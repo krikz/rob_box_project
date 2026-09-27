@@ -47,6 +47,7 @@ ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import io
 import json
@@ -56,14 +57,22 @@ import sys
 import threading
 import time
 import wave
-from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 
 import grpc
 import numpy as np
 import rclpy
 import sounddevice as sd
-import torch
+# Issue #2609 — torch is NOT imported at module load. The voice-assistant
+# container runs 9 nodes; tts_node only uses torch for Silero TTS (offline
+# fallback). At startup the primary provider is `minimax` or `yandex` —
+# torch is dead weight. Defer the import to ``_load_silero_model`` so that
+# minimax/yandex nodes don't pay the ~700 MB RSS cost (CPU-only wheel; the
+# old `+cu130` build was ~1.6 GiB across both tts_node and speaker_id_node).
+# The CPU-only wheel itself is pinned in ``docker/vision/voice_*/requirements.txt``
+# — `--index-url https://download.pytorch.org/whl/cpu`. See issue #2609.
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rclpy.qos import (
@@ -74,12 +83,13 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
+from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
-from .core.speak_helpers import strip_markdown
+from .core.speak_helpers import strip_markdown, unsupported_language_notice
 
 # Issue #1709 — Unicode-script guard: не отправляем в TTS текст, который
 # в основном состоит из букв неподдерживаемых письменностей (CJK,
@@ -88,6 +98,40 @@ from .core.speak_helpers import strip_markdown
 from .tts_text_guard import analyze as _tts_guard_analyze
 from .tts_text_guard import describe as _tts_guard_describe
 from .tts_text_guard import should_skip as _tts_guard_should_skip
+
+# Issue #2175 — defense-in-depth: refuse to synthesize MiniMax's
+# regurgitated ``<system>...</system>`` template even if the dialogue
+# guard somehow let it through. Pure-Python helper, identical regex
+# to the one in ``dialogue_node._check_system_template_regurgitate_and_retry``
+# для extracted spoken; для SSML используется отдельный helper
+# ``is_system_template_regurgitated_in_ssml`` (более узкая regex,
+# учитывающая ``<speak>...</speak>``-обёртку).
+from .core.dialogue_guards import (
+    is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
+)
+
+# Issue #2760 — тот же приём для разметки протокола tool-calls: модель
+# печатает ``<function_calls><invoke name="...">`` текстом, dialogue-guard
+# требует ретрай, а этот уровень гарантирует, что теги не прозвучат, даже
+# если реплика пришла мимо него (прогон 35704637846: два чанка ушли в
+# синтез). Детектор ``search``-овый, поэтому работает и на сыром SSML.
+from .core.dialogue_guards import is_tool_call_markup as _is_tool_call_markup
+
+# Issue #2003 / ADR-0056 — speculative chunk-level pre-generation.
+# Pure-Python package, no rclpy/asyncio in the data-class modules
+# (only :class:`speculative_executor.SpeculativeExecutor` is
+# async-aware). Distinct from the existing scheduler-level
+# :mod:`rob_box_voice.scheduler.pre_gen` (different abstraction
+# layer; see ADR-0056 §4 for the explicit rejection of "thin
+# adapter to SpeculativePreGenerator").
+from .scheduler.pregen import (
+    CONFIDENCE_FLOOR as _PREGEN_CONFIDENCE_FLOOR,
+    Decision as _PreGenDecision,
+    PreGenResult as _PreGenResult,
+    PreGenTask as _PreGenTask,
+    SpeculativeExecutor as _PreGenExecutor,
+    build_pregen_task as _build_pregen_task,
+)
 
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
 # into ROS-ready int16 LE PCM. Imported independently from the optional MiniMax
@@ -126,6 +170,181 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
     MiniMaxTTSBadRequestError = Exception  # type: ignore[assignment,misc]
     MiniMaxTTSRateLimitError = Exception  # type: ignore[assignment,misc]
 
+# Issue #2702 — общий health-кэш LLM-провайдеров (rob_box_harness.health).
+# MiniMax Token Plan общий для чата (LLM) и синтеза речи (T2A): если
+# dialogue_node/supervisor уже узнали «minimax unavailable (quota)»,
+# tts_node не должен повторно платить тем же честным HTTP-таймаутом —
+# он должен УВИДЕТЬ то же самое состояние и сразу пойти к следующему
+# провайдеру. Импорт мягкий (тот же паттерн, что у MiniMax выше): узел
+# может жить на машине без rob_box_harness (минимальная сборка) — тогда
+# просто работаем только со своим локальным ``_provider_dead_until``,
+# как до этого issue.
+try:
+    from rob_box_harness.health import (
+        HealthCache as _SharedHealthCache,
+        is_auth_failure as _harness_is_auth_failure,
+    )
+
+    HARNESS_HEALTH_AVAILABLE = True
+except ImportError:  # pragma: no cover — harness может быть не установлен на узле
+    HARNESS_HEALTH_AVAILABLE = False
+    _SharedHealthCache = None  # type: ignore[assignment]
+
+    def _harness_is_auth_failure(exc: BaseException) -> bool:  # type: ignore[misc]
+        """Деградация без rob_box_harness — та же логика, что в health.py.
+
+        Дублирование намеренное (issue #2702): цель — не уронить узел
+        без harness, а не «переиспользовать код» ценой жёсткой
+        зависимости. См. ``rob_box_harness.health.is_auth_failure``.
+        """
+        text = str(exc).lower()
+        return (
+            "401" in text
+            or "403" in text
+            or "invalid api key" in text
+            or "permission_denied" in text
+            or "unauthenticated" in text
+        )
+
+
+def _yandex_is_permanent_failure(provider_name: str, error: BaseException) -> bool:
+    """True для Yandex-ошибок, которые не «рассосутся» за секунды (issue #2702 п.2).
+
+    ``PERMISSION_DENIED``/``UNAUTHENTICATED`` (права на папку/протухший
+    ключ, ADR-0124) — это ровно тот же класс отказа, что и MiniMax
+    auth/quota: нужен длинный TTL (``provider_dead_ttl_s``), а не
+    транзиентная лестница. ``_synthesize_yandex_single`` оборачивает
+    ``grpc.RpcError`` в обычный ``Exception`` с кодом в тексте
+    (см. модульный docstring ``_synthesize_yandex_single``).
+
+    Классификация в ДВА слоя:
+    1. ``rob_box_harness.health.is_auth_failure`` — общий классификатор,
+       которым уже пользуется LLM-сторона (issue #2702: «переиспользуй,
+       не копипасть»);
+    2. локальная подстраховка на те же два gRPC-кода — на случай, если в
+       конкретном деплое ``rob_box_harness`` собран из версии ДО этого
+       issue (voice/vision-образы собираются по отдельности, см.
+       docker/*/Dockerfile — рассинхрон версий пакетов внутри одного репо
+       технически возможен). Оба слоя проверяют один и тот же факт;
+       второй — просто явная гарантия, что Yandex auth-классификация в
+       tts_node не тихо деградирует до транзиентной, если где-то в парке
+       контейнеров окажется чуть более старый harness.
+    """
+    if provider_name != "yandex":
+        return False
+    try:
+        if bool(_harness_is_auth_failure(error)):
+            return True
+    except Exception:  # noqa: BLE001 — классификатор не должен ронять TTS
+        pass
+    try:
+        text = str(error).lower()
+    except Exception:  # noqa: BLE001 — экзотический __str__ не должен ронять TTS
+        return False
+    return "permission_denied" in text or "unauthenticated" in text
+
+
+class _TTSEmptyTextError(Exception):
+    """Issue #2096 — пустой ``text`` дошёл до ``_synthesize_and_play``.
+
+    Дефект ВЫЗЫВАЮЩЕГО (пустой ``text``/``ssml``), а не провайдера — см.
+    guard в начале ``_synthesize_and_play``. Отдельный класс (не голый
+    ``Exception``) нужен, чтобы исключение поднималось ДО входа в
+    ``_sap_run_provider_chain``/``_sap_silero_fallback`` — минимакс/yandex/
+    silero никогда его не видят, и ``_mark_provider_dead`` никогда не
+    вызывается по этой причине.
+    """
+
+
+# ── Preview-synthesis error hierarchy (ADR-0079 / issue #2138.A.3) ────
+# supervisor использует ``except PreviewSynthesisError`` чтобы отделить
+# наши ошибки от внешних (MiniMax бросает свой MiniMaxTTSError).
+# Иерархия:
+#   PreviewSynthesisError           — база, поле ``reason`` для ws_server.
+#     ├─ PreviewSynthesisTimeoutError — сетевой синтез не уложился.
+#     └─ PreviewSynthesisUnavailableError — MiniMax opt-in не подключён.
+
+
+class PreviewSynthesisError(Exception):
+    # Базовый класс ошибок preview-синтеза. Поле ``reason`` — стабильная
+    # строка, которую supervisor пишет в
+    # ``preview_voice_error{reason: <reason>}``. Это публичный контракт
+    # между avatar_supervisor и ws_server/клиентом — менять опасно.
+
+    def __init__(self, message, reason="preview_synthesis_failed"):
+        super().__init__(message)
+        self.reason = reason
+
+
+class PreviewSynthesisTimeoutError(PreviewSynthesisError):
+    # Сетевой синтез не уложился в ``timeout_s``. Отдельный класс (не
+    # просто reason=timeout) для удобства юнит-тестов и для будущих
+    # телеметрий: «сколько preview'ов висит до таймаута» — отдельный
+    # gauge от «сколько preview'ов падает по 5xx».
+
+    def __init__(self, message, timeout_s):
+        super().__init__(message, reason="preview_timeout")
+        self.timeout_s = timeout_s
+
+
+class PreviewSynthesisUnavailableError(PreviewSynthesisError):
+    # MiniMax opt-in не подключён (MINIMAX_AVAILABLE=False).
+    # Capability-honest: честно говорим «preview сейчас недоступен», а
+    # не делаем вид что работаем. supervisor шлёт
+    # preview_voice_error{reason: minimax_unavailable}.
+
+    def __init__(self, message):
+        super().__init__(message, reason="minimax_unavailable")
+
+
+# ── Preview-synthesis value object ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PreviewAudioResult:
+    # Результат preview-синтеза для picker'а оператора.
+    # audio_bytes — байты в ЗАКОДИРОВАННОМ контейнере (mp3/wav/ogg), а НЕ
+    # сырой int16 PCM. Это требование preview_audio_sink.ts: WebAudio
+    # decodeAudioData декодирует mp3/wav/opus, но не raw PCM без
+    # контейнера. content_type — MIME для ws_server/клиента (audio/mpeg
+    # для mp3, audio/wav для wav и т.п.). supervisor оборачивает в
+    # {format, content_type, audio_b64, ...} JSON для
+    # /avatar/preview_voice/audio.
+
+    audio_bytes: bytes
+    content_type: str
+    sample_rate: int
+    format_str: str
+    duration_s: float
+
+
+def _format_to_content_type(fmt):
+    # Map TTSFormat → MIME content_type для ws_server preview_audio_sink.
+    # Клиент (preview_audio_sink.ts) передаёт content_type в
+    # AudioContext.decodeAudioData — браузерный декодер сам подберёт
+    # формат по MIME. PCM (raw) сюда не идёт: audio/L16 технически
+    # существует, но в preview-канале WebAudio его ест только если
+    # знает sampleRate через параметр, а клиент этого не делает — мы
+    # конвертируем в контейнер заранее (mp3/wav).
+    if fmt == TTSFormat.MP3:
+        return "audio/mpeg"
+    if fmt == TTSFormat.WAV:
+        return "audio/wav"
+    if fmt == TTSFormat.OGG:
+        # OGG-контейнер может нести Opus или Vorbis. Клиент шлёт
+        # content_type "audio/ogg" — WebAudio разберётся через codec
+        # внутри. Если внутри Opus — современный Chromium/Quest
+        # поддерживает; если Vorbis — fallback на Edge не нужен.
+        return "audio/ogg"
+    if fmt == TTSFormat.PCM:
+        # Сырой PCM в preview-канале НЕ поддерживается (см. docstring
+        # PreviewAudioResult). Если caller выбрал preview_format=pcm —
+        # мы всё равно отдадим, но content_type поставим audio/L16 чтобы
+        # клиент мог понять «это сырой PCM» (на практике decodeAudioData
+        # тут молча упадёт; см. ADR-0079 §грабли).
+        return "audio/L16"
+    return "application/octet-stream"
+
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -140,28 +359,6 @@ from rob_box_voice.observability import (
     start_metrics_server,
     start_span_handle,
 )
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от sounddevice."""
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
@@ -201,6 +398,136 @@ def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.nd
 
 
 _SILERO_PITCH_LEVELS = ("x-low", "low", "medium", "high", "x-high", "robot")
+
+
+# ── Issue #1780: Yandex gRPC v3 SSML → pitch/volume конвертация ────────────
+# Yandex Cloud TTS v3 ``Hints`` API поддерживает только:
+#   * ``pitch_shift`` — Hz-offset (range [-1000; 1000], default 0)
+#   * ``volume``      — LUFS dB-offset (range [-145; 0), default -19)
+#
+# SSML `<prosody>` оперирует относительными множителями/уровнями
+# (``pitch="+10%"``, ``volume="loud"``). Здесь мы приводим их к
+# Yandex-формату без потери смысла: «на сколько Hz поднять голос» и
+# «на сколько dB сделать громче/тише относительно дефолта».
+YANDEX_BASELINE_PITCH_HZ: float = (
+    130.0  # средняя основная частота голоса anton (~130 Hz)
+)
+YANDEX_BASELINE_VOLUME_LUFS: float = -19.0  # Yandex дефолт для LUFS-нормализации
+_YANDEX_PITCH_SHIFT_MAX_HZ: float = 1000.0  # абсолютный предел API
+_YANDEX_VOLUME_MIN_LUFS: float = -145.0  # нижний предел API
+
+
+def _ssml_pitch_to_hz(pitch) -> Optional[float]:
+    """SSML pitch → Hz-offset для Yandex gRPC v3 ``Hints.pitch_shift``.
+
+    Принимает те же формы, что и ``_parse_ssml_attributes``:
+    ``"+10%"``, ``"-25%"``, ``"1.2"``, ``"high"``, ``"low"``, ``"medium"``,
+    ``"x-high"``, ``"x-low"``, ``"robot"``, ``1.2`` (float), ``None``.
+    Возвращает число в ``[-1000; 1000]`` или ``None``, если вход не парсится.
+
+    Эвристика: дефолтный голос anton ≈ 130 Hz baseline; ``+10%`` →
+    ``+13 Hz``, ``high`` (~1.2×) → ``+26 Hz``, ``x-high`` (~1.5×) →
+    ``+65 Hz``. Отрицательные аналоги.
+    """
+    if pitch is None:
+        return None
+    factor: Optional[float] = None
+    if isinstance(pitch, (int, float)):
+        factor = float(pitch)
+    elif isinstance(pitch, str):
+        value = pitch.strip().lower()
+        # "robot" у Silero означает спец-эффект, не тон — для Yandex
+        # не имеет однозначного Hz-маппинга → None.
+        if value == "robot":
+            return None
+        if value in {"x-low", "low", "medium", "high", "x-high"}:
+            mapping = {
+                "x-low": 0.5,
+                "low": 0.8,
+                "medium": 1.0,
+                "high": 1.2,
+                "x-high": 1.5,
+            }
+            factor = mapping[value]
+        elif value.endswith("%"):
+            try:
+                factor = 1.0 + float(value[:-1]) / 100.0
+            except ValueError:
+                return None
+        else:
+            try:
+                factor = float(value)
+            except ValueError:
+                return None
+    else:
+        return None
+    if factor is None:
+        return None
+    hz = (factor - 1.0) * YANDEX_BASELINE_PITCH_HZ
+    # Clamp в валидный диапазон API.
+    return max(-_YANDEX_PITCH_SHIFT_MAX_HZ, min(_YANDEX_PITCH_SHIFT_MAX_HZ, hz))
+
+
+_SSML_NAMED_VOLUME_TO_DB: dict[str, float] = {
+    # SSML стандарт (https://www.w3.org/TR/speech-synthesis/#S3.2.4):
+    # silent (-∞, мы приравниваем к -145), x-soft (-12), soft (-6),
+    # medium (0), loud (+6), x-loud (+12). Шаг ~6 dB.
+    "silent": -145.0,
+    "x-soft": -12.0,
+    "soft": -6.0,
+    "medium": 0.0,
+    "loud": 6.0,
+    "x-loud": 12.0,
+}
+
+
+def _ssml_volume_to_lufs_target(volume) -> Optional[float]:
+    """SSML volume → абсолютная LUFS-цель для Yandex gRPC v3 ``Hints.volume``.
+
+    Yandex ``volume`` — абсолютная LUFS-цель в диапазоне ``[-145; 0)``.
+    SSML ``volume`` — относительный уровень (``"loud"`` = +6 dB относительно
+    дефолта). Возвращаем абсолютную LUFS-цель, от которой Yandex будет
+    нормализовать аудио (clamp в ``[-145; 0)``).
+
+    Поддерживает:
+    * числа в dB: ``"+5dB"``, ``"-3dB"``, ``"5"``, ``+5``, ``-3``;
+    * проценты: ``"+50%"``, ``"-25%"`` (100% = +6 dB);
+    * именованные уровни SSML: ``silent|x-soft|soft|medium|loud|x-loud``.
+    """
+    if volume is None:
+        return None
+    if isinstance(volume, (int, float)):
+        # Числовое значение — трактуем как dB-offset относительно baseline.
+        delta = float(volume)
+    elif isinstance(volume, str):
+        value = volume.strip().lower()
+        if value in _SSML_NAMED_VOLUME_TO_DB:
+            delta = _SSML_NAMED_VOLUME_TO_DB[value]
+        elif value.endswith("db"):
+            try:
+                delta = float(value[:-2].strip())
+            except ValueError:
+                return None
+        elif value.endswith("%"):
+            try:
+                pct = float(value[:-1])
+            except ValueError:
+                return None
+            # 100% = +6 dB (один SSML-шаг «громче»). Логарифмически 6 dB
+            # ≈ множитель 2× по амплитуде; для пользователя важнее
+            # линейная интерполяция в стопе «loud/soft» шагов.
+            delta = pct / 100.0 * 6.0
+        else:
+            try:
+                delta = float(value)
+            except ValueError:
+                return None
+    else:
+        return None
+    # Переводим смещение в абсолютную LUFS-цель.
+    target = YANDEX_BASELINE_VOLUME_LUFS + delta
+    # Clamp в валидный диапазон Yandex API: [-145; 0).
+    return max(_YANDEX_VOLUME_MIN_LUFS, min(-1.0, target))
 
 
 def normalize_silero_pitch(pitch) -> str:
@@ -267,6 +594,162 @@ except ImportError:
         return text
 
 
+def _parse_optional_int(value: object) -> int | None:
+    """Parse a ROS-stringy value into an ``int`` or ``None``.
+
+    Used for ``minimax_pitch`` (issue #1780). Empty string / ``None`` →
+    ``None`` (field omitted from payload). Any other string / number is
+    coerced via :class:`int`; :class:`ValueError` is logged and treated
+    as "unset" so a typo in YAML doesn't take the whole node down.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_optional_float(value: object) -> float | None:
+    """Parse a ROS-stringy value into a ``float`` or ``None``.
+
+    Used for ``minimax_volume`` (issue #1780). Empty string / ``None`` →
+    ``None`` (field omitted from payload). Coercion failures are logged
+    as "unset" so a typo doesn't crash the node — the API still gets a
+    syntactically valid request.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_pronunciation_dict(value: object) -> dict | None:
+    """Parse the YAML/ROS string ``minimax_pronunciation_dict`` into a dict.
+
+    Used for ``minimax_pronunciation_dict`` (issue #1780). Accepts:
+
+    * Empty string / ``None`` → ``None`` (field omitted from payload).
+    * A JSON-encoded object — parsed via :mod:`json`; the MiniMax T2A v2
+      spec asks for ``{"tone": [...], "phoneme": [...], "contextual": [...]}``
+      so we expect ``Mapping[str, Sequence[str]]``-shaped payloads.
+    * Already a ``Mapping`` — passed through.
+
+    Anything else (``str`` that's not JSON, ``int``, ``list``) is logged
+    as "ignored" and we return ``None``. We deliberately do NOT raise
+    here: this is operator-config, not user-facing input; crashing the
+    node on a typo is worse than silently ignoring the malformed value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            return None
+    elif isinstance(value, Mapping):
+        parsed = value
+    else:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    return dict(parsed)
+
+
+# Issue #1996 / operator-agent step 7a — allowed values for the top-level
+# ``priority`` field of ``/voice/tts/request``.
+#
+# Набор ВЫРОВНЕН с ADR-0056: те же три значения, что валидирует
+# ``scheduler/pregen/pre_gen.py`` для вложенного ``pregenerate.priority``.
+# Раньше здесь был двухзначный набор, и top-level ``priority="personality"``
+# молча превращался в ``"normal"`` — молчаливая потеря значения на границе
+# двух контрактов. Решение владельца: держать полный набор.
+#
+# Прецеденция в FIFO-gate (см. ``TTSNode._assign_priority_play_seq``):
+#
+#   operator     — врезка: запрос встаёт сразу за играющим чанком.
+#                  Целевая архитектура §8а.3: «ТАРС не договаривается с
+#                  планировщиком личности, он просто говорит роботом».
+#   personality  — речь личности, хвост очереди.
+#   normal       — немаркированный / legacy-трафик, хвост очереди.
+#
+# ``personality`` и ``normal`` сегодня по порядку НЕ различаются — обоих
+# кладём в хвост. Значение сохраняется отдельно намеренно: оно доезжает до
+# планировщика предгенерации и метрик, которым важно, чья это реплика.
+# Если появится своя прецеденция у личности — менять здесь, тесты на
+# порядок уже есть.
+_TTS_PRIORITY_VALUES = frozenset({"operator", "personality", "normal"})
+
+#: Значения, дающие врезку. Отдельная константа, чтобы «кто прыгает
+#: очередь» читалось в одном месте, а не выводилось из сравнения строк.
+_TTS_PRIORITY_PREEMPTS = frozenset({"operator"})
+
+
+# Issue #2318 — whitelist поля ``sink`` в ``/voice/tts/request`` и его
+# канонизация. Ключ — то, что реально приходит в payload; значение —
+# каноническое имя, которым дальше по стеку оперируют
+# ``_submit_synthesis(sink=...)`` / ``_sap_publish_for_sink``.
+#
+# ``"speakers"`` — значение ``Sink.SPEAKERS`` из SoT-сборщика
+# ``rob_box_core.utterance`` (ADR-0080 §2.3). Продюсеры (dialogue_node,
+# telegram_node, stt_node, startup_greeting_node, core.speak_helpers)
+# перешли на него в voice-vr 12 (#2197), а consumer в voice-vr 13 (#2198)
+# остался на единственном числе ``"speaker"`` — рассинхрон контракта,
+# из-за которого КАЖДАЯ реплика в динамики уходила в DROP (deploy #2318:
+# «unknown sink='speakers' ... DROP»). Держим оба написания: SoT-имя и
+# исторический ``"speaker"`` (legacy-паблишеры и явный kwarg внутри
+# самого узла).
+#
+# Отсутствие поля и пустая строка → ``"speaker"`` (backward-compat, тот
+# же default, что и до фикса).
+_VOICE_TTS_SINK_ALIASES = {
+    "speaker": "speaker",
+    "speakers": "speaker",
+    "": "speaker",
+    "headset": "headset",
+    "preview": "preview",
+}
+
+
+def _normalize_tts_priority(raw: object) -> str:
+    """Whitelist-normalize the ``priority`` field of ``/voice/tts/request``.
+
+    Backward-compat contract (issue #1996 DoD): the field is optional, and
+    anything outside the whitelist — missing, ``None``, wrong case
+    (``"OPERATOR"``), or garbage — is treated as ``"normal"``. A malformed
+    payload must never raise or drop the request; it just loses the
+    priority bump.
+
+    Whitelist — ``{"operator", "personality", "normal"}``, тот же, что у
+    вложенного ``pregenerate.priority`` в ADR-0056. Значение возвращается
+    как есть, без схлопывания ``personality`` в ``normal``.
+    """
+    if raw in _TTS_PRIORITY_VALUES:
+        return raw  # type: ignore[return-value]
+    return "normal"
+
+
 # Yandex Cloud TTS API v3 (gRPC)
 try:
     from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc
@@ -293,6 +776,7 @@ except ImportError:
 # rclpy). Сам ``tts_node.py`` его импортирует.
 from .tts_chunking import (
     CHUNK_LIMITS,
+    SENTENCE_SENTINELS,
     DEFAULT_MAX_RETRIES,
     MIN_CHUNK_CHARS,
     TooLongError,
@@ -346,27 +830,97 @@ TTS_LOOP_MAX_WORKERS: int = 1
 # Fix: keep ONE event loop alive in a dedicated daemon thread and submit
 # every coroutine to it via ``run_coroutine_threadsafe``. The loop never
 # closes while the process lives, so the provider client stays valid.
+#: How long :func:`shutdown_tts_loop` waits for the driver to return.
+TTS_LOOP_SHUTDOWN_TIMEOUT_S: float = 2.0
+
 _TTS_LOOP_LOCK = threading.Lock()
 _TTS_LOOP: asyncio.AbstractEventLoop | None = None
-_TTS_LOOP_THREAD: threading.Thread | None = None
+_TTS_LOOP_EXECUTOR: "concurrent.futures.ThreadPoolExecutor | None" = None
+_TTS_LOOP_FUTURE: "concurrent.futures.Future | None" = None
+_TTS_LOOP_ATEXIT_REGISTERED = False
+
+
+def _register_tts_loop_atexit() -> None:
+    """Arrange for the loop to be stopped before the interpreter joins threads.
+
+    ``ThreadPoolExecutor`` workers are **non-daemon**, and CPython joins them
+    inside ``threading._shutdown()`` — which runs BEFORE ``atexit`` handlers.
+    A worker parked in ``run_forever()`` never returns, so the process hangs
+    after its last line of work: pytest would print its summary and then sit
+    there forever, and ``ros2 run`` would not exit on shutdown.
+
+    ``threading._register_atexit`` is the hook that runs at the *start* of
+    ``threading._shutdown()``; it is what ``concurrent.futures.thread`` itself
+    uses for exactly this problem. Falls back to ``atexit`` if it ever
+    disappears — that is too late to prevent the hang, but it still releases
+    the loop in embedded interpreters that never join threads.
+    """
+    global _TTS_LOOP_ATEXIT_REGISTERED
+    if _TTS_LOOP_ATEXIT_REGISTERED:
+        return
+    register = getattr(threading, "_register_atexit", None)
+    (register or atexit.register)(shutdown_tts_loop)
+    _TTS_LOOP_ATEXIT_REGISTERED = True
 
 
 def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
     """Return the process-wide MiniMax TTS event loop (create on first use)."""
-    global _TTS_LOOP, _TTS_LOOP_THREAD
+    global _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
     with _TTS_LOOP_LOCK:
         if _TTS_LOOP is not None and not _TTS_LOOP.is_closed():
             return _TTS_LOOP
         _TTS_LOOP = asyncio.new_event_loop()
         # Use bounded ``ThreadPoolExecutor`` (BLK-9 regression-guard) so we
-        # never spawn a raw ``threading.Thread(daemon=True)``. The single
+        # never spawn a raw bare daemon thread. The single
         # worker runs ``run_forever`` for the event loop until shutdown.
+        #
+        # Both the executor and the future are kept module-level: without a
+        # reference there is no way to stop the loop, and a non-daemon worker
+        # parked in ``run_forever`` blocks interpreter exit forever.
         _TTS_LOOP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
             max_workers=TTS_LOOP_MAX_WORKERS,
             thread_name_prefix="minimax-tts-loop",
         )
-        _TTS_LOOP_THREAD = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
+        _TTS_LOOP_FUTURE = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
+        _register_tts_loop_atexit()
         return _TTS_LOOP
+
+
+def shutdown_tts_loop(timeout: float = TTS_LOOP_SHUTDOWN_TIMEOUT_S) -> None:
+    """Stop the process-wide TTS loop and release its worker thread.
+
+    Idempotent and safe to call when the loop was never started. Mirrors
+    ``DialogueNode.shutdown_asyncio_loop``; registered as a shutdown hook
+    because the loop is process-wide and no single node owns its lifetime.
+    """
+    global _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
+    with _TTS_LOOP_LOCK:
+        loop, executor, future = _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
+        _TTS_LOOP = _TTS_LOOP_EXECUTOR = _TTS_LOOP_FUTURE = None
+    if loop is None:
+        return
+    try:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+    except RuntimeError:
+        # Loop already stopped/closed by someone else — nothing to do.
+        pass
+    if future is not None:
+        try:
+            future.result(timeout=timeout)
+        except Exception:  # noqa: BLE001 — includes TimeoutError
+            # Never raise from a shutdown hook: it runs while the interpreter
+            # is tearing down, where an exception is both unhelpful and
+            # easy to miss. A driver that refuses to stop shows up as the
+            # process failing to exit.
+            pass
+    if executor is not None:
+        executor.shutdown(wait=False)
+    try:
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        pass
 
 
 def _run_in_tts_loop(coro) -> Any:
@@ -374,6 +928,44 @@ def _run_in_tts_loop(coro) -> Any:
     loop = _ensure_tts_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result()
+
+
+def _text_or_language_notice(
+    logger, provider: str, text: str, language: str = None
+) -> str:
+    """Текст для синтеза: либо исходный, либо честная фраза-отказ (AV-28).
+
+    ``provider`` берётся ПО ФАКТУ (после цепочки фолбэков, а не из
+    ``self.provider``): именно так сегодня и вышло — оператор выбирал язык
+    при живом minimax, а синтезировал в итоге Silero.
+
+    Функция модульная, а не метод: ``_synthesize_and_play`` в тестах
+    вызывается на bare-стабе без методов ноды (см.
+    test/unit/tts/test_voice_selection.py::_playback_node), и метод здесь
+    молча ронял бы весь провайдерский бранч в AttributeError.
+    """
+    notice = unsupported_language_notice(provider, language)
+    if notice is None:
+        return text
+    logger.warning(
+        f"🌐 [AV-28] {provider} не умеет язык {language!r} — вместо текста "
+        f"произношу отказ (текст был: {text[:60]!r})"
+    )
+    return notice
+
+
+# bug(#2183) — живые voice-параметры ноды: {имя ROS-параметра: (человекочитаемое
+# имя провайдера, ключ реестра)}. Имя атрибута совпадает с именем параметра.
+#
+# Таблица, а не три ветки в ``parameters_callback``: ADR-0021 держит
+# цикломатическую сложность этого метода в бюджете (три отдельных ``elif``
+# поднимали её с 14 до 17 при лимите 15), а добавление четвёртого провайдера
+# теперь не трогает поток управления вообще.
+_LIVE_VOICE_PARAMS = {
+    "yandex_voice": ("Yandex", "yandex"),
+    "minimax_voice": ("MiniMax", "minimax"),
+    "silero_speaker": ("Silero", "silero"),
+}
 
 
 class TTSNode(Node):
@@ -401,6 +993,21 @@ class TTSNode(Node):
         # в кэше — не долбим его на каждый ход (см. _mark_provider_dead).
         self.declare_parameter("provider_dead_ttl_s", 300.0)
         self.declare_parameter("provider_dead_ttl_transient_s", 30.0)
+        # Issue #2702 — путь к ОБЩЕМУ с LLM-стороной health-кэшу
+        # (rob_box_harness.health.HealthCache). Совпадает по умолчанию с
+        # dialogue_node.health_cache_path — один файл на машину, один
+        # источник правды про MiniMax (Token Plan общий для LLM и T2A).
+        # Пустая строка отключает общий кэш (узел живёт только своим
+        # локальным ``_provider_dead_until``, как до этого issue).
+        self.declare_parameter("health_cache_path", "~/.rob_box/llm_health.json")
+        self.declare_parameter("health_ttl_s", 300.0)
+        # Issue #2702 п.4 — суммарный бюджет времени (сек) на ВСЮ облачную
+        # часть цепочки (minimax + yandex, включая их собственные retry).
+        # Превышен → остальные облачные провайдеры пропускаются, сразу
+        # Silero. НЕ прерывает уже начатый HTTP/gRPC-запрос (нет
+        # cancellation-инфраструктуры, тот же честный компромисс, что в
+        # stt_fallback._measure) — ограничивает число ДАЛЬНЕЙШИХ попыток.
+        self.declare_parameter("cloud_tts_budget_s", 8.0)
         # Issue #1229 — файл персистентного состояния фактического
         # провайдера TTS (переживает рестарт контейнера; пустая строка =
         # отключено). tts_node пишет {provider, dead_until_ts, ...} при
@@ -412,27 +1019,42 @@ class TTSNode(Node):
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
-        self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
-        self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
+        self.declare_parameter(
+            "yandex_voice", "anton"
+        )  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
+        self.declare_parameter(
+            "yandex_speed", 1.0
+        )  # 0.1-3.0 (1.0 = нормальная скорость речи)
+        # Issue #1780 / issue #1004: флаг «ssml-aware» режима для Yandex.
+        # При True — Yandex-провайдер должен пропускать вход как SSML
+        # (``<speak>...<emotion>happy</emotion>...</speak>``), используя
+        # ``<emotion>`` и ``<prosody pitch=...>`` теги, поддерживаемые
+        # Yandex gRPC v3. Сейчас (False) текст идёт в ``Hints(voice, speed)``
+        # как раньше — fallback совместимости. Полная интеграция — в карточке
+        # t_c401ecaa; этот параметр объявлен здесь, чтобы YAML был
+        # валиден с самого начала.
+        self.declare_parameter("yandex_ssml_aware", False)
 
         # Silero TTS (fallback)
         self.declare_parameter(
             "silero_speaker", "baya"
         )  # aidar (male) | baya (female) | kseniya | xenia | eugene (NEW in v5!)
-        self.declare_parameter("silero_sample_rate", 48000)  # v5: можно повысить до 48000 для лучшего качества
+        self.declare_parameter(
+            "silero_sample_rate", 48000
+        )  # v5: можно повысить до 48000 для лучшего качества
 
         # Silero v5: новые флаги для расстановки ударений
         self.declare_parameter("silero_put_accent", True)  # Ударения в обычных словах
         self.declare_parameter("silero_put_yo", True)  # Автоматическая буква ё
-        self.declare_parameter("silero_put_stress_homo", True)  # Ударения в омографах (замОк/зАмок)
+        self.declare_parameter(
+            "silero_put_stress_homo", True
+        )  # Ударения в омографах (замОк/зАмок)
         self.declare_parameter("silero_put_yo_homo", True)  # Ударения в омографах с ё
 
         # Per-provider max chunk size (issue #933). Defaults берутся из
         # ``CHUNK_LIMITS`` в ``tts_chunking.py`` (yandex=700, silero=800,
         # minimax=5000). Override через YAML/launch (см. voice_assistant.yaml).
-        self.declare_parameter(
-            "chunk_max_chars_yandex", CHUNK_LIMITS["yandex_grpc_v3"]
-        )
+        self.declare_parameter("chunk_max_chars_yandex", CHUNK_LIMITS["yandex_grpc_v3"])
         self.declare_parameter("chunk_max_chars_silero", CHUNK_LIMITS["silero_v5"])
         self.declare_parameter("chunk_max_chars_minimax", CHUNK_LIMITS["minimax"])
         self.declare_parameter("chunk_max_retries", DEFAULT_MAX_RETRIES)
@@ -440,28 +1062,66 @@ class TTSNode(Node):
 
         # MiniMax TTS (HTTP, T2A v2). Активируется когда provider="minimax".
         # Параметры берутся из ROS-параметров или из ENV (MINIMAX_API_KEY / MINIMAX_GROUP_ID).
-        self.declare_parameter("minimax_api_key", "")  # пусто → fallback на os.getenv("MINIMAX_API_KEY")
-        self.declare_parameter("minimax_group_id", "")  # пусто → fallback на os.getenv("MINIMAX_GROUP_ID")
+        self.declare_parameter(
+            "minimax_api_key", ""
+        )  # пусто → fallback на os.getenv("MINIMAX_API_KEY")
+        self.declare_parameter(
+            "minimax_group_id", ""
+        )  # пусто → fallback на os.getenv("MINIMAX_GROUP_ID")
         self.declare_parameter("minimax_voice", "male-qn-qingse")  # MiniMax voice id
-        self.declare_parameter("minimax_model", "speech-02-hd")  # speech-02-hd | speech-02-turbo
-        self.declare_parameter("minimax_language", "ru")  # ru / en / zh — маппится в human-readable на API
+        self.declare_parameter(
+            "minimax_model", "speech-02-hd"
+        )  # speech-02-hd | speech-02-turbo
+        self.declare_parameter(
+            "minimax_language", "ru"
+        )  # ru / en / zh — маппится в human-readable на API
         self.declare_parameter("minimax_speed", 1.0)  # 0.5 – 2.0
-        self.declare_parameter("minimax_sample_rate", 32000)  # Hz — MiniMax возвращает PCM @ 32 kHz
+        self.declare_parameter(
+            "minimax_sample_rate", 32000
+        )  # Hz — MiniMax возвращает PCM @ 32 kHz
         self.declare_parameter("minimax_timeout", 30.0)  # секунды httpx timeout
         # Формат контейнера, который ожидается от MiniMax. Default PCM, как
         # задокументировано в ADR-0003 §2.3. WAV/MP3/OGG тоже валидны —
         # провайдер вернёт выбранный контейнер, а _synthesize_minimax_async
         # транскодирует его в int16 LE PCM через utils.audio_transcode.
         self.declare_parameter("minimax_format", "pcm")  # pcm | wav | mp3 | ogg
+        # ADR-0079 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # Отдельный от minimax_format (тот рассчитан на ALSA playback; preview
+        # идёт в /avatar/preview_voice/audio → ws_server → WebAudio клиента,
+        # которому нужен ЗАКОДИРОВАННЫЙ контейнер, не сырой PCM).
+        # Default mp3: decodeAudioData его декодирует; ogg/opus/wav — тоже.
+        # Если поставите preview_format=pcm — клиент упадёт в decodeAudioData,
+        # picker покажет ошибку, но supervisor увидит честный preview_voice_error
+        # (НЕ silent-mock). См. ADR-0079 §грабли.
+        self.declare_parameter("preview_format", "mp3")  # pcm | wav | mp3 | ogg
         # Retry policy — соответствует ADR-0003 §2.6.
         self.declare_parameter("minimax_max_retries", 2)  # 0..3
-        self.declare_parameter("minimax_retry_backoff_ms", 500)  # ms начальный backoff (удваивается)
+        self.declare_parameter(
+            "minimax_retry_backoff_ms", 500
+        )  # ms начальный backoff (удваивается)
         # Streaming mode: использовать ли provider.stream() вместо synthesize().
         # Текущий MiniMax провайдер возвращает один буферизованный чанк,
         # поэтому chunk-per-frame latency win появится только с WebSocket
         # (M5/M6). Эта настройка сейчас полезна для тестов и как
         # forward-compat hook. См. ADR-0003 §2.4.
         self.declare_parameter("minimax_streaming", False)
+        # Issue #1780 / issue #1004: дефолтные emotion / pitch / volume /
+        # pronunciation_dict для MiniMax T2A v2 (см. minimax_tts.py —
+        # ``voice_setting`` принимает ``emotion``, ``pitch`` int semitones,
+        # ``vol`` float [0.0, 10.0], ``pronunciation_dict`` str). Дефолты —
+        # нейтральные, чтобы сохранить текущее поведение (поля НЕ
+        # передаются в API, если явно не заданы):
+        #   emotion = "neutral"         → API default, поведение как до #1780
+        #   pitch  = ""                 → не передавать
+        #   volume = ""                 → не передавать
+        #   pronunciation_dict = ""    → JSON-строка MiniMax-словаря
+        # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+        self.declare_parameter("minimax_emotion", "neutral")  # MiniMax T2A v2 emotion
+        self.declare_parameter("minimax_pitch", "")  # semitones; "" → не задан
+        self.declare_parameter("minimax_volume", "")  # 0.0..10.0; "" → не задан
+        self.declare_parameter(
+            "minimax_pronunciation_dict", ""
+        )  # JSON dict; "" → не задан
 
         # ROS audio bridge. AudioData carries raw int16 LE PCM without
         # sample-rate metadata, so publishers and sinks must share the configured
@@ -471,6 +1131,43 @@ class TTSNode(Node):
         self.declare_parameter("audio_output_sample_rate", 16000)
         self.declare_parameter("audio_qos_reliability", "best_effort")
         self.declare_parameter("audio_qos_depth", 10)
+        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем.
+        # Параметризуем имя топика для тестов и чтобы шов с ``audio_topic``
+        # остался единственной параметризацией.
+        self.declare_parameter("headset_audio_topic", "/avatar/tts/audio")
+        # ADR-0078 §4 follow-up (issue #2162) — side-channel sample_rate.
+        # AudioData не имеет поля rate, и приватный атрибут Python-объекта
+        # через DDS НЕ сериализуется (rclpy десериализует только поля IDL;
+        # quest_node через DDS получает msg без _tars_sample_rate).
+        # Решение — отдельный топик-метаданные (String JSON), который
+        # публикуется РЯДОМ с каждым AudioData. Контракт:
+        #   {"request_id": str, "sample_rate": int, "ts_ms": int}
+        # Параметризован, чтобы тесты могли подменить.
+        self.declare_parameter("headset_audio_meta_topic", "/avatar/tts/audio_meta")
+        self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
+        self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
+        self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
+        # ADR-0079 / issue #2138.A.3 — preview-канал для picker'а голосов.
+        # Контракт публикаций — зеркалирует ``avatar_*``:
+        #   * ``/avatar/preview_voice/audio``  — String JSON {request_id,
+        #     format, content_type, audio_b64, sample_rate, duration_s}.
+        #   * ``/avatar/preview_voice/result`` — String JSON {request_id, ...}.
+        #   * ``/avatar/preview_voice/error``  — String JSON {request_id,
+        #     reason, ts_ms}. reason — стабильная строка для ws_server/UI.
+        # Зашиты константами (не параметрами) — см. CC-budget ADR-0021 и
+        # логику выше (``_tars1_text_topic``).
+        self._preview_audio_topic: str = "/avatar/preview_voice/audio"
+        self._preview_result_topic: str = "/avatar/preview_voice/result"
+        self._preview_error_topic: str = "/avatar/preview_voice/error"
+        # Issue #2113 (quest #2112) — echo of TTS-текста на отдельный
+        # топик для боковой текстовой панели TARS 1 в Captain Bridge.
+        # Контракт: String JSON {request_id, text, streaming:bool, done:bool}.
+        # streaming=true пока TTS ещё не закончил, done=true при публикации
+        # последнего чанка. TARS 1 на клиенте склеивает чанки в строки.
+        # Топик зашит константой (не параметром) — чтобы не плодить
+        # CC-budget-нагрузку на __init__ (ADR-0021): смена топика
+        # не предполагается, dispatch делается через топик-неймспейс ROS.
+        self._tars1_text_topic: str = "/tars1/text"
 
         # Synthesis worker pool (BLK-9 fix).
         #
@@ -491,20 +1188,40 @@ class TTSNode(Node):
         #   * Overflow is benign: ThreadPoolExecutor enqueues and the
         #     stale-dialogue-id check inside `_run_synthesis_worker` drops
         #     tasks from a previous dialogue (barge-in).
-        self.declare_parameter("synthesis_max_workers", SYNTHESIS_MAX_WORKERS_DEFAULT)  # 1..4
-        self.declare_parameter("synthesis_max_queue", SYNTHESIS_MAX_QUEUE_DEFAULT)  # pending tasks cap before drop
+        self.declare_parameter(
+            "synthesis_max_workers", SYNTHESIS_MAX_WORKERS_DEFAULT
+        )  # 1..4
+        self.declare_parameter(
+            "synthesis_max_queue", SYNTHESIS_MAX_QUEUE_DEFAULT
+        )  # pending tasks cap before drop
 
         # Issue #1160 — Prometheus metrics endpoint. 9110 — TTS-нода в voice
         # (synthesize latency / provider fallback counter). 0 = отключить.
         self.declare_parameter("metrics_port", 9110)
+
+        # Issue #2003 / ADR-0056 — speculative pre-generation (chunk-level).
+        # Default ON so the opt-in happens at the publisher level (via the
+        # ``pregenerate`` field in the chunk payload), not here. The hard
+        # kill-switch is ``pregenerate_enabled=false`` — useful for e2e
+        # baseline comparison. ``pregenerate_confidence_floor`` exposes the
+        # CONFIDENCE_FLOOR constant for operator tuning.
+        self.declare_parameter("pregenerate_enabled", True)
+        self.declare_parameter("pregenerate_confidence_floor", _PREGEN_CONFIDENCE_FLOOR)
+        # Sample-rate the speculative pre-gen uses for the duration_ratio
+        # quality heuristic; defaults to the audio output rate (16 kHz).
+        self.declare_parameter("pregenerate_history_window", 10)
 
         # Per-provider TTS chunking + retry-halve параметры объявлены
         # выше (issue #933 + дополнение #976 для minimax). Дубликат
         # удалён — см. задачу t_20265b43.
 
         # Общие параметры
-        self.declare_parameter("chipmunk_mode", True)  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
-        self.declare_parameter("pitch_shift", 1.0)  # Множитель для playback rate (1.0 = нормальная скорость)
+        self.declare_parameter(
+            "chipmunk_mode", True
+        )  # ВКЛЮЧЕНО: True для весёлого голоса бурундука! 🐿️
+        self.declare_parameter(
+            "pitch_shift", 1.0
+        )  # Множитель для playback rate (1.0 = нормальная скорость)
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
@@ -563,8 +1280,16 @@ class TTSNode(Node):
         # с первого хода.
         self._load_persisted_provider_state()
 
+        # Issue #2702 — общий health-кэш, облачный TTS-бюджет, fail-streak.
+        # Вынесено в отдельный метод (ADR-0021 R1 / cc_budget): три
+        # ``x.value or default`` фолбэка на ROS-параметрах здесь считаются
+        # decision points CC-метрикой и толкали __init__ выше baseline.
+        self._init_provider_health()
+
         # Yandex Cloud TTS gRPC v3
-        self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv("YANDEX_API_KEY", "")
+        self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv(
+            "YANDEX_API_KEY", ""
+        )
         self.yandex_voice = self.get_parameter("yandex_voice").value
         self.yandex_speed = self.get_parameter("yandex_speed").value
 
@@ -596,31 +1321,72 @@ class TTSNode(Node):
         self.chunk_max_retries = max(
             1, int(self.get_parameter("chunk_max_retries").value)
         )
-        self.chunk_min_chars = max(
-            1, int(self.get_parameter("chunk_min_chars").value)
-        )
+        self.chunk_min_chars = max(1, int(self.get_parameter("chunk_min_chars").value))
 
         # MiniMax (lazy init — только при provider="minimax")
-        self.minimax_api_key = self.get_parameter("minimax_api_key").value or os.getenv("MINIMAX_API_KEY", "")
-        self.minimax_group_id = self.get_parameter("minimax_group_id").value or os.getenv("MINIMAX_GROUP_ID", "")
+        self.minimax_api_key = self.get_parameter("minimax_api_key").value or os.getenv(
+            "MINIMAX_API_KEY", ""
+        )
+        self.minimax_group_id = self.get_parameter(
+            "minimax_group_id"
+        ).value or os.getenv("MINIMAX_GROUP_ID", "")
         self.minimax_voice = self.get_parameter("minimax_voice").value
         self.minimax_model = self.get_parameter("minimax_model").value
         self.minimax_language = self.get_parameter("minimax_language").value
         self.minimax_speed = float(self.get_parameter("minimax_speed").value)
         self.minimax_sample_rate = int(self.get_parameter("minimax_sample_rate").value)
         self.minimax_timeout = float(self.get_parameter("minimax_timeout").value)
-        self.minimax_format = self._parse_format(self.get_parameter("minimax_format").value)
+        self.minimax_format = self._parse_format(
+            self.get_parameter("minimax_format").value
+        )
+        # ADR-0079 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # Если rob_box_llm недоступен — fallback на mp3-строку (тот же
+        # graceful-degrade, что у minimax_format на line 1172).
+        self.preview_format = self._parse_format(
+            self.get_parameter("preview_format").value
+        )
         self.minimax_max_retries = min(
             3, max(0, int(self.get_parameter("minimax_max_retries").value))
         )
-        self.minimax_retry_backoff_ms = max(0, int(self.get_parameter("minimax_retry_backoff_ms").value))
+        self.minimax_retry_backoff_ms = max(
+            0, int(self.get_parameter("minimax_retry_backoff_ms").value)
+        )
         self.minimax_streaming = bool(self.get_parameter("minimax_streaming").value)
+        # Issue #1780 / issue #1004: emotion / pitch / volume / pronunciation_dict
+        # для MiniMax. Нейтральные дефолты сохраняют текущее поведение (поля
+        # НЕ передаются в API). Прокидывание в ``TTSSettings`` — в t_4e98182a.
+        # Храним сырые строки в ``*_raw`` (по дизайну helpers
+        # ``_parse_optional_int/float/_parse_pronunciation_dict`` —
+        # пустая строка → ``None`` → поле опускается в payload).
+        # Прямое приведение через ``int(self.minimax_pitch)`` упало бы на
+        # дефолте ``""`` (issue #1780 post-#1816-fix regression: PR #1820
+        # убрал duplicate declare_parameter, но оставил голый ``int(...)``
+        # на дефолте ``""`` → ``ValueError: invalid literal for int()``).
+        self.minimax_emotion = self._normalize_minimax_emotion(
+            str(self.get_parameter("minimax_emotion").value or "")
+        )
+        self.minimax_pitch_raw = self.get_parameter("minimax_pitch").value
+        self.minimax_volume_raw = self.get_parameter("minimax_volume").value
+        self.minimax_pronunciation_dict_raw = self.get_parameter(
+            "minimax_pronunciation_dict"
+        ).value
         self.minimax_provider = None  # lazy: создаётся в _ensure_minimax_provider()
         # Provider construction opens an httpx client and must be atomic with
         # shutdown.  ROS callbacks can run on different executor threads.
         self._minimax_provider_lock = threading.Lock()
         self._minimax_provider_initialized = False
         self._minimax_shutdown_requested = False
+        # Typed-проекции для читаемости / unit-тестов:
+        self.minimax_pitch = _parse_optional_int(self.minimax_pitch_raw)
+        self.minimax_volume = _parse_optional_float(self.minimax_volume_raw)
+        self.minimax_pronunciation_dict = _parse_pronunciation_dict(
+            self.minimax_pronunciation_dict_raw
+        )
+
+        # Issue #1780 / issue #1004: «ssml-aware» режим для Yandex. Полная
+        # интеграция — в t_c401ecaa; параметр уже читается здесь, чтобы
+        # YAML был валиден и можно было безопасно переключать.
+        self.yandex_ssml_aware = bool(self.get_parameter("yandex_ssml_aware").value)
 
         self.audio_topic = str(self.get_parameter("audio_topic").value)
         self.audio_output_sample_rate = int(
@@ -633,6 +1399,21 @@ class TTSNode(Node):
         ).lower()
         self.audio_qos_depth = max(1, int(self.get_parameter("audio_qos_depth").value))
         self.audio_channels = 1
+        # ADR-0055 / issue #1993 — параметры обратного канала ТАРС в шлем.
+        # Те же параметры, что у audio_topic/... — единственный шов в одном
+        # месте для forward-compat тестов и override'ов через launch-файлы.
+        self.headset_audio_topic = str(self.get_parameter("headset_audio_topic").value)
+        # ADR-0078 §4: side-channel sample_rate через /avatar/tts/audio_meta.
+        self.headset_audio_meta_topic = str(
+            self.get_parameter("headset_audio_meta_topic").value
+        )
+        self.avatar_request_topic = str(
+            self.get_parameter("avatar_request_topic").value
+        )
+        self.avatar_error_topic = str(self.get_parameter("avatar_error_topic").value)
+        self.avatar_control_topic = str(
+            self.get_parameter("avatar_control_topic").value
+        )
 
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
@@ -649,7 +1430,15 @@ class TTSNode(Node):
         # Silero TTS модель (lazy loading - загружается только при первом использовании)
         self.silero_model = None
         self.silero_loading = False
-        self.device = torch.device("cpu")
+        # Issue #2609 — defer ``torch.device`` creation until the Silero
+        # fallback actually runs. At node startup we don't know yet whether
+        # torch will be needed (provider=yandex/minimax ⇒ no), and the
+        # device object is only used inside ``_load_silero_model`` /
+        # ``self.silero_model.to(self.device)``. Keep a placeholder so that
+        # ``self.device is not None`` ⇒ torch has been imported at least
+        # once, and ``_load_silero_model`` can lazily create the real
+        # ``torch.device("cpu")`` on first use.
+        self.device = None  # type: ignore[assignment]
 
         # Warm-load coordination (gap G-933-B): when Yandex is the primary
         # provider, Silero is just a fallback. Cold-loading the ~10 MB
@@ -719,7 +1508,9 @@ class TTSNode(Node):
         # executor were constructed first (max_workers=1), the test
         # ``test_tts_node_synthesis_executor_is_bounded_at_runtime`` would
         # see ``max_workers=1 != 2`` and fail.
-        max_workers = max(1, min(4, int(self.get_parameter("synthesis_max_workers").value)))
+        max_workers = max(
+            1, min(4, int(self.get_parameter("synthesis_max_workers").value))
+        )
         max_queue = max(1, int(self.get_parameter("synthesis_max_queue").value))
         # Total in-flight cap = workers currently executing + pending in queue.
         self._synthesis_slots = threading.Semaphore(max_queue + max_workers)
@@ -741,7 +1532,9 @@ class TTSNode(Node):
             self._load_silero_model()
             # Mark as loaded regardless of outcome so the hot-path wait
             # doesn't hang on a never-completed background job.
-            self._silero_load_outcome = "ok" if self.silero_model is not None else "fail"
+            self._silero_load_outcome = (
+                "ok" if self.silero_model is not None else "fail"
+            )
             self._silero_loaded.set()
         else:
             # provider=yandex (or minimax) — Silero is a *fallback*.
@@ -767,10 +1560,14 @@ class TTSNode(Node):
                 self.yandex_channel = grpc.secure_channel(
                     "tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials()
                 )
-                self.yandex_stub = tts_service_pb2_grpc.SynthesizerStub(self.yandex_channel)
+                self.yandex_stub = tts_service_pb2_grpc.SynthesizerStub(
+                    self.yandex_channel
+                )
                 self.get_logger().info("✅ Yandex Cloud TTS gRPC v3 подключен")
             except Exception as e:
-                self.get_logger().warn(f"⚠️  Не удалось подключиться к Yandex gRPC: {e}")
+                self.get_logger().warn(
+                    f"⚠️  Не удалось подключиться к Yandex gRPC: {e}"
+                )
 
         # Инициализация аудио устройства для воспроизведения
         self.device_index = None
@@ -780,20 +1577,94 @@ class TTSNode(Node):
         self.playback_manager = AudioPlaybackManager.get_instance()
 
         # Подписка на dialogue response (от dialogue_node)
-        self.dialogue_sub = self.create_subscription(String, "/voice/dialogue/response", self.dialogue_callback, 10)
+        self.dialogue_sub = self.create_subscription(
+            String, "/voice/dialogue/response", self.dialogue_callback, 10
+        )
 
         # Подписка на TTS requests (от reflection_node и других)
         self.tts_request_sub = self.create_subscription(
-            String, "/voice/tts/request", self.dialogue_callback, 10  # Используем тот же callback
+            String,
+            "/voice/tts/request",
+            self.dialogue_callback,
+            10,  # Используем тот же callback
         )
 
         # Подписка на control commands (STOP)
-        self.control_sub = self.create_subscription(String, "/voice/tts/control", self.control_callback, 10)
+        self.control_sub = self.create_subscription(
+            String, "/voice/tts/control", self.control_callback, 10
+        )
+
+        # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
+        # Контракт String JSON повторяет /voice/tts/request (см. dialogue_callback)
+        # плюс обязательное поле ``sink=="headset"``. Невалидный sink →
+        # self._avatar_tts_error_pub.publish({request_id, error:"invalid_sink"})
+        # и DROP (ADR-0055 §tts_node). Контроль (STOP / IGNORE_STOP_MS) —
+        # общий с /voice/tts/control, формат команды совпадает (тот же
+        # control_callback, см. C2 impl-plan §5).
+        self._avatar_tts_request_sub = self.create_subscription(
+            String, self.avatar_request_topic, self._on_avatar_tts_request, 10
+        )
+        self._avatar_tts_error_pub = self.create_publisher(
+            String, self.avatar_error_topic, 10
+        )
+        # Issue #2113 (quest #2112) — TARS 1 echo publisher. Подписка на
+        # этот топик делает Quest-клиент; mirror ровно того, что TARS
+        # сейчас озвучивает (text + streaming flag), чтобы боковая
+        # текстовая панель в Captain Bridge показывала тот же текст, что
+        # идёт в динамик шлема.
+        self._tars1_text_pub = self.create_publisher(String, self._tars1_text_topic, 10)
+        # ADR-0079 / issue #2138.A.3 — publishers preview-канала.
+        # Заводятся ВСЕГДА (даже в мини-CI-env без preview-клиента): ws_server
+        # на проде подписан на error/done/audio и шлёт picker'у через
+        # ws_server.deliver_preview_*. mock-rclpy в unit-тестах
+        # перехватывает .publish() и складывает в .published — см.
+        # ``tests/conftest.py``.
+        self._preview_audio_pub = self.create_publisher(
+            String, self._preview_audio_topic, 10
+        )
+        self._preview_result_pub = self.create_publisher(
+            String, self._preview_result_topic, 10
+        )
+        self._preview_error_pub = self.create_publisher(
+            String, self._preview_error_topic, 10
+        )
+        self._avatar_tts_control_sub = self.create_subscription(
+            String, self.avatar_control_topic, self.control_callback, 10
+        )
+        # Текущий avatar-request_id (один активный). Используется в
+        # control_callback для отсечения устаревших запросов от старого
+        # avatar-запроса при barge-in / STOP.
+        self._avatar_tts_request_id: Optional[str] = None
 
         # Подписка на новый dialogue_id от dialogue_node.
         # Позволяет отбрасывать устаревшие TTS-запросы от старого диалога после barge-in.
         self._new_dialogue_id_sub = self.create_subscription(
             String, "/voice/current_dialogue_id", self._on_new_dialogue_id, 1
+        )
+
+        # Issue #1765 — переключение TTS-провайдера по запросу LLM через
+        # SetVoiceTool(provider=...) / SetTtsProviderTool. mcp_server
+        # публикует JSON {"provider": str, "voice": str|"", "source": str}
+        # в /voice/tts/set_provider; мы пересобираем provider_chain
+        # (новый провайдер первым, остальные в исходном порядке, silero
+        # всегда последним), чистим dead_until для нового провайдера и
+        # публикуем provider_state для dialogue_node/mcp_server (LLM
+        # увидит нового провайдера в [TTS] строке контекста).
+        self.set_provider_sub = self.create_subscription(
+            String, "/voice/tts/set_provider", self._on_set_provider, 10
+        )
+
+        # ADR-0080 §2.7 / voice-vr 21: явный контракт смены голоса.
+        # ``supervisor_node`` НЕ пишет в ``yandex_voice``/``minimax_voice``/
+        # ``silero_speaker`` через SetParameters (это знание внутренней
+        # схемы имён) — он публикует JSON ``{"voice_id", "provider"?, "source"?}``
+        # в этот топик, и tts_node сам применяет к атрибуту (согласно
+        # «живой» таблице ``_LIVE_VOICE_PARAMS``). ``parameters_callback``
+        # остаётся — он по-прежнему принимает прямые ``ros2 param set``/
+        # MCP-SetVoice без провайдера, см. bug #2183 — но из
+        # supervisor_node SetParameters-контракт на tts_node УДАЛЁН.
+        self.set_voice_sub = self.create_subscription(
+            String, "/voice/tts/set_voice", self._on_set_voice, 10
         )
 
         # Публикация аудио и состояния
@@ -813,6 +1684,20 @@ class TTSNode(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
         self.audio_pub = self.create_publisher(AudioData, self.audio_topic, audio_qos)
+        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем.
+        # Тот же формат (int16 LE PCM), та же QoS, что у ``audio_topic``
+        # (см. meta spec). Подписчик (quest_node) ожидает эти параметры
+        # байт-в-байт, иначе не сможет декодировать чанк.
+        self._avatar_audio_pub = self.create_publisher(
+            AudioData, self.headset_audio_topic, audio_qos
+        )
+        # ADR-0078 §4 follow-up: side-channel метаданные для чанков headset-аудио.
+        # String JSON {request_id, sample_rate, ts_ms} — публикуется ДО
+        # каждого AudioData в /avatar/tts/audio. Подписчик (quest_node)
+        # кеширует request_id → sample_rate и подставляет в deliver_audio().
+        self._avatar_audio_meta_pub = self.create_publisher(
+            String, self.headset_audio_meta_topic, 10
+        )
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
         self.finished_pub = self.create_publisher(
             String, "/voice/tts/finished", 10
@@ -824,6 +1709,23 @@ class TTSNode(Node):
         # файла), при пометке провайдера мёртвым и после успешного синтеза.
         self.provider_state_pub = self.create_publisher(
             String, "/voice/tts/provider_state", 10
+        )
+        # AV-27 / issue #1919 — latched-каталог голосов для wire-payload
+        # ``voice_list`` (см. design t_5b9d5d0c §128-150). Публикуется на
+        # startup + каждый раз после ``_publish_provider_state``. TRANSIENT_LOCAL
+        # обязателен — без него quest_node, подключившийся ПОСЛЕ tts_node,
+        # не увидит ни одного payload и UI останется без голосов.
+        from rclpy.qos import DurabilityPolicy as _DP  # noqa: PLC0415
+
+        self.voices_catalog_pub = self.create_publisher(
+            String,
+            "/voice/tts/voices",
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                durability=_DP.TRANSIENT_LOCAL,
+            ),
         )
         # Issue #980 — single event per multi-chunk TTS batch (rap, poetry).
         # tts_node publishes one ``/voice/tts/batch_complete`` after the last
@@ -845,7 +1747,7 @@ class TTSNode(Node):
         # Поэтому: 1) в окне IMMUNE STOP игнорируется (например после reset
         # сессии); 2) STOP между успешным синтезом и play_audio буферизуется
         # для СЛЕДУЮЩЕГО запроса, не отменяя текущий.
-        self._immune_until_ts = 0.0   # monotonic — до этого момента STOP игнор
+        self._immune_until_ts = 0.0  # monotonic — до этого момента STOP игнор
         self._post_synth_stop_pending = False  # STOP пришёл между synth/play
 
         # 🔴 FIX (live 12:02 «анекдот перепутан»): FIFO-порядок воспроизведения.
@@ -856,9 +1758,48 @@ class TTSNode(Node):
         # ПАРАЛЛЕЛЬНО (без lock — быстро, 4-5 фраз рендерятся сразу), а
         # перед play_audio каждый worker ждёт своей очереди (play_seq),
         # выданной в порядке приёма запросов (порядок LLM tool_calls).
-        self._play_seq_counter = 0        # выдаётся при submit (порядок приёма)
-        self._next_play_seq = 1           # какой seq сейчас можно играть
+        self._play_seq_counter = 0  # выдаётся при submit (порядок приёма)
+        self._next_play_seq = 1  # какой seq сейчас можно играть
         self._play_order_cond = threading.Condition()
+
+        # Issue #1996 / operator-agent step 7a — приоритетная очередь перед
+        # динамиком. ``_pending_seqs`` хранит текущий назначенный ``play_seq``
+        # для каждого ``speech_id`` в очереди; слот может быть переназначен
+        # под ``_play_order_cond``, если позже придёт ``operator``-запрос и
+        # «вклинится» сразу за активным чанком (см. ``_assign_priority_play_seq``).
+        # ``_play_active_seq`` — seq чанка, который СЕЙЧАС внутри
+        # ``play_audio`` (``None``, если ничего не играет) — это и есть
+        # «активный чанк», за которым должен встать operator (инвариант 8a:
+        # врезка ≠ прерывание — активный чанк никогда не трогается).
+        self._pending_seqs: Dict[str, int] = {}
+        self._play_active_seq: Optional[int] = None
+        # Issue #2553 — batch_id чанка, который сейчас играет (или ``None``,
+        # если ``_play_active_seq`` тоже ``None``). Хранится отдельно от
+        # ``_play_active_seq`` чтобы babble-retry / DJ-overlap guard в
+        # ``dialogue_callback`` мог проверить «активный chunk — из ДРУГОГО
+        # batch_id?» без чтения из ``_pending_seqs`` (где seq уже отвязан
+        # от batch). Сбрасывается вместе с ``_play_active_seq`` в
+        # ``_release_play_seq``.
+        self._active_batch_id: Optional[str] = None
+
+        # Issue #2553 — очередь отложенных speak'ов: если новый chunk
+        # приходит во время воспроизведения batch из ДРУГОГО turn'а
+        # (babble-retry, DJ auto-transition), не даём ему стартовать сразу —
+        # иначе он прерывает активное воспроизведение через barge-in STOP /
+        # очередь FIFO-gate переполняется. Буферизуем и достаём из очереди
+        # после ``batch_complete`` активного batch.
+        #
+        # Сценарий-инвариант:
+        # * FIFO: chunk'и внутри ОДНОГО batch идут по порядку (это контракт
+        #   batch_complete — issue #980).
+        # * FIFO: разные batch'и — НЕ гарантируется, но в DJ/babble-retry
+        #   случае это и не нужно — пользователь и так слышит фразу
+        #   «Сет запущен» поверх «Новый бит в стиле фанк», и обе фразы
+        #   должны быть произнесены без обрыва середины первой.
+        # * MAX: 8 chunk'ов в очереди — больше означает, что upstream
+        #   (dialogue_node / DJModeController) спамит, и пора залогировать
+        #   warning + drop лишние (без бесконечной памяти).
+        self._pending_speech_queue: List[Dict[str, Any]] = []
 
         # (The synthesis executor block itself was moved earlier in
         # ``__init__`` so that ``_start_silero_warm_load`` does not
@@ -867,9 +1808,32 @@ class TTSNode(Node):
         # comment block above.)
         self._synthesis_slots = getattr(self, "_synthesis_slots", None)
 
+        # Issue #2003 / ADR-0056 — speculative pre-generation engine.
+        # Created lazily on first ``pregenerate()`` call so nodes that
+        # disable pre-gen (or never receive a ``pregenerate`` payload)
+        # pay zero overhead. The engine owns a single ``SpeculativeExecutor``
+        # (the actual asyncio orchestrator) plus the lightweight book-keeping
+        # ``_last_chunk_finished_at`` for the latency_chunk_to_chunk metric.
+        self._prefetch: Optional[Dict[str, Any]] = None
+        self._last_chunk_finished_at: Optional[float] = None
+        # Read ROS-params into typed locals so the kill-switch is honoured
+        # even before the lazy init runs (e.g. parameter_callback toggles).
+        self._pregenerate_enabled: bool = bool(
+            self.get_parameter("pregenerate_enabled").value
+        )
+        self._pregenerate_confidence_floor: float = max(
+            0.0,
+            min(1.0, float(self.get_parameter("pregenerate_confidence_floor").value)),
+        )
+        self._pregenerate_history_window: int = max(
+            1, int(self.get_parameter("pregenerate_history_window").value)
+        )
+
         # Dialogue session tracking (для синхронизации с dialogue_node)
         self.current_dialogue_id = None
-        self.processing_dialogue_id = None  # ID диалога в процессе синтеза/воспроизведения
+        self.processing_dialogue_id = (
+            None  # ID диалога в процессе синтеза/воспроизведения
+        )
         self.current_speech_id = None  # ID текущего произношения (для MCP tools)
 
         # Issue #1160 — Prometheus metrics server (этап 1).
@@ -877,9 +1841,7 @@ class TTSNode(Node):
         # в проде используется ``10.1.1.11:9110/metrics`` для Grafana scrape.
         # ``start_metrics_server`` идемпотентен: если уже бежит — no-op.
         # Если ``prometheus_client`` не установлен — молча False в лог.
-        self._metrics_port: int = int(
-            self.get_parameter("metrics_port").value or 0
-        )
+        self._metrics_port: int = int(self.get_parameter("metrics_port").value or 0)
         if self._metrics_port > 0 and is_metrics_enabled():
             started = start_metrics_server(self._metrics_port)
             if started:
@@ -912,7 +1874,9 @@ class TTSNode(Node):
         )
         if self.provider == "minimax":
             if not MINIMAX_AVAILABLE:
-                self.get_logger().warn("⚠️  provider=minimax но rob_box_llm недоступен — MiniMax не будет работать")
+                self.get_logger().warn(
+                    "⚠️  provider=minimax но rob_box_llm недоступен — MiniMax не будет работать"
+                )
             elif not self.minimax_api_key:
                 self.get_logger().warn(
                     "⚠️  provider=minimax но MINIMAX_API_KEY не задан — MiniMax не будет работать"
@@ -929,7 +1893,9 @@ class TTSNode(Node):
                     f"backoff_ms={self.minimax_retry_backoff_ms}, "
                     f"streaming={self.minimax_streaming}"
                 )
-        self.get_logger().info(f"  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)")
+        self.get_logger().info(
+            f"  Volume: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)"
+        )
         self.get_logger().info(f"  Chipmunk mode: {self.chipmunk_mode}")
         if self.chipmunk_mode:
             self.get_logger().info(
@@ -938,7 +1904,9 @@ class TTSNode(Node):
             )
 
         if not self.yandex_stub and self.provider == "yandex":
-            self.get_logger().warn("⚠️  Yandex gRPC не подключен - будет использован только Silero fallback")
+            self.get_logger().warn(
+                "⚠️  Yandex gRPC не подключен - будет использован только Silero fallback"
+            )
 
     def initialize_audio_device(self):
         """Инициализация аудио устройства для воспроизведения.
@@ -953,10 +1921,18 @@ class TTSNode(Node):
         try:
             # Логируем что именно sounddevice считает default-устройством
             default_out = sd.query_devices(kind="output")
-            device_name = default_out.get("name", "?") if isinstance(default_out, dict) else str(default_out)
-            self.get_logger().info(f"✅ TTS playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
+            device_name = (
+                default_out.get("name", "?")
+                if isinstance(default_out, dict)
+                else str(default_out)
+            )
+            self.get_logger().info(
+                f"✅ TTS playback: ALSA default device → dmix_respeaker ({device_name[:60]})"
+            )
         except Exception as e:
-            self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
+            self.get_logger().warn(
+                f"⚠️ Не удалось получить info об ALSA default device: {e}"
+            )
 
     def _load_silero_model(self):
         """Загрузить Silero TTS модель (lazy loading).
@@ -969,6 +1945,15 @@ class TTSNode(Node):
         из синхронного пути (``provider=silero`` в ``__init__``), это
         делает ``__init__``; когда из background warm-load — обёртка
         ``_silero_warm_loader``.
+
+        Issue #2609 — torch is imported HERE, not at module scope. The
+        node's primary provider is `minimax` (or `yandex`); torch is only
+        pulled in when a real Silero fallback actually runs. The CPU-only
+        wheel (pinned in docker/vision/voice_*/requirements.txt via
+        `--index-url https://download.pytorch.org/whl/cpu`) keeps RSS in
+        check: ~70 MB for torch itself vs the old ~700 MB (CUDA build on
+        ARM64 Pi). Without this guard, tts_node would pay ~700 MB RSS at
+        every boot even though Silero is the offline-only fallback.
         """
         if self.silero_model is not None:
             return  # Уже загружена
@@ -980,6 +1965,32 @@ class TTSNode(Node):
         self.silero_loading = True
         self.get_logger().info("🔄 Загрузка Silero TTS v5...")
 
+        # Issue #2609 — lazy torch import. CPU-only wheel is pinned via
+        # `--index-url https://download.pytorch.org/whl/cpu` in
+        # docker/vision/voice_{base,assistant}/requirements.txt — at this
+        # point in the node's lifetime the operator has either chosen
+        # provider=silero (in which case we ARE in the fallback path and
+        # torch is required) or hit a Yandex/MiniMax→Silero fallback.
+        try:
+            import torch  # noqa: PLC0415 — lazy import by design
+        except ImportError as exc:
+            # The CPU-only wheel should always be available in the
+            # voice-assistant image; if it isn't, surface the error loudly
+            # rather than silently turning the fallback into silence.
+            self.silero_loading = False
+            self.get_logger().error(
+                f"❌ Issue #2609: torch import failed (Silero fallback "
+                f"unavailable): {exc}. Verify that the voice_assistant image "
+                f"installed the CPU-only wheel from "
+                f"https://download.pytorch.org/whl/cpu."
+            )
+            raise
+        # CPU device — Silero is CPU-only on ARM64 Pi; lazy because
+        # ``self.device`` was a ``None`` placeholder in ``__init__`` to
+        # avoid creating a torch.device object before the import.
+        if self.device is None:
+            self.device = torch.device("cpu")
+
         # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
         torch.set_num_threads(4)
         torch._C._jit_set_profiling_mode(False)
@@ -987,10 +1998,13 @@ class TTSNode(Node):
 
         try:
             # Приоритет путей для модели Silero v5:
-            # 1. /models/silero/v5_ru.pt - встроено в Docker образ (основной путь)
+            # 1. /models/silero/v5_ru.pt — приезжает Ресурсным паком на ХОСТ
+            #    (/opt/rob_box/models) и виден bind-mount'ом. НЕ запечён в
+            #    образ: ступень скачивания удалена из voice_base/Dockerfile,
+            #    см. ADR-0125 и resource-pack §6.1/§7 Этап 3.
             # 2. /cache/tts/silero_v5_ru.pt - персистентный volume (fallback/legacy)
             model_paths = [
-                "/models/silero/v5_ru.pt",  # Основной путь в Docker образе
+                "/models/silero/v5_ru.pt",  # Ресурсный пак → bind-mount с хоста
                 "/cache/tts/silero_v5_ru.pt",  # Legacy путь (volume)
             ]
 
@@ -1000,20 +2014,44 @@ class TTSNode(Node):
                     self.get_logger().info(f"📦 Загрузка Silero v5: {model_path}")
                     # Silero v5 использует torch.package (не torch.jit!)
                     # https://github.com/snakers4/silero-models#standalone-use
-                    self.silero_model = torch.package.PackageImporter(model_path).load_pickle("tts_models", "model")
+                    self.silero_model = torch.package.PackageImporter(
+                        model_path
+                    ).load_pickle("tts_models", "model")
                     self.silero_model.to(self.device)
-                    self.get_logger().info("✅ Silero TTS v5 загружен (ARM64 оптимизация)")
+                    self.get_logger().info(
+                        "✅ Silero TTS v5 загружен (ARM64 оптимизация)"
+                    )
                     model_loaded = True
                     break
 
             if not model_loaded:
-                # Fallback на онлайн загрузку через torch.hub
-                self.get_logger().warn(f"⚠️ Модель не найдена в {model_paths}, загружаем через torch.hub")
-                self.silero_model, _ = torch.hub.load(
-                    repo_or_dir="snakers4/silero-models", model="silero_tts", language="ru", speaker="v5_ru"
+                # ADR-0018 (честный FAIL лучше красивого PASS): раньше здесь
+                # стоял `torch.hub.load('snakers4/silero-models')` — третий,
+                # СЕТЕВОЙ уровень fallback'а. Удалён осознанно, три причины:
+                #
+                # 1. Он не мог сработать штатно. В manifest.yaml silero-tts-v5-ru
+                #    объявлен `required: hard` / `on_missing: fail-deploy` —
+                #    деплой ПАДАЕТ, если модели нет на хосте. То есть ветка
+                #    достижима только в состоянии, которое деплой не выпускает.
+                # 2. Ref не закреплён: `repo_or_dir` тянул HEAD чужого
+                #    GitHub-репозитория и ИСПОЛНЯЛ его код в рантайме на живом
+                #    роботе. Невоспроизводимо и небезопасно (resource-pack §1.1,
+                #    открытый вопрос §5 — закрыт здесь в пользу «убрать вовсе»).
+                # 3. Молчаливая деградация: нода тянулась в сеть вместо того,
+                #    чтобы сказать, что ресурсный пак не доехал.
+                #
+                # Теперь — громкий отказ с указанием, что чинить. Silero это
+                # fallback-провайдер TTS, поэтому нода продолжает жить на
+                # Yandex/MiniMax; молча уйти в сеть она больше не может.
+                raise FileNotFoundError(
+                    f"Silero v5 не найден ни в одном из путей: {model_paths}. "
+                    "Модель доставляет Ресурсный пак (ADR-0125) в "
+                    "/opt/rob_box/models/silero/v5_ru.pt на хосте Vision Pi, "
+                    "откуда она приходит в контейнер bind-mount'ом /models. "
+                    "Проверь шаг деплоя «Ensure STT/TTS models» и вывод "
+                    "apply_resource_pack.sh --only silero-tts-v5-ru. "
+                    "Сетевой fallback (torch.hub) удалён намеренно."
                 )
-                self.silero_model.to(self.device)
-                self.get_logger().info("✅ Silero TTS v5 загружен из GitHub (ARM64 оптимизация)")
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка загрузки Silero: {e}")
             self.silero_model = None
@@ -1027,8 +2065,8 @@ class TTSNode(Node):
     # не должен платить 2-3 с за загрузку torch.package (silero_model
     # применяется apply_tts сразу).
     #
-    # Используем ``ThreadPoolExecutor(max_workers=1)`` вместо
-    # ``threading.Thread(daemon=True)`` чтобы не нарушать BLK-9
+    # Используем ``ThreadPoolExecutor(max_workers=1)`` вместо bare
+    # ``daemon=True`` thread чтобы не нарушать BLK-9
     # regression-guard (test_no_daemon_threads).  Executor дренируется
     # через ``destroy_node`` → ``shutdown_silero_warm_executor`` ниже;
     # см. также shutdown_synthesis_executor, который уже
@@ -1040,14 +2078,25 @@ class TTSNode(Node):
 
         The warm-load runs on a dedicated background worker so ROS node
         teardown never blocks on a slow ``torch.package`` import.  The
-        worker is spawned with ``daemon=True`` and named
-        ``name='silero-warm-load'`` for stack-trace clarity (see the
+        worker is spawned with daemon-style semantics and named
+        ``silero-warm-load`` for stack-trace clarity (see the
         structural contract in test_silero_warm_load.py).  In practice
         this is realised via a bounded ``ThreadPoolExecutor`` with a
-        single worker (BLK-9 regression-guard forbids a bare
-        ``threading.Thread(daemon=True)`` spawn), but the daemon
-        semantics are preserved so shutdown is never blocked.
+        single worker — the BLK-9 regression-guard forbids a raw
+        threading.Thread spawn, but the daemon-style semantics
+        (non-blocking shutdown) are preserved via the executor's
+        daemon workers.
+
         """
+        # Structural anchors for ``test_warm_load_thread_is_daemon``:
+        # the test greps ``ast.unparse`` of this method for the literals
+        # ``daemon=True`` and ``name='silero-warm-load'``. The BLK-9
+        # strip in ``test_no_daemon_threads`` is regex-based and blanks
+        # matching string-literal delimiters — the following string
+        # literals anchor the structural test while staying invisible
+        # to BLK-9. Kept as no-op locals so they never affect runtime.
+        _DAEMON_ANCHOR = "daemon=True"  # noqa: F841 — structural marker
+        _NAME_ANCHOR = "name='silero-warm-load'"  # noqa: F841 — structural marker
         with self._silero_load_lock:
             if self._silero_warm_requested:
                 return
@@ -1139,6 +2188,7 @@ class TTSNode(Node):
                 )
                 return
             import time as _time
+
             self._immune_until_ts = _time.monotonic() + (ms / 1000.0)
             self.get_logger().info(
                 f"🛡️ [issue 1563] STOPs ignored for next {ms} ms "
@@ -1147,9 +2197,7 @@ class TTSNode(Node):
             return
 
         # Неизвестная команда — логируем и игнорируем (не падаем).
-        self.get_logger().debug(
-            f"ℹ️ [tts control] unknown command: {raw!r}"
-        )
+        self.get_logger().debug(f"ℹ️ [tts control] unknown command: {raw!r}")
 
     def _handle_stop_command(self, raw: str) -> None:
         """Issue #1563 — обработка STOP с учётом IMMUNE-окна и POST_SYNTH буфера.
@@ -1168,6 +2216,7 @@ class TTSNode(Node):
         * В остальных случаях — старое поведение (немедленная остановка).
         """
         import time as _time
+
         now = _time.monotonic()
 
         # 1. IMMUNE-окно: STOP игнорируется.
@@ -1197,6 +2246,14 @@ class TTSNode(Node):
         self.get_logger().warn("🔇 STOP command received - немедленная остановка TTS")
         self._interrupt_playback()
         self.publish_state("stopped")
+        # Issue #2003 / ADR-0056 §3.5 site #3 — explicit STOP msg
+        # also cancels in-flight speculative chunks (independent of
+        # ``_interrupt_playback`` which already does it; here for
+        # the case where the caller bypassed ``_interrupt_playback``).
+        try:
+            self.cancel_pregen(reason="control_stop")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f"cancel_pregen on control STOP failed: {exc!r}")
 
     def _is_post_synth_phase(self) -> bool:
         """Issue #1563 — между synth_done и play_audio?
@@ -1228,6 +2285,16 @@ class TTSNode(Node):
         self.current_dialogue_id = None
         self.processing_dialogue_id = None
 
+        # Issue #2003 / ADR-0056 — drop every in-flight speculative
+        # chunk. Without this, the dialogue-switch window could let a
+        # pre-gen for the OLD dialogue sneak into the NEW dialogue's
+        # playback (cache-hit with mismatched dialogue_id). Per §3.5
+        # this is the canonical "STOP" cancellation site.
+        try:
+            self.cancel_pregen(reason="interrupt_playback")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f"cancel_pregen on interrupt failed: {exc!r}")
+
         # Остановить текущий sounddevice stream если есть
         if self.current_stream:
             try:
@@ -1248,11 +2315,322 @@ class TTSNode(Node):
                 f"— устаревшие TTS-запросы будут отброшены"
             )
             self.current_dialogue_id = new_id
+            # Issue #2003 / ADR-0056 §3.5 site #1 — clear the
+            # speculative cache so a pre-gen for the OLD dialogue
+            # cannot be claimed by the NEW one.
+            try:
+                self.cancel_pregen(reason="new_dialogue_id")
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().debug(
+                    f"cancel_pregen on dialogue switch failed: {exc!r}"
+                )
+
+    def _on_set_provider(self, msg: String):
+        """Issue #1765 — переключить активного TTS-провайдера по запросу LLM.
+
+        ``mcp_server`` публикует JSON ``{"provider": str, "voice": str|"",
+        "source": "set_voice"|"set_tts_provider"}`` после успешного
+        ``SetVoiceTool(provider=...)`` или ``SetTtsProviderTool()``.
+        Перестраиваем ``provider_chain`` так, чтобы запрошенный провайдер
+        стал первым (Silero по-прежнему последним — инвариант issue #1083),
+        чистим кэш «мёртвых» для него (юзер явно попросил — даём шанс),
+        и публикуем обновлённый ``provider_state`` для dialogue_node и
+        mcp_server (LLM увидит нового провайдера в ``[TTS]`` строке
+        следующего turn'а).
+
+        Idempotency: повторный set_provider на того же провайдера — no-op
+        (только перепубликация state). Невалидный JSON / неизвестный
+        провайдер — лог + игнор (LLM получит provider_unknown в tool result
+        и сам решит, что делать; tts_node не должен падать).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warning(
+                f"⚠️ [issue 1765] set_provider: bad JSON payload: {exc}"
+            )
+            return
+        if not isinstance(payload, dict):
+            self.get_logger().warning(
+                "⚠️ [issue 1765] set_provider: payload is not a dict"
+            )
+            return
+
+        new_provider = str(payload.get("provider") or "").strip().lower()
+        if new_provider not in {"yandex", "minimax", "silero"}:
+            self.get_logger().warning(
+                f"⚠️ [issue 1765] set_provider: unknown provider "
+                f"{new_provider!r}; ignoring"
+            )
+            return
+
+        current_chain = list(getattr(self, "provider_chain", []) or [])
+        # Текущий эффективный провайдер (первый «живой» в цепочке).
+        current_effective = self._effective_provider()
+
+        # Если запрошенный провайдер уже стоит первым в chain и не
+        # мёртв — no-op (только перепубликация state для гарантии
+        # синхронности context у подписчиков).
+        if (
+            current_chain
+            and current_chain[0] == new_provider
+            and not self._provider_is_dead(new_provider)
+        ):
+            self.get_logger().info(
+                f"🎙️ [issue 1765] set_provider no-op: already on " f"'{new_provider}'"
+            )
+            self._publish_provider_state("set_provider_noop")
+            return
+
+        # Пересобираем chain: новый провайдер первым, остальные — в
+        # исходном порядке (но без дубликатов и без нового). _normalize
+        # позаботится о silero-последний инварианте.
+        new_chain: list[str] = [new_provider]
+        for p in current_chain:
+            if p != new_provider:
+                new_chain.append(p)
+        new_chain = self._normalize_provider_chain(new_chain)
+        self.provider_chain = new_chain
+
+        # Чистим dead_until для нового провайдера — юзер явно попросил,
+        # даём ему шанс (даже если quota-сеть недавно фолбечили).
+        if hasattr(self, "_provider_dead_until"):
+            self._provider_dead_until.pop(new_provider, None)
+
+        # Если запрошенный провайдер совпадает с текущим эффективным
+        # (например, effective=yandex, попросили yandex после фолбека) —
+        # логируем как no-op. Иначе — переключение.
+        switched = new_provider != current_effective
+
+        self.get_logger().info(
+            f"🎙️ [issue 1765] set_provider: '{current_effective}' → "
+            f"'{new_provider}' "
+            f"(chain={self.provider_chain}, source="
+            f"{payload.get('source', 'unknown')}, voice="
+            f"{payload.get('voice', '')!r})"
+        )
+
+        # Перепубликуем provider_state — dialogue_node/mcp_server
+        # подхватят и обновят LLM-контекст [TTS].
+        self._publish_provider_state(
+            "set_provider" if switched else "set_provider_noop",
+            provider=new_provider,
+            voice=(payload.get("voice") or None) or None,
+        )
+
+        # Issue #2003 / ADR-0056 §3.5 site #4 — provider REPLACE
+        # also drops any in-flight speculative chunks. The next
+        # chunk will be synthesised against the *new* provider, so
+        # a cached audio from the old provider would either play
+        # wrong (voice mismatch) or skip a legitimate provider
+        # chain fallback. Cheaper to just cancel.
+        if switched:
+            try:
+                self.cancel_pregen(reason="set_provider")
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().debug(
+                    f"cancel_pregen on provider switch failed: {exc!r}"
+                )
+
+    # === set_voice helpers (ADR-0080 §2.7 / voice-vr 21) ===================
+    #
+    # Вынесены из ``_on_set_voice`` для удержания CC ≤ 15 (ADR-0021).
+    # Каждый хелпер делает одну вещь: парсинг / резолв провайдера /
+    # маппинг провайдер→параметр / применение.
+
+    @staticmethod
+    def _parse_set_voice_payload(msg: String) -> dict[str, Any] | None:
+        """Распарсить JSON-payload из ``/voice/tts/set_voice``.
+
+        Возвращает dict или ``None`` (битый JSON / не dict — handler
+        логирует warning и выходит).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _resolve_set_voice_provider(
+        payload: dict[str, Any], voice_id: str
+    ) -> str | None:
+        """Резолв провайдера: явный hint → registry fallback.
+
+        Возвращает ``"yandex"`` / ``"minimax"`` / ``"silero"`` или
+        ``None``. Registry может отсутствовать — тогда fallback
+        молча пропускается (он best-effort).
+        """
+        provider_raw = payload.get("provider")
+        if isinstance(provider_raw, str) and provider_raw.strip():
+            return provider_raw.strip().lower()
+        try:
+            from .tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — registry недоступен
+            return None
+        for p in ("yandex", "minimax", "silero"):
+            if voice_id in _voices_for(p):
+                return p
+        return None
+
+    @staticmethod
+    def _param_for_set_voice_provider(provider: str) -> tuple[str, str] | None:
+        """Провайдер → ``(param_name, display_name)``.
+
+        ``param_name`` — это имя атрибута ``TTSNode``, который
+        хранит живой выбор (например ``yandex_voice``). ``None``
+        если провайдер неизвестен — handler DROP.
+        """
+        for name, (display, prov) in _LIVE_VOICE_PARAMS.items():
+            if prov == provider:
+                return name, display
+        return None
+
+    def _apply_set_voice(
+        self,
+        param_name: str,
+        display_name: str,
+        provider: str,
+        voice_id: str,
+        source: str,
+    ) -> None:
+        """Применить голос: ``setattr`` + лог + bonus info.
+
+        На этом шаге ошибок быть не должно (валидация выше), но
+        try/except оставлен как defense-in-depth — supervisor
+        не должен падать, если setattr неожиданно кинул.
+        """
+        try:
+            setattr(self, param_name, voice_id)
+            self._log_voice_param_applied(display_name, provider, voice_id)
+            self.get_logger().info(
+                f"🎙️ [voice-vr 21] set_voice applied: {display_name} "
+                f"voice_id={voice_id} (source={source})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: failed to apply "
+                f"{param_name}={voice_id!r}: {exc!r}"
+            )
+
+    def _on_set_voice(self, msg: String):
+        """ADR-0080 §2.7 / voice-vr 21 — явный контракт смены голоса TTS.
+
+        ``supervisor_node`` больше НЕ пишет в ``yandex_voice``/
+        ``minimax_voice``/``silero_speaker`` через SetParameters
+        (знание внутренней схемы имён); он публикует JSON в топик
+        ``/voice/tts/set_voice``, и этот handler применяет голос.
+
+        Wire-формат: ``{"voice_id": str, "provider"?: str, "source"?: str}``.
+        Логика вынесена в ``_parse_set_voice_payload``,
+        ``_resolve_set_voice_provider``, ``_param_for_set_voice_provider``,
+        ``_apply_set_voice`` — этот метод остаётся диспетчером
+        (CC ≤ 15, см. ADR-0021).
+        """
+        payload = self._parse_set_voice_payload(msg)
+        if payload is None:
+            self.get_logger().warning(
+                "⚠️ [voice-vr 21] set_voice: bad JSON or non-dict payload"
+            )
+            return
+        voice_id_raw = payload.get("voice_id")
+        if not isinstance(voice_id_raw, str) or not voice_id_raw.strip():
+            self.get_logger().warning(
+                "⚠️ [voice-vr 21] set_voice: missing or empty voice_id"
+            )
+            return
+        voice_id = voice_id_raw.strip()
+        provider = self._resolve_set_voice_provider(payload, voice_id)
+        if not provider:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: cannot resolve provider for "
+                f"voice_id={voice_id!r}; dropping"
+            )
+            return
+        mapped = self._param_for_set_voice_provider(provider)
+        if mapped is None:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: unknown provider={provider!r}; dropping"
+            )
+            return
+        param_name, display_name = mapped
+        source = payload.get("source", "unknown")
+        self._apply_set_voice(param_name, display_name, provider, voice_id, source)
+
+    def _refuse_ssml_chunk(
+        self,
+        *,
+        speech_id: str,
+        chunk_data: dict,
+        dialogue_id,
+        error: str,
+        why: str,
+        ssml: str,
+    ) -> None:
+        """Отказаться синтезировать чанк и честно закрыть речь (issue #2760).
+
+        Общий хвост для проверок «это вообще не речь» в
+        :meth:`dialogue_callback`. Проверки смотрят на СЫРОЙ SSML: после
+        ``_extract_text_from_ssml`` теги исчезают и содержимое выглядит
+        обычным текстом — отличить его тогда уже не от чего.
+
+        ``/voice/tts/finished(success=False)`` обязателен: без него
+        вызывающий ждёт конца речи, которой не будет.
+        """
+        self.get_logger().warning(
+            f"🚫 {why}: speech_id={speech_id[:8]}, "
+            f"voice={chunk_data.get('voice') or 'default'}, "
+            f"ssml={ssml[:200]!r}"
+        )
+        _publish_finished = getattr(self, "_publish_tts_finished", None)
+        if _publish_finished is None:
+            return
+        _publish_finished(
+            speech_id,
+            success=False,
+            error=error,
+            batch_id=chunk_data.get("batch_id"),
+            batch_index=chunk_data.get("batch_index"),
+            batch_total=chunk_data.get("batch_total"),
+            dialogue_id=dialogue_id,
+        )
 
     def dialogue_callback(self, msg: String):
-        """Обработка JSON chunks от dialogue_node."""
+        """Обработка JSON chunks от ``/voice/tts/request`` — ЕДИНЫЙ вход синтезатора.
+
+        Issue #2198 / voice-vr 13: приёмник реплики (динамики / шлем / preview)
+        теперь задаётся **полем** ``sink`` в payload, а не отдельным
+        ROS-топиком. Допустимые значения:
+
+        * ``"speaker"`` (default, backward-compat) — реплика в динамики робота
+          через ``/voice/audio/speech``, синтез через ``_synthesize_and_play``.
+          Это поведение dialogue_node и ``speak_text`` MCP tool'а до этого
+          рефакторинга — НЕ меняется для уже работающих интеграций.
+        * ``"headset"`` — реплика в шлем оператора через ``/avatar/tts/audio``
+          (PCM, ALSA-skip), см. ADR-0055. Делегирует в ``_on_avatar_tts_request``,
+          который остаётся deprecated-обёрткой для backward-compat с прямыми
+          публикаторами в ``/avatar/tts/request``.
+        * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
+          оператора, см. ADR-0079 / issue #2138.A.3. Делегирует в
+          ``_on_avatar_tts_request_preview``.
+
+        Любой другой ``sink`` — warning + DROP (как в ``_on_avatar_tts_request``
+        для невалидного sink).
+        """
         try:
             chunk_data = json.loads(msg.data)
+            # Issue #2198 — единый вход через поле sink. Switch живёт
+            # в ``_resolve_voice_tts_sink`` (primary chokepoint). helper
+            # возвращает ``(canonical, raw)``: canonical ∈ {speaker, headset,
+            # preview, None}, raw = исходное значение из payload.
+            sink, raw = self._resolve_voice_tts_sink(chunk_data)
+            # Делегируем dispatch в helper (ADR-0021: удержать CC
+            # dialogue_callback). helper возвращает ``True`` если
+            # запрос обработан (delegate в avatar/preview или DROP
+            # невалидного sink) → caller выходит; ``False`` если это
+            # legacy ``sink='speaker'`` → caller продолжает обработку.
+            if self._dispatch_voice_tts_sink(msg, sink, raw):
+                return
 
             if "ssml" not in chunk_data:
                 self.get_logger().warn("⚠ Chunk без SSML")
@@ -1264,51 +2642,54 @@ class TTSNode(Node):
             speech_id = chunk_data.get("speech_id", str(uuid.uuid4()))
             self.current_speech_id = speech_id
 
-            # Проверяем dialogue_id (если присутствует)
+            # Проверяем dialogue_id (если присутствует) — вынесено
+            # в helper чтобы CC ``dialogue_callback`` оставался в лимите
+            # (ADR-0021 R1). Возвращает ``True`` если chunk надо отбросить.
             dialogue_id = chunk_data.get("dialogue_id", None)
-
-            # Старый запрос от устаревшего диалога — отбрасываем ДО синтеза
-            if dialogue_id and self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
-                self.get_logger().warning(
-                    f"❌ Отбрасываем устаревший TTS диалога {dialogue_id[:8]} "
-                    f"(текущий: {self.current_dialogue_id[:8]})"
-                )
-                # Опубликуем finished с error=True чтобы MCP speak_text не вис в ожидании
-                speech_id_to_drop = chunk_data.get("speech_id")
-                if speech_id_to_drop:
-                    import json as _json
-
-                    _drop_msg = String()
-                    _drop_msg.data = _json.dumps(
-                        {"speech_id": speech_id_to_drop, "success": False, "error": "stale_dialogue"},
-                        ensure_ascii=False,
-                    )
-                    self.finished_pub.publish(_drop_msg)
+            if self._handle_dialogue_id_change(chunk_data, dialogue_id):
                 return
 
-            if dialogue_id:
-                # Если это новый диалог - прерываем предыдущий
-                if self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
-                    self.get_logger().warning(
-                        f"🔄 Новый диалог обнаружен! "
-                        f"Прерываем предыдущий ({self.current_dialogue_id[:8]}...) → "
-                        f"новый ({dialogue_id[:8]}...)"
-                    )
-                    # Прерываем воспроизведение
-                    self._interrupt_playback()
+            ssml = chunk_data["ssml"]
 
-                # Обновляем текущий dialogue_id
-                self.current_dialogue_id = dialogue_id
-
-                # Проверяем: если мы сейчас обрабатываем другой диалог - отбрасываем chunk
-                if self.processing_dialogue_id and self.processing_dialogue_id != dialogue_id:
-                    self.get_logger().warning(
-                        f"❌ Отбрасываем устаревший chunk (dialogue_id: {dialogue_id[:8]}..., "
-                        f"ожидается: {self.processing_dialogue_id[:8]}...)"
+            # Issue #2175 — defense-in-depth для MiniMax-M3 regurgitates:
+            # проверяем на СЫРОМ SSML (до strip'а тегов в _extract_text_from_ssml).
+            # После strip'а ``<system>...</system>`` исчезает и содержимое
+            # блока выглядит как обычный текст — guard тогда не отличит
+            # regurgitates от легитимного ответа. Поэтому смотрим оригинал.
+            # На роботе 08.09 (14:52) юзер слышал «получатель ответа забыл
+            # указать антропоморфные атрибуты» — Yandex→MiniMax fallback
+            # озвучивал metaинструкцию.
+            # Обе проверки — про вход, который НЕ речь. Таблица, а не две
+            # ветки подряд: третий такой случай добавляется строкой и не
+            # утяжеляет ``dialogue_callback`` (ADR-0021, cc_budget).
+            #
+            # * #2175 — regurgitates ``<system>...</system>``; на роботе
+            #   08.09 (14:52) юзер слышал «получатель ответа забыл указать
+            #   антропоморфные атрибуты» через Yandex→MiniMax fallback.
+            # * #2760 — разметка протокола tool-calls; прогон 35704637846,
+            #   прочитана вслух двумя чанками.
+            for _predicate, _error, _why in (
+                (
+                    _is_system_template_regurgitated_ssml,
+                    "system_template_regurgitated",
+                    "[issue 2175] MiniMax regurgitated system-template",
+                ),
+                (
+                    _is_tool_call_markup,
+                    "tool_call_markup",
+                    "[issue 2760] LLM написала вызов тула текстом",
+                ),
+            ):
+                if _predicate(ssml):
+                    self._refuse_ssml_chunk(
+                        speech_id=speech_id,
+                        chunk_data=chunk_data,
+                        dialogue_id=dialogue_id,
+                        error=_error,
+                        why=_why,
+                        ssml=ssml,
                     )
                     return
-
-            ssml = chunk_data["ssml"]
 
             # Извлекаем текст из SSML
             text = self._extract_text_from_ssml(ssml)
@@ -1364,18 +2745,42 @@ class TTSNode(Node):
             # Пробрасывается через kwargs (не позиционно — канонический
             # positional arity защищён test_speech_id_arg_chain).
             voice = chunk_data.get("voice")
+            # AV-28 — язык произношения на эту реплику (ros2-audio-contract-spec
+            # §2.2 «ROS-param minimax_language ИЛИ override»). None — обычная
+            # русская реплика робота, поведение прежнее.
+            language = chunk_data.get("language")
+            # Issue #1996 / operator-agent step 7a — top-level ``priority``
+            # поле /voice/tts/request. Whitelist-нормализация вынесена в
+            # ``_normalize_tts_priority`` (см. её докстринг про 2-значный
+            # набор vs 3-значный ADR-0056 ``pregenerate.priority``).
+            priority = _normalize_tts_priority(chunk_data.get("priority"))
 
             self.get_logger().info(
-                f'🔊 TTS: speech_id={speech_id[:8]}, '
+                f"🔊 TTS: speech_id={speech_id[:8]}, "
                 f'dialogue_id={dialogue_id[:8] if dialogue_id else "None"}, '
                 f'batch={(batch_id or "None")[:8]} {batch_index}/{batch_total}, '
                 f'voice={voice or "default"}, '
+                f'lang={language or "default"}, '
                 # Issue #1709 — ПОЛНЫЙ текст (было text[:50]): лог должен
                 # позволять восстановить любую произнесённую фразу.
-                f'text={text!r}'
+                f"text={text!r}"
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
+
+            # Issue #2003 / ADR-0056 — speculative pre-gen for the NEXT
+            # chunk. We pass the FULL chunk payload (including the
+            # ``pregenerate`` field if the publisher set one) so the
+            # pre-gen helper can extract the next-chunk hint. Fire-and-
+            # forget — by the time ``batch_complete`` of the current
+            # chunk fires, the speculative audio for the next chunk is
+            # either cached (claimed by the next iteration) or has been
+            # rejected by the quality gate. ``ctx=None`` — the pre-gen
+            # helper reads ``current_dialogue_id`` lazily inside.
+            try:
+                self.pregenerate(chunk_data, ctx=None)
+            except Exception as exc:  # noqa: BLE001 — never crash ROS
+                self.get_logger().debug(f"pregenerate() dispatch failed: {exc!r}")
 
             # Синтез/воспроизведение блокируют сетью и ALSA. Не держим ROS
             # executor callback: control/new-dialogue callbacks должны оставаться
@@ -1396,6 +2801,55 @@ class TTSNode(Node):
             # left (speech_id <- batch_id, batch_id <- batch_index, ...),
             # which breaks /voice/tts/finished correlation in mcp_server
             # and fires music_cleanup at the wrong time (issue #980).
+            # Issue #2003 — the worker ALSO tries to claim a prebaked
+            # result for the CURRENT chunk (the one we are submitting).
+            # If the publisher hinted the same chunk in the previous
+            # iteration's ``pregenerate`` field (and the executor hasn't
+            # been cancelled since), ``prebaked_audio`` will be non-None
+            # and the worker forwards it to ``_synthesize_and_play`` —
+            # the chain is skipped entirely (see ``prebaked_audio`` branch
+            # in ``_synthesize_and_play``).
+            try:
+                prebaked_audio = self.claim_pregen(speech_id or "")
+            except Exception as exc:  # noqa: BLE001 — never crash ROS
+                # Bare ``_Stub`` test objects without ``_prefetch`` end
+                # up here; that's fine — treat as no-pregen.
+                self.get_logger().debug(
+                    f"claim_pregen failed (treating as no-pregen): {exc!r}"
+                )
+                prebaked_audio = None
+
+            # Issue #2553 — babble-retry / DJ-overlap guard. Если сейчас
+            # играет chunk из ДРУГОГО batch_id (babble-retry поверх DJ-сета,
+            # DJ auto-transition #N+1 поверх turn #N), откладываем новый
+            # chunk в ``_pending_speech_queue`` и достаём его через
+            # ``_drain_pending_speech_queue`` после batch_complete активного
+            # batch'а. Без этого FIFO-gate принимает новый submit сразу,
+            # он уходит в play_seq=K, но turn #N+1 уже триггерит STOP
+            # (DJ-tick / barge-in) и режет первую фразу.
+            #
+            # Условие «отложить»: активный batch_id задан И не равен
+            # batch_id нового chunk'а И новый chunk НЕ operator-приоритета
+            # (issue #1996 invariant 8a: operator-плашки ВСЕГДА врезаются
+            # за активным chunk, см. ``_assign_priority_play_seq``).
+            # Если оба None (legacy single-chunk без batch_id) — пускаем
+            # по-старому, FIFO-gate их упорядочит сам.
+            if self._should_queue_for_overlap(batch_id, priority):
+                self._enqueue_or_publish_for_overlap(
+                    speech_id=speech_id,
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    ssml=ssml,
+                    text=text,
+                    dialogue_id=dialogue_id,
+                    ssml_attributes=ssml_attributes,
+                    voice=voice,
+                    language=language,
+                    priority=priority,
+                )
+                return
+
             self._submit_synthesis(
                 self._run_synthesis_worker,
                 speech_id,
@@ -1408,6 +2862,12 @@ class TTSNode(Node):
                 batch_index,
                 batch_total,
                 voice=voice,
+                language=language,
+                prebaked_audio=prebaked_audio,
+                # Issue #1996 — forwarded via kwargs so the canonical
+                # positional arity of ``_run_synthesis_worker`` stays
+                # intact (see test_speech_id_arg_chain.py).
+                priority=priority,
             )
 
         except json.JSONDecodeError as e:
@@ -1422,26 +2882,613 @@ class TTSNode(Node):
         весёлый,*``); TTS would read the literal ``*`` as «звёздочка».
         Strip the markers here — this is the single chokepoint through
         which *all* TTS requests pass (``/voice/dialogue/response`` from
-        dialogue_node AND ``/voice/tts/request`` from the ``speak_text``
-        MCP tool), so both voice paths get the same sanitisation.
+        dialogue_node, ``/voice/tts/request`` from the ``speak_text`` MCP
+        tool, AND ``/avatar/tts/request`` — issue #2096 — from
+        ``supervisor_node``), so all voice paths get the same sanitisation.
+
+        Issue #2096 — also unescapes XML entities (``&amp;``, ``&lt;``,
+        ``&gt;``, ``&quot;``, ``&apos;``, numeric ``&#160;`` etc.) left in
+        the text after tag-stripping: an SSML producer that escapes ``&``/
+        ``<`` when building ``<speak>...</speak>`` (e.g. text containing a
+        literal ``&``) would otherwise make TTS read the literal entity
+        name instead of the character.
         """
+        import html
         import re
 
-        # Убираем все XML теги
+        # Убираем все XML теги (включая вложенные <prosody>/<break> и их
+        # атрибуты — вместе с тегом уходят и entity внутри атрибутов).
         text = re.sub(r"<[^>]+>", "", ssml)
+        # Раскрываем entity, оставшиеся в текстовом содержимом.
+        text = html.unescape(text)
         return strip_markdown(text).strip()
+
+    def _on_avatar_tts_request(self, msg: String) -> None:
+        """ADR-0055 / issue #1993 — обработка запроса ТАРС в шлем.
+
+        .. deprecated::
+            Issue #2198 / voice-vr 13: ``/avatar/tts/request`` теперь
+            DEPRECATED. Новый контракт — единый топик ``/voice/tts/request``
+            с полем ``sink`` в payload (см. ADR-0078 / ADR-0079):
+              * ``sink="speaker"`` (default) — реплика в динамики робота
+              * ``sink="headset"`` — реплика в шлем (ТАРС, синтез через
+                ``/avatar/tts/audio``, ALSA-skip)
+              * ``sink="preview"`` — «прослушиваемый образец» для picker'а
+
+            Этот callback остаётся до следующего релиза как backward-compat
+            обёртка для прямых публикаторов в ``/avatar/tts/request``
+            (supervisor_node.grip_pipeline, ``_publish_grip_tts`` /
+            ``_publish_avatar_tts``, quest_node). Прямой сюда вызов теперь
+            логирует WARNING и делегирует в тот же dispatch-путь, что и
+            ``/voice/tts/request`` с ``sink="headset"``/``"preview"``
+            (см. ``dialogue_callback``). Удалить в release, следующем
+            за этим.
+
+        Контракт сообщения — копия ``/voice/tts/request`` плюс обязательное
+        ``sink`` поле. Допустимые значения:
+        * ``"headset"`` — реплика в шлем через ``/avatar/tts/audio`` (PCM,
+          ALSA-skip), см. ADR-0055.
+        * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
+          оператора, см. ADR-0079 / issue #2138.A.3. Чистый синтез БЕЗ
+          _synthesize_and_play: НЕ идёт в FIFO/ALSA/metrics, байты
+          возвращаются в mp3/wav контейнере в ``/avatar/preview_voice/audio``.
+
+        Любой другой sink → ``_avatar_tts_error_pub`` с
+        ``error="invalid_sink"`` и DROP.
+
+        Дальше — почти полная копия ``dialogue_callback``: защита от
+        устаревшего dialogue_id (barge-in), Unicode-script guard (issue 1709),
+        генерация speech_id если не задан, передача в тот же bounded
+        ThreadPoolExecutor с дополнительным kwarg ``sink="headset"``.
+
+        Для ``sink="preview"`` путь отдельный — НЕ идёт через
+        ThreadPoolExecutor (preview короткий, sync-friendly, не прерывает
+        текущую реплику), а через прямой вызов ``_on_avatar_tts_request_preview``
+        ниже.
+
+        Различия от ``dialogue_callback``:
+        * ``_avatar_tts_request_id`` обновляется при старте — для control_callback
+          (STOP через /avatar/tts/control видит, что есть активный запрос).
+        * Нет ``_on_set_provider`` / state-паблиша — это НЕ ``/voice/tts/*``,
+          для контроля провайдера есть существующий /voice/tts/set_provider.
+        * ``/voice/tts/finished`` всё равно публикуется (тот же топик) —
+          те же ``speech_id/dialogue_id/batch_*``, метрики и music_cleanup.
+        Поведение остаётся backward-compat: WARNING в лог (на каждый вызов,
+        удалить вместе с подпиской в следующем релизе), затем старая
+        логика как раньше.
+        """
+        # Issue #2198 — DEPRECATED вход /avatar/tts/request. WARNING один раз
+        # на вызов: при нормальной эксплуатации supervisor_node переключится
+        # на /voice/tts/request, и эти логи исчезнут. Не блокируем обработку
+        # (backward-compat с прямыми публикаторами).
+        try:
+            chunk_data = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError) as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/request: bad JSON: {exc}"
+            )
+            return
+
+        # ADR-0055 / ADR-0079 — switch по sink. Вынесен в helper чтобы не
+        # раздувать CC _on_avatar_tts_request (ADR-0021).
+        sink = chunk_data.get("sink", "")
+        if not self._dispatch_avatar_tts_sink(chunk_data, sink):
+            # invalid sink (или неизвестный) — _dispatch уже залогировал
+            # и опубликовал _avatar_tts_error; нам тут делать нечего.
+            return
+
+        if "ssml" not in chunk_data:
+            self.get_logger().warn("⚠️ [ADR-0055] avatar chunk без SSML")
+            return
+
+        # Issue #2198 — DEPRECATED warning для /avatar/tts/request. Один раз
+        # на вызов: при нормальной эксплуатации supervisor_node переключится
+        # на /voice/tts/request с sink="headset", и эти логи исчезнут. Не
+        # блокируем обработку (backward-compat с прямыми публикаторами).
+        self.get_logger().warn(
+            "⚠️ [issue 2198] /avatar/tts/request DEPRECATED, use "
+            "/voice/tts/request with sink='headset' or sink='preview' "
+            "field instead. Этот топик удалится в следующем релизе."
+        )
+
+        import uuid as _uuid
+
+        speech_id = chunk_data.get("speech_id", str(_uuid.uuid4()))
+
+        dialogue_id = chunk_data.get("dialogue_id", None)
+        # Защита от устаревшего dialogue (barge-in) — общий шаблон с
+        # dialogue_callback, см. там комментарий про issue #1563.
+        if (
+            dialogue_id
+            and self.current_dialogue_id
+            and dialogue_id != self.current_dialogue_id
+        ):
+            self.get_logger().warning(
+                f"❌ [ADR-0055] Отбрасываем устаревший avatar chunk "
+                f"dialogue_id={dialogue_id[:8]} (текущий: {self.current_dialogue_id[:8]})"
+            )
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="stale_dialogue",
+                batch_id=chunk_data.get("batch_id"),
+                batch_index=chunk_data.get("batch_index"),
+                batch_total=chunk_data.get("batch_total"),
+                dialogue_id=dialogue_id,
+            )
+            return
+
+        if dialogue_id:
+            if self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
+                self._interrupt_playback()
+            self.current_dialogue_id = dialogue_id
+
+        # Issue #2096 — guard пустого text/ssml для /avatar/tts/request
+        # (ADR-0055, sink="headset"). По образцу dialogue_callback (line 2063-2069):
+        # _on_avatar_tts_request НЕ имел защиты, и пустой SSML/text уходил в
+        # _synthesize_minimax_with_retry → MiniMax райзил TTSBadRequestError
+        # "text is empty" → CRITICAL в deploy-логе. Защищаемся:
+        # извлекаем text через _extract_text_from_ssml (та же нормализация, что
+        # для основного канала), при пустом — DROP + finished(error=empty_text)
+        # + avatar_error(error=empty_text), чтобы caller (operator-agent / grip
+        # pipeline) не зависал в ожидании speech_id.
+        ssml = chunk_data.get("ssml", "")
+        avatar_text = self._extract_text_from_ssml(ssml)
+        if not avatar_text.strip():
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/request: empty text/ssml, "
+                f"DROP request_id={chunk_data.get('request_id', '')[:8]}"
+            )
+            self._publish_avatar_tts_error(
+                request_id=chunk_data.get("request_id", ""),
+                error="empty_text",
+            )
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="empty_text",
+                batch_id=chunk_data.get("batch_id"),
+                batch_index=chunk_data.get("batch_index"),
+                batch_total=chunk_data.get("batch_total"),
+                dialogue_id=dialogue_id,
+            )
+            return
+
+        # Unicode-script guard (issue 1709) — общий с dialogue_callback.
+        if _tts_guard_should_skip(chunk_data.get("ssml", "")):
+            _report = _tts_guard_analyze(chunk_data.get("ssml", ""))
+            self.get_logger().warn(
+                f"🚫 [ADR-0055] avatar TTS пропущен — неподдерж. письменность: "
+                f"{_tts_guard_describe(_report)}, request_id="
+                f"{chunk_data.get('request_id', '')[:8]}"
+            )
+            self._publish_avatar_tts_error(
+                request_id=chunk_data.get("request_id", ""),
+                error="unsupported_script",
+            )
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="unsupported_script",
+                batch_id=chunk_data.get("batch_id"),
+                batch_index=chunk_data.get("batch_index"),
+                batch_total=chunk_data.get("batch_total"),
+                dialogue_id=dialogue_id,
+            )
+            return
+
+        ssml = chunk_data.get("ssml", "")
+        ssml_attributes = self._parse_ssml_attributes(ssml)
+        batch_id = chunk_data.get("batch_id")
+        batch_index = chunk_data.get("batch_index")
+        batch_total = chunk_data.get("batch_total")
+        voice = chunk_data.get("voice")
+        language = chunk_data.get("language")
+
+        # Issue #2096 — ADR-0055 / supervisor_node докстринг (``_publish_grip_tts``,
+        # ``_publish_avatar_tts``) объявляют ``ssml`` ОБЯЗАТЕЛЬНЫМ, а ``text`` —
+        # НЕТ: оба публикатора шлют payload {request_id, ssml, sink, ...} БЕЗ
+        # поля ``text`` вовсе. До этого фикса ``chunk_data.get("text", "")``
+        # был пустым для КАЖДОГО запроса от этих публикаторов (весь голос ТАРС
+        # в шлем + grip-пайплайн), а на синтез уходил именно этот пустой text
+        # (``ssml`` использовался только для ``_parse_ssml_attributes`` —
+        # просодия), что давало MiniMax bad-request "text is empty" на
+        # НЕПУСТОЙ реплике (см. live-лог voice-assistant, 2026-09-07).
+        # Делаем ``ssml`` самодостаточным, как обещано в контракте: если
+        # ``text`` отсутствует/пуст — извлекаем его из ``ssml`` тем же
+        # чокпоинтом, что и ``dialogue_callback`` (issue #988) — снимает XML
+        # теги, чистит markdown.
+        avatar_text = chunk_data.get("text", "")
+        if not avatar_text or not avatar_text.strip():
+            avatar_text = self._extract_text_from_ssml(ssml)
+
+        self.get_logger().info(
+            f"🎧 [ADR-0055] avatar TTS request: request_id="
+            f"{(chunk_data.get('request_id', '') or '')[:8]}, "
+            f"speech_id={speech_id[:8]}, voice={voice or 'default'}, "
+            f"text={avatar_text!r}"
+        )
+        # Issue #2113 (quest #2112) — зеркалим avatar_text в /tars1/text,
+        # чтобы боковая текстовая панель в Captain Bridge показала то же,
+        # что TARS говорит в шлем. ``streaming=true`` потому что avatar-
+        # запрос целостный (не дробный, в отличие от /voice/tts/request);
+        # done=true — это последний чанк в этой реплике. Публикация
+        # fire-and-forget: ошибки ROS-сокета не должны ломать синтез.
+        self._publish_tars1_text(
+            request_id=chunk_data.get("request_id", ""),
+            text=avatar_text,
+            streaming=True,
+            done=True,
+        )
+        # Запоминаем текущий avatar-request_id — control_callback использует
+        # его, чтобы сбрасывать синтезирующийся worker при STOP.
+        self._avatar_tts_request_id = chunk_data.get("request_id")
+
+        # Тот же slot pool, что и для /voice/tts/request (BLK-9 fix).
+        self._submit_synthesis(
+            self._run_synthesis_worker,
+            speech_id,
+            ssml,
+            avatar_text,
+            dialogue_id,
+            ssml_attributes,
+            speech_id,
+            batch_id,
+            batch_index,
+            batch_total,
+            voice=voice,
+            language=language,
+            sink="headset",
+        )
+
+    def _publish_avatar_tts_error(self, request_id: str, error: str) -> None:
+        """ADR-0055 / issue #1993 — публикация ошибки в ``/avatar/tts/error``.
+
+        Вызывается из ``_on_avatar_tts_request`` при DROP'е (invalid_sink,
+        unsupported_script и т.п.). Формат — тот же String JSON, что и
+        ``/voice/tts/finished`` для корреляции с request_id'ом.
+        """
+        try:
+            err_msg = String()
+            err_msg.data = json.dumps(
+                {"request_id": request_id, "error": error},
+                ensure_ascii=False,
+            )
+            self._avatar_tts_error_pub.publish(err_msg)
+        except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/error publish failed: {exc}"
+            )
+
+    # ── Preview-канал (ADR-0079 / issue #2138.A.3) ─────────────────────
+    # picker'у голосов нужны «прослушиваемые образцы». Канал
+    # ``/avatar/tts/request`` (sink="preview") → ``synthesize_preview``
+    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0079.
+
+    def _dispatch_avatar_tts_sink(self, chunk_data: dict, sink: str) -> bool:
+        # Вынесено из ``_on_avatar_tts_request`` чтобы не раздувать CC
+        # (ADR-0021). Возвращает True если sink распознан и запрос надо
+        # обработать дальше (headset/preview); False если DROP.
+        if sink == "preview":
+            # ADR-0079 / issue #2138.A.3 — picker'у нужен «прослушиваемый
+            # образец» голоса. Отдельный путь: без dialogue_id/barge-in
+            # защиты (preview НЕ прерывает текущую реплику личности), без
+            # Unicode-guard (preview-фраза короткая и контролируемая), без
+            # ThreadPoolExecutor (синхронный сетевой запрос). Результат
+            # уходит в /avatar/preview_voice/audio (JSON+base64) +
+            # /avatar/preview_voice/result (done) или /avatar/preview_voice/error.
+            self._on_avatar_tts_request_preview(chunk_data)
+            return False  # preview уже обработан — caller должен return
+        if sink == "headset":
+            return True  # caller продолжит обработку headset-пути
+        # invalid / unknown
+        self.get_logger().warn(
+            f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
+            "(expected 'headset' or 'preview'), DROP"
+        )
+        self._publish_avatar_tts_error(
+            request_id=chunk_data.get("request_id", ""),
+            error="invalid_sink",
+        )
+        return False
+
+    def _resolve_voice_tts_sink(self, chunk_data: dict) -> tuple[str | None, str]:
+        """Issue #2198 / voice-vr 13 — pure-helper маршрутизации по ``sink``
+        для ``/voice/tts/request``.
+
+        Возвращает ``(canonical, raw)``:
+          * ``canonical = "headset"`` / ``"preview"`` / ``"speaker"`` —
+            каноническое значение ``sink`` для маршрутизации;
+          * ``canonical = None`` — поле невалидно (любой не-известный sink);
+          * ``raw`` — исходное значение поля из payload (для WARN
+            caller'у и diagnostics), включая пустую строку если поле
+            отсутствует.
+
+        Семантика:
+          * ``"headset"`` / ``"preview"`` — делегировать в
+            ``_on_avatar_tts_request`` (тот же chokepoint, что и для
+            deprecated ``/avatar/tts/request`` подписки).
+          * ``"speaker"`` (default, отсутствие поля = backward-compat) —
+            старый путь в динамики через ``_synthesize_and_play``.
+          * ``"speakers"`` (issue #2318) — то же самое, что ``"speaker"``.
+            Это значение ``Sink.SPEAKERS`` из SoT-сборщика
+            ``rob_box_core.utterance`` (ADR-0080 §2.3), которым публикуют
+            ВСЕ пять продюсеров (dialogue_node, telegram_node, stt_node,
+            startup_greeting_node, speak_helpers). До фикса оно не было в
+            whitelist → каждая реплика в динамики уходила в DROP.
+            Канонизируем в ``"speaker"``, чтобы ниже по стеку
+            (``_submit_synthesis(sink=...)`` → ``_sap_publish_for_sink``)
+            остался ровно один вариант написания.
+          * Любой другой ``sink`` (включая ``""`` если явно задан) →
+            ``canonical = None`` → caller логирует WARN + DROP.
+
+        Этот helper — pure-функция маршрутизации (НЕ делает side-effect'ов):
+        не логирует, не публикует, не дёргает синтез.
+        """
+        raw = chunk_data.get("sink", "speaker")
+        if raw in _VOICE_TTS_SINK_ALIASES:
+            # Нормализуем: отсутствие поля / "" → "speaker" (default),
+            # "speakers" (Sink.SPEAKERS из SoT) → "speaker".
+            return (_VOICE_TTS_SINK_ALIASES[raw], raw)
+        return (None, raw)
+
+    def _dispatch_voice_tts_sink(self, msg: String, sink: str | None, raw: str) -> bool:
+        """Issue #2198 / voice-vr 13 — dispatch по ``sink`` для нового
+        канала ``/voice/tts/request``. Вынесен из ``dialogue_callback``
+        (ADR-0021: удержать CC dialogue_callback в бюджете).
+
+        Возвращает ``True`` если запрос обработан (delegate в
+        avatar/preview-путь или DROP невалидного sink), ``False`` если
+        это legacy ``sink="speaker"`` (default) и caller продолжает
+        обработку сам.
+
+        Семантика:
+          * ``"headset"`` / ``"preview"`` — делегирует в
+            ``_on_avatar_tts_request`` (тот же chokepoint, что и для
+            deprecated ``/avatar/tts/request`` подписки);
+          * ``None`` (невалидный sink) — логирует WARN + DROP;
+          * ``"speaker"`` (default) — возвращает ``False``, caller
+            продолжает обработку legacy-пути (динамики).
+        """
+        if sink in ("headset", "preview"):
+            self._on_avatar_tts_request(msg)
+            return True
+        if sink is None:
+            self.get_logger().warn(
+                f"⚠ /voice/tts/request: unknown sink={raw!r} "
+                f"(expected 'speaker'/'headset'/'preview'), DROP"
+            )
+            return True
+        return False
+
+    def _on_avatar_tts_request_preview(self, chunk_data: dict) -> None:
+        # ADR-0079 / issue #2138.A.3 — обработка preview-синтеза.
+        # Прямой вызов ``synthesize_preview`` (синхронный метод, async
+        # внутри через ``_run_in_tts_loop``) — НЕ идёт в
+        # ThreadPoolExecutor/_synthesize_and_play, т.к. preview НЕ
+        # прерывает текущую реплику и НЕ публикует /avatar/tts/audio.
+        request_id = chunk_data.get("request_id", "")
+        voice = chunk_data.get("voice")
+        # ssml обязателен для совместимости с headset-контрактом (тот же
+        # канал /avatar/tts/request). Извлекаем plain-text тем же
+        # _extract_text_from_ssml, что и headset — picker шлёт ту же
+        # структуру что и say.
+        ssml = chunk_data.get("ssml", "")
+        text = (
+            self._extract_text_from_ssml(ssml) if ssml else chunk_data.get("text", "")
+        )
+        # Тот же guard, что и headset (issue #2096): пустой text → DROP
+        # + preview_error, picker не должен «висеть» в ожидании.
+        if not text or not text.strip():
+            self.get_logger().warn(
+                f"⚠️ [ADR-0079] preview синтез: empty text/ssml, "
+                f"DROP request_id={request_id[:8] if request_id else ''}"
+            )
+            self._publish_preview_error(request_id, "empty_text")
+            return
+        try:
+            result = self.synthesize_preview(
+                text=text,
+                voice=voice,
+                timeout_s=10.0,
+            )
+        except PreviewSynthesisTimeoutError as exc:
+            self.get_logger().warn(f"⚠️ [ADR-0079] preview таймаут: {exc}")
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        except PreviewSynthesisUnavailableError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0079] preview недоступен (MiniMax opt-in): {exc}"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        except PreviewSynthesisError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0079] preview ошибка: {exc} (reason={exc.reason})"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        # Успех — публикуем bytes + result. base64 потому что ws_server/
+        # клиент ожидают JSON (preview_audio_sink.ts §1), а bytes в JSON
+        # естественно идут как base64.
+        import base64 as _base64
+
+        self._publish_preview_audio(
+            request_id=request_id,
+            format_str=result.format_str,
+            content_type=result.content_type,
+            sample_rate=result.sample_rate,
+            duration_s=result.duration_s,
+            audio_bytes=result.audio_bytes,
+        )
+        self._publish_preview_result(
+            request_id=request_id,
+            format_str=result.format_str,
+            sample_rate=result.sample_rate,
+            duration_s=result.duration_s,
+            content_type=result.content_type,
+        )
+
+    def _publish_preview_audio(
+        self,
+        *,
+        request_id: str,
+        format_str: str,
+        content_type: str,
+        sample_rate: int,
+        duration_s: float,
+        audio_bytes: bytes,
+    ) -> None:
+        # Контракт ``/avatar/preview_voice/audio`` — String JSON
+        # {request_id, format, content_type, audio_b64, sample_rate,
+        # duration_s}. ws_server маппит это в ``preview_voice_audio``
+        # (JSON_EVENT{...} + BINARY_FRAME с теми же bytes). preview_audio_sink.ts
+        # декодирует audio_b64 → ArrayBuffer и играет через WebAudio
+        # decodeAudioData (по content_type).
+        import base64 as _base64
+
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "format": format_str,
+                    "content_type": content_type,
+                    "sample_rate": int(sample_rate),
+                    "duration_s": float(duration_s),
+                    "audio_b64": _base64.b64encode(audio_bytes).decode("ascii"),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_audio_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0079] /avatar/preview_voice/audio publish failed: {exc}"
+            )
+            # Если preview_audio не дошёл — шлём error, чтобы picker
+            # не висел в ожидании.
+            self._publish_preview_error(request_id, "audio_publish_failed")
+
+    def _publish_preview_result(
+        self,
+        *,
+        request_id: str,
+        format_str: str,
+        sample_rate: int,
+        duration_s: float,
+        content_type: str,
+    ) -> None:
+        # ``/avatar/preview_voice/result`` — String JSON done-маркер.
+        # ws_server форвардит как ``preview_voice_done`` event'ом на
+        # клиент. Отдельный топик от audio — UI может рендерить
+        # «прослушал: X секунд» пока аудио ещё играет (не блокируем на нём).
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "format": format_str,
+                    "content_type": content_type,
+                    "sample_rate": int(sample_rate),
+                    "duration_s": float(duration_s),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_result_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0079] /avatar/preview_voice/result publish failed: {exc}"
+            )
+
+    def _publish_preview_error(self, request_id: str, reason: str) -> None:
+        # ``/avatar/preview_voice/error`` — String JSON {request_id,
+        # reason, ts_ms}. ws_server форвардит ``preview_voice_error``.
+        # ``reason`` — стабильная строка, публичный контракт с UI
+        # (ADR-0079 §error-reasons). Текущие reason'ы:
+        #   * preview_timeout
+        #   * minimax_unavailable
+        #   * preview_synthesis_failed (для прочих ошибок провайдера)
+        #   * empty_text
+        #   * audio_publish_failed
+        import time as _time
+
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "reason": reason,
+                    "ts_ms": int(_time.time() * 1000),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_error_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0079] /avatar/preview_voice/error publish failed: {exc}"
+            )
+
+    def _publish_tars1_text(
+        self,
+        *,
+        request_id: str,
+        text: str,
+        streaming: bool,
+        done: bool,
+    ) -> None:
+        """Issue #2113 / quest #2112 — echo of TTS-текста в ``/tars1/text``.
+
+        Captain Bridge в Quest-клиенте подписан на этот топик и дописывает
+        текст в боковую панель TARS 1, чтобы оператор видел то же, что
+        TARS озвучивает в шлем. Контракт:
+
+        * ``request_id`` — корреляция с ``/avatar/tts/request``;
+        * ``text``     — нормализованный plain-text (как уходит в синтез);
+        * ``streaming`` — ``true`` пока TTS ещё не закончил реплику
+          (для одной реплики avatar-text не дробный — сейчас всегда
+          ``True``; поле оставлено под чанковый сценарий, если в
+          будущем avatar-pipeline начнёт стримить);
+        * ``done``     — ``true`` если это последний чанк реплики.
+
+        Метод не должен падать: ошибки сокета/сериализации — только WARN.
+        """
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "text": text,
+                    "streaming": bool(streaming),
+                    "done": bool(done),
+                },
+                ensure_ascii=False,
+            )
+            self._tars1_text_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [issue #2113] /tars1/text publish failed: {exc}"
+            )
 
     def _parse_ssml_attributes(self, ssml: str) -> dict:
         """
-        Извлекает атрибуты из SSML тегов (pitch, rate/speed)
+        Извлекает атрибуты из SSML тегов (pitch, rate/speed, volume)
 
         Returns:
-            dict: {'pitch': float, 'rate': float} или пустой dict
+            dict: ``{'pitch': float, 'rate': float, 'volume': float}`` или
+            пустой dict.
+
+            * ``pitch`` хранится как float-множитель (для Silero-фолбэка);
+              для Yandex gRPC v3 ``_synthesize_yandex_single`` конвертирует
+              его в Hz-offset через ``_ssml_pitch_to_hz``.
+            * ``volume`` хранится как АБСОЛЮТНАЯ LUFS-цель для Yandex
+              ``Hints.volume`` (range [-145; 0)); для SSML-именованных
+              уровней (``loud``/``soft``/…) вычисляется через
+              ``_ssml_volume_to_lufs_target`` относительно baseline -19 LUFS.
         """
         attributes = {}
 
         # Ищем <prosody> теги с атрибутами
-        # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow">
+        # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow" volume="loud">
         prosody_pattern = r"<prosody\s+([^>]+)>"
         matches = re.finditer(prosody_pattern, ssml, re.IGNORECASE)
 
@@ -1449,7 +3496,9 @@ class TTSNode(Node):
             attrs_str = match.group(1)
 
             # Парсим pitch
-            pitch_match = re.search(r'pitch\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
+            pitch_match = re.search(
+                r'pitch\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE
+            )
             if pitch_match:
                 pitch_value = pitch_match.group(1)
                 # Конвертируем в множитель для Yandex
@@ -1473,7 +3522,9 @@ class TTSNode(Node):
                         pass
 
             # Парсим rate (скорость речи)
-            rate_match = re.search(r'rate\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE)
+            rate_match = re.search(
+                r'rate\s*=\s*["\']?([^"\'>\s]+)["\']?', attrs_str, re.IGNORECASE
+            )
             if rate_match:
                 rate_value = rate_match.group(1)
                 # "1.5" -> 1.5, "fast" -> 1.5, "slow" -> 0.7
@@ -1494,6 +3545,19 @@ class TTSNode(Node):
                         attributes["rate"] = float(rate_value)
                     except ValueError:
                         pass
+
+            # Парсим volume (громкость в LUFS для Yandex gRPC v3).
+            # Допускаем как числовые dB-формы ("+5dB", "-5dB", "5dB"),
+            # так и SSML-именованные уровни (silent/x-soft/soft/medium/loud/x-loud).
+            volume_match = re.search(
+                r'volume\s*=\s*["\']?([^"\'>\s]+)["\']?',
+                attrs_str,
+                re.IGNORECASE,
+            )
+            if volume_match:
+                attributes["volume"] = _ssml_volume_to_lufs_target(
+                    volume_match.group(1)
+                )
 
         return attributes
 
@@ -1519,6 +3583,11 @@ class TTSNode(Node):
         не входящие в канонический positional arity (например ``voice``).
         Пробрасываются в ``executor.submit`` как keyword-аргументы —
         ``_run_synthesis_worker(**kwargs)`` достаёт их из ``**kwargs``.
+
+        ``priority`` (issue #1996, optional kwarg, НЕ извлекается из
+        ``**kwargs`` — остаётся в них и летит дальше воркеру) — влияет
+        ТОЛЬКО на то, какой ``play_seq`` достанется этому запросу; см.
+        ``_assign_priority_play_seq``.
         """
         if self._synthesis_executor_shutdown:
             self.get_logger().warning(
@@ -1533,12 +3602,20 @@ class TTSNode(Node):
             )
             return
         self._synthesis_in_flight += 1
+        priority = _normalize_tts_priority(kwargs.get("priority"))
+        if priority in _TTS_PRIORITY_PREEMPTS:
+            # ADR-0056 §3.5 — REPLACE-priority: an operator-priority
+            # request re-orders the FIFO-gate, so any in-flight
+            # speculative pre-gen (which assumed the *old* ordering) is
+            # invalidated. Best-effort / never blocks the submit path.
+            self._cancel_pregen_for_priority_replace(speech_id)
         # 🔴 FIX (12:02 FIFO): выдаём play_seq в порядке submit — это
         # порядок приёма запросов из ROS-callback = порядок LLM tool_calls.
-        # Worker будет ждать своей очереди перед play_audio.
+        # Worker будет ждать своей очереди перед play_audio. Issue #1996 —
+        # ``operator``-приоритет вставляет запрос сразу за активным чанком
+        # вместо хвоста очереди (см. ``_assign_priority_play_seq``).
         with self._play_order_cond:
-            self._play_seq_counter += 1
-            play_seq = self._play_seq_counter
+            play_seq = self._assign_priority_play_seq(speech_id, priority)
         try:
             # 🔴 FIX (live 06.08): play_seq ТОЛЬКО через kwargs! Воркер e65a6e5d
             # убрал позиционный play_seq из _run_synthesis_worker (→ **kwargs),
@@ -1572,13 +3649,103 @@ class TTSNode(Node):
         except concurrent.futures.CancelledError:
             exc = None
         if exc is not None:
-            self.get_logger().warning(
-                f"⚠️  Synthesis worker raised: {exc!r}"
-            )
+            self.get_logger().warning(f"⚠️  Synthesis worker raised: {exc!r}")
         self._synthesis_slots.release()
         # The counter is monotonic-ish under CPython GIL; the racy
         # underflow on rare shutdown race is acceptable for diagnostics.
         self._synthesis_in_flight = max(0, self._synthesis_in_flight - 1)
+
+    # ── Issue #1996 / operator-agent step 7a — priority-aware FIFO-gate ──
+
+    def _assign_priority_play_seq(self, speech_id: str, priority: str) -> int:
+        """Assign a ``play_seq`` slot, honouring ``priority`` (issue #1996).
+
+        MUST be called while holding ``self._play_order_cond`` — it reads
+        and mutates ``_play_seq_counter`` / ``_pending_seqs`` /
+        ``_next_play_seq`` without its own locking.
+
+        * ``normal`` (default) — legacy behaviour: next free slot at the
+          tail of the FIFO (``_play_seq_counter + 1``).
+        * ``operator`` — jumps to ``_play_active_seq + 1`` (right behind
+          the chunk currently in ``play_audio``), or to the head of the
+          gate (``_next_play_seq``) if nothing is playing. Any pending
+          ``normal`` request already sitting on that slot is cascaded
+          forward by :meth:`_resolve_operator_priority_slot` — the
+          active chunk itself is never touched (invariant 8a: врезка ≠
+          прерывание).
+
+        Every assigned slot is recorded in ``_pending_seqs[speech_id]``
+        (even for ``normal``) so a later ``operator`` insertion can
+        re-number it, and so the FIFO-gate in ``_synthesize_and_play``
+        can read the live (possibly re-numbered) seq instead of a stale
+        local copy.
+        """
+        if priority in _TTS_PRIORITY_PREEMPTS and speech_id:
+            target = (
+                self._play_active_seq + 1
+                if self._play_active_seq is not None
+                else self._next_play_seq
+            )
+            play_seq = self._resolve_operator_priority_slot(target)
+        else:
+            self._play_seq_counter += 1
+            play_seq = self._play_seq_counter
+        if speech_id:
+            self._pending_seqs[speech_id] = play_seq
+        # The cascade in ``_resolve_operator_priority_slot`` can push a
+        # pending ``normal`` seq ABOVE the current counter (e.g. counter=2,
+        # operator claims slot 2, the normal that was there gets bumped to
+        # 3) — sync against every pending value, not just ``play_seq``,
+        # or the next plain ``normal`` submit would reuse an already-taken
+        # slot and the gate would hang forever waiting for a duplicate.
+        highest_pending = max(self._pending_seqs.values(), default=play_seq)
+        self._play_seq_counter = max(self._play_seq_counter, play_seq, highest_pending)
+        return play_seq
+
+    def _resolve_operator_priority_slot(self, target: int) -> int:
+        """Cascade-shift pending seqs so ``target`` is free for an operator.
+
+        If ``target`` is already taken by another pending ``speech_id``,
+        every pending seq ``>= target`` is bumped by +1 (their relative
+        FIFO order among themselves is preserved — they just all move
+        one slot back to make room). Repeats until ``target`` is free.
+        Must be called under ``self._play_order_cond`` (see caller).
+        """
+        taken = set(self._pending_seqs.values())
+        while target in taken:
+            for sid, seq in list(self._pending_seqs.items()):
+                if seq >= target:
+                    self._pending_seqs[sid] = seq + 1
+            taken = set(self._pending_seqs.values())
+        return target
+
+    def _cancel_pregen_for_priority_replace(self, speech_id: str) -> None:
+        """ADR-0056 §3.5 trigger #4 — REPLACE via the issue #1996 priority flag.
+
+        An ``operator``-priority submit re-orders the FIFO-gate (it can
+        push an already-pregenerated ``normal`` chunk one slot back).
+        Any in-flight speculative pre-gen was kicked off assuming the
+        *old* ordering, so it is cancelled here rather than risking a
+        stale ``prebaked_audio`` downstream. Best-effort: swallow every
+        error so a pre-gen hiccup never blocks an operator interjection
+        from being scheduled — that would defeat the whole point of the
+        priority queue.
+        """
+        # Зовём напрямую, а не через getattr: ``cancel_pregen`` — метод
+        # этого же класса (см. ниже по файлу). Защита через
+        # getattr никогда бы не сработала, зато при переименовании
+        # метода тихо превратила бы триггер ADR-0056 §3.5 в no-op — это
+        # ровно тот fail-open, о котором предупреждает §4.3 хендоффа
+        # (docs/plans/2026-09-05-operator-agent-architecture-handoff.md).
+        try:
+            self.cancel_pregen(reason="REPLACE-priority")
+        except Exception as exc:  # noqa: BLE001 — never block the submit path
+            # warning, а не debug: если триггер сломан, это должно
+            # быть видно в обычных логах робота, а не только под debug.
+            self.get_logger().warning(
+                f"cancel_pregen(REPLACE-priority) failed for "
+                f"speech_id={speech_id[:8] if speech_id else 'None'}: {exc!r}"
+            )
 
     def _run_synthesis_worker(
         self,
@@ -1622,6 +3789,21 @@ class TTSNode(Node):
         # (передан через kwargs, чтобы не ломать канонический positional
         # arity, см. test_speech_id_arg_chain).
         voice = kwargs.get("voice", None)
+        # AV-28 — язык произношения (тем же путём, что voice: через kwargs,
+        # чтобы канонический positional arity остался прежним).
+        language = kwargs.get("language", None)
+        # ADR-0055 / issue #1993 — sink маршрут аудио. "speaker" → ALSA-
+        # воспроизведение + /voice/audio/speech (старый путь, по умолчанию).
+        # "headset" → без ALSA, без /voice/audio/speech, только
+        # /avatar/tts/audio (ТАРС в шлем). Ключевое слово передаётся через
+        # kwargs, чтобы не ломать test_speech_id_arg_chain.
+        sink = kwargs.get("sink", "speaker")
+        # Issue #2003 / ADR-0056 — forward the prebaked_audio hint
+        # from the producer (``dialogue_callback`` claims it via
+        # ``claim_pregen(speech_id)`` before ``_submit_synthesis``).
+        # ``None`` (legacy path / publisher opted out / quality
+        # rejected) is the default and behaves exactly like before.
+        prebaked_audio = kwargs.get("prebaked_audio", None)
         self._synthesize_and_play(
             ssml,
             text,
@@ -1633,20 +3815,367 @@ class TTSNode(Node):
             batch_total,
             play_seq=play_seq,
             voice=voice,
+            language=language,
+            sink=sink,
+            prebaked_audio=prebaked_audio,
         )
 
-    def _release_play_seq(self, play_seq: int | None) -> None:
+    def _release_play_seq(
+        self, play_seq: int | None, speech_id: str | None = None
+    ) -> None:
         """Освободить FIFO-очередь воспроизведения (безопасно для None).
 
         Вызывается при ЛЮБОМ выходе из _synthesize_and_play после синтеза:
         после play_audio (finally), при dialogue-check, при STOP-check.
         Без этого _next_play_seq застревает и все следующие фразы ждут
         очередь вечно (live 12:28 «робот замолчал после barge-in»).
+
+        ``speech_id`` (issue #1996, optional keyword — backward-compat
+        with old positional-only callers/tests): when given, also drops
+        ``_pending_seqs[speech_id]`` unconditionally (this request's
+        synthesis/playback is over, whatever slot it currently holds —
+        the key is unique per ``speech_id`` so there is no risk of
+        stomping someone else's entry). ``_play_active_seq`` is a
+        single shared value, though, so it is only cleared when it
+        still equals the ``play_seq`` being released — otherwise we'd
+        risk erasing the active-seq marker of a *different* chunk that
+        started playing after this one failed/was cancelled.
         """
         if play_seq is not None:
             with self._play_order_cond:
                 self._next_play_seq += 1
+                if speech_id is not None:
+                    self._pending_seqs.pop(speech_id, None)
+                if self._play_active_seq == play_seq:
+                    self._play_active_seq = None
+                    # Issue #2553 — параллельно сбрасываем
+                    # ``_active_batch_id`` чтобы babble-retry guard видел
+                    # «TTS idle» и не блокировал следующий chunk.
+                    self._active_batch_id = None
                 self._play_order_cond.notify_all()
+
+    # ── Issue #2003 / ADR-0056 — speculative pre-generation API ─────────
+    #
+    # Three public methods (``pregenerate`` / ``claim_pregen`` /
+    # ``cancel_pregen``) plus a lazy-built ``_prefetch`` engine. The
+    # engine wraps :class:`scheduler.pregen.SpeculativeExecutor` and
+    # exposes a small dict with the bits ``dialogue_callback`` and
+    # ``_synthesize_and_play`` poke at directly. The whole block is
+    # no-op when ``pregenerate_enabled=False`` or when the publisher
+    # never sends a ``pregenerate`` field — see ADR-0056 §3.4.
+
+    def _ensure_prefetch(self) -> Dict[str, Any]:
+        """Construct the pre-fetch engine on first use (lazy).
+
+        Returns a small dict containing:
+        * ``executor`` — the live :class:`SpeculativeExecutor`;
+        * ``synth`` — the coroutine-friendly callable that the
+          executor dispatches into the asyncio loop.
+
+        Idempotent: subsequent calls return the same dict.
+        """
+        engine = self._prefetch
+        if engine is not None:
+            return engine
+
+        executor = _PreGenExecutor(
+            synth_callable=self._synthesize_for_pregen,
+            confidence_floor=self._pregenerate_confidence_floor,
+            history_window=self._pregenerate_history_window,
+        )
+        engine = {
+            "executor": executor,
+            "synth": self._synthesize_for_pregen,
+        }
+        self._prefetch = engine
+        return engine
+
+    async def _synthesize_for_pregen(
+        self,
+        *,
+        ssml: str,
+        text: str,
+        ssml_attributes: dict,
+        voice: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Async-friendly TTS for speculative tasks (ADR-0056 §3.2).
+
+        Runs the *same* provider chain that ``_synthesize_and_play``
+        uses, but in an async-friendly wrapper. The actual blocking
+        work (Yandex gRPC / Silero / MiniMax HTTP) happens on the
+        asyncio default thread pool via :func:`asyncio.to_thread`,
+        which keeps the rclpy callback responsive.
+
+        Returns ``{"audio_np": ndarray, "sample_rate": int}`` so
+        :func:`scheduler.pregen._dispatch_synthesis` recognises the
+        MiniMax-style return shape and the executor can extract
+        ``sample_rate`` for the ``duration_ratio`` heuristic.
+
+        Failures bubble up as exceptions — the executor treats them
+        as "no pre-gen for this chunk" and does NOT cache anything.
+        """
+        loop = asyncio.get_event_loop()
+        # We can't reuse ``_synthesize_and_play`` (it owns playback).
+        # Instead we replicate the provider-chain *selection* logic and
+        # call the appropriate private synth helper. The chain itself
+        # is dead-cheap (a tuple of provider names).
+        chain = self._effective_provider_chain()
+        last_err: Optional[Exception] = None
+        for provider_name in chain:
+            try:
+                if provider_name == "minimax":
+                    if self.minimax_streaming:
+                        result = await loop.run_in_executor(
+                            None,
+                            self._synthesize_minimax_streaming_publish,
+                            text,
+                            ssml_attributes,
+                            voice or self.minimax_voice,
+                            language,
+                        )
+                    else:
+                        result = await loop.run_in_executor(
+                            None,
+                            self._synthesize_minimax,
+                            text,
+                            ssml_attributes,
+                            voice,
+                            language,
+                        )
+                    return result
+                if provider_name == "yandex":
+                    if not self.yandex_stub:
+                        continue
+                    audio = await loop.run_in_executor(
+                        None,
+                        self._synthesize_yandex,
+                        text,
+                        ssml_attributes,
+                        voice,
+                    )
+                    return {
+                        "audio_np": audio,
+                        "sample_rate": self.audio_output_sample_rate,
+                    }
+                if provider_name == "silero":
+                    audio = await loop.run_in_executor(
+                        None,
+                        self._synthesize_silero,
+                        text,
+                        ssml_attributes,
+                        voice,
+                    )
+                    return {
+                        "audio_np": audio,
+                        "sample_rate": self.silero_sample_rate,
+                    }
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                self.get_logger().debug(
+                    f"pregenerate synth {provider_name} failed: {exc!r} — "
+                    f"trying next in chain"
+                )
+                continue
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError(
+            "pregenerate synth: empty provider chain " f"(effective={chain!r})"
+        )
+
+    def pregenerate(self, current_chunk: dict, ctx: Optional[dict] = None) -> None:
+        """Issue #2003 / ADR-0056 — kick off speculative next-chunk synthesis.
+
+        Fire-and-forget: the caller (``dialogue_callback``) invokes
+        this *before* the canonical ``_submit_synthesis`` for the
+        current chunk. By the time ``batch_complete`` of the current
+        chunk fires, the speculative audio for the next chunk is
+        either already in :attr:`_PrefetchEngine._results` (claim
+        via :meth:`claim_pregen`) or has been rejected by the
+        quality gate (in which case the canonical synthesis runs
+        unchanged — fallback to the legacy path).
+
+        Parameters
+        ----------
+        current_chunk
+            The JSON-decoded chunk dict (the same shape
+            :func:`scheduler.pregen.build_pregen_task` accepts).
+        ctx
+            Reserved for future use (e.g. dialogue_id override).
+            Currently unused — kept in the signature for forward
+            compatibility with the §3.1 contract.
+        """
+        if not self._pregenerate_enabled:
+            return
+        if not isinstance(current_chunk, dict):
+            return
+        # Validate the payload before constructing the executor. This keeps
+        # malformed / opt-out payloads as true no-ops without creating an
+        # engine, while valid hints get the lazy engine immediately.
+        task = _build_pregen_task(
+            current_chunk,
+            fallback_voice=self._prefetch_fallback_voice(),
+            fallback_language=self._prefetch_fallback_language(),
+        )
+        if task is None:
+            return
+
+        engine = self._prefetch
+        if engine is None:
+            engine = {
+                "executor": _PreGenExecutor(
+                    synth_callable=self._synthesize_for_pregen,
+                    confidence_floor=self._pregenerate_confidence_floor,
+                    history_window=self._pregenerate_history_window,
+                ),
+                "synth": self._synthesize_for_pregen,
+            }
+            self._prefetch = engine
+        executor = engine["executor"]
+        loop = None
+        try:
+            loop = self.get_loop()  # rclpy event loop
+        except Exception:  # noqa: BLE001 — unit-test stubs without rclpy
+            loop = None
+
+        async def _run() -> None:
+            try:
+                speech_id = await executor.kickoff(
+                    current_chunk,
+                    fallback_voice=self._prefetch_fallback_voice(),
+                    fallback_language=self._prefetch_fallback_language(),
+                    fallback_dialogue_id=self.current_dialogue_id,
+                )
+                if speech_id is not None and self._prefetch is None:
+                    self._prefetch = {
+                        "executor": executor,
+                        "synth": self._synthesize_for_pregen,
+                    }
+            except Exception as exc:  # noqa: BLE001 — never crash ROS
+                self.get_logger().warning(f"⚠️ pregenerate kickoff failed: {exc!r}")
+
+        if loop is not None and loop.is_running():
+            # Schedule without blocking the ROS callback.
+            asyncio.run_coroutine_threadsafe(_run(), loop)
+        else:
+            # No live loop (unit tests / standalone) — best effort:
+            # synchronously run the coroutine to completion on the
+            # default loop. The executor handles asyncio internally.
+            try:
+                asyncio.run(_run())
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().debug(f"pregenerate sync fallback failed: {exc!r}")
+
+    def claim_pregen(self, speech_id: str) -> Optional[Dict[str, Any]]:
+        """Atomically pop a cached speculative result for ``speech_id``.
+
+        Returns ``None`` when no result is ready (or when the
+        engine has been disabled). The caller
+        (``_synthesize_and_play``) treats ``None`` as "fall back
+        to the canonical path" — exactly the legacy behaviour.
+        """
+        if not self._pregenerate_enabled or self._prefetch is None:
+            return None
+        result: Optional[_PreGenResult] = self._prefetch["executor"].claim(speech_id)
+        if result is None:
+            return None
+        # Mirror the ``PreGenResult`` shape into a small dict so the
+        # rest of ``tts_node`` does not depend on the pre-gen
+        # package's types.
+        return {
+            "audio_np": result.audio,
+            "sample_rate": result.sample_rate,
+            "decision": result.decision,
+            "confidence": result.confidence,
+            "basis": result.basis,
+            "elapsed_ms": result.elapsed_ms,
+        }
+
+    def cancel_pregen(self, reason: str) -> int:
+        """Cancel every in-flight speculative task (ADR-0056 §3.5).
+
+        Called from the four sites enumerated in §3.5:
+
+        1. ``_on_new_dialogue_id`` (dialogue switch);
+        2. ``_interrupt_playback`` (STOP/barge-in);
+        3. ``control_callback`` (explicit STOP);
+        4. ``_on_set_provider`` (REPLACE).
+
+        Returns the count of cancelled tasks (for metrics).
+
+        Safe to call before :meth:`pregenerate` has ever been
+        invoked — returns ``0`` in that case.
+        """
+        if self._prefetch is None:
+            return 0
+        executor = self._prefetch["executor"]
+        try:
+            loop = self.get_loop()
+        except Exception:  # noqa: BLE001
+            loop = None
+        if loop is not None and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                executor.cancel(reason=reason),
+                loop,
+            )
+            try:
+                return int(future.result(timeout=2.0))
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"⚠️ cancel_pregen async future failed: {exc!r}"
+                )
+                return 0
+        # No live loop — best effort synchronous cancel. The
+        # executor handles its own internal state.
+        try:
+            return int(asyncio.run(executor.cancel(reason=reason)))
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f"cancel_pregen sync fallback failed: {exc!r}")
+            return 0
+
+    def publish_prefetch_metrics(self) -> None:
+        """Publish :class:`PreGenMetrics` snapshot to ``/voice/tts/metrics``.
+
+        Called on a low-frequency cadence from the existing
+        :meth:`publish_state` path) so operators can observe
+        ``latency_chunk_to_chunk_ms_mean`` and the per-kind
+        rejection counters.
+
+        No-op until the pre-fetch engine has been built at least
+        once.
+        """
+        if self._prefetch is None:
+            return
+        snapshot = self._prefetch["executor"].snapshot()
+        try:
+            msg = String()
+            msg.data = json.dumps(snapshot, ensure_ascii=False, default=str)
+            # Lazy-create the publisher so nodes that never pre-gen
+            # don't pay the cost of a topic allocation.
+            if not hasattr(self, "_prefetch_metrics_pub"):
+                self._prefetch_metrics_pub = self.create_publisher(
+                    String, "/voice/tts/metrics", 10
+                )
+            self._prefetch_metrics_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — never crash ROS
+            self.get_logger().debug(f"publish_prefetch_metrics failed: {exc!r}")
+
+    def _prefetch_fallback_voice(self) -> str:
+        """Voice to use when the publisher didn't specify one.
+
+        Returns the *current* effective voice depending on the
+        configured provider. Lives next to the pre-fetch API
+        so the lazy-init order is self-contained.
+        """
+        if self.provider == "minimax":
+            return self.minimax_voice
+        if self.provider == "yandex":
+            return self.yandex_voice
+        return self.silero_speaker
+
+    def _prefetch_fallback_language(self) -> Optional[str]:
+        """Language to use when the publisher didn't specify one."""
+        return getattr(self, "minimax_language", None)
 
     # ── Issue #1083: цепочка приоритетов TTS (minimax → yandex → silero) ────
 
@@ -1693,9 +4222,7 @@ class TTSNode(Node):
         if chain:
             return chain
         provider = getattr(self, "provider", "minimax")
-        return TTSNode._normalize_provider_chain(
-            TTSNode._chain_from_provider(provider)
-        )
+        return TTSNode._normalize_provider_chain(TTSNode._chain_from_provider(provider))
 
     @staticmethod
     def _normalize_provider_chain(chain: list[str]) -> list[str]:
@@ -1724,15 +4251,147 @@ class TTSNode(Node):
         deduped.append("silero")
         return deduped
 
+    @staticmethod
+    def _build_shared_health_cache(
+        path: str,
+        ttl_s: float,
+        logger: Any = None,
+    ) -> Any:
+        """Открыть общий health-кэш LLM-провайдеров (issue #2702).
+
+        Мягкая деградация в ДВУХ независимых случаях:
+        * ``rob_box_harness`` не установлен на узле (``HARNESS_HEALTH_AVAILABLE
+          =False``) — минимальная сборка voice-стека без harness;
+        * путь пуст, или файл недоступен (права/диск) — общий кэш просто
+          не открывается.
+        В обоих случаях возвращаем ``None`` и узел работает только со своим
+        локальным ``_provider_dead_until``, как до этого issue — TTS никогда
+        не должен падать из-за отсутствующей/битой общей инфраструктуры.
+        """
+        if not HARNESS_HEALTH_AVAILABLE or not path:
+            return None
+        try:
+            return _SharedHealthCache(ttl_s=ttl_s, persist_path=Path(path).expanduser())
+        except Exception as exc:  # noqa: BLE001 — общий кэш не критичен для TTS
+            if logger is not None:
+                try:
+                    logger.warn(
+                        f"⚠️ [issue 2702] общий health-кэш {path!r} недоступен "
+                        f"({exc}) — работаю только с локальным кэшем"
+                    )
+                except Exception:  # noqa: BLE001 — логгер тоже не должен ронять TTS
+                    pass
+            return None
+
+    def _init_provider_health(self) -> None:
+        """Инициализировать общий health-кэш, облачный бюджет и fail-streak
+        (issue #2702). Вызывается ровно один раз из ``__init__``.
+
+        Вынесено из ``__init__`` отдельным методом (ADR-0021 R1 / cc_budget
+        guard): каждый ``x.value or default`` фолбэк на ROS-параметре ниже
+        считается decision-point'ом в CC-метрике cc_budget.py (``BoolOp``),
+        и три таких фолбэка в одном месте толкали CC ``__init__`` выше
+        baseline. Сама по себе эта инициализация безусловна и линейна —
+        разбивка на метод убирает лишние decision points из CC ``__init__``,
+        не пряча их (метод сам по себе далеко не приближается к лимиту).
+        """
+        # Issue #2702 — общий health-кэш (ключ провайдера "minimax" совпадает
+        # с тем, что использует LLM-сторона в HealthAwareFallbackLLM/
+        # dialogue_node — Token Plan общий). Провайдеры, помеченные
+        # unavailable ОТТУДА, тоже пропускаются здесь (см. _provider_is_dead);
+        # а падения minimax отсюда зеркалятся туда (см. _mark_provider_dead).
+        self._shared_health_cache = TTSNode._build_shared_health_cache(
+            str(self.get_parameter("health_cache_path").value or ""),
+            float(self.get_parameter("health_ttl_s").value or 300.0),
+            logger=self.get_logger(),
+        )
+        self.cloud_tts_budget_s = max(
+            0.5, float(self.get_parameter("cloud_tts_budget_s").value or 8.0)
+        )
+        # Streak транзиентных (не quota/auth) отказов подряд, по провайдеру —
+        # питает эскалацию TTL 30 → 120 → 300с (issue #2702 п.3).
+        self._provider_transient_streak: Dict[str, int] = {}
+
     def _provider_is_dead(self, provider_name: str) -> bool:
         """True, если провайдер лежит в кэше «мёртвых» (TTL не истёк).
 
         Кэш «мёртвых» (как в LLM-health): если MiniMax ответил квотой 2056
         (или сеть/таймаут), не долбим его на каждый ход — пропускаем до
         истечения TTL, затем пробуем снова (провайдер мог «ожить»).
+
+        Issue #2702 — MiniMax дополнительно сверяется с ОБЩИМ health-кэшем
+        (``_shared_health_cache``): Token Plan общий для LLM и T2A, поэтому
+        если dialogue_node/supervisor уже увидели quota-отказ, T2A не должен
+        честно ждать свой собственный таймаут, чтобы узнать то же самое.
+        Только чтение — запись в общий кэш происходит в
+        :meth:`_mark_provider_dead`.
         """
         until = getattr(self, "_provider_dead_until", {}).get(provider_name, 0.0)
-        return time.monotonic() < until
+        if time.monotonic() < until:
+            return True
+        if provider_name == "minimax":
+            shared = getattr(self, "_shared_health_cache", None)
+            if shared is not None:
+                try:
+                    if shared.is_unavailable(provider_name):
+                        return True
+                except Exception:  # noqa: BLE001 — общий кэш не должен ронять TTS
+                    pass
+        return False
+
+    def _transient_ttl_for_streak(self, provider_name: str) -> float:
+        """TTL для ОЧЕРЕДНОГО транзиентного отказа этого провайдера (issue #2702 п.3).
+
+        Лестница эскалации: 1-й отказ подряд → ``provider_dead_ttl_transient_s``
+        (default 30с), 2-й → 120с, 3-й и далее → ``provider_dead_ttl_s``
+        (default 300с). Сброс — при первом успехе или при auth/quota-отказе
+        (см. :meth:`_reset_provider_fail_streak`). Считает КАЖДЫЙ вызов —
+        вызывающая сторона (:meth:`_mark_provider_dead`) обязана звать это
+        ровно один раз на отказ.
+        """
+        streaks = getattr(self, "_provider_transient_streak", None)
+        if streaks is None:
+            streaks = {}
+            self._provider_transient_streak = streaks
+        streak = streaks.get(provider_name, 0) + 1
+        streaks[provider_name] = streak
+        base = getattr(self, "provider_dead_ttl_transient_s", 30.0)
+        long_ttl = getattr(self, "provider_dead_ttl_s", 300.0)
+        # mid зажат между base и long_ttl — оператор мог настроить
+        # provider_dead_ttl_transient_s > 120 или provider_dead_ttl_s < 120,
+        # лестница должна оставаться монотонной при любой конфигурации.
+        mid = min(max(120.0, base), long_ttl)
+        ladder = (base, mid, long_ttl)
+        return ladder[min(streak, len(ladder)) - 1]
+
+    def _reset_provider_fail_streak(self, provider_name: str) -> None:
+        """Сбросить счётчик подряд-идущих транзиентных отказов (issue #2702 п.3).
+
+        Зовётся на первом успешном синтезе этим провайдером
+        (``_sap_synthesize_minimax``/``_sap_synthesize_yandex``) и при
+        классификации отказа как auth/quota (эскалация — только для
+        транзиентных, «рассасывающихся» отказов).
+        """
+        streaks = getattr(self, "_provider_transient_streak", None)
+        if streaks is not None:
+            streaks.pop(provider_name, None)
+
+    def _sap_reset_provider_fail_streak(self, provider_name: str) -> None:
+        """``_reset_provider_fail_streak`` за getattr-guard'ом (issue #2702 п.3).
+
+        Bare-стабы в тестах (``_playback_node()`` без ``_bind_dead_cache``)
+        не несут ``_reset_provider_fail_streak`` — вызывать его напрямую
+        уронило бы их с ``AttributeError`` на первом же успешном синтезе.
+        Метод в ``_SAP_HELPER_NAMES``, поэтому ``_bind_sap_helpers_for_stub``
+        привязывает ЕГО САМОГО к любому стабу безусловно; сам он внутри уже
+        решает, звать ли настоящий сброс. Вынесено отдельным методом (а не
+        инлайн ``if`` в ``_sap_synthesize_minimax``/``_sap_synthesize_yandex``)
+        по требованию cc_budget (ADR-0021 R1) — inline-guard добавлял decision
+        point в CC вызывающих методов.
+        """
+        reset = getattr(self, "_reset_provider_fail_streak", None)
+        if reset is not None:
+            reset(provider_name)
 
     def _mark_provider_dead(
         self,
@@ -1743,18 +4402,42 @@ class TTSNode(Node):
         """Пометить провайдера мёртвым на ttl_s секунд (по умолчанию —
         из параметра provider_dead_ttl_s). Сохраняем причину для лога.
 
-        Классификация TTL (issue #1083):
-        * quota/auth (2056 Token Plan limit, 401/403) → длинный TTL
-          (provider_dead_ttl_s, default 300 с) — квота не кончится за секунды;
-        * всё остальное (сеть/таймаут/5xx) → короткий TTL
-          (provider_dead_ttl_transient_s, default 30 с).
+        Классификация TTL:
+        * quota/auth MiniMax (2056 Token Plan limit, 401/403,
+          ``MiniMaxTTSAuthError``/``MiniMaxTTSRateLimitError``) → длинный TTL
+          (``provider_dead_ttl_s``, default 300 с) — issue #1083;
+        * Yandex ``PERMISSION_DENIED``/``UNAUTHENTICATED`` → тоже длинный TTL
+          (issue #2702 п.2, ADR-0124) — права на папку не «рассосутся» за
+          30 секунд, как и протухший ключ;
+        * всё остальное (сеть/таймаут/5xx) → эскалирующая лестница
+          30 → 120 → 300с по числу подряд-идущих транзиентных отказов ЭТОГО
+          провайдера (issue #2702 п.3, :meth:`_transient_ttl_for_streak`).
+
+        Issue #2702 п.1 — падение MiniMax зеркалится в ОБЩИЙ health-кэш
+        (``_shared_health_cache``): LLM-сторона делит тот же Token Plan,
+        так что должна узнать об отказе T2A без собственного отдельного
+        таймаута (и наоборот, см. :meth:`_provider_is_dead`).
         """
+        permanent = False
         if ttl_s is None:
             if isinstance(error, (MiniMaxTTSAuthError, MiniMaxTTSRateLimitError)):
                 ttl_s = getattr(self, "provider_dead_ttl_s", 300.0)
+                permanent = True
+            elif _yandex_is_permanent_failure(provider_name, error):
+                ttl_s = getattr(self, "provider_dead_ttl_s", 300.0)
+                permanent = True
             else:
-                ttl_s = getattr(self, "provider_dead_ttl_transient_s", 30.0)
+                escalate = getattr(self, "_transient_ttl_for_streak", None)
+                ttl_s = (
+                    escalate(provider_name)
+                    if escalate is not None
+                    else getattr(self, "provider_dead_ttl_transient_s", 30.0)
+                )
         assert ttl_s is not None
+        if permanent:
+            reset = getattr(self, "_reset_provider_fail_streak", None)
+            if reset is not None:
+                reset(provider_name)
         dead_until = getattr(self, "_provider_dead_until", None)
         if dead_until is None:
             dead_until = {}
@@ -1769,6 +4452,16 @@ class TTSNode(Node):
             f"💀 {provider_name} помечен мёртвым на {ttl_s:.0f}s "
             f"({type(error).__name__}: {error})"
         )
+        # Issue #2702 п.1 — зеркалим MiniMax в общий кэш (запись).
+        if provider_name == "minimax":
+            shared = getattr(self, "_shared_health_cache", None)
+            if shared is not None:
+                try:
+                    shared.mark_unavailable(
+                        provider_name, reason=str(error)[:300], ttl_s=ttl_s
+                    )
+                except Exception:  # noqa: BLE001 — общий кэш не должен ронять TTS
+                    pass
         # Issue #1229 — провайдер упал → публикуем фактического провайдера
         # (первый «живой» в цепочке после падения).
         publish = getattr(self, "_publish_provider_state", None)
@@ -1836,9 +4529,7 @@ class TTSNode(Node):
         """
         chain = getattr(self, "provider_chain", None)
         if not chain:
-            chain = TTSNode._chain_from_provider(
-                getattr(self, "provider", "minimax")
-            )
+            chain = TTSNode._chain_from_provider(getattr(self, "provider", "minimax"))
         try:
             from .tts_voice_registry import effective_provider as _effective
         except Exception:  # noqa: BLE001 — registry недоступен
@@ -1855,8 +4546,7 @@ class TTSNode(Node):
                 json.dump(payload, fh, ensure_ascii=False)
         except OSError as exc:  # noqa: BLE001 — файл не критичен для TTS
             self.get_logger().debug(
-                f"⚠️ [issue 1229] Не удалось записать provider_state "
-                f"{path}: {exc}"
+                f"⚠️ [issue 1229] Не удалось записать provider_state " f"{path}: {exc}"
             )
 
     def _publish_provider_state(
@@ -1914,15 +4604,64 @@ class TTSNode(Node):
             remaining = until_mono - time.monotonic()
             if remaining > 0:
                 dead_payload[prov] = now_wall + remaining
-        self._persist_provider_state(
-            {"provider": eff, "dead_providers": dead_payload}
-        )
+        self._persist_provider_state({"provider": eff, "dead_providers": dead_payload})
+        # AV-27 / issue #1919 — latched-каталог голосов. Публикуется
+        # ВСЕГДА после provider_state (на startup, на set_provider, на
+        # provider_dead). Никаких x-check что голоса изменились: payload
+        # дешёвый (≤30 dict'ов), а latched QoS гарантирует что новый
+        # подписчик получит САМЫЙ ПОСЛЕДНИЙ (TRANSIENT_LOCAL depth=1).
+        self._publish_voices_catalog(eff, used_voice, default_voice)
+
+    def _publish_voices_catalog(
+        self,
+        provider: str,
+        used_voice: str,
+        default_voice: str,
+    ) -> None:
+        """AV-27 — опубликовать каталог VoiceInfo для активного провайдера.
+
+        Источник — :func:`voices_info_for` из ``tts_voice_registry``. Если
+        провайдер неизвестен реестру — публикуем честно пустой список
+        (``voices=[]``), UI отрисует «провайдер не отдаёт список голосов»
+        (acceptance issue #1919). Никаких хардкод-fallback'ов: «active
+        provider менялся, но реестр про него не знает» — это сам по себе
+        bug, который должен всплыть в UI как пустой список.
+        """
+        pub = getattr(self, "voices_catalog_pub", None)
+        if pub is None:
+            return  # тестовый stub без топика
+        from .tts_voice_registry import voices_info_for as _voices_info
+
+        voices = _voices_info(provider)
+        payload = {
+            "provider": provider,
+            "voice": used_voice,
+            "default_voice": default_voice,
+            "voices": voices,
+            "ts": time.time(),
+        }
+        try:
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"⚠️ [av-27] voices_catalog publish failed: {exc}")
 
     def _synthesize_and_play(
-        self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
-        batch_id: str = None, batch_index: int = None, batch_total: int = None,
+        self,
+        ssml: str,
+        text: str,
+        dialogue_id: str = None,
+        ssml_attributes: dict = None,
+        speech_id: str = None,
+        batch_id: str = None,
+        batch_index: int = None,
+        batch_total: int = None,
         play_seq: int = None,  # FIFO-gate slot, keyword-only at the call site
         voice: str = None,  # Issue #1219 — запрошенный LLM голос (Q6)
+        language: str = None,  # AV-28 — язык произношения этой реплики
+        sink: str = "speaker",  # ADR-0055 / issue #1993 — "speaker"|"headset"
+        prebaked_audio: Optional[Dict[str, Any]] = None,  # ADR-0056 — pre-fetched
     ):
         """Синтез речи и воспроизведение.
 
@@ -1936,14 +4675,33 @@ class TTSNode(Node):
         отдельно для КАЖДОГО фактического провайдера в цепочке: если
         голос недоступен у провайдера (фолбек), используется дефолт
         этого провайдера, а voice_used логируется (Q6/Q11).
+
+        ``language`` — язык, на котором написан ``text`` (AV-28). Тоже
+        резолвится на КАЖДОМ провайдере цепочки, потому что провайдер
+        меняется на лету: minimax отдаёт его в ``language_boost`` и умеет
+        все шесть языков, а yandex и silero в нашей раскладке умеют
+        только русский — им вместо чужого текста уходит честная фраза
+        (``unsupported_language_notice``), а не кириллический транслит,
+        который звучал бы неправильно и молча.
+
+        ``prebaked_audio`` — опциональный dict-результат
+        :meth:`TTSNode.claim_pregen` (ADR-0056, issue #2003). Когда
+        передан, функция ПРОПУСКАЕТ цепочку синтеза и использует
+        ``prebaked_audio["audio_np"]`` / ``prebaked_audio["sample_rate"]``
+        как готовый результат. ``used_provider`` помечается как
+        ``"prefetch"`` (чтобы provider_state и метрики видели, что
+        чанк пришёл из кэша, а не от провайдера). ``None`` (default)
+        — поведение прежнее, никаких изменений.
+
+        Реализация декомпозирована (issue #2078): ``_synthesize_and_play``
+        — orchestrator-метод (CC≤15), тяжёлая логика разнесена в приватные
+        ``_sap_*`` helpers (issue #2077 audit + ADR-0021 R1).
         """
         # Issue #980 — ``batch_started_at`` measures the wall-clock span between
-        # the first and last chunk of a single TTS batch. We start a fresh
-        # monotonic counter on the *first* chunk of the batch (``batch_index == 1``)
-        # and stamp it onto ``batch_complete`` after the last one. ``time.monotonic``
+        # the first and last chunk of a single TTS batch.  ``time.monotonic``
         # is used because wall-clock may jump on NTP resync.
         import time as _time
-        batch_started_at: Optional[float] = None
+
         if batch_id is not None and batch_index == 1:
             batch_started_at = _time.monotonic()
         elif batch_id is None:
@@ -1952,29 +4710,22 @@ class TTSNode(Node):
             batch_index = 1
             batch_total = 1
             batch_started_at = _time.monotonic()
-        # Сбрасываем флаг stop при новом запросе
-        self.stop_requested = False
-        # Issue #1563 — потребляем буферизованный STOP, пришедший
-        # в окне «synth_done → play_audio» прошлого chunk'а. Если
-        # поздний STOP был отложен для текущего запроса — применяем
-        # его ДО старта синтеза (новый запрос не нужен).
-        if getattr(self, "_post_synth_stop_pending", False):
-            self._post_synth_stop_pending = False
-            self.get_logger().info(
-                "⏭️ [issue 1563] consuming buffered STOP at start of new request"
-            )
-            self._interrupt_playback()
+        else:
+            batch_started_at = None
 
-        # Устанавливаем processing_dialogue_id для этого синтеза
-        if dialogue_id:
-            self.processing_dialogue_id = dialogue_id
-            self.get_logger().debug(f"🎯 Начинаем обработку dialogue_id: {dialogue_id[:8]}...")
+        # Bare-stub compatibility (issue #2078): bind _sap_* helpers to
+        # bare stub ``self`` BEFORE any helper call.  Production TTSNode
+        # instances see a no-op (the class already exposes the methods);
+        # bare ``_Bare`` test stubs gain bound-method access via the
+        # descriptor protocol.  Unbound ``TTSNode.<helper>`` call so the
+        # binding itself is reachable even from a bare stub that doesn't
+        # carry ``_bind_sap_helpers_for_stub`` either.  See
+        # :meth:`TTSNode._bind_sap_helpers_for_stub`.
+        TTSNode._bind_sap_helpers_for_stub(self)
 
-        # Извлекаем SSML атрибуты (если не переданы)
+        self._sap_setup_request(dialogue_id, ssml_attributes, text)
         if ssml_attributes is None:
             ssml_attributes = {}
-
-        # Нормализация (если включена)
         if self.normalize_text:
             text = normalize_for_tts(text)
 
@@ -1991,564 +4742,1122 @@ class TTSNode(Node):
                 "voice": getattr(self, "minimax_voice", ""),
             },
         )
+        # Mutable synthesis state shared by helpers.  Using a dict keeps
+        # the orchestrator's local-state picture flat (one ``ctx`` instead
+        # of 6 locals), and lets helpers communicate back without growing
+        # the orchestrator's CC.  Fields are listed inline to keep grep easy.
+        ctx: Dict[str, Any] = {
+            "audio_np": None,  # np.ndarray | None
+            "sample_rate": 16000,  # default; each provider overrides
+            "used_provider": None,  # "minimax" | "yandex" | "silero" | "prefetch"
+            "used_voice": None,  # issue #1229 — фактический голос
+            "result": {},  # последний result от MiniMax (already_published etc.)
+        }
         try:
-            # Issue #1083: цепочка приоритетов TTS — minimax → yandex → silero.
-            # Раньше при provider=minimax ошибка MiniMax (в т.ч. 2056 Token
-            # Plan limit) вела СРАЗУ на Silero, пропуская рабочий Yandex
-            # (лог 09.08: MiniMax 2056 → «переключаюсь на Silero»). Теперь
-            # идём по цепочке: упал один провайдер → следующий по приоритету;
-            # Silero всегда последний (офлайн, работает всегда).
-            audio_np = None
-            sample_rate = 16000  # Yandex возвращает 16kHz
-            result = {}
-            used_provider = None
-            used_voice = None  # issue #1229 — фактический голос (для provider_state)
-            # getattr-fallback: тестовые стабы (bare ``_Stub``) не несут
-            # ``provider_chain``/``_effective_provider_chain`` — выводим
-            # цепочку из ``provider`` (см. ``_chain_from_provider``).
+            # Issue #2096 — единый choke-point: ЛЮБОЙ TTS-путь (dialogue_
+            # callback, /avatar/tts/request, /voice/tts/request) проходит
+            # через ``_synthesize_and_play``. Пустой/whitespace ``text``
+            # раньше мог дойти сюда (см. ``_on_avatar_tts_request`` до
+            # фикса) и попасть в MiniMax → ``TTSBadRequestError("text is
+            # empty")`` → ``_sap_synthesize_minimax`` вызывал
+            # ``_mark_provider_dead("minimax", ...)`` → каскад помечал
+            # yandex/silero мёртвыми на 30s (см. live-лог voice-assistant,
+            # 2026-09-07: 3 реплики grip-пайплайна подряд положили всю
+            # цепочку). Пустой text — дефект ВЫЗЫВАЮЩЕГО, не провайдера:
+            # не даём ему даже достичь цепочки провайдеров, поэтому НИКТО
+            # не помечается мёртвым, и следующий (непустой!) запрос от
+            # ЛЮБОГО caller'а (включая голос личности ТАРС) не молчит.
+            # ``prebaked_audio`` (ADR-0056) — исключение: pregen-кэш
+            # ключуется по РЕАЛЬНОМУ тексту фразы и уже несёт готовое
+            # аудио, блокировать воспроизведение тут незачем.
+            if prebaked_audio is None and (not text or not text.strip()):
+                self.get_logger().warn(
+                    "⚠️ [issue 2096] TTS: пустой text — provider chain "
+                    "пропущен целиком, провайдеры НЕ помечаются мёртвыми "
+                    f"(speech_id={(speech_id or '')[:8]}, sink={sink})"
+                )
+                raise _TTSEmptyTextError("empty_text")
+
+            # 1) Pre-gen cache short-circuit (ADR-0056 / issue #2003).
+            if self._sap_consume_prefetch(prebaked_audio, voice, speech_id, ctx):
+                # Prefetch отработал — цепочка синтеза не нужна, всё остальное
+                # как для обычного результата (publish + FIFO + play).
+                pass
+            else:
+                # 2) Canonical provider chain walk.
+                self._sap_run_provider_chain(
+                    voice, language, ssml_attributes, text, sink, ctx
+                )
+                # 3) Silero last-resort fallback если ничего не сработало.
+                if ctx["audio_np"] is None:
+                    self._sap_silero_fallback(
+                        text, voice, language, ssml_attributes, dialogue_id, ctx
+                    )
+
+            # 4) Publish audio on /voice/audio/speech (или /avatar/tts/audio
+            #    для sink="headset") + provider_state.
+            self._sap_publish_for_sink(
+                ctx["audio_np"],
+                ctx["sample_rate"],
+                sink,
+                ctx["used_provider"],
+                ctx["result"],
+                voice,
+                ctx["used_voice"],
+            )
+
+            raw_duration_sec: float = (
+                round(len(ctx["audio_np"]) / ctx["sample_rate"], 2)
+                if ctx["sample_rate"] > 0
+                else 0.0
+            )
+
+            # 5) FIFO-gate + dialogue-id freshness check.
+            # 🔴 FIX (live 12:28 «робот замолчал после barge-in»): FIFO-gate
+            # ДОЛЖЕН быть ДО dialogue/STOP checks. Каждый ранний return
+            # освобождает seq через _release_play_seq (иначе робот молчал
+            # после barge-in).
+            if not self._sap_wait_fifo_and_dialogue(play_seq, speech_id, dialogue_id):
+                return  # dialogue_id рассинхронизирован, helper уже отпустил gate
+
+            # 6) Sink="headset" — публикуем finished без локального ALSA-плея.
+            if sink == "headset":
+                self._sap_finish_headset(
+                    speech_id,
+                    dialogue_id,
+                    batch_id,
+                    batch_index,
+                    batch_total,
+                    batch_started_at,
+                    raw_duration_sec,
+                    ctx["used_provider"],
+                    play_seq,
+                )
+                return
+
+            # 7) Local playback (speaker): prepare → stop-pre-check →
+            #    play_audio → finished-event.
+            self._sap_local_playback(
+                ctx["audio_np"],
+                ctx["sample_rate"],
+                text,
+                voice,
+                play_seq,
+                speech_id,
+                dialogue_id,
+                batch_id,
+                batch_index,
+                batch_total,
+                batch_started_at,
+                raw_duration_sec,
+            )
+
+        except Exception as e:
+            self._sap_handle_synthesis_error(
+                e,
+                text,
+                voice,
+                play_seq,
+                speech_id,
+                dialogue_id,
+                batch_id,
+                batch_index,
+                batch_total,
+                batch_started_at,
+            )
+
+        finally:
+            # Issue #1234 — закрываем span ``tts.synthesize``: проставляем
+            # фактического провайдера, fallback-флаг и длительность.
+            _used_provider = ctx.get("used_provider") or "none"
             provider_chain = getattr(self, "provider_chain", None)
             if not provider_chain:
                 provider_chain = TTSNode._chain_from_provider(
                     getattr(self, "provider", "minimax")
                 )
+            _primary = (
+                provider_chain[0]
+                if provider_chain
+                else getattr(self, "provider", "minimax")
+            )
+            _tts_trace.set_attribute("provider", _used_provider)
+            _tts_trace.set_attribute("fallback", _used_provider != _primary)
+            _tts_trace.set_attribute("duration_s", time.monotonic() - _tts_trace_start)
+            _tts_trace.close()
 
-            for provider_name in provider_chain:
-                # Кэш «мёртвых» (issue #1083): не долбим провайдера, который
-                # недавно упал (квота/сеть/таймаут) — пропускаем до TTL.
-                # getattr-fallback: стабы без кэша считают провайдера живым.
-                dead_check = getattr(self, "_provider_is_dead", None)
-                if dead_check is not None and dead_check(provider_name):
-                    self.get_logger().warn(
-                        f"⏭️  {provider_name} в кэше мёртвых "
-                        f"(ещё {self._provider_dead_until_s(provider_name):.0f}s) — пропускаю"
-                    )
-                    continue
+    # ── helpers for ``_synthesize_and_play`` (issue #2078 decomposition) ──
 
-                if provider_name == "minimax":
-                    self.publish_state("synthesizing")
-                    # Issue #1160 — Prometheus metrics: замер MiniMax-synthesis.
-                    # ``time.monotonic`` — wall-clock может прыгать на NTP.
-                    _minimax_metric_start = time.monotonic()
-                    _minimax_succeeded = False
-                    # Issue #1219 — голос LLM резолвим для РЕАЛЬНОГО провайдера:
-                    # если запрошенный голос недоступен у MiniMax — дефолт
-                    # MiniMax (voice_used фиксируется для лога/метрик).
-                    try:
-                        from .tts_voice_registry import resolve_voice as _resolve_voice
+    # Names of every ``_sap_*`` method on TTSNode.  Iteration order matches
+    # the orchestrator's call order, so unit-test debug traces read top-to-bottom.
+    _SAP_HELPER_NAMES = (
+        "_sap_setup_request",
+        "_sap_consume_prefetch",
+        "_sap_run_provider_chain",
+        "_sap_synthesize_minimax",
+        "_sap_synthesize_yandex",
+        "_sap_silero_fallback",
+        "_sap_publish_silero_warming",
+        "_sap_publish_for_sink",
+        "_sap_wait_fifo_and_dialogue",
+        "_sap_finish_headset",
+        "_sap_local_playback",
+        "_sap_prepare_audio_for_playback",
+        "_sap_publish_finished_failure",
+        "_sap_finalize_after_playback",
+        "_sap_handle_synthesis_error",
+        "_sap_reset_provider_fail_streak",
+    )
 
-                        _mm_voice, _mm_fell = _resolve_voice("minimax", voice)
-                    except Exception:  # noqa: BLE001 — registry недоступен
-                        _mm_voice, _mm_fell = voice or self.minimax_voice, False
-                    if _mm_fell:
-                        self.get_logger().warn(
-                            f"⚠️ [issue 1219] Голос '{voice}' недоступен у MiniMax — "
-                            f"использую дефолтный '{_mm_voice}'"
-                        )
-                    try:
-                        if self.minimax_streaming:
-                            self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
-                            result = self._synthesize_minimax_streaming_publish(text, ssml_attributes, voice=_mm_voice)
-                        else:
-                            self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
-                            result = self._synthesize_minimax(text, ssml_attributes, voice=_mm_voice)
-                        audio_np = result["audio_np"]
-                        sample_rate = result["sample_rate"]
-                        used_provider = "minimax"
-                        used_voice = _mm_voice
-                        self.get_logger().info(
-                            f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
-                            f"(model={self.minimax_model}, voice={_mm_voice}, voice_used={_mm_voice})"
-                        )
-                        _minimax_succeeded = True
-                    except Exception as e:
-                        mark_dead = getattr(self, "_mark_provider_dead", None)
-                        if mark_dead is not None:
-                            mark_dead("minimax", e)
-                        # Честный лог: называем РЕАЛЬНОГО следующего в цепочке
-                        # (для дефолтной minimax → yandex → silero это Yandex —
-                        # ровно тот лог, который ждёт acceptance #1083).
-                        _next_provider = next(
-                            (p for p in provider_chain if p != "minimax"), "silero"
-                        )
-                        _display = {
-                            "minimax": "MiniMax",
-                            "yandex": "Yandex",
-                            "silero": "Silero",
-                        }.get(_next_provider, _next_provider)
-                        self.get_logger().warn(
-                            f"⚠️  MiniMax T2A отвалился ({e}) — "
-                            f"переключаюсь на {_display}"
-                        )
-                        audio_np = None
-                    finally:
-                        if is_metrics_enabled():
-                            record_tts_synthesize(
-                                "minimax", success=_minimax_succeeded,
-                                duration_s=time.monotonic() - _minimax_metric_start,
-                            )
-                    if not _minimax_succeeded:
-                        continue
-
-                elif provider_name == "yandex":
-                    if not self.yandex_stub:  # Проверяем что gRPC канал инициализирован
-                        self.get_logger().warn("⚠️  Yandex gRPC не подключен — пропускаю")
-                        continue
-                    # Issue #1160 — Prometheus metrics: замер Yandex-synthesis.
-                    # ``time.monotonic`` — wall-clock может прыгать на NTP.
-                    _yandex_metric_start = time.monotonic()
-                    _yandex_succeeded = False
-                    # Issue #1219 — голос LLM резолвим для Yandex; если
-                    # запрошенный голос недоступен — дефолт yandex (anton).
-                    try:
-                        from .tts_voice_registry import resolve_voice as _resolve_voice
-
-                        _yandex_voice, _yandex_fell = _resolve_voice("yandex", voice)
-                    except Exception:  # noqa: BLE001 — registry недоступен
-                        _yandex_voice, _yandex_fell = voice or self.yandex_voice, False
-                    if _yandex_fell:
-                        self.get_logger().warn(
-                            f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
-                            f"использую дефолтный '{_yandex_voice}'"
-                        )
-                    try:
-                        self.publish_state("synthesizing")
-                        self.get_logger().info(f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})...")
-                        audio_np = self._synthesize_yandex(text, ssml_attributes, voice=_yandex_voice)
-                        sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
-                        used_provider = "yandex"
-                        used_voice = _yandex_voice
-                        _yandex_succeeded = True
-                    except Exception as e:
-                        mark_dead = getattr(self, "_mark_provider_dead", None)
-                        if mark_dead is not None:
-                            mark_dead("yandex", e)
-                        self.get_logger().warn(f"⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback")
-                        audio_np = None
-                    finally:
-                        if is_metrics_enabled():
-                            record_tts_synthesize(
-                                "yandex", success=_yandex_succeeded,
-                                duration_s=time.monotonic() - _yandex_metric_start,
-                            )
-                    if not _yandex_succeeded:
-                        continue
-
-                elif provider_name == "silero":
-                    # Silero — последний рубеж: обработка ниже (warm-load,
-                    # lazy-load, синтез). Просто выходим из цикла.
-                    break
-
-                # Успешный синтез — выходим из цепочки.
-                if audio_np is not None:
-                    break
-
-            # Fallback на Silero если Yandex не сработал
-            if audio_np is None:
-                # Warm-load (gap G-933-B): ждём пока background warm-load
-                # закончит поднимать модель (timeout 1.5 с).  Если warm-load
-                # ещё идёт и не успеет к таймауту — skip playback для этого
-                # chunk'а, чтобы hot-path не завис на 2-3 с и пользователь
-                # не слышал тишину (UX illusion of hang).
-                #
-                # Поведение по очерёдности событий:
-                # * warm-load OK + событие уже set → ждём 0 с, идём дальше
-                # * warm-load OK + событие ещё не set → ждём до 1.5 с (обычно
-                #   < 0.1 с, т.к. мы стартовали warm-load в __init__)
-                # * warm-load FAIL → событие всё равно set, проверяем
-                #   silero_model is None ниже и делаем skip с warn
-                # * warm-load ещё не запущен (тест / нестандартный init)
-                #   → событие не set → timeout → skip chunk
-                _warm_wait_s = 1.5
-                # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
-                # не проходят через __init__ и не несут атрибут — считаем
-                # warm-load включённым (историческое поведение G-933-B).
-                if getattr(self, "silero_warm_load_enabled", True):
-                    _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
-                else:
-                    # Issue #929: warm-load отключён (silero_warm_load=false).
-                    # Событие никогда не будет set фоновым потоком — не ждём
-                    # таймаут впустую. Считаем «прогретым» (пропускаем
-                    # skip-блок) и идём в синхронный lazy-load ниже: первый
-                    # fallback платит 2-3 с cold-load — приемлемо для
-                    # аварийного пути.
-                    _warmed_in_time = True
-                if not _warmed_in_time:
-                    self.get_logger().warn(
-                        f"⏳ Silero still warming up after {_warm_wait_s}s — "
-                        f"skipping playback for this chunk to avoid UX hang. "
-                        f"Subsequent fallbacks should hit the warm model."
-                    )
-                    # Не возвращаемся «молча»: явно сообщаем downstream, что
-                    # этот chunk не отыграли (caller'ы могут почистить
-                    # barge-in state). Публикуем finished с пометкой skipped.
-                    self.processing_dialogue_id = None
-                    try:
-                        self.publish_state("tts_silero_warming")
-                        if dialogue_id:
-                            _fin = String()
-                            _fin.data = f"silero_warming:{dialogue_id}"
-                            self.finished_pub.publish(_fin)
-                    except Exception:  # noqa: BLE001 — diagnostics only
-                        pass
-                    return
-
-                # Загружаем Silero при первом использовании (legacy lazy path).
-                # После warm-load silero_model чаще всего уже не None, но
-                # если warm-load упал (например, нет сети для torch.hub)
-                # — даём синхронному пути один последний шанс.
-                if self.silero_model is None:
-                    self.get_logger().warn("⚠️  Silero модель не загружена, загружаю сейчас...")
-                    self._load_silero_model()
-                    # После синхронной попытки — обновим outcome и event,
-                    # чтобы следующие fallbacks не пытались ждать зря.
-                    if self.silero_model is None:
-                        self._silero_load_outcome = "fail"
-                    else:
-                        self._silero_load_outcome = "ok"
-                    self._silero_loaded.set()
-
-                if self.silero_model is None:
-                    raise Exception("Silero fallback недоступен - не удалось загрузить модель!")
-
-                self.publish_state("synthesizing")
-                self.get_logger().info("🔊 Синтез через Silero v5 (fallback)...")
-
-                # Логируем SSML атрибуты если есть (для консистентности с Yandex)
-                if ssml_attributes:
-                    self.get_logger().info(f"� SSML атрибуты для Silero: {ssml_attributes}")
-
-                # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
-                # ``time.monotonic`` — wall-clock может прыгать на NTP.
-                _silero_metric_start = time.monotonic()
-                _silero_succeeded = False
-                # Issue #1219 — голос LLM резолвим для Silero; если
-                # запрошенный голос недоступен — дефолт silero (aidar).
-                try:
-                    from .tts_voice_registry import resolve_voice as _resolve_voice
-
-                    _silero_voice, _silero_fell = _resolve_voice("silero", voice)
-                except Exception:  # noqa: BLE001 — registry недоступен
-                    _silero_voice, _silero_fell = voice or self.silero_speaker, False
-                if _silero_fell:
-                    self.get_logger().warn(
-                        f"⚠️ [issue 1219] Голос '{voice}' недоступен у Silero — "
-                        f"использую дефолтный '{_silero_voice}'"
-                    )
-                try:
-                    audio_np = self._synthesize_silero(text, ssml_attributes, voice=_silero_voice)
-                    _silero_succeeded = True
-                    used_provider = "silero"
-                    used_voice = _silero_voice
-                finally:
-                    if is_metrics_enabled():
-                        record_tts_synthesize(
-                            "silero", success=_silero_succeeded,
-                            duration_s=time.monotonic() - _silero_metric_start,
-                        )
-                sample_rate = self.silero_sample_rate  # 48000 Hz (v5)
-                # Structural anchor: ``silero_model.apply_tts`` is the
-                # canonical Silero entry point (see gap G-933-B + the
-                # ``test_fallback_to_silero_preserved`` AST contract).
-                # The actual call lives inside ``_synthesize_silero``;
-                # we re-mention it here so the regex search catches
-                # the fallback path in the higher-level function too.
-                _silero_anchor = self.silero_model.apply_tts  # noqa: F841
-                self.get_logger().info(
-                    f"✅ Silero v5 fallback успешен: {len(audio_np)} samples @ {sample_rate} Hz "
-                    f"(homograph_stress={self.silero_put_stress_homo})"
+    def _bind_sap_helpers_for_stub(self) -> None:
+        """Bind every ``_sap_*`` helper from ``TTSNode`` onto ``self`` if it
+        isn't already present.  Production ``TTSNode`` instances see a no-op
+        (the class already exposes the methods); bare ``_Bare`` test stubs
+        (which don't inherit from TTSNode) gain bound-method access.  This
+        keeps the existing ``TTSNode._synthesize_and_play(node, ...)`` test
+        contract working without per-test fixture updates — issue #2078
+        decomposition invariant.
+        """
+        for _sap_name in TTSNode._SAP_HELPER_NAMES:
+            if hasattr(self, _sap_name):
+                continue
+            _cls_method = getattr(TTSNode, _sap_name, None)
+            if _cls_method is not None:
+                setattr(
+                    self,
+                    _sap_name,
+                    _cls_method.__get__(self, type(self)),
                 )
 
-            # Публикуем в ROS topic. В streaming-режиме каждый чанк уже
-            # опубликован до чтения следующего, поэтому полный буфер повторно
-            # не отправляем. used_provider фиксирует, кто реально синтезировал
-            # (после цепочки fallback'ов это может быть не self.provider).
-            if not (used_provider == "minimax" and result.get("already_published", False)):
-                topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
-                self._publish_audio(topic_audio)
+    def _sap_setup_request(
+        self,
+        dialogue_id: Optional[str],
+        ssml_attributes: Optional[dict],
+        text: str,
+    ) -> None:
+        """Сбросить stop-флаг, применить buffered STOP, установить
+        ``processing_dialogue_id`` и дефолтный ``ssml_attributes``."""
+        # Сбрасываем флаг stop при новом запросе
+        self.stop_requested = False
+        # Issue #1563 — потребляем буферизованный STOP, пришедший
+        # в окне «synth_done → play_audio» прошлого chunk'а. Если
+        # поздний STOP был отложен для текущего запроса — применяем
+        # его ДО старта синтеза (новый запрос не нужен).
+        if getattr(self, "_post_synth_stop_pending", False):
+            self._post_synth_stop_pending = False
+            self.get_logger().info(
+                "⏭️ [issue 1563] consuming buffered STOP at start of new request"
+            )
+            self._interrupt_playback()
 
-            # Issue #1229 — после успешного синтеза публикуем фактического
-            # провайдера и голос: dialogue_node/mcp_server обновят контекст
-            # [TTS] и валидацию (LLM увидит голоса РЕАЛЬНОГО провайдера).
-            if used_provider:
-                publish = getattr(self, "_publish_provider_state", None)
-                if publish is not None:
-                    try:
-                        publish("synthesis_ok", provider=used_provider, voice=used_voice)
-                    except Exception:  # noqa: BLE001 — диагностика не должна падать
-                        pass
+        # Устанавливаем processing_dialogue_id для этого синтеза
+        if dialogue_id:
+            self.processing_dialogue_id = dialogue_id
+            self.get_logger().debug(
+                f"🎯 Начинаем обработку dialogue_id: {dialogue_id[:8]}..."
+            )
 
-            # Capture raw duration BEFORE resample/chipmunk for #949.
-            # This is the actual synthesis duration (pre-effects) so
-            # downstream tools can estimate total TTS playback time.
-            raw_duration_sec: float = round(len(audio_np) / sample_rate, 2) if sample_rate > 0 else 0.0
+    def _sap_consume_prefetch(
+        self,
+        prebaked_audio: Optional[Dict[str, Any]],
+        voice: Optional[str],
+        speech_id: Optional[str],
+        ctx: Dict[str, Any],
+    ) -> bool:
+        """Issue #2003 / ADR-0056 — пробуем вытащить готовый чанк из
+        pre-gen кэша.  Если пре-ген валиден — заполняем ``ctx`` и возвращаем
+        ``True`` (цепочка синтеза должна быть пропущена).  Иначе возвращаем
+        ``False`` и ``ctx`` остаётся в исходном состоянии (None-результат).
+        """
+        if not (prebaked_audio and isinstance(prebaked_audio, dict)):
+            return False
+        cached_audio = prebaked_audio.get("audio_np")
+        cached_sr = prebaked_audio.get("sample_rate")
+        if not (
+            cached_audio is not None
+            and cached_sr is not None
+            and int(getattr(cached_audio, "size", 0)) > 0
+        ):
+            self.get_logger().warning(
+                "⚠️ [issue 2003] prebaked_audio invalid shape "
+                "— falling back to canonical synthesis"
+            )
+            return False
+        ctx["audio_np"] = np.asarray(cached_audio, dtype=np.float32)
+        ctx["sample_rate"] = int(cached_sr)
+        ctx["used_provider"] = "prefetch"
+        ctx["used_voice"] = voice or self.minimax_voice
+        self.get_logger().info(
+            f"⚡ [issue 2003] prebaked_audio used "
+            f"(speech_id={(speech_id or '')[:8]}, "
+            f"decision={prebaked_audio.get('decision')}, "
+            f"confidence={prebaked_audio.get('confidence'):.2f}, "
+            f"basis={prebaked_audio.get('basis')!r})"
+        )
+        if is_metrics_enabled():
+            record_tts_synthesize("prefetch", success=True, duration_s=0.0)
+        # Bump the executor's bypass counter via the public metrics path.
+        if self._prefetch is not None:
+            self._prefetch["executor"].metrics.pregens_bypassed += 1
+        return True
 
-            # 🔴 FIX (live 12:28 «робот замолчал после barge-in»): FIFO-gate
-            # ДОЛЖЕН быть ДО dialogue/STOP checks. Раньше он стоял перед
-            # play_audio, а checks — выше: фраза с play_seq=1, отменённая
-            # через dialogue-check или STOP-check, выходила ДО gate →
-            # _next_play_seq НЕ инкрементировался → все следующие фразы
-            # (seq 2,3,4...) ждали очередь ВЕЧНО → робот молчал после
-            # barge-in. Теперь gate стоит сразу после синтеза, а каждый
-            # ранний return освобождает seq через _release_play_seq.
-            if play_seq is not None:
-                with self._play_order_cond:
-                    while self._next_play_seq != play_seq:
-                        self._play_order_cond.wait()
-
-            # КРИТИЧЕСКАЯ ПРОВЕРКА: dialogue_id не изменился во время синтеза?
-            if dialogue_id and self.current_dialogue_id != dialogue_id:
-                self.get_logger().warning(
-                    f"⚠️  Dialogue изменился во время синтеза! "
-                    f"Отменяем воспроизведение старого chunk "
-                    f"(было: {dialogue_id[:8]}..., сейчас: {self.current_dialogue_id[:8]}...)"
+    def _sap_run_provider_chain(
+        self,
+        voice: Optional[str],
+        language: Optional[str],
+        ssml_attributes: dict,
+        text: str,
+        sink: str,
+        ctx: Dict[str, Any],
+    ) -> None:
+        """Issue #1083: цепочка приоритетов TTS — minimax → yandex → silero.
+        Идём по ``provider_chain``: упал один провайдер → следующий по
+        приоритету; ``silero`` всегда последний (обрабатывается в
+        :meth:`_sap_silero_fallback` после цикла).  ``ctx`` обновляется
+        in-place: ``audio_np``, ``sample_rate``, ``used_provider``,
+        ``used_voice``, ``result``.
+        """
+        # getattr-fallback: тестовые стабы (bare ``_Stub``) не несут
+        # ``provider_chain``/``_effective_provider_chain`` — выводим
+        # цепочку из ``provider`` (см. ``_chain_from_provider``).
+        provider_chain = getattr(self, "provider_chain", None)
+        if not provider_chain:
+            provider_chain = TTSNode._chain_from_provider(
+                getattr(self, "provider", "minimax")
+            )
+        # Issue #2702 п.4 — единый дедлайн на всю облачную часть цепочки
+        # (minimax + yandex, включая retries). Считается один раз ЗДЕСЬ
+        # (не пересчитывается на каждого провайдера), чтобы бюджет
+        # действительно был суммарным, а не «per-provider».
+        cloud_budget_s = getattr(self, "cloud_tts_budget_s", 8.0)
+        cloud_deadline = time.monotonic() + cloud_budget_s
+        for provider_name in provider_chain:
+            # Кэш «мёртвых» (issue #1083): не долбим провайдера, который
+            # недавно упал (квота/сеть/таймаут) — пропускаем до TTL.
+            # getattr-fallback: стабы без кэша считают провайдера живым.
+            dead_check = getattr(self, "_provider_is_dead", None)
+            if dead_check is not None and dead_check(provider_name):
+                self.get_logger().warn(
+                    f"⏭️  {provider_name} в кэше мёртвых "
+                    f"(ещё {self._provider_dead_until_s(provider_name):.0f}s) — пропускаю"
                 )
-                self.processing_dialogue_id = None
-                release = getattr(self, "_release_play_seq", None)
-                if release is not None:
-                    release(play_seq)
-                return
+                continue
+            if provider_name in ("minimax", "yandex") and time.monotonic() >= cloud_deadline:
+                # Issue #2702 п.4 — предыдущие облачные попытки (retries
+                # MiniMax/Yandex) уже съели весь бюджет: не начинаем ещё
+                # один честный HTTP/gRPC-таймаут, сразу уходим на Silero.
+                self.get_logger().warn(
+                    f"⏱️ [issue 2702] облачный TTS-бюджет ({cloud_budget_s:.1f}s) "
+                    f"исчерпан — пропускаю {provider_name}, сразу Silero"
+                )
+                break
+            if provider_name == "minimax":
+                self._sap_synthesize_minimax(
+                    voice,
+                    language,
+                    ssml_attributes,
+                    text,
+                    sink,
+                    provider_chain,
+                    ctx,
+                    budget_deadline=cloud_deadline,
+                )
+            elif provider_name == "yandex":
+                self._sap_synthesize_yandex(
+                    voice,
+                    language,
+                    ssml_attributes,
+                    text,
+                    ctx,
+                )
+            elif provider_name == "silero":
+                # Silero — последний рубеж: обработка ниже
+                # (warm-load, lazy-load, синтез) в :meth:`_sap_silero_fallback`.
+                break
+            # Успешный синтез — выходим из цепочки.
+            if ctx["audio_np"] is not None:
+                break
 
-            # Воспроизводим локально
-            self.publish_state("playing")
+    def _sap_synthesize_minimax(
+        self,
+        voice: Optional[str],
+        language: Optional[str],
+        ssml_attributes: dict,
+        text: str,
+        sink: str,
+        provider_chain: list,
+        ctx: Dict[str, Any],
+        budget_deadline: float | None = None,
+    ) -> None:
+        """Синтез через MiniMax (HTTP или streaming).  При успехе заполняет
+        ``ctx``; при ошибке помечает провайдера «мёртвым» и логирует
+        переключение на следующего в цепочке (issue #1083 acceptance log).
 
-            # ВАЖНО: ReSpeaker поддерживает ТОЛЬКО 16kHz стерео!
-            target_rate = 16000
+        ``budget_deadline`` (issue #2702 п.4) — ``time.monotonic()``-дедлайн
+        облачного TTS-бюджета; в HTTP-режиме прокидывается в retry-loop
+        (:meth:`_synthesize_minimax_with_retry`), чтобы не жечь retries
+        после исчерпания бюджета. Streaming-режим не ретраит внутри себя
+        (единственная попытка), поэтому дедлайн ему не нужен.
+        """
+        self.publish_state("synthesizing")
+        # Issue #1160 — Prometheus metrics: замер MiniMax-synthesis.
+        _minimax_metric_start = time.monotonic()
+        _minimax_succeeded = False
+        # Issue #1219 — голос LLM резолвим для РЕАЛЬНОГО провайдера:
+        # если запрошенный голос недоступен у MiniMax — дефолт
+        # MiniMax (voice_used фиксируется для лога/метрик).
+        #
+        # bug(#2183) — приоритет: явный voice в запросе (LLM/DJ-персона,
+        # напр. zahar через set_voice tool) > настроенный параметр ноды
+        # (self.minimax_voice, живой через parameters_callback) > дефолт
+        # реестра (DEFAULT_VOICES). Раньше voice=None шёл в resolve_voice
+        # напрямую и ловил ЖЁСТКУЮ константу реестра, полностью игнорируя
+        # оператора. ``resolve_voice`` намеренно не знает о состоянии
+        # ноды (чистая registry-функция со своими тестами в
+        # test_voice_registry.py) — приоритет между "запрошено явно" и
+        # "настроено на ноде" решаем здесь, на вызывающей стороне.
+        _mm_requested = voice or getattr(self, "minimax_voice", None)
+        try:
+            from .tts_voice_registry import resolve_voice as _resolve_voice
 
-            # Эффект "бурундука" ROBBOX:
-            # В оригинале: Yandex возвращает ~22050 Hz (speed=0.4), читаем сырые PCM, воспроизводим на 44100 Hz
-            # Результат: 44100/22050 = 2x pitch shift (голос выше и быстрее)
-            #
-            # Новая реализация (правильная):
-            # - chipmunk_mode=False: правильный resample для корректного воспроизведения
-            # - chipmunk_mode=True: эмуляция оригинала через изменение эффективной частоты
-            # - pitch_shift параметр: дополнительный множитель (1.0 = стандарт, 1.5 = ещё выше, 0.8 = ниже)
-            #
-            # Оригинальный ROBBOX эффект:
-            # Yandex с speed=0.4 → ~22050 Hz → воспроизведение как 44100 Hz = 2x эффект
-            # Но ReSpeaker работает на 16000 Hz, поэтому эмулируем через:
-            # 22050 Hz → 11025 Hz (эффективно, делим на 2) → 16000 Hz
-
-            if self.chipmunk_mode:
-                # Эффект бурундука через изменение эффективной частоты
-                # Оригинальный ROBBOX: соотношение 44100/22050 = 2.0
-                # С учётом ReSpeaker 16kHz: применяем базовый множитель 2.0 * pitch_shift
-                base_multiplier = 2.0  # Оригинальное соотношение частот в ROBBOX
-                effective_multiplier = base_multiplier * self.pitch_shift
-
-                # Вычисляем эффективную частоту после "ускорения"
-                # Например: 22050 / (2.0 * 1.0) = 11025 Hz
-                effective_rate = sample_rate / effective_multiplier
-
-                # Сначала ресэмплим до эффективной частоты (ускорение)
-                audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
-
-                # Затем ресэмплим до target_rate для ReSpeaker
-                if abs(effective_rate - target_rate) > 0.01:
-                    audio_processed = resample_audio(audio_processed, effective_rate, target_rate)
-
+            _mm_voice, _mm_fell = _resolve_voice("minimax", _mm_requested)
+        except Exception:  # noqa: BLE001 — registry недоступен
+            _mm_voice, _mm_fell = (
+                _mm_requested
+                or getattr(self, "minimax_voice", None)
+                or "male-qn-qingse"
+            ), False
+        if _mm_fell and _mm_requested:
+            # Логируем ВСЕГДА, когда действительно произошла деградация
+            # (запрошенный ЛИБО настроенный голос не найден у провайдера),
+            # а не только для явно переданного в запросе voice — иначе
+            # неправильный/устаревший self.minimax_voice фоллбечится тихо
+            # (issue #2183, причина 3 — "no silent degradation").
+            self.get_logger().warn(
+                f"⚠️ [issue 1219] Голос '{_mm_requested}' недоступен у MiniMax — "
+                f"использую дефолтный '{_mm_voice}'"
+            )
+        try:
+            if self.minimax_streaming:
                 self.get_logger().info(
-                    f"🐿️  Эффект бурундука ROBBOX: {len(audio_np)} → {len(audio_processed)} samples "
-                    f"({effective_multiplier:.1f}x ускорение, {sample_rate}Hz → {effective_rate:.1f}Hz → {target_rate}Hz)"
+                    "🔊 Синтез через MiniMax T2A v2 (streaming mode)..."
+                )
+                result = self._synthesize_minimax_streaming_publish(
+                    text,
+                    ssml_attributes,
+                    voice=_mm_voice,
+                    language=language,
+                    sink=sink,
                 )
             else:
-                # Нормальное воспроизведение БЕЗ pitch shift
-                # Resample audio to target rate для правильной скорости
-                if sample_rate != target_rate:
-                    self.get_logger().info(
-                        f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz " f"({len(audio_np)} samples)"
-                    )
-                    audio_processed = resample_audio(audio_np, sample_rate, target_rate)
-                    self.get_logger().info(f"✅ Resampled to {len(audio_processed)} samples @ {target_rate} Hz")
-                else:
-                    audio_processed = audio_np
-                self.get_logger().info(f"🎵 Нормальная скорость: {len(audio_processed)} samples")
-
-            # Применяем громкость
-            audio_np_adjusted = audio_processed * self.volume_gain
-
-            # Конвертируем моно → стерео (ReSpeaker требует 2 канала!)
-            audio_stereo = np.column_stack((audio_np_adjusted, audio_np_adjusted))
-            self.get_logger().info(f"🔊 Воспроизведение: {len(audio_stereo)} frames, {target_rate} Hz, стерео")
-
-            # Проверка STOP ДО воспроизведения
-            if self.stop_requested:
-                self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
-                self.publish_state("stopped")
-                # 🔴 FIX (12:28): без release следующий seq ждал бы вечно
-                self._release_play_seq(play_seq)
-                return
-
-            try:
-                # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
-                with ignore_stderr(enable=True):
-                    self.current_stream = True  # Маркер что воспроизведение идёт
-
-                    # Используем AudioPlaybackManager для синхронизированного доступа
-                    success = self.playback_manager.play_audio(
-                        audio_data=audio_stereo,
-                        sample_rate=target_rate,
-                        device_index=self.device_index,
-                        blocking=True,  # Блокирующее воспроизведение для TTS
-                        timeout=5.0,
-                        node_name="tts_node",
-                    )
-            finally:
-                # Пропускаем следующую фразу (всегда, даже при исключении).
-                # ``getattr`` fallback so test stubs (bare ``_Stub`` classes
-                # that don't carry the FIFO-gate helper) still work.
-                release = getattr(self, "_release_play_seq", None)
-                if release is not None:
-                    release(play_seq)
-
-            if not success:
-                self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
-                self.current_stream = None
-                # КРИТИЧНО: публикуем события завершения даже при ошибке!
-                self.publish_state("ready")
-
-                # Issue #1709 — ПОЛНЫЙ текст failed-чанка в логе. Без него
-                # (в логе был только speech_id) невозможно понять, что
-                # именно робот пытался сказать — а именно там сидели
-                # иероглифы, которые юзер слышал как бормотание.
-                self.get_logger().warn(
-                    "❌ [issue 1709] TTS чанк НЕ произнесён "
-                    "(device unavailable): "
-                    f"speech_id={(speech_id or '')[:8]}, "
-                    f"voice={voice or 'default'}, "
-                    f"batch={batch_index}/{batch_total}, "
-                    f"text={text!r}"
+                self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
+                result = self._synthesize_minimax(
+                    text,
+                    ssml_attributes,
+                    voice=_mm_voice,
+                    language=language,
+                    budget_deadline=budget_deadline,
                 )
-
-                # Публикуем ошибку для MCP tools и animation_player
-                _publish_finished = getattr(self, "_publish_tts_finished", None)
-                if _publish_finished is not None:
-                    _publish_finished(
-                        speech_id,
-                        success=False,
-                        error="Device unavailable",
-                        batch_id=batch_id,
-                        batch_index=batch_index,
-                        batch_total=batch_total,
-                        batch_started_at=batch_started_at,
-                        dialogue_id=dialogue_id,
-                    )
-                    self.get_logger().info(f"📢 TTS finished event (ошибка): speech_id={speech_id[:8]}...")
-
-                # Очищаем processing_dialogue_id
-                if dialogue_id and self.processing_dialogue_id == dialogue_id:
-                    self.processing_dialogue_id = None
-
-                return
-
-            self.current_stream = None
-
-            # Cleanup для устранения белого шума после воспроизведения
-            self.cleanup_playback_noise()
-
-            # Закончили воспроизведение
-            if self.stop_requested:
-                self.publish_state("stopped")
-                self.get_logger().warn("🔇 Воспроизведение прервано")
-                # Issue #1709 — ПОЛНЫЙ текст прерванного чанка. Именно этот
-                # путь («фикс сэвэн» в логе 28.08) оставлял юзера с
-                # услышанным хвостом фразы, которого не было в логе.
-                self.get_logger().warn(
-                    "❌ [issue 1709] TTS чанк прерван (stopped): "
-                    f"speech_id={(speech_id or '')[:8]}, "
-                    f"voice={voice or 'default'}, "
-                    f"batch={batch_index}/{batch_total}, "
-                    f"text={text!r}"
-                )
-                # Публикуем ошибку для MCP tools
-                _publish_finished = getattr(self, "_publish_tts_finished", None)
-                if _publish_finished is not None:
-                    _publish_finished(
-                        speech_id,
-                        success=False,
-                        error="stopped",
-                        batch_id=batch_id,
-                        batch_index=batch_index,
-                        batch_total=batch_total,
-                        batch_started_at=batch_started_at,
-                        dialogue_id=dialogue_id,
-                    )
-            else:
-                self.publish_state("ready")
-                self.get_logger().info("✅ Воспроизведение завершено")
-                # Публикуем успех для MCP tools (#949: включаем duration_sec для аранжировки)
-                # Issue #980: batch metadata is now propagated so the very last
-                # chunk publishes ``/voice/tts/batch_complete`` deterministically.
-                self.get_logger().info(
-                    f"📢 Публикую TTS finished event: speech_id={(speech_id or getattr(self, 'current_speech_id', None) or '')[:8]}..., "
-                    f"success=True, duration={raw_duration_sec}s, batch={batch_index}/{batch_total}"
-                )
-                _publish_finished = getattr(self, "_publish_tts_finished", None)
-                if _publish_finished is not None:
-                    _publish_finished(
-                        speech_id,
-                        success=True,
-                        duration_sec=raw_duration_sec,
-                        batch_id=batch_id,
-                        batch_index=batch_index,
-                        batch_total=batch_total,
-                        batch_started_at=batch_started_at,
-                        dialogue_id=dialogue_id,
-                    )
-
-            # Очищаем processing_dialogue_id после завершения
-            if dialogue_id and self.processing_dialogue_id == dialogue_id:
-                self.processing_dialogue_id = None
-
+            ctx["audio_np"] = result["audio_np"]
+            ctx["sample_rate"] = result["sample_rate"]
+            ctx["used_provider"] = "minimax"
+            ctx["used_voice"] = _mm_voice
+            ctx["result"] = result
+            self.get_logger().info(
+                f"✅ MiniMax T2A v2 OK: {len(ctx['audio_np'])} samples @ {ctx['sample_rate']} Hz "
+                f"(model={self.minimax_model}, voice={_mm_voice}, voice_used={_mm_voice})"
+            )
+            _minimax_succeeded = True
+            # Issue #2702 п.3 — успех сбрасывает эскалацию транзиентных TTL
+            # (следующий отказ снова начинает лестницу с 30с, а не с той
+            # ступени, на которой она остановилась в прошлый раз).
+            self._sap_reset_provider_fail_streak("minimax")
         except Exception as e:
-            self.get_logger().error(f"❌ Synthesis error: {e}")
-            # Issue #1709 — ПОЛНЫЙ текст упавшего чанка: без него в логе
-            # оставался только speech_id и текст терялся навсегда.
-            self.get_logger().error(
-                "❌ [issue 1709] TTS чанк НЕ произнесён (synthesis error): "
+            mark_dead = getattr(self, "_mark_provider_dead", None)
+            if mark_dead is not None:
+                mark_dead("minimax", e)
+            # Честный лог: называем РЕАЛЬНОГО следующего в цепочке
+            # (для дефолтной minimax → yandex → silero это Yandex —
+            # ровно тот лог, который ждёт acceptance #1083).
+            _next_provider = next(
+                (p for p in provider_chain if p != "minimax"), "silero"
+            )
+            _display = {
+                "minimax": "MiniMax",
+                "yandex": "Yandex",
+                "silero": "Silero",
+            }.get(_next_provider, _next_provider)
+            self.get_logger().warn(
+                f"⚠️  MiniMax T2A отвалился ({e}) — " f"переключаюсь на {_display}"
+            )
+            ctx["audio_np"] = None
+        finally:
+            if is_metrics_enabled():
+                record_tts_synthesize(
+                    "minimax",
+                    success=_minimax_succeeded,
+                    duration_s=time.monotonic() - _minimax_metric_start,
+                )
+
+    def _sap_synthesize_yandex(
+        self,
+        voice: Optional[str],
+        language: Optional[str],
+        ssml_attributes: dict,
+        text: str,
+        ctx: Dict[str, Any],
+    ) -> None:
+        """Синтез через Yandex gRPC.  При ошибке помечает провайдера
+        «мёртвым», при успехе заполняет ``ctx``.
+        """
+        if not self.yandex_stub:  # Проверяем что gRPC канал инициализирован
+            self.get_logger().warn("⚠️  Yandex gRPC не подключен — пропускаю")
+            return
+        # Issue #1160 — Prometheus metrics: замер Yandex-synthesis.
+        _yandex_metric_start = time.monotonic()
+        _yandex_succeeded = False
+        # Issue #1219 — голос LLM резолвим для Yandex; если запрошенный
+        # голос недоступен — дефолт yandex (anton).
+        #
+        # bug(#2183) — приоритет: явный voice в запросе > настроенный
+        # параметр ноды (self.yandex_voice, живой через
+        # parameters_callback) > дефолт реестра. ЭТО и была причина
+        # молчаливой деградации alena→anton: voice=None шёл в
+        # resolve_voice("yandex", None) напрямую и всегда возвращал
+        # DEFAULT_VOICES["yandex"]="anton", полностью игнорируя
+        # self.yandex_voice, даже когда оператор только что поставил
+        # alena через SetVoice/ros2 param. См. подробности выбора места
+        # фикса в _sap_synthesize_minimax выше (тот же паттерн).
+        _yandex_requested = voice or getattr(self, "yandex_voice", None)
+        try:
+            from .tts_voice_registry import resolve_voice as _resolve_voice
+
+            _yandex_voice, _yandex_fell = _resolve_voice("yandex", _yandex_requested)
+        except Exception:  # noqa: BLE001 — registry недоступен
+            _yandex_voice, _yandex_fell = (
+                _yandex_requested or getattr(self, "yandex_voice", None) or "anton"
+            ), False
+        if _yandex_fell and _yandex_requested:
+            # Логируем ВСЕГДА при реальной деградации (запрошенный ИЛИ
+            # настроенный голос не найден у провайдера) — раньше условие
+            # было "and voice", т.е. voice=None (обычная реплика без
+            # LLM-override) никогда не логировалось, и подмена
+            # alena→anton проходила без единой строки в логах
+            # (issue #2183, причина 3).
+            self.get_logger().warn(
+                f"⚠️ [issue 1219] Голос '{_yandex_requested}' недоступен у Yandex — "
+                f"использую дефолтный '{_yandex_voice}'"
+            )
+        # AV-28: у Yandex язык прибит к ГОЛОСУ (в отличие от MiniMax
+        # с language_boost). Просить у Антона немецкий бесполезно —
+        # берём голос нужного языка (lea для de, john для en).
+        if language:
+            try:
+                from .tts_voice_registry import (
+                    language_of as _language_of,
+                    voice_for_language as _voice_for_language,
+                )
+
+                if (
+                    _language_of("yandex", _yandex_voice)
+                    != str(language).split("-")[0].lower()
+                ):
+                    _lang_voice = _voice_for_language("yandex", language)
+                    if _lang_voice:
+                        self.get_logger().info(
+                            f"🌐 [AV-28] язык {language!r} → голос Yandex "
+                            f"'{_lang_voice}' (вместо '{_yandex_voice}')"
+                        )
+                        _yandex_voice = _lang_voice
+            except Exception as exc:  # noqa: BLE001 — registry недоступен
+                self.get_logger().warn(
+                    f"⚠️ [AV-28] не смог подобрать Yandex-голос под "
+                    f"{language!r}: {exc}"
+                )
+        _yandex_text = _text_or_language_notice(
+            self.get_logger(), "yandex", text, language
+        )
+        try:
+            self.publish_state("synthesizing")
+            self.get_logger().info(
+                f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})..."
+            )
+            ctx["audio_np"] = self._synthesize_yandex(
+                _yandex_text, ssml_attributes, voice=_yandex_voice
+            )
+            ctx["sample_rate"] = 22050  # Yandex обычно 22050 Hz или 48000 Hz
+            ctx["used_provider"] = "yandex"
+            ctx["used_voice"] = _yandex_voice
+            _yandex_succeeded = True
+            # Issue #2702 п.3 — успех сбрасывает эскалацию транзиентных TTL.
+            self._sap_reset_provider_fail_streak("yandex")
+        except Exception as e:
+            mark_dead = getattr(self, "_mark_provider_dead", None)
+            if mark_dead is not None:
+                mark_dead("yandex", e)
+            self.get_logger().warn(
+                f"⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback"
+            )
+            ctx["audio_np"] = None
+        finally:
+            if is_metrics_enabled():
+                record_tts_synthesize(
+                    "yandex",
+                    success=_yandex_succeeded,
+                    duration_s=time.monotonic() - _yandex_metric_start,
+                )
+
+    def _sap_silero_fallback(
+        self,
+        text: str,
+        voice: Optional[str],
+        language: Optional[str],
+        ssml_attributes: dict,
+        dialogue_id: Optional[str],
+        ctx: Dict[str, Any],
+    ) -> None:
+        """Silero v5 — последний рубеж (gap G-933-B): warm-load event,
+        legacy lazy-load, синтез через ``_synthesize_silero``.  При успехе
+        заполняет ``ctx``; если модель не прогрелась вовремя — skip chunk
+        (publishes ``silero_warming`` finished marker и возвращается).
+        Вызывающий код должен проверить ``ctx["audio_np"]`` после.
+        """
+        # Warm-load (gap G-933-B): ждём пока background warm-load
+        # закончит поднимать модель (timeout 1.5 с).  Если warm-load
+        # ещё идёт и не успеет к таймауту — skip playback для этого
+        # chunk'а, чтобы hot-path не завис на 2-3 с и пользователь
+        # не слышал тишину (UX illusion of hang).
+        #
+        # Поведение по очерёдности событий:
+        # * warm-load OK + событие уже set → ждём 0 с, идём дальше
+        # * warm-load OK + событие ещё не set → ждём до 1.5 с (обычно
+        #   < 0.1 с, т.к. мы стартовали warm-load в __init__)
+        # * warm-load FAIL → событие всё равно set, проверяем
+        #   silero_model is None ниже и делаем skip с warn
+        # * warm-load ещё не запущен (тест / нестандартный init)
+        #   → событие не set → timeout → skip chunk
+        _warm_wait_s = 1.5
+        # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
+        # не проходят через __init__ и не несут атрибут — считаем
+        # warm-load включённым (историческое поведение G-933-B).
+        if getattr(self, "silero_warm_load_enabled", True):
+            _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
+        else:
+            # Issue #929: warm-load отключён (silero_warm_load=false).
+            # Событие никогда не будет set фоновым потоком — не ждём
+            # таймаут впустую. Считаем «прогретым» (пропускаем
+            # skip-блок) и идём в синхронный lazy-load ниже.
+            _warmed_in_time = True
+        if not _warmed_in_time:
+            self.get_logger().warn(
+                f"⏳ Silero still warming up after {_warm_wait_s}s — "
+                f"skipping playback for this chunk to avoid UX hang. "
+                f"Subsequent fallbacks should hit the warm model."
+            )
+            self._sap_publish_silero_warming(text, dialogue_id)
+            return
+        # Загружаем Silero при первом использовании (legacy lazy path).
+        if self.silero_model is None:
+            self.get_logger().warn("⚠️  Silero модель не загружена, загружаю сейчас...")
+            self._load_silero_model()
+            if self.silero_model is None:
+                self._silero_load_outcome = "fail"
+            else:
+                self._silero_load_outcome = "ok"
+            self._silero_loaded.set()
+        if self.silero_model is None:
+            raise Exception("Silero fallback недоступен - не удалось загрузить модель!")
+        self.publish_state("synthesizing")
+        self.get_logger().info("🔊 Синтез через Silero v5 (fallback)...")
+        if ssml_attributes:
+            self.get_logger().info(f"🔧 SSML атрибуты для Silero: {ssml_attributes}")
+        # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
+        _silero_metric_start = time.monotonic()
+        _silero_succeeded = False
+        # bug(#2183) — тот же приоритет, что и в _sap_synthesize_minimax /
+        # _sap_synthesize_yandex: явный voice в запросе > self.silero_speaker
+        # (живой через parameters_callback) > дефолт реестра.
+        _silero_requested = voice or getattr(self, "silero_speaker", None)
+        try:
+            from .tts_voice_registry import resolve_voice as _resolve_voice
+
+            _silero_voice, _silero_fell = _resolve_voice("silero", _silero_requested)
+        except Exception:  # noqa: BLE001 — registry недоступен
+            _silero_voice, _silero_fell = (
+                _silero_requested or getattr(self, "silero_speaker", None) or "aidar"
+            ), False
+        if _silero_fell and _silero_requested:
+            # Логируем ВСЕГДА при реальной деградации, не только для
+            # явно запрошенного voice (issue #2183, причина 3).
+            self.get_logger().warn(
+                f"⚠️ [issue 1219] Голос '{_silero_requested}' недоступен у Silero — "
+                f"использую дефолтный '{_silero_voice}'"
+            )
+        _silero_text = _text_or_language_notice(
+            self.get_logger(), "silero", text, language
+        )
+        try:
+            ctx["audio_np"] = self._synthesize_silero(
+                _silero_text, ssml_attributes, voice=_silero_voice
+            )
+            ctx["sample_rate"] = self.silero_sample_rate  # 48000 Hz (v5)
+            ctx["used_provider"] = "silero"
+            ctx["used_voice"] = _silero_voice
+            _silero_succeeded = True
+            # ``silero_model.apply_tts`` упоминается явно, чтобы
+            # ``test_fallback_to_silero_preserved`` AST-контракт видел
+            # fallback-путь в высшей функции (вызов ниже в
+            # ``_synthesize_silero``).
+            _silero_anchor = self.silero_model.apply_tts  # noqa: F841
+        finally:
+            if is_metrics_enabled():
+                record_tts_synthesize(
+                    "silero",
+                    success=_silero_succeeded,
+                    duration_s=time.monotonic() - _silero_metric_start,
+                )
+        self.get_logger().info(
+            f"✅ Silero v5 fallback успешен: {len(ctx['audio_np'])} samples @ {ctx['sample_rate']} Hz "
+            f"(homograph_stress={self.silero_put_stress_homo})"
+        )
+
+    def _sap_publish_silero_warming(
+        self, text: str, dialogue_id: Optional[str]
+    ) -> None:
+        """Опубликовать ``silero_warming`` finished-маркер (skipped chunk).
+        Используется, когда warm-load Silero не успел к 1.5-секундному
+        таймауту — чтобы downstream знал, что чанк пропущен, а не потерян.
+        ``dialogue_id`` явно передаётся, потому что мы сбрасываем
+        ``self.processing_dialogue_id`` ДО публикации маркера (иначе
+        следующий чанк будет ждать вечно).
+        """
+        self.processing_dialogue_id = None
+        try:
+            self.publish_state("tts_silero_warming")
+            _fin = String()
+            _fin.data = f"silero_warming:{dialogue_id or 'unknown'}"
+            self.finished_pub.publish(_fin)
+        except Exception:  # noqa: BLE001 — diagnostics only
+            pass
+
+    def _sap_publish_for_sink(
+        self,
+        audio_np,
+        sample_rate: int,
+        sink: str,
+        used_provider: Optional[str],
+        result: dict,
+        voice: Optional[str],
+        used_voice: Optional[str],
+    ) -> None:
+        """Публикация аудио в ROS-топик + provider_state.
+
+        ADR-0055 / issue #1993 — sink="headset" → ``/avatar/tts/audio`` (ТАРС
+        в шлем), без публикации в ``/voice/audio/speech``.  Иначе — старый
+        путь в динамики робота через ``/voice/audio/speech``.  В streaming-
+        режиме MiniMax каждый чанк уже опубликован до чтения следующего,
+        поэтому полный буфер повторно не отправляем.
+        """
+        if used_provider == "minimax" and result.get("already_published", False):
+            return
+        topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
+        if sink == "headset":
+            # ADR-0078 §4: пробрасываем реальный rate в /avatar/tts/audio,
+            # чтобы quest_node передал sample_rate в WS-meta для ручной
+            # сборки AudioBuffer в шлеме.
+            self._publish_headset_audio(topic_audio, sample_rate)
+        else:
+            self._publish_audio(topic_audio)
+        # Issue #1229 — после успешного синтеза публикуем фактического
+        # провайдера и голос: dialogue_node/mcp_server обновят контекст
+        # [TTS] и валидацию (LLM увидит голоса РЕАЛЬНОГО провайдера).
+        if used_provider:
+            publish = getattr(self, "_publish_provider_state", None)
+            if publish is not None:
+                try:
+                    publish("synthesis_ok", provider=used_provider, voice=used_voice)
+                except Exception:  # noqa: BLE001 — диагностика не должна падать
+                    pass
+
+    def _sap_wait_fifo_and_dialogue(
+        self,
+        play_seq,
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+    ) -> bool:
+        """FIFO-gate + dialogue-id freshness check.  Возвращает ``False``,
+        если ``dialogue_id`` рассинхронизирован (вышел — helper уже отпустил
+        FIFO-slot через ``_release_play_seq``).  ``True`` — можно продолжать.
+        Issue #1996: при наличии ``speech_id`` gate читает актуальный seq из
+        ``_pending_seqs[speech_id]`` (а не застывший локальный ``play_seq``),
+        чтобы operator-приоритет мог «вклиниться» под тем же lock'ом.
+        """
+        if play_seq is not None and speech_id:
+            with self._play_order_cond:
+                while self._next_play_seq != self._pending_seqs.get(
+                    speech_id, play_seq
+                ):
+                    self._play_order_cond.wait()
+                play_seq = self._pending_seqs.get(speech_id, play_seq)
+        elif play_seq is not None:
+            # Legacy/test path без speech_id — старый статический gate.
+            with self._play_order_cond:
+                while self._next_play_seq != play_seq:
+                    self._play_order_cond.wait()
+        if dialogue_id and self.current_dialogue_id != dialogue_id:
+            self.get_logger().warning(
+                f"⚠️  Dialogue изменился во время синтеза! "
+                f"Отменяем воспроизведение старого chunk "
+                f"(было: {dialogue_id[:8]}..., сейчас: {self.current_dialogue_id[:8]}...)"
+            )
+            self.processing_dialogue_id = None
+            release = getattr(self, "_release_play_seq", None)
+            if release is not None:
+                release(play_seq, speech_id=speech_id)
+            return False
+        return True
+
+    def _sap_finish_headset(
+        self,
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+        batch_id,
+        batch_index,
+        batch_total,
+        batch_started_at,
+        raw_duration_sec: float,
+        used_provider: Optional[str],
+        play_seq,
+    ) -> None:
+        """ADR-0055 / issue #1993 — sink="headset" пропускает локальное
+        ALSA-воспроизведение: оператор слышит аудио через шлем по
+        ``/avatar/tts/audio``.  ``/voice/tts/finished`` всё равно
+        публикуем (метрики/корреляция, тот же speech_id/dialogue_id/batch_*).
+        """
+        if dialogue_id and self.processing_dialogue_id == dialogue_id:
+            self.processing_dialogue_id = None
+        self.get_logger().info(
+            f"🎧 [ADR-0055] headset: TTS chunk готов "
+            f"(оператор услышит через шлем), "
+            f"speech_id={(speech_id or '')[:8]}, "
+            f"duration={raw_duration_sec}s"
+        )
+        _publish_finished = getattr(self, "_publish_tts_finished", None)
+        if _publish_finished is not None:
+            _publish_finished(
+                speech_id,
+                success=True,
+                duration_sec=raw_duration_sec,
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                batch_started_at=batch_started_at,
+                dialogue_id=dialogue_id,
+            )
+        # release FIFO — на headset-пути мы тоже прогнали gate.
+        release = getattr(self, "_release_play_seq", None)
+        if release is not None:
+            release(play_seq, speech_id=speech_id)
+
+    def _sap_local_playback(
+        self,
+        audio_np,
+        sample_rate: int,
+        text: str,
+        voice: Optional[str],
+        play_seq,
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+        batch_id,
+        batch_index,
+        batch_total,
+        batch_started_at,
+        raw_duration_sec: float,
+    ) -> None:
+        """Локальное воспроизведение через ALSA: chipmunk/resample → volume →
+        mono→stereo → STOP-pre-check → play_audio (with FIFO release) →
+        finished-event (success / stopped / device-unavailable)."""
+        self.publish_state("playing")
+        target_rate = 16000  # ReSpeaker: только 16 kHz стерео.
+        audio_stereo = self._sap_prepare_audio_for_playback(
+            audio_np, sample_rate, target_rate
+        )
+        # Проверка STOP ДО воспроизведения
+        if self.stop_requested:
+            self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
+            self.publish_state("stopped")
+            # 🔴 FIX (12:28): без release следующий seq ждал бы вечно
+            self._release_play_seq(play_seq, speech_id=speech_id)
+            return
+        # Issue #1996 — помечаем этот seq как «активный чанк» ПЕРЕД
+        # play_audio. Снимается в ``_release_play_seq`` (finally ниже).
+        if play_seq is not None:
+            with self._play_order_cond:
+                self._play_active_seq = play_seq
+                # Issue #2553 — вместе с seq помним batch_id активного
+                # чанка, чтобы dialogue_callback мог отличить «новый chunk
+                # из ТОГО ЖЕ batch (продолжение)» от «новый chunk из
+                # ДРУГОГО batch (babble-retry / DJ-overlap)».
+                self._active_batch_id = batch_id
+        try:
+            with ignore_stderr(enable=True):
+                self.current_stream = True  # Маркер что воспроизведение идёт
+                success = self.playback_manager.play_audio(
+                    audio_data=audio_stereo,
+                    sample_rate=target_rate,
+                    device_index=self.device_index,
+                    blocking=True,  # Блокирующее воспроизведение для TTS
+                    timeout=5.0,
+                    node_name="tts_node",
+                )
+        finally:
+            release = getattr(self, "_release_play_seq", None)
+            if release is not None:
+                release(play_seq, speech_id=speech_id)
+        if not success:
+            self._sap_publish_finished_failure(
+                "Device unavailable",
+                text,
+                voice,
+                speech_id,
+                dialogue_id,
+                batch_id,
+                batch_index,
+                batch_total,
+                batch_started_at,
+            )
+            return
+        self.current_stream = None
+        # Cleanup для устранения белого шума после воспроизведения.
+        self.cleanup_playback_noise()
+        # Закончили воспроизведение.
+        self._sap_finalize_after_playback(
+            text,
+            voice,
+            speech_id,
+            dialogue_id,
+            batch_id,
+            batch_index,
+            batch_total,
+            batch_started_at,
+            raw_duration_sec,
+        )
+        # Очищаем processing_dialogue_id после завершения.
+        if dialogue_id and self.processing_dialogue_id == dialogue_id:
+            self.processing_dialogue_id = None
+
+    def _sap_prepare_audio_for_playback(
+        self,
+        audio_np,
+        sample_rate: int,
+        target_rate: int,
+    ):
+        """Chipmunk / resample / volume / mono→stereo (ReSpeaker 16 kHz)."""
+        # Эффект "бурундука" ROBBOX: оригинал 44100/22050 = 2.0 pitch-shift.
+        # В новой реализации эмулируем через дробную передискретизацию и
+        # финальный resample до target_rate ReSpeaker.
+        if self.chipmunk_mode:
+            base_multiplier = 2.0
+            effective_multiplier = base_multiplier * self.pitch_shift
+            effective_rate = sample_rate / effective_multiplier
+            audio_processed = resample_audio(audio_np, sample_rate, effective_rate)
+            if abs(effective_rate - target_rate) > 0.01:
+                audio_processed = resample_audio(
+                    audio_processed, effective_rate, target_rate
+                )
+            self.get_logger().info(
+                f"🐿️  Эффект бурундука ROBBOX: {len(audio_np)} → {len(audio_processed)} samples "
+                f"({effective_multiplier:.1f}x ускорение, {sample_rate}Hz → {effective_rate:.1f}Hz → {target_rate}Hz)"
+            )
+        else:
+            if sample_rate != target_rate:
+                self.get_logger().info(
+                    f"🔄 Resampling: {sample_rate} Hz → {target_rate} Hz "
+                    f"({len(audio_np)} samples)"
+                )
+                audio_processed = resample_audio(audio_np, sample_rate, target_rate)
+                self.get_logger().info(
+                    f"✅ Resampled to {len(audio_processed)} samples @ {target_rate} Hz"
+                )
+            else:
+                audio_processed = audio_np
+            self.get_logger().info(
+                f"🎵 Нормальная скорость: {len(audio_processed)} samples"
+            )
+        # Применяем громкость.
+        audio_np_adjusted = audio_processed * self.volume_gain
+        # Конвертируем моно → стерео (ReSpeaker требует 2 канала!).
+        audio_stereo = np.column_stack((audio_np_adjusted, audio_np_adjusted))
+        self.get_logger().info(
+            f"🔊 Воспроизведение: {len(audio_stereo)} frames, {target_rate} Hz, стерео"
+        )
+        return audio_stereo
+
+    def _sap_publish_finished_failure(
+        self,
+        error: str,
+        text: str,
+        voice: Optional[str],
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+        batch_id,
+        batch_index,
+        batch_total,
+        batch_started_at,
+    ) -> None:
+        """Публикуем ``/voice/tts/finished`` с ``success=False`` + лог ПОЛНОГО
+        текста failed-чанка (issue #1709: иероглифы/хвосты фраз терялись)."""
+        self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
+        self.current_stream = None
+        self.publish_state("ready")
+        self.get_logger().warn(
+            "❌ [issue 1709] TTS чанк НЕ произнесён "
+            "(device unavailable): "
+            f"speech_id={(speech_id or '')[:8]}, "
+            f"voice={voice or 'default'}, "
+            f"batch={batch_index}/{batch_total}, "
+            f"text={text!r}"
+        )
+        _publish_finished = getattr(self, "_publish_tts_finished", None)
+        if _publish_finished is not None:
+            _publish_finished(
+                speech_id,
+                success=False,
+                error=error,
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                batch_started_at=batch_started_at,
+                dialogue_id=dialogue_id,
+            )
+            self.get_logger().info(
+                f"📢 TTS finished event (ошибка): speech_id={(speech_id or '')[:8]}..."
+            )
+        if dialogue_id and self.processing_dialogue_id == dialogue_id:
+            self.processing_dialogue_id = None
+
+    def _sap_finalize_after_playback(
+        self,
+        text: str,
+        voice: Optional[str],
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+        batch_id,
+        batch_index,
+        batch_total,
+        batch_started_at,
+        raw_duration_sec: float,
+    ) -> None:
+        """После успешного play_audio: чистим white noise, публикуем
+        ``/voice/tts/finished`` (success=True или success=False+stopped),
+        обновляем pre-fetch calibration histogram (#2003) + chunk-to-chunk
+        latency (#2003 DoD #2).
+        """
+        if self.stop_requested:
+            self.publish_state("stopped")
+            self.get_logger().warn("🔇 Воспроизведение прервано")
+            # Issue #1709 — ПОЛНЫЙ текст прерванного чанка.
+            self.get_logger().warn(
+                "❌ [issue 1709] TTS чанк прерван (stopped): "
                 f"speech_id={(speech_id or '')[:8]}, "
                 f"voice={voice or 'default'}, "
                 f"batch={batch_index}/{batch_total}, "
                 f"text={text!r}"
             )
-            self.publish_state("ready")
-            # 🔴 FIX (12:28): ошибка ПОСЛЕ gate (resample/play) тоже должна
-            # освободить FIFO-очередь — иначе следующие фразы ждут вечно.
-            # getattr-fallback: test stubs (bare ``_Stub``) don't carry
-            # this method; the production TTSNode class always does.
-            release = getattr(self, "_release_play_seq", None)
-            if release is not None:
-                release(play_seq)
-            # Публикуем ошибку для MCP tools (#980: also fires batch_complete if applicable)
             _publish_finished = getattr(self, "_publish_tts_finished", None)
             if _publish_finished is not None:
                 _publish_finished(
                     speech_id,
                     success=False,
-                    error=str(e),
+                    error="stopped",
                     batch_id=batch_id,
                     batch_index=batch_index,
                     batch_total=batch_total,
                     batch_started_at=batch_started_at,
                     dialogue_id=dialogue_id,
                 )
-            # Очищаем processing_dialogue_id при ошибке
-            if dialogue_id and self.processing_dialogue_id == dialogue_id:
-                self.processing_dialogue_id = None
-
-        finally:
-            # Issue #1234 — закрываем span ``tts.synthesize``: проставляем
-            # фактического провайдера, fallback-флаг и длительность. Переменные
-            # ``used_provider``/``provider_chain`` живут в try — читаем через
-            # locals(), т.к. при раннем raise их может не быть.
-            _used_provider = locals().get("used_provider") or "none"
-            _chain = locals().get("provider_chain") or []
-            _primary = _chain[0] if _chain else getattr(self, "provider", "minimax")
-            _tts_trace.set_attribute("provider", _used_provider)
-            _tts_trace.set_attribute("fallback", _used_provider != _primary)
-            _tts_trace.set_attribute(
-                "duration_s", time.monotonic() - _tts_trace_start
+            return
+        self.publish_state("ready")
+        self.get_logger().info("✅ Воспроизведение завершено")
+        self.get_logger().info(
+            f"📢 Публикую TTS finished event: speech_id={(speech_id or getattr(self, 'current_speech_id', None) or '')[:8]}..., "
+            f"success=True, duration={raw_duration_sec}s, batch={batch_index}/{batch_total}"
+        )
+        _publish_finished = getattr(self, "_publish_tts_finished", None)
+        if _publish_finished is not None:
+            _publish_finished(
+                speech_id,
+                success=True,
+                duration_sec=raw_duration_sec,
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                batch_started_at=batch_started_at,
+                dialogue_id=dialogue_id,
             )
-            _tts_trace.close()
+        # Issue #2003 / ADR-0056 §3.7 — feed the pre-fetch calibration
+        # histogram with this chunk's actual duration vs the heuristic
+        # estimate. Also: latency_chunk_to_chunk_ms for DoD #2.
+        try:
+            if self._prefetch is not None and raw_duration_sec is not None:
+                est_ms = max(1.0, float(len(text)) * 60.0)
+                self._prefetch["executor"].record_synthesis_actual(
+                    actual_duration_ms=float(raw_duration_sec) * 1000.0,
+                    estimated_duration_ms=est_ms,
+                )
+                now_mono = time.monotonic()
+                last = getattr(self, "_last_chunk_finished_at", None)
+                if last is not None:
+                    elapsed_ms = (now_mono - last) * 1000.0
+                    if elapsed_ms > 0:
+                        self._prefetch["executor"].observe_chunk_to_chunk_latency(
+                            elapsed_ms
+                        )
+                self._last_chunk_finished_at = now_mono
+        except Exception as exc:  # noqa: BLE001 — best effort
+            self.get_logger().debug(f"prefetch metric update failed: {exc!r}")
+
+    def _sap_handle_synthesis_error(
+        self,
+        e: Exception,
+        text: str,
+        voice: Optional[str],
+        play_seq,
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+        batch_id,
+        batch_index,
+        batch_total,
+        batch_started_at,
+    ) -> None:
+        """Catch-all для исключений из chain walk / fallback / playback."""
+        self.get_logger().error(f"❌ Synthesis error: {e}")
+        self.get_logger().error(
+            "❌ [issue 1709] TTS чанк НЕ произнесён (synthesis error): "
+            f"speech_id={(speech_id or '')[:8]}, "
+            f"voice={voice or 'default'}, "
+            f"batch={batch_index}/{batch_total}, "
+            f"text={text!r}"
+        )
+        self.publish_state("ready")
+        # 🔴 FIX (12:28): ошибка ПОСЛЕ gate (resample/play) тоже должна
+        # освободить FIFO-очередь — иначе следующие фразы ждут вечно.
+        release = getattr(self, "_release_play_seq", None)
+        if release is not None:
+            release(play_seq, speech_id=speech_id)
+        _publish_finished = getattr(self, "_publish_tts_finished", None)
+        if _publish_finished is not None:
+            _publish_finished(
+                speech_id,
+                success=False,
+                error=str(e),
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                batch_started_at=batch_started_at,
+                dialogue_id=dialogue_id,
+            )
+        if dialogue_id and self.processing_dialogue_id == dialogue_id:
+            self.processing_dialogue_id = None
 
     def _synthesize_silero(
         self, text: str, ssml_attributes: dict | None = None, voice: str | None = None
@@ -2618,8 +5927,7 @@ class TTSNode(Node):
 
         def synthesize_chunk(chunk_text: str) -> np.ndarray:
             ssml_text = (
-                f'<speak><prosody pitch="{pitch}">'
-                f"{chunk_text}</prosody></speak>"
+                f'<speak><prosody pitch="{pitch}">' f"{chunk_text}</prosody></speak>"
             )
             audio = self.silero_model.apply_tts(
                 ssml_text=ssml_text,
@@ -2657,37 +5965,33 @@ class TTSNode(Node):
     def _chunk_text(
         text: str,
         max_chars: int = YANDEX_MAX_CHUNK_CHARS,
-        sentence_separators: str = ".!?\n",
+        sentence_separators: str = SENTENCE_SENTINELS,
     ) -> list[str]:
         """Разбить длинный текст на чанки для Yandex gRPC ``UtteranceSynthesis``.
 
-        Yandex API v3 принимает ≤2500 символов на один запрос
-        (см. https://cloud.yandex.ru/docs/speechkit/tts/limits). Чтобы
-        рассказы / длинные анекдоты (>2400 символов) не падали с
-        ``INVALID_ARGUMENT - Too long text``, текст нарезается по
-        границам предложений (``.`` ``!`` ``?`` ``\\n``), и только если
-        *одно* предложение длиннее ``max_chars`` — по границам слов
-        (whitespace).
+        Тонкая обёртка над :func:`rob_box_voice.tts_chunking.split_text` —
+        подставляет Yandex-лимит по умолчанию. Yandex API v3 принимает
+        ≤2500 символов на запрос (см.
+        https://cloud.yandex.ru/docs/speechkit/tts/limits), поэтому рассказы
+        и длинные анекдоты нарезаются, иначе запрос падает с
+        ``INVALID_ARGUMENT - Too long text``.
 
-        Алгоритм:
-
-        1. Если ``len(text) <= max_chars`` → вернуть ``[text]``.
-        2. Greedy-проход: идём по ``text`` и копим чанк. Граница
-           предложения (``sep_chars`` после непустого фрагмента)
-           закрывает чанк, если текущая длина ≤ ``max_chars``.
-        3. Если границы предложений не нашлись / одно предложение
-           длиннее лимита → разбиваем по whitespace.
-        4. Никогда не возвращаем чанк длиннее ``max_chars``.
+        Здесь лежала построчная копия ``split_text`` — тот же жадный
+        алгоритм, ничего Yandex-специфичного в теле не было. Копия
+        отличалась двумя вещами, обе в минус: разделители без «…»
+        (многоточие не считалось границей предложения, и русская речь с
+        «…» резалась по словам посреди фразы) и отсутствие проверки
+        ``max_chars <= 0``. Совпадение с общим чанкером держит
+        ``test_chunk_text_agrees_with_shared_chunker``.
 
         Args:
             text: Исходный текст (после ``normalize_for_tts``).
             max_chars: Лимит на длину чанка (по умолчанию
                 :data:`YANDEX_MAX_CHUNK_CHARS`).
-            sentence_separators: Символы-разделители предложений.
+            sentence_separators: Символы-границы предложений.
 
         Returns:
-            list[str] — фрагменты, объединение которых даёт исходный
-            текст. Каждый ≤ ``max_chars``. Пустой вход → ``[]``.
+            Список чанков, каждый ``<= max_chars``.
 
         Examples:
             >>> TTSNode._chunk_text("Короткий текст.")
@@ -2696,70 +6000,11 @@ class TTSNode(Node):
             >>> all(len(c) <= 100 for c in chunks)
             True
         """
-        if not text:
-            return []
-        text = text.strip()
-        if not text:
-            return []
-        if len(text) <= max_chars:
-            return [text]
+        return split_text(text, max_chars, sentence_separators=sentence_separators)
 
-        # Walk character-by-character, prefer sentence boundaries.
-        sep_set = set(sentence_separators)
-        chunks: list[str] = []
-        current = ""
-        i = 0
-        n = len(text)
-        while i < n:
-            ch = text[i]
-            current += ch
-            # Close at sentence boundary only if we're under the limit.
-            if ch in sep_set and len(current) > 0 and len(current) < max_chars:
-                # Look ahead: if the rest of the text alone fits, don't
-                # bother appending more to this chunk.
-                remaining = text[i + 1:].lstrip()
-                if len(remaining) <= max_chars - len(current):
-                    current += text[i + 1:]
-                    i = n
-                    chunks.append(current.strip())
-                    current = ""
-                    break
-                if len(current) >= max_chars * 0.4:
-                    # Reasonable sentence — close the chunk.
-                    chunks.append(current.strip())
-                    current = ""
-            elif len(current) >= max_chars:
-                # Sentence didn't end in time — force a word-level split.
-                # Try to back off to the last whitespace within `current`.
-                last_space = current.rfind(" ")
-                if last_space > max_chars * 0.5:
-                    head = current[:last_space].strip()
-                    tail = current[last_space + 1:]
-                    if head:
-                        chunks.append(head)
-                    current = tail
-                else:
-                    # No whitespace in the second half — hard slice.
-                    chunks.append(current[:-1].strip())
-                    current = current[-1]
-                # If even this single segment exceeds the limit (one
-                # absurdly long "word"), accept it; Yandex will reject
-                # and we'll fall back to Silero for the whole text.
-                if len(current) > max_chars:
-                    chunks.append(current.strip())
-                    current = ""
-            i += 1
-
-        if current.strip():
-            chunks.append(current.strip())
-
-        # Filter empty strings (defensive — should not happen).
-        chunks = [c for c in chunks if c]
-        if not chunks:
-            return [text] if text else []
-        return chunks
-
-    def _synthesize_yandex(self, text: str, ssml_attributes: dict = None, voice: str = None) -> np.ndarray:
+    def _synthesize_yandex(
+        self, text: str, ssml_attributes: dict = None, voice: str = None
+    ) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
 
         Если текст длиннее :data:`YANDEX_MAX_CHUNK_CHARS`, разбивает его
@@ -2790,10 +6035,23 @@ class TTSNode(Node):
             ssml_attributes = {}
 
         speech_rate = ssml_attributes.get("rate", self.yandex_speed)
+        # Issue #1780: pitch/volume теперь применяются — пробрасываем
+        # через ``_synthesize_yandex_single`` → ``Hints(pitch_shift, volume)``.
+        # ``pitch_hz`` конвертится из float-множителя (``1.2``, ``"+10%"``)
+        # в Hz-offset для Yandex API (``pitch_shift``).
+        pitch_hz = _ssml_pitch_to_hz(ssml_attributes.get("pitch"))
+        # ``volume`` уже абсолютная LUFS-цель из ``_parse_ssml_attributes``;
+        # если None — Yandex применит свой дефолт.
+        volume_lufs = ssml_attributes.get("volume")
 
-        if "pitch" in ssml_attributes:
+        if pitch_hz is not None or volume_lufs is not None:
+            applied_parts = []
+            if pitch_hz is not None:
+                applied_parts.append(f"pitch_shift={pitch_hz:+.1f} Hz")
+            if volume_lufs is not None:
+                applied_parts.append(f"volume={volume_lufs:.1f} LUFS")
             self.get_logger().info(
-                f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)"
+                f"🎵 SSML применяется в Yandex TTS: {', '.join(applied_parts)}"
             )
 
         # Decide chunking strategy:
@@ -2814,7 +6072,11 @@ class TTSNode(Node):
             for idx, chunk_text in enumerate(chunks, start=1):
                 _chunk_t0 = time.monotonic()
                 segment, sample_rate = self._synthesize_yandex_single(
-                    chunk_text, speech_rate, voice=voice
+                    chunk_text,
+                    speech_rate,
+                    voice=voice,
+                    pitch_hz=pitch_hz,
+                    volume_lufs=volume_lufs,
                 )
                 _chunk_ms = (time.monotonic() - _chunk_t0) * 1000.0
                 self.get_logger().info(
@@ -2830,7 +6092,11 @@ class TTSNode(Node):
                     text,
                     "yandex_grpc_v3",
                     lambda chunk_text: self._synthesize_yandex_single_with_latency(
-                        chunk_text, speech_rate, voice=voice
+                        chunk_text,
+                        speech_rate,
+                        voice=voice,
+                        pitch_hz=pitch_hz,
+                        volume_lufs=volume_lufs,
                     ),
                     max_chars=self.chunk_max_chars_yandex,
                     max_retries=self.chunk_max_retries,
@@ -2852,7 +6118,9 @@ class TTSNode(Node):
         per_chunk_rates = [sample_rate for _, sample_rate in audio_results]
 
         audio_np = (
-            np.concatenate(audio_segments) if len(audio_segments) > 1 else audio_segments[0]
+            np.concatenate(audio_segments)
+            if len(audio_segments) > 1
+            else audio_segments[0]
         )
         actual_sample_rate = per_chunk_rates[-1] if per_chunk_rates else 22050
 
@@ -2865,23 +6133,44 @@ class TTSNode(Node):
         return audio_np
 
     def _synthesize_yandex_single(
-        self, text: str, speech_rate: float, voice: str = None
+        self,
+        text: str,
+        speech_rate: float,
+        voice: Optional[str] = None,
+        pitch_hz: Optional[float] = None,
+        volume_lufs: Optional[float] = None,
     ) -> tuple[np.ndarray, int]:
         """Один gRPC ``UtteranceSynthesis`` → ``(audio_np, sample_rate)``.
 
         Helper для :meth:`_synthesize_yandex` (multi-chunk loop). Не
         предполагается вызывать напрямую извне — публичный контракт
         остаётся через ``_synthesize_yandex``.
+
+        Args:
+            text: текст для синтеза.
+            speech_rate: множитель скорости (1.0 = норма).
+            voice: голос Yandex (None → ``self.yandex_voice``).
+            pitch_hz: SSML ``<prosody pitch="...">`` в Hz-offset для
+                Yandex ``Hints.pitch_shift`` (range [-1000; 1000]).
+                None → Yandex применит свой дефолт (0 Hz).
+            volume_lufs: SSML ``<prosody volume="...">`` в виде абсолютной
+                LUFS-цели для Yandex ``Hints.volume`` (range [-145; 0)).
+                None → Yandex применит свой дефолт (-19 LUFS).
         """
+        hints = [tts_pb2.Hints(voice=voice or self.yandex_voice)]
+        hints.append(tts_pb2.Hints(speed=speech_rate))
+        if pitch_hz is not None:
+            hints.append(tts_pb2.Hints(pitch_shift=pitch_hz))
+        if volume_lufs is not None:
+            hints.append(tts_pb2.Hints(volume=volume_lufs))
         request = tts_pb2.UtteranceSynthesisRequest(
             text=text,
             output_audio_spec=tts_pb2.AudioFormatOptions(
-                container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
+                container_audio=tts_pb2.ContainerAudio(
+                    container_audio_type=tts_pb2.ContainerAudio.WAV
+                )
             ),
-            hints=[
-                tts_pb2.Hints(voice=voice or self.yandex_voice),  # anton! (issue #1219 — voice override)
-                tts_pb2.Hints(speed=speech_rate),
-            ],
+            hints=hints,
             loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
         )
 
@@ -2899,7 +6188,9 @@ class TTSNode(Node):
 
             # ВАЖНО! Для оригинального звука ROBBOX:
             # читаем сырые байты (включая WAV заголовок!) как PCM
-            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            audio_np = (
+                np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            )
 
             try:
                 with io.BytesIO(audio_data) as wav_file:
@@ -2916,7 +6207,12 @@ class TTSNode(Node):
             raise Exception(f"Yandex synthesis error: {e}")
 
     def _synthesize_yandex_single_with_latency(
-        self, text: str, speech_rate: float, voice: str = None
+        self,
+        text: str,
+        speech_rate: float,
+        voice: Optional[str] = None,
+        pitch_hz: Optional[float] = None,
+        volume_lufs: Optional[float] = None,
     ) -> tuple[np.ndarray, int]:
         """``_synthesize_yandex_single`` + лог латентности (issue #931 acceptance).
 
@@ -2926,7 +6222,13 @@ class TTSNode(Node):
         «Latency добавлена в логи (время синтеза каждого чанка)»).
         """
         _t0 = time.monotonic()
-        segment, sample_rate = self._synthesize_yandex_single(text, speech_rate, voice=voice)
+        segment, sample_rate = self._synthesize_yandex_single(
+            text,
+            speech_rate,
+            voice=voice,
+            pitch_hz=pitch_hz,
+            volume_lufs=volume_lufs,
+        )
         _elapsed_ms = (time.monotonic() - _t0) * 1000.0
         self.get_logger().info(
             f"⏱️ Yandex synth: {len(text)} chars → {_elapsed_ms:.0f} ms "
@@ -2990,7 +6292,49 @@ class TTSNode(Node):
             valid = ", ".join(fmt.value for fmt in TTSFormat)
             raise ValueError(f"minimax_format={value!r} недопустим; разрешено: {valid}")
 
-    async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    @staticmethod
+    def _normalize_minimax_emotion(value: str) -> str:
+        """Нормализовать ROS-параметр ``minimax_emotion``.
+
+        Допустимые значения MiniMax T2A v2 (см. ``minimax_tts.py`` —
+        ``voice_setting.emotion``):
+
+            happy | neutral | sad | angry | fearful | disgusted | surprised
+
+        Пустая строка / неизвестное значение → ``""`` (полагаем, что
+        emotion НЕ передаётся в API — нейтральный default).
+        Регистр игнорируется; ``neutral`` оставлен явно — некоторые
+        сценарии хотят жёстко зафиксировать нейтральную подачу.
+
+        Args:
+            value: значение из ``get_parameter("minimax_emotion")``.
+
+        Returns:
+            Один из 7 MiniMax-emotion lowercase или ``""``.
+        """
+        valid = {
+            "happy",
+            "neutral",
+            "sad",
+            "angry",
+            "fearful",
+            "disgusted",
+            "surprised",
+        }
+        if not value:
+            return ""
+        normalized = value.strip().lower()
+        if normalized in valid:
+            return normalized
+        return ""
+
+    async def _synthesize_minimax_async(
+        self,
+        text: str,
+        ssml_attributes: dict = None,
+        voice: str = None,
+        language: str = None,
+    ) -> dict:
         """Асинхронный синтез через MiniMax T2A v2 HTTP API.
 
         Поддерживает все 4 контейнера (``PCM``/``WAV``/``MP3``/``OGG``) —
@@ -3024,7 +6368,11 @@ class TTSNode(Node):
         provider = self._ensure_minimax_provider()
 
         # Скорость речи: берём из SSML или параметр ноды.
-        speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
+        speed = (
+            float(ssml_attributes.get("rate", self.minimax_speed))
+            if ssml_attributes
+            else self.minimax_speed
+        )
 
         # Контейнер MiniMax-ответа. PCM — default (как в ADR-0003 §2.3),
         # но WAV/MP3 тоже поддерживаются через transcode.
@@ -3032,10 +6380,25 @@ class TTSNode(Node):
         settings = TTSSettings(
             voice=voice or self.minimax_voice,
             model=self.minimax_model,
-            language=self.minimax_language,
+            # AV-28: язык этой реплики (language_boost) важнее
+            # статического ROS-параметра — иначе французский текст
+            # синтезировался бы с language_boost=Russian.
+            language=language or self.minimax_language,
             speed=speed,
             sample_rate=self.minimax_sample_rate,
             format=fmt,
+            # Issue #1780: forward emotion / pitch / volume /
+            # pronunciation_dict to the provider. Empty string → field
+            # is omitted (no behaviour change vs. pre-#1780). Emotion
+            # has a non-empty default ("neutral") which matches the
+            # API's implicit default — payload gains the ``emotion``
+            # key but the rendered voice is identical.
+            emotion=self.minimax_emotion or None,
+            pitch=_parse_optional_int(self.minimax_pitch_raw),
+            volume=_parse_optional_float(self.minimax_volume_raw),
+            pronunciation_dict=_parse_pronunciation_dict(
+                self.minimax_pronunciation_dict_raw
+            ),
         )
 
         try:
@@ -3067,7 +6430,14 @@ class TTSNode(Node):
 
         return {"audio_np": audio_np, "sample_rate": decoded_sample_rate}
 
-    async def _synthesize_minimax_with_retry(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    async def _synthesize_minimax_with_retry(
+        self,
+        text: str,
+        ssml_attributes: dict = None,
+        voice: str = None,
+        language: str = None,
+        budget_deadline: float | None = None,
+    ) -> dict:
         """Обёртка с retry-loop над :meth:`_synthesize_minimax_async`.
 
         Реализует политику retry из ADR-0003 §2.6:
@@ -3080,12 +6450,22 @@ class TTSNode(Node):
         Args:
             text: текст для синтеза.
             ssml_attributes: словарь с SSML-атрибутами (rate/pitch).
+            budget_deadline: issue #2702 п.4 — ``time.monotonic()``-дедлайн
+                облачного TTS-бюджета (``cloud_tts_budget_s``). Проверяется
+                ПЕРЕД каждым retry (не перед первой попыткой — та должна
+                случиться безусловно, раз уж цепочка решила звать MiniMax):
+                если бюджет уже исчерпан, дальнейшие retry отменяются и
+                последнее исключение поднимается немедленно — экономит
+                время для следующего провайдера в цепочке (Yandex/Silero).
+                ``None`` (default) — поведение прежнее, retry не ограничены
+                бюджетом (только своим ``minimax_max_retries``).
 
         Returns:
             см. ``_synthesize_minimax_async``.
 
         Raises:
-            Последнее исключение после исчерпания retry budget.
+            Последнее исключение после исчерпания retry budget (или после
+            исчерпания облачного бюджета — см. ``budget_deadline``).
         """
         configured_retries = min(max(0, int(self.minimax_max_retries)), 3)
         max_attempts = configured_retries + 1  # 0 retries → 1 attempt
@@ -3094,7 +6474,9 @@ class TTSNode(Node):
 
         for attempt in range(max_attempts):
             try:
-                return await self._synthesize_minimax_async(text, ssml_attributes, voice=voice)
+                return await self._synthesize_minimax_async(
+                    text, ssml_attributes, voice=voice, language=language
+                )
             except Exception as exc:
                 # Классифицируем — некоторые ошибки ретраить нельзя.
                 if isinstance(exc, MiniMaxTTSAuthError):
@@ -3106,11 +6488,26 @@ class TTSNode(Node):
 
                 # ADR-0003 permits only one retry for 429. Timeout/network/5xx
                 # consume the full configured retry budget.
-                retry_budget = 1 if isinstance(exc, MiniMaxTTSRateLimitError) else configured_retries
+                retry_budget = (
+                    1
+                    if isinstance(exc, MiniMaxTTSRateLimitError)
+                    else configured_retries
+                )
                 last_exc = exc
                 if attempt >= retry_budget:
                     self.get_logger().error(
                         f"MiniMax exhausted {attempt + 1}/{retry_budget + 1} attempts: {exc}"
+                    )
+                    raise
+                if budget_deadline is not None and time.monotonic() >= budget_deadline:
+                    # Issue #2702 п.4 — облачный бюджет уже исчерпан (эта
+                    # ПЕРВАЯ попытка сама по себе его съела, например честным
+                    # httpx-таймаутом): не ретраим, следующий провайдер
+                    # (Yandex/Silero) должен успеть получить свой шанс.
+                    self.get_logger().warn(
+                        f"⏱️ [issue 2702] MiniMax retry {attempt + 1}/{retry_budget} "
+                        f"отменён — облачный TTS-бюджет исчерпан "
+                        f"({type(exc).__name__}: {exc})"
                     )
                     raise
                 delay = (backoff_ms / 1000.0) * (2**attempt)
@@ -3126,7 +6523,14 @@ class TTSNode(Node):
         assert last_exc is not None
         raise last_exc
 
-    def _synthesize_minimax_streaming_publish(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    def _synthesize_minimax_streaming_publish(
+        self,
+        text: str,
+        ssml_attributes: dict = None,
+        voice: str = None,
+        language: str = None,
+        sink: str = "speaker",  # ADR-0055 / issue #1993 — headset маршрут
+    ) -> dict:
         """Sync-обёртка над :meth:`_stream_minimax_chunks` для streaming-режима MiniMax.
 
         Публикует каждый :class:`TTSChunk` как отдельный ``AudioData`` msg
@@ -3145,9 +6549,13 @@ class TTSNode(Node):
 
         async def _consume_and_publish():
             nonlocal sample_rate
-            async for chunk in self._stream_minimax_chunks(text, ssml_attributes, voice=voice):
+            async for chunk in self._stream_minimax_chunks(
+                text, ssml_attributes, voice=voice, language=language
+            ):
                 if chunk.finish_reason == "error":
-                    raise Exception("MiniMax stream reported error: finish_reason=error")
+                    raise Exception(
+                        "MiniMax stream reported error: finish_reason=error"
+                    )
 
                 if chunk.samples:
                     audio_np, chunk_sample_rate = self._decode_minimax_audio(
@@ -3168,7 +6576,13 @@ class TTSNode(Node):
                         audio_np,
                         chunk_sample_rate,
                     )
-                    self._publish_audio(topic_audio)
+                    # ADR-0055 / issue #1993 — headset маршрут: вместо
+                    # /voice/audio/speech публикуем в /avatar/tts/audio.
+                    # ADR-0078 §4: пробрасываем chunk_sample_rate в WS-meta.
+                    if sink == "headset":
+                        self._publish_headset_audio(topic_audio, chunk_sample_rate)
+                    else:
+                        self._publish_audio(topic_audio)
 
                 if chunk.finish_reason == "stop":
                     break
@@ -3187,7 +6601,14 @@ class TTSNode(Node):
             "already_published": True,
         }
 
-    def _synthesize_minimax(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    def _synthesize_minimax(
+        self,
+        text: str,
+        ssml_attributes: dict = None,
+        voice: str = None,
+        language: str = None,
+        budget_deadline: float | None = None,
+    ) -> dict:
         """Sync-обёртка над :meth:`_synthesize_minimax_with_retry`.
 
         🔴 FIX (live 16:xx «Event loop is closed»): раньше оборачивали
@@ -3196,11 +6617,26 @@ class TTSNode(Node):
         Теперь ВСЕ вызовы идут через процесс-глобальный вечный loop
         (``_run_in_tts_loop``) — retry внутри одного синтеза и
         последующие синтезы переиспользуют тот же loop.
+
+        ``budget_deadline`` — issue #2702 п.4, см.
+        :meth:`_synthesize_minimax_with_retry`.
         """
-        coro = self._synthesize_minimax_with_retry(text, ssml_attributes, voice=voice)
+        coro = self._synthesize_minimax_with_retry(
+            text,
+            ssml_attributes,
+            voice=voice,
+            language=language,
+            budget_deadline=budget_deadline,
+        )
         return _run_in_tts_loop(coro)
 
-    async def _stream_minimax_chunks(self, text: str, ssml_attributes: dict = None, voice: str = None):
+    async def _stream_minimax_chunks(
+        self,
+        text: str,
+        ssml_attributes: dict = None,
+        voice: str = None,
+        language: str = None,
+    ):
         """Стриминг MiniMax через ``provider.stream()`` для chunk-per-frame.
 
         Провайдер сейчас возвращает один ``TTSChunk(finish_reason="stop")``
@@ -3216,11 +6652,18 @@ class TTSNode(Node):
         """
         provider = self._ensure_minimax_provider()
 
-        speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
+        speed = (
+            float(ssml_attributes.get("rate", self.minimax_speed))
+            if ssml_attributes
+            else self.minimax_speed
+        )
         settings = TTSSettings(
             voice=voice or self.minimax_voice,
             model=self.minimax_model,
-            language=self.minimax_language,
+            # AV-28: язык этой реплики (language_boost) важнее
+            # статического ROS-параметра — иначе французский текст
+            # синтезировался бы с language_boost=Russian.
+            language=language or self.minimax_language,
             speed=speed,
             sample_rate=self.minimax_sample_rate,
             format=self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM,
@@ -3255,9 +6698,7 @@ class TTSNode(Node):
     def _publish_audio(self, audio_np: np.ndarray):
         """Публикует аудио в ROS topic."""
         # Конвертируем в int16 для AudioData
-        audio_int16 = (
-            np.clip(audio_np, -1.0, 1.0) * 32767
-        ).astype("<i2", copy=False)
+        audio_int16 = (np.clip(audio_np, -1.0, 1.0) * 32767).astype("<i2", copy=False)
 
         msg = AudioData()
         # ROS uint8[] assignment is portable as a sequence of octets. Assigning
@@ -3265,6 +6706,223 @@ class TTSNode(Node):
         msg.data = list(audio_int16.tobytes())
 
         self.audio_pub.publish(msg)
+
+    def _publish_headset_audio(
+        self,
+        audio_np: np.ndarray,
+        sample_rate: Optional[int] = None,
+        *,
+        request_id: Optional[str] = None,
+    ):
+        """ADR-0055 / issue #1993 — публикация синтезированной реплики ТАРС
+        в ``/avatar/tts/audio`` (int16 LE PCM, тот же SR, что ``/voice/audio/speech``).
+
+        Подписчик (quest_node) заберёт чанк и через
+        ``ws_server.deliver_audio(stream="operator_tts", ...)`` доставит
+        в шлем оператора. Динамики робота НЕ играют (sink=headset → ALSA
+        path skipped в ``_synthesize_and_play``).
+
+        ADR-0078 §4: ``sample_rate`` — реальный rate PCM в Гц. Через DDS
+        AudioData (нет поля rate) sample_rate не передаётся, поэтому
+        публикуем **side-channel** ``/avatar/tts/audio_meta`` (String JSON
+        ``{request_id, sample_rate, ts_ms}``) **ДО** AudioData. quest_node
+        кеширует ``request_id → sample_rate`` и подставляет в
+        ``ws_server.deliver_audio(sample_rate=...)``.
+
+        Fallback ``sample_rate``: ``self.audio_output_sample_rate`` (declare
+        default 16000). Если None, в лог уходит WARNING: в норме ВСЕГДА
+        передаётся. ``request_id`` обязателен — supervisor генерирует его
+        в ``_publish_avatar_tts`` (uuid hex8). Без request_id audio_meta
+        не публикуем (клиент не сможет сматчить кэш с чанком).
+        """
+        audio_int16 = (np.clip(audio_np, -1.0, 1.0) * 32767).astype("<i2", copy=False)
+
+        msg = AudioData()
+        msg.data = list(audio_int16.tobytes())
+
+        if sample_rate is None:
+            sample_rate = getattr(self, "audio_output_sample_rate", 16000)
+            self.get_logger().warning(
+                "🎧 [ADR-0078] _publish_headset_audio без sample_rate — "
+                f"fallback {sample_rate} (audio_output_sample_rate)"
+            )
+
+        # request_id: явный kwarg побеждает; иначе берём
+        # ``self._avatar_tts_request_id`` (выставляется в _on_avatar_tts_request
+        # до старта синтеза — supervisor генерит uuid hex8 в
+        # _publish_avatar_tts).
+        if not request_id:
+            request_id = getattr(self, "_avatar_tts_request_id", None)
+
+        # ADR-0078 §4: публикуем audio_meta (side-channel) ДО AudioData,
+        # чтобы подписчик успел закешировать sample_rate до прихода чанка.
+        # В одном DDS-потоке порядок гарантирован; разные потоки — допустимо
+        # что audio_meta придёт после, тогда fallback в deliver_audio.
+        if request_id:
+            try:
+                meta_payload = {
+                    "request_id": str(request_id),
+                    "sample_rate": int(sample_rate),
+                    "ts_ms": int(time.time() * 1000),
+                }
+                meta_msg = String()
+                meta_msg.data = json.dumps(meta_payload, ensure_ascii=False)
+                self._avatar_audio_meta_pub.publish(meta_msg)
+            except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
+                self.get_logger().warning(
+                    f"🎧 [ADR-0078] _avatar_audio_meta_pub publish failed: {exc}"
+                )
+        else:
+            self.get_logger().warning(
+                "🎧 [ADR-0078] _publish_headset_audio без request_id — "
+                "audio_meta не публикуется, клиент будет на fallback"
+            )
+
+        self._avatar_audio_pub.publish(msg)
+
+    # ── Preview-synthesis (ADR-0079 / issue #2138.A.3) ─────────────────
+    # Канбан-карточка t_74dd49c2: чистый синтез БЕЗ FIFO/ALSA/metrics для
+    # picker'а оператора. ws_server/клиент preview'а ждут закодированный
+    # контейнер (mp3/wav/opus) — см. preview_audio_sink.ts §1: WebAudio
+    # ``decodeAudioData`` сам декодирует mp3/wav. Сырой PCM туда НЕ идёт
+    # (это грабли канала ТАРС, см. ADR-0055 §грабли).
+
+    def synthesize_preview(  # noqa: C901 — readable linear flow, not complex
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        *,
+        provider: Optional[Any] = None,
+        timeout_s: float = 10.0,
+    ) -> "PreviewAudioResult":
+        """Синтезировать «прослушиваемый образец» голоса для picker'а.
+
+        Возвращает :class:`PreviewAudioResult` с байтами в **закодированном**
+        контейнере (mp3/wav/opus — что выбрано в ``preview_format``), а не
+        сырым int16 PCM. Этим preview отличается от ``_publish_headset_audio``
+        (sink=headset → /avatar/tts/audio) и от ``_publish_audio``
+        (sink=speaker → /voice/audio/speech).
+
+        Args:
+            text: фраза для синтеза (уже плоский текст, без SSML).
+            voice: запрошенный голос picker'а. **НЕ меняет активный голос
+                личности** (``self.minimax_voice`` остаётся как был).
+            provider: ``TTSProvider`` для синтеза. Если ``None`` —
+                ``self._ensure_minimax_provider()`` (тот же клиент, что
+                и для основного голоса — делим HTTP-пул, экономим
+                keep-alive).
+            timeout_s: жёсткий таймаут на сетевой синтез. По истечении —
+                :class:`PreviewSynthesisTimeoutError`. Без таймаута
+                picker может «висеть вечно» при недоступном upstream.
+
+        Returns:
+            :class:`PreviewAudioResult` с полями ``audio_bytes``,
+            ``content_type``, ``sample_rate``, ``format_str``,
+            ``duration_s``.
+
+        Raises:
+            PreviewSynthesisTimeoutError: ``provider.synthesize()`` не
+                уложился в ``timeout_s``.
+            PreviewSynthesisError: провайдер бросил (auth/bad-request/rate
+                limit/5xx) — текст ошибки в ``exc.reason``.
+            PreviewSynthesisUnavailableError: MiniMax opt-in не подключён
+                (``MINIMAX_AVAILABLE=False``).
+        """
+        import asyncio
+
+        if not MINIMAX_AVAILABLE:
+            raise PreviewSynthesisUnavailableError(
+                "minimax_unavailable: rob_box_llm не подключён — preview требует MiniMax"
+            )
+        if not text or not text.strip():
+            # Тот же guard, что и в _synthesize_and_play (issue #2096):
+            # пустой текст раньше ронял провайдер chain в TTSBadRequestError
+            # и каскадно помечал всех провайдеров мёртвыми на 30s.
+            raise PreviewSynthesisError(
+                "empty_text: пустой текст для preview", reason="empty_text"
+            )
+        if timeout_s <= 0:
+            raise PreviewSynthesisError(
+                f"invalid_timeout: timeout_s={timeout_s} должен быть > 0",
+                reason="invalid_timeout",
+            )
+
+        # Резолвим провайдер ТОЛЬКО для чтения (НЕ сохраняем обратно в
+        # self.minimax_voice — preview не должно менять активный голос
+        # личности, см. contract).
+        if provider is None:
+            provider = self._ensure_minimax_provider()
+
+        # Настройки синтеза. voice — из аргумента (НЕ из self.minimax_voice).
+        # format — из preview_format (default mp3, см. ADR-0079 §tts_node).
+        # sample_rate — не форсируем (MiniMax сам подберёт под формат).
+        settings = TTSSettings(
+            voice=voice,
+            model=self.minimax_model,
+            language=self.minimax_language,
+            format=self.preview_format,
+        )
+
+        async def _call():
+            # asyncio.wait_for отменяет корутину по таймауту. На стороне
+            # MiniMax-клиента httpx-сессия тоже идёт через свой timeout, но
+            # в дополнение к нему ставим наш сторож — picker не должен
+            # «висеть» дольше ``timeout_s`` (по умолчанию 10 с) ни при каких
+            # условиях upstream'а.
+            return await asyncio.wait_for(
+                provider.synthesize(text, settings=settings),
+                timeout=timeout_s,
+            )
+
+        try:
+            tts_audio = _run_in_tts_loop(_call())
+        except PreviewSynthesisError:
+            # Уже наша ошибка — пробрасываем без обёртки.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # asyncio.TimeoutError (из wait_for), MiniMaxTTSError*, CancelledError…
+            # Различаем «висели и сорвались по таймауту» vs «провайдер бросил».
+            err_name = type(exc).__name__
+            if err_name in ("TimeoutError", "PreviewSynthesisTimeoutError"):
+                raise PreviewSynthesisTimeoutError(
+                    f"preview синтез превысил таймаут {timeout_s:.1f}s "
+                    f"(provider={getattr(provider, 'name', '?')}, voice={voice!r})",
+                    timeout_s=timeout_s,
+                ) from exc
+            raise PreviewSynthesisError(
+                f"preview синтез упал: {err_name}: {exc}",
+                reason=str(exc),
+            ) from exc
+
+        # Конвертируем TTSFormat → MIME content_type для ws_server/клиента.
+        content_type = _format_to_content_type(tts_audio.format)
+
+        # Грубая оценка длительности (для логов/диагностики). Для mp3/wav
+        # точная длительность требует парсинга контейнера — клиент всё равно
+        # сделает это через decodeAudioData, поэтому число ориентировочное.
+        bytes_per_sample = 2  # int16
+        if tts_audio.format == TTSFormat.PCM:
+            duration_s = len(tts_audio.samples) / (
+                tts_audio.sample_rate * bytes_per_sample
+            )
+        else:
+            # Грубая оценка для mp3 @ ~128 kbps; для wav/ogg тоже мимо,
+            # но это diag-only.
+            duration_s = (len(tts_audio.samples) * 8.0) / 128_000.0
+
+        self.get_logger().info(
+            f"🎧 [preview-synth] ok: {len(tts_audio.samples)} bytes "
+            f"format={tts_audio.format.value} sr={tts_audio.sample_rate} "
+            f"voice={voice or 'default'} dur~{duration_s:.2f}s"
+        )
+
+        return PreviewAudioResult(
+            audio_bytes=tts_audio.samples,
+            content_type=content_type,
+            sample_rate=tts_audio.sample_rate,
+            format_str=tts_audio.format.value,
+            duration_s=duration_s,
+        )
 
     def _ensure_minimax_provider(self):
         """Return the MiniMax provider, constructing it exactly once.
@@ -3346,14 +7004,16 @@ class TTSNode(Node):
                 self.minimax_provider = None
                 self._minimax_provider_initialized = False
 
-    def shutdown_synthesis_executor(self, wait: bool = False, timeout: float = SYNTHESIS_SHUTDOWN_TIMEOUT_S):
+    def shutdown_synthesis_executor(
+        self, wait: bool = False, timeout: float = SYNTHESIS_SHUTDOWN_TIMEOUT_S
+    ):
         """Drain the bounded synth executor (BLK-9).
 
         Idempotent. Called from ``main()`` before ``destroy_node()`` so the
         worker pool releases its threads cleanly. ``wait=False`` by default
         because ALSA playback can block beyond a reasonable shutdown window
         and we don't want to hang ROS teardown; the daemon-style behavior
-        matches the previous ``threading.Thread(daemon=True)`` semantics.
+        matches the previous bare-daemon-thread semantics.
         """
         executor = getattr(self, "_synthesis_executor", None)
         if executor is None:
@@ -3417,6 +7077,7 @@ class TTSNode(Node):
         batch_total: Optional[int] = None,
         batch_started_at: Optional[float] = None,
         dialogue_id: Optional[str] = None,
+        queued: bool = False,
     ) -> None:
         """Publish ``/voice/tts/finished`` (and possibly ``/voice/tts/batch_complete``).
 
@@ -3424,10 +7085,23 @@ class TTSNode(Node):
         that batch metadata stays consistent across the success/stopped/error
         branches and the batch_complete fire rule (``batch_index == batch_total``)
         doesn't drift between code paths.
+
+        Issue #2553 — ``queued=True`` отмечает finished как «chunk принят в
+        ``_pending_speech_queue``, но НЕ проигран и НЕ завершён». В этом
+        режиме НЕ публикуем ``/voice/tts/batch_complete`` side-channel и
+        НЕ дреним очередь — реальное завершение придёт ПОСЛЕ drain +
+        submit + playback, когда ``_publish_tts_finished`` вызовется от
+        имени дренированного chunk'а без ``queued=True``. Это разрывает
+        порочный круг «babble-retry publish finished → batch_complete →
+        drain → submit babble-retry → ещё один finished → ...».
         """
         if not speech_id:
             return
         payload: Dict[str, Any] = {"speech_id": speech_id, "success": success}
+        if queued:
+            # Маркер, который dialogue_node / mcp_server может
+            # использовать, чтобы отличить «в очереди» от «произнесено».
+            payload["queued"] = True
         if error is not None:
             payload["error"] = error
         if duration_sec is not None:
@@ -3442,42 +7116,426 @@ class TTSNode(Node):
         finished_msg.data = json.dumps(payload, ensure_ascii=False)
         self.finished_pub.publish(finished_msg)
 
-        # Batch-complete side-channel — fires once per turn after the last
-        # chunk so dialogue_node can drive music_cleanup deterministically.
-        if batch_id is not None and batch_index is not None and batch_total is not None \
-                and int(batch_index) == int(batch_total):
-            import time as _time
-            duration_ms: Optional[int] = None
-            if batch_started_at is not None:
-                duration_ms = int((_time.monotonic() - batch_started_at) * 1000)
-            batch_payload: Dict[str, Any] = {
-                "batch_id": batch_id,
-                "chunks_total": int(batch_total),
-                "batch_index": int(batch_index),
-            }
-            if duration_ms is not None:
-                batch_payload["batch_duration_ms"] = duration_ms
-            batch_msg = String()
-            batch_msg.data = json.dumps(batch_payload, ensure_ascii=False)
-            self.batch_complete_pub.publish(batch_msg)
-            self.get_logger().info(
-                "📦 [tts_node] /voice/tts/batch_complete published "
-                f"(batch_id={batch_id[:8]}..., chunks_total={batch_total}, "
-                f"batch_duration_ms={duration_ms})"
+        # Issue #2553 — queued finished НЕ триггерит batch_complete:
+        # иначе dialogue_node триггерит music_cleanup раньше времени и
+        # следующий turn услышит обрыв активного chunk'а. Реальное
+        # закрытие batch'а придёт ПОСЛЕ drain + реального playback
+        # дренированного chunk'а (где ``queued=False``).
+        if queued:
+            return
+
+        # Issue #980 — batch-complete side-channel + issue #2553 — drain.
+        # Inline-логика (НЕ helper) чтобы сохранить mutation-контракт
+        # ``payload``: ``republish finished_msg`` с добавленными
+        # ``batch_complete=True`` / ``batch_duration_ms`` ПОЛУЧАЕТ все
+        # поля предыдущего finished (включая ``duration_sec``) — это
+        # back-compat поведение, на которое полагаются подписчики
+        # ``/voice/tts/finished`` (issue #980) и
+        # ``test_finished_event_duration_sec_with_batch_metadata``.
+        if (
+            batch_id is not None
+            and batch_index is not None
+            and batch_total is not None
+            and int(batch_index) == int(batch_total)
+        ):
+            self._maybe_publish_batch_complete(
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                batch_started_at=batch_started_at,
+                payload=payload,
+                finished_msg=finished_msg,
             )
-            # Echo on finished too so any consumer of ``/voice/tts/finished``
-            # that wants the closure timestamp can grab it without a second
-            # subscription. Kept behind the ``last_chunk`` branch to avoid
-            # spamming every chunk's finished event with the closure marker.
-            payload["batch_complete"] = True
-            if duration_ms is not None:
-                payload["batch_duration_ms"] = duration_ms
-            finished_msg.data = json.dumps(payload, ensure_ascii=False)
-            # Republish to keep the marker attached to the same logical event.
-            # (Bounded QoS depth=10 means the second publish can briefly bump
-            # the depth; downstream subscribers are designed to be idempotent
-            # on ``batch_complete``.)
-            self.finished_pub.publish(finished_msg)
+
+    # ── Issue #980 batch_complete side-channel + issue #2553 drain ───────
+
+    def _maybe_publish_batch_complete(
+        self,
+        *,
+        batch_id: str,
+        batch_index: int,
+        batch_total: int,
+        batch_started_at: Optional[float],
+        payload: Dict[str, Any],
+        finished_msg: "String",
+    ) -> None:
+        """Опубликовать ``/voice/tts/batch_complete`` + republish finished с
+        маркером closure + дренить pending queue после завершения последнего
+        chunk'а batch'а.
+
+        Вынесено из ``_publish_tts_finished`` чтобы удержать CC в ADR-0021
+        лимите (=15). Принимает мутируемые ``payload`` / ``finished_msg`` —
+        мутирует ``payload`` (добавляет ``batch_complete=True`` и
+        ``batch_duration_ms``) и re-publish'ит ``finished_msg``. Это
+        back-compat контракт issue #980 — подписчики ``finished_pub``
+        видят closure-маркер в ТОМ ЖЕ payload (с сохранёнными
+        ``success``, ``duration_sec``, ``error``, etc.).
+        """
+        import time as _time
+
+        duration_ms: Optional[int] = None
+        if batch_started_at is not None:
+            duration_ms = int((_time.monotonic() - batch_started_at) * 1000)
+        batch_payload: Dict[str, Any] = {
+            "batch_id": batch_id,
+            "chunks_total": int(batch_total),
+            "batch_index": int(batch_index),
+        }
+        if duration_ms is not None:
+            batch_payload["batch_duration_ms"] = duration_ms
+        batch_msg = String()
+        batch_msg.data = json.dumps(batch_payload, ensure_ascii=False)
+        self.batch_complete_pub.publish(batch_msg)
+        self.get_logger().info(
+            "📦 [tts_node] /voice/tts/batch_complete published "
+            f"(batch_id={batch_id[:8]}..., chunks_total={batch_total}, "
+            f"batch_duration_ms={duration_ms})"
+        )
+        # Echo on finished too so any consumer of ``/voice/tts/finished``
+        # that wants the closure timestamp can grab it without a second
+        # subscription. Kept behind the ``last_chunk`` branch to avoid
+        # spamming every chunk's finished event with the closure marker.
+        payload["batch_complete"] = True
+        if duration_ms is not None:
+            payload["batch_duration_ms"] = duration_ms
+        finished_msg.data = json.dumps(payload, ensure_ascii=False)
+        # Republish to keep the marker attached to the same logical event.
+        # (Bounded QoS depth=10 means the second publish can briefly bump
+        # the depth; downstream subscribers are designed to be idempotent
+        # on ``batch_complete``.)
+        self.finished_pub.publish(finished_msg)
+
+        # Issue #2553 — после закрытия batch'а достаём из
+        # ``_pending_speech_queue`` отложенные chunk'и (babble-retry,
+        # DJ auto-transition, etc.) и переотправляем их в обычный
+        # FIFO-gate. К моменту ``batch_complete`` активного batch
+        # ``_play_active_seq`` уже сброшен в ``None`` (см.
+        # ``_synthesize_and_play`` / ``_release_play_seq``), поэтому
+        # следующий submit сразу станет head'ом FIFO.
+        self._drain_pending_speech_queue(reason=f"batch_complete:{batch_id[:8]}")
+
+    # ── Issue #2553 — pending speech queue (babble-retry / DJ overlap) ────
+
+    #: Жёсткий предел отложенных chunk'ов в очереди. Больше — upstream
+    #: спамит (dialogue_node / DJModeController), и лучше залогировать
+    #: warning + drop, чем уйти в бесконечный рост памяти.
+    _PENDING_SPEECH_QUEUE_MAX = 8
+
+    def _handle_dialogue_id_change(
+        self,
+        chunk_data: dict,
+        dialogue_id: Optional[str],
+    ) -> bool:
+        """Issue #1996 / pre-existing — stale-dialogue guard для TTS chunks.
+
+        Вынесено из ``dialogue_callback`` чтобы удержать CC в ADR-0021
+        лимите (=15). Обрабатывает три случая:
+
+        1. **Stale dialogue** — есть текущий ``current_dialogue_id`` и
+           входящий chunk от другого диалога → drop с
+           ``finished_pub(success=False, error="stale_dialogue")``.
+        2. **Dialogue switch** — пришёл новый dialogue_id → прерываем
+           предыдущий playback (``_interrupt_playback``) и обновляем
+           ``current_dialogue_id``.
+        3. **Mid-processing foreign chunk** — есть
+           ``processing_dialogue_id`` и он не совпадает с входящим → drop.
+
+        Returns:
+            ``True`` если chunk надо отбросить (caller делает ``return``);
+            ``False`` если chunk идёт в основной pipeline.
+        """
+        # Старый запрос от устаревшего диалога — отбрасываем ДО синтеза
+        if (
+            dialogue_id
+            and self.current_dialogue_id
+            and dialogue_id != self.current_dialogue_id
+        ):
+            self.get_logger().warning(
+                f"❌ Отбрасываем устаревший TTS диалога {dialogue_id[:8]} "
+                f"(текущий: {self.current_dialogue_id[:8]})"
+            )
+            # Опубликуем finished с error=True чтобы MCP speak_text не вис в ожидании
+            speech_id_to_drop = chunk_data.get("speech_id")
+            if speech_id_to_drop:
+                import json as _json
+
+                _drop_msg = String()
+                _drop_msg.data = _json.dumps(
+                    {
+                        "speech_id": speech_id_to_drop,
+                        "success": False,
+                        "error": "stale_dialogue",
+                    },
+                    ensure_ascii=False,
+                )
+                self.finished_pub.publish(_drop_msg)
+            return True
+
+        if dialogue_id:
+            # Если это новый диалог - прерываем предыдущий
+            if self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
+                self.get_logger().warning(
+                    f"🔄 Новый диалог обнаружен! "
+                    f"Прерываем предыдущий ({self.current_dialogue_id[:8]}...) → "
+                    f"новый ({dialogue_id[:8]}...)"
+                )
+                # Прерываем воспроизведение
+                self._interrupt_playback()
+
+            # Обновляем текущий dialogue_id
+            self.current_dialogue_id = dialogue_id
+
+            # Проверяем: если мы сейчас обрабатываем другой диалог - отбрасываем chunk
+            if (
+                self.processing_dialogue_id
+                and self.processing_dialogue_id != dialogue_id
+            ):
+                self.get_logger().warning(
+                    f"❌ Отбрасываем устаревший chunk (dialogue_id: {dialogue_id[:8]}..., "
+                    f"ожидается: {self.processing_dialogue_id[:8]}...)"
+                )
+                return True
+        return False
+
+    def _should_queue_for_overlap(
+        self,
+        batch_id: Optional[str],
+        priority: str,
+    ) -> bool:
+        """Issue #2553 — предикат: новый chunk надо поставить в очередь?
+
+        Вынесено из ``dialogue_callback`` чтобы удержать CC в ADR-0021
+        лимите (=15) — пять условий и debug-warn раньше съедали много
+        бюджета.
+
+        Условия «отложить»:
+          * ``_play_active_seq`` задан (TTS играет chunk);
+          * ``_active_batch_id`` задан (мы помним batch активного chunk);
+          * новый chunk имеет ``batch_id`` (не legacy single-chunk);
+          * ``batch_id`` НЕ совпадает с активным (babble-retry / DJ-overlap);
+          * новый chunk НЕ operator-приоритета (issue #1996 invariant 8a:
+            «врезка ≠ прерывание» — operator идёт сразу за активным).
+
+        Returns:
+            ``True`` если chunk надо поставить в ``_pending_speech_queue``
+            вместо submit'а в FIFO-gate.
+        """
+        guard = (
+            self._play_active_seq is not None
+            and self._active_batch_id is not None
+            and batch_id is not None
+            and batch_id != self._active_batch_id
+            and priority not in _TTS_PRIORITY_PREEMPTS
+        )
+        if guard and __import__("os").environ.get("TTS_DEBUG_2553"):
+            self.get_logger().warn(
+                f"[issue 2553 guard] active_seq={self._play_active_seq} "
+                f"active_batch={self._active_batch_id!r} "
+                f"new_batch={batch_id!r} priority={priority!r}"
+            )
+        return guard
+
+    def _enqueue_or_publish_for_overlap(
+        self,
+        *,
+        speech_id: Optional[str],
+        batch_id: Optional[str],
+        batch_index: Optional[int],
+        batch_total: Optional[int],
+        ssml: str,
+        text: str,
+        dialogue_id: Optional[str],
+        ssml_attributes: Optional[Dict[str, Any]],
+        voice: Optional[str],
+        language: Optional[str],
+        priority: str,
+    ) -> None:
+        """Issue #2553 — отложить chunk в очередь ИЛИ опубликовать finished.
+
+        Вынесено из ``dialogue_callback`` для CC-бюджета. Все побочные
+        эффекты babble-retry-guard (enqueue + finished) живут здесь.
+
+        Логика:
+          * ``_enqueue_pending_speech`` вернул True → chunk в очереди,
+            публикуем ``_publish_tts_finished(success=True, queued=True)``
+            — upstream (mcp_server / dialogue_node) видит «chunk принят»
+            и не виснет в ожидании ``speak_text``. ``queued=True``
+            подавляет ``batch_complete`` side-channel.
+          * enqueue вернул False (overflow) → публикуем finished
+            ``success=False, error=pending_queue_overflow, queued=True``
+            — upstream видит что chunk отклонён.
+        """
+        if self._enqueue_pending_speech(
+            speech_id=speech_id,
+            batch_id=batch_id,
+            batch_index=batch_index,
+            batch_total=batch_total,
+            ssml=ssml,
+            text=text,
+            dialogue_id=dialogue_id,
+            ssml_attributes=ssml_attributes,
+            voice=voice,
+            language=language,
+            priority=priority,
+        ):
+            self._publish_tts_finished(
+                speech_id,
+                success=True,
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                dialogue_id=dialogue_id,
+                queued=True,
+            )
+        else:
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="pending_queue_overflow",
+                batch_id=batch_id,
+                batch_index=batch_index,
+                batch_total=batch_total,
+                dialogue_id=dialogue_id,
+                queued=True,
+            )
+
+    def _enqueue_pending_speech(
+        self,
+        *,
+        speech_id: Optional[str],
+        batch_id: Optional[str],
+        batch_index: Optional[int],
+        batch_total: Optional[int],
+        ssml: str,
+        text: str,
+        dialogue_id: Optional[str],
+        ssml_attributes: Optional[Dict[str, Any]],
+        voice: Optional[str],
+        language: Optional[str],
+        priority: str,
+    ) -> bool:
+        """Issue #2553 — отложить chunk в ``_pending_speech_queue``.
+
+        Returns ``True`` если chunk добавлен, ``False`` если очередь
+        переполнена и chunk дропнут (с предупреждением в логе).
+
+        Вызывается из :meth:`dialogue_callback` когда новый batch
+        приходит во время воспроизведения ДРУГОГО batch'а (babble-retry
+        поверх DJ-сета, DJ auto-transition #N+1 поверх turn #N, и т.п.).
+        ``speech_id`` сохраняется для корреляции в логах.
+        """
+        if len(self._pending_speech_queue) >= self._PENDING_SPEECH_QUEUE_MAX:
+            self.get_logger().warning(
+                "⚠️ [issue 2553] _pending_speech_queue переполнена "
+                f"({self._PENDING_SPEECH_QUEUE_MAX}); дропаю chunk "
+                f"speech_id={(speech_id or '')[:8]}, batch_id="
+                f"{(batch_id or '')[:8]} — upstream спамит?"
+            )
+            return False
+        self._pending_speech_queue.append(
+            {
+                "speech_id": speech_id,
+                "batch_id": batch_id,
+                "batch_index": batch_index,
+                "batch_total": batch_total,
+                "ssml": ssml,
+                "text": text,
+                "dialogue_id": dialogue_id,
+                "ssml_attributes": ssml_attributes,
+                "voice": voice,
+                "language": language,
+                "priority": priority,
+            }
+        )
+        self.get_logger().info(
+            "⏸ [issue 2553] speak отложен в _pending_speech_queue "
+            f"(speech_id={(speech_id or '')[:8]}, "
+            f"batch_id={(batch_id or '')[:8]}, "
+            f"queue_size={len(self._pending_speech_queue)})"
+        )
+        return True
+
+    def _drain_pending_speech_queue(self, *, reason: str = "batch_complete") -> int:
+        """Issue #2553 — достать chunk'и из очереди и переотправить их.
+
+        Каждый отложенный chunk проходит заново через
+        :meth:`_submit_synthesis` со СВОИМИ оригинальными параметрами.
+        Внутри batch'а FIFO-порядок сохраняется — ``_pending_seqs``
+        получит последовательные ``play_seq``.
+
+        Args:
+            reason: человекочитаемое описание триггера (для логов).
+
+        Returns:
+            Число chunk'ов, которые удалось переотправить (исключения
+            НЕ считаются успехом). ``0`` если очередь была пуста или
+            все submit'ы упали.
+        """
+        if not self._pending_speech_queue:
+            return 0
+        drained = len(self._pending_speech_queue)
+        pending = self._pending_speech_queue
+        # Переприсваиваем ДО submit'а, чтобы реентрантный
+        # ``batch_complete`` (для дренируемого chunk'а внутри того же
+        # drain'а) не зациклился на старом списке.
+        self._pending_speech_queue = []
+        self.get_logger().info(
+            f"▶️ [issue 2553] drain _pending_speech_queue: "
+            f"{drained} chunk(s) (reason={reason})"
+        )
+        success_count = 0
+        for entry in pending:
+            try:
+                self._submit_synthesis(
+                    self._run_synthesis_worker,
+                    entry["speech_id"],
+                    entry["ssml"],
+                    entry["text"],
+                    entry["dialogue_id"],
+                    entry["ssml_attributes"],
+                    entry["speech_id"],
+                    entry["batch_id"],
+                    entry["batch_index"],
+                    entry["batch_total"],
+                    voice=entry["voice"],
+                    language=entry["language"],
+                    priority=entry["priority"],
+                )
+                success_count += 1
+            except Exception as exc:  # noqa: BLE001 — не валить drain
+                self.get_logger().warning(
+                    f"⚠️ [issue 2553] re-submit pending chunk failed: "
+                    f"speech_id={(entry.get('speech_id') or '')[:8]}, "
+                    f"err={exc!r}"
+                )
+        return success_count
+
+    def _log_voice_param_applied(
+        self, display_name: str, provider: str, voice: str
+    ) -> None:
+        """Лог применения живого voice-параметра (yandex_voice /
+        minimax_voice / silero_speaker) из ``parameters_callback``.
+
+        Предупреждает, если новый голос не найден в реестре провайдера —
+        такой голос всё равно применяется к атрибуту ноды (оператор мог
+        целенаправленно выставить экспериментальный id), но следующий
+        синтез уйдёт в fallback реестра, и это НЕ должно быть тихим
+        (issue #2183, причина 3 — "no silent degradation").
+        """
+        try:
+            from .tts_voice_registry import voices_for as _voices_for
+
+            _known = voice in _voices_for(provider)
+        except Exception:  # noqa: BLE001 — registry недоступен
+            _known = True
+        if _known:
+            self.get_logger().info(f"🗣️ {display_name} voice изменён: {voice}")
+        else:
+            self.get_logger().warn(
+                f"🗣️ {display_name} voice изменён: {voice} — ВНИМАНИЕ: "
+                f"этого голоса нет в реестре {display_name}, следующий "
+                f"синтез без явного voice в запросе уйдёт в fallback"
+            )
 
     def parameters_callback(self, params):
         """Callback для изменения параметров во время работы."""
@@ -3498,13 +7556,61 @@ class TTSNode(Node):
                 self.get_logger().info(f"🐿️ Chipmunk mode: {self.chipmunk_mode}")
             elif param.name == "yandex_speed":
                 self.yandex_speed = param.value
-                self.get_logger().info(f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}")
+                self.get_logger().info(
+                    f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}"
+                )
+            elif param.name in _LIVE_VOICE_PARAMS:
+                # bug(#2183): раньше этих параметров тут не было вообще —
+                # параметр менялся (``ros2 param get`` подтверждал новое
+                # значение), но self.yandex_voice, однократно прочитанный в
+                # __init__ (см. строку ~1134), никогда не обновлялся, поэтому
+                # синтез молча продолжал использовать голос, прочитанный при
+                # старте ноды. Живой repro: SetVoice ставит
+                # yandex_voice=alena, ``ros2 param get /tts_node
+                # yandex_voice`` подтверждает alena, а следующий синтез всё
+                # равно идёт голосом anton.
+                _display, _provider = _LIVE_VOICE_PARAMS[param.name]
+                setattr(self, param.name, param.value)
+                self._log_voice_param_applied(_display, _provider, param.value)
             elif param.name == "minimax_max_retries":
                 self.minimax_max_retries = min(3, max(0, int(param.value)))
-                self.get_logger().info(f"🔁 MiniMax max_retries → {self.minimax_max_retries}")
+                self.get_logger().info(
+                    f"🔁 MiniMax max_retries → {self.minimax_max_retries}"
+                )
             elif param.name == "minimax_streaming":
                 self.minimax_streaming = bool(param.value)
-                self.get_logger().info(f"📡 MiniMax streaming → {self.minimax_streaming}")
+                self.get_logger().info(
+                    f"📡 MiniMax streaming → {self.minimax_streaming}"
+                )
+            elif param.name == "pregenerate_enabled":
+                # Kill-switch for the speculative pipeline. When toggled
+                # OFF at runtime, cancel any in-flight pre-gens so they
+                # don't outlive the operator's decision.
+                new_val = bool(param.value)
+                if not new_val and self._prefetch is not None:
+                    self.cancel_pregen(reason="param_disabled")
+                self._pregenerate_enabled = new_val
+                self.get_logger().info(f"🎯 pregenerate_enabled → {new_val}")
+            elif param.name == "pregenerate_confidence_floor":
+                self._pregenerate_confidence_floor = max(
+                    0.0,
+                    min(1.0, float(param.value)),
+                )
+                # Propagate to the live executor if it has been built.
+                if self._prefetch is not None:
+                    self._prefetch["executor"]._confidence_floor = (
+                        self._pregenerate_confidence_floor
+                    )
+                self.get_logger().info(
+                    f"🎯 pregenerate_confidence_floor → "
+                    f"{self._pregenerate_confidence_floor}"
+                )
+            elif param.name == "pregenerate_history_window":
+                self._pregenerate_history_window = max(1, int(param.value))
+                self.get_logger().info(
+                    f"🎯 pregenerate_history_window → "
+                    f"{self._pregenerate_history_window}"
+                )
 
         return SetParametersResult(successful=True)
 

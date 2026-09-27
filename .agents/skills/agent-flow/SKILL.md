@@ -90,6 +90,14 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 Комментарий `# shellcheck source=hermes_github.sh` нужен чтобы shellcheck
 не предупреждал о non-constant source path.
 
+Тем же `$_LIB_DIR_HERE` подключаются остальные библиотеки рядом со скриптами:
+`lib_agent_flow_common.sh` (общие помощники — `af_load_profile_env`,
+`af_flock_guard_or_exit`, `af_maintenance_gate_or_exit`,
+`gh_list_issues_by_label`, `has_label`/`has_label_json`, `slugify`,
+`detect_pr_kind`, `free_stale_worktrees_for`; дедуп 30.08),
+`lib_user_unlabel_check.sh` и `lib_workflow_dedup.sh`. Все они перечислены в
+`EXPECTED` внутри `install.sh` — иначе на хост не раскладываются.
+
 ## Тесты
 
 `scripts/agent_flow/tests/test_hermes_github.sh` — 12 unit/integration

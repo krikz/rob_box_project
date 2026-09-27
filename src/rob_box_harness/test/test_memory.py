@@ -1,9 +1,7 @@
-"""Tests for the in-memory MemoryStore and the Turn / Fact value objects.
+"""Tests for the in-memory MemoryStore and the Fact value objects.
 
 Covers:
 
-* ``append_turn`` keeps an ordered history per scope.
-* ``load_recent`` returns the most recent turns in newest-first order.
 * ``save_fact`` is idempotent on the fact key.
 * ``search_facts`` ranks by token overlap with ``tags`` and ``key``.
 * ``save_waypoint`` / ``list_waypoints`` / ``delete_waypoint`` /
@@ -23,61 +21,8 @@ from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
     MemoryStore,
-    Turn,
     Waypoint,
 )
-
-
-@pytest.mark.asyncio
-async def test_append_and_load_recent() -> None:
-    """Appended turns appear in ``load_recent`` (newest first)."""
-    store = InMemoryStore()
-    await store.append_turn("user:1", Turn(role="user", content="hi"))
-    await store.append_turn(
-        "user:1", Turn(role="assistant", content="hello there")
-    )
-    recent = await store.load_recent("user:1", limit=10)
-    assert [t.role for t in recent] == ["assistant", "user"]
-    assert recent[0].content == "hello there"
-
-
-@pytest.mark.asyncio
-async def test_clear_turns_removes_scope() -> None:
-    """``clear_turns`` wipes one scope and returns the removed count."""
-    store = InMemoryStore()
-    await store.append_turn("a", Turn(role="user", content="a1"))
-    await store.append_turn("a", Turn(role="assistant", content="a2"))
-    await store.append_turn("b", Turn(role="user", content="b1"))
-    removed = await store.clear_turns("a")
-    assert removed == 2
-    assert await store.load_recent("a") == []
-    # Другой scope не тронут.
-    assert len(await store.load_recent("b")) == 1
-    # Повторная очистка пустого scope → 0.
-    assert await store.clear_turns("a") == 0
-
-
-@pytest.mark.asyncio
-async def test_load_recent_respects_limit() -> None:
-    """``limit`` caps the number of returned turns."""
-    store = InMemoryStore()
-    for i in range(5):
-        await store.append_turn(
-            "scope", Turn(role="user", content=f"msg-{i}")
-        )
-    recent = await store.load_recent("scope", limit=2)
-    assert len(recent) == 2
-    # Newest first: msg-4, msg-3
-    assert recent[0].content == "msg-4"
-    assert recent[1].content == "msg-3"
-
-
-@pytest.mark.asyncio
-async def test_load_recent_rejects_zero_limit() -> None:
-    """``limit`` must be positive."""
-    store = InMemoryStore()
-    with pytest.raises(ValueError, match="limit must be positive"):
-        await store.load_recent("x", limit=0)
 
 
 @pytest.mark.asyncio
@@ -136,20 +81,13 @@ async def test_search_facts_rejects_zero_top_k() -> None:
 
 
 @pytest.mark.asyncio
-async def test_load_recent_empty_scope_returns_empty() -> None:
-    """An unknown scope returns an empty list, not an error."""
-    store = InMemoryStore()
-    assert await store.load_recent("nonexistent") == []
-
-
-@pytest.mark.asyncio
 async def test_in_memory_store_is_aclose_safe() -> None:
     """``aclose`` is a no-op on the in-memory store."""
     store = InMemoryStore()
     await store.aclose()
     # The store is still usable.
-    await store.append_turn("x", Turn(role="user", content="hi"))
-    assert len(await store.load_recent("x")) == 1
+    await store.save_fact("x", Fact(key="k", value="v"))
+    assert len(await store.list_facts("x")) == 1
 
 
 def test_in_memory_store_name() -> None:

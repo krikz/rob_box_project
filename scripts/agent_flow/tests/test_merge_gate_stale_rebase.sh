@@ -40,7 +40,7 @@ slugify_branch() {  # $1=issue $2=title
     local issue="$1" title="$2" slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     printf 'z-{agent}/%s-%s' "$issue" "$slug"
 }
 

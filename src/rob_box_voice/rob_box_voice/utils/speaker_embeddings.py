@@ -4,13 +4,48 @@ speaker_embeddings.py — Speaker identification via resemblyzer d-vectors.
 
 Stores per-speaker embeddings in a SQLite database at /data/speakers.db.
 Each speaker can have multiple reference embeddings (one per registration),
-the identity decision uses mean-of-cosine similarity across all references.
+the identity decision uses MAX-of-cosine similarity across all references
+(не mean — старая формулировка докстринга была неверной, см. issue W5-4:
+``identify()`` берёт лучший, а не средний скор по пулу эмбеддингов спикера).
 
 Usage:
     db = SpeakerDatabase("/data/speakers.db")
     embedding = db.embed_audio(pcm_bytes, sample_rate=16000)
     result = db.identify(embedding)   # → SpeakerMatch | None
     new_id = db.register("Иван", embedding)
+
+Issue W5-4 (баг «один голос — два профиля»): голая ``register()`` ВСЕГДА
+создаёт новый speaker_id, если явно не передан ``speaker_id=``. До этой
+задачи вызывающий код (speaker_id_node) никогда его не передавал — то
+есть КАЖДЫЙ вызов register_speaker(name=...) от LLM создавал новый
+профиль, даже если голос уже был опознан. ``register_or_merge()`` — новый
+метод, который сначала пытается опознать говорящего по уже сохранённым
+эмбеддингам (более строгий порог, чем обычная идентификация, — см.
+REGISTER_MATCH_THRESHOLD) и, при совпадении, дописывает эмбеддинг в
+СУЩЕСТВУЮЩИЙ профиль вместо создания нового. ``merge_speakers()`` —
+ручная склейка уже расползшихся дублей (например, найденных оператором
+в списке спикеров).
+
+ADR-0127 (night-marathon 22.09.2026, run 35667281570): слияние при
+регистрации происходит ТОЛЬКО если совпало и имя. Похожий голос под
+ДРУГИМ именем — это конфликт: заводится отдельный профиль, прежнее имя
+остаётся у прежнего профиля. Регистрация больше никогда не переименовывает
+чужой профиль и (ADR-0097 / issue #2469) не стирает его эпитет, теги и
+``created_at``.
+
+Issue #2769: у ``identify()`` и у ``register()``/``register_or_merge()``
+ТЕПЕРЬ РАЗНЫЕ пороги длительности речи. ``MIN_AUDIO_DURATION_SEC`` (0.3с) —
+общий низкий пол в ``embed_audio()``, ниже него эмбеддинг просто не
+считается (identify() сознательно остаётся мягким — лучше слабый матч, чем
+никакого). ``MIN_REGISTER_AUDIO_DURATION_SEC`` (3.0с, целевое 5.0с) —
+отдельный, более строгий гейт ТОЛЬКО для создания/дозаписи эталона:
+``register()``/``register_or_merge()`` бросают :class:`AudioTooShortError`,
+если передан ``duration_sec`` короче него — эталон профиля не должен
+строиться на реплике, для которой сам resemblyzer (README: 5-30с/профиль) и
+внешние замеры (CEUR Vol-4164, arXiv 1810.10884/2002.06033) не гарантируют
+надёжности. См. evidence/duration-vs-score-2026-09-22/ — измерение на
+логах робота, подтверждающее чувствительность score к длительности на этом
+самом пайплайне.
 """
 
 from __future__ import annotations
@@ -30,9 +65,140 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ── Tuning constants ─────────────────────────────────────────────────────────
-IDENTIFY_THRESHOLD: float = 0.75    # cosine similarity to accept a match
-MIN_AUDIO_DURATION_SEC: float = 0.3  # minimum speech length for reliable embedding
+IDENTIFY_THRESHOLD: float = 0.72    # cosine similarity to accept a match
+# Issue #2348 / AC3 / issue #1101 — единая точка истины для «мусорных имён».
+# Объединяет noise-токены из dialogue.RegisterSpeakerTool._NOISE_NAMES
+# (LLM иногда передаёт служебное слово из фразы «меня зовут X» вместо X)
+# и INVALID_SPEAKER_NAMES из core.dialogue_helpers (Null/None/undefined
+# приходят из resemblyzer / битых JSON-полей). Здесь, в низкоуровневом
+# модуле записи в БД, валидация повторяется как «второй рубеж»: даже
+# если MCP-тул пропустит мусор (или кто-то вызовет db.register() в обход
+# MCP, из тестов/ноутбука/миграционного скрипта), в /data/speakers.db
+# не появится строки ``name='Зовут'``.
+_INVALID_SPEAKER_NAMES: frozenset = frozenset(
+    {
+        # — из dialogue.RegisterSpeakerTool._NOISE_NAMES (issue #1101) —
+        "зовут",
+        "имя",
+        "меня",
+        "зовут-это",
+        "зовут меня",
+        "это",
+        "называю",
+        "зовут-меня",
+        "моё",
+        "мое",
+        "моё имя",
+        "мое имя",
+        "имя мне",
+        "имя моё",
+        "имя мое",
+        # — из core.dialogue_helpers.INVALID_SPEAKER_NAMES (#1077/#1101) —
+        "null",
+        "none",
+        "undefined",
+        "unknown",
+        "",
+    }
+)
+# Issue #2348 / AC3 — короткие имена («Я», «О») и однобуквенные опечатки
+# не несут идентификационной ценности и плодят ложные дубли. Граница 2
+# символа — тест в dialogue.py использует тот же лимит для
+# ``name_too_short``.
+MIN_SPEAKER_NAME_LEN: int = 2
+# Issue W5-4 + #2348 — порог для решения «дописать эмбеддинг в СУЩЕСТВУЮЩИЙ
+# профиль vs завести новый» внутри register_or_merge(). Сознательно ВЫШЕ
+# IDENTIFY_THRESHOLD: обычная идентификация ошибается дёшево (один ход
+# «не узнал» — не страшно, поправится на следующей фразе), а решение при
+# регистрации — дорогое и малообратимое: ложное слияние смешает факты
+# ДВУХ разных людей под одним профилем (хуже, чем временный дубль, который
+# чинится merge_speakers() после факта). С учётом калибровки #2348 снижен с
+# 0.82 до 0.75 — синтетический бенчмарк показал, что при 0.82 через merge
+# проходит только 38 % same-voice повторов, а это и есть основной путь
+# появления дублей из бага W5-4.
+REGISTER_MATCH_THRESHOLD: float = 0.75
+# Issue #2769 — НИЗКИЙ пол для embed_audio() вообще (identify() и любой
+# другой потребитель эмбеддинга). НЕ обещает надёжности — просто минимум,
+# ниже которого preprocess_wav/embed_utterance на очень коротком клипе
+# либо падает, либо возвращает вырожденный вектор. Для identify() низкий
+# порог — сознательный выбор (issue #2769 п.2 / карточка): лучше слабый
+# матч, чем никакого, а решение «доверять ли score» всё равно принимает
+# IDENTIFY_THRESHOLD выше. Раньше комментарий здесь гласил «for reliable
+# embedding» — это было принятие желаемого за действительное: см.
+# MIN_REGISTER_AUDIO_DURATION_SEC ниже и evidence/duration-vs-score-2026-09-22/
+# — 0.3с НИКОГДА не было надёжным порогом, просто никто не проверял.
+MIN_AUDIO_DURATION_SEC: float = 0.3
+# Issue #2769 — ОТДЕЛЬНЫЙ, более строгий пол ТОЛЬКО для создания/дозаписи
+# эталона (register() / register_or_merge()). Обоснование:
+#   * README resemblyzer: профиль стоит строить «from a few seconds of
+#     speech (5s - 30s)»;
+#   * CEUR Vol-4164 (оценка resemblyzer на коротких записях): надёжная
+#     аутентификация — от 2.63с, клипы 1-1.5с «less dependable»;
+#   * arXiv 1810.10884 / 2002.06033: EER растёт в 3-4 раза при укорочении
+#     тестовой реплики с ~20/3.6с до ~2/2с.
+#   * evidence/duration-vs-score-2026-09-22/ — замер на живых логах робота
+#     (тот же микрофон/пайплайн, диапазон 4.3-10.7с, n=13): pearson
+#     r(duration, best_score)=0.88; ОДИН И ТОТ ЖЕ профиль давал score
+#     0.92-0.95 на репликах ~9-10с и 0.57-0.67 на репликах ~4.3-4.6с —
+#     прямое (хоть и не покрывающее диапазон <3с из-за потери исторических
+#     логов при пересоздании контейнера, см. README там же) подтверждение
+#     чувствительности score к длительности на этом самом пайплайне.
+# 3.0с — жёсткий гейт (AudioTooShortError), 5.0с — целевое (не гейтится,
+# просто то, что советует README resemblyzer как нижнюю границу диапазона).
+MIN_REGISTER_AUDIO_DURATION_SEC: float = 3.0
+TARGET_REGISTER_AUDIO_DURATION_SEC: float = 5.0
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
+
+# ── Растущая галерея (issue #2747) — БЕЗ адаптивного порога ─────────────────
+#
+# ИСТОРИЯ РЕШЕНИЯ (важно не повторить дважды, issue #2747 обсуждение в PR
+# #2757): первая версия этой правки вводила ``adaptive_identify_threshold()``
+# — мягкий порог 0.45 на ``gallery_size==1``, линейно ужесточающийся до
+# калиброванного 0.72. Идея была в том, что 0.45 пропускает 7 из 8 живых
+# реплик одного человека из замера issue #2747 (0.283-0.584 против
+# единственного эталона). Эта идея была ОТКЛОНЕНА после проверки на реальных
+# данных робота (``speakers.db.bak-20260921T224624Z``, 44 профиля, 45
+# эмбеддингов, тот же пайплайн и микрофон, попарные косинусы):
+#
+#     ОДНО имя (один человек):    n=277  min=0.329 p50=0.786 p90=0.903
+#                                  доля >= 0.45: 92.4%   доля >= 0.72: 57.0%
+#     РАЗНЫЕ имена (чужие):       n=669  min=0.293 p50=0.536 p90=0.658
+#                                  доля >= 0.45: 90.0%   доля >= 0.72:  4.9%
+#
+# При пороге 0.45 проходит 90% ЧУЖИХ пар — не «повышенный риск», а «почти
+# всегда». Сведя с замером живого голоса из #2747 (один и тот же человек
+# против своего профиля: 0.283-0.584, медиана чужих пар здесь: 0.536) —
+# распределения «свой»/«чужой» не просто пересекаются, они лежат друг на
+# друге. НИКАКОЕ значение порога их не разделяет: 0.45 впускает чужих,
+# 0.72 не впускает хозяина. Порог — не рычаг для этой задачи.
+#
+# ОГОВОРКА О ДАННЫХ (честно, чтобы не выглядело точнее, чем есть): 44
+# профиля бэкапа — в основном синтетические e2e-дикторы (23 «Саша», TTS
+# anton/ermil и т.п.), голоса TTS звучат друг на друга похоже сильнее живых
+# людей, так что «90% чужих проходит» — вероятно ВЕРХНЯЯ оценка ложного
+# приёма. Косинус между двумя РЕАЛЬНЫМИ людьми на этом микрофоне и пайплайне
+# никто не мерил (десять минут работы вдвоём, когда стенд освободится от
+# E2E-марафона) — нижней оценки пока нет ни у кого.
+#
+# ЧТО ДЕЛАЕМ ВМЕСТО ПОРОГА: ``identify()`` остаётся на калиброванном
+# IDENTIFY_THRESHOLD ВСЕГДА (адаптации по умолчанию больше нет — см. ниже).
+# Галерея растёт не там, где косинус случайно высокий, а там, где личность
+# подтверждена ВНЕШНИМ свидетельством — непрерывностью присутствия/диалога:
+# реплики, идущие подряд без разрыва сразу после ``register_speaker``,
+# принадлежат тому, кто только что представился (тот же принцип уже
+# используется в ``mcp_server._on_speaker_result`` для события
+# ``event="registered"`` — «прямо сейчас зарегистрировали юзера и следующая
+# реплика относится к нему»). Эта логика живёт в speaker_id_node
+# (``_growth_session`` + ``_apply_growth_session``, НЕ здесь) — модуль БД
+# знает только про numeric cap (:data:`GALLERY_WARMUP_SIZE`) и не участвует
+# в решении «это тот же человек».
+#
+# GALLERY_WARMUP_SIZE = 5: не изменилось — из лога issue #2747 реплики шли
+# с интервалом ~60-70 c (10:03→10:11 на 8 реплик), пять реплик — одна-две
+# минуты обычного разговора. Теперь это ПОТОЛОК числа эмбеддингов, которые
+# сессионный якорь может дописать в галерею за один непрерывный разговор —
+# не связан с порогом identify() никак.
+GALLERY_WARMUP_SIZE: int = 5
 
 
 @dataclass
@@ -43,6 +209,18 @@ class SpeakerMatch:
     name: str
     confidence: float  # 0.0–1.0 (cosine similarity)
     is_known: bool = True
+    # Issue #1787 — внутренняя кличка робота («Гроссмейстер»). Живёт
+    # ПАРАЛЛЕЛЬНО с ``name``: name — что говорит юзер, epithet — чем робот
+    # различает тёзок. None, пока профиль её не получил (старые записи до
+    # миграции + спикеры, зарегистрированные вне speaker_id_node).
+    epithet: Optional[str] = None
+    # Issue #2747 — сколько эмбеддингов сейчас в галерее этого спикера (ДО
+    # возможного дозаписывания текущей реплики). ЧИСТО диагностическое поле
+    # (лог, "score X при пуле из Y") — НЕ используется для выбора порога
+    # identify() (адаптивный порог по gallery_size отклонён, см. комментарий
+    # у GALLERY_WARMUP_SIZE): один и тот же score означает разную степень
+    # доверия при пуле из 1 и из 5, полезно видеть в логах при разборе.
+    gallery_size: int = 0
 
 
 # ── Lazy import of resemblyzer (not available at build time on CI) ────────────
@@ -86,6 +264,199 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE INDEX IF NOT EXISTS idx_emb_speaker ON embeddings(speaker_id);
 """
 
+# Issue #1787 — колонки эпитета. Добавляются миграцией, а не в _CREATE_SQL:
+# на роботе уже лежит /data/speakers.db с 42 профилями, и CREATE TABLE
+# IF NOT EXISTS для существующей таблицы — no-op, новые колонки в ней сами
+# не появятся. Все — nullable, backfill не нужен (research §5.5): старый
+# профиль получит эпитет при первой же реплике после апдейта.
+_EPITHET_COLUMNS: Tuple[Tuple[str, str], ...] = (
+    ("epithet", "TEXT"),              # текущая кличка
+    ("epithet_history", "TEXT"),      # JSON: [{ts, old, new, reason}]
+    ("tags", "TEXT"),                 # CSV кластеров: «шахматы,техно»
+    ("sentiment_score", "REAL"),      # лексическая валентность [-1, 1]
+    ("last_epithet_review", "REAL"),  # unix ts последнего пересмотра
+)
+
+
+# Issue #2348 / AC3 / issue #1101 — валидатор имени спикера для
+# низкоуровневого API (register / register_or_merge). Возвращает
+# санитизированное имя (с заглавной буквы, без обрамляющих пробелов) или
+# ``""``, если имя мусорное. Семантика ``""`` == «отбросить»: вызывающий
+# код решает, как реагировать (MCP-тул — MCPToolResult с error;
+# speaker_id_node — warning + skip; прямой register() — ValueError,
+# см. _check_name_or_raise ниже).
+def _validate_speaker_name(name: object) -> str:
+    """Normalise raw speaker name; ``""`` for junk.
+
+    Аналог ``core.dialogue_helpers.sanitize_speaker_name``, но с
+    расширенным blacklist'ом (включает русские noise-токены «зовут» /
+    «имя» / «меня» из dialogue.RegisterSpeakerTool._NOISE_NAMES,
+    issue #1101) и проверкой длины. Совпадает по контракту с
+    ``sanitize_speaker_name`` (``""`` на мусор), чтобы два слоя
+    можно было склеить без перекрёстной логики.
+    """
+    if name is None:
+        return ""
+    cleaned = str(name).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) < MIN_SPEAKER_NAME_LEN:
+        return ""
+    if cleaned.lower() in _INVALID_SPEAKER_NAMES:
+        return ""
+    # .capitalize() — «денис» → «Денис», а «илья» / «ольга» останутся
+    # узнаваемыми («Илья» / «Ольга»). .title() ломал бы «робот» в «Робот»
+    # так же, как и нужные имена, а у нас именно личные имена.
+    return cleaned.capitalize()
+
+
+def _same_speaker_name(existing: object, incoming: object) -> bool:
+    """ADR-0127 — «это то же самое имя?» для решения о слиянии профилей.
+
+    Сравниваются НОРМАЛИЗОВАННЫЕ имена (``_validate_speaker_name`` +
+    casefold): «саша» / «  Саша » / «САША» — одно имя, «Саша» и «Борис» —
+    разные. Мусорное имя (``""`` после валидации) не совпадает ни с чем,
+    включая другое мусорное: профиль с легаси-именем «Зовут» не должен
+    молча собирать в себя чужие эмбеддинги.
+    """
+    left = _validate_speaker_name(existing)
+    right = _validate_speaker_name(incoming)
+    if not left or not right:
+        return False
+    return left.casefold() == right.casefold()
+
+
+@dataclass(frozen=True)
+class EmbedResult:
+    """Эмбеддинг вместе с тем, СКОЛЬКО В НЁМ РЕЧИ (issue #2747).
+
+    ``raw_sec`` — длина окна записи, как её видел вызывающий код всегда.
+    ``voiced_sec`` — сколько осталось после ``preprocess_wav``, то есть
+    после VAD-обрезки тишины и шума. Разница между ними и есть слепое
+    пятно, из-за которого мусорная реплика попадала в эталон: окно 4.6с
+    с полусекундой речи проходило любой порог длительности.
+
+    Отдельный тип, а не кортеж, именно ради ``voiced_ratio``: доля речи
+    в окне — то число, по которому в логе сразу видно, «человек говорил»
+    или «микрофон записал тишину», и его не хочется пересчитывать в
+    каждом месте заново.
+    """
+
+    embedding: np.ndarray
+    raw_sec: float
+    voiced_sec: float
+
+    @property
+    def voiced_ratio(self) -> float:
+        """Доля речи в окне, 0.0–1.0. Ноль при пустом окне (не деление на ноль)."""
+        return (self.voiced_sec / self.raw_sec) if self.raw_sec > 0 else 0.0
+
+
+class AudioTooShortError(ValueError):
+    """Issue #2769 — реплика короче ``MIN_REGISTER_AUDIO_DURATION_SEC``.
+
+    Честный отказ вместо тихой записи мусорного эталона: ``register()`` /
+    ``register_or_merge()`` бросают это исключение ДО любой записи в БД
+    (ни строки в ``speakers``, ни в ``embeddings``). Отдельный от обычного
+    ``ValueError`` невалидного имени (``_validate_speaker_name``) тип —
+    вызывающий код (``speaker_id_node._do_register``) должен ответить
+    ПО-РАЗНОМУ: на мусорное имя нет смысла переспрашивать голосом (имя
+    просто плохое), а на короткую реплику — есть (попросить сказать ещё
+    пару слов и повторить попытку).
+
+    ``duration_sec`` / ``min_required_sec`` — для формирования
+    машиночитаемого ack (``{"error": "too_short", ...}``, по аналогии с
+    ``{"error": "noise_name"}`` в ``dialogue.RegisterSpeakerTool``).
+    """
+
+    def __init__(self, duration_sec: float, min_required_sec: float) -> None:
+        self.duration_sec = duration_sec
+        self.min_required_sec = min_required_sec
+        super().__init__(
+            f"speaker_embeddings.register: audio too short for a reliable "
+            f"anchor: {duration_sec:.2f}s < {min_required_sec:.1f}s required "
+            f"(issue #2769, see evidence/duration-vs-score-2026-09-22/)"
+        )
+
+
+class RegisterOutcome(tuple):
+    """Результат ``register_or_merge()``: ``(speaker_id, reused)`` + причина.
+
+    Это ДВУХэлементный кортеж — весь существующий код вида
+    ``sid, reused = db.register_or_merge(...)`` продолжает работать без
+    правок (контракт ADR-0097 §5.5). Дополнительные поля живут атрибутами,
+    а не третьим элементом, именно поэтому.
+
+    Зачем поля ``conflict_*``: решение «не сливать из-за конфликта имён»
+    принимается здесь, в модуле БД, а рассказать о нём оператору может
+    только ROS-нода — модульный ``logging`` в ``docker logs`` робота не
+    виден (проверено на run 35667281570: строка ``🔗 register_or_merge:``
+    из этого файла в логах отсутствует, видна только строка от
+    ``node.get_logger()``). Поэтому ноде нужен машиночитаемый повод
+    написать своё предупреждение и положить его в ack.
+
+    * ``conflict_name`` / ``conflict_speaker_id`` — чей голос похож;
+    * ``conflict_score`` — косинус (>= REGISTER_MATCH_THRESHOLD);
+    * все три ``None``, если конфликта не было.
+    """
+
+    def __new__(
+        cls,
+        speaker_id: str,
+        reused: bool,
+        conflict_name: Optional[str] = None,
+        conflict_speaker_id: Optional[str] = None,
+        conflict_score: Optional[float] = None,
+        twin_name: Optional[str] = None,
+        twin_speaker_id: Optional[str] = None,
+        twin_score: Optional[float] = None,
+    ) -> "RegisterOutcome":
+        """Собрать кортеж ``(speaker_id, reused)`` и навесить причину."""
+        obj = super().__new__(cls, (speaker_id, reused))
+        obj.speaker_id = speaker_id
+        obj.reused = reused
+        obj.conflict_name = conflict_name
+        obj.conflict_speaker_id = conflict_speaker_id
+        obj.conflict_score = conflict_score
+        obj.twin_name = twin_name
+        obj.twin_speaker_id = twin_speaker_id
+        obj.twin_score = twin_score
+        return obj
+
+    @property
+    def name_conflict(self) -> bool:
+        """``True``, если голос совпал, но имя другое — профиль отдельный."""
+        return self.conflict_speaker_id is not None
+
+    @property
+    def name_twin(self) -> bool:
+        """``True``, если имя совпало, а голос НЕ дотянул до слияния.
+
+        Зеркало :attr:`name_conflict`. Тот случай разбирал ADR-0127:
+        голос похож, имя другое — значит скорее всего разные люди, и
+        сливать нельзя. Здесь ровно наоборот: человек назвался именем,
+        которое в базе уже есть, но голос не дотянул до
+        ``REGISTER_MATCH_THRESHOLD``, и по одному голосу не понять, тот
+        же это человек или тёзка.
+
+        Почему нельзя решить молча, ни так, ни эдак:
+
+        * слить по имени — значит в мастерской, где есть два Саши,
+          второй унаследует факты первого. Эпитеты (внутренние клички
+          для различения тёзок) заведены именно потому, что тёзки —
+          ожидаемый случай, а не экзотика;
+        * завести новый профиль — то, что делалось до сих пор, и это
+          наблюдалось живьём 22.09.2026: человек, которого перестали
+          узнавать, представился заново, и пара профилей «Дэнчик»,
+          слитая вручную двумя часами ранее, восстановилась за
+          пятнадцать минут разговора.
+
+        Поэтому по умолчанию профиль всё же создаётся (данные целы, как
+        требует ADR-0127), но наружу уезжает повод ПЕРЕСПРОСИТЬ. Решает
+        человек, а не косинус.
+        """
+        return self.twin_speaker_id is not None
+
 
 class SpeakerDatabase:
     """SQLite-backed speaker embedding store."""
@@ -94,9 +465,51 @@ class SpeakerDatabase:
         self._db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # issue #2794: в схеме `embeddings` объявлен
+        # `REFERENCES speakers(speaker_id) ON DELETE CASCADE`, но SQLite
+        # держит внешние ключи ВЫКЛЮЧЕННЫМИ по умолчанию и включает их
+        # ОТДЕЛЬНО НА КАЖДОЕ СОЕДИНЕНИЕ. Без этой строки объявленный
+        # каскад — мёртвая декларация: `delete_speaker()` удаляет строку
+        # из `speakers`, а эмбеддинги остаются сиротами навсегда.
+        #
+        # Замер на боевой БД 22.09.2026: после удаления трёх профилей
+        # E2E-сценария в таблице `embeddings` осталось 9 векторов с
+        # несуществующими speaker_id. На узнавание это не влияло
+        # (`_score_all` берёт их через `JOIN speakers`, который сирот
+        # отбрасывает), но попарная диагностика `speaker_db_admin.py
+        # list` читает `embeddings` напрямую и показывала удалённые
+        # профили как «возможные дубли одного человека» — посреди чистки,
+        # когда по этой самой таблице и решают, кого с кем сливать.
+        #
+        # PRAGMA обязана идти ДО первого запроса на этом соединении.
+        self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_CREATE_SQL)
         self._conn.commit()
+        self._migrate_epithet_columns()
         logger.info(f"SpeakerDatabase opened: {db_path}")
+
+    # ── Migrations ────────────────────────────────────────────────────────────
+
+    def _migrate_epithet_columns(self) -> None:
+        """Issue #1787 — добить недостающие колонки эпитета в ``speakers``.
+
+        Идемпотентно: смотрит PRAGMA table_info и добавляет только то,
+        чего нет. SQLite не умеет ``ADD COLUMN IF NOT EXISTS``, а падать
+        на втором старте нельзя — это путь запуска ноды, не миграционный
+        скрипт.
+        """
+        existing = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(speakers)")
+        }
+        added = []
+        for column, sql_type in _EPITHET_COLUMNS:
+            if column in existing:
+                continue
+            self._conn.execute(f"ALTER TABLE speakers ADD COLUMN {column} {sql_type}")
+            added.append(column)
+        if added:
+            self._conn.commit()
+            logger.info(f"🔤 speakers: добавлены колонки эпитета {added}")
 
     # ── Serialisation ─────────────────────────────────────────────────────────
 
@@ -110,10 +523,35 @@ class SpeakerDatabase:
 
     # ── Core API ──────────────────────────────────────────────────────────────
 
-    def embed_audio(self, pcm_bytes: bytes, sample_rate: int = 16000) -> Optional[np.ndarray]:
-        """Convert raw PCM int16 bytes → 256-dim d-vector (numpy float32 array).
+    def embed_audio_ex(
+        self, pcm_bytes: bytes, sample_rate: int = 16000
+    ) -> Optional["EmbedResult"]:
+        """PCM int16 → d-vector ВМЕСТЕ с длительностью речи (issue #2747).
 
-        Returns None if resemblyzer is unavailable or the audio is too short.
+        Зачем отдельно от :meth:`embed_audio`: длительность, по которой
+        судят о пригодности реплики, обязана мериться ПОСЛЕ ``preprocess_
+        wav`` — тот режет тишину и шум по VAD. Раньше все гейты смотрели
+        на ``len(pcm)/sample_rate``, то есть на длину ОКНА записи, а не на
+        количество речи в нём. Окно 4.6с, где речи полсекунды, проходило
+        любой порог и уезжало в эмбеддер, давая вектор, который потом
+        сравнивали с эталоном как полноценный.
+
+        Замер на роботе 22.09.2026, откуда это видно. Скоры одного и того
+        же человека против только что созданного профиля скачут от
+        реплики к реплике: 0.908, 0.550, 0.820, 0.556 — не плавная
+        деградация, а качели. При этом попарные косинусы между
+        СОХРАНЁННЫМИ эталонами того же человека внутри одной сессии
+        держатся 0.65–0.91, то есть сам эмбеддер стабилен. Разброс
+        вносит не модель, а то, что в неё попадает.
+
+        Связано с уже задокументированным здесь же замером
+        ``evidence/duration-vs-score-2026-09-22/``: r(duration, score) =
+        0.88 на этом самом пайплайне. Эта функция даёт мерить ту сторону
+        длительности, которая имеет смысл, — речь, а не окно.
+
+        Возвращает ``None`` по тем же причинам, что и раньше
+        (resemblyzer недоступен, аудио короче ``MIN_AUDIO_DURATION_SEC``,
+        ошибка) — чтобы вызывающий код не пришлось переписывать.
         """
         if not _load_resemblyzer():
             return None
@@ -125,7 +563,10 @@ class SpeakerDatabase:
             pcm = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             duration = len(pcm) / sample_rate
             if duration < MIN_AUDIO_DURATION_SEC:
-                logger.info(f"⏭️ Audio too short for embedding: {duration:.2f}s < {MIN_AUDIO_DURATION_SEC}s — skipped")
+                logger.info(
+                    f"⏭️ Audio too short for embedding: {duration:.2f}s < "
+                    f"{MIN_AUDIO_DURATION_SEC}s — skipped"
+                )
                 return None
 
             # Resample to 16 kHz if needed
@@ -135,34 +576,70 @@ class SpeakerDatabase:
                 pcm = scipy.signal.resample_poly(pcm, SAMPLE_RATE, sample_rate)
 
             wav = preprocess_wav(pcm, source_sr=SAMPLE_RATE)
+            voiced = len(wav) / SAMPLE_RATE
             embedding = _encoder.embed_utterance(wav)
+            ratio = (voiced / duration * 100.0) if duration else 0.0
             logger.info(
                 f"✅ embed_audio: {len(pcm_bytes)} bytes → "
-                f"{len(embedding)}-dim vector (norm={float((embedding**2).sum()**0.5):.3f})"
+                f"{len(embedding)}-dim vector "
+                f"(norm={float((embedding**2).sum()**0.5):.3f}, "
+                f"окно={duration:.2f}s речь={voiced:.2f}s {ratio:.0f}%)"
             )
-            return embedding.astype(np.float32)
+            return EmbedResult(
+                embedding=embedding.astype(np.float32),
+                raw_sec=float(duration),
+                voiced_sec=float(voiced),
+            )
         except Exception as exc:
             logger.error(f"embed_audio failed: {type(exc).__name__}: {exc}")
             return None
 
-    def identify(self, embedding: np.ndarray) -> Optional[SpeakerMatch]:
-        """Find the closest known speaker.  Returns None if confidence < threshold."""
+    def embed_audio(self, pcm_bytes: bytes, sample_rate: int = 16000) -> Optional[np.ndarray]:
+        """Convert raw PCM int16 bytes → 256-dim d-vector (numpy float32 array).
+
+        Returns None if resemblyzer is unavailable or the audio is too short.
+
+        Тонкая обёртка над :meth:`embed_audio_ex` — оставлена, потому что
+        подавляющему большинству вызывающих нужен только вектор, и
+        заставлять их распаковывать результат было бы шумом. Там, где
+        решают судьбу эталона, зовут ``embed_audio_ex`` и смотрят на
+        ``voiced_sec``.
+        """
+        result = self.embed_audio_ex(pcm_bytes, sample_rate=sample_rate)
+        return result.embedding if result is not None else None
+
+    def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float, int]]:
+        """Посчитать best-of-pool cosine similarity для КАЖДОГО известного спикера.
+
+        Возвращает список ``(speaker_id, name, score, gallery_size)``,
+        отсортированный по убыванию score. ``score`` — MAX косинусной
+        близости по всем сохранённым эмбеддингам спикера (не mean —
+        устойчивее к разнородному пулу: шум/громкость/дистанция одной
+        "плохой" фразы не размывают уже подтверждённое совпадение с лучшей
+        референсной записью). ``gallery_size`` — сколько эмбеддингов сейчас
+        в пуле этого спикера (issue #2747 — чисто диагностическое поле, см.
+        docstring у ``SpeakerMatch.gallery_size``).
+
+        Общий метод для ``identify()`` (порог IDENTIFY_THRESHOLD) и
+        ``identify_candidates()`` (диагностика без порога, issue W5-4 п.4).
+        """
         rows = self._conn.execute(
             "SELECT s.speaker_id, s.name, e.embedding "
             "FROM embeddings e JOIN speakers s USING (speaker_id)"
         ).fetchall()
-
         if not rows:
-            return None
+            return []
 
-        # Build per-speaker pools and compute mean similarity.
-        # numpy-only cosine similarity (склейка по всем эмбеддингам) — не тянем
-        # sklearn как обязательную зависимость (issue #1077).
         query = embedding.reshape(1, -1)
         if query.shape[1] == 0:
-            return None
+            return []
+
+        # numpy-only cosine similarity — не тянем sklearn как обязательную
+        # зависимость (issue #1077).
         speaker_scores: dict[str, Tuple[str, float]] = {}
+        speaker_counts: dict[str, int] = {}
         for speaker_id, name, blob in rows:
+            speaker_counts[speaker_id] = speaker_counts.get(speaker_id, 0) + 1
             ref = self._blob_to_ndarray(blob).reshape(1, -1)
             if ref.shape[1] != query.shape[1]:
                 continue
@@ -172,36 +649,420 @@ class SpeakerDatabase:
             if speaker_id not in speaker_scores or sim > speaker_scores[speaker_id][1]:
                 speaker_scores[speaker_id] = (name, sim)
 
-        best_id, (best_name, best_score) = max(speaker_scores.items(), key=lambda kv: kv[1][1])
+        ranked = sorted(
+            (
+                (sid, name, score, speaker_counts[sid])
+                for sid, (name, score) in speaker_scores.items()
+            ),
+            key=lambda t: -t[2],
+        )
+        return ranked
 
-        if best_score < IDENTIFY_THRESHOLD:
-            logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {IDENTIFY_THRESHOLD}")
+    def identify(
+        self, embedding: np.ndarray, threshold: Optional[float] = None
+    ) -> Optional[SpeakerMatch]:
+        """Find the closest known speaker.  Returns None if confidence < threshold.
+
+        ``threshold`` по умолчанию — модульный ``IDENTIFY_THRESHOLD``
+        (калиброванный, НЕ зависит от размера галереи — см. большой
+        комментарий у ``GALLERY_WARMUP_SIZE`` про то, почему адаптивный
+        порог по gallery_size был опробован и отклонён на реальных данных
+        робота: same-voice и cross-voice распределения косинуса
+        пересекаются настолько, что ни одно значение порога их не
+        разделяет). Вызывающий код может передать ЯВНЫЙ порог для ДРУГОГО
+        решения — например, ``register_or_merge()`` передаёт
+        ``REGISTER_MATCH_THRESHOLD`` (решение «слить с существующим
+        профилем vs завести новый», issue W5-4 / ADR-0127).
+        """
+        ranked = self._score_all(embedding)
+        if not ranked:
+            return None
+        best_id, best_name, best_score, gallery_size = ranked[0]
+        thr = IDENTIFY_THRESHOLD if threshold is None else threshold
+
+        if best_score < thr:
+            logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {thr}")
             return None
 
-        return SpeakerMatch(speaker_id=best_id, name=best_name, confidence=best_score)
+        return SpeakerMatch(
+            speaker_id=best_id,
+            name=best_name,
+            confidence=best_score,
+            epithet=self.get_epithet(best_id),
+            gallery_size=gallery_size,
+        )
 
-    def register(self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None) -> str:
-        """Create a new speaker (or add another embedding to existing speaker_id)."""
+    def identify_candidates(
+        self, embedding: np.ndarray, top_n: int = 2
+    ) -> List[SpeakerMatch]:
+        """Топ-N кандидатов БЕЗ порога — для диагностики (issue W5-4 п.4).
+
+        Без этого в проде виден только булев результат identify() —
+        «известен / неизвестен» — и дрейф голоса между двумя дублирующими
+        профилями невозможно отследить постфактум: неясно, насколько
+        близко было решение и с кем именно конкурировал победитель.
+        Возвращает пустой список, если спикеров в БД ещё нет.
+        """
+        ranked = self._score_all(embedding)[: max(0, top_n)]
+        return [
+            SpeakerMatch(speaker_id=sid, name=name, confidence=score, gallery_size=size)
+            for sid, name, score, size in ranked
+        ]
+
+    def gallery_size(self, speaker_id: str) -> int:
+        """Сколько эмбеддингов сейчас в профиле ``speaker_id`` (issue #2747)."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def append_reference_embedding(
+        self, speaker_id: str, name: str, embedding: np.ndarray
+    ) -> bool:
+        """Issue #2747 — дописать эмбеддинг в профиль, пока галерея маленькая.
+
+        ЧИСТО численный guard: проверяет только
+        ``gallery_size(speaker_id) < GALLERY_WARMUP_SIZE`` и не более того.
+        Этот метод НЕ решает, «тот ли это человек» — то есть НЕ смотрит на
+        cosine similarity эмбеддинга вообще. Причина — см. большой
+        комментарий у ``GALLERY_WARMUP_SIZE``: попытка гейтить дозапись
+        косинусом (адаптивный порог, первая версия этой правки) была
+        отклонена, потому что на реальных данных робота same-voice и
+        cross-voice распределения перекрываются целиком, и порог,
+        пропускающий live-голос хозяина, пропускает вместе с ним ~90%
+        чужих пар (см. PR #2757, комментарий с измерением бэкапа
+        ``speakers.db.bak-20260921T224624Z``).
+
+        Решение «этот эмбеддинг принадлежит ``speaker_id``» вызывающий код
+        (``speaker_id_node._apply_growth_session``) принимает ДО вызова
+        этого метода — на основании непрерывности сессии/присутствия
+        (внешнее свидетельство: только что был явный ``register_speaker``,
+        и реплики идут подряд без разрыва), а не на основании похожести
+        голоса. Здесь только защита от неограниченного роста галереи.
+
+        Возвращает ``True``, если эмбеддинг дописан, ``False`` — если
+        галерея уже достигла ``GALLERY_WARMUP_SIZE`` (потолок роста, не
+        связан с identify_threshold).
+        """
+        if self.gallery_size(speaker_id) >= GALLERY_WARMUP_SIZE:
+            return False
+        self.register(name, embedding, speaker_id=speaker_id)
+        return True
+
+    def register(
+        self,
+        name: str,
+        embedding: np.ndarray,
+        speaker_id: Optional[str] = None,
+        duration_sec: Optional[float] = None,
+    ) -> str:
+        """Create a new speaker (or add another embedding to existing speaker_id).
+
+        ⚠️ Issue W5-4: эта функция ВСЕГДА создаёт новый профиль, если
+        ``speaker_id`` не передан явно — она НЕ проверяет, похож ли голос
+        на уже известного спикера. Для потока «LLM вызвал register_speaker
+        по имени, услышанному в речи» используйте ``register_or_merge()``
+        — он сначала проверяет совпадение и только потом решает, создавать
+        новый профиль или дописать эмбеддинг в существующий.
+
+        Issue #2348 / AC3 / issue #1101 — имя проходит через
+        ``_validate_speaker_name`` перед записью; пустое/мусорное имя
+        → ``ValueError``. Низкоуровневый Python API не делает «мягкого»
+        fallback'а: вызывающий код (тест, миграция, ноутбук) сам решает,
+        что значит «спросить у пользователя» — функция лишь гарантирует,
+        что в БД не попадёт ``name='Зовут'``.
+
+        Issue #2769 — ``duration_sec`` (опционально) — длительность речи,
+        породившей ``embedding``. Если передан и короче
+        ``MIN_REGISTER_AUDIO_DURATION_SEC``, функция бросает
+        :class:`AudioTooShortError` ДО любой записи в БД (второй рубеж,
+        аналогичный ``_validate_speaker_name`` — «второй рубеж» на случай,
+        если кто-то обошёл более ранний гейт). ``None`` (по умолчанию) —
+        гейт не применяется: вызывающий код либо не знает длительность
+        (тесты/миграции синтетических эмбеддингов), либо сознательно её не
+        проверяет (``append_reference_embedding`` — рост уже существующей
+        галереи, не создание нового эталона, issue #2769 п.2 ограничивает
+        гейт именно созданием/дозаписью через ``register_speaker``).
+        """
+        clean_name = _validate_speaker_name(name)
+        if not clean_name:
+            raise ValueError(
+                f"speaker_embeddings.register: invalid speaker name "
+                f"{name!r} (empty / noise token / shorter than "
+                f"{MIN_SPEAKER_NAME_LEN} chars; see _INVALID_SPEAKER_NAMES, "
+                f"issue #2348 / #1101)"
+            )
+        if duration_sec is not None and duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
+            raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
         now = time.time()
         if speaker_id is None:
             speaker_id = str(uuid.uuid4())
             self._conn.execute(
-                "INSERT OR IGNORE INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
-                (speaker_id, name, now),
+                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(speaker_id) DO NOTHING",
+                (speaker_id, clean_name, now),
             )
         else:
-            # Update name in case it changed
-            self._conn.execute(
-                "INSERT OR REPLACE INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
-                (speaker_id, name, now),
-            )
+            # ADR-0097 / issue #2469 — НЕ ``INSERT OR REPLACE``. В SQLite
+            # REPLACE — это DELETE + INSERT: все колонки, не перечисленные
+            # в запросе, возвращаются к дефолту. Здесь это молча стирало
+            # ``epithet`` / ``epithet_history`` / ``tags`` /
+            # ``sentiment_score`` / ``last_epithet_review`` (issue #1787,
+            # добавлены миграцией) и переписывало ``created_at`` на «сейчас»,
+            # то есть КАЖДАЯ повторная регистрация уже известного голоса
+            # обнуляла накопленный профиль. UPDATE трогает ровно одну
+            # колонку; ``created_at`` — «когда профиль создан», а не
+            # «когда его последний раз трогали», поэтому не обновляется.
+            prev = self._conn.execute(
+                "SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)
+            ).fetchone()
+            if prev is None:
+                # Явный id, которого ещё нет в БД (тест / миграция /
+                # восстановление): создаём строку, иначе FK-ссылка из
+                # embeddings повиснет на несуществующего спикера.
+                self._conn.execute(
+                    "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(speaker_id) DO NOTHING",
+                    (speaker_id, clean_name, now),
+                )
+            elif prev[0] != clean_name:
+                # Переименование по ЯВНО переданному id — вызывающий код
+                # утверждает, что это тот же человек (rename-поток). Логируем
+                # на WARNING: имя профиля — единственное, что связывает
+                # биометрию с человеком, и его потеря необратима (ADR-0127).
+                logger.warning(
+                    f"register(speaker_id={speaker_id[:8]}): имя профиля "
+                    f"{prev[0]!r} → {clean_name!r} (явный id, переименование "
+                    f"по требованию вызывающего кода)"
+                )
+                self._conn.execute(
+                    "UPDATE speakers SET name=? WHERE speaker_id=?",
+                    (clean_name, speaker_id),
+                )
         self._conn.execute(
             "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
             (speaker_id, self._ndarray_to_blob(embedding), now),
         )
         self._conn.commit()
-        logger.info(f"Registered speaker '{name}' id={speaker_id[:8]}")
+        logger.info(f"Registered speaker '{clean_name}' id={speaker_id[:8]}")
         return speaker_id
+
+    def register_or_merge(
+        self,
+        name: str,
+        embedding: np.ndarray,
+        speaker_id: Optional[str] = None,
+        duration_sec: Optional[float] = None,
+    ) -> "RegisterOutcome":
+        """Зарегистрировать эмбеддинг, избегая создания дубля (issue W5-4).
+
+        Если ``speaker_id`` передан явно — поведение как у ``register()``
+        (вызывающий код уже знает, к какому профилю привязать эмбеддинг).
+
+        Иначе сначала проверяется, похож ли голос на уже известного
+        спикера (``identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)``
+        — порог строже обычной идентификации, см. комментарий у константы).
+        Дальше решает ИМЯ (ADR-0127):
+
+        * имя совпадает с именем найденного профиля → эмбеддинг
+          дописывается в него (``reused=True``), имя в БД не трогаем;
+        * имя ДРУГОЕ → конфликт. Слияния НЕ происходит: заводится
+          отдельный профиль (``reused=False``, заполнены поля
+          ``conflict_*``), а прежнее имя остаётся при прежнем профиле.
+
+        Почему так — night-marathon 22.09.2026, run 35667281570, акт 2:
+        Саша (TTS anton) и Борис (TTS ermil) звучат для resemblyzer на
+        cos=0.846 (замер по /data/speakers.db робота), то есть ВЫШЕ любого
+        рабочего порога слияния. Старое поведение «слить и переименовать»
+        стирало Сашу как личность: в БД оставался один профиль, и тот под
+        именем Бориса. Дубль чинится ``merge_speakers()`` постфактум,
+        потерянное имя — ничем.
+
+        Возвращает :class:`RegisterOutcome` — распаковывается как
+        ``(speaker_id, reused)`` (обратная совместимость с прежним
+        контрактом), но дополнительно несёт на себе ``conflict_name`` /
+        ``conflict_speaker_id`` / ``conflict_score`` — чтобы вызывающий
+        код (speaker_id_node) мог сказать оператору, ЧТО именно похоже и
+        как склеить вручную, если это всё-таки один человек.
+
+        Issue #2769 — ``duration_sec`` пробрасывается в КАЖДЫЙ внутренний
+        вызов ``register()`` ниже (явный id / merge / конфликт / новый
+        профиль) — во всех этих ветках эмбеддинг становится (частью)
+        эталона профиля, поэтому гейт единый. Короткая реплика бросает
+        :class:`AudioTooShortError` до первого обращения к БД: явная
+        проверка здесь же (в дополнение к проверке внутри ``register()``)
+        экономит бесполезный ``identify()`` по кандидатам на слияние —
+        если реплика заведомо отбракуется, незачем искать, с кем её
+        мог бы слить.
+        """
+        if duration_sec is not None and duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
+            raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
+
+        if speaker_id is not None:
+            return RegisterOutcome(
+                self.register(
+                    name, embedding, speaker_id=speaker_id, duration_sec=duration_sec
+                ),
+                False,
+            )
+
+        match = self.identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)
+        if match is not None and _same_speaker_name(match.name, name):
+            logger.info(
+                f"🔗 register_or_merge: голос похож на уже известного "
+                f"'{match.name}' (score={match.confidence:.3f} >= "
+                f"{REGISTER_MATCH_THRESHOLD}) и имя то же — дописываю в "
+                f"id={match.speaker_id[:8]} вместо нового профиля"
+            )
+            # Пишем ИМЯ ИЗ БД, а не переданное: имена равны с точностью до
+            # регистра/пробелов, и профиль не должен «дёргаться» между
+            # «Саша» и «саша» на каждой реплике.
+            return RegisterOutcome(
+                self.register(
+                    match.name,
+                    embedding,
+                    speaker_id=match.speaker_id,
+                    duration_sec=duration_sec,
+                ),
+                True,
+            )
+
+        if match is not None:
+            # ADR-0127 — конфликт имён. Отличить «LLM расслышал имя иначе»
+            # от «пришёл другой человек с похожим голосом» на этом уровне
+            # НЕЧЕМ: у обоих случаев одна и та же наблюдаемая картина
+            # (высокий cos + новое имя). Выбираем ошибку, которая
+            # ОБРАТИМА: лишний профиль оператор склеит merge_speakers(),
+            # а затёртое имя не восстановит никто.
+            logger.warning(
+                f"⚠️ register_or_merge: голос похож на '{match.name}' "
+                f"(id={match.speaker_id[:8]}, score={match.confidence:.3f} >= "
+                f"{REGISTER_MATCH_THRESHOLD}), но регистрируют как {name!r} — "
+                f"конфликт имён, слияния НЕ делаю, завожу отдельный профиль "
+                f"(ADR-0127). Если это один человек — склеить вручную: "
+                f"merge_speakers(src=<новый>, dst={match.speaker_id})"
+            )
+            new_id = self.register(
+                name, embedding, speaker_id=None, duration_sec=duration_sec
+            )
+            return RegisterOutcome(
+                new_id,
+                False,
+                conflict_name=match.name,
+                conflict_speaker_id=match.speaker_id,
+                conflict_score=match.confidence,
+            )
+
+        # Тёзка (issue #2747, продолжение ADR-0127). Голос до порога
+        # слияния не дотянул — значит по биометрии это «незнакомец». Но
+        # если человек назвался именем, которое в базе УЖЕ есть, молча
+        # заводить второй профиль нельзя: именно так 22.09.2026 пара
+        # профилей «Дэнчик», слитая вручную двумя часами ранее,
+        # восстановилась за пятнадцать минут разговора. И слить молча
+        # тоже нельзя — в мастерской бывают настоящие тёзки, ради них и
+        # заведены эпитеты.
+        #
+        # Поэтому: профиль создаём (данные целы — инвариант ADR-0127),
+        # но на исход вешаем повод переспросить. Решает человек.
+        twin = self._find_by_name(name)
+        twin_score = None
+        if twin is not None:
+            twin_score = self._score_for(embedding, twin[0])
+        new_id = self.register(
+            name, embedding, speaker_id=None, duration_sec=duration_sec
+        )
+        if twin is not None:
+            logger.info(
+                f"👥 register_or_merge: имя '{name}' уже есть у "
+                f"id={twin[0][:8]}, но голос не дотянул до "
+                f"{REGISTER_MATCH_THRESHOLD} (score="
+                f"{twin_score if twin_score is None else round(twin_score, 3)}) — "
+                f"завёл отдельный профиль id={new_id[:8]} и прошу переспросить"
+            )
+            return RegisterOutcome(
+                new_id,
+                False,
+                twin_name=twin[1],
+                twin_speaker_id=twin[0],
+                twin_score=twin_score,
+            )
+        return RegisterOutcome(new_id, False)
+
+    def _find_by_name(self, name: str) -> Optional[Tuple[str, str]]:
+        """Профиль с таким же именем: ``(speaker_id, name)`` или ``None``.
+
+        Сравнение в Python, а не в SQL: ``LOWER()`` в SQLite умеет только
+        ASCII, и «Дэнчик» с «дэнчик» он не свёл бы (тот же приём и по той
+        же причине, что в :meth:`rename_by_name`). Берётся САМЫЙ СВЕЖИЙ
+        из совпавших — если тёзок уже несколько, переспрашивать логично
+        про последнего, с кем разговаривали.
+        """
+        wanted = _validate_speaker_name(name)
+        if not wanted:
+            return None
+        rows = self._conn.execute(
+            "SELECT speaker_id, name FROM speakers ORDER BY created_at DESC"
+        ).fetchall()
+        for sid, existing in rows:
+            if _same_speaker_name(existing, wanted):
+                return (sid, existing)
+        return None
+
+    def _score_for(self, embedding: np.ndarray, speaker_id: str) -> Optional[float]:
+        """Косинус эмбеддинга против галереи КОНКРЕТНОГО профиля.
+
+        Нужен, чтобы в поводе переспросить стояло число, а не «похоже/не
+        похоже»: оператор по логу должен видеть, насколько близко было
+        решение. ``None``, если у профиля пустая галерея.
+        """
+        for sid, _name, score, _size in self._score_all(embedding):
+            if sid == speaker_id:
+                return float(score)
+        return None
+
+    def merge_speakers(self, src_id: str, dst_id: str) -> int:
+        """Слить два профиля одного человека (issue W5-4).
+
+        Переносит ВСЕ эмбеддинги ``src_id`` под ``dst_id`` и удаляет
+        профиль ``src_id``. Имя ``dst_id`` не меняется — считается основным
+        (тот, под кем профиль решили оставить). Возвращает число
+        перенесённых эмбеддингов.
+
+        Идемпотентно/безопасно: возвращает 0 и ничего не делает, если
+        ``src_id == dst_id``, любой из id пуст, либо ``dst_id`` не найден
+        в БД (защита от опечатки в вызывающем коде — иначе можно случайно
+        "потерять" src, не создав валидный dst).
+
+        Факты собеседника (``scope="speaker:<id>"``) живут в отдельном
+        слое памяти (``rob_box_harness.memory`` / ``SQLiteVoiceMemory``) —
+        этот метод их не трогает. Вызывающий код, которому нужно склеить
+        и факты, должен ОТДЕЛЬНО вызвать
+        ``rob_box_harness.memory.merge_speaker_facts(store, src_id, dst_id)``
+        после (или до) вызова этого метода — SpeakerDatabase намеренно не
+        знает о MemoryStore, чтобы не размазывать ответственность между
+        слоями (голосовая биометрия vs LLM-память).
+        """
+        if not src_id or not dst_id or src_id == dst_id:
+            return 0
+        dst_exists = self._conn.execute(
+            "SELECT 1 FROM speakers WHERE speaker_id=?", (dst_id,)
+        ).fetchone()
+        if not dst_exists:
+            logger.warning(
+                f"merge_speakers: dst={dst_id[:8]} не найден в БД — отмена, "
+                f"src={src_id[:8]} не тронут"
+            )
+            return 0
+        cur = self._conn.execute(
+            "UPDATE embeddings SET speaker_id=? WHERE speaker_id=?", (dst_id, src_id)
+        )
+        moved = cur.rowcount
+        self._conn.execute("DELETE FROM speakers WHERE speaker_id=?", (src_id,))
+        self._conn.commit()
+        logger.info(
+            f"🔗 merge_speakers: {src_id[:8]} → {dst_id[:8]} ({moved} эмбеддингов перенесено)"
+        )
+        return moved
 
     def rename(self, speaker_id: str, new_name: str) -> bool:
         """Rename an existing speaker."""
@@ -212,22 +1073,59 @@ class SpeakerDatabase:
         return cur.rowcount > 0
 
     def list_speakers(self) -> List[dict]:
-        """Return all registered speakers with embedding count."""
+        """Return all registered speakers with embedding count.
+
+        Issue #1787 — в выдаче есть ``epithet``/``tags``: без них список
+        спикеров бесполезен ровно в том сценарии, ради которого эпитет
+        заводился (два одинаковых ``name`` в таблице неразличимы глазом).
+        """
         rows = self._conn.execute(
-            "SELECT s.speaker_id, s.name, s.created_at, COUNT(e.id) AS emb_count "
+            "SELECT s.speaker_id, s.name, s.created_at, COUNT(e.id) AS emb_count, "
+            "s.epithet, s.tags "
             "FROM speakers s LEFT JOIN embeddings e USING (speaker_id) "
             "GROUP BY s.speaker_id ORDER BY s.created_at"
         ).fetchall()
         return [
-            {"id": r[0], "name": r[1], "created_at": r[2], "embeddings": r[3]}
+            {
+                "id": r[0],
+                "name": r[1],
+                "created_at": r[2],
+                "embeddings": r[3],
+                "epithet": r[4],
+                "tags": _split_tags(r[5]),
+            }
             for r in rows
         ]
 
     def delete_speaker(self, speaker_id: str) -> bool:
-        """Remove a speaker and all their embeddings."""
+        """Remove a speaker and all their embeddings.
+
+        Эмбеддинги уходят каскадом (`ON DELETE CASCADE` в схеме), но
+        только потому, что соединение открыто с `PRAGMA foreign_keys =
+        ON` — см. `__init__`. Явного `DELETE FROM embeddings` здесь
+        сознательно нет: два места, удаляющих одно и то же, разъезжаются
+        при первом же изменении схемы. Вместо этого есть тест, который
+        падает, если каскад перестанет работать (issue #2794).
+        """
         cur = self._conn.execute("DELETE FROM speakers WHERE speaker_id=?", (speaker_id,))
         self._conn.commit()
         return cur.rowcount > 0
+
+    def orphaned_embedding_count(self) -> int:
+        """Сколько эмбеддингов ссылается на несуществующий профиль.
+
+        Ноль на здоровой БД. Ненулевое значение означает, что строки
+        пережили удаление профиля — так выглядела боевая база до #2794,
+        когда каскад не работал. Нужно инструментам обслуживания
+        (`scripts/maintenance/speaker_db_admin.py`), чтобы расхождение
+        было видно числом, а не маскировалось под «дубли» в попарной
+        диагностике.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings "
+            "WHERE speaker_id NOT IN (SELECT speaker_id FROM speakers)"
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     def rename_by_name(self, old_name: str, new_name: str) -> Optional[str]:
         """Find speaker by ``old_name`` and rename to ``new_name``.
@@ -260,5 +1158,155 @@ class SpeakerDatabase:
         logger.info(f"Renamed speaker '{old_name}' → '{new_name}' (id={speaker_id[:8]})")
         return speaker_id
 
+    # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
+
+    def get_epithet(self, speaker_id: str) -> Optional[str]:
+        """Текущая кличка спикера (``None``, если ещё не назначена)."""
+        row = self._conn.execute(
+            "SELECT epithet FROM speakers WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_speaker_profile(self, speaker_id: str) -> Optional[dict]:
+        """Полный профиль спикера, включая эпитет, теги и историю.
+
+        Возвращает ``None``, если спикера нет. ``epithet_history`` всегда
+        list (битый/пустой JSON → ``[]``: история — диагностика, а не
+        источник истины, ронять из-за неё диалог нельзя).
+        """
+        row = self._conn.execute(
+            "SELECT speaker_id, name, created_at, epithet, epithet_history, "
+            "tags, sentiment_score, last_epithet_review "
+            "FROM speakers WHERE speaker_id=?",
+            (speaker_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "speaker_id": row[0],
+            "name": row[1],
+            "created_at": row[2],
+            "epithet": row[3],
+            "epithet_history": _load_history(row[4]),
+            "tags": _split_tags(row[5]),
+            "sentiment_score": row[6],
+            "last_epithet_review": row[7],
+        }
+
+    def taken_epithets(self, exclude_speaker_id: Optional[str] = None) -> List[str]:
+        """Все занятые клички — вход для ``epithets.choose_epithet(taken=…)``.
+
+        Без этого списка словарный слой снова начал бы выдавать одинаковые
+        клички тёзкам с общей темой (research §4.2) — именно ради этого
+        аргумента там предлагался LLM. ``exclude_speaker_id`` — чтобы при
+        ПЕРЕсмотре спикер не считал занятой собственную текущую кличку.
+        """
+        rows = self._conn.execute(
+            "SELECT speaker_id, epithet FROM speakers WHERE epithet IS NOT NULL"
+        ).fetchall()
+        return [
+            r[1] for r in rows if r[1] and r[0] != exclude_speaker_id
+        ]
+
+    def set_epithet(self, speaker_id: str, epithet: str, reason: str) -> bool:
+        """Назначить кличку и дописать переход в ``epithet_history``.
+
+        Историю ведём всегда (research §4.1: «эпитет версионируется —
+        можно откатить и видеть эволюцию»), поэтому здесь же обновляется
+        ``last_epithet_review`` — таймер антидребезга пересмотра.
+
+        Возвращает ``False``, если спикер не найден или ``epithet`` пуст.
+        """
+        epithet = (epithet or "").strip()
+        if not speaker_id or not epithet:
+            return False
+        profile = self.get_speaker_profile(speaker_id)
+        if profile is None:
+            logger.warning(f"set_epithet: спикер {speaker_id[:8]} не найден")
+            return False
+        if profile["epithet"] == epithet:
+            # Идемпотентность: та же кличка — не плодим записи в истории,
+            # но таймер пересмотра сдвигаем (решение «оставить как есть»
+            # тоже является пересмотром).
+            self._conn.execute(
+                "UPDATE speakers SET last_epithet_review=? WHERE speaker_id=?",
+                (time.time(), speaker_id),
+            )
+            self._conn.commit()
+            return True
+
+        now = time.time()
+        history = profile["epithet_history"]
+        history.append(
+            {
+                "ts": now,
+                "old": profile["epithet"],
+                "new": epithet,
+                "reason": reason,
+            }
+        )
+        self._conn.execute(
+            "UPDATE speakers SET epithet=?, epithet_history=?, "
+            "last_epithet_review=? WHERE speaker_id=?",
+            (epithet, json.dumps(history, ensure_ascii=False), now, speaker_id),
+        )
+        self._conn.commit()
+        logger.info(
+            f"🔤 epithet {speaker_id[:8]}: {profile['epithet']!r} → {epithet!r} "
+            f"({reason})"
+        )
+        return True
+
+    def update_speaker_stats(
+        self,
+        speaker_id: str,
+        tags: Optional[List[str]] = None,
+        sentiment_score: Optional[float] = None,
+    ) -> bool:
+        """Обновить темы и валентность речи спикера.
+
+        Метаданные профиля, на которых строится выбор эпитета. Оба поля
+        опциональны — вызов без обоих ничего не делает и возвращает
+        ``False`` (нет смысла ходить в БД).
+        """
+        sets: List[str] = []
+        params: List[object] = []
+        if tags is not None:
+            sets.append("tags=?")
+            params.append(",".join(t for t in tags if t))
+        if sentiment_score is not None:
+            sets.append("sentiment_score=?")
+            params.append(float(sentiment_score))
+        if not sets or not speaker_id:
+            return False
+        params.append(speaker_id)
+        cur = self._conn.execute(
+            f"UPDATE speakers SET {', '.join(sets)} WHERE speaker_id=?", params
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._conn.close()
+
+
+# ── Хелперы сериализации профиля (issue #1787) ───────────────────────────────
+
+
+def _split_tags(raw: Optional[str]) -> List[str]:
+    """CSV-строка тегов → список (пустая/``None`` → ``[]``)."""
+    if not raw:
+        return []
+    return [t.strip() for t in str(raw).split(",") if t.strip()]
+
+
+def _load_history(raw: Optional[str]) -> List[dict]:
+    """JSON-история эпитетов → список dict-ов, толерантно к мусору."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("epithet_history: битый JSON — читаю как пустую историю")
+        return []
+    return data if isinstance(data, list) else []

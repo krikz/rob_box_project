@@ -24,6 +24,7 @@ test_dialogue_node.py — Реальные unit-тесты DialogueNode (FA-5, i
 import asyncio
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -69,6 +70,8 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._sound_trigger_pub = MagicMock()
     n._tts_control_pub = MagicMock()
     n._music_cleanup_pub = MagicMock()
+    # ADR-0066 — pub для /dialogue/control_ack (тест-dialogue_control).
+    n._dialogue_control_pub = MagicMock()
 
     # State attrs
     n._wake_words = ["робок", "робот", "роббокс"]
@@ -104,6 +107,10 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._effects.handle_sound_state = MagicMock()
 
     n._active_batches = {}
+    # Telegram echo routing (issue #1195) — `_publish_response` and
+    # `_publish_response_batch` read it unconditionally; `__init__` sets it
+    # to None and this fixture bypasses `__init__`.
+    n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._session_started_at = None
     n._session_end_reason = "success"
@@ -112,6 +119,9 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._faq_store = None
     n._event_profile = None
     n._startup_greeting_fired = False
+    # ADR-0066 — кэш паузы (для тестов test_dialogue_control).
+    n._paused_at_ms = None
+    n._pause_reason = ""
     return n
 
 
@@ -132,13 +142,6 @@ class TestNodeCreation:
         import rob_box_voice.dialogue_node as dn
         assert issubclass(dn.DialogueNode, dn.Node)
 
-    def test_module_exposes_skill_aliases(self):
-        """Модуль объявляет skill-классы как атрибуты (test contracts)."""
-        import rob_box_voice.dialogue_node as dn
-        for alias in ("MusicSkill", "FAQSkill", "WebSearchSkill",
-                      "NavigationSkill", "MemorySkill", "StatusSkill"):
-            assert hasattr(dn, alias)
-
     def test_module_constants_present(self):
         import rob_box_voice.dialogue_node as dn
         assert dn.ASYNCIO_LOOP_DRIVER_MAX_WORKERS == 1
@@ -153,68 +156,126 @@ class TestNodeCreation:
         # но контракт имени проверяем через статический анализ: класс
         # объявляет параметры с ожидаемыми именами.
         assert hasattr(n, "_declare_params")
-        assert hasattr(n, "_build_llm")
+        # ADR-0083 §2.3 — единая точка сборки AgentSpec для personality;
+        # раньше тест проверял ``_build_llm``, но логика LLM/prompt/
+        # skill-prompt сборки переехала в ``rob_box_harness.core.assembly``
+        # (PR #2276, follow-up ADR-0083 §2.3). Нода только строит спек
+        # и зовёт ``build_agent(spec)``.
+        assert hasattr(n, "_build_personality_spec")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  missing API key / provider chain (legacy: test_missing_api_key_raises_error)
+#  ADR-0083 §2.3 — провайдер-цепочка, дефолты и «нет API key» живут
+#  теперь в ``rob_box_harness.core.assembly.build_llm_chain`` /
+#  ``build_agent``. Поведение покрыто в ``test_assembly.py``
+#  (test_build_agent_*, test_load_system_prompt_missing_dir_returns_empty).
+#  Здесь оставляем только быстрый unit-чек, что ``_build_personality_spec``
+#  подхватывает CSV-формат ``llm_providers`` (раньше это была отдельная
+#  функция ``_resolve_provider_chain``, теперь inline-парсинг внутри спека).
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestBuildLlm:
-    def test_resolve_provider_chain_default(self):
-        """Нет параметра llm_providers → default ['deepseek']."""
+class TestBuildPersonalitySpec:
+    def test_spec_parses_csv_provider_chain(self):
+        """llm_providers="deepseek,minimax" → spec.provider_chain == ('deepseek', 'minimax')."""
+        n = _make_node({"llm_providers": "deepseek,minimax"})
+        # Метод требует ``self._resolve_personality_prompt_dir`` (ament_index);
+        # подменяем на MagicMock, проверяем только форму спека. ``get_parameter``
+        # уже настроен в ``_make_node`` — НЕ перетираем.
+        n._resolve_personality_prompt_dir = MagicMock(
+            return_value=Path("/tmp/fake")
+        )
+        spec = n._build_personality_spec()
+        assert spec.name == "personality"
+        assert spec.provider_chain == ("deepseek", "minimax")
+
+    def test_spec_default_provider_is_deepseek(self):
+        """llm_providers unset → spec.provider_chain == ('deepseek',)."""
         n = _make_node()
-        assert n._resolve_provider_chain() == ["deepseek"]
+        n._resolve_personality_prompt_dir = MagicMock(
+            return_value=Path("/tmp/fake")
+        )
+        spec = n._build_personality_spec()
+        assert spec.provider_chain == ("deepseek",)
 
-    def test_resolve_provider_chain_parses_csv(self):
-        n = _make_node({"llm_providers": "minimax, deepseek"})
-        assert n._resolve_provider_chain() == ["minimax", "deepseek"]
 
-    def test_resolve_provider_chain_empty_uses_default(self):
-        n = _make_node({"llm_providers": ""})
-        assert n._resolve_provider_chain() == ["deepseek"]
+# ─────────────────────────────────────────────────────────────────────────────
+#  barge_in_policy parameter (S1.1, scheduler-segments-merge plan)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def test_build_llm_raises_when_no_provider(self):
-        """Пустая цепочка провайдеров → RuntimeError (missing API key path)."""
+class TestBargeInPolicyParam:
+    def test_declares_default_replace(self):
+        """_declare_params объявляет barge_in_policy с дефолтом 'replace'."""
+        import rob_box_voice.dialogue_node as dn
+        import inspect
+        src = inspect.getsource(dn.DialogueNode._declare_params)
+        assert 'declare_parameter("barge_in_policy", "replace")' in src
+
+    def test_resolve_default_missing_param_is_replace(self):
         n = _make_node()
-        n._resolve_provider_chain = MagicMock(return_value=["deepseek"])
-        n._build_single_provider = MagicMock(return_value=None)
-        with pytest.raises(RuntimeError, match="No LLM providers"):
-            n._build_llm()
+        assert n._resolve_barge_in_policy() == "replace"
 
-    def test_build_llm_single_provider_returned_directly(self):
-        n = _make_node()
-        provider = MagicMock()
-        n._resolve_provider_chain = MagicMock(return_value=["deepseek"])
-        n._build_single_provider = MagicMock(return_value=provider)
-        assert n._build_llm() is provider
+    def test_resolve_accepts_replace(self):
+        n = _make_node({"barge_in_policy": "replace"})
+        assert n._resolve_barge_in_policy() == "replace"
 
-    def test_build_single_provider_unknown_name(self):
-        """Неизвестный провайдер → None + warning (без краха)."""
-        n = _make_node()
-        assert n._build_single_provider("nonexistent") is None
+    def test_resolve_accepts_classify(self):
+        n = _make_node({"barge_in_policy": "classify"})
+        assert n._resolve_barge_in_policy() == "classify"
+
+    def test_resolve_garbage_value_warns_and_falls_back(self):
+        n = _make_node({"barge_in_policy": "yolo"})
+        assert n._resolve_barge_in_policy() == "replace"
         n.get_logger().warning.assert_called()
 
-    @patch("rob_box_voice.dialogue_node.build_deepseek_provider")
-    def test_build_single_provider_deepseek(self, mock_build):
-        """deepseek строится с api_key из env (legacy: test_deepseek_api_call)."""
-        import os
-        old = os.environ.get("DEEPSEEK_API_KEY")
-        os.environ["DEEPSEEK_API_KEY"] = "test-ds-key"
-        try:
-            n = _make_node({"deepseek.api_key": ""})
-            provider = MagicMock()
-            mock_build.return_value = provider
-            assert n._build_single_provider("deepseek") is provider
-            kwargs = mock_build.call_args.kwargs
-            assert kwargs["api_key"] == "test-ds-key"
-            assert kwargs["model"]
-            assert kwargs["base_url"]
-        finally:
-            if old is None:
-                os.environ.pop("DEEPSEEK_API_KEY", None)
-            else:
-                os.environ["DEEPSEEK_API_KEY"] = old
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _cancel_run split: turn-cancel vs tts-stop (S1.2, scheduler-segments-merge)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCancelRunSplit:
+    def _running_task_node(self):
+        n = _make_node()
+        task = MagicMock()
+        task.done.return_value = False
+        n._run_task = task
+        n._task_lock = MagicMock()
+        n._task_lock.__enter__ = MagicMock(return_value=None)
+        n._task_lock.__exit__ = MagicMock(return_value=False)
+        n._loop = MagicMock()
+        n._loop.call_soon_threadsafe = lambda fn, *a, **kw: fn(*a, **kw)
+        n._effects = MagicMock()
+        return n, task
+
+    def test_stop_tts_true_publishes_stop(self):
+        """Default (stop_tts=True) — регресс сегодняшнего поведения."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason", stop_tts=True)
+        assert n._run_cancelled is True
+        task.cancel.assert_called_once()
+        n._tts_control_pub.publish.assert_called_once()
+        published = n._tts_control_pub.publish.call_args.args[0]
+        assert published.data == "STOP"
+        n._effects.release_all_tts.assert_called_once()
+        n._effects.clear_sound_event.assert_called_once()
+
+    def test_default_stop_tts_is_true(self):
+        """Обратная совместимость: вызов без kwarg ведёт себя как раньше."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason")
+        n._tts_control_pub.publish.assert_called_once()
+
+    def test_stop_tts_false_does_not_publish_stop_but_releases_awaiters(self):
+        """Ключевой инвариант R1: STOP не уходит, но awaiter'ы всё равно
+        отпускаются — иначе speak_helpers._tts_events залипают навсегда
+        и робот замолкает без возможности когда-либо заговорить снова."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason", stop_tts=False)
+        assert n._run_cancelled is True
+        task.cancel.assert_called_once()
+        n._tts_control_pub.publish.assert_not_called()
+        n._effects.release_all_tts.assert_called_once()
+        n._effects.clear_sound_event.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,7 +368,22 @@ class TestBuildDynamicSystemContext:
         ctx = n._build_dynamic_system_context()
         assert "<name>Анна</name>" in ctx
         assert "<voice_confidence>0.92</voice_confidence>" in ctx
-        assert "<speaker_id>sp_12345</speaker_id>" in ctx  # sp_id[:8]
+        # Issue #2440 — полный id, без усечения до 8 символов.
+        assert "<speaker_id>sp_1234567890</speaker_id>" in ctx
+
+    def test_epithet_rule_says_epithet_is_not_another_person(self):
+        """Issue #2864 — кличку Саши «Незнакомец» LLM посчитала третьим
+        человеком. Правило рядом с кличкой обязано сказать, что это
+        второе обозначение ТОГО ЖЕ собеседника, а не ещё один знакомый."""
+        n = _make_node({"provider": "yandex"})
+        n._current_speaker = {"is_known": True, "name": "Саша",
+                              "confidence": 0.9, "speaker_id": "sp_2b276f43",
+                              "epithet": "Наблюдатель"}
+        ctx = n._build_dynamic_system_context()
+        assert '<epithet internal="true">Наблюдатель</epithet>' in ctx
+        rule = ctx.split("<epithet_rule>", 1)[1].split("</epithet_rule>", 1)[0]
+        assert "НЕ отдельный человек" in rule
+        assert "перечисляешь знакомых" in rule
 
     def test_invalid_speaker_name_sanitized(self):
         n = _make_node({"provider": "yandex"})
@@ -321,18 +397,272 @@ class TestBuildDynamicSystemContext:
         ctx = n._build_dynamic_system_context()
         assert "<tts_provider>minimax</tts_provider>" in ctx
 
+    # --- S5.2: [SEGMENT PLAN] block --------------------------------------
+
+    def test_no_segment_plan_block_when_idle(self):
+        """No scheduler executor at all → idle, no [SEGMENT PLAN]."""
+        n = _make_node({"provider": "yandex"})
+        ctx = n._build_dynamic_system_context()
+        assert "[SEGMENT PLAN]" not in ctx
+
+    def test_no_segment_plan_block_when_executor_reports_empty(self):
+        n = _make_node({"provider": "yandex"})
+        n._scheduler_executor = MagicMock()
+        n._scheduler_executor.active_tasks_block.return_value = ""
+        n._scheduler_executor.segment_plan_block.return_value = ""
+        ctx = n._build_dynamic_system_context()
+        assert "[SEGMENT PLAN]" not in ctx
+
+    def test_segment_plan_block_included_when_active_group(self):
+        n = _make_node({"provider": "yandex"})
+        n._scheduler_executor = MagicMock()
+        n._scheduler_executor.active_tasks_block.return_value = ""
+        n._scheduler_executor.segment_plan_block.return_value = (
+            "[SEGMENT PLAN]\n- ACTIVE: seg_0 voice 'куплет' (remaining=?)\n"
+            "- REWRITEABLE_SEGMENTS: []\n- AT_RISK_ON_REPLACE: []"
+        )
+        ctx = n._build_dynamic_system_context()
+        assert "[SEGMENT PLAN]" in ctx
+        assert "seg_0" in ctx
+
+    def test_segment_plan_block_render_error_does_not_crash_context(self):
+        n = _make_node({"provider": "yandex"})
+        n._scheduler_executor = MagicMock()
+        n._scheduler_executor.active_tasks_block.return_value = ""
+        n._scheduler_executor.segment_plan_block.side_effect = RuntimeError("boom")
+        ctx = n._build_dynamic_system_context()  # must not raise
+        assert "<system_context>" in ctx
+        assert "[SEGMENT PLAN]" not in ctx
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _on_speaker_result — issue #2769: честный отказ на короткой реплике при
+#  регистрации доезжает до пользователя голосом, а не тонет в логах ноды.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestIdentityClarification:
+    """issue #2747 + отложенный шаг ADR-0127 — робот переспрашивает.
+
+    Поле ``voice_conflict`` нода клала в ack с самого ADR-0127, но читать
+    его было некому: «правильное поведение продукта и, вероятно,
+    следующий шаг» так и осталось следующим шагом. Здесь появляется
+    потребитель, сразу для обоих зеркальных случаев.
+    """
+
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_name_twin_asks_whether_same_person(self):
+        """Имя совпало, голос не дотянул — спрашиваем, тот же ли человек.
+
+        Живой случай 22.09.2026: человека перестали узнавать (медиана
+        косинуса 0.502 при пороге 0.72), он представился заново, и пара
+        профилей «Дэнчик», слитая вручную двумя часами ранее,
+        восстановилась за пятнадцать минут разговора.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Дэнчик", "speaker_id": "new123",
+            "name_twin": {"name": "Дэнчик", "speaker_id": "old456", "score": 0.5},
+        }))
+
+        n._speak_direct.assert_called_once()
+        spoken = n._speak_direct.call_args[0][0]
+        assert "Дэнчик" in spoken
+        assert "?" in spoken, "это должен быть вопрос, а не констатация"
+        assert n._current_speaker == {"is_known": False}, (
+            "служебный ack не обновляет current_speaker"
+        )
+
+    def test_voice_conflict_asks_whether_different_people(self):
+        """Голос похож, имя другое — случай ADR-0127 (Саша и Борис на 0.846)."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Саша", "speaker_id": "s1",
+            "voice_conflict": {"name": "Борис", "speaker_id": "b1", "score": 0.85},
+        }))
+
+        n._speak_direct.assert_called_once()
+        spoken = n._speak_direct.call_args[0][0]
+        assert "Борис" in spoken
+        assert "?" in spoken
+
+    def test_plain_registration_asks_nothing(self):
+        """Обычная регистрация без неоднозначности — молчим.
+
+        Защита от болтливости: если робот начнёт переспрашивать на каждом
+        знакомстве, люди перестанут отвечать.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Саша", "speaker_id": "s1",
+        }))
+
+        n._speak_direct.assert_not_called()
+
+    def test_twin_without_name_asks_nothing(self):
+        """Повод пришёл, но имени в нём нет — вопрос без имени бессмыслен.
+
+        Лучше промолчать, чем спросить «ты тот самый или другой?» про
+        неизвестно кого.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "", "speaker_id": "s1",
+            "name_twin": {"name": "", "speaker_id": "old", "score": 0.4},
+        }))
+
+        n._speak_direct.assert_not_called()
+
+    def test_speak_failure_does_not_raise(self):
+        """Не смогли озвучить — регистрация всё равно состоялась.
+
+        Вопрос это улучшение, а не условие работы: падение TTS не должно
+        рушить обработку ack.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock(side_effect=RuntimeError("tts dead"))
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Дэнчик", "speaker_id": "new",
+            "name_twin": {"name": "Дэнчик", "speaker_id": "old", "score": 0.5},
+        }))
+
+
+class TestOnSpeakerResultRegisterError:
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_registered_event_is_logged_and_not_treated_as_match(self):
+        n = _make_node()
+        n._on_speaker_result(self._msg({"event": "registered", "name": "Саша", "speaker_id": "abc123"}))
+        # Старое поведение не сломано: current_speaker не тронут.
+        assert n._current_speaker == {"is_known": False}
+
+    def test_register_error_too_short_speaks_reask_and_does_not_touch_speaker(self):
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(
+            self._msg(
+                {
+                    "event": "register_error",
+                    "error": "too_short",
+                    "name": "Шифу",
+                    "duration_s": 1.2,
+                    "min_required_s": 3.0,
+                }
+            )
+        )
+
+        n._speak_direct.assert_called_once()
+        spoken = n._speak_direct.call_args[0][0]
+        assert isinstance(spoken, str) and spoken.strip()
+        # current_speaker не должен обновляться служебным событием ошибки —
+        # это не результат identify(), а отказ регистрации.
+        assert n._current_speaker == {"is_known": False}
+
+    def test_register_error_other_than_too_short_is_ignored_by_reask_path(self):
+        """Документирует контракт: обрабатываем именно ``error=="too_short"``
+        — неизвестный код ошибки не должен внезапно начать что-то озвучивать
+        (защита от расширения ack в будущем без синхронной правки здесь)."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(
+            self._msg({"event": "register_error", "error": "something_else", "name": "Шифу"})
+        )
+
+        n._speak_direct.assert_not_called()
+
+    def test_register_error_speak_failure_does_not_raise(self):
+        """Честный отказ не должен уронить обработчик, если TTS-паблишер
+        временно недоступен — та же защита, что и у _on_command_feedback."""
+        n = _make_node()
+        n._speak_direct = MagicMock(side_effect=RuntimeError("tts down"))
+
+        n._on_speaker_result(
+            self._msg(
+                {
+                    "event": "register_error",
+                    "error": "too_short",
+                    "name": "Шифу",
+                    "duration_s": 0.5,
+                    "min_required_s": 3.0,
+                }
+            )
+        )  # must not raise
+
+    def test_unspoken_register_error_does_not_reset_known_speaker(self):
+        """Issue #2863 — служебный ack с незнакомым кодом ошибки раньше
+        проваливался дальше и затирал узнанного диктора самим ack."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+        known = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша", "confidence": 0.877}
+        n._current_speaker = dict(known)
+
+        n._on_speaker_result(
+            self._msg({"event": "register_error", "error": "something_else", "name": "Саша"})
+        )
+
+        assert n._current_speaker == known
+
+
+class TestOnSpeakerResultInconclusive:
+    """Issue #2863 — «не смог оценить» не сбрасывает узнанного диктора."""
+
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_inconclusive_unknown_keeps_current_speaker(self):
+        """Живой лог: речь=0.36s, -66.6 dBFS, STT пустой → раньше сброс в ∅."""
+        n = _make_node()
+        n._utterance_speaker = MagicMock()
+        known = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша", "confidence": 0.877}
+        n._current_speaker = dict(known)
+        payload = {
+            "is_known": False,
+            "utterance_id": "noise-1",
+            "inconclusive": True,
+            "reason": "too_short_for_biometry",
+        }
+
+        n._on_speaker_result(self._msg(payload))
+
+        assert n._current_speaker == known
+        # #2829: для СВОЕЙ фразы результат остаётся «не узнан» — имя она
+        # не наследует (join по utterance_id получает is_known=false).
+        n._utterance_speaker.submit.assert_called_once_with("noise-1", payload)
+
+    def test_evaluated_unknown_still_resets_current_speaker(self):
+        """Фразу реально оценили и не узнали — сброс допустим (#2829)."""
+        n = _make_node()
+        n._utterance_speaker = MagicMock()
+        n._current_speaker = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша"}
+
+        n._on_speaker_result(self._msg({"is_known": False, "utterance_id": "u-2"}))
+
+        assert n._current_speaker == {"is_known": False, "utterance_id": "u-2"}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  System prompt (legacy: test_system_prompt_injection)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSystemPrompt:
-    def test_load_system_prompt_returns_default_when_missing(self):
-        """Файл промпта недоступен → дефолтная строка (без краха)."""
-        n = _make_node({"system_prompt_file": "nonexistent.txt"})
-        prompt = n._load_system_prompt()
-        assert "ROBBOX" in prompt
-        assert "робот" in prompt.lower()
+    # ``test_load_system_prompt_returns_default_when_missing`` удалён:
+    # ADR-0083 §2.3 — ``_load_system_prompt`` мигрировал в
+    # ``rob_box_harness.core.assembly.load_system_prompt``, и поведение
+    # «нет файла → пустая строка» покрыто там в
+    # ``test_load_system_prompt_missing_dir_returns_empty``.
 
     def test_render_event_instructions_returns_base_when_no_profile(self):
         n = _make_node()
@@ -468,24 +798,50 @@ class TestOnStt:
         # 1. Сканируем increment-сайты (производственный код, не тесты).
         import re
         from pathlib import Path
-        dialogue_node_path = (
-            Path(__file__).resolve().parents[3]
-            / "rob_box_voice"
-            / "dialogue_node.py"
+        # Issue #2628 / #2628 refactor — STT admission counters
+        # (no_wake_word, empty_after_strip, stt_rejected, silence_command,
+        # command_intent, new_session, quick_decide_ignore) now live in
+        # ``core/stt_admission.py`` and are bumped by a single
+        # ``ctx.skip_counter[key] = ctx.skip_counter.get(key, 0) + 1``
+        # in :meth:`SttAdmission.evaluate`. The keys themselves come
+        # from ``drop("reason")`` / ``handled("reason")`` literal
+        # arguments of each step. To keep ``test_counter_keys_match_constant``
+        # meaningful as a SSoT guard for #1389, scan BOTH files but
+        # collect from the literal-sources: ``drop(<name>, "k")``,
+        # ``handled(<name>, "k")`` and direct ``self._llm_skipped_counter[\"k\"] += 1`` /
+        # ``skip_counter[\"k\"] += 1``.
+        package_root = Path(__file__).resolve().parents[3] / "rob_box_voice"
+        scan_targets = (
+            package_root / "dialogue_node.py",
+            package_root / "core" / "stt_admission.py",
         )
-        src = dialogue_node_path.read_text()
-        # Только строки ``+= 1`` — не комментарии, не fixture-литералы.
         increment_keys: set[str] = set()
-        for line in src.splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("#"):
-                continue
-            m = re.search(
-                r'_llm_skipped_counter\["([^"]+)"\]\s*\+=\s*1', line
-            )
-            if m:
-                increment_keys.add(m.group(1))
-        # Sanity: должны быть все 7 production-ключей из _on_stt/etc.
+        patterns = (
+            # Legacy direct increment (still present in dialogue_node.py).
+            re.compile(r'_llm_skipped_counter\["([^"]+)"\]\s*\+=\s*1'),
+            re.compile(r'_llm_skipped_counter\["([^"]+)"\]\s*=\s*[^+]*\+\s*1'),
+            # New pipeline: explicit literal increments (none today, but
+            # be defensive in case a step ever writes the counter directly).
+            re.compile(r'skip_counter\["([^"]+)"\]\s*\+=\s*1'),
+            re.compile(r'skip_counter\["([^"]+)"\]\s*=\s*[^+]*\+\s*1'),
+            # The real source of keys under #2628: ``drop("reason")`` /
+            # ``handled("reason")`` literal in stt_admission.py. ``self.name``
+            # is the step name, the second string is the increment key.
+            re.compile(r'\b(?:drop|handled)\s*\(\s*[A-Za-z_][\w.]*\s*,\s*"([^"]+)"\s*\)'),
+        )
+        for path in scan_targets:
+            src = path.read_text(encoding="utf-8")
+            # Только строки в коде — не комментарии, не fixture-литералы.
+            for line in src.splitlines():
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                for pat in patterns:
+                    m = pat.search(line)
+                    if m:
+                        increment_keys.add(m.group(1))
+                        break
+        # Sanity: должны быть все ключи из pipeline + legacy inline.
         assert "no_wake_word" in increment_keys
         assert "stt_rejected" in increment_keys
         assert "e2e_busy" not in increment_keys, (

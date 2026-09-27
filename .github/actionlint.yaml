@@ -1,0 +1,15 @@
+# Конфигурация actionlint (https://github.com/rhysd/actionlint).
+#
+# Заведена вместе с hard-gate шагом "actionlint (build workflows)" в
+# "G-Lint Code.yml" — acceptance Phase 2 плана
+# docs/plans/2026-09-15-service-manifest.md (§8, первый пункт).
+#
+# Без этого файла actionlint считает ошибкой КАЖДЫЙ `runs-on: [self-hosted,
+# rob-box]`: он знает только стандартные метки GitHub-хостинга и не может
+# догадаться, что "rob-box" — метка нашего self-hosted раннера (build-стенд
+# с локальным registry на localhost:5000). Метка "e2e" — раннер e2e-прогонов
+# ("L-E2E Voice Test.yml").
+self-hosted-runner:
+  labels:
+    - rob-box
+    - e2e

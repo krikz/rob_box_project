@@ -28,3 +28,9 @@ audio_node:
     music_vad_min_db: -35.0
     dsp_apply_on_start: true
     hpf_on: 1
+    # Issue #2701: watchdog захвата — «поток открыт, но замолчал на ходу»
+    # (PortAudio перестаёт звать audio_callback без исключения). См.
+    # audio_node.py::_check_audio_watchdog / _reopen_audio_stream.
+    audio_stall_timeout_s: 5.0
+    audio_stall_empty_speech_count: 3
+    audio_heartbeat_file: /tmp/rob_box_audio_heartbeat

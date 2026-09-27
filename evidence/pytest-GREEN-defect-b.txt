@@ -1,0 +1,13 @@
+============================= test session starts ==============================
+collecting ... collected 8 items
+
+local_test/test_quest_caddyfile.py::TestHealthzUpstream::test_healthz_handle_exists PASSED [ 12%]
+local_test/test_quest_caddyfile.py::TestHealthzUpstream::test_healthz_does_not_point_at_voice_action_server PASSED [ 25%]
+local_test/test_quest_caddyfile.py::TestHealthzUpstream::test_healthz_and_quest_share_one_upstream PASSED [ 37%]
+local_test/test_quest_caddyfile.py::TestComposeWsPortContract::test_compose_declares_ws_port PASSED [ 50%]
+local_test/test_quest_caddyfile.py::TestComposeWsPortContract::test_caddyfile_upstream_matches_compose_ws_port PASSED [ 62%]
+local_test/test_quest_caddyfile.py::TestQuestWsTransport::test_quest_forces_http11_not_h2c PASSED [ 75%]
+local_test/test_quest_caddyfile.py::TestListenPorts::test_site_listens_on_port[443] PASSED [ 87%]
+local_test/test_quest_caddyfile.py::TestListenPorts::test_site_listens_on_port[8443] PASSED [100%]
+
+============================== 8 passed in 0.05s ===============================

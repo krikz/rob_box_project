@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -202,6 +204,9 @@ from rob_box_voice.stt_fallback import (  # noqa: E402
     DEFAULT_YANDEX_MAX_RETRIES,
     DEFAULT_YANDEX_TIMEOUT_S,
     STTAttempt,
+    STTAuthError,
+    STTQuotaError,
+    STTTimeoutError,
     select_recognition,
 )
 
@@ -239,6 +244,20 @@ def _make_stt_node_stub(**param_overrides):
         # Issue #1251 — ранний «бульк»
         early_boop_enabled=True,
         early_boop_trigger="boop",
+        # Issue #2365 Phase 2 — цепочка провайдеров. MiniMax по умолчанию
+        # ВЫКЛЮЧЕН в тестах намеренно: иначе у разработчика с живым
+        # MINIMAX_API_KEY в окружении юнит-тесты полезут в сеть и станут
+        # флаки. Тесты MiniMax включают его явно.
+        stt_provider_chain=["yandex", "vosk"],
+        minimax_stt_enabled=False,
+        minimax_stt_api_key="",
+        minimax_stt_api_key_env="MINIMAX_API_KEY_UNSET_FOR_TESTS",
+        minimax_stt_timeout_s=5.0,
+        minimax_stt_max_retries=1,
+        provider_dead_ttl_s=300.0,
+        provider_dead_ttl_transient_s=30.0,
+        # Пустая строка — не писать файл состояния с юнит-теста.
+        provider_state_file="",
     )
     defaults.update(param_overrides)
 
@@ -275,6 +294,12 @@ def _make_stt_node_stub(**param_overrides):
     # param_overrides нужно форсировать после __init__)
     for k, v in defaults.items():
         setattr(node, k, v)
+    # ``stt_provider_chain`` — имя ROS-параметра, а нода хранит уже
+    # нормализованную цепочку в ``provider_chain``; цикл выше про это не
+    # знает, поэтому пересобираем её так же, как это делает __init__.
+    node.provider_chain = stt_node_module.STTNode._normalize_provider_chain(
+        list(defaults["stt_provider_chain"])
+    )
     # Mock publishers/subscribers/loggers
     node.result_pub = MagicMock()
     node.state_pub = MagicMock()
@@ -667,13 +692,20 @@ class TestRecognizeWithFallback:
         assert attempts == []
 
     def test_yandex_only_no_vosk(self, stt_node_no_vosk):
-        """Если Vosk отключён — идём только через Yandex + retry."""
+        """Если Vosk отключён — идём только через Yandex + retry.
+
+        Issue #2767: ``empty`` (None без исключения) больше НЕ ретраится
+        (гарантированно даст тот же ``empty`` на тех же байтах) —
+        1-я попытка здесь обязана быть настоящим транзиентным сбоем сети
+        (не ``timeout`` — он тоже не ретраится, issue #2924), иначе retry
+        не сработает вовсе.
+        """
         calls = []
 
         def fake_yandex(audio):
             calls.append(len(audio))
             if len(calls) == 1:
-                return None  # 1-я: пусто → retry
+                raise ConnectionError("UNAVAILABLE: network flap")  # транзиент → retry
             return "расскажи ещё раз"
 
         stt_node_no_vosk._recognize_yandex = fake_yandex
@@ -686,21 +718,25 @@ class TestRecognizeWithFallback:
         assert attempts[1].provider == "yandex"
 
     def test_vosk_fallback_when_yandex_fails(self, stt_node):
-        """Если Yandex падает — идём на Vosk (issue #979)."""
+        """Если Yandex падает — идём на Vosk (issue #979).
+
+        Issue #2767: Yandex здесь падает с ``empty`` — ОДНА попытка (без
+        retry, empty не транзиентен), сразу Vosk. 2 attempts, не 3.
+        """
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
 
-        # Yandex обе попытки — пусто/timeout
+        # Yandex — пусто (empty, без retry — issue #2767)
         stt_node._recognize_yandex = MagicMock(return_value=None)
         # Vosk возвращает валидную фразу
         stt_node._recognize_vosk = MagicMock(return_value="расскажи ещё раз")
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
         assert text == "расскажи ещё раз"
-        # 2 попытки Yandex + 1 Vosk = 3 attempts
-        assert len(attempts) == 3
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        # 1 попытка Yandex (empty, без retry) + 1 Vosk = 2 attempts
+        assert len(attempts) == 2
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_vosk_short_garbage_rejected(self, stt_node):
         """Короткий Vosk-мусор (1 char) → text=«а» (rejected(short), не None).
@@ -906,6 +942,14 @@ class TestBargeInWakeWordStopTTS:
     Раньше (Fix B из #989) VAD гейтился на всё время TTS, поэтому даже
     «робот, добавь бит» не доходило до STT. Теперь гейт снят, и STT обязан
     прервать TTS при wake word — это и есть barge-in.
+
+    Issue #1734 — этот немедленный STOP работает ТОЛЬКО при
+    ``barge_in_policy="replace"`` (дефолт, ``self._barge_in_policy``
+    инициализируется в "replace" в ``__init__`` — fail-safe до первого
+    сообщения от dialogue_node). Тесты ниже это явно закрепляют. Отдельная
+    ветка при ``barge_in_policy="classify"`` — класс ``TestBargeInClassifyPolicyDefersStop``
+    ниже: STOP там НЕ публикуется, решение отдаётся dialogue_node/quick_decide
+    (§2.5 SCHEDULER_DESIGN.md).
     """
 
     @staticmethod
@@ -930,6 +974,7 @@ class TestBargeInWakeWordStopTTS:
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.tts_control_pub = MagicMock()
         stt_node.result_pub = MagicMock()
         # В фикстуре publish_result замокан (чтобы другие тесты не публиковали),
@@ -951,6 +996,7 @@ class TestBargeInWakeWordStopTTS:
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.tts_control_pub = MagicMock()
         stt_node.result_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
@@ -973,6 +1019,7 @@ class TestBargeInWakeWordStopTTS:
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.aec_mode = "hardware"
         stt_node.tts_grace_s = 2.5
         stt_node.is_robot_speaking = True  # TTS активен
@@ -1021,6 +1068,107 @@ class TestBargeInWakeWordStopTTS:
         assert stt_node.publish_result.call_count == 0
 
 
+class TestBargeInClassifyPolicyDefersStop:
+    """Issue #1734: при ``barge_in_policy="classify"`` stt_node НЕ публикует
+    немедленный STOP на wake-word — решение (STOP/MERGE/PENDING_LLM/IGNORE)
+    отдаётся dialogue_node/quick_decide, чтобы «правка на лету без
+    замолкания» (§2.5 SCHEDULER_DESIGN.md) реально работала.
+
+    Regression pin: до фикса этот код публиковал STOP безусловно, что и
+    ломало сценарий из raw evidence issue #1734 («комар» обрывался на
+    «и ещё про енота», хотя quick_decide должен был смёржить сегменты) —
+    см. также test_barge_in_policy.py::TestQuickDecideDispatch на стороне
+    dialogue_node (там уже проверено, что _cancel_run сам публикует STOP
+    для REPLACE-вердикта — stt_node дублировать это не должен).
+    """
+
+    @staticmethod
+    def _patch_string_factory(monkeypatch, stt_node_module):
+        TestBargeInWakeWordStopTTS._patch_string_factory(monkeypatch, stt_node_module)
+
+    def test_classify_wake_word_does_not_stop_tts(self, stt_node, monkeypatch):
+        """policy=classify — wake-word НЕ шлёт STOP (в отличие от replace)."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "classify"
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("робот и ещё про енота")
+
+        stt_node.tts_control_pub.publish.assert_not_called()
+        # Результат всё равно публикуется — dialogue_node должен его увидеть,
+        # чтобы вообще смочь прогнать quick_decide.
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_classify_without_wake_word_no_stop(self, stt_node, monkeypatch):
+        """policy=classify без wake word — тоже без STOP (как и раньше)."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "classify"
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("не расслышал скажи")
+
+        stt_node.tts_control_pub.publish.assert_not_called()
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_default_policy_is_replace_before_any_topic_message(self, stt_node):
+        """Fail-safe: до первого сообщения от dialogue_node __init__
+        оставляет ``_barge_in_policy == "replace"`` — сохраняет поведение
+        issue #993, а не молча его выключает."""
+        assert stt_node._barge_in_policy == "replace"
+
+
+class TestBargeInPolicyCallback:
+    """Issue #1734 — приём политики от dialogue_node через latched-топик
+    ``/voice/dialogue/barge_in_policy`` (``barge_in_policy_callback``)."""
+
+    def test_classify_message_updates_policy(self, stt_node):
+        msg = MagicMock()
+        msg.data = "classify"
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "classify"
+
+    def test_replace_message_updates_policy(self, stt_node):
+        stt_node._barge_in_policy = "classify"
+        msg = MagicMock()
+        msg.data = "replace"
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "replace"
+
+    def test_case_insensitive_and_whitespace_tolerant(self, stt_node):
+        msg = MagicMock()
+        msg.data = "  CLASSIFY  "
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "classify"
+
+    def test_unknown_value_ignored_keeps_current_policy(self, stt_node):
+        """Опечатка/невалидное значение — dialogue_node уже сам провалидировал
+        и залогировал warning; здесь просто не трогаем текущее значение."""
+        stt_node._barge_in_policy = "replace"
+        msg = MagicMock()
+        msg.data = "yolo"
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "replace"
+
+    def test_empty_value_ignored(self, stt_node):
+        stt_node._barge_in_policy = "classify"
+        msg = MagicMock()
+        msg.data = ""
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "classify"
+
+
 # ---------------------------------------------------------------------------
 # Acceptance: запись через колонки → 80%+ фраз распознаются
 # ---------------------------------------------------------------------------
@@ -1055,7 +1203,7 @@ class TestAcceptanceE2EWithSynthAudio:
         ],
     )
     def test_realistic_3to4_word_phrase(self, phrase):
-        """Каждая фраза: Yandex 1-я → timeout, 2-я → ok."""
+        """Каждая фраза: Yandex 1-я → сетевой сбой, 2-я → ok."""
         node = _make_stt_node_stub(
             yandex_api_key="FAKE",
             yandex_timeout_s=5.0,
@@ -1064,13 +1212,16 @@ class TestAcceptanceE2EWithSynthAudio:
         node.yandex_stub = MagicMock()
         node.recognizer = MagicMock()
 
-        # Yandex: 1-я попытка timeout (None), 2-я — фраза
+        # Yandex: 1-я попытка — сетевой сбой (транзиентный error, ретраится),
+        # 2-я — фраза. Issue #2767: ``empty`` (None без исключения) больше
+        # НЕ ретраится, issue #2924: ``timeout`` тоже — поэтому 1-я попытка
+        # обязана быть именно сетевой ошибкой.
         yandex_calls = []
 
         def fake_yandex(audio):
             yandex_calls.append(1)
             if len(yandex_calls) == 1:
-                return None  # timeout/empty
+                raise ConnectionError("UNAVAILABLE: network flap")
             return phrase
 
         vosk_calls = []
@@ -1109,12 +1260,14 @@ class TestAcceptanceE2EWithSynthAudio:
         ]
         successes = 0
         for ph in phrases:
-            # Pure-Python провайдеры (без rclpy)
+            # Pure-Python провайдеры (без rclpy). Issue #2767: ``empty``
+            # (None без исключения) больше НЕ ретраится, issue #2924:
+            # ``timeout`` тоже — «флап» смоделирован сетевой ошибкой.
             if ph == "а":
-                primary_responses = [None, None]  # обе попытки пусто
+                primary_responses = [None]  # пусто, без retry — сразу vosk
                 fallback_response = "а"
             else:
-                primary_responses = [None, ph]  # 1-я пусто, 2-я ok
+                primary_responses = [ConnectionError("UNAVAILABLE: network flap"), ph]
                 fallback_response = "а"  # мусор
 
             class _P:
@@ -1128,7 +1281,10 @@ class TestAcceptanceE2EWithSynthAudio:
                     self._calls += 1
                     if self._calls > len(self._responses):
                         return None
-                    return self._responses[self._calls - 1]
+                    result = self._responses[self._calls - 1]
+                    if isinstance(result, BaseException):
+                        raise result
+                    return result
 
             class _F:
                 name = "vosk"
@@ -1292,3 +1448,796 @@ class TestTelemetryPhraseToAccept:
             if "phrase_to_accept_ms=" in r.getMessage()
         ]
         assert telemetry == []
+
+
+class TestVoskLazyLoad:
+    """Issue #2609 — Vosk грузится при первом fallback, а не на старте.
+
+    Модель держит ~400 МБ RSS в stt_node, а на Vision Pi (8 ГБ) нужна только
+    когда Yandex не ответил.
+    """
+
+    @staticmethod
+    def _node_with_model_on_disk(monkeypatch):
+        monkeypatch.setattr("os.path.isdir", lambda _p: True)
+        node = _make_stt_node_stub()
+        from rob_box_voice import stt_node as stt_node_module
+
+        return node, stt_node_module
+
+    def test_model_not_loaded_at_startup(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        assert node._vosk_available is True
+        assert node.recognizer is None
+        mod.Model.assert_not_called()
+
+    def test_first_vosk_call_loads_model_once(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        mod.KaldiRecognizer.return_value.FinalResult.return_value = '{"text": "привет"}'
+
+        assert node._recognize_vosk(b"\x00" * 8000) == "привет"
+        assert node._recognize_vosk(b"\x00" * 8000) == "привет"
+        assert mod.Model.call_count == 1
+
+    def test_fallback_offers_vosk_before_it_is_loaded(self, monkeypatch):
+        node, _mod = self._node_with_model_on_disk(monkeypatch)
+        node.yandex_stub = None
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(node, "_recognize_vosk", MagicMock(return_value="привет робот"))
+            text, attempts = node._recognize_with_fallback(b"\x00" * 8000)
+        assert text == "привет робот"
+        assert [a.provider for a in attempts] == ["vosk"]
+
+    def test_preload_loads_model_at_init(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        node.vosk_preload = True
+        node.initialize_vosk()
+        assert node.recognizer is not None
+        assert mod.Model.call_count == 1
+
+    def test_load_failure_disables_vosk(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        mod.Model.side_effect = RuntimeError("broken model")
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+        assert node._vosk_available is False
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+        assert mod.Model.call_count == 1
+
+    def test_missing_model_dir_leaves_vosk_unavailable(self, monkeypatch):
+        monkeypatch.setattr("os.path.isdir", lambda _p: False)
+        node = _make_stt_node_stub()
+        assert node._vosk_available is False
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+
+
+def test_vosk_adapter_prepare_loads_model_outside_timeout(monkeypatch):
+    """Issue #2609 — загрузка Vosk не должна съедать таймаут первой фразы."""
+    monkeypatch.setattr("os.path.isdir", lambda _p: True)
+    node = _make_stt_node_stub()
+    from rob_box_voice import stt_node as mod
+
+    node.yandex_stub = None
+    node.yandex_timeout_s = 0.2
+    mod.KaldiRecognizer.return_value.FinalResult.return_value = '{"text": "привет робот"}'
+
+    real_model = mod.Model
+
+    def _slow_model(*a, **kw):
+        time.sleep(0.4)
+        return real_model(*a, **kw)
+
+    monkeypatch.setattr(mod, "Model", _slow_model)
+    text, attempts = node._recognize_with_fallback(b"\x00" * 8000)
+    assert text == "привет робот"
+    assert [(a.provider, a.reason) for a in attempts] == [("vosk", "ok")]
+
+
+# ---------------------------------------------------------------------------
+# Issue #2365 Phase 2 (ADR-0124): цепочка minimax → yandex → vosk
+# ---------------------------------------------------------------------------
+
+
+class TestProviderChainNormalization:
+    """Инварианты ``_normalize_provider_chain`` (аналог tts_node, #1083)."""
+
+    @staticmethod
+    def _normalize(chain, logger=None):
+        from rob_box_voice.stt_node import STTNode
+
+        return STTNode._normalize_provider_chain(chain, logger=logger)
+
+    def test_default_order_is_yandex_minimax_vosk(self):
+        """Issue #2866: счёт Yandex пополнен — Yandex снова primary."""
+        from rob_box_voice.stt_node import DEFAULT_STT_PROVIDER_CHAIN
+
+        assert DEFAULT_STT_PROVIDER_CHAIN == ["yandex", "minimax", "vosk"]
+
+    def test_empty_chain_falls_back_to_default(self):
+        assert self._normalize([]) == ["yandex", "minimax", "vosk"]
+
+    def test_vosk_is_forced_last(self):
+        """Vosk в середине — переносится в конец: он последний рубеж."""
+        assert self._normalize(["vosk", "minimax", "yandex"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+    def test_vosk_appended_when_missing(self):
+        """Без Vosk цепочка оставила бы робота глухим при мёртвых облаках."""
+        assert self._normalize(["minimax", "yandex"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+    def test_duplicates_removed_keeping_first_position(self):
+        assert self._normalize(["yandex", "minimax", "yandex"]) == [
+            "yandex",
+            "minimax",
+            "vosk",
+        ]
+
+    def test_vosk_only_is_a_legitimate_offline_mode(self):
+        assert self._normalize(["vosk"]) == ["vosk"]
+
+    def test_unknown_provider_is_dropped_with_warning(self):
+        logger = MagicMock()
+        assert self._normalize(["whisper", "yandex"], logger=logger) == [
+            "yandex",
+            "vosk",
+        ]
+        assert logger.warning.called
+
+    def test_garbage_chain_falls_back_to_default(self):
+        assert self._normalize(["whisper", "azure"]) == [
+            "yandex",
+            "minimax",
+            "vosk",
+        ]
+
+    def test_case_and_whitespace_tolerated(self):
+        assert self._normalize([" MiniMax ", "YANDEX"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+
+class TestProviderChainWiring:
+    """``_build_provider_chain`` — кого и в каком порядке реально зовём."""
+
+    def test_chain_order_follows_parameter(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = True
+        stt_node.minimax_stt_api_key = "FAKE"
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["minimax", "yandex", "vosk"]
+
+    def test_minimax_skipped_without_key(self, stt_node):
+        """Нет ключа — MiniMax тихо выпадает (ADR-0091 §5.2), без ошибок."""
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = True
+        stt_node.minimax_stt_api_key = ""
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["yandex", "vosk"]
+
+    def test_minimax_skipped_when_disabled(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = False
+        stt_node.minimax_stt_api_key = "FAKE"
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["yandex", "vosk"]
+
+    def test_yandex_skipped_without_stub(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = True
+        stt_node.minimax_stt_api_key = "FAKE"
+        stt_node.yandex_stub = None
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["minimax", "vosk"]
+
+    def test_vosk_prepare_is_wired(self, stt_node):
+        """Vosk грузит модель через prepare() — вне таймаута (#2609)."""
+        stt_node.provider_chain = ["vosk"]
+        stt_node.recognizer = MagicMock()
+        stt_node._ensure_vosk_loaded = MagicMock(return_value=True)
+
+        chain = stt_node._build_provider_chain()
+        chain[0].prepare()
+
+        assert stt_node._ensure_vosk_loaded.called
+
+    def test_per_provider_policies(self, stt_node):
+        stt_node.minimax_stt_timeout_s = 5.0
+        stt_node.minimax_stt_max_retries = 1
+        stt_node.yandex_timeout_s = 12.0
+        stt_node.yandex_max_retries = 1
+
+        policies = stt_node._provider_policies()
+
+        assert policies["minimax"].timeout_s == 5.0
+        assert policies["minimax"].max_retries == 1
+        assert policies["yandex"].timeout_s == 12.0
+        # Vosk офлайновый: повтор мусора даст тот же мусор.
+        assert policies["vosk"].max_retries == 0
+
+
+class TestRecognizeChainEndToEnd:
+    """Полный прогон ``_recognize_with_fallback`` по новой цепочке."""
+
+    @staticmethod
+    def _prepare(node):
+        node.provider_chain = ["minimax", "yandex", "vosk"]
+        node.minimax_stt_enabled = True
+        node.minimax_stt_api_key = "FAKE"
+        node.yandex_stub = MagicMock()
+        node.recognizer = MagicMock()
+        node.retry_backoff_s = 0.0
+        node.minimax_stt_max_retries = 0
+        node.yandex_max_retries = 0
+        node._ensure_vosk_loaded = MagicMock(return_value=True)
+        return node
+
+    def test_minimax_wins_when_alive(self, stt_node):
+        node = self._prepare(stt_node)
+        node._recognize_minimax = MagicMock(return_value="робот расскажи анекдот")
+        node._recognize_yandex = MagicMock(return_value="яндекс не нужен")
+        node._recognize_vosk = MagicMock(return_value="воск не нужен")
+
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text == "робот расскажи анекдот"
+        assert attempts[0].provider == "minimax"
+        assert node._recognize_yandex.called is False
+        assert node._recognize_vosk.called is False
+
+    def test_falls_through_to_yandex_then_vosk(self, stt_node):
+        node = self._prepare(stt_node)
+        node._recognize_minimax = MagicMock(side_effect=STTQuotaError("2056"))
+        node._recognize_yandex = MagicMock(side_effect=STTQuotaError("RESOURCE_EXHAUSTED"))
+        node._recognize_vosk = MagicMock(return_value="робот расскажи анекдот")
+
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text == "робот расскажи анекдот"
+        assert [a.provider for a in attempts] == ["minimax", "yandex", "vosk"]
+        assert [a.reason for a in attempts] == ["error", "error", "ok"]
+
+    def test_dead_clouds_are_skipped_on_next_phrase(self, stt_node):
+        """Сценарий 21.09: оба облака без денег — вторая фраза идёт в Vosk сразу."""
+        node = self._prepare(stt_node)
+        node._recognize_minimax = MagicMock(side_effect=STTQuotaError("2056"))
+        node._recognize_yandex = MagicMock(side_effect=STTQuotaError("RESOURCE_EXHAUSTED"))
+        node._recognize_vosk = MagicMock(return_value="робот расскажи анекдот")
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert node._recognize_minimax.call_count == 1
+        assert node._recognize_yandex.call_count == 1
+        assert node._recognize_vosk.call_count == 2
+        assert text == "робот расскажи анекдот"
+        assert [a.reason for a in attempts] == ["dead", "dead", "ok"]
+
+    def test_no_providers_returns_none(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = False
+        stt_node.yandex_stub = None
+        stt_node.recognizer = None
+        stt_node._vosk_available = False
+
+        text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text is None
+        assert attempts == []
+
+
+class TestEffectiveProvider:
+    """Фактический провайдер после фолбека (лог + файл состояния)."""
+
+    def test_effective_is_head_of_chain_when_all_alive(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        assert stt_node._effective_provider() == "minimax"
+
+    def test_effective_skips_dead_providers(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+        assert stt_node._effective_provider() == "yandex"
+
+    def test_effective_is_last_when_everyone_dead(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        for name in stt_node.provider_chain:
+            stt_node._provider_dead_cache.mark_dead(name, "dead", transient=False)
+        assert stt_node._effective_provider() == "vosk"
+
+    def test_state_persisted_only_on_change(self, stt_node, tmp_path):
+        """Строка в логе и запись в файл — только при СМЕНЕ провайдера."""
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.provider_state_file = str(tmp_path / "state.json")
+        stt_node._last_effective_provider = None
+        stt_node._persist_provider_state = MagicMock()
+
+        stt_node._log_provider_state("startup")
+        assert stt_node._persist_provider_state.call_count == 1
+
+        stt_node._log_provider_state("recognize")  # ничего не изменилось
+        assert stt_node._persist_provider_state.call_count == 1
+
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+        stt_node._log_provider_state("recognize")
+        assert stt_node._persist_provider_state.call_count == 2
+
+    def test_persisted_payload_names_provider_and_dead(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node._last_effective_provider = None
+        stt_node._persist_provider_state = MagicMock()
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+
+        stt_node._log_provider_state("startup")
+
+        payload = stt_node._persist_provider_state.call_args[0][0]
+        assert payload["provider"] == "yandex"
+        assert "minimax" in payload["dead_providers"]
+
+
+class TestPersistedProviderState:
+    """Рестарт ноды не должен снова платить таймаут мёртвому облаку (#2676)."""
+
+    def test_round_trip_through_file(self, stt_node, tmp_path):
+        state_file = tmp_path / "stt_provider_state.json"
+        stt_node.provider_state_file = str(state_file)
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node._last_effective_provider = None
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+
+        stt_node._log_provider_state("startup")
+        assert state_file.exists()
+
+        fresh = _make_stt_node_stub(provider_state_file=str(state_file))
+        fresh.provider_state_file = str(state_file)
+        fresh._load_persisted_provider_state()
+
+        assert fresh._provider_dead_cache.is_dead("minimax") is True
+
+    def test_missing_file_does_not_break_startup(self, stt_node, tmp_path):
+        stt_node.provider_state_file = str(tmp_path / "nope.json")
+        stt_node._load_persisted_provider_state()  # не должно бросить
+
+    def test_broken_json_does_not_break_startup(self, stt_node, tmp_path):
+        broken = tmp_path / "broken.json"
+        broken.write_text("{не json", encoding="utf-8")
+        stt_node.provider_state_file = str(broken)
+        stt_node._load_persisted_provider_state()  # не должно бросить
+
+
+class TestMiniMaxErrorMapping:
+    """MiniMax-исключения → типизированные ошибки цепочки (для кэша)."""
+
+    @staticmethod
+    def _node_with_provider(stt_node, exc):
+        provider = MagicMock()
+        provider.transcribe.side_effect = exc
+        stt_node._ensure_minimax_provider = lambda: provider
+        return stt_node
+
+    def test_auth_error_becomes_stt_auth_error(self, stt_node):
+        from rob_box_voice.stt_providers.minimax_provider import MiniMaxSTTAuthError
+
+        node = self._node_with_provider(stt_node, MiniMaxSTTAuthError("HTTP 401"))
+        with pytest.raises(STTAuthError):
+            node._recognize_minimax(b"\x00" * 100)
+
+    def test_rate_limit_becomes_quota_error(self, stt_node):
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTRateLimitError,
+        )
+
+        node = self._node_with_provider(
+            stt_node, MiniMaxSTTRateLimitError("HTTP 429")
+        )
+        with pytest.raises(STTQuotaError):
+            node._recognize_minimax(b"\x00" * 100)
+
+    def test_timeout_becomes_stt_timeout_error(self, stt_node):
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTUnavailableError,
+        )
+
+        node = self._node_with_provider(
+            stt_node, MiniMaxSTTUnavailableError("timeout: read")
+        )
+        with pytest.raises(STTTimeoutError):
+            node._recognize_minimax(b"\x00" * 100)
+
+    def test_unconfigured_provider_returns_none(self, stt_node):
+        stt_node._ensure_minimax_provider = lambda: None
+        assert stt_node._recognize_minimax(b"\x00" * 100) is None
+
+    def test_text_is_returned_on_success(self, stt_node):
+        provider = MagicMock()
+        provider.transcribe.return_value = SimpleNamespace(text="робот привет")
+        stt_node._ensure_minimax_provider = lambda: provider
+
+        assert stt_node._recognize_minimax(b"\x00" * 100) == "робот привет"
+
+
+class TestDeadCacheTtlOnRealRobotErrors:
+    """Отказы, снятые с робота 21.09.2026 — проверяем класс TTL.
+
+    Симптом до фикса: `dead={'minimax': 11.3}` в логе — то есть 30с
+    вместо 300с, и облако переспрашивалось каждые полминуты.
+    """
+
+    @staticmethod
+    def _chain(node):
+        node.provider_chain = ["minimax", "yandex", "vosk"]
+        node.minimax_stt_enabled = True
+        node.minimax_stt_api_key = "FAKE"
+        node.yandex_stub = MagicMock()
+        node.recognizer = MagicMock()
+        node.retry_backoff_s = 0.0
+        node._ensure_vosk_loaded = MagicMock(return_value=True)
+        node._recognize_vosk = MagicMock(return_value="робот как дела")
+        return node
+
+    def test_minimax_plan_error_gets_long_ttl_and_no_retry(self, stt_node):
+        """HTTP 500 + код 2061 = план, а не «сервер моргнул»."""
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTRateLimitError,
+        )
+
+        node = self._chain(stt_node)
+        node.minimax_stt_max_retries = 1
+        provider = MagicMock()
+        provider.transcribe.side_effect = MiniMaxSTTRateLimitError(
+            "minimax STT: minimax API error: your current token plan "
+            "not support model, asr-1.0 (2061)"
+        )
+        node._ensure_minimax_provider = lambda: provider
+        node._recognize_yandex = MagicMock(return_value=None)
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+
+        # Повтора не было — квоту ретраить бессмысленно.
+        assert provider.transcribe.call_count == 1
+        # И TTL длинный: через 30с (транзиентный порог) всё ещё мёртв.
+        assert node._provider_dead_cache.remaining_s("minimax") > 100
+
+    def test_yandex_network_error_gets_short_ttl(self, stt_node):
+        """UNAVAILABLE (на роботе — нет IPv6-маршрута) = транзиентный."""
+        node = self._chain(stt_node)
+        node.minimax_stt_enabled = False
+        node.yandex_max_retries = 0
+        node._recognize_yandex = MagicMock(
+            side_effect=RuntimeError("failed to connect to all addresses")
+        )
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+
+        remaining = node._provider_dead_cache.remaining_s("yandex")
+        assert 0 < remaining <= 30
+
+
+class TestGrpcErrorMapping:
+    """gRPC-код Yandex → типизированная ошибка (для кэша «мёртвых»)."""
+
+    @staticmethod
+    def _rpc_error(code, details="boom"):
+        """Заглушка gRPC-ошибки.
+
+        ``spec=grpc.RpcError`` здесь не годится: в этом модуле ``grpc``
+        подменён моком (как и rclpy), а замокать мок нельзя.
+        ``_map_grpc_error`` смотрит только на ``code()``/``details()``.
+        """
+
+        class _Err(Exception):
+            def code(self):
+                return code
+
+            def details(self):
+                return details
+
+        return _Err()
+
+    def test_deadline_exceeded_becomes_timeout(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.DEADLINE_EXCEEDED), 12.0
+        )
+        assert isinstance(mapped, STTTimeoutError)
+
+    def test_unauthenticated_becomes_auth_error(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.UNAUTHENTICATED), 12.0
+        )
+        assert isinstance(mapped, STTAuthError)
+
+    def test_resource_exhausted_becomes_quota_error(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.RESOURCE_EXHAUSTED), 12.0
+        )
+        assert isinstance(mapped, STTQuotaError)
+
+    def test_unavailable_is_passed_through_as_transient(self):
+        """«Network is unreachable» — сеть, а не деньги: короткий TTL."""
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        original = self._rpc_error(
+            _grpc.StatusCode.UNAVAILABLE, "Network is unreachable"
+        )
+        mapped = _map_grpc_error(original, 12.0)
+        assert mapped is original
+
+
+# ---------------------------------------------------------------------------
+# Issue #2891 — Yandex v3 шлёт final/final_refinement на КАЖДЫЙ сегмент фразы.
+# ---------------------------------------------------------------------------
+
+
+def _yandex_response(event_type, text="", final_index=0):
+    """Фейковый StreamingResponse v3 (поля — как в stt.proto)."""
+    from types import SimpleNamespace
+
+    alts = [SimpleNamespace(text=text)] if text else []
+    update = SimpleNamespace(alternatives=alts)
+    resp = SimpleNamespace(
+        WhichOneof=lambda _oneof: event_type,
+        audio_cursors=SimpleNamespace(final_index=final_index),
+    )
+    if event_type == "final_refinement":
+        resp.final_refinement = SimpleNamespace(
+            final_index=final_index, normalized_text=update
+        )
+    elif event_type in ("final", "partial"):
+        setattr(resp, event_type, update)
+    return resp
+
+
+class TestYandexAllSegments:
+    """Issue #2891 — «Робот, здравствуй, я Саша…» не должно стать «робот здравствуй»."""
+
+    @staticmethod
+    def _run(node, responses, phase="REAL_TIME"):
+        node.yandex_stub.RecognizeStreaming.side_effect = (
+            lambda gen, metadata=None, timeout=None: iter(responses)
+        )
+        return node._recognize_yandex_phase(
+            b"\x00" * 8000,
+            phase=phase,
+            enable_speech_analysis=(phase == "REAL_TIME"),
+        )
+
+    @pytest.mark.parametrize("phase", ["REAL_TIME", "FULL_DATA"])
+    def test_two_segments_with_refinements_give_full_text(self, stt_node_no_vosk, phase):
+        responses = [
+            _yandex_response("partial", "робот здравствуй"),
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            _yandex_response("partial", "я саша чиню"),
+            _yandex_response("final", "я саша чиню тут технику по вечерам", 1),
+            _yandex_response(
+                "final_refinement", "Я Саша, чиню тут технику по вечерам.", 1
+            ),
+        ]
+        text = self._run(stt_node_no_vosk, responses, phase)
+        assert text == "Робот, здравствуй. Я Саша, чиню тут технику по вечерам."
+
+    @pytest.mark.parametrize("phase", ["REAL_TIME", "FULL_DATA"])
+    def test_last_segment_without_refinement_uses_its_final(self, stt_node_no_vosk, phase):
+        responses = [
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            _yandex_response("final", "я саша", 1),
+        ]
+        text = self._run(stt_node_no_vosk, responses, phase)
+        assert text == "Робот, здравствуй. я саша"
+
+    def test_single_segment_as_before(self, stt_node_no_vosk):
+        responses = [
+            _yandex_response("partial", "робот привет"),
+            _yandex_response("final", "робот привет", 0),
+            _yandex_response("final_refinement", "Робот, привет.", 0),
+        ]
+        assert self._run(stt_node_no_vosk, responses) == "Робот, привет."
+
+    def test_no_final_falls_back_to_last_partial(self, stt_node_no_vosk):
+        responses = [
+            _yandex_response("partial", "робот"),
+            _yandex_response("partial", "робот стоп"),
+        ]
+        assert self._run(stt_node_no_vosk, responses) == "робот стоп"
+
+    def test_speaker_tag_kept_with_multiple_segments(self, stt_node_no_vosk):
+        from types import SimpleNamespace
+
+        speaker = SimpleNamespace(
+            WhichOneof=lambda _oneof: "speaker_analysis",
+            speaker_analysis=SimpleNamespace(speaker_tag="1"),
+        )
+        responses = [
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            speaker,
+            _yandex_response("final", "я саша", 1),
+            _yandex_response("final_refinement", "Я Саша.", 1),
+        ]
+        stt_node_no_vosk._last_speaker_tag = None
+        text = self._run(stt_node_no_vosk, responses)
+        assert text == "Робот, здравствуй. Я Саша."
+        assert stt_node_no_vosk._last_speaker_tag == "1"
+
+
+class TestIssue2931YandexFirstSegment:
+    """Issue #2931 — «Робот, привет, давай знакомиться…» трижды пришло без
+    «робот» (E2E run 35943180077, n201). Прогон через настоящий
+    ``_recognize_yandex_phase``: «робот» сервер показал только partial'ом,
+    final его сегмента не прислал."""
+
+    @staticmethod
+    def _timed(event_type, text, start, end, final_index=0):
+        resp = _yandex_response(event_type, text, final_index)
+        getattr(resp, event_type).alternatives[0].start_time_ms = start
+        getattr(resp, event_type).alternatives[0].end_time_ms = end
+        return resp
+
+    def test_first_word_only_in_partial_is_kept_and_logged(self, stt_node_no_vosk, caplog):
+        node = stt_node_no_vosk
+        responses = [
+            self._timed("partial", "робот", 0, 640),
+            self._timed("partial", "привет давай", 1900, 2600),
+            self._timed("final", "привет давай знакомиться как следует", 1900, 6100, 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: iter(responses)
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            text = node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        assert text == "робот привет давай знакомиться как следует"
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "[#2931]" in r.getMessage()]
+        assert len(info) == 1, info
+        assert "P×1'робот'@0-640" in info[0] and "F#0'" in info[0] and "segments=2" in info[0], info[0]
+
+
+# ---------------------------------------------------------------------------
+# Issue #2924 — Yandex STT DEADLINE_EXCEEDED: сервер молчит весь дедлайн.
+# ---------------------------------------------------------------------------
+
+
+class TestIssue2924YandexStreamDeadline:
+    """23.09 23:22–23:39: каждый вызов Yandex стоял до дедлайна 5 с, не
+    прислав ни одного partial, и сам ожил без рестарта ноды.
+
+    Фикс: в лог ошибки стрима — сколько ответов успело прийти (отличает
+    «сервер молчал» от «не закрыл стрим»); после DEADLINE_EXCEEDED канал
+    пересоздаётся, чтобы следующая фраза не шла по зависшему соединению.
+    """
+
+    @staticmethod
+    def _install_rpc_error(monkeypatch, code):
+        from rob_box_voice import stt_node as stt_node_module
+
+        class _RpcError(Exception):
+            def code(self):
+                return code
+
+            def details(self):
+                return "Deadline Exceeded"
+
+        monkeypatch.setattr(stt_node_module.grpc, "RpcError", _RpcError, raising=False)
+        return _RpcError
+
+    @staticmethod
+    def _stream(responses, error):
+        def _gen():
+            yield from responses
+            raise error
+
+        return _gen()
+
+    @staticmethod
+    def _warnings(caplog):
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_deadline_with_silent_server_resets_channel(self, stt_node_no_vosk, monkeypatch, caplog):
+        from rob_box_voice import stt_node as stt_node_module
+
+        rpc_error = self._install_rpc_error(monkeypatch, stt_node_module.grpc.StatusCode.DEADLINE_EXCEEDED)
+        node = stt_node_no_vosk
+        old_channel = MagicMock()
+        node.yandex_channel = old_channel
+        node.initialize_yandex = MagicMock()
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
+            [], rpc_error()
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="test_stt_node_fallback"):
+            with pytest.raises(STTTimeoutError):
+                node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+
+        old_channel.close.assert_called_once()
+        node.initialize_yandex.assert_called_once()
+        warnings = self._warnings(caplog)
+        assert any("responses=0" in m and "phase=REAL_TIME" in m for m in warnings), warnings
+
+    def test_deadline_after_segments_logs_how_much_arrived(self, stt_node_no_vosk, monkeypatch, caplog):
+        from rob_box_voice import stt_node as stt_node_module
+
+        rpc_error = self._install_rpc_error(monkeypatch, stt_node_module.grpc.StatusCode.DEADLINE_EXCEEDED)
+        node = stt_node_no_vosk
+        node.yandex_channel = MagicMock()
+        node.initialize_yandex = MagicMock()
+        responses = [
+            _yandex_response("partial", "робот здравствуй"),
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
+            responses, rpc_error()
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="test_stt_node_fallback"):
+            with pytest.raises(STTTimeoutError):
+                node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+
+        warnings = self._warnings(caplog)
+        assert any(
+            "responses=3" in m and "partials=1" in m and "eou=1" in m and "segments=1" in m for m in warnings
+        ), warnings
+
+    def test_unavailable_does_not_reset_channel(self, stt_node_no_vosk, monkeypatch):
+        """Пересоздание — только на DEADLINE_EXCEEDED, не на любую ошибку."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        rpc_error = self._install_rpc_error(monkeypatch, stt_node_module.grpc.StatusCode.UNAVAILABLE)
+        node = stt_node_no_vosk
+        node.yandex_channel = MagicMock()
+        node.initialize_yandex = MagicMock()
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
+            [], rpc_error()
+        )
+
+        with pytest.raises(rpc_error):
+            node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        node.initialize_yandex.assert_not_called()
+
+    def test_eou_update_is_counted(self, stt_node_no_vosk, caplog):
+        """В v3 oneof-поле называется ``eou_update``; до #2924 в телеметрии
+        всегда стояло eou=0 (сравнивали с несуществующим ``end_of_utterance``)."""
+        node = stt_node_no_vosk
+        responses = [
+            _yandex_response("final", "робот привет", 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: iter(responses)
+        with caplog.at_level(logging.DEBUG, logger="test_stt_node_fallback"):
+            text = node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        assert text == "робот привет"
+        assert any("eou=1" in r.getMessage() for r in caplog.records)

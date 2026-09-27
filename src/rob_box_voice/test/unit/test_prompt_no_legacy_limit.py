@@ -1,6 +1,6 @@
 """Static regression guard for issue #1377.
 
-Issue #1377: the LLM prompts (master_prompt_compact.txt, compositor_prompt.txt)
+Issue #1377: the LLM prompt (master_prompt_compact.txt)
 told the model "no more than 150 characters" per speak_text call. This is a
 legacy hint that pre-dates the runtime contract:
 
@@ -35,12 +35,6 @@ MASTER_PROMPT = (
     Path(__file__).resolve().parents[2]
     / "prompts"
     / "master_prompt_compact.txt"
-)
-
-COMPOSITOR_PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "compositor_prompt.txt"
 )
 
 
@@ -93,23 +87,8 @@ def test_master_prompt_documents_200_character_limit() -> None:
     )
 
 
-# ── compositor_prompt.txt ─────────────────────────────────────────────
+# ── compositor_prompt.txt удалён (change skill-scoped-dialogue-context,
+#    задача 6.3): он маршрутизировал на фасады handle_music /
+#    handle_navigation, которых нет с e96b912d. Проверки не потеряны —
+#    у каждой есть близнец выше, на master_prompt_compact.txt. ──────
 
-
-def test_compositor_prompt_has_no_legacy_150_character_limit() -> None:
-    """Compositor prompt must not echo the legacy 150 hint."""
-    content = _read(COMPOSITOR_PROMPT)
-    hits = _legacy_150_hits(content)
-    assert hits == [], (
-        f"compositor_prompt.txt still contains legacy '150 characters' "
-        f"hint(s): {hits!r}. Use 200 to match _MAX_CHUNK_CHARS."
-    )
-
-
-def test_compositor_prompt_documents_200_character_limit() -> None:
-    """Compositor prompt must use 200 as the single source of truth."""
-    content = _read(COMPOSITOR_PROMPT)
-    assert "no more than 200 characters" in content, (
-        "compositor_prompt.txt missing the BREVITY rule rewrite "
-        "'no more than 200 characters' (see issue #1377)."
-    )

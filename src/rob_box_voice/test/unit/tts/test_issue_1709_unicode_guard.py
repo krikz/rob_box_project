@@ -170,6 +170,12 @@ def _make_node(tts_node_cls):
     n.finished_pub = _CapturingPublisher()
     n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
+    # Issue #2553 — babble-retry / DJ-overlap guard. Для тестов
+    # dialogue_callback (одиночный submit без активного batch'а)
+    # ставим пустую очередь и ``_play_active_seq=None`` (TTS idle).
+    n._pending_speech_queue = []
+    n._play_active_seq = None
+    n._active_batch_id = None
     return n
 
 

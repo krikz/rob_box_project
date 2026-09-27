@@ -110,11 +110,23 @@ def test_minimax_known_voice_passed_through() -> None:
 
 
 def test_minimax_default_when_no_voice() -> None:
-    """Без voice → дефолт MiniMax (male-qn-qingse) уходит в провайдер."""
+    """Без voice → дефолт MiniMax (male-qn-qingse) уходит в провайдер без warn.
+
+    ``resolve_voice`` returns ``fell_back=True`` for a missing request as
+    well as for an unknown one, so the fallback warning used to fire on
+    every ordinary utterance: 21 «Голос 'None' недоступен у MiniMax»
+    lines in 40 minutes of vision-host logs, reading like a broken
+    ``set_voice`` when nothing had been requested at all.
+    """
     node = _playback_node()
     _run_with_voice(node, voice=None)
     _, kwargs = node._synthesize_minimax.call_args
     assert kwargs.get("voice") == "male-qn-qingse"
+    warn_msgs = " ".join(str(c) for c in node.logger.warn.call_args_list)
+    assert "недоступен" not in warn_msgs, (
+        "no voice was requested — falling back to the provider default is "
+        f"not a fallback worth warning about: {warn_msgs}"
+    )
 
 
 def test_minimax_unknown_voice_falls_back_to_default() -> None:

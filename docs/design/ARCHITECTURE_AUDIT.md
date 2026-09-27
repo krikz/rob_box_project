@@ -22,16 +22,17 @@ The tooling separates evidence from architectural decisions. A duplicate or unpa
 
 ## Runtime collection
 
-The collector can inspect ROS2 on the runner or an SSH-accessible ROS2 host.
+The runtime collector runs on the self-hosted `rob-box` runner, where the robot ROS2 network is reachable. GitHub-hosted runners must not be used for live ROS2 collection.
 
 Examples:
 
     python tools/architecture_runtime_snapshot.py
     python tools/architecture_runtime_snapshot.py --topics /scan,/cmd_vel
-    python tools/architecture_runtime_snapshot.py --remote-host 10.1.1.21 --remote-user ros2 --topics /scan,/cmd_vel
+    source /opt/ros/humble/setup.bash
+    python tools/architecture_runtime_snapshot.py --topics /scan,/cmd_vel
     python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
-Remote collection requires passwordless SSH from the self-hosted runner. No password is stored in the repository.
+The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and uses passwordless SSH to the robot (`10.1.1.21` by default). GitHub-hosted runners are never used for live robot access.
 
 ## Node review questions
 

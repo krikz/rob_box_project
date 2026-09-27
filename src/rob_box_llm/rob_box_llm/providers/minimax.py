@@ -277,6 +277,8 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         # sensitive paths (voice, perception). Pass ``thinking=None`` to opt
         # out of the default; pass your own mapping to override.
         thinking: Optional[Mapping[str, str]] = DEFAULT_THINKING_POLICY,
+        # Issue #2939: ретраи самого SDK; ``None`` — дефолт ``AsyncOpenAI``.
+        max_retries: Optional[int] = None,
     ) -> None:
         # Install redaction on the originating loggers before any SDK/httpx
         # record can reach application handlers. Logger filters run before
@@ -303,6 +305,7 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
             api_key=api_key,
             timeout=resolved_timeout,
             client=client,
+            max_retries=max_retries,
         )
         # The thinking policy is applied via ``settings.extra`` for each call;
         # we keep it as an instance attribute so tests / callers can override.

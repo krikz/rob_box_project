@@ -46,7 +46,7 @@ class _NoopMetric:
 
     __slots__ = ()
 
-    def labels(self, *args: Any, **kwargs: Any) -> '_NoopMetric':
+    def labels(self, *args: Any, **kwargs: Any) -> "_NoopMetric":
         return self
 
     def inc(self, amount: float = 1.0) -> None:
@@ -74,19 +74,20 @@ def start_metrics_server(port: int) -> bool:
             start_http_server(port)  # type: ignore[misc]
         except OSError as exc:
             _log.warning(
-                'prometheus_client.start_http_server(%d) failed: %s',
-                port, exc,
+                "prometheus_client.start_http_server(%d) failed: %s",
+                port,
+                exc,
             )
             return False
         _http_server_started.add(port)
-        _log.info('Prometheus metrics server started on :%d/metrics', port)
+        _log.info("Prometheus metrics server started on :%d/metrics", port)
         return True
 
 
 def _get_counter(name: str, documentation: str, labelnames: tuple[str, ...]) -> Any:
     if not is_metrics_enabled():
         return _NoopMetric()
-    key = f'counter:{name}'
+    key = f"counter:{name}"
     with _registry_lock:
         existing = _metric_registry.get(key)
         if existing is not None:
@@ -96,7 +97,7 @@ def _get_counter(name: str, documentation: str, labelnames: tuple[str, ...]) -> 
         return metric
 
 
-def record_telegram_message(direction: str, *, message_type: str = 'text') -> None:
+def record_telegram_message(direction: str, *, message_type: str = "text") -> None:
     """Учёт telegram-сообщения.
 
     :param direction: ``"in"`` (входящее от юзера) или ``"out"``
@@ -105,15 +106,39 @@ def record_telegram_message(direction: str, *, message_type: str = 'text') -> No
         ``"callback"``.
     """
     counter = _get_counter(
-        'telegram_message_total',
-        'Telegram bot messages, labelled by direction and type.',
-        ('direction', 'type'),
+        "telegram_message_total",
+        "Telegram bot messages, labelled by direction and type.",
+        ("direction", "type"),
     )
     counter.labels(direction=direction, type=message_type).inc()
 
 
+def record_avatar_state_decode_error(reason: str) -> None:
+    """Учёт ошибок декодирования ``/avatar/state`` (AV-14, issue #1906).
+
+    Метрика не имеет labelnames — нас интересует только сам факт, что
+    бот получил битый/несовместимый payload. Reason (``"transport"``,
+    ``"version"``, ``"missing_msgpack"``, ``"other"``) живёт только в
+    логе (rate-limited WARN в ``supervisor_client._on_state_msg``), а
+    не в label — иначе cardinality метрики взлетит.
+
+    :param reason: категория ошибки. В Prometheus не попадает (см. выше),
+        но пригодится в логах / unit-тестах, чтобы различать сценарии.
+    """
+    counter = _get_counter(
+        "avatar_state_decode_errors_total",
+        "Count of /avatar/state payloads the bot failed to decode " "(AV-14, issue #1906).",
+        (),
+    )
+    counter.inc()
+    # Side-effect: лог на DEBUG, чтобы причина была видна при включении
+    # подробного логирования (без засорения INFO-уровня).
+    _log.debug("avatar_state_decode_error reason=%s", reason)
+
+
 __all__ = [
-    'is_metrics_enabled',
-    'record_telegram_message',
-    'start_metrics_server',
+    "is_metrics_enabled",
+    "record_telegram_message",
+    "record_avatar_state_decode_error",
+    "start_metrics_server",
 ]

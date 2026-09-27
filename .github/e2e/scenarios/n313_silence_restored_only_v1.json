@@ -1,0 +1,28 @@
+{
+  "name": "n313_silence_restored_only",
+  "description": "Isolated test of n313_silence_restored prompt fix from PR #2387. Single-step scenario: user asks 'Робот, теперь тихо?' — LLM must call get_music_state BEFORE verbal answer. Pre-conditions: DJ mode disabled, stop_music called to ensure no music playing.",
+  "stability": "expected-green",
+  "steps": [
+    {
+      "label": "pre_clear_dj_and_music",
+      "voice": "anton",
+      "text": "Робот, выключай музыку",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": ["stop_music"]
+      },
+      "_why": "Cleanup: stop any music and disable DJ mode (post-condition for n313)."
+    },
+    {
+      "label": "n313_silence_restored",
+      "voice": "anton",
+      "text": "Робот, теперь тихо?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": ["get_music_state"],
+        "must_not_call": ["execute_music_code", "stop_music"],
+        "_comment": "Per issue #2347 / PR #2387 fix: prompt RULE #MUSIC-STATE must force get_music_state call before verbal answer about music state."
+      }
+    }
+  ]
+}

@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 
 from control_msgs.msg import DynamicJointState
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose, PoseWithCovarianceStamped
 
 from nav_msgs.msg import Odometry
 
@@ -49,6 +49,10 @@ from rob_box_perception.utils.internet_monitor import (
 )
 from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
 from rob_box_perception.utils.time_provider import TimeAwarenessProvider
+from rob_box_perception.vision_hailo_loader import (
+    VISION_EVENT_FIELDS,
+    is_stub_event,
+)
 
 from std_msgs.msg import String
 
@@ -57,6 +61,15 @@ try:
     from rob_box_perception_msgs.msg import PerceptionEvent
 except ImportError:
     PerceptionEvent = None  # Fallback if not built yet
+
+# ADR-0089 Phase 1: VisionEvent msg is optional — node stays buildable
+# without it (mirrors the PerceptionEvent fallback above). When missing,
+# we skip subscribing to /vision/hailo/events and the structured
+# vision_events_json stays empty.
+try:
+    from rob_box_perception_msgs.msg import VisionEvent
+except ImportError:
+    VisionEvent = None  # Fallback if not built yet
 
 
 class ContextAggregatorNode(Node):
@@ -79,10 +92,20 @@ class ContextAggregatorNode(Node):
 
         # ============ Текущее состояние (кэш) ============
         self.current_vision: Optional[Dict] = None
-        self.current_pose: Optional[PoseStamped] = None
+        # Issue #2826: rtabmap публикует PoseWithCovarianceStamped;
+        # current_pose хранит нормализованный geometry_msgs/Pose
+        # (берётся из msg.pose.pose в on_robot_pose), чтобы PerceptionEvent.pose
+        # оставался типом Pose.
+        self.current_pose: Optional[Pose] = None
         self.current_odom: Optional[Odometry] = None
         self.current_sensors: Dict = {}
         self.last_apriltags: List[int] = []
+
+        # ============ ADR-0089 Phase 1: AI HAT+ events ============
+        # Кольцевой буфер последних VisionEvent. Окна = memory_window (сек).
+        # Публикуется как vision_events_json в PerceptionEvent.
+        # При отсутствии VisionEvent.msg — буфер остаётся пустым (fallback).
+        self._hailo_events: List[Dict] = []
 
         # Здоровье системы
         self.recent_errors: List[Dict] = []
@@ -123,8 +146,13 @@ class ContextAggregatorNode(Node):
         )
 
         # Pose
+        # Issue #2826: rtabmap публикует ``/rtabmap/localization_pose`` как
+        # ``geometry_msgs/PoseWithCovarianceStamped``. До фикса подписка была
+        # на ``PoseStamped`` — DDS не сматчивал publisher/subscriber, и
+        # ``/perception/context_update`` оставался без позы. Внутри callback
+        # нормализуем до ``geometry_msgs/Pose`` (``msg.pose.pose``).
         self.pose_sub = self.create_subscription(
-            PoseStamped,
+            PoseWithCovarianceStamped,
             '/rtabmap/localization_pose',
             self.on_robot_pose,
             10
@@ -202,6 +230,26 @@ class ContextAggregatorNode(Node):
             10
         )
 
+        # ============ ADR-0089 Phase 1: AI HAT+ VisionEvent ============
+        # Подписка на структурированные события лиц/объектов от
+        # vision_hailo_node. Подаёт vision_events_json в PerceptionEvent.
+        if VisionEvent is not None:
+            self._hailo_events_sub = self.create_subscription(
+                VisionEvent,
+                '/vision/hailo/events',
+                self.on_hailo_vision_event,
+                10
+            )
+            self.get_logger().info(
+                '👁️  Hailo VisionEvent subscribed (/vision/hailo/events)'
+            )
+        else:
+            self._hailo_events_sub = None
+            self.get_logger().warning(
+                '⚠️  VisionEvent msg не найден — /vision/hailo/events '
+                'подписка отключена (ADR-0089 Phase 1 deferred)'
+            )
+
         # ============ Публикации ============
 
         if PerceptionEvent:
@@ -239,11 +287,60 @@ class ContextAggregatorNode(Node):
         except json.JSONDecodeError:
             self.get_logger().error('❌ Ошибка парсинга vision_context')
 
-    def on_robot_pose(self, msg: PoseStamped):
-        """Обновление позиции."""
-        self.current_pose = msg
-        x = msg.pose.position.x
-        y = msg.pose.position.y
+    def on_hailo_vision_event(self, msg) -> None:
+        """Callback VisionEvent от vision_hailo_node (ADR-0089 Phase 1).
+
+        Сериализует ROS-msg в dict и кладёт в кольцевой буфер
+        `_hailo_events` (окно = `memory_window` секунд), БЕЗ фильтрации —
+        буфер хранит всё, что реально пришло с `/vision/hailo/events`,
+        включая stub-события (полезно для отладки самого топика). Фильтр
+        `is_stub_event` применяется позже, в `publish_event()`, ровно в
+        точке, где буфер превращается в `PerceptionEvent.vision_events_json`
+        — то есть в контекст Личности.
+
+        Контракт полей — VisionEvent.msg (см. rob_box_perception_msgs).
+        `stamp` обрабатывается отдельно от цикла по VISION_EVENT_FIELDS
+        (он не входит в tuple — это вложенная sub-msg-структура).
+        """
+        event_dict = {
+            'stamp': {
+                'sec': int(msg.stamp.sec),
+                'nanosec': int(msg.stamp.nanosec),
+            },
+            **{
+                field: getattr(msg, field)
+                for field in VISION_EVENT_FIELDS
+            },
+        }
+        self._hailo_events.append({'time': time.time(), 'event': event_dict})
+        self._prune_hailo_events()
+
+    def _prune_hailo_events(self) -> None:
+        """Выбросить VisionEvent старше memory_window секунд.
+
+        Зовётся и при приходе события, и при публикации: когда объект уходит
+        из кадра, новых событий нет, и без чистки в publish_event() старые
+        детекции жили бы в контексте Личности вечно.
+        """
+        cutoff = time.time() - self.memory_window
+        self._hailo_events = [
+            e for e in self._hailo_events if e['time'] > cutoff
+        ]
+
+    def on_robot_pose(self, msg: PoseWithCovarianceStamped):
+        """Обновление позиции (issue #2826).
+
+        rtabmap публикует ``/rtabmap/localization_pose`` как
+        ``PoseWithCovarianceStamped``. До фикса подписка была на
+        ``PoseStamped``, DDS не сматчивал publisher/subscriber, и
+        ``/perception/context_update`` оставался без позы. Берём
+        ``msg.pose.pose`` (``geometry_msgs/Pose``), а не всю обёртку —
+        так ``current_pose`` остаётся совместимым с ``PerceptionEvent.pose``
+        (``geometry_msgs/Pose`` в rob_box_perception_msgs/msg/PerceptionEvent.msg).
+        """
+        self.current_pose = msg.pose.pose
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
         self.get_logger().debug(f'📍 Pose: ({x:.2f}, {y:.2f})')
 
     def on_odometry(self, msg: Odometry):
@@ -459,9 +556,38 @@ class ContextAggregatorNode(Node):
         else:
             event.vision_context = ''
 
+        # ============ ADR-0089 Phase 1: AI HAT+ structured events ============
+        # Публикуем последние VisionEvent в JSON. vision_event_count
+        # — это cache hint для downstream-консьюмеров (mcp_server.py),
+        # которые могут пропустить парсинг если ничего не изменилось.
+        #
+        # Приватность (ADR-0089 §2.2, issue #2532): PerceptionEvent — это
+        # граница, за которой начинается контекст Личности. StubHEFLoader
+        # публикует выдуманное "person, conf 0.92, 1 м" в /vision/hailo/events
+        # (см. vision_hailo_loader.StubHEFLoader) — этот сырой топик им и
+        # остаётся для отладки пайплайна. Но в PerceptionEvent, откуда
+        # perception_projection читает vision_event_count/vision_events_json
+        # для LLM-контекста, выдумка попадать не должна вообще — иначе
+        # Личность расскажет про несуществующего человека рядом. Отсекаем
+        # здесь, единственным способом — is_stub_event (маркер из #2583),
+        # НЕ самодельным сравнением строк (см. docstring is_stub_event).
+        self._prune_hailo_events()
+        hailo_payload = [
+            item['event'] for item in self._hailo_events
+            if not is_stub_event(item['event'])
+        ]
+        event.vision_event_count = len(hailo_payload)
+        event.vision_events_json = json.dumps(
+            hailo_payload, ensure_ascii=False
+        )
+
         # Pose
+        # Issue #2826: current_pose хранит нормализованный geometry_msgs/Pose
+        # (берём ``msg.pose.pose`` в on_robot_pose). До фикса тут было
+        # ``event.pose = self.current_pose.pose``, потому что current_pose
+        # был PoseStamped; теперь current_pose сразу Pose, и лишний .pose не нужен.
         if self.current_pose:
-            event.pose = self.current_pose.pose
+            event.pose = self.current_pose
 
         # Velocity & Moving
         if self.current_odom:

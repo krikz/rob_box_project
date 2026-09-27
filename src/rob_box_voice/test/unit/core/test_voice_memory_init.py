@@ -111,7 +111,38 @@ class TestSafeSaveTurn:
     def test_saves_when_memory_available(self) -> None:
         memory = MagicMock()
         result = safe_save_turn(memory, "user", "hello")
-        memory.save_turn.assert_called_once_with("user", "hello")
+        # Issue #1770 — ``safe_save_turn`` now passes speaker_id (None
+        # by default). Old 2-arg signature still works via the TypeError
+        # fallback path, so legacy ``MagicMock``s with no kwarg support
+        # are honoured; this mock does support kwargs, so we see the
+        # keyword form.
+        memory.save_turn.assert_called_once_with("user", "hello", speaker_id=None)
+        assert result is True
+
+    def test_saves_with_speaker_id_when_provided(self) -> None:
+        memory = MagicMock()
+        result = safe_save_turn(memory, "user", "hello", speaker_id="denchik")
+        memory.save_turn.assert_called_once_with("user", "hello", speaker_id="denchik")
+        assert result is True
+
+    def test_falls_back_to_legacy_signature_for_old_memory(self) -> None:
+        """Mock that rejects ``speaker_id`` kwarg must still work (#1770).
+
+        VoiceMemory before issue #1770 only accepted ``(role, text)``.
+        ``safe_save_turn`` must try the new signature first and fall
+        back to the legacy one when the backend raises TypeError, so
+        pre-migration deployments don't crash the dialogue loop.
+        """
+        # First call (with kwarg) → TypeError; second call (legacy) → OK.
+        memory = MagicMock()
+        memory.save_turn.side_effect = [
+            TypeError("unexpected kwarg 'speaker_id'"),
+            None,
+        ]
+        result = safe_save_turn(memory, "user", "hello", speaker_id="denchik")
+        assert memory.save_turn.call_count == 2
+        memory.save_turn.assert_any_call("user", "hello", speaker_id="denchik")
+        memory.save_turn.assert_called_with("user", "hello")
         assert result is True
 
     def test_swallows_save_errors(self, caplog: pytest.LogCaptureFixture) -> None:

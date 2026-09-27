@@ -6,6 +6,21 @@ setup(
     name=package_name,
     version="0.1.0",
     packages=find_packages(exclude=["test"]),
+    # confirmation_policy.yaml лежит ВНУТРИ пакета
+    # (rob_box_harness/core/data/) и читается через
+    # importlib.resources.files("rob_box_harness.core.data") — см.
+    # core/confirmation_policy.py:426. Значит доставка — package_data,
+    # а не data_files: find_packages() собирает только *.py, а
+    # ament-share из importlib.resources не виден. Прод-образ
+    # собирается БЕЗ --symlink-install
+    # (docker/vision/voice_assistant/Dockerfile:239), то есть пакет
+    # реально устанавливается — без этой строки YAML в
+    # install-дерево не попадает. Четвёртый случай этого
+    # класса в репозитории: prompts/ (6bb0f999), wake_words.yaml
+    # (#2022), slice_policy.yaml (#1998), теперь этот.
+    package_data={
+        "rob_box_harness.core.data": ["*.yaml"],
+    },
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
@@ -26,7 +41,9 @@ setup(
             "pytest-cov>=4.0",
         ],
     },
-    zip_safe=True,
+    # Пакет читает свои ресурсы с диска (confirmation_policy.yaml) — из
+    # zip-egg это работает не на всех путях установки.
+    zip_safe=False,
     maintainer="krikz",
     maintainer_email="kukoreken@rob-box.local",
     description=(

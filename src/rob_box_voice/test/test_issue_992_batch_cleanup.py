@@ -123,6 +123,42 @@ def _music_tools() -> FakeToolProvider:
         return json.dumps({"ok": True})
 
     tools.register(music_spec, _music_handler)
+
+    # compose_music — the form arranger. Registered alongside
+    # execute_music_code so the TRACK/BACKING tests can assert that BOTH
+    # music entry points keep playback alive.
+    compose_spec = ToolSpec(
+        name="compose_music",
+        description="Play a composition with a form.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "bpm": {"type": "number"},
+                "root": {"type": "string"},
+                "scale": {"type": "string"},
+                "form": {"type": "string"},
+                "pad_synth": {"type": "string"},
+                "pad_notes": {"type": "string"},
+            },
+        },
+    )
+    tools.register(compose_spec, _music_handler)
+
+    # gen_play_from_library — AI-библиотека mp3 (issue #1392). Registered
+    # alongside execute_music_code/compose_music so the TRACK test below
+    # can assert it keeps playback alive exactly like the Renardo tools do.
+    gen_play_spec = ToolSpec(
+        name="gen_play_from_library",
+        description="Play an mp3 track from the generated-music library.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "track_id": {"type": "string"},
+            },
+            "required": ["track_id"],
+        },
+    )
+    tools.register(gen_play_spec, _music_handler)
     return tools
 
 
@@ -635,6 +671,122 @@ class TestIssue992BatchCleanup:
             _complete_batch(node, "track-1", chunks_total=1)
             assert _music_cleanup_payloads(node) == [], (
                 "TRACK: music_cleanup must not fire after the accept phrase"
+            )
+        finally:
+            node.close()
+
+    def test_track_compose_music_single_accept_no_cleanup(self):
+        """compose_music must live as long as execute_music_code does.
+
+        Live 30.08, "придумай что-нибудь приятное для души": the robot
+        started an ambient composition and killed it 1.5 s later, before
+        the TTS accept phrase had even been synthesised. ``compose_music``
+        was missing from ``_music_starters``, so the turn armed
+        ``_pending_music_cleanup`` and the "no active batches" catch-up
+        fired ``music_cleanup`` immediately.
+
+        The list of music-starting tools now lives in ``dialogue_guards``
+        so a new music tool cannot silently reintroduce this.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="music-1",
+                        name="compose_music",
+                        arguments={
+                            "bpm": 80,
+                            "root": "F#",
+                            "scale": "majorPentatonic",
+                            "form": "ambient",
+                            "pad_synth": "warmpad",
+                            "pad_notes": "0, 4, 7",
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Играю тёплый эмбиент."},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            _register_batch(node, "track-1", chunks_total=1)
+            self._drive(node)
+            assert node._pending_music_cleanup is False, (
+                "compose_music must NOT schedule cleanup on tts_batch_complete"
+            )
+            _complete_batch(node, "track-1", chunks_total=1)
+            assert _music_cleanup_payloads(node) == [], (
+                "compose_music: music_cleanup must not fire after the accept"
+            )
+        finally:
+            node.close()
+
+    def test_track_gen_play_from_library_single_accept_no_cleanup(self):
+        """gen_play_from_library must live as long as execute_music_code does.
+
+        Live 02.09.2026, "включи трек про весну": the robot correctly called
+        gen_search_library + gen_play_from_library and the mp3 genuinely
+        started playing, but ``gen_play_from_library`` was missing from
+        ``_music_starters`` (only Renardo tools were listed there,
+        ``GENERATED_MUSIC_TOOLS`` was defined in dialogue_guards but never
+        wired in). The turn never armed ``_track_mode_music_active``, so the
+        very next reply from idle (unrelated to music) fired
+        ``music_cleanup(reason="new_dialogue")`` and killed the track ~14s
+        after it started. The LLM, unaware, kept claiming "уже играет" for
+        several turns.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="music-1",
+                        name="gen_play_from_library",
+                        arguments={"track_id": "94aa7ddf259847debbf602f573cfb0ee"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Запускаю «До первых дней весны»."},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            _register_batch(node, "track-1", chunks_total=1)
+            self._drive(node)
+            assert node._pending_music_cleanup is False, (
+                "gen_play_from_library must NOT schedule cleanup on tts_batch_complete"
+            )
+            _complete_batch(node, "track-1", chunks_total=1)
+            assert _music_cleanup_payloads(node) == [], (
+                "gen_play_from_library: music_cleanup must not fire after the accept"
+            )
+            assert node._track_mode_music_active is True, (
+                "gen_play_from_library must arm TRACK mode so the next "
+                "unrelated turn does not kill the mp3 (live 02.09 regression)"
             )
         finally:
             node.close()

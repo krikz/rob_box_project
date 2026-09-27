@@ -15,6 +15,13 @@
 # Ретро 23.08 (t_98bb3a1d, e2e-rotation-idle-no-cron): до этого скрипта
 # e2e-process запускался только вручную падаваном, и падаван упал с 401 →
 # rotation простаивал 20ч+. Этот launcher восстанавливает автозапуск.
+#
+# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): после тика
+# ротации вызываем fail-streak watchdog — если L: E2E Voice Test падает
+# 5+ раз подряд, watchdog постит issue-comment; при 20+ создаёт pause-
+# sentinel (заморозка ротации до ручного override). Без этого fail-streak
+# 24 раунда подряд (~3 дня) прошёл без алерта (issue #1668 46h+ open
+# без process-меток).
 # ============================================================================
 
 set -uo pipefail  # без -e — ошибки скрипта НЕ должны убивать cron-job
@@ -36,10 +43,46 @@ if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
     [ -n "$GH_TOKEN" ] && export GH_TOKEN
 fi
 
+# 2.5 Defaults for fail-streak escalation (ретро 28.08 t_4ead2dd4).
+#   AUTO_NEEDS_REVIEW_ON_FAIL_STREAK — порог streak для auto-установки
+#     needs-review на готовые PR (mergeStateStatus=CLEAN + Raw-evidence).
+#     Параллельно E2E_FAIL_STREAK_WARN из PR #1721 watchdog для согласованных
+#     алертов в одном тике (issue-comment + needs-review).
+#   E2E_FAIL_STREAK_WARN / E2E_FAIL_STREAK_PAUSE — пороги watchdog'а из PR #1721
+#     (если он разложен install.sh; в develop его ещё нет — задаются для
+#     будущей совместимости, fallback'ом в e2e-process.sh).
+: "${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:=5}"
+: "${E2E_FAIL_STREAK_WARN:=5}"
+: "${E2E_FAIL_STREAK_PAUSE:=20}"
+export AUTO_NEEDS_REVIEW_ON_FAIL_STREAK E2E_FAIL_STREAK_WARN E2E_FAIL_STREAK_PAUSE
+
 # 3. Запуск канонического скрипта. Не используем flock здесь — он уже
 #    внутри e2e-process.sh (post-tick), и второй launcher просто пройдёт
 #    мимо через skip-логику скрипта. Cron scheduler сам даёт нам запуск
 #    каждые 20 мин, без перекрытия.
+
+# 3.1 MAINTENANCE gate (issue #3009). Inline-проверка (без source
+# lib_agent_flow_common): remote через git ls-remote, local fallback через
+# git -C REPO_DIR show. Шифу ставит MAINTENANCE-файл в develop чтобы
+# приостановить работу воркеров на время ручных правок. Срабатывает →
+# exit 0 (тик пропускается, не ошибка, fail-streak watchdog тоже не
+# запускается). Проверяем ЗДЕСЬ, а не в e2e-process.sh, потому что
+# launcher — это cron-входная точка (cron не знает про e2e-process).
+_branch="${MAINTENANCE_BRANCH:-develop}"
+_file="${MAINTENANCE_FILE:-MAINTENANCE}"
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" "${_branch}:${_file}" \
+        2>/dev/null | grep -q .; then
+    echo "❌ launcher: [MAINTENANCE] gate active on remote ${_branch}:${_file} — skip" >&2
+    exit 0
+fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+    echo "❌ launcher: [MAINTENANCE] gate active locally in ${REPO_DIR} (${_branch}:${_file}) — skip" >&2
+    exit 0
+fi
+unset _branch _file
+
 E2E_SCRIPT="/home/builder/.hermes/scripts/agent-flow-e2e-process.sh"
 if [ ! -x "$E2E_SCRIPT" ]; then
     echo "❌ launcher: e2e script not executable: $E2E_SCRIPT" >&2
@@ -47,4 +90,21 @@ if [ ! -x "$E2E_SCRIPT" ]; then
 fi
 
 # stdout — deliver, stderr — log (deliver=local → пишется в cron output).
-bash "$E2E_SCRIPT" 2>&1
+# set +e вокруг bash — ошибка ротации НЕ должна блокировать watchdog.
+bash "$E2E_SCRIPT" 2>&1 || true
+
+# 4. Fail-streak watchdog (ретро 28.08 t_faac94b0). Каждый тик (every 20m)
+#    проверяем streak последних E2E runs. При streak ≥ WARN → issue comment
+#    в процесс-релевантные issue; при streak ≥ PAUSE → создаём sentinel
+#    (заморозка ротации, manual override). Идемпотентен: comment dedup 6h.
+WATCHDOG_SCRIPT="/home/builder/.hermes/scripts/agent-flow-e2e-fail-streak-watchdog.sh"
+if [ ! -x "$WATCHDOG_SCRIPT" ]; then
+    # Fallback: возможно SOT ещё не разложен install.sh — берём прямо из репо.
+    WATCHDOG_SCRIPT="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}/scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh"
+fi
+if [ -x "$WATCHDOG_SCRIPT" ]; then
+    bash "$WATCHDOG_SCRIPT" 2>&1 || \
+        echo "⚠️ launcher: fail-streak watchdog failed (exit $?) — продолжим" >&2
+else
+    echo "⚠️ launcher: fail-streak watchdog not found: $WATCHDOG_SCRIPT" >&2
+fi

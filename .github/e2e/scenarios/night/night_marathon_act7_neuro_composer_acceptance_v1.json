@@ -1,0 +1,25 @@
+{
+  "name": "night_marathon_act7_neuro_composer_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
+    "generate_music и gen_play_from_library ВНЕ GATE-1 намеренно —",
+    "их отсутствие чаще всего означает недоступность внешнего API.",
+    "В gate только каталожные gen_*-тулы (работают локально) и stop_music."
+  ],
+  "expected_tool_calls": [
+    "gen_list_library",
+    "gen_search_library",
+    "gen_save_to_library",
+    "gen_get_track_info",
+    "gen_delete_from_library",
+    "stop_music"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

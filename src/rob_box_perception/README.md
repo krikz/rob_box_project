@@ -24,9 +24,10 @@ AI Agent (DeepSeek) будет:
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                   │
 │  ┌──────────────┐         ┌──────────────────────────────────┐  │
-│  │ OAK-D Camera │────────▶│ vision_stub_node                 │  │
-│  │ /oak/rgb/... │         │ (TODO: AI HAT + YOLO в будущем)  │  │
-│  └──────────────┘         └─────────────┬────────────────────┘  │
+│  │ OAK-D Camera │────────▶│ vision_hailo_node (ADR-0089)     │  │
+│  │ /oak/rgb/... │         │ AI HAT+ 26 TOPS inference        │  │
+│  └──────────────┘         │ /vision/hailo/events (VisionEvent)│  │
+│                            └─────────────┬────────────────────┘  │
 │                                          │                        │
 │  ┌──────────────┐                        │                        │
 │  │ AprilTag     │────────────────────────┤                        │
@@ -34,6 +35,8 @@ AI Agent (DeepSeek) будет:
 │  └──────────────┘                        │                        │
 │                                          ▼                        │
 │                             /perception/vision_context            │
+│                             /perception/context_update            │
+│                             .vision_events_json                   │
 │                                          │                        │
 └──────────────────────────────────────────┼────────────────────────┘
                                            │
@@ -77,21 +80,53 @@ AI Agent (DeepSeek) будет:
 
 ## Ноды
 
-### vision_stub_node
-**Статус:** ⚠️ ЗАГЛУШКА (TODO: AI HAT + YOLO)
+### vision_hailo_node (ADR-0089 Phase 1)
+**Статус:** ✅ Реализован (stub-режим, готов к Phase 1.5 на железе)
 
-Временная нода для публикации фейкового vision context.
+Реальная AI HAT+ 26 TOPS inference-нода. В stub-режиме (`hailo_enabled=false`) публикует
+детерминированные `VisionEvent` для тестирования downstream-pipeline. В real-режиме
+(`hailo_enabled=true` + HEF file) загружает pre-compiled модели через `hailort`.
 
 **Подписывается:**
 - `/oak/rgb/image_raw/compressed` (sensor_msgs/CompressedImage)
 
 **Публикует:**
-- `/perception/vision_context` (std_msgs/String) - JSON с семантическим контекстом
+- `/vision/hailo/events` (rob_box_perception_msgs/VisionEvent) — structured events
 
-**В будущем:**
-- Обработка на AI HAT 26 TOPS
-- YOLO v8/v11 детекция объектов
-- Поддержка нескольких камер (front stereo, up camera)
+**Зависимости downstream:**
+- `context_aggregator_node` подписан на `/vision/hailo/events` и заполняет
+  `PerceptionEvent.vision_events_json` (ADR-0089 touchpoint #4).
+- `mcp_server.py` (harness MCP-bridge) читает `vision_events_json` → LLM-контекст.
+
+**Phase-план (см. ADR-0089 §2.1):**
+- Phase 1 (PoC): YOLOv8n person detection + safety stop.
+- Phase 2: RetinaFace + ArcFace embeddings + `/data/faces.db` journal.
+- Phase 3: scene-graph для TARS-cockpit.
+
+**Launch (ADR-0110, issue #2658):**
+
+```bash
+# SSoT launch-файл (ADR-0110, заменил захардкоженный ros2 run).
+# vision_face.launch.py и vision_hailo.launch.py — шимы над общей
+# factory rob_box_perception.launch_factory.make_hailo_node_launch;
+# вся launch-конструкция (DeclareLaunchArgument + OpaqueFunction + Node)
+# живёт ровно в одном месте.
+ros2 launch rob_box_perception vision_hailo.launch.py \
+    hailo_enabled:=false \
+    hef_path:= \
+    stub_period_sec:=2.0 \
+    confidence_threshold:=0.5
+
+# Или на Vision Pi через docker-сервис:
+HAILO_ENABLED=false docker compose -f docker/vision/docker-compose.yaml up vision-hailo
+```
+
+Capability-honest (ADR-0018): `hailo_enabled=true` без `/dev/hailo0` / HEF /
+numpy / cv2 / hailo_platform → WARN-лог, нода деградирует в stub-режим.
+Pre-flight check через OpaqueFunction запускается ДО ноды и логирует причину.
+
+Подробности: [`docs/adr/0089-ai-hat-plus-deployment.md`](../../../adr/0089-ai-hat-plus-deployment.md),
+[`docs/adr/0110-vision-hailo-launch-file-decoupling.md`](../../../adr/0110-vision-hailo-launch-file-decoupling.md).
 
 ### reflection_node
 **Статус:** ✅ Работает (с DeepSeek API)
@@ -145,7 +180,7 @@ ros2 run rob_box_perception health_monitor
 - `/apriltag/detections` (apriltag_msgs/AprilTagDetectionArray) - AprilTag маркеры
 - `/voice/stt/result` (std_msgs/String) - что сказал пользователь
 - `/voice/dialogue/response` (std_msgs/String) - что ответил робот
-- `/rtabmap/localization_pose` (geometry_msgs/PoseStamped) - позиция на карте
+- `/rtabmap/localization_pose` (geometry_msgs/PoseWithCovarianceStamped) - позиция на карте
 - `/odom` (nav_msgs/Odometry) - одометрия
 - `/device/snapshot` (robot_sensor_hub_msg/DeviceSnapshot) - сенсоры ESP32
 - `/sensors/motor_state/*` (vesc_msgs/VescStateStamped) - состояние моторов
@@ -191,7 +226,7 @@ ros2 launch rob_box_perception internal_dialogue.launch.py
 | `/apriltag/detections` | AprilTagDetectionArray | apriltag_node | AprilTag маркеры |
 | `/voice/stt/result` | String | stt_node | Распознанная речь |
 | `/voice/dialogue/response` | String | dialogue_node | Ответы робота |
-| `/rtabmap/localization_pose` | PoseStamped | rtabmap | Позиция на карте |
+| `/rtabmap/localization_pose` | PoseWithCovarianceStamped | rtabmap | Позиция на карте |
 | `/odom` | Odometry | ros2_control | Одометрия |
 | `/rosout` | Log | ROS2 Core | **Логи всех нод (ERROR/WARN)** |
 

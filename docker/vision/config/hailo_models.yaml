@@ -1,0 +1,242 @@
+# ADR-0089 Phase 1: SSoT для активных HEF моделей AI HAT+.
+#
+# Этот файл монтируется в vision-hailo контейнер по /config/hailo_models.yaml
+# и парсится start_vision_hailo.sh (через python3 -c с yaml.safe_load).
+# Любые изменения должны проходить через PR — НЕ править на проде руками.
+#
+# Структура:
+#   vision_hailo_node.<param>: параметры для ros2 Node.
+#   models.<model_name>: список активных HEF с метаданными (для Phase 2/3).
+#
+# Phase 1 PoC использует только vision_hailo_node.hailo_enabled = false
+# (stub-режим), чтобы протестировать downstream-pipeline до установки
+# реального HEF на Vision Pi. Реальные HEF подключаются в Phase 1.5
+# переключением hailo_enabled=true + hef_path=...
+#
+# Соответствие: docker/vision/scripts/vision-hailo/start_vision_hailo.sh
+#               docker/vision/vision-hailo/Dockerfile
+#               src/rob_box_perception/rob_box_perception/vision_hailo_node.py
+#               docs/adr/0089-ai-hat-plus-deployment.md §3 touchpoint #11
+
+vision_hailo_node:
+  # Real inference: true только когда HEF загружен на /opt/rob_box/models/.
+  # Phase 1.5 acceptance: hailo_enabled=true + yolov8n.hef → ≥30 FPS.
+  # Default остаётся false, чтобы smoke-test pipeline оставался воспроизводимым.
+  hailo_enabled: false
+
+  # Путь к HEF файлу. Игнорируется если hailo_enabled=false.
+  # Phase 1.5: /opt/rob_box/models/yolov8n.hef (Hailo-8L/8, HailoRT 4.18+).
+  hef_path: ""
+
+  # Период stub-событий (секунды). В real-режиме не используется.
+  stub_period_sec: 2.0
+
+  # Confidence threshold [0.0, 1.0]. Ниже — drop.
+  confidence_threshold: 0.5
+
+  # Подписка (ADR-0104, шов «Взгляд»).
+  #
+  # Старое: жёсткая строка ``input_topic`` дублировалась в трёх местах
+  # (нода, YAML, bash) и расходилась с реальным топиком OAK-D.
+  # Теперь выбор источника — ЕДИНСТВЕННЫЙ параметр ``gaze_source``:
+  #   - oak_d           → /camera/camera/color/image_raw      (Image msg)
+  #   - ceiling_camera  → /ceiling_camera/image_raw/compressed (CompressedImage msg)
+  #   - stub            → синтетический кадр (CI/smoke)
+  # Топик/msg-type/транспорт спрятаны внутри ``rob_box_perception.gaze``
+  # (см. OakDSource, CeilingCameraSource). Согласовано с
+  # ``docker/vision/config/oak-d/oak_d_config.yaml`` (i_rs_compat:true →
+  # rgb→color, namespace=camera → /camera/camera/color/image_raw).
+  #
+  # input_topic сохранён в YAML для back-compat с уже задеплоенными
+  # инструментами (diagnose.sh, force_publish.sh и т.д.), но НЕ
+  # читается нодой напрямую.
+  gaze_source: oak_d
+  input_topic: /camera/camera/color/image_raw
+
+  # Сколько секунд ждать первый кадр от real-источника (ADR-0104,
+  # capability-honest). При hailo_enabled=true нода fail-fast'ит
+  # если источник не отдал кадр за это время.
+  first_frame_timeout_sec: 10.0
+
+  # Публикация VisionEvent.
+  output_topic: /vision/hailo/events
+
+# Лицевая нода (ADR-0089 Phase 2, issue #2599 PR-A). Отдельный процесс
+# с retinaface_mobilenet_v1.hef. Публикует VisionEvent event_type="face"
+# на тот же output_topic (embedding_id/display_name пустые — это PR-B).
+# См. docker/vision/scripts/vision-hailo/start_vision_face.sh.
+vision_face_node:
+  # Real inference. HEF кладёт на хост шаг деплоя "[Vision Pi] Ensure HEF
+  # models" — Ресурсный пак (docker/vision/scripts/resource_pack/,
+  # запись retinaface-hef в manifest.yaml). Если файла не окажется — нода
+  # логирует причину и остаётся в degraded (ADR-0018), stub-событий в
+  # real-режиме она не выдумывает.
+  #
+  # ВНИМАНИЕ: фактический режим решает ENV, а не этот файл — compose всегда
+  # передаёт HAILO_ENABLED=${FACE_HAILO_ENABLED:-false}, а
+  # start_vision_face.sh отдаёт ENV приоритет ("ENV override wins").
+  # Значение здесь держим согласованным с docker/vision/.env, чтобы SSoT
+  # не врал; выключать лицевую детекцию нужно ИМЕННО в .env.
+  hailo_enabled: true
+
+  # Путь к retinaface_mobilenet_v1.hef. Игнорируется если hailo_enabled=false.
+  hef_path: /opt/rob_box/models/retinaface_mobilenet_v1.hef
+
+  # Период stub-событий (секунды). В real-режиме не используется.
+  stub_period_sec: 2.0
+
+  # Confidence threshold для face-score (RetinaFace softmax).
+  confidence_threshold: 0.6
+
+  # IoU порог NMS (single-class).
+  nms_iou_threshold: 0.45
+
+  # Источник кадра — тот же шов «Взгляд» (ADR-0104), что у vision_hailo_node.
+  gaze_source: oak_d
+  input_topic: /camera/camera/color/image_raw
+
+  # Сколько секунд ждать первый кадр (capability-honest).
+  first_frame_timeout_sec: 10.0
+
+  # Тот же топик, что у person-детекции (issue #2599 acceptance).
+  output_topic: /vision/hailo/events
+
+  # ---- ArcFace-узнавание (ADR-0123, issue #2599 PR-B) ----
+  # Отдельный HEF от детекции: RetinaFace (hef_path выше) находит лицо на
+  # кадре, ArcFace на кропе лица считает эмбеддинг для узнавания. Отдельная
+  # пара enabled/path, а не переиспользование hailo_enabled/hef_path выше —
+  # это два разных инференса на одном устройстве, каждый может деградировать
+  # независимо (ADR-0018): без ArcFace нода остаётся с детекцией, но без
+  # узнавания.
+  #
+  # ENV override — те же хостовые переменные ADR-0120 §8, что у
+  # HAILO_ENABLED/HEF_PATH: FACE_ARCFACE_ENABLED / FACE_ARCFACE_HEF_PATH в
+  # docker/vision/.env, внутри контейнера ARCFACE_ENABLED/ARCFACE_HEF_PATH
+  # ("ENV override wins", start_vision_face.sh).
+  arcface_enabled: true
+
+  # Путь к arcface_mobilefacenet.hef. Кладёт на хост шаг деплоя
+  # "[Vision Pi] Ensure HEF models" (Ресурсный пак, запись arcface-hef в
+  # scripts/resource_pack/manifest.yaml). Если файла нет — нода остаётся без
+  # узнавания, RetinaFace-детекция не затронута (degrade, не fail-deploy).
+  arcface_hef_path: /opt/rob_box/models/arcface_mobilefacenet.hef
+
+  # ---- Хранилище лиц (ADR-0123 §4-5) ----
+  # FaceStore — единственный модуль, который пишет сюда. Каталог смонтирован
+  # как отдельный persistent-том в docker-compose.yaml (./data/faces →
+  # /data/faces), а НЕ печётся в образ: должен пережить пересоздание
+  # контейнера (ADR-0123 §4, "не в образе").
+  face_store_root: /data/faces
+
+  # Режим приватности (ADR-0123 §2, таблица режимов). workshop — решение
+  # владельца от 16.09.2026: эмбеддинги+снимки пишутся на диск для ВСЕХ,
+  # включая незнакомцев (нужно для отладки узнавания в мастерской). Это
+  # заменяет строгую политику ADR-0089 §8 (только эмбеддинг+имя, без снимков) —
+  # см. заметку "face-privacy-workshop-mode". Другие значения:
+  # exhibition (незнакомцы только в памяти) и strict (снимки не хранятся).
+  # Переключение — вручную владельцем, робот сам площадку не определяет.
+  face_privacy_mode: workshop
+
+  # Пороги узнавания (ADR-0123 §6, косинусное сходство эмбеддингов).
+  # ЗАГЛУШКА до настоящего sweep по реальным данным (issue #2771), как
+  # голосовой identify до sweep-таблицы (issue #2348) — НЕ калиброванные
+  # значения. Прежний дефолт 0.45 пускал чужих: 22.09.2026 тёща владельца
+  # опознана как «Деньчик» при score=0.483 (issue #2771).
+  #
+  # identify_threshold — «похож достаточно, чтобы НАЗВАТЬ имя».
+  # enroll_threshold — заметно строже, «похож достаточно, чтобы
+  # ДОПИСАТЬ эмбеддинг в галерею» этого человека (issue #2772: раньше
+  # это был один и тот же порог, и каждое ложное узнавание расширяло
+  # галерею чужим лицом, облегчая следующее ложное узнавание). См.
+  # докстринг ``FaceStore.__init__`` за подробностями.
+  face_identify_threshold: 0.6
+  face_enroll_threshold: 0.75
+
+  # Прогрев галереи (issue #2771). Пока в записи меньше стольких
+  # эмбеддингов, дозапись идёт по факту УЗНАВАНИЯ — enroll_threshold не
+  # применяется. Иначе молодая запись не может вырасти: пока вектор
+  # один, «медоид» галереи — это он сам, и оба условия двойного согласия
+  # вырождаются в сравнение с единственным ракурсом.
+  #
+  # Живой замер на роботе 22.09.2026: три записи ОДНОГО человека,
+  # снятые за пять минут (анфас, опущенная голова, тёмные очки), дали
+  # попарные косинусы 0.538 / 0.582 / 0.461 — ВЕСЬ внутриперсонный
+  # разброс ниже 0.75. Галереи так и остались размером 1, и каждый
+  # новый ракурс заводил нового «человека».
+  face_gallery_warmup_size: 5
+
+  # Встреча, а не кадр (ADR-0123 §3): при ~5 VisionEvent/сек с одного лица
+  # писать на каждое событие нельзя. Лицевой трекер склеивает детекции в
+  # трек; трек становится встречей, когда лицо было в кадре не меньше
+  # min_track_sec и хотя бы в одном кадре не меньше min_face_px по короткой
+  # стороне. Стартовые значения владельца от 16.09.2026.
+  min_track_sec: 2.0
+  min_face_px: 48.0
+
+  # Ворота качества кропа (issue #2749). confidence_threshold и
+  # min_face_px выше проверяют только геометрию детекции — RetinaFace
+  # может полчаса честно детектировать тень в тёмной комнате: бокс
+  # крупный, confidence в норме, а кроп почти чёрный. ArcFace на таком
+  # входе не падает, а стабильно отдаёт один и тот же вырожденный
+  # эмбеддинг, который ложится в галерею как "человек" с аномально
+  # однородной (0.90+) попарной близостью векторов — именно так на
+  # Vision Pi накопилась фантомная запись из 130 "встреч" (запись
+  # 8ffc2641-..., создана 22.09.2026). Живой замер той записи: средняя
+  # яркость кропа 6.4-7.4/255, контраст(p95-p5) 28-31; для сравнения
+  # живой человек в той же базе — яркость 76.6-185.4/255, контраст
+  # 170-208. min_crop_mean/min_crop_contrast садятся между этими
+  # диапазонами с большим запасом в обе стороны (подробности —
+  # DEFAULT_MIN_CROP_MEAN/DEFAULT_MIN_CROP_CONTRAST в
+  # rob_box_perception/face_recognition.py). Кроп, не прошедший ворота,
+  # трактуется как отсутствующий: не эмбеддится, не идёт в снимок.
+  min_crop_mean: 20.0
+  min_crop_contrast: 25.0
+
+  # Сколько лиц эмбеддить за кадр. Бюджет замерен на Vision Pi
+  # 22.09.2026 с ОБОИМИ HEF в одном процессе: после прогрева детекция
+  # 120-150 мс, эмбеддинг 8-25 мс на лицо, тик ноды 0.5 с. То есть NPU
+  # тут не узкое место (влезает десяток лиц) — ограничение про то, что
+  # хвост мелких лиц на заднем плане только пачкает галерею. Эмбеддятся
+  # САМЫЕ КРУПНЫЕ лица; мелкие и так отсекает min_face_px.
+  max_embeds_per_frame: 4
+
+  # Лимиты хранилища (ADR-0123 §4.1, §10). Стартовые значения владельца:
+  # max_embeddings — векторов на одного человека в галерее (при переполнении
+  # вытесняется вектор, дальше всех от медоида галереи — issue #2772,
+  # см. FaceStore._evict_most_distant_from_medoid); keep_encounters —
+  # снимков встреч на человека (старые удаляются); max_strangers — записей
+  # незнакомцев суммарно в workshop (при переполнении вытесняется самый
+  # давний). Ничего из этого пока не откалибровано на реальных данных.
+  max_embeddings: 20
+  keep_encounters: 10
+  max_strangers: 500
+
+# Модели (Phase 1.5+). Phase 1 PoC оставляет список пустым.
+models:
+  # YOLOv8n — person detection. 3.5 TOPS, 100+ FPS.
+  # Источник: https://github.com/hailo-ai/hailo_model_zoo (yolov8n)
+  yolov8n_person:
+    enabled: false
+    hef: /opt/rob_box/models/yolov8n.hef
+    confidence_threshold: 0.5
+    nms_iou_threshold: 0.45
+
+  # RetinaFace — face detection. 4.6 TOPS, 50+ FPS.
+  # Источник: https://github.com/hailo-ai/hailo_model_zoo (retinaface)
+  retinaface:
+    enabled: true
+    hef: /opt/rob_box/models/retinaface_mobilenet_v1.hef
+    confidence_threshold: 0.6
+
+  # ArcFace-MobileFaceNet — face embedding. 2.8 TOPS, 60+ FPS.
+  # Источник: https://github.com/hailo-ai/hailo_model_zoo (arcface_mobilefacenet)
+  arcface:
+    enabled: true
+    hef: /opt/rob_box/models/arcface_mobilefacenet.hef
+    # ВНИМАНИЕ: 512, не 128. embedding_dim: 128 было ошибкой (взято со
+    # страницы model zoo не глядя на устройство) и в этом виде разошлось по
+    # ADR-0089/ADR-0106/ADR-0123 §4.1 — там пока не поправлено. ЗАМЕРЕНО на
+    # реальном Vision Pi 22.09.2026: вход (112,112,3) UINT8, выход fc1
+    # (512,) UINT8. Если правишь это число — сверяйся с устройством
+    # (hailortcli parse-hef), а не с документацией model zoo.
+    embedding_dim: 512

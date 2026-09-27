@@ -316,10 +316,10 @@ fi
 # --- T11: presence check (key G9 markers в коде) -----------------------------
 echo ""
 echo "=== T11: presence-of-key-markers в triage.sh ==="
-if grep -q 'dedup-skipped: \${dedup_intra_skipped} (intra-tick), \${dedup_race_skipped} (race)' "$SCRIPT_UNDER_TEST"; then
-    pass "T11a: summary line 'dedup-skipped: ... (intra-tick), ... (race)' present"
+if grep -q 'dedup-skipped: \${dedup_intra_skipped} (intra-tick), \${dedup_race_skipped} (race), \${dedup_file_overlap_skipped} (file-overlap), \${dedup_branch_active_skipped} (branch-active)' "$SCRIPT_UNDER_TEST"; then
+    pass "T11a: summary line 'dedup-skipped: ... (intra-tick), ... (race), ... (file-overlap), ... (branch-active)' present (G9a/G9b/G10a/G9c)"
 else
-    fail "T11a: summary line 'dedup-skipped: ... (intra-tick), ... (race)' missing in summary"
+    fail "T11a: summary line 'dedup-skipped: ... (intra-tick), ... (race), ... (file-overlap), ... (branch-active)' missing in summary"
 fi
 if grep -q 'branch_exists_in_remote "$branch"' "$SCRIPT_UNDER_TEST"; then
     pass "T11b: branch_exists_in_remote called in process_issues_json"

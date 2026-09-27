@@ -48,10 +48,10 @@ flowchart TD
   - Требует настроенный build machine
 
 **Примеры:**
-- `G-Build Base Images.yml` - сборка базовых образов на GitHub Actions
+- `L-Build Base Images.yml` - сборка базовых образов на GitHub Actions
 - `L-Build Base Images.yml` - сборка базовых образов на локальном runner
-- `G-Build All Services.yml` - полная сборка на GitHub Actions
-- `L-Build All Services.yml` - полная сборка на локальном runner
+- `L-Build-All-Services.yml` - полная сборка на GitHub Actions
+- `L-Build-All-Services.yml` - полная сборка на локальном runner
 
 ### 1. Create PR Feature to Develop
 
@@ -101,7 +101,7 @@ push:
 ```
 
 **Логика:**
-1. **Build All Services** - собирает ВСЕ сервисы через `G-Build All Services.yml`
+1. **Build All Services** - собирает ВСЕ сервисы через `L-Build-All-Services.yml`
    - Base images (ros2-zenoh)
    - Vision Pi (oak-d, lslidar, apriltag, led-matrix, voice-assistant)
    - Main Pi (micro-ros-agent, zenoh-router)
@@ -120,7 +120,7 @@ push:
 
 ### 3. Build Vision Services (GitHub Actions)
 
-**Файл:** `.github/workflows/G-Build Vision Pi Services.yml`
+**Файл:** `.github/workflows/L-Build Vision Pi Services.yml`
 
 **Сервисы:**
 - `oak-d` - OAK-D camera
@@ -134,7 +134,7 @@ push:
 
 ### 4. Build Main Services (GitHub Actions)
 
-**Файл:** `.github/workflows/G-Build Main Pi Services.yml`
+**Файл:** `.github/workflows/L-Build Main Pi Services.yml`
 
 **Сервисы:**
 - `robot-state-publisher` - Robot state publisher
@@ -151,7 +151,7 @@ push:
 
 ### 5. Build Base Images (GitHub Actions)
 
-**Файл:** `.github/workflows/G-Build Base Images.yml`
+**Файл:** `.github/workflows/L-Build Base Images.yml`
 
 **Образы:**
 - `ros2-zenoh` - ROS 2 Humble + Zenoh middleware
@@ -165,14 +165,14 @@ push:
 
 ### 6. Build All Services (GitHub Actions)
 
-**Файл:** `.github/workflows/G-Build All Services.yml`
+**Файл:** `.github/workflows/L-Build-All-Services.yml`
 
 **Назначение:** Полная сборка всех образов проекта на GitHub Actions
 
 **Вызывает workflows:**
-- `G-Build Base Images.yml`
-- `G-Build Main Pi Services.yml`
-- `G-Build Vision Pi Services.yml`
+- `L-Build Base Images.yml`
+- `L-Build Main Pi Services.yml`
+- `L-Build Vision Pi Services.yml`
 
 **Триггеры:**
 - `push` в ветку `main` (автоматически)
@@ -202,7 +202,7 @@ push:
 
 **Файл:** `.github/workflows/L-Build Vision Pi Services.yml`
 
-Аналог `G-Build Vision Pi Services.yml`, но:
+Аналог `L-Build Vision Pi Services.yml`, но:
 - Собирается на локальном build machine
 - Использует локальный APT cache
 - Публикует в `localhost:5000`
@@ -211,14 +211,14 @@ push:
 
 **Файл:** `.github/workflows/L-Build Main Pi Services.yml`
 
-Аналог `G-Build Main Pi Services.yml`, но:
+Аналог `L-Build Main Pi Services.yml`, но:
 - Собирается на локальном build machine
 - Использует локальный APT cache
 - Публикует в `localhost:5000`
 
 ### 10. Build All Services (Local Runner)
 
-**Файл:** `.github/workflows/L-Build All Services.yml`
+**Файл:** `.github/workflows/L-Build-All-Services.yml`
 
 **Назначение:** Полная сборка всех образов на локальном build machine
 
@@ -506,7 +506,7 @@ on:
 
 ```bash
 # Через GitHub CLI
-gh workflow run "G-Build Vision Pi Services.yml" --ref develop
+gh workflow run "L-Build Vision Pi Services.yml" --ref develop
 
 # Или через web interface
 # GitHub → Actions → Build Vision Pi Services → Run workflow
@@ -552,7 +552,7 @@ git push origin main
 Проверить статус сборки:
 ```bash
 # Через GitHub CLI
-gh run list --workflow="G-Build Vision Pi Services.yml"
+gh run list --workflow="L-Build Vision Pi Services.yml"
 
 # Последний статус
 gh run view --log
@@ -588,7 +588,7 @@ gh pr create --base develop --head feature/my-feature \
 **Решение:**
 ```bash
 # Проверить что всё собирается
-gh workflow run "G-Build All Services.yml" --ref develop
+gh workflow run "L-Build-All-Services.yml" --ref develop
 
 # Проверить статус
 gh run list --workflow="G-Auto-merge to Main.yml"
@@ -682,10 +682,12 @@ curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash 
 act -l
 
 # Запуск конкретного workflow (dry run)
-act -W ".github/workflows/G-Build Vision Pi Services.yml" -n
+act -W ".github/workflows/L-Build Vision Pi Services.yml" -n
 
-# Запуск конкретного job
-act -j build-oak-d
+# Запуск конкретного job (сервисы собираются одним matrix-job'ом `build`,
+# состав — docker/build-manifest.yaml; отдельного job'а на сервис, вроде
+# build-oak-d, в текущем пайплайне нет)
+act -j build
 
 # Запуск с секретами
 echo "GITHUB_TOKEN=ghp_xxx" > .secrets
@@ -878,8 +880,13 @@ BUILD_MACHINE_IP=10.1.1.5 ./configure_raspberry_pi.sh
 Измените workflow для использования self-hosted runner:
 
 ```yaml
+# Актуальный пайплайн уже так и устроен: отдельного job'а на сервис
+# (вроде build-oak-d) нет, все сервисы Vision/Main Pi собираются одним
+# matrix-job'ом `build` через composite .github/actions/l-build-service,
+# состав задаёт docker/build-manifest.yaml. Ниже — принцип на примере
+# одного сервиса.
 jobs:
-  build-oak-d:
+  build-<service>:
     runs-on: self-hosted  # ← было: ubuntu-latest
     
     steps:
@@ -903,25 +910,25 @@ jobs:
 
 ```yaml
 jobs:
-  build-oak-d:
+  build-<service>:
     runs-on: ubuntu-latest  # Сборка на GitHub
-    
+
     steps:
       - name: Build and push to ghcr.io
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: ghcr.io/krikz/rob_box:oak-d-humble-latest
-      
+          tags: ghcr.io/krikz/rob_box:<service>-humble-latest
+
       # Дополнительно: копирование в локальный registry
       - name: Copy to local registry
         if: github.ref == 'refs/heads/main'
         run: |
           # Выполнится на build machine через self-hosted runner
-          docker pull ghcr.io/krikz/rob_box:oak-d-humble-latest
-          docker tag ghcr.io/krikz/rob_box:oak-d-humble-latest \
-                     10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
-          docker push 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+          docker pull ghcr.io/krikz/rob_box:<service>-humble-latest
+          docker tag ghcr.io/krikz/rob_box:<service>-humble-latest \
+                     10.1.1.5:5000/krikz/rob_box:<service>-humble-latest
+          docker push 10.1.1.5:5000/krikz/rob_box:<service>-humble-latest
 ```
 
 ### Мониторинг Build Machine

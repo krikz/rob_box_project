@@ -12,17 +12,42 @@ ROS 2 интерфейс:
 - Публикует: /mcp/tools (String) - JSON список доступных инструментов
 - Подписывается на: /mcp/execute (String) - JSON запросы на выполнение
 - Публикует: /mcp/result (String) - JSON результаты выполнения
+
+Runtime-параметр (``ros2 param set``, НЕ топик — issue #2781, по образцу
+speaker_id_node.e2e_mode из issue #2750/#2763):
+    e2e_mode (bool) — переключить активную БД долгосрочной памяти
+        (voice_facts, ``memory_save``) боевая ↔ e2e_db_path. Владелец —
+        только E2E-харнесс (``ros2 param set /mcp_server e2e_mode
+        true|false``). См. ``parameters_callback`` / ``_apply_e2e_mode``.
+        Реализовано только для legacy VoiceMemory (``/data/voice_memory.db``,
+        активный бэкенд в проде на 22.09.2026) — при
+        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает
+        (fail-fast, см. docstring ``_apply_e2e_mode``).
+
+Parameters:
+    e2e_db_path (str) — изолированная БД памяти для E2E-режима, переключается
+        параметром e2e_mode выше [/data/voice_memory.e2e.db]
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
+import asyncio
 import json
 import math
 import os
-from typing import Dict, Any
+import threading
+import time
+from typing import Any, Dict, Optional, Tuple
+
+# Issue #2442 — единый шов «Встреча» вместо самостоятельного
+# ``current_speaker_id``. См. ``_on_speaker_result`` ниже и ADR-0105 §3.
+from rob_box_harness.encounter import EncounterSeam, EncounterChannel
+from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
+from rob_box_harness.memory import InMemoryStore
 
 from .registry import MCPToolRegistry
 from .tools import (
@@ -55,12 +80,22 @@ from .tools import (
     EstimateTtsDurationTool,
     RegisterSpeakerTool,
     SetVoiceTool,
+    # Issue #1765 — cross-provider TTS switching.
+    SetTtsProviderTool,
+    ListTtsVoicesTool,
+    # S6.1 — task_delta MCP tool (scheduler segments).
+    TaskDeltaTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
     MusicManager,
     TrackLibrary,
+    RtttlLibrary,
     ExecuteMusicCodeTool,
+    ComposeMusicTool,
+    PreviewArrangementTool,
+    SaveArrangementPresetTool,
+    ArrangementPresetStore,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
@@ -70,8 +105,14 @@ from .tools import (
     DeleteTrackTool,
     SetDjModeTool,
     SearchSamplesTool,
+    LookupMelodyTool,
+    SearchMelodyTool,
     FaqSearchTool,
     SearchWebTool,
+    # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
+    # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
+    # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
+    ShowMetricsTool,
 )
 
 # Issue #1392 — MiniMax music generation + generated-music library tools.
@@ -98,9 +139,13 @@ except ImportError as _exc:  # noqa: BLE001
     GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
+from .mcp_auth import RequestAuthenticator
+from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
+from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
 from .voice_state import VoiceStateStore
+from .perception_projection import project_perception_event
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -110,6 +155,81 @@ except ImportError:
     _VoiceMemory = None  # type: ignore[assignment,misc]
     _FAQStore = None
     _load_event_profile = None
+
+# Issue #2000 / ADR-0055 — Phase 1 path consolidation. ONLY ``self.voice_memory``
+# (long-term facts, see ``_init_voice_memory`` below) can share
+# /data/harness_voice.db with the dialogue node, via VoiceMemoryAdapter (sync
+# facade over SQLiteVoiceMemory) — gated by this env var so production can
+# roll back to the legacy VoiceMemory without code edits.
+#
+# WaypointStore, FAQStore and TrackLibrary (tools/music.py) are NOT part of
+# this switch and stay on ``VOICE_MEMORY_DB_PATH`` (default
+# /data/voice_memory.db) regardless of this flag. Investigated for Phase 2
+# (issue #2000) and rejected as a plain path swap: SQLiteVoiceMemory already
+# defines its own ``waypoints`` (name TEXT PRIMARY KEY) and ``faq_items``
+# (created_at, no FTS5) tables in harness_voice.db, which collide by name
+# with incompatible schemas against WaypointStore's ``waypoints`` (id,
+# map_id NOT NULL FK -> maps) and the legacy FAQStore's ``faq_items``
+# (indexed_at, FTS5 triggers). ``CREATE TABLE IF NOT EXISTS`` would silently
+# keep whichever schema got created first and every write from the other
+# store would then fail with "no such column". See the comment on
+# ``sqlite_db_path`` in docker/vision/config/voice_assistant/dialogue_node.yaml
+# and docs/adr/0055-voice-memory-db-unify-with-harness.md (§1.3, §3) for the
+# full analysis. Merging them needs a schema-reconciling adapter (like this
+# one, but for waypoints/faq), not a default-value edit.
+_USE_HARNESS_VOICE_MEMORY = os.getenv("MCP_USE_HARNESS_VOICE_MEMORY", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+try:
+    if _USE_HARNESS_VOICE_MEMORY:
+        from rob_box_harness.memory.voice_memory_adapter import (
+            VoiceMemoryAdapter as _VoiceMemoryAdapter,
+        )
+    else:
+        _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
+except ImportError:
+    _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
+
+
+def _music_form_ends_at_epoch(state: Dict[str, Any]) -> Optional[float]:
+    """``form_cycle_remaining_s`` (monotonic-остаток) → epoch (issue #2461).
+
+    Модульная функция, а не метод — она не зависит от ``self``/``Node``,
+    что делает её проверяемой юнит-тестом без поднятия ROS-паблишера или
+    даже фейкового ``MCPServer``: тест кладёт ``remaining_s`` и сверяет
+    результат против ``time.time()``, доказывая, что наружу уходит
+    стенное время, а не ``time.monotonic()`` из процесса mcp_server
+    (несопоставим с dialogue_node — см. docstring ``publish_music_state``).
+    """
+    remaining_s = state.get("form_cycle_remaining_s")
+    if not isinstance(remaining_s, (int, float)) or remaining_s <= 0:
+        return None
+    return time.time() + float(remaining_s)
+
+
+def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """``/voice/speaker/result`` → ``(меняет ли «кто сейчас», новый speaker_id)``.
+
+    Issue #2863 — «не знаю» ≠ «это другой человек». Отказ регистрации
+    (``event=register_error``, поля is_known в нём нет вовсе) и фраза,
+    которую биометрия не смогла оценить (``inconclusive``: нет эмбеддинга /
+    мало речи), раньше читались как is_known=false и сбрасывали узнанного
+    диктора в ∅. Теперь они ``(False, None)`` — не сигнал. Сбрасывает
+    только оценённая фраза (``{"is_known": false}`` без пометки, #2829).
+    Модульная функция — чтобы держать CC ``_on_speaker_result`` в бюджете
+    ADR-0021 и чтобы её можно было звать со стаба ноды в тестах.
+    """
+    event = data.get("event")
+    if (event and event != "registered") or data.get("inconclusive"):
+        return False, None
+    raw_sid = data.get("speaker_id")
+    # ``registered`` событие несёт speaker_id даже без is_known; ``and``
+    # отфильтровывает пустые строки и None.
+    if raw_sid and (event == "registered" or data.get("is_known")):
+        return True, str(raw_sid)
+    return True, None
 
 
 class MCPServer(Node):
@@ -123,19 +243,64 @@ class MCPServer(Node):
         super().__init__("mcp_server")
 
         # Параметры ноды
-        # Issue 986: музыка орала, голос не был слышен — понизили max_amp с 0.7 до 0.42
-        self.declare_parameter("music_max_amp", 0.42)
+        # Громкость музыки — ДВА разных параметра, см.
+        # docs/analysis/2026-08-30-music-quality-audit.md (RC1).
+        #
+        # music_max_amp — санитарный потолок ОДНОГО слоя, не регулятор
+        # громкости. Issue 986 («музыка орала, голос не был слышен») чинили
+        # понижением до 0.42, но это выравнивало все слои по одному потолку:
+        # микс становился плоским, а клиппинг оставался (капается каждый amp,
+        # а не их сумма — 4 слоя * 0.42 = 1.68 на шине). Теперь сумму держит
+        # синт masterlimiter в scsynth, поэтому потолок поднят.
+        self.declare_parameter("music_max_amp", 0.85)
+        # music_master_gain — ЕДИНСТВЕННАЯ ручка уровня музыки относительно
+        # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
+        # Внутренняя динамика микса при этом сохраняется.
+        self.declare_parameter("music_master_gain", 0.5)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).
         self.declare_parameter("tts_provider", "minimax")
 
+        # Issue #2781 — E2E-изоляция долгосрочной памяти (voice_facts),
+        # по образцу speaker_id_node.e2e_mode (issue #2750/#2763). memory_save
+        # пишет факты в self.voice_memory (legacy VoiceMemory →
+        # /data/voice_memory.db), и до этой правки изоляция дикторов НЕ
+        # накрывала этот писатель: акт «Знакомство» ночного марафона
+        # регистрирует голоса через speaker_id_node (изолирован) И называет
+        # LLM факты через memory_save (НЕ изолирован) — 59 из 116 фактов
+        # боевой /data/voice_memory.db на 22.09.2026 оказались синтезированным
+        # кастом марафона ("Саша"/"Борис"). См. ``parameters_callback`` /
+        # ``_apply_e2e_mode`` ниже — тот же ``ros2 param set`` паттерн, что у
+        # speaker_id_node (bool-параметр, не топик — синхронный ответ
+        # вызывающему в exit-коде, seam_without_consumer его не видит).
+        self.declare_parameter("e2e_db_path", "/data/voice_memory.e2e.db")
+        self.declare_parameter("e2e_mode", False)
+
         # Реестр инструментов
         self.registry = MCPToolRegistry()
+
+        # Issue #2781 — состояние переключателя e2e_mode для voice_memory
+        # (см. docstring declare_parameter выше и _apply_e2e_mode). Боевой
+        # путь запоминается в _init_voice_memory() (None, если активен
+        # harness-адаптер MCP_USE_HARNESS_VOICE_MEMORY=1 — для него
+        # переключение не реализовано, см. _apply_e2e_mode).
+        self._voice_memory_prod_db_path: "str | None" = None
+        self._voice_memory_ollama_url: "str | None" = None
+        self._voice_memory_e2e_db_path: str = str(
+            self.get_parameter("e2e_db_path").value or "/data/voice_memory.e2e.db"
+        )
+        self._voice_memory_e2e_mode_active: bool = False
+        self._voice_memory_lock = threading.Lock()
 
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
         self._init_voice_memory()
+        # Issue #2781 — единственный побочный эффект в parameters_callback:
+        # e2e_mode. Регистрируется здесь (после _init_voice_memory), чтобы
+        # ``self.voice_memory`` / ``self._voice_memory_prod_db_path`` уже
+        # существовали к моменту первого возможного ``ros2 param set``.
+        self.add_on_set_parameters_callback(self.parameters_callback)
 
         # FAQ store + event profile (event mode)
         self.faq_store = None
@@ -168,8 +333,24 @@ class MCPServer(Node):
         )
         self._qos_profile = qos_profile
 
-        # Publisher для списка инструментов
-        self.tools_pub = self.create_publisher(String, "/mcp/tools", qos_profile)
+        # Publisher для списка инструментов.
+        #
+        # TRANSIENT_LOCAL (latched): каталог инструментов — это статическое
+        # объявление, а не поток данных. Раньше здесь висел таймер на 10с,
+        # который каждые десять секунд сериализовал ~50 схем с indent=2 и
+        # публиковал их в топик, у которого в проде не было ни одного
+        # подписчика. У этой ноды уже была история CPU-петли
+        # (mcp-server-cpu-loop-2026-08-22), так что периодическая рассылка
+        # мегабайтного JSON в никуда — не мелочь. Теперь публикуем один раз
+        # при старте, а late joiner'ы (dialogue_node, `ros2 topic echo`)
+        # получают последнее сообщение из durability-кэша.
+        tools_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.tools_pub = self.create_publisher(String, "/mcp/tools", tools_qos)
 
         # Publisher для результатов
         self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
@@ -178,6 +359,30 @@ class MCPServer(Node):
         # тот поднимал VAD threshold при активной музыке (strict mode).
         # audio_node подписывается на /voice/music/state ("playing"/"idle").
         self.music_state_pub = self.create_publisher(String, "/voice/music/state", qos_profile)
+
+        # Issue #2461 — структурный канал конца прохода формы для
+        # DJModeController.tick() (dialogue_node). НЕ расширяем
+        # /voice/music/state этим полем: audio_node._on_music_state
+        # сравнивает его payload ТОЧНЫМ РАВЕНСТВОМ ("playing"/"idle") для
+        # VAD-эхоподавления (issue #989) — любой суффикс/JSON там молча
+        # ломает порог, музыка перестаёт считаться активной, и бит
+        # начинает триггерить «речь». Поэтому — отдельный String+JSON
+        # топик, по образцу /voice/dj_mode. Payload и его monotonic/epoch
+        # нюанс — см. docstring publish_music_state().
+        self.music_form_pub = self.create_publisher(String, "/voice/music/form", qos_profile)
+
+        # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
+        # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
+        # ``MusicManager.stop_all()`` про него ничего не знает, поэтому и
+        # ``music_cleanup``, и watchdog его не гасили: юзер сказал «останови
+        # музыку», робот ответил «Музыка выключена.», а трек доиграл до
+        # конца. Единственным местом, которое реально его останавливало,
+        # был ``StopMusicTool``. Публикуем те же два топика здесь, а тул
+        # теперь делегирует сюда (одна точка правды).
+        self.sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", qos_profile)
+        self.generated_music_state_pub = self.create_publisher(
+            String, "/voice/generated_music/state", qos_profile
+        )
 
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
@@ -191,6 +396,45 @@ class MCPServer(Node):
             callback_group=self._execute_cb_group
         )
 
+        # Аутентификация отправителя /mcp/execute. Топик открыт всему
+        # ROS2/Zenoh-графу, а за ним сразу registry.execute() — без этой
+        # проверки любой пир исполняет инструменты в обход LLM и
+        # confirmation gate. См. mcp_auth.py.
+        self.authenticator = RequestAuthenticator.from_env(logger=self.get_logger())
+
+        # Issue #1998 §6.2 — sender → slice → tool allowlist (ADR-0052).
+        # Стоит после auth (HMAC подпись) и до FSM-гарда картографирования:
+        # каждый гард отвечает за свой инвариант и не знает про остальные,
+        # чтобы лог отказа был однозначным. Политика загружается из
+        # bundled YAML (data/slice_policy.yaml); тесты могут подменить
+        # через ``self.slice_authority = ...`` (атрибут публичный).
+        try:
+            self.slice_authority: ToolSliceAuthority = load_default_authority()
+        except Exception as exc:  # ConfigError / yaml YAMLError / etc.
+            # ADR-0018 (честный отказ): поведение здесь — **fail-closed**.
+            # Пустая политика (senders={}) означает, что is_allowed() откажет
+            # ЛЮБОМУ sender'у на ЛЮБОЙ инструмент — голосовой стек
+            # останется без инструментов целиком. Это сознательный выбор
+            # (срез — граница безопасности, открывать её при сломанном конфиге
+            # нельзя), но диагностически это тихая смерть: снаружи выглядит
+            # как «агент перестал уметь всё», поэтому лог обязан называть
+            # и причину, и самую вероятную поломку (упаковка).
+            self.get_logger().error(
+                f"❌ Не удалось загрузить slice_policy.yaml: {exc}. "
+                "mcp_server стартует с ПУСТОЙ политикой — это FAIL-CLOSED: "
+                "НИ ОДИН sender не сможет вызвать НИ ОДИН инструмент, "
+                "весь tool-слой агента мёртв. Самая частая причина — сломанная "
+                "упаковка: rob_box_mcp_tools/setup.py обязан объявлять "
+                "package_data={'rob_box_mcp_tools.data': ['*.yaml']}, иначе YAML не "
+                "попадает в install-дерево (прод-образ собирается без "
+                "--symlink-install). Проверка на роботе: python3 -c "
+                "'from rob_box_mcp_tools.slice_authority import load_default_authority; "
+                "load_default_authority()'"
+            )
+            self.slice_authority = ToolSliceAuthority.from_mapping(
+                {"senders": {}, "slices": {"_noop": []}}
+            )
+
         # Подписка на perception context для обновления инструментов
         try:
             from rob_box_perception_msgs.msg import PerceptionEvent
@@ -199,6 +443,38 @@ class MCPServer(Node):
             self.get_logger().info("✅ Подписан на /perception/context_update")
         except ImportError:
             self.get_logger().warning("⚠️ PerceptionEvent не найден, мониторинг контекста отключен")
+
+        # Issue #1770 — подписка на /voice/speaker/result, чтобы memory
+        # tools могли фильтровать facts/turns по speaker_id без явной передачи
+        # от LLM (fallback: см. ``tools/memory.py:_current_encounter_speaker_id``).
+        # speaker_id_node публикует ``{"is_known": true, "speaker_id": "...",
+        # "name": "...", "confidence": 0.93}`` после каждой распознанной
+        # реплики; нам нужен только ``speaker_id`` (UUID), всё остальное —
+        # для логов.
+        #
+        # Issue #2442 — раньше это был отдельный ``self.current_speaker_id:
+        # Optional[str]``, продублированный с ``dialogue_node._current_speaker``
+        # и тремя фоллбэками в ``tools/memory.py``. Теперь сигнал кормит
+        # ``EncounterSeam`` (``rob_box_harness.encounter``, тот же шов, что
+        # использует голосовой адаптер) — единственный источник «кто сейчас»
+        # для этого процесса. Идентичность здесь намеренно эфемерна
+        # (``InMemoryStore`` — ничего не пишет на диск): mcp_server и раньше
+        # не считал ``since_last_seen`` для локального кэша спикера, так что
+        # это не регрессия, а явное сохранение прежнего поведения при
+        # переходе на общий контракт шва (ADR-0105 §3.1, §2.4).
+        self._encounter_seam = EncounterSeam(MemoryIdentitySeam(InMemoryStore()))
+        try:
+            self._speaker_result_sub = self.create_subscription(
+                String,
+                "/voice/speaker/result",
+                self._on_speaker_result,
+                10,
+            )
+            self.get_logger().info("🎙️ Подписан на /voice/speaker/result (issue #1770)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /voice/speaker/result: {exc}"
+            )
 
         # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
         # tts_node публикует JSON {"provider": str, "voice": str, ...} после
@@ -217,10 +493,7 @@ class MCPServer(Node):
                 f"⚠️ Не удалось подписаться на /voice/tts/provider_state: {exc}"
             )
 
-        # Таймер для периодической публикации списка инструментов
-        self.tools_timer = self.create_timer(10.0, self.publish_tools)
-
-        # Публикуем список инструментов сразу при старте
+        # Публикуем каталог инструментов один раз — он latched (см. tools_qos).
         self.publish_tools()
 
         # --------------------------------------------------------------
@@ -246,6 +519,17 @@ class MCPServer(Node):
             os.environ.get("MUSIC_WATCHDOG_ENABLED", "true").lower()
             in ("1", "true", "yes", "on")
         )
+        # Issue #1812 — idle-TTL threshold, explicitly passed to
+        # ``auto_stop_idle_music`` on every tick so it overrides whatever
+        # default ``MusicManager`` picked up on construction. 300s was too
+        # short for "listening to a track in silence" (the normal case);
+        # 1800s (30 min) matches an actually abandoned session instead.
+        try:
+            self._music_watchdog_idle_ttl_s: float = float(
+                os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+            )
+        except (TypeError, ValueError):
+            self._music_watchdog_idle_ttl_s = 1800.0
         # Subscribe to /mcp/music_cleanup — payload is JSON like
         # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
         # payload defaults to dialogue_end.
@@ -268,7 +552,6 @@ class MCPServer(Node):
         # (~30с при segments:16) убивал музыку посреди DJ-сета:
         # «чуть музыки потом замолкает».
         try:
-            self._dj_active = False
             self._dj_mode_sub = self.create_subscription(
                 String,
                 "/voice/dj_mode",
@@ -289,7 +572,7 @@ class MCPServer(Node):
                 )
                 self.get_logger().info(
                     f"🎵 Music watchdog timer запущен (period={period}s, "
-                    f"ttl={self._music_manager._auto_stop_ttl_seconds if self._music_manager else '?'}s)"
+                    f"ttl={self._music_watchdog_idle_ttl_s}s)"
                 )
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(
@@ -323,20 +606,106 @@ class MCPServer(Node):
             f"(reason: {payload.get('reason')})"
         )
 
-    def _on_dj_mode(self, msg: "String") -> None:
-        """Track DJ-mode state so the watchdog doesn't kill DJ sets.
+    def _on_speaker_result(self, msg: "String") -> None:
+        """Issue #1770 / #2442 — учесть сигнал голосовой биометрии в ``EncounterSeam``.
 
-        DJ-режим = непрерывный сет с переходами каждые 30-120с.
+        Формат: ``{"is_known": true, "speaker_id": "<uuid>",
+        "name": "Денчик", "confidence": 0.93}`` или
+        ``{"is_known": false}``. ``speaker_id`` есть только при
+        ``is_known=True``; в этом случае мы кормим сигнал в
+        ``EncounterSeam.observe()`` — тот же шов, что используют
+        ``tools/memory.py`` (fallback ``speaker_id``) через
+        ``_current_encounter_speaker_id``.
+
+        На событие ``{"event": "registered", "speaker_id": "..."}`` мы
+        тоже обновляем шов — это значит, что прямо сейчас
+        зарегистрировали нового юзера и следующая реплика отнесётся к
+        нему. Это осознанное расхождение с
+        ``rob_box_harness.encounter.voice_adapter.VoiceEncounterAdapter``
+        (тот трактует ``registered`` как no-op) — поведение mcp_server
+        здесь старше и продиктовано issue #1770 («следующая реплика
+        должна найти профиль немедленно после регистрации»), сохраняем
+        его 1:1, а не подменяем общим адаптером.
+
+        ``EncounterSeam.observe`` — асинхронный метод (может дойти до
+        ``IdentitySeam.since_last_seen``). Мостик sync ROS callback →
+        async вызов — ``asyncio.run`` за один вызов: тот же приём, что
+        ``VoiceMemoryAdapter`` уже использует в этом сервисе (см.
+        ``rob_box_harness/memory/voice_memory_adapter.py``, докстрока
+        «Why a per-call asyncio.run»). Идентичность шва здесь —
+        ``InMemoryStore`` (без диска), поэтому вызов не блокируется на
+        реальном I/O и безопасен внутри ROS executor'а.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        # Issue #2863 — служебные ack и неоценённые фразы не сигнал.
+        relevant, new_speaker_id = _speaker_signal(data)
+        if not relevant:
+            return
+
+        old = self._current_encounter_speaker_id()
+        if new_speaker_id == old:
+            return  # без изменений — тихий return, не спамим лог
+
+        who = Acquaintance(id=new_speaker_id, name=data.get("name")) if new_speaker_id else None
+        try:
+            confidence = float(data.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        asyncio.run(
+            self._encounter_seam.observe(EncounterChannel.VOICE, who, confidence)
+        )
+        if new_speaker_id:
+            self.get_logger().info(
+                f"👤 [issue 1770] current_speaker_id: {old or '∅'} → "
+                f"{new_speaker_id[:12]}… (name={data.get('name')!r})"
+            )
+        else:
+            self.get_logger().info(
+                f"👤 [issue 1770] current_speaker_id: {old or '∅'} → ∅ "
+                "(unknown / is_known=false)"
+            )
+
+    def _current_encounter_speaker_id(self) -> Optional[str]:
+        """Issue #2442 — ``speaker_id`` текущей Встречи, или ``None``.
+
+        Единственная точка чтения ``EncounterSeam.current()`` внутри
+        mcp_server. ``tools/memory.py`` не импортирует этот метод напрямую
+        (``mcp_server`` зависит от ``tools`` — обратный импорт дал бы
+        цикл), поэтому там та же логика продублирована как модульная
+        функция ``_current_encounter_speaker_id(node)`` — оба места читают
+        ровно один и тот же атрибут узла, ``node._encounter_seam``.
+        """
+        current = self._encounter_seam.current()
+        if current is None or current.who is None:
+            return None
+        return current.who.id
+
+    def _on_dj_mode(self, msg: "String") -> None:
+        """Адаптер на шве /voice/dj_mode → MusicManager.set_dj_mode().
+
+        Один владелец DJ-флага — :meth:`MusicManager.set_dj_mode`. Топик
+        нужен только как транспорт от dialogue_node (тот публикует
+        ``enabled=false`` в stop-fallback), а сам ``SetDjModeTool`` ставит
+        флаг напрямую и публикует топик для ``DJModeController``.
+
         segments-дедлайн (#990) ставится на каждый execute_music_code
         (~30с при segments:16) — если DJ активен и мы его соблюдаем,
         музыка умирает посреди сета. Пока DJ включён — дедлайн
-        игнорируется; музыка живёт по idle-TTL (300с), а каждый
-        переход обновляет активность.
+        игнорируется; музыка живёт по idle-TTL, а каждый переход
+        обновляет активность.
         """
         try:
             data = json.loads(msg.data) if msg.data else {}
-            self._dj_active = bool(data.get("enabled", False))
-            state = "ON" if self._dj_active else "OFF"
+            enabled = bool(data.get("enabled", False))
+            manager = getattr(self, "_music_manager", None)
+            if manager is not None:
+                manager.set_dj_mode(enabled)
+            state = "ON" if enabled else "OFF"
             self.get_logger().info(f"🎧 [DJ watchdog] DJ mode: {state}")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ DJ mode parse failed: {exc}")
@@ -365,6 +734,29 @@ class MCPServer(Node):
             self.get_logger().info(
                 f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
                 f"(stop_all вызван профилактически). msg={result.get('message')}"
+            )
+        # Renardo погашен — гасим и mp3-трек в sound_node (см. комментарий
+        # у ``sound_stop_pub``).
+        self.stop_generated_track_playback()
+
+    def stop_generated_track_playback(self) -> None:
+        """Остановить mp3 из библиотеки сгенерированной музыки.
+
+        ``gen_play_from_library`` публикует путь в ``sound_node``; ни
+        ``MusicManager.stop_all()``, ни ``/g_freeAll`` до него не достают.
+        Одна точка правды для ``StopMusicTool``, ``music_cleanup`` и
+        watchdog — issue #1392 follow-up.
+        """
+        try:
+            msg = String()
+            msg.data = "STOP"
+            self.sound_stop_pub.publish(msg)
+            state = String()
+            state.data = json.dumps({"status": "idle"})
+            self.generated_music_state_pub.publish(state)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось остановить mp3 в sound_node: {exc}"
             )
 
     def _on_music_fallback(self, msg: "String") -> None:
@@ -434,25 +826,50 @@ class MCPServer(Node):
         if manager is None:
             return
         try:
-            # 🔴 FIX (live 10:13 DJ): проброс DJ-флага в MusicManager —
-            # watchdog не должен убивать непрерывный DJ-сет по
-            # segments-дедлайну #990.
-            if hasattr(self, "_dj_active"):
-                manager._dj_active = bool(self._dj_active)
-            result = manager.auto_stop_idle_music()
+            # Issue #1812 — explicit TTL from the (now 30-min-default)
+            # ROS-side parameter, so it always wins over whatever default
+            # MusicManager picked up on construction.
+            result = manager.auto_stop_idle_music(
+                ttl_seconds=self._music_watchdog_idle_ttl_s
+            )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Music watchdog failed: {exc}"
             )
             return
+        if result.get("held_reason"):
+            # Issue #1812 — не спамим warning на каждый тик (period~5s) пока
+            # форма не доиграла; debug делает причину видимой при разборе
+            # логов, не засоряя обычный вывод.
+            idle_s = result.get("idle_seconds")
+            remaining_s = result.get("form_deadline_remaining_s")
+            idle_str = f"{idle_s:.1f}s" if isinstance(idle_s, (int, float)) else str(idle_s)
+            remaining_str = (
+                f" form_remaining={remaining_s:.1f}s"
+                if isinstance(remaining_s, (int, float))
+                else ""
+            )
+            self.get_logger().debug(
+                f"🎵 [watchdog] Не гашу: reason={result['held_reason']} "
+                f"idle={idle_str}{remaining_str}"
+            )
         if result.get("stopped"):
             patterns = result.get("active_patterns", [])
             idle = result.get("idle_seconds", "?")
             ttl = result.get("ttl_seconds", "?")
+            # 🔴 FIX (live 30.08): без ``stop_reason`` строка врала — писала
+            # «после 20.1s (ttl=300s)», хотя музыку убил segments-дедлайн,
+            # а не idle-TTL. Из лога было не понять, почему бит прожил 20
+            # секунд при ttl=300.
+            reason = result.get("stop_reason", "idle_ttl")
+            deadline_segments = result.get("deadline_segments")
             self.get_logger().warning(
-                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов после "
-                f"{idle:.1f}s (ttl={ttl:.0f}s). Issue #935."
+                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов: "
+                f"reason={reason} idle={idle:.1f}s ttl={ttl:.0f}s"
+                + (f" segments={deadline_segments}" if deadline_segments else "")
+                + ". Issue #935."
             )
+            self.stop_generated_track_playback()
         # Issue 989 Fix C: синхронизируем состояние музыки для audio_node
         # (поднятие VAD threshold при активной музыке). Watchdog тикает
         # каждые ~5s — достаточно для strict mode; tool-вызовы публикуют
@@ -460,12 +877,34 @@ class MCPServer(Node):
         self.publish_music_state()
 
     def publish_music_state(self) -> None:
-        """Опубликовать /voice/music/state: "playing" если музыка активна, иначе "idle".
+        """Опубликовать /voice/music/state и /voice/music/form.
 
+        ``/voice/music/state``: "playing" если музыка активна, иначе "idle".
         Issue 989 Fix C: audio_node слушает этот топик и поднимает порог VAD
         при активной музыке, чтобы бит не триггерил «речь» (эхо-петля).
         Музыка считается активной, если у MusicManager есть открытая сессия
         (``music_session_active_since`` не None) или именованные паттерны.
+
+        ⚠️ КОНТРАКТ, НЕ ТРОГАТЬ: ``audio_node._on_music_state`` сравнивает
+        ``msg.data`` ТОЧНЫМ РАВЕНСТВОМ (``state == "playing"``), а не
+        ``startswith``/JSON-парсингом. Любой суффикс или структура вместо
+        плоской строки "playing"/"idle" молча ломает VAD-эхоподавление —
+        музыка перестанет считаться активной, порог не поднимется, бит
+        начнёт триггерить «речь». Именно поэтому конец формы (issue #2461,
+        ниже) идёт ОТДЕЛЬНЫМ топиком, а не полем здесь.
+
+        ``/voice/music/form`` (issue #2461): JSON
+        ``{"form_ends_at": <epoch float|null>, "playing": bool}`` — конец
+        текущего прохода формы для ``DJModeController.tick()`` в
+        dialogue_node. ``form_cycle_remaining_s`` из ``MusicManager.get_state()``
+        посчитан через ``time.monotonic()`` — эти часы НЕСОПОСТАВИМЫ между
+        процессами (mcp_server и dialogue_node — РАЗНЫЕ ОС-процессы, см.
+        voice_assistant.launch.py: один Node(...), другой ExecuteProcess(...)).
+        Публиковать monotonic-значение наружу нельзя — в чужом процессе оно
+        бессмысленно. Поэтому здесь остаток переводится в АБСОЛЮТНОЕ стенное
+        время (``time.time() + remaining``) ПРЯМО ПЕРЕД публикацией;
+        получатель сравнивает его со своим собственным ``time.time()`` —
+        wall-clock общий для обоих процессов на одной машине.
         """
         manager = getattr(self, "_music_manager", None)
         pub = getattr(self, "music_state_pub", None)
@@ -481,27 +920,62 @@ class MCPServer(Node):
         msg.data = "playing" if playing else "idle"
         pub.publish(msg)
 
-    def _init_waypoint_store(self) -> WaypointStore:
-        """Инициализация WaypointStore (SQLite для вейпоинтов)."""
+        form_pub = getattr(self, "music_form_pub", None)
+        if form_pub is None:
+            return
+        form_msg = String()
+        form_msg.data = json.dumps({
+            "form_ends_at": _music_form_ends_at_epoch(state),
+            "playing": playing,
+        })
+        form_pub.publish(form_msg)
+
+    def _init_waypoint_store(self) -> WaypointAdapter:
+        """Инициализация адаптера для вейпоинтов.
+
+        ADR-0055 Phase 2 v2 (issue #2000): ``WaypointAdapter`` —
+        schema-reconciling facade over ``WaypointStore``. Остаётся на
+        ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``; DDL
+        ``harness_voice.db.waypoints`` НЕ трогается (ADR-0055 §3).
+        Адаптер отдаёт:
+
+        * MCP-вью (pass-through): ``list_waypoints`` / ``get_waypoint``
+          / ``save_waypoint`` / ``delete_waypoint`` / ``clear_waypoints``
+          / ``get_active_map`` / ``list_maps`` / ``create_map``.
+          Все эти методы удовлетворяют ранее подписанному контракту
+          ``WaypointStore``, поэтому ``tools/navigation.py``
+          (NavigateToWaypointTool, ListWaypointsTool, …) продолжают
+          работать без правок кода, принимая ``WaypointAdapter``
+          (duck-type = ``WaypointStore``).
+        * Harness-вью (для AgentCore step 03): ``*_harness``-методы,
+          ``map_id`` по умолчанию ``"default"``.
+
+        Обёртка ``WaypointAdapter`` — единственная точка контакта
+        для всех MCP-инструментов по вейпоинтам, чтобы Phase 2 v3
+        (data-migration) могла сменить бэкенд «под ковром» без
+        затрагивания вызывающего кода.
+        """
         import os
 
         db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
         try:
             store = WaypointStore(db_path=db_path)
-            active = store.get_active_map()
+            adapter = WaypointAdapter(store=store)
+            active = adapter.get_active_map()
             if active:
-                wp_count = len(store.list_waypoints())
+                wp_count = len(adapter.list_waypoints())
                 self.get_logger().info(
-                    f"📍 WaypointStore: карта '{active['name'] or active['map_id'][:8]}', "
+                    f"📍 WaypointAdapter: карта '{active['name'] or active['map_id'][:8]}', "
                     f"{wp_count} точек"
                 )
             else:
-                self.get_logger().info("📍 WaypointStore: активная карта не задана (будет создана при первом сохранении)")
-            return store
+                self.get_logger().info("📍 WaypointAdapter: активная карта не задана (будет создана при первом сохранении)")
+            return adapter
         except Exception as exc:
-            self.get_logger().error(f"❌ Ошибка инициализации WaypointStore: {exc}")
-            # Fallback — create in-memory so tools don't crash
-            return WaypointStore(db_path=":memory:")
+            self.get_logger().error(f"❌ Ошибка инициализации WaypointAdapter: {exc}")
+            # Fallback — in-memory adapter so tools don't crash
+            fallback_store = WaypointStore(db_path=":memory:")
+            return WaypointAdapter(store=fallback_store)
 
     def _init_pose_subscription(self) -> None:
         """Подписка на /odom для лёгкого снимка позиции (без tf2_ros.Buffer).
@@ -593,11 +1067,30 @@ class MCPServer(Node):
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
         self.registry.register(SetVoiceTool(self, voice_store=voice_store))
+        # Issue #1765 — переключение TTS-провайдера + список голосов
+        # по провайдеру (кросс-провайдерный кейс: «Яндекс Артём» при
+        # активном minimax). Оба tool'а публикуют /voice/tts/set_provider,
+        # tts_node подписан и пересобирает provider_chain.
+        self.registry.register(SetTtsProviderTool(self, voice_store=voice_store))
+        self.registry.register(ListTtsVoicesTool(self))
         # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
         # LLM extracts name from user_input and calls register_speaker(name=X)
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
         self.registry.register(RegisterSpeakerTool(self))
         self.registry.register(SearchWebTool(self))
+        # Issue #2113 — TARS 2 metrics panel. ``show_metrics`` публикует
+        # запрос в /avatar/tars/panel_request; TarsPanelDispatcher
+        # (rob_box_supervisor.tars_panel) подписан на этот топик, парсит
+        # запрос и публикует собранный URL Grafana-панели в
+        # /avatar/tars/panel_url (на этот топик уже подписан Quest-клиент).
+        # Без этой регистрации mcp_server отвечал бы «unknown tool» на
+        # show_metrics — даже если срез-гард пропускал avatar_supervisor.
+        self.registry.register(ShowMetricsTool(self))
+        # Issue #968 (S6) — task_delta: schema-only registration so the
+        # LLM sees the tool. Real execution is intercepted in-process by
+        # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever
+        # reaches mcp_server — see TaskDeltaTool's docstring.
+        self.registry.register(TaskDeltaTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
@@ -609,10 +1102,16 @@ class MCPServer(Node):
     def _register_music_tools(self) -> None:
         """Регистрирует music tools, не роняя весь MCP server при частичной деградации."""
         music_max_amp = self.get_parameter("music_max_amp").value
-        self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
+        music_master_gain = self.get_parameter("music_master_gain").value
+        self.get_logger().info(
+            f"🎵 Music max_amp: {music_max_amp:.2f}, "
+            f"master_gain: {music_master_gain:.2f}"
+        )
 
         try:
-            music_manager = MusicManager(max_amp=music_max_amp)
+            music_manager = MusicManager(
+                max_amp=music_max_amp, master_gain=music_master_gain
+            )
         except Exception as exc:
             self.get_logger().error(
                 f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
@@ -626,10 +1125,41 @@ class MCPServer(Node):
         # playback automatically.
         self._music_manager: Optional[MusicManager] = music_manager
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+
+        # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
+        # SQLite. Поиск по имени/жанру + конвертация RTTTL→Renardo при игре.
+        # Создаём ДО ComposeMusicTool: композитор по name= сам ищет точные
+        # ноты известной мелодии в этой библиотеке.
+        rtttl_library: Optional[RtttlLibrary] = None
+        try:
+            rtttl_library = RtttlLibrary()
+            self.registry.register(SearchMelodyTool(self, rtttl_library))
+            self.get_logger().info(f"🎵 RTTTL library: {rtttl_library.total()} мелодий")
+        except Exception as exc:
+            self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
+
+        # ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned,
+        # $MUSIC_LIBRARY_PATH — та же персистентная точка, что TrackLibrary
+        # ниже). Один экземпляр — общий для compose_music/preview_arrangement
+        # (тот же пресет, что реально применится) и save_arrangement_preset.
+        preset_store = ArrangementPresetStore()
+
+        # Форма трека строится кодом, а не LLM (RC4 в
+        # docs/analysis/2026-08-30-music-quality-audit.md).
+        self._compose_music_tool = ComposeMusicTool(
+            self, music_manager, rtttl_library, preset_store
+        )
+        self.registry.register(self._compose_music_tool)
+        self.registry.register(
+            PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
+        )
+        self.registry.register(
+            SaveArrangementPresetTool(self, self._compose_music_tool, preset_store)
+        )
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
-        self.registry.register(SetDjModeTool(self))
+        self.registry.register(SetDjModeTool(self, music_manager))
         self.registry.register(SearchSamplesTool(self))
 
         try:
@@ -646,6 +1176,7 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,
@@ -755,7 +1286,50 @@ class MCPServer(Node):
         )
 
     def _init_voice_memory(self) -> None:
-        """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
+        """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках.
+
+        ADR-0055 Phase 1 — when ``MCP_USE_HARNESS_VOICE_MEMORY=1`` the
+        adapter over ``SQLiteVoiceMemory`` is used so writes go to
+        ``/data/harness_voice.db`` (same file the dialogue node uses).
+        Otherwise we fall back to the legacy ``VoiceMemory`` →
+        ``/data/voice_memory.db``.
+
+        This flag only affects ``self.voice_memory`` (facts). It does
+        NOT unify ``self.waypoint_store`` or ``self.faq_store`` — those
+        stay on ``/data/voice_memory.db`` either way (see the module-level
+        comment above ``_USE_HARNESS_VOICE_MEMORY`` for why: their table
+        names collide with incompatible schemas already living in
+        harness_voice.db).
+
+        Issue #2781 — ``self._voice_memory_prod_db_path`` stays ``None``
+        when the harness adapter branch below is taken: ``_apply_e2e_mode``
+        only knows how to re-point the legacy ``_VoiceMemory`` class at a
+        different SQLite file, and treats ``None`` as "no E2E target for
+        this backend" (fails the ``ros2 param set`` instead of silently
+        no-op'ing — see its docstring).
+        """
+        if _USE_HARNESS_VOICE_MEMORY and _VoiceMemoryAdapter is not None:
+            import os
+
+            # Default to the unified DB on /data/ but allow override for
+            # staging / test environments.
+            db_path = os.getenv(
+                "HARNESS_VOICE_DB", "/data/harness_voice.db"
+            )
+            try:
+                self.voice_memory = _VoiceMemoryAdapter(db_path=db_path)
+                stats = self.voice_memory.get_stats()
+                self.get_logger().info(
+                    f"🧠 VoiceMemoryAdapter (ADR-0055 Phase 1): {db_path} "
+                    f"(facts={stats.get('fact_count', 0)})"
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"❌ Ошибка инициализации VoiceMemoryAdapter: {exc}"
+                )
+                self.voice_memory = None
+            return
+
         if _VoiceMemory is None:
             self.get_logger().warning(
                 "⚠️ rob_box_voice не найден — VoiceMemory отключена. "
@@ -770,6 +1344,11 @@ class MCPServer(Node):
 
         try:
             self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            # Issue #2781 — запоминаем боевой путь/ollama_url, чтобы
+            # _apply_e2e_mode мог переоткрыть VoiceMemory на e2e_db_path и
+            # вернуться обратно, не завися от переменных окружения второй раз.
+            self._voice_memory_prod_db_path = db_path
+            self._voice_memory_ollama_url = ollama_url
             stats = self.voice_memory.get_stats()
             self.get_logger().info(
                 f"🧠 VoiceMemory инициализирована: {db_path} "
@@ -780,8 +1359,161 @@ class MCPServer(Node):
             self.get_logger().error(f"❌ Ошибка инициализации VoiceMemory: {exc}")
             self.voice_memory = None
 
+    # ── E2E isolation for voice_facts (issue #2781) ─────────────────────────
+    #
+    # По образцу speaker_id_node.e2e_mode (issue #2750/#2763, ADR-0128 §
+    # "Seam guard"): ``ros2 param set`` вместо топика — синхронный ответ
+    # вызывающему в exit-коде, seam_without_consumer.py (ADR-0021) не видит
+    # паблишера в bash-харнессе как «шов без потребителя».
+
+    def parameters_callback(self, params):
+        """``ros2 param set`` роутер mcp_server (issue #2781).
+
+        Тот же компромисс, что у ``speaker_id_node.parameters_callback``:
+        Humble даёт только валидирующий ``add_on_set_parameters_callback``,
+        и побочный эффект (переоткрыть voice_memory на другом файле) живёт
+        прямо в нём. Только ``e2e_mode`` имеет эффект; ``e2e_db_path``
+        читается один раз в ``__init__`` и не перехватывается здесь.
+        """
+        result_ok = True
+        for param in params:
+            if param.name == "e2e_mode":
+                if not self._apply_e2e_mode(bool(param.value)):
+                    result_ok = False
+        return SetParametersResult(successful=result_ok)
+
+    def _wipe_e2e_voice_memory_db_file(self) -> None:
+        """Стереть файл ``e2e_db_path`` (и -wal/-shm/-journal) перед каждым ON.
+
+        По образцу ``speaker_id_node._wipe_e2e_db_file``. НИКОГДА не трогает
+        ``self._voice_memory_prod_db_path`` — путь для удаления берётся из
+        ``self._voice_memory_e2e_db_path`` напрямую (константа узла, не то,
+        что можно подменить через ``ros2 param set``).
+        """
+        import os as _os
+
+        # Issue #2890 — боевая voice_memory.db не стирается НИКОГДА, даже
+        # если e2e_db_path в конфиге указал на неё же (опечатка в YAML,
+        # симлинк): исключение прерывает переключение в _apply_e2e_mode,
+        # харнесс получает отказ e2e_mode и фейлит акт.
+        prod = self._voice_memory_prod_db_path
+        if prod and _os.path.realpath(prod) == _os.path.realpath(
+            self._voice_memory_e2e_db_path
+        ):
+            raise RuntimeError(
+                f"e2e_db_path {self._voice_memory_e2e_db_path!r} совпадает с "
+                f"боевой {prod!r} — стирать отказываюсь"
+            )
+        removed = []
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = f"{self._voice_memory_e2e_db_path}{suffix}"
+            try:
+                if _os.path.exists(path):
+                    _os.remove(path)
+                    removed.append(path)
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"⚠️ не удалось удалить {path!r} перед E2E-прогоном "
+                    f"({type(exc).__name__}: {exc}) — e2e-база памяти может "
+                    "унаследовать факты с прошлого марафона"
+                )
+        # Issue #2890 — явная строка сброса e2e-памяти фактов в логе робота.
+        self.get_logger().warning(
+            f"🧹 mcp_server: e2e-память фактов сброшена перед актом — "
+            f"удалено {len(removed)} файл(ов) {self._voice_memory_e2e_db_path!r}"
+        )
+
+    def _apply_e2e_mode(self, enabled: bool) -> bool:
+        """Переключить voice_memory (voice_facts) боевая ↔ E2E. ``True`` — успех.
+
+        Issue #2781 — до этой правки изоляция БД дикторов (#2750/#2763)
+        накрывала только ``speakers.db``: акт «Знакомство» ночного марафона
+        и регистрирует голоса (изолировано), и называет LLM факты через
+        ``memory_save`` (НЕ изолировано) — замер на Vision Pi 22.09.2026
+        нашёл 59 из 116 фактов боевой ``/data/voice_memory.db``,
+        упоминающих синтезированный каст марафона ("Саша не ест лук",
+        "Борис болеет за Спартак").
+
+        Переход False→True стирает прежний файл ``e2e_db_path`` (см.
+        ``_wipe_e2e_voice_memory_db_file``) и открывает НОВЫЙ экземпляр
+        ``VoiceMemory`` на нём — гарантия пустой e2e-базы держится узлом,
+        не вызывающим скриптом. Переход True→True (повторный
+        ``ros2 param set ... true``) — no-op, не чистит базу второй раз
+        (не обнулять уже накопленные за акт факты). Боевой
+        ``_voice_memory_prod_db_path`` никогда не удаляется и не изменяется.
+
+        ``False`` — отказ (переключение НЕ применено, активная БД осталась
+        прежней): либо E2E-изоляция не реализована для активного бэкенда
+        (``self._voice_memory_prod_db_path is None`` — harness-адаптер
+        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` или ``rob_box_voice`` недоступен,
+        ``self.voice_memory is None``), либо переоткрытие файла бросило
+        исключение. Вызывающий (``activate_e2e_voice_memory_db`` в харнессе)
+        обязан относиться к ``False`` как к ФАТАЛУ: лучше не прогнать акт,
+        чем засорить боевую память.
+        """
+        if enabled == self._voice_memory_e2e_mode_active:
+            self.get_logger().info(
+                f"🧪 e2e_mode (voice_memory): уже "
+                f"{'включён' if enabled else 'выключен'} — no-op"
+            )
+            return True
+
+        if self._voice_memory_prod_db_path is None or _VoiceMemory is None:
+            self.get_logger().error(
+                "❌ e2e_mode (voice_memory): нет боевого пути для переключения — "
+                "либо активен harness-адаптер (MCP_USE_HARNESS_VOICE_MEMORY=1, "
+                "E2E-изоляция для него не реализована, issue #2781 накрывает "
+                "только legacy VoiceMemory/voice_memory.db), либо "
+                "rob_box_voice недоступен и self.voice_memory не инициализирована. "
+                "Переключение отклонено."
+            )
+            return False
+
+        target_path = (
+            self._voice_memory_e2e_db_path
+            if enabled
+            else self._voice_memory_prod_db_path
+        )
+        try:
+            with self._voice_memory_lock:
+                old_memory = self.voice_memory
+                if enabled:
+                    # Гарантия чистой базы — только на переходе в E2E-режим.
+                    self._wipe_e2e_voice_memory_db_file()
+                self.voice_memory = _VoiceMemory(
+                    db_path=target_path,
+                    ollama_base_url=self._voice_memory_ollama_url,
+                )
+                self._voice_memory_e2e_mode_active = enabled
+                if old_memory is not None:
+                    old_memory.close()
+        except Exception as exc:  # noqa: BLE001 — переключение не должно ронять ноду
+            self.get_logger().error(
+                f"❌ e2e_mode (voice_memory)={'ON' if enabled else 'OFF'} "
+                f"переключение провалилось: {type(exc).__name__}: {exc} — "
+                f"активная БД памяти НЕ изменена (осталась "
+                f"{'E2E' if self._voice_memory_e2e_mode_active else 'боевая'})"
+            )
+            return False
+
+        # WARNING, не info: смена активной БД памяти обязана быть видна в
+        # `docker logs voice-assistant` без фильтров (issue #2750 — то же
+        # решение у speaker_id_node._apply_e2e_mode).
+        self.get_logger().warning(
+            f"🧪 mcp_server: e2e_mode (voice_memory)={'ON' if enabled else 'OFF'} — "
+            f"voice_facts (memory_save) теперь пишутся в {target_path!r} "
+            f"({'боевая voice_memory.db НЕ используется, пока режим включён' if enabled else 'вернулись на боевую'})"
+        )
+        return True
+
     def _init_faq_store(self) -> None:
-        """Инициализация FAQStore и загрузка event profile (режим мероприятия)."""
+        """Инициализация FAQStore и загрузка event profile (режим мероприятия).
+
+        Остаётся на ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``:
+        ``faq_items`` в ``/data/harness_voice.db`` уже создаётся
+        ``SQLiteVoiceMemory`` с другой схемой (``created_at`` вместо
+        ``indexed_at``, без FTS5-триггеров) — см. ADR-0055.
+        """
         if _FAQStore is None or _load_event_profile is None:
             self.get_logger().info(
                 "ℹ️ FAQ-модуль не загружен — faq_search будет возвращать 'недоступен'."
@@ -824,9 +1556,10 @@ class MCPServer(Node):
         """Публикация списка доступных инструментов в OpenAI Tool Calls формате."""
         tools = self.registry.get_openai_tools()
         msg = String()
-        msg.data = json.dumps(tools, ensure_ascii=False, indent=2)
+        # Без indent: сообщение читает машина, а отступы удваивали payload.
+        msg.data = json.dumps(tools, ensure_ascii=False)
         self.tools_pub.publish(msg)
-        self.get_logger().debug(f"📤 Опубликован список {len(tools)} инструментов")
+        self.get_logger().info(f"📤 Опубликован каталог из {len(tools)} инструментов (latched)")
 
     def on_execute_request(self, msg: String):
         """
@@ -849,9 +1582,52 @@ class MCPServer(Node):
 
             self.get_logger().info(f"📥 Запрос выполнения: {tool_name} с параметрами {parameters}")
 
+            # ── Auth Guard: запрос должен быть подписан общим секретом ──
+            # Стоит перед FSM-гардом и перед любым обращением к registry:
+            # неаутентифицированный запрос не должен даже влиять на
+            # replay-кэш имён инструментов в логах.
+            is_authentic, auth_error = self.authenticator.verify(request)
+            if not is_authentic:
+                self.get_logger().error(
+                    f"🚫 Отклонён неаутентифицированный /mcp/execute "
+                    f"'{tool_name}': {auth_error}"
+                )
+                self._publish_error(f"Запрос отклонён: {auth_error}", request_id)
+                return
+            # ────────────────────────────────────────────────────────────
+
             if not tool_name:
                 self._publish_error("Не указано имя инструмента", request_id)
                 return
+
+            # ── Slice Guard: sender → slice → tool (ADR-0052, issue #1998 §6.2) ──
+            # Стоит после auth (нам нужен подписанный ``auth.sender``) и
+            # до FSM-гарда картографирования: каждый гард отвечает за свой
+            # инвариант и не знает про остальные, чтобы лог отказа был
+            # однозначным. Sender берём из подписанного блока auth —
+            # провалидированного HMAC'ом, так что подменить нельзя.
+            sender = (
+                (request.get("auth") or {}).get("sender")
+                if isinstance(request.get("auth"), dict)
+                else None
+            ) or "unknown"
+            slice_decision = self.slice_authority.is_allowed(sender, tool_name)
+            if not slice_decision.allowed:
+                self.get_logger().warning(
+                    f"🚫 Slice blocked '{tool_name}' для sender='{sender}': "
+                    f"{slice_decision.reason}"
+                )
+                from .base import MCPToolResult
+                _slice_msg = (
+                    f"Инструмент '{tool_name}' недоступен: {slice_decision.reason}"
+                )
+                _result = MCPToolResult(success=False, error=_slice_msg)
+                _resp = {"tool_name": tool_name, "request_id": request_id, "result": _result.to_dict()}
+                _msg_out = String()
+                _msg_out.data = json.dumps(_resp, ensure_ascii=False)
+                self.result_pub.publish(_msg_out)
+                return
+            # ────────────────────────────────────────────────────────────
 
             # ── FSM Guard: block disallowed tools during active mapping ──
             if not self.mapping_state.is_tool_allowed(tool_name):
@@ -899,20 +1675,26 @@ class MCPServer(Node):
             self._publish_error(f"Внутренняя ошибка: {str(e)}", "")
 
     def on_perception_update(self, msg):
-        """Обработка обновления контекста восприятия."""
-        try:
-            # Обновляем battery tool
-            if hasattr(msg, "battery_percentage"):
-                self.battery_tool.update_battery(msg.battery_percentage)
+        """Обработка обновления контекста восприятия.
 
-            # Обновляем perception context tool
-            # Конвертируем PerceptionEvent в dict для хранения
-            context = {
-                "timestamp": msg.timestamp if hasattr(msg, "timestamp") else 0.0,
-                "internet_available": msg.internet_available if hasattr(msg, "internet_available") else False,
-                "battery_percentage": msg.battery_percentage if hasattr(msg, "battery_percentage") else 0.0,
-                "mapping_mode": msg.mapping_mode if hasattr(msg, "mapping_mode") else "unknown",
-            }
+        Проекция (issue #2532) живёт в ``perception_projection`` — что именно
+        из 27 полей ``PerceptionEvent`` видит Личность, решается там, один раз
+        и под тестом паритета с IDL. Здесь остаётся тонкий адаптер.
+
+        ``hasattr``-гвардов тут больше нет намеренно: прежде они превращали
+        расхождение имён полей с IDL в тихий ноль (батарея не доходила до LLM
+        вообще, timestamp всегда был 0). Теперь дрейф IDL — это громкая ошибка
+        в логе, а не молчаливая потеря данных.
+        """
+        try:
+            context = project_perception_event(msg)
+
+            # battery_percent = None означает «данных о батарее ещё не было»
+            # (агрегатор пишет 0.0 В по умолчанию). Не путаем с «разряжена».
+            battery_percent = context["battery_percent"]
+            if battery_percent is not None:
+                self.battery_tool.update_battery(battery_percent)
+
             self.perception_context_tool.update_context(context)
 
         except Exception as e:

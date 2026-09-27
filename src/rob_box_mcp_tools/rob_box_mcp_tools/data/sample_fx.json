@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "Issue #2968 — белый список FX-одиночек (выстрел/сирена/скрэтч/лазер)",
+    "из 1_pitchglitch_samples, по образцу белого списка лупов (#2841,",
+    "data/sample_loops.json). Пути сняты 24.09.2026 чтением файлового",
+    "дерева в контейнере voice-assistant (ssh + docker exec ... ls -la) —",
+    "имена файлов ПОДТВЕРЖДЕНЫ, но НИ ОДИН из них не прослушан на роботе",
+    "(16 kHz DAC). Включается той же переменной, что и лупы —",
+    "ROB_BOX_PACK1_LOOPS=1 (core/sample_loops.py: 'имя флага историческое —",
+    "теперь он открывает весь каталог'), по умолчанию выключен.",
+    "Лишнее при прослушке — удалить из этого файла без правки логики.",
+    "tags — жанровые метки для подбора в промпте/DJ-скилле (см. issue",
+    "acceptance: g-funk/gangsta → gunshot,siren,scratch; dnb → laser)."
+  ],
+  "pack1_dir": "1_pitchglitch_samples",
+  "fx": {
+    "gunshot_1": {
+      "path": "u/upper/005_Snare_AltGunShot_Kaonaya.wav",
+      "tags": ["gangsta", "gfunk", "hiphop", "trap"]
+    },
+    "gunshot_2": {
+      "path": "_/at/017_Noise_Shot_JosePharaoh99.wav",
+      "tags": ["gangsta", "gfunk", "hiphop", "trap"]
+    },
+    "siren_1": {
+      "path": "_/percent/002_SoundFX_DubSiren_Zoltan87.wav",
+      "tags": ["gangsta", "gfunk", "dnb", "jungle"]
+    },
+    "laser_1": {
+      "path": "_/backslash/003_SoundFX_LaserGun_KS.wav",
+      "tags": ["dnb", "electro", "future", "scifi"]
+    },
+    "laser_2": {
+      "path": "_/backslash/004_SoundFX_Lasershot1_KS.wav",
+      "tags": ["dnb", "electro", "future", "scifi"]
+    },
+    "laser_3": {
+      "path": "_/backslash/005_SoundFX_Lasershot2_KS.wav",
+      "tags": ["dnb", "electro", "future", "scifi"]
+    },
+    "laser_4": {
+      "path": "_/backslash/033_SoundFX_LazerGun01_KS.wav",
+      "tags": ["dnb", "electro", "future", "scifi"]
+    },
+    "laser_5": {
+      "path": "_/backslash/034_SoundFX_LazerGun03_KS.wav",
+      "tags": ["dnb", "electro", "future", "scifi"]
+    },
+    "scratch_1": {
+      "path": "_/dollar/034_Various_BeatBoxScratch1_Baddj.wav",
+      "tags": ["hiphop", "funk", "gfunk", "breakbeat"]
+    },
+    "scratch_2": {
+      "path": "_/dollar/035_Various_BeatBoxScratch2_Baddj.wav",
+      "tags": ["hiphop", "funk", "gfunk", "breakbeat"]
+    },
+    "scratch_3": {
+      "path": "_/dollar/036_Various_BeatBoxScratch3_NoN.wav",
+      "tags": ["hiphop", "funk", "gfunk", "breakbeat"]
+    },
+    "scratch_4": {
+      "path": "_/at/012_Noise_Scratch_SFXR.wav",
+      "tags": ["hiphop", "electro"]
+    },
+    "scratch_5": {
+      "path": "_/colon/026_HiHat_Scratch_KS.wav",
+      "tags": ["hiphop", "funk"]
+    }
+  }
+}

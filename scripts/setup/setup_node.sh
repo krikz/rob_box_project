@@ -586,6 +586,83 @@ SERVICEEOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ZRAM SWAP (issue #2621)
+# ═══════════════════════════════════════════════════════════════════════════
+# Vision Pi — 8 ГБ RAM и 13 контейнеров, свопа по умолчанию нет вообще.
+# Когда MemAvailable доходит до нуля, ядру некуда вытеснять анонимные
+# страницы: узел перестаёт отвечать по ssh, и единственный выход —
+# перезагрузка, которая стирает улики. Замер 15.09.2026: MemAvailable
+# падал 1206 → 416 МБ за 27 минут, page cache вытеснялся 1230 → 513 МБ.
+#
+# zram — сжатый своп в самой RAM (zstd, ~3:1). Он НЕ лечит причину
+# (см. #2609 — 1.6 ГБ мёртвого CUDA-torch в voice-assistant), но даёт
+# окно, в котором узел тормозит, а не умирает, и его можно
+# диагностировать живьём.
+#
+# PERCENT=25 → ~2 ГБ ёмкости свопа, реально занимающих ~700 МБ RAM
+# при типичном сжатии. Сознательно консервативно: сам zram тоже живёт
+# в памяти, и на узле, который уже у края, забирать больше опасно.
+#
+# swappiness=100 — для zram намеренно высокий (дефолт 60): вытеснение
+# идёт в RAM, а не на SD-карту, поэтому оно дёшево и предпочтительнее
+# выбрасывания page cache. page-cluster=0 отключает readahead свопа:
+# zram распаковывает постранично, батчинг только тратит такты.
+
+setup_zram_swap() {
+    log_step "Настройка zram-свопа (issue #2621)"
+
+    local sysctl_file="/etc/sysctl.d/99-robbox-zram.conf"
+
+    # Идемпотентность: zram-tools уже настроен — только досогласуем sysctl.
+    if systemctl is-enabled zramswap.service &> /dev/null; then
+        log_success "zram-tools уже включён"
+    else
+        log_info "Установка zram-tools..."
+        if ! sudo apt install -y zram-tools; then
+            log_error "Не удалось установить zram-tools — узел останется без свопа"
+            log_warning "Проверьте вручную: sudo apt install zram-tools"
+            return 0   # не валим всю установку узла из-за свопа
+        fi
+    fi
+
+    log_info "Конфигурация /etc/default/zramswap (zstd, 25% RAM)..."
+    sudo tee /etc/default/zramswap > /dev/null << 'ZRAMEOF'
+# Managed by rob_box setup_node.sh (issue #2621) — правки перетираются при
+# повторном прогоне скрипта. Менять здесь: scripts/setup/setup_node.sh
+ALGO=zstd
+PERCENT=25
+PRIORITY=100
+ZRAMEOF
+
+    log_info "Конфигурация sysctl ($sysctl_file)..."
+    sudo tee "$sysctl_file" > /dev/null << 'SYSCTLEOF'
+# Managed by rob_box setup_node.sh (issue #2621)
+# Своп живёт в RAM (zram), а не на SD-карте — вытеснять дёшево.
+vm.swappiness = 100
+# zram распаковывает постранично: readahead свопа бесполезен.
+vm.page-cluster = 0
+SYSCTLEOF
+
+    sudo sysctl -p "$sysctl_file" > /dev/null 2>&1 || log_warning "sysctl -p вернул ошибку"
+
+    log_info "Перезапуск zramswap..."
+    sudo systemctl enable zramswap.service &> /dev/null || true
+    sudo systemctl restart zramswap.service || log_warning "Не удалось перезапустить zramswap"
+
+    # Проверка результата — без неё молчаливый отказ выглядит как успех.
+    if grep -q zram /proc/swaps 2>/dev/null; then
+        local zram_size
+        zram_size=$(awk '/zram/ {printf "%.1f ГБ", $3/1048576}' /proc/swaps | head -1)
+        log_success "zram-своп активен: $zram_size"
+        log_info "Проверка: cat /proc/swaps; zramctl"
+    else
+        log_error "zram-своп НЕ активен — /proc/swaps пуст"
+        log_warning "Узел остался без свопа, см. issue #2621"
+        log_warning "Диагностика: systemctl status zramswap; journalctl -u zramswap"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # СПЕЦИФИЧНАЯ НАСТРОЙКА ДЛЯ РАЗНЫХ ТИПОВ УЗЛОВ
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -609,6 +686,109 @@ setup_node_specific() {
             setup_custom_node
             ;;
     esac
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HAILO AI HAT (PCIe, Hailo-8)
+# ═══════════════════════════════════════════════════════════════════════════
+# HailoRT 4.24.0. Драйвер ставится DKMS-пакетом `hailort-pcie-driver`
+# (firmware теперь внутри него — отдельного hailofw в 4.24 больше нет),
+# runtime — `hailort`. Оба .deb доступны только в Hailo Developer Zone
+# (нужен аккаунт), поэтому ожидаем их предзаложенными в /opt/rob_box/vendor/.
+# Python-биндинг (hailo_platform) на хост НЕ ставится — он нужен только
+# внутри контейнера vision-hailo (см. docker/vision/vision-hailo/Dockerfile,
+# ADR-0099 §2.2).
+#
+# Идемпотентность: скрипт можно запускать многократно. Каждый компонент
+# проверяется отдельно — если он уже стоит и версия совпадает, пропускаем;
+# доустанавливаем только недостающее. Железки нет — просто пропускаем.
+# ═══════════════════════════════════════════════════════════════════════════
+
+setup_hailo_ai_hat() {
+    local hailo_version="4.24.0"
+    local vendor="/opt/rob_box/vendor"
+    local hailo_driver_deb="${vendor}/hailort-pcie-driver_${hailo_version}_all.deb"
+    local hailo_rt_deb="${vendor}/hailort_${hailo_version}_arm64.deb"
+
+    log_step "Настройка Hailo AI HAT (v${hailo_version})"
+
+    # lspci нужен для проверки наличия железки
+    if ! command -v lspci &> /dev/null; then
+        log_info "Устанавливаем pciutils (lspci)..."
+        sudo apt-get install -y pciutils
+    fi
+
+    if ! lspci 2>/dev/null | grep -qi "Hailo"; then
+        log_info "Hailo AI HAT не обнаружен на PCIe — настройка не требуется"
+        return 0
+    fi
+
+    log_success "Hailo AI HAT обнаружен:"
+    lspci 2>/dev/null | grep -i "Hailo" | sed 's/^/  /'
+
+    # .deb HailoRT 4.24.0 — только в Developer Zone (аккаунт), публично их нет.
+    # Ожидаем предзаложенными в /opt/rob_box/vendor/.
+    if [ ! -f "$hailo_driver_deb" ] || [ ! -f "$hailo_rt_deb" ]; then
+        log_warning "Отсутствуют .deb HailoRT ${hailo_version} в ${vendor}/"
+        log_warning "Скачайте с Hailo Developer Zone (раздел Hailo-8/8L, версия ${hailo_version}):"
+        log_warning "  - hailort-pcie-driver_${hailo_version}_all.deb"
+        log_warning "  - hailort_${hailo_version}_arm64.deb"
+        log_warning "и положите их в ${vendor}/, затем перезапустите setup."
+        return 0
+    fi
+
+    # Сборочные инструменты + заголовки ядра (для DKMS-сборки драйвера)
+    local headers="/usr/src/linux-headers-$(uname -r)"
+    if [ ! -d "$headers" ]; then
+        log_info "Устанавливаем build-essential, dkms и linux-headers-$(uname -r)..."
+        sudo apt-get update
+        sudo apt-get install -y build-essential dkms "linux-headers-$(uname -r)"
+    elif ! command -v dkms &> /dev/null || ! command -v gcc &> /dev/null; then
+        log_info "Устанавливаем build-essential и dkms..."
+        sudo apt-get install -y build-essential dkms
+    fi
+
+    # 1) Драйвер + firmware: hailort-pcie-driver (DKMS).
+    # В 4.24 firmware переехал внутрь драйвера; старый hailofw (4.20.x) владеет
+    # /etc/modprobe.d/hailo_pci.conf и конфликтует — снимаем перед установкой.
+    if dpkg -l hailofw 2>/dev/null | grep -q '^ii'; then
+        log_info "Снимаем старый hailofw (firmware теперь в hailort-pcie-driver)..."
+        sudo apt-get remove -y hailofw
+    fi
+    if modinfo hailo_pci 2>/dev/null | grep -q "version:.*${hailo_version}"; then
+        log_success "Драйвер hailo_pci ${hailo_version} уже установлен"
+    else
+        log_info "Устанавливаем hailort-pcie-driver ${hailo_version} (DKMS-сборка)..."
+        sudo apt-get install -y "$hailo_driver_deb"
+        log_success "Драйвер и firmware установлены"
+    fi
+
+    # 2) HailoRT (runtime + hailortcli)
+    if command -v hailortcli &> /dev/null && hailortcli --version 2>/dev/null | grep -q "${hailo_version}"; then
+        log_success "HailoRT ${hailo_version} уже установлен"
+    else
+        log_info "Устанавливаем HailoRT ${hailo_version}..."
+        sudo apt-get install -y "$hailo_rt_deb"
+        log_success "HailoRT установлен"
+    fi
+
+    # 3) Загружаем драйвер и проверяем связь с устройством
+    if [ ! -e /dev/hailo0 ]; then
+        log_info "Загружаем модуль hailo_pci..."
+        sudo modprobe hailo_pci || log_warning "Не удалось загрузить hailo_pci (см. dmesg | grep hailo)"
+    fi
+
+    if [ -e /dev/hailo0 ] && command -v hailortcli &> /dev/null; then
+        if hailortcli fw-control identify > /tmp/hailo_identify.txt 2>&1; then
+            log_success "Hailo-8 работает:"
+            grep -E "Firmware Version|Board Name|Device Architecture" /tmp/hailo_identify.txt | sed 's/^/  /'
+        else
+            log_warning "hailortcli не смог определить устройство:"
+            sed 's/^/  /' /tmp/hailo_identify.txt
+        fi
+    else
+        log_warning "Устройство /dev/hailo0 не появилось — проверьте: dmesg | grep hailo"
+    fi
 }
 
 setup_vision_node() {
@@ -642,6 +822,14 @@ setup_vision_node() {
     else
         log_warning "! SPI не включен, добавьте в config.txt: dtparam=spi=on"
     fi
+
+    # Hailo AI HAT (PCIe)
+    setup_hailo_ai_hat
+
+    # zram-своп: Vision Pi держит 13 контейнеров на 8 ГБ без свопа (#2621).
+    # Функция общая — её можно звать и из setup_main_node, если Main Pi
+    # упрётся в ту же стену.
+    setup_zram_swap
 }
 
 setup_main_node() {

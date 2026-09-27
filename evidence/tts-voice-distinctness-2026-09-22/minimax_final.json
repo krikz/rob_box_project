@@ -1,0 +1,40 @@
+{
+  "provider": "minimax",
+  "identify_threshold": 0.72,
+  "register_match_threshold": 0.75,
+  "voices": [
+    "Russian_ReliableMan",
+    "Russian_PessimisticGirl",
+    "Russian_CrazyQueen",
+    "Russian_AttractiveGuy"
+  ],
+  "intra_voice_min_cos": {
+    "Russian_ReliableMan": 0.9648540019989014,
+    "Russian_PessimisticGirl": 0.9650693535804749,
+    "Russian_CrazyQueen": 0.9545120000839233,
+    "Russian_AttractiveGuy": 0.9628269672393799
+  },
+  "inter_voice_max_cos": {
+    "Russian_ReliableMan|Russian_PessimisticGirl": 0.5269477367401123,
+    "Russian_ReliableMan|Russian_CrazyQueen": 0.5452655553817749,
+    "Russian_ReliableMan|Russian_AttractiveGuy": 0.6612746715545654,
+    "Russian_PessimisticGirl|Russian_CrazyQueen": 0.6837510466575623,
+    "Russian_PessimisticGirl|Russian_AttractiveGuy": 0.45072245597839355,
+    "Russian_CrazyQueen|Russian_AttractiveGuy": 0.45770251750946045
+  },
+  "scenario_pairs": [
+    {
+      "scenario_voices": [
+        "anton",
+        "filipp"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_AttractiveGuy"
+      ],
+      "cos": 0.6612746715545654,
+      "merges_on_register": false,
+      "identified_as_same": false
+    }
+  ]
+}

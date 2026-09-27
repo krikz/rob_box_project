@@ -1,0 +1,74 @@
+# scenarios/05_merge_song.yaml
+# S8 Task 8.1 (scheduler-segments-merge plan, issue #968) — "комар + енот"
+#
+# ⚠️ ЧЕСТНОСТЬ (ADR-0018): этот файл НЕ прогонялся. На машине воркера нет
+# ни ROS 2, ни докера — только конфиг runner.py и сам сценарий подготовлены
+# по спеке (SCHEDULER_DESIGN.md §2.5, plan §S8 Task 8.1). Прогон и raw-вывод —
+# на стенде.
+#
+# Требует barge_in_policy: classify (docker/vision/test/config/
+# voice_assistant_test.yaml) — с дефолтным "replace" второй inject_stt
+# безусловно шлёт STOP и assert_tts_not_stopped упадёт (это и есть тот
+# самый регресс, который S1-S7 чинят).
+#
+# Инвариант §2.3 из дизайна: новая фраза во время исполнения песни НЕ
+# глушит робота — текущий сегмент (куплет 1) доигрывает до конца, ещё не
+# начатые сегменты правит LLM через task_delta (S6), не начиная заново.
+#
+# Требует реального LLM, способного:
+#   1) увидеть [SEGMENT PLAN] с REWRITEABLE_SEGMENTS в system-контексте,
+#   2) вызвать task_delta вместо повторного execute_music_code/speak_text
+#      с чистого листа.
+# На маленьких локальных моделях (qwen2.5:0.5b) это не гарантировано —
+# assert_task_event специально проверяет ФАКТ вызова task_delta через
+# побочный эффект (/harness/task_events), а не текст ответа: если LLM
+# проигнорировала [SEGMENT PLAN] и начала песню заново, тест это поймает.
+
+scenarios:
+
+  # ──────────────────────────────────────────────────────────────────────
+  # "Комар + енот" — §0 плана / §2.5 спека.
+  # Пользователь просит песню → во время куплета 1 добавляет тему.
+  # ОЖИДАЕМО:
+  #   - куплет 1 (ACTIVE-сегмент) доигрывает до конца — TTS не глушится
+  #     (assert_tts_not_stopped);
+  #   - LLM видит [SEGMENT PLAN], правит PENDING-сегменты через task_delta
+  #     — TaskScheduler.update() эмитит task.updated в /harness/task_events
+  #     (assert_task_event).
+  # ──────────────────────────────────────────────────────────────────────
+  - name: merge_song_komar_i_enot
+    timeout_s: 90
+    description: >
+      MERGE, не REPLACE: "робок спой песню про комара" запускает
+      многосегментное исполнение (см. master_prompt_compact.txt —
+      "for multi-part content: MULTIPLE speak_text, one per item").
+      Пока играет куплет 1, пользователь добавляет "и ещё про енота" —
+      робот не должен замолкнуть, а PENDING-сегменты должны переписаться
+      через task_delta (не рестарт).
+    steps:
+      # Запускаем песню — fire-and-forget, нода уходит в DIALOGUE и
+      # начинает исполнение (первый speak_text уже мог уйти в очередь
+      # канала VOICE).
+      - inject_stt_no_wait: "робок спой песню про комара"
+
+      # Ждём пока робот реально начнёт петь (первый speak_text дошёл до
+      # /voice/dialogue/response через mock MCP).
+      - wait_for_speaking: true
+        timeout_s: 30
+
+      # Пока куплет 1 ещё звучит (mock speak_text спит tts_sim_s секунд —
+      # см. runner.py _on_mcp_execute), добавляем тему. Это НЕ императив
+      # ("хватит"/"стоп") — quick_decide должен отдать PENDING_LLM, а не
+      # REPLACE, иначе assert_tts_not_stopped упадёт.
+      - inject_stt: "робок и ещё про енота"
+        timeout_s: 45
+        assert_response_not_empty: true
+        # Куплет 1 должен доиграть до естественной границы — не должно
+        # быть "STOP" в /voice/tts/control между этими двумя инъекциями.
+        assert_tts_not_stopped: true
+        # Побочный эффект MERGE: TaskScheduler.update() эмитит
+        # "task.updated" при успешной правке PENDING-сегмента через
+        # task_delta (S3.2 + S6.2). Если это событие не пришло — LLM
+        # либо проигнорировала [SEGMENT PLAN], либо S6.2-врезка сломана.
+        assert_task_event: "task.updated"
+        assert_task_event_wait_s: 20.0

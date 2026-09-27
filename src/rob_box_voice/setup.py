@@ -21,6 +21,11 @@ setup(
         # Config files
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml') + glob('config/*.json')),
+        # ADR-0066 §6.3 — voice style presets (config/presets/*.txt) теперь
+        # читаются ``grip_pipeline`` супервизора (а не dialogue_node), но
+        # install-share нужен — оставляем шаг data_files для ROS-share.
+        (os.path.join('share', package_name, 'config', 'presets'),
+            glob('config/presets/*.txt')),
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             glob('prompts/*.txt') + glob('prompts/*.yaml')),

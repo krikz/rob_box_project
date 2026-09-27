@@ -13,31 +13,13 @@ stt_node:
     metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
-    # 🔴 fix(voice #1252): wake words синхронизированы с dialogue_node.yaml —
-    # 12 вариантов + исторический «робик». STT реально выдаёт кривые варианты
-    # («робок», «роберт», «рыбок») — все покрываем для надёжного barge-in.
-    wake_words:
-    - робок
-    - робот
-    - роббокс
-    - робокос
-    - роббос
-    - робокс
-    - робэкс
-    - робекс
-    - робакс
-    - рабокс
-    - рубокс
-    - роблокс
-    - роберт
-    - рыбок
-    - рабок
-    - робак
-    - рома
-    - бот
-    - робо
-    - роб
-    - робик
+    # Issue #2609 — Vosk (~400 МБ RSS) нужен только когда Yandex не ответил:
+    # грузим модель при первом fallback, а не на старте.
+    vosk_preload: false
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file; пусто здесь =
+    # dev-env без файла → кодовый фолбек DEFAULT_WAKE_WORDS (байт-в-байт тот же).
+    wake_words_file: ""
     # ===== Fallback/retry/short-phrase (issue #979) =====
     yandex_timeout_s: 5.0
     yandex_max_retries: 1
@@ -52,3 +34,59 @@ stt_node:
     # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
     early_boop_enabled: true
     early_boop_trigger: boop
+    # ⚠️ issue #1734: barge_in_policy здесь НЕТ и не должно быть. Единственный
+    # источник истины — dialogue_node.yaml (ключ barge_in_policy). stt_node
+    # узнаёт актуальное значение runtime через latched-топик
+    # /voice/dialogue/barge_in_policy, а не из своего YAML — иначе получим
+    # тот же класс ошибки, что и с дублированием wake_words выше (#1252),
+    # который и породил #1734.
+    # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====
+    # Порядок = приоритет: первый — primary, остальные — фолбеки.
+    # Vosk принудительно переносится в конец (_normalize_provider_chain):
+    # он единственный работает офлайн и без денег на счету, поэтому он
+    # последний рубеж, а не первый эшелон.
+    #
+    # Это ЕДИНСТВЕННЫЙ источник истины для порядка. Файла
+    # config/stt_chain.yaml больше нет: второй YAML для того же значения
+    # уже дважды стоил нам инцидента (issue #1252 → #1734), а issue #1004
+    # требует, чтобы каждый ключ был объявлен через declare_parameter.
+    #
+    # Issue #2866 (23.09.2026): порядок yandex → minimax → vosk. Причина
+    # смены — товарищ Шифу пополнил счёт Yandex SpeechKit и решил сделать
+    # его primary (до этого с 21.09 первым был MiniMax, ADR-0124 §2.1).
+    # Значение обязано совпадать с DEFAULT_STT_PROVIDER_CHAIN в
+    # stt_node.py и с docker/vision/config/voice_assistant/stt_node.yaml
+    # (гард: test/test_yaml_param_consistency.py).
+    stt_provider_chain: [yandex, minimax, vosk]
+
+    # ===== MiniMax STT (issue #2365) =====
+    # Ключ берётся из ENV MINIMAX_API_KEY (приоритет) или из
+    # minimax_stt_api_key. Без ключа провайдер тихо выпадает из цепочки —
+    # это штатный режим dev-окружения, а не ошибка.
+    minimax_stt_enabled: true
+    minimax_stt_api_key: ""
+    minimax_stt_api_key_env: MINIMAX_API_KEY
+    minimax_stt_base_url: https://api.minimax.io
+    minimax_stt_model: asr-1.0
+    minimax_stt_language: ru
+    # 5с — мягче яндексовых 12с: MiniMax стоит первым и не должен съедать
+    # весь бюджет фразы, если облако тупит (ADR-0091 §2.2).
+    minimax_stt_timeout_s: 5.0
+    minimax_stt_max_retries: 1
+
+    # ===== Кэш «мёртвых» провайдеров (issue #2365 Phase 2) =====
+    # Те же имена и дефолты, что у TTS (tts_node.yaml, issue #1083/#1229).
+    # Квота/ключ (402/429/401) → длинный TTL: баланс не появится за 30с.
+    # Сеть/5xx/таймаут → короткий: сеть могла просто моргнуть.
+    provider_dead_ttl_s: 300.0
+    provider_dead_ttl_transient_s: 30.0
+    # Персистентность кэша между рестартами ноды (их много — см. #2676).
+    # Пустая строка отключает файл (dev-окружение без /data).
+    provider_state_file: ""
+
+    # Issue #2767 — общий бюджет времени на цепочку одной фразы. 20с —
+    # ожидаемый худший однопроходный сценарий (minimax ~4с + yandex до
+    # 12с холодным стартом + vosk ~2с) с небольшим запасом; режет только
+    # аномальные повторы, не забирает попытку у последнего провайдера
+    # (обычно Vosk). 0/отрицательное значение отключает бюджет.
+    stt_phrase_budget_s: 20.0

@@ -1,0 +1,24 @@
+{
+  "name": "night_marathon_act8_barge_in_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 8 — expected-partially-red: четыре хука планировщика",
+    "(set_group_boundary, set_frozen_touch_hook, set_llm_continue_hook,",
+    "set_eta_provider) в dialogue_node ни к чему не подключены, поэтому",
+    "task_delta в n807 скорее всего не вызовется. GATE-1 держит только то,",
+    "что обязано работать: речь, музыка, остановка музыки.",
+    "ВАЖНО: перед прогоном ros2 param set /dialogue_node barge_in_policy classify."
+  ],
+  "expected_tool_calls": [
+    "speak_text",
+    "execute_music_code",
+    "stop_music"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

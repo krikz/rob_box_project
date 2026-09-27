@@ -97,4 +97,55 @@ else
     echo "[SuperCollider] WARNING: scsynth JACK ports not found, audio may be silent"
 fi
 
+# ── Группа 1 — дефолтная группа клиента ──────────────────────────────────────
+#
+# 🔴 FIX (live 31.08, робот молчал при полностью здоровых логах): Renardo
+# заводит группу на каждый плеер как ДОЧЕРНЮЮ к группе 1
+# (ServerManager.get_bundle: `/g_new [id, 1, 1]`) и все ноты кладёт внутрь неё.
+# Саму группу 1 создаёт клиент при инициализации — один раз.
+#
+# Свежий scsynth поднимается только с RootNode. Если он рестартовал ПОСЛЕ
+# того, как Renardo проинициализировался (перезапуск контейнера, краш,
+# порядок подъёма при деплое), группы 1 больше нет, а пересоздать её некому:
+#
+#     FAILURE IN SERVER /g_new Group 1 not found
+#     FAILURE IN SERVER /s_new Group 6469 not found
+#
+# То есть /g_new плеера падает, а следом отвергается КАЖДАЯ нота. Снаружи это
+# выглядит идеально: контейнеры healthy, sclang рапортует прелоад, tool
+# отвечает «успешно», в логе лежит корректный код композиции — и полная
+# тишина. Диагностируется только опросом самого сервера.
+#
+# Поэтому группу заводит сам сервер при старте: тогда она есть с первой
+# секунды жизни scsynth и переживает любой рестарт клиента.
+if command -v python3 > /dev/null 2>&1; then
+    python3 - <<'PYEOF'
+import socket
+import struct
+
+ZERO = b"\x00"
+
+
+def osc_string(s):
+    # Строка OSC обязана иметь минимум один нулевой терминатор и длину,
+    # кратную 4. Для строк длиной кратной 4 это ещё 4 нуля, а не ноль.
+    b = s.encode() + ZERO
+    while len(b) % 4:
+        b += ZERO
+    return b
+
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# /g_new <id> <addAction> <target>: группа 1, addToHead (0) от RootNode (0).
+sock.sendto(
+    osc_string("/g_new") + osc_string(",iii") + struct.pack(">iii", 1, 0, 0),
+    ("127.0.0.1", 57110),
+)
+sock.close()
+PYEOF
+    echo "[SuperCollider] Default client group 1 created"
+else
+    echo "[SuperCollider] WARNING: python3 missing, group 1 not created — Renardo will be silent"
+fi
+
 wait $SCSYNTH_PID

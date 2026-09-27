@@ -145,7 +145,7 @@
 |---|---|---|---|---|
 | `voice_id` | ROS-param `minimax_voice` ИЛИ override в `/voice/dialogue/response` (если поддерживается) | оператор / dialogue_node | ~40 ID + клоны | какой MiniMax-голос |
 | `model` | ROS-param `minimax_model` ИЛИ override в `/voice/dialogue/response` | оператор | 8 моделей | качество / латентность / эмоции |
-| `language` | ROS-param `minimax_language` ИЛИ override | оператор | `ru/en/zh/...` | язык произношения |
+| `language` | ROS-param `minimax_language` ИЛИ override в `/voice/dialogue/response` (поле `language`, AV-28) | оператор | `ru/en/fr/de/zh/hi` | язык произношения |
 | `speed` | ROS-param `minimax_speed` ИЛИ SSML `<prosody rate>` в диалоге | оператор / SSML | [0.5, 2] | темп |
 | `volume` (`vol`) | производный от `volume_db` + runtime gain | dialogue_node | (0, 10] | громкость синтеза |
 | `pitch` | (не вынесено в ROS-параметр; только через `settings.extra` или SSML) | SSML | [-12, 12] semitones | высота голоса |
@@ -153,6 +153,41 @@
 | `text` (utterance) | payload `/voice/dialogue/response` | dialogue_node | ≤ 10000 симв | **собственно текст для синтеза** |
 | `actual_sample_rate` (MiniMax-выход) | `extra_info.audio_sample_rate` | MiniMax API | 8000–44100 | **фактический SR**, всегда требует проверки |
 | `audio_length` | `extra_info.audio_length` | MiniMax API | ms | длительность utterance |
+
+> **Не каждый провайдер умеет каждый язык.** `language` в payload'е —
+> это язык, на котором НАПИСАН текст (его выставляет AV-28-формализатор
+> `dialogue_node`), а не пожелание.
+>
+> | Язык UI | MiniMax | Yandex | Silero (сейчас) |
+> |---|---|---|---|
+> | `ru` | ✅ | ✅ весь каталог | ✅ `v5_ru` |
+> | `en` | ✅ | ✅ `john` | ❌ (upstream: `v3_en`) |
+> | `de` | ✅ | ✅ `lea` | ❌ (upstream: `v3_de`) |
+> | `fr` | ✅ | ❌ | ❌ (upstream: `v3_fr`) |
+> | `hi` | ✅ | ❌ | ❌ (upstream: indic) |
+> | `zh` | ✅ | ❌ | ❌ нет вовсе |
+>
+> Разница в МЕХАНИЗМЕ, и она важна. MiniMax задаёт язык полем
+> `language_boost` при любом голосе (`_LANGUAGE_ALIASES` в
+> `minimax_tts.py`). У Yandex язык прибит к ГОЛОСУ: попросить у `anton`
+> немецкий нельзя, надо брать `lea` — это и делает
+> `tts_voice_registry.voice_for_language`. Silero упирается в загруженную
+> модель, сейчас `v5_ru`.
+>
+> Поэтому «какие языки умеет провайдер» считается по каталогу голосов
+> (`languages_for`), а не отдельной таблицей: вторая таблица разъехалась
+> бы с каталогом ровно так же, как разъехались whitelist'ы AV-28.
+> Единственное явное исключение — `LANGUAGE_AGNOSTIC_PROVIDERS`
+> (MiniMax), у которого каталог языку не указ.
+>
+> Когда голоса на язык нет — вместо чужого текста звучит короткая
+> фраза-отказ (`speak_helpers.unsupported_language_notice`). Читать
+> французский по русским правилам значит молча деградировать: оператор
+> слышит речь и считает, что робот говорит по-французски. Транслит
+> кириллицей эту проблему не решает, а маскирует, и после догрузки
+> Silero-моделей на язык он не нужен нигде, кроме китайского офлайн —
+> где палладица, прочитанная русским голосом, китайцу всё равно
+> непонятна.
 
 > **Правило варьирования**: всё, что касается **содержания** голоса
 > (кто говорит, как, на каком языке, что говорит) — варьируется.

@@ -146,6 +146,12 @@ sys.modules["rclpy.callback_groups"] = _cb
 _qos = _types.ModuleType("rclpy.qos")
 _qos.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
 _qos.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE="RELIABLE")
+# Issue #1734 — dialogue_node.__init__ создаёт latched-топик barge_in_policy
+# (QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL)); без атрибута
+# import dialogue_node падает ImportError.
+_qos.DurabilityPolicy = _types.SimpleNamespace(
+    TRANSIENT_LOCAL="TRANSIENT_LOCAL", VOLATILE="VOLATILE"
+)
 _qos.QoSProfile = lambda *a, **kw: MagicMock()
 sys.modules["rclpy.qos"] = _qos
 
@@ -176,7 +182,7 @@ sys.modules["std_msgs.msg"] = _std_msgs_msg
 # keep this block after the rclpy shim.
 from std_msgs.msg import Bool, String  # noqa: E402
 
-from rob_box_harness.core.dialog_core import DialogCore  # noqa: E402
+from rob_box_harness.core.agent_core import AgentCore  # noqa: E402
 from rob_box_harness.core.dialogue_state_machine import (  # noqa: E402
     DialogueStateKind,
 )
@@ -294,7 +300,7 @@ class _TestableDialogueNode(DialogueNode):
         # but InMemoryStore doesn't expose that method (only the
         # SQLite implementation does). The shell's InMemoryStore
         # fallback path is therefore broken; we sidestep it here so
-        # the tests exercise the upstream wiring (DialogCore ↔
+        # the tests exercise the upstream wiring (AgentCore ↔
         # MemoryStore) without the in-memory init dance.
         return self._test_memory
 
@@ -567,7 +573,7 @@ class TestDialogueShell(unittest.TestCase):
     # was not republished, so scenario_runner's ``wait_for_idle`` polled
     # the last ``DIALOGUE`` notification for 45 s and timed out.
     #
-    # DialogCore now drives DIALOGUE → IDLE on its own; the shell must
+    # AgentCore now drives DIALOGUE → IDLE on its own; the shell must
     # publish the resulting state regardless of whether the legacy
     # ``if DIALOGUE: on_event(DIALOGUE_END)`` path fired.
 
@@ -588,7 +594,7 @@ class TestDialogueShell(unittest.TestCase):
     def test_tool_call_turn_publishes_idle_state(self):
         """A tool-call turn (issue #918) must also publish the final IDLE.
 
-        DialogCore now drives the full ``DIALOGUE → IDLE`` transition
+        AgentCore now drives the full ``DIALOGUE → IDLE`` transition
         internally; the shell must publish the resulting state even
         when no additional ``DIALOGUE_END`` event is needed in the
         finally clause. Without the fix, scenario_runner
@@ -721,8 +727,9 @@ class TestDialogueShell(unittest.TestCase):
 
         We can't rely on wall-clock waits, so we patch
         ``DialogueStateMachine.check_inactivity_timeout`` to fire on
-        the first tick. The shell's ``_on_inactivity_check`` calls
-        ``self._core.check_timeout()`` which delegates there.
+        the first tick. The shell's ``_on_inactivity_check`` drives the
+        DSM directly (issue #1986 §5.3 — AgentCore no longer owns
+        timeout).
         """
         # Wake into LISTENING. We can't drive the full STT path
         # because the shell immediately fires STT_RESULT → DIALOGUE
@@ -736,7 +743,7 @@ class TestDialogueShell(unittest.TestCase):
         self.assertEqual(_state_name(self.node), "LISTENING")
 
         # Patch the DSM's check_inactivity_timeout to always fire.
-        from rob_box_harness.core import dialog_core as _dc_mod
+        from rob_box_harness.core import agent_core as _dc_mod
 
         original = self.node._dsm.check_inactivity_timeout
         self.node._dsm.check_inactivity_timeout = lambda _t: (
@@ -834,6 +841,53 @@ class TestDialogueShell(unittest.TestCase):
         self.node._dj.tick()
         self.node._dj.tick()
         self.assertEqual(self.llm.call_count, before)
+
+    # ── Issue #2461: /voice/music/form → DJModeController.tick() ────
+
+    def test_on_music_form_stores_epoch_form_ends_at(self):
+        """``_on_music_form`` кладёт ``form_ends_at`` в ``DJState`` как
+        есть — mcp_server уже перевёл его в epoch (``time.time()``-based)
+        перед публикацией, dialogue_node ничего не пересчитывает."""
+        ends_at = time.time() + 123.0
+        self.node._on_music_form(_make_string(
+            json.dumps({"form_ends_at": ends_at, "playing": True})
+        ))
+        self.assertEqual(self.node._dj.state.form_ends_at, ends_at)
+
+    def test_on_music_form_null_form_ends_at_clears_the_gate(self):
+        self.node._dj.state.form_ends_at = time.time() + 500.0
+        self.node._on_music_form(_make_string(
+            json.dumps({"form_ends_at": None, "playing": False})
+        ))
+        self.assertIsNone(self.node._dj.state.form_ends_at)
+
+    def test_on_music_form_ignores_malformed_payload(self):
+        """Битый JSON/не-dict не должен ронять callback ни менять состояние."""
+        self.node._dj.state.form_ends_at = 42.0
+        self.node._on_music_form(_make_string("not json"))
+        self.assertEqual(self.node._dj.state.form_ends_at, 42.0)
+        self.node._on_music_form(_make_string(json.dumps([1, 2, 3])))
+        self.assertEqual(self.node._dj.state.form_ends_at, 42.0)
+
+    def test_dj_tick_waits_for_music_form_before_dispatching(self):
+        """End-to-end через реальную подписку: /voice/music/form сообщает
+        конец формы через 150с, next_transition_sec модели (45с, клэмп до
+        45) уже истёк — tick() не должен диспатчить, пока форма не
+        доиграла (живой баг #2461: переключение на 45-й секунде срезало
+        дроп на форме 96-190с)."""
+        self.node._dj.handle_message(json.dumps({
+            "enabled": True, "next_transition_sec": 45,
+        }))
+        self.node._dj.state.next_transition_at = time.time() - 1.0
+        self.node._on_music_form(_make_string(json.dumps({
+            "form_ends_at": time.time() + 150.0, "playing": True,
+        })))
+        before = self.llm.call_count
+        self.node._dj.tick()
+        self.assertEqual(
+            self.llm.call_count, before,
+            "tick() не должен был диспатчить переход раньше конца формы",
+        )
 
     # ── 6. Barge-in: new STT cancels old turn ────────────────────────
 
@@ -1095,7 +1149,7 @@ class TestLLMProviderWiring(unittest.TestCase):
 
     def test_minimax_init_success_still_wraps_in_health_aware_fallback(self):
         """Зелёный путь: оба провайдера собираются → HealthAwareFallbackLLM
-        с цепочкой [minimax, deepseek]. Каждый со своим base_url.
+        с цепочкой [deepseek, minimax]. Каждый со своим base_url.
         """
         from unittest.mock import patch
 
@@ -1428,7 +1482,7 @@ class TestToolProviderWiring(unittest.TestCase):
 
         fake_mcp = _types.ModuleType("rob_box_mcp_tools")
         fake_mcp_adapter = _types.ModuleType("rob_box_mcp_tools.llm_adapter")
-        fake_mcp_adapter.LLMToolCallAdapter = lambda _node: _StubBridge()
+        fake_mcp_adapter.LLMToolCallAdapter = lambda _node, **_kw: _StubBridge()
 
         saved = {
             k: sys.modules.get(k)

@@ -1,0 +1,18 @@
+{
+  "starwars_4": {
+    "title": "Star Wars - Imperial March",
+    "knobs": {
+      "lead_synth": "brass",
+      "bass_synth": "bass",
+      "pad_synth": "strings",
+      "counter_synth": "strings",
+      "drum_style": "march",
+      "bass_style": "root_fifth",
+      "theme_octaves": "on",
+      "density": "dense"
+    },
+    "note": "Мигрировано из composer.txt (ADR-0132 PR-7): марш держится на медных, тонально тёмный pad стронных, второй голос unison strings, октавное удвоение темы — вес гимна/марша, не сольная нить.",
+    "approved_by_user_quote": "владелец репо, миграция рецепта ADR-0132 §7 (27.09.2026)",
+    "created_at": "2026-09-24T00:00:00+00:00"
+  }
+}

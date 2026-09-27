@@ -15,6 +15,9 @@ Acceptance map:
   NUDGE after budget exhausted.
 * :class:`TestEvaluateStopCommand` — stop-commands skip the guard entirely
   (regression for the 06.08 live bug).
+* :class:`TestMusicStateQueryE2E35665111906` — вопрос о состоянии, на
+  который LLM ответила read-only тулом, не нудится (шаг
+  ``n110_silence_baseline``).
 * :class:`TestBudgetsIndependent` — DJ budget vs user budget do not
   interact; ``reset_for_new_user_request`` does not reset DJ counter.
 * :class:`TestRegressionIssue1204` — sync retry must land on a non-IDLE
@@ -42,6 +45,33 @@ def _music_prompt(user_input: str) -> str:
 def _dj_prompt() -> str:
     """Stub for ``DialogueNode._build_dj_retry_prompt``."""
     return "[CRITICAL] DJ retry — call execute_music_code"
+
+
+def test_lookup_melody_alone_does_not_satisfy_guard() -> None:
+    """lookup_melody только возвращает ноты (не играет) — сам по себе он не
+    закрывает просьбу «сыграй X»: гуард должен дожать до execute_music_code."""
+    guard = MusicGuard()
+    verdict = guard.evaluate(
+        was_dj_auto=False,
+        user_input="сыграй имперский марш",
+        tools_called=("lookup_melody",),
+        dj_enabled=True,
+        build_music_retry_prompt=_music_prompt,
+        build_dj_retry_prompt=_dj_prompt,
+    )
+    assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+
+
+def test_music_starting_tools_derived_from_catalog() -> None:
+    """Множества музыкальных тулов выводятся из каталога, а не из frozenset."""
+    from rob_box_core.tool_catalog import TOOL_CATALOG
+    from rob_box_voice.core.dialogue_guards import MUSIC_STARTING_TOOLS
+
+    expected = {e.name for e in TOOL_CATALOG if e.starts_music}
+    assert MUSIC_STARTING_TOOLS == frozenset(expected)
+    assert {"execute_music_code", "compose_music"} <= MUSIC_STARTING_TOOLS
+    # lookup_melody — read-only (возвращает ноты), музыку НЕ запускает.
+    assert "lookup_melody" not in MUSIC_STARTING_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +224,84 @@ class TestEvaluateDjAuto:
 
 
 # ---------------------------------------------------------------------------
+# Issue #2966 — a music-starting tool NAME in ``tools_called`` does not
+# mean it SUCCEEDED. Live 24.09.2026: ``compose_music`` returned
+# ``success=False`` inside a DJ transition (tool refused a parameter),
+# but the tool's NAME still landed in ``tools_called`` — the old guard
+# treated that as "music started" and returned SKIP, so the LLM's false
+# track announcement went straight to TTS while the previous track kept
+# playing. ``tool_error_occurred`` (threaded from
+# ``DialogResult.tool_error_occurred``) lets the guard tell a real
+# success apart from "tool was called and errored" — this is a general
+# fix for ANY tool failure inside a DJ transition, not specific to any
+# one tool, parameter, or track.
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateToolErrorDuringDjAuto:
+    def test_music_tool_present_but_errored_does_not_skip(self) -> None:
+        """``compose_music`` in tools_called + tool_error_occurred=True
+        on a DJ auto-transition → DJ_RETRY (Bug B), NOT the success SKIP."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="DJ auto prompt",
+            tools_called=("compose_music", "set_dj_mode"),
+            dj_enabled=True,
+            build_dj_retry_prompt=_dj_prompt,
+            tool_error_occurred=True,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.DJ_RETRY
+        assert verdict.reason == "bug_b"
+        assert guard.dj_retry_count == 1
+
+    def test_music_tool_present_without_error_still_skips(self) -> None:
+        """Baseline: no error this turn → legacy SKIP behaviour unchanged."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="DJ auto prompt",
+            tools_called=("compose_music", "set_dj_mode"),
+            dj_enabled=True,
+            build_dj_retry_prompt=_dj_prompt,
+            tool_error_occurred=False,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+        assert verdict.reason == "executed"
+
+    def test_tool_error_occurred_defaults_to_false_for_legacy_callers(self) -> None:
+        """Callers that don't thread ``tool_error_occurred`` yet keep the
+        exact legacy behaviour (default ``False``)."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="DJ auto prompt",
+            tools_called=("compose_music",),
+            dj_enabled=True,
+            build_dj_retry_prompt=_dj_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+
+    def test_non_music_tool_error_outside_dj_auto_falls_through_to_user_retry(
+        self,
+    ) -> None:
+        """User-turn (not DJ) with a music tool that errored → falls
+        through past the success shortcut into Bug C's own logic instead
+        of silently SKIPping."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй что-нибудь",
+            tools_called=("compose_music",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            tool_error_occurred=True,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+
+# ---------------------------------------------------------------------------
 # Bug C — user asked for music but LLM skipped execute_music_code
 # ---------------------------------------------------------------------------
 
@@ -229,11 +337,19 @@ class TestEvaluateUserMusicVocal:
         assert "спой песенку про котика" in verdict.prompt
         assert guard.user_retry_count == 1
 
-    def test_vocal_request_after_user_budget_returns_nudge(self) -> None:
-        """``max_user_retries=1`` (production default) — the 2nd empty
-        vocal request returns NUDGE and resets the budget so the next
-        genuine user request gets a fresh allocation."""
-        guard = MusicGuard()  # default max_user_retries=1
+    def test_vocal_request_after_user_budget_returns_fallback(self) -> None:
+        """``max_user_retries=1`` — the 2nd empty vocal request returns
+        FALLBACK (issue #2561, not the legacy NUDGE) with a context-aware
+        spoken phrase proposing an alternative, and resets the budget
+        so the next genuine user request gets a fresh allocation.
+
+        Pinned explicitly (not via the production default, which is
+        now 8 — see
+        ``test_default_max_user_retries_matches_legacy_constant``) so
+        this test keeps covering the exhausted-budget transition itself
+        regardless of what the default happens to be.
+        """
+        guard = MusicGuard(max_user_retries=1)
         # 1st failure — USER_RETRY
         first = guard.evaluate(
             was_dj_auto=False,
@@ -245,7 +361,7 @@ class TestEvaluateUserMusicVocal:
         assert first.kind is MusicGuardVerdictKind.USER_RETRY
         assert guard.user_retry_count == 1
 
-        # 2nd failure — NUDGE
+        # 2nd failure — FALLBACK (issue #2561)
         second = guard.evaluate(
             was_dj_auto=False,
             user_input="спой песенку про зайчика",
@@ -253,13 +369,19 @@ class TestEvaluateUserMusicVocal:
             dj_enabled=False,
             build_music_retry_prompt=_music_prompt,
         )
-        assert second.kind is MusicGuardVerdictKind.NUDGE
-        assert second.reason == "budget_exhausted"
+        assert second.kind is MusicGuardVerdictKind.FALLBACK
+        assert second.reason == "retry_exhausted"
+        assert second.prompt is not None
+        # Фраза НЕ должна содержать «растерялся» (это было в старом
+        # NUDGE) и НЕ должна содержать извинений.
+        assert "растерял" not in second.prompt
+        assert "извини" not in second.prompt.lower()
         # Budget reset so the *next* user request gets fresh retries.
         assert guard.user_retry_count == 0
 
     def test_user_retry_respects_custom_max(self) -> None:
-        """``max_user_retries=3`` allows 3 USER_RETRY verdicts before NUDGE."""
+        """``max_user_retries=3`` allows 3 USER_RETRY verdicts before
+        FALLBACK (issue #2561: 3 retry подряд → на 4-м fallback)."""
         guard = MusicGuard(max_user_retries=3)
         for n in range(1, 4):
             verdict = guard.evaluate(
@@ -271,7 +393,7 @@ class TestEvaluateUserMusicVocal:
             )
             assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
             assert guard.user_retry_count == n
-        # 4th → NUDGE
+        # 4th → FALLBACK
         verdict = guard.evaluate(
             was_dj_auto=False,
             user_input="зачитай рэп",
@@ -279,7 +401,13 @@ class TestEvaluateUserMusicVocal:
             dj_enabled=False,
             build_music_retry_prompt=_music_prompt,
         )
-        assert verdict.kind is MusicGuardVerdictKind.NUDGE
+        assert verdict.kind is MusicGuardVerdictKind.FALLBACK
+        assert verdict.reason == "retry_exhausted"
+        assert verdict.prompt is not None
+        # Acceptance criterion: после 3 retry на 4-м — fallback.
+        assert "по-другому" in verdict.prompt.lower()
+        # Budget reset.
+        assert guard.user_retry_count == 0
 
     def test_bit_request_without_music_returns_user_retry(self) -> None:
         """«включи бит» / «включи музыку» style requests are NOT vocal —
@@ -322,20 +450,218 @@ class TestEvaluateUserMusicVocal:
 
 
 # ---------------------------------------------------------------------------
+# State query — вопрос о состоянии закрывается read-only тулом
+# ---------------------------------------------------------------------------
+
+
+class TestMusicStateQueryE2E35665111906:
+    """Ночной марафон, акт 1, шаг ``n110_silence_baseline`` (якорь тишины).
+
+    Живой лог робота::
+
+        ✅ [turn] spoken='Проверил — музыка сейчас не играет, активных
+                  паттернов нет, AI и диджей стоят' tools=['get_music_state']
+        [WARN] 🎵 [issue 992 Bug C] user asked for music but LLM skipped
+               execute_music_code (tools=['get_music_state']); retry 1/3
+
+    Ответ был ПРАВИЛЬНЫЙ, а гуард требовал ``execute_music_code`` — тул,
+    который шаг держит в ``must_not_call``. Ход размазывался на три
+    попытки, харнесс не видел чистого акцепта → FAIL no_accept.
+    """
+
+    LIVE_PHRASE = "Робот, у тебя сейчас играет какая-нибудь музыка?"
+
+    def test_live_phrase_with_get_music_state_is_satisfied(self) -> None:
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=self.LIVE_PHRASE,
+            tools_called=("get_music_state",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+        assert verdict.reason == "state_query_satisfied"
+        # Вердикт различим в логах и НЕ несёт CRITICAL-промпта.
+        assert verdict.prompt is None
+        assert guard.user_retry_count == 0
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "get_music_state",
+            "list_tracks",
+            "gen_list_library",
+            "gen_search_library",
+            "gen_get_track_info",
+        ],
+    )
+    def test_any_read_only_music_tool_satisfies_the_query(self, tool: str) -> None:
+        """Состояние можно посмотреть не только через get_music_state —
+        «какой трек?» модель законно закрывает и листингом библиотеки."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="какой трек сейчас играет",
+            tools_called=(tool,),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+        assert verdict.reason == "state_query_satisfied"
+
+    def test_state_query_without_tools_still_nudges(self) -> None:
+        """Без тулов поведение НЕ меняется.
+
+        Иначе исключение замаскирует настоящий Bug C — «LLM вообще ничего
+        не вызвала», то есть ответ о живом состоянии по памяти модели.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=self.LIVE_PHRASE,
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+        assert guard.user_retry_count == 1
+
+    def test_state_query_with_speak_text_only_still_nudges(self) -> None:
+        """``speak_text`` — не проверка состояния, а рассказ по памяти."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=self.LIVE_PHRASE,
+            tools_called=("speak_text",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "включи музыку",
+            "поставь трек",
+            "включи следующий трек",
+            "сыграй джаз",
+        ],
+    )
+    def test_start_command_with_get_music_state_still_nudges(
+        self, phrase: str
+    ) -> None:
+        """Регресс-гард: исключение не должно стать слишком широким.
+
+        «Включи музыку» + один только ``get_music_state`` — музыка не
+        пошла, Bug C обязан дожать до реального запуска.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=phrase,
+            tools_called=("get_music_state",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+    def test_stop_command_keeps_its_own_verdict(self) -> None:
+        """Порядок исключений не сдвинулся: стоп остаётся стопом.
+
+        «Выключи диджея» — единственный класс стопов, который доходит до
+        ветки ``stop_command`` (совпадает и с ``MUSIC_GUARD_KEYWORDS``, и с
+        ``MUSIC_STOP_OVERRIDES``); новая ветка вопроса стоит ПОСЛЕ неё.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="выключи диджея",
+            tools_called=("stop_music", "get_music_state"),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+        assert verdict.reason == "stop_command"
+
+    def test_playback_tool_still_wins_over_state_query(self) -> None:
+        """«что играет» + реальный запуск — это executed_via_library,
+        а не state_query_satisfied: ветка воспроизведения выше."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="что сейчас играет",
+            tools_called=("gen_play_from_library",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+
+
+# ---------------------------------------------------------------------------
 # Stop-command override — must NOT trigger a music retry
 # ---------------------------------------------------------------------------
 
 
-class TestEvaluateStopCommand:
-    def test_stop_command_skips_entirely(self) -> None:
-        """🔴 FIX (live 06.08): «хватит диджеить» — guard returns
-        SKIP_NOT_APPLICABLE and does NOT touch the user-budget (a stop
-        request is not a music request and shouldn't burn retries).
+class TestLoadTrackSatisfiesUserGuard:
+    """🔴 e2e 33251879328, tc10_load_track.
 
-        For phrases where stop AND music keywords do NOT overlap,
-        ``user_wants_music`` short-circuits to False and the guard
-        returns ``not_music_request``. The next test covers the
-        ``stop_command`` reason itself (phrases where both overlap)."""
+    «загрузи и включи трек тисбит» дважды вернулось «Трек тисбит играет.»
+    с tools=[], и юзер услышал «Я тут растерялся — бит не запустился».
+    Две причины: retry-промпт звал только в mp3-библиотеку (трек лежал в
+    Renardo-медиатеке), и сам ``load_track`` гуард за старт не считал —
+    хотя внутри он зовёт ``MusicManager.execute_code``.
+    """
+
+    def test_load_track_closes_the_user_request(self) -> None:
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="загрузи и включи трек тисбит",
+            tools_called=("load_track",),
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+        assert verdict.reason == "executed_via_library"
+        assert guard.user_retry_count == 0
+
+    def test_load_track_does_not_close_a_dj_transition(self) -> None:
+        """Bug B остаётся строгим: DJ-переход обязан РОЖДАТЬ музыку."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="dj transition",
+            tools_called=("load_track",),
+            dj_enabled=True,
+            build_dj_retry_prompt=lambda: "dj",
+        )
+        assert verdict.kind is MusicGuardVerdictKind.DJ_RETRY
+
+    def test_set_dj_mode_alone_still_retries(self) -> None:
+        """Режимные тулы без старта — ровно та авария, что ловит гуард."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй техно",
+            tools_called=("set_dj_mode",),
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+
+
+class TestEvaluateStopCommand:
+    """Стоп-команды.
+
+    🔴 FIX (live 30.08, vision-pi 12:33): «останови музыку» → LLM ответила
+    «Музыка выключена.» с ``tools=[]``, mp3 доиграл ещё 20 секунд. Стоп без
+    stop-тула теперь даёт ``FORCE_STOP`` — адаптер гасит музыку сам. Стоп,
+    который LLM отработала тулом, по-прежнему ``SKIP_NOT_APPLICABLE``.
+    """
+
+    def test_stop_command_without_stop_tool_forces_stop(self) -> None:
         guard = MusicGuard()
         verdict = guard.evaluate(
             was_dj_auto=False,
@@ -344,15 +670,74 @@ class TestEvaluateStopCommand:
             dj_enabled=False,
             build_music_retry_prompt=_music_prompt,
         )
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+        assert verdict.reason == "stop_command_unbacked"
+        assert guard.user_retry_count == 0
+
+    def test_live_30_08_ostanovi_muzyku_without_tool(self) -> None:
+        """Дословный кейс из лога: «останови музыку» → tools=[]."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="останови музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+
+    def test_stop_command_with_stop_tool_skips(self) -> None:
+        """LLM вызвала stop_music — гасить повторно нечего."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="останови музыку",
+            tools_called=("stop_music",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
         assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
         assert guard.user_retry_count == 0
 
+    def test_stop_command_with_only_set_dj_mode_still_force_stops(self) -> None:
+        """Issue #992, live 01.09 — ``set_dj_mode(enabled=False)`` alone does
+        NOT prove the audio stopped: it only flips a bool flag
+        (rob_box_mcp_tools/tools/music.py) and never touches Renardo/
+        SuperCollider. Verified live against scsynth's own OSC ``/status``:
+        publishing ``enabled=False`` left numSynths unchanged (65) — the
+        track kept looping until an explicit ``stop_music``/music_cleanup
+        was sent. «хватит диджеить» while a ``repeat=True`` DJ track is
+        playing is the NORMAL case, not an edge case, so this must still
+        force-stop rather than skip."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="хватит диджеить",
+            tools_called=("set_dj_mode",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+        assert verdict.reason == "stop_command_unbacked"
+
+    def test_stop_command_with_set_dj_mode_and_stop_music_skips(self) -> None:
+        """When ``stop_music`` IS in the mix, the audio really did stop —
+        no need for the code-side force-stop regardless of what else ran."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="хватит диджеить",
+            tools_called=("set_dj_mode", "stop_music"),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+
     def test_stop_command_overlapping_music_keyword_uses_stop_branch(self) -> None:
-        """If a stop phrase ALSO matches a music keyword (e.g. «диджея»,
-        «диджей режим»), ``user_wants_music`` returns True but the
-        stop-command check MUST win — Bug C previously mis-classified
-        these as music requests and re-enabled music via the retry
-        (live 06.08 incident)."""
+        """Фраза, попадающая И в стоп-оверрайды, И в муз-ключи («выключи
+        диджея»), обязана уйти в стоп-ветку: Bug C раньше принимал её за
+        просьбу включить музыку и ретраем её же и включал (инцидент 06.08).
+        """
         guard = MusicGuard()
         verdict = guard.evaluate(
             was_dj_auto=False,
@@ -361,30 +746,48 @@ class TestEvaluateStopCommand:
             dj_enabled=False,
             build_music_retry_prompt=_music_prompt,
         )
-        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert verdict.reason == "stop_command"
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+        assert guard.user_retry_count == 0, (
+            "Stop-command must NOT consume the user-retry budget — "
+            "it is not a music request"
+        )
+
+    def test_issue_2834_stop_dj_without_stop_tool_forces_stop(self) -> None:
+        """Issue #2834, live 23.09.2026 (TG): «стоп диджей» → робот через
+        пару секунд снова заиграл. ``is_music_stop_command`` не ловил
+        «стоп» + голое «диджей» (без «ить»/«я»/«режим»), а «диджей» само
+        по себе совпадало с ``MUSIC_GUARD_KEYWORDS`` — гуард решал «юзер
+        хочет музыку» и уходил в ``USER_RETRY`` вместо ``FORCE_STOP``.
+        Со стоп-командой это Bug C с CRITICAL «ты НЕ вызвал музыкальный
+        тул», хотя юзер просил ровно противоположное — остановить.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="стоп диджей",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+        assert verdict.kind is not MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "stop_command_unbacked"
         assert guard.user_retry_count == 0, (
             "Stop-command must NOT consume the user-retry budget — "
             "it is not a music request"
         )
 
     def test_stop_command_with_was_dj_auto_falls_through(self) -> None:
-        """If ``was_dj_auto=True`` AND ``dj_enabled=False``, the guard
-        falls through to the user-music branch — a stop-command with
-        a music-keyword overlap is caught there and returned as
-        ``stop_command`` (NOT as ``bug_b_budget_exhausted``)."""
+        """``was_dj_auto=True`` + ``dj_enabled=False`` — ветка Bug B
+        отключена, стоп-команда ловится стоп-веткой, а не бюджетом Bug B."""
         guard = MusicGuard()
-        # Use a phrase that BOTH matches a music keyword AND a stop
-        # override, so we exercise the stop-check (not the
-        # not-music-request early return).
         verdict = guard.evaluate(
             was_dj_auto=True,
             user_input="выключи диджея",
             tools_called=(),
             dj_enabled=False,
         )
-        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert verdict.reason == "stop_command"
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
         assert guard.dj_retry_count == 0
         assert guard.user_retry_count == 0
 
@@ -420,6 +823,228 @@ class TestEvaluateNonMusic:
         )
         assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
         assert verdict.reason == "not_music_request"
+
+
+# ---------------------------------------------------------------------------
+# Issue #2561 — babble-retry success rate ~62% → context-aware fallback
+# ---------------------------------------------------------------------------
+
+class TestIssue2561FallbackOnRetryExhaustion:
+    """Issue #2561, live 15.09: на 16 Bug C-триггеров в час 6 (38%) НЕ
+    закрываются retry'ем — модель снова отвечает spoken-фразой при
+    tools_called=[]. После исчерпания user-budget возвращаем :class:`FALLBACK`
+    с контекстной фразой, предлагающей альтернативу. Это закрывает
+    acceptance criteria #2 и #3.
+    """
+
+    def test_fallback_prompt_names_track_when_present(self) -> None:
+        """«сыграй кисс» → fallback содержит имя трека в кавычках."""
+        guard = MusicGuard(max_user_retries=1)
+        # 1st failure — USER_RETRY (counter→1, budget=1 exhausted).
+        guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй кисс",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        # 2nd attempt — FALLBACK (counter reset to 0 in the verdict).
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй кисс",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FALLBACK
+        assert verdict.prompt is not None
+        assert "кисс" in verdict.prompt
+        assert "по-другому" in verdict.prompt
+
+    def test_fallback_prompt_generic_when_no_track_name(self) -> None:
+        """Запрос с префиксом, но хвост — общее слово «музыку».
+
+        Эвристика builder'а извлекает хвост после префикса, и
+        «музыку» попадает в кавычки. Это нормально — фраза
+        конкретизирована («не получилось с «музыку»»), без извинений.
+        Главное — НЕ должно быть никакого выдуманного имени типа
+        «трек», «кисс» или «техно».
+        """
+        guard = MusicGuard(max_user_retries=1)
+        # 1st failure — USER_RETRY.
+        guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку пожалуйста",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        # 2nd attempt — FALLBACK.
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку пожалуйста",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FALLBACK
+        assert verdict.prompt is not None
+        # Хвост «музыку» попадает в кавычки, «пожалуйста» НЕ должно.
+        assert "музыку" in verdict.prompt
+        assert "«пожалуйста»" not in verdict.prompt
+        # Главное: НЕТ выдуманного имени.
+        assert "кисс" not in verdict.prompt
+        assert "техно" not in verdict.prompt
+
+    def test_fallback_prompt_no_apology_markers(self) -> None:
+        """Фраза НЕ содержит извинений / claim'ов о выполнении."""
+        guard = MusicGuard(max_user_retries=1)
+        # 1st failure — USER_RETRY.
+        guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи трек кисс",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        # 2nd attempt — FALLBACK.
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи трек кисс",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        text = (verdict.prompt or "").lower()
+        # Извинения запрещены.
+        for marker in ("извини", "прости", "sorry", "прошу прощения"):
+            assert marker not in text, (
+                f"fallback фраза не должна содержать {marker!r}: "
+                f"{verdict.prompt!r}"
+            )
+        # Заявления о выполнении тоже запрещены (это враньё — модель
+        # НЕ выполнила, ретраи выгорели).
+        for marker in ("запустил", "поставил", "включил", "сделал", "готово"):
+            assert marker not in text, (
+                f"fallback фраза не должна содержать {marker!r}: "
+                f"{verdict.prompt!r}"
+            )
+
+    def test_fallback_resets_user_budget(self) -> None:
+        """После FALLBACK budget сбрасывается — следующий запрос
+        получает свежий budget."""
+        guard = MusicGuard(max_user_retries=2)
+        # 1st — USER_RETRY (counter→1).
+        guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        # 2nd — USER_RETRY (counter→2).
+        guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        # 3rd — FALLBACK (budget exhausted, counter reset to 0).
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FALLBACK
+        assert guard.user_retry_count == 0
+        # Следующий USER_RETRY-счёт начинается с 1 (свежий budget).
+        next_v = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert next_v.kind is MusicGuardVerdictKind.USER_RETRY
+        assert guard.user_retry_count == 1
+
+    def test_acceptance_criterion_3_retries_then_fallback(self) -> None:
+        """Acceptance criterion: 3 retry подряд → на 4-м fallback."""
+        guard = MusicGuard(max_user_retries=3)
+        # 3 retries.
+        for n in (1, 2, 3):
+            verdict = guard.evaluate(
+                was_dj_auto=False,
+                user_input="сыграй рэп",
+                tools_called=(),
+                dj_enabled=False,
+                build_music_retry_prompt=_music_prompt,
+            )
+            assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+            assert guard.user_retry_count == n
+        # 4th attempt → FALLBACK.
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй рэп",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FALLBACK
+        assert verdict.reason == "retry_exhausted"
+        assert verdict.prompt is not None
+        # Текст fallback'а предлагает альтернативу.
+        assert "по-другому" in verdict.prompt.lower()
+
+    def test_fallback_does_not_break_success_path(self) -> None:
+        """Если LLM в итоге вызвала тул — FALLBACK не публикуется."""
+        guard = MusicGuard(max_user_retries=1)
+        # 1st failure — USER_RETRY (counter→1).
+        v1 = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert v1.kind is MusicGuardVerdictKind.USER_RETRY
+        # 2nd attempt — LLM наконец вызвала тул.
+        v2 = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи музыку",
+            tools_called=("execute_music_code",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert v2.kind is MusicGuardVerdictKind.SKIP
+        assert guard.user_retry_count == 0
+
+    def test_fallback_prompt_with_genre_request(self) -> None:
+        """«включи техно» → fallback валиден, без claim'ов и извинений."""
+        guard = MusicGuard(max_user_retries=1)
+        # 1st — USER_RETRY.
+        guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи техно",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        # 2nd — FALLBACK.
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи техно",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FALLBACK
+        assert verdict.prompt is not None
+        # Текст fallback'а валиден — нет claim'ов и извинений.
+        assert "по-другому" in verdict.prompt.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -683,13 +1308,13 @@ def test_default_max_dj_retries_matches_legacy_constant() -> None:
 
 
 def test_default_max_user_retries_matches_legacy_constant() -> None:
-    """Legacy ``MAX_MUSIC_GUARD_RETRIES=1`` — preserved as default. The
-    acceptance spec suggested ``max_user_retries=2`` but the production
-    behaviour has been ``1`` since the 06.08 live fix; changing it
-    here would be a silent behaviour change."""
-    assert MusicGuard.DEFAULT_MAX_USER_RETRIES == 1
+    """Issue #992, live 01.09 — bumped 1 → 8 to test whether more
+    retries change outcomes when ``user_wants_music()`` false-positives
+    (e.g. bare mention of the DJ persona's name). This does NOT fix the
+    misclassification itself, only delays the "растерялся" fallback."""
+    assert MusicGuard.DEFAULT_MAX_USER_RETRIES == 8
     guard = MusicGuard()
-    assert guard.max_user_retries == 1
+    assert guard.max_user_retries == 8
 
 
 def test_logger_is_optional() -> None:
@@ -703,3 +1328,71 @@ def test_logger_is_optional() -> None:
         build_dj_retry_prompt=_dj_prompt,
     )
     assert verdict.kind is MusicGuardVerdictKind.DJ_RETRY
+
+
+# ---------------------------------------------------------------------------
+# Issue #2561 — production dialogue_node.py must use max_user_retries=3
+# ---------------------------------------------------------------------------
+
+
+def test_dialogue_node_uses_max_user_retries_3_for_fallback_path() -> None:
+    """Issue #2561 AC #3: «3 retry подряд → на 4-м fallback».
+
+    Каркас ``MusicGuard`` это уже умеет (``test_user_retry_respects_custom_max``),
+    но если продовый ``DialogueNode`` создаст гард с дефолтом 8, юзер будет
+    слышать «растерялся» только на 9-й попытке. Проверяем AST, чтобы не
+    тащить в юнит-тест тяжёлый импорт ``rclpy``.
+
+    Это статический тест-инвариант. Если кто-то откатит budget обратно к 8
+    (или закомментирует kwarg), этот тест заорёт — то самое поведение,
+    которое мы зафиксировали после round3 live-инцидента.
+    """
+    import ast
+    from pathlib import Path
+
+    # test lives at src/rob_box_voice/test/unit/core/test_music_guard.py
+    # walk up 4 dirs to reach src/, then descend into the double-nested
+    # package directory.
+    src_root = Path(__file__).resolve().parents[4]
+    dialogue_node = src_root / "rob_box_voice" / "rob_box_voice" / "dialogue_node.py"
+    assert dialogue_node.exists(), (
+        f"dialogue_node.py not found at {dialogue_node} "
+        f"(resolved src_root={src_root})"
+    )
+    tree = ast.parse(dialogue_node.read_text(encoding="utf-8"))
+    found_3 = False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "MusicGuard"
+        ):
+            for kw in node.keywords:
+                if (
+                    kw.arg == "max_user_retries"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value == 3
+                ):
+                    found_3 = True
+                    break
+    assert found_3, (
+        "Issue #2561 AC #3: DialogueNode должен создавать MusicGuard с "
+        "max_user_retries=3, чтобы на 4-м фейле публиковать FALLBACK "
+        "вместо безличного NUDGE. Проверь dialogue_node.py — там должен "
+        "быть `MusicGuard(max_user_retries=3, logger=...)`."
+    )
+
+
+def test_music_guard_advertises_fallback_path_in_docstring() -> None:
+    """Issue #2561 — документируем новое поведение в docstring ``evaluate``.
+
+    Если кто-то рефакторит ``MusicGuard.evaluate`` и теряет FALLBACK-ветку
+    из docstring, легко пропустить регрессию. Тест пинит, что docstring
+    упоминает FALLBACK — это сигнал для следующего ревьюера.
+    """
+    from rob_box_voice.core.music_guard import MusicGuard
+    doc = MusicGuard.evaluate.__doc__ or ""
+    assert "FALLBACK" in doc, (
+        "MusicGuard.evaluate docstring должен явно упоминать FALLBACK — "
+        "иначе ревьюер не увидит новую ветку после рефактора."
+    )

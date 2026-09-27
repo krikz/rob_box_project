@@ -139,10 +139,22 @@ def test_fallback_to_silero_preserved() -> None:
     src = _parse_module(_TTS_NODE)
     fn = _find_class_member(src, "TTSNode", "_synthesize_and_play")
     fn_src = ast.unparse(fn)
-    # The except clause must set audio_np=None and the subsequent code
-    # must switch to silero_model.apply_tts(...)
-    assert "silero_model.apply_tts" in fn_src, "Silero fallback path must be intact"
-    assert "Yandex gRPC отвалился" in fn_src, "Yandex failure log message must be present"
+    # Issue #2078 decomposition: silero fallback helper now owns the
+    # ``silero_model.apply_tts(...)`` call (was inline in this method).
+    # Search across the whole module so the contract survives extraction.
+    module_src = _TTS_NODE.read_text(encoding="utf-8")
+    assert "silero_model.apply_tts" in module_src, (
+        "Silero fallback path must be intact (search across module after "
+        "issue #2078 decomposition)"
+    )
+    # The Yandex-failure log message MUST stay somewhere in the high-level
+    # orchestrator or its helpers (per-issue #1083 acceptance:
+    # «переключаюсь на Silero»).  Issue #2078 moved it to
+    # ``_sap_synthesize_yandex``; search across the module.
+    assert "Yandex gRPC отвалился" in module_src, (
+        "Yandex failure log message must be present (module-wide after "
+        "issue #2078 decomposition)"
+    )
 
 
 # ── Behavioural tests for _chunk_text (pure Python) ─────────────────────────
@@ -167,8 +179,31 @@ def _import_chunk_text():
     # exercise the full code path without the real yandex SDK.
     import types
 
+    def _needs_pb2_stand_in(module) -> bool:
+        """True unless ``tts_pb2`` already builds a request that keeps its text.
+
+        ``hasattr`` is useless here: the project conftest registers
+        ``yandex.cloud.ai.tts.v3`` as a ``MagicMock``, which answers yes to
+        every attribute. The guard passed, the stand-in below was skipped, and
+        ``UtteranceSynthesisRequest(text=...)`` returned a MagicMock whose
+        ``.text`` is another MagicMock — ``len()`` of which is 0, so the
+        "too long text" branch never fired and the retry test saw one attempt
+        instead of three. It passed alone (no MagicMock in ``sys.modules``
+        yet) and failed in a directory run.
+        """
+        if module is None:
+            return True
+        pb2 = getattr(module, "tts_pb2", None)
+        if pb2 is None:
+            return True
+        try:
+            probe = pb2.UtteranceSynthesisRequest(text="probe")
+        except Exception:  # noqa: BLE001 — anything unusable needs the stub
+            return True
+        return getattr(probe, "text", None) != "probe"
+
     yandex_v3 = sys.modules.get("yandex.cloud.ai.tts.v3")
-    if yandex_v3 is None or not hasattr(yandex_v3, "tts_pb2"):
+    if _needs_pb2_stand_in(yandex_v3):
 
         class _Container:
             WAV = 0
@@ -181,9 +216,12 @@ def _import_chunk_text():
                 self.container_audio = container_audio
 
         class _Hints:
-            def __init__(self, voice=None, speed=None):
+            def __init__(self, voice=None, speed=None, pitch_shift=None,
+                         volume=None):
                 self.voice = voice
                 self.speed = speed
+                self.pitch_shift = pitch_shift
+                self.volume = volume
 
         class _UtteranceSynthesisRequest:
             LUFS = 0
@@ -484,3 +522,39 @@ def test_chunk_failure_propagates_for_silero_fallback(_import_chunk_text):
 
     with pytest.raises(Exception, match=r"(Too long text|Yandex (gRPC|synthesis) error)"):
         TTSNode._synthesize_yandex(node, text)  # type: ignore[arg-type]
+
+# ── _chunk_text не должен быть копией split_text ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Он подумал… Потом ушёл… И вернулся… Снова подумал… Ушёл опять…",
+        "Раз. Два. Три. Четыре. Пять. Шесть. Семь. Восемь.",
+        "Ага! Точно? Ну да! Конечно? Ага! Точно? Ну да! Конечно?",
+        "Первый абзац тут.\nВторой абзац тут.\nТретий абзац тут.",
+    ],
+)
+@pytest.mark.parametrize("max_chars", [20, 40, 120])
+def test_chunk_text_agrees_with_shared_chunker(
+    _import_chunk_text, text: str, max_chars: int
+) -> None:
+    """``TTSNode._chunk_text`` обязан резать так же, как общий ``split_text``.
+
+    Тело ``_chunk_text`` было построчной копией
+    ``rob_box_voice.tts_chunking.split_text`` (сходство нормализованного
+    исходника 0.91, ~100 строк на копию), при том что ``tts_node`` и так
+    импортирует ``split_text``. Единственное, чем копия отличалась по
+    поведению, — набор разделителей: у неё ``".!?\n"``, у общего
+    чанкера ``".!?…\n"``.
+
+    Из-за этого многоточие не считалось границей предложения, и
+    Yandex-путь резал русскую речь с «…» по словам посреди фразы, ломая
+    паузу, — тогда как все остальные провайдеры резали по предложениям.
+    """
+    from rob_box_voice.tts_chunking import split_text
+
+    TTSNode, _ = _import_chunk_text
+    assert TTSNode._chunk_text(text, max_chars=max_chars) == split_text(
+        text, max_chars=max_chars
+    )

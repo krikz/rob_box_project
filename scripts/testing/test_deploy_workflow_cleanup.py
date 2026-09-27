@@ -38,3 +38,22 @@ def test_environment_local_is_aliased_to_dev():
     # Должен быть явный warning с упоминанием ретро
     assert "WARNING: environment=local" in workflow
     assert "issue #1379" in workflow
+
+
+def test_deploy_pull_ignores_compose_pull_policy():
+    """Issue #2609 (16.09): docker/vision/docker-compose.yaml ставит
+    pull_policy: if_not_present (#2634). С ним голый `docker compose pull`
+    пишет «Skipped Image is already present locally» и не обновляет :dev —
+    деплой проходил зелёным, а робот оставался на старых образах."""
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    pulls = [line for line in workflow.splitlines() if "docker compose pull" in line and not line.strip().startswith("#")]
+    assert len(pulls) >= 2, "ожидались pull-шаги для Vision Pi и Main Pi"
+    for line in pulls:
+        assert "--policy always" in line, f"pull без --policy always: {line.strip()}"
+
+
+def test_vision_autostart_pull_ignores_compose_pull_policy():
+    setup = (Path(__file__).resolve().parents[2] / "scripts/setup/setup_vision_pi.sh").read_text(encoding="utf-8")
+    exec_pre = [line for line in setup.splitlines() if line.startswith("ExecStartPre=") and "compose pull" in line]
+    assert exec_pre and all("--policy always" in line for line in exec_pre)

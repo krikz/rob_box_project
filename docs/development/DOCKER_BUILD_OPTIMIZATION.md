@@ -260,11 +260,11 @@ FROM ros:humble-ros-base
 
 ---
 
-### 7. **Скачивание моделей во время build** ⚠️
+### 7. **Скачивание моделей во время build** ✅ РЕШЕНО (ADR-0125)
 
-**Проблема:**
+**Было:**
 ```dockerfile
-# docker/vision/voice_assistant/Dockerfile
+# docker/vision/voice_assistant/Dockerfile (устаревший пример)
 RUN mkdir -p /models && \
     wget -q -O /tmp/vosk-model.zip \
     https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
@@ -273,6 +273,13 @@ RUN mkdir -p /models && \
     wget -q -O /models/silero_v4_ru.pt \
     https://models.silero.ai/models/tts/ru/v4_ru.pt
 ```
+
+**Стало:** ступень скачивания удалена из Dockerfile вовсе (Ресурсный пак,
+ADR-0125) — это фактически Решение 3 ниже, доведённое до продакшна. Vosk и
+Silero лежат на хосте Vision Pi в `/opt/rob_box/models` (кладёт их туда шаг
+деплоя, манифест — `docker/vision/scripts/resource_pack/manifest.yaml`) и
+приходят в контейнер bind-mount'ом `/opt/rob_box/models:/models:ro`. Ниже —
+исходный анализ проблемы и рассмотренных решений, для истории.
 
 **Почему плохо:**
 - Network dependency (может упасть)
@@ -320,7 +327,7 @@ volumes:
 
 ### MEDIUM (в ближайшее время):
 4. ⚠️ **Vendor audio_common_msgs** (30 минут)
-5. ⚠️ **Оптимизировать скачивание моделей** (20 минут)
+5. ✅ **Оптимизировать скачивание моделей** — сделано Ресурсным паком (ADR-0125)
 
 ### LOW (при необходимости):
 6. ℹ️ Рассмотреть ros-core вместо ros-base (если нужно уменьшение размера)

@@ -9,8 +9,12 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        # issue #2199: единый конфиг сегментации речи для всех голосовых
+        # путей. Используется и Python-вызывающими (rob_box_quest),
+        # и генератором TS-констант для webxr_client.
+        ("share/" + package_name + "/config", ["config/speech_segmentation.yaml"]),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "pyyaml"],
     zip_safe=True,
     maintainer="krikz",
     maintainer_email="kukoreken@rob-box.local",

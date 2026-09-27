@@ -1,0 +1,145 @@
+[
+  {
+    "duration_s": 9.9,
+    "bytes": 318336,
+    "best_name": "Саша",
+    "best_id": "dc76d659",
+    "best_score": 0.939,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.891,
+    "gap": 0.048
+  },
+  {
+    "duration_s": 9.4,
+    "bytes": 301952,
+    "best_name": "Саша",
+    "best_id": "dc76d659",
+    "best_score": 0.935,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.884,
+    "gap": 0.051
+  },
+  {
+    "duration_s": 7.1,
+    "bytes": 228224,
+    "best_name": "Саша",
+    "best_id": "dc76d659",
+    "best_score": 0.911,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.834,
+    "gap": 0.077
+  },
+  {
+    "duration_s": 10.2,
+    "bytes": 326528,
+    "best_name": "Саша",
+    "best_id": "dc76d659",
+    "best_score": 0.924,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.874,
+    "gap": 0.05
+  },
+  {
+    "duration_s": 7.9,
+    "bytes": 252800,
+    "best_name": "Саша",
+    "best_id": "dc76d659",
+    "best_score": 0.88,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.841,
+    "gap": 0.039
+  },
+  {
+    "duration_s": 10.7,
+    "bytes": 342912,
+    "best_name": "Саша",
+    "best_id": "dc76d659",
+    "best_score": 0.934,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.874,
+    "gap": 0.06
+  },
+  {
+    "duration_s": 9.9,
+    "bytes": 318336,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.936,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.723,
+    "gap": 0.213
+  },
+  {
+    "duration_s": 10.5,
+    "bytes": 334720,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.935,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.673,
+    "gap": 0.262
+  },
+  {
+    "duration_s": 9.2,
+    "bytes": 293760,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.918,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.65,
+    "gap": 0.268
+  },
+  {
+    "duration_s": 8.2,
+    "bytes": 260992,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.948,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.681,
+    "gap": 0.267
+  },
+  {
+    "duration_s": 8.7,
+    "bytes": 277376,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.923,
+    "second_name": "Ночной инженер",
+    "second_id": "10208fea",
+    "second_score": 0.678,
+    "gap": 0.245
+  },
+  {
+    "duration_s": 4.6,
+    "bytes": 146304,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.668,
+    "second_name": "Деньчик",
+    "second_id": "d9b91d1c",
+    "second_score": 0.515,
+    "gap": 0.152
+  },
+  {
+    "duration_s": 4.3,
+    "bytes": 138112,
+    "best_name": "Борис",
+    "best_id": "05ff0881",
+    "best_score": 0.567,
+    "second_name": "Деньчик",
+    "second_id": "d9b91d1c",
+    "second_score": 0.56,
+    "gap": 0.007
+  }
+]

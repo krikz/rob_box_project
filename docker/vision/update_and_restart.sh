@@ -54,6 +54,15 @@ docker-compose up -d
 echo "✅ Контейнеры запущены"
 echo ""
 
+# Здесь запускался `docker-compose --profile init up voice-resources-init`,
+# который заливал Renardo-сэмплы из образа в named-volume. Образ,
+# init-контейнер и volume удалены: сэмплы лежат на хосте в
+# /opt/rob_box/samples и приходят в контейнеры bind-mount'ом. Пополнить их
+# вручную:
+#   sudo bash scripts/resource_pack/apply_resource_pack.sh --only renardo-samples
+# (из ~/rob_box_project/docker/vision). Если каталог пуст — музыка честно
+# уходит в synth-only, стек при этом поднимается.
+
 # Показываем статус
 echo "📊 Статус контейнеров:"
 docker-compose ps

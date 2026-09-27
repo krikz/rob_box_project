@@ -11,6 +11,16 @@
 #
 # Зависимости: gh (GitHub CLI), авторизация через gh auth status.
 # Автор плана: architect, kanban t_c035d460.
+#
+# ----------------------------------------------------------------------------
+# DEPRECATED (2026-09-02, issue #1902): Avatar epic (AV-*) завершён (8/11
+# closed, 3 в open — orphan, отдельная работа вне scope). feature/avatar
+# ветка локально удалена Шифу (на origin всё ещё существует как исторический
+# артефакт). Тела issue'ов ниже обновлены до `develop` для будущих ре-планов;
+# для фактической идемпотентной проверки запускать с --dry-run. Скрипт
+# сохранён как историческая документация AV-* декомпозиции (см. также
+# docs/plans/2026-08-24-avatar-decomposition.md).
+# ----------------------------------------------------------------------------
 
 set -euo pipefail
 
@@ -132,7 +142,7 @@ create_issue \
 
 ## Branch
 
-\`feature/av-2-supervisor-package-skeleton\` (от \`feature/avatar\`).
+\`feature/av-2-supervisor-package-skeleton\` (от \`develop\`).
 
 ## Commit
 
@@ -142,7 +152,7 @@ git commit -m "feat(supervisor): package skeleton + smoke-import (TDD)"
 
 ## Definition of Done
 
-- [ ] PR открыт в \`feature/avatar\`, прошёл \`agent-flow-merge-gate\`.
+- [ ] PR открыт в \`develop\`, прошёл \`agent-flow-merge-gate\`.
 - [ ] \`pytest -v\` raw-вывод в PR-описании.
 - [ ] \`black --check\` + \`flake8\` raw-вывод в PR-описании.
 
@@ -195,7 +205,7 @@ State-machine режимов аватара (ADR-0028 §4.1) — чистая Py
 
 ## Branch
 
-\`feature/av-3-supervisor-fsm\` (от \`feature/avatar\`).
+\`feature/av-3-supervisor-fsm\` (от \`develop\`).
 
 ## Commit
 
@@ -205,7 +215,7 @@ git commit -m "feat(supervisor): FSM ModeManager off/telegram_active/avatar_pres
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`pytest -v\` с полным -v, не "тесты прошли").
+- [ ] PR в \`develop\`, raw-evidence (\`pytest -v\` с полным -v, не "тесты прошли").
 - [ ] \`flake8\` + \`black\` raw-вывод.
 
 ## Связанные
@@ -259,7 +269,7 @@ TDD, без ROS. ADR-0028 §4.2 + §6 Q4 (dead-man 500 мс).
 
 ## Branch
 
-\`feature/av-4-supervisor-lock-manager\` (от \`feature/avatar\`).
+\`feature/av-4-supervisor-lock-manager\` (от \`develop\`).
 
 ## Commit
 
@@ -269,7 +279,7 @@ git commit -m "feat(supervisor): LockManager teleop_floor/voice_floor + 500ms de
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`pytest -v\` с -v).
+- [ ] PR в \`develop\`, raw-evidence (\`pytest -v\` с -v).
 
 ## Связанные
 
@@ -318,7 +328,7 @@ create_issue \
 
 ## Branch
 
-\`feature/av-5-avatar-state-msgpack-schema\` (от \`feature/avatar\`).
+\`feature/av-5-avatar-state-msgpack-schema\` (от \`develop\`).
 
 ## Commit
 
@@ -328,7 +338,7 @@ git commit -m "feat(supervisor): /avatar/state msgpack schema + serialization ro
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`pytest -v\`).
+- [ ] PR в \`develop\`, raw-evidence (\`pytest -v\`).
 
 ## Связанные
 
@@ -382,7 +392,7 @@ ROS2-нода, которая принимает сервисы AcquireFloor/Rel
 
 ## Branch
 
-\`feature/av-6-supervisor-node-monitor\` (от \`feature/avatar\`).
+\`feature/av-6-supervisor-node-monitor\` (от \`develop\`).
 
 ## Commit
 
@@ -392,7 +402,7 @@ git commit -m "feat(supervisor): supervisor_node.py in monitor mode (Phase 1 saf
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`pytest -v\` с mock rclpy).
+- [ ] PR в \`develop\`, raw-evidence (\`pytest -v\` с mock rclpy).
 - [ ] Деплой на dev-стенде (опционально для этой карточки, основное —
       AV-9 с docker-сервисом).
 
@@ -446,7 +456,7 @@ ADR-0027 §3.4 описывает 4 режима \`voice_input_mode\`, но па
 
 ## Branch
 
-\`feature/av-7-voice-input-mode-param\` (от \`feature/avatar\`).
+\`feature/av-7-voice-input-mode-param\` (от \`develop\`).
 
 ## Commit
 
@@ -456,7 +466,7 @@ git commit -m "feat(voice): declare voice_input_mode param in dialogue_node (ADR
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`pytest -v\`).
+- [ ] PR в \`develop\`, raw-evidence (\`pytest -v\`).
 
 ## Связанные
 
@@ -508,7 +518,7 @@ docs-only карточка — без кода.
 
 ## Branch
 
-\`feature/av-8-meta-quest-frame-types-supervisor\` (от \`feature/avatar\`).
+\`feature/av-8-meta-quest-frame-types-supervisor\` (от \`develop\`).
 
 ## Commit
 
@@ -518,7 +528,7 @@ git commit -m "docs(meta-quest-api): extend frame types 0x30-0x33 for supervisor
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`git diff --stat\` + \`gh run view\` lint).
+- [ ] PR в \`develop\`, raw-evidence (\`git diff --stat\` + \`gh run view\` lint).
 - [ ] Mermaid-stateDiagram из ADR-0028 §4.1 скопирован в meta-quest-api.md
       (cross-reference).
 
@@ -574,7 +584,7 @@ create_issue \
 
 ## Branch
 
-\`feature/av-9-supervisor-docker-service\` (от \`feature/avatar\`).
+\`feature/av-9-supervisor-docker-service\` (от \`develop\`).
 
 ## Commit
 
@@ -584,7 +594,7 @@ git commit -m "infra(supervisor): docker service on Vision Pi (Phase 1 monitor)"
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`docker build\` + \`docker logs\`).
+- [ ] PR в \`develop\`, raw-evidence (\`docker build\` + \`docker logs\`).
 - [ ] Сервис протестирован на dev-стенде (Vision Pi).
 
 ## Связанные
@@ -638,7 +648,7 @@ Telegram-бот сейчас сам публикует \`cmd_vel_web\` (priority
 
 ## Branch
 
-\`feature/av-10-telegram-supervisor-client\` (от \`feature/avatar\`).
+\`feature/av-10-telegram-supervisor-client\` (от \`develop\`).
 
 ## Commit
 
@@ -648,7 +658,7 @@ git commit -m "refactor(telegram): route move/tts commands through supervisor cl
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (\`pytest -v\`).
+- [ ] PR в \`develop\`, raw-evidence (\`pytest -v\`).
 - [ ] Деплой и smoke-test на dev-стенде.
 
 ## Связанные
@@ -705,7 +715,7 @@ Quest Wi-Fi fail → Telegram подхватывает teleop (graceful handover
 
 ## Branch
 
-\`feature/av-11-avatar-mixed-e2e\` (от \`feature/avatar\`).
+\`feature/av-11-avatar-mixed-e2e\` (от \`develop\`).
 
 ## Commit
 
@@ -713,7 +723,7 @@ Quest Wi-Fi fail → Telegram подхватывает teleop (graceful handover
 
 ## Definition of Done
 
-- [ ] PR в \`feature/avatar\`, raw-evidence (логи + скриншоты).
+- [ ] PR в \`develop\`, raw-evidence (логи + скриншоты).
 - [ ] Все 7 шагов сценария пройдены, e2e отчёт в PR-описании.
 
 ## Связанные

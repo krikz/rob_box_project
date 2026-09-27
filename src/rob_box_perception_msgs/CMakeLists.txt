@@ -15,6 +15,7 @@ find_package(builtin_interfaces REQUIRED)
 # Generate messages
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PerceptionEvent.msg"
+  "msg/VisionEvent.msg"
   DEPENDENCIES
     std_msgs
     geometry_msgs

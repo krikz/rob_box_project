@@ -38,10 +38,11 @@ _ENV_PATTERN = re.compile(r"\$\{\s*([A-Z][A-Z0-9_]*)\s*\}")
 # ---------------------------------------------------------------------------
 
 
-# Allowed values for ``harness.kind`` — mirrors the kinds enumerated in
-# ADR-0001 §2.5.1. Concrete harnesses (dialog/persistent/telegram) are
-# registered via :class:`rob_box_harness.registry.HarnessRegistry`; this
-# enum is just for the schema.
+# Allowed values for ``harness.kind`` — historically mirrored the kinds
+# enumerated in ADR-0001 §2.5.1. The concrete harnesses and the registry
+# that resolved them were removed with the Harness-каркас (ADR-0051
+# §3.2, issue #1985); the field survives only as a schema tag on
+# :class:`HarnessConfig`, which ``AgentCore`` still consumes.
 HarnessKind = str  # "dialog" | "persistent" | "telegram" | test-registered names
 
 

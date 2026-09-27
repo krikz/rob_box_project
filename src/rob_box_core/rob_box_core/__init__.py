@@ -1,12 +1,23 @@
 """rob_box_core — ROS-free contracts shared by the harness packages."""
 
-from rob_box_core.clock import Clock, MockClock, SystemClock
-from rob_box_core.dialogue_state import (
-    DialogueState,
-    DialogueStateMachine,
-    IllegalTransitionError,
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_RESULT_TOPIC,
+    AVATAR_COMMAND_TOPIC,
+    SOURCES,
+    build_command,
+    build_command_result,
+    decode_command,
+    decode_command_result,
+    encode_command,
+    encode_command_result,
+    make_quest_client_id,
+    make_telegram_client_id,
+    new_request_id,
+    now_ts_ms,
 )
+from rob_box_core.clock import Clock, MockClock, SystemClock
 from rob_box_core.memory import Fact, InMemoryStore, MemoryHit, MemoryStore, Turn
+from rob_box_core.praise_gate import PRAISE_WORDS, SAVE_REQUEST_WORDS, contains_praise
 from rob_box_core.ports import (
     ToolContext,
     ToolDescriptor,
@@ -20,6 +31,24 @@ from rob_box_core.ports import (
     ToolValidationError,
     ValidationResult,
 )
+from rob_box_core.speech_segmentation import (
+    BYTES_PER_S,
+    DEFAULT_ROBOT_VOICE_CONFIG,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter,
+    SAMPLE_RATE_HZ,
+    SpeechSegmentationConfig,
+)
+from rob_box_core.utterance import (
+    ALLOWED_PRIORITIES,
+    DEFAULT_PRIORITY,
+    PRIORITY_BARGE_IN,
+    PRIORITY_NORMAL,
+    PRIORITY_OPERATOR,
+    PRIORITY_REPLACE,
+    Sink,
+    Utterance,
+)
 
 __all__ = [
     "Clock",
@@ -30,9 +59,6 @@ __all__ = [
     "Turn",
     "Fact",
     "MemoryHit",
-    "DialogueState",
-    "DialogueStateMachine",
-    "IllegalTransitionError",
     "ToolProvider",
     "ToolDescriptor",
     "ToolResult",
@@ -44,6 +70,40 @@ __all__ = [
     "ToolTimeout",
     "ToolTimeoutError",
     "ToolValidationError",
+    # Utterance — единый сборщик SSML (voice-vr 12, ADR-0080 §1.3, §2.3)
+    "ALLOWED_PRIORITIES",
+    "DEFAULT_PRIORITY",
+    "PRIORITY_BARGE_IN",
+    "PRIORITY_NORMAL",
+    "PRIORITY_OPERATOR",
+    "PRIORITY_REPLACE",
+    "Sink",
+    "Utterance",
+    # avatar_command (AV-22, freeze §3.3 worker-brief)
+    "AVATAR_COMMAND_TOPIC",
+    "AVATAR_COMMAND_RESULT_TOPIC",
+    "SOURCES",
+    "build_command",
+    "build_command_result",
+    "decode_command",
+    "decode_command_result",
+    "encode_command",
+    "encode_command_result",
+    "make_quest_client_id",
+    "make_telegram_client_id",
+    "new_request_id",
+    "now_ts_ms",
+    # speech_segmentation (issue #2199: единый сегментатор речи)
+    "PhraseSegmenter",
+    "SpeechSegmentationConfig",
+    "DEFAULT_WAKE_CONFIG",
+    "DEFAULT_ROBOT_VOICE_CONFIG",
+    "SAMPLE_RATE_HZ",
+    "BYTES_PER_S",
+    # praise_gate (ADR-0132 PR-7): save_arrangement_preset hard gate.
+    "PRAISE_WORDS",
+    "SAVE_REQUEST_WORDS",
+    "contains_praise",
 ]
 
 __version__ = "0.1.0"

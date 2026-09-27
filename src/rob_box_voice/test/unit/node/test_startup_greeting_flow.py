@@ -40,9 +40,21 @@ def node():
     n._startup_greeting_fired = False
     n._startup_greeting_text = ""
     n._greeting_timer = None
+    # `_publish_response` routes the Telegram echo by this id (issue #1195).
+    # `__init__` sets it to None; this fixture bypasses `__init__`, so it has
+    # to supply it — nothing here comes from a Telegram chat.
+    n._active_tg_chat_id = None
 
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.IDLE
+
+    # ADR-0101 PR-B: OccasionGate для gating _on_startup_greeting_finish.
+    # Дефолтный global_debounce_s=2.0 — НЕ влияет на тесты ниже (только
+    # _on_startup_greeting_finish вызывает may_speak с одним и тем же
+    # kind='startup', первый раз → ALLOW, далее → DEFER). Для старых
+    # тестов (один проход finish) этого достаточно.
+    from rob_box_voice.core.occasion import OccasionGate
+    n._occasion = OccasionGate()
 
     # Таймеры: запоминаем созданные (period, callback), чтобы тест мог
     # вручную вызвать следующую фазу.

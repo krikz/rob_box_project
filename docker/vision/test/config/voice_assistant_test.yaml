@@ -17,9 +17,16 @@
     enable_mcp_tools: false
     internet_available: true
 
-    # Wake words: сценарии инжектят "робок <текст>" — префикс стрипается,
-    # в LLM идёт только смысловая часть. Пустая/whitespace фраза фильтруется.
-    wake_words: ["робок", "робот", "роббокс", "робокос", "роббос", "робокс", "роберт", "рыбок", "рома", "бот", "робо", "роб", "робик"]
+    # S8 Task 8.1 (scheduler-segments-merge plan, issue #968) — enables
+    # the MERGE path (quick_decide dispatch in _on_stt) for e2e. Default
+    # in production stays "replace" until Task 8.3 (only after green
+    # 8.1/8.2 with raw evidence — NOT done from this machine, no stand).
+    barge_in_policy: "classify"
+
+    # wake_words намеренно НЕ здесь: единственное объявление —
+    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
+    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
+    # разъехалось в #1252 и стоило #1734.
     silence_words: "стоп,тихо,замолчи"
 
     # Системный промпт для тестов — краткие ответы быстрее
@@ -39,4 +46,6 @@
     # Иначе LLM видит handle_memory в истории → pattern-completion:
     # вызывает его для КАЖДОГО запроса (даже "привет") →
     # история пухнет → OOM после 7+ сценариев.
-    history_excluded_tools: ["handle_memory", "handle_navigation"]
+    # handle_memory / handle_navigation — фасады Compositor'а, удалены:
+    # фильтр по ним не отсекал ничего.
+    history_excluded_tools: ['move_direction']

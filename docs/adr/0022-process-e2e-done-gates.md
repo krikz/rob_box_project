@@ -111,6 +111,19 @@ fi
 
 **Когда принять:** после PR #1399 (user-reopen guard) staged-rollout — двушаговая логика только на NEW e2e-done's, не retroactively.
 
+#### 4.2.1 Force-triage для high-priority voice/operator-bugs (дополнение, kanban-card t_25a2b395)
+
+GATE-2 закрывает «не доделано» через 24ч stale-timer. **Force-triage** — зеркальная защита с другой стороны: чтобы high-priority voice/operator-bugs **не пропадали** до того, как GATE-2 их закроет.
+
+Phase 3 (`bug-orphans`, ретро t_a733c3d2) ловит только issues с меткой `bug` + priority:* без process-меток. **Второй класс orphan'ов** — voice/operator-bugs с `priority:high` БЕЗ `agent:*` метки: они проваливаются через Phase 1 (нет `hermes`), Phase 2 (нет `source:gsd`), Phase 3 (нет `bug`), висят до GATE-2 → close. Phase 4 (`force-triage`, ретро `orphan-stale-no-agent-assign`) добавляет отдельную ветку логики в `agent-flow-triage.sh`:
+- Фильтр: `priority:high` AND (`bug` OR `voice` OR `operator`) AND НЕТ process-меток AND НЕТ `agent:*`.
+- По умолчанию `FORCE_TRIAGE_APPLY=false` — только логирует кандидатов с префиксом `[FORCE-TRIAGE]` (наблюдение без side-effect).
+- С `FORCE_TRIAGE_APPLY=true` (или `--apply-force`): реально ставит `needs-triage` + `agent:backend` (дефолт) + пишет комментарий с маркером `agent-flow-triage:force-triage` для дедупа в окне 60 мин (cron every 1m не спамит).
+
+Дефолтный assignee `agent:backend` — потому что для voice/operator-bugs это натуральный выбор; Phase 3 использует `agent:architect`, что для этого scope не подходит (голосовые/операторские баги требуют code-fix, а не архитектурного решения).
+
+Safety: apply-toggle по умолчанию выключен → первый rollout это **наблюдение** (видим кандидатов в логе cron), и только потом — apply=true. Это зеркальный паттерн к «GATE-2 staged-rollout на NEW events» (см. §7.2 ниже).
+
 ### 4.3 GATE-3: CI-blocking completion
 
 **Что:** новый `agent-flow-completion-check.sh` (тик в воркере при `kanban complete` — это **не** блок для `kanban complete`, а **soft-blocker** до того, как worker вызовет):

@@ -28,7 +28,24 @@ _MERGE_CONFLICT_START_RE = re.compile(r"^<{7}(?:\s|$)")
 _MERGE_CONFLICT_MID_RE = re.compile(r"^={7}$")
 _MERGE_CONFLICT_END_RE = re.compile(r"^>{7}(?:\s|$)")
 _MISSING_SYNTH_RE = re.compile(r"SynthDef\s+([A-Za-z0-9_]+)\s+not found", re.IGNORECASE)
-_LOADED_SYNTH_RE = re.compile(r"SynthDef\s+preload\s+ok:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+# 🔴 FIX (живой инцидент 21.09.2026, Vision Pi): foxdot_init.sc поменял
+# формат подтверждения ещё в live-фиксе 30.08 ("SynthDef preload ok: X" →
+# "SynthDef in scsynth: X", см. docker/vision/voice_assistant/foxdot_init.sc
+# :159-179 — старая строка печаталась сразу после path.load(), то есть
+# подтверждала лишь то, что sclang СКОМПИЛИРОВАЛ .scd, а не что scsynth его
+# принял; Server.sync дал правдивое "ok", но заодно сменил текст лога).
+# Этот regex остался на старом тексте — 21.09.2026 валидатор рапортовал
+# "Missing critical SynthDefs: ..." на ВСЕ 11 критичных синтов, хотя
+# /tmp/sclang.log содержал ровно "SynthDef in scsynth: <name>" для каждого
+# из них (подтверждено grep -x на роботе). Тесты были зелёными, потому что
+# гоняли старую строку, которую sclang больше не печатает — см.
+# test_classify_sclang_log_matches_actual_foxdot_init_log_format ниже.
+# Оставляем ОБА варианта в одном regex — старый формат дёшево сохранить
+# для обратной совместимости (например, для логов, снятых до 30.08).
+_LOADED_SYNTH_RE = re.compile(
+    r"SynthDef\s+(?:preload\s+ok|in\s+scsynth):\s*([A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
 _FATAL_LOG_PATTERNS = (
     "syntax error",
     "Class not defined",
@@ -59,6 +76,35 @@ def format_music_stack_report(status: MusicStackStatus) -> str:
         lines.append("Fatal errors:")
         lines.extend(f"- {error}" for error in status.fatal_errors)
     return "\n".join(lines)
+
+
+def missing_log_hint(status: MusicStackStatus, log_path: str | Path) -> str | None:
+    """Return the "Log file not found" operator hint, or ``None``.
+
+    Issue #2716 (RAW from the Vision Pi, 22.09.2026): the sclang runtime was
+    healthy — ``/tmp/sclang.log`` existed and was read fine, 11 critical
+    SynthDefs simply had not confirmed into scsynth yet (or were reported
+    missing) — yet ``validate_music_stack.py`` printed ``Log file not
+    found: /tmp/sclang.log`` right below the report. The old condition in
+    that script's ``main()`` was ``not status.is_healthy and not
+    status.fatal_errors``: true for ANY degraded reason that isn't a fatal
+    sclang error, not just a missing file, so it fired even when the log
+    was right there with useful content. The operator followed the hint,
+    found the file present and non-empty, and had no idea the message was
+    simply wrong.
+
+    This helper makes the check honest: the hint only fires when the log
+    file is actually absent from disk. ``format_music_stack_report`` already
+    surfaces the "Missing sclang log file: ..." fatal error in that case
+    (see :func:`load_sclang_health`); this is the short, operator-facing
+    echo of the same fact, not an independent diagnosis.
+    """
+
+    if status.is_healthy:
+        return None
+    if Path(log_path).exists():
+        return None
+    return f"Log file not found: {log_path}"
 
 
 def contains_merge_conflict_markers(content: str) -> bool:
@@ -184,3 +230,66 @@ def load_sclang_health(
         )
 
     return classify_sclang_log(log_text, critical_synths=list(critical_synths or []))
+
+
+# ---------------------------------------------------------------------------
+# Issue #2838 — какие SynthDef-ы РЕАЛЬНО есть в scsynth
+# ---------------------------------------------------------------------------
+# Живой прогон 23.09.2026: валидатор синтов подсказал LLM 'sine' («Возможно,
+# имелся в виду 'sine'?»), она им воспользовалась — и scsynth 235 раз ответил
+# "SynthDef sine not found". Разрешённое множество строилось по тому, что
+# Python-сторона renardo ОТПРАВИЛА (sdef.add() → UDP /foxdot → sclang), а не по
+# тому, что сервер ПРИНЯЛ: /foxdot идёт по UDP без подтверждения, на порту
+# sclang 57120 копятся drops, и потерянный синт остаётся в «известных».
+#
+# Единственное подтверждение, которое у нас есть, — строки прелоада
+# foxdot_init.sc "SynthDef in scsynth: X", которые печатаются только ПОСЛЕ
+# Server.sync (т.е. scsynth обработал /d_recv). Им и верим.
+_PRELOAD_FINISHED_RE = re.compile(
+    r"SynthDef\s+preload\s+finished", re.IGNORECASE
+)
+
+
+def confirmed_synths_from_log(log_text: str) -> frozenset[str] | None:
+    """Имена SynthDef-ов, приход которых в scsynth подтвердил sclang.
+
+    Returns:
+        frozenset имён в нижнем регистре; ``None``, если прелоад в логе ещё
+        не завершён (нет строки "SynthDef preload finished") — тогда список
+        неполон и выдавать его за «всё, что есть на сервере» нельзя.
+        Имена, про которые позже в логе сказано "SynthDef X not found",
+        исключаются (та же логика, что в :func:`classify_sclang_log`).
+    """
+
+    if not _PRELOAD_FINISHED_RE.search(log_text):
+        return None
+    loaded: set[str] = set()
+    for line in log_text.splitlines():
+        loaded_match = _LOADED_SYNTH_RE.search(line)
+        if loaded_match:
+            loaded.add(loaded_match.group(1).lower())
+        missing_match = _MISSING_SYNTH_RE.search(line)
+        if missing_match:
+            loaded.discard(missing_match.group(1).lower())
+    return frozenset(loaded)
+
+
+def load_confirmed_synths(
+    log_path: str | Path | None = None,
+) -> frozenset[str] | None:
+    """Прочитать sclang-лог и вернуть :func:`confirmed_synths_from_log`.
+
+    Путь разрешается так же, как в :func:`load_sclang_health`. ``None`` —
+    лог отсутствует / не читается / прелоад не завершён.
+    """
+
+    resolved = (
+        Path(log_path)
+        if log_path is not None
+        else Path(os.environ.get("SCLANG_LOG_PATH", "/tmp/sclang.log"))
+    )
+    try:
+        log_text = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return confirmed_synths_from_log(log_text)

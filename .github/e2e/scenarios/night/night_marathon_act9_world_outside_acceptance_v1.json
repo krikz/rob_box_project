@@ -1,0 +1,22 @@
+{
+  "name": "night_marathon_act9_world_outside_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 9 — звуки/анимации/веб. Всё в gate работает локально или через",
+    "стабильный веб-поиск. Языковой зонд (n909) и estimate_tts_duration",
+    "(n910) вне gate — их красный это находка, а не регрессия."
+  ],
+  "expected_tool_calls": [
+    "play_sound",
+    "play_animation",
+    "search_web",
+    "get_sound_info"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

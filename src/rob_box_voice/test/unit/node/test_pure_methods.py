@@ -493,6 +493,33 @@ class TestBuildDynamicSystemContextTtsProvider:
         assert "provider: minimax" in ctx
 
 
+class TestBuildDynamicSystemContextTtsVoiceTag(object):
+    """Issue #2817 -- <tts_voice> otражает ФАКТИЧЕСКИЙ голос, а не
+    захардкоженный "Yandex_Maxim" (живой лог 23.09: реально говорил
+    MiniMax male-qn-qingse, а тег показывал Yandex-имя)."""
+
+    def test_default_voice_of_active_provider_without_state(self, node):
+        """Нет provider_state / current_voice -- дефолт АКТИВНОГО
+        провайдера (minimax), а не Yandex."""
+        ctx = node._build_dynamic_system_context()
+        assert "<tts_voice>male-qn-qingse</tts_voice>" in ctx
+        assert "Yandex_Maxim" not in ctx
+
+    def test_current_voice_set_via_set_voice(self, node):
+        """set_voice выставил ``_current_tts_voice`` -- тег его отражает."""
+        node._current_tts_voice = "Russian_ReliableMan"
+        ctx = node._build_dynamic_system_context()
+        assert "<tts_voice>Russian_ReliableMan</tts_voice>" in ctx
+
+    def test_actual_voice_after_fallback_wins(self, node):
+        """Фолбек minimax->yandex сообщил фактический голос (issue #1229) --
+        тег показывает его, а не номинальный provider'а/set_voice."""
+        node._actual_tts_provider = "yandex"
+        node._actual_tts_voice = "anton"
+        ctx = node._build_dynamic_system_context()
+        assert "<tts_voice>anton</tts_voice>" in ctx
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  _build_music_state_snapshot — issue #1544
 # ─────────────────────────────────────────────────────────────────────────────

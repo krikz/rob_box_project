@@ -2,7 +2,7 @@
 
 Covers the §8 / §11.2 acceptance criteria that depend only on the
 classifier and the bundled YAML catalog — no asyncio, no scheduler,
-no integration with :class:`DialogCore`. Companion to
+no integration with :class:`AgentCore`. Companion to
 ``test_acceptance_gate.py`` which exercises the runtime side.
 """
 

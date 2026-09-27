@@ -317,6 +317,205 @@ jobs:
             sleep 5
           done
 
+      # t_ea209b2d (issue #3018): привести systemd unit + health-monitor
+      # timer на Vision Pi к состоянию из репозитория. Проверяем не только
+      # source diff: первый deploy после merge этого PR должен мигрировать
+      # уже установленный старый unit, даже если setup_vision_pi.sh не менялся.
+      - name: "[Vision Pi] Reinstall Systemd Units + Health Timer (issue #3018)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔧 Checking Vision Pi systemd units + health timer"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Reinstall нужен, если source-файлы отличаются от develop ИЛИ
+          # установленный unit/timer ещё не соответствует текущему контракту.
+          # Последнее условие закрывает миграцию старых Pi после #2635/#2683.
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && \
+               diff -q scripts/setup/setup_vision_pi.sh <(git show origin/develop:scripts/setup/setup_vision_pi.sh) >/dev/null 2>&1 && \
+               diff -q scripts/monitoring/robbox_vision_health_check.sh <(git show origin/develop:scripts/monitoring/robbox_vision_health_check.sh) >/dev/null 2>&1 && \
+               systemctl cat robbox-vision.service >/dev/null 2>&1 && \
+               systemctl cat robbox-vision.service | grep -q '^Restart=on-failure$' && \
+               systemctl cat robbox-vision.service | grep -q '^ExecStart=/usr/bin/docker compose up -d --pull never$' && \
+               test -f /etc/systemd/system/robbox-vision-health.timer && \
+               systemctl is-enabled --quiet robbox-vision-health.timer && \
+               diff -q /usr/local/bin/robbox_vision_health_check.sh scripts/monitoring/robbox_vision_health_check.sh >/dev/null 2>&1"; then
+            echo "✅ Vision Pi systemd unit + health timer уже соответствуют develop — skip reinstall"
+          else
+            echo "⚠️  Vision Pi systemd/health state устарел или source изменился — переустанавливаем"
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              'set -e; export USER=ros2 HOME=/home/ros2 SUDO_PASSWORD=open; \
+               bash ~/rob_box_project/scripts/setup/reinstall_vision_pi_systemd.sh && \
+               echo "open" | sudo -S systemctl daemon-reload && \
+               echo "✅ systemd units + health-timer reinstalled"
+            '
+          fi
+      - name: "[Vision Pi] Ensure Hailo PCIe driver (#3090)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔧 Checking Hailo PCIe driver for running kernel"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project && echo 'open' | sudo -S bash scripts/setup/ensure_hailo_driver.sh"
+
+      - name: "[Vision Pi] Ensure HEF models (#2398, #2599) — Ресурсный пак"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧠 Ресурсный пак: HEF-модели на Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Этап 2 плана docs/plans/2026-09-15-resource-pack.md §7: вместо цикла
+          # по нескольким почти дословно одинаковым download_*_hef.sh — один
+          # вызов apply_resource_pack.sh с манифестом. НЕВЕРНО, ЧТО «новый
+          # HEF не требует правки этого workflow»: --only ниже и цикл
+          # HEF_MISSING перечисляют имена явно (issue #2599 PR-B, ArcFace —
+          # третий пример после yolov8n/retinaface). Новую запись в
+          # manifest.yaml обязательно добавить и сюда, иначе
+          # apply_resource_pack.sh её просто не тронет.
+          #
+          # /opt/rob_box/models монтируется в vision-hailo/vision-face как :ro,
+          # поэтому скачать модель может только хост — не контейнер. Скрипт
+          # идемпотентен: файл на месте + sha256 совпал → no-op без сети.
+          #
+          # Что значит код возврата скрипта (см. его шапку):
+          #   0 — всё на месте ЛИБО soft-ресурс не встал: это ОБЪЯВЛЕННАЯ
+          #       деградация, нода честно уходит в stub (ADR-0018),
+          #       restart-loop'а не будет — HEF открывается лениво, на первом
+          #       кадре. Деплой такой промах НЕ валит, как и раньше.
+          #   1 — sha256 не совпал (на диске/скачалось НЕ то) или не встал
+          #       hard-ресурс.
+          #   2 — сломан манифест или вызов.
+          # Коды 1/2 деплой ВАЛЯТ, и это осознанное изменение поведения:
+          # «скачалось не то» — не деградация, а неизвестное состояние робота,
+          # и узнавать о нём из логов через неделю мы уже пробовали.
+          #
+          # Факт наличия файла проверяем ОТДЕЛЬНО (test -f), а не только по коду
+          # возврата: `|| echo warning` красил шаг зелёным, и 15.09 деплой
+          # отрапортовал success, пока retinaface не встал вовсе (SHA-сравнение
+          # падало на регистре). Промах виден как GitHub-аннотация, а не только
+          # в сыром логе шага.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only yolov8n-hef,retinaface-hef,arcface-hef" || rp_rc=$?
+
+          HEF_MISSING=""
+          for hef in "yolov8n.hef" "retinaface_mobilenet_v1.hef" "arcface_mobilefacenet.hef"; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f /opt/rob_box/models/$hef"; then
+              echo "✅ $hef на месте"
+            else
+              HEF_MISSING="$HEF_MISSING $hef"
+              echo "::warning title=HEF missing::$hef не встал на Vision Pi — real-инференс уйдёт в degraded (вывод скрипта выше)"
+            fi
+          done
+          if [ -n "$HEF_MISSING" ]; then
+            echo "⚠️  Отсутствуют HEF:$HEF_MISSING — проверить [Vision Pi] Check Container Logs на 'HEF loader failed'"
+          fi
+          if [ "$rp_rc" -ne 0 ]; then
+            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc — sha256 mismatch или сломанный манифест, см. вывод шага выше"
+            exit "$rp_rc"
+          fi
+
+      - name: "[Vision Pi] Ensure STT/TTS models (Ресурсный пак, Этап 3)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🗣  Ресурсный пак: Vosk + Silero на Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Этап 3 плана docs/plans/2026-09-15-resource-pack.md §7.
+          # РАНЬШЕ обе модели (~227 МиБ на диске, измерено на Vision Pi
+          # 21.09.2026 — не «113 МБ», как говорили комментарии) лежали
+          # ВНУТРИ образа voice-base:
+          # их качала ступень сборки, и сборка падала целиком при недоступной
+          # сети. Теперь их кладёт на хост этот шаг, а voice-assistant видит
+          # их через bind-mount /opt/rob_box/models:/models:ro. Пути внутри
+          # контейнера не изменились (stt_node.yaml:8, tts_node.py:1853).
+          #
+          # ОТДЕЛЬНЫЙ шаг от HEF намеренно: у HEF записи soft (нет модели →
+          # нода в stub, деплой жив), у Vosk/Silero — hard (без модели
+          # stt_node не стартует вовсе). Разные последствия должны и падать
+          # по-разному, иначе в логе непонятно, что именно случилось.
+          #
+          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
+          # voice-assistant стартует с пустым /models.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only vosk-ru-small,silero-tts-v5-ru" || rp_rc=$?
+
+          # Проверяем ФАКТ наличия, а не только код возврата (§11.5 плана):
+          # sentinel-файлы те же, что проверял Dockerfile до переезда.
+          MODELS_MISSING=""
+          for probe in \
+            "/opt/rob_box/models/vosk-model-small-ru-0.22/README" \
+            "/opt/rob_box/models/silero/v5_ru.pt"; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $probe"; then
+              echo "✅ $probe на месте"
+            else
+              MODELS_MISSING="$MODELS_MISSING $probe"
+              echo "::error title=Model missing::$probe не встал на Vision Pi — stt_node/tts_node не поднимутся"
+            fi
+          done
+
+          if [ "$rp_rc" -ne 0 ] || [ -n "$MODELS_MISSING" ]; then
+            echo "::error title=Resource pack failed::STT/TTS модели не разложены (exit=$rp_rc, missing:$MODELS_MISSING)"
+            echo "Откат: см. docs/plans/2026-09-15-resource-pack.md §7 Этап 3 — вернуть ступень скачивания в voice_base/Dockerfile."
+            exit 1
+          fi
+
+      - name: "[Vision Pi] Ensure Renardo samples (Ресурсный пак, хук)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎵 Ресурсный пак: Renardo/FoxDot сэмплы на Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # РАНЬШЕ сэмплы (~600 МБ) ехали ОТДЕЛЬНЫМ образом voice-resources:
+          # его тянул с registry one-shot контейнер voice-resources-init при
+          # каждом деплое и раскладывал в named-volume renardo_samples. Образ,
+          # init-контейнер, volume и предыдущий шаг «Run voice-resources-init»
+          # удалены: сэмплы кладёт на хост этот шаг, а supercollider и
+          # voice-assistant видят их bind-mount'ом /opt/rob_box/samples.
+          # Пути ВНУТРИ контейнеров не изменились.
+          #
+          # ОТДЕЛЬНЫЙ шаг от STT/TTS-моделей намеренно, по той же причине, по
+          # которой HEF отделён от моделей: у сэмплов запись soft (нет сэмплов
+          # → музыка в synth-only, диалог/STT/TTS живы), у Vosk/Silero — hard
+          # (нет модели → stt_node не стартует вовсе). Слить их в один --only
+          # значило бы либо ронять деплой из-за музыки, либо перестать ронять
+          # его из-за распознавания речи: шаг выше проверяет наличие каждого
+          # своего sentinel-файла через `exit 1`, и сэмплы в этом списке вели
+          # бы себя как hard-ресурс вопреки манифесту.
+          #
+          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
+          # первый старт стека получит пустой bind-mount.
+          #
+          # Первый прогон на «чистом» роботе качает ~600 МБ и идёт долго;
+          # дальше это no-op по маркеру 0_foxdot_default/downloaded_at.txt,
+          # без единого сетевого запроса.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples" || rp_rc=$?
+
+          # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
+          # маркер тот же, на котором стоит идемпотентность фетчера.
+          SAMPLES_MARKER="/opt/rob_box/samples/0_foxdot_default/downloaded_at.txt"
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $SAMPLES_MARKER"; then
+            echo "✅ Renardo сэмплы на месте ($SAMPLES_MARKER)"
+          else
+            echo "::warning title=Renardo samples missing::сэмплы не разложены — музыка уйдёт в synth-only (MusicSkill не найдёт WAV, scsynth не прочитает буферы). Диалог/STT/TTS не затронуты."
+            echo "⚠️  Проверить: [Vision Pi] Check Container Logs на 'samples not found' / 'Buffer UGen: no buffer data'"
+          fi
+
+          # exit 1 только на 1/2 от самого скрипта (сломанный манифест,
+          # неизвестный хук). Отсутствие soft-ресурса скрипт кодом 0 и
+          # отдаёт — деплой из-за музыки не падает.
+          if [ "$rp_rc" -ne 0 ]; then
+            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc на renardo-samples — сломан манифест или вызов, см. вывод выше"
+            exit "$rp_rc"
+          fi
+
       - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
         if: '!inputs.dry_run'
         run: |
@@ -334,6 +533,10 @@ jobs:
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # --policy always обязателен: у сервисов vision стоит
+          # pull_policy: if_not_present (#2634, чтобы up -d работал без сети),
+          # и голый `compose pull` молча пропускает уже скачанный :dev —
+          # робот оставался на старых образах (issue #2609, 16.09).
           echo "📦 Pulling Docker images on Vision Pi..."
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -343,7 +546,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
+             docker compose pull --policy always --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       # ==================== TIME SYNC ====================
@@ -377,38 +580,48 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Ретро 14.08 t_d01fe536: одноразовый init-контейнер voice-resources-init
-          # (Exited) из прошлого деплоя блокирует compose up — «Conflict. The container
-          # name /voice-resources-init is already in use» + «network vision_default already
-          # exists» (deploy round-109 06:03Z упал на этом).
+          # ИСТОРИЯ (issue #2095, PR #2120, PR #2634): здесь годами жил фикс
+          # гонки вокруг one-shot контейнера voice-resources-init — его
+          # выносили в отдельный sync-шаг, исключали из основного `up -d`
+          # (сначала `--scale voice-resources-init=0`, потом `profiles: [init]`),
+          # вычищали exited-контейнер, чтобы `depends_on:
+          # service_completed_successfully` не ловил «No such container: <HASH>».
+          # Всей этой конструкции больше нет: сэмплы приезжают на хост
+          # шагом «Ensure Renardo samples» ДО старта стека, init-контейнер и
+          # его образ удалены, ждать в compose нечего.
+          # Списки сервисов позиционными аргументами по-прежнему не используем —
+          # они рассинхронизируются с compose-файлом при добавлении сервиса.
           #
-          # Ретро 18.08 t_9d35468d (round-130): docker rm -f + network rm БЫЛО НЕДОСТАТОЧНО.
-          # Демон docker удерживает name-slot для свеже-удалённого контейнера ~5-6 секунд,
-          # и при повторном deploy (после предыдущего fail) compose up получает
-          # «Conflict. The container name /voice-resources-init is already in use by
-          # container HASH» — даже после того, как `docker rm -f` удалил контейнер
-          # по имени. Это intermittent: первый прогон после простоя — OK, повторный
-          # через <30s — fail.
-          #
-          # Фикс:
-          # 1) `docker container prune -f` — сбрасывает ВСЕ stopped-контейнеры
-          #    (защита от stale name-slot, не только voice-resources-init);
-          # 2) `docker rm -f voice-resources-init` — точечно для one-shot init;
-          # 3) `docker network rm vision_default` — stale-сеть;
-          # 4) `docker compose up -d --force-recreate --pull never` — compose
-          #    принудительно пересоздаёт контейнеры, а не переиспользует (осторожно:
-          #    он ещё и down не делает, см. step Stop Containers выше).
-          #    NB: --force-recreate тут безопасен — Stop Containers уже сделал down.
+          # Issue #2499 / deploy run #34920120730 (round-403): race в docker daemon
+          # name-slot release после `compose down`. Логика фикса:
+          # 1) Stop Containers делает `docker compose down --remove-orphans` — daemon
+          #    маркирует контейнеры как Removed, но name-slot для container_name
+          #    (zenoh-router-vision, supercollider, …) иногда остаётся зарезервированным
+          #    на короткое окно (3-4 сек в нашем случае: Removed в 02:10:53,
+          #    новый `compose up -d` в 02:13:29 → Conflict «already in use by ca436eff…»).
+          # 2) `docker container prune -f` НЕ освобождает name-slot удалённых
+          #    контейнеров (reclaimed 0B, что и видим в логе).
+          # 3) Фикс: явный `docker rm -f` для ВСЕХ контейнеров с compose-label
+          #    ПЕРЕД `compose up`. Через `label=com.docker.compose.project` —
+          #    универсально, не зависит от списка container_name в yaml
+          #    (а их 16 на vision, 11 на main — хардкод хрупкий и будет рассинхрон).
+          #    Fallback `docker network rm vision_default` остаётся на случай,
+          #    если daemon держит сеть после неудачного recreate.
+          # 4) `docker ps -a --filter` идёт ПОСЛЕ prune, чтобы не удалить
+          #    контейнеры, которые уже удалены (prune их не трогает, но
+          #    `docker rm -f` на missing — это OK благодаря || true).
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             echo '🔧 retro t_d01fe536+t_9d35468d: cleanup stale containers/networks'; \
-             docker rm -f voice-resources-init 2>/dev/null || true; \
+             echo '🔧 retro t_d01fe536+t_9d35468d+round-403: cleanup stale containers/networks'; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
-             docker compose up -d --force-recreate --pull never"
+             echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
+             docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
+             echo '🚀 compose up'; \
+             docker compose up -d --force-recreate --pull never --remove-orphans"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -468,7 +681,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
+             docker compose pull --policy always --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       # ==================== TIME SYNC ====================
@@ -505,6 +718,15 @@ jobs:
           # Ретро 18.08 t_9d35468d: на Vision Pi был race на name-slot после `docker rm -f`
           # (docker daemon удерживает имя ~5-6s). Защищаем Main Pi тем же набором:
           # `docker container prune -f` + `--force-recreate` (Stop Containers уже сделал down).
+          #
+          # Issue #2499 / deploy run #34920120730 (round-403): на Vision Pi
+          # увидели, что prune+down НЕ освобождают name-slot для удалённого
+          # контейнера (reclaimed 0B, но Conflict «already in use» пришёл на
+          # следующий `compose up`). Применяем явный `docker rm -f` для всех
+          # compose-контейнеров здесь — defense-in-depth, чтобы Main Pi не
+          # словил тот же race (container_name: zenoh-router, twist-mux и т.д.).
+          # `label=com.docker.compose.project=main` фильтрует только контейнеры
+          # этого compose-проекта, не трогает чужие.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
@@ -512,6 +734,8 @@ jobs:
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
              docker container prune -f 2>/dev/null || true; \
+             echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
+             docker ps -a --filter 'label=com.docker.compose.project=main' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
              docker compose up -d --force-recreate --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
@@ -528,112 +752,138 @@ jobs:
 
       # ==================== POST-DEPLOY CLEANUP ====================
 
-      - name: "[Vision Pi] Cleanup Docker Artifacts"
+      - name: "[Vision Pi + Main Pi] Cleanup Docker Artifacts (parallel)"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 Cleaning up unused Docker artifacts on Vision Pi..."
+          echo "🧹 Cleaning up unused Docker artifacts on both Pi (parallel)..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
+          # Разбор тайминга деплоя run 35645507502 (16m41s vs обычных ~8-9м,
+          # docs/plans/2026-09-21-cicd-pipeline-handoff.md): два этих шага были
+          # последовательными (Vision 56с + Main 7с в этом прогоне) при том, что
+          # это две независимые SSH-сессии на два разных хоста — ни один не
+          # читает вывод другого, ни один более поздний шаг не смотрит на
+          # id/outputs этих двух (в отличие от Check Container Status ниже,
+          # чьи outputs разбирает "Deployment Summary" — те НЕ трогаем).
+          # Объединение меняет только время выполнения (сумма → максимум),
+          # не поведение: обе ветки по-прежнему `|| warning`, шаг по-прежнему
+          # никогда не проваливает деплой сам по себе.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker system df && \
              docker image prune -af && \
              docker builder prune -af && \
              docker system df" \
-            || echo "⚠️  Warning: Docker cleanup failed on Vision Pi"
-
-      - name: "[Main Pi] Cleanup Docker Artifacts"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 Cleaning up unused Docker artifacts on Main Pi..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            > "${RUNNER_TEMP}/cleanup_vision.log" 2>&1 \
+            || echo "⚠️  Warning: Docker cleanup failed on Vision Pi" >> "${RUNNER_TEMP}/cleanup_vision.log" &
+          VISION_CLEANUP_PID=$!
 
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker system df && \
              docker image prune -af && \
              docker builder prune -af && \
              docker system df" \
-            || echo "⚠️  Warning: Docker cleanup failed on Main Pi"
+            > "${RUNNER_TEMP}/cleanup_main.log" 2>&1 \
+            || echo "⚠️  Warning: Docker cleanup failed on Main Pi" >> "${RUNNER_TEMP}/cleanup_main.log" &
+          MAIN_CLEANUP_PID=$!
+
+          # wait на каждый PID отдельно и без учёта кода возврата — как и
+          # раньше, провал очистки только предупреждает (`|| echo warning`
+          # уже внутри каждой фоновой ветки), деплой из-за неё не падает.
+          wait "$VISION_CLEANUP_PID" || true
+          wait "$MAIN_CLEANUP_PID" || true
+
+          echo "--- [Vision Pi] ---"
+          cat "${RUNNER_TEMP}/cleanup_vision.log"
+          echo "--- [Main Pi] ---"
+          cat "${RUNNER_TEMP}/cleanup_main.log"
 
       # ==================== HEALTH CHECKS ====================
 
       - name: "[Vision Pi] Check Container Status"
         if: '!inputs.dry_run'
         id: vision_status
+        # Source-of-truth для логики вынесен в .github/scripts/check_container_status.sh
+        # (рефакторинг после #2122 — ретро run 34153246013). Скрипт покрыт
+        # регрессионным тестом .github/scripts/tests/test_check_container_status.sh
+        # (14 ассертов, 7 сценариев) и CI G-Check-Container-Status-Tests. Здесь
+        # только тонкий wrapper: выставляем env и парсим JSON-результат.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Vision Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
 
-          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
+          # CONFIRM_INTERVAL=15 не новая константа: это уже принятое в этом
+          # workflow значение SSH keepalive (ServerAliveInterval=5 ×
+          # ServerAliveCountMax=3, см. "Setup SSH and Environment") и совпадает
+          # с interval: 15s healthcheck самого quest-сервиса.
+          PI_HOST="${{ env.vision_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/vision' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          CONFIRM_INTERVAL=15 \
+          SUMMARY_FILE=vision_status_summary.txt \
+          FINDINGS_FILE="$VISION_FINDINGS_FILE" \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          SCOPE=vision \
+            bash .github/scripts/check_container_status.sh > /tmp/vision_status.json
 
-          echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
+          # Гарантируем наличие файла (на случай если скрипт упал до записи)
+          touch vision_status_summary.txt
 
-          # Проверяем наличие падших контейнеров
-          FAILED_COUNT=$(echo "$STATUS" | jq -r 'select(.State != "running") | .Name' | wc -l)
-          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+          VISION_HEALTHY=$(jq -r '.healthy' /tmp/vision_status.json)
+          VISION_FAILED_COUNT=$(jq -r '.failed_count' /tmp/vision_status.json)
 
-          if [ "$FAILED_COUNT" -gt 0 ]; then
-            echo "❌ $FAILED_COUNT container(s) not running on Vision Pi"
-            echo "vision_healthy=false" >> $GITHUB_OUTPUT
-            echo "$STATUS" | jq -c 'select(.State != "running") | {container: .Name, state: .State}' | while read -r item; do
-              CONTAINER_NAME=$(echo "$item" | jq -r '.container')
-              CONTAINER_STATE=$(echo "$item" | jq -r '.state')
-              jq -nc \
-                --arg environment "${{ inputs.environment }}" \
-                --arg scope "vision" \
-                --arg container "$CONTAINER_NAME" \
-                --arg kind "container_status" \
-                --arg severity "critical" \
-                --arg summary "Container is not running" \
-                --arg raw_text "Container state: $CONTAINER_STATE" \
-                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
-                >> "$VISION_FINDINGS_FILE"
-            done
+          echo "vision_healthy=$VISION_HEALTHY" >> $GITHUB_OUTPUT
+          echo "failed_count=$VISION_FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$VISION_HEALTHY" = "true" ]; then
+            echo "✅ All Vision Pi containers running and confirmed stable"
           else
-            echo "✅ All Vision Pi containers running"
-            echo "vision_healthy=true" >> $GITHUB_OUTPUT
+            echo "❌ $VISION_FAILED_COUNT container(s) unhealthy on Vision Pi"
+            echo "--- vision_status_summary.txt ---"
+            cat vision_status_summary.txt
           fi
 
       - name: "[Main Pi] Check Container Status"
         if: '!inputs.dry_run'
         id: main_status
+        # См. комментарий в "[Vision Pi] Check Container Status" — та же
+        # логика (двухзамерная проверка через docker inspect, см. скрипт
+        # .github/scripts/check_container_status.sh), но для Main Pi.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Main Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
 
-          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose ps --format json')
+          PI_HOST="${{ env.main_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/main' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          CONFIRM_INTERVAL=15 \
+          SUMMARY_FILE=main_status_summary.txt \
+          FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          SCOPE=main \
+            bash .github/scripts/check_container_status.sh > /tmp/main_status.json
 
-          echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
+          touch main_status_summary.txt
 
-          # Проверяем наличие падших контейнеров
-          FAILED_COUNT=$(echo "$STATUS" | jq -r 'select(.State != "running") | .Name' | wc -l)
-          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+          MAIN_HEALTHY=$(jq -r '.healthy' /tmp/main_status.json)
+          MAIN_FAILED_COUNT=$(jq -r '.failed_count' /tmp/main_status.json)
 
-          if [ "$FAILED_COUNT" -gt 0 ]; then
-            echo "❌ $FAILED_COUNT container(s) not running on Main Pi"
-            echo "main_healthy=false" >> $GITHUB_OUTPUT
-            echo "$STATUS" | jq -c 'select(.State != "running") | {container: .Name, state: .State}' | while read -r item; do
-              CONTAINER_NAME=$(echo "$item" | jq -r '.container')
-              CONTAINER_STATE=$(echo "$item" | jq -r '.state')
-              jq -nc \
-                --arg environment "${{ inputs.environment }}" \
-                --arg scope "main" \
-                --arg container "$CONTAINER_NAME" \
-                --arg kind "container_status" \
-                --arg severity "critical" \
-                --arg summary "Container is not running" \
-                --arg raw_text "Container state: $CONTAINER_STATE" \
-                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
-                >> "$MAIN_FINDINGS_FILE"
-            done
+          echo "main_healthy=$MAIN_HEALTHY" >> $GITHUB_OUTPUT
+          echo "failed_count=$MAIN_FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$MAIN_HEALTHY" = "true" ]; then
+            echo "✅ All Main Pi containers running and confirmed stable"
           else
-            echo "✅ All Main Pi containers running"
-            echo "main_healthy=true" >> $GITHUB_OUTPUT
+            echo "❌ $MAIN_FAILED_COUNT container(s) unhealthy on Main Pi"
+            echo "--- main_status_summary.txt ---"
+            cat main_status_summary.txt
           fi
 
       - name: "[Vision Pi] Check Container Logs"
@@ -1157,6 +1407,41 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           MARKER="deploy-fail:${BRANCH}:${ENV_NAME}:$(date -u +%Y-%m-%d)"
 
+          # DoD (branch z-{agent}/deploy-verify-catch-restarting): issue должен
+          # содержать имя контейнера, его State.Status и хвост логов, а не только
+          # ссылку на run. vision_status_summary.txt/main_status_summary.txt
+          # (из "[Vision/Main Pi] Check Container Status") и
+          # vision_logs.txt/main_logs.txt (из "[Vision/Main Pi] Check Container
+          # Logs") — файлы в рабочей директории джобы, живут между шагами одного
+          # job на self-hosted runner (checkout --clean был только один раз в
+          # начале job).
+          DIAGNOSTICS_FILE="$(mktemp)"
+          : > "$DIAGNOSTICS_FILE"
+          for f in vision_status_summary.txt main_status_summary.txt; do
+            if [ -s "$f" ]; then
+              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_status_summary.txt" ] && SCOPE_LABEL="Main Pi"
+              {
+                echo "### ${SCOPE_LABEL}: unhealthy/restart-looping containers"
+                echo '```'
+                cat "$f"
+                echo '```'
+                echo ''
+              } >> "$DIAGNOSTICS_FILE"
+            fi
+          done
+          for f in vision_logs.txt main_logs.txt; do
+            if [ -s "$f" ]; then
+              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_logs.txt" ] && SCOPE_LABEL="Main Pi"
+              {
+                echo "### ${SCOPE_LABEL}: log tail (critical/warning findings)"
+                echo '```'
+                tail -c 4000 "$f"
+                echo '```'
+                echo ''
+              } >> "$DIAGNOSTICS_FILE"
+            fi
+          done
+
           # Дедуп: открытый issue с тем же маркером уже есть → не плодим дубликат,
           # только комментируем новый run (ретро 14.08: старый шаг был отключён
           # именно из-за дубликатов).
@@ -1167,24 +1452,34 @@ jobs:
             # не имеют hermes-метки → триаж их не видит. Догоняем метки здесь,
             # чтобы существующий issue тоже стал kanban-карточкой.
             gh issue edit "$EXISTING" --repo "${{ github.repository }}" --add-label hermes --add-label agent:devops >/dev/null 2>&1 || true
-            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body \
-              "Ещё один failing deploy run: $RUN_URL" >/dev/null 2>&1 || true
+            COMMENT_FILE="$(mktemp)"
+            {
+              echo "Ещё один failing deploy run: $RUN_URL"
+              echo ''
+              cat "$DIAGNOSTICS_FILE"
+            } > "$COMMENT_FILE"
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body-file "$COMMENT_FILE" >/dev/null 2>&1 || true
+            rm -f "$COMMENT_FILE" "$DIAGNOSTICS_FILE"
             exit 0
           fi
 
           BODY_FILE="$(mktemp)"
-          printf '%s\n' \
-            '## 🚨 Deployment Completed With Issues' \
-            '' \
-            "<!-- deploy-signature: ${MARKER} -->" \
-            '' \
-            "**Branch:** \`${BRANCH}\`" \
-            "**Environment:** \`${ENV_NAME}\`" \
-            "**Timestamp:** ${TS}" \
-            "**Workflow Run:** ${RUN_URL}" \
-            '' \
-            'Deployment completed with issues (non-success status). See the workflow log for details.' \
-            > "$BODY_FILE"
+          {
+            printf '%s\n' \
+              '## 🚨 Deployment Completed With Issues' \
+              '' \
+              "<!-- deploy-signature: ${MARKER} -->" \
+              '' \
+              "**Branch:** \`${BRANCH}\`" \
+              "**Environment:** \`${ENV_NAME}\`" \
+              "**Timestamp:** ${TS}" \
+              "**Workflow Run:** ${RUN_URL}" \
+              '' \
+              'Deployment completed with issues (non-success status). See details below and the workflow log.' \
+              ''
+            cat "$DIAGNOSTICS_FILE"
+          } > "$BODY_FILE"
+          rm -f "$DIAGNOSTICS_FILE"
 
           gh issue create \
             --repo "${{ github.repository }}" \

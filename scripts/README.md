@@ -11,6 +11,13 @@ Docker image building and CI/CD utilities
 - `patch_*_workflows.sh` - CI/CD workflow patches
 - 📖 See [build/README_DOCKER_MANAGEMENT.md](build/README_DOCKER_MANAGEMENT.md) for detailed Docker documentation
 
+### [dialogue/](dialogue/)
+Local text chat with the robot's dialogue system — no ROS2 required
+- `run.ps1` / `run.sh` - Start the chat (picks the repo `.venv`, forces UTF-8)
+- `chat.py` - REPL around the same `DialogCore` the robot runs
+- `local_tools.py` - Simulated tool provider (real catalog, faked hardware)
+- 📖 See [dialogue/README.md](dialogue/README.md) — what matches the robot and what doesn't
+
 ### [diagnostics/](diagnostics/)
 System diagnostic and troubleshooting tools
 - `diagnose_data_flow.sh` - Camera data flow Vision→Main
@@ -51,6 +58,9 @@ Animation and graphics tools
 ## 🚀 Quick Examples
 
 ```bash
+# Chat with the robot's dialogue system locally (no ROS2)
+./scripts/dialogue/run.sh
+
 # Build Docker image locally
 ./scripts/build/local-build.sh voice-assistant
 

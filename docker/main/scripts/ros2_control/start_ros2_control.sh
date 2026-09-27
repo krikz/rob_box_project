@@ -26,7 +26,17 @@ echo -e "${BLUE}═════════════════════�
 # CAN_INTERFACE можно переопределить через environment variable
 # Поддерживаемые значения: can0, can1
 CAN_INTERFACE="${CAN_INTERFACE:-can0}"
-URDF_PATH="${URDF_PATH:-/ws/src/rob_box_description/urdf/rob_box.xacro}"
+# URDF_PATH: после PR #2726 (builder/runtime seam) /ws/src в runtime-образе
+# НЕ существует — только /ws/install копируется через COPY --from=builder.
+# rob_box_description/CMakeLists.txt делает `install(DIRECTORY ... DESTINATION share/${PROJECT_NAME})`,
+# и colcon build в builder-стадии кладёт .xacro в
+# /ws/install/rob_box_description/share/rob_box_description/urdf/rob_box.xacro
+# (стандартный ament layout: install/<pkg>/share/<pkg>/...). Ссылка на
+# meshes/*.stl остаётся через `package://rob_box_description/...` и
+# резолвится ROS'ом через AMENT_PREFIX_PATH после source /ws/install/setup.bash.
+# Это и есть фикс регрессии #2727 (deploy run 35645507502,
+# ros2-control RestartCount=11 — URDF not found).
+URDF_PATH="${URDF_PATH:-/ws/install/rob_box_description/share/rob_box_description/urdf/rob_box.xacro}"
 CONTROLLER_CONFIG="${CONTROLLER_CONFIG:-/config/shared/controllers/controller_manager.yaml}"
 
 # Валидация CAN интерфейса

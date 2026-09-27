@@ -114,6 +114,11 @@ class PlaySoundTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: sound-эффекты. personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         """Звуки — fire-and-forget: публикуем триггер и возвращаемся немедленно.
 

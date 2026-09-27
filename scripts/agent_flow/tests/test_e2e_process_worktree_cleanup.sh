@@ -76,21 +76,15 @@ assert_contains() {  # $1=needle $2=haystack $3=msg
     esac
 }
 
-# extract_funcs <script> <func_name>... — печатает определения функций
-# (включая вложенные helper'ы, которые они вызывают). Простая эвристика:
-# находим строку `^<func>() {` и копируем до следующей `^}`.
+# extract_funcs — извлечь функции из скрипта для последующего eval/source.
+# Использует shared lib (issue #2295) — единственный источник истины для
+# brace-tracking awk. Тест передаёт (script, fn, [ignored-extra]) — лишние
+# аргументы оставлены ради backward-compat с прежним локальным API.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_LIB_DIR/lib/lib_eval_func.sh"
 extract_funcs() {
-    local script="$1"; shift
-    local func="$1"
-    awk -v fn="$func" '
-        $0 ~ "^"fn"\\(\\) \\{" { capture=1; depth=0 }
-        capture {
-            print
-            n=gsub(/\\{/, "{"); depth+=n
-            n=gsub(/\\}/, "}"); depth-=n
-            if (depth==0 && /^}/) { capture=0 }
-        }
-    ' "$script"
+    local script="$1" func="$2"
+    extract_func_or_die "$script" "$func"
 }
 
 # load_cleanup_helpers — создаёт поддельный REPO_DIR и source'ит функции

@@ -1,0 +1,1040 @@
+#!/bin/bash
+# ============================================================================
+# lib_agent_flow_common.sh — общие помощники процессных скриптов agent-flow.
+#
+# SOT (source-of-truth): <repo>/scripts/agent_flow/lib_agent_flow_common.sh
+# Правим ТОЛЬКО здесь + commit + merge в develop. На хост раскладывает
+# `bash <repo>/scripts/agent_flow/install.sh` — hardlink-копиями (cp -al), НЕ
+# симлинками: симлинк в ~/.hermes/scripts/ ресолвится наружу и отклоняется
+# guard'ом hermes-agent scheduler.py::_validate_script_path (ретро 11.08
+# t_a6a236e0d9f0470e — 50 упавших тиков подряд, 1ч42м даунтайма).
+# Полный список путей раскладки — в install.sh, сверку копий держит
+# agent-flow-drift-detect.sh. Ручная правка копии на хосте затрётся.
+#
+# Зачем (дедуп процессного слоя 30.08):
+#   До этого одно и то же жило копипастой по шести скриптам —
+#   gh_list_issues_by_label ×4 (135 лишних строк), detect_pr_kind ×2,
+#   free_stale_worktrees_for ×2, slugify ×3, has_label ×4, .env-загрузчик ×5,
+#   flock-преамбула ×5, MAINTENANCE-гейт ×4. Копии успели разъехаться
+#   дефолтами и текстами логов, а один и тот же баг приходилось чинить в
+#   четырёх местах (или, чаще, в одном — см. updated_at ниже).
+#
+#   Кто что берёт: triage / merge-gate / e2e-process / deploy-sweep — почти
+#   всё; unlabeled-sweep — has_label + оба гейта; handoff — .env + оба гейта.
+#
+# ⚠️ ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ (урок хендофа 30.08 §6: совпадение имени —
+#    гипотеза, а не диагноз):
+#   - `log()` — у каждого скрипта свой LOG_PREFIX. Функции ниже зовут
+#     `_af_log`, который делегирует в `log`, если тот уже определён.
+#   - `has_label` из agent-flow-deploy-sweep.sh НЕ сведён с остальными: там
+#     на вход приходит labels **JSON** от `gh issue view --json labels`, а у
+#     merge-gate / e2e-process / unlabeled-sweep — labels **CSV**. Одно имя,
+#     два контракта. Обе версии здесь, но под разными именами:
+#     `has_label` (CSV) и `has_label_json` (JSON).
+#
+# Использование (после `set -euo pipefail` и определения своего `log`):
+#   _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+#   # shellcheck source=lib_agent_flow_common.sh
+#   . "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# _af_log <msg...> — внутренний лог библиотеки.
+#
+# Делегирует в `log` вызывающего скрипта, если тот определён (у каждого свой
+# LOG_PREFIX), иначе печатает сам. Проверка через declare -F, а не наличие
+# переменной, — на момент source'а `log` ещё может быть не определён, а на
+# момент ВЫЗОВА функций ниже уже определён.
+# ---------------------------------------------------------------------------
+_af_log() {
+    if declare -F log >/dev/null 2>&1; then
+        log "$@"
+    else
+        printf '[agent-flow] %s %s\n' "$(date -Iseconds)" "$*" >&2
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# af_summary_set <kind> [reason...] — запомнить «причину» текущего tick'а.
+#
+# Зачем (issue #2329): скрипты agent-flow пишут логи в stderr (by-design),
+# поэтому stdout при «ничего не делал» (lock held, MAINTENANCE, ночное окно,
+# rate-limit, gh-auth-fail, успешный tick без работы) — пустой, и Hermes cron
+# scheduler.py:5637-5646 сохраняет в output/<job-id>/...md placeholder 156 байт
+# «silent (empty output)». Это нарушает observability по ADR-0018 (honest
+# reporting) и ADR-0116 (nightly-review-persistence): человек, читающий
+# output/-каталог, не видит, какой именно gate skip'нул тик.
+#
+# Контракт: перед `exit 0/1` скрипт зовёт `af_summary_set <kind> <reason>`,
+# а затем `af_summary_emit`. emit пишет ОДНУ строку в stdout вида
+#   summary: kind=<kind> exit=<code> reason="<reason>"
+# (без timestamp, без перевода строки в середине — Hermes cron выводит её
+# как есть в output/-файл).
+#
+# Kind — короткий slug (lock / maintenance / window / sentinel / auth /
+# no-work / ok / error / dry-run / self-test). Reason — произвольный текст
+# (пробелы допустимы, но `\n` — нет: cron ожидает одну строку).
+#
+# Идемпотентность: повторный вызов emit (например, из cleanup-trap после
+# явного emit перед exit) — no-op (флаг _AF_SUMMARY_EMITTED=1).
+# Подавление: _AF_SUPPRESS_SUMMARY=1 для --self-test режимов.
+#
+# Use:
+#   af_summary_set lock "another instance holds $LOCK_FILE"
+#   af_summary_emit 0
+#   exit 0
+# ---------------------------------------------------------------------------
+af_summary_set() {
+    _AF_SUMMARY_KIND="${1:-no-work}"
+    shift || true
+    _AF_SUMMARY_REASON="$*"
+}
+af_summary_kind() { printf '%s' "${_AF_SUMMARY_KIND:-no-work}"; }
+af_summary_reason() { printf '%s' "${_AF_SUMMARY_REASON:-}"; }
+af_summary_emit() {
+    local _ec="${1:-$?}"
+    if [ "${_AF_SUMMARY_EMITTED:-0}" = "1" ]; then return 0; fi
+    _AF_SUMMARY_EMITTED=1
+    if [ "${_AF_SUPPRESS_SUMMARY:-0}" = "1" ]; then return 0; fi
+    printf 'summary: kind=%s exit=%s reason="%s"\n' \
+        "${_AF_SUMMARY_KIND:-no-work}" "${_ec}" "${_AF_SUMMARY_REASON:-}"
+}
+: "${_AF_SUMMARY_KIND:=no-work}"
+: "${_AF_SUMMARY_REASON:=}"
+
+# ---------------------------------------------------------------------------
+# af_load_profile_env [env_path] — подгрузить profile .env.
+#
+# Приоритет: env вызывающего > .env > дефолты скрипта. Намеренно БЕЗ `set -a`:
+# он затёр бы override'ы вызывающего, а на них держатся тесты и cron-флаги.
+# Пустое значение считается «не задано».
+#
+# Дефолты (`: "${X:=...}"`) НЕ здесь — они у каждого скрипта свои.
+# ---------------------------------------------------------------------------
+af_load_profile_env() {
+    # Аргумент $1 — желаемый путь. Если файла нет — пробуем fallback-кандидаты
+    # (per-profile gateway может передать HERMES_HOME=<profile_dir>; тогда
+    # прямой путь уйдёт мимо реальной иерархии и GH_REPO не загрузится).
+    # Ретро 12.08 t_061d466e + ретро 31.08 t_18941c54 (deploy-sweep).
+    local _env_path="" _cand
+    if [ -n "${1:-}" ] && [ -f "$1" ]; then
+        _env_path="$1"
+    else
+        for _cand in \
+            "/home/builder/.hermes/profiles/agent-flow/.env" \
+            "${HERMES_HOME}/profiles/agent-flow/.env" \
+            "${HOME}/hermes/profiles/agent-flow/.env" \
+            "${HOME}/.hermes/profiles/agent-flow/.env"; do
+            [ -f "$_cand" ] && { _env_path="$_cand"; break; }
+        done
+    fi
+    unset _cand
+    [ -z "$_env_path" ] && return 0
+    local key val
+    while IFS='=' read -r key val; do
+        # skip comments / blanks
+        case "$key" in ''|\#*) continue ;; esac
+        # strip surrounding quotes from .env value
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        # only set if not already in caller env (treat empty as unset)
+        if [ -z "${!key:-}" ]; then
+            export "$key=$val"
+        fi
+    done < "$_env_path"
+}
+
+# ---------------------------------------------------------------------------
+# af_flock_guard_or_exit [lock_file] — взять tick-lock или выйти (exit 0).
+#
+# Открывает fd 9 на lock-файл и берёт неблокирующий flock. Занят — значит
+# предыдущий тик ещё идёт: выходим с 0 (это НЕ ошибка, cron позовёт снова).
+#
+# ⚠️ Функция ВЫХОДИТ ИЗ СКРИПТА. Зовите её только напрямую, из top-level:
+#    в подстановке `$(...)` или пайпе `exit` убьёт лишь подоболочку.
+# fd 9 остаётся открытым после return — на нём и держится замок до конца тика.
+#
+# Вариант с ожиданием (e2e-process G6: ждать до 60с, если тик запущен
+# вручную через RUN_NOW) НЕ сведён сюда — там другая семантика.
+# ---------------------------------------------------------------------------
+af_flock_guard_or_exit() {  # $1=lock_file (default $LOCK_FILE)
+    local _lock="${1:-${LOCK_FILE:-}}"
+    if [ -z "$_lock" ]; then
+        _af_log "af_flock_guard_or_exit: LOCK_FILE не задан"
+        af_summary_set error "LOCK_FILE не задан"; af_summary_emit 1
+        exit 1
+    fi
+    exec 9>"$_lock" || { _af_log "cannot open lock $_lock"
+        af_summary_set error "cannot open lock $_lock"; af_summary_emit 1
+        exit 1; }
+    if ! flock -n 9; then
+        _af_log "another instance holds $_lock — skip"
+        af_summary_set lock "another instance holds $_lock"; af_summary_emit 0
+        exit 0
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_maintenance_gate_or_exit — kill-switch: exit 0, если стоит MAINTENANCE.
+#
+# Флаг — файл ${MAINTENANCE_FILE} (default MAINTENANCE) в ветке
+# ${MAINTENANCE_BRANCH} (default develop). Две проверки:
+#   1) remote (git ls-remote по $GH_REPO) — источник истины, его ставит
+#      человек или agents_sleep.sh (PEAK-часы: «все спят»);
+#   2) local clone $REPO_DIR — на случай, если сеть недоступна.
+# Любая сработала → тик пропускается (exit 0, не ошибка).
+#
+# ⚠️ Функция ВЫХОДИТ ИЗ СКРИПТА — зовите только из top-level (см. выше).
+# ---------------------------------------------------------------------------
+af_maintenance_gate_or_exit() {
+    local _branch="${MAINTENANCE_BRANCH:-develop}"
+    local _file="${MAINTENANCE_FILE:-MAINTENANCE}"
+    local _remote_ref
+    if [ -n "${GH_REPO:-}" ]; then
+        _remote_ref="${_branch}:${_file}"
+        if git ls-remote "https://github.com/${GH_REPO}.git" "$_remote_ref" 2>/dev/null | grep -q .; then
+            _af_log "🛑 MAINTENANCE flag set on remote ${_remote_ref} — skip"
+            af_summary_set maintenance "remote ${_remote_ref}"; af_summary_emit 0
+            exit 0
+        fi
+    fi
+    if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
+        if git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+            _af_log "🛑 MAINTENANCE flag set locally in ${REPO_DIR} — skip"
+            af_summary_set maintenance "local ${REPO_DIR}:${_branch}:${_file}"; af_summary_emit 0
+            exit 0
+        fi
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_maintenance_gate_inline_or_exit — drop-in kill-switch для скриптов,
+# которые ещё не source'нули lib_agent_flow_common.sh.
+#
+# Зачем (issue #3009, ретро t_4dbffcaa): 11+ скриптов agent-flow (cleanup-249,
+# runtime-overshoot-loop, decomposed-watchdog, conflict-sweep, stale-
+# conflicting-watchdog, blocked-watchdog, e2e-fail-streak-watchdog, cancel-
+# on-provider-exhausted, e2e-process-launcher, e2e-rejected-watchdog,
+# orphan-watchdog — последний через declare -F fallback) не вызывали
+# `af_maintenance_gate_or_exit`. Когда Шифу ставил MAINTENANCE-файл в
+# agents-sleep-repo:develop, эти скрипты продолжали работать → воркеры
+# создавали PR которые конфликтовали с ручной работой Шифу.
+#
+# Решение: НЕ добавлять source lib_agent_flow_common.sh в 11 скриптов
+# (риск регрессии через set -euo pipefail + переопределение log/vars),
+# а положить ту же логику inline прямо в каждый скрипт. Двухканальная
+# проверка (remote → local clone) сохранена.
+#
+# Использование (после flock, до основной работы):
+#   # MAINTENANCE gate — kill-switch через remote (issue #3009).
+#   af_maintenance_gate_inline_or_exit
+#
+# ⚠️ Функция ВЫХОДИТ ИЗ СКРИПТА — зовите только из top-level (см. выше).
+#
+# Семантика и поведение полностью идентичны af_maintenance_gate_or_exit:
+#   - remote first (git ls-remote по GH_REPO, если задан);
+#   - local fallback (git -C REPO_DIR show <branch>:<file>, если REPO_DIR задан);
+#   - exit 0 при срабатывании (тик пропускается, не ошибка);
+#   - silent exit (exit 0) если ни remote, ни local не сработали (нет MAINTENANCE).
+#
+# Отличия от af_maintenance_gate_or_exit:
+#   - Не зависит от af_summary_set / af_summary_emit (эти функции живут в том
+#     же lib — если скрипт не source'нул lib, их нет). Логирует через stderr
+#     printf в формате "[MAINTENANCE] gate active — skip", чтобы cron-delivery
+#     видел причину skip'а (ADR-0116).
+#   - Не пытается вызвать af_maintenance_gate_or_exit (avoid recursion).
+#
+# Ретро 24.09 (issue #3009): первая версия использовала просто
+# `git -C "$REPO_DIR" ls-tree origin/develop --name-only | grep -qx MAINTENANCE`.
+# Этого НЕДОСТАТОЧНО: во-первых, ls-tree требует локальный клон develop и
+# сетевой fetch origin/develop (на хосте без сети → silent fail); во-вторых,
+# remote ls-remote работает с ЛЮБЫМ clone'ом (даже bare) и быстрее (~50ms vs
+# ~300ms fetch). Текущая версия использует обе проверки, как и
+# af_maintenance_gate_or_exit.
+# ---------------------------------------------------------------------------
+af_maintenance_gate_inline_or_exit() {
+    local _branch="${MAINTENANCE_BRANCH:-develop}"
+    local _file="${MAINTENANCE_FILE:-MAINTENANCE}"
+    local _remote_ref
+    if [ -n "${GH_REPO:-}" ]; then
+        _remote_ref="${_branch}:${_file}"
+        if git ls-remote "https://github.com/${GH_REPO}.git" "$_remote_ref" 2>/dev/null | grep -q .; then
+            printf '[MAINTENANCE] gate active on remote %s — skip\n' "$_remote_ref" >&2
+            exit 0
+        fi
+    fi
+    if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
+        if git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+            printf '[MAINTENANCE] gate active locally in %s (%s:%s) — skip\n' \
+                "$REPO_DIR" "$_branch" "$_file" >&2
+            exit 0
+        fi
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# has_label <labels_csv> <label_name> — есть ли метка в CSV-списке.
+#
+# Контракт: $1 — «a,b,c» (обычно уже в lowercase). Через `case`, без
+# подпроцессов: на 5-минутном тике merge-gate это зовётся сотни раз.
+# ---------------------------------------------------------------------------
+has_label() {  # $1=labels_csv (lowercased) $2=label_name
+    case ",${1}," in *",${2},"*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------------------------------------------------------------------------
+# has_label_json <labels_json> <label_name> — есть ли метка в JSON-массиве.
+#
+# Контракт: $1 — вывод `gh issue view --json labels --jq '.labels'`, то есть
+# компактный JSON вида [{"name":"hermes"},...] (gh печатает --jq компактно,
+# без пробела после двоеточия — на этом держится образец поиска).
+# ---------------------------------------------------------------------------
+has_label_json() {  # $1=labels_json  $2=label_name
+    printf '%s' "$1" | grep -q "\"name\":\"$2\""
+}
+
+# ---------------------------------------------------------------------------
+# slugify <text> — kebab-case, только [a-z0-9-], максимум 50 символов.
+# Используется для имён веток z-{agent}/<issue>-<slug> и openspec-change папок
+# (issue #2296, согласовано 09.09.2026: канон = 50-символьный slugify из
+# agent-flow-openspec-sync.sh; lib и openspec-sync используют один и тот же).
+#
+# Для извлечения slug из имени ветки (z-{agent}/<num>-<slug> → <slug>) см.
+# `agent-flow-openspec-sync.sh slug-for-branch <branch>` — единая точка
+# преобразования branch → openspec-slug (ADR-0039).
+# ---------------------------------------------------------------------------
+slugify() {
+    printf '%s' "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-50
+}
+
+# ---------------------------------------------------------------------------
+# gh_list_issues_by_label <label> [state] [limit] [fields]
+#
+# Печатает JSON-массив issue с меткой. Обёртка нужна из-за бага фильтрации
+# по label в `gh issue list`: при некоторых состояниях кэша он отдаёт пустой
+# массив там, где issue есть. Primary — gh-list, при пустом ответе fallback
+# на REST /issues?labels=... с приведением к форме gh-list.
+#
+# ⚠️ Fallback возвращает ПОДМНОЖЕСТВО полей (number/title/labels/body/
+#    updatedAt), а не произвольный $4 — REST отдаёт другую схему.
+#
+# Баг, живший во всех четырёх копиях до 30.08: маппинг делал
+# `if "updatedAt" in it`, а REST отдаёт `updated_at` (проверено:
+# `gh api repos/<owner>/<repo>/issues --jq '.[0]|keys'`). Условие не
+# срабатывало никогда, поэтому на fallback-пути updatedAt отсутствовал —
+# и agent-flow-deploy-sweep.sh:314 (`str(i["updatedAt"])`) падал с KeyError
+# внутри `< <(python3 ...)`, то есть тихо: трейс в stderr, ноль обработанных
+# issue, exit-код тика не меняется. Теперь читаем оба имени.
+# ---------------------------------------------------------------------------
+gh_list_issues_by_label() {
+    local _label="$1" _state="${2:-open}"
+    local _limit="${3:-${ISSUE_LIMIT:-${LIMIT:-20}}}"
+    local _fields="${4:-number,title,labels,body,updatedAt}"
+    local _json="" _api_json=""
+    _json="$(gh issue list \
+        --repo "$GH_REPO" \
+        --label "$_label" \
+        --state "$_state" \
+        --limit "$_limit" \
+        --json "$_fields" 2>/dev/null || true)"
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json"
+        return 0
+    fi
+    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
+    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
+        printf '[]'
+        return 0
+    fi
+    _af_log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
+    printf '%s' "$_api_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    if it.get("pull_request"):
+        continue
+    rec = {
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
+        "body": it.get("body") or "",
+    }
+    # REST отдаёт updated_at (snake_case), gh-list — updatedAt. Потребители
+    # (deploy-sweep, stale-conflicting-scan) ждут updatedAt, причём
+    # deploy-sweep обращается по ключу жёстко, без .get().
+    updated = it.get("updatedAt") or it.get("updated_at")
+    if updated:
+        rec["updatedAt"] = updated
+    keep.append(rec)
+print(json.dumps(keep, ensure_ascii=False))
+'
+}
+
+# ---------------------------------------------------------------------------
+# af_skill_for_profile <assignee> [labels_csv] → печатает skill (или пусто).
+#
+# Ретро t_b3476561: agent-flow-triage.sh создавал kanban-карточки БЕЗ
+# `--skill`, и они либо падали в «worker exited cleanly (rc=0) without
+# calling kanban_complete» (crash), либо в timeout 30/30 (worker не знал что
+# делать без доменного skill). Минимум 7 карточек застряли в todo/blocked:
+# t_42d98188, t_08288c77, t_0ed5689a, t_7ac9b225, t_82f555cf, t_77a878a8,
+# t_93effef9, t_1a42a5b4, t_c401ecaa, t_a02c368b.
+#
+# Решение (ADR ещё не написан — это retro 02.09.2026): deterministic mapping
+# assignee → skill + проверка, что этот skill реально установлен в профиле
+# assignee (по on-disk layout skills/<category>/<skill>/SKILL.md, тем же
+# walker, что и hermes-agent/_profile_skill_names). Если skill не найден в
+# профиле — fail-OPEN: печатаем пусто (карточка создастся без skill, как
+# раньше — лучше «нет skill» чем fail-fast над process-скриптом).
+#
+# Ретро 05.09: добавлено второе измерение — тип задачи по label issue.
+# Раньше bug и feature у backend/devops получали один и тот же git-workflow
+# (скилл был привязан к роли, а не к задаче). Теперь label переопределяет
+# роль: bug → systematic-debugging, functional/feature → test-driven-
+# development, refactor/tech-debt → codebase-design, process → agent-flow.
+# Repo-скиллы доставляются в профиль через sync-skills.sh (skills/repo/<skill>/).
+#
+# Контракт:
+#   $1 = assignee (profile id, например "devops", "backend", ...)
+#   $2 = labels_csv (опционально, "a,b,c") — для маппинга по типу задачи
+#   stdout = один skill name (если найден в профиле) или пустая строка
+#   exit = 0 всегда (fail-OPEN)
+#
+# Mapping по роли (база; срабатывает, когда нет type-label или task-скилл
+# не установлен в профиле):
+#
+#   backend       → git-workflow            (CI/CD/process задачи backend)
+#   devops        → git-workflow            (CI/CD/process задачи devops)
+#   tester        → sdlc-review             (process-ревью в SDLC цикле)
+#   agent-flow    → agent-flow-merge-gate   (специфический для agent-flow)
+#   architect     → agent-flow-pipeline-ops (pipeline-проектирование)
+#   pr-reviewer   → code-review             (двухосевое ревью diff: Standards+Spec)
+#   default       → simplify-code           (shared через symlink, всегда есть)
+#
+# Проверка наличия: walk <PROFILE>/skills/SKILL.md (symlink-following),
+# включая категорию repo/ (куда кладёт sync-skills.sh), grep «<skill>/SKILL.md»
+# → если да — печатаем, иначе пусто.
+#
+# Путь к профилям берём из HERMES_HOME (default /home/builder/.hermes),
+# как и весь остальной код agent-flow. _profile_skill_names в hermes-agent
+# использует тот же источник (get_profile_dir()).
+# ---------------------------------------------------------------------------
+# Single source of truth для проверки «установлен ли skill в профиле».
+# Используется и af_skill_for_profile, и af_skills_for_profile — раньше логика
+# дублировалась в двух местах, что разъезжалось при добавлении новых
+# категорий (ретро 09.09.2026, issue #2297).
+#
+# Контракт:
+#   $1 = skills_dir (например /home/builder/.hermes/profiles/backend/skills)
+#   $2 = skill name (без категории, например git-workflow)
+#   rc = 0 если найден, 1 если нет
+#
+# Walk: плоский skills/<skill>/ + категории repo/bundled/devops/autonomous-ai-agents
+# /software-development/productivity/research/process (категории создаются
+# sync-skills.sh и плагинами). Финальный fallback — symlink-following find -L
+# по всему дереву (для свежей раскладки, где категория ещё не symlink).
+# Идентично _profile_skill_names в hermes-agent.
+_skill_installed() {  # $1=skills_dir  $2=skill_name  →  rc 0/1
+    local _sd="$1" _s="$2"
+    [ -n "$_sd" ] && [ -n "$_s" ] || return 1
+    [ -d "$_sd" ] || return 1
+    [ -f "${_sd}/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/repo/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/bundled/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/devops/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/autonomous-ai-agents/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/software-development/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/productivity/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/research/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/process/${_s}/SKILL.md" ] \
+        || find -L "$_sd" -maxdepth 4 -path '*/_org' -prune -o \
+           -type f -name SKILL.md -print 2>/dev/null \
+           | grep -q "/${_s}/SKILL.md$" \
+        || return 1
+    return 0
+}
+
+af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
+    local _assignee="${1:-}" _labels="${2:-}" _hermes_home _skills_dir _cand
+    local _role_candidate _task_candidate _labels_lower
+    [ -n "$_assignee" ] || { return 0; }
+    _hermes_home="${HERMES_HOME:-${HOME}/.hermes}"
+    _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
+    if [ ! -d "$_skills_dir" ]; then
+        return 0
+    fi
+    # Роль → skill (backward-compatible база, ретро t_b3476561).
+    case "$_assignee" in
+        backend)        _role_candidate="git-workflow" ;;
+        devops)         _role_candidate="git-workflow" ;;
+        tester)         _role_candidate="sdlc-review" ;;
+        agent-flow)     _role_candidate="agent-flow-merge-gate" ;;
+        architect)      _role_candidate="agent-flow-pipeline-ops" ;;
+        pr-reviewer)    _role_candidate="code-review" ;;
+        default)        _role_candidate="simplify-code" ;;
+        *)              _role_candidate="simplify-code" ;;  # shared default fallback
+    esac
+
+    # Тип задачи (label issue) переопределяет роль (ретро 05.09). Repo-скиллы
+    # доставляются в профиль через sync-skills.sh (skills/repo/<skill>/).
+    _labels_lower="$(printf '%s' "$_labels" | tr '[:upper:]' '[:lower:]')"
+    _task_candidate=""
+    if [ -n "$_labels_lower" ]; then
+        case ",${_labels_lower}," in
+            *",bug,"*|*",type:bug,"*)
+                _task_candidate="systematic-debugging" ;;
+            *",type:functional,"*|*",type:feature,"*|*",feature,"*)
+                _task_candidate="test-driven-development" ;;
+            *",type:refactor,"*|*",type:tech-debt,"*|*",type:stub,"*)
+                _task_candidate="codebase-design" ;;
+            *",type:process,"*)
+                _task_candidate="agent-flow" ;;
+        esac
+    fi
+
+    # Пробуем сперва task-кандидат, затем роль-кандидат. Проверка установлен-
+    # ности делегирована в top-level _skill_installed — единый источник
+    # правды для всего lib (см. ретро 09.09.2026, issue #2297).
+    for _cand in "$_task_candidate" "$_role_candidate"; do
+        [ -n "$_cand" ] || continue
+        if _skill_installed "$_skills_dir" "$_cand"; then
+            printf '%s' "$_cand"
+            return 0
+        fi
+    done
+    _af_log "af_skill_for_profile(${_assignee}): no installed skill for task='${_task_candidate}' role='${_role_candidate}' — falling back (no --skill)"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_skills_for_profile <assignee> [labels_csv] [pr_flag] → multi-line: skill
+# names (one per line), dedup, обязательный verification-before-completion
+# первым.
+#
+# Контракт:
+#   $1 = assignee (profile id)
+#   $2 = CSV меток issue (опционально, "a,b,c") — для маппинга по типу задачи
+#   $3 = "pr" | "" — explicit PR-флаг; если пусто и assignee ∈ {backend,
+#       developer, tester, devops, pr-reviewer} → авто-detect "pr" (эти
+#       профили порождают PR → нужен code-review)
+#   stdout = skills, разделенные \n (для mapfile -t); первый — обязательный
+#       verification-before-completion (если установлен в профиле), затем
+#       primary skill (task/role) и опционально code-review
+#   exit = 0 всегда (fail-OPEN)
+#
+# Ретро t_aafad606 (issue #2160): одна карточка = один skill → воркеры не
+# делают self-review. ADR-0077 вводит multi-skill: ОБЯЗАТЕЛЬНЫЙ
+# verification-before-completion + доменный primary + опциональный code-review
+# для PR-порождающих профилей. Обратная совместимость: af_skill_for_profile
+# остаётся как был (single primary skill) для тестов и обратной совместимости.
+#
+# Правила:
+#   1) verification-before-completion — всегда первый (если установлен).
+#   2) primary skill (task-candidate > role-candidate) — вторым, dedup с #1.
+#   3) code-review — третьим, если pr_flag != "" И он ещё не в списке И
+#      установлен в профиле.
+#   4) Дедупликация (case-sensitive) — повторы отбрасываются с сохранением
+#      первого вхождения.
+#   5) Пустой результат = ни один skill не найден → fail-OPEN (как раньше).
+#
+# Использование:
+#   mapfile -t SKILLS < <(af_skills_for_profile backend "bug,agent:backend" "")
+#   for s in "${SKILLS[@]}"; do args+=(--skill "$s"); done
+# ---------------------------------------------------------------------------
+af_skills_for_profile() {  # $1=assignee  $2=labels_csv  $3=pr_flag
+    local _assignee="${1:-}" _labels="${2:-}" _pr_flag="${3:-}"
+    local _skills_dir _hermes_home _cand _primary="" _add_cr=0 _seen=""
+    local _skills_out=()
+
+    [ -n "$_assignee" ] || return 0
+    _hermes_home="${HERMES_HOME:-${HOME}/.hermes}"
+    _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
+    [ -d "$_skills_dir" ] || return 0
+
+    # Дедуп helper: добавляет $_cand в _skills_out только если ещё нет.
+    # Проверка установленности делегирована в top-level _skill_installed
+    # (единый источник правды, ретро 09.09.2026, issue #2297).
+    _add_skill() {
+        local s="$1"
+        [ -n "$s" ] || return 0
+        case " $_seen " in
+            *" $s "*) return 0 ;;
+        esac
+        _skill_installed "$_skills_dir" "$s" || return 0
+        _skills_out+=("$s")
+        _seen="$_seen $s"
+    }
+
+    # 1) Обязательный verification-before-completion первым.
+    _add_skill "verification-before-completion"
+
+    # 2) Primary skill через af_skill_for_profile (single, тот же алгоритм).
+    _primary="$(af_skill_for_profile "$_assignee" "$_labels" 2>/dev/null || true)"
+    if [ -n "$_primary" ]; then
+        # af_skill_for_profile уже проверил установленность; добавляем
+        # минуя _add_skill (чтобы не делать дубль walk).
+        case " $_seen " in
+            *" $_primary "*) ;;
+            *)
+                _skills_out+=("$_primary")
+                _seen="$_seen $_primary"
+                ;;
+        esac
+    fi
+
+    # 3) code-review для PR-порождающих профилей.
+    #    Авто-detect: assignee из списка, плюс явный pr_flag="pr".
+    case "$_pr_flag$_assignee" in
+        pr*|backend|developer|tester|devops|pr-reviewer) _add_cr=1 ;;
+    esac
+    if [ "$_add_cr" = "1" ]; then
+        _add_skill "code-review"
+    fi
+
+    # Вывод: один skill на строку.
+    if [ "${#_skills_out[@]}" -eq 0 ]; then
+        _af_log "af_skills_for_profile(${_assignee}): no installed skills — failing OPEN (no --skill)"
+        return 0
+    fi
+    printf '%s\n' "${_skills_out[@]}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# detect_pr_kind <pr_labels_csv> <pr_title> → печатает "lint" | "functional"
+#
+# "lint" = e2e на железе не нужен, зелёного CI достаточно.
+# Источники сигнала по приоритету:
+#   1) метка ${NO_E2E_LABEL} на PR — явный opt-out воркера
+#   2) префикс `[lint]` / `[refactor]` в заголовке — сокращение воркера
+#   3) `fix(agent-flow` / `fix(agent_flow` (ретро 13.08 t_de63be1f): фиксы
+#      КОНВЕЙЕРА не меняют поведение робота. Раньше такие PR (#1189/#1190)
+#      уходили в e2e-очередь как functional и застревали.
+#   4) `docs(adr` / `docs(architecture` (ретро 24.08 t_388bb652): ADR-черновики
+#      архитектора docs-only, runtime не трогают. Раньше #1577/#1580/#1581/
+#      #1578 залипали с e2e:rejected (cold-start wake-gate, ретро t_d9e70587).
+#   5) `wip(arch` / `wip(infra` (ретро 24.08 t_388bb652): PR #1559 висел
+#      e2e:rejected 11ч49м без прогресса.
+#   6) `wip(voice-core` (ретро 24.08 t_388bb652): verification-suite черновик.
+#   7) иначе → functional (e2e обязателен)
+#
+# rc=0 всегда. Зависит от глобального $NO_E2E_LABEL и от has_label выше.
+# ---------------------------------------------------------------------------
+detect_pr_kind() {  # $1=labels_csv $2=title
+    local labels_csv title_lc prefix
+    labels_csv="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    title_lc="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+    if has_label "$labels_csv" "$NO_E2E_LABEL"; then
+        printf '%s' "lint"; return 0
+    fi
+    # Два независимых case'а:
+    #   - по первому токену `prefix` для тегов без скобок: [lint], [refactor];
+    #   - по всей строке с glob для conventional-commit префиксов.
+    # Первый токен берём отдельно, потому что `(` и `)` внутри
+    # docs(adr-0027) / wip(arch #1506) ломают extglob-группировку.
+    prefix="${title_lc%% *}"
+    case "$prefix" in
+        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
+    esac
+    case "$title_lc" in
+        'fix(agent-flow'*|'fix(agent_flow'*|\
+        'docs(adr'*|'docs(architecture'*|\
+        'wip(arch'*|'wip(infra'*|'wip(voice-core'*)
+            printf '%s' "lint"; return 0 ;;
+    esac
+    printf '%s' "functional"
+}
+
+# ---------------------------------------------------------------------------
+# af_role_for <labels_csv> [fallback] — единая таблица agent:* label → profile.
+#
+# Контракт:
+#   $1 = labels_csv (lowercased, "agent:devops,bug,priority:high" — то, что
+#        приходит из `gh issue list --json labels` или CSV-список меток)
+#   $2 = fallback profile (опционально; default:
+#        $AGENT_FLOW_DEFAULT_ROLE (or "architect" if unset)).
+#        Передача $2="" явно = "пустой fallback" → last-resort "devops".
+#   stdout = одно из:
+#       - profile из таблицы (agent:<token> → profile, см. _af_role_table)
+#       - fallback ($2, или AGENT_FLOW_DEFAULT_ROLE, или architect),
+#         если метка agent:* не найдена
+#       - "devops", если fallback пустой (последний рубеж — см. ADR-0041)
+#   exit = 0 всегда (fail-OPEN — caller сам решает, что делать)
+#
+# Поведение:
+#   1) lower-case на входе (`tr` в bash), чтобы "Agent:Devops" тоже подобрался.
+#   2) ищем ПЕРВЫЙ `agent:<token>` в списке меток (порядок определяется caller'ом).
+#   3) токен матчится против _af_role_table (case-statement — это «таблица
+#      данных» в bash; добавить новый label = одна строка).
+#   4) если метка найдена, но профиля нет в `hermes profile list` — warn +
+#      возврат fallback. Это **fail-OPEN**, не hard gate: caller (triage) уже
+#      имеет собственный жёсткий guard через `is_valid_profile` (skip + errored++).
+#      Здесь дубль жёсткого gate'а не нужен — это источник разъехавшихся
+#      дефолтов в прошлом (agent-flow-triage.sh:615 vs agent-flow-merge-gate.sh:4082).
+#   5) devops как последний рубеж — профиль-воркер (он же умеет force-with-lease
+#      push, см. ретро 02.09 t_2bd2e7ea). Никогда не возвращаем "default"
+#      (ADR-0041 silent-drop в диспетчере → карточка висит в ready вечно).
+#
+# История (09.09.2026, issue #2292):
+#   Раньше эта логика жила в 4 копиях:
+#     - agent-flow-triage.sh:615  — regex, fallback=architect
+#     - agent-flow-merge-gate.sh:4082, :4284 — whitelist (без agent:tester)
+#     - agent-flow-e2e-process.sh:3196 — whitelist (без agent:tester)
+#     - test_merge_gate_assignee_fallback.sh:63 — тест-реплика
+#   Копии успели разъехаться: e2e-process потерял agent:tester, merge-gate
+#   две копии с разными комментариями. Любая правка (добавить label, сменить
+#   fallback) требовала 4 синхронных коммита — рецепт дрейфа. Теперь одна
+#   функция + одна таблица; добавить profile = одна строка case.
+#
+# Использование:
+#   role="$(af_role_for "$labels")"             # fallback=${AGENT_FLOW_DEFAULT_ROLE:-architect}
+#   role="$(af_role_for "$labels" devops)"      # явный fallback
+# ---------------------------------------------------------------------------
+af_role_for() {  # $1=labels_csv  $2=fallback (default AGENT_FLOW_DEFAULT_ROLE|architect|devops)
+    local _labels _fallback _token _profile _hermes_home _valid_profiles_csv
+    _labels="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    # Семантика fallback (важно для ADR-0041 last-resort):
+    #   - $2 задан И непустой → используем его (явный override вызывающего).
+    #   - $2 UNSET (не передан) → берём $AGENT_FLOW_DEFAULT_ROLE (или architect).
+    #   - $2 = "" (явно пустая строка) → пустая строка. Не подменяем на default:
+    #     это сигнал "caller хочет пустой fallback → devops по last-resort".
+    #   - Итоговый fallback всё ещё пустой → devops (ADR-0041 silent-drop недопустим).
+    if [ "$#" -ge 2 ] && [ -n "${2-}" ]; then
+        _fallback="$2"
+    else
+        _fallback="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
+    fi
+    [ -n "$_fallback" ] || _fallback="devops"
+
+    _profile=""
+    if [ -n "$_labels" ]; then
+        # Первый agent:<token> в списке — caller контролирует порядок меток.
+        # Цикл по запятой: дешевле awk/python, не плодит подпроцессы на горячем пути.
+        _labels="$_labels,"
+        while [ -n "$_labels" ] && [ "$_labels" != "," ]; do
+            _token="${_labels%%,*}"
+            _labels="${_labels#*,}"
+            # Проверяем префикс "agent:" через case (быстрее [[ =~ ]] на горячем пути).
+            case "$_token" in
+                agent:*)
+                    _token="${_token#agent:}"
+                    # Каноничная таблица agent:<token> → profile.
+                    # ADD HERE: новый label = одна строка case.
+                    case "$_token" in
+                        backend|developer|devops|tester|architect|\
+                        frontend|analyst|pm|pr-reviewer|techwriter|\
+                        ml-engineer|ros2-engineer|embedded|cad-engineer|\
+                        dba|designer|llm-expert|base|agent-flow)
+                            _profile="$_token" ;;
+                        *)
+                            # Метка есть, но профиль не каноничный — warn + пропуск.
+                            # Не возвращаем $_token напрямую: он мог быть что угодно
+                            # ("agent:triager" из ретро t_1ca827a6), и caller всё равно
+                            # отфильтрует через is_valid_profile. Здесь — fallback.
+                            _af_log "af_role_for: unknown agent:label '$_token' — falling back to '$_fallback'"
+                            ;;
+                    esac
+                    [ -n "$_profile" ] && break
+                    ;;
+            esac
+        done
+    fi
+
+    # Если не нашли — fallback. Если fallback сам невалиден — devops.
+    if [ -z "$_profile" ]; then
+        _profile="$_fallback"
+    fi
+
+    # Warn + fail-open против живого списка профилей (если доступен).
+    # Не делаем hard gate: caller (triage) уже зовёт is_valid_profile для
+    # errored++ / skip; merge-gate и e2e-process принимают fallback как есть.
+    # Парсим по тому же regex что и load_valid_profiles в triage.sh, плюс
+    # strip ведущего `◆` (active profile marker в hermes profile list).
+    _hermes_home="${HERMES_HOME:-${HOME}/.hermes}"
+    if [ -x "${HERMES_BIN:-}" ]; then
+        _valid_profiles_csv="$("${HERMES_BIN}" profile list 2>/dev/null \
+            | awk '
+                /^[ \t]*─/{next} /^[ \t]*Profile[ \t]/{next}
+                /^[ \t]*$/{next} /^[ \t]*default[ \t]/{next}
+                {gsub(/^[ \t]+|[ \t]+$/,""); sub(/^[^a-zA-Z0-9]+/,""); print $1}
+            ' | sort -u | paste -sd, -)" || _valid_profiles_csv=""
+        if [ -n "$_valid_profiles_csv" ] \
+            && ! printf '%s' ",$_valid_profiles_csv," | grep -q ",$_profile,"; then
+            _af_log "af_role_for: profile '$_profile' NOT in hermes profile list — warn + fail-open (caller should hard-gate if needed)"
+        fi
+    fi
+
+    printf '%s' "$_profile"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_role_found_for <labels_csv> → exit 0 если есть валидный agent:* label,
+# exit 1 если нет (или он неизвестный).
+#
+# Зачем (issue #2292): scan-all-prs в merge-gate раньше использовал
+# локальный case-цикл с флагом `_assignee_explicit=1` — «нашли явную метку
+# agent:*». Это различало «назначили devops по метке» и «назначили devops
+# как fallback, потому что меток нет». Логика ниже (contract_drift)
+# перезаписывает assignee на backend, ЕСЛИ метки не было.
+#
+# Если бы мы взяли `af_role_for` и смотрели «результат != devops», мы бы
+# сломали кейс с явной `agent:devops`: вернулось бы `devops`, флаг бы
+# остался 0, и contract_drift перезаписал бы на backend. Регрессия.
+#
+# Companion-функция: тот же token-парсер, что в af_role_for, но возвращает
+# только факт «нашли валидный token из _af_role_table». Никакого stdout —
+# чисто exit-code. Дешёвая: ранний break, без fallback-логики.
+# ---------------------------------------------------------------------------
+af_role_found_for() {  # $1=labels_csv
+    local _labels="${1:-}" _token
+    [ -n "$_labels" ] || return 1
+    _labels="$(printf '%s' "$_labels" | tr '[:upper:]' '[:lower:]'),"
+    while [ -n "$_labels" ] && [ "$_labels" != "," ]; do
+        _token="${_labels%%,*}"
+        _labels="${_labels#*,}"
+        case "$_token" in
+            agent:*)
+                    case "${_token#agent:}" in
+                        backend|developer|devops|tester|architect|\
+                        frontend|analyst|pm|pr-reviewer|techwriter|\
+                        ml-engineer|ros2-engineer|embedded|cad-engineer|\
+                        dba|designer|llm-expert|base|agent-flow)
+                            return 0 ;;
+                    esac
+                    # Невалидный agent:* (например, agent:triager) — НЕ считаем
+                    # «явным». Caller должен идти в fallback-ветку.
+                    return 1
+                    ;;
+        esac
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# free_stale_worktrees_for <task_id> — снять чужие worktree на нашей ветке.
+#
+# Карточка держит свой worktree; если та же ветка занята worktree'ем другой
+# (уже мёртвой) карточки, git не даст с ней работать. Сносим только чужие
+# (basename != task_id) и только те, что стоят на НАШЕЙ ветке.
+# Требует $HERMES_BIN и $KANBAN_BOARD в окружении.
+# ---------------------------------------------------------------------------
+free_stale_worktrees_for() {  # $1=task_id (t_<hex>)
+    local task_id="$1" my_wt my_branch line wt_path wt_branch owner
+    my_wt="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$task_id" --json 2>/dev/null \
+        | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); print(d.get("task",{}).get("workspace_path") or "")
+except Exception: print("")' 2>/dev/null || true)"
+    if [ -z "$my_wt" ] || [ ! -d "$my_wt" ]; then
+        return 0
+    fi
+    my_branch="$(git -C "$my_wt" branch --show-current 2>/dev/null || true)"
+    [ -z "$my_branch" ] && return 0
+    wt_path=""
+    while IFS= read -r line; do
+        case "$line" in
+            worktree\ *) wt_path="${line#worktree }" ;;
+            branch\ *)
+                wt_branch="${line#branch refs/heads/}"
+                if [ "$wt_branch" = "$my_branch" ] && [ "$wt_path" != "$my_wt" ]; then
+                    owner="$(basename "$wt_path")"
+                    if [ "$owner" != "$task_id" ]; then
+                        git -C "$my_wt" worktree remove --force "$wt_path" 2>/dev/null \
+                            && _af_log "  freed stale worktree $wt_path (branch $my_branch, card $owner)"
+                    fi
+                fi
+                ;;
+        esac
+    done < <(git -C "$my_wt" worktree list --porcelain 2>/dev/null)
+    git -C "$my_wt" worktree prune 2>/dev/null || true
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _gm_recent_commented <kind> <number> <marker> <window_seconds> [mode]
+#   — обёртка над hermes_github.sh::comment_recently_posted с инвертированной
+#   семантикой (0 = should_post, 1 = should_skip), удобной для merge-gate.
+#
+# Возвращает:
+#   0 (truthy) — комментария с маркером M за окно W секунд НЕТ → постить.
+#   1 (falsey)  — комментарий ЕСТЬ → skip.
+#
+# Args:
+#   kind           — "issue" | "pr" (проходит в comment_recently_posted)
+#   number         — issue# / pr# (digits)
+#   marker         — substring (mode=contains) или prefix (mode=prefix),
+#                    которому должен удовлетворять body комментария.
+#   window_seconds — non-negative integer (24*3600 = 24h, 6*3600 = 6h, etc.)
+#   mode           — optional "prefix" (default) или "contains".
+#
+# Когда caller уже source'нул hermes_github.sh, всё работает out-of-the-box.
+# Если hermes_github.sh не source'нут — функция still возвращает 1 (don't post),
+# чтобы не сломать flow и не запостить случайно дубль.
+#
+# Кейсы (issue #2293, соглашение 09.09.2026):
+#   Раньше в agent-flow-merge-gate.sh было ~20 inline-сканов вида:
+#     _dedup_since="$(date -u -d 'N hours ago' +...)"
+#     _dup_count="$(gh api ".../comments?since=${_dedup_since}..." --jq \
+#         '[.[] | select(.body | startswith/contains("MARKER"))] | length')"
+#     if [ "${_dup_count:-0}" -eq 0 ]; then gh issue comment ...; fi
+#   Теперь:
+#     if ! _gm_recent_commented "issue" "$number" "MARKER" "$((N*3600))" \
+#         prefix; then gh issue comment ...; fi
+#
+# Преимущества:
+#   - Нет jq-фильтра в каждом месте (читаемость).
+#   - Нет date-string'а в каждом месте (window — секунды).
+#   - Нет GH_REPO/${number}/kind — всё вычисляется внутри.
+#   - Helper-семантика стабильна при изменении API (server-side ?since=).
+# ---------------------------------------------------------------------------
+_gm_recent_commented() {
+    local kind="${1:-}" number="${2:-}" marker="${3:-}"
+    local window_seconds="${4:-0}" mode="${5:-prefix}"
+
+    # Безопасный fallback: если hermes_github.sh не source'нут (например,
+    # тесты изолированы), comment_recently_posted будет undefined → будем
+    # считать, что коммента НЕТ, и caller постит. Это безопаснее, чем silent
+    # skip без контракта.
+    if ! declare -F comment_recently_posted >/dev/null 2>&1; then
+        _af_log "WARN: _gm_recent_commented: comment_recently_posted is not defined (hermes_github.sh not sourced?) — assuming NOT posted"
+        return 0
+    fi
+
+    comment_recently_posted "$kind" "$number" "$marker" \
+        "$window_seconds" "$mode"
+}
+
+# ---------------------------------------------------------------------------
+# wait_run <run_id> <timeout_s> [label] → conclusion (через stdout)
+#
+# Единый модуль poll+retry+race-fix для GitHub Actions run'ов. Заменяет две
+# копипасты (ретро 09.09.2026, issue #2302):
+#   - wait_workflow в agent-flow-e2e-process.sh:3367 (build/deploy-фаза)
+#   - inline verdict-цикл в agent-flow-e2e-process.sh:3877 (e2e-фаза)
+#
+# Аргументы:
+#   $1 run_id       — числовой GitHub Actions run id (обязателен, валидируется)
+#   $2 timeout_s    — бюджет ожидания completed (целое секунд)
+#   $3 label        — короткий тег для логов (build/deploy/e2e/...)
+#   $4 gh_repo      — репо для `gh run view/cancel` (default $GH_REPO)
+#   $5 poll_interval — пауза между poll'ами (default $E2E_POLL_INTERVAL=15)
+#   $6 cancel_on_timeout — 1 (default) = отменить run при TIMEOUT;
+#                          0 = оставить (например для e2e, где дать
+#                          естественно завершиться)
+#
+# Контракт (важно для e2e-обёртки):
+#   - На stdout: итоговый conclusion ("success" | "failure" | "cancelled" |
+#     "skipped" | "timed_out" | "" при отмене через timeout). Гарантированно
+#     НЕ пустой при completed-исходе (3× retry на race пустого/null conclusion,
+#     ретро 09.08 #4).
+#   - rc=0  — run completed, conclusion валиден (даже "failure"). 5× recheck
+#             на race in_progress→success (ретро 01.09 t_32c28562).
+#   - rc=1  — таймаут; run либо completed ровно в момент exit, либо
+#             отменён cancel'ом (если cancel_on_timeout=1).
+#
+# Race-fix `in_progress→success` (post-fail recheck × 5, ретро 01.09
+# t_32c28562) живёт в одном месте: если initial conclusion=failure, до
+# 5 повторов по 10с — если хоть один дал success, это race и считаем
+# итог = success. Audit-комментарий в issue — дело вызывающего (у нас
+# был бы issue #${number}, которого lib не знает).
+#
+# gh run cancel при TIMEOUT (ретро 13.08 t_da3e0bd5) — освобождает
+# залипший раннер.
+#
+# rc=2 — run_id пустой/невалидный (программная ошибка caller'а, не
+# сетевая). В отличие от rc=1 (timeout) — НЕ пытаемся cancel'ить.
+# ---------------------------------------------------------------------------
+wait_run() {  # $1=run_id $2=timeout_s $3=label $4=gh_repo $5=poll_interval $6=cancel_on_timeout
+    local rid="$1" tmo="$2" lbl="${3:-run}" _repo="${4:-${GH_REPO:-}}" \
+          _poll="${5:-${E2E_POLL_INTERVAL:-15}}" _cancel="${6:-1}" \
+          st="" concl="" _dl _recheck_concl _rc_try _rc_success_seen
+
+    # Валидация run_id — cobra-краш 13.08 (см. wait_workflow). Пусто или не
+    # число → rc=2, программная ошибка, cancel'ить не пытаемся.
+    if [ -z "$rid" ] || ! [[ "$rid" =~ ^[0-9]+$ ]]; then
+        _af_log "wait_run(${lbl}): invalid run_id='${rid}' (rc=2)"
+        return 2
+    fi
+    if [ -z "$_repo" ]; then
+        _af_log "wait_run(${lbl}): GH_REPO не задан (rc=2)"
+        return 2
+    fi
+
+    _dl=$((SECONDS + tmo))
+    while [ "$SECONDS" -lt "$_dl" ]; do
+        st="$(gh run view "$rid" --repo "$_repo" --json status --jq '.status' 2>/dev/null || echo "")"
+        if [ "$st" = "completed" ]; then
+            # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
+            # completed (gh run view гонка) → перечитываем до 3 раз с паузой.
+            for _rc_try in 1 2 3; do
+                concl="$(gh run view "$rid" --repo "$_repo" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+                if [ -n "$concl" ] && [ "$concl" != "null" ]; then
+                    break
+                fi
+                sleep 5
+            done
+            # Пустой после 3 retry — считаем "timed_out" (раньше success→FAILURE,
+            # ретро 09.08 #4). Caller сам решит, считать ли это FAIL.
+            if [ -z "$concl" ] || [ "$concl" = "null" ]; then
+                printf '%s\n' "timed_out"
+                _af_log "wait_run(${lbl}): run ${rid} completed но conclusion пустой после 3 retry"
+                return 0
+            fi
+            if [ "$concl" = "success" ]; then
+                printf '%s\n' "$concl"
+                return 0
+            fi
+            # Ретро-фикс 01.09 (t_32c28562): conclusion=failure тоже бывает
+            # ложным в момент перехода in_progress→success. До 5 повторов
+            # по 10с; если хоть один дал success — race, итог = success.
+            _rc_success_seen=0
+            for _rc_try in 1 2 3 4 5; do
+                sleep 10
+                _recheck_concl="$(gh run view "$rid" --repo "$_repo" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+                if [ "$_recheck_concl" = "success" ]; then
+                    _rc_success_seen=1
+                    _af_log "wait_run(${lbl}): ⚠️ race на run ${rid} — initial=${concl}, recheck#${_rc_try}=success (01.09 t_32c28562)"
+                    # Сигнализируем caller'у о race через WR_RUN_RACE_DETECTED=1
+                    # (audit-комментарий в issue — caller делает со своим
+                    # контекстом #${number}, не lib).
+                    WR_RUN_RACE_DETECTED=1
+                    printf '%s\n' "success"
+                    return 0
+                fi
+            done
+            # Все 6 polls (1 начальный + 5 recheck) дали failure → настоящий FAIL.
+            printf '%s\n' "$concl"
+            return 0
+        fi
+        sleep "$_poll"
+    done
+
+    # TIMEOUT
+    _af_log "wait_run(${lbl}): TIMEOUT (${tmo}s) на run ${rid}"
+    if [ "$_cancel" = "1" ]; then
+        # Ретро 13.08 t_da3e0bd5: TIMEOUT — НЕ оставляем run висеть. Залипший
+        # docker build держит раннер и ~20 job'ов round в очереди.
+        st="$(gh run view "$rid" --repo "$_repo" --json status --jq '.status' 2>/dev/null || echo "")"
+        if [ "$st" != "completed" ] \
+            && gh run cancel "$rid" --repo "$_repo" >/dev/null 2>&1; then
+            _af_log "wait_run(${lbl}): run ${rid} CANCELED после TIMEOUT (освобождаю раннеры)"
+        fi
+    fi
+    printf '%s\n' "timed_out"
+    return 1
+}

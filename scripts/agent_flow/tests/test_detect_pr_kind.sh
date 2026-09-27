@@ -20,6 +20,9 @@ set -euo pipefail
 TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_LIB_DIR/.." && pwd)"  # scripts/agent_flow/, где лежат *.sh
 
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_LIB_DIR/lib/lib_eval_func.sh"
+
 # Color codes (если stdout — терминал)
 if [ -t 1 ]; then
     RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; BLU=$'\033[34m'; END=$'\033[0m'
@@ -33,54 +36,43 @@ TESTS_FAILED=0
 FAILED_NAMES=()
 
 # ---- Извлечение detect_pr_kind из реальных production-скриптов -------------
-# Чтобы тест не зависел от copy-paste: парсим функцию из исходников через awk
-# и eval'им в текущий scope. Если в будущем кто-то поправит detect_pr_kind
-# в одном файле и забудет про второй — этот тест сразу скажет.
-extract_func() {  # $1=script_path $2=func_signature $3=out_var
-    local script="$1" sig="$2" outvar="$3" body
-    # Сигнатура: has_label() или detect_pr_kind() с опциональным комментарием
-    body="$(awk -v sig="$sig" '
-        $0 ~ "^" sig "[[:space:]]*\\(\\)" {flag=1}
-        flag {print}
-        flag && /^}/ {flag=0; exit}
-    ' "$script")"
-    if [ -z "$body" ]; then
-        printf 'FAIL: func %s не найдена в %s\n' "$sig" "$script" >&2
-        return 1
+# Парсим функцию из исходников через общий lib (issue #2295). Если кто-то
+# поправит detect_pr_kind в lib и забудет про вызывающие скрипты — этот тест
+# СРАЗУ скажет (extract_func_or_die падает с понятным FAIL-сообщением).
+#
+# После дедупа 30.08 detect_pr_kind и has_label живут в ОДНОМ месте —
+# lib_agent_flow_common.sh, который сорсят и e2e-process, и merge-gate.
+# Расходиться копиям больше негде, поэтому тест:
+#   1) проверяет, что ни один из двух скриптов не завёл локальную копию
+#      обратно (иначе drift, от которого этот гард и написан, возвращается);
+#   2) берёт единственную реализацию из библиотеки и вешает на неё оба имени
+#      (detect_pr_kind_e2e / detect_pr_kind_mg) — кейсы ниже не менялись.
+LIB_COMMON="$REPO_ROOT/lib_agent_flow_common.sh"
+[ -f "$LIB_COMMON" ] || { printf 'FAIL: нет %s\n' "$LIB_COMMON" >&2; exit 1; }
+
+for _script in agent-flow-e2e-process.sh agent-flow-merge-gate.sh; do
+    if grep -qE '^detect_pr_kind\(\)' "$REPO_ROOT/$_script"; then
+        printf 'FAIL: %s снова держит СВОЮ копию detect_pr_kind (дедуп 30.08 откатан)\n' \
+            "$_script" >&2
+        exit 1
     fi
-    printf -v "$outvar" '%s' "$body"
-}
+    if ! grep -q 'lib_agent_flow_common\.sh' "$REPO_ROOT/$_script"; then
+        printf 'FAIL: %s не сорсит lib_agent_flow_common.sh\n' "$_script" >&2
+        exit 1
+    fi
+done
 
-extract_func "$REPO_ROOT/agent-flow-e2e-process.sh" "detect_pr_kind"  E2E_BODY
-extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "detect_pr_kind"  MG_BODY
-extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "has_label"       MG_HAS_LABEL
+LIB_BODY="$(extract_func_or_die "$LIB_COMMON" "detect_pr_kind")"
+LIB_HAS_LABEL="$(extract_func_or_die "$LIB_COMMON" "has_label")"
 
-# Подставь NO_E2E_LABEL. Используется внутри eval-функций detect_pr_kind_*
-# (они обращаются к глобальной $NO_E2E_LABEL).
+# Подставь NO_E2E_LABEL — detect_pr_kind обращается к глобальной переменной.
 # shellcheck disable=SC2034
 NO_E2E_LABEL="no-e2e-required"
 
-# has_label из agent-flow-e2e-process.sh (точная копия). detect_pr_kind_e2e
-# внутри зовёт `has_label`, и нам нужно, чтобы eval-scope получил её из
-# того же источника (иначе будет "command not found" при no-e2e-required
-# тестах).
-extract_func "$REPO_ROOT/agent-flow-e2e-process.sh" "has_label" E2E_HAS_LABEL
-eval "$E2E_HAS_LABEL" >/dev/null  # определяет has_label в текущем scope
-
-# Eval варианта detect_pr_kind из e2e-process.sh (production код).
-# Сохраняем под именем detect_pr_kind_e2e чтобы тесты могли звать
-# обе реализации (e2e и mg) раздельно.
-EVAL_E2E_BODY="$(printf '%s' "$E2E_BODY" | sed 's/^detect_pr_kind()/detect_pr_kind_e2e()/')"
-unset -f detect_pr_kind detect_pr_kind_e2e 2>/dev/null || true
-eval "$EVAL_E2E_BODY" >/dev/null
-
-# Eval варианта detect_pr_kind из merge-gate.sh (production код).
-# has_label в merge-gate своя — уже извлечена в MG_HAS_LABEL, переопределяем
-# поверх возможной e2e-версии.
-eval "$MG_HAS_LABEL" >/dev/null
-EVAL_MG_BODY="$(printf '%s' "$MG_BODY" | sed 's/^detect_pr_kind()/detect_pr_kind_mg()/')"
-unset -f detect_pr_kind_mg 2>/dev/null || true
-eval "$EVAL_MG_BODY" >/dev/null
+eval "$LIB_HAS_LABEL" >/dev/null  # определяет has_label в текущем scope
+unset -f detect_pr_kind detect_pr_kind_e2e detect_pr_kind_mg 2>/dev/null || true
+eval "$(printf '%s' "$LIB_BODY" | sed 's/^detect_pr_kind()/detect_pr_kind_e2e()/')" >/dev/null
+eval "$(printf '%s' "$LIB_BODY" | sed 's/^detect_pr_kind()/detect_pr_kind_mg()/')" >/dev/null
 
 # ---- Test runner ----------------------------------------------------------
 run_test() {

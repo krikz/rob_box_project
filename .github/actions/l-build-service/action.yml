@@ -1,0 +1,418 @@
+name: 'L-Build Service (composite)'
+description: >-
+  Reusable composite action для self-hosted build-job'ов в L-Build Main Pi Services /
+  L-Build Vision Pi Services / L-Build Single Service. Оборачивает docker-сборку
+  сервиса: buildx build + (опционально) docker push ТОЛЬКО в локальный registry.
+
+  Clean stale submodules + actions/checkout живут в вызывающем job'е, а НЕ здесь:
+  GitHub требует, чтобы репозиторий был зачекаутен ДО вызова локального composite
+  action (иначе раннер не найдёт .github/actions/l-build-service/action.yml и упадёт
+  с "Did you forget to run actions/checkout"). Т.е. composite физически не может
+  сам себя причекаутить — checkout обязан быть в job'е до `uses:`.
+
+  Режим по умолчанию (load=false) = buildx build --load (все --tag в локальный
+  docker daemon) + docker push ТОЛЬКО тегов локального registry (localhost:5000).
+  Это соответствует прежнему (проверенному) поведению и требуется
+  update-image-versions'у, который делает `docker tag` из локального daemon.
+  GHCR-теги НЕ пушим: runner не залогинен в ghcr.io для локальных test/dev сборок
+  (issue #1503) — buildx --push по GHCR-тегу падал бы с unauthorized (run
+  #34368750126). GHCR-тег остаётся локальным именем образа в daemon.
+
+  Если нужен только образ в daemon без пуша в registry (например, для `docker run`
+  в том же job'е) — input `load=true` → buildx build --load без docker push.
+
+  Кеш: registry-кеш buildx (--cache-from/--cache-to type=registry,mode=max) в
+  localhost:5000 по ОТДЕЛЬНОМУ тегу <service>-buildcache. Переживает между
+  ранами (локальный build-кеш демона — нет) и кеширует ВСЕ стадии multi-stage
+  сборки (для этого и нужен mode=max). Выключается input'ом cache=false.
+  См. docs/plans/2026-09-15-builder-runtime-seam.md §6 (Этап 0).
+
+  Acceptance: см. issue #2280 (arch review 2026-09-09, кандидат 4).
+
+inputs:
+  service-name:
+    description: 'Имя сервиса (для логов/метаданных, никак не влияет на buildx).'
+    required: false
+    default: 'service'
+
+  dockerfile-path:
+    description: 'Путь к Dockerfile относительно корня репо.'
+    required: true
+
+  build-context:
+    description: >-
+      Путь к build context относительно корня репо (по умолчанию ".").
+      Соответствует последнему позиционному аргументу buildx build.
+    required: false
+    default: '.'
+
+  platform:
+    description: 'buildx --platform (linux/arm64 для self-hosted Pi-builder).'
+    required: false
+    default: 'linux/arm64'
+
+  # Список тегов для buildx --tag. По одному тегу на строку.
+  # GHCR-теги и LOCAL-теги разделять не нужно — buildx сам пушит на каждый
+  # registry, на который залогинен runner. Но т.к. на self-hosted runner'е
+  # НЕ делается `docker login ghcr.io` для develop/test build'ов (issue #1503),
+  # GHCR-теги будут локально прокинуты buildx'ом и никому не отправятся — это
+  # эквивалентно прежнему поведению `--load` + отсутствию docker push.
+  tags:
+    description: >-
+      Список тегов для buildx --tag, по одному тегу на строку. Обязательно
+      включите LOCAL-тег (localhost:5000/...) если push_to_registry=true —
+      buildx сам его запишет в registry.
+    required: true
+
+  # Список build-args в формате KEY=VAL, по одной записи на строку.
+  # Совпадает 1:1 с тем, что раньше стояло после --build-arg= в прежних job'ах.
+  # Обязательные: APT_PROXY=http://host.docker.internal:3142 (если нужен).
+  build-args:
+    description: >-
+      Список build-args в формате KEY=VAL, по одной записи на строку.
+      Каждая строка превращается в отдельный --build-arg=KEY=VAL.
+    required: false
+    default: ''
+
+  # Один флаг, который включает COMPUTE-хеши внутри action'а — чтобы
+  # не повторять `find ... | sha256sum` в каждом job'е. Если нужна
+  # нестандартная логика (например, hash TS-исходников для webxr_client) —
+  # оставьте пустым и считайте хеш в самом job'е, потом передавайте
+  # через build-args как SOURCE_HASH=...
+  compute-submodule-sha:
+    description: >-
+      Имя субмодуля (например, src/ros2leds или src/vesc_nexus) для
+      которого action посчитает SHA и подмешает его как
+      <submodule-dir-upper>_SHA=<sha> build-arg. Если пусто — не считает.
+      ВНИМАНИЕ: имя build-arg формируется как `<basename>_SHA=<sha>` —
+      для src/ros2leds → ROS2LEDS_SHA, для src/vesc_nexus → VESC_NEXUS_SHA
+      (в верхнем регистре, неразрывный underscore).
+    required: false
+    default: ''
+
+  load:
+    description: >-
+      Если true → только buildx build --load (образ в локальный docker daemon),
+      БЕЗ docker push в registry. Если false (по умолчанию) → buildx --load +
+      docker push тегов локального registry (см. local-registry). GHCR не пушится.
+    required: false
+    default: 'false'
+
+  local-registry:
+    description: >-
+      Реестр, в который реально пушим при load=false (локальная сборка).
+      GHCR-теги НЕ пушим никогда: self-hosted runner не залогинен в ghcr.io
+      для test/dev (issue #1503), buildx --push по ним падал бы unauthorized.
+    required: false
+    default: 'localhost:5000'
+
+  # Self-hosted runner уже настроен на host.docker.internal:host-gateway —
+  # в buildx передаём его явно. Для будущих job'ов, которым не нужен
+  # APT_PROXY / buildkit gateway, можно отключить.
+  add-host:
+    description: 'Значение для buildx --add-host (по умолчанию host.docker.internal:host-gateway).'
+    required: false
+    default: 'host.docker.internal:host-gateway'
+
+  # ---- registry-кеш buildx (Этап 0, docs/plans/2026-09-15-builder-runtime-seam.md §6) ----
+  # Локальный build-кеш docker daemon'а на katana переживает только до
+  # `docker builder prune` / перезапуска демона и НЕ переживает между ранами,
+  # если раннер переустановили (§6.5). Registry-кеш пишется в тот же
+  # постоянный localhost:5000 на том же хосте и переживает такие события.
+  cache:
+    description: >-
+      Включить registry-кеш buildx (--cache-from / --cache-to type=registry,mode=max).
+      'false' → полностью выключить кеш-флаги (например, для forced-rebuild job'а,
+      по аналогии с --no-cache в L-Build Base Images.yml).
+    required: false
+    default: 'true'
+
+  cache-ref:
+    description: >-
+      Ref кеша для --cache-from / --cache-to. Если пусто (по умолчанию) —
+      выводится из ПЕРВОГО тега в `tags`, который лежит в local-registry:
+      <local-registry>/<repo>:<service-name>-buildcache. Это ОТДЕЛЬНЫЙ тег,
+      он не пересекается с тегами образа (<service>-<ros_distro>-<docker_tag>),
+      поэтому кеш-манифест не затирает образ в registry (§6.4). Репо-часть
+      (krikz/rob_box) берётся из самого тега, а не хардкодится здесь.
+      Пустое значение + отсутствие local-тега → кеш выключается (с warning).
+    required: false
+    default: ''
+
+  # Полный вывод buildx в лог job'а, по умолчанию ON (раньше тоже было видно).
+  # Progress оставлен plain для краткости лога (раньше тоже не использовали --progress=json).
+  progress:
+    description: 'Значение для buildx --progress (auto / plain / tty). По умолчанию plain.'
+    required: false
+    default: 'plain'
+
+runs:
+  using: 'composite'
+  steps:
+    # ---- Шаг 1: buildx --load + docker push (LOCAL registry only) ----
+    # Clean stale submodules + checkout выполняются в вызывающем job'е (см.
+    # description выше): локальный composite action требует зачекаутенный
+    # репозиторий ДО своего вызова, поэтому физически не может содержать
+    # собственный checkout. Если убрать checkout из job'а — раннер не найдёт
+    # action.yml и job упадёт (баг run #34366133083, fix issue #2280).
+    #
+    # Почему НЕ buildx --push: (1) он пушит ВСЕ --tag, включая GHCR, а runner
+    # не залогинен в ghcr.io для локальных test/dev сборок → unauthorized
+    # (run #34368750126); (2) update-image-versions делает `docker tag` из
+    # локального docker daemon — образ обязан быть в daemon, а --push туда его
+    # не кладёт. Поэтому: buildx --load (все теги в daemon) + docker push ТОЛЬКО
+    # тегов локального registry (localhost:5000). GHCR-тег остаётся локальным
+    # именем в daemon (как в прежнем коде, issue #1503).
+    - name: Build ${{ inputs.service-name }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Multi-line inputs (tags, build-args) — GitHub Actions подаёт их
+        # с реальными LF между строками. Здесь через env → temp-file →
+        # read на каждой строке, чтобы пережить CRLF (если вдруг runner
+        # на Windows) и trailing newlines. <<< "$VAR" вполне работает в bash
+        # для LF-входов, но file-based подход надёжнее для CI.
+        TAGS_TMP="$(mktemp)"
+        BUILD_ARGS_TMP="$(mktemp)"
+        trap 'rm -f "$TAGS_TMP" "$BUILD_ARGS_TMP"' EXIT
+        # shellcheck disable=SC2154  # inputs.* подставляется GH Actions до запуска bash
+        printf '%s\n' "${{ inputs.tags }}" > "$TAGS_TMP"
+        printf '%s\n' "${{ inputs.build-args }}" > "$BUILD_ARGS_TMP"
+
+        # Соберём флаги --tag
+        TAG_ARGS=()
+        while IFS= read -r tag || [ -n "$tag" ]; do
+          # пропускаем пустые строки (от trailing newline в inputs.tags)
+          [ -z "$tag" ] && continue
+          TAG_ARGS+=(--tag "$tag")
+        done < "$TAGS_TMP"
+
+        # Соберём --build-arg=...
+        BUILD_ARG_ARGS=()
+        while IFS= read -r arg || [ -n "$arg" ]; do
+          [ -z "$arg" ] && continue
+          BUILD_ARG_ARGS+=(--build-arg="$arg")
+        done < "$BUILD_ARGS_TMP"
+
+        # Опционально: посчитаем SHA субмодуля и добавим как build-arg
+        # (имя build-arg = <basename>_SHA в верхнем регистре — это
+        # согласовано с Dockerfile'ами, ожидающими ROS2LEDS_SHA / VESC_NEXUS_SHA).
+        if [ -n "${{ inputs.compute-submodule-sha }}" ]; then
+          SUBMODULE_PATH="${{ inputs.compute-submodule-sha }}"
+          SUBMODULE_BASENAME="$(basename "$SUBMODULE_PATH")"
+          SHA_VAR="${SUBMODULE_BASENAME^^}_SHA"
+          SHA_VAL="$(git submodule status "$SUBMODULE_PATH" | awk '{print $1}' | sed 's/^[+-]//')"
+          echo "  $SHA_VAR: $SHA_VAL"
+          BUILD_ARG_ARGS+=(--build-arg="${SHA_VAR}=${SHA_VAL}")
+        fi
+
+        # --add-host по умолчанию — host.docker.internal:host-gateway. Это
+        # ФИЧА ДЕМОНА docker, и драйвер docker-container её не понимает:
+        #   ERROR: unable to derive the IP value for host-gateway:
+        #          host-gateway is not supported by the docker-container driver
+        # (поймано на katana, run 35626403139 — все 8 job'ов упали за 2 минуты
+        # после того, как билдер впервые стал docker-container). Поэтому ниже,
+        # когда драйвер оказывается docker-container, host-gateway заменяется
+        # на реальный IP шлюза bridge-сети. Если IP не вычислился — оставляем
+        # как есть: apt-прокси в Dockerfile'ах и так проверяется на
+        # доступность и честно деградирует в «идём напрямую».
+        ADD_HOST_VALUE="${{ inputs.add-host }}"
+
+        # ---- Registry-кеш (план 2026-09-15-builder-runtime-seam.md §6, Этап 0) ----
+        # Кеш НЕ трогает ни --load, ни docker push локальных тегов (§6.5):
+        # --cache-from/--cache-to — независимые от экспортёра образа флаги,
+        # образ всё так же уезжает в локальный docker daemon через --load
+        # (проверено локально: при провалившемся cache-export с
+        # ignore-error=true `docker image inspect` находит собранный тег).
+        CACHE_ARGS=()
+        CACHE_REF="${{ inputs.cache-ref }}"
+        if [ "${{ inputs.cache }}" = "false" ]; then
+          CACHE_REF=""
+          echo "  Cache: disabled (cache=false)"
+        elif [ -z "$CACHE_REF" ]; then
+          # Дефолт выводим из первого тега локального registry: из
+          # localhost:5000/krikz/rob_box:oak-d-humble-test получаем
+          # localhost:5000/krikz/rob_box:oak-d-buildcache. Так репо-часть
+          # не дублируется в action'е и остаётся единственным источником
+          # правды в вызывающем workflow (env.LOCAL_PREFIX).
+          while IFS= read -r tag || [ -n "$tag" ]; do
+            [ -z "$tag" ] && continue
+            case "$tag" in
+              "${{ inputs.local-registry }}"/*)
+                # Отрезаем :<tag> только если после последнего ':' нет '/':
+                # иначе это порт registry (тег без :tag-части) — такой вход
+                # оставляем без кеша, чтобы не сконструировать мусорный ref.
+                case "${tag##*:}" in
+                  */*) : ;;
+                  *) CACHE_REF="${tag%:*}:${{ inputs.service-name }}-buildcache" ;;
+                esac
+                break
+                ;;
+            esac
+          done < "$TAGS_TMP"
+          if [ -z "$CACHE_REF" ]; then
+            echo "  ⚠️ Cache: disabled — в tags нет тега ${{ inputs.local-registry }}/<repo>:<tag>," \
+                 "не из чего вывести cache-ref (передайте cache-ref явно)"
+          fi
+        fi
+
+        if [ -n "$CACHE_REF" ]; then
+          # --cache-from на НЕсуществующий ref безопасен: buildx печатает
+          # ошибку импорта манифеста и продолжает сборку с кодом 0 (проверено
+          # на buildx v0.17.1 с заведомо недоступным registry). Поэтому первый
+          # прогон, когда кеша в registry ещё нет, не падает.
+          CACHE_ARGS+=(--cache-from "type=registry,ref=${CACHE_REF}")
+
+          # --cache-to — другое дело, и по ДВУМ независимым причинам:
+          #
+          # (1) Драйвер buildx. На дефолтном драйвере `docker` (без containerd
+          #     image store) buildx отказывает ещё ДО старта сборки:
+          #     "Cache export is not supported for the docker driver".
+          #     ignore-error=true тут НЕ помогает — это проверка фич драйвера
+          #     в самом buildx, а не ошибка экспорта внутри buildkit
+          #     (проверено локально, buildx v0.17.1: exit 1). Поэтому
+          #     спрашиваем драйвер и добавляем --cache-to только если он умеет
+          #     экспорт: любой не-`docker` драйвер (docker-container/remote/
+          #     kubernetes) умеет, `docker` — только с containerd image store.
+          # (2) Доступность registry. Если localhost:5000 лежит/не принимает
+          #     манифест, экспорт кеша роняет весь build (проверено: exit 1).
+          #     ignore-error=true превращает это в warning (exit 0), а образ
+          #     всё равно оказывается в daemon через --load.
+          #
+          # mode=max обязателен (§6.3): без него в кеш попадают только слои
+          # ФИНАЛЬНОГО образа, а промежуточные стадии multi-stage сборки — нет,
+          # т.е. будущее builder/runtime-разделение (Этапы 1+) кеша не увидит.
+          # Сам драйвер мы теперь не просто спрашиваем, а заводим: раннеры на
+          # katana — это КОНТЕЙНЕРЫ (myoung34/github-runner, docker.sock с
+          # хоста), у каждого свой ~/.docker, поэтому `docker buildx create`,
+          # сделанный руками на хосте, им не виден, а сделанный внутри
+          # контейнера — теряется при его пересоздании. Единственное место,
+          # где это переживает и то и другое, — вот этот шаг.
+          #
+          # network=host обязателен: buildkit в отдельном контейнере иначе не
+          # увидит ни localhost:5000 (куда пишется кеш), ни apt-прокси.
+          # buildkitd.toml с http=true — потому что локальный registry без TLS,
+          # иначе экспорт кеша тихо уходил бы в ignore-error-warning.
+          # Имя билдера завязано на hostname: у каждого раннер-контейнера свой,
+          # два параллельных job'а не дерутся за один buildkit-контейнер.
+          BUILDER_NAME="robbox-$(hostname)"
+          if ! docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+            BUILDKITD_TOML="$(mktemp)"
+            # printf, а не heredoc: тело heredoc'а обязано начинаться с нулевой
+            # колонки, а мы внутри YAML-блока `run: |` — нулевая колонка тут
+            # ломает разбор самого workflow.
+            {
+              printf '[registry."%s"]\n' "${{ inputs.local-registry }}"
+              printf '  http = true\n'
+              printf '  insecure = true\n'
+            } > "$BUILDKITD_TOML"
+            echo "  buildx: создаю билдер $BUILDER_NAME (docker-container, network=host)"
+            docker buildx create \
+              --name "$BUILDER_NAME" \
+              --driver docker-container \
+              --driver-opt network=host \
+              --config "$BUILDKITD_TOML" \
+              --bootstrap >/dev/null 2>&1 \
+              || echo "  ⚠️ buildx: не удалось создать $BUILDER_NAME — остаёмся на текущем билдере"
+            rm -f "$BUILDKITD_TOML"
+          fi
+          # Если билдер не создался — молча остаёмся на дефолтном `docker`:
+          # сборка важнее кеша, а ниже мы всё равно спросим драйвер и не
+          # добавим --cache-to, если экспорт не поддерживается.
+          docker buildx use "$BUILDER_NAME" >/dev/null 2>&1 || true
+
+          CACHE_DRIVER="$(docker buildx inspect 2>/dev/null \
+            | awk -F':[[:space:]]*' '/^Driver:/ {print $2; exit}' || true)"
+          # host-gateway → реальный IP, если драйвер его не понимает (см.
+          # комментарий к ADD_HOST_VALUE выше).
+          case "$CACHE_DRIVER:$ADD_HOST_VALUE" in
+            docker:*) : ;;                      # дефолтный драйвер умеет host-gateway
+            *:*host-gateway)
+              GW_IP="$(docker network inspect bridge \
+                --format '{{ (index .IPAM.Config 0).Gateway }}' 2>/dev/null || true)"
+              if [ -n "$GW_IP" ]; then
+                ADD_HOST_VALUE="${ADD_HOST_VALUE%:host-gateway}:${GW_IP}"
+                echo "  add-host: host-gateway → ${GW_IP} (драйвер ${CACHE_DRIVER} не умеет host-gateway)"
+              else
+                echo "  ⚠️ add-host: не удалось вычислить IP шлюза bridge — оставляю host-gateway как есть"
+              fi
+              ;;
+          esac
+
+          if [ -n "$CACHE_DRIVER" ] && [ "$CACHE_DRIVER" != "docker" ]; then
+            CACHE_EXPORT_OK="true"
+          elif docker info --format '{{ .DriverStatus }}' 2>/dev/null | grep -q 'io.containerd.snapshotter'; then
+            CACHE_EXPORT_OK="true"
+          else
+            CACHE_EXPORT_OK="false"
+          fi
+
+          if [ "$CACHE_EXPORT_OK" = "true" ]; then
+            CACHE_ARGS+=(--cache-to "type=registry,ref=${CACHE_REF},mode=max,ignore-error=true")
+            echo "  Cache: ${CACHE_REF} (from + to, mode=max, ignore-error, driver=${CACHE_DRIVER:-unknown})"
+          else
+            echo "  Cache: ${CACHE_REF} (from only)"
+            echo "  ⚠️ cache export пропущен: buildx-драйвер '${CACHE_DRIVER:-unknown}' не умеет" \
+                 "--cache-to type=registry. Чтобы кеш реально писался, на раннере нужен драйвер" \
+                 "docker-container (docker buildx create --driver docker-container --use) или" \
+                 "containerd image store."
+          fi
+        fi
+
+        # Режим load vs load+push-local. buildx --push НЕ используем — причины
+        # в комментарии над шагом и в description (GHCR unauthorized + daemon
+        # нужен update-image-versions'у).
+        echo "🏗️ Building ${{ inputs.service-name }}..."
+        echo "  Dockerfile: ${{ inputs.dockerfile-path }}"
+        echo "  Build context: ${{ inputs.build-context }}"
+        echo "  Tags:"
+        while IFS= read -r tag || [ -n "$tag" ]; do
+          [ -z "$tag" ] && continue
+          echo "    - $tag"
+        done < "$TAGS_TMP"
+        if [ "${{ inputs.load }}" = "true" ]; then
+          echo "  Output mode: --load (no push to registry)"
+        else
+          echo "  Output mode: --load + docker push (LOCAL registry only)"
+        fi
+
+        # buildx build --load: образ со всеми --tag уходит в локальный docker
+        # daemon (нужен update-image-versions'у для `docker tag`).
+        docker buildx build \
+          --platform "${{ inputs.platform }}" \
+          --file "${{ inputs.dockerfile-path }}" \
+          "${TAG_ARGS[@]}" \
+          --load \
+          --add-host="${ADD_HOST_VALUE}" \
+          "${BUILD_ARG_ARGS[@]}" \
+          "${CACHE_ARGS[@]}" \
+          --progress="${{ inputs.progress }}" \
+          "${{ inputs.build-context }}"
+
+        # Локальная сборка → пушим ТОЛЬКО теги локального registry.
+        # GHCR-теги (ghcr.io/...) НЕ пушим: runner не залогинен в ghcr.io для
+        # test/dev (issue #1503), попытка push упала бы с unauthorized. GHCR-тег
+        # уже есть в daemon как локальное имя образа (см. --load выше).
+        if [ "${{ inputs.load }}" != "true" ]; then
+          echo "  Pushing LOCAL tags (${{ inputs.local-registry }}/*):"
+          while IFS= read -r tag || [ -n "$tag" ]; do
+            [ -z "$tag" ] && continue
+            case "$tag" in
+              "${{ inputs.local-registry }}"/*)
+                echo "    docker push $tag"
+                docker push "$tag"
+                ;;
+            esac
+          done < "$TAGS_TMP"
+        fi
+
+        echo "✅ Built ${{ inputs.service-name }}"
+
+    # ---- Шаг 2 (опционально): verification & tagging ----
+    # Если job — это ВНУТРЕННИЙ build-job без `update-image-versions`,
+    # verification здесь не нужен (verify делается централизованно в
+    # update-image-versions, см. issue #1482 acceptance B). Этот шаг
+    # здесь — заглушка для будущих расширений, не активен по умолчанию.
+
+outputs: {}

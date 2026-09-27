@@ -70,7 +70,7 @@ class DialogueManager:
 """ROS node wrapper for dialogue system"""
 
 from rob_box_voice.core.dialogue_manager import DialogueManager
-from rob_box_voice.llm.streaming_client import StreamingClient
+from rob_box_llm.streaming_client import StreamingClient  # rob_box_voice.llm удалён (issue #1985)
 
 class DialogueNode(Node):
     def __init__(self):

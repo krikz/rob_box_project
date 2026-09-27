@@ -4,7 +4,7 @@ This module is the **catalog** of every tool that needs user
 confirmation before it is allowed to touch the hardware. It is
 intentionally **pure Python** — no ``rclpy``, no LLM, no ROS2
 transport. The :class:`ToolConfirmationPolicy` is consulted by
-:meth:`rob_box_harness.core.dialog_core.DialogCore` (or any other
+:meth:`rob_box_harness.core.agent_core.AgentCore` (or any other
 tool-call orchestrator) before a tool result is delivered to the
 executor.
 

@@ -32,10 +32,15 @@ from rob_box_voice.observability import (
     MetricsDisabled,
     get_metric,
     is_metrics_enabled,
+    record_audio_input_overflow,
     record_barge_in,
+    record_music_retry_exhausted,
+    record_pending_queue_latency,
+    record_quick_decide_verdict,
     record_session_duration,
     record_speaker_recognize,
     record_stt_recognize,
+    record_task_updated,
     record_telegram_message,
     record_tts_synthesize,
     record_voice_llm_request,
@@ -63,6 +68,12 @@ class TestNoopBehaviour:
         record_barge_in()
         record_session_duration(12.0, result="success")
         record_telegram_message("in", message_type="text")
+        # W2-6 (issue #968) — MERGE-метрики.
+        record_quick_decide_verdict("IGNORE")
+        record_task_updated()
+        record_pending_queue_latency(0.05)
+        # Issue #2554 — audio_node overflow counter.
+        record_audio_input_overflow(frames_per_buffer=4096)
 
     def test_start_server_disabled_returns_false(self):
         if is_metrics_enabled():
@@ -146,6 +157,61 @@ class TestMetricsWithPrometheusClient:
         after = _hist_sum("voice_session_duration_seconds", {"result": "success"})
         assert after >= before + 5.0
 
+    # ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────
+
+    def test_record_quick_decide_verdict_all_labels(self):
+        for verdict in ("IGNORE", "REPLACE", "PENDING_LLM"):
+            before = _counter_value(
+                "voice_scheduler_quick_decide_total", {"verdict": verdict}
+            )
+            record_quick_decide_verdict(verdict)
+            after = _counter_value(
+                "voice_scheduler_quick_decide_total", {"verdict": verdict}
+            )
+            assert after == before + 1
+
+    def test_record_task_updated_increments(self):
+        before = _counter_value("voice_scheduler_task_updated_total", {})
+        record_task_updated()
+        after = _counter_value("voice_scheduler_task_updated_total", {})
+        assert after == before + 1
+
+    def test_record_pending_queue_latency_histogram(self):
+        before = _hist_sum("voice_scheduler_pending_queue_latency_seconds", {})
+        record_pending_queue_latency(0.15)
+        after = _hist_sum("voice_scheduler_pending_queue_latency_seconds", {})
+        assert after >= before + 0.15
+
+    # ── Issue #2554: audio_node paInputOverflow counter ────────────
+
+    def test_record_audio_input_overflow_increments(self):
+        """Issue #2554: voice_audio_input_overflow_total — counter
+        paInputOverflow, лейблованный frames_per_buffer (chunk_size
+        на момент события). Проверяем: метрика инкрементируется
+        ровно на 1 и лейбл сохраняется.
+        """
+        before_4096 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "4096"},
+        )
+        before_8192 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "8192"},
+        )
+        record_audio_input_overflow(frames_per_buffer=4096)
+        record_audio_input_overflow(frames_per_buffer=8192)
+        record_audio_input_overflow(frames_per_buffer=4096)
+        after_4096 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "4096"},
+        )
+        after_8192 = _counter_value(
+            "voice_audio_input_overflow_total",
+            {"frames_per_buffer": "8192"},
+        )
+        assert after_4096 == before_4096 + 2
+        assert after_8192 == before_8192 + 1
+
 
 def _counter_value(name: str, labels: dict) -> int:
     """Читает текущее значение счётчика из REGISTRY (0 если метка не существует).
@@ -177,3 +243,109 @@ def _hist_sum(name: str, labels: dict) -> float:
             ):
                 return float(sample.value)
     return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Issue #2561 — record_music_retry_exhausted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not is_metrics_enabled(),
+    reason="prometheus_client required for registry-level assertions",
+)
+class TestRecordMusicRetryExhausted:
+    """Issue #2561: проверяем, что :func:`record_music_retry_exhausted`
+    правильно инкрементирует ``voice_music_retry_exhausted_total``
+    с лейблами (guard_name, reason, user_input_kind)."""
+
+    def test_increments_counter_with_labels(self):
+        before = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "track_name",
+            },
+        )
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="track_name",
+        )
+        after = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "track_name",
+            },
+        )
+        assert after == before + 1
+
+    def test_distinguishes_user_input_kinds(self):
+        # Каждый лейбл — своя серия в REGISTRY.
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="genre",
+        )
+        v_genre = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "genre",
+            },
+        )
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="general",
+        )
+        v_general = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "general",
+            },
+        )
+        # Оба лейбла должны быть учтены (>= 1, не нули).
+        assert v_genre >= 1
+        assert v_general >= 1
+
+    def test_empty_user_input_kind_defaults_to_unknown(self):
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="",
+        )
+        # Метка с пустой строкой должна стать "unknown".
+        v_unknown = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "unknown",
+            },
+        )
+        assert v_unknown >= 1
+
+
+@pytest.mark.skipif(
+    not is_metrics_enabled(),
+    reason="prometheus_client required for registry-level assertions",
+)
+class TestRecordMusicRetryExhaustedNoop:
+    """Без prometheus_client ``record_music_retry_exhausted`` — no-op."""
+
+    def test_noop_when_disabled(self):
+        if is_metrics_enabled():
+            pytest.skip("prometheus_client installed — no-op path not exercised")
+        # Не должно падать.
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="track_name",
+        )

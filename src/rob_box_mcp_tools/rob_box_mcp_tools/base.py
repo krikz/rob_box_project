@@ -12,6 +12,40 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import threading
+
+
+# ---------------------------------------------------------------------------
+# Ожидание rclpy-future
+# ---------------------------------------------------------------------------
+
+
+def wait_future(future, timeout_sec: float) -> bool:
+    """Wait for an rclpy Future without touching the executor.
+
+    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
+    callback that is already executing under ``MultiThreadedExecutor`` — it
+    internally tries to add the node to a *new* executor, which corrupts the
+    existing one and silently breaks all subsequent subscription callbacks.
+
+    This helper attaches a ``done_callback`` to the future so that a plain
+    ``threading.Event`` is set when the future completes.  The calling thread
+    blocks on the event, leaving the ROS 2 executor completely undisturbed.
+
+    Returns True if the future completed within *timeout_sec*, False otherwise.
+
+    Живёт здесь, а не в ``tools/``: хелпер нужен трём модулям тулов
+    (``navigation``, ``system``, ``mapping``), а ``base`` — единственный
+    общий для них модуль, который при этом ROS-free. Тащить сюда
+    ``rclpy`` нельзя: каталог тулов собирается через AST именно потому,
+    что ``tools/navigation.py`` тянет ``rclpy.action`` на импорте
+    (``tools/gen_tool_catalog.py``). Раньше это были три дословные копии,
+    причём в ``mapping.py`` докстринг был ужат до одной строки и причина
+    запрета ``spin_until_future_complete`` там терялась (карточка W6-1).
+    """
+    event = threading.Event()
+    future.add_done_callback(lambda _: event.set())
+    return event.wait(timeout=timeout_sec)
 
 
 class ToolExecutionType(Enum):
@@ -56,6 +90,12 @@ class MCPToolParameter:
     properties: Optional[Dict[str, "MCPToolParameter"]] = None  # Для type="object"
     items: Optional["MCPToolParameter"] = None  # Для type="array"
     default: Optional[Any] = None
+    #: Применять ли ``enum`` в ``validate_parameters``. ``False`` — список
+    #: остаётся в JSON Schema (ведёт LLM к правильным значениям), но
+    #: валидация его не навязывает. Нужно инструментам, которые сами
+    #: нормализуют вход: напр. ``speak_text(animation=...)`` принимает
+    #: русские названия и псевдонимы и приводит их к реальной анимации.
+    enum_strict: bool = True
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата."""
@@ -147,6 +187,22 @@ class MCPTool(ABC):
         pass
 
     @property
+    def slice(self) -> str:
+        """Срез каталога, которому принадлежит инструмент (ADR-0052, issue #1998 §6.2).
+
+        Дефолт — ``"core"`` (узкий read-only срез: батарея, поза, время,
+        статус). Подклассы, доступные LLM-личности, обязаны переопределить
+        на ``"personality"`` (музыка, память, навигация, mapping). Тулы
+        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.control"`` /
+        ``"operator.admin"``.
+
+        Проверяется на регистрации (``mcp_server._register_tools`` ловит
+        пустой/неизвестный ``slice`` и отказывает старту) и на каждом
+        запросе ``/mcp/execute`` через ``ToolSliceAuthority.is_allowed``.
+        """
+        return "core"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         """
         Тип выполнения инструмента (по умолчанию MEDIUM)
@@ -170,6 +226,29 @@ class MCPTool(ABC):
         return False
 
     @property
+    def starts_music(self) -> bool:
+        """Инструмент запускает слышимую музыку (Renardo или mp3).
+
+        Единственный источник для post-turn music guard'а: если в ходе был
+        вызван тул с ``starts_music=True``, гуард не должен ретраить LLM
+        «ты не вызвал музыкальный тул». Ранее это знание дублировалось в
+        ``dialogue_guards.RENARDO_MUSIC_TOOLS``/``GENERATED_MUSIC_TOOLS``
+        и каждый новый музыкальный тул про него забывал (lookup_melody).
+        """
+        return False
+
+    @property
+    def satisfies_user_music(self) -> bool:
+        """Инструмент закрывает пользовательскую просьбу «включи X».
+
+        Отдельно от ``starts_music``: ``load_track`` запускает Renardo, но
+        в DJ-переходе не должен засчитываться за «музыка пошла» (DJ обязан
+        играть через compose_music/lookup_melody), поэтому у него
+        ``starts_music=False``, а ``satisfies_user_music=True``.
+        """
+        return False
+
+    @property
     def destructive(self) -> bool:
         """
         Инструмент выполняет разрушительные операции (destructiveHint)
@@ -188,6 +267,18 @@ class MCPTool(ABC):
         - False: повторные вызовы могут добавлять эффекты [DEFAULT]
         """
         return False
+
+    @property
+    def llm_visible(self) -> bool:
+        """Показывать ли инструмент LLM в списке доступных tool calls.
+
+        ``False`` — инструмент остаётся исполняемым через ``/mcp/execute``
+        (внутренние вызовы, тесты, ручная отладка), но не попадает в
+        каталог, который получает модель. Нужен ровно для инструментов,
+        чей внешний бэкенд умер: см. ``GenerateMusicTool`` (MiniMax Music
+        API отключён, 410 Gone) — LLM не должен видеть мёртвый тул.
+        """
+        return True
 
     @property
     def blocking(self) -> bool:
@@ -294,7 +385,7 @@ class MCPTool(ABC):
 
         # Проверяем enum значения
         for param in self.parameters:
-            if param.name in kwargs and param.enum is not None:
+            if param.name in kwargs and param.enum is not None and param.enum_strict:
                 if kwargs[param.name] not in param.enum:
                     return (
                         False,

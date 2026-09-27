@@ -7,19 +7,50 @@ stt_node:
   ros__parameters:
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
+    # Issue #2609 — Vosk (~400 МБ RSS) нужен только когда Yandex не ответил:
+    # грузим модель при первом fallback, а не на старте.
+    vosk_preload: false
     # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
     #           'software' = выкидываем фразы пока TTS играет
     aec_mode: hardware
-    # Wake words для мгновенного STOP TTS (barge-in). Должны совпадать
-    # с dialogue_node.wake_words.
-    # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
-    # + исторический «робик». STT реально выдаёт кривые варианты («робок»,
-    # «роберт», «рыбок») — все покрываем для надёжного barge-in.
-    wake_words: [робок, робот, роббокс, робокос, роббос, робокс, робэкс, робекс, робакс, рабокс, рубокс, роблокс, роберт, рыбок, рабок, робак, рома, бот, робо, роб, робик]
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file (namespace
+    # personality → ReSpeaker / voice/stt/result, operator → wake-поток шлема /
+    # avatar/stt/result). Кодовая DEFAULT_WAKE_WORDS — только фолбек для dev-env.
+    # Монтируемый ./config:/config кладёт файл в /config/wake_words.yaml.
+    wake_words_file: /config/wake_words.yaml
     yandex_timeout_s: 5.0
     yandex_max_retries: 1
     retry_backoff_s: 1.0
     min_text_chars: 3
+    # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====
+    # Порядок = приоритет. Vosk принудительно последний: он единственный
+    # работает офлайн и без денег на счету — это последний рубеж.
+    # Единственный источник истины для порядка (config/stt_chain.yaml
+    # удалён: второй YAML для того же значения — класс ошибки #1252/#1734).
+    # Issue #2866 (23.09.2026): Yandex первым — товарищ Шифу пополнил счёт
+    # Yandex SpeechKit и решил поставить его primary. MiniMax — второй
+    # эшелон. Значение обязано совпадать с DEFAULT_STT_PROVIDER_CHAIN в
+    # stt_node.py (гард: test_yaml_param_consistency.py).
+    stt_provider_chain: [yandex, minimax, vosk]
+    # MiniMax STT. Ключ приезжает из ENV MINIMAX_API_KEY (тот же, что у
+    # TTS/LLM — см. docker/vision/.env). Без ключа провайдер тихо
+    # выпадает из цепочки, робот работает на Yandex + Vosk.
+    minimax_stt_enabled: true
+    minimax_stt_api_key_env: MINIMAX_API_KEY
+    minimax_stt_base_url: https://api.minimax.io
+    minimax_stt_model: asr-1.0
+    minimax_stt_language: ru
+    minimax_stt_timeout_s: 5.0
+    minimax_stt_max_retries: 1
+    # Кэш «мёртвых» провайдеров (те же дефолты, что у tts_node).
+    # Без него при пустом балансе робот платил бы таймаут обоим облакам
+    # на КАЖДОЙ фразе, прежде чем дойти до Vosk.
+    provider_dead_ttl_s: 300.0
+    provider_dead_ttl_transient_s: 30.0
+    # /data — тот же том, что у tts_provider_state.json (issue #1229):
+    # рестарт ноды не должен заново платить таймаут мёртвому облаку.
+    provider_state_file: /data/stt_provider_state.json
     unclear_phrase: Не расслышал, скажи ещё раз
     unclear_cooldown_s: 5.0
     tts_grace_s: 2.5
@@ -29,3 +60,10 @@ stt_node:
     # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
     early_boop_enabled: true
     early_boop_trigger: boop
+    # ⚠️ issue #1734: barge_in_policy здесь НЕТ и не должно быть. Это НЕ
+    # параметр stt_node — единственный источник истины: dialogue_node.yaml
+    # (ключ barge_in_policy). stt_node узнаёт актуальное значение runtime
+    # через latched-топик /voice/dialogue/barge_in_policy (см.
+    # dialogue_node._publish_barge_in_policy / stt_node.barge_in_policy_callback),
+    # а не из своего YAML — иначе будет ровно тот же класс ошибки, что и
+    # с дублированием wake_words выше (issue #1252), который и породил #1734.

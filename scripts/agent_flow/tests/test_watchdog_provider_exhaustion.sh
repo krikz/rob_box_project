@@ -21,6 +21,10 @@
 #   6. blocked карточка с маркерами, но последнее событие kind='blocked'
 #      (ручной block Шифу) → НЕТ action (guard от ручных блоков)
 #
+# Регресс-тест для COOLDOWN-логики watchdog-provider-quick.sh (новт ретро
+# t_197de62a) живёт в отдельном test_watchdog_provider_quick_cooldown.sh
+# — здесь тестируется только логика watchdog.sh.
+#
 # Run:
 #   bash scripts/agent_flow/tests/test_watchdog_provider_exhaustion.sh
 # ============================================================================

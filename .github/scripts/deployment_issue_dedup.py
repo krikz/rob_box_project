@@ -58,6 +58,25 @@ CRITICAL_EXCLUDE_COMMON = [
     # healthy variant; the lookahead `(?!none\b)` keeps the
     # healthy-positive case caught by that earlier rule and excludes
     # every non-empty missing-list echo.
+    #
+    # 🔴 UPDATE (live incident 21.09.2026, Vision Pi): the underlying race
+    # had a SECOND root cause beyond the 30s-cap timing above — the
+    # start_voice_assistant.sh wait loop only waited for "FoxDot OSCdef
+    # registered" + a blind 3s sleep, but the actual preload (63 SynthDefs,
+    # ~0.3-0.8s each with a Server.sync after every one) can take far
+    # longer than 3s and starts right after that marker. On top of that,
+    # music_stack_validation.py's _LOADED_SYNTH_RE was still matching the
+    # OLD log line "SynthDef preload ok: X" — foxdot_init.sc had switched
+    # to "SynthDef in scsynth: X" back on the 30.08 live-fix — so the
+    # validator reported every loaded critical SynthDef as missing even on
+    # a full, successful preload. Both are fixed now: the wait loop polls
+    # for the real completion marker "SynthDef preload finished:" (cap
+    # raised to 60s), and the regex accepts both log formats (see
+    # music_stack_validation.py::_LOADED_SYNTH_RE). This exclusion stays as
+    # a harmless defence-in-depth layer for the remaining legitimate race
+    # (sclang still mid-preload when validate_music_stack.py runs on an
+    # exceptionally slow cold start) — it should fire far less often now
+    # that the actual root causes are gone.
     r"missing critical synthdefs: (?!none\b)",
     # Same race (issue #1520): validate_music_stack.py prints
     # `Log file not found: <path>` when sclang hasn't yet written
@@ -67,6 +86,10 @@ CRITICAL_EXCLUDE_COMMON = [
     # new failure mode. Excluded so the deploy gate only sees the
     # post-sclang-warning content, which is what the operator
     # actually needs to triage.
+    #
+    # Same 21.09.2026 update as above applies here — still kept as
+    # defence-in-depth, expected to fire only on genuinely slow cold starts
+    # now that the wait loop waits for the real preload-finished marker.
     r"log file not found: .*sclang\.log",
     # BrokenPipeError from `ros2 topic list | head` in start_nav2_direct.sh:
     # head closes the pipe after the first line, ros2cli prints a traceback —
@@ -149,6 +172,39 @@ CRITICAL_EXCLUDE_COMMON = [
     # team can address the underlying preload separately.
     r"error: synthdef \S+ not found",
     r"failure in server /s_new synthdef not found",
+    # SuperCollider startup noise (issue #1802, deploy run 33395279992 31.08):
+    # FoxDot/Renardo cleanup path sends `/n_free Node <id>` for SynthDef
+    # nodes that were already freed by sclang during the headless shutdown
+    # sequence (node <id> not found is the expected reply). The scsynth
+    # server logs `FAILURE IN SERVER /n_free Node <id> not found` and the
+    # `failure` keyword trips CRITICAL_MATCH_RE → false deploy-critical on
+    # fully-green runs (Vision Pi supercollider + voice-assistant both stay
+    # healthy: 189 topics, container_status=true, music stack degraded-but-
+    # usable). Real scsynth crashes still match a different wording
+    # (`Exception in Server...`) which is NOT covered here, so genuine
+    # outages are still surfaced. Narrowed to `/n_free` so unrelated
+    # FAILURE IN SERVER lines (e.g. group/free races on /g_free) are still
+    # reported — those need an operator's eye.
+    r"failure in server /n_free node \S+ not found",
+    # Voice-assistant bootstrap echo (issue #1802, deploy run 33395279992
+    # 31.08): start_voice_assistant.sh prints `⚠ Music stack validation
+    # found non-critical errors (degraded but usable)` whenever
+    # validate_music_stack.py exits non-zero but did not declare a fatal
+    # sclang crash — see docker/vision/scripts/voice_assistant/start_voice_
+    # assistant.sh:138 and src/rob_box_voice/scripts/validate_music_stack.py
+    # (returns 1 on degraded mode). The container is INTENTIONALLY
+    # continuing with a degraded music stack; voice/TTS/STT stay healthy
+    # (Voice Pi container_status=true + 189 ROS2 topics). The plain word
+    # `errors` in the wrapper's own status line trips CRITICAL_MATCH_RE
+    # and was causing a deploy-critical issue to be filed on every
+    # staging run. Excluded here as the operator-facing tier of the
+    # earlier `missing critical synthdefs: none` / `log file not found:
+    # sclang.log` exclusions (all part of the same retro 15.08 t_a14ac65d
+    # sclang-preload race). The positive `✓ Music stack validation
+    # passed` line on the happy path is a normal boot log with no
+    # `error`/`critical`/`failure` keyword and therefore never matched
+    # CRITICAL_MATCH_RE in the first place — it needs no exclusion.
+    r"music stack validation found non-critical errors",
     # vesc_hardware_interface transient startup segfault (issue #1593,
     # deploy run 32771845791 24.08 / kanban t_efc1a364). libvesc_hardware_interface.so
     # starts CanInterface::receiveLoop() in parallel with hardware activate(),
@@ -193,6 +249,158 @@ CRITICAL_EXCLUDE_COMMON = [
     # multi-line scan to require a libvesc_hardware_interface.so frame
     # in the preceding lines of the same log dump.
     r"\[ros2run\]: segmentation fault",
+    # SuperCollider /n_free Node ... not found (deploy run 33335300188,
+    # 30.08 21:07, kanban t_fe19566c, issue #1737): sibling of the
+    # /s_new SynthDef not found rule above. FoxDot / Renardo sends
+    # /n_free for nodes that the headless scsynth image never allocated
+    # (the client/server log the missing-id echo as "FAILURE IN SERVER
+    # /n_free Node <num> not found"), then immediately schedules a new
+    # node and music keeps flowing. Same exclusion class as issue
+    # #1485 - the audio music-pipeline team tracks the underlying
+    # preload separately; the deploy gate must not file a critical
+    # issue every time it repeats.
+    r"failure in server /n_free node \d+ not found",
+    # dialogue_node user_input echo (deploy run 33308557595, 30.08
+    # 11:17, kanban t_fe19566c, issue #1737): dialogue_node logs the
+    # entire `user_input='...'` payload it forwards to the LLM, so a
+    # user who literally said the words "[CRITICAL]" / "[ERROR]" /
+    # "traceback" in a sentence gets that text echoed verbatim into
+    # the container log (e.g. `[Spkr:Den] [CRITICAL] ...`). The
+    # bare-word CRITICAL_MATCH_RE then flags the line as a
+    # deploy-critical issue even though no system error happened -
+    # the robot is happily processing a turn. Excluding every
+    # `user_input='` echo makes the rule tight (LLM payload is
+    # structured; a real dialogue_node crash shows up in a different
+    # log shape, e.g. `Traceback (most recent call last):` followed by
+    # a Python exception line that does NOT match `user_input='`).
+    #
+    # Issue #1834 (deploy run 33450019127, 31.08 23:17, kanban
+    # t_65a41c8c): dialogue_node formats the same payload via
+    # `{user_input!r}` (Python repr, see dialogue_node.py:4557).
+    # Python's repr() picks SINGLE quotes by default but switches to
+    # DOUBLE quotes whenever the string contains a `'` and no `"` -
+    # so a retry-cycle system-reminder like
+    # `"[Speaker:unknown] [CRITICAL] ...'` (yes, an unescaped `'` from
+    # the LLM-side raw text on a "НЕ вызвал ни один" line) ends up
+    # logged as `user_input="[Speaker:unknown] [CRITICAL] ..."`. The
+    # original rule `r"user_input='"` does not match, and the
+    # deploy-gate files a critical_log issue on an otherwise green
+    # run (Vision Pi all containers healthy + 210 ROS2 topics). The
+    # character class `['"]` covers both quote styles uniformly and
+    # keeps the rule tight (a real Python crash still shows up as a
+    # `Traceback (most recent call last):` header followed by an
+    # exception line that does not contain `user_input=...`).
+    r"""user_input=['"]""",
+    # dialogue_node synthetic-retreat log line (deploy run 34908172365,
+    # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395): the DJ Bug B
+    # synchronous retry path emits a single-shot
+    # `_dispatch_turn(raw_user_command=user_input, is_synthetic=True)`
+    # whose reminder payload is `[CRITICAL] В прошлом цикле ты НЕ вызвал
+    # compose_music` (see dialogue_node.py:_build_dj_retry_prompt).
+    # rclpy prints that user_input as a turn-start line in the form
+    # `[dialogue_node-N]   [<pid>] user: '<payload>'` (the `[<pid>]`
+    # slot is the logger's process-id formatter; the value varies per
+    # container restart). The CRITICAL_MATCH_RE `\bcritical\b` part of
+    # that line is purely the reminder text, not a deployment failure
+    # — the music guard itself is intentionally escalating the LLM
+    # (issue #992 Bug C), and a successful follow-up turn is logged a
+    # few lines later without errors. The exclusion is scoped to the
+    # `[CRITICAL]` marker + `не вызвал`/`ни один` phrasing so a real
+    # dialogue_node crash on the same container (which prints a
+    # `Traceback (most recent call last):` header followed by an
+    # exception line) is still reported. The negative test
+    # `test_dialogue_node_dj_retry_critical_reminder_still_reports_real_traceback`
+    # locks the safety net.
+    r"\[dialogue_node-\d+\]\s+\[\d+\]\s+user:\s*'\[Speaker:[^\]]+\]\s+\[CRITICAL\][^']*не вызвал",
+    # Music-stack validator self-report (deploy runs 33330895761 /
+    # 33335300188, 30.08 19:31 / 21:07, kanban t_fe19566c, issue
+    # #1737): start_voice_assistant.sh runs validate_music_stack.py
+    # right after sclang starts and prints "Music stack validation
+    # found non-critical errors (degraded but usable)" when sclang has
+    # not finished its SynthDef preload yet (same root cause as the
+    # `missing critical synthdefs: ...` race already excluded above,
+    # see issue #1520). The validator itself already downgraded the
+    # severity ("non-critical", "degraded but usable") and the bash
+    # harness continues - but the regex still flags the literal
+    # "critical" and "errors" words in the message and would open a
+    # deploy-critical issue on every green run until sclang finishes
+    # preloading.
+    r"music stack validation found non-critical errors \(degraded but usable\)",
+    # dialogue_node bare "Traceback" header without the exact
+    # column-zero shape covered by the rule above (issue #1335 retro
+    # 15.08 covered only `^traceback \(most recent call last\):$`,
+    # but ROS2 node loggers prepend a `[dialogue_node-4]` prefix
+    # before the header, so the line `[dialogue_node-4] Traceback
+    # (most recent call last):` slips through and triggers a
+    # deploy-critical issue on otherwise green runs - deploy run
+    # 33315845764, 30.08 14:08, kanban t_fe19566c, issue #1737). The
+    # follow-up Python exception line (e.g. `BrokenPipeError:`,
+    # `ModuleNotFoundError:`) still matches CRITICAL_MATCH_RE via
+    # "error" and is reported unless it is explicitly excluded by
+    # another rule. Drop the `^` anchor so the bare header - alone or
+    # with a logger prefix - is excluded uniformly.
+    r"^\[.*\] traceback \(most recent call last\):$|^Traceback \(most recent call last\):$",
+    # stt_node successful-fallback echo (issue #1875, deploy run
+    # 33605805375, 02.09 07:53 UTC, kanban t_198f9374): voice-assistant
+    # logs `[stt_attempt] yandex:error(Nms)->...->vosk:ok(Nms '...') ->
+    # accepted '...'` whenever Yandex STT returns transient errors but
+    # Vosk successfully recognizes the phrase and the turn is accepted.
+    # The `yandex:error` token trips CRITICAL_MATCH_RE on the bare word
+    # `error` and files a false deploy-critical on otherwise green runs
+    # (Vision Pi voice-assistant healthy + 193 ROS2 topics, Main Pi
+    # perception healthy, all container_status checks passing). The
+    # pre-existing `yandex:empty(.*)->.*:empty(.*) -> rejected` warning
+    # exclusion (retro 12.08 t_d3e44336) only covers the empty-rejection
+    # code path; the error→ok success path needs its own rule. Narrow
+    # the match to lines that carry BOTH `[stt_attempt]` and a `vosk:ok`
+    # provider in the same chain - real STT failures (`FATAL: microphone
+    # not found`, `yandex:error(1500ms) - no stt provider succeeded`,
+    # `[stt_attempt] yandex:error->vosk:error->rejected`) do not match
+    # the `vosk:ok` half and continue to surface as critical issues.
+    r"\[stt_attempt\][^]]*yandex:error[^]]*vosk:ok",
+    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): dialogue_node's babble
+    # guard logs `[issue 992 Bug D] LLM babble detected — retrying
+    # once with CRITICAL reminder (head=...)` at WARN level when the
+    # metalanguage detector trips on the LLM's reply. The literal
+    # `CRITICAL reminder` string is part of the retry-injection prompt
+    # (see dialogue_node.py:3564-3565), NOT a system failure — the
+    # node recovers via the synthetic one-shot retry and continues
+    # serving the turn. The bare `CRITICAL` keyword trips
+    # CRITICAL_MATCH_RE and was filing a false deploy-critical issue
+    # on an otherwise green run (Vision Pi all containers healthy +
+    # 189 topics, Main Pi perception healthy). Same root cause /
+    # recovery shape as the `[issue 1777 / 1762] LLM skip non-music
+    # tool ... retrying once with CRITICAL reminder` echo from the
+    # tool-skipped guard (dialogue_node.py:4023) — both are
+    # intentional retry notifications, not crashes. The follow-up
+    # turn either succeeds (babble gone, tool called) or fails
+    # loudly through the normal error channel (Traceback + Error line
+    # that does NOT carry `CRITICAL reminder` and is still surfaced).
+    r"\[issue 992 bug d\] llm babble detected — retrying once with critical reminder",
+    r"\[issue 1777\s*/\s*1762\] llm skip non-music tool .*— retrying once with critical reminder",
+    # stt_node structured metric (issue #1893, deploy run 33650766141
+    # 02.09 / kanban t_583c838d): stt_node logs every STT attempt as
+    # `[stt_attempt_metric] provider=<p> reason=<r> latency_ms=<n>
+    # attempt=<n> text=<text>` so the operator can spot provider
+    # outages / bad network in Loki. The metric is emitted at INFO
+    # level, not ERROR - the word `error` only appears inside the
+    # `reason=` field (e.g. `reason=error` when yandex returned an
+    # HTTP 5xx or the quota check failed), so CRITICAL_MATCH_RE
+    # catches it via the bare \berror\b keyword. The real stt_node
+    # failure mode is a Python traceback (see the rules above for
+    # `^Traceback` / `BrokenPipeError`), which still surfaces as
+    # deploy-critical because it has its own log shape. The metric
+    # line by itself is informational and the deploy gate must not
+    # file a critical issue every time yandex drops a single
+    # request - the e2e voice harness already covers real STT
+    # breakage end-to-end (see `.github/e2e/voice_commands/`).
+    # Complementary to the #1875 rule above: #1875 covers the
+    # `stt_attempt yandex:error->...->vosk:ok -> accepted` success
+    # path; this rule covers the `stt_attempt_metric ... reason=error`
+    # INFO-level metric line that the multi-provider chain emits on
+    # every fallback attempt regardless of the final outcome.
+    r"\[stt_attempt_metric\].*reason=error",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -235,6 +443,57 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # restart on Vision Pi) is not a deployment failure.
         r"нода упала: /audio_node",
         r"/audio_node\b",
+        # Scope leak (issue #1893, deploy run 33650766141 02.09 /
+        # kanban t_583c838d): stt_node lives in the voice-assistant
+        # container on the Vision Pi (ROS_DOMAIN_ID=0, shared /rosout
+        # bus via Zenoh router). The Main Pi perception's
+        # context_aggregator / health_monitor subscribes to /rosout
+        # and prints the same lines in its periodic report, e.g.
+        # `[WARN] stt_node (1s ago): [stt_attempt] yandex:error(...)->
+        # ...`. The bare word `error` in the re-echoed yandex chain
+        # is what trips CRITICAL_MATCH_RE in the main scope. Same
+        # shape as the telegram_node / audio_node exclusions above —
+        # the real root cause is on the Vision Pi (transient yandex
+        # 5xx), and the multi-provider fallback chain keeps STT
+        # working. A real stt_node crash on the Vision Pi still
+        # surfaces in the vision container's own log dump, where the
+        # exclusion does not apply. The narrow `[WARN] stt_node`
+        # prefix is the health_monitor's exact rewrite shape.
+        r"\[warn\] stt_node.*\[stt_attempt\]",
+        # rtabmap icp_odometry (issue #2229, deploy run 34300912847
+        # 09.09 / kanban t_8bf3e909): on the test-rig the IMU UART
+        # on /dev/ttyAMA0 is optional lab hardware and is not
+        # attached — perception_bridge logs "Sensor UART
+        # /dev/ttyAMA0 not available; reads will no-op until
+        # hardware is attached" at startup. rtabmap.icp_odometry
+        # then prints `We didn't receive IMU newer than previous
+        # image/scan (0.0000 sec)` for every frame until the SLAM
+        # node catches up that no IMU is coming, at which point it
+        # falls back to vision-only odometry and the pipeline keeps
+        # tracking. The ERROR severity is rtabmap's own log level,
+        # not a real deployment failure — the rest of the SLAM
+        # stack (rtabmap slam node, point-cloud assembly, Nav2)
+        # stays healthy on the Vision+main split rig. Same family
+        # as the existing rtabmap startup-handshake exclusions for
+        # `scan_voxel_size` / `scan_normal_k` / `dropping
+        # image/scan` (issues #1485, #1680, #1893 — those live in
+        # the WARNING_EXCLUDE lists because rtabmap prints them at
+        # WARN level, this one prints at ERROR so it lives in
+        # CRITICAL_EXCLUDE): rtabmap prints an informational
+        # message during startup handshake about optional lab
+        # hardware being absent, deploy gate must not file a
+        # critical issue per-run on every test rig. The bare
+        # `didn't receive imu` substring is narrow on purpose: a
+        # real "no IMU" deployment bug on hardware that DOES have
+        # the UART would print additional context (serial-port
+        # error, permission-denied on /dev/ttyAMA0) that does NOT
+        # match the `\(0\.0000 sec\)$` tail and would still be
+        # reported. health_monitor re-echoes the rtabmap line via
+        # the shared /rosout bus with the `[ERROR]` /
+        # `[FATAL]` prefix — the `rtabmap\.icp_odometry` prefix
+        # anchors the rule so an unrelated perception ERROR (e.g.
+        # a real librtabmap_core crash) is still surfaced.
+        r"rtabmap\.icp_odometry.*didn't receive imu newer than previous image/scan \(0\.0000 sec\)$",
     ],
     "vision": [
         # telegram_node start_polling transient (issue #1433 / deploy run
@@ -293,6 +552,23 @@ WARNING_EXCLUDE_COMMON = [
     # deployment failure (retro 12.08 t_d3e44336, issue #989, #684).
     r"отклонено \(пустое\)",
     r"yandex:empty\(.*\)->.*:empty\(.*\) -> rejected",
+    # STT provider-error rejection (issue #1893, deploy run 33650766141
+    # 02.09 / kanban t_583c838d): stt_node logs the provider chain
+    # `[stt_attempt] <p1>:<r1>(<ms>ms)-><p2>:<r2>(<ms>ms)->...
+    # -> rejected` whenever the multi-provider fallback chain fails
+    # and the utterance is dropped. The yandex:error token appears
+    # when yandex returned an HTTP 5xx / quota error / network
+    # timeout; the chain then falls back to vosk / silero. The word
+    # `WARN` is the only signal deploy gate sees (no `error` keyword
+    # in WARNING_MATCH_RE) and stt_attempt_metric at INFO level does
+    # NOT count. Same exclusion class as the empty-rejection rule
+    # above — the existing rule covers the empty path; this sibling
+    # covers the error/fallback path. Real STT failures (provider
+    # timeout that deadlocks stt_node, missing yaml, missing api
+    # key) all surface as a Python traceback in stt_node, which the
+    # CRITICAL rules above already catch. Deploy gate must not flag
+    # a transient 4xx/5xx from yandex as a deploy-warning.
+    r"yandex:error\(.*\)->.*-> rejected",
     r"отклонено \(короткое",
     r"интернет недоступен",
     # PyAudio overflow: input overrun is handled by the audio pipeline,
@@ -313,6 +589,131 @@ WARNING_EXCLUDE_COMMON = [
     # explicit "Ignore this warning if the ini file does not exist yet" —
     # rtabmap creates the file on shutdown, benign (round-117).
     r"section .* in /config/rtabmap/rtabmap.ini doesn't exist",
+    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): the babble/tool-skipped
+    # retry notifications in dialogue_node.py:3564 and 4023 log at
+    # `[WARN]` severity, and the message text contains the literal
+    # phrase `CRITICAL reminder` (part of the synthetic retry prompt
+    # name, not a real failure). The CRITICAL exclusion above
+    # silences them in the `critical` pass; the WARNING pass scans
+    # the same line on the bare `[WARN]` token (`re.compile(r"\b(warn
+    # |warning)\b", re.IGNORECASE)`) and would file a parallel
+    # `warning_log` finding, producing a duplicate FP for the same
+    # healthy turn. Mirror both CRITICAL exclusions here so the
+    # WARNING pass also drops them — without this guard, a single
+    # babble recovery would still bump `warning_count` and trigger
+    # the `DEPLOYMENT COMPLETED WITH ISSUES` path on otherwise green
+    # runs.
+    r"\[issue 992 bug d\] llm babble detected — retrying once with critical reminder",
+    r"\[issue 1777\s*/\s*1762\] llm skip non-music tool .*— retrying once with critical reminder",
+    # tts_node STOP command receipt (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): tts_node logs
+    # `[WARN] 🔇 STOP command received - немедленная остановка TTS`
+    # every time the user/operator issues a stop. This is the routine
+    # interruption path inside `_handle_stop_command()`
+    # (tts_node.py:1529) — playback halts, state publishes "stopped",
+    # the audio pipeline comes back to idle. The `WARN` severity is
+    # correct from a state-change standpoint, but is unrelated to
+    # deployment health. Without this exclusion, the deploy detector
+    # filed a warning_log finding on every green run where the user
+    # happened to issue a stop command during the deploy window.
+    r"stop command received - немедленная остановка tts",
+    # rob_box_quest startup PIN echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): quest_node logs
+    # `[WARN] 🔑 Quest PIN: <num> (show this to operator — required
+    # to start a session)` ONCE during startup when log_pin is set
+    # (quest_node.py:520). The line is informational — telling the
+    # operator which PIN to use to start a session — but the node
+    # uses `warning()` severity so the deploy detector picks it up.
+    # Same exclusion class as the `[issue 989] ReSpeaker не принял
+    # threshold` rule above (legitimate WARN carrying operator
+    # guidance, not a deployment failure). `extract_relevant_log_line`
+    # scans the raw line (no `normalize_pattern` pass), so the PIN
+    # number is still present as digits — `.*` matches any digits
+    # here. Narrow to the literal `quest pin: <digits> (show this to
+    # operator` signature so we don't accidentally silence unrelated
+    # WARN lines from rob_box_quest that DO need operator attention.
+    r"quest pin: \d+ \(show this to operator",
+    # sound_node already-playing echo (issue #2229, deploy run
+    # 34300912847 09.09 / kanban t_8bf3e909): sound_node logs
+    # `[WARN] ⚠️ Звук уже играет (<current_sound>), пропускаю
+    # <trigger|file_path>` whenever an external trigger
+    # (`/voice/sound/trigger` or `/voice/sound/play_file`) arrives
+    # while a previous sound is still playing. This is the
+    # intentional overlap-guard inside trigger_callback /
+    # play_file_callback (sound_node.py:226-229, 256-259): the
+    # node protects the underlying audio device from being
+    # preempted mid-playback, so the operator-visible symptom is
+    # "the second sound was skipped, the first keeps playing" —
+    # not a deployment failure. Real sound_node outages (mp3
+    # decoder crash, ALSA fatal, JACK ProcessGraphAsyncMaster
+    # deadlock) keep their WARN/CRITICAL severity because the
+    # wording differs. Mirror this rule in COMMON so the same
+    # exclusion applies whether the WARN lands in the
+    # voice-assistant's own log dump or in the Main Pi
+    # health_monitor's /rosout re-echo (the audio device lives
+    # on the Vision Pi, but the shared ROS_DOMAIN_ID=0 bus
+    # surfaces the warning to context_aggregator on the Main
+    # Pi — same scope-leak shape as the stt_node / telegram_node
+    # exclusions above). Narrow to the literal `звук уже играет
+    # (.*), пропускаю` signature so unrelated sound_node WARNs
+    # (e.g. "файл не найден", "звук для триггера ... не
+    # найден") stay visible to the operator.
+    r"звук уже играет \(.*\), пропускаю",
+    # mcp_server ComposeMusicTool exec failure (deploy run 34908172365,
+    # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395, kanban
+    # t_db1a15c8): ``ComposeMusicTool._execute`` calls
+    # ``exec(code, _renardo_context)`` to run the Renardo/FoxDot Python
+    # snippet the LLM produced. When the snippet contains an unmatched
+    # ``||`` (the Renardo pattern-parallel operator, e.g. ``a || b`` —
+    # FoxDot requires exactly two sides) the runtime raises
+    # ``ValueError: '||' delimeters must contain exactly 2 elements``
+    # which ``ComposeMusicTool._execute`` catches and re-emits as
+    # ``{"success": False, "error": "Ошибка выполнения: ..."}``.
+    # mcp_server's tool-execution wrapper then logs the line
+    # ``❌ Инструмент compose_music завершился с ошибкой: Ошибка
+    # выполнения: '||' delimeters must contain exactly 2 elements``
+    # at WARN severity (see mcp_server.py:1304). This is a model-side
+    # authoring error, not a deploy failure — the music stack comes up
+    # healthy and the next LLM turn can re-issue a corrected code
+    # block. The bash harness already gates on a successful
+    # ``Missing critical SynthDefs: none`` line for the happy path
+    # (see CRITICAL exclude above), so a transient ``||`` slip on a
+    # synthetic turn does not regress the deploy verdict. Narrow the
+    # rule to the literal ``'||' delimeters must contain exactly 2
+    # elements`` substring so other ``Ошибка выполнения`` variants
+    # (e.g. ``NameError`` from a stale ``pre-roll_msg`` f-string bug —
+    # see the voice-pipeline-hardware-debugging skill) still surface.
+    r"инструмент compose_music завершился с ошибкой.*\|\|.*delimeters must contain exactly 2 elements",
+    # music_guard scope-leak echo (deploy run 34909697360, 14.09
+    # 23:37, issue #2466 / z-{e2e}/test-round-396, kanban
+    # t_cce8616a): `MusicGuard` in voice-assistant logs
+    # `🎵 [issue 992 Bug C] user asked for music but LLM skipped
+    # execute_music_code ...` at WARN severity when the LLM
+    # answered a vocal request without calling compose_music
+    # (music_guard.py:386-388, `_log_warning`). The Main Pi's
+    # perception/health_monitor subscribes to the shared /rosout
+    # bus and re-echoes the same line under
+    # `[WARN] dialogue_node (Ns ago): ...` — the bare `warn` token
+    # in the echo trips WARNING_MATCH_RE in the main scope and
+    # produces a false-positive deploy warning on every run where
+    # the LLM happened to satisfy a vocal request without the
+    # compose_music tool. Same exclusion class as the
+    # `r"[warn] audio_node.*не принял threshold"` /
+    # `r"\[warn\] stt_node.*\[stt_attempt\]"` scope-leak rules
+    # (issues #1485 / #1893): legitimate guard feedback from a
+    # shared node, surfaced through a different container's
+    # health_monitor. The rule is anchored on the literal
+    # `[issue 992 Bug C] user asked for music but LLM skipped`
+    # substring so unrelated `LLM skipped` log lines (e.g. an
+    # LLM-side tool-call bug that genuinely breaks deploy
+    # behaviour) keep their WARN severity. The CRITICAL pass
+    # already silences the sibling `[CRITICAL] ...не вызвал...`
+    # reminder (PR #2465, rule above); this rule mirrors that
+    # coverage for the WARN-severity echo from health_monitor so
+    # the WARNING scan does not file a parallel finding for the
+    # same healthy turn.
+    r"\[issue 992 bug c\] user asked for music but llm skipped",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -355,8 +756,77 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # covers the literal phrase; this MAIN-scope pattern catches the
         # rewritten form so it cannot slip through as a non-voice-msg.
         r"\[warn\] audio_node.*не принял threshold",
+        # rtabmap icp_odometry (issue #1893, deploy run 33650766141
+        # 02.09 / kanban t_583c838d): rtabmap logs
+        # `Dropping image/scan data with stamp <t> (delay...` when
+        # the first scan arrives after rtabmap's SLAM node is up
+        # but the static TF tree is still being published. The
+        # data is dropped once, the next message stamps correctly,
+        # and the SLAM pipeline catches up within ~5s. Same family
+        # as the `scan_voxel_size` / `scan_normal_k` exclusions
+        # above (issue #1485, #1680): rtabmap prints an
+        # informational WARN during startup handshake, deploy gate
+        # must not flag the warning per-run. Bare "Dropping
+        # image/scan" without the `stamp ... (delay` continuation
+        # (e.g. a real scan drop after the TF tree is stable) is
+        # still reported.
+        r"rtabmap\.icp_odometry.*dropping image/scan data with stamp.*\(delay",
+        # rtabmap SLAM startup race (deploy run 34909697360, 14.09
+        # 23:37, issue #2466 / z-{e2e}/test-round-396, kanban
+        # t_cce8616a): on the first frames after rtabmap starts, the
+        # visual-features bag is empty (no keypoints/landmarks have
+        # been observed yet because the camera frame is still
+        # warming up and the SLAM module is filling its memory).
+        # rtabmap's odometry node logs
+        # `[ WARN] (2026-09-14 23:44:47.894)
+        # Memory.cpp:3776::computeTransform() Missing visual
+        # features or missing raw data to compute them. Transform
+        # cannot be estimated.` at WARN severity (upstream
+        # rtabmap_core, not our code — `Memory.cpp` / `rtabmap`
+        # library). Once enough frames have been observed (~1-2s
+        # after startup), the SLAM module fills its memory and the
+        # warning disappears for the rest of the run. The pipeline
+        # stays healthy (no restart, no crash, no ICP fallback to
+        # error severity). Same exclusion family as the
+        # `icp_odometry didn't receive imu` / `dropping image/scan`
+        # rules above: rtabmap prints an informational WARN during
+        # the SLAM startup handshake, the deploy gate must not file
+        # a deploy-warning per-run on a benign visual-feature
+        # race. Narrow the rule to the literal
+        # `Memory.cpp:3776::computeTransform()` location so a real
+        # compute failure (e.g. an OOM that hits
+        # `computeTransform` at a different line number) still
+        # surfaces to the operator.
+        r"memory\.cpp:\d+::computetransform\(\) missing visual features",
     ],
     "vision": [
+        # telegram_node /radio disabled echo (issue #2229, deploy run
+        # 34300912847 09.09 / kanban t_8bf3e909): when the
+        # `audio_common_msgs` python package is not installed in the
+        # telegram-bot container, telegram_node publishes the explicit
+        # `audio_common_msgs недоступен — /radio выключен, голосовые
+        # из Telegram публиковаться не будут` warning ONCE at
+        # startup (telegram_node.py:194-201). The warning is the
+        # operator-facing notification that the optional Telegram →
+        # `/avatar/voice_in` radio pipeline is gracefully disabled
+        # (ADR-0018 "honest degradation": the chain is OFF, not
+        # silently broken — the `publish_voice_audio_chunk` path
+        # short-circuits on the `AudioData is None` guard and never
+        # crashes the bot loop). On the Vision+main test-rig the
+        # /radio radio stack is intentionally absent (the
+        # `audio_common_msgs` dependency ships in the deploy-time
+        # overlay, not the test rig), so this WARN fires on every
+        # test deploy and would otherwise surface as a false
+        # `warning_log` finding → `DEPLOYMENT COMPLETED WITH ISSUES`.
+        # The deploy gate must skip it. Same exclusion class as the
+        # `[issue 989] ReSpeaker не принял threshold` /
+        # `quest pin: <num> (show this to operator` rules in COMMON:
+        # legitimate startup warning carrying operator guidance, not
+        # a deployment failure. Narrow to the literal `audio_common_msgs
+        # недоступен` signature so a real audio_common_msgs import
+        # bug (e.g. an unrelated ImportError mid-loop) keeps its
+        # WARN severity.
+        r"audio_common_msgs недоступен",
         # audio_node HPFONOFF write (issue #1680, deploy round-244):
         # voice-assistant prints "[WARN] HPFONOFF: write_parameter вернул
         # False (устройство занято?). Используется дефолт firmware."

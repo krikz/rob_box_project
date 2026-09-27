@@ -7,6 +7,10 @@ test_e2e_voice_test_gate1.py — юнит-тесты ADR-0022 GATE-1 acceptance.
   3. Python-валидатор: PASS при expected найденном в логах, FAIL при
      expected отсутствующем или forbidden вызванном
   4. Per-step acceptance.json формат (backwards-compat с issue #1396)
+  5. Issue #2300 (09.09.2026): harness НЕ имеет собственного auto-discovery
+     (regression guard). Раньше были тесты test_auto_discovery_* — теперь
+     они инвертированы: harness должен падать на GATE-1, если
+     ACCEPTANCE_FILE не передан (единственный резолвер — e2e-process).
 
 Run:
   python3 -m pytest tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py -v --no-cov
@@ -302,8 +306,22 @@ class TestE2EVoiceTestScriptGating:
         # Aggregate check выполнился (даже если verdict FAIL — gating ОК)
         assert "E2E_GATE1" in result.stdout
 
-    def test_auto_discovery_of_acceptance_json(self, tmp_path):
-        """Если acceptance.json рядом с scenario.json — auto-discovery."""
+    def test_no_auto_discovery_of_acceptance_json(self, tmp_path):
+        """Issue #2300 (09.09.2026): harness НЕ имеет auto-discovery.
+
+        Если рядом со scenario.json лежит acceptance.json, harness НЕ должен
+        его подхватить сам — раньше test_auto_discovery_of_acceptance_json
+        это проверял (issue #1452 round-155). Теперь инвертировано: единственный
+        резолвер — agent-flow-e2e-process.sh:resolve_acceptance_candidate.
+        Если harness всё-таки подхватил файл — регресс (drift с deploy,
+        исторические false-FAIL #1452 / #1456 / #1551).
+
+        ВАЖНО: тест БЕЗ --acceptance-skip — gating должен сработать. С
+        --acceptance-skip gating пропускается (явный override), и дальше
+        скрипт падает на synth Yandex (fake-key) — это не то, что мы
+        проверяем. Контракт #2300: harness gating → auto-discovery → None.
+        Тест: scenario+acceptance.json лежат рядом, ни --acceptance, ни
+        --acceptance-skip не переданы → gating должен ругнуться."""
         scenario = tmp_path / "scenario.json"
         scenario.write_text(json.dumps({"steps": [
             {"label": "s1", "text": "test", "voice": "anton"}
@@ -313,24 +331,40 @@ class TestE2EVoiceTestScriptGating:
             "expected_tool_calls": ["foo"],
             "must_not_call": [],
         }))
+        # Без --acceptance и без --acceptance-skip — gating должен сработать.
         result = subprocess.run(
             [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
+             "--scenario", str(scenario)],
             capture_output=True, text=True, timeout=15,
         )
-        assert "auto-discovered" in result.stdout
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        # Gating ДОЛЖЕН сработать: harness не передал ACCEPTANCE_FILE,
+        # auto-discovery удалён → E2E_GATE1_MISSING_ACCEPTANCE.
+        combined = result.stdout + result.stderr
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" in combined, (
+            f"harness больше НЕ должен auto-discover acceptance.json "
+            f"(issue #2300), но gating не сработал. STDOUT: {result.stdout}\n"
+            f"STDERR: {result.stderr}"
+        )
+        assert "auto-discovered" not in combined, (
+            f"harness выдал 'auto-discovered' — регресс issue #2300: "
+            f"auto-discovery снова в harness? STDOUT: {result.stdout}"
+        )
 
-    def test_auto_discovery_per_scenario_fallback(self, tmp_path):
-        """Репродукция issue #1452: scenario=music_library_suite_v1.json,
-        acceptance=music_library_acceptance_v1.json (без acceptance.json)
-        → должно найтись через fallback кандидат (issue #1452 round-155)."""
+    def test_no_per_scenario_fallback(self, tmp_path):
+        """Issue #2300: harness НЕ резолвит per-scenario (issue #1452 round-155).
+
+        Раньше test_auto_discovery_per_scenario_fallback проверял, что
+        harness находит music_library_acceptance_v1.json. Теперь это
+        инвертировано: harness не должен искать acceptance сам — путь
+        приходит из e2e-process через env ACCEPTANCE_FILE.
+
+        Без --acceptance и без --acceptance-skip — gating должен сработать,
+        даже если рядом лежит music_library_acceptance_v1.json (раньше
+        harness бы его подхватил)."""
         scenario = tmp_path / "music_library_suite_v1.json"
         scenario.write_text(json.dumps({"steps": [
             {"label": "ml01", "text": "test", "voice": "anton"}
         ]}))
-        # НЕТ acceptance.json рядом — есть только per-scenario версия.
         acc = tmp_path / "music_library_acceptance_v1.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
@@ -338,92 +372,88 @@ class TestE2EVoiceTestScriptGating:
         }))
         result = subprocess.run(
             [str(E2E_SCRIPT),
+             "--scenario", str(scenario)],
+            capture_output=True, text=True, timeout=15,
+        )
+        # Gating должен сработать — harness НЕ резолвит сам.
+        combined = result.stdout + result.stderr
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" in combined, (
+            f"harness auto-discover'нул per-scenario acceptance — регресс "
+            f"issue #2300. STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+
+    def test_explicit_acceptance_bypasses_gating(self, tmp_path):
+        """Если --acceptance <path> задан явно — gating проходит, aggregate
+        check FAIL (нет робота). Это РАБОТАЕТ без auto-discovery.
+
+        Заменяет старые test_auto_discovery_* — суть та же (acceptance
+        найден → gating pass), но теперь это явный --acceptance, а не
+        harness-side fallback. Реальная цепочка в проде:
+        e2e-process резолвит → -f acceptance_file=... → env ACCEPTANCE_FILE
+        → харнесс использует как есть."""
+        scenario = tmp_path / "scenario.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "s1", "text": "test", "voice": "anton"}
+        ]}))
+        acc = tmp_path / "music_library_acceptance_v1.json"
+        acc.write_text(json.dumps({
+            "expected_tool_calls": ["generate_music"],
+            "must_not_call": [],
+        }))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
              "--scenario", str(scenario),
+             "--acceptance", str(acc),
              "--acceptance-skip"],
             capture_output=True, text=True, timeout=15,
         )
-        # Главный ассерт: GATE-1 НЕ должен падать с MISSING_ACCEPTANCE —
-        # это именно то, что ломалось в issue #1452 round-155.
+        # Gating прошёл (явный --acceptance).
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in (
             result.stdout + result.stderr
-        ), (
-            f"per-scenario acceptance должен найтись через fallback, "
-            f"но получили FAIL:\nSTDOUT: {result.stdout}\n"
-            f"STDERR: {result.stderr}"
-        )
-        # Дополнительно: лог auto-discover должен быть в выводе
-        # (если скрипт упал раньше из-за fake Yandex key, проверяю stderr)
-        combined = result.stdout + result.stderr
-        assert "music_library_acceptance_v1.json" in combined, (
-            f"auto-discovered path должен быть в логе:\n{combined}"
         )
 
-    def test_auto_discovery_per_scenario_without_version(self, tmp_path):
-        """Fallback без _v1 суффикса тоже работает (общий паттерн)."""
-        scenario = tmp_path / "foo_suite.json"
-        scenario.write_text(json.dumps({"steps": [
-            {"label": "s1", "text": "test", "voice": "anton"}
-        ]}))
-        acc = tmp_path / "foo_suite_acceptance.json"
-        acc.write_text(json.dumps({
-            "expected_tool_calls": [],
-            "must_not_call": [],
-        }))
-        result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
-            capture_output=True, text=True, timeout=15,
-        )
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
-        assert "foo_suite_acceptance.json" in result.stdout
-
-    def test_auto_discovery_priority_acceptance_json_wins(self, tmp_path):
-        """Если оба acceptance.json И per-scenario существуют — acceptance.json
-        в приоритете (backwards-compat)."""
-        scenario = tmp_path / "music_library_suite_v1.json"
-        scenario.write_text(json.dumps({"steps": [
-            {"label": "s1", "text": "test", "voice": "anton"}
-        ]}))
-        acc_generic = tmp_path / "acceptance.json"
-        acc_generic.write_text(json.dumps({
-            "expected_tool_calls": ["generic_tool"],
-            "must_not_call": [],
-        }))
-        acc_specific = tmp_path / "music_library_acceptance_v1.json"
-        acc_specific.write_text(json.dumps({
-            "expected_tool_calls": ["specific_tool"],
-            "must_not_call": [],
-        }))
-        result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario),
-             "--acceptance-skip"],
-            capture_output=True, text=True, timeout=15,
-        )
-        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
-        # acceptance.json должен победить (per-scenario остаётся fallback)
-        assert "acceptance.json" in result.stdout
-        assert "music_library_acceptance_v1.json" not in result.stdout
-
-    def test_gating_message_lists_all_expected_paths(self, tmp_path):
-        """FAIL-сообщение должно перечислять все ожидаемые пути (issue #1452)."""
+    def test_gating_message_points_to_e2e_process(self, tmp_path):
+        """Issue #2300: gating-message должен указывать на e2e-process как
+        источник пути, а не перечислять harness-side fallback (раньше
+        test_gating_message_lists_all_expected_paths проверял 4 локальных
+        кандидата). Теперь контракт: harness без auto-discovery, поэтому
+        в FAIL-сообщении либо рекомендация '--acceptance <path>',
+        либо указание на agent-flow-e2e-process.sh:resolve_acceptance_candidate.
+        """
         scenario = tmp_path / "scenario.json"
         scenario.write_text(json.dumps({"steps": [
             {"label": "s1", "text": "test", "voice": "anton"}
         ]}))
         result = subprocess.run(
-            [str(E2E_SCRIPT),
-             "--scenario", str(scenario)],
+            [str(E2E_SCRIPT), "--scenario", str(scenario)],
             capture_output=True, text=True, timeout=15,
         )
         assert result.returncode == 1
         combined = result.stdout + result.stderr
-        # Все 4 ожидаемых пути должны быть в FAIL-сообщении
-        assert "acceptance.json" in combined
-        assert "scenario_acceptance.json" in combined  # SCENARIO_BASE
-        # SCENARIO_PREFIX (scenario → "scenario") — оба варианта с одним base
-        assert "scenario_acceptance_v1.json" in combined
+        # Маркер gating сохранён (downstream-парсеры).
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" in combined
+        # Контракт issue #2300: подсказка ведёт на e2e-process, а не на
+        # fallback-кандидатов в harness.
+        assert "resolve_acceptance_candidate" in combined, (
+            f"gating-message должен указывать на e2e-process как "
+            f"единственный резолвер. Получено:\n{combined}"
+        )
+        # 'acceptance.json' в combined допустим (упоминается как один из
+        # кандидатов в hint-логе), но в acceptance.json verdict должен
+        # быть новый reason.
+        verdict_path_glob = "/tmp/e2e_v2_*/acceptance.json"
+        import glob
+        verdict_files = sorted(
+            glob.glob(verdict_path_glob),
+            key=os.path.getmtime, reverse=True,
+        )
+        if verdict_files:
+            verdict = json.loads(Path(verdict_files[0]).read_text())
+            assert verdict["pass"] is False
+            assert "e2e-process-only" in verdict.get("reason", ""), (
+                f"verdict reason должен указывать на issue #2300: "
+                f"{verdict}"
+            )
 
     def test_text_only_does_not_require_acceptance(self, tmp_path):
         """--text (single-shot smoke) БЕЗ --scenario не требует acceptance.json
@@ -547,17 +577,26 @@ class TestE2EScriptContract:
             "--acceptance-skip CLI флаг не найден"
         )
 
-    def test_script_has_auto_discovery(self):
+    def test_script_has_no_auto_discovery(self):
+        """Issue #2300 (09.09.2026): harness НЕ должен иметь auto-discovery.
+
+        Бывший test_script_has_auto_discovery проверял наличие 'auto-discovered'
+        и '_acceptance_v1.json' в скрипте. Теперь инвертировано: эти маркеры
+        НЕ должны присутствовать (иначе — регресс: harness снова делает
+        candidate-search и рассинхронизируется с e2e-process)."""
         text = E2E_SCRIPT.read_text()
-        assert "auto-discovered" in text, (
-            "auto-discovery блок не найден"
+        assert "auto-discovered" not in text, (
+            "в e2e_voice_test.sh снова появился 'auto-discovered' — регресс "
+            "issue #2300 (harness снова делает auto-discovery, единственный "
+            "резолвер — agent-flow-e2e-process.sh:resolve_acceptance_candidate)"
         )
-        # Issue #1452 fix: per-scenario fallback (issue #1452 round-155)
-        assert "_acceptance_v1.json" in text, (
-            "per-scenario fallback для *_acceptance_v1.json отсутствует"
-        )
-        assert "_acceptance.json" in text, (
-            "per-scenario fallback для *_acceptance.json отсутствует"
+        # PREFIX-стрип (_v[0-9]*/_suite) жил только в harness до #2300.
+        # Теперь — только в e2e-process. Если снова в harness — drift.
+        assert "_acceptance_v1.json" not in text or "_v1" not in text.replace(
+            "_v1_", ""
+        ).replace("_v2_", ""), (
+            "per-scenario fallback-кандидат *_acceptance_v1.json снова "
+            "в harness — регресс issue #2300"
         )
 
     def test_script_has_gating_message(self):

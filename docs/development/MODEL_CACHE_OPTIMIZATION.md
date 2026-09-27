@@ -156,7 +156,7 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked
 GitHub Actions workflows уже настроены для использования BuildKit cache:
 
 ```yaml
-# .github/workflows/G-Build Vision Pi Services.yml
+# .github/workflows/L-Build Vision Pi Services.yml
 - name: Set up Docker Buildx
   uses: docker/setup-buildx-action@v3  # ✅ BuildKit включен
 

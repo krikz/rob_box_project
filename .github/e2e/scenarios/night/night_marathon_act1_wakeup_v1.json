@@ -1,0 +1,115 @@
+{
+  "name": "night_marathon_act1_wakeup_v1",
+  "stability": "stable",
+  "act": 1,
+  "title": "Смена началась",
+  "description": "Ночь, мастерская, Саша заступает на смену. Базовый прогрев: wake-word, сброс сессии, паспортные тулы (время/батарея/статус), альтернативное wake-слово «Робокс» (#1252), command-intent gate (#1279) и — ключевое — ЗАМЕР ТИШИНЫ: доказываем, что музыка не играет, до того как её включать.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n101_wake_cold_start",
+      "voice": "anton",
+      "text": "Робот, ты меня слышишь? Ответь коротко, я только что зашёл в мастерскую.",
+      "patterns": [],
+      "expect": "cycle",
+      "_why": "Явный cycle: пробиваем cold-start wake-gate ДО остальных шагов, иначе preflight пометит весь акт SKIP и он станет пустым."
+    },
+    {
+      "label": "n102_session_reset",
+      "voice": "anton",
+      "text": "Робот, сбрось всё и начни новую сессию, у нас ночная смена с чистого листа.",
+      "patterns": [
+        "session reset|session_reset|Новая сессия|new session"
+      ]
+    },
+    {
+      "label": "n103_time",
+      "voice": "anton",
+      "text": "Робот, который сейчас час?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_current_time"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n104_battery",
+      "voice": "anton",
+      "text": "Робот, сколько у тебя осталось заряда, до утра дотянешь?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_battery_level"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n105_status",
+      "voice": "anton",
+      "text": "Робот, доложи статус: всё ли у тебя работает, ничего не отвалилось?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_robot_status"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n106_alt_wake_roboks",
+      "voice": "anton",
+      "text": "Робокс, а на второе имя ты тоже отзываешься?",
+      "patterns": [],
+      "_why": "Альтернативное wake-слово (#1252). Ассертов нет намеренно: факт полного цикла = wake-word сработал."
+    },
+    {
+      "label": "n107_command_intent_gate",
+      "voice": "anton",
+      "text": "Робот, где ты",
+      "patterns": [
+        "LLM dispatch skipped|command intent"
+      ],
+      "_why": "#1279: короткий статусный вопрос не должен уходить в LLM."
+    },
+    {
+      "label": "n108_perception",
+      "voice": "anton",
+      "text": "Робот, что ты сейчас видишь вокруг себя, опиши в двух словах.",
+      "patterns": [
+        "get_perception_context"
+      ],
+      "_why": "НЕ в GATE-1: зависит от живой камеры на стенде. Ни одного вызова за ночь = завести карточку, а не красить прогон."
+    },
+    {
+      "label": "n109_sound_info",
+      "voice": "anton",
+      "text": "Робот, какие звуки ты вообще умеешь издавать?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_sound_info"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n110_silence_baseline",
+      "voice": "anton",
+      "text": "Робот, у тебя сейчас играет какая-нибудь музыка?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "stop_music",
+          "execute_music_code"
+        ],
+        "_comment": "ЯКОРЬ ТИШИНЫ. Робот обязан ПОСМОТРЕТЬ состояние, а не рефлекторно дёрнуть stop_music на молчащем плеере. Всё, что акты 5-8 делают с музыкой, отсчитывается от этого шага."
+      }
+    }
+  ]
+}

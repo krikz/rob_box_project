@@ -16,7 +16,7 @@ workflow, либо через ручной `rsync`/`scp` от дежурного
 ### `e2e_voice_test.sh` — 🟢 активный, атомарный (v2)
 
 Единственный e2e-харнесс, который вызывает `L: E2E Voice Test.yml`. Синтезирует
-голосовую команду на лету через Yandex TTS, играет её, ждёт **полный цикл**
+голосовую команду на лету, играет её, ждёт **полный цикл**
 `ПРИНЯТО → LLM INPUT → TTS finished → Воспроизведение завершено` в логах
 робота, ретраит команду при NO_ACCEPT, детектит LLM 429 как красный. Поддерживает
 сценарии из JSON, паттерны в логах, выход `E2E_VERDICT PASS|FAIL`.
@@ -30,8 +30,88 @@ ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh \
 ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh --scenario /tmp/scenario.json
 ```
 
-Env: `YANDEX_API_KEY` (обязателен), `ROBOT_HOST`, `SSHPASS`. Подробности —
-`docs/design/E2E_TESTING_DESIGN_v2.md` §A.10.
+Env: `ROBOT_HOST`, `SSHPASS`; ключи TTS — по выбранному провайдеру (см. ниже).
+Подробности — `docs/design/E2E_TESTING_DESIGN_v2.md` §A.10.
+
+#### Выбор TTS-провайдера (`--tts-provider`)
+
+Речь про провайдера, которым **билд-машина озвучивает команду в колонку**, а не
+про `tts_node` на роботе. Раньше харнесс умел только Yandex: когда доступ к
+папке Yandex Cloud отвалился (`PERMISSION_DENIED`), каждый шаг каждого прогона
+падал `FAIL synth`, и робота при этом никто не спрашивал (run 35533542706).
+
+| Значение  | Чем синтезирует            | Ключ             |
+|-----------|----------------------------|------------------|
+| `auto` ⭐ | проба по очереди, первый живой | по ситуации  |
+| `yandex`  | SpeechKit v3 (gRPC)        | `YANDEX_API_KEY` |
+| `minimax` | T2A v2 (HTTP)              | `MINIMAX_API_KEY`|
+| `silero`  | локально, torch на 249     | не нужен         |
+
+```bash
+# прибить провайдера явно (никакой подмены — упадёт именно на нём)
+ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh --scenario /tmp/scenario.json \
+  --tts-provider silero
+```
+
+`auto` (дефолт) один раз за прогон проходит `E2E_TTS_PROVIDER_ORDER`
+(по умолчанию `yandex,minimax,silero`) и берёт первого, кто синтезирует пробную
+фразу; проба одна на прогон, а не на шаг. Явно заданный провайдер **не
+подменяется** живым соседом — иначе прогон был бы зелёным, проверив не то, что
+просили. Silero локальный и без ключей, поэтому «облака легли» больше не равно
+«e2e красный».
+
+Голоса сценариев названы по-яндексовски (`anton`/`ermil`/`zahar`/`filipp`);
+`map_tts_voice` в `e2e_voice_lib.sh` переводит их в каталог выбранного
+провайдера, сохраняя **различимость** — иначе диаризация в
+`night_marathon` act2/act3 проверяла бы один голос вместо четырёх.
+
+Выбор виден в логе (`E2E_TTS_PROVIDER <name> <auto|explicit>`) и лежит в
+артефакте `tts_provider.json`. Из workflow — input `tts_provider`; из
+agent-flow — env `E2E_TTS_PROVIDER`. Прочие ручки: `E2E_TTS_PROVIDER_ORDER`,
+`MINIMAX_TTS_MODEL`, `E2E_SILERO_MODEL`, `E2E_SILERO_SAMPLE_RATE`.
+
+#### Что прогон оставляет после себя
+
+Харнесс пишет в `OUT_DIR` (`/tmp/e2e_v2_<run_id>`):
+
+| файл | что внутри |
+|---|---|
+| `verdict.txt` | `PASS`/`FAIL` — вердикт, бинарный по ADR-0015 |
+| `steps.jsonl` | по строке на шаг: `label`, `status`, `detail`, время |
+| `summary.json` | сводка: шаги N/M, GATE-1, RMS/тишина, сверка с golden |
+| `acceptance.json` | GATE-1: ожидаемые/вызванные тулы, ключевые слова (per-step — ещё и исход `register_speaker`, см. `.github/e2e/docs/GATE-1-DESIGN.md`, issue #2846) |
+| `audio_metrics.json` | RMS/peak/silence по записи |
+| `baseline_diff.json` | сверка записи с golden + `keyword_match_pct` |
+| `transcript.json` | что просили сказать vs что распознал STT |
+| `recording.wav`, `cmd_*.wav` | запись микрофона и синтезированные команды |
+
+`summary.json` — то, что рендерится в GitHub Step Summary шагом
+**E2E quality summary**. Вердикт при этом остаётся бинарным: счётчик
+«9 из 11 OK» — доказательство, а не новая шкала, FAIL от него не теплеет.
+
+Три места, где эти цифры раньше терялись, и почему их важно не сломать обратно:
+
+1. **Замеры шли раньше, чем появлялся файл.** `audio_metrics`/`baseline_diff`
+   читают `recording.wav`, а создавал его `stop_recording`, висевший только на
+   `trap ... EXIT`. В каждом прогоне (включая зелёные) оба артефакта содержали
+   `{"error":"recording.wav not found"}`. Теперь `stop_recording` вызывается
+   явно перед замерами; trap остался страховкой.
+2. **`transcript.json` был невалидным JSON** — `"expected"` подставлялся без
+   кавычек. Его читает `e2e_baseline_diff.py` под `except: pass`, поэтому
+   `keyword_match_pct` молча не считался. Сборка JSON ушла в `json.dumps`.
+3. **На FAIL сводка скипалась.** У шага без `if:` действует неявное
+   `if: success()`, а `Verdict from atomic harness` падает без
+   `continue-on-error` — всё, что ниже, отменялось ровно на тех прогонах, где
+   отчёт и нужен. Шаги отчётности теперь под `if: always()`.
+
+Артефактов workflow'а — семь, и они не пересекаются: `e2e-voice-recording`
+(все wav), `e2e-voice-artifacts` (полный бандл логов и json), `e2e-voice-logs`,
+`e2e-voice-model`, `e2e-voice-timing`, `e2e-voice-diff` и условный
+`e2e-acceptance`. Раньше их было одиннадцать: `transcript`/`audio-metrics`/
+`baseline-diff`/`acceptance` дублировали файлы из общего бандла побайтово, а
+`harness-artifacts` тянул каталог целиком и уносил вторую копию всех wav
+(+26 МБ на прогон). Guard на это — `tests/unit/e2e_scripts/
+test_issue_1429_no_recording_wav_dupe.py`.
 
 ### `e2e_remote.sh` — 🟡 deprecated (шляпа)
 
@@ -66,6 +146,10 @@ Env: `YANDEX_API_KEY` (обязателен), `ROBOT_HOST`, `SSHPASS`. Подр�
 нота `text: str`-форма для старого proto). Используется для отладочных
 прогонов с одной командой. В атомарном харнесс синтез встроен, но этот
 скрипт пригодится для ad-hoc "проверить как звучит голос X с фразой Y".
+
+Только Yandex: выбор провайдера живёт в самом харнессе (`--tts-provider`), а
+этот скрипт остаётся однопровайдерным пробником — если нужен MiniMax/Silero,
+зови харнесс.
 
 Запуск:
 

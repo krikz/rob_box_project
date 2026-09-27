@@ -16,7 +16,6 @@ navigation.py - Инструменты навигации и движения р
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import math
-import threading
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
@@ -24,28 +23,10 @@ from action_msgs.srv import CancelGoal
 from action_msgs.msg import GoalInfo
 
 if TYPE_CHECKING:
+    from ..waypoint_adapter import WaypointAdapter
     from ..waypoint_store import WaypointStore
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-
-
-def _wait_future(future, timeout_sec: float) -> bool:
-    """Wait for an rclpy Future without touching the executor.
-
-    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
-    callback that is already executing under ``MultiThreadedExecutor`` — it
-    internally tries to add the node to a *new* executor, which corrupts the
-    existing one and silently breaks all subsequent subscription callbacks.
-
-    This helper attaches a ``done_callback`` to the future so that a plain
-    ``threading.Event`` is set when the future completes.  The calling thread
-    blocks on the event, leaving the ROS 2 executor completely undisturbed.
-
-    Returns True if the future completed within *timeout_sec*, False otherwise.
-    """
-    event = threading.Event()
-    future.add_done_callback(lambda _: event.set())
-    return event.wait(timeout=timeout_sec)
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
 
 
 def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id: str = "map", timeout: float = 120.0):
@@ -66,7 +47,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     goal.pose.pose.orientation.w = math.cos(theta / 2.0)
 
     send_future = nav_client.send_goal_async(goal)
-    if not _wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
+    if not wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
         return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
 
     goal_handle = send_future.result()
@@ -74,7 +55,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
         return MCPToolResult(success=False, error="Nav2 отклонил цель", message="Цель недостижима")
 
     result_future = goal_handle.get_result_async()
-    if not _wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
+    if not wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
         return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
 
     return MCPToolResult(success=True)
@@ -103,7 +84,7 @@ def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
 class NavigateToWaypointTool(MCPTool):
     """Навигация к именованной точке из базы данных вейпоинтов."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.waypoint_store = waypoint_store
@@ -131,6 +112,11 @@ class NavigateToWaypointTool(MCPTool):
                 required=True,
             )
         ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: navigation, personality.
+        return "personality"
 
     @property
     def execution_type(self) -> ToolExecutionType:
@@ -198,6 +184,11 @@ class NavigateToCoordinatesTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: navigation, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
@@ -259,6 +250,11 @@ class MoveDirectionTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: navigation, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
@@ -308,6 +304,11 @@ class StopNavigationTool(MCPTool):
         return []
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: stop, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.FAST
 
@@ -333,7 +334,7 @@ class StopNavigationTool(MCPTool):
 class ListWaypointsTool(MCPTool):
     """Список доступных точек из базы данных."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
 
@@ -380,7 +381,7 @@ class ListWaypointsTool(MCPTool):
 class SaveWaypointTool(MCPTool):
     """Сохранить текущую позицию робота как именованную точку."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore", pose_getter, mapping_state=None):
+    def __init__(self, node, waypoint_store: "WaypointAdapter", pose_getter, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self._pose_getter = pose_getter
@@ -409,6 +410,11 @@ class SaveWaypointTool(MCPTool):
                 required=True,
             )
         ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: save waypoint, personality.
+        return "personality"
 
     @property
     def execution_type(self) -> ToolExecutionType:
@@ -450,7 +456,7 @@ class SaveWaypointTool(MCPTool):
 class DeleteWaypointTool(MCPTool):
     """Удалить именованную точку."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
 
@@ -477,6 +483,11 @@ class DeleteWaypointTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: delete waypoint, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.INSTANT
 
@@ -501,7 +512,7 @@ class DeleteWaypointTool(MCPTool):
 class ClearWaypointsTool(MCPTool):
     """Удалить все точки текущей карты."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
 
@@ -519,6 +530,11 @@ class ClearWaypointsTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: clear waypoints, personality.
+        return "personality"
 
     @property
     def execution_type(self) -> ToolExecutionType:

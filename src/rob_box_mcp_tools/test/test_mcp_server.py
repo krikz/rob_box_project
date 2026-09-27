@@ -1,6 +1,7 @@
 """Unit tests for MCP server startup behavior."""
 
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -8,6 +9,21 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+class _FakePublisher:
+    """Captures every ``.publish(msg)`` call — no real rclpy publisher.
+
+    Issue #2461: used to assert what ``publish_music_state`` actually
+    puts on the wire for both ``/voice/music/state`` and the new
+    ``/voice/music/form``, without spinning up a real Node.
+    """
+
+    def __init__(self):
+        self.published: list = []
+
+    def publish(self, msg) -> None:
+        self.published.append(msg.data)
 
 
 class _FakeRegistry:
@@ -23,6 +39,7 @@ class _FakeLogger:
         self.info_messages = []
         self.error_messages = []
         self.warning_messages = []
+        self.debug_messages = []
 
     def info(self, message):
         self.info_messages.append(message)
@@ -32,6 +49,9 @@ class _FakeLogger:
 
     def warning(self, message):
         self.warning_messages.append(message)
+
+    def debug(self, message):
+        self.debug_messages.append(message)
 
 
 class _FakeParameter:
@@ -45,9 +65,14 @@ class _FakeServer:
         self.waypoint_store = object()
         self.mapping_state = object()
         self._logger = _FakeLogger()
+        self.stop_generated_track_playback_calls = 0
+        self.publish_music_state_calls = 0
 
     def get_parameter(self, name):
-        assert name == "music_max_amp"
+        # ``_register_music_tools`` reads both — the second (music_master_gain)
+        # was added after this fixture was first written (same drift as the
+        # tool-import fallback above).
+        assert name in ("music_max_amp", "music_master_gain")
         return _FakeParameter(0.7)
 
     def get_logger(self):
@@ -55,6 +80,12 @@ class _FakeServer:
 
     def get_current_pose_snapshot(self):
         return None
+
+    def stop_generated_track_playback(self):
+        self.stop_generated_track_playback_calls += 1
+
+    def publish_music_state(self):
+        self.publish_music_state_calls += 1
 
 
 def _make_tool_class(tool_name):
@@ -70,6 +101,13 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     rclpy_node = types.ModuleType("rclpy.node")
     rclpy_callback_groups = types.ModuleType("rclpy.callback_groups")
     rclpy_qos = types.ModuleType("rclpy.qos")
+    # Issue #2781 — mcp_server.py gained ``from rcl_interfaces.msg import
+    # SetParametersResult`` for the voice_memory e2e_mode parameters
+    # callback (same pattern speaker_id_node already uses for its own
+    # e2e_mode). Real ``rcl_interfaces`` needs a live ROS2 install, so it
+    # gets the same module-stub treatment as ``rclpy``/``std_msgs`` here.
+    rcl_interfaces = types.ModuleType("rcl_interfaces")
+    rcl_interfaces_msg = types.ModuleType("rcl_interfaces.msg")
     std_msgs = types.ModuleType("std_msgs")
     std_msgs_msg = types.ModuleType("std_msgs.msg")
     registry_module = types.ModuleType("rob_box_mcp_tools.registry")
@@ -79,6 +117,11 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
 
     class Node:
         pass
+
+    class SetParametersResult:
+        def __init__(self, successful: bool = True, reason: str = ""):
+            self.successful = successful
+            self.reason = reason
 
     class ReentrantCallbackGroup:
         pass
@@ -92,6 +135,16 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
 
     class HistoryPolicy:
         KEEP_LAST = 1
+
+    class DurabilityPolicy:
+        # Issue #1812: mcp_server.py's ``publish_tools`` QoS (line ~203)
+        # gained a ``durability=DurabilityPolicy.TRANSIENT_LOCAL`` at some
+        # point after this fake ``rclpy.qos`` stub was written, so every
+        # test using ``_load_mcp_server_module`` started failing at import
+        # time with ``ImportError: cannot import name 'DurabilityPolicy'``
+        # — an infra gap, unrelated to any one feature, that happened to
+        # surface again with the watchdog tests added here.
+        TRANSIENT_LOCAL = 1
 
     class String:
         def __init__(self):
@@ -156,6 +209,28 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     for class_name, tool_name in tool_names.items():
         setattr(tools_module, class_name, _make_tool_class(tool_name))
 
+    def _tools_module_fallback(name):
+        """Issue #1812: ``mcp_server.py`` has grown far more tool imports
+        (compose_music, generate_music, set_tts_provider, task_delta, ...)
+        than this fixture's hand-curated ``tool_names`` map tracks, so the
+        whole module failed to import — one missing name at a time — every
+        time a new tool was added upstream. PEP 562 module ``__getattr__``:
+        anything not explicitly listed above gets a generic stub instead of
+        an ``ImportError``; only tests that actually care about a tool's
+        identity/behaviour need to list it in ``tool_names``.
+
+        Must raise ``AttributeError`` (not synthesize a stub) for dunder
+        names like ``__path__``/``__all__`` — the import machinery probes
+        those to decide whether this is a package, and handing back a
+        class instead of ``None``/a list breaks it with a confusing
+        ``TypeError: 'type' object is not iterable``.
+        """
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return _make_tool_class(name)
+
+    tools_module.__getattr__ = _tools_module_fallback
+
     class MusicManager:
         def __init__(self, *args, **kwargs):
             pass
@@ -172,6 +247,8 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     rclpy_qos.QoSProfile = QoSProfile
     rclpy_qos.ReliabilityPolicy = ReliabilityPolicy
     rclpy_qos.HistoryPolicy = HistoryPolicy
+    rclpy_qos.DurabilityPolicy = DurabilityPolicy
+    rcl_interfaces_msg.SetParametersResult = SetParametersResult
     std_msgs_msg.String = String
     registry_module.MCPToolRegistry = MCPToolRegistry
     waypoint_store_module.WaypointStore = WaypointStore
@@ -181,6 +258,8 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     monkeypatch.setitem(sys.modules, "rclpy.node", rclpy_node)
     monkeypatch.setitem(sys.modules, "rclpy.callback_groups", rclpy_callback_groups)
     monkeypatch.setitem(sys.modules, "rclpy.qos", rclpy_qos)
+    monkeypatch.setitem(sys.modules, "rcl_interfaces", rcl_interfaces)
+    monkeypatch.setitem(sys.modules, "rcl_interfaces.msg", rcl_interfaces_msg)
     monkeypatch.setitem(sys.modules, "std_msgs", std_msgs)
     monkeypatch.setitem(sys.modules, "std_msgs.msg", std_msgs_msg)
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.registry", registry_module)
@@ -378,3 +457,229 @@ def test_tts_provider_state_ignores_empty_payload(monkeypatch):
     msg2.data = ""
     module.MCPServer._on_tts_provider_state(server, msg2)
     assert server.actual_tts_provider is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1812 — music watchdog idle-TTL parameter + form-end protection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_music_watchdog_idle_ttl_defaults_to_1800(monkeypatch):
+    """300s ("слушаю музыку" читалось как простой) → 1800s (30 min).
+
+    Same env-var-backed pattern as ``_music_watchdog_period_s`` /
+    ``_music_watchdog_enabled``: read once at __init__ time, default when
+    unset.
+    """
+    monkeypatch.delenv("MUSIC_WATCHDOG_IDLE_TTL_S", raising=False)
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    # Exercise only the parsing snippet that __init__ runs — constructing
+    # the full Node is out of scope for this fake-module harness (see
+    # test_register_tools_* above for the same pattern with music_max_amp).
+    try:
+        server._music_watchdog_idle_ttl_s = float(
+            module.os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+        )
+    except (TypeError, ValueError):
+        server._music_watchdog_idle_ttl_s = 1800.0
+    assert server._music_watchdog_idle_ttl_s == 1800.0
+
+
+@pytest.mark.unit
+def test_music_watchdog_idle_ttl_honors_env_override(monkeypatch):
+    monkeypatch.setenv("MUSIC_WATCHDOG_IDLE_TTL_S", "42")
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    try:
+        server._music_watchdog_idle_ttl_s = float(
+            module.os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+        )
+    except (TypeError, ValueError):
+        server._music_watchdog_idle_ttl_s = 1800.0
+    assert server._music_watchdog_idle_ttl_s == 42.0
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_passes_the_configured_ttl_to_the_manager(monkeypatch):
+    """The watchdog timer callback must forward its own TTL explicitly —
+    it must not rely on whatever default MusicManager picked up."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.return_value = {"stopped": False}
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    manager.auto_stop_idle_music.assert_called_once_with(ttl_seconds=1800.0)
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_logs_stop_with_reason_as_before(monkeypatch):
+    """Regression guard: the existing stop_reason logging (#935/#990) must
+    keep working exactly as before — only the held_reason branch is new."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.return_value = {
+        "stopped": True,
+        "active_patterns": ["p1"],
+        "idle_seconds": 1801.0,
+        "ttl_seconds": 1800.0,
+        "stop_reason": "idle_ttl",
+    }
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    assert server.stop_generated_track_playback_calls == 1
+    assert server.publish_music_state_calls == 1
+    assert any(
+        "reason=idle_ttl" in m for m in server.get_logger().warning_messages
+    )
+    # No held_reason on a stop — the debug branch must stay silent.
+    assert server.get_logger().debug_messages == []
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_does_not_stop_while_form_is_not_finished(monkeypatch):
+    """Issue #1812: when MusicManager reports ``held_reason`` (a
+    ``compose_music(repeat=False)`` track whose form hasn't played out
+    yet), the watchdog must NOT call stop_generated_track_playback, and it
+    logs the reason at debug level instead of spamming warnings on every
+    ~5s tick."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.return_value = {
+        "stopped": False,
+        "held_reason": "form_not_finished",
+        "idle_seconds": 5.0,
+        "form_deadline_remaining_s": 42.0,
+    }
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    assert server.stop_generated_track_playback_calls == 0
+    assert server.get_logger().warning_messages == []
+    assert any(
+        "form_not_finished" in m for m in server.get_logger().debug_messages
+    )
+    # publish_music_state still runs every tick regardless (issue 989 Fix C).
+    assert server.publish_music_state_calls == 1
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_survives_a_manager_exception(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.side_effect = RuntimeError("boom")
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    assert any(
+        "Music watchdog failed" in m for m in server.get_logger().warning_messages
+    )
+    assert server.stop_generated_track_playback_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #2461 — /voice/music/form: структурный канал конца формы для
+# DJModeController.tick(), заведённый ОТДЕЛЬНО от /voice/music/state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_publish_music_state_keeps_the_exact_playing_idle_contract(monkeypatch):
+    """Регрессия контракта: audio_node._on_music_state (issue #989, VAD
+    эхоподавление) сравнивает payload ТОЧНЫМ равенством
+    ``state == "playing"``, не ``startswith``/JSON-парсингом. Issue #2461
+    добавил ВТОРОЙ топик (``/voice/music/form``) для конца формы именно
+    затем, чтобы не пришлось трогать этот payload. Этот тест ловит
+    будущую попытку «заодно» засунуть JSON и сюда."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    server._music_manager = manager
+
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 123.0,
+        "form_cycle_remaining_s": 42.0,
+    }
+    module.MCPServer.publish_music_state(server)
+    assert server.music_state_pub.published == ["playing"]
+
+    manager.get_state.return_value = {
+        "active_patterns": [],
+        "music_session_active_since": None,
+        "form_cycle_remaining_s": None,
+    }
+    module.MCPServer.publish_music_state(server)
+    assert server.music_state_pub.published == ["playing", "idle"]
+
+
+@pytest.mark.unit
+def test_publish_music_form_converts_monotonic_remaining_to_wall_clock_epoch(monkeypatch):
+    """Issue #2461: ``form_cycle_remaining_s`` считается в MusicManager
+    через ``time.monotonic()`` — публиковать его как есть в другой процесс
+    нельзя (mcp_server и dialogue_node — разные ОС-процессы, monotonic-часы
+    не сопоставимы между ними). Публикатор обязан перевести остаток в
+    epoch (``time.time() + remaining``) ДО публикации."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 123.0,
+        # Нарочно далеко от текущего unix-времени — так monotonic-регрессия
+        # (публикация remaining_s или monotonic-времени как есть) даёт
+        # payload, который провалит сравнение с epoch "сейчас + 42".
+        "form_cycle_remaining_s": 42.0,
+    }
+    server._music_manager = manager
+
+    before = module.time.time()
+    module.MCPServer.publish_music_state(server)
+    after = module.time.time()
+
+    assert len(server.music_form_pub.published) == 1
+    payload = json.loads(server.music_form_pub.published[0])
+    assert payload["playing"] is True
+    assert before + 42.0 <= payload["form_ends_at"] <= after + 42.0 + 1.0
+
+
+@pytest.mark.unit
+def test_publish_music_form_is_null_when_no_active_form(monkeypatch):
+    """Нет активной формы (idle, ничего не играет) — form_ends_at: null,
+    не 0/NaN/monotonic-мусор. DJModeController.tick() трактует None как
+    «данных нет» и не блокирует переход этим полем."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": [],
+        "music_session_active_since": None,
+        "form_cycle_remaining_s": None,
+    }
+    server._music_manager = manager
+
+    module.MCPServer.publish_music_state(server)
+
+    payload = json.loads(server.music_form_pub.published[0])
+    assert payload == {"form_ends_at": None, "playing": False}

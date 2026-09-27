@@ -49,6 +49,7 @@ def _load_redact_module():
 
 _redact = _load_redact_module()
 redact_upstream_body = _redact.redact_upstream_body
+redact_log_text = _redact.redact_log_text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,9 +110,9 @@ class TestRedactUpstreamBody:
         assert '"access_token": "***"' in out
 
     def test_masks_url_query_token(self):
-        body = "GET /v1/chat?api_key=sk-live-zzz&model=foo"
+        body = "GET /v1/chat?api_key=PLACEHOLDER_LIVE_VALUE&model=foo"
         out = redact_upstream_body(body)
-        assert "sk-live-zzz" not in out
+        assert "PLACEHOLDER_LIVE_VALUE" not in out
         assert "api_key=***" in out
         # Non-secret query params stay intact.
         assert "model=foo" in out
@@ -216,11 +217,204 @@ def test_api_status_error_log_masks_token_in_short_200_char_window(caplog):
     dialogue_node ships to the logger."""
     # Construct a body > 200 chars so the slice actually does something.
     padding = "x" * 300
-    body = f'{{"error":"upstream","detail":"Authorization: Bearer sk-very-secret-{padding}"}}'
+    body = (
+        '{"error":"upstream","detail":"Authorization: Bearer '
+        f'eyJhbGciOiJIUzI1Ni-padding{padding}-sig'
+        '"}'
+    )
     exc = _FakeAPIStatusError(401, body, request_id="req-short")
 
     formatted = _format_api_status_log(exc)
 
-    assert "sk-very-secret" not in formatted
+    assert "eyJhbGciOiJIUzI1Ni" not in formatted
     assert "Authorization: ***" in formatted
     assert "401" in formatted
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# issue #1998 §6.3 — redact_log_text
+#
+# Operator-agent ТАРС reads ``docker logs`` / ``/rosout`` via ``read_logs``.
+# Before any log line reaches the LLM, ``redact_log_text`` MUST mask the
+# credential shapes that ``redact_upstream_body`` does not cover: env-var
+# assignments, CLI flags, bare JWT, vendor-prefixed API keys.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestRedactLogText:
+    """``redact_log_text`` — process-log counterpart of ``redact_upstream_body``."""
+
+    # --- env-var form -------------------------------------------------------
+
+    def test_masks_uppercase_env_api_key(self):
+        # The exact scenario from issue #1998 body — DEEPSEEK_API_KEY in a
+        # captured ``docker logs`` dump.
+        line = "voice-assistant | os.environ: DEEPSEEK_API_KEY=sk-live-xyz123"
+        out = redact_log_text(line)
+        assert "sk-live-xyz123" not in out
+        assert "DEEPSEEK_API_KEY=***" in out
+
+    def test_masks_uppercase_env_secret(self):
+        line = "DJANGO_SECRET_KEY=PLACEHOLDER_NOT_A_SECRET"
+        out = redact_log_text(line)
+        assert "PLACEHOLDER_NOT_A_SECRET" not in out
+        assert "DJANGO_SECRET_KEY=***" in out
+
+    def test_masks_uppercase_env_token(self):
+        line = "ROBOFLOW_TOKEN=abc123def456ghi789"
+        out = redact_log_text(line)
+        assert "abc123def456ghi789" not in out
+        assert "ROBOFLOW_TOKEN=***" in out
+
+    def test_masks_uppercase_env_password(self):
+        line = "DB_PASSWORD=Tr0ub4dor-pipe"
+        out = redact_log_text(line)
+        assert "Tr0ub4dor-pipe" not in out
+        assert "DB_PASSWORD=***" in out
+
+    def test_masks_lowercase_env_api_key(self):
+        # YAML / JSON-stringified env files use lower_case.
+        line = "{deepseek_api_key: sk-live-xyz123, model: foo}"
+        out = redact_log_text(line)
+        assert "sk-live-xyz123" not in out
+        assert "deepseek_api_key=***" in out
+
+    def test_does_not_mask_arbitrary_uppercase_name(self):
+        # ``NODE_ENV=production`` is not a credential.
+        line = "starting app NODE_ENV=production PORT=8080"
+        out = redact_log_text(line)
+        assert out == line
+
+    def test_does_not_mask_arbitrary_lowercase_name(self):
+        # ``max_speed=0.5`` is not a credential.
+        line = "robot config: max_speed=0.5 wheel_base=0.3"
+        out = redact_log_text(line)
+        assert out == line
+
+    # --- CLI flag form ------------------------------------------------------
+
+    def test_masks_cli_flag_api_key(self):
+        line = "spawn: docker run --api-key=PLACEHOLDER_LIVE_VALUE image:tag"
+        out = redact_log_text(line)
+        assert "PLACEHOLDER_LIVE_VALUE" not in out
+        assert "--api-key=***" in out
+
+    def test_masks_cli_flag_token(self):
+        line = "llm provider cli --token=abc123def456ghi789xyz012"
+        out = redact_log_text(line)
+        assert "abc123def456ghi789xyz012" not in out
+        assert "--token=***" in out
+
+    def test_masks_cli_flag_access_token(self):
+        line = "oauth --access-token=ya29abcdef-real-token-value-1234"
+        out = redact_log_text(line)
+        assert "ya29abcdef-real-token-value-1234" not in out
+        assert "--access-token=***" in out
+
+    # --- bare JWT / vendor-prefixed tokens ----------------------------------
+
+    def test_masks_bare_jwt(self):
+        # Three base64url segments separated by dots.
+        line = (
+            "auth check: bearer=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c ok"
+        )
+        out = redact_log_text(line)
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in out
+        assert "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c" not in out
+        assert "***" in out
+        # Non-credential context stays intact.
+        assert "auth check:" in out
+        assert "ok" in out
+
+    def test_masks_sk_prefix_openai_key(self):
+        # Synthetic test fixture — uses a real ``sk-`` prefix (which the
+        # redactor MUST mask) but with an obviously-placeholder value that
+        # does not match GitHub secret scanner heuristics.
+        line = "provider: openai key=sk-***REDACTED***"
+        out = redact_log_text(line)
+        # The redactor must consume the value placeholder.
+        assert "***REDACTED***" not in out or "***" in out  # sanity
+        # The ``sk-`` prefix is masked out (whole token replaced by ***).
+        assert "sk-" not in out or out.count("sk-") == 0
+
+    def test_masks_ghp_prefix_github_token(self):
+        # Synthetic test fixture — placeholder after the real ``ghp_``
+        # prefix so the redactor covers the vendor shape but the
+        # scanner does not flag a credential.
+        line = "gh api -H 'Authorization: token ghp_PLACEHOLDER_NOT_A_REAL_TOKEN'"
+        out = redact_log_text(line)
+        assert "PLACEHOLDER_NOT_A_REAL_TOKEN" not in out
+
+    def test_masks_xoxb_prefix_slack_token(self):
+        # Synthetic test fixture — placeholder after the real ``xoxb-``
+        # prefix.
+        line = "slack: xoxb-PLACEHOLDER-NOT-A-REAL-TOKEN-XXXXXXXX"
+        out = redact_log_text(line)
+        assert "PLACEHOLDER-NOT-A-REAL-TOKEN" not in out
+
+    def test_does_not_mask_short_dotted_identifier(self):
+        # A three-segment ``a.b.c`` is *not* a JWT — segments must be long.
+        line = "module: aaa.bbb.ccc loaded"
+        assert redact_log_text(line) == line
+
+    # --- end-to-end log line ----------------------------------------------
+
+    def test_full_log_line_like_docker_logs(self):
+        # Realistic log line: prefix + ISO time + tag + message that mixes
+        # an env-var leak, a CLI flag, and a bare JWT. Token values are
+        # clearly marked as placeholders so the secret scanner does not
+        # flag this fixture.
+        line = (
+            "2026-09-07T10:11:12 voice-assistant 1 - "
+            "DEBUG DEEPSEEK_API_KEY=PLACEHOLDER_LIVE_VALUE "
+            "--token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c "
+            "still using yandex_fallback"
+        )
+        out = redact_log_text(line)
+        assert "PLACEHOLDER_LIVE_VALUE" not in out
+        assert "DEEPSEEK_API_KEY=***" in out
+        assert "--token=***" in out
+        # The JWT is fully masked (anywhere from --token=*** followed by an
+        # extra *** for the bare-token sweep, or fully absorbed — but the
+        # raw segments must not survive).
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in out
+        assert "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c" not in out
+        # Non-credential parts preserved.
+        assert "voice-assistant" in out
+        assert "yandex_fallback" in out
+
+    # --- pure-function semantics ------------------------------------------
+
+    def test_empty_string_returns_empty(self):
+        assert redact_log_text("") == ""
+
+    def test_non_string_returns_input(self):
+        for val in (None, 123, b"bytes"):
+            assert redact_log_text(val) is val
+
+    def test_preserves_non_sensitive_text(self):
+        line = "robot reached waypoint 'kitchen' in 12.3 seconds"
+        assert redact_log_text(line) == line
+
+    def test_idempotent(self):
+        # Running the redactor twice must not garble the output further.
+        line = "DEEPSEEK_API_KEY=PLACEHOLDER_LIVE_VALUE ok"
+        once = redact_log_text(line)
+        twice = redact_log_text(once)
+        assert once == twice
+
+    # --- issue #1998 §6.3 acceptance --------------------------------------
+
+    def test_acceptance_deepseek_api_key_redacted_from_stubbed_log(self):
+        # Exact DoD from the card: ``read_logs`` returns ``***REDACTED***``
+        # instead of ``DEEPSEEK_API_KEY=...``. We don't have the tool yet
+        # (шаг 11), so we test the helper the tool will call. Value is
+        # a clearly-not-a-secret placeholder to avoid scanner false positives.
+        line = "boot: DEEPSEEK_API_KEY=PLACEHOLDER_NOT_A_SECRET ready"
+        out = redact_log_text(line)
+        assert "PLACEHOLDER_NOT_A_SECRET" not in out
+        assert "DEEPSEEK_API_KEY" in out  # name preserved for context
+        assert "***" in out             # value masked

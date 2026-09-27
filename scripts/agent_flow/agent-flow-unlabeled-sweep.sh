@@ -69,7 +69,7 @@
 # ============================================================================
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 export HOME="${HOME:-/home/builder}"
 
 STALE_HOURS_1="${STALE_HOURS_1:-24}"
@@ -94,17 +94,64 @@ STALE_LABEL="${STALE_LABEL:-${STALE_LABEL_DEFAULT}}"
 PREFIX="[agent-flow-unlabeled-sweep]"
 
 # --- MAINTENANCE gate + env (из .env если есть) -----------------------------
-ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-if [ -f "$ENV_FILE" ]; then
-  while IFS='=' read -r key val; do
-    case "$key" in ''|\#*) continue ;; esac
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    if [ -z "${!key:-}" ]; then
-      export "$key=$val"
-    fi
-  done < "$ENV_FILE"
+# Ретро 31.08 (t_9b0d60f7, agent-flow-unlabeled-sweep cron 24-fail подряд):
+# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): предыдущая
+# версия использовала `read IFS='='` парсинг key=val — он уже заменён на
+# `set -a; .` ниже; новый код superset (robust + ENV_FILE-fallback).
+#
+# Supersedes ретро 28.08 (t_faac94b0) — добавляет robust fallback по
+# нескольким кандидатам ENV_FILE (однокандидатный fix развит до multi-candidate).
+#
+# Скрипт падал в no_agent cron-режиме когда `$HERMES_HOME` в env указывал
+# на профильную папку (например `/home/builder/.hermes/profiles/devops`),
+# ENV_FILE вычислялся в `<profile>/profiles/agent-flow/.env` — не существовал
+# → set -e срабатывал раньше source → GH_REPO оставался пустым →
+# `: "${GH_REPO:?...}"` exit 1. Robust-фикс:
+#   (1) Пробуем несколько кандидатов ENV_FILE (по убыванию приоритета):
+#       - /home/builder/.hermes/profiles/agent-flow/.env (absolute SOT)
+#       - $HERMES_HOME/profiles/agent-flow/.env (per-profile gateway)
+#       - $HOME/.hermes/profiles/agent-flow/.env (system-cron, ~ = HOME)
+#   (2) Используем `set -a; . "$ENV_FILE"; set +a` — robust к `=` в значениях,
+#       не падает на пустом .env.
+#   (3) Финальная проверка GH_REPO сообщает какой ENV_FILE пробовался.
+#
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824, 26-fail streak): заменяем
+# локальный 3-кандидатный fallback на общую функцию `af_load_profile_env`
+# из `lib_agent_flow_common.sh` (DRY — у неё уже правильный набор 4
+# кандидатов: `/home/builder/.hermes/profiles/agent-flow/.env` ИДЁТ ПЕРВЫМ,
+# что было критично — локальный fallback ставил per-profile-relative пути
+# ВПЕРЁД, и при запуске из любого профиля cron получал exit 1 на 26 тиков
+# подряд). Также добавляем `af_load_profile_env` с явным первым кандидатом,
+# чтобы убрать необходимость в ручном ENV_FILE-fallback (lib делает это сам).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824): заменить локальный 3-кандидат
+# fallback на lib af_load_profile_env. Локальный fallback ставил
+# `$HERMES_HOME/profiles/agent-flow/.env` ПЕРВЫМ, что для cron-профилей
+# (agent-flow, devops, architect) вычислялось в
+# `/home/builder/.hermes/profiles/<profile>/profiles/agent-flow/.env` —
+# не существует → exit 1. У lib — `/home/builder/.hermes/profiles/agent-flow/.env`
+# идёт ПЕРВЫМ (absolute SOT, 4 кандидата, проверено 31.08 t_18941c54).
+af_load_profile_env "${HERMES_HOME}/profiles/agent-flow/.env" || true
+
+# Defensive: если GH_REPO всё ещё пустой (lib не нашла .env), пробуем
+# hardcoded absolute-path fallback (на случай если lib потеряна из sync).
+# shellcheck disable=SC1090  # ENV_FILE — runtime path, не constant source
+if [ -z "${GH_REPO:-}" ] && [ -f "/home/builder/.hermes/profiles/agent-flow/.env" ]; then
+    ENV_FILE="/home/builder/.hermes/profiles/agent-flow/.env"
+    set -a; . "$ENV_FILE"; set +a
 fi
-: "${GH_REPO:?GH_REPO must be set (owner/repo)}"
+: "${GH_REPO:?GH_REPO must be set (owner/repo) — checked lib af_load_profile_env + /home/builder/.hermes/profiles/agent-flow/.env}"
+
+# Ретро-фикс (01.09, t_186ae5b3, devops): в cron no_agent env `_sanitize_subprocess_env`
+# заменяет HOME на `$HERMES_HOME/home` (= /home/builder/.hermes/profiles/<profile>/home),
+# `gh` ищет config там — не находит → "You are not logged into any GitHub hosts" → exit 1.
+# Подкладываем GH_CONFIG_DIR к абсолютному пути если он ещё не установлен и там есть hosts.yml.
+if [ -z "${GH_CONFIG_DIR:-}" ] && [ -f "/home/builder/.config/gh/hosts.yml" ]; then
+    export GH_CONFIG_DIR=/home/builder/.config/gh
+fi
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 
@@ -135,6 +182,11 @@ if [ "${UNLABELED_SWEEP_TEST_MODE:-0}" != "1" ]; then
   if ! flock -n 9; then
     log "another instance holds $LOCK_FILE — skip tick"; exit 0
   fi
+  # MAINTENANCE gate (issue #3009). Тело — af_maintenance_gate_or_exit в
+  # lib_agent_flow_common.sh (двухканальная проверка: remote → local clone).
+  # Ставится после flock, до gh-auth — те же гейты, что у triage/merge-gate/
+  # e2e-process. В test mode не зовём (тест изолирован от сети/MAINTENANCE).
+  af_maintenance_gate_or_exit
 fi
 
 # --- gate: gh auth ----------------------------------------------------------
@@ -150,12 +202,84 @@ log "tick start: GH_REPO=$GH_REPO stale1=${STALE_HOURS_1}h stale2=${STALE_HOURS_
 # Не фильтруем по меткам — будем фильтровать внутри, чтобы иметь
 # complete view (для сообщения 'никого нет'). Но лаг API ~5–10s на 200 —
 # это OK для cron раз в час.
-all_json="$(gh issue list \
+# --- GraphQL → REST fallback (ретро t_291506bf) ------------------------------
+# `gh issue list --json` ходит в GraphQL. У GraphQL СВОЙ бюджет 5000
+# points/час, и он выгорает независимо от REST. Старый код был:
+#   gh issue list ... 2>/dev/null || echo '[]'
+# → при "API rate limit already exceeded" скрипт получал пустой массив,
+#   считал considered=0 и рапортовал exit 0 — silent-fail: PR/issues
+#   висели без меток часами (наблюдение 10.09: #2340, #2338).
+# Теперь: GraphQL первый, при ошибке/невалидном JSON — REST
+# (`/repos/{owner}/{repo}/issues?state=open`, отдельный лимит 5000 req/h),
+# при отказе ОБОИХ — ERROR в лог + exit 1 (fail-closed), НЕ considered=0.
+
+# Нормализация REST-ответа в схему `gh issue list --json`:
+#   updated_at → updatedAt, created_at → createdAt, PR-записи отбрасываем
+#   (REST /issues отдаёт и pull requests — у них есть ключ pull_request).
+normalize_rest_issues() {  # stdin=REST json, stdout=gh-like json | rc=1 если не JSON/не массив
+  python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(data, list):
+    sys.exit(1)
+out = []
+for it in data:
+    if not isinstance(it, dict) or "pull_request" in it:
+        continue
+    out.append({
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": it.get("labels") or [],
+        "updatedAt": it.get("updated_at") or "",
+        "createdAt": it.get("created_at") or "",
+    })
+json.dump(out, sys.stdout)
+'
+}
+
+# Валидатор: непустой JSON-массив на входе?
+is_json_array() { python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, list) else 1)
+'; }
+
+all_json=""
+issues_source=""
+gql_err=""
+
+if gql_out="$(gh issue list \
     --repo "$GH_REPO" \
     --state open \
     --limit "$SWEEP_LIMIT" \
-    --json number,title,labels,updatedAt,createdAt 2>/dev/null || echo '[]')"
+    --json number,title,labels,updatedAt,createdAt 2>/tmp/.unlabeled-sweep-gql.err)" \
+   && printf '%s' "$gql_out" | is_json_array; then
+  all_json="$gql_out"
+  issues_source="graphql"
+else
+  gql_err="$(tr '\n' ' ' < /tmp/.unlabeled-sweep-gql.err 2>/dev/null | cut -c1-300)"
+  log "WARNING: gh issue list (GraphQL) failed or returned non-JSON — falling back to REST. err: ${gql_err:-<empty>}"
+  if rest_out="$(gh api "repos/${GH_REPO}/issues?state=open&per_page=100" 2>/tmp/.unlabeled-sweep-rest.err)" \
+     && rest_norm="$(printf '%s' "$rest_out" | normalize_rest_issues)"; then
+    all_json="$rest_norm"
+    issues_source="rest"
+    log "REST fallback OK: $(printf '%s' "$all_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?') open issues"
+  else
+    rest_err="$(tr '\n' ' ' < /tmp/.unlabeled-sweep-rest.err 2>/dev/null | cut -c1-300)"
+    log "ERROR: обе ветки листинга issues отказали (GraphQL: ${gql_err:-<empty>} | REST: ${rest_err:-<empty>}) — fail-closed, exit 1"
+    log "tick done: considered=0 fresh=0 labeled=0 closed=0 un_staled=0 skipped=0 errored=1 source=none"
+    exit 1
+  fi
+fi
+rm -f /tmp/.unlabeled-sweep-gql.err /tmp/.unlabeled-sweep-rest.err 2>/dev/null || true
 if [ -z "$all_json" ]; then all_json='[]'; fi
+log "issues listing source=${issues_source}"
 
 # --- helpers -----------------------------------------------------------------
 has_label() {  # $1=labels_csv(lowercase)  $2=label_name
@@ -194,6 +318,30 @@ matches = [
     e for e in data
     if isinstance(e, dict) and e.get("event") == "labeled"
     and ((e.get("label") or {}).get("name") == target)
+]
+print(matches[-1].get("created_at", "") if matches else "")
+' || true
+}
+
+# Получить ISO-время ПОСЛЕДНЕЙ установки process-метки (hermes/needs-e2e/
+# e2e-done/e2e:rejected/no-e2e-required), или пусто. Используется в BRANCH
+# B1.5 для детекта race: если воркер/юзер поставил process-метку ПОСЛЕ
+# установки stale-candidate — sweep должен снять stale-candidate, чтобы
+# close-окно не убило issue, которая уже в процессе (ретро t_2928c1c7,
+# race case issue #2754, ADR-0022 GATE-2).
+process_label_added_at() {  # $1=issue_number
+  gh api "repos/${GH_REPO}/issues/${1}/timeline?per_page=100" \
+    2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+process_labels = {"hermes", "needs-e2e", "e2e-done", "e2e:rejected", "no-e2e-required"}
+matches = [
+    e for e in data
+    if isinstance(e, dict) and e.get("event") == "labeled"
+    and ((e.get("label") or {}).get("name", "") in process_labels)
 ]
 print(matches[-1].get("created_at", "") if matches else "")
 ' || true
@@ -247,14 +395,21 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
   labels_norm="$(printf '%s' "$labels_csv" | tr '[:upper:]' '[:lower:]')"
 
   # Already in process → skip
-  if has_label "$labels_norm" "$ISSUE_LABEL" \
-     || has_label "$labels_norm" "$NEEDS_E2E_LABEL" \
-     || has_label "$labels_norm" "$DONE_LABEL" \
-     || has_label "$labels_norm" "$REJECTED_LABEL" \
-     || has_label "$labels_norm" "$NO_E2E_LABEL"; then
-    skipped=$((skipped+1))
-    log "issue #${number}: уже в process-цикле (${labels_norm}) — skip"
-    continue
+  # ИСКЛЮЧЕНИЕ: если у issue есть stale-candidate — мы должны попасть в
+  # BRANCH B и проверить B1.5 (process-метка ПОСЛЕ stale → un-stale),
+  # даже если process-метка уже на месте. Иначе race case (ретро t_2928c1c7,
+  # issue #2754) не защитить: sweep будет skip'ать такие issues вечно и
+  # stale-candidate не снимется.
+  if ! has_label "$labels_norm" "$STALE_LABEL"; then
+    if has_label "$labels_norm" "$ISSUE_LABEL" \
+       || has_label "$labels_norm" "$NEEDS_E2E_LABEL" \
+       || has_label "$labels_norm" "$DONE_LABEL" \
+       || has_label "$labels_norm" "$REJECTED_LABEL" \
+       || has_label "$labels_norm" "$NO_E2E_LABEL"; then
+      skipped=$((skipped+1))
+      log "issue #${number}: уже в process-цикле (${labels_norm}) — skip"
+      continue
+    fi
   fi
 
   upd_epoch="$(to_epoch "$updated_at")"
@@ -289,6 +444,28 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
       continue
     fi
 
+    # --- B1.5: process-метка (hermes/needs-e2e/e2e-done/e2e:rejected/
+    #          no-e2e-required) добавлена ПОСЛЕ stale_labeled_at → un-stale.
+    # Race window (ретро t_2928c1c7, issue #2754 ADR-0134):
+    #   T0   sweep ставит stale-candidate
+    #   T0+Δ воркер/юзер ставит process-метку (hermes/needs-e2e/...)
+    #   T1   close-окно 48h без детекта этой ситуации → issue закрывается
+    # Решение: снимаем stale-candidate, оставляем process-метку — sweep
+    # больше не тронет, юзер продолжает работу. Симметрично B1 (user-reopen).
+    process_added_at_iso="$(process_label_added_at "$number")"
+    process_added_at_epoch="$(to_epoch "$process_added_at_iso")"
+    if [ -n "$process_added_at_iso" ] && [ "$process_added_at_iso" != "null" ] \
+       && [ "$process_added_at_epoch" -gt "$labeled_at_epoch" ] 2>/dev/null; then
+      log "issue #${number}: process-метка (${process_added_at_iso}) ПОСЛЕ stale_labeled_at (${labeled_at_iso}) — un-stale"
+      if [ "$DRY_RUN" != "true" ]; then
+        gh issue edit "$number" --repo "$GH_REPO" --remove-label "$STALE_LABEL" >/dev/null 2>&1 || true
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+          "agent-flow: ♻️ process-метка появилась после stale-candidate (${labeled_at_iso}). Метка снята — sweep больше не тронет. Продолжайте работу." >/dev/null 2>&1 || true
+      fi
+      un_staled=$((un_staled+1))
+      continue
+    fi
+
     # --- B2: прошло STALE_HOURS_2 с момента метки → закрываем ------------
     elapsed_after_label=$(( (now_epoch - labeled_at_epoch) / 3600 ))
     if [ "$elapsed_after_label" -lt "$STALE_HOURS_2" ]; then
@@ -309,8 +486,12 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
     if [ "$DRY_RUN" != "true" ]; then
       gh issue edit "$number" --repo "$GH_REPO" --remove-label "$STALE_LABEL" >/dev/null 2>&1 || true
       gh issue comment "$number" --repo "$GH_REPO" --body \
-        "$(printf '⏰ auto-sweep stale-candidate → close (ADR-0022 GATE-2): issue в OPEN без process-меток %s+ час, метка %s висела %s+ час без user-reopen. Закрыто как not_planned. Если проблема всё ещё актуальна — откройте новый issue с актуальным контекстом.' "$STALE_HOURS_1" "$STALE_LABEL" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
-      if gh issue close "$number" --repo "$GH_REPO" --reason not_planned >/dev/null 2>&1; then
+        "$(printf '⏰ auto-sweep stale-candidate → close (ADR-0022 GATE-2): issue в OPEN без process-меток %s+ час, метка %s висела %s+ час без user-reopen. Закрыто как not planned. Если проблема всё ещё актуальна — откройте новый issue с актуальным контекстом.' "$STALE_HOURS_1" "$STALE_LABEL" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
+      # Ретро t_e198c3f3: gh CLI требует `--reason "not planned"` (с пробелом),
+      # НЕ `not_planned` (подчёркивание) — иначе close падает с
+      # "invalid argument" и errored+=1 каждый тик, метка уже снята, issue
+      # остаётся OPEN → бесконечный retry.
+      if gh issue close "$number" --repo "$GH_REPO" --reason "not planned" >/dev/null 2>&1; then
         closed=$((closed+1))
       else
         log "issue #${number}: WARNING close failed — retry next tick"
@@ -340,7 +521,7 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
   if [ "$DRY_RUN" != "true" ]; then
     if gh issue edit "$number" --repo "$GH_REPO" --add-label "$STALE_LABEL" >/dev/null 2>&1; then
       gh issue comment "$number" --repo "$GH_REPO" --body \
-        "$(printf '⚠️ auto-sweep pending stale-candidate (ADR-0022 GATE-2): issue в OPEN без process-меток уже %s+ час. Через %s час метка `stale-candidate` будет снята и issue закрыта как not_planned. Если вы работаете над ней — откройте любой комментарий или переоткройте issue после возможного системного close, метка будет снята автоматически.' "$STALE_HOURS_1" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
+        "$(printf '⚠️ auto-sweep pending stale-candidate (ADR-0022 GATE-2): issue в OPEN без process-меток уже %s+ час. Через %s час метка `stale-candidate` будет снята и issue закрыта как not planned. Если вы работаете над ней — откройте любой комментарий или переоткройте issue после возможного системного close, метка будет снята автоматически.' "$STALE_HOURS_1" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
       stale_marked=$((stale_marked+1))
     else
       log "issue #${number}: WARNING label-add failed — retry next tick"

@@ -6,17 +6,21 @@ CommandNode - распознавание голосовых команд для 
 Action Clients: NavigateToPose, FollowPath
 
 REFACTORED: Now uses CommandParser from core module for intent classification
+
+The in-process cancel bridge that used to live here was removed by
+ADR-0086 (2026-09-09). ``handle_stop()`` cancels Nav2 goals via
+``CancelGoal``; preemption of in-flight TTS chunks is handled by
+``_normalize_tts_priority`` in ``tts_node`` (ADR-0066 §8а.3).
 """
+
+from typing import Optional, Dict, List
 
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
-
-from typing import Optional, Dict, List
-from geometry_msgs.msg import Twist
 
 # Import from core module
 from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
@@ -391,6 +395,14 @@ class CommandNode(Node):
         msg.data = text
         self.feedback_pub.publish(msg)
         self.get_logger().info(f'💬 Feedback: {text}')
+
+    # ADR-0086 (2026-09-09): the previous ``destroy_node`` had a
+    # ``Phase 2.5 teardown`` block that closed the in-process bus
+    # and joined the worker thread. With the bridge removed, no
+    # teardown is needed beyond the ``rclpy.Node`` default.
+
+    def destroy_node(self):
+        super().destroy_node()
 
 
 def main(args=None):

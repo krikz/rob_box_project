@@ -4,12 +4,23 @@
 #
 # Source of truth: ветка origin/develop репозитория (после `git fetch origin`),
 # файлы <repo>/scripts/agent_flow/*.sh на origin/develop.
-# Проверяет, что md5sum между origin/develop и 4 хостами-копиями одинаковые:
+# Проверяет, что **md5 И размер** между origin/develop и 6 хостами-копиями
+# одинаковые:
 #   - /home/builder/hermes-share/rob_box_project/scripts/agent_flow/<file>
 #   - /home/builder/.hermes/profiles/agent-flow/scripts/<file>
 #   - /home/builder/.hermes/profiles/architect/scripts/<file>
 #   - /home/builder/.hermes/profiles/devops/scripts/<file>
-#   - /home/builder/.hermes/scripts/<file>
+#   - /home/builder/.hermes/profiles/backend/scripts/<file>
+#   - /home/builder/.hermes/profiles/analyst/scripts/<file>
+#   - /home/builder/.hermes/scripts/<file>                 (legacy)
+#
+# Зачем проверяем ОБА — md5 И size — (ретро 01.09 t_a3ba921e):
+#   - md5 ловит любое изменение содержимого, включая partial-copy;
+#   - size ловит race-кейсы, когда файл изменился между md5 одной копии и
+#     другой (in-flight write). Размер — быстрый guard (stat -c %s) и в
+#     alert.log выводится сразу, чтобы оператор видел масштаб расхождения
+#     без сравнения 32-char hex'ов;
+#   - размер ≠ md5: только при совпадении обоих копия считается «in sync».
 #
 # Ретро 12.08 t_24054f6c: install.sh не донёс обновлённый merge-gate/triage
 # в 4 host-копии → cron дрифтанулся → ADR-0014 post-merge не работал
@@ -46,10 +57,17 @@
 #   git worktree remove --force <wt>
 # Карточка создаётся ТОЛЬКО если и этот путь не помог (md5-сверка после).
 #
+# Ретро 01.09 t_a3ba921e: dual md5+size, TARGETS расширен с 4 до 6 (добавлены
+# backend/scripts и analyst/scripts). Если файл отсутствует хоть в одном
+# TARGET — это DRIFT (не WARN как раньше). См. compute_drift() ниже.
+#
 # Теперь перед сверкой:
 #   1) `git fetch origin develop` (таймаут 30s); при недоступности origin —
 #      fallback на локальное дерево + WARN в stdout;
-#   2) эталон md5 берётся из origin/develop (git show origin/develop:...),
+#   2) эталон md5 берётся из origin/develop (git cat-file blob <ref>:<path>),
+#      раньше тут стоял `git show` в `$(...)` — command substitution trim'ил
+#      trailing newline и ломал md5/size (DRIFT=34 ложно-положительно 12+ч,
+#      ретро 14.09 t_7800c199).
 #      а не из локального дерева;
 #   3) если локальный develop != origin/develop — печатается отдельный маркер
 #      LOCAL_DESYNC (сигнал: локальное дерево устарело, install.sh из него
@@ -57,6 +75,14 @@
 #   4) auto-fix: при отставании локального develop (ветка develop + чистое
 #      дерево) сначала `git merge --ff-only origin/develop`, затем install.sh —
 #      чтобы install.sh раскладывал СВЕЖИЕ скрипты, а не устаревшие.
+#   5) auto-fix fallback (ретро 15.09 t_40611e65): если FF-merge невозможен
+#      (develop+dirty worktree → try_ff_update rc=1) И host drift есть — НЕ
+#      раскладываем stale скрипты через install.sh из локального дерева, а
+#      используем wt_origin_autofix: временный worktree на origin/develop
+#      + REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh. Эта стратегия
+#      уже работала для BRANCH_ACTIVE (current branch != develop), теперь
+#      применена и для DIRTY_DEVELOP (current branch == develop + dirty).
+#      Без фикса FIX FAILED → create_drift_card каждые 30 мин.
 #
 # Поведение:
 #   - BRANCH_ACTIVE (current branch != develop)
@@ -83,8 +109,13 @@
 #       автофикс ff-only невозможен/не помог — нужен ручной pull)
 #
 # Переменные окружения (оператор/тесты):
-#   REPO_DIR        — путь к репо (по умолчанию dev-машина; как в install.sh)
-#   DRIFT_DRY_RUN=1 — только детект, без auto-fix (как install.sh --dry-run)
+#   REPO_DIR              — путь к репо (по умолчанию dev-машина; как в install.sh)
+#   DRIFT_DRY_RUN=1       — только детект, без auto-fix (как install.sh --dry-run)
+#   DRIFT_TARGETS=p1:p2   — colon-separated список путей для override (тесты).
+#                           По умолчанию — все 6 TARGETS (см. шапку). Отличие
+#                           от INSTALL_TARGET_DIRS (install.sh): имена env-переменных
+#                           специально разные, чтобы тесты могли прогонять
+#                           drift-detect с одной подмножиной путей независимо.
 #
 # Используется cron'ом `Agent Flow Scripts Drift` (no_agent=True, every 30m)
 # в профиле devops. Cron scheduler выводит stdout, если непустой — это
@@ -162,13 +193,21 @@ fi
 TARGETS=()
 if [ -n "${DRIFT_TARGETS:-}" ]; then
     # Тесты/hermetic прогоны: DRIFT_TARGETS — colon-separated список путей.
+    # Отличие от INSTALL_TARGET_DIRS (install.sh): имена env разные, чтобы
+    # тесты могли изолированно гонять drift-detect на подмножестве путей.
     IFS=':' read -r -a TARGETS <<< "$DRIFT_TARGETS"
 else
+    # Ретро 01.09 t_a3ba921e: TARGETS расширен с 4 до 6 (backend/scripts и
+    # analyst/scripts добавлены, иначе drift-detect не видел бы host-drift
+    # на профилях, чьи скрипты раскладываются через install.sh, но не
+    # учитываются drift-detect'ом).
     TARGETS=(
         "$REPO_DIR/scripts/agent_flow"
         "/home/builder/.hermes/profiles/agent-flow/scripts"
         "/home/builder/.hermes/profiles/architect/scripts"
         "/home/builder/.hermes/profiles/devops/scripts"
+        "/home/builder/.hermes/profiles/backend/scripts"
+        "/home/builder/.hermes/profiles/analyst/scripts"
         "/home/builder/.hermes/scripts"
     )
 fi
@@ -188,15 +227,31 @@ if [ ! -d "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
-# get_origin_md5 <file> — md5 файла на origin/develop (пусто, если недоступен)
-get_origin_md5() {
+# get_origin_meta <file> -> "<md5prefix>|<size>" или пусто, если недоступен.
+# Ретро 01.09 t_a3ba921e: возвращает И md5-prefix И размер в байтах через
+# pipe-delimited string — вызывающий парсит через IFS='|'. Размер пишем
+# рядом с md5 в alert.log, чтобы оператор сразу видел масштаб расхождения
+# (например, «size differs by 24771 bytes» — это и есть 24KB drift из t_a3ba921e).
+get_origin_meta() {
     local f="$1"
     if [ "$FETCH_OK" != "1" ]; then
         echo ""
         return
     fi
     if git -C "$REPO_DIR" cat-file -e "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null; then
-        git -C "$REPO_DIR" show "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null | md5sum | cut -c1-12
+        # Ретро 14.09 t_7800c199: раньше тут был `git show <ref>:<path>`,
+        # чей stdout оборачивается в `$(...)`. Command substitution тримит
+        # trailing newline (POSIX), и ровно 1 потерянный \n смещал md5/size
+        # от эталона для КАЖДОГО .sh файла → DRIFT=34 ложно-положительно
+        # 24 тика подряд (12+ часов), install.sh не виноват — host-копии
+        # реально identical to origin/develop blob.
+        # Фикс: `git cat-file blob <ref>:<path>` даёт чистый blob через
+        # pipe — без trim'а и без diff-обёртки. Считаем md5/size прямо
+        # из stdin (process substitution, не `$(...)`-subshell).
+        local md5 size
+        md5="$(git -C "$REPO_DIR" cat-file blob "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null | md5sum | cut -c1-12)"
+        size="$(git -C "$REPO_DIR" cat-file -s "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null | tr -d ' ')"
+        printf '%s|%s\n' "$md5" "$size"
     fi
 }
 
@@ -207,40 +262,62 @@ get_origin_md5() {
 # устаревшим local, считались «в синхроне» → дрейф host↔origin оставался
 # слепым (t_20775d14 не дочинен). LOCAL используется ТОЛЬКО как fallback,
 # когда origin недоступен (fetch не удался).
+#
+# Ретро 01.09 t_a3ba921e: dual md5+size check; файл отсутствует на host —
+# это DRIFT (а не WARN как раньше). Это и был основной баг ретро: install.sh
+# не раскладывал EXPECTED на backend/analyst, а compute_drift'у было всё
+# равно (только md5 сверено с существующих). Теперь для каждого TARGET_DIR
+# отсутствие файла = DRIFT.
 DRIFT=0
 DRIFT_FILES=()
 compute_drift() {
     DRIFT=0
     DRIFT_FILES=()
-    local f t CUR_MD5 ORIGIN_MD5 LOCAL_MD5 REF_MD5 HAS_MISMATCH
+    local f t CUR_MD5 CUR_SIZE ORIGIN_META ORIGIN_MD5 ORIGIN_SIZE LOCAL_MD5 LOCAL_SIZE REF_MD5 REF_SIZE HAS_MISMATCH MISMATCH_REASON
     for f in "${FILES[@]}"; do
         if [ ! -f "$SCRIPT_DIR/$f" ]; then
             continue
         fi
         LOCAL_MD5="$(md5sum "$SCRIPT_DIR/$f" | cut -c1-12)"
-        ORIGIN_MD5="$(get_origin_md5 "$f")"
-        if [ -n "$ORIGIN_MD5" ]; then
+        LOCAL_SIZE="$(stat -c '%s' "$SCRIPT_DIR/$f" 2>/dev/null || echo 0)"
+        ORIGIN_META="$(get_origin_meta "$f")"
+        if [ -n "$ORIGIN_META" ]; then
+            ORIGIN_MD5="${ORIGIN_META%%|*}"
+            ORIGIN_SIZE="${ORIGIN_META##*|}"
             REF_MD5="$ORIGIN_MD5"
+            REF_SIZE="$ORIGIN_SIZE"
         else
             REF_MD5="$LOCAL_MD5"
+            REF_SIZE="$LOCAL_SIZE"
         fi
         HAS_MISMATCH=0
+        MISMATCH_REASON=""
         for t in "${TARGETS[@]}"; do
             if [ "$t" = "$SCRIPT_DIR" ]; then
                 continue  # эталон не сравниваем сам с собой
             fi
-            if [ -f "$t/$f" ]; then
-                CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
-                if [ "$CUR_MD5" != "$REF_MD5" ]; then
-                    HAS_MISMATCH=1
-                    break
-                fi
+            if [ ! -f "$t/$f" ]; then
+                # Ретро 01.09 t_a3ba921e: отсутствующий файл = DRIFT (а не
+                # WARN как раньше). Именно так прошёл 24KB drift на
+                # backend/analyst в августе — drift-detect проглядел.
+                HAS_MISMATCH=1
+                MISMATCH_REASON="missing"
+                break
+            fi
+            CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
+            CUR_SIZE="$(stat -c '%s' "$t/$f" 2>/dev/null || echo 0)"
+            # dual check: оба должны совпадать для «in sync»
+            if [ "$CUR_MD5" != "$REF_MD5" ] || [ "$CUR_SIZE" != "$REF_SIZE" ]; then
+                HAS_MISMATCH=1
+                MISMATCH_REASON="md5=${CUR_MD5}@${CUR_SIZE}b vs ref=${REF_MD5}@${REF_SIZE}b"
+                break
             fi
         done
         if [ "$HAS_MISMATCH" = "1" ]; then
             DRIFT=1
             DRIFT_FILES+=("$f")
         fi
+        unset MISMATCH_REASON
     done
 }
 
@@ -299,7 +376,7 @@ fi
 
 # --- git fetch origin (эталон — origin/develop) ---
 # Выполняем ДО ветвления по BRANCH_ACTIVE: fetch не меняет рабочую ветку,
-# а get_origin_md5 (git show origin/develop:...) нужен и в z-ветке.
+# а get_origin_meta (git show origin/develop:...) нужен и в z-ветке.
 FETCH_OK=0
 if timeout "$FETCH_TIMEOUT" git -C "$REPO_DIR" fetch origin develop >/dev/null 2>&1; then
     FETCH_OK=1
@@ -307,14 +384,22 @@ else
     log "WARN: git fetch origin failed (timeout ${FETCH_TIMEOUT}s) — falling back to local-tree comparison; origin/develop drift NOT checked"
 fi
 
-# branch_active_autofix — автофикс при BRANCH_ACTIVE через временный worktree
-# на origin/develop (ретро 14.08 t_ea771b06). install.sh из worktree раскладывает
-# host-копии ИЗ origin/develop, а не из текущей z-ветки. После — md5-сверка.
-# Возврат: 0 = вылечено (или worktree недоступен — карточка всё равно создана
-# вызывающим), 1 = не вылечено.
-branch_active_autofix() {
-    local wt="${DRIFT_WT_PREFIX}$$"
-    log "BRANCH_ACTIVE auto-fix: temp worktree $wt at $REF_BRANCH"
+# wt_origin_autofix — автофикс через временный worktree на origin/develop.
+# install.sh из worktree раскладывает host-копии ИЗ origin/develop, а не из
+# локального дерева (устаревшего или веточного). Используется в двух кейсах
+# (DRY-обёртка над branch_active_autofix + dirty-develop fallback):
+#   1) BRANCH_ACTIVE (current branch != develop): воркер в z-ветке, нельзя
+#      раскладывать веточный код на хост (ретро 14.08 t_ea771b06).
+#   2) DIRTY_DEVELOP (current branch = develop, дерево грязное): FF-merge
+#      невозможен, а install.sh из устаревшего локального дерева раскладывает
+#      stale скрипты → FIX FAILED каждые 30 мин (ретро 15.09 t_40611e65).
+# После — md5-сверка; карточка создаётся ТОЛЬКО если и этот путь не помог.
+# Возврат: 0 = вылечено, 1 = не вылечено (карточка уже создана внутри).
+# Параметр $1 — логический префикс для маркера ("BRANCH_ACTIVE" / "DIRTY_DEVELOP").
+wt_origin_autofix() {
+    local ctx="${1:-WT_ORIGIN}"
+    local wt="${DRIFT_WT_PREFIX}$$${ctx:+-$ctx}"
+    log "$ctx auto-fix: temp worktree $wt at $REF_BRANCH"
     if ! git -C "$REPO_DIR" worktree add --detach "$wt" "$REF_BRANCH" >>"$ALERT_LOG" 2>&1; then
         log "FIX FAILED — git worktree add $wt $REF_BRANCH failed"
         create_drift_card
@@ -332,7 +417,7 @@ branch_active_autofix() {
         log "Auto-fix (worktree) OK. Re-checking drift..."
         compute_drift
         if [ "$DRIFT" = "0" ]; then
-            log "FIXED — drift resolved via origin/develop worktree"
+            log "FIXED — drift resolved via origin/develop worktree ($ctx)"
             git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
             return 0
         fi
@@ -345,6 +430,9 @@ branch_active_autofix() {
     git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
     return 1
 }
+
+# Backward-compat alias (некоторые downstream-скрипты могли полагаться на имя).
+branch_active_autofix() { wt_origin_autofix "BRANCH_ACTIVE"; }
 
 if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "$LOCAL_BRANCH" ]; then
     echo "BRANCH_ACTIVE: $CURRENT_BRANCH"
@@ -375,7 +463,10 @@ fi
 
 # try_ff_update — подтянуть локальный develop к origin/develop, если безопасно:
 # ветка develop, чистое дерево, merge только fast-forward.
-# Возврат: 0 = healed, 1 = skip (ветка/дерево не позволяют), 2 = ff-merge failed.
+# Возврат: 0 = healed, 1 = skip (ветка/дерево не позволяют — можно fallback на
+#          временный worktree origin/develop, см. wt_origin_autofix),
+#          2 = ff-merge failed (ветка diverged — НЕЛЬЗЯ fallback, нужна ручная
+#          разборка: ручной pull или merge).
 try_ff_update() {
     [ "$DESYNC" = "1" ] || return 0
     local branch dirty new_local
@@ -386,7 +477,14 @@ try_ff_update() {
     fi
     dirty="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | head -1)"
     if [ -n "$dirty" ]; then
-        log "LOCAL_DESYNC: auto-update skipped (working tree dirty: $dirty)"
+        # Ретро 15.09 t_40611e65: при грязном worktree на develop FF-merge
+        # невозможен. Возвращаем 1 (skip, можно fallback), а не 2 — ручной
+        # разборки не требуется, автофикс через wt_origin_autofix (временный
+        # worktree на origin/develop) решает задачу без потери локальных
+        # правок. Старая логика падала тут в "WARN: continuing auto-fix with
+        # local tree as-is" — и install.sh раскладывал stale скрипты на хост,
+        # FIX FAILED → create_drift_card каждые 30 мин.
+        log "LOCAL_DESYNC: auto-update skipped (working tree dirty: $dirty) — caller may fallback to wt_origin_autofix"
         return 1
     fi
     if git -C "$REPO_DIR" merge --ff-only "$REF_BRANCH" >>"$ALERT_LOG" 2>&1; then
@@ -435,20 +533,31 @@ fi
 log "DRIFT detected in ${#DRIFT_FILES[@]} file(s): ${DRIFT_FILES[*]}"
 for f in "${DRIFT_FILES[@]}"; do
     LOCAL_MD5="$(md5sum "$SCRIPT_DIR/$f" | cut -c1-12)"
-    ORIGIN_MD5="$(get_origin_md5 "$f")"
+    LOCAL_SIZE="$(stat -c '%s' "$SCRIPT_DIR/$f" 2>/dev/null || echo 0)"
+    ORIGIN_META="$(get_origin_meta "$f")"
+    if [ -n "$ORIGIN_META" ]; then
+        ORIGIN_MD5="${ORIGIN_META%%|*}"
+        ORIGIN_SIZE="${ORIGIN_META##*|}"
+    else
+        ORIGIN_MD5=""
+        ORIGIN_SIZE=""
+    fi
     PEND=""
     if [ -n "$ORIGIN_MD5" ] && [ "$ORIGIN_MD5" != "$LOCAL_MD5" ]; then
         PEND=" [local blob != origin/develop]"
     fi
-    log "  $f:$PEND origin=${ORIGIN_MD5:-n/a} local=$LOCAL_MD5"
+    # Ретро 01.09 t_a3ba921e: добавлен size в байтах рядом с md5 — оператор
+    # сразу видит масштаб расхождения (24KB drift как раз = 24771 bytes).
+    log "  $f:$PEND origin=${ORIGIN_MD5:-n/a}@${ORIGIN_SIZE:-n/a}b local=${LOCAL_MD5}@${LOCAL_SIZE}b"
     for t in "${TARGETS[@]}"; do
         if [ "$t" = "$SCRIPT_DIR" ]; then
             continue
         fi
         if [ -f "$t/$f" ]; then
             MD="$(md5sum "$t/$f" | cut -c1-12)"
+            SZ="$(stat -c '%s' "$t/$f" 2>/dev/null || echo 0)"
             INO="$(stat -c '%i' "$t/$f" 2>/dev/null || echo '?')"
-            log "    $MD  inode=$INO  $t/$f"
+            log "    $MD@${SZ}b  inode=$INO  $t/$f"
         else
             log "    MISSING  $t/$f"
         fi
@@ -463,39 +572,77 @@ fi
 # === АВТОФИКС ===
 # Сначала лечим локальное дерево (чтобы install.sh раскладывал свежие скрипты),
 # если это ещё не сделано выше.
+# Ретро 15.09 t_40611e65: если try_ff_update вернул 1 (skip — грязный
+# develop worktree), FF-merge невозможен, но это НЕ повод раскладывать
+# stale скрипты на хост. Fallback: wt_origin_autofix — временный worktree
+# на origin/develop + REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh.
+# Эта стратегия уже работает для BRANCH_ACTIVE (current branch != develop),
+# теперь применена и для DIRTY_DEVELOP (current branch == develop + dirty).
 if [ "$DESYNC" = "1" ]; then
-    if ! try_ff_update; then
-        log "WARN: continuing auto-fix with local tree as-is (may deploy stale scripts)"
+    FF_RC=0
+    try_ff_update || FF_RC=$?
+    if [ "$FF_RC" = "1" ]; then
+        # Skip (ветка не develop, или develop+dirty) — fallback на wt_origin_autofix.
+        # Это безопасно: install.sh раскладывает из origin/develop, а не из
+        # локального дерева. ВАЖНО: до try_ff_update DESYNC=1, после — он может
+        # стать 0 (если успели залечить), но wt_origin_autofix всё равно нужен
+        # если DRIFT_FILES не пуст (install.sh из локального дерева в install-секции
+        # ниже — может опять stale, если develop не залечен).
+        # Решение: идём в wt_origin_autofix; если он тоже не помог — карточка.
+        # DRY-RUN не запускает wt_origin_autofix (как и весь auto-fix).
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: LOCAL_DESYNC+dirty/branch_skip, auto-fix skipped"
+            exit 1
+        fi
+        if [ -n "${DRIFT_FILES[*]:-}" ] && [ "${#DRIFT_FILES[@]}" -gt 0 ]; then
+            if wt_origin_autofix "DIRTY_DEVELOP"; then
+                exit 0
+            fi
+            # wt_origin_autofix уже создал карточку при падении.
+            exit 1
+        fi
+    elif [ "$FF_RC" = "2" ]; then
+        # Diverged — нельзя автоматически вылечить без merge/rebase.
+        log "FIX FAILED — LOCAL_DESYNC diverged (try_ff_update rc=2); manual intervention required"
+        create_drift_card
+        exit 2
     fi
 fi
 
 log "Auto-fix: bash $INSTALL_SH"
 if REPO_DIR="$REPO_DIR" bash "$INSTALL_SH" >> "$ALERT_LOG" 2>&1; then
-    log "Auto-fix OK. Re-checking drift..."
+    log "Auto-fix OK. Re-checking drift (dual md5+size)..."
     STILL_DRIFT=0
     for f in "${DRIFT_FILES[@]}"; do
         LOCAL_MD5="$(md5sum "$SCRIPT_DIR/$f" | cut -c1-12)"
-        ORIGIN_MD5="$(get_origin_md5 "$f")"
-        if [ -n "$ORIGIN_MD5" ]; then
-            REF_MD5="$ORIGIN_MD5"
+        LOCAL_SIZE="$(stat -c '%s' "$SCRIPT_DIR/$f" 2>/dev/null || echo 0)"
+        ORIGIN_META="$(get_origin_meta "$f")"
+        if [ -n "$ORIGIN_META" ]; then
+            REF_MD5="${ORIGIN_META%%|*}"
+            REF_SIZE="${ORIGIN_META##*|}"
         else
             REF_MD5="$LOCAL_MD5"
+            REF_SIZE="$LOCAL_SIZE"
         fi
         for t in "${TARGETS[@]}"; do
             if [ "$t" = "$SCRIPT_DIR" ]; then
                 continue
             fi
-            if [ -f "$t/$f" ]; then
-                CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
-                if [ "$CUR_MD5" != "$REF_MD5" ]; then
-                    STILL_DRIFT=1
-                    break 2
-                fi
+            if [ ! -f "$t/$f" ]; then
+                # Ретро 01.09 t_a3ba921e: missing после install.sh = drift не вылечен.
+                STILL_DRIFT=1
+                break 2
+            fi
+            CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
+            CUR_SIZE="$(stat -c '%s' "$t/$f" 2>/dev/null || echo 0)"
+            if [ "$CUR_MD5" != "$REF_MD5" ] || [ "$CUR_SIZE" != "$REF_SIZE" ]; then
+                STILL_DRIFT=1
+                break 2
             fi
         done
     done
     if [ "$STILL_DRIFT" = "0" ]; then
-        log "FIXED — drift resolved"
+        log "FIXED — drift resolved (md5+size match for all ${#TARGETS[@]} targets)"
         exit 0
     else
         log "FIX FAILED — drift still present after install.sh"

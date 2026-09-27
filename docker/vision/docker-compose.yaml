@@ -4,7 +4,20 @@ services:
   zenoh-router:
     image: eclipse/zenoh:1.6.2
     container_name: zenoh-router-vision
+    # issue #2610 + GH task t_b79d0581: не пытаться рефетчить образ, который
+    # уже лежит локально. С `pull_policy: missing`/`always` compose
+    # при `up -d` без сети возвращает exit 1 и валит весь стек.
+    # `if_not_present` (= старый `never`, но явный) — компромисс: при
+    # наличии тега в registry CI перетегирование + pull делает отдельный
+    # скрипт (`scripts/build/set-docker-tags.sh` + update_and_restart.sh),
+    # а compose при повседневном `up -d` не дёргает docker daemon registry.
+    pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): Vision Pi 8 GB → каждый контейнер
+    # обязан иметь лимит. Zenoh router — лёгкий процесс (64 MB RSS замер),
+    # даём 128 MB с запасом на рост локальной таблицы маршрутов.
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       - RUST_LOG=zenoh=info
     volumes:
@@ -25,6 +38,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${OAK_D_TAG:-${IMAGE_TAG}}
     container_name: oak-d
+    pull_policy: if_not_present
     network_mode: host
     privileged: true
     environment:
@@ -53,6 +67,19 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    # t_5ab5e44a (наблюдаемость): healthcheck, чтобы `docker ps` показывал
+    # реальный статус, а не «висит на init». Проверяем сам драйвер
+    # depthai camera_node, а не `ros2 launch`: launch — это PID 1, он жив,
+    # пока жив контейнер, даже если дочерняя нода упала (USB error -71).
+    # Скобки в `[d]epthai` не дают pgrep найти собственный `sh -c`,
+    # в командной строке которого тоже есть шаблон. start_period 60s даём
+    # на холодный старт стека + USB-инициализацию DepthAI.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[d]epthai_ros_driver/camera_node' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     labels:
       logging: "promtail"
 
@@ -60,7 +87,11 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${LED_MATRIX_TAG:-${IMAGE_TAG}}
     container_name: led-matrix
+    pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 406 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
     devices:
       - /dev/spidev0.0:/dev/spidev0.0  # SPI для NeoPixel LED
@@ -93,7 +124,11 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${CEILING_CAMERA_TAG:-${IMAGE_TAG}}
     container_name: ceiling-camera
+    pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 206 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к USB camera
     devices:
       - /dev/video0:/dev/video0  # USB UVC камера
@@ -116,15 +151,54 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    # t_5ab5e44a (наблюдаемость): healthcheck для usb_cam ноды — pgrep
+    # по пути исполняемого файла. PID 1 здесь `ros2 run usb_cam
+    # usb_cam_node_exe`, поэтому ищем `lib/usb_cam/...`, которого в его
+    # командной строке нет; скобки `[l]ib` исключают собственный `sh -c`.
+    # На cold start ждём USB-инициализацию (start_period 30s), иначе
+    # healthcheck fail'ит пока устройство не прокинулось.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[l]ib/usb_cam/usb_cam_node_exe' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     labels:
       logging: "promtail"
 
   # non-ROS service: аудиосервер SuperCollider (scsynth).
   # Не публикует/подписывается на ROS-топики, depends_on: zenoh-router не требуется.
+  #
+  # 🔴 issue #1807 — ОСТОРОЖНО с одиночным `docker restart supercollider`.
+  # Вся палитра SynthDef (~300 определений) живёт только в памяти scsynth,
+  # грузит её процесс sclang из СОСЕДНЕГО контейнера voice-assistant — один
+  # раз, при своём собственном старте. Если перезапустить только этот
+  # контейнер, scsynth поднимется пустым (RootNode и ничего больше), а
+  # voice-assistant не перезапускался и повторно грузить нечего не станет:
+  # робот немеет ПОЛНОСТЬЮ, при этом healthcheck ниже (`pgrep scsynth`)
+  # зелёный, оба контейнера healthy, в логах чисто.
+  #
+  # Митигация: foxdot_init.sc (в voice-assistant) следит за
+  # Server.default.serverRunning и сам перезаливает всю запомненную палитру,
+  # если ловит переход true→false→true — см. комментарий там же. Но это
+  # подстраховка, а не гарантия (например, если оба контейнера рестартуют
+  # одновременно при деплое — sclang перезагрузится и перезальёт всё штатно
+  # через собственный прелоад, это ок). Проверить фактическое состояние
+  # можно метрикой `supercollider_synthdefs_count` (issue #1809): она
+  # опрашивает сам scsynth через OSC /status и покажет реальное число
+  # загруженных SynthDef, а не число файлов на диске — значение в разы ниже
+  # ожидаемого (~300) означает пустую палитру НЕЗАВИСИМО от healthcheck.
+  #
+  # Безопасный путь при необходимости рестарта: `docker compose restart
+  # supercollider voice-assistant` (оба вместе), не только supercollider.
   supercollider:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-local}
     container_name: supercollider
+    pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 179 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к ALSA audio
     ipc: host      # Share host IPC namespace so dmix SHM is shared with voice-assistant
     shm_size: '256m'  # JACK использует /dev/shm для mmap (~107MB), default 64MB недостаточно
@@ -136,15 +210,27 @@ services:
     volumes:
       - ./scripts/supercollider:/scripts:ro
       - ./config/audio/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
-      # Shared renardo samples — supercollider должен читать WAV файлы по тому же пути что renardo
-      - renardo_samples:/root/.config/renardo/samples:ro
+      # Renardo samples — supercollider должен читать WAV файлы по тому же пути,
+      # что и renardo в voice-assistant. Раньше это был named-volume
+      # renardo_samples, который наполнял init-контейнер из отдельного образа
+      # voice-resources; теперь сэмплы кладёт на хост Ресурсный пак (запись
+      # renardo-samples в scripts/resource_pack/manifest.yaml, тот же шаг
+      # деплоя, что и STT/TTS-модели), а сюда они приходят bind-mount'ом.
+      # Путь ВНУТРИ контейнера не изменился.
+      # :ro — сэмплы меняет только хост; scsynth туда писать незачем.
+      - /opt/rob_box/samples:/root/.config/renardo/samples:ro
       # Shared synthdefs — sclang/Renardo в voice-assistant компилирует .scsyndef сюда,
       # scsynth должен читать их по тому же пути (иначе "bassguitar.scsyndef could not be opened")
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
     command: ["/scripts/start_supercollider.sh"]
-    depends_on:
-      voice-resources-init:
-        condition: service_completed_successfully
+    # depends_on НЕТ осознанно. Раньше здесь висел
+    # `voice-resources-init: {condition: service_completed_successfully,
+    # required: false}` — ожидание one-shot init-контейнера, который тянул
+    # с registry отдельный образ с сэмплами (issue #2610, PR #2634).
+    # Сэмплы теперь лежат на хосте до `docker compose up`, ждать нечего:
+    # bind-mount либо наполнен, либо пуст, и во втором случае музыка честно
+    # уходит в synth-only — ровно то же поведение, что давал `required: false`,
+    # но без обращения к registry на старте стека.
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep scsynth || exit 1"]
@@ -155,23 +241,18 @@ services:
     labels:
       logging: "promtail"
 
-  # non-ROS service: одноразовый init-контейнер для копирования renardo samples в volume.
-  # Не использует ROS/Zenoh, network_mode не требуется.
-  voice-resources-init:
-    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-resources-${ROS_DISTRO:-humble}-${VOICE_RESOURCES_TAG:-${IMAGE_TAG}}
-    container_name: voice-resources-init
-    volumes:
-      - renardo_samples:/target
-    restart: "no"
-    labels:
-      logging: "promtail"
+  # Здесь был `voice-resources-init` — one-shot init-контейнер, который
+  # копировал сэмплы из образа voice-resources в named-volume
+  # renardo_samples. Удалён вместе с образом: сэмплы кладёт на хост
+  # Ресурсный пак (шаг деплоя «Ensure STT/TTS models + Renardo samples»),
+  # потребители видят их bind-mount'ом /opt/rob_box/samples.
 
   voice-assistant:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     # Format: VOICE_ASSISTANT_TAG=env-gitsha (e.g. test-abc1234) → immutable, pinned to specific build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
     container_name: voice-assistant
+    pull_policy: if_not_present
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
     ipc: host      # Share host IPC namespace so dmix SHM is shared with supercollider
@@ -195,6 +276,12 @@ services:
       # VoiceMemory + Ollama
       - OLLAMA_BASE_URL=http://localhost:11434
       - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+      # Issue #1777 / #1763 — timezone для get_current_time tool. TZ нужен
+      # для glibc strftime() и лог-timestamps, ROBOT_TIMEZONE — для
+      # Python zoneinfo в GetCurrentTimeTool. Europe/Moscow по умолчанию,
+      # override через .env.secrets или env_file.
+      - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
+      - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
       # Agent skills feature flag (set to false to revert to flat tool mode)
       - USE_SKILLS=true
       # OpenAI SDK logging (set to debug for HTTP traffic dump, info for request-level, off for silent)
@@ -205,6 +292,31 @@ services:
       # Renardo paths (MusicSkill uses these to load reference docs and search samples)
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
+      # Pack-1 samples: жанровые лупы (#2841) + FX-одиночки (#2968).
+      # "1" открывает весь каталог 1_pitchglitch_samples (лупы И fx одним
+      # флагом — см. core/sample_loops.py, core/sample_fx.py).
+      - ROB_BOX_PACK1_LOOPS=1
+      # /mcp/execute sender authentication (see rob_box_mcp_tools/mcp_auth.py).
+      # dialogue_node and mcp_server run in THIS container, so they share the
+      # secret through a file on the /data volume — created automatically on
+      # first start, unreadable from other hosts. Set ROB_BOX_MCP_TOKEN here
+      # instead if the nodes are ever split across containers.
+      - ROB_BOX_MCP_TOKEN_FILE=/data/.mcp_token
+      # Timezone для системного вывода времени (issue #1763).
+      # - TZ — для всех C-библиотек и os.environ процессов (date, strftime, glibc-функции).
+      # - ROBOT_TIMEZONE — для Python zoneinfo в GetCurrentTimeTool.execute().
+      # По умолчанию Europe/Moscow, т.к. робот обслуживает русскоязычного оператора.
+      - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
+      - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
+      # issue #2184 — стек мониторинга поднят на build-машине katana, не в
+      # этой compose-сети: docker-DNS сюда не достаёт, и дефолты вида
+      # http://prometheus:9090 с робота не резолвились (из-за чего молча не
+      # работали operator.admin-тулзы container_status / read_logs(loki) /
+      # show_metrics). Задаём адрес явно.
+      - MONITORING_HOST=${MONITORING_HOST:-10.1.1.249}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://${MONITORING_HOST:-10.1.1.249}:9090}
+      - LOKI_URL=${LOKI_URL:-http://${MONITORING_HOST:-10.1.1.249}:3100}
+      - GRAFANA_URL=${GRAFANA_URL:-http://${MONITORING_HOST:-10.1.1.249}:3000}
     env_file:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
@@ -218,10 +330,26 @@ services:
       - ./config/audio/asound.conf:/etc/asound.conf:ro
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
+      # STT/TTS модели с хоста (Ресурсный пак, Этап 3 —
+      # docs/plans/2026-09-15-resource-pack.md §6.1).
+      # РАНЬШЕ Vosk (44 МиБ) и Silero v5 (139 МиБ) были запечены в образ
+      # voice-base ступенью скачивания в его Dockerfile. Теперь их кладёт на
+      # хост apply_resource_pack.sh (шаг деплоя «Ensure STT/TTS models»), а
+      # сюда они приходят bind-mount'ом. Путь ВНУТРИ контейнера не изменился:
+      # stt_node.yaml:8 (`/models/vosk-model-small-ru-0.22`) и tts_node.py:1853
+      # (`/models/silero/v5_ru.pt`) читают то же самое место.
+      # :ro — модели меняет только хост; контейнеру писать туда незачем.
+      # Каталог тот же, что уже монтируется в vision-hailo/vision-face
+      # (ниже, :820 и :889) — третий host-каталог не заводим (план §5).
+      - /opt/rob_box/models:/models:ro
       # VoiceMemory persistent storage
       - ./data/voice:/data
-      # Shared renardo samples — предварительно заполняются one-shot контейнером voice-resources-init
-      - renardo_samples:/root/.config/renardo/samples
+      # Renardo samples — кладёт на хост Ресурсный пак (запись renardo-samples
+      # в scripts/resource_pack/manifest.yaml), сюда приходят bind-mount'ом.
+      # Путь ВНУТРИ контейнера не изменился. БЕЗ :ro, в отличие от
+      # supercollider: renardo_gatherer/FoxDot при инициализации пишет в этот
+      # каталог свои служебные файлы.
+      - /opt/rob_box/samples:/root/.config/renardo/samples
       # Shared synthdefs — sclang/Renardo компилирует SynthDefs сюда, scsynth в контейнере
       # supercollider читает их по тому же пути (issue 986)
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
@@ -229,7 +357,28 @@ services:
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
       # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
       - ../../migrations:/migrations:ro
-    mem_limit: 4g  # Voice Assistant + Animations
+    mem_limit: 5g  # Voice Assistant + Animations
+    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)
+    # 5 GiB (↑ с 4 GiB после #2676) потому что при cold-start всех 9 нод
+    # одновременно + Silero v5 warm-load + Yandex gRPC + PyTorch + Vosk
+    # RSS прыгает в 3.4-3.9 GB с пиками до 99.6% от 4 GB (см. ADR-0122,
+    # issue #2676: docker stats показывал MEM USAGE 3.417 GiB / 4 GiB =
+    # 85.42%, ПРЫГАЛО до 99.64% → каскадные SIGKILL exit code -9 у
+    # tts_node / stt_node / speaker_id_node каждые ~30 с).
+    #
+    # memswap_limit: 6g разрешает контейнеру занять до 5 GB RAM + 1 GB
+    # swap поверх. На Vision Pi сейчас dphys-swapfile 2 GB (file-based,
+    # медленный), zram-swap по ADR-0111 ещё не поднят — но даже file-based
+    # swap даёт буфер на короткие пики, чтобы OOM-killer не убивал ноды
+    # сразу. После раскатки zram (ADR-0111, issue #2621) этот лимит станет
+    # более эффективным; до тех пор это страховка от каскадных SIGKILL.
+    #
+    # Долгосрочное решение (НЕ в этой карточке — backend work, см.
+    # issue #2676 "Proposed fix §2"): вынести тяжёлые ноды (Vosk STT,
+    # Silero, MiniMax T2A, mcp_server) в отдельные контейнеры с
+    # собственными лимитами → конкуренция за RAM внутри одного
+    # cgroup уйдёт.
+    #
     # 4 GiB because the container hosts 9 respawn-able nodes including:
     #   - audio_node (PyAudio + ReSpeaker 6ch buffers)
     #   - stt_node (Vosk model ~200-500 MB)
@@ -249,21 +398,32 @@ services:
     # so the model is resident for the entire container lifetime while
     # Yandex is primary.  Net RSS effect vs old lazy-load: roughly the
     # same peak (model is ~150-200 MB either way) but the user no longer
-    # hears the cold-load pause on first fallback.  The 4 GiB ceiling
-    # comfortably holds Yandex gRPC client (negligible) + warm Silero
-    # (~200 MB) + the other 8 nodes; no further increase needed.
-    memswap_limit: 4.5g
+    # hears the cold-load pause on first fallback.  The 5 GiB ceiling
+    # (raised from 4 GiB per ADR-0122 / issue #2676) comfortably holds
+    # Yandex gRPC client (negligible) + warm Silero (~200 MB) + the other
+    # 8 nodes with ~1 GiB headroom for dialogue bursts; memswap_limit=6g
+    # adds a 1 GB swap cushion against transient spikes.
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:
       zenoh-router:
         condition: service_healthy
       supercollider:
         condition: service_healthy
-      voice-resources-init:
-        condition: service_completed_successfully
+      # Зависимости на voice-resources-init больше нет: init-контейнер и его
+      # образ удалены, сэмплы приезжают на хост до старта стека. Если их там
+      # нет — MusicSkill скажет "samples not found", а dialogue/STT/TTS
+      # не заметят (ровно прежняя деградация, но без pull с registry).
     restart: unless-stopped
+    # Issue #2701: старый healthcheck (`pgrep -f 'python3.*voice'`) отвечал
+    # healthy даже когда audio_node молчал часами — PortAudio переставал
+    # звать audio_callback без исключения, процесс жил, ReSpeaker был
+    # виден в lsusb. healthcheck_audio.sh (docker/vision/scripts/
+    # voice_assistant/, смонтирован в /scripts выше) добавляет к
+    # pgrep-проверке возраст heartbeat-файла, который audio_node
+    # обновляет, пока захват реально жив (см.
+    # AudioNode._touch_audio_heartbeat, audio_stall_timeout_s=5.0 default).
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
+      test: ["CMD-SHELL", "/scripts/healthcheck_audio.sh"]
       interval: 15s
       timeout: 5s
       start_period: 20s
@@ -276,7 +436,11 @@ services:
   voice-action-server:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
     container_name: voice-action-server
+    pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 25 MB RSS замер, даём 128 MB
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       - PYTHONUNBUFFERED=1
       - ACTION_SERVER_HOST=127.0.0.1
@@ -291,6 +455,128 @@ services:
       interval: 10s
       timeout: 3s
       start_period: 10s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+# ============ Avatar Supervisor (AV-9, ADR-0028) ============
+  # Phase 1 monitor-only: publishes /avatar/state, no twist_mux /
+  # dialogue_node mutation. Phase 2 (mode=active) — after voice_input_mode
+  # lands in dialogue_node (расхождение #1 плана Quest).
+  #
+  # Build context: docker/vision/supervisor/Dockerfile — наследует
+  # voice-assistant image (pytorch/renardo не пересобираются).
+  supervisor:
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
+    container_name: avatar-supervisor
+    pull_policy: if_not_present
+    network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 253 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 768m
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - PYTHONUNBUFFERED=1
+      # AV-9 Phase 1: monitor only. Phase 2 (active) requires voice_input_mode
+      # in dialogue_node + AV-10 telegram refactor — see ADR-0028 §4.5.
+      # P7-simple (2026-08-27): voice_input_mode уже принят в dialogue_node
+      # (PR #1618) → включаем active, чтобы супервизор применял voice_input_mode
+      # (SetVoiceMode). Teleop-FSM/floors остаются Phase 2 (NOT_IMPLEMENTED).
+      - AVATAR_SUPERVISOR_MODE=active
+      # issue #2184 — TarsPanelDispatcher ходит за метриками сам (Prometheus
+      # /api/v1/query_range, Loki /loki/api/v1/query_range) и публикует ряды
+      # точек в /avatar/tars/panel_data. Стек мониторинга живёт на katana,
+      # не в этой compose-сети — адрес задаём явно (см. metrics_source.py).
+      - MONITORING_HOST=${MONITORING_HOST:-10.1.1.249}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://${MONITORING_HOST:-10.1.1.249}:9090}
+      - LOKI_URL=${LOKI_URL:-http://${MONITORING_HOST:-10.1.1.249}:3100}
+      - GRAFANA_URL=${GRAFANA_URL:-http://${MONITORING_HOST:-10.1.1.249}:3000}
+    # issue #2111 — БЕЗ ЭТОГО У ТАРС НЕТ LLM ВООБЩЕ.
+    # avatar_supervisor._build_operator_llm строит провайдеров из ключей в
+    # окружении (MINIMAX_API_KEY / DEEPSEEK_API_KEY). У сервиса не было
+    # env_file, поэтому в контейнере не было НИ ОДНОГО *_API_KEY, и на
+    # роботе 2026-09-08 в логах висело:
+    #   _build_operator_llm: deepseek build failed: missing API key
+    #   _build_operator_llm: no LLM provider built (chain=['deepseek'])
+    # Агент оператора принимал фразы из шлема и молча не мог ответить.
+    # Тот же файл уже подключён у voice-assistant (см. ниже) и telegram-bot.
+    env_file:
+      - .env.secrets  # MINIMAX_API_KEY, DEEPSEEK_API_KEY — операторский LLM (ТАРС)
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/supervisor:/scripts:ro
+      # issue #1988 — память оператора и журнал ТАРС. После ADR-0083 §E
+      # обе ноды (supervisor + voice-assistant) пишут в одну
+      # ``/data/harness_voice.db``, различая факты через колонку ``agent``
+      # (``operator`` / ``personality``, миграция 011_agent_namespace.sql).
+      # Тот же host-path, что у voice-assistant (./data/voice → /data).
+      - ./data/voice:/data
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'supervisor_node' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # ============ Avatar Arbiter (ADR-0051 §2.2, issue #1987) ============
+  # Отдельная нода без LLM: арбитр floor/FSM (LockManager, ModeManager,
+  # агрегатор), сервисы /avatar_arbiter/{acquire_floor,release_floor,
+  # set_avatar_mode}, публикация /avatar/state. Арбитраж вынесен из
+  # supervisor (там остались голос + супервизор-агент оператора).
+  #
+  # Переиспользует supervisor-образ: тот собирает ВЕСЬ пакет
+  # rob_box_supervisor (console_scripts: supervisor_node + avatar_arbiter).
+  avatar-arbiter:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
+    container_name: avatar-arbiter
+    pull_policy: if_not_present
+    network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 230 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - PYTHONUNBUFFERED=1
+      # Арбитр по умолчанию в active-режиме — это его единственная роль
+      # (он не monitor-нода). Захват/освобождение floor + FSM работают.
+      - AVATAR_ARBITER_MODE=active
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/supervisor:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_arbiter.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'avatar_arbiter' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
       retries: 3
     labels:
       logging: "promtail"
@@ -310,7 +596,11 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
+    pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 266 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     build:
       context: .
       dockerfile: docker/vision/quest/Dockerfile
@@ -326,6 +616,16 @@ services:
       - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
       - QUEST_IP=${QUEST_IP:-10.1.1.11}
       - CERT_DAYS=${QUEST_CERT_DAYS:-365}
+      # WS_PORT=8766 чтобы не конфликтовать с voice-action-server,
+      # который по дефолту биндит 127.0.0.1:8765. В host-network оба
+      # порта = 8765 → второй стартующий получает OSError EADDRINUSE
+      # и aiohttp-сабтред падает → Caddy получает 404 на /quest (Phase 1.6).
+      # Меняем только rob-box-quest на 8766, voice-action-server остаётся на 8765.
+      - WS_PORT=${QUEST_WS_PORT:-8766}
+      # Фиксированный PIN для dev-сессий. Если задан — используется вместо
+      # случайного из generate_pin(). Чтобы перебить: export QUEST_PIN=XXXXXX
+      # до docker compose up, либо через .env (QUEST_PIN=XXXXXX).
+      - QUEST_PIN=${QUEST_PIN:-103856}
     volumes:
       # certs persist between restarts; монтируем именованный путь,
       # чтобы self-signed не пересоздавался на каждом redeploy
@@ -357,6 +657,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-${IMAGE_TAG}}
     container_name: telegram-bot
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
@@ -373,6 +674,23 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/telegram_bot:/scripts:ro
+      # Vosk-модель с хоста (Ресурсный пак, ADR-0125) — тот же том, что у
+      # voice-assistant (:362). До 21.09.2026 telegram_bot/Dockerfile качал
+      # ЭТУ ЖЕ модель на этапе сборки своего образа: одна модель жила в двух
+      # образах, а сборка падала целиком при недоступном alphacephei.com.
+      # Путь ВНУТРИ контейнера не изменился — voice_processor.py:40 читает
+      # `/models/vosk-model-small-ru-0.22` (дефолт VOSK_MODEL_PATH).
+      # :ro — модели кладёт только хост (шаг деплоя «Ensure STT/TTS models»).
+      # Без тома бот стартует, но Vosk-фолбэк недоступен: STT остаётся на
+      # одном Yandex, и об этом есть строка в логе (не молчаливая деградация).
+      - /opt/rob_box/models:/models:ro
+      # issue #3025: том лицевой базы — тот же каталог, что у vision-face
+      # (:922, без :ro — пишет). :ro гарантирует, что telegram-bot только
+      # ЧИТАЕТ (ADR-0123 §4: FaceStore пишет только в своём контейнере).
+      # Конфликта с живой нодой нет — FaceStore держит /data/faces в памяти
+      # и переписывает meta.json при встрече, поэтому бот всегда видит
+      # актуальное состояние диска.
+      - ./data/faces:/data/faces:ro
     mem_limit: 512m
     memswap_limit: 640m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
@@ -400,6 +718,7 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.52.1
     container_name: cadvisor-vision
     profiles: ["monitoring"]
+    pull_policy: if_not_present
     network_mode: host
     privileged: true
     devices:
@@ -425,6 +744,7 @@ services:
     image: grafana/promtail:2.9.2
     container_name: promtail-vision
     profiles: ["monitoring"]
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - LOKI_HOST=${LOKI_HOST:-monitoring-machine}
@@ -447,6 +767,7 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     profiles: ["ai"]
+    pull_policy: if_not_present
     network_mode: host
     volumes:
       - ./data/ollama:/root/.ollama  # Модели хранятся между перезапусками
@@ -457,12 +778,181 @@ services:
     labels:
       logging: "promtail"
 
+# ============ AI HAT+ 26 TOPS inference (ADR-0089 Phase 1) ============
+  # Hailo-8 NPU через PCIe Gen 2 x1 на Vision Pi. VisionEvent.msg →
+  # /vision/hailo/events → context_aggregator → PerceptionEvent.vision_events_json.
+  #
+  # Phase 1 PoC: hailo_enabled=false (stub), чтобы smoke-test pipeline
+  # до установки реального HEF. Phase 1.5 — переключаем hailo_enabled=true,
+  # монтируем /opt/rob_box/models/*.hef.
+  #
+  # Стартует по умолчанию (как остальные сервисы): HAT установлен на Vision Pi
+  # (/dev/hailo0 присутствует). CI только собирает образ, этот compose на CI
+  # не деплоится — профильный гейт снят, чтобы update_and_restart.sh поднимал
+  # сервис обычным `docker-compose up -d`.
+  #
+  # Hardware: https://www.raspberrypi.com/documentation/accessories/ai-hat-plus.html
+  vision-hailo:
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:vision-hailo-${ROS_DISTRO:-humble}-${VISION_HAILO_TAG:-${IMAGE_TAG}}
+    container_name: vision-hailo
+    pull_policy: if_not_present
+    network_mode: host
+    # devices для /dev/hailo0 обязателен для real inference (Phase 1.5).
+    # В Phase 1 stub-режим device не нужен, но не вредит — hailortcli scan
+    # будет просто падать с понятным exit code.
+    devices:
+      - /dev/hailo0:/dev/hailo0  # Hailo-8 device file
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - PYTHONUNBUFFERED=1
+      # ADR-0089 §9 Phase 1 acceptance: hailo_enabled=false → stub.
+      # Переключение на real inference — Phase 1.5 после установки HEF.
+      - HAILO_ENABLED=${HAILO_ENABLED:-false}
+      - HEF_PATH=${HEF_PATH:-}
+      - HAILO_MODELS_YAML=/config/hailo_models.yaml
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/vision-hailo:/scripts:ro
+      # Phase 1.5: HEF models монтируются read-only из host. На CI/локально
+      # если /opt/rob_box/models отсутствует — compose упадёт; для dev-режима
+      # можно закомментировать строку ниже.
+      - /opt/rob_box/models:/opt/rob_box/models:ro
+      # /dev/shm нужен для shared memory при большом inference.
+      - /dev/shm:/dev/shm
+      # Сокет hailort_service: железом владеет сервис, ноды ходят
+      # через него (issue #2599). Без этого монтирования процесс
+      # берёт /dev/hailo0 единолично и второй продюсер получает
+      # HAILO_OUT_OF_PHYSICAL_DEVICES(74) — проверено на роботе.
+      - /tmp/hailort_uds.sock:/tmp/hailort_uds.sock
+    mem_limit: 1g  # HailoRT + python binding ≈ 0.5-1 GB
+    memswap_limit: 1.5g
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_vision_hailo.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # ADR-0104 + issue #2703: capability-honest healthcheck, БЕЗ ros2 CLI.
+      #
+      # История: pgrep-only (silent blindness) -> ros2 topic echo --once
+      # (issue #2531/#2608) -> ЭТОТ вариант (issue #2703), потому что
+      # "ros2 topic echo" оказался ложью в обе стороны: (1) ros2cli-демон
+      # на Vision Pi падает под rmw_zenoh независимо от состояния ноды,
+      # (2) тишина в топике в real-режиме — норма (пустая сцена), а не
+      # признак смерти. Новый healthcheck_frame.sh проверяет:
+      #   1) процесс vision_hailo жив (pgrep),
+      #   2) heartbeat-файл (/tmp/vision_hailo_heartbeat) свежий —
+      #      нода обновляет его после каждого успешного infer(), НЕ по
+      #      факту публикации события (rob_box_perception.utils.heartbeat).
+      #
+      # Если heartbeat протух — контейнер уходит в unhealthy и docker
+      # перезапустит (или operator увидит через promtail + grafana).
+      test: ["CMD-SHELL", "/scripts/healthcheck_frame.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s  # HailoRT init медленный на cold start
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # ADR-0089 Phase 2 (issue #2599 PR-A): детекция лица RetinaFace отдельным
+  # процессом. Тот же образ vision-hailo (пакет rob_box_perception собирается
+  # с новым entrypoint vision_face), отдельный контейнер + отдельный HEF.
+  # Выход — на тот же /vision/hailo/events (VisionEvent event_type="face").
+  vision-face:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:vision-hailo-${ROS_DISTRO:-humble}-${VISION_HAILO_TAG:-${IMAGE_TAG}}
+    container_name: vision-face
+    pull_policy: if_not_present
+    network_mode: host
+    devices:
+      - /dev/hailo0:/dev/hailo0
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - PYTHONUNBUFFERED=1
+      # ADR-0120 §8: у vision-face СВОИ хостовые переменные. Общие
+      # HAILO_ENABLED / HEF_PATH принадлежат vision-hailo — через них в
+      # vision-face приезжал yolov8n.hef вместо RetinaFace. Внутри контейнера
+      # имена прежние (их читает start_vision_face.sh); пусто → берётся
+      # секция vision_face_node из config/hailo_models.yaml.
+      - HAILO_ENABLED=${FACE_HAILO_ENABLED:-}
+      - HEF_PATH=${FACE_HEF_PATH:-}
+      - HAILO_MODELS_YAML=/config/hailo_models.yaml
+      # ArcFace-узнавание (ADR-0123, issue #2599 PR-B). Тот же приём хостовых
+      # переменных, что у HAILO_ENABLED/HEF_PATH выше: пусто → берётся
+      # секция vision_face_node из config/hailo_models.yaml.
+      - ARCFACE_ENABLED=${FACE_ARCFACE_ENABLED:-}
+      - ARCFACE_HEF_PATH=${FACE_ARCFACE_HEF_PATH:-}
+      # Хранилище лиц и режим приватности (ADR-0123 §2/§4-5). Имена
+      # хостовых и контейнерных переменных совпадают: коллизии с
+      # vision-hailo нет (тот их не читает вовсе), namespacing ADR-0120 §8
+      # тут не нужен.
+      - FACE_STORE_ROOT=${FACE_STORE_ROOT:-}
+      - FACE_PRIVACY_MODE=${FACE_PRIVACY_MODE:-}
+      - FACE_IDENTIFY_THRESHOLD=${FACE_IDENTIFY_THRESHOLD:-}
+      # issue #2772: порог допуска в галерею, отдельный от порога
+      # узнавания. Без этой строки FACE_ENROLL_THRESHOLD из .env до
+      # контейнера не доезжает вовсе и молча берётся дефолт ноды.
+      - FACE_ENROLL_THRESHOLD=${FACE_ENROLL_THRESHOLD:-}
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/vision-hailo:/scripts:ro
+      - /opt/rob_box/models:/opt/rob_box/models:ro
+      - /dev/shm:/dev/shm
+      # Сокет hailort_service: железом владеет сервис, ноды ходят
+      # через него (issue #2599). Без этого монтирования процесс
+      # берёт /dev/hailo0 единолично и второй продюсер получает
+      # HAILO_OUT_OF_PHYSICAL_DEVICES(74) — проверено на роботе.
+      - /tmp/hailort_uds.sock:/tmp/hailort_uds.sock
+      # FaceStore (ADR-0123 §4): "не в образе, переживает пересоздание
+      # контейнера". Тот же приём, что у VoiceMemory (voice-assistant,
+      # ./data/voice:/data выше) — отдельный host-каталог под docker/vision,
+      # НЕ под /opt/rob_box (там живут только read-only модели Ресурсного
+      # пака). Без :ro — FaceStore пишет сюда эмбеддинги, снимки, meta.json.
+      - ./data/faces:/data/faces
+    mem_limit: 1g
+    memswap_limit: 1.5g
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_vision_face.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # issue #2704: старый чек уходил в fallback pgrep-only ВСЕГДА
+      # (command -v ros2 до source setup.bash -> ros2 CLI не в PATH).
+      # Новый healthcheck_face_frame.sh — heartbeat СВОЕЙ ноды
+      # (/tmp/vision_face_heartbeat), не Publisher count общего топика
+      # /vision/hailo/events (issue #2602 — этот признак непригоден,
+      # топик общий с vision-hailo). Тот же механизм, что у vision-hailo.
+      test: ["CMD-SHELL", "/scripts/healthcheck_face_frame.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s  # HailoRT init медленный на cold start
+      retries: 3
+    labels:
+      logging: "promtail"
+
 # Named volumes
 volumes:
-  # Shared renardo sample packs between voice-assistant (renardo) and supercollider (scsynth).
-  # Without this, scsynth can't find WAV files by path → "Buffer UGen: no buffer data".
-  # Initialized by one-shot voice-resources-init container from bundled sample image.
-  renardo_samples:
+  # Здесь был named-volume renardo_samples. Сэмплы больше не живут в volume:
+  # их кладёт на хост Ресурсный пак в /opt/rob_box/samples, а оба потребителя
+  # (voice-assistant и supercollider) монтируют этот каталог bind-mount'ом.
   # Shared SuperCollider synthdefs between voice-assistant (sclang/Renardo compiles .scsyndef)
   # and supercollider (scsynth reads them). Without this, scsynth can't find SynthDefs by name
   # → "bassguitar.scsyndef could not be opened" + negative node IDs (issue 986).

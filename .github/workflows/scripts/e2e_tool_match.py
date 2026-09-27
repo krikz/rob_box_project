@@ -1,0 +1,671 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""e2e_tool_match.py — «тул РЕАЛЬНО вызван» vs «тул просто доступен».
+
+Зачем это существует
+====================
+``check_acceptance`` и ``check_gate1_aggregate`` в ``e2e_voice_test.sh``
+искали имя тула ПОДСТРОКОЙ по ``docker logs voice-assistant``. Это не
+работает: ``dialogue_node`` на каждом ходе печатает в лог весь запрос к
+LLM, включая строку
+
+    tools(56): clear_waypoints, compose_music, ..., stop_music, ...
+
+и системный промпт, где тулы упомянуты по именам в правилах.
+
+Замер на живом роботе (run 34408526453, акт 1 ночного марафона, 1065
+строк лога, 11 минут прогона)::
+
+    TOOL                       bare  quoted  zapros
+    get_current_time             38       4       1   ← реально вызывался
+    get_battery_level            36       4       1   ← реально вызывался
+    get_sound_info               31       4       1   ← реально вызывался
+    get_music_state              17       0       0   ← НЕ вызывался
+    move_direction               17       0       0   ← НЕ вызывался
+    clear_waypoints              17       0       0   ← НЕ вызывался
+    stop_music                   17       0       0   ← НЕ вызывался
+
+Голое имя даёт 17 совпадений у тула, который не вызывали ни разу — это
+пол, который создаёт сам лог запроса. Отсюда два следствия, и оба плохие:
+
+* ``expected_tool_calls`` проходил ВСЕГДА. GATE-1 печатал
+  «✅ all checks passed» независимо от поведения робота — то есть
+  ADR-0022 гейт был декоративным.
+* ``must_not_call`` падал ВСЕГДА, когда его выставляли. В акте 1
+  марафона шаг «у тебя сейчас играет музыка?» получил
+  «❌ forbidden tool calls invoked: ['stop_music', 'execute_music_code']»,
+  хотя робот в этом ходе не вызвал вообще ни одного тула (``tools=[]``).
+
+Как отличить вызов от доступности
+=================================
+Реальный вызов оставляет в логе имя тула В КАВЫЧКАХ или после явного
+маркера исполнения:
+
+    dialogue_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
+    dialogue_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
+    dialogue_node: 📤 Отправлен запрос b5119339: get_current_time
+    mcp_server:    📥 Запрос выполнения: get_current_time с параметрами {}
+    mcp_server:    ✅ Инструмент get_current_time выполнен успешно
+
+Списки доступных тулов и текст промпта имён в кавычках не содержат —
+там они через запятую без кавычек. Поэтому кавычки и маркеры исполнения
+дают чистый ноль на невызванных тулах (колонки quoted/zapros выше).
+
+Контракт функции
+================
+``tool_invoked(logs, frag)``:
+
+* ``frag`` похож на имя тула (``^[a-z][a-z0-9_]*$``) → ищем ТОЛЬКО
+  маркеры реального вызова;
+* иначе (``"STOP command received"``, ``"Cancel: new STT input"``,
+  ``"session reset"``) → обычный подстрочный поиск, как раньше.
+
+Второе правило обязательно: сценарии кладут в ``must_not_call`` не
+только имена тулов, но и куски строк лога (например, проверка «добавка
+куплета не оборвала песню» ищет отсутствие ``STOP command received``).
+Ломать этот способ нельзя.
+"""
+
+from __future__ import annotations
+
+import re
+
+__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
+           "first_invocation_position", "VOICE_CYCLE_MARKERS",
+           "registration_outcome", "registration_expected",
+           "registration_failures", "registration_pending",
+           "identify_failures", "robot_speech", "keyword_hit",
+           "retry_block_reason"]
+
+# Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
+# Используются для assertion «discovery tool был вызван ДО голосового ответа»
+# (issue #2406 — verbal-only LLM answers на discovery/inquiry-шагах).
+# Все маркеры — lower-case: вызывающий сравнивает с логом в lower-case.
+VOICE_CYCLE_MARKERS = (
+    # Финальная строка dialogue_node после LLM/TTS цикла (есть spoken='...').
+    "✅ [turn] process_input returned:",
+    # tool_calls перечисление (speak_text = голосовой ответ, не молчание).
+    "'speak_text'",
+    # mcp_server финальный ack по speak_text.
+    "инструмент speak_text выполнен",
+    # TTS ack от yandex_tts / minimax_tts.
+    "tts finished",
+)
+
+#: Как выглядит имя тула. Все 56 зарегистрированных тулов —
+#: snake_case из ``def name(self) -> str`` в rob_box_mcp_tools/tools/*.py.
+TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def invocation_markers(tool: str) -> list:
+    """Подстроки, каждая из которых доказывает РЕАЛЬНЫЙ вызов ``tool``.
+
+    Все — lower-case: вызывающий сравнивает с логом в lower-case.
+    """
+    t = tool.lower()
+    return [
+        # tools=['x', 'y'] в итоговой строке хода + ToolCall(name='x')
+        "'%s'" % t,
+        '"%s"' % t,
+        # dialogue_node → mcp_server и обратно
+        "запрос выполнения: %s" % t,
+        "инструмент %s выполнен" % t,
+        "публикую результат для %s" % t,
+    ]
+
+
+def tool_invoked(logs: str, frag: str) -> bool:
+    """True, если ``frag`` найден как РЕАЛЬНЫЙ вызов (или как обычная
+    подстрока, если ``frag`` — не имя тула)."""
+    if frag is None:
+        return False
+    low = logs.lower()
+    frag_l = frag.strip().lower()
+    if not frag_l:
+        return False
+    if not TOOL_NAME_RE.match(frag_l):
+        # свободный текст (кусок строки лога) — поведение как было
+        return frag_l in low
+    return any(m in low for m in invocation_markers(frag_l))
+
+
+def first_invocation_position(logs: str, tool: str) -> int | None:
+    """Позиция первого РЕАЛЬНОГО вызова ``tool`` в ``logs`` (lower-case
+    индекс первого символа матча), или ``None`` если тул не вызывался.
+
+    Используется для assertion «discovery tool был вызван ДО голосового
+    ответа» (issue #2406, ретро n313). Возвращаем позицию (int), чтобы
+    вызывающий мог сравнить её с позицией первого voice-cycle маркера.
+
+    Не-имя тула (free text) — функция НЕ поддерживает, контракт ``TOOL_NAME_RE``.
+    Вызывающий валидирует имя до вызова.
+    """
+    if not tool or not TOOL_NAME_RE.match(tool.lower()):
+        return None
+    low = logs.lower()
+    return _first_marker_position(low, invocation_markers(tool.lower()))
+
+
+def _first_marker_position(lowered_logs: str, markers: list[str] | tuple[str]) -> int | None:
+    """Helper: индекс первого вхождения любой из подстрок в lower-case логе.
+
+    Возвращает ``None`` если ни один маркер не найден. Раньше аналогичный
+    код был inline в check_acceptance, теперь — общий хелпер.
+    """
+    earliest: int | None = None
+    for m in markers:
+        idx = lowered_logs.find(m)
+        if idx == -1:
+            continue
+        if earliest is None or idx < earliest:
+            earliest = idx
+    return earliest
+
+
+def first_voice_cycle_position(logs: str) -> int | None:
+    """Позиция первого маркера голосового цикла в ``logs`` (lower-case индекс),
+    или ``None`` если голосового ответа ещё не было.
+
+    Используется для assertion «discovery tool был вызван ДО первого
+    голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
+    ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
+    или финальная строка ``✅ [turn] process_input returned:``.
+    """
+    low = logs.lower()
+    return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
+
+
+# =============================================================================
+# Issue #2764: expected_keywords искались по ВСЕМУ логу шага
+# =============================================================================
+# Та же болезнь, что вылечена выше для имён тулов, только в другом канале.
+# ``check_acceptance`` матчил ``expected_keywords`` подстрокой по всему
+# ``docker logs voice-assistant --since <шаг>``. А в этот лог попадает и
+# реплика САМОГО ГОВОРЯЩЕГО, и подпись диктора, которую ставит
+# speaker_id_node:
+#
+#   dialogue_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
+#   dialogue_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
+#
+# Из-за этого три из четырёх keyword-проверок акта 2 были тавтологиями —
+# зелёными независимо от поведения робота (замер 22.09.2026):
+#
+#   n207_recall_sasha      KW=['Саш']                 говорит Саша → «Саш» в логе всегда
+#   n209_recall_boris      KW=['Борис|Спартак|пицц']  говорит Борис → «Борис» в логе всегда
+#   n211_who_do_you_know   KW=['Саш', 'Борис']        половина ключа бесплатная
+#
+# А шаг n207 при этом объявлен в сценарии как проверка связки
+# «голос → профиль → факты, а не просто вежливый ответ». Проверки не было.
+#
+# Лечение: ключевые слова ищутся ТОЛЬКО в том, что робот произнёс.
+# Три канала, все три реально встречаются в логе живого робота
+# (замер 22.09.2026, Vision Pi):
+#
+#   tts_node:    🔊 TTS: speech_id=..., voice=default, lang=default, text='Добрый день, Денис!'
+#   mcp_server:  📥 Запрос выполнения: speak_text с параметрами {'text': 'Лицо знакомое...', 'animation': 'happy'}
+#   dialogue_node: ✅ [turn] process_input returned: spoken='Привет! У меня всё отлично...'[:60]
+#
+# Третий канал обрезан до 60 символов — он идёт последним и нужен как
+# подстраховка, когда TTS не доехал (строка TTS ещё не легла в лог).
+#
+# Issue #2902 (E2E акт 2c, run 35912751803): третий канал — это текст LLM
+# ДО решения dialogue_node, а не то, что прозвучало. После #2828/#2888 ответ
+# хода часто ЗАМЕНЯЕТСЯ вопросом о личности:
+#
+#   dialogue_node: ✅ [turn] process_input returned: spoken='Здравствуй, Борис! Очень приятно познакомиться…'[:60]
+#   dialogue_node: 👥 [issue #2828] ответ хода заменён переспросом про личность: 'Здравствуй, Борис! Очень приятно позн…'
+#   tts_node:      🔊 TTS: … text='Твой голос очень похож на голос, который я …'
+#
+# Вслух прозвучал только вопрос, а must_not_say «Приятно познакомиться»
+# сработал по spoken= — ложный FAIL. Поэтому spoken= теперь подстраховка
+# ПО ХОДУ: ход — это отрезок лога от строки «process_input returned» до
+# следующей такой строки (ответ хода озвучивается/глушится ПОСЛЕ неё).
+# spoken= хода считается речью, только если в его отрезке
+#   * нет ни одной строки реального озвучивания (🔊 TTS / speak_text) —
+#     если TTS есть, речь берётся из TTS, это и есть «что прозвучало»;
+#   * нет маркера «этот ответ не озвучен» (_NOT_VOICED_MARKERS ниже).
+# Иначе (TTS в окне ещё не доехал, маркера нет) — spoken= считается речью,
+# как раньше: строже, а не мягче.
+_VOICED_PATTERNS = (
+    # 🔊 TTS: ... text='...'  — text идёт последним полем строки. repr()
+    # берёт двойные кавычки, если в тексте есть апостроф: без второй ветки
+    # такая фраза выпала бы из речи совсем (spoken= её больше не страхует).
+    re.compile(r"🔊 TTS:.*?\btext=(?:'(.*?)'|\"(.*?)\")\s*$", re.MULTILINE),
+    # Запрос выполнения: speak_text с параметрами {'text': '...', ...}
+    re.compile(
+        r"speak_text с параметрами \{'text':\s*(?:'(.*?)'|\"(.*?)\")\s*[,}]"
+    ),
+)
+# process_input returned: spoken='...'[:60]  /  🔍 [handle_result] spoken='...' (len=NN)
+_SPOKEN_FALLBACK_RE = re.compile(
+    r"spoken=(?:'(.*?)'|\"(.*?)\")(?:\[:\d+\]|\s*\(len=\d+\))"
+)
+#: Строка, открывающая отрезок хода (dialogue_node._run_turn).
+_TURN_RESULT_MARK = "process_input returned:"
+#: Подстроки строк лога, признающих «spoken= этого хода вслух НЕ звучал».
+#: Копии f-строк src/rob_box_voice/rob_box_voice/dialogue_node.py; все
+#: печатаются ПОСЛЕ «process_input returned» того же хода.
+_NOT_VOICED_MARKERS = (
+    # _deliver_turn_result (#2828): вместо ответа прозвучал переспрос. Сюда
+    # же сводятся придержанные вопросы #2747 («переспрашиваю про личность …
+    # held_until_turn_end=True») и #2888 («identity question by robot …
+    # held_until_turn_end=True»): они печатаются ДО строки результата
+    # (т.е. в отрезке прошлого хода), а замену фиксирует именно эта строка.
+    "ответ хода заменён переспросом про личность",
+    # _deliver_turn_result (#2908): вместо ответа прозвучала просьба
+    # повторить после отказа регистрации. НЕ маркер вопроса о личности
+    # (_IDENTITY_QUESTION_MARKERS) — ретрай такого шага по-прежнему можно.
+    "ответ хода заменён просьбой повторить",
+    # _handle_result: маркер завершения «done» вместо ответа.
+    "skip auto-TTS",
+    # #988: ответ уже прозвучал через speak_text — финальный текст не звучит.
+    "final text skipped (anti-duplicate)",
+    "skipping auto-TTS of final text",
+    # DJ-переход: свободный текст не озвучивается.
+    "свободный текст НЕ озвучиваю",
+    # #1882: внутренний монолог модели заглушён.
+    "planning-narration hard-mute",
+    # Служебка: [SYSTEM…]/[CRITICAL…] не озвучиваются.
+    "Служебный текст LLM не озвучиваем",
+    # #2760: вызов тула текстом — не озвучен, ушёл ретрай.
+    "вызов тула ТЕКСТОМ вместо tool-call",
+    # #2175: пересказ system-шаблона — не озвучен, ушёл ретрай.
+    "regurgitates system-template в spoken",
+    # #2874: ответ хода отозван гуардом / ход ушёл в синхронный ретрай.
+    "ответ хода не озвучиваю",
+)
+
+
+def _voiced_texts(line: str) -> list:
+    out: list = []
+    for pat in _VOICED_PATTERNS:
+        for m in pat.finditer(line):
+            out.append(m.group(1) if m.group(1) is not None else m.group(2))
+    return out
+
+
+def _turn_segments(logs: str) -> list:
+    """Строки лога, нарезанные на отрезки ходов. Отрезок 0 — всё до первой
+    строки «process_input returned» (окно шага может начаться посреди хода)."""
+    segments: list = [[]]
+    for line in logs.splitlines():
+        if _TURN_RESULT_MARK in line:
+            segments.append([])
+        segments[-1].append(line)
+    return segments
+
+
+def robot_speech(logs: str) -> str:
+    """Только то, что робот ПРОИЗНЁС, склеенное в одну строку.
+
+    Пустая строка означает «робот в этом окне не сказал ничего» — это
+    валидный (красный) исход шага, а не сбой парсера: молчащий робот не
+    должен проходить keyword-проверку.
+
+    Одна функция на ``expected_keywords``, ``must_not_say`` и
+    ``when_robot_asked`` — правило «что считается речью» у них общее.
+    """
+    if not logs:
+        return ""
+    voiced: list = []
+    fallback: list = []
+    for seg in _turn_segments(logs):
+        seg_voiced: list = []
+        for line in seg:
+            seg_voiced.extend(_voiced_texts(line))
+        voiced.extend(seg_voiced)
+        if seg_voiced or any(
+            mk in line for line in seg for mk in _NOT_VOICED_MARKERS
+        ):
+            continue
+        for line in seg:
+            for m in _SPOKEN_FALLBACK_RE.finditer(line):
+                fallback.append(m.group(1) if m.group(1) is not None else m.group(2))
+    return "\n".join(voiced + fallback)
+
+
+def keyword_hit(logs: str, kw: str) -> bool:
+    """``kw`` (алтернативы через ``|``) найден в РЕЧИ робота.
+
+    Контракт совпадает со старым ``_keyword_hit``: регистронезависимо,
+    ``|`` — это ИЛИ, пустые альтернативы игнорируются.
+    """
+    speech = robot_speech(logs).lower()
+    if not speech:
+        return False
+    return any(v.strip() and v.strip() in speech for v in kw.lower().split("|"))
+
+
+# ── Issue #2846: «register_speaker вызван» != «голос зарегистрирован» ─────────
+#
+# Живой прогон 35875477264 (акт 2, develop f9b826d): шаги n201…n202c получили
+# ``E2E_STEP … OK``, а speaker_id_node отклонял КАЖДУЮ регистрацию:
+#
+#   [speaker_id_node] ⚠️ [issue #2829] register_request for 'Саша' has no
+#       utterance_id -- honest refusal instead of registering whoever speaks next
+#   [dialogue_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
+#       no_utterance_context (utterance_id=None)
+#
+# ``expected_tool_calls``/``discovery_tools`` доказывают только, что LLM
+# ДЁРНУЛА тул. register_speaker — fire-and-forget публикация в топик: тул
+# «выполнен успешно» и тогда, когда нода биометрии профиль не завела.
+# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialogue_node.
+#
+# Регэкспы ниже — копии f-строк из кода робота, а не «похожий вид»
+# (src/rob_box_voice/rob_box_voice/speaker_id_node.py):
+#   _do_register:            ✅ Speaker '{name}' registered (id=…)
+#   _do_register (ADR-0127): ⚠️ Speaker '{name}' (id=…) — голос похож на уже известного …
+#   _do_register:            🔗 Speaker '{name}' merged into existing profile (id=…)
+#   _on_register_request:    register_request for '{name}' has no utterance_id
+#   _register_after_wait:    register_request for '{name}': no embedding for utterance=…
+#   _do_register (#2769):    Registration of '{name}' rejected — audio too short
+# и dialogue_node.py (_on_speaker_result):
+#   Регистрация '{name}' отклонена: {error} (utterance_id=…)
+#   Регистрация '{name}' отклонена — реплика …с короче …   (too_short)
+# Отказ ищется по ОБЕИМ нодам: dialogue_node параллельно правят (#2842), и
+# если его строка поменяется, строка speaker_id_node всё равно поймает отказ.
+
+REGISTER_TOOL = "register_speaker"
+
+_REG_ACCEPTED_RES = (
+    # Новый профиль (и тёзка #2747 — у него та же строка).
+    re.compile(r"✅ Speaker '([^']*)' registered \(id=[0-9a-f]*\)"),
+    # ADR-0127: голос похож на чужой, имя другое — заведён ОТДЕЛЬНЫЙ профиль.
+    # Это принятая регистрация (данные целы); переспрос проверяют n722/n723.
+    re.compile(r"Speaker '([^']*)' \(id=[0-9a-f]*\) — голос похож на уже известного"),
+)
+_REG_MERGED_RE = re.compile(
+    r"Speaker '([^']*)' merged into existing profile \(id=[0-9a-f]*\)"
+)
+_REG_REJECTED_RES = (
+    (re.compile(r"register_request for '([^']*)' has no utterance_id"),
+     "no_utterance_context"),
+    (re.compile(r"register_request for '([^']*)': no embedding for utterance="),
+     "utterance_not_found"),
+    (re.compile(r"Registration of '([^']*)' rejected"), "too_short"),
+)
+# Причину dialogue_node печатает явно после двоеточия; у too_short вместо
+# двоеточия тире — тогда причины в строке нет, и это too_short.
+_REG_REJECTED_DIALOGUE_RE = re.compile(
+    r"Регистрация '([^']*)' отклонена(?::\s*([A-Za-z_]+))?"
+)
+
+
+def registration_outcome(logs: str) -> dict:
+    """Что speaker_id_node СДЕЛАЛ с регистрациями в окне ``logs``.
+
+    ``{"accepted": [имя, …], "merged": [строка, …],
+    "rejected": [{"name": …, "reason": …}, …]}`` — без дублей: один и тот
+    же отказ печатают обе ноды, в вердикт он должен попасть один раз.
+    """
+    accepted: list = []
+    merged: list = []
+    rejected: list = []
+    seen_rej: set = set()
+    if not logs:
+        return {"accepted": accepted, "merged": merged, "rejected": rejected}
+    for pat in _REG_ACCEPTED_RES:
+        for name in pat.findall(logs):
+            if name not in accepted:
+                accepted.append(name)
+    for m in _REG_MERGED_RE.finditer(logs):
+        if m.group(0) not in merged:
+            merged.append(m.group(0))
+
+    def _add(name: str, reason: str) -> None:
+        if (name, reason) not in seen_rej:
+            seen_rej.add((name, reason))
+            rejected.append({"name": name, "reason": reason})
+
+    for pat, reason in _REG_REJECTED_RES:
+        for name in pat.findall(logs):
+            _add(name, reason)
+    for name, reason in _REG_REJECTED_DIALOGUE_RE.findall(logs):
+        _add(name, reason or "too_short")
+    return {"accepted": accepted, "merged": merged, "rejected": rejected}
+
+
+def _acc_list(acc: dict, key: str) -> list:
+    val = acc.get(key) or []
+    if not isinstance(val, list):
+        return []
+    return [v for v in val if isinstance(v, str)]
+
+
+def registration_expected(acc: dict) -> bool:
+    """Обязан ли шаг ДОКАЗАТЬ, что регистрация голоса принята.
+
+    Авто-правило: да, если ``register_speaker`` есть в ``expected_tool_calls``
+    или ``discovery_tools`` шага — сценарий, требующий вызова тула, требует
+    и его результата (иначе зелёный шаг поверх пустой базы дикторов).
+    Явное булево ``require_registration_accepted`` перекрывает авто-правило
+    в обе стороны. Не-булево значение — ошибка схемы (её отдаёт
+    :func:`registration_failures`), при нём действует авто-правило.
+    """
+    flag = acc.get("require_registration_accepted")
+    if isinstance(flag, bool):
+        return flag
+    return (REGISTER_TOOL in _acc_list(acc, "expected_tool_calls")
+            or REGISTER_TOOL in _acc_list(acc, "discovery_tools"))
+
+
+def _registration_in_scope(acc: dict) -> bool:
+    """Шаг вообще про регистрацию (в т.ч. ``must_not_call: [register_speaker]``)
+    — тогда склейка профиля тоже проверяется, как в прежней bash-проверке
+    ``*register_speaker*`` scenario-цикла (run 35667281570)."""
+    return (registration_expected(acc)
+            or REGISTER_TOOL in _acc_list(acc, "must_not_call"))
+
+
+def registration_pending(acc: dict, logs: str) -> bool:
+    """True — исход регистрации ожидается, но в логе его ещё нет.
+
+    speaker_id_node ждёт эмбеддинг фразы до 1.5с (_REGISTER_UTTERANCE_WAIT_SEC)
+    после вызова тула. Если LLM дёрнула тул последним действием хода, ack
+    может лечь в лог позже, чем харнесс начнёт проверку — check_acceptance
+    дочитывает лог, пока эта функция True (не дольше таймаута).
+    """
+    if not registration_expected(acc):
+        return False
+    out = registration_outcome(logs)
+    return not (out["accepted"] or out["merged"] or out["rejected"])
+
+
+def registration_failures(acc: dict, logs: str) -> list:
+    """Причины FAIL шага по исходу регистрации (пустой список — всё честно).
+
+    * отказ speaker_id_node (``no_utterance_context`` / ``utterance_not_found``
+      / ``too_short``) — FAIL, даже если тул «выполнен успешно»;
+    * регистрация ожидалась, но ни принятия, ни отказа в логе нет — FAIL:
+      не доказано — не принято (ADR-0018);
+    * склейка с уже известным профилем — FAIL (перенесено из bash-проверки
+      scenario-цикла, чтобы вердикт шага был ОДНОЙ строкой, а не
+      «✅ all checks passed» и следом «❌ регистрация СКЛЕИЛАСЬ»).
+    """
+    failures: list = []
+    flag = acc.get("require_registration_accepted")
+    if flag is not None and not isinstance(flag, bool):
+        failures.append(
+            f"require_registration_accepted must be true/false, got {flag!r}"
+        )
+    if not _registration_in_scope(acc):
+        return failures
+    out = registration_outcome(logs)
+    if out["merged"]:
+        failures.append(
+            "speaker registration merged into an existing profile: "
+            + "; ".join(out["merged"])
+            + " (not a separate profile, run 35667281570)"
+        )
+    if not registration_expected(acc):
+        return failures
+    if out["rejected"]:
+        failures.append(
+            "speaker registration REJECTED by speaker_id_node: "
+            + ", ".join(f"{r['name']!r} {r['reason']}" for r in out["rejected"])
+            + " (issue #2846: register_speaker was called, no profile saved)"
+        )
+    elif not (out["accepted"] or out["merged"]):
+        failures.append(
+            "speaker registration NOT confirmed: no \"✅ Speaker '<name>' "
+            "registered\" from speaker_id_node in the step log (issue #2846: "
+            "a register_speaker call alone does not prove the voice was saved)"
+        )
+    return failures
+
+
+# ── ADR-0134: «незнакомец НЕ опознан как известный» (per-step инвариант) ──────
+#
+# Контракт лога (см. ADR-0134 §2.1 + speaker_id_node.py:539/543/646-648):
+# финальный вердикт identify живёт в строке вида
+#   👤 Speaker: 'Борис'        — успешное опознание (порог пройден)
+#   👤 Speaker: 'unknown'      — отказ (порог не пройден, is_known=False)
+# Поле `must_not_identify_as` в acceptance.json шага — список имён, которых
+# НЕ должно быть в этой строке. Любое совпадение → FAIL шага. Это закрывает
+# дыру из issue #2754: «незнакомец опознаётся как Борис (0.816), а шаг
+# n210_grisha_no_name зелёный, потому что проверяется только must_not_call:
+# register_speaker». Сам факт «identify выдал Бориса» теперь ассертится.
+#
+# Семантика:
+# * ищем ТОЛЬКО финальный verdict (Speaker: 'NAME'), а не «identify
+#   candidates: best='Борис'» — это диагностика, ещё не вердикт (#2779
+#   использует ту же аксиому для must_not_say);
+# * если в логе несколько финальных вердиктов (например, retried шаг с
+#   двумя попытками) — провисает ЛЮБОЙ из forbidden ⇒ ошибка;
+# * пустой список / отсутствие поля → функция возвращает [] (zero effect).
+
+#: Финальный вердикт speaker_id_node. Покрывает ОБА формата лога:
+#: * новый (с эмодзи 👤, post-#2754): ``👤 Speaker: 'Борис' (812 ms)`` —
+#:   копия f-string speaker_id_node.py:543;
+#: * старый (без эмодзи, pre-#2754): ``Speaker: 'Борис' confidence=0.95``
+#:   или ``[speaker_id_node] Speaker: 'Борис' confidence=...``.
+#: Если завязаться только на 👤 — мы регрессируем #2754 на старых
+#: харнессах (см. ADR-0134 §2.1 «устойчивость якоря»). re.MULTILINE
+#: не нужен — ищем по всему логу, шаги не должны пересекаться по логу.
+_IDENTIFY_VERDICT_RE = re.compile(
+    r"(?:👤\s*)?Speaker:\s*['\"]([^'\"]+)['\"]"
+)
+
+
+def identify_failures(acc: dict, logs: str) -> list:
+    """Причины FAIL шага по инварианту ``must_not_identify_as`` (ADR-0134).
+
+    Возвращает список строк-причин. Пустой список — инвариант выполнен:
+    ни одно из запрещённых имён не появилось в финальном вердикте identify.
+
+    Формат ``acc``::
+
+        {"must_not_identify_as": ["Борис", "Саша"]}     # список str'ов
+
+    Невалидный тип элемента (не str) — отдельная причина FAIL с подсказкой,
+    инвариант всё равно проверяется по остальным (best-effort).
+    """
+    raw = acc.get("must_not_identify_as", []) or []
+    if not isinstance(raw, list):
+        return [
+            f"must_not_identify_as must be list[str], got {type(raw).__name__}"
+        ]
+    forbidden: list[str] = []
+    type_errors: list[str] = []
+    for i, name in enumerate(raw):
+        if isinstance(name, str):
+            forbidden.append(name)
+        else:
+            type_errors.append(
+                f"must_not_identify_as[{i}] is not str: {name!r}"
+            )
+    if not forbidden and not type_errors:
+        return []
+    failures: list = list(type_errors)
+    if not forbidden:
+        return failures
+    # Все forbidden-имена → один проход regex, чтобы не сканровать лог
+    # по разу на каждое имя (на act 2 лог шага бывает 100+ КБ).
+    verdicts = _IDENTIFY_VERDICT_RE.findall(logs)
+    if not verdicts:
+        # Вердикта нет вообще — это нормально (шаг не дошёл до биометрии,
+        # например wake-gate SKIP). Инвариант не нарушен, провисать
+        # нечего. Возвращаем type_errors, если были.
+        return failures
+    for forbidden_name in forbidden:
+        if forbidden_name in verdicts:
+            failures.append(
+                f"speaker identified as forbidden name {forbidden_name!r} "
+                f"(ADR-0134 / issue #2754: незнакомец опознан как известный "
+                f"диктор; финальный вердикт 👤 Speaker: '{forbidden_name}' "
+                f"в логе шага)"
+            )
+    return failures
+
+
+# ── Issue #2902: ретрай шага, который изменил состояние робота ───────────────
+#
+# E2E акт 2c, run 35912751803, шаг n722_boris_intro_conflict
+# (retry_acceptance: 1). Попытка 1: Борис зарегистрирован отдельным профилем
+# (ADR-0127), робот задал переспрос «Твой голос очень похож…». Попытка 2
+# проиграла ту же реплику «Меня зовут Борис…» поверх ЭТОГО состояния —
+# dialogue_node честно прочитал её как ответ на переспрос
+# («👥 [issue #2828] ответ на переспрос: …»), register_speaker не вызывался,
+# и шаг упал уже по другой причине. Ретрай проверял не то, что написано в
+# шаге.
+#
+# Почему запрет, а не сброс состояния перед повтором: откатить то, что
+# сделала попытка 1, харнессу нечем. Профиль лежит в speakers.db, а боевая
+# /data общая с живыми людьми — стирать её перед повтором нельзя; ожидание
+# ответа на переспрос живёт в памяти dialogue_node, ручки «забудь вопрос» у
+# ноды нет (а код нод этот фикс не трогает). Сброс «почти всего» дал бы
+# повтор поверх частично грязного состояния — то же враньё, только тише.
+#
+# Почему по уликам, а не по виду шага: ретрай регистрационного шага,
+# который ничего не изменил (регистрацию отклонили — no_utterance_context,
+# #2846), безопасен и полезен: LLM недетерминирована (04d4ba2f6). Запрещаем
+# ровно тогда, когда в логе попытки есть доказательство смены состояния.
+
+#: Робот задал вопрос о личности и ждёт ответа (dialogue_node.py).
+_IDENTITY_QUESTION_MARKERS = (
+    "[issue #2747] переспрашиваю про личность",
+    "[issue #2828] ответ хода заменён переспросом про личность",
+    "[issue #2888] identity question by robot",
+)
+
+
+def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
+    """Почему повтор шага после проваленной попытки делать НЕЛЬЗЯ.
+
+    ``logs`` — лог voice-assistant за окно ЭТОЙ попытки,
+    ``next_when_robot_asked`` — поле ``when_robot_asked`` СЛЕДУЮЩЕГО шага
+    сценария. Пустая строка — попытка состояния не изменила, ретрай можно.
+
+    Улики смены состояния:
+
+    * регистрация голоса принята или склеена (профиль уже в базе — повтор
+      проверял бы повторную регистрацию, а не первую);
+    * робот задал вопрос о личности (следующая реплика читается как ответ);
+    * речь попытки совпала с ``when_robot_asked`` следующего шага — сценарий
+      сам объявил этот вопрос сменой хода: следующий шаг на него отвечает.
+    """
+    if not logs:
+        return ""
+    reasons: list = []
+    reg = registration_outcome(logs)
+    if reg["accepted"]:
+        reasons.append(
+            "speaker registration accepted: "
+            + ", ".join(repr(n) for n in reg["accepted"])
+        )
+    if reg["merged"]:
+        reasons.append("speaker registration merged into an existing profile")
+    if any(mk in logs for mk in _IDENTITY_QUESTION_MARKERS):
+        reasons.append("robot asked an identity question and awaits the answer")
+    pattern = (next_when_robot_asked or "").strip()
+    if pattern:
+        try:
+            asked = re.search(pattern, robot_speech(logs), re.IGNORECASE)
+        except re.error:
+            asked = None
+        if asked:
+            reasons.append(
+                f"robot already asked what the next step answers "
+                f"(when_robot_asked={pattern!r})"
+            )
+    return "; ".join(reasons)

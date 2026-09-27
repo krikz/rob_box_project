@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..voice_state import VoiceStateStore
+from ..animations import (
+    KNOWN_ANIMATIONS,
+    normalize_animation,
+)
+
 
 # Issue #1219 — LLM voice selection: единый реестр голосов живёт в
 # rob_box_voice (чистый Python, без ROS). Ленивый импорт с fallback,
@@ -295,6 +300,14 @@ class SpeakTextTool(MCPTool):
         )
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: голосовая реплика от ЛИЧНОСТИ
+        # робота (TTS). Срез ``personality`` — dialogue_node и
+        # avatar_supervisor оба имеют его; оператор (ТАРС) зовёт
+        # ``say`` (slice=operator.speech) вместо ``speak_text``.
+        return "personality"
+
+    @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
             MCPToolParameter(
@@ -327,6 +340,11 @@ class SpeakTextTool(MCPTool):
                     "Если указано неизвестное значение — будет warning в лог и анимация останется без изменений."
                 ),
                 required=False,
+                enum=list(KNOWN_ANIMATIONS),
+                # Нестрогий enum: список ведёт LLM к реальным именам, но
+                # ``execute`` умеет нормализовать псевдонимы и русские
+                # названия — валидация не должна рубить их до нормализации.
+                enum_strict=False,
             ),
         ]
 
@@ -464,51 +482,17 @@ class SpeakTextTool(MCPTool):
                 ),
             )
 
-        # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
-        animation_map = {
-            # Русские названия
-            "нейтрально": "idle",
-            "нейтральная": "idle",
-            "нейтральный": "idle",
-            "радость": "happy",
-            "радостный": "happy",
-            "счастливый": "happy",
-            "грустный": "sad",
-            "грусть": "sad",
-            "печаль": "sad",
-            "злой": "angry",
-            "злость": "angry",
-            "возбужденный": "happy",
-            "возбуждение": "happy",
-            "смущенный": "thinking",
-            "смущение": "thinking",
-            "растерянный": "thinking",
-            # Несуществующие анимации → замена на похожие
-            "neutral": "idle",
-            "excited": "happy",
-            "confused": "thinking",
-            "laughing": "happy",
-            "smiling": "happy",
-            "dancing": "excited",
-            "singing": "happy",
-            # LLM часто пишет "talk" вместо "talking"
-            "talk": "talking",
-        }
-        # Множество реально существующих анимаций (без алиасов)
-        _KNOWN_ANIMATIONS = {
-            "idle", "talking", "wakeup", "sleep",
-            "happy", "sad", "angry", "surprised", "thinking", "victory",
-            "error", "low_battery", "charging",
-            "police_lights", "ambulance", "fire_truck", "road_service",
-            "turn_left", "turn_right", "accelerating", "braking",
-        }
-        animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
-        if animation not in _KNOWN_ANIMATIONS:
-            self.log_warning(
-                f"⚠️ Неизвестная анимация '{animation}' — "
-                f"использую 'talking' (робот же говорит), текст будет произнесён"
-            )
-            animation = "talking"
+        # Нормализация анимаций: псевдонимы и русские названия приводятся к
+        # реальному имени манифеста, всё остальное падает в "talking"
+        # (робот же говорит) — текст при этом произносится в любом случае.
+        requested_animation = animation
+        animation = normalize_animation(animation, fallback="talking")
+        if requested_animation and animation != str(requested_animation).strip().lower():
+            if animation == "talking":
+                self.log_warning(
+                    f"⚠️ Неизвестная анимация '{requested_animation}' — "
+                    f"использую 'talking', текст будет произнесён"
+                )
 
         # Определяем pitch для голоса на основе анимации (только для эмоциональных)
         pitch_map = {
@@ -521,9 +505,26 @@ class SpeakTextTool(MCPTool):
         pitch = pitch_map.get(animation, None)
 
         def _make_ssml(chunk: str) -> str:
+            # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
+            # XML-экранирование &, <, > делает сам сборщик; ``pitch``
+            # приходит из локальной таблицы (high/low/x-high) и в SSML
+            # не нуждается в экранировании.
+            from rob_box_core.utterance import escape_xml_text
+
             if pitch:
-                return f"<speak><prosody pitch='{pitch}'>{chunk}</prosody></speak>"
-            return f"<speak>{chunk}</speak>"
+                # Prosody-обёртка нужна только для эмоциональных анимаций.
+                # ``escape_xml_text`` — публичный алиас того же escape,
+                # что внутри ``Utterance.ssml``.
+                return (
+                    f"<speak><prosody pitch='{pitch}'>"
+                    f"{escape_xml_text(chunk)}"
+                    f"</prosody></speak>"
+                )
+            # Без prosody — пользуемся готовым ``Utterance.ssml`` (один
+            # источник правды для всей сборки SSML).
+            from rob_box_core.utterance import Utterance
+
+            return Utterance(text=chunk).ssml
 
         # Разбиваем текст на чанки ≤ _MAX_CHUNK_CHARS (лимит Yandex TTS)
         chunks = self._split_sentences(text, self._MAX_CHUNK_CHARS)
@@ -717,6 +718,11 @@ class ListenForResponseTool(MCPTool):
         )
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: STT-gate. Срез ``personality``.
+        return "personality"
+
+    @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
             MCPToolParameter(
@@ -782,6 +788,11 @@ class EstimateTtsDurationTool(MCPTool):
             "Используется для планирования аранжировки музыки под длительность рэпа/стиха. "
             "Возвращает estimate_sec (float) — примерное время звучания с учётом chipmunk-ускорения."
         )
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: TTS-budget evaluation. personality.
+        return "personality"
 
     @property
     def parameters(self) -> list:
@@ -866,12 +877,18 @@ class RegisterSpeakerTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Зарегистрировать голос текущего спикера в voice biometric DB. "
-            "Вызывай когда: (1) пользователь представился («меня зовут X») — "
-            "передай name=X, (2) хочешь узнать имя незнакомца — передай name=null "
+            "Зарегистрировать голос текущего собеседника в voice biometric DB "
+            "(resemblyzer d-vector). Вызывай когда: (1) пользователь "
+            "представился фразой типа «меня зовут X» / «моё имя X» — извлеки "
+            "имя из user_input и передай name=ИМЯ (Cyrillic, ≥2 буквы, с "
+            "заглавной); (2) хочешь узнать имя незнакомца — передай name=null "
             "и спроси «Как вас зовут?» через speak_text. "
-            "Имя сохранится в БД вместе с эмбеддингом голоса (resemblyzer d-vector), "
-            "после этого пользователя можно будет узнавать по голосу."
+            "ВАЖНО: НЕ передавай служебные слова «зовут», «имя», «меня», "
+            "«зовут-это», «зовут меня» — это шумовые токены из фразы, а не "
+            "реальные имена. Извлеки имя из контекста вручную (например, для "
+            "фразы «робот меня зовут Денис говорю» — передай name=\"Денис\"). "
+            "Имя сохранится в БД вместе с эмбеддингом голоса, после этого "
+            "пользователя можно будет узнавать по голосу."
         )
 
     @property
@@ -902,6 +919,12 @@ class RegisterSpeakerTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: speaker-id registration (d-vector).
+        # personality.
+        return "personality"
+
+    @property
     def destructive(self) -> bool:
         return False
 
@@ -911,6 +934,15 @@ class RegisterSpeakerTool(MCPTool):
     # produced a junk row in /data/speakers.db (``name='Зовут'``). The
     # set covers the highest-frequency false positives observed on the
     # robot on 2026-08-10/11 (see PR-1101 cleanup migration notes).
+    #
+    # Issue #2932 — расширено заглушечными/служебными именами.
+    # LLM иногда вызывает register_speaker(name="unknown") вместо того,
+    # чтобы спросить настоящее имя (или подставляет технический
+    # плейсхолдер вроде "Guest"/"User"/"Speaker"). Без фильтра тул
+    # публиковал регистрацию под именем "Unknown" в /voice/speaker/register.
+    # Сравнение — точное совпадение ЦЕЛОГО (уже lower()-нутого) имени,
+    # НЕ substring/prefix — поэтому настоящие имена вроде "Юзеф" или
+    # "Гостомысл" фильтр не задевают.
     _NOISE_NAMES: frozenset[str] = frozenset(
         {
             "зовут",
@@ -928,31 +960,54 @@ class RegisterSpeakerTool(MCPTool):
             "имя мне",
             "имя моё",
             "имя мое",
+            # Issue #2932 — заглушечные/служебные имена (плейсхолдеры).
+            "unknown",
+            "неизвестный",
+            "неизвестная",
+            "неизвестно",
+            "незнакомец",
+            "незнакомка",
+            "гость",
+            "user",
+            "пользователь",
+            "speaker",
+            "name",
+            "-",
+            "?",
+            # "null"/"none" не добавлены сюда намеренно: они уже
+            # перехватываются отдельной веткой (literal null/None,
+            # issue #1101) ВЫШЕ по коду, до проверки _NOISE_NAMES —
+            # тут они были бы недостижимым (dead) кодом.
         }
     )
 
-    def execute(self, name: str | None = None, old_name: str | None = None) -> MCPToolResult:
+    def execute(
+        self,
+        name: str | None = None,
+        old_name: str | None = None,
+        utterance_id: str | None = None,
+        self_intro_name: str | None = None,
+        intro_registered: bool | None = None,
+        known_speaker_name: str | None = None,
+    ) -> MCPToolResult:
+        """Зарегистрировать голос.
+
+        ``utterance_id`` — СКРЫТЫЙ аргумент (issue #2842): его нет в
+        :attr:`parameters` (LLM его не видит), его подставляет
+        ``LLMToolCallAdapter`` из контекста хода dialogue_node
+        (``llm_adapter.TURN_CONTEXT_ARGS``), вырезая то, что прислала LLM.
+
+        Issue #2925 — ещё три скрытых аргумента того же хода:
+        ``self_intro_name`` (как человек назвал себя в реплике, если
+        назвал), ``intro_registered`` (робот уже сам отправил регистрацию
+        по этому представлению) и ``known_speaker_name`` (кем реплика
+        УВЕРЕННО узнана по голосу). По ним — :func:`register_speaker_gate`.
+        """
         import json
         from std_msgs.msg import String
 
         # Step 1 — if old_name provided, rename the existing entry first.
-        if old_name and old_name.strip():
-            old_clean = old_name.strip()
-            if old_clean.lower() not in {"null", "none"} and len(old_clean) >= 2:
-                rename_msg = String()
-                rename_msg.data = json.dumps(
-                    {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
-                    ensure_ascii=False,
-                )
-                # Issue #1101 — rename идёт на /voice/speaker/rename
-                # (speaker_id_node._on_rename_request), НЕ на register:
-                # register-хендлер читает только {"name": ...} и
-                # игнорировал бы {old_name, new_name} как пустое имя.
-                self._speaker_rename_pub.publish(rename_msg)
-                self.log_info(
-                    f"[register_speaker] rename {old_clean!r} → "
-                    f"{(name or '').strip()!r}"
-                )
+        self._publish_rename(old_name, name)
 
         if name is None or name.strip() == "":
             if old_name:
@@ -1011,20 +1066,197 @@ class RegisterSpeakerTool(MCPTool):
                     'говорю» — передай name="Денис") и вызови тул ещё раз.'
                 ),
             )
+        # Issue #2925 — регистрация согласуется с тем, что человек сказал
+        # о себе в ЭТОЙ реплике (см. register_speaker_gate).
+        gated = self._gate_result(
+            name_clean, self_intro_name, intro_registered, known_speaker_name
+        )
+        if gated is not None:
+            return gated
         # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
+        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода:
+        # speaker_id_node регистрирует ИМЕННО фразу, в которой человек
+        # представился, а не "следующую фразу кого угодно" (см.
+        # speaker_id_node._on_register_request).
+        # Issue #2842 — при tool_provider=ros_mcp тул исполняется в
+        # процессе mcp_server, ``self.node`` — НЕ dialogue_node, и
+        # атрибута хода у него нет. Поэтому источник правды — скрытый
+        # аргумент ``utterance_id`` из подписанного запроса /mcp/execute
+        # (его подставляет dialogue_node через LLMToolCallAdapter).
+        # getattr — только фолбек для in-process исполнения на самом
+        # dialogue_node.
+        if utterance_id is None:
+            utterance_id = getattr(self.node, "_current_turn_utterance_id", None)
         msg = String()
-        msg.data = json.dumps({"name": name_clean}, ensure_ascii=False)
+        msg.data = json.dumps(
+            {"name": name_clean, "utterance_id": utterance_id},
+            ensure_ascii=False,
+        )
         self._speaker_register_pub.publish(msg)
         self.log_info(f"[register_speaker] published name={name_clean!r}")
         return MCPToolResult(
             success=True,
             data={"registered_name": name_clean, "speaker_id": "pending"},
-            message=f"Голос зарегистрирован как '{name_clean}'. Теперь этого пользователя можно узнавать по голосу.",
+            # Issue #2863 — честно: тул только ОТПРАВЛЯЕТ запрос, исход решает
+            # speaker_id_node позже (эталон / «уже знаю» / отказ). Прежнее
+            # «Голос зарегистрирован» заявляло результат, которого тул не знает.
+            message=(
+                f"Запрос на запоминание голоса как '{name_clean}' отправлен. "
+                "Если этот человек уже узнан по голосу под этим именем — "
+                "новый эталон не создаётся, повторно вызывать не нужно."
+            ),
+        )
+
+    def _publish_rename(self, old_name: str | None, name: str | None) -> None:
+        """Issue #1101 — поправка имени («я не X, я Y»): rename идёт на
+        /voice/speaker/rename (speaker_id_node._on_rename_request), НЕ на
+        register: register-хендлер читает только {"name": ...} и
+        игнорировал бы {old_name, new_name} как пустое имя. Вынесено из
+        :meth:`execute` (issue #2925, бюджет CC ADR-0021)."""
+        import json
+        from std_msgs.msg import String
+
+        old_clean = (old_name or "").strip()
+        if old_clean.lower() in {"", "null", "none"} or len(old_clean) < 2:
+            return
+        rename_msg = String()
+        rename_msg.data = json.dumps(
+            {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
+            ensure_ascii=False,
+        )
+        self._speaker_rename_pub.publish(rename_msg)
+        self.log_info(
+            f"[register_speaker] rename {old_clean!r} → "
+            f"{(name or '').strip()!r}"
+        )
+
+    def _gate_result(
+        self,
+        name: str,
+        self_intro_name: str | None,
+        intro_registered: bool | None,
+        known_speaker_name: str | None,
+    ) -> MCPToolResult | None:
+        """Issue #2925 — ответ тула без публикации, или ``None`` (публикуем).
+
+        В ответе нет слова ``pending``: по нему ``SchedulerToolExecutor``
+        (issue #2913) решает, что ack регистрации придёт, и держит речь
+        хода. Здесь запрос не уходит — ждать нечего.
+        """
+        verdict = register_speaker_gate(
+            name, self_intro_name, intro_registered, known_speaker_name
+        )
+        if verdict is None:
+            return None
+        if verdict == "intro_already_sent":
+            self.log_info(
+                f"[register_speaker] #2925: регистрация по представлению "
+                f"'{self_intro_name}' уже отправлена роботом в этом ходе — "
+                f"повторный запрос name={name!r} не публикую"
+            )
+            return MCPToolResult(
+                success=True,
+                data={"registered_name": self_intro_name,
+                      "sent_by_robot": True},
+                message=(
+                    f"Голос уже отправлен на запоминание как "
+                    f"'{self_intro_name}' — человек сам представился. "
+                    "Повторно вызывать не нужно."
+                ),
+            )
+        self.log_warning(
+            f"[register_speaker] #2925 ОТКАЗ: name={name!r} — в реплике "
+            f"человек не представлялся, а голос уверенно узнан как "
+            f"'{known_speaker_name}'. Новый профиль не завожу."
+        )
+        return MCPToolResult(
+            success=False,
+            data={"error": "not_self_introduction",
+                  "received": name, "known_speaker": known_speaker_name},
+            message=(
+                f"Имя '{name}' НЕ зарегистрировано: в этой реплике человек "
+                f"не называл себя, а по голосу это {known_speaker_name}. "
+                "Не говори, что запомнил нового человека; если в реплике "
+                "был факт о человеке — сохрани его через memory_save."
+            ),
         )
 
 
+def _name_key(name: str | None) -> str:
+    return (name or "").strip().casefold().replace("ё", "е")
+
+
+def register_speaker_gate(
+    name: str,
+    self_intro_name: str | None,
+    intro_registered: bool | None,
+    known_speaker_name: str | None,
+) -> str | None:
+    """Issue #2925 — можно ли публиковать ``register_speaker(name)``.
+
+    ``None`` — публикуем как раньше. Иначе код причины:
+
+    * ``"intro_already_sent"`` — человек назвал себя в реплике, и робот
+      уже сам отправил регистрацию по этой реплике
+      (``dialogue_node._register_self_intro``). Второй запрос с той же
+      фразой — дубль эталона (или второй профиль, если LLM исказила имя).
+    * ``"not_self_introduction"`` — человек себя НЕ называл, голос уверенно
+      узнан как ``known_speaker_name``, а LLM регистрирует ДРУГОЕ имя.
+      Живой случай: «запомни про меня: Дарья болит за Спартак» (ослышка
+      STT «Борис болеет»), голос Борис 0.796 → третий профиль «Дарья».
+
+    Граница: без контекста хода (Telegram, синтетический ход, старый
+    dialogue_node) все три аргумента ``None`` — гейт молчит. Не узнанный
+    уверенно голос (``known_speaker_name=None``) тоже не блокируется: ответ
+    одним именем на «как тебя зовут?» — законная регистрация, а конфликт
+    с похожим голосом разбирает ADR-0127/#2828.
+    """
+    if intro_registered and self_intro_name:
+        return "intro_already_sent"
+    known = _name_key(known_speaker_name)
+    if not known or _name_key(name) == known:
+        return None
+    if self_intro_name and _name_key(self_intro_name) == _name_key(name):
+        return None
+    return "not_self_introduction"
+
+
+# Список поддерживаемых TTS-провайдеров для переключения (issue #1765).
+# Совпадает с ключами tts_voice_registry.PROVIDER_VOICES и
+# tts_node._default_provider_chain. Используется как enum в ToolSpec и
+# при валидации пользовательского ввода (отсекаем опечатки типа
+# «yandeх» / «minimax-tts» / «Яндекс» — LLM получит provider_unknown).
+SUPPORTED_TTS_PROVIDERS: tuple[str, ...] = ("yandex", "minimax", "silero")
+
+
+def _normalise_provider_name(raw: str | None) -> str:
+    """Нормализовать имя провайдера: trim + lowercase.
+
+    Принимает строки в любом регистре («Yandex», «Яндекс», « MINIMAX »),
+    возвращает lowercase («yandex», «minimax»). Кириллицу не транслитерирует:
+    «яandex» останется «яandex» и провалится валидацию в execute().
+    """
+    return (raw or "").strip().lower()
+
+
+def _validate_provider(raw: str | None) -> tuple[str | None, str | None]:
+    """Валидация имени провайдера для set_voice/set_tts_provider.
+
+    Returns:
+        ``(provider, error)`` — ровно одно из двух не-None:
+        * ``(provider, None)`` — валидно;
+        * ``(None, "<error_code>")`` — невалидно.
+    """
+    name = _normalise_provider_name(raw)
+    if not name:
+        return None, "provider_empty"
+    if name not in SUPPORTED_TTS_PROVIDERS:
+        return None, "provider_unknown"
+    return name, None
+
+
 class SetVoiceTool(MCPTool):
-    """Issue #1219 — персистентный выбор голоса TTS (Q7/Q11).
+    """Issue #1219 — персистентный выбор голоса TTS (Q7/Q11, issue #1765).
 
     LLM вызывает этот tool когда пользователь просит «говори голосом X»
     или когда хочет сменить голос на диалог (например, рассказывать
@@ -1032,9 +1264,24 @@ class SetVoiceTool(MCPTool):
     привязкой к speaker_id; следующий ``speak_text`` без voice= говорит
     установленным голосом.
 
-    Контракт (docs/design/LLM_VOICE_SELECTION_PROPOSAL.md):
-    ``{"tool": "set_voice", "params": {"voice": "zahar"}}``
-    → ``{"status": "ok", "voice_set": "zahar", "default_voice": "anton"}``
+    Опциональный параметр ``provider`` (issue #1765): если задан, бот
+    СНАЧАЛА переключает активного TTS-провайдера (yandex ↔ minimax ↔
+    silero), затем валидирует голос против списка НОВОГО провайдера и
+    сохраняет. Это закрывает баг «юзер сказал «Яндекс Артём», бот
+    ответил «нет такого голоса», хотя Артём — yandex-голос, а активный
+    был minimax». После успеха tool публикует ``/voice/tts/set_provider``
+    (JSON {"provider", "voice"}); tts_node подписан и обновляет свой
+    provider_chain + provider_dead_until, перепубликовывает
+    ``/voice/tts/provider_state`` — dialogue_node/mcp_server увидят
+    нового провайдера в ``[TTS]`` строке LLM-контекста.
+
+    Контракт (docs/design/LLM_VOICE_SELECTION_PROPOSAL.md, issue #1765):
+    ``{"tool": "set_voice", "params": {"voice": "artem"}}``
+    → ``{"status": "ok", "voice_set": "artem", "provider": "yandex", ...}``
+
+    ``{"tool": "set_voice", "params": {"voice": "artem", "provider": "yandex"}}``
+    → ``{"status": "ok", "voice_set": "artem", "provider": "yandex",
+       "provider_switched": true, ...}``
     """
 
     def __init__(self, node, voice_store: VoiceStateStore | None = None):
@@ -1046,6 +1293,14 @@ class SetVoiceTool(MCPTool):
 
         self._voice_state_pub = node.create_publisher(
             String, "/voice/tts/current_voice", 10
+        )
+        # Issue #1765 — переключение TTS-провайдера. tts_node подписан на
+        # этот topic и пересобирает provider_chain (новый провайдер
+        # первым), чистит provider_dead_until для этого провайдера и
+        # публикует provider_state обратно (dialogue_node/mcp_server
+        # увидят нового провайдера в LLM-контексте).
+        self._set_provider_pub = node.create_publisher(
+            String, "/voice/tts/set_provider", 10
         )
 
     @property
@@ -1059,7 +1314,9 @@ class SetVoiceTool(MCPTool):
             "Используй когда: (1) пользователь просит «говори голосом X» — "
             "передай voice=X; (2) хочешь рассказывать историю от разных лиц "
             "(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться "
-            "к дефолтному голосу — передай voice=<default_voice>. "
+            "к дефолтному голосу — передай voice=<default_voice>; (4) юзер "
+            "просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex "
+            "anton») — передай voice=... И provider='yandex'. "
             "Доступные голоса перечислены в контексте: [TTS] voices=... "
             "После set_voice следующий speak_text без voice= говорит "
             "установленным голосом."
@@ -1078,7 +1335,32 @@ class SetVoiceTool(MCPTool):
                 ),
                 required=True,
             ),
+            MCPToolParameter(
+                name="provider",
+                type="string",
+                description=(
+                    "Опциональный TTS-провайдер («yandex» | «minimax» | "
+                    "«silero»). Если задан — бот СНАЧАЛА переключает "
+                    "провайдера, потом валидирует voice против голосов "
+                    "НОВОГО провайдера. Используй когда юзер просит голос "
+                    "по имени, привязанному к конкретному провайдеру "
+                    "(«Яндекс Артём», «Yandex anton»), а в [TTS] provider: "
+                    "сейчас другой провайдер."
+                ),
+                required=False,
+                enum=list(SUPPORTED_TTS_PROVIDERS),
+            ),
         ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: выбор голоса TTS. В slice_policy.yaml
+        # tool ``set_voice`` принадлежит ОБОИМ срезам ``personality`` и
+        # ``operator.speech`` (намеренное пересечение: и личность, и
+        # оператор используют один и тот же туул). Здесь фиксируем
+        # ``personality`` как «домашний» срез — sender-ы сами проверяются
+        # в ToolSliceAuthority.is_allowed.
+        return "personality"
 
     @property
     def execution_type(self):
@@ -1090,7 +1372,15 @@ class SetVoiceTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, voice: str) -> MCPToolResult:
+    def execute(self, voice: str, provider: str = "") -> MCPToolResult:
+        """Установить голос (опционально — переключить провайдера).
+
+        Args:
+            voice: имя голоса. Обязательно, не пустое.
+            provider: опциональное имя TTS-провайдера (yandex/minimax/
+                silero). Если задано и отличается от активного — сначала
+                переключает провайдера, потом валидирует voice.
+        """
         import json as _json
 
         voice_clean = (voice or "").strip()
@@ -1100,36 +1390,91 @@ class SetVoiceTool(MCPTool):
                 error="voice_empty",
                 message="Параметр voice не может быть пустым — передай имя голоса из [TTS] voices=...",
             )
+
+        # Issue #1765 — опциональное переключение провайдера.
+        # Валидируем параметр ДО валидации voice: если юзер указал
+        # кривое имя провайдера, не сбрасываем его в активного молча —
+        # возвращаем provider_unknown, LLM поправит.
+        requested_provider, prov_err = _validate_provider(provider)
+        if prov_err == "provider_empty":
+            # Пустая строка — пользовательский «не указывать»; не ошибка.
+            requested_provider = None
+        elif prov_err == "provider_unknown":
+            return MCPToolResult(
+                success=False,
+                data={
+                    "error": "provider_unknown",
+                    "requested": provider,
+                    "supported": list(SUPPORTED_TTS_PROVIDERS),
+                },
+                message=(
+                    f"Провайдер '{provider}' не поддерживается. "
+                    f"Допустимые: {', '.join(SUPPORTED_TTS_PROVIDERS)}."
+                ),
+            )
+
         # Активный провайдер — как в speak_text (фактический от tts_node
         # после фолбека, иначе mcp_server param tts_provider).
-        provider = _active_tts_provider(self.node)
-        # Валидация против списка провайдера (Q6): неизвестный голос не
-        # сохраняем — LLM получит ошибку и сможет поправиться. Это строже,
-        # чем speak_text (там fallback на дефолт), т.к. set_voice — явный
-        # запрос пользователя «говори голосом X»: молча подменить голос
-        # нельзя, надо сказать LLM, что голос недоступен.
-        known = voices_for(provider)
+        active_provider = _active_tts_provider(self.node)
+        # Провайдер, относительно которого валидируем voice: если
+        # requested_provider задан И отличается от активного — после
+        # переключения будет он; иначе — активный.
+        target_provider = requested_provider or active_provider
+        provider_switched = bool(
+            requested_provider and requested_provider != active_provider
+        )
+
+        # Валидация голоса. Делаем ПОСЛЕ вычисления target_provider, чтобы
+        # для cross-provider случая (set_voice(voice="artem", provider="yandex")
+        # при активном minimax) валидировали против yandex-списка, а не
+        # против minimax (где «artem» отсутствует → voice_unavailable).
+        known = voices_for(target_provider)
         if known and voice_clean not in known:
             return MCPToolResult(
                 success=False,
                 data={
                     "error": "voice_unavailable",
                     "requested": voice_clean,
-                    "provider": provider,
+                    "provider": target_provider,
                     "available": known,
-                    "default_voice": default_voice_for(provider),
+                    "default_voice": default_voice_for(target_provider),
                 },
                 message=(
-                    f"Голос '{voice_clean}' недоступен у провайдера '{provider}'. "
-                    f"Доступные: {', '.join(known)}. Дефолтный: "
-                    f"{default_voice_for(provider)}. Выбери голос из списка."
+                    f"Голос '{voice_clean}' недоступен у провайдера "
+                    f"'{target_provider}'. Доступные: {', '.join(known)}. "
+                    f"Дефолтный: {default_voice_for(target_provider)}. "
+                    f"Выбери голос из списка."
                 ),
             )
 
+        # Если провайдер переключался — публикуем set_provider ДО
+        # сохранения голоса. tts_node подписан, пересоберёт chain и
+        # переопубликует provider_state → mcp_server/dialogue_node
+        # обновят [TTS] в LLM-контексте до следующего speak_text.
+        if provider_switched:
+            try:
+                from std_msgs.msg import String as _String
+
+                msg = _String()
+                msg.data = _json.dumps(
+                    {
+                        "provider": requested_provider,
+                        "voice": voice_clean,
+                        "source": "set_voice",
+                    },
+                    ensure_ascii=False,
+                )
+                self._set_provider_pub.publish(msg)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                self.log_warning(
+                    f"⚠️ [set_voice] publish set_provider failed: {exc}"
+                )
+
         self._voice_store.set_voice(voice_clean)
         self.log_info(
-            f"[set_voice] voice={voice_clean!r} provider={provider} "
-            f"default={default_voice_for(provider)}"
+            f"[set_voice] voice={voice_clean!r} provider={target_provider} "
+            f"default={default_voice_for(target_provider)} "
+            f"switched={provider_switched}"
         )
         # Публикуем смену голоса — dialogue_node обновит [TTS] current_voice.
         try:
@@ -1137,7 +1482,8 @@ class SetVoiceTool(MCPTool):
 
             msg = _String()
             msg.data = _json.dumps(
-                {"voice": voice_clean, "provider": provider}, ensure_ascii=False
+                {"voice": voice_clean, "provider": target_provider},
+                ensure_ascii=False,
             )
             self._voice_state_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001 — best-effort
@@ -1148,11 +1494,280 @@ class SetVoiceTool(MCPTool):
             data={
                 "status": "ok",
                 "voice_set": voice_clean,
-                "default_voice": default_voice_for(provider),
-                "provider": provider,
+                "default_voice": default_voice_for(target_provider),
+                "provider": target_provider,
+                "previous_provider": active_provider if provider_switched else None,
+                "provider_switched": provider_switched,
             },
             message=(
-                f"Голос установлен: '{voice_clean}' "
-                f"(дефолтный: {default_voice_for(provider)})"
+                f"Голос установлен: '{voice_clean}' на провайдере "
+                f"'{target_provider}' (дефолтный: "
+                f"{default_voice_for(target_provider)})"
+                + (
+                    f"; переключились с '{active_provider}'"
+                    if provider_switched
+                    else ""
+                )
+            ),
+        )
+
+
+class SetTtsProviderTool(MCPTool):
+    """Issue #1765 — переключение активного TTS-провайдера.
+
+    LLM вызывает этот tool когда юзер просит СМЕНИТЬ провайдера целиком
+    без явного голоса («давай говорить Яндексом», «переключись на
+    MiniMax», «давай через Silero — без сети»). Использует дефолтный
+    голос нового провайдера (``yandex→anton``, ``minimax→male-qn-qingse``,
+    ``silero→aidar``). Для смены голоса ВНУТРИ провайдера — используй
+    ``set_voice``.
+
+    Контракт:
+    ``{"tool": "set_tts_provider", "params": {"provider": "yandex"}}``
+    → ``{"status": "ok", "provider": "yandex", "default_voice": "anton"}``
+    """
+
+    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+        super().__init__(node)
+        self._voice_store = voice_store or VoiceStateStore()
+        from std_msgs.msg import String
+
+        self._set_provider_pub = node.create_publisher(
+            String, "/voice/tts/set_provider", 10
+        )
+
+    @property
+    def name(self) -> str:
+        return "set_tts_provider"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Переключить активного TTS-провайдера (yandex ↔ minimax ↔ "
+            "silero). Используй когда юзер просит СМЕНИТЬ ПРОВАЙДЕРА "
+            "целиком: «давай говорить Яндексом», «переключись на "
+            "MiniMax», «через Silero — без интернета». Голос будет "
+            "дефолтным для нового провайдера. Для смены голоса внутри "
+            "текущего провайдера — используй set_voice(voice=...)."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="provider",
+                type="string",
+                description=(
+                    "Имя TTS-провайдера: «yandex» | «minimax» | «silero»."
+                ),
+                required=True,
+                enum=list(SUPPORTED_TTS_PROVIDERS),
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: см. SetVoiceTool — пересечение
+        # ``personality`` / ``operator.speech``. Фиксируем ``personality``.
+        return "personality"
+
+    @property
+    def execution_type(self):
+        from ..base import ToolExecutionType
+
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, provider: str) -> MCPToolResult:
+        import json as _json
+
+        target_provider, prov_err = _validate_provider(provider)
+        if prov_err == "provider_empty":
+            return MCPToolResult(
+                success=False,
+                error="provider_empty",
+                message=(
+                    "Параметр provider обязателен. "
+                    f"Допустимые: {', '.join(SUPPORTED_TTS_PROVIDERS)}."
+                ),
+            )
+        if prov_err == "provider_unknown":
+            return MCPToolResult(
+                success=False,
+                data={
+                    "error": "provider_unknown",
+                    "requested": provider,
+                    "supported": list(SUPPORTED_TTS_PROVIDERS),
+                },
+                message=(
+                    f"Провайдер '{provider}' не поддерживается. "
+                    f"Допустимые: {', '.join(SUPPORTED_TTS_PROVIDERS)}."
+                ),
+            )
+
+        # target_provider строго not-None после _validate_provider.
+        assert target_provider is not None  # noqa: S101 — invariant
+        active_provider = _active_tts_provider(self.node)
+        if target_provider == active_provider:
+            # Уже на нужном — no-op, но не ошибка: LLM мог перепутать
+            # активного. Возвращаем текущее состояние, чтобы LLM не
+            # крутил ретраи.
+            return MCPToolResult(
+                success=True,
+                data={
+                    "status": "ok",
+                    "provider": target_provider,
+                    "default_voice": default_voice_for(target_provider),
+                    "provider_switched": False,
+                    "noop": True,
+                },
+                message=(
+                    f"Провайдер уже '{target_provider}', переключение "
+                    f"не требуется."
+                ),
+            )
+
+        default_voice = default_voice_for(target_provider)
+        # Публикуем set_provider — tts_node пересоберёт chain,
+        # почистит dead_until для нового провайдера и переопубликует
+        # provider_state.
+        try:
+            from std_msgs.msg import String as _String
+
+            msg = _String()
+            msg.data = _json.dumps(
+                {
+                    "provider": target_provider,
+                    "voice": default_voice,
+                    "source": "set_tts_provider",
+                },
+                ensure_ascii=False,
+            )
+            self._set_provider_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            self.log_warning(
+                f"⚠️ [set_tts_provider] publish set_provider failed: {exc}"
+            )
+
+        # Запоминаем дефолтный голос нового провайдера в voice_store,
+        # чтобы следующий speak_text без voice= говорил им (а не
+        # старым голосом от старого провайдера).
+        self._voice_store.set_voice(default_voice)
+
+        self.log_info(
+            f"[set_tts_provider] provider={target_provider!r} "
+            f"default_voice={default_voice!r} previous={active_provider!r}"
+        )
+
+        return MCPToolResult(
+            success=True,
+            data={
+                "status": "ok",
+                "provider": target_provider,
+                "default_voice": default_voice,
+                "previous_provider": active_provider,
+                "provider_switched": True,
+            },
+            message=(
+                f"Провайдер переключён: '{active_provider}' → "
+                f"'{target_provider}'. Дефолтный голос: '{default_voice}'."
+            ),
+        )
+
+
+class ListTtsVoicesTool(MCPTool):
+    """Issue #1765 — список голосов TTS по провайдеру (или всех).
+
+    LLM вызывает когда юзер спрашивает «какие голоса есть на Яндексе?»,
+    «какие у тебя есть голоса?», «а какие голоса у MiniMax?». Возвращает
+    JSON-список. По умолчанию — голоса АКТИВНОГО провайдера; для
+    кросс-провайдерного запроса — передай provider='yandex' /
+    'minimax' / 'silero'.
+
+    Контракт:
+    ``{"tool": "list_tts_voices"}``
+    → ``{"voices": [...], "provider": "<active>", "default_voice": "<...>"}``
+    """
+
+    @property
+    def name(self) -> str:
+        return "list_tts_voices"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Список доступных голосов TTS. Без аргументов — голоса "
+            "АКТИВНОГО провайдера (см. [TTS] provider: в контексте). "
+            "С аргументом provider — голоса конкретного провайдера "
+            "(«какие голоса есть на Яндексе?» → provider='yandex'). "
+            "Используй когда юзер спрашивает «какие у тебя голоса?» / "
+            "«а на yandex какие?»."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="provider",
+                type="string",
+                description=(
+                    "Опциональный TTS-провайдер («yandex» | «minimax» | "
+                    "«silero»). Без аргумента — активный провайдер."
+                ),
+                required=False,
+                enum=list(SUPPORTED_TTS_PROVIDERS),
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: см. SetVoiceTool — пересечение.
+        return "personality"
+
+    @property
+    def execution_type(self):
+        from ..base import ToolExecutionType
+
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, provider: str = "") -> "MCPToolResult":
+        # Валидация (silent для пустой строки — берём активного).
+        target_provider, prov_err = _validate_provider(provider)
+        if prov_err == "provider_unknown":
+            return MCPToolResult(
+                success=False,
+                data={
+                    "error": "provider_unknown",
+                    "requested": provider,
+                    "supported": list(SUPPORTED_TTS_PROVIDERS),
+                },
+                message=(
+                    f"Провайдер '{provider}' не поддерживается. "
+                    f"Допустимые: {', '.join(SUPPORTED_TTS_PROVIDERS)}."
+                ),
+            )
+        if target_provider is None:
+            # Пустая строка → активный провайдер.
+            target_provider = _active_tts_provider(self.node)
+        assert target_provider is not None  # noqa: S101 — invariant
+        voices = voices_for(target_provider)
+        default_voice = default_voice_for(target_provider)
+        return MCPToolResult(
+            success=True,
+            data={
+                "provider": target_provider,
+                "voices": voices,
+                "default_voice": default_voice,
+            },
+            message=(
+                f"Провайдер '{target_provider}': {len(voices)} голосов, "
+                f"дефолтный '{default_voice}'."
             ),
         )

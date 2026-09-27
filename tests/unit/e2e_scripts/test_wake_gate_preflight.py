@@ -1,5 +1,5 @@
 """
-test_wake_gate_preflight.py — юнит-тесты ADR-0027 §5.2 wake-gate pre-flight.
+test_wake_gate_preflight.py — юнит-тесты ADR-0029 §2.3 wake-gate pre-flight.
 
 Проверяют:
   1. Schema wake_gate_preflight.json: обязательные поля cleared/checked_at/before/reason/error
@@ -13,7 +13,8 @@ test_wake_gate_preflight.py — юнит-тесты ADR-0027 §5.2 wake-gate pre
 Run:
   python3 -m pytest tests/unit/e2e_scripts/test_wake_gate_preflight.py -v --no-cov
 
-ADR-0027 §5.2 source: docs/adr/0027-systemic-wake-gate-no-wake-word-blocker.md
+ADR-0029 §2.3 source: docs/adr/0029-wake-gate-cold-start-known-state.md
+Related ADR (root cause of cold-start): docs/adr/0070-systemic-wake-gate-no-wake-word-blocker.md
 Retro: t_be491fba
 """
 

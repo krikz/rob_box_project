@@ -6,10 +6,15 @@ AI Voice Assistant для автономного ровера РОББОКС с 
 
 Модульная ROS2 система голосового управления роботом с интеграцией:
 - **ReSpeaker Mic Array v2.0** — захват аудио, VAD, DOA, LED индикация
-- **STT (Speech-to-Text):**
-  - **Vosk** (offline, fast, real-time) — основной выбор
-  - **Whisper** (offline, high accuracy) — альтернатива
-  - **Yandex SpeechKit** (online, fallback) — для сложных случаев
+- **STT (Speech-to-Text)** — цепочка `minimax → yandex → vosk` (ADR-0124, порядок = приоритет):
+  - **MiniMax STT** (online) — первый в цепочке; пунктуированный текст, диаризация (пока не потребляется)
+  - **Yandex SpeechKit** (online) — второй; даёт `speaker_tag` (issue #1077)
+  - **Vosk** (offline, CPU) — последний рубеж, работает без сети и без денег на счету; переносится в конец цепочки принудительно
+  - **Whisper** (offline, high accuracy) — альтернатива, в цепочку не подключён
+
+  Отказавший провайдер пропускается по TTL (квота — 300с, сеть — 30с) и
+  возвращается сам после успешного ответа. Детали и разбор ошибок —
+  [docs/architecture/minimax-stt-provider.md](../../docs/architecture/minimax-stt-provider.md).
 - **TTS (Text-to-Speech):**
   - **Yandex Cloud TTS** (primary, anton voice) — оригинальный голос ROBBOX
   - **Silero** (offline, fallback) — альтернатива
@@ -103,7 +108,7 @@ source install/setup.bash
 Для максимальной автономности и минимальной зависимости от интернета:
 
 ```yaml
-# config/voice_assistant.yaml
+# config/stt_node.yaml
 
 stt_node:
   provider: "vosk"  # Основной: быстрый, offline
@@ -145,9 +150,14 @@ dialogue_node:
 
 ### Основные параметры
 
-Файл `config/voice_assistant.yaml`:
+Каждая нода читает свой файл — `config/<node>.yaml` (ADR-0004,
+issue #1004). Монолитного `voice_assistant.yaml` нет: вложенные
+секции `<node>:` в общем файле превращались в dotted-параметры
+`dialogue_node.llm_provider`, которых `get_parameter("llm_provider")`
+не находил, и нода молча работала на дефолтах.
 
 ```yaml
+# config/audio_node.yaml
 audio_node:
   sample_rate: 16000
   channels: 1
@@ -188,6 +198,106 @@ deepseek_api_key: "YOUR_DEEPSEEK_API_KEY"
 ```
 
 **⚠️ Не коммитить secrets.yaml в git!**
+
+### Цепочка STT-провайдеров: `minimax → yandex → vosk`
+
+> ADR: [ADR-0124](../../docs/adr/0124-stt-provider-chain-priority.md)
+> (заменяет ADR-0091 §2.2/§2.3/§5).
+> Операторский гайд по MiniMax: [`docs/architecture/minimax-stt-provider.md`](../../docs/architecture/minimax-stt-provider.md).
+
+Порядок = приоритет, задаётся ROS-параметром `stt_provider_chain`
+(`config/stt_node.yaml` — единственное зеркало, отдельного
+`stt_chain.yaml` больше нет):
+
+| # | Провайдер | Тип | timeout | retries | Когда работает |
+|---|---|---|---|---|---|
+| 1 | `minimax` | cloud HTTPS | 5с | 1 | есть `MINIMAX_API_KEY` и деньги на счету |
+| 2 | `yandex` | cloud gRPC v3 | 12с | 1 | есть `YANDEX_API_KEY`; даёт `speaker_tag` |
+| 3 | `vosk` | offline CPU | — | 0 | всегда — последний рубеж, без сети и без денег |
+
+`vosk` **всегда** переносится в конец цепочки, что бы ни стояло в
+параметре: он единственный работает офлайн, и конфигом нельзя сделать
+робота глухим. Цепочка ровно из одного `vosk` — легитимный офлайн-режим.
+
+#### Фолбек и кэш «мёртвых» провайдеров
+
+Отказавший провайдер помечается мёртвым и пропускается, пока не истечёт
+TTL — тот же приём, что у TTS (`tts_node`, issue #1083) и LLM
+(`rob_box_harness.health`, issue #1082):
+
+| Класс отказа | TTL | Параметр |
+|---|---|---|
+| квота / ключ (401/403/429, `RESOURCE_EXHAUSTED`) | 300с | `provider_dead_ttl_s` |
+| сеть / 5xx / таймаут (`DEADLINE_EXCEEDED`) | 30с | `provider_dead_ttl_transient_s` |
+
+Без кэша при пустом балансе обоих облаков робот платил бы таймаут
+каждому из них на **каждой** фразе. С кэшем — один раз за TTL, дальше
+сразу Vosk. Успешный ответ снимает отметку (баланс пополнили). Если
+мёртвыми оказались все — кэш игнорируется и цепочка идёт целиком:
+глухой робот хуже медленного.
+
+Кэш переживает рестарт ноды через `provider_state_file`
+(`/data/stt_provider_state.json`).
+
+Фактический провайдер (первый живой в цепочке) виден в логе при каждой
+смене и лежит в том же `provider_state_file`:
+
+```
+🎧 STT provider → 'vosk' (chain=['minimax', 'yandex', 'vosk'],
+   dead={'minimax': 287.4, 'yandex': 291.1}, reason=recognize, last_attempt=vosk)
+```
+
+```bash
+docker exec voice-assistant cat /data/stt_provider_state.json
+# {"provider": "vosk", "dead_providers": {"minimax": 1758413100.0, ...}}
+```
+
+Отдельного топика `/voice/stt/provider_state` нет — у него пока нет ни
+одного потребителя (см. ADR-0124 §2.5 и сторож issue #2118).
+
+В логе ноды пропуск мёртвого провайдера виден в той же строке попыток:
+
+```
+[stt_attempt] minimax:dead(0ms)->yandex:dead(0ms)->vosk:ok(180ms) -> accepted '...'
+```
+
+Когда выбирать MiniMax STT (коротко; полный разбор — в docstring
+класса):
+
+* нужна **диаризация спикеров** (issues #2346 / #2348);
+* допустим облачный запрос и есть `MINIMAX_API_KEY`;
+* Vosk слишком шумный для аудио-условий, а Yandex — слишком
+  медленный под нагрузкой.
+
+#### Конфигурация
+
+```bash
+# Включить MiniMax STT (провайдер сам встанет первым в цепочке)
+export MINIMAX_API_KEY="sk-..."
+
+# Отключить без правки кода — цепочка перешагнёт через MiniMax
+unset MINIMAX_API_KEY        # или:  export MINIMAX_API_KEY=""
+```
+
+Все остальные параметры (`base_url`, `model`, `language`, `timeout`)
+имеют дефолты в `stt_providers/minimax_provider.py` и могут быть
+переопределены через `MiniMaxSTTProvider.maybe_from_env(**kwargs)`,
+если Phase 2 поднимет ROS-параметры `minimax_stt_*` (issue #1004).
+
+#### Тесты
+
+```bash
+# Из src/rob_box_voice — использует package pytest.ini
+pytest test/unit/stt/test_minimax_provider.py -v
+
+# Весь unit-набор (быстрый, CI-safe)
+pytest test/unit -v
+```
+
+43 теста покрывают: успешный 200/JSON-ответ, ошибки 401/403/429/5xx,
+timeout, non-JSON, отсутствие поля `text`, фабрику `maybe_from_env()`
+с пустым ключом, ограничение 25 MB на размер аудио и стабильность
+`PROVIDER_NAME == "minimax"`.
 
 ## Запуск
 
@@ -432,7 +542,10 @@ rob_box_voice/
 │       ├── llm_client.py       # DeepSeek API client
 │       └── cache_manager.py    # Кэширование TTS
 ├── config/
-│   ├── voice_assistant.yaml    # Основные параметры
+│   ├── audio_node.yaml         # По файлу на ноду (ADR-0004)
+│   ├── dialogue_node.yaml
+│   ├── stt_node.yaml
+│   ├── tts_node.yaml           # ... и так далее
 │   └── secrets.yaml.example    # Шаблон для API ключей
 ├── launch/
 │   └── voice_assistant.launch.py

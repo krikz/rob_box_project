@@ -13,6 +13,7 @@ from rob_box_core.ports import (
     ValidationResult,
 )
 from rob_box_harness.executors import LegacyToolProviderAdapter, adapt_tool_provider
+from rob_box_harness.executors.core_adapter import _result_content
 from rob_box_harness.tools import ToolProvider as LegacyToolProvider
 from rob_box_llm.provider import ToolCall
 
@@ -85,6 +86,63 @@ async def test_adapter_delegates_close() -> None:
     adapter = adapt_tool_provider(provider)
     await adapter.aclose()
     assert provider.closed == 1
+
+
+# -- Issue #2916 — ``message`` + ``data`` both reach the LLM ---------------
+
+
+def test_result_content_shows_message_then_data_when_both_present() -> None:
+    result = ToolResult(
+        value={"bpm": 120},
+        metadata={"message": "next_transition_sec: 8.0"},
+    )
+
+    text = _result_content(result)
+
+    assert text == "next_transition_sec: 8.0\n{'bpm': 120}"
+
+
+def test_result_content_data_only_is_unchanged() -> None:
+    result = ToolResult(value={"bpm": 120})
+
+    assert _result_content(result) == "{'bpm': 120}"
+
+
+def test_result_content_message_only_is_unchanged() -> None:
+    # No ``data`` at all — ``value`` already IS the message (ros_mcp's
+    # ``_result`` folds message into value when there's no data), so no
+    # metadata is attached and behaviour is untouched.
+    result = ToolResult(value="ok, done")
+
+    assert _result_content(result) == "ok, done"
+
+
+def test_result_content_error_path_is_unchanged() -> None:
+    result = ToolResult(
+        value={"partial": True},
+        error="нет развивающих паттернов",
+        metadata={"message": "нет развивающих паттернов"},
+    )
+
+    assert _result_content(result) == "нет развивающих паттернов"
+
+
+def test_result_content_skips_duplicate_when_message_equals_data_text() -> None:
+    result = ToolResult(value="ok", metadata={"message": "ok"})
+
+    assert _result_content(result) == "ok"
+
+
+def test_result_content_trims_overlong_message() -> None:
+    long_message = "x" * 600
+    result = ToolResult(value={"a": 1}, metadata={"message": long_message})
+
+    text = _result_content(result)
+
+    header, _, rest = text.partition("\n")
+    assert len(header) == 500
+    assert header.endswith("…")
+    assert rest == "{'a': 1}"
 
 
 def test_adapter_wraps_invoke_exception_into_error_tool_result() -> None:

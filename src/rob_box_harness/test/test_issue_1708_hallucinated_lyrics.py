@@ -5,7 +5,7 @@ Issue #1708 — after ``execute_music_code`` the LLM sometimes also calls
 уехал я, братан, в тёмны...»). The user hears a robotic voice reading
 hallucinated text on top of (or instead of) the beat.
 
-The fix lives in :mod:`rob_box_harness.core.dialog_core`:
+The fix lives in :mod:`rob_box_harness.core.agent_core`:
 
 * Module-level helper :func:`_is_hallucinated_speak_text` decides whether
   a ``speak_text`` call should be suppressed.
@@ -15,8 +15,8 @@ The fix lives in :mod:`rob_box_harness.core.dialog_core`:
   detector so the guard only fires on NON-vocal requests — backing
   mode (rap / poem / song lyrics via ``speak_text`` × N) is preserved.
 
-These tests drive ``DialogCore.process_input`` end-to-end with the
-real port fakes from ``test_dialog_core.py`` (copied locally to avoid
+These tests drive ``AgentCore.process_input`` end-to-end with the
+real port fakes from ``test_agent_core.py`` (copied locally to avoid
 cross-file fixture sharing in this isolated regression module). They
 also exercise the pure-function helpers directly so a future regression
 in the heuristic gets caught even when the full harness stack changes.
@@ -34,9 +34,10 @@ from typing import Any
 
 import pytest
 
-from rob_box_harness.core import dialog_core
-from rob_box_harness.core.dialog_core import DialogCore
+from rob_box_harness.core import agent_core
+from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.dialogue_state_machine import (
+    DialogueEvent,
     DialogueStateMachine,
 )
 from rob_box_harness.tools import ToolProvider
@@ -49,7 +50,7 @@ from rob_box_llm.provider import (
 
 
 # ---------------------------------------------------------------------
-# Helpers — copied from test_dialog_core.py so this module is
+# Helpers — copied from test_agent_core.py so this module is
 # runnable in isolation. If the originals drift, copy from there.
 # ---------------------------------------------------------------------
 
@@ -108,7 +109,7 @@ class _RecordingToolProvider(ToolProvider):
     sees a normal ``role=tool`` message in its history.
 
     Inherits from :class:`ToolProvider` so it satisfies the
-    ``DialogCore(tools=...)`` type contract (the abstract base
+    ``AgentCore(tools=...)`` type contract (the abstract base
     declares ``discover`` / ``execute`` / ``aclose``).
     """
 
@@ -178,31 +179,81 @@ class _FakeMemoryStore:
         return None
 
 
+def _wake(core: AgentCore) -> None:
+    """Drive the injected DSM to LISTENING (issue #1986 §5.3 — AgentCore no
+    longer owns wake routing; the shell/test drives the DSM directly)."""
+    core._dsm.on_event(DialogueEvent.WAKE_WORD)
+
+
 def _build_core(
     responses: list[LLMResponse],
     *,
     manifest: tuple[Any, ...],
     handler_map: dict[str, Any],
     fail_on_execute_names: set[str] | None = None,
-) -> tuple[DialogCore, _RecordingToolProvider, _ScriptedLLM]:
+) -> tuple[AgentCore, _RecordingToolProvider, _ScriptedLLM]:
     llm = _ScriptedLLM(responses)
     tools = _RecordingToolProvider(manifest, handler_map)
     if fail_on_execute_names:
         tools.fail_on_execute_names.update(fail_on_execute_names)
     memory = _FakeMemoryStore()
     dsm = DialogueStateMachine()
-    core = DialogCore(llm=llm, tools=tools, memory=memory, dsm=dsm)
-    asyncio.run(core.handle_wake_word(""))
+    core = AgentCore(llm=llm, tools=tools, memory=memory, dsm=dsm)
+    _wake(core)
     return core, tools, llm
 
 
-def _run(core: DialogCore, text: str) -> Any:
-    return asyncio.run(core.process_input(text, history=[]))
+def _run(core: AgentCore, text: str, *, dynamic_system: str | None = None) -> Any:
+    return asyncio.run(
+        core.process_input(text, history=[], dynamic_system=dynamic_system)
+    )
 
 
 # ---------------------------------------------------------------------
 # Pure-function helper tests — drive the heuristic directly.
 # ---------------------------------------------------------------------
+
+
+class TestRawUserUtterance:
+    """Issue #2955 — direct coverage of ``_raw_user_utterance``, the
+    helper both this guard and the ADR-0132 praise gate now use for
+    ``current_user_input`` instead of re-reading the composed
+    ``<system_context>...`` LLM turn.
+    """
+
+    def test_no_prefix_passthrough(self) -> None:
+        assert agent_core._raw_user_utterance("сыграй ещё раз") == "сыграй ещё раз"
+
+    def test_strips_tg_prefix(self) -> None:
+        # dialogue_node: user_input = f"[TG] {user_input}" (issue #1195).
+        assert agent_core._raw_user_utterance(
+            "[TG] вот это кайф, огонь! сохрани этот вариант"
+        ) == "вот это кайф, огонь! сохрани этот вариант"
+
+    def test_strips_spkr_name_prefix(self) -> None:
+        # dialogue_node: tag = f"[Spkr:{name}]" (issue #1077).
+        assert agent_core._raw_user_utterance(
+            "[Spkr:Антон] сыграй ещё раз"
+        ) == "сыграй ещё раз"
+
+    def test_strips_speaker_unknown_prefix(self) -> None:
+        assert agent_core._raw_user_utterance(
+            "[Speaker:unknown] сыграй ещё раз"
+        ) == "сыграй ещё раз"
+
+    def test_strips_speaker_tentative_prefix(self) -> None:
+        assert agent_core._raw_user_utterance(
+            "[Speaker:tentative] сыграй ещё раз"
+        ) == "сыграй ещё раз"
+
+    def test_empty_and_none_safe(self) -> None:
+        assert agent_core._raw_user_utterance("") == ""
+
+    def test_does_not_touch_bracket_text_mid_sentence(self) -> None:
+        # Only a LEADING tag is stripped — a user quoting brackets mid
+        # sentence must survive untouched.
+        text = "сыграй трек [колобок] ещё раз"
+        assert agent_core._raw_user_utterance(text) == text
 
 
 class TestIsVocalRequest:
@@ -231,7 +282,7 @@ class TestIsVocalRequest:
         ],
     )
     def test_vocal_keywords_detected(self, text: str) -> None:
-        assert dialog_core._is_vocal_request(text) is True, (
+        assert agent_core._is_vocal_request(text) is True, (
             f"vocal cue should match: {text!r}"
         )
 
@@ -250,16 +301,16 @@ class TestIsVocalRequest:
         ],
     )
     def test_non_vocal_requests_not_detected(self, text: str) -> None:
-        assert dialog_core._is_vocal_request(text) is False, (
+        assert agent_core._is_vocal_request(text) is False, (
             f"non-vocal cue must NOT match: {text!r}"
         )
 
     def test_empty_input_returns_false(self) -> None:
-        assert dialog_core._is_vocal_request("") is False
+        assert agent_core._is_vocal_request("") is False
 
     def test_none_safe(self) -> None:
         # Defensive: live providers may pass None. We never crash.
-        assert dialog_core._is_vocal_request("") is False  # use empty str
+        assert agent_core._is_vocal_request("") is False  # use empty str
 
 
 class TestIsHallucinatedSpeakText:
@@ -277,7 +328,7 @@ class TestIsHallucinatedSpeakText:
 
     def test_non_speak_text_never_hallucinated(self) -> None:
         call = ToolCall(id="t1", name="stop_music", arguments={})
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=call,
             same_batch_music_calls=frozenset({"execute_music_code"}),
             user_input="сыграй бит",
@@ -285,7 +336,7 @@ class TestIsHallucinatedSpeakText:
 
     def test_no_prior_music_never_hallucinated(self) -> None:
         # LLM called only speak_text (e.g. answering a question).
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call("полный ответ на вопрос юзера"),
             same_batch_music_calls=frozenset(),
             user_input="расскажи про себя",
@@ -294,7 +345,7 @@ class TestIsHallucinatedSpeakText:
     def test_vocal_request_never_hallucinated(self) -> None:
         # Backing mode: execute_music_code + speak_text × N is legal
         # on a vocal request («спой куплет»).
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call("куплет про колобка длинный текст" * 5),
             same_batch_music_calls=frozenset({"execute_music_code"}),
             user_input="спой куплет про колобка",
@@ -302,7 +353,7 @@ class TestIsHallucinatedSpeakText:
 
     def test_short_accept_after_music_not_hallucinated(self) -> None:
         # Master prompt allows ONE short accept phrase. Keep it.
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call("Ок, играю Бах"),
             same_batch_music_calls=frozenset({"execute_music_code"}),
             user_input="сыграй баха",
@@ -313,7 +364,7 @@ class TestIsHallucinatedSpeakText:
         # lyrics anyway. «сыграй бит в нига стайле» is instrumental —
         # backing-mode lyrics are NOT appropriate, so any speak_text
         # longer than the accept threshold is a hallucination.
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call(
                 "Нига-стайл, Колобок-флоу, уехал я, братан, в тёмны..."
             ),
@@ -325,7 +376,7 @@ class TestIsHallucinatedSpeakText:
         # Backing mode: user EXPLICITLY asked to sing (спой куплет),
         # LLM produced backing beat + lyrics. Both are legitimate —
         # the heuristic must NOT fire.
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call(
                 "Куплет про колобка длинный текст" * 3
             ),
@@ -337,7 +388,7 @@ class TestIsHallucinatedSpeakText:
         # Empty speak_text is issue #1343 territory (validation
         # rejection), NOT hallucinated lyrics — we must not steal that
         # signal from the downstream anti-duplicate path.
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call(""),
             same_batch_music_calls=frozenset({"execute_music_code"}),
             user_input="сыграй бит",
@@ -349,7 +400,7 @@ class TestIsHallucinatedSpeakText:
         # The order inside the batch doesn't matter for the guard —
         # what matters is that BOTH are in the same batch on a
         # non-vocal request.
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call(
                 "Нига-стайл, Колобок-флоу, уехал я, братан, в тёмны..."
             ),
@@ -360,14 +411,14 @@ class TestIsHallucinatedSpeakText:
     def test_accept_threshold_exact(self) -> None:
         # 41 chars = 1 over the threshold (40) → suppressed.
         long_text = "a" * 41
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call(long_text),
             same_batch_music_calls=frozenset({"execute_music_code"}),
             user_input="сыграй бит",
         ) is True
         # 40 chars exactly = legitimate accept.
         short_text = "a" * 40
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call(short_text),
             same_batch_music_calls=frozenset({"execute_music_code"}),
             user_input="сыграй бит",
@@ -377,7 +428,7 @@ class TestIsHallucinatedSpeakText:
         # MiniMax Music API path also triggers the guard — but only
         # on a NON-vocal request. «поставь музыку фоном» is library
         # play, not singing, so backing-mode lyrics are inappropriate.
-        assert dialog_core._is_hallucinated_speak_text(
+        assert agent_core._is_hallucinated_speak_text(
             call=self._call("неожиданно произнесённый текст после трека"),
             same_batch_music_calls=frozenset({"generate_music"}),
             user_input="поставь музыку фоном",
@@ -391,20 +442,20 @@ class TestSuppressedSpeakTextResult:
 
     def test_carries_call_id(self) -> None:
         call = ToolCall(id="abc", name="speak_text", arguments={"text": "x"})
-        result = dialog_core._suppressed_speak_text_result(call)
+        result = agent_core._suppressed_speak_text_result(call)
         assert result.tool_call_id == "abc"
 
     def test_marked_as_error(self) -> None:
         # LLM treats is_error=True as a tool failure and pivots away
         # from this call shape on its next iteration.
         call = ToolCall(id="abc", name="speak_text", arguments={"text": "x"})
-        result = dialog_core._suppressed_speak_text_result(call)
+        result = agent_core._suppressed_speak_text_result(call)
         assert result.is_error is True
 
     def test_message_explains_why(self) -> None:
         # The message must mention the rule so the LLM can learn it.
         call = ToolCall(id="abc", name="speak_text", arguments={"text": "x"})
-        result = dialog_core._suppressed_speak_text_result(call)
+        result = agent_core._suppressed_speak_text_result(call)
         assert "speak_text подавлен" in result.content
         assert "execute_music_code" in result.content
 
@@ -415,23 +466,23 @@ class TestExtractSpeakText:
     """
 
     def test_normal_mapping(self) -> None:
-        assert dialog_core._extract_speak_text({"text": "  привет  "}) == "привет"
+        assert agent_core._extract_speak_text({"text": "  привет  "}) == "привет"
 
     def test_missing_key(self) -> None:
-        assert dialog_core._extract_speak_text({}) == ""
+        assert agent_core._extract_speak_text({}) == ""
 
     def test_none_input(self) -> None:
-        assert dialog_core._extract_speak_text(None) == ""
+        assert agent_core._extract_speak_text(None) == ""
 
     def test_non_mapping_input(self) -> None:
-        assert dialog_core._extract_speak_text("not a mapping") == ""
+        assert agent_core._extract_speak_text("not a mapping") == ""
 
     def test_non_string_value(self) -> None:
-        assert dialog_core._extract_speak_text({"text": 123}) == ""
+        assert agent_core._extract_speak_text({"text": 123}) == ""
 
 
 # ---------------------------------------------------------------------
-# Integration tests — drive DialogCore.process_input end-to-end.
+# Integration tests — drive AgentCore.process_input end-to-end.
 # ---------------------------------------------------------------------
 
 
@@ -469,7 +520,7 @@ def _build_music_manifest() -> tuple[Any, ...]:
 
 
 class TestIssue1708GuardIntegration:
-    """End-to-end coverage of the dialog_core guard."""
+    """End-to-end coverage of the agent_core guard."""
 
     def test_hallucinated_lyrics_are_suppressed(self) -> None:
         """The exact live bug: execute_music_code + speak_text(lyrics).
@@ -818,6 +869,90 @@ class TestIssue1708GuardIntegration:
         executed_names = [c.name for c in tools.executed]
         assert executed_names == ["generate_music"], (
             f"only generate_music should run; got {executed_names!r}"
+        )
+        assert result.speak_text_real_count == 0
+
+
+class TestIssue2955SystemContextDoesNotLeakIntoGuard:
+    """Issue #2955 — same flaw as the ADR-0132 praise gate: this guard
+    also reads ``current_user_input`` (see
+    ``test_issue_adr0132_save_arrangement_preset_gate.py``, which pins
+    the sibling regression). A vocal cue like «спой» sitting in the
+    ``<system_context>`` snapshot (speaker profile/memory — issue
+    #2817/#2822), rather than in what the user actually said, must NOT
+    make ``_is_vocal_request`` see the turn as vocal.
+    """
+
+    def test_vocal_word_in_system_context_does_not_make_request_vocal(self) -> None:
+        """Utterance is NON-vocal («сыграй бит в нига стайле») but the
+        glued system_context snapshot mentions «спой» (e.g. a memory
+        fact about the speaker's habits). The guard must still fire —
+        exactly like ``test_hallucinated_lyrics_are_suppressed`` — because
+        the ACTUAL request carries no vocal cue.
+        """
+        system_context_with_vocal_word = (
+            "<system_context>\n"
+            "  <speaker>Антон любит, когда робот спой ему вечером песню "
+            "перед сном</speaker>\n"
+            "</system_context>"
+        )
+        scripted = [
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="m1",
+                        name="execute_music_code",
+                        arguments={
+                            "code": "p1 >> blip([0,2,4], dur=0.5)",
+                            "segments": 96,
+                        },
+                    ),
+                    ToolCall(
+                        id="s1",
+                        name="speak_text",
+                        arguments={
+                            "text": (
+                                "Нига-стайл, Колобок-флоу, уехал я, "
+                                "братан, в тёмны..."
+                            ),
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", tool_calls=()),
+        ]
+
+        async def music_handler(_args: dict[str, object]) -> str:
+            return json_dumps_ok()
+
+        async def speak_handler(_args: dict[str, object]) -> str:
+            raise AssertionError(
+                "suppressed speak_text reached executor — system_context "
+                "vocal word must not unlock backing mode (issue #2955)"
+            )
+
+        core, tools, _llm = _build_core(
+            scripted,
+            manifest=_build_music_manifest(),
+            handler_map={
+                "execute_music_code": music_handler,
+                "speak_text": speak_handler,
+            },
+            fail_on_execute_names={"speak_text"},
+        )
+
+        result = _run(
+            core,
+            "сыграй бит в нига стайле про колобка",
+            dynamic_system=system_context_with_vocal_word,
+        )
+
+        executed_names = [c.name for c in tools.executed]
+        assert executed_names == ["execute_music_code"], (
+            f"only music tool should run; speak_text must stay suppressed "
+            f"despite the system_context vocal word; got {executed_names!r}"
         )
         assert result.speak_text_real_count == 0
 

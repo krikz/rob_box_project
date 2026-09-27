@@ -77,6 +77,8 @@ class _FakeNode:
         sub = MagicMock()
         sub.topic = topic
         sub.callback = callback
+        sub.msg_type = msg_type  # expose msg_type for assertion-only tests
+        sub._msg_type = msg_type
         self._subs[topic] = callback
         return sub
 
@@ -103,11 +105,11 @@ _mock_rclpy = _types.ModuleType('rclpy')
 _mock_rclpy.init = lambda *a, **kw: None
 _mock_rclpy.shutdown = lambda *a, **kw: None
 _mock_rclpy.ok = lambda: True
-sys.modules.setdefault('rclpy', _mock_rclpy)
+sys.modules['rclpy'] = _mock_rclpy
 
 _mock_rclpy_node = _types.ModuleType('rclpy.node')
 _mock_rclpy_node.Node = _FakeNode
-sys.modules.setdefault('rclpy.node', _mock_rclpy_node)
+sys.modules['rclpy.node'] = _mock_rclpy_node
 
 _interfaces = _types.ModuleType('rcl_interfaces')
 
@@ -123,18 +125,18 @@ class _Log:
 
 _interfaces_msg = _types.ModuleType('rcl_interfaces.msg')
 _interfaces_msg.Log = _Log
-sys.modules.setdefault('rcl_interfaces', _interfaces)
-sys.modules.setdefault('rcl_interfaces.msg', _interfaces_msg)
+sys.modules['rcl_interfaces'] = _interfaces
+sys.modules['rcl_interfaces.msg'] = _interfaces_msg
 
 _cb_mod = _types.ModuleType('rclpy.callback_groups')
 _cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
-sys.modules.setdefault('rclpy.callback_groups', _cb_mod)
+sys.modules['rclpy.callback_groups'] = _cb_mod
 
 _qos_mod = _types.ModuleType('rclpy.qos')
 _qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST='KEEP_LAST')
 _qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE='RELIABLE')
 _qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
-sys.modules.setdefault('rclpy.qos', _qos_mod)
+sys.modules['rclpy.qos'] = _qos_mod
 
 _std_msgs = _types.ModuleType('std_msgs')
 _std_msgs_msg = _types.ModuleType('std_msgs.msg')
@@ -154,8 +156,8 @@ class _Bool:
 
 _std_msgs_msg.String = _String
 _std_msgs_msg.Bool = _Bool
-sys.modules.setdefault('std_msgs', _std_msgs)
-sys.modules.setdefault('std_msgs.msg', _std_msgs_msg)
+sys.modules['std_msgs'] = _std_msgs
+sys.modules['std_msgs.msg'] = _std_msgs_msg
 
 # ── geometry_msgs shim ───────────────────────────────────────────────────
 _geom = _types.ModuleType('geometry_msgs')
@@ -214,6 +216,20 @@ class _TwistWithCovariance:
         self.twist = _Twist()
 
 
+class _PoseWithCovariance:
+
+    def __init__(self):
+        self.pose = _Pose()
+        self.covariance = [0.0] * 36
+
+
+class _PoseWithCovarianceStamped:
+
+    def __init__(self):
+        self.pose = _PoseWithCovariance()
+        self.header = MagicMock()
+
+
 _geom_msg.Vector3 = _Vector3
 _geom_msg.Point = _Point
 _geom_msg.Quaternion = _Quaternion
@@ -221,8 +237,10 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
-sys.modules.setdefault('geometry_msgs', _geom)
-sys.modules.setdefault('geometry_msgs.msg', _geom_msg)
+_geom_msg.PoseWithCovariance = _PoseWithCovariance
+_geom_msg.PoseWithCovarianceStamped = _PoseWithCovarianceStamped
+sys.modules['geometry_msgs'] = _geom
+sys.modules['geometry_msgs.msg'] = _geom_msg
 
 # ── nav_msgs shim ────────────────────────────────────────────────────────
 _nav = _types.ModuleType('nav_msgs')
@@ -241,8 +259,8 @@ class _Odometry:
 
 
 _nav_msg.Odometry = _Odometry
-sys.modules.setdefault('nav_msgs', _nav)
-sys.modules.setdefault('nav_msgs.msg', _nav_msg)
+sys.modules['nav_msgs'] = _nav
+sys.modules['nav_msgs.msg'] = _nav_msg
 
 # ── control_msgs shim ────────────────────────────────────────────────────
 # context_aggregator_node.py imports DynamicJointState from control_msgs.msg
@@ -260,8 +278,8 @@ class _DynamicJointState:
 
 
 _control_msg.DynamicJointState = _DynamicJointState
-sys.modules.setdefault('control_msgs', _control)
-sys.modules.setdefault('control_msgs.msg', _control_msg)
+sys.modules['control_msgs'] = _control
+sys.modules['control_msgs.msg'] = _control_msg
 
 # ── rob_box_perception_msgs shim ─────────────────────────────────────────
 # context_aggregator_node.py tries to import ``PerceptionEvent`` from this
@@ -294,11 +312,19 @@ class _PerceptionEvent:
 
 
 _msgs_msg.PerceptionEvent = _PerceptionEvent
-sys.modules.setdefault('rob_box_perception_msgs', _msgs)
-sys.modules.setdefault('rob_box_perception_msgs.msg', _msgs_msg)
+sys.modules['rob_box_perception_msgs'] = _msgs
+sys.modules['rob_box_perception_msgs.msg'] = _msgs_msg
 
-# Import after the shim is registered.
-from geometry_msgs.msg import Point, PoseStamped, Quaternion  # noqa: E402
+# Import after the shim is registered.  Fresh import: another test file may
+# have already imported the node against ITS stubs (conftest.py rolls the
+# stubs back after each module, but not the real module bound to them).
+sys.modules.pop('rob_box_perception.context_aggregator_node', None)
+from geometry_msgs.msg import (  # noqa: E402
+    Point,
+    PoseStamped,
+    PoseWithCovarianceStamped,
+    Quaternion,
+)
 from nav_msgs.msg import Odometry  # noqa: E402
 import rclpy  # noqa: E402  — resolves to the shim module registered above
 from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402, E501
@@ -367,21 +393,72 @@ class TestContextAggregator(unittest.TestCase):
         self.assertIsNotNone(self.node.current_vision)
 
     def test_pose_subscription(self):
-        """Тест: Подписка на позицию (localization_pose)."""
-        # Создаём pose сообщение
-        pose_msg = PoseStamped()
-        pose_msg.pose.position = Point(x=1.0, y=2.0, z=0.0)
-        pose_msg.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+        """Тест: Подписка на позицию (localization_pose).
+
+        Issue #2826: rtabmap публикует ``PoseWithCovarianceStamped``,
+        поэтому callback должен принимать этот тип и нормализовывать
+        до ``Pose`` через ``msg.pose.pose``. Тест проверяет обе
+        стороны контракта: callback работает без падения на новом
+        типе и сохраняет координаты.
+        """
+        # Создаём PoseWithCovarianceStamped — это тот тип, который
+        # реально публикует rtabmap (см. issue #2826).
+        pose_msg = PoseWithCovarianceStamped()
+        pose_msg.pose.pose.position = Point(x=1.0, y=2.0, z=0.0)
+        pose_msg.pose.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
 
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_robot_pose'))
 
-        # Вызываем callback
+        # Вызываем callback — НЕ должно упасть на новом типе.
         self.node.on_robot_pose(pose_msg)
 
-        # Проверяем что позиция сохранена
+        # current_pose хранит нормализованный Pose (либо ссылку на
+        # вложенный Pose, либо сам msg). Допустимы оба варианта:
+        # важно, что координаты достижимы через ``.position.x``.
         self.assertIsNotNone(self.node.current_pose)
-        self.assertEqual(self.node.current_pose.pose.position.x, 1.0)
+        # Достаём .position.x либо через Pose, либо через .pose.pose.position
+        cur = self.node.current_pose
+        pos_x = getattr(getattr(cur, 'pose', cur), 'position').x
+        pos_y = getattr(getattr(cur, 'pose', cur), 'position').y
+        self.assertEqual(pos_x, 1.0)
+        self.assertEqual(pos_y, 2.0)
+
+    def test_pose_subscription_uses_pose_with_covariance_type(self):
+        """Регрессия issue #2826.
+
+        rtabmap публикует ``/rtabmap/localization_pose`` как
+        ``PoseWithCovarianceStamped``. DDS не матчит publisher и
+        subscription при разных msg-типах, и до фикса поза в
+        ``/perception/context_update`` никогда не обновлялась.
+
+        Этот тест ПРОВЕРЯЕТ контракт через сохранённый mock
+        ``_subs``: топик ``/rtabmap/localization_pose`` должен быть
+        подписан именно на ``PoseWithCovarianceStamped``.
+        """
+        sub = self.node._subs.get('/rtabmap/localization_pose')
+        self.assertIsNotNone(
+            sub,
+            'подписка на /rtabmap/localization_pose должна быть зарегистрирована',
+        )
+        # msg_type живёт в ``self.pose_sub`` (атрибут ноды). Доступ
+        # к нему идёт через ``pose_sub`` MagicMock — у реального
+        # rclpy.Node Subscription нет публичного .msg_type, но в
+        # нашем shim хранится msg_type в ``pose_sub.__class__``.
+        # Проще сравнить через атрибут, который shim ставит:
+        msg_type = getattr(self.node.pose_sub, 'msg_type', None)
+        if msg_type is None:
+            # fallback — на shim уровне мы подменили ``msg_type`` явно
+            msg_type = getattr(
+                self.node.pose_sub, '_msg_type', None
+            )
+        self.assertIs(
+            msg_type,
+            PoseWithCovarianceStamped,
+            'подписка на /rtabmap/localization_pose должна быть '
+            'geometry_msgs/PoseWithCovarianceStamped (issue #2826), '
+            f'получили {msg_type!r}',
+        )
 
     def test_odometry_subscription(self):
         """Тест: Подписка на одометрию."""
@@ -446,8 +523,9 @@ class TestContextAggregator(unittest.TestCase):
         self.node.on_vision_context(vision_msg)
 
         # Pose
-        pose_msg = PoseStamped()
-        pose_msg.pose.position = Point(x=5.0, y=6.0, z=0.0)
+        # Issue #2826: подписка на PoseWithCovarianceStamped.
+        pose_msg = PoseWithCovarianceStamped()
+        pose_msg.pose.pose.position = Point(x=5.0, y=6.0, z=0.0)
         self.node.on_robot_pose(pose_msg)
 
         # Проверяем что все данные сохранены

@@ -478,8 +478,8 @@ async def test_complete_passes_model_and_messages() -> None:
     assert kwargs["stream"] is False
     assert kwargs["messages"][0]["role"] == "system"
     assert kwargs["messages"][1]["role"] == "user"
-    # Default thinking policy is injected via settings.extra.
-    assert kwargs["thinking"] == DEFAULT_THINKING_POLICY
+    # Default thinking policy is injected via settings.extra → extra_body.
+    assert kwargs["extra_body"]["thinking"] == DEFAULT_THINKING_POLICY
 
 
 @pytest.mark.asyncio
@@ -548,8 +548,8 @@ async def test_chat_builds_settings_and_delegates_to_complete() -> None:
     assert kwargs["model"] == "MiniMax-M2.7"
     assert kwargs["max_tokens"] == 64
     assert kwargs["tool_choice"] == "auto"
-    # Vendor-specific knobs ride along via ``extra``.
-    assert kwargs["top_k"] == 42
+    # Vendor-specific knobs ride along via ``extra`` → ``extra_body``.
+    assert kwargs["extra_body"]["top_k"] == 42
 
 
 @pytest.mark.asyncio
@@ -579,8 +579,8 @@ async def test_chat_with_only_unknown_kwargs() -> None:
     )
     assert response.content == "ok"
     kwargs = client.chat.completions.calls[0]
-    assert kwargs["thinking"] == {"type": "enabled", "budget": 100}
-    assert kwargs["top_p"] == 0.9
+    assert kwargs["extra_body"]["thinking"] == {"type": "enabled", "budget": 100}
+    assert kwargs["extra_body"]["top_p"] == 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -994,22 +994,28 @@ async def test_stream_yields_chunks_with_finish_reason() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_with_tools_raises_capability_error() -> None:
-    """Streaming + tools is capability-gated in the upstream provider."""
+async def test_stream_with_tools_is_supported() -> None:
+    """Streaming + tools is now supported (upstream ``streaming_tools=True``)."""
     p, client = _make_minimax()
+    client.chat.completions.next_stream = [
+        _stream_chunk("He"),
+        _stream_chunk("llo"),
+        _stream_chunk("", finish_reason="stop"),
+    ]
 
-    async def drain() -> None:
-        async for _ in p.stream(
-            [LLMMessage(role="user", content="hi")],
-            tools=({"type": "function", "function": {"name": "play_sound"}},),
-        ):
-            pass
+    chunks = []
+    async for chunk in p.stream(
+        [LLMMessage(role="user", content="hi")],
+        tools=({"type": "function", "function": {"name": "play_sound"}},),
+    ):
+        chunks.append(chunk)
 
-    with pytest.raises(CapabilityUnavailableError):
-        await drain()
-    # Crucially: no SDK call was made (the capability check runs
-    # BEFORE the network).
-    assert client.chat.completions.calls == []
+    assert [c.content_delta for c in chunks] == ["He", "llo", ""]
+    # The SDK call was made WITH the tools payload (no capability error).
+    kwargs = client.chat.completions.calls[0]
+    assert kwargs["tools"] == [
+        {"type": "function", "function": {"name": "play_sound"}}
+    ]
 
 
 @pytest.mark.asyncio

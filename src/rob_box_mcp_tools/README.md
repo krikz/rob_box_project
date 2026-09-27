@@ -126,46 +126,43 @@ ros2 run rob_box_mcp_tools mcp_server
 
 MCP Server автоматически:
 1. Регистрирует все доступные инструменты
-2. Публикует список инструментов в `/mcp/tools` (формат DeepSeek)
+2. Публикует каталог инструментов в `/mcp/tools` один раз при старте
+   (latched / TRANSIENT_LOCAL — late joiner получит его из кэша)
 3. Слушает запросы на выполнение в `/mcp/execute`
 4. Публикует результаты в `/mcp/result`
 
 ### Интеграция с dialogue_node
 
-Пример интеграции см. в `examples/dialogue_node_mcp_integration.py`
+Схемы инструментов LLM берёт **не из топика**, а из общего каталога
+`rob_box_core.tool_catalog`. Каталог генерируется из самих классов
+`MCPTool` (`python tools/gen_tool_catalog.py`), поэтому объявление тула
+ровно одно — рядом с его `execute()`.
 
-Основные шаги:
-1. Создать `LLMToolCallAdapter`
-2. Подписаться на `/mcp/tools` для получения списка инструментов
-3. Передать `tools` в LLM API (OpenAI-compatible) при запросе
-4. Обработать `tool_calls` из streaming ответа
-5. Выполнить инструменты через MCP адаптер
-6. Отправить результаты обратно в LLM
+```python
+from rob_box_core.tool_catalog import llm_visible_tools
+
+tools = [entry.to_openai_tool() for entry in llm_visible_tools()]
+```
+
+`dialogue_node` делает это через
+`rob_box_harness.core.tool_registry.ToolRegistry`, а вызовы отправляет в
+`/mcp/execute` через `LLMToolCallAdapter`:
 
 ```python
 from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter
 
-# В __init__ вашей ноды:
 self.mcp_adapter = LLMToolCallAdapter(self)
-self.tools_sub = self.create_subscription(
-    String, "/mcp/tools", self.on_tools_update, 10
-)
-
-# При запросе к LLM:
-stream = self.client.chat.completions.create(
-    model="your-model",
-    messages=messages,
-    tools=self.available_tools,  # ← Передаём инструменты
-    stream=True
-)
-
-# Обработка tool_calls:
-if delta.tool_calls:
-    # Выполнить через MCP адаптер
-    result = self.mcp_adapter.execute_tool_call_sync(
-        tool_name, parameters
-    )
 ```
+
+Топик `/mcp/tools` остаётся объявлением того, что реально зарегистрировано
+на сервере — удобно для отладки и сверки с каталогом, но это не источник
+схем.
+
+> ⚠️ Раньше здесь был пример с подпиской на `/mcp/tools` и отдельными
+> схемами на стороне harness. Так делать нельзя: два независимых
+> объявления одного контракта разъехались — у `navigate_to_waypoint`
+> разошлись даже имена параметров, и навигация по вейпоинтам перестала
+> работать. Единственный источник — класс инструмента.
 
 ## 📦 Структура пакета
 
@@ -185,8 +182,6 @@ rob_box_mcp_tools/
 │       ├── mapping.py          # Картографирование
 │       ├── animation.py        # LED анимации
 │       └── sound.py            # Звуковые эффекты
-├── examples/
-│   └── dialogue_node_mcp_integration.py  # Пример интеграции
 ├── package.xml
 ├── setup.py
 └── README.md
@@ -243,7 +238,8 @@ self.registry.register(MyCustomTool(self))
 ## 📝 ROS 2 Topics
 
 ### Публикуемые MCP Server:
-- `/mcp/tools` (String) - JSON список доступных инструментов (DeepSeek format)
+- `/mcp/tools` (String, latched) - JSON каталог зарегистрированных инструментов,
+  публикуется один раз при старте (для отладки/сверки, не источник схем)
 - `/mcp/result` (String) - JSON результаты выполнения
 
 ### Принимаемые MCP Server:

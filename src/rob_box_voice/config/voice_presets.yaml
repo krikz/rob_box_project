@@ -1,0 +1,104 @@
+# voice_presets.yaml — голосовые пресеты стиля речи для режима
+# `voice_input_mode=quest_llm_formalize` (AV-28, фаза P7-full голосового плана).
+#
+# Смысл: оператор говорит своими словами в Quest-микрофон, робот
+# переписывает реплику в выбранном стиле и на выбранном языке и
+# произносит её вслух через TTS. Это НЕ диалог: LLM не отвечает
+# оператору, не задаёт вопросов, не добавляет фактов.
+#
+# Формат — данные, а не код: добавление седьмого пресета — это новая
+# строчка здесь + новый txt-файл промпта. Python-код dialogue_node
+# трогать НЕ нужно (см. декомпозицию AV-28, дочерняя карточка
+# t_b0b06e44 / t_dcfa6012).
+#
+# Конвенции:
+# - ключ пресета = технический id (lower-snake, ASCII): используется в
+#   API/ROS-параметре `voice_preset` и в HUD-индикаторе ST:<KEY>.
+# - `name` — русское название для UI (кнопка в панели режимов AV-18).
+# - `prompt_file` — путь относительно src/rob_box_voice/config/ (т.е.
+#   "presets/<key>.txt" лежит рядом с этим YAML).
+#
+# Соседи по конфигурации (per-node ROS2 YAML):
+# - audio_node.yaml / dialogue_node.yaml / tts_node.yaml — параметры
+#   соответствующих ROS2-нод; см. config/README.md.
+# - master_prompt.txt — основной диалоговый промпт dialogue_node
+#   (НЕ для формализации, это другой режим).
+
+# Список пресетов. Порядок = порядок в UI-секции «Стиль речи».
+presets:
+  technical:
+    name: "Технический"
+    prompt_file: presets/technical.txt
+  street:
+    name: "По понятиям"
+    prompt_file: presets/street.txt
+  caveman:
+    name: "Пещерный"
+    prompt_file: presets/caveman.txt
+  business:
+    name: "Деловой"
+    prompt_file: presets/business.txt
+  philosopher:
+    name: "Философ"
+    prompt_file: presets/philosopher.txt
+  lenin:
+    name: "Ленин"
+    prompt_file: presets/lenin.txt
+  # «Перевод» — стиль, который НЕ стилизует: только чистит оговорки и
+  # переводит реплику на выбранный язык. Нужен для случая «я просто хочу
+  # говорить через робота на другом языке, без чужого голоса поверх моего».
+  # Это НЕ то же самое, что выключить LLM: там реплика уходит дословно и
+  # на исходном языке (см. кнопку «Без стиля» в панели пайплайна).
+  translate:
+    name: "Перевод"
+    prompt_file: presets/translate.txt
+
+# Допустимые языки вывода. Ключ = значение ROS-параметра
+# voice_output_language (см. dialogue_node.py) и wire-поля `language`
+# (meta-quest-api.md §P7) — совпадают 1:1.
+#
+# Формат — map, а не список: кроме самого кода языку нужны две вещи,
+# которые раньше были захардкожены в dialogue_node.
+#   `name`   — подпись кнопки в UI (на самом языке, как принято в
+#              языковых переключателях);
+#   `label`  — как язык называется по-русски внутри директивы для LLM
+#              («перепиши … на языке «французский»»);
+#   `prompt_section` — какую секцию двуязычного prompt-файла отдать
+#              модели как system-промпт. Файлы содержат RU-секцию и
+#              EN-секцию; для всех неславянских целей берём EN-секцию:
+#              её правила не содержат «отвечай по-русски», а нужный
+#              язык задаётся директивой в user-сообщении.
+#
+# Валидация в _resolve_voice_language итерирует ключи, поэтому старый
+# списочный формат (`languages: [ru, en]`) тоже остаётся рабочим.
+languages:
+  ru:
+    name: "Русский"
+    label: "русский"
+    prompt_section: ru
+  en:
+    name: "English"
+    label: "английский"
+    prompt_section: en
+  fr:
+    name: "Français"
+    label: "французский"
+    prompt_section: en
+  de:
+    name: "Deutsch"
+    label: "немецкий"
+    prompt_section: en
+  zh:
+    name: "中文"
+    label: "китайский"
+    prompt_section: en
+  hi:
+    name: "हिन्दी"
+    label: "хинди"
+    prompt_section: en
+
+# Дефолты для первого запуска и для fallback при битом параметре.
+# Менять здесь без согласования с AV-18/HUD — нельзя: ST:LENIN в HUD
+# должен совпадать с default_preset.
+default_preset: technical
+default_language: ru

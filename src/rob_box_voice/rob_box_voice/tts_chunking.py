@@ -58,7 +58,12 @@ DEFAULT_MAX_RETRIES: int = 3
 # ---------------------------------------------------------------------------
 
 # Границы предложений: . ! ? … \n (Unicode ellipsis).
-_SENTENCE_SENTINELS = ".!?…\n"
+#: Границы предложений — общий набор для ВСЕХ провайдеров TTS.
+#: Публичный, потому что ``tts_node.TTSNode._chunk_text`` подставляет его
+#: как дефолт: раньше у Yandex-пути был свой набор без «…», и русская речь
+#: с многоточием резалась по словам посреди фразы.
+SENTENCE_SENTINELS = ".!?…\n"
+_SENTENCE_SENTINELS = SENTENCE_SENTINELS  # алиас под старым приватным именем
 # Регексп: lookahead на whitespace после sentence-terminator.
 _SENTENCE_RE = re.compile(r"(?<=[.!?…])\s+")
 
@@ -334,6 +339,7 @@ def synthesize_with_retry(
 
 __all__ = [
     "CHUNK_LIMITS",
+    "SENTENCE_SENTINELS",
     "MIN_CHUNK_CHARS",
     "DEFAULT_MAX_RETRIES",
     "TooLongError",

@@ -1,0 +1,94 @@
+name: "G: CC-Ref Remote Verify (nightly)"
+
+# ADR-0021-r1 R-1d (issue #2626, defect #2): nightly sweep that checks
+# every issue referenced from cc_budget_baseline.json:
+#
+#   * ``_refactor_cards[*]`` — must exist, be labelled ``type:tech-debt``,
+#     and be in state=open.
+#   * ``_legacy_acknowledged[*].since`` — every ``#NNNN`` mentioned as
+#     «owner of the debt» must also be open (parent-gate entries like
+#     ``parent gate #1984 / #2077 covers decomp backlog`` are exempt
+#     via a heuristic in cc_budget_refs.py:check_remote).
+#
+# Why nightly, not per-PR: hitting ``gh api`` on every PR burns the
+# rate limit and slows the gate; the local structural check (the one
+# that runs on every PR in G-Lint Code.yml) already catches new entries.
+# The nightly job's job is to detect drift AFTER the fact — e.g. someone
+# closes an issue that the baseline still depends on.
+#
+# On FAIL the job posts a Summary annotation; human (or agent-flow
+# triage) picks it up. ADR-0021-r1 R-1d makes this the canonical
+# «owner of debt closed» detector that issue #2626 defect #2 demanded.
+
+on:
+  schedule:
+    # 04:07 UTC every day — out of phase with merge-gate (which runs
+    # hourly) and codeql (Tue 07:26 UTC). Picking 04:07 so we don't
+    # race other nightly sweeps at the top of the hour.
+    - cron: '7 4 * * *'
+  workflow_dispatch:  # Ручной запуск для отладки / on-demand sweep
+    inputs:
+      gh_repo:
+        description: 'owner/repo for the sweep (default krikz/rob_box_project)'
+        required: false
+        default: 'krikz/rob_box_project'
+
+permissions:
+  contents: read
+
+jobs:
+  cc-ref-remote-verify:
+    name: Verify CC-budget ref-cards and legacy-since issues
+    runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.event.inputs.gh_repo || 'krikz/rob_box_project' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+
+      - name: Install gh CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Authenticate gh CLI (read-only)
+        # ``gh api`` on issues works with the workflow's GITHUB_TOKEN
+        # scope (issues:read is enough for GET /repos/.../issues/N).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GH_TOKEN}" | gh auth login --with-token
+
+      - name: CC-budget ref-card remote verify (R-1d)
+        env:
+          GH_REPO: ${{ env.GH_REPO }}
+        run: |
+          set -euo pipefail
+          echo "::group::cc_budget_refs --verify-remote (GH_REPO=${GH_REPO})"
+          python scripts/lint/cc_budget_refs.py --verify-remote
+          echo "::endgroup::"
+
+      - name: Summarize result
+        # Always run so the Summary surfaces the breakdown even when the
+        # verify step succeeded with uncovered legacy debt (R-1f:
+        # «долг под контролем, но НЕ покрыт»).
+        if: always()
+        run: |
+          {
+            echo "## CC-budget ref-card remote verify (R-1d, nightly)"
+            echo ""
+            echo "- **Repo:** \`${GH_REPO}\`"
+            echo "- **Result:** ${{ job.status }}"
+            echo ""
+            echo "If FAIL: см. логи шага \`CC-budget ref-card remote verify\`. "
+            echo "Частые причины: ref-card ссылается на закрытую issue (state≠open), "
+            "либо \`since:\` legacy-записи ссылается на issue, которую закрыли. "
+            "Фикс: либо переоткрыть issue, либо вынести запись из "
+            "\`_legacy_acknowledged\`, либо перенести её в обычный exempt + "
+            "\`_refactor_cards\`."
+          } >> "$GITHUB_STEP_SUMMARY"

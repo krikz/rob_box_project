@@ -112,7 +112,13 @@ class MockNode:
         self._publishers[topic] = pub
         return pub
 
-    def create_subscription(self, msg_type, topic: str, callback, qos: int = 10) -> MockSubscription:
+    def create_subscription(
+        self, msg_type, topic: str, callback, qos: int = 10, callback_group=None
+    ) -> MockSubscription:
+        # callback_group принимается и игнорируется: реальные ноды передают
+        # его для реентерабельных подписок (см. ShowMetricsTool — он ждёт
+        # ответа супервизора в другом потоке), моку он не нужен, но без
+        # параметра вызов падал бы на TypeError.
         sub = MockSubscription(msg_type, topic, callback, qos)
         self._subscriptions[topic] = sub
         return sub

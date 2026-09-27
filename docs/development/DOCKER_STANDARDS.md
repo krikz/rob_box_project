@@ -112,8 +112,6 @@ docker/
     │   └── Dockerfile
     ├── voice_base/              # ✅ Base image, не compose-сервис
     │   └── Dockerfile
-    ├── voice_resources/         # ✅ Resource image для one-shot инициализации volume
-    │   └── Dockerfile
     ├── telegram_bot/            # ✅ ТОЛЬКО Dockerfile
     │   └── Dockerfile
     ├── led_matrix/              # ✅ ТОЛЬКО Dockerfile
@@ -424,6 +422,16 @@ devices:
 mem_limit: 6g          # Оставляем 2GB для системы
 memswap_limit: 7g      # 6GB RAM + 1GB swap max
 ```
+
+**ADR-0111 (issue #2621):** каждый контейнер **обязан** иметь `mem_limit`.
+Если контейнер лёгкий (Zenoh router, voice-action-server) — лимит
+всё равно ставится (например, 128 MB), чтобы при OOM-killer сначала
+пострадал виновник, а не случайный сосед.
+
+**Vision Pi с 2026-09-15 использует zram-swap (4 GB, zstd)** — см.
+`docs/adr/0111-vision-pi-zram-swap-and-container-limits.md` и
+`host/vision/README.md`. Без zram `memswap_limit` бесполезен — нет
+устройства для свопа.
 
 ### 8. Network Mode
 

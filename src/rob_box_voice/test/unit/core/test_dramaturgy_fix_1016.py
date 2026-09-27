@@ -1,9 +1,11 @@
-"""Smoke test for the dramaturgy fix in build_auto_prompt (issue #1016 follow-up).
+"""Smoke test for build_auto_prompt dramaturgy (issue #1016 follow-up, #2441).
 
 Verifies that:
   * n=1 prompt BANS load_track/list_tracks (library auto-play) and carries
-    the stage_line markers
-  * n=2 prompt contains the "С РАЗВИТИЕМ" requirement + the listed patterns
+    the stage marker ("Стадия сета: переход #N")
+  * transitions go through compose_music and demand material different from
+    the previous track, instead of carrying hand-written arrangement advice
+    (issue #2441 moved density/swing/form knowledge to composer.txt)
   * Neither prompt leaks task-tracking identifiers (#NNNN, "Refs:", "issue #")
     that carry no semantic value for the LLM and may trigger hallucinated
     "fix #NNNN" comments in generated code.
@@ -51,10 +53,14 @@ def test_n1_contains_library_and_stage_lines() -> None:
     # Library line: DJ transitions must NOT load stored tracks (load_track
     # auto-plays them → harsh cut between tracks).
     assert "НЕ вызывай load_track" in prompt, "load_track ban missing from n=1 prompt"
-    assert "С НУЛЯ" in prompt, "fresh-generation instruction missing from n=1 prompt"
+    # Issue #1811: DJ mode plays through compose_music, not hand-written code.
+    assert "compose_music" in prompt, "compose_music instruction missing from n=1 prompt"
+    assert "execute_music_code" not in prompt, (
+        "n=1 prompt must not tell the model to hand-write Renardo code"
+    )
 
-    # Stage line: progress indicator for the LLM.
-    assert "переход #1" in prompt, f"stage_line missing — got: {prompt[:200]!r}"
+    # Stage marker: progress indicator for the LLM.
+    assert "переход #1" in prompt, f"stage_marker missing — got: {prompt[:200]!r}"
 
     # Persona + theme still reach the prompt (regression guard).
     assert "Роббокс" in prompt
@@ -65,20 +71,32 @@ def test_n1_contains_library_and_stage_lines() -> None:
 
 
 def test_n2_requires_dramaturgy() -> None:
+    """Развитие — работа аранжировщика (compose_music), а не текст-подсказка
+    в DJ-промпте (issue #2441): build_auto_prompt больше не учит модель про
+    form=/progression/слои — это знание живёт в composer.txt. Переход обязан
+    только: идти через compose_music, просить ДРУГОЙ материал
+    (bpm/root/scale/synth), чем у предыдущего трека, и не звать рукописный
+    execute_music_code."""
     ctrl = _build_controller()
     ctrl.state.theme = "тёмный техно"
     prompt = ctrl.build_auto_prompt(2)
 
     assert "DJ_AUTO переход #2" in prompt
-    assert "РАЗВИТИЕМ" in prompt, "transition prompt must demand dramaturgy"
+    assert "compose_music" in prompt, "transition must go through compose_music"
+    # Поведение: переход обязан менять материал относительно прошлого трека.
+    assert "другой" in prompt
+    assert "bpm/root/scale/synth" in prompt
 
-    # All four dramaturgy patterns must be listed (model picks at least one).
-    for pattern in (".every", "Pvar", "linvar", "Clock.future"):
-        assert pattern in prompt, f"{pattern!r} missing from dramaturgy list"
+    # The old hand-written-code dramaturgy techniques are no longer required.
+    for pattern in (".every()", "Pvar", "linvar", "Clock.future"):
+        assert pattern not in prompt, (
+            f"{pattern!r} is a hand-written-code technique — compose_music "
+            "should not need it"
+        )
+    assert "execute_music_code" not in prompt
 
     # Library line still present on transitions — as a BAN (no auto-play).
     assert "НЕ вызывай load_track" in prompt
-    assert "С НУЛЯ" in prompt
 
 
 def test_no_task_ids_leak_into_prompt() -> None:
@@ -115,26 +133,41 @@ def test_n1_contains_research_and_plan_instructions() -> None:
 
 
 def test_tech_guardrails_present_on_transition() -> None:
-    """Каждый переход обязан нести тех-лимиты против какофонии."""
+    """Аранжировщик и мастер-фильтр держат амплитуды/паттерны и плотность —
+    DJ-промпт больше не несёт ручную инструкцию по свингу/индексам сэмплов
+    (issue #2441): это знание живёт в composer-фрагменте и описании
+    compose_music. Переход обязан только идти через compose_music и брать
+    сэмплы через search_samples."""
     ctrl = _build_controller()
     ctrl.state.theme = "техно"
     prompt = ctrl.build_auto_prompt(2)
 
-    assert "Clock.clear()" in prompt
-    assert "НЕ используй chop" in prompt
-    assert "СУММА amp" in prompt
-    assert "d4/d5/p4/p5" in prompt
+    assert "compose_music" in prompt
     assert "search_samples" in prompt
 
+    # Плотность/свинг больше не задача DJ-промпта — аранжировщик держит их
+    # (issue #2441). Это знание не должно дублироваться в build_auto_prompt.
+    for moved in ("swing", "hats_sample", "perc_sample"):
+        assert moved not in prompt, (
+            f"{moved!r} is arranger/composer knowledge — must not be copied "
+            "into the DJ transition prompt"
+        )
 
-def test_chop_is_banned_not_recommended() -> None:
-    """chop= должен встречаться только как запрет (щелчки на 16kHz)."""
+    # Hand-managed limits from the execute_music_code era are gone — the
+    # arranger and master filter own this now, the model shouldn't compute it.
+    for stale in ("Clock.clear()", "СУММА amp", "d4/d5/p4/p5", "chop="):
+        assert stale not in prompt, f"{stale!r} is a pre-#1811 hand-coded limit"
+
+
+def test_chop_is_never_mentioned_in_dj_transitions() -> None:
+    """compose_music has no chop= parameter — DJ prompts should not mention it
+    at all anymore (issue #1811), unlike the old hand-written-code era."""
     ctrl = _build_controller()
     ctrl.state.theme = "техно"
     prompt = ctrl.build_auto_prompt(2)
 
-    assert ".every()" in prompt
-    assert "НЕ используй chop=" in prompt
+    assert "chop" not in prompt
+    assert ".every()" not in prompt
 
 
 def test_final_track_when_plan_set() -> None:
@@ -142,6 +175,9 @@ def test_final_track_when_plan_set() -> None:
     ctrl = _build_controller()
     ctrl.state.theme = "диско"
     ctrl.state.set_plan = "Трек 1: старт\nТрек 2: пик"
+    # Issue #2875 — финал по плану считается по РЕАЛЬНО запущенным трекам,
+    # а не по номеру перехода: Трек 1 сыгран → следующий (Трек 2) последний.
+    ctrl.state.tracks_started = 1
 
     prompt = ctrl.build_auto_prompt(2)
 
@@ -166,8 +202,25 @@ def test_first_plan_does_not_reset_transition_count() -> None:
     assert ctrl.state.transition_count == 1, "первый план не должен сбрасывать счётчик"
 
 
-def test_plan_rewrite_resets_transition_count() -> None:
-    """Переписывание сета (новый план при уже существующем) — счётчик с нуля."""
+def test_mid_session_plan_rewrite_keeps_transition_count() -> None:
+    """Перезапись плана ВНУТРИ идущей сессии — счётчик НЕ сбрасывается.
+
+    Контракт изменён сознательно в ``ef525468e`` ("fix(dj): keep transition
+    progress on mid-session plan updates", live 01.09, issue #992). До него
+    сигналом «новый сет» была строка плана: ``is_rewrite = bool(set_plan)``.
+    На практике модель переписывает план своими словами почти на КАЖДОМ
+    переходе (промпт этого не запрещает) → строка отличается → счётчик
+    обнулялся → ``build_auto_prompt(1)`` снова выдавал «СТАРТ ВЕЧЕРИНКИ» →
+    модель снова сочиняла план → бесконечный цикл. И финальный трек, и
+    auto-stop гейтятся на ``transition_count`` vs длину плана (см.
+    ``tick()``), поэтому сет НИКОГДА не завершался. Живой прогон 01.09
+    («вечеринка у черепашек-ниндзя»): 8 «rewrite» подряд за 12 минут, ни
+    одного перехода дальше #1.
+
+    Теперь единственный сигнал генуинного старта — DJ был ВЫКЛЮЧЕН
+    (``is_fresh_start = not was_enabled``), см.
+    ``test_fresh_start_resets_transition_count`` ниже.
+    """
     ctrl = _build_controller()
     ctrl.state.enabled = True
     ctrl.state.set_plan = "Трек 1: old"
@@ -178,4 +231,168 @@ def test_plan_rewrite_resets_transition_count() -> None:
         "plan": "Трек 1: new\nТрек 2: new2",
     }))
 
-    assert ctrl.state.transition_count == 0, "переписывание плана должно сбрасывать счётчик"
+    assert ctrl.state.set_plan == "Трек 1: new\nТрек 2: new2", (
+        "текст плана обновляется даже без сброса счётчика"
+    )
+    assert ctrl.state.transition_count == 5, (
+        "перезапись плана в идущей сессии НЕ должна сбрасывать счётчик "
+        "(ef525468e, issue #992) — иначе сет зацикливается на переходе #1"
+    )
+
+
+def test_fresh_start_resets_transition_count() -> None:
+    """Генуинный старт (DJ был выключен) — счётчик с нуля.
+
+    Обратная сторона ``ef525468e``: сброс прогресса остался, но привязан к
+    переходу enabled False→True, а не к тексту плана.
+    """
+    ctrl = _build_controller()
+    ctrl.state.enabled = False
+    ctrl.state.set_plan = "Трек 1: old"
+    ctrl.state.transition_count = 5
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "plan": "Трек 1: new\nТрек 2: new2",
+    }))
+
+    assert ctrl.state.set_plan == "Трек 1: new\nТрек 2: new2"
+    assert ctrl.state.transition_count == 0, (
+        "при генуинном старте (enabled False→True) счётчик сбрасывается "
+        "в 0, даже если план уже был — is_fresh_start = not was_enabled"
+    )
+
+
+def test_middle_transitions_suppress_free_text() -> None:
+    """🔴 Живой лог 02.09: на КАЖДОМ переходе поверх бита звучало
+    «Переход номер два отыгран — нарастание с дропом в ре миноре
+    фригийском, сто сорок ударов!». Это свободный текст мимо ``speak_text``:
+    на середине сета фраза идёт только через speak_text (короткий тематический
+    выкрик), свободный текст глушится. Юзер: «во время сочинения музыки LLM
+    много говорит» → «пусть говорит прикольную фразу, зажигающую толпу».
+    """
+    ctrl = _build_controller()
+    ctrl.state.set_plan = "\n".join(
+        f"Трек {i}: {c}" for i, c in enumerate("abcd", start=1)
+    )
+
+    # #1 — представление диджея, свободная форма разрешена.
+    assert ctrl.suppresses_free_text(1) is False
+    # Середина сета — свободный текст глушится (фраза идёт через speak_text).
+    assert ctrl.suppresses_free_text(2) is True
+    assert ctrl.suppresses_free_text(3) is True
+    # Финальный трек плана — тоже: прощание говорит хук.
+    assert ctrl.suppresses_free_text(4) is True
+
+
+def test_free_text_suppressed_without_a_plan() -> None:
+    """Без плана финального трека не существует — свободный текст глушится
+    на всех переходах, кроме первого."""
+    ctrl = _build_controller()
+    assert ctrl.suppresses_free_text(1) is False
+    assert ctrl.suppresses_free_text(7) is True
+
+
+def test_mid_transition_prompt_instructs_thematic_phrase() -> None:
+    """Середина сета разогревает толпу: короткая тематическая фраза через
+    speak_text, свободный текст запрещён (иначе уходит в TTS мимо гарда)."""
+    ctrl = _build_controller()
+    ctrl.state.set_plan = "\n".join(f"Трек {i}" for i in range(1, 6))
+    prompt = ctrl.build_auto_prompt(3)
+    assert "speak_text" in prompt
+    assert "РАЗОГРЕЙ ТОЛПУ" in prompt
+    assert "НЕ пиши свободный текст" in prompt
+
+
+def test_transition_prompt_asks_for_the_form_length() -> None:
+    """Форма compose_music играет 96-190 секунд, а промпт просил
+    ``next_transition_sec=45`` — дроп не звучал ни разу за 30 часов лога."""
+    ctrl = _build_controller()
+    for n in (1, 2):
+        prompt = ctrl.build_auto_prompt(n)
+        assert "next_transition_sec=45" not in prompt
+        assert "длительность" in prompt.lower()
+
+
+def test_theme_change_mid_session_is_applied() -> None:
+    """Смена темы внутри идущего сета обязана доехать до state.
+
+    🔴 Живой лог vision 03.09. Тема обновлялась только при
+    ``is_fresh_start or not self.state.theme``, а персона — безусловно.
+    «Теперь ты диджей Векна, тема Изнанка» посреди сета меняло персону и
+    НЕ меняло тему: ``build_auto_prompt`` продолжал подставлять
+    `Тема вечеринки: "<старая>"` в каждый переход, и сет уезжал обратно
+    к прошлой теме.
+    """
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "3 сентября — костры рябин"
+    ctrl.state.persona = "Диджей Шафутинский"
+    ctrl.state.transition_count = 3
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "theme": "Изнанка",
+        "persona": "Диджей Векна",
+    }))
+
+    assert ctrl.state.theme == "Изнанка"
+    assert ctrl.state.persona == "Диджей Векна"
+    assert 'Тема вечеринки: "Изнанка"' in ctrl.build_auto_prompt(4)
+    assert "костры рябин" not in ctrl.build_auto_prompt(4)
+
+
+def test_theme_change_mid_session_drops_the_previous_plan() -> None:
+    """План прошлой темы не должен ехать в промпт новой.
+
+    ``plan_block`` подставляется в каждый переход дословно — «Трек 1:
+    костры рябин…» под темой «Изнанка» тянет модель обратно ровно так же,
+    как сама тема. Прогресс (``transition_count``) при этом СОХРАНЯЕТСЯ:
+    сброс счётчика по содержимому payload — регрессия #992, из-за которой
+    каждый переход снова становился «СТАРТ ВЕЧЕРИНКИ».
+    """
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "костры рябин"
+    ctrl.state.set_plan = "Трек 1: костры рябин\nТрек 2: у огня"
+    ctrl.state.transition_count = 3
+
+    ctrl.handle_message(json.dumps({"enabled": True, "theme": "Изнанка"}))
+
+    assert ctrl.state.set_plan == ""
+    assert ctrl.state.transition_count == 3, (
+        "смена темы не сбрасывает прогресс сета — иначе возвращается #992"
+    )
+
+
+def test_theme_change_with_a_new_plan_keeps_the_new_plan() -> None:
+    """Тема и план в одном payload: чистка старого плана не должна съесть новый."""
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "костры рябин"
+    ctrl.state.set_plan = "Трек 1: костры рябин"
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "theme": "Изнанка",
+        "plan": "Трек 1: Демогоргон\nТрек 2: Одиннадцать",
+    }))
+
+    assert ctrl.state.theme == "Изнанка"
+    assert ctrl.state.set_plan == "Трек 1: Демогоргон\nТрек 2: Одиннадцать"
+
+
+def test_resent_identical_theme_does_not_touch_the_plan() -> None:
+    """Модель переприсылает ту же тему на переходах — план трогать нельзя."""
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "Изнанка"
+    ctrl.state.set_plan = "Трек 1: Демогоргон\nТрек 2: Одиннадцать"
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "theme": "Изнанка",
+        "next_transition_sec": 90,
+    }))
+
+    assert ctrl.state.set_plan == "Трек 1: Демогоргон\nТрек 2: Одиннадцать"

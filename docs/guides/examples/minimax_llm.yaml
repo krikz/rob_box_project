@@ -26,7 +26,7 @@
 llm:
   # Порядок попыток: MiniMax первым, MiMo вторым, DeepSeek последним.
   # Чтобы отключить MiniMax — переставьте его в хвост или удалите.
-  provider_order: [minimax, mimo, deepseek]
+  provider_order: [deepseek, minimax, mimo]
 
   providers:
     # ------------------------------------------------------------------

@@ -237,7 +237,7 @@ sub-карточкой (см. §9 «Что не входит в verdict»).
 PR #1565 OPEN с 23.08, head-refName по старому `z-{agent}/...` паттерну.
 В merge-gate есть stale-branch scan (`agent-flow-merge-gate.sh:271-`),
 который **не блокирует** напрямую ветки с этим префиксом (см. §3.0
-ADR-0030 / `t_a2cd5753-stale-branch-gate` PR), но **может** пометить
+ADR-AF-0030 / `t_a2cd5753-stale-branch-gate` PR), но **может** пометить
 `stale-conflicting` если будет force-push на develop. На карточку это
 влияет косвенно: e2e-process может попытаться триггернуть round на
 #1565 и заблокироваться.

@@ -12,18 +12,18 @@
 #
 # Контекст / ретро t_1d0426e3:
 #   Pattern "карточки-призраки": orphan blocked-карточки остаются на доске
-#   после того, как задача решена через параллельную ветку (PR merged,
-#   но issue НЕ закрыт). Причина — расхождение меток: issue в labels
-#   имеет `needs-e2e`, хотя реализация уже в feature/avatar (или develop).
-#   Manual cleanup уже проведён для t_547e17a7, t_3aa4c587, t_307bae4a,
-#   но pattern системный — нужна автоматизация.
+# после того, как задача решена через параллельную ветку (PR merged,
+# но issue НЕ закрыт). Причина — расхождение меток: issue в labels
+# имеет `needs-e2e`, хотя реализация уже в develop.
+# Manual cleanup уже проведён для t_547e17a7, t_3aa4c587, t_307bae4a,
+# но pattern системный — нужна автоматизация.
 #
 # Контракт (per tick):
 #   1. List open issues with label `needs-e2e` in repo $GH_REPO
 #   2. For each: search MERGED PR (gh pr list --state merged --search "#NNN")
 #   3. If MERGED PR found:
-#        - Verify mergeCommit exists in base branch (develop / feature/avatar)
-#          via `git branch --contains <sha>` (локально) или `gh api`
+#        - Verify mergeCommit exists in base branch (develop) via
+#          `git branch --contains <sha>` (локально) или `gh api`
 #        - Comment issue with reason
 #        - Close issue with state_reason=completed
 #        - Find related kanban-card (t_<id> in issue body OR via label
@@ -33,7 +33,7 @@
 # ENV:
 #   GH_REPO                — owner/repo (default krikz/rob_box_project)
 #   BLOCKED_WATCHDOG_DRY_RUN=true — only log, no side-effects
-#   BASE_BRANCHES          — colon-separated, default develop:feature/avatar
+#   BASE_BRANCHES          — colon-separated, default develop:develop
 #   LOCK_FILE              — flock guard against merge-gate (default
 #                            /tmp/agent-flow-blocked-watchdog.lock)
 #
@@ -47,7 +47,7 @@
 #   - gh search возвращает MERGED PR'ы в общем списке; надо фильтровать
 #     --state merged И проверять mergeCommit.oid (None для closed-not-merged).
 #   - Не закрывать issue если базовая ветка — НЕ та, в которой работаем
-#     (orphan может быть только для develop/feature/avatar).
+#     (orphan валиден только для develop).
 #   - comment в issue должен быть idempotent — если за последние 24h уже
 #     был написан marker "agent-flow-blocked-watchdog: closing", skip.
 # ============================================================================
@@ -56,7 +56,7 @@ set -euo pipefail
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 DRY_RUN="${BLOCKED_WATCHDOG_DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-blocked-watchdog.lock}"
-BASE_BRANCHES="${BASE_BRANCHES:-develop:feature/avatar}"
+BASE_BRANCHES="${BASE_BRANCHES:-develop:develop}"
 WINDOW_HOURS=24  # comment idempotency window
 
 # --- flock guard (avoid race with merge-gate) ------------------------------
@@ -66,11 +66,62 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# --- MAINTENANCE gate (issue #3009) -----------------------------------------
+# Inline-проверка (без source lib_agent_flow_common): remote через
+# git ls-remote, local fallback через git -C REPO_DIR show. Шифу ставит
+# MAINTENANCE-файл в develop чтобы приостановить работу воркеров на время
+# ручных правок. Срабатывает → exit 0 (тик пропускается, не ошибка).
+_branch="${MAINTENANCE_BRANCH:-develop}"
+_file="${MAINTENANCE_FILE:-MAINTENANCE}"
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" "${_branch}:${_file}" \
+        2>/dev/null | grep -q .; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: [MAINTENANCE] gate active on remote — skip" >&2
+    exit 0
+fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: [MAINTENANCE] gate active locally in ${REPO_DIR} — skip" >&2
+    exit 0
+fi
+unset _branch _file
+
 # --- gh auth probe ---------------------------------------------------------
 if ! gh auth status >/dev/null 2>&1; then
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: gh auth failed — exit 1" >&2
     exit 1
 fi
+
+# --- tick-summary logging (ADR-0116 / retro t_e3fc9bfe, issue #1977) ---------
+# Cron читает STDOUT (hermes_cli.subcommands.cron: «Empty stdout = silent»).
+# Этот watchdog исторически писал в stderr только. Теперь — маркеры в
+# stdout + per-day log-файл для диагностики задним числом.
+BLOCKED_WATCHDOG_TICK_LOG_DIR="${BLOCKED_WATCHDOG_TICK_LOG_DIR:-$HOME/.hermes/profiles/architect/logs/blocked-watchdog}"
+out() {
+    local _line
+    _line="$(printf '[%s] blocked-watchdog: %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*")"
+    printf '%s\n' "$_line"
+    if [ -n "$BLOCKED_WATCHDOG_TICK_LOG_DIR" ]; then
+        mkdir -p "$BLOCKED_WATCHDOG_TICK_LOG_DIR" 2>/dev/null || true
+        if [ -d "$BLOCKED_WATCHDOG_TICK_LOG_DIR" ]; then
+            printf '%s\n' "$_line" >> "$BLOCKED_WATCHDOG_TICK_LOG_DIR/$(date -u +%Y-%m-%d).log" 2>/dev/null || true
+        fi
+    fi
+}
+tick_start_marker() {
+    out "# TICK_SUMMARY: start pid=$$ script=agent-flow-blocked-watchdog repo=${GH_REPO} window=${WINDOW_HOURS}h"
+}
+tick_end_marker() {
+    out "# TICK_SUMMARY: end checked=${_checked:-0} closed=${_closed:-0} skipped=${_skipped:-0} errors=${_errors:-0} repo=${GH_REPO}"
+}
+trap 'tick_end_marker 2>/dev/null || true' EXIT
+
+# --- tick_start: structured marker в stdout (ADR-0116 / retro t_e3fc9bfe) ---
+# После gh auth + flock. На skip-tick (lock busy / auth fail) marker
+# не появляется — там уже свой лог в stderr. Вызываем ПОСЛЕ определения
+# функций выше (bash не source'ит весь файл заранее — функции доступны
+# только ПОСЛЕ их `function …` строки).
+tick_start_marker
 
 # --- helpers ---------------------------------------------------------------
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -260,6 +311,7 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 # --- exit code -------------------------------------------------------------
 # exit 2 если закрыли хоть один (alert для cron), exit 0 если ничего не
 # закрыли (норма). exit 1 только если gh auth упала (выше).
+tick_end_marker
 if [ "$_closed" -gt 0 ] && [ "$DRY_RUN" != "true" ]; then
     exit 2
 fi

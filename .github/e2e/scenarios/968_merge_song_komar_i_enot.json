@@ -1,0 +1,17 @@
+{
+  "description": "Issue #968 (scheduler-segments-merge, S8) — «комар + енот». Шаг 1: просим спеть длинную песню про комара (LLM должна выдать MULTIPLE speak_text, один на куплет — master_prompt_compact.txt). Шаг 2 (пока робот ещё поёт куплет 1): добавляем тему «и ещё про енота» — это НЕ императив, поэтому quick_decide должен отдать PENDING_LLM, а не REPLACE. С barge_in_policy=classify (нужно выставить live через `ros2 param set /dialogue_node barge_in_policy classify` до прогона — прод-дефолт всё ещё replace, S8.3 не переключён) ожидается: куплет 1 доигрывает до конца (НЕТ 'STOP command received' / 'Cancel: new STT input' между шагами), LLM видит [SEGMENT PLAN] и правит PENDING-сегменты через task_delta вместо рестарта песни с начала.",
+  "steps": [
+    {
+      "text": "Робот, спой длинную песенку из нескольких куплетов про комара",
+      "voice": "anton",
+      "label": "s1_song_komar",
+      "patterns": []
+    },
+    {
+      "text": "Робот, и ещё про енота",
+      "voice": "anton",
+      "label": "s2_merge_enot",
+      "patterns": []
+    }
+  ]
+}

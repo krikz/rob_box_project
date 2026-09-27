@@ -1,0 +1,551 @@
+// Smoke-тест connection.ts без реального WebSocket:
+// проверяем encode/decode HELLO/WELCOME/SUBSCRIBE handshake через loopback.
+//
+// Используем `FakeWebSocket.reserveClient()` чтобы подменить конструктор,
+// который дёрнет `Connection` — `new FakeWebSocket()` вернёт наш заранее
+// подготовленный client-сокет (см. FakeWebSocket constructor).
+
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  encodeJsonFrame,
+  FrameType,
+  decodeFrame
+} from "../src/wire/protocol";
+
+// jsdom не предоставляет WebSocket, поэтому делаем in-memory loopback.
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = [];
+  /** Следующий new FakeWebSocket() вернёт этот объект (через Object.assign). */
+  static nextInstance: FakeWebSocket | null = null;
+
+  static makeServer(): FakeWebSocket {
+    const ws = Object.create(FakeWebSocket.prototype) as FakeWebSocket;
+    ws.readyState = 0;
+    ws.peer = null;
+    ws.sentFrames = [];
+    ws.listeners = {};
+    FakeWebSocket.instances.push(ws);
+    return ws;
+  }
+
+  /** Pre-create a "client" socket and queue it as the next instance returned by `new FakeWebSocket()`. */
+  static reserveClient(): FakeWebSocket {
+    const ws = Object.create(FakeWebSocket.prototype) as FakeWebSocket;
+    ws.readyState = 0;
+    ws.peer = null;
+    ws.sentFrames = [];
+    ws.listeners = {};
+    FakeWebSocket.instances.push(ws);
+    FakeWebSocket.nextInstance = ws;
+    return ws;
+  }
+
+  static link(a: FakeWebSocket, b: FakeWebSocket): void {
+    a.peer = b;
+    b.peer = a;
+  }
+
+  readyState = 0; // CONNECTING
+  peer: FakeWebSocket | null = null;
+  sentFrames: Uint8Array[] = [];
+  listeners: Record<string, Array<(ev: unknown) => void>> = {};
+
+  constructor() {
+    if (FakeWebSocket.nextInstance) {
+      const inst = FakeWebSocket.nextInstance;
+      FakeWebSocket.nextInstance = null;
+      Object.assign(this, inst);
+      return;
+    }
+    FakeWebSocket.instances.push(this);
+  }
+
+  addEventListener(name: string, fn: (ev: unknown) => void): void {
+    (this.listeners[name] ??= []).push(fn);
+  }
+
+  removeEventListener(name: string, fn: (ev: unknown) => void): void {
+    const arr = this.listeners[name];
+    if (!arr) return;
+    const i = arr.indexOf(fn);
+    if (i >= 0) arr.splice(i, 1);
+  }
+
+  send(data: ArrayBuffer | Uint8Array): void {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    this.sentFrames.push(bytes);
+    // Simulate async loopback: dispatch message event on peer.
+    queueMicrotask(() => {
+      if (this.peer) {
+        const listeners = this.peer.listeners["message"] ?? [];
+        for (const fn of listeners) {
+          fn({ data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
+        }
+      }
+    });
+  }
+
+  close(code = 1000, reason = ""): void {
+    this.readyState = 3;
+    for (const fn of this.listeners["close"] ?? []) fn({ code, reason });
+    if (this.peer) {
+      for (const fn of this.peer.listeners["close"] ?? []) fn({ code, reason });
+    }
+  }
+
+  dispatchOpen(): void {
+    this.readyState = 1;
+    for (const fn of this.listeners["open"] ?? []) fn({});
+  }
+}
+
+(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
+
+import { Connection } from "../src/wire/connection";
+
+describe("Connection handshake (loopback)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  it("FakeWebSocket.dispatchOpen actually calls listeners", () => {
+    const [a, b] = [FakeWebSocket.makeServer(), FakeWebSocket.makeServer()];
+    FakeWebSocket.link(a, b);
+    let called = 0;
+    a.addEventListener("open", () => (called += 1));
+    a.dispatchOpen();
+    expect(called).toBe(1);
+  });
+
+  it("sends HELLO on open and parses WELCOME", () => {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+
+    const states: string[] = [];
+    let welcome: { sessionId: string; serverTimeMs: number } | null = null;
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "123456",
+        autoReconnect: false,
+        pingIntervalMs: 100_000, // не триггерить ping в тесте
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      {
+        onStateChange: (s) => states.push(s),
+        onWelcome: (sid, ts) => (welcome = { sessionId: sid, serverTimeMs: ts })
+      }
+    );
+    conn.connect();
+    // Connection создал FakeWebSocket через reserveClient() — наш `client`.
+    expect(client.listeners["open"]?.length).toBeGreaterThanOrEqual(1);
+
+    // Симулируем открытие сокета: client.open + server.open.
+    client.dispatchOpen();
+    server.dispatchOpen();
+
+    // Клиент должен отправить HELLO синхронно при open.
+    expect(client.sentFrames.length).toBeGreaterThanOrEqual(1);
+    const helloFrame = client.sentFrames[0];
+    const dec = decodeFrame(helloFrame);
+    expect(dec.type).toBe(FrameType.HELLO);
+    expect(JSON.parse(new TextDecoder().decode(dec.payload)).session_pin).toBe("123456");
+
+    // Сервер отвечает WELCOME.
+    const welcomeBytes = encodeJsonFrame(FrameType.WELCOME, 0, {
+      server_version: "0.1.0",
+      session_id: "test-session",
+      server_time_ms: 12345
+    });
+    server.send(welcomeBytes as unknown as ArrayBuffer);
+    return new Promise<void>((r) =>
+      queueMicrotask(() =>
+        queueMicrotask(() => {
+          expect(states).toContain("connected");
+          expect(welcome).toEqual({ sessionId: "test-session", serverTimeMs: 12345 });
+          r();
+        })
+      )
+    );
+  });
+
+  it("on AUTH_FAIL → state auth_failed and no reconnect", () => {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+
+    const states: string[] = [];
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "000000",
+        autoReconnect: true,
+        pingIntervalMs: 100_000,
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      { onStateChange: (s) => states.push(s) }
+    );
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    // сервер шлёт ERROR{AUTH_FAIL}
+    const errBytes = encodeJsonFrame(FrameType.ERROR, 0, {
+      code: "AUTH_FAIL",
+      message: "wrong PIN"
+    });
+    server.send(errBytes as unknown as ArrayBuffer);
+    return new Promise<void>((r) =>
+      queueMicrotask(() =>
+        queueMicrotask(() => {
+          expect(states).toContain("auth_failed");
+          expect(conn.getState()).toBe("auth_failed");
+          r();
+        })
+      )
+    );
+  });
+
+  it("subscribe_ack populates streamId → topic map", () => {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      pingIntervalMs: 100_000,
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    // WELCOME
+    server.send(
+      encodeJsonFrame(FrameType.WELCOME, 0, { server_version: "0.1.0", session_id: "s", server_time_ms: 1 }) as unknown as ArrayBuffer
+    );
+    return new Promise<void>((r) =>
+      queueMicrotask(() => {
+        // subscribe
+        conn.subscribe("camera_rear", "med");
+        queueMicrotask(() => {
+          // сервер отвечает ack с stream_id
+          server.send(
+            encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+              type: "subscribe_ack",
+              topic: "camera_rear",
+              stream_id: 0x1001,
+              quality: "med"
+            }) as unknown as ArrayBuffer
+          );
+          queueMicrotask(() =>
+            queueMicrotask(() => {
+              expect(conn.getTopicForStream(0x1001)).toBe("camera_rear");
+              expect(conn.listSubscribed()).toEqual([
+                { topic: "camera_rear", stream_id: 0x1001, quality: "med" }
+              ]);
+              r();
+            })
+          );
+        });
+      })
+    );
+  });
+
+  it("close() switches to closed and prevents reconnect", () => {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const states: string[] = [];
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "123456",
+        autoReconnect: true,
+        pingIntervalMs: 100_000,
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      { onStateChange: (s) => states.push(s) }
+    );
+    conn.connect();
+    client.dispatchOpen();
+    conn.close();
+    expect(conn.getState()).toBe("closed");
+    expect(states).toContain("closed");
+  });
+});
+describe("Connection RTT (ping → pong)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  function connect(onRtt: (ms: number) => void) {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "123456",
+        autoReconnect: false,
+        pingIntervalMs: 100_000,
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      { onRtt }
+    );
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    return { conn, server };
+  }
+
+  it("measures RTT from the echoed ts_ms", async () => {
+    const seen: number[] = [];
+    const { conn, server } = connect((ms) => seen.push(ms));
+    expect(conn.getRttMs()).toBeNull();
+
+    // Сервер эхом возвращает наш ts_ms (meta-quest-api.md §6/§7).
+    const sentTs = Date.now() - 42;
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "pong",
+        ts_ms: sentTs,
+        server_ts_ms: Date.now()
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toBeGreaterThanOrEqual(42);
+    expect(seen[0]).toBeLessThan(2000);
+    expect(conn.getRttMs()).toBe(seen[0]);
+  });
+
+  it("ignores a pong without a usable ts_ms", async () => {
+    const seen: number[] = [];
+    const { conn, server } = connect((ms) => seen.push(ms));
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, { type: "pong" }) as unknown as ArrayBuffer
+    );
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen).toEqual([]);
+    expect(conn.getRttMs()).toBeNull();
+  });
+});
+
+// ─── ADR-0071 step 5a: sendVoiceAudio streamId (1|2) ─────────────────────
+//
+// Один VOICE_AUDIO frame type, два stream_id: 1 = ptt (default, текущее
+// поведение), 2 = wake (новое — always-on поток через VAD-gate).
+
+describe("Connection.sendVoiceAudio streamId (ADR-0071)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  /**
+   * Открыть сокет И завершить HELLO/WELCOME (state=connected), чтобы
+   * клиент реально мог слать фреймы. После WELCOME state становится
+   * 'connected', и `this.ws.readyState` всё ещё 0 (FakeWebSocket не
+   * синхронизирует primitive readyState между экземплярами) — поэтому
+   * дополнительно форсим `readyState=1` на сокете, который Connection
+   * реально хранит (`_peekWs()`).
+   */
+  async function connect(): Promise<{ conn: Connection; client: FakeWebSocket }> {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      pingIntervalMs: 100_000,
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    // Сервер отвечает WELCOME → state=connected.
+    const welcomeBytes = encodeJsonFrame(FrameType.WELCOME, 0, {
+      server_version: "0.1.0",
+      session_id: "test-session",
+      server_time_ms: 12345
+    });
+    server.send(welcomeBytes as unknown as ArrayBuffer);
+    // Дать микротаскам отработать: server.send() асинхронно доставляет
+    // WELCOME → connection обрабатывает → startPing.
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(r)));
+    // Форсим readyState=1 на сокете, который Connection реально хранит
+    // (loopback не синхронизирует это автоматически, см. FakeWebSocket).
+    const ws = conn._peekWs() as unknown as { readyState: number } | null;
+    if (ws) ws.readyState = 1;
+    return { conn, client };
+  }
+
+  it("default streamId=1 (back-compat with current PTT behavior)", async () => {
+    const { conn, client } = await connect();
+    const pcm = new Uint8Array([0x00, 0x00, 0xff, 0x7f]);
+    const sent = conn.sendVoiceAudio(pcm); // no streamId arg → default = 1
+    expect(sent).toBe(true);
+    expect(client.sentFrames.length).toBeGreaterThanOrEqual(1);
+    const last = client.sentFrames[client.sentFrames.length - 1];
+    const dec = decodeFrame(last);
+    expect(dec.type).toBe(FrameType.VOICE_AUDIO);
+    expect(dec.streamId).toBe(1);
+    expect(Array.from(dec.payload)).toEqual([0x00, 0x00, 0xff, 0x7f]);
+  });
+
+  it("streamId=2 marks the chunk as wake (ADR-0071 §2.1)", async () => {
+    const { conn, client } = await connect();
+    const pcm = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+    conn.sendVoiceAudio(pcm, 2);
+    const last = client.sentFrames[client.sentFrames.length - 1];
+    const dec = decodeFrame(last);
+    expect(dec.type).toBe(FrameType.VOICE_AUDIO);
+    expect(dec.streamId).toBe(2);
+    expect(Array.from(dec.payload)).toEqual([0x01, 0x02, 0x03, 0x04]);
+  });
+
+  it("returns false when socket is not open (no spurious send)", () => {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      pingIntervalMs: 100_000,
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    // НЕ дёргаем dispatchOpen — сокет в CONNECTING.
+    const sent = conn.sendVoiceAudio(new Uint8Array([0]), 2);
+    expect(sent).toBe(false);
+  });
+});
+
+// ─── issue #2113 (quest #2112, Captain Bridge): TARS1/TARS2 transport шов ──
+//
+// quest_node.py релеит /tars1/text и /avatar/tars/panel_url в
+// JSON_EVENT(type="tars1_text"|"tars_panel_url") — см.
+// QuestNode._on_tars1_text / _on_tars_panel_url и их unit-тесты
+// (src/rob_box_quest/test/unit/test_quest_tars_transport.py). Этот блок
+// проверяет вторую половину того же шва: что декодер клиента
+// (wire/connection.ts) корректно доносит эти события до `onJsonEvent`
+// колбэка нетронутыми — именно оттуда main.ts зовёт
+// `bridge.tars1Panel.append()` / `bridge.tars2Panel.setPanelUrl()`
+// (см. main.ts, ветки `type === "tars1_text"` / `type === "tars_panel_url"`).
+describe("Connection JSON_EVENT relay: TARS1/TARS2 (issue #2113)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  function connectWithJsonEvents(onJsonEvent: (event: unknown) => void) {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "123456",
+        autoReconnect: false,
+        pingIntervalMs: 100_000,
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      { onJsonEvent: onJsonEvent as (event: import("../src/wire/messages").JsonEvent) => void }
+    );
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    return { conn, server };
+  }
+
+  it("delivers tars1_text payload unchanged to onJsonEvent", async () => {
+    const seen: unknown[] = [];
+    const { server } = connectWithJsonEvents((ev) => seen.push(ev));
+
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "tars1_text",
+        request_id: "abc123",
+        text: "Привет, оператор",
+        streaming: true,
+        done: false,
+        ts_ms: 1234
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toMatchObject({
+      type: "tars1_text",
+      request_id: "abc123",
+      text: "Привет, оператор",
+      streaming: true,
+      done: false
+    });
+  });
+
+  it("delivers tars_panel_url ok status unchanged to onJsonEvent", async () => {
+    const seen: unknown[] = [];
+    const { server } = connectWithJsonEvents((ev) => seen.push(ev));
+
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "tars_panel_url",
+        request_id: "req1",
+        url: "http://prometheus.lan/grafana/d/prometheus-overview?query=cpu",
+        status: "ok",
+        error: "",
+        ts_ms: 5678
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toMatchObject({
+      type: "tars_panel_url",
+      request_id: "req1",
+      url: "http://prometheus.lan/grafana/d/prometheus-overview?query=cpu",
+      status: "ok"
+    });
+  });
+
+  it("delivers tars_panel_url error status with empty url unchanged", async () => {
+    const seen: unknown[] = [];
+    const { server } = connectWithJsonEvents((ev) => seen.push(ev));
+
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "tars_panel_url",
+        request_id: "req2",
+        url: "",
+        status: "error",
+        error: "empty query",
+        ts_ms: 9999
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toMatchObject({
+      type: "tars_panel_url",
+      status: "error",
+      url: "",
+      error: "empty query"
+    });
+  });
+});

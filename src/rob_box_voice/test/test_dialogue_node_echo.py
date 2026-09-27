@@ -26,7 +26,7 @@ _OPTIONAL_DEPS = {
     "audio_common_msgs.msg": True,
     "rob_box_harness": False,
     "rob_box_harness.core": False,
-    "rob_box_harness.core.dialog_core": False,
+    "rob_box_harness.core.agent_core": False,
     "rob_box_harness.core.dialogue_state_machine": False,
     "rob_box_harness.core.tool_registry": False,
     "rob_box_harness.executors": False,
@@ -100,6 +100,11 @@ def _ensure_rclpy_mock(monkeypatch):
         QoSProfile = MagicMock()
         ReliabilityPolicy = MagicMock()
         HistoryPolicy = MagicMock()
+        # Issue #1734 — dialogue_node.__init__ создаёт latched-топик
+        # barge_in_policy (QoSProfile(durability=DurabilityPolicy.
+        # TRANSIENT_LOCAL)); без атрибута import dialogue_node падает
+        # ImportError.
+        DurabilityPolicy = MagicMock()
 
     monkeypatch.setitem(sys.modules, "rclpy.qos", _QoSMod())
 
@@ -127,7 +132,7 @@ def _ensure_rclpy_mock(monkeypatch):
     for mod in [
         "rob_box_harness",
         "rob_box_harness.core",
-        "rob_box_harness.core.dialog_core",
+        "rob_box_harness.core.agent_core",
         "rob_box_harness.core.dialogue_state_machine",
         "rob_box_harness.core.tool_registry",
         "rob_box_harness.executors",

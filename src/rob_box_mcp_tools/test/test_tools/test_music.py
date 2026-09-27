@@ -7,8 +7,12 @@ test_music.py - Unit тесты для инструментов управлен
 - ExecuteMusicCodeTool, StopMusicTool, SetVibePresetTool, GetMusicStateTool
 """
 
+import re
+import socket
+import struct
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -34,11 +38,17 @@ for _mod in [
 
 from rob_box_mcp_tools.tools.music import (  # noqa: E402
     MusicManager,
+    ComposeMusicTool,
     ExecuteMusicCodeTool,
+    PreviewArrangementTool,
+    SaveArrangementPresetTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    LookupMelodyTool,
+    TrackLibrary,
 )
+from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -80,10 +90,65 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     # issue #990 — segments safety-net deadline
     mgr._music_deadline_at = None
     mgr._music_deadline_segments = None
+    # issue #1812 — non-repeating compose_music() form-end deadline
+    mgr._music_form_deadline_at = None
+    # issue #2461 — form-cycle end (arms regardless of repeat)
+    mgr._music_form_cycle_ends_at = None
+    # issue #2950 — last named track snapshot for tweak inheritance
+    mgr.last_track_arrangement = None
     # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
+
+
+def _osc_string(s: str) -> bytes:
+    """Build one OSC string field: NUL-terminated, padded to a multiple of 4.
+
+    Mirrors the correct algorithm from issue #1808 (a naive
+    ``(4 - len(b) % 4) % 4`` gives ZERO padding for strings whose encoded
+    length is already a multiple of 4 — the exact bug this test helper must
+    NOT reproduce, since it is used to build the "ground truth" packets the
+    parser is tested against).
+    """
+    b = s.encode() + b"\x00"
+    while len(b) % 4:
+        b += b"\x00"
+    return b
+
+
+def _build_osc_message(address: str, tags: str = "", *args: object) -> bytes:
+    """Build a raw OSC message: address + (optional) type-tag string + args.
+
+    ``tags`` is the tag string WITHOUT the leading comma (e.g. ``"ss"``,
+    ``"sif"``); pass ``""`` for an address-only message (no type tag at
+    all — legal OSC, used by some scsynth notifications).
+    """
+    msg = bytearray(_osc_string(address))
+    if not tags:
+        return bytes(msg)
+    msg.extend(_osc_string("," + tags))
+    for tag, arg in zip(tags, args):
+        if tag == "s":
+            msg.extend(_osc_string(str(arg)))
+        elif tag == "i":
+            msg.extend(struct.pack(">i", int(arg)))
+        elif tag == "f":
+            msg.extend(struct.pack(">f", float(arg)))
+        else:  # pragma: no cover — test helper only supports s/i/f
+            raise ValueError(f"unsupported tag {tag!r} in test helper")
+    return bytes(msg)
+
+
+def _manager_with_captured_warnings():
+    """A ``_make_manager()`` instance whose ``_log_warning`` calls are
+    captured into a list instead of hitting stderr — used by the #1808
+    OSC-reply tests below."""
+    mgr = _make_manager()
+    mgr._logger = None
+    logged: list = []
+    mgr._log_warning = lambda message: logged.append(message)
+    return mgr, logged
 
 
 # ---------------------------------------------------------------------------
@@ -221,14 +286,37 @@ class TestMusicManagerCaps:
     def setup_method(self):
         self.mgr = _make_manager()
 
-    def test_oct_is_capped_at_4(self):
-        # oct=5 (резкий диапазон) → oct=4
+    def test_oct_is_capped_at_5(self):
+        """Санитарный потолок: выше oct=5 на 16 kHz только писк.
+
+        🔴 Live 31.08: потолок стоял на 6 в расчёте на анти-алиасинговый
+        LPF внутри ``masterlimiter``. Лимитер снят (выдавал NaN и глушил
+        выход), и модель тут же засвистела: ``bell(..., oct=7)`` обрезался
+        до 6 и всё равно зеркалил обертоны из-за Найквиста в 8 kHz.
+        Регистры аранжировщика (бас 3, пэд 4, мелодия 5) потолок 5 не
+        задевает — режется только рукописный код выше них.
+        """
+        code = "p1 >> pluck([0,2,4], oct=9)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=5" in out
+        assert "oct=9" not in out
+
+    def test_bell_from_the_live_whistle_is_brought_down(self):
+        """Ровно та строка, на которой робот засвистел 31.08."""
+        code = "p3 >> bell([7, 4, 2, 0], dur=1, oct=7, amp=0.2)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=5" in out
+        assert "oct=7" not in out
+
+    def test_oct_5_survives_for_register_separation(self):
+        # RC2 в docs/analysis/2026-08-30-music-quality-audit.md: старый кап
+        # oct<=4 схлопывал бас (oct=3) и лид в соседние октавы — микс без
+        # регистрового разделения слышится как «одна повторяющаяся мелодия».
         code = "p1 >> pluck([0,2,4], oct=5)"
         out = self.mgr._cap_amp(code)
-        assert "oct=4" in out
-        assert "oct=5" not in out
+        assert "oct=5" in out
 
-    def test_oct_unchanged_when_leq_4(self):
+    def test_oct_unchanged_when_leq_5(self):
         code = "p1 >> pluck([0,2,4], oct=3)"
         out = self.mgr._cap_amp(code)
         assert "oct=3" in out
@@ -263,6 +351,227 @@ class TestMusicManagerCaps:
         assert self.mgr.dj_mode_enabled is True
         self.mgr.set_dj_mode(False)
         assert self.mgr.dj_mode_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — issue #1803: рисунок play(...) должен делить такт
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerPatternLength:
+    """``_fix_pattern_length`` достраивает рисунок до степени двойки.
+
+    Живые прогоны 30-31.08, четыре трека подряд — барабаны «плыли», потому
+    что модель писала рисунки, чья длина не делит такт (см. issue #1803).
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    def test_nine_step_pattern_trimmed_to_eight(self):
+        """🔴 live 01.09: раньше добивали до 16, и грув бил вдвое реже.
+
+        Хвостовые паузы снимаются: 9 шагов с паузой на конце дают ровно
+        такт, а не два такта с тишиной во второй половине.
+        """
+        code = 'd1 >> play("X..X.o...")'  # джаз-трек 30.08
+        out = self.mgr._fix_pattern_length(code)
+        assert 'play("X..X.o..")' in out
+
+    def test_pad_character_is_a_true_rest_not_a_sample(self):
+        """Живой инцидент: добивка ``-`` — это звучащий сэмпл "hyphen"
+        (renardo_gatherer/collections.py, каталог
+        samples/0_foxdot_default/_/hyphen существует на роботе), а не
+        пауза. У ``.`` сэмпл-каталога нет ни в одном паке — это и есть
+        настоящая тишина. Проверяем инвариант напрямую: нормализация не
+        должна добавлять НИ ОДНОГО звучащего символа, только точки.
+        """
+        code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
+        out = self.mgr._fix_pattern_length(code)
+        pattern = re.search(r'play\("([^"]*)"\)', out).group(1)
+        sounding = [c for c in pattern if c != "."]
+        assert sounding == [c for c in "X..o.X.o." if c != "."], (
+            "звучащие символы обязаны сохраниться один в один"
+        )
+        assert "-" not in pattern
+
+    def test_power_of_two_pattern_is_untouched(self):
+        # "....o..." — 8 шагов, уже степень двойки: трогать нечего.
+        code = 'd3 >> play("....o...")'
+        assert self.mgr._fix_pattern_length(code) == code
+
+    def test_nine_step_disco_pattern_trimmed_to_eight(self):
+        code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
+        out = self.mgr._fix_pattern_length(code)
+        assert len(re.search(r'play\("([^"]*)"\)', out).group(1)) == 8
+
+    def test_single_quoted_pattern_is_handled(self):
+        code = "d1 >> play('X..o.X.o.')"  # 9 шагов, диско трек 6
+        out = self.mgr._fix_pattern_length(code)
+        assert "play('X..o.X.o')" in out
+
+    def test_eighteen_step_pattern_trimmed_to_sixteen(self):
+        # Финал диджей-сета: d2 >> play("V..o.....V..o.....") — 18 шагов.
+        code = 'd2 >> play("V..o.....V..o.....")'
+        out = self.mgr._fix_pattern_length(code)
+        match = re.search(r'play\("([^"]*)"\)', out)
+        assert len(match.group(1)) == 16
+        assert match.group(1) == "V..o.....V..o..."
+
+    def test_trailing_rests_are_not_stripped_past_a_power_of_two(self):
+        """'X.....' — «бочка раз в шесть шагов», не повод бить на каждом."""
+        code = 'd1 >> play("X.....")'
+        out = self.mgr._fix_pattern_length(code)
+        assert 'play("X...")' in out
+
+    def test_pattern_without_trailing_rests_is_padded_as_before(self):
+        """Резать нечего — добиваем, звучащие символы терять нельзя."""
+        code = 'd2 >> play("-.---")'
+        out = self.mgr._fix_pattern_length(code)
+        assert 'play("-.---...")' in out
+
+    def test_short_pattern_left_alone(self):
+        code = 'd1 >> play("X")'
+        assert self.mgr._fix_pattern_length(code) == code
+
+    def test_multiple_layers_each_normalized_independently(self):
+        # Дэт-метал трек: три рассинхронизированных рисунка в одном коде.
+        code = (
+            'd1 >> play("X...X...X...X...")\n'
+            'd2 >> play("..........o.......")\n'
+            'd3 >> play("---.-.-.-.-.-.-")\n'
+        )
+        out = self.mgr._fix_pattern_length(code)
+        lengths = [len(m.group(1)) for m in re.finditer(r'play\("([^"]*)"\)', out)]
+        # d1 уже 16; у d2 семь хвостовых пауз снимаются до 16 (а не добиваются
+        # до 32); d3 звучит до последнего символа — режем нечего, добиваем.
+        assert lengths == [16, 16, 16], (
+            "после нормализации все три слоя обязаны делить такт ОДИНАКОВО, "
+            "иначе они продолжат расходиться по фазе"
+        )
+
+    def test_execute_code_applies_pattern_fix_before_sending_to_renardo(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code('d1 >> play("X..X.o...")')
+        assert result["success"] is True
+        assert "-" not in result["code"]
+        assert 'play("X..X.o..")' in result["code"]
+        executed_code = mock_exec.call_args[0][0]
+        assert 'play("X..X.o..")' in executed_code
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — issue #1804: только d1-d3/p1-p3 звучат на роботе
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerSlotRemap:
+    """``_remap_illegal_slots`` спасает слои из d4+/p4+ (issue #1804).
+
+    Живой прогон 31.08, «в траве сидел кузнечик»: ``p4 >> play(...)`` не
+    звучал — на роботе физически подключены только d1-d3/p1-p3, а тул
+    рапортовал success. Правило было только в промпте, кода-стража не было.
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    def test_illegal_play_slot_moves_to_free_d_slot(self):
+        code = 'p4 >> play("..o...o.", amp=0.2)'
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert 'd1 >> play("..o...o.", amp=0.2)' in out
+
+    def test_illegal_synth_slot_moves_to_free_p_slot(self):
+        code = 'd4 >> pluck([0, 2, 4])'
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert "p1 >> pluck([0, 2, 4])" in out
+
+    def test_preferred_category_full_falls_back_to_the_other(self):
+        # d1-d3 уже заняты — play() из d4 должен уйти в p-слот.
+        code = (
+            'd1 >> play("x")\n'
+            'd2 >> play("x")\n'
+            'd3 >> play("x")\n'
+            'd4 >> play("o")\n'
+        )
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert 'p1 >> play("o")' in out
+
+    def test_no_free_slots_returns_honest_error_instead_of_silence(self):
+        code = (
+            'd1 >> play("x")\n'
+            'd2 >> play("x")\n'
+            'd3 >> play("x")\n'
+            'p1 >> pluck([0])\n'
+            'p2 >> pluck([2])\n'
+            'p3 >> pluck([4])\n'
+            'p4 >> play("o")\n'
+        )
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is not None
+        assert "p4" in error
+        assert out == code  # исходный код не подменяется на невалидный
+
+    def test_repeated_illegal_name_reuses_the_same_new_slot(self):
+        # Один и тот же p4 упомянут дважды — не должен расщепиться на два
+        # разных плеера.
+        code = 'p4 >> play("x")\np4.amp = 0.3\n'
+        # `.amp =` не матчится ассайн-регексом (нет `>>`), поэтому
+        # проверяем именно случай двух `>>`-строк на одно илегальное имя:
+        code2 = 'p4 >> play("x")\np4 >> play("o")\n'
+        out, error = self.mgr._remap_illegal_slots(code2)
+        assert error is None
+        assert out.count("d1 >>") == 2
+
+    def test_the_live_grasshopper_incident_is_fixed(self):
+        # Ровно тот код из живого прогона 31.08.
+        code = (
+            "p1 >> blip([0,2,4,7,9,7,4,2], dur=0.25, amp=0.4)\n"
+            "p2 >> dub([0,0,0,-2], dur=0.5, oct=3, amp=0.35)\n"
+            'p3 >> play("X..X..X.", amp=0.25)\n'
+            'p4 >> play("..o...o.", amp=0.2)\n'
+        )
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert "p4" not in out
+        assert 'd1 >> play("..o...o.", amp=0.2)' in out
+
+    def test_allowed_slots_are_never_touched(self):
+        code = "p1 >> pluck([0])\nd2 >> play('x-o-')\n"
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert out == code
+
+    def test_execute_code_rejects_when_all_slots_are_taken(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        code = (
+            'd1 >> play("x")\n'
+            'd2 >> play("x")\n'
+            'd3 >> play("x")\n'
+            'p1 >> pluck([0])\n'
+            'p2 >> pluck([2])\n'
+            'p3 >> pluck([4])\n'
+            'p4 >> play("o")\n'
+        )
+        with patch("builtins.exec"):
+            result = mgr.execute_code(code)
+        assert result["success"] is False
+        assert "слот" in result["error"].lower()
+
+    def test_execute_code_remaps_before_sending_to_renardo(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code('p4 >> play("..o...o.")')
+        assert result["success"] is True
+        executed_code = mock_exec.call_args[0][0]
+        assert "p4" not in executed_code
+        assert "d1 >>" in executed_code
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +722,60 @@ class TestMusicManagerSCCheck:
         # Type tag should contain ',if'
         assert b",if" in sent_data
 
+    def test_set_master_gain_targets_limiter_node_and_clamps(self):
+        """The fader is the only music-vs-speech level knob (issue #986).
+
+        It must land on the fixed ``masterlimiter`` node, and clamp — a
+        gain above 1.0 would push the mix back into the limiter and undo
+        the headroom the limiter exists to provide.
+        """
+        mgr = self._make_raw_manager()
+        with patch.object(MusicManager, "_send_osc_raw") as send:
+            assert mgr.set_master_gain(0.35) == 0.35
+            send.assert_called_once_with(
+                "/n_set", MusicManager.MASTER_LIMITER_NODE, "gain", 0.35
+            )
+        assert MusicManager.MASTER_LIMITER_NODE < 1000, (
+            "renardo hands out node IDs from 1001 upwards "
+            "(ServerManager.nextnodeID) — staying below 1000 is what keeps "
+            "the limiter node collision-free"
+        )
+        with patch.object(MusicManager, "_send_osc_raw"):
+            assert mgr.set_master_gain(3.0) == 1.0
+            assert mgr.set_master_gain(-1.0) == 0.0
+
+    def test_set_master_gain_survives_missing_socket(self):
+        """A dead OSC socket must not take the music tools down with it."""
+        mgr = self._make_raw_manager()
+        with patch.object(
+            MusicManager, "_send_osc_raw", side_effect=OSError("no route")
+        ):
+            assert mgr.set_master_gain(0.4) == 0.4
+
+    def test_send_osc_raw_string_arg_is_padded_and_tagged(self):
+        """Control names must travel as OSC ``s``, not as int32.
+
+        ``/n_set <node> <control-name> <value>`` is how the master limiter
+        fader is driven. If the name went out as ``i``, scsynth would read
+        the first 4 bytes of ``gain`` as an int32 and silently ignore the
+        set — the exact trap documented in ``_verify_and_retry_synthdefs``
+        for ``"amp"``.
+        """
+        import struct
+
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mgr._send_osc_raw("/n_set", 999, "gain", 0.5)
+        sent_data, _ = mock_sock.sendto.call_args[0]
+        assert b",isf" in sent_data
+        # "gain" is 4 chars -> needs a full 4-byte pad block for the NUL.
+        assert b"gain\x00\x00\x00\x00" in sent_data
+        assert sent_data.endswith(struct.pack(">f", 0.5))
+        assert len(sent_data) % 4 == 0
+
     def test_send_osc_raw_propagates_socket_errors(self):
         """_send_osc_raw is a raw transport — it propagates OSError.
 
@@ -428,6 +791,336 @@ class TestMusicManagerSCCheck:
             )
             with pytest.raises(OSError):
                 mgr._send_osc_raw("/g_new", 1, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — OSC reply parsing (issue #1808)
+# ---------------------------------------------------------------------------
+#
+# scsynth's /fail replies used to be sent into the void (Renardo never reads
+# its own OSC socket). These are the pure byte-level parsing functions that
+# make the new listener trustworthy: if THEY silently swallow a malformed
+# packet or misparse a real /fail, the whole feature degrades back to
+# silent failure with an added false sense of safety — worse than before.
+
+
+@pytest.mark.unit
+class TestSplitOscAddress:
+    """``MusicManager._split_osc_address`` — byte-level, no socket needed."""
+
+    def test_fail_with_ss_args(self):
+        """Typical scsynth error: /fail ,ss <failed-command> <description>."""
+        data = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        address, rest = MusicManager._split_osc_address(data)
+        assert address == "/fail"
+        # Byte-exact: rest must start with the type-tag block, unchanged.
+        assert rest == data[8:]  # "/fail\0\0\0" is 8 bytes (5 chars + 3 pad)
+
+    def test_done_address_only_no_type_tag(self):
+        """Some scsynth notifications carry no type tag at all (legal OSC)."""
+        data = _build_osc_message("/done")
+        address, rest = MusicManager._split_osc_address(data)
+        assert address == "/done"
+        assert rest == b""
+
+    def test_address_length_multiple_of_4_still_gets_full_padding(self):
+        """Regression for the naive-padding trap named in issue #1808.
+
+        A naive ``(4 - len(b) % 4) % 4`` gives ZERO padding when the
+        encoded string length is already a multiple of 4 — the address
+        then has no NUL terminator at all and everything after it is
+        misaligned. "/abc" is 4 bytes before any terminator; a correct
+        packer still adds a full 4-byte pad block (1 terminator + 3 more
+        NULs), landing the payload at offset 8, not 4.
+        """
+        # Correctly built: "/abc" (4) + 4 pad bytes (terminator + 3 more) = 8.
+        data = b"/abc" + b"\x00" * 4 + b"MARKER!!"
+        address, rest = MusicManager._split_osc_address(data)
+        assert address == "/abc"
+        assert rest == b"MARKER!!"
+
+    def test_empty_bytes_returns_none_safely(self):
+        assert MusicManager._split_osc_address(b"") == (None, b"")
+
+    def test_missing_leading_slash_returns_none_safely(self):
+        """Garbage on the wire (not an OSC message at all) must not raise."""
+        assert MusicManager._split_osc_address(b"garbage\x00") == (None, b"")
+
+    def test_truncated_message_with_no_terminator_returns_none_safely(self):
+        """A cut-off UDP packet (no NUL anywhere) must not raise or hang."""
+        assert MusicManager._split_osc_address(b"/fail") == (None, b"")
+
+
+@pytest.mark.unit
+class TestDecodeOscArgs:
+    """``MusicManager._decode_osc_args`` — byte-level, no socket needed."""
+
+    def test_ss_args(self):
+        """The common /fail shape: failed command + human-readable reason."""
+        data = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        _address, rest = MusicManager._split_osc_address(data)
+        args = MusicManager._decode_osc_args(rest)
+        assert args == ["/g_new", "Group 1 not found"]
+
+    def test_sif_mixed_types_regression_1444(self):
+        """Regression for #1444: a control name typed as int32 by mistake.
+
+        ``/n_set`` with tag ``,isf`` sent a float 1.0 through an int32
+        slot and it came back as ``Node 1065353216 not found`` — a value
+        only explicable once you know 1065353216 is IEEE-754 1.0f reread
+        as int32. The decoder must keep ``i`` and ``f`` distinct instead
+        of collapsing everything to one numeric type.
+        """
+        data = _build_osc_message("/fail", "sif", "/n_set", 1065353216, 1.0)
+        _address, rest = MusicManager._split_osc_address(data)
+        args = MusicManager._decode_osc_args(rest)
+        assert args == ["/n_set", 1065353216, 1.0]
+        assert isinstance(args[1], int)
+        assert isinstance(args[2], float)
+
+    def test_done_style_ss_args_alignment(self):
+        """``,ss`` is itself exactly 4 bytes (",ss" + NUL) — zero EXTRA
+        padding needed after the terminator. Pins the other half of the
+        alignment math: the loop must add nothing when already aligned,
+        not just something when it isn't (see TestSplitOscAddress for the
+        opposite case)."""
+        data = _build_osc_message("/done", "ss", "/foxdot", "ok")
+        _address, rest = MusicManager._split_osc_address(data)
+        # ",ss\0" is 4 bytes: tag block ends exactly on a boundary.
+        assert rest[:4] == b",ss\x00"
+        args = MusicManager._decode_osc_args(rest)
+        assert args == ["/foxdot", "ok"]
+
+    def test_no_type_tag_returns_empty_list(self):
+        assert MusicManager._decode_osc_args(b"") == []
+        assert MusicManager._decode_osc_args(b"not-a-tag-block") == []
+
+    def test_truncated_after_type_tag_returns_partial_without_raising(self):
+        """Type tag promises an int, but the packet is cut short."""
+        rest = _osc_string(",i")  # tag block present, no int payload follows
+        assert MusicManager._decode_osc_args(rest) == []
+
+    def test_truncated_string_arg_returns_partial_without_raising(self):
+        """String tag with no NUL terminator anywhere in the remaining bytes."""
+        rest = _osc_string(",s") + b"nonulhere"
+        assert MusicManager._decode_osc_args(rest) == []
+
+    def test_unknown_type_tag_stops_without_raising(self):
+        """A blob ('b') or other unsupported tag must stop parsing cleanly,
+        keeping whatever was already decoded instead of raising."""
+        msg = bytearray(_osc_string(",sb"))
+        msg.extend(_osc_string("/s_new"))
+        # No attempt to encode a real blob — decoder must bail out at 'b'
+        # without needing valid blob bytes to follow.
+        args = MusicManager._decode_osc_args(bytes(msg))
+        assert args == ["/s_new"]
+
+
+@pytest.mark.unit
+class TestLogOscReply:
+    """``MusicManager._log_osc_reply`` — formatting into the mcp_server log."""
+
+    def test_fail_is_logged_with_command_and_description(self):
+        mgr, logged = _manager_with_captured_warnings()
+        data = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        mgr._log_osc_reply(data)
+        assert len(logged) == 1
+        assert "/g_new" in logged[0]
+        assert "Group 1 not found" in logged[0]
+
+    def test_fail_without_type_tag_falls_back_to_raw_bytes(self):
+        """Some scsynth versions/edge cases may send /fail with no args at
+        all — must still produce a readable (non-crashing) log line."""
+        mgr, logged = _manager_with_captured_warnings()
+        data = _build_osc_message("/fail")
+        mgr._log_osc_reply(data)
+        assert len(logged) == 1
+        assert "scsynth" in logged[0].lower() or "FAILURE" in logged[0]
+
+    def test_non_fail_address_is_not_logged(self):
+        """/done and friends are routine acks — logging them would drown
+        out the actual failures this feature exists to surface."""
+        mgr, logged = _manager_with_captured_warnings()
+        data = _build_osc_message("/done", "ss", "/foxdot", "ok")
+        mgr._log_osc_reply(data)
+        assert logged == []
+
+    def test_garbage_bytes_do_not_raise_or_log(self):
+        mgr, logged = _manager_with_captured_warnings()
+        mgr._log_osc_reply(b"\x00\x00\x00\x00")
+        assert logged == []
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — reply-listener plumbing (issue #1808)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestLogScsynthReplyIfAny:
+    """``_send_osc_raw``'s post-sendto reply check — must never block long
+    or raise; a timeout (the common, successful case) is normal, not an
+    error."""
+
+    def test_timeout_is_swallowed_silently(self):
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        sock.recvfrom.side_effect = socket.timeout
+        mgr._log_scsynth_reply_if_any(sock)
+        assert logged == []
+        sock.settimeout.assert_called_once_with(MusicManager.OSC_REPLY_TIMEOUT_SECONDS)
+
+    def test_fail_reply_is_logged(self):
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        sock.recvfrom.return_value = (
+            _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found"),
+            ("127.0.0.1", 57110),
+        )
+        mgr._log_scsynth_reply_if_any(sock)
+        assert len(logged) == 1
+        assert "Group 1 not found" in logged[0]
+
+    def test_arbitrary_socket_error_is_swallowed(self):
+        """Any transport hiccup here must never propagate into the admin
+        OSC send path it's attached to (``_send_osc_raw``)."""
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        sock.recvfrom.side_effect = OSError("network unreachable")
+        mgr._log_scsynth_reply_if_any(sock)  # must not raise
+        assert logged == []
+
+
+@pytest.mark.unit
+class TestRenardoReplyListenerLoop:
+    """``_renardo_reply_listener_loop`` — the background thread body."""
+
+    def test_logs_fail_then_exits_cleanly_when_socket_closes(self):
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        fail_packet = _build_osc_message("/fail", "ss", "/s_new", "SynthDef blip not found")
+        sock.recvfrom.side_effect = [
+            (fail_packet, ("127.0.0.1", 57110)),
+            OSError("socket closed"),
+        ]
+        # Must return (not hang) once the socket goes away.
+        mgr._renardo_reply_listener_loop(sock)
+        assert len(logged) == 1
+        assert "SynthDef blip not found" in logged[0]
+
+    def test_bad_packet_does_not_kill_the_loop(self):
+        """One malformed datagram must not stop the listener from seeing
+        the next (real) one."""
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        fail_packet = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        sock.recvfrom.side_effect = [
+            (b"\xff\xff garbage", ("127.0.0.1", 57110)),
+            (fail_packet, ("127.0.0.1", 57110)),
+            OSError("socket closed"),
+        ]
+        mgr._renardo_reply_listener_loop(sock)
+        assert len(logged) == 1
+        assert "Group 1 not found" in logged[0]
+
+
+@pytest.mark.unit
+class TestAttachRenardoReplyListener:
+    """``_attach_renardo_reply_listener`` — best-effort tap onto Renardo's
+    own long-lived scsynth socket. Must never raise, regardless of what
+    ``_rt``'s object graph looks like, and must never spawn more than one
+    listener thread per underlying socket."""
+
+    def _mgr(self):
+        mgr = _make_manager()
+        mgr._logger = None
+        mgr._renardo_reply_sock = None
+        return mgr
+
+    def test_real_socket_gets_a_daemon_listener_thread(self):
+        mgr = self._mgr()
+        real_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            fake_rt = SimpleNamespace(
+                Server=SimpleNamespace(client=SimpleNamespace(socket=real_sock))
+            )
+            with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+                mock_thread = Mock()
+                mock_thread_cls.return_value = mock_thread
+
+                mgr._attach_renardo_reply_listener(fake_rt)
+
+                assert mgr._renardo_reply_sock is real_sock
+                _args, kwargs = mock_thread_cls.call_args
+                assert kwargs["target"] == mgr._renardo_reply_listener_loop
+                assert kwargs["args"] == (real_sock,)
+                assert kwargs["daemon"] is True
+                mock_thread.start.assert_called_once()
+        finally:
+            real_sock.close()
+
+    def test_missing_server_attribute_does_not_raise_or_attach(self):
+        mgr = self._mgr()
+        with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+            mgr._attach_renardo_reply_listener(SimpleNamespace())  # no .Server at all
+        assert mgr._renardo_reply_sock is None
+        mock_thread_cls.assert_not_called()
+
+    def test_none_rt_does_not_raise(self):
+        mgr = self._mgr()
+        mgr._attach_renardo_reply_listener(None)
+        assert mgr._renardo_reply_sock is None
+
+    def test_client_socket_attribute_missing_does_not_attach(self):
+        mgr = self._mgr()
+        fake_rt = SimpleNamespace(Server=SimpleNamespace(client=SimpleNamespace()))
+        with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+            mgr._attach_renardo_reply_listener(fake_rt)
+        assert mgr._renardo_reply_sock is None
+        mock_thread_cls.assert_not_called()
+
+    def test_socket_attribute_is_not_a_real_socket_does_not_attach(self):
+        """A different Renardo version (or a mock in some other test) might
+        expose a ``.socket`` that isn't a ``socket.socket`` — must be
+        ignored rather than handed to a thread expecting real recv()."""
+        mgr = self._mgr()
+        fake_rt = SimpleNamespace(
+            Server=SimpleNamespace(client=SimpleNamespace(socket="not-a-socket"))
+        )
+        with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+            mgr._attach_renardo_reply_listener(fake_rt)
+        assert mgr._renardo_reply_sock is None
+        mock_thread_cls.assert_not_called()
+
+    def test_same_socket_is_attached_only_once(self):
+        """A retried ``_ensure_renardo_available`` must not stack up a new
+        listener thread per retry as long as Renardo kept the same socket."""
+        mgr = self._mgr()
+        real_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            fake_rt = SimpleNamespace(
+                Server=SimpleNamespace(client=SimpleNamespace(socket=real_sock))
+            )
+            with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+                mock_thread_cls.return_value = Mock()
+                mgr._attach_renardo_reply_listener(fake_rt)
+                mgr._attach_renardo_reply_listener(fake_rt)
+                assert mock_thread_cls.call_count == 1
+        finally:
+            real_sock.close()
+
+    def test_attaching_raises_internally_is_swallowed(self):
+        """Even a genuinely broken object graph (attribute access itself
+        raises) must not take down Renardo initialization."""
+        mgr = self._mgr()
+
+        class _Explodes:
+            @property
+            def Server(self):
+                raise RuntimeError("boom")
+
+        mgr._attach_renardo_reply_listener(_Explodes())  # must not raise
+        assert mgr._renardo_reply_sock is None
 
 
 # ---------------------------------------------------------------------------
@@ -726,10 +1419,14 @@ class TestSampleBufferPrewarm:
         mgr = _make_manager()
         mgr._renardo_context = {"Samples": _FakeSamples()}
 
-        mgr._prewarm_sample_buffers('d1 >> play("x-o-", dur=0.5, sample=1)')
+        # Issue #1815: "-" — звучащий хэт ("hyphen"), а не пауза; настоящая
+        # пауза — ".". Прогреваться должны x, "-" (дважды) и o — всё, кроме
+        # точки. Обе "-" объединены в проверке ниже, а не отброшены.
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-.", dur=0.5, sample=1)')
 
-        assert [c[0] for c in calls] == ["x", "o"], (
-            f"должны грузиться только символы x и o, получено: {calls!r}"
+        assert [c[0] for c in calls] == ["x", "-", "o", "-"], (
+            f"должны грузиться все звучащие символы (в т.ч. '-'), кроме "
+            f"паузы '.', получено: {calls!r}"
         )
         assert all(spack == 0 for _, spack in calls)
 
@@ -852,6 +1549,41 @@ class TestMusicManagerExecuteCode:
         remaining = mgr._music_deadline_at - time.monotonic()
         assert remaining >= MusicManager.MIN_SEGMENTS_DEADLINE_SECONDS - 0.5
 
+    def test_live_3008_short_beat_survives_longer_than_the_tts_reply(self):
+        """🔴 Регрессия 30.08 (vision-pi 12:30:22 → 12:30:43).
+
+        «сыграй короткий бит» → LLM отдала ``segments=8`` при
+        ``Clock.bpm=90``. Старая формула давала дедлайн 8*2.667 = 21.3 s,
+        и watchdog убил бит через 20 s: TTS-ответ («Бит играет и сохранён
+        как «тисбит».», 6.8 s) закончился на 11-й секунде, музыка играла
+        одна ещё 7 секунд и оборвалась. Следующая реплика юзера —
+        «продолжай развивать этот бит» — пришла в тишину.
+
+        Дедлайн обязан оставаться ПРЕДОХРАНИТЕЛЕМ: заметно длиннее того,
+        что напросила LLM, и не короче минуты.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=90)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> blip([0,2,4,7])", segments=8)
+        remaining = mgr._music_deadline_at - time.monotonic()
+        assert remaining >= 60.0 - 0.5, (
+            "8 баров на 90 bpm давали 21 s — бит умирал раньше, чем "
+            "юзер успевал попросить продолжение"
+        )
+
+    def test_segments_deadline_applies_the_safety_factor(self):
+        """Дедлайн = музыкальная длина × запас, а не ровно она."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=120)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=64)
+        bar = 4 * 60.0 / 120.0  # 2.0 s
+        expected = 64 * bar * MusicManager.SEGMENTS_DEADLINE_SAFETY_FACTOR
+        remaining = mgr._music_deadline_at - time.monotonic()
+        assert remaining == pytest.approx(expected, abs=1.0)
+        assert expected > MusicManager.MIN_SEGMENTS_DEADLINE_SECONDS
+
     def test_execute_with_segments_clamps_absurd_values(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
@@ -969,6 +1701,324 @@ class TestMusicManagerExecuteCode:
 
         assert "/g_freeAll" not in osc_calls
         assert "/g_new" not in osc_calls
+
+
+# ---------------------------------------------------------------------------
+# MusicManager.known_synth_names() — live-инцидент 21.09.2026
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerKnownSynthNames:
+    """``known_synth_names()`` — источник истины для валидации синтов."""
+
+    def test_returns_none_when_synthdefs_added_is_empty(self):
+        """Renardo ещё не инициализирован (или тест создал mgr через __new__)
+        → None, а не пустое множество, иначе валидатор запретил бы ЛЮБОЙ
+        синт до конца инициализации."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        assert mgr._synthdefs_added == set()
+        assert mgr.known_synth_names() is None
+
+    def test_includes_default_and_custom_synths(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "strings", "wobblebass"}
+        known = mgr.known_synth_names()
+        assert known is not None
+        assert {"pluck", "strings", "wobblebass"} <= known
+        # CUSTOM_SC_ONLY_SYNTH_NAMES — кастомные .scd, которые
+        # foxdot_init.sc грузит напрямую в sclang (не через sdef.add()).
+        assert "supersawlead" in known
+        assert "imperialbrass" in known
+
+    def test_master_bus_synths_are_not_playable_instruments(self):
+        """masterlimiter/masterfilter — служебные шины, не тембры для
+        lead_synth/bass_synth/pad_synth — не должны попадать в known set."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck"}
+        known = mgr.known_synth_names()
+        assert "masterlimiter" not in known
+        assert "masterfilter" not in known
+
+
+# ---------------------------------------------------------------------------
+# Issue #2838 — разрешённые синты = подтверждённые scsynth, а не отправленные
+# ---------------------------------------------------------------------------
+
+
+def _foxdot_init_preload() -> list:
+    """``startupSynths`` + ``customSynths`` из РЕАЛЬНОГО foxdot_init.sc."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve()
+    root = next(
+        p for p in here.parents
+        if (p / "docker").is_dir() and (p / "src").is_dir()
+    )
+    sc = root / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
+    content = sc.read_text(encoding="utf-8")
+    names: list = []
+    for var in ("startupSynths", "customSynths"):
+        match = re.search(r"var " + var + r" = \[(.*?)\];", content, re.S)
+        assert match, var
+        names += re.findall(r'"([^"]+)"', match.group(1))
+    return names
+
+
+def _sclang_log_for(names) -> str:
+    """Лог sclang в формате foxdot_init.sc (как /tmp/sclang.log на роботе)."""
+    lines = [
+        "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+        "Server running: true",
+    ]
+    lines += [f"SynthDef in scsynth: {name}" for name in names]
+    lines.append(f"SynthDef preload finished: {len(names)} defs")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.unit
+class TestKnownSynthNamesServerTruth:
+    """RAW 23.09.2026 (issue #2838): валидатор подсказал 'sine' на 'seepline',
+    LLM сыграла ``d2 >> sine(...)``, execute_music_code → «успешно», scsynth →
+    235 × "SynthDef sine not found". 'sine' был в ``_synthdefs_added``
+    (sdef.add() отправил /foxdot по UDP), но в прелоаде foxdot_init.sc его нет
+    и до сервера он не доехал."""
+
+    #: renardo-палитра, которую Python-сторона «добавила» (sdef.add()):
+    #: весь прелоад + синты, которых в прелоаде нет (как 'sine' на роботе).
+    RENARDO_ONLY = {"sine", "vinsine", "siren"}
+
+    def _mgr(self, tmp_path):
+        preload = _foxdot_init_preload()
+        log = tmp_path / "sclang.log"
+        log.write_text(_sclang_log_for(preload), encoding="utf-8")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = set(preload) - {"masterlimiter", "masterfilter"}
+        mgr._synthdefs_added |= self.RENARDO_ONLY
+        mgr._evaluate_music_stack_health(sclang_log_path=str(log))
+        return mgr, set(preload)
+
+    def test_known_set_is_what_sclang_confirmed_in_scsynth(self, tmp_path):
+        mgr, preload = self._mgr(tmp_path)
+        known = mgr.known_synth_names()
+        assert "sine" not in known
+        assert not (self.RENARDO_ONLY & known)
+        assert known <= preload
+        assert "masterfilter" not in known and "masterlimiter" not in known
+        assert {"epiano", "sinepad", "supersawlead"} <= known
+
+    def test_renardo_synth_missing_from_preload_is_rejected(self, tmp_path):
+        mgr, _ = self._mgr(tmp_path)
+        code = "d2 >> sine([3,5,7,5,3,5,7,5], dur=0.5, oct=5, amp=0.18)"
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(code)
+        assert result["success"] is False
+        assert "'sine'" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_seepline_suggestion_is_a_synth_loaded_on_server(self, tmp_path):
+        mgr, preload = self._mgr(tmp_path)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(
+                "p4 >> seepline([3,5,7,5], dur=0.5, amp=0.18)"
+            )
+        assert result["success"] is False
+        error = result["error"]
+        assert "имелся в виду 'sine'" not in error
+        suggested = error.split("имелся в виду ")[1].split("?")[0].strip("'")
+        assert suggested in preload
+        mock_exec.assert_not_called()
+
+    def test_unconfirmed_synths_are_logged_at_startup(self, tmp_path):
+        mgr, _ = self._mgr(tmp_path)
+        warnings: list = []
+        mgr._log_warning = warnings.append
+        mgr._log_synth_truth_discrepancy()
+        assert len(warnings) == 1
+        assert "#2838" in warnings[0]
+        for name in sorted(self.RENARDO_ONLY):
+            assert repr(name) in warnings[0]
+
+    def test_unverified_fallback_when_sclang_log_is_missing(self, tmp_path):
+        """Лога нет → подтверждения нет → прежний список отправленных
+        (задокументированный fallback) + предупреждение, что он не проверен."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "sine"}
+        absent = str(tmp_path / "absent.log")
+        mgr._evaluate_music_stack_health(sclang_log_path=absent)
+        assert mgr._server_confirmed_synths is None
+        assert {"pluck", "sine"} <= mgr.known_synth_names()
+        warnings: list = []
+        mgr._log_warning = warnings.append
+        mgr._log_synth_truth_discrepancy()
+        assert "не проверен сервером" in warnings[0]
+
+    def test_still_none_before_renardo_initialization(self, tmp_path):
+        """Документированный контракт: пустой _synthdefs_added → None
+        (проверка выключена), даже если прелоад подтверждён."""
+        mgr, _ = self._mgr(tmp_path)
+        mgr._synthdefs_added = set()
+        assert mgr.known_synth_names() is None
+
+
+#: Реальный /tmp/sclang.log контейнера voice-assistant (Vision Pi, 23.09.2026,
+#: снят координатором #2841): 63 строки "SynthDef in scsynth: X", loop'а нет.
+_ROBOT_SCLANG_LOG = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "sclang_robot_2026-09-23.log"
+)
+
+
+@pytest.mark.unit
+class TestGrooveLoopServerTruth:
+    """Issue #2841 × #2838: ``dN >> loop(...)`` от ``groove_loop`` должен
+    пройти валидатор синтов, который верит только прелоаду foxdot_init.sc.
+
+    ``loop`` — renardo ``LoopPygenSynthDef`` (special_synthdefs.py:19),
+    регистрируется в ``SynthDefs`` (PygenSynthDef.py:76 ``container[name] =
+    self``) и шлётся ``sdef.add()`` → ``loadSynthDef`` → OSC ``/foxdot`` в
+    sclang (ServerManager/__init__.py:490) — тем же неподтверждённым путём,
+    что и 'sine' из #2838. Подтверждение даёт только прелоад, поэтому loop
+    добавлен в ``startupSynths``."""
+
+    def _mgr(self, log_text, tmp_path):
+        log = tmp_path / "sclang.log"
+        log.write_text(log_text, encoding="utf-8")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # renardo SynthDefs = весь прелоад + loop (special_synthdefs.py).
+        mgr._synthdefs_added = (
+            set(_foxdot_init_preload()) - {"masterlimiter", "masterfilter"}
+        ) | {"loop"}
+        mgr._evaluate_music_stack_health(sclang_log_path=str(log))
+        return mgr
+
+    @staticmethod
+    def _log_with_repo_preload() -> str:
+        """Реальный лог робота, где строки прелоада заменены на те, что
+        напечатает foxdot_init.sc ИЗ РЕПО (после деплоя образа)."""
+        real = _ROBOT_SCLANG_LOG.read_text(encoding="utf-8")
+        kept = [
+            line for line in real.splitlines()
+            if not line.startswith("SynthDef in scsynth:")
+            and not line.startswith("SynthDef preload finished")
+        ]
+        preload = _foxdot_init_preload()
+        kept += [f"SynthDef in scsynth: {name}" for name in preload]
+        kept.append(f"SynthDef preload finished: {len(preload)} defs")
+        return "\n".join(kept) + "\n"
+
+    def test_robot_log_as_deployed_has_no_loop(self):
+        from rob_box_voice.core.music_stack_validation import confirmed_synths_from_log
+
+        confirmed = confirmed_synths_from_log(_ROBOT_SCLANG_LOG.read_text(encoding="utf-8"))
+        assert confirmed is not None and len(confirmed) == 63
+        assert "loop" not in confirmed
+
+    def test_groove_loop_rejected_with_robot_log_as_deployed(self, tmp_path, monkeypatch):
+        """Честный FAIL до деплоя: образ без нового прелоада → loop отклонён."""
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = self._mgr(_ROBOT_SCLANG_LOG.read_text(encoding="utf-8"), tmp_path)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code("d3 >> loop('dnb_1', dur=4, beat_stretch=1, amp=0.3)")
+        assert result["success"] is False
+        assert "'loop'" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_repo_preload_confirms_loop(self):
+        assert "loop" in _foxdot_init_preload()
+
+    def test_groove_loop_passes_with_repo_preload_log(self, mock_node, tmp_path, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = self._mgr(self._log_with_repo_preload(), tmp_path)
+        assert "loop" in mgr.known_synth_names()
+        tool = ComposeMusicTool(mock_node, mgr)
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bpm=120, root="A", scale="minor", form="arc",
+                drums="X...o...X...o...", hats="-.-.-.-.",
+                bass_synth="dub", bass_notes="0,0,4,0",
+                lead_synth="blip", lead_notes="0,2,4,7",
+                groove_loop="dnb_1",
+            )
+        assert result.success is True, result.error
+        assert "d3 >> loop('../../1_pitchglitch_samples/_loop_/dnb_1'" in mock_exec.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# MusicManager.execute_code — валидация имён синтов (live-инцидент 21.09.2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerExecuteCodeSynthValidation:
+    """RAW-инцидент: compose_music(bass_synth='supersaw') — нет такого синта,
+    есть 'supersawlead'. execute_code() рапортовал success=True, а scsynth
+    в СВОЁМ логе 54 раза ответил "SynthDef supersaw not found" — бас
+    молча пропал из трека. Проверяем, что теперь это HARD error ДО exec()."""
+
+    def test_unknown_synth_is_rejected_before_exec(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "strings", "wobblebass", "supersawlead"}
+
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(
+                "p1 >> supersaw([38, 43, 39], dur=[2, 2, 2], amp=0.4)"
+            )
+
+        assert result["success"] is False
+        assert "supersaw" in result["error"]
+        assert "supersawlead" in result["error"]  # ближайшее реальное имя
+        mock_exec.assert_not_called()
+
+    def test_known_synth_executes_normally(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "strings", "wobblebass", "supersawlead"}
+
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(
+                "p1 >> supersawlead([0, 2, 4], dur=0.5, amp=0.4)"
+            )
+
+        assert result["success"] is True
+        mock_exec.assert_called_once()
+
+    def test_validation_is_skipped_before_renardo_initialization(self):
+        """_synthdefs_added ещё пуст (как в свежесозданном mgr из фикстуры)
+        → known_synth_names() is None → проверка не блокирует произвольный
+        код (существующее поведение не должно измениться)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        assert mgr._synthdefs_added == set()
+
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code("p1 >> totallymadeupname([0, 2, 4], dur=0.5)")
+
+        assert result["success"] is True
+        mock_exec.assert_called_once()
+
+
+@pytest.mark.unit
+class TestMusicManagerExecuteCodePack1Loops:
+    """Issue #2841: лупы пака 1 — только за флагом ROB_BOX_PACK1_LOOPS,
+    по умолчанию выключенным (звук не прослушан на 16 kHz DAC)."""
+
+    CODE = 'd3 >> loop("dnb_1", dur=4, beat_stretch=1, amp=0.3)'
+
+    def test_pack1_loop_rejected_before_exec_when_flag_unset(self, monkeypatch):
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(self.CODE)
+        assert result["success"] is False
+        assert "ROB_BOX_PACK1_LOOPS" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_pack1_loop_reaches_exec_as_path_when_flag_set(self, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(self.CODE)
+        assert result["success"] is True, result
+        executed = mock_exec.call_args[0][0]
+        assert "../../1_pitchglitch_samples/_loop_/dnb_1" in executed
 
 
 # ---------------------------------------------------------------------------
@@ -1402,8 +2452,1165 @@ class TestExecuteMusicCodeTool:
 
 
 # ---------------------------------------------------------------------------
+# ComposeMusicTool — form-end watchdog protection (issue #1812)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestComposeMusicToolFormDeadline:
+    """A ``compose_music(repeat=False)`` track has a computable finite
+    length. The tool must arm the manager's form-end deadline so the idle
+    watchdog doesn't cut it off before it actually finishes (issue #1812).
+    A looping (``repeat=True``) track has no such end, so the deadline must
+    stay cleared and idle-TTL alone governs it — same as before #1812.
+    """
+
+    def _make_tool(self, mock_node, **kwargs):
+        mgr = _make_manager(sc_running=True, renardo_available=True, **kwargs)
+        return ComposeMusicTool(mock_node, mgr), mgr
+
+    _COMMON_KWARGS = dict(
+        bpm=100,
+        root="C",
+        scale="minor",
+        form="arc",
+        drums="X..o.X.o",
+        bass_synth="dub",
+        bass_notes="0, 0, 3, -2",
+        lead_synth="blip",
+        lead_notes="0, 2, 4, 7",
+    )
+
+    def test_repeat_false_arms_the_form_deadline(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=False, **self._COMMON_KWARGS)
+        assert result.success is True
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_deadline_at > time.monotonic()
+
+    def test_repeat_false_deadline_matches_the_form_length(self, mock_node):
+        from rob_box_mcp_tools.core.arranger import FORMS, BEATS_PER_BAR
+
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=False, **self._COMMON_KWARGS)
+        total_beats = sum(bars for _n, bars, _i in FORMS["arc"]) * BEATS_PER_BAR
+        expected_duration = total_beats * 60.0 / 100.0
+        remaining = mgr._music_form_deadline_at - time.monotonic()
+        assert remaining == pytest.approx(expected_duration, abs=1.0)
+
+    def test_repeat_true_leaves_the_form_deadline_cleared(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert result.success is True
+        assert mgr._music_form_deadline_at is None
+
+    def test_repeat_true_clears_a_stale_deadline_from_a_previous_track(self, mock_node):
+        """LLM plays a fixed-length track, then starts a DJ loop — the old
+        track's form-end protection must not leak into the new session."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=False, **self._COMMON_KWARGS)
+        assert mgr._music_form_deadline_at is not None
+        with patch("builtins.exec"):
+            tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert mgr._music_form_deadline_at is None
+
+    def test_repeat_false_track_survives_idle_ttl_via_the_real_watchdog_call(self, mock_node):
+        """End-to-end: compose a finite track, then run the exact watchdog
+        query (auto_stop_idle_music) that mcp_server's timer uses — it must
+        NOT stop the track while the form is still playing, even though
+        dialogue has been silent well past the (short, here) idle TTL."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=False, **self._COMMON_KWARGS)
+        # Idle far past a short TTL, but still inside the form's own runtime.
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=1, now=mgr._music_form_deadline_at - 1.0
+        )
+        assert result["stopped"] is False
+        assert result.get("held_reason") == "form_not_finished"
+
+
+@pytest.mark.unit
+class TestComposeMusicToolGrooveLoop:
+    """Issue #2841: compose_music(groove_loop=...) — луп в свободном d-слоте,
+    pack 1 только за флагом ROB_BOX_PACK1_LOOPS (по умолчанию выключен)."""
+
+    _KW = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        drums="X...o...X...o...", hats="-.-.-.-.",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr)
+
+    def test_schema_exposes_groove_loop_with_catalog_enum(self, mock_node):
+        param = next(p for p in self._tool(mock_node).parameters if p.name == "groove_loop")
+        assert "dnb_1" in param.enum and "foxdot" in param.enum
+
+    def test_pack1_loop_is_dropped_without_flag_not_refused(self, mock_node, monkeypatch):
+        """Issue #2966 — живой 24.09: hard-отказ рвал DJ-переход целиком
+        (модель объявляла трек, который не заиграл — предыдущий трек
+        продолжал звучать). Тул больше НЕ падает на известном, но
+        выключенном флагом лупе: трек играет БЕЗ лупа, а предупреждение
+        уходит в ``message`` (capability-honest — честно, но не fatal)."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
+        assert result.success is True, result.error
+        assert "ROB_BOX_PACK1_LOOPS" in result.message
+        mock_exec.assert_called_once()
+        executed = mock_exec.call_args[0][0]
+        assert "loop(" not in executed
+
+    def test_pack1_loop_plays_with_flag(self, mock_node, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
+        assert result.success is True, result.error
+        executed = mock_exec.call_args[0][0]
+        assert "d3 >> loop('../../1_pitchglitch_samples/_loop_/break_1', dur=8" in executed
+
+    def test_unknown_loop_is_tool_error(self, mock_node):
+        result = self._tool(mock_node).execute(groove_loop="nope_1", **self._KW)
+        assert result.success is False
+        assert "groove_loop" in result.error
+
+    def test_flag_drop_wins_over_full_slots(self, mock_node, monkeypatch):
+        """Issue #2878 (обновлено #2966) — живой прогон 23.09.2026: с
+        флагом выключенным модель раньше сперва получала «слоты d1-d3
+        заняты» (перестроила аранжировку впустую), и только вторым
+        вызовом — отказ по флагу. Флаг разбирается ДО занятости слотов:
+        здесь заняты все три (drums/hats из ``_KW`` + ``perc``), и
+        трек всё равно играет с первого вызова (луп просто снят), без
+        какой-либо ошибки о занятых слотах.
+        """
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        kw = dict(self._KW, perc="..n...n...n...n.")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **kw)
+        assert result.success is True, result.error
+        assert "ROB_BOX_PACK1_LOOPS" in result.message
+        assert "d1-d3" not in result.message
+        mock_exec.assert_called_once()
+
+
+@pytest.mark.unit
+class TestComposeMusicToolFx:
+    """Issue #2968: compose_music(fx=...) — одиночный FX-акцент, pack 1
+    только за тем же флагом ROB_BOX_PACK1_LOOPS (по умолчанию выключен).
+    Тот же non-fatal контракт, что groove_loop получил в #2966 (см.
+    TestComposeMusicToolGrooveLoop выше) — акцент снимается флагом молча,
+    трек играет, предупреждение уходит в message, вызов не падает."""
+
+    _KW = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        drums="X...o...X...o...", hats="-.-.-.-.",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr)
+
+    def test_schema_exposes_fx_with_catalog_enum(self, mock_node):
+        param = next(p for p in self._tool(mock_node).parameters if p.name == "fx")
+        assert "gunshot_1" in param.enum and "siren_1" in param.enum
+
+    def test_fx_is_dropped_without_flag_not_refused(self, mock_node, monkeypatch):
+        """Тот же принцип, что #2966 для groove_loop: известный, но
+        выключенный флагом FX не должен рвать весь compose_music-вызов —
+        трек играет без FX, предупреждение честно уходит в message."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(fx="gunshot_1", **self._KW)
+        assert result.success is True, result.error
+        assert "ROB_BOX_PACK1_LOOPS" in result.message
+        mock_exec.assert_called_once()
+        executed = mock_exec.call_args[0][0]
+        assert "loop(" not in executed
+
+    def test_fx_plays_with_flag(self, mock_node, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(fx="gunshot_1", **self._KW)
+        assert result.success is True, result.error
+        executed = mock_exec.call_args[0][0]
+        assert (
+            "d3 >> loop('../../1_pitchglitch_samples/u/upper/"
+            "005_Snare_AltGunShot_Kaonaya.wav'" in executed
+        )
+
+    def test_unknown_fx_is_tool_error(self, mock_node):
+        result = self._tool(mock_node).execute(fx="nope_1", **self._KW)
+        assert result.success is False
+        assert "fx" in result.error
+
+    def test_groove_loop_and_fx_warnings_combine(self, mock_node, monkeypatch):
+        """Оба слоя сняты одним и тем же флагом — модель должна узнать
+        про оба, а не только про groove_loop (первый в порядке резолва)."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        kw = dict(self._KW, drums=None, hats="-.-.-.-.")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(
+                groove_loop="break_1", fx="siren_1", **kw
+            )
+        assert result.success is True, result.error
+        assert result.message.count("ROB_BOX_PACK1_LOOPS") == 2
+        mock_exec.assert_called_once()
+        executed = mock_exec.call_args[0][0]
+        assert "loop(" not in executed
+
+
+@pytest.mark.unit
+class TestComposeMusicToolDrumStyle:
+    """Issue #2841: compose_music(drum_style=...) — жанровый каркас ударных.
+    С name= стиль уходит в core.harmonize; без name= заполняет drums/hats,
+    которых модель не дала; неизвестный стиль — честная ошибка."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+    _FREE = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node, rtttl=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        library = None
+        if rtttl is not None:
+            library = Mock()
+            library.get.return_value = {"name": "t", "title": "T", "rtttl": rtttl}
+        tool = ComposeMusicTool(mock_node, mgr, library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return tool, mgr
+
+    def test_schema_exposes_drum_style_enum(self, mock_node):
+        tool, _ = self._tool(mock_node)
+        param = next(p for p in tool.parameters if p.name == "drum_style")
+        assert {"auto", "four_on_floor", "halftime", "none"} <= set(param.enum)
+
+    def test_name_path_uses_style_skeleton(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        result = tool.execute(name="t", drum_style="halftime", **self._ARR)
+        assert result.success is True, result.error
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X.......o.......'" in code
+
+    def test_name_path_default_keeps_old_backbeat(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        tool.execute(name="t", **self._ARR)
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X...o.......o...'" in code  # редкая тема: без бочки на 3
+
+    def test_free_path_fills_missing_drums_from_style(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        result = tool.execute(drum_style="four_on_floor", **self._FREE)
+        assert result.success is True, result.error
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X...X...X...X...'" in code
+        assert "d2 >> play('..-...-...-...-.'" in code
+
+    def test_free_path_model_drums_win_over_style(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        tool.execute(drum_style="four_on_floor", drums="X..oX.o.", **self._FREE)
+        code = mgr.execute_code.call_args.args[0]
+        assert "X...X...X...X..." not in code
+
+    def test_none_style_frees_drum_slots_for_loop(self, mock_node, monkeypatch):
+        # Issue #2878: ``groove_loop`` теперь проверяется по флагу ДО
+        # построения аранжировки (см. TestComposeMusicToolGrooveLoop) —
+        # этот тест про drum_style/слоты, не про флаг, поэтому включаем
+        # его явно, как и в остальных тестах пака 1.
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        tool.execute(name="t", drum_style="none", groove_loop="foxdot", **self._ARR)
+        code = mgr.execute_code.call_args.args[0]
+        assert "play(" not in code
+        assert "d1 >> loop('foxdot'" in code
+
+    def test_unknown_style_is_tool_error(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        result = tool.execute(drum_style="polka", **self._FREE)
+        assert result.success is False
+        assert "drum_style" in result.error
+        mgr.execute_code.assert_not_called()
+
+
+@pytest.mark.unit
+class TestComposeMusicToolFormCycleEnd:
+    """Issue #2461 — момент конца ОДНОГО прохода формы (``_music_form_cycle_ends_at``)
+    должен взводиться на любой ``compose_music``, включая ``repeat=True`` —
+    именно так DJ-режим играет треки, и до этого поля момент «форма доиграла»
+    был виден только модели, копирующей число из текста в ``next_transition_sec``.
+    Это НЕ то же самое, что ``_music_form_deadline_at`` (issue #1812,
+    watchdog-защита от cut-off) — тот и дальше обязан оставаться ``None`` при
+    ``repeat=True`` (см. ``TestComposeMusicToolFormDeadline`` выше), эти тесты
+    его не трогают.
+    """
+
+    def _make_tool(self, mock_node, **kwargs):
+        mgr = _make_manager(sc_running=True, renardo_available=True, **kwargs)
+        return ComposeMusicTool(mock_node, mgr), mgr
+
+    _COMMON_KWARGS = dict(
+        bpm=100,
+        root="C",
+        scale="minor",
+        form="arc",
+        drums="X..o.X.o",
+        bass_synth="dub",
+        bass_notes="0, 0, 3, -2",
+        lead_synth="blip",
+        lead_notes="0, 2, 4, 7",
+    )
+
+    def test_repeat_true_still_arms_the_form_cycle_end(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert result.success is True
+        # Watchdog-дедлайн (#1812) остаётся None при repeat=True — не сломано.
+        assert mgr._music_form_deadline_at is None
+        # Но момент конца прохода формы (#2461) взведён — DJ-сет играет
+        # именно repeat=True, и без этого поля тут не было бы ничего.
+        assert mgr._music_form_cycle_ends_at is not None
+        assert mgr._music_form_cycle_ends_at > time.monotonic()
+
+    def test_repeat_false_also_arms_the_form_cycle_end(self, mock_node):
+        """repeat=False взводит ОБА поля — они защищают/описывают одно и то же."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=False, **self._COMMON_KWARGS)
+        assert result.success is True
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_cycle_ends_at is not None
+
+    def test_form_cycle_end_is_the_same_regardless_of_repeat(self, mock_node):
+        """form_duration_seconds() не принимает repeat — длительность одного
+        прохода формы одинакова что при repeat=True, что при repeat=False."""
+        tool_a, mgr_a = self._make_tool(mock_node)
+        tool_b, mgr_b = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool_a.execute(repeat=True, **self._COMMON_KWARGS)
+        with patch("builtins.exec"):
+            tool_b.execute(repeat=False, **self._COMMON_KWARGS)
+        remaining_a = mgr_a._music_form_cycle_ends_at - time.monotonic()
+        remaining_b = mgr_b._music_form_cycle_ends_at - time.monotonic()
+        assert remaining_a == pytest.approx(remaining_b, abs=0.5)
+
+    def test_stop_all_clears_the_form_cycle_end(self, mock_node):
+        """Явный стоп снимает и watchdog-дедлайн, и момент конца формы —
+        трека, чей конец описывался бы этим полем, больше не существует."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert mgr._music_form_cycle_ends_at is not None
+        mgr.stop_all()
+        assert mgr._music_form_cycle_ends_at is None
+
+    def test_get_state_exposes_form_cycle_end_for_repeat_true(self, mock_node):
+        """Критерий приёмки #2461: get_state() отдаёт поле наружу после
+        compose_music(repeat=True) — раньше DJ-сет (repeat=True) не оставлял
+        в состоянии ничего, кроме None."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=True, **self._COMMON_KWARGS)
+        state = mgr.get_state()
+        assert state["form_cycle_ends_at"] is not None
+        assert state["form_cycle_remaining_s"] is not None
+        assert state["form_cycle_remaining_s"] > 0
+
+    def test_get_state_form_cycle_end_is_none_when_no_track_played(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        state = mgr.get_state()
+        assert state["form_cycle_ends_at"] is None
+        assert state["form_cycle_remaining_s"] is None
+
+
+class TestComposeMusicToolMelodyByName:
+    """``compose_music(name=...)`` сам ищет мелодию в RTTTL-библиотеке и
+    конвертирует ноты в абсолютные MIDI. От LLM нужны только тембры
+    (lead/bass/pad) — без них вызов отклоняется (голое «пиканье» запрещено);
+    ноты и рисунки ударных система выводит из самой темы."""
+
+    def _make_tool(self, mock_node, rtttl_library=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    _ARR = dict(
+        lead_synth="blip",
+        bass_synth="dub",
+        pad_synth="warmpad",
+    )
+
+    def test_name_lookup_builds_arrangement_around_exact_notes(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        # Ноты позиционно (degree), НЕ через midinote= — Renardo этот
+        # ключ как высоту игнорирует (регресс 14.09, см. core/rtttl.py).
+        # Тема играется дословно. Удвоения в октаву здесь нет: три
+        # восьмых и длинная нота — РЕДКАЯ тема (одна атака на бит при
+        # пороге 1.2), а удвоение и второй голос положены только плотным
+        # (harmonize::DENSE_ONSETS_PER_BEAT).
+        # blip играет на октаву выше написанного (SYNTH_SEMITONE_SHIFT =
+        # -12), поэтому в коде нота на октаву ниже задуманной G5/D#5 —
+        # на слух тема остаётся дословной (79/75 звучат как 79/75).
+        assert "[None, 67, 67, 67, 63]" in code
+        assert "d3 >>" not in code  # второй голос редкой теме не даётся
+        assert "midinote=" not in code
+        assert "oct=0, root=0, scale=Scale.chromatic" in code
+        assert "Clock.bpm = 63" in code
+        assert "Beethoven's Fifth" in result.message
+        # Аранжировка LLM дошла до кода: только тембры — нот и рисунков в
+        # _ARR больше нет, их система выводит из темы (core.harmonize).
+        assert "dub" in code
+        assert "warmpad" in code
+        assert "d1 >> play(" in code
+
+    def test_name_without_arrangement_is_rejected(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth")
+        assert result.success is False
+        assert "аранжировка" in result.error
+        assert "lead_synth" in result.error
+        assert "bass_synth" in result.error
+        assert "pad_synth" in result.error
+        # Ноты и рисунки ударных больше не требуются: они выводятся из темы,
+        # а требовать их — учить модель писать аккомпанемент вслепую.
+        assert "drums" not in result.error
+        assert "bass_notes" not in result.error
+        assert "pad_notes" not in result.error
+        assert not mgr.execute_code.called
+
+    def test_name_not_found_is_honest_failure(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = None
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        result = tool.execute(name="nonexistent", **self._ARR)
+        assert result.success is False
+        assert "не найдена" in result.error
+
+    def test_name_tries_variants_in_order(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.side_effect = [
+            None,
+            {
+                "name": "imperial",
+                # issue #2964: covers_tokens() проверяет опознавательные
+                # поля ПРОТИВ кандидата, который реально нашёл запись
+                # («darth vader», не исходного «imperial march») — title
+                # обязан покрывать оба токена варианта, иначе честный
+                # резолв (_resolve_melody_honest) отклонит совпадение как
+                # вероятно другую песню.
+                "title": "Imperial March (Darth Vader Theme)",
+                "rtttl": "imperial:d=4,o=5,b=80:8g5,8g5,8g5",
+            },
+        ]
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="imperial march", variants=["darth vader"], **self._ARR
+        )
+        assert result.success is True
+        assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",
+            "darth vader",
+        ]
+
+    def test_without_name_the_normal_path_is_unchanged(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7")
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        assert "midinote=" not in code
+        assert "blip" in code
+
+    def test_result_data_carries_title_of_the_actually_played_record(self, mock_node):
+        """issue #2877: ``data['title']`` — название РЕАЛЬНО сыгранной записи,
+        не только текст message. Без этого поля рассинхрон между тем, что
+        объявляет LLM, и тем, что реально играет ``compose_music``, был
+        виден только в свободном тексте, а не в структурированном ответе."""
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert result.data["title"] == "Beethoven's Fifth"
+
+    def test_result_data_has_no_title_when_name_not_given(self, mock_node):
+        """Сочинённый с нуля трек (без ``name=``) — объявлять нечего."""
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7"
+        )
+        assert result.success is True
+        assert result.data.get("title") is None
+
+
+class TestComposeMusicToolRtttlParam:
+    """Issue #2969 — ``compose_music(rtttl=...)``: присланные юзером ноты.
+
+    Живой лог 24.09.2026: юзер вставил в TG готовую RTTTL трека («играй
+    вот примерно это»), модель всё равно вызвала ``compose_music(name=...)``
+    и сыграла версию из библиотеки — присланному было некуда попасть.
+    ``rtttl=`` даёт прямой путь мимо библиотеки: ВСЕГДА побеждает ``name=``
+    для источника нот, библиотека вообще не опрашивается.
+    """
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+    _RTTTL = "usersong:d=4,o=5,b=100:8c,8d,8e,8f,2g"
+
+    def _make_tool(self, mock_node, rtttl_library=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    def test_rtttl_plays_the_sent_notes_without_touching_the_library(self, mock_node):
+        rtttl_library = Mock()
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl=self._RTTTL, **self._ARR)
+        assert result.success is True
+        assert not rtttl_library.get.called
+        code = mgr.execute_code.call_args.args[0]
+        assert "dub" in code
+        assert "warmpad" in code
+        assert "Clock.bpm = 100" in code
+
+    def test_rtttl_wins_over_a_name_that_would_resolve_in_the_library(self, mock_node):
+        """``name=`` вместе с ``rtttl=`` — только заголовок, не поиск."""
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth", rtttl=self._RTTTL, **self._ARR)
+        assert result.success is True
+        assert not rtttl_library.get.called
+        code = mgr.execute_code.call_args.args[0]
+        # Темп присланной строки (100), а не библиотечной записи (63) —
+        # значит аранжировка построена из rtttl, не из "fifth".
+        assert "Clock.bpm = 100" in code
+        assert result.data["title"] == "fifth"
+
+    def test_rtttl_without_arrangement_is_rejected(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl=self._RTTTL)
+        assert result.success is False
+        assert "lead_synth" in result.error
+        assert "bass_synth" in result.error
+        assert "pad_synth" in result.error
+        assert not mgr.execute_code.called
+
+    def test_malformed_rtttl_is_an_honest_failure(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl="not a valid rtttl string", **self._ARR)
+        assert result.success is False
+        assert not mgr.execute_code.called
+
+    def test_seed_reaches_the_score_decisions(self, mock_node):
+        """``seed=`` доходит до ``harmonize()`` через полный путь тула."""
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl=self._RTTTL, seed=7, **self._ARR)
+        assert result.success is True
+        assert tool.last_score["raw_decisions"]["harmony"]["seed"] == 7
+        assert tool.last_score["decisions"]["seed"] == "7"
+
+    def test_seed_without_name_or_rtttl_is_rejected(self, mock_node):
+        """Сид варьирует ручки, выведенные из темы — без темы варьировать нечего."""
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            seed=7, bpm=100, root="C", scale="minor",
+            lead_synth="blip", lead_notes="0,2,4,7",
+        )
+        assert result.success is False
+        assert "name=" in result.error or "rtttl" in result.error
+
+    def test_two_calls_with_different_seeds_diverge(self, mock_node):
+        """Acceptance issue #2969: тот же трек, разный seed → разный бас/пэд/ударные."""
+        tool1, mgr1 = self._make_tool(mock_node, rtttl_library=None)
+        mgr1.execute_code = Mock(return_value={"success": True})
+        tool1.execute(rtttl=self._RTTTL, seed=1, **self._ARR)
+        code1 = mgr1.execute_code.call_args.args[0]
+
+        tool2, mgr2 = self._make_tool(mock_node, rtttl_library=None)
+        mgr2.execute_code = Mock(return_value={"success": True})
+        tool2.execute(rtttl=self._RTTTL, seed=2, **self._ARR)
+        code2 = mgr2.execute_code.call_args.args[0]
+
+        assert code1 != code2
+
+
+class TestArrangementPresetApplication:
+    """ADR-0132 PR-7 — пресет ручек по мелодии в ``compose_music(name=...)``.
+
+    Явная ручка вызова всегда побеждает пресет; пресет подмешивается,
+    только когда вызов её не задал.
+    """
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _rtttl_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        return rtttl_library
+
+    def _store(self, tmp_path, knobs):
+        shipped = tmp_path / "shipped.json"
+        shipped.write_text(
+            '{"fifth": {"title": "Beethoven\'s Fifth", "knobs": %s}}'
+            % __import__("json").dumps(knobs),
+            encoding="utf-8",
+        )
+        return ArrangementPresetStore(
+            shipped_path=shipped, learned_root=str(tmp_path / "learned")
+        )
+
+    def _tool(self, mock_node, tmp_path, knobs):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        store = self._store(tmp_path, knobs)
+        tool = ComposeMusicTool(mock_node, mgr, self._rtttl_library(), store)
+        return tool, mgr, store
+
+    def test_preset_applied_when_no_explicit_knob(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert tool.last_score is not None
+        assert "Пресет: Beethoven's Fifth (bass_style=root)" in tool.last_score["text"]
+        assert tool.last_score["decisions"]["bass_style"].startswith("root")
+
+    def test_explicit_knob_wins_over_preset(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", bass_style="off", **self._ARR)
+        assert result.success is True
+        # Явная ручка выиграла — эффективное значение "off", а не "root" из
+        # пресета, и партитура не приписывает это решение пресету.
+        assert tool.last_score["decisions"]["bass_style"] == "off"
+        assert tool.last_score.get("preset") is None
+
+    def test_no_matching_preset_is_a_silent_noop(self, mock_node, tmp_path):
+        """Пресет-стор без ключа резолвленной мелодии — вызов не меняется."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        tool._preset_store = ArrangementPresetStore(
+            shipped_path=tmp_path / "empty_shipped.json",
+            learned_root=str(tmp_path / "empty_learned"),
+        )
+        kwargs = {"name": "fifth", **self._ARR}
+        merged, note = tool._resolve_preset(kwargs)
+        assert merged == kwargs
+        assert note is None
+
+    def test_last_played_preset_records_effective_knobs(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        played = tool.last_played_preset
+        assert played is not None
+        assert played["melody_key"] == "fifth"
+        assert played["title"] == "Beethoven's Fifth"
+        assert played["knobs"]["bass_style"] == "root"
+        assert played["knobs"]["lead_synth"] == "blip"
+
+    def test_last_played_preset_is_none_without_name(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {})
+        result = tool.execute(
+            bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7"
+        )
+        assert result.success is True
+        assert tool.last_played_preset is None
+
+    def test_preview_arrangement_applies_the_same_preset(self, mock_node, tmp_path):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        store = self._store(tmp_path, {"bass_style": "root"})
+        preview = PreviewArrangementTool(mock_node, mgr, self._rtttl_library(), store)
+        result = preview.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert "Пресет: Beethoven's Fifth (bass_style=root)" in result.data["score"]
+
+
+class TestSaveArrangementPresetTool:
+    """ADR-0132 PR-7 — сохраняет ручки ПОСЛЕДНЕГО сыгранного трека.
+
+    Похвала/просьба-гейт живёт ВНЕ этого тула (rob_box_harness.core.
+    agent_core._gate_save_arrangement_preset — MCP-процесс не видит
+    истории диалога); тул сам только персистит то, что реально сыграно.
+    """
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _rtttl_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        return rtttl_library
+
+    def _tools(self, mock_node, tmp_path):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        store = ArrangementPresetStore(
+            shipped_path=tmp_path / "missing_shipped.json",
+            learned_root=str(tmp_path / "learned"),
+        )
+        compose = ComposeMusicTool(mock_node, mgr, self._rtttl_library(), store)
+        save = SaveArrangementPresetTool(mock_node, compose, store)
+        return compose, save, store
+
+    def test_refuses_when_nothing_played_yet(self, mock_node, tmp_path):
+        _compose, save, _store = self._tools(mock_node, tmp_path)
+        result = save.execute()
+        assert result.success is False
+        assert "Нечего сохранять" in result.error
+
+    def test_refuses_after_a_composed_without_name_track(self, mock_node, tmp_path):
+        compose, save, _store = self._tools(mock_node, tmp_path)
+        compose.execute(bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7")
+        result = save.execute()
+        assert result.success is False
+
+    def test_saves_the_last_played_knobs_and_the_store_carries_them(self, mock_node, tmp_path):
+        compose, save, store = self._tools(mock_node, tmp_path)
+        compose.execute(name="fifth", **self._ARR)
+        result = save.execute(note="звучит собранно", approved_by_user_quote="кайф, сохрани")
+        assert result.success is True
+        assert result.data["melody_key"] == "fifth"
+        assert result.data["title"] == "Beethoven's Fifth"
+        assert result.data["knobs"]["lead_synth"] == "blip"
+        assert result.data["note"] == "звучит собранно"
+        assert result.data["approved_by_user_quote"] == "кайф, сохрани"
+        assert "created_at" in result.data
+
+        stored = store.get("fifth")
+        assert stored is not None
+        assert stored["title"] == "Beethoven's Fifth"
+        assert stored["knobs"]["bass_synth"] == "dub"
+
+    def test_saved_preset_then_applies_on_the_next_call(self, mock_node, tmp_path):
+        compose, save, _store = self._tools(mock_node, tmp_path)
+        compose.execute(name="fifth", bass_style="root", **self._ARR)
+        save.execute(approved_by_user_quote="класс")
+        # Issue #2950: сразу после успешного проигрывания той же мелодии
+        # вызов унаследовал бы bass_style от НЕЁ ЖЕ (см.
+        # test_compose_music_tweak_inherits.py) — это отдельный, более
+        # специфичный механизм («подстройка играющего трека»), и он
+        # законно перекрывает пресет здесь же, в том же вызове. Чтобы
+        # изолированно проверить именно ПРЕСЕТ (сценарий этого теста —
+        # «в СЛЕДУЮЩИЙ раз, без связи с тем, что играло только что»),
+        # сбрасываем «последний трек» между вызовами.
+        compose._manager.last_track_arrangement = None
+        result = compose.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert compose.last_score["decisions"]["bass_style"].startswith("root")
+        assert "Пресет: Beethoven's Fifth (bass_style=root)" in compose.last_score["text"]
+
+
+class TestComposeMusicToolRealArchiveWeakMatch:
+    """issue #2896 (регрессия #2882→#2877): интеграция с РЕАЛЬНЫМ
+    RTTTL-архивом (не мок). Первая версия фикса #2877 (``get()`` молча
+    возвращает ``None`` на «слабое» текстовое совпадение) ломала СИЛЬНЫЕ
+    совпадения — ``get('super mario')``/``get('star wars')`` переставали
+    находить точные записи архива. Новый подход: ``get()`` больше не
+    отказывает сам — всегда возвращает лучшего кандидата, а
+    ``compose_music`` отдаёт модели РЕАЛЬНО найденный ``title`` (как и
+    раньше) плюс ``alternatives`` (соседние результаты search()), чтобы
+    модель сама сверяла название с тем, что просил юзер, вместо того
+    чтобы библиотека угадывала это за неё молчанием."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _make_tool(self, mock_node, tmp_path):
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "compose_real.db"))
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    def test_stranger_things_plays_but_transparently_flags_the_mismatch(
+        self, mock_node, tmp_path
+    ):
+        """issue #2896 → issue #2964 (комментарий 24.09, сет «80s analog
+        horror»): слабое совпадение по-прежнему не блокируется молча
+        (жёсткий гейт под этот случай товарищ Шифу отклонил — история
+        отката #2882→#2896 показала, что такая эвристика ломает сильные
+        совпадения, напр. «super mario»). ``compose_music(name='stranger
+        things')`` реально играет «Strangers In The Night» (Sinatra), но
+        результат ОБЯЗАН честно и структурированно показать: «stranger»
+        совпал (подстрока «strangers»), а значимый токен «things» — нет.
+        Решение, объявлять ли найденное под именем «stranger things»,
+        остаётся у модели (правило — в промпте скилла composer)."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="stranger things", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Strangers In The Night"
+        assert result.data["match"]["unmatched"] == ["things"]
+        assert "stranger" in result.data["match"]["matched"]
+        assert result.data["match"]["coverage"] < 1.0
+        assert "things" in result.message  # честное предупреждение в тексте
+
+    def test_super_mario_no_longer_regressed_to_unknown_melody(
+        self, mock_node, tmp_path
+    ):
+        """issue #2896 живой репро: до #2882 «super mario» играл Марио с
+        первого раза; фикс #2882 сломал это в None. Контроль регрессии:
+        снова играет и называет точный title."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="super mario", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Supermario Brothers"
+        assert "Supermario Brothers" in result.message
+
+    def test_star_wars_finds_starwars_compound_name(self, mock_node, tmp_path):
+        """issue #2896: «star wars» находит starwars_* (compound-написание
+        в name), а не отказывает молча."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="star wars", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert "Star Wars" in result.data["title"]
+        assert any(
+            (alt.get("name") or "").startswith("starwars")
+            for alt in result.data["alternatives"]
+        )
+
+    def test_strong_match_still_plays_and_reports_its_own_title(
+        self, mock_node, tmp_path
+    ):
+        """Контроль: строгое совпадение (issue #2840) фиксом не сломано —
+        реально играет и называет ИМЕННО найденную запись."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="mario", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Supermario Brothers"
+        assert "Supermario Brothers" in result.message
+
+
+class TestComposeMusicToolHonestMismatchRealArchive:
+    """issue #2964: живой DJ-сет 24.09 — модель молча играла ДРУГУЮ песню
+    под именем той, что просил юзер (предупреждение в message #2896
+    минимакс игнорировал). Товарищ Шифу отклонил жёсткий гейт
+    found=False/отказ (история отката #2882→#2896: такая эвристика ломает
+    сильные совпадения вроде «super mario»). Вместо гейта —
+    ``compose_music`` по-прежнему играет лучшего ПО ТЕКСТУ кандидата, но
+    результат ОБЯЗАН честно и структурированно показать (``data['match']``
+    — :func:`match_info`, IDF по корпусу архива, БЕЗ хардкод-списка
+    стоп-слов), какие значимые слова запроса совпали, а какие нет —
+    решение объявлять ли найденное под запрошенным именем остаётся у
+    модели (правило — в промпте скилла composer)."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _make_tool(self, mock_node, tmp_path):
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "compose_honest.db"))
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    def test_gin_and_juice_plays_but_flags_the_mismatch(self, mock_node, tmp_path):
+        """Live 24.09: ``lookup_melody('Gin and Juice')`` нашёл «Everybody's
+        Changing» (Keane) — «juice» не встречается вовсе («gin» совпадает
+        только подстрокой внутри «chanGINg», как и остальной поиск
+        архива матчит по подстроке, не по целому слову). compose_music
+        всё ещё играет (тот же лучший по тексту кандидат, что нашёл бы
+        get()), но обязан честно назвать несовпадение — «juice» юзер
+        точно называл, а в найденной записи его нет."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="Gin and Juice", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Everybody's Changing"
+        assert result.data["match"]["unmatched"] == ["juice"]
+        assert result.data["match"]["coverage"] < 1.0
+        assert result.data["alternatives"] is not None
+        assert "juice" in result.message.lower()
+
+    def test_nuthin_but_a_g_thang_plays_but_flags_the_mismatch(
+        self, mock_node, tmp_path
+    ):
+        """Live 24.09: ``compose_music({'name': 'If I Can Poppin Them
+        Thangs', ...})`` реально сыграл под видом «Nuthin' But a G Thang».
+        Результат обязан честно показать, что «nuthin»/«but» не нашлись —
+        решение, объявлять ли это как G Thang, остаётся у модели."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="Nuthin But A G Thang", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "If I Can Poppin Them Thangs"
+        assert "nuthin" in result.data["match"]["unmatched"]
+        assert result.data["match"]["coverage"] < 1.0
+
+    def test_terminator_theme_plays_with_full_coverage_and_artist_in_display(
+        self, mock_node, tmp_path
+    ):
+        """Внимание из тикета: ``theme_178`` (title «Theme», artist
+        «Terminatorv v2.0») — ПРАВИЛЬНАЯ тема Терминатора. ``data['title']``
+        остаётся сырым title записи (обратная совместимость, issue #2877),
+        а ``data['display_title']`` (issue #2964) добавляет исполнителя,
+        раз «Theme» само по себе неинформативно по корпусу архива — иначе
+        сообщение «Играю «Theme»» ничего не говорит юзеру про Терминатора.
+        Полное покрытие («terminator» покрыт artist, «theme» — title)."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="terminator theme", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Theme"
+        assert "Terminatorv" in result.data["display_title"]
+        assert result.data["match"]["unmatched"] == []
+        assert result.data["match"]["coverage"] == 1.0
+        assert "Terminatorv" in result.message
+
+
+class TestComposeMusicToolCounterSynthAndThemeOctaves:
+    """counter_synth и theme_octaves доходят от вызова compose_music до
+    сгенерированного Renardo-кода (issue #2463).
+
+    До фикса ``arranger.spec_from_flat`` уже умел принимать оба параметра,
+    но ``ComposeMusicTool`` их не знал: ни в схеме параметров, ни в
+    сигнатуре ``execute``. В результате фолбэк ``counter_synth or
+    lead_synth`` срабатывал на КАЖДОМ вызове (второй голос всегда звучал
+    тембром темы), а ``theme_octaves`` всегда получал дефолт ``True`` и
+    удвоение в октаву нельзя было выключить.
+    """
+
+    def _make_tool(self, mock_node, rtttl_library=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    # 16 шестнадцатых (0.25 бита каждая) на 4 бита формы — плотность 4
+    # атаки/бит, выше порога DENSE_ONSETS_PER_BEAT=1.2: второй голос и
+    # удвоение доступны. Все ноты от C5=72 — выше MIN_MIDI_FOR_OCTAVE_DOUBLE
+    # (C4=60), поэтому удвоение не блокируется регистром.
+    _DENSE_RTTTL = "dense:d=16,o=5,b=120:c,d,e,f,g,a,b,c6,c,d,e,f,g,a,b,c6"
+
+    def _dense_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "dense",
+            "title": "Dense Theme",
+            "rtttl": self._DENSE_RTTTL,
+        }
+        return rtttl_library
+
+    def test_schema_exposes_both_parameters(self, mock_node):
+        tool, _mgr = self._make_tool(mock_node)
+        by_name = {p.name: p for p in tool.parameters}
+        assert "counter_synth" in by_name
+        assert "theme_octaves" in by_name
+
+        counter = by_name["counter_synth"]
+        assert counter.type == "string"
+        assert counter.required is False
+        assert counter.enum is not None and "strings" in counter.enum
+
+        # ADR-0132 PR-4: ручка auto|on|off (старые true/false execute()
+        # по-прежнему принимает — test_compose_music_knobs).
+        octaves = by_name["theme_octaves"]
+        assert octaves.type == "string"
+        assert octaves.enum == ["auto", "on", "off"]
+        assert octaves.required is False
+
+    def test_counter_synth_reaches_the_generated_code(self, mock_node):
+        """Явный counter_synth, отличный от lead_synth, звучит на слое d3
+        своим тембром, а не тембром темы (фолбэк not в силе)."""
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub",
+            pad_synth="warmpad", counter_synth="strings",
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        counter_line = next(l for l in code.splitlines() if l.startswith("d3 >>"))
+        assert "strings(" in counter_line
+        assert "blip(" not in counter_line
+
+    def test_counter_synth_omitted_still_falls_back_to_lead_synth(self, mock_node):
+        """Обратная совместимость: без counter_synth второй голос звучит
+        тембром темы — старым вызовам compose_music поведение не меняется."""
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub", pad_synth="warmpad",
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        counter_line = next(l for l in code.splitlines() if l.startswith("d3 >>"))
+        assert "blip(" in counter_line
+
+    def test_theme_octaves_false_removes_the_octave_doubling(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub",
+            pad_synth="warmpad", theme_octaves=False,
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        lead_line = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(60, 72)" not in lead_line  # удвоение снято явным флагом
+        assert "d3 >>" in code             # второй голос никуда не делся
+
+    def test_theme_octaves_omitted_defaults_to_true(self, mock_node):
+        """Обратная совместимость: без theme_octaves удвоение на плотной
+        теме по-прежнему включено, как и до появления параметра в схеме."""
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub", pad_synth="warmpad",
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        lead_line = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(60, 72)" in lead_line
+
+
+@pytest.mark.unit
+class TestComposeMusicToolRejectsUnknownSynths:
+    """RAW-инцидент 21.09.2026 (диджей-сет 19:55-19:56): LLM вызвал
+    ``compose_music(bass_synth='supersaw')`` — синта 'supersaw' не
+    существует, есть 'supersawlead'. Аранжировщик всё равно построил код
+    ``p1 >> supersaw(...)``, execute_code() вернул success=True, а scsynth
+    в СВОЁМ контейнерном логе ответил 54 раза "SynthDef supersaw not
+    found" — бас молча пропал из трека, пользователь не узнал почему.
+
+    Эти тесты идут через РЕАЛЬНЫЙ (не замоканный) ``execute_code``, чтобы
+    доказать сквозной путь: compose_music → render() → sanitize_renando()
+    → MusicManager.known_synth_names() → honest HARD error до exec().
+    """
+
+    def test_unknown_bass_synth_is_rejected_before_exec(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {
+            "pluck", "strings", "wobblebass", "supersawlead", "blip", "warmpad",
+        }
+        tool = ComposeMusicTool(mock_node, mgr)
+
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bass_synth="supersaw", bass_notes="0,4,7",
+                lead_synth="blip", lead_notes="0,2,4,7",
+            )
+
+        assert result.success is False
+        assert "supersaw" in result.error
+        assert "supersawlead" in result.error  # ближайшее реальное имя
+        mock_exec.assert_not_called()
+
+    def test_known_bass_synth_plays_normally(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {
+            "pluck", "strings", "wobblebass", "supersawlead", "blip", "warmpad",
+        }
+        tool = ComposeMusicTool(mock_node, mgr)
+
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bass_synth="supersawlead", bass_notes="0,4,7",
+                lead_synth="blip", lead_notes="0,2,4,7",
+            )
+
+        assert result.success is True
+        mock_exec.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # StopMusicTool
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTrackLibrarySlug:
+    """🔴 Регрессия 30.08: русское имя трека превращалось в частокол «_».
+
+    Старый ``_slug`` был ``re.sub(r"[^a-z0-9_]", "_", name.lower())``: КАЖДЫЙ
+    кириллический символ заменялся на «_», поэтому slug кодировал только
+    длину имени. В живой медиатеке робота лежит запись
+    ``('________________', 'комната_мудрости')``, а «сохрани как трек
+    тисбит» породило четыре записи одного трека — ``tisbeat``, ``tisbit``,
+    ``thisbit``, ``tinbit``: LLM каждый раз транслитерировала имя сама и
+    каждый раз по-своему. «Удали трек тисбит» после этого не находил ничего.
+    """
+
+    def test_cyrillic_is_transliterated(self):
+        assert TrackLibrary._slug("Тисбит") == "tisbit"
+
+    def test_slug_is_case_insensitive(self):
+        assert TrackLibrary._slug("ТисБит") == TrackLibrary._slug("тисбит")
+
+    def test_different_names_do_not_collide(self):
+        """Раньше «мурка» и «пляска» (по 5 букв) давали один и тот же slug."""
+        assert TrackLibrary._slug("мурка") != TrackLibrary._slug("пляск")
+
+    def test_spaces_do_not_become_a_picket_fence(self):
+        assert TrackLibrary._slug("комната мудрости") == "komnata_mudrosti"
+
+    def test_latin_slugs_are_unchanged(self):
+        """Существующие записи медиатеки не должны переехать."""
+        assert TrackLibrary._slug("csm_chill_v2") == "csm_chill_v2"
+        assert TrackLibrary._slug("club_energy_128bpm") == "club_energy_128bpm"
+
+    def test_empty_name_stays_empty(self):
+        """``save_track`` отвергает пустой slug — контракт не меняем."""
+        assert TrackLibrary._slug("   ") == ""
+
+    def test_save_and_delete_round_trip_by_russian_name(self, tmp_path):
+        lib = TrackLibrary(db_path=str(tmp_path / "tracks.db"))
+        saved = lib.save_track(name="Тисбит", code="p1 >> blip([0])")
+        assert saved["success"] is True
+        assert saved["name"] == "tisbit"
+        # То, как юзер произнёс имя во второй раз, значения не имеет.
+        deleted = lib.delete_track("тисбит")
+        assert deleted["success"] is True
 
 
 @pytest.mark.unit
@@ -1451,6 +3658,26 @@ class TestStopMusicTool:
         tool, _ = self._make_tool(mock_node)
         result = tool.execute(pattern_name="d1")
         assert result.success is True
+
+    def test_sound_stop_is_delegated_to_the_node(self, mock_node):
+        """🔴 Регрессия 30.08: mp3 из ``gen_play_from_library`` играет в
+        ``sound_node``, и остановить его умел ТОЛЬКО этот тул. Те же два
+        топика нужны ``music_cleanup`` и watchdog'у, поэтому публикация
+        переехала в ``McpServerNode.stop_generated_track_playback`` — тул
+        обязан звать её, а не дублировать паблишеры.
+        """
+        calls = []
+        mock_node.stop_generated_track_playback = lambda: calls.append(1)
+        tool, _ = self._make_tool(mock_node)
+        result = tool.execute()
+        assert result.success is True
+        assert calls == [1], "stop_music не позвал stop_generated_track_playback"
+
+    def test_sound_stop_degrades_when_node_has_no_helper(self, mock_node):
+        """Нода без хелпера (юнит-тесты / minimal install) — не падаем."""
+        assert not hasattr(mock_node, "stop_generated_track_playback")
+        tool, _ = self._make_tool(mock_node)
+        assert tool.execute().success is True
 
 
 # ---------------------------------------------------------------------------
@@ -1534,6 +3761,152 @@ class TestGetMusicStateTool:
         assert result.success is True
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
+
+
+class TestLookupMelodyTool:
+    """Тул поиска известной мелодии — возвращает ноты, НЕ играет."""
+
+    def _make_tool(self, mock_node, library=None, manager=None) -> LookupMelodyTool:
+        library = library if library is not None else Mock()
+        manager = manager if manager is not None else Mock()
+        return LookupMelodyTool(mock_node, library, manager)
+
+    def test_tool_name(self, mock_node):
+        assert self._make_tool(mock_node).name == "lookup_melody"
+
+    def test_tool_is_not_destructive(self, mock_node):
+        assert self._make_tool(mock_node).destructive is False
+
+    def test_tool_is_read_only(self, mock_node):
+        assert self._make_tool(mock_node).read_only is True
+
+    def test_found_melody_returns_raw_rtttl_without_playing(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "starwars_3",
+            "title": "Imperial March",
+            "rtttl": "StarWars:d=4,o=5,b=80:8d",
+        }
+        manager = Mock()
+        tool = LookupMelodyTool(mock_node, Mock(), manager, rtttl_library)
+
+        result = tool.execute("imperial march")
+
+        assert result.success is True
+        assert result.data["rtttl"] == "StarWars:d=4,o=5,b=80:8d"
+        assert result.data["title"] == "Imperial March"
+        manager.execute_code.assert_not_called()  # lookup ничего не играет
+
+    def test_miss_returns_honest_error(self, mock_node):
+        library = Mock()
+        library.find_melody.return_value = None
+        tool = self._make_tool(mock_node, library=library)
+        result = tool.execute("шопен")
+        assert result.success is False
+        assert "не знаешь точных нот" in result.error
+
+    def test_variants_are_tried_in_order(self, mock_node):
+        """LLM может дать несколько вариантов названия — пробуем по порядку."""
+        library = Mock()
+        library.find_melody.return_value = None
+        rtttl_library = Mock()
+        rtttl_library.get.side_effect = [
+            None,  # primary name не нашёлся
+            {
+                "name": "starwars_3",
+                # issue #2964: covers_tokens() сверяет запись с кандидатом,
+                # который её реально нашёл («darth vader») — title обязан
+                # покрывать оба его токена, иначе честный резолв отклонит
+                # совпадение как вероятно другую песню.
+                "title": "Imperial March (Darth Vader Theme)",
+                "rtttl": "x:d=4,o=5,b=80:c",
+            },
+        ]
+        manager = Mock()
+        tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
+
+        result = tool.execute("imperial march", variants=["darth vader", "star wars"])
+
+        assert result.success is True
+        assert result.data["name"] == "starwars_3"
+        # Останавливаемся на первом совпадении — третий вариант не нужен.
+        assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",
+            "darth vader",
+        ]
+        manager.execute_code.assert_not_called()
+
+
+class TestLookupMelodyToolTransparencyRealArchive:
+    """issue #2964: живой DJ-сет 24.09 — ``lookup_melody`` находил ДРУГУЮ
+    песню и предупреждал в message «сверь title», а minimax предупреждение
+    игнорировал. Товарищ Шифу отклонил жёсткий гейт found=False (история
+    отката #2882→#2896 — единая эвристика отказа ломает сильные
+    совпадения). Вместо гейта — честная СТРУКТУРИРОВАННАЯ сверка
+    (``data['match']`` — :func:`match_info`, IDF по корпусу, без
+    хардкод-списка стоп-слов): какие значимые слова запроса нашлись/не
+    нашлись. Решение — у модели, по общему правилу в промпте composer."""
+
+    def _make_tool(self, mock_node, tmp_path):
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "lookup_honest.db"))
+        manager = Mock()
+        return LookupMelodyTool(mock_node, Mock(), manager, rtttl_library), manager
+
+    def test_gin_and_juice_flags_juice_as_unmatched(self, mock_node, tmp_path):
+        tool, manager = self._make_tool(mock_node, tmp_path)
+        result = tool.execute("Gin and Juice")
+        assert result.success is True
+        assert result.data["title"] == "Everybody's Changing"
+        assert result.data["match"]["unmatched"] == ["juice"]
+        assert result.data["match"]["coverage"] < 1.0
+        assert result.data["alternatives"] is not None
+        manager.execute_code.assert_not_called()
+
+    def test_nuthin_but_a_g_thang_flags_nuthin_as_unmatched(self, mock_node, tmp_path):
+        tool, manager = self._make_tool(mock_node, tmp_path)
+        result = tool.execute("Nuthin But A G Thang")
+        assert result.success is True
+        assert result.data["title"] == "If I Can Poppin Them Thangs"
+        assert "nuthin" in result.data["match"]["unmatched"]
+        assert result.data["match"]["coverage"] < 1.0
+        manager.execute_code.assert_not_called()
+
+    def test_terminator_theme_reports_full_coverage_via_artist(self, mock_node, tmp_path):
+        """theme_178 (title «Theme», artist «Terminatorv v2.0») — правильная
+        тема; полное покрытие («terminator» покрыт artist, «theme» —
+        title), и display_title добавляет исполнителя, раз голое «Theme»
+        неинформативно по корпусу архива (сотни записей так называются)."""
+        tool, manager = self._make_tool(mock_node, tmp_path)
+        result = tool.execute("terminator theme")
+        assert result.success is True
+        assert result.data["title"] == "Theme"
+        assert "Terminatorv" in result.data["display_title"]
+        assert result.data["match"]["unmatched"] == []
+        assert result.data["match"]["coverage"] == 1.0
+        assert result.data["name"] == "theme_178"
+
+
+def test_find_melody_resolves_slug_title_and_tag(tmp_path):
+    """find_melody ищет по slug (транслит), title и tags."""
+    lib = TrackLibrary(db_path=str(tmp_path / "melodies.db"))
+    lib._conn.execute(
+        "ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'track'"
+    )
+    lib.save_track(
+        name="kuznechik",
+        code="p1 >> pluck([4,4,2])",
+        title="В траве сидел кузнечик",
+        tags=["кузнечик"],
+    )
+    lib._conn.execute("UPDATE music_tracks SET type='melody' WHERE name='kuznechik'")
+    lib._conn.commit()
+
+    assert lib.find_melody("кузнечик")["name"] == "kuznechik"      # tag match
+    assert lib.find_melody("Kuznechik")["name"] == "kuznechik"     # slug match
+    assert lib.find_melody("в траве")["name"] == "kuznechik"       # title substring
+    assert lib.find_melody("шопен") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1722,11 +4095,27 @@ class TestMusicSessionLifecycle:
         assert result2["stopped"] is True
         assert mgr._auto_stop_count == 2
 
-    def test_auto_stop_default_ttl_matches_env_or_300(self):
-        """The default TTL constant must be 300 seconds when env unset."""
-        mgr = _make_manager()
-        mgr._auto_stop_ttl_seconds = 300
-        assert mgr._auto_stop_ttl_seconds == 300
+    def test_real_init_default_ttl_is_1800_when_env_unset(self, monkeypatch):
+        """Issue #1812: 300s was too short for "listening in silence" —
+        the default TTL is now 1800s (30 min) when nobody overrides it.
+
+        Exercises the REAL ``MusicManager.__init__`` (not the ``_make_manager``
+        test double, which sets ``_auto_stop_ttl_seconds`` by hand) so the
+        assertion catches a regression in the actual constructor logic.
+        """
+        monkeypatch.delenv("MUSIC_AUTO_STOP_TTL_SECONDS", raising=False)
+        with patch.object(MusicManager, "_evaluate_music_stack_health", lambda self, **k: None), \
+                patch.object(MusicManager, "_initialize_renardo", lambda self: None):
+            mgr = MusicManager()
+        assert mgr._auto_stop_ttl_seconds == 1800
+
+    def test_real_init_honors_ttl_env_override(self, monkeypatch):
+        """``MUSIC_AUTO_STOP_TTL_SECONDS`` still overrides the 1800s default."""
+        monkeypatch.setenv("MUSIC_AUTO_STOP_TTL_SECONDS", "42")
+        with patch.object(MusicManager, "_evaluate_music_stack_health", lambda self, **k: None), \
+                patch.object(MusicManager, "_initialize_renardo", lambda self: None):
+            mgr = MusicManager()
+        assert mgr._auto_stop_ttl_seconds == 42
 
     def test_auto_stop_returns_diagnostic_fields(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -1765,6 +4154,26 @@ class TestMusicSessionLifecycle:
         assert mgr._music_deadline_at is None
         assert mgr._music_deadline_segments is None
 
+    def test_dj_mode_skips_segments_deadline(self):
+        """DJ-сет непрерывен: segments-дедлайн #990 не должен его гасить.
+
+        Один владелец DJ-флага — ``set_dj_mode()``; пока DJ включён,
+        ``auto_stop_idle_music`` сбрасывает дедлайн вместо остановки
+        (живой фикс 10:13 DJ: дедлайн убивал музыку посреди сета).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.set_dj_mode(True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result["stopped"] is False
+        # DJ-ветка сбрасывает дедлайн — следующий переход продлит сессию.
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
     def test_auto_stop_noop_before_segments_deadline(self):
         """Before the deadline, the segments backstop must NOT fire."""
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -1786,6 +4195,31 @@ class TestMusicSessionLifecycle:
         assert result["stopped"] is True
         assert result.get("stop_reason") == "segments_deadline"
 
+    def test_idle_ttl_stop_reports_its_reason(self):
+        """Строка watchdog'а в логе врала: писала «после 20.1s (ttl=300s)»,
+        хотя убил музыку segments-дедлайн. Обе ветки теперь называют себя.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        # Без segments дедлайна нет — сработает только idle-TTL.
+        assert mgr._music_deadline_at is None
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=time.monotonic() + 10)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "idle_ttl"
+
+    def test_segments_stop_reports_the_segments_value(self):
+        """``deadline_segments`` в результате — чтобы из лога было видно,
+        какую цифру напросила LLM."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result.get("stop_reason") == "segments_deadline"
+        assert result.get("deadline_segments") == 16
+
     def test_stop_all_clears_segments_deadline(self):
         """tts_batch_complete → stop_all must cancel the backstop."""
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -1803,6 +4237,81 @@ class TestMusicSessionLifecycle:
         state = mgr.get_state()
         assert state["music_deadline_segments"] == 8
         assert state["music_deadline_at"] == mgr._music_deadline_at
+
+    # ----- Issue #1812 — compose_music() form-end deadline -----------------
+
+    def test_set_form_deadline_arms_a_future_wall_clock_time(self):
+        mgr = _make_manager()
+        mgr.set_form_deadline(120.0)
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_deadline_at > time.monotonic()
+
+    def test_clear_form_deadline_resets_to_none(self):
+        mgr = _make_manager()
+        mgr.set_form_deadline(120.0)
+        mgr.clear_form_deadline()
+        assert mgr._music_form_deadline_at is None
+
+    def test_form_not_finished_survives_idle_ttl(self):
+        """A repeat=False track must NOT be cut off by idle-TTL before its
+        one pass of the form has actually finished playing — listening to
+        music in silence is the expected use, not an abandoned session."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        # Form is 120s long; the idle-TTL (1s) has long been exceeded, but
+        # the form itself has 60s left to play.
+        mgr.set_form_deadline(120.0)
+        now = mgr._music_form_deadline_at - 60.0
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=now)
+        assert result["stopped"] is False
+        assert result.get("held_reason") == "form_not_finished"
+        assert result["form_deadline_remaining_s"] == pytest.approx(60.0, abs=0.5)
+        # Music is still active — nothing was torn down.
+        assert "p1" in mgr._active_patterns
+
+    def test_form_deadline_passed_lets_idle_ttl_stop_it(self):
+        """Once the form has actually finished, idle-TTL governs normally."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        mgr.set_form_deadline(120.0)
+        # 1s past the form's natural end, and idle (ttl=1) is also exceeded.
+        now = mgr._music_form_deadline_at + 1.0
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=now)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "idle_ttl"
+
+    def test_looping_track_has_no_form_deadline_and_obeys_ttl(self):
+        """repeat=True music has no natural end — idle-TTL alone governs it,
+        exactly like before #1812 (form deadline stays None)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert mgr._music_form_deadline_at is None
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=time.monotonic() + 10)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "idle_ttl"
+
+    def test_stop_all_clears_form_deadline(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        mgr.set_form_deadline(120.0)
+        mgr.stop_all()
+        assert mgr._music_form_deadline_at is None
+
+    def test_execute_code_clears_a_stale_form_deadline(self):
+        """A fresh code push (e.g. plain execute_music_code after a
+        compose_music track) must not stay protected by the OLD track's
+        form-end deadline — that would block idle-TTL for unrelated code."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        mgr.set_form_deadline(120.0)
+        with patch("builtins.exec"):
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        assert mgr._music_form_deadline_at is None
 
     # ----- stop_music_on_session_end ---------------------------------------
 
@@ -2022,4 +4531,45 @@ class TestMusicQualityValidator:
         )
         assert ok is True
         assert err == ""
+
+
+# ---------------------------------------------------------------------------
+# Issue #2856 — set_dj_mode передаёт лимиты сета в /voice/dj_mode
+# ---------------------------------------------------------------------------
+
+
+class TestSetDjModeSetLimits:
+    """``max_minutes`` / ``max_tracks`` доезжают до DJModeController payload'ом."""
+
+    @staticmethod
+    def _published_payload(**kwargs):
+        import json as _json
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        node = MagicMock()
+        tool = SetDjModeTool(node, manager=None)
+        result = tool.execute(**kwargs)
+        publisher = node.create_publisher.return_value
+        msg = publisher.publish.call_args[0][0]
+        return _json.loads(msg.data), result
+
+    def test_schema_exposes_limits(self):
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        names = {p.name for p in SetDjModeTool(MagicMock()).parameters}
+        assert {"max_minutes", "max_tracks", "plan"} <= names
+
+    def test_max_minutes_and_tracks_reach_payload(self):
+        payload, result = self._published_payload(
+            enabled=True, next_transition_sec=45, max_minutes=30, max_tracks=5,
+        )
+        assert payload["max_minutes"] == 30
+        assert payload["max_tracks"] == 5
+        assert "лимит: 30 мин" in result.message
+        assert "лимит: 5 треков" in result.message
+
+    def test_limits_omitted_when_not_given(self):
+        payload, _ = self._published_payload(enabled=True, next_transition_sec=45)
+        assert "max_minutes" not in payload
+        assert "max_tracks" not in payload
 

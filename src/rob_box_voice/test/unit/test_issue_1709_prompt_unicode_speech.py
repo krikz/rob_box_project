@@ -121,7 +121,7 @@ def test_speak_text_tool_card_repeats_the_constraint() -> None:
     """
     content = _read()
     card_start = content.index("### speak_text(text, animation)")
-    card_end = content.index("### set_voice(voice)")
+    card_end = content.index("### set_voice(voice, provider=None)")
     card = content[card_start:card_end]
     assert "UNICODE-SPEECH" in card, (
         "The speak_text tool card (§4) must cross-reference "

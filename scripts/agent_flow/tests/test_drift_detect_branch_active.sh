@@ -53,7 +53,13 @@ setup_fixture() { # $1 = (optional) файл, отсутствующий в orig
     git -C "$WORK/repo" config user.name test
     git -C "$WORK/repo" remote add origin "$WORK/origin.git"
     mkdir -p "$WORK/repo/scripts/agent_flow"
-    cp "$AGENT_FLOW_DIR"/*.sh "$WORK/repo/scripts/agent_flow/"
+    # Fixture должна быть зеркалом реального SOT — install.sh sanity check
+    # требует, чтобы ВСЕ файлы из EXPECTED были на месте. Раньше тут
+    # копировался только *.sh, но в EXPECTED добавились .conf (agents_sleep_*)
+    # и .py (validate_test_ws_dirs, cross_task_archive_*). Ретро 14.09
+    # t_06956919: ставим `cp -r` и снимаем проблему выборочного копирования
+    # раз и навсегда.
+    cp -r "$AGENT_FLOW_DIR"/. "$WORK/repo/scripts/agent_flow/"
     if [ -n "$missing" ] && [ -f "$WORK/repo/scripts/agent_flow/$missing" ]; then
         rm -f "$WORK/repo/scripts/agent_flow/$missing"
     fi

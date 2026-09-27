@@ -1,0 +1,97 @@
+name: "G: Quest Caddyfile Contract"
+
+# Контракт HTTPS-фронтенда rob_box_quest (task t_0b926b23).
+#
+# Зачем отдельный workflow:
+#   `local_test/` НЕ покрыт ни одним существующим workflow (G-Run Tests гоняет
+#   только src/*/test через colcon, pytest.ini testpaths ограничен
+#   rob_box_harness). Поэтому регресс-тест Caddyfile, положенный в local_test/,
+#   без этого файла никогда бы не запустился в CI — то есть был бы ровно тем
+#   «красивым PASS», от которого он должен защищать (ADR-0018).
+#
+# Что проверяем:
+#   docker/vision/quest/Caddyfile склеивает HTTPS (443/8443) с aiohttp-
+#   приложением quest_node. Оба маршрута (/healthz и /quest) отдаёт ОДНО
+#   приложение (server/ws_server.py::build_app), поэтому обязаны смотреть в
+#   один upstream-порт = WS_PORT из docker-compose.
+#
+#   Регресс, который это ловит (t_0b926b23): /healthz проксировался на :8765 —
+#   порт соседнего voice-action-server (host-network), который тоже отвечает
+#   200 OK, но своим телом. Health quest_node не проверялся вообще, а
+#   smoke-скрипт печатал зелёное.
+#
+# Тесты чисто текстовые (парсинг Caddyfile + compose): без сети, Docker,
+# ROS2 и rclpy — поэтому ubuntu-latest + голый pytest, без ROS-контейнера.
+#
+# branches включает feature/** : любая feature/* ветка с WebXR/glTF
+# изменениями получает проверку (avatar/wearable/...). Это покрывает
+# и feature/avatar (если когда-то оживёт), и feature/av-*.
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - 'docker/vision/quest/Caddyfile'
+      - 'docker/vision/docker-compose.yaml'
+      - 'local_test/test_quest_caddyfile.py'
+      - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
+  pull_request:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - 'docker/vision/quest/Caddyfile'
+      - 'docker/vision/docker-compose.yaml'
+      - 'local_test/test_quest_caddyfile.py'
+      - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  caddyfile-contract:
+    name: Quest Caddyfile upstream contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: python3 -m pip install --quiet --no-cache-dir pytest
+
+      - name: Run Caddyfile contract tests
+        run: |
+          echo "📏 Контракт Caddyfile ↔ docker-compose WS_PORT..."
+          # -o addopts="" : корневой pytest.ini добавляет --cov=rob_box_harness,
+          # который здесь не установлен (и не нужен — тесты не про harness).
+          # -p no:cacheprovider : не мусорим .pytest_cache в CI.
+          python3 -m pytest local_test/test_quest_caddyfile.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      - name: Explain failure
+        if: failure()
+        run: |
+          echo "::error::Caddyfile-контракт нарушен."
+          echo ""
+          echo "Самая частая причина: /healthz и /quest смотрят в РАЗНЫЕ порты."
+          echo "Оба эндпоинта отдаёт одно aiohttp-приложение quest_node"
+          echo "(src/rob_box_quest/rob_box_quest/server/ws_server.py::build_app),"
+          echo "поэтому порт должен быть один и совпадать с WS_PORT из"
+          echo "docker/vision/docker-compose.yaml (\${QUEST_WS_PORT:-8766})."
+          echo ""
+          echo "НЕ ставьте сюда 8765 — это порт voice-action-server, который"
+          echo "в host-network живёт рядом и отвечает 200 на /healthz своим"
+          echo "телом. Тогда smoke-проверка зеленеет, не проверив quest_node."
+          echo "См. evidence/DEFECT-B-healthz-wrong-upstream.md и ADR-0018."

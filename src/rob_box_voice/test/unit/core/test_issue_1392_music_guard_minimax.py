@@ -65,20 +65,38 @@ def test_user_wants_music_sgeneriruy_pesnyu() -> None:
 # ── build_music_retry_prompt must point at handle_music, not execute_music_code alone
 
 
-def test_music_retry_prompt_mentions_both_engines() -> None:
-    """Retry prompt must name BOTH engines directly (Renardo +
-    MiniMax) — ``handle_music`` (the old Compositor skill facade) has no
-    executor anymore, so pointing the LLM at it would send it to a
-    phantom tool."""
+def test_music_retry_prompt_names_only_reachable_engines() -> None:
+    """Retry prompt must name engines the LLM can ACTUALLY call.
+
+    Исходная посылка теста (19.08.2026) верна и не поменялась: указывать в
+    CRITICAL-ретрае на незарегистрированный тул — значит гарантированно
+    сжечь цикл, потому что модель физически не сможет его вызвать. Тогда
+    фантомом был ``handle_music`` (фасад старого Compositor-скилла).
+
+    Что поменялось: 20.08.2026 MiniMax Music API отключили (410 Gone), и
+    ``mcp_server`` перестал регистрировать ``generate_music`` — фантомом
+    стал он сам. Живьём 30.08 это стоило пользователю ответа «Я тут
+    растерялся»: на «спой песню про денчика» гуард требовал generate_music,
+    модель дважды отвечала прозой, бюджет ретраев кончался.
+
+    Поэтому проверка развёрнута: раньше требовали упоминание MiniMax,
+    теперь требуем его ОТСУТСТВИЕ и наличие живых Renardo-путей.
+    Связь с реальной регистрацией пинится отдельно в
+    ``test_generate_music_is_gone.py``.
+    """
     prompt = build_music_retry_prompt("сгенерируй песню про дождь")
     assert "execute_music_code" in prompt, (
         "build_music_retry_prompt does not mention 'execute_music_code' — "
         "Renardo (bit/DJ/ambient) path must be reachable on Bug C retry."
     )
-    assert "generate_music" in prompt, (
-        "build_music_retry_prompt does not mention 'generate_music' — "
-        "LLM must be told about both engines (Renardo AND MiniMax)"
-        " when retrying on AI-generation requests."
+    assert "compose_music" in prompt, (
+        "build_music_retry_prompt does not mention 'compose_music' — это "
+        "единственный оставшийся путь для «сочини/спой про X»."
+    )
+    assert "generate_music" not in prompt, (
+        "build_music_retry_prompt снова зовёт 'generate_music' — тул не "
+        "зарегистрирован с 20.08.2026 (MiniMax 410 Gone), вызвать его "
+        "нельзя, и ретрай гарантированно уйдёт в прозу."
     )
     assert "handle_music" not in prompt, (
         "build_music_retry_prompt still mentions 'handle_music' — that "

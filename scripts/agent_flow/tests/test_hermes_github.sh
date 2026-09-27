@@ -515,6 +515,162 @@ test_13_integration_whoami_on_critical_mutations() {
 }
 
 # ============================================================================
+# Contract tests for comment_recently_posted (issue #2293, ADR-AF-0063+)
+#
+# Generic idempotency-check helper: returns 0 if comment body matches
+# marker (prefix/contains) within window_seconds, else 1.
+#
+# Acceptance #5:
+#   - window boundary (within / outside / exactly ==)
+#   - marker modes (prefix vs contains)
+#   - kind routing (issue vs pr — same endpoint, но контрактно разные)
+#   - failure semantics (no GH_REPO, bad kind → assume NOT posted)
+# ============================================================================
+
+# --- t14: comment_recently_posted: 0 when marker present in window ----------
+test_14_crp_within_window() {
+    install_fake_gh
+    export GH_REPO="test/test"
+    export HOME=/home/builder
+    # Pre-seed one matching comment (just now).
+    local now_iso
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'GH_COMMENTS_4242=[{"body":"⚠️ duplicate file detected","created_at":"%s"}]\n' "$now_iso" \
+        > "$TEST_TMP/gh_state"
+    . "$HERMES_GITHUB"
+    local rc=0
+    # 3600s window, prefix mode, marker matches → expect rc=0 (found)
+    comment_recently_posted issue "4242" "⚠️ duplicate file detected" 3600 prefix || rc=$?
+    assert_eq "0" "$rc" "within-window + matching marker → rc=0 (found)" || return 1
+    return 0
+}
+
+# --- t15: comment_recently_posted: 1 when marker outside window -------------
+test_15_crp_outside_window() {
+    install_fake_gh
+    export GH_REPO="test/test"
+    export HOME=/home/builder
+    # Pre-seed comment 48h ago (way outside 1h window).
+    local old_iso
+    old_iso="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+        python3 -c 'from datetime import datetime,timezone,timedelta;print((datetime.now(timezone.utc)-timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+    printf 'GH_COMMENTS_5151=[{"body":"🛑 stale-branch reuse","created_at":"%s"}]\n' "$old_iso" \
+        > "$TEST_TMP/gh_state"
+    . "$HERMES_GITHUB"
+    local rc=0
+    # 3600s window, prefix mode → expect rc=1 (not found)
+    comment_recently_posted pr "5151" "🛑 stale-branch reuse" 3600 prefix || rc=$?
+    assert_eq "1" "$rc" "outside-window marker → rc=1 (not found)" || return 1
+    return 0
+}
+
+# --- t16: comment_recently_posted: contains-mode substring match ------------
+test_16_crp_contains_mode() {
+    install_fake_gh
+    export GH_REPO="test/test"
+    export HOME=/home/builder
+    # Body starts with unrelated header, then contains substring.
+    local now_iso
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'GH_COMMENTS_6262=[{"body":"=== HEADER ===\\nprocess marker missing on PR #42","created_at":"%s"}]\n' \
+        "$now_iso" > "$TEST_TMP/gh_state"
+    . "$HERMES_GITHUB"
+    local rc=0
+    # contains-mode: "process marker missing" appears as substring.
+    comment_recently_posted issue "6262" "process marker missing" 86400 contains || rc=$?
+    assert_eq "0" "$rc" "contains-mode + substring present → rc=0" || return 1
+    rc=0
+    # prefix-mode: body doesn't startswith → expect rc=1.
+    comment_recently_posted issue "6262" "process marker missing" 86400 prefix || rc=$?
+    assert_eq "1" "$rc" "prefix-mode + substring-only body → rc=1" || return 1
+    return 0
+}
+
+# --- t17: comment_recently_posted: kind routing (issue vs pr) ----------------
+test_17_crp_kind_routing() {
+    install_fake_gh
+    export GH_REPO="test/test"
+    export HOME=/home/builder
+    local now_iso
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'GH_COMMENTS_7777=[{"body":"test marker","created_at":"%s"}]\n' "$now_iso" \
+        > "$TEST_TMP/gh_state"
+    . "$HERMES_GITHUB"
+    # Unknown kind → rc=1 (assume NOT posted).
+    local rc=0
+    comment_recently_posted "wrongkind" "7777" "test marker" 3600 prefix || rc=$?
+    assert_eq "1" "$rc" "unknown kind → rc=1 (assume NOT posted)" || return 1
+    # Empty kind → rc=1.
+    rc=0
+    comment_recently_posted "" "7777" "test marker" 3600 prefix || rc=$?
+    assert_eq "1" "$rc" "empty kind → rc=1" || return 1
+    # Empty marker → rc=1.
+    rc=0
+    comment_recently_posted issue "7777" "" 3600 prefix || rc=$?
+    assert_eq "1" "$rc" "empty marker → rc=1" || return 1
+    # Valid kind → rc=0 (matches).
+    rc=0
+    comment_recently_posted issue "7777" "test marker" 3600 prefix || rc=$?
+    assert_eq "0" "$rc" "valid kind+marker → rc=0" || return 1
+    return 0
+}
+
+# --- t18: comment_recently_posted: API failure → rc=1 (don't block caller) ---
+test_18_crp_failure_semantics() {
+    # No GH_REPO → return 1 (assume NOT posted → caller proceeds).
+    unset GH_REPO
+    export HOME=/home/builder
+    install_fake_gh
+    . "$HERMES_GITHUB"
+    local rc=0
+    comment_recently_posted issue "9999" "any marker" 3600 prefix || rc=$?
+    assert_eq "1" "$rc" "no GH_REPO → rc=1 (assume NOT posted, caller proceeds)" || return 1
+    return 0
+}
+
+# --- t19: comment_recently_posted: window=0 (no time limit, all comments) ---
+test_19_crp_window_zero() {
+    install_fake_gh
+    export GH_REPO="test/test"
+    export HOME=/home/builder
+    # Very old comment (1 year ago), window=0 → python-filter uses cutoff=now,
+    # so old comment should NOT match. Actually: window=0 means cutoff=now,
+    # so old comment at ep < now is NOT >= cutoff → not found.
+    # However, the implementation forces cutoff_epoch = now - 0 = now even when
+    # window_seconds=0; so old comments are filtered out client-side too.
+    local old_iso
+    old_iso="$(python3 -c 'from datetime import datetime,timezone,timedelta;print((datetime.now(timezone.utc)-timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+    printf 'GH_COMMENTS_8888=[{"body":"old marker","created_at":"%s"}]\n' "$old_iso" \
+        > "$TEST_TMP/gh_state"
+    . "$HERMES_GITHUB"
+    local rc=0
+    comment_recently_posted issue "8888" "old marker" 0 prefix || rc=$?
+    assert_eq "1" "$rc" "window=0 + 1-year-old comment → rc=1" || return 1
+    return 0
+}
+
+# --- t20: _whoami_already_posted still reuses comment_recently_posted logic --
+test_20_whoami_wrapper_reuses_helper() {
+    install_fake_gh
+    export GH_REPO="test/test"
+    export HOME=/home/builder
+    local now_iso
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Seed with body that matches whoami format "<HERMES_WHOAMI_MARKER> script=X action=Y".
+    printf 'GH_COMMENTS_3333=[{"body":"🤖 [agent:devops] script=test_xxx action=closing","created_at":"%s"}]\n' \
+        "$now_iso" > "$TEST_TMP/gh_state"
+    . "$HERMES_GITHUB"
+    local rc=0
+    _whoami_already_posted issue "3333" "test_xxx" "closing" || rc=$?
+    assert_eq "0" "$rc" "_whoami_already_posted: matching whoami → rc=0 (backwards-compat)" || return 1
+    # Different action → rc=1.
+    rc=0
+    _whoami_already_posted issue "3333" "test_xxx" "reopening" || rc=$?
+    assert_eq "1" "$rc" "_whoami_already_posted: different action → rc=1" || return 1
+    return 0
+}
+
+# ============================================================================
 # RUN
 # ============================================================================
 echo "Running hermes_github.sh tests..."
@@ -534,6 +690,13 @@ run_test "10_integration_source_lines"       test_10_integration_source_lines
 run_test "11_install_includes"               test_11_install_includes
 run_test "12_bad_inputs"                     test_12_bad_inputs
 run_test "13_integration_whoami_on_critical_mutations" test_13_integration_whoami_on_critical_mutations
+run_test "14_crp_within_window"              test_14_crp_within_window
+run_test "15_crp_outside_window"             test_15_crp_outside_window
+run_test "16_crp_contains_mode"              test_16_crp_contains_mode
+run_test "17_crp_kind_routing"               test_17_crp_kind_routing
+run_test "18_crp_failure_semantics"          test_18_crp_failure_semantics
+run_test "19_crp_window_zero"                test_19_crp_window_zero
+run_test "20_whoami_wrapper_reuses_helper"   test_20_whoami_wrapper_reuses_helper
 
 echo
 echo "=========================================="

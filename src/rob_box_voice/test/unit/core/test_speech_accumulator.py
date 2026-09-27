@@ -83,8 +83,64 @@ class TestSpeechAccumulator:
         assert "ФОНОВЫЙ ЗАПРОС" in hint
         assert "напомни позвонить маме" in hint
         assert "Антон" in hint
-        assert "Если в текущей фразе есть своя явная команда" in hint
+        # Issue #1766 — усиленная инструкция: priority над историей + LRU.
+        assert "ВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога" in hint
+        assert "ВЫПОЛНИ последнюю явную команду" in hint
+        assert "выполни ПОСЛЕДНЮЮ (LRU)" in hint
+        assert "[URGENT_BACKLOG]" in hint
 
     def test_format_user_hint_empty_returns_none(self):
         acc = SpeechAccumulator()
         assert acc.format_user_hint() is None
+
+    # Issue #1766 — инструкция для LLM в <system_context> требует
+    # явного приоритета backlog над историей + [URGENT_BACKLOG] маркер.
+    # Без этого LLM «застревает» на старой теме диалога и игнорирует
+    # backlog, в котором лежит явная команда («включи трек про весну»).
+    def test_format_block_has_urgent_marker(self):
+        acc = SpeechAccumulator()
+        acc.add("включи трек про весну", speaker_tag="0", speaker_name="Денчик")
+        block = acc.format_block()
+        assert block is not None
+        assert "[URGENT_BACKLOG]" in block
+        assert "включи трек про весну" in block
+
+    def test_format_block_instructs_priority_over_history(self):
+        acc = SpeechAccumulator()
+        acc.add("включи трек про весну", speaker_tag="0", speaker_name="Денчик")
+        block = acc.format_block()
+        # Приоритет backlog над историей — главная мотивация issue #1766.
+        assert "backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога" in block
+
+    def test_format_block_instructs_lru_for_multiple_commands(self):
+        """Если в backlog несколько явных команд — выполни последнюю (LRU)."""
+        acc = SpeechAccumulator()
+        acc.add("включи джаз", speaker_tag="0", speaker_name="Денчик")
+        acc.add("поставь рок", speaker_tag="0", speaker_name="Денчик")
+        acc.add("вруби техно", speaker_tag="0", speaker_name="Денчик")
+        block = acc.format_block()
+        assert "выполни ПОСЛЕДНЮЮ (LRU)" in block
+        # Все три записи в block присутствуют (порядок LRU = insertion order).
+        assert "включи джаз" in block
+        assert "поставь рок" in block
+        assert "вруби техно" in block
+
+    def test_format_user_hint_instructs_priority_over_history(self):
+        acc = SpeechAccumulator()
+        acc.add("включи трек про весну", speaker_tag="0", speaker_name="Денчик")
+        hint = acc.format_user_hint()
+        assert hint is not None
+        assert "backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога" in hint
+        assert "выполни ПОСЛЕДНЮЮ (LRU)" in hint
+
+    def test_format_user_hint_lists_bare_wake_examples(self):
+        """Документирует в user-hint «голые wake» паттерны, чтобы LLM
+        не трактовала их как новую тему диалога (live-баг #1766:
+        «давай зарегистрируем» сбивал LLM на тему идентификации)."""
+        acc = SpeechAccumulator()
+        acc.add("включи трек про весну", speaker_tag="0", speaker_name="Денчик")
+        hint = acc.format_user_hint()
+        assert "робот" in hint
+        assert "повтори" in hint
+        assert "что думаешь" in hint
+        assert "давай зарегистрируем" in hint

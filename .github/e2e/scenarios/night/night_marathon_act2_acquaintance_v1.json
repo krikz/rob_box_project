@@ -1,0 +1,254 @@
+{
+  "name": "night_marathon_act2_acquaintance_v1",
+  "stability": "new-unproven",
+  "act": 2,
+  "title": "Знакомство и прогрев голосов",
+  "description": "Саша (anton) и Борис (ermil) представляются ДЛИННЫМИ репликами — resemblyzer считает d-vector на каждой принятой фразе, короткое «привет» даёт неустойчивый эмбеддинг при identify_threshold=0.75. Дядя Гриша (zahar) заходит и намеренно НЕ называет имя — это контрольная группа «незнакомец» для акта 3.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n201_sasha_intro_long",
+      "voice": "anton",
+      "text": "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой ночной инженер и механик.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "register_speaker"
+        ],
+        "discovery_tools": [
+          "register_speaker"
+        ],
+        "must_not_call": [],
+        "_comment": "Разбито на n201/n201b/n201c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116, ❌ Речь отклонена: 17.37с), исходная реплика ~25с не доходила до STT. Имя и register_speaker остаются на этом шаге. expect=cycle: первый шаг акта пробивает wake-gate. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard). Issue #2907: «и механик» удлиняет реплику регистрации (85 → 95 символов), чтобы чистой речи после VAD было с запасом над порогом эталона 3.0с (run 35916899022: 51 символ дал 2.97с → too_short). Потолок — test_e2e_scenario_playable.sh (<=96 символов без WARN): длиннее уже упирается в 15с VAD-окно."
+      },
+      "expect": "cycle",
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n201b_sasha_backstory",
+      "voice": "anton",
+      "text": "Я собирал тебе блок питания и переделывал левый мотор. Запомни мой голос как следует.",
+      "patterns": [],
+      "expect": "backlog",
+      "_why": "Продолжение n201_sasha_intro_long — см. why там (run 35658231116, лимит VAD 15с). Суммарная длина речи сохранена для устойчивого d-vector."
+    },
+    {
+      "label": "n201c_sasha_voice_note",
+      "voice": "anton",
+      "text": "Потому что ночью я буду говорить с тобой чаще всех остальных в этой мастерской.",
+      "patterns": [],
+      "expect": "backlog",
+      "_why": "Хвост n201_sasha_intro_long — см. n201b."
+    },
+    {
+      "label": "n202a_sasha_warmup",
+      "voice": "anton",
+      "text": "Робот, слушай дальше и запоминай, как я звучу.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "_why": "n202 разбит на три шага: 15с VAD-окно (run 35658231116) не пропускало исходную реплику ~20с. Паттерн мягкий: ловим ЛЮБОЙ след биометрии в логах, поэтому держим его на каждой части."
+    },
+    {
+      "label": "n202b_sasha_warmup_hum",
+      "voice": "anton",
+      "text": "Вчера я всю ночь паял этот несчастный блок питания, и он всё равно гудит как трансформатор.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "expect": "backlog"
+    },
+    {
+      "label": "n202c_sasha_warmup_guess",
+      "voice": "anton",
+      "text": "А я так и не понял, земля виновата или дроссель.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "expect": "backlog"
+    },
+    {
+      "label": "n203_sasha_memory_tea",
+      "voice": "anton",
+      "text": "Робот, запомни: я пью только зелёный чай без сахара и совсем не ем лук, даже жареный.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_save"
+        ],
+        "must_not_call": [],
+        "_comment": "Сокращено под бюджет VAD 15с (run 35658231116), оба факта (зелёный чай без сахара, не ест лук) сохранены — нужны в акте 9 (рецепт борща без лука) и в акте 10 (память переживает сброс сессии)."
+      }
+    },
+    {
+      "label": "n204_boris_intro_long",
+      "voice": "ermil",
+      "text": "Робот, добрый вечер, меня зовут Борис, я друг Саши и прихожу с пиццей по пятницам, раз в неделю.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "register_speaker"
+        ],
+        "discovery_tools": [
+          "register_speaker"
+        ],
+        "must_not_call": [],
+        "_comment": "Разбито на n204/n204b/n204c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116) — исходная реплика ~24с не доходила до STT. Имя и register_speaker остаются на этом шаге. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard). Issue #2907: «по пятницам» удлиняет реплику регистрации (92 → 96 символов, факт «раз в неделю» сохранён) — ровно до потолка test_e2e_scenario_playable.sh без WARN; длиннее упирается в 15с VAD-окно."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n204b_boris_voice_note",
+      "voice": "ermil",
+      "text": "Запомни мой голос отдельно от Сашиного, мы очень по-разному звучим.",
+      "patterns": [],
+      "expect": "backlog",
+      "_why": "Продолжение n204_boris_intro_long — см. why там (run 35658231116, лимит VAD 15с)."
+    },
+    {
+      "label": "n204c_boris_voice_reason",
+      "voice": "ermil",
+      "text": "Я не хочу, чтобы ты нас путал, когда мы оба будем тебе что-то говорить.",
+      "patterns": [],
+      "expect": "backlog",
+      "_why": "Хвост n204_boris_intro_long — см. n204b."
+    },
+    {
+      "label": "n205a_boris_warmup",
+      "voice": "ermil",
+      "text": "Робот, продолжаю говорить, чтобы ты привык к моему голосу.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "_why": "n205 разбит на три шага: 15с VAD-окно (run 35658231116) не пропускало исходную реплику ~20с. Паттерн держим на каждой части."
+    },
+    {
+      "label": "n205b_boris_warmup_spartak",
+      "voice": "ermil",
+      "text": "Я болею за Спартак с девяносто восьмого года, и Саша каждый раз надо мной смеётся.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "expect": "backlog"
+    },
+    {
+      "label": "n205c_boris_warmup_tease",
+      "voice": "ermil",
+      "text": "Хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "expect": "backlog"
+    },
+    {
+      "label": "n206_boris_memory",
+      "voice": "ermil",
+      "text": "Робот, запомни про меня: Борис болеет за Спартак и всегда приносит пиццу.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_save"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n207_recall_sasha",
+      "voice": "anton",
+      "text": "Робот, как меня зовут и что ты про меня уже знаешь?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Саш"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Проверяем связку голос→профиль→факты, а не просто вежливый ответ."
+      }
+    },
+    {
+      "label": "n209_recall_boris",
+      "voice": "ermil",
+      "text": "Робот, а про меня что помнишь?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Борис|Спартак|пицц"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n210_grisha_no_name",
+      "voice": "zahar",
+      "text": "Робот, я мимо шёл. Имя своё я тебе называть не буду, я старой закалки и не доверяю железкам.",
+      "patterns": [],
+      "acceptance": {
+        "must_not_call": [
+          "register_speaker"
+        ],
+        "must_not_say": [
+          "Борис",
+          "Саш",
+          "Спартак",
+          "пицц"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Сокращено под бюджет VAD 15с (run 35658231116), отказ называть имя сохранён. КОНТРОЛЬНАЯ ГРУППА для акта 3. Робот НЕ должен регистрировать профиль без имени: register_speaker с пустым/мусорным name засоряет /data/speakers.db (см. dialogue.py:1021). Issue #2779: незнакомец не должен получить имя/факты чужого (по голосу) диктора — ни из бэклога непрошедшей wake-гейт реплики, ни из истории/памяти.",
+        "must_not_identify_as": [
+          "Борис",
+          "Саша"
+        ]
+      }
+    },
+    {
+      "label": "n211_who_do_you_know",
+      "voice": "anton",
+      "text": "Робот, перечисли всех, кого ты сегодня запомнил по голосу.",
+      "patterns": [],
+      "acceptance": {
+        "must_not_say": [
+          "Гриш",
+          "троих",
+          "трёх человек|трех человек|три человека",
+          "Незнакомец"
+        ],
+        "expected_keywords": [
+          "Саш",
+          "Борис"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Оба зарегистрированных должны быть названы. Гриши в списке быть не должно — раньше это можно было проверить только глазами, теперь есть явный must_not_say (issue #2779 AC3)."
+      }
+    },
+    {
+      "label": "n212_session_reset_before_search",
+      "voice": "anton",
+      "text": "Робот, новая сессия, забудь этот разговор.",
+      "patterns": [
+        "session reset|session_reset|Новая сессия|new session"
+      ],
+      "_why": "Issue #2865: без сброса факт n203 лежит в окне чата, и LLM отвечает на n213 из истории, не зовя memory_search (run 35886659057, n208: tools=[]). Паттерн — строка «🧹 [new-session] session reset» из dialogue_node.reset_session: если сброс не случился, n213 ничего не доказывает, и этот шаг обязан покраснеть сам."
+    },
+    {
+      "label": "n213_memory_search_tea_after_reset",
+      "voice": "anton",
+      "text": "Робот, поищи у себя в памяти, что я говорил про чай.",
+      "patterns": [
+        "\\[memory_search\\] query=.* [1-9][0-9]* results"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_search"
+        ],
+        "expected_keywords": [
+          "зелён|зелен"
+        ],
+        "must_not_call": [],
+        "_comment": "Issue #2865 / #2793: вопрос задаётся ПОСЛЕ сброса сессии (n212) — факт о чае есть только в voice_facts. Зелёный = memory_search вызван, вернул >=1 хит и робот произнёс факт («зелёный»), которого нет ни в вопросе, ни в окне чата."
+      }
+    }
+  ]
+}

@@ -5,6 +5,16 @@ waypoint_store.py — SQLite-backed CRUD for named waypoints, scoped per map.
 Reuses the same database file as VoiceMemory (``VOICE_MEMORY_DB_PATH``).
 Migration ``003_waypoints.sql`` is applied idempotently on first init.
 
+NOT on ``/data/harness_voice.db`` (issue #2000 / ADR-0055): the dialogue
+node's ``SQLiteVoiceMemory`` already creates its own ``waypoints`` table
+there with an incompatible schema (``name`` PRIMARY KEY, no ``map_id``).
+Pointing this class at that file would make ``CREATE TABLE IF NOT EXISTS``
+a no-op against the wrong schema and every insert here would then fail
+with "no such column: map_id". Deliberate, documented blocker — not an
+oversight. See the ``sqlite_db_path`` comment in
+``docker/vision/config/voice_assistant/dialogue_node.yaml`` and
+``docs/adr/0055-voice-memory-db-unify-with-harness.md``.
+
 Thread-safe: every public method acquires ``self._lock``.
 
 Usage (inside MCPServer)::

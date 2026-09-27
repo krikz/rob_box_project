@@ -37,6 +37,16 @@ TTS. Сейчас observability — только логи в Loki, и ответ
   (result ∈ success|fail — что произошло в конце диалога)
 * ``telegram_message_total{direction, type}`` — counter
 
+Метрики W2-6 (issue #968, волна scheduler-segments-merge, фаза S12):
+
+* ``voice_scheduler_quick_decide_total{verdict}`` — counter
+  (verdict ∈ IGNORE|REPLACE|PENDING_LLM, см. quick_decide.py)
+* ``voice_scheduler_task_updated_total`` — counter (применённая
+  MERGE-правка — TaskScheduler.update()/replace_args())
+* ``voice_scheduler_pending_queue_latency_seconds`` — histogram
+  (задержка отложенной пользовательской фразы в очереди
+  ``_pending_user_messages``, цель — ≤ 200 мс)
+
 Все метрики живут в ``prometheus_client.REGISTRY`` (process-global).
 Каждая ROS2-нода запускается в отдельном процессе, поэтому
 пересечения имён между нодами нет, но ВНУТРИ процесса (unit-тесты
@@ -126,9 +136,10 @@ class MetricsDisabled:
     тот же объект (или self), не падает и не считает. Это позволяет
     прод-коду вызывать ``counter.labels(...).inc()`` без
     ``if prometheus_client is not None`` в каждом месте.
-    """
 
-    __slots__ = ()
+    ``labels`` — обычный атрибут экземпляра (не слот), чтобы unit-тесты
+    могли подменять его на spy и перехватывать вызовы ``.inc()``.
+    """
 
     def labels(self, *args: Any, **kwargs: Any) -> "MetricsDisabled":
         return self
@@ -357,6 +368,82 @@ def record_voice_llm_request(
     hist.labels(provider=provider).observe(duration_s)
 
 
+#: Бакеты для ``voice_llm_prompt_tokens``. Подобраны вокруг сегодняшнего
+#: фиксированного префикса (~27 100 токенов на 02.09.2026: 16 240 схемы
+#: инструментов + 10 838 мастер-промпт), чтобы сдвиг вниз от доменных
+#: скиллов был виден по перцентилям, а не тонул в одном бакете.
+PROMPT_TOKENS_BUCKETS: tuple[float, ...] = (
+    2000, 4000, 8000, 12000, 16000, 20000, 24000, 28000, 32000, 40000,
+    48000, 64000, float("inf"),
+)
+
+
+def record_llm_prompt_tokens(
+    provider: str,
+    *,
+    tokens: int,
+    skill: str = "none",
+    estimated: bool = True,
+) -> None:
+    """Учёт размера ОДНОГО запроса к LLM в токенах.
+
+    Зовётся на каждое обращение к провайдеру, включая каждую итерацию
+    тул-цикла: ход с восемью итерациями стоит восьми промптов.
+
+    :param provider: ``"minimax"`` / ``"deepseek"`` / ...
+    :param tokens: размер промпта. Неположительные значения игнорируются —
+        это признак того, что провайдер прислал мусор, и записывать его в
+        гистограмму значит испортить перцентили.
+    :param skill: имя активного доменного скилла (``"none"`` пока скиллы
+        не включены). Именно эта метка отвечает на вопрос «сколько стоит
+        ход композитора против хода плеера».
+    :param estimated: ``True`` — число получено клиентской эвристикой,
+        потому что провайдер не прислал usage. Метка позволяет не смешивать
+        точные и оценочные измерения в одной выборке.
+    """
+    if tokens <= 0:
+        return
+    hist = get_metric(
+        "histogram",
+        "voice_llm_prompt_tokens",
+        "Prompt size in tokens per LLM request, by provider, skill and source.",
+        labelnames=("provider", "skill", "estimated"),
+        buckets=PROMPT_TOKENS_BUCKETS,
+    )
+    hist.labels(
+        provider=provider,
+        skill=skill or "none",
+        estimated="true" if estimated else "false",
+    ).observe(tokens)
+
+
+def record_skill_activation(
+    skill: str,
+    *,
+    source: str,
+) -> None:
+    """Учёт одной активации доменного скилла.
+
+    :param skill: имя скилла (``"none"`` — активации не было).
+    :param source: ``"router"`` — сработал детерминированный
+        пред-роутер; ``"dj-auto"`` — DJ_AUTO-ход форсировал composer
+        (issue #2441); ``"llm"`` — домен пришлось грузить вызовом
+        ``load_skill``, то есть роутер промахнулся; ``"miss"`` — LLM
+        запросила несуществующий домен.
+
+    Доля ``source="llm"`` и есть метрика промахов роутера (задача 3.7):
+    если она растёт, роутер не покрывает реальные формулировки, и
+    включать сужение каталога (Move B) рано.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_skill_activation_total",
+        "Domain-skill activations, labelled by skill and how it was chosen.",
+        labelnames=("skill", "source"),
+    )
+    counter.labels(skill=skill or "none", source=source).inc()
+
+
 def record_fallback(
     primary: str,
     fallback: str,
@@ -482,6 +569,42 @@ def record_session_duration(
     hist.labels(result=result).observe(duration_s)
 
 
+def record_music_retry_exhausted(
+    guard_name: str,
+    *,
+    reason: str,
+    user_input_kind: str = "unknown",
+) -> None:
+    """Учёт исчерпания retry-budget для music-guard'а (#2561).
+
+    Live 15.09: на 16 Bug C-триггеров в час 6 (38%) НЕ закрываются
+    retry'ем — модель снова отвечает spoken-фразой при tools_called=[].
+    Метрика даёт видимость, насколько часто retry-цепочка выгорает.
+
+    :param guard_name: имя guard'а, который выгорел
+        (``"music_user"`` для Bug C). Лейбл — чтобы можно было
+        отделить от других мест, где тот же приём может появиться.
+    :param reason: короткий тег причины исчерпания
+        (``"retry_exhausted"`` для обычного случая;
+        ``"dj_retry_exhausted"`` — для Bug B path).
+    :param user_input_kind: тип user_input'а (``"track_name"`` /
+        ``"genre"`` / ``"vocal"`` / ``"general"`` / ``"unknown"``) —
+        чтобы видеть, на каких запросах retry выгорает чаще.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_music_retry_exhausted_total",
+        "Music-guard retry-budget exhaustion events "
+        "(issue #2561 — babble-retry success rate ~62%).",
+        labelnames=("guard_name", "reason", "user_input_kind"),
+    )
+    counter.labels(
+        guard_name=guard_name,
+        reason=reason,
+        user_input_kind=user_input_kind or "unknown",
+    ).inc()
+
+
 def record_telegram_message(
     direction: str,
     *,
@@ -501,3 +624,155 @@ def record_telegram_message(
         labelnames=("direction", "type"),
     )
     counter.labels(direction=direction, type=message_type).inc()
+
+
+# ── Issue #2554: audio_node paInputOverflow (status=2) ─────────────────
+# Раньше paInputOverflow виден только через rate-limited WARN в docker
+# logs (один раз в 60с, см. audio_node.py:_log_overflow). Это удобно
+# для немедленной диагностики, но не даёт тренда: «растёт/падает»
+# непонятно, пока не смотришь логи руками. Метрика позволяет
+# dashboard'у Grafana/Prometheus алертить по «overflow rate > N/мин» и
+# видеть, помог ли рост frames_per_buffer 1024 → 4096 (issue #1050)
+# против текущей пиковой нагрузки DJ-сетов.
+#
+# Имя: ``voice_audio_input_overflow_total`` — counter (по конвенции
+# #1160 «voice_*_total»). Лейбл: ``frames_per_buffer`` — диапазон
+# (chunk_size на момент события), потому что основной сценарий
+# регрессии = кто-то выставил слишком маленькое значение и надо быстро
+# понять, в каком окружении проблема.
+
+
+def record_audio_input_overflow(*, frames_per_buffer: int) -> None:
+    """Учёт одного paInputOverflow (status=2) в audio_node.
+
+    :param frames_per_buffer: текущее значение ``chunk_size`` (фреймы
+        на чанк). Зафиксировано как label, чтобы при смене параметра
+        в проде можно было отследить корреляцию «новый frames_per_buffer
+        → больше/меньше overflow» — а не гадать «у нас сейчас сколько».
+
+    Безопасен при отсутствии ``prometheus_client`` (no-op). См. общую
+    договорённость в :mod:`rob_box_voice.observability`.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_audio_input_overflow_total",
+        "PyAudio paInputOverflow (status=2) events from audio_node, "
+        "labelled by frames_per_buffer (chunk_size) at the time of event.",
+        labelnames=("frames_per_buffer",),
+    )
+    counter.labels(frames_per_buffer=str(int(frames_per_buffer))).inc()
+
+
+# ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────────────
+# Метрики MERGE-цепочки: quick_decide-вердикты (S4.1), применённые
+# TaskScheduler.update()-правки (S3.2) и задержка очереди отложенных
+# фраз (S7).
+
+
+def record_quick_decide_verdict(verdict: str) -> None:
+    """Учёт одного вердикта ``quick_decide`` (S4.1, barge_in_policy="classify").
+
+    :param verdict: строковое значение :class:`QuickVerdict`
+        (``"IGNORE"`` / ``"REPLACE"`` / ``"PENDING_LLM"``) — см.
+        ``rob_box_voice.scheduler.quick_decide.QuickVerdict``. Дан как
+        ``str``, а не enum, чтобы этот модуль не тянул зависимость на
+        ``scheduler`` (наблюдатель не должен знать детали типа —
+        только его строковое значение для Prometheus-лейбла).
+    """
+    counter = get_metric(
+        "counter",
+        "voice_scheduler_quick_decide_total",
+        "quick_decide Level-1 verdicts, labelled by verdict "
+        "(IGNORE|REPLACE|PENDING_LLM).",
+        labelnames=("verdict",),
+    )
+    counter.labels(verdict=verdict).inc()
+
+
+def record_task_updated() -> None:
+    """Учёт одной применённой MERGE-правки (S3.2, ``TaskScheduler.update()``).
+
+    Инкрементируется на стороне вызывающего слоя (``dialogue_node``),
+    когда приходит lifecycle-событие ``"task.updated"`` от планировщика
+    (``_Channel.replace_args`` — rewrite/replace op применился к ещё не
+    стартовавшему сегменту). Планировщик (``task_scheduler.py``)
+    намеренно НЕ импортирует ``observability`` напрямую — событие уже
+    публикуется через существующий ``on_event``-колбэк
+    (``TaskScheduler(on_event=...)``), тот же механизм, что используется
+    для ``/harness/task_events`` (W7c), эта метрика — второй наблюдатель
+    того же события.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_scheduler_task_updated_total",
+        "Applied TaskScheduler.update() edits (MERGE rewrite/replace "
+        "ops on a not-yet-started segment).",
+    )
+    counter.inc()
+
+
+#: Бакеты для ``voice_scheduler_pending_queue_latency_seconds`` —
+#: подобраны вокруг целевого порога 200мс (S7, §4.7.3), а не общих
+#: :data:`DEFAULT_BUCKETS` (те начинаются слишком грубо для суб-
+#: секундной цели).
+_PENDING_QUEUE_LATENCY_BUCKETS: tuple[float, ...] = (
+    0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0,
+)
+
+
+def record_pending_queue_latency(latency_s: float) -> None:
+    """Учёт задержки одной фразы в очереди ``_pending_user_messages`` (S7).
+
+    Задержка — от постановки в очередь (когда ``quick_decide`` вернул
+    ``PENDING_LLM`` во время in-flight турна) до дренажа
+    (``_drain_pending_user_messages``, когда предыдущий турн
+    освобождает слот). Целевое значение — **≤ 200 мс** (S7, §4.7.3):
+    если дренаж систематически превышает порог, значит турны копятся
+    быстрее, чем LLM-цикл успевает их обрабатывать.
+
+    :param latency_s: задержка в секундах (не мс).
+    """
+    hist = get_metric(
+        "histogram",
+        "voice_scheduler_pending_queue_latency_seconds",
+        "Queue latency of deferred user phrases in _pending_user_messages "
+        "(enqueue → drain), target <= 200ms.",
+        buckets=_PENDING_QUEUE_LATENCY_BUCKETS,
+    )
+    hist.observe(latency_s)
+
+
+def record_hallucinated_midi(*, source: str, action: str) -> None:
+    """Issue #2560 — учёт одного случая «модель выдумала MIDI-паттерн».
+
+    Hallucinated MIDI — режим, при котором LLM при запросе известной
+    мелодии (Григ «В пещере горного короля», Бетховен «К Элизе», etc.)
+    пишет выдуманные MIDI-ноты в ``execute_music_code(code=...)``
+    (FoxDot/renardo-синтаксис вида ``p1 >> strangerarp(...)``,
+    ``pe<номер>le<номер>f`` и т.п.) вместо того, чтобы СНАЧАЛА
+    вызвать ``lookup_melody`` и достать реальные ноты из RTTTL-библиотеки.
+
+    Текстовое правило ``RULE #KNOWN-MELODY`` в composer.txt
+    (issue #2550 → PR #2551) этот баг НЕ устранило: модель иногда
+    читает правило и тут же нарушает. ``hallucinated_midi_total`` —
+    последний рубеж: ``dialogue_node._check_hallucinated_midi_and_retry``
+    детектирует паттерн по regex ``pe[0-9]+le[0-9]+f``, требует
+    один CRITICAL-ретрай с «сначала lookup_melody» и инкрементит
+    этот счётчик. Prometheus-алерт: ``rate(...) > 0`` за 1ч
+    ⇒ расследование (issue #2560 acceptance criteria).
+
+    :param source: ``"guard"`` (сработал ``_check_hallucinated_midi_and_retry``)
+        или ``"skip"`` (бюджет исчерпан, ретрай не отправлен).
+    :param action: ``"retry"`` (CRITICAL-ретрай ушёл в LLM),
+        ``"publish"`` (юзер всё-таки услышал babble), ``"skipped"``
+        (бюджет/флаг не пустили ретрай).
+    """
+    counter = get_metric(
+        "counter",
+        "voice_composer_hallucinated_midi_total",
+        "Hallucinated MIDI patterns (FoxDot pe<num>le<num>f) emitted by LLM "
+        "instead of lookup_melody (issue #2560). Labels: source (guard|skip), "
+        "action (retry|publish|skipped).",
+        labelnames=("source", "action"),
+    )
+    counter.labels(source=source, action=action).inc()

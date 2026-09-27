@@ -23,6 +23,7 @@ from rob_box_harness.memory import (
     InMemoryStore,
     ensure_speaker_profile,
     get_speaker_profile,
+    merge_speaker_facts,
     speaker_scope,
     touch_speaker,
 )
@@ -146,6 +147,73 @@ class TestSpeakerProfileSQLite:
         # Новые (b) — первыми (created_at DESC).
         assert facts[0].key == "b"
         assert {f.key for f in facts} == {"a", "b"}
+
+
+class TestMergeSpeakerFacts:
+    """Issue W5-4 — merge_speaker_facts(): перенос фактов при склейке профилей.
+
+    Пара к ``SpeakerDatabase.merge_speakers()`` (rob_box_voice) — тот
+    метод склеивает эмбеддинги голоса, эта функция — факты в слое
+    памяти. Проверяется на обоих бэкендах (InMemoryStore + SQLiteVoiceMemory),
+    как и остальные хелперы в этом файле.
+    """
+
+    def test_moves_facts_from_src_to_dst_in_memory(self):
+        store = InMemoryStore()
+        _run(store.init())
+        _run(store.save_fact(
+            speaker_scope("src"),
+            Fact(key="likes", value="джаз", tags=("speaker",)),
+        ))
+
+        moved = _run(merge_speaker_facts(store, "src", "dst"))
+
+        assert moved == 1
+        dst_facts = {f.key: f.value for f in _run(store.list_facts(speaker_scope("dst")))}
+        assert dst_facts["likes"] == "джаз"
+        # src scope должен быть очищен — иначе факты "застрянут" под
+        # старым speaker_id, который никто больше не опознаёт.
+        assert _run(store.list_facts(speaker_scope("src"))) == []
+
+    def test_dst_fact_wins_on_key_conflict(self):
+        """Issue W5-4: dst — основной (уже подтверждённый) профиль, его
+        факты не должны перезаписываться данными временного/дублирующего src."""
+        store = InMemoryStore()
+        _run(store.init())
+        _run(store.save_fact(speaker_scope("dst"), Fact(key="name", value="Денчик")))
+        _run(store.save_fact(speaker_scope("src"), Fact(key="name", value="Эйджик")))
+
+        moved = _run(merge_speaker_facts(store, "src", "dst"))
+
+        assert moved == 0  # единственный факт src конфликтовал по ключу — не перенесён
+        dst_facts = {f.key: f.value for f in _run(store.list_facts(speaker_scope("dst")))}
+        assert dst_facts["name"] == "Денчик"  # dst выигрывает
+        assert _run(store.list_facts(speaker_scope("src"))) == []  # src всё равно очищен
+
+    def test_noop_when_src_equals_dst(self):
+        store = InMemoryStore()
+        _run(store.init())
+        _run(store.save_fact(speaker_scope("a"), Fact(key="k", value="v")))
+        assert _run(merge_speaker_facts(store, "a", "a")) == 0
+        assert len(_run(store.list_facts(speaker_scope("a")))) == 1
+
+    def test_noop_when_src_empty(self):
+        store = InMemoryStore()
+        _run(store.init())
+        assert _run(merge_speaker_facts(store, "empty-src", "dst")) == 0
+        assert _run(store.list_facts(speaker_scope("dst"))) == []
+
+    def test_moves_facts_sqlite(self):
+        store, _ = _make_sqlite_store()
+        _run(touch_speaker(store, "src", now=100.0))  # создаёт profile-факт
+        _run(store.save_fact(speaker_scope("src"), Fact(key="likes", value="кофе")))
+
+        moved = _run(merge_speaker_facts(store, "src", "dst"))
+
+        assert moved == 2  # profile + likes
+        dst_keys = {f.key for f in _run(store.list_facts(speaker_scope("dst")))}
+        assert dst_keys == {"profile", "likes"}
+        assert _run(store.list_facts(speaker_scope("src"))) == []
 
 
 class TestSpeakerFullPathAcceptance:

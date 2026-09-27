@@ -58,6 +58,11 @@ class _FakeProvider:
         self.calls = 0
         self.stream_calls = 0
         self.closed = False
+        # Issue #1883 — record the ``settings=`` argument on each
+        # ``complete()`` / ``stream()`` call so tests can verify the
+        # per-provider dispatch in ``HealthAwareFallbackLLM``.
+        self.settings_received: list[LLMSettings | None] = []
+        self.stream_settings_received: list[LLMSettings | None] = []
 
     async def complete(
         self,
@@ -67,6 +72,7 @@ class _FakeProvider:
         settings: LLMSettings | None = None,
     ) -> LLMResponse:
         self.calls += 1
+        self.settings_received.append(settings)
         if self.fail is not None:
             raise self.fail
         return LLMResponse(content=f"from-{self.name}")
@@ -79,6 +85,7 @@ class _FakeProvider:
         settings: LLMSettings | None = None,
     ) -> AsyncIterator[LLMChunk]:
         self.stream_calls += 1
+        self.stream_settings_received.append(settings)
         if self.fail is not None:
             raise self.fail
         yield LLMChunk(content_delta=f"from-{self.name}", finish_reason="stop")
@@ -136,6 +143,38 @@ def test_is_auth_failure_detects_auth_error_and_401_403() -> None:
     assert is_auth_failure(ProviderError("401 Unauthorized")) is True
     assert is_auth_failure(ProviderError("403 Forbidden")) is True
     assert is_auth_failure(RateLimitError(_QUOTA_MSG)) is False
+
+
+def test_is_auth_failure_detects_grpc_permission_denied_and_unauthenticated() -> None:
+    """Issue #2702 — Yandex TTS wraps grpc.RpcError into a generic
+    Exception whose message embeds ``e.code()`` (real prod log,
+    2026-09-17): "Yandex gRPC error: StatusCode.PERMISSION_DENIED - ...".
+    Such an error is exactly as permanent as a bad API key (ADR-0124:
+    the Yandex folder is missing an IAM role, not a transient network
+    hiccup) and must get the long TTL, not the 30s transient one.
+    """
+    assert (
+        is_auth_failure(
+            ProviderError(
+                "Yandex gRPC error: StatusCode.PERMISSION_DENIED - "
+                "account has no permission"
+            )
+        )
+        is True
+    )
+    assert (
+        is_auth_failure(
+            ProviderError("Yandex gRPC error: StatusCode.UNAUTHENTICATED - bad token")
+        )
+        is True
+    )
+    # A genuinely transient gRPC code must NOT be reclassified as permanent.
+    assert (
+        is_auth_failure(
+            ProviderError("Yandex gRPC error: StatusCode.UNAVAILABLE - connection reset")
+        )
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +294,88 @@ async def test_check_deepseek_balance_returns_total(monkeypatch: pytest.MonkeyPa
     client = _patch_httpx_client(monkeypatch, handler)
     balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
     assert balance == pytest.approx(110.0)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_negative_account_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 FIX (live 08.09): отрицательный счёт не вычитается из хорошего.
+
+    Реальный ответ /user/balance: CNY = -1.02 (минус!), USD = +5.60.
+    Старый код складывал валюты → баланс -0.31 ≤ 0 → DeepSeek ошибочно
+    unavailable (TTL 300s) → робот «интернет недоступен», хотя USD были.
+    Теперь: учитываем только положительные счета → USD 5.60 → healthy.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "-1.02"},
+                    {"currency": "USD", "total_balance": "5.60"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(5.60)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_sums_all_positive_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Суммируются все положительные счета, валюты не важны."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "100.00"},
+                    {"currency": "CNY", "total_balance": "10.00"},
+                    {"currency": "USD", "total_balance": "3.00"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(113.0)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_all_negative_returns_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Все счета ≤ 0 → 0.0 (unavailable)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "-2.00"},
+                    {"currency": "USD", "total_balance": "-0.50"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == 0.0
     await client.aclose()
 
 
@@ -673,6 +794,111 @@ async def test_aclose_closes_all_providers() -> None:
 def test_empty_provider_list_rejected() -> None:
     with pytest.raises(ValueError):
         HealthAwareFallbackLLM([])
+
+
+# ---------------------------------------------------------------------------
+# Issue #1883 — per-provider LLM settings dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_dispatches_per_provider_settings() -> None:
+    """``settings_for={name: LLMSettings}`` overrides the global ``settings=`` arg.
+
+    Regression for issue #1883: ``dialogue_node.yaml`` allows the operator
+    to set ``minimax.max_tokens`` and ``deepseek.max_tokens`` to different
+    values. Without per-provider dispatch, both providers would receive
+    whichever settings the caller passed last (the primary's).
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    minimax_settings = LLMSettings(temperature=0.3, max_tokens=250)
+    deepseek_settings = LLMSettings(temperature=0.9, max_tokens=800)
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        # No global ``settings=`` arg → each provider MUST receive its
+        # own mapped LLMSettings.
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+
+    # 1) Primary answers → it MUST receive minimax_settings.
+    response = await wrapper.complete(_msg())
+    assert response.content == "from-minimax"
+    assert primary.settings_received[-1] is minimax_settings
+    assert fallback.settings_received == []
+
+    # 2) Mark minimax unavailable → wrapper falls through to deepseek
+    #    which MUST receive deepseek_settings.
+    cache = HealthCache()
+    cache.mark_unavailable("minimax", reason="test")
+    wrapper_with_cache = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+    response = await wrapper_with_cache.complete(_msg())
+    assert response.content == "from-deepseek"
+    assert fallback.settings_received[-1] is deepseek_settings
+
+
+@pytest.mark.asyncio
+async def test_complete_global_settings_used_when_no_per_provider_override() -> None:
+    """When ``settings_for`` is empty, every provider uses the caller's settings.
+
+    Backward-compat: a caller that doesn't know about per-provider
+    settings keeps seeing its own ``settings=`` argument on every
+    downstream ``complete()`` call.
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])  # settings_for={}
+
+    global_settings = LLMSettings(temperature=0.5, max_tokens=400)
+    await wrapper.complete(_msg(), settings=global_settings)
+
+    assert primary.settings_received[-1] is global_settings
+
+    # Even when the primary fails and the fallback answers, the fallback
+    # STILL receives the global settings.
+    primary.fail = RateLimitError(_QUOTA_MSG, provider="minimax")
+    fallback.calls = 0
+    fallback.settings_received.clear()
+    response = await wrapper.complete(_msg(), settings=global_settings)
+    assert response.content == "from-deepseek"
+    assert fallback.settings_received[-1] is global_settings
+
+
+@pytest.mark.asyncio
+async def test_stream_dispatches_per_provider_settings() -> None:
+    """Streaming path also honours ``settings_for`` (issue #1883).
+
+    The voice node uses ``stream()`` when ``llm_streaming=true`` is set
+    in YAML; the per-provider dispatch MUST apply to that branch too.
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    minimax_settings = LLMSettings(temperature=0.1, max_tokens=120)
+    deepseek_settings = LLMSettings(temperature=0.8, max_tokens=900)
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+
+    chunks: list[LLMChunk] = []
+    async for ch in wrapper.stream(_msg()):
+        chunks.append(ch)
+    assert chunks and chunks[-1].content_delta == "from-minimax"
+    assert primary.stream_settings_received[-1] is minimax_settings
+    assert fallback.stream_settings_received == []
 
 
 def test_capabilities_forward_from_primary() -> None:

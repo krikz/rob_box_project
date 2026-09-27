@@ -160,6 +160,10 @@ def _make_audio_node_stub(**param_overrides):
         tts_grace_s=2.5,
         music_vad_threshold=6.0,
         music_vad_min_db=-35.0,
+        # Issue #1764: по умолчанию barge-in с музыкой ВКЛЮЧЁН (AEC ReSpeaker
+        # уже убирает музыку). Тесты для legacy strict-режима (989 Fix C)
+        # переопределяют это в False явно.
+        barge_in_with_music=True,
         # Issue #1117 round-2: DSP tuning. По умолчанию выключено в
         # тестах (моки), иначе USB-write дёргается в неожиданный момент.
         dsp_apply_on_start=False,
@@ -278,9 +282,21 @@ class TestTTSGraceGate:
 
 
 class TestMusicStrictGate:
-    """Fix C: при активной музыке VAD гейтится по RMS, порог поднимается."""
+    """Fix C: при активной музыке VAD гейтится по RMS, порог поднимается.
+
+    Issue #1764: legacy strict-режим — barge_in_with_music=False.
+    В этом режиме _vad_gated режет VAD по RMS при активной музыке
+    (защита от ложных срабатываний на бит, когда AEC недоступен).
+    """
+
+    def _disable_barge_in_with_music(self, audio_node):
+        """Legacy Fix C: строгий RMS-гейт при активной музыке."""
+        audio_node.barge_in_with_music = False
 
     def test_music_active_raises_threshold_on_respeaker(self, audio_node):
+        """Legacy Fix C: barge_in_with_music=False + активная музыка →
+        железный VAD threshold поднимается с vad_threshold до music_vad_threshold."""
+        self._disable_barge_in_with_music(audio_node)
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
 
@@ -304,7 +320,9 @@ class TestMusicStrictGate:
         audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
 
     def test_vad_suppressed_when_music_and_quiet_signal(self, audio_node):
-        """Музыка активна, уровень сигнала ниже music_vad_min_db → VAD подавлен."""
+        """Legacy Fix C: музыка активна + barge_in_with_music=False,
+        уровень сигнала ниже music_vad_min_db → VAD подавлен."""
+        self._disable_barge_in_with_music(audio_node)
         audio_node.tts_active = False
         audio_node._tts_ended_at = 0.0  # «давно, не в grace»
         audio_node.music_active = True
@@ -314,7 +332,9 @@ class TestMusicStrictGate:
         assert audio_node._vad_gated(True) is False
 
     def test_vad_passes_when_music_and_loud_signal(self, audio_node):
-        """Музыка активна, но уровень сигнала высокий (голос поверх) → VAD проходит."""
+        """Legacy Fix C: музыка активна + barge_in_with_music=False,
+        но уровень сигнала высокий (голос поверх) → VAD проходит."""
+        self._disable_barge_in_with_music(audio_node)
         audio_node.tts_active = False
         audio_node._tts_ended_at = 0.0
         audio_node.music_active = True
@@ -334,6 +354,118 @@ class TestMusicStrictGate:
 
         # Повторный "playing" не дёргает set_vad_threshold снова
         audio_node.respeaker.set_vad_threshold.assert_not_called()
+
+
+class TestBargeInWithMusic:
+    """Issue #1764: TRACK (Renardo/SuperCollider) barge-in.
+
+    Симптом (issue #1764): пользователь говорит «робот, выключи музыку»
+    во время TRACK — VAD не пропускает речь, wake-word отбрасывается,
+    робот «глохнет».
+
+    Root cause: Fix C (issue #989) подавлял VAD при любой активной музыке,
+    включая TRACK из SuperCollider (отдельный контейнер, не через TTS-ноду).
+    С barge_in_with_music=True (дефолт) ReSpeaker AEC на Ch1 убирает
+    музыку из ASR-канала — VAD пропускает речь без RMS-гейта.
+
+    Acceptance:
+    - barge_in_with_music=True + music_active=True → VAD=True пропускается.
+    - _on_music_state("playing") НЕ поднимает аппаратный VAD threshold.
+    - _on_music_state("idle") восстанавливает поведение.
+    """
+
+    def test_vad_passes_during_music_when_barge_in_enabled(self, audio_node):
+        """Issue #1764: при активной музыке + barge_in_with_music=True
+        VAD пропускается независимо от RMS — wake-word «робот» проходит."""
+        # barge_in_with_music=True — дефолт в _make_audio_node_stub.
+        assert audio_node.barge_in_with_music is True
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0  # вне grace
+        audio_node.music_active = True
+        # _current_db = -100.0 (тишина) — в legacy-режиме VAD подавлен;
+        # в новом режиме RMS вообще не проверяется.
+        audio_node._current_db = -100.0
+
+        assert audio_node._vad_gated(True) is True
+
+    def test_vad_passes_with_loud_signal_during_music(self, audio_node):
+        """Issue #1764: даже громкая музыка не давит VAD."""
+        assert audio_node.barge_in_with_music is True
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = True
+        audio_node._current_db = -10.0  # очень громко
+
+        assert audio_node._vad_gated(True) is True
+
+    def test_vad_false_when_hardware_silence(self, audio_node):
+        """Issue #1764: barge_in_with_music=True не ломает базовый гейт —
+        если аппаратный VAD=False, VAD остаётся False."""
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = True
+
+        assert audio_node._vad_gated(False) is False
+
+    def test_on_music_playing_does_not_change_respeaker_threshold(self, audio_node):
+        """Issue #1764: при barge_in_with_music=True _on_music_state("playing")
+        НЕ зовёт set_vad_threshold — железный VAD остаётся на дефолте."""
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
+
+        playing = MagicMock()
+        playing.data = "playing"
+        audio_node._on_music_state(playing)
+
+        # music_active переключился, но set_vad_threshold НЕ вызван —
+        # ReSpeaker VAD threshold остаётся на vad_threshold (3.5 dB).
+        assert audio_node.music_active is True
+        audio_node.respeaker.set_vad_threshold.assert_not_called()
+
+    def test_on_music_idle_restores_threshold(self, audio_node):
+        """Issue #1764: при остановке музыки возвращаем дефолтный VAD."""
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
+        audio_node.music_active = True
+
+        idle = MagicMock()
+        idle.data = "idle"
+        audio_node._on_music_state(idle)
+
+        assert audio_node.music_active is False
+        audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
+
+    def test_barge_in_disabled_falls_back_to_rms_gate(self, audio_node):
+        """Issue #1764: barge_in_with_music=False — legacy RMS-гейт.
+        Если RMS ниже music_vad_min_db, VAD подавлен (защита без AEC)."""
+        audio_node.barge_in_with_music = False
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = True
+        audio_node.music_vad_min_db = -35.0
+        audio_node._current_db = -50.0  # тихо
+
+        assert audio_node._vad_gated(True) is False
+
+    def test_tts_active_overrides_music_barge_in(self, audio_node):
+        """TTS активен — VAD пропускается независимо от music/barge-in
+        (issue 993 barge-in: wake-word gate режет эхо)."""
+        audio_node.tts_active = True
+        audio_node.music_active = True
+        audio_node.barge_in_with_music = True
+
+        assert audio_node._vad_gated(True) is True
+
+    def test_tts_grace_still_suppresses_after_tts(self, audio_node):
+        """TTS grace (issue 989 Fix B) активен — VAD подавлен даже во время
+        музыки: эхо собственного голоса режется первым."""
+        audio_node.tts_active = False
+        audio_node.tts_grace_s = 2.5
+        audio_node._tts_ended_at = time.monotonic() - 1.0  # 1с назад — в grace
+        audio_node.music_active = True
+        audio_node.barge_in_with_music = True
+
+        assert audio_node._vad_gated(True) is False
 
 
 class TestInputOverflowHandling:
@@ -400,13 +532,183 @@ class TestInputOverflowHandling:
         assert len(warnings) == 2
 
     def test_overflow_log_reports_lost_bytes(self, audio_node):
-        """В логе видно сколько байт ожидалось/пришло/потеряно."""
+        """В логе видно сколько байт ожидалось/пришло/потеряно.
+
+        Issue #2554: формат лога теперь явно указывает обе величины —
+        frames_per_buffer (chunk_size, то, что задано в YAML) и размер
+        буфера в байтах (то, что фактически проходит через PortAudio,
+        = frames × ch × 2). Раньше лог печатал только байты, и
+        оператор, увидев «chunk 49152/49152 байт» в 6-канальном режиме,
+        делал ложный вывод «frames_per_buffer=49152» — но 49152 = 4096
+        × 6 × 2.
+
+        Имитируем типичный overflow: chunk_size=4096, callback получил
+        только 256 сэмплов (т.е. 512 байт). Лог считает expected от
+        chunk_size (= 4096 × 1 × 2 = 8192 байт) — это то, что PortAudio
+        ДОЛЖЕН был прислать по контракту. Разница = потеря.
+        """
         audio_node.is_running = True
         warnings = self._capture_warnings(audio_node)
         audio_node.audio_callback(b"\x00\x00" * 256, 1024, {}, 2)
         assert len(warnings) == 1
-        assert "512/2048" in warnings[0]  # got/expected
-        assert "потеряно ~1536" in warnings[0]
+        # frames_per_buffer=4096 (chunk_size) явно указан в логе —
+        # это и есть главный фикс #2554 (раньше лог писал только байты).
+        assert "frames_per_buffer=4096" in warnings[0]
+        # Размер буфера в байтах: chunk_size=4096, channels=1 → 8192 байт.
+        assert "buffer=512/8192" in warnings[0]
+        # Развёрнутое объяснение: «4096 frames × 1 ch × 2 Б».
+        assert "4096 frames × 1 ch × 2" in warnings[0]
+        assert "потеряно ~7680" in warnings[0]
+        # Лог также помечает issue #2554 для grep'а по issue-тегу.
+        assert "[issue 1050/2554]" in warnings[0]
+
+
+class TestInputOverflowMetric:
+    """Issue #2554: Prometheus-метрика ``voice_audio_input_overflow_total``.
+
+    Раньше paInputOverflow был виден только через rate-limited WARN
+    в docker logs (один раз в 60с). Это удобно для немедленной
+    диагностики, но не даёт тренда. Метрика позволяет Grafana/Prometheus
+    алертить по «overflow rate > N/мин».
+
+    Проверяем:
+    - на каждый overflow (status=2) зовётся record_audio_input_overflow
+      с текущим chunk_size;
+    - без overflow (status=0) — НЕ зовётся;
+    - в rate-limited окне (между двумя логами) счётчик всё равно
+      инкрементируется — метрика показывает РЕАЛЬНЫЙ rate, а не частоту
+      лог-строк.
+    """
+
+    def _capture_record_calls(self, monkeypatch, audio_node):
+        """Подменяем ``record_audio_input_overflow`` и ловим вызовы.
+
+        Импорт из audio_node делается через прямой monkeypatch на
+        ``rob_box_voice.audio_node.record_audio_input_overflow`` —
+        audio_node импортирует его ``from rob_box_voice.observability
+        import record_audio_input_overflow``, и Python создаёт новую
+        ссылку в ``audio_node``-модуле (это import-binding). Значит,
+        надо подменять именно ссылку В МОДУЛЕ audio_node, а не в
+        observability (иначе старая ссылка останется).
+
+        Альтернатива — патчить через mock. Но ``monkeypatch.setattr``
+        на уровне модуля audio_node чище.
+        """
+        from rob_box_voice import audio_node as audio_node_module
+
+        calls = []
+
+        def _spy(*, frames_per_buffer: int) -> None:
+            calls.append(frames_per_buffer)
+
+        monkeypatch.setattr(
+            audio_node_module,
+            "record_audio_input_overflow",
+            _spy,
+        )
+        return calls
+
+    def test_overflow_increments_metric(self, monkeypatch, audio_node):
+        """Один overflow → один вызов record_audio_input_overflow
+        с текущим chunk_size (=4096)."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.is_running = True
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert calls == [4096]
+
+    def test_no_metric_when_status_zero(self, monkeypatch, audio_node):
+        """status=0 (нет overflow) → метрика НЕ инкрементируется."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.is_running = True
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 0)
+        assert calls == []
+
+    def test_metric_increments_in_rate_limited_window(
+        self, monkeypatch, audio_node
+    ):
+        """В окне между двумя логами WARN rate-limited, но метрика
+        растёт — это и есть основной фикс issue #2554 (тренд
+        независимо от того, как часто спамит docker logs)."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.is_running = True
+        for _ in range(50):
+            audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert len(calls) == 50
+        assert all(c == 4096 for c in calls)
+
+    def test_metric_uses_current_chunk_size(
+        self, monkeypatch, audio_node
+    ):
+        """Если chunk_size менялся в рантайме (например, через
+        ``ros2 param set``), метрика лейблится актуальным значением,
+        а не дефолтом."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.chunk_size = 8192  # operator выставил явно
+        audio_node.is_running = True
+        audio_node.audio_callback(b"\x00\x00" * 8192, 8192, {}, 2)
+        assert calls == [8192]
+
+
+class TestInputOverflowLogFormat:
+    """Issue #2554: формат overflow-лога явно указывает обе величины.
+
+    Раньше лог печатал только байты: ``chunk 49152/49152 байт`` — в
+    6-канальном режиме (``frames_per_buffer=4096``, ``channels=6``,
+    int16) оператор делал ложный вывод «frames_per_buffer=49152».
+    На самом деле 49152 = 4096 × 6 × 2 байт, а chunk_size (frames)
+    по-прежнему 4096.
+
+    Проверяем, что новый лог содержит ОБЕ величины явно.
+    """
+
+    @staticmethod
+    def _capture_warnings(audio_node):
+        warnings = []
+
+        def _logger():
+            return MagicMock(
+                info=lambda *a, **kw: None,
+                warning=lambda *a, **kw: warnings.append(a[0] if a else ""),
+                warn=lambda *a, **kw: None,
+                error=lambda *a, **kw: None,
+                debug=lambda *a, **kw: None,
+            )
+
+        audio_node.get_logger = _logger
+        return warnings
+
+    def test_log_explicitly_shows_frames_per_buffer(self, audio_node):
+        """Лог должен явно содержать ``frames_per_buffer=4096`` —
+        чтобы оператор не путал «49152 байт» с «frames_per_buffer=49152»."""
+        audio_node.is_running = True
+        audio_node.channels = 6  # 6-канальный режим Vision Pi (как в issue #2554)
+        audio_node.sample_rate = 16000
+        audio_node.chunk_size = 4096
+        warnings = self._capture_warnings(audio_node)
+        # Имитируем полный 6-канальный чанк без потерь: 4096 frames × 6 ch × 2 Б.
+        full_chunk = b"\x00\x00" * (4096 * 6)
+        audio_node.audio_callback(full_chunk, 4096, {}, 2)
+        assert len(warnings) == 1
+        line = warnings[0]
+        # frames_per_buffer явно — 4096 (НЕ 49152).
+        assert "frames_per_buffer=4096" in line
+        # Размер буфера в байтах — 4096 × 6 × 2 = 49152.
+        assert "buffer=49152/49152" in line
+        # Развёрнутое объяснение раскладки.
+        assert "4096 frames × 6 ch × 2 Б" in line
+
+    def test_log_format_at_low_load(self, audio_node):
+        """При низком канале (1 ch) frames_per_buffer=4096 → 8192 байт."""
+        audio_node.is_running = True
+        audio_node.channels = 1
+        audio_node.sample_rate = 16000
+        audio_node.chunk_size = 4096
+        warnings = self._capture_warnings(audio_node)
+        full_chunk = b"\x00\x00" * 4096
+        audio_node.audio_callback(full_chunk, 4096, {}, 2)
+        line = warnings[0]
+        assert "frames_per_buffer=4096" in line
+        assert "buffer=8192/8192" in line
 
 
 class TestMixChannels:

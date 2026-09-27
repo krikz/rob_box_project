@@ -468,7 +468,7 @@ test_B_orphan_no_round() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
 
     set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
@@ -505,7 +505,7 @@ test_C_live_candidate_creates_round() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
 
     set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
@@ -548,7 +548,7 @@ test_D_nonconventional_branch_fallback() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     local alt_branch="${issue}-fixvoice-bug-c-retry"  # вне конвенции
 
@@ -589,7 +589,7 @@ test_E_live_labels_skip_after_sweep() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
 
     set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
@@ -631,7 +631,7 @@ test_F_candidate_swept_same_tick() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
 
     # Первый снимок: issue #4701 needs-e2e с OPEN PR → живой кандидат.
@@ -681,7 +681,7 @@ test_F_active_round_dedup_no_new_round() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     local round="z-{e2e}/test-round-90"
 
@@ -725,7 +725,7 @@ test_G_completed_round_not_active() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     local round="z-{e2e}/test-round-90"
 
@@ -768,7 +768,7 @@ test_H_branch_created_candidate_removed_deleted() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
 
     # Первый снимок: issue #4901 needs-e2e с OPEN PR → живой кандидат.
@@ -826,7 +826,7 @@ test_H_merged_branch_reuse_skips_merge() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
 
     set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"

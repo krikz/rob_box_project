@@ -49,90 +49,6 @@ class InterruptibleTask:
         return False
 
 
-class ToolCallAccumulator:
-    """
-    Накопитель tool_calls из streaming chunks
-
-    LLM API возвращает tool_calls по частям в streaming режиме:
-    - chunk 1: {tool_calls: [{index: 0, id: "call_123", type: "function", function: {name: "play_animation"}}]}
-    - chunk 2: {tool_calls: [{index: 0, function: {arguments: '{"ani'}}]}
-    - chunk 3: {tool_calls: [{index: 0, function: {arguments: 'mation": '}}]}
-    - chunk 4: {tool_calls: [{index: 0, function: {arguments: '"happy"}'}}]}
-
-    Accumulator собирает всё в единую структуру
-    """
-
-    def __init__(self):
-        self.tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
-
-    def add_chunk(self, delta_tool_calls: List[Any]) -> None:
-        """
-        Добавить chunk tool_calls из streaming response
-
-        Args:
-            delta_tool_calls: Список tool_call delta objects из OpenAI API
-        """
-        for tc in delta_tool_calls:
-            index = tc.index
-
-            if index not in self.tool_calls_buffer:
-                # Инициализация новой tool_call
-                self.tool_calls_buffer[index] = {
-                    "id": getattr(tc, "id", None),
-                    "type": getattr(tc, "type", "function"),
-                    "function": {
-                        "name": None,
-                        "arguments": ""
-                    }
-                }
-
-            # Обновление существующей tool_call
-            if hasattr(tc, "id") and tc.id:
-                self.tool_calls_buffer[index]["id"] = tc.id
-
-            if hasattr(tc, "function") and tc.function:
-                func = tc.function
-                if hasattr(func, "name") and func.name:
-                    self.tool_calls_buffer[index]["function"]["name"] = func.name
-                if hasattr(func, "arguments") and func.arguments:
-                    self.tool_calls_buffer[index]["function"]["arguments"] += func.arguments
-
-    def get_complete_tool_calls(self) -> List[Dict[str, Any]]:
-        """
-        Получить полный список собранных tool_calls
-
-        Returns:
-            Список tool_calls в формате {id, type, function: {name, arguments}}
-        """
-        # Сортируем по index
-        sorted_calls = [self.tool_calls_buffer[idx] for idx in sorted(self.tool_calls_buffer.keys())]
-
-        # Парсим arguments из JSON string
-        result = []
-        for call in sorted_calls:
-            try:
-                arguments_str = call["function"]["arguments"]
-                parsed_args = json.loads(arguments_str) if arguments_str else {}
-
-                result.append({
-                    "id": call["id"],
-                    "type": call["type"],
-                    "function": {
-                        "name": call["function"]["name"],
-                        "arguments": parsed_args
-                    }
-                })
-            except json.JSONDecodeError:
-                # Если не смогли распарсить - оставляем как есть
-                result.append(call)
-
-        return result
-
-    def clear(self) -> None:
-        """Очистить буфер."""
-        self.tool_calls_buffer.clear()
-
-
 class AsyncToolExecutor:
     """
     Асинхронный executor для MCP инструментов
@@ -145,16 +61,31 @@ class AsyncToolExecutor:
     - Sequence ID для отмены устаревших tool_calls при прерываниях
     """
 
-    def __init__(self, execute_pub, result_callback: Callable, logger):
+    def __init__(
+        self,
+        execute_pub,
+        result_callback: Callable,
+        logger,
+        authenticator=None,
+        prepare_parameters: Optional[Callable] = None,
+    ):
         """
         Args:
             execute_pub: ROS publisher для /mcp/execute
             result_callback: Callback для получения результатов (request_id, result)
             logger: ROS logger
+            authenticator: RequestAuthenticator для подписи запросов. None —
+                публикуем без подписи (mcp_server такой запрос отклонит,
+                см. mcp_auth.py); допустимо только в тестах.
+            prepare_parameters: ``(tool_name, parameters) -> parameters`` —
+                подстановка контекста хода (issue #2842, см.
+                ``llm_adapter.apply_turn_context``). None — как есть.
         """
         self.execute_pub = execute_pub
+        self._prepare_parameters = prepare_parameters
         self.result_callback = result_callback
         self.logger = logger
+        self.authenticator = authenticator
 
         # Sequence ID для отслеживания актуальности tool_calls
         self._current_sequence_id: int = 0
@@ -261,6 +192,8 @@ class AsyncToolExecutor:
             }
 
         # Формируем запрос
+        if self._prepare_parameters is not None:
+            parameters = self._prepare_parameters(tool_name, parameters)
         request = {
             "tool_name": tool_name,
             "parameters": parameters,
@@ -269,6 +202,8 @@ class AsyncToolExecutor:
 
         # Публикуем запрос в ROS
         from std_msgs.msg import String
+        if self.authenticator is not None:
+            request = self.authenticator.sign(request)
         msg = String()
         msg.data = json.dumps(request, ensure_ascii=False)
         self.execute_pub.publish(msg)

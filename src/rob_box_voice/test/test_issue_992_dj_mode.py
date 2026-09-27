@@ -66,7 +66,7 @@ from rob_box_llm.provider import LLMResponse, ToolCall
 def _execute_music_code_tools() -> FakeToolProvider:
     """FakeToolProvider carrying a no-op ``execute_music_code`` tool.
 
-    The handler returns immediately so ``DialogCore`` records the tool
+    The handler returns immediately so ``AgentCore`` records the tool
     call name in ``result.tools_called`` without actually playing any
     Renardo code — that's the signal the music-guard uses to decide
     whether Bug B / Bug C should fire.

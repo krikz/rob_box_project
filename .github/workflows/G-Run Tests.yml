@@ -10,7 +10,15 @@ on:
       - 'src/*/**.py'
       - 'src/*/test/**.py'
       - 'src/*/package.xml'
-      - '.github/workflows/test.yml'
+      # '.github/workflows/test.yml' — файла с таким именем в репозитории нет
+      # (этот workflow называется 'G-Run Tests.yml'), то есть правка самого
+      # workflow'а его не триггерила. Заодно добавлены пути, от которых
+      # зависит job e2e-contract-guards: без них правка харнесса, гарда или
+      # сценария не поднимала проверки на push в develop.
+      - '.github/workflows/G-Run Tests.yml'
+      - '.github/workflows/scripts/**'
+      - 'scripts/testing/**'
+      - '.github/e2e/scenarios/**'
   pull_request:
     branches:
       - develop
@@ -58,6 +66,15 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
+          # rob_box_quest импортирует ``audio_common_msgs`` на верхнем уровне
+          # (см. src/rob_box_quest/rob_box_quest/quest_node.py:43). В базовом
+          # CI-образе ``rob-box-ci:humble`` его нет (только ``ros-base``),
+          # поэтому без apt-install тесты падают с ModuleNotFoundError ещё
+          # на COLLECTION (issue #2232 — CI не запускал rob_box_quest).
+          apt-get update -qq && apt-get install -y --no-install-recommends \
+            ros-humble-audio-common-msgs \
+          && rm -rf /var/lib/apt/lists/*
+
           # Create workspace — exclude vendor submodules (not our code to lint).
           # Also copy sibling directories (docker/, migrations/, docs/...) so
           # tests can resolve paths like ``../../docker/vision/...`` relative
@@ -65,14 +82,31 @@ jobs:
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
           # Sibling directories referenced by tests (NOT compiled by colcon).
-          for d in docker migrations docs; do
+          # .github is here for .github/e2e/{scenarios,voice_commands}: six
+          # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
+          # and had been failing on every push with FileNotFoundError.
+          # scripts is here for scripts/voice_bench/score.py, imported by
+          # src/rob_box_voice/test/unit/test_voice_bench_scoring.py — without it
+          # that test raises RuntimeError at COLLECTION time, which fails the
+          # whole rob_box_voice batch (develop was RED ~9h on 03.09, blocking
+          # 20+ PRs). tools is here for tools/gen_tool_catalog.py, imported by
+          # src/rob_box_harness/test/test_skill_catalog.py — without it those
+          # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
+          # real contract regression as a green CI. Guard against the next
+          # occurrence:
+          #   python3 scripts/agent_flow/validate_test_ws_dirs.py
+          for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
-          # Build packages (use --packages-up-to to include dependencies)
+          # Build packages (use --packages-up-to to include dependencies).
+          # rob_box_core / rob_box_quest / rob_box_supervisor добавлены после
+          # issue #2232: ранее CI их НЕ запускал (conftest с моками rclpy +
+          # audio_common_msgs, но без CI-прогона тесты «молча» скипались или
+          # фейлились на develop при локальном запуске).
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_quest rob_box_supervisor rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run unit tests
@@ -85,6 +119,15 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+          # Anchor for tests that walk up the directory tree to find the repo
+          # root (e.g. test_sclang_resyncs_after_scsynth_restart.py and friends
+          # in src/rob_box_voice/test/unit/core/). Without this, a test whose
+          # ``__file__`` resolves outside test_ws/{src,docker} — most often
+          # through a colcon test build/install mirror — raises
+          # ``RuntimeError: repo root not found`` at import time. See the
+          # `_repo_root()` helper in those tests for the matching fallback.
+          export ROB_BOX_REPO_ROOT="${{ github.workspace }}/test_ws"
 
           # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
           # Cannot be blocklisted via PYTEST_ADDOPTS or pytest.ini — only removal works.
@@ -100,17 +143,33 @@ jobs:
           python3 -m pip install --quiet --no-cache-dir requests pyyaml pytz 2>/dev/null || true
 
           # ── rob_box_voice ───────────────────────────────────────────────────
-          # pytest hangs for ~4 min AFTER all tests complete
-          # (639 passed, 8 skipped).  Root cause is an unresolved
-          # daemon-thread / event-loop leak in the test suite.
+          # pytest may hang for ~4 min AFTER all tests complete.  Root cause
+          # is an unresolved daemon-thread / event-loop leak in the suite.
+          # That hang happens *after* pytest has written junitxml and
+          # returned, i.e. during interpreter shutdown — no pytest-level
+          # timeout can catch it, only an external `timeout` backstop can.
           #
-          # Strategy: run pytest with `timeout 240`.  If it completes
-          # under the limit: green.  If `timeout` kills it (rc=124)
-          # BUT the junitxml report shows 0 failures: treat as green
-          # with a warning (the hang is post-test shutdown).
-          echo "=== pytest: rob_box_voice (timeout 60s) ==="
+          # Strategy: run pytest under `timeout $VOICE_TIMEOUT`.  If it
+          # completes under the limit: green.  If `timeout` kills it
+          # (rc=124) BUT the junitxml report shows 0 failures: treat as
+          # green with a warning (the hang is post-test shutdown).
+          #
+          # ВАЖНО про бюджет (не срезать его снова!).  Он был опущен до 60s
+          # в 942d850d2 под лозунгом «tests take 8s» — на той версии сьюта
+          # это было правдой.  С тех пор сьют вырос до ~3100 тестов и идёт
+          # ~48s (run 35654649855, attempt 2: «3068 passed, 23 skipped …
+          # in 47.68s»).  Запас был ~20%, и на первой же медленной машине
+          # его не хватило: в attempt 1 того же run pytest прибили на 99%
+          # пройденных тестов.  junitxml пишется в pytest_sessionfinish,
+          # то есть ДО него файла ещё нет — спасательная ветка rc=124 не
+          # срабатывала, и job краснел с «FAILED (rc=124)», хотя ни один
+          # тест не упал (диф PR #2730 не трогал src/rob_box_voice/ вообще).
+          # 240s дают ~5x запаса и совпадают с бюджетом соседних пакетов
+          # (rob_box_core / rob_box_supervisor ниже по файлу).
+          VOICE_TIMEOUT=240
+          echo "=== pytest: rob_box_voice (timeout ${VOICE_TIMEOUT}s) ==="
           PYTEST_RC=0
-          timeout 60 python3 -m pytest \
+          timeout "$VOICE_TIMEOUT" python3 -m pytest \
             -p no:launch_testing \
             -p no:ament_flake8 -p no:ament_pep257 \
             -p no:ament_copyright -p no:ament_xmllint \
@@ -123,10 +182,20 @@ jobs:
 
           XML="${{ github.workspace }}/test_ws/build/rob_box_voice/pytest.xml"
           if [ "$PYTEST_RC" = "124" ] && [ -f "$XML" ]; then
-            echo "pytest timed out (240s) - checking junitxml..."
+            echo "pytest timed out (${VOICE_TIMEOUT}s) - checking junitxml..."
             python3 -c "import xml.etree.ElementTree as ET; t=ET.parse('${XML}').getroot(); f=int(t.attrib.get('failures','0')); e=int(t.attrib.get('errors','0')); exit(0 if f==0 and e==0 else 1)" \
               && echo "✅ rob_box_voice passed (tests OK, shutdown hung)" \
               || { echo "❌ rob_box_voice FAILED"; exit 1; }
+          elif [ "$PYTEST_RC" = "124" ]; then
+            # Убиты ДО pytest_sessionfinish — junitxml не существует, судить
+            # по нему нечего.  Это НЕ «тесты упали»: это сам прогон не
+            # влез в бюджет.  Красим в красный (молча зеленить нельзя —
+            # реально вечный тест выглядел бы так же), но говорим прямо,
+            # что это таймаут без отчёта, а не падение теста.
+            echo "❌ rob_box_voice: pytest killed at ${VOICE_TIMEOUT}s before writing junitxml"
+            echo "   (no test failed — the run itself did not fit the budget)"
+            echo "   Суммарное время сьюта растёт; подними VOICE_TIMEOUT или разбей прогон."
+            exit 1
           elif [ "$PYTEST_RC" != "0" ]; then
             echo "❌ rob_box_voice FAILED (rc=$PYTEST_RC)"
             exit 1
@@ -152,7 +221,7 @@ jobs:
             [ -f "$TG_TEST" ] || continue
             TG_NAME="$(basename "$TG_TEST")"
             echo "--- rob_box_telegram: $TG_NAME ---"
-            ( cd "$TG_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+            ( cd "$TG_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
                 -p no:launch_testing \
                 -p no:ament_flake8 -p no:ament_pep257 \
                 -p no:ament_copyright -p no:ament_xmllint \
@@ -172,7 +241,7 @@ jobs:
           # are self-contained (no cross-file pollution like telegram).
           echo "=== pytest: rob_box_teleop (issue #1344) ==="
           TELEOP_DIR="${{ github.workspace }}/test_ws/src/rob_box_teleop"
-          ( cd "$TELEOP_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+          ( cd "$TELEOP_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
               -p no:launch_testing \
               -p no:ament_flake8 -p no:ament_pep257 \
               -p no:ament_copyright -p no:ament_xmllint \
@@ -181,22 +250,150 @@ jobs:
               "$TELEOP_DIR/test/" ) || { echo "❌ rob_box_teleop tests FAILED"; exit 1; }
           echo "✅ rob_box_teleop passed"
 
-          # rob_box_animations + rob_box_perception: pytest only, split so a
-          # hang in one package doesn't block the other.  Each wrapped in
-          # `timeout 300` so a stuck test fails fast instead of hanging the
-          # job for hours (see runs 1293/1300-1302: 6h+ hangs).
-          # Linting skipped — pre-existing style debt, tracked separately.
+          # rob_box_core / rob_box_quest / rob_box_supervisor: pytest only
+          # (issue #2232). Ранее CI их не запускал, из-за чего:
+          #   * молча скипались/падали тесты сторожа против дрейфа трёх копий
+          #     белого списка пресетов (YAML → ws_server → supervisor_node);
+          #   * PR #2217 был зелёный при двух падающих тестах на ветке;
+          #   * conformance-тест мостика (#2215) был инертен с момента влития.
+          # Подход — по образцу rob_box_teleop (issue #1344): pytest из-под
+          # ``cd <pkg>``, конftest сам ставит rclpy/audio_common_msgs моки,
+          # ``timeout 240`` от hung-shutdown + junitxml для надёжного FAIL
+          # гейта (а не «silent skipped»).
+          #
+          # Runtime deps (НЕ в базовом CI image, apt/python-base-ROS image
+          # их не тянет — проверил: ros-humble-ros-base не зависит от
+          # python3-msgpack / python3-aiohttp, они идут в ros-humble-* рантайм
+          # пакетах, которые мы НЕ ставим для тестов):
+          python3 -m pip install --quiet --no-cache-dir msgpack aiohttp 2>/dev/null || true
+
+          CORE_DIR="${{ github.workspace }}/test_ws/src/rob_box_core"
+          QUEST_DIR="${{ github.workspace }}/test_ws/src/rob_box_quest"
+          SUP_DIR="${{ github.workspace }}/test_ws/src/rob_box_supervisor"
+
+          echo "=== pytest: rob_box_core (timeout 240s) ==="
+          ( cd "$CORE_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 240 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -q \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_core/pytest.xml" \
+              test/ ) \
+            || { echo "❌ rob_box_core FAILED"; exit 1; }
+          echo "✅ rob_box_core passed"
+
+          # rob_box_supervisor: тесты в test/unit/ (issue #2232: conftest.py
+          # ставит mock-rclpy + std_srvs; без rclpy CI-окружения тесты
+          # импортируют supervisor_node через stub).
+          echo "=== pytest: rob_box_supervisor (timeout 240s) ==="
+          ( cd "$SUP_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 240 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -q \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_supervisor/pytest.xml" \
+              test/unit/ ) \
+            || { echo "❌ rob_box_supervisor FAILED"; exit 1; }
+          echo "✅ rob_box_supervisor passed"
+
+          # rob_box_quest: ~45 файлов / 12k LOC тестов. conftest ставит
+          # расширенные ROS-моки + rob_box_core.* в sys.modules; реальный
+          # ``audio_common_msgs`` приходит из apt-install шага Build
+          # workspace. Per-file прогон, как rob_box_telegram (issue #1196
+          # L1) — единый pytest на пакет ловит cross-file pollution.
+          #
+          # Exit code: pytest = 0 (passed), 1 (failed), 2 (interrupted),
+          # 3 (internal error), 4 (pytest cmdline error), 5 (no tests
+          # collected — все skip'нуты через ``importorskip``, ок),
+          # >=124 (timeout). Считаем FAILED только 1 и 3/4; 5 (all-skip)
+          # — это ожидаемое поведение на CI-env без части зависимостей.
+          echo "=== pytest: rob_box_quest (per-file, issue #2232) ==="
+          QUEST_FAILED=0
+          for Q_TEST in "$QUEST_DIR"/test/unit/test_*.py "$QUEST_DIR"/test/unit/*/test_*.py; do
+            [ -f "$Q_TEST" ] || continue
+            Q_NAME="$(basename "$Q_TEST")"
+            echo "--- rob_box_quest: $Q_NAME ---"
+            Q_EXIT=0
+            ( cd "$QUEST_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
+                -p no:launch_testing \
+                -p no:ament_flake8 -p no:ament_pep257 \
+                -p no:ament_copyright -p no:ament_xmllint \
+                -p no:ament_lint -p no:colcon_core \
+                --tb=short --no-header -q \
+                "$Q_TEST" ) || Q_EXIT=$?
+            # ``|| Q_EXIT=$?`` обязательно: шаги GitHub Actions идут под
+            # ``set -e``, и НЕобёрнутая подоболочка с ненулевым кодом рвёт
+            # шаг ДО классификации ниже. Именно так падал прогон на
+            # test_camera_payload.py: файл целиком skip-ается → pytest
+            # отдаёт 5 → ``exit code 5`` у всего job-а, хотя ветка
+            # ``elif [ "$Q_EXIT" -eq 5 ]`` трактует это как норму.
+            if [ "$Q_EXIT" -eq 1 ] || [ "$Q_EXIT" -eq 3 ] || [ "$Q_EXIT" -eq 4 ]; then
+              echo "❌ rob_box_quest FAILED: $Q_NAME (exit=$Q_EXIT)"
+              QUEST_FAILED=1
+            elif [ "$Q_EXIT" -eq 5 ]; then
+              echo "ℹ️  rob_box_quest all-skipped: $Q_NAME (exit=5, CI-env без зависимостей)"
+            elif [ "$Q_EXIT" -ge 124 ]; then
+              echo "❌ rob_box_quest TIMEOUT: $Q_NAME (exit=$Q_EXIT)"
+              QUEST_FAILED=1
+            fi
+          done
+          if [ "$QUEST_FAILED" != "0" ]; then
+            echo "❌ rob_box_quest tests FAILED"
+            exit 1
+          fi
+          echo "✅ rob_box_quest passed"
+
+          # rob_box_animations + rob_box_perception: split so a hang in one
+          # package doesn't block the other.  Each wrapped in `timeout 300`
+          # so a stuck test fails fast instead of hanging the job for hours
+          # (see runs 1293/1300-1302: 6h+ hangs).
+          #
+          # БЕЗ `|| true`.  Раньше оба вызова заканчивались `|| true`, чтобы
+          # не валить job на стилевом долге ament-линтеров, — но заодно это
+          # глотало НАСТОЯЩИЕ падения: на develop (runs 35948478547,
+          # 35952608277) шаг печатал «18 failed, 450 passed» для
+          # rob_box_perception, а job был зелёным.  Теперь стилевые ament-
+          # линтеры исключаются ЯВНО и видимо (как для остальных пакетов,
+          # политика 69ca0181a «enforce linting on rob_box_voice, keep
+          # pytest-only for other packages»), а любой упавший юнит-тест
+          # или таймаут (rc=124) красит job.
+          #
+          # rob_box_animations — ament_cmake, тестов кроме ament-линтеров нет.
+          # copyright/flake8/pep257 — стилевой долг (≈130 pep257, flake8,
+          # нет copyright-шапок), исключены по ctest-лейблу; lint_cmake и
+          # xmllint зелёные и продолжают гейтить.
           echo "=== colcon test: rob_box_animations (timeout 300s) ==="
+          echo "NOTE: ament copyright/flake8/pep257 EXCLUDED (-LE) — style debt, not gated here"
           timeout 300 colcon test \
             --packages-select rob_box_animations \
             --event-handlers console_direct+ \
-            --return-code-on-test-failure || true
+            --return-code-on-test-failure \
+            --ctest-args ' -LE' '^(copyright|flake8|pep257)$' \
+            || { echo "❌ rob_box_animations FAILED (rc=$?)"; exit 1; }
 
+          # rob_box_perception: ворота качества кропа и эмбеддер
+          # (face_embedding / face_recognition) считают метрики через cv2 —
+          # на Vision Pi он есть, в CI-образе нет.  Без cv2 ворота честно
+          # открываются (degraded), и 7 тестов, проверяющих сами ворота,
+          # падали.  Ставим headless-колесо; 4.10 собрано с поддержкой
+          # numpy 1.21 из образа и не тянет апгрейд numpy.  Без `|| true`:
+          # если cv2 не встал, cv2-тесты ушли бы в skip — лучше красный job.
+          python3 -m pip install --quiet --no-cache-dir 'opencv-python-headless==4.10.0.84'
+          python3 -c "import cv2, numpy; print('cv2', cv2.__version__, 'numpy', numpy.__version__)"
+
+          # Стилевые ament-линтеры (test_flake8 / test_pep257, маркер
+          # `linter`) исключены: ≈370 flake8 и ≈750 pep257 замечаний
+          # стилевого долга.  Pytest печатает их в строке «N deselected».
           echo "=== colcon test: rob_box_perception (timeout 300s) ==="
+          echo "NOTE: ament linters (-m 'not linter') EXCLUDED — style debt, not gated here"
           timeout 300 colcon test \
             --packages-select rob_box_perception \
             --event-handlers console_direct+ \
-            --return-code-on-test-failure || true
+            --return-code-on-test-failure \
+            --pytest-args ' -m' 'not linter' \
+            || { echo "❌ rob_box_perception FAILED (rc=$?)"; exit 1; }
 
       - name: Display test results
         if: always()
@@ -204,9 +401,8 @@ jobs:
           set -eo pipefail
           source /opt/ros/humble/setup.bash
           cd ${{ github.workspace }}/test_ws
-          # Информационный шаг — показывает результаты. Failures от стилевых
-          # тестов (copyright/flake8/pep257, pre-existing style debt) не
-          # должны валить CI: сами тесты уже отработали с || true выше.
+          # Информационный шаг — только показывает результаты. Гейтит шаг
+          # «Run unit tests» выше (без `|| true`), здесь job не валим.
           colcon test-result --all --verbose || true
 
       - name: Generate coverage report
@@ -269,9 +465,21 @@ jobs:
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Sibling directories referenced by tests (NOT compiled by colcon).
+          # Same as the unit-tests job above. Without this, tests that walk up
+          # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
+          # raise FileNotFoundError at collection time
+          # (test_supercollider_metrics_osc_status).
+          # scripts is here for the same reason as in unit-tests above
+          # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
+          # tools is here for the same reason as in unit-tests above
+          # (tools/gen_tool_catalog.py, test_skill_catalog.py).
+          for d in docker migrations docs .github scripts tools; do
+            [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
+          done
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run integration tests
@@ -284,6 +492,15 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+          # Anchor for tests that walk up the directory tree to find the repo
+          # root (e.g. test_sclang_resyncs_after_scsynth_restart.py and friends
+          # in src/rob_box_voice/test/unit/core/). Without this, a test whose
+          # ``__file__`` resolves outside test_ws/{src,docker} — most often
+          # through a colcon test build/install mirror — raises
+          # ``RuntimeError: repo root not found`` at import time. See the
+          # `_repo_root()` helper in those tests for the matching fallback.
+          export ROB_BOX_REPO_ROOT="${{ github.workspace }}/test_ws"
 
           # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
           # Same workaround as the unit-tests job above — without it pytest 9.x
@@ -315,12 +532,153 @@ jobs:
             --return-code-on-test-failure
 
   # ============================================================================
+  # E2E Contract Guards (shell)
+  # ============================================================================
+  # ЗАЧЕМ ОТДЕЛЬНЫМ JOB'ОМ. 22.09.2026 обнаружено, что каталог
+  # scripts/testing/*.sh не запускался НИ ОДНИМ workflow'ом — единственное
+  # упоминание во всём .github было в комментарии. То есть
+  # test_e2e_voice_safe_label.sh и test_e2e_health_probe.sh лежали в репозитории
+  # как декорация: они не могли поймать регресс, потому что их никто не звал.
+  # Ровно в этот зазор и уехали баги, которые чинит PR #2736 (потерянная
+  # мёржем observe_step, repo-relative пути к скриптам метрик, слепые grep'ы
+  # по «✅ ПРИНЯТО», непроигрываемые реплики сценариев).
+  #
+  # Гейт дешёвый: ubuntu-latest без ROS-контейнера, ни ssh, ни робота, ни
+  # билд-машины, ни docker. Секунды, а не минуты.
+  #
+  # Список ЯВНЫЙ, а не scripts/testing/*.sh: в том каталоге живут и тесты,
+  # которым нужен docker (test_docker_builds.sh, test_docker_smoke.sh,
+  # test_docker_local_arm64.sh) — их здесь гонять нельзя. Добавляешь новый
+  # офлайновый гард — вписывай его сюда, иначе он тоже станет декорацией.
+  e2e-contract-guards:
+    name: E2E Contract Guards (shell)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run offline e2e contract guards
+        run: |
+          # UTF-8 обязателен: гарды печатают кириллицу и читают сценарии с ней.
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          python3 -m pip install --quiet --no-cache-dir pyyaml 2>/dev/null || true
+
+          GUARDS="
+          scripts/testing/test_e2e_harness_deploy.sh
+          scripts/testing/test_e2e_vad_reject_diagnosis.sh
+          scripts/testing/test_e2e_log_marker_contract.sh
+          scripts/testing/test_e2e_wake_gate_no_mass_skip.sh
+          scripts/testing/test_e2e_scenario_playable.sh
+          scripts/testing/test_e2e_health_probe.sh
+          scripts/testing/test_e2e_voice_safe_label.sh
+          "
+          rc=0
+          {
+            echo "## 🛡 E2E Contract Guards"
+            echo ""
+            echo "| Guard | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for g in $GUARDS; do
+            if [ ! -f "$g" ]; then
+              echo "❌ $g — файла нет (переименовали и забыли поправить список?)"
+              echo "| \`$(basename "$g")\` | ❌ missing |" >> "$GITHUB_STEP_SUMMARY"
+              rc=1
+              continue
+            fi
+            echo "::group::$g"
+            if bash "$g"; then
+              echo "| \`$(basename "$g")\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$(basename "$g")\` | ❌ |" >> "$GITHUB_STEP_SUMMARY"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "⚠️ Контракт e2e-харнесса нарушен — см. группы выше." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "✅ Все контракты e2e-харнесса соблюдены." >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================================
+  # rob_box_mcp_tools unit tests
+  # ============================================================================
+  # До этого job'а src/rob_box_mcp_tools/test/ не гонял ни один workflow:
+  # unit-tests выше собирает пакеты без rob_box_mcp_tools, а G-Lint Code
+  # (PR #2899) подключил один файл. В run 35946562609 файл
+  # test_dialogue_register_speaker.py встречается только в rsync-копии
+  # шага Build workspace — ни одной строки PASSED/FAILED.
+  #
+  # Отдельный job, а не ещё один блок в unit-tests: colcon build ему не
+  # нужен (тесты грузят пакеты из src/ через PYTHONPATH), а 61 файл
+  # пофайлово — это ~2 минуты, которые не должны съедать 15-минутный
+  # бюджет соседа. Вся логика — в scripts/testing/run_mcp_tools_unit_tests.sh,
+  # локально запускается тем же скриптом.
+  mcp-tools-unit-tests:
+    name: Unit Tests (rob_box_mcp_tools)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/krikz/rob-box-ci:humble
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install test dependencies
+        run: |
+          # nav2_msgs: rob_box_mcp_tools.tools.__init__ импортирует
+          # navigation.py, а тот — nav2_msgs.action. Без пакета
+          # test_animation.py и test_llm_integration.py падают на коллекции.
+          apt-get update -qq && apt-get install -y --no-install-recommends \
+            ros-humble-nav2-msgs \
+          && rm -rf /var/lib/apt/lists/*
+          python3 -m pip install --quiet --no-cache-dir \
+            httpx openai msgpack aiohttp requests pyyaml pytz
+
+      - name: Run rob_box_mcp_tools tests
+        run: |
+          set -eo pipefail
+          source /opt/ros/humble/setup.bash
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          # launch_testing из apt собран под pytest 6 и роняет pytest 9.
+          # Удалять ТОЛЬКО после source setup.bash: пакет лежит в
+          # /opt/ros/humble/..., без ROS-окружения pip его не видит — так
+          # было в run 35963939649 (uninstall в шаге без source). Скрипт
+          # вдобавок глушит плагины через -p no:*.
+          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+          python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
+          bash scripts/testing/run_mcp_tools_unit_tests.sh "${{ github.workspace }}/mcp_tools_junit"
+
+      - name: Upload junitxml
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcp-tools-junit
+          path: ${{ github.workspace }}/mcp_tools_junit/
+          retention-days: 14
+
+  # ============================================================================
   # Test Summary
   # ============================================================================
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests]
+    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards]
     if: always()
 
     steps:
@@ -331,9 +689,13 @@ jobs:
           echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests (rob_box_mcp_tools) | ${{ needs.mcp-tools-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Contract Guards | ${{ needs.e2e-contract-guards.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+          if [ "${{ needs.unit-tests.result }}" != "success" ] \
+             || [ "${{ needs.mcp-tools-unit-tests.result }}" != "success" ] \
+             || [ "${{ needs.e2e-contract-guards.result }}" != "success" ]; then
             echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### 🔧 Quick Debug" >> $GITHUB_STEP_SUMMARY

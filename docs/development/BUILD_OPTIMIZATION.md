@@ -274,11 +274,19 @@ grep -A 10 "volumes:" docker/*/docker-compose.yaml
 
 ## Оптимизация загрузки моделей ML/AI
 
-### Проблема
+### Статус: решено иначе (ADR-0125), пример ниже — история
 
-Модели машинного обучения (Vosk STT, Silero TTS) имеют большой размер (145 MB) и загружаются из внешних источников во время Docker build. Это замедляет сборку на 10+ минут при каждом изменении.
+Модели машинного обучения (Vosk STT, Silero TTS) больше НЕ загружаются во
+время Docker build вообще — ни напрямую, ни через cache mount. Ступень
+скачивания удалена из `docker/vision/voice_base/Dockerfile` целиком
+(Ресурсный пак, [ADR-0125](../adr/0125-resource-pack-host-delivery-seam.md)).
+Модели кладёт на хост Vision Pi (`/opt/rob_box/models`) шаг деплоя, контейнер
+получает их bind-mount'ом `/opt/rob_box/models:/models:ro`. Пример с
+BuildKit cache mount ниже — рассмотренная и отклонённая альтернатива,
+оставлена для истории решения (сборка образа лучше вообще не зависит от
+сети, чем зависит-с-кешем).
 
-### Решение: BuildKit Cache Mounts
+### Решение (отклонено, оставлено для истории): BuildKit Cache Mounts
 
 Используйте Docker BuildKit cache mounts для кеширования загруженных файлов между сборками:
 
@@ -307,27 +315,29 @@ RUN --mount=type=cache,target=/model_cache,sharing=locked \
 - ✅ Кеш сохраняется между разными Docker образами
 - ✅ Не требует коммита больших файлов в Git
 
-**Где используется:**
-- `docker/vision/voice_base/Dockerfile` - тяжёлые apt/pip зависимости, Vosk + Silero модели, ReSpeaker drivers, `audio_common_msgs`
-- `docker/vision/voice_resources/Dockerfile` - большие Renardo/FoxDot sample packs для shared volume
+**Где используется (актуально на 2026-09-21, ADR-0125/ADR-0126):**
+- `docker/vision/voice_base/Dockerfile` - тяжёлые apt/pip зависимости, ReSpeaker drivers, `audio_common_msgs`. Vosk/Silero модели в образ больше НЕ входят — см. выше.
+- `docker/vision/voice_resources/` - удалён целиком вместе с образом `voice-resources` (ADR-0126); Renardo/FoxDot sample packs теперь кладёт на хост Ресурсный пак (`/opt/rob_box/samples`), без образа и без named volume.
 - `docker/vision/voice_assistant/Dockerfile` - только fast-changing app layer (`rob_box_voice`, `rob_box_animations`, `rob_box_mcp_tools`)
 
-### Рекомендуемая схема слоёв для voice stack
+### Схема слоёв для voice stack
 
-Для сервисов voice на Vision Pi теперь используйте три уровня:
+Для сервисов voice на Vision Pi используются два уровня образов плюс
+Ресурсный пак на хосте:
 
 1. **`voice-base`** — всё медленно меняющееся и тяжёлое:
     - apt/pip зависимости;
-    - offline STT/TTS модели;
     - ReSpeaker drivers;
     - ROS message dependencies.
-2. **`voice-resources`** — большие immutable ресурсы, не нужные для пересборки app layer:
-    - Renardo/FoxDot sample packs;
-    - one-shot инициализация named volume.
-3. **`voice-assistant`** — только код и package metadata:
+    - offline STT/TTS модели сюда НЕ входят (см. выше) — они на хосте.
+2. **`voice-assistant`** — только код и package metadata:
     - Python/ROS пакеты проекта;
     - launch/config/prompts, которые реально нужны при сборке пакета;
     - без скачивания моделей и sample packs.
+3. **Ресурсный пак** (не образ, шаг деплоя на хосте) — Vosk/Silero модели
+   (`/opt/rob_box/models`) и Renardo-сэмплы (`/opt/rob_box/samples`),
+   оба bind-mount'ом в контейнеры. Раньше сэмплы жили в третьем образе
+   `voice-resources` + one-shot init-контейнер — оба удалены (ADR-0126).
 
 ### Правило для mutable ресурсов
 

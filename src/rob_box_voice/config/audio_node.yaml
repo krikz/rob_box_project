@@ -48,9 +48,13 @@ audio_node:
     # теряет начало фразы («робот» → «роберт»).
     speech_prefetch: 1.5
     speech_min_duration: 0.3
-    # 12.0 (было 10.0): pre-roll 1.5s входит в duration=len(buf)/sr,
-    # запас на длинные фразы (10s речи + 1.5s pre-roll ≤ 11.5s).
-    speech_max_duration: 12.0
+    # 15.0 — совпадает с дефолтом audio_node.py:176 и с деплойным
+    # docker/vision/config/voice_assistant/audio_node.yaml. Здесь
+    # оставалось 12.0 с прошлого подъёма лимита: pre-roll 1.5s входит в
+    # duration=len(buf)/sr, и длинные фразы отклонялись («Речь
+    # отклонена: 12.76с»), из-за чего порог и подняли — в двух местах
+    # из трёх.
+    speech_max_duration: 15.0
     tts_grace_s: 2.5
     music_vad_threshold: 6.0
     music_vad_min_db: -35.0
@@ -68,3 +72,20 @@ audio_node:
     # (-26 dBFS в начале) режется → STT даёт «обот» / «меня зовут саша».
     # 1 = 70 Hz cut-off — сохраняет «Р» (≈60 Hz основной тон + гармоники).
     hpf_on: 1                  # 0=OFF, 1=70Hz, 2=125Hz, 3=180Hz (default firmware)
+
+    # ====== Watchdog захвата (issue #2701) ======
+    # Ретрай audio_retry_period (выше) лечит только «поток не открылся на
+    # старте». Здесь — «поток открыт, но PortAudio молча перестал звать
+    # audio_callback» (ReSpeaker завис на ходу, 17.09.2026, робот простоял
+    # ночь и не слышал голос до ручного docker restart).
+    # audio_stall_timeout_s: сколько секунд без audio_callback считается
+    # зависанием.
+    audio_stall_timeout_s: 5.0
+    # audio_stall_empty_speech_count: второй признак того же зависания —
+    # VAD видит речь по USB HID (независимый канал), а буфер захвата пуст
+    # («Речь отклонена: 0.00с») K раз подряд.
+    audio_stall_empty_speech_count: 3
+    # audio_heartbeat_file: файл для healthcheck контейнера (docker/vision/
+    # scripts/voice_assistant/healthcheck_audio.sh) — пустая строка
+    # отключает запись.
+    audio_heartbeat_file: /tmp/rob_box_audio_heartbeat

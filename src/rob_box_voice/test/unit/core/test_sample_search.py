@@ -215,3 +215,85 @@ def test_keyword_search_only_audio_extensions() -> None:
 
         result = search_renardo_samples(root, "kick")
         assert result["found"] == 3  # .wav + .aiff + .mp3, NOT .txt
+
+
+# ---------------------------------------------------------------------------
+# Result-window rotation (docs/analysis/2026-08-30-music-quality-audit.md)
+# ---------------------------------------------------------------------------
+
+
+def _big_kick_pack(root: Path, count: int) -> None:
+    pack_dir = _make_samples_tree(root)
+    for i in range(count):
+        _touch(pack_dir / "a" / "lower" / f"kick_{i:03d}.wav")
+
+
+def test_repeating_a_query_surfaces_different_samples() -> None:
+    """The reason every generation reused the same drums.
+
+    The search returned the alphabetically first MAX_RESULTS matches and
+    stopped, so an identical query produced a byte-identical answer. The
+    model was not picking the same samples — it was never shown any others.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _big_kick_pack(root, MAX_RESULTS * 3)
+
+        first = search_renardo_samples(root, "kick", rotate=0)
+        second = search_renardo_samples(root, "kick", rotate=1)
+
+        assert [r["filename"] for r in first["results"]] != [
+            r["filename"] for r in second["results"]
+        ]
+
+
+def test_rotation_eventually_reaches_every_sample() -> None:
+    """A window that only ever shows a slice is no better than a fixed head."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        total = MAX_RESULTS * 3
+        _big_kick_pack(root, total)
+
+        seen = set()
+        for rotate in range(total):
+            result = search_renardo_samples(root, "kick", rotate=rotate)
+            seen.update(r["filename"] for r in result["results"])
+
+        assert len(seen) == total
+
+
+def test_rotation_is_deterministic_for_the_same_counter() -> None:
+    """Variety must come from the caller's counter, not from hidden state."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _big_kick_pack(root, MAX_RESULTS * 3)
+
+        assert search_renardo_samples(root, "kick", rotate=4) == (
+            search_renardo_samples(root, "kick", rotate=4)
+        )
+
+
+def test_total_found_reports_the_whole_collection() -> None:
+    """"Found 30" out of 200 tells the model the pack is poor."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        total = MAX_RESULTS * 3
+        _big_kick_pack(root, total)
+
+        result = search_renardo_samples(root, "kick")
+
+        assert result["found"] == MAX_RESULTS
+        assert result["total_found"] == total
+
+
+def test_small_result_sets_are_unaffected_by_rotation() -> None:
+    """Below the cap there is nothing to rotate — order must stay stable."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pack_dir = _make_samples_tree(root)
+        _touch(pack_dir / "a" / "lower" / "kick1.wav")
+        _touch(pack_dir / "a" / "lower" / "kick2.wav")
+
+        assert search_renardo_samples(root, "kick", rotate=0) == (
+            search_renardo_samples(root, "kick", rotate=9)
+        )

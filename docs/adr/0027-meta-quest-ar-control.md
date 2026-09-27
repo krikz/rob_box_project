@@ -2,12 +2,12 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Accepted (дизайн-фаза, реализация отложена) |
+| Статус | Accepted; amended 2026-09-08 (Phase 1 + часть Phase 2 реализованы, оставшиеся возможности планируются) |
 | Дата | 2026-08-24 |
 | Автор | architect (Hermes Agent), kanban t_77f08bb8 |
 | Контекст | Issue #1576 (LOW priority, design-only) — Meta Quest 2 / 3 / Pro как нативный WebXR-клиент к роботу: passthrough + camera stream + LiDAR overlay + teleop + микрофон очков |
 | Затрагивает | (будущее) новый docker-сервис `rob_box_quest` в `docker/vision/`; companion-документ `docs/architecture/meta-quest-api.md` (HTTP/WS контракт) |
-| Родители | ADR-0017 (Zenoh router SPOF), ADR-0018 (honesty), ADR-0026 (recovery-contract) |
+| Родители | ADR-0017 (Zenoh router SPOF), ADR-0018 (honesty), ADR-AF-0026 (recovery-contract) |
 | Связанные | issue #1576; ADR-0021 (dialogue_node discipline — точка входа для voice-mode bypass) |
 
 > **TL;DR.** Поднимаем на Vision Pi лёгкий WebSocket-шлюз с самоподписанным TLS,
@@ -198,7 +198,7 @@ rob_box_quest — только Zenoh pub/sub.
 | `camera_rear` | `ros2_main/oak_d/stereo/image_rect_raw` или MJPEG topic с Vision Pi | 30 fps | H.264 в `BINARY_FRAME.data` (Annex-B, ~2 Mbps на 720p) |
 | `lidar_2d` | `ros2_main/lslidar/scan` | 10 Hz | MessagePack: ranges + intensities |
 | `lidar_3d` (опц.) | `ros2_main/rtabmap/cloud_map` | 2-5 Hz | подвыборка до 10k точек, zstd-compressed в `data_bytes` |
-| `voice_state` | `voice/state` | event | MessagePack: idle/listening/speaking |
+| `voice_state` | `voice/state` | event | MessagePack: `idle`/`listening`/`thinking`/`speaking`/`denied` (state + ts_ms + utterance_id? + holder_id? + detail?). Семантика `denied`/`holder_id`/`detail` — VoiceFloor (server-side mutex, см. §3.1-bis ниже и `rob_box_quest/server/voice_floor.py`); контракт зафиксирован в [meta-quest-api.md §6](../architecture/meta-quest-api.md). Аудит G8/G19 (issue #1912). |
 | `robot_status` | агрегатор (mode, battery, Wi-Fi rssi) | 1 Hz | MessagePack |
 
 Публикации (Zenoh keyexpr):
@@ -216,6 +216,45 @@ rob_box_quest — только Zenoh pub/sub.
 приоритетом **ниже** joystick (чтобы физический пульт всегда побеждал) и
 таймаутом 0.5 с — если от Quest нет фреймов 0.5 с, twist_mux отключает этот
 input и робот останавливается (dead-man switch, см. §3.3).
+
+### 3.1-bis. VoiceFloor — серверный mutex на голосовой поток (дополнение, AV-25)
+
+> **Дополнение от 03.09.2026** (post-ADR, реализовано в PR #1933,
+> контракт — issue #1912 + meta-quest-api.md §6).
+
+Когда AV-23 (Telegram-рация) приземлится, два WS-клиента (operator-quest
+в Meta Quest + telegram-bridge) получат возможность одновременно слать
+голос. Голосовой поток квеста (`voice_ptt_start/stop`, `VOICE_AUDIO`
+фреймы → `/avatar/voice_in`) сейчас один на всех WS-клиентов. Без
+серверного gate'а два клиента начнут микшировать голос в один PCM
+и рвать звук.
+
+**Решение**: добавляем in-memory `VoiceFloor` в `rob_box_quest.server`:
+
+- ровно один держатель на все WS-сессии;
+- `holder_id` = `"<client_id>:<session_id_short>"` (≤ ~32 символа, чтобы
+  влезло в `voice_state.detail` без обрезки);
+- `voice_ptt_start`:
+  - floor свободен → `try_acquire` → `state=listening` + `holder_id`;
+  - floor занят → `state=denied` + `holder_id` текущего + `detail="busy: <holder_id>"`,
+    bridge **не** вызывается;
+- `voice_ptt_stop`:
+  - от держателя → `state=idle`;
+  - от НЕ-держателя → no-op (защита от двойного stop от постороннего);
+- watchdog/disconnect → `force_release_for(old_session_id)` → следующий
+  клиент может захватить floor;
+- `SUBSCRIBE voice_state` → snapshot текущего состояния сразу (UI не
+  ждёт первого события).
+
+Состояние `denied` — **локальное расширение** для UI (quest-сервера),
+не входит в основной state-машину `dialogue_node`. Это позволяет
+показать «у робота говорит другой» без введения нового типа события
+или wire-frame.
+
+Полный список тестов: `test_voice_floor.py` (13 unit, pure-logic) +
+`test_ws_server_voice.py` (8 integration на aiohttp WS) +
+`test_voice_floor_e2e_full_flow.py` (e2e-сценарий двух клиентов) +
+`test_voice_floor_edge_cases.py` (watchdog-trip, retry-storm, recon).
 
 ### 3.3. Dead-man switch и safety
 
@@ -249,9 +288,109 @@ Teleop через Quest — это **контроллер, который пол
 
 Реализация — `dialogue_node` декомпозирует voice_input (см. ADR-0021 R1),
 новый параметр `voice_input_mode` ∈ `{respeaker, quest_passthrough,
-quest_ttts, quest_stt, quest_llm_formalize}`. Это **мини-фича в dialogue_node**,
-не отдельный сервис — голосовой пайплайн у нас уже есть, и дублировать его
-ради Quest было бы безумием.
+quest_ttts, quest_stt, quest_llm_formalize, quest_command, off}`. Это
+**мини-фича в dialogue_node**, не отдельный сервис — голосовой пайплайн
+у нас уже есть, и дублировать его ради Quest было бы безумием.
+
+| Режим | Поведение dialogue_node | Зачем |
+|---|---|---|
+| `passthrough` | AudioData из `/audio/quest_in` идёт **напрямую** в `/voice/audio/out` (динамик робота), без STT/LLM | Оператор хочет поговорить с человеком рядом с роботом через микрофон очков (hands-free) |
+| `ttts_proxy` | AudioData → STT → LLM (без wake-word, потому что PTT) → TTS голосом робота | Оператор хочет, чтобы робот **от своего лица** ответил человеку рядом (например, ассистент на мероприятии) |
+| `stt_llm` (default) | AudioData → STT → LLM, как обычная wake-word-активация, но без wake-word (gaze-click активирует режим) | Управление роботом голосом через очки (без ReSpeaker) |
+| `llm_formalize` (Phase 3) | AudioData → STT → LLM-перефразирование в формальную/структурированную речь → TTS | Оператор наговорил черновик, робот озвучивает «причёсанную» версию (выступление/объявление) |
+| **`quest_command`** (AV-22, Issue #1914) | AudioData → STT → **опубликовать** распознанную фразу в `/avatar/command` (`source="quest"`), **не запускать LLM** личности | Голосовая команда супервизор-агенту: «мотивируй народ» из очков → супервизор-агент (AV-21) обрабатывает. Личность молчит. |
+| `off` (W3-1) | Глушит ТОЛЬКО обычных людей у ReSpeaker-микрофона | «Диалог выключен для окружающих, полное управление у оператора» (см. dialogue-mode-spec-2026-08-28.md §3.5) |
+
+**Выбор `quest_command` как нового значения, а не переиспользование
+`quest_stt`** (зафиксировано в `docs/plans/2026-09-02-avatar-worker-brief.md`
+и OpenSpec `supervisor-agent/design.md`, AV-22):
+
+* `quest_stt` → запускает LLM личности (`dialogue_node._on_stt(from_quest=True)`)
+  — это «диалог с роботом через очки»;
+* `quest_command` → публикует в `/avatar/command`, LLM личности НЕ
+  вызывается — это «голосовая команда супервизор-агенту»;
+* Разные потребители (диалоговая нода vs супервизор-агент) — разные
+  режимы. Переиспользование `quest_stt` сломало бы гейт «личность молчит»
+  и перепутало бы два независимых потребителя одной фразы.
+
+#### 3.4.1. Стиль речи и язык вывода (AV-28 §P7, фаза P7-full)
+
+В режиме `quest_llm_formalize` оператор говорит в грип своими словами, а
+робот озвучивает их в выбранном **стиле речи** и на выбранном **языке
+вывода**. Это **не диалог** — LLM не отвечает оператору, не задаёт
+вопросов, не добавляет фактов. Она только переписывает реплику в стиле
+выбранного пресета. Жёсткие ограничения (`max_tokens`/`temperature`/
+no-tools/no-questions) — в спецификации PR #1952 §5.
+
+Два дополнительных параметра на `dialogue_node`:
+
+| Параметр | Допустимые значения | Где хранится |
+|---|---|---|
+| `voice_preset` | `technical` / `street` / `caveman` / `business` / `philosopher` / `lenin` / `translate` | `src/rob_box_voice/config/voice_presets.yaml` (manifest) + `presets/<id>.txt` (system prompt: RU-секция и общая не-русская секция в одном файле) |
+| `voice_output_language` | `ru` / `en` / `fr` / `de` / `zh` / `hi` | тот же файл, поле `languages:` (map код → `{name, label, prompt_section}`) |
+
+> Секций в `.txt` две, а языков шесть: RU-секция обслуживает только
+> русский, вторая («EN version») — все остальные, и конкретный язык ей
+> задаёт директива в user-сообщении, а не сам промпт. Хардкод «Output MUST
+> be English» в этой секции означал бы, что fr/de/zh/hi звучат
+> по-английски.
+
+**Тексты пресетов — данные, а не код**: добавление нового пресета =
+правка YAML + новый `.txt`, без правок Python (требование origin-карточки
+#1920). Контракт: «preserve meaning / no answering / no invented facts»
++ явная language-directive. Это no-dialog contract (см. PR #1952 §5).
+
+**Маршрутизация — через супервизор (ADR-0028 S5)**, как `voice_input_mode`:
+
+```
+клиент (WebXR) → ws_server.cmd=='set_voice'{preset?, language?}
+   → Bridge.set_voice_preset / set_voice_language
+   → /avatar/set_voice_preset | /avatar/set_voice_language
+   → avatar_supervisor → SetParameters(voice_preset=…) или
+                                      SetParameters(voice_output_language=…)
+   → dialogue_node (применяется к следующей фразе, без рестарта ноды)
+```
+
+Прямых `SetParameters` на `dialogue_node` из `rob_box_quest` нет — supervisor
+единственная точка записи для всех voice-параметров (ADR-0028 S5, в т.ч.
+`voice_input_mode` уже там). Whitelist пресетов и языков — единый на стороне
+ws_server (`VOICE_PRESET_IDS` / `VOICE_LANGUAGES`) и supervisor; невалидное
+значение → `voice_set_nack{reason:invalid_voice_preset|language}`, UI
+откатывает optimistic update.
+
+**HUD-индикатор** текущего пресета в WebXR-клиенте: короткая метка
+`ST:LENIN` / `ST:LENIN@RU` рядом с chip-кнопками стиля речи (чтобы оператор
+видел с расстояния, не всматриваясь в chip-надписи). Префикс `ST:`
+именно для **стиля речи**, чтобы не путать с `voice_id` (TTS picker,
+AV-27) — другой «слой», отдельный выбор голоса. Контракт рендера —
+pure-функция `renderHud(preset, language)` в
+`src/rob_box_quest/webxr_client/src/scene/voice_pipeline_panel.ts`; формат:
+
+```
+renderHud(null, null)             = "ST:--"
+renderHud("lenin", null)          = "ST:LENIN"
+renderHud("lenin", "ru")          = "ST:LENIN@RU"
+```
+
+HUD обновляется оптимистично при локальном клике (ещё до ack от
+сервера) и подтверждается через `voice_set_ack` (mode_manager). На
+невалидный preset/language → UI откатывает optimistic update по
+`voice_set_nack.reason` (UI-state хранится в mode_manager, см.
+`voice_pipeline_panel.ts:setCurrentPreset/setCurrentLanguage`).
+
+**Контракт клиент↔сервер** (см. `docs/architecture/meta-quest-api.md` §P7
++ `src/rob_box_quest/webxr_client/src/wire/messages.ts`):
+
+* CMD: `set_voice {voice_id?, preset?, language?}` — все поля опциональны,
+  клиент шлёт то, что реально поменялось.
+* ACK: `voice_set_ack {voice_id?, preset?, language?, ts_ms}` — UI синхронизирует
+  mode_manager.
+* NACK: `voice_set_nack {voice_id?, preset?, language?, reason, ts_ms}` — UI
+  откатывает optimistic update (mode_manager к предыдущему значению).
+
+`voice_id` (TTS picker, AV-27) — out of scope этой карточки: серверная
+часть маршрутизирует только `preset` + `language`. Расширение на
+`voice_id` — отдельная работа.
 
 ---
 
@@ -427,45 +566,50 @@ desktop-сценария, но:
 
 ## 7. Изменения в этом ADR
 
-**Сейчас (дизайн-фаза):**
+**2026-09-08 — Amendment ADR-0082 (issue #2196, architect):**
 
-1. Этот файл — `docs/adr/0027-meta-quest-ar-control.md` (принят).
-2. Companion-документ `docs/architecture/meta-quest-api.md` с детальным
-   HTTP/WS-контрактом (frame schema, MessagePack-структуры, error codes).
+Companion `meta-quest-api.md` больше не считается замороженным: его статус
+изменён на живой reference wire-контракта, с amendment history (§13).
+Документ синхронизирован с фактическим `rob_box_quest`:
 
-**Когда дойдёт до реализации (Phase 1):**
+- удалены из доступного API неподтверждённые `ui_button`, `admin_logs`,
+  `admin_logs_stop` и `set_panel_topic`; они явно отмечены planned/not
+  implemented в companion-документе;
+- добавлены реализованные `voice_pipeline`, `voice_listen_start/stop`,
+  `stream_select` и соответствующие ack/nack-события;
+- исправлены описания `deadman`/`seq` (gate живёт в `avatar_arbiter`, anti-replay
+  по `seq` нет) и `BINARY_FRAME` (payload as-is, маршрутизация по `stream_id`,
+  без `topic_id` prefix).
 
-3. Новый пакет `src/rob_box_quest/` — Python (ROS2 node + ws-server на
-   `aiohttp` или `websockets`).
-4. `docker/vision/docker-compose.yaml` — сервис `rob_box_quest` + опц.
-   healthcheck.
-5. `docker/main/config/twist_mux/twist_mux.yaml` — добавить `quest` input
-   с приоритетом ниже joystick и timeout 0.5 с.
-6. `src/rob_box_voice/rob_box_voice/dialogue_node.py` — параметр
-   `voice_input_mode` и топик `/audio/quest_in` (мини-фича в рамках
-   ADR-0021 R3 «per-bag workflow», отдельная worker-карточка).
-7. `/safety/emergency_stop` topic + handler (или сервис, зависит от того,
-   как уже сделано в rob_box_bringup).
-8. Веб-клиент: статический билд Three.js + WebXR Device API, source
-   в `src/rob_box_quest/webxr_client/` (или отдельный `webxr_quest/`
-   монорепо), собирается esbuild'ом в `docker/vision/quest_static/`.
-   Работает и в обычном браузере, и в Quest (R9).
+Это amendment меняет только документацию и контрактный reference; серверный
+код и клиентские исходники не изменяются.
 
-**Phase 2/3 (Видение v2, §1.1):**
+**Реализовано и остаётся плановым:**
 
-9. Стрим-селектор: registry доступных стримов + `SUBSCRIBE` на несколько
-   `camera_*` одновременно (R10).
-10. Детекция людей → топик `person_detections` → подсветка в 3D-сцене (R11, Q10).
-11. Ходимое виртуальное пространство: grid-map + pointcloud как 3D-сцена (R12, Q9).
-12. Голосовой режим `llm_formalize` в `dialogue_node` (R13, §3.4).
-13. Админ-панель: логи, статус, restart/диагностика (R14, Q11).
-14. Эволюция доступа к северной звезде: TOTP/mTLS + DNS/TLS + туннель (Q12).
+- Реализованы пакет `src/rob_box_quest/`, сервис `rob_box_quest`, Quest input
+  в `twist_mux`, базовый WebXR-клиент и voice-интеграция; точный текущий
+  wire-контракт приведён в companion-документе.
+- Оставшиеся требования R10–R14 и вопросы §6 (расширенный stream selector,
+  person detections, walkable 3D space, `llm_formalize`, admin panel и
+  эволюция доступа) выполняются отдельными карточками с acceptance criteria.
 
 **Не делаем:**
 
 - Не вводим rosbridge / web_video_server (см. §5).
 - Не делаем standalone Android-приложение (см. §5.4).
 - Не выносим voice-pipeline в отдельный сервис — расширяем dialogue_node.
+
+**Уточнение (03.09.2026, t_53a576a4, issue #1912):**
+
+В §3.1 таблица стримов указывает Zenoh-keyexpr `voice/state` для
+voice_state. В этом же разделе §7 п.6 выше упомянут топик `/audio/quest_in`
+в контексте параметра `voice_input_mode` dialogue_node. Это **не**
+расхождение имени одного и того же топика: `voice/state` — это
+**событийный** VoiceState (FSM → UI), а `/audio/quest_in` — это
+**командный** входной канал (PCM от Quest-микрофона). Они дополняют
+друг друга, оба попадают в одну FSM внутри dialogue_node. Пометка
+закрыта; AV-25 (PR #1933) добавил VoiceFloor как server-side mutex
+между WS-клиентами (см. §3.1-bis).
 
 ---
 

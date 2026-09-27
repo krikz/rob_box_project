@@ -393,6 +393,34 @@ def test_thinking_policy_callers_can_override():
     }
 
 
+def test_thinking_policy_still_applied_when_caller_sets_only_max_tokens(
+) -> None:
+    """Issue #1883 regression: caller passes ``LLMSettings(max_tokens=500)``.
+
+    Before the fix, ``AgentCore`` never forwarded ``settings=`` to the
+    provider, so this scenario could never arise in production. After
+    the fix, the voice node sends ``LLMSettings(temperature=0.7,
+    max_tokens=500)`` on every call. That ``LLMSettings`` has no
+    ``thinking`` key — but the instance thinking policy MUST still land
+    in ``extra_body``; otherwise MiniMax-M3 silently flips back to
+    adaptive thinking and the voice latency goes from ~1.5 s to ~15 s.
+    """
+    p, c = _make_minimax()  # instance default: thinking={"type": "disabled"}
+    c.chat.completions.next_response = _ok_response("ok")
+    asyncio.run(
+        p.complete(
+            [LLMMessage(role="user", content="hi")],
+            settings=LLMSettings(temperature=0.7, max_tokens=500),
+        )
+    )
+    kwargs = c.chat.completions.calls[0]
+    # The instance thinking policy survived the merge.
+    assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+    # And max_tokens / temperature made it to the wire.
+    assert kwargs["max_tokens"] == 500
+    assert kwargs["temperature"] == 0.7
+
+
 # ---------------------------------------------------------------------------
 # stream() — text only (streaming + tools is capability-gated)
 # ---------------------------------------------------------------------------
@@ -736,7 +764,7 @@ def test_aclose_is_idempotent():
 
 
 def test_provider_installs_api_key_redaction_on_sdk_and_httpx_loggers(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     api_key = "minimax-auto-filter-secret-do-not-log"
     monkeypatch.setenv("MINIMAX_API_KEY", api_key)
@@ -758,14 +786,26 @@ def test_provider_installs_api_key_redaction_on_sdk_and_httpx_loggers(
         p, _ = _make_minimax()
         del p
 
-        with caplog.at_level(logging.INFO):
-            provider_logger.info("Authorization: Bearer %s", api_key)
-            httpx_logger.info("Authorization: Bearer %s", api_key)
-
-        assert [record.getMessage() for record in caplog.records] == [
-            "Authorization: Bearer ***",
-            "Authorization: Bearer ***",
-        ]
+        # The provider must attach the redaction filter to both loggers, and
+        # the filter must mask the synthetic key even in records that mention it.
+        for logger in (provider_logger, httpx_logger):
+            assert any(
+                isinstance(item, MiniMaxRedactedLogFilter)
+                for item in logger.filters
+            )
+            record = logging.LogRecord(
+                name=logger.name,
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=0,
+                msg="Authorization: Bearer %s",
+                args=(api_key,),
+                exc_info=None,
+            )
+            assert record.getMessage() == "Authorization: Bearer " + api_key
+            for item in logger.filters:
+                item.filter(record)
+            assert record.getMessage() == "Authorization: Bearer ***"
     finally:
         for logger, filters in previous_filters.items():
             logger.filters[:] = filters

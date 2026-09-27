@@ -20,6 +20,7 @@ This conftest makes the intent explicit at the dir level so pytest 9.x
 
 from pathlib import Path
 
+
 # This file lives at test/conftest.py — ``test`` IS a Python package thanks
 # to test/unit/__init__.py, so pytest will pick this up for any subdirectory.
 # We use __file__ to resolve the root ``test/`` directory at runtime.

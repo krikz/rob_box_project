@@ -1,0 +1,21 @@
+{
+  "name": "night_marathon_act2c_voice_conflict_question_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "GATE-1 (ADR-0022 §4.1) агрегат для акта «Вы разные люди?» (issue #2828).",
+    "register_speaker обязан прозвучать за акт (Саша n721, Борис n722) —",
+    "без двух профилей voice_conflict не из чего получиться.",
+    "Настоящая проверка ФАКТА переспроса — per-step required_question в n723",
+    "(when_robot_asked), столкновения с ответом хода — must_not_say в n722."
+  ],
+  "expected_tool_calls": [
+    "register_speaker"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton/ermil",
+    "tts": "auto (yandex|minimax|silero, см. E2E_TTS_PROVIDER_ORDER)",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

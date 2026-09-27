@@ -75,6 +75,11 @@ def _make_node():
     node.batch_complete_pub = _CapturingPublisher()
     node._logger = Mock()
     node.get_logger = lambda: node._logger
+    # Issue #2553 — ``_publish_tts_finished`` теперь зовёт
+    # ``_drain_pending_speech_queue`` после batch_complete; в idle-тестах
+    # очередь пустая, поэтому добавляем только пустой list (иначе
+    # AttributeError при первом же finished-событии с batch_id).
+    node._pending_speech_queue = []
     return node
 
 

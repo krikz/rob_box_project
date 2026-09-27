@@ -1,11 +1,10 @@
 """Pure helpers for wake-word / silence-command text classification.
 
-Extracted from :class:`DialogueManager` and the per-method regex in
-:mod:`rob_box_harness.harnesses.dialog` so the same logic can be used
+Extracted from :class:`DialogueManager` so the same logic can be used
 by:
 
 * the legacy ``DialogueNode`` (OpenAI Agents SDK pipeline)
-* the new ``DialogHarness`` (harness framework)
+* ``stt_node``'s wake-word gate
 * unit tests that don't want to spin up the full state machine
 
 Everything in this module is **pure**: no I/O, no ROS2, no time
@@ -16,6 +15,7 @@ That makes the helpers cheap to test in isolation (see
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Sequence
 
@@ -46,7 +46,19 @@ DEFAULT_WAKE_WORDS: tuple[str, ...] = (
     "роберт",
     "роббос",
     "robbox",
+    # STT-искажение «Робот,» в начале фразы: vosk слышит «Робота, про меня
+    # что помнишь?» (прогон 35734532425, шаг n209 — три попытки, робот
+    # промолчал). Матчинг по границам слов не ловит «робот» внутри «робота», поэтому
+    # нужен отдельный вариант, и он обязан стоять ПЕРЕД «робот».
+    # Побочный эффект принят: «спроси у робота» теперь тоже будит.
+    "робота",
     "робот",
+    # STT-искажение «Робот,» перед звонкой согласной: yandex слышит «Робби,
+    # добрый вечер» (прогон 35775984954, шаг n204_boris_intro_long — три
+    # попытки подряд, NO_ACCEPT, из-за чего Борис не представился и упали
+    # n209/n211). Ретраи тут бесполезны: харнесс переигрывает тот же WAV,
+    # и ошибка воспроизводится побитово.
+    "робби",
     "робок",
     # STT-искажения «робок»: гласная первого/второго слога.
     "рабок",
@@ -58,6 +70,12 @@ DEFAULT_WAKE_WORDS: tuple[str, ...] = (
     "бот",
     "роб",
 )
+# Namespace оператора (целевая §7.3, issue #1990): вейк «ТАРС» для агента
+# оператора. Слышит ТОЛЬКО микрофон шлема (wake-поток /audio/quest_wake);
+# из ReSpeaker-канала игнорируется (namespace привязан к источнику аудио).
+# STT-искажения («тарз», «тас», «target»...) НЕ придумываем — наполняем по
+# логам e2e (целевая §14.1), как собирали для «роббокс».
+DEFAULT_OPERATOR_WAKE_WORDS: tuple[str, ...] = ("тарс", "tars")
 DEFAULT_SILENCE_COMMANDS: tuple[str, ...] = ("помолч", "замолч", "хватит")
 DEFAULT_UNSILENCE_COMMANDS: tuple[str, ...] = (
     "говори",
@@ -105,12 +123,12 @@ def has_wake_word(text_lower: str, wake_words: Sequence[str]) -> bool:
 def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
     """Remove the *first* matching wake word from ``text`` (any position).
 
-    Used by the harness wake-word gate (``DialogHarness._strip_wake_word``)
-    AND by the legacy node's ``DialogueManager.remove_wake_word``.
+    Used by ``stt_node``'s wake-word gate AND by the legacy node's
+    ``DialogueManager.remove_wake_word``.
 
     🔴 FIX (live 10.08): regex was anchored ``^`` — пропускал wake-word
     в середине фразы (напр. «денчик ой фу робот меня зовут...»).
-    ``on_user_input()`` в DialogCore видел «робот» → WAKE_WORD вместо
+    ``on_user_input()`` в AgentCore видел «робот» → WAKE_WORD вместо
     STT_RESULT → guard ``event==STT_RESULT`` пропускал LLM → тишина.
     Теперь удаляем из ЛЮБОГО места в тексте.
 
@@ -132,6 +150,64 @@ def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# SSoT wake-слов из YAML (целевая §7.3, issue #1990)
+# ---------------------------------------------------------------------------
+
+
+def load_wake_word_namespaces(path: str | os.PathLike[str] | None) -> dict[str, list[str]]:
+    """Прочитать ``config/wake_words.yaml`` (SSoT) в ``{namespace: [words]}``.
+
+    Namespaces: ``personality`` (только ReSpeaker → ``/voice/stt/result``) и
+    ``operator`` (только микрофон шлема, wake-поток). Порядок списка
+    сохраняется КАК В ФАЙЛЕ — от него зависит :func:`strip_wake_word`
+    (regex leftmost-first, длинные варианты первыми).
+
+    Безопасная функция: при пустом пути / отсутствующем файле / битом YAML /
+    незнакомой структуре возвращает ``{}`` (а не падает) — вызывающий решает,
+    откатиться ли на кодовые дефолты (:data:`DEFAULT_WAKE_WORDS` /
+    :data:`DEFAULT_OPERATOR_WAKE_WORDS`).
+    """
+    if not path:
+        return {}
+    import yaml  # noqa: PLC0415 — лениво: модуль остаётся чистым без пути
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for namespace in ("personality", "operator"):
+        words = data.get(namespace)
+        if isinstance(words, list):
+            cleaned = [w for w in words if isinstance(w, str) and w.strip()]
+            if cleaned:
+                out[namespace] = cleaned
+    return out
+
+
+def resolve_wake_word_namespaces(
+    path: str | os.PathLike[str] | None,
+    personality_fallback: Sequence[str] = DEFAULT_WAKE_WORDS,
+    operator_fallback: Sequence[str] = DEFAULT_OPERATOR_WAKE_WORDS,
+) -> tuple[list[str], list[str]]:
+    """Вернуть ``(personality, operator)`` списки вейк-слов (порядок важен).
+
+    Файл — единственный SSoT в проде (docker: ``/config/wake_words.yaml``).
+    Если файл не задан / не читается / не содержит namespace — берём
+    переданные фолбеки (в юнит-тестах и dev-env без файла поведение
+    не меняется; в проде список копируется из кода в YAML байт-в-байт).
+    """
+    loaded = load_wake_word_namespaces(path)
+    personality = loaded.get("personality") or list(personality_fallback)
+    operator = loaded.get("operator") or list(operator_fallback)
+    return personality, operator
+
+
+
+# ---------------------------------------------------------------------------
 # Silence / unsilence commands
 # ---------------------------------------------------------------------------
 
@@ -150,10 +226,13 @@ def is_unsilence_command(text_lower: str, commands: Sequence[str] | None = None)
 
 __all__ = [
     "DEFAULT_WAKE_WORDS",
+    "DEFAULT_OPERATOR_WAKE_WORDS",
     "DEFAULT_SILENCE_COMMANDS",
     "DEFAULT_UNSILENCE_COMMANDS",
     "has_wake_word",
     "strip_wake_word",
     "is_silence_command",
     "is_unsilence_command",
+    "load_wake_word_namespaces",
+    "resolve_wake_word_namespaces",
 ]

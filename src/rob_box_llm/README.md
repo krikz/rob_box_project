@@ -145,7 +145,7 @@ asyncio.run(main())
 
 ROS2 wiring lives in `rob_box_voice/tts_node.py` (opt-in via
 `tts_node.provider = "minimax"`); see the user guide for launch args
-and a copy-pasteable `voice_assistant.yaml` snippet.
+and a copy-pasteable `dialogue_node.yaml` snippet.
 
 ## Testing
 

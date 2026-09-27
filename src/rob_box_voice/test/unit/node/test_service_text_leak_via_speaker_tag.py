@@ -19,7 +19,7 @@
 
 from unittest.mock import MagicMock
 
-from rob_box_harness.core.dialog_core import DialogResult
+from rob_box_harness.core.agent_core import DialogResult
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -42,6 +42,14 @@ def _make_node() -> DialogueNode:
     n._babble_retry_used = False
     n._memory = MagicMock()
     n._active_tg_chat_id = None
+    # Upstream-regression t_5e06c47d: dialogue_node.py:640 / :678 / :682.
+    # ``_handle_result`` reads ``_code_speech_retry_used`` (line 3495) and
+    # ``_action_claim_retry_used`` (line 3555) — every test that calls it
+    # through ``object.__new__`` needs these seeded explicitly to avoid
+    # AttributeError before we ever get to the assertion.
+    n._track_mode_music_active = False
+    n._action_claim_retry_used = False
+    n._code_speech_retry_used = False
     return n
 
 

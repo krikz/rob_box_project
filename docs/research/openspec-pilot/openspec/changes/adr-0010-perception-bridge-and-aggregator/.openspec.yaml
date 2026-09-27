@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-31
+goal: "Bulk-import of legacy ADR for OpenSpec tracking (docs-only)"
+skip_specs: true

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================================
 # SOT (source-of-truth): <repo>/scripts/agent_flow/agent-flow-post-merge-build.sh
-# Каноническая версия живёт в репо. На хост раскладывается через
-# `bash <repo>/scripts/agent_flow/install.sh`, который создаёт
-# символические/жёсткие ссылки в:
-#   - ~/.hermes/profiles/agent-flow/scripts/agent-flow-post-merge-build.sh
-#   - ~/.hermes/profiles/architect/scripts/agent-flow-post-merge-build.sh
-#   - ~/.hermes/scripts/agent-flow-post-merge-build.sh
-# Правка: редактируем <repo>/scripts/agent_flow/agent-flow-post-merge-build.sh,
-# commit, merge. На хост: bash <repo>/scripts/agent_flow/install.sh
-# (или вручную cp + ln -sf). Если правишь этот файл НА ХОСТЕ — синхронизируй
-# обратно в репо.
+# Правим ТОЛЬКО здесь + commit + merge в develop. На хост раскладывает
+# `bash <repo>/scripts/agent_flow/install.sh` — hardlink-копиями (cp -al), НЕ
+# симлинками: симлинк в ~/.hermes/scripts/ ресолвится наружу и отклоняется
+# guard'ом hermes-agent scheduler.py::_validate_script_path (ретро 11.08
+# t_a6a236e0d9f0470e — 50 упавших тиков подряд, 1ч42м даунтайма).
+# Полный список путей раскладки — в install.sh, сверку копий держит
+# agent-flow-drift-detect.sh. Ручная правка копии на хосте затрётся.
 # ============================================================================
 # agent-flow-post-merge-build.sh — ADR-0022 extension (issue #1475),
 # updated 25.08.2026 (issue #1625, Шифу)

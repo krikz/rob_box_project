@@ -34,11 +34,13 @@ FAKE
 chmod +x "$WORK/hermes"
 
 # --- извлекаем ensure_cleanup_cron() из install.sh --------------------------
-awk '/^ensure_cleanup_cron\(\) \{/{f=1} f{print} f && /^\}/{exit}' \
+# ensure_cleanup_cron() — тонкая обёртка над общим ensure_cron_job() (дедуп 30.08),
+# поэтому извлекаем обе функции.
+awk '/^ensure_cron_job\(\) \{/{f=1} /^ensure_cleanup_cron\(\) \{/{f=1} f{print} f && /^\}$/{f=0}' \
     "$INSTALL_SH" > "$WORK/fn.sh"
 [ -s "$WORK/fn.sh" ] || fail "ensure_cleanup_cron() not found in $INSTALL_SH"
 
-# --- подменяем profile_dir на временный + PATH на фейковый hermes -----------
+# --- profiles root → временный (HERMES_PROFILES_ROOT) + fake hermes в PATH -
 mkdir -p "$WORK/profiles/devops/cron"
 make_runner() { # $1 = DRY_RUN (true/false)
     cat > "$WORK/run.sh" <<RUN
@@ -47,7 +49,7 @@ export WORK="$WORK"
 DRY_RUN=$1
 REPO_DIR="/home/builder/hermes-share/rob_box_project"
 PATH="$WORK:\$PATH"
-sed -i 's#profile_dir="/home/builder/.hermes/profiles/devops"#profile_dir="$WORK/profiles/devops"#' "$WORK/fn.sh"
+export HERMES_PROFILES_ROOT="$WORK/profiles"
 . "$WORK/fn.sh"
 ensure_cleanup_cron
 RUN

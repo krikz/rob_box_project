@@ -1,0 +1,4 @@
+# HailoRT python wheel (hailort-4.24.0-cp310-cp310-linux_aarch64.whl) —
+# артефакт Hailo Developer Zone (аккаунт), НЕ коммитим в git.
+# Кладётся workflow'ом в build-context из /opt/rob_box/vendor/ на build-машине.
+*.whl

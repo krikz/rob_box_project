@@ -1,3 +1,7 @@
+# .claude/skills/ — локальные junction/symlink на .agents/skills/ (Windows/Linux),
+# в git не коммитим: единственный SOT скиллов — .agents/skills/.
+.claude/skills/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -21,8 +25,13 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Якорь `/` обязателен: без него `lib/` матчит ЛЮБОЙ каталог с таким именем
+# на любой глубине. Из-за этого scripts/agent_flow/tests/lib/ был невидим для
+# git, и lib_eval_func.sh (без которого test_gh_label_filter_fallback.sh падал
+# первой строкой) не попадал в коммиты — тест не отработал ни разу. Здесь
+# имелись в виду python-артефакты сборки в корне репозитория.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -92,11 +101,23 @@ docs/guides/BUILD_MACHINE_ACCESS.md
 Thumbs.db
 
 .worktrees/
+.claude/worktrees/
 docker/vision/config/voice_assistant/event_mode.yaml
 .colcon-bench/
 
 # e2e live test artefacts (regenerated each run)
 tests/e2e/_artifacts/
 
+# ADR-0076 §2.2: side-channel эмпирического сбора STT-семплов «ТАРС»
+# с шлема (issue #2158, follow-up #2135). Файл data/stt_tars_samples.jsonl
+# пишется, когда ``ROBBOX_STT_COLLECT=1``, и НЕ должен случайно утечь
+# в коммит. Сборщик ``core/tars_sample_logger.py`` сам делает mkdir
+# data/ при необходимости.
+/data/
+
 # frontend
 node_modules/
+# Vite root cache — artefact of `npx vite` when invoked from a directory
+# without local vite/node_modules (e.g. wrong cwd in PowerShell). Normal
+# vite cache for webxr_client is in src/rob_box_quest/webxr_client/.gitignore.
+/.vite/

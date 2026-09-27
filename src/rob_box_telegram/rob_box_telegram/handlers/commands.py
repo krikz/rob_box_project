@@ -8,11 +8,12 @@ After Phase 6 v2 / W7 this module is a *thin transport*:
   here because they are direct ROS callbacks — no LLM, no tool bridge.
 * Status / navigation / volume / music / mapping handlers used to call the
   ToolProvider through ``_invoke_tool``. They now forward the command
-  intent to ``/voice/stt/result`` so the unified DialogCore/harness
+  intent to ``/voice/stt/result`` so the unified AgentCore/harness
   pipeline (``dialogue_node``) can decide what to do with it.
 
 All handlers receive ``context.bot_data["node"]`` — our TelegramNode
-instance which exposes ROS 2 publishers and the camera cache.
+instance which exposes ROS 2 publishers and on-demand camera frames
+(``fetch_camera_frame``).
 """
 
 import io
@@ -25,9 +26,27 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
+from ..face_card import (
+    build_face_collage,
+    find_summary,
+    format_face_summary,
+    format_faces_table,
+    load_detail,
+    list_people,
+)
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
+from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
+
+
+#: Filesystem location of the live face store inside the telegram-bot
+#: container. Same host directory (``./data/faces`` under
+#: ``docker/vision/``) is bind-mounted read-only into both
+#: ``vision-face`` (writer, :no-ro) and ``telegram-bot`` (reader,
+#: :ro) — see ``docker/vision/docker-compose.yaml``. Issue #3025 +
+#: ADR-0123 §4: the bot must never write here.
+FACE_STORE_MOUNT = "/data/faces"
 
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
@@ -72,8 +91,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     else:
         await update.message.reply_text(
-            f"👋 Привет! Ваш chat ID: `{chat_id}`\n\n"
-            "Отправьте этот ID администратору для получения доступа.",
+            f"👋 Привет! Ваш chat ID: `{chat_id}`\n\n" "Отправьте этот ID администратору для получения доступа.",
             parse_mode="Markdown",
         )
 
@@ -102,7 +120,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/photo\\_map — 2D карта помещения (RTAB-Map)\n\n"
         "*Голос:*\n"
         "/say <текст> — произнести текст\n"
-        "/playvoice — режим: следующее голосовое проиграть\n\n"
+        "/playvoice — режим: следующее голосовое проиграть\n"
+        "/radio on|off|status — рация (голос → динамик робота)\n\n"
         "*Навигация:*\n"
         "/goto <вейпоинт> — ехать к точке\n"
         "/waypoints — список вейпоинтов\n"
@@ -111,7 +130,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Управление:*\n"
         "/control — пульт движения\n"
         "/menu — быстрое меню\n"
-        "/volume <0-100> — громкость\n\n"
+        "/volume <0-100> — громкость\n"
+        "/avatar — состояние аватара, кто за рулём/голосом, кнопки floor\n\n"
         "*Эффекты:*\n"
         "/animation <имя> — LED анимация\n"
         "/sound <имя> — звуковой эффект\n\n"
@@ -125,9 +145,99 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Система:*\n"
         "/status — статус робота\n"
         "/clear — очистить историю чата\n"
-        "/myid — показать chat ID\n",
+        "/myid — показать chat ID\n\n"
+        "*Лица (issue #3025):*\n"
+        "/faces — список всех лиц в лицевой базе\n"
+        "/face <id|имя> — карточка лица (сводка + коллаж)\n",
         parse_mode="Markdown",
     )
+
+
+# ─── /avatar ──────────────────────────────────────────────────────────────
+
+
+@authorized
+async def avatar_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /avatar — карточка состояния аватара.
+
+    AV-24 (issue #1916): оператор в Telegram хочет видеть, кто сейчас рулит
+    (Quest-оператор в очках или сам Telegram), как долго держится floor, и
+    почему получает отказ на команду движения/TTS. Эта команда показывает
+    inline-карточку с состоянием и кнопками floor. Дальнейшие обновления
+    карточки приходят через ``AvatarCardStore.on_state_update`` — listener
+    подписан на ``/avatar/state`` (один на процесс, не на каждый ``/avatar``).
+    """
+    from ..avatar_card import (
+        AvatarCardStore,
+        build_floor_keyboard,
+        format_avatar_card,
+    )
+
+    node = _node(context)
+    chat_id = update.effective_chat.id
+
+    # AV-24: ленивая инициализация store + единый state-listener. Каждый
+    # вызов /avatar НЕ создаёт новый listener — иначе через 100 нажатий
+    # в чате жили бы 100 callback'ов на каждый state-update (это и есть
+    # «утячка listener'ов» из acceptance criteria).
+    bot_data = context.application.bot_data if hasattr(context, "application") else context.bot_data
+    store: AvatarCardStore = bot_data.setdefault(
+        "avatar_card_store",
+        AvatarCardStore(),
+    )
+
+    # Первый store в процессе → подписываемся на /avatar/state один раз.
+    if not bot_data.get("avatar_state_listener_installed"):
+        _install_state_listener(node, store, bot_data)
+
+    state = node.supervisor.state
+    text = format_avatar_card(state, now_s=store.now(), last_seen_s=store.now())
+    keyboard_rows = build_floor_keyboard(
+        state.teleop_floor,
+        state.voice_floor,
+        client_id=node.supervisor.client_id,
+    )["rows"]
+    reply_markup = _build_inline_markup(keyboard_rows)
+
+    sent = await update.message.reply_text(text, reply_markup=reply_markup)
+    store.register(chat_id, sent.message_id, text, state)
+
+
+def _install_state_listener(node, store: "AvatarCardStore", bot_data: dict) -> None:
+    """Подписаться на ``/avatar/state`` (один раз на процесс).
+
+    Listener живёт в ``bot_data["avatar_state_listener_unsubscribe"]`` —
+    handler'ы могут его дёрнуть (например, при shutdown). Listener-функция
+    **сама** не делает Telegram-вызовов: она делегирует это
+    ``AvatarCardDispatcher`` (см. ``avatar_card_dispatcher.py``), который
+    вызывается из ROS-потока через ``call_soon_threadsafe``.
+
+    AV-24 / ADR-0028 §4.4: ``supervisor.subscribe_state`` уже имеет
+    механизм отписки — используем его, а не пишем свой.
+    """
+    from .avatar_card_dispatcher import make_dispatcher
+
+    loop = bot_data.get("telegram_loop")
+    dispatcher = make_dispatcher(loop=loop, store=store, bot_data=bot_data)
+    unsubscribe = node.supervisor.subscribe_state(dispatcher)
+    bot_data["avatar_state_listener_unsubscribe"] = unsubscribe
+    bot_data["avatar_state_listener_installed"] = True
+    bot_data["avatar_state_dispatcher"] = dispatcher
+
+
+def _build_inline_markup(rows: list) -> "InlineKeyboardMarkup":
+    """Собрать ``InlineKeyboardMarkup`` из словарного описания.
+
+    ``rows`` — список списков ``{"text": "...", "callback_data": "..."}``.
+    Тестируем без ``python-telegram-bot`` (словарный формат), а в handler'е
+    разворачиваем в настоящую разметку.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    markup_rows = []
+    for row in rows:
+        markup_rows.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]) for btn in row])
+    return InlineKeyboardMarkup(markup_rows)
 
 
 # ─── /menu ───────────────────────────────────────────────────────────────
@@ -148,7 +258,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     node = _node(context)
     topic = node.camera_topic
 
-    jpeg_data = node.camera_cache.get(topic)
+    jpeg_data = await node.fetch_camera_frame(topic)
     if jpeg_data is None:
         age = node.camera_cache.get_age(topic)
         if age is not None:
@@ -169,7 +279,7 @@ async def photo_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     node = _node(context)
     topic = node.camera_up_topic
 
-    jpeg_data = node.camera_cache.get(topic)
+    jpeg_data = await node.fetch_camera_frame(topic)
     if jpeg_data is None:
         await update.message.reply_text("⚠️ Нет кадров с потолочной камеры.")
         return
@@ -232,9 +342,9 @@ def _occupancy_grid_to_png(grid) -> bytes:
     w = grid.info.width
     data = np.array(grid.data, dtype=np.int8).reshape(h, w)
 
-    rgb = np.full((h, w, 3), 128, dtype=np.uint8)   # unknown = gray
-    rgb[data == 0] = [235, 235, 235]                 # free = light
-    rgb[data == 100] = [20, 20, 20]                  # occupied = dark
+    rgb = np.full((h, w, 3), 128, dtype=np.uint8)  # unknown = gray
+    rgb[data == 0] = [235, 235, 235]  # free = light
+    rgb[data == 100] = [20, 20, 20]  # occupied = dark
     # Partial occupancy gradient
     mask = (data > 0) & (data < 100)
     if mask.any():
@@ -267,7 +377,7 @@ async def photo_depth_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     node = _node(context)
     topic = node.camera_depth_topic
 
-    raw = node.camera_cache.get(topic)
+    raw = await node.fetch_camera_frame(topic)
     if raw is None:
         age = node.camera_cache.get_age(topic)
         if age is not None:
@@ -298,9 +408,7 @@ async def photo_map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     node = _node(context)
     grid = getattr(node, "latest_map_grid", None)
     if grid is None:
-        await update.message.reply_text(
-            "⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту."
-        )
+        await update.message.reply_text("⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту.")
         return
 
     try:
@@ -343,8 +451,7 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not result.granted:
         held = result.held_by or "другим оператором"
         await update.message.reply_text(
-            f"🚫 Голос удерживает {held}. "
-            "Дождитесь окончания текущего ответа или используйте текст."
+            f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа или используйте текст."
         )
         return
     await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
@@ -355,7 +462,20 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @authorized
 async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /playvoice — next voice message will be transcribed and spoken by the robot."""
+    """Handle /playvoice — robot speaks the transcribed text of the NEXT voice.
+
+    AV-23 / ADR-0021: это **отдельный** режим от ``/radio``. Разница:
+
+    * ``/playvoice`` (one-shot, 1 сообщение) — STT → текст → TTS (робот
+      произносит РАСПОЗНАННЫЙ текст голосом TTS). Используется, чтобы
+      дать роботу голосовое сообщение «без клавиатуры».
+    * ``/radio on|off`` (per-chat, sticky) — голос оператора БЕЗ обработки
+      идёт в динамик робота как рация (см. ``docs/plans/2026-08-27-
+      quest-voice-passthrough-design.md`` §1.1, режим «рация»).
+
+    Плодить второй механизм для одной задачи запрещено (ADR-0021),
+    но это РАЗНЫЕ задачи: playvoice = STT→TTS echo, radio = raw passthrough.
+    """
     # Issue #1195 — echo path: remember the chat so the played voice
     # text is echoed into the right chat.
     node = _node(context)
@@ -363,8 +483,52 @@ async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["playvoice_mode"] = True
     await update.message.reply_text(
         "🎤 Режим озвучки активирован.\n"
-        "Отправьте голосовое сообщение — робот произнесёт его текст.",
+        "Отправьте голосовое сообщение — робот произнесёт его текст.\n\n"
+        "Если хотите, чтобы голос шёл в динамик как рация — "
+        "используйте /radio on.",
     )
+
+
+# ─── /radio ──────────────────────────────────────────────────────────────
+
+
+@authorized
+async def radio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/radio on|off|status`` — per-chat режим рации (AV-23).
+
+    Семантика:
+      * default — ``off`` (как до фичи, никаких побочных эффектов).
+      * ``on``  — следующие голосовые из этого чата идут прямо в
+        ``/avatar/voice_in`` (рация), STT НЕ запускается.
+      * ``off`` — вернуться к STT-режиму.
+      * ``status`` — текущее состояние.
+    """
+    user_data = context.user_data or {}
+    if context.user_data is None:
+        # python-telegram-bot хранит per-chat state в Context.user_data,
+        # но в новой версии (21.x) он может быть None до первого
+        # обращения. Нам mutate-нужно, поэтому прокинем dict через
+        # ``__setattr__`` (Context — не обычный dataclass).
+        try:
+            context.user_data = user_data
+        except AttributeError:
+            pass
+    arg = context.args[0].lower() if context.args else "status"
+    if arg == "on":
+        set_radio_mode(user_data, True)
+        await update.message.reply_text(
+            "📻 Рация включена.\n"
+            "Голосовые сообщения будут звучать в динамике робота "
+            "(как рация). Для возврата — /radio off."
+        )
+    elif arg == "off":
+        set_radio_mode(user_data, False)
+        await update.message.reply_text("📴 Рация выключена. Голосовые снова идут через STT.")
+    elif arg == "status":
+        on = get_radio_mode(user_data)
+        await update.message.reply_text("📻 Рация: " + ("включена ✅" if on else "выключена ❌"))
+    else:
+        await update.message.reply_text("Использование: /radio on | off | status")
 
 
 # ─── Tool-bridged commands (W7: forward intents to /voice/stt/result) ──
@@ -596,7 +760,7 @@ async def stopmusic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /clear — clear LLM chat history.
 
-    After W7 the chat history lives in the dialogue pipeline (DialogCore),
+    After W7 the chat history lives in the dialogue pipeline (AgentCore),
     not in the Telegram node. Forward the intent as plain text so the
     dialogue manager can drop the session.
     """
@@ -605,3 +769,152 @@ async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # (command intents must not be dropped by the wake-word gate).
     _forward(node, "/clear", chat_id=update.effective_chat.id)
     await update.message.reply_text("🧹 Запрос на очистку истории отправлен.")
+
+
+# ─── AV-22 (Issue #1914) — /cmd и /operator ──────────────────────────────
+
+
+@authorized
+async def cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/cmd <text>`` — операторская команда для супервизор-агента.
+
+    ВСЕГДА идёт в ``/avatar/command`` (worker-brief §3.3, ADR-0027 §3.4 +
+    ADR-0028), независимо от того, включён ли в чате «режим оператора»
+    (``/operator on|off``). Это явная команда — пользователь сознательно
+    нажал ``/cmd``, как нажимают ``/cmd`` в CLI.
+    """
+    node = _node(context)
+    chat_id = update.effective_chat.id
+    # PTB ``CommandHandler`` срезает ``/cmd`` и кладёт остаток в
+    # ``context.args`` (как у /say, /goto, /volume и др. — см. этот же
+    # файл). ``update.message.text`` содержит ПОЛНЫЙ текст ``/cmd ...``
+    # — для команды он бесполезен. Если шлют ``/cmd@botname <text>`` —
+    # ``@botname`` уже отрезан PTB (он не попадает в args).
+    text = " ".join(context.args).strip() if context.args else ""
+    if not text:
+        await update.message.reply_text(
+            "ℹ️ Использование: `/cmd <текст команды для агента>`",
+            parse_mode="Markdown",
+        )
+        return
+    request_id = node.publish_avatar_command(text=text, chat_id=chat_id)
+    if request_id is None:
+        await update.message.reply_text(
+            "⚠️ Не удалось отправить команду: пустой текст после ``/cmd``."
+        )
+        return
+    await update.message.reply_text(
+        f"🎮 Команда отправлена агенту.\n"
+        f"`request_id`: `{request_id}`\n"
+        f"Ждите ответа в этом чате.",
+        parse_mode="Markdown",
+    )
+
+
+@authorized
+async def operator_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/operator on|off`` — per-chat переключатель «режима оператора».
+
+    * ``on`` — каждый СВОБОДНЫЙ текст (без команды) в этом чате идёт
+      прямиком в ``/avatar/command`` (а не в личность через ``forward_to_stt``).
+      Это «консоль оператора», когда оператор знает, что бот сейчас —
+      его инструмент.
+    * ``off`` (default) — стандартное поведение: свободный текст идёт в
+      личность (как было до AV-22).
+
+    Состояние per-chat: хранится в ``context.user_data["operator_mode"]``
+    (PTB user_data изолирован по user_id). При перезапуске бота —
+    сбрасывается в ``off``.
+    """
+    chat_id = update.effective_chat.id
+    raw = (update.message.text or "").strip()
+    # ``/operator on`` / ``/operator off``
+    parts = raw.split(maxsplit=1)
+    arg = parts[1].lower() if len(parts) > 1 else ""
+
+    if arg not in ("on", "off", "вкл", "выкл"):
+        await update.message.reply_text(
+            "ℹ️ Использование: `/operator on` или `/operator off`",
+            parse_mode="Markdown",
+        )
+        return
+
+    on = arg in ("on", "вкл")
+    context.user_data["operator_mode"] = on
+    label = "✅ Режим оператора **включён** — свободный текст идёт в агента." \
+        if on else \
+        "🟢 Режим оператора **выключен** — свободный текст идёт в личность (как раньше)."
+    await update.message.reply_text(label, parse_mode="Markdown")
+    logger.info("AV-22 /operator %s chat_id=%s", arg, chat_id)
+
+
+# ─── /faces и /face (Issue #3025) — read-only просмотр лицевой базы ───────
+
+
+@authorized
+async def faces_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/faces`` — таблица всех записей в ``/data/faces``.
+
+    Issue #3025 + ADR-0123 §4: бот читает диск напрямую через
+    :mod:`rob_box_telegram.face_card` (read-only volume). Никакой
+    FaceStore / ROS API не задействован — бот и vision-face живут в
+    разных контейнерах и не разделяют состояние.
+    """
+    summaries = list_people(FACE_STORE_MOUNT)
+    text = format_faces_table(summaries)
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+@authorized
+async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/face <id|имя>`` — карточка лица: сводка + коллаж снимков.
+
+    Принимает либо короткий ``person_id`` (8 символов, как оператор
+    копирует из ``/faces``), либо полный id, либо точное имя (без
+    учёта регистра). Если ничего не передано — показывает справку.
+
+    Коллаж строится локально через PIL (4×3 сетка, эталон Шифу).
+    Если ни reference, ни encounters не нашлись — отправляем только
+    сводку, без ``reply_photo``, и не падаем с исключением.
+    """
+    raw = " ".join(context.args).strip() if context.args else ""
+    if not raw:
+        await update.message.reply_text(
+            "ℹ️ Использование: `/face <person_id | имя>`\n"
+            "Примеры:\n"
+            "  `/face 4ff0ddc5`\n"
+            "  `/face Дэнчик`",
+            parse_mode="Markdown",
+        )
+        return
+
+    summary = find_summary(FACE_STORE_MOUNT, raw)
+    if summary is None:
+        await update.message.reply_text(
+            f"⚠️ Не нашёл запись «{raw}». Список — `/faces`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    detail = load_detail(FACE_STORE_MOUNT, summary.person_id)
+    if detail is None:
+        await update.message.reply_text(
+            f"⚠️ Запись `{summary.person_id_short}` повреждена "
+            "(нет meta.json). Проверьте диск.",
+            parse_mode="Markdown",
+        )
+        return
+
+    text = format_face_summary(detail)
+    collage = build_face_collage(detail)
+    if collage is None:
+        # Нет ни reference, ни encounters — это легальный кейс
+        # (лицо только что создано без эмбеддингов). Шлём только сводку.
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+
+    await update.message.reply_photo(
+        photo=io.BytesIO(collage),
+        caption=text,
+        parse_mode="Markdown",
+    )

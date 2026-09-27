@@ -1,19 +1,24 @@
 """
-test_system_prompt_tools_check.py — Issue #1409 / ARCH-review #1405
+test_system_prompt_tools_check.py — Issue #1409 / ARCH-review #1405,
+обобщено change'ом skill-scoped-dialogue-context (фаза 4, задача 4.1).
 
-SSoT tools-vs-prompt validation in ``DialogueNode._load_system_prompt``.
+Рантайм-страховка «инструменты против текста», которая раньше называлась
+``DialogueNode._validate_tools_in_prompt`` и смотрела ТОЛЬКО
+``music_skill_prompt.txt``. Класс расхождения общий, а не музыкальный:
+#1403 — ``generate_music`` был зарегистрирован, но в тексте не упомянут,
+и LLM уверенно отвечала «нет такой функции», уходя на другой путь.
 
-The music skill prompt is a static contract the LLM reads verbatim at
-startup. If an MCP tool gets registered but never mentioned in the
-prompt, the LLM silently degrades to «нет такой функции» fallback
-(see issue #1403). This test suite locks down the runtime guard that
-warns about the drift.
+Теперь проверка зовётся ``_validate_skill_fragments`` и проходит по ВСЕМ
+загруженным доменным фрагментам. Блокером стал отдельный тест
+(``test_skill_prompt_contract.py``) — здесь остаётся именно рантайм-
+предупреждение: контейнер с рассинхронизированным промптом обязан
+подняться и заговорить, а не упасть, но оператор должен увидеть в логе,
+какой скилл разъехался.
 
 Не требует ROS2 — rclpy замокан в conftest.py.
 """
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,225 +37,88 @@ def node():
     logger = MagicMock()
     n._logger = logger
     n.get_logger = lambda: logger
-
-    # SSoT set (заполняется в __init__ из ToolRegistry().list_tools())
-    n._mcp_tool_names = set()
-
-    # Параметры (get_parameter stub)
-    n._declared_params = {"system_prompt_file": "music_skill_prompt.txt"}
-
-    def _get_parameter(name):
-        return type("P", (), {"value": n._declared_params.get(name)})()
-
-    n.get_parameter = _get_parameter
-
     return n
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  _collect_mcp_tool_names — SSoT source
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestCollectMcpToolNames:
-    """``_collect_mcp_tool_names`` returns the canonical tool set."""
-
-    def test_returns_names_from_tool_registry(self, node):
-        # Stub ToolRegistry().list_tools() to return two specs.
-        fake_spec_a = MagicMock(name="ToolSpecA")
-        fake_spec_a.name = "generate_music"
-        fake_spec_b = MagicMock(name="ToolSpecB")
-        fake_spec_b.name = "search_library"
-        with patch(
-            "rob_box_voice.dialogue_node.ToolRegistry"
-        ) as fake_registry:
-            fake_registry.return_value.list_tools.return_value = (
-                fake_spec_a,
-                fake_spec_b,
-            )
-            names = node._collect_mcp_tool_names()
-        assert names == {"generate_music", "search_library"}
-
-    def test_returns_empty_set_on_registry_failure(self, node):
-        """If ToolRegistry() raises, return an empty set (don't crash)."""
-        with patch(
-            "rob_box_voice.dialogue_node.ToolRegistry",
-            side_effect=RuntimeError("registry not importable"),
-        ):
-            names = node._collect_mcp_tool_names()
-        assert names == set()
-        # Operator sees a warning explaining the skip.
-        node.get_logger().warning.assert_called()
-
-    def test_returns_empty_set_when_registry_empty(self, node):
-        """An empty registry (e.g. fake deployment) yields an empty set."""
-        with patch(
-            "rob_box_voice.dialogue_node.ToolRegistry"
-        ) as fake_registry:
-            fake_registry.return_value.list_tools.return_value = ()
-            names = node._collect_mcp_tool_names()
-        assert names == set()
+def _warnings(node) -> list[str]:
+    return [str(call.args[0]) for call in node.get_logger().warning.call_args_list]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  _validate_tools_in_prompt — guard logic
+#  Расхождение «инструмент есть — в тексте не назван»
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestValidateToolsInPrompt:
-    """The validation only fires for music-domain prompts (ARCH #1405/B)."""
+class TestValidateSkillFragments:
+    def test_missing_tool_is_reported_with_skill_and_name(self, node):
+        """Главный сценарий: инструмент скилла не описан во фрагменте.
 
-    PROMPT_FULL = (
-        "You are the РОББОКС music module.\n"
-        "STEP 1. execute_music_code() to play.\n"
-        "STEP 2. set_dj_mode(enabled=True).\n"
-        "Optional: generate_music(prompt=...) to compose songs.\n"
-        "Search: search_library(query=...) returns matching tracks.\n"
-    )
-    PROMPT_MISSING_MUSIC_TOOLS = (
-        "You are the РОББОКС music module.\n"
-        "STEP 1. execute_music_code() to play.\n"
-        # NO generate_music, NO search_library, NO list_library
-    )
-
-    def test_music_prompt_missing_tools_logs_warning(self, node):
-        """AC.A — registry has [generate_music, search_library], prompt
-        mentions neither → warning."""
-        node._mcp_tool_names = {"generate_music", "search_library"}
-        node._validate_tools_in_prompt(
-            "music_skill_prompt.txt", self.PROMPT_MISSING_MUSIC_TOOLS
-        )
-        node.get_logger().warning.assert_called()
-        msg = node.get_logger().warning.call_args[0][0]
-        assert "[issue 1409]" in msg
-        assert "generate_music" in msg
-        assert "search_library" in msg
-
-    def test_music_prompt_partial_coverage_lists_only_missing(self, node):
-        """AC.C-2 — prompt mentions generate_music but NOT search_library
-        → warning only for search_library."""
-        node._mcp_tool_names = {"generate_music", "search_library"}
-        prompt = (
-            "You are the РОББОКС music module.\n"
-            "Use generate_music(prompt=...) to compose songs.\n"
-            # NO search_library
-        )
-        node._validate_tools_in_prompt("music_skill_prompt.txt", prompt)
-        node.get_logger().warning.assert_called()
-        msg = node.get_logger().warning.call_args[0][0]
-        assert "search_library" in msg
-        # generate_music IS mentioned — should NOT appear in the warning
-        # alongside search_library (sorted list of missing).
-        assert "generate_music" not in msg.split("not described")[1]
-
-    def test_music_prompt_full_coverage_no_warning(self, node):
-        """AC.C-3 — all tools mentioned → no warning, debug log only."""
-        node._mcp_tool_names = {"generate_music", "search_library"}
-        node._validate_tools_in_prompt(
-            "music_skill_prompt.txt", self.PROMPT_FULL
-        )
-        node.get_logger().warning.assert_not_called()
-        # Debug log confirms the check ran.
-        node.get_logger().debug.assert_called()
-        msg = node.get_logger().debug.call_args[0][0]
-        assert "[issue 1409]" in msg
-        assert "2 MCP tools" in msg
-
-    def test_empty_tool_set_skips_silently(self, node):
-        """AC.C-3 — registry empty → no warning (don't spam the log)."""
-        node._mcp_tool_names = set()
-        node._validate_tools_in_prompt(
-            "music_skill_prompt.txt", self.PROMPT_MISSING_MUSIC_TOOLS
-        )
-        node.get_logger().warning.assert_not_called()
-
-    def test_non_music_prompt_skipped(self, node):
-        """AC.B — only music_skill_prompt.txt triggers the check.
-
-        Other domain prompts (FAQ, navigation, web_search) stay
-        unchecked for now — that's a future-cycle TODO.
+        Регрессия класса #1403 — предупреждение обязано назвать И скилл,
+        И конкретный инструмент, иначе по логу непонятно, что чинить.
         """
-        node._mcp_tool_names = {"generate_music"}
-        node._validate_tools_in_prompt(
-            "master_prompt_compact.txt",
-            "Ты ROBBOX — умный робот-ассистент. Без упоминаний tools.",
+        node._validate_skill_fragments(
+            {"scheduler": "Скилл планировщика без единого имени инструмента."}
         )
-        node.get_logger().warning.assert_not_called()
-        node.get_logger().debug.assert_not_called()
+
+        warnings = _warnings(node)
+        assert warnings, "расхождение не было залогировано"
+        assert any("scheduler" in w and "task_delta" in w for w in warnings)
+
+    def test_full_coverage_produces_no_warning(self, node):
+        """Все инструменты названы → тихо."""
+        node._validate_skill_fragments(
+            {"scheduler": "Используй `task_delta` чтобы поправить задачу."}
+        )
+
+        assert not _warnings(node)
 
     def test_case_insensitive_match(self, node):
-        """The check is case-insensitive (AC.A says case-insensitive)."""
-        node._mcp_tool_names = {"generate_music", "set_dj_mode"}
-        prompt = (
-            "Use Generate_Music() or SET_DJ_MODE() to control playback."
+        """Имя в другом регистре считается упомянутым."""
+        node._validate_skill_fragments({"scheduler": "Зови TASK_DELTA."})
+
+        assert not _warnings(node)
+
+    def test_every_skill_is_checked_not_just_music(self, node):
+        """Ради чего задача 4.1: проверка больше не музыко-специфична."""
+        node._validate_skill_fragments(
+            {
+                "scheduler": "пусто",
+                "knowledge": "пусто",
+            }
         )
-        node._validate_tools_in_prompt("music_skill_prompt.txt", prompt)
-        node.get_logger().warning.assert_not_called()
 
-    def test_missing_attribute_skips_silently(self, node):
-        """If ``_mcp_tool_names`` is missing (e.g. early init failure),
-        the guard must not crash."""
-        if hasattr(node, "_mcp_tool_names"):
-            del node._mcp_tool_names
-        # Should NOT raise — getattr with default handles it.
-        node._validate_tools_in_prompt(
-            "music_skill_prompt.txt", self.PROMPT_MISSING_MUSIC_TOOLS
+        warnings = _warnings(node)
+        assert any("scheduler" in w for w in warnings)
+        assert any("knowledge" in w for w in warnings)
+
+    def test_unknown_skill_name_is_reported_not_crashed(self, node):
+        """Фрагмент, не соответствующий ни одному скиллу каталога.
+
+        Такое приезжает, когда на робот попал промпт из другой сборки.
+        Нода обязана подняться и предупредить, а не упасть.
+        """
+        node._validate_skill_fragments({"нет-такого-скилла": "текст"})
+
+        warnings = _warnings(node)
+        assert any("нет-такого-скилла" in w for w in warnings)
+
+    def test_empty_mapping_skips_silently(self, node):
+        """``skills_enabled=false`` → проверять нечего, лог чистый."""
+        node._validate_skill_fragments({})
+
+        assert not _warnings(node)
+
+    def test_core_skill_checks_its_own_tools(self, node):
+        """core описывает свои инструменты сам — он единственный такой."""
+        node._validate_skill_fragments({"core": "Только про speak_text."})
+
+        warnings = _warnings(node)
+        assert any("core" in w and "get_battery_level" in w for w in warnings)
+
+    def test_non_core_skill_is_not_required_to_describe_core_tools(self, node):
+        """Иначе каждый фрагмент дублировал бы speak_text и статусные тулы."""
+        node._validate_skill_fragments(
+            {"scheduler": "Зови `task_delta`, и ничего больше."}
         )
-        node.get_logger().warning.assert_not_called()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _on_mcp_tools_update — keeps _mcp_tool_names in sync
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestOnMcpToolsUpdateSyncsMcpToolNames:
-    """Issue #1409 — /mcp/tools refresh updates ``_mcp_tool_names`` too."""
-
-    def _make_msg(self, data: str):
-        msg = MagicMock()
-        msg.data = data
-        return msg
-
-    def test_valid_payload_populates_mcp_tool_names(self, node):
-        tools = [
-            {"function": {"name": "generate_music"}, "type": "function"},
-            {"function": {"name": "search_library"}, "type": "function"},
-            {"function": {"name": "list_library"}, "type": "function"},
-        ]
-        node._on_mcp_tools_update(self._make_msg(json.dumps(tools)))
-        assert node.mcp_tools_available is True
-        assert node._mcp_tool_names == {
-            "generate_music",
-            "search_library",
-            "list_library",
-        }
-
-    def test_empty_list_clears_mcp_tool_names(self, node):
-        """An empty refresh → ``_mcp_tool_names`` becomes empty too
-        (mirror of ``available_tools`` behaviour)."""
-        node._mcp_tool_names = {"stale_tool"}
-        node._on_mcp_tools_update(self._make_msg("[]"))
-        assert node._mcp_tool_names == set()
-        assert node.available_tools == []
-
-    def test_invalid_json_does_not_clobber_existing_names(self, node):
-        """If /mcp/tools sends garbage, we don't lose the SSoT set — the
-        operator should fix the bridge, not have the LLM lose tools."""
-        node._mcp_tool_names = {"generate_music"}
-        node._on_mcp_tools_update(self._make_msg("{invalid json"))
-        # _mcp_tool_names untouched (no overwrite with garbage).
-        assert node._mcp_tool_names == {"generate_music"}
-        assert node.mcp_tools_available is False
-
-    def test_skips_entries_without_function_name(self, node):
-        """Malformed tool dicts (no ``function.name``) are filtered out
-        rather than polluting the set with empty strings."""
-        tools = [
-            {"function": {"name": "generate_music"}, "type": "function"},
-            {"function": {}, "type": "function"},  # no name
-            {"type": "function"},  # no function block
-            "not a dict",  # not a dict
-        ]
-        node._on_mcp_tools_update(self._make_msg(json.dumps(tools)))
-        assert node._mcp_tool_names == {"generate_music"}
+        assert not _warnings(node)

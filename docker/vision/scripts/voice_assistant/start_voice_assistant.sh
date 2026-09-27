@@ -23,15 +23,17 @@ fi
 echo "Проверка аудио устройств..."
 arecord -l | grep -i "respeaker" || echo "⚠ ReSpeaker audio не найден"
 
-# Проверка shared volume renardo семплов.
-# Инициализация теперь выполняется отдельным one-shot контейнером voice-resources-init.
-SAMPLES_VOLUME=/root/.config/renardo/samples
-if [ -f "${SAMPLES_VOLUME}/.initialized" ]; then
-    echo "✓ Renardo samples volume initialized ($(find "${SAMPLES_VOLUME}" -name '*.wav' | wc -l) WAV files)"
-elif [ -d "${SAMPLES_VOLUME}" ] && [ -n "$(find "${SAMPLES_VOLUME}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    echo "✓ Renardo samples volume present without marker ($(find "${SAMPLES_VOLUME}" -name '*.wav' | wc -l) WAV files)"
+# Проверка renardo-сэмплов. Раньше это был named-volume, который заливал
+# one-shot контейнер voice-resources-init (маркер .initialized); теперь это
+# bind-mount хостового /opt/rob_box/samples, который наполняет Ресурсный пак
+# на деплое, а маркером служит downloaded_at.txt самого фетчера.
+SAMPLES_DIR=/root/.config/renardo/samples
+if [ -f "${SAMPLES_DIR}/0_foxdot_default/downloaded_at.txt" ]; then
+    echo "✓ Renardo samples ready ($(find "${SAMPLES_DIR}" -name '*.wav' | wc -l) WAV files)"
+elif [ -d "${SAMPLES_DIR}" ] && [ -n "$(find "${SAMPLES_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "✓ Renardo samples present without marker ($(find "${SAMPLES_DIR}" -name '*.wav' | wc -l) WAV files)"
 else
-    echo "⚠ Renardo samples volume is empty — synth-only mode"
+    echo "⚠ Renardo samples missing (/opt/rob_box/samples на хосте пуст) — synth-only mode"
 fi
 
 # Создать директорию для ТТС кэша
@@ -97,24 +99,31 @@ if command -v sclang > /dev/null 2>&1; then
     # напечатать даже "sclang started") → load_sclang_health рапортует
     # "Log file not found" и ВСЕ критичные SynthDefs как missing,
     # хотя через несколько секунд sclang доходит до конца прелоада
-    # и music stack становится healthy. Цикл ниже ждёт появления
-    # маркера "FoxDot OSCdef registered" (значит SystemClock.sched
-    # отработал и пошла загрузка SynthDef'ов) или таймаут 30с, что
-    # покрывает даже самые медленные cold-start self-hosted runner'ы.
-    SCLANG_BOOT_TIMEOUT=30
+    # и music stack становится healthy.
+    #
+    # 🔴 FIX (живой инцидент 21.09.2026): первая версия этого цикла ждала
+    # только "FoxDot OSCdef registered" + фиксированные 3с — но прелоад
+    # (63 синта: 53 renardo + 10 custom, ~0.3-0.8с КАЖДЫЙ с Server.sync
+    # после каждого, см. foxdot_init.sc) СТАРТУЕТ сразу после этого
+    # маркера и может занимать до ~50с. 3с хватало не всегда: на роботе
+    # /tmp/sclang.log существовал (подтверждено ls -la), но валидатор
+    # ловил его ДО того, как прелоад дописал строки про конкретные синты
+    # — "Missing critical SynthDefs" на все 11 критичных при живых 63
+    # defs в scsynth. Ждём явный маркер конца прелоада
+    # ("SynthDef preload finished:", foxdot_init.sc:189) вместо слепой
+    # паузы — таймаут поднят до 60с, чтобы покрыть медленный cold-start
+    # self-hosted runner + весь прелоад с запасом.
+    SCLANG_BOOT_TIMEOUT=60
     SCLANG_BOOT_ELAPSED=0
     while [ "${SCLANG_BOOT_ELAPSED}" -lt "${SCLANG_BOOT_TIMEOUT}" ]; do
-        if [ -f /tmp/sclang.log ] && grep -q "FoxDot OSCdef registered" /tmp/sclang.log; then
-            # Даём ещё 3с чтобы sclang дофлашил последние "SynthDef preload
-            # ok: <name>" строки в лог перед тем, как validate их прочитает.
-            sleep 3
+        if [ -f /tmp/sclang.log ] && grep -q "SynthDef preload finished:" /tmp/sclang.log; then
             break
         fi
         sleep 1
         SCLANG_BOOT_ELAPSED=$((SCLANG_BOOT_ELAPSED + 1))
     done
     if [ "${SCLANG_BOOT_ELAPSED}" -ge "${SCLANG_BOOT_TIMEOUT}" ]; then
-        echo "⚠ sclang не зарегистрировал OSCdef за ${SCLANG_BOOT_TIMEOUT}с — продолжаем с тем, что есть"
+        echo "⚠ sclang не завершил прелоад SynthDef'ов за ${SCLANG_BOOT_TIMEOUT}с — продолжаем с тем, что есть"
     fi
     if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
         echo "Проверка music stack readiness..."
@@ -135,8 +144,13 @@ if command -v sclang > /dev/null 2>&1; then
         if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
             echo "✓ Music stack validation passed"
         else
-            echo "⚠ Music stack validation found non-critical errors (degraded but usable)"
+            # Issue #2716: раньше здесь был текст, называвший это "usable
+            # degradation" — но тембр, не подтвердившийся в scsynth, играет
+            # ТИШИНОЙ (ReplaceOut на несуществующий synth), а не музыкой
+            # чуть похуже. Честный статус — FAILED, с прямым путём к причине.
+            echo "✗ Music stack validation FAILED (music tools will produce silent notes)"
             echo "  └─ Подробности: /tmp/sclang.log"
+            echo "  └─ Диагностика: grep -E 'ERROR|SynthDef in scsynth|SynthDef preload finished' /tmp/sclang.log"
         fi
     fi
     echo "sclang готов"

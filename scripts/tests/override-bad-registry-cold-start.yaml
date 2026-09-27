@@ -1,0 +1,51 @@
+# Cold-start override for issue #2610 regression test.
+#
+# Подменяет ВСЕ in-house образы (krikz/rob_box) на TEST-NET-1
+# (192.0.2.0/24, RFC 5737) — гарантированно не маршрутизируемый
+# диапазон. Используется для интеграционного теста
+# tests/vision/cold_start/test_docker_compose_bad_registry.py,
+# чтобы убедиться:
+#
+#   1. docker compose config с этим override проходит без ошибок
+#      (override-механика работает, SERVICE_IMAGE_PREFIX подменяется).
+#   2. cold-start сценарий НЕ падает на стадии config, даже когда
+#      registry гарантированно недоступен (это и есть суть issue #2610).
+#
+# ⚠️ Это НЕ тест pull-failure (это e2e на реальном железе, в работе
+# e2e-process). Здесь мы только проверяем, что compose-конфиг
+# синтаксически валиден и override-механика PR #2634 жива.
+#
+# Также используется в .github/workflows/vision-cold-start-test.yml
+# как часть cold-start-test job — там он применяется с `docker compose
+# up -d --pull never` чтобы воспроизвести сценарий "registry offline,
+# локальный кэш должен работать".
+
+services:
+  # Zenoh уже подменён в override-bad-registry.yaml (PR #2634 acceptance).
+  # Дублируем здесь, чтобы override был самодостаточным.
+  zenoh-router:
+    image: 192.0.2.1:9999/missing/eclipse-zenoh:1.6.2
+
+  # Подменяем SERVICE_IMAGE_PREFIX для всех остальных образов.
+  # На практике это делается через environment, но compose не позволяет
+  # override-ить env из .env через -f override; вместо этого подменяем
+  # image напрямую для критичных собственных образов.
+  #
+  # Если этот override перестал парситься — фикс уже сломал
+  # override-механику, и cold-start тест в CI упадёт на стадии config.
+
+  # voice-assistant и supercollider используют ${SERVICE_IMAGE_PREFIX} —
+  # их достаточно подменить через переменную окружения в CI workflow
+  # (SERVICE_IMAGE_PREFIX=192.0.2.1:9999/missing). Здесь оставляем
+  # override компактным для теста парсинга.
+
+  cadvisor:
+    # upstream-образ, но для теста добавим override чтобы убедиться,
+    # что наш compose вообще принимает override на любой сервис
+    image: 192.0.2.1:9999/missing/cadvisor:v0.52.1
+
+# Подмена SERVICE_IMAGE_PREFIX через переменную окружения делается в
+# самом workflow (env: SERVICE_IMAGE_PREFIX=192.0.2.1:9999/missing).
+# Compose не позволяет override-ить переменные из .env через -f
+# override-файл (только через environment в сервисах), но env из
+# shell передаётся напрямую — это и используется в CI workflow.

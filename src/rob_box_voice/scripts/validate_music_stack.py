@@ -59,6 +59,7 @@ def main() -> int:
         classify_sclang_log,
         format_music_stack_report,
         load_sclang_health,
+        missing_log_hint,
     )
 
     args = _build_parser().parse_args()
@@ -82,11 +83,14 @@ def main() -> int:
         ))
     else:
         print(format_music_stack_report(status))
-        if not status.is_healthy and not status.fatal_errors:
-            # Missing-log case isn't shown by format_music_stack_report
-            # (fatal_errors is empty when the file is absent). Surface it
-            # so the operator notices instead of a silent degraded mode.
-            print(f"Log file not found: {log_path}")
+        # Issue #2716: this used to fire whenever the stack was unhealthy
+        # for ANY reason with no fatal sclang errors — including the common
+        # case where the log file existed and was read fine, but some
+        # critical SynthDef simply wasn't confirmed yet. missing_log_hint
+        # only returns non-None when the file is genuinely absent from disk.
+        hint = missing_log_hint(status, log_path)
+        if hint:
+            print(hint)
 
     return 0 if status.is_healthy else 1
 

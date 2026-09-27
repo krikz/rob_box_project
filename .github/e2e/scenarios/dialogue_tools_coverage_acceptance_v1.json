@@ -1,0 +1,47 @@
+{
+  "name": "dialogue_tools_coverage_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 acceptance для dialogue_tools_coverage_v1.json.",
+    "AND-семантика: каждый перечисленный тул должен встретиться хотя бы раз за прогон.",
+    "В список вынесены ТОЛЬКО те тулы, вызов которых однозначно следует из формулировки",
+    "запроса пользователя. Намеренно НЕ включены:",
+    "  faq_search            — зависит от загруженного FAQ-профиля (faq_mode_enabled)",
+    "  estimate_tts_duration — служебный, его зовёт планировщик, а не LLM по своей воле",
+    "  get_perception_context — зависит от живой камеры на стенде",
+    "Их отсутствие в логе — это результат прогона (тул недостижим/мёртв), а не провал",
+    "сценария. Смотреть глазами в raw-логе, см. docs/e2e/dialogue-coverage-map-2026-08-29.md.",
+    "must_not_call здесь — подстраховка по безопасности: ни один шаг этой сьюты не должен",
+    "приводить к движению робота (move_direction / navigate_to_*) и к вычистке базы точек",
+    "(clear_waypoints). Движение проверяется отдельной сьютой dialogue_motion_coverage_v1."
+  ],
+  "expected_tool_calls": [
+    "memory_save",
+    "memory_search",
+    "get_sound_info",
+    "get_music_state",
+    "search_samples",
+    "save_track",
+    "list_tracks",
+    "load_track",
+    "stop_music",
+    "delete_track",
+    "list_waypoints",
+    "save_waypoint",
+    "delete_waypoint"
+  ],
+  "must_not_call": [
+    "move_direction",
+    "navigate_to_coordinates",
+    "navigate_to_waypoint",
+    "clear_waypoints",
+    "start_mapping",
+    "finish_mapping"
+  ],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m2"
+  }
+}

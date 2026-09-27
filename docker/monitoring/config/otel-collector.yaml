@@ -31,6 +31,14 @@ exporters:
       insecure: true
 
 service:
+  # Self-telemetry (Prometheus /metrics). Дефолт otelcol v0.105 — :8888,
+  # но на Katana этот порт занят build-deepseek-proxy (LiteLLM metrics,
+  # network_mode: host). Переносим на 8889 — см. issue #1730.
+  # Prometheus scrape-target должен соответствовать (docker/monitoring/config/prometheus.yml).
+  telemetry:
+    metrics:
+      level: basic
+      address: 0.0.0.0:8889
   pipelines:
     traces:
       receivers: [otlp]

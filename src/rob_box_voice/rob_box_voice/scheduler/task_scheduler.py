@@ -1,23 +1,29 @@
-"""task_scheduler.py — Phase 1 MVP TaskScheduler (issue #968 §11.1).
+"""task_scheduler.py — TaskScheduler with cancel-preempt.
 
-Minimal viable scheduler that
+Lifecycle:
 
-1. accepts :class:`SchedulerTask` submissions,
-2. routes each task to the right FIFO channel
-   (voice / music / anim — see :class:`ChannelKind`),
-3. runs the tasks on each channel **strictly sequentially** via an
-   ``asyncio.Lock`` so two TTS requests never collide on the audio
-   device and ``stop_music`` cannot outrun the TTS chunk that the
-   scheduler just queued,
-4. exposes a small ``wait_all`` / ``cancel`` / ``channel_status``
-   surface for the LLM loop and integration tests.
+1. Construct on the asyncio loop that will own the channels
+   (the bus needs a running loop for its async publish).
+2. Call :meth:`start` once (idempotent) to spawn the channel
+   pumps.
+3. :meth:`submit` tasks; await :meth:`wait_all` if you need to
+   synchronise on completion (tests, end-of-dialogue cleanup).
+4. :meth:`shutdown` to drain pumps and close the bus.
 
-The MVP deliberately keeps the executor interface trivial: callers
-pass a :class:`TaskExecutor` — a coroutine that performs the actual
-side-effect (publish on ``/voice/tts/control``, etc.) and returns a
-:class:`TaskResult`. The MVP does NOT route through the
-:class:`~rob_box_harness.core.acceptance.AcceptanceGate`; that is
-Phase 1.5 (acceptance tool-calling, §11.2).
+Cancellation (C2, #1995):
+
+* QUEUED tasks are removed from the channel queue
+  (:meth:`_Channel.remove`).
+* RUNNING tasks are preempted by cancelling the executor's
+  :class:`asyncio.Task` handle. ``CancelledError`` propagates
+  through ``_pump``'s existing handler and the task transitions
+  to CANCELLED.
+* ADR-0086 (2026-09-09): cancel-preemption no longer publishes a
+  ``scheduler.cancel`` observability envelope — the pub/sub
+  ``EventBus`` it used to fan out on had zero subscribers once
+  the reflex bridge (its only one) was removed. ``cancel()``
+  still preempts the RUNNING executor's ``asyncio.Task`` exactly
+  as before; only the dead observability side-channel is gone.
 
 Threading / concurrency
 -----------------------
@@ -30,14 +36,10 @@ execution lock is an ``asyncio.Lock``; it MUST be awaited on the
 loop that owns the scheduler (callers that need to drive it from a
 worker thread should use ``asyncio.run_coroutine_threadsafe``).
 
-Out of scope (Phase 1.5+)
--------------------------
+Out of scope
+------------
 
-* ``SchedulerEventBus`` (Phase 2)
-* Reflex / priority queue (Phase 1.5+)
-* Two-tier quick-decide (Phase 2)
-* ``SegmentEstimator`` / speculative pre-gen (Phase 3)
-* Persistent timers / timeouts (Phase 1.5)
+* Speculative pre-generation (Phase 3, #968 §11.4).
 """
 
 from __future__ import annotations
@@ -49,10 +51,17 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
+from .delta import DeltaOp, DeltaOpKind, TaskDelta
+from .event_bus import EventEnvelope
 
 _LOG = logging.getLogger(__name__)
+
+#: S10 (scheduler-segments-merge, issue #968, §4.5) — events at this
+#: priority never satisfy the auto-trigger's "unapplied event" condition
+#: (anti-pattern: "При ``priority=low`` events (IGNORE / шум)").
+_LOW_PRIORITY = "low"
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +174,13 @@ class SchedulerTask:
             ``None`` until then.
         error: Exception text captured on :attr:`TaskStatus.FAILED`,
             or ``None`` until then.
+        group_id: S2 (scheduler-segments-merge, issue #968) —
+            identifies the multi-segment task this task belongs to
+            (e.g. all ``speak_text`` calls of one song). ``None``
+            means an ungrouped, standalone task — the default, so
+            existing callers are unaffected.
+        seg_idx: Position within :attr:`group_id`, 0-based. ``None``
+            when :attr:`group_id` is ``None``.
     """
 
     task_id: str
@@ -178,6 +194,8 @@ class SchedulerTask:
     finished_at: Optional[float] = None
     result: Optional[TaskResult] = None
     error: Optional[str] = None
+    group_id: Optional[str] = None
+    seg_idx: Optional[int] = None
 
     def snapshot(self) -> Dict[str, Any]:
         """Return a frozen, log-friendly view of the task.
@@ -196,6 +214,8 @@ class SchedulerTask:
             "finished_at": self.finished_at,
             "args_keys": sorted(self.args.keys()),
             "error": self.error,
+            "group_id": self.group_id,
+            "seg_idx": self.seg_idx,
         }
 
 
@@ -261,6 +281,13 @@ class _Channel:
         self._current_task_id: Optional[str] = None
         self._current_tool: Optional[str] = None
         self._pump_task: Optional[asyncio.Task[None]] = None
+        # C2 (#1995, operator-agent 07) — handle to the currently
+        # RUNNING executor's asyncio.Task, used by
+        # ``TaskScheduler.cancel`` to preempt a task that already
+        # holds the channel lock. ``None`` whenever the channel is
+        # idle. Cleared in ``_pump``'s ``finally`` so the reference
+        # cannot outlive the executor it points at.
+        self._current_executor_task: Optional[asyncio.Task[TaskResult]] = None
         # W7c observer — forwarded from :class:`TaskScheduler`.
         self._on_event = on_event
         # Loop is bound so the lock/queue are constructed on the
@@ -333,7 +360,21 @@ class _Channel:
                     task.started_at = time.monotonic()
                     self._emit("task.started", task)
                     try:
-                        task.result = await task.executor(task)
+                        # C2 (#1995) — schedule the executor on the
+                        # running loop and keep its asyncio.Task handle
+                        # so a cancel() call can preempt a RUNNING task
+                        # by raising ``asyncio.CancelledError`` inside
+                        # the executor. ``_current_executor_task`` is
+                        # cleared in the ``finally`` below regardless
+                        # of how the executor ends.
+                        executor_coro = task.executor(task)
+                        self._current_executor_task = asyncio.ensure_future(
+                            executor_coro
+                        )
+                        try:
+                            task.result = await self._current_executor_task
+                        finally:
+                            self._current_executor_task = None
                         task.status = TaskStatus.COMPLETED
                         self._emit("task.completed", task)
                     except asyncio.CancelledError:
@@ -385,7 +426,48 @@ class _Channel:
             kept.append(t)
         for t in kept:
             self._queue.put_nowait(t)
+            # 🔴 FIX (S3.2, scheduler-segments-merge) — put_nowait() here
+            # is a *re*-queue of an item whose original put() already
+            # counted toward asyncio.Queue's unfinished-task total.
+            # Without this compensating task_done(), every kept item
+            # permanently inflates that counter by one and wait_all()
+            # (Queue.join()) never returns once a snapshot rebuild has
+            # touched a queue with 2+ items. _pump's own task_done() at
+            # completion still fires later and brings the count back to
+            # zero — this just cancels the redundant +1 from our re-put.
+            self._queue.task_done()
         return removed
+
+    def replace_args(self, task_id: str, args: Dict[str, Any]) -> Optional[SchedulerTask]:
+        """Rewrite the ``args`` of *task_id* while it is still queued.
+
+        S3.2 (scheduler-segments-merge, §2.3 invariant / R2) — same
+        rebuild-from-snapshot technique as :meth:`remove`, which is
+        what makes it race-safe: ``get_nowait``/``put_nowait`` run with
+        no ``await`` in between, so nothing can interleave mid-rebuild.
+        If ``_pump`` already dequeued *task_id* (about to go RUNNING or
+        already terminal), it simply will not be found in this
+        snapshot — returns ``None`` rather than mutating a task that is
+        no longer safely ours to touch.
+        """
+        kept: list[SchedulerTask] = []
+        found: Optional[SchedulerTask] = None
+        while True:
+            try:
+                t = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if t.task_id == task_id and found is None:
+                t.args = dict(args)
+                found = t
+            kept.append(t)
+        for t in kept:
+            self._queue.put_nowait(t)
+            # Same Queue.join() accounting fix as remove() above.
+            self._queue.task_done()
+        if found is not None:
+            self._emit("task.updated", found)
+        return found
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +485,74 @@ class TaskNotFoundError(KeyError):
 
 class ChannelBusyError(RuntimeError):
     """Raised when a single-task channel already has a current task."""
+
+
+# ---------------------------------------------------------------------------
+# S3.1/S3.2 — MERGE delta application result (scheduler-segments-merge)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UpdateOpOutcome:
+    """What happened to one :class:`~rob_box_voice.scheduler.delta.DeltaOp`.
+
+    ``applied=False`` is the normal, expected outcome for an op that
+    targets a RUNNING or already-terminal segment — the §2.3 invariant
+    means "ignored", not "error". ``reason`` explains why for logging.
+
+    ``frozen`` (S9.1, §6.5): ``True`` when the op *was* applied but the
+    target segment was PENDING_FROZEN (past the group's pre-gen
+    boundary) at the time — the op still succeeded (FROZEN, unlike
+    RUNNING, is not a hard block), but the caller should treat this as
+    a signal to cancel/regenerate that segment's speculative pre-gen.
+    Always ``False`` for ``applied=False`` outcomes and for ``append``.
+    """
+
+    op: DeltaOp
+    applied: bool
+    task_id: Optional[str] = None
+    reason: str = ""
+    frozen: bool = False
+
+
+@dataclass(frozen=True)
+class UpdateReport:
+    """Result of :meth:`TaskScheduler.update` — one outcome per op, in order."""
+
+    group_id: str
+    outcomes: tuple[UpdateOpOutcome, ...]
+
+
+# ---------------------------------------------------------------------------
+# S10 — llm_continue_hook (scheduler-segments-merge, issue #968, §4.5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LlmContinueContext:
+    """Snapshot handed to the §4.5 ``llm_continue_hook`` when it fires.
+
+    Built by :meth:`TaskScheduler._maybe_trigger_continue` once all
+    three §4.5 conditions hold. Carries exactly what the hook needs to
+    build a ``[SEGMENT PLAN]``/``[PENDING EVENTS]``-style prompt and,
+    eventually, call :meth:`TaskScheduler.update` with the resulting
+    ``task_delta`` — the scheduler itself never builds that prompt or
+    calls an LLM; that is the hook's job (see :class:`LlmContinueHook`).
+    """
+
+    group_id: str
+    channel: ChannelKind
+    pending_segments: tuple[SchedulerTask, ...]
+    events: tuple[EventEnvelope, ...]
+
+
+#: §4.5 extension point. The scheduler calls ``hook(context)`` as a
+#: fire-and-forget task on its own loop when the auto-trigger fires; it
+#: does **not** know or care what the hook does with it (per revision
+#: v5 / §4.7, the intended implementation calls the MAIN LLM — never a
+#: second/light model — but that decision lives entirely on the caller
+#: side, e.g. ``dialogue_node.py``, not here).
+LlmContinueHook = Callable[[LlmContinueContext], Awaitable[None]]
 
 
 # ---------------------------------------------------------------------------
@@ -477,14 +627,39 @@ class TaskScheduler:
             )
         self._lock = threading.Lock()
         self._tasks: Dict[str, SchedulerTask] = {}
+        # S2.2 (scheduler-segments-merge) — group_id → ordered task_ids.
+        # Populated in submit(); cleared lazily in segments() once every
+        # segment of the group has reached a terminal status (§2.2).
+        self._groups: Dict[str, list[str]] = {}
+        # S9.1 (scheduler-segments-merge, §6.5) — group_id → boundary_idx,
+        # mirroring the latest PreGenPlan.boundary_idx the caller computed
+        # for that group. See set_group_boundary()/is_frozen().
+        self._boundaries: Dict[str, int] = {}
+        # S9.1 — optional callback fired from update() when a FROZEN
+        # segment is edited (see set_frozen_touch_hook()).
+        self._on_frozen_touch: Optional[Callable[[SchedulerTask], None]] = None
         # W7c (issue #968): optional lifecycle callback — receives
         # ``(event, payload)`` for task.created / task.started /
         # task.completed / task.failed / task.cancelled. The dialogue
         # node uses it to publish on /harness/task_events and to feed
         # the [ACTIVE TASKS] LLM-context block.
         self._on_event = on_event
+        # S10 (scheduler-segments-merge, issue #968, §4.5) — auto-trigger
+        # state. ``_pending_events`` holds unapplied EventEnvelopes per
+        # group_id (condition 2); ``_channel_running`` is a tri-state
+        # per channel: ``None`` = never started a task yet, ``True`` =
+        # currently RUNNING, ``False`` = previously RUNNING and now
+        # idle. The tri-state (not a plain bool) is what keeps the
+        # trigger from firing on a channel that simply hasn't started
+        # anything yet — only a real ACTIVE→idle transition counts as
+        # "voice: speaking → silence после ACTIVE".
+        self._pending_events: Dict[str, list[EventEnvelope]] = {}
+        self._channel_running: Dict[ChannelKind, Optional[bool]] = {
+            kind: None for kind in channels
+        }
+        self._llm_continue_hook: Optional[LlmContinueHook] = None
         self._channels: Dict[ChannelKind, _Channel] = {
-            kind: _Channel(kind, loop=self._loop, on_event=on_event)
+            kind: _Channel(kind, loop=self._loop, on_event=self._dispatch_channel_event)
             for kind in channels
         }
         self._started: bool = False
@@ -501,6 +676,154 @@ class TaskScheduler:
             self._on_event(event, payload)
         except Exception:  # noqa: BLE001 — observer must not break the scheduler
             _LOG.exception("scheduler: on_event(%s) callback failed", event)
+
+    # ----- S10: llm_continue_hook auto-trigger (§4.5) --------------------
+
+    _CHANNEL_LIFECYCLE_EVENTS = frozenset(
+        {"task.started", "task.completed", "task.failed", "task.cancelled"}
+    )
+
+    def _dispatch_channel_event(self, event: str, payload: Dict[str, Any]) -> None:
+        """``_Channel``'s ``on_event`` — updates §4.5 state, then forwards.
+
+        Runs synchronously, in-line with ``_Channel._pump``'s own
+        processing of the just-finished/just-started task, which is
+        exactly what makes the auto-trigger race-free: by the time this
+        function returns, nothing else on this event loop has had a
+        chance to dequeue the *next* segment out from under
+        :meth:`segments`'s snapshot (single-threaded asyncio — no
+        ``await`` happens in this call chain).
+        """
+        if event in self._CHANNEL_LIFECYCLE_EVENTS:
+            channel_value = payload.get("channel")
+            try:
+                kind = ChannelKind(channel_value)
+            except ValueError:
+                kind = None
+            if kind is not None:
+                self._channel_running[kind] = event == "task.started"
+                task_id = payload.get("task_id")
+                task = self.get_task(task_id) if task_id else None
+                if task is not None and task.group_id is not None:
+                    self._maybe_trigger_continue(task.group_id)
+        if self._on_event is not None:
+            try:
+                self._on_event(event, payload)
+            except Exception:  # noqa: BLE001 — observer must not break the pump
+                _LOG.exception("scheduler: on_event(%s) callback failed", event)
+
+    def _channel_needs_continuation(self, kind: ChannelKind) -> bool:
+        """§4.5 condition (3) — "канал выглядит требующим продолжения".
+
+        * ``VOICE`` — the ACTIVE segment just ended (state flipped
+          ``True`` → ``False``). ``None`` (nothing has run yet on this
+          channel) deliberately does NOT count — otherwise a MERGE
+          event registered before the group's first segment even
+          starts would fire immediately, which is not what §4.5 means
+          by "speaking → silence после ACTIVE".
+        * ``MUSIC``/``ANIM`` — §4.5's music branch fires WHILE the
+          segment is still playing (see the "комар+енот" §4.6
+          sequence: MERGE lands mid-verse-1). The full elapsed/eta
+          refinement ("_last_segment_user_initiated=false AND
+          elapsed > 0.5×eta") needs a per-task "user initiated" flag
+          and the Phase-3 :class:`SegmentEstimator` wired through
+          :meth:`set_eta_provider` — neither exists on
+          :class:`SchedulerTask` yet, so S10 deliberately ships the
+          simpler "channel is currently RUNNING" heuristic and leaves
+          the eta-ratio refinement as a follow-up (see final report).
+        """
+        state = self._channel_running.get(kind)
+        if kind is ChannelKind.VOICE:
+            return state is False
+        return state is True
+
+    def _maybe_trigger_continue(self, group_id: str) -> None:
+        """Re-evaluate the §4.5 three-condition auto-trigger for *group_id*.
+
+        Called after every VOICE/MUSIC/ANIM lifecycle transition and
+        every :meth:`notify_event` call. Cheap no-op when the hook is
+        not installed or any condition is unmet — see
+        :meth:`_channel_needs_continuation` for condition (3) and the
+        module docstring / §4.5 for the full three-condition contract.
+        """
+        hook = self._llm_continue_hook
+        if hook is None:
+            return
+        events = self._pending_events.get(group_id) or []
+        unapplied = tuple(e for e in events if e.priority != _LOW_PRIORITY)
+        if not unapplied:
+            return  # condition (2) unmet
+        pending_segments = tuple(
+            s for s in self.segments(group_id)
+            if s.status in (TaskStatus.QUEUED, TaskStatus.SCHEDULED)
+        )
+        if not pending_segments:
+            return  # condition (1) unmet
+        channel_kind = pending_segments[0].channel
+        if not self._channel_needs_continuation(channel_kind):
+            return  # condition (3) unmet
+        # All three hold — consume the events now so a second lifecycle
+        # transition (e.g. the next segment's task.started, fired right
+        # after this call returns) cannot fan the same events out twice.
+        self._pending_events.pop(group_id, None)
+        context = LlmContinueContext(
+            group_id=group_id,
+            channel=channel_kind,
+            pending_segments=pending_segments,
+            events=unapplied,
+        )
+        self._fire_llm_continue_hook(hook, context)
+
+    def _fire_llm_continue_hook(self, hook: LlmContinueHook, context: LlmContinueContext) -> None:
+        """Schedule *hook* as a fire-and-forget task on the scheduler's loop.
+
+        The scheduler never awaits the hook itself — §4.5 is explicit
+        that the scheduler "self-drives" this turn without blocking its
+        own channels on the LLM round-trip. A failing hook is logged,
+        not raised, matching every other observer boundary in this
+        module (:meth:`_emit`, ``_Channel._emit``).
+        """
+
+        async def _run() -> None:
+            try:
+                await hook(context)
+            except Exception:  # noqa: BLE001 — hook boundary must not break the scheduler
+                _LOG.exception(
+                    "scheduler: llm_continue_hook failed for group %s", context.group_id
+                )
+
+        self._loop.create_task(_run(), name=f"scheduler-llm-continue-{context.group_id}")
+
+    def notify_event(self, group_id: str, event: EventEnvelope) -> None:
+        """Register *event* as an unapplied §4.5 continuation signal.
+
+        Called by a future quick_decide integration layer (outside
+        this module, not yet wired — issue #968 §4.5) whenever a
+        decision lands that could need a
+        follow-up ``task_delta`` — MERGE, ``battery_critical``, etc. —
+        but no fresh user turn is going to carry it. Immediately
+        re-evaluates the auto-trigger for *group_id*; if the other two
+        §4.5 conditions already hold, this call is what fires the
+        installed :meth:`set_llm_continue_hook` hook. A *group_id* the
+        scheduler has never seen (or has already fully drained) is a
+        harmless no-op — :meth:`segments` returns ``[]`` for it, so
+        condition (1) simply stays unmet.
+        """
+        self._pending_events.setdefault(group_id, []).append(event)
+        self._maybe_trigger_continue(group_id)
+
+    def set_llm_continue_hook(self, hook: Optional[LlmContinueHook]) -> None:
+        """Install (or clear, with ``None``) the §4.5 auto-trigger hook.
+
+        Mirrors :meth:`set_eta_provider`'s "Phase 3 hook" shape — the
+        scheduler exposes a plain extension point and stays ignorant of
+        what the hook does. Per revision v5 (§4.7, "Одна LLM, без
+        уровня 2"), the intended production hook calls the MAIN LLM
+        turn, not a second/light model; that decision is entirely the
+        caller's (``dialogue_node.py``/MCP integration), not enforced
+        here.
+        """
+        self._llm_continue_hook = hook
 
     # ----- lifecycle -----------------------------------------------------
 
@@ -559,6 +882,8 @@ class TaskScheduler:
             task.task_id = uuid.uuid4().hex
         with self._lock:
             self._tasks[task.task_id] = task
+            if task.group_id is not None:
+                self._groups.setdefault(task.group_id, []).append(task.task_id)
         channel = self._channels[task.channel]
         # ``submit`` runs on the loop that owns the channel's
         # queue; it is a sync helper (``put_nowait``).
@@ -571,6 +896,17 @@ class TaskScheduler:
                 "channel": task.channel.value,
                 "status": task.status.value,
                 "args_keys": sorted(task.args.keys()),
+                # Сегментные координаты задачи. Без них по
+                # ``/harness/task_events`` нельзя посчитать, приезжает
+                # выступление одним батчем или по куску за итерацию
+                # тул-цикла: ``agent_core`` зовёт ``begin_group()`` на
+                # КАЖДЫЙ батч, поэтому число разных ``group_id`` за тёрн
+                # равно числу итераций, а ``seg_idx`` внутри группы —
+                # размеру батча. Оба поля у задачи были всегда, в
+                # событие не попадали. ``None`` — задача вне группы
+                # (bypass-тул или submit без ``begin_group``).
+                "group_id": task.group_id,
+                "seg_idx": task.seg_idx,
             },
         )
         _LOG.debug(
@@ -583,10 +919,26 @@ class TaskScheduler:
         """Cancel *task_id*.
 
         Returns ``True`` if the task was found and either
-        cancelled before start or marked for cancellation after
-        start. The MVP does not interrupt a running executor
-        coroutine mid-flight — that lands in Phase 2 with
-        :class:`SchedulerEventBus`.
+        cancelled before start or interrupted mid-execution. The
+        MVP could not preempt a RUNNING executor; that limitation
+        was removed in C2 (#1995, operator-agent 07):
+
+        1. If the task is QUEUED, :meth:`_Channel.remove` pulls
+           it from the queue and flips status to CANCELLED.
+        2. If the task is RUNNING, we call ``.cancel()`` on the
+           executor's :class:`asyncio.Task` (kept by ``_pump``
+           in ``self._current_executor_task``); ``CancelledError``
+           propagates through ``_pump``'s existing handler and
+           flips status to CANCELLED. The executor coroutine is
+           expected to honour cancellation — TTS executors
+           already do via their internal ``await``s.
+
+        ADR-0086 (2026-09-09): both paths used to also publish a
+        ``scheduler.cancel`` observability envelope on a pub/sub
+        ``EventBus``; that bus is removed (its only subscriber,
+        the reflex bridge, was removed the same day) — preemption
+        itself is unchanged, only the dead observability
+        side-channel is gone.
 
         Tasks already in :attr:`TaskStatus.COMPLETED` /
         :attr:`TaskStatus.FAILED` are reported as not found
@@ -603,12 +955,24 @@ class TaskScheduler:
         if removed is not None:
             _LOG.info("scheduler: task %s cancelled before start", task_id)
             return True
-        # The task is already past SCHEDULED — we cannot preempt
-        # it in the MVP. Surface a best-effort log line and leave
-        # the executor to finish naturally.
+        # C2 (#1995) — preempt a RUNNING task by cancelling the
+        # executor's asyncio.Task. The Channel tracks the live
+        # handle in ``_current_executor_task`` while the executor
+        # is awaited; if it has already exited (race window after
+        # SCHEDULED → COMPLETED but before _pump's finally), the
+        # task is gone and we fall through to the legacy path.
+        running = channel._current_executor_task
+        if running is not None and not running.done():
+            running.cancel()
+            _LOG.info(
+                "scheduler: task %s cancelled mid-flight (C2 preempt)",
+                task_id,
+            )
+            return True
+        # The task was past SCHEDULED but the executor had already
+        # finished by the time we looked — leave it terminal.
         _LOG.info(
-            "scheduler: task %s already running; "
-            "MVP cannot preempt (Phase 2 will add EventBus cancel)",
+            "scheduler: task %s already terminal; nothing to cancel",
             task_id,
         )
         return False
@@ -617,6 +981,218 @@ class TaskScheduler:
         """Return the live task record for *task_id*, or ``None``."""
         with self._lock:
             return self._tasks.get(task_id)
+
+    _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+
+    def segments(self, group_id: str) -> list[SchedulerTask]:
+        """Return every segment of *group_id*, ordered by :attr:`SchedulerTask.seg_idx`.
+
+        S2.2 (scheduler-segments-merge, issue #968). Unknown or already-
+        cleared groups return ``[]`` — this is a read-only query used by
+        the future ``[SEGMENT PLAN]`` context block (S5), not an error
+        path like :meth:`TaskScheduler.update` (S3).
+
+        Completed/failed/cancelled segments stay in the returned list
+        (so the LLM/log can see "verse 1 already played") until every
+        segment in the group has reached a terminal status — at that
+        point the group is cleared from the registry as a side effect
+        of this call.
+        """
+        with self._lock:
+            task_ids = list(self._groups.get(group_id, ()))
+            tasks = [self._tasks[tid] for tid in task_ids if tid in self._tasks]
+            if tasks and all(t.status in self._TERMINAL_STATUSES for t in tasks):
+                self._groups.pop(group_id, None)
+        tasks.sort(key=lambda t: (t.seg_idx is None, t.seg_idx))
+        return tasks
+
+    def set_group_boundary(self, group_id: str, boundary_idx: Optional[int]) -> None:
+        """S9.1 (§6.5, scheduler-segments-merge) — record the PENDING_FROZEN /
+        PENDING_LIVE split for *group_id*.
+
+        ``boundary_idx`` mirrors :attr:`~.pre_gen.PreGenPlan.boundary_idx` —
+        the caller (whoever owns the ``SpeculativePreGenerator`` /
+        ``SpeculativeStepExecutor`` bridge, §6.5) is expected to call this
+        every time it recomputes ``build_plan`` for the group: when a
+        segment starts, after ``LLMEstimator.record`` recalibrates, and
+        right before :meth:`update`. This module deliberately does not
+        import ``pre_gen``/``speculative_executor`` itself — they already
+        import *this* module, so the dependency only runs one way — it
+        just stores whatever value the caller last computed.
+
+        :meth:`is_frozen` reads the stored boundary fresh on every call;
+        there is no separate cache to go stale, so "recompute at the
+        three triggers" simply means "call this setter again there".
+
+        ``None`` clears the boundary — every PENDING segment of the group
+        is then LIVE (matches pre-S9 behaviour, and a ``PreGenPlan`` with
+        no reachable boundary, e.g. an enormous LLM ETA).
+        """
+        with self._lock:
+            if boundary_idx is None:
+                self._boundaries.pop(group_id, None)
+            else:
+                self._boundaries[group_id] = boundary_idx
+
+    def is_frozen(self, task: SchedulerTask) -> bool:
+        """True when *task* is PENDING_FROZEN (§6.5).
+
+        FROZEN is deliberately **not** a :class:`TaskStatus` value — it
+        is a derived property of a PENDING (``QUEUED``/``SCHEDULED``)
+        segment: still queued, but at or past the pre-gen boundary index
+        recorded via :meth:`set_group_boundary` for its group. RUNNING
+        and terminal segments are never FROZEN — RUNNING is already
+        covered by the harder §2.3 invariant enforced in :meth:`update`.
+        """
+        if task.status not in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
+            return False
+        if task.group_id is None or task.seg_idx is None:
+            return False
+        with self._lock:
+            boundary = self._boundaries.get(task.group_id)
+        if boundary is None:
+            return False
+        return task.seg_idx < boundary
+
+    def _notify_frozen_touch(self, task: SchedulerTask) -> None:
+        """S9.1: fire the optional frozen-touch hook (see
+        :meth:`set_frozen_touch_hook`).
+
+        The hook lets the integration layer cancel that segment's
+        in-flight speculative pre-gen (with
+        ``speculative_executor.CANCEL_REASON_MERGE_TOUCHED_FROZEN``) and
+        let it regenerate — this module only notifies, it does not own
+        the pre-gen cache (§6.5 boundary rule, see
+        ``speculative_executor.py``'s module docstring).
+        """
+        if self._on_frozen_touch is None:
+            return
+        try:
+            self._on_frozen_touch(task)
+        except Exception:  # noqa: BLE001 — a hook bug must not corrupt update()
+            _LOG.exception(
+                "scheduler: on_frozen_touch hook failed for task %s", task.task_id
+            )
+
+    def set_frozen_touch_hook(
+        self, hook: Optional[Callable[[SchedulerTask], None]],
+    ) -> None:
+        """Install the S9.1 callback fired when :meth:`update` edits a
+        FROZEN segment (§6.5). ``None`` (the MVP default) disables it —
+        ``update`` still applies the edit either way; only the
+        notification is skipped.
+        """
+        self._on_frozen_touch = hook
+
+    def update(
+        self,
+        group_id: str,
+        delta: TaskDelta,
+        *,
+        executor_factory: Optional[Callable[[DeltaOp], "TaskExecutor"]] = None,
+    ) -> UpdateReport:
+        """Apply *delta* to *group_id*, honouring the §2.3 ACTIVE invariant.
+
+        S3.2 (scheduler-segments-merge, issue #968) — the whole point of
+        this plan: a RUNNING segment is **never** rewritten or cancelled.
+        ``rewrite``/``replace`` mutate a PENDING (``QUEUED``/``SCHEDULED``)
+        segment's args in place, preserving FIFO order; ``drop`` removes a
+        PENDING segment (reuses :meth:`_Channel.remove`); ``append`` adds
+        a brand new segment to the tail via the normal :meth:`submit`
+        path. An op that targets a RUNNING or already-terminal segment is
+        *ignored*, not an error — see :class:`UpdateOpOutcome`.
+
+        Race safety (R2): the RUNNING/terminal check below is only an
+        optimisation. The actual safety comes from
+        :meth:`_Channel.replace_args` / :meth:`_Channel.remove`, which
+        operate on the live queue snapshot — if ``_pump`` already
+        dequeued the segment (even if ``status`` has not flipped to
+        SCHEDULED yet), they simply will not find it.
+
+        Raises:
+            TaskNotFoundError: *group_id* has no tracked segments (never
+                submitted, or fully cleared by a prior :meth:`segments`
+                call after every segment went terminal).
+            TaskSubmitError: *delta* contains an ``append`` op but no
+                *executor_factory* was given — the scheduler has no way
+                to build the new segment's executor on its own (that
+                requires tool-specific knowledge that lives in
+                :mod:`rob_box_voice.scheduler.tool_executor`, not here).
+        """
+        with self._lock:
+            task_ids = list(self._groups.get(group_id, ()))
+            by_seg_idx: Dict[int, SchedulerTask] = {
+                t.seg_idx: t
+                for t in (self._tasks.get(tid) for tid in task_ids)
+                if t is not None and t.seg_idx is not None
+            }
+            sample_task = next(
+                (self._tasks[tid] for tid in task_ids if tid in self._tasks), None
+            )
+        if sample_task is None:
+            raise TaskNotFoundError(group_id)
+        if delta.group_id != group_id:
+            raise ValueError(
+                f"delta.group_id={delta.group_id!r} does not match group_id={group_id!r}"
+            )
+        if executor_factory is None and any(
+            op.kind is DeltaOpKind.APPEND for op in delta.ops
+        ):
+            raise TaskSubmitError(
+                "delta contains an append op but no executor_factory was given"
+            )
+
+        channel = self._channels[sample_task.channel]
+        outcomes: List[UpdateOpOutcome] = []
+        for op in delta.ops:
+            if op.kind is DeltaOpKind.APPEND:
+                next_idx = (max(by_seg_idx) + 1) if by_seg_idx else 0
+                new_task = SchedulerTask(
+                    task_id="",
+                    tool=sample_task.tool,
+                    channel=sample_task.channel,
+                    executor=executor_factory(op),  # type: ignore[misc]
+                    args=dict(op.args or {}),
+                    group_id=group_id,
+                    seg_idx=next_idx,
+                )
+                self.submit(new_task)
+                by_seg_idx[next_idx] = new_task
+                outcomes.append(UpdateOpOutcome(op=op, applied=True, task_id=new_task.task_id))
+                continue
+
+            target = by_seg_idx.get(op.seg_idx)
+            if target is None:
+                outcomes.append(UpdateOpOutcome(op=op, applied=False, reason="segment not found"))
+                continue
+            if target.status not in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
+                reason = (
+                    "segment RUNNING (invariant)"
+                    if target.status is TaskStatus.RUNNING
+                    else "segment terminal"
+                )
+                outcomes.append(
+                    UpdateOpOutcome(op=op, applied=False, task_id=target.task_id, reason=reason)
+                )
+                continue
+
+            # S9.1 (§6.5): FROZEN is not a hard block like RUNNING — the
+            # edit still goes through — but the caller needs to know so
+            # it can cancel/regenerate that segment's speculative pre-gen.
+            frozen = self.is_frozen(target)
+            if op.kind in (DeltaOpKind.REWRITE, DeltaOpKind.REPLACE):
+                mutated = channel.replace_args(target.task_id, dict(op.args or {}))
+            else:  # DROP
+                mutated = channel.remove(target.task_id)
+            applied = mutated is not None
+            if applied and frozen:
+                self._notify_frozen_touch(target)
+            outcomes.append(UpdateOpOutcome(
+                op=op, applied=applied, task_id=target.task_id,
+                reason="" if applied else "segment started running before update landed",
+                frozen=applied and frozen,
+            ))
+        return UpdateReport(group_id=group_id, outcomes=tuple(outcomes))
 
     def wait(self, task_id: str, *, timeout: Optional[float] = None) -> SchedulerTask:
         """Block until *task_id* reaches a terminal status.

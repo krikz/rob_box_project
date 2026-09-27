@@ -50,7 +50,8 @@ class NodeAvailabilityMonitor:
             '/tts_node',
             '/dialogue_node',
             '/context_aggregator',
-            '/camera',               # OAK-D camera node (oak-d container)
+            # OAK-D camera node (oak-d container, namespace /camera)
+            '/camera/camera',
             '/lslidar_driver_node',  # LS LiDAR driver node (lslidar container)
             # RTAB-Map SLAM node (rtabmap container, namespaced)
             '/rtabmap/rtabmap',

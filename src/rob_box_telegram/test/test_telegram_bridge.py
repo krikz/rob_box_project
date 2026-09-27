@@ -84,6 +84,11 @@ def _install_fake_rclpy() -> None:
 
     class _Durability:
         TRANSIENT_LOCAL = "transient_local"
+        # AV-23 (issue #1915): _VOICE_IN_QOS у рации — volatile, чтобы
+        # sound_node не доигрывал stale-чанки после разрыва. Заглушка
+        # обязана знать оба значения, иначе импорт telegram_node падает
+        # здесь, а не в рации.
+        VOLATILE = "volatile"
 
     class QoSProfile:
         def __init__(self, reliability=None, history=None, depth=10, durability=None):
@@ -144,6 +149,15 @@ def _install_fake_rclpy() -> None:
             sub.callback_group = callback_group
             self._created_subscriptions.append(sub)
             return sub
+
+        def destroy_subscription(self, sub):
+            self._created_subscriptions.remove(sub)
+            return True
+
+        def create_timer(self, period, callback, callback_group=None, **_):
+            timer = MagicMock(name=f"Timer[{period}]")
+            timer.callback = callback
+            return timer
 
         def _record_publish(self, topic):
             calls: list = []
@@ -570,6 +584,9 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         cache = self.node.camera_cache
         self.assertEqual(cache.topics, [])
+        subs = self.node.camera_subscriptions
+        for topic in (self.node.camera_topic, self.node.camera_depth_topic, self.node.camera_up_topic):
+            subs.request(topic, timeout_s=0)
 
         front = self._subscription_for(self.node.camera_topic).callback
         depth = self._subscription_for(self.node.camera_depth_topic).callback
@@ -590,6 +607,24 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cache.get(self.node.camera_topic), b"\xff\xd8front")
         self.assertEqual(cache.get(self.node.camera_depth_topic), b"\xff\xd8depth")
         self.assertEqual(cache.get(self.node.camera_up_topic), b"\xff\xd8up")
+
+    def test_no_camera_subscription_until_photo_requested(self) -> None:
+        """Постоянная подписка держала камеры включёнными (lazy publisher)."""
+        topics = {s.topic for s in self.node._created_subscriptions}
+        for topic in (self.node.camera_topic, self.node.camera_depth_topic, self.node.camera_up_topic):
+            self.assertNotIn(topic, topics)
+
+    async def test_fetch_camera_frame_subscribes_and_waits(self) -> None:
+        topic = self.node.camera_topic
+
+        async def _publish_later():
+            await asyncio.sleep(0.1)
+            self._subscription_for(topic).callback(_compressed_image(b"\xff\xd8late"))
+
+        publisher = asyncio.create_task(_publish_later())
+        frame = await self.node.fetch_camera_frame(topic)
+        await publisher
+        self.assertEqual(frame, b"\xff\xd8late")
 
     def test_map_grid_subscription_records_payload(self) -> None:
         """Map subscription stores the latest OccupancyGrid on the node."""
@@ -755,6 +790,117 @@ class TestVPNConnectivity(unittest.TestCase):
     )
     def test_vpn_endpoint_reachable(self) -> None:
         pass
+
+
+class TestAvatarCommandResult(unittest.IsolatedAsyncioTestCase):
+    """issue #1988 (шаг 4а) — Telegram как consumer /avatar/command_result.
+
+    Ответ ТАРС (summary) уходит оператору в исходный чат тем же echo-путём,
+    что диалоговые ответы: ``_on_avatar_command_result`` → _response_queue →
+    _chat_echo_worker. Роут по ``request_id='telegram:<chat_id>:<ts_ms>'``.
+    """
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        os.environ["TELEGRAM_BOT_TOKEN"] = "test-token-123456"
+        self._start_patch = patch.object(
+            self._node_mod.TelegramNode,
+            "_start_telegram_bot",
+            lambda self, token: None,
+        )
+        self._start_patch.start()
+        self.node = self._node_mod.TelegramNode()
+
+    def tearDown(self) -> None:
+        self._start_patch.stop()
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+    def _subscription_for(self, topic: str):
+        for sub in self.node._created_subscriptions:
+            if sub.topic == topic:
+                return sub
+        raise AssertionError(f"No subscription registered for {topic}")
+
+    def test_node_subscribes_to_avatar_command_result(self) -> None:
+        """Telegram слушает /avatar/command_result (DoD #1988)."""
+        sub = self._subscription_for("/avatar/command_result")
+        self.assertIsNotNone(sub.callback)
+
+    def test_resolve_result_chat_parses_telegram_prefix(self) -> None:
+        """'telegram:<chat_id>:<ts>' → chat_id; uuid/quest/битый → None."""
+        node = self.node
+        self.assertEqual(
+            node._resolve_avatar_result_chat("telegram:12345:999"), 12345
+        )
+        self.assertIsNone(node._resolve_avatar_result_chat("aabbccdd"))
+        self.assertIsNone(node._resolve_avatar_result_chat("quest:sid:1"))
+        self.assertIsNone(node._resolve_avatar_result_chat("telegram:abc:1"))
+        self.assertIsNone(node._resolve_avatar_result_chat(""))
+
+    async def test_result_relays_to_originating_chat(self) -> None:
+        """ok-результат → summary уходит в чат из request_id."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {
+                    "request_id": "telegram:777:11",
+                    "ok": True,
+                    "summary": "Выполнено",
+                },
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "Выполнено"))
+
+    async def test_error_result_prefixed(self) -> None:
+        """fail-результат → summary с префиксом ⚠️."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {
+                    "request_id": "telegram:777:12",
+                    "ok": False,
+                    "summary": "agent_unavailable",
+                }
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "⚠️ agent_unavailable"))
+
+    async def test_unroutable_falls_back_to_active_chat(self) -> None:
+        """uuid4-request_id (malformed) → fallback на active-чат."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 42
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"request_id": "aabbccdd", "ok": True, "summary": "ok"}
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (42, "ok"))
+
+    async def test_empty_summary_dropped(self) -> None:
+        """Пустой summary не уходит в чат."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"request_id": "telegram:1:1", "ok": True, "summary": "   "}
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        self.assertTrue(self.node._response_queue.empty())
 
 
 # ─────────────────────────────────────────────────────────────────────────

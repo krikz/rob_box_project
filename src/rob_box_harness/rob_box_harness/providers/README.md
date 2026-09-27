@@ -162,7 +162,13 @@ transient failures, and retrying them only hides a real bug.
 
 ## Retry policy
 
-`RetryPolicy` is a small frozen dataclass:
+`RetryPolicy` lives in [`retry.py`](retry.py) — one class for the whole
+harness, LLM and TTS halves alike. `deepseek.py`, `minimax.py`,
+`providers/__init__.py` and `tts/minimax_tts.py` all re-export that same
+object; until W6-1 the first two carried their own byte-identical copies,
+so `providers.RetryPolicy` and `tts.RetryPolicy` were different classes.
+
+It is a small frozen dataclass:
 
 ```python
 @dataclass(frozen=True)

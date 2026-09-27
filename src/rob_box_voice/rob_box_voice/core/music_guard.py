@@ -23,9 +23,10 @@ Owns:
 See also:
 
 * :mod:`rob_box_voice.core.dialogue_guards` — keyword heuristics
-  (``user_wants_music``, ``is_music_stop_command``, ``is_vocal_request``)
-  used here, kept in the guards module so future bug-D-style fixes can
-  extend the keyword lists without touching the policy module.
+  (``user_wants_music``, ``is_music_stop_command``, ``is_vocal_request``,
+  ``is_music_state_query``) used here, kept in the guards module so future
+  bug-D-style fixes can extend the keyword lists without touching the
+  policy module.
 * ARCH-review #1405 / ADR-0021.
 """
 
@@ -35,7 +36,14 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from .dialogue_guards import (
+    MUSIC_HARD_STOP_TOOLS,
+    MUSIC_STARTING_TOOLS,
+    MUSIC_STATE_QUERY_TOOLS,
+    USER_MUSIC_SATISFYING_TOOLS,
+    build_music_retry_exhausted_fallback,
+    is_music_state_query,
     is_music_stop_command,
+    is_phantom_music_action,
     is_vocal_request,
     user_wants_music,
 )
@@ -61,6 +69,19 @@ class MusicGuardVerdictKind(str, Enum):
     #: попробуй ещё раз»). After a nudge the budget is reset so the
     #: next genuine user request gets a fresh one.
     NUDGE = "nudge"
+
+    #: Issue #2561 — babble-retry success rate ~62% (16 случаев Bug C, 38%
+    #: retry не помогает). После исчерпания USER_RETRY-budget возвращаем
+    #: :class:`MusicGuardVerdictKind.FALLBACK` — адаптер публикует
+    #: контекстную фразу-предложение альтернативы («Что-то не получается
+    #: с <название>, давай попробуем по-другому?») вместо безликого
+    #: «Я тут растерялся». Содержит ``prompt`` с этим текстом, чтобы
+    #: адаптер не строил фразу на лету.
+    FALLBACK = "fallback"
+
+    #: User asked to STOP music but the LLM called no stop tool — the
+    #: adapter must force the stop itself (issue #992 Bug F, live 30.08).
+    FORCE_STOP = "force_stop"
 
     #: Guard deliberately skipped (stop-command OR user did not ask for
     #: music OR DJ was off). Adapter only logs a diagnostic.
@@ -126,7 +147,12 @@ class MusicGuard:
     #: Legacy defaults preserved verbatim from the original
     #: ``DialogueNode`` constants so behaviour does not regress.
     DEFAULT_MAX_DJ_RETRIES: int = 2
-    DEFAULT_MAX_USER_RETRIES: int = 1
+    #: Live 01.09 — bumped 1 → 8 to test whether more retries change
+    #: outcomes when ``user_wants_music()`` false-positives (e.g. bare
+    #: mention of the DJ persona's name). Does NOT fix the misclassification
+    #: itself — the CRITICAL retry text is still wrong for those turns, this
+    #: just delays the "растерялся" fallback and burns more LLM round-trips.
+    DEFAULT_MAX_USER_RETRIES: int = 8
 
     def __init__(
         self,
@@ -186,10 +212,125 @@ class MusicGuard:
         """
         self._dj_retry_count = 0
 
+    def reset_for_new_session(self) -> None:
+        """Issue #2835 — «новая сессия»: оба бюджета с нуля.
+
+        Счётчики ретраев принадлежат сессии: недожжённый бюджет старой
+        сессии (DJ или юзер-музыка) не должен влиять на первые ходы новой.
+        """
+        self._dj_retry_count = 0
+        self._user_retry_count = 0
+
     # ------------------------------------------------------------------
     # Policy — the decision tree that used to live inline in
     # :meth:`DialogueNode._apply_music_guard`.
     # ------------------------------------------------------------------
+
+    def _user_music_already_satisfied(
+        self, user_input: str, tools_set: set
+    ) -> Optional[str]:
+        """Bug C — это вообще не просьба включить музыку, либо она закрыта?
+
+        Три исключения одного класса, каждое родилось из живого лога.
+        Возвращает ``reason``-тег для ``SKIP_NOT_APPLICABLE`` или ``None``,
+        если Bug C должен работать как обычно (ретрай/nudge).
+
+        Живёт отдельным методом, а не цепочкой ``if`` внутри
+        :meth:`evaluate`: cc_budget (ADR-0021 R1) держит ``evaluate`` на
+        baseline CC=17, и третье исключение уже не влезало. Декомпозиция
+        вместо бампа baseline — ровно то, чего требует R1.
+
+        Порядок веток значим: стоп-команда проверяется первой, чтобы
+        «выключи диджея» не утекло в ветку вопроса о состоянии.
+        """
+        # 🔴 FIX (live 06.08): stop-commands («хватит диджеить»,
+        # «выключи музыку») must NOT trigger a music retry — they ask
+        # to STOP music, not START it. Bug C previously mis-classified
+        # them as music requests and re-enabled music via the retry.
+        # Сюда доходят только стопы, которые LLM уже отработала тулом
+        # (безтуловые перехвачены веткой FORCE_STOP выше).
+        if is_music_stop_command(user_input):
+            self._log_debug(
+                "🎵 [issue 992 Bug C] stop-command — skipping music "
+                "guard entirely"
+            )
+            return "stop_command"
+
+        # 🔴 FIX (live 10:00): vocal requests («спой/пой/песня») — when
+        # the LLM did ANY tool (speak_text, etc.) it has honoured the
+        # request. Only nudge when the LLM did literally nothing.
+        if is_vocal_request(user_input) and tools_set:
+            self._log_debug(
+                "🎵 [issue 992 Bug C] vocal request, LLM replied "
+                f"(tools={sorted(tools_set)!r}) — no nudge needed"
+            )
+            return "vocal_satisfied"
+
+        # 🔴 FIX (e2e 35665111906, night-marathon акт 1, шаг
+        # n110_silence_baseline): ВОПРОС о состоянии («у тебя сейчас играет
+        # какая-нибудь музыка?») — не просьба включить. LLM правильно
+        # вызвала ``get_music_state`` и ответила «музыка не играет», а Bug C
+        # требовал ``execute_music_code`` — ровно тот тул, который шаг
+        # держит в ``must_not_call``. Ретрай уводил ход в трёхкратный цикл
+        # с CRITICAL-промптом, и харнесс не видел чистого акцепта.
+        #
+        # Read-only музыкальный тул ОТВЕЧАЕТ на такой вопрос, значит просьба
+        # удовлетворена. Без тулов nudge остаётся как был: иначе мы
+        # замаскируем настоящий случай «LLM вообще ничего не вызвала».
+        _state_answered = tools_set & MUSIC_STATE_QUERY_TOOLS
+        if _state_answered and is_music_state_query(user_input):
+            self._log_debug(
+                "🎵 [issue 992 Bug C] state query, LLM answered via "
+                f"{sorted(_state_answered)!r} — no nudge needed"
+            )
+            return "state_query_satisfied"
+
+        return None
+
+    def _music_started_verdict(
+        self, music_started: set, tool_error_occurred: bool
+    ) -> Optional[MusicGuardVerdict]:
+        """Issue #2966 — a music-starting tool NAME in ``tools_called``
+        does NOT mean it succeeded.
+
+        Live 24.09.2026: ``compose_music`` returned ``success=False``
+        (a rejected parameter) INSIDE a DJ transition, but the tool's
+        NAME still landed in ``tools_called`` — the old inline check
+        (``if music_started: SKIP``) read that as "music started" and
+        returned success, so the LLM's false track announcement went
+        straight to TTS while the previous track kept playing.
+
+        Returns the ``SKIP`` verdict on a REAL success (resets both
+        retry budgets, same as the legacy behaviour). Returns ``None``
+        (fall through to Bug B/C below, which retries) when either no
+        music tool was called at all, or one WAS called but the turn
+        also had a tool error — we can't tell from names alone whether
+        the failed call was the music-starting one, but falling through
+        to a budgeted synchronous retry is safe either way: worst case
+        one wasted retry, never a silently wrong announcement.
+
+        Split out of :meth:`evaluate` so its own CC does not grow — the
+        baseline already sat at the class ceiling (ADR-0021 R1), same
+        reasoning as :meth:`_user_music_already_satisfied`.
+        """
+        if not music_started:
+            return None
+        if tool_error_occurred:
+            self._log_warning(
+                "🎵 [issue 2966] music tool in tools_called "
+                f"({sorted(music_started)!r}) but tool_error_occurred=True "
+                "— NOT treating as success, falling through to Bug B/C"
+            )
+            return None
+        # Success — reset both budgets so a future failure gets a fresh
+        # allocation. Mirrors the legacy 2787/2788 reset.
+        self._dj_retry_count = 0
+        self._user_retry_count = 0
+        self._log_debug(
+            f"🎵 [music_guard] music tool in tools_called "
+            f"({sorted(music_started)!r}) → SKIP (counters reset)"
+        )
+        return MusicGuardVerdict(kind=MusicGuardVerdictKind.SKIP, reason="executed")
 
     def evaluate(
         self,
@@ -200,6 +341,8 @@ class MusicGuard:
         dj_enabled: bool = False,
         build_music_retry_prompt=None,
         build_dj_retry_prompt=None,
+        spoken: Optional[str] = None,
+        tool_error_occurred: bool = False,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -209,7 +352,8 @@ class MusicGuard:
             user_input: The original user command (or DJ auto-prompt
                 for tick transitions). Used by the keyword detectors
                 (``user_wants_music``, ``is_music_stop_command``,
-                ``is_vocal_request``) and by the Bug C retry prompt.
+                ``is_vocal_request``, ``is_music_state_query``) and by the
+                Bug C retry prompt.
             tools_called: Tuple of tool names the LLM invoked this
                 turn. ``"execute_music_code"`` presence short-circuits
                 the guard to ``SKIP``.
@@ -224,6 +368,32 @@ class MusicGuard:
             build_dj_retry_prompt: Callable ``() -> str`` for the
                 Bug B synthetic retry prompt. The adapter passes
                 ``self._build_dj_retry_prompt``.
+            spoken: Optional LLM reply text (post-TTS pre-processing).
+                Used only by issue #2565 phantom-action deferral
+                — before :attr:`MusicGuardVerdictKind.FORCE_STOP` we
+                check whether the LLM *just promised* a music action
+                without calling the matching tool. If yes, the
+                active track is NOT silenced (so the upcoming
+                :func:`_check_unbacked_action_claim_and_retry` CRITICAL
+                retry has a chance to land a real ``load_track`` /
+                ``gen_play_from_library`` call instead of the user
+                hearing silence after «Запускаю…»). ``None`` means
+                «spoken unknown yet» (e.g. ``_dispatch_dj_turn`` path
+                before the LLM ran) — deferral is skipped, FORCE_STOP
+                stays as before (back-compat).
+            tool_error_occurred: Issue #2966 — live 24.09: ``compose_music``
+                returned ``success=False`` (``groove_loop`` refused —
+                lupы выключены флагом) INSIDE a DJ transition, and the
+                LLM did not retry — it just announced the new track name
+                while the PREVIOUS track kept playing. ``tools_called``
+                alone can't tell a failed call from a real one (the tool
+                name is recorded either way), so a music-starting tool
+                being present is no longer treated as unconditional
+                success when at least one tool errored THIS turn — Bug B
+                (DJ auto) below decides instead, which means a real
+                synchronous retry instead of a silently wrong
+                announcement. ``False`` (default) keeps the legacy
+                behaviour for callers that don't thread this through yet.
 
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
@@ -234,29 +404,38 @@ class MusicGuard:
             Counters are advanced **here** (not by the adapter) so the
             policy and the bookkeeping cannot drift apart. The
             ``SKIP`` verdict on success resets both counters atomically.
+
+            Verdict kinds (issue #2561 added :attr:`FALLBACK`):
+
+            * ``DJ_RETRY`` / ``USER_RETRY`` — dispatch a synchronous
+              retry (Bug B / Bug C path).
+            * ``SKIP`` / ``SKIP_NOT_APPLICABLE`` — guard has nothing to
+              say this turn.
+            * ``NUDGE`` — legacy terminal fallback; still honoured by
+              the adapter for backward compat, but ``evaluate`` now
+              emits ``FALLBACK`` instead (issue #2561).
+            * ``FALLBACK`` — user-budget exhausted. The verdict carries
+              a context-aware spoken phrase in ``prompt`` (``build_music_retry_exhausted_fallback``)
+              that proposes an alternative rather than apologising.
+              Adapter publishes it via ``_speak_direct`` and increments
+              ``voice_music_retry_exhausted_total``.
+            * ``FORCE_STOP`` — user asked to stop music but LLM called
+              no stop tool.
         """
         tools_set = set(tools_called or ())
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
-        _music_started = tools_set & {
-            "execute_music_code",
-            "generate_music",
-            "gen_play_from_library",
-        }
-        if _music_started:
-            # Success — reset both budgets so a future failure gets a
-            # fresh allocation. Mirrors the legacy 2787/2788 reset.
-            self._dj_retry_count = 0
-            self._user_retry_count = 0
-            self._log_debug(
-                f"🎵 [music_guard] music tool in tools_called "
-                f"({sorted(_music_started)!r}) → SKIP (counters reset)"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP,
-                reason="executed",
-            )
+        _music_started = tools_set & MUSIC_STARTING_TOOLS
+        # Issue #2966 — split into a helper so evaluate()'s own CC does not
+        # grow (baseline already sat at the ceiling): the helper carries
+        # the extra "was it a real success or a swallowed error" branch,
+        # evaluate() keeps a single ``if``, same shape as before.
+        success_verdict = self._music_started_verdict(
+            _music_started, tool_error_occurred
+        )
+        if success_verdict is not None:
+            return success_verdict
 
         # Bug B — DJ auto-transition completed without music.
         if was_dj_auto and dj_enabled:
@@ -277,7 +456,7 @@ class MusicGuard:
             prompt = (
                 build_dj_retry_prompt()
                 if build_dj_retry_prompt is not None
-                else "[CRITICAL] DJ retry — call execute_music_code"
+                else "[CRITICAL] DJ retry — call compose_music"
             )
             self._log_warning(
                 "🎵 [issue 992 Bug B] DJ auto-transition completed "
@@ -288,6 +467,71 @@ class MusicGuard:
                 kind=MusicGuardVerdictKind.DJ_RETRY,
                 reason="bug_b",
                 prompt=prompt,
+            )
+
+        # 🔴 FIX (live 30.08, vision-pi 12:33): «останови музыку» → LLM
+        # ответила «Музыка выключена.» с ``tools=[]``. Ни ``stop_music``, ни
+        # чего-либо ещё вызвано не было, и mp3 из ``gen_play_from_library``
+        # доиграл до конца ещё 20 секунд после «выключена». Стоп —
+        # идемпотентная операция, поэтому здесь мы не ретраим LLM, а
+        # останавливаем музыку сами (адаптер публикует music_cleanup).
+        #
+        # 🔴 FIX (issue #2565, live 2026-09-15 DJ Oakenfold case): перед
+        # тем как Force-Stop'ать активную музыку, проверяем — не было ли в
+        # последнем LLM-turn-е phantom-action claim'а на ЗАПУСК нового
+        # трека («Запускаю Oakenfold-сессию…» при tools=[]). Если да —
+        # НЕ тушим, потому что модель только что пообещала действие,
+        # но не сделала его; CRITICAL-retry в
+        # :func:`_check_unbacked_action_claim_and_retry` (issue #992
+        # Bug E) сейчас же перезапросит модель с явным указанием
+        # тула, и она реально запустит трек через
+        # ``load_track`` / ``gen_play_from_library``. Если же мы
+        # сначала потушим активную музыку, юзер услышит тишину после
+        # «Запускаю…» — ровно то, что воспроизвело issue #2565.
+        # ``spoken=None`` (ещё не известно) → back-compat: Force-Stop
+        # срабатывает как раньше.
+        if is_music_stop_command(user_input) and not (tools_set & MUSIC_HARD_STOP_TOOLS):
+            phantom = is_phantom_music_action(
+                user_input=user_input,
+                spoken=spoken,
+                tools_called=tuple(tools_set),
+            )
+            if phantom is not None:
+                self._log_warning(
+                    "🎵 [issue 2565] phantom-action deferral: LLM пообещала "
+                    f"{phantom.what!r} (category={phantom.category!r}, "
+                    f"tools={sorted(tools_set)!r}) — НЕ тушим активную "
+                    "музыку, дождёмся CRITICAL-retry из "
+                    "_check_unbacked_action_claim_and_retry"
+                )
+                return MusicGuardVerdict(
+                    kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
+                    reason="phantom_action_defers_stop",
+                )
+            self._log_warning(
+                "🎵 [issue 992 Bug F] stop-command без stop-тула "
+                f"(tools={sorted(tools_set)!r}) — принудительный стоп из кода"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.FORCE_STOP,
+                reason="stop_command_unbacked",
+            )
+
+        # 🔴 FIX (live 30.08, e2e tc10_load_track): ``load_track`` реально
+        # запускает Renardo (внутри — ``execute_code``), но лежал только
+        # в ``MUSIC_MODE_TOOLS``, которые за «музыка пошла» не считаются.
+        # Корректный вызов уходил в ретрай, а на втором промахе юзер слышал
+        # «Я тут растерялся — бит не запустился».
+        _user_satisfied = tools_set & USER_MUSIC_SATISFYING_TOOLS
+        if _user_satisfied:
+            self._user_retry_count = 0
+            self._log_debug(
+                f"🎵 [music_guard] {sorted(_user_satisfied)!r} запустил "
+                "воспроизведение → SKIP"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.SKIP,
+                reason="executed_via_library",
             )
 
         # Bug C — user asked for music but LLM skipped execute_music_code.
@@ -302,31 +546,11 @@ class MusicGuard:
                 reason="not_music_request",
             )
 
-        # 🔴 FIX (live 06.08): stop-commands («хватит диджеить»,
-        # «выключи музыку») must NOT trigger a music retry — they ask
-        # to STOP music, not START it. Bug C previously mis-classified
-        # them as music requests and re-enabled music via the retry.
-        if is_music_stop_command(user_input):
-            self._log_debug(
-                "🎵 [issue 992 Bug C] stop-command — skipping music "
-                "guard entirely"
-            )
+        _skip_reason = self._user_music_already_satisfied(user_input, tools_set)
+        if _skip_reason is not None:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
-                reason="stop_command",
-            )
-
-        # 🔴 FIX (live 10:00): vocal requests («спой/пой/песня») — when
-        # the LLM did ANY tool (speak_text, etc.) it has honoured the
-        # request. Only nudge when the LLM did literally nothing.
-        if is_vocal_request(user_input) and tools_set:
-            self._log_debug(
-                "🎵 [issue 992 Bug C] vocal request, LLM replied "
-                f"(tools={sorted(tools_set)!r}) — no nudge needed"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
-                reason="vocal_satisfied",
+                reason=_skip_reason,
             )
 
         if self._user_retry_count < self._max_user_retries:
@@ -351,17 +575,34 @@ class MusicGuard:
                 prompt=prompt,
             )
 
-        # Budget exhausted — publish the spoken nudge and reset so the
-        # *next* genuine user request gets a fresh allocation.
+        # 🔴 FIX (issue #2561, 2026-09-15): babble-retry success rate ~62%
+        # (16 случаев Bug C за час, 38% retry не помогает — модель снова
+        # отвечает spoken-фразой с action-verb при tools_called=[]).
+        # Раньше budget=8 → после исчерпания 8 USER_RETRY публиковался
+        # безличный NUDGE «Я тут растерялся — попробуй ещё раз», что
+        # юзером читалось как отмазка. Теперь — НА КАЖДЫЙ цикл исчерпания
+        # budget публикуем FALLBACK с контекстной фразой «Что-то не
+        # получается с <название>, давай попробуем по-другому?» — это
+        # предлагает альтернативу (acceptance criterion #2). NUDGE
+        # остаётся терминальным fallback'ом для случаев, когда FALLBACK
+        # сам по какой-то причине не отработал (например, нет
+        # адаптера). Содержимое фразы строит :func:`build_music_retry_exhausted_fallback`
+        # из :mod:`dialogue_guards`; verdict несёт её в ``prompt``,
+        # чтобы адаптер не строил фразу на лету.
+        fallback_text = build_music_retry_exhausted_fallback(user_input)
         self._log_warning(
-            f"🎵 [issue 992 Bug C] user asked for music but LLM "
-            f"skipped execute_music_code (tools={sorted(tools_set)!r}); "
-            "publishing spoken nudge"
+            f"🎵 [issue 2561] user-budget exhausted "
+            f"({self._user_retry_count}/{self._max_user_retries}); "
+            f"publishing fallback with proposed alternative "
+            f"(user_input={user_input!r}, tools={sorted(tools_set)!r}, "
+            f"fallback={fallback_text!r})"
         )
+        # Reset so the *next* genuine user request gets a fresh budget.
         self._user_retry_count = 0
         return MusicGuardVerdict(
-            kind=MusicGuardVerdictKind.NUDGE,
-            reason="budget_exhausted",
+            kind=MusicGuardVerdictKind.FALLBACK,
+            reason="retry_exhausted",
+            prompt=fallback_text,
         )
 
     # ------------------------------------------------------------------

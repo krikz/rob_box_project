@@ -22,7 +22,12 @@ import json
 import re
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единое место сборки
+# SSML — раньше здесь был ``f"<speak>{text}</speak>"`` без экранирования.
+# Теперь текст проходит через ``Utterance.ssml`` (XML-escape для ``&``/`<`/`>`).
+from rob_box_core.utterance import Sink, Utterance
 
 # Strip history marker prefix that some LLMs copy into output.
 _HISTORY_MARKER_RE = re.compile(
@@ -42,6 +47,51 @@ _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
 # service-text guard in dialogue_node can catch it. The ``+`` consumes
 # repeated leading tags in one match.
 _SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
+
+# Strip leading meta-markers the LLM occasionally emits in
+# ``spoken`` — internal section headers that were meant for the
+# assistant's own reasoning but leaked past the system prompt. TTS
+# reads ``spoken`` verbatim, so leaking these prefixes produces
+# audible noise (live 15.09: «[Мнение ассистента] Вплела тему
+# Грига…»).
+#
+# Anchored at start-of-string, optionally preceded by whitespace, and
+# consumes **one** prefix at a time — the caller (``strip_meta_markers``
+# below) loops so stacked prefixes («[Мнение ассистента] **Итог:** …»)
+# collapse cleanly. Two prefix shapes:
+#
+# * ``[Anything]`` — bracketed section header (issue #2547 live case:
+#   ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]``, ``[Answer]``).
+#   Square brackets inside the marker are not allowed (the regex
+#   stops at the first ``]``).
+#
+#     **Excluded** (must remain visible to the service-text guard
+#     running downstream in ``_handle_result``):
+#
+#     * ``[CRITICAL]`` — internal retry prompt (suppressed by
+#       ``_check_babble_and_retry`` / service-text guard).
+#     * ``[SYSTEM ...]`` — internal system template regurgitated
+#       (issue #2175, suppressed by ``is_system_template_regurgitated``).
+#     * ``[Spkr:<name>]`` — speaker routing marker (owned by
+#       :func:`strip_speaker_tag` which runs first).
+#
+# * ``**Anything**`` — Markdown-bold section header (``**Итог:**``,
+#   ``**Answer:**``).
+_META_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    # Bracketed meta-markers — only when the inner content is NOT one of
+    # the reserved service-text prefixes. Case-insensitive (CRITICAL /
+    # Critical / critical are all reserved).
+    r"(?!\s*\[(?:CRITICAL|Spkr:[^\]]*|SYSTEM\b)[^\]]*\])"
+    r"\[[^\]]+\]"
+    r"|"
+    # Markdown-bold meta-markers. Bold-form of CRITICAL doesn't exist
+    # in practice; no exclusion needed here.
+    r"\*\*[^*]+\*\*"
+    r")"
+    r"\s*(?:[:\-—]\s*)?",
+    flags=re.UNICODE | re.IGNORECASE,
+)
 
 # Strip a trailing ``done`` / ``task complete`` / Russian equivalents
 # that the LLM adds AFTER the final ``speak_text`` per the master-prompt
@@ -98,6 +148,53 @@ def strip_thinking_blocks(text: str) -> str:
     return _THINK_BLOCK_RE.sub("", text).strip()
 
 
+def strip_meta_markers(text: str) -> str:
+    """Remove leading meta-markers (``[…]``, ``**…**``) from ``spoken`` (issue #2547).
+
+    MiniMax-M1 sometimes prefixes its reply with internal section headers
+    like ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]`` or
+    ``**Итог:**``. These were meant for the assistant's own reasoning
+    (structured answer sections), but they leaked past the system prompt
+    into the ``spoken`` field that is read by TTS verbatim. The user hears
+    the prefix as part of the reply, which is confusing and breaks the
+    conversational tone (live 15.09 DJ test: 21 occurrences on a single
+    session; round 3 regression: 193 cases/hour).
+
+    Strip is applied BEFORE ``strip_markdown`` so the bold-form prefix
+    (``**…**``) is removed before markdown rules can corrupt it. The
+    bracketed-form prefix (``[Spkr:<имя>]``) is **not** matched here —
+    that one is owned by :func:`strip_speaker_tag` which runs first in
+    the pipeline (``_handle_result``).
+
+    Rules (anchored at start-of-string, looped to consume stacks):
+
+    * optional leading whitespace;
+    * one bracketed marker ``[<non-bracket>+]`` or one Markdown-bold
+      marker ``**<non-asterisk>+**``;
+    * optional trailing whitespace;
+    * optional trailing colon/dash separator (``[Мнение ассистента]:``,
+      ``**Итог** —``).
+
+    Loop is bounded to ``_MAX_STACK`` iterations — more than 4 stacked
+    meta prefixes in a single response is pathological and most likely
+    a model hallucination; falling through unchanged is the right
+    behaviour (the downstream equality check still recognises
+    done-markers and the chunking layer survives the prefix).
+
+    Pure Python — no ROS, no heavy deps. Non-string input is returned
+    as-is (matches the contract of :func:`strip_thinking_blocks`).
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    for _ in range(4):
+        new = _META_PREFIX_RE.sub("", out, count=1).lstrip()
+        if new == out:
+            break
+        out = new
+    return out
+
+
 def strip_done_marker(text: str) -> str:
     """Remove a trailing ``done`` / ``task complete`` / Russian-equivalent
     marker (issue #1564).
@@ -131,6 +228,157 @@ def strip_done_marker(text: str) -> str:
     if not isinstance(text, str) or not text:
         return text
     return _DONE_MARKER_RE.sub("", text).rstrip()
+
+
+# Issue #2557 (DJ live round 3, 2026-09-15): the LLM sometimes returns
+# ``spoken='done'`` (or ``\n\ndone`` / «готово» / «всё» / …) AFTER calling
+# music tools WITHOUT ``speak_text`` — the user hears music start but no
+# audible acknowledgement. The cycle-end equality check in
+# ``_handle_result`` correctly suppresses the marker from auto-TTS, but
+# the user is left with silence after a music action. The DJ fallback
+# (issue #2547) only fired when ``spoken`` was already empty post-strip
+# AND the turn was NOT ``is_dj_auto`` — which is exactly the opposite of
+# what we want here: on a DJ transition the announcement IS the
+# information (track changed), not noise. This helper is called by
+# ``_handle_result`` to replace the spoken text with a short
+# DJ-appropriate phrase when the model called music tools but produced
+# a degenerate (``done`` / empty) answer.
+#
+# The set below mirrors ``agent_core._MUSIC_LAUNCH_TOOLS`` plus the
+# pure-DJ controls (``set_dj_mode``, ``stop_music``, ``lookup_melody``,
+# ``load_skill``). Keep both lists in sync when adding a new music
+# tool — otherwise the fallback won't fire and the user will hear
+# silence again.
+_DJ_MUSIC_TOOLS: frozenset[str] = frozenset({
+    # Music launchers (agent_core._MUSIC_LAUNCH_TOOLS).
+    "execute_music_code", "generate_music",
+    "gen_play_from_library", "set_vibe_preset", "load_track",
+    # Pure-DJ controls.
+    "compose_music", "set_dj_mode", "stop_music",
+    "lookup_melody", "load_skill",
+})
+#: Degenerate marker that the master-prompt cycle-end contract tells the
+#: LLM to emit after the LAST ``speak_text``. Same set as the equality
+#: check in ``_handle_result`` (``done`` / «готово» / «всё» / …). Used
+#: here to recognise the «tools called but marker only» shape that
+#: falls through to silence.
+_DJ_DEGENERATE_MARKERS: frozenset[str] = frozenset({
+    "done", "task complete", "task_complete",
+    "готово", "готов", "готова",
+    "всё", "выполнено", "завершено", "завершена",
+})
+#: Short DJ announcement when the model changed the music without
+#: speaking. Tuned to be informative without claiming a specific
+#: action: «Готово, играю.» confirms the music change reached TTS, then
+#: the rest of the ``spoken`` (when present and non-degenerate) follows.
+#: No emoji / no exclamation — keeps the tone neutral and matches the
+#: other DJ hooks (``Принял.``, «Понял.»).
+_DJ_FALLBACK_PHRASE: str = "Готово, играю."
+
+#: Issue #2857 (round 2, live 23.09.2026 review) — templates for the
+#: DJ auto-transition announcement. A single fixed template
+#: («{persona}: дальше — {theme}!») turned out just as robotic as the
+#: generic phrase it replaced once ``theme`` (a whole party description,
+#: not a track) got stuffed into it, AND the persona name was repeated
+#: on every single transition. Fixed by:
+#: * NEVER using ``theme`` as a track substitute (it's a party
+#:   description, not a song title — too long, wrong shape);
+#: * dropping the persona prefix entirely (it was the same words every
+#:   transition — exactly the dull repetition being fixed);
+#: * rotating through a few short templates, chosen deterministically
+#:   by the transition number so tests stay stable and the phrase
+#:   still varies across a DJ set instead of repeating verbatim.
+_DJ_TRACK_TEMPLATES: Tuple[str, ...] = (
+    "Дальше — {track}!",
+    "Следом — {track}!",
+    "Новый трек — {track}!",
+)
+
+
+def ensure_dj_music_response(
+    spoken: str,
+    tools_called: Optional[List[str]],
+    *,
+    is_dj_auto: bool = False,
+    track_name: Optional[str] = None,
+    transition_count: int = 0,
+) -> str:
+    """Return a DJ-style fallback when music tools ran without real
+    user-facing text (issue #2557; #2857 extends it — see below).
+
+    Contract:
+
+    * ``spoken`` is the post-strip, post-cycle-marker-equal text
+      (already passed through ``strip_done_marker`` etc.). May be
+      empty, whitespace, or one of :data:`_DJ_DEGENERATE_MARKERS`.
+    * ``tools_called`` is the list of tool names the LLM called this
+      turn (may be ``None``).
+
+    Returns the cleaned ``spoken`` if it looks like a real reply;
+    otherwise returns a fallback when ``tools_called`` intersects
+    :data:`_DJ_MUSIC_TOOLS`.
+
+    Issue #2857 — live 23.09.2026: ``speak_text`` was called AND
+    voiced a real DJ line this turn, but the post-strip ``spoken``
+    field still ended up empty/``done`` (the LLM's cycle-end
+    contract), and the fallback stomped the already-spoken line with
+    a second, duller phrase. If ``speak_text`` is in ``tools_called``
+    at all, this turn already had its say — never override it here,
+    regardless of what ``spoken`` looks like.
+
+    Issue #2857 also replaces the flat ``"Готово, играю."`` on
+    autonomous DJ transitions (``is_dj_auto=True``): the generic
+    phrase is only appropriate when the USER directly asked for music
+    and got no reply text. On a DJ auto-transition, a short,
+    templated line names the actual track (``track_name`` — the real
+    ``compose_music(name=...)`` argument, NOT ``theme``, which is a
+    whole party description). If no track name is available, stay
+    silent (``""``) rather than repeat a dull phrase every transition.
+
+    Pure / no ROS, no side effects — caller decides whether to publish.
+    Designed to be the single source of truth so the dialogue_node
+    change is a one-liner and stays under the CC budget.
+    """
+    if tools_called is None:
+        return spoken
+    # Defensive: mirror ``strip_done_marker`` contract — non-string
+    # ``spoken`` is the caller's problem (the dialogue_node already
+    # does ``result.spoken_text or ""`` upstream), but if it slips
+    # through here we pass it through untouched rather than crash on
+    # ``.strip()``.
+    if not isinstance(spoken, str):
+        return spoken
+    called = set(tools_called)
+    if "speak_text" in called:
+        # Issue #2857 — speak_text already voiced this turn's line (the
+        # live bug: 'Йоу, народ, гангста-драйв качает!' via speak_text,
+        # then 'Готово, играю.' stomped on top of it). Never publish a
+        # second, generic line over an already-spoken one.
+        return spoken
+    if not (called & _DJ_MUSIC_TOOLS):
+        return spoken
+    # Real user-facing reply? Leave it alone — the master-prompt contract
+    # allows the model to call music tools AND speak (e.g. «Запускаю
+    # Баха!»). Only intervene when the reply is empty or one of the
+    # cycle-end markers the LLM uses to signal turn end without
+    # producing speech.
+    stripped = spoken.strip()
+    if stripped and stripped.lower() not in _DJ_DEGENERATE_MARKERS:
+        return spoken
+    if not is_dj_auto:
+        # Direct user request ("сыграй что-нибудь") with no reply text —
+        # the generic confirmation is still the right call here.
+        return _DJ_FALLBACK_PHRASE
+    # DJ auto-transition without any spoken line: prefer a short,
+    # track-specific announcement over the generic phrase; silence
+    # beats a robotic "Готово, играю." repeated every ~45s. ``theme``
+    # is deliberately NOT used here — it's a party description
+    # ("гангста-вечеринка в чёрном квартале..."), not a track title.
+    name = (track_name or "").strip()
+    if not name:
+        return ""
+    template = _DJ_TRACK_TEMPLATES[transition_count % len(_DJ_TRACK_TEMPLATES)]
+    return template.format(track=name)
 
 
 #: Regexes applied by :func:`strip_markdown` in order. Each tuple is
@@ -223,6 +471,92 @@ def split_into_chunks(text: str, max_len: int = 200) -> List[str]:
     return [c for c in chunks if c.strip()] or [text]
 
 
+# ── AV-28: язык произношения (per-utterance override) ──────────────────
+#
+# `ros2-audio-contract-spec.md` §2.2 объявляет `language` варьирующимся
+# параметром («ROS-param minimax_language ИЛИ override»), но override
+# никогда не был реализован: dialogue_node переписывал реплику на
+# французский, а tts_node синтезировал её со статическим
+# `minimax_language="ru"`. Здесь — недостающее поле payload'а плюс ответ
+# на вопрос «а этот провайдер вообще так умеет?».
+#
+# Кто какой язык умеет — считается ПО КАТАЛОГУ ГОЛОСОВ
+# (`tts_voice_registry.languages_for`), а не по отдельной таблице:
+# вторая таблица разъехалась бы с каталогом ровно так же, как разъехались
+# whitelist'ы AV-28. Исключение ровно одно и оно явное — MiniMax.
+
+# MiniMax задаёт язык полем `language_boost`, а не выбором голоса, поэтому
+# он умеет ВСЁ из `minimax_tts._LANGUAGE_ALIASES` независимо от того, на
+# каком языке говорят голоса каталога (там ru и zh). Дублировать сюда весь
+# список смысла нет — достаточно знать, что ограничений по каталогу нет.
+LANGUAGE_AGNOSTIC_PROVIDERS: frozenset = frozenset({"minimax"})
+
+# Как назвать язык в честной фразе-отказе.
+_LANGUAGE_NAMES_RU: Dict[str, str] = {
+    "ru": "русском",
+    "en": "английском",
+    "fr": "французском",
+    "de": "немецком",
+    "zh": "китайском",
+    "hi": "хинди",
+}
+
+
+def provider_speaks(provider: str, language: Optional[str]) -> bool:
+    """Умеет ли ``provider`` говорить на ``language``.
+
+    ``language`` пустой/``None`` (обычный диалог робота) — всегда ``True``.
+    """
+    if not language:
+        return True
+    lang = str(language).strip().lower().split("-")[0]
+    if not lang:
+        return True
+    prov = str(provider).strip().lower()
+    if prov in LANGUAGE_AGNOSTIC_PROVIDERS:
+        return True
+    from ..tts_voice_registry import languages_for  # локально: избегаем цикла
+
+    known = languages_for(prov)
+    # Неизвестный провайдер не ограничиваем: пустой каталог — это «мы про
+    # него ничего не знаем», а не «он ничего не умеет».
+    return not known or lang in known
+
+
+def unsupported_language_notice(
+    provider: str, language: Optional[str]
+) -> Optional[str]:
+    """Фраза-отказ, если ``provider`` не умеет ``language``; иначе ``None``.
+
+    Зачем отказ, а не транслит кириллицей: Silero с моделью ``v5_ru``
+    читает по русским правилам, и «beaucoup», переписанное кириллицей,
+    звучит «беаукоуп», а не «боку». Это молчаливая деградация — оператор
+    слышит речь, считает, что робот говорит по-французски, и узнаёт правду
+    от собеседника. Честная короткая фраза лучше (ADR-0018).
+
+    Правильное решение — не транслит, а НАСТОЯЩИЙ голос на этом языке;
+    из шести языков UI он есть почти везде:
+      * MiniMax — все шесть (`language_boost`);
+      * Yandex  — ru, en (`john`), de (`lea`); fr/zh/hi у него нет вовсе;
+      * Silero  — сейчас загружена только `v5_ru`, но upstream отдаёт
+        `v3_en`, `v3_de`, `v3_fr` и indic (`hindi_male`/`hindi_female`).
+        Догрузить их — отдельная карточка (модели качаются на Pi
+        поштучно); китайского у Silero нет.
+
+    То есть транслит нужен ровно для одного пересечения — китайский
+    офлайн, — и именно там он бесполезнее всего: палладица, прочитанная
+    русским голосом, китайцу непонятна.
+    """
+    if provider_speaks(provider, language):
+        return None
+    lang = str(language).strip().lower().split("-")[0]
+    name = _LANGUAGE_NAMES_RU.get(lang, lang)
+    return (
+        f"Не могу сказать это на {name}: сейчас работает голосовой движок "
+        f"{provider}, у него нет голоса на этом языке."
+    )
+
+
 def build_ssml_payload(
     text: str,
     animation: str = "neutral",
@@ -232,6 +566,7 @@ def build_ssml_payload(
     batch_total: Optional[int] = None,
     tg_chat_id: Optional[int] = None,
     voice: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
@@ -248,21 +583,33 @@ def build_ssml_payload(
     into) is an extra routing hint for telegram_node; tts_node ignores
     unknown fields.
     """
-    payload: Dict[str, Any] = {
-        "ssml": f"<speak>{text}</speak>",
-        "speech_id": str(uuid.uuid4()),
-        "emotion": animation,
-    }
-    if batch_id is not None:
-        payload["batch_id"] = batch_id
-    if batch_index is not None:
-        payload["batch_index"] = int(batch_index)
-    if batch_total is not None:
-        payload["batch_total"] = int(batch_total)
-    if tg_chat_id is not None:
-        payload["tg_chat_id"] = int(tg_chat_id)
-    if voice is not None:
-        payload["voice"] = voice
+    payload: Dict[str, Any] = Utterance(
+        text=text,
+        sink=Sink.SPEAKERS,
+        emotion=animation or "neutral",
+        extra={
+            "speech_id": str(uuid.uuid4()),
+            "batch_id": batch_id,
+            "batch_index": batch_index,
+            "batch_total": batch_total,
+            "tg_chat_id": tg_chat_id,
+            "voice": voice,
+            "language": language,
+        },
+    ).to_request()
+    # ``Utterance.to_request`` ставит ``emotion="neutral"`` по умолчанию и
+    # выкидывает ``None``-поля из extra; здесь чистим ``None`` для обратной
+    # совместимости со старыми подписчиками, которые ждут отсутствие ключей.
+    for k in (
+        "batch_id",
+        "batch_index",
+        "batch_total",
+        "tg_chat_id",
+        "voice",
+        "language",
+    ):
+        if k in payload and payload[k] is None:
+            payload.pop(k)
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -362,6 +709,7 @@ class EffectAwaiterRegistry:
 __all__ = [
     "strip_history_marker",
     "strip_markdown",
+    "strip_meta_markers",
     "strip_done_marker",
     "split_into_chunks",
     "build_ssml_payload",

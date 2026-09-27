@@ -71,6 +71,12 @@ sys.modules.setdefault("rclpy.callback_groups", _mock_cb)
 _mock_qos = types.ModuleType("rclpy.qos")
 _mock_qos.HistoryPolicy = types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
 _mock_qos.ReliabilityPolicy = types.SimpleNamespace(RELIABLE="RELIABLE")
+# Issue #1734 — dialogue_node.__init__ создаёт latched-топик barge_in_policy
+# (QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL)); без атрибута
+# import dialogue_node падает ImportError.
+_mock_qos.DurabilityPolicy = types.SimpleNamespace(
+    TRANSIENT_LOCAL="TRANSIENT_LOCAL", VOLATILE="VOLATILE"
+)
 _mock_qos.QoSProfile = lambda *_a, **_kw: MagicMock()
 sys.modules.setdefault("rclpy.qos", _mock_qos)
 
@@ -194,7 +200,7 @@ def _install_mcp_adapter_with_bridge(
 
     fake_mcp = types.ModuleType("rob_box_mcp_tools")
     fake_adapter = types.ModuleType("rob_box_mcp_tools.llm_adapter")
-    fake_adapter.LLMToolCallAdapter = lambda _node: _StubBridge()
+    fake_adapter.LLMToolCallAdapter = lambda _node, **_kw: _StubBridge()
 
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools", fake_mcp)
     monkeypatch.setitem(
@@ -252,7 +258,7 @@ def test_build_tool_provider_returns_ros_mcp_when_mcp_available(
     # adapter. The shell wraps ``ROSMCPToolProvider`` in a
     # ``LegacyToolProviderAdapter`` whose observable surface is
     # ``discover()`` (async) returning a tuple of ``ToolSpec``
-    # objects — that is the contract ``DialogCore`` consumes, so
+    # objects — that is the contract ``AgentCore`` consumes, so
     # we exercise the same path here.
     import asyncio
 

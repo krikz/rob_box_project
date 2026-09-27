@@ -6,7 +6,16 @@
 # для быстрой пересборки при изменениях в rob_box_voice коде
 
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
-ARG BUILD_VERSION=2026-03-08-v2
+# Issue #2378 (devops, arch review): добавили apt-зависимости voice-assistant
+# (python3-httpx, python3-aiohttp) сюда, чтобы voice-assistant/Dockerfile мог
+# УБРАТЬ `rosdep update && rosdep install || true` (Шаг 2) — это был
+# единственный `rosdep install` в проекте после PR #2286 (9414bb3, issue #2279),
+# и он проглатывал сетевые ошибки (`|| true`). Паттерн «build once, share with all»
+# (как для rob_box_supervisor_msgs) — apt-зависимости резолвятся здесь,
+# consumers (voice-assistant) переиспользуют. Bump при изменении apt-слоя —
+# voice-assistant наследует через BASE_IMAGE=$LOCAL_PREFIX:voice-base-$ROS-$TAG
+# (см. .github/workflows/L-Build Vision Pi Services.yml build-voice-assistant).
+ARG BUILD_VERSION=2026-09-14-2378-httpx-aiohttp
 
 FROM ${BASE_IMAGE}
 
@@ -56,6 +65,17 @@ RUN apt-get update && apt-get install -y debconf-utils \
     ros-${ROS_DISTRO}-ament-cmake \
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
+    # Issue #2378: добавили python3-httpx + python3-aiohttp для voice-assistant,
+    # чтобы он мог убрать `rosdep install || true` (см. Шаг 2 в
+    # docker/vision/voice_assistant/Dockerfile). python3-yaml/pil/numpy уже
+    # доступны из rob_box_base:rtabmap (introlab3it/rtabmap_ros:humble-latest
+    # наследует Ubuntu jammy со всем python3-набором). python3-openai
+    # НЕ существует в apt — rob_box_llm ставит openai через pip в setup.py
+    # install_requires; <exec_depend>python3-openai</exec_depend> в его
+    # package.xml — техдолг (не наша зона), но rosdep раньше его проглатывал
+    # через || true; после удаления rosdep install — он просто не вызывается.
+    python3-httpx \
+    python3-aiohttp \
     && apt-get install -y --reinstall \
     ros-${ROS_DISTRO}-builtin-interfaces \
     ros-${ROS_DISTRO}-rcutils \
@@ -104,45 +124,31 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
     > /etc/udev/rules.d/60-respeaker.rules
 
 # ============================================================================
-# Скачивание STT/TTS моделей (offline inference)
+# STT/TTS модели — БОЛЬШЕ НЕ ЗДЕСЬ (Ресурсный пак, Этап 3)
 # ============================================================================
-RUN --mount=type=cache,target=/root/.cache,sharing=locked \
-    mkdir -p /models /root/.cache/models /models/silero && \
-    VOSK_MODEL_FILE="vosk-model-small-ru-0.22.zip" && \
-    VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
-    SILERO_MODEL_FILE="v5_ru.pt" && \
-    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
-    # Vosk model is bundled in the image (Architect decision G-VOSK, option A —
-    # offline-capable robot). Path MUST match model_path in
-    # src/rob_box_voice/config/stt_node.yaml (per-node, issue #1004) and the
-    # default in stt_node.py: /models/vosk-model-small-ru-0.22
-    # Earlier mishap: this Dockerfile unzipped into /models/vosk-model-small-ru-0.22
-    # and then mv'd it to /models/vosk-model-ru, while every consumer (stt_node,
-    # voice_assistant.yaml, scripts, README) still pointed at the original
-    # canonical path. Result: 'Folder does not contain model files' at runtime.
-    # Fix: drop the rename — keep the unpacked directory at its canonical path.
-    if [ -f "/root/.cache/models/${VOSK_MODEL_FILE}" ]; then \
-        echo "✅ Using cached Vosk model"; \
-        cp "/root/.cache/models/${VOSK_MODEL_FILE}" /tmp/vosk-model.zip; \
-    else \
-        echo "⬇️ Downloading Vosk model (45 MB)..."; \
-        wget -q -O /tmp/vosk-model.zip "${VOSK_MODEL_URL}" && \
-        cp /tmp/vosk-model.zip "/root/.cache/models/${VOSK_MODEL_FILE}"; \
-    fi && \
-    unzip -q -o /tmp/vosk-model.zip -d /models/ && \
-    test -f /models/vosk-model-small-ru-0.22/README && \
-    rm /tmp/vosk-model.zip && \
-    if [ -f "/root/.cache/models/${SILERO_MODEL_FILE}" ]; then \
-        echo "✅ Using cached Silero model"; \
-        cp "/root/.cache/models/${SILERO_MODEL_FILE}" /models/silero/v5_ru.pt; \
-    else \
-        echo "⬇️ Downloading Silero v5 model (68 MB)..."; \
-        wget -q -O /models/silero/v5_ru.pt "${SILERO_MODEL_URL}" && \
-        cp /models/silero/v5_ru.pt "/root/.cache/models/${SILERO_MODEL_FILE}"; \
-    fi && \
-    echo "⬇️ Pre-downloading Silero repository for torch.hub..." && \
-    python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru', source='github')" || true && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB at /models/vosk-model-small-ru-0.22) + Silero v5 (68 MB)"
+# Здесь была ступень скачивания Vosk (44 МиБ архив) + Silero v5 (139 МиБ —
+# комментарий тут годами говорил «68 МБ», измерено 21.09.2026) + прогрев
+# torch.hub. Удалена по docs/plans/2026-09-15-resource-pack.md §6.1/§7 Этап 3.
+#
+# Почему: сборка образа делала два сетевых запроса, и при недоступной сети
+# падала целиком (цепочка `wget ... && unzip ... && test -f` без `|| true`),
+# а ошибка тонула в стандартном выводе wget. Плюс ~227 МиБ моделей лежали в
+# слое образа, который тянет каждый холодный `docker pull` на Vision Pi.
+#
+# Куда переехало: docker/vision/scripts/resource_pack/manifest.yaml, записи
+# `vosk-ru-small` и `silero-tts-v5-ru`. Файлы кладёт на ХОСТ шаг деплоя
+# «[Vision Pi] Ensure STT/TTS models», контейнер получает их bind-mount'ом
+# `/opt/rob_box/models:/models:ro` (docker-compose.yaml, voice-assistant).
+# Пути ВНУТРИ контейнера не изменились — stt_node.yaml:8 и tts_node.py:1853
+# читают тот же `/models/...`, поэтому ни один Python-файл не правился.
+#
+# `mkdir -p /models` тоже не нужен: каталог создаёт bind-mount.
+#
+# Прогрев `torch.hub.load('snakers4/silero-models')` уехал вместе со ступенью
+# и НЕ заменён ничем: это был fallback третьего уровня (tts_node.py:1874-1879)
+# без pin на коммит, тянувший HEAD чужого репозитория. Если он сработает в
+# рантайме — полезет в сеть на первом вызове. Судьба этого fallback'а —
+# открытый вопрос плана §13.5, отдельным решением.
 
 # ============================================================================
 # Клонирование и сборка audio_common_msgs

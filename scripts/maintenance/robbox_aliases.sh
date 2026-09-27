@@ -28,7 +28,7 @@ alias rbstart='docker compose up -d'
 alias rbrestart='docker compose restart'
 alias rbstatus='docker compose ps'
 alias rblogs='docker compose logs -f'
-alias rbpull='docker compose pull'
+alias rbpull='docker compose pull --policy always'
 
 # Навигация
 alias rbvision='cd ~/rob_box_project/docker/vision'
@@ -46,7 +46,7 @@ alias rblog-agent='docker compose logs -f micro-ros-agent'
 alias rblog-zenoh='docker compose logs -f zenoh-router'
 
 # Полное обновление
-alias rbupdate='rbstop && git pull origin develop && docker compose pull && rbstart'
+alias rbupdate='rbstop && git pull origin develop && docker compose pull --policy always && rbstart'
 
 # Остановка всех узлов
 alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down; cd ~/rob_box_project/docker/main && docker compose down'
@@ -118,7 +118,7 @@ rbsync() {
     echo -e "${ROBBOX_COLOR_CYAN}Обновляем код...${ROBBOX_COLOR_NC}"
     cd ~/rob_box_project && git pull origin develop
     echo -e "${ROBBOX_COLOR_CYAN}Обновляем образы...${ROBBOX_COLOR_NC}"
-    docker compose pull
+    docker compose pull --policy always
     echo -e "${ROBBOX_COLOR_CYAN}Запускаем контейнеры...${ROBBOX_COLOR_NC}"
     rbstart
     echo -e "${ROBBOX_COLOR_GREEN}✓ Готово!${ROBBOX_COLOR_NC}"

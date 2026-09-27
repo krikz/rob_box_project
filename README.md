@@ -218,6 +218,74 @@ timeout 5 ros2 run rob_box_voice led_node
    указывает на `/usr/bin/python3.10`. **Не запускать `ros2 run …` под `python3.11`** —
    ROS бинари слинкованы с libpython3.10.
 
+## 🚑 Cold-start при недоступных образах (Vision Pi)
+
+После применения серии фиксов ([issue #2610](https://github.com/krikz/rob_box_project/issues/2610), [ADR-0111](docs/adr/0111-voice-resources-image-sourcing.md)) Vision Pi **поднимает стек частично**, а не валится целиком, если один из образов недоступен (registry offline, отсутствует тег, переключение DNS).
+
+> **Статус (обновлено 2026-09-21):** фиксы смёржены в `develop`. Пункт
+> ADR-0111 §2.1 про bake Renardo-сэмплов в `voice-base` **не реализован
+> так, как описан ниже в истории PR** — вместо bake-in-образ выбран другой
+> механизм: [ADR-0125](docs/adr/0125-resource-pack-host-delivery-seam.md)
+> (Ресурсный пак) и [ADR-0126](docs/adr/0126-renardo-samples-host-delivery.md)
+> (уточняет ADR-0111 §2.1). Образ `voice-resources` и init-контейнер
+> `voice-resources-init` **удалены целиком**, никакого `profiles: [init]`
+> в compose больше нет. Сэмплы и STT/TTS-модели (Vosk, Silero) кладёт на
+> хост Vision Pi (`/opt/rob_box/samples`, `/opt/rob_box/models`) шаг деплоя
+> «Ensure STT/TTS models + Renardo samples», контейнеры видят их
+> bind-mount'ом. Проверено на роботе 21.09.2026 (raw: `docker inspect`
+> bind-mount, `ls` моделей/сэмплов внутри контейнера, прогрев Vosk/Silero).
+
+### Что нового
+
+- **`Restart=on-failure` + `RestartSec=60` + `StartLimitBurst=5` + `StartLimitIntervalSec=600`** в `robbox-vision.service` ([PR #2635](https://github.com/krikz/rob_box_project/pull/2635), `scripts/setup/setup_vision_pi.sh:setup_autostart`) — systemd сам поднимет юнит после транзитных сбоев (до 5 попыток за 10 минут), даже если `docker compose up -d` вернул ненулевой exit code.
+- **`pull_policy: missing`** для всех image-based сервисов в `docker/vision/docker-compose.yaml` ([PR #2634](https://github.com/krikz/rob_box_project/pull/2634)) — compose использует локальный кэш, если образ уже скачан; если нет — попытается стянуть, но **не уронит стек из-за одного образа**.
+- **`--pull never`** (через override-файл или явный флаг в `ExecStart`) — жёсткая гарантия «использовать только локальный кэш». Рекомендуется на проде Vision Pi, где registry может быть недоступен.
+- **Renardo-сэмплы и STT/TTS-модели переехали на хост** (ADR-0125/ADR-0126): никакого init-контейнера и `profiles: [init]` больше нет — стек стартует без обращения к registry за этими ресурсами. `supercollider` и `voice-assistant` получают сэмплы bind-mount'ом `/opt/rob_box/samples:/root/.config/renardo/samples`; `voice-assistant`, `telegram-bot` и др. получают модели bind-mount'ом `/opt/rob_box/models:/models`. Пополняется вручную: `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh` (или `--only <имя>` для одной записи манифеста, `--dry-run` для плана без сети).
+
+### Какие сервисы считаются критичными, а какие — опциональными
+
+| Категория | Сервисы | Что произойдёт, если образ недоступен |
+|-----------|---------|---------------------------------------|
+| **Критичные** (без них стек бесполезен) | `ros2_bridge`, `zenoh-router`, `hailo`, `vision_node` (лицевая/person), `avatar-arbiter` | Робот «глух и слеп» — голос и зрение не работают. Но **стек всё равно поднимется**, systemd рестартует и логи покажут причину. |
+| **Опциональные** (можно без них) | `supercollider` (без сэмплов на хосте → `synth-only mode`), `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
+
+### Диагностика: что делать, если часть контейнеров не поднялась
+
+```bash
+# 1. Какие сервисы не стартовали и почему
+docker compose -f ~/rob_box_project/docker/vision/docker-compose.yaml ps --format json \
+  | jq -r '.[] | select(.State != "running") | "\(.Name)\t\(.State)\t\(.ExitCode // "-")\t\(.Error // "-")"'
+
+# 2. Логи конкретного сервиса
+docker compose logs --tail=200 <service>
+
+# 3. Полный статус systemd-юнита
+sudo systemctl status robbox-vision --no-pager -l
+
+# 4. Ресурсы (сэмплы/модели) не на месте — пополнить Ресурсный пак
+sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh --dry-run  # план, без сети
+sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh           # применить
+
+# 5. Полный cold-start с гарантией использования локального кэша
+docker compose --pull never up -d
+```
+
+### Сценарии
+
+| Сценарий | Что происходит | Что делать |
+|----------|---------------|-----------|
+| `/opt/rob_box/samples` или `/opt/rob_box/models` пусты/отсутствуют (registry/CDN offline на этапе доставки) | `supercollider`/`voice-assistant` поднимаются в `synth-only mode` (без музыки), STT/TTS без моделей не стартуют | `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh` когда сеть доступна |
+| Один из образов не скачался | Остальные сервисы работают. systemd рестартует юнит, повторный `pull` сделает best-effort | Дождаться registry или поднять руками: `docker compose --pull never up -d <service>` |
+| Нужно обновить сэмплы Renardo | Ресурсный пак идемпотентен (sha256/marker) — повторный прогон no-op, если манифест не менялся | `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh --only renardo-samples` |
+
+### Профили compose (Vision Pi)
+
+- **`default`** (без флага `--profile`): все основные сервисы. Используется в `robbox-vision.service` для повседневного старта. Init-профиля для сэмплов/моделей больше нет — их кладёт на хост Ресурсный пак ДО `docker compose up` (ADR-0125/ADR-0126).
+- **`monitoring`** (без изменений): `cadvisor-vision`, `promtail-vision`.
+- **`ai`** (без изменений): `ollama`.
+
+> **Главный инвариант**: стек **всегда** поднимает базовые сервисы без обращения к registry за сэмплами/моделями — они уже на хосте до `docker compose up` (ADR-0125, ADR-0126, уточняют [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)). Образ `voice-resources` и init-контейнер удалены целиком. Defense-in-depth: `--ignore-pull-failures` (`.github/workflows/L-Deploy and Verify.yml:381`) + `pull_policy: missing` (compose) + `Restart=on-failure` (systemd) — независимые слои защиты от каскадного краша.
+
 ## 🎯 Цель проекта
 
 **РОББОКС** - автономный робот-доставщик для использования внутри помещений.

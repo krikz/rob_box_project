@@ -290,8 +290,10 @@ docker-compose config | grep image:
 # View active env
 cat docker/vision/.env
 
-# Run local workflow
-act -j build-oak-d  # Requires 'act' tool
+# Run local workflow (сервисы собираются одним matrix-job'ом `build`,
+# состав — docker/build-manifest.yaml; отдельного job'а на сервис,
+# вроде build-oak-d, в текущем пайплайне нет)
+act -j build  # Requires 'act' tool
 ```
 
 ## Summary

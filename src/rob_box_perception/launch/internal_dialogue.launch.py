@@ -4,7 +4,7 @@ internal_dialogue.launch.py - Launch perception pipeline (dev).
 
 Phase 6 v2 / W11. Perception package is now a thin sensor bridge — no LLM,
 no reflection node, no vision stub. The dialogue shell (src/rob_box_voice)
-owns all reasoning via DialogCore + MemoryStore.
+owns all reasoning via AgentCore + MemoryStore.
 
 Launches:
 1. perception_bridge - UART sensor bridge -> /sensors/data + /perception/health
@@ -24,7 +24,7 @@ Data flow (current — Phase 6 v2):
                                      |
                                      v
         /perception/context_update -> mcp_server.py (harness MCP-bridge)
-                                     -> DialogCore -> LLM
+                                     -> AgentCore -> LLM
 
 Data flow (target — Phase 7+, после готовности sensor board firmware):
   [Sensor board (UART)] -> perception_bridge -> /sensors/data

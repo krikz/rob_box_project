@@ -449,6 +449,167 @@ llm_streaming, agent-flow. В активной разработке, требу�
 
 ## [Unreleased]
 
+### Vision Pi zram-swap + ssh MemoryLow + mem_limit для всех контейнеров (issue #2621, ADR-0111, kanban t_22362046)
+
+Vision Pi под нагрузкой становилась недоступна по ssh (MemAvailable
+падал до 416 МБ за 27 минут, свопа не было — ядро не могло вытеснить
+анонимные страницы). Решение:
+
+* **zram-swap** через systemd (4 GB, zstd, swappiness=180) — даёт ядру
+  возможность вытеснять анонимные страницы при пиках. Скрипт
+  `scripts/setup/setup_vision_pi_swap.sh` (идемпотентен, команды `--auto`,
+  `--dry-run`, `--status`, `--remove`). Systemd-юнит
+  `host/vision/robbox-zram.service`. Подробности — в
+  [`ADR-0111`](docs/adr/0111-vision-pi-zram-swap-and-container-limits.md).
+* **MemoryLow=128M для sshd** через drop-in
+  `host/vision/ssh-memory-low.conf` — чтобы сессия управления
+  выживала, когда прикладные контейнеры потребляют память.
+* **`mem_limit` для всех контейнеров** в `docker/vision/docker-compose.yaml`.
+  Раньше лимиты были только у 5 из 14 контейнеров (4 GB у
+  voice-assistant, 6 GB у oak-d, 1 GB у vision-hailo/vision-face, 512 MB
+  у telegram-bot). Теперь добавлены лимиты для zenoh-router (128m),
+  led-matrix (512m), ceiling-camera (512m), supercollider (512m),
+  voice-resources-init (256m), voice-action-server (128m),
+  avatar-supervisor (512m), avatar-arbiter (512m), rob-box-quest (512m).
+  Под профилем (`cadvisor`, `promtail`, `ollama`) — намеренно без
+  лимита.
+* **19 unit-тестов** в
+  `tests/unit/scripts/test_setup_vision_pi_swap.py` (bash-syntax,
+  shellcheck, dry-run idempotency, validation strict, status без root).
+* **Документация:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
+  (обновлён OOM-раздел), `docs/development/DOCKER_STANDARDS.md` §7
+  (обязательный mem_limit + ссылка на zram),
+  `host/vision/README.md` (инструкции по ручной/авто-установке).
+* **`setup_vision_pi.sh`** — добавлены шаги `setup_zram_swap` и
+  `setup_ssh_memory_low` в `main()`.
+
+**Что НЕ лечит этот PR:** root cause ~1.6 GB мёртвого груза CUDA-torch
+в `voice-assistant` — это отдельная карточка
+[issue #2609](https://github.com/krikz/rob_box_project/issues/2609)
+(профиль `agent:backend`, в работе). После неё voice-assistant будет
+~2 GB вместо 3.5 GB, и zram-swap станет страховкой, а не необходимостью.
+
+### MiniMax STT provider (Phase 1 PoC, kanban t_7283c042 / issue #2365)
+
+Cross-package documentation polish для MiniMax Speech-to-Text провайдера,
+вмерженного в `develop` через PR #2369 (commit `490918d1f`) и
+спецификацию [ADR-0091](docs/adr/0091-minimax-stt-provider.md).
+Никаких изменений в коде — только docs & comments.
+
+#### Изменено (docs-only)
+
+* **Новый operator-гайд:**
+  [`docs/architecture/minimax-stt-provider.md`](docs/architecture/minimax-stt-provider.md)
+  — mini-разбор для операторов: chain order (`vosk → minimax → yandex`),
+  env-var `MINIMAX_API_KEY`, toggle on/off, pytest-команды,
+  troubleshooting. Подробная архитектура/контракт — в ADR-0091 и
+  [`docs/architecture/stt-provider-contract.md`](docs/architecture/stt-provider-contract.md).
+* **Расширен class docstring**
+  `src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py`
+  (`MiniMaxSTTProvider`) — две новые секции: «When to prefer this
+  provider» (cloud + diarization trade-offs, latency для barge-in,
+  когда выбирать vs Vosk/Yandex) и «Configuration» (env, base_url,
+  model, timeout, max audio size).
+* **`src/rob_box_voice/README.md`** — MiniMax STT добавлен в список
+  провайдеров + новая подсекция «MiniMax STT (Phase 1 PoC)» с
+  конфигурацией (`MINIMAX_API_KEY`), toggle on/off, ссылками на
+  ADR и pytest-команды.
+* **CHANGELOG-записи:**
+  [`src/rob_box_voice/CHANGELOG.md`](src/rob_box_voice/CHANGELOG.md)
+  (`### Added` → MiniMax STT provider — Phase 1 PoC).
+
+#### Не менялось
+
+* Сам код `MiniMaxSTTProvider` (Phase 1) и его поведение — только docstring.
+* Phase 2 wiring в `stt_node._recognize_with_fallback` —
+  намеренно вне scope этой карточки; см. ADR-0091 §3 и issue #2365.
+* Поведение chain в production — MiniMax STT будет вставлен между
+  Vosk и Yandex только после Phase 2 merge (новая PR с
+  ROS-параметрами `minimax_stt_*`).
+
+### Agent-flow: auto-create fail-streak issue (ADR-FS-001, kanban t_401e52de)
+
+> Ретро t_401e52de: 8 fail-прогонов L: E2E Voice Test подряд прошли молча
+> без issue — process-gap. Watchdog теперь создаёт ОДИН issue с лейблом
+> `e2e-fail-streak` (rate-limit 4ч), вместо безмолвного fail-streak.
+
+#### Добавлено
+
+* `scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh`:
+  - Новая ветка «AUTO-CREATE ISSUE» (после «WARN: issue comment», до «PAUSE: sentinel»).
+    Срабатывает при `streak ≥ E2E_FAIL_STREAK_ISSUE_THRESHOLD` (default 5).
+  - Два guard'а идемпотентности: (a) `ISSUE_COOLDOWN_FILE` (mtime) младше
+    `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` → skip; (b) `gh issue list
+    --label e2e-fail-streak --state open` уже возвращает 1+ → skip.
+  - Issue body: timeline последних 8 failed runs (`format_failed_runs_table`
+    уже был добавлен ранее в шапку), `git -C $REPO_DIR rev-parse origin/develop`
+    → HEAD SHA, релевантные merged PR за 5 дней (парсятся из
+    `git log origin/develop --merges --pretty=format:'%s' | grep -oE '#[0-9]+'`),
+    hypothesis «music-fix regression» с cross-refs на `#2246` (supervisor
+    метрики) и `#2347` (voice follow-up).
+  - Title: `[e2e-fail-streak] L: E2E Voice Test — N fails подряд (develop <sha>)`.
+  - ENV: `E2E_FAIL_STREAK_ISSUE_THRESHOLD`,
+    `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS`,
+    `E2E_FAIL_STREAK_ISSUE_LABEL`,
+    `E2E_FAIL_STREAK_ISSUE_ASSIGNEE`,
+    `REPO_DIR`.
+* `scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh` — 10 unit-кейсов
+  через PATH-hijack mock-gh / mock-git:
+  S1 streak<threshold, S2 DRY-RUN, S3 fresh cooldown,
+  S4 existing open issue, S5 create-call correctness, S6 8-fails→1-issue
+  (acceptance), S7 stale cooldown, S8 gh-fail handling, S9 assignee,
+  Sanity marker в body.
+
+#### Не менялось
+
+* Существующая comment-alert ветка (Q22 unlabel respect).
+* Auto-pause sentinel на streak ≥ 20.
+* install.sh — скрипт уже в `EXPECTED`, новая логика self-contained внутри.
+
+### Agent-flow: документация fail-streak watchdog (kanban t_e72760e9)
+
+> Карточка t_e72760e9 (techwriter) — пост-merge polish PR к #2374: заполнить
+> пробелы в user-facing документации, которых не было в исходном коммите
+> (требовала acceptance из task body: state-путь, gh auth/scope,
+> DRY-RUN, explicit disable через ENV). Код НЕ менялся — только README
+> и CHANGELOG.
+
+#### Добавлено (в `scripts/agent_flow/README.md`, секция `agent-flow-e2e-fail-streak-watchdog.sh`)
+
+* Подсекция **«State-файлы (rate-limit + pause-sentinel)»** — таблица
+  `$HERMES_HOME/state/agent-flow-e2e-fail-streak-{last-issue,pause}`
+  с колонками «назначение / очистка» + явное замечание про путь из task body
+  `/var/lib/agent-flow/e2e-fail-streak-issue.last` (абстрактный reference,
+  реальный код использует `$HERMES_HOME/state/...`).
+* Подсекция **«Требования к окружению»** — `gh` CLI + `gh auth status` (exit 1
+  без логина), GitHub token scope `repo` (нужен и для `gh run list`,
+  и для `gh issue create`), опциональный `read:org` (только если задан
+  `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` как `@org-member`), `python3`
+  (для парсинга JSON), `flock` (util-linux), `REPO_DIR` для `git -C`.
+* Подсекция **«Как отключить или сильно ослабить watchdog»** — explicit
+  рецепты: `E2E_FAIL_STREAK_ISSUE_THRESHOLD=999999` отключает auto-create
+  (но comment + pause продолжают работать), три порога в 999999 отключают
+  весь watchdog, `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS=24` меняет окно
+  rate-limit, `rm -f $HERMES_HOME/state/agent-flow-e2e-fail-streak-{last-issue,pause}`
+  для срочного cooldown-clear / manual resume после fix регрессии.
+* Подсекция **«DRY-RUN для оператора»** — `FAIL_STREAK_DRY_RUN=true bash …`
+  с явным списком, что в DRY-RUN блокируется (`gh issue comment`,
+  `gh issue create`, `touch` pause-sentinel, write cooldown) и что
+  остаётся как обычно (READ: `gh run list`, `gh auth status`, `git -C`).
+  Это «safe test path» для оператора перед любым ENV-тюнингом или
+  новым релизом watchdog'а.
+* В ENV-таблицу добавлены `HERMES_HOME` (`~/.hermes`), `GH_REPO`
+  (`krikz/rob_box_project`), `LOCK_FILE` (`/tmp/agent-flow-e2e-fail-streak-watchdog.lock`),
+  `FAIL_STREAK_DRY_RUN` (`false`) — раньше не были видны оператору
+  без чтения исходника.
+* Подсекция **«Тесты / регресс-гард»** — explicit `bash scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh`
+  с ожидаемым `PASS=10 FAIL=0 exit 0` + утверждение «можно гонять в любом
+  окружении (включая CI без `gh` auth) — mock-gh лежит в `mktemp -d/bin/gh`».
+
+#### Не менялось
+
+* Никакого кода — только README и этот CHANGELOG-entry. См. PR (kanban t_e72760e9).
+
 ### MiniMax TTS-провайдер
 
 #### Добавлено
