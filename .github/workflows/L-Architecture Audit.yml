@@ -121,7 +121,7 @@ jobs:
         run: |
           {
             echo "## Robot runtime ROS2 graph"
-            python -c 'import json; d=json.load(open("architecture/runtime.json")); print(f"- Source: {d.get("captured_from")}"); print(f"- Nodes: {len(d.get("nodes", []))}"); print(f"- Topics: {len(d.get("topics", []))}"); print(f"- Services: {len(d.get("services", []))}"); print(f"- Actions: {len(d.get("actions", []))}")'
+            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes: " + str(len(d.get("nodes", [])))); print("- Topics: " + str(len(d.get("topics", [])))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
             echo
             cat architecture/runtime-diff.md
           } >> "$GITHUB_STEP_SUMMARY"
