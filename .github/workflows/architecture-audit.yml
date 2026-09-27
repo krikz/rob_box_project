@@ -70,6 +70,9 @@ jobs:
       - name: Run structural findings
         run: |
           python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
+      - name: Render node and topic catalogs
+        run: |
+          python tools/architecture_catalog.py architecture/inventory.json
       - name: Validate inventory
         run: |
           python - <<'PY'
@@ -93,6 +96,8 @@ jobs:
             architecture/inventory.md
             architecture/findings.json
             architecture/findings.md
+            architecture/node-catalog.md
+            architecture/topic-catalog.md
       - name: Publish static summary
         run: |
           {
