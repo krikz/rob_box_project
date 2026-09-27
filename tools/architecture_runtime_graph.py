@@ -177,6 +177,8 @@ def build_graph(runtime, inventory, topics, title):
         host_id = f"H{next_id}"
         next_id += 1
         lines.append(f'    subgraph {host_id}["🖥️ {host} @ {address}"]')
+        if compact:
+            lines.append("        direction TB")
         assigned = defaultdict(list)
         for node, meta in node_meta.items():
             owner = meta["owner"]
@@ -191,6 +193,8 @@ def build_graph(runtime, inventory, topics, title):
             next_id += 1
             service_ids[service_name] = cid
             lines.append(f'        subgraph {cid}["🐳 {safe(service_name)}"]')
+            if compact:
+                lines.append("            direction TB")
             for node in sorted(assigned[service_name]):
                 nid = f"N{next_id}"
                 kid = f"K{next_id}"
