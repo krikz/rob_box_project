@@ -135,15 +135,19 @@ if ! command -v gh >/dev/null 2>&1; then
     fail "gh CLI not found in PATH"
 fi
 
-PR_JSON="$(gh pr list \
+PR_JSON=""
+if ! PR_JSON="$(gh pr list \
     --repo "$GH_REPO" \
     --state open \
     --limit 200 \
     --json number,title,labels,mergeable,mergeStateStatus,updatedAt,headRefName \
-    2>/dev/null || echo '[]')"
-
+    2>/dev/null)"; then
+    fail "gh pr list failed (backlog unavailable)"
+fi
+# An empty response is not the same as a valid empty JSON array: fail closed
+# so a transient/partial gh failure can never be reported as "0 open PRs".
 if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
-    PR_JSON='[]'
+    fail "gh pr list returned empty output"
 fi
 
 # --- cross-check: issues с label stale-candidate ---------------------------
