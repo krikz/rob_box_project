@@ -24,6 +24,15 @@ This directory contains all automated workflows for the Rob Box project.
 | **L: Build Main Pi Services** | Called by local workflows | Build Main Pi services locally |
 | **L: Build Single Service** | Manual | Build a single service on local build machine |
 
+### 🏛️ Architecture Audit
+
+| Workflow | Runner | Purpose |
+|----------|--------|---------|
+| **G: Architecture Audit** | GitHub-hosted | Static architecture inventory and structural findings |
+| **L: Architecture Audit** | Self-hosted `rob-box` | Live ROS2 nodes/topics/services/actions and runtime diff |
+
+The `L:` audit is the one to use when collecting the real robot ROS2 graph. The robot network is intentionally not accessed from GitHub-hosted runners.
+
 ### 🔄 CI/CD Automation
 
 | Workflow | Trigger | Purpose |
@@ -41,8 +50,8 @@ This directory contains all automated workflows for the Rob Box project.
 
 ## Naming Convention
 
-- **G-** prefix = GitHub Actions runners (cloud-based)
-- **L-** prefix = Local self-hosted runners (build machine)
+- **G-** prefix = GitHub-hosted runners (cloud-based)
+- **L-** prefix = local self-hosted runners (build machine / robot network)
 
 ## Common Use Cases
 
