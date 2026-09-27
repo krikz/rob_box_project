@@ -128,7 +128,7 @@ unsettled across jurisdictions. Per ADR-0136 each such asset MUST:
 
 1. Be tracked in the per-area meta tracking issue with label
    `ai-asset` (currently: meta-issue for `rob_box_quest` environment
-   assets — see tracking section below when populated).
+   assets — [tracking issue #3051](https://github.com/krikz/rob_box_project/issues/3051)).
 2. Appear in this CREDITS.md with: generator name, generation date,
    tracking-issue link, current license status (`pending` / `yes` /
    `removed`), owner (товарищ Шифу).
