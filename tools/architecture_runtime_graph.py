@@ -1,107 +1,230 @@
 #!/usr/bin/env python3
 """Render Mermaid architecture graphs from static inventory + live ROS 2 runtime evidence."""
 from __future__ import annotations
-import argparse, json, re
+
+import argparse
+import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
-SYSTEM_TOPICS={"/rosout","/parameter_events","/bond"}
-MAX_LABEL_TOPICS=3
+SYSTEM_TOPICS = {"/rosout", "/parameter_events", "/bond"}
 
-def norm(value): return re.sub(r"[^a-z0-9]","",value.lower())
+
+def norm(value):
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
 
 def canonical_node(value):
-    """Normalize ROS node names so '/foo' and 'foo' are one graph node."""
+    """Normalize ROS node names while preserving namespaces."""
     return value.lstrip("/")
 
+
 def safe(value):
-    return value.replace("&","&amp;").replace('"',"&quot;").replace("<","&lt;").replace(">","&gt;")
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
 
 def node_class_map(inventory):
-    by_norm=defaultdict(list)
-    for item in inventory.get("classes",[]):
-        if not item.get("is_node") or not item.get("name"): continue
-        name=item["name"]; key=norm(name)
-        for candidate in {key,re.sub(r"node$","",key)}:
-            if candidate: by_norm[candidate].append(name)
-    return {k: sorted(set(v))[0] for k,v in by_norm.items() if len(set(v))==1}
+    by_norm = defaultdict(list)
+    for item in inventory.get("classes", []):
+        if not item.get("is_node") or not item.get("name"):
+            continue
+        name = item["name"]
+        key = norm(name)
+        for candidate in {key, re.sub(r"node$", "", key)}:
+            if candidate:
+                by_norm[candidate].append(name)
+    return {k: sorted(set(v))[0] for k, v in by_norm.items() if len(set(v)) == 1}
+
 
 def resolve_class(node, classes):
-    key=norm(node.rsplit("/",1)[-1])
-    return classes.get(key) or classes.get(re.sub(r"node$","",key))
+    key = norm(node.rsplit("/", 1)[-1])
+    return classes.get(key) or classes.get(re.sub(r"node$", "", key))
+
 
 def connected_topics(runtime, include_system=False):
-    result=[]
-    for topic in runtime.get("topics",[]):
-        if not include_system and topic in SYSTEM_TOPICS: continue
-        info=runtime.get("topic_info",{}).get(topic,{})
-        if info.get("publishers") and info.get("subscribers"): result.append(topic)
-    return sorted(result,key=lambda t:(-(len(runtime.get("topic_info",{}).get(t,{}).get("publishers",[]))+len(runtime.get("topic_info",{}).get(t,{}).get("subscribers",[]))),t))
+    result = []
+    for topic in runtime.get("topics", []):
+        if not include_system and topic in SYSTEM_TOPICS:
+            continue
+        info = runtime.get("topic_info", {}).get(topic, {})
+        if info.get("publishers") and info.get("subscribers"):
+            result.append(topic)
+    return sorted(
+        result,
+        key=lambda t: (
+            -(
+                len(runtime.get("topic_info", {}).get(t, {}).get("publishers", []))
+                + len(runtime.get("topic_info", {}).get(t, {}).get("subscribers", []))
+            ),
+            t,
+        ),
+    )
+
+
+def resolve_runtime_node(value, runtime_nodes):
+    """Map topic-info endpoint names to the captured runtime node identity."""
+    node = canonical_node(value)
+    if node in runtime_nodes:
+        return node
+    matches = [candidate for candidate in runtime_nodes if candidate.rsplit("/", 1)[-1] == node]
+    if len(matches) == 1:
+        return matches[0]
+    return node
+
 
 def build_graph(runtime, inventory, topics, title):
-    nodes={canonical_node(x) for x in runtime.get("nodes",[]) if x}
+    runtime_nodes = {canonical_node(x) for x in runtime.get("nodes", []) if x}
+    nodes = set(runtime_nodes)
+
     for topic in topics:
-        info=runtime.get("topic_info",{}).get(topic,{})
-        nodes.update(canonical_node(x.get("node")) for x in info.get("publishers",[]) if x.get("node"))
-        nodes.update(canonical_node(x.get("node")) for x in info.get("subscribers",[]) if x.get("node"))
-    nodes=sorted(nodes)
-    classes=node_class_map(inventory)
-    edges=defaultdict(list)
+        info = runtime.get("topic_info", {}).get(topic, {})
+        for endpoint in info.get("publishers", []) + info.get("subscribers", []):
+            value = endpoint.get("node")
+            if value:
+                nodes.add(resolve_runtime_node(value, runtime_nodes))
+    nodes = sorted(nodes)
+
+    classes = node_class_map(inventory)
+    edges = defaultdict(list)
     for topic in topics:
-        info=runtime.get("topic_info",{}).get(topic,{})
-        pubs=[canonical_node(x.get("node")) for x in info.get("publishers",[]) if x.get("node")]
-        subs=[canonical_node(x.get("node")) for x in info.get("subscribers",[]) if x.get("node")]
+        info = runtime.get("topic_info", {}).get(topic, {})
+        pubs = [
+            resolve_runtime_node(x.get("node"), runtime_nodes)
+            for x in info.get("publishers", [])
+            if x.get("node")
+        ]
+        subs = [
+            resolve_runtime_node(x.get("node"), runtime_nodes)
+            for x in info.get("subscribers", [])
+            if x.get("node")
+        ]
         for pub in pubs:
             for sub in subs:
-                if pub!=sub: edges[(pub,sub)].append(topic)
-    ids={node:f"N{i}" for i,node in enumerate(nodes)}
-    source=runtime.get("captured_from","unknown")
-    container_label=source
-    match=re.match(r"remote:([^:]+):container:(.+)$",source)
-    if match: container_label=f"{match.group(2)} @ {match.group(1)}"
-    lines=[
+                if pub != sub:
+                    edges[(pub, sub)].append(topic)
+
+    source = runtime.get("captured_from", "unknown")
+    container_label = source
+    match = re.match(r"remote:([^:]+):container:(.+)$", source)
+    if match:
+        container_label = f"{match.group(2)} @ {match.group(1)}"
+
+    lines = [
         "%% Auto-generated by tools/architecture_runtime_graph.py",
         "%% Source: architecture/runtime.json + architecture/inventory.json",
+        "%% Hierarchy: container -> node -> class -> topic",
         '%%{init: {"theme":"neutral","htmlLabels":true,"flowchart":{"curve":"basis"}}}%%',
         "flowchart LR",
         f'    T["{safe(title)}"]:::title',
         f'    subgraph C0["🐳 {safe(container_label)}"]',
     ]
-    for node in nodes:
-        cls=resolve_class(node,classes)
-        leaf=node.rsplit("/",1)[-1] or "/"
-        label=f"{safe(leaf)}<br/><small>{safe(cls)}</small>" if cls else f"{safe(leaf)}<br/><small>class: unresolved</small>"
-        lines.append(f'        {ids[node]}["{label}"]:::node')
+
+    class_ids = {}
+    node_topic_ids = defaultdict(set)
+
+    for index, node in enumerate(nodes):
+        node_id = f"N{index}"
+        cls = resolve_class(node, classes)
+        class_id = f"K{index}"
+        class_ids[node] = class_id
+
+        lines.append(f'        subgraph {node_id}["{safe(node)}"]')
+        class_label = f"class: {cls}" if cls else "class: unresolved"
+        lines.append(f'            {class_id}["{safe(class_label)}"]:::class')
+        lines.append("        end")
+
     lines.append("    end")
-    for (pub,sub),names in sorted(edges.items()):
-        unique=sorted(set(names)); shown=unique[:MAX_LABEL_TOPICS]
-        label="<br/>".join(safe(x) for x in shown)
-        if len(unique)>MAX_LABEL_TOPICS: label+=f"<br/><small>+{len(unique)-MAX_LABEL_TOPICS} more</small>"
-        lines.append(f'    {ids[pub]} -->|"{label}"| {ids[sub]}')
+
+    topic_ids = {}
+    for index, topic in enumerate(topics):
+        topic_id = f"P{index}"
+        topic_ids[topic] = topic_id
+        lines.append(f'    {topic_id}["{safe(topic)}"]:::topic')
+
+    for topic in topics:
+        info = runtime.get("topic_info", {}).get(topic, {})
+        pubs = {
+            resolve_runtime_node(x.get("node"), runtime_nodes)
+            for x in info.get("publishers", [])
+            if x.get("node")
+        }
+        subs = {
+            resolve_runtime_node(x.get("node"), runtime_nodes)
+            for x in info.get("subscribers", [])
+            if x.get("node")
+        }
+        for pub in sorted(pubs):
+            if pub in class_ids:
+                lines.append(f"    {class_ids[pub]} --> {topic_ids[topic]}")
+        for sub in sorted(subs):
+            if sub in class_ids:
+                lines.append(f"    {topic_ids[topic]} --> {class_ids[sub]}")
+
     lines += [
         "",
         "    classDef title fill:#f7f7f7,stroke:#777,color:#111,font-weight:bold;",
-        "    classDef node fill:#eef5ff,stroke:#3b82f6,color:#102a43,stroke-width:1.5px;",
+        "    classDef class fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.2px;",
+        "    classDef topic fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1.2px;",
         "    style C0 fill:#f7fbff,stroke:#3b82f6,stroke-width:2px;",
-        "    linkStyle default stroke:#6b7280,stroke-width:1.2px;",
     ]
-    return "\n".join(lines)+"\n"
+    return "\n".join(lines) + "\n"
+
 
 def main():
-    p=argparse.ArgumentParser()
-    p.add_argument("--runtime",type=Path,default=Path("architecture/runtime.json"))
-    p.add_argument("--inventory",type=Path,default=Path("architecture/inventory.json"))
-    p.add_argument("--output-dir",type=Path,default=Path("architecture"))
-    p.add_argument("--overview-topics",type=int,default=40)
-    a=p.parse_args()
-    runtime=json.loads(a.runtime.read_text(encoding="utf-8"))
-    inventory=json.loads(a.inventory.read_text(encoding="utf-8"))
-    a.output_dir.mkdir(parents=True,exist_ok=True)
-    all_topics=connected_topics(runtime)
-    overview=all_topics[:max(1,a.overview_topics)]
-    (a.output_dir/"runtime-graph.mmd").write_text(build_graph(runtime,inventory,all_topics,"ROB-BOX ROS 2 runtime architecture — connected application graph"),encoding="utf-8")
-    (a.output_dir/"runtime-overview.mmd").write_text(build_graph(runtime,inventory,overview,f"ROB-BOX ROS 2 runtime overview — top {len(overview)} connected topics"),encoding="utf-8")
-    classes=node_class_map(inventory)
-    print(json.dumps({"runtime_nodes":len(runtime.get("nodes",[])),"connected_topics":len(all_topics),"overview_topics":len(overview),"unresolved_class_nodes":sum(resolve_class(n,classes) is None for n in runtime.get("nodes",[]))},ensure_ascii=False,sort_keys=True))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runtime", type=Path, default=Path("architecture/runtime.json"))
+    parser.add_argument("--inventory", type=Path, default=Path("architecture/inventory.json"))
+    parser.add_argument("--output-dir", type=Path, default=Path("architecture"))
+    parser.add_argument("--overview-topics", type=int, default=40)
+    args = parser.parse_args()
 
-if __name__=="__main__": main()
+    runtime = json.loads(args.runtime.read_text(encoding="utf-8"))
+    inventory = json.loads(args.inventory.read_text(encoding="utf-8"))
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    all_topics = connected_topics(runtime)
+    overview = all_topics[: max(1, args.overview_topics)]
+
+    (args.output_dir / "runtime-graph.mmd").write_text(
+        build_graph(
+            runtime,
+            inventory,
+            all_topics,
+            "ROB-BOX ROS 2 runtime architecture — full connected graph",
+        ),
+        encoding="utf-8",
+    )
+    (args.output_dir / "runtime-overview.mmd").write_text(
+        build_graph(
+            runtime,
+            inventory,
+            overview,
+            f"ROB-BOX ROS 2 runtime overview — top {len(overview)} connected topics",
+        ),
+        encoding="utf-8",
+    )
+
+    classes = node_class_map(inventory)
+    unresolved = sum(resolve_class(n, classes) is None for n in runtime.get("nodes", []))
+    print(
+        json.dumps(
+            {
+                "runtime_nodes": len(runtime.get("nodes", [])),
+                "connected_topics": len(all_topics),
+                "overview_topics": len(overview),
+                "unresolved_class_nodes": unresolved,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
