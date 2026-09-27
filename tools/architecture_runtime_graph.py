@@ -149,7 +149,6 @@ def build_graph(runtime, inventory, topics, title):
         "%% Physical hierarchy: Pi -> container -> node -> class; topics are shared ROS resources",
         '%%{init: {"theme":"neutral","htmlLabels":true,"flowchart":{"curve":"basis"}}}%%',
         "flowchart LR",
-        f'    T["{safe(title)}"]:::title',
     ]
 
     hosts = {"Main Pi": "10.1.1.20", "Vision Pi": "10.1.1.21"}
@@ -251,7 +250,7 @@ def main():
     parser.add_argument("--runtime", type=Path, default=Path("architecture/runtime.json"))
     parser.add_argument("--inventory", type=Path, default=Path("architecture/inventory.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("architecture"))
-    parser.add_argument("--overview-topics", type=int, default=40)
+    parser.add_argument("--overview-topics", type=int, default=12)
     args = parser.parse_args()
 
     runtime = json.loads(args.runtime.read_text(encoding="utf-8"))
