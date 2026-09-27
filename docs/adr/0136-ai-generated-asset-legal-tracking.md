@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | **Proposed** |
+| Статус | **Accepted** |
 | Дата | 2026-09-27 |
 | Автор | architect (Hermes Agent), kanban `t_2d0f27f7`, по ревью-находке issue #3050 |
 | Контекст | В `src/rob_box_quest/webxr_client/public/models/environment/CREDITS.md` появилась секция "Hero props (Tripo3D, 2026-09-26)" — ассеты сгенерированы Tripo3D из Qwen reference images. ADR-0032 §1.2 R9 требует «Все ассеты — CC0 (или собственные)». AI-generated формально НЕ CC0 (юридический статус mesh'ей, сгенерированных text-to-3D моделью, не settled в большинстве юрисдикций) и НЕ собственные в строгом смысле (промежуточная генерация через proprietary Qwen reference). Текущее примечание в CREDITS.md («flag before any public redistribution») — только комментарий, не process-инвариант. Решение ниже формализует обязательный process + CREDITS.md contract + CI guard. |
