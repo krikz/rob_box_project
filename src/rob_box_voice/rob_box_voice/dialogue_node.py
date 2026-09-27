@@ -3962,28 +3962,62 @@ class DialogueNode(Node):
             % (face_obs.name, face_obs.age_sec(), face_obs.similarity, state["name"])
         )
         return True
-    def _handle_tentative_speaker(
-        self, sp: dict, user_input: str, utterance_id: Optional[str] = None
-    ) -> str:
-        """Диспетчер переспроса для tentative-случая (см. блок выше).
-
-        ``single`` (живой хозяин, конкурента с другим именем нет) может
-        дойти до вопроса с ИМЕНЕМ кандидата. ``contested`` (n210: голос
-        похож сразу на нескольких людей с разными именами) -- имя
-        кандидата НИКУДА не идёт, даже в подсказку-гипотезу: критично,
-        что в n210 само слово "Борис" запрещено (must_not_say), и вопрос
-        "Борис, это ты?" тоже завалил бы приёмку.
-        """
+    def _tentative_identity_parts(
+        self, sp: dict
+    ) -> tuple[str, str, Optional[str]]:
+        """Normalize tentative speaker payload before dispatch."""
         full_sid = str(sp.get("speaker_id") or "")
         tentative_kind = str(sp.get("tentative_kind") or "")
         if not full_sid or tentative_kind not in ("single", "contested"):
-            return self._tag_tentative(user_input)
-
+            return "", "", None
         tentative_name = None
         if tentative_kind == "single":
             tentative_name = sanitize_speaker_name(
                 str(sp.get("tentative_name") or "")
             ) or None
+        return full_sid, tentative_kind, tentative_name
+
+    def _finish_tentative_identity(
+        self,
+        state: dict,
+        full_sid: str,
+        tentative_kind: str,
+        tentative_name: Optional[str],
+        sp: dict,
+        user_input: str,
+        utterance_id: Optional[str],
+    ) -> str:
+        """Apply the existing confirmation/question tail for tentative speakers."""
+        if state.get("confirmed") and state.get("name"):
+            return self._confirm_tentative_speaker(
+                full_sid, state["name"], user_input, utterance_id
+            )
+        if state.get("confirmed") is False:
+            return self._tag_tentative(user_input)
+        if not state["asked"]:
+            state["asked"] = True
+            state["asked_utterance_id"] = utterance_id
+            self._pending_identity_hint = {
+                "kind": tentative_kind,
+                "name": tentative_name,
+                "confidence": float(
+                    sp.get("tentative_conf") or sp.get("confidence") or 0.0
+                ),
+            }
+            self.get_logger().info(
+                f"👤 [issue 2809] identity question hint set: "
+                f"kind={tentative_kind} (id={full_sid[:8]})"
+            )
+            self._ask_tentative_identity(tentative_kind, tentative_name)
+        return self._tag_tentative(user_input)
+
+    def _handle_tentative_speaker(
+        self, sp: dict, user_input: str, utterance_id: Optional[str] = None
+    ) -> str:
+        """Диспетчер переспроса для tentative-случая (см. блок выше)."""
+        full_sid, tentative_kind, tentative_name = self._tentative_identity_parts(sp)
+        if not full_sid:
+            return self._tag_tentative(user_input)
 
         state = self._tentative_session_state(full_sid)
         intro = getattr(self, "_turn_self_intro", None)
@@ -3999,10 +4033,6 @@ class DialogueNode(Node):
             user_input,
             utterance_id,
         )
-
-        # ADR-0135 §2.4 — face→voice hint. The helper only mutates the
-        # tentative state; the existing confirmation tail below remains
-        # the single return path, preserving legacy test-double semantics.
         self._face_hint_confirmation(
             state=state,
             tentative_name=tentative_name,
@@ -4010,30 +4040,15 @@ class DialogueNode(Node):
             user_input=user_input,
             utterance_id=utterance_id,
         )
-
-        if state.get("confirmed") and state.get("name"):
-            return self._confirm_tentative_speaker(
-                full_sid, state["name"], user_input, utterance_id
-            )
-        if state.get("confirmed") is False:
-            return self._tag_tentative(user_input)
-        if not state["asked"]:
-            state["asked"] = True
-            # Issue #2914 -- ответом будет только ДРУГАЯ реплика человека.
-            state["asked_utterance_id"] = utterance_id
-            self._pending_identity_hint = {
-                "kind": tentative_kind,
-                "name": tentative_name,
-                "confidence": float(
-                    sp.get("tentative_conf") or sp.get("confidence") or 0.0
-                ),
-            }
-            self.get_logger().info(
-                f"👤 [issue 2809] identity question hint set: "
-                f"kind={tentative_kind} (id={full_sid[:8]})"
-            )
-            self._ask_tentative_identity(tentative_kind, tentative_name)
-        return self._tag_tentative(user_input)
+        return self._finish_tentative_identity(
+            state,
+            full_sid,
+            tentative_kind,
+            tentative_name,
+            sp,
+            user_input,
+            utterance_id,
+        )
     def _tentative_with_self_intro(
         self,
         state: dict,
