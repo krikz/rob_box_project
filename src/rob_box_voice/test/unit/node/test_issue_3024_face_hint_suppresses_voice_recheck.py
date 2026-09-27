@@ -212,6 +212,43 @@ def test_identity_seam_face_observation_confidence_bands():
     assert obs_high is not None and obs_high.confidence_band == "high"
 
 
+def test_face_hint_cache_evicts_expired_person_ids():
+    """TTL eviction keeps the per-person cache bounded over process lifetime."""
+    store = InMemoryStore()
+    _run(store.init())
+    seam = MemoryIdentitySeam(store)
+    seam.configure_face_hint(window_sec=30.0, buffer_capacity=8)
+
+    seam.note_face_seen(
+        FaceSignal(
+            person_id="old-person",
+            name="Старый",
+            similarity=0.81,
+            is_new=False,
+            source_camera="oak_d",
+            captured_at=100.0,
+        ),
+        now=100.0,
+    )
+    assert "old-person" in seam._face_observations
+
+    # A later event triggers TTL eviction; the expired UUID must not remain
+    # in the dictionary even though its deque itself had maxlen=8.
+    seam.note_face_seen(
+        FaceSignal(
+            person_id="new-person",
+            name="Новый",
+            similarity=0.81,
+            is_new=False,
+            source_camera="oak_d",
+            captured_at=131.0,
+        ),
+        now=131.0,
+    )
+    assert "old-person" not in seam._face_observations
+    assert "new-person" in seam._face_observations
+
+
 def test_face_hint_suppresses_tentative_question_in_window():
     """Главный сценарий issue #3024.
 
