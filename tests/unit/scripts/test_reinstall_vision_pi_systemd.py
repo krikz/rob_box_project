@@ -170,3 +170,28 @@ def test_helper_awk_filter_excludes_main_from_source():
     assert "setup_health_monitor" in r.stdout, (
         "awk-фильтр вырезал ВСЁ — helper не сможет вызвать setup_health_monitor"
     )
+
+
+def test_setup_autostart_heredoc_has_no_command_substitution():
+    """Heredoc `sudo tee ... << SERVICEEOF` в setup_autostart использует
+    НЕквотированный delimiter, поэтому bash выполняет command substitution
+    (backticks / $()) прямо в теле heredoc'а.
+
+    Это ломало deploy (#3018): `docker compose ps` в комментарии запускался
+    в cwd без compose-файла → «no configuration file provided: not found»
+    в логе, а `journalctl -u ...` подставлял свой вывод прямо в unit-файл.
+    Backticks должны быть экранированы (\\`...\\`), а $() — отсутствовать.
+    """
+    txt = _read(SETUP_SCRIPT)
+    m = re.search(r"<< SERVICEEOF(.*?)SERVICEEOF", txt, re.DOTALL)
+    assert m, "setup_autostart: heredoc << SERVICEEOF не найден"
+    heredoc = m.group(1)
+    # НЕэкранированный backtick (перед ним нет бэкслэша) → command substitution.
+    assert not re.search(r"(?<!\\)`", heredoc), (
+        "setup_autostart heredoc содержит НЕэкранированный backtick — "
+        "bash выполнит command substitution при записи unit-файла"
+    )
+    # $() — тоже command substitution; допустим только $VAR / $COMPOSE_DIR.
+    assert "$(" not in heredoc, (
+        "setup_autostart heredoc содержит $() — bash выполнит command substitution"
+    )

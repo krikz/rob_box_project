@@ -40,6 +40,16 @@ source "$FILTERED_SETUP"
 
 echo "🔧 Reinstalling systemd units + health-timer (user=$USER, home=$HOME)"
 
+# CI-режим (L-Deploy and Verify): ssh без TTY не даёт sudo спросить пароль,
+# а setup_autostart/setup_health_monitor используют `sudo tee ... << EOF` —
+# stdin занят heredoc'ом, поэтому `sudo -S` там не применить. Кэшируем
+# credentials заранее через `sudo -v` (пароль из SUDO_PASSWORD): дальнейшие
+# sudo-вызовы в этом же процессе не требуют TTY. Вручную (с TTY)
+# SUDO_PASSWORD не задан — sudo спросит пароль сам, поведение не меняется.
+if [[ -n "${SUDO_PASSWORD:-}" ]]; then
+    echo "$SUDO_PASSWORD" | command sudo -S -p '' -v
+fi
+
 setup_autostart
 setup_health_monitor
 

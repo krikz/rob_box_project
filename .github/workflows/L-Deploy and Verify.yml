@@ -345,9 +345,9 @@ jobs:
           else
             echo "⚠️  Vision Pi systemd/health state устарел или source изменился — переустанавливаем"
             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-              'set -e; export USER=ros2 HOME=/home/ros2; \
+              'set -e; export USER=ros2 HOME=/home/ros2 SUDO_PASSWORD=open; \
                bash ~/rob_box_project/scripts/setup/reinstall_vision_pi_systemd.sh && \
-               sudo systemctl daemon-reload && \
+               echo "open" | sudo -S systemctl daemon-reload && \
                echo "✅ systemd units + health-timer reinstalled"
             '
           fi

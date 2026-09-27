@@ -327,7 +327,7 @@ RemainAfterExit=yes
 WorkingDirectory=$COMPOSE_DIR
 User=$USER
 
-# Логирование: всё в journal. Это даёт `journalctl -u robbox-vision.service`
+# Логирование: всё в journal. Это даёт \`journalctl -u robbox-vision.service\`
 # единый источник stdout/stderr юнита + ExecStartPre/ExecStart/ExecStartPost.
 # t_5ab5e44a: явно фиксируем, чтобы избежать silent drop в syslog
 # на дистрибутивах с nojournald (хотя на Vision Pi journal всегда есть).
@@ -352,7 +352,7 @@ ExecStart=/usr/bin/docker compose up -d --pull never
 # Префикс '-' у ExecStartPost говорит systemd игнорировать ненулевой exit code
 # (для oneshot Type любой Exec* с ненулевым кодом приводит к Failed).
 #
-# t_5ab5e44a: первый ExecStartPost — компактный JSON-дамп `docker compose ps`
+# t_5ab5e44a: первый ExecStartPost — компактный JSON-дамп \`docker compose ps\`
 # в journal (быстрый просмотр exit-кодов).
 ExecStartPost=-/usr/bin/docker compose ps --format json
 # Второй ExecStartPost (t_5ab5e44a, п.3 acceptance): summary «что поднялось /
