@@ -33,6 +33,11 @@ jobs:
 
           if [ -n "$FAILED_START_STEP" ]; then
             echo "DEPLOY_START_CRASH=true" >> "$GITHUB_ENV"
+            if [[ "$FAILED_START_STEP" == "[Vision Pi] Start Containers" ]]; then
+              echo "DEPLOY_START_NODE=vision_pi" >> "$GITHUB_ENV"
+            else
+              echo "DEPLOY_START_NODE=main_pi" >> "$GITHUB_ENV"
+            fi
             echo "Detected failed startup step: $FAILED_START_STEP"
           else
             echo "DEPLOY_START_CRASH=false" >> "$GITHUB_ENV"
@@ -40,7 +45,7 @@ jobs:
           fi
 
       - name: Collect Vision Pi crash evidence
-        if: env.DEPLOY_START_CRASH == 'true'
+        if: env.DEPLOY_START_CRASH == 'true' && env.DEPLOY_START_NODE == 'vision_pi'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
@@ -48,8 +53,7 @@ jobs:
           GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
         run: |
           if [ -z "$SSHPASS" ]; then
-            echo "ROBOT_SSH_PASS is not configured; cannot collect remote Docker evidence."
-            exit 1
+            echo "ROBOT_SSH_PASS is not configured; creating fallback deploy issue without remote Docker evidence."
           fi
 
           bash scripts/ci/auto-bug-on-deploy-failure.sh \
@@ -59,7 +63,7 @@ jobs:
             "${{ github.event.workflow_run.html_url }}"
 
       - name: Collect Main Pi crash evidence
-        if: env.DEPLOY_START_CRASH == 'true'
+        if: env.DEPLOY_START_CRASH == 'true' && env.DEPLOY_START_NODE == 'main_pi'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
@@ -67,8 +71,7 @@ jobs:
           GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
         run: |
           if [ -z "$SSHPASS" ]; then
-            echo "ROBOT_SSH_PASS is not configured; cannot collect remote Docker evidence."
-            exit 1
+            echo "ROBOT_SSH_PASS is not configured; creating fallback deploy issue without remote Docker evidence."
           fi
 
           bash scripts/ci/auto-bug-on-deploy-failure.sh \
