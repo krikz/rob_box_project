@@ -139,9 +139,9 @@ jobs:
             echo
             echo "## ROS2 runtime architecture diagram"
             echo
-            printf '%s\\n' '```mermaid'
+            echo '```mermaid'
             cat architecture/runtime-overview.mmd
-            printf '%s\\n' '```'
+            echo '```'
             echo
             echo "Full Mermaid graph: architecture/runtime-graph.mmd in the architecture-local-runtime artifact."
           } >> "$GITHUB_STEP_SUMMARY"
