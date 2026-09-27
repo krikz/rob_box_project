@@ -406,7 +406,8 @@ E2E_SPEAKER_DB_ACTIVATED=0
 # путём боевой базы (узел переключает активное соединение, а не параметр).
 _read_e2e_mode() {
     robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
-        | grep -aoE 'Boolean value is: (True|False)' | tail -1}
+        | grep -aoE 'Boolean value is: (True|False)' | tail -1
+}
 activate_e2e_speaker_db() {
     # Issue #2890 — узел стирает e2e-базу только на переходе false→true.
     # Если прошлый прогон не вернул узел на боевую (❌ в его deactivate),
@@ -805,7 +806,8 @@ fi
 # scenario.json задан + acceptance.json отсутствует + не --acceptance-skip
 # → FAIL (ADR-0022 §4.1 R1: smoke-false-PASS).
 # Single-shot --text без scenario не требует acceptance (legitimate smoke).
-if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" != "1" ]; then    log "❌ GATE-1 FAIL: --scenario задан, но ACCEPTANCE_FILE не передан"
+if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" != "1" ]; then
+    log "❌ GATE-1 FAIL: --scenario задан, но ACCEPTANCE_FILE не передан"
     log "   Контракт ADR-0022 §4.1 / issue #2300: путь к acceptance.json"
     log "   должен резолвиться на deploy-стороне (agent-flow-e2e-process.sh:"
     log "   resolve_acceptance_candidate), а не здесь. Этот запуск либо"
@@ -1204,7 +1206,8 @@ except Exception:
 base_resp = body.get("base_resp") or {}
 status = int(base_resp.get("status_code", 0) or 0)
 msg = str(base_resp.get("status_msg", "") or "")
-if r.status_code >= 400 or status != 0:    if not msg:
+if r.status_code >= 400 or status != 0:
+    if not msg:
         msg = str((body.get("error") or {}).get("message", "") or r.text[:200])
     low = msg.lower()
     if "auth" in low or "key" in low or "token" in low or "plan" in low:
@@ -1603,7 +1606,8 @@ for line in data.splitlines():
         return 0
     fi
 
-    # 3. Ни метрик, ни логов — сервис может быть не готов/не в этом контейнере.    if ! ${ROBOT_SSH} "docker ps --filter name=telegram-bot --format '{{.Status}}'" 2>/dev/null | grep -q Up; then
+    # 3. Ни метрик, ни логов — сервис может быть не готов/не в этом контейнере.
+    if ! ${ROBOT_SSH} "docker ps --filter name=telegram-bot --format '{{.Status}}'" 2>/dev/null | grep -q Up; then
         log "TG_ECHO: ⚠️ контейнер telegram-bot не запущен — SKIP"
         return 2
     fi
@@ -2002,7 +2006,8 @@ parse_transcript() {  # $1=label $2=before_rfc3339
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     local text duration_s expected
     expected="$3"
-    # «✅ ПРИНЯТО (<source>): <текст>» — основной маркер распознанной фразы.    # stt_node.py:923: self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
+    # «✅ ПРИНЯТО (<source>): <текст>» — основной маркер распознанной фразы.
+    # stt_node.py:923: self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
     #
     # bug(run 35658231116, 22.09.2026): паттерн был '✅ ПРИНЯТО:' — без тега
     # источника, который появился в 6e016325f (#2011). Совпадений ноль, поэтому
@@ -2401,7 +2406,8 @@ for c in (expected_call + must_not):
 
 found_expected = [c for c in expected_call if has(logs, c)]
 missing_expected = [c for c in expected_call if not has(logs, c)]
-forbidden_called = [c for c in must_not if has(logs, c)]# Issue #2753 — ключ вида "Борис|Спартак|пицц" сценарии пишут как
+forbidden_called = [c for c in must_not if has(logs, c)]
+# Issue #2753 — ключ вида "Борис|Спартак|пицц" сценарии пишут как
 # АЛЬТЕРНАЦИЮ, по аналогии с соседним полем patterns (оно идёт через grep -E).
 # Сравнение целой строкой искало её вместе с палками и не находило никогда:
 # n209_recall_boris в run 35699257202 покраснел при идеальном ответе робота
@@ -2800,7 +2806,8 @@ if [ -n "$SCENARIO_FILE" ]; then
                     | python3 -c 'import json,sys
 for p in json.load(sys.stdin):
     print(p.replace("\n", " "))' | tr -d '\015')
-                log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"                pat_checked=1
+                log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
+                pat_checked=1
                 check_patterns "$STEP_BEFORE" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
