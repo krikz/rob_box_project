@@ -2359,6 +2359,15 @@ expected_kw = acc.get("expected_keywords", []) or []
 # чужое имя» (см. n210_grisha_no_name). must_not_say ищет ТОЛЬКО в
 # robot_speech() — том же канале, что и expected_keywords (issue #2764).
 must_not_say = acc.get("must_not_say", []) or []
+must_not_identify_as = acc.get("must_not_identify_as", []) or []
+if must_not_identify_as and not isinstance(must_not_identify_as, list):
+    sys.stdout.write(json.dumps({"gate":"GATE-1","pass":False,"reason":"must_not_identify_as must be list[str]","acceptance_file":os.environ.get("ACC_JSON","")}, ensure_ascii=False, indent=2))
+    sys.exit(0)
+forbidden_identified = []
+for name in must_not_identify_as:
+    needle = "Speaker: '%s'" % name
+    if needle in logs:
+        forbidden_identified.append(name)
 # Issue #2406: discovery_tools — список тулов, которые ОБЯЗАНЫ быть вызваны
 # ДО первого голосового ответа. Если в acceptance.json шага есть это поле —
 # ассертим порядок, иначе — старый чек (только факт вызова).
@@ -2501,6 +2510,8 @@ if expected_kw and missing_keywords:
     failures.append(f"expected keywords missing in logs: {missing_keywords}")
 if forbidden_said:
     failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
+if forbidden_identified:
+    failures.append("forbidden speakers identified by speaker_id_node: %s (matched Speaker: 'NAME'; issue #2754 / ADR-0134 §4)" % forbidden_identified)
 if discovery_tool_errors:
     failures.extend(discovery_tool_errors)
 if discovery_failures:
@@ -2529,6 +2540,8 @@ result = {
     # Issue #2779 — must_not_say verdict (robot_speech-scoped, see above).
     "must_not_say": must_not_say,
     "forbidden_said": forbidden_said,
+    "must_not_identify_as": must_not_identify_as,
+    "forbidden_identified": forbidden_identified,
     # Issue #2406: discovery-step enforcement (per-step).
     # discovery_tools содержит имена тулов, которые ОБЯЗАНЫ быть вызваны
     # ДО первого голосового ответа. discovery_records — массив позиций
