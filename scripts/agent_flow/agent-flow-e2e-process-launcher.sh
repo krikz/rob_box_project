@@ -60,6 +60,29 @@ export AUTO_NEEDS_REVIEW_ON_FAIL_STREAK E2E_FAIL_STREAK_WARN E2E_FAIL_STREAK_PAU
 #    внутри e2e-process.sh (post-tick), и второй launcher просто пройдёт
 #    мимо через skip-логику скрипта. Cron scheduler сам даёт нам запуск
 #    каждые 20 мин, без перекрытия.
+
+# 3.1 MAINTENANCE gate (issue #3009). Inline-проверка (без source
+# lib_agent_flow_common): remote через git ls-remote, local fallback через
+# git -C REPO_DIR show. Шифу ставит MAINTENANCE-файл в develop чтобы
+# приостановить работу воркеров на время ручных правок. Срабатывает →
+# exit 0 (тик пропускается, не ошибка, fail-streak watchdog тоже не
+# запускается). Проверяем ЗДЕСЬ, а не в e2e-process.sh, потому что
+# launcher — это cron-входная точка (cron не знает про e2e-process).
+_branch="${MAINTENANCE_BRANCH:-develop}"
+_file="${MAINTENANCE_FILE:-MAINTENANCE}"
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" "${_branch}:${_file}" \
+        2>/dev/null | grep -q .; then
+    echo "❌ launcher: [MAINTENANCE] gate active on remote ${_branch}:${_file} — skip" >&2
+    exit 0
+fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+    echo "❌ launcher: [MAINTENANCE] gate active locally in ${REPO_DIR} (${_branch}:${_file}) — skip" >&2
+    exit 0
+fi
+unset _branch _file
+
 E2E_SCRIPT="/home/builder/.hermes/scripts/agent-flow-e2e-process.sh"
 if [ ! -x "$E2E_SCRIPT" ]; then
     echo "❌ launcher: e2e script not executable: $E2E_SCRIPT" >&2

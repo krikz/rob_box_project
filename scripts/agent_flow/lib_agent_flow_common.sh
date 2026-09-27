@@ -210,6 +210,72 @@ af_maintenance_gate_or_exit() {
 }
 
 # ---------------------------------------------------------------------------
+# af_maintenance_gate_inline_or_exit — drop-in kill-switch для скриптов,
+# которые ещё не source'нули lib_agent_flow_common.sh.
+#
+# Зачем (issue #3009, ретро t_4dbffcaa): 11+ скриптов agent-flow (cleanup-249,
+# runtime-overshoot-loop, decomposed-watchdog, conflict-sweep, stale-
+# conflicting-watchdog, blocked-watchdog, e2e-fail-streak-watchdog, cancel-
+# on-provider-exhausted, e2e-process-launcher, e2e-rejected-watchdog,
+# orphan-watchdog — последний через declare -F fallback) не вызывали
+# `af_maintenance_gate_or_exit`. Когда Шифу ставил MAINTENANCE-файл в
+# agents-sleep-repo:develop, эти скрипты продолжали работать → воркеры
+# создавали PR которые конфликтовали с ручной работой Шифу.
+#
+# Решение: НЕ добавлять source lib_agent_flow_common.sh в 11 скриптов
+# (риск регрессии через set -euo pipefail + переопределение log/vars),
+# а положить ту же логику inline прямо в каждый скрипт. Двухканальная
+# проверка (remote → local clone) сохранена.
+#
+# Использование (после flock, до основной работы):
+#   # MAINTENANCE gate — kill-switch через remote (issue #3009).
+#   af_maintenance_gate_inline_or_exit
+#
+# ⚠️ Функция ВЫХОДИТ ИЗ СКРИПТА — зовите только из top-level (см. выше).
+#
+# Семантика и поведение полностью идентичны af_maintenance_gate_or_exit:
+#   - remote first (git ls-remote по GH_REPO, если задан);
+#   - local fallback (git -C REPO_DIR show <branch>:<file>, если REPO_DIR задан);
+#   - exit 0 при срабатывании (тик пропускается, не ошибка);
+#   - silent exit (exit 0) если ни remote, ни local не сработали (нет MAINTENANCE).
+#
+# Отличия от af_maintenance_gate_or_exit:
+#   - Не зависит от af_summary_set / af_summary_emit (эти функции живут в том
+#     же lib — если скрипт не source'нул lib, их нет). Логирует через stderr
+#     printf в формате "[MAINTENANCE] gate active — skip", чтобы cron-delivery
+#     видел причину skip'а (ADR-0116).
+#   - Не пытается вызвать af_maintenance_gate_or_exit (avoid recursion).
+#
+# Ретро 24.09 (issue #3009): первая версия использовала просто
+# `git -C "$REPO_DIR" ls-tree origin/develop --name-only | grep -qx MAINTENANCE`.
+# Этого НЕДОСТАТОЧНО: во-первых, ls-tree требует локальный клон develop и
+# сетевой fetch origin/develop (на хосте без сети → silent fail); во-вторых,
+# remote ls-remote работает с ЛЮБЫМ clone'ом (даже bare) и быстрее (~50ms vs
+# ~300ms fetch). Текущая версия использует обе проверки, как и
+# af_maintenance_gate_or_exit.
+# ---------------------------------------------------------------------------
+af_maintenance_gate_inline_or_exit() {
+    local _branch="${MAINTENANCE_BRANCH:-develop}"
+    local _file="${MAINTENANCE_FILE:-MAINTENANCE}"
+    local _remote_ref
+    if [ -n "${GH_REPO:-}" ]; then
+        _remote_ref="${_branch}:${_file}"
+        if git ls-remote "https://github.com/${GH_REPO}.git" "$_remote_ref" 2>/dev/null | grep -q .; then
+            printf '[MAINTENANCE] gate active on remote %s — skip\n' "$_remote_ref" >&2
+            exit 0
+        fi
+    fi
+    if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
+        if git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+            printf '[MAINTENANCE] gate active locally in %s (%s:%s) — skip\n' \
+                "$REPO_DIR" "$_branch" "$_file" >&2
+            exit 0
+        fi
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # has_label <labels_csv> <label_name> — есть ли метка в CSV-списке.
 #
 # Контракт: $1 — «a,b,c» (обычно уже в lowercase). Через `case`, без

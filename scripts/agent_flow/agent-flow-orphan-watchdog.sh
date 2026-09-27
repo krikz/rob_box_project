@@ -145,14 +145,28 @@ if [ ! -f "$INSTALL_SH" ]; then
     exit 1
 fi
 
-# Optional MAINTENANCE gate (если lib подгружен)
-if [ -f "$LIB_PATH" ]; then
-    # shellcheck disable=SC1090
-    source "$LIB_PATH" || true
-    if declare -F af_maintenance_gate_or_exit >/dev/null 2>&1; then
-        af_maintenance_gate_or_exit || exit 0
-    fi
+# --- MAINTENANCE gate (issue #3009) -----------------------------------------
+# Inline-проверка (без source lib_agent_flow_common): remote через
+# git ls-remote, local fallback через git -C REPO_DIR show. Шифу ставит
+# MAINTENANCE-файл в develop чтобы приостановить работу воркеров на время
+# ручных правок. Срабатывает → exit 0 (тик пропускается, не ошибка).
+# Раньше здесь был declare -F fallback на af_maintenance_gate_or_exit из
+# source'нутой lib (срабатывал только если lib была подгружена install.sh
+# раскладкой). Перешли на inline — не зависим от состояния раскладки lib.
+_branch="${MAINTENANCE_BRANCH:-develop}"
+_file="${MAINTENANCE_FILE:-MAINTENANCE}"
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" "${_branch}:${_file}" \
+        2>/dev/null | grep -q .; then
+    echo "[$(_now_iso)] watchdog-orphan-detector: [MAINTENANCE] gate active on remote — skip" >&2
+    exit 0
 fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+    echo "[$(_now_iso)] watchdog-orphan-detector: [MAINTENANCE] gate active locally in ${REPO_DIR} — skip" >&2
+    exit 0
+fi
+unset _branch _file
 
 # --- 1) получить список EXPECTED-файлов из install.sh (SOT) -----------------
 # Используем `--list-files` режим (см. install.sh строки 408-412). Это

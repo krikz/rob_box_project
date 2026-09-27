@@ -182,6 +182,11 @@ if [ "${UNLABELED_SWEEP_TEST_MODE:-0}" != "1" ]; then
   if ! flock -n 9; then
     log "another instance holds $LOCK_FILE — skip tick"; exit 0
   fi
+  # MAINTENANCE gate (issue #3009). Тело — af_maintenance_gate_or_exit в
+  # lib_agent_flow_common.sh (двухканальная проверка: remote → local clone).
+  # Ставится после flock, до gh-auth — те же гейты, что у triage/merge-gate/
+  # e2e-process. В test mode не зовём (тест изолирован от сети/MAINTENANCE).
+  af_maintenance_gate_or_exit
 fi
 
 # --- gate: gh auth ----------------------------------------------------------

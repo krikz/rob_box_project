@@ -124,6 +124,13 @@ GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 # #2477 §«Последствия»): parse-friendly парсеры адаптируются.
 af_flock_guard_or_exit "$LOCK_FILE"
 
+# --- MAINTENANCE gate (issue #3009) -----------------------------------------
+# Тело — af_maintenance_gate_or_exit в lib_agent_flow_common.sh. Срабатывает
+# exit 0 (тик пропускается, не ошибка), если MAINTENANCE-файл есть в remote
+# или локальном clone. Ставится после flock (как и в других скриптах
+# agent-flow: triage, merge-gate, e2e-process).
+af_maintenance_gate_or_exit
+
 # --- pre-flight: gh + python3 ----------------------------------------------
 if ! command -v python3 >/dev/null 2>&1; then
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] stale-blocked-watchdog: python3 not on PATH — exit 1" >&2
