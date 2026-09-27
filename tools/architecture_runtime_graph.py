@@ -152,10 +152,10 @@ def build_graph(runtime, inventory, topics, title):
         f'    T["{safe(title)}"]:::title',
     ]
 
-    hosts = {
-        "Main Pi": "10.1.1.20",
-        "Vision Pi": "10.1.1.21",
-    }
+    hosts = {"Main Pi": "10.1.1.20", "Vision Pi": "10.1.1.21"}
+    for capture in runtime.get("captures", []):
+        if capture.get("pi") and capture.get("host"):
+            hosts[capture["pi"]] = capture["host"]
     host_services = defaultdict(list)
     for service in services:
         if service.get("host") in hosts:
@@ -193,21 +193,22 @@ def build_graph(runtime, inventory, topics, title):
                 lines.append("            end")
             lines.append("        end")
 
-        unresolved = [n for n, m in node_meta.items() if not m["owner"] and n]
-        if unresolved:
-            uid = f"C{next_id}"
+        lines.append("    end")
+
+    unresolved = [n for n, m in node_meta.items() if not m["owner"] and n]
+    if unresolved:
+        uid = f"C{next_id}"
+        next_id += 1
+        lines.append(f'    subgraph {uid}["🐳 physical ownership unresolved"]')
+        for node in sorted(unresolved):
+            nid = f"N{next_id}"
+            kid = f"K{next_id}"
             next_id += 1
-            lines.append(f'        subgraph {uid}["🐳 runtime ownership unresolved"]')
-            for node in sorted(unresolved):
-                nid = f"N{next_id}"
-                kid = f"K{next_id}"
-                next_id += 1
-                cls = node_meta[node]["class"]
-                class_label = f"class: {cls}" if cls else "class: unresolved"
-                class_ids[node] = kid
-                lines.append(f'            subgraph {nid}["{safe(node)}"]')
-                lines.append(f'                {kid}["{safe(class_label)}"]:::class')
-                lines.append("            end")
+            cls = node_meta[node]["class"]
+            class_label = f"class: {cls}" if cls else "class: unresolved"
+            class_ids[node] = kid
+            lines.append(f'        subgraph {nid}["{safe(node)}"]')
+            lines.append(f'            {kid}["{safe(class_label)}"]:::class')
             lines.append("        end")
         lines.append("    end")
 
