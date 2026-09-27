@@ -1,0 +1,124 @@
+name: "L: Architecture Audit"
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_topics:
+        description: "Comma-separated ROS2 topics for verbose inspection; empty = all discovered topics"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-audit-local-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Runtime ROS2 graph (self-hosted)
+    runs-on: [self-hosted, Linux, X64, rob-box]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Set up ROS2 environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /opt/ros/humble/setup.bash || {
+            echo "ROS2 Humble is not installed on this self-hosted runner"
+            exit 1
+          }
+          source /opt/ros/humble/setup.bash
+          if [ -f install/setup.bash ]; then
+            source install/setup.bash
+          fi
+          ros2 --help >/dev/null
+
+      - name: Check robot ROS2 graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/humble/setup.bash
+          echo "Runner: $(hostname)"
+          echo "ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-<unset>}"
+          echo "RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-<default>}"
+          echo
+          echo "=== ROS2 nodes ==="
+          ros2 node list
+          echo
+          echo "=== ROS2 topics ==="
+          ros2 topic list
+          echo
+          echo "=== ROS2 services ==="
+          ros2 service list
+          echo
+          echo "=== ROS2 actions ==="
+          ros2 action list
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install scanner dependency
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Build static evidence locally
+        run: |
+          mkdir -p architecture
+          python tools/architecture_audit.py --output architecture/inventory.json --markdown architecture/inventory.md
+          python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
+          python tools/architecture_catalog.py architecture/inventory.json
+
+      - name: Capture local ROS2 runtime graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/humble/setup.bash
+          args=(--output architecture/runtime.json)
+          if [ -n "${{ inputs.runtime_topics }}" ]; then
+            args+=(--topics "${{ inputs.runtime_topics }}")
+          fi
+          python tools/architecture_runtime_snapshot.py "${args[@]}"
+
+      - name: Compare static and runtime
+        run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
+
+      - name: Upload local architecture evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-local-runtime
+          path: |
+            architecture/inventory.json
+            architecture/inventory.md
+            architecture/findings.json
+            architecture/findings.md
+            architecture/node-catalog.md
+            architecture/topic-catalog.md
+            architecture/runtime.json
+            architecture/runtime-diff.json
+            architecture/runtime-diff.md
+
+      - name: Publish runtime summary
+        run: |
+          {
+            echo "## Local runtime ROS2 graph"
+            python - <<'PY'
+            import json
+            d = json.load(open("architecture/runtime.json"))
+            print(f"- Source: {d.get('captured_from')}")
+            print(f"- Nodes: {len(d.get('nodes', []))}")
+            print(f"- Topics: {len(d.get('topics', []))}")
+            print(f"- Services: {len(d.get('services', []))}")
+            print(f"- Actions: {len(d.get('actions', []))}")
+            PY
+            echo
+            cat architecture/runtime-diff.md
+          } >> "$GITHUB_STEP_SUMMARY"
