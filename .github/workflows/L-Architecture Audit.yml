@@ -39,19 +39,31 @@ jobs:
 
       - name: Check robot SSH access
         shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || 'open' }}
         run: |
           set -euo pipefail
+          if ! command -v sshpass >/dev/null 2>&1; then
+            echo "sshpass is required on the self-hosted runner"
+            exit 1
+          fi
           command -v ssh
-          ssh -o BatchMode=yes -o ConnectTimeout=10             "${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"             "source /opt/ros/humble/setup.bash && ros2 node list >/dev/null"
+          command -v sshpass
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+            "${{ inputs.runtime_user }}@${{ inputs.runtime_host }}" \
+            "source /opt/ros/humble/setup.bash && ros2 node list >/dev/null"
           echo "Runner: $(hostname)"
           echo "Robot: ${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
 
       - name: Check robot ROS2 graph
         shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || 'open' }}
         run: |
           set -euo pipefail
           ROBOT="${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
-          ssh -o BatchMode=yes -o ConnectTimeout=10 "$ROBOT"             "source /opt/ros/humble/setup.bash && echo '=== ROS2 nodes ===' && ros2 node list && echo '=== ROS2 topics ===' && ros2 topic list && echo '=== ROS2 services ===' && ros2 service list && echo '=== ROS2 actions ===' && ros2 action list"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$ROBOT" \
+            "source /opt/ros/humble/setup.bash && echo '=== ROS2 nodes ===' && ros2 node list && echo '=== ROS2 topics ===' && ros2 topic list && echo '=== ROS2 services ===' && ros2 service list && echo '=== ROS2 actions ===' && ros2 action list"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -70,6 +82,8 @@ jobs:
 
       - name: Capture robot ROS2 runtime graph
         shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || 'open' }}
         run: |
           set -euo pipefail
           args=(--output architecture/runtime.json
