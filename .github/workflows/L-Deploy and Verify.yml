@@ -1100,8 +1100,10 @@ jobs:
           # ложно срабатывало на "❌ DEPLOYMENT COMPLETED WITH ISSUES" +
           # создавался deploy-issue. Теперь распознаём отменённый/прерванный run
           # явно: ни success, ни issues → отдельный статус "cancelled".
-          if [ "${{ steps.wait_init.conclusion }}" = "cancelled" ] || \
-             [ "${{ steps.wait_init.conclusion }}" = "skipped" ]; then
+          # Wait for Container Initialization is skipped when an earlier deploy step fails.
+          # That is a deployment failure, not a user cancellation. Use job.status so
+          # the existing issue creation step receives deploy_status=issues for failures.
+          if [ "${{ job.status }}" = "cancelled" ]; then
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "⚠️  DEPLOYMENT RUN CANCELLED OR SKIPPED"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
