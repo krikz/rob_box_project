@@ -279,8 +279,9 @@ default `[02:00, 06:00)` по локальному времени хоста. О
 1. Механически собирает дайджест за ревью-сутки (`REVIEW_DATE 00:00`
    локально → now): merged PR, коммиты `origin/develop`, issues
    open/closed, красные CI-прогоны, kanban (закрытые / упавшие / висящие
-   >6ч / ретро), churn по компонентам. Секция без данных печатает
-   `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
+   >6ч / ретро), churn по компонентам, **last-green метрика E2E Voice Test
+   на develop** (см. § «E2E last-green метрика» ниже). Секция без данных
+   печатает `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
 2. Создаёт ОДНУ карточку **«🌙 ночной ревью \<дата\>»** на `architect`
    (key `nightly-review-<ISO-неделя>`, см. ADR-0049 §6.1 — issue #2159).
 3. Создаёт до `COMPONENT_REVIEW_MAX` (default 3) карточек
@@ -336,6 +337,52 @@ NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DATE=2026-09-02 bash scripts/agent_flow
 
 # тест: bash scripts/agent_flow/tests/test_nightly_review.sh
 ```
+
+### E2E last-green метрика (issue t_b6961c87)
+
+Добавляет в дайджест секцию «## 7. E2E Voice Test (develop)» с однострочным
+блоком вида:
+
+```
+- L: E2E Voice Test (develop) — последний success: 2026-09-25T19:11:57Z
+  ([run](…)), текущий статус: RED (conclusion=failure), consecutive fails: 1
+  (HEAD `962262a9` НЕ покрыт последними 20 прогонами — старее retention или
+   develop откатился)
+```
+
+Архитектор-надзор видит зелёность E2E develop без ручного захода в GH Actions.
+
+- Источник: `GET /repos/{owner}/{repo}/actions/workflows/<file>/runs?branch=develop&per_page=N`
+  через `gh api`. Имя workflow-файла содержит пробел — URL-кодируется в `%20`.
+- `consecutive_fails` — сколько `failure/timed_out/cancelled` подряд идёт
+  от самого последнего `success` (in_progress не считается).
+- `current_status`:
+  - `GREEN` — последний run `success`;
+  - `RED` — последний run `failure/timed_out/cancelled`;
+  - `IN_PROGRESS` — последний run ещё выполняется (conclusion пуст).
+- Если `head_sha` develop-а покрыт одним из последних N прогонов — отдельная
+  ремарка «HEAD \`<sha>\` уже покрыт: conclusion=…»; если нет — «HEAD \`<sha>\`
+  НЕ покрыт …» (старее retention или develop откатился).
+- Нет данных (`gh` не на PATH, auth упал, workflow runs пуст) → стандартное
+  `НЕТ ДАННЫХ (<причина>)` по контракту остальных `section_*`.
+
+ENV-переменные (override):
+
+| var | default | смысл |
+|---|---|---|
+| `E2E_DEVELOP_WORKFLOW_FILE` | `L-E2E Voice Test.yml` | workflow-файл для last-green (URL-кодируется автоматически) |
+| `E2E_DEVELOP_PER_PAGE` | `20` | размер окна прогонов (max retention ~50) |
+
+Pitfalls:
+
+- Не путать `createdAt` (PR/issue list, camelCase) и `created_at` (actions/runs,
+  snake_case). У GH Actions API — только snake_case.
+- Если в репо несколько develop-веток (`origin/develop`, `origin/develop-old`)
+  — секция всё равно берёт ровно `branch=develop`, без альтернатив.
+- Секция считается за всё время, не за окно `WIN_START_LOCAL` — «last-green»
+  это инвариант HEAD develop, а не срез за сутки. (Ретро-логика: архитектор
+  должен видеть «был ли вообще когда-нибудь зелёный develop», а не «что
+  изменилось за 24 часа».)
 
 Ночное окно НЕ должно попадать в PEAK-окна `agents_sleep_schedule.conf`
 (`04:00-07:00` и `09:00-13:00` MSK) — там висит MAINTENANCE и тик

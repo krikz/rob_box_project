@@ -132,6 +132,12 @@ FORCE="${NIGHTLY_REVIEW_FORCE:-false}"
 SECTION_LIMIT="${NIGHTLY_REVIEW_SECTION_LIMIT:-40}"
 MAX_RUNTIME_NIGHTLY="${NIGHTLY_REVIEW_MAX_RUNTIME:-3600}"
 MAX_RUNTIME_COMPONENT="${COMPONENT_REVIEW_MAX_RUNTIME:-2700}"
+# E2E develop last-green метрика (issue t_b6961c87): workflow-файл берётся из
+# ENV, default — единственный канонический L: E2E Voice Test на develop.
+# Имя файла содержит пробел → URL-кодируется автоматически (`gh api` ждёт
+# path, не query — %20 обязателен; см. README § «E2E last-green»).
+E2E_DEVELOP_WORKFLOW_FILE="${E2E_DEVELOP_WORKFLOW_FILE:-L-E2E Voice Test.yml}"
+E2E_DEVELOP_PER_PAGE="${E2E_DEVELOP_PER_PAGE:-20}"
 # ADR-0049 §6.1 follow-up (issue #2159): dedup-ключ БЕЗ голой даты. Используем
 # ISO-неделю (`%G-W%V` → `2026-W37`) — см. NIGHTLY_KEY / comp_key ниже.
 export COMPONENT_REVIEW_EXCLUDE_RE
@@ -528,6 +534,93 @@ component_commits() {  # $1=component
         --pretty=format:'- `%h` %s — %an' -- "$comp" 2>/dev/null | head -n 20
 }
 
+# --- E2E Voice Test develop last-green (t_b6961c87) -------------------------
+# Даёт архитектору-надзору однострочный ответ на вопрос «зелёный ли сейчас
+# develop на E2E?» без ручного захода в GH Actions. Источник — REST API:
+#   GET /repos/{owner}/{repo}/actions/workflows/<file>/runs?branch=develop&per_page=N
+# Возвращает три поля: last_green (UTC ISO дата последнего success),
+# current_status (GREEN если HEAD-успех после, RED иначе), consecutive_fails
+# (сколько failure подряд идёт прямо сейчас с самого последнего success).
+# Если runs отсутствуют / API упал / gh не авторизован — печатает
+# «НЕТ ДАННЫХ (<причина>)» по контракту остальных section_*.
+section_e2e_develop() {
+    local wf_file="$E2E_DEVELOP_WORKFLOW_FILE"
+    local per_page="$E2E_DEVELOP_PER_PAGE"
+    [ -n "$wf_file" ] || { echo "НЕТ ДАННЫХ (E2E_DEVELOP_WORKFLOW_FILE не задан)"; return 0; }
+    [ -n "${GH_BIN:-}" ] || { echo "НЕТ ДАННЫХ (GH_BIN не задан)"; return 0; }
+    command -v "$GH_BIN" >/dev/null 2>&1 || { echo "НЕТ ДАННЫХ (gh не на PATH)"; return 0; }
+    [ -n "${GH_REPO:-}" ] || { echo "НЕТ ДАННЫХ (GH_REPO не задан)"; return 0; }
+
+    # gh api ожидает path-segment с URL-кодированием; пробел в имени файла
+    # обязателен как %20, иначе 404. Делаем это в python (urllib) — он
+    # умеет quote с safe='/', иначе экранирование имени через printf/awk
+    # приводит к двойному кодированию или пропуску.
+    local wf_enc
+    wf_enc="$(printf '%s' "$wf_file" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
+    local json
+    if ! json="$("$GH_BIN" api "repos/${GH_REPO}/actions/workflows/${wf_enc}/runs?branch=develop&per_page=${per_page}" 2>/dev/null)"; then
+        echo "НЕТ ДАННЫХ (gh api упал или вернул не-JSON)"
+        return 0
+    fi
+
+    printf '%s' "$json" | E2E_HEAD_SHA="$(git -C "$REPO_DIR" rev-parse origin/develop 2>/dev/null || true)" \
+        python3 -c '
+import json, os, sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("НЕТ ДАННЫХ (gh вернул не-JSON)")
+    sys.exit(0)
+runs = data.get("workflow_runs") or []
+if not runs:
+    print("НЕТ ДАННЫХ (workflow runs пуст — E2E Voice Test ещё не запускался на develop)")
+    sys.exit(0)
+runs_sorted = sorted(runs, key=lambda r: r.get("created_at") or "", reverse=True)
+head_sha = os.environ.get("E2E_HEAD_SHA") or ""
+head_match = None
+for r in runs_sorted:
+    if r.get("head_sha") == head_sha:
+        head_match = r
+        break
+
+current = runs_sorted[0]
+current_conclusion = current.get("conclusion") or "in_progress"
+current_status = "IN_PROGRESS"
+if current_conclusion == "success":
+    current_status = "GREEN"
+elif current_conclusion in ("failure", "timed_out", "cancelled"):
+    current_status = "RED"
+
+last_green = None
+consecutive_fails = 0
+for r in runs_sorted:
+    c = r.get("conclusion")
+    if c == "success":
+        last_green = r
+        break
+    if c in ("failure", "timed_out", "cancelled"):
+        consecutive_fails += 1
+    # in_progress / None — нейтрально, не считаем ни зелёным, ни красным
+
+if last_green is None:
+    print("- L: E2E Voice Test (develop) — последний success: **НИКОГДА** в окне последних %d прогонов, текущий статус: **%s** (conclusion=%s), consecutive fails: **%d**" % (
+        len(runs_sorted), current_status, current_conclusion, consecutive_fails))
+else:
+    lg_at = (last_green.get("created_at") or "")[:19] + "Z"
+    lg_url = last_green.get("html_url") or ""
+    head_line = ""
+    if head_match is not None:
+        head_line = " (HEAD `%s` уже покрыт: conclusion=%s)" % (
+            head_sha[:8], head_match.get("conclusion") or "in_progress")
+    elif head_sha:
+        head_line = " (HEAD `%s` НЕ покрыт последними %d прогонами — старее retention или develop откатился)" % (
+            head_sha[:8], len(runs_sorted))
+    print("- L: E2E Voice Test (develop) — последний success: **%s** ([run](%s)), текущий статус: **%s** (conclusion=%s), consecutive fails: **%d**%s" % (
+        lg_at, lg_url, current_status, current_conclusion, consecutive_fails, head_line))
+'
+}
+
 # --- cooldown guard ----------------------------------------------------------
 # Был ли компонент отревьюен за последние COOLDOWN дней? Ищем в kanban
 # карточку с маркером `ретро-key: component-review-<slug>-` (его вписывает
@@ -596,8 +689,11 @@ trap 'rm -f "$DIGEST_FILE"' EXIT
     echo "## 6. Компоненты, которые менялись"
     section_components "$CHURN" || echo "НЕТ ДАННЫХ (секция компонентов упала — см. stderr тика)"
     echo
+    echo "## 7. E2E Voice Test (develop)"
+    section_e2e_develop || echo "НЕТ ДАННЫХ (секция E2E develop упала — см. stderr тика)"
+    echo
     cat <<'TASK_EOF'
-## 7. Что сделать (это и есть работа карточки)
+## 8. Что сделать (это и есть работа карточки)
 
 Ты — ночной ревьюер. Дайджест выше **механический**: он говорит, что
 произошло, но не говорит, хорошо ли это. Твоя работа — посмотреть на день
