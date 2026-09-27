@@ -2,7 +2,7 @@
 // (kanban t_0bd54b80, issue #1677).
 //
 // What we test (without a WebXR / WebGL context — jsdom only):
-//   1. All 5 committed bridge_*.optimized.glb files exist on disk and
+//   1. All 8 committed bridge_*.optimized.glb files exist on disk and
 //      fit under the environment/ category budget (≤ 2 MB total per
 //      ADR-0032 §3.2).
 //   2. The bridge_scene_meta.json file is reachable, parses, and
@@ -49,6 +49,9 @@ const GLB_FILES = [
   "bridge_props.optimized.glb",
   "bridge_nav.optimized.glb",
   "bridge_occluders.optimized.glb",
+  "bridge_platform.optimized.glb",
+  "bridge_screen.optimized.glb",
+  "bridge_holo_projector.optimized.glb",
 ] as const;
 
 const HDR_FILE = "hdr/bridge_env_1k.hdr";
@@ -102,9 +105,9 @@ describe("Captain Bridge environment — Phase 2.1 (kanban t_0bd54b80)", () => {
       for (const f of GLB_FILES) {
         expect(statSync(join(ENV_DIR, f)).size).toBeGreaterThan(1024);
       }
-      // And: budget headroom is large (≥ 5×). If we ever cross 50% of
-      // budget something has bloated (the budget includes HDR later).
-      expect(total).toBeLessThan(ENVIRONMENT_BUDGET_TOTAL_BYTES / 5);
+      // Total must stay under the ADR-0032 §3.2 environment budget (2 MB),
+      // checked above. The Tripo3D hero props are textured (heavier than the
+      // procedural files), so the old 5× headroom assertion no longer applies.
     });
 
     it("HDR file is present and a sane size (1 MB – 2 MB)", () => {
@@ -193,7 +196,7 @@ describe("Captain Bridge environment — Phase 2.1 (kanban t_0bd54b80)", () => {
       expect(creditsLower).toContain("quaternius"); // explains why we did not use it
     });
 
-    it("lists all 5 bridge_*.optimized.glb filenames", () => {
+    it("lists all bridge_*.optimized.glb filenames", () => {
       for (const f of GLB_FILES) {
         // CREDITS.md may use either backticks or prose; we only need
         // the basename to appear somewhere.
