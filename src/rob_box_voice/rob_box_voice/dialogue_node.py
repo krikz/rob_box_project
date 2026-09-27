@@ -3993,7 +3993,11 @@ class DialogueNode(Node):
                 utterance_id,
             )
         self._resolve_pending_tentative_answer(
-            state, tentative_name, user_input, utterance_id
+            state,
+            tentative_name,
+            float(sp.get("tentative_conf") or sp.get("confidence") or 0.0),
+            user_input,
+            utterance_id,
         )
 
         # ADR-0135 §2.4 — face→voice hint. The helper only mutates the
