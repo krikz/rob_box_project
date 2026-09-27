@@ -102,6 +102,13 @@ jobs:
       - name: Compare static and runtime
         run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
+      - name: Render runtime architecture graph
+        run: |
+          python tools/architecture_runtime_graph.py \
+            --runtime architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --output-dir architecture
+
       - name: Upload local architecture evidence
         uses: actions/upload-artifact@v4
         with:
@@ -116,6 +123,8 @@ jobs:
             architecture/runtime.json
             architecture/runtime-diff.json
             architecture/runtime-diff.md
+            architecture/runtime-overview.mmd
+            architecture/runtime-graph.mmd
 
       - name: Publish runtime summary
         run: |
@@ -124,4 +133,15 @@ jobs:
             python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes: " + str(len(d.get("nodes", [])))); print("- Topics: " + str(len(d.get("topics", [])))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
             echo
             cat architecture/runtime-diff.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo
+            echo "## ROS2 runtime architecture diagram"
+            echo
+            printf '%s\\n' '```mermaid'
+            cat architecture/runtime-overview.mmd
+            printf '%s\\n' '```'
+            echo
+            echo "Full Mermaid graph: architecture/runtime-graph.mmd in the architecture-local-runtime artifact."
           } >> "$GITHUB_STEP_SUMMARY"
