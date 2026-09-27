@@ -347,7 +347,7 @@ def test_apply_renardo_synthdef_patches_patches_tb303_file_in_place(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# fuzz SynthDef patch — issue #3008 (live 24.09.2026)
+# fuzz SynthDef patch — issue #3008 (live 24.09.2026; band-limited Saw carrier)
 #
 # Upstream renardo_lib fuzz.scd aliased and clicked on 16 kHz scsynth because
 # (a) LFSaw has infinite harmonics and the synth shipped with no filter at all,
