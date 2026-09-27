@@ -37,3 +37,20 @@ It does not decide that a node or class should be deleted or merged.
 - Weekly / before release: AI-assisted semantic review using inventory, feature matrix, ADRs, tests/E2E evidence and recent changes.
 
 Human engineers remain responsible for architectural decisions such as “is this node necessary?” and “should these responsibilities be merged?”
+
+
+## Local commands
+
+Static inventory:
+
+    python tools/architecture_audit.py
+
+Structural findings:
+
+    python tools/architecture_findings.py architecture/inventory.json
+
+Runtime snapshot (run on a machine with ROS 2 and the target graph visible):
+
+    python tools/architecture_runtime_snapshot.py
+
+The runtime snapshot is evidence from an actual ROS graph. It must not be generated on a generic CI runner and presented as robot evidence.
