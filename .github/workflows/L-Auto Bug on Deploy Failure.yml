@@ -19,7 +19,7 @@ jobs:
       - name: Checkout workflow revision
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: main
           fetch-depth: 1
           clean: true
 
