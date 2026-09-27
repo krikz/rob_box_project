@@ -528,8 +528,10 @@ def _fmt_ts(ts: Optional[float]) -> str:
 
 
 # ----------------------------------------------------------------------
-# Collage (PIL — only here, only for ``/face``)
+# Collage adapter (shared implementation lives in rob_box_core)
 # ----------------------------------------------------------------------
+
+from rob_box_core.face_collage import FaceCollageTile, build_face_collage as _build_face_collage
 
 
 def build_face_collage(
@@ -541,128 +543,29 @@ def build_face_collage(
     pad: int = 6,
     caption_height: int = 22,
 ) -> Optional[bytes]:
-    """Compose a 4x3 grid (default — the spec from issue #3025) of the
-    available tiles and return it as JPEG bytes. Empty cells are filled
-    with white. Each cell carries a white caption strip below with the
-    original size (e.g. ``Дэнчик 305x405``).
+    """Telegram adapter around the shared ROS-free collage builder.
 
-    Returns ``None`` if there's nothing usable (no tiles at all — the
-    operator gets a "no snapshot yet" text in the handler instead).
-
-    This function imports PIL lazily because the unit tests that only
-    exercise ``list_people`` / ``format_faces_table`` don't need PIL
-    installed.
+    The rendering implementation is shared with Quest per ADR-0135; this
+    adapter keeps the Telegram-facing FaceDetail API unchanged.
     """
-    if not detail.tiles:
-        return None
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError:
-        logger.warning("face_card: PIL not available — cannot build collage")
-        return None
-
-    cols = max(1, columns)
-    row_n = max(1, rows)
-    tile_w, tile_h = tile_size
-    cell_w = tile_w + 2 * pad
-    cell_h = tile_h + caption_height + 2 * pad
-    canvas_w = cols * cell_w
-    canvas_h = row_n * cell_h
-
-    canvas = Image.new("RGB", (canvas_w, canvas_h), color=(255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-
-    # font: try a common system font, fall back to PIL default
-    font = _pick_font(caption_height - 4)
-
-    name_label = (detail.summary.name or "незнакомец").replace("\n", " ")
-
-    # Fill row-major, left-to-right then top-to-bottom.
-    positions = [(c, r) for r in range(row_n) for c in range(cols)]
-    for idx, (col, row) in enumerate(positions):
-        x0 = col * cell_w + pad
-        y0 = row * cell_h + pad
-        if idx < len(detail.tiles):
-            tile = detail.tiles[idx]
-            try:
-                tile_img = Image.open(io.BytesIO(tile.jpeg_bytes)).convert("RGB")
-                tile_img = _cover_fit(tile_img, tile_w, tile_h)
-                canvas.paste(tile_img, (x0, y0))
-            except Exception:
-                _draw_empty_cell(draw, x0, y0, tile_w, tile_h + caption_height)
-            # caption strip
-            caption = f"{name_label} {tile.width}x{tile.height}"
-            _draw_caption(draw, x0, y0 + tile_h, tile_w, caption_height, caption, font)
-        else:
-            # empty cell — white with no caption
-            _draw_empty_cell(draw, x0, y0, tile_w, tile_h + caption_height)
-
-    buf = io.BytesIO()
-    canvas.save(buf, format="JPEG", quality=85)
-    return buf.getvalue()
-
-
-def _pick_font(size: int):
-    """Return a PIL ImageFont; try DejaVuSans first, fall back to default.
-
-    We don't hard-fail if no font file is found — the default bitmap font
-    is ugly but readable, and shipping a font with the bot image would
-    bloat it for a feature that's diagnostic, not a customer surface.
-    """
-    try:
-        from PIL import ImageFont
-
-        for candidate in (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        ):
-            try:
-                return ImageFont.truetype(candidate, size=size)
-            except OSError:
-                continue
-        return ImageFont.load_default()
-    except Exception:
-        return None
-
-
-def _draw_caption(draw, x: int, y: int, w: int, h: int, text: str, font) -> None:
-    """White strip + black text."""
-    draw.rectangle([x, y, x + w, y + h], fill=(255, 255, 255))
-    try:
-        draw.text((x + 4, y + 2), text, fill=(20, 20, 20), font=font)
-    except Exception:
-        # Font errors must not break the collage.
-        pass
-
-
-def _draw_empty_cell(draw, x: int, y: int, w: int, h: int) -> None:
-    draw.rectangle([x, y, x + w, y + h], fill=(255, 255, 255), outline=(220, 220, 220))
-
-
-def _cover_fit(img, w: int, h: int):
-    """Resize-and-crop to exactly (w, h), preserving aspect ratio.
-
-    We crop rather than letterbox so all tiles look uniform — Telegram
-    shows images at varying widths and a letterboxed collage looks
-    chaotic in a multi-row grid.
-    """
-    iw, ih = img.size
-    if iw == 0 or ih == 0:
-        return img
-    target_ratio = w / h
-    src_ratio = iw / ih
-    if src_ratio > target_ratio:
-        # too wide — crop sides
-        new_w = int(ih * target_ratio)
-        left = (iw - new_w) // 2
-        img = img.crop((left, 0, left + new_w, ih))
-    elif src_ratio < target_ratio:
-        # too tall — crop top/bottom
-        new_h = int(iw / target_ratio)
-        top = (ih - new_h) // 2
-        img = img.crop((0, top, iw, top + new_h))
-    return img.resize((w, h))
+    tiles = [
+        FaceCollageTile(
+            label=tile.label,
+            width=tile.width,
+            height=tile.height,
+            jpeg_bytes=tile.jpeg_bytes,
+        )
+        for tile in detail.tiles
+    ]
+    return _build_face_collage(
+        tiles,
+        name_label=(detail.summary.name or "незнакомец"),
+        columns=columns,
+        rows=rows,
+        tile_size=tile_size,
+        pad=pad,
+        caption_height=caption_height,
+    )
 
 
 # ----------------------------------------------------------------------
