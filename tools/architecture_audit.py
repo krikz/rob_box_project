@@ -269,10 +269,11 @@ def main():
         "|---|---|---|---|",
     ]
     for cls in inventory["classes"]:
+        docstring = (cls["docstring"] or "—").replace("|", "\\|")
         lines.append(
             f"| {cls['name']} | {cls['file']} | "
             f"{', '.join(cls['bases']) or '—'} | "
-            f"{(cls['docstring'] or '—').replace('|', '\\|')} |"
+            f"{docstring} |"
         )
 
     lines += [
