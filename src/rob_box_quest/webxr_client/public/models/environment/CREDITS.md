@@ -101,3 +101,24 @@ explicit teleport anchors (back / front of the room).
 
 When a non-CC0 source is added (e.g. CC-BY), append a row with author,
 license, and source URL — never silently include a third-party asset.
+
+## AI-generated assets
+
+AI-generated assets (mesh/texture/audio produced by generative models
+such as Tripo3D, MiniMax image, MiniMax TTS, voice cloning) are **NOT
+CC0** by default and the redistribution status of AI-only output is
+unsettled across jurisdictions. Per ADR-0134 each such asset MUST:
+
+1. Be tracked in the per-area meta tracking issue with label
+   `ai-asset` (currently: meta-issue for `rob_box_quest` environment
+   assets — see tracking section below when populated).
+2. Appear in this CREDITS.md with: generator name, generation date,
+   tracking-issue link, current license status (`pending` / `yes` /
+   `removed`), owner (товарищ Шифу).
+3. Have a `<!-- ai-asset-policy: yes|pending|removed -->` trailer on
+   the commit that introduced it.
+
+**`pending` assets MUST NOT be included in public releases** (Docker
+Hub tags, GitHub releases, web deploys). See
+`docs/process/ai-generated-asset-handling.md` for the operational
+procedure.
