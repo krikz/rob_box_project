@@ -392,12 +392,16 @@ def test_patch_fuzz_scd_content_adds_anti_aliasing_lowpass_relative_to_sample_ra
     # Anti-aliasing must be tied to the actual server sample rate, not a
     # hard-coded Hz number — same rule as masterfilter.scd §правило 3.
     assert "SampleRate.ir" in patched, (
-        "срез должен быть от SampleRate, иначе на 16 kHz режет слишком высоко"
+        "срез должен быть привязан к фактическому sample rate сервера"
     )
     assert "LPF.ar" in patched
     assert "CheckBadValues.ar" in patched, (
         "один сломанный плеер не должен убивать весь слой (NaN → 0)"
     )
+    # The audible carrier must be the built-in band-limited Saw. LFSaw remains
+    # only as the original control-rate FM modulator.
+    assert "osc = Saw.ar(LFSaw.kr" in patched
+    assert "osc = LFSaw.ar(" not in patched
 
 
 def test_patch_fuzz_scd_content_adds_lpf_argument_so_userspace_lpf_works():
