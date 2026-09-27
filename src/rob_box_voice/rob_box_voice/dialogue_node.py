@@ -3938,25 +3938,20 @@ class DialogueNode(Node):
         full_sid: str,
         user_input: str,
         utterance_id: Optional[str],
-    ) -> Optional[str]:
-        """ADR-0135 — apply a fresh high-confidence face hint, if present.
-
-        Kept outside ``_handle_tentative_speaker`` so the identity-question
-        dispatcher stays within the ADR-0021 CC budget. Returns the normal
-        confirmation-path result, or ``None`` when the hint is unusable.
-        """
+    ) -> bool:
+        """ADR-0135 — apply a fresh high-confidence face hint, if present."""
         if not (
             getattr(self, "_face_voice_hint_enabled", False)
             and tentative_name
             and not state.get("asked")
         ):
-            return None
+            return False
         face_obs = self._identity.recent_face_observation_by_name(
             tentative_name,
             window_sec=getattr(self, "_face_voice_hint_window_sec", 30.0),
         )
         if face_obs is None or face_obs.confidence_band != "high":
-            return None
+            return False
         state["asked"] = True
         state["confirmed"] = True
         state["name"] = tentative_name
@@ -3964,17 +3959,9 @@ class DialogueNode(Node):
             "👤 [issue #3024 ADR-0135] voice tentative suppressed "
             "by recent face hint (name=%r, age=%.1fs, sim=%.3f); "
             "confirming as %r"
-            % (
-                face_obs.name,
-                face_obs.age_sec(),
-                face_obs.similarity,
-                state["name"],
-            )
+            % (face_obs.name, face_obs.age_sec(), face_obs.similarity, state["name"])
         )
-        return self._confirm_tentative_speaker(
-            full_sid, state["name"], user_input, utterance_id
-        )
-
+        return True
     def _handle_tentative_speaker(
         self, sp: dict, user_input: str, utterance_id: Optional[str] = None
     ) -> str:
@@ -4009,34 +3996,17 @@ class DialogueNode(Node):
             state, tentative_name, user_input, utterance_id
         )
 
-        return self._face_hint_confirmation(
+        # ADR-0135 §2.4 — face→voice hint. The helper only mutates the
+        # tentative state; the existing confirmation tail below remains
+        # the single return path, preserving legacy test-double semantics.
+        self._face_hint_confirmation(
             state=state,
             tentative_name=tentative_name,
             full_sid=full_sid,
-            user_input=user_input,
-            utterance_id=utterance_id,
-        ) or self._continue_tentative_speaker(
-            state=state,
-            full_sid=full_sid,
-            tentative_kind=tentative_kind,
-            tentative_name=tentative_name,
-            confidence=float(sp.get("tentative_conf") or sp.get("confidence") or 0.0),
             user_input=user_input,
             utterance_id=utterance_id,
         )
 
-    def _continue_tentative_speaker(
-        self,
-        *,
-        state: dict,
-        full_sid: str,
-        tentative_kind: str,
-        tentative_name: Optional[str],
-        confidence: float,
-        user_input: str,
-        utterance_id: Optional[str],
-    ) -> str:
-        """Finish tentative identity handling after the face-hint gate."""
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
                 full_sid, state["name"], user_input, utterance_id
@@ -4050,7 +4020,9 @@ class DialogueNode(Node):
             self._pending_identity_hint = {
                 "kind": tentative_kind,
                 "name": tentative_name,
-                "confidence": confidence,
+                "confidence": float(
+                    sp.get("tentative_conf") or sp.get("confidence") or 0.0
+                ),
             }
             self.get_logger().info(
                 f"👤 [issue 2809] identity question hint set: "
