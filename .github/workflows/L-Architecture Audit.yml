@@ -3,6 +3,16 @@ name: "L: Architecture Audit"
 on:
   workflow_dispatch:
     inputs:
+      runtime_host:
+        description: "Robot ROS2 host reachable from the local build machine"
+        required: false
+        default: "10.1.1.21"
+        type: string
+      runtime_user:
+        description: "SSH user on the robot"
+        required: false
+        default: "ros2"
+        type: string
       runtime_topics:
         description: "Comma-separated ROS2 topics for verbose inspection; empty = all discovered topics"
         required: false
@@ -27,40 +37,21 @@ jobs:
         with:
           clean: true
 
-      - name: Set up ROS2 environment
+      - name: Check robot SSH access
         shell: bash
         run: |
           set -euo pipefail
-          test -f /opt/ros/humble/setup.bash || {
-            echo "ROS2 Humble is not installed on this self-hosted runner"
-            exit 1
-          }
-          source /opt/ros/humble/setup.bash
-          if [ -f install/setup.bash ]; then
-            source install/setup.bash
-          fi
-          ros2 --help >/dev/null
+          command -v ssh
+          ssh -o BatchMode=yes -o ConnectTimeout=10             "${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"             "source /opt/ros/humble/setup.bash && ros2 node list >/dev/null"
+          echo "Runner: $(hostname)"
+          echo "Robot: ${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
 
       - name: Check robot ROS2 graph
         shell: bash
         run: |
           set -euo pipefail
-          source /opt/ros/humble/setup.bash
-          echo "Runner: $(hostname)"
-          echo "ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-<unset>}"
-          echo "RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-<default>}"
-          echo
-          echo "=== ROS2 nodes ==="
-          ros2 node list
-          echo
-          echo "=== ROS2 topics ==="
-          ros2 topic list
-          echo
-          echo "=== ROS2 services ==="
-          ros2 service list
-          echo
-          echo "=== ROS2 actions ==="
-          ros2 action list
+          ROBOT="${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
+          ssh -o BatchMode=yes -o ConnectTimeout=10 "$ROBOT"             "source /opt/ros/humble/setup.bash && echo '=== ROS2 nodes ===' && ros2 node list && echo '=== ROS2 topics ===' && ros2 topic list && echo '=== ROS2 services ===' && ros2 service list && echo '=== ROS2 actions ===' && ros2 action list"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -77,12 +68,13 @@ jobs:
           python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
           python tools/architecture_catalog.py architecture/inventory.json
 
-      - name: Capture local ROS2 runtime graph
+      - name: Capture robot ROS2 runtime graph
         shell: bash
         run: |
           set -euo pipefail
-          source /opt/ros/humble/setup.bash
-          args=(--output architecture/runtime.json)
+          args=(--output architecture/runtime.json
+                --remote-host "${{ inputs.runtime_host }}"
+                --remote-user "${{ inputs.runtime_user }}")
           if [ -n "${{ inputs.runtime_topics }}" ]; then
             args+=(--topics "${{ inputs.runtime_topics }}")
           fi
@@ -109,7 +101,7 @@ jobs:
       - name: Publish runtime summary
         run: |
           {
-            echo "## Local runtime ROS2 graph"
+            echo "## Robot runtime ROS2 graph"
             python - <<'PY'
             import json
             d = json.load(open("architecture/runtime.json"))
