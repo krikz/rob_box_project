@@ -213,6 +213,16 @@ record_alert() {
 # 1. Считаем running-контейнеры
 running="$(count_running)"
 
+# Hailo is a host prerequisite for vision-hailo. A reboot/kernel update can
+# leave the userspace package installed while hailo_pcie.ko is absent.
+hailo_device="0"
+hailo_reason=""
+if [ -e /dev/hailo0 ]; then
+  hailo_device="1"
+else
+  hailo_reason="missing /dev/hailo0"
+fi
+
 # 2. Считаем сколько секунд прошло с момента start unit-а
 grace_elapsed="$(elapsed_seconds_since_start_unit)"
 
@@ -220,7 +230,10 @@ grace_elapsed="$(elapsed_seconds_since_start_unit)"
 verdict="ok"
 reason=""
 
-if [ "$running" = "-1" ]; then
+if [ "$hailo_device" != "1" ]; then
+  verdict="alert"
+  reason="$hailo_reason"
+elif [ "$running" = "-1" ]; then
   # docker daemon лежит — это ИНФРА-проблема, а не проблема стека.
   # Пишем в метрики -1 (не число контейнеров), не алертим, но warn.
   verdict="infra_error"
