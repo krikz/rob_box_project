@@ -10,10 +10,20 @@ def local_run(args, timeout=30):
     p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
     return {"returncode":p.returncode,"stdout":p.stdout,"stderr":p.stderr}
 
-def remote_run(host,user,args,timeout=30):
+def remote_run(host,user,args,container="",timeout=30):
     target=f"{user}@{host}" if user else host
-    command=" ".join(shlex.quote(x) for x in args)
-    p=subprocess.run(["ssh","-o","BatchMode=yes","-o","ConnectTimeout=10",target,command],
+    inner=" ".join(shlex.quote(x) for x in args)
+    if container:
+        inner=f"source /opt/ros/humble/setup.bash && {inner}"
+        command=f"docker exec {shlex.quote(container)} bash -lc {shlex.quote(inner)}"
+    else:
+        command=inner
+    ssh=["ssh","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=/dev/null","-o","ConnectTimeout=10","-o","ServerAliveInterval=5","-o","ServerAliveCountMax=3",target,command]
+    if os.getenv("SSHPASS"):
+        if not shutil.which("sshpass"):
+            raise RuntimeError("SSHPASS is set but sshpass is not installed")
+        ssh=["sshpass","-e",*ssh]
+    p=subprocess.run(ssh,
                      text=True,capture_output=True,timeout=timeout)
     return {"returncode":p.returncode,"stdout":p.stdout,"stderr":p.stderr}
 
@@ -23,10 +33,11 @@ def main():
     p.add_argument("--topics",default="",help="Comma-separated topic names to inspect deeply; empty means all")
     p.add_argument("--remote-host",default="")
     p.add_argument("--remote-user",default="")
+    p.add_argument("--remote-container",default="oak-d")
     a=p.parse_args()
     remote=bool(a.remote_host)
     runner=remote_run if remote else local_run
-    kwargs={"host":a.remote_host,"user":a.remote_user} if remote else {}
+    kwargs={"host":a.remote_host,"user":a.remote_user,"container":a.remote_container} if remote else {}
 
     def call(*args,timeout=30):
         result=runner(*args,timeout=timeout,**kwargs)
@@ -68,9 +79,9 @@ def main():
         }
 
     snapshot={
-        "schema_version":2,
+        "schema_version":3,
         "captured_at_unix":time.time(),
-        "captured_from":"remote:"+a.remote_host if remote else "local",
+        "captured_from":("remote:"+a.remote_host+":container:"+a.remote_container if remote and a.remote_container else "remote:"+a.remote_host if remote else "local"),
         "ros_domain_id":os.getenv("ROS_DOMAIN_ID"),
         "rmw_implementation":os.getenv("RMW_IMPLEMENTATION"),
         "nodes":nodes,"topics":topics,"services":services,"actions":actions,
