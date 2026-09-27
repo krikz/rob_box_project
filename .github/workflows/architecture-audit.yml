@@ -47,7 +47,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: architecture-audit-\${{ github.ref }}
+  group: architecture-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -104,7 +104,7 @@ jobs:
 
   runtime:
     name: Runtime ROS2 graph
-    if: \${{ inputs.runtime == true }}
+    if: ${{ inputs.runtime == true }}
     needs: static
     runs-on: [self-hosted, Linux, X64, rob-box]
     timeout-minutes: 15
@@ -122,22 +122,22 @@ jobs:
           python-version: "3.11"
       - name: Check runtime prerequisites
         env:
-          RUNTIME_HOST: \${{ inputs.runtime_host }}
+          RUNTIME_HOST: ${{ inputs.runtime_host }}
         run: |
           if [ -n "$RUNTIME_HOST" ]; then
             command -v ssh
-            ssh -o BatchMode=yes -o ConnectTimeout=10 "\${{ inputs.runtime_user }}@$RUNTIME_HOST" "ros2 node list >/dev/null"
+            ssh -o BatchMode=yes -o ConnectTimeout=10 "${{ inputs.runtime_user }}@$RUNTIME_HOST" "ros2 node list >/dev/null"
           else
             command -v ros2
           fi
       - name: Capture ROS2 runtime graph
         run: |
           args=(--output architecture/runtime.json)
-          if [ -n "\${{ inputs.runtime_topics }}" ]; then
-            args+=(--topics "\${{ inputs.runtime_topics }}")
+          if [ -n "${{ inputs.runtime_topics }}" ]; then
+            args+=(--topics "${{ inputs.runtime_topics }}")
           fi
-          if [ -n "\${{ inputs.runtime_host }}" ]; then
-            args+=(--remote-host "\${{ inputs.runtime_host }}" --remote-user "\${{ inputs.runtime_user }}")
+          if [ -n "${{ inputs.runtime_host }}" ]; then
+            args+=(--remote-host "${{ inputs.runtime_host }}" --remote-user "${{ inputs.runtime_user }}")
           fi
           python tools/architecture_runtime_snapshot.py "\${args[@]}"
       - name: Compare static and runtime
