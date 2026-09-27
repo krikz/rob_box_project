@@ -189,7 +189,7 @@ def build_graph(runtime, inventory, topics, title):
                 class_label = f"class: {cls}" if cls else "class: unresolved"
                 class_ids[node] = kid
                 lines.append(f'            subgraph {nid}["{safe(node)}"]')
-                lines.append(f'                {kid}["{safe(class_label)}"]:::class')
+                lines.append(f'                {kid}["{safe(class_label)}"]:::classNode')
                 lines.append("            end")
             lines.append("        end")
 
@@ -216,7 +216,7 @@ def build_graph(runtime, inventory, topics, title):
     for index, topic in enumerate(topics):
         topic_id = f"P{index}"
         topic_ids[topic] = topic_id
-        lines.append(f'    {topic_id}["{safe(topic)}"]:::topic')
+        lines.append(f'    {topic_id}["{safe(topic)}"]:::topicNode')
 
     for topic in topics:
         info = runtime.get("topic_info", {}).get(topic, {})
@@ -240,8 +240,8 @@ def build_graph(runtime, inventory, topics, title):
     lines += [
         "",
         "    classDef title fill:#f7f7f7,stroke:#777,color:#111,font-weight:bold;",
-        "    classDef class fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.2px;",
-        "    classDef topic fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1.2px;",
+        "    classDef classNode fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.2px;",
+        "    classDef topicNode fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1.2px;",
     ]
     return "\n".join(lines) + "\n"
 
