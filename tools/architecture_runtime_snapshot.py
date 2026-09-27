@@ -40,10 +40,19 @@ def main():
     kwargs={"host":a.remote_host,"user":a.remote_user,"container":a.remote_container} if remote else {}
 
     def call(*args,timeout=30):
-        result=runner(list(args),timeout=timeout,**kwargs)
-        if result["returncode"] != 0:
-            raise RuntimeError(f"{' '.join(args)} failed: {result['stderr'].strip()}")
-        return [x.strip() for x in result["stdout"].splitlines() if x.strip()]
+        last=None
+        attempts=3 if remote else 1
+        for attempt in range(1, attempts + 1):
+            result=runner(list(args),timeout=timeout,**kwargs)
+            if result["returncode"] == 0:
+                return [x.strip() for x in result["stdout"].splitlines() if x.strip()]
+            last=result
+            if attempt < attempts:
+                time.sleep(2)
+        raise RuntimeError(
+            f"{' '.join(args)} failed after {attempts} attempts: "
+            f"{last['stderr'].strip()}"
+        )
 
     nodes=call("ros2","node","list")
     topics=call("ros2","topic","list")
@@ -57,6 +66,12 @@ def main():
             topic_info[topic]={"present":False}
             continue
         result=runner(["ros2","topic","info",topic,"--verbose"],timeout=15,**kwargs)
+        if remote and result["returncode"] != 0:
+            for _ in range(2):
+                time.sleep(2)
+                result=runner(["ros2","topic","info",topic,"--verbose"],timeout=15,**kwargs)
+                if result["returncode"] == 0:
+                    break
         raw=result["stdout"]
         publishers=[]; subscribers=[]; mode=None; current={}
         for line in raw.splitlines():
