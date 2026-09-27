@@ -50,10 +50,10 @@ def test_helper_sources_setup_vision_pi_without_running_main():
     """
     txt = _read(HELPER_SCRIPT)
     # source + awk-фильтр
-    assert "source <(awk" in txt, \
-        "helper должен source'ить setup_vision_pi.sh через awk-фильтр (исключая main)"
-    assert "/^main\\\\(\\\\) \\{/" in txt or "/^main\\(\\) \\{/" in txt, \
-        "awk должен резать на строке '^main() {'"
+    assert "awk '/^main\\(\\) \\{/{exit} {print}'" in txt, \
+        "helper должен фильтровать setup_vision_pi.sh до main()"
+    assert "FILTERED_SETUP=" in txt, \
+        "helper должен использовать временный файл рядом с setup_vision_pi.sh, чтобы BASH_SOURCE[0] сохранял корректный путь"
     # main() НЕ должен вызываться явно
     # (если helper случайно вызовет main — мы переустановим ВЕСЬ Pi)
     assert not re.search(r"^\s*main\b", txt, re.MULTILINE), \
