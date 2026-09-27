@@ -33,7 +33,7 @@ def main():
     p.add_argument("--topics",default="",help="Comma-separated topic names to inspect deeply; empty means all")
     p.add_argument("--remote-host",default="")
     p.add_argument("--remote-user",default="")
-    p.add_argument("--remote-container",default="")
+    p.add_argument("--remote-container",default="oak-d")
     a=p.parse_args()
     remote=bool(a.remote_host)
     runner=remote_run if remote else local_run
