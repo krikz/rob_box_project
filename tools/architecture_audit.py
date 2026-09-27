@@ -14,6 +14,13 @@ ROS_CALLS = {
     "create_client": "client",
     "create_action_client": "action_client",
 }
+ROS_NAME_ARG = {
+    "create_subscription": 1,
+    "create_publisher": 1,
+    "create_service": 1,
+    "create_client": 1,
+    "create_action_client": 1,
+}
 NODE_BASES = {"Node", "LifecycleNode", "ComposableNode"}
 
 def literal(node):
@@ -66,9 +73,12 @@ def scan_python(src: Path):
 
         for call in [x for x in ast.walk(tree) if isinstance(x, ast.Call)]:
             method = call.func.attr if isinstance(call.func, ast.Attribute) else None
-            if method not in ROS_CALLS or not call.args:
+            if method not in ROS_CALLS:
                 continue
-            interface_name = literal(call.args[0])
+            name_index = ROS_NAME_ARG[method]
+            if len(call.args) <= name_index:
+                continue
+            interface_name = literal(call.args[name_index])
             if not isinstance(interface_name, str):
                 continue
             interfaces.append({
