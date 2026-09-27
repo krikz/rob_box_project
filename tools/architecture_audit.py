@@ -21,6 +21,13 @@ ROS_NAME_ARG = {
     "create_client": 1,
     "create_action_client": 1,
 }
+ROS_NAME_ARG = {
+    "create_subscription": 1,
+    "create_publisher": 1,
+    "create_service": 1,
+    "create_client": 1,
+    "create_action_client": 1,
+}
 NODE_BASES = {"Node", "LifecycleNode", "ComposableNode"}
 
 def literal(node):
