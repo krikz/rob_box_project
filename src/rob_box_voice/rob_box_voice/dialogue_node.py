@@ -738,16 +738,9 @@ class DialogueNode(Node):
         self._face_voice_hint_buffer_capacity: int = int(
             self.get_parameter("face_voice_hint.buffer_capacity").value
         )
-        # Прокидываем параметры в сам шов — ADR-0135 §2.2 (пороги high/low
-        # и окно живут в шве, чтобы note_face_seen мог их использовать
-        # при классификации band).
-        if self._face_voice_hint_enabled:
-            self._identity.configure_face_hint(
-                buffer_capacity=self._face_voice_hint_buffer_capacity,
-                high_threshold=self._face_voice_hint_high_threshold,
-                low_threshold=self._face_voice_hint_low_threshold,
-                window_sec=self._face_voice_hint_window_sec,
-            )
+        # Прокидываем параметры в сам шов — ADR-0135 §2.2. Вынесено в
+        # helper, чтобы __init__ оставался в CC-budget ADR-0021.
+        self._configure_face_voice_hint()
         # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
         # сессию на кандидата. Ключ -- полный speaker_id (см.
         # _tentative_session_state); значение -- {"asked", "confirmed",
@@ -3926,6 +3919,16 @@ class DialogueNode(Node):
             f"speaker_id={speaker_id[:8]}"
         )
 
+    def _configure_face_voice_hint(self) -> None:
+        """Apply configured face-hint parameters to the identity seam."""
+        if not self._face_voice_hint_enabled:
+            return
+        self._identity.configure_face_hint(
+            buffer_capacity=self._face_voice_hint_buffer_capacity,
+            high_threshold=self._face_voice_hint_high_threshold,
+            low_threshold=self._face_voice_hint_low_threshold,
+            window_sec=self._face_voice_hint_window_sec,
+        )
     def _face_hint_confirmation(
         self,
         *,
@@ -4005,15 +4008,32 @@ class DialogueNode(Node):
             state, tentative_name, user_input, utterance_id
         )
 
-        face_confirmation = self._face_hint_confirmation(
+        return self._face_hint_confirmation(
             state=state,
             tentative_name=tentative_name,
             full_sid=full_sid,
             user_input=user_input,
             utterance_id=utterance_id,
+        ) or self._continue_tentative_speaker(
+            state=state,
+            full_sid=full_sid,
+            tentative_kind=tentative_kind,
+            tentative_name=tentative_name,
+            user_input=user_input,
+            utterance_id=utterance_id,
         )
-        if face_confirmation is not None:
-            return face_confirmation
+
+    def _continue_tentative_speaker(
+        self,
+        *,
+        state: dict,
+        full_sid: str,
+        tentative_kind: str,
+        tentative_name: Optional[str],
+        user_input: str,
+        utterance_id: Optional[str],
+    ) -> str:
+        """Finish tentative identity handling after the face-hint gate."""
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
                 full_sid, state["name"], user_input, utterance_id
@@ -4028,7 +4048,7 @@ class DialogueNode(Node):
                 "kind": tentative_kind,
                 "name": tentative_name,
                 "confidence": float(
-                    sp.get("tentative_conf") or sp.get("confidence") or 0.0
+                    state.get("confidence") or 0.0
                 ),
             }
             self.get_logger().info(
@@ -4037,7 +4057,6 @@ class DialogueNode(Node):
             )
             self._ask_tentative_identity(tentative_kind, tentative_name)
         return self._tag_tentative(user_input)
-
     def _tentative_with_self_intro(
         self,
         state: dict,
