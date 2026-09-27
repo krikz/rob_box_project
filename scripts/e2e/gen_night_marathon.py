@@ -72,11 +72,16 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Callable, Dict, List, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 OUT_DIR = os.path.join(REPO, ".github", "e2e", "scenarios", "night")
+# Корень репозитория — нужно для поиска evidence/tts-voice-distinctness-*/
+# относительно REPO, а не HERE (= scripts/e2e/). Используется
+# _validate_voice_distinctness, см. ADR-0134 §2.2.
+REPO_ROOT = REPO
 
 # --- голоса синтеза (люди) ---------------------------------------------------
 SASHA = "anton"    # представляется
@@ -158,6 +163,224 @@ def step(
     if why and "acceptance" not in s:
         s["_why"] = why
     return s
+
+
+# =============================================================================
+# ADR-0134 §2.2 — provider-aware guard: «выбранные голоса разводятся?»
+# =============================================================================
+#
+# Контракт (см. ADR-0134 §2.2, evidence/tts-voice-distinctness-2026-09-22/):
+# 1. Из steps[] собираем уникальные voice= (не None).
+# 2. Поднимаем evidence/tts-voice-distinctness-*/<provider>_voices.json.
+#    Файл замера лежит в evidence/tts-voice-distinctness-YYYY-MM-DD/
+#    (ближайшая по дате директория к REPO). У файла формат::
+#        {"voices": ["A","B",...], "inter_voice_max_cos": {"A|B": 0.95, ...}}
+#    Ключ «A|B» — пара голосов; значение — максимальный косинус,
+#    который БЫЛ зафиксирован между ними на замере. Чем ближе к 1.0, тем
+#    менее различимы голоса.
+# 3. Для КАЖДОЙ пары уникальных голосов (a, b) смотрим значение в
+#    ``inter_voice_max_cos`` — сначала ключ ``a|b``, потом ``b|a``
+#    (замерщик мог сохранить только одну сторону). Если значение
+#    ``>= threshold`` — это нарушение: такие голоса не разводятся identify().
+# 4. Самопара ``voice|voice``: если в шагах ВСЕ voice= одинаковые (один
+#    уникальный голос использован N>=2 раз), проверяем запись ``v|v`` —
+#    «voice v имеет плохую внутреннюю согласованность (samples расходятся
+#    друг с другом, как разные голоса)». Это закрывает дыру «4 шага с
+#    voice='A' едут в сценарий и identify() не различает шаги».
+# 5. Поведение по умолчанию при нарушении:
+#    * нарушение найдено → ``raise SystemExit(2)`` с диагностикой (на CI
+#      генерация должна падать, чтобы e2e не уехал в неразличимый сценарий);
+#    * файла замера нет (greenfield-провайдер) → warning в stderr, НЕ raise
+#      (см. ADR §5 trade-off #1).
+#
+# Helper сделан отдельно от emit(), чтобы:
+# * его можно было прогнать из pytest с подменой evidence (monkeypatch);
+# * логика была одна и для greenfield-провайдера, и для прода;
+# * ``step()`` остался чистым (kw-only параметры — это scope backend).
+def _validate_voice_distinctness(
+    steps: List[Dict[str, Any]],
+    provider: str,
+    threshold: float,
+    *,
+    loader: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
+    evidence_root: Optional[str] = None,
+    warn: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """Поднимает evidence/<provider>_voices.json и валидирует пары.
+
+    Параметры
+    ---------
+    steps : list[dict]
+        Список шагов (то, что вернул ``step()``). Используется только
+        ``step["voice"]``; ``None``/отсутствие пропускаются.
+    provider : str
+        Имя TTS-провайдера (``"minimax"``, ``"yandex"``, ...).
+    threshold : float
+        Максимально допустимый косинус между любыми двумя голосами шагов.
+        Если в evidence есть пара ``>= threshold`` — raise ``SystemExit(2)``.
+    loader : callable, optional
+        ``loader(provider) -> dict | None``. По умолчанию — поиск файла
+        в evidence/tts-voice-distinctness-*/<provider>_voices.json. Точка
+        расширения для тестов (monkeypatch).
+    evidence_root : str, optional
+        Корень поиска evidence-директорий. По умолчанию — REPO_ROOT/evidence.
+    warn : callable, optional
+        ``warn(msg)``. По умолчанию — ``print(..., file=sys.stderr)``.
+        Используется для greenfield-предупреждения (файл замера отсутствует).
+    """
+    import sys as _sys
+    if warn is None:
+        warn = lambda msg: print("WARNING: " + msg, file=_sys.stderr)
+
+    # 1. Собрать уникальные voice=
+    voices: List[str] = sorted({
+        s["voice"] for s in steps
+        if isinstance(s, dict) and isinstance(s.get("voice"), str)
+    })
+    # Проверять есть смысл только если в шагах использовано >=2 раз
+    # один и тот же voice= (или разных >=2). Если 0 или 1 шаг с voice=
+    # — distinctness-инвариант не имеет смысла (нечего разводить).
+    n_voice_steps = sum(
+        1 for s in steps
+        if isinstance(s, dict) and isinstance(s.get("voice"), str)
+    )
+    if n_voice_steps < 2:
+        return {"ok": True, "voices": voices, "violations": [], "missing": False}
+
+    # 2. Загрузить evidence (или сразу вызвать кастомный loader — для тестов).
+    if loader is not None:
+        data = loader(provider)
+    else:
+        root = evidence_root or os.path.join(REPO_ROOT, "evidence")
+        data = _load_voice_distinctness_evidence(root, provider)
+
+    if data is None:
+        # 5. Greenfield: файла нет — warning, не error (см. ADR §2.2 + §5 #1).
+        warn(
+            "no voice-distinctness evidence for provider %r "
+            "(look in evidence/tts-voice-distinctness-*/). "
+            "Run scripts/e2e/measure_tts_voice_distinctness.py --provider=%s "
+            "to populate it. Skipping distinctness check." % (provider, provider)
+        )
+        return {
+            "ok": True, "voices": voices, "violations": [],
+            "missing": True, "evidence_file": None,
+        }
+
+    # 3-4. Проверить пары (a, b) и самопары (v, v) — если в шагах
+    # только один уникальный голос, проверять «пары» нечего, но
+    # самопара ``v|v`` ловит «samples v расходятся друг с другом».
+    inter = data.get("inter_voice_max_cos", {}) if isinstance(data, dict) else {}
+    violations: List[Dict[str, Any]] = []
+
+    def _cos_for(a: str, b: str):
+        """Значение из evidence для пары (a, b). Возвращает float или
+        None, если замерщик эту пару не покрыл."""
+        v = inter.get("%s|%s" % (a, b))
+        if v is None:
+            v = inter.get("%s|%s" % (b, a))
+        return v
+
+    if len(voices) == 1:
+        # Только один уникальный голос — смотрим самопару.
+        v = voices[0]
+        cos = _cos_for(v, v)
+        if cos is not None and cos >= threshold:
+            violations.append({
+                "pair": [v, v], "max_cos": cos, "threshold": threshold,
+            })
+    else:
+        for i, a in enumerate(voices):
+            for b in voices[i + 1:]:
+                cos = _cos_for(a, b)
+                if cos is None:
+                    # Пара не замерена — пропускаем (не наша забота сейчас;
+                    # отдельный PR добавит «нет данных ⇒ fail», когда будут
+                    # полные матрицы по всем провайдерам).
+                    continue
+                if cos >= threshold:
+                    violations.append({
+                        "pair": [a, b], "max_cos": cos, "threshold": threshold,
+                    })
+
+    if violations:
+        # Сортируем «самый плохой» сверху, чтобы сообщение вело прямо в корень.
+        violations.sort(key=lambda x: -x["max_cos"])
+        worst = violations[0]
+        worst_pair = "|".join(worst["pair"])
+        msg = (
+            "voice distinctness guard (ADR-0134 §2.2): provider=%s "
+            "has indistinguishable voices %s with max cosine %.3f "
+            ">= threshold %.3f. All %d violating pairs: %s. "
+            "Either pick more distinct voices for the scenario, raise "
+            "--voice-distinctness-threshold, or regenerate the scenario "
+            "with a different cast."
+            % (
+                provider, worst_pair, worst["max_cos"], worst["threshold"],
+                len(violations),
+                ", ".join(
+                    "%s(%.3f)" % ("|".join(v["pair"]), v["max_cos"])
+                    for v in violations
+                ),
+            )
+        )
+        # Диагностика в stderr ОБЯЗАТЕЛЬНА перед raise — иначе
+        # SystemExit(2) на CI проглатывается без звука (exit-code
+        # без сообщения = «CI красный, но непонятно почему»). Это
+        # та же причина, по которой helper печатает warning при
+        # greenfield: оператор должен ВИДЕТЬ проблему.
+        _sys.stderr.write(msg + "\n")
+        _sys.stderr.flush()
+        # 4. Fail-fast: падаем именно на этапе генерации, чтобы e2e не
+        # уехал в неразводимый сценарий.
+        raise SystemExit(2)
+
+    return {
+        "ok": True, "voices": voices, "violations": [],
+        "missing": False, "evidence_file": data.get("_source_path"),
+    }
+
+
+#: Имя файла замера для провайдера (ищется внутри каждой evidence-папки).
+_VOICE_DISTINCTNESS_FILENAME_TPL = "%s_voices.json"
+
+
+def _load_voice_distinctness_evidence(
+    evidence_root: str, provider: str
+) -> Optional[Dict[str, Any]]:
+    """Найти и загрузить evidence/tts-voice-distinctness-*/<provider>_voices.json.
+
+    Берём ПОСЛЕДНЮЮ по дате директорию (лексикографически == ISO-дата),
+    в которой лежит нужный файл. Если в репо несколько замеров — используем
+    самый свежий; остальные остаются для исторической сверки.
+    """
+    if not os.path.isdir(evidence_root):
+        return None
+    pattern = re.compile(r"^tts-voice-distinctness-(\d{4}-\d{2}-\d{2})$")
+    candidates: List[str] = []
+    fname = _VOICE_DISTINCTNESS_FILENAME_TPL % provider
+    for entry in sorted(os.listdir(evidence_root)):
+        full = os.path.join(evidence_root, entry)
+        if not (pattern.match(entry) and os.path.isdir(full)):
+            continue
+        if os.path.isfile(os.path.join(full, fname)):
+            candidates.append(full)
+    if not candidates:
+        return None
+    path = os.path.join(candidates[-1], fname)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Прикрепляем путь — пригодится для диагностики в caller'е.
+    try:
+        data["_source_path"] = path  # type: ignore[index]
+    except (KeyError, TypeError):
+        pass
+    return data
 
 
 ACTS: List[Dict[str, Any]] = []
