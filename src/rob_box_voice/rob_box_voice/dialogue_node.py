@@ -4032,6 +4032,7 @@ class DialogueNode(Node):
         full_sid: str,
         tentative_kind: str,
         tentative_name: Optional[str],
+        confidence: float,
         user_input: str,
         utterance_id: Optional[str],
     ) -> str:
