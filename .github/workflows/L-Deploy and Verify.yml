@@ -358,7 +358,7 @@ jobs:
           echo "🔧 Checking Hailo PCIe driver for running kernel"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            "cd ~/rob_box_project && sudo bash scripts/setup/ensure_hailo_driver.sh"
+            "cd ~/rob_box_project && echo 'open' | sudo -S bash scripts/setup/ensure_hailo_driver.sh"
 
       - name: "[Vision Pi] Ensure HEF models (#2398, #2599) — Ресурсный пак"
         if: '!inputs.dry_run'
