@@ -291,29 +291,36 @@ echo '[]' > "$WORK/open_none.json"  # no open fail-streak issue → log-only
 run_watchdog s1 "$WORK/runs_s1.json" "$WORK/open_none.json" absent absent "true"
 rc_s1="$(cat "$WORK/rc_s1")"
 n_create="$(grep -c '^issue_create$' "$WORK/calls_s1" || true)"
+# shellcheck disable=SC2034  # n_comment диагностический; не влияет на S1 PASS-condition
 n_comment="$(grep -c '^issue_comment:' "$WORK/calls_s1" || true)"
 flaky_log="$(grep -c 'flaky-detect:.*same-headsha=' "$WORK/log_s1" || true)"
 action="$(grep -E 'tick done: streak=[0-9]+ action=[a-z-]+' "$WORK/log_s1" | tail -n1 || true)"
 
 if [ "$rc_s1" = "0" ] && [ "$n_create" = "0" ] && [ "$flaky_log" -ge 1 ] \
     && [[ "$action" == *"action=flaky-skip"* ]]; then
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok1="S1 PASS: no issue_create, flaky log present, action=flaky-skip"
 else
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok1="S1 FAIL: rc=$rc_s1, n_create=$n_create, flaky_log=$flaky_log, action=${action:-(none)}"
 fi
 
-# S2: 5 fails на РАЗНЫХ sha → REGRESSION → issue_create вызван
+# S2: 5 fails на РАЗНЫХ sha → REGRESSION → issue_create вызван.
+# dry_run=false чтобы mock-gh issue_create действительно сработал
+# (с dry_run=true ветка просто логирует 'DRY-RUN would').
 echo "── S2: streak=5, 5 fails different shas → regression (issue_create) ──"
 mk_runs_diff_shas "$WORK/runs_s2.json"
 echo '[]' > "$WORK/open_none.json"
-run_watchdog s2 "$WORK/runs_s2.json" "$WORK/open_none.json" absent absent "true"
+run_watchdog s2 "$WORK/runs_s2.json" "$WORK/open_none.json" absent absent "false"
 rc_s2="$(cat "$WORK/rc_s2")"
 n_create_s2="$(grep -c '^issue_create$' "$WORK/calls_s2" || true)"
 regression_log="$(grep -c 'flaky-detect:.*decision=regression' "$WORK/log_s2" || true)"
 
 if [ "$rc_s2" = "0" ] && [ "$n_create_s2" = "1" ] && [ "$regression_log" -ge 1 ]; then
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok2="S2 PASS: 1 issue_create, decision=regression logged"
 else
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok2="S2 FAIL: rc=$rc_s2, n_create=$n_create_s2, regression_log=$regression_log"
 fi
 
@@ -328,8 +335,10 @@ action_s3="$(grep -E 'tick done: streak=[0-9]+ action=[a-z-]+' "$WORK/log_s3" | 
 
 if [ "$rc_s3" = "0" ] && [ "$n_create_s3" = "0" ] \
     && [[ "$action_s3" == *"action=noop"* ]]; then
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok3="S3 PASS: no issue_create, action=noop (streak < threshold)"
 else
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok3="S3 FAIL: rc=$rc_s3, n_create=$n_create_s3, action=${action_s3:-(none)}"
 fi
 
@@ -345,8 +354,10 @@ dedup_active="$(grep -c 'FLAKY_DEDUP active' "$WORK/log_s4" || true)"
 
 if [ "$rc_s4" = "0" ] && [ "$n_create_s4" = "0" ] && [ "$n_comment_s4" = "0" ] \
     && [ "$dedup_active" = "1" ]; then
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok4="S4 PASS: dedup active, no issue_create, no issue_comment"
 else
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok4="S4 FAIL: rc=$rc_s4, n_create=$n_create_s4, n_comment=$n_comment_s4, dedup_active=$dedup_active"
 fi
 
@@ -359,8 +370,10 @@ n_create_s5="$(grep -c '^issue_create$' "$WORK/calls_s5" || true)"
 flaky_log_s5="$(grep -c 'flaky-detect:.*same-headsha=3/' "$WORK/log_s5" || true)"
 
 if [ "$rc_s5" = "0" ] && [ "$n_create_s5" = "0" ] && [ "$flaky_log_s5" = "1" ]; then
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok5="S5 PASS: 3/5 ratio=0.6 → flaky (no issue_create, decision=flaky)"
 else
+    # shellcheck disable=SC2034  # читается через ${!label} в summary
     ok5="S5 FAIL: rc=$rc_s5, n_create=$n_create_s5, flaky_log=$flaky_log_s5"
 fi
 

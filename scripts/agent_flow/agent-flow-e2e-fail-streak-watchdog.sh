@@ -126,6 +126,8 @@ log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 # → печатает markdown-таблицу последних failed runs (id | conclusion | createdAt | sha[7] | branch)
 format_failed_runs_table() {
     local _runs="$1" _max_rows="${2:-5}" _repo="$3"
+    # shellcheck disable=SC2016  # env-передача через GH_REPO_PASS/MAX_ROWS_PASS,
+    # python читает их через os.environ — single quotes намеренно.
     GH_REPO_PASS="$_repo" MAX_ROWS_PASS="$_max_rows" printf '%s' "$_runs" \
         | GH_REPO_PASS="$_repo" MAX_ROWS_PASS="$_max_rows" python3 -c '
 import json, os, sys
@@ -339,9 +341,11 @@ else:
             # Записать dedup mtime (НО НЕ ISSUE_COOLDOWN_FILE — реальная
             # регрессия после flaky не должна быть замаскирована).
             mkdir -p "$(dirname "$FLAKY_DEDUP_FILE")" 2>/dev/null || true
-            date -u +%s > "$FLAKY_DEDUP_FILE" 2>/dev/null \
-                && log "flaky-dedup written: $FLAKY_DEDUP_FILE" \
-                || log "WARN: cannot write flaky-dedup file"
+            if date -u +%s > "$FLAKY_DEDUP_FILE" 2>/dev/null; then
+                log "flaky-dedup written: $FLAKY_DEDUP_FILE"
+            else
+                log "WARN: cannot write flaky-dedup file"
+            fi
         fi
         [ "$_streak_action" = "noop" ] && _streak_action="flaky-skip"
         log "tick done: streak=${_streak} action=${_streak_action} (flaky path)"
@@ -522,9 +526,11 @@ ${_failed_table}
                 log "🚨 AUTO-CREATED fail-streak issue: ${_issue_url:-${_create_out}}"
                 # Записать cooldown (epoch) — следующие 4ч не создавать ещё
                 mkdir -p "$(dirname "$ISSUE_COOLDOWN_FILE")" 2>/dev/null || true
-                date -u +%s > "$ISSUE_COOLDOWN_FILE" 2>/dev/null \
-                    && log "cooldown written: $ISSUE_COOLDOWN_FILE" \
-                    || log "WARN: cannot write cooldown file $ISSUE_COOLDOWN_FILE"
+                if date -u +%s > "$ISSUE_COOLDOWN_FILE" 2>/dev/null; then
+                    log "cooldown written: $ISSUE_COOLDOWN_FILE"
+                else
+                    log "WARN: cannot write cooldown file $ISSUE_COOLDOWN_FILE"
+                fi
                 [ "$_streak_action" = "noop" ] && _streak_action="issue-created"
             else
                 log "ERROR: gh issue create failed (rc=${_create_rc}): ${_create_out}"
