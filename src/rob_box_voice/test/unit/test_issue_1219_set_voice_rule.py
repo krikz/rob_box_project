@@ -154,7 +154,7 @@ def test_master_prompt_default_matches_registry() -> None:
     # `female-shaonv` / `male-qn-qingse` and current `Russian_*` ids).
     mentioned = set(
         re.findall(
-            r"\b(?:female|male)-(?:\w+-?)+\w+\b|\bRussian_[A-Za-z]+(?:-[A-Za-z]+)*\b",
+            r"\b(?:female|male)-[\w-]*\w\b|\bRussian_[A-Za-z]+(?:-[A-Za-z]+)*\b",
             block,
         )
     )

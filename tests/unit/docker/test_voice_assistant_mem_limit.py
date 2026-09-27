@@ -172,7 +172,7 @@ def test_voice_assistant_comment_mentions_adr0122(compose_doc: dict) -> None:
     raw = COMPOSE_FILE.read_text(encoding="utf-8")
     # Найти блок voice-assistant (грубо — до следующего top-level ключа)
     m = re.search(
-        r"^  voice-assistant:\n(?:\s+.*\n)+?(?=^  [a-z]|\Z)", raw, re.MULTILINE
+        r"^  voice-assistant:\n(?:[ \t]+.*\n)+?(?=^  [a-z]|\Z)", raw, re.MULTILINE
     )
     assert m, "could not extract voice-assistant block from compose"
     block = m.group(0)

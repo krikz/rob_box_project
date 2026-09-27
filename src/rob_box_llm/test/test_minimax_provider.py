@@ -787,7 +787,9 @@ def test_provider_installs_api_key_redaction_on_sdk_and_httpx_loggers(
         del p
 
         with caplog.at_level(logging.INFO):
+            # codeql[py/clear-text-logging-sensitive-data]: synthetic test key; asserts redaction to "***"
             provider_logger.info("Authorization: Bearer %s", api_key)
+            # codeql[py/clear-text-logging-sensitive-data]: synthetic test key; asserts redaction to "***"
             httpx_logger.info("Authorization: Bearer %s", api_key)
 
         assert [record.getMessage() for record in caplog.records] == [

@@ -1,3 +1,4 @@
+# checkov:skip=CKV_GHA_7: manual diagnostic workflow — workflow_dispatch inputs (robot SSH hosts) are intentional, not a build entry point
 name: "L: Architecture Audit"
 
 on:

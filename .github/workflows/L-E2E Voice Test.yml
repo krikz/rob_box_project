@@ -1,5 +1,8 @@
 name: 'L: E2E Voice Test'
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
