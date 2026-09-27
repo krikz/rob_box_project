@@ -1,56 +1,65 @@
 # ROB-BOX Architecture Audit
 
-The audit is a read-only observability layer. Its first question is what exists, before asking whether it should exist.
+## Evidence chain
 
-## Chain
+container -> node -> ROS interface -> class -> responsibility -> capability -> feature
 
-container → node → interface → class → responsibility → capability → feature
+The reverse view is also required:
 
-Reverse interface trace:
+feature -> capability -> node -> publisher/subscriber/service/action
 
-topic/service/action → publishers/subscribers/servers/clients → node → capability
+The tooling separates evidence from architectural decisions. A duplicate or unpaired interface is a review candidate, not an automatic refactor instruction.
 
-## First milestone
+## Audit layers
 
-tools/architecture_audit.py deterministically scans Docker Compose and Python source and produces:
+1. Static inventory: Compose services, ROS packages, Python classes, node classes, launch entries and ROS interfaces.
+2. Structural review: multiple publishers, unpaired interfaces, duplicate class names, semantic identity-topic names and node packages without literal launch entries.
+3. Runtime graph: real ros2 node/topic/service/action output and verbose topic endpoints.
+4. Static/runtime diff: declared topics absent at runtime and runtime-only topics.
+5. Ownership: architecture/ownership.yml records canonical owner only after human verification.
+6. Capability/feature overlay: implementation evidence is reconciled with the feature matrix and acceptance evidence.
+7. Semantic review: each topic/service/action needs one contract, owner and meaning.
 
-- architecture/inventory.json
-- architecture/inventory.md
+## Runtime collection
 
-It records containers/services, ROS package directories, Python classes, detected ROS node classes, and literal ROS publisher/subscriber/service/client/action declarations.
+The collector can inspect ROS2 on the runner or an SSH-accessible ROS2 host.
 
-It does not decide that a node or class should be deleted or merged.
-
-## Later layers
-
-1. Map compose services to launch scripts and actual ROS nodes.
-2. Ingest runtime ros2 node/topic/service/action snapshots.
-3. Compare static and runtime graphs.
-4. Overlay capabilities and the existing feature matrix.
-5. Detect duplicate responsibilities, shadow implementations, orphan interfaces, and semantic collisions.
-6. Produce architecture-debt findings for human review.
-
-## Cadence
-
-- Every PR: deterministic static scan + architecture diff.
-- Nightly: repository snapshot; optionally compare with runtime snapshot.
-- Weekly / before release: AI-assisted semantic review using inventory, feature matrix, ADRs, tests/E2E evidence and recent changes.
-
-Human engineers remain responsible for architectural decisions such as “is this node necessary?” and “should these responsibilities be merged?”
-
-
-## Local commands
-
-Static inventory:
-
-    python tools/architecture_audit.py
-
-Structural findings:
-
-    python tools/architecture_findings.py architecture/inventory.json
-
-Runtime snapshot (run on a machine with ROS 2 and the target graph visible):
+Examples:
 
     python tools/architecture_runtime_snapshot.py
+    python tools/architecture_runtime_snapshot.py --topics /scan,/cmd_vel
+    python tools/architecture_runtime_snapshot.py --remote-host 10.1.1.21 --remote-user ros2 --topics /scan,/cmd_vel
+    python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
-The runtime snapshot is evidence from an actual ROS graph. It must not be generated on a generic CI runner and presented as robot evidence.
+Remote collection requires passwordless SSH from the self-hosted runner. No password is stored in the repository.
+
+## Node review questions
+
+- What problem does this node solve?
+- What capability does it own?
+- Why is it a separate node?
+- Which interfaces does it own?
+- What state does it own?
+- Which other nodes overlap?
+- Which features depend on it?
+- What breaks if it is removed?
+- Is ROS2 the right boundary?
+
+## Topic contract
+
+For every interface record:
+
+- name
+- type
+- semantic owner
+- publishers/subscribers or servers/clients
+- purpose
+- what it must not mean
+- static evidence
+- runtime evidence
+
+Identity-related names such as person, speaker, face and identity deserve explicit contracts. They must not silently mix detection, known identity, current speaker and current user.
+
+## Decision rule
+
+The audit produces evidence and review candidates. Merge, delete, rename, split and keep decisions are made only after checking runtime behavior, tests, ADRs and feature acceptance evidence.
