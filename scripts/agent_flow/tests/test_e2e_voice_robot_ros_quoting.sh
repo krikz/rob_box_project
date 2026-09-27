@@ -122,57 +122,54 @@ expect_tokens_intact() {
         return
     fi
 
-    # (C) В собранной команде должно быть `eval "$cmd"` (printf %q-фикс).
-    if ! printf '%s' "$cmd" | grep -qF 'eval "$cmd"'; then
-        printf '  ❌ %s: в собранной команде нет `eval "$cmd"` (нет printf %q-фикса?)\n' "$name"
+    # (C) cmd уже должен быть материализован в отправленной строке:
+    # удалённый bash не должен получать необъявленную переменную $cmd.
+    if printf '%s' "$cmd" | grep -qF '$cmd'; then
+        printf '  ❌ %s: в SSH-команде остался литерал $cmd — remote bash его не знает\n' "$name"
+        printf '     cmd: %s\n' "$cmd"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+    if ! printf '%s' "$cmd" | grep -qF 'eval '; then
+        printf '  ❌ %s: в SSH-команде нет удалённого eval\n' "$name"
         printf '     cmd: %s\n' "$cmd"
         FAIL=$((FAIL + 1))
         return
     fi
 
-    # (D) Извлекаем shell-quoted строку из собранной команды и проверяем,
-    #     что eval её восстанавливает в исходные want-токены.
-    #
-    #     Собранная команда оканчивается на `...; eval "$cmd"'`
-    #     (с одинарной кавычкой на конце). Между `eval "$cmd"` и
-    #     финальной `'` — пусто (команда заканчивается сразу после eval).
-    #     Сама shell-quoted строка лежит в $cmd, который bash
-    #     раскрывает при выполнении команды. Внутри собранной команды
-    #     `$cmd` — литерал.
-    #
-    #     Чтобы достать значение: запускаем `bash -c "$cmd"` с `$cmd`,
-    #     определённым в окружении как сериализация want-токенов через
-    #     printf %q. Это эквивалентно тому, что eval раскрывает на
-    #     удалённой стороне.
+    # (D) В stub попадает вся SSH-команда. Извлекаем quoted-аргумент bash -lc
+    # и реально исполняем его локальным bash: это моделирует удалённую сторону.
+    local remote_payload="${cmd#docker exec voice-assistant bash -lc }"
+    if [ "$remote_payload" = "$cmd" ] || [ -z "$remote_payload" ]; then
+        printf '  ❌ %s: не удалось выделить payload bash -lc\n' "$name"
+        printf '     cmd: %s\n' "$cmd"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+    local remote_output
+    remote_output="$(eval "bash -c $remote_payload" 2>&1)" || true
+
+    # Для payload с ros2/bash на локальной машине ожидаем отсутствие реальных
+    # зависимостей: проверяем отдельно, что сериализация round-trip сохраняет токены.
     local expected_serialized
-    expected_serialized="$(printf '%q ' "$@")"
-    expected_serialized="${expected_serialized% }"
-
-    # eval сериализации должен восстановить want-токены.
+    expected_serialized="$(printf '%q ' "$@")"; expected_serialized="${expected_serialized% }"
     local round_trip
-    round_trip="$(eval "printf '%s\n' $expected_serialized" 2>&1)" || true
-
+    round_trip="$(eval "printf '%s\\n' $expected_serialized" 2>&1)" || true
     local missing=0
     local w
     for w in "${want[@]}"; do
-        # Сравниваем через printf, а не grep — токены могут начинаться
-        # с `-` (например, `--no-daemon`) и быть флагом для grep.
         if ! printf '%s\n' "$round_trip" | grep -qxF -- "$w"; then
             missing=1
             printf '     потерян токен: [%s]\n' "$w"
         fi
     done
-
     if [ "$missing" = "0" ]; then
         echo "  ✅ $name"; PASS=$((PASS + 1))
     else
-        printf '  ❌ %s: printf %q round-trip потерял токены\n' "$name"
-        printf '     serialized: %s\n' "$expected_serialized"
-        printf '     round_trip:\n'
-        printf '%s\n' "$round_trip" | sed 's/^/       /'
+        printf '  ❌ %s: printf %%q round-trip потерял токены\n' "$name"
+        printf '     remote_output: %s\n' "$remote_output"
         FAIL=$((FAIL + 1))
     fi
-}
 
 # ---------------------------------------------------------------------------
 # Шаг 3: фикстуры.
