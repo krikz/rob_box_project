@@ -77,6 +77,7 @@ from rob_box_harness.health import (
     check_deepseek_balance,
 )
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
+from rob_box_harness.identity.base import FaceSignal  # ADR-0135 §2.1
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
@@ -718,7 +719,28 @@ class DialogueNode(Node):
         self._speaker_resolve_timeout_sec: float = float(
             self.get_parameter("speaker_resolve_timeout_sec").value
         )
-        # Issue #2809 (продолжение) -- переспрос про tentative-личность
+        # ADR-0135 §2.6 — face→voice hint: читаем namespace-параметры
+        # (см. _declare_params ниже). При выключенном флаге логика
+        # полностью отсутствует (note_face_seen не зовётся,
+        # _handle_tentative_speaker не ищет hint — ADR-0135 §2.5).
+        self._face_voice_hint_enabled: bool = bool(
+            self.get_parameter("face_voice_hint.enabled").value
+        )
+        self._face_voice_hint_window_sec: float = float(
+            self.get_parameter("face_voice_hint.window_sec").value
+        )
+        self._face_voice_hint_high_threshold: float = float(
+            self.get_parameter("face_voice_hint.similarity_high_threshold").value
+        )
+        self._face_voice_hint_low_threshold: float = float(
+            self.get_parameter("face_voice_hint.similarity_low_threshold").value
+        )
+        self._face_voice_hint_buffer_capacity: int = int(
+            self.get_parameter("face_voice_hint.buffer_capacity").value
+        )
+        # Прокидываем параметры в сам шов — ADR-0135 §2.2. Вынесено в
+        # helper, чтобы __init__ оставался в CC-budget ADR-0021.
+        self._configure_face_voice_hint()
         # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
         # сессию на кандидата. Ключ -- полный speaker_id (см.
         # _tentative_session_state); значение -- {"asked", "confirmed",
@@ -1429,6 +1451,19 @@ class DialogueNode(Node):
         # в диалоге или, что было раньше, имя предыдущего собеседника).
         # 2.5с = запас x1.3 над верхней границей нормального диапазона.
         self.declare_parameter("speaker_resolve_timeout_sec", 2.5)
+        # ADR-0135 §2.6 — face→voice hint: свежее наблюдение лица в шов
+        # «Знакомый» отменяет голосовой переспрос #2809, если имя лица и
+        # имя голосового кандидата совпадают и hint в окне. Дефолты из
+        # ADR-0123 §6 (high=0.78) и ADR-0089 §2.2 (low=0.65 стаб-зеркало).
+        # Деградация к текущему поведению — ADR-0135 §2.5: false здесь
+        # = подписка на /vision/hailo/events не зовёт note_face_seen,
+        # _handle_tentative_speaker не ищет hint. Ключи dotted — стандарт
+        # ROS2 для namespace-секций (см. test_yaml_param_consistency).
+        self.declare_parameter("face_voice_hint.enabled", True)
+        self.declare_parameter("face_voice_hint.window_sec", 30.0)
+        self.declare_parameter("face_voice_hint.similarity_high_threshold", 0.78)
+        self.declare_parameter("face_voice_hint.similarity_low_threshold", 0.65)
+        self.declare_parameter("face_voice_hint.buffer_capacity", 8)
         # issue #1077: сколько фраз подряд с одним speaker_tag нужно для
         # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
         # 1 = мгновенное подтверждение (если tag стабилен).
@@ -3752,6 +3787,7 @@ class DialogueNode(Node):
         self,
         state: dict,
         tentative_name: Optional[str],
+        confidence: float,
         user_input: str,
         utterance_id: Optional[str] = None,
     ) -> None:
@@ -3884,40 +3920,74 @@ class DialogueNode(Node):
             f"speaker_id={speaker_id[:8]}"
         )
 
-    def _handle_tentative_speaker(
-        self, sp: dict, user_input: str, utterance_id: Optional[str] = None
-    ) -> str:
-        """Диспетчер переспроса для tentative-случая (см. блок выше).
-
-        ``single`` (живой хозяин, конкурента с другим именем нет) может
-        дойти до вопроса с ИМЕНЕМ кандидата. ``contested`` (n210: голос
-        похож сразу на нескольких людей с разными именами) -- имя
-        кандидата НИКУДА не идёт, даже в подсказку-гипотезу: критично,
-        что в n210 само слово "Борис" запрещено (must_not_say), и вопрос
-        "Борис, это ты?" тоже завалил бы приёмку.
-        """
+    def _configure_face_voice_hint(self) -> None:
+        """Apply configured face-hint parameters to the identity seam."""
+        if not self._face_voice_hint_enabled:
+            return
+        self._identity.configure_face_hint(
+            buffer_capacity=self._face_voice_hint_buffer_capacity,
+            high_threshold=self._face_voice_hint_high_threshold,
+            low_threshold=self._face_voice_hint_low_threshold,
+            window_sec=self._face_voice_hint_window_sec,
+        )
+    def _face_hint_confirmation(
+        self,
+        *,
+        state: dict,
+        tentative_name: Optional[str],
+        full_sid: str,
+        user_input: str,
+        utterance_id: Optional[str],
+    ) -> bool:
+        """ADR-0135 — apply a fresh high-confidence face hint, if present."""
+        if not (
+            getattr(self, "_face_voice_hint_enabled", False)
+            and tentative_name
+            and not state.get("asked")
+        ):
+            return False
+        face_obs = self._identity.recent_face_observation_by_name(
+            tentative_name,
+            window_sec=getattr(self, "_face_voice_hint_window_sec", 30.0),
+        )
+        if face_obs is None or face_obs.confidence_band != "high":
+            return False
+        state["asked"] = True
+        state["confirmed"] = True
+        state["name"] = tentative_name
+        self.get_logger().info(
+            "👤 [issue #3024 ADR-0135] voice tentative suppressed "
+            "by recent face hint (name=%r, age=%.1fs, sim=%.3f); "
+            "confirming as %r"
+            % (face_obs.name, face_obs.age_sec(), face_obs.similarity, state["name"])
+        )
+        return True
+    def _tentative_identity_parts(
+        self, sp: dict
+    ) -> tuple[str, str, Optional[str]]:
+        """Normalize tentative speaker payload before dispatch."""
         full_sid = str(sp.get("speaker_id") or "")
         tentative_kind = str(sp.get("tentative_kind") or "")
         if not full_sid or tentative_kind not in ("single", "contested"):
-            return self._tag_tentative(user_input)
-
+            return "", "", None
         tentative_name = None
         if tentative_kind == "single":
             tentative_name = sanitize_speaker_name(
                 str(sp.get("tentative_name") or "")
             ) or None
+        return full_sid, tentative_kind, tentative_name
 
-        state = self._tentative_session_state(full_sid)
-        intro = getattr(self, "_turn_self_intro", None)
-        if intro:
-            return self._tentative_with_self_intro(
-                state, full_sid, tentative_name, intro, user_input,
-                utterance_id,
-            )
-        self._resolve_pending_tentative_answer(
-            state, tentative_name, user_input, utterance_id
-        )
-
+    def _finish_tentative_identity(
+        self,
+        state: dict,
+        full_sid: str,
+        tentative_kind: str,
+        tentative_name: Optional[str],
+        sp: dict,
+        user_input: str,
+        utterance_id: Optional[str],
+    ) -> str:
+        """Apply the existing confirmation/question tail for tentative speakers."""
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
                 full_sid, state["name"], user_input, utterance_id
@@ -3926,7 +3996,6 @@ class DialogueNode(Node):
             return self._tag_tentative(user_input)
         if not state["asked"]:
             state["asked"] = True
-            # Issue #2914 -- ответом будет только ДРУГАЯ реплика человека.
             state["asked_utterance_id"] = utterance_id
             self._pending_identity_hint = {
                 "kind": tentative_kind,
@@ -3942,6 +4011,44 @@ class DialogueNode(Node):
             self._ask_tentative_identity(tentative_kind, tentative_name)
         return self._tag_tentative(user_input)
 
+    def _handle_tentative_speaker(
+        self, sp: dict, user_input: str, utterance_id: Optional[str] = None
+    ) -> str:
+        """Диспетчер переспроса для tentative-случая (см. блок выше)."""
+        full_sid, tentative_kind, tentative_name = self._tentative_identity_parts(sp)
+        if not full_sid:
+            return self._tag_tentative(user_input)
+
+        state = self._tentative_session_state(full_sid)
+        intro = getattr(self, "_turn_self_intro", None)
+        if intro:
+            return self._tentative_with_self_intro(
+                state, full_sid, tentative_name, intro, user_input,
+                utterance_id,
+            )
+        self._resolve_pending_tentative_answer(
+            state,
+            tentative_name,
+            float(sp.get("tentative_conf") or sp.get("confidence") or 0.0),
+            user_input,
+            utterance_id,
+        )
+        self._face_hint_confirmation(
+            state=state,
+            tentative_name=tentative_name,
+            full_sid=full_sid,
+            user_input=user_input,
+            utterance_id=utterance_id,
+        )
+        return self._finish_tentative_identity(
+            state,
+            full_sid,
+            tentative_kind,
+            tentative_name,
+            sp,
+            user_input,
+            utterance_id,
+        )
     def _tentative_with_self_intro(
         self,
         state: dict,
@@ -8634,6 +8741,12 @@ class DialogueNode(Node):
         Колбэк горячий: топик общий с person-детекцией и сыплет ~5
         событий в секунду на человека. Поэтому здесь только дешёвая
         проверка, а вся логика — в :meth:`_handle_meeting`.
+
+        ADR-0135 §2.3: дополнительно кладём наблюдение лица в шов
+        «Знакомый» (``self._identity.note_face_seen``), чтобы голосовой
+        ``_handle_tentative_speaker`` мог снять переспрос #2809 при
+        свежем face-hint с тем же именем (issue #3024). Колбэк дешёвый
+        — операция in-memory, без сети/БД.
         """
         marker = parse_meeting_marker(
             event_type=getattr(msg, "event_type", "") or "",
@@ -8642,6 +8755,27 @@ class DialogueNode(Node):
         )
         if marker is None:
             return
+        # ADR-0135 §2.3 — note_face_seen через тот же подписочный путь,
+        # что и _handle_meeting. Не плодим новый топик
+        # /perception/face/meeting (контракт Vision Pi, ADR-0135 §5.2).
+        if self._face_voice_hint_enabled:
+            try:
+                self._identity.note_face_seen(
+                    FaceSignal(
+                        person_id=marker.person_id,
+                        name=marker.name or None,
+                        similarity=float(marker.similarity or 0.0),
+                        is_new=bool(marker.is_new),
+                        source_camera=marker.source_camera,
+                        captured_at=time.time(),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                # ADR-0135 §2.5: hint — деградируемая функциональность,
+                # падение не должно ронять основной поток _handle_meeting.
+                self.get_logger().debug(
+                    f"👤 [ADR-0135] note_face_seen failed (ignored): {exc!r}"
+                )
         try:
             self._handle_meeting(marker)
         except Exception as exc:  # noqa: BLE001

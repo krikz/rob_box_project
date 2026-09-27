@@ -122,6 +122,19 @@ dialogue_node:
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0
+    # ADR-0135 §2.6 / issue #3024 — face→voice hint: свежее наблюдение
+    # лица в шов «Знакомый» отменяет голосовой переспрос #2809, если
+    # имя лица и имя голосового кандидата совпадают и hint в окне.
+    # Дефолты из ADR-0123 §6 (high=0.78) и ADR-0089 §2.2 (low=0.65).
+    # Деградация к текущему поведению — ADR-0135 §2.5: enabled=false →
+    # подписка не зовёт note_face_seen, _handle_tentative_speaker
+    # не ищет hint.
+    face_voice_hint:
+      enabled: true
+      window_sec: 30.0
+      similarity_high_threshold: 0.78
+      similarity_low_threshold: 0.65
+      buffer_capacity: 8
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).
