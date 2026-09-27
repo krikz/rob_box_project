@@ -28,11 +28,6 @@ on:
         required: false
         default: "ros2"
         type: string
-      runtime_container:
-        description: "Docker container containing the ROS2 graph"
-        required: false
-        default: "oak-d"
-        type: string
       runtime_topics:
         description: "Comma-separated ROS2 topics for verbose inspection; empty = all discovered topics"
         required: false
