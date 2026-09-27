@@ -389,6 +389,58 @@ test_K_card_always_created() {
     assert_eq "1" "$(journal_creates)" "K: kanban-карточка создаётся независимо от NIGHTLY_REVIEW_OUTCOME (её никто не задаёт в проде)" || return 1
 }
 
+# ---------------------------------------------------------------------------
+# L. E2E Voice Test (develop) last-green: RED/GREEN + HEAD coverage.
+# ---------------------------------------------------------------------------
+test_L_e2e_develop_last_green() {
+    reset_state
+    local gh_fixture="$TEST_TMP/e2e_runs.json"
+    local head_sha
+    head_sha="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+
+    cat > "$gh_fixture" <<JSON
+{"workflow_runs":[
+  {"head_sha":"$head_sha","conclusion":"failure","created_at":"2026-09-27T11:00:00Z","html_url":"https://example.invalid/run-red"},
+  {"head_sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","conclusion":"success","created_at":"2026-09-27T10:00:00Z","html_url":"https://example.invalid/run-green"}
+]}
+JSON
+
+    cat > "$TEST_TMP/bin/gh" <<'GH_EOF'
+#!/bin/bash
+if [ "${1:-}" = "api" ] && [[ "${2:-}" == *"/actions/workflows/"* ]]; then
+    cat "${E2E_RUNS_FIXTURE}"
+    exit 0
+fi
+# Other nightly-review GitHub queries are irrelevant to this focused test.
+echo '[]'
+exit 0
+GH_EOF
+    chmod +x "$TEST_TMP/bin/gh"
+
+    local rc out
+    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=0 GH_REPO=krikz/rob_box_project GH_BIN=gh E2E_RUNS_FIXTURE="$gh_fixture")"
+    assert_eq "0" "$rc" "L: RED fixture exit 0" || return 1
+    out="$(cat "$STDOUT_FILE")"
+    assert_contains "текущий статус: **RED**" "$out" "L: failure → RED" || return 1
+    assert_contains "consecutive fails: **1**" "$out" "L: one failure → streak=1" || return 1
+    assert_contains "HEAD \`$head_sha" "$out" "L: current develop HEAD is covered" || return 1
+    assert_contains "последний success: **2026-09-27T10:00:00Z**" "$out" "L: last-green comes from older success" || return 1
+
+    cat > "$gh_fixture" <<JSON
+{"workflow_runs":[
+  {"head_sha":"$head_sha","conclusion":"success","created_at":"2026-09-27T12:00:00Z","html_url":"https://example.invalid/run-green-current"},
+  {"head_sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","conclusion":"failure","created_at":"2026-09-27T11:00:00Z","html_url":"https://example.invalid/run-red"}
+]}
+JSON
+    reset_state
+    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=0 GH_REPO=krikz/rob_box_project GH_BIN=gh E2E_RUNS_FIXTURE="$gh_fixture")"
+    assert_eq "0" "$rc" "L: GREEN fixture exit 0" || return 1
+    out="$(cat "$STDOUT_FILE")"
+    assert_contains "текущий статус: **GREEN**" "$out" "L: success → GREEN" || return 1
+    assert_contains "consecutive fails: **0**" "$out" "L: current success → streak=0" || return 1
+    assert_contains "HEAD \`$head_sha" "$out" "L: current develop HEAD remains covered" || return 1
+}
+
 run_test "A: вне ночного окна → skip"                     test_A_outside_window
 run_test "B: ночная карточка (key + assignee)"            test_B_nightly_card
 run_test "C: компонентные карточки, cap соблюдается"      test_C_component_cards
