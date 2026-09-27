@@ -74,7 +74,8 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
            "first_invocation_position", "VOICE_CYCLE_MARKERS",
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
-           "robot_speech", "keyword_hit", "retry_block_reason"]
+           "identify_failures", "robot_speech", "keyword_hit",
+           "retry_block_reason"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
 # Используются для assertion «discovery tool был вызван ДО голосового ответа»
@@ -510,6 +511,90 @@ def registration_failures(acc: dict, logs: str) -> list:
             "registered\" from speaker_id_node in the step log (issue #2846: "
             "a register_speaker call alone does not prove the voice was saved)"
         )
+    return failures
+
+
+# ── ADR-0134: «незнакомец НЕ опознан как известный» (per-step инвариант) ──────
+#
+# Контракт лога (см. ADR-0134 §2.1 + speaker_id_node.py:539/543/646-648):
+# финальный вердикт identify живёт в строке вида
+#   👤 Speaker: 'Борис'        — успешное опознание (порог пройден)
+#   👤 Speaker: 'unknown'      — отказ (порог не пройден, is_known=False)
+# Поле `must_not_identify_as` в acceptance.json шага — список имён, которых
+# НЕ должно быть в этой строке. Любое совпадение → FAIL шага. Это закрывает
+# дыру из issue #2754: «незнакомец опознаётся как Борис (0.816), а шаг
+# n210_grisha_no_name зелёный, потому что проверяется только must_not_call:
+# register_speaker». Сам факт «identify выдал Бориса» теперь ассертится.
+#
+# Семантика:
+# * ищем ТОЛЬКО финальный verdict (Speaker: 'NAME'), а не «identify
+#   candidates: best='Борис'» — это диагностика, ещё не вердикт (#2779
+#   использует ту же аксиому для must_not_say);
+# * если в логе несколько финальных вердиктов (например, retried шаг с
+#   двумя попытками) — провисает ЛЮБОЙ из forbidden ⇒ ошибка;
+# * пустой список / отсутствие поля → функция возвращает [] (zero effect).
+
+#: Финальный вердикт speaker_id_node. Покрывает ОБА формата лога:
+#: * новый (с эмодзи 👤, post-#2754): ``👤 Speaker: 'Борис' (812 ms)`` —
+#:   копия f-string speaker_id_node.py:543;
+#: * старый (без эмодзи, pre-#2754): ``Speaker: 'Борис' confidence=0.95``
+#:   или ``[speaker_id_node] Speaker: 'Борис' confidence=...``.
+#: Если завязаться только на 👤 — мы регрессируем #2754 на старых
+#: харнессах (см. ADR-0134 §2.1 «устойчивость якоря»). re.MULTILINE
+#: не нужен — ищем по всему логу, шаги не должны пересекаться по логу.
+_IDENTIFY_VERDICT_RE = re.compile(
+    r"(?:👤\s*)?Speaker:\s*['\"]([^'\"]+)['\"]"
+)
+
+
+def identify_failures(acc: dict, logs: str) -> list:
+    """Причины FAIL шага по инварианту ``must_not_identify_as`` (ADR-0134).
+
+    Возвращает список строк-причин. Пустой список — инвариант выполнен:
+    ни одно из запрещённых имён не появилось в финальном вердикте identify.
+
+    Формат ``acc``::
+
+        {"must_not_identify_as": ["Борис", "Саша"]}     # список str'ов
+
+    Невалидный тип элемента (не str) — отдельная причина FAIL с подсказкой,
+    инвариант всё равно проверяется по остальным (best-effort).
+    """
+    raw = acc.get("must_not_identify_as", []) or []
+    if not isinstance(raw, list):
+        return [
+            f"must_not_identify_as must be list[str], got {type(raw).__name__}"
+        ]
+    forbidden: list[str] = []
+    type_errors: list[str] = []
+    for i, name in enumerate(raw):
+        if isinstance(name, str):
+            forbidden.append(name)
+        else:
+            type_errors.append(
+                f"must_not_identify_as[{i}] is not str: {name!r}"
+            )
+    if not forbidden and not type_errors:
+        return []
+    failures: list = list(type_errors)
+    if not forbidden:
+        return failures
+    # Все forbidden-имена → один проход regex, чтобы не сканровать лог
+    # по разу на каждое имя (на act 2 лог шага бывает 100+ КБ).
+    verdicts = _IDENTIFY_VERDICT_RE.findall(logs)
+    if not verdicts:
+        # Вердикта нет вообще — это нормально (шаг не дошёл до биометрии,
+        # например wake-gate SKIP). Инвариант не нарушен, провисать
+        # нечего. Возвращаем type_errors, если были.
+        return failures
+    for forbidden_name in forbidden:
+        if forbidden_name in verdicts:
+            failures.append(
+                f"speaker identified as forbidden name {forbidden_name!r} "
+                f"(ADR-0134 / issue #2754: незнакомец опознан как известный "
+                f"диктор; финальный вердикт 👤 Speaker: '{forbidden_name}' "
+                f"в логе шага)"
+            )
     return failures
 
 

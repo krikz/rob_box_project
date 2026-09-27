@@ -26,10 +26,27 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
+from ..face_card import (
+    build_face_collage,
+    find_summary,
+    format_face_summary,
+    format_faces_table,
+    load_detail,
+    list_people,
+)
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
 from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
+
+
+#: Filesystem location of the live face store inside the telegram-bot
+#: container. Same host directory (``./data/faces`` under
+#: ``docker/vision/``) is bind-mounted read-only into both
+#: ``vision-face`` (writer, :no-ro) and ``telegram-bot`` (reader,
+#: :ro) — see ``docker/vision/docker-compose.yaml``. Issue #3025 +
+#: ADR-0123 §4: the bot must never write here.
+FACE_STORE_MOUNT = "/data/faces"
 
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
@@ -128,7 +145,10 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Система:*\n"
         "/status — статус робота\n"
         "/clear — очистить историю чата\n"
-        "/myid — показать chat ID\n",
+        "/myid — показать chat ID\n\n"
+        "*Лица (issue #3025):*\n"
+        "/faces — список всех лиц в лицевой базе\n"
+        "/face <id|имя> — карточка лица (сводка + коллаж)\n",
         parse_mode="Markdown",
     )
 
@@ -826,3 +846,75 @@ async def operator_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "🟢 Режим оператора **выключен** — свободный текст идёт в личность (как раньше)."
     await update.message.reply_text(label, parse_mode="Markdown")
     logger.info("AV-22 /operator %s chat_id=%s", arg, chat_id)
+
+
+# ─── /faces и /face (Issue #3025) — read-only просмотр лицевой базы ───────
+
+
+@authorized
+async def faces_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/faces`` — таблица всех записей в ``/data/faces``.
+
+    Issue #3025 + ADR-0123 §4: бот читает диск напрямую через
+    :mod:`rob_box_telegram.face_card` (read-only volume). Никакой
+    FaceStore / ROS API не задействован — бот и vision-face живут в
+    разных контейнерах и не разделяют состояние.
+    """
+    summaries = list_people(FACE_STORE_MOUNT)
+    text = format_faces_table(summaries)
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+@authorized
+async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/face <id|имя>`` — карточка лица: сводка + коллаж снимков.
+
+    Принимает либо короткий ``person_id`` (8 символов, как оператор
+    копирует из ``/faces``), либо полный id, либо точное имя (без
+    учёта регистра). Если ничего не передано — показывает справку.
+
+    Коллаж строится локально через PIL (4×3 сетка, эталон Шифу).
+    Если ни reference, ни encounters не нашлись — отправляем только
+    сводку, без ``reply_photo``, и не падаем с исключением.
+    """
+    raw = " ".join(context.args).strip() if context.args else ""
+    if not raw:
+        await update.message.reply_text(
+            "ℹ️ Использование: `/face <person_id | имя>`\n"
+            "Примеры:\n"
+            "  `/face 4ff0ddc5`\n"
+            "  `/face Дэнчик`",
+            parse_mode="Markdown",
+        )
+        return
+
+    summary = find_summary(FACE_STORE_MOUNT, raw)
+    if summary is None:
+        await update.message.reply_text(
+            f"⚠️ Не нашёл запись «{raw}». Список — `/faces`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    detail = load_detail(FACE_STORE_MOUNT, summary.person_id)
+    if detail is None:
+        await update.message.reply_text(
+            f"⚠️ Запись `{summary.person_id_short}` повреждена "
+            "(нет meta.json). Проверьте диск.",
+            parse_mode="Markdown",
+        )
+        return
+
+    text = format_face_summary(detail)
+    collage = build_face_collage(detail)
+    if collage is None:
+        # Нет ни reference, ни encounters — это легальный кейс
+        # (лицо только что создано без эмбеддингов). Шлём только сводку.
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+
+    await update.message.reply_photo(
+        photo=io.BytesIO(collage),
+        caption=text,
+        parse_mode="Markdown",
+    )
