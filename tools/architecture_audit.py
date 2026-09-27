@@ -123,6 +123,27 @@ def scan_compose(path: Path):
         })
     return result
 
+def scan_launch_files(root: Path):
+    result = []
+    for path in sorted(root.rglob("*.launch.py")):
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        for call in [x for x in ast.walk(tree) if isinstance(x, ast.Call)]:
+            if not isinstance(call.func, ast.Name) or call.func.id != "Node":
+                continue
+            values = {}
+            for kw in call.keywords:
+                if kw.arg in {"package", "executable", "name", "namespace", "output"}:
+                    values[kw.arg] = literal(kw.value)
+            if values:
+                result.append({"file": rel, **values})
+    return result
+
 def scan_packages(src: Path):
     if not src.exists():
         return []
@@ -155,6 +176,7 @@ def main():
 
     python_files, classes, interfaces = scan_python(root / "src")
     packages = scan_packages(root / "src")
+    launches = scan_launch_files(root)
 
     topics = defaultdict(lambda: {
         "publishers": [], "subscribers": [], "services": [], "clients": [], "files": []
@@ -180,6 +202,7 @@ def main():
         "repository": {"root": str(root)},
         "containers": compose,
         "packages": packages,
+        "launches": launches,
         "python": python_files,
         "classes": sorted(classes, key=lambda x: (x["file"], x["line"])),
         "ros_interfaces": interfaces,
