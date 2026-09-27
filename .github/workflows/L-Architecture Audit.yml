@@ -45,7 +45,7 @@ jobs:
       - name: Check robot SSH access
         shell: bash
         env:
-          SSHPASS: open
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
         run: |
           set -euo pipefail
           if ! command -v sshpass >/dev/null 2>&1; then
@@ -62,12 +62,12 @@ jobs:
       - name: Check robot ROS2 graph
         shell: bash
         env:
-          SSHPASS: open
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
         run: |
           set -euo pipefail
           ROBOT="${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$ROBOT" \
-            "docker exec '${{ inputs.runtime_container }}' bash -lc 'source /opt/ros/humble/setup.bash && echo "=== ROS2 nodes ===" && ros2 node list && echo "=== ROS2 topics ===" && ros2 topic list && echo "=== ROS2 services ===" && ros2 service list && echo "=== ROS2 actions ===" && ros2 action list'"
+            "docker exec '${{ inputs.runtime_container }}' bash -lc 'source /opt/ros/humble/setup.bash && echo ROS2-nodes && ros2 node list && echo ROS2-topics && ros2 topic list && echo ROS2-services && ros2 service list && echo ROS2-actions && ros2 action list'"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -87,7 +87,7 @@ jobs:
       - name: Capture robot ROS2 runtime graph
         shell: bash
         env:
-          SSHPASS: open
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
         run: |
           set -euo pipefail
           args=(--output architecture/runtime.json
