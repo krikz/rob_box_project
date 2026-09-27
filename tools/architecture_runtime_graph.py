@@ -149,25 +149,22 @@ def build_graph(runtime, inventory, topics, title):
 
     for topic in topics:
         info = runtime.get("topic_info", {}).get(topic, {})
-        endpoint_nodes = {
+        pubs = {
             resolve_runtime_node(x.get("node"), runtime_nodes)
-            for x in info.get("publishers", []) + info.get("subscribers", [])
+            for x in info.get("publishers", [])
             if x.get("node")
         }
-        for node in endpoint_nodes:
-            if node in class_ids:
-                node_topic_ids[node].add(topic)
-
-    for node in sorted(node_topic_ids):
-        for topic in sorted(node_topic_ids[node]):
-            lines.append(f"    {class_ids[node]} --> {topic_ids[topic]}")
-
-    for (pub, sub), names in sorted(edges.items()):
-        unique = sorted(set(names))
-        if pub not in class_ids or sub not in class_ids or not unique:
-            continue
-        label = safe(unique[0]) if len(unique) == 1 else f"{len(unique)} topics"
-        lines.append(f'    {class_ids[pub]} -.->|"{label}"| {class_ids[sub]}')
+        subs = {
+            resolve_runtime_node(x.get("node"), runtime_nodes)
+            for x in info.get("subscribers", [])
+            if x.get("node")
+        }
+        for pub in sorted(pubs):
+            if pub in class_ids:
+                lines.append(f"    {class_ids[pub]} --> {topic_ids[topic]}")
+        for sub in sorted(subs):
+            if sub in class_ids:
+                lines.append(f"    {topic_ids[topic]} --> {class_ids[sub]}")
 
     lines += [
         "",
