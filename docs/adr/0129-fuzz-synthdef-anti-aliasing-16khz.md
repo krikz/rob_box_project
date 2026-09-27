@@ -51,11 +51,9 @@ SynthDef.new(\fuzz, {
 
 ### 1.2 Альтернативы, которые не подошли
 
-- **BLSaw / DPW4 из SC-Plugins** — band-limited осциллятор в стандартной
-  поставке. Чище пила, но требует регистрации плагина в sclang, а это
-  ещё один слой «есть/нет на роботе», который надо поддерживать. KISS:
-  тот же `LFSaw`, но срез ниже Найквиста прямо в SynthDef — паттерн
-  уже есть в `masterfilter.scd` (правило 3, стр. 65–68).
+- **BLSaw / DPW4 из SC-Plugins** — не нужны: штатный `Saw.ar` уже
+  band-limited, поэтому не добавляем новую runtime-зависимость. `LFSaw.kr`
+  оставляем только как исходный control-rate FM-модулятор.
 - **Полный запрет `bass_synth=fuzz` в arranger** — да, в ADR это
   зафиксировано как fallback (см. §5), но это **уменьшает** палитру
   промпта и нарушает инвариант
@@ -89,12 +87,9 @@ SynthDef.new(\fuzz, {
     // ── Правило 1: NaN/Inf не должны выйти из SynthDef ─────────────────
     // (аналогично masterfilter.scd §правило 1, чтобы один сломанный вход
     // не убивал всю пачку)
-    osc = LFSaw.ar(LFSaw.kr(freq, 0, freq, (freq * 2)));
+    osc = Saw.ar(LFSaw.kr(freq, 0, freq, (freq * 2)));
     osc = CheckBadValues.ar(osc, 0, 0);            // пост-режим 0: тихо
     osc = Select.ar(osc, [DC.ar(0), DC.ar(0), DC.ar(0), DC.ar(0)]);
-    // ВНИМАНИЕ: Select.ar на bool-результат отбрасывает весь сигнал,
-    // правильнее через `if(osc==0)` или `(osc * (1-bad)).sum` — см.
-    // обновлённый вариант в §2.2.
 
     // ── Правило 3 (masterfilter.scd): срез от SampleRate ────────────────
     // На 16 kHz потолок РеСпикера — 8 kHz. Срез ниже Найквиста чистит
@@ -124,7 +119,7 @@ SynthDef.new(\fuzz, {
 
 ```supercollider
 bad = CheckBadValues.ar(osc, 0, 0);             // 0=ok, 1=NaN, 2=Inf, 3=denorm
-osc = Select.ar(bad > 0, [osc, DC.ar(0)]);      // NaN/Inf/denorm → тишина
+osc = Select.ar(bad, [osc, DC.ar(0), DC.ar(0), DC.ar(0)]); // bad → тишина
 ```
 
 Это ровно то, что делает `masterfilter.scd:59` (`Select.ar(bad, [sig, ...])`,
@@ -134,7 +129,7 @@ osc = Select.ar(bad > 0, [osc, DC.ar(0)]);      // NaN/Inf/denorm → тишин
 
 | Свойство                              | Старое (`renardo_lib` upstream) | Новое (патч) |
 |---------------------------------------|--------------------------------|--------------|
-| Осциллятор                            | LFSaw(LFSaw.kr) сырой          | LFSaw + CheckBadValues + LPF(SampleRate) |
+| Осциллятор                            | LFSaw(LFSaw.kr) сырой          | Saw(LFSaw.kr) band-limited + CheckBadValues + LPF |
 | Огибающая                             | `Env(..., curve:'step')`       | `Env(atk, sus, rel, curve:-4)` |
 | Аргумент `lpf=`                       | нет                            | есть, default=4000 |
 | Аргумент `atk`/`rel`                  | есть, но игнорируются          | есть, реально используются |
@@ -180,9 +175,9 @@ brass/organ/tb303):
 1. `test_patch_fuzz_scd_content_replaces_step_envelope_with_real_attack_release`
    — патченный вариант содержит `curve: -4` и `atk.max(0.005)`, **не**
    содержит `curve: 'step'`.
-2. `test_patch_fuzz_scd_content_adds_anti_aliasing_lowpass` — содержит
-   `LPF.ar` и `SampleRate.ir`, **не** содержит голого `LFSaw.ar` без
-   фильтра (как минимум — рядом с LFSaw идёт LPF).
+2. `test_patch_fuzz_scd_content_adds_band_limited_carrier_and_cutoff` — содержит
+   `Saw.ar(LFSaw.kr(...))` для band-limited carrier, плюс `LPF.ar`/`SampleRate.ir`
+   для пользовательского cutoff и safety margin.
 3. `test_patch_fuzz_scd_content_adds_lpf_arg` — в шапке есть `lpf=4000`,
    в теле — `LPF.ar(osc, ..., lpf)`.
 4. `test_apply_renardo_synthdef_patches_patches_fuzz_file_in_place` —
