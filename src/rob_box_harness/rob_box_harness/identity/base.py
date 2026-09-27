@@ -236,6 +236,7 @@ class IdentitySeam(abc.ABC):
         — пока владелец не сделает полную arbitration ADR-0123 §6).
         """
         ts = now if now is not None else time.time()
+        self._prune_face_observations(ts)
         band = _classify_face_band(
             signal.similarity,
             high=self._face_high_threshold,
@@ -255,6 +256,22 @@ class IdentitySeam(abc.ABC):
         buf.append(obs)
         return obs
 
+    def _prune_face_observations(self, now: float) -> None:
+        """Удалить истёкшие person_id из face-hint cache.
+
+        ``deque(maxlen=...)`` ограничивает только число наблюдений внутри
+        одного person_id. Без eviction сам словарь рос бы без ограничений
+        при появлении новых UUID, хотя TTL у самих наблюдений уже истёк.
+        """
+        cutoff = float(now) - self._face_window_sec
+        expired = [
+            person_id
+            for person_id, buf in self._face_observations.items()
+            if not buf or buf[-1].captured_at < cutoff
+        ]
+        for person_id in expired:
+            self._face_observations.pop(person_id, None)
+
     def recent_face_observation(
         self,
         person_id: str,
@@ -273,6 +290,10 @@ class IdentitySeam(abc.ABC):
             return None
         win = self._face_window_sec if window_sec is None else float(window_sec)
         ts = now if now is not None else time.time()
+        self._prune_face_observations(ts)
+        buf = self._face_observations.get(person_id)
+        if not buf:
+            return None
         for obs in reversed(buf):
             if (ts - obs.captured_at) <= win:
                 return obs
@@ -302,6 +323,7 @@ class IdentitySeam(abc.ABC):
             return None
         win = self._face_window_sec if window_sec is None else float(window_sec)
         ts = now if now is not None else time.time()
+        self._prune_face_observations(ts)
         best: Optional[FaceObservation] = None
         for buf in self._face_observations.values():
             for obs in reversed(buf):
