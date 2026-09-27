@@ -353,15 +353,16 @@ fi
 # ``--no-daemon`` — потому что демон ros2cli на роботе периодически умирает
 # и роняет CLI в ``Fault 1: !rclpy.ok()`` (видели в vision-hailo, #2703).
 robot_ros() {
-    # ADR-0129 вариант B: printf %q экранирует каждый аргумент "$@" в
-    # shell-safe литерал; eval на удалённой стороне раскрывает его ровно
-    # в те токены, что были переданы сюда. Раньше тут был литерал `$*`,
-    # который bash разворачивал в позиционные параметры ВСЕГО скрипта
-    # (не функции) — activate_e2e_*_db() молча уходили в FATAL exit 2 и
-    # сценарий ехал по боевой /data/speakers.db (#2750/#2763/#2764/#2781).
-    local cmd
-    cmd="$(printf %q "$@")"
-    ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; eval \"\$cmd\"'"
+    # ADR-0129 вариант B: сериализуем каждый аргумент через printf %q
+    # локально, затем экранируем ВСЮ команду как один аргумент для bash -lc.
+    # Важно: cmd не экспортируется и не раскрывается на роботе — он уже
+    # встроен в remote_cmd. eval выполняется только внутри удалённого bash.
+    local cmd remote_cmd remote_cmd_quoted
+    cmd="$(printf '%q ' "$@")"
+    cmd="${cmd% }"
+    remote_cmd="source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; eval $cmd"
+    remote_cmd_quoted="$(printf '%q' "$remote_cmd")"
+    ${ROBOT_SSH} "docker exec voice-assistant bash -lc $remote_cmd_quoted"
 }
 # ⚠️ ЯКОРЬ — СОДЕРЖИМОЕ СЦЕНАРИЯ, А НЕ ЕГО ИМЯ (issue #2763, инцидент
 # 22.09.2026, run 35729958215)
@@ -397,8 +398,7 @@ scenario_registers_speakers() {
 }
 E2E_SPEAKER_DB_ACTIVATED=0
 
-# Режим ЧИТАЕТСЯ обратно, а не берётся из exit-кода: ros2cli печатает
-# «Set parameter failed» при отказе parameters_callback и всё равно может
+# Режим ЧИТАЕТСЯ обратно, а не берётся из exit-кода: ros2cli печатает# «Set parameter failed» при отказе parameters_callback и всё равно может
 # выйти с 0, а цена ошибки здесь — боевая БД мастерской с профилями живых
 # людей. Единственное честное подтверждение — значение параметра на узле.
 # Проверять надо ИМЕННО e2e_mode: ``db_path`` не меняется, он остаётся
@@ -797,8 +797,7 @@ fi
 # теперь живёт ТОЛЬКО в agent-flow-e2e-process.sh:resolve_acceptance_candidate().
 # Это единственный резолвер в системе — раньше та же логика дублировалась
 # здесь (issue #1452 / #1456 / #1551 исторические false-FAIL из-за рассинхрона
-# harness ↔ deploy-side). Контракт: e2e-process резолвит один раз и
-# передаёт путь явно через `-f acceptance_file=<path>` в workflow input →
+# harness ↔ deploy-side). Контракт: e2e-process резолвит один раз и# передаёт путь явно через `-f acceptance_file=<path>` в workflow input →
 # env ACCEPTANCE_FILE → сюда. Харнесс читает как есть, без fallback-поиска.
 #
 # Gating оставлен как guard для ручного запуска workflow (без e2e-process):
@@ -1197,8 +1196,7 @@ except Exception as exc:
 
 try:
     body = r.json()
-except Exception:
-    fail("BadResponse", "HTTP %s, не JSON: %s" % (r.status_code, r.text[:200]), r.status_code)
+except Exception:    fail("BadResponse", "HTTP %s, не JSON: %s" % (r.status_code, r.text[:200]), r.status_code)
 
 # Канал 1: HTTP >= 400 (тело — {"error": {"message": ...}}).
 # Канал 2: HTTP 200 + base_resp.status_code != 0 (так приезжает квота).
@@ -1597,8 +1595,7 @@ for line in data.splitlines():
     #    Для голосового e2e без активного чата эхо не уходит, но
     #    telegram_node ПРИНИМАЕТ /voice/dialogue/response и логирует
     #    "Dropping dialogue echo" — это и есть доказательство связи
-    #    диалог↔бот (L2 ловит именно разрыв на этом участке).
-    tg_logs="$(${ROBOT_SSH} "docker logs telegram-bot --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    #    диалог↔бот (L2 ловит именно разрыв на этом участке).    tg_logs="$(${ROBOT_SSH} "docker logs telegram-bot --since '${before}' 2>&1" 2>/dev/null || echo '')"
     if printf '%s' "$tg_logs" | grep -qiE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo"; then
         log "TG_ECHO: ✅ telegram_node получил ответ dialogue_node (send_message / echo evidence)"
         printf '%s\n' "$tg_logs" | grep -iE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo" | tail -3 > "$OUT_DIR/tg_echo_evidence.txt" 2>/dev/null || true
@@ -1997,8 +1994,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
 #   audio_metrics.json — RMS/peak/silence_ratio по recording.wav
 #   baseline_diff.json — diff с golden (если задан) или synthetic baseline
 #   acceptance.json   — результат проверки acceptance-блока сценария
-# Все файлы кладутся в OUT_DIR (рядом с verdict.txt); workflow upload'ит их
-# отдельными actions/upload-artifact шагами.
+# Все файлы кладутся в OUT_DIR (рядом с verdict.txt); workflow upload'ит их# отдельными actions/upload-artifact шагами.
 parse_transcript() {  # $1=label $2=before_rfc3339
     local label="$1" before="$2"
     local logs
@@ -2397,7 +2393,6 @@ if m:
 # которую хотел mv03 (LLM OUTPUT / spoken= / то, что ушло в синтез),
 # без пользовательского ввода.
 logs_low = logs.lower()
-
 actual_calls = []
 for c in (expected_call + must_not):
     if has(logs, c) and c not in actual_calls:
@@ -2797,8 +2792,7 @@ if [ -n "$SCENARIO_FILE" ]; then
                 # Читаем паттерны построчно в массив: JSON-строка с переводом
                 # строки внутри паттерна не поддерживается (и не нужна).
                 # `tr -d '\015'` обязателен: mapfile -t срезает только \n, а
-                # CR остаётся ВНУТРИ значения — паттерн «set_voice\r» не
-                # матчит ничего и шаг краснеет без объяснимой причины.
+                # CR остаётся ВНУТРИ значения — паттерн «set_voice\r» не                # матчит ничего и шаг краснеет без объяснимой причины.
                 # Тот же класс, что inputs.scenario_file с CRLF
                 # (test_e2e_voice_workflow_crlf_inputs.sh).
                 mapfile -t _pats_arr < <(printf '%s' "$patterns_json" \
