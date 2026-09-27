@@ -3926,6 +3926,51 @@ class DialogueNode(Node):
             f"speaker_id={speaker_id[:8]}"
         )
 
+    def _face_hint_confirmation(
+        self,
+        *,
+        state: dict,
+        tentative_name: Optional[str],
+        full_sid: str,
+        user_input: str,
+        utterance_id: Optional[str],
+    ) -> Optional[str]:
+        """ADR-0135 — apply a fresh high-confidence face hint, if present.
+
+        Kept outside ``_handle_tentative_speaker`` so the identity-question
+        dispatcher stays within the ADR-0021 CC budget. Returns the normal
+        confirmation-path result, or ``None`` when the hint is unusable.
+        """
+        if not (
+            getattr(self, "_face_voice_hint_enabled", False)
+            and tentative_name
+            and not state.get("asked")
+        ):
+            return None
+        face_obs = self._identity.recent_face_observation_by_name(
+            tentative_name,
+            window_sec=getattr(self, "_face_voice_hint_window_sec", 30.0),
+        )
+        if face_obs is None or face_obs.confidence_band != "high":
+            return None
+        state["asked"] = True
+        state["confirmed"] = True
+        state["name"] = tentative_name
+        self.get_logger().info(
+            "👤 [issue #3024 ADR-0135] voice tentative suppressed "
+            "by recent face hint (name=%r, age=%.1fs, sim=%.3f); "
+            "confirming as %r"
+            % (
+                face_obs.name,
+                face_obs.age_sec(),
+                face_obs.similarity,
+                state["name"],
+            )
+        )
+        return self._confirm_tentative_speaker(
+            full_sid, state["name"], user_input, utterance_id
+        )
+
     def _handle_tentative_speaker(
         self, sp: dict, user_input: str, utterance_id: Optional[str] = None
     ) -> str:
@@ -3960,55 +4005,15 @@ class DialogueNode(Node):
             state, tentative_name, user_input, utterance_id
         )
 
-        # ADR-0135 §2.4 — face→voice hint: если есть СВЕЖИЙ face-hint с
-        # тем же именем и band=='high' (sim >= high_threshold), голос
-        # НЕ задаёт переспрос «<Имя>, это ты?» — идём в confirmation
-        # path тем же способом, как если бы человек словечно ответил
-        # «да» (issue #2809). Голос ничего не знает про Vision
-        # ``person_id`` (разные стабильные UUID, ADR-0123 §6 Phase 2),
-        # сшивка идёт по имени — единственному общему атрибуту.
-        #
-        # ``getattr(..., False)`` — защита от unit-тестов, которые
-        # собирают DialogueNode через ``object.__new__`` без прохождения
-        # ``__init__`` (наследие legacy-стиля с моками rclpy): атрибут
-        # может отсутствовать, и тогда логика face-hint просто
-        # выключается (== ADR-0135 §2.5 деградация к текущему
-        # поведению). На проде после ``__init__`` атрибут всегда есть.
-        if (
-            getattr(self, "_face_voice_hint_enabled", False)
-            and tentative_name
-            and not state.get("asked")
-        ):
-            face_obs = (
-                self._identity.recent_face_observation_by_name(
-                    tentative_name,
-                    window_sec=getattr(
-                        self, "_face_voice_hint_window_sec", 30.0
-                    ),
-                )
-            )
-            if (
-                face_obs is not None
-                and face_obs.confidence_band == "high"
-            ):
-                state["asked"] = True
-                state["confirmed"] = True
-                state["name"] = tentative_name
-                self.get_logger().info(
-                    "👤 [issue #3024 ADR-0135] voice tentative suppressed "
-                    "by recent face hint (name=%r, age=%.1fs, sim=%.3f); "
-                    "confirming as %r"
-                    % (
-                        face_obs.name,
-                        face_obs.age_sec(),
-                        face_obs.similarity,
-                        state["name"],
-                    )
-                )
-                return self._confirm_tentative_speaker(
-                    full_sid, state["name"], user_input, utterance_id
-                )
-
+        face_confirmation = self._face_hint_confirmation(
+            state=state,
+            tentative_name=tentative_name,
+            full_sid=full_sid,
+            user_input=user_input,
+            utterance_id=utterance_id,
+        )
+        if face_confirmation is not None:
+            return face_confirmation
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
                 full_sid, state["name"], user_input, utterance_id
