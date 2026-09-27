@@ -65,6 +65,16 @@ if [[ "$RUN_STARTED_AT" != "unknown" ]]; then
   run_start_epoch="$(date -d "$RUN_STARTED_AT" +%s 2>/dev/null || echo 0)"
 fi
 
+duration_seconds=0
+if [[ "$RUN_STARTED_AT" != "unknown" ]]; then
+  started_epoch="$run_start_epoch"
+  failed_epoch="$(date -d "$FAILED_AT" +%s 2>/dev/null || echo 0)"
+  if (( started_epoch > 0 && failed_epoch > 0 && failed_epoch >= started_epoch )); then
+    duration_seconds=$((failed_epoch - started_epoch))
+  fi
+fi
+duration_display="${duration_seconds}s"
+
 CONTAINERS="$(ssh_remote "docker ps -aq --filter label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null || true)"
 if [[ -n "$REQUESTED_CONTAINER" && "$REQUESTED_CONTAINER" != "-" ]]; then
   CONTAINERS="$REQUESTED_CONTAINER"
@@ -106,7 +116,7 @@ while IFS= read -r container_id; do
   dedup_key="$image_sha:$service"
   dedup_marker="<!-- deploy-dedup-key: $dedup_key -->"
 
-  existing="$(gh issue list --repo "$REPO" --state open --label deploy-failure --limit 200 --json number,body,url 2>/dev/null |
+  existing="$(gh issue list --repo "$REPO" --state open --label deploy-failure --search "$image_sha" --limit 200 --json number,body,url 2>/dev/null |
     jq -r --arg key "$dedup_marker" '.[] | select(.body | contains($key)) | [.number,.url] | @tsv' |
     head -1 || true)"
 
@@ -132,6 +142,8 @@ while IFS= read -r container_id; do
     echo "- Workflow: L-Deploy and Verify"
     echo "- Started: $RUN_STARTED_AT"
     echo "- Failed at: $FAILED_AT"
+    echo "- Duration: $duration_display"
+    echo "- Job: deploy-and-verify"
     echo "- Run: $RUN_URL"
     echo "- Node: $NODE ($NODE_IP)"
     echo "- Service: $service"
