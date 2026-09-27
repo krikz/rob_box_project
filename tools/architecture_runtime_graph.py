@@ -37,18 +37,18 @@ def connected_topics(runtime, include_system=False):
 def build_graph(runtime, inventory, topics, title):
     # topic_info can contain endpoint nodes absent from the plain node snapshot
     # during a node lifecycle change. Include observed endpoint nodes as well.
-    nodes=set(runtime.get("nodes",[]))
+    nodes={canonical_node(x) for x in runtime.get("nodes",[]) if x}
     for topic in topics:
         info=runtime.get("topic_info",{}).get(topic,{})
-        nodes.update(x.get("node") for x in info.get("publishers",[]) if x.get("node"))
-        nodes.update(x.get("node") for x in info.get("subscribers",[]) if x.get("node"))
+        nodes.update(canonical_node(x.get("node")) for x in info.get("publishers",[]) if x.get("node"))
+        nodes.update(canonical_node(x.get("node")) for x in info.get("subscribers",[]) if x.get("node"))
     nodes=sorted(nodes)
     classes=node_class_map(inventory)
     edges=defaultdict(list)
     for topic in topics:
         info=runtime.get("topic_info",{}).get(topic,{})
-        pubs=[x.get("node") for x in info.get("publishers",[]) if x.get("node")]
-        subs=[x.get("node") for x in info.get("subscribers",[]) if x.get("node")]
+        pubs=[canonical_node(x.get("node")) for x in info.get("publishers",[]) if x.get("node")]
+        subs=[canonical_node(x.get("node")) for x in info.get("subscribers",[]) if x.get("node")]
         for pub in pubs:
             for sub in subs:
                 if pub!=sub: edges[(pub,sub)].append(topic)
