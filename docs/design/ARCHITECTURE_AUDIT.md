@@ -32,7 +32,7 @@ Examples:
     python tools/architecture_runtime_snapshot.py --topics /scan,/cmd_vel
     python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
-The `L: Architecture Audit` workflow runs these commands directly on the self-hosted `rob-box` runner. No SSH hop to the robot is required.
+The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and uses passwordless SSH to the robot (`10.1.1.21` by default). GitHub-hosted runners are never used for live robot access.
 
 ## Node review questions
 
