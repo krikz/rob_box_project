@@ -353,7 +353,16 @@ fi
 # ``--no-daemon`` — потому что демон ros2cli на роботе периодически умирает
 # и роняет CLI в ``Fault 1: !rclpy.ok()`` (видели в vision-hailo, #2703).
 robot_ros() {
-    ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; $*'"
+    # ADR-0129 вариант B: сериализуем каждый аргумент через printf %q
+    # локально, затем экранируем ВСЮ команду как один аргумент для bash -lc.
+    # Важно: cmd не экспортируется и не раскрывается на роботе — он уже
+    # встроен в remote_cmd. eval выполняется только внутри удалённого bash.
+    local cmd remote_cmd remote_cmd_quoted
+    cmd="$(printf '%q ' "$@")"
+    cmd="${cmd% }"
+    remote_cmd="source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; eval $cmd"
+    remote_cmd_quoted="$(printf '%q' "$remote_cmd")"
+    ${ROBOT_SSH} "docker exec voice-assistant bash -lc $remote_cmd_quoted"
 }
 # ⚠️ ЯКОРЬ — СОДЕРЖИМОЕ СЦЕНАРИЯ, А НЕ ЕГО ИМЯ (issue #2763, инцидент
 # 22.09.2026, run 35729958215)
