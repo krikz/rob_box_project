@@ -35,7 +35,14 @@ def connected_topics(runtime, include_system=False):
     return sorted(result,key=lambda t:(-(len(runtime.get("topic_info",{}).get(t,{}).get("publishers",[]))+len(runtime.get("topic_info",{}).get(t,{}).get("subscribers",[]))),t))
 
 def build_graph(runtime, inventory, topics, title):
-    nodes=sorted(set(runtime.get("nodes",[])))
+    # topic_info can contain endpoint nodes absent from the plain node snapshot
+    # during a node lifecycle change. Include observed endpoint nodes as well.
+    nodes=set(runtime.get("nodes",[]))
+    for topic in topics:
+        info=runtime.get("topic_info",{}).get(topic,{})
+        nodes.update(x.get("node") for x in info.get("publishers",[]) if x.get("node"))
+        nodes.update(x.get("node") for x in info.get("subscribers",[]) if x.get("node"))
+    nodes=sorted(nodes)
     classes=node_class_map(inventory)
     edges=defaultdict(list)
     for topic in topics:
