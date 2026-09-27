@@ -10,7 +10,7 @@ def local_run(args, timeout=30):
     p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
     return {"returncode":p.returncode,"stdout":p.stdout,"stderr":p.stderr}
 
-def remote_run(host,user,args,container="",timeout=30):
+def remote_run(args, host="", user="", container="", timeout=30):
     target=f"{user}@{host}" if user else host
     inner=" ".join(shlex.quote(x) for x in args)
     if container:
@@ -40,7 +40,7 @@ def main():
     kwargs={"host":a.remote_host,"user":a.remote_user,"container":a.remote_container} if remote else {}
 
     def call(*args,timeout=30):
-        result=runner(*args,timeout=timeout,**kwargs)
+        result=runner(list(args),timeout=timeout,**kwargs)
         if result["returncode"] != 0:
             raise RuntimeError(f"{' '.join(args)} failed: {result['stderr'].strip()}")
         return [x.strip() for x in result["stdout"].splitlines() if x.strip()]
@@ -56,7 +56,7 @@ def main():
         if topic not in topics:
             topic_info[topic]={"present":False}
             continue
-        result=runner("ros2","topic","info",topic,"--verbose",timeout=15,**kwargs)
+        result=runner(["ros2","topic","info",topic,"--verbose"],timeout=15,**kwargs)
         raw=result["stdout"]
         publishers=[]; subscribers=[]; mode=None; current={}
         for line in raw.splitlines():
