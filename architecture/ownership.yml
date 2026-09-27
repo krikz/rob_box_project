@@ -1,0 +1,7 @@
+schema_version: 1
+# Human-reviewed ownership map.
+# Do not infer canonical ownership from names alone.
+nodes: {}
+topics: {}
+capabilities: {}
+features: {}
