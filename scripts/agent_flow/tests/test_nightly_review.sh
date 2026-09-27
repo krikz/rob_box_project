@@ -452,6 +452,7 @@ run_test "H: dry-run"                                     test_H_dry_run
 run_test "I: EXCLUDE_RE (docs/)"                          test_I_exclude_docs
 run_test "J: dedup-ключ = ISO-неделя (фикс #2159)"        test_J_iso_week_key
 run_test "K: карточка создаётся всегда (не зависит от NIGHTLY_REVIEW_OUTCOME)" test_K_card_always_created
+run_test "L: E2E develop last-green RED/GREEN + HEAD coverage" test_L_e2e_develop_last_green
 
 printf '\n[==========] %d tests, %d passed, %d failed\n' \
     "$TESTS_TOTAL" "$TESTS_PASSED" "$TESTS_FAILED"
