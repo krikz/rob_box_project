@@ -97,6 +97,23 @@ safe to walk in room-scale VR. Run-time: read `nav_points` from the
 JSON, walk their AABBs; treat points tagged `kind: "entry"` as
 explicit teleport anchors (back / front of the room).
 
+## Hero props (Tripo3D, 2026-09-26)
+
+Three hero props augment the procedural `bridge_props` scene. Generated via
+Tripo3D (image-to-3D) from Qwen-generated reference images. No third-party
+meshes: source `.glb` live in `_raw/` (gitignored); committed `.optimized.glb`
+are produced by `npm run gltf:optimize`.
+
+| File | Purpose |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `bridge_platform.optimized.glb` | Central hex pedestal under the operator (spawn `(0,0,0)`). |
+| `bridge_screen.optimized.glb`   | Universal 16:9 screen frame — reused for main screen, TARS wings, ceiling and floating panels. |
+| `bridge_holo_projector.optimized.glb` | Holographic projector base (emitter disc only; the translucent cone stays procedural in code). |
+
+**License note:** AI-generated (Tripo3D from Qwen reference images), no
+third-party meshes/textures. License status of AI-generated content is not yet
+settled — flag before any public redistribution.
+
 ## Adding non-CC0 assets
 
 When a non-CC0 source is added (e.g. CC-BY), append a row with author,
