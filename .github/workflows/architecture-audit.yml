@@ -144,7 +144,7 @@ jobs:
           if [ -n "${{ inputs.runtime_host }}" ]; then
             args+=(--remote-host "${{ inputs.runtime_host }}" --remote-user "${{ inputs.runtime_user }}")
           fi
-          python tools/architecture_runtime_snapshot.py "\${args[@]}"
+          python tools/architecture_runtime_snapshot.py "${args[@]}"
       - name: Compare static and runtime
         run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
       - name: Upload runtime evidence
