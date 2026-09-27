@@ -208,7 +208,7 @@ def build_graph(runtime, inventory, topics, title):
             class_label = f"class: {cls}" if cls else "class: unresolved"
             class_ids[node] = kid
             lines.append(f'        subgraph {nid}["{safe(node)}"]')
-            lines.append(f'            {kid}["{safe(class_label)}"]:::class')
+            lines.append(f'            {kid}["{safe(class_label)}"]:::classNode')
             lines.append("        end")
         lines.append("    end")
 
