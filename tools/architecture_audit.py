@@ -41,7 +41,7 @@ def scan_python(src):
             bases={dotted_name(base) for base in cls.bases}
             is_node=bool(bases & NODE_BASES) or any(base and base.rsplit(".",1)[-1] in NODE_BASES for base in bases)
             if is_node: node_classes.append(cls.name)
-            class_by_line.append((cls.lineno,cls.name,is_node))
+            class_by_line.append((cls.lineno,getattr(cls,"end_lineno",cls.lineno),cls.name,is_node))
             doc=ast.get_docstring(cls)
             classes.append({"name":cls.name,"file":rel,"line":cls.lineno,"package":package,"is_node":is_node,
                             "bases":sorted(x for x in bases if x),
@@ -54,8 +54,8 @@ def scan_python(src):
             name=literal(call.args[ROS_NAME_ARG[method]])
             if not isinstance(name,str): continue
             owner=None
-            for line,cls_name,is_node in sorted(class_by_line):
-                if is_node and line<=call.lineno: owner=cls_name
+            candidates=[(end-line,cls_name) for line,end,cls_name,is_node in class_by_line if is_node and line<=call.lineno<=end]
+            if candidates: owner=min(candidates)[1]
             interfaces.append({"kind":ROS_CALLS[method],"name":name,"file":rel,"line":call.lineno,
                                "package":package,"node_class":owner,"type":dotted_name(call.args[0]) if call.args else None})
     return files,classes,interfaces
