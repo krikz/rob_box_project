@@ -44,7 +44,7 @@ case "$NODE" in
 esac
 
 ssh_remote() {
-  sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS "ros2@$NODE_IP" "$@"
+  sshpass -p "$SSHPASS" ssh $SSH_OPTS "ros2@$NODE_IP" "$@"
 }
 
 ensure_label() {
