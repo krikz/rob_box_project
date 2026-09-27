@@ -68,6 +68,35 @@ TB303_SYNTHDEF = """SynthDef.new(\\tb303, {
 }).add;
 """
 
+# Issue #3008: upstream renardo_lib fuzz.scd (a) used non-band-limited LFSaw
+# as the audible carrier and aliased badly on 16 kHz scsynth; (b) hard-coded
+# `curve:'step'` envelope ignored atk/rel arguments and clicked on every note;
+# (c) had no `lpf=` arg, so Renardo-side `lpf=` was a silent no-op. The patch
+# keeps the original control-rate LFSaw FM shape but switches the audible
+# carrier to SuperCollider's built-in band-limited Saw, then keeps the LPF as
+# the user's tonal cutoff / additional low-rate safety margin.
+FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
+        |amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=0, bus=0, blur=1, beat_dur=1, atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, lpf=4000|
+        var osc, env, nyquist, cutoff, baseFreq, bad;
+        sus = sus * blur;
+        baseFreq = Lag.kr(In.kr(bus, 1).max(20), 0.01);
+        freq = [baseFreq, baseFreq + fmod];
+        freq = (freq / 2);
+        amp = (amp / 6);
+        osc = Saw.ar(LFSaw.kr(freq, 0, freq, (freq * 2)));
+        bad = CheckBadValues.ar(osc, 0, 0);
+        osc = Select.ar(bad, [osc, DC.ar(0), DC.ar(0), DC.ar(0)]);
+        nyquist = SampleRate.ir * 0.5;
+        cutoff = min(lpf.max(80), nyquist * 0.45);
+        osc = LPF.ar(osc, Lag.kr(cutoff, 0.05));
+        env = EnvGen.ar(Env([0, amp, amp, 0], [atk.max(0.005), sus.max(0.05), rel.max(0.05)], curve: -4), doneAction: 0);
+        osc = (osc * env);
+        osc = Mix(osc) * 0.5;
+        osc = Pan2.ar(osc, pan);
+        ReplaceOut.ar(bus, osc)
+}).add;
+"""
+
 
 def resolve_conflicted_scd_content(content: str) -> str:
     """Resolve all git conflict blocks by keeping the bottom/theirs variant."""
@@ -118,6 +147,24 @@ def patch_tb303_scd_content(content: str) -> str:
     return TB303_SYNTHDEF
 
 
+def patch_fuzz_scd_content(content: str) -> str:
+    """Replace fuzz.scd content with a 16 kHz-safe anti-aliasing variant.
+
+    See :doc:`docs/adr/0129-fuzz-synthdef-anti-aliasing-16khz` for the
+    root-cause analysis (issue #3008). The upstream ``renardo_lib`` synth
+    ships with ``LFSaw`` + ``curve:'step'`` envelope and **no** ``lpf``
+    argument, which aliases and clicks on the robot's 16 kHz scsynth.
+    """
+
+    if "\\fuzz" not in content and "fuzz" not in content:
+        return content
+
+    if content == FUZZ_SYNTHDEF:
+        return content
+
+    return FUZZ_SYNTHDEF
+
+
 def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
     """Patch broken Renardo .scd files in place and return modified file names."""
 
@@ -138,6 +185,9 @@ def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
 
         if scd_file.name == "tb303.scd":
             updated = patch_tb303_scd_content(updated)
+
+        if scd_file.name == "fuzz.scd":
+            updated = patch_fuzz_scd_content(updated)
 
         if updated != original:
             scd_file.write_text(updated, encoding="utf-8")

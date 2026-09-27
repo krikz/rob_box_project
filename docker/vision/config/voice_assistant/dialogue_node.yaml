@@ -35,6 +35,14 @@ dialogue_node:
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0
 
+    # ADR-0135 §2.6 / issue #3024 — face→voice hint: см. src/config/dialogue_node.yaml
+    face_voice_hint:
+      enabled: true
+      window_sec: 30.0
+      similarity_high_threshold: 0.78
+      similarity_low_threshold: 0.65
+      buffer_capacity: 8
+
     # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
     # сброс контекста текущего диалога без вызова LLM. Фразы по умолчанию
     # заданы в коде (_DEFAULT_NEW_SESSION_PHRASES); при необходимости
