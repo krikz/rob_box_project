@@ -35,14 +35,17 @@ import pytest
 
 
 # ROS2/audio-зависимости — стаб, как в test_issue_2809_*.py.
+_MISSING = object()
+_STUB_MODULES = ("audio_common_msgs", "audio_common_msgs.msg",
+                 "pyaudio", "usb", "usb.core", "usb.util", "sounddevice")
+_ORIGINAL_MODULES = {name: sys.modules.get(name, _MISSING) for name in _STUB_MODULES}
 _audio_common = types.ModuleType("audio_common_msgs")
 _audio_common_msg = types.ModuleType("audio_common_msgs.msg")
 _audio_common_msg.AudioData = MagicMock
-sys.modules.setdefault("audio_common_msgs", _audio_common)
-sys.modules.setdefault("audio_common_msgs.msg", _audio_common_msg)
-
+sys.modules["audio_common_msgs"] = _audio_common
+sys.modules["audio_common_msgs.msg"] = _audio_common_msg
 for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
-    sys.modules.setdefault(_hw, MagicMock())
+    sys.modules[_hw] = MagicMock()
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -54,6 +57,14 @@ from rob_box_harness.identity.base import (  # noqa: E402
 )
 from rob_box_harness.memory import InMemoryStore  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+
+# Do not leak import-only hardware stubs into the rest of pytest. The imported
+# modules keep the references they needed; later tests see their real modules.
+for _name, _original in _ORIGINAL_MODULES.items():
+    if _original is _MISSING:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _original
 
 
 def _run(coro):
