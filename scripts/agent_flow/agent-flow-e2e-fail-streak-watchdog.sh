@@ -195,7 +195,7 @@ fi
 # --- compute fail-streak (newest → oldest, stop at first success) ---------
 log "querying last ${E2E_FAIL_STREAK_LIMIT} runs of ${E2E_WORKFLOW}"
 _runs_json="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" \
-    --limit "$E2E_FAIL_STREAK_LIMIT" --json databaseId,conclusion,createdAt,headBranch,name 2>/dev/null || true)"
+    --limit "$E2E_FAIL_STREAK_LIMIT" --json databaseId,conclusion,createdAt,headBranch,headSha,name 2>/dev/null || true)"
 
 if [ -z "$_runs_json" ] || [ "$_runs_json" = "[]" ]; then
     log "no runs found (workflow may not exist yet) — skip"
