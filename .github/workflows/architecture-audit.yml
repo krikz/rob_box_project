@@ -104,7 +104,7 @@ jobs:
 
   runtime:
     name: Runtime ROS2 graph
-    if: ${{ inputs.runtime == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime == true }}
     needs: static
     runs-on: [self-hosted, Linux, X64, rob-box]
     timeout-minutes: 15
