@@ -112,6 +112,7 @@ def step(
     expect_tools: Optional[List[str]] = None,
     must_not: Optional[List[str]] = None,
     must_not_say: Optional[List[str]] = None,
+    must_not_identify_as: Optional[List[str]] = None,
     keywords: Optional[List[str]] = None,
     voice_changed: bool = False,
     expect: str = "",
@@ -144,6 +145,8 @@ def step(
     # ПРОИЗНЕСТИ, а не любой текст лога.
     if must_not_say:
         acc["must_not_say"] = must_not_say
+    if must_not_identify_as:
+        acc["must_not_identify_as"] = must_not_identify_as
     if keywords:
         acc["expected_keywords"] = keywords
     if voice_changed:
@@ -674,6 +677,7 @@ act(
             "закалки и не доверяю железкам.",
             voice=GRISHA,
             must_not=["register_speaker"],
+            must_not_identify_as=["Борис", "Саша"],
             # Issue #2779 AC3 — имена и факты ДРУГИХ дикторов каста не
             # должны ПРОЗВУЧАТЬ незнакомцу. Это must_not_say (проверяется
             # только по robot_speech(), т.е. по РЕЧИ робота), а НЕ

@@ -2335,7 +2335,7 @@ from e2e_tool_match import (
     TOOL_NAME_RE,
 )
 # Issue #2764: expected_keywords матчатся по речи робота, не по всему логу.
-from e2e_tool_match import keyword_hit, robot_speech
+from e2e_tool_match import keyword_hit, robot_speech, identify_failures
 # Issue #2846: вызов register_speaker != регистрация принята speaker_id_node.
 from e2e_tool_match import (
     registration_expected,
@@ -2359,6 +2359,7 @@ expected_kw = acc.get("expected_keywords", []) or []
 # чужое имя» (см. n210_grisha_no_name). must_not_say ищет ТОЛЬКО в
 # robot_speech() — том же канале, что и expected_keywords (issue #2764).
 must_not_say = acc.get("must_not_say", []) or []
+identification_failures = identify_failures(acc, logs)
 # Issue #2406: discovery_tools — список тулов, которые ОБЯЗАНЫ быть вызваны
 # ДО первого голосового ответа. Если в acceptance.json шага есть это поле —
 # ассертим порядок, иначе — старый чек (только факт вызова).
@@ -2501,6 +2502,8 @@ if expected_kw and missing_keywords:
     failures.append(f"expected keywords missing in logs: {missing_keywords}")
 if forbidden_said:
     failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
+if identification_failures:
+    failures.extend(identification_failures)
 if discovery_tool_errors:
     failures.extend(discovery_tool_errors)
 if discovery_failures:
@@ -2529,6 +2532,8 @@ result = {
     # Issue #2779 — must_not_say verdict (robot_speech-scoped, see above).
     "must_not_say": must_not_say,
     "forbidden_said": forbidden_said,
+    "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
+    "identify_failures": identification_failures,
     # Issue #2406: discovery-step enforcement (per-step).
     # discovery_tools содержит имена тулов, которые ОБЯЗАНЫ быть вызваны
     # ДО первого голосового ответа. discovery_records — массив позиций
