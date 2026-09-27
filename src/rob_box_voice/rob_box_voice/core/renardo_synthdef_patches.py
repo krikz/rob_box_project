@@ -68,15 +68,13 @@ TB303_SYNTHDEF = """SynthDef.new(\\tb303, {
 }).add;
 """
 
-# Issue #3008: upstream renardo_lib fuzz.scd (a) aliased badly on 16 kHz
-# scsynth because LFSaw has infinite harmonics and the synth shipped with no
-# filter at all; (b) hard-coded `curve:'step'` envelope ignored atk/rel
-# arguments and clicked on every note; (c) had no `lpf=` arg, so
-# Renardo-side `lpf=` was a silent no-op. Patch mirrors the pattern from
-# brass/organ/tb303 patches above plus the anti-aliasing rule from
-# masterfilter.scd (rule 3: "срез от SampleRate, не в герцах"). Default
-# `lpf=4000` keeps the synth character audible while staying clear of the
-# 8 kHz Nyquist on the robot's 16 kHz server.
+# Issue #3008: upstream renardo_lib fuzz.scd (a) used non-band-limited LFSaw
+# as the audible carrier and aliased badly on 16 kHz scsynth; (b) hard-coded
+# `curve:'step'` envelope ignored atk/rel arguments and clicked on every note;
+# (c) had no `lpf=` arg, so Renardo-side `lpf=` was a silent no-op. The patch
+# keeps the original control-rate LFSaw FM shape but switches the audible
+# carrier to SuperCollider's built-in band-limited Saw, then keeps the LPF as
+# the user's tonal cutoff / additional low-rate safety margin.
 FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
         |amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=0, bus=0, blur=1, beat_dur=1, atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, lpf=4000|
         var osc, env, nyquist, cutoff, baseFreq, bad;
@@ -85,9 +83,9 @@ FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
         freq = [baseFreq, baseFreq + fmod];
         freq = (freq / 2);
         amp = (amp / 6);
-        osc = LFSaw.ar(LFSaw.kr(freq, 0, freq, (freq * 2)));
+        osc = Saw.ar(LFSaw.kr(freq, 0, freq, (freq * 2)));
         bad = CheckBadValues.ar(osc, 0, 0);
-        osc = Select.ar(bad > 0, [osc, DC.ar(0)]);
+        osc = Select.ar(bad, [osc, DC.ar(0), DC.ar(0), DC.ar(0)]);
         nyquist = SampleRate.ir * 0.5;
         cutoff = min(lpf.max(80), nyquist * 0.45);
         osc = LPF.ar(osc, Lag.kr(cutoff, 0.05));
