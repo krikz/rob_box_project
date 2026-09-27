@@ -420,3 +420,5 @@ MiniMax подключается **opt-in** через `provider: "minimax"`. С
 - **Камера:** DepthAI для OAK-D-Lite
 - **Контейнеризация:** Docker + Docker Compose
 
+
+<!-- temporary baseline probe #3040 -->
