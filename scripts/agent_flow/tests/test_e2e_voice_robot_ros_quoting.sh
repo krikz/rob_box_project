@@ -170,6 +170,7 @@ expect_tokens_intact() {
         printf '     remote_output: %s\n' "$remote_output"
         FAIL=$((FAIL + 1))
     fi
+}
 
 # ---------------------------------------------------------------------------
 # Шаг 3: фикстуры.
