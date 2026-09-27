@@ -1,0 +1,101 @@
+name: Architecture Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: "Collect runtime ROS graph (requires ROS 2 environment)"
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - "src/**"
+      - "docker/**"
+      - "tools/architecture_audit.py"
+      - ".github/workflows/architecture-audit.yml"
+  push:
+    branches:
+      - develop
+    paths:
+      - "src/**"
+      - "docker/**"
+      - "tools/architecture_audit.py"
+      - ".github/workflows/architecture-audit.yml"
+  schedule:
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static architecture inventory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install scanner dependency
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Run architecture scanner
+        run: |
+          python tools/architecture_audit.py             --output architecture/inventory.json             --markdown architecture/inventory.md
+
+      - name: Run structural findings
+        run: |
+          python tools/architecture_findings.py architecture/inventory.json
+
+      - name: Validate inventory
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("architecture/inventory.json")
+          data = json.loads(p.read_text())
+          required = {"schema_version", "containers", "packages", "python", "classes", "ros_interfaces", "topics", "summary"}
+          missing = required - data.keys()
+          if missing:
+              raise SystemExit(f"Missing inventory keys: {sorted(missing)}")
+          print("Inventory OK:", data["summary"])
+          PY
+
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-inventory
+          path: |
+            architecture/inventory.json
+            architecture/inventory.md
+            architecture/findings.md
+
+      - name: Publish summary
+        run: |
+          {
+            echo "## Architecture inventory"
+            echo
+            cat architecture/inventory.md
+            echo
+            cat architecture/findings.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  runtime:
+    name: Runtime ROS graph (optional)
+    if: ${{ inputs.runtime == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain runtime collection
+        run: |
+          echo "Runtime collection is intentionally gated."
+          echo "A ROS-enabled runner will be wired here once the robot/ROS environment is available."
+          echo "This job currently does not claim runtime evidence."
