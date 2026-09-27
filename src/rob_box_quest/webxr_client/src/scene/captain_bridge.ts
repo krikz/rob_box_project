@@ -679,6 +679,48 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
   let environment: BridgeAssetHandle | null = null;
   const environmentBaseUrl = opts.environmentBaseUrl === null ? null : (opts.environmentBaseUrl ?? "/models/environment/");
+
+  // Hero props (Tripo3D, 2026-09-26) — расставляются после загрузки
+  // environment-GLB. Масштаб моделей Tripo3D неизвестен заранее, поэтому
+  // позиция/размер вычисляются из bounding box под целевые размеры сцены.
+  let heroHoloRight: THREE.Group | null = null;
+  function placeHeroProps(env: BridgeAssetHandle): void {
+    const g = env.groups;
+
+    const placeOnFloor = (group: THREE.Group, x: number, z: number, width?: number, height?: number): void => {
+      const box = new THREE.Box3().setFromObject(group);
+      const size = box.getSize(new THREE.Vector3());
+      let scale = 1;
+      if (width && size.x > 0) scale = width / size.x;
+      if (height && size.y > 0) scale = height / size.y;
+      group.scale.setScalar(scale);
+      group.position.set(x, -box.min.y * scale, z);
+    };
+
+    // Подиум — под оператором (спавн (0,0,0)), диаметр ~2 м.
+    if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, 2);
+
+    // Голо-проекторы — слева и справа от оператора, высота ~0.9 м.
+    if (g.heroHoloProjector) {
+      placeOnFloor(g.heroHoloProjector, -1, -1.8, undefined, 0.9);
+      heroHoloRight = g.heroHoloProjector.clone(true);
+      heroHoloRight.name = "bridge_holo_projector_right";
+      placeOnFloor(heroHoloRight, 1, -1.8, undefined, 0.9);
+      scene.add(heroHoloRight);
+    }
+
+    // Рамка экрана — позади главного экрана: видео-панель (впереди)
+    // перекрывает «экранную» поверхность рамки, остаётся тонкий безель.
+    // Точная подгонка безеля — визуально на Quest; здесь базовая посадка
+    // по ширине главного экрана 4.8 м.
+    if (g.heroScreen) {
+      const box = new THREE.Box3().setFromObject(g.heroScreen);
+      const size = box.getSize(new THREE.Vector3());
+      g.heroScreen.scale.setScalar(size.x > 0 ? 4.8 / size.x : 1);
+      g.heroScreen.position.set(0, 1.5, -3.95);
+    }
+  }
+
   async function loadEnvironment(): Promise<BridgeAssetHandle | null> {
     if (environment) return environment;
     if (environmentBaseUrl === null) return null;
@@ -690,6 +732,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         baseUrl: environmentBaseUrl,
         loadHdr: true,
       });
+      placeHeroProps(environment);
     } catch (err) {
       // Fail soft: keep the procedural fallback floor + grid so the scene
       // remains usable in environments where the GLB cannot be served
@@ -1233,6 +1276,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     hoverFrame.geometry.dispose();
     (hoverFrame.material as THREE.Material).dispose();
     environment?.dispose();
+    if (heroHoloRight) {
+      heroHoloRight.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        mesh.geometry?.dispose?.();
+        const mat = mesh.material as THREE.Material | undefined;
+        if (mat && "dispose" in mat && typeof mat.dispose === "function") mat.dispose();
+      });
+    }
     armTexture.dispose();
     statusHud.dispose();
     supervisorPanel.dispose();

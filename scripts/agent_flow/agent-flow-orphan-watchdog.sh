@@ -2,7 +2,12 @@
 # ============================================================================
 # agent-flow-orphan-watchdog.sh — ежедневный (every 24h) no-agent
 # sweep, проверяющий что каждый agent-flow-*-watchdog.sh из EXPECTED[] install.sh
-# зарегистрирован как cron-job в ~/.hermes/profiles/devops/cron/jobs.json.
+# зарегистрирован как cron-job хотя бы в одном профиле
+# (~/.hermes/profiles/*/cron/jobs.json).
+#
+# Сканируются ВСЕ профили, а не только devops — ретро t_4c796522
+# (2026-09-26): watchdogs `needs-e2e-orphan-watchdog` и `orphan-audit`
+# живут в agent-flow профиле и раньше ложно флагались как orphan.
 #
 # SOT (source-of-truth): <repo>/scripts/agent_flow/agent-flow-orphan-watchdog.sh
 # Copies are laid down by install.sh into:
@@ -36,10 +41,16 @@
 #      Если install.sh недоступен — exit 1.
 #   4. Отфильтровать только `agent-flow-*-watchdog.sh` (нас интересуют
 #      именно watchdog'и — не все EXPECTED-скрипты).
-#   5. Для каждого watchdog проверить наличие interval-job с
-#      `script == <basename>` и `enabled == true` в
-#      `~/.hermes/profiles/devops/cron/jobs.json`.
-#   6. Для каждого orphan:
+#   5. Из списка вычесть NON_CRON_WATCHDOGS — watchdog'и, которые
+#      раскладываются install.sh, но регистрируются НЕ как cron-job
+#      (например, вызываются из launcher'а). Без этой корректировки
+#      детектор вечно флагает их как orphan (false-positive).
+#   6. Для каждого оставшегося watchdog проверить наличие interval-job с
+#      `script == <basename>` и `enabled == true` в ЛЮБОМ
+#      `~/.hermes/profiles/*/cron/jobs.json` (раньше читался только
+#      devops — ретро t_4c796522: watchdogs `needs-e2e-orphan-watchdog`
+#      и `orphan-audit` живут в agent-flow профиле → false-negative).
+#   7. Для каждого orphan:
 #      a) append в drift.alert.log (через alert_marker).
 #      b) emit gh-issue-comment в `krikz/rob_box_project` issue
 #         (label `agent-flow-watchdog-orphan`) — idempotent через
@@ -47,7 +58,7 @@
 #      c) emit kanban-карточку (через kanban-retro-create.sh) с
 #         idempotency-key `retro:register-watchdog-<basename>` —
 #         на следующий тик pre-check найдёт существующую → SKIP.
-#   7. Log stats: scanned, with_cron, missing_cron, alerts_emitted,
+#   8. Log stats: scanned, with_cron, missing_cron, alerts_emitted,
 #      errors.
 #
 # ENV:
@@ -57,8 +68,24 @@
 #   GH_REPO                   — owner/repo для issue-comment
 #                              (default: krikz/rob_box_project)
 #   GH_CONFIG_DIR             — для gh CLI auth (default: ~/.config/gh)
-#   JOBS_FILE                 — путь к jobs.json (default:
-#                              <HERMES_HOME>/profiles/devops/cron/jobs.json)
+#   PROFILES_GLOB             — glob для jobs.json (default:
+#                              <HERMES_HOME>/profiles/*/cron/jobs.json).
+#                              Сканирует ВСЕ профили — ретро t_4c796522:
+#                              часть watchdogs жила в agent-flow профиле и
+#                              ошибочно флагалась как orphan при сканировании
+#                              только devops.
+#   JOBS_FILE                 — DEPRECATED, оставлен для backcompat: если
+#                              задан И PROFILES_GLOB пустой, используется как
+#                              единственный путь к jobs.json.
+#   NON_CRON_WATCHDOGS        — space-separated список watchdog-имён
+#                              (без пути, только basename), которые
+#                              раскладываются install.sh, но НЕ являются
+#                              cron-job'ами (вызываются из launcher'а или
+#                              руками). Default:
+#                              "agent-flow-e2e-fail-streak-watchdog.sh"
+#                              (ретро 28.08 t_faac94b0 — fail-streak
+#                              watchdog инвокается из
+#                              agent-flow-e2e-process-launcher.sh).
 #   ALERT_LOG                 — путь к drift.alert.log (default:
 #                              /tmp/agent-flow-drift.alert.log)
 #   LOCK_FILE                 — flock guard (default:
@@ -112,7 +139,18 @@ if [ -z "${HERMES_HOME:-}" ] || [[ "$HERMES_HOME" == */profiles/* ]]; then
 fi
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
-JOBS_FILE="${JOBS_FILE:-$HERMES_HOME/profiles/devops/cron/jobs.json}"
+# PROFILES_GLOB — сканируем jobs.json во ВСЕХ профилях. Раньше (до
+# фикса t_4c796522) детектор читал только devops/cron/jobs.json —
+# watchdogs в agent-flow профиле (needs-e2e-orphan, orphan-audit)
+# всегда флагались как orphan → false-positive issues #3028, #3029.
+# JOBS_FILE оставлен как backcompat-overhead для ad-hoc запусков.
+PROFILES_GLOB="${PROFILES_GLOB:-$HERMES_HOME/profiles/*/cron/jobs.json}"
+JOBS_FILE="${JOBS_FILE:-}"
+# Watchdog'и, которые раскладываются install.sh, но НЕ регистрируются
+# как cron-job (вызываются из launcher'а или руками). Default — fail-streak
+# watchdog: ретро 28.08 t_faac94b0, agent-flow-e2e-process-launcher.sh
+# инвокает его каждый tick после e2e-process.sh.
+NON_CRON_WATCHDOGS="${NON_CRON_WATCHDOGS:-agent-flow-e2e-fail-streak-watchdog.sh}"
 ALERT_LOG="${ALERT_LOG:-/tmp/agent-flow-drift.alert.log}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-orphan-watchdog.lock}"
 LOG_FILE="${LOG_FILE:-/tmp/agent-flow-orphan-watchdog.log}"
@@ -180,20 +218,35 @@ if [ -z "$EXPECTED_FILES_STR" ]; then
 fi
 
 # --- 2) отфильтровать только agent-flow-*-watchdog.sh ------------------------
+# 2a. self-skip: orphan-detector регистрируется отдельно, иначе вечный
+#     false-positive на первом тике.
+# 2b. NON_CRON_WATCHDOGS-skip: явно перечисленные watchdog'и (default:
+#     fail-streak), которые install.sh раскладывает, но НЕ регистрирует
+#     как cron. Без этого фильтра детектор всегда будет алармить на них.
 WATCHDOG_FILES=()
 while IFS= read -r f; do
     case "$f" in
         agent-flow-*-watchdog.sh)
-            # exclude этот сам orphan-detector (он сам регистрируется отдельно,
-            # и проверять «есть ли для него cron» не имеет смысла в этом
-            # скрипте — иначе вечный false-positive на первом тике).
             if [ "$f" = "agent-flow-orphan-watchdog.sh" ]; then
+                continue
+            fi
+            # NON_CRON_WATCHDOGS — space-separated basename'ы; простой
+            # substring-match через case по каждому токену.
+            _skip=0
+            for _ncw in $NON_CRON_WATCHDOGS; do
+                if [ "$f" = "$_ncw" ]; then
+                    _skip=1
+                    break
+                fi
+            done
+            if [ "$_skip" = "1" ]; then
                 continue
             fi
             WATCHDOG_FILES+=("$f")
             ;;
     esac
 done <<< "$EXPECTED_FILES_STR"
+unset _skip _ncw
 
 _scanned=${#WATCHDOG_FILES[@]}
 if [ "$_scanned" -eq 0 ]; then
@@ -202,18 +255,47 @@ if [ "$_scanned" -eq 0 ]; then
 fi
 
 # --- 3) получить список script-name'ов из jobs.json -------------------------
-# Используем python3 для парсинга — json бывает битый, fail-open.
+# Сканируем ВСЕ профили через PROFILES_GLOB (default: profiles/*/cron/jobs.json).
+# Раньше (до t_4c796522) читался только devops/cron/jobs.json, из-за чего
+# watchdogs в agent-flow профиле (needs-e2e-orphan-watchdog, orphan-audit)
+# всегда ложно флагались как orphan.
+#
+# Backcompat: если PROFILES_GLOB пустой, но JOBS_FILE задан — читаем
+# единственный файл (старое поведение ad-hoc-вызовов).
 _JOBS_TMP="$(mktemp -t wdorph.XXXXXX)"
 trap 'rm -f "$_JOBS_TMP"' EXIT
 
-python3 - "$JOBS_FILE" "$_JOBS_TMP" <<'PYEOF' 2>/dev/null || true
-import json, os, sys
-jobs_file = sys.argv[1]
+if [ "${USE_LEGACY_JOBS_FILE:-0}" = "1" ] && [ -n "$JOBS_FILE" ]; then
+    # Явно форсирован back-compat-режим: сканировать один файл,
+    # как делал watchdog до t_4c796522.
+    _jobs_inputs="$JOBS_FILE"
+else
+    # Default: сканировать все profiles/*/cron/jobs.json через glob.
+    _jobs_inputs="$PROFILES_GLOB"
+fi
+
+# shellcheck disable=SC2086  # PROFILES_GLOB intentionally unquoted
+python3 - "$_jobs_inputs" "$_JOBS_TMP" <<'PYEOF' 2>/dev/null || true
+import json, os, sys, glob
+inputs = sys.argv[1]
 out = sys.argv[2]
 scripts_with_cron = set()
-try:
-    with open(jobs_file, "r") as fh:
-        d = json.load(fh)
+# Поддерживаем как glob (содержит *), так и whitespace-separated список путей.
+candidates = []
+if any(c in inputs for c in ('*', '?', '[')):
+    candidates = sorted(glob.glob(inputs))
+else:
+    for tok in inputs.split():
+        candidates.append(tok)
+for jobs_file in candidates:
+    try:
+        with open(jobs_file, "r") as fh:
+            d = json.load(fh)
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
+        continue
+    except Exception:
+        # Битый JSON — fail-open (считаем «нет джобов» в этом файле).
+        continue
     for j in d.get("jobs", []):
         if not isinstance(j, dict):
             continue
@@ -222,11 +304,6 @@ try:
             continue
         if j.get("enabled") and j.get("schedule", {}).get("kind") == "interval":
             scripts_with_cron.add(s)
-except FileNotFoundError:
-    pass
-except Exception:
-    # Битый JSON — fail-open (считаем «нет джобов»).
-    pass
 with open(out, "w") as fh:
     for s in sorted(scripts_with_cron):
         fh.write(s + "\n")
@@ -234,10 +311,6 @@ PYEOF
 
 _with_cron_count=0
 _missing=()
-
-while IFS= read -r registered_script; do
-    [ -z "$registered_script" ] && continue
-done < "$_JOBS_TMP"
 
 for f in "${WATCHDOG_FILES[@]}"; do
     if grep -Fxq "$f" "$_JOBS_TMP"; then
@@ -256,7 +329,7 @@ _errors=0
 if [ "$_missing_count" -gt 0 ]; then
     # Append в drift.alert.log (общий канал с drift-detect).
     for f in "${_missing[@]}"; do
-        alert_msg="[$(_now_iso)] watchdog-orphan-detector: MISSING cron-job for $f (EXPECTED[] in install.sh but no enabled interval-job in $JOBS_FILE)"
+        alert_msg="[$(_now_iso)] watchdog-orphan-detector: MISSING cron-job for $f (EXPECTED[] in install.sh but no enabled interval-job in profiles=($_jobs_inputs))"
         if [ "$DRY_RUN" = "true" ]; then
             echo "[DRY] $alert_msg" >&2
         else
@@ -291,7 +364,7 @@ except Exception:
                     --repo "$GH_REPO" \
                     --label "agent-flow-watchdog-orphan" \
                     --title "🛡 agent-flow-orphan-watchdog: $f без cron-job" \
-                    --body "$(printf '%s\n\n## Affected watchdog scripts (без cron)\n\n%s\n\n## Что делать\n\n1. Добавить в scripts/agent_flow/install.sh:\n   ```\n   ensure_%s_watchdog_cron() {\n       ensure_cron_job devops \"Agent Flow <Name> Watchdog\" \"<basename>\" \"every Nh\" interval\n   }\n   ensure_%s_watchdog_cron\n   ```\n2. Запустить на хосте: \`bash scripts/agent_flow/install.sh\`.\n\nРегрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled) и t_197de62a (cancel-on-provider-exhausted).\n' "$MARKER_TAG" "$f" "${f#agent-flow-}" "${f%-watchdog.sh}" "${f#agent-flow-}" 2>&1 | head -3 | tr -d '\r')" ; then
+                    --body "$(printf '%s\n\n## Affected watchdog scripts (без cron)\n\n%s\n\n## Что делать\n\n1. Добавить в scripts/agent_flow/install.sh:\n   ```\n   ensure_%s_watchdog_cron() {\n       ensure_cron_job <profile> \"Agent Flow <Name> Watchdog\" \"<basename>\" \"every Nh\" interval\n   }\n   ensure_%s_watchdog_cron\n   ```\n   Где `<profile>` = `devops` (по умолчанию) или `agent-flow`.\n2. Запустить на хосте: \`bash scripts/agent_flow/install.sh\`.\n\nРегрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled), t_197de62a (cancel-on-provider-exhausted), t_4c796522 (orphan-watchdog false-positive на cross-profile watchdog'ах).\n' "$MARKER_TAG" "$f" "${f#agent-flow-}" "${f%-watchdog.sh}" "${f#agent-flow-}" 2>&1 | head -3 | tr -d '\r')" ; then
                     _alerts_emitted=$((_alerts_emitted + 1))
                 else
                     _errors=$((_errors + 1))
@@ -324,9 +397,9 @@ except Exception:
 
 Повторная детекция (tick от $(_now_iso)): orphan watchdog всё ещё без cron-job.
 
-- $f — нет enabled interval-job в jobs.json
+- $f — нет enabled interval-job ни в одном profiles/*/cron/jobs.json (сканировались: $_jobs_inputs)
 
-Действие: зарегистрировать ensure_*_watchdog_cron() в scripts/agent_flow/install.sh + запустить install.sh на хосте." >/dev/null 2>&1; then
+Действие: зарегистрировать ensure_*_watchdog_cron() в scripts/agent_flow/install.sh (выбрать профиль: devops или agent-flow) + запустить install.sh на хосте." >/dev/null 2>&1; then
                         _alerts_emitted=$((_alerts_emitted + 1))
                     else
                         _errors=$((_errors + 1))
@@ -338,7 +411,7 @@ except Exception:
 fi
 
 # --- 5) summary -------------------------------------------------------------
-_summary="watchdog-orphan-detector: scanned=$_scanned with_cron=$_with_cron_count missing=$_missing_count alerts=$_alerts_emitted errors=$_errors"
+_summary="watchdog-orphan-detector: scanned=$_scanned with_cron=$_with_cron_count missing=$_missing_count alerts=$_alerts_emitted errors=$_errors profiles=($_jobs_inputs)"
 echo "[$(_now_iso)] $_summary" >> "$LOG_FILE"
 echo "$_summary" >&2
 

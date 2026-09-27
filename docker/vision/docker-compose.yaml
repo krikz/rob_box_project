@@ -293,10 +293,9 @@ services:
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
       # Pack-1 samples: жанровые лупы (#2841) + FX-одиночки (#2968).
-      # ВЫКЛЮЧЕНО: сэмплы моно, а loop-синт стерео (PlayBuf.ar(2)) →
-      # "Buffer UGen channel mismatch" + late-флуд = клиппинг (revert b9ae10cd1).
-      # Включать после фикса mono→stereo (см. core/sample_loops.py).
-      - ROB_BOX_PACK1_LOOPS=0
+      # "1" открывает весь каталог 1_pitchglitch_samples (лупы И fx одним
+      # флагом — см. core/sample_loops.py, core/sample_fx.py).
+      - ROB_BOX_PACK1_LOOPS=1
       # /mcp/execute sender authentication (see rob_box_mcp_tools/mcp_auth.py).
       # dialogue_node and mcp_server run in THIS container, so they share the
       # secret through a file on the /data volume — created automatically on
@@ -685,6 +684,13 @@ services:
       # Без тома бот стартует, но Vosk-фолбэк недоступен: STT остаётся на
       # одном Yandex, и об этом есть строка в логе (не молчаливая деградация).
       - /opt/rob_box/models:/models:ro
+      # issue #3025: том лицевой базы — тот же каталог, что у vision-face
+      # (:922, без :ro — пишет). :ro гарантирует, что telegram-bot только
+      # ЧИТАЕТ (ADR-0123 §4: FaceStore пишет только в своём контейнере).
+      # Конфликта с живой нодой нет — FaceStore держит /data/faces в памяти
+      # и переписывает meta.json при встрече, поэтому бот всегда видит
+      # актуальное состояние диска.
+      - ./data/faces:/data/faces:ro
     mem_limit: 512m
     memswap_limit: 640m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
