@@ -353,7 +353,16 @@ fi
 # ``--no-daemon`` — потому что демон ros2cli на роботе периодически умирает
 # и роняет CLI в ``Fault 1: !rclpy.ok()`` (видели в vision-hailo, #2703).
 robot_ros() {
-    ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; $*'"
+    # ADR-0129 вариант B: сериализуем каждый аргумент через printf %q
+    # локально, затем экранируем ВСЮ команду как один аргумент для bash -lc.
+    # Важно: cmd не экспортируется и не раскрывается на роботе — он уже
+    # встроен в remote_cmd. eval выполняется только внутри удалённого bash.
+    local cmd remote_cmd remote_cmd_quoted
+    cmd="$(printf '%q ' "$@")"
+    cmd="${cmd% }"
+    remote_cmd="source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; eval $cmd"
+    remote_cmd_quoted="$(printf '%q' "$remote_cmd")"
+    ${ROBOT_SSH} "docker exec voice-assistant bash -lc $remote_cmd_quoted"
 }
 # ⚠️ ЯКОРЬ — СОДЕРЖИМОЕ СЦЕНАРИЯ, А НЕ ЕГО ИМЯ (issue #2763, инцидент
 # 22.09.2026, run 35729958215)
@@ -2257,18 +2266,6 @@ PY
 #                                     БЕЗ строк биометрии/пользовательского
 #                                     ввода). Тот же формат альтернации
 #                                     "А|Б|В", что и expected_keywords.
-#   must_not_identify_as: list[str]  — ADR-0134 / issue #2754: НЕ должно быть
-#                                     события успешной атрибуции
-#                                     ``Speaker: 'NAME'`` в логе шага
-#                                     (строки speaker_id_node, не robot_speech).
-#                                     Отдельное от must_not_say, т.к. «опознал»
-#                                     — это событие биометрии, а не речь
-#                                     робота. Ищется подстрокой по ВСЕМУ
-#                                     логу шага (как grep -F), ловит и
-#                                     ``Speaker: 'Борис' confidence=...``
-#                                     (старый формат), и ``Speaker: 'Борис'``
-#                                     (текущий). Сообщение о FAIL явно
-#                                     отсылает к issue #2754 / ADR-0134 §4.
 #   expected_keywords:    list[str]  — должны быть в логах шага (признанная
 #                                     фраза ИЛИ LLM OUTPUT / spoken=). Ключ
 #                                     вида "Борис|Спартак|пицц" — это
@@ -2362,21 +2359,9 @@ expected_kw = acc.get("expected_keywords", []) or []
 # чужое имя» (см. n210_grisha_no_name). must_not_say ищет ТОЛЬКО в
 # robot_speech() — том же канале, что и expected_keywords (issue #2764).
 must_not_say = acc.get("must_not_say", []) or []
-# ADR-0134 / Issue #2754 — must_not_identify_as: на этом шаге робот НЕ
-# должен ОПОЗНАТЬ голос как одного из перечисленных дикторов. Ищем
-# ``Speaker: 'NAME'`` (без хвоста, чтобы подстрока ловила и старый формат
-# dialogue_node ``Speaker: 'NAME' confidence=``, и текущий без confidence)
-# по ВСЕМУ логу шага — `Speaker:` живёт в логе speaker_id_node, это
-# НЕ robot_speech, must_not_say не подходит (issue #2779). Используем
-# ``grep -F`` для точного матча строки с апострофами и кириллицей.
 must_not_identify_as = acc.get("must_not_identify_as", []) or []
 if must_not_identify_as and not isinstance(must_not_identify_as, list):
-    sys.stdout.write(json.dumps({
-        "gate": "GATE-1",
-        "pass": False,
-        "reason": "must_not_identify_as must be list[str]",
-        "acceptance_file": os.environ.get("ACC_JSON", ""),
-    }, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps({"gate":"GATE-1","pass":False,"reason":"must_not_identify_as must be list[str]","acceptance_file":os.environ.get("ACC_JSON","")}, ensure_ascii=False, indent=2))
     sys.exit(0)
 forbidden_identified = []
 for name in must_not_identify_as:
@@ -2525,15 +2510,8 @@ if expected_kw and missing_keywords:
     failures.append(f"expected keywords missing in logs: {missing_keywords}")
 if forbidden_said:
     failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
-# ADR-0134 / Issue #2754 — зеркало forbidden_said, но для «Speaker: 'NAME'»
-# в логе speaker_id_node (не в robot_speech). Сообщение должно явно
-# отличать от must_not_call/must_not_say: разные слои одной регрессии.
 if forbidden_identified:
-    failures.append(
-        "forbidden speakers identified by speaker_id_node: %s "
-        "(matched Speaker: 'NAME' in step log; issue #2754 / ADR-0134 §4)"
-        % forbidden_identified
-    )
+    failures.append("forbidden speakers identified by speaker_id_node: %s (matched Speaker: 'NAME'; issue #2754 / ADR-0134 §4)" % forbidden_identified)
 if discovery_tool_errors:
     failures.extend(discovery_tool_errors)
 if discovery_failures:
@@ -2562,10 +2540,6 @@ result = {
     # Issue #2779 — must_not_say verdict (robot_speech-scoped, see above).
     "must_not_say": must_not_say,
     "forbidden_said": forbidden_said,
-    # ADR-0134 / Issue #2754 — must_not_identify_as verdict: «Speaker: 'NAME'»
-    # в логе шага (поиск подстрокой, см. check_acceptance()). Отдельное от
-    # must_not_say: must_not_say смотрит ТОЛЬКО в robot_speech(), а тут
-    # мы ищем событие успешной атрибуции в speaker_id_node.
     "must_not_identify_as": must_not_identify_as,
     "forbidden_identified": forbidden_identified,
     # Issue #2406: discovery-step enforcement (per-step).
