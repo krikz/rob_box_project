@@ -107,7 +107,7 @@ license, and source URL — never silently include a third-party asset.
 AI-generated assets (mesh/texture/audio produced by generative models
 such as Tripo3D, MiniMax image, MiniMax TTS, voice cloning) are **NOT
 CC0** by default and the redistribution status of AI-only output is
-unsettled across jurisdictions. Per ADR-0134 each such asset MUST:
+unsettled across jurisdictions. Per ADR-0136 each such asset MUST:
 
 1. Be tracked in the per-area meta tracking issue with label
    `ai-asset` (currently: meta-issue for `rob_box_quest` environment

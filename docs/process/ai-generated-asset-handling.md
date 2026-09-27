@@ -2,7 +2,7 @@
 
 > Процедура работы с AI-generated assets (mesh/texture/audio) в репозитории.
 > Обязательная в дополнение к ADR-0032 §1.2 R9 (CC0-or-own).
-> Architectural basis: ADR-0134.
+> Architectural basis: ADR-0136.
 
 ## Scope
 
@@ -65,7 +65,7 @@ AI-generated. Если нет (например, нужен уникальный
 ```
 
 Если tracking issue для area ещё не существует — создать по шаблону
-из ADR-0134 §3.2 с labels `legal` + `ai-asset` + `area:<component>` + `process`.
+из ADR-0136 §3.2 с labels `legal` + `ai-asset` + `area:<component>` + `process`.
 
 ### Шаг 4. ДО `git commit` — добавить trailer в commit body
 
@@ -95,7 +95,7 @@ git commit --trailer '<!-- ai-asset-policy: pending -->' ...
 - Owner: товарищ Шифу
 - Resolution target: <milestone>
 
-<!-- Per ADR-0134. Do NOT publicly redistribute until 'yes'. -->
+<!-- Per ADR-0136. Do NOT publicly redistribute until 'yes'. -->
 ```
 
 ### Шаг 6. После merge — обновить tracking issue
@@ -120,7 +120,7 @@ gh issue list --label ai-asset --state open
 #    - ассет заменяется/удаляется до release.
 ```
 
-Эта проверка — **manual** до момента, когда CI guard (ADR-0134 §6
+Эта проверка — **manual** до момента, когда CI guard (ADR-0136 §6
 future work) будет реализован.
 
 ## Когда ассет больше не AI-generated
@@ -143,10 +143,10 @@ future work) будет реализован.
   процедура не выполнена — это protocol violation (см. AGENTS.md), не
   cosmetic issue.
 - **Architect**: ревью при появлении новых case'ов (например, voice
-  cloning, video generation). ADR-0134 пересматривается при
+  cloning, video generation). ADR-0136 пересматривается при
   структурных изменениях (например, новый тип генератора без явного
   license).
 
 ## Changelog этой процедуры
 
-- 2026-09-27 — initial version (kanban t_2d0f27f7, ADR-0134, issue #3051).
+- 2026-09-27 — initial version (kanban t_2d0f27f7, ADR-0136, issue #3051).

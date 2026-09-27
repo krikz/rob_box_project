@@ -1,4 +1,4 @@
-# ADR-0134 — AI-generated assets: legal/license tracking policy (process + CREDITS.md contract)
+# ADR-0136 — AI-generated assets: legal/license tracking policy (process + CREDITS.md contract)
 
 | Поле | Значение |
 |---|---|
