@@ -85,6 +85,9 @@ export interface BridgeAssetHandle {
     walls?: THREE.Group;
     props?: THREE.Group;
     occluders?: THREE.Group;
+    heroPlatform?: THREE.Group;
+    heroScreen?: THREE.Group;
+    heroHoloProjector?: THREE.Group;
   };
   /** Nav-point AABB meshes (visible in dev, hidden in production). */
   readonly nav: THREE.Group;
@@ -122,6 +125,14 @@ const GLB_NAMES = [
   "bridge_props.optimized.glb",
   "bridge_nav.optimized.glb",
   "bridge_occluders.optimized.glb",
+] as const;
+
+// Tripo3D hero props (2026-09-26) — loaded separately from the procedural
+// environment; positioned by captain_bridge.ts (unknown baked scale).
+const HERO_GLB_NAMES = [
+  "bridge_platform.optimized.glb",
+  "bridge_screen.optimized.glb",
+  "bridge_holo_projector.optimized.glb",
 ] as const;
 
 // ---------- meta loader (testable in jsdom) ----------
@@ -255,6 +266,18 @@ export async function loadBridgeAssets(
   const occludersGroup = await loadGlb(GLB_NAMES[4]);
   scene.add(occludersGroup);
   groups.occluders = occludersGroup;
+
+  // Hero props (Tripo3D) — added to the scene, positioned later by
+  // captain_bridge.ts (their baked scale/origin are unknown at load time).
+  const heroPlatform = await loadGlb(HERO_GLB_NAMES[0]);
+  const heroScreen = await loadGlb(HERO_GLB_NAMES[1]);
+  const heroHoloProjector = await loadGlb(HERO_GLB_NAMES[2]);
+  scene.add(heroPlatform);
+  scene.add(heroScreen);
+  scene.add(heroHoloProjector);
+  groups.heroPlatform = heroPlatform;
+  groups.heroScreen = heroScreen;
+  groups.heroHoloProjector = heroHoloProjector;
 
   // HDR → PMREM environment map. Only if renderer supports PMREM and the
   // caller asked for it (tests pass loadHdr=false to skip the fetch).

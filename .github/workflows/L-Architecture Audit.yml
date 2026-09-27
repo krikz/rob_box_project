@@ -1,0 +1,147 @@
+name: "L: Architecture Audit"
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_host:
+        description: "Vision Pi SSH host (ROS2 is inside oak-d)"
+        required: false
+        default: "10.1.1.21"
+        type: string
+      runtime_user:
+        description: "SSH user on the robot"
+        required: false
+        default: "ros2"
+        type: string
+      runtime_container:
+        description: "Docker container containing the ROS2 graph"
+        required: false
+        default: "oak-d"
+        type: string
+      runtime_topics:
+        description: "Comma-separated ROS2 topics for verbose inspection; empty = all discovered topics"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-audit-local-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Runtime ROS2 graph (self-hosted)
+    runs-on: [self-hosted, Linux, X64, rob-box]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Check robot SSH access
+        shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+        run: |
+          set -euo pipefail
+          if ! command -v sshpass >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y sshpass
+          fi
+          command -v sshpass
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+            "${{ inputs.runtime_user }}@${{ inputs.runtime_host }}" \
+            "docker exec '${{ inputs.runtime_container }}' bash -lc 'source /opt/ros/humble/setup.bash && ros2 node list >/dev/null'"
+          echo "Runner: $(hostname)"
+          echo "Robot: ${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
+
+      - name: Check robot ROS2 graph
+        shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+        run: |
+          set -euo pipefail
+          ROBOT="${{ inputs.runtime_user }}@${{ inputs.runtime_host }}"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$ROBOT" \
+            "docker exec '${{ inputs.runtime_container }}' bash -lc 'source /opt/ros/humble/setup.bash && echo ROS2-nodes && ros2 node list && echo ROS2-topics && ros2 topic list && echo ROS2-services && ros2 service list && echo ROS2-actions && ros2 action list'"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install scanner dependency
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Build static evidence locally
+        run: |
+          mkdir -p architecture
+          python tools/architecture_audit.py --output architecture/inventory.json --markdown architecture/inventory.md
+          python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
+          python tools/architecture_catalog.py architecture/inventory.json
+
+      - name: Capture robot ROS2 runtime graph
+        shell: bash
+        env:
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+        run: |
+          set -euo pipefail
+          args=(--output architecture/runtime.json
+                --remote-host "${{ inputs.runtime_host }}"
+                --remote-user "${{ inputs.runtime_user }}"
+                --remote-container "${{ inputs.runtime_container }}")
+          if [ -n "${{ inputs.runtime_topics }}" ]; then
+            args+=(--topics "${{ inputs.runtime_topics }}")
+          fi
+          python tools/architecture_runtime_snapshot.py "${args[@]}"
+
+      - name: Compare static and runtime
+        run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
+
+      - name: Render runtime architecture graph
+        run: |
+          python tools/architecture_runtime_graph.py \
+            --runtime architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --output-dir architecture
+
+      - name: Upload local architecture evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-local-runtime
+          path: |
+            architecture/inventory.json
+            architecture/inventory.md
+            architecture/findings.json
+            architecture/findings.md
+            architecture/node-catalog.md
+            architecture/topic-catalog.md
+            architecture/runtime.json
+            architecture/runtime-diff.json
+            architecture/runtime-diff.md
+            architecture/runtime-overview.mmd
+            architecture/runtime-graph.mmd
+
+      - name: Publish runtime summary
+        run: |
+          {
+            echo "## Robot runtime ROS2 graph"
+            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes: " + str(len(d.get("nodes", [])))); print("- Topics: " + str(len(d.get("topics", [])))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
+            echo
+            cat architecture/runtime-diff.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo
+            echo "## ROS2 runtime architecture diagram"
+            echo
+            printf '%s\\n' '```mermaid'
+            cat architecture/runtime-overview.mmd
+            printf '%s\\n' '```'
+            echo
+            echo "Full Mermaid graph: architecture/runtime-graph.mmd in the architecture-local-runtime artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
