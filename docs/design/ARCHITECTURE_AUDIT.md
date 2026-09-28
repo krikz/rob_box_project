@@ -13,6 +13,10 @@ The tooling separates evidence from architectural decisions. A duplicate or unpa
 ## Audit layers
 
 1. Static inventory: Compose services (every `docker/*/docker-compose*.y*ml` except `docker/build/`, which is CI/registry infrastructure), ROS packages, Python classes, node classes, launch entries and ROS interfaces. Tests and examples (`test/`, `tests/`, `test_*.py`, `conftest.py`, `scripts/test_*`, `scripts/example_*`) are skipped and only counted as `skipped_test_files`.
+   ROS interface names come from the topic/service argument of `create_publisher`, `create_subscription`, `create_service`, `create_client`, `create_action_client` and `shared_publisher`. A string literal is taken as is. A `self.<attr>` argument is resolved statically inside the innermost enclosing class (Node or not) and the entry is marked, because the name may be overridden at launch:
+   - `"name_source": "parameter_default"` plus `"name_parameter": "<p>"` when the class assigns `self.<attr> = self.get_parameter('<p>').value` (optionally wrapped in `str(...)`) and calls `self.declare_parameter('<p>', '<string literal>')`;
+   - `"name_source": "class_attr"` when `<attr>` is a class-level string constant (`topic = '/camera/...'`, `ODOM_TOPIC = '/odom'`).
+   An attribute with more than one candidate value (e.g. a class constant also reassigned in a method, or two different declared defaults) is ambiguous and skipped, as are nested classes, inherited attributes, local variables and non-literal defaults. The markers are carried into `topics[].publishers/subscribers/...` and shown in `inventory.md` as *(default of `p`)* / *(class attr)*; literal entries have no `name_source`.
 2. Structural review: multiple publishers, unpaired interfaces, duplicate class names, semantic identity-topic names and node packages without literal launch entries.
 3. Runtime graph: real ros2 node/topic/service/action output and verbose topic endpoints.
 4. Static/runtime diff: declared topics absent at runtime and runtime-only topics.
