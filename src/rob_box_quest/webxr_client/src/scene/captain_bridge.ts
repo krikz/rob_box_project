@@ -14,6 +14,7 @@ import {
   type LayoutStorage
 } from "./panel_layout_store";
 import { FpsMeter } from "./fps_meter";
+import { createBridgeShell, type HudBezelRect } from "./bridge_shell";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
 import { createPointerBeam, type PointerBeamHandle } from "../interaction/pointer_beam";
@@ -156,6 +157,74 @@ export function ceilingScreenPitchRad(
  * (довернуть на четверть) — одно число, без правки геометрии.
  */
 export const CEILING_SCREEN_ROLL_RAD = 0;
+
+// ── Крылья TARS (issue #2113) ───────────────────────────────────────────
+// Копии главного экрана по бокам, шарнирно прижаты к его вертикальным
+// кромкам и отогнуты на 50° к оператору (подробности — у создания крыльев
+// в createCaptainBridge).
+export const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 } as const; // = как главный экран
+export const TARS_PANEL_Y = 1.5; // = как главный экран
+const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
+const TARS_MAIN_Z = -3.9; // плоскость главного экрана
+/** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
+export const TARS_FLARE_RAD = (50 * Math.PI) / 180;
+// Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
+export const TARS_WING_X =
+  TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
+export const TARS_WING_Z =
+  TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
+
+/**
+ * Сектор азимутов (градусы, 0 = прямо, модуль — в любую сторону), который
+ * крыло TARS занимает из глаз оператора в (0, 0). Чистая функция: панели
+ * на окружности вокруг оператора не должны заходить в этот сектор, иначе
+ * они закрывают крыло (так было с depth −75° и «ГОЛОС» +60°).
+ */
+export function tarsWingSectorDeg(): { min: number; max: number } {
+  const nearX = TARS_MAIN_EDGE_X;
+  const nearZ = TARS_MAIN_Z;
+  const farX = TARS_MAIN_EDGE_X + TARS_PANEL_SIZE.width * Math.cos(TARS_FLARE_RAD);
+  const farZ = TARS_MAIN_Z + TARS_PANEL_SIZE.width * Math.sin(TARS_FLARE_RAD);
+  const az = (x: number, z: number) => (Math.atan2(x, -z) * 180) / Math.PI;
+  return { min: az(nearX, nearZ), max: az(farX, farZ) };
+}
+
+/**
+ * Угловая полуширина панели шириной `widthM` на радиусе `radiusM`, градусы.
+ * Для проверки «панель не заходит в сектор крыла».
+ */
+export function panelHalfSpanDeg(widthM: number, radiusM: number): number {
+  return (Math.atan2(widthM / 2, radiusM) * 180) / Math.PI;
+}
+
+// ── HUD-полоса над экраном-стеной ──────────────────────────────────────
+// Статус (таблица), голос и ARM стоят в один ряд в «шапке» над рамкой
+// экрана-стены: верх рамки ≈ 3.04 м (fitScreenFrame), полоса — 3.10…3.60,
+// потолок оболочки — 3.8 (bridge_shell.ts). Раньше спрайты висели на
+// y = 2.85–2.95, наезжали на верх видео, а статус торчал выше потолка.
+/** Плоскость спрайтов полосы (чуть перед видео, z = −3.9). */
+export const HUD_STRIP_Z = -3.85;
+/** Центр полосы по высоте. */
+export const HUD_STRIP_Y = 3.35;
+/** Слоты полосы: центр по X и размер спрайта, м. Слева направо. */
+export const HUD_STRIP_SLOTS = {
+  status: { x: -0.95, width: 3.0, height: 0.5 },
+  voice: { x: 1.05, width: 0.8, height: 0.375 },
+  arm: { x: 1.95, width: 0.8, height: 0.375 }
+} as const;
+
+/** Прямоугольник, который занимает HUD-полоса (под подложку в оболочке). */
+export function hudStripBezel(): HudBezelRect {
+  const slots = Object.values(HUD_STRIP_SLOTS);
+  const left = Math.min(...slots.map((s) => s.x - s.width / 2));
+  const right = Math.max(...slots.map((s) => s.x + s.width / 2));
+  const height = Math.max(...slots.map((s) => s.height));
+  return {
+    center: { x: (left + right) / 2, y: HUD_STRIP_Y, z: HUD_STRIP_Z },
+    width: right - left,
+    height
+  };
+}
 
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
@@ -411,6 +480,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const floor = new THREE.Mesh(floorGeom, floorMat);
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
+
+  // Оболочка мостика: стены по бокам и сзади, потолок, шапка под
+  // HUD-полосой (bridge_shell.ts). Процедурная — стоит и без GLB-окружения.
+  const shell = createBridgeShell({ hudBezel: hudStripBezel() });
+  scene.add(shell.object);
 
   // Маркер позиции пользователя.
   const origin = new THREE.Mesh(
@@ -680,18 +754,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // поэтому декоративный короб комнаты расширен по ширине ROOM_W 7 → 11.6 м
   // (build_bridge_assets.mjs). ROOM_D не менялся (крылья не выходят за него:
   // far-z ≈ -0.22 лежит внутри [−4.56, +4.56]).
-  const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 }; // = как главный экран
-  const TARS_PANEL_Y = 1.5; // = как главный экран
-  const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
-  const TARS_MAIN_Z = -3.9; // плоскость главного экрана
-  /** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
-  const TARS_FLARE_RAD = THREE.MathUtils.degToRad(50);
-  // Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
-  const TARS_WING_X =
-    TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
-  const TARS_WING_Z =
-    TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
-
   // Левое крыло (TARS 1): local +X меша направлен к шарниру (краю главного),
   // разворот +50° вокруг вертикали уводит крыло влево-вперёд к оператору.
   const tars1Panel = createTars1TextPanel();
@@ -707,11 +769,12 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   tars2Panel.mesh.rotation.y = -TARS_FLARE_RAD;
   scene.add(tars2Panel.mesh);
 
-  // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
+  // Arm-state HUD: правый слот HUD-полосы над экраном-стеной.
   // Sprite всегда повёрнут к камере — читается из любой позы оператора.
+  // Канвас 512×240 — те же пропорции и стиль, что у индикатора голоса.
   const armCanvas = document.createElement("canvas");
   armCanvas.width = 512;
-  armCanvas.height = 128;
+  armCanvas.height = 240;
   const armCtx = armCanvas.getContext("2d");
   if (!armCtx) {
     throw new Error("captain_bridge: failed to acquire arm HUD 2D context");
@@ -722,25 +785,32 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const armSprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: armTexture, depthTest: false, transparent: true })
   );
-  // Правый верхний угол стены-экрана (mainScreen 4.8×2.7, центр y=1.5, z=-3.9).
-  armSprite.position.set(2.35, 2.95, -3.85);
-  armSprite.scale.set(1.1, 0.275, 1);
+  armSprite.position.set(HUD_STRIP_SLOTS.arm.x, HUD_STRIP_Y, HUD_STRIP_Z);
+  armSprite.scale.set(HUD_STRIP_SLOTS.arm.width, HUD_STRIP_SLOTS.arm.height, 1);
+  armSprite.renderOrder = 14; // поверх карты/лидара, как статус
   scene.add(armSprite);
 
   function drawArmHud(armed: boolean): void {
     const ctx = armCtx!;
     ctx.clearRect(0, 0, armCanvas.width, armCanvas.height);
-    // Тёмная подложка.
-    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+    const color = armed ? "#2ec27e" : "#8b98a5";
+    // Тёмная подложка + holo-кант — единый стиль HUD-полосы.
+    ctx.fillStyle = "rgba(10, 13, 17, 0.82)";
     ctx.fillRect(0, 0, armCanvas.width, armCanvas.height);
+    ctx.strokeStyle = "rgba(68, 221, 255, 0.55)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, armCanvas.width - 4, armCanvas.height - 4);
     // Цветной индикатор слева.
-    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
+    ctx.fillStyle = color;
     ctx.fillRect(0, 0, 16, armCanvas.height);
-    // Текст.
-    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
-    ctx.font = "bold 56px monospace";
+    // Подпись слота мелко сверху, состояние — крупно.
+    ctx.fillStyle = "#8b98a5";
+    ctx.font = "bold 30px monospace";
     ctx.textBaseline = "middle";
-    ctx.fillText(armed ? "ARM" : "DISARM", 44, armCanvas.height / 2);
+    ctx.fillText("TELEOP", 44, 48);
+    ctx.fillStyle = color;
+    ctx.font = "bold 72px monospace";
+    ctx.fillText(armed ? "ARM" : "DISARM", 44, armCanvas.height / 2 + 30);
     armTexture.needsUpdate = true;
   }
   drawArmHud(false);
@@ -750,8 +820,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   // Status HUD (Wave 3.A / R8): battery, Wi-Fi, скорость, RTT, режим.
-  // Зеркально ARM-индикатору — левый верх стены-экрана.
-  const statusHud = createStatusHud();
+  // Левый (широкий) слот HUD-полосы над экраном-стеной.
+  const statusHud = createStatusHud({
+    position: { x: HUD_STRIP_SLOTS.status.x, y: HUD_STRIP_Y, z: HUD_STRIP_Z },
+    scale: { x: HUD_STRIP_SLOTS.status.width, y: HUD_STRIP_SLOTS.status.height }
+  });
   scene.add(statusHud.sprite);
 
   // #3151: навигационный слой (путь Nav2, след, nav-цель, отмена). Кормится
@@ -764,16 +837,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   });
   scene.add(navLayer.overlay.object);
 
-  // Voice state indicator (AV-20): центр стены над экраном, между
-  // status_hud и arm-sprite. Позиция (0, 2.85, -3.85) — выше main screen
-  // (центр y=1.5) и не перекрывает ни ARM-sprite (x=2.35), ни status_hud
-  // (x=-2.35). Размер 1.1 × 0.5 — компактнее, чем статус/ARM: это не
-  // «главный HUD», а индикатор активности микрофона при работе с PTT на
-  // гриппах (аудит §4-bis).
+  // Voice state indicator (AV-20): средний слот HUD-полосы, между
+  // таблицей статуса и ARM. Компактнее статуса: это не «главный HUD», а
+  // индикатор активности микрофона при работе с PTT на гриппах (аудит §4-bis).
   const voiceIndicator: VoiceStateIndicator = createVoiceStateIndicator({
-    position: { x: 0, y: 2.85, z: -3.85 },
-    scale: { x: 1.1, y: 0.5 }
+    position: { x: HUD_STRIP_SLOTS.voice.x, y: HUD_STRIP_Y, z: HUD_STRIP_Z },
+    scale: { x: HUD_STRIP_SLOTS.voice.width, y: HUD_STRIP_SLOTS.voice.height }
   });
+  voiceIndicator.sprite.renderOrder = 14;
   scene.add(voiceIndicator.sprite);
 
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
@@ -1434,6 +1505,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       });
     }
     armTexture.dispose();
+    shell.dispose();
     statusHud.dispose();
     supervisorPanel.dispose();
     voicePipeline.dispose();

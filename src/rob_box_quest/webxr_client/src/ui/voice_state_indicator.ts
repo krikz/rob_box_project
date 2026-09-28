@@ -216,9 +216,9 @@ export interface VoiceStateIndicator {
 }
 
 export interface VoiceStateIndicatorOptions {
-  /** Позиция спрайта в сцене (по умолчанию — центр стены над экраном). */
+  /** Позиция спрайта в сцене (по умолчанию — средний слот HUD-полосы над экраном). */
   position?: { x: number; y: number; z: number };
-  /** Размер спрайта в метрах (default 1.1 × 0.5). */
+  /** Размер спрайта в метрах (default 0.8 × 0.375, пропорции канваса). */
   scale?: { x: number; y: number };
   /**
    * Куда монтировать visually-hidden aria-live-регион.
@@ -245,8 +245,8 @@ export function createVoiceStateIndicator(
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true })
   );
-  const pos = opts.position ?? { x: 0, y: 2.85, z: -3.85 };
-  const scale = opts.scale ?? { x: 1.1, y: 0.5 };
+  const pos = opts.position ?? { x: 1.05, y: 3.35, z: -3.85 };
+  const scale = opts.scale ?? { x: 0.8, y: 0.375 };
   sprite.position.set(pos.x, pos.y, pos.z);
   sprite.scale.set(scale.x, scale.y, 1);
 
@@ -292,17 +292,23 @@ export function createVoiceStateIndicator(
       frame ?? { state: "unknown", detail: "none", tsMs: 0 }
     );
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // Тёмная подложка — единый стиль с status_hud и arm-state sprite.
-    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+    // Тёмная подложка + holo-кант — единый стиль HUD-полосы (status_hud, ARM).
+    ctx.fillStyle = "rgba(10, 13, 17, 0.82)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "rgba(68, 221, 255, 0.55)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
     // Цветной индикатор слева.
     ctx.fillStyle = presentation.color;
     ctx.fillRect(0, 0, 16, canvas.height);
-    // Текст.
-    ctx.fillStyle = presentation.color;
-    ctx.font = "bold 56px monospace";
+    // Подпись слота мелко сверху, состояние — крупно.
+    ctx.fillStyle = "#8b98a5";
+    ctx.font = "bold 30px monospace";
     ctx.textBaseline = "middle";
-    ctx.fillText(presentation.label, 44, canvas.height / 2);
+    ctx.fillText("VOICE", 44, 48);
+    ctx.fillStyle = presentation.color;
+    ctx.font = "bold 64px monospace";
+    ctx.fillText(presentation.label, 44, canvas.height / 2 + 30);
     texture.needsUpdate = true;
     // aria-live: текст для скринридера. Меняем текст ТОЛЬКО при смене,
     // чтобы не спамить.
