@@ -36,8 +36,11 @@
 | base depthai | ✅ 33 мин | job 108925437017 |
 | base rtabmap | ✅ 40 мин | job 108925436916 |
 | base pcl | ❌ attempt 1 → ✅ attempt 2 (9 мин) | 108936203116 (apt 503) → 108940610231 |
-| main rtabmap | ✅ **15 с** — registry-кеш на новом пути работает | 108945295801 |
+| main rtabmap | ✅ 15 с — **НЕ доказательство кеша**: digest сервиса = digest базы (`646445597f…`), builder-стадия CANCELED, «skipping cache export for empty result» | 108945295801 |
 | main perception | ❌ apt-cacher-ng 503 | 108945295791 |
+| main twist-mux / rsp / lslidar / ros2-control | ✅ 4 / 2,5 / 8 / 11 мин — **кеш-промах** (см. §2.1) | 108945295646 и др. |
+| vision voice-base | ❌ apt-cacher-ng `Hash Sum mismatch` на `ros-humble-builtin-interfaces_1.2.3-1jammy.20260907.203343_arm64.deb` | 108945302234 |
+| vision oak-d / led-matrix / supercollider | ✅ | — |
 | main lslidar, ros2-control, teleop, twist-mux, nav2, robot-state-publisher | ⏳ шли | — |
 | vision (10 сервисов) | ⏳ led-matrix, supercollider стартовали, остальные в очереди | — |
 
@@ -45,11 +48,33 @@
 - **Перезапуск упавших job'ов уже потрачен** (`rerun_failed_jobs` в 13:06).
   Повторно этот прогон НЕ перезапускать, нужен новый `workflow_dispatch`
   после починки apt-cacher-ng.
-- Итог attempt 2 я не видел. Первым делом: `list_workflow_jobs 36421581380 filter=latest`.
+- Снимок сделан на 13:40 UTC, прогон ещё не закончился. Первым делом: `list_workflow_jobs 36421581380 filter=latest`.
+
+### 2.1. Кеш: что доказано и что НЕТ
+
+Лог twist-mux (job 108945295646):
+```
+Cache: localhost:5000/krikz/rob_box:twist-mux-buildcache (from + to, mode=max, ignore-error, driver=docker-container)
+#4 [1/3] FROM localhost:5000/krikz/rob_box_base:ros2-zenoh-humble@sha256:268bf01f3cd6…
+#5 importing cache manifest from …twist-mux-buildcache … done
+#6 [2/3] RUN apt-get update && apt-get install -y ros-humble-twist-mux   ← НЕ CACHED, 243 с
+#10 exporting cache to registry … writing cache image manifest sha256:746bbbcc… done
+```
+- **Доказано:** кеш импортируется и экспортируется (механика цела).
+- **Промах:** базы пересобраны, получили новый digest, поэтому все слои сервисов пересобирались.
+  В тёплом прогоне 35642624956 сервисы шли 50–65 с, здесь — минуты.
+- **НЕ проверено, возможная регрессия PR:** стабилен ли digest базы при полном попадании
+  в кеш. Проверка — следующий прогон без изменений: `ros2-zenoh-humble` должен остаться
+  `sha256:268bf01f3cd63625f4ef6c5d548174f5f217ac27fe0866bc389fe937a5491396`, шаги сервисов — `CACHED`.
+  Если digest «плывёт», сервисы не попадут в кеш никогда. Тогда чинить в PR: не пересобирать
+  неизменённые базы (например, проверка по хешу `docker/base/`) или воспроизводимая сборка
+  (`SOURCE_DATE_EPOCH`, `rewrite-timestamp=true` в экспортёре).
 
 ## 3. Открытая проблема: apt-cacher-ng отдаёт 503
 
-Два разных job'а в двух попытках упали на одном и том же:
+Три отказа в одном прогоне: два `503 DlMaxRetries` и один `Hash Sum mismatch`
+(voice-base: apt-cacher-ng отдаёт устаревшую копию `.deb` того же размера — удалить
+её из кеша прокси). Первые два:
 
 ```
 Err:221 http://ports.ubuntu.com/ubuntu-ports jammy-updates/main arm64 libsoup2.4-common ...
@@ -110,17 +135,23 @@ docker exec build-apt-cache grep -E -i 'DlMaxRetries|NetworkTimeout|MaxConThread
 for c in $(docker ps --format '{{.Names}}' | grep -i runner); do echo "== $c"; docker exec "$c" docker buildx ls | head -5; done
 ```
 
+```bash
+# 6. Hash Sum mismatch (voice-base): найти и удалить устаревшую копию
+docker exec build-apt-cache sh -c 'find /var/cache/apt-cacher-ng -name "ros-humble-builtin-interfaces_1.2.3-1jammy.20260907.203343_arm64.deb*"'
+#    ожидаемый SHA256 c9129ec0…, отданный 42b16a31… — сверить sha256sum найденного файла, удалить
+```
+
 После починки: новый `workflow_dispatch` `L: Build All Services` на ветке PR
 (`ref=claude/compassionate-hopper-uc56yt`). Ждём, что базы пройдут быстро
-(registry-кеш уже записан), а сервисы соберутся полностью. Результат с run_id
+(registry-кеш уже записан) **с тем же digest**, а сервисы — за ~минуту (`CACHED`), см. §2.1. Результат с run_id
 отписать в PR #3100.
 
 ## 5. НЕ проверено
 
 - Полный зелёный прогон `L: Build All Services` на ветке PR: Vision Pi не
   завершился ни разу, Main — частично.
-- Что **базы** на втором прогоне берут registry-кеш. Для сервисов это видно
-  (main rtabmap за 15 с), для баз прогона ещё не было.
+- Попадание в registry-кеш на новом пути не доказано ни для баз, ни для сервисов (§2.1).
+  Доказана только механика: импорт и экспорт кеша.
 - `scripts/build/build.py` реальной arm64-сборкой не гонялся (только
   `--dry-run`). Движок `buildx_build.sh` гонялся вживую в x86-песочнице
   (docker-container билдер + локальный registry), см. описание PR.
