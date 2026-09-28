@@ -27,6 +27,29 @@ def remote_run(args, host="", user="", container="", timeout=30):
                      text=True,capture_output=True,timeout=timeout)
     return {"returncode":p.returncode,"stdout":p.stdout,"stderr":p.stderr}
 
+ENDPOINT_FIELDS={"Node namespace":"namespace","Topic type":"type","Endpoint type":"endpoint_type",
+                 "Reliability":"reliability","Durability":"durability"}
+
+def parse_topic_info(raw):
+    """Parse ``ros2 topic info --verbose`` into (publishers, subscribers).
+
+    Each endpoint block starts with ``Node name:`` and is followed by its own
+    ``Node namespace:``, type and QoS lines, so fields are attached to the block
+    opened by the last ``Node name:`` line.
+    """
+    publishers=[]; subscribers=[]; mode=None; current=None
+    for line in raw.splitlines():
+        s=line.strip()
+        if s.startswith("Publisher count:"): mode="publishers"; current=None
+        elif s.startswith("Subscription count:"): mode="subscribers"; current=None
+        elif s.startswith("Node name:") and mode:
+            current={"node":s.split(":",1)[1].strip()}
+            (publishers if mode=="publishers" else subscribers).append(current)
+        elif current is not None and ":" in s:
+            key,value=(x.strip() for x in s.split(":",1))
+            if key in ENDPOINT_FIELDS: current[ENDPOINT_FIELDS[key]]=value
+    return publishers,subscribers
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--output",type=Path,default=Path("architecture/runtime.json"))
@@ -73,18 +96,7 @@ def main():
                 if result["returncode"] == 0:
                     break
         raw=result["stdout"]
-        publishers=[]; subscribers=[]; mode=None; current={}
-        for line in raw.splitlines():
-            s=line.strip()
-            if s.startswith("Publisher count:"): mode="publishers"
-            elif s.startswith("Subscription count:"): mode="subscribers"
-            elif s.startswith("Node name:"):
-                current["node"]=s.split(":",1)[1].strip()
-                if mode:
-                    (publishers if mode=="publishers" else subscribers).append(dict(current))
-                current={}
-            elif s.startswith("Node namespace:"):
-                current["namespace"]=s.split(":",1)[1].strip()
+        publishers,subscribers=parse_topic_info(raw)
         topic_info[topic]={
             "present":result["returncode"]==0,
             "returncode":result["returncode"],
