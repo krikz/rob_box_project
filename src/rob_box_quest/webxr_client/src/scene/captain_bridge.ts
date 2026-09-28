@@ -28,6 +28,7 @@ import { createSupervisorPanel, type SupervisorPanelHandle, PANEL_TARGET_PREFIX 
 import {
   createStreamsPanel,
   parseStreamsTargetId,
+  STREAMS_TAB_TARGET_ID,
   type StreamsAction,
   type StreamsPanelHandle
 } from "./streams_panel";
@@ -355,7 +356,10 @@ export interface CaptainBridgeHandle {
   streamsPanel: StreamsPanelHandle;
   /** Перерисовать панель «ПОТОКИ» (и перерегистрировать её кнопки). */
   renderStreams(view: SubscriptionsView): void;
-  /** Показать/скрыть панель «ПОТОКИ» (клавиша P). Возвращает новое состояние. */
+  /**
+   * Показать/скрыть панель «ПОТОКИ» (клавиша P на десктопе, вкладка под
+   * панелью лучом в VR). Возвращает новое состояние.
+   */
   toggleStreamsPanel(): boolean;
   isStreamsPanelVisible(): boolean;
   /**
@@ -609,6 +613,12 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
           applyMenuChoice(menuTopic);
           return;
         }
+        // Вкладка «ПОТОКИ»: показать/скрыть панель лучом (в VR нет клавиши P).
+        if (id === STREAMS_TAB_TARGET_ID) {
+          toggleStreamsPanel();
+          refreshHighlights();
+          return;
+        }
         // Клик по кнопке панели супервизора (R14): маршрутизируем в
         // callback, который установлен через `onSupervisorAction`.
         // issue #3150: кнопки панели «ПОТОКИ» (prefix `str:`).
@@ -689,6 +699,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // перерегистрируются при каждой пересборке хит-мешей.
   const streamsPanel = createStreamsPanel();
   scene.add(streamsPanel.object);
+  // Вкладка «ПОТОКИ» под панелью — единственный способ скрыть/показать
+  // панель в VR (клавиатуры там нет). Видна и кликается всегда.
+  scene.add(streamsPanel.tab);
+  pointer.addTarget({ id: STREAMS_TAB_TARGET_ID, object: streamsPanel.tab, draggable: false });
   let streamsTargetIds: string[] = [];
   function renderStreams(view: SubscriptionsView): void {
     if (!streamsPanel.render(view)) return;
@@ -1354,8 +1368,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   function toggleStreamsPanel(): boolean {
-    streamsPanel.object.visible = !streamsPanel.object.visible;
-    return streamsPanel.object.visible;
+    streamsPanel.setVisible(!streamsPanel.isVisible());
+    return streamsPanel.isVisible();
   }
 
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
@@ -1564,7 +1578,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     streamsPanel,
     renderStreams,
     toggleStreamsPanel,
-    isStreamsPanelVisible: () => streamsPanel.object.visible,
+    isStreamsPanelVisible: () => streamsPanel.isVisible(),
     setVideoPlaceholder,
     tars1Panel,
     tars2Panel,

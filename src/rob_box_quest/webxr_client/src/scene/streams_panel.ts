@@ -36,6 +36,25 @@ export const STREAMS_PANEL_H_M = (STREAMS_PANEL_W_M * CANVAS_H) / CANVAS_W;
 /** Префикс id кнопок панели в PointerSystem. */
 export const STREAMS_TARGET_PREFIX = "str:";
 
+/**
+ * Вкладка-ярлык «ПОТОКИ» под панелью: показать/скрыть панель лучом в VR
+ * (на десктопе то же делает клавиша P). Живёт ВНЕ группы панели — видна и
+ * кликается, когда панель скрыта. Не начинается с `str:`: это не кнопка
+ * панели, parseStreamsTargetId её не разбирает.
+ */
+export const STREAMS_TAB_TARGET_ID = "strtab:toggle";
+export const STREAMS_TAB_W_M = 0.5;
+export const STREAMS_TAB_H_M = 0.12;
+/** Зазор между низом панели и вкладкой, м. */
+const STREAMS_TAB_GAP_M = 0.06;
+/** Центр вкладки по высоте: под нижней кромкой панели. */
+export const STREAMS_TAB_Y_M = STREAMS_PANEL_Y_M - STREAMS_PANEL_H_M / 2 - STREAMS_TAB_GAP_M - STREAMS_TAB_H_M / 2;
+
+/** Подпись вкладки. Чистая функция: говорит, что сделает клик. */
+export function streamsTabLabel(panelVisible: boolean): string {
+  return panelVisible ? "СКРЫТЬ ПОТОКИ" : "ПОКАЗАТЬ ПОТОКИ";
+}
+
 export type StreamsAction =
   | { kind: "profile"; profile: ProfileId }
   | { kind: "toggle"; topic: string }
@@ -122,6 +141,10 @@ export interface StreamsPanelTarget {
 
 export interface StreamsPanelHandle {
   object: THREE.Group;
+  /** Вкладка-ярлык (добавляется в сцену отдельно, цель STREAMS_TAB_TARGET_ID). */
+  tab: THREE.Mesh;
+  setVisible(visible: boolean): void;
+  isVisible(): boolean;
   targets(): StreamsPanelTarget[];
   /**
    * Перерисовать. Если набор потоков изменился, хит-меши пересобираются и
@@ -163,6 +186,49 @@ export function createStreamsPanel(): StreamsPanelHandle {
   );
   mesh.renderOrder = 15;
   group.add(mesh);
+
+  // ── Вкладка-ярлык ──
+  const tabCanvas = document.createElement("canvas");
+  tabCanvas.width = 512;
+  tabCanvas.height = Math.round((512 * STREAMS_TAB_H_M) / STREAMS_TAB_W_M);
+  const tabCtx = tabCanvas.getContext("2d");
+  const tabTexture = new THREE.CanvasTexture(tabCanvas);
+  tabTexture.minFilter = THREE.LinearFilter;
+  tabTexture.magFilter = THREE.LinearFilter;
+  const tab = new THREE.Mesh(
+    new THREE.PlaneGeometry(STREAMS_TAB_W_M, STREAMS_TAB_H_M),
+    new THREE.MeshBasicMaterial({ map: tabTexture, transparent: true, depthTest: false })
+  );
+  tab.renderOrder = 16;
+  tab.position.set(geom.position.x, STREAMS_TAB_Y_M, geom.position.z);
+  tab.rotation.y = group.rotation.y;
+
+  function drawTab(): void {
+    if (!tabCtx) return;
+    const w = tabCanvas.width;
+    const h = tabCanvas.height;
+    const open = group.visible;
+    tabCtx.clearRect(0, 0, w, h);
+    tabCtx.fillStyle = open ? COLORS.panel : "rgba(10, 40, 30, 0.92)";
+    tabCtx.fillRect(0, 0, w, h);
+    tabCtx.strokeStyle = COLORS.accent;
+    tabCtx.lineWidth = 4;
+    tabCtx.strokeRect(2, 2, w - 4, h - 4);
+    tabCtx.fillStyle = open ? COLORS.text : COLORS.accent;
+    const label = streamsTabLabel(open);
+    let px = Math.floor(h * 0.5);
+    tabCtx.font = `bold ${px}px monospace`;
+    const tw = tabCtx.measureText(label).width;
+    if (tw > w - 32 && tw > 0) {
+      px = Math.max(14, Math.floor((px * (w - 32)) / tw));
+      tabCtx.font = `bold ${px}px monospace`;
+    }
+    tabCtx.textAlign = "center";
+    tabCtx.textBaseline = "middle";
+    tabCtx.fillText(label, w / 2, h / 2 + 2);
+    tabTexture.needsUpdate = true;
+  }
+  drawTab();
 
   const hitMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthTest: false });
   const hitMeshes = new Map<string, THREE.Mesh>();
@@ -240,6 +306,12 @@ export function createStreamsPanel(): StreamsPanelHandle {
 
   return {
     object: group,
+    tab,
+    setVisible(visible: boolean): void {
+      group.visible = visible;
+      drawTab();
+    },
+    isVisible: () => group.visible,
     targets() {
       return [...hitMeshes.entries()].map(([id, object]) => ({ id, object }));
     },
@@ -248,6 +320,9 @@ export function createStreamsPanel(): StreamsPanelHandle {
       for (const m of hitMeshes.values()) m.geometry.dispose();
       hitMat.dispose();
       texture.dispose();
+      tabTexture.dispose();
+      tab.geometry.dispose();
+      (tab.material as THREE.Material).dispose();
       (mesh.material as THREE.Material).dispose();
       mesh.geometry.dispose();
     }

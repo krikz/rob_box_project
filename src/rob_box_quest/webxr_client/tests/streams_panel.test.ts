@@ -11,8 +11,14 @@ import {
   formatKbps,
   formatRate,
   parseStreamsTargetId,
+  streamsTabLabel,
   streamsTargetId,
-  STREAMS_PANEL_ANGLE_DEG
+  STREAMS_PANEL_ANGLE_DEG,
+  STREAMS_PANEL_H_M,
+  STREAMS_PANEL_Y_M,
+  STREAMS_TAB_H_M,
+  STREAMS_TAB_TARGET_ID,
+  STREAMS_TAB_Y_M
 } from "../src/scene/streams_panel";
 import {
   SUPERVISOR_PANEL_ANGLE_DEG,
@@ -29,6 +35,7 @@ beforeAll(() => {
     fillRect: () => {},
     fillText: () => {},
     clearRect: () => {},
+    strokeRect: () => {},
     measureText: (t: string) => ({ width: t.length * 7 })
   } as unknown as CanvasRenderingContext2D;
   HTMLCanvasElement.prototype.getContext = function () {
@@ -80,10 +87,10 @@ describe("layout", () => {
     expect(l.rows[0].toggle.y).toBeGreaterThan(l.profiles[0].rect.y + l.profiles[0].rect.h);
   });
 
-  it("sits on the right flank, clear of the pipeline and supervisor panels", () => {
+  it("sits on the right flank, mirrored to supervisor, away from the pipeline", () => {
     expect(STREAMS_PANEL_ANGLE_DEG).toBe(-SUPERVISOR_PANEL_ANGLE_DEG);
-    // 0.95 м на радиусе 2.4 м ≈ ±11.3° — между панелями больше 22.6°
-    expect(STREAMS_PANEL_ANGLE_DEG - VOICE_PIPELINE_ANGLE_DEG).toBeGreaterThan(23);
+    // «ГОЛОС» — на другом фланге (слева), «ПОТОКИ» — справа.
+    expect(Math.sign(STREAMS_PANEL_ANGLE_DEG)).not.toBe(Math.sign(VOICE_PIPELINE_ANGLE_DEG));
     const g = panelGeometry(STREAMS_PANEL_ANGLE_DEG, 2.4, 1.45);
     expect(g.position.x).toBeGreaterThan(0);
     // facing — к оператору (в центр)
@@ -125,6 +132,41 @@ describe("createStreamsPanel", () => {
     expect(p.render(view(["camera_rear", "lidar_2d"]))).toBe(false);
     expect(p.render(view(["camera_front", "lidar_2d"]))).toBe(true);
     expect(p.targets().map((t) => t.id)).toContain("str:toggle:camera_front");
+    p.dispose();
+  });
+});
+
+describe("streams tab (VR toggle, #3150 хвост)", () => {
+  it("tab id is not parsed as a panel button", () => {
+    expect(parseStreamsTargetId(STREAMS_TAB_TARGET_ID)).toBeNull();
+  });
+
+  it("hangs just below the panel, within ray reach", () => {
+    const panelBottom = STREAMS_PANEL_Y_M - STREAMS_PANEL_H_M / 2;
+    expect(STREAMS_TAB_Y_M + STREAMS_TAB_H_M / 2).toBeLessThan(panelBottom);
+    expect(STREAMS_TAB_Y_M).toBeGreaterThan(0.5);
+  });
+
+  it("label says what the click will do", () => {
+    expect(streamsTabLabel(true)).toMatch(/скрыть/i);
+    expect(streamsTabLabel(false)).toMatch(/показать/i);
+  });
+
+  it("setVisible hides the panel but the tab stays outside its group", () => {
+    const p = createStreamsPanel();
+    expect(p.isVisible()).toBe(true);
+    p.setVisible(false);
+    expect(p.isVisible()).toBe(false);
+    expect(p.object.visible).toBe(false);
+    // Вкладка — не потомок группы панели: скрытая панель её не прячет.
+    let inside = false;
+    p.object.traverse((o) => {
+      if (o === p.tab) inside = true;
+    });
+    expect(inside).toBe(false);
+    expect(p.tab.visible).toBe(true);
+    p.setVisible(true);
+    expect(p.object.visible).toBe(true);
     p.dispose();
   });
 });
