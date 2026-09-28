@@ -407,7 +407,10 @@ export class MockRobot {
 
   mode(): string {
     if (this.isEmergency()) return "emergency_stop";
-    if (Math.abs(this.state.v) > 0.01 || Math.abs(this.state.w) > 0.01) return "teleop";
+    const moving = Math.abs(this.state.v) > 0.01 || Math.abs(this.state.w) > 0.01;
+    // Едет Nav2, а не оператор — как у сервера (quest_node: teleop_active
+    // только от телеопа), это не «teleop».
+    if (moving && (this.teleopOverridesNav() || !this.nav.activeGoal())) return "teleop";
     return "idle";
   }
 
