@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Optional
 
+from .core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
 from .utils.stderr_silence import ignore_stderr
@@ -154,9 +155,16 @@ class AudioNode(Node):
         # /voice/tts/state — "synthesizing"/"playing" пока робот говорит,
         # "ready"/"idle" после. Используем для grace period (Fix B).
         self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
-        # /voice/music/state — "playing"/"idle" от mcp_server (Fix C): при
-        # активной музыке поднимаем порог VAD, чтобы бит не триггерил речь.
-        self.create_subscription(String, '/voice/music/state', self._on_music_state, 10)
+        # /voice/music/state — снимок плеера от mcp_server (Fix C, с #3133 —
+        # JSON, ADR-0141): при активной музыке поднимаем порог VAD, чтобы бит
+        # не триггерил речь. Latched (TRANSIENT_LOCAL, depth 1) как у
+        # публикатора: после рестарта сразу знаем, играет ли музыка.
+        music_state_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, music_state_qos)
 
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
@@ -879,9 +887,13 @@ class AudioNode(Node):
         (Ch1 в 6-канальном режиме). Аппаратный VAD остаётся на дефолтном
         уровне; музыкальный фон уже подавлен AEC.
         """
-        state = (msg.data or "").strip()
+        # Issue #3133: payload — JSON-снимок плеера (ADR-0141); парсер
+        # понимает и старую плоскую строку. Мусор состояние не трогает.
+        snapshot = parse_music_state(msg.data)
+        if snapshot is None:
+            return
         was_active = self.music_active
-        self.music_active = state == "playing"
+        self.music_active = snapshot.is_playing()
         if self.music_active == was_active:
             return
         if self.music_active:

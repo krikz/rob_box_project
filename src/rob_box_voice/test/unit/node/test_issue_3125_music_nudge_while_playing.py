@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from rob_box_voice.core.music_guard import MusicGuard
+from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 
 _DJ_WRAPPER = (
@@ -46,7 +47,8 @@ def _make_node(*, playing: bool, budget_left: bool = False):
     n._dj = MagicMock()
     n._dj.state.enabled = False
     n._retry_dispatched_in_turn = False
-    n._track_mode_music_active = playing
+    # Issue #3133: «играет» — только снимок плеера (/voice/music/state).
+    n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
     n._consume_synthetic_retry = MagicMock(return_value=budget_left)
     n._discard_last_music_reply = MagicMock()
     n._speak_direct = MagicMock()
