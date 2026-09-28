@@ -549,3 +549,71 @@ describe("Connection JSON_EVENT relay: TARS1/TARS2 (issue #2113)", () => {
     });
   });
 });
+
+describe("Connection subscribe max_hz (issue #3150)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  async function connectPair(): Promise<{ conn: Connection; client: FakeWebSocket; server: FakeWebSocket }> {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      pingIntervalMs: 100_000,
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    server.send(
+      encodeJsonFrame(FrameType.WELCOME, 0, { server_version: "0.1.0", session_id: "s", server_time_ms: 1 }) as unknown as ArrayBuffer
+    );
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(r)));
+    const ws = conn._peekWs() as unknown as { readyState: number } | null;
+    if (ws) ws.readyState = 1;
+    return { conn, client, server };
+  }
+
+  function subscribeFrames(client: FakeWebSocket): Array<Record<string, unknown>> {
+    return client.sentFrames
+      .map((b) => decodeFrame(b))
+      .filter((f) => f.type === FrameType.SUBSCRIBE)
+      .map((f) => JSON.parse(new TextDecoder().decode(f.payload)) as Record<string, unknown>);
+  }
+
+  async function ack(server: FakeWebSocket, topic: string, streamId: number): Promise<void> {
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, { type: "subscribe_ack", topic, stream_id: streamId, quality: "med" }) as unknown as ArrayBuffer
+    );
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(r)));
+  }
+
+  it("sends max_hz, resends only when the rate changes", async () => {
+    const { conn, client, server } = await connectPair();
+    conn.subscribe("lidar_2d", undefined, { maxHz: 5 });
+    await ack(server, "lidar_2d", 0x1001);
+    conn.subscribe("lidar_2d", undefined, { maxHz: 5 }); // та же частота — тишина
+    conn.subscribe("lidar_2d"); // частота не важна — тишина
+    conn.subscribe("lidar_2d", undefined, { maxHz: 2 });
+    conn.subscribe("lidar_2d", undefined, { maxHz: null }); // снять лимит
+    expect(subscribeFrames(client)).toEqual([
+      { topic: "lidar_2d", max_hz: 5 },
+      { topic: "lidar_2d", max_hz: 2 },
+      { topic: "lidar_2d" }
+    ]);
+  });
+
+  it("plain subscribe() keeps the old idempotent behaviour", async () => {
+    const { conn, client, server } = await connectPair();
+    conn.subscribe("camera_rear", "med");
+    await ack(server, "camera_rear", 0x1002);
+    conn.subscribe("camera_rear", "med");
+    expect(subscribeFrames(client)).toEqual([{ topic: "camera_rear", quality: "med" }]);
+  });
+});
