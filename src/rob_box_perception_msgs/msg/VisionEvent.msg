@@ -1,5 +1,8 @@
 # VisionEvent.msg — Single AI HAT+ inference event
 #
+# DEPRECATED с ADR-0130 (v2.0); замена — Observation.msg (ADR-0138).
+# Поля не меняются, пока потребители не мигрируют (ADR-0130 §2.14).
+#
 # One message = one detection (face, object, person, gesture).
 # Published by vision_hailo_node on /vision/hailo/events.
 # Aggregated by context_aggregator_node into PerceptionEvent.vision_events_json.

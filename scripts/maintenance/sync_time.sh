@@ -2,6 +2,13 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # 🔧 Синхронизация системного времени (NTP)
 # ═══════════════════════════════════════════════════════════════════════════
+# ⚠️  УСТАРЕЛ с ADR-0137: время двух Pi ведёт chrony —
+#     scripts/maintenance/setup_chrony.sh --role main|vision.
+#     Этот скрипт оставлен для Pi, где chrony ещё не поставлен (его зовёт
+#     L-Deploy and Verify на каждом деплое). Если chrony активен — timesyncd
+#     НЕ трогается (два демона времени — конфликт), выполняется только
+#     `setup_chrony.sh --check`.
+#
 # Лечит рассинхронизацию часов между Pi, из-за которой zenoh-router режет
 # входящие данные ("Error treating timestamp ... exceeding delta 500ms is
 # rejected") и деплой-воркфлоу создаёт ложные critical issue.
@@ -37,6 +44,13 @@ log_error() { echo -e "${RED}[sync_time]${NC} $*"; }
 
 CHECK_ONLY=false
 [ "${1:-}" = "--check" ] && CHECK_ONLY=true
+
+# ── ADR-0137: chrony уже ведёт время → только проверка через setup_chrony.sh ─
+if systemctl is-active --quiet chrony 2>/dev/null; then
+    log_warn "sync_time.sh устарел (ADR-0137): время ведёт chrony, timesyncd не трогаю."
+    log_warn "Проверка: setup_chrony.sh --check"
+    exec bash "$(dirname "$0")/setup_chrony.sh" --check
+fi
 
 # ── Проверка прав ────────────────────────────────────────────────────────────
 if [ "$(id -u)" -ne 0 ]; then
@@ -96,7 +110,7 @@ systemctl restart systemd-timesyncd || log_warn "Не удалось перез�
 
 log_info "Ожидаем синхронизацию (до ${SYNC_TIMEOUT_SEC}с)..."
 SYNCED=false
-for i in $(seq 1 "$SYNC_TIMEOUT_SEC"); do
+for _ in $(seq 1 "$SYNC_TIMEOUT_SEC"); do
     if timedatectl 2>/dev/null | grep -q "System clock synchronized: yes"; then
         SYNCED=true
         break

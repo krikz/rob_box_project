@@ -5,7 +5,10 @@
 - выбор ROS-топика и типа сообщения (CompressedImage vs Image),
 - JPEG/PNG декодирование,
 - BGR → RGB (YOLOv8n HEF обучен на RGB; cv2.imdecode отдаёт BGR),
-- метаданные кадра (frame_id, stamp, source_name).
+- метаданные кадра (frame_id, stamp, source_name),
+- выровненную глубину + intrinsics RGB-камеры, синхронизированные с кадром
+  по stamp (ADR-0138, этап 1 ADR-0130). Нет глубины — честный статус в
+  ``Frame.depth_status``, а не молчаливые нули.
 
 Архитектура:
     +-------------------+       +-------------------+
@@ -50,12 +53,29 @@ Touchpoints:
 
 from __future__ import annotations
 
+import collections
+import dataclasses
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional, Protocol, Tuple
+from dataclasses import dataclass
+from typing import Any, Iterator, Optional, Protocol, Sequence, Tuple
+
+from rob_box_perception.observation_geometry import (
+    STATUS_CAMERA_INFO_SIZE_MISMATCH,
+    STATUS_DEPTH_ENCODING_UNSUPPORTED,
+    STATUS_DEPTH_OUT_OF_SYNC,
+    STATUS_DEPTH_SIZE_MISMATCH,
+    STATUS_NO_CAMERA_INFO,
+    STATUS_NO_DEPTH_STREAM,
+    STATUS_OK,
+)
 
 _LOG = logging.getLogger(__name__)
+
+#: Допуск синхронизации depth ↔ RGB по stamp, с (ADR-0138). При 5 fps
+#: соседние кадры идут через 0.2 с — 0.15 с отделяет «тот же кадр» от
+#: «соседнего». На роботе не замерено.
+DEFAULT_DEPTH_SYNC_TOLERANCE_SEC = 0.15
 
 
 # ============================================================================
@@ -84,7 +104,15 @@ class Frame:
             ``oak-d`` или ``ceiling_camera_optical_frame``).
         stamp: ``header.stamp`` как float seconds (ros Time → sec.nanoseconds).
         source_name: имя адаптера (``"oak_d"``, ``"ceiling_camera"``) —
-            пробрасывается в VisionEvent.source_camera.
+            пробрасывается в Observation.source.
+        depth_mm: HxW uint16 numpy.ndarray, глубина в мм (0 = нет данных),
+            выровненная по RGB (тот же размер), ближайшая по stamp; или
+            None (ADR-0138).
+        intrinsics: (fx, fy, cx, cy) RGB-камеры в пикселях этого кадра из
+            camera_info; или None.
+        depth_status: ``ok`` только когда есть и глубина, и intrinsics,
+            согласованные с кадром; иначе причина из
+            ``observation_geometry.STATUS_*`` (capability-honest).
     """
 
     rgb: Any  # numpy.ndarray — ленивый import numpy, чтобы модуль
@@ -97,6 +125,9 @@ class Frame:
     frame_id: str
     stamp: float
     source_name: str
+    depth_mm: Any = None
+    intrinsics: Optional[Tuple[float, float, float, float]] = None
+    depth_status: str = STATUS_NO_DEPTH_STREAM
 
     def as_letterbox(self, input_w: int, input_h: int) -> Any:
         """Привести Frame к letterbox-тензору input_w×input_h (NHWC uint8).
@@ -288,6 +319,59 @@ def _ros_stamp_to_float(stamp: Any) -> float:
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
 
+def select_nearest_by_stamp(
+    items: Sequence[Tuple[float, Any]],
+    stamp: float,
+    tolerance_sec: float,
+) -> Tuple[Optional[Any], Optional[float]]:
+    """Ближайший по stamp элемент ``(stamp, item)`` в пределах допуска.
+
+    Returns:
+        (item, |dt|) — если ближайший в допуске; (None, |dt|) — если
+        ближайший дальше допуска; (None, None) — если ``items`` пуст.
+    """
+    best = None
+    best_dt = None
+    for item_stamp, item in items:
+        dt = abs(float(item_stamp) - float(stamp))
+        if best_dt is None or dt < best_dt:
+            best, best_dt = item, dt
+    if best_dt is None:
+        return None, None
+    if best_dt > tolerance_sec:
+        return None, best_dt
+    return best, best_dt
+
+
+def _decode_depth_msg(msg: Any) -> Tuple[Optional[Any], str]:
+    """sensor_msgs/Image (16UC1 | mono16, мм) → (HxW uint16 ndarray, статус)."""
+    if msg.encoding not in ('16UC1', 'mono16'):
+        return None, STATUS_DEPTH_ENCODING_UNSUPPORTED
+    import numpy as np  # type: ignore[import-not-found]
+
+    h, w = int(msg.height), int(msg.width)
+    step = int(msg.step) or w * 2
+    dtype = np.dtype('>u2' if msg.is_bigendian else '<u2')
+    arr = np.frombuffer(bytes(msg.data), dtype=dtype)
+    if step % 2 or arr.size < h * (step // 2):
+        return None, STATUS_DEPTH_ENCODING_UNSUPPORTED
+    depth = arr[:h * (step // 2)].reshape((h, step // 2))[:, :w]
+    return depth.astype(np.uint16, copy=False), STATUS_OK
+
+
+def _intrinsics_from_camera_info(
+    msg: Any,
+) -> Optional[Tuple[float, float, float, float, int, int]]:
+    """sensor_msgs/CameraInfo → (fx, fy, cx, cy, width, height) или None."""
+    k = list(getattr(msg, 'k', None) or [])
+    if len(k) != 9 or float(k[0]) <= 0.0 or float(k[4]) <= 0.0:
+        return None
+    return (
+        float(k[0]), float(k[4]), float(k[2]), float(k[5]),
+        int(msg.width), int(msg.height),
+    )
+
+
 # ============================================================================
 # OakDSource — реальный адаптер для OAK-D (ros2 topic: /camera/camera/color/image_raw)
 # ============================================================================
@@ -303,18 +387,47 @@ class OakDSource:
 
     Если камера выключена или launch не поднял ноду — ``wait_for_first_frame``
     бросает :class:`GazeSourceUnavailable` (capability-honest).
+
+    Глубина (ADR-0138): дополнительно подписывается на выровненную по RGB
+    глубину ``depth_topic`` (16UC1, мм; ``i_align_depth: true``) и на
+    ``camera_info_topic`` RGB-камеры. К кадру прикладывается depth,
+    ближайший по stamp в пределах ``depth_sync_tolerance_sec``; иначе
+    ``Frame.depth_status`` говорит почему глубины нет. Depth-кадр может
+    прийти позже RGB — тогда связывание повторяется при его приходе.
+    TF здесь не используется: наблюдения уезжают в optical frame,
+    в base_link/map переводит трекер на Main Pi (ADR-0130 §2.11).
     """
 
     source_name = 'oak_d'
     topic = '/camera/camera/color/image_raw'
+    depth_topic = '/camera/camera/depth/image_rect_raw'
+    camera_info_topic = '/camera/camera/color/camera_info'
+    #: Сколько последних depth-сообщений держать для поиска по stamp.
+    _DEPTH_BUFFER_LEN = 8
 
-    def __init__(self, node: Any) -> None:
-        """Args:
+    def __init__(
+        self,
+        node: Any,
+        depth_enabled: bool = True,
+        depth_sync_tolerance_sec: float = DEFAULT_DEPTH_SYNC_TOLERANCE_SEC,
+    ) -> None:
+        """Подписаться на RGB и (если ``depth_enabled``) на глубину OAK-D.
+
+        Args:
             node: rclpy.node.Node — нужен для ``create_subscription`` и логов.
+            depth_enabled: подписываться ли на depth + camera_info.
+                False → все кадры с ``depth_status=no_depth_stream``.
+            depth_sync_tolerance_sec: допуск |stamp_rgb − stamp_depth|.
         """
         self._node = node
         self._latest: Optional[Frame] = None
         self._stopped = False
+        self._depth_enabled = bool(depth_enabled)
+        self._depth_sync_tolerance_sec = float(depth_sync_tolerance_sec)
+        self._depth_buffer: Any = collections.deque(maxlen=self._DEPTH_BUFFER_LEN)
+        self._camera_info: Optional[Tuple[float, float, float, float, int, int]] = None
+        self._depth_sub = None
+        self._info_sub = None
 
         from sensor_msgs.msg import Image  # type: ignore
         self._msg_type = Image
@@ -327,6 +440,24 @@ class OakDSource:
         self._node.get_logger().info(
             f'[{self.source_name}] subscribed to {self.topic} (sensor_msgs/Image)'
         )
+        if self._depth_enabled:
+            from sensor_msgs.msg import CameraInfo  # type: ignore
+            self._depth_sub = self._node.create_subscription(
+                Image, self.depth_topic, self._on_depth, 10,
+            )
+            self._info_sub = self._node.create_subscription(
+                CameraInfo, self.camera_info_topic, self._on_camera_info, 10,
+            )
+            self._node.get_logger().info(
+                f'[{self.source_name}] depth: {self.depth_topic} + '
+                f'{self.camera_info_topic}, sync tolerance '
+                f'{self._depth_sync_tolerance_sec:.3f}s'
+            )
+        else:
+            self._node.get_logger().warning(
+                f'[{self.source_name}] depth disabled (depth_enabled=false) — '
+                f'наблюдения без 3D, position_status={STATUS_NO_DEPTH_STREAM}'
+            )
 
     def _on_msg(self, msg: Any) -> None:
         if self._stopped:
@@ -334,7 +465,7 @@ class OakDSource:
         rgb = _decode_image_msg_to_rgb(msg)
         if rgb is None:
             return
-        self._latest = Frame(
+        self._latest = self._attach_depth(Frame(
             rgb=rgb,
             scale=1.0,
             pad_left=0,
@@ -344,6 +475,53 @@ class OakDSource:
             frame_id=str(getattr(msg.header, 'frame_id', '') or 'unknown'),
             stamp=_ros_stamp_to_float(msg.header.stamp),
             source_name=self.source_name,
+        ))
+
+    def _on_depth(self, msg: Any) -> None:
+        if self._stopped:
+            return
+        self._depth_buffer.append((_ros_stamp_to_float(msg.header.stamp), msg))
+        # Depth мог прийти позже своего RGB-кадра — повторить связывание.
+        # Только для «ещё не нашли пару»: остальные статусы новым depth-
+        # сообщением не лечатся, а декод 1280x720 стоит CPU.
+        latest = self._latest
+        if latest is not None and latest.depth_status in (
+            STATUS_NO_DEPTH_STREAM, STATUS_DEPTH_OUT_OF_SYNC,
+        ):
+            self._latest = self._attach_depth(latest)
+
+    def _on_camera_info(self, msg: Any) -> None:
+        if self._stopped:
+            return
+        self._camera_info = _intrinsics_from_camera_info(msg)
+
+    def _attach_depth(self, frame: Frame) -> Frame:
+        """Вернуть копию кадра с ближайшей по stamp глубиной и статусом."""
+        depth_mm = None
+        intrinsics = None
+        depth_msg, _dt = select_nearest_by_stamp(
+            self._depth_buffer, frame.stamp, self._depth_sync_tolerance_sec,
+        )
+        if not self._depth_buffer:
+            status = STATUS_NO_DEPTH_STREAM
+        elif depth_msg is None:
+            status = STATUS_DEPTH_OUT_OF_SYNC
+        else:
+            depth_mm, status = _decode_depth_msg(depth_msg)
+            if depth_mm is not None and depth_mm.shape[:2] != (
+                frame.original_h, frame.original_w,
+            ):
+                depth_mm, status = None, STATUS_DEPTH_SIZE_MISMATCH
+        if status == STATUS_OK:
+            info = self._camera_info
+            if info is None:
+                status = STATUS_NO_CAMERA_INFO
+            elif (info[4], info[5]) != (frame.original_w, frame.original_h):
+                status = STATUS_CAMERA_INFO_SIZE_MISMATCH
+            else:
+                intrinsics = info[:4]
+        return dataclasses.replace(
+            frame, depth_mm=depth_mm, intrinsics=intrinsics, depth_status=status,
         )
 
     def poll_latest(self) -> Optional[Frame]:
@@ -371,10 +549,13 @@ class OakDSource:
 
     def stop(self) -> None:
         self._stopped = True
-        try:
-            self._node.destroy_subscription(self._sub)
-        except Exception:  # noqa: BLE001
-            pass
+        for sub in (self._sub, self._depth_sub, self._info_sub):
+            if sub is None:
+                continue
+            try:
+                self._node.destroy_subscription(sub)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ============================================================================
@@ -387,6 +568,8 @@ class CeilingCameraSource:
     Topic:   ``/ceiling_camera/image_raw/compressed`` (msg=sensor_msgs/CompressedImage).
     Используется существующими потребителями (``quest_node.py:2151``,
     ``telegram_node.py:107``), это второй живой сценарий адаптера Взгляда.
+
+    Глубины нет: ``Frame.depth_status=no_depth_stream`` (ADR-0138).
 
     Не используется в production-vision_hailo немедленно — добавляется
     как второй адаптер, чтобы шов «Взгляд» был настоящим (issue #2531
@@ -464,6 +647,8 @@ class CeilingCameraSource:
 class StubSource:
     """Заглушка, отдающая синтетический кадр каждые ``period_sec``.
 
+    Глубины нет: ``Frame.depth_status=no_depth_stream`` (ADR-0138).
+
     Используется:
     - в unit-тестах (без rclpy и без cv2 — Frame.rgb может быть пустым).
     - в CI smoke-тестах, когда нет ни OAK-D, ни потолочной камеры.
@@ -540,6 +725,8 @@ def make_source(
     name: str,
     node: Any,
     timeout_sec: float = 5.0,
+    depth_enabled: bool = True,
+    depth_sync_tolerance_sec: float = DEFAULT_DEPTH_SYNC_TOLERANCE_SEC,
 ) -> FrameSource:
     """Сконструировать FrameSource по имени и дождаться первого кадра.
 
@@ -548,6 +735,8 @@ def make_source(
         node: rclpy.node.Node — нужен адаптерам, использующим ROS.
         timeout_sec: сколько секунд ждать первый кадр от реального
             источника перед тем как бросить :class:`GazeSourceUnavailable`.
+        depth_enabled / depth_sync_tolerance_sec: глубина для ``oak_d``
+            (ADR-0138); остальные источники глубины не имеют.
 
     Raises:
         ValueError: если ``name`` не из списка ``_KNOWN_SOURCES``.
@@ -560,7 +749,11 @@ def make_source(
         )
 
     if name == 'oak_d':
-        src: FrameSource = OakDSource(node)
+        src: FrameSource = OakDSource(
+            node,
+            depth_enabled=depth_enabled,
+            depth_sync_tolerance_sec=depth_sync_tolerance_sec,
+        )
     elif name == 'ceiling_camera':
         src = CeilingCameraSource(node)
     else:

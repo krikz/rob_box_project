@@ -46,6 +46,8 @@ def emit(k, v):
 for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'confidence_threshold', 'nms_iou_threshold', 'gaze_source',
             'first_frame_timeout_sec', 'output_topic',
+            # ADR-0138: Observation + глубина OAK-D.
+            'observation_topic', 'depth_enabled', 'depth_sync_tolerance_sec',
             # ArcFace-узнавание + FaceStore (ADR-0123, issue #2599 PR-B).
             # Тот же приём "ENV override wins", ключи YAML совпадают с
             # именами контейнерных ENV после .upper() — см. compose (ARCFACE_*,
@@ -85,6 +87,10 @@ NMS_IOU_THRESHOLD="${NMS_IOU_THRESHOLD:-0.45}"
 GAZE_SOURCE="${GAZE_SOURCE:-oak_d}"
 FIRST_FRAME_TIMEOUT_SEC="${FIRST_FRAME_TIMEOUT_SEC:-10.0}"
 OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
+# ADR-0138: Observation + глубина OAK-D (дефолты = hailo_models.yaml).
+OBSERVATION_TOPIC="${OBSERVATION_TOPIC:-/perception/observations}"
+DEPTH_ENABLED="${DEPTH_ENABLED:-true}"
+DEPTH_SYNC_TOLERANCE_SEC="${DEPTH_SYNC_TOLERANCE_SEC:-0.15}"
 
 # ArcFace-узнавание + FaceStore (ADR-0123, issue #2599 PR-B). Дефолты те же,
 # что в docker/vision/config/hailo_models.yaml — держим на случай, если ни
@@ -169,6 +175,9 @@ LAUNCH_ARGS=(
     gaze_source:=${GAZE_SOURCE}
     first_frame_timeout_sec:=${FIRST_FRAME_TIMEOUT_SEC}
     output_topic:=${OUTPUT_TOPIC}
+    observation_topic:=${OBSERVATION_TOPIC}
+    depth_enabled:=${DEPTH_ENABLED}
+    depth_sync_tolerance_sec:=${DEPTH_SYNC_TOLERANCE_SEC}
     # ADR-0104 acceptance #5 (issue #2703): в проде обязан быть false —
     # см. тот же комментарий в start_vision_hailo.sh. launch_factory
     # default остаётся 'true' (CI/smoke), сюда не трогать.
