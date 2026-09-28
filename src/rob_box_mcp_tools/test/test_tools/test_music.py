@@ -1702,6 +1702,75 @@ class TestMusicManagerExecuteCode:
         assert "/g_freeAll" not in osc_calls
         assert "/g_new" not in osc_calls
 
+    # ----- gate=0 ramp-down before /g_freeAll (issue #3137) ---------------
+
+    def test_execute_with_clock_clear_sends_gate_zero_before_g_freeAll(self):
+        """execute_code's transition path must NOT send a bare /g_freeAll.
+
+        Issue #3137: a live −180 dBFS window at a track transition was
+        traced to ``execute_code`` sending a naked ``/g_freeAll`` right
+        after ``exec`` — no release ramp, unlike ``stop_all`` (#1000).
+        The fix routes both through ``_ramp_down_group``: ``/n_set -1
+        "gate" 0.0`` (all live nodes) MUST be sent, and it MUST come
+        before ``/g_freeAll``.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append((address, args))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        addresses = [c[0] for c in osc_calls]
+        assert "/n_set" in addresses, (
+            "Expected a gate=0 /n_set ramp-down before /g_freeAll: " + str(osc_calls)
+        )
+        assert addresses.index("/n_set") < addresses.index("/g_freeAll"), (
+            "gate=0 must be sent BEFORE /g_freeAll: " + str(osc_calls)
+        )
+        # The gate=0 message targets ALL nodes (-1), not a specific one.
+        n_set_call = next(c for c in osc_calls if c[0] == "/n_set")
+        assert n_set_call[1] == (-1, "gate", 0.0)
+
+    def test_execute_with_clock_clear_sleeps_between_gate_zero_and_g_freeAll(self):
+        """A release pause MUST sit between gate=0 and /g_freeAll, so the
+        ADSR release actually starts before the nodes are freed —
+        otherwise gate=0 is sent and immediately undone by freeAll,
+        reproducing the original click (issue #3137).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        call_log = []
+
+        def _fake_send(address, *args):
+            call_log.append(("osc", address))
+
+        def _fake_sleep(seconds):
+            call_log.append(("sleep", seconds))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_fake_send
+        ), patch("rob_box_mcp_tools.tools.music.time.sleep", side_effect=_fake_sleep):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        try:
+            idx_gate = next(i for i, c in enumerate(call_log) if c == ("osc", "/n_set"))
+            idx_free = next(
+                i for i, c in enumerate(call_log) if c == ("osc", "/g_freeAll")
+            )
+        except StopIteration:
+            pytest.fail("Expected /n_set and /g_freeAll OSC sends, got: " + str(call_log))
+
+        assert idx_gate < idx_free
+        sleeps_between = [s for s in call_log[idx_gate + 1 : idx_free] if s[0] == "sleep"]
+        assert sleeps_between, (
+            "No release pause between gate=0 and /g_freeAll: " + str(call_log)
+        )
+        assert any(s[1] >= 0.05 for s in sleeps_between)
+
 
 # ---------------------------------------------------------------------------
 # MusicManager.known_synth_names() — live-инцидент 21.09.2026
@@ -2104,6 +2173,29 @@ class TestMusicManagerStop:
             result = mgr.stop_all()
         assert result["success"] is True
         assert len(mgr._active_patterns) == 0
+
+    def test_stop_all_uses_shared_ramp_down_gate_zero_before_g_freeAll(self):
+        """Issue #3137: stop_all's ramp-down now goes through the same
+        ``_ramp_down_group`` helper as execute_code's transition path —
+        gate=0 on all nodes, then /g_freeAll, in that order.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append((address, args))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ):
+            mgr.stop_all()
+
+        addresses = [c[0] for c in osc_calls]
+        assert "/n_set" in addresses
+        assert "/g_freeAll" in addresses
+        assert addresses.index("/n_set") < addresses.index("/g_freeAll")
+        n_set_call = next(c for c in osc_calls if c[0] == "/n_set")
+        assert n_set_call[1] == (-1, "gate", 0.0)
 
 
 # ---------------------------------------------------------------------------
