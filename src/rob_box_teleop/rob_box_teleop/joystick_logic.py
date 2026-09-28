@@ -5,6 +5,8 @@ unit-tested without a ROS2 runtime (mirrors the pattern used by
 rob_box_voice unit tests: mock rclpy, test pure methods).
 """
 
+import json
+
 # SBUS channel value range (ExpressLRS)
 SBUS_MIN = 172
 SBUS_CENTER = 992
@@ -72,3 +74,29 @@ def compute_twist(
     if len(axes) > ch_yaw:
         angular_z = apply_deadzone(axes[ch_yaw], deadzone) * max_angular
     return linear_x, angular_z
+
+
+# tts_node's single synthesis input (ADR-0080 §2.3). The legacy /tts/speak
+# topic this node used to publish on has no subscriber anywhere (issue #3107).
+TTS_REQUEST_TOPIC = "/voice/tts/request"
+
+
+def build_tts_request(text: str) -> str:
+    """Build the ``/voice/tts/request`` JSON payload for a spoken ``text``.
+
+    tts_node drops plain strings (``json.loads`` fails) and chunks without an
+    ``ssml`` field, so the payload mirrors ``rob_box_core.utterance.Utterance
+    .to_request()``: escaped ``<speak>`` SSML, speakers sink, default priority
+    and emotion. The teleop image builds only rob_box_teleop, so the contract
+    is reproduced here instead of importing rob_box_core.
+    """
+    escaped = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return json.dumps(
+        {
+            "ssml": f"<speak>{escaped}</speak>",
+            "sink": "speakers",
+            "priority": "normal",
+            "emotion": "neutral",
+        },
+        ensure_ascii=False,
+    )

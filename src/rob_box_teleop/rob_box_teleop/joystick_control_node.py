@@ -23,7 +23,9 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, String
 
 from rob_box_teleop.joystick_logic import (
+    TTS_REQUEST_TOPIC,
     apply_deadzone,
+    build_tts_request,
     compute_axes,
     compute_buttons,
     compute_twist,
@@ -106,7 +108,7 @@ class JoystickControlNode(Node):
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
-        self.tts_pub = self.create_publisher(String, "/tts/speak", 10)
+        self.tts_pub = self.create_publisher(String, TTS_REQUEST_TOPIC, 10)
         self.joy_pub = self.create_publisher(Joy, "joy", 10)
         # twist_mux lock (std_msgs/Bool): True while armed blocks lower-priority
         # sources (web/voice/nav2). twist_mux is configured with timeout=0.0
@@ -414,9 +416,9 @@ class JoystickControlNode(Node):
         self.cmd_vel_pub.publish(twist)
 
     def speak(self, text: str):
-        """Publish text-to-speech message."""
+        """Publish a spoken reply to tts_node (/voice/tts/request JSON contract)."""
         msg = String()
-        msg.data = text
+        msg.data = build_tts_request(text)
         self.tts_pub.publish(msg)
         self.get_logger().info(f"🗣️  TTS: {text}")
 
