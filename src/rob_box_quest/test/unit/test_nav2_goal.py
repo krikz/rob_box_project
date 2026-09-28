@@ -12,7 +12,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from rob_box_quest.core.nav_goal import NavGoalRequest
-from rob_box_quest.nav2_goal import Nav2GoalBridge, build_navigate_to_pose_goal
+from rob_box_quest.nav2_goal import (
+    NAV2_TIMEOUT_REASON,
+    Nav2GoalBridge,
+    build_navigate_to_pose_goal,
+)
 
 
 class _Future:
@@ -71,7 +75,7 @@ class _Clock:
         return self.t
 
 
-def _make(ready=True):
+def _make(ready=True, result_timeout_s=15.0):
     client = _Client(ready)
     events = []
     terminals = []
@@ -83,6 +87,7 @@ def _make(ready=True):
         on_terminal=lambda: terminals.append(True),
         clock=clock,
         wall_ms=lambda: 123,
+        result_timeout_s=result_timeout_s,
     )
     return bridge, client, events, terminals, clock
 
@@ -197,6 +202,73 @@ def test_emit_failure_does_not_raise():
     bridge = Nav2GoalBridge(client, make_goal=lambda r: r, emit=lambda e: 1 / 0)
     bridge.send_goal(REQ)
     client.sent[0][2].complete(_Handle())  # не должно бросить
+
+
+def test_check_timeout_noop_without_active_goal():
+    bridge, _, events, terminals, clock = _make(result_timeout_s=10.0)
+    clock.t += 999.0
+    bridge.check_timeout()
+    assert events == []
+    assert terminals == []
+
+
+def test_check_timeout_noop_before_deadline():
+    bridge, client, events, _, clock = _make(result_timeout_s=10.0)
+    bridge.send_goal(REQ)
+    client.sent[0][2].complete(_Handle())
+    clock.t += 9.9
+    bridge.check_timeout()
+    assert _states(events) == ["accepted"]
+
+
+def test_check_timeout_aborts_when_accepted_without_feedback():
+    """Nav2 принял цель и умолк — таймер стартует уже с accept."""
+    bridge, client, events, terminals, clock = _make(result_timeout_s=10.0)
+    bridge.send_goal(REQ)
+    handle = _Handle()
+    client.sent[0][2].complete(handle)
+    clock.t += 10.1
+    bridge.check_timeout()
+    assert _states(events) == ["accepted", "aborted"]
+    assert events[-1]["reason"] == NAV2_TIMEOUT_REASON
+    assert handle.cancel_calls == 1
+    assert terminals == [True]
+    assert not bridge.has_active_goal()
+
+
+def test_check_timeout_aborts_when_no_response_at_all():
+    """Nav2 даже не ответил на send_goal — таймер стартует с send."""
+    bridge, client, events, terminals, clock = _make(result_timeout_s=10.0)
+    bridge.send_goal(REQ)
+    clock.t += 10.1
+    bridge.check_timeout()
+    assert _states(events) == ["aborted"]
+    assert events[-1]["reason"] == NAV2_TIMEOUT_REASON
+    assert terminals == [True]
+
+
+def test_feedback_resets_timeout_clock():
+    bridge, client, events, _, clock = _make(result_timeout_s=10.0)
+    bridge.send_goal(REQ)
+    handle = _Handle()
+    fb_cb = client.sent[0][1]
+    client.sent[0][2].complete(handle)
+    clock.t += 9.0
+    fb_cb(SimpleNamespace(feedback=SimpleNamespace(distance_remaining=5.0)))
+    clock.t += 9.0
+    bridge.check_timeout()
+    # 18с с accept, но только 9с с последнего feedback — ещё не пора.
+    assert "aborted" not in _states(events)
+
+
+def test_check_timeout_is_idempotent_after_finish():
+    bridge, client, events, terminals, clock = _make(result_timeout_s=10.0)
+    bridge.send_goal(REQ)
+    clock.t += 10.1
+    bridge.check_timeout()
+    bridge.check_timeout()
+    assert _states(events) == ["aborted"]
+    assert terminals == [True]
 
 
 def test_build_goal_sets_map_frame_and_quaternion():

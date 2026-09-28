@@ -975,7 +975,9 @@ EVENTS: tuple[EventSpec, ...] = (
         server_emitted=True,
         description=(
             "Жизненный цикл nav-цели от Nav2 (#3151), broadcast всем сессиям. "
-            "active — feedback NavigateToPose (≤ 2 Гц, distance_remaining)."
+            "active — feedback NavigateToPose (≤ 2 Гц, distance_remaining). "
+            "aborted{reason:nav2_timeout} — мост не дождался feedback/result "
+            "дольше 15 с (Nav2 умер) и честно оборвал цель сам."
         ),
     ),
     EventSpec(

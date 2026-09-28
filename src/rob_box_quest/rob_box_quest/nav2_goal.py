@@ -55,6 +55,15 @@ NAV2_ACTION_NAME: str = "navigate_to_pose"
 #: nav_status{state:"active"} не чаще раза в столько секунд (≤ 2 Гц):
 #: bt_navigator шлёт feedback на каждом тике BT (bt_loop_duration 10 мс).
 NAV_FEEDBACK_MIN_PERIOD_S: float = 0.5
+#: Честный обрыв «зависшей» цели (#3151): если Nav2 умирает между accept и
+#: result, ``get_result_async()`` future никогда не завершится, и клиент
+#: висит на «ЕДЕТ»/«ПРИНЯТО» вечно. Если с момента последнего прогресса
+#: (send/accept/feedback) не было вестей столько секунд — честно aborted.
+#: Покрывает и «accepted без единого feedback» — таймер стартует уже с
+#: send_goal.
+NAV2_RESULT_TIMEOUT_S: float = 15.0
+#: nav_status{state:"aborted", reason:...} при срабатывании таймаута выше.
+NAV2_TIMEOUT_REASON: str = "nav2_timeout"
 
 
 @dataclass
@@ -63,6 +72,9 @@ class _ActiveGoal:
     token: int
     handle: Any = None
     cancel_requested: bool = False
+    #: monotonic-время последнего прогресса (send/accept/feedback) — основа
+    #: для check_timeout().
+    last_progress_at: float = 0.0
 
 
 class Nav2GoalBridge:
@@ -77,6 +89,7 @@ class Nav2GoalBridge:
         on_terminal: Optional[Callable[[], None]] = None,
         clock: Callable[[], float] = time.monotonic,
         wall_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        result_timeout_s: float = NAV2_RESULT_TIMEOUT_S,
     ) -> None:
         self._client = action_client
         self._make_goal = make_goal
@@ -84,6 +97,7 @@ class Nav2GoalBridge:
         self._on_terminal = on_terminal
         self._clock = clock
         self._wall_ms = wall_ms
+        self._result_timeout_s = float(result_timeout_s)
         self._lock = threading.Lock()
         self._active: Optional[_ActiveGoal] = None
         self._token = 0
@@ -99,7 +113,7 @@ class Nav2GoalBridge:
         with self._lock:
             self._token += 1
             token = self._token
-            self._active = _ActiveGoal(req=req, token=token)
+            self._active = _ActiveGoal(req=req, token=token, last_progress_at=self._clock())
             self._feedback_gate.reset()
         future = self._client.send_goal_async(
             goal, feedback_callback=lambda fb: self._on_feedback(token, fb)
@@ -130,6 +144,34 @@ class Nav2GoalBridge:
         with self._lock:
             return self._active is not None
 
+    def check_timeout(self) -> None:
+        """Дёргать периодически (host timer): честно оборвать зависшую цель.
+
+        Если Nav2 умер между accept и result, ``get_result_async()`` future
+        не завершится никогда — клиент застрянет на «ЕДЕТ»/«ПРИНЯТО».
+        Нет прогресса (send/accept/feedback) дольше ``result_timeout_s`` →
+        aborted{reason:nav2_timeout} + best-effort cancel (ADR-0018: честный
+        FAIL лучше тишины).
+        """
+        token, handle = self._stale_goal()
+        if token is None:
+            return
+        if handle is not None:
+            try:
+                handle.cancel_goal_async()
+            except Exception as exc:  # noqa: BLE001 — cancel не важнее aborted
+                log.warning("quest nav: best-effort cancel on timeout failed: %s", exc)
+        self._finish(token, STATE_ABORTED, reason=NAV2_TIMEOUT_REASON)
+
+    def _stale_goal(self) -> tuple[Optional[int], Any]:
+        with self._lock:
+            active = self._active
+            if active is None:
+                return None, None
+            if self._clock() - active.last_progress_at < self._result_timeout_s:
+                return None, None
+            return active.token, active.handle
+
     # --- колбэки ROS executor ---------------------------------------------
 
     def _current(self, token: int) -> Optional[_ActiveGoal]:
@@ -151,6 +193,7 @@ class Nav2GoalBridge:
             return
         with self._lock:
             active.handle = handle
+            active.last_progress_at = self._clock()
             cancel_now = active.cancel_requested
         self._emit_state(active.req, STATE_ACCEPTED)
         handle.get_result_async().add_done_callback(lambda f: self._on_result(token, f))
@@ -159,7 +202,13 @@ class Nav2GoalBridge:
 
     def _on_feedback(self, token: int, feedback_msg: Any) -> None:
         active = self._current(token)
-        if active is None or not self._feedback_gate.admit(self._clock()):
+        if active is None:
+            return
+        now = self._clock()
+        with self._lock:
+            active.last_progress_at = now
+        # Робот жив — таймаут отложен, даже если emit ниже дросселируется.
+        if not self._feedback_gate.admit(now):
             return
         feedback = getattr(feedback_msg, "feedback", None)
         distance = getattr(feedback, "distance_remaining", None)

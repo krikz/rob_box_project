@@ -1086,6 +1086,11 @@ class QuestBridge:
         self._node.get_logger().info(f"🧭 nav_cancel от {client_id}")
         return self._nav2.cancel()
 
+    def nav2_check_timeout(self) -> None:
+        """Тик таймера хоста (#3151): оборвать зависшую цель, если Nav2 молчит."""
+        if self._nav2 is not None:
+            self._nav2.check_timeout()
+
     def on_nav_path(self, msg) -> None:
         """ROS /plan (nav_msgs/Path) → nav_path (0x1104), ≤ 2 Гц, ≤ 200 точек.
 
@@ -2198,6 +2203,9 @@ class QuestNode(Node):
         self._tick_timer = self.create_timer(PUBLISH_PERIOD_S, self._on_tick_timer)
         # Watchdog check (раз в 100 мс).
         self._watchdog_timer = self.create_timer(0.1, self._on_watchdog_timer)
+        # issue #3151: честный обрыв зависшей nav-цели, если Nav2 умер
+        # между accept и result (см. nav2_goal.NAV2_RESULT_TIMEOUT_S=15с).
+        self._nav2_timeout_timer = self.create_timer(1.0, self.bridge.nav2_check_timeout)
         # robot_status (1 Hz).
         self._status_timer = self.create_timer(1.0, self._on_status_timer)
         # AV-26 / R7: robot_alert evaluation — 1 Hz, чтобы не было мигающего
