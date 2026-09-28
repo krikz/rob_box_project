@@ -59,7 +59,7 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
-from ..core.club_arranger import club_duration_seconds, club_form_beats, render_club
+from ..core.club_arranger import club_duration_seconds, club_form_beats, club_kit, render_club
 from ..core.club_transition import FADE_BARS, fade_seconds, wrap_with_fade
 from ..core.clock_phase import clock_phase_snapshot
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
@@ -2857,7 +2857,8 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "форма из матрицы секций (build/predrop/drop/verse, "
                     "32 такта). С club работают только bpm (по умолчанию "
                     "124), root (по умолчанию A#), scale (только minor), "
-                    "seed (выбирает прогрессию и риф) и repeat; остальные "
+                    "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
+                    "секций и тембры) и repeat; остальные "
                     "параметры игнорируются — об этом сказано в начале "
                     "ответа. С name= известной мелодии или rtttl= club не "
                     "применяется: тема важнее стиля, трек играет classic."
@@ -3837,10 +3838,13 @@ class ComposeMusicTool(MCPTool):
         bpm = kwargs.get("bpm")
         bpm = 124 if bpm is None else bpm
         repeat = bool(kwargs.get("repeat", False))
+        seed = kwargs.get("seed") or 0
+        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры).
+        kit = club_kit(seed)
         try:
             code = render_club(
                 bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
-                seed=kwargs.get("seed") or 0, repeat=repeat,
+                seed=seed, repeat=repeat,
                 align_clock=music_align_clock_enabled(),
             )
         except ValueError as exc:
@@ -3851,11 +3855,14 @@ class ComposeMusicTool(MCPTool):
             # Фаза клока (#3112) снимается в момент exec, а трек при фейде
             # стартует позже — смещение в логе тогда описывает момент exec.
             code = wrap_with_fade(code)
-        self.log_info(f"Композиция: style=club{', transition=fade' if fade else ''}")
-        result = self._execute_with_clock_phase(code, club_form_beats())
+        self.log_info(
+            f"Композиция: style=club{', transition=fade' if fade else ''}, каркас seed={seed}: "
+            + ", ".join(f"{k}={v}" for k, v in kit.items())
+        )
+        result = self._execute_with_clock_phase(code, club_form_beats(kit["template"]))
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
-        duration_s = club_duration_seconds(bpm) + (fade_seconds(bpm) if fade else 0.0)
+        duration_s = club_duration_seconds(bpm, kit["template"]) + (fade_seconds(bpm) if fade else 0.0)
         if repeat:
             self._manager.clear_form_deadline()
         else:
@@ -3865,8 +3872,11 @@ class ComposeMusicTool(MCPTool):
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
+        result["club_kit"] = kit
         message = (
-            f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд. "
+            f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд, "
+            f"шаблон {kit['template']}, бочка {kit['kick']}, "
+            f"тембры {kit['lead']}/{kit['bass']}/{kit['pad']}. "
             "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
         )
         if fade:

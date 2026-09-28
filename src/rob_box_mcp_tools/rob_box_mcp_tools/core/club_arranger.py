@@ -22,6 +22,11 @@ p3        pad         трезвучие на аккорд (2 такта), MIDI 
 
 Слой ``perc`` из шаблона матрицы НЕ рендерится — седьмого слота нет.
 
+Каркас (issue #3113): таблица выше — эталон ``seed=0``. При ``seed != 0``
+:func:`club_kit` выбирает шаблон секций (:data:`CLUB_TEMPLATES`), рисунок
+бочки (:data:`KICK_PATTERNS`), хэтов (:data:`HATS_PATTERNS`) и тембры
+лида/баса/пэда (:data:`ROLE_SYNTHS`); слоты и роли слоёв те же.
+
 Две громкостные оси, каждая на своём ключе (оба уже звучат вживую):
 
 * **секции** — ``amp=<ArrangementMatrix.gate_var(слой, уровень)>``
@@ -53,7 +58,7 @@ SamplePlayer``; ``sclang_file_synthdefs.py``: ``play.defaults["dur"]=.5``).
 from __future__ import annotations
 
 import random
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
 from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude
@@ -63,10 +68,54 @@ KICK_PATTERNS: Dict[str, str] = {
     # «By Design» (Strudel ``x ~ ~ x ~ ~ x ~ ~ [~|x] x ~ ~ ~ ~ ~``)
     "by_design": "X..X..X..(.X)X.....",
     "four_on_floor": "X...X...X...X...",
+    # Issue #3113: жанровые бочки, чтобы seed менял и каркас, не только ноты.
+    # half_time — удары на 1 и «и» третьей доли (полтемпа, трэп/дабстеп).
+    "half_time": "X.........X.....",
+    # breakbeat — ломаный рисунок: 1, «и» 1-й, «и» 3-й, 4-я «е».
+    "breakbeat": "X.X.......X..X..",
+    # outrun — 4/4 синтвейва с подхватом перед следующим тактом.
+    "outrun": "X...X...X...X..X",
 }
 
 #: Хэты «By Design» (``x*16 | [x!3 ~!2 x!10 ~]`` → чередование дыр).
 HATS_PATTERN = "---(-.)(-.)----------(-.)"
+
+#: Issue #3113: рисунки хэтов на выбор сида (16 шагов, ``dur=1/4``).
+HATS_PATTERNS: Dict[str, str] = {
+    "by_design": HATS_PATTERN,
+    # на «и» каждой доли (хаус-оффбит)
+    "offbeat": "..-...-...-...-.",
+    # ровные 8-е
+    "eighths": "-.-.-.-.-.-.-.-.",
+    # 16-е с дырами «тук-ту-тук» (шаффл)
+    "shuffle": "-.--.--.-.--.--.",
+}
+
+#: Issue #3113: тембры по ролям. Только синты из ``CRITICAL_SYNTHS``
+#: (tools/music.py) с коротким или фиксированным хвостом — ни одного
+#: ``held``-синта из core/synth_traits (у арпеджио 16-ми ноты слились бы),
+#: и ни одного яркого/шумового (saw/square/supersaw/noise): звук идёт
+#: через 16 кГц-тракт, выше 8 кГц всё равно срез. Первый в каждой роли —
+#: эталонный (seed=0).
+ROLE_SYNTHS: Dict[str, Tuple[str, ...]] = {
+    "lead": ("pluck", "blip", "arpy", "karp", "marimba"),
+    "bass": ("bass", "retrobass", "dub"),
+    "pad": ("sinepad", "warmpad", "space"),
+}
+
+#: Клубные шаблоны секций, из которых выбирает сид (все по 32 такта).
+#: ``lofi_froos`` сюда не входит — это lofi-форма на 56 тактов, не клуб.
+CLUB_TEMPLATES: Tuple[str, ...] = ("dj_dave_32", "drop_first_32", "long_build_32")
+
+#: Каркас seed=0 — эталон «By Design» (снимок fixtures/club_arranger_seed0).
+REFERENCE_KIT: Dict[str, str] = {
+    "template": "dj_dave_32",
+    "kick": "by_design",
+    "hats": "by_design",
+    "lead": "pluck",
+    "bass": "bass",
+    "pad": "sinepad",
+}
 #: Клэп ``*`` на 2 и 4 + открытый хэт ``=`` на слабые 8-е — один плеер.
 CLAP_PATTERN = "..=.*.=...=.*.=."
 
@@ -83,7 +132,7 @@ LANE_SLOTS: Dict[str, Tuple[str, str]] = {
 }
 
 #: Синты, которые использует club (все есть в ``CRITICAL_SYNTHS``).
-CLUB_SYNTHS = frozenset({"pluck", "bass", "sinepad"})
+CLUB_SYNTHS = frozenset(s for synths in ROLE_SYNTHS.values() for s in synths)
 
 #: Потолок уровня одного слоя (тот же, что ``max_amp`` санитайзера).
 MAX_LAYER_AMP = 0.85
@@ -309,22 +358,68 @@ def build_matrix(template: str) -> ArrangementMatrix:
     return ArrangementMatrix.from_specs({lane: specs[lane] for lane in LANE_SLOTS})
 
 
-def _lead_block(notes: List[int]) -> str:
+def _lead_block(notes: List[int], synth: str = "pluck") -> str:
     rows = [", ".join(str(n) for n in notes[i:i + STEPS_PER_BAR]) for i in range(0, len(notes), STEPS_PER_BAR)]
-    return "[" + ",\n             ".join(rows) + "]"
+    indent = " " * len(f"p1 >> {synth}([")
+    return "[" + (",\n" + indent).join(rows) + "]"
+
+
+def club_kit(
+    seed: int = 0, template: Optional[str] = None, kick: Optional[str] = None,
+) -> Dict[str, str]:
+    """Каркас трека по сиду: шаблон секций, бочка, хэты, тембры ролей.
+
+    Issue #3113 (живой прогон 28.09 + сверка рендером): сид менял только
+    прогрессию/риф/бас/пэд, а бочка ``by_design``, хэты, шаблон
+    ``dj_dave_32`` и тембры pluck/bass/sinepad были одни на весь сет —
+    три перехода подряд звучали однотипно. Теперь сид выбирает и каркас.
+
+    * ``seed=0`` — эталон :data:`REFERENCE_KIT` (снимок seed=0 не меняется);
+    * иначе — отдельный ГСЧ ``random.Random(f"club-kit:{seed}")``: выбор
+      детерминирован и НЕ сдвигает поток ``random.Random(seed)``, из
+      которого берутся прогрессия и риф (ноты у сида те же, что и раньше);
+    * явные ``template``/``kick`` побеждают выбор сида.
+    """
+    if seed == 0:
+        kit = dict(REFERENCE_KIT)
+    else:
+        rng = random.Random(f"club-kit:{seed}")
+        kit = {
+            "template": rng.choice(CLUB_TEMPLATES),
+            "kick": rng.choice(sorted(KICK_PATTERNS)),
+            "hats": rng.choice(sorted(HATS_PATTERNS)),
+            "lead": rng.choice(ROLE_SYNTHS["lead"]),
+            "bass": rng.choice(ROLE_SYNTHS["bass"]),
+            "pad": rng.choice(ROLE_SYNTHS["pad"]),
+        }
+    if template is not None:
+        kit["template"] = template
+    if kick is not None:
+        kit["kick"] = kick
+    return kit
+
+
+def _player(slot: str, synth: str, first: str, rest: Sequence[str]) -> List[str]:
+    """Плеер ``slot >> synth(first,`` + строки ``rest`` с выравниванием под ``(``."""
+    head = f"{slot} >> {synth}("
+    pad = " " * len(head)
+    return [head + first] + [pad + line for line in rest]
 
 
 def render_club(
     bpm: float = 124,
     root: str = "A#",
     scale: str = "minor",
-    template: str = "dj_dave_32",
+    template: Optional[str] = None,
     seed: int = 0,
-    kick: str = "by_design",
+    kick: Optional[str] = None,
     repeat: bool = False,
     align_clock: bool = False,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
+
+    ``template``/``kick`` = ``None`` — их (и хэты, и тембры) выбирает сид
+    (:func:`club_kit`); ``seed=0`` — эталон «By Design».
 
     ``align_clock`` (issue #3112, по умолчанию выкл.): сразу после
     ``Clock.clear()`` — :func:`core.arranger.clock_align_prelude`, чтобы
@@ -333,6 +428,8 @@ def render_club(
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
+    kit = club_kit(seed, template, kick)
+    template, kick = kit["template"], kit["kick"]
     _validate(bpm, root, scale, template, kick)
     matrix = build_matrix(template)
     rng = random.Random(seed)
@@ -358,24 +455,27 @@ def render_club(
         f"Clock.bpm = {_fmt(bpm)}",
         "",
         f'd1 >> play("{kick_pattern}", dur=1/4, amp={gate["kick"]})',
-        f'd2 >> play("{HATS_PATTERN}", dur=1/4, hpf=2500, amp={gate["hats"]})',
+        f'd2 >> play("{HATS_PATTERNS[kit["hats"]]}", dur=1/4, hpf=2500, amp={gate["hats"]})',
         f'd3 >> play("{CLAP_PATTERN}", dur=1/4, lpf=3000, room=0.25, amp={gate["clap"]})',
         "",
-        f"p1 >> pluck({_lead_block(lead_notes(tonic, chords, riff))},",
-        "            dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.15,",
-        f"            lpf=linvar([900, 4000], 31),{hpf_arg} room=0.6, mix=0.3,",
-        f"            amp={gate['lead']},",
-        f"            amplify={pump})",
+        *_player("p1", kit["lead"], _lead_block(lead_notes(tonic, chords, riff), kit["lead"]) + ",", [
+            "dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.15,",
+            f"lpf=linvar([900, 4000], 31),{hpf_arg} room=0.6, mix=0.3,",
+            f"amp={gate['lead']},",
+            f"amplify={pump})",
+        ]),
         "",
-        f"p2 >> bass({bass},",
-        "           dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.2,",
-        "           lpf=linvar([500, 2500], 61), room=0.25,",
-        f"           amp={gate['bass']},",
-        f"           amplify={pump})",
+        *_player("p2", kit["bass"], f"{bass},", [
+            "dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.2,",
+            "lpf=linvar([500, 2500], 61), room=0.25,",
+            f"amp={gate['bass']},",
+            f"amplify={pump})",
+        ]),
         "",
-        f"p3 >> sinepad([{pads}], dur={CHORD_BARS * BEATS_PER_BAR},",
-        "              scale=Scale.chromatic, root=0, oct=0, room=0.7, mix=0.4,",
-        f"              amp={gate['pad']})",
+        *_player("p3", kit["pad"], f"[{pads}], dur={CHORD_BARS * BEATS_PER_BAR},", [
+            "scale=Scale.chromatic, root=0, oct=0, room=0.7, mix=0.4,",
+            f"amp={gate['pad']})",
+        ]),
     ]
     if not repeat:
         end_beats = matrix.total_beats + (ALIGN_LEAD_BEATS if align_clock else 0)
@@ -395,12 +495,17 @@ def club_duration_seconds(bpm: float = 124, template: str = "dj_dave_32") -> flo
 
 __all__ = [
     "CLUB_SYNTHS",
+    "CLUB_TEMPLATES",
+    "HATS_PATTERNS",
     "KICK_PATTERNS",
     "LAYER_LEVELS",
     "PROGRESSIONS",
     "build_matrix",
+    "REFERENCE_KIT",
+    "ROLE_SYNTHS",
     "chord_pentatonic",
     "club_duration_seconds",
+    "club_kit",
     "club_form_beats",
     "kick_steps",
     "peak_levels",
