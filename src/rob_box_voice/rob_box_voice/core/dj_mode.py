@@ -151,6 +151,10 @@ class DJState:
     # ``/voice/music/form``), в порядке звучания. Промпт перехода запрещает
     # их повтор (живой прогон 28.09: Für Elise дважды в одном сете).
     played_names: list = field(default_factory=list)
+    # Issue #3153 — сет начат мгновенным club-превью роутера медиакоманд:
+    # трек #1 уже звучит, переход #1 — обычный переход к треку #2, без
+    # исследования («СТАРТ ВЕЧЕРИНКИ» с search_web и т.п. не нужен).
+    preview_started: bool = False
 
 
 @dataclass
@@ -204,6 +208,11 @@ class DJModeController:
     # Issue #2875 — прощание ждёт конец финальной формы, но не дольше этого
     # (страховка от протухшего/ошибочного ``form_ends_at``).
     FAREWELL_MAX_DEFER_S: float = 300.0
+    # Issue #3153 — сколько живёт заявка «превью — трек #1» до генуинного
+    # старта сета. ``/voice/dj_mode`` от ``set_dj_mode`` роутера приходит
+    # через доли секунды; протухшая заявка (топик отброшен забором #2835)
+    # не должна достаться чужому старту сета минуты спустя.
+    PREVIEW_CLAIM_TTL_S: float = 10.0
 
     def __init__(
         self,
@@ -220,6 +229,8 @@ class DJModeController:
         self._clock = clock
         self.state = DJState()
         self._persona_default = hook.persona_default
+        # Issue #3153 — заявка роутера: (тоника превью, когда заявлено).
+        self._preview_claim: Optional[tuple] = None
 
     # ── Message handlers ────────────────────────────────────────────
 
@@ -386,6 +397,8 @@ class DJModeController:
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
             self.state.set_root = ""
             self.state.played_names = []
+            self.state.preview_started = False
+            self._take_preview_claim()
         bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
         if bpm is not None and bpm != self.state.set_bpm:
             # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113.
@@ -431,6 +444,7 @@ class DJModeController:
         self.state.final_track_no = 0
         self.state.set_bpm = DJ_SET_DEFAULT_BPM
         self.state.set_root = ""
+        self.state.preview_started = False
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
         # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
         # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
@@ -440,6 +454,40 @@ class DJModeController:
         self._logger.info("🎧 DJ Mode OFF")
         if farewell:
             self._farewell_after_form(farewell_persona, form_ends_at)
+
+    # ── Instant preview (issue #3153) ───────────────────────────────
+
+    def claim_preview(self, root: str) -> None:
+        """Роутер запускает сет club-превью в тонике ``root`` — это трек #1.
+
+        Зовётся ДО ``compose_music`` / ``set_dj_mode`` роутера: включение
+        приходит отдельным топиком ``/voice/dj_mode`` из mcp_server, и
+        заявка к этому моменту уже должна лежать. Забирает её генуинный
+        старт сета (:meth:`_apply_set_limits`).
+        """
+        self._preview_claim = (root, self._clock())
+
+    def drop_preview_claim(self) -> None:
+        """Превью или ``set_dj_mode`` не сработали — заявка не нужна."""
+        self._preview_claim = None
+
+    def _take_preview_claim(self) -> None:
+        """Генуинный старт сета: свежая заявка → превью — трек #1 сета."""
+        claim, self._preview_claim = self._preview_claim, None
+        if claim is None:
+            return
+        root, claimed_at = claim
+        if self._clock() - claimed_at > self.PREVIEW_CLAIM_TTL_S:
+            return
+        self.state.tracks_started = 1
+        self.state.preview_started = True
+        if root in CLUB_ROOTS:
+            # Трек #1 сета звучит в тонике сета (``related_root(root, 1)``).
+            self.state.set_root = root
+        self._logger.info(
+            f"🎧 DJ трек #1 — мгновенное превью (тоника {root}), "
+            "переход #1 сыграет трек #2 без исследования"
+        )
 
     # ── Farewell (issue #2875 addendum) ─────────────────────────────
 
@@ -830,7 +878,7 @@ class DJModeController:
         Поэтому свободный текст там глушится: фраза идёт только через
         ``speak_text``, прощание — через хук.
         """
-        if n <= 1:
+        if n <= 1 and not self.state.preview_started:
             return False
         return True
 
@@ -955,6 +1003,64 @@ class DJModeController:
             f"{self._played_line()}"
         )
 
+    def _after_preview_prompt(
+        self, persona: str, theme_line: str, track_no: int, length_line: str
+    ) -> str:
+        """Issue #3153 — переход #1 сета, начатого мгновенным превью.
+
+        Трек #1 (club-превью роутера) уже отыграл форму, диджей уже
+        представился фразой роутера. Живой прогон 28.09: «СТАРТ ВЕЧЕРИНКИ»
+        звал search_web / search_samples / gen_search_library и составлял
+        план 30 с, пока юзер слушал тишину. Здесь — обычный переход к
+        треку #2: без исследования и без представления.
+        """
+        return (
+            f"[DJ_AUTO переход #1] Ты {persona}. {theme_line}"
+            "Сет уже идёт: трек #1 (клубное превью) доиграл форму. НЕ исследуй "
+            "материал (search_web / search_samples / gen_search_library не нужны) "
+            "и НЕ представляйся заново — сразу следующий трек. "
+            "❌ НЕ вызывай load_track / list_tracks. "
+            f"Стадия сета: переход #1. {self._next_track_line('', track_no)}"
+            f"{self._tempo_line()}{length_line} "
+            "Свободный текст не озвучивается: одна короткая фраза-выкрик "
+            "(до 30 символов) — только через speak_text. После этого вызови "
+            "set_dj_mode(enabled=true, next_transition_sec=<длительность формы "
+            "из ответа compose_music>) для следующего перехода."
+        )
+
+    def _party_start_prompt(
+        self, persona: str, theme_line: str, track_no: int, *,
+        library_line: str, stage_marker: str, length_line: str,
+    ) -> str:
+        """Переход #1 сета без плана.
+
+        Сет начат мгновенным превью (issue #3153) — обычный переход к треку
+        #2 без исследования; иначе «СТАРТ ВЕЧЕРИНКИ»: исследование, план и
+        трек #1.
+        """
+        if self.state.preview_started:
+            return self._after_preview_prompt(persona, theme_line, track_no, length_line)
+        return (
+            "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
+            f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
+            "🔎 СНАЧАЛА ИССЛЕДУЙ МАТЕРИАЛ: "
+            "1) search_web(<персона> — стиль, темп, характерные приёмы) — "
+            "изучи персону и её музыку; 2) search_samples(<стиль>) — найди "
+            "реальные сэмплы (макс. 2 вызова); 3) gen_search_library(<персона>) "
+            "— посмотри, что есть в AI-библиотеке для вдохновения. "
+            "📋 ЗАТЕМ СОСТАВЬ ПЛАН СЕТА из 5-8 треков (дуга: вход → "
+            "нарастание → пик → спуск) и сохрани через "
+            "set_dj_mode(enabled=true, plan=<список треков, каждый с новой "
+            "строки 'Трек N: ...'>, next_transition_sec=<длительность формы "
+            "из ответа compose_music>). Потом сыграй "
+            f"трек #1 через {self._club_call(track_no)} "
+            f"— seed, чтобы повтор темы в другом сете звучал не тем же "
+            f"басом/пэдом/ударными. {self._played_line()}{self._tempo_line()}"
+            f"{library_line} {stage_marker}"
+            f"{length_line} "
+            f"Затем представься как {persona} через speak_text."
+        )
+
     def build_auto_prompt(self, n: int) -> str:
         persona = self.state.persona or self._persona_default
         theme_line = (
@@ -1013,25 +1119,10 @@ class DJModeController:
                 f"Затем представься как {persona} через speak_text."
             )
         if n == 1 and not plan_tracks:
-            return (
-                "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
-                f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
-                "🔎 СНАЧАЛА ИССЛЕДУЙ МАТЕРИАЛ: "
-                "1) search_web(<персона> — стиль, темп, характерные приёмы) — "
-                "изучи персону и её музыку; 2) search_samples(<стиль>) — найди "
-                "реальные сэмплы (макс. 2 вызова); 3) gen_search_library(<персона>) "
-                "— посмотри, что есть в AI-библиотеке для вдохновения. "
-                "📋 ЗАТЕМ СОСТАВЬ ПЛАН СЕТА из 5-8 треков (дуга: вход → "
-                "нарастание → пик → спуск) и сохрани через "
-                "set_dj_mode(enabled=true, plan=<список треков, каждый с новой "
-                "строки 'Трек N: ...'>, next_transition_sec=<длительность формы "
-                "из ответа compose_music>). Потом сыграй "
-                f"трек #1 через {self._club_call(track_no)} "
-                f"— seed, чтобы повтор темы в другом сете звучал не тем же "
-                f"басом/пэдом/ударными. {self._played_line()}{self._tempo_line()}"
-                f"{library_line} {stage_marker}"
-                f"{length_line} "
-                f"Затем представься как {persona} через speak_text."
+            return self._party_start_prompt(
+                persona, theme_line, track_no,
+                library_line=library_line, stage_marker=stage_marker,
+                length_line=length_line,
             )
         # Issue #2856 — финал по лимиту времени/треков (``final_dispatched``
         # взводит ``tick()``) звучит так же, как финал по плану.

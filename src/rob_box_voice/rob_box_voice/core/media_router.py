@@ -26,6 +26,7 @@ LLM вызвать тул» нельзя, а ретраи-гуарды вокр�
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -36,6 +37,7 @@ from rob_box_harness.decision import (
     DeterministicProvider,
 )
 
+from .dj_mode import CLUB_ROOTS, DJ_SET_DEFAULT_BPM
 from .media_command_grammar import (
     MEDIA_INTENT_OPTIONS,
     NO_COMMAND,
@@ -51,9 +53,23 @@ _LOG = logging.getLogger(__name__)
 MEDIA_INTENT_QUESTION = "media_intent"
 
 #: Через сколько секунд после ``set_dj_mode`` DJ-тикер делает переход #1
-#: («СТАРТ ВЕЧЕРИНКИ»), если музыка не играет. 15 — нижний клэмп
-#: ``DJModeController`` / ``SetDjModeTool``.
+#: («СТАРТ ВЕЧЕРИНКИ»), когда роутер не запускает превью (над играющим
+#: треком — переход всё равно ждёт конца его формы; открытый DJ-запрос —
+#: музыку ставит LLM). 15 — нижний клэмп ``DJModeController`` /
+#: ``SetDjModeTool``.
 DJ_START_TRANSITION_SEC = 15
+
+#: Issue #3153 (ADR-0142 «мгновенное превью») — длина одного прохода
+#: клубной формы превью, с: все шаблоны ``style="club"`` — 32 такта,
+#: при темпе сета 124 BPM это 32·4·60/124 ≈ 61,9 с
+#: (``club_arranger.club_duration_seconds``). Переход #1 назначается на
+#: конец формы превью; ``DJModeController.tick`` дополнительно гейтит его
+#: реальным ``form_ends_at`` из ``/voice/music/form``.
+DJ_PREVIEW_FORM_SEC = 62
+
+#: Диапазон сида превью: ``seed=0`` — эталонный каркас club
+#: (``club_arranger.REFERENCE_KIT``), его не берём — каждый сет свой.
+DJ_PREVIEW_SEED_RANGE = (1, 9_999_999)
 
 
 @dataclass(frozen=True)
@@ -74,8 +90,18 @@ class MediaState:
 
 @dataclass(frozen=True)
 class MediaToolCall:
+    """Один MCP-тул плана.
+
+    Attributes:
+        fail_text: issue #3153 — если непусто и тул не сработал, план
+            ОСТАНАВЛИВАЕТСЯ на этом туле и говорится эта фраза (вместо
+            ``MediaPlan.say_fail``): следующий тул без предыдущего не имеет
+            смысла, а общая фраза соврала бы о том, что успело случиться.
+    """
+
     name: str
     arguments: Dict[str, Any] = field(default_factory=dict)
+    fail_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +118,9 @@ class MediaPlan:
             содержимым вне грамматики — план, треки, лимиты).
         dj_off: стоп — выключить DJ-режим в коде (как #2897).
         cancel_inflight: отменить идущий ход LLM (команда его заменяет).
+        preview_root: issue #3153 — план запускает DJ-сет мгновенным
+            club-превью в этой тонике (``""`` — превью нет). Нода заранее
+            сообщает DJ-контроллеру, что превью — трек #1 сета.
     """
 
     command: MediaCommand
@@ -101,6 +130,7 @@ class MediaPlan:
     to_llm: bool = False
     dj_off: bool = False
     cancel_inflight: bool = False
+    preview_root: str = ""
 
     @property
     def handled(self) -> bool:
@@ -116,6 +146,10 @@ STOP_FAIL_TEXT = "Не получилось выключить музыку."
 DJ_FAIL_TEXT = "Не получилось включить диджей-сет."
 DJ_ALREADY_TEXT = "Сет уже идёт."
 DJ_START_TEXT = "Запускаю диджей-сет."
+#: Issue #3153 — превью не запустилось: DJ не включаем, говорим как есть.
+DJ_PREVIEW_FAIL_TEXT = "Не получилось запустить музыку — диджей-сет не включил."
+#: Превью играет, а ``set_dj_mode`` не прошёл: музыка есть, сета нет.
+DJ_MODE_FAIL_AFTER_PREVIEW_TEXT = "Музыку включил, а диджей-сет не запустился."
 
 _VOLUME_ACTIONS: Mapping[MediaIntent, Tuple[str, str]] = {
     MediaIntent.VOLUME_UP: ("louder", "Сделал музыку громче."),
@@ -195,8 +229,15 @@ def _decide_now(provider: DecisionProvider, state: Mapping[str, Any]) -> Optiona
 class MediaRouter:
     """Классификатор + планировщик медиакоманд."""
 
-    def __init__(self, provider: Optional[DecisionProvider] = None) -> None:
+    def __init__(
+        self,
+        provider: Optional[DecisionProvider] = None,
+        rng: Optional[random.Random] = None,
+    ) -> None:
         self._provider = provider or default_media_provider()
+        # Issue #3153 — сид и тоника превью: свои на каждый сет. Тесты
+        # подают сидированный ГСЧ.
+        self._rng = rng or random.Random()
 
     @property
     def provider_name(self) -> str:
@@ -224,7 +265,36 @@ class MediaRouter:
         command = self.classify(user_input, media)
         if command.intent is MediaIntent.NONE:
             return None
-        return plan_media_command(command, media)
+        return plan_media_command(command, media, preview=self._preview_pick())
+
+    def _preview_pick(self) -> "DJPreview":
+        low, high = DJ_PREVIEW_SEED_RANGE
+        return DJPreview(
+            seed=self._rng.randint(low, high),
+            root=self._rng.choice(CLUB_ROOTS),
+        )
+
+
+@dataclass(frozen=True)
+class DJPreview:
+    """Issue #3153 — сид и тоника мгновенного club-превью DJ-сета."""
+
+    seed: int
+    root: str
+
+    def compose_call(self) -> MediaToolCall:
+        """``compose_music`` превью: зациклен, в темпе сета по умолчанию."""
+        return MediaToolCall(
+            "compose_music",
+            {
+                "style": "club",
+                "repeat": True,
+                "seed": self.seed,
+                "root": self.root,
+                "bpm": DJ_SET_DEFAULT_BPM,
+            },
+            fail_text=DJ_PREVIEW_FAIL_TEXT,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -260,16 +330,73 @@ def _stop_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
     )
 
 
-def _dj_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
+def _dj_args(command: MediaCommand) -> Dict[str, Any]:
     args: Dict[str, Any] = {"enabled": True}
     if command.persona:
         args["persona"] = command.persona
     if command.theme:
         args["theme"] = command.theme
+    return args
+
+
+def _dj_preview_plan(
+    command: MediaCommand, media: MediaState, preview: Optional[DJPreview]
+) -> Optional[MediaPlan]:
+    """Issue #3153 — «ты диджей X» в ТИШИНЕ: звук сразу, без хода LLM.
+
+    Живой прогон 28.09: роутер включал DJ с переходом через 15 с, переход
+    #1 («СТАРТ ВЕЧЕРИНКИ») гнал модель в search_web / search_samples /
+    gen_search_library и план — первый звук через ~50 с после «запускаю
+    сет». Теперь (ADR-0142 §7, «мгновенное превью»):
+
+    1. ``compose_music(style="club", repeat=True, seed=<свой>)`` — первым:
+       звук не ждёт ничего, кроме этого вызова. Не сработал — DJ не
+       включаем и честно говорим, что музыки нет.
+    2. ``set_dj_mode(..., next_transition_sec=DJ_PREVIEW_FORM_SEC)`` —
+       переход #1 на конце формы превью. Не сработал — музыка играет, а
+       сета нет, так и говорим.
+
+    Превью — трек #1 сета: нода до вызовов сообщает об этом
+    DJ-контроллеру (``preview_root``), и переход #1 играет трек #2 без
+    исследования (``DJModeController.build_auto_prompt``). Порядок
+    «compose, потом set_dj_mode» на счёт треков не влияет — счёт ставит
+    не ход LLM, а заявка ноды, которую забирает генуинный старт сета.
+
+    Только закрытая команда: открытый DJ-запрос («…сыграй Still Dre и
+    Next Episode») идёт в LLM, и музыку запускает она — превью поверх
+    заказа юзера было бы лишним треком.
+    """
+    if preview is None or media.music_playing or media.dj_enabled or not command.closed:
+        return None
+    who = command.persona
+    args = _dj_args(command)
+    args["next_transition_sec"] = DJ_PREVIEW_FORM_SEC
+    return MediaPlan(
+        command=command,
+        tool_calls=(
+            preview.compose_call(),
+            MediaToolCall(
+                "set_dj_mode", args, fail_text=DJ_MODE_FAIL_AFTER_PREVIEW_TEXT
+            ),
+        ),
+        say_ok=f"Я {who}, запускаю сет." if who else DJ_START_TEXT,
+        say_fail=DJ_FAIL_TEXT,
+        cancel_inflight=True,
+        preview_root=preview.root,
+    )
+
+
+def _dj_plan(
+    command: MediaCommand, media: MediaState, preview: Optional[DJPreview] = None
+) -> MediaPlan:
+    preview_plan = _dj_preview_plan(command, media, preview)
+    if preview_plan is not None:
+        return preview_plan
+    args = _dj_args(command)
     if not media.dj_enabled:
-        # Сет стартует переходом #1 DJ-тикера (штатный путь старта сета:
-        # «СТАРТ ВЕЧЕРИНКИ», композитор, ретраи Bug B). На играющем треке
-        # переход всё равно ждёт конца формы (``form_ends_at``).
+        # Над играющим треком (или открытый запрос — музыку ставит LLM)
+        # сет стартует переходом #1 DJ-тикера; на играющем треке переход
+        # всё равно ждёт конца формы (``form_ends_at``).
         args["next_transition_sec"] = DJ_START_TRANSITION_SEC
     who = command.persona
     if not media.dj_enabled:
@@ -291,19 +418,31 @@ def _dj_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
     )
 
 
-def plan_media_command(command: MediaCommand, media: MediaState) -> Optional[MediaPlan]:
-    """Тулы и фраза для команды при данном состоянии плеера."""
+def plan_media_command(
+    command: MediaCommand,
+    media: MediaState,
+    preview: Optional[DJPreview] = None,
+) -> Optional[MediaPlan]:
+    """Тулы и фраза для команды при данном состоянии плеера.
+
+    ``preview`` — сид/тоника club-превью для старта DJ-сета в тишине
+    (issue #3153); ``None`` — превью не запускать (старый путь).
+    """
     if command.intent in _VOLUME_ACTIONS:
         return _volume_plan(command, media)
     if command.intent is MediaIntent.STOP:
         return _stop_plan(command, media)
     if command.intent is MediaIntent.DJ:
-        return _dj_plan(command, media)
+        return _dj_plan(command, media, preview)
     return None
 
 
 __all__ = [
+    "DJ_MODE_FAIL_AFTER_PREVIEW_TEXT",
+    "DJ_PREVIEW_FAIL_TEXT",
+    "DJ_PREVIEW_FORM_SEC",
     "DJ_START_TRANSITION_SEC",
+    "DJPreview",
     "MEDIA_INTENT_QUESTION",
     "MediaPlan",
     "MediaRouter",
