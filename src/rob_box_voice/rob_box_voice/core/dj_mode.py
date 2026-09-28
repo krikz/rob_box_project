@@ -681,7 +681,7 @@ class DJModeController:
 
     # ── Prompt builders ─────────────────────────────────────────────
 
-    def preamble(self) -> str:
+    def preamble(self, *, dj_request: bool = False) -> str:
         """Prefix injected into user STT turns when DJ-mode is active.
 
         🔴 FIX (live 11:48): раньше preamble подмешивал ПОЛНЫЕ DJ-инструкции
@@ -691,7 +691,14 @@ class DJModeController:
         НЕЙТРАЛЬНАЯ подсказка: DJ играет в фоне, юзер говорит обычную
         команду — ответь на неё; не трогай DJ, если юзер не просит.
         Полные DJ-инструкции живут только в build_auto_prompt (DJ_AUTO).
+
+        Issue #2999 (ADR-0140): ``dj_request=True`` — юзер назначает новую
+        персону/тему посреди сета («Ты диджей Анакен… имперский слет»).
+        Тогда «Не вызывай set_dj_mode» — ровно то, что ломало смену сета
+        (живой лог 28.09), и обёртка отдаётся :meth:`_persona_change_preamble`.
         """
+        if dj_request:
+            return self._persona_change_preamble()
         persona = self.state.persona
         persona_line = (
             f", диджей: {persona}" if persona else ""
@@ -704,6 +711,29 @@ class DJModeController:
             f"{persona_line}. Это ОБЫЧНАЯ команда юзера, не DJ-переход. "
             "Ответь на неё нормально. Не вызывай set_dj_mode и не меняй "
             "музыку, если юзер об этом не просит.] "
+        )
+
+    def _persona_change_preamble(self) -> str:
+        """Issue #2999 — обёртка хода, где юзер переназначает диджея/тему.
+
+        ``set_dj_mode(enabled=true, persona=…, theme=…)`` на идущем сете —
+        не новый сет: :meth:`_apply_enable_payload` с ``is_fresh_start=False``
+        меняет персону и тему, сбрасывает план старой темы, а темп
+        (``set_bpm``), отсчёт и счётчики оставляет. Музыку он не глушит.
+        ``bpm`` не передаём — иначе модель «угадает» темп и сломает #3113.
+        """
+        old = self.state.persona or self._persona_default
+        theme_line = f', тема "{self.state.theme}"' if self.state.theme else ""
+        bpm = self.state.set_bpm
+        return (
+            f"[🎧 Идёт DJ-сет: сейчас {old}{theme_line}, темп сета {bpm} BPM. "
+            "Юзер НАЗНАЧАЕТ новую DJ-персону/тему — это смена сета, а не "
+            "разовый заказ. В этом ходе вызови set_dj_mode(enabled=true, "
+            "persona='<новый диджей из запроса>', theme='<новая тема из "
+            "запроса>') — bpm НЕ передавай, темп сета "
+            f"{bpm} BPM сохранится; сет не выключай, stop_music не вызывай. "
+            "Потом, как при старте сета, сразу сыграй трек новой темы "
+            f"в темпе {bpm} BPM и коротко представься от лица новой персоны.] "
         )
 
     def suppresses_free_text(self, n: int) -> bool:

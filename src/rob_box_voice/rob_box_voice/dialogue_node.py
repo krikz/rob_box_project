@@ -205,6 +205,7 @@ from rob_box_voice.core.identity_ack import (
     identity_ack_plan,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
+from rob_box_voice.core.dj_request import is_dj_request  # Issue #2999 / ADR-0140
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
@@ -3088,7 +3089,9 @@ class DialogueNode(Node):
         """
         raw_user_command = clean
         if self._dj.state.enabled:
-            clean = self._dj.preamble() + clean
+            # Issue #2999 — «ты диджей X…» посреди сета: обёртка просит
+            # set_dj_mode с новой персоной/темой вместо «не вызывай set_dj_mode».
+            clean = self._dj.preamble(dj_request=is_dj_request(clean)) + clean
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         # Issue #1766 — markers the operator / e2e harness grep for.
@@ -6454,7 +6457,7 @@ class DialogueNode(Node):
         if self._turn_guards is not None:
             return self._turn_guards
         music_adapter = turn_guards_music_adapter(
-            evaluate_fn=lambda turn, reply: self._music_guard.evaluate(
+            evaluate_fn=lambda turn, reply: self._music_guard.evaluate_turn(
                 was_dj_auto=turn.is_dj_auto,
                 user_input=turn.user_input,
                 tools_called=reply.tools_called,
@@ -7112,7 +7115,8 @@ class DialogueNode(Node):
             )
             return False
 
-        verdict = self._music_guard.evaluate(
+        # Issue #2999 — ``evaluate_turn``: DJ-запрос юзера до Bug C.
+        verdict = self._music_guard.evaluate_turn(
             was_dj_auto=was_dj_auto,
             user_input=user_input,
             tools_called=tuple(tools_called or ()),

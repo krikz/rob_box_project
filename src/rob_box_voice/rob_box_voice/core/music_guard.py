@@ -47,6 +47,13 @@ from .dialogue_guards import (
     is_vocal_request,
     user_wants_music,
 )
+from .dj_request import (  # Issue #2999 / ADR-0140
+    DJ_REQUEST_MAX_RETRIES,
+    DJ_REQUEST_SATISFYING_TOOLS,
+    build_dj_request_exhausted_fallback,
+    build_dj_request_retry_prompt,
+    is_dj_request,
+)
 
 
 class MusicGuardVerdictKind(str, Enum):
@@ -202,6 +209,7 @@ class MusicGuard:
         a DJ transition is independent of the user-music budget.
         """
         self._user_retry_count = 0
+        self._dj_request_closed = False  # Issue #2999
 
     def reset_for_new_dj_transition(self) -> None:
         """Reset the DJ budget when a fresh 5 s tick fires a transition.
@@ -220,6 +228,7 @@ class MusicGuard:
         """
         self._dj_retry_count = 0
         self._user_retry_count = 0
+        self._dj_request_closed = False  # Issue #2999
 
     # ------------------------------------------------------------------
     # Policy — the decision tree that used to live inline in
@@ -621,6 +630,115 @@ class MusicGuard:
     def _log_warning(self, msg: str) -> None:
         if self._logger is not None:
             self._logger.warning(msg)
+
+    # ------------------------------------------------------------------
+    # Issue #2999 / ADR-0140 — DJ-запрос («ты диджей X…») идёт ДО Bug C.
+    # ------------------------------------------------------------------
+
+    #: ``set_dj_mode`` уже вызван в ЭТОМ запросе юзера (ход или его ретрай).
+    #: Сбрасывается в :meth:`reset_for_new_user_request` /
+    #: :meth:`reset_for_new_session`. Нужен, чтобы ретрай-ход, где модель
+    #: после ``set_dj_mode`` дозапустила трек, не требовал set_dj_mode снова.
+    _dj_request_closed: bool = False
+
+    def evaluate_turn(
+        self,
+        *,
+        was_dj_auto: bool,
+        user_input: str,
+        tools_called: Optional[Tuple[str, ...]],
+        dj_enabled: bool = False,
+        **kwargs,
+    ) -> MusicGuardVerdict:
+        """Точка входа адаптера: DJ-запрос юзера, затем :meth:`evaluate`.
+
+        «Ты диджей X…» ловится и :func:`user_wants_music` (слово «диджей»),
+        и Bug C ретраил его промптом «вызови compose_music» — неверный тул
+        для DJ-запроса (issue #2999, 15 пустых ходов 24.09). Отдельная
+        точка входа, а не ещё одна ветка в :meth:`evaluate`: тот стоит на
+        потолке cc_budget (ADR-0021 R1), и Bug C/#2966 правят параллельно.
+        """
+        dj_verdict = self._dj_request_verdict(
+            was_dj_auto=was_dj_auto,
+            user_input=user_input,
+            tools_set=set(tools_called or ()),
+            dj_enabled=dj_enabled,
+        )
+        if dj_verdict is not None:
+            return dj_verdict
+        return self.evaluate(
+            was_dj_auto=was_dj_auto,
+            user_input=user_input,
+            tools_called=tools_called,
+            dj_enabled=dj_enabled,
+            **kwargs,
+        )
+
+    def _dj_request_verdict(
+        self,
+        *,
+        was_dj_auto: bool,
+        user_input: str,
+        tools_set: set,
+        dj_enabled: bool,
+    ) -> Optional[MusicGuardVerdict]:
+        """Вердикт для DJ-запроса юзера или ``None`` (не DJ-запрос).
+
+        * ``set_dj_mode`` вызван в этом запросе (ход или его ретрай) —
+          DJ-часть закрыта, ``None``: дальше обычный :meth:`evaluate`
+          (музыка стартовала → ``SKIP``, нет → Bug C, как до #2999).
+        * не вызван, бюджет есть — ``USER_RETRY`` с DJ-промптом
+          (:func:`build_dj_request_retry_prompt`); адаптер диспатчит его
+          тем же путём, что Bug C (discard + синтетический ход).
+        * бюджет исчерпан — ``SKIP``, если музыка хотя бы запустилась, иначе
+          ``FALLBACK`` с DJ-фразой; в Bug C НЕ проваливаемся (его промпт
+          здесь бесполезен — ровно тот цикл, который чинится).
+
+        Счётчик — тот же ``_user_retry_count`` (сбрасывается на новом
+        запросе юзера), потолок свой — :data:`DJ_REQUEST_MAX_RETRIES`.
+        """
+        if was_dj_auto or not is_dj_request(user_input):
+            return None
+        if tools_set & DJ_REQUEST_SATISFYING_TOOLS:
+            self._dj_request_closed = True
+        if self._dj_request_closed:
+            # DJ-часть закрыта; запустилась ли музыка — обычная работа
+            # :meth:`evaluate` (Bug C), как и до #2999: скилл dj требует
+            # трек в том же ходе, иначе тишина до первого перехода.
+            self._log_debug(
+                "🎧 [issue 2999] DJ-запрос закрыт set_dj_mode "
+                f"(tools={sorted(tools_set)!r}) → дальше evaluate()"
+            )
+            return None
+        if self._user_retry_count < DJ_REQUEST_MAX_RETRIES:
+            self._user_retry_count += 1
+            self._log_warning(
+                "🎧 [issue 2999] DJ-запрос без set_dj_mode "
+                f"(tools={sorted(tools_set)!r}, dj_enabled={dj_enabled}); "
+                f"DJ-ретрай {self._user_retry_count}/{DJ_REQUEST_MAX_RETRIES}"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.USER_RETRY,
+                reason="dj_request",
+                prompt=build_dj_request_retry_prompt(
+                    user_input, dj_active=dj_enabled
+                ),
+            )
+        self._user_retry_count = 0
+        self._log_warning(
+            "🎧 [issue 2999] DJ-ретраи исчерпаны без set_dj_mode "
+            f"(tools={sorted(tools_set)!r})"
+        )
+        if tools_set & MUSIC_STARTING_TOOLS:
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.SKIP,
+                reason="dj_request_exhausted_music_playing",
+            )
+        return MusicGuardVerdict(
+            kind=MusicGuardVerdictKind.FALLBACK,
+            reason="dj_request_retry_exhausted",
+            prompt=build_dj_request_exhausted_fallback(user_input),
+        )
 
 
 __all__ = [
