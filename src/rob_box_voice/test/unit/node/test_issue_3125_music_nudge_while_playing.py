@@ -96,14 +96,28 @@ class TestNudgeWhileMusicPlaying:
         assert not any("бит не запустился" in t for t in said)
         n._discard_last_music_reply.assert_called_once()
 
-    def test_budget_exhausted_without_music_keeps_old_text(self) -> None:
+    def test_budget_exhausted_without_music_after_failed_tool_keeps_old_text(
+        self,
+    ) -> None:
+        # «бит не запустился» — правда: музыкальный тул в ходе был и упал.
+        n = _make_node(playing=False, budget_left=False)
+        n._apply_music_guard(
+            was_dj_auto=False,
+            user_input=LIVE_C_USER_INPUT,
+            tools_called=("compose_music",),
+            tool_error_occurred=True,
+        )
+        assert _spoken(n) == ["Я тут растерялся — бит не запустился, попробуй ещё раз."]
+
+    def test_budget_exhausted_without_any_music_tool_is_honest(self) -> None:
+        # Issue #3161: тулов не было — «бит не запустился» было бы враньём.
         n = _make_node(playing=False, budget_left=False)
         n._apply_music_guard(
             was_dj_auto=False,
             user_input=LIVE_C_USER_INPUT,
             tools_called=(),
         )
-        assert _spoken(n) == ["Я тут растерялся — бит не запустился, попробуй ещё раз."]
+        assert _spoken(n) == [DialogueNode.MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT]
 
     def test_error_then_success_turn_threads_succeeded_tools(self) -> None:
         n = _make_node(playing=True, budget_left=True)

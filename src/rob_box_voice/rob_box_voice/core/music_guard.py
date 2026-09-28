@@ -227,7 +227,7 @@ class MusicGuard:
     # ------------------------------------------------------------------
 
     def _user_music_already_satisfied(
-        self, user_input: str, tools_set: set
+        self, user_input: str, tools_set: set, spoken: Optional[str] = None
     ) -> Optional[str]:
         """Bug C — это вообще не просьба включить музыку, либо она закрыта?
 
@@ -277,15 +277,57 @@ class MusicGuard:
         # Read-only музыкальный тул ОТВЕЧАЕТ на такой вопрос, значит просьба
         # удовлетворена. Без тулов nudge остаётся как был: иначе мы
         # замаскируем настоящий случай «LLM вообще ничего не вызвала».
+        if not is_music_state_query(user_input):
+            return None
         _state_answered = tools_set & MUSIC_STATE_QUERY_TOOLS
-        if _state_answered and is_music_state_query(user_input):
+        if _state_answered:
             self._log_debug(
                 "🎵 [issue 992 Bug C] state query, LLM answered via "
                 f"{sorted(_state_answered)!r} — no nudge needed"
             )
             return "state_query_satisfied"
+        return self._state_query_answered_in_words(user_input, tools_set, spoken)
 
-        return None
+    def _state_query_answered_in_words(
+        self, user_input: str, tools_set: set, spoken: Optional[str]
+    ) -> Optional[str]:
+        """Issue #3161 — вопрос о состоянии, ответ словами без тулов.
+
+        Живой прогон 28.09 22:32: «а какую музыку ты сейчас включал?» через
+        13 с после стопа, модель ответила «Минуту назад играл клубный
+        трек…» без тулов — ответ ПРАВИЛЬНЫЙ, а Bug C дважды потребовал
+        ``execute_music_code`` и кончился фразой «бит не запустился».
+        Ретрай Bug C на вопросе всегда ведёт не туда: его промпт требует
+        ЗАПУСТИТЬ музыку, о чём юзер не просил. С #3161 ``<music_state>``
+        строится из снимка плеера, и ответ по тегу без тула — честный.
+
+        Условия (без новых регексов — только существующие детекторы):
+
+        * реплика — вопрос о состоянии (:func:`is_music_state_query`;
+          знак «?» не годится: Yandex STT работает с
+          ``TEXT_NORMALIZATION_DISABLED`` и пунктуацию не ставит);
+        * ответ модели известен и не заявляет музыкальное действие без тула
+          (:func:`is_phantom_music_action`, таблица Bug E). Ответ
+          неизвестен (``spoken=None``) — поведение прежнее (ретрай).
+
+        Заявления действий, которых эта таблица не знает, ловят
+        babble/Bug E/#2549-гуарды: они работают в том же ходе ДО
+        музыкального и, отправив ретрай, выключают его
+        (``_retry_dispatched_in_turn``).
+        """
+        if spoken is None:
+            return None
+        phantom = is_phantom_music_action(
+            user_input=user_input, spoken=spoken, tools_called=tuple(tools_set)
+        )
+        if phantom is not None:
+            return None
+        self._log_info(
+            "🎵 [issue 3161 Bug C] вопрос о состоянии музыки, модель ответила "
+            f"словами без заявления действия (tools={sorted(tools_set)!r}) — "
+            "ретрай «включи музыку» не нужен"
+        )
+        return "state_query_answered_in_words"
 
     def _music_call_succeeded(
         self, music_started: set, succeeded_tools: Optional[Tuple[str, ...]]
@@ -580,7 +622,9 @@ class MusicGuard:
                 reason="not_music_request",
             )
 
-        _skip_reason = self._user_music_already_satisfied(user_input, tools_set)
+        _skip_reason = self._user_music_already_satisfied(
+            user_input, tools_set, spoken
+        )
         if _skip_reason is not None:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
