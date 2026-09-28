@@ -104,6 +104,7 @@ jobs:
           python tools/architecture_audit.py --output architecture/inventory.json --markdown architecture/inventory.md
           python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
           python tools/architecture_catalog.py architecture/inventory.json
+          python tools/architecture_class_metrics.py
 
       - name: Capture both Pi ROS2 runtime graphs
         shell: bash
@@ -206,6 +207,8 @@ jobs:
             architecture/findings.md
             architecture/node-catalog.md
             architecture/topic-catalog.md
+            architecture/class-metrics.json
+            architecture/class-metrics.md
             architecture/runtime.json
             architecture/runtime-main.json
             architecture/runtime-vision.json

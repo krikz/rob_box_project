@@ -78,3 +78,18 @@ Readability rules:
 - Placement comes only from repo evidence: compose `command`/`entrypoint` → start script → `ros2 run` / `ros2 launch` / `-r __node:=` → launch file `name=` / `setup.py` entry point. Library-hosted nodes (costmaps, ros2_control controllers) follow their host node; `/rtabmap/*` follows the namespace. A node without evidence is shown as "unplaced", never guessed.
 - Hidden as noise and listed in the report: `/tf`, `/tf_static`, `/diagnostics`, `/rosout`, `/parameter_events`, `/clock`, `/robot_description`, `/bond`, `*/transition_event`; tf2 `transform_listener_impl_*`, `launch_ros_*`, nav2 `*_rclcpp_node` helpers.
 - A topic with one publisher and one subscriber is an arrow label; a shared topic is a green pill.
+
+## Class metrics
+
+`tools/architecture_class_metrics.py` measures production classes (tests and `scripts/example_*`/`test_*` excluded) and writes `class-metrics.json` / `class-metrics.md`:
+
+- `loc`, `methods`, `attributes` (distinct `self.<name>` the class assigns);
+- `wmc` — sum of method cyclomatic complexity, `max_cc` / `max_cc_method`;
+- `tcc` — Tight Class Cohesion: share of method pairs using a common attribute the class assigns;
+- `responsibilities` — LCOM4: groups of methods linked by shared state or `self.method()` calls. Dunders and methods that touch no own state (`stateless_methods`: Protocol/ABC stubs, helpers) are left out;
+- `ros_endpoints` — `create_publisher/subscription/service/client/timer` calls;
+- `god_class` — `wmc >= 47 and tcc < 1/3 and loc >= 500` (Lanza & Marinescu without ATFD);
+- `test_refs` — test files that mention the class name. A proxy, not coverage;
+- `line_coverage` — only with `--coverage <coverage.py JSON>`; otherwise `null`, never guessed.
+
+Metrics are review candidates: a god class or several responsibilities is a reason to ask the node review questions above, not an automatic split.
