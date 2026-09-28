@@ -14,7 +14,8 @@ Issue #3133. Владелец состояния «играет / какой т�
       "track_id": str | null,          # id трека, который звучит сейчас
       "form_ends_at": float | null,    # epoch конца прохода формы (любой repeat)
       "stops_at": float | null,        # epoch остановки конечного трека
-      "dj": bool,                      # DJ-режим включён (MusicManager)
+      "dj": {"enabled": bool},         # DJ-режим (MusicManager); объект —
+                                       # ADR-0142 добавит persona/theme/plan
       "finished_track_id": str | null, # idle потому, что этот трек доиграл сам
       "ts": float                      # epoch публикации
     }
@@ -22,6 +23,12 @@ Issue #3133. Владелец состояния «играет / какой т�
 QoS: ``RELIABLE`` + ``TRANSIENT_LOCAL`` + ``KEEP_LAST 1`` — последний снимок
 получает и тот, кто подписался позже (перезапуск ноды). Подписчику нужен
 тот же ``TRANSIENT_LOCAL``: с ``VOLATILE``-подпиской истории не будет.
+
+``track_id`` — непрозрачная строка: сравнивать только на равенство, формат
+не разбирать (ADR-0142 сменит его на токен ``<set_id>:<track_no>:…``).
+Событие «трек доиграл сам» в этом контракте — ``finished_track_id`` в
+снимке ``idle``; отдельный поток событий ``/voice/music/event``
+(``started`` / ``nearly_finished`` / ``finished``) вводит ADR-0142.
 
 Модуль без ROS-импортов: его используют и публикатор (``rob_box_mcp_tools``),
 и подписчики (``rob_box_voice``), а юнит-тесты гоняют его без rclpy.
@@ -58,6 +65,13 @@ def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+def _dj_enabled(value: Any) -> bool:
+    """``dj`` — объект ``{"enabled": bool, ...}``; голый bool тоже принимаем."""
+    if isinstance(value, dict):
+        return value.get("enabled") is True
+    return value is True
+
+
 @dataclass(frozen=True)
 class MusicPlayerState:
     """Разобранный снимок ``/voice/music/state``."""
@@ -66,7 +80,7 @@ class MusicPlayerState:
     track_id: Optional[str] = None
     form_ends_at: Optional[float] = None
     stops_at: Optional[float] = None
-    dj: bool = False
+    dj: bool = False  # dj.enabled
     finished_track_id: Optional[str] = None
     ts: Optional[float] = None
 
@@ -101,7 +115,7 @@ def build_music_state_payload(
             "track_id": _str_or_none(track_id),
             "form_ends_at": _epoch_or_none(form_ends_at),
             "stops_at": _epoch_or_none(stops_at),
-            "dj": bool(dj),
+            "dj": {"enabled": bool(dj)},
             # «доиграл сам» имеет смысл только в idle.
             "finished_track_id": None if playing else _str_or_none(finished_track_id),
             "ts": time.time() if ts is None else float(ts),
@@ -135,7 +149,7 @@ def parse_music_state(data: Optional[str]) -> Optional[MusicPlayerState]:
         track_id=_str_or_none(payload.get("track_id")),
         form_ends_at=_epoch_or_none(payload.get("form_ends_at")),
         stops_at=_epoch_or_none(payload.get("stops_at")),
-        dj=payload.get("dj") is True,
+        dj=_dj_enabled(payload.get("dj")),
         finished_track_id=_str_or_none(payload.get("finished_track_id")),
         ts=_epoch_or_none(payload.get("ts")),
     )

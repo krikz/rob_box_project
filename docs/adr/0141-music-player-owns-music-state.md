@@ -4,7 +4,7 @@
 **Статус:** Предложено (ждёт ревью товарища Шифу)
 **Автор:** шисюн (Claude Code)
 **Issue:** [#3133](https://github.com/krikz/rob_box_project/issues/3133)
-**Связанные:** `docs/design/2026-09-28-music-dj-systemic-analysis.md` (§2 П1–П2, §6 Ш1), issue #935 (watchdog), #989 (VAD при музыке), #1812 (удержание формы от idle-TTL), #2461 (`/voice/music/form`), #3113 (`stops_at`), #3125 (nudge при играющей музыке), #3134 (следующий шаг)
+**Связанные:** `docs/design/2026-09-28-music-dj-systemic-analysis.md` (§2 П1–П2, §6 Ш1), issue #935 (watchdog), #989 (VAD при музыке), #1812 (удержание формы от idle-TTL), #2461 (`/voice/music/form`), #3113 (`stops_at`), #3125 (nudge при играющей музыке), #3134 (следующий шаг), ADR-0142 (DJ-конвейер, опирается на этот контракт)
 
 ## 1. Проблема
 
@@ -33,12 +33,13 @@
 
    ```json
    {"state": "playing|idle", "track_id": "…|null", "form_ends_at": 0.0, "stops_at": 0.0,
-    "dj": false, "finished_track_id": "…|null", "ts": 0.0}
+    "dj": {"enabled": false}, "finished_track_id": "…|null", "ts": 0.0}
    ```
 
    - Время — epoch.
-   - `track_id` новый на каждый успешный `execute_code`.
-   - `finished_track_id` заполнен только в `idle`, если трек доиграл сам; при явном стопе он `null`.
+   - `track_id` новый на каждый успешный `execute_code`. Это непрозрачная строка: её сравнивают только на равенство. ADR-0142 сменит формат на токен `<set_id>:<track_no>:<source>:<sha8>`.
+   - `dj` — объект, а не bool: ADR-0142 (§4, §6.3) положит туда `persona`, `theme`, `plan` без смены типа поля.
+   - `finished_track_id` заполнен только в `idle`, если трек доиграл сам; при явном стопе он `null`. Это и есть событие `finished` в этом шаге. Отдельный поток `/voice/music/event` (`started` / `nearly_finished` / `finished`) вводит ADR-0142 §3.1.
    - Публикация идёт после каждого музыкального тула, на тике watchdog'а и по таймеру конца формы.
    - Контракт, сборка и разбор живут в одном модуле без ROS: `rob_box_voice/core/music_player_state.py`. Парсер понимает и старую плоскую строку, потому что пакеты могут обновиться не одновременно.
 3. **Подписчики читают «играет» только из снимка.**

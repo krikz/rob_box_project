@@ -55,6 +55,18 @@ def test_garbage_is_ignored():
         assert parse_music_state(data) is None
 
 
+def test_dj_is_an_extensible_object():
+    payload = json.loads(build_music_state_payload(playing=True, dj=True))
+    assert payload["dj"] == {"enabled": True}
+    # ADR-0142 добавит поля в dj — разбор не ломается.
+    snap = parse_music_state(json.dumps({
+        "state": "playing", "dj": {"enabled": True, "persona": "Снупдог", "plan": {}},
+    }))
+    assert snap.dj is True
+    assert parse_music_state('{"state": "idle", "dj": {"enabled": false}}').dj is False
+    assert parse_music_state('{"state": "idle", "dj": true}').dj is True
+
+
 def test_bad_field_types_are_dropped():
     snap = parse_music_state(json.dumps({
         "state": "playing", "track_id": 5, "stops_at": True, "dj": "yes",

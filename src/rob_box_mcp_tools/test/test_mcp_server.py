@@ -636,7 +636,8 @@ def test_publish_music_state_is_the_player_snapshot_json(monkeypatch):
     }
     assert payload["state"] == "playing"
     assert payload["track_id"] == "abc-7"
-    assert payload["dj"] is True
+    # Объект, а не bool: ADR-0142 добавит persona/theme/plan.
+    assert payload["dj"] == {"enabled": True}
     assert before + 42.0 <= payload["stops_at"] <= before + 43.0
     assert payload["finished_track_id"] is None
     snap = parse_music_state(server.music_state_pub.published[0])
