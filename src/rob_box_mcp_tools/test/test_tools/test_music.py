@@ -1792,7 +1792,10 @@ class TestMusicManagerExecuteCode:
         don't have a ``gate`` control at all — sus/doneAction envelopes).
         It was about WHEN ``/g_freeAll`` fires: immediately after ``exec``,
         while the new track's first note doesn't actually sound until
-        ``Clock.next_bar()`` — up to ``ALIGN_LEAD_BEATS`` beats later.
+        ``Clock.next_bar() + Clock.latency`` — up to ``ALIGN_LEAD_BEATS``
+        beats plus the OSC bundle's scheduling latency later (issue #3137
+        second review, live remeasure 28.09.2026: R1/#3148 fixed the beats
+        part but left a ≈0.5s dip because it didn't account for latency).
 
         With a live Clock available, ``execute_code`` MUST NOT have sent
         ``/g_freeAll`` (or the gate=0 ramp, or /g_new) by the time it
@@ -1804,6 +1807,7 @@ class TestMusicManagerExecuteCode:
         clock.now.return_value = 100.0
         clock.next_bar.return_value = 102.0  # 2 beats away, like ALIGN_LEAD_BEATS
         clock.bpm = 124
+        clock.latency = 0.25  # Renardo default (renardo_lib/TempoClock.py:121)
         mgr._renardo_context = {"Clock": clock}
         # Isolate the transition-cleanup OSC traffic from the unrelated
         # lazy master-gain apply (execute_code sends its own /n_set on the
@@ -1826,40 +1830,104 @@ class TestMusicManagerExecuteCode:
         fake_timer_cls.assert_called_once()
         args, kwargs = fake_timer_cls.call_args
         delay = args[0] if args else kwargs["interval"]
-        # 2 beats @ 124 BPM = 0.9677s, minus the safety margin (0.08s).
-        assert delay == pytest.approx(2.0 * 60.0 / 124.0 - 0.08, abs=1e-6)
+        # 2 beats @ 124 BPM = 0.9677s + 0.25s Clock.latency, minus the
+        # safety margin (0.15s — issue #3137 R2, covers the full
+        # _transition_cleanup pipeline: RAMP_DOWN_RELEASE_SECONDS +
+        # TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS + jitter buffer).
+        assert delay == pytest.approx(2.0 * 60.0 / 124.0 + 0.25 - 0.15, abs=1e-6)
         fake_timer_cls.return_value.start.assert_called_once()
 
-    def test_transition_cleanup_delay_uses_clock_next_bar_and_bpm(self):
+    def test_transition_cleanup_delay_uses_clock_next_bar_bpm_and_latency(self):
         """``_transition_cleanup_delay_seconds`` — the actual math (issue
-        #3137 R2): seconds until ``Clock.next_bar()`` at the current BPM,
-        minus the safety margin, floored at zero.
+        #3137 R2, live remeasure 28.09.2026): seconds until
+        ``Clock.next_bar()`` at the current BPM, PLUS ``Clock.latency``
+        (the OSC bundle scheduling delay — the new track's first note
+        doesn't materialise in scsynth until ``next_bar + latency``, not
+        at ``next_bar`` itself), minus the safety margin.
         """
         mgr = _make_manager()
         clock = Mock()
         clock.now.return_value = 10.0
         clock.next_bar.return_value = 14.0  # 4 beats away
         clock.bpm = 120
+        clock.latency = 0.25
         mgr._renardo_context = {"Clock": clock}
 
         delay = mgr._transition_cleanup_delay_seconds()
 
-        # 4 beats @ 120 BPM = 2.0s, minus 0.08s margin.
-        assert delay == pytest.approx(2.0 - 0.08, abs=1e-6)
+        # 4 beats @ 120 BPM = 2.0s + 0.25s latency, minus 0.15s margin.
+        assert delay == pytest.approx(2.0 + 0.25 - 0.15, abs=1e-6)
 
-    def test_transition_cleanup_delay_floors_at_zero_past_deadline(self):
-        """Deadline already passed (or margin exceeds the gap) -> 0.0, the
-        signal for immediate (synchronous) teardown — never a negative
-        delay for ``threading.Timer``.
+    def test_transition_cleanup_delay_reads_latency_from_clock_not_hardcoded(self):
+        """``Clock.latency`` must be read off the live Clock object, not
+        assumed to be Renardo's own default — a Clock configured with
+        ``Clock.set_latency(...)`` (or any other non-default value) has to
+        be honoured verbatim (issue #3137 R2)."""
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 0.0
+        clock.next_bar.return_value = 4.0  # 4 beats away
+        clock.bpm = 120
+        clock.latency = 0.5  # deliberately not the 0.25 Renardo default
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # 4 beats @ 120 BPM = 2.0s + 0.5s latency, minus 0.15s margin.
+        assert delay == pytest.approx(2.0 + 0.5 - 0.15, abs=1e-6)
+
+    def test_transition_cleanup_delay_falls_back_to_default_latency_when_clock_lacks_attribute(
+        self,
+    ):
+        """A Clock object with no ``latency`` attribute at all (a minimal
+        stub, or an exotic Renardo build) must not collapse the delay back
+        to the pre-latency (R1) math — fall back to Renardo's own
+        documented default (``RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS`` ==
+        0.25s, ``renardo_lib/TempoClock.py:121``), read via ``getattr``
+        rather than hardcoded inline."""
+
+        class _ClockWithoutLatency:
+            def now(self):
+                return 0.0
+
+            def next_bar(self):
+                return 4.0
+
+            bpm = 120
+
+        mgr = _make_manager()
+        mgr._renardo_context = {"Clock": _ClockWithoutLatency()}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        assert delay == pytest.approx(
+            2.0 + MusicManager.RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS - 0.15, abs=1e-6
+        )
+
+    def test_transition_cleanup_delay_floors_at_latency_minus_margin_at_deadline(self):
+        """At (or past) ``Clock.next_bar()`` itself, the delay no longer
+        collapses to 0.0 the way R1 did (issue #3137 R2, live remeasure
+        28.09.2026): the new track's OSC bundle has already been queued in
+        scsynth timestamped ``send_time + Clock.latency`` — it won't
+        actually materialise for another ``latency`` seconds regardless of
+        how close (or how far past) ``next_bar`` already is, so teardown
+        still has to wait that long minus the safety margin. A literal
+        0.0 is now reserved for the "Clock unavailable/broken" fallback
+        paths (see the tests below), not for "deadline is imminent".
         """
         mgr = _make_manager()
         clock = Mock()
         clock.now.return_value = 10.0
         clock.next_bar.return_value = 10.01  # a few ms away, less than margin
         clock.bpm = 124
+        clock.latency = 0.25
         mgr._renardo_context = {"Clock": clock}
 
-        assert mgr._transition_cleanup_delay_seconds() == 0.0
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # 0.01 beats @ 124 BPM = 0.00484s + 0.25s latency, minus 0.15s margin.
+        assert delay == pytest.approx(0.01 * 60.0 / 124.0 + 0.25 - 0.15, abs=1e-6)
+        assert delay > 0.0
 
     def test_transition_cleanup_delay_falls_back_to_zero_without_clock(self):
         """No Clock in context (degraded/mocked stack, or renardo not up
@@ -1897,6 +1965,7 @@ class TestMusicManagerExecuteCode:
         clock.now.return_value = 0.0
         clock.next_bar.return_value = 2.0  # 2 beats away
         clock.bpm = 1e-9
+        clock.latency = 0.25
         mgr._renardo_context = {"Clock": clock}
 
         delay = mgr._transition_cleanup_delay_seconds()
@@ -1917,6 +1986,7 @@ class TestMusicManagerExecuteCode:
         clock.now.return_value = 0.0
         clock.next_bar.return_value = 2.0
         clock.bpm = 124
+        clock.latency = 0.25
         mgr._renardo_context = {"Clock": clock}
         mgr._master_gain_applied = True  # isolate from the lazy gain-apply /n_set
         call_log = []

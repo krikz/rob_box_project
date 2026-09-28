@@ -1300,14 +1300,45 @@ class MusicManager:
     #: — issue #3137, столько же, сколько #1000 уже использовал в ``stop_all``.
     RAMP_DOWN_RELEASE_SECONDS = 0.05
 
-    #: Запас (сек) перед вычисленным моментом ``Clock.next_bar()`` в
-    #: :meth:`_transition_cleanup_delay_seconds` — issue #3137 R2 (ревью
-    #: координатора). Отложенный ramp/freeAll обязан прийти в scsynth
-    #: строго ДО первой ноты нового трека (иначе freeAll убьёт свежесозданную
-    #: ноду вместо старой — новый трек тоже щёлкнет/оборвётся). Запас
-    #: покрывает джиттер треда таймера и время самого OSC round-trip внутри
-    #: _ramp_down_group (gate=0 + RAMP_DOWN_RELEASE_SECONDS + freeAll).
-    TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS = 0.08
+    #: Пауза (сек) между ``/g_freeAll`` и ``/g_new`` в :meth:`_transition_cleanup`
+    #: — issue #778 (``FAILURE IN SERVER /g_new negative node IDs are
+    #: reserved``): UDP fire-and-forget, scsynth не успевает освободить ID
+    #: группы мгновенно, без паузы пересоздание группы гонится с ещё не
+    #: обработанным ``/g_freeAll``. Вынесено в именованную константу (было
+    #: инлайновым ``time.sleep(0.05)``), потому что issue #3137 R2 (живой
+    #: замер 28.09.2026) считает по ней :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`
+    #: — см. её docstring.
+    TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS = 0.05
+
+    #: Запас (сек) перед вычисленным дедлайном (``next_bar + Clock.latency``,
+    #: см. :meth:`_transition_cleanup_delay_seconds`) — issue #3137 R2
+    #: (живой замер 28.09.2026, второй раунд ревью координатора). Отложенный
+    #: ramp/freeAll обязан ЗАВЕРШИТЬСЯ в scsynth строго ДО момента, когда там
+    #: материализуется первая нота нового трека — иначе возможны два разных
+    #: отказа: (1) freeAll убьёт свежесозданную ноду нового трека вместо
+    #: старой (новый трек тоже щёлкнет/оборвётся); (2) хуже — если
+    #: материализация нового трека наступит РАНЬШЕ, чем наш ``/g_new``
+    #: пересоздаст группу 1 (см. :meth:`_transition_cleanup`), у scsynth
+    #: нет группы-цели, когда бандл нового трека пробует создать в ней свою
+    #: под-группу (``ServerManager.get_bundle``: первое сообщение бандла —
+    #: ``/g_new [group_id, 1, 1]``, ``target=1``) → тот же класс отказа, что
+    #: и issue #778 («target node not found»), только для НОВОГО трека, не
+    #: для пересоздания группы.
+    #:
+    #: Поэтому запас обязан целиком покрывать локальный конвейер
+    #: :meth:`_transition_cleanup` ОТ момента срабатывания таймера ДО
+    #: завершения ``/g_new`` — :data:`RAMP_DOWN_RELEASE_SECONDS` (пауза
+    #: перед freeAll) + :data:`TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS`
+    #: (пауза перед g_new, issue #778) = 0.10s, плюс буфер на джиттер треда
+    #: таймера и сам OSC round-trip отправки трёх сообщений. Старое значение
+    #: (0.08s, R1/#3148) было МЕНЬШЕ этих 0.10s — не баг для R1 (дедлайн
+    #: стоял ДО ``next_bar``, а реальная материализация — на ``next_bar +
+    #: latency``, ≈0.25s запаса набегало случайно), но стало бы гонкой для
+    #: R2, если бы margin не подняли вместе со сдвигом дедлайна на
+    #: ``+ latency``.
+    TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS = (
+        RAMP_DOWN_RELEASE_SECONDS + TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS + 0.05
+    )  # = 0.15
 
     #: Потолок для :meth:`_transition_cleanup_delay_seconds` — реалистичный
     #: разрыв (``ALIGN_LEAD_BEATS`` долей на разумном BPM) укладывается в
@@ -1322,6 +1353,15 @@ class MusicManager:
     #: scsynth, см. комментарий про «too many nodes» выше по файлу), и
     #: защита от невалидного OSC-интервала.
     TRANSITION_CLEANUP_MAX_DELAY_SECONDS = 5.0
+
+    #: Дефолт ``Clock.latency`` в Renardo (``renardo_lib/TempoClock.py``
+    #: 0.9.13, строка 121: ``self.latency = 0.25 # Time between starting
+    #: processing osc messages and sending to server``) — используется в
+    #: :meth:`_transition_cleanup_delay_seconds` ТОЛЬКО как fallback, если
+    #: у живого ``Clock`` почему-то нет атрибута ``latency`` (см. её
+    #: docstring — issue #3137, живой замер 28.09.2026 после #3148).
+    #: Обычное значение читается с самого ``clock.latency``, не хардкодится.
+    RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS = 0.25
 
     def _ramp_down_group(self, group: int = 1) -> None:
         """Плавно погасить живые SC-ноды группы перед ``/g_freeAll`` (anti-click).
@@ -1378,13 +1418,13 @@ class MusicManager:
             pass  # если SC недоступен — не критично, старые ноды умрут сами
 
     def _transition_cleanup_delay_seconds(self) -> float:
-        """Секунд до дедлайна: ``Clock.next_bar()`` минус запас (issue #3137).
+        """Секунд до дедлайна: ``next_bar + Clock.latency`` минус запас.
 
         Корневая причина живого симптома (issue #3137, найдено ревью
-        координатора): дело не в жёсткости ``/g_freeAll`` как такового, а в
-        МОМЕНТЕ его вызова. ``execute_code`` раньше слал ``freeAll`` сразу
-        после ``exec`` — в этот момент старые SC-ноды ещё звучат, а новые
-        плееры (зарегистрированные тем же ``exec``) встают на
+        координатора, R1): дело не в жёсткости ``/g_freeAll`` как такового,
+        а в МОМЕНТЕ его вызова. ``execute_code`` раньше слал ``freeAll``
+        сразу после ``exec`` — в этот момент старые SC-ноды ещё звучат, а
+        новые плееры (зарегистрированные тем же ``exec``) встают на
         ``Clock.next_bar()`` (``Players.py:892``) и реально зазвучат не
         раньше, чем клок дойдёт до этой доли. При типичном арранжировщике
         (``core/arranger.py:clock_align_prelude``, ``ALIGN_LEAD_BEATS=2``)
@@ -1393,18 +1433,46 @@ class MusicManager:
         а новый начинает звучать почти секунду спустя → окно цифровой
         тишины (−180 dBFS), а не щелчок.
 
+        R1 (сдвиг teardown на ``next_bar - запас``, #3148) убрал окно
+        цифровой тишины на стыке, но живой замер 28.09.2026 (issue #3137,
+        деплой ``82c973e62``) нашёл остаточную просадку ≈0.5с до −75 dB.
+        Причина (R2, тот же живой комментарий): ``Clock.next_bar()`` — это
+        МОМЕНТ, когда Renardo-клок (``TempoClock.py:583``, фоновый тред
+        ``__run_block``) отправляет OSC-бандл с новыми нотами в scsynth —
+        не момент, когда они реально зазвучат. Сам бандл несёт таймстемп
+        ``osc_message_time() == time.time() + Clock.latency``
+        (``TempoClock.py:485-487``; дефолт ``Clock.latency = 0.25``,
+        ``TempoClock.py:121``) — это НАСТОЯЩИЙ NTP-таймстемп OSC bundle
+        (``ServerManager/__init__.py:get_bundle``: ``OSCBundle(time=
+        timestamp)``), а scsynth планирует его исполнение (создание своих
+        ``/g_new``+``/s_new`` нод — каждая нота у Renardo живёт в
+        собственной подгруппе группы 1, см. ``get_bundle``) НА этот момент
+        в будущем, не раньше. До этого момента у scsynth просто нет нод
+        нового трека — их физически нечем задеть немедленным
+        ``/g_freeAll``, поэтому teardown можно (и нужно) держать старый
+        трек живым ещё ``Clock.latency`` секунд ПОСЛЕ ``next_bar()``, а не
+        только до него.
+
         Фикс: не звать ``freeAll`` синхронно, а посчитать здесь, сколько
-        секунд реально осталось до старта нового трека, и запланировать
-        ramp/freeAll на этот момент (см.
-        :meth:`_schedule_transition_cleanup`). До дедлайна старый трек
-        доигрывает сам — короткие ноты с ``sus``/``doneAction`` успевают
-        освободиться естественно, длинные попадают под ramp/freeAll ровно
-        на границе, а не секундой раньше.
+        секунд реально осталось до старта нового трека
+        (``next_bar + Clock.latency``), и запланировать ramp/freeAll на
+        этот момент минус запас (см. :meth:`_schedule_transition_cleanup`).
+        До дедлайна старый трек доигрывает сам — короткие ноты с
+        ``sus``/``doneAction`` успевают освободиться естественно, длинные
+        попадают под ramp/freeAll ровно на границе (перед тем, как в
+        scsynth материализуются ноды нового трека), а не секундой раньше и
+        не 0.25с раньше.
+
+        ``Clock.latency`` читается с живого ``clock`` (``getattr``), не
+        хардкодится — конкретное значение внешнее (Renardo/оператор могут
+        его менять, ``Clock.set_latency(...)``); дефолт Renardo
+        (:data:`RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS`) — только fallback,
+        если атрибута нет вовсе.
 
         Returns:
             Секунды до дедлайна, зажатые снизу нулём (``0.0`` — сигнал
             вызвать teardown немедленно: Clock недоступен, BPM невалиден,
-            или дедлайн уже наступил/прошёл) и сверху
+            или диагностика упала) и сверху
             :data:`TRANSITION_CLEANUP_MAX_DELAY_SECONDS`. Никогда не бросает.
         """
         try:
@@ -1416,9 +1484,17 @@ class MusicManager:
             bpm = float(self._renardo_bpm())
             if bpm <= 0:
                 return 0.0
+            latency = float(
+                getattr(clock, "latency", self.RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS)
+            )
+            if latency < 0.0:
+                latency = 0.0
             beats_until = max(0.0, next_bar - now)
-            seconds_until = beats_until * 60.0 / bpm
-            delay = max(0.0, seconds_until - self.TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS)
+            seconds_until_bar = beats_until * 60.0 / bpm
+            seconds_until_first_note = seconds_until_bar + latency
+            delay = max(
+                0.0, seconds_until_first_note - self.TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS
+            )
             return min(delay, self.TRANSITION_CLEANUP_MAX_DELAY_SECONDS)
         except Exception:  # noqa: BLE001 — диагностика не должна ронять переход
             return 0.0
@@ -1429,16 +1505,26 @@ class MusicManager:
         Тело исполняется либо сразу (``delay<=0`` в
         :meth:`_schedule_transition_cleanup`), либо в потоке
         ``threading.Timer`` — в обоих случаях после того, как
-        :meth:`_ramp_down_group` отработает, обязана остаться пауза перед
-        ``/g_new`` (issue #778): UDP fire-and-forget, scsynth не успевает
-        освободить ID группы мгновенно, без паузы ``/g_new`` (или первая
-        нота нового трека, целящаяся в ту же группу) придёт раньше, чем
-        scsynth обработает ``/g_freeAll`` → «FAILURE IN SERVER /g_new
-        negative node IDs are reserved».
+        :meth:`_ramp_down_group` отработает, обязана остаться пауза
+        (:data:`TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS`) перед ``/g_new``
+        (issue #778): UDP fire-and-forget, scsynth не успевает освободить
+        ID группы мгновенно, без паузы ``/g_new`` (или первая нота нового
+        трека, целящаяся в ту же группу) придёт раньше, чем scsynth
+        обработает ``/g_freeAll`` → «FAILURE IN SERVER /g_new negative node
+        IDs are reserved».
+
+        Issue #3137 R2 (живой замер 28.09.2026): у ЭТОЙ паузы теперь есть
+        второй потребитель — :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`
+        считает по ней (вместе с :data:`RAMP_DOWN_RELEASE_SECONDS`), сколько
+        всего времени занимает весь конвейер этого метода, чтобы дедлайн в
+        :meth:`_transition_cleanup_delay_seconds` гарантированно оставлял
+        время на его завершение ДО того, как в scsynth материализуется
+        первая нота нового трека (её собственный ``/g_new`` целится в ЭТУ
+        группу — см. margin'а docstring).
         """
         self._ramp_down_group(group)
         try:
-            time.sleep(0.05)
+            time.sleep(self.TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS)
         except Exception:
             pass
         try:
@@ -1456,19 +1542,35 @@ class MusicManager:
         момент — старый трек доигрывает почти до самой границы, новый
         стартует туда же, где старый замолк, дыры не остаётся.
 
-        Дедлайн выбран строго ДО ``Clock.next_bar()`` (с запасом
-        :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`) — то есть строго
-        до того, как Renardo пошлёт первую ноту нового трека. Это
-        сознательный выбор между двумя вариантами, предложенными ревью:
-        (а) freeAll строго до первой новой ноты — можно звать по номеру
-        группы, не отслеживая конкретные node ID; (б) free только СТАРЫХ
-        node ID — потребовало бы вести реестр ID нод на Python-стороне
-        (scsynth сам назначает ID при ``/s_new``, Renardo их не
-        публикует) — отдельная инвазивная правка ради временного окна в
-        десятки миллисекунд. (а) даёт тот же результат проще и без нового
-        состояния, поэтому выбран он: пока наш таймер стреляет РАНЬШE, чем
-        Renardo поставит новую ноту в очередь на ту же группу, freeAll не
-        может задеть ничего, кроме старых нод.
+        Дедлайн выбран строго ДО момента, когда в scsynth реально
+        МАТЕРИАЛИЗУЕТСЯ первая нота нового трека (с запасом
+        :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`) — issue #3137 R2
+        (живой замер 28.09.2026): это НЕ ``Clock.next_bar()``, а
+        ``Clock.next_bar() + Clock.latency``. ``next_bar()`` — момент,
+        когда Renardo-клок ОТПРАВЛЯЕТ в scsynth OSC-бандл новой ноты; сам
+        бандл несёт NTP-таймстемп ``time.time() + Clock.latency``
+        (``renardo_lib/TempoClock.py:485-487``, дефолт ``latency=0.25s``,
+        строка 121) — и scsynth ставит его в свой внутренний планировщик,
+        создавая ноды бандла (``ServerManager.get_bundle``) РОВНО на этот
+        будущий момент, не раньше. До него у scsynth физически нет ни
+        одной ноды нового трека — немедленному ``/g_freeAll`` нечего
+        задеть, кроме старых, поэтому дедлайн можно (и нужно) держать на
+        ``next_bar + latency``, а не на самом ``next_bar`` (см.
+        :meth:`_transition_cleanup_delay_seconds` — там же обоснование
+        полного расчёта запаса). Это сознательный выбор между двумя
+        вариантами, предложенными ревью: (а) freeAll строго до первой
+        новой ноты — можно звать по номеру группы, не отслеживая
+        конкретные node ID; (б) free только СТАРЫХ node ID — потребовало
+        бы вести реестр ID нод на Python-стороне (scsynth сам назначает ID
+        при ``/s_new``, Renardo их не публикует) — отдельная инвазивная
+        правка ради временного окна в десятки миллисекунд. (а) даёт тот же
+        результат проще и без нового состояния, поэтому выбран он: пока
+        наш таймер (и весь его конвейер до завершения ``/g_new``, см.
+        margin) укладывается СТРОГО РАНЬШЕ, чем в scsynth материализуется
+        нода нового трека, ``/g_freeAll`` не может задеть ничего, кроме
+        старых нод, а группа-цель для новой ноды (``target=1`` в её
+        собственном ``/g_new``, см. :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`)
+        успевает быть пересоздана заранее.
 
         Никогда не блокирует вызывающий поток — либо выполняет teardown
         сразу (``delay<=0``, включая любой сбой диагностики Clock —
