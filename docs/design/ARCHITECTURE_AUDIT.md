@@ -34,6 +34,12 @@ Examples:
 
 The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and uses passwordless SSH to the robot (`10.1.1.21` by default). GitHub-hosted runners are never used for live robot access.
 
+Both Pis see one shared Zenoh graph (run 36422274238: 52 nodes on each Pi, union 52), so the workflow captures from the Main Pi only. The `capture_vision` input adds the Vision Pi capture; `tools/architecture_runtime_merge.py` merges one or more snapshots into `runtime.json`:
+
+    python tools/architecture_runtime_merge.py --output architecture/runtime.json \
+      --capture "Main Pi|10.1.1.20|nav2|architecture/runtime-main.json" \
+      --capture "Vision Pi|10.1.1.21|oak-d|architecture/runtime-vision.json"
+
 ## Node review questions
 
 - What problem does this node solve?

@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      capture_vision:
+        description: "Also capture from the Vision Pi. Both Pis see one shared Zenoh graph, so Main Pi alone is the default (~5 min saved)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -58,7 +63,7 @@ jobs:
         with:
           clean: true
 
-      - name: Check both Pi SSH access
+      - name: Check Pi SSH access
         shell: bash
         env:
           SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
@@ -69,14 +74,16 @@ jobs:
             sudo apt-get install -y sshpass
           fi
           command -v sshpass
-          for target in \
-            "${{ inputs.runtime_user }}@${{ inputs.main_host }}" \
-            "${{ inputs.runtime_user }}@${{ inputs.vision_host }}"; do
+          targets=("${{ inputs.runtime_user }}@${{ inputs.main_host }}")
+          if [ "${{ inputs.capture_vision }}" = "true" ]; then
+            targets+=("${{ inputs.runtime_user }}@${{ inputs.vision_host }}")
+          fi
+          for target in "${targets[@]}"; do
             sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$target" "hostname"
           done
           echo "Runner: $(hostname)"
           echo "Main Pi: ${{ inputs.runtime_user }}@${{ inputs.main_host }}"
-          echo "Vision Pi: ${{ inputs.runtime_user }}@${{ inputs.vision_host }}"
+          echo "Vision Pi: ${{ inputs.runtime_user }}@${{ inputs.vision_host }} (capture_vision=${{ inputs.capture_vision }})"
 
       - name: Check both Pi ROS2 graphs
         shell: bash
@@ -111,7 +118,7 @@ jobs:
           python tools/architecture_catalog.py architecture/inventory.json
           python tools/architecture_class_metrics.py
 
-      - name: Capture both Pi ROS2 runtime graphs
+      - name: Capture Pi ROS2 runtime graphs
         shell: bash
         env:
           SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
@@ -130,12 +137,16 @@ jobs:
             fi
             python tools/architecture_runtime_snapshot.py "${args[@]}"
           }
+          # Both Pis see one shared Zenoh graph (run 36422274238: 52 == 52 == 52
+          # nodes), so the Vision Pi capture is opt-in.
           capture "${{ inputs.main_host }}" "${{ inputs.main_container }}" architecture/runtime-main.json
-          capture "${{ inputs.vision_host }}" "${{ inputs.vision_container }}" architecture/runtime-vision.json
+          merge_args=(--capture "Main Pi|${{ inputs.main_host }}|${{ inputs.main_container }}|architecture/runtime-main.json")
+          if [ "${{ inputs.capture_vision }}" = "true" ]; then
+            capture "${{ inputs.vision_host }}" "${{ inputs.vision_container }}" architecture/runtime-vision.json
+            merge_args+=(--capture "Vision Pi|${{ inputs.vision_host }}|${{ inputs.vision_container }}|architecture/runtime-vision.json")
+          fi
 
-          python tools/architecture_runtime_merge.py --output architecture/runtime.json \
-            --capture "Main Pi|${{ inputs.main_host }}|${{ inputs.main_container }}|architecture/runtime-main.json" \
-            --capture "Vision Pi|${{ inputs.vision_host }}|${{ inputs.vision_container }}|architecture/runtime-vision.json"
+          python tools/architecture_runtime_merge.py --output architecture/runtime.json "${merge_args[@]}"
 
       - name: Compare static and runtime
         run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
