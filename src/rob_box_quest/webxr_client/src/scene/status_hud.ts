@@ -87,7 +87,8 @@ export function parseRobotStatus(payload: Uint8Array): RobotStatus | null {
 export function formatStatusLines(
   status: RobotStatus | null,
   rttMs: number | null,
-  fps: number | null = null
+  fps: number | null = null,
+  netKbps: number | null = null
 ): StatusLine[] {
   const lines: StatusLine[] = [];
 
@@ -140,6 +141,16 @@ export function formatStatusLines(
       label: "FPS",
       value: `${Math.round(fps)}`,
       level: fps < 15 ? "bad" : fps < 30 ? "warn" : "ok"
+    });
+  }
+
+  // NET (issue #3150): суммарный входящий трафик подписок. Строки нет,
+  // пока счётчик не подключён (null) — не рисуем «0» вместо «не меряли».
+  if (netKbps !== null && Number.isFinite(netKbps)) {
+    lines.push({
+      label: "NET",
+      value: netKbps < 1000 ? `${Math.round(netKbps)} kbit/s` : `${(netKbps / 1000).toFixed(1)} Mbit/s`,
+      level: "ok"
     });
   }
 
@@ -254,6 +265,8 @@ export interface StatusHud {
   setRtt(rttMs: number | null): void;
   /** FPS из scene loop (`null` — данных ещё нет). AV-25. */
   setFps(fps: number | null): void;
+  /** Суммарный входящий трафик подписок, кбит/с (issue #3150). */
+  setBandwidth(kbps: number | null): void;
   /**
    * Supervisor-state (AV-17). `null` = STATE_UPDATE ещё не пришёл
    * (или сервер на v1 — тогда `degraded=true`).
@@ -300,6 +313,7 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
   let status: RobotStatus | null = null;
   let rttMs: number | null = null;
   let fps: number | null = null;
+  let netKbps: number | null = null;
   // AV-17: supervisor-state. `null` = неизвестно (STATE_UPDATE ещё не пришёл).
   let supervisor: SupervisorState | null = null;
   let supervisorMyClientId: string | null = null;
@@ -325,7 +339,7 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     // AV-26: если есть активный алёрт — перекрашиваем фон HUD плашкой,
     // обычные строки рисуем поверх (они не гаснут, оператор всё ещё
     // видит заряд/связь/RTT/FPS).
-    const lines = formatStatusLines(status, rttMs, fps);
+    const lines = formatStatusLines(status, rttMs, fps, netKbps);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (alert !== null) {
       ctx.fillStyle = alert.level === "error" ? ALERT_BG : ALERT_BG_WARN;
@@ -387,6 +401,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     },
     setFps(next: number | null): void {
       fps = next;
+      draw();
+    },
+    setBandwidth(next: number | null): void {
+      netKbps = next;
       draw();
     },
     setSupervisor(

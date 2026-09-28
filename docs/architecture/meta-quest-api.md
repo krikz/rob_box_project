@@ -67,7 +67,7 @@
 |---|---|---|---|
 | `0x01` | `HELLO` | client → server | `{client_version: "0.1.0", capabilities: ["webxr","hand_tracking"], session_pin: "123456"}` |
 | `0x02` | `WELCOME` | server → client | `{server_version: "0.1.0", session_id: "<uuid4>", server_time_ms: 1234567890, robot_status: {...}, teleop_floor_held_by: "<client_id>"\|null}` |
-| `0x03` | `SUBSCRIBE` | client → server | `{topic: "camera_rear"\|"camera_front"\|"lidar_2d"\|"lidar_3d"\|"voice_state"\|"robot_status"\|"person_detections", quality: "low"\|"med"\|"high"}` |
+| `0x03` | `SUBSCRIBE` | client → server | `{topic: "camera_rear"\|"camera_front"\|"lidar_2d"\|"lidar_3d"\|"voice_state"\|"robot_status"\|"person_detections", quality: "low"\|"med"\|"high", max_hz?: number}` — `max_hz` см. §4.1 |
 | `0x04` | `UNSUBSCRIBE` | client → server | `{topic: "..."}` |
 | `0x10` | `BINARY_FRAME` | server → client | binary blob (raw bytes; topic определяется по `stream_id` из `subscribe_ack`, см. §4) |
 | `0x11` | `JSON_CMD` | client → server | JSON object; `cmd` is one of the implemented commands catalogued in §5 |
@@ -147,6 +147,31 @@ payload. Он не является частью текущего wire-прот�
 | `robot_status` | `stream_id` из `subscribe_ack` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
 | `voice_state` | `stream_id` из `subscribe_ack` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking"\|"denied", ts_ms, utterance_id?, holder_id?, detail?}` — event-driven. См. §6 `JSON_EVENT{type:voice_state}` для семантики `denied`/`holder_id`/`detail` (добавлены в PR #1930 + #1933 под аудит G8/G19, см. issue #1912). |
 | `person_detections` | `stream_id` из `subscribe_ack` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
+
+### 4.1 Лимит частоты на поток: `SUBSCRIBE.max_hz` (issue #3150)
+
+Оператор по интернету сам выбирает, сколько кадров ему нужно.
+`SUBSCRIBE` принимает необязательное `max_hz` (кадров/с на эту сессию и
+этот topic). Сервер (`server/stream_rate.py`, вызывается из
+`broadcast_frame`) режет кадры у себя, до `ws.send_bytes`:
+
+- поля нет, `≤ 0`, не число, bool, NaN/inf или `> 120` → без лимита;
+- первый кадр после интервала уходит сразу; ранний кадр ложится в
+  единственный слот ожидания (более свежий вытесняет старый) и
+  выталкивается, когда интервал истёк — событийные потоки (`voice_state`,
+  `map_2d`) не теряют последнее состояние;
+- повторный `SUBSCRIBE` на тот же topic обновляет лимит (без `max_hz` —
+  снимает), `stream_id` не меняется; `UNSUBSCRIBE` выбрасывает
+  отложенный кадр;
+- `subscribe_ack.max_hz` — действующий лимит; поля нет = без лимита.
+
+Клиент (`state/subscription_manager.ts` + панель «ПОТОКИ» на мостике):
+профили «LAN» (всё, полная частота), «Интернет» (главная камера 5 Гц,
+лидар 5 Гц, карта, статус, голос; остальные камеры выкл.), «Минимум»
+(без видео: статус, лидар 2 Гц, карта, голос), «Свой» (ручные правки);
+выбор хранится в `localStorage["robbox.quest.subscriptions.v1"]`.
+Панель показывает кбит/с и fps по каждому потоку (EMA по входящим
+`BINARY_FRAME`) и сумму; сумма дублируется строкой `NET` в status HUD.
 
 **Frequency policy:**
 
@@ -431,7 +456,7 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "robot_alert",    "active": false, "code": "BATTERY_LOW", "level": "info", "args": {},                 "ts_ms": 1234567890 }
 { "type": "robot_alert",    "active": true, "code": "WIFI_WEAK",    "level": "warn",  "args": {"rssi_dbm": -78},   "ts_ms": 1234567890 }
 { "type": "robot_alert",    "active": true, "code": "ROBOT_STUCK",  "level": "error", "args": {"cmd_linear":0.5, "cmd_angular":0.0, "odom_motion_s":4.2}, "ts_ms": 1234567890 }
-{ "type": "subscribe_ack",  "topic": "camera_rear", "stream_id": 0x1001, "quality": "med" }
+{ "type": "subscribe_ack",  "topic": "camera_rear", "stream_id": 0x1001, "quality": "med", "max_hz": 5.0 }  // max_hz — только если лимит действует (§4.1)
 { "type": "subscribe_nack", "topic": "lidar_3d", "reason": "topic_not_available_yet" }
 { "type": "heartbeat",      "ts_ms": 1234567890 }   // каждые 200 мс, см. §7
 { "type": "voice_state",    "state": "speaking", "ts_ms": 1234567890, "utterance_id": "..." }

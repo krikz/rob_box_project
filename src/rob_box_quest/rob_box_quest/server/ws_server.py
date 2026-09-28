@@ -39,6 +39,7 @@ from .session import (
     ClientSession,
     generate_pin,
 )
+from .stream_rate import StreamRateLimiter, parse_max_hz
 from .voice_floor import FloorHolder, FloorState, VoiceFloorCache
 
 # AV-28 §P7 (issue #1920): whitelist voice-preset ID и языков вывода.
@@ -803,6 +804,9 @@ class WSSServer:
         # loop — раньше кадр молча терялся (чёрный экран). Устанавливается
         # quest_node через set_send_loop().
         self._send_loop: Optional[asyncio.AbstractEventLoop] = None
+        # issue #3150: session_id → лимитер частоты кадров (SUBSCRIBE.max_hz).
+        # Отдельно от ClientSession: offer() зовётся из ROS-потоков.
+        self._rate_limiters: dict[str, StreamRateLimiter] = {}
         # AV-27 / issue #1919 — state для preview_voice + rate-limit.
         # ADR-0055 / issue #1993: общий per-stream реестр активных audio-запросов.
         # Внутри: stream → {request_id: (ws, opened_at)}. Два стрима
@@ -1506,9 +1510,55 @@ class WSSServer:
             frame = encode_frame(FrameType.BINARY_FRAME, stream_id, payload)
             # ws.send_bytes — coroutine. Из aiohttp-loop — await напрямую;
             # из другого потока — call_soon_threadsafe (Phase 1.5).
-            self._schedule_send(ws, frame)
-            count += 1
+            # issue #3150: SUBSCRIBE.max_hz — ранний кадр в слот ожидания.
+            if self._offer_rate_limited(sid, ui_name, ws, frame):
+                count += 1
         return count
+
+    def _offer_rate_limited(self, sid: str, ui_name: str, ws, frame: bytes) -> bool:
+        """Отправить кадр с учётом max_hz. True — ушёл сразу.
+
+        Отложенный кадр (слишком рано) лежит в слоте лимитера; flush
+        планируется на aiohttp-loop через ``call_later`` (issue #3150).
+        """
+        limiter = self._rate_limiters.get(sid)
+        if limiter is None:
+            self._schedule_send(ws, frame)
+            return True
+        decision = limiter.offer(ui_name, frame, time.monotonic())
+        if decision.send_now:
+            self._schedule_send(ws, frame)
+            return True
+        if decision.flush_in_s is not None:
+            self._schedule_rate_flush(sid, ui_name, decision.flush_in_s)
+        return False
+
+    def _schedule_rate_flush(self, sid: str, ui_name: str, delay_s: float) -> None:
+        loop = self._send_loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(
+                loop.call_later, delay_s, self._flush_rate_limited, sid, ui_name
+            )
+        except RuntimeError:
+            return  # loop закрыт — отложенный кадр теряем, ноду не роняем
+
+    def _flush_rate_limited(self, sid: str, ui_name: str) -> None:
+        """Вытолкнуть отложенный кадр (выполняется в aiohttp-loop)."""
+        limiter = self._rate_limiters.get(sid)
+        ws = self._ws_by_session.get(sid)
+        if limiter is None or ws is None:
+            return
+        frame, again_in_s = limiter.flush(ui_name, time.monotonic())
+        if again_in_s is not None:
+            self._schedule_rate_flush(sid, ui_name, again_in_s)
+        elif frame is not None:
+            self._schedule_send(ws, frame)
 
     # === AV-16: STATE_UPDATE broadcast =========================================
     # 0x33 STATE_UPDATE — broadcast для ВСЕХ v2-сессий (не stream: подписок
@@ -1655,6 +1705,7 @@ class WSSServer:
     def _register_session(self, session: ClientSession, ws) -> None:
         self._sessions[session.session_id] = session
         self._ws_by_session[session.session_id] = ws
+        self._rate_limiters[session.session_id] = StreamRateLimiter()
 
     def _unregister_session(self, session: ClientSession) -> None:
         # Освободить stream_id'ы этой сессии.
@@ -1687,6 +1738,7 @@ class WSSServer:
         session.close()
         self._sessions.pop(session.session_id, None)
         self._ws_by_session.pop(session.session_id, None)
+        self._rate_limiters.pop(session.session_id, None)
 
     async def _on_hello(
         self,
@@ -1789,18 +1841,22 @@ class WSSServer:
             sid = session.allocate_stream_id(_stream_ids_in_use)
             _stream_ids_in_use.add(sid)
             session.subscribed[topic] = sid
-        await self._send(
-            ws,
-            FrameType.JSON_EVENT,
-            0,
-            {
-                "type": "subscribe_ack",
-                "topic": topic,
-                "stream_id": sid,
-                "quality": quality,
-                "kind": spec.kind.value,
-            },
-        )
+        # issue #3150: max_hz — необязательный; повторный SUBSCRIBE
+        # обновляет лимит (отсутствие поля = снять лимит).
+        max_hz = parse_max_hz(payload_obj.get("max_hz"))
+        limiter = self._rate_limiters.get(session.session_id)
+        if limiter is not None:
+            limiter.set_limit(topic, max_hz)
+        ack: dict[str, Any] = {
+            "type": "subscribe_ack",
+            "topic": topic,
+            "stream_id": sid,
+            "quality": quality,
+            "kind": spec.kind.value,
+        }
+        if max_hz is not None:
+            ack["max_hz"] = max_hz
+        await self._send(ws, FrameType.JSON_EVENT, 0, ack)
         # voice_state: эмитим актуальный snapshot floor-а сразу при подписке
         # (а не ждём первого события) — UI должен сразу показать «робот
         # говорит» если кто-то уже держит floor. meta-quest-api.md §4
@@ -1863,6 +1919,9 @@ class WSSServer:
         sid = session.subscribed.pop(topic, None)
         if sid is not None:
             _stream_ids_in_use.discard(sid)
+        limiter = self._rate_limiters.get(session.session_id)
+        if limiter is not None:
+            limiter.remove(topic)
 
     async def _on_json_event(
         self,

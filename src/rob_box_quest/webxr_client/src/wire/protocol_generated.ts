@@ -172,6 +172,7 @@
     stream_id: number;
     quality: string;
     kind?: string;
+    max_hz?: number;
   }
   export interface SubscribeNackEvent {
     type: "subscribe_nack";
