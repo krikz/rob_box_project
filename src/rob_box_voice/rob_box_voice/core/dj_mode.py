@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 
@@ -47,6 +47,25 @@ CLUB_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 #: Параллельный мажор (§7.5: G ↔ E minor) club не умеет — у него только
 #: ``scale="minor"``, поэтому «родственная» здесь = квинтовый сосед.
 KEY_WALK = (0, 7, 0, 5)
+
+# Issue #3113 (живой прогон 28.09, ~15 с тишины между треками): конечный
+# (``repeat=False``) трек сам замолкает ``Clock.future(..., Clock.clear)``,
+# а переход ждал конца его формы и только ПОТОМ звал модель. Переход к
+# такому треку назначается заранее — на время хода модели и фейда.
+#: Бюджет хода модели на переходе, с. Живой лог 28.09: auto-transition →
+#: compose_music за 3-13 с (с ретраем Bug B).
+DJ_TURN_BUDGET_S = 20.0
+#: Длина фейда перехода в тактах — ``core.club_transition.FADE_BARS`` в
+#: rob_box_mcp_tools (+1 такт до границы, как ``fade_seconds``).
+DJ_FADE_BARS = 8
+#: Минимум, который конечный трек звучит до раннего перехода, с (короткий
+#: заказ юзера не должен уйти в фейд сразу после старта).
+DJ_MIN_TRACK_PLAY_S = 30.0
+
+
+def finite_form_lead_s(bpm: float) -> float:
+    """За сколько секунд до остановки конечного трека звать переход."""
+    return DJ_TURN_BUDGET_S + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
 
 
 def related_root(set_root: str, track_no: int) -> str:
@@ -121,6 +140,17 @@ class DJState:
     # тоника (``""`` — ещё не выбрана) — от эпохи старта сета.
     set_bpm: int = DJ_SET_DEFAULT_BPM
     set_root: str = ""
+    # Issue #3113 — когда конечный (``repeat=False``) трек замолчит, epoch
+    # (``stops_at`` из ``/voice/music/form``; ``None`` — зациклен/нет данных),
+    # когда это значение впервые пришло, и для какого ``stops_at`` ранний
+    # переход уже был (второй раз на ту же форму не стреляем).
+    form_stops_at: Optional[float] = None
+    form_stops_seen_at: float = 0.0
+    early_transition_for: Optional[float] = None
+    # Issue #3113 — названия тем, уже сыгранных в ЭТОМ сете (``track`` из
+    # ``/voice/music/form``), в порядке звучания. Промпт перехода запрещает
+    # их повтор (живой прогон 28.09: Für Elise дважды в одном сете).
+    played_names: list = field(default_factory=list)
 
 
 @dataclass
@@ -355,6 +385,7 @@ class DJModeController:
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
             self.state.set_root = ""
+            self.state.played_names = []
         bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
         if bpm is not None and bpm != self.state.set_bpm:
             # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113.
@@ -387,6 +418,9 @@ class DJModeController:
         self.state.persona = ""
         # Issue #2461 — не тащить дедлайн формы прошлого сета в следующий.
         self.state.form_ends_at = None
+        self.state.form_stops_at = None
+        self.state.early_transition_for = None
+        self.state.played_names = []
         # Issue #2856 — лимиты и отсчёт времени принадлежат одному сету.
         self.state.started_at = 0.0
         self.state.last_transition_at = 0.0
@@ -485,6 +519,9 @@ class DJModeController:
         form_ends_at = self.state.form_ends_at
         if form_ends_at is not None and form_ends_at > now:
             gate_at = max(gate_at, form_ends_at)
+        early_for = self._early_gate(now)
+        if early_for is not None:
+            gate_at = min(gate_at, early_for[0])
         if now < gate_at:
             return
         # Don't interrupt an active dialogue or sound playback.
@@ -513,10 +550,76 @@ class DJModeController:
         self.state.transition_count = next_n
         self.state.last_transition_at = now
         self.state.next_transition_at = now + self.FALLBACK_INTERVAL_S
+        if early_for is not None and now >= early_for[0]:
+            self.state.early_transition_for = early_for[1]
+            self._logger.info(
+                f"🎧 DJ переход раньше остановки конечного трека "
+                f"(замолчит через {early_for[1] - now:.0f}с)"
+            )
         self._logger.info(f"🎧 DJ auto-transition #{next_n}")
         # Issue #992 Bug B — ``from_tick=True`` lets the dispatcher
         # reset its synchronous-retry budget for this fresh transition.
         self._hook.dispatch(self.build_auto_prompt(next_n), True)
+
+    def note_form_stop(self, stops_at: Any) -> None:
+        """Issue #3113 — ``stops_at`` из ``/voice/music/form`` (epoch или null)."""
+        if not isinstance(stops_at, (int, float)) or isinstance(stops_at, bool):
+            self.state.form_stops_at = None
+            return
+        previous = self.state.form_stops_at
+        if previous is None or abs(float(stops_at) - previous) > 2.0:
+            # Новая конечная форма (значение пересчитывается при каждой
+            # публикации — дрожит на миллисекунды, поэтому допуск 2 с).
+            self.state.form_stops_seen_at = self._clock()
+        self.state.form_stops_at = float(stops_at)
+
+    def note_track_name(self, name: Any) -> None:
+        """Issue #3113 — тема, которая сейчас играет (``track`` из ``/voice/music/form``).
+
+        Копится только пока DJ включён; повтор публикации той же темы (топик
+        приходит каждые ~5 с) не дублирует запись. Сравнение без регистра.
+        """
+        if not self.state.enabled or not isinstance(name, str) or not name.strip():
+            return
+        title = name.strip()
+        if title.casefold() in {p.casefold() for p in self.state.played_names}:
+            return
+        self.state.played_names.append(title)
+        self._logger.info(f"🎧 DJ в сете уже звучало: {self.state.played_names!r}")
+
+    def _played_line(self) -> str:
+        """Запрет повтора уже сыгранных в сете песен (issue #3113)."""
+        if not self.state.played_names:
+            return ""
+        names = ", ".join(f"«{n}»" for n in self.state.played_names)
+        return (
+            f"🚫 В этом сете уже звучали: {names} — НЕ играй их снова (ни через "
+            "name=, ни другим написанием того же названия). Если трек плана — "
+            "одна из них, вместо неё сыграй клубный трек. "
+        )
+
+    def _early_gate(self, now: float) -> Optional[tuple]:
+        """``(момент раннего перехода, stops_at)`` или ``None``.
+
+        Конечный трек замолкает сам; переход, назначенный на конец формы,
+        давал тишину на время хода модели и фейда (живой прогон 28.09:
+        Star Wars 141 с, переход через 146 с, ~15 с тишины). Переход к
+        такому треку — за :func:`finite_form_lead_s` до остановки, но не
+        раньше :data:`DJ_MIN_TRACK_PLAY_S` от старта трека и не второй раз
+        на ту же форму. Зацикленные треки (``stops_at`` = ``None``) — как
+        раньше, по концу формы.
+        """
+        stops_at = self.state.form_stops_at
+        if stops_at is None or stops_at <= now:
+            return None
+        done = self.state.early_transition_for
+        if done is not None and abs(done - stops_at) <= 2.0:
+            return None
+        at = max(
+            stops_at - finite_form_lead_s(self.state.set_bpm),
+            self.state.form_stops_seen_at + DJ_MIN_TRACK_PLAY_S,
+        )
+        return min(at, stops_at), stops_at
 
     def _should_stop(self, next_n: int, plan_tracks: int) -> bool:
         """True — сет исчерпан, переход ``next_n`` не играть, а выключить DJ."""
@@ -681,7 +784,7 @@ class DJModeController:
 
     # ── Prompt builders ─────────────────────────────────────────────
 
-    def preamble(self) -> str:
+    def preamble(self, *, dj_request: bool = False) -> str:
         """Prefix injected into user STT turns when DJ-mode is active.
 
         🔴 FIX (live 11:48): раньше preamble подмешивал ПОЛНЫЕ DJ-инструкции
@@ -691,7 +794,14 @@ class DJModeController:
         НЕЙТРАЛЬНАЯ подсказка: DJ играет в фоне, юзер говорит обычную
         команду — ответь на неё; не трогай DJ, если юзер не просит.
         Полные DJ-инструкции живут только в build_auto_prompt (DJ_AUTO).
+
+        Issue #2999 (ADR-0140): ``dj_request=True`` — юзер назначает новую
+        персону/тему посреди сета («Ты диджей Анакен… имперский слет»).
+        Тогда «Не вызывай set_dj_mode» — ровно то, что ломало смену сета
+        (живой лог 28.09), и обёртка отдаётся :meth:`_persona_change_preamble`.
         """
+        if dj_request:
+            return self._persona_change_preamble()
         persona = self.state.persona
         persona_line = (
             f", диджей: {persona}" if persona else ""
@@ -704,6 +814,29 @@ class DJModeController:
             f"{persona_line}. Это ОБЫЧНАЯ команда юзера, не DJ-переход. "
             "Ответь на неё нормально. Не вызывай set_dj_mode и не меняй "
             "музыку, если юзер об этом не просит.] "
+        )
+
+    def _persona_change_preamble(self) -> str:
+        """Issue #2999 — обёртка хода, где юзер переназначает диджея/тему.
+
+        ``set_dj_mode(enabled=true, persona=…, theme=…)`` на идущем сете —
+        не новый сет: :meth:`_apply_enable_payload` с ``is_fresh_start=False``
+        меняет персону и тему, сбрасывает план старой темы, а темп
+        (``set_bpm``), отсчёт и счётчики оставляет. Музыку он не глушит.
+        ``bpm`` не передаём — иначе модель «угадает» темп и сломает #3113.
+        """
+        old = self.state.persona or self._persona_default
+        theme_line = f', тема "{self.state.theme}"' if self.state.theme else ""
+        bpm = self.state.set_bpm
+        return (
+            f"[🎧 Идёт DJ-сет: сейчас {old}{theme_line}, темп сета {bpm} BPM. "
+            "Юзер НАЗНАЧАЕТ новую DJ-персону/тему — это смена сета, а не "
+            "разовый заказ. В этом ходе вызови set_dj_mode(enabled=true, "
+            "persona='<новый диджей из запроса>', theme='<новая тема из "
+            "запроса>') — bpm НЕ передавай, темп сета "
+            f"{bpm} BPM сохранится; сет не выключай, stop_music не вызывай. "
+            "Потом, как при старте сета, сразу сыграй трек новой темы "
+            f"в темпе {bpm} BPM и коротко представься от лица новой персоны.] "
         )
 
     def suppresses_free_text(self, n: int) -> bool:
@@ -845,6 +978,7 @@ class DJModeController:
             f"{club}Если юзер попросил конкретную песню — "
             f"compose_music(name=..., seed={self._track_seed(track_no)}, "
             f"bpm={self.state.set_bpm}, repeat=true) вместо клубного трека. "
+            f"{self._played_line()}"
         )
 
     def build_auto_prompt(self, n: int) -> str:
@@ -900,7 +1034,8 @@ class DJModeController:
                 f"{plan_block}"
                 "План сета УЖЕ ЕСТЬ — НЕ исследуй материал (search_web / "
                 "gen_search_library не нужны) и НЕ составляй новый план. "
-                f"{track_line}{self._tempo_line()}{library_line} {stage_marker}{length_line} "
+                f"{track_line}{self._played_line()}{self._tempo_line()}{library_line} "
+                f"{stage_marker}{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
         if n == 1 and not plan_tracks:
@@ -919,7 +1054,8 @@ class DJModeController:
                 "из ответа compose_music>). Потом сыграй "
                 f"трек #1 через {self._club_call(track_no)} "
                 f"— seed, чтобы повтор темы в другом сете звучал не тем же "
-                f"басом/пэдом/ударными. {self._tempo_line()}{library_line} {stage_marker}"
+                f"басом/пэдом/ударными. {self._played_line()}{self._tempo_line()}"
+                f"{library_line} {stage_marker}"
                 f"{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
@@ -932,7 +1068,7 @@ class DJModeController:
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
-                f"{track_line}{self._tempo_line()}{library_line} "
+                f"{track_line}{self._played_line()}{self._tempo_line()}{library_line} "
                 "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
                 f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
                 "сама доводит его до спокойного финала и затухания, не проси "

@@ -1771,15 +1771,29 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '(только '
                                                                         'minor), seed '
                                                                         '(выбирает '
-                                                                        'прогрессию и '
-                                                                        'риф) и '
+                                                                        'прогрессию, '
+                                                                        'риф, бочку, '
+                                                                        'хэты, шаблон '
+                                                                        'секций и '
+                                                                        'тембры) и '
                                                                         'repeat; '
                                                                         'остальные '
                                                                         'параметры '
                                                                         'игнорируются '
                                                                         '— об этом '
                                                                         'сказано в '
-                                                                        'ответе.',
+                                                                        'начале '
+                                                                        'ответа. С '
+                                                                        'name= '
+                                                                        'известной '
+                                                                        'мелодии или '
+                                                                        'rtttl= club '
+                                                                        'не '
+                                                                        'применяется: '
+                                                                        'тема важнее '
+                                                                        'стиля, трек '
+                                                                        'играет '
+                                                                        'classic.',
                                                          'enum': ['classic', 'club'],
                                                          'default': 'classic'},
                                             'transition': {   'type': 'string',
@@ -5100,15 +5114,29 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '(только '
                                                                         'minor), seed '
                                                                         '(выбирает '
-                                                                        'прогрессию и '
-                                                                        'риф) и '
+                                                                        'прогрессию, '
+                                                                        'риф, бочку, '
+                                                                        'хэты, шаблон '
+                                                                        'секций и '
+                                                                        'тембры) и '
                                                                         'repeat; '
                                                                         'остальные '
                                                                         'параметры '
                                                                         'игнорируются '
                                                                         '— об этом '
                                                                         'сказано в '
-                                                                        'ответе.',
+                                                                        'начале '
+                                                                        'ответа. С '
+                                                                        'name= '
+                                                                        'известной '
+                                                                        'мелодии или '
+                                                                        'rtttl= club '
+                                                                        'не '
+                                                                        'применяется: '
+                                                                        'тема важнее '
+                                                                        'стиля, трек '
+                                                                        'играет '
+                                                                        'classic.',
                                                          'enum': ['classic', 'club'],
                                                          'default': 'classic'},
                                             'transition': {   'type': 'string',
@@ -5956,6 +5984,60 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'skill': ('dj',)},
     {   'llm_visible': True,
         'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
+        'name': 'set_music_volume',
+        'description': 'Громкость МУЗЫКИ (трек/бит/DJ-сет: compose_music, '
+                       'lookup_melody, execute_music_code, load_track), а НЕ голоса '
+                       'робота. Юзер просит «громче/тише/погромче/потише» и сейчас '
+                       'играет музыка, или прямо говорит «музыку/трек/бит громче» — '
+                       'вызывай ЭТОТ тул, а не set_volume (set_volume меняет только '
+                       'голос). Музыку не перезапускает: играющий трек продолжает '
+                       'играть, меняется только уровень. action: louder/quieter — шаг '
+                       '±3 dB, max — максимум, normal — стартовый уровень, set — '
+                       'абсолютный уровень level 0..100 (% от максимума). mp3 из '
+                       'MiniMax-библиотеки (gen_play_from_library) этим тулом не '
+                       'регулируется.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'action': {   'type': 'string',
+                                                          'description': 'louder — '
+                                                                         'громче на '
+                                                                         'шаг, quieter '
+                                                                         '— тише на '
+                                                                         'шаг, max — '
+                                                                         'на максимум, '
+                                                                         'normal — '
+                                                                         'стартовый '
+                                                                         'уровень, set '
+                                                                         '— выставить '
+                                                                         'level',
+                                                          'enum': [   'louder',
+                                                                      'quieter',
+                                                                      'max',
+                                                                      'normal',
+                                                                      'set']},
+                                            'level': {   'type': 'integer',
+                                                         'description': 'Только для '
+                                                                        'action=set: '
+                                                                        'уровень '
+                                                                        'музыки в '
+                                                                        'процентах от '
+                                                                        'максимума, '
+                                                                        '0..100 '
+                                                                        '(значения вне '
+                                                                        'диапазона '
+                                                                        'обрезаются).'}},
+                          'required': ['action'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['action', 'level'],
+                         'required': ['action'],
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj', 'voice-tts')},
+    {   'llm_visible': True,
+        'read_only': False,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
@@ -6165,8 +6247,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_volume',
-        'description': 'Установить громкость голоса робота. Используй для команд '
-                       "'громче', 'тише', 'максимальная громкость'.",
+        'description': 'Громкость ГОЛОСА робота (речь TTS), НЕ музыки. Используй для '
+                       "'говори громче', 'тише говори', 'максимальная громкость "
+                       "голоса', а также для 'громче/тише', когда музыка НЕ играет. "
+                       'Если играет трек/бит/DJ-сет и юзер просит громче/тише музыку — '
+                       'вызывай set_music_volume, а не этот тул.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Действие с '

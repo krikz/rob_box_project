@@ -17,6 +17,8 @@ import pytest
 
 from rob_box_mcp_tools.core.club_arranger import (
     CLUB_SYNTHS,
+    CLUB_TEMPLATES,
+    HATS_PATTERNS,
     KICK_PATTERNS,
     LAYER_LEVELS,
     LEAD_TOP_LIMIT,
@@ -25,8 +27,12 @@ from rob_box_mcp_tools.core.club_arranger import (
     PROGRESSIONS,
     PUMP_HIGH,
     PUMP_LOW,
+    REFERENCE_KIT,
+    ROLE_SYNTHS,
     build_matrix,
     chord_pentatonic,
+    club_duration_seconds,
+    club_kit,
     kick_steps,
     peak_levels,
     predrop_hpf,
@@ -50,7 +56,9 @@ def _player_block(code: str, slot: str) -> str:
 
 def _lead_notes(code: str):
     block = _player_block(code, "p1")
-    body = block[block.index("pluck([") + len("pluck(["):block.index("],")]
+    # Issue #3113: тембр лида выбирает сид — ищем «p1 >> <синт>([».
+    start = re.match(r"p1 >> \w+\(\[", block).end()
+    body = block[start:block.index("],")]
     return [int(v) for v in body.replace("\n", " ").split(",")]
 
 
@@ -182,7 +190,7 @@ def test_registers(root, seed):
     assert max(notes) - min(notes) <= 24
     bass = [int(v) for v in re.findall(r"\[\((\d+), \d+\)\] \* 32", code)]
     assert len(bass) == 4 and all(34 <= n <= 45 for n in bass)
-    pads = re.search(r"sinepad\(\[(.*?)\], dur=8", code).group(1)
+    pads = re.search(r"p3 >> \w+\(\[(.*?)\], dur=8", code).group(1)
     pad_notes = [int(v) for v in re.findall(r"\d+", pads)]
     assert all(50 <= n <= 70 for n in pad_notes)
 
@@ -238,6 +246,99 @@ def test_predrop_hpf_durations_cover_form():
 def test_validation_errors(kwargs, message):
     with pytest.raises(ValueError, match=message):
         render_club(**kwargs)
+
+
+# ── Issue #3113: сид выбирает каркас (живой прогон 28.09 — «однотипно») ──
+
+
+def _kit_signature(seed: int):
+    """(бочка, шаблон, тембр лида) — ИЗ КОДА, а не из club_kit."""
+    code = render_club(seed=seed)
+    header = re.search(r"^# club: ([^,]+), [^,]+, [^,]+, бочка (\w+),", code, re.MULTILINE)
+    lead = re.search(r"^p1 >> (\w+)\(", code, re.MULTILINE).group(1)
+    return header.group(2), header.group(1), lead
+
+
+@pytest.mark.parametrize("base", [1, 1110504])
+def test_ten_consecutive_seeds_vary_the_kit(base):
+    """10 сидов подряд (как DJ-сет: seed трека = база + номер) → ≥4 разных каркаса.
+
+    База 1110504 — сиды живого сета 28.09 (1110504..1110506 звучали одним
+    каркасом by_design/dj_dave_32/pluck).
+    """
+    combos = {_kit_signature(s) for s in range(base, base + 10)}
+    assert len(combos) >= 4, combos
+
+
+def test_seed0_is_the_reference_kit():
+    assert club_kit(0) == REFERENCE_KIT
+    assert _kit_signature(0) == ("by_design", "dj_dave_32", "pluck")
+
+
+def test_kit_is_deterministic_and_does_not_shift_the_riff_stream():
+    for seed in (1, 7, 1110504):
+        assert club_kit(seed) == club_kit(seed)
+        # ноты берутся из random.Random(seed) — каркас их не сдвигает
+        assert _lead_notes(render_club(seed=seed)) == _lead_notes(
+            render_club(seed=seed, template="dj_dave_32", kick="by_design")
+        )
+
+
+def test_explicit_template_and_kick_override_the_seed():
+    kit = club_kit(5, template="lofi_froos", kick="four_on_floor")
+    assert kit["template"] == "lofi_froos" and kit["kick"] == "four_on_floor"
+    assert "# club: lofi_froos," in render_club(seed=5, template="lofi_froos")
+
+
+def _seed_for(key: str, value: str) -> int:
+    return next(s for s in range(1, 500) if club_kit(s)[key] == value)
+
+
+KIT_OPTIONS = (
+    [("template", t) for t in CLUB_TEMPLATES]
+    + [("kick", k) for k in KICK_PATTERNS]
+    + [("hats", h) for h in HATS_PATTERNS]
+    + [(role, synth) for role, synths in ROLE_SYNTHS.items() for synth in synths]
+)
+
+
+@pytest.mark.parametrize("key, value", KIT_OPTIONS, ids=lambda v: str(v))
+def test_every_kit_option_is_reachable_and_sanitizer_clean(key, value):
+    seed = _seed_for(key, value)
+    code = render_club(seed=seed)
+    result = sanitize_renando(code, 0.85, known_synths=CLUB_SYNTHS)
+    assert result.security_error is None
+    assert result.quality_errors == ()
+    assert result.slot_error is None
+    assert result.warnings == ()
+    assert result.code == code
+    if key in ROLE_SYNTHS:
+        slot = {"lead": "p1", "bass": "p2", "pad": "p3"}[key]
+        assert re.search(rf"^{slot} >> {value}\(", code, re.MULTILINE)
+    if key == "hats":
+        assert f'd2 >> play("{HATS_PATTERNS[value]}"' in code
+
+
+@pytest.mark.parametrize("pattern", sorted(set(KICK_PATTERNS.values()) | set(HATS_PATTERNS.values())))
+def test_kit_patterns_are_one_bar_of_sixteenths(pattern):
+    assert len(_play_steps(pattern)) == 16
+
+
+def test_role_synths_have_no_held_tail():
+    """Арп/бас 16-ми: синт с ``held``-хвостом (core.synth_traits) слил бы ноты."""
+    from rob_box_mcp_tools.core.synth_traits import traits_of
+
+    for synth in CLUB_SYNTHS:
+        traits = traits_of(synth)
+        assert traits is None or traits.tail != "held", synth
+
+
+@pytest.mark.parametrize("template", CLUB_TEMPLATES)
+def test_club_templates_are_32_bars_with_a_predrop(template):
+    matrix = build_matrix(template)
+    assert matrix.total_beats == 128
+    assert club_duration_seconds(124, template) == pytest.approx(128 * 60 / 124)
+    assert predrop_runs(matrix), template
 
 
 def test_seed0_snapshot():

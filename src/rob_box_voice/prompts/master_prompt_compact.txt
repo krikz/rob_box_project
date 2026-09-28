@@ -565,8 +565,13 @@ on MiniMax (`provider=minimax`) and Yandex (`provider=yandex`). Only Silero
 honors it — and only with discrete enum values (`x-low|low|medium|high|
 x-high|robot`), not numeric multipliers. To actually change voice pitch,
 volume, or speed, call the dedicated tools:
-- `set_volume(action)` — `action ∈ {louder, quieter, max, normal}`. Step ±3 dB,
-  clamped to [-20 dB, +6 dB].
+- `set_volume(action)` — VOICE volume only (TTS), NOT music.
+  `action ∈ {louder, quieter, max, normal}`. Step ±3 dB, clamped to [-20 dB, +6 dB].
+- `set_music_volume(action, level?)` — MUSIC volume (track/beat/DJ set master
+  fader). When music is playing and the user says «громче/тише/погромче/потише»
+  or «трек/музыку громче» — call THIS, not `set_volume` and not a new
+  `compose_music`. `action ∈ {louder, quieter, max, normal, set}`, `level` 0..100
+  for `set`. Never claim «подкрутил музыку» without calling it.
 - `set_pitch(action)` — `action ∈ {higher, lower, normal}`. Step ±0.2,
   clamped to [0.5, 2.0]; `normal` resets to 1.0.
 - `set_speed(action)` — `action ∈ {faster, slower, normal}`. Step ±0.2× of the

@@ -586,6 +586,12 @@ class DialogResult:
     # lets dialogue_node's action-claim guards require an actual
     # SUCCESSFUL result before treating a spoken claim as backed.
     tool_error_occurred: bool = False
+    # Issue #3004 — names of tools whose call THIS TURN returned WITHOUT
+    # ``is_error`` (unique, first-success order). ``tool_error_occurred``
+    # is one boolean for the whole turn, so «compose_music failed
+    # validation, the retry in the same turn succeeded» looked exactly
+    # like a failure to dialogue_node's music guard (#2966 rule).
+    succeeded_tools: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1034,6 +1040,7 @@ class AgentCore:
                 result.track_name = outcome.track_name
                 result.music_call_args = outcome.music_call_args
                 result.tool_error_occurred = outcome.tool_error_occurred
+                result.succeeded_tools = list(outcome.succeeded_tools)
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1343,6 +1350,10 @@ class AgentCore:
         # tool-call, no speak_text) that is babble, not an answer — the
         # robot would voice «дан» / «бит не получился» instead of acting.
         tool_error_occurred: bool = False
+        # Issue #3004 — which tools SUCCEEDED this turn (per call, not one
+        # boolean): a validation error followed by a successful retry of the
+        # same tool is a success for the music guard.
+        succeeded_tools: list[str] = []
         # Issue #2967 — force a tool call on the FIRST request of this
         # turn only (see the ``force_tool_choice`` docstring above).
         # Extracted to a helper so this method's CC stays at its
@@ -1548,6 +1559,9 @@ class AgentCore:
                 results_by_call_id,
                 tool_error_occurred,
             )
+            self._record_succeeded_tools(
+                response.tool_calls, results_by_call_id, succeeded_tools
+            )
 
             # load_skill мог сменить домен — пересобираем набор, иначе
             # загрузка скилла была бы бессмысленной: текст пришёл, а
@@ -1572,7 +1586,7 @@ class AgentCore:
         # получился» while nothing actually happened. System transition:
         # return empty spoken so dialogue_node moves to the next round
         # instead of parroting the babble.
-        return self._finalize_outcome(
+        outcome = self._finalize_outcome(
             response=response,
             tools_called=tools_called,
             speak_text_count=speak_text_count,
@@ -1583,6 +1597,7 @@ class AgentCore:
             track_name=track_name,
             music_call_args=music_call_args,
         )
+        return replace(outcome, succeeded_tools=tuple(succeeded_tools))
 
     def _record_tool_calls(
         self,
@@ -1648,6 +1663,17 @@ class AgentCore:
                     tool_result=tool_result,
                 )
             )
+
+    @staticmethod
+    def _record_succeeded_tools(
+        tool_calls: list[ToolCall],
+        results_by_call_id: dict[str, ToolResult],
+        succeeded_tools: list[str],
+    ) -> None:
+        """Issue #3004 — дописать в ``succeeded_tools`` имена успешных вызовов."""
+        for call in tool_calls:
+            if not results_by_call_id[call.id].is_error and call.name not in succeeded_tools:
+                succeeded_tools.append(call.name)
 
     @staticmethod
     def _update_tool_error_flag(

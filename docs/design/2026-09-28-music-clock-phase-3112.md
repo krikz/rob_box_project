@@ -83,3 +83,30 @@ Clock.bpm = ...
 См. чек-лист в отчёте. Главное: INFO `[#3112]` с `смещение в форме ≠ 0` на
 втором треке без флага и `= 0` с флагом; на слух — интро с начала;
 темп нового трека применяется (нет залипания на старом bpm).
+
+## Включение на роботе
+
+Решение владельца 28.09: live-прогон показал `[#3112]` смещение ≠ 0 во всех 13
+треках, флаг включается на роботе. В коде дефолт остаётся ВЫКЛ до
+live-подтверждения.
+
+Путь переменной до процесса:
+
+1. `docker/vision/docker-compose.yaml`, сервис `voice-assistant`, `environment`:
+   `ROB_BOX_MUSIC_ALIGN_CLOCK=${ROB_BOX_MUSIC_ALIGN_CLOCK:-1}`. Если в `.env`
+   ничего не задано, значение 1.
+2. ENTRYPOINT образа (`bash -c 'source … && exec "$@"'`), затем
+   `ros_with_namespace.sh` (`exec "$@"`), затем `start_voice_assistant.sh`
+   (`exec ros2 launch …voice_assistant_headless.launch.py`). Ни `env -i`, ни
+   `unset` по пути нет.
+3. `Node(package='rob_box_mcp_tools', executable='mcp_server')` без `env=`:
+   launch_ros передаёт процессу окружение launch целиком.
+4. `mcp_server` → `tools/music.py:music_align_clock_enabled()` читает
+   `os.environ` при каждом `compose_music`/DJ-треке.
+
+Коммитнутый `docker/vision/.env` переменную не задаёт. Guard:
+`src/rob_box_voice/test/unit/core/test_issue_3112_music_align_clock_env.py`.
+
+**Откат:** добавить `ROB_BOX_MUSIC_ALIGN_CLOCK=0` в `docker/vision/.env` и
+перезапустить сервис: `docker compose up -d voice-assistant`. Одного
+`restart` мало, он не перечитывает окружение.

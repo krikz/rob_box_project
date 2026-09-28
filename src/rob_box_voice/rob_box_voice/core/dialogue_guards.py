@@ -1817,6 +1817,9 @@ CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     # config
     "set_volume", "set_voice", "set_speed", "set_pitch",
     "set_tts_provider",
+    # issue #3125 — громкость музыки: «сделал трек громче» после реального
+    # вызова — не phantom-claim.
+    "set_music_volume",
     # memory / speaker
     "memory_save", "memory_search", "memory_context",
     "register_speaker", "faq_search", "search_web",

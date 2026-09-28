@@ -59,7 +59,7 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
-from ..core.club_arranger import club_duration_seconds, club_form_beats, render_club
+from ..core.club_arranger import club_duration_seconds, club_form_beats, club_kit, render_club
 from ..core.club_transition import FADE_BARS, fade_seconds, wrap_with_fade
 from ..core.clock_phase import clock_phase_snapshot
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
@@ -575,6 +575,12 @@ class MusicManager:
         # ``ComposeMusicTool._remember_last_track``, читает
         # ``ComposeMusicTool._inherit_last_track``.
         self.last_track_arrangement: Optional[Dict[str, Any]] = None
+        # Issue #3113 — название играющей темы (``compose_music(name=...)``,
+        # заголовок из библиотеки) для DJ-сета: dialogue_node копит сыгранные
+        # и не даёт модели повторить песню в том же сете. ``None`` — трек без
+        # имени (club, сочинённый, execute_music_code) или тишина; сбрасывает
+        # :meth:`clear_form_deadline` (новый код / стоп), пишет ComposeMusicTool.
+        self.current_track_name: Optional[str] = None
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -1305,6 +1311,11 @@ class MusicManager:
             self._log_warning(f"master gain not applied: {exc}")
         return self._master_gain
 
+    @property
+    def master_gain(self) -> float:
+        """Issue #3125 — текущий уровень мастер-фейдера (0.0-1.0)."""
+        return self._master_gain
+
     # ------------------------------------------------------------------
     # Code safety filter — логика вынесена в core/renardo_sanitizer
     # (единый seam). Обёртки ниже оставлены для обратной совместимости
@@ -1414,6 +1425,22 @@ class MusicManager:
         """
         self._music_form_cycle_ends_at = time.monotonic() + max(0.0, float(duration_seconds))
 
+    def form_stop_remaining_s(self) -> Optional[float]:
+        """Issue #3113 — сколько секунд до ОСТАНОВКИ конечного трека.
+
+        Только ``repeat=False`` (код трека кончается ``Clock.future(...,
+        Clock.clear)``, :meth:`set_form_deadline`); зацикленный трек сам не
+        замолкает — ``None``. Живой прогон 28.09: DJ-переход ждал конца такой
+        формы, и между треками было ~15 с тишины; dialogue_node получает это
+        значение (как epoch) в ``/voice/music/form`` и назначает переход
+        раньше остановки.
+        """
+        deadline = self._music_form_deadline_at
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        return remaining if remaining > 0 else None
+
     def clear_form_deadline(self) -> None:
         """Снять защиту «форма ещё не доиграла» (issue #1812).
 
@@ -1432,6 +1459,7 @@ class MusicManager:
         """
         self._music_form_deadline_at = None
         self._music_form_cycle_ends_at = None
+        self.current_track_name = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -2029,6 +2057,11 @@ class MusicManager:
                 if self._music_form_cycle_ends_at is not None
                 else None
             ),
+            # Issue #3113 — остаток до остановки конечного (repeat=False)
+            # трека; ``None`` — зацикленный трек или ничего не играет.
+            "form_stop_remaining_s": self.form_stop_remaining_s(),
+            # getattr: часть тестов собирает менеджер через __new__ без __init__.
+            "track_name": getattr(self, "current_track_name", None),
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -2852,8 +2885,11 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "форма из матрицы секций (build/predrop/drop/verse, "
                     "32 такта). С club работают только bpm (по умолчанию "
                     "124), root (по умолчанию A#), scale (только minor), "
-                    "seed (выбирает прогрессию и риф) и repeat; остальные "
-                    "параметры игнорируются — об этом сказано в ответе."
+                    "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
+                    "секций и тембры) и repeat; остальные "
+                    "параметры игнорируются — об этом сказано в начале "
+                    "ответа. С name= известной мелодии или rtttl= club не "
+                    "применяется: тема важнее стиля, трек играет classic."
                 ),
                 required=False,
                 enum=["classic", "club"],
@@ -3670,9 +3706,16 @@ class ComposeMusicTool(MCPTool):
         # Issue #3113: переход фейдом есть только у club; classic его не
         # знает — вынимаем до _execute_named и честно говорим в ответе.
         transition = kwargs.pop("transition", None)
-        club = self._style_branch(kwargs.pop("style", None), kwargs, transition)
+        style, route_note = self._route_named_club(kwargs.pop("style", None), kwargs)
+        club = self._style_branch(style, kwargs, transition)
         if club is not None:
             return club
+        if route_note:
+            return self._with_route_note(self._execute_classic(kwargs, transition), route_note)
+        return self._execute_classic(kwargs, transition)
+
+    def _execute_classic(self, kwargs: Dict[str, Any], transition: Optional[str]) -> MCPToolResult:
+        """Путь ``style="classic"``: наследование, пресет, аранжировщик."""
         # Issue #2950: наследование от играющего трека — ДО пресета, чтобы
         # свежая подстройка сеанса («играл с bass_style=root минуту назад»)
         # перевешивала статичный сохранённый пресет мелодии, а не наоборот
@@ -3696,6 +3739,52 @@ class ComposeMusicTool(MCPTool):
 
     #: Параметры, которые ``style="club"`` реально использует.
     _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat")
+
+    def _route_named_club(
+        self, style: Optional[str], kwargs: Dict[str, Any],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Issue #3113 п.2 (живой прогон 28.09): ``style="club"`` + известная тема.
+
+        ``compose_music(name="super mario bros", style="club", ...)`` играл
+        анонимный клубный трек: club не умеет чужих тем, ``name`` и синты
+        уходили в «Проигнорировано» в хвосте ответа, модель считала, что
+        играет Марио. Юзер просил ТЕМУ — значит тема важнее стиля: если
+        ``rtttl=`` прислан или ``name=`` находится в RTTTL-библиотеке, вызов
+        уходит в classic (там тема, синты и ручки работают), а ответ честно
+        говорит, что club не применён. ``name``, которого нет в библиотеке
+        («club floor filler»), — просто подпись клубного трека: club
+        играет, ответ говорит, что темы в треке нет.
+
+        Returns:
+            ``(style, note)``: ``note`` — текст для ответа, если стиль сменён.
+        """
+        if style != "club":
+            return style, None
+        name = kwargs.get("name")
+        if kwargs.get("rtttl"):
+            label = f"rtttl= (присланные ноты{f', {name!r}' if name else ''})"
+        elif name and self._resolve_melody(name, kwargs.get("variants")) is not None:
+            label = f"name={name!r} — тема из библиотеки мелодий"
+        else:
+            return style, None
+        return "classic", (
+            f"style=club НЕ применён: {label}; клубный режим чужих тем не играет, "
+            "поэтому трек собран в style=classic с темой и твоими синтами/ручками, "
+            "переход — сразу, без фейда. Если нужен именно клубный трек без темы — "
+            "вызови compose_music(style='club') без name/rtttl."
+        )
+
+    @staticmethod
+    def _with_route_note(result: MCPToolResult, note: str) -> MCPToolResult:
+        """Поставить пометку о смене стиля В НАЧАЛО ответа (и в ошибку)."""
+        if result.success:
+            result.message = f"⚠️ {note} " + (result.message or "")
+            if isinstance(result.data, dict):
+                result.data["style"] = "classic"
+                result.data["style_requested"] = "club"
+        else:
+            result.error = f"{note} Ошибка classic: {result.error}"
+        return result
 
     def _style_branch(
         self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
@@ -3777,25 +3866,34 @@ class ComposeMusicTool(MCPTool):
         bpm = kwargs.get("bpm")
         bpm = 124 if bpm is None else bpm
         repeat = bool(kwargs.get("repeat", False))
+        seed = kwargs.get("seed") or 0
+        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры).
+        kit = club_kit(seed)
         try:
             code = render_club(
                 bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
-                seed=kwargs.get("seed") or 0, repeat=repeat,
+                seed=seed, repeat=repeat,
                 align_clock=music_align_clock_enabled(),
             )
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
+        fade_note = self._fade_outlives_form(bpm) if fade else ""
+        if fade_note:
+            fade = False
         if fade:
             # Issue #3113: фейд уходящего трека вместо жёсткой склейки
             # (core/club_transition). Дедлайн формы — с запасом на фейд.
             # Фаза клока (#3112) снимается в момент exec, а трек при фейде
             # стартует позже — смещение в логе тогда описывает момент exec.
             code = wrap_with_fade(code)
-        self.log_info(f"Композиция: style=club{', transition=fade' if fade else ''}")
-        result = self._execute_with_clock_phase(code, club_form_beats())
+        self.log_info(
+            f"Композиция: style=club{', transition=fade' if fade else ''}, каркас seed={seed}: "
+            + ", ".join(f"{k}={v}" for k, v in kit.items())
+        )
+        result = self._execute_with_clock_phase(code, club_form_beats(kit["template"]))
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
-        duration_s = club_duration_seconds(bpm) + (fade_seconds(bpm) if fade else 0.0)
+        duration_s = club_duration_seconds(bpm, kit["template"]) + (fade_seconds(bpm) if fade else 0.0)
         if repeat:
             self._manager.clear_form_deadline()
         else:
@@ -3805,9 +3903,19 @@ class ComposeMusicTool(MCPTool):
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
-        ignored = self._club_ignored(kwargs)
+        result["club_kit"] = kit
+        message = self._club_message(kwargs, result, duration_s, fade) + fade_note
+        return MCPToolResult(success=True, data=result, message=message)
+
+    def _club_message(
+        self, kwargs: Dict[str, Any], result: Dict[str, Any], duration_s: float, fade: bool,
+    ) -> str:
+        """Текст ответа club: предупреждение (если есть) — ПЕРВЫМ."""
+        kit = result["club_kit"]
         message = (
-            f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд. "
+            f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд, "
+            f"шаблон {kit['template']}, бочка {kit['kick']}, "
+            f"тембры {kit['lead']}/{kit['bass']}/{kit['pad']}. "
             "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
         )
         if fade:
@@ -3815,9 +3923,64 @@ class ComposeMusicTool(MCPTool):
                 f" Переход fade: играющий трек уходит за {FADE_BARS} тактов, новый "
                 "стартует после фейда (если ничего не играло — сразу)."
             )
+        warning = self._club_ignored_warning(kwargs, result)
+        # Issue #3113 (живой прогон 28.09): хвост «Проигнорировано …» в
+        # конце ответа модель не замечала — предупреждение идёт ПЕРВЫМ.
+        return f"{warning} {message}" if warning else message
+
+    def _fade_outlives_form(self, bpm: float) -> str:
+        """Issue #3113: фейд длиннее остатка конечного уходящего трека → cut.
+
+        Уходящий ``repeat=False``-трек сам вызовет ``Clock.clear`` в конце
+        формы (``Clock.future(..., Clock.clear)``), а ``TempoClock.clear()``
+        чистит и очередь — запланированный фейдом старт нового трека
+        (``Clock.schedule(_rbx_next_track, ...)``) пропал бы, и музыка
+        замолчала бы совсем. Длина фейда — в долях ТЕКУЩЕГО клока (темп
+        уходящего трека); клок недоступен — темп нового трека.
+
+        Returns:
+            Пояснение для ответа (переход будет cut) или ``""`` — фейд можно.
+        """
+        getter = getattr(self._manager, "form_stop_remaining_s", None)
+        try:
+            remaining = getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001 — не мешаем музыке
+            remaining = None
+        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+            return ""
+        clock_bpm = getattr(self._clock_or_none(), "bpm", None)
+        old_bpm = clock_bpm if isinstance(clock_bpm, (int, float)) and clock_bpm > 0 else bpm
+        need = fade_seconds(old_bpm)
+        if remaining >= need:
+            return ""
+        return (
+            f" Переход cut вместо fade: играющий трек сам кончается через {remaining:.0f} с, "
+            f"а фейд занял бы {need:.0f} с — новый трек стартовал сразу, без тишины."
+        )
+
+    def _clock_or_none(self) -> Any:
+        getter = getattr(self._manager, "renardo_clock", None)
+        try:
+            return getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _club_ignored_warning(self, kwargs: Dict[str, Any], result: Dict[str, Any]) -> str:
+        """Что из вызова club НЕ сыграл — текст для начала ответа (или ``""``)."""
+        ignored = [k for k in self._club_ignored(kwargs) if k != "name"]
+        result["ignored_params"] = list(ignored)
+        parts = []
+        name = kwargs.get("name")
+        if name:
+            parts.append(
+                f"name={name!r} не найдено в библиотеке мелодий — в club это только "
+                "подпись, ТЕМЫ в треке нет (не говори юзеру, что играет эта песня)."
+            )
         if ignored:
-            message += " Проигнорировано в club: " + ", ".join(ignored) + "."
-        return MCPToolResult(success=True, data=result, message=message)
+            parts.append(
+                "Проигнорировано в club (трек звучит БЕЗ них): " + ", ".join(ignored) + "."
+            )
+        return ("⚠️ " + " ".join(parts)) if parts else ""
 
     def _execute_named(
         self,
@@ -4208,6 +4371,9 @@ class ComposeMusicTool(MCPTool):
         """Хвост успешного ``execute``: тайминги формы, данные, сообщение."""
         duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
         self._apply_form_deadline(spec, duration_s)
+        # Issue #3113: имя играющей темы уходит в /voice/music/form — DJ-сет
+        # не повторяет уже сыгранную песню (живой прогон 28.09: Für Elise x2).
+        self._manager.current_track_name = (melody_title or name) if name else None
         self._notify_music_state()
         self._build_compose_result_data(spec, result, duration_s)
         # issue #2877: результат обязан называть РЕАЛЬНО сыгранную запись —
@@ -4901,6 +5067,136 @@ class GetMusicStateTool(MCPTool):
             success=True,
             data=state,
             message="\n".join(parts),
+        )
+
+
+class SetMusicVolumeTool(MCPTool):
+    """Issue #3125 — громкость МУЗЫКИ (мастер-фейдер scsynth), не голоса.
+
+    Живой сет 28.09.2026: «играй громче» во время DJ-сета — у LLM был только
+    ``set_volume``, а он крутит ``/tts_node volume_db``, то есть ГОЛОС. Уровень
+    музыки задавал лишь ROS-параметр ``music_master_gain`` при старте, до LLM
+    он не доходил, и модель честно выполнить просьбу не могла — фантазировала
+    «подкручиваю трек на максимум» при неизменном уровне.
+
+    Тул двигает тот же фейдер, что и параметр: ``MusicManager.set_master_gain``
+    → ``/n_set 999 gain <v>`` (синт ``masterlimiter``, сглаживание ``Lag.kr``,
+    без щелчка). Шаг ``louder``/``quieter`` — ±3 dB (×√2 по амплитуде), как у
+    ``set_volume`` для голоса. ``normal`` — значение ``music_master_gain``, с
+    которым стартовал сервер. Уровень клэмпится в [0, 1]: выше 1.0 фейдер
+    не поднимается (``set_master_gain``).
+    """
+
+    #: ±3 dB по амплитуде.
+    STEP_FACTOR: float = 10 ** (3.0 / 20.0)
+    #: Нижний предел ШАГОВОГО «тише»: шаги не должны молча заглушить музыку
+    #: в ноль (для тишины есть ``stop_music``); явный ``level=0`` разрешён.
+    MIN_STEP_GAIN: float = 0.05
+    MAX_GAIN: float = 1.0
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+        #: Уровень «как было при старте» — значение ROS-параметра
+        #: ``music_master_gain``, которым сконструирован менеджер.
+        self._normal_gain: float = float(manager.master_gain)
+
+    @property
+    def name(self) -> str:
+        return "set_music_volume"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Громкость МУЗЫКИ (трек/бит/DJ-сет: compose_music, lookup_melody, "
+            "execute_music_code, load_track), а НЕ голоса робота. Юзер просит "
+            "«громче/тише/погромче/потише» и сейчас играет музыка, или прямо "
+            "говорит «музыку/трек/бит громче» — вызывай ЭТОТ тул, а не "
+            "set_volume (set_volume меняет только голос). Музыку не "
+            "перезапускает: играющий трек продолжает играть, меняется только "
+            "уровень. action: louder/quieter — шаг ±3 dB, max — максимум, "
+            "normal — стартовый уровень, set — абсолютный уровень level "
+            "0..100 (% от максимума). mp3 из MiniMax-библиотеки "
+            "(gen_play_from_library) этим тулом не регулируется."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="action",
+                type="string",
+                description=(
+                    "louder — громче на шаг, quieter — тише на шаг, max — на "
+                    "максимум, normal — стартовый уровень, set — выставить level"
+                ),
+                required=True,
+                enum=["louder", "quieter", "max", "normal", "set"],
+            ),
+            MCPToolParameter(
+                name="level",
+                type="integer",
+                description=(
+                    "Только для action=set: уровень музыки в процентах от "
+                    "максимума, 0..100 (значения вне диапазона обрезаются)."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def _target_gain(self, action: str, level: Optional[float], current: float):
+        """Целевой уровень для ``action`` или ``(None, error)``."""
+        if action == "louder":
+            return min(self.MAX_GAIN, current * self.STEP_FACTOR), None
+        if action == "quieter":
+            return max(self.MIN_STEP_GAIN, current / self.STEP_FACTOR), None
+        if action == "max":
+            return self.MAX_GAIN, None
+        if action == "normal":
+            return self._normal_gain, None
+        if action == "set":
+            if level is None:
+                return None, "action=set требует level 0..100"
+            try:
+                pct = float(level)
+            except (TypeError, ValueError):
+                return None, f"level должен быть числом 0..100, получено {level!r}"
+            return max(0.0, min(100.0, pct)) / 100.0 * self.MAX_GAIN, None
+        return None, f"Неизвестное действие: {action}"
+
+    def execute(self, action: str, level: Optional[float] = None) -> MCPToolResult:
+        """Изменить уровень мастер-фейдера музыки."""
+        current = float(self._manager.master_gain)
+        target, error = self._target_gain(action, level, current)
+        if error is not None:
+            return MCPToolResult(success=False, error=error)
+        applied = self._manager.set_master_gain(target)
+        self.log_info(
+            f"[set_music_volume] action={action} level={level} "
+            f"master_gain {current:.2f} → {applied:.2f}"
+        )
+        pct = round(applied / self.MAX_GAIN * 100)
+        if abs(applied - current) < 1e-3:
+            edge = "максимальная" if applied >= self.MAX_GAIN else "уже такая"
+            message = f"Громкость музыки не изменилась ({edge}, {pct}%)"
+        else:
+            message = f"Громкость музыки: {round(current / self.MAX_GAIN * 100)}% → {pct}%"
+        return MCPToolResult(
+            success=True,
+            data={"old_gain": round(current, 3), "new_gain": round(applied, 3), "percent": pct},
+            message=message,
         )
 
 

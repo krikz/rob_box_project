@@ -47,6 +47,19 @@ _LYRICS_KEYWORDS: tuple = (
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
 
+#: Issue #2999 — маркер синтетического ретрай-промпта гуардов. Живой лог
+#: 24.09 11:43:51: модель слила вставку ретрая в ответ. Если в ответе с
+#: ``tools=[]`` названы тулы, его глушит #1882 (planning-narration), но
+#: ответ, где модель И вызвала тул (например ``set_dj_mode``), И
+#: процитировала «[CRITICAL] …», тот гейт пропускает. В речи человеку этот
+#: маркер не бывает никогда — такой ответ не озвучиваем.
+RETRY_PROMPT_LEAK_MARKER: str = "[critical]"
+
+
+def is_retry_prompt_leak(text: Optional[str]) -> bool:
+    """В ответе процитирован ретрай-промпт гуарда (``[CRITICAL] …``)."""
+    return RETRY_PROMPT_LEAK_MARKER in (text or "").lower()
+
 
 def wants_lyrics(user_input: Optional[str]) -> bool:
     """Юзер просил исполнить текст (рэп/стих/песню) — не резать ответ."""
@@ -112,7 +125,7 @@ def decide_turn_speech(
         music_context: DJ-сессия или музыкальный запрос юзера.
         lyrics_requested: юзер просил исполнить текст (:func:`wants_lyrics`).
     """
-    if not text or retry_dispatched or retracted:
+    if not text or retry_dispatched or retracted or is_retry_prompt_leak(text):
         return None
     if budget_exhausted:
         return first_sentence(text) or None
@@ -125,7 +138,9 @@ __all__ = [
     "FIRST_SENTENCE_LIMIT",
     "MUSIC_MAX_CHUNKS",
     "TurnSpeechHold",
+    "RETRY_PROMPT_LEAK_MARKER",
     "decide_turn_speech",
     "first_sentence",
+    "is_retry_prompt_leak",
     "wants_lyrics",
 ]
