@@ -105,13 +105,18 @@ def test_running_set_only_switches_persona(run_plans):  # noqa: F811
     assert n._speak_direct.call_args[0][0].startswith("Теперь я диджей Снупдог")
 
 
-def test_over_playing_track_no_preview(run_plans):  # noqa: F811
+def test_over_playing_track_no_compose_but_claims_track_one(run_plans):  # noqa: F811
+    """Issue #3153 (доп.) — живой прогон 28.09.2026 22:30: играющий обычный
+    трек не получает свой ``compose_music`` (он уже звучит), но роутер
+    заявляет его DJ-контроллеру как трек #1 сета (пустая тоника — роутер
+    её не знает), чтобы переход #1 не шёл по ветке «СТАРТ ВЕЧЕРИНКИ»."""
     journal: list = []
     n = _node(journal, playing=True, track="Still Dre")
     _stt(n, "Робот, ты диджей Снупдог")
     run_plans()
     assert [c[0] for c in n._scheduler_executor.calls] == ["set_dj_mode"]
-    assert not [e for e in journal if e[0] == "claim"]
+    assert journal.index(("claim", "")) < journal.index(("tool", "set_dj_mode"))
+    assert ("drop",) not in journal
 
 
 def test_preview_after_idle_snapshot(run_plans):  # noqa: F811

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -81,11 +82,17 @@ class MediaState:
             (``_music_playing_now``, #3133 / ADR-0141).
         dj_enabled: идёт ли DJ-сет.
         track_name: название играющего трека, если известно.
+        form_ends_at: issue #3153 (доп.) — конец текущего прохода формы
+            играющего трека, epoch (``/voice/music/state`` → снимок плеера,
+            то же поле, что ``DJState.form_ends_at``). ``None`` — данных
+            нет (форма ещё не сыграна ни разу / топик не пришёл) или
+            музыка не играет.
     """
 
     music_playing: bool = False
     dj_enabled: bool = False
     track_name: Optional[str] = None
+    form_ends_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -119,8 +126,16 @@ class MediaPlan:
         dj_off: стоп — выключить DJ-режим в коде (как #2897).
         cancel_inflight: отменить идущий ход LLM (команда его заменяет).
         preview_root: issue #3153 — план запускает DJ-сет мгновенным
-            club-превью в этой тонике (``""`` — превью нет). Нода заранее
-            сообщает DJ-контроллеру, что превью — трек #1 сета.
+            club-превью в этой тонике (``""`` — превью нет или тоника
+            неизвестна). Нода заранее сообщает DJ-контроллеру, что превью
+            — трек #1 сета.
+        claim_track_one: issue #3153 (доп.) — заявка «трек #1 сета»
+            (``DJModeController.claim_preview``) нужна ДАЖЕ без своего
+            ``compose_music``: «ты диджей X» поверх уже играющего
+            обычного трека тоже считает его треком #1 (роутер тоник
+            играющего трека не знает — заявка уходит с ``preview_root=""``,
+            контроллер тогда просто не трогает тонику сета). ``False`` —
+            план не связан с DJ-стартом, заявку звать не нужно.
     """
 
     command: MediaCommand
@@ -131,6 +146,7 @@ class MediaPlan:
     dj_off: bool = False
     cancel_inflight: bool = False
     preview_root: str = ""
+    claim_track_one: bool = False
 
     @property
     def handled(self) -> bool:
@@ -383,6 +399,70 @@ def _dj_preview_plan(
         say_fail=DJ_FAIL_TEXT,
         cancel_inflight=True,
         preview_root=preview.root,
+        claim_track_one=True,
+    )
+
+
+def _over_playing_transition_sec(media: MediaState, *, now: Optional[float] = None) -> int:
+    """Issue #3153 (доп.) — секунды до перехода #1 над уже играющим треком.
+
+    До конца текущей формы (``media.form_ends_at``), если она известна —
+    тикер (``DJModeController.tick``) всё равно гейтит переход реальным
+    ``form_ends_at``, так что более раннее число здесь только НАЗНАЧАЕТ
+    будильник, а не укорачивает играющий трек. Форма ещё не известна (топик
+    ``/voice/music/state`` не донёс ``form_ends_at``) или уже в прошлом —
+    прежний дефолт :data:`DJ_START_TRANSITION_SEC`.
+    """
+    if media.form_ends_at is None:
+        return DJ_START_TRANSITION_SEC
+    moment = time.time() if now is None else now
+    remaining = media.form_ends_at - moment
+    if remaining <= 0:
+        return DJ_START_TRANSITION_SEC
+    return int(round(remaining))
+
+
+def _dj_over_playing_plan(
+    command: MediaCommand, media: MediaState
+) -> Optional[MediaPlan]:
+    """Issue #3153 (доп.) — «ты диджей X» поверх уже играющего ОБЫЧНОГО трека.
+
+    Живой прогон 28.09.2026 22:30 (деплой develop ``8888d6f02``): музыка уже
+    играла — превью роутера (:func:`_dj_preview_plan`) не запускается
+    (``media.music_playing``), роутер ставил только
+    ``set_dj_mode(next_transition_sec=DJ_START_TRANSITION_SEC)``, а
+    стартовый переход #1 DJ-тикера всё равно шёл по ветке «СТАРТ
+    ВЕЧЕРИНКИ» (``search_web`` / ``search_samples`` / ``gen_search_library``)
+    — LLM ответила текстом, сработал Bug B retry.
+
+    Играющий трек засчитывается треком #1 сета — тем же механизмом, что и
+    мгновенное превью (:meth:`DJModeController.claim_preview`), только без
+    своего ``compose_music`` (трек уже звучит): переход #1 идёт через
+    ``_after_preview_prompt`` (без исследования). Тонику играющего трека
+    роутер не знает (только имя, не тональность) — заявка уходит с
+    ``preview_root=""``, контроллер тогда просто не трогает тонику сета
+    (``related_root`` останется от дефолта). ``next_transition_sec`` — до
+    конца текущей формы, если она известна (:func:`_over_playing_transition_sec`).
+
+    Идущий DJ-сет (``media.dj_enabled``) сюда не попадает — там прежний
+    путь (смена персоны/темы без остановки). Открытый DJ-запрос
+    (``not command.closed``) тоже — музыку в этом случае ставит LLM, а не
+    код, и заявка на «уже играющий трек» была бы лишней.
+    """
+    if media.dj_enabled or not media.music_playing or not command.closed:
+        return None
+    args = _dj_args(command)
+    args["next_transition_sec"] = _over_playing_transition_sec(media)
+    who = command.persona
+    ok_text = f"Я {who}, подхватываю сет." if who else DJ_START_TEXT
+    return MediaPlan(
+        command=command,
+        tool_calls=(MediaToolCall("set_dj_mode", args),),
+        say_ok=ok_text,
+        say_fail=DJ_FAIL_TEXT,
+        cancel_inflight=True,
+        preview_root="",
+        claim_track_one=True,
     )
 
 
@@ -392,11 +472,16 @@ def _dj_plan(
     preview_plan = _dj_preview_plan(command, media, preview)
     if preview_plan is not None:
         return preview_plan
+    over_playing_plan = _dj_over_playing_plan(command, media)
+    if over_playing_plan is not None:
+        return over_playing_plan
     args = _dj_args(command)
     if not media.dj_enabled:
-        # Над играющим треком (или открытый запрос — музыку ставит LLM)
-        # сет стартует переходом #1 DJ-тикера; на играющем треке переход
-        # всё равно ждёт конца формы (``form_ends_at``).
+        # Сюда доходит только тишина без превью (``preview is None`` —
+        # тесты/деградация) и открытый DJ-запрос (музыку ставит LLM):
+        # играющий обычный трек и закрытое превью в тишине разобраны выше
+        # (:func:`_dj_over_playing_plan`, :func:`_dj_preview_plan`). Сет
+        # стартует переходом #1 DJ-тикера через прежний дефолт.
         args["next_transition_sec"] = DJ_START_TRANSITION_SEC
     who = command.persona
     if not media.dj_enabled:

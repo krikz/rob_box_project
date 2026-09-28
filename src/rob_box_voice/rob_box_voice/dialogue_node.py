@@ -7360,15 +7360,23 @@ class DialogueNode(Node):
         плеера ``/voice/music/state`` (#3133, ADR-0141,
         ``MusicPlayerState.is_playing``); название трека — последний
         ``track`` из ``/voice/music/form`` (в снимке плеера только
-        непрозрачный ``track_id``); DJ — ``DJState``. Роутер других
-        источников не читает: сменить источник — здесь и только здесь.
+        непрозрачный ``track_id``); DJ — ``DJState``. ``form_ends_at`` —
+        issue #3153 (доп.): конец текущей формы из того же снимка плеера
+        (нужен роутеру, чтобы назначить переход #1 «ты диджей X» над уже
+        играющим треком на конец формы, а не на фиксированные 15 с).
+        Роутер других источников не читает: сменить источник — здесь и
+        только здесь.
         """
         dj = getattr(self, "_dj", None)
         playing = self._music_playing_now()
+        snapshot = getattr(self, "_music_player_state", None)
         return MediaState(
             music_playing=playing,
             dj_enabled=bool(dj is not None and dj.state.enabled),
             track_name=getattr(self, "_music_form_track", None) if playing else None,
+            form_ends_at=(
+                getattr(snapshot, "form_ends_at", None) if playing else None
+            ),
         )
 
     def _route_media_command(self, text: str) -> bool:
@@ -7415,18 +7423,22 @@ class DialogueNode(Node):
             self._force_dj_off_for_stop_command(reason="media_router_stop")
 
     def _prepare_dj_preview(self, plan: MediaPlan, executor: Any) -> None:
-        """Issue #3153 — старт DJ-сета мгновенным превью: подготовка до тулов.
+        """Issue #3153 (+доп.) — заявка «трек #1 сета»: подготовка до тулов.
 
-        * Заявка DJ-контроллеру «превью — трек #1 сета»: ``/voice/dj_mode``
-          от ``set_dj_mode`` приходит отдельным топиком, заявка должна
-          лежать раньше него.
+        * Заявка DJ-контроллеру: ``/voice/dj_mode`` от ``set_dj_mode``
+          приходит отдельным топиком, заявка должна лежать раньше него.
+          Два случая несут ``plan.claim_track_one=True``: мгновенное
+          club-превью в тишине (``plan.preview_root`` — своя тоника) и «ты
+          диджей X» поверх уже играющего обычного трека (тоника роутеру
+          неизвестна — ``preview_root=""``, контроллер её просто не
+          трогает).
         * Сброс лимита «один трек за ход» (#2859) у исполнителя: он
           снимается только на границе хода LLM, и трек прошлого хода
           иначе отказал бы превью (отказ — не ошибка тула, робот сказал бы
           «запускаю сет» в тишине). Идущий ход команда уже отменила
           (``cancel_inflight``).
         """
-        if not plan.preview_root:
+        if not plan.claim_track_one:
             return
         begin_turn = getattr(executor, "begin_turn", None)
         if callable(begin_turn):
@@ -7449,7 +7461,7 @@ class DialogueNode(Node):
             if call.fail_text:
                 phrase = call.fail_text
                 break
-        if not ok and plan.preview_root and getattr(self, "_dj", None) is not None:
+        if not ok and plan.claim_track_one and getattr(self, "_dj", None) is not None:
             self._dj.drop_preview_claim()
         phrase = phrase or (plan.say_ok if ok else plan.say_fail)
         if phrase:

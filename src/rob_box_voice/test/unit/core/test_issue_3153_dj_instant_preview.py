@@ -91,11 +91,51 @@ def test_preview_failure_texts_are_honest() -> None:
     assert "запускаю" not in DJ_MODE_FAIL_AFTER_PREVIEW_TEXT
 
 
-def test_over_playing_track_no_preview() -> None:
+def test_over_playing_track_no_compose_but_claims_track_one() -> None:
+    """Issue #3153 (доп.) — играющий трек не получает свой compose_music
+    (он уже звучит), но заявка «трек #1 сета» всё равно уходит — без
+    тоники, роутер её не знает."""
     plan = MediaRouter().route("ты диджей Снупдог, давай сет", PLAYING)
     assert _names(plan) == ["set_dj_mode"]
     assert plan.tool_calls[0].arguments["next_transition_sec"] == DJ_START_TRANSITION_SEC
     assert plan.preview_root == ""
+    assert plan.claim_track_one is True
+
+
+def test_over_playing_track_transition_falls_back_without_form(monkeypatch) -> None:
+    import rob_box_voice.core.media_router as media_router_module
+
+    monkeypatch.setattr(media_router_module.time, "time", lambda: T0)
+    state = MediaState(
+        music_playing=True, track_name="В пещере горного короля",
+        form_ends_at=T0 + 40.0,
+    )
+    plan = MediaRouter().route("ты диджей Снупдог, давай сет", state)
+    assert plan.tool_calls[0].arguments["next_transition_sec"] == 40
+
+    no_form_state = MediaState(
+        music_playing=True, track_name="В пещере горного короля"
+    )
+    plan = MediaRouter().route("ты диджей Снупдог, давай сет", no_form_state)
+    assert plan.tool_calls[0].arguments["next_transition_sec"] == DJ_START_TRANSITION_SEC
+
+
+def test_over_playing_track_first_transition_skips_research() -> None:
+    """Играющий трек засчитан треком #1 — переход #1 без «СТАРТ ВЕЧЕРИНКИ»."""
+    ctrl, hook, clock = _controller()
+    ctrl.claim_preview("")  # тоника неизвестна, как заявка роутера
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "persona": "диджей Снупдог",
+        "next_transition_sec": DJ_START_TRANSITION_SEC,
+    }))
+    assert ctrl.state.tracks_started == 1
+    assert ctrl.state.preview_started
+    prompt = _tick_until_dispatch(ctrl, hook, clock)
+    assert prompt.startswith("[DJ_AUTO переход #1]")
+    assert "СТАРТ ВЕЧЕРИНКИ" not in prompt
+    for tool in RESEARCH_TOOLS:
+        assert tool not in prompt, tool
 
 
 def test_running_set_only_switches_persona() -> None:
