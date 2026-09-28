@@ -2792,6 +2792,7 @@ def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
     историей и вызвала ``set_dj_mode(persona='Диджей Шафутинский')``.
     Юзер услышал, что робот «всё-таки Шафутинский».
     """
+    llm.response_text = "Диджей Векна в студии!"
     obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
@@ -2799,17 +2800,19 @@ def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
     obj._turn_window.extend([
         Turn(role="user", content="Ты диджей Шафутинский"),
         Turn(role="assistant", content="С вами диджей Шафутинский!"),
-        Turn(role="user", content="Ты диджей Векна, тема Изнанка"),
-        Turn(role="assistant", content="Диджей Векна в студии!"),
     ])
+    # Issue #3145 — отзывается ответ, записанный последним process_input.
+    _wake(obj)
+    asyncio.run(obj.process_input("Ты диджей Векна, тема Изнанка"))
 
     assert asyncio.run(obj.discard_last_reply()) is True
 
     _wake(obj)
     asyncio.run(obj.process_input("[CRITICAL] вызови музыкальный тул", is_synthetic=True))
 
-    contents = [m.content for m in llm.calls[0][0]]
+    contents = [m.content for m in llm.calls[1][0]]
     assert "Ты диджей Векна, тема Изнанка" in contents, contents
+    assert "Диджей Векна в студии!" not in contents, contents
 
 
 def test_orphaned_user_turn_is_still_dropped_on_an_ordinary_turn(
@@ -2854,18 +2857,17 @@ def test_pending_user_turn_is_not_resurrected_on_the_next_real_turn(
     идёт обычная реплика человека, и повисший запрос не должен конкурировать
     с ней за внимание модели.
     """
+    llm.response_text = "Диджей Векна в студии!"
     obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    obj._turn_window.extend([
-        Turn(role="user", content="Ты диджей Векна, тема Изнанка"),
-        Turn(role="assistant", content="Диджей Векна в студии!"),
-    ])
-    asyncio.run(obj.discard_last_reply())
+    _wake(obj)
+    asyncio.run(obj.process_input("Ты диджей Векна, тема Изнанка"))
+    assert asyncio.run(obj.discard_last_reply()) is True
 
     _wake(obj)
     asyncio.run(obj.process_input("сколько времени"))
 
-    contents = [m.content for m in llm.calls[0][0]]
+    contents = [m.content for m in llm.calls[1][0]]
     assert "Ты диджей Векна, тема Изнанка" not in contents, contents

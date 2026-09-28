@@ -24,9 +24,10 @@
 
   * ``process_input`` пишет ``tools_called`` в ``metadata`` ассистентского
     хода;
-  * ``_resolve_history`` разворачивает его в ``system``-сообщение ПЕРЕД
-    ответом ассистента (не в текст ассистента — модель копирует свои же
-    реплики, ретро 20.08 с утечкой ``[Spkr:...]`` в TTS);
+  * ``_resolve_history`` сводит его в ОДИН блок «выполнено в прошлых
+    ходах» во втором system-сообщении шапки (issue #3145: раньше — system
+    перед каждым ответом с тулами, до 9 mid-system), не в текст ассистента
+    — модель копирует свои же реплики (ретро 20.08, утечка ``[Spkr:...]``);
   * ход без тулов историю не засоряет;
   * битая metadata из SQLite не роняет ход.
 """
@@ -182,7 +183,9 @@ def test_turn_without_tools_stores_no_evidence() -> None:
     assert "tools_called" not in assistant_turns[-1].metadata
 
 
-def test_evidence_reaches_the_prompt_before_the_assistant_reply() -> None:
+def test_evidence_reaches_the_prompt_in_one_header_block() -> None:
+    """Issue #3145 — след тулов доходит до модели, но одним блоком в шапке
+    (второй system), с цитатой запроса, а не system перед ответом."""
     memory = _FakeMemoryStore()
     llm = _FakeLLMProvider(response_text="ок")
     core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
@@ -200,11 +203,13 @@ def test_evidence_reaches_the_prompt_before_the_assistant_reply() -> None:
     sent = llm.calls[0][0]
     roles = [m.role for m in sent]
     contents = [m.content for m in sent]
+    assert roles[:2] == ["system", "system"]
+    assert roles.count("system") == 2
+    block = contents[1]
+    assert "на «сыграй жесткий барабанный бит»: compose_music, speak_text" in block
     idx = contents.index("Бочка как кувалда.")
-    assert roles[idx - 1] == "system"
-    assert "compose_music" in contents[idx - 1]
-    assert "speak_text" in contents[idx - 1]
-    # Текст ассистента не тронут — модели нечего копировать в TTS.
+    # Посреди истории system нет, текст ассистента не тронут.
+    assert roles[idx - 1] == "user"
     assert contents[idx] == "Бочка как кувалда."
 
 
