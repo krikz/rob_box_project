@@ -212,8 +212,11 @@ def test_dj_plan_in_silence_starts_set() -> None:
 
 
 def test_dj_plan_over_playing_track_starts_set() -> None:
+    # Issue #3153 (доп.): играющий трек засчитан треком #1 сета — подробно
+    # test_issue_3153_dj_instant_preview.py.
     plan = MediaRouter().route("ты диджей Снупдог, давай сет", PLAYING)
     assert _calls(plan)[0][1]["next_transition_sec"] == DJ_START_TRANSITION_SEC
+    assert plan.claim_track_one is True
 
 
 def test_dj_plan_mid_set_switches_persona_without_stop() -> None:

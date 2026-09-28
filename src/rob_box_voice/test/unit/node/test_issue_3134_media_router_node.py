@@ -270,3 +270,12 @@ def test_media_state_is_the_single_accessor():
     n._music_player_state = MusicPlayerState(state="idle")
     assert n._media_state().music_playing is False
     assert n._media_state().track_name is None  # название — только пока играет
+
+
+def test_media_state_exposes_form_ends_at_only_while_playing():
+    """Issue #3153 (доп.) — роутеру нужен конец формы играющего трека."""
+    n = _make_node(playing=True, track="Still Dre")
+    n._music_player_state = MusicPlayerState(state="playing", form_ends_at=123.0)
+    assert n._media_state().form_ends_at == 123.0
+    n._music_player_state = MusicPlayerState(state="idle", form_ends_at=123.0)
+    assert n._media_state().form_ends_at is None
