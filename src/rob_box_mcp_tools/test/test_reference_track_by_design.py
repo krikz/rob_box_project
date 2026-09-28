@@ -48,6 +48,13 @@ def test_every_drum_pattern_is_one_bar_of_sixteenths():
     assert len(patterns) == 3
     for pattern in patterns:
         assert len(_play_steps(pattern)) == 16, pattern
+    # По умолчанию у play() dur=0.5 (renardo_lib Players.py:602): без явного
+    # dur=1/4 16 шагов длились бы 2 такта, а бас/арп с dur=1/4 — один, и
+    # просадки сайдчейна не совпали бы с бочкой.
+    play_lines = [line for line in code_lines.splitlines() if "play(" in line]
+    assert len(play_lines) == 3
+    for line in play_lines:
+        assert "dur=1/4" in line, line
 
 
 def test_sidechain_dips_exactly_on_kick_steps():

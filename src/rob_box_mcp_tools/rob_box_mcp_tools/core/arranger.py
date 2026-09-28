@@ -1304,7 +1304,12 @@ def _render_drum_layer(
             'например "X..o.X.o".'
         )
     head = f'play({layer.pattern!r}'
-    args: List[str] = []
+    # Рисунок — ровно один такт (16 шагов на такт, harmonize._STYLE_DRUMS;
+    # дакинг _duck_expr_from_drum_pattern тоже считает шаг = такт / длина).
+    # Без явного dur у play() в renardo_lib dur=0.5 (Players.py:602):
+    # 16 шагов шли восьмыми, рисунок длился 2 такта — бочка вдвое реже
+    # задуманного, а провалы дакинга (цикл в 1 такт) мимо ударов.
+    args: List[str] = [f"dur={_fmt(BEATS_PER_BAR / len(layer.pattern))}"]
     if layer.sample:
         args.append(f"sample={int(layer.sample)}")
     return head, args
