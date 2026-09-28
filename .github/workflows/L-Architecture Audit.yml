@@ -34,6 +34,11 @@ on:
         required: false
         default: ""
         type: string
+      fail_on_new:
+        description: "Fail the run when runtime findings appear that are not in architecture/runtime-baseline.json"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -188,6 +193,12 @@ jobs:
       - name: Compare static and runtime
         run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
+      - name: Runtime findings (dead topics, type/QoS mismatch, multiple writers)
+        run: |
+          python tools/architecture_runtime_findings.py architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --baseline architecture/runtime-baseline.json
+
       - name: Render runtime architecture graph
         run: |
           python tools/architecture_runtime_graph.py \
@@ -214,6 +225,8 @@ jobs:
             architecture/runtime-vision.json
             architecture/runtime-diff.json
             architecture/runtime-diff.md
+            architecture/runtime-findings.json
+            architecture/runtime-findings.md
             architecture/runtime-overview.mmd
             architecture/runtime-graph.mmd
             architecture/runtime-graph.md
@@ -225,6 +238,8 @@ jobs:
             python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes (union): " + str(len(d.get("nodes", [])))); [print("- " + c["pi"] + ": " + c["host"] + " / " + c["container"]) for c in d.get("captures", [])]; print("- Topics: " + str(len(d.get("topics", [])))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
             echo
             cat architecture/runtime-diff.md
+            echo
+            cat architecture/runtime-findings.md
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Container map + one collapsible diagram per container + placement
@@ -233,3 +248,12 @@ jobs:
             echo
             cat architecture/runtime-graph.md
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Last step, so the graph, artifacts and summary are published first.
+      - name: Fail on new runtime findings
+        if: inputs.fail_on_new
+        run: |
+          python tools/architecture_runtime_findings.py architecture/runtime.json \
+            --inventory architecture/inventory.json \
+            --baseline architecture/runtime-baseline.json \
+            --fail-on-new

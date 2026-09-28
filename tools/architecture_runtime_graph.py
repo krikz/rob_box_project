@@ -43,7 +43,7 @@ INFRA_TOPIC_SUFFIXES = ("/transition_event",)
 HELPER_NODE_PATTERNS = (
     re.compile(r"(^|/)transform_listener_impl_[0-9a-f]+$"),  # tf2_ros::TransformListener
     re.compile(r"(^|/)launch_ros_\d+$"),  # ros2 launch process itself
-    re.compile(r"(^|/)_ros2cli_\d+$"),  # ros2 CLI daemon probes
+    re.compile(r"(^|/)_ros2cli_(daemon_)?\d+(_[0-9a-f]+)?$"),  # ros2 CLI + its daemon (the audit itself)
     re.compile(r"_rclcpp_node$"),  # nav2 BT action helper nodes
 )
 

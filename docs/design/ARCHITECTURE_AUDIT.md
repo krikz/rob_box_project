@@ -93,3 +93,17 @@ Readability rules:
 - `line_coverage` — only with `--coverage <coverage.py JSON>`; otherwise `null`, never guessed.
 
 Metrics are review candidates: a god class or several responsibilities is a reason to ask the node review questions above, not an automatic split.
+
+## Runtime findings
+
+`tools/architecture_runtime_findings.py` reads `runtime.json` (the live graph captured by `L: Architecture Audit`) and writes `runtime-findings.json` / `runtime-findings.md`:
+
+- `type_mismatch` — endpoints of one topic use different message types, so data never flows;
+- `qos_incompatible` — BEST_EFFORT publisher → RELIABLE subscriber, or VOLATILE → TRANSIENT_LOCAL;
+- `dead_input` / `dead_output` — subscribers without a publisher / publishers without a subscriber;
+- `multiple_writers` — several nodes publish one topic;
+- `duplicate_publishers` — one node holds several publishers on one topic.
+
+Endpoints are re-parsed from the raw `ros2 topic info --verbose` text. Infra topics and helper nodes (including the `_ros2cli_daemon_*` the audit itself starts) are ignored. `scope: repo` means one of the endpoint nodes is created in `src/`, or the topic is declared in our code; the rest is `external` (nav2, rtabmap, drivers).
+
+`architecture/runtime-baseline.json` lists known findings. Findings that are not in it are marked 🆕; keys that disappeared are listed as resolved. The `fail_on_new` input of `L: Architecture Audit` fails the run on new findings, after the reports are published. A snapshot shows only what was connected at capture time, so a node that was down produces findings too.
