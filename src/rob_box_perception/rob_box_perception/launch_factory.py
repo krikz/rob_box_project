@@ -65,6 +65,10 @@ _DEFAULTS: Dict[str, Any] = {
     # (см. gaze.py → OakDSource и т.д.).
     'input_topic': '/camera/camera/color/image_raw',
     'output_topic': '/vision/hailo/events',
+    # ADR-0138 (этап 1 ADR-0130): Observation + глубина OAK-D.
+    'observation_topic': '/perception/observations',
+    'depth_enabled': 'true',
+    'depth_sync_tolerance_sec': '0.15',
     'publish_when_no_input': 'true',
     # issue #2703/#2704: пустая строка = нода сама вычисляет
     # /tmp/{executable}_heartbeat (см. utils.heartbeat.default_heartbeat_path).
@@ -233,6 +237,27 @@ def make_hailo_node_launch(
             description='Публикация VisionEvent[] (consumed by context_aggregator).',
         ),
         DeclareLaunchArgument(
+            'observation_topic',
+            default_value=_DEFAULTS['observation_topic'],
+            description=(
+                'Публикация Observation (ADR-0138): person/face + 3D в '
+                'optical frame камеры по глубине OAK-D, без имени.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'depth_enabled',
+            default_value=_DEFAULTS['depth_enabled'],
+            description=(
+                'Подписка oak_d на выровненную глубину + camera_info '
+                '(ADR-0138). false = position_status=no_depth_stream.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'depth_sync_tolerance_sec',
+            default_value=_DEFAULTS['depth_sync_tolerance_sec'],
+            description='Допуск |stamp_rgb - stamp_depth|, с (ADR-0138).',
+        ),
+        DeclareLaunchArgument(
             'publish_when_no_input',
             default_value=_DEFAULTS['publish_when_no_input'],
             description='В stub-режиме публиковать события даже без входящих '
@@ -260,6 +285,11 @@ def make_hailo_node_launch(
             'first_frame_timeout_sec'
         ),
         'output_topic': LaunchConfiguration('output_topic'),
+        'observation_topic': LaunchConfiguration('observation_topic'),
+        'depth_enabled': LaunchConfiguration('depth_enabled'),
+        'depth_sync_tolerance_sec': LaunchConfiguration(
+            'depth_sync_tolerance_sec'
+        ),
         'publish_when_no_input': LaunchConfiguration('publish_when_no_input'),
         'heartbeat_path': LaunchConfiguration('heartbeat_path'),
     }
