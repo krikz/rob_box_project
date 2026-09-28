@@ -7330,6 +7330,7 @@ class DialogueNode(Node):
             f"text={text[:60]!r}"
         )
         self._apply_media_plan_side_effects(plan)
+        self._prepare_dj_preview(plan, executor)
         asyncio.run_coroutine_threadsafe(
             self._execute_media_plan(plan, executor), self._loop
         )
@@ -7345,12 +7346,44 @@ class DialogueNode(Node):
             # Как #2897: стоп юзера гасит DJ-режим в коде, молча.
             self._force_dj_off_for_stop_command(reason="media_router_stop")
 
+    def _prepare_dj_preview(self, plan: MediaPlan, executor: Any) -> None:
+        """Issue #3153 — старт DJ-сета мгновенным превью: подготовка до тулов.
+
+        * Заявка DJ-контроллеру «превью — трек #1 сета»: ``/voice/dj_mode``
+          от ``set_dj_mode`` приходит отдельным топиком, заявка должна
+          лежать раньше него.
+        * Сброс лимита «один трек за ход» (#2859) у исполнителя: он
+          снимается только на границе хода LLM, и трек прошлого хода
+          иначе отказал бы превью (отказ — не ошибка тула, робот сказал бы
+          «запускаю сет» в тишине). Идущий ход команда уже отменила
+          (``cancel_inflight``).
+        """
+        if not plan.preview_root:
+            return
+        begin_turn = getattr(executor, "begin_turn", None)
+        if callable(begin_turn):
+            begin_turn()
+        dj = getattr(self, "_dj", None)
+        if dj is not None:
+            dj.claim_preview(plan.preview_root)
+
     async def _execute_media_plan(self, plan: MediaPlan, executor: Any) -> None:
-        """Вызвать тулы плана по порядку и сказать фиксированную фразу."""
-        ok = True
+        """Вызвать тулы плана по порядку и сказать фиксированную фразу.
+
+        Тул с ``fail_text`` при неудаче обрывает план и говорит свою фразу
+        (issue #3153: превью не встало — DJ не включаем).
+        """
+        ok, phrase = True, ""
         for call in plan.tool_calls:
-            ok = await self._execute_media_tool(executor, call) and ok
-        phrase = plan.say_ok if ok else plan.say_fail
+            if await self._execute_media_tool(executor, call):
+                continue
+            ok = False
+            if call.fail_text:
+                phrase = call.fail_text
+                break
+        if not ok and plan.preview_root and getattr(self, "_dj", None) is not None:
+            self._dj.drop_preview_claim()
+        phrase = phrase or (plan.say_ok if ok else plan.say_fail)
         if phrase:
             self._speak_direct(phrase)
 

@@ -174,7 +174,7 @@ def test_stop_is_executed_by_code(run_plans, state):
 # ── «ты диджей X» × состояние ──────────────────────────────────────────
 
 
-@pytest.mark.parametrize("state", ["playing", "quiet"])
+@pytest.mark.parametrize("state", ["playing"])  # тишина — превью, #3153
 def test_dj_persona_starts_set_without_llm(run_plans, state):
     n = _make_node(**STATES[state])
     _stt(n, "Робот, ты диджей Снупдог, давай сет")

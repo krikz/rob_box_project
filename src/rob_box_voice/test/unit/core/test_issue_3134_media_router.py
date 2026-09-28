@@ -26,6 +26,7 @@ from rob_box_voice.core.media_command_grammar import (
     parse_media_command,
 )
 from rob_box_voice.core.media_router import (
+    DJ_PREVIEW_FORM_SEC,
     DJ_START_TRANSITION_SEC,
     NOTHING_PLAYING_TEXT,
     MediaRouter,
@@ -194,16 +195,19 @@ def test_stop_plan(state: str) -> None:
 
 
 def test_dj_plan_in_silence_starts_set() -> None:
+    # Issue #3153: в тишине сет стартует мгновенным club-превью, затем
+    # set_dj_mode (подробно — test_issue_3153_dj_instant_preview.py).
     plan = MediaRouter().route("ты диджей Снупдог, давай сет", QUIET)
     assert plan.handled
-    assert _calls(plan) == [(
+    assert [c.name for c in plan.tool_calls] == ["compose_music", "set_dj_mode"]
+    assert _calls(plan)[1] == (
         "set_dj_mode",
         {
             "enabled": True,
             "persona": "диджей Снупдог",
-            "next_transition_sec": DJ_START_TRANSITION_SEC,
+            "next_transition_sec": DJ_PREVIEW_FORM_SEC,
         },
-    )]
+    )
     assert "Снупдог" in plan.say_ok
 
 
