@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LEDNode - управление 12× RGB LED на ReSpeaker Mic Array v2.0
-Подписывается на: /voice/state, /audio/direction, /voice/animation/request
+Подписывается на: /voice/dialogue/state, /audio/direction, /voice/animation/request
 Предоставляет сервис: /voice/set_led_mode
 
 Синхронизация с LED-матрицей:
@@ -16,6 +16,12 @@ from std_srvs.srv import SetBool
 import usb.core
 import usb.util
 from typing import Optional
+
+# Состояние диалога публикует dialogue_node (std_msgs/String, имя
+# DialogueStateKind: IDLE / LISTENING / DIALOGUE / SILENCED). Топика
+# ``/voice/state`` на роботе никто не публикует — это старое имя
+# (ADR-0027 #2, arbiter_node.VOICE_DIALOGUE_STATE_TOPIC), issue #3107.
+VOICE_STATE_TOPIC = '/voice/dialogue/state'
 
 
 class PixelRingLite:
@@ -158,7 +164,7 @@ class LEDNode(Node):
         # Subscribers
         self.state_sub = self.create_subscription(
             String,
-            '/voice/state',
+            VOICE_STATE_TOPIC,
             self.state_callback,
             10
         )

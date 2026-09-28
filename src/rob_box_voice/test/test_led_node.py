@@ -122,7 +122,7 @@ class TestLEDNode(unittest.TestCase):
         )
         sub_topics = [name for name, _ in subscriptions]
 
-        self.assertIn('/voice/state', sub_topics)
+        self.assertIn('/voice/dialogue/state', sub_topics)
         self.assertIn('/audio/direction', sub_topics)
 
     def test_service_created(self):
@@ -656,7 +656,7 @@ class TestLEDNodeIntegration(unittest.TestCase):
 
         # Публикуем состояния
         test_node = rclpy.create_node('test_publisher')
-        pub = test_node.create_publisher(String, '/voice/state', 10)
+        pub = test_node.create_publisher(String, '/voice/dialogue/state', 10)
 
         msg = String()
         msg.data = 'listening'
