@@ -1781,7 +1781,46 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'сказано в '
                                                                         'ответе.',
                                                          'enum': ['classic', 'club'],
-                                                         'default': 'classic'}},
+                                                         'default': 'classic'},
+                                            'transition': {   'type': 'string',
+                                                              'description': 'Только '
+                                                                             'для '
+                                                                             'style=club. '
+                                                                             'cut (по '
+                                                                             'умолчанию) '
+                                                                             '— новый '
+                                                                             'трек '
+                                                                             'сразу '
+                                                                             'заменяет '
+                                                                             'играющий. '
+                                                                             'fade — '
+                                                                             'DJ-переход: '
+                                                                             'играющий '
+                                                                             'трек за '
+                                                                             '8 тактов '
+                                                                             'уходит '
+                                                                             'фильтром '
+                                                                             'и '
+                                                                             'громкостью, '
+                                                                             'новый '
+                                                                             'стартует '
+                                                                             'с '
+                                                                             'границы '
+                                                                             'такта '
+                                                                             'после '
+                                                                             'фейда '
+                                                                             '(если '
+                                                                             'ничего '
+                                                                             'не '
+                                                                             'играет — '
+                                                                             'сразу). '
+                                                                             'В '
+                                                                             'DJ-сете '
+                                                                             'между '
+                                                                             'треками '
+                                                                             '— fade.',
+                                                              'enum': ['cut', 'fade'],
+                                                              'default': 'cut'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -1825,7 +1864,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'levels',
                                        'seed',
                                        'rtttl',
-                                       'style'],
+                                       'style',
+                                       'transition'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -5070,7 +5110,46 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'сказано в '
                                                                         'ответе.',
                                                          'enum': ['classic', 'club'],
-                                                         'default': 'classic'}},
+                                                         'default': 'classic'},
+                                            'transition': {   'type': 'string',
+                                                              'description': 'Только '
+                                                                             'для '
+                                                                             'style=club. '
+                                                                             'cut (по '
+                                                                             'умолчанию) '
+                                                                             '— новый '
+                                                                             'трек '
+                                                                             'сразу '
+                                                                             'заменяет '
+                                                                             'играющий. '
+                                                                             'fade — '
+                                                                             'DJ-переход: '
+                                                                             'играющий '
+                                                                             'трек за '
+                                                                             '8 тактов '
+                                                                             'уходит '
+                                                                             'фильтром '
+                                                                             'и '
+                                                                             'громкостью, '
+                                                                             'новый '
+                                                                             'стартует '
+                                                                             'с '
+                                                                             'границы '
+                                                                             'такта '
+                                                                             'после '
+                                                                             'фейда '
+                                                                             '(если '
+                                                                             'ничего '
+                                                                             'не '
+                                                                             'играет — '
+                                                                             'сразу). '
+                                                                             'В '
+                                                                             'DJ-сете '
+                                                                             'между '
+                                                                             'треками '
+                                                                             '— fade.',
+                                                              'enum': ['cut', 'fade'],
+                                                              'default': 'cut'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -5114,7 +5193,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'levels',
                                        'seed',
                                        'rtttl',
-                                       'style'],
+                                       'style',
+                                       'transition'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -5844,7 +5924,22 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              '→ 5), а '
                                                                              'списка '
                                                                              'треков '
-                                                                             'нет.'}},
+                                                                             'нет.'},
+                                            'bpm': {   'type': 'integer',
+                                                       'description': 'Темп ВСЕГО сета '
+                                                                      '(60–180), по '
+                                                                      'умолчанию 124. '
+                                                                      'Передавай '
+                                                                      'ТОЛЬКО если '
+                                                                      'юзер сам '
+                                                                      'попросил темп '
+                                                                      '(«быстрее», '
+                                                                      '«давай 128») — '
+                                                                      'сет держит один '
+                                                                      'темп, переходы '
+                                                                      'между треками '
+                                                                      'его не '
+                                                                      'меняют.'}},
                           'required': ['enabled'],
                           'additionalProperties': False},
         'signature': {   'params': [   'enabled',
@@ -5854,7 +5949,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'persona',
                                        'plan',
                                        'max_minutes',
-                                       'max_tracks'],
+                                       'max_tracks',
+                                       'bpm'],
                          'required': ['enabled'],
                          'accepts_kwargs': False},
         'skill': ('dj',)},
