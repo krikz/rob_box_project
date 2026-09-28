@@ -95,7 +95,7 @@ from rob_box_harness.providers import (
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
-from rob_box_llm.provider import LLMMessage, LLMSettings
+from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.skill_router import SkillRouter
@@ -206,7 +206,7 @@ from rob_box_voice.core.identity_ack import (
     identity_ack_plan,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
-from rob_box_voice.core.dj_request import is_dj_request  # Issue #2999 / ADR-0140
+from rob_box_voice.core.media_router import MediaPlan, MediaRouter, MediaState
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
@@ -3104,9 +3104,9 @@ class DialogueNode(Node):
         """
         raw_user_command = clean
         if self._dj.state.enabled:
-            # Issue #2999 — «ты диджей X…» посреди сета: обёртка просит
-            # set_dj_mode с новой персоной/темой вместо «не вызывай set_dj_mode».
-            clean = self._dj.preamble(dj_request=is_dj_request(clean)) + clean
+            # Issue #3134 — «ты диджей X» сюда доходит только после того, как
+            # роутер медиакоманд сам вызвал set_dj_mode, поэтому обёртка одна.
+            clean = self._dj.preamble() + clean
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         # Issue #1766 — markers the operator / e2e harness grep for.
@@ -3310,6 +3310,10 @@ class DialogueNode(Node):
         # сыгранная тема — в список «не повторять» сета.
         self._dj.note_form_stop(payload.get("stops_at"))
         self._dj.note_track_name(payload.get("track"))
+        # Issue #3134 — название играющего трека для роутера медиакоманд
+        # («горный король погромче»); читается только через _media_state.
+        track = payload.get("track")
+        self._music_form_track = track if isinstance(track, str) and track else None
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
@@ -6471,7 +6475,7 @@ class DialogueNode(Node):
         if self._turn_guards is not None:
             return self._turn_guards
         music_adapter = turn_guards_music_adapter(
-            evaluate_fn=lambda turn, reply: self._music_guard.evaluate_turn(
+            evaluate_fn=lambda turn, reply: self._music_guard.evaluate(
                 was_dj_auto=turn.is_dj_auto,
                 user_input=turn.user_input,
                 tools_called=reply.tools_called,
@@ -7133,8 +7137,7 @@ class DialogueNode(Node):
             )
             return False
 
-        # Issue #2999 — ``evaluate_turn``: DJ-запрос юзера до Bug C.
-        verdict = self._music_guard.evaluate_turn(
+        verdict = self._music_guard.evaluate(
             was_dj_auto=was_dj_auto,
             user_input=user_input,
             tools_called=tuple(tools_called or ()),
@@ -7144,7 +7147,6 @@ class DialogueNode(Node):
             spoken=spoken,
             tool_error_occurred=tool_error_occurred,
             succeeded_tools=succeeded_tools,
-            music_playing=self._music_playing_now(),
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
@@ -7280,6 +7282,96 @@ class DialogueNode(Node):
         """
         snapshot = getattr(self, "_music_player_state", None)
         return snapshot is not None and snapshot.is_playing()
+
+    # ── Issue #3134 — роутер медиакоманд до LLM ────────────────────────
+
+    def _media_state(self) -> MediaState:
+        """ЕДИНСТВЕННЫЙ аксессор состояния плеера для роутера медиакоманд.
+
+        Источники сегодня: «играет» — :meth:`_music_playing_now` (флаг,
+        который гасит ``/voice/music/state`` = idle), название трека —
+        последний ``track`` из ``/voice/music/form``, DJ — ``DJState``.
+        Когда плеер станет владельцем состояния (#3133, ADR-0141, JSON в
+        ``/voice/music/state``), источник меняется здесь и только здесь.
+        """
+        dj = getattr(self, "_dj", None)
+        playing = self._music_playing_now()
+        return MediaState(
+            music_playing=playing,
+            dj_enabled=bool(dj is not None and dj.state.enabled),
+            track_name=getattr(self, "_music_form_track", None) if playing else None,
+        )
+
+    def _route_media_command(self, text: str) -> bool:
+        """Медиакоманду исполняет код, до LLM. ``True`` — в LLM не идёт.
+
+        MCP-тулы вызываются тем же исполнителем, что и у LLM-хода
+        (``SchedulerToolExecutor`` → ``ROSMCPToolProvider`` →
+        ``LLMToolCallAdapter`` → подписанный ``/mcp/execute``).
+        """
+        router = getattr(self, "_media_router", None)
+        if router is None:
+            router = self._media_router = MediaRouter()
+        plan = router.route(text, self._media_state())
+        if plan is None:
+            return False
+        executor = getattr(self, "_scheduler_executor", None)
+        if plan.tool_calls and executor is None:
+            self.get_logger().warning(
+                f"🎛️ [media-router] {plan.command.intent.value}: MCP-тулов нет "
+                "(tool_provider не ros_mcp) — отдаю реплику LLM"
+            )
+            return False
+        self.get_logger().info(
+            f"🎛️ [media-router] intent={plan.command.intent.value} "
+            f"closed={plan.command.closed} provider={router.provider_name} "
+            f"tools={[c.name for c in plan.tool_calls]} to_llm={plan.to_llm} "
+            f"text={text[:60]!r}"
+        )
+        self._apply_media_plan_side_effects(plan)
+        asyncio.run_coroutine_threadsafe(
+            self._execute_media_plan(plan, executor), self._loop
+        )
+        return plan.handled
+
+    def _apply_media_plan_side_effects(self, plan: MediaPlan) -> None:
+        """Синхронная часть плана: счётчик, отмена хода, DJ off при стопе."""
+        if plan.handled:
+            self._llm_skipped_counter["media_command"] += 1
+        if plan.cancel_inflight:
+            self._cancel_run("media command (issue 3134)", stop_tts=True)
+        if plan.dj_off:
+            # Как #2897: стоп юзера гасит DJ-режим в коде, молча.
+            self._force_dj_off_for_stop_command(reason="media_router_stop")
+
+    async def _execute_media_plan(self, plan: MediaPlan, executor: Any) -> None:
+        """Вызвать тулы плана по порядку и сказать фиксированную фразу."""
+        ok = True
+        for call in plan.tool_calls:
+            ok = await self._execute_media_tool(executor, call) and ok
+        phrase = plan.say_ok if ok else plan.say_fail
+        if phrase:
+            self._speak_direct(phrase)
+
+    async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
+        tool_call = ToolCall(
+            id=f"media-router-{uuid.uuid4().hex[:8]}",
+            name=call.name,
+            arguments=dict(call.arguments),
+        )
+        try:
+            result = await executor.execute(tool_call)
+        except Exception as exc:  # noqa: BLE001 — честная фраза вместо падения
+            self.get_logger().warning(
+                f"🎛️ [media-router] {call.name}({call.arguments}) упал: {exc}"
+            )
+            return False
+        ok = not bool(getattr(result, "is_error", False))
+        self.get_logger().info(
+            f"🎛️ [media-router] {call.name}({call.arguments}) ok={ok} "
+            f"result={str(getattr(result, 'content', ''))[:160]!r}"
+        )
+        return ok
 
     def _speak_music_retry_nudge(self) -> None:
         """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
@@ -10070,6 +10162,10 @@ class _DialogueSttHost:
             f"{text[:60]!r}"
         )
         return True
+
+    def handle_media_command(self, text: str) -> bool:
+        # Issue #3134 — медиакоманды кодом, до LLM (и в TG, и в DJ-режиме).
+        return self._node._route_media_command(text)
 
     def reset_session(
         self,

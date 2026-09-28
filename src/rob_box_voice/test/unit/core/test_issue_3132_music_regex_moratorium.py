@@ -39,10 +39,16 @@ _CORE_DIR = Path(__file__).resolve().parents[3] / "rob_box_voice" / "core"
 # Зафиксированные пределы на 28.09.2026 (issue #3132). Понижать можно
 # в любом PR, убирающем регексы; повышать — только с явного разрешения
 # товарища Шифу (см. docs/design/2026-09-28-music-dj-systemic-analysis.md §6).
+#
+# Issue #3134 (Ш2): грамматика «громче/тише/стоп/ты диджей X» перенесена в
+# ``media_command_grammar.py`` (роутер медиакоманд до LLM): 3 регекса из
+# удалённого ``music_volume_request.py``, 4 из удалённого ``dj_request.py``
+# и ``MUSIC_STOP_COMMAND_RE`` из ``dialogue_guards.py`` (35 -> 34). Новых нет:
+# ``_VOLUME_CORE_RE`` заменён одним ``_WORD_CLASS_RE`` (классы слов).
 _MAX_RE_COMPILE: dict[str, int] = {
-    "dialogue_guards.py": 35,
+    "dialogue_guards.py": 34,
     "music_guard.py": 0,
-    "music_volume_request.py": 3,
+    "media_command_grammar.py": 8,
 }
 
 _RE_COMPILE_CALL = re.compile(r"re\.compile\(")

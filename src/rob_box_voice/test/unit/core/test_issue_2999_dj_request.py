@@ -11,11 +11,12 @@
   «Не вызывай set_dj_mode», ``tools=[]`` → ``['lookup_melody']`` →
   разовый ``compose_music``; персона/тема сета не сменились.
 
-Здесь — чистые части: детектор (таблица), промпт/фолбэк, вердикты
-``MusicGuard.evaluate_turn``, утечка CRITICAL в TTS (``decide_turn_speech``),
-обёртка ``DJModeController.preamble(dj_request=...)`` и смена персоны на
-идущем сете. Адаптер ``DialogueNode`` — в
-``test/unit/node/test_issue_2999_dj_request_node.py``.
+Issue #3134: «ты диджей X» исполняет роутер медиакоманд кодом ДО LLM
+(``set_dj_mode``), поэтому DJ-ретрай ``MusicGuard.evaluate_turn``, его
+промпт/фолбэк и особая обёртка хода удалены. Здесь остались: детектор
+(перенесён в ``core/media_command_grammar.py``), утечка CRITICAL в TTS и
+смена персоны на идущем сете в ``DJModeController``. Роутер — в
+``test_issue_3134_media_router.py``.
 """
 
 from __future__ import annotations
@@ -28,14 +29,10 @@ import pytest
 
 from rob_box_voice.core.dialogue_guards import MUSIC_STARTING_TOOLS
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
-from rob_box_voice.core.dj_request import (
-    DJ_REQUEST_MAX_RETRIES,
-    build_dj_request_exhausted_fallback,
-    build_dj_request_retry_prompt,
+from rob_box_voice.core.media_command_grammar import (
     extract_dj_request_hint,
     is_dj_request,
 )
-from rob_box_voice.core.music_guard import MusicGuard, MusicGuardVerdictKind
 from rob_box_voice.core.turn_speech import decide_turn_speech, is_retry_prompt_leak
 
 LIVE_A = "[TG] Ты диджей Снупдог и у нас сегодня вечеринка ганкста в чорном квартале"
@@ -113,179 +110,13 @@ def test_extract_dj_request_hint(text: str, persona: str, theme: str) -> None:
     assert extract_dj_request_hint(text) == (persona, theme)
 
 
-# ── 2. Промпт ретрая и фолбэк ──────────────────────────────────────────
-
-
-def test_retry_prompt_names_dj_tools_with_hints() -> None:
-    prompt = build_dj_request_retry_prompt(LIVE_A, dj_active=False)
-    assert prompt.startswith("[CRITICAL]")
-    assert "load_skill(skill='dj')" in prompt
-    assert "set_dj_mode(enabled=true" in prompt
-    assert "persona='диджей Снупдог'" in prompt
-    assert "theme='вечеринка ганкста в чорном квартале'" in prompt
-    # Не музыкальный промпт Bug C.
-    assert "ни один музыкальный тул" not in prompt
-    assert "НЕ DJ-сет" in prompt
-
-
-def test_retry_prompt_active_set_keeps_bpm_and_music() -> None:
-    prompt = build_dj_request_retry_prompt(LIVE_B, dj_active=True)
-    assert "УЖЕ ИДЁТ" in prompt
-    assert "bpm НЕ передавай" in prompt
-    assert "stop_music НЕ вызывай" in prompt
-    assert "persona='диджей Анакен скайвокер'" in prompt
-
-
-def test_exhausted_fallback_is_honest() -> None:
-    text = build_dj_request_exhausted_fallback(LIVE_A)
-    assert "не запустился" in text
-    low = text.lower()
-    for bad in ("извин", "прости", "попробую", "[critical]"):
-        assert bad not in low
-
-
-# ── 3. MusicGuard.evaluate_turn ────────────────────────────────────────
-
-
-def _turn(guard: MusicGuard, user_input: str, tools=(), **kw):
-    return guard.evaluate_turn(
-        was_dj_auto=kw.pop("was_dj_auto", False),
-        user_input=user_input,
-        tools_called=tuple(tools),
-        dj_enabled=kw.pop("dj_enabled", False),
-        build_music_retry_prompt=lambda u: "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один музыкальный тул",
-        build_dj_retry_prompt=lambda: "[CRITICAL] DJ",
-        **kw,
-    )
-
-
-class TestScenarioA:
-    """DJ выключен, трек играет, модель нарративит с ``tools=[]``."""
-
-    def test_first_miss_is_dj_retry_not_bug_c(self) -> None:
-        v = _turn(MusicGuard(), LIVE_A, ())
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
-        assert v.reason == "dj_request"
-        assert "set_dj_mode" in v.prompt
-        assert "ни один музыкальный тул" not in v.prompt
-
-    def test_budget_then_dj_fallback_not_bug_c_loop(self) -> None:
-        g = MusicGuard()
-        kinds = [_turn(g, LIVE_A, ()).reason for _ in range(DJ_REQUEST_MAX_RETRIES)]
-        assert kinds == ["dj_request"] * DJ_REQUEST_MAX_RETRIES
-        last = _turn(g, LIVE_A, ())
-        assert last.kind is MusicGuardVerdictKind.FALLBACK
-        assert last.reason == "dj_request_retry_exhausted"
-        assert "Диджей-сет" in last.prompt
-        # Бюджет сброшен: следующий запрос юзера — снова DJ-ретрай.
-        assert g.user_retry_count == 0
-
-    def test_exhausted_with_music_started_is_skip(self) -> None:
-        g = MusicGuard()
-        for _ in range(DJ_REQUEST_MAX_RETRIES):
-            _turn(g, LIVE_A, ())
-        v = _turn(g, LIVE_A, ("compose_music",))
-        assert v.kind is MusicGuardVerdictKind.SKIP
-        assert v.reason == "dj_request_exhausted_music_playing"
-
-    @pytest.mark.parametrize(
-        "tools",
-        [
-            ("set_dj_mode", "compose_music"),
-            ("load_skill", "set_dj_mode", "compose_music"),
-        ],
-    )
-    def test_set_dj_mode_with_track_is_skip(self, tools) -> None:
-        g = MusicGuard()
-        _turn(g, LIVE_A, ())
-        v = _turn(g, LIVE_A, tools)
-        assert v.kind is MusicGuardVerdictKind.SKIP
-        assert v.reason == "executed"
-        assert g.user_retry_count == 0
-
-    def test_set_dj_mode_without_track_is_bug_c_as_before(self) -> None:
-        # DJ-часть закрыта; трек в том же ходе требует скилл dj, и
-        # это по-прежнему работа Bug C (не DJ-ретрай).
-        v = _turn(MusicGuard(), LIVE_A, ("load_skill", "set_dj_mode"))
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
-        assert v.reason == "bug_c"
-
-    def test_retry_after_set_dj_mode_does_not_demand_it_again(self) -> None:
-        g = MusicGuard()
-        _turn(g, LIVE_A, ("set_dj_mode",))  # Bug C: трека нет
-        v = _turn(g, LIVE_A, ("compose_music",))  # ретрай дозапустил трек
-        assert v.kind is MusicGuardVerdictKind.SKIP
-        assert v.reason == "executed"
-
-    def test_closed_flag_resets_on_new_user_request(self) -> None:
-        g = MusicGuard()
-        _turn(g, LIVE_A, ("set_dj_mode", "compose_music"))
-        g.reset_for_new_user_request()
-        assert _turn(g, LIVE_A, ()).reason == "dj_request"
-        g._dj_request_closed = True
-        g.reset_for_new_session()
-        assert _turn(g, LIVE_A, ()).reason == "dj_request"
-
-    def test_load_skill_alone_does_not_satisfy(self) -> None:
-        v = _turn(MusicGuard(), LIVE_A, ("load_skill",))
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
-        assert v.reason == "dj_request"
-
-    def test_reset_for_new_user_request_gives_fresh_budget(self) -> None:
-        g = MusicGuard()
-        for _ in range(DJ_REQUEST_MAX_RETRIES):
-            _turn(g, LIVE_A, ())
-        g.reset_for_new_user_request()
-        assert _turn(g, LIVE_A, ()).reason == "dj_request"
-
-
-class TestScenarioB:
-    """DJ включён, юзер назначает новую персону посреди сета."""
-
-    @pytest.mark.parametrize("tools", [(), ("lookup_melody",), ("lookup_melody", "compose_music")])
-    def test_one_off_track_is_not_enough(self, tools) -> None:
-        v = _turn(MusicGuard(), LIVE_B, tools, dj_enabled=True)
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
-        assert v.reason == "dj_request"
-        assert "УЖЕ ИДЁТ" in v.prompt
-
-    def test_set_dj_mode_mid_set_satisfies(self) -> None:
-        v = _turn(
-            MusicGuard(), LIVE_B, ("set_dj_mode", "compose_music"),
-            dj_enabled=True,
-        )
-        assert v.kind is MusicGuardVerdictKind.SKIP
-
-
-class TestNotDjRequestFallsThrough:
-    def test_dj_auto_transition_goes_to_bug_b(self) -> None:
-        v = _turn(MusicGuard(), DJ_AUTO, (), was_dj_auto=True, dj_enabled=True)
-        assert v.kind is MusicGuardVerdictKind.DJ_RETRY
-        assert v.reason == "bug_b"
-
-    def test_plain_music_request_still_bug_c(self) -> None:
-        v = _turn(MusicGuard(), "включи музыку", ())
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
-        assert v.reason == "bug_c"
-
-    def test_volume_request_is_not_dj_path(self) -> None:
-        v = _turn(MusicGuard(), "диджей, сделай громче", (), dj_enabled=True)
-        assert v.reason != "dj_request"
-
-    def test_evaluate_itself_unchanged(self) -> None:
-        # Прямой ``evaluate`` (без DJ-входа) по-прежнему даёт Bug C —
-        # DJ-ветка живёт только в ``evaluate_turn``.
-        v = MusicGuard().evaluate(was_dj_auto=False, user_input=LIVE_A, tools_called=())
-        assert v.reason == "bug_c"
-
-
 # ── 4. CRITICAL не доходит до TTS ──────────────────────────────────────
 
 
 @pytest.mark.parametrize(
     "spoken",
     [
-        build_dj_request_retry_prompt(LIVE_A),
+        "[CRITICAL] В прошлом цикле ты НЕ вызвал set_dj_mode, хотя юзер назначил тебя диджеем",
         "[Speaker:unknown] [CRITICAL] В прошлом цикле ты НЕ вызвал set_dj_mode",
         "Йо! [critical] вызови set_dj_mode",
     ],
@@ -326,23 +157,10 @@ def _dive_set(dj: DJModeController) -> None:
     }))
 
 
-def test_default_preamble_unchanged() -> None:
+def test_preamble_is_single_neutral_wrapper() -> None:
     dj = _dj()
     _dive_set(dj)
-    text = dj.preamble()
-    assert "Не вызывай set_dj_mode" in text
-    assert text == dj.preamble(dj_request=False)
-
-
-def test_persona_change_preamble_asks_for_set_dj_mode_keeping_bpm() -> None:
-    dj = _dj()
-    _dive_set(dj)
-    text = dj.preamble(dj_request=is_dj_request(LIVE_B))
-    assert "Не вызывай set_dj_mode" not in text
-    assert "set_dj_mode(enabled=true" in text
-    assert "bpm НЕ передавай" in text
-    assert "128 BPM" in text
-    assert "диджей Дайв" in text  # что сейчас играет — модель видит контекст
+    assert "Не вызывай set_dj_mode" in dj.preamble()
 
 
 def test_set_dj_mode_on_active_set_switches_persona_theme_without_reset() -> None:
@@ -353,7 +171,7 @@ def test_set_dj_mode_on_active_set_switches_persona_theme_without_reset() -> Non
     dj.state.tracks_started = 2
     started = dj.state.started_at
 
-    # Ровно то, что модель должна вызвать по новой обёртке (без bpm).
+    # Ровно то, что вызывает роутер медиакоманд (#3134) — без bpm.
     dj.handle_message(json.dumps({
         "enabled": True, "persona": "диджей Анакен скайвокер",
         "theme": "имперский слет в клубе",

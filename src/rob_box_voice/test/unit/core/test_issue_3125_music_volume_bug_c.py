@@ -11,6 +11,12 @@
 (c) ``1790611417..429`` — ``compose_music`` с ``levels: lead=1.3`` отвергнут,
     повтор в том же ходе успешен, но правило #2966 (``tool_error_occurred``)
     сочло ход провалом → Bug C.
+
+Issue #3134: (a) и (b) больше не доходят до LLM и до ``MusicGuard`` —
+реплику закрывает роутер медиакоманд (``core/media_router.py``), поэтому
+исключение Bug C для громкости (``_music_volume_skip_reason``) удалено, а
+детектор переехал в ``core/media_command_grammar.py``. Здесь — что эти
+живые строки действительно закрываются роутером, и (c) #3004 без изменений.
 """
 
 from __future__ import annotations
@@ -18,11 +24,13 @@ from __future__ import annotations
 import logging
 import pytest
 
-from rob_box_voice.core.music_guard import MusicGuard, MusicGuardVerdictKind
-from rob_box_voice.core.music_volume_request import (
+from rob_box_voice.core.media_command_grammar import (
+    MediaIntent,
     extract_user_utterance,
-    is_music_volume_request,
+    parse_media_command,
 )
+from rob_box_voice.core.media_router import MediaRouter, MediaState
+from rob_box_voice.core.music_guard import MusicGuard, MusicGuardVerdictKind
 
 # --- дословные строки из живого лога ---------------------------------------
 
@@ -64,7 +72,9 @@ def _guard() -> MusicGuard:
     return MusicGuard(logger=logging.getLogger("test_3125"))
 
 
-# --- детектор просьбы о громкости ------------------------------------------
+# --- детектор просьбы о громкости (теперь грамматика роутера) --------------
+
+_PLAYING = MediaState(music_playing=True, track_name="Still Dre")
 
 
 class TestVolumeRequestDetector:
@@ -82,7 +92,9 @@ class TestVolumeRequestDetector:
         ],
     )
     def test_pure_volume_requests(self, text: str) -> None:
-        assert is_music_volume_request(text)
+        cmd = parse_media_command(text)
+        assert cmd.intent in (MediaIntent.VOLUME_UP, MediaIntent.VOLUME_DOWN)
+        assert cmd.closed
 
     @pytest.mark.parametrize(
         "text",
@@ -95,7 +107,7 @@ class TestVolumeRequestDetector:
         ],
     )
     def test_not_volume_requests(self, text: str) -> None:
-        assert not is_music_volume_request(text)
+        assert parse_media_command(text).intent is MediaIntent.NONE
 
     def test_extract_strips_tags_and_trailing_blocks(self) -> None:
         assert extract_user_utterance(LIVE_A_USER_INPUT) == "играй громче"
@@ -105,67 +117,26 @@ class TestVolumeRequestDetector:
         )
 
 
-# --- (a) «играй громче» + set_volume при играющем треке ---------------------
+class TestLiveAB_ClosedByRouter:
+    """(a)/(b) — до LLM не доходят: set_music_volume вызывает код."""
 
+    @pytest.mark.parametrize(
+        "text", ["[TG] играй громче", "[TG] играй трей кромче а не говори громче"]
+    )
+    def test_router_calls_set_music_volume(self, text: str) -> None:
+        plan = MediaRouter().route(text, _PLAYING)
+        assert plan is not None and plan.handled
+        assert [(c.name, c.arguments) for c in plan.tool_calls] == [
+            ("set_music_volume", {"action": "louder"})
+        ]
 
-class TestLiveA_PlayLouderWithSetVolume:
-    def test_no_bug_c_retry_when_track_playing(self) -> None:
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_A_USER_INPUT,
-            tools_called=LIVE_A_TOOLS,
-            spoken="Громче, громче! Танцпол не слышит!",
-            music_playing=True,
-        )
-        assert v.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert v.reason == "volume_adjust_while_playing"
-
-    def test_set_music_volume_satisfies_turn_even_without_playing_flag(self) -> None:
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_A_USER_INPUT,
-            tools_called=("set_music_volume",),
-            music_playing=False,
-        )
-        assert v.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert v.reason == "music_volume_set"
-
-    def test_legacy_retry_kept_when_nothing_plays(self) -> None:
-        # Музыки нет и тула громкости музыки нет — Bug C как раньше.
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_A_USER_INPUT,
-            tools_called=LIVE_A_TOOLS,
-            music_playing=False,
-        )
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
-
-
-# --- (b) phantom-claim + tools=[] при играющем треке ------------------------
-
-
-class TestLiveB_PhantomClaimNoTools:
-    @pytest.mark.parametrize("user_input", [LIVE_B_USER_INPUT, LIVE_B_RETRY_USER_INPUT])
-    def test_no_bug_c_retry_chain(self, user_input: str) -> None:
-        g = _guard()
-        for _ in range(3):  # живьём было 1/3, 2/3, затем budget → nudge
-            v = g.evaluate(
-                was_dj_auto=False,
-                user_input=user_input,
-                tools_called=(),
-                spoken=LIVE_B_SPOKEN,
-                music_playing=True,
-            )
-            assert v.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert g.user_retry_count == 0
-
-    def test_named_track_request_still_retried(self) -> None:
-        # «сыграй X погромче» без тулов — это заказ трека, Bug C обязан ретраить.
+    def test_named_track_order_still_goes_to_llm(self) -> None:
+        # «сыграй X погромче» — заказ трека, Bug C работает как раньше.
+        assert MediaRouter().route("сыграй в пещере гороного короля погромче", _PLAYING) is None
         v = _guard().evaluate(
             was_dj_auto=False,
             user_input=LIVE_C_USER_INPUT,
             tools_called=(),
-            music_playing=True,
         )
         assert v.kind is MusicGuardVerdictKind.USER_RETRY
 
@@ -181,7 +152,6 @@ class TestLiveC_ErrorThenSuccessSameTurn:
             tools_called=LIVE_C_TOOLS,
             tool_error_occurred=True,
             succeeded_tools=("lookup_melody", "compose_music"),
-            music_playing=True,
         )
         assert v.kind is MusicGuardVerdictKind.SKIP
         assert v.reason == "executed"
