@@ -490,3 +490,79 @@ body {
   cursor: pointer;
   padding: 0 4px;
 }
+
+/* ── Симулятор мостика и ходьба на десктопе (#3149) ───────────────── */
+
+.sim-badge {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: rgba(246, 211, 45, 0.14);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  cursor: help;
+  box-shadow: 0 0 18px rgba(246, 211, 45, 0.25);
+}
+
+.walk-crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.walk-crosshair::before,
+.walk-crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(127, 255, 212, 0.9);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+}
+
+.walk-crosshair::before {
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 18px;
+}
+
+.walk-crosshair::after {
+  top: 8px;
+  left: 0;
+  width: 18px;
+  height: 2px;
+}
+
+.walk-crosshair[hidden],
+.walk-hint[hidden] {
+  display: none;
+}
+
+.walk-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 6;
+}
