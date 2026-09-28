@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      capture_vision:
+        description: "Also capture from the Vision Pi. Both Pis see one shared Zenoh graph, so Main Pi alone is the default (~5 min saved)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -52,48 +57,46 @@ jobs:
     name: Runtime ROS2 graph (self-hosted)
     runs-on: [self-hosted, Linux, X64, rob-box]
     timeout-minutes: 15
+    # Inputs reach run: scripts only through env, never as expressions inside the script.
+    env:
+      MAIN_HOST: ${{ inputs.main_host }}
+      MAIN_CONTAINER: ${{ inputs.main_container }}
+      VISION_HOST: ${{ inputs.vision_host }}
+      VISION_CONTAINER: ${{ inputs.vision_container }}
+      RUNTIME_USER: ${{ inputs.runtime_user }}
+      RUNTIME_TOPICS: ${{ inputs.runtime_topics }}
+      CAPTURE_VISION: ${{ inputs.capture_vision }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           clean: true
 
-      - name: Check both Pi SSH access
+      - name: Check Pi SSH access
         shell: bash
         env:
-          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
         run: |
           set -euo pipefail
+          if [ -z "${SSHPASS:-}" ]; then
+            echo "::error::Secret ROBOT_SSH_PASS is empty or not set. Add it in Settings -> Secrets and variables -> Actions (robot SSH password for $RUNTIME_USER)."
+            exit 1
+          fi
           if ! command -v sshpass >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -y sshpass
           fi
           command -v sshpass
-          for target in \
-            "${{ inputs.runtime_user }}@${{ inputs.main_host }}" \
-            "${{ inputs.runtime_user }}@${{ inputs.vision_host }}"; do
+          targets=("$RUNTIME_USER@$MAIN_HOST")
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            targets+=("$RUNTIME_USER@$VISION_HOST")
+          fi
+          for target in "${targets[@]}"; do
             sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$target" "hostname"
           done
           echo "Runner: $(hostname)"
-          echo "Main Pi: ${{ inputs.runtime_user }}@${{ inputs.main_host }}"
-          echo "Vision Pi: ${{ inputs.runtime_user }}@${{ inputs.vision_host }}"
-
-      - name: Check both Pi ROS2 graphs
-        shell: bash
-        env:
-          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
-        run: |
-          set -euo pipefail
-          for spec in \
-            "${{ inputs.main_host }}|${{ inputs.main_container }}" \
-            "${{ inputs.vision_host }}|${{ inputs.vision_container }}"; do
-            host="${spec%%|*}"
-            container="${spec#*|}"
-            echo "=== $host / $container ==="
-            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
-              "${{ inputs.runtime_user }}@$host" \
-              "docker exec '$container' bash -lc 'source /opt/ros/humble/setup.bash && echo ROS2-nodes && ros2 node list && echo ROS2-topics && ros2 topic list >/dev/null && echo ROS2-services && ros2 service list >/dev/null && echo ROS2-actions && ros2 action list >/dev/null'"
-          done
+          echo "Main Pi: $RUNTIME_USER@$MAIN_HOST"
+          echo "Vision Pi: $RUNTIME_USER@$VISION_HOST (capture_vision=$CAPTURE_VISION)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -111,10 +114,10 @@ jobs:
           python tools/architecture_catalog.py architecture/inventory.json
           python tools/architecture_class_metrics.py
 
-      - name: Capture both Pi ROS2 runtime graphs
+      - name: Capture Pi ROS2 runtime graphs
         shell: bash
         env:
-          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
         run: |
           set -euo pipefail
           capture() {
@@ -123,75 +126,36 @@ jobs:
             local output="$3"
             local args=(--output "$output"
                         --remote-host "$host"
-                        --remote-user "${{ inputs.runtime_user }}"
-                        --remote-container "$container")
-            if [ -n "${{ inputs.runtime_topics }}" ]; then
-              args+=(--topics "${{ inputs.runtime_topics }}")
+                        --remote-user "$RUNTIME_USER"
+                        --remote-container "$container"
+                        --budget "$budget")
+            if [ -n "$RUNTIME_TOPICS" ]; then
+              args+=(--topics "$RUNTIME_TOPICS")
             fi
             python tools/architecture_runtime_snapshot.py "${args[@]}"
           }
-          capture "${{ inputs.main_host }}" "${{ inputs.main_container }}" architecture/runtime-main.json
-          capture "${{ inputs.vision_host }}" "${{ inputs.vision_container }}" architecture/runtime-vision.json
+          # Both Pis see one shared Zenoh graph (run 36422274238: 52 == 52 == 52
+          # nodes), so the Vision Pi capture is opt-in.
+          # Deep-inspection wall-clock budget per capture (batch <= 300 s + per-topic
+          # fallback), so the captures stay inside timeout-minutes: 15. Topics left
+          # when it runs out are recorded as skipped: "budget" with a ::warning::.
+          budget=480
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            budget=240
+          fi
+          capture "$MAIN_HOST" "$MAIN_CONTAINER" architecture/runtime-main.json
+          merge_args=(--capture "Main Pi|$MAIN_HOST|$MAIN_CONTAINER|architecture/runtime-main.json")
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            capture "$VISION_HOST" "$VISION_CONTAINER" architecture/runtime-vision.json
+            merge_args+=(--capture "Vision Pi|$VISION_HOST|$VISION_CONTAINER|architecture/runtime-vision.json")
+          fi
 
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          main = json.loads(Path("architecture/runtime-main.json").read_text())
-          vision = json.loads(Path("architecture/runtime-vision.json").read_text())
-
-          def union_lines(*snapshots, key):
-              out = []
-              seen = set()
-              for snapshot in snapshots:
-                  for value in snapshot.get(key, []):
-                      if value not in seen:
-                          seen.add(value)
-                          out.append(value)
-              return sorted(out)
-
-          topic_info = {}
-          for snapshot in (main, vision):
-              for topic, info in snapshot.get("topic_info", {}).items():
-                  if topic not in topic_info:
-                      topic_info[topic] = info
-                      continue
-                  merged = topic_info[topic]
-                  for field in ("publishers", "subscribers"):
-                      existing = {(x.get("node"), x.get("namespace")) for x in merged.get(field, [])}
-                      for endpoint in info.get(field, []):
-                          key = (endpoint.get("node"), endpoint.get("namespace"))
-                          if key not in existing:
-                              merged.setdefault(field, []).append(endpoint)
-                  merged["present"] = bool(merged.get("present") or info.get("present"))
-
-          merged = {
-              "schema_version": 4,
-              "captured_at_unix": max(main.get("captured_at_unix", 0), vision.get("captured_at_unix", 0)),
-              "captured_from": "remote:MainPi+VisionPi",
-              "ros_domain_id": main.get("ros_domain_id") or vision.get("ros_domain_id"),
-              "rmw_implementation": main.get("rmw_implementation") or vision.get("rmw_implementation"),
-              "nodes": union_lines(main, vision, key="nodes"),
-              "topics": union_lines(main, vision, key="topics"),
-              "services": union_lines(main, vision, key="services"),
-              "actions": union_lines(main, vision, key="actions"),
-              "topic_info": topic_info,
-              "captures": [
-                  {"host": "${{ inputs.main_host }}", "pi": "Main Pi", "container": "${{ inputs.main_container }}", "snapshot": "runtime-main.json"},
-                  {"host": "${{ inputs.vision_host }}", "pi": "Vision Pi", "container": "${{ inputs.vision_container }}", "snapshot": "runtime-vision.json"}
-              ]
-          }
-          Path("architecture/runtime.json").write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-          print(json.dumps({
-              "main_nodes": len(main.get("nodes", [])),
-              "vision_nodes": len(vision.get("nodes", [])),
-              "union_nodes": len(merged["nodes"]),
-              "union_topics": len(merged["topics"])
-          }, ensure_ascii=False, sort_keys=True))
-          PY
+          python tools/architecture_runtime_merge.py --output architecture/runtime.json "${merge_args[@]}"
 
       - name: Compare static and runtime
-        run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
+        run: |
+          python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json \
+            --json architecture/runtime-diff.json --markdown architecture/runtime-diff.md
 
       - name: Runtime findings (dead topics, type/QoS mismatch, multiple writers)
         run: |
@@ -207,6 +171,10 @@ jobs:
             --repo-root . \
             --output-dir architecture
 
+      # runtime-vision.json exists only with capture_vision. upload-artifact@v4 globs
+      # all paths together and skips a missing one silently (@actions/glob: ENOENT ->
+      # continue); if-no-files-found only fires when nothing matches at all. Every
+      # other file is produced by an earlier step that fails the job if it cannot.
       - name: Upload local architecture evidence
         uses: actions/upload-artifact@v4
         with:
@@ -235,7 +203,7 @@ jobs:
         run: |
           {
             echo "## Robot runtime ROS2 graph"
-            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes (union): " + str(len(d.get("nodes", [])))); [print("- " + c["pi"] + ": " + c["host"] + " / " + c["container"]) for c in d.get("captures", [])]; print("- Topics: " + str(len(d.get("topics", [])))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
+            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes (union): " + str(len(d.get("nodes", [])))); [print("- " + c["pi"] + ": " + c["host"] + " / " + c["container"]) for c in d.get("captures", [])]; print("- Topics: " + str(len(d.get("topics", []))) + ", not inspected (budget): " + str(sum(1 for i in d.get("topic_info", {}).values() if i.get("skipped")))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
             echo
             cat architecture/runtime-diff.md
             echo

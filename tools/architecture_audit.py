@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a deterministic static architecture inventory for ROB-BOX."""
 from __future__ import annotations
-import argparse, ast, json
+import argparse, ast, json, re
 from collections import defaultdict
 from pathlib import Path
 import yaml
@@ -16,6 +16,12 @@ ROS_HELPER_CALLS={"shared_publisher":"publish"}
 ROS_NAME_ARG.update({name:2 for name in ROS_HELPER_CALLS})
 ROS_TYPE_ARG.update({name:1 for name in ROS_HELPER_CALLS})
 NODE_BASES={"Node","LifecycleNode","ComposableNode"}
+# Tests and examples are not architecture: 580 of 942 files / 1939 of 2577 classes were tests.
+# Same rule as architecture_class_metrics.TEST_PATH.
+TEST_PATH=re.compile(r"(^|/)(test|tests)/|(^|/)test_[^/]*\.py$|(^|/)conftest\.py$|/scripts/(example|test)_")
+COMPOSE_GLOB="docker/*/docker-compose*.y*ml"
+# docker/build is CI/registry infrastructure (runners, apt cache, registry), not robot containers.
+COMPOSE_EXCLUDE_DIRS={"build"}
 
 def literal(node):
     try: return ast.literal_eval(node)
@@ -35,11 +41,13 @@ def package_for(path,src):
     return rel.parts[0] if rel.parts else None
 
 def scan_python(src):
-    files=[]; classes=[]; interfaces=[]
-    if not src.exists(): return files,classes,interfaces
+    """Production Python only; returns (files, classes, interfaces, skipped test/example files)."""
+    files=[]; classes=[]; interfaces=[]; skipped=0
+    if not src.exists(): return files,classes,interfaces,skipped
     for path in sorted(src.rglob("*.py")):
         if any(part in SKIP_DIRS for part in path.parts): continue
         rel=path.relative_to(src.parent).as_posix(); package=package_for(path,src)
+        if TEST_PATH.search(rel): skipped+=1; continue
         try: tree=ast.parse(path.read_text(encoding="utf-8"),filename=rel)
         except (OSError,SyntaxError,UnicodeDecodeError): continue
         node_classes=[]; class_by_line=[]
@@ -67,7 +75,7 @@ def scan_python(src):
             if candidates: owner=min(candidates)[1]
             interfaces.append({"kind":kind,"name":name,"file":rel,"line":call.lineno,
                                "package":package,"node_class":owner,"type":dotted_name(call.args[ROS_TYPE_ARG[method]])})
-    return files,classes,interfaces
+    return files,classes,interfaces,skipped
 
 def scan_compose(path):
     if not path.exists(): return []
@@ -108,10 +116,11 @@ def main():
     parser.add_argument("--markdown",type=Path,default=Path("architecture/inventory.md")); args=parser.parse_args()
     root=args.root.resolve()
     compose=[]
-    for path in [root/"docker/main/docker-compose.yaml",root/"docker/vision/docker-compose.yaml",root/"docker/quest/docker-compose.yaml"]:
+    for path in sorted(root.glob(COMPOSE_GLOB)):
+        if path.parent.name in COMPOSE_EXCLUDE_DIRS: continue
         services=scan_compose(path)
         if services: compose.append({"file":path.relative_to(root).as_posix(),"services":services})
-    python_files,classes,interfaces=scan_python(root/"src"); packages=scan_packages(root/"src"); launches=scan_launch_files(root)
+    python_files,classes,interfaces,skipped_test_files=scan_python(root/"src"); packages=scan_packages(root/"src"); launches=scan_launch_files(root)
     topics=defaultdict(lambda:{"publishers":[],"subscribers":[],"services":[],"clients":[],"actions":[],"files":[],"types":[]})
     for item in interfaces:
         t=topics[item["name"]]; t["files"].append(item["file"])
@@ -124,7 +133,7 @@ def main():
                "python":python_files,"classes":sorted(classes,key=lambda x:(x["file"],x["line"])),"ros_interfaces":interfaces,
                "topics":[{"name":n,**v} for n,v in sorted(topics.items())],
                "summary":{"containers":sum(len(x["services"]) for x in compose),"packages":len(packages),
-                          "python_files":len(python_files),"classes":len(classes),"node_classes":sum(x["is_node"] for x in classes),
+                          "python_files":len(python_files),"skipped_test_files":skipped_test_files,"classes":len(classes),"node_classes":sum(x["is_node"] for x in classes),
                           "ros_interfaces":len(interfaces),"unique_interfaces":len(topics),"launch_nodes":len(launches)}}
     args.output.parent.mkdir(parents=True,exist_ok=True); args.markdown.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(inventory,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")

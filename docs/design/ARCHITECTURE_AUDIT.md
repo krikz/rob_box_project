@@ -12,7 +12,7 @@ The tooling separates evidence from architectural decisions. A duplicate or unpa
 
 ## Audit layers
 
-1. Static inventory: Compose services, ROS packages, Python classes, node classes, launch entries and ROS interfaces.
+1. Static inventory: Compose services (every `docker/*/docker-compose*.y*ml` except `docker/build/`, which is CI/registry infrastructure), ROS packages, Python classes, node classes, launch entries and ROS interfaces. Tests and examples (`test/`, `tests/`, `test_*.py`, `conftest.py`, `scripts/test_*`, `scripts/example_*`) are skipped and only counted as `skipped_test_files`.
 2. Structural review: multiple publishers, unpaired interfaces, duplicate class names, semantic identity-topic names and node packages without literal launch entries.
 3. Runtime graph: real ros2 node/topic/service/action output and verbose topic endpoints.
 4. Static/runtime diff: declared topics absent at runtime and runtime-only topics.
@@ -32,7 +32,15 @@ Examples:
     python tools/architecture_runtime_snapshot.py --topics /scan,/cmd_vel
     python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
-The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and uses passwordless SSH to the robot (`10.1.1.21` by default). GitHub-hosted runners are never used for live robot access.
+The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and reaches the robot over password SSH via `sshpass`: Main Pi `10.1.1.20` (container `nav2`) and, with `capture_vision`, Vision Pi `10.1.1.21` (container `oak-d`), user `ros2` by default. The password comes only from the `ROBOT_SSH_PASS` repository secret; the first step fails with an `::error::` when it is empty. Workflow inputs reach the scripts through `env:`, never as `${{ }}` expressions inside `run:`. GitHub-hosted runners are never used for live robot access.
+
+Remote capture inspects all topics in one `ssh` + one `docker exec`: a loop inside the container prints each `ros2 topic info --verbose` between `=====TOPIC <name>=====` / `=====RC <n>=====` markers, and the same call records `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` from the container. Topics whose block is empty, failed or missing are retried one `ssh` each; `--per-topic` skips the batch entirely. The batch call times out after at most 300 s, and `--budget` (480 s; 240 s per Pi with `capture_vision`) caps batch + fallback so the job stays inside its 15 min: topics left when it runs out are recorded as `present: false, returncode: null, skipped: "budget"`, with a `::warning::` and a count in the job summary.
+
+Both Pis see one shared Zenoh graph (run 36422274238: 52 nodes on each Pi, union 52), so the workflow captures from the Main Pi only. The `capture_vision` input adds the Vision Pi capture; `tools/architecture_runtime_merge.py` merges one or more snapshots into `runtime.json`:
+
+    python tools/architecture_runtime_merge.py --output architecture/runtime.json \
+      --capture "Main Pi|10.1.1.20|nav2|architecture/runtime-main.json" \
+      --capture "Vision Pi|10.1.1.21|oak-d|architecture/runtime-vision.json"
 
 ## Node review questions
 
