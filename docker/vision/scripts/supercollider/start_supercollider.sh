@@ -4,13 +4,28 @@
 # Стратегия: JACK (no-realtime) → dmix_respeaker → ReSpeaker.
 # dmix_respeaker определён в asound.conf, тот же шейринг что у voice-assistant TTS.
 #
-# ВАЖНО: period_size в jackd и scsynth ДОЛЖЕН совпадать с period_size в asound.conf (1024).
+# ВАЖНО: period_size в jackd (-p) ДОЛЖЕН совпадать с period_size в asound.conf (1024).
+# Это касается ТОЛЬКО jackd. Аппаратный буфер scsynth при `-H jack` задаёт
+# jackd: драйвер берёт его из jack_get_buffer_size(), а `-Z` JACK-драйвер
+# scsynth не читает (SC 3.13.0 server/scsynth/SC_Jack.cpp:259, issue #3114).
 #
 # Опции scsynth:
 #   -u 57110   UDP OSC-порт (Renardo/FoxDot подключается сюда)
-#   -D 0       Отключить realtime scheduling (необходимо в Docker)
-#   -m 8192    Размер realtime-памяти в KB
-#   -z 1024    Размер буфера = period_size dmix (JACK требует совпадения)
+#   -D 0       НЕ загружать SynthDef'ы с диска при старте (`-D <load synthdefs? 1 or 0>`
+#              в scsynth --help). Палитру заливает sclang из voice-assistant.
+#              Realtime-приоритет здесь ни при чём: его выключает `jackd --no-realtime`.
+#   -m 65536   Размер realtime-памяти в KB
+#   -z $SCSYNTH_BLOCK_SIZE
+#              Размер БЛОКА обработки (block size), не аппаратного буфера.
+#              Control rate = 16000 / block: 1024 → 15.6 Гц (.kr шаг 64 мс),
+#              64 → 250 Гц (4 мс). JACK-колбэк на 1024 сэмпла scsynth
+#              прогоняет как 1024/block блоков подряд (SC_Jack.cpp:403),
+#              поэтому block обязан быть степенью двойки ≤ периода jackd (1024),
+#              иначе 1024/block = 0 и сервер молчит.
+#              Env SCSYNTH_BLOCK_SIZE, по умолчанию 1024 (историческое значение).
+#              Менять дефолт — только по замеру CPU/xrun на Pi (issue #3114,
+#              scripts/music/scsynth_block_bench.sh,
+#              docs/design/2026-09-28-scsynth-block-size.md).
 #   -S 16000   Частота дискретизации (ReSpeaker UAC1.0 поддерживает только 16000 Hz)
 #   -H jack    JACK backend
 #   -a 1024    Число аудио-шин
@@ -65,13 +80,30 @@ if ! kill -0 $JACK_PID 2>/dev/null; then
     exit 1
 fi
 
-echo "[SuperCollider] JACK running. Starting scsynth on UDP port 57110..."
+# ── Block size (issue #3114) ─────────────────────────────────────────────────
+# Дефолт 1024 = поведение до #3114. Допустимы только степени двойки, делящие
+# период jackd (-p 1024 выше). Неверное значение не глотаем молча: громкая
+# ошибка в лог и откат на дефолт, чтобы опечатка в env не оставила робота
+# без музыки.
+SCSYNTH_BLOCK_SIZE_DEFAULT=1024
+SCSYNTH_BLOCK_SIZE="${SCSYNTH_BLOCK_SIZE:-1024}"
+case "$SCSYNTH_BLOCK_SIZE" in
+    64|128|256|512|1024) ;;
+    *)
+        echo "[SuperCollider] ERROR: SCSYNTH_BLOCK_SIZE='$SCSYNTH_BLOCK_SIZE' недопустим" \
+             "(нужно 64|128|256|512|1024), использую $SCSYNTH_BLOCK_SIZE_DEFAULT"
+        SCSYNTH_BLOCK_SIZE=$SCSYNTH_BLOCK_SIZE_DEFAULT
+        ;;
+esac
+
+echo "[SuperCollider] JACK running. Starting scsynth on UDP port 57110" \
+     "(block size -z $SCSYNTH_BLOCK_SIZE, control rate $((16000 / SCSYNTH_BLOCK_SIZE)) Hz)..."
 
 scsynth \
     -u 57110 \
     -D 0 \
     -m 65536 \
-    -z 1024 \
+    -z "$SCSYNTH_BLOCK_SIZE" \
     -S 16000 \
     -H jack \
     -a 1024 \
