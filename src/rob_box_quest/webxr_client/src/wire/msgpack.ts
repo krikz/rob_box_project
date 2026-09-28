@@ -240,6 +240,9 @@ export type MsgpackInput =
   | boolean
   | number
   | string
+  // bin 8/16/32 (как `use_bin_type=True` у сервера): нужно симулятору
+  // мостика (src/dev/) — map_2d несёт PNG-байты в поле `png`.
+  | Uint8Array
   | MsgpackInput[]
   | { [key: string]: MsgpackInput };
 
@@ -379,6 +382,20 @@ function writeValue(w: Writer, v: unknown): void {
   }
   if (typeof v === "string") {
     writeStr(w, v);
+    return;
+  }
+  if (v instanceof Uint8Array) {
+    if (v.length <= 0xff) {
+      w.u8(0xc4);
+      w.u8(v.length);
+    } else if (v.length <= 0xffff) {
+      w.u8(0xc5);
+      w.u16(v.length);
+    } else {
+      w.u8(0xc6);
+      w.u32(v.length);
+    }
+    w.push(v);
     return;
   }
   if (Array.isArray(v)) {
