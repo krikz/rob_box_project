@@ -56,7 +56,7 @@ import random
 from typing import Dict, List, Mapping, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
-from .arranger import BPM_RANGE, VALID_ROOTS
+from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude
 
 #: Паттерны бочки: 16 шагов = такт 16-ми (при ``dur=1/4``).
 KICK_PATTERNS: Dict[str, str] = {
@@ -322,8 +322,13 @@ def render_club(
     seed: int = 0,
     kick: str = "by_design",
     repeat: bool = False,
+    align_clock: bool = False,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
+
+    ``align_clock`` (issue #3112, по умолчанию выкл.): сразу после
+    ``Clock.clear()`` — :func:`core.arranger.clock_align_prelude`, чтобы
+    форма стартовала с позиции 0 при давно идущем клоке.
 
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
@@ -349,6 +354,7 @@ def render_club(
         f"# club: {template}, {root} {scale}, {prog_name}, бочка {kick}, seed={seed}",
         *("# " + row for row in matrix.to_text().splitlines()),
         "Clock.clear()",
+        *([clock_align_prelude(matrix.total_beats)] if align_clock else []),
         f"Clock.bpm = {_fmt(bpm)}",
         "",
         f'd1 >> play("{kick_pattern}", dur=1/4, amp={gate["kick"]})',
@@ -372,8 +378,14 @@ def render_club(
         f"              amp={gate['pad']})",
     ]
     if not repeat:
-        lines += ["", f"Clock.future({_fmt(matrix.total_beats)}, Clock.clear)"]
+        end_beats = matrix.total_beats + (ALIGN_LEAD_BEATS if align_clock else 0)
+        lines += ["", f"Clock.future({_fmt(end_beats)}, Clock.clear)"]
     return "\n".join(lines) + "\n"
+
+
+def club_form_beats(template: str = "dj_dave_32") -> int:
+    """Длина одного прохода клубной формы в долях (issue #3112, диагностика фазы)."""
+    return int(build_matrix(template).total_beats)
 
 
 def club_duration_seconds(bpm: float = 124, template: str = "dj_dave_32") -> float:
@@ -389,6 +401,7 @@ __all__ = [
     "build_matrix",
     "chord_pentatonic",
     "club_duration_seconds",
+    "club_form_beats",
     "kick_steps",
     "peak_levels",
     "predrop_hpf",

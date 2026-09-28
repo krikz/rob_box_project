@@ -33,6 +33,32 @@ _NON_IDLE_STATES = frozenset({"DIALOGUE", "SILENCED"})
 # set_dj_mode(plan=...) по dj.txt).
 _PLAN_ENTRY_RE = re.compile(r"^\s*Трек\s*(\d+)\s*[:.)\-—–]\s*(.+?)\s*$")
 
+# Issue #3113 — сет держит один темп и родственные тональности (план
+# docs/design/2026-09-28-dj-live-coding-quality-plan.md §5 п.3, §7.1).
+#: Темп сета по умолчанию (дефолт ``compose_music(style="club")``).
+DJ_SET_DEFAULT_BPM = 124
+#: Допустимый темп сета (тот же, что ``arranger.BPM_RANGE``).
+DJ_SET_BPM_RANGE = (60, 180)
+#: Тоники в написании ``compose_music`` (``arranger.VALID_ROOTS``).
+CLUB_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+#: Обход тональностей по трекам сета, в полутонах от тоники сета:
+#: i → v → i → iv → … Соседи по квинтовому кругу: у минора и его
+#: доминантового/субдоминантового минора 6 из 7 нот общие — смена мягкая.
+#: Параллельный мажор (§7.5: G ↔ E minor) club не умеет — у него только
+#: ``scale="minor"``, поэтому «родственная» здесь = квинтовый сосед.
+KEY_WALK = (0, 7, 0, 5)
+
+
+def related_root(set_root: str, track_no: int) -> str:
+    """Тоника трека ``track_no`` (с 1) в сете с тоникой ``set_root``.
+
+    Детерминированно по :data:`KEY_WALK`; неизвестная тоника → как есть.
+    """
+    if set_root not in CLUB_ROOTS:
+        return set_root
+    shift = KEY_WALK[(max(1, track_no) - 1) % len(KEY_WALK)]
+    return CLUB_ROOTS[(CLUB_ROOTS.index(set_root) + shift) % len(CLUB_ROOTS)]
+
 
 def plan_entry(plan: str, track_no: int) -> str:
     """Текст строки ``Трек <track_no>: ...`` плана или ``""``."""
@@ -90,6 +116,11 @@ class DJState:
     # его сказать (``None`` — не ждём), и персона, от чьего имени.
     farewell_at: Optional[float] = None
     farewell_persona: str = ""
+    # Issue #3113 — темп и тоника СЕТА: темп взводится на генуинном старте
+    # (дефолт 124) и меняется только явным ``set_dj_mode(bpm=...)``;
+    # тоника (``""`` — ещё не выбрана) — от эпохи старта сета.
+    set_bpm: int = DJ_SET_DEFAULT_BPM
+    set_root: str = ""
 
 
 @dataclass
@@ -322,6 +353,13 @@ class DJModeController:
             self.state.tracks_started = 0
             self.state.final_track_no = 0
             self.state.farewell_at = None
+            self.state.set_bpm = DJ_SET_DEFAULT_BPM
+            self.state.set_root = ""
+        bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
+        if bpm is not None and bpm != self.state.set_bpm:
+            # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113.
+            self.state.set_bpm = bpm
+            self._logger.info(f"🎧 DJ темп сета: {bpm} BPM")
         minutes = self._clamped_int(
             data.get("max_minutes"), self.DJ_SET_MAX_MINUTES_RANGE
         )
@@ -357,6 +395,8 @@ class DJModeController:
         self.state.final_dispatched = False
         self.state.tracks_started = 0
         self.state.final_track_no = 0
+        self.state.set_bpm = DJ_SET_DEFAULT_BPM
+        self.state.set_root = ""
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
         # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
         # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
@@ -707,6 +747,40 @@ class DJModeController:
         started = int(self.state.started_at) if self.state.started_at else int(time.time())
         return (started % 100000) * 100 + track_no
 
+    def _set_root(self) -> str:
+        """Issue #3113 — тоника сета: от эпохи старта (разные сеты — разные
+        тональности), внутри сета одна. До старта отсчёта — дефолт club."""
+        if self.state.set_root:
+            return self.state.set_root
+        if not self.state.started_at:
+            return "A#"
+        self.state.set_root = CLUB_ROOTS[int(self.state.started_at) % len(CLUB_ROOTS)]
+        return self.state.set_root
+
+    def _club_call(self, track_no: int, *, repeat: bool = True) -> str:
+        """Issue #3113 — готовый вызов клубного трека ``track_no`` сета.
+
+        Темп — темп сета (не меняется между треками), тоника — по
+        :func:`related_root`, ``seed`` — свой на трек (другие прогрессия и
+        риф), ``transition="fade"`` — уходящий трек гаснет, а не обрывается.
+        """
+        root = related_root(self._set_root(), track_no)
+        return (
+            f'compose_music(style="club", bpm={self.state.set_bpm}, root="{root}", '
+            f'scale="minor", seed={self._track_seed(track_no)}, '
+            f'repeat={"true" if repeat else "false"}, transition="fade")'
+        )
+
+    def _tempo_line(self) -> str:
+        """Issue #3113 — один темп на весь сет (DJ Dave: переходы фильтром,
+        не скачком темпа)."""
+        return (
+            f"🎚 Темп сета {self.state.set_bpm} BPM — ОДИН на весь сет: НЕ меняй "
+            "bpm между треками. Сменить темп — только если юзер сам попросил: "
+            "тогда set_dj_mode(enabled=true, bpm=<новый>) и этот же bpm в "
+            "compose_music. "
+        )
+
     def _plan_track_line(self, track_no: int) -> str:
         """Issue #2875 — какой трек плана играть сейчас и как.
 
@@ -733,21 +807,44 @@ class DJModeController:
         if not entry:
             return (
                 f"▶ Сейчас по плану — Трек {track_no}: сыграй его через "
-                f"compose_music(seed={seed}). "
+                f"{self._club_call(track_no)}. "
             )
         return (
             f"▶ Сейчас по плану — Трек {track_no}: «{entry}». Если это "
             "название конкретной песни/композиции (не жанр и не "
             "описание вайба) — действует RULE #KNOWN-MELODY (см. "
             "composer.txt): НЕ импровизируй по памяти, СНАЧАЛА "
-            f'compose_music(name="{entry}", seed={seed}) — тул сам ищет точные '
+            f'compose_music(name="{entry}", seed={seed}) + bpm={self.state.set_bpm} '
+            "(темп сета) — тул сам ищет точные "
             f'ноты в RTTTL-базе; при сомнении в написании названия — '
             f'lookup_melody(name="{entry}") первым отдельным вызовом. '
             f"seed={seed} — чтобы повтор той же песни в другом сете звучал не "
             "тем же басом/пэдом/ударными один в один; при повторе ЭТОЙ песни "
             "в ЭТОМ сете (не по плану) увеличь seed хотя бы на 1. Если в "
-            "строке плана не песня, а описание — compose_music в этом духе, "
-            "без name=. НЕ говори, что трека нет, не вызвав lookup_melody. "
+            "строке плана не песня, а описание — клубный трек в этом духе: "
+            f"{self._club_call(track_no)}. "
+            "НЕ говори, что трека нет, не вызвав lookup_melody. "
+        )
+
+    def _next_track_line(self, track_line: str, track_no: int) -> str:
+        """Issue #3113 — середина сета: клубный трек в темпе сета.
+
+        Трек плана уже назван в ``track_line`` (там же клубный вызов для
+        строки-описания) — здесь только путь для песни, которую назвал юзер.
+        """
+        club = (
+            ""
+            if track_line
+            else (
+                f"Сыграй следующий трек через {self._club_call(track_no)} — "
+                "свой seed даёт новые прогрессию и риф, тоника — родственная "
+                "тональности сета, уходящий трек гаснет фейдом. "
+            )
+        )
+        return (
+            f"{club}Если юзер попросил конкретную песню — "
+            f"compose_music(name=..., seed={self._track_seed(track_no)}, "
+            f"bpm={self.state.set_bpm}, repeat=true) вместо клубного трека. "
         )
 
     def build_auto_prompt(self, n: int) -> str:
@@ -803,7 +900,7 @@ class DJModeController:
                 f"{plan_block}"
                 "План сета УЖЕ ЕСТЬ — НЕ исследуй материал (search_web / "
                 "gen_search_library не нужны) и НЕ составляй новый план. "
-                f"{track_line}{library_line} {stage_marker}{length_line} "
+                f"{track_line}{self._tempo_line()}{library_line} {stage_marker}{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
         if n == 1 and not plan_tracks:
@@ -820,9 +917,9 @@ class DJModeController:
                 "set_dj_mode(enabled=true, plan=<список треков, каждый с новой "
                 "строки 'Трек N: ...'>, next_transition_sec=<длительность формы "
                 "из ответа compose_music>). Потом сыграй "
-                f"трек #1 через compose_music(seed={self._track_seed(track_no)}) "
+                f"трек #1 через {self._club_call(track_no)} "
                 f"— seed, чтобы повтор темы в другом сете звучал не тем же "
-                f"басом/пэдом/ударными. {library_line} {stage_marker}"
+                f"басом/пэдом/ударными. {self._tempo_line()}{library_line} {stage_marker}"
                 f"{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
@@ -835,10 +932,11 @@ class DJModeController:
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
-                f"{track_line}{library_line} "
+                f"{track_line}{self._tempo_line()}{library_line} "
                 "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
-                "compose_music с repeat=false (форма сама доводит его до "
-                "спокойного финала и затухания — не проси зацикленный трек). "
+                f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
+                "сама доводит его до спокойного финала и затухания, не проси "
+                "зацикленный трек (трек плана с name= — тоже с repeat=false). "
                 "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
                 "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст, "
                 "и НЕ вызывай speak_text в этом ходе: система сама скажет "
@@ -848,11 +946,8 @@ class DJModeController:
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
             f"{track_line}{library_line} {stage_marker} "
-            "Сыграй следующий трек через compose_music (repeat=true, другой "
-            "bpm/root/scale/synth в духе темы, чем предыдущий трек; "
-            f"с name=/rtttl= добавь seed={self._track_seed(track_no)}, чтобы "
-            "повтор той же песни в другом сете не звучал тем же "
-            "басом/пэдом/ударными один в один). "
+            f"{self._next_track_line(track_line, track_no)}"
+            f"{self._tempo_line()}"
             f"{length_line} "
             "🔥 РАЗОГРЕЙ ТОЛПУ: перед стартом трека вызови speak_text с ОДНОЙ "
             "короткой тематической фразой-выкриком в стиле персоны и в тему "

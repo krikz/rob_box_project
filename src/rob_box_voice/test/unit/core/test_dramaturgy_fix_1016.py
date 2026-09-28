@@ -74,18 +74,23 @@ def test_n2_requires_dramaturgy() -> None:
     """Развитие — работа аранжировщика (compose_music), а не текст-подсказка
     в DJ-промпте (issue #2441): build_auto_prompt больше не учит модель про
     form=/progression/слои — это знание живёт в composer.txt. Переход обязан
-    только: идти через compose_music, просить ДРУГОЙ материал
-    (bpm/root/scale/synth), чем у предыдущего трека, и не звать рукописный
-    execute_music_code."""
+    только: идти через compose_music, давать новый материал и не звать
+    рукописный execute_music_code.
+
+    Issue #3113: раньше здесь проверялось требование «другой
+    bpm/root/scale/synth» — именно оно давало скачок темпа на каждом стыке.
+    Теперь новый материал = свой ``seed`` (прогрессия и риф) в ТОМ ЖЕ темпе
+    сета и родственной тональности (см. test_issue_3113_dj_club_set.py)."""
     ctrl = _build_controller()
     ctrl.state.theme = "тёмный техно"
     prompt = ctrl.build_auto_prompt(2)
 
     assert "DJ_AUTO переход #2" in prompt
     assert "compose_music" in prompt, "transition must go through compose_music"
-    # Поведение: переход обязан менять материал относительно прошлого трека.
-    assert "другой" in prompt
-    assert "bpm/root/scale/synth" in prompt
+    # Поведение: новый материал — новый seed, темп сета не меняется.
+    assert 'style="club"' in prompt
+    assert "seed=" in prompt
+    assert "bpm/root/scale/synth" not in prompt
 
     # The old hand-written-code dramaturgy techniques are no longer required.
     for pattern in (".every()", "Pvar", "linvar", "Clock.future"):

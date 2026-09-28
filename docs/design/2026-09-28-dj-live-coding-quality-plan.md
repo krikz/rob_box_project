@@ -90,6 +90,14 @@ Clock.future(252, Clock.clear)
    (запись через `tools/music_bench`).
 3. **P2 — DJ-режим держит темп/тональность сета** и меняет слои вместо
    `Clock.clear()` (`dj_mode.py:851`, `arranger.py:1872`).
+   Шаг 1 (#3113): DJ-промпт зовёт `compose_music(style="club", bpm=<темп
+   сета>, root=<квинтовый сосед тоники сета>, seed=<свой на трек>,
+   transition="fade")`; темп меняется только `set_dj_mode(bpm=...)`.
+   `transition="fade"` (`core/club_transition.py`): `Master().lpf/amplify`
+   на `linvar` за 8 тактов, новый трек — `Clock.schedule` на границу такта
+   после фейда. На роботе НЕ проверено. Не сделано: новый трек входит
+   целиком (раскрытие слоями — интро-маски шаблона), `/g_freeAll` из
+   `execute_code` срабатывает в начале фейда и обрывает хвосты пэда.
 4. **P3 — техдолг #3014**: общий dataclass параметров вместо 4 копий
    сигнатуры; вынос Renardo-bootstrap из `music.py`.
 
