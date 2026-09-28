@@ -6480,7 +6480,9 @@ class DialogueNode(Node):
                     "🧹 [issue 3145] отвергнутый гуардом ответ убран из истории"
                 )
 
-        future.add_done_callback(_log_if_failed)
+        # Тестовые стабы ``run_coroutine_threadsafe`` future не возвращают.
+        if future is not None:
+            future.add_done_callback(_log_if_failed)
 
     # ------------------------------------------------------------------
     # Issue #2241 / ADR-0080 §2.4 — TurnGuards bridge (voice-vr 19).
