@@ -1779,7 +1779,18 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'игнорируются '
                                                                         '— об этом '
                                                                         'сказано в '
-                                                                        'ответе.',
+                                                                        'начале '
+                                                                        'ответа. С '
+                                                                        'name= '
+                                                                        'известной '
+                                                                        'мелодии или '
+                                                                        'rtttl= club '
+                                                                        'не '
+                                                                        'применяется: '
+                                                                        'тема важнее '
+                                                                        'стиля, трек '
+                                                                        'играет '
+                                                                        'classic.',
                                                          'enum': ['classic', 'club'],
                                                          'default': 'classic'},
                                             'transition': {   'type': 'string',
@@ -5108,7 +5119,18 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'игнорируются '
                                                                         '— об этом '
                                                                         'сказано в '
-                                                                        'ответе.',
+                                                                        'начале '
+                                                                        'ответа. С '
+                                                                        'name= '
+                                                                        'известной '
+                                                                        'мелодии или '
+                                                                        'rtttl= club '
+                                                                        'не '
+                                                                        'применяется: '
+                                                                        'тема важнее '
+                                                                        'стиля, трек '
+                                                                        'играет '
+                                                                        'classic.',
                                                          'enum': ['classic', 'club'],
                                                          'default': 'classic'},
                                             'transition': {   'type': 'string',

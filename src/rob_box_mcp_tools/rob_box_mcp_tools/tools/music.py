@@ -2858,7 +2858,9 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "32 такта). С club работают только bpm (по умолчанию "
                     "124), root (по умолчанию A#), scale (только minor), "
                     "seed (выбирает прогрессию и риф) и repeat; остальные "
-                    "параметры игнорируются — об этом сказано в ответе."
+                    "параметры игнорируются — об этом сказано в начале "
+                    "ответа. С name= известной мелодии или rtttl= club не "
+                    "применяется: тема важнее стиля, трек играет classic."
                 ),
                 required=False,
                 enum=["classic", "club"],
@@ -3675,9 +3677,16 @@ class ComposeMusicTool(MCPTool):
         # Issue #3113: переход фейдом есть только у club; classic его не
         # знает — вынимаем до _execute_named и честно говорим в ответе.
         transition = kwargs.pop("transition", None)
-        club = self._style_branch(kwargs.pop("style", None), kwargs, transition)
+        style, route_note = self._route_named_club(kwargs.pop("style", None), kwargs)
+        club = self._style_branch(style, kwargs, transition)
         if club is not None:
             return club
+        if route_note:
+            return self._with_route_note(self._execute_classic(kwargs, transition), route_note)
+        return self._execute_classic(kwargs, transition)
+
+    def _execute_classic(self, kwargs: Dict[str, Any], transition: Optional[str]) -> MCPToolResult:
+        """Путь ``style="classic"``: наследование, пресет, аранжировщик."""
         # Issue #2950: наследование от играющего трека — ДО пресета, чтобы
         # свежая подстройка сеанса («играл с bass_style=root минуту назад»)
         # перевешивала статичный сохранённый пресет мелодии, а не наоборот
@@ -3701,6 +3710,52 @@ class ComposeMusicTool(MCPTool):
 
     #: Параметры, которые ``style="club"`` реально использует.
     _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat")
+
+    def _route_named_club(
+        self, style: Optional[str], kwargs: Dict[str, Any],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Issue #3113 п.2 (живой прогон 28.09): ``style="club"`` + известная тема.
+
+        ``compose_music(name="super mario bros", style="club", ...)`` играл
+        анонимный клубный трек: club не умеет чужих тем, ``name`` и синты
+        уходили в «Проигнорировано» в хвосте ответа, модель считала, что
+        играет Марио. Юзер просил ТЕМУ — значит тема важнее стиля: если
+        ``rtttl=`` прислан или ``name=`` находится в RTTTL-библиотеке, вызов
+        уходит в classic (там тема, синты и ручки работают), а ответ честно
+        говорит, что club не применён. ``name``, которого нет в библиотеке
+        («club floor filler»), — просто подпись клубного трека: club
+        играет, ответ говорит, что темы в треке нет.
+
+        Returns:
+            ``(style, note)``: ``note`` — текст для ответа, если стиль сменён.
+        """
+        if style != "club":
+            return style, None
+        name = kwargs.get("name")
+        if kwargs.get("rtttl"):
+            label = f"rtttl= (присланные ноты{f', {name!r}' if name else ''})"
+        elif name and self._resolve_melody(name, kwargs.get("variants")) is not None:
+            label = f"name={name!r} — тема из библиотеки мелодий"
+        else:
+            return style, None
+        return "classic", (
+            f"style=club НЕ применён: {label}; клубный режим чужих тем не играет, "
+            "поэтому трек собран в style=classic с темой и твоими синтами/ручками, "
+            "переход — сразу, без фейда. Если нужен именно клубный трек без темы — "
+            "вызови compose_music(style='club') без name/rtttl."
+        )
+
+    @staticmethod
+    def _with_route_note(result: MCPToolResult, note: str) -> MCPToolResult:
+        """Поставить пометку о смене стиля В НАЧАЛО ответа (и в ошибку)."""
+        if result.success:
+            result.message = f"⚠️ {note} " + (result.message or "")
+            if isinstance(result.data, dict):
+                result.data["style"] = "classic"
+                result.data["style_requested"] = "club"
+        else:
+            result.error = f"{note} Ошибка classic: {result.error}"
+        return result
 
     def _style_branch(
         self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
@@ -3810,7 +3865,6 @@ class ComposeMusicTool(MCPTool):
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
-        ignored = self._club_ignored(kwargs)
         message = (
             f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд. "
             "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
@@ -3820,9 +3874,29 @@ class ComposeMusicTool(MCPTool):
                 f" Переход fade: играющий трек уходит за {FADE_BARS} тактов, новый "
                 "стартует после фейда (если ничего не играло — сразу)."
             )
-        if ignored:
-            message += " Проигнорировано в club: " + ", ".join(ignored) + "."
+        warning = self._club_ignored_warning(kwargs, result)
+        if warning:
+            # Issue #3113 (живой прогон 28.09): хвост «Проигнорировано …» в
+            # конце ответа модель не замечала — предупреждение идёт ПЕРВЫМ.
+            message = warning + " " + message
         return MCPToolResult(success=True, data=result, message=message)
+
+    def _club_ignored_warning(self, kwargs: Dict[str, Any], result: Dict[str, Any]) -> str:
+        """Что из вызова club НЕ сыграл — текст для начала ответа (или ``""``)."""
+        ignored = [k for k in self._club_ignored(kwargs) if k != "name"]
+        result["ignored_params"] = list(ignored)
+        parts = []
+        name = kwargs.get("name")
+        if name:
+            parts.append(
+                f"name={name!r} не найдено в библиотеке мелодий — в club это только "
+                "подпись, ТЕМЫ в треке нет (не говори юзеру, что играет эта песня)."
+            )
+        if ignored:
+            parts.append(
+                "Проигнорировано в club (трек звучит БЕЗ них): " + ", ".join(ignored) + "."
+            )
+        return ("⚠️ " + " ".join(parts)) if parts else ""
 
     def _execute_named(
         self,

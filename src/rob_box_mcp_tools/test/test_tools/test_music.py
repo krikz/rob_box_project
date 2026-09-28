@@ -4618,11 +4618,89 @@ class TestComposeMusicToolClubStyle:
         assert mgr._music_form_deadline_at is None
 
     def test_club_names_ignored_params(self, mock_node):
+        """Issue #3113 (живой прогон 28.09): неприменённое — В НАЧАЛЕ ответа.
+
+        Библиотеки мелодий нет → ``name`` не тема, а подпись: club играет,
+        ответ прямо говорит, что темы в треке нет. Раньше тот же вызов
+        заканчивался хвостом «Проигнорировано в club: lead_synth, name.»,
+        который модель не замечала.
+        """
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec"):
             result = tool.execute(style="club", name="imperial march", lead_synth="blip")
         assert result.success is True, result.error
-        assert "Проигнорировано в club: lead_synth, name." in result.message
+        assert result.data["style"] == "club"
+        assert result.message.startswith("⚠️ name='imperial march' не найдено в библиотеке")
+        assert "ТЕМЫ в треке нет" in result.message
+        assert "Проигнорировано в club (трек звучит БЕЗ них): lead_synth." in result.message
+        assert result.message.index("Проигнорировано") < result.message.index("Играю клубный трек")
+        assert result.data["ignored_params"] == ["lead_synth"]
+
+    # ── Issue #3113: style=club + известная тема → classic с темой ───
+
+    _MARIO = {
+        "name": "smb",
+        "title": "Super Mario Bros",
+        "rtttl": "smb:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g,8p",
+    }
+    _MARIO_CALL = dict(
+        name="super mario bros", lead_synth="blip", bass_synth="retrobass",
+        pad_synth="sinepad", form="buildup", drum_style="four_on_floor",
+        style="club", transition="fade", seed=101,
+    )
+
+    def test_club_with_known_name_plays_the_theme_in_classic(self, mock_node):
+        """Живой вызов «8-битного монстра» 28.09: тема и синты должны звучать."""
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(**self._MARIO_CALL)
+        assert result.success is True, result.error
+        code = fake_exec.call_args[0][0]
+        assert "# club:" not in code
+        assert "blip(" in code and "retrobass(" in code and "sinepad(" in code
+        assert result.data["style"] == "classic"
+        assert result.data["style_requested"] == "club"
+        assert result.message.startswith("⚠️ style=club НЕ применён: name='super mario bros'")
+        assert "Super Mario Bros" in result.message
+
+    def test_club_with_known_name_error_keeps_the_route_note(self, mock_node):
+        """Без синтов classic честно отказывает — и ошибка говорит, почему classic."""
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", name="super mario bros")
+        assert result.success is False
+        assert result.error.startswith("style=club НЕ применён")
+        assert "Ошибка classic:" in result.error
+        fake_exec.assert_not_called()
+
+    def test_club_with_rtttl_plays_classic(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(
+                style="club", rtttl=self._MARIO["rtttl"],
+                lead_synth="blip", bass_synth="retrobass", pad_synth="sinepad",
+            )
+        assert result.success is True, result.error
+        assert "# club:" not in fake_exec.call_args[0][0]
+        assert result.data["style"] == "classic"
+
+    def test_club_without_name_is_not_rerouted(self, mock_node):
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=4)
+        assert result.success is True, result.error
+        assert "# club:" in fake_exec.call_args[0][0]
+        lib.get.assert_not_called()
+        assert "⚠️" not in result.message
 
     def test_club_invalid_scale_is_honest_error(self, mock_node):
         tool, _ = self._make_tool(mock_node)
