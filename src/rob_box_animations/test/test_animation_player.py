@@ -293,3 +293,67 @@ class TestManifestNameHelper:
             AnimationPlayer._manifest_name('./manifests/happy.yaml')
             == 'happy'
         )
+
+
+# ---------------------------------------------------------------------------
+# TestSinglePanelImagePublisher (issue #3108)
+# ---------------------------------------------------------------------------
+
+
+class TestSinglePanelImagePublisher:
+    """Live graph showed voice_animation_player with 5 publishers on
+    /panel_image — one per logical group (main_display + 4 wheels). All
+    groups go to the same topic, so they must share one publisher."""
+
+    def test_multi_group_animations_create_one_publisher(
+        self, fake_node, tmp_path,
+    ) -> None:
+        from PIL import Image
+        from rob_box_animations.animation_player import AnimationPlayer
+
+        groups_a = ['main_display', 'wheel_front_left', 'wheel_front_right']
+        groups_b = ['wheel_rear_left', 'wheel_rear_right', 'main_display']
+        manifests = tmp_path / 'manifests'
+        manifests.mkdir()
+        frame = tmp_path / 'f.png'
+        Image.new('RGB', (1, 1)).save(frame)
+        for name, groups in (('multi_a', groups_a), ('multi_b', groups_b)):
+            panels = ''.join(
+                f"""  - logical_group: {g}
+    offset_ms: 0
+    frames:
+      - image: {frame.name}
+        duration_ms: 100
+"""
+                for g in groups
+            )
+            (manifests / f'{name}.yaml').write_text(
+                f"""name: {name}
+description: test
+version: "1.0"
+author: tester
+duration_ms: 100
+loop: true
+fps: 10
+panels:
+{panels}"""
+            )
+
+        created = []
+
+        def _create_publisher(*args, **kwargs):
+            pub = object()
+            created.append((args, pub))
+            return pub
+
+        fake_node.create_publisher = _create_publisher
+        player = AnimationPlayer(fake_node, str(tmp_path))
+        player._playback_loop = lambda: None
+
+        assert player.load_animation('multi_a.yaml') is True
+        assert player.load_animation('multi_b.yaml') is True
+
+        assert len(created) == 1
+        assert created[0][0][1] == '/panel_image'
+        assert set(player.publishers) == set(groups_a) | set(groups_b)
+        assert {id(p) for p in player.publishers.values()} == {id(created[0][1])}

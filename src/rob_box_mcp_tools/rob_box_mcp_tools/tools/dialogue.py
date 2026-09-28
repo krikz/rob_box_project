@@ -14,7 +14,7 @@ from typing import List, TYPE_CHECKING
 if TYPE_CHECKING:
     from std_msgs.msg import String
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, shared_publisher
 from ..voice_state import VoiceStateStore
 from ..animations import (
     KNOWN_ANIMATIONS,
@@ -96,7 +96,8 @@ class SpeakTextTool(MCPTool):
         # Publisher для TTS запросов
         self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
         # Publisher для анимаций (инициализируем сразу, чтобы не создавать дубли в execute())
-        self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
+        # Issue #3108: общий с PlayAnimationTool publisher на этой ноде.
+        self.animation_pub = shared_publisher(node, String, "/voice/animation/request", 10)
         # Subscriber для получения завершения произношения
         self.finished_sub = node.create_subscription(String, "/voice/tts/finished", self._on_tts_finished, 10)
         # Subscriber для получения текущего dialogue_id от dialogue_node
@@ -1289,8 +1290,9 @@ class SetVoiceTool(MCPTool):
         # первым), чистит provider_dead_until для этого провайдера и
         # публикует provider_state обратно (dialogue_node/mcp_server
         # увидят нового провайдера в LLM-контексте).
-        self._set_provider_pub = node.create_publisher(
-            String, "/voice/tts/set_provider", 10
+        # Issue #3108: SetVoiceTool и SetTtsProviderTool делят один publisher.
+        self._set_provider_pub = shared_publisher(
+            node, String, "/voice/tts/set_provider", 10
         )
 
     @property
@@ -1522,8 +1524,9 @@ class SetTtsProviderTool(MCPTool):
         self._voice_store = voice_store or VoiceStateStore()
         from std_msgs.msg import String
 
-        self._set_provider_pub = node.create_publisher(
-            String, "/voice/tts/set_provider", 10
+        # Issue #3108: SetVoiceTool и SetTtsProviderTool делят один publisher.
+        self._set_provider_pub = shared_publisher(
+            node, String, "/voice/tts/set_provider", 10
         )
 
     @property
