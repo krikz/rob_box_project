@@ -1022,9 +1022,17 @@ class AgentCore:
                 # ``dialogue_node._dispatch_dj_turn``): the live DJ set
                 # showed minimax answering with plain text and no tool
                 # call 2-3 times before the retry finally landed
-                # ``compose_music``. ``tool_choice="required"`` closes
-                # that gap at the source instead of relying entirely on
-                # the synchronous-retry safety net.
+                # ``compose_music``.
+                # NOTE (issue #3135, ADR-0143): against the production
+                # MiniMax provider this is currently a NO-OP. A live probe
+                # of MiniMax-M3 showed ``tool_choice="required"`` (and the
+                # named-function form) silently ignored — HTTP 200, no
+                # tool_calls, no error; MiniMax documents only
+                # ``auto``/``none``. DJ-auto correctness therefore still
+                # depends ENTIRELY on the Bug-B synchronous retry. The
+                # forced tool_choice is kept only in case a future
+                # provider/model honours it, not as a guarantee.
+                # See docs/adr/0143-minimax-tool-choice-not-supported.md.
                 outcome = await self._run_with_tools(
                     messages,
                     raw_user_input=_raw_user_utterance(text),
@@ -1271,9 +1279,14 @@ class AgentCore:
         auto-transitions: the live DJ set showed minimax replying with
         plain text and no tool call on the first attempt 2-3 times in a
         row before the Bug-B synchronous retry finally landed a
-        ``compose_music`` call — forcing ``tool_choice="required"``
-        closes that gap at the source instead of relying entirely on
-        the retry.
+        ``compose_music`` call. Against the production MiniMax provider
+        the override is currently a NO-OP (issue #3135, ADR-0143): a
+        live probe of MiniMax-M3 showed ``tool_choice="required"`` and
+        the named-function form silently ignored (HTTP 200, no
+        tool_calls, no error; only ``auto``/``none`` are documented).
+        DJ-auto turns therefore still rely ENTIRELY on the Bug-B retry;
+        the override is kept only in case a future provider/model
+        honours it, not because it guarantees a tool call today.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -1354,8 +1367,9 @@ class AgentCore:
         # boolean): a validation error followed by a successful retry of the
         # same tool is a success for the music guard.
         succeeded_tools: list[str] = []
-        # Issue #2967 — force a tool call on the FIRST request of this
-        # turn only (see the ``force_tool_choice`` docstring above).
+        # Issue #2967 — request a forced tool call on the FIRST request of
+        # this turn only (see the ``force_tool_choice`` docstring above —
+        # a no-op against MiniMax today, issue #3135 / ADR-0143).
         # Extracted to a helper so this method's CC stays at its
         # cc_budget baseline.
         _first_call_settings = self._settings_with_forced_tool_choice(
