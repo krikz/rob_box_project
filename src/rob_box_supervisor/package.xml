@@ -18,6 +18,8 @@
   <exec_depend>rcl_interfaces</exec_depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
+  <!-- #3104: avatar_arbiter подписан на /odom (nav_msgs/Odometry от rtabmap icp_odometry). -->
+  <depend>nav_msgs</depend>
   <!-- AV-12 / ADR-0028 §4.3: typed IDL для acquire/release/mode сервисов.
        Импорт через try-import (см. supervisor_node._try_load_supervisor_msgs) —
        если пакет не собран (например, mock-rclpy в CI), нода откатывается
