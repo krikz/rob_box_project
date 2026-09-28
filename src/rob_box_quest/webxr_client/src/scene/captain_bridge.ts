@@ -31,6 +31,8 @@ import {
 } from "./voice_pipeline_panel";
 import {
   loadBridgeAssets,
+  placeOnFloor,
+  computeFitScale,
   type BridgeAssetHandle,
 } from "./bridge_assets";
 import {
@@ -687,36 +689,40 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   function placeHeroProps(env: BridgeAssetHandle): void {
     const g = env.groups;
 
-    const placeOnFloor = (group: THREE.Group, x: number, z: number, width?: number, height?: number): void => {
-      const box = new THREE.Box3().setFromObject(group);
-      const size = box.getSize(new THREE.Vector3());
-      let scale = 1;
-      if (width && size.x > 0) scale = width / size.x;
-      if (height && size.y > 0) scale = height / size.y;
-      group.scale.setScalar(scale);
-      group.position.set(x, -box.min.y * scale, z);
-    };
-
     // Подиум — под оператором (спавн (0,0,0)), диаметр ~2 м.
-    if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, 2);
+    if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, { width: 2 });
 
     // Голо-проекторы — слева и справа от оператора, высота ~0.9 м.
     if (g.heroHoloProjector) {
-      placeOnFloor(g.heroHoloProjector, -1, -1.8, undefined, 0.9);
+      placeOnFloor(g.heroHoloProjector, -1, -1.8, { height: 0.9 });
       heroHoloRight = g.heroHoloProjector.clone(true);
       heroHoloRight.name = "bridge_holo_projector_right";
-      placeOnFloor(heroHoloRight, 1, -1.8, undefined, 0.9);
+      // `clone(true)` deep-clones the Object3D graph but NOT materials
+      // (three.js shares them by reference) — deep-clone materials too so
+      // `environment.dispose()` (which walks `g.heroHoloProjector`) and the
+      // separate `heroHoloRight` dispose below each dispose their own
+      // material exactly once, never the same shared one twice (#3045).
+      heroHoloRight.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.material) {
+          mesh.material = Array.isArray(mesh.material)
+            ? mesh.material.map((m) => m.clone())
+            : mesh.material.clone();
+        }
+      });
+      placeOnFloor(heroHoloRight, 1, -1.8, { height: 0.9 });
       scene.add(heroHoloRight);
     }
 
     // Рамка экрана — позади главного экрана: видео-панель (впереди)
     // перекрывает «экранную» поверхность рамки, остаётся тонкий безель.
     // Точная подгонка безеля — визуально на Quest; здесь базовая посадка
-    // по ширине главного экрана 4.8 м.
+    // по ширине главного экрана 4.8 м. Не floor-mounted (фиксированная
+    // высота 1.5 м), поэтому переиспользуем только `computeFitScale`, а не
+    // `placeOnFloor` целиком.
     if (g.heroScreen) {
       const box = new THREE.Box3().setFromObject(g.heroScreen);
-      const size = box.getSize(new THREE.Vector3());
-      g.heroScreen.scale.setScalar(size.x > 0 ? 4.8 / size.x : 1);
+      g.heroScreen.scale.setScalar(computeFitScale(box, { width: 4.8 }));
       g.heroScreen.position.set(0, 1.5, -3.95);
     }
   }

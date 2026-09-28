@@ -8,9 +8,12 @@ import { MeshoptDecoder } from "meshoptimizer";
 
 // gltf-pipeline smoke test (Phase 2.0, ADR-0032 §3.1).
 //
-// Loads `public/models/environment/Duck.optimized.glb` (committed artifact
-// of `npm run gltf:optimize` applied to a CC0 Khronos Sample Asset Duck.glb)
-// through gltf-transform's NodeIO + Draco + Meshopt decoders, and asserts
+// Loads `tests/fixtures/Duck.optimized.glb` (committed artifact of
+// `npm run gltf:optimize` applied to a CC0 Khronos Sample Asset Duck.glb;
+// moved out of `public/models/environment/` in #3044-#3048 review pass —
+// it's a test fixture, not a shipped scene asset, and `gltf-verify.mjs` /
+// `bridge_environment.test.ts` should not have to account for it) through
+// gltf-transform's NodeIO + Draco + Meshopt decoders, and asserts
 // that:
 //   - the asset is reachable on disk;
 //   - the file parses without throwing;
@@ -32,10 +35,7 @@ import { MeshoptDecoder } from "meshoptimizer";
 
 const ASSET_PATH = resolve(
   __dirname,
-  "..",
-  "public",
-  "models",
-  "environment",
+  "fixtures",
   "Duck.optimized.glb"
 );
 

@@ -198,6 +198,50 @@ export function validateBridgeMeta(raw: unknown): BridgeSceneMeta {
   return r as unknown as BridgeSceneMeta;
 }
 
+// ---------- hero-prop placement (pure, jsdom-testable) ----------
+
+/** Target size (metres) to fit a group's bounding box into, per axis. */
+export interface FitTarget {
+  width?: number; // X
+  height?: number; // Y
+  depth?: number; // Z
+}
+
+/**
+ * Uniform scale factor that fits `box`'s size to the given `target` axis
+ * (or axes; the last one with a positive target size wins — see #3044).
+ * Falls back to `1` (no scaling) for an empty/degenerate box instead of
+ * producing `NaN`/`Infinity` (#3047) — an empty GLB stays at its authored
+ * scale rather than silently vanishing or exploding.
+ */
+export function computeFitScale(box: THREE.Box3, target: FitTarget): number {
+  if (box.isEmpty()) return 1;
+  const size = box.getSize(new THREE.Vector3());
+  let scale = 1;
+  if (target.width && size.x > 0) scale = target.width / size.x;
+  if (target.height && size.y > 0) scale = target.height / size.y;
+  if (target.depth && size.z > 0) scale = target.depth / size.z;
+  return scale;
+}
+
+/**
+ * Places `group` on the floor (`y = 0`) at `(x, z)`, uniformly scaled to
+ * fit `target`. Shared by all floor-standing hero props (platform,
+ * holo-projectors) — previously each call site recomputed the bbox/scale
+ * by hand (#3044).
+ *
+ * Guards against an empty/degenerate bounding box: `box.min.y` is
+ * `+Infinity` for `Box3.makeEmpty()`, which would otherwise place the
+ * group at `y = -Infinity` (#3047). Such a group is left at `y = 0`.
+ */
+export function placeOnFloor(group: THREE.Object3D, x: number, z: number, target: FitTarget = {}): void {
+  const box = new THREE.Box3().setFromObject(group);
+  const scale = computeFitScale(box, target);
+  group.scale.setScalar(scale);
+  const floorY = box.isEmpty() || !Number.isFinite(box.min.y) ? 0 : -box.min.y * scale;
+  group.position.set(x, floorY, z);
+}
+
 // ---------- GLB / HDR loader (browser-only; needs Web Worker for Draco) ----------
 
 /**

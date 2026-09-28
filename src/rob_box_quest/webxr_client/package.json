@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "gltf:optimize": "node scripts/gltf-optimize.mjs",
-    "gltf:verify": "node scripts/gltf-verify.mjs"
+    "gltf:verify": "node scripts/gltf-verify.mjs",
+    "gltf:inspect": "node scripts/gltf-inspect.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"
