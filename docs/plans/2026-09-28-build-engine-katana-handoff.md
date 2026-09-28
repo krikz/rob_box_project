@@ -41,15 +41,17 @@
 | main twist-mux / rsp / lslidar / ros2-control | ✅ 4 / 2,5 / 8 / 11 мин — **кеш-промах** (см. §2.1) | 108945295646 и др. |
 | vision voice-base | ❌ apt-cacher-ng `Hash Sum mismatch` на `ros-humble-builtin-interfaces_1.2.3-1jammy.20260907.203343_arm64.deb` | 108945302234 |
 | main nav2 | ❌ тот же `Hash Sum mismatch` на `ros-humble-ompl_1.7.0-4jammy.20260306.230109_arm64.deb` (ожидался SHA256 `514402c1…`, получен `5e87c7fe…`, размер 2328172 у обоих), apt шёл 23 мин | 108945295845 |
-| vision oak-d / led-matrix / supercollider | ✅ | — |
-| main lslidar, ros2-control, teleop, twist-mux, nav2, robot-state-publisher | ⏳ шли | — |
+| vision oak-d / led-matrix / supercollider / telegram-bot / quest / vision-hailo / ceiling-camera | ✅ (supercollider — кеш-попадание, остальные — промах из-за новых баз) | — |
+| vision voice-assistant, supervisor | ⏭ skipped (зависят от voice-base) | — |
 | vision (10 сервисов) | ⏳ led-matrix, supercollider стартовали, остальные в очереди | — |
 
 - **Исходная ошибка не повторилась ни в одном job'е.**
 - **Перезапуск упавших job'ов уже потрачен** (`rerun_failed_jobs` в 13:06).
   Повторно этот прогон НЕ перезапускать, нужен новый `workflow_dispatch`
   после починки apt-cacher-ng.
-- Снимок сделан на 13:40 UTC, прогон ещё не закончился. Первым делом: `list_workflow_jobs 36421581380 filter=latest`.
+- **Прогон завершён 13:49 UTC.** Итог: базы 4/4 ✅; Main 6 ✅ / 2 ❌ (perception, nav2);
+  Vision 7 ✅ / 1 ❌ (voice-base) / 2 ⏭ (voice-assistant, supervisor). Все ❌ — apt-cacher-ng.
+  `update-image-versions` пропущен. Таблица — [комментарий в PR](https://github.com/krikz/rob_box_project/pull/3100).
 
 ### 2.1. Кеш: что доказано и что НЕТ
 
@@ -62,6 +64,8 @@ Cache: localhost:5000/krikz/rob_box:twist-mux-buildcache (from + to, mode=max, i
 #10 exporting cache to registry … writing cache image manifest sha256:746bbbcc… done
 ```
 - **Доказано:** кеш импортируется и экспортируется (механика цела).
+- **Доказано попадание при неизменной базе:** supercollider (FROM `ubuntu:26.04`, job 108945302423):
+  `#6 RUN apt-get … CACHED`, `#7 CACHED`, шаг сборки 23 с.
 - **Промах:** базы пересобраны, получили новый digest, поэтому все слои сервисов пересобирались.
   В тёплом прогоне 35642624956 сервисы шли 50–65 с, здесь — минуты.
 - **НЕ проверено, возможная регрессия PR:** стабилен ли digest базы при полном попадании
