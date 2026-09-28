@@ -159,7 +159,8 @@ _STUB_ATTRS = {
         "Twist": _StubTwist,
         "PoseWithCovarianceStamped": _StubPoseWithCovarianceStamped,
     },
-    "nav_msgs.msg": {"OccupancyGrid": _StubMsg, "Odometry": _StubMsg},
+    # Path — issue #3151 (nav_path из /plan).
+    "nav_msgs.msg": {"OccupancyGrid": _StubMsg, "Odometry": _StubMsg, "Path": _StubMsg},
     "sensor_msgs.msg": {"CompressedImage": _StubMsg, "LaserScan": _StubMsg},
     "std_msgs.msg": {"String": _StubString},
     "rob_box_core.avatar_command": {
