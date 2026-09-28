@@ -1282,6 +1282,56 @@ class MusicManager:
             # OSC_REPLY_TIMEOUT_SECONDS. Best-effort, никогда не бросает.
             self._log_scsynth_reply_if_any(sock)
 
+    #: Пауза (сек) между ``gate=0`` и ``/g_freeAll`` в :meth:`_ramp_down_group`
+    #: — issue #3137, столько же, сколько #1000 уже использовал в ``stop_all``.
+    RAMP_DOWN_RELEASE_SECONDS = 0.05
+
+    def _ramp_down_group(self, group: int = 1) -> None:
+        """Плавно погасить живые SC-ноды перед ``/g_freeAll`` (anti-click).
+
+        Issue #3137 (живой стык двух треков дал окно −180 dBFS): голый
+        ``/g_freeAll`` обрывает синты ровно в момент вызова, mid-waveform
+        — щелчок/цифровая тишина. Правильная последовательность (прецедент
+        — commit ``d922ee836``, «smooth DJ transition — gate=0 before
+        /g_freeAll», живой тест на Vision Pi: без gate=0 щелчок
+        подтверждён, с gate=0 — чисто):
+
+        1. ``/n_set -1 "gate" 0.0`` — nodeID ``-1`` адресует ВСЕ живые ноды
+           scsynth разом, запускает их release-фазу ADSR.
+        2. Пауза :data:`RAMP_DOWN_RELEASE_SECONDS` — дать release начаться
+           (не закончиться: полный sustain/release может быть длиннее,
+           но щелчок даёт именно резкий обрыв в момент gate=0→freeAll без
+           паузы, а не незавершённый хвост после неё).
+        3. ``/g_freeAll <group>`` — убить ноды (сейчас уже в release, не
+           кликают).
+
+        Раньше это делалось только внутри ``stop_all`` (issue #1000, там
+        же через ``player.stop()`` + пауза + freeAll — без явного gate=0
+        на уровне OSC). ``execute_code`` слал голый ``/g_freeAll`` без
+        какого-либо ramp — используется для звукового обрыва в §7.2 разбора
+        (``docs/design/2026-09-28-music-dj-systemic-analysis.md``). Обе
+        точки теперь используют этот общий хелпер.
+
+        Не блокирует надолго: суммарная пауза — десятки миллисекунд.
+
+        Args:
+            group: номер группы, которую освобождаем ``/g_freeAll`` после
+                ramp (по умолчанию Group 1 — куда Renardo шлёт все ноты).
+        """
+        try:
+            # nodeID -1 = все живые ноды scsynth (не конкретная group).
+            self._send_osc_raw("/n_set", -1, "gate", 0.0)
+        except Exception:
+            pass  # если SC недоступен — freeAll ниже всё равно best-effort
+        try:
+            time.sleep(self.RAMP_DOWN_RELEASE_SECONDS)
+        except Exception:
+            pass
+        try:
+            self._send_osc_raw("/g_freeAll", group)
+        except Exception:
+            pass  # если SC недоступен — не критично, старые ноды умрут сами
+
     # ------------------------------------------------------------------
     # Master limiter fader
     # ------------------------------------------------------------------
@@ -1622,11 +1672,12 @@ class MusicManager:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
         if has_clock_clear:
-            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
-            try:
-                self._send_osc_raw("/g_freeAll", 1)
-            except Exception:
-                pass  # если SC недоступен — не критично, старые ноды умрут сами
+            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны
+            # зарегистрированы. Issue #3137: голый /g_freeAll обрывал их
+            # mid-waveform (−180 dBFS окно на стыке треков) — теперь через
+            # общий anti-click ramp-down (gate=0 → пауза → freeAll), тот
+            # же, что stop_all использует для остановки (issue #1000).
+            self._ramp_down_group(1)
             # Пауза между /g_freeAll и /g_new обязательна (issue #778):
             # UDP — fire-and-forget, scsynth обрабатывает /g_freeAll
             # асинхронно и не освобождает ID Group 1 мгновенно. Без паузы
@@ -1851,15 +1902,16 @@ class MusicManager:
 
         Issue #1000 (phase-3.2 anti-click):
             Hard ``/g_freeAll`` без ramp-down даёт щелчки на MdaPiano/rhpiano
-            (физ-модели — release-фаза ADSR не успевает затухнуть). Делаем
-            ``amp=0`` на всех плеерах → release → ~50ms → ``/g_freeAll``.
+            (физ-модели — release-фаза ADSR не успевает затухнуть).
 
         Этапы:
-        1. ``amp=0`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
-           запускает release-фазу ADSR, синты затухают естественно.
+        1. ``.stop()`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
+           снимает их с планировщика Renardo (внутреннее состояние).
         2. ``Clock.clear()`` — убрать все запланированные события.
-        3. ~50ms sleep — дать ADSR release затухнуть.
-        4. OSC ``/g_freeAll`` — убить все живые синтезаторы в scsynth.
+        3-4. :meth:`_ramp_down_group` (issue #3137) — ``gate=0`` на все
+           живые SC-ноды → ~50ms на release ADSR → ``/g_freeAll``. Тот же
+           общий хелпер, которым теперь пользуется ``execute_code`` для
+           перехода между треками.
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
@@ -1905,17 +1957,9 @@ class MusicManager:
                 # still need to reset our own lifecycle fields. Issue #935.
                 clock_error = f"Clock.clear() failed: {exc}"
 
-            # Шаг 3: ~50ms на release ADSR (issue #1000 anti-click)
-            try:
-                time.sleep(0.05)
-            except Exception:
-                pass
-
-            # Шаг 4: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
-            try:
-                self._send_osc_raw("/g_freeAll", 1)
-            except Exception:
-                pass  # если SC недоступен — не страшно, Clock уже очищен
+            # Шаг 3-4: gate=0 ramp-down → freeAll (issue #1000 anti-click,
+            # issue #3137 — общий хелпер, тот же путь, что execute_code).
+            self._ramp_down_group(1)
 
         self._active_patterns.clear()
         self._last_stop_at = time.monotonic()
