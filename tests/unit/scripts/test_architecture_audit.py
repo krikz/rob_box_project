@@ -194,3 +194,121 @@ def test_shared_publisher_helper_body_and_short_calls_are_ignored(tmp_path):
         "    shared_publisher(node, String)\n",
     )
     assert interfaces == []
+
+
+# Topic names passed as ``self.<attr>`` are resolved within the same class:
+# vision_hailo_node published /vision/hailo/events via a parameter and
+# gaze.OakDSource subscribed via a class constant, both invisible before.
+def test_parameter_default_name_is_resolved_and_marked(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "pkg/pkg/node.py",
+        "class N(Node):\n"
+        "    def __init__(self):\n"
+        "        self.declare_parameter('output_topic', '/vision/hailo/events')\n"
+        "        self.declare_parameter('in_topic', '/in')\n"
+        "        self.output_topic = str(self.get_parameter('output_topic').value)\n"
+        "        self.in_topic = self.get_parameter('in_topic').value\n"
+        "        self.create_publisher(VisionEventMsg, self.output_topic, 10)\n"
+        "        self.create_subscription(String, self.in_topic, self.cb, 10)\n",
+    )
+    got = sorted(
+        (i["kind"], i["name"], i["name_source"], i["name_parameter"], i["node_class"]) for i in interfaces
+    )
+    assert got == [
+        ("publish", "/vision/hailo/events", "parameter_default", "output_topic", "N"),
+        ("subscribe", "/in", "parameter_default", "in_topic", "N"),
+    ]
+
+
+def test_class_attr_name_is_resolved_in_non_node_class(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "pkg/pkg/gaze.py",
+        "class OakDSource:\n"
+        "    topic = '/camera/camera/color/image_raw'\n"
+        "    def start(self, node):\n"
+        "        node.create_subscription(Image, self.topic, self.cb, 10)\n"
+        "class CeilingSource(OakDSource):\n"
+        "    topic = '/ceiling_camera/image_raw/compressed'\n"
+        "    def start(self, node):\n"
+        "        node.create_subscription(CompressedImage, self.topic, self.cb, 10)\n",
+    )
+    got = sorted((i["name"], i["name_source"], i["node_class"], "name_parameter" in i) for i in interfaces)
+    assert got == [
+        ("/camera/camera/color/image_raw", "class_attr", None, False),
+        ("/ceiling_camera/image_raw/compressed", "class_attr", None, False),
+    ]
+
+
+def test_literal_names_carry_no_name_source(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "pkg/pkg/node.py",
+        "class N(Node):\n" "    def __init__(self):\n" "        self.create_publisher(String, '/a', 10)\n",
+    )
+    assert "name_source" not in interfaces[0]
+
+
+def test_unresolvable_or_ambiguous_names_are_skipped(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "pkg/pkg/node.py",
+        "class N(Node):\n"
+        "    shadowed = '/const'\n"
+        "    def __init__(self, topic):\n"
+        "        self.declare_parameter('dyn', make_default())\n"
+        "        self.dyn = self.get_parameter('dyn').value\n"
+        "        self.undeclared = self.get_parameter('nope').value\n"
+        "        self.shadowed = topic\n"
+        "        self.plain = topic\n"
+        "        self.create_publisher(String, self.dyn, 10)\n"
+        "        self.create_publisher(String, self.undeclared, 10)\n"
+        "        self.create_publisher(String, self.shadowed, 10)\n"
+        "        self.create_publisher(String, self.plain, 10)\n"
+        "        self.create_publisher(String, self.missing, 10)\n"
+        "        self.create_publisher(String, topic, 10)\n"
+        "class Other(Node):\n"
+        "    def __init__(self):\n"
+        "        self.create_publisher(String, self.shadowed, 10)\n",
+    )
+    assert interfaces == []
+
+
+def test_nested_class_constants_do_not_leak_into_outer_class(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "pkg/pkg/node.py",
+        "class Outer(Node):\n"
+        "    class Config:\n"
+        "        topic = '/inner'\n"
+        "    def __init__(self):\n"
+        "        self.create_publisher(String, self.topic, 10)\n",
+    )
+    assert interfaces == []
+
+
+def test_resolved_names_reach_topics_markdown_and_output_is_deterministic(tmp_path):
+    write(tmp_path / "src/pkg/package.xml", "<package/>")
+    write(
+        tmp_path / "src/pkg/pkg/node.py",
+        "class N(Node):\n"
+        "    STATE = '/state'\n"
+        "    def __init__(self):\n"
+        "        self.declare_parameter('out', '/out')\n"
+        "        self.out = self.get_parameter('out').value\n"
+        "        self.create_publisher(String, self.out, 10)\n"
+        "        self.create_publisher(String, self.STATE, 10)\n",
+    )
+
+    inventory, _summary = run_audit(tmp_path)
+    first = (tmp_path / "out/inventory.json").read_bytes()
+    run_audit(tmp_path)
+
+    assert (tmp_path / "out/inventory.json").read_bytes() == first
+    pubs = {t["name"]: t["publishers"][0] for t in inventory["topics"]}
+    assert pubs["/out"]["name_source"] == "parameter_default" and pubs["/out"]["name_parameter"] == "out"
+    assert pubs["/state"]["name_source"] == "class_attr"
+    md = (tmp_path / "out/inventory.md").read_text(encoding="utf-8")
+    assert "| publish | /out *(default of `out`)* |" in md
+    assert "| publish | /state *(class attr)* |" in md

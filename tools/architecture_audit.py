@@ -35,6 +35,50 @@ def dotted_name(node):
     if isinstance(node,ast.Subscript): return dotted_name(node.value)
     return None
 
+def _own_nodes(cls):
+    """ast.walk over a class body without descending into nested classes."""
+    stack=list(cls.body)
+    while stack:
+        node=stack.pop(); yield node
+        if not isinstance(node,ast.ClassDef): stack.extend(ast.iter_child_nodes(node))
+
+def _self_attr(node):
+    return node.attr if isinstance(node,ast.Attribute) and isinstance(node.value,ast.Name) and node.value.id=="self" else None
+
+def _parameter_read(node):
+    """'p' for ``self.get_parameter('p').value``, optionally wrapped in ``str(...)``."""
+    if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=="str" and len(node.args)==1 and not node.keywords: node=node.args[0]
+    if not (isinstance(node,ast.Attribute) and node.attr=="value" and isinstance(node.value,ast.Call)): return None
+    call=node.value
+    if _self_attr(call.func)!="get_parameter" or len(call.args)!=1: return None
+    name=literal(call.args[0]); return name if isinstance(name,str) else None
+
+def class_name_sources(cls):
+    """Statically resolvable ``self.<attr>`` topic names of one class: {attr: (name, source, parameter)}.
+
+    source is "class_attr" (class-level string constant) or "parameter_default"
+    (``self.<attr> = self.get_parameter('p').value`` + ``self.declare_parameter('p', '<str>')``).
+    An attribute with more than one candidate value is ambiguous and left out.
+    """
+    candidates=defaultdict(set); defaults={}; reads=[]
+    for stmt in cls.body:
+        targets=stmt.targets if isinstance(stmt,ast.Assign) else [stmt.target] if isinstance(stmt,ast.AnnAssign) and stmt.value is not None else []
+        value=literal(stmt.value) if targets else None
+        for target in targets:
+            if isinstance(target,ast.Name) and isinstance(value,str): candidates[target.id].add((value,"class_attr",None))
+    for node in _own_nodes(cls):
+        if isinstance(node,ast.Call) and _self_attr(node.func)=="declare_parameter" and len(node.args)>=2:
+            param,default=literal(node.args[0]),literal(node.args[1])
+            if isinstance(param,str) and isinstance(default,str): defaults.setdefault(param,set()).add(default)
+        if isinstance(node,(ast.Assign,ast.AnnAssign)) and node.value is not None:
+            for target in node.targets if isinstance(node,ast.Assign) else [node.target]:
+                attr=_self_attr(target)
+                if attr: reads.append((attr,_parameter_read(node.value)))
+    for attr,param in reads:
+        if param is None or len(defaults.get(param,()))!=1: candidates[attr].add(None)
+        else: candidates[attr].add((next(iter(defaults[param])),"parameter_default",param))
+    return {attr:next(iter(values)) for attr,values in candidates.items() if len(values)==1 and None not in values}
+
 def package_for(path,src):
     try: rel=path.relative_to(src)
     except ValueError: return None
@@ -50,8 +94,9 @@ def scan_python(src):
         if TEST_PATH.search(rel): skipped+=1; continue
         try: tree=ast.parse(path.read_text(encoding="utf-8"),filename=rel)
         except (OSError,SyntaxError,UnicodeDecodeError): continue
-        node_classes=[]; class_by_line=[]
+        node_classes=[]; class_by_line=[]; name_sources={}
         for cls in [x for x in ast.walk(tree) if isinstance(x,ast.ClassDef)]:
+            name_sources[cls.lineno]=class_name_sources(cls)
             bases={dotted_name(base) for base in cls.bases}
             is_node=bool(bases & NODE_BASES) or any(base and base.rsplit(".",1)[-1] in NODE_BASES for base in bases)
             if is_node: node_classes.append(cls.name)
@@ -68,13 +113,19 @@ def scan_python(src):
                 method=call.func.id if isinstance(call.func,ast.Name) and call.func.id in ROS_HELPER_CALLS else None
             if method is None or len(call.args)<=ROS_NAME_ARG[method]: continue
             kind=ROS_CALLS.get(method) or ROS_HELPER_CALLS[method]
-            name=literal(call.args[ROS_NAME_ARG[method]])
-            if not isinstance(name,str): continue
+            arg=call.args[ROS_NAME_ARG[method]]; name=literal(arg); resolved={}
+            if not isinstance(name,str):
+                # Innermost enclosing class (any class: sources like gaze.OakDSource are not Nodes).
+                enclosing=[(end-line,line) for line,end,_n,_i in class_by_line if line<=call.lineno<=end]
+                found=name_sources[min(enclosing)[1]].get(_self_attr(arg)) if enclosing else None
+                if found is None: continue
+                name,source,param=found; resolved={"name_source":source}
+                if param: resolved["name_parameter"]=param
             owner=None
             candidates=[(end-line,cls_name) for line,end,cls_name,is_node in class_by_line if is_node and line<=call.lineno<=end]
             if candidates: owner=min(candidates)[1]
             interfaces.append({"kind":kind,"name":name,"file":rel,"line":call.lineno,
-                               "package":package,"node_class":owner,"type":dotted_name(call.args[ROS_TYPE_ARG[method]])})
+                               "package":package,"node_class":owner,"type":dotted_name(call.args[ROS_TYPE_ARG[method]]),**resolved})
     return files,classes,interfaces,skipped
 
 def scan_compose(path):
@@ -110,6 +161,11 @@ def scan_packages(src):
     if not src.exists(): return []
     return [{"name":p.name,"path":p.relative_to(src.parent).as_posix()} for p in sorted(src.iterdir()) if p.is_dir() and (p/"package.xml").exists()]
 
+def name_note(item):
+    if item.get("name_source")=="parameter_default": return f" *(default of `{item['name_parameter']}`)*"
+    if item.get("name_source")=="class_attr": return " *(class attr)*"
+    return ""
+
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--root",type=Path,default=Path("."))
     parser.add_argument("--output",type=Path,default=Path("architecture/inventory.json"))
@@ -126,7 +182,8 @@ def main():
         t=topics[item["name"]]; t["files"].append(item["file"])
         if item["type"]: t["types"].append(item["type"])
         key={"publish":"publishers","subscribe":"subscribers","service":"services","client":"clients","action_client":"actions"}.get(item["kind"])
-        if key: t[key].append({"file":item["file"],"package":item["package"],"node_class":item["node_class"],"line":item["line"]})
+        if key: t[key].append({"file":item["file"],"package":item["package"],"node_class":item["node_class"],"line":item["line"],
+                               **{k:item[k] for k in ("name_source","name_parameter") if k in item}})
     for t in topics.values():
         t["files"]=sorted(set(t["files"])); t["types"]=sorted(set(t["types"]))
     inventory={"schema_version":2,"repository":{"root":str(root)},"containers":compose,"packages":packages,"launches":launches,
@@ -141,8 +198,9 @@ def main():
     lines += [f"- {k}: **{v}**" for k,v in inventory["summary"].items()]
     lines += ["","## Launch nodes","","| Package | Executable | Name | Namespace | File |","|---|---|---|---|---|"]
     for n in launches: lines.append(f"| {n.get('package') or '—'} | {n.get('executable') or '—'} | {n.get('name') or '—'} | {n.get('namespace') or '—'} | {n['file']} |")
-    lines += ["","## ROS interfaces","","| Kind | Name | Type | Package | Node class | File | Line |","|---|---|---|---|---|---|---|"]
-    for i in interfaces: lines.append(f"| {i['kind']} | {i['name']} | {i.get('type') or '—'} | {i.get('package') or '—'} | {i.get('node_class') or '—'} | {i['file']} | {i['line']} |")
+    lines += ["","## ROS interfaces","","Names marked *(default of `p`)* / *(class attr)* are resolved statically and may be overridden at launch.","",
+              "| Kind | Name | Type | Package | Node class | File | Line |","|---|---|---|---|---|---|---|"]
+    for i in interfaces: lines.append(f"| {i['kind']} | {i['name']}{name_note(i)} | {i.get('type') or '—'} | {i.get('package') or '—'} | {i.get('node_class') or '—'} | {i['file']} | {i['line']} |")
     lines += ["","## Architectural classes","","| Class | Node? | Package | File | Bases | Responsibility hint |","|---|:---:|---|---|---|---|"]
     for cls in inventory["classes"]:
         doc=(cls["docstring"] or "—").replace("|","\\|")
