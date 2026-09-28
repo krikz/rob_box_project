@@ -208,6 +208,7 @@ from rob_box_voice.core.identity_ack import (
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.media_router import MediaPlan, MediaRouter, MediaState
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
+from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
 )
@@ -3528,6 +3529,14 @@ class DialogueNode(Node):
         backlog_pending: bool = False,
         utterance_id: str | None = None,
     ) -> None:
+        # Issue #3144 — синтетический ретрай гуарда (Bug D/E, TurnGuards,
+        # tool-skipped, …), отправленный изнутри DJ-автоперехода, остаётся
+        # DJ-автопереходом. Иначе ретрай становился «ходом юзера», промпт
+        # DJ_AUTO — «запросом юзера», и Bug C выжигал бюджет до фразы
+        # «Музыка играет, а вот эту просьбу я выполнить не смог».
+        is_dj_auto = retry_is_dj_auto(
+            is_dj_auto=is_dj_auto, is_synthetic=is_synthetic
+        )
         # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
         # PR-B…F); сигнатура принимает ``occasion``, логирует только при
         # явной передаче. occasion=None → байт-в-байт прежнее поведение.
@@ -4804,6 +4813,9 @@ class DialogueNode(Node):
         if not self._admit_turn_epoch(session_epoch):
             return
         epoch_token = TURN_EPOCH.set(session_epoch)
+        # Issue #3144 — происхождение хода для ретраев гуардов (см.
+        # ``core/turn_origin.py``): ретрай наследует его через контекст.
+        dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
         with self._task_lock:
             self._run_task = asyncio.current_task()
         # Issue #2913 -- решения о речи speak_text -- по этому ходу.
@@ -5091,6 +5103,7 @@ class DialogueNode(Node):
                 tool_retry_dispatched=tool_retry_dispatched,
                 session_handed_over=self._take_session_handover(),
             )
+            TURN_IS_DJ_AUTO.reset(dj_auto_token)
             TURN_EPOCH.reset(epoch_token)
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
@@ -5160,6 +5173,15 @@ class DialogueNode(Node):
                 "post-turn ретраи (music/tool) не диспатчим: ждём ответ человека"
             )
             return False, False
+        if was_dj_auto and not self._dj_session_active():
+            # Issue #3144 — DJ-автопереход, а DJ уже выключен: Bug B
+            # неприменим, а Bug C/tool-skipped читали бы промпт DJ_AUTO
+            # как просьбу юзера (живой прогон 28.09 18:48).
+            self.get_logger().info(
+                "🎧 [issue 3144] DJ-автопереход при выключенном DJ — "
+                "music/tool ретраи не диспатчим: это не ход юзера"
+            )
+            return False, False
         tools_called = result.tools_called if result else ()
         music_retry_dispatched = self._apply_music_guard(
             was_dj_auto=was_dj_auto,
@@ -5188,7 +5210,9 @@ class DialogueNode(Node):
         # ``memory_search`` / ``faq_search``): ОДИН CRITICAL retry с явным
         # указанием нужного tool. Вызывается ПОСЛЕ music guard — чтобы не
         # дублировать retry для пересекающихся случаев.
-        tool_retry_dispatched = self._apply_tool_skipped_guard(
+        # Issue #3144 — на DJ-автопереходе промпт DJ_AUTO не просьба юзера:
+        # tool-skipped (Bug C для не-музыкальных тулов) его не читает.
+        tool_retry_dispatched = (not was_dj_auto) and self._apply_tool_skipped_guard(
             user_input=user_input,
             tools_called=tools_called,
             other_retry_dispatched=music_retry_dispatched,
@@ -6549,7 +6573,8 @@ class DialogueNode(Node):
         assert state is not None  # for type-checkers (init above)
         turn = TurnContext(
             user_input=user_input or "",
-            is_dj_auto=False,
+            # Issue #3144 — происхождение хода, а не константа False.
+            is_dj_auto=TURN_IS_DJ_AUTO.get(),
         )
         reply = TurnReply(
             spoken=spoken or "",
@@ -7158,10 +7183,10 @@ class DialogueNode(Node):
             # общий budget `_synthetic_retries_left` иначе ping-pong
             # DJ_RETRY ↔ babble/code/tool даёт до 9 LLM-вызовов на
             # один переход без единого слова юзера (см. live-логи
-            # #1881). Декремент ДО диспатча, на исчерпании — spoken
-            # nudge, как в USER_RETRY ниже.
+            # #1881). Декремент ДО диспатча. Issue #3144: на исчерпании —
+            # тишина, а не nudge: юзер в этом ходе ничего не просил.
             if not self._consume_synthetic_retry(guard_name="music_dj"):
-                self._speak_music_retry_nudge()
+                self._give_up_dj_transition_silently()
                 return False
             # Помечаем «в этом ходе ретрай уже отправлен» — иначе
             # babble-/tool-guards в следующем цикле guard'ов могут
@@ -7422,6 +7447,25 @@ class DialogueNode(Node):
             self._speak_direct(self.MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT)
             return
         self._speak_direct(self.MUSIC_RETRY_NUDGE_TEXT)
+
+    def _give_up_dj_transition_silently(self) -> None:
+        """Issue #3144 — общий бюджет ретраев кончился на DJ-автопереходе.
+
+        Раньше здесь звучал :meth:`_speak_music_retry_nudge` — «Музыка
+        играет, а вот эту просьбу я выполнить не смог», хотя юзер в этом
+        ходе ничего не просил (живой прогон 28.09 18:48:57). Теперь ход
+        просто молчит (тот же флаг, что у исчерпания Bug B, #2967), а
+        следующий тик DJ попробует снова.
+
+        Ответ из истории НЕ отзываем: DJ-переход ответов в историю не
+        пишет (``AgentCore.process_input``, ``if not is_dj_auto``), и
+        ``discard_last_reply`` снёс бы чужой — последний ответ юзеру.
+        """
+        self.get_logger().warning(
+            "🎧 [issue 3144] бюджет ретраев исчерпан на DJ-автопереходе — "
+            "молчим (никакого «просьбу не смог»: юзер ничего не просил)"
+        )
+        self._dj_giveup_silent_in_turn = True
 
     def _mark_dj_giveup_silent_if_budget_exhausted(
         self, verdict: MusicGuardVerdict
