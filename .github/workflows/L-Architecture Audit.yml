@@ -57,6 +57,15 @@ jobs:
     name: Runtime ROS2 graph (self-hosted)
     runs-on: [self-hosted, Linux, X64, rob-box]
     timeout-minutes: 15
+    # Inputs reach run: scripts only through env, never as expressions inside the script.
+    env:
+      MAIN_HOST: ${{ inputs.main_host }}
+      MAIN_CONTAINER: ${{ inputs.main_container }}
+      VISION_HOST: ${{ inputs.vision_host }}
+      VISION_CONTAINER: ${{ inputs.vision_container }}
+      RUNTIME_USER: ${{ inputs.runtime_user }}
+      RUNTIME_TOPICS: ${{ inputs.runtime_topics }}
+      CAPTURE_VISION: ${{ inputs.capture_vision }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,41 +75,28 @@ jobs:
       - name: Check Pi SSH access
         shell: bash
         env:
-          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
         run: |
           set -euo pipefail
+          if [ -z "${SSHPASS:-}" ]; then
+            echo "::error::Secret ROBOT_SSH_PASS is empty or not set. Add it in Settings -> Secrets and variables -> Actions (robot SSH password for $RUNTIME_USER)."
+            exit 1
+          fi
           if ! command -v sshpass >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -y sshpass
           fi
           command -v sshpass
-          targets=("${{ inputs.runtime_user }}@${{ inputs.main_host }}")
-          if [ "${{ inputs.capture_vision }}" = "true" ]; then
-            targets+=("${{ inputs.runtime_user }}@${{ inputs.vision_host }}")
+          targets=("$RUNTIME_USER@$MAIN_HOST")
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            targets+=("$RUNTIME_USER@$VISION_HOST")
           fi
           for target in "${targets[@]}"; do
             sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$target" "hostname"
           done
           echo "Runner: $(hostname)"
-          echo "Main Pi: ${{ inputs.runtime_user }}@${{ inputs.main_host }}"
-          echo "Vision Pi: ${{ inputs.runtime_user }}@${{ inputs.vision_host }} (capture_vision=${{ inputs.capture_vision }})"
-
-      - name: Check both Pi ROS2 graphs
-        shell: bash
-        env:
-          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
-        run: |
-          set -euo pipefail
-          for spec in \
-            "${{ inputs.main_host }}|${{ inputs.main_container }}" \
-            "${{ inputs.vision_host }}|${{ inputs.vision_container }}"; do
-            host="${spec%%|*}"
-            container="${spec#*|}"
-            echo "=== $host / $container ==="
-            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
-              "${{ inputs.runtime_user }}@$host" \
-              "docker exec '$container' bash -lc 'source /opt/ros/humble/setup.bash && echo ROS2-nodes && ros2 node list && echo ROS2-topics && ros2 topic list >/dev/null && echo ROS2-services && ros2 service list >/dev/null && echo ROS2-actions && ros2 action list >/dev/null'"
-          done
+          echo "Main Pi: $RUNTIME_USER@$MAIN_HOST"
+          echo "Vision Pi: $RUNTIME_USER@$VISION_HOST (capture_vision=$CAPTURE_VISION)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -121,7 +117,7 @@ jobs:
       - name: Capture Pi ROS2 runtime graphs
         shell: bash
         env:
-          SSHPASS: ${{ secrets.ROBOT_SSH_PASS || format('{0}{1}', 'o', 'pen') }}
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
         run: |
           set -euo pipefail
           capture() {
@@ -130,20 +126,20 @@ jobs:
             local output="$3"
             local args=(--output "$output"
                         --remote-host "$host"
-                        --remote-user "${{ inputs.runtime_user }}"
+                        --remote-user "$RUNTIME_USER"
                         --remote-container "$container")
-            if [ -n "${{ inputs.runtime_topics }}" ]; then
-              args+=(--topics "${{ inputs.runtime_topics }}")
+            if [ -n "$RUNTIME_TOPICS" ]; then
+              args+=(--topics "$RUNTIME_TOPICS")
             fi
             python tools/architecture_runtime_snapshot.py "${args[@]}"
           }
           # Both Pis see one shared Zenoh graph (run 36422274238: 52 == 52 == 52
           # nodes), so the Vision Pi capture is opt-in.
-          capture "${{ inputs.main_host }}" "${{ inputs.main_container }}" architecture/runtime-main.json
-          merge_args=(--capture "Main Pi|${{ inputs.main_host }}|${{ inputs.main_container }}|architecture/runtime-main.json")
-          if [ "${{ inputs.capture_vision }}" = "true" ]; then
-            capture "${{ inputs.vision_host }}" "${{ inputs.vision_container }}" architecture/runtime-vision.json
-            merge_args+=(--capture "Vision Pi|${{ inputs.vision_host }}|${{ inputs.vision_container }}|architecture/runtime-vision.json")
+          capture "$MAIN_HOST" "$MAIN_CONTAINER" architecture/runtime-main.json
+          merge_args=(--capture "Main Pi|$MAIN_HOST|$MAIN_CONTAINER|architecture/runtime-main.json")
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            capture "$VISION_HOST" "$VISION_CONTAINER" architecture/runtime-vision.json
+            merge_args+=(--capture "Vision Pi|$VISION_HOST|$VISION_CONTAINER|architecture/runtime-vision.json")
           fi
 
           python tools/architecture_runtime_merge.py --output architecture/runtime.json "${merge_args[@]}"
