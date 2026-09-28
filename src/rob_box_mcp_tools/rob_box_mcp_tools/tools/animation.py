@@ -12,7 +12,7 @@ from typing import List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from std_msgs.msg import String
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..animations import KNOWN_ANIMATIONS, normalize_animation
 
 
@@ -30,7 +30,8 @@ class PlayAnimationTool(MCPTool):
         from std_msgs.msg import String
 
         # Publisher для запроса анимаций
-        self.animation_pub = node.create_publisher(String, "/voice/animation/request", 10)
+        # (issue #3108: общий с SpeakTextTool publisher на этой ноде)
+        self.animation_pub = shared_publisher(node, String, "/voice/animation/request", 10)
 
     @property
     def name(self) -> str:

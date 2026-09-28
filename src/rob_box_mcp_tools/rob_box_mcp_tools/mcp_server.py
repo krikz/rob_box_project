@@ -49,6 +49,7 @@ from rob_box_harness.encounter import EncounterSeam, EncounterChannel
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
 
+from .base import shared_publisher
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -379,9 +380,13 @@ class MCPServer(Node):
         # конца. Единственным местом, которое реально его останавливало,
         # был ``StopMusicTool``. Публикуем те же два топика здесь, а тул
         # теперь делегирует сюда (одна точка правды).
-        self.sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", qos_profile)
-        self.generated_music_state_pub = self.create_publisher(
-            String, "/voice/generated_music/state", qos_profile
+        #
+        # Issue #3108: через shared_publisher — StopMusicTool и
+        # PlayGeneratedMusicTool публикуют в эти же топики на этой же ноде
+        # и получают тот же объект, а не второй/третий writer.
+        self.sound_stop_pub = shared_publisher(self, String, "/voice/sound/stop", qos_profile)
+        self.generated_music_state_pub = shared_publisher(
+            self, String, "/voice/generated_music/state", qos_profile
         )
 
         # Subscriber для запросов на выполнение

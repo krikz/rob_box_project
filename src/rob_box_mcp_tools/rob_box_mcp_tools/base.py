@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 import threading
+import weakref
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,79 @@ def wait_future(future, timeout_sec: float) -> bool:
     event = threading.Event()
     future.add_done_callback(lambda _: event.set())
     return event.wait(timeout=timeout_sec)
+
+
+# ---------------------------------------------------------------------------
+# Общий publisher на (нода, тип, топик, QoS)
+# ---------------------------------------------------------------------------
+
+# node -> {(msg_type, topic): [(qos, publisher), ...]}. Weak — чтобы кэш не
+# держал уничтоженную ноду (в тестах их создаются сотни).
+_SHARED_PUBLISHERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_SHARED_PUBLISHERS_LOCK = threading.Lock()
+
+
+def _normalize_qos(qos: Any) -> Any:
+    """``10`` -> ``QoSProfile(depth=10)``, как это делает сам rclpy.
+
+    ``create_publisher(String, topic, 10)`` и ``create_publisher(String,
+    topic, QoSProfile(RELIABLE, KEEP_LAST, depth=10))`` — один и тот же
+    профиль, но сравнить ``10`` с профилем напрямую нельзя. Без rclpy (или
+    с тестовой заглушкой, которая не умеет так строиться) оставляем как
+    есть: тогда совпадут только буквально равные значения.
+    """
+    if isinstance(qos, int) and not isinstance(qos, bool):
+        try:
+            from rclpy.qos import QoSProfile
+
+            if isinstance(QoSProfile, type):
+                return QoSProfile(depth=qos)
+        except Exception:  # noqa: BLE001 — нет rclpy / заглушка в тестах
+            pass
+    return qos
+
+
+def _qos_equal(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    try:
+        return bool(_normalize_qos(a) == _normalize_qos(b))
+    except Exception:  # noqa: BLE001 — экзотические заглушки
+        return False
+
+
+def shared_publisher(node: Any, msg_type: Any, topic: str, qos: Any) -> Any:
+    """Вернуть единственный publisher ``(msg_type, topic, qos)`` на ``node``.
+
+    Issue #3108: несколько тулов (и сам ``mcp_server``) на одной ноде
+    звали ``create_publisher`` на один и тот же топик — в живом графе у
+    ``mcp_server`` было 3 publisher'а на ``/voice/generated_music/state``
+    и по 2 на ``/voice/animation/request``, ``/voice/sound/stop``,
+    ``/voice/tts/set_provider``. Каждый лишний publisher — отдельный
+    DDS/Zenoh writer и шум в графе. Этот хелпер отдаёт один и тот же
+    объект на повторный запрос.
+
+    Склеиваются только запросы с тем же типом сообщения и эквивалентным
+    QoS. Если QoS отличается — это другой контракт, и молча отдавать чужой
+    publisher нельзя: создаём отдельный (как было до хелпера).
+
+    Если ноду нельзя положить в weak-кэш — просто ``create_publisher``.
+    """
+    with _SHARED_PUBLISHERS_LOCK:
+        try:
+            per_node = _SHARED_PUBLISHERS.setdefault(node, {})
+            entries = per_node.setdefault((msg_type, topic), [])
+        except TypeError:
+            # Нода не hashable / не weakref-able — без кэша, как раньше.
+            entries = None
+        if entries is not None:
+            for cached_qos, pub in entries:
+                if _qos_equal(cached_qos, qos):
+                    return pub
+        pub = node.create_publisher(msg_type, topic, qos)
+        if entries is not None:
+            entries.append((qos, pub))
+        return pub
 
 
 class ToolExecutionType(Enum):
