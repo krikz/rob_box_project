@@ -166,6 +166,12 @@ export interface CaptainBridgeOptions {
    */
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
   /**
+   * Сброс раскладки (R) пересоздал панели с топиками по умолчанию — набор
+   * видеотопиков сцены мог поменяться целиком (#3150: менеджер подписок
+   * должен узнать об этом, иначе подписки остаются на старые топики).
+   */
+  onVideoTopicsReset?(topics: string[]): void;
+  /**
    * AV-27: оператор ткнул лучом в TTS picker (строку/PREVIEW/APPLY/STOP/
    * CLOSE). Сцена не знает ни про WSS, ни про состояние стора — она только
    * сообщает, куда попал луч.
@@ -274,6 +280,14 @@ export interface CaptainBridgeHandle {
   streamsPanel: StreamsPanelHandle;
   /** Перерисовать панель «ПОТОКИ» (и перерегистрировать её кнопки). */
   renderStreams(view: SubscriptionsView): void;
+  /** Показать/скрыть панель «ПОТОКИ» (клавиша P). Возвращает новое состояние. */
+  toggleStreamsPanel(): boolean;
+  isStreamsPanelVisible(): boolean;
+  /**
+   * Поток видеотопика выключен (#3150): `lines` — текст заглушки на всех
+   * экранах этого топика; `null` — поток снова идёт.
+   */
+  setVideoPlaceholder(topic: string, lines: readonly string[] | null): void;
   /**
    * TARS 1 — текстовое полотно (issue #2113, quest #2112). Слева от
    * FRONT CAM, лицом к оператору. Показывает текст, который TARS
@@ -621,6 +635,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   );
   scene.add(mainScreen.mesh);
 
+  // #3150: заглушки «поток выключен» по топику — держим здесь, чтобы
+  // панели, пересозданные syncPanels (сброс раскладки, смена топика),
+  // сразу получали актуальную заглушку, а не чёрный экран до следующего тика.
+  const videoPlaceholders = new Map<string, readonly string[]>();
+
   // Потолочный экран: тот же азимут, что у экрана-стены, но над головой —
   // «смотрю прямо» / «смотрю вверх» повторяет пару камер на роботе.
   // Это фиксированный экран, а не панель PanelManager: панели живут на
@@ -865,6 +884,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         vp.setState(s);
       }
       vp.setLabel(s.topic);
+      vp.setPlaceholder(videoPlaceholders.get(s.topic) ?? null);
       vp.setHighlight(highlightFor(s.id, s.selected));
     }
     for (const [id, vp] of videoPanels.entries()) {
@@ -1049,6 +1069,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     layoutSaver?.cancel();
     panelMgr.resetLayout();
     syncPanels();
+    opts.onVideoTopicsReset?.(videoTopics());
   }
 
   // ---------- меню выбора стрима (R10) ----------
@@ -1108,6 +1129,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     if (next && vp) {
       vp.setState(next);
       vp.setLabel(next.topic);
+      vp.setPlaceholder(videoPlaceholders.get(next.topic) ?? null);
     }
     opts.onPanelTopicChange?.(panelId, oldTopic, topic);
   }
@@ -1224,6 +1246,19 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     const after = floorOverlay.lastMapFrame();
     if (after && after !== before) navLayer.setPose(after.robot);
     return ok;
+  }
+
+  function setVideoPlaceholder(topic: string, lines: readonly string[] | null): void {
+    if (lines) videoPlaceholders.set(topic, lines);
+    else videoPlaceholders.delete(topic);
+    if (topic === MAIN_SCREEN_TOPIC) mainScreen.setPlaceholder(lines);
+    if (topic === CEILING_SCREEN_TOPIC) ceilingScreen.setPlaceholder(lines);
+    for (const vp of videoPanels.values()) if (vp.topic === topic) vp.setPlaceholder(lines);
+  }
+
+  function toggleStreamsPanel(): boolean {
+    streamsPanel.object.visible = !streamsPanel.object.visible;
+    return streamsPanel.object.visible;
   }
 
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
@@ -1430,6 +1465,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     voicePipeline,
     streamsPanel,
     renderStreams,
+    toggleStreamsPanel,
+    isStreamsPanelVisible: () => streamsPanel.object.visible,
+    setVideoPlaceholder,
     tars1Panel,
     tars2Panel,
     setAvailableStreams,

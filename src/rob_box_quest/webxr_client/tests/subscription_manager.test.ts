@@ -4,6 +4,7 @@ import {
   SUBSCRIPTIONS_STORAGE_KEY,
   nextRate,
   parsePersisted,
+  videoPlaceholderLines,
   profileConfig,
   type SubscriptionStorage,
   type SubscriptionTransport
@@ -139,6 +140,59 @@ describe("transport sync", () => {
     expect(m.config("camera_rear")).toBeUndefined();
     expect(t.calls).toEqual(["unsub camera_rear", "sub camera_front 5"]);
     expect(m.topics()[0]).toBe("camera_front");
+  });
+});
+
+describe("layout reset (R) — setVideoTopics", () => {
+  it("new panel topics get subscribed, dropped video topics unsubscribed; non-video untouched", () => {
+    const m = make();
+    const t = new FakeTransport();
+    m.attach(t);
+    t.calls = [];
+    // Панель показывала camera_front (сменили меню), сброс вернул camera_oak_depth.
+    m.replaceTopic("camera_oak_depth", "camera_front", false);
+    t.calls = [];
+    m.setVideoTopics(["camera_rear", "camera_ceiling", "camera_oak_depth"]);
+    expect(t.calls).toEqual(["unsub camera_front", "sub camera_oak_depth -"]);
+    expect(m.topics()).toEqual(["camera_rear", "camera_ceiling", "camera_oak_depth", "lidar_2d", "map_2d", "robot_status", "voice_state"]);
+  });
+
+  it("same set → no traffic, no emit", () => {
+    const m = make();
+    const t = new FakeTransport();
+    m.attach(t);
+    t.calls = [];
+    let emits = 0;
+    m.onChange(() => (emits += 1));
+    m.setVideoTopics(["camera_rear", "camera_ceiling", "camera_oak_depth"]);
+    expect(t.calls).toEqual([]);
+    expect(emits).toBe(0);
+  });
+
+  it("new topic takes the current profile config (Интернет: extra camera off)", () => {
+    const m = make();
+    m.applyProfile("internet");
+    const t = new FakeTransport();
+    m.attach(t);
+    t.calls = [];
+    m.setVideoTopics(["camera_rear", "camera_ceiling", "camera_front"]);
+    expect(m.config("camera_front")).toEqual({ enabled: false, maxHz: null });
+    expect(t.calls).toEqual([]); // oak_depth и так был выключен профилем
+  });
+});
+
+describe("videoPlaceholderLines", () => {
+  it("only for disabled video streams; names the profile and the topic", () => {
+    const m = make();
+    m.applyProfile("minimum");
+    const lines = videoPlaceholderLines(m.view(), "camera_rear")!;
+    expect(lines[0]).toBe("ПОТОК ВЫКЛЮЧЕН");
+    expect(lines.join(" ")).toContain("Минимум");
+    expect(lines.join(" ")).toContain("camera_rear");
+    m.applyProfile("lan");
+    expect(videoPlaceholderLines(m.view(), "camera_rear")).toBeNull();
+    expect(videoPlaceholderLines(m.view(), "lidar_2d")).toBeNull();
+    expect(videoPlaceholderLines(m.view(), "camera_unknown")).toBeNull();
   });
 });
 

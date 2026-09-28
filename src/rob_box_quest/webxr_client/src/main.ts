@@ -15,7 +15,11 @@
 import type * as THREE from "three";
 import { Connection, type ConnectionOptions } from "./wire/connection";
 import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
-import { SubscriptionManager, type SubscriptionStorage } from "./state/subscription_manager";
+import {
+  SubscriptionManager,
+  videoPlaceholderLines,
+  type SubscriptionStorage
+} from "./state/subscription_manager";
 import { parseRobotStatus } from "./scene/status_hud";
 import {
   isUnknownState,
@@ -27,6 +31,7 @@ import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createDesktopWalk, type WalkPose } from "./input/desktop_walk";
+import { bridgeHotkey } from "./input/bridge_hotkeys";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
@@ -441,6 +446,9 @@ export function bootstrap(opts: BootstrapOptions): {
       // и гасит исключение.
       sendCmd({ cmd: "stream_select", topic: newTopic, ts_ms: Date.now() });
     },
+    // issue #3150: сброс раскладки (R) сменил топики панелей — менеджер
+    // подписок переподписывается на новый набор (и снимает старые).
+    onVideoTopicsReset: (topics) => subs.setVideoTopics(topics),
     // issue #3150: панель «ПОТОКИ» — профиль / вкл-выкл / частота.
     onStreamsAction: (action) => {
       if (action.kind === "profile") subs.applyProfile(action.profile);
@@ -714,8 +722,11 @@ export function bootstrap(opts: BootstrapOptions): {
     storage: browserStorage()
   });
   const renderSubs = (): void => {
-    bridge.renderStreams(subs.view());
+    const view = subs.view();
+    bridge.renderStreams(view);
     bridge.statusHud.setBandwidth(subs.totalKbps());
+    // Выключенный видеопоток — заглушка на его экранах, а не замёрзший кадр.
+    for (const t of bridge.videoTopics()) bridge.setVideoPlaceholder(t, videoPlaceholderLines(view, t));
   };
   subs.onChange(renderSubs);
   renderSubs();
@@ -1782,27 +1793,33 @@ export function bootstrap(opts: BootstrapOptions): {
   // пересоздаёт панели). Слушаем на document, чтобы работало и в VR
   // (XR-сессия не глушит document keydown), и в desktop-режиме.
   document.addEventListener("keydown", (ev) => {
-    if (ev.repeat) return;
     const target = ev.target as HTMLElement | null;
     const tag = target?.tagName?.toLowerCase();
     if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
-    if (ev.key === "r" || ev.key === "R") {
-      ev.preventDefault();
-      bridge.resetPanelLayout();
-    }
-    // AV-27: V — открыть/закрыть TTS picker на десктопе. В VR та же
-    // операция делается кликом по вкладке VOICE (клавиатуры там нет).
-    if (ev.key === "v" || ev.key === "V") {
-      ev.preventDefault();
-      toggleTtsPicker();
-    }
-    // #3151: G — взвести/разрядить прицел nav-цели (дальше ЛКМ по полу,
-    // потянуть — курс, отпустить — цель ушла); Shift+G — отменить цель.
-    // В VR то же делает кнопка A/X (см. pollXrNavAim).
-    if (ev.code === "KeyG") {
-      ev.preventDefault();
-      if (ev.shiftKey) bridge.nav.cancel();
-      else bridge.nav.toggleAim();
+    // Раскладка клавиш — input/bridge_hotkeys.ts (сверяется с help_overlay).
+    const action = bridgeHotkey(ev);
+    if (!action) return;
+    ev.preventDefault();
+    switch (action) {
+      case "reset_layout":
+        bridge.resetPanelLayout();
+        break;
+      // AV-27: TTS picker. В VR — кликом по вкладке VOICE (клавиатуры нет).
+      case "tts_picker":
+        toggleTtsPicker();
+        break;
+      // #3151: прицел nav-цели (дальше ЛКМ по полу, потянуть — курс,
+      // отпустить — цель ушла); в VR то же делает A/X (pollXrNavAim).
+      case "nav_aim":
+        bridge.nav.toggleAim();
+        break;
+      case "nav_cancel":
+        bridge.nav.cancel();
+        break;
+      // #3150: панель «ПОТОКИ».
+      case "streams_panel":
+        bridge.toggleStreamsPanel();
+        break;
     }
   });
 
