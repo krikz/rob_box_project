@@ -80,6 +80,8 @@ export const MAIN_SCREEN_SIZE = { width: 4.8, height: 2.7 } as const;
 export const SCREEN_FRAME_DEPTH_M = 0.08;
 /** Зазор между передним кантом рамки и плоскостью видео, м. */
 export const SCREEN_FRAME_GAP_M = 0.01;
+/** Цвет палубы: графит вместо белого металла (см. placeHeroProps). */
+export const DECK_TINT = 0x5c6670;
 /** Потолок metalness рамки (IBL выключен — см. placeHeroProps). */
 const SCREEN_FRAME_MAX_METALNESS = 0.35;
 
@@ -857,6 +859,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   let heroHoloRight: THREE.Group | null = null;
   function placeHeroProps(env: BridgeAssetHandle): void {
     const g = env.groups;
+
+    // Палуба (bridge_floor.glb) — белый металл без карты окружения, на
+    // экране выходила светло-серой плитой: карта и лидар на ней терялись.
+    // Притемняем до графита — голо-слои (карта аддитивная) читаются на ней.
+    g.floor?.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (mat && "color" in mat) {
+        mat.color.setHex(DECK_TINT);
+        mat.needsUpdate = true;
+      }
+    });
 
     // Подиум — под оператором (спавн (0,0,0)), диаметр ~2 м.
     if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, { width: 2 });
