@@ -656,9 +656,9 @@ EVENTS: tuple[EventSpec, ...] = (
             "topic": "str",
             "stream_id": "int",
             "quality": "str",
-            "kind": "str?",}),
+            "kind": "str?", "max_hz": "float?",}),
         subprotocol="any",
-        description="Подтверждение SUBSCRIBE (§6).",
+        description="Подтверждение SUBSCRIBE (§6). max_hz — действующий лимит частоты кадров (issue #3150); поля нет = без лимита.",
     ),
     EventSpec(
         name="subscribe_nack",
