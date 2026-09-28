@@ -12,6 +12,7 @@
 //   - mode_manager — клиентский стор UI-состояния (voice mode / armed / current voice).
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
+import type * as THREE from "three";
 import { Connection, type ConnectionOptions } from "./wire/connection";
 import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
 import { SubscriptionManager, type SubscriptionStorage } from "./state/subscription_manager";
@@ -25,7 +26,7 @@ import {
 import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
-import { createDesktopWalk } from "./input/desktop_walk";
+import { createDesktopWalk, type WalkPose } from "./input/desktop_walk";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
@@ -138,6 +139,11 @@ export function bootstrap(opts: BootstrapOptions): {
    * wake-каналом (true = слушаем, false = подавлено).
    */
   setWakeListen(on: boolean): void;
+  /** Десктопная поза оператора (симулятор: осмотреться без pointer lock). */
+  setWalkPose(pose: Partial<WalkPose>): void;
+  getWalkPose(): WalkPose;
+  /** Сцена мостика — для отладочного хука симулятора (window.__robBoxSim). */
+  readonly scene: THREE.Scene;
   dispose(): void;
 } {
   const url = opts.url ?? deriveWsUrl();
@@ -2017,6 +2023,9 @@ export function bootstrap(opts: BootstrapOptions): {
      * локально. Idempotent.
      */
     setWakeListen,
+    setWalkPose: (pose) => desktopWalk.setPose(pose),
+    getWalkPose: () => desktopWalk.getPose(),
+    scene: bridge.scene,
     dispose(): void {
       document.removeEventListener("keydown", onHotKey);
       stopRender();

@@ -30,6 +30,34 @@ export function mountSimBadge(parent: HTMLElement): HTMLElement {
   return badge;
 }
 
+/** `window.__robBoxSim` — отладочный хук симулятора (только ?sim=1). */
+export interface SimDebugApi {
+  robot: MockRobot;
+  /** Повернуть голову оператора: yaw влево от «на экран-стену», pitch вверх, градусы. */
+  lookAt(yawDeg: number, pitchDeg?: number): void;
+  /** Переставить оператора по мостику (x/z сцены, м). */
+  teleport(x: number, z: number): void;
+  /** Сцена мостика (осмотр объектов из консоли). */
+  scene: ReturnType<typeof bootstrap>["scene"];
+}
+
+export function createSimDebugApi(
+  robot: MockRobot,
+  handle: Pick<ReturnType<typeof bootstrap>, "setWalkPose" | "scene">
+): SimDebugApi {
+  const rad = (deg: number): number => (deg * Math.PI) / 180;
+  return {
+    robot,
+    scene: handle.scene,
+    lookAt(yawDeg: number, pitchDeg = 0): void {
+      handle.setWalkPose({ yaw: rad(yawDeg), pitch: rad(pitchDeg) });
+    },
+    teleport(x: number, z: number): void {
+      handle.setWalkPose({ x, z });
+    }
+  };
+}
+
 export function startSim(
   opts: Omit<BootstrapOptions, "WebSocketCtor" | "url" | "pin">,
   simOpts: { latencyMs?: number } = {}
@@ -50,7 +78,8 @@ export function startSim(
   const badge = mountSimBadge(opts.statusEl.parentElement ?? opts.body);
   document.title = `SIM · ${document.title}`;
   // Для отладки из консоли: window.__robBoxSim.robot.state и т.п.
-  (window as unknown as { __robBoxSim?: unknown }).__robBoxSim = { robot };
+  // lookAt/teleport — осмотреть мостик без pointer lock (скриншоты, ревью).
+  (window as unknown as { __robBoxSim?: SimDebugApi }).__robBoxSim = createSimDebugApi(robot, handle);
   // Сабмит через форму — тот же путь, что у человека (валидация PIN,
   // openConnection, попытка авто-входа в VR).
   opts.pinInput.value = SIM_PIN;
