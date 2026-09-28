@@ -1,0 +1,198 @@
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "style": {
+      "type": "string",
+      "enum": [
+        "club"
+      ]
+    },
+    "bpm": {
+      "type": "number",
+      "minimum": 60.0,
+      "maximum": 180.0
+    },
+    "root": {
+      "type": "string",
+      "enum": [
+        "C",
+        "C#",
+        "D",
+        "D#",
+        "E",
+        "F",
+        "F#",
+        "G",
+        "G#",
+        "A",
+        "A#",
+        "B"
+      ]
+    },
+    "scale": {
+      "type": "string",
+      "enum": [
+        "minor"
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "form": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "type": "string",
+          "enum": [
+            "dj_dave_32",
+            "lofi_froos",
+            "drop_first_32",
+            "long_build_32"
+          ]
+        }
+      },
+      "required": [
+        "template"
+      ],
+      "additionalProperties": false
+    },
+    "progression": {
+      "type": "string",
+      "enum": [
+        "VI-III-VII-i",
+        "i-VI-III-VII",
+        "i-VII-VI-VII",
+        "i-iv-VI-v",
+        "VI-VII-i-i"
+      ]
+    },
+    "groove": {
+      "type": "object",
+      "properties": {
+        "kick": {
+          "type": "string",
+          "enum": [
+            "by_design",
+            "four_on_floor",
+            "half_time",
+            "breakbeat",
+            "outrun"
+          ]
+        },
+        "hats": {
+          "type": "string",
+          "enum": [
+            "by_design",
+            "offbeat",
+            "eighths",
+            "shuffle"
+          ]
+        }
+      },
+      "required": [
+        "kick",
+        "hats"
+      ],
+      "additionalProperties": false
+    },
+    "timbre": {
+      "type": "object",
+      "properties": {
+        "lead": {
+          "type": "string",
+          "enum": [
+            "pluck",
+            "blip",
+            "arpy",
+            "karp",
+            "marimba"
+          ]
+        },
+        "bass": {
+          "type": "string",
+          "enum": [
+            "bass",
+            "retrobass",
+            "dub"
+          ]
+        },
+        "pad": {
+          "type": "string",
+          "enum": [
+            "sinepad",
+            "warmpad",
+            "space"
+          ]
+        }
+      },
+      "required": [
+        "lead",
+        "bass",
+        "pad"
+      ],
+      "additionalProperties": false
+    },
+    "levels": {
+      "type": "object",
+      "properties": {
+        "kick": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "hats": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "clap": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "bass": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "lead": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "pad": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    }
+  },
+  "required": [
+    "version",
+    "style",
+    "bpm",
+    "root",
+    "scale",
+    "seed",
+    "form",
+    "progression",
+    "groove",
+    "timbre"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrackSpec"
+}

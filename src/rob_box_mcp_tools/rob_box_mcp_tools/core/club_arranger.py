@@ -428,17 +428,76 @@ def render_club(
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
-    kit = club_kit(seed, template, kick)
-    template, kick = kit["template"], kit["kick"]
+    return render_club_kit(
+        club_kit(seed, template, kick), bpm=bpm, root=root, scale=scale,
+        seed=seed, repeat=repeat, align_clock=align_clock,
+    )
+
+
+def _validate_kit(kit: Mapping[str, str]) -> None:
+    """Каркас из явной спеки (issue #3136): ключи и значения — только из палитры."""
+    if kit.get("hats") not in HATS_PATTERNS:
+        raise ValueError(f"Неизвестный рисунок хэтов {kit.get('hats')!r} (допустимо: {', '.join(HATS_PATTERNS)})")
+    for role, synths in ROLE_SYNTHS.items():
+        if kit.get(role) not in synths:
+            raise ValueError(f"Синт {kit.get(role)!r} не из палитры роли {role} (допустимо: {', '.join(synths)})")
+
+
+def _pick_progression(rng: random.Random, name: Optional[str]) -> Tuple[str, Tuple[Chord, ...]]:
+    """Прогрессия: по сиду или по имени. Сид расходуется ВСЕГДА — риф тот же."""
+    seeded = PROGRESSIONS[rng.randrange(len(PROGRESSIONS))]
+    if name is None:
+        return seeded
+    for entry in PROGRESSIONS:
+        if entry[0] == name:
+            return entry
+    raise ValueError(f"Неизвестная прогрессия {name!r} (допустимо: {', '.join(n for n, _ in PROGRESSIONS)})")
+
+
+def _layer_level(lane: str, levels: Optional[Mapping[str, float]]) -> float:
+    """Уровень гейта слоя: LAYER_LEVELS × множитель 0..1 (``None`` — как есть)."""
+    if not levels or lane not in levels:
+        return LAYER_LEVELS[lane]
+    factor = levels[lane]
+    if isinstance(factor, bool) or not isinstance(factor, (int, float)) or not 0.0 <= factor <= 1.0:
+        raise ValueError(f"Множитель уровня {lane}={factor!r} вне 0..1")
+    return LAYER_LEVELS[lane] * float(factor)
+
+
+def render_club_kit(
+    kit: Mapping[str, str],
+    *,
+    bpm: float = 124,
+    root: str = "A#",
+    scale: str = "minor",
+    seed: int = 0,
+    progression: Optional[str] = None,
+    levels: Optional[Mapping[str, float]] = None,
+    repeat: bool = False,
+    align_clock: bool = False,
+) -> str:
+    """Собрать клубный трек по ЯВНОМУ каркасу (issue #3136, ADR-0142 §4).
+
+    ``kit`` — как у :func:`club_kit`: template, kick, hats, lead, bass, pad.
+    ``seed`` задаёт риф (и прогрессию, если ``progression=None``);
+    ``progression`` — имя из :data:`PROGRESSIONS`; ``levels`` — множители
+    0..1 к :data:`LAYER_LEVELS` по слоям. Без ``progression``/``levels``
+    и с ``kit=club_kit(seed)`` результат побайтно равен ``render_club(seed=seed)``.
+
+    Raises:
+        ValueError: значение вне палитры или вне диапазона.
+    """
+    template, kick = kit.get("template"), kit.get("kick")
     _validate(bpm, root, scale, template, kick)
+    _validate_kit(kit)
     matrix = build_matrix(template)
     rng = random.Random(seed)
-    prog_name, chords = PROGRESSIONS[rng.randrange(len(PROGRESSIONS))]
+    prog_name, chords = _pick_progression(rng, progression)
     riff = riff_indices(rng)
     tonic = VALID_ROOTS.index(root)
     kick_pattern = KICK_PATTERNS[kick]
     pump = _fmt_list(pump_weights(kick_pattern))
-    gate = {lane: matrix.gate_var(lane, LAYER_LEVELS[lane]) for lane in LANE_SLOTS}
+    gate = {lane: matrix.gate_var(lane, _layer_level(lane, levels)) for lane in LANE_SLOTS}
 
     bass = " + ".join(
         f"[({n}, {n + 12})] * {CHORD_STEPS}" for n in (bass_root(tonic, c) for c in chords)
@@ -513,4 +572,5 @@ __all__ = [
     "predrop_runs",
     "pump_weights",
     "render_club",
+    "render_club_kit",
 ]
