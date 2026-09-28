@@ -40,6 +40,7 @@
 | main perception | ❌ apt-cacher-ng 503 | 108945295791 |
 | main twist-mux / rsp / lslidar / ros2-control | ✅ 4 / 2,5 / 8 / 11 мин — **кеш-промах** (см. §2.1) | 108945295646 и др. |
 | vision voice-base | ❌ apt-cacher-ng `Hash Sum mismatch` на `ros-humble-builtin-interfaces_1.2.3-1jammy.20260907.203343_arm64.deb` | 108945302234 |
+| main nav2 | ❌ тот же `Hash Sum mismatch` на `ros-humble-ompl_1.7.0-4jammy.20260306.230109_arm64.deb` (ожидался SHA256 `514402c1…`, получен `5e87c7fe…`, размер 2328172 у обоих), apt шёл 23 мин | 108945295845 |
 | vision oak-d / led-matrix / supercollider | ✅ | — |
 | main lslidar, ros2-control, teleop, twist-mux, nav2, robot-state-publisher | ⏳ шли | — |
 | vision (10 сервисов) | ⏳ led-matrix, supercollider стартовали, остальные в очереди | — |
@@ -136,7 +137,11 @@ for c in $(docker ps --format '{{.Names}}' | grep -i runner); do echo "== $c"; d
 ```
 
 ```bash
-# 6. Hash Sum mismatch (voice-base): найти и удалить устаревшую копию
+# 6. Hash Sum mismatch (voice-base, nav2): устаревшие копии пакетов packages.ros.org в кеше
+#    прокси. Два файла известны, скорее всего их больше — разумнее прогнать штатную
+#    чистку apt-cacher-ng (acngtool maint / expire в веб-морде /acng-report.html)
+#    или удалить весь каталог packages.ros.org в кеше.
+docker exec build-apt-cache sh -c 'find /var/cache/apt-cacher-ng -name "ros-humble-ompl_1.7.0-4jammy.20260306.230109_arm64.deb*"'
 docker exec build-apt-cache sh -c 'find /var/cache/apt-cacher-ng -name "ros-humble-builtin-interfaces_1.2.3-1jammy.20260907.203343_arm64.deb*"'
 #    ожидаемый SHA256 c9129ec0…, отданный 42b16a31… — сверить sha256sum найденного файла, удалить
 ```
