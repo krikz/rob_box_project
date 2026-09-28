@@ -29,7 +29,6 @@
     "/rtabmap/map": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
     "/rosout": "Встроенный топик логов ROS2 — публикуется рантаймом rclpy/rclcpp у КАЖДОГО узла автоматически, никогда через явный create_publisher(...). Подписчики (health_monitor.py, context_aggregator_node.py) легитимны.",
     "/sensors/motor_state/front_left": "Публикует vesc_nexus (VESC motor controller driver, src/vesc_nexus — git submodule, в этом чекауте не выкачан; сообщение vesc_msgs.VescStateStamped). Подписка в quest_node.py обёрнута в try/except ImportError на случай отсутствия vesc_msgs.",
-    "/device/snapshot": "Публикует ESP32 sensor hub через micro-ROS мост (прошивка/железо, вне Python-скана src/). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py.",
-    "/voice/state": "Известное расхождение имён, уже задокументированное в ADR-0027 #2 и явно помеченное комментарием в arbiter_node.py (\"НЕ /voice/state\") — реальный топик состояния диалога называется /voice/dialogue/state, а led_node.py всё ещё подписан на старое имя /voice/state. Не чиним в рамках этого PR (сторож сообщает, не чинит, issue #2118), баселайним и оставляем явную ссылку, чтобы не выглядело неизвестной находкой."
+    "/device/snapshot": "Публикует ESP32 sensor hub через micro-ROS мост (прошивка/железо, вне Python-скана src/). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py."
   }
 }

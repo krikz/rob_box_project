@@ -418,6 +418,60 @@ def named_entries(
     }
 
 
+def base_image_entries(
+    manifest: dict[str, Any], *, ros_distro: str | None = None
+) -> dict[str, list[dict[str, str]]]:
+    """Базовые образы (секция `base_images`) — {имя: [элемент]}.
+
+    Форма та же, что у `named_entries` (chained): в "L-Build Base Images.yml"
+    по именованному job'у на образ (pcl `needs:` ros2-zenoh), а каждый job
+    берёт свой элемент по ИМЕНИ. Набор ключей — как у `matrix_entry`, чтобы
+    композит и scripts/build/build.sh звались одинаково для базы и сервиса.
+    """
+    defaults = manifest.get("defaults") or {}
+    section = manifest.get("base_images") or {}
+    images = section.get("images") or {}
+    if not images:
+        raise ManifestError("manifest has no base_images.images")
+    distro = ros_distro or defaults["ros_distro"]
+    ghcr = section["registry"]["ghcr"]
+    local = defaults["base_registry"]
+    apt_proxy = defaults["apt_proxy"]
+    context = section.get("build_context", "docker/base")
+
+    result: dict[str, list[dict[str, str]]] = {}
+    for name, img in images.items():
+        depends_on = img.get("depends_on") or []
+        for dep in depends_on:
+            if dep not in images:
+                raise ManifestError(
+                    f"base_images.images.{name}: depends_on references unknown image {dep!r}"
+                )
+        build_args = [f"BASE_IMAGE={local}:{dep}-{distro}-latest" for dep in depends_on]
+        build_args.append(f"APT_PROXY={apt_proxy}")
+        result[name] = [
+            {
+                "name": name,
+                "dockerfile": img["dockerfile"],
+                "build_context": img.get("build_context", context),
+                "tags": "\n".join(
+                    [
+                        f"{ghcr}:{name}-{distro}-latest",
+                        f"{local}:{name}-{distro}-latest",
+                        f"{local}:{name}-{distro}",
+                    ]
+                ),
+                "build_args": "\n".join(build_args),
+                "submodule_sha": "",
+                "source_hash_arg": "",
+                "source_hash_spec": "",
+                "pre_build": "",
+                "depends_on": " ".join(depends_on),
+            }
+        ]
+    return result
+
+
 def image_versions_tags(
     services: dict[str, Any], ctx: BuildContext
 ) -> list[tuple[str, str]]:
@@ -451,14 +505,14 @@ def _build_cli() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pi",
-        required=True,
+        required=False,  # обязателен для всех режимов, кроме base (проверка в main)
         choices=["vision", "main"],
         help="Для какого Pi генерировать вывод",
     )
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["matrix", "chained", "tags", "services"],
+        choices=["matrix", "chained", "tags", "services", "base"],
         help=(
             "matrix — сервисы вне графа зависимостей, элементы для "
             "strategy.matrix.include; "
@@ -466,7 +520,9 @@ def _build_cli() -> argparse.ArgumentParser:
             "зависимостей; "
             "tags — {ИМЯ_ПЕРЕМЕННОЙ: имя_сервиса} для .image-versions.* "
             "(с --format shell — строки `ПЕРЕМЕННАЯ <tag>`); "
-            "services — все сервисы Pi (для сводки в summary-job'е)"
+            "services — все сервисы Pi (для сводки в summary-job'е); "
+            "base — {имя: [элемент]} базовых образов (секция base_images, "
+            "--pi не нужен)"
         ),
     )
     parser.add_argument(
@@ -510,6 +566,13 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_cli().parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
+        if args.mode == "base":
+            # Базовые образы не привязаны к Pi и не несут docker_tag.
+            bases = base_image_entries(manifest, ros_distro=args.ros_distro)
+            print(json.dumps(bases, ensure_ascii=False))
+            return 0
+        if not args.pi:
+            raise ManifestError(f"--mode {args.mode} requires --pi")
         services = services_for_pi(manifest, args.pi)
 
         needs_tag = args.mode in ("matrix", "chained") or (

@@ -12,9 +12,7 @@
     "/dialogue/control_ack",
     "/perception/health",
     "/sensors/data",
-    "/tts/speak",
     "/voice/audio/speech",
-    "/voice/stt/request",
     "/voice/stt/state",
     "~/status"
   ],

@@ -697,13 +697,11 @@ class SpeakTextTool(MCPTool):
 class ListenForResponseTool(MCPTool):
     """Инструмент для ожидания ответа пользователя."""
 
-    def __init__(self, node):
-        super().__init__(node)
-        # Динамический импорт во время выполнения
-        from std_msgs.msg import String
-
-        # Publisher для запроса активации STT
-        self.stt_request_pub = node.create_publisher(String, "/voice/stt/request", 10)
+    # Issue #3107: the tool used to publish ``listen:<timeout>`` on
+    # ``/voice/stt/request``, which no node has ever subscribed to (stt_node
+    # listens continuously). The real effect lives in the caller:
+    # dialogue_node leaves the agent loop when it sees a
+    # ``listen_for_response`` tool result and keeps the dialogue open.
 
     @property
     def name(self) -> str:
@@ -745,14 +743,6 @@ class ListenForResponseTool(MCPTool):
 
         if prompt_text:
             self.log_info(f"Подсказка: {prompt_text}")
-
-        # Публикуем запрос на активацию STT
-        from std_msgs.msg import String
-        msg = String()
-        msg.data = f"listen:{timeout_seconds}"
-        self.stt_request_pub.publish(msg)
-
-        self.log_info("STT активирован для ожидания ответа")
 
         return MCPToolResult(
             success=True,

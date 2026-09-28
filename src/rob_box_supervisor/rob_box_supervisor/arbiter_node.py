@@ -96,6 +96,7 @@ import time
 from typing import Any, Callable, Optional
 
 import rclpy
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import String as RosString
@@ -479,7 +480,10 @@ class AvatarArbiter(Node):
 
         # Subscriptions — на Phase 1 только регистрируем callback-и и
         # обновляем aggregator. Полный IDL / парсинг msg — Phase 2.
-        self.create_subscription(RosString, self.ODOM_TOPIC, self._on_odom_msg, 10)
+        # /odom публикует /rtabmap/icp_odometry как nav_msgs/Odometry — тип
+        # подписки обязан совпадать, иначе DDS/Zenoh не свяжет endpoint-ы
+        # и callback не вызовется никогда (issue #3104).
+        self.create_subscription(Odometry, self.ODOM_TOPIC, self._on_odom_msg, 10)
         self.create_subscription(
             RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10
         )
@@ -968,15 +972,20 @@ class AvatarArbiter(Node):
         self._teleop_lock_pub.publish(msg)
 
     # ── subscription callbacks (Phase 1: best-effort parse) ──────────
-    def _on_odom_msg(self, msg: RosString) -> None:
-        """Обработать ``/odom``. Phase 1 — парсим минимум (x, y) из JSON."""
-        data = self._try_parse_json(msg.data)
-        if not isinstance(data, dict):
+    def _on_odom_msg(self, msg: Odometry) -> None:
+        """Обработать ``/odom`` (``nav_msgs/Odometry``). Phase 1 — только (x, y).
+
+        Берём ``msg.pose.pose.position.x/y``. Раньше здесь был JSON в
+        ``std_msgs/String`` — такого издателя на роботе нет (issue #3104).
+        """
+        try:
+            position = msg.pose.pose.position
+            x = float(position.x)
+            y = float(position.y)
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._log.warning(f"avatar_arbiter: malformed /odom message skipped: {type(exc).__name__}: {exc}")
             return
-        x = data.get("x")
-        y = data.get("y")
-        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
-            self._aggregator.update_odom(x, y)
+        self._aggregator.update_odom(x, y)
 
     def _on_device_snapshot_msg(self, msg: RosString) -> None:
         """Обработать ``/device/snapshot``. Phase 1 — battery_pct."""

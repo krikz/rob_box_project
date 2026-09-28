@@ -37,21 +37,24 @@ if [ ! -f "$WORKFLOW" ]; then
 fi
 
 BACKUP="$(mktemp)"
-trap 'cp "$BACKUP" "$WORKFLOW" && rm -f "$BACKUP"' EXIT
+# stderr — во временный файл, не в cwd: иначе локальный прогон
+# (scripts/ci/run_workflow_job.py) оставлял err.txt в корне репо.
+ERR_FILE="$(mktemp)"
+trap 'cp "$BACKUP" "$WORKFLOW" && rm -f "$BACKUP" "$ERR_FILE"' EXIT
 cp "$WORKFLOW" "$BACKUP"
 
 # Case 1: pre-fix state (remove rob_box_quest from --packages-up-to)
 echo "--- Case 1: rob_box_quest missing from --packages-up-to ---"
 sed -i 's| rob_box_quest| |g' "$WORKFLOW"
 set +e
-"$SCRIPT" >/dev/null 2>err.txt
+"$SCRIPT" >/dev/null 2>"$ERR_FILE"
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
-    echo "❌ expected non-zero exit, got 0"; cat err.txt; exit 1
+    echo "❌ expected non-zero exit, got 0"; cat "$ERR_FILE"; exit 1
 fi
-if ! grep -q "rob_box_quest" err.txt; then
-    echo "❌ stderr doesn't mention rob_box_quest"; cat err.txt; exit 1
+if ! grep -q "rob_box_quest" "$ERR_FILE"; then
+    echo "❌ stderr doesn't mention rob_box_quest"; cat "$ERR_FILE"; exit 1
 fi
 echo "  ✅ returned non-zero + mentions rob_box_quest"
 
@@ -61,14 +64,14 @@ cp "$BACKUP" "$WORKFLOW"
 echo "--- Case 2: rob_box_core missing pytest header ---"
 sed -i '/=== pytest: rob_box_core/d' "$WORKFLOW"
 set +e
-"$SCRIPT" >/dev/null 2>err.txt
+"$SCRIPT" >/dev/null 2>"$ERR_FILE"
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
-    echo "❌ expected non-zero exit, got 0"; cat err.txt; exit 1
+    echo "❌ expected non-zero exit, got 0"; cat "$ERR_FILE"; exit 1
 fi
-if ! grep -q "rob_box_core" err.txt; then
-    echo "❌ stderr doesn't mention rob_box_core"; cat err.txt; exit 1
+if ! grep -q "rob_box_core" "$ERR_FILE"; then
+    echo "❌ stderr doesn't mention rob_box_core"; cat "$ERR_FILE"; exit 1
 fi
 echo "  ✅ returned non-zero + mentions rob_box_core"
 

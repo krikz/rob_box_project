@@ -102,6 +102,33 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: 1 такт = 4 бита в дефолтном метре Renardo (``TempoClock.bar_length()``).
 BEATS_PER_BAR = 4
 
+#: Issue #3112: ``Clock.set_time`` ставит клок в середину такта за 2 доли до
+#: начала формы — ``next_bar()`` тогда даёт ровно k·F при любом сдвиге
+#: ``nudge`` в (-2, +2) долей (``_now`` считает время с nudge, а ``set_time``
+#: пишет ``bpm_start_time`` без него). Живёт здесь, а не в
+#: ``core/clock_phase``: модуль грузится ``tools/gen_tool_catalog.py`` как
+#: отдельный файл, без пакета — относительные импорты ему запрещены.
+ALIGN_LEAD_BEATS = 2
+
+
+def clock_align_prelude(form_total_beats: int) -> str:
+    """Строка Renardo, ставящая клок так, что ``next_bar()`` = k·F (issue #3112).
+
+    Цель ``T = ((now + 2) // F + 1) * F - 2``: всегда ``T > now`` (прыжок
+    только вперёд), ``T ≡ -2 (mod F)``. Обоснование —
+    ``docs/design/2026-09-28-music-clock-phase-3112.md``.
+
+    Raises:
+        ValueError: F не положительно или не кратно такту (тогда
+            ``next_bar`` не может совпасть с началом формы).
+    """
+    total = int(form_total_beats)
+    if total <= 0 or total % BEATS_PER_BAR:
+        raise ValueError(f"длина формы {form_total_beats!r} не кратна такту {BEATS_PER_BAR}")
+    lead = ALIGN_LEAD_BEATS
+    return f"Clock.set_time(((Clock.now() + {lead}) // {total} + 1) * {total} - {lead})"
+
+
 #: Роль -> (имя плеера, октава, базовая амплитуда).
 #:
 #: Плееры удержаны в d1-d3 / p1-p3 — это ограничение деплоя (d4+/p4+ на
@@ -923,9 +950,13 @@ def form_duration_seconds(
         Длительность в секундах: ``total_bars * BEATS_PER_BAR * 60 / bpm``.
     """
     clamped_bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(bpm)))
+    return form_total_beats(name, theme_bars) * 60.0 / clamped_bpm
+
+
+def form_total_beats(name: Optional[str], theme_bars: int = 0) -> int:
+    """Длина одного прохода формы в долях — та же, что в ``Clock.future`` :func:`render`."""
     plan = resolve_form(name, theme_bars)
-    total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
-    return total_beats * 60.0 / clamped_bpm
+    return sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
 
 
 def _section_intensity(role: str, intensities: Dict[str, float]) -> float:
@@ -1965,8 +1996,14 @@ def _append_layer_lines(
     return count
 
 
-def render(spec: CompositionSpec) -> str:
+def render(spec: CompositionSpec, *, align_clock: bool = False) -> str:
     """Развернуть спецификацию в Renardo-код с формой.
+
+    Args:
+        align_clock: issue #3112 — сразу после ``Clock.clear()`` вставить
+            :func:`core.arranger.clock_align_prelude`, чтобы форма
+            стартовала с позиции 0, а не с ``доля_клока mod длина_формы``.
+            По умолчанию выключено (флаг окружения читает ``tools/music.py``).
 
     Returns:
         Многострочный Renardo-код, готовый для ``execute_music_code``.
@@ -1984,7 +2021,14 @@ def render(spec: CompositionSpec) -> str:
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     total_beats = total_bars * BEATS_PER_BAR
 
-    lines: List[str] = ["Clock.clear()", f"Clock.bpm = {_fmt(bpm)}"]
+    lines: List[str] = ["Clock.clear()"]
+    end_beats = total_beats
+    if align_clock:
+        # #3112: строго между clear и ``Clock.bpm =`` — ``set_time`` чистит
+        # очередь, а смена темпа планируется в неё (TempoClock.py:420, 235).
+        lines.append(clock_align_prelude(total_beats))
+        end_beats += ALIGN_LEAD_BEATS
+    lines.append(f"Clock.bpm = {_fmt(bpm)}")
 
     if spec.swing > 0:
         # #1806 — ровные восьмые не читаются как джаз/блюз/шафл ни при
@@ -2049,7 +2093,7 @@ def render(spec: CompositionSpec) -> str:
     if not spec.repeat:
         # Функция, а не lambda: lambda режется AST-фильтром, а Clock.clear
         # передаётся как объект и вызывается планировщиком.
-        lines.append(f"Clock.future({total_beats}, Clock.clear)")
+        lines.append(f"Clock.future({end_beats}, Clock.clear)")
 
     return "\n".join(lines)
 

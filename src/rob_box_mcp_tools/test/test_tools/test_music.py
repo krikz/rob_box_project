@@ -4572,6 +4572,13 @@ class TestSetDjModeSetLimits:
         payload, _ = self._published_payload(enabled=True, next_transition_sec=45)
         assert "max_minutes" not in payload
         assert "max_tracks" not in payload
+        # Issue #3113: темп сета уходит только по явной просьбе.
+        assert "bpm" not in payload
+
+    def test_set_bpm_reaches_payload(self):
+        """Issue #3113 — set_dj_mode(bpm=...) несёт темп сета в DJModeController."""
+        payload, _ = self._published_payload(enabled=True, next_transition_sec=45, bpm=128)
+        assert payload["bpm"] == 128
 
 
 @pytest.mark.unit
@@ -4641,3 +4648,53 @@ class TestComposeMusicToolClubStyle:
         result = preview.execute(style="club")
         assert result.success is False
         assert "style=classic" in result.error
+
+    # ── Issue #3113: переход fade вместо жёсткой склейки ──────────────
+
+    def test_club_fade_wraps_render_club_code(self, mock_node):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+        from rob_box_mcp_tools.core.club_transition import fade_seconds, wrap_with_fade
+
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", root="C", seed=3, repeat=True, transition="fade")
+        assert result.success is True, result.error
+        executed = fake_exec.call_args[0][0]
+        assert executed == wrap_with_fade(render_club(bpm=124, root="C", scale="minor", seed=3, repeat=True))
+        assert result.data["transition"] == "fade"
+        assert result.data["duration_seconds"] == pytest.approx(128 * 60 / 124 + fade_seconds(124), abs=0.1)
+        assert "Переход fade" in result.message
+        # transition не считается «проигнорированным» параметром club
+        assert "Проигнорировано" not in result.message
+
+    def test_club_default_transition_is_cut(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=1)
+        assert result.data["transition"] == "cut"
+        assert "Master()" not in fake_exec.call_args[0][0]
+
+    def test_unknown_transition_is_honest_error(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", transition="crossfade")
+        assert result.success is False
+        assert "transition" in result.error and "crossfade" in result.error
+        fake_exec.assert_not_called()
+
+    def test_classic_with_fade_plays_and_says_fade_unsupported(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        kwargs = TestComposeMusicToolFormDeadline._COMMON_KWARGS
+        with patch("builtins.exec") as fake_plain:
+            tool.execute(**kwargs)
+        with patch("builtins.exec") as fake_fade:
+            result = tool.execute(transition="fade", **kwargs)
+        assert result.success is True, result.error
+        assert fake_fade.call_args[0][0] == fake_plain.call_args[0][0]
+        assert "transition=fade есть только у style=club" in result.message
+
+    def test_transition_in_schema(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        param = next(p for p in tool.parameters if p.name == "transition")
+        assert param.enum == ["cut", "fade"]
+        assert param.required is False
