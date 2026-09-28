@@ -682,4 +682,38 @@ def test_publish_music_form_is_null_when_no_active_form(monkeypatch):
     module.MCPServer.publish_music_state(server)
 
     payload = json.loads(server.music_form_pub.published[0])
-    assert payload == {"form_ends_at": None, "playing": False}
+    # Issue #3113: + stops_at (остановка конечного трека) — тоже null.
+    assert payload == {"form_ends_at": None, "playing": False, "stops_at": None}
+
+
+@pytest.mark.unit
+def test_publish_music_form_carries_finite_track_stop_as_epoch(monkeypatch):
+    """Issue #3113 — ``stops_at``: когда конечный (repeat=False) трек замолчит.
+
+    Живой прогон 28.09: DJ-переход ждал конца формы Star Wars (141 с), и
+    между треками было ~15 с тишины. dialogue_node назначает переход
+    раньше ``stops_at``; значение, как и ``form_ends_at``, — epoch.
+    """
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 1.0,
+        "form_cycle_remaining_s": 141.0,
+        "form_stop_remaining_s": 141.0,
+    }
+    server._music_manager = manager
+
+    before = module.time.time()
+    module.MCPServer.publish_music_state(server)
+    after = module.time.time()
+
+    payload = json.loads(server.music_form_pub.published[0])
+    assert before + 141.0 <= payload["stops_at"] <= after + 141.0 + 1.0
+
+    manager.get_state.return_value["form_stop_remaining_s"] = None  # repeat=True
+    module.MCPServer.publish_music_state(server)
+    assert json.loads(server.music_form_pub.published[1])["stops_at"] is None

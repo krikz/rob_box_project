@@ -48,6 +48,25 @@ CLUB_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 #: ``scale="minor"``, поэтому «родственная» здесь = квинтовый сосед.
 KEY_WALK = (0, 7, 0, 5)
 
+# Issue #3113 (живой прогон 28.09, ~15 с тишины между треками): конечный
+# (``repeat=False``) трек сам замолкает ``Clock.future(..., Clock.clear)``,
+# а переход ждал конца его формы и только ПОТОМ звал модель. Переход к
+# такому треку назначается заранее — на время хода модели и фейда.
+#: Бюджет хода модели на переходе, с. Живой лог 28.09: auto-transition →
+#: compose_music за 3-13 с (с ретраем Bug B).
+DJ_TURN_BUDGET_S = 20.0
+#: Длина фейда перехода в тактах — ``core.club_transition.FADE_BARS`` в
+#: rob_box_mcp_tools (+1 такт до границы, как ``fade_seconds``).
+DJ_FADE_BARS = 8
+#: Минимум, который конечный трек звучит до раннего перехода, с (короткий
+#: заказ юзера не должен уйти в фейд сразу после старта).
+DJ_MIN_TRACK_PLAY_S = 30.0
+
+
+def finite_form_lead_s(bpm: float) -> float:
+    """За сколько секунд до остановки конечного трека звать переход."""
+    return DJ_TURN_BUDGET_S + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
+
 
 def related_root(set_root: str, track_no: int) -> str:
     """Тоника трека ``track_no`` (с 1) в сете с тоникой ``set_root``.
@@ -121,6 +140,13 @@ class DJState:
     # тоника (``""`` — ещё не выбрана) — от эпохи старта сета.
     set_bpm: int = DJ_SET_DEFAULT_BPM
     set_root: str = ""
+    # Issue #3113 — когда конечный (``repeat=False``) трек замолчит, epoch
+    # (``stops_at`` из ``/voice/music/form``; ``None`` — зациклен/нет данных),
+    # когда это значение впервые пришло, и для какого ``stops_at`` ранний
+    # переход уже был (второй раз на ту же форму не стреляем).
+    form_stops_at: Optional[float] = None
+    form_stops_seen_at: float = 0.0
+    early_transition_for: Optional[float] = None
 
 
 @dataclass
@@ -387,6 +413,8 @@ class DJModeController:
         self.state.persona = ""
         # Issue #2461 — не тащить дедлайн формы прошлого сета в следующий.
         self.state.form_ends_at = None
+        self.state.form_stops_at = None
+        self.state.early_transition_for = None
         # Issue #2856 — лимиты и отсчёт времени принадлежат одному сету.
         self.state.started_at = 0.0
         self.state.last_transition_at = 0.0
@@ -485,6 +513,9 @@ class DJModeController:
         form_ends_at = self.state.form_ends_at
         if form_ends_at is not None and form_ends_at > now:
             gate_at = max(gate_at, form_ends_at)
+        early_for = self._early_gate(now)
+        if early_for is not None:
+            gate_at = min(gate_at, early_for[0])
         if now < gate_at:
             return
         # Don't interrupt an active dialogue or sound playback.
@@ -513,10 +544,51 @@ class DJModeController:
         self.state.transition_count = next_n
         self.state.last_transition_at = now
         self.state.next_transition_at = now + self.FALLBACK_INTERVAL_S
+        if early_for is not None and now >= early_for[0]:
+            self.state.early_transition_for = early_for[1]
+            self._logger.info(
+                f"🎧 DJ переход раньше остановки конечного трека "
+                f"(замолчит через {early_for[1] - now:.0f}с)"
+            )
         self._logger.info(f"🎧 DJ auto-transition #{next_n}")
         # Issue #992 Bug B — ``from_tick=True`` lets the dispatcher
         # reset its synchronous-retry budget for this fresh transition.
         self._hook.dispatch(self.build_auto_prompt(next_n), True)
+
+    def note_form_stop(self, stops_at: Any) -> None:
+        """Issue #3113 — ``stops_at`` из ``/voice/music/form`` (epoch или null)."""
+        if not isinstance(stops_at, (int, float)) or isinstance(stops_at, bool):
+            self.state.form_stops_at = None
+            return
+        previous = self.state.form_stops_at
+        if previous is None or abs(float(stops_at) - previous) > 2.0:
+            # Новая конечная форма (значение пересчитывается при каждой
+            # публикации — дрожит на миллисекунды, поэтому допуск 2 с).
+            self.state.form_stops_seen_at = self._clock()
+        self.state.form_stops_at = float(stops_at)
+
+    def _early_gate(self, now: float) -> Optional[tuple]:
+        """``(момент раннего перехода, stops_at)`` или ``None``.
+
+        Конечный трек замолкает сам; переход, назначенный на конец формы,
+        давал тишину на время хода модели и фейда (живой прогон 28.09:
+        Star Wars 141 с, переход через 146 с, ~15 с тишины). Переход к
+        такому треку — за :func:`finite_form_lead_s` до остановки, но не
+        раньше :data:`DJ_MIN_TRACK_PLAY_S` от старта трека и не второй раз
+        на ту же форму. Зацикленные треки (``stops_at`` = ``None``) — как
+        раньше, по концу формы.
+        """
+        stops_at = self.state.form_stops_at
+        if stops_at is None or stops_at <= now:
+            return None
+        done = self.state.early_transition_for
+        if done is not None and abs(done - stops_at) <= 2.0:
+            return None
+        at = max(
+            stops_at - finite_form_lead_s(self.state.set_bpm),
+            self.state.form_stops_seen_at + DJ_MIN_TRACK_PLAY_S,
+        )
+        return min(at, stops_at), stops_at
 
     def _should_stop(self, next_n: int, plan_tracks: int) -> bool:
         """True — сет исчерпан, переход ``next_n`` не играть, а выключить DJ."""

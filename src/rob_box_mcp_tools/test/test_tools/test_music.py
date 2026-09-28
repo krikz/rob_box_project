@@ -4745,6 +4745,39 @@ class TestComposeMusicToolClubStyle:
         # transition не считается «проигнорированным» параметром club
         assert "Проигнорировано" not in result.message
 
+    def test_fade_falls_back_to_cut_when_finite_track_ends_first(self, mock_node):
+        """Issue #3113: уходящий repeat=False-трек замолчит раньше конца фейда —
+        его Clock.clear снял бы запланированный старт нового трека. Тогда cut."""
+        import time as _time
+
+        tool, mgr = self._make_tool(mock_node)
+        mgr._music_form_deadline_at = _time.monotonic() + 5.0
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=3, repeat=True, transition="fade")
+        assert result.success is True, result.error
+        assert "Master()" not in fake_exec.call_args[0][0]
+        assert result.data["transition"] == "cut"
+        assert "Переход cut вместо fade" in result.message
+
+    def test_fade_kept_when_finite_track_outlives_the_fade(self, mock_node):
+        import time as _time
+
+        tool, mgr = self._make_tool(mock_node)
+        mgr._music_form_deadline_at = _time.monotonic() + 100.0
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=3, repeat=True, transition="fade")
+        assert "Master()" in fake_exec.call_args[0][0]
+        assert result.data["transition"] == "fade"
+
+    def test_state_reports_finite_stop_only_for_repeat_false(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(style="club", seed=1)
+        assert mgr.get_state()["form_stop_remaining_s"] == pytest.approx(128 * 60 / 124, abs=1.0)
+        with patch("builtins.exec"):
+            tool.execute(style="club", seed=1, repeat=True)
+        assert mgr.get_state()["form_stop_remaining_s"] is None
+
     def test_club_default_transition_is_cut(self, mock_node):
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec") as fake_exec:

@@ -1419,6 +1419,22 @@ class MusicManager:
         """
         self._music_form_cycle_ends_at = time.monotonic() + max(0.0, float(duration_seconds))
 
+    def form_stop_remaining_s(self) -> Optional[float]:
+        """Issue #3113 — сколько секунд до ОСТАНОВКИ конечного трека.
+
+        Только ``repeat=False`` (код трека кончается ``Clock.future(...,
+        Clock.clear)``, :meth:`set_form_deadline`); зацикленный трек сам не
+        замолкает — ``None``. Живой прогон 28.09: DJ-переход ждал конца такой
+        формы, и между треками было ~15 с тишины; dialogue_node получает это
+        значение (как epoch) в ``/voice/music/form`` и назначает переход
+        раньше остановки.
+        """
+        deadline = self._music_form_deadline_at
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        return remaining if remaining > 0 else None
+
     def clear_form_deadline(self) -> None:
         """Снять защиту «форма ещё не доиграла» (issue #1812).
 
@@ -2034,6 +2050,9 @@ class MusicManager:
                 if self._music_form_cycle_ends_at is not None
                 else None
             ),
+            # Issue #3113 — остаток до остановки конечного (repeat=False)
+            # трека; ``None`` — зацикленный трек или ничего не играет.
+            "form_stop_remaining_s": self.form_stop_remaining_s(),
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -3849,6 +3868,9 @@ class ComposeMusicTool(MCPTool):
             )
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
+        fade_note = self._fade_outlives_form(bpm) if fade else ""
+        if fade_note:
+            fade = False
         if fade:
             # Issue #3113: фейд уходящего трека вместо жёсткой склейки
             # (core/club_transition). Дедлайн формы — с запасом на фейд.
@@ -3873,6 +3895,14 @@ class ComposeMusicTool(MCPTool):
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
         result["club_kit"] = kit
+        message = self._club_message(kwargs, result, duration_s, fade) + fade_note
+        return MCPToolResult(success=True, data=result, message=message)
+
+    def _club_message(
+        self, kwargs: Dict[str, Any], result: Dict[str, Any], duration_s: float, fade: bool,
+    ) -> str:
+        """Текст ответа club: предупреждение (если есть) — ПЕРВЫМ."""
+        kit = result["club_kit"]
         message = (
             f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд, "
             f"шаблон {kit['template']}, бочка {kit['kick']}, "
@@ -3885,11 +3915,46 @@ class ComposeMusicTool(MCPTool):
                 "стартует после фейда (если ничего не играло — сразу)."
             )
         warning = self._club_ignored_warning(kwargs, result)
-        if warning:
-            # Issue #3113 (живой прогон 28.09): хвост «Проигнорировано …» в
-            # конце ответа модель не замечала — предупреждение идёт ПЕРВЫМ.
-            message = warning + " " + message
-        return MCPToolResult(success=True, data=result, message=message)
+        # Issue #3113 (живой прогон 28.09): хвост «Проигнорировано …» в
+        # конце ответа модель не замечала — предупреждение идёт ПЕРВЫМ.
+        return f"{warning} {message}" if warning else message
+
+    def _fade_outlives_form(self, bpm: float) -> str:
+        """Issue #3113: фейд длиннее остатка конечного уходящего трека → cut.
+
+        Уходящий ``repeat=False``-трек сам вызовет ``Clock.clear`` в конце
+        формы (``Clock.future(..., Clock.clear)``), а ``TempoClock.clear()``
+        чистит и очередь — запланированный фейдом старт нового трека
+        (``Clock.schedule(_rbx_next_track, ...)``) пропал бы, и музыка
+        замолчала бы совсем. Длина фейда — в долях ТЕКУЩЕГО клока (темп
+        уходящего трека); клок недоступен — темп нового трека.
+
+        Returns:
+            Пояснение для ответа (переход будет cut) или ``""`` — фейд можно.
+        """
+        getter = getattr(self._manager, "form_stop_remaining_s", None)
+        try:
+            remaining = getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001 — не мешаем музыке
+            remaining = None
+        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+            return ""
+        clock_bpm = getattr(self._clock_or_none(), "bpm", None)
+        old_bpm = clock_bpm if isinstance(clock_bpm, (int, float)) and clock_bpm > 0 else bpm
+        need = fade_seconds(old_bpm)
+        if remaining >= need:
+            return ""
+        return (
+            f" Переход cut вместо fade: играющий трек сам кончается через {remaining:.0f} с, "
+            f"а фейд занял бы {need:.0f} с — новый трек стартовал сразу, без тишины."
+        )
+
+    def _clock_or_none(self) -> Any:
+        getter = getattr(self._manager, "renardo_clock", None)
+        try:
+            return getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            return None
 
     def _club_ignored_warning(self, kwargs: Dict[str, Any], result: Dict[str, Any]) -> str:
         """Что из вызова club НЕ сыграл — текст для начала ответа (или ``""``)."""

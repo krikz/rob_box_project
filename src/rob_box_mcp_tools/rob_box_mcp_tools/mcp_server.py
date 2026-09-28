@@ -205,10 +205,25 @@ def _music_form_ends_at_epoch(state: Dict[str, Any]) -> Optional[float]:
     стенное время, а не ``time.monotonic()`` из процесса mcp_server
     (несопоставим с dialogue_node — см. docstring ``publish_music_state``).
     """
-    remaining_s = state.get("form_cycle_remaining_s")
-    if not isinstance(remaining_s, (int, float)) or remaining_s <= 0:
+    return _remaining_to_epoch(state.get("form_cycle_remaining_s"))
+
+
+def _remaining_to_epoch(remaining_s: Any) -> Optional[float]:
+    if not isinstance(remaining_s, (int, float)) or isinstance(remaining_s, bool) or remaining_s <= 0:
         return None
     return time.time() + float(remaining_s)
+
+
+def _music_form_stops_at_epoch(state: Dict[str, Any]) -> Optional[float]:
+    """Issue #3113 — когда конечный (``repeat=False``) трек ЗАМОЛЧИТ, epoch.
+
+    ``form_ends_at`` — конец прохода формы для любого трека (зацикленный
+    играет дальше), а ``stops_at`` — только для трека, который сам
+    остановится ``Clock.future(..., Clock.clear)``. DJModeController
+    назначает переход раньше ``stops_at``, иначе между треками тишина
+    (живой прогон 28.09: ~15 с). ``None`` — трек зациклен или ничего нет.
+    """
+    return _remaining_to_epoch(state.get("form_stop_remaining_s"))
 
 
 def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
@@ -933,6 +948,8 @@ class MCPServer(Node):
         form_msg.data = json.dumps({
             "form_ends_at": _music_form_ends_at_epoch(state),
             "playing": playing,
+            # Issue #3113: когда конечный трек замолчит (DJ-переход раньше).
+            "stops_at": _music_form_stops_at_epoch(state),
         })
         form_pub.publish(form_msg)
 
