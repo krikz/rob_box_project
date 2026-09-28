@@ -18,6 +18,8 @@ import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud"
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
 import { createPointerBeam, type PointerBeamHandle } from "../interaction/pointer_beam";
 import { resizeSize } from "../interaction/pointer_math";
+import { createNavLayer, type NavLayerHandle } from "../nav/nav_layer";
+import type { NavCancelCmd, NavGoalCmd } from "../wire/protocol_generated";
 import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
 import { createTtsPickerMenu, type TtsPickerMenuHandle } from "./tts_picker_menu";
 import { parseTtsTargetId, type TtsPickerState, type TtsPickerTarget } from "../state/tts_picker_state";
@@ -168,6 +170,14 @@ export interface CaptainBridgeOptions {
    */
   onPipelineAction?(action: VoicePipelineAction): void;
   /**
+   * #3151: навигационный слой просит отправить nav_goal / nav_cancel.
+   * `false` — связи нет (слой скажет оператору, что команда не ушла).
+   * Сцена транспорта не знает — как у остальных панелей.
+   */
+  onNavCommand?(cmd: NavGoalCmd | NavCancelCmd): boolean;
+  /** #3151: короткое уведомление навигационного слоя (тост). */
+  onNavNotify?(text: string, level: "info" | "warn"): void;
+  /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
    * (e.g. unit tests that only exercise panels/LiDAR).
@@ -286,6 +296,11 @@ export interface CaptainBridgeHandle {
   updatePointer(ray: PointerRay | null): void;
   /** Слой указателя — сюда регистрируются будущие кликабельные объекты. */
   pointer: PointerSystem;
+  /**
+   * #3151: навигационный слой на полу — путь Nav2 (nav_path), след робота,
+   * nav-цель лучом (прицел A/X или G), кнопка отмены, строка NAV на HUD.
+   */
+  nav: NavLayerHandle;
   /**
    * Каталог доступных стримов (из `stream_list`) — наполняет меню выбора
    * стрима, которое всплывает по клику на панель.
@@ -443,6 +458,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     handlers: {
       onHover: () => refreshHighlights(),
       onSelect: (id) => {
+        // #3151: кнопка отмены nav-цели (nav:*).
+        if (id.startsWith("nav:")) {
+          navLayer.handleSelect(id);
+          return;
+        }
         // W6-2: клик по панели голосового пайплайна (vpl:*) — раньше
         // всего остального: его цели на том же слое указателя.
         const pipelineTarget = parsePipelineTargetId(id);
@@ -663,6 +683,16 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Зеркально ARM-индикатору — левый верх стены-экрана.
   const statusHud = createStatusHud();
   scene.add(statusHud.sprite);
+
+  // #3151: навигационный слой (путь Nav2, след, nav-цель, отмена). Кормится
+  // позой из map_2d (ingestMapFrame) и лучом указателя (updatePointer).
+  const navLayer: NavLayerHandle = createNavLayer({
+    send: (cmd) => opts.onNavCommand?.(cmd) ?? false,
+    onStatusLine: (line) => statusHud.setNav(line),
+    notify: (text, level) => opts.onNavNotify?.(text, level),
+    pointer
+  });
+  scene.add(navLayer.overlay.object);
 
   // Voice state indicator (AV-20): центр стены над экраном, между
   // status_hud и arm-sprite. Позиция (0, 2.85, -3.85) — выше main screen
@@ -1030,6 +1060,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     });
     pointer.update(ray);
     pointerBeam.update(ray, pointer.getHit());
+    // #3151: жест nav-цели. Панель/кнопка под лучом приоритетнее пола.
+    navLayer.updatePointer(ray, pointer.getHit().id !== null);
   }
 
   // ---------- AV-27: TTS picker (3D-меню выбора голоса) ----------
@@ -1110,7 +1142,13 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   function ingestMapFrame(payload: Uint8Array): boolean {
-    return floorOverlay.ingestMapPayload(payload);
+    const before = floorOverlay.lastMapFrame();
+    const ok = floorOverlay.ingestMapPayload(payload);
+    // #3151: поза робота → навигационный слой. Только из НОВОГО кадра:
+    // битый кадр не должен освежать старую позу.
+    const after = floorOverlay.lastMapFrame();
+    if (after && after !== before) navLayer.setPose(after.robot);
+    return ok;
   }
 
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
@@ -1270,6 +1308,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     floorOverlay.dispose();
+    navLayer.dispose();
     streamMenu?.dispose();
     ttsPicker.dispose();
     pointerBeam.dispose();
@@ -1310,6 +1349,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     resetPanelLayout,
     updatePointer,
     pointer,
+    nav: navLayer,
     supervisorPanel,
     voicePipeline,
     tars1Panel,

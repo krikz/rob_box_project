@@ -80,6 +80,7 @@ import {
 import type { JsonEvent, VoiceInfo, VoicePreset } from "./wire/messages";
 import type { JsonCmd } from "./wire/messages";
 import { buildVoicePipelineCmd } from "./wire/voice_pipeline_cmd";
+import { createEdge, navAimPressed } from "./nav/nav_xr_input";
 
 const CLIENT_VERSION = "0.1.0";
 // AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
@@ -96,6 +97,9 @@ const DEFAULT_VOICE_LANGUAGE: VoiceLanguage = "ru";
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
 const NON_VIDEO_TOPICS = ["lidar_2d", "map_2d", "robot_status", "voice_state"];
+// #3151: путь Nav2 на полу (0x1104). Отдельной константой — чтобы правка
+// списка выше соседними карточками не конфликтовала с этой.
+NON_VIDEO_TOPICS.push("nav_path");
 
 interface BootstrapOptions {
   url?: string;
@@ -417,6 +421,11 @@ export function bootstrap(opts: BootstrapOptions): {
     // AV-27: клик по TTS picker'у. Сцена уже открыла/закрыла меню сама,
     // здесь остаётся то, что требует сокета и стора.
     onTtsPickerAction: (action) => handleTtsPickerAction(action),
+    // #3151: nav_goal / nav_cancel из навигационного слоя (жест лучом по
+    // полу, кнопка отмены, Shift+G). sendCmd объявлен ниже — вызов только
+    // по действию оператора, к тому времени bootstrap уже прошёл.
+    onNavCommand: (cmd) => sendCmd(cmd),
+    onNavNotify: (text, level) => toast.show(text, { level, autoHideMs: 4000 }),
     // Клик по кнопке панели супервизора (R14): маппим action → JSON_CMD.
     onSupervisorAction: (action) => {
       if (!conn || disconnected) return;
@@ -1265,6 +1274,8 @@ export function bootstrap(opts: BootstrapOptions): {
             void exitVr();
           } else if (state === "reconnecting") {
             setStatus("RECONNECTING…", "connecting");
+            // #3151: статус nav-цели после разрыва — не факт (ADR-0018).
+            bridge.nav.onDisconnected();
             // Старый RTT после разрыва — враньё: обнуляем до первого pong.
             bridge.statusHud.setRtt(null);
             // AV-19: на reconnect FSM предполагает «оптимистично» hasFloor=true;
@@ -1296,6 +1307,7 @@ export function bootstrap(opts: BootstrapOptions): {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
             setStatus("CLOSED", "lost");
+            bridge.nav.onDisconnected(); // #3151
             bridge.statusHud.setRtt(null);
             disconnected = true;
             // AV-19: сброс FSM-state и тостов.
@@ -1356,6 +1368,11 @@ export function bootstrap(opts: BootstrapOptions): {
             bridge.lidar.ingestPayload(payload);
             return;
           }
+          if (topic === "nav_path") {
+            // #3151: глобальный путь Nav2 — светящаяся линия на полу.
+            bridge.nav.ingestPathPayload(payload);
+            return;
+          }
           if (topic === "map_2d") {
             // SLAM-карта под ногами. Битый кадр (или кадр без позы робота)
             // просто пропускается — карта декорация пола, не телеметрия.
@@ -1411,6 +1428,8 @@ export function bootstrap(opts: BootstrapOptions): {
           // первым и не мешаем обработчикам ниже: voice_set_ack нужен
           // обоим — picker'у и панели пресетов AV-28.
           handleVoiceEvent(event as JsonEvent);
+          // #3151: nav_goal_ack / nav_goal_nack / nav_status / nav_cancel_ack.
+          if (bridge.nav.handleEvent(event)) return;
           // AV-18: ack/nack панели режимов — у них свои типы событий,
           // ниже по функции их уже не ждут.
           const t = (event as { type?: string }).type;
@@ -1714,6 +1733,14 @@ export function bootstrap(opts: BootstrapOptions): {
       ev.preventDefault();
       toggleTtsPicker();
     }
+    // #3151: G — взвести/разрядить прицел nav-цели (дальше ЛКМ по полу,
+    // потянуть — курс, отпустить — цель ушла); Shift+G — отменить цель.
+    // В VR то же делает кнопка A/X (см. pollXrNavAim).
+    if (ev.code === "KeyG") {
+      ev.preventDefault();
+      if (ev.shiftKey) bridge.nav.cancel();
+      else bridge.nav.toggleAim();
+    }
   });
 
   // ---- Teleop loop -----------------------------------------------------------
@@ -1865,6 +1892,7 @@ export function bootstrap(opts: BootstrapOptions): {
       const xrFrame = (_time: DOMHighResTimeStamp, frame: XRFrame): void => {
         if (!xr.isActive()) return;
         tickTeleop();
+        pollXrNavAim();
         // Луч указателя — из targetRaySpace активного контроллера.
         bridge.updatePointer(
           refSpace ? xrPointer.ray(frame, refSpace, xrInputSources) : null
@@ -1876,6 +1904,12 @@ export function bootstrap(opts: BootstrapOptions): {
       // eslint-disable-next-line no-console
       console.warn("[quest] requestSession failed:", err);
     }
+  }
+
+  // #3151: A/X (любая рука) — взвести/разрядить прицел nav-цели.
+  const xrNavAimEdge = createEdge();
+  function pollXrNavAim(): void {
+    if (xrNavAimEdge(navAimPressed(xrInputSources))) bridge.nav.toggleAim();
   }
 
   async function exitVr(): Promise<void> {
