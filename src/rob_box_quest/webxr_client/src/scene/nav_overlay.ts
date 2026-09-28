@@ -30,6 +30,18 @@ const PREVIEW_COLOR = 0xffffff;
 /** id цели указателя для кнопки отмены (prefix `nav:` — маршрутизация в captain_bridge). */
 export const NAV_CANCEL_TARGET_ID = "nav:cancel";
 
+/**
+ * Где висит кнопка «ОТМЕНА НАВ»: по центру, сразу за кромкой подиума
+ * (радиус 1 м), низко — под нижним краем экрана-стены из глаз оператора
+ * (≈ 35° вниз против ≈ 20° у низа видео) и между голо-проекторами
+ * (x = ±1, z = −1.8 — ≈ 29° по азимуту, кнопка — ±13°). Раньше стояла на
+ * (−0.75, 1.0, −1.25) и налезала на левый проектор.
+ */
+export const NAV_CANCEL_POS = { x: 0, y: 0.75, z: -1.2 } as const;
+export const NAV_CANCEL_SIZE = { width: 0.56, height: 0.14 } as const;
+/** Высота глаз оператора — кнопка развёрнута нормалью к ним. */
+const NAV_CANCEL_EYE_Y = 1.6;
+
 export interface NavPin {
   point: SceneXz;
   /** Поворот вокруг +Y сцены (nav_frames.mapYawToSceneRotY). */
@@ -155,11 +167,12 @@ function createCancelButton(): { mesh: THREE.Mesh; texture: THREE.Texture | null
   } else {
     material.color.set(PATH_COLOR);
   }
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.56, 0.14), material);
-  // Слева-спереди на уровне пояса, чуть развёрнута к оператору: рядом с
-  // полом, где цель, но не под ногами и не на пути луча к экрану-стене.
-  mesh.position.set(-0.75, 1.0, -1.25);
-  mesh.rotation.y = 0.5;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(NAV_CANCEL_SIZE.width, NAV_CANCEL_SIZE.height), material);
+  // Как пульт: наклонена к глазам (нормаль → (0, EYE, 0)), читается при
+  // взгляде вниз-вперёд на пол, где лежит путь и цель.
+  const p = NAV_CANCEL_POS;
+  mesh.position.set(p.x, p.y, p.z);
+  mesh.rotation.x = -Math.atan2(NAV_CANCEL_EYE_Y - p.y, -p.z);
   mesh.renderOrder = 12;
   mesh.visible = false;
   return { mesh, texture };
