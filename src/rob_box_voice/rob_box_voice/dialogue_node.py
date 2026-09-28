@@ -7288,11 +7288,12 @@ class DialogueNode(Node):
     def _media_state(self) -> MediaState:
         """ЕДИНСТВЕННЫЙ аксессор состояния плеера для роутера медиакоманд.
 
-        Источники сегодня: «играет» — :meth:`_music_playing_now` (флаг,
-        который гасит ``/voice/music/state`` = idle), название трека —
-        последний ``track`` из ``/voice/music/form``, DJ — ``DJState``.
-        Когда плеер станет владельцем состояния (#3133, ADR-0141, JSON в
-        ``/voice/music/state``), источник меняется здесь и только здесь.
+        Источники: «играет» — :meth:`_music_playing_now`, то есть снимок
+        плеера ``/voice/music/state`` (#3133, ADR-0141,
+        ``MusicPlayerState.is_playing``); название трека — последний
+        ``track`` из ``/voice/music/form`` (в снимке плеера только
+        непрозрачный ``track_id``); DJ — ``DJState``. Роутер других
+        источников не читает: сменить источник — здесь и только здесь.
         """
         dj = getattr(self, "_dj", None)
         playing = self._music_playing_now()

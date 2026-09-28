@@ -21,6 +21,7 @@ from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
 from rob_box_voice.core.media_router import DJ_START_TRANSITION_SEC, NOTHING_PLAYING_TEXT
+from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
 
@@ -63,7 +64,8 @@ def _make_node(*, playing=False, dj=False, track=None, fail=False, state_name="I
     n._speak_direct = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
-    n._track_mode_music_active = playing
+    # Снимок плеера /voice/music/state (#3133) — источник «играет».
+    n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
     n._music_form_track = track
     n._scheduler_executor = _FakeExecutor(fail=fail)
     n._loop = MagicMock()
@@ -265,5 +267,6 @@ def test_media_state_is_the_single_accessor():
     assert (state.music_playing, state.dj_enabled, state.track_name) == (
         True, True, "Still Dre"
     )
-    n._track_mode_music_active = False
+    n._music_player_state = MusicPlayerState(state="idle")
+    assert n._media_state().music_playing is False
     assert n._media_state().track_name is None  # название — только пока играет

@@ -61,8 +61,8 @@ class MediaState:
     """Снимок состояния плеера на момент реплики.
 
     Attributes:
-        music_playing: играет ли музыка (сейчас — ``_music_playing_now``,
-            после #3133 — плеер-владелец, ADR-0141).
+        music_playing: играет ли музыка — снимок плеера
+            (``_music_playing_now``, #3133 / ADR-0141).
         dj_enabled: идёт ли DJ-сет.
         track_name: название играющего трека, если известно.
     """
@@ -247,8 +247,8 @@ def _volume_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
 
 
 def _stop_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
-    # stop_music идемпотентен — зовём и в «тишине»: флаг «играет» пока
-    # догадка (П1), лишний стоп дешевле недовыключенной музыки.
+    # stop_music идемпотентен — зовём и в «тишине»: mp3 из библиотеки и
+    # опоздавший снимок плеера не должны оставить музыку недовыключенной.
     active = media.music_playing or media.dj_enabled
     return MediaPlan(
         command=command,
