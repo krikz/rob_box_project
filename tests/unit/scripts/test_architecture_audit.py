@@ -1,5 +1,8 @@
 """Tests for tools/architecture_audit.py and tools/architecture_runtime_diff.py.
 
+Also issue #3108: publishers created through shared_publisher(node, Type,
+"topic", qos) must still count as publish (topic = arg 2, type = arg 1).
+
 Before: 580 of 942 scanned files and 1939 of 2577 classes were tests, the
 compose list named a missing docker/quest file and skipped docker/monitoring
 (docker/build is CI infrastructure and stays out),
@@ -8,6 +11,7 @@ and runtime_diff wrote runtime-diff.json to a fixed path.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -129,3 +133,64 @@ def test_runtime_diff_writes_json_where_asked(tmp_path):
     result = json.loads((tmp_path / "x/diff.json").read_text(encoding="utf-8"))
     assert result["static_not_runtime"] == ["/a"] and result["runtime_not_static"] == ["/c"]
     assert not (tmp_path / "architecture").exists()
+
+
+spec = importlib.util.spec_from_file_location("architecture_audit", AUDIT)
+audit = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+spec.loader.exec_module(audit)
+
+
+def _scan(tmp_path: Path, rel: str, content: str) -> list[dict]:
+    src = tmp_path / "src"
+    path = src / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    _files, _classes, interfaces, _skipped = audit.scan_python(src)
+    return interfaces
+
+
+def test_create_publisher_still_counted(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "pkg/pkg/node.py",
+        "class N(Node):\n"
+        "    def __init__(self):\n"
+        "        self.create_publisher(String, '/a', 10)\n"
+        "        self.create_subscription(String, '/b', self.cb, 10)\n",
+    )
+    got = sorted((i["kind"], i["name"], i["type"], i["node_class"]) for i in interfaces)
+    assert got == [("publish", "/a", "String", "N"), ("subscribe", "/b", "String", "N")]
+
+
+def test_shared_publisher_bare_and_attribute_calls_count_as_publish(tmp_path):
+    interfaces = _scan(
+        tmp_path,
+        "rob_box_mcp_tools/rob_box_mcp_tools/tools/t.py",
+        "from ..base import shared_publisher\n"
+        "from .. import base\n"
+        "class Tool:\n"
+        "    def __init__(self, node):\n"
+        "        self.a = shared_publisher(node, String, '/voice/animation/request', 10)\n"
+        "        self.b = base.shared_publisher(node, std_msgs.msg.String, '/voice/tts/set_provider', 10)\n",
+    )
+    got = sorted((i["kind"], i["name"], i["type"]) for i in interfaces)
+    assert got == [
+        ("publish", "/voice/animation/request", "String"),
+        ("publish", "/voice/tts/set_provider", "std_msgs.msg.String"),
+    ]
+
+
+def test_shared_publisher_helper_body_and_short_calls_are_ignored(tmp_path):
+    # The helper's own ``node.create_publisher(msg_type, topic, qos)`` has a
+    # non-literal topic and must not produce an entry; a malformed call with
+    # too few args must not crash the scan.
+    interfaces = _scan(
+        tmp_path,
+        "rob_box_mcp_tools/rob_box_mcp_tools/base.py",
+        "def shared_publisher(node, msg_type, topic, qos):\n"
+        "    return node.create_publisher(msg_type, topic, qos)\n"
+        "def f(node):\n"
+        "    shared_publisher(node, String)\n",
+    )
+    assert interfaces == []

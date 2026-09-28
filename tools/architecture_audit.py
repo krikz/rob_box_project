@@ -9,6 +9,12 @@ import yaml
 SKIP_DIRS={".git",".venv","venv","__pycache__","build","install","log","node_modules",".mypy_cache",".pytest_cache"}
 ROS_CALLS={"create_subscription":"subscribe","create_publisher":"publish","create_service":"service","create_client":"client","create_action_client":"action_client"}
 ROS_NAME_ARG={name:1 for name in ROS_CALLS}
+ROS_TYPE_ARG={name:0 for name in ROS_CALLS}
+# Wrappers around create_publisher with signature (node, msg_type, topic, qos);
+# matched both as a bare name and as an attribute call (issue #3108).
+ROS_HELPER_CALLS={"shared_publisher":"publish"}
+ROS_NAME_ARG.update({name:2 for name in ROS_HELPER_CALLS})
+ROS_TYPE_ARG.update({name:1 for name in ROS_HELPER_CALLS})
 NODE_BASES={"Node","LifecycleNode","ComposableNode"}
 # Tests and examples are not architecture: 580 of 942 files / 1939 of 2577 classes were tests.
 # Same rule as architecture_class_metrics.TEST_PATH.
@@ -58,14 +64,17 @@ def scan_python(src):
         files.append({"path":rel,"package":package,"node_classes":sorted(node_classes)})
         for call in [x for x in ast.walk(tree) if isinstance(x,ast.Call)]:
             method=call.func.attr if isinstance(call.func,ast.Attribute) else None
-            if method not in ROS_CALLS or len(call.args)<=ROS_NAME_ARG[method]: continue
+            if method not in ROS_CALLS and method not in ROS_HELPER_CALLS:
+                method=call.func.id if isinstance(call.func,ast.Name) and call.func.id in ROS_HELPER_CALLS else None
+            if method is None or len(call.args)<=ROS_NAME_ARG[method]: continue
+            kind=ROS_CALLS.get(method) or ROS_HELPER_CALLS[method]
             name=literal(call.args[ROS_NAME_ARG[method]])
             if not isinstance(name,str): continue
             owner=None
             candidates=[(end-line,cls_name) for line,end,cls_name,is_node in class_by_line if is_node and line<=call.lineno<=end]
             if candidates: owner=min(candidates)[1]
-            interfaces.append({"kind":ROS_CALLS[method],"name":name,"file":rel,"line":call.lineno,
-                               "package":package,"node_class":owner,"type":dotted_name(call.args[0]) if call.args else None})
+            interfaces.append({"kind":kind,"name":name,"file":rel,"line":call.lineno,
+                               "package":package,"node_class":owner,"type":dotted_name(call.args[ROS_TYPE_ARG[method]])})
     return files,classes,interfaces,skipped
 
 def scan_compose(path):

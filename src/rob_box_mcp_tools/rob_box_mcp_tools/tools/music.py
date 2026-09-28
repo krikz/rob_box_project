@@ -39,7 +39,7 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
     register_sc_only_custom_synthdefs,
 )
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core.arranger import (
     FORMS,
     ON_OFF_AUTO,
@@ -4693,11 +4693,12 @@ class StopMusicTool(MCPTool):
             from std_msgs.msg import String
 
             if hasattr(node, "create_publisher"):
-                self._sound_stop_pub = node.create_publisher(
-                    String, "/voice/sound/stop", 10
+                # Issue #3108: общие с mcp_server publisher'ы на этой ноде.
+                self._sound_stop_pub = shared_publisher(
+                    node, String, "/voice/sound/stop", 10
                 )
-                self._generated_music_state_pub = node.create_publisher(
-                    String, "/voice/generated_music/state", 10
+                self._generated_music_state_pub = shared_publisher(
+                    node, String, "/voice/generated_music/state", 10
                 )
         except Exception:  # noqa: BLE001 — unit tests / minimal install
             self._sound_stop_pub = None

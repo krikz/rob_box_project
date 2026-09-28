@@ -73,6 +73,9 @@ _SKIP_DIR_NAMES = {
 }
 
 _TOPIC_CALL_NAMES = {"create_publisher": "pub", "create_subscription": "sub"}
+# Хелперы-обёртки над ``create_publisher`` с сигнатурой
+# ``(node, msg_type, topic, qos)`` — см. ``_is_shared_publisher_call``.
+_SHARED_PUBLISHER_NAMES = {"shared_publisher"}
 _SEAM_PREFIXES = ("_publish_", "_on_")
 
 # Msg-type resolution: как и для топиков, лучшее, что мы можем сделать
@@ -753,10 +756,30 @@ class SeamScan:
 # ---------------------------------------------------------------------------
 
 
+def _is_shared_publisher_call(call: ast.Call) -> bool:
+    """``shared_publisher(node, Type, "topic", qos)`` (issue #3108).
+
+    ``rob_box_mcp_tools.base.shared_publisher`` оборачивает
+    ``node.create_publisher`` и кэширует publisher на ноде. Внутри него
+    ``create_publisher(msg_type, topic, qos)`` статически не резолвится,
+    поэтому реальный топик и тип берём с call-site хелпера: ``Type`` —
+    arg 1, ``topic`` — arg 2. Ловим и голое имя, и атрибут
+    (``base.shared_publisher(...)``).
+    """
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id in _SHARED_PUBLISHER_NAMES
+    if isinstance(func, ast.Attribute):
+        return func.attr in _SHARED_PUBLISHER_NAMES
+    return False
+
+
 def _topic_call_kind(call: ast.Call) -> str | None:
     func = call.func
     if isinstance(func, ast.Attribute) and func.attr in _TOPIC_CALL_NAMES:
         return _TOPIC_CALL_NAMES[func.attr]
+    if _is_shared_publisher_call(call):
+        return "pub"
     return None
 
 
@@ -764,6 +787,8 @@ def _topic_arg(call: ast.Call) -> ast.expr | None:
     for kw in call.keywords:
         if kw.arg == "topic":
             return kw.value
+    if _is_shared_publisher_call(call):
+        return call.args[2] if len(call.args) >= 3 else None
     if len(call.args) >= 2:
         return call.args[1]
     if len(call.args) == 1:
@@ -779,6 +804,11 @@ def _msg_type_arg(call: ast.Call) -> ast.expr | None:
     (``msg_type=...``) — добавим сюда; пока все call-sites в репо
     передают его первым позиционным аргументом.
     """
+    if _is_shared_publisher_call(call):
+        for kw in call.keywords:
+            if kw.arg == "msg_type":
+                return kw.value
+        return call.args[1] if len(call.args) >= 2 else None
     return call.args[0] if call.args else None
 
 
