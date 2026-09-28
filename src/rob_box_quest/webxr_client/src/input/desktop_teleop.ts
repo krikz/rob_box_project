@@ -1,5 +1,10 @@
-// Desktop WASD/Space/E fallback для teleop (дизайн §6).
+// Desktop-телеоп (дизайн §6): стрелки + Space (deadman) + E (emergency).
 // Активируется автоматически, если XR недоступен.
+//
+// WASD раньше тоже вёл робота, но на десктопе WASD теперь ходит оператором
+// по мостику (input/desktop_walk.ts, #3149). Робота ведут стрелки И ТОЛЬКО
+// при зажатом Space: без deadman FSM twist не шлёт, так что случайная
+// стрелка робота не сдвинет.
 
 import type { TeleopFSM } from "./teleop_fsm";
 
@@ -14,10 +19,6 @@ export interface DesktopTeleopOptions {
 }
 
 const KEY_BINDINGS: Record<string, "linear+" | "linear-" | "angular+" | "angular-" | "deadman" | "emergency"> = {
-  KeyW: "linear+",
-  KeyS: "linear-",
-  KeyA: "angular+",
-  KeyD: "angular-",
   ArrowUp: "linear+",
   ArrowDown: "linear-",
   ArrowLeft: "angular+",
@@ -25,6 +26,9 @@ const KEY_BINDINGS: Record<string, "linear+" | "linear-" | "angular+" | "angular
   Space: "deadman",
   KeyE: "emergency"
 };
+
+/** Клавиши, которые перехватывает телеоп (экспорт — для конфликт-теста с ходьбой). */
+export const DESKTOP_TELEOP_KEYS: ReadonlyArray<string> = Object.freeze(Object.keys(KEY_BINDINGS));
 
 export function createDesktopTeleop(opts: DesktopTeleopOptions): DesktopTeleopHandle {
   const fsm = opts.fsm;
@@ -65,10 +69,8 @@ export function createDesktopTeleop(opts: DesktopTeleopOptions): DesktopTeleopHa
   }
 
   function refresh(): void {
-    const linear = (pressed.has("KeyW") || pressed.has("ArrowUp") ? 1 : 0) +
-      (pressed.has("KeyS") || pressed.has("ArrowDown") ? -1 : 0);
-    const angular = (pressed.has("KeyA") || pressed.has("ArrowLeft") ? 1 : 0) +
-      (pressed.has("KeyD") || pressed.has("ArrowRight") ? -1 : 0);
+    const linear = (pressed.has("ArrowUp") ? 1 : 0) + (pressed.has("ArrowDown") ? -1 : 0);
+    const angular = (pressed.has("ArrowLeft") ? 1 : 0) + (pressed.has("ArrowRight") ? -1 : 0);
     const deadman = pressed.has("Space");
     fsm.setLinear(linear);
     fsm.setAngular(angular);

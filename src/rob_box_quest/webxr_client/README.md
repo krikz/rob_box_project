@@ -103,8 +103,9 @@ Trigger свободен намеренно: grip'ы заняты голосом
 
 | Key | Action | Mode |
 |---|---|---|
-| WASD | Movement | Desktop |
-| Space | Boost (×1.5) | Desktop |
+| Click on canvas | Capture mouse (look around, crosshair = pointer, click = select) | Desktop |
+| WASD (+ Shift) | Walk around the bridge (run) — the operator, not the robot | Desktop |
+| Space + arrows | Drive the robot (Space = deadman; arrows alone do nothing) | Desktop |
 | E | Emergency stop | Desktop |
 | L stick | Move (forward/back/strafe) | WebXR |
 | R stick click | Arm / disarm toggle | WebXR |
@@ -112,9 +113,53 @@ Trigger свободен намеренно: grip'ы заняты голосом
 | R grip | Voice: robot_voice (STT→LLM→TTS) | WebXR |
 | B / Y | Emergency stop | WebXR |
 | H | Показать / скрыть help overlay | Global |
-| Esc | Закрыть overlay / exit VR | Global |
+| Esc | Отпустить мышь / закрыть overlay / exit VR | Global |
 
 Press H in the client to see this list interactively.
+
+### Симулятор без шлема
+
+Погулять по мостику без Quest и без робота (issue #3149):
+
+```bash
+npm run dev:sim            # vite + открыть http://127.0.0.1:5173/?sim=1
+# или вручную: npm run dev, затем /?sim=1 (&sim_latency=40 — задержка мок-сети, мс)
+```
+
+`?sim=1` пропускает PIN (симулятор вводит его сам), в шапке висит жёлтый
+бейдж **SIM · мок-робот**. Без флага прод-путь не меняется: код мока лежит
+в `src/dev/` и грузится отдельным чанком только по флагу.
+
+Что показывает. Мок-робот ездит по 2D-плану мастерской (комната → коридор →
+комната, стол, колонны, стеллаж, ящики) и шлёт стримы в **серверных**
+форматах, их разбирают штатные декодеры клиента:
+
+- `camera_rear` (экран-стена), `camera_oak_depth` (боковая панель),
+  `camera_ceiling` (потолок) — «вид из робота», псевдо-3D рейкаст по плану,
+  HUD с топиком, временем, позой, скоростью и водяным знаком SIM, JPEG ~10 fps;
+- `lidar_2d` — 360 лучей, 10 Гц; `map_2d` — карта открывается там, куда
+  робот посмотрел (полный PNG при изменениях, поза — 5 Гц);
+- `robot_status` 1 Гц (батарея медленно садится, Wi-Fi хуже вдали от
+  «точки доступа», режим idle/teleop/emergency_stop), `voice_state` (idle),
+  STATE_UPDATE супервизора (руль наш), ответы на команды голосовой панели.
+
+Управление: клик по канвасу — захват мыши (осмотреться, прицел в центре,
+клик = выбор/перетаскивание панели), **WASD** — ходить, **Shift** — бегом,
+**Esc** — отпустить мышь; робота ведут **стрелки при зажатом Space**,
+**E** — аварийный стоп (в симуляторе держится 3 с; у настоящего робота —
+до нового HELLO). Ходьба зажата в пределах комнаты мостика и работает и
+на обычном десктопе, не только в симуляторе. В VR она выключена.
+
+Шов: мок подключается через `ConnectionOptions.WebSocketCtor`
+(`bootstrap({ WebSocketCtor })`) — логика `Connection` не форкается.
+Расширять: `robot.registerCommand(name, handler)` (Nav2 `nav_goal`/`nav_cancel`),
+`robot.registerStream(topic, source)` (`nav_path`), частота подписки —
+единая `subscriptionPeriodMs()` в `src/dev/mock_robot.ts` (туда ляжет `max_hz`).
+Из консоли: `window.__robBoxSim.robot.state`.
+
+Чего симулятор не умеет: голоса (микрофон/синтез), 3D-облака, Nav2, TARS-панелей
+с Prometheus/Loki — такие команды получают честный `UNKNOWN_COMMAND` или
+`preview_voice_error`.
 
 ### Tooltips
 

@@ -12,7 +12,7 @@
 //   - mode_manager — клиентский стор UI-состояния (voice mode / armed / current voice).
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
-import { Connection } from "./wire/connection";
+import { Connection, type ConnectionOptions } from "./wire/connection";
 import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
 import { SubscriptionManager, type SubscriptionStorage } from "./state/subscription_manager";
 import { parseRobotStatus } from "./scene/status_hud";
@@ -25,6 +25,7 @@ import {
 import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
+import { createDesktopWalk } from "./input/desktop_walk";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
@@ -120,6 +121,11 @@ interface BootstrapOptions {
   body: HTMLElement;
   /** Опциональная кнопка "?" в HUD; клик тогглит help overlay. */
   helpToggle?: HTMLElement | null;
+  /**
+   * Подмена WebSocket — симулятор мостика (`?sim=1`, src/dev/) подсовывает
+   * сюда мок-робота. В проде не задаётся: Connection берёт globalThis.WebSocket.
+   */
+  WebSocketCtor?: ConnectionOptions["WebSocketCtor"];
 }
 
 export function bootstrap(opts: BootstrapOptions): {
@@ -529,11 +535,23 @@ export function bootstrap(opts: BootstrapOptions): {
 
   // Указатель: на десктопе — мышь через камеру, в VR — луч контроллера
   // (см. XR-цикл ниже). Панели наводятся, выбираются и перетаскиваются.
-  const desktopPointer = createDesktopPointer({ canvas: opts.canvas, camera: bridge.camera });
+  // lockOnClick: клик захватывает мышь для ходьбы (#3149), дальше луч из
+  // центра экрана под прицелом.
+  const desktopPointer = createDesktopPointer({
+    canvas: opts.canvas,
+    camera: bridge.camera,
+    lockOnClick: true
+  });
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
   const xr: XrBootstrap = createXrBootstrap();
+  // Десктоп: WASD/мышь водят оператора по мостику (#3149); в VR выключено.
+  const desktopWalk = createDesktopWalk({
+    canvas: opts.canvas,
+    camera: bridge.camera,
+    isXrActive: () => xr.isActive()
+  });
   // Источник XR-луча: держит активную руку и гистерезис trigger'а между
   // кадрами (см. interaction/xr_pointer.ts — оба против ложных кликов).
   const xrPointer: XrPointerSource = createXrPointerSource();
@@ -1258,7 +1276,8 @@ export function bootstrap(opts: BootstrapOptions): {
         subprotocol: SUBPROTOCOL,
         clientVersion: CLIENT_VERSION,
         capabilities: ["webxr"],
-        pin: opts.pin
+        pin: opts.pin,
+        WebSocketCtor: opts.WebSocketCtor
       },
       {
         onStateChange: (state) => {
@@ -1968,6 +1987,7 @@ export function bootstrap(opts: BootstrapOptions): {
       document.removeEventListener("keydown", onHotKey);
       stopRender();
       desktopTeleop.destroy();
+      desktopWalk.destroy();
       if (xrRafSession && xrRafId) {
         xrRafSession.cancelAnimationFrame(xrRafId);
       }
