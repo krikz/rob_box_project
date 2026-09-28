@@ -1703,6 +1703,14 @@ class TestMusicManagerExecuteCode:
         assert "/g_new" not in osc_calls
 
     # ----- gate=0 ramp-down before /g_freeAll (issue #3137) ---------------
+    #
+    # These tests use the default ``_renardo_context = {}`` from
+    # ``_make_manager`` — no "Clock" key, so
+    # ``_transition_cleanup_delay_seconds()`` returns 0.0 (Clock
+    # unavailable) and ``_schedule_transition_cleanup`` runs the teardown
+    # SYNCHRONOUSLY (the safe fallback — never worse than the old
+    # behaviour). This exercises ``_transition_cleanup``'s OSC ordering
+    # without needing a real/mocked Renardo Clock or a timer.
 
     def test_execute_with_clock_clear_sends_gate_zero_before_g_freeAll(self):
         """execute_code's transition path must NOT send a bare /g_freeAll.
@@ -1710,9 +1718,12 @@ class TestMusicManagerExecuteCode:
         Issue #3137: a live −180 dBFS window at a track transition was
         traced to ``execute_code`` sending a naked ``/g_freeAll`` right
         after ``exec`` — no release ramp, unlike ``stop_all`` (#1000).
-        The fix routes both through ``_ramp_down_group``: ``/n_set -1
-        "gate" 0.0`` (all live nodes) MUST be sent, and it MUST come
-        before ``/g_freeAll``.
+        The fix routes both through ``_ramp_down_group``: ``/n_set 1
+        "gate" 0.0`` (Group 1 — a group target sets the control on every
+        node inside it, per the OSC Server Command Reference; node ID -1
+        is NOT documented as "all nodes" for ``/n_set``, that was wrong in
+        the first cut of this fix — issue #3137 review) MUST be sent, and
+        it MUST come before ``/g_freeAll``.
         """
         mgr = _make_manager(sc_running=True, renardo_available=True)
         osc_calls = []
@@ -1732,9 +1743,9 @@ class TestMusicManagerExecuteCode:
         assert addresses.index("/n_set") < addresses.index("/g_freeAll"), (
             "gate=0 must be sent BEFORE /g_freeAll: " + str(osc_calls)
         )
-        # The gate=0 message targets ALL nodes (-1), not a specific one.
+        # The gate=0 message targets Group 1, not nodeID -1 (issue #3137 R2).
         n_set_call = next(c for c in osc_calls if c[0] == "/n_set")
-        assert n_set_call[1] == (-1, "gate", 0.0)
+        assert n_set_call[1] == (1, "gate", 0.0)
 
     def test_execute_with_clock_clear_sleeps_between_gate_zero_and_g_freeAll(self):
         """A release pause MUST sit between gate=0 and /g_freeAll, so the
@@ -1770,6 +1781,181 @@ class TestMusicManagerExecuteCode:
             "No release pause between gate=0 and /g_freeAll: " + str(call_log)
         )
         assert any(s[1] >= 0.05 for s in sleeps_between)
+
+    # ----- deferred cleanup: freeAll must NOT be synchronous (issue #3137 R2) --
+
+    def test_execute_with_clock_clear_does_not_send_freeAll_synchronously_when_clock_present(
+        self,
+    ):
+        """Root-cause fix (issue #3137 R2, coordinator review): the −180 dBFS
+        hole was never really about ``gate`` (most synthdefs on the robot
+        don't have a ``gate`` control at all — sus/doneAction envelopes).
+        It was about WHEN ``/g_freeAll`` fires: immediately after ``exec``,
+        while the new track's first note doesn't actually sound until
+        ``Clock.next_bar()`` — up to ``ALIGN_LEAD_BEATS`` beats later.
+
+        With a live Clock available, ``execute_code`` MUST NOT have sent
+        ``/g_freeAll`` (or the gate=0 ramp, or /g_new) by the time it
+        returns — that teardown has to be deferred to a background timer
+        so the old track's tail fills the gap instead of dead air.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        clock = Mock()
+        clock.now.return_value = 100.0
+        clock.next_bar.return_value = 102.0  # 2 beats away, like ALIGN_LEAD_BEATS
+        clock.bpm = 124
+        mgr._renardo_context = {"Clock": clock}
+        # Isolate the transition-cleanup OSC traffic from the unrelated
+        # lazy master-gain apply (execute_code sends its own /n_set on the
+        # masterlimiter node on the first successful call).
+        mgr._master_gain_applied = True
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append((address, args))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ), patch("rob_box_mcp_tools.tools.music.threading.Timer") as fake_timer_cls:
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        assert osc_calls == [], (
+            "execute_code must not touch scsynth synchronously when Clock "
+            "is live — teardown has to be scheduled, not immediate: " + str(osc_calls)
+        )
+        fake_timer_cls.assert_called_once()
+        args, kwargs = fake_timer_cls.call_args
+        delay = args[0] if args else kwargs["interval"]
+        # 2 beats @ 124 BPM = 0.9677s, minus the safety margin (0.08s).
+        assert delay == pytest.approx(2.0 * 60.0 / 124.0 - 0.08, abs=1e-6)
+        fake_timer_cls.return_value.start.assert_called_once()
+
+    def test_transition_cleanup_delay_uses_clock_next_bar_and_bpm(self):
+        """``_transition_cleanup_delay_seconds`` — the actual math (issue
+        #3137 R2): seconds until ``Clock.next_bar()`` at the current BPM,
+        minus the safety margin, floored at zero.
+        """
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 10.0
+        clock.next_bar.return_value = 14.0  # 4 beats away
+        clock.bpm = 120
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # 4 beats @ 120 BPM = 2.0s, minus 0.08s margin.
+        assert delay == pytest.approx(2.0 - 0.08, abs=1e-6)
+
+    def test_transition_cleanup_delay_floors_at_zero_past_deadline(self):
+        """Deadline already passed (or margin exceeds the gap) -> 0.0, the
+        signal for immediate (synchronous) teardown — never a negative
+        delay for ``threading.Timer``.
+        """
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 10.0
+        clock.next_bar.return_value = 10.01  # a few ms away, less than margin
+        clock.bpm = 124
+        mgr._renardo_context = {"Clock": clock}
+
+        assert mgr._transition_cleanup_delay_seconds() == 0.0
+
+    def test_transition_cleanup_delay_falls_back_to_zero_without_clock(self):
+        """No Clock in context (degraded/mocked stack, or renardo not up
+        yet) -> 0.0 -> immediate teardown, same as the pre-#3137 behaviour.
+        Never worse than before.
+        """
+        mgr = _make_manager()
+        mgr._renardo_context = {}
+
+        assert mgr._transition_cleanup_delay_seconds() == 0.0
+
+    def test_transition_cleanup_delay_falls_back_to_zero_on_broken_clock(self):
+        """A Clock that raises (or has a garbage bpm) must not blow up the
+        transition — fall back to immediate teardown."""
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.side_effect = RuntimeError("scsynth gone")
+        mgr._renardo_context = {"Clock": clock}
+
+        assert mgr._transition_cleanup_delay_seconds() == 0.0
+
+    def test_transition_cleanup_delay_is_capped_for_degenerate_bpm(self):
+        """Regression (issue #3137 R2 review fallout): a near-zero BPM
+        (``FakeClock(bpm=1e-9)`` in ``test_music_clock_phase.py``, or any
+        corrupted live Clock) turns ``beats_until * 60 / bpm`` into ~1e11
+        seconds. Unclamped, ``threading.Timer(1e11, ...)`` raises
+        ``OverflowError: timestamp too large to convert to C _PyTime_t`` in
+        its background thread the moment it starts — an unhandled thread
+        exception that (observed live in this repo's own test suite) can
+        surface as flaky failures in unrelated, later-running tests. The
+        delay must be capped at ``TRANSITION_CLEANUP_MAX_DELAY_SECONDS``.
+        """
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 0.0
+        clock.next_bar.return_value = 2.0  # 2 beats away
+        clock.bpm = 1e-9
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # Unclamped this would be 2 beats * 60 / 1e-9 ~= 1.2e11 seconds;
+        # capped, it must land exactly at the ceiling.
+        assert delay == MusicManager.TRANSITION_CLEANUP_MAX_DELAY_SECONDS
+        assert delay < 1e6  # sanity: nowhere near the unclamped ~1e11s
+
+    def test_scheduled_transition_cleanup_runs_gate_then_freeAll_then_g_new(self):
+        """End-to-end (issue #3137 R2): when the deferred timer actually
+        fires, it must reproduce the exact OSC order that used to run
+        synchronously — gate=0 -> pause -> /g_freeAll -> #778 pause ->
+        /g_new — just later in wall time, not different in shape.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        clock = Mock()
+        clock.now.return_value = 0.0
+        clock.next_bar.return_value = 2.0
+        clock.bpm = 124
+        mgr._renardo_context = {"Clock": clock}
+        mgr._master_gain_applied = True  # isolate from the lazy gain-apply /n_set
+        call_log = []
+
+        def _capture_send(address, *args):
+            call_log.append(("osc", address, args))
+
+        def _fake_sleep(seconds):
+            call_log.append(("sleep", seconds))
+
+        captured_timer_args = {}
+
+        class _FakeTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                captured_timer_args["interval"] = interval
+                captured_timer_args["function"] = function
+                captured_timer_args["args"] = args or ()
+
+            def start(self):
+                # Run synchronously in the test — same thread, no real wait.
+                captured_timer_args["function"](*captured_timer_args["args"])
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ), patch(
+            "rob_box_mcp_tools.tools.music.time.sleep", side_effect=_fake_sleep
+        ), patch("rob_box_mcp_tools.tools.music.threading.Timer", _FakeTimer):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        addresses = [c[1] for c in call_log if c[0] == "osc"]
+        assert addresses == ["/n_set", "/g_freeAll", "/g_new"], call_log
+        n_set_call = next(c for c in call_log if c[0] == "osc" and c[1] == "/n_set")
+        assert n_set_call[2] == (1, "gate", 0.0)
+        g_new_call = next(c for c in call_log if c[0] == "osc" and c[1] == "/g_new")
+        assert g_new_call[2] == (1, 0, 0)
+        sleeps = [c[1] for c in call_log if c[0] == "sleep"]
+        # Release pause (inside _ramp_down_group) + issue #778 pause before /g_new.
+        assert len(sleeps) == 2
+        assert all(s >= 0.05 for s in sleeps)
 
 
 # ---------------------------------------------------------------------------
@@ -2177,7 +2363,9 @@ class TestMusicManagerStop:
     def test_stop_all_uses_shared_ramp_down_gate_zero_before_g_freeAll(self):
         """Issue #3137: stop_all's ramp-down now goes through the same
         ``_ramp_down_group`` helper as execute_code's transition path —
-        gate=0 on all nodes, then /g_freeAll, in that order.
+        gate=0 on Group 1 (not nodeID -1, fixed in review R2), then
+        /g_freeAll, in that order. Called SYNCHRONOUSLY (stop_all never
+        defers — explicit stop, the transition hole doesn't apply).
         """
         mgr = _make_manager(sc_running=True, renardo_available=True)
         osc_calls = []
@@ -2195,7 +2383,7 @@ class TestMusicManagerStop:
         assert "/g_freeAll" in addresses
         assert addresses.index("/n_set") < addresses.index("/g_freeAll")
         n_set_call = next(c for c in osc_calls if c[0] == "/n_set")
-        assert n_set_call[1] == (-1, "gate", 0.0)
+        assert n_set_call[1] == (1, "gate", 0.0)
 
 
 # ---------------------------------------------------------------------------

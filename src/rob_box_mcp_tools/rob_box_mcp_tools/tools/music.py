@@ -1300,41 +1300,72 @@ class MusicManager:
     #: — issue #3137, столько же, сколько #1000 уже использовал в ``stop_all``.
     RAMP_DOWN_RELEASE_SECONDS = 0.05
 
+    #: Запас (сек) перед вычисленным моментом ``Clock.next_bar()`` в
+    #: :meth:`_transition_cleanup_delay_seconds` — issue #3137 R2 (ревью
+    #: координатора). Отложенный ramp/freeAll обязан прийти в scsynth
+    #: строго ДО первой ноты нового трека (иначе freeAll убьёт свежесозданную
+    #: ноду вместо старой — новый трек тоже щёлкнет/оборвётся). Запас
+    #: покрывает джиттер треда таймера и время самого OSC round-trip внутри
+    #: _ramp_down_group (gate=0 + RAMP_DOWN_RELEASE_SECONDS + freeAll).
+    TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS = 0.08
+
+    #: Потолок для :meth:`_transition_cleanup_delay_seconds` — реалистичный
+    #: разрыв (``ALIGN_LEAD_BEATS`` долей на разумном BPM) укладывается в
+    #: секунды, но ``bpm`` в ``Clock`` — внешнее, не наше состояние: если
+    #: оно когда-нибудь окажется вырожденным (около нуля, битый рантайм),
+    #: ``beats_until * 60 / bpm`` даёт секунды порядка ``1e11`` —
+    #: ``threading.Timer`` с таким интервалом падает в фоновом потоке
+    #: (``OverflowError: timestamp too large to convert to C _PyTime_t``,
+    #: живой баг этого ревью: ловится ``test_music_clock_phase.py`` с
+    #: ``FakeClock(bpm=1e-9)``). Потолок — и защита от зависшего таймера
+    #: (freeAll не должен откладываться дольше, чем не свалить node-table
+    #: scsynth, см. комментарий про «too many nodes» выше по файлу), и
+    #: защита от невалидного OSC-интервала.
+    TRANSITION_CLEANUP_MAX_DELAY_SECONDS = 5.0
+
     def _ramp_down_group(self, group: int = 1) -> None:
-        """Плавно погасить живые SC-ноды перед ``/g_freeAll`` (anti-click).
+        """Плавно погасить живые SC-ноды группы перед ``/g_freeAll`` (anti-click).
 
-        Issue #3137 (живой стык двух треков дал окно −180 dBFS): голый
-        ``/g_freeAll`` обрывает синты ровно в момент вызова, mid-waveform
-        — щелчок/цифровая тишина. Правильная последовательность (прецедент
-        — commit ``d922ee836``, «smooth DJ transition — gate=0 before
-        /g_freeAll», живой тест на Vision Pi: без gate=0 щелчок
-        подтверждён, с gate=0 — чисто):
+        Issue #3137 (живой стык двух треков дал окно −180 dBFS). Первая
+        версия этого фикса слала ``/n_set -1 "gate" 0.0``, по аналогии с
+        прецедентом — commit ``d922ee836``. Ревью координатора (issue
+        #3137, R2) поправило это: nodeID ``-1`` у ``/n_set`` НЕ означает
+        «все живые ноды» (в Server Command Reference это не документировано
+        как спецзначение для ``/n_set``; спецзначения ``-1``/``-2`` есть у
+        ``target`` в ``/g_new``/``/s_new``, не у самого ``/n_set``).
+        Правильный адресат — ГРУППА: ``/n_set <group> "gate" 0.0`` ставит
+        контрол ``gate`` всем нодам ВНУТРИ группы (Server Command
+        Reference, ``/n_set``: «Groups will substitute one message for each
+        node in the group»).
 
-        1. ``/n_set -1 "gate" 0.0`` — nodeID ``-1`` адресует ВСЕ живые ноды
-           scsynth разом, запускает их release-фазу ADSR.
-        2. Пауза :data:`RAMP_DOWN_RELEASE_SECONDS` — дать release начаться
-           (не закончиться: полный sustain/release может быть длиннее,
-           но щелчок даёт именно резкий обрыв в момент gate=0→freeAll без
-           паузы, а не незавершённый хвост после неё).
-        3. ``/g_freeAll <group>`` — убить ноды (сейчас уже в release, не
-           кликают).
+        Второе уточнение (то же ревью): из ~370 synthdef'ов Renardo на
+        роботе (``SynthDefManagement/sclang_code/scsynth/*.scd``) только
+        ~60 имеют контрол ``gate`` — play/сэмплы и большинство мелодических
+        синтов (``pluck``, ``blip``, ``saw``, …) используют ``sus``-огибающую
+        с ``doneAction``, у них ``gate`` нет вовсе, и ``/n_set`` для них —
+        no-op (scsynth либо тихо игнорирует неизвестный контрол, либо не
+        находит его на синте). Поэтому для БОЛЬШИНСТВА живых нод этот шаг
+        ничего не смягчает — щелчок/обрыв решает не сам ``gate=0``, а то,
+        КОГДА вызывается ``freeAll`` относительно последней реальной ноты
+        (см. :meth:`_schedule_transition_cleanup` — главный фикс #3137).
+        ``gate=0`` остаётся полезным для той минорной доли синтов (включая
+        ``MdaPiano``/``rhpiano`` из issue #1000), у которых контрол есть.
 
-        Раньше это делалось только внутри ``stop_all`` (issue #1000, там
-        же через ``player.stop()`` + пауза + freeAll — без явного gate=0
-        на уровне OSC). ``execute_code`` слал голый ``/g_freeAll`` без
-        какого-либо ramp — используется для звукового обрыва в §7.2 разбора
-        (``docs/design/2026-09-28-music-dj-systemic-analysis.md``). Обе
-        точки теперь используют этот общий хелпер.
+        Последовательность:
+
+        1. ``/n_set <group> "gate" 0.0`` — на нодах группы, у которых есть
+           ``gate``, запускает release-фазу ADSR; на остальных — no-op.
+        2. Пауза :data:`RAMP_DOWN_RELEASE_SECONDS` — дать release начаться.
+        3. ``/g_freeAll <group>`` — убить оставшиеся живые ноды группы.
 
         Не блокирует надолго: суммарная пауза — десятки миллисекунд.
 
         Args:
-            group: номер группы, которую освобождаем ``/g_freeAll`` после
-                ramp (по умолчанию Group 1 — куда Renardo шлёт все ноты).
+            group: номер группы и адресат ``gate=0``/``freeAll`` (по
+                умолчанию Group 1 — куда Renardo шлёт все ноты).
         """
         try:
-            # nodeID -1 = все живые ноды scsynth (не конкретная group).
-            self._send_osc_raw("/n_set", -1, "gate", 0.0)
+            self._send_osc_raw("/n_set", group, "gate", 0.0)
         except Exception:
             pass  # если SC недоступен — freeAll ниже всё равно best-effort
         try:
@@ -1345,6 +1376,116 @@ class MusicManager:
             self._send_osc_raw("/g_freeAll", group)
         except Exception:
             pass  # если SC недоступен — не критично, старые ноды умрут сами
+
+    def _transition_cleanup_delay_seconds(self) -> float:
+        """Секунд до дедлайна: ``Clock.next_bar()`` минус запас (issue #3137).
+
+        Корневая причина живого симптома (issue #3137, найдено ревью
+        координатора): дело не в жёсткости ``/g_freeAll`` как такового, а в
+        МОМЕНТЕ его вызова. ``execute_code`` раньше слал ``freeAll`` сразу
+        после ``exec`` — в этот момент старые SC-ноды ещё звучат, а новые
+        плееры (зарегистрированные тем же ``exec``) встают на
+        ``Clock.next_bar()`` (``Players.py:892``) и реально зазвучат не
+        раньше, чем клок дойдёт до этой доли. При типичном арранжировщике
+        (``core/arranger.py:clock_align_prelude``, ``ALIGN_LEAD_BEATS=2``)
+        это ``next_bar() - now() == 2`` доли, то есть ``2·60/BPM`` секунд —
+        ≈0.97с на 124 BPM. Freeall в момент exec убивает старый трек СРАЗУ,
+        а новый начинает звучать почти секунду спустя → окно цифровой
+        тишины (−180 dBFS), а не щелчок.
+
+        Фикс: не звать ``freeAll`` синхронно, а посчитать здесь, сколько
+        секунд реально осталось до старта нового трека, и запланировать
+        ramp/freeAll на этот момент (см.
+        :meth:`_schedule_transition_cleanup`). До дедлайна старый трек
+        доигрывает сам — короткие ноты с ``sus``/``doneAction`` успевают
+        освободиться естественно, длинные попадают под ramp/freeAll ровно
+        на границе, а не секундой раньше.
+
+        Returns:
+            Секунды до дедлайна, зажатые снизу нулём (``0.0`` — сигнал
+            вызвать teardown немедленно: Clock недоступен, BPM невалиден,
+            или дедлайн уже наступил/прошёл) и сверху
+            :data:`TRANSITION_CLEANUP_MAX_DELAY_SECONDS`. Никогда не бросает.
+        """
+        try:
+            clock = self._renardo_context.get("Clock")
+            if clock is None:
+                return 0.0
+            now = float(clock.now())
+            next_bar = float(clock.next_bar())
+            bpm = float(self._renardo_bpm())
+            if bpm <= 0:
+                return 0.0
+            beats_until = max(0.0, next_bar - now)
+            seconds_until = beats_until * 60.0 / bpm
+            delay = max(0.0, seconds_until - self.TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS)
+            return min(delay, self.TRANSITION_CLEANUP_MAX_DELAY_SECONDS)
+        except Exception:  # noqa: BLE001 — диагностика не должна ронять переход
+            return 0.0
+
+    def _transition_cleanup(self, group: int = 1) -> None:
+        """Снести СТАРЫЕ ноды группы и подготовить её для НОВОГО трека.
+
+        Тело исполняется либо сразу (``delay<=0`` в
+        :meth:`_schedule_transition_cleanup`), либо в потоке
+        ``threading.Timer`` — в обоих случаях после того, как
+        :meth:`_ramp_down_group` отработает, обязана остаться пауза перед
+        ``/g_new`` (issue #778): UDP fire-and-forget, scsynth не успевает
+        освободить ID группы мгновенно, без паузы ``/g_new`` (или первая
+        нота нового трека, целящаяся в ту же группу) придёт раньше, чем
+        scsynth обработает ``/g_freeAll`` → «FAILURE IN SERVER /g_new
+        negative node IDs are reserved».
+        """
+        self._ramp_down_group(group)
+        try:
+            time.sleep(0.05)
+        except Exception:
+            pass
+        try:
+            self._send_osc_raw("/g_new", group, 0, 0)
+        except Exception:
+            pass
+
+    def _schedule_transition_cleanup(self, group: int = 1) -> None:
+        """Отложить ramp/freeAll старого трека до старта нового (issue #3137).
+
+        Раньше ``execute_code`` звало ``/g_freeAll`` СРАЗУ после ``exec`` —
+        старые ноды умирали мгновенно, а новые начинали звучать секундой
+        позже (:meth:`_transition_cleanup_delay_seconds`), отсюда живой
+        симптом −180 dBFS. Теперь teardown откладывается на вычисленный
+        момент — старый трек доигрывает почти до самой границы, новый
+        стартует туда же, где старый замолк, дыры не остаётся.
+
+        Дедлайн выбран строго ДО ``Clock.next_bar()`` (с запасом
+        :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`) — то есть строго
+        до того, как Renardo пошлёт первую ноту нового трека. Это
+        сознательный выбор между двумя вариантами, предложенными ревью:
+        (а) freeAll строго до первой новой ноты — можно звать по номеру
+        группы, не отслеживая конкретные node ID; (б) free только СТАРЫХ
+        node ID — потребовало бы вести реестр ID нод на Python-стороне
+        (scsynth сам назначает ID при ``/s_new``, Renardo их не
+        публикует) — отдельная инвазивная правка ради временного окна в
+        десятки миллисекунд. (а) даёт тот же результат проще и без нового
+        состояния, поэтому выбран он: пока наш таймер стреляет РАНЬШE, чем
+        Renardo поставит новую ноту в очередь на ту же группу, freeAll не
+        может задеть ничего, кроме старых нод.
+
+        Никогда не блокирует вызывающий поток — либо выполняет teardown
+        сразу (``delay<=0``, включая любой сбой диагностики Clock —
+        поведение не хуже старого синхронного пути), либо планирует его
+        фоновым ``threading.Timer`` (не поток Renardo-клока и не поток
+        MCP-инструмента).
+
+        Args:
+            group: группа, которую разово освобождаем и пересоздаём.
+        """
+        delay = self._transition_cleanup_delay_seconds()
+        if delay <= 0.0:
+            self._transition_cleanup(group)
+            return
+        timer = threading.Timer(delay, self._transition_cleanup, args=(group,))
+        timer.daemon = True
+        timer.start()
 
     # ------------------------------------------------------------------
     # Master limiter fader
@@ -1626,20 +1767,24 @@ class MusicManager:
                 "error": error,
             }
 
-        # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем новые
-        # паттерны), ПОТОМ посылаем /g_freeAll чтобы убить старые SC-ноды.
+        # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем
+        # новые паттерны), ПОТОМ ПЛАНИРУЕМ (не зовём синхронно!) ramp/freeAll
+        # старых SC-нод на момент, когда реально стартует новый трек.
         #
-        # Порядок важен для бесшовного перехода:
-        # 1. exec(code): Clock.clear() + новые паттерны зарегистрированы (мгновенно)
-        # 2. /g_freeAll: убиваем старые SC-синтезаторы (они играли пока LLM думал)
-        # 3. /g_new: пересоздаём Group 1 для новых нот
-        # При таком порядке нет тишины — новые паттерны уже ждут следующего beat,
-        # а /g_freeAll только убивает СТАРЫЕ ноды, которые overlap не нужен.
+        # Issue #3137 (корень, найден ревью координатора): раньше freeAll
+        # звался СРАЗУ после exec — старые ноды умирали мгновенно, а новые
+        # плееры встают на Clock.next_bar() и реально начинают звучать
+        # секундой(-ями) позже (см. ALIGN_LEAD_BEATS в core/arranger.py) —
+        # отсюда окно цифровой тишины (−180 dBFS), а не просто щелчок.
+        # _schedule_transition_cleanup вычисляет этот разрыв и откладывает
+        # teardown группы почти до самой границы — см. её докстринг и
+        # _transition_cleanup_delay_seconds для точной математики и выбора
+        # между вариантами фикса.
         #
-        # Почему нужен /g_freeAll: Clock.clear() останавливает планировщик Renardo,
-        # но НЕ посылает /g_freeAll в scsynth. Уже запущенные синтезаторы живут
-        # до конца sus-конверта. После многих переходов 1024-нодовая таблица SC
-        # забивается → "too many nodes" / "negative node IDs" → тишина.
+        # Почему freeAll вообще нужен (не только доиграть и забыть): Clock.
+        # clear() останавливает планировщик Renardo, но НЕ посылает freeAll
+        # в scsynth сам по себе. После многих переходов 1024-нодовая таблица
+        # SC забивается → "too many nodes" / "negative node IDs" → тишина.
         has_clock_clear = "Clock.clear()" in code
 
         # Issue #990: the music lifecycle is owned by the system
@@ -1686,31 +1831,15 @@ class MusicManager:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
         if has_clock_clear:
-            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны
-            # зарегистрированы. Issue #3137: голый /g_freeAll обрывал их
-            # mid-waveform (−180 dBFS окно на стыке треков) — теперь через
-            # общий anti-click ramp-down (gate=0 → пауза → freeAll), тот
-            # же, что stop_all использует для остановки (issue #1000).
-            self._ramp_down_group(1)
-            # Пауза между /g_freeAll и /g_new обязательна (issue #778):
-            # UDP — fire-and-forget, scsynth обрабатывает /g_freeAll
-            # асинхронно и не освобождает ID Group 1 мгновенно. Без паузы
-            # наш /g_new (или любой /s_new от Renardo Player-а, который
-            # попытается вставить ноту в Group 1) приходит в scsynth, когда
-            # ID ещё занят → "FAILURE IN SERVER /g_new negative node IDs are
-            # reserved" в логах supercollider (старый баг, был
-            # замаскирован тем, что renardo при инициализации сначала
-            # пересоздаёт Group, и в среднем прокатывало). 50ms достаточно
-            # для scsynth обработать free и освободить ID.
-            try:
-                time.sleep(0.05)
-            except Exception:
-                pass
-            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
-            try:
-                self._send_osc_raw("/g_new", 1, 0, 0)
-            except Exception:
-                pass
+            # Issue #3137: НЕ убиваем старые SC-ноды синхронно здесь —
+            # планируем ramp/freeAll на момент, когда реально стартует новый
+            # трек (_schedule_transition_cleanup), чтобы старый трек доигрывал
+            # почти до самой границы вместо мгновенного обрыва в цифровую
+            # тишину. Внутри — тот же anti-click ramp (gate=0 → пауза →
+            # freeAll → пауза #778 → /g_new), что раньше шёл здесь синхронно
+            # и что ``stop_all`` использует немедленно (там дыра не важна —
+            # явная остановка, а не переход между треками).
+            self._schedule_transition_cleanup(1)
 
         # Мастер-фейдер применяем лениво, на первом успешном выполнении:
         # ``foxdot_init.sc`` ставит синт ``masterlimiter`` через ~5 с после
@@ -1999,10 +2128,12 @@ class MusicManager:
         1. ``.stop()`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
            снимает их с планировщика Renardo (внутреннее состояние).
         2. ``Clock.clear()`` — убрать все запланированные события.
-        3-4. :meth:`_ramp_down_group` (issue #3137) — ``gate=0`` на все
-           живые SC-ноды → ~50ms на release ADSR → ``/g_freeAll``. Тот же
-           общий хелпер, которым теперь пользуется ``execute_code`` для
-           перехода между треками.
+        3-4. :meth:`_ramp_down_group` (issue #3137) — ``gate=0`` на ноды
+           группы 1 → ~50ms на release ADSR → ``/g_freeAll``. Вызывается
+           СИНХРОННО (в отличие от ``execute_code``'а — там тот же teardown
+           теперь откладывается до старта нового трека, потому что там
+           важна секунда тишины между треками; здесь явная остановка,
+           отложенность не нужна и не делается).
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
