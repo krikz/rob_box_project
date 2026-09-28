@@ -81,6 +81,28 @@ var masterLimiterNode = 999;
 // материал для повторной заливки при обнаружении рестарта scsynth.
 var loadedSynthPaths = Set.new;
 
+// Issue #3008 (регресс 27.09): fuzz в upstream renardo_lib — НЕ файловый
+// синт, а Python-генерируемый (DefaultPygenSynthDef). Его add() на каждом
+// старте музыки заново пишет tmp_code/scsynth/fuzz.scd исходным
+// LFSaw-вариантом и шлёт этот путь сюда через /foxdot — scsynth получал
+// upstream-версию поверх нашего патча (renardo_synthdef_patches.py). Для имён
+// из списка /foxdot перенаправляется на пропатченный renardoSynthDir/<name>.scd.
+// Синхронно с PYGEN_PATCHED_SYNTHS в renardo_synthdef_patches.py (тест).
+var pygenPatchedSynths = ["fuzz"];
+var redirectPatchedPygenPath = { |path|
+    var name = path.basename.splitext[0];
+    var patched = renardoSynthDir ++ "/" ++ name ++ ".scd";
+    // Гард тот же, что у прелоада: без настоящего RENARDO_SCLANG_DIR не
+    // перенаправляем (пропатченный файл грузится прелоадом из этой же папки).
+    var dirReady = (renardoSynthDir != renardoSynthDirPlaceholder) && { renardoSynthDir.notEmpty };
+    if(dirReady && { path.contains("tmp_code") } && { pygenPatchedSynths.includesEqual(name) }) {
+        ("[#3008] /foxdot " ++ path ++ " -> " ++ patched).postln;
+        patched
+    } {
+        path
+    };
+};
+
 // Перезаливает один .scd и ждёт подтверждения (Server.sync) — используется
 // ТОЛЬКО при авто-реставре после рестарта scsynth (см. вотчер ниже).
 // Стартовый прелоад ниже по файлу использует те же два вызова инлайново
@@ -149,7 +171,7 @@ SystemClock.sched(3.0, {
     OSCdef.new(
         \foxdot,
         {|msg, time, addr, recvPort|
-            var path = msg[1].asString;
+            var path = redirectPatchedPygenPath.value(msg[1].asString);
             // #1807: запоминаем путь, чтобы при авто-реставре после
             // рестарта scsynth перезалить и то, что прислали не мы, а
             // Python renardo во время работы (сэмплы, доп. синты и т.п.).

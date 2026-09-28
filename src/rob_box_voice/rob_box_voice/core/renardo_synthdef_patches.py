@@ -72,9 +72,16 @@ TB303_SYNTHDEF = """SynthDef.new(\\tb303, {
 # as the audible carrier and aliased badly on 16 kHz scsynth; (b) hard-coded
 # `curve:'step'` envelope ignored atk/rel arguments and clicked on every note;
 # (c) had no `lpf=` arg, so Renardo-side `lpf=` was a silent no-op. The patch
-# keeps the original control-rate LFSaw FM shape but switches the audible
+# keeps the original LFSaw FM shape but switches the audible
 # carrier to SuperCollider's built-in band-limited Saw, then keeps the LPF as
 # the user's tonal cutoff / additional low-rate safety margin.
+#
+# Issue #3008 (regression 27.09): the FM modulator is audio-rate `LFSaw.ar`,
+# not `.kr`. scsynth runs with a 1024-sample block (start_supercollider.sh
+# `-z 1024`), so at 16 kHz the control rate is only ~15.6 Hz: a `.kr`
+# modulator sweeping at freq/2 = 20..40 Hz for bass notes is sampled below its
+# own frequency and the carrier pitch jumps every 64 ms — the audible
+# "burble/fart" that survived the first patch.
 FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
         |amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=0, bus=0, blur=1, beat_dur=1, atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, lpf=4000|
         var osc, env, nyquist, cutoff, baseFreq, bad;
@@ -83,7 +90,7 @@ FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
         freq = [baseFreq, baseFreq + fmod];
         freq = (freq / 2);
         amp = (amp / 6);
-        osc = Saw.ar(LFSaw.kr(freq, 0, freq, (freq * 2)));
+        osc = Saw.ar(LFSaw.ar(freq, 0, freq, (freq * 2)));
         bad = CheckBadValues.ar(osc, 0, 0);
         osc = Select.ar(bad, [osc, DC.ar(0), DC.ar(0), DC.ar(0)]);
         nyquist = SampleRate.ir * 0.5;
@@ -96,6 +103,18 @@ FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
         ReplaceOut.ar(bus, osc)
 }).add;
 """
+
+
+# Issue #3008 (regression 27.09): some synths are NOT file-based in upstream
+# renardo_lib — they are Python-generated (``DefaultPygenSynthDef`` in
+# ``runtime/synthdefs_initialisation/python_defined_synthdefs.py``). Their
+# ``add()`` regenerates ``sclang_code/tmp_code/scsynth/<name>.scd`` from Python
+# on every music start and sends THAT path to sclang via ``/foxdot``, which
+# replaces our build-time patch of ``sclang_code/scsynth/<name>.scd`` in
+# scsynth. foxdot_init.sc therefore redirects ``/foxdot`` for these names to
+# the patched file. Keep in sync with ``pygenPatchedSynths`` in
+# docker/vision/voice_assistant/foxdot_init.sc (guarded by a unit test).
+PYGEN_PATCHED_SYNTHS: tuple[str, ...] = ("fuzz",)
 
 
 def resolve_conflicted_scd_content(content: str) -> str:

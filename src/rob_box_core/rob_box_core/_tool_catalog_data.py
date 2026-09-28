@@ -1736,7 +1736,52 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'Тембры '
                                                                         '(lead_synth/bass_synth/pad_synth) '
                                                                         'и ручки — как '
-                                                                        'с name=.'}},
+                                                                        'с name=.'},
+                                            'style': {   'type': 'string',
+                                                         'description': 'Стиль '
+                                                                        'аранжировки. '
+                                                                        'classic (по '
+                                                                        'умолчанию) — '
+                                                                        'прежнее '
+                                                                        'поведение. '
+                                                                        'club — '
+                                                                        'клубный трек '
+                                                                        'по эталону DJ '
+                                                                        'Dave «By '
+                                                                        'Design»: '
+                                                                        'синкопированная '
+                                                                        'бочка, бас и '
+                                                                        'арпеджио '
+                                                                        '16-ми с '
+                                                                        'пампингом под '
+                                                                        'бочку, '
+                                                                        'клэп+открытый '
+                                                                        'хэт, пэд, '
+                                                                        'форма из '
+                                                                        'матрицы '
+                                                                        'секций '
+                                                                        '(build/predrop/drop/verse, '
+                                                                        '32 такта). С '
+                                                                        'club работают '
+                                                                        'только bpm '
+                                                                        '(по умолчанию '
+                                                                        '124), root '
+                                                                        '(по умолчанию '
+                                                                        'A#), scale '
+                                                                        '(только '
+                                                                        'minor), seed '
+                                                                        '(выбирает '
+                                                                        'прогрессию и '
+                                                                        'риф) и '
+                                                                        'repeat; '
+                                                                        'остальные '
+                                                                        'параметры '
+                                                                        'игнорируются '
+                                                                        '— об этом '
+                                                                        'сказано в '
+                                                                        'ответе.',
+                                                         'enum': ['classic', 'club'],
+                                                         'default': 'classic'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -1779,7 +1824,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'lead_outliers',
                                        'levels',
                                        'seed',
-                                       'rtttl'],
+                                       'rtttl',
+                                       'style'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -4979,7 +5025,52 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'Тембры '
                                                                         '(lead_synth/bass_synth/pad_synth) '
                                                                         'и ручки — как '
-                                                                        'с name=.'}},
+                                                                        'с name=.'},
+                                            'style': {   'type': 'string',
+                                                         'description': 'Стиль '
+                                                                        'аранжировки. '
+                                                                        'classic (по '
+                                                                        'умолчанию) — '
+                                                                        'прежнее '
+                                                                        'поведение. '
+                                                                        'club — '
+                                                                        'клубный трек '
+                                                                        'по эталону DJ '
+                                                                        'Dave «By '
+                                                                        'Design»: '
+                                                                        'синкопированная '
+                                                                        'бочка, бас и '
+                                                                        'арпеджио '
+                                                                        '16-ми с '
+                                                                        'пампингом под '
+                                                                        'бочку, '
+                                                                        'клэп+открытый '
+                                                                        'хэт, пэд, '
+                                                                        'форма из '
+                                                                        'матрицы '
+                                                                        'секций '
+                                                                        '(build/predrop/drop/verse, '
+                                                                        '32 такта). С '
+                                                                        'club работают '
+                                                                        'только bpm '
+                                                                        '(по умолчанию '
+                                                                        '124), root '
+                                                                        '(по умолчанию '
+                                                                        'A#), scale '
+                                                                        '(только '
+                                                                        'minor), seed '
+                                                                        '(выбирает '
+                                                                        'прогрессию и '
+                                                                        'риф) и '
+                                                                        'repeat; '
+                                                                        'остальные '
+                                                                        'параметры '
+                                                                        'игнорируются '
+                                                                        '— об этом '
+                                                                        'сказано в '
+                                                                        'ответе.',
+                                                         'enum': ['classic', 'club'],
+                                                         'default': 'classic'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -5022,7 +5113,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'lead_outliers',
                                        'levels',
                                        'seed',
-                                       'rtttl'],
+                                       'rtttl',
+                                       'style'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},

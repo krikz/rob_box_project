@@ -399,8 +399,11 @@ def test_patch_fuzz_scd_content_adds_anti_aliasing_lowpass_relative_to_sample_ra
         "один сломанный плеер не должен убивать весь слой (NaN → 0)"
     )
     # The audible carrier must be the built-in band-limited Saw. LFSaw remains
-    # only as the original control-rate FM modulator.
-    assert "osc = Saw.ar(LFSaw.kr" in patched
+    # only as the FM modulator, and it must be audio-rate: with `-z 1024` the
+    # control rate is 16000/1024 ≈ 15.6 Hz, below the modulator's own
+    # frequency for bass notes (regression of #3008, 27.09).
+    assert "osc = Saw.ar(LFSaw.ar(" in patched
+    assert "LFSaw.kr" not in patched
     assert "osc = LFSaw.ar(" not in patched
 
 
