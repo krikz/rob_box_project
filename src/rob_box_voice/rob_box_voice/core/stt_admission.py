@@ -349,6 +349,17 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
+    def handle_media_command(self, text: str) -> bool:
+        """Issue #3134 — детерминированный роутер медиакоманд до LLM.
+
+        «громче / тише / на максимум / выключи музыку / ты диджей X»
+        исполняет код (MCP-тулы + фиксированная фраза). ``True`` — реплика
+        закрыта, в LLM не идёт; ``False`` — не медиакоманда или DJ-запрос
+        с содержимым вне грамматики (``set_dj_mode`` уже выполнен, дальше
+        решает LLM).
+        """
+        ...
+
     def flush_pending_backlog(self) -> None:
         """Set ``_pending_backlog_flush = True`` so the next dispatch
         prepends the backlog hint. No-op when the backlog is empty.
@@ -711,6 +722,27 @@ class NewSessionStep:
 
 
 @dataclass(frozen=True)
+class MediaCommandStep:
+    """Issue #3134 — медиакоманды исполняет код, до LLM.
+
+    Стоит после wake-word, силенс-, command- и new-session-гейтов (фраза
+    уже адресована роботу и очищена) и ДО :class:`BargeInClassifyStep`:
+    иначе при ``barge_in_policy=classify`` команда во время хода ушла бы
+    в очередь ``PENDING_LLM`` и склеилась в следующий LLM-ход — ровно
+    регрессия HA core#139415 (роутер обязан срабатывать на КАЖДОМ ходе,
+    и в продолжении разговора, и посреди DJ-сета). Путь Telegram идёт
+    через этот же шаг.
+    """
+
+    name: str = "media_command"
+
+    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
+        if host.handle_media_command(ctx.text):
+            return handled(self.name, "media_command")
+        return PASS
+
+
+@dataclass(frozen=True)
 class BacklogFlushStep:
     """Step 11 — backlog hint injection.
 
@@ -825,9 +857,10 @@ def default_steps(
     8. :class:`SilenceCommandStep` — «замолчи».
     9. :class:`CommandIntentGateStep` — command_intent gate (issue #1279).
     10. :class:`NewSessionStep` — «новая сессия» / «/clear».
-    11. :class:`BacklogFlushStep` — backlog hint injection.
-    12. :class:`BargeInClassifyStep` — barge_in_policy="classify".
-    13. :class:`DispatchTriggerStep` — FSM transition + dispatch.
+    11. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
+    12. :class:`BacklogFlushStep` — backlog hint injection.
+    13. :class:`BargeInClassifyStep` — barge_in_policy="classify".
+    14. :class:`DispatchTriggerStep` — FSM transition + dispatch.
     """
     return [
         EmptyTextStep(),
@@ -838,6 +871,7 @@ def default_steps(
         SilenceCommandStep(),
         CommandIntentGateStep(),
         NewSessionStep(),
+        MediaCommandStep(),
         BacklogFlushStep(),
         BargeInClassifyStep(policy=barge_in_policy),
         DispatchTriggerStep(),
@@ -852,6 +886,7 @@ __all__ = [
     "DefaultSttAdmission",
     "DispatchTriggerStep",
     "EmptyTextStep",
+    "MediaCommandStep",
     "NewSessionStep",
     "PASS",
     "RejectedMarkerStep",

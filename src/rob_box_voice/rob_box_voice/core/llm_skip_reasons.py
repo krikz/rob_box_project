@@ -29,6 +29,8 @@ class LLMSkipReason(str, Enum):
     PENDING_LLM = "pending_llm"
     BACKLOG_ACCUMULATED = "backlog_accumulated"
     UNSILENCE = "unsilence"
+    #: Issue #3134 — медиакоманду исполнил роутер кодом, LLM не нужна.
+    MEDIA_COMMAND = "media_command"
 
 
 def new_llm_skip_counter() -> dict[str, int]:

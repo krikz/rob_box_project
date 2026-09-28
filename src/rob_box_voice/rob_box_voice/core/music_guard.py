@@ -47,14 +47,6 @@ from .dialogue_guards import (
     is_vocal_request,
     user_wants_music,
 )
-from .dj_request import (  # Issue #2999 / ADR-0140
-    DJ_REQUEST_MAX_RETRIES,
-    DJ_REQUEST_SATISFYING_TOOLS,
-    build_dj_request_exhausted_fallback,
-    build_dj_request_retry_prompt,
-    is_dj_request,
-)
-from .music_volume_request import is_music_volume_request, music_volume_tool_called
 
 
 class MusicGuardVerdictKind(str, Enum):
@@ -210,7 +202,6 @@ class MusicGuard:
         a DJ transition is independent of the user-music budget.
         """
         self._user_retry_count = 0
-        self._dj_request_closed = False  # Issue #2999
 
     def reset_for_new_dj_transition(self) -> None:
         """Reset the DJ budget when a fresh 5 s tick fires a transition.
@@ -229,7 +220,6 @@ class MusicGuard:
         """
         self._dj_retry_count = 0
         self._user_retry_count = 0
-        self._dj_request_closed = False  # Issue #2999
 
     # ------------------------------------------------------------------
     # Policy — the decision tree that used to live inline in
@@ -296,50 +286,6 @@ class MusicGuard:
             return "state_query_satisfied"
 
         return None
-
-    def _music_volume_skip_reason(
-        self, user_input: str, tools_set: set, music_playing: bool
-    ) -> Optional[str]:
-        """Issue #3125 — «громче/тише» не заказ новой музыки.
-
-        Живой сет 28.09: «играй громче» при играющем треке → Bug C требовал
-        ``execute_music_code`` (из-за «играй»), ретраи выгорали, и робот
-        говорил «бит не запустился», хотя бит играл. Просьба ТОЛЬКО о
-        громкости (без названия трека, см. :func:`is_music_volume_request`):
-
-        * закрыта, если в ходе был ``set_music_volume``;
-        * не ретраится, если музыка уже играет — какой бы тул модель ни
-          вызвала (даже ``set_volume`` голоса или вовсе ничего: ложное
-          обещание без тула ловит phantom-action гуард #2559, не Bug C —
-          его ретрай «вызови execute_music_code» здесь просто неверен).
-
-        Без играющей музыки и без тула громкости — ``None``: Bug C как раньше.
-        """
-        if not is_music_volume_request(user_input):
-            return None
-        if music_volume_tool_called(tools_set):
-            self._log_info(
-                "🎵 [issue 3125] volume request closed by set_music_volume "
-                f"(tools={sorted(tools_set)!r}) — no Bug C retry"
-            )
-            return "music_volume_set"
-        if music_playing:
-            self._log_warning(
-                "🎵 [issue 3125] volume request while music is playing "
-                f"(tools={sorted(tools_set)!r}) — NOT a request to start "
-                "music, Bug C retry skipped"
-            )
-            return "volume_adjust_while_playing"
-        return None
-
-    def _bug_c_skip_reason(
-        self, user_input: str, tools_set: set, music_playing: bool
-    ) -> Optional[str]:
-        """Все исключения Bug C одной точкой (CC ``evaluate`` не растёт)."""
-        reason = self._music_volume_skip_reason(user_input, tools_set, music_playing)
-        if reason is not None:
-            return reason
-        return self._user_music_already_satisfied(user_input, tools_set)
 
     def _music_call_succeeded(
         self, music_started: set, succeeded_tools: Optional[Tuple[str, ...]]
@@ -427,7 +373,6 @@ class MusicGuard:
         spoken: Optional[str] = None,
         tool_error_occurred: bool = False,
         succeeded_tools: Optional[Tuple[str, ...]] = None,
-        music_playing: bool = False,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -484,10 +429,6 @@ class MusicGuard:
                 tool is among them, a ``tool_error_occurred`` from an
                 earlier failed attempt in the same turn does not make the
                 turn a failure. ``None`` — unknown (legacy #2966 rule).
-            music_playing: Issue #3125 — music is already playing (the
-                adapter's ``_track_mode_music_active``). A pure volume
-                request («играй громче») is then not retried by Bug C.
-
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
             what to do and ``prompt`` (when applicable) carries the
@@ -639,7 +580,7 @@ class MusicGuard:
                 reason="not_music_request",
             )
 
-        _skip_reason = self._bug_c_skip_reason(user_input, tools_set, music_playing)
+        _skip_reason = self._user_music_already_satisfied(user_input, tools_set)
         if _skip_reason is not None:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
@@ -714,115 +655,6 @@ class MusicGuard:
     def _log_warning(self, msg: str) -> None:
         if self._logger is not None:
             self._logger.warning(msg)
-
-    # ------------------------------------------------------------------
-    # Issue #2999 / ADR-0140 — DJ-запрос («ты диджей X…») идёт ДО Bug C.
-    # ------------------------------------------------------------------
-
-    #: ``set_dj_mode`` уже вызван в ЭТОМ запросе юзера (ход или его ретрай).
-    #: Сбрасывается в :meth:`reset_for_new_user_request` /
-    #: :meth:`reset_for_new_session`. Нужен, чтобы ретрай-ход, где модель
-    #: после ``set_dj_mode`` дозапустила трек, не требовал set_dj_mode снова.
-    _dj_request_closed: bool = False
-
-    def evaluate_turn(
-        self,
-        *,
-        was_dj_auto: bool,
-        user_input: str,
-        tools_called: Optional[Tuple[str, ...]],
-        dj_enabled: bool = False,
-        **kwargs,
-    ) -> MusicGuardVerdict:
-        """Точка входа адаптера: DJ-запрос юзера, затем :meth:`evaluate`.
-
-        «Ты диджей X…» ловится и :func:`user_wants_music` (слово «диджей»),
-        и Bug C ретраил его промптом «вызови compose_music» — неверный тул
-        для DJ-запроса (issue #2999, 15 пустых ходов 24.09). Отдельная
-        точка входа, а не ещё одна ветка в :meth:`evaluate`: тот стоит на
-        потолке cc_budget (ADR-0021 R1), и Bug C/#2966 правят параллельно.
-        """
-        dj_verdict = self._dj_request_verdict(
-            was_dj_auto=was_dj_auto,
-            user_input=user_input,
-            tools_set=set(tools_called or ()),
-            dj_enabled=dj_enabled,
-        )
-        if dj_verdict is not None:
-            return dj_verdict
-        return self.evaluate(
-            was_dj_auto=was_dj_auto,
-            user_input=user_input,
-            tools_called=tools_called,
-            dj_enabled=dj_enabled,
-            **kwargs,
-        )
-
-    def _dj_request_verdict(
-        self,
-        *,
-        was_dj_auto: bool,
-        user_input: str,
-        tools_set: set,
-        dj_enabled: bool,
-    ) -> Optional[MusicGuardVerdict]:
-        """Вердикт для DJ-запроса юзера или ``None`` (не DJ-запрос).
-
-        * ``set_dj_mode`` вызван в этом запросе (ход или его ретрай) —
-          DJ-часть закрыта, ``None``: дальше обычный :meth:`evaluate`
-          (музыка стартовала → ``SKIP``, нет → Bug C, как до #2999).
-        * не вызван, бюджет есть — ``USER_RETRY`` с DJ-промптом
-          (:func:`build_dj_request_retry_prompt`); адаптер диспатчит его
-          тем же путём, что Bug C (discard + синтетический ход).
-        * бюджет исчерпан — ``SKIP``, если музыка хотя бы запустилась, иначе
-          ``FALLBACK`` с DJ-фразой; в Bug C НЕ проваливаемся (его промпт
-          здесь бесполезен — ровно тот цикл, который чинится).
-
-        Счётчик — тот же ``_user_retry_count`` (сбрасывается на новом
-        запросе юзера), потолок свой — :data:`DJ_REQUEST_MAX_RETRIES`.
-        """
-        if was_dj_auto or not is_dj_request(user_input):
-            return None
-        if tools_set & DJ_REQUEST_SATISFYING_TOOLS:
-            self._dj_request_closed = True
-        if self._dj_request_closed:
-            # DJ-часть закрыта; запустилась ли музыка — обычная работа
-            # :meth:`evaluate` (Bug C), как и до #2999: скилл dj требует
-            # трек в том же ходе, иначе тишина до первого перехода.
-            self._log_debug(
-                "🎧 [issue 2999] DJ-запрос закрыт set_dj_mode "
-                f"(tools={sorted(tools_set)!r}) → дальше evaluate()"
-            )
-            return None
-        if self._user_retry_count < DJ_REQUEST_MAX_RETRIES:
-            self._user_retry_count += 1
-            self._log_warning(
-                "🎧 [issue 2999] DJ-запрос без set_dj_mode "
-                f"(tools={sorted(tools_set)!r}, dj_enabled={dj_enabled}); "
-                f"DJ-ретрай {self._user_retry_count}/{DJ_REQUEST_MAX_RETRIES}"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.USER_RETRY,
-                reason="dj_request",
-                prompt=build_dj_request_retry_prompt(
-                    user_input, dj_active=dj_enabled
-                ),
-            )
-        self._user_retry_count = 0
-        self._log_warning(
-            "🎧 [issue 2999] DJ-ретраи исчерпаны без set_dj_mode "
-            f"(tools={sorted(tools_set)!r})"
-        )
-        if tools_set & MUSIC_STARTING_TOOLS:
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP,
-                reason="dj_request_exhausted_music_playing",
-            )
-        return MusicGuardVerdict(
-            kind=MusicGuardVerdictKind.FALLBACK,
-            reason="dj_request_retry_exhausted",
-            prompt=build_dj_request_exhausted_fallback(user_input),
-        )
 
 
 __all__ = [
