@@ -34,6 +34,8 @@ Examples:
 
 The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and uses passwordless SSH to the robot (`10.1.1.21` by default). GitHub-hosted runners are never used for live robot access.
 
+Remote capture inspects all topics in one `ssh` + one `docker exec`: a loop inside the container prints each `ros2 topic info --verbose` between `=====TOPIC <name>=====` / `=====RC <n>=====` markers, and the same call records `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` from the container. Topics whose block is empty, failed or missing are retried one `ssh` each; `--per-topic` skips the batch entirely.
+
 Both Pis see one shared Zenoh graph (run 36422274238: 52 nodes on each Pi, union 52), so the workflow captures from the Main Pi only. The `capture_vision` input adds the Vision Pi capture; `tools/architecture_runtime_merge.py` merges one or more snapshots into `runtime.json`:
 
     python tools/architecture_runtime_merge.py --output architecture/runtime.json \
