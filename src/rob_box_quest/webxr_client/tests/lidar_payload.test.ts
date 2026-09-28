@@ -79,6 +79,22 @@ describe("parseLidar2d", () => {
     expect(scanToFloorPoints(out)).toHaveLength(3);
   });
 
+  it("parses a payload sliced out of a wire frame at an unaligned offset (#3149)", () => {
+    // Так payload приходит из decodeFrame: subarray после 5 байт заголовка
+    // и LEB128-длины — byteOffset = 7, не кратен 4.
+    const n = 3;
+    const body = new Uint8Array(32 + n * 8);
+    const v = new DataView(body.buffer);
+    [-1, 1, 1, 0.1, 10, 0, 0.1, n].forEach((x, i) => v.setFloat32(i * 4, x, true));
+    [1.5, 2.5, 3.5].forEach((x, i) => v.setFloat32(32 + i * 4, x, true));
+    [7, 8, 9].forEach((x, i) => v.setFloat32(32 + n * 4 + i * 4, x, true));
+    const frame = new Uint8Array(7 + body.length);
+    frame.set(body, 7);
+    const scan = parseLidar2d(frame.subarray(7));
+    expect(Array.from(scan.ranges)).toEqual([1.5, 2.5, 3.5]);
+    expect(Array.from(scan.intensities)).toEqual([7, 8, 9]);
+  });
+
   it("throws LidarParseError on too-short payload", () => {
     const tooShort = new Uint8Array(16);
     expect(() => parseLidar2d(tooShort)).toThrow(LidarParseError);
