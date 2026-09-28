@@ -301,6 +301,13 @@ services:
       # "1" открывает весь каталог 1_pitchglitch_samples (лупы И fx одним
       # флагом — см. core/sample_loops.py, core/sample_fx.py).
       - ROB_BOX_PACK1_LOOPS=1
+      # Issue #3112 — выравнивание фазы клока Renardo (Clock.set_time перед
+      # треком, docs/design/2026-09-28-music-clock-phase-3112.md). Читает
+      # mcp_server (tools/music.py:music_align_clock_enabled) при каждом
+      # compose_music. В коде дефолт ВЫКЛ до live-подтверждения; на роботе
+      # включено решением владельца 28.09. Откат: ROB_BOX_MUSIC_ALIGN_CLOCK=0
+      # в docker/vision/.env + рестарт voice-assistant.
+      - ROB_BOX_MUSIC_ALIGN_CLOCK=${ROB_BOX_MUSIC_ALIGN_CLOCK:-1}
       # /mcp/execute sender authentication (see rob_box_mcp_tools/mcp_auth.py).
       # dialogue_node and mcp_server run in THIS container, so they share the
       # secret through a file on the /data volume — created automatically on
