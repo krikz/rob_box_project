@@ -64,3 +64,17 @@ Identity-related names such as person, speaker, face and identity deserve explic
 ## Decision rule
 
 The audit produces evidence and review candidates. Merge, delete, rename, split and keep decisions are made only after checking runtime behavior, tests, ADRs and feature acceptance evidence.
+
+## Runtime diagrams
+
+`tools/architecture_runtime_graph.py` turns `runtime.json` + `inventory.json` into:
+
+- `runtime-graph.md` — job summary: container map (one box per Docker container, colour = Pi, arrows = topics between containers), one collapsible diagram per container, node placement evidence table.
+- `runtime-overview.mmd` — the container map alone.
+- `runtime-graph.mmd` — full node-level graph.
+
+Readability rules:
+
+- Placement comes only from repo evidence: compose `command`/`entrypoint` → start script → `ros2 run` / `ros2 launch` / `-r __node:=` → launch file `name=` / `setup.py` entry point. Library-hosted nodes (costmaps, ros2_control controllers) follow their host node; `/rtabmap/*` follows the namespace. A node without evidence is shown as "unplaced", never guessed.
+- Hidden as noise and listed in the report: `/tf`, `/tf_static`, `/diagnostics`, `/rosout`, `/parameter_events`, `/clock`, `/robot_description`, `/bond`, `*/transition_event`; tf2 `transform_listener_impl_*`, `launch_ros_*`, nav2 `*_rclcpp_node` helpers.
+- A topic with one publisher and one subscriber is an arrow label; a shared topic is a green pill.
