@@ -36,6 +36,15 @@ _spec.loader.exec_module(_base)
 shared_publisher = _base.shared_publisher
 
 
+# Топики передаются переменными, а не литералами: tools/architecture_audit.py
+# сканирует и тестовые файлы, и литерал в shared_publisher(...) здесь
+# попал бы в инвентарь как «ещё один publisher» реального топика.
+_ANIMATION = "/voice/animation/request"
+_SOUND_STOP = "/voice/sound/stop"
+_MUSIC_STATE = "/voice/generated_music/state"
+_T = "/t"
+
+
 class _Msg:
     pass
 
@@ -87,20 +96,20 @@ def fake_rclpy_qos(monkeypatch):
 def test_same_topic_type_qos_returns_one_publisher():
     node = _FakeNode()
 
-    first = shared_publisher(node, _Msg, "/voice/animation/request", 10)
-    second = shared_publisher(node, _Msg, "/voice/animation/request", 10)
-    third = shared_publisher(node, _Msg, "/voice/animation/request", 10)
+    first = shared_publisher(node, _Msg, _ANIMATION, 10)
+    second = shared_publisher(node, _Msg, _ANIMATION, 10)
+    third = shared_publisher(node, _Msg, _ANIMATION, 10)
 
     assert first is second is third
-    assert node.calls == [(_Msg, "/voice/animation/request", 10)]
+    assert node.calls == [(_Msg, _ANIMATION, 10)]
 
 
 @pytest.mark.unit
 def test_different_topics_get_different_publishers():
     node = _FakeNode()
 
-    a = shared_publisher(node, _Msg, "/voice/sound/stop", 10)
-    b = shared_publisher(node, _Msg, "/voice/generated_music/state", 10)
+    a = shared_publisher(node, _Msg, _SOUND_STOP, 10)
+    b = shared_publisher(node, _Msg, _MUSIC_STATE, 10)
 
     assert a is not b
     assert len(node.calls) == 2
@@ -110,8 +119,8 @@ def test_different_topics_get_different_publishers():
 def test_different_msg_type_is_not_merged():
     node = _FakeNode()
 
-    a = shared_publisher(node, _Msg, "/t", 10)
-    b = shared_publisher(node, _OtherMsg, "/t", 10)
+    a = shared_publisher(node, _Msg, _T, 10)
+    b = shared_publisher(node, _OtherMsg, _T, 10)
 
     assert a is not b
     assert len(node.calls) == 2
@@ -122,14 +131,14 @@ def test_different_qos_is_not_silently_merged():
     """Разный QoS — это разный контракт; склеивать молча нельзя."""
     node = _FakeNode()
 
-    a = shared_publisher(node, _Msg, "/t", 10)
-    b = shared_publisher(node, _Msg, "/t", 1)
+    a = shared_publisher(node, _Msg, _T, 10)
+    b = shared_publisher(node, _Msg, _T, 1)
 
     assert a is not b
     assert len(node.calls) == 2
     # Повторный запрос каждого варианта возвращает свой кэш.
-    assert shared_publisher(node, _Msg, "/t", 10) is a
-    assert shared_publisher(node, _Msg, "/t", 1) is b
+    assert shared_publisher(node, _Msg, _T, 10) is a
+    assert shared_publisher(node, _Msg, _T, 1) is b
     assert len(node.calls) == 2
 
 
@@ -142,8 +151,8 @@ def test_depth_int_and_equivalent_profile_are_merged(fake_rclpy_qos):
     node = _FakeNode()
     explicit = _FakeQoSProfile(depth=10)
 
-    a = shared_publisher(node, _Msg, "/voice/sound/stop", explicit)
-    b = shared_publisher(node, _Msg, "/voice/sound/stop", 10)
+    a = shared_publisher(node, _Msg, _SOUND_STOP, explicit)
+    b = shared_publisher(node, _Msg, _SOUND_STOP, 10)
 
     assert a is b
     assert len(node.calls) == 1
@@ -154,8 +163,8 @@ def test_depth_int_and_different_profile_are_not_merged(fake_rclpy_qos):
     node = _FakeNode()
     latched = _FakeQoSProfile(depth=10, durability="transient_local")
 
-    a = shared_publisher(node, _Msg, "/t", latched)
-    b = shared_publisher(node, _Msg, "/t", 10)
+    a = shared_publisher(node, _Msg, _T, latched)
+    b = shared_publisher(node, _Msg, _T, 10)
 
     assert a is not b
     assert len(node.calls) == 2
@@ -165,8 +174,8 @@ def test_depth_int_and_different_profile_are_not_merged(fake_rclpy_qos):
 def test_cache_is_per_node():
     n1, n2 = _FakeNode(), _FakeNode()
 
-    a = shared_publisher(n1, _Msg, "/t", 10)
-    b = shared_publisher(n2, _Msg, "/t", 10)
+    a = shared_publisher(n1, _Msg, _T, 10)
+    b = shared_publisher(n2, _Msg, _T, 10)
 
     assert a is not b
     assert len(n1.calls) == 1 and len(n2.calls) == 1
