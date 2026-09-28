@@ -1,0 +1,523 @@
+{
+  "schema_version": 1,
+  "source": "L: Architecture Audit run 36422274238 (2026-09-28, Main Pi nav2 container), re-parsed from raw ros2 topic info",
+  "note": "Known runtime findings. New ones are marked in runtime-findings.md; remove a key once it is fixed. Tracked in #3104-#3108.",
+  "known": [
+    {
+      "key": "type_mismatch|/odom|nav_msgs/msg/Odometry vs std_msgs/msg/String",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/avatar/tts/control|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/battery_state|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/device/snapshot|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/perception/vision_context|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/voice/current_dialogue_id|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/voice/state|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/voice_animation_player/load_animation|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_input|/camera/imu/data|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/env_sensor|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/global_costmap/footprint|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/gps/fix|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/local_costmap/footprint|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/lslidar_order|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/aruco/detections|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/aruco_opencv/detections|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/global_pose|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/goal_node|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/goal|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/initialpose|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/landmark_detections|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/landmark_detection|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/rtabmap/republish_node_data|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/rtabmap/tag_detections|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/scan_cloud|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/speed_limit|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_input|/user_data_async|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/animations/trigger|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/audio/audio|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/audio/state|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/avatar/tts/error|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/avatar/wake_stream|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/camera/camera/depth/image_rect_raw/compressedDepth|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/ceiling_camera/image_raw/compressed|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/dialogue/control_ack|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/harness/task_events|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/joy|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/perception/health|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/sensors/data|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/tts/speak|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/voice/audio/speech|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/voice/stt/request|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/voice/stt/state|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/voice_animation_player/status|",
+      "scope": "repo"
+    },
+    {
+      "key": "dead_output|/camera/camera/color/image_raw/compressedDepth|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/camera/camera/color/image_raw/theora|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/camera/camera/depth/camera_info|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/camera/camera/depth/image_rect_raw/compressed|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/camera/camera/depth/image_rect_raw/theora|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/camera/camera/depth/image_rect_raw|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/camera/camera/imu|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/ceiling_camera/camera_info|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/ceiling_camera/image_raw/compressedDepth|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/ceiling_camera/image_raw/theora|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/ceiling_camera/image_raw|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/cmd_vel_smoothed|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/cost_cloud|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/diff_drive_controller/cmd_vel_out|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/diff_drive_controller/odom|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/evaluation|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/global_costmap/costmap_updates|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/global_costmap/costmap|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/local_costmap/clearing_endpoints|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/local_costmap/costmap_updates|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/local_costmap/costmap|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/local_plan|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/marker|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/plan_smoothed|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/plan|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/received_global_plan|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/cloud_ground|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/cloud_map|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/cloud_obstacles|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/global_path_nodes|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/global_path|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/goal_reached|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/info|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/labels|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/landmarks|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/local_grid_empty|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/local_grid_ground|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/local_grid_obstacle|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/local_path_nodes|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/local_path|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/mapData|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/mapGraph|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/mapOdomCache|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/mapPath|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_binary|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_empty_space|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_full|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_global_frontier_space|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_grid|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_ground|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_obstacles|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/octomap_occupied_space|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_filtered_input_scan|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_info_lite|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_last_frame|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_local_map|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_local_scan_map|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_rgbd_image|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_sensor_data/compressed|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_sensor_data/features|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/rtabmap/odom_sensor_data/raw|",
+      "scope": "external"
+    },
+    {
+      "key": "dead_output|/transformed_global_plan|",
+      "scope": "external"
+    },
+    {
+      "key": "multiple_writers|/avatar/command|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/avatar/preview_voice/audio|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/avatar/preview_voice/error|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/avatar/preview_voice/result|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/avatar/tars/panel_request|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/vision/hailo/events|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/dialogue/response|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/dj_mode|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/generated_music/state|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/sound/stop|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/sound/trigger|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/speaker/register|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/stt/result|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/tts/batch_complete|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/tts/control|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/voice/tts/request|",
+      "scope": "repo"
+    },
+    {
+      "key": "multiple_writers|/cmd_vel|",
+      "scope": "external"
+    },
+    {
+      "key": "duplicate_publishers|/panel_image|/voice_animation_player",
+      "scope": "repo"
+    },
+    {
+      "key": "duplicate_publishers|/voice/animation/request|/mcp_server",
+      "scope": "repo"
+    },
+    {
+      "key": "duplicate_publishers|/voice/generated_music/state|/mcp_server",
+      "scope": "repo"
+    },
+    {
+      "key": "duplicate_publishers|/voice/sound/stop|/mcp_server",
+      "scope": "repo"
+    },
+    {
+      "key": "duplicate_publishers|/voice/tts/set_provider|/mcp_server",
+      "scope": "repo"
+    },
+    {
+      "key": "duplicate_publishers|/cmd_vel|/behavior_server",
+      "scope": "external"
+    }
+  ]
+}
