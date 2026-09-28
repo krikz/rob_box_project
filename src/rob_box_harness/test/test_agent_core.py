@@ -1505,6 +1505,84 @@ def test_tool_success_does_not_set_tool_error_occurred(
 
     assert result.error is None
     assert result.tool_error_occurred is False
+    assert result.succeeded_tools == ["save_arrangement_preset"]
+
+
+def test_issue_3004_validation_error_then_success_reports_succeeded_tool(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #3004 — живой ход 28.09 (``voice-assistant.log``, 1790611417 →
+    1790611425): ``compose_music`` с ``levels: lead=1.3`` отвергнут
+    валидацией, повтор с ``lead=1.0`` в ТОМ ЖЕ ходе прошёл. Один булев
+    ``tool_error_occurred`` не отличает это от провала — ``succeeded_tools``
+    должен назвать ``compose_music`` успешным."""
+    from rob_box_llm.provider import ToolResult
+
+    bad = {
+        "name": "Hall Of The Mountain King (Alton Towers Theme) 2",
+        "levels": "lead=1.3,bass=1.2,pad=0.9,drums=1.1,hats=1.0",
+        "seed": 101,
+    }
+    good = dict(bad, levels="lead=1.0,bass=1.0,pad=0.9,drums=1.0,hats=1.0")
+    llm.responses = [
+        LLMResponse(content="", tool_calls=(ToolCall(id="c1", name="compose_music", arguments=bad),)),
+        LLMResponse(content="", tool_calls=(ToolCall(id="c2", name="compose_music", arguments=good),)),
+        LLMResponse(content="Григ в пещере горного короля гремит на весь танцпол!", tool_calls=()),
+    ]
+
+    async def compose_handler(args: dict[str, object]) -> Any:
+        if "lead=1.3" in str(args.get("levels")):
+            return ToolResult(
+                tool_call_id="c1",
+                content="levels: lead=1.3 — нужен множитель 0..1 (1 — как есть).",
+                is_error=True,
+            )
+        return "ok"
+
+    tools_provider._handler_map = {"compose_music": compose_handler}
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(
+        core_obj.process_input("сыграй в пещере гороного короля погромче", history=[])
+    )
+
+    assert result.error is None
+    assert [c.arguments["levels"] for c in tools_provider.executed] == [
+        bad["levels"], good["levels"],
+    ]
+    assert result.tool_error_occurred is True
+    assert result.succeeded_tools == ["compose_music"]
+
+
+def test_issue_3004_only_failed_call_is_not_in_succeeded_tools(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Контраст: единственный вызов упал — ``succeeded_tools`` пуст."""
+    from rob_box_llm.provider import ToolResult
+
+    llm.responses = [
+        LLMResponse(content="", tool_calls=(ToolCall(id="c1", name="save_arrangement_preset", arguments={}),)),
+        LLMResponse(content="Записала пресет!", tool_calls=()),
+    ]
+
+    async def refusing_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(tool_call_id="c1", content="недоступен", is_error=True)
+
+    tools_provider._handler_map = {"save_arrangement_preset": refusing_handler}
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(core_obj.process_input("сохрани пресет", history=[]))
+
+    assert result.tool_error_occurred is True
+    assert result.succeeded_tools == []
 
 
 def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(

@@ -100,6 +100,7 @@ from .tools import (
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    SetMusicVolumeTool,
     SaveTrackTool,
     ListTracksTool,
     LoadTrackTool,
@@ -1164,6 +1165,8 @@ class MCPServer(Node):
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
+        # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
+        self.registry.register(SetMusicVolumeTool(self, music_manager))
         self.registry.register(SetDjModeTool(self, music_manager))
         self.registry.register(SearchSamplesTool(self))
 

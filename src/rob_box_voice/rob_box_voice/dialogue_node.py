@@ -5164,6 +5164,9 @@ class DialogueNode(Node):
             tool_error_occurred=bool(
                 getattr(result, "tool_error_occurred", False)
             ),
+            # Issue #3004 — per-call success: validation error + successful
+            # retry of the music tool in the same turn is a success.
+            succeeded_tools=tuple(getattr(result, "succeeded_tools", None) or ()),
         )
         # Issue #1777 / #1762 — Bug C retry для non-music tool-based
         # запросов (``get_current_time`` / ``search_web`` / ``set_voice`` /
@@ -7032,6 +7035,7 @@ class DialogueNode(Node):
         tools_called: tuple,
         spoken: Optional[str] = None,
         tool_error_occurred: bool = False,
+        succeeded_tools: tuple = (),
     ) -> bool:
         """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
         side effects (dispatch, speak_direct, dialogue-reopen) out of
@@ -7125,6 +7129,8 @@ class DialogueNode(Node):
             build_dj_retry_prompt=self._build_dj_retry_prompt,
             spoken=spoken,
             tool_error_occurred=tool_error_occurred,
+            succeeded_tools=succeeded_tools,
+            music_playing=self._music_playing_now(),
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
@@ -7139,10 +7145,7 @@ class DialogueNode(Node):
             # #1881). Декремент ДО диспатча, на исчерпании — spoken
             # nudge, как в USER_RETRY ниже.
             if not self._consume_synthetic_retry(guard_name="music_dj"):
-                self._discard_last_music_reply()
-                self._speak_direct(
-                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
-                )
+                self._speak_music_retry_nudge()
                 return False
             # Помечаем «в этом ходе ретрай уже отправлен» — иначе
             # babble-/tool-guards в следующем цикле guard'ов могут
@@ -7175,10 +7178,7 @@ class DialogueNode(Node):
                 # Бюджет исчерпан — публикуем spoken nudge (как при
                 # budget_exhausted внутри ``MusicGuard``) и НЕ
                 # диспатчим второй ретрай.
-                self._discard_last_music_reply()
-                self._speak_direct(
-                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
-                )
+                self._speak_music_retry_nudge()
                 return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
@@ -7231,10 +7231,7 @@ class DialogueNode(Node):
             # :meth:`MusicGuard.evaluate` сейчас отдаёт FALLBACK
             # вместо NUDGE (issue #2561), но если где-то ещё живёт
             # кастомный guard, сюда он попадёт.
-            self._discard_last_music_reply()
-            self._speak_direct(
-                "Я тут растерялся — бит не запустился, попробуй ещё раз."
-            )
+            self._speak_music_retry_nudge()
             return False
 
         # Issue #2967 — Bug B retry-budget exhausted on THIS DJ-transition
@@ -7246,6 +7243,39 @@ class DialogueNode(Node):
         # user did not request music, DJ off, etc.). Policy module already
         # logged the diagnostic.
         return False
+
+    #: Nudge после исчерпания бюджета, когда музыки НЕТ — тогда он правдив.
+    MUSIC_RETRY_NUDGE_TEXT = "Я тут растерялся — бит не запустился, попробуй ещё раз."
+    #: Issue #3125 — тот же момент, но музыка играет: «бит не запустился»
+    #: было бы враньём (живой сет 28.09: трек играл, робот 3 раза сказал,
+    #: что бит не запустился). Честно: музыка идёт, а просьбу не выполнил.
+    MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT = (
+        "Музыка играет, а вот эту просьбу я выполнить не смог — скажи по-другому."
+    )
+
+    def _music_playing_now(self) -> bool:
+        """Issue #3125 — играет ли сейчас музыка (TRACK с прошлого хода).
+
+        Тот же флаг, что пишет «[track-mode] TRACK играет с прошлого хода»;
+        сервер гасит его через ``/voice/music/state`` = idle.
+        """
+        return bool(getattr(self, "_track_mode_music_active", False))
+
+    def _speak_music_retry_nudge(self) -> None:
+        """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
+
+        Issue #3125: при играющей музыке «бит не запустился» не звучит —
+        вместо него честная фраза :attr:`MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT`.
+        """
+        self._discard_last_music_reply()
+        if self._music_playing_now():
+            self.get_logger().warning(
+                "🎵 [issue 3125] retry budget exhausted while music is playing "
+                "— NOT saying «бит не запустился»"
+            )
+            self._speak_direct(self.MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT)
+            return
+        self._speak_direct(self.MUSIC_RETRY_NUDGE_TEXT)
 
     def _mark_dj_giveup_silent_if_budget_exhausted(
         self, verdict: MusicGuardVerdict

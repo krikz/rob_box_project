@@ -1305,6 +1305,11 @@ class MusicManager:
             self._log_warning(f"master gain not applied: {exc}")
         return self._master_gain
 
+    @property
+    def master_gain(self) -> float:
+        """Issue #3125 — текущий уровень мастер-фейдера (0.0-1.0)."""
+        return self._master_gain
+
     # ------------------------------------------------------------------
     # Code safety filter — логика вынесена в core/renardo_sanitizer
     # (единый seam). Обёртки ниже оставлены для обратной совместимости
@@ -4901,6 +4906,136 @@ class GetMusicStateTool(MCPTool):
             success=True,
             data=state,
             message="\n".join(parts),
+        )
+
+
+class SetMusicVolumeTool(MCPTool):
+    """Issue #3125 — громкость МУЗЫКИ (мастер-фейдер scsynth), не голоса.
+
+    Живой сет 28.09.2026: «играй громче» во время DJ-сета — у LLM был только
+    ``set_volume``, а он крутит ``/tts_node volume_db``, то есть ГОЛОС. Уровень
+    музыки задавал лишь ROS-параметр ``music_master_gain`` при старте, до LLM
+    он не доходил, и модель честно выполнить просьбу не могла — фантазировала
+    «подкручиваю трек на максимум» при неизменном уровне.
+
+    Тул двигает тот же фейдер, что и параметр: ``MusicManager.set_master_gain``
+    → ``/n_set 999 gain <v>`` (синт ``masterlimiter``, сглаживание ``Lag.kr``,
+    без щелчка). Шаг ``louder``/``quieter`` — ±3 dB (×√2 по амплитуде), как у
+    ``set_volume`` для голоса. ``normal`` — значение ``music_master_gain``, с
+    которым стартовал сервер. Уровень клэмпится в [0, 1]: выше 1.0 фейдер
+    не поднимается (``set_master_gain``).
+    """
+
+    #: ±3 dB по амплитуде.
+    STEP_FACTOR: float = 10 ** (3.0 / 20.0)
+    #: Нижний предел ШАГОВОГО «тише»: шаги не должны молча заглушить музыку
+    #: в ноль (для тишины есть ``stop_music``); явный ``level=0`` разрешён.
+    MIN_STEP_GAIN: float = 0.05
+    MAX_GAIN: float = 1.0
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+        #: Уровень «как было при старте» — значение ROS-параметра
+        #: ``music_master_gain``, которым сконструирован менеджер.
+        self._normal_gain: float = float(manager.master_gain)
+
+    @property
+    def name(self) -> str:
+        return "set_music_volume"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Громкость МУЗЫКИ (трек/бит/DJ-сет: compose_music, lookup_melody, "
+            "execute_music_code, load_track), а НЕ голоса робота. Юзер просит "
+            "«громче/тише/погромче/потише» и сейчас играет музыка, или прямо "
+            "говорит «музыку/трек/бит громче» — вызывай ЭТОТ тул, а не "
+            "set_volume (set_volume меняет только голос). Музыку не "
+            "перезапускает: играющий трек продолжает играть, меняется только "
+            "уровень. action: louder/quieter — шаг ±3 dB, max — максимум, "
+            "normal — стартовый уровень, set — абсолютный уровень level "
+            "0..100 (% от максимума). mp3 из MiniMax-библиотеки "
+            "(gen_play_from_library) этим тулом не регулируется."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="action",
+                type="string",
+                description=(
+                    "louder — громче на шаг, quieter — тише на шаг, max — на "
+                    "максимум, normal — стартовый уровень, set — выставить level"
+                ),
+                required=True,
+                enum=["louder", "quieter", "max", "normal", "set"],
+            ),
+            MCPToolParameter(
+                name="level",
+                type="integer",
+                description=(
+                    "Только для action=set: уровень музыки в процентах от "
+                    "максимума, 0..100 (значения вне диапазона обрезаются)."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def _target_gain(self, action: str, level: Optional[float], current: float):
+        """Целевой уровень для ``action`` или ``(None, error)``."""
+        if action == "louder":
+            return min(self.MAX_GAIN, current * self.STEP_FACTOR), None
+        if action == "quieter":
+            return max(self.MIN_STEP_GAIN, current / self.STEP_FACTOR), None
+        if action == "max":
+            return self.MAX_GAIN, None
+        if action == "normal":
+            return self._normal_gain, None
+        if action == "set":
+            if level is None:
+                return None, "action=set требует level 0..100"
+            try:
+                pct = float(level)
+            except (TypeError, ValueError):
+                return None, f"level должен быть числом 0..100, получено {level!r}"
+            return max(0.0, min(100.0, pct)) / 100.0 * self.MAX_GAIN, None
+        return None, f"Неизвестное действие: {action}"
+
+    def execute(self, action: str, level: Optional[float] = None) -> MCPToolResult:
+        """Изменить уровень мастер-фейдера музыки."""
+        current = float(self._manager.master_gain)
+        target, error = self._target_gain(action, level, current)
+        if error is not None:
+            return MCPToolResult(success=False, error=error)
+        applied = self._manager.set_master_gain(target)
+        self.log_info(
+            f"[set_music_volume] action={action} level={level} "
+            f"master_gain {current:.2f} → {applied:.2f}"
+        )
+        pct = round(applied / self.MAX_GAIN * 100)
+        if abs(applied - current) < 1e-3:
+            edge = "максимальная" if applied >= self.MAX_GAIN else "уже такая"
+            message = f"Громкость музыки не изменилась ({edge}, {pct}%)"
+        else:
+            message = f"Громкость музыки: {round(current / self.MAX_GAIN * 100)}% → {pct}%"
+        return MCPToolResult(
+            success=True,
+            data={"old_gain": round(current, 3), "new_gain": round(applied, 3), "percent": pct},
+            message=message,
         )
 
 
