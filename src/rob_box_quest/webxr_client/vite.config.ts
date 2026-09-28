@@ -15,8 +15,9 @@ export default defineConfig({
     target: "es2022",
     rollupOptions: {
       output: {
-        manualChunks: {
-          three: ["three"]
+        // Vite 8 (rolldown) принимает только функцию, объектная форма удалена.
+        manualChunks(id: string) {
+          if (id.includes("/node_modules/three/")) return "three";
         }
       }
     }

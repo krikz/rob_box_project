@@ -21,7 +21,7 @@
     "@gltf-transform/core": "^4.4.2",
     "@gltf-transform/extensions": "^4.4.2",
     "@gltf-transform/functions": "^4.4.2",
-    "@types/node": "^20.12.7",
+    "@types/node": "^22.12.0",
     "@types/three": "^0.170.0",
     "draco3dgltf": "^1.5.7",
     "jsdom": "^24.1.0",
