@@ -147,6 +147,7 @@ payload. Он не является частью текущего wire-прот�
 | `robot_status` | `stream_id` из `subscribe_ack` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
 | `voice_state` | `stream_id` из `subscribe_ack` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking"\|"denied", ts_ms, utterance_id?, holder_id?, detail?}` — event-driven. См. §6 `JSON_EVENT{type:voice_state}` для семантики `denied`/`holder_id`/`detail` (добавлены в PR #1930 + #1933 под аудит G8/G19, см. issue #1912). |
 | `person_detections` | `stream_id` из `subscribe_ack` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
+| `nav_path` (topic_id `0x1104`) | `stream_id` из `subscribe_ack` | MessagePack `{frame: "map", n, xy: bin, ts_ms}` — глобальный план Nav2 из `/plan` (`nav_msgs/Path`, публикует `planner_server`). `xy` — `n` пар little-endian float32 `[x0, y0, x1, y1, …]` в кадре `map`, прорежено до ≤ 200 точек (первая и последняя сохраняются). `n = 0` — «пути нет» (цель завершилась), клиент гасит линию. Путь не в `map` сервер не шлёт. Клиент сам кладёт точки в `base_link` по позе из `map_2d` (issue #3151) |
 
 **Frequency policy:**
 
@@ -161,6 +162,10 @@ payload. Он не является частью текущего wire-прот�
 - `lidar_3d`: 2 Hz (тяжёлый, клиент может unsubscribe если не нужен).
 - `robot_status`: 1 Hz всегда (пока не unsubscribe).
 - `voice_state`: event-driven (только при смене состояния).
+- `nav_path`: ≤ 2 Гц (на деле ~1 Гц — `RateController hz=1.0` в BT
+  `navigate_to_pose_w_replanning.xml`), только пока есть подписчик
+  (ROS-подписка на `/plan` создаётся по требованию, как у камер) и пока
+  Nav2 планирует. Пустой кадр по завершении цели проходит мимо дросселя.
 
 **Backpressure:** если клиент не успевает читать, сервер применяет
 `drop-oldest` политику для потоковых топиков (camera, lidar) — лучше
@@ -196,6 +201,8 @@ payload. Он не является частью текущего wire-прот�
 | `set_voice` | implemented | Phase 2 / AV-27/28 | `voice_set_ack` или `voice_set_nack` |
 | `voice_pipeline` | implemented | Phase 2.1+ / AV-28 | `voice_pipeline_ack` или `voice_pipeline_nack` |
 | `preview_voice` | implemented | Phase 2 / AV-27 | preview audio events + `BINARY_FRAME` |
+| `nav_goal` | implemented | Captain Bridge волна 2 / #3151 | `nav_goal_ack` или `nav_goal_nack`; дальше `nav_status` (Nav2 `navigate_to_pose`) |
+| `nav_cancel` | implemented | Captain Bridge волна 2 / #3151 | `nav_cancel_ack`; итог — `nav_status{state:"canceled"}` |
 | `ui_button` | planned | Phase 2 / R14 | не реализовано; Q11 |
 | `admin_logs` / `admin_logs_stop` | planned | Phase 2 / R14 | не реализовано; Q11 |
 | `set_panel_topic` | planned | Phase 2 / R10 | заменено реализованным `stream_select` |
@@ -398,6 +405,41 @@ Phase 2 (R10). Сервер отвечает `JSON_EVENT{type: "stream_list", it
 — список доступных стримов для стрим-селектора. Каждый item приходит из
 `Bridge.available_streams()`.
 
+#### Nav-цель из VR (`nav_goal` / `nav_cancel`, issue #3151)
+
+```json
+{ "cmd": "nav_goal", "ts_ms": 1234567890, "seq": 3, "x": 4.2, "y": -1.5, "yaw": 1.57, "frame": "map" }
+{ "cmd": "nav_cancel", "ts_ms": 1234567890 }
+```
+
+- Клиент пересчитывает точку на полу (`base_link`) в `map` сам — по
+  последней позе из `map_2d`; `frame` обязан быть `"map"` (иначе
+  `nav_goal_nack{reason:"bad_frame"}`). `yaw` — радианы в `map`,
+  сервер нормализует его в (−π, π].
+- Гейт — тот же, что у `teleop_twist`: при `require_teleop_floor=true`
+  цель принимается только от держателя `teleop_floor`
+  (`nav_goal_nack{reason:"floor_held"}`); плюс emergency lock после
+  `stop_emergency` / watchdog (`emergency_active`) до нового HELLO.
+- Сервер → Nav2 action `navigate_to_pose` (`nav2_msgs/NavigateToPose`,
+  bt_navigator). Не `/goal_pose`: у топика нет ни ответа «принял/отверг»,
+  ни feedback, ни отмены. Нет action-сервера / `nav2_msgs` в образе →
+  `nav_goal_nack{reason:"nav2_unavailable"}`.
+- Новая цель поверх активной вытесняет её (штатно для Nav2); события
+  вытесненной цели сервер не пересылает.
+- `nav_cancel` — без floor-гейта (как `stop_emergency`). `stop_emergency`
+  и watchdog-трип тоже отменяют активную nav-цель: одиночный Twist в
+  `cmd_vel_emergency` живёт в twist_mux 0.1 с, после чего Nav2 поехал бы
+  дальше.
+
+Клиент мостика (`webxr_client/src/nav/`) выставляет цель так:
+взвести прицел (VR — A/X на любой руке, desktop — `G`) → trigger / ЛКМ
+в пол (панель под лучом приоритетнее пола) → не отпуская, потянуть —
+курс прибытия (натяг ≥ 0.3 м; без натяга — «по ходу движения» от робота
+к точке) → отпустить — `nav_goal` ушёл, прицел разрядился (одна взводка —
+одна цель). Цель дальше 20 м и цель по позе старше 1.5 с не отправляются.
+Отмена — кнопка «ОТМЕНА НАВ» у левой руки (видна, пока цель жива),
+`Shift+G` или аварийный стоп B/Y.
+
 ### 5.1. Supervisor-команды (Phase 2, subprotocol `robbox-quest-v2`)
 
 Те же 4 supervisor-команды из §3 (`0x30`–`0x33`) доступны как `JSON_CMD`
@@ -468,6 +510,17 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 // ручной release). Клиент обязан мгновенно DISARM-нуться
 // (teleop_fsm.setHasFloor(false)) и показать тост «возьми руль».
 { "type": "floor_lost",     "floor": "teleop"|"voice", "reason": "external_supervisor_or_lost", "ts_ms": 1234567890 }
+
+// issue #3151: nav-цель. ack/nack/cancel_ack — только запросившей сессии;
+// nav_status — broadcast всем (все операторы видят пин и статус).
+{ "type": "nav_goal_ack",   "seq": 3, "ts_ms": 1234567890 }   // ушла в Nav2, НЕ «Nav2 принял»
+{ "type": "nav_goal_nack",  "seq": 3, "reason": "bad_payload"|"bad_frame"|"floor_held"|"emergency_active"|"nav2_unavailable", "ts_ms": 1234567890 }
+{ "type": "nav_status",     "state": "accepted"|"rejected"|"active"|"succeeded"|"aborted"|"canceled",
+                            "seq": 3, "x": 4.2, "y": -1.5, "yaw": 1.57, "distance_remaining": 2.8, "reason": "...", "ts_ms": 1234567890 }
+// active — feedback NavigateToPose, ≤ 2 Гц; distance_remaining — только если
+// Nav2 его прислал. rejected/succeeded/aborted/canceled — терминальные,
+// после них сервер шлёт пустой nav_path.
+{ "type": "nav_cancel_ack", "had_goal": true, "ts_ms": 1234567890 }
 ```
 
 `robot_alert` codes (Phase 1): `BATTERY_LOW (<20%)`, `WIFI_WEAK (<-75 dBm)`,
@@ -717,3 +770,4 @@ architect, issue #2196):
 | Дата | Amendment | Изменение |
 |---|---|---|
 | 2026-09-08 | ADR-0082 / issue #2196 | Снят статус frozen; удалены неподтверждённые команды из реализованного API; добавлены `voice_pipeline`, `voice_listen_*`, `stream_select` и их события; `deadman`/`seq` и `BINARY_FRAME` описаны по фактическому поведению кода. Владелец: architect. |
+| 2026-09-28 | issue #3151 (Captain Bridge волна 2) | Добавлены стрим `nav_path` (0x1104, `/plan`), команды `nav_goal` / `nav_cancel` (→ Nav2 `navigate_to_pose`), события `nav_goal_ack` / `nav_goal_nack` / `nav_status` / `nav_cancel_ack`. |
