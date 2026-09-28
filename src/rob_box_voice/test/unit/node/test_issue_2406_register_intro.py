@@ -380,7 +380,8 @@ class TestExistingRemindersUnaffected:
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
         music_state_reminder = reminders[-2]
         assert "get_music_state" in music_state_reminder
-        assert "stale" in music_state_reminder
+        # Issue #3161: «stale» убрано из reminder намеренно (тег — снимок
+        # плеера); контракт здесь — только позиция reminder'а.
 
     def test_stop_music_reminder_still_first(self):
         """stop_music-reminder остаётся reminders[0] (контракт PR #1544)."""
