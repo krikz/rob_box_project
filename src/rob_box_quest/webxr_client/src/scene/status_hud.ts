@@ -278,6 +278,11 @@ export interface StatusHud {
   ): void;
   /** AV-26: вывести плашку с активным robot_alert. `null` — скрыть. */
   setAlert(alert: { text: string; level: "warn" | "error" } | null): void;
+  /**
+   * #3151: строка NAV (статус nav-цели, см. nav/nav_state.ts:navStatusLine).
+   * `null` — навигации нет, строку не рисуем.
+   */
+  setNav(line: StatusLine | null): void;
   dispose(): void;
 }
 
@@ -333,6 +338,8 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     voiceLabel = floorLabel(supervisor, "voice", supervisorMyClientId);
   }
   let alert: { text: string; level: "warn" | "error" } | null = null;
+  // #3151: строка NAV — последней, под статусом робота.
+  let navLine: StatusLine | null = null;
 
   function draw(): void {
     // AV-25 (FPS): передаём fps в formatStatusLines.
@@ -368,6 +375,7 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     }
 
     // Если алёрт активен — строки сдвигаем вниз, чтобы не перекрывать.
+    if (navLine !== null) lines.push(navLine);
     const topOffset = alert !== null ? ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2 : 0;
     const rowH = (canvas.height - topOffset) / lines.length;
     lines.forEach((line, i) => {
@@ -416,6 +424,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
       supervisorMyClientId = myClientId;
       supervisorDegraded = options?.degraded ?? false;
       recomputeFloorLabels();
+      draw();
+    },
+    setNav(next: StatusLine | null): void {
+      navLine = next;
       draw();
     },
     setAlert(next: { text: string; level: "warn" | "error" } | null): void {

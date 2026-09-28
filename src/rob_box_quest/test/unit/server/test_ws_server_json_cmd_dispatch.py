@@ -44,6 +44,9 @@ EXPECTED_JSON_COMMANDS = {
     "set_voice",
     "voice_pipeline",
     "preview_voice",
+    # issue #3151 — Captain Bridge волна 2: nav-цель из VR.
+    "nav_goal",
+    "nav_cancel",
 }
 
 

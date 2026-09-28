@@ -642,6 +642,41 @@ COMMANDS: tuple[CommandSpec, ...] = (
             "(Phase 2, R14) Описан в §5; см. admin_logs. "
             "Обработчик не подключён."
         ),
+    ),    # --- Captain Bridge волна 2 (issue #3151): nav-цель из VR --------------
+    # Клиент сам пересчитывает точку на полу (base_link) в ``map`` по
+    # последней позе из map_2d и шлёт готовую цель. Сервер НЕ знает, какой
+    # позой пользовался клиент, поэтому frame обязан быть ``map`` явно —
+    # чужой frame честно отвергается (nav_goal_nack{reason:"bad_frame"}).
+    CommandSpec(
+        name="nav_goal",
+        payload=_p({
+            "cmd": "nav_goal",
+            "ts_ms": "int",
+            "seq": "int",
+            "x": "float",
+            "y": "float",
+            "yaw": "float",
+            "frame": {"type": "literal", "values": ["map"]},
+        }),
+        subprotocol="any",
+        description=(
+            "Цель навигации в кадре map → Nav2 NavigateToPose (#3151). "
+            "Гейт тот же, что у teleop_twist (teleop_floor) + emergency lock. "
+            "Ответ: nav_goal_ack / nav_goal_nack, дальше nav_status."
+        ),
+    ),
+    CommandSpec(
+        name="nav_cancel",
+        payload=_p({
+            "cmd": "nav_cancel",
+            "ts_ms": "int",
+        }),
+        subprotocol="any",
+        description=(
+            "Отменить текущую nav-цель (#3151). Без floor-гейта — как "
+            "stop_emergency, отмена движения не должна упираться в руль. "
+            "Ответ: nav_cancel_ack."
+        ),
     ),
 )
 
@@ -890,6 +925,72 @@ EVENTS: tuple[EventSpec, ...] = (
         subprotocol="any",
         server_emitted=True,
         description="Финал стрима логов (R14, §6).",
+    ),    # --- Captain Bridge волна 2 (issue #3151): статус навигации ------------
+    EventSpec(
+        name="nav_goal_ack",
+        payload=_p({
+            "type": "nav_goal_ack",
+            "seq": "int",
+            "ts_ms": "int",
+        }),
+        subprotocol="any",
+        server_emitted=True,
+        description=(
+            "Цель прошла гейт и ушла в Nav2 (#3151). Это НЕ «Nav2 принял»: "
+            "принятие/отказ Nav2 приходит отдельным nav_status."
+        ),
+    ),
+    EventSpec(
+        name="nav_goal_nack",
+        payload=_p({
+            "type": "nav_goal_nack",
+            "seq": "int?",
+            "reason": "str",
+            "ts_ms": "int",
+        }),
+        subprotocol="any",
+        server_emitted=True,
+        description=(
+            "Цель отвергнута мостом до Nav2 (#3151): bad_payload | bad_frame | "
+            "floor_held | emergency_active | nav2_unavailable."
+        ),
+    ),
+    EventSpec(
+        name="nav_status",
+        payload=_p({
+            "type": "nav_status",
+            "state": {
+                "type": "literal",
+                "values": ["accepted", "rejected", "active", "succeeded", "aborted", "canceled"],
+            },
+            "seq": "int",
+            "x": "float",
+            "y": "float",
+            "yaw": "float",
+            "distance_remaining": "float?",
+            "reason": "str?",
+            "ts_ms": "int",
+        }),
+        subprotocol="any",
+        server_emitted=True,
+        description=(
+            "Жизненный цикл nav-цели от Nav2 (#3151), broadcast всем сессиям. "
+            "active — feedback NavigateToPose (≤ 2 Гц, distance_remaining)."
+        ),
+    ),
+    EventSpec(
+        name="nav_cancel_ack",
+        payload=_p({
+            "type": "nav_cancel_ack",
+            "had_goal": "bool",
+            "ts_ms": "int",
+        }),
+        subprotocol="any",
+        server_emitted=True,
+        description=(
+            "Ответ на nav_cancel (#3151). had_goal=false — отменять было "
+            "нечего; итог отмены придёт как nav_status{state:canceled}."
+        ),
     ),
 )
 
@@ -991,6 +1092,18 @@ STREAMS: tuple[StreamSpec, ...] = (
         source="phase2_source",
         default_quality="med",
         description="(Phase 2 R11) детекция людей в стриме.",
+    ),    # Captain Bridge волна 2 (issue #3151). Глобальный план Nav2 —
+    # planner_server публикует ``plan`` (без namespace → /plan) на каждом
+    # ComputePathToPose; в BT navigate_to_pose_w_replanning это ~1 Гц.
+    StreamSpec(
+        ui_name="nav_path",
+        topic_id=0x1104,
+        kind=StreamKind.ROS_TOPIC,
+        source="/plan",
+        default_quality="low",
+        description=(
+            "Глобальный путь Nav2 (nav_msgs/Path, кадр map, ≤ 200 точек, ≤ 2 Гц)."
+        ),
     ),
 )
 
