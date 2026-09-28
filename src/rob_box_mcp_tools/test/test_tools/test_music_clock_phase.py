@@ -182,7 +182,16 @@ def _club_run(mock_node, clock):
     mgr = _make_manager(sc_running=True, renardo_available=True)
     mgr._renardo_context = {"Clock": clock} if clock is not None else {}
     tool = ComposeMusicTool(mock_node, mgr)
-    with patch("builtins.exec") as fake_exec:
+    # Issue #3137 R2: execute_code's Clock.clear() path now defers its
+    # ramp/freeAll teardown via threading.Timer (see MusicManager.
+    # _schedule_transition_cleanup). This module's tests aren't about that
+    # mechanism — they use a live-ish FakeClock purely for the #3112 phase
+    # math — so a real (unmocked) Timer would leak a background thread
+    # into the rest of the test session, which is instead exercised (with
+    # proper mocking of both exec and threading.Timer) in test_music.py.
+    with patch("builtins.exec") as fake_exec, patch(
+        "rob_box_mcp_tools.tools.music.threading.Timer"
+    ):
         result = tool.execute(style="club", seed=0)
     return result, fake_exec.call_args[0][0]
 
@@ -226,7 +235,10 @@ def test_classic_compose_reports_phase_and_honours_flag(mock_node, monkeypatch):
     mgr = _make_manager(sc_running=True, renardo_available=True)
     mgr._renardo_context = {"Clock": FakeClock(beat=37.3)}
     tool = ComposeMusicTool(mock_node, mgr)
-    with patch("builtins.exec") as fake_exec:
+    # See the comment in _club_run above — same reason to mock threading.Timer.
+    with patch("builtins.exec") as fake_exec, patch(
+        "rob_box_mcp_tools.tools.music.threading.Timer"
+    ):
         result = tool.execute(
             bpm=100, root="C", scale="minor", form="arc", drums="X..o.X.o",
             bass_synth="dub", bass_notes="0, 0, 3, -2", lead_synth="blip",
