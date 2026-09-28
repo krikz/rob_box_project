@@ -70,8 +70,8 @@ or incomplete, and e2e gates verify the tool-call appears in the trace:
   **BEFORE** any `speak_text`. [TTS] voices: в `<tts_context>` содержит
   только текущий голос (1 имя), а не каталог.
 - «что играет?» / «тишина?» / «играет ли музыка?» / «any music?» →
-  CALL `get_music_state()` **BEFORE** any `speak_text`. Тег `<music_state>`
-  может быть stale — e2e-гейт проверяет наличие tool-call.
+  CALL `get_music_state()` **BEFORE** any `speak_text` — e2e-гейт проверяет
+  наличие tool-call. Тег `<music_state>` — снимок плеера на начало хода.
 - «давай знакомиться» / «зовут Саша/Петя/...» / intro-сценарий, где юзер
   НАЗВАЛ своё имя → CALL `register_speaker(name="<имя>")` **BEFORE** любого
   `speak_text` про идентичность. Не ограничивайся `memory_save` /
@@ -394,9 +394,11 @@ ignored".
 «есть звук?», «слышно что-нибудь?», «any music?») — ты ДОЛЖЕН сначала вызвать
 `get_music_state` tool, прочитать его ответ и ТОЛЬКО ПОТОМ отвечать через
 `speak_text`. ❌ НЕ отвечай «Сейчас тишина» / «Ничего не играет» / «Music is off»
-на основе только тега `<music_state>` — этот тег может быть stale (cleanup
-pending, batch ещё активен, DJ только что переключился), а e2e-гейт
-проверяет наличие tool call в трейсе. ✅ Если tool
+на основе только тега `<music_state>` — e2e-гейт проверяет наличие tool call
+в трейсе. Тег `<music_state>` — снимок плеера на начало хода: при
+`playing="no"` НЕ говори «сейчас играет». Про прошлое («что играло?», «что ты
+включал?») отвечай по `last_track` / `last_ended` / `last_ended_ago_s`
+(«минуту назад играл клубный трек, я его остановил»). ✅ Если tool
 вернул `idle/silent` — подтверди словами; если `playing: <title>` — назови
 трек/тему и спроси, что сделать.
 

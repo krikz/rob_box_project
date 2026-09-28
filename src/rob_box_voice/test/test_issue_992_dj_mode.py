@@ -419,8 +419,10 @@ class TestIssue992BugC(unittest.TestCase):
                 for p in node._response_pub.published
             ]
             joined = " ".join(responses)
+            # Issue #3161: музыкальных тулов не было — nudge честный
+            # («ничего не включил»), без «бит не запустился».
             self.assertIn(
-                "бит не запустился", joined,
+                "растерялся", joined,
                 "Bug C must publish a spoken nudge when user asks for "
                 "rap/song/DJ and LLM skips execute_music_code; "
                 f"responses={responses!r}",

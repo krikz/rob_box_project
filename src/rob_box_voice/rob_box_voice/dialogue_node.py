@@ -100,6 +100,7 @@ from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
     DefaultSttAdmission,
@@ -274,28 +275,6 @@ from rob_box_voice.observability import (
     start_metrics_server,
     start_span,
 )
-
-
-def _xml_attr(value: str) -> str:
-    """Escape ``value`` for safe inclusion in an XML attribute (issue #1544).
-
-    Replaces the four characters that would break the ``<music_state …/>``
-    attribute syntax: ``"``, ``&``, ``<``, ``>``. Used by
-    :meth:`DialogueNode._build_music_state_snapshot` to safely embed user-
-    controlled theme names (``DJ-тема может содержать кавычки и амперсанды
-    из free-form ввода юзера)``) into the LLM-bound ``<system_context>``.
-
-    Cheap enough to call per-turn (~4 regex subs). Not a full XML escape —
-    we only render to LLM, not to a browser.
-    """
-    # ``str.replace`` chain is fine here — values are short (<200 chars).
-    return (
-        value
-        .replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 def _resolve_tts_voice_tag(
@@ -1038,6 +1017,9 @@ class DialogueNode(Node):
         # топика (``_music_player_state`` → ``_music_playing_now``). Latched,
         # как у публикатора: после рестарта ноды снимок приходит сразу.
         self._music_player_state = None
+        # Issue #3161 — те же снимки + имя темы из /voice/music/form → тег
+        # <music_state> для LLM (что играет и что замолчало недавно).
+        self._music_state_memory = MusicStateMemory()
         self.create_subscription(
             String, MUSIC_STATE_TOPIC, self._on_music_state,
             QoSProfile(
@@ -3268,6 +3250,7 @@ class DialogueNode(Node):
         if snapshot is None:
             return
         self._music_player_state = snapshot
+        self._music_state_mem().observe_state(snapshot)
         if snapshot.state == "idle" and self._track_mode_music_active:
             self._track_mode_music_active = False
             self.get_logger().info(
@@ -3315,6 +3298,8 @@ class DialogueNode(Node):
         # («горный король погромче»); читается только через _media_state.
         track = payload.get("track")
         self._music_form_track = track if isinstance(track, str) and track else None
+        # Issue #3161 — имя играющей темы для <music_state>.
+        self._music_state_mem().observe_track_name(self._music_form_track)
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
@@ -4315,84 +4300,38 @@ class DialogueNode(Node):
     #
     # Issue #1544 — LLM нужен честный обзор того, ЧТО играет прямо сейчас,
     # чтобы решать «стоп музыку» / «давай трек» / «хватит диджеить».
-    # До фикса был только <generated_music> для AI-генерации (issue #1392
-    # follow-up), и DJ-бит/Renardo оставались невидимыми → LLM говорил
-    # verbal «уже выключено» на стоп-команду, пока DJ-бит реально играл.
     #
-    # Четыре независимых источника истины:
-    #   * DJ-режим (``self._dj.state.enabled``) — autonomous DJ-сессия.
-    #   * AI-сгенерированная музыка (``self._generated_music_state`` dict)
-    #     — приходит из /voice/generated_music/state топика.
-    #   * Активный Renardo-бит — эвристика: либо cleanup-флаг
-    #     (``_pending_music_cleanup`` True → LLM запустил execute_music_code
-    #     и музыка ещё живёт), либо есть активные TTS-батчи в
-    #     ``_active_batches`` (музыка под backing-вокал).
-    #   * cleanup_in_progress — отложенный cleanup (cleanup=True означает
-    #     «бит был, сейчас будет остановлен после TTS batch_complete»).
+    # Issue #3161 (ADR-0141) — тег строится ТОЛЬКО из того, что публикует
+    # плеер: снимок ``/voice/music/state`` + имя темы из
+    # ``/voice/music/form`` (см. ``core/music_state_prompt.py``). Прежняя
+    # эвристика ``beat`` («играет», если взведён cleanup или живы
+    # TTS-батчи) врала после стопа: живой прогон 28.09 22:32 — через 10 с
+    # после «выключи музыку» модель прочла «играет» и так и сказала.
     #
-    # XML формат — компактный, один блок в <system_context>:
-    #
-    #   <music_state dj="playing: <theme>" ai="playing: <title>" beat="active" />
-    #   <music_state dj="off" ai="idle" beat="silent" />  ← idle
-    #
-    # Чтобы не путать LLM лишними атрибутами, всегда рендерим ВСЕ три
-    # (``dj``, ``ai``, ``beat``) — LLM видит «что есть» и «чего нет» одним
-    # взглядом, без чтения нескольких тегов.
-    DJ_THEME_UNKNOWN = "unknown theme"
+    #   <music_state playing="yes" track="клубный трек" repeat="once"
+    #                ends_in_s="42" dj="off" ai="idle" />
+    #   <music_state playing="no" dj="off" ai="idle" last_track="клубный трек"
+    #                last_ended="stopped" last_ended_ago_s="13" />
+
+    def _music_state_mem(self) -> MusicStateMemory:
+        """Память о снимках плеера (лениво — для стабов из ``__new__``)."""
+        memory = getattr(self, "_music_state_memory", None)
+        if memory is None:
+            memory = self._music_state_memory = MusicStateMemory()
+        return memory
 
     def _build_music_state_snapshot(self) -> str:
-        """Единый <music_state> snapshot для LLM (issue #1544).
+        """Единый ``<music_state>`` для LLM (issue #1544, #3161).
 
-        Возвращает строку вида::
-
-            <music_state dj="playing: <theme>" ai="playing: <title>"
-                         beat="active" cleanup="pending"/>
-
-        Все четыре атрибута рендерятся всегда (даже если ``off`` /
-        ``idle`` / ``silent``) — LLM не должен угадывать по отсутствию
-        тега.
-
-        Side effects: только чтение атрибутов; ничего не публикуется и
-        не модифицируется. Pure function of ``self.*`` state.
+        ``ai=`` — mp3 из AI-библиотеки играет в ``sound_node`` мимо
+        ``MusicManager`` и в снимок плеера не попадает; его состояние
+        публикует сам плеер mp3 (``/voice/generated_music/state``).
         """
-        # ── DJ-режим ──
-        dj_state = getattr(self, "_dj", None)
-        dj_inner = getattr(dj_state, "state", None) if dj_state else None
-        dj_enabled = bool(getattr(dj_inner, "enabled", False))
-        if dj_enabled:
-            dj_theme = (
-                getattr(dj_inner, "theme", None)
-                or self.DJ_THEME_UNKNOWN
-            )
-            dj_attr = f"playing: {dj_theme}"
-        else:
-            dj_attr = "off"
-
-        # ── AI-сгенерированная музыка (топик /voice/generated_music/state) ──
         gm = getattr(self, "_generated_music_state", None) or {}
+        title = None
         if gm.get("status") == "playing":
             title = gm.get("title") or "без названия"
-            ai_attr = f"playing: {title}"
-        else:
-            ai_attr = "idle"
-
-        # ── Активный Renardo-бит (не-DJ, не-AI) ──
-        # Эвристика: cleanup-флаг (LLM только что вызвал execute_music_code,
-        # бит ещё жив до tts_batch_complete) ИЛИ есть активные батчи
-        # TTS (музыка держится под вокал).
-        # Если _music_guard_budget или _pending_music_cleanup=False и
-        # _active_batches пуст — значит музыка уже не звучит.
-        pending_cleanup = bool(getattr(self, "_pending_music_cleanup", False))
-        active_batches = getattr(self, "_active_batches", None) or {}
-        beat_attr = "active" if (pending_cleanup or active_batches) else "silent"
-        cleanup_attr = "pending" if pending_cleanup else "none"
-
-        return (
-            f'  <music_state dj="{_xml_attr(dj_attr)}" '
-            f'ai="{_xml_attr(ai_attr)}" '
-            f'beat="{beat_attr}" '
-            f'cleanup="{cleanup_attr}" />'
-        )
+        return self._music_state_mem().render(generated_title=title)
 
     def _pending_identity_hint_lines(self) -> list:
         """Issue #2809 (продолжение) -- строки подсказки-гипотезы для
@@ -4587,9 +4526,9 @@ class DialogueNode(Node):
         # вызова stop_music tool. Один блок на весь turn — short enough.
         lines.append(
             "  <reminder>Если юзер говорит «стоп музыку / выключи / хватит "
-            "диджеить»: посмотри <music_state> выше — если НЕЧТО играет "
-            "(dj_active или ai_active или beat_active), ОБЯЗАТЕЛЬНО вызови "
-            "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
+            "диджеить»: посмотри <music_state> выше — если playing=\"yes\" "
+            "или ai=\"playing: …\", ОБЯЗАТЕЛЬНО вызови stop_music tool, а "
+            "потом коротко подтверди; если playing=\"no\" и ai=\"idle\" — "
             "verbal «уже выключено» без tool call.</reminder>"
         )
         # Issue #2406 (n201/n204 intro — register_speaker на discovery-шаге) —
@@ -4615,19 +4554,22 @@ class DialogueNode(Node):
         # Issue #2347 (n313 silence_restored) — SYSTEM REMINDER: на
         # state-запрос LLM по умолчанию делает verbal-only ответ из
         # <music_state> тега и пропускает get_music_state tool. e2e-гейт
-        # n313_silence_restored требует tool call в трейсе. Дублируем правило
-        # в dynamic context, чтобы LLM не «угадывал» ответ на основе stale
-        # snapshot. Ставим МЕЖДУ stop_music и time — test_issue_1777_time_format
-        # берёт reminders[-1] как time-reminder, не сдвигаем его.
+        # n313_silence_restored требует tool call в трейсе. Ставим МЕЖДУ
+        # stop_music и time — test_issue_1777_time_format берёт
+        # reminders[-1] как time-reminder, не сдвигаем его.
+        # Issue #3161: «тег может быть stale» больше не правда — он из
+        # снимка плеера; вместо этого учим отвечать про прошлое по last_*.
         lines.append(
             "  <reminder>Если юзер спрашивает про состояние музыки "
             "(«тихо?», «тишина?», «тише?», «играет ли музыка?», «что играет?», "
             "«что сейчас играет?», «музыка включена?», «слышно что-нибудь?»): "
             "ОБЯЗАТЕЛЬНО вызови get_music_state tool ПЕРЕД ответом, прочитай "
-            "результат и только потом отвечай через speak_text. НЕ угадывай "
-            "ответ по <music_state> тегу — он может быть stale (DJ переключился, "
-            "beat ещё держится под TTS-батчем, cleanup pending). Tool call "
-            "обязателен даже если кажется, что и так ясно.</reminder>"
+            "результат и только потом отвечай через speak_text. <music_state> "
+            "— снимок плеера на начало хода: при playing=\"no\" НЕ говори "
+            "«сейчас играет». Про прошлое («что играло?», «что ты включал?») "
+            "отвечай по last_track / last_ended / last_ended_ago_s («минуту "
+            "назад играл …»). Tool call обязателен даже если кажется, что и "
+            "так ясно.</reminder>"
         )
         # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
         # ``get_current_time`` уже возвращает ``formatted_time`` русской
@@ -7262,7 +7204,7 @@ class DialogueNode(Node):
                 # Бюджет исчерпан — публикуем spoken nudge (как при
                 # budget_exhausted внутри ``MusicGuard``) и НЕ
                 # диспатчим второй ретрай.
-                self._speak_music_retry_nudge()
+                self._speak_music_retry_nudge(tools_called)
                 return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
@@ -7315,7 +7257,7 @@ class DialogueNode(Node):
             # :meth:`MusicGuard.evaluate` сейчас отдаёт FALLBACK
             # вместо NUDGE (issue #2561), но если где-то ещё живёт
             # кастомный guard, сюда он попадёт.
-            self._speak_music_retry_nudge()
+            self._speak_music_retry_nudge(tools_called)
             return False
 
         # Issue #2967 — Bug B retry-budget exhausted on THIS DJ-transition
@@ -7328,8 +7270,16 @@ class DialogueNode(Node):
         # logged the diagnostic.
         return False
 
-    #: Nudge после исчерпания бюджета, когда музыки НЕТ — тогда он правдив.
+    #: Nudge после исчерпания бюджета, когда музыки НЕТ, а музыкальный тул
+    #: в этом ходе вызывался и упал — только тогда «бит не запустился» правда.
     MUSIC_RETRY_NUDGE_TEXT = "Я тут растерялся — бит не запустился, попробуй ещё раз."
+    #: Issue #3161 — тот же момент, но музыкальных тулов в ходе не было:
+    #: ничего не запускалось, значит, и «не запустилось» нечему (живой
+    #: прогон 28.09 22:32 — фраза прозвучала в ответ на вопрос). Честно:
+    #: просьбу не выполнил, ничего не включал.
+    MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT = (
+        "Я тут растерялся и ничего не включил — скажи, пожалуйста, по-другому."
+    )
     #: Issue #3125 — тот же момент, но музыка играет: «бит не запустился»
     #: было бы враньём (живой сет 28.09: трек играл, робот 3 раза сказал,
     #: что бит не запустился). Честно: музыка идёт, а просьбу не выполнил.
@@ -7487,11 +7437,16 @@ class DialogueNode(Node):
         )
         return ok
 
-    def _speak_music_retry_nudge(self) -> None:
+    def _speak_music_retry_nudge(self, tools_called: tuple = ()) -> None:
         """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
 
         Issue #3125: при играющей музыке «бит не запустился» не звучит —
         вместо него честная фраза :attr:`MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT`.
+
+        Issue #3161: «бит не запустился» — только если в оценённом вызове
+        LLM был музыкальный тул (``MUSIC_STARTING_TOOLS``) и гуард не
+        засчитал его успехом, то есть он упал. Без такого тула ничего не
+        запускалось — звучит :attr:`MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT`.
         """
         self._discard_last_music_reply()
         if self._music_playing_now():
@@ -7500,6 +7455,14 @@ class DialogueNode(Node):
                 "— NOT saying «бит не запустился»"
             )
             self._speak_direct(self.MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT)
+            return
+        if not set(tools_called or ()) & MUSIC_STARTING_TOOLS:
+            self.get_logger().warning(
+                "🎵 [issue 3161] retry budget exhausted, музыкальных тулов в "
+                f"ходе не было (tools={sorted(set(tools_called or ()))!r}) — "
+                "NOT saying «бит не запустился»"
+            )
+            self._speak_direct(self.MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT)
             return
         self._speak_direct(self.MUSIC_RETRY_NUDGE_TEXT)
 

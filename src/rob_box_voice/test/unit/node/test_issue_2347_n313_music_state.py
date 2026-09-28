@@ -154,8 +154,11 @@ class TestPromptMusicStateRule:
         block = m.group(0)
         assert "get_music_state" in block
         assert "<music_state>" in block
-        # Rationale про stale тег — ключ к поведению LLM.
-        assert "stale" in block
+        # Issue #3161: тег строится из снимка плеера — «может быть stale»
+        # стало ложью и из правила убрано; вместо него — про прошлое.
+        assert "stale" not in block
+        assert "снимок плеера" in block
+        assert "last_track" in block
 
     def test_rule_has_do_and_dont_examples(self, prompt_text: str):
         """В блоке есть ✅ и ❌ — модель учится на примерах."""
@@ -238,14 +241,21 @@ class TestDynamicContextMusicStateReminder:
                 f"trigger {trigger!r} missing from get_music_state reminder"
             )
 
-    def test_reminder_mentions_stale_rationale(self):
-        """Rationale про stale snapshot — ключ к поведению LLM."""
+    def test_reminder_explains_snapshot_and_past(self):
+        """Issue #3161 — тег из снимка плеера: «stale» больше не правда.
+
+        Вместо недоверия к тегу — как отвечать про прошлое (last_*) и
+        запрет «сейчас играет» при playing="no".
+        """
         n = _make_node()
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
         music_state_reminder = reminders[-2]
-        assert "stale" in music_state_reminder
+        assert "stale" not in music_state_reminder
+        assert "снимок плеера" in music_state_reminder
+        assert "last_track" in music_state_reminder
+        assert "сейчас играет" in music_state_reminder
 
 
 # ────────────────────────────────────────────────────────────────────────
