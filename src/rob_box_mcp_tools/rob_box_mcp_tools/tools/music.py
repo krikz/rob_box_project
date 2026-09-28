@@ -15,6 +15,7 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
+import inspect
 import json
 import os
 import re
@@ -57,6 +58,7 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
+from ..core.club_arranger import club_duration_seconds, render_club
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
@@ -2813,6 +2815,24 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="style",
+                type="string",
+                description=(
+                    "Стиль аранжировки. classic (по умолчанию) — прежнее "
+                    "поведение. club — клубный трек по эталону DJ Dave "
+                    "«By Design»: синкопированная бочка, бас и арпеджио "
+                    "16-ми с пампингом под бочку, клэп+открытый хэт, пэд, "
+                    "форма из матрицы секций (build/predrop/drop/verse, "
+                    "32 такта). С club работают только bpm (по умолчанию "
+                    "124), root (по умолчанию A#), scale (только minor), "
+                    "seed (выбирает прогрессию и риф) и repeat; остальные "
+                    "параметры игнорируются — об этом сказано в ответе."
+                ),
+                required=False,
+                enum=["classic", "club"],
+                default="classic",
+            ),
 ]
 
 
@@ -3588,6 +3608,7 @@ class ComposeMusicTool(MCPTool):
         levels: Any = _UNSET,
         seed: Optional[int] = None,
         rtttl: Optional[str] = None,
+        style: Optional[str] = None,
     ) -> MCPToolResult:
         """Точка входа тула (ADR-0132 PR-7): подмешать пресет, затем сыграть.
 
@@ -3605,6 +3626,9 @@ class ComposeMusicTool(MCPTool):
         :meth:`_execute_named`, единственном месте, которое их знает.
         """
         kwargs = _explicit_kwargs(locals())
+        club = self._style_branch(kwargs.pop("style", None), kwargs)
+        if club is not None:
+            return club
         # Issue #2950: наследование от играющего трека — ДО пресета, чтобы
         # свежая подстройка сеанса («играл с bass_style=root минуту назад»)
         # перевешивала статичный сохранённый пресет мелодии, а не наоборот
@@ -3621,6 +3645,66 @@ class ComposeMusicTool(MCPTool):
             )
             self._remember_last_track(merged)
         return result
+
+    #: Параметры, которые ``style="club"`` реально использует.
+    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat")
+
+    def _style_branch(self, style: Optional[str], kwargs: Dict[str, Any]) -> Optional[MCPToolResult]:
+        """``None`` — играть classic дальше; иначе готовый результат club/ошибки."""
+        if style in (None, "classic"):
+            return None
+        if style != "club":
+            return MCPToolResult(
+                success=False, error=f"Неизвестный style={style!r}: допустимо classic или club."
+            )
+        return self._execute_club(kwargs)
+
+    def _club_ignored(self, kwargs: Dict[str, Any]) -> List[str]:
+        """Переданные вызовом параметры, которые club не использует (честно назвать)."""
+        defaults = inspect.signature(self.execute).parameters
+        return sorted(
+            k for k, v in kwargs.items()
+            if k not in self._CLUB_PARAMS and k in defaults and v != defaults[k].default
+        )
+
+    def _execute_club(self, kwargs: Dict[str, Any]) -> MCPToolResult:
+        """``style="club"``: код из :func:`core.club_arranger.render_club`.
+
+        Тот же путь исполнения, что у classic (``MusicManager.execute_code``
+        → санитайзер, состояние, стоп), те же тайминги формы. Пресеты и
+        наследование ручек classic-трека к club не применяются.
+        """
+        bpm = kwargs.get("bpm")
+        bpm = 124 if bpm is None else bpm
+        repeat = bool(kwargs.get("repeat", False))
+        try:
+            code = render_club(
+                bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
+                seed=kwargs.get("seed") or 0, repeat=repeat,
+            )
+        except ValueError as exc:
+            return MCPToolResult(success=False, error=f"style=club: {exc}")
+        self.log_info("Композиция: style=club")
+        result = self._manager.execute_code(code, pattern_name="composition")
+        if not result["success"]:
+            return MCPToolResult(success=False, error=result["error"])
+        duration_s = club_duration_seconds(bpm)
+        if repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(duration_s)
+        self._manager.set_form_cycle_end(duration_s)
+        self._notify_music_state()
+        result["style"] = "club"
+        result["duration_seconds"] = round(duration_s, 1)
+        ignored = self._club_ignored(kwargs)
+        message = (
+            f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд. "
+            "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
+        )
+        if ignored:
+            message += " Проигнорировано в club: " + ", ".join(ignored) + "."
+        return MCPToolResult(success=True, data=result, message=message)
 
     def _execute_named(
         self,
@@ -4238,6 +4322,7 @@ class PreviewArrangementTool(MCPTool):
         levels: Any = _UNSET,
         seed: Optional[int] = None,
         rtttl: Optional[str] = None,
+        style: Optional[str] = None,
     ) -> MCPToolResult:
         """ADR-0132 PR-7 / issue #2950: партитура превью подмешивает то же
         наследование от играющего трека и тот же пресет, что применил бы
@@ -4249,6 +4334,15 @@ class PreviewArrangementTool(MCPTool):
         же сигнатура-с-сентинелом, что ``ComposeMusicTool.execute`` — см.
         его докстринг (общий AST-контракт ``tools/gen_tool_catalog.py``)."""
         kwargs = _explicit_kwargs(locals())
+        if kwargs.pop("style", None) not in (None, "classic"):
+            # capability-honest: у club нет спецификации/партитуры — не
+            # показываем партитуру classic под видом клубного трека.
+            return MCPToolResult(
+                success=False,
+                error="preview_arrangement поддерживает только style=classic: "
+                "у клубного режима нет партитуры. Играй сразу "
+                "compose_music(style='club').",
+            )
         kwargs, inherited_note = self._composer._inherit_last_track(kwargs)
         merged, preset_note = self._composer._resolve_preset(kwargs)
         self._composer._pending_preset_note = preset_note

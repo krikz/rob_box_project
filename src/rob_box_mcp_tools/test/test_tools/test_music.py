@@ -4573,3 +4573,71 @@ class TestSetDjModeSetLimits:
         assert "max_minutes" not in payload
         assert "max_tracks" not in payload
 
+
+@pytest.mark.unit
+class TestComposeMusicToolClubStyle:
+    """style="club" — код из core.club_arranger.render_club через тот же
+    MusicManager.execute_code (санитайзер, состояние, тайминги формы)."""
+
+    def _make_tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr), mgr
+
+    def test_club_executes_render_club_code(self, mock_node):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", root="C", seed=3)
+        assert result.success is True, result.error
+        assert fake_exec.call_count == 1
+        executed = fake_exec.call_args[0][0]
+        assert executed == render_club(bpm=124, root="C", scale="minor", seed=3)
+        assert result.data["style"] == "club"
+        assert result.data["code"] == executed
+        assert result.data["duration_seconds"] == pytest.approx(128 * 60 / 124, abs=0.1)
+        # repeat=False → дедлайн формы взведён, как у classic
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_cycle_ends_at is not None
+
+    def test_club_repeat_has_no_clock_future_and_no_deadline(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", repeat=True, bpm=128)
+        assert result.success is True, result.error
+        executed = fake_exec.call_args[0][0]
+        assert "Clock.bpm = 128" in executed
+        assert "Clock.future" not in executed
+        assert mgr._music_form_deadline_at is None
+
+    def test_club_names_ignored_params(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", name="imperial march", lead_synth="blip")
+        assert result.success is True, result.error
+        assert "Проигнорировано в club: lead_synth, name." in result.message
+
+    def test_club_invalid_scale_is_honest_error(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", scale="major")
+        assert result.success is False
+        assert "style=club" in result.error and "major" in result.error
+        fake_exec.assert_not_called()
+
+    def test_classic_is_default_and_unchanged(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        kwargs = TestComposeMusicToolFormDeadline._COMMON_KWARGS
+        with patch("builtins.exec") as fake_default:
+            tool.execute(**kwargs)
+        with patch("builtins.exec") as fake_classic:
+            tool.execute(style="classic", **kwargs)
+        assert fake_default.call_args[0][0] == fake_classic.call_args[0][0]
+        assert "amplify=[" not in fake_default.call_args[0][0]
+
+    def test_preview_rejects_club_honestly(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        preview = PreviewArrangementTool(mock_node, mgr)
+        result = preview.execute(style="club")
+        assert result.success is False
+        assert "style=classic" in result.error
