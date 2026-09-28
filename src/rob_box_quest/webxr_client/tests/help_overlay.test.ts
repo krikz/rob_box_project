@@ -51,6 +51,15 @@ describe("createHelpOverlay", () => {
     expect(labels).toContain("Global");
   });
 
+  it("lists every desktop hotkey bound in main.ts (nav G / Shift+G, streams P), no duplicate keys", () => {
+    const desktop = DEFAULT_HOTKEYS.filter((h) => h.category === "Desktop").map((h) => h.key);
+    for (const k of ["G", "Shift + G", "P", "M", "R", "V", "E"]) expect(desktop).toContain(k);
+    const all = DEFAULT_HOTKEYS.map((h) => `${h.category}:${h.key}`);
+    expect(new Set(all).size).toBe(all.length);
+    const xr = DEFAULT_HOTKEYS.filter((h) => h.category === "WebXR").map((h) => h.key);
+    expect(xr).toContain("A / X");
+  });
+
   it("Escape key hides overlay when visible", () => {
     help.show();
     const ev = new KeyboardEvent("keydown", { key: "Escape" });

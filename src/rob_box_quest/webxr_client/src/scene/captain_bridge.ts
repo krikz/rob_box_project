@@ -41,7 +41,8 @@ import {
 import {
   loadBridgeAssets,
   placeOnFloor,
-  computeFitScale,
+  fitScreenFrame,
+  BRIDGE_SCREEN_FACE,
   type BridgeAssetHandle,
 } from "./bridge_assets";
 import {
@@ -69,6 +70,17 @@ export const MAIN_SCREEN_TOPIC = "camera_rear";
 // Смотрит вверх — и в сцене её экран висит над оператором (см. ниже,
 // CEILING_SCREEN_*).
 export const CEILING_SCREEN_TOPIC = "camera_ceiling";
+
+// Экран-стена: центр и размер видео-прямоугольника. Рамка
+// (bridge_screen.optimized.glb) подгоняется ровно под него (fitScreenFrame).
+export const MAIN_SCREEN_CENTER = { x: 0, y: 1.5, z: -3.9 } as const;
+export const MAIN_SCREEN_SIZE = { width: 4.8, height: 2.7 } as const;
+/** Толщина рамки экрана, м (модель 0.131 → ×0.6). */
+export const SCREEN_FRAME_DEPTH_M = 0.08;
+/** Зазор между передним кантом рамки и плоскостью видео, м. */
+export const SCREEN_FRAME_GAP_M = 0.01;
+/** Потолок metalness рамки (IBL выключен — см. placeHeroProps). */
+const SCREEN_FRAME_MAX_METALNESS = 0.35;
 
 // Боковые панели (Wave 3.A). Экран-стена занимает фронт, потолочная
 // камера — верх, поэтому на свободную панель остаётся OAK-D depth.
@@ -153,6 +165,12 @@ export interface CaptainBridgeOptions {
    * решает, что делать с подписками: сцена про WSS ничего не знает.
    */
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
+  /**
+   * Сброс раскладки (R) пересоздал панели с топиками по умолчанию — набор
+   * видеотопиков сцены мог поменяться целиком (#3150: менеджер подписок
+   * должен узнать об этом, иначе подписки остаются на старые топики).
+   */
+  onVideoTopicsReset?(topics: string[]): void;
   /**
    * AV-27: оператор ткнул лучом в TTS picker (строку/PREVIEW/APPLY/STOP/
    * CLOSE). Сцена не знает ни про WSS, ни про состояние стора — она только
@@ -262,6 +280,14 @@ export interface CaptainBridgeHandle {
   streamsPanel: StreamsPanelHandle;
   /** Перерисовать панель «ПОТОКИ» (и перерегистрировать её кнопки). */
   renderStreams(view: SubscriptionsView): void;
+  /** Показать/скрыть панель «ПОТОКИ» (клавиша P). Возвращает новое состояние. */
+  toggleStreamsPanel(): boolean;
+  isStreamsPanelVisible(): boolean;
+  /**
+   * Поток видеотопика выключен (#3150): `lines` — текст заглушки на всех
+   * экранах этого топика; `null` — поток снова идёт.
+   */
+  setVideoPlaceholder(topic: string, lines: readonly string[] | null): void;
   /**
    * TARS 1 — текстовое полотно (issue #2113, quest #2112). Слева от
    * FRONT CAM, лицом к оператору. Показывает текст, который TARS
@@ -600,14 +626,19 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     {
       id: "main_screen",
       topic: MAIN_SCREEN_TOPIC,
-      position: { x: 0, y: 1.5, z: -3.9 },
+      position: { ...MAIN_SCREEN_CENTER },
       facing: { x: 0, z: 1 },
-      size: { width: 4.8, height: 2.7 },
+      size: { ...MAIN_SCREEN_SIZE },
       selected: false
     },
     { showLabel: false, canvasWidth: 1280, canvasHeight: 720 }
   );
   scene.add(mainScreen.mesh);
+
+  // #3150: заглушки «поток выключен» по топику — держим здесь, чтобы
+  // панели, пересозданные syncPanels (сброс раскладки, смена топика),
+  // сразу получали актуальную заглушку, а не чёрный экран до следующего тика.
+  const videoPlaceholders = new Map<string, readonly string[]>();
 
   // Потолочный экран: тот же азимут, что у экрана-стены, но над головой —
   // «смотрю прямо» / «смотрю вверх» повторяет пару камер на роботе.
@@ -781,16 +812,36 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       scene.add(heroHoloRight);
     }
 
-    // Рамка экрана — позади главного экрана: видео-панель (впереди)
-    // перекрывает «экранную» поверхность рамки, остаётся тонкий безель.
-    // Точная подгонка безеля — визуально на Quest; здесь базовая посадка
-    // по ширине главного экрана 4.8 м. Не floor-mounted (фиксированная
-    // высота 1.5 м), поэтому переиспользуем только `computeFitScale`, а не
-    // `placeOnFloor` целиком.
+    // Рамка экрана — ЗА главным экраном: полотно рамки ровно под видео
+    // (4.8 × 2.7, центр (0, 1.5, −3.9)), видео на 1 см впереди переднего
+    // канта, вокруг остаётся безель. Геометрия модели и почему масштаб
+    // раздельный по осям — BRIDGE_SCREEN_FACE / fitScreenFrame.
     if (g.heroScreen) {
-      const box = new THREE.Box3().setFromObject(g.heroScreen);
-      g.heroScreen.scale.setScalar(computeFitScale(box, { width: 4.8 }));
-      g.heroScreen.position.set(0, 1.5, -3.95);
+      g.heroScreen.scale.setScalar(1);
+      g.heroScreen.position.set(0, 0, 0);
+      g.heroScreen.updateMatrixWorld(true);
+      const fit = fitScreenFrame(new THREE.Box3().setFromObject(g.heroScreen), BRIDGE_SCREEN_FACE, {
+        center: { ...MAIN_SCREEN_CENTER },
+        width: MAIN_SCREEN_SIZE.width,
+        height: MAIN_SCREEN_SIZE.height,
+        depth: SCREEN_FRAME_DEPTH_M,
+        gap: SCREEN_FRAME_GAP_M,
+      });
+      if (fit) {
+        g.heroScreen.scale.set(fit.scale.x, fit.scale.y, fit.scale.z);
+        g.heroScreen.position.set(fit.position.x, fit.position.y, fit.position.z);
+      }
+      // Материал модели — metalness 1 / roughness 1. IBL на мостике выключен
+      // (bridge_assets: HDR засвечивал стены), а чистый металл без карты
+      // окружения ambient/directional почти не отражает — безель выходил
+      // чёрным пятном на тёмной стене. Приглушаем металл, текстура остаётся.
+      g.heroScreen.traverse((obj) => {
+        const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+        if (mat && "metalness" in mat && mat.metalness > SCREEN_FRAME_MAX_METALNESS) {
+          mat.metalness = SCREEN_FRAME_MAX_METALNESS;
+          mat.needsUpdate = true;
+        }
+      });
     }
   }
 
@@ -833,6 +884,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         vp.setState(s);
       }
       vp.setLabel(s.topic);
+      vp.setPlaceholder(videoPlaceholders.get(s.topic) ?? null);
       vp.setHighlight(highlightFor(s.id, s.selected));
     }
     for (const [id, vp] of videoPanels.entries()) {
@@ -1017,6 +1069,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     layoutSaver?.cancel();
     panelMgr.resetLayout();
     syncPanels();
+    opts.onVideoTopicsReset?.(videoTopics());
   }
 
   // ---------- меню выбора стрима (R10) ----------
@@ -1076,6 +1129,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     if (next && vp) {
       vp.setState(next);
       vp.setLabel(next.topic);
+      vp.setPlaceholder(videoPlaceholders.get(next.topic) ?? null);
     }
     opts.onPanelTopicChange?.(panelId, oldTopic, topic);
   }
@@ -1192,6 +1246,19 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     const after = floorOverlay.lastMapFrame();
     if (after && after !== before) navLayer.setPose(after.robot);
     return ok;
+  }
+
+  function setVideoPlaceholder(topic: string, lines: readonly string[] | null): void {
+    if (lines) videoPlaceholders.set(topic, lines);
+    else videoPlaceholders.delete(topic);
+    if (topic === MAIN_SCREEN_TOPIC) mainScreen.setPlaceholder(lines);
+    if (topic === CEILING_SCREEN_TOPIC) ceilingScreen.setPlaceholder(lines);
+    for (const vp of videoPanels.values()) if (vp.topic === topic) vp.setPlaceholder(lines);
+  }
+
+  function toggleStreamsPanel(): boolean {
+    streamsPanel.object.visible = !streamsPanel.object.visible;
+    return streamsPanel.object.visible;
   }
 
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
@@ -1398,6 +1465,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     voicePipeline,
     streamsPanel,
     renderStreams,
+    toggleStreamsPanel,
+    isStreamsPanelVisible: () => streamsPanel.object.visible,
+    setVideoPlaceholder,
     tars1Panel,
     tars2Panel,
     setAvailableStreams,

@@ -315,6 +315,23 @@ describe("PointerSystem", () => {
     expect(sys.getHovered()).toBeNull();
   });
 
+  it("hidden targets (or targets under a hidden parent) do not catch the ray", () => {
+    const handlers = { onHover: vi.fn() };
+    const sys = new PointerSystem({ center: CENTER, handlers });
+    const group = new THREE.Group();
+    const near = panel(0, 1.6, -2);
+    group.add(near);
+    group.updateMatrixWorld(true);
+    sys.addTarget({ id: "far", object: panel(0, 1.6, -4) });
+    sys.addTarget({ id: "near", object: near });
+    group.visible = false; // как скрытая панель режимов/потоков
+    sys.update(forward(false));
+    expect(handlers.onHover).toHaveBeenLastCalledWith("far");
+    group.visible = true;
+    sys.update(forward(false));
+    expect(handlers.onHover).toHaveBeenLastCalledWith("near");
+  });
+
   it("picks the nearest target when two overlap", () => {
     const handlers = { onHover: vi.fn() };
     const sys = new PointerSystem({ center: CENTER, handlers });

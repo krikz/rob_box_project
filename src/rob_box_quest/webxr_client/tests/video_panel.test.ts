@@ -86,6 +86,7 @@ let savedCreateImageBitmap: unknown;
  * падают на содержательной проверке, а не на брошенном конструкторе.
  */
 const drawImage = vi.fn();
+const fillText = vi.fn();
 
 beforeAll(() => {
   const stubCtx = {
@@ -93,7 +94,9 @@ beforeAll(() => {
     font: "",
     textBaseline: "",
     fillRect: () => {},
-    fillText: () => {},
+    fillText,
+    strokeRect: () => {},
+    setLineDash: () => {},
     clearRect: () => {},
     measureText: (text: string) => ({ width: text.length * 7 }),
     drawImage
@@ -107,6 +110,7 @@ beforeEach(() => {
   pending = [];
   lastOptions = undefined;
   drawImage.mockClear();
+  fillText.mockClear();
   savedCreateImageBitmap = g.createImageBitmap;
   createBitmapSpy = vi.fn((_blob: Blob, options?: ImageBitmapOptions) => {
     lastOptions = options;
@@ -307,6 +311,58 @@ describe("VideoPanel.ingestJpeg — фолбэк без createImageBitmap", () =
     const panel = new VideoPanel(STATE, { showLabel: false });
     expect(() => panel.ingestJpeg(JPEG)).not.toThrow();
     expect(createObjectURL).toHaveBeenCalledTimes(1);
+    panel.dispose();
+  });
+});
+
+describe("VideoPanel.setPlaceholder — поток выключен (#3150)", () => {
+  it("быстрый путь: битмап закрыт, в текстуре canvas-заглушка с текстом; поздние кадры не затирают её", async () => {
+    const panel = new VideoPanel(STATE, { showLabel: false });
+    panel.ingestJpeg(JPEG);
+    const bmp = makeBitmap();
+    pending.shift()!.resolve(bmp);
+    await flush();
+    expect(textureOf(panel).image).toBe(bmp);
+
+    // Кадр уже летел, когда поток выключили.
+    panel.ingestJpeg(JPEG);
+    panel.setPlaceholder(["ПОТОК ВЫКЛЮЧЕН", "профиль «Интернет»"]);
+    expect(panel.hasPlaceholder()).toBe(true);
+    expect(bmp.closed).toBe(true);
+    const tex = textureOf(panel);
+    expect(tex.image).toBeInstanceOf(HTMLCanvasElement);
+    expect(tex.flipY).toBe(true);
+    expect(fillText.mock.calls.map((c) => c[0])).toEqual(["ПОТОК ВЫКЛЮЧЕН", "профиль «Интернет»"]);
+    const late = makeBitmap();
+    pending.shift()!.resolve(late);
+    await flush();
+    expect(tex.image).toBeInstanceOf(HTMLCanvasElement);
+    expect(late.closed).toBe(true);
+
+    // Тот же текст — не перерисовываем.
+    fillText.mockClear();
+    panel.setPlaceholder(["ПОТОК ВЫКЛЮЧЕН", "профиль «Интернет»"]);
+    expect(fillText).not.toHaveBeenCalled();
+
+    // Поток снова включён — следующий кадр ложится как обычно.
+    panel.setPlaceholder(null);
+    expect(panel.hasPlaceholder()).toBe(false);
+    panel.ingestJpeg(JPEG);
+    const next = makeBitmap();
+    pending.shift()!.resolve(next);
+    await flush();
+    expect(tex.image).toBe(next);
+    expect(tex.flipY).toBe(false);
+    panel.dispose();
+  });
+
+  it("панель с подписью: заглушка рисуется в её canvas, подпись топика поверх", () => {
+    const panel = new VideoPanel(STATE, { showLabel: true });
+    fillText.mockClear();
+    panel.setPlaceholder(["ПОТОК ВЫКЛЮЧЕН"]);
+    const texts = fillText.mock.calls.map((c) => c[0]);
+    expect(texts).toContain("ПОТОК ВЫКЛЮЧЕН");
+    expect(texts[texts.length - 1]).toBe(STATE.topic);
     panel.dispose();
   });
 });

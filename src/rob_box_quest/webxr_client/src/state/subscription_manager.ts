@@ -96,6 +96,21 @@ export function profileConfig(
   return { enabled: true, maxHz: null };
 }
 
+/**
+ * Текст заглушки на экране выключенного видеопотока; `null` — поток
+ * включён (или это не видео / топика нет). Первая строка — крупно.
+ */
+export function videoPlaceholderLines(view: SubscriptionsView, topic: string): string[] | null {
+  const s = view.streams.find((x) => x.topic === topic);
+  if (!s || !s.video || s.enabled) return null;
+  return [
+    "ПОТОК ВЫКЛЮЧЕН",
+    `профиль «${PROFILE_LABELS[view.profile]}»`,
+    topic,
+    "включить: панель «ПОТОКИ» (клавиша P)"
+  ];
+}
+
 /** Следующий шаг частоты по кругу (неизвестное значение → «без лимита»). */
 export function nextRate(current: number | null): number | null {
   const i = RATE_STEPS.indexOf(current);
@@ -240,6 +255,34 @@ export class SubscriptionManager {
     this.commit();
   }
 
+  /**
+   * Набор видеотопиков сцены сменился целиком (сброс раскладки — R):
+   * новые топики добавляются с настройками текущего профиля, видеотопики,
+   * которых сцена больше не показывает, убираются (их UNSUBSCRIBE уйдёт
+   * в sync). Невидео-потоки не трогаем — их показывает не раскладка.
+   */
+  setVideoTopics(shown: readonly string[]): void {
+    const want = new Set(shown.filter(isVideoTopic));
+    let changed = false;
+    for (const t of [...this.order]) {
+      if (isVideoTopic(t) && !want.has(t)) {
+        this.removeTopic(t);
+        changed = true;
+      }
+    }
+    // Новые видеотопики — в начало списка видео, в порядке сцены.
+    let lastVideo: string | undefined;
+    for (const t of shown) {
+      if (!isVideoTopic(t)) continue;
+      if (!this.configs.has(t)) {
+        this.addVideoTopicAfter(t, lastVideo);
+        changed = true;
+      }
+      lastVideo = t;
+    }
+    if (changed) this.commit();
+  }
+
   // ─────────────── транспорт ───────────────
 
   /** Новый сокет (после WELCOME): сервер ничего не помнит — подписываем заново. */
@@ -291,6 +334,17 @@ export class SubscriptionManager {
     const base = this.currentProfile === "custom" ? "lan" : this.currentProfile;
     this.configs.set(topic, profileConfig(base, topic, this.mainVideoTopic));
     this.meters.set(topic, { bytes: 0, frames: 0, kbps: 0, fps: 0 });
+  }
+
+  private addVideoTopicAfter(topic: string, after: string | undefined): void {
+    if (after !== undefined) {
+      this.addTopic(topic, after);
+      return;
+    }
+    // Первый видеотопик сцены — перед всеми остальными строками.
+    this.addTopic(topic);
+    this.order.splice(this.order.indexOf(topic), 1);
+    this.order.unshift(topic);
   }
 
   private removeTopic(topic: string): void {

@@ -609,6 +609,50 @@ describe("Connection subscribe max_hz (issue #3150)", () => {
     ]);
   });
 
+  function unsubscribeFrames(client: FakeWebSocket): Array<{ sid: number; topic: unknown }> {
+    return client.sentFrames
+      .map((b) => decodeFrame(b))
+      .filter((f) => f.type === FrameType.UNSUBSCRIBE)
+      .map((f) => ({ sid: f.streamId, topic: JSON.parse(new TextDecoder().decode(f.payload)).topic }));
+  }
+
+  it("toggle-off before subscribe_ack → UNSUBSCRIBE as soon as the ack arrives", async () => {
+    const { conn, client, server } = await connectPair();
+    conn.subscribe("camera_oak_depth", undefined, { maxHz: 5 });
+    conn.unsubscribe("camera_oak_depth"); // ack ещё не пришёл — stream_id неизвестен
+    expect(unsubscribeFrames(client)).toEqual([]);
+    await ack(server, "camera_oak_depth", 0x1004);
+    expect(unsubscribeFrames(client)).toEqual([{ sid: 0x1004, topic: "camera_oak_depth" }]);
+    expect(conn.getTopicForStream(0x1004)).toBeUndefined();
+    // Отписка прошла — повторный subscribe снова шлёт SUBSCRIBE.
+    conn.subscribe("camera_oak_depth", undefined, { maxHz: 5 });
+    expect(subscribeFrames(client)).toHaveLength(2);
+  });
+
+  it("off → on before the ack cancels the deferred UNSUBSCRIBE", async () => {
+    const { conn, client, server } = await connectPair();
+    conn.subscribe("camera_oak_depth", undefined, { maxHz: 5 });
+    conn.unsubscribe("camera_oak_depth");
+    conn.subscribe("camera_oak_depth", undefined, { maxHz: 5 });
+    await ack(server, "camera_oak_depth", 0x1004);
+    await ack(server, "camera_oak_depth", 0x1004);
+    expect(unsubscribeFrames(client)).toEqual([]);
+    expect(conn.getTopicForStream(0x1004)).toBe("camera_oak_depth");
+  });
+
+  it("ack of a rate change that was followed by UNSUBSCRIBE does not resurrect the topic", async () => {
+    const { conn, client, server } = await connectPair();
+    conn.subscribe("lidar_2d", undefined, { maxHz: 5 });
+    await ack(server, "lidar_2d", 0x1001);
+    conn.subscribe("lidar_2d", undefined, { maxHz: 2 }); // SUBSCRIBE в полёте
+    conn.unsubscribe("lidar_2d"); // stream_id известен — UNSUBSCRIBE сразу
+    expect(unsubscribeFrames(client)).toEqual([{ sid: 0x1001, topic: "lidar_2d" }]);
+    await ack(server, "lidar_2d", 0x1001); // запоздалый ack на max_hz: 2
+    expect(conn.getTopicForStream(0x1001)).toBeUndefined();
+    conn.subscribe("lidar_2d", undefined, { maxHz: 2 });
+    expect(subscribeFrames(client)).toHaveLength(3);
+  });
+
   it("plain subscribe() keeps the old idempotent behaviour", async () => {
     const { conn, client, server } = await connectPair();
     conn.subscribe("camera_rear", "med");

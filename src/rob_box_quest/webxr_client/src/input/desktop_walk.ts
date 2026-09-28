@@ -104,6 +104,11 @@ export interface DesktopWalkHandle {
   /** Захвачена ли мышь (прицел в центре экрана). */
   isLocked(): boolean;
   getPose(): WalkPose;
+  /**
+   * Поставить позу программно (зажим в WALK_BOUNDS/±85°). Нужен симулятору
+   * (`window.__robBoxSim.lookAt/teleport`) — осмотреться без pointer lock.
+   */
+  setPose(next: Partial<WalkPose>): void;
   destroy(): void;
 }
 
@@ -186,6 +191,18 @@ export function createDesktopWalk(opts: DesktopWalkOptions): DesktopWalkHandle {
   return {
     isLocked: locked,
     getPose: () => ({ ...pose }),
+    setPose(next: Partial<WalkPose>): void {
+      pose = {
+        x: clamp(next.x ?? pose.x, WALK_BOUNDS.minX, WALK_BOUNDS.maxX),
+        z: clamp(next.z ?? pose.z, WALK_BOUNDS.minZ, WALK_BOUNDS.maxZ),
+        yaw: next.yaw ?? pose.yaw,
+        pitch: clamp(next.pitch ?? pose.pitch, -MAX_PITCH, MAX_PITCH)
+      };
+      if (!opts.isXrActive()) {
+        camera.position.set(pose.x, EYE_HEIGHT_M, pose.z);
+        camera.rotation.set(pose.pitch, pose.yaw, 0, "YXZ");
+      }
+    },
     destroy(): void {
       cancelAnimationFrame(raf);
       document.removeEventListener("pointerlockchange", onLockChange);

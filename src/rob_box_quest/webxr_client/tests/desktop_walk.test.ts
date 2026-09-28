@@ -107,6 +107,52 @@ describe("stepWalk / applyMouseLook", () => {
   });
 });
 
+describe("desktop pointer when the browser refuses pointer lock", () => {
+  it("after pointerlockerror clicks press the scene instead of re-requesting the lock", () => {
+    const canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    let lockRequested = 0;
+    (canvas as unknown as { requestPointerLock: () => void }).requestPointerLock = () => {
+      lockRequested += 1;
+    };
+    const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 50);
+    camera.updateMatrixWorld();
+    const ptr = createDesktopPointer({ canvas, camera, lockOnClick: true });
+    canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 0, clientY: 0 }));
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0 }));
+    expect(lockRequested).toBe(1);
+    document.dispatchEvent(new Event("pointerlockerror"));
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0 }));
+    expect(lockRequested).toBe(1);
+    // jsdom: getBoundingClientRect = 0×0 → курсор не «внутри»; нажатие всё
+    // равно зафиксировано и уйдёт с первым лучом.
+    Object.defineProperty(document, "pointerLockElement", { configurable: true, get: () => canvas });
+    expect(ptr.poll()!.pressed).toBe(true);
+    ptr.destroy();
+    canvas.remove();
+    delete (document as unknown as { pointerLockElement?: unknown }).pointerLockElement;
+  });
+
+  it("a rejected requestPointerLock() promise also falls back to plain clicks", async () => {
+    const canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    let lockRequested = 0;
+    (canvas as unknown as { requestPointerLock: () => Promise<void> }).requestPointerLock = () => {
+      lockRequested += 1;
+      return Promise.reject(new Error("NotAllowedError"));
+    };
+    const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 50);
+    const ptr = createDesktopPointer({ canvas, camera, lockOnClick: true });
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0 }));
+    expect(lockRequested).toBe(1);
+    ptr.destroy();
+    canvas.remove();
+  });
+});
+
 describe("desktop pointer with pointer lock", () => {
   it("first click only captures the mouse; when locked the ray comes from screen centre", () => {
     const canvas = document.createElement("canvas");
