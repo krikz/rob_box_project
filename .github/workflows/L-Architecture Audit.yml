@@ -133,62 +133,9 @@ jobs:
           capture "${{ inputs.main_host }}" "${{ inputs.main_container }}" architecture/runtime-main.json
           capture "${{ inputs.vision_host }}" "${{ inputs.vision_container }}" architecture/runtime-vision.json
 
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          main = json.loads(Path("architecture/runtime-main.json").read_text())
-          vision = json.loads(Path("architecture/runtime-vision.json").read_text())
-
-          def union_lines(*snapshots, key):
-              out = []
-              seen = set()
-              for snapshot in snapshots:
-                  for value in snapshot.get(key, []):
-                      if value not in seen:
-                          seen.add(value)
-                          out.append(value)
-              return sorted(out)
-
-          topic_info = {}
-          for snapshot in (main, vision):
-              for topic, info in snapshot.get("topic_info", {}).items():
-                  if topic not in topic_info:
-                      topic_info[topic] = info
-                      continue
-                  merged = topic_info[topic]
-                  for field in ("publishers", "subscribers"):
-                      existing = {(x.get("node"), x.get("namespace")) for x in merged.get(field, [])}
-                      for endpoint in info.get(field, []):
-                          key = (endpoint.get("node"), endpoint.get("namespace"))
-                          if key not in existing:
-                              merged.setdefault(field, []).append(endpoint)
-                  merged["present"] = bool(merged.get("present") or info.get("present"))
-
-          merged = {
-              "schema_version": 4,
-              "captured_at_unix": max(main.get("captured_at_unix", 0), vision.get("captured_at_unix", 0)),
-              "captured_from": "remote:MainPi+VisionPi",
-              "ros_domain_id": main.get("ros_domain_id") or vision.get("ros_domain_id"),
-              "rmw_implementation": main.get("rmw_implementation") or vision.get("rmw_implementation"),
-              "nodes": union_lines(main, vision, key="nodes"),
-              "topics": union_lines(main, vision, key="topics"),
-              "services": union_lines(main, vision, key="services"),
-              "actions": union_lines(main, vision, key="actions"),
-              "topic_info": topic_info,
-              "captures": [
-                  {"host": "${{ inputs.main_host }}", "pi": "Main Pi", "container": "${{ inputs.main_container }}", "snapshot": "runtime-main.json"},
-                  {"host": "${{ inputs.vision_host }}", "pi": "Vision Pi", "container": "${{ inputs.vision_container }}", "snapshot": "runtime-vision.json"}
-              ]
-          }
-          Path("architecture/runtime.json").write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-          print(json.dumps({
-              "main_nodes": len(main.get("nodes", [])),
-              "vision_nodes": len(vision.get("nodes", [])),
-              "union_nodes": len(merged["nodes"]),
-              "union_topics": len(merged["topics"])
-          }, ensure_ascii=False, sort_keys=True))
-          PY
+          python tools/architecture_runtime_merge.py --output architecture/runtime.json \
+            --capture "Main Pi|${{ inputs.main_host }}|${{ inputs.main_container }}|architecture/runtime-main.json" \
+            --capture "Vision Pi|${{ inputs.vision_host }}|${{ inputs.vision_container }}|architecture/runtime-vision.json"
 
       - name: Compare static and runtime
         run: python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json

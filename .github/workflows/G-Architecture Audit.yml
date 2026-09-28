@@ -64,6 +64,7 @@ jobs:
             tests/unit/scripts/test_architecture_runtime_graph.py \
             tests/unit/scripts/test_architecture_class_metrics.py \
             tests/unit/scripts/test_architecture_runtime_findings.py \
+            tests/unit/scripts/test_architecture_runtime_merge.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider
