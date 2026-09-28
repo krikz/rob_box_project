@@ -99,6 +99,7 @@ from rob_box_llm.provider import LLMMessage, LLMSettings
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.skill_router import SkillRouter
+from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
     DefaultSttAdmission,
@@ -1031,8 +1032,19 @@ class DialogueNode(Node):
         # ретрай-промпт требовал ИЗМЕНИТЬ несуществующий трек, модель
         # отвечала словами — и робот произносил «я растерялся».
         # Теперь флаг следует за сервером, а не за догадкой.
+        #
+        # Issue #3133 (ADR-0141): «играет» диалог читает ТОЛЬКО из этого
+        # топика (``_music_player_state`` → ``_music_playing_now``). Latched,
+        # как у публикатора: после рестарта ноды снимок приходит сразу.
+        self._music_player_state = None
         self.create_subscription(
-            String, "/voice/music/state", self._on_music_state, 10,
+            String, MUSIC_STATE_TOPIC, self._on_music_state,
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            ),
             callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
         # batch (rap, poetry), not after the first. tts_node publishes this
@@ -1067,10 +1079,9 @@ class DialogueNode(Node):
             String, "/voice/dj_mode",
             lambda m: self._on_dj_mode_msg(m.data), 10, callback_group=cbg)
         # Issue #2461 — структурный канал конца прохода формы для DJ-тикера.
-        # НАРОЧНО отдельный топик, не ``/voice/music/state``: тот несёт
-        # ровно "playing"/"idle" под ТОЧНОЕ РАВЕНСТВО в audio_node
-        # (``_on_music_state``, VAD-эхоподавление, issue #989) — любой
-        # суффикс/JSON там молча ломает порог. См. ``_on_music_form``.
+        # С issue #3133 те же form_ends_at/stops_at есть в снимке
+        # ``/voice/music/state``; DJState переедет на него в #3134, до тех
+        # пор читает этот топик. См. ``_on_music_form``.
         self.create_subscription(
             String, "/voice/music/form", self._on_music_form, 10,
             callback_group=cbg)
@@ -1129,6 +1140,10 @@ class DialogueNode(Node):
         # Флаг помнит, что живая музыка — это TRACK, и cleanup для неё не
         # вооружается. Потолок остаётся за watchdog'ом (idle TTL 300 s и
         # segments-дедлайн), явным stop_music и cleanup'ом нового диалога.
+        #
+        # Issue #3133 (ADR-0141): это ТОЛЬКО политика cleanup (TRACK vs
+        # BACKING). Играет ли музыка, флаг не говорит — это знает плеер,
+        # см. ``_music_player_state`` / ``_music_playing_now``.
         self._track_mode_music_active: bool = False
 
         # 🔴 FIX (live 30.08, e2e 33251879328): один флаг «в этом ходе гуард
@@ -3240,30 +3255,24 @@ class DialogueNode(Node):
         self._generated_music_state = payload
 
     def _on_music_state(self, msg: String) -> None:
-        """Renardo-музыка остановилась на сервере — снять флаг «играет».
+        """Снимок плеера ``/voice/music/state`` (issue #3133, ADR-0141).
 
-        ``/voice/music/state`` публикует mcp_server: ``"playing"`` пока у
-        MusicManager есть открытая сессия или именованные паттерны, иначе
-        ``"idle"``. Раньше этот топик слушал только audio_node (порог VAD,
-        issue #989), а диалог вёл собственный ``_track_mode_music_active``
-        по своим догадкам — и расходился с реальностью каждый раз, когда
-        музыку останавливал не он: watchdog по idle_ttl, стоп из другого
-        клиента, падение паттерна.
-
-        Цена расхождения — ``build_music_retry_prompt``: при True он говорит
-        модели «музыка ИГРАЕТ, её надо ИЗМЕНИТЬ, а не заводить заново».
-        Сказанное про несуществующий трек уводит модель в описание вместо
-        вызова тула, ретраи выгорают, и робот произносит «я растерялся».
-
-        Только гасим. Взводит флаг по-прежнему ход диалога: там известно,
-        BACKING это или TRACK, а серверу такое различие не видно.
+        Единственный источник «играет» для диалога: ``_music_playing_now``,
+        гуард #3125 и Bug-C ретрай-промпт читают ``_music_player_state``.
+        При idle гасим и ``_track_mode_music_active`` — это теперь только
+        политика cleanup (TRACK живёт до стопа, BACKING гасится после
+        речи), а не «играет»: взводит его ход диалога, здесь только гасим.
         """
-        state = (msg.data or "").strip().lower()
-        if state.startswith("idle") and self._track_mode_music_active:
+        snapshot = parse_music_state(msg.data)
+        if snapshot is None:
+            return
+        self._music_player_state = snapshot
+        if snapshot.state == "idle" and self._track_mode_music_active:
             self._track_mode_music_active = False
             self.get_logger().info(
-                "🎵 [track-mode] сервер сообщил idle — снимаю флаг «играет» "
-                "(музыку остановил не диалог: watchdog/внешний стоп)"
+                "🎵 [track-mode] сервер сообщил idle — снимаю флаг TRACK "
+                f"(finished={snapshot.finished_track_id or '—'}: конец формы/"
+                "watchdog/внешний стоп)"
             )
 
     def _on_music_form(self, msg: String) -> None:
@@ -3271,11 +3280,9 @@ class DialogueNode(Node):
 
         ``/voice/music/form`` — ОТДЕЛЬНЫЙ от ``/voice/music/state`` топик
         (mcp_server публикует оба в одном месте, ``publish_music_state()``).
-        Заводить его пришлось потому, что ``/voice/music/state`` нельзя
-        трогать: ``audio_node._on_music_state`` сравнивает payload ТОЧНЫМ
-        РАВЕНСТВОМ (``state == "playing"``) для VAD-эхоподавления — любой
-        суффикс или JSON вместо плоской строки молча ломает порог (бит
-        начинает триггерить «речь»). Здесь же — JSON
+        Заводили его, пока ``/voice/music/state`` был плоской строкой; с
+        issue #3133 снимок плеера несёт те же поля, и DJState переедет на
+        него (#3134). Здесь — JSON
         ``{"form_ends_at": <epoch float|null>, "playing": bool}``.
 
         ``form_ends_at`` — уже АБСОЛЮТНОЕ стенное время: mcp_server сам
@@ -6705,9 +6712,12 @@ class DialogueNode(Node):
                     "scheduled for this turn"
                 )
         elif getattr(self, "_track_mode_music_active", False):
+            # Issue #3133: флаг — политика cleanup, а не «играет»; правду
+            # о звуке пишем рядом из снимка плеера.
             self.get_logger().info(
-                "🎵 [track-mode] TRACK играет с прошлого хода — "
-                "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
+                "🎵 [track-mode] TRACK-режим с прошлого хода — "
+                "cleanup НЕ вооружаем (живёт до stop_music/watchdog/конца "
+                f"формы); плеер: playing={self._music_playing_now()}"
             )
         elif not was_dj_auto and not self._pending_music_cleanup:
             self._pending_music_cleanup = True
@@ -7258,12 +7268,18 @@ class DialogueNode(Node):
     )
 
     def _music_playing_now(self) -> bool:
-        """Issue #3125 — играет ли сейчас музыка (TRACK с прошлого хода).
+        """Issue #3125 / #3133 — играет ли сейчас музыка, по словам плеера.
 
-        Тот же флаг, что пишет «[track-mode] TRACK играет с прошлого хода»;
-        сервер гасит его через ``/voice/music/state`` = idle.
+        Источник — только снимок ``/voice/music/state`` (ADR-0141). До
+        #3133 здесь читался ``_track_mode_music_active``, который ставился
+        по ИМЕНАМ тулов (в т.ч. ``set_dj_mode(enabled=false)`` и упавшего
+        ``compose_music``) и снимался только по idle, а idle после конечного
+        трека приходил через 30 минут: робот говорил «Музыка играет» в
+        тишине. Снимка ещё нет — не играет. ``stops_at`` в прошлом —
+        не играет, даже если свежий idle не дошёл.
         """
-        return bool(getattr(self, "_track_mode_music_active", False))
+        snapshot = getattr(self, "_music_player_state", None)
+        return snapshot is not None and snapshot.is_playing()
 
     def _speak_music_retry_nudge(self) -> None:
         """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
@@ -7364,7 +7380,7 @@ class DialogueNode(Node):
         играет X» без вызова тула (e2e renardo_evolve rn03).
         """
         return build_music_retry_prompt(
-            user_input, music_playing=getattr(self, "_track_mode_music_active", False)
+            user_input, music_playing=self._music_playing_now()
         )
 
     def _build_dj_retry_prompt(self) -> str:

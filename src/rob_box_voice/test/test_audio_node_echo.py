@@ -319,6 +319,39 @@ class TestMusicStrictGate:
         assert audio_node.music_active is False
         audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
 
+    def test_json_player_snapshot_drives_music_active(self, audio_node):
+        """Issue #3133: /voice/music/state — JSON-снимок плеера (ADR-0141)."""
+        import json as _json
+        import time as _time
+
+        self._disable_barge_in_with_music(audio_node)
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
+
+        msg = MagicMock()
+        msg.data = _json.dumps({"state": "playing", "track_id": "a-1", "stops_at": None})
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is True
+        audio_node.respeaker.set_vad_threshold.assert_called_with(6.0)
+
+        msg.data = _json.dumps({"state": "idle", "finished_track_id": "a-1"})
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is False
+        audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
+
+        # «playing», но stops_at давно прошёл — порог не поднимаем (живой
+        # 28.09: 30 минут повышенного VAD после конца трека).
+        msg.data = _json.dumps({"state": "playing", "stops_at": _time.time() - 60})
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is False
+
+    def test_garbage_music_state_keeps_current_value(self, audio_node):
+        audio_node.music_active = True
+        msg = MagicMock()
+        msg.data = "{broken"
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is True
+
     def test_vad_suppressed_when_music_and_quiet_signal(self, audio_node):
         """Legacy Fix C: музыка активна + barge_in_with_music=False,
         уровень сигнала ниже music_vad_min_db → VAD подавлен."""

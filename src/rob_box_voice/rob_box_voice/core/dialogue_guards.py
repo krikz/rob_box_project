@@ -57,17 +57,21 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
     entry.name for entry in TOOL_CATALOG if entry.starts_music
 )
 
-#: Tools that mean "this turn is no longer starting/managing TRACK-mode
-#: music" — used ONLY to clear ``dialogue_node._track_mode_music_active``
-#: bookkeeping (see the 31.08 fix at the call site) so a later Bug-C retry
-#: doesn't claim music is still playing when the turn just turned DJ
-#: orchestration off. ``set_dj_mode`` belongs here.
+#: Tools that end TRACK-mode — used ONLY to clear the cleanup-policy flag
+#: ``dialogue_node._track_mode_music_active`` (see the 31.08 fix at the
+#: call site).
+#:
+#: Issue #3133 (ADR-0141): ``set_dj_mode`` removed. It sat here AND in
+#: ``MUSIC_MODE_TOOLS`` at once; the starters branch runs after the stop
+#: branch and re-armed the flag anyway, so its presence here never cleared
+#: anything — it only made the set lie about what «stop» means. Whether
+#: music is playing is no longer derived from tool names at all: dialogue
+#: reads the player snapshot on ``/voice/music/state``.
 #:
 #: 🔴 Do NOT use this set to decide whether a stop-COMMAND was actually
 #: satisfied — see ``MUSIC_HARD_STOP_TOOLS`` below for why.
 MUSIC_STOP_TOOLS: frozenset = frozenset({
     "stop_music",
-    "set_dj_mode",
 })
 
 #: Tools that actually SILENCE currently-audible Renardo output. Used by
@@ -76,7 +80,7 @@ MUSIC_STOP_TOOLS: frozenset = frozenset({
 #:
 #: 🔴 FIX (live 01.09, issue #992): ``set_dj_mode`` used to count as a stop
 #: tool here (it was in ``MUSIC_STOP_TOOLS``, shared with the bookkeeping
-#: use above) on the theory that turning DJ mode off is "satisfied by
+#: use above — and left there until issue #3133) on the theory that turning DJ mode off is "satisfied by
 #: turning DJ mode off even when no Renardo pattern was running". That
 #: theory is false whenever DJ mode turns off WHILE a ``repeat=True``
 #: track from the last transition is still looping — which is the normal

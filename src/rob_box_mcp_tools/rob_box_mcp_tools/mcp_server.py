@@ -49,6 +49,11 @@ from rob_box_harness.encounter import EncounterSeam, EncounterChannel
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
 
+from rob_box_voice.core.music_player_state import (
+    MUSIC_STATE_TOPIC,
+    build_music_state_payload,
+)
+
 from .base import shared_publisher
 from .registry import MCPToolRegistry
 from .tools import (
@@ -226,6 +231,47 @@ def _music_form_stops_at_epoch(state: Dict[str, Any]) -> Optional[float]:
     return _remaining_to_epoch(state.get("form_stop_remaining_s"))
 
 
+#: Issue #3133 — сериализует перевзвод одноразового таймера конца формы
+#: (publish_music_state зовут потоки тулов, watchdog и сам таймер).
+_FORM_END_TIMER_LOCK = threading.Lock()
+
+
+def _positive_seconds(value: Any) -> Optional[float]:
+    """Число секунд > 0 или ``None`` (bool, None, мусор, ноль)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def _finish_music_form(manager: Any, logger: Any) -> Optional[Dict[str, Any]]:
+    """Issue #3133 (ADR-0141) — закрыть сессию, если конечный трек доиграл.
+
+    Один путь для watchdog'а и одноразового таймера. ``MusicManager``
+    решает сам (:meth:`MusicManager.finish_form_if_ended`); здесь только
+    вызов и лог с id трека — по нему сверяют живой прогон
+    («finished track_id=… → /voice/music/state idle»).
+
+    Returns:
+        Описание доигравшего трека или ``None``.
+    """
+    finish = getattr(manager, "finish_form_if_ended", None)
+    if not callable(finish):
+        return None
+    try:
+        finished = finish()
+    except Exception as exc:  # noqa: BLE001 — watchdog не должен падать
+        logger.warning(f"⚠️ [music] finish_form_if_ended упал: {exc}")
+        return None
+    if not isinstance(finished, dict):
+        return None
+    logger.info(
+        f"🎵 [music] finished track_id={finished.get('track_id')} "
+        f"name={finished.get('track_name')!r} reason={finished.get('reason')} "
+        "— форма доиграла, сессия → idle (issue #3133)"
+    )
+    return finished
+
+
 def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """``/voice/speaker/result`` → ``(меняет ли «кто сейчас», новый speaker_id)``.
 
@@ -372,20 +418,20 @@ class MCPServer(Node):
         # Publisher для результатов
         self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
 
-        # Issue 989 Fix C: публикуем состояние музыки для audio_node, чтобы
-        # тот поднимал VAD threshold при активной музыке (strict mode).
-        # audio_node подписывается на /voice/music/state ("playing"/"idle").
-        self.music_state_pub = self.create_publisher(String, "/voice/music/state", qos_profile)
+        # Issue #3133 / ADR-0141: плеер — владелец состояния музыки.
+        # /voice/music/state — JSON-снимок {state, track_id, form_ends_at,
+        # stops_at, dj, finished_track_id, ts}, контракт — модуль
+        # rob_box_voice.core.music_player_state. Latched (TRANSIENT_LOCAL,
+        # KEEP_LAST 1): перезапущенный audio_node/dialogue_node сразу
+        # получает последний снимок, а не «ничего не играет» до тика.
+        # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
+        self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
 
         # Issue #2461 — структурный канал конца прохода формы для
-        # DJModeController.tick() (dialogue_node). НЕ расширяем
-        # /voice/music/state этим полем: audio_node._on_music_state
-        # сравнивает его payload ТОЧНЫМ РАВЕНСТВОМ ("playing"/"idle") для
-        # VAD-эхоподавления (issue #989) — любой суффикс/JSON там молча
-        # ломает порог, музыка перестаёт считаться активной, и бит
-        # начинает триггерить «речь». Поэтому — отдельный String+JSON
-        # топик, по образцу /voice/dj_mode. Payload и его monotonic/epoch
-        # нюанс — см. docstring publish_music_state().
+        # DJModeController.tick() (dialogue_node). С issue #3133 те же
+        # form_ends_at/stops_at есть и в /voice/music/state; этот топик
+        # остаётся, пока DJState не переведён на снимок плеера (#3134).
+        # Payload и его monotonic/epoch нюанс — см. publish_music_state().
         self.music_form_pub = self.create_publisher(String, "/voice/music/form", qos_profile)
 
         # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
@@ -846,6 +892,9 @@ class MCPServer(Node):
         manager = getattr(self, "_music_manager", None)
         if manager is None:
             return
+        # Issue #3133 — страховка к одноразовому таймеру конца формы
+        # (_arm_form_end_timer): если тот не сработал, idle наступит здесь.
+        _finish_music_form(manager, self.get_logger())
         try:
             # Issue #1812 — explicit TTL from the (now 30-min-default)
             # ROS-side parameter, so it always wins over whatever default
@@ -900,19 +949,20 @@ class MCPServer(Node):
     def publish_music_state(self) -> None:
         """Опубликовать /voice/music/state и /voice/music/form.
 
-        ``/voice/music/state``: "playing" если музыка активна, иначе "idle".
-        Issue 989 Fix C: audio_node слушает этот топик и поднимает порог VAD
-        при активной музыке, чтобы бит не триггерил «речь» (эхо-петля).
-        Музыка считается активной, если у MusicManager есть открытая сессия
+        ``/voice/music/state`` (issue #3133, ADR-0141): JSON-снимок плеера
+        ``{state, track_id, form_ends_at, stops_at, dj, finished_track_id,
+        ts}``, контракт и парсер — ``rob_box_voice.core.music_player_state``.
+        ``state="playing"``, если у MusicManager есть открытая сессия
         (``music_session_active_since`` не None) или именованные паттерны.
+        Сессию закрывает стоп, idle-TTL, segments-дедлайн и — с #3133 —
+        конец формы конечного трека (:func:`_finish_music_form`). До #3133
+        payload был плоской строкой "playing"/"idle", и audio_node сравнивал
+        её точным равенством; теперь оба подписчика разбирают JSON через
+        ``parse_music_state`` (старый формат он тоже понимает).
 
-        ⚠️ КОНТРАКТ, НЕ ТРОГАТЬ: ``audio_node._on_music_state`` сравнивает
-        ``msg.data`` ТОЧНЫМ РАВЕНСТВОМ (``state == "playing"``), а не
-        ``startswith``/JSON-парсингом. Любой суффикс или структура вместо
-        плоской строки "playing"/"idle" молча ломает VAD-эхоподавление —
-        музыка перестанет считаться активной, порог не поднимется, бит
-        начнёт триггерить «речь». Именно поэтому конец формы (issue #2461,
-        ниже) идёт ОТДЕЛЬНЫМ топиком, а не полем здесь.
+        Публикуется после каждого музыкального тула, на каждом тике
+        watchdog'а (~5 с) и одноразовым таймером в момент ``stops_at``
+        (:meth:`_arm_form_end_timer`).
 
         ``/voice/music/form`` (issue #2461): JSON
         ``{"form_ends_at": <epoch float|null>, "playing": bool}`` — конец
@@ -937,23 +987,79 @@ class MCPServer(Node):
             self.get_logger().debug(f"⚠️ publish_music_state: get_state failed: {exc}")
             return
         playing = bool(state.get("active_patterns")) or state.get("music_session_active_since") is not None
+        form_ends_at = _music_form_ends_at_epoch(state)
+        stops_at = _music_form_stops_at_epoch(state)
         msg = String()
-        msg.data = "playing" if playing else "idle"
+        msg.data = build_music_state_payload(
+            playing=playing,
+            track_id=state.get("track_id"),
+            form_ends_at=form_ends_at,
+            stops_at=stops_at,
+            dj=state.get("dj_mode_enabled") is True,
+            finished_track_id=state.get("last_finished_track_id"),
+        )
         pub.publish(msg)
+        self._arm_form_end_timer(state.get("form_stop_remaining_s"))
 
         form_pub = getattr(self, "music_form_pub", None)
         if form_pub is None:
             return
         form_msg = String()
         form_msg.data = json.dumps({
-            "form_ends_at": _music_form_ends_at_epoch(state),
+            "form_ends_at": form_ends_at,
             "playing": playing,
             # Issue #3113: когда конечный трек замолчит (DJ-переход раньше)
             # и какая тема играет (DJ-сет не повторяет песню).
-            "stops_at": _music_form_stops_at_epoch(state),
+            "stops_at": stops_at,
             "track": state.get("track_name") if isinstance(state.get("track_name"), str) else None,
         })
         form_pub.publish(form_msg)
+
+    #: Issue #3133 — на сколько позже расчётного конца формы срабатывает
+    #: одноразовый таймер: Renardo гасит трек по долям клока, а не по
+    #: стенным часам; небольшой запас, чтобы не закрыть сессию до
+    #: последней ноты. Acceptance: idle не позже ``stops_at + 1 с``.
+    FORM_END_TIMER_SLACK_S = 0.3
+
+    def _arm_form_end_timer(self, remaining_s: Any) -> None:
+        """Issue #3133 — одноразовый таймер на конец формы конечного трека.
+
+        Watchdog тикает раз в ~5 с — idle запаздывал бы до 5 с. Таймер
+        ставится на ``remaining + FORM_END_TIMER_SLACK_S`` и перевзводится
+        только если конец формы сдвинулся (новый трек). ``remaining_s``
+        не число (зацикленный трек, тишина) — таймер снимается.
+
+        ``threading.Timer``, а не rclpy-таймер: одноразовый, отменяемый и
+        не требует живого Node в юнит-тестах. Колбэк зовёт тот же путь,
+        что и watchdog, — :func:`_finish_music_form` + публикация.
+        """
+        remaining = _positive_seconds(remaining_s)
+        with _FORM_END_TIMER_LOCK:
+            pending = getattr(self, "_form_end_timer", None)
+            due = None if remaining is None else time.monotonic() + remaining + self.FORM_END_TIMER_SLACK_S
+            if pending is not None and due is not None and abs(pending[0] - due) < 0.5:
+                return  # тот же трек — таймер уже стоит
+            if pending is not None:
+                pending[1].cancel()
+            self._form_end_timer = None
+            if due is None:
+                return
+            timer = threading.Timer(due - time.monotonic(), self._on_form_end_timer)
+            timer.daemon = True
+            self._form_end_timer = (due, timer)
+            timer.start()
+
+    def _on_form_end_timer(self) -> None:
+        """Issue #3133 — колбэк одноразового таймера конца формы."""
+        with _FORM_END_TIMER_LOCK:
+            pending = getattr(self, "_form_end_timer", None)
+            if pending is not None and pending[1] is threading.current_thread():
+                self._form_end_timer = None
+        manager = getattr(self, "_music_manager", None)
+        if manager is None:
+            return
+        _finish_music_form(manager, self.get_logger())
+        self.publish_music_state()
 
     def _init_waypoint_store(self) -> WaypointAdapter:
         """Инициализация адаптера для вейпоинтов.
