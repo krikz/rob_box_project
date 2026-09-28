@@ -23,6 +23,13 @@ import { createTtsPickerMenu, type TtsPickerMenuHandle } from "./tts_picker_menu
 import { parseTtsTargetId, type TtsPickerState, type TtsPickerTarget } from "../state/tts_picker_state";
 import { createSupervisorPanel, type SupervisorPanelHandle, PANEL_TARGET_PREFIX } from "./supervisor_panel";
 import {
+  createStreamsPanel,
+  parseStreamsTargetId,
+  type StreamsAction,
+  type StreamsPanelHandle
+} from "./streams_panel";
+import type { SubscriptionsView } from "../state/subscription_manager";
+import {
   createVoicePipelinePanel,
   parsePipelineTargetId,
   PIPELINE_DRAG_TARGET_ID,
@@ -168,6 +175,12 @@ export interface CaptainBridgeOptions {
    */
   onPipelineAction?(action: VoicePipelineAction): void;
   /**
+   * Клик по панели «ПОТОКИ» (issue #3150): профиль / вкл-выкл потока /
+   * частота. Сцена не знает про подписки — это `SubscriptionManager` в
+   * bootstrap.
+   */
+  onStreamsAction?(action: StreamsAction): void;
+  /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
    * (e.g. unit tests that only exercise panels/LiDAR).
@@ -233,6 +246,10 @@ export interface CaptainBridgeHandle {
    * Всегда видима (это не HUD-оверлей, а панель на мостике).
    */
   voicePipeline: VoicePipelinePanelHandle;
+  /** 3D-панель «ПОТОКИ» (issue #3150): профили подписок, частоты, трафик. */
+  streamsPanel: StreamsPanelHandle;
+  /** Перерисовать панель «ПОТОКИ» (и перерегистрировать её кнопки). */
+  renderStreams(view: SubscriptionsView): void;
   /**
    * TARS 1 — текстовое полотно (issue #2113, quest #2112). Слева от
    * FRONT CAM, лицом к оператору. Показывает текст, который TARS
@@ -466,6 +483,12 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         }
         // Клик по кнопке панели супервизора (R14): маршрутизируем в
         // callback, который установлен через `onSupervisorAction`.
+        // issue #3150: кнопки панели «ПОТОКИ» (prefix `str:`).
+        const streamsAction = parseStreamsTargetId(id);
+        if (streamsAction !== null) {
+          opts.onStreamsAction?.(streamsAction);
+          return;
+        }
         if (id.startsWith(PANEL_TARGET_PREFIX)) {
           const action = id.slice(PANEL_TARGET_PREFIX.length);
           opts.onSupervisorAction?.(action, supervisorPanel);
@@ -532,6 +555,20 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Фон панели тащит всю панель по сфере вокруг оператора. Кнопки ловят
   // луч первыми (они ближе к камере), поэтому перетаскивание не мешает клику.
   pointer.addTarget({ id: PIPELINE_DRAG_TARGET_ID, object: voicePipeline.object, draggable: true });
+
+  // Панель «ПОТОКИ» (issue #3150): +105°, зеркально панели режимов (−105°).
+  // Набор строк меняется вместе с набором потоков, поэтому цели указателя
+  // перерегистрируются при каждой пересборке хит-мешей.
+  const streamsPanel = createStreamsPanel();
+  scene.add(streamsPanel.object);
+  let streamsTargetIds: string[] = [];
+  function renderStreams(view: SubscriptionsView): void {
+    if (!streamsPanel.render(view)) return;
+    for (const id of streamsTargetIds) pointer.removeTarget(id);
+    const targets = streamsPanel.targets();
+    for (const t of targets) pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+    streamsTargetIds = targets.map((t) => t.id);
+  }
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
   // камеру. Стена мостика стоит на z = -4.56 (ROOM_D/2, ADR-0076 R1,
@@ -1288,6 +1325,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     statusHud.dispose();
     supervisorPanel.dispose();
     voicePipeline.dispose();
+    streamsPanel.dispose();
     voiceIndicator.dispose();
     tars1Panel.dispose();
     tars2Panel.dispose();
@@ -1312,6 +1350,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     pointer,
     supervisorPanel,
     voicePipeline,
+    streamsPanel,
+    renderStreams,
     tars1Panel,
     tars2Panel,
     setAvailableStreams,

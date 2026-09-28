@@ -237,3 +237,13 @@ describe("formatSupervisorLines (AV-17)", () => {
     expect(SUPERVISOR_DEGRADED_NOTE.toLowerCase()).toContain("no coordination");
   });
 });
+
+describe("NET line (issue #3150)", () => {
+  it("absent until the meter is wired (null)", () => {
+    expect(formatStatusLines(null, null, null).find((l) => l.label === "NET")).toBeUndefined();
+  });
+  it("shows kbit/s and Mbit/s", () => {
+    expect(valueOf(formatStatusLines(null, null, null, 412.6), "NET").value).toBe("413 kbit/s");
+    expect(valueOf(formatStatusLines(null, null, null, 2400), "NET").value).toBe("2.4 Mbit/s");
+  });
+});

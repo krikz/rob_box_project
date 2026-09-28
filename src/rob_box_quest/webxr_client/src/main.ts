@@ -13,7 +13,8 @@
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
 import { Connection } from "./wire/connection";
-import { createCaptainBridge } from "./scene/captain_bridge";
+import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
+import { SubscriptionManager, type SubscriptionStorage } from "./state/subscription_manager";
 import { parseRobotStatus } from "./scene/status_hud";
 import {
   isUnknownState,
@@ -96,6 +97,15 @@ const DEFAULT_VOICE_LANGUAGE: VoiceLanguage = "ru";
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
 const NON_VIDEO_TOPICS = ["lidar_2d", "map_2d", "robot_status", "voice_state"];
+
+/** localStorage, если доступен (приватный режим / тесты — null). */
+function browserStorage(): SubscriptionStorage | null {
+  try {
+    return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
 
 interface BootstrapOptions {
   url?: string;
@@ -405,14 +415,21 @@ export function bootstrap(opts: BootstrapOptions): {
     //      идемпотентно, см. ws_server._on_subscribe).
     //   3) Отписываемся от старого, если его больше никто не показывает.
     onPanelTopicChange: (_panelId, oldTopic, newTopic) => {
+      // issue #3150: подписками владеет SubscriptionManager — новый топик
+      // наследует настройки слота (вкл/частота), SUBSCRIBE/UNSUBSCRIBE он
+      // шлёт сам, если сокет подключён.
+      const stillUsed = bridge.videoTopics().includes(oldTopic);
+      subs.replaceTopic(oldTopic, newTopic, stillUsed);
       if (!conn || disconnected) return;
       // Мета-команда: UI запросил смену активного стрима. sendCmd логирует
-      // и гасит исключение, чтобы сбой отправки не уронил локальный обмен
-      // подписками ниже.
+      // и гасит исключение.
       sendCmd({ cmd: "stream_select", topic: newTopic, ts_ms: Date.now() });
-      conn.subscribe(newTopic);
-      const stillUsed = bridge.videoTopics().includes(oldTopic);
-      if (!stillUsed) conn.unsubscribe(oldTopic);
+    },
+    // issue #3150: панель «ПОТОКИ» — профиль / вкл-выкл / частота.
+    onStreamsAction: (action) => {
+      if (action.kind === "profile") subs.applyProfile(action.profile);
+      else if (action.kind === "toggle") subs.toggle(action.topic);
+      else subs.cycleRate(action.topic);
     },
     // AV-27: клик по TTS picker'у. Сцена уже открыла/закрыла меню сама,
     // здесь остаётся то, что требует сокета и стора.
@@ -657,6 +674,20 @@ export function bootstrap(opts: BootstrapOptions): {
   // Тик раз в секунду: крутит счётчик ожидания, гасит «✓ готово» и
   // переводит зависшую реплику в «нет ответа». Секунды достаточно —
   // счётчик показывается с точностью до секунды.
+  // issue #3150: подписки (профиль, частоты) + счётчик трафика по потокам.
+  const subs = new SubscriptionManager({
+    topics: [...bridge.videoTopics(), ...NON_VIDEO_TOPICS],
+    mainVideoTopic: MAIN_SCREEN_TOPIC,
+    storage: browserStorage()
+  });
+  const renderSubs = (): void => {
+    bridge.renderStreams(subs.view());
+    bridge.statusHud.setBandwidth(subs.totalKbps());
+  };
+  subs.onChange(renderSubs);
+  renderSubs();
+  const subsTicker = setInterval(() => subs.tick(Date.now()), 1000);
+
   const utteranceTicker = setInterval(() => {
     dispatchUtterance({ kind: "tick", atMs: Date.now() });
     // Даже без смены стадии счётчик секунд должен идти.
@@ -1236,9 +1267,13 @@ export function bootstrap(opts: BootstrapOptions): {
             setStatus("CONNECTED", "connected");
             // Phase 2.3: ошибка прячется при восстановлении коннекта.
             watchdog.markConnected();
-            for (const topic of [...bridge.videoTopics(), ...NON_VIDEO_TOPICS]) {
-              conn!.subscribe(topic);
-            }
+            // issue #3150: новая сессия сервера — менеджер подписывает
+            // включённые потоки с их max_hz.
+            const c = conn!;
+            subs.attach({
+              subscribe: (topic, maxHz) => c.subscribe(topic, undefined, { maxHz }),
+              unsubscribe: (topic) => c.unsubscribe(topic)
+            });
             // Каталог стримов → меню выбора на панелях (R10).
             conn!.requestStreamList();
             // AV-27: если picker открыт (например, разрыв случился при
@@ -1265,6 +1300,7 @@ export function bootstrap(opts: BootstrapOptions): {
             void exitVr();
           } else if (state === "reconnecting") {
             setStatus("RECONNECTING…", "connecting");
+            subs.detach();
             // Старый RTT после разрыва — враньё: обнуляем до первого pong.
             bridge.statusHud.setRtt(null);
             // AV-19: на reconnect FSM предполагает «оптимистично» hasFloor=true;
@@ -1296,6 +1332,7 @@ export function bootstrap(opts: BootstrapOptions): {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
             setStatus("CLOSED", "lost");
+            subs.detach();
             bridge.statusHud.setRtt(null);
             disconnected = true;
             // AV-19: сброс FSM-state и тостов.
@@ -1352,6 +1389,7 @@ export function bootstrap(opts: BootstrapOptions): {
           }
           const topic = conn!.getTopicForStream(streamId);
           if (!topic) return;
+          subs.recordFrame(topic, payload.byteLength);
           if (topic === "lidar_2d") {
             bridge.lidar.ingestPayload(payload);
             return;
@@ -1940,6 +1978,7 @@ export function bootstrap(opts: BootstrapOptions): {
       // PCM в мост после dispose.
       voiceCapture.setWakeGate({ enabled: false, suppressed: true });
       clearInterval(utteranceTicker);
+      clearInterval(subsTicker);
       clearApplyTimeout();
       previewSink.dispose();
       // ADR-0078: operatorAudioSink.dispose() теперь закрывает AudioContext
