@@ -53,18 +53,33 @@ from ..core.arranger import (
     check_swing,
     form_duration_seconds,
     form_summary,
+    form_total_beats,
     normalize_synth,
     render,
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
-from ..core.club_arranger import club_duration_seconds, render_club
+from ..core.club_arranger import club_duration_seconds, club_form_beats, render_club
+from ..core.clock_phase import clock_phase_snapshot
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary, display_title, match_info
+
+#: Issue #3112 — флаг кандидата-фикса фазы клока (по умолчанию ВЫКЛ).
+_ALIGN_CLOCK_ENV = "ROB_BOX_MUSIC_ALIGN_CLOCK"
+
+
+def music_align_clock_enabled() -> bool:
+    """``ROB_BOX_MUSIC_ALIGN_CLOCK=1`` — аранжировщики ставят ``Clock.set_time``.
+
+    Читается здесь, а не в ``core``: ядро аранжировщика чистое и получает
+    флаг параметром (``render(..., align_clock=)``/``render_club``).
+    """
+    return os.environ.get(_ALIGN_CLOCK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -1329,6 +1344,16 @@ class MusicManager:
     # ------------------------------------------------------------------
     # Issue #990 — segments safety-net
     # ------------------------------------------------------------------
+
+    def renardo_clock(self) -> Any:
+        """``Clock`` уже поднятого рантайма Renardo или ``None`` (issue #3112).
+
+        Только чтение для диагностики фазы — рантайм здесь не поднимается.
+        """
+        try:
+            return self._renardo_context.get("Clock")
+        except Exception:  # noqa: BLE001
+            return None
 
     def _renardo_bpm(self) -> float:
         """Current Renardo BPM (default 120 when Clock is unavailable)."""
@@ -3667,6 +3692,52 @@ class ComposeMusicTool(MCPTool):
             if k not in self._CLUB_PARAMS and k in defaults and v != defaults[k].default
         )
 
+    def _execute_with_clock_phase(self, code: str, form_beats: int) -> Dict[str, Any]:
+        """``execute_code`` трека + диагностика фазы клока (issue #3112, всегда вкл.).
+
+        Снимок до и после ``exec``: с какой доли встанут плееры и какое это
+        смещение внутри формы (0 — трек начнётся с интро). Ошибка снятия
+        фазы музыку не ломает: снимок просто ``None``.
+        """
+        before = self._clock_phase(form_beats)
+        result = self._manager.execute_code(code, pattern_name="composition")
+        if result.get("success"):
+            self._report_clock_phase(result, before, self._clock_phase(form_beats), code)
+        return result
+
+    def _clock_phase(self, form_beats: int) -> Optional[Dict[str, float]]:
+        getter = getattr(self._manager, "renardo_clock", None)
+        try:
+            clock = getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            clock = None
+        return clock_phase_snapshot(clock, form_beats)
+
+    def _report_clock_phase(
+        self,
+        result: Dict[str, Any],
+        before: Optional[Dict[str, float]],
+        after: Optional[Dict[str, float]],
+        code: str,
+    ) -> None:
+        """Положить фазу в результат тула и в INFO-лог (evidence для #3112)."""
+        try:
+            align = "Clock.set_time(" in code
+            snap = after or before
+            result["clock_phase"] = {"before_exec": before, "after_exec": after, "align_clock": align}
+            result["clock_phase_offset_beats"] = snap["phase_offset_beats"] if snap else None
+            if snap is None:
+                self.log_info("[#3112] фаза клока: Clock недоступен, смещение формы не измерено")
+                return
+            self.log_info(
+                f"[#3112] фаза клока: доля до exec={before['clock_beat'] if before else None}, "
+                f"после exec={snap['clock_beat']}, плееры встанут на долю {snap['start_beat']}, "
+                f"смещение в форме {snap['phase_offset_beats']} из {snap['form_total_beats']:g} долей "
+                f"(align_clock={'вкл' if align else 'выкл'})"
+            )
+        except Exception:  # noqa: BLE001 — диагностика не ломает музыку
+            pass
+
     def _execute_club(self, kwargs: Dict[str, Any]) -> MCPToolResult:
         """``style="club"``: код из :func:`core.club_arranger.render_club`.
 
@@ -3681,11 +3752,12 @@ class ComposeMusicTool(MCPTool):
             code = render_club(
                 bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
                 seed=kwargs.get("seed") or 0, repeat=repeat,
+                align_clock=music_align_clock_enabled(),
             )
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
         self.log_info("Композиция: style=club")
-        result = self._manager.execute_code(code, pattern_name="composition")
+        result = self._execute_with_clock_phase(code, club_form_beats())
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
         duration_s = club_duration_seconds(bpm)
@@ -3774,7 +3846,10 @@ class ComposeMusicTool(MCPTool):
             "Композиция: "
             f"{form_summary(built.spec.form, getattr(built.spec, 'theme_bars', 0))}"
         )
-        result = self._manager.execute_code(built.code, pattern_name="composition")
+        result = self._execute_with_clock_phase(
+            built.code,
+            form_total_beats(built.spec.form, getattr(built.spec, "theme_bars", 0)),
+        )
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
 
@@ -3971,7 +4046,7 @@ class ComposeMusicTool(MCPTool):
                 fx=fx,
                 options=knobs.arrange,
             )
-            code = render(spec)
+            code = render(spec, align_clock=music_align_clock_enabled())
         except ArrangementError as exc:
             # Сообщение аранжировщика написано так, чтобы модель могла
             # исправиться следующим вызовом, а не гадать.
