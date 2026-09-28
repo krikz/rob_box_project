@@ -4,6 +4,7 @@
 //   map_2d       → rob_box_quest/streams/occupancy.py: encode_map_2d + grid_to_png
 //   robot_status → rob_box_quest/protocol/topics.py: encode_robot_status
 //   voice_state  → rob_box_quest/protocol/topics.py: encode_voice_state
+//   nav_path     → rob_box_quest/streams/nav_path.py: encode_nav_path
 //   STATE_UPDATE → rob_box_supervisor/core/state.py: pack (плоская форма)
 //
 // Каждый энкодер покрыт тестом, который гоняет байты через НАСТОЯЩИЙ
@@ -249,4 +250,23 @@ export function encodeSupervisorState(s: SupervisorStateInput): Uint8Array {
     since_ms: Math.round(s.sinceMs),
     version: s.version
   });
+}
+
+// ────────────────────────── nav_path ──────────────────────────
+
+export interface NavPathInput {
+  frame: string;
+  points: ReadonlyArray<{ x: number; y: number }>;
+  tsMs: number;
+}
+
+/** msgpack-map `{frame, n, xy: bin (n пар float32 LE), ts_ms}` (encode_nav_path). */
+export function encodeNavPath(f: NavPathInput): Uint8Array {
+  const xy = new Uint8Array(f.points.length * 8);
+  const view = new DataView(xy.buffer);
+  f.points.forEach((p, i) => {
+    view.setFloat32(i * 8, p.x, true);
+    view.setFloat32(i * 8 + 4, p.y, true);
+  });
+  return encodeMsgpackMap({ frame: f.frame, n: f.points.length, xy, ts_ms: Math.round(f.tsMs) });
 }

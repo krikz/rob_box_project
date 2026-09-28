@@ -317,9 +317,22 @@ export interface SimGrid {
   originX: number;
   originY: number;
   data: Int8Array;
-  /** Растёт при каждом изменении — энкодер карты шлёт PNG только по нему. */
+  /**
+   * Счётчик попаданий лидара по клетке (гистерезис занятости): клетка
+   * становится занятой только после OCC_HITS_TO_MARK попаданий, а луч,
+   * прошедший сквозь неё, счётчик уменьшает. Иначе шум дальномера (±1 см)
+   * то и дело «зажигал» соседние со стеной клетки — ревизия карты росла
+   * каждый скан, и мок слал 336-килобайтный PNG раз в секунду.
+   */
+  hits: Uint8Array;
+  /** Растёт при каждом изменении решётки (планировщик пересчитывает маску). */
   revision: number;
+  /** Сколько клеток изменилось за всё время — «значимость» изменения карты. */
+  changedCells: number;
 }
+
+/** Попаданий подряд (без пролётов насквозь), чтобы клетка стала занятой. */
+export const OCC_HITS_TO_MARK = 3;
 
 export function createGrid(world: SimWorld, resolution = 0.05): SimGrid {
   const { minX, minY, maxX, maxY } = world.bounds;
@@ -332,7 +345,9 @@ export function createGrid(world: SimWorld, resolution = 0.05): SimGrid {
     originX: minX,
     originY: minY,
     data: new Int8Array(width * height).fill(-1),
-    revision: 0
+    hits: new Uint8Array(width * height),
+    revision: 0,
+    changedCells: 0
   };
 }
 
@@ -345,15 +360,16 @@ function cellIndex(g: SimGrid, x: number, y: number): number {
 
 /**
  * «SLAM»: протащить каждый луч скана по решётке — клетки вдоль луча
- * свободны, клетка попадания занята. Так карта открывается ровно там,
- * куда робот реально посмотрел. Возвращает true, если решётка изменилась.
+ * свободны, клетка попадания копит попадания и занимается после
+ * OCC_HITS_TO_MARK (см. SimGrid.hits). Так карта открывается ровно там,
+ * куда робот реально посмотрел. Возвращает число изменившихся клеток.
  */
 export function integrateScan(
   g: SimGrid,
   st: Pick<SimRobotState, "x" | "y" | "yaw">,
   scan: SimScan
-): boolean {
-  let changed = false;
+): number {
+  let changed = 0;
   const step = g.resolution * 0.8;
   for (let i = 0; i < scan.ranges.length; i += 1) {
     const r = scan.ranges[i];
@@ -367,17 +383,26 @@ export function integrateScan(
       if (idx < 0) break;
       if (g.data[idx] === -1) {
         g.data[idx] = 0;
-        changed = true;
+        changed += 1;
       }
+      // Луч прошёл насквозь — улика против занятости (кроме уже занятых:
+      // занятое не «гаснет», карта сходится, а не мерцает).
+      if (g.hits[idx] > 0 && g.data[idx] !== 100) g.hits[idx] -= 1;
     }
     if (hit) {
       const idx = cellIndex(g, st.x + dx * r, st.y + dy * r);
       if (idx >= 0 && g.data[idx] !== 100) {
-        g.data[idx] = 100;
-        changed = true;
+        g.hits[idx] = Math.min(255, g.hits[idx] + 1);
+        if (g.hits[idx] >= OCC_HITS_TO_MARK) {
+          g.data[idx] = 100;
+          changed += 1;
+        }
       }
     }
   }
-  if (changed) g.revision += 1;
+  if (changed > 0) {
+    g.revision += 1;
+    g.changedCells += changed;
+  }
   return changed;
 }

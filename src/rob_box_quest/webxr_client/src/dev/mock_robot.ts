@@ -12,7 +12,9 @@
 //   JSON_EVENT ping → pong с эхом ts_ms;
 //   SUBSCRIBE → subscribe_ack{stream_id} | ERROR{TOPIC_UNKNOWN};
 //   UNSUBSCRIBE; JSON_CMD по таблице `commands` (unknown → ERROR{UNKNOWN_COMMAND});
-//   SET_MODE / ACQUIRE_FLOOR / RELEASE_FLOOR → STATE_UPDATE.
+//   SET_MODE / ACQUIRE_FLOOR / RELEASE_FLOOR → STATE_UPDATE;
+//   SUBSCRIBE.max_hz (#3150) — прореживание стрима + эхо в subscribe_ack;
+//   nav_goal / nav_cancel + стрим nav_path (#3151) — sim_nav.ts.
 //
 // Расширение (Nav2, max_hz — отдельными карточками):
 //   * новая команда — `robot.registerCommand("nav_goal", handler)`;
@@ -50,6 +52,8 @@ import {
   type SimWorld
 } from "./sim_world";
 import { cameraKindForTopic, type CameraRenderer } from "./sim_camera";
+import { SimNavigator } from "./sim_nav";
+import { encodeNavPath } from "./sim_encoders";
 
 // ────────────────────────── типы расширения ──────────────────────────
 
@@ -57,8 +61,10 @@ export interface MockSubscription {
   topic: string;
   streamId: number;
   quality: string;
-  /** Исходный SUBSCRIBE целиком — сюда приедут будущие поля (max_hz). */
+  /** Исходный SUBSCRIBE целиком. */
   request: Record<string, unknown>;
+  /** SUBSCRIBE.max_hz после нормализации (parseMaxHz); null — без лимита. */
+  maxHz: number | null;
   nextDueMs: number;
   /** Кадр ещё кодируется (async-камера) — следующий не начинаем. */
   busy: boolean;
@@ -239,6 +245,9 @@ export class MockSession {
     }
     const q = msg.quality;
     const quality = q === "low" || q === "med" || q === "high" ? q : source.defaultQuality;
+    // Как ws_server: повторный SUBSCRIBE идемпотентен по stream_id, но
+    // обновляет лимит частоты (отсутствие max_hz = снять лимит).
+    const maxHz = parseMaxHz(msg.max_hz);
     let sub = this.subscriptions.get(topic);
     if (!sub) {
       sub = {
@@ -246,19 +255,26 @@ export class MockSession {
         streamId: this.robot.allocateStreamId(),
         quality,
         request: msg,
+        maxHz,
         nextDueMs: 0,
         busy: false,
         memo: {}
       };
       this.subscriptions.set(topic, sub);
+    } else {
+      sub.request = msg;
+      sub.maxHz = maxHz;
+      sub.quality = quality;
     }
-    this.sendEvent({
+    const ack: Record<string, unknown> = {
       type: "subscribe_ack",
       topic,
       stream_id: sub.streamId,
       quality,
       kind: source.kind
-    });
+    };
+    if (maxHz !== null) ack.max_hz = maxHz;
+    this.sendEvent(ack);
     source.onSubscribe?.(this.robot, this, sub);
   }
 }
@@ -291,6 +307,10 @@ export class MockRobot {
   supervisorMode = "avatar_present";
   supervisorVersion = 1;
   supervisorSinceMs: number;
+  /** Nav2 симулятора (sim_nav.ts): цель, план, pure-pursuit. */
+  readonly nav: SimNavigator;
+  /** Последний teleop_twist — телеоп перебивает навигацию (twist_mux 90 > 10). */
+  lastTeleopMs = -Infinity;
 
   private readonly sessions = new Set<MockSession>();
   private readonly commands = new Map<string, MockCommandHandler>();
@@ -313,6 +333,12 @@ export class MockRobot {
     this.supervisorSinceMs = this.now();
     this.lastScan = scanLidar(this.world, this.state);
     integrateScan(this.grid, this.state, this.lastScan);
+    this.nav = new SimNavigator({
+      grid: this.grid,
+      pose: () => this.state,
+      drive: (v, w) => this.setCommandVelocity(v, w),
+      emit: (ev) => this.broadcastEvent(ev)
+    });
     for (const [name, h] of Object.entries(DEFAULT_COMMANDS)) this.commands.set(name, h);
     for (const [topic, s] of Object.entries(DEFAULT_STREAMS)) this.streams.set(topic, s);
   }
@@ -357,6 +383,11 @@ export class MockRobot {
 
   sessionCount(): number {
     return this.sessions.size;
+  }
+
+  /** JSON_EVENT всем подключённым сессиям (nav_status у сервера — так же). */
+  broadcastEvent(event: Record<string, unknown>): void {
+    for (const s of this.sessions) if (s.authenticated) s.sendEvent(event);
   }
 
   allocateStreamId(): number {
@@ -404,7 +435,20 @@ export class MockRobot {
     this.state.lastCmdMs = this.now();
   }
 
+  /** teleop_twist оператора (в отличие от команд навигатора). */
+  teleopCommand(v: number, w: number): void {
+    this.lastTeleopMs = this.now();
+    this.setCommandVelocity(v, w);
+  }
+
+  /** Телеоп сейчас перебивает навигацию (twist_mux: quest timeout 0.5 с). */
+  teleopOverridesNav(): boolean {
+    return this.now() - this.lastTeleopMs <= TELEOP_MUX_TIMEOUT_MS;
+  }
+
   emergencyStop(): void {
+    // quest_node.emergency_stop (#3151): аварийный стоп отменяет и nav-цель.
+    this.nav.cancel(this.now());
     this.emergencyUntilMs = this.now() + SIM_EMERGENCY_HOLD_MS;
     this.state.cmdV = 0;
     this.state.cmdW = 0;
@@ -449,6 +493,8 @@ export class MockRobot {
     if (this.isEmergency()) {
       this.state.cmdV = 0;
       this.state.cmdW = 0;
+    } else {
+      this.nav.step(now, this.teleopOverridesNav());
     }
     stepRobot(this.world, this.state, dt, now);
     const moving = Math.abs(this.state.v) + Math.abs(this.state.w) > 0.01;
@@ -495,12 +541,31 @@ export class MockRobot {
 }
 
 /**
- * Период кадров подписки, мс. Единственное место, где считается частота —
- * сюда ляжет `max_hz` из SUBSCRIBE (sub.request), когда его добавят.
+ * Период кадров подписки, мс. Единственное место, где считается частота:
+ * номинал стрима, прореженный до SUBSCRIBE.max_hz (#3150), если лимит
+ * строже номинала. Событийные стримы (rateHz = 0) лимит не включает.
  */
-export function subscriptionPeriodMs(source: MockStreamSource, _sub: MockSubscription): number {
-  return source.rateHz > 0 ? 1000 / source.rateHz : 0;
+export function subscriptionPeriodMs(source: MockStreamSource, sub: MockSubscription): number {
+  if (source.rateHz <= 0) return 0;
+  const hz = sub.maxHz !== null ? Math.min(source.rateHz, sub.maxHz) : source.rateHz;
+  return 1000 / hz;
 }
+
+/** Потолок max_hz (stream_rate.py MAX_HZ_CEILING). */
+export const MAX_HZ_CEILING = 120;
+
+/**
+ * SUBSCRIBE.max_hz → Гц или null (без лимита) — зеркало stream_rate.py
+ * parse_max_hz: null для отсутствия, bool, не-числа, NaN/inf, ≤ 0, > 120.
+ */
+export function parseMaxHz(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  if (raw <= 0 || raw > MAX_HZ_CEILING) return null;
+  return raw;
+}
+
+/** twist_mux: quest timeout 0.5 с — столько телеоп держит приоритет над nav. */
+export const TELEOP_MUX_TIMEOUT_MS = 500;
 
 // ────────────────────────── таблица команд ──────────────────────────
 
@@ -548,8 +613,8 @@ export const DEFAULT_COMMANDS: Readonly<Record<string, MockCommandHandler>> = Ob
     const lin = (cmd.linear ?? {}) as Record<string, unknown>;
     const ang = (cmd.angular ?? {}) as Record<string, unknown>;
     // deadman=false → стоп (FSM шлёт такой twist при отпускании Space).
-    if (cmd.deadman === false) robot.setCommandVelocity(0, 0);
-    else robot.setCommandVelocity(num(lin.x), num(ang.z));
+    if (cmd.deadman === false) robot.teleopCommand(0, 0);
+    else robot.teleopCommand(num(lin.x), num(ang.z));
   },
   teleop_heartbeat: () => undefined,
   stop_emergency: ({ robot }) => robot.emergencyStop(),
@@ -591,8 +656,42 @@ export const DEFAULT_COMMANDS: Readonly<Record<string, MockCommandHandler>> = Ob
   supervisor_get_state: supervisorCmd,
   avatar_set_mode: supervisorCmd,
   avatar_acquire_floor: supervisorCmd,
-  avatar_release_floor: supervisorCmd
+  avatar_release_floor: supervisorCmd,
+  nav_goal: navGoalCmd,
+  nav_cancel: ({ robot, session }) => {
+    const hadGoal = robot.nav.cancel(robot.now());
+    session.sendEvent({ type: "nav_cancel_ack", had_goal: hadGoal });
+  }
 });
+
+/** Причины nav_goal_nack (core/nav_goal.py NACK_*). */
+export const NAV_NACK = Object.freeze({
+  badPayload: "bad_payload",
+  badFrame: "bad_frame",
+  emergency: "emergency_active"
+});
+
+/**
+ * nav_goal (ws_server._json_cmd_nav_goal + parse_nav_goal): frame обязан
+ * быть "map", seq — целое, x/y/yaw — конечные числа; E-STOP → nack. Floor
+ * у сессии симулятора всегда свой, floor_held не бывает.
+ */
+function navGoalCmd({ robot, session, cmd }: MockCommandContext): void {
+  const rawSeq = cmd.seq;
+  const seq = typeof rawSeq === "number" && Number.isInteger(rawSeq) ? rawSeq : null;
+  const nack = (reason: string): void => {
+    const ev: Record<string, unknown> = { type: "nav_goal_nack", reason };
+    if (seq !== null) ev.seq = seq;
+    session.sendEvent(ev);
+  };
+  if (cmd.frame !== "map") return nack(NAV_NACK.badFrame);
+  const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  if (seq === null || !finite(cmd.x) || !finite(cmd.y) || !finite(cmd.yaw)) return nack(NAV_NACK.badPayload);
+  if (robot.isEmergency()) return nack(NAV_NACK.emergency);
+  const yaw = Math.atan2(Math.sin(cmd.yaw), Math.cos(cmd.yaw));
+  robot.nav.start({ seq, x: cmd.x, y: cmd.y, yaw: yaw === -Math.PI ? Math.PI : yaw }, robot.now());
+  session.sendEvent({ type: "nav_goal_ack", seq });
+}
 
 function supervisorCmd({ robot, session, cmd }: MockCommandContext): void {
   if (
@@ -629,10 +728,34 @@ function cameraStream(topicId: number, source: string, description: string): Moc
   };
 }
 
-/** Полный кадр карты (с PNG) — при изменении решётки, но не чаще раза в 1 с. */
-const MAP_PNG_MIN_INTERVAL_MS = 1000;
-/** И даже без изменений — раз в 10 с (клиент мог пересоздать текстуру). */
-const MAP_PNG_REFRESH_MS = 10_000;
+/**
+ * Полный кадр карты (с PNG, ~336 КБ несжатого RGBA) — только при значимом
+ * изменении и не чаще раза в 5 с (quest_node.py MAP_PNG_MIN_PERIOD_S = 5).
+ */
+export const MAP_PNG_MIN_PERIOD_MS = 5000;
+/** «Значимо» — изменилось хотя бы столько клеток (5 см) с прошлого PNG. */
+export const MAP_PNG_MIN_CHANGED_CELLS = 25;
+/** Мелкие изменения всё же доезжают, но не чаще раза в 30 с. */
+export const MAP_PNG_MINOR_PERIOD_MS = 30_000;
+/** Без изменений — PNG раз в минуту (подписка и так начинается с PNG). */
+export const MAP_PNG_KEEPALIVE_MS = 60_000;
+
+/**
+ * Нужен ли PNG в очередном кадре map_2d. Первый кадр подписки — всегда
+ * (BINARY_FRAME не latched: иначе новый подписчик стоял бы на пустом полу).
+ */
+export function mapPngDue(
+  now: number,
+  last: { ms: number; changedCells: number } | null,
+  changedCells: number
+): boolean {
+  if (!last) return true;
+  const since = now - last.ms;
+  const delta = changedCells - last.changedCells;
+  if (delta >= MAP_PNG_MIN_CHANGED_CELLS) return since >= MAP_PNG_MIN_PERIOD_MS;
+  if (delta > 0) return since >= MAP_PNG_MINOR_PERIOD_MS;
+  return since >= MAP_PNG_KEEPALIVE_MS;
+}
 
 export const DEFAULT_STREAMS: Readonly<Record<string, MockStreamSource>> = Object.freeze({
   camera_rear: cameraStream(0x1001, "/camera/camera/color/image_raw", "OAK-D color — вид вперёд"),
@@ -658,16 +781,11 @@ export const DEFAULT_STREAMS: Readonly<Record<string, MockStreamSource>> = Objec
     rateHz: 5,
     produce(robot, sub) {
       const now = robot.now();
-      const lastRev = (sub.memo.pngRevision as number | undefined) ?? -1;
-      const lastMs = (sub.memo.pngMs as number | undefined) ?? -Infinity;
-      const needPng =
-        (robot.grid.revision !== lastRev && now - lastMs >= MAP_PNG_MIN_INTERVAL_MS) ||
-        now - lastMs >= MAP_PNG_REFRESH_MS;
+      const last = (sub.memo.png as { ms: number; changedCells: number } | undefined) ?? null;
       let png: Uint8Array | null = null;
-      if (needPng) {
+      if (mapPngDue(now, last, robot.grid.changedCells)) {
         png = gridToPng(robot.grid);
-        sub.memo.pngRevision = robot.grid.revision;
-        sub.memo.pngMs = now;
+        sub.memo.png = { ms: now, changedCells: robot.grid.changedCells };
       }
       const { x, y, yaw } = robot.state;
       return encodeMap2d({ grid: robot.grid, robot: { x, y, yaw }, tsMs: now, png });
@@ -690,6 +808,26 @@ export const DEFAULT_STREAMS: Readonly<Record<string, MockStreamSource>> = Objec
         velAngular: robot.state.w,
         tsMs: robot.now()
       })
+  },
+  nav_path: {
+    topicId: 0x1104,
+    kind: "ros_topic",
+    source: "/plan",
+    description: "SIM: глобальный план Nav2 (≤ 2 Гц)",
+    defaultQuality: "low",
+    // NAV_PATH_MIN_PERIOD_S = 0.5; кадр уходит только при смене плана
+    // (пересчёт раз в 1 с) и один пустой (n = 0) по завершении цели.
+    rateHz: 2,
+    produce(robot, sub) {
+      const rev = robot.nav.pathRevision;
+      if (sub.memo.navRevision === rev) return null;
+      const first = sub.memo.navRevision === undefined;
+      sub.memo.navRevision = rev;
+      const pts = robot.nav.currentPath();
+      // Свежая подписка без цели — молчим, как сервер без /plan.
+      if (first && pts.length === 0) return null;
+      return encodeNavPath({ frame: "map", points: pts, tsMs: robot.now() });
+    }
   },
   voice_state: {
     topicId: 0x1202,
