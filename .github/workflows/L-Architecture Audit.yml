@@ -171,6 +171,10 @@ jobs:
             --repo-root . \
             --output-dir architecture
 
+      # runtime-vision.json exists only with capture_vision. upload-artifact@v4 globs
+      # all paths together and skips a missing one silently (@actions/glob: ENOENT ->
+      # continue); if-no-files-found only fires when nothing matches at all. Every
+      # other file is produced by an earlier step that fails the job if it cannot.
       - name: Upload local architecture evidence
         uses: actions/upload-artifact@v4
         with:
