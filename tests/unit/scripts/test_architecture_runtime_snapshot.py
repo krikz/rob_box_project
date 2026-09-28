@@ -195,3 +195,79 @@ def test_main_per_topic_flag_still_reads_env_from_container(monkeypatch, tmp_pat
     assert data["topic_info"]["/x"]["raw"] == "Type: b\n"
     batch_calls = [c for c in runner.calls if c[:2] == ["bash", "-c"]]
     assert len(batch_calls) == 1 and ENV_ONLY in batch_calls[0][2]
+
+
+# --------------------------------------------------------------------------- time budget
+# The job limit is 15 min: a hung batch plus a full per-topic fallback must not blow it.
+
+
+class ClockRunner:
+    """Fake runner on a fake monotonic clock: the batch hangs until its timeout, each topic call costs 100 s."""
+
+    def __init__(self, topics):
+        self.now = 0.0
+        self.topics = topics
+        self.calls = []
+        self.batch_timeouts = []
+
+    def monotonic(self):
+        return self.now
+
+    def __call__(self, args, timeout=30, **kwargs):
+        self.calls.append(args)
+        if args[:2] == ["bash", "-c"]:
+            if ENV_ONLY in args[2]:
+                self.now += 1
+                return {"returncode": 0, "stdout": "=====ENV ROS_DOMAIN_ID=0=====\n", "stderr": ""}
+            self.batch_timeouts.append(timeout)
+            self.now += timeout
+            raise snapshot.subprocess.TimeoutExpired(args, timeout)
+        if args[:3] == ["ros2", "topic", "info"]:
+            self.now += 100
+            return {"returncode": 0, "stdout": f"Type: t {args[3]}\n", "stderr": ""}
+        lists = {"node": "/a\n", "topic": "".join(t + "\n" for t in self.topics), "service": "", "action": ""}
+        return {"returncode": 0, "stdout": lists[args[1]], "stderr": ""}
+
+
+def inspected(runner):
+    return [c[3] for c in runner.calls if c[:3] == ["ros2", "topic", "info"]]
+
+
+def test_fallback_within_budget_inspects_everything(monkeypatch, tmp_path):
+    runner = ClockRunner(["/t1", "/t2", "/t3", "/t4"])
+    monkeypatch.setattr(snapshot.time, "monotonic", runner.monotonic)
+
+    data = run_main(monkeypatch, tmp_path, runner, "--budget", "480")
+
+    assert runner.batch_timeouts == [68]  # min(300, 60 + 2 s x 4 topics)
+    assert inspected(runner) == ["/t1", "/t2", "/t3", "/t4"]  # 69 s + 4 x 100 s = 469 s < 480 s
+    assert data["ros_domain_id"] == "0"
+    assert not any(info.get("skipped") for info in data["topic_info"].values())
+
+
+def test_budget_cuts_per_topic_fallback_after_batch_timeout(monkeypatch, tmp_path, capsys):
+    runner = ClockRunner([f"/t{i}" for i in range(1, 11)])
+    monkeypatch.setattr(snapshot.time, "monotonic", runner.monotonic)
+
+    data = run_main(monkeypatch, tmp_path, runner, "--budget", "300")
+
+    assert runner.batch_timeouts == [80]
+    assert inspected(runner) == ["/t1", "/t2", "/t3"]  # clock 81 -> 181 -> 281 -> 381, then out of budget
+    for topic in [f"/t{i}" for i in range(4, 11)]:
+        assert data["topic_info"][topic] == {"present": False, "returncode": None, "skipped": "budget"}
+    assert data["topic_info"]["/t1"]["present"] is True
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "7 of 10 topics not inspected" in out
+    assert json.loads(out.strip().splitlines()[-1])["skipped_topics"] == 7
+
+
+def test_batch_timeout_is_capped_at_300s_and_default_budget_holds(monkeypatch, tmp_path):
+    runner = ClockRunner([f"/t{i}" for i in range(222)])
+    monkeypatch.setattr(snapshot.time, "monotonic", runner.monotonic)
+
+    data = run_main(monkeypatch, tmp_path, runner)
+
+    assert runner.batch_timeouts == [300]
+    assert inspected(runner) == ["/t0", "/t1"]  # clock 301 -> 401 -> 501 > 480
+    assert sum(info.get("skipped") == "budget" for info in data["topic_info"].values()) == 220
+    assert runner.now == 501

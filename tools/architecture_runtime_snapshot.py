@@ -76,9 +76,11 @@ def split_batch(stdout):
     blocks={m["topic"]:{"returncode":int(m["rc"]),"stdout":m["raw"]} for m in BLOCK_RE.finditer(stdout)}
     return env,blocks
 
+BATCH_TIMEOUT_MAX=300
+
 def batch_capture(runner,topics,timeout=None,**kwargs):
     """One ssh + one docker exec for every topic; ({env}, {topic: result}) or None on failure."""
-    timeout=timeout or min(600,60+2*len(topics))  # job budget is 15 min
+    timeout=timeout or min(BATCH_TIMEOUT_MAX,60+2*len(topics))
     try:
         result=runner(["bash","-c",batch_script(topics)],timeout=timeout,**kwargs)
     except subprocess.TimeoutExpired:
@@ -97,6 +99,9 @@ def main():
     p.add_argument("--remote-user",default="")
     p.add_argument("--remote-container",default="oak-d")
     p.add_argument("--per-topic",action="store_true",help="Remote: one ssh per topic instead of one batch call")
+    p.add_argument("--budget",type=float,default=480,
+                   help="Wall-clock seconds for deep topic inspection (batch + per-topic fallback); "
+                        "topics left when it runs out are recorded as skipped")
     a=p.parse_args()
     remote=bool(a.remote_host)
     runner=remote_run if remote else local_run
@@ -126,9 +131,13 @@ def main():
     present=[t for t in inspect_topics if t in topics]
     env={name:os.getenv(name) for name in REMOTE_ENV}
     batched={}; batch_used=False
+    started=time.monotonic()
+    remaining=lambda: a.budget-(time.monotonic()-started)
     if remote:
         # ROS_DOMAIN_ID / RMW_IMPLEMENTATION must come from the container, not this runner.
-        batch=batch_capture(runner,[] if a.per_topic else present,**kwargs) or batch_capture(runner,[],**kwargs)
+        batch_timeout=max(10,min(BATCH_TIMEOUT_MAX,60+2*len(present),remaining()))
+        batch=(batch_capture(runner,[] if a.per_topic else present,timeout=batch_timeout,**kwargs)
+               or batch_capture(runner,[],timeout=max(10,min(60,remaining())),**kwargs))
         env={name:(batch[0].get(name) if batch else None) for name in REMOTE_ENV}
         if batch and not a.per_topic:
             batched={t:r for t,r in batch[1].items() if r["returncode"]==0 and r["stdout"].strip()}
@@ -136,17 +145,24 @@ def main():
     retried=[t for t in present if t not in batched] if batch_used else []
     if retried:
         print(f"batch: {len(batched)} topics ok, retrying {len(retried)} individually: {retried[:20]}",file=sys.stderr)
-    topic_info={}
+    topic_info={}; skipped=[]
     for topic in inspect_topics:
         if topic not in topics:
             topic_info[topic]={"present":False}
             continue
         if topic in batched:
             result=batched[topic]
+        elif remaining()<=0:
+            # Out of wall-clock budget: say so instead of silently dropping the topic.
+            skipped.append(topic)
+            topic_info[topic]={"present":False,"returncode":None,"skipped":"budget"}
+            continue
         else:
             result=runner(["ros2","topic","info",topic,"--verbose"],timeout=15,**kwargs)
         if remote and result["returncode"] != 0:
             for _ in range(2):
+                if remaining()<=0:
+                    break
                 time.sleep(2)
                 result=runner(["ros2","topic","info",topic,"--verbose"],timeout=15,**kwargs)
                 if result["returncode"] == 0:
@@ -160,6 +176,11 @@ def main():
             "subscribers":subscribers,
             "raw":raw,
         }
+
+    if skipped:
+        print(f"::warning::architecture_runtime_snapshot: inspection budget of {a.budget:.0f}s ran out; "
+              f"{len(skipped)} of {len(present)} topics not inspected (skipped: budget), "
+              f"their endpoints are missing from this snapshot: {skipped[:10]}")
 
     snapshot={
         "schema_version":3,
@@ -175,7 +196,7 @@ def main():
     print(json.dumps({
         "nodes":len(nodes),"topics":len(topics),"services":len(services),
         "actions":len(actions),"inspected_topics":len(topic_info),
-        "batched_topics":len(batched),"retried_topics":len(retried),
+        "batched_topics":len(batched),"retried_topics":len(retried),"skipped_topics":len(skipped),
     },ensure_ascii=False,sort_keys=True))
 
 if __name__=="__main__":

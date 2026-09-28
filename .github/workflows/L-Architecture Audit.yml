@@ -127,7 +127,8 @@ jobs:
             local args=(--output "$output"
                         --remote-host "$host"
                         --remote-user "$RUNTIME_USER"
-                        --remote-container "$container")
+                        --remote-container "$container"
+                        --budget "$budget")
             if [ -n "$RUNTIME_TOPICS" ]; then
               args+=(--topics "$RUNTIME_TOPICS")
             fi
@@ -135,6 +136,13 @@ jobs:
           }
           # Both Pis see one shared Zenoh graph (run 36422274238: 52 == 52 == 52
           # nodes), so the Vision Pi capture is opt-in.
+          # Deep-inspection wall-clock budget per capture (batch <= 300 s + per-topic
+          # fallback), so the captures stay inside timeout-minutes: 15. Topics left
+          # when it runs out are recorded as skipped: "budget" with a ::warning::.
+          budget=480
+          if [ "$CAPTURE_VISION" = "true" ]; then
+            budget=240
+          fi
           capture "$MAIN_HOST" "$MAIN_CONTAINER" architecture/runtime-main.json
           merge_args=(--capture "Main Pi|$MAIN_HOST|$MAIN_CONTAINER|architecture/runtime-main.json")
           if [ "$CAPTURE_VISION" = "true" ]; then
@@ -191,7 +199,7 @@ jobs:
         run: |
           {
             echo "## Robot runtime ROS2 graph"
-            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes (union): " + str(len(d.get("nodes", [])))); [print("- " + c["pi"] + ": " + c["host"] + " / " + c["container"]) for c in d.get("captures", [])]; print("- Topics: " + str(len(d.get("topics", [])))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
+            python -c 'import json; d=json.load(open("architecture/runtime.json")); print("- Source: " + str(d.get("captured_from"))); print("- Nodes (union): " + str(len(d.get("nodes", [])))); [print("- " + c["pi"] + ": " + c["host"] + " / " + c["container"]) for c in d.get("captures", [])]; print("- Topics: " + str(len(d.get("topics", []))) + ", not inspected (budget): " + str(sum(1 for i in d.get("topic_info", {}).values() if i.get("skipped")))); print("- Services: " + str(len(d.get("services", [])))); print("- Actions: " + str(len(d.get("actions", []))))'
             echo
             cat architecture/runtime-diff.md
             echo
