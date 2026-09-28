@@ -9,10 +9,12 @@
 // Состояние и транспорт живут в `SubscriptionManager` (state/), сцена только
 // рисует `SubscriptionsView` и сообщает клики через `onStreamsAction`.
 //
-// Геометрия: +105° от оператора, радиус 2.4 м — зеркально панели режимов
-// (−105°). Справа от панели голосового пайплайна (+60°, ширина 0.95 м
-// ≈ ±11°), за правым крылом TARS2 по азимуту не пересекается: крыло лежит
-// в секторе ≈ 32°..88° на дальности 4..5.5 м, панель — 94°..116° на 2.4 м.
+// Геометрия: +145° от оператора, радиус 2.4 м — зеркально панели режимов
+// (−145°). Правый фланг за depth-панелью (+108°): крыло TARS2 лежит в
+// секторе ≈ 32°..88°, панель (0.95 м ≈ ±11°) — 134°..156°.
+//
+// Скрыть/показать: клавиша P на десктопе и ярлык-вкладка под панелью в VR
+// (STREAMS_TAB_TARGET_ID) — вкладка видна всегда, даже когда панель скрыта.
 
 import * as THREE from "three";
 import { panelGeometry } from "./supervisor_panel";
@@ -23,7 +25,7 @@ import {
   type SubscriptionsView
 } from "../state/subscription_manager";
 
-export const STREAMS_PANEL_ANGLE_DEG = 105;
+export const STREAMS_PANEL_ANGLE_DEG = 145;
 export const STREAMS_PANEL_RADIUS_M = 2.4;
 export const STREAMS_PANEL_Y_M = 1.45;
 export const STREAMS_PANEL_W_M = 0.95;

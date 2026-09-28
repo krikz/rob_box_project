@@ -91,9 +91,13 @@ const SCREEN_FRAME_MAX_METALNESS = 0.35;
 // экране-стене (registry: 0x1001 через ROS vs 0x1003 через depthai).
 export const SIDE_PANEL_TOPICS = ["camera_oak_depth"] as const;
 
-// Углы боковых панелей: шире дефолтного полукруга (дизайн §3), чтобы
-// не перекрывать экран-стену во фронтальном секторе обзора.
-export const SIDE_PANEL_ANGLES_DEG = [-75];
+// Углы боковых панелей. Фронт до ±88° занят экраном-стеной и крыльями
+// TARS (tarsWingSectorDeg), поэтому depth стоит справа ЗА крылом TARS2:
+// на −75° она закрывала крыло TARS1 (панель 1.2 м на радиусе 2 м —
+// ±16.7°, сектор 91°…125°). Раскладка флангов целиком:
+//   слева  −100° «ГОЛОС» (рядом с TARS1 — речью), −145° режимы (M);
+//   справа +108° depth,                            +145° «ПОТОКИ».
+export const SIDE_PANEL_ANGLES_DEG = [108];
 
 // ── Потолочный экран ────────────────────────────────────────────────────
 //
@@ -680,7 +684,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // луч первыми (они ближе к камере), поэтому перетаскивание не мешает клику.
   pointer.addTarget({ id: PIPELINE_DRAG_TARGET_ID, object: voicePipeline.object, draggable: true });
 
-  // Панель «ПОТОКИ» (issue #3150): +105°, зеркально панели режимов (−105°).
+  // Панель «ПОТОКИ» (issue #3150): +145°, зеркально панели режимов (−145°).
   // Набор строк меняется вместе с набором потоков, поэтому цели указателя
   // перерегистрируются при каждой пересборке хит-мешей.
   const streamsPanel = createStreamsPanel();
@@ -1078,6 +1082,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // перезапуск клиента. Отдельный ключ — панель не видео-поток и живёт вне
   // PanelManager. Битый JSON/чужой version → дефолт (молча не молчим: warn).
   const PIPELINE_POS_STORAGE_KEY = "rob_box_quest.voice_pipeline_pos.v1";
+  // Версия записи. 2 — панель переехала с +60° на −100° (ребаланс флангов
+  // 29.09): сохранённая позиция v1 стояла бы перед крылом TARS2, её
+  // отбрасываем — как раскладку панелей (PANEL_LAYOUT_VERSION).
+  const PIPELINE_POS_VERSION = 2;
 
   // Диагностика 2026-09-08 (nightly-review-fix, issue "voice button stuck
   // on main screen"): в отличие от panel_layout_store (там позиция всегда
@@ -1110,7 +1118,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     const p = voicePipeline.getPosition();
     layoutStorage.setItem(
       PIPELINE_POS_STORAGE_KEY,
-      JSON.stringify({ version: 1, x: p.x, y: p.y, z: p.z })
+      JSON.stringify({ version: PIPELINE_POS_VERSION, x: p.x, y: p.y, z: p.z })
     );
   }
 
@@ -1122,7 +1130,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       const d = JSON.parse(raw) as { version?: number; x?: number; y?: number; z?: number };
       if (
         d &&
-        d.version === 1 &&
+        d.version === PIPELINE_POS_VERSION &&
         typeof d.x === "number" &&
         typeof d.y === "number" &&
         typeof d.z === "number"
@@ -1139,6 +1147,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
           return;
         }
         voicePipeline.setPosition(d.x, d.y, d.z);
+      } else if (d && typeof d.version === "number" && d.version !== PIPELINE_POS_VERSION) {
+        // Позиция под старые дефолты — стираем, панель встаёт на новое место.
+        // eslint-disable-next-line no-console
+        console.info(`[captain_bridge] restorePipelinePos: version ${d.version} ≠ ${PIPELINE_POS_VERSION} — дефолтная позиция`);
+        layoutStorage.removeItem(PIPELINE_POS_STORAGE_KEY);
       }
     } catch (err) {
       // eslint-disable-next-line no-console

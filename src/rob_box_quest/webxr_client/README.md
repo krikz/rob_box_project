@@ -22,9 +22,12 @@ WSS protocol contract: [`docs/architecture/meta-quest-api.md`](../../../docs/arc
 - **Two-mode entry**: PIN form → if browser supports `immersive-vr`, auto-enter
   WebXR; otherwise stay in desktop fallback (WASD + 2D render).
 - **Scene graph**: Captain Bridge environment (5 CC0 GLB + HDR, ~70 KB total),
-  main wall-screen for the front camera, side video panels at ±75°
-  (`camera_oak_depth`, `camera_ceiling`), LiDAR overlay, ARM + status HUDs.
-- **Voice pipeline panel**: always-visible 3D panel on the right (+105°),
+  main wall-screen for the front camera (TARS wings hinged to its sides),
+  ceiling screen for `camera_ceiling`, side video panel at +108°
+  (`camera_oak_depth`, behind the TARS2 wing), LiDAR overlay, HUD strip
+  (status table · voice · ARM) above the wall-screen, procedural bridge shell
+  (side/back walls, ceiling — `scene/bridge_shell.ts`).
+- **Voice pipeline panel**: always-visible 3D panel on the left (−100°),
   showing `voice → STT → LLM → TTS → speaker` with per-stage toggles, six
   style presets + output language, and a TTS voice button opening the TTS
   picker. Only the PIN form is HTML — all panels live in the 3D scene.
@@ -69,8 +72,11 @@ Three DOM-overlay modules in `src/ui/`:
 | Где | Topic | Назначение |
 |---|---|---|
 | стена (z=-3.9) | `camera_rear` | фронтальная OAK-D color (через ROS) |
-| -75° | `camera_oak_depth` | OAK-D depth (depthai) |
-| +75° | `camera_ceiling` | потолочная USB-камера |
+| +108° | `camera_oak_depth` | OAK-D depth (depthai), справа за крылом TARS2 |
+| потолок | `camera_ceiling` | потолочная USB-камера (свой экран над головой) |
+
+Фланги (вне сектора крыльев TARS ≈ 32°…88°): слева −100° «ГОЛОС», −145°
+режимы (M); справа +108° depth, +145° «ПОТОКИ» (P / вкладка в VR).
 
 `camera_oak_color` (0x1003) не дублируется на панель — это тот же сенсор,
 что и на экране-стене.
