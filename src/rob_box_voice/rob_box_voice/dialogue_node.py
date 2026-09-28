@@ -3104,10 +3104,10 @@ class DialogueNode(Node):
         through ``_dispatch_turn`` → ``_run_turn`` for that purpose.
         """
         raw_user_command = clean
-        if self._dj.state.enabled:
-            # Issue #3134 — «ты диджей X» сюда доходит только после того, как
-            # роутер медиакоманд сам вызвал set_dj_mode, поэтому обёртка одна.
-            clean = self._dj.preamble() + clean
+        # Issue #3145 — DJ-преамбула («[🎧 Музыкальный режим активен …]»)
+        # больше НЕ клеится к реплике: реплика уходит в историю, и префикс
+        # жил там до 10 ходов (82 штуки в логе 28.09). Состояние DJ подаётся
+        # только в текущем запросе — см. :meth:`_dj_turn_hint`.
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         # Issue #1766 — markers the operator / e2e harness grep for.
@@ -3573,6 +3573,10 @@ class DialogueNode(Node):
         if was_idle and not is_dj_auto and self._session_started_at is None:
             self._session_started_at = time.monotonic()
             self._session_end_reason = "success"
+        # Issue #3145 — синтетический ретрай значит «гуард отверг ответ
+        # этого хода»: ответ уходит из истории ДО ретрая, у всех гуардов.
+        if is_synthetic:
+            self._retract_rejected_reply()
 
         asyncio.run_coroutine_threadsafe(
             self._run_turn(
@@ -6438,8 +6442,29 @@ class DialogueNode(Node):
         hold = getattr(self, "_turn_speech_hold", None)
         if hold is not None:
             hold.retract()
-        future =asyncio.run_coroutine_threadsafe(
-            self._core.discard_last_reply(), self._loop
+        self._retract_rejected_reply()
+
+    def _retract_rejected_reply(self) -> None:
+        """Issue #3145 — убрать из истории ответ, отвергнутый гуардом.
+
+        Раньше отзыв делали только music-гуарды; ретраи Bug D/E, TurnGuards,
+        tool-skipped и прочие оставляли плохой ответ в окне, и после ответа
+        ретрая в истории стояли два assistant подряд (живой лог 28.09 — 28
+        мест; «Клубняк в клубе, погнали дальше!» ~10 ходов висел ответом на
+        «ты диджей Снупдог»). Теперь это делает :meth:`_dispatch_turn` для
+        ЛЮБОГО синтетического ретрая.
+
+        ``AgentCore.discard_last_reply`` снимает только ответ последнего
+        хода (повторный вызов и ход без записанного ответа — no-op), поэтому
+        music-гуард, который и сам зовёт отзыв, второй ответ не снесёт.
+        Планируется на loop ДО ретрая — FIFO гарантирует, что ретрай уже не
+        увидит отвергнутый ответ.
+        """
+        core = getattr(self, "_core", None)
+        if core is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            core.discard_last_reply(), self._loop
         )
 
         def _log_if_failed(fut: "asyncio.Future[bool]") -> None:
@@ -6447,13 +6472,12 @@ class DialogueNode(Node):
                 removed = fut.result()
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(
-                    f"🎵 [issue 992] discard_last_reply failed: {exc}"
+                    f"🧹 [issue 3145] discard_last_reply failed: {exc}"
                 )
                 return
-            if not removed:
-                self.get_logger().debug(
-                    "🎵 [issue 992] discard_last_reply: no assistant turn "
-                    "found to retract"
+            if removed:
+                self.get_logger().info(
+                    "🧹 [issue 3145] отвергнутый гуардом ответ убран из истории"
                 )
 
         future.add_done_callback(_log_if_failed)
@@ -7043,7 +7067,24 @@ class DialogueNode(Node):
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
         dynamic_system = self._build_dynamic_system_context()
-        return user_input, dynamic_system
+        return user_input, self._dj_turn_hint(dynamic_system, was_dj_auto)
+
+    def _dj_turn_hint(self, dynamic_system: Any, was_dj_auto: bool) -> Any:
+        """Issue #3145 — DJ-преамбула как состояние ТЕКУЩЕГО хода.
+
+        Раньше (#3134) ``_dispatch_cleaned`` клеил ``DJModeController.preamble``
+        к тексту юзера, и префикс «[🎧 … Это ОБЫЧНАЯ команда юзера …]»
+        оседал в истории. Теперь он едет в ``dynamic_system``: AgentCore
+        склеивает его с репликой только в исходящем запросе
+        (``_compose_current_turn_message``), в окно пишутся дословные слова
+        юзера. На DJ-переходе преамбула не нужна — у него свой промпт.
+        """
+        if was_dj_auto or not self._dj_session_active():
+            return dynamic_system
+        hint = self._dj.preamble().strip()
+        if not dynamic_system:
+            return hint
+        return f"{dynamic_system}\n{hint}"
 
     def _inject_backlog_hint(self, user_input: str) -> str:
         """Issue #2779 — добавить ``[URGENT_BACKLOG]`` хинт в user-turn.

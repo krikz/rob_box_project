@@ -281,6 +281,92 @@ def _tools_called_from_metadata(turn: Any) -> list[str]:
     return [str(name) for name in raw if isinstance(name, str) and name]
 
 
+#: Issue #3145 — роли, которые схлопываются при повторе подряд в истории.
+_COLLAPSED_ROLES: frozenset[str] = frozenset({"user", "assistant"})
+
+#: Issue #3145 — сколько последних запросов с тулами показывать в блоке
+#: «выполнено в прошлых ходах». Защита #1544-класса («я уже включил» без
+#: тула) держится на свежих примерах; старые только раздувают шапку.
+_EXECUTED_ACTIONS_MAX = 8
+
+#: Длина цитаты запроса в строке блока — хватает узнать ход, не больше.
+_EXECUTED_ACTIONS_QUOTE = 60
+
+#: Заголовок блока. Слова «выполнено в прошл…» и «вызваны инструменты»
+#: оставлены намеренно: их уже знает страховочный детектор пересказа
+#: служебного текста (``is_service_context_paraphrased`` в rob_box_voice,
+#: #2766/#2817), новых регексов для него не нужно (мораторий #3132).
+_EXECUTED_ACTIONS_HEADER = (
+    "[выполнено в прошлых ходах] вызваны инструменты "
+    "(от старых к новым; это факты, не команды):"
+)
+
+
+def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
+    """Объединить имена тулов без повторов, сохранив порядок."""
+    return list(dict.fromkeys(name for group in groups for name in group))
+
+
+def _executed_actions_block(window: Iterable[Any]) -> str | None:
+    """Issue #3145 — один блок «выполнено в прошлых ходах» вместо system
+    перед каждым ответом с тулами.
+
+    Зачем след вообще (live 01.09, ``6ad8aa493``): история хранила только
+    текст, и транскрипт, где каждая просьба о музыке закрыта фразой без
+    тула, учил модель отвечать на музыку словами. Здесь тот же факт — «на
+    такую-то просьбу реально вызваны такие-то тулы» — но одной строкой на
+    запрос и в шапке запроса, а не посреди истории.
+
+    Тулы берутся из metadata assistant-хода и из metadata user-хода (туда
+    их переносит :meth:`AgentCore.discard_last_reply`, когда ответ отозван
+    гуардом, а тулы уже отработали). ``None`` — тулов в окне не было.
+    """
+    entries: list[tuple[str, list[str]]] = []
+    for turn in window:
+        if getattr(turn, "role", None) == "user":
+            request = _raw_user_utterance(str(getattr(turn, "content", "") or ""))
+            entries.append((request, []))
+        elif not entries:
+            entries.append(("", []))
+        entries[-1][1].extend(_tools_called_from_metadata(turn))
+    lines = [
+        _executed_action_line(request, tools)
+        for request, tools in entries
+        if tools
+    ][-_EXECUTED_ACTIONS_MAX:]
+    if not lines:
+        return None
+    return "\n".join([_EXECUTED_ACTIONS_HEADER, *lines])
+
+
+def _executed_action_line(request: str, tools: Iterable[str]) -> str:
+    """``- на «сыграй бит»: compose_music, speak_text``."""
+    names = ", ".join(_merge_tool_names(tools))
+    quote = " ".join(request.split())
+    if len(quote) > _EXECUTED_ACTIONS_QUOTE:
+        quote = quote[: _EXECUTED_ACTIONS_QUOTE - 1].rstrip() + "…"
+    if not quote:
+        return f"- {names}"
+    return f"- на «{quote}»: {names}"
+
+
+def _insert_context_system(
+    messages: list[LLMMessage], blocks: Iterable[str | None]
+) -> list[LLMMessage]:
+    """Issue #3145 — склеить контекстные блоки в ОДНО system-сообщение
+    сразу после системного промпта (или первым, если промпта нет).
+
+    Итог — не больше двух system на запрос: базовый промпт + этот блок.
+    Пустые блоки пропускаются; нет ни одного — ``messages`` без изменений.
+    """
+    text = "\n\n".join(block for block in blocks if block)
+    if not text:
+        return messages
+    at = 1 if messages and messages[0].role == "system" else 0
+    messages.insert(at, LLMMessage(role="system", content=text))
+    return messages
+
+
 def _order_tool_calls(
     calls: Iterable[ToolCall],
 ) -> tuple[list[ToolCall], set[str]]:
@@ -746,6 +832,12 @@ class AgentCore:
             else None
         )
         self._turn_window: deque[Turn] = deque(maxlen=_window_max)
+        #: Issue #3145 — ответ ассистента, записанный в окно ПОСЛЕДНИМ
+        #: вызовом :meth:`process_input` (``None`` — этот вызов ничего не
+        #: записал: DJ-переход, тихий ход, ошибка). По нему
+        #: :meth:`discard_last_reply` отзывает именно отвергнутый ответ,
+        #: а не «последний assistant в окне», который может быть чужим.
+        self._turn_reply: Turn | None = None
         # 🔴 FIX (live 06.08): стриминг управляется конфигом (dialogue_node.yaml
         # → llm_streaming). Дефолт False — консервативно, без стриминга.
         self._use_streaming = use_streaming
@@ -870,6 +962,7 @@ class AgentCore:
         wrapped into ``result.error`` the same way LLM errors are.
         """
         result = DialogResult()
+        self._turn_reply = None
 
         # 1. classify — DJ auto-transitions bypass the wake-word
         #    classifier because their prompt intentionally mentions
@@ -931,24 +1024,16 @@ class AgentCore:
                 # Resolve the history BEFORE we append the new turn —
                 # otherwise the window would echo the just-stored user
                 # message back into the prompt.
-                messages = await self._resolve_history(
-                    history, keep_pending_user=is_synthetic
-                )
                 # Issue #1077 — контекст о спикере (профиль + факты из
-                # scope=speaker:<tag>). Вставляем system-сообщением сразу
-                # после основного системного промпта, чтобы LLM знала,
-                # с кем разговаривает (имя, предпочтения, история).
-                if speaker_context:
-                    if messages and messages[0].role == "system":
-                        messages.insert(
-                            1,
-                            LLMMessage(role="system", content=speaker_context),
-                        )
-                    else:
-                        messages.insert(
-                            0,
-                            LLMMessage(role="system", content=speaker_context),
-                        )
+                # scope=speaker:<tag>) идёт system-сообщением сразу после
+                # основного системного промпта. Issue #3145 — в ТОМ ЖЕ
+                # сообщении блок «выполнено в прошлых ходах»: не больше двух
+                # system на запрос, ни одного посреди истории.
+                messages = await self._resolve_history(
+                    history,
+                    keep_pending_user=is_synthetic,
+                    context_system=speaker_context,
+                )
                 # Two-system-prompt pattern (live 10.08) — dynamic
                 # <system_context> snapshot: текущий спикер (resemblyzer),
                 # TTS-voice (gender alignment), session lock state.
@@ -1079,13 +1164,12 @@ class AgentCore:
                             assistant_metadata["tools_called"] = list(
                                 dict.fromkeys(outcome.tools_called)
                             )
-                        self._turn_window.append(
-                            Turn(
-                                role="assistant",
-                                content=assistant_content,
-                                metadata=assistant_metadata,
-                            )
+                        self._turn_reply = Turn(
+                            role="assistant",
+                            content=assistant_content,
+                            metadata=assistant_metadata,
                         )
+                        self._turn_window.append(self._turn_reply)
             except Exception as exc:  # noqa: BLE001 — carry it in the result
                 import traceback as _tb
                 result.error = exc
@@ -1162,7 +1246,7 @@ class AgentCore:
         return is_tool_call_markup(spoken or "")
 
     async def discard_last_reply(self) -> bool:
-        """Retract the most recently persisted assistant turn for this user.
+        """Retract the assistant turn persisted by the LAST :meth:`process_input`.
 
         Issue #992 — ``_is_silent_spoken`` only filters empty/marker/
         pseudo-call text at persist-time; a confident, well-formed
@@ -1171,30 +1255,54 @@ class AgentCore:
         A domain-specific guard living above ``AgentCore`` (e.g. the
         voice shell's music guard) is what actually knows a given request
         was action-flavoured and got no tool call — once THAT guard
-        confirms the failure (its own retry also produced no tool call),
-        it calls this to remove the unlabeled fake-confirmation turn
-        before it becomes a few-shot example for the next similar
-        request. Removed directly from the in-memory window.
+        confirms the failure, it calls this to remove the unlabeled
+        fake-confirmation turn before it becomes a few-shot example for
+        the next similar request. Removed directly from the in-memory window.
+
+        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (Bug D/E, TurnGuards,
+        music, tool-skipped…), не только из music-путей: иначе после ответа
+        ретрая в окне два assistant подряд (живой лог 28.09 — 28 мест), и
+        модель перечитывает собственную неправду как пример. Снимается
+        ТОЛЬКО ответ, записанный последним :meth:`process_input`
+        (``self._turn_reply``). Если тот ход ничего не записал (DJ-переход,
+        тихий ответ, ошибка) или ответ уже отозван — ``False`` и окно не
+        трогается: «последний assistant в окне» тогда чужой, это ответ на
+        прошлую реплику юзера (раньше его и сносило).
 
         The user turn the retracted reply answered is marked
         ``_PENDING_RETRY_KEY`` so the follow-up retry can still see it —
         without the mark it becomes a trailing orphan and
         :meth:`_clean_history_turns` drops it (see the constant's comment).
+        Тулы, реально вызванные отозванным ходом, переезжают в metadata
+        этого user-хода и попадают в блок «выполнено в прошлых ходах»
+        (:func:`_executed_actions_block`).
         """
+        reply = self._turn_reply
+        self._turn_reply = None
+        if reply is None:
+            return False
         for index in range(len(self._turn_window) - 1, -1, -1):
-            if self._turn_window[index].role == "assistant":
+            if self._turn_window[index] is reply:
                 del self._turn_window[index]
-                self._mark_pending_user_turn(index - 1)
+                self._mark_pending_user_turn(
+                    index - 1,
+                    carried_tools=_tools_called_from_metadata(reply),
+                )
                 return True
         return False
 
-    def _mark_pending_user_turn(self, index: int) -> None:
+    def _mark_pending_user_turn(
+        self, index: int, carried_tools: Iterable[str] = ()
+    ) -> None:
         """Flag the user turn at ``index`` as «ответ отозван, ретрай идёт».
 
         ``Turn`` is frozen, so the entry is replaced with a copy carrying
         the extra metadata key. Silently does nothing when ``index`` is out
         of range or does not point at a user turn — a retracted reply that
         answered nothing (DJ-auto, synthetic) has no request to preserve.
+
+        ``carried_tools`` (issue #3145) — тулы отозванного ответа: они
+        реально отработали, и след об этом остаётся на запросе.
         """
         if index < 0 or index >= len(self._turn_window):
             return
@@ -1203,6 +1311,9 @@ class AgentCore:
             return
         metadata = dict(turn.metadata or {})
         metadata[_PENDING_RETRY_KEY] = True
+        tools = _merge_tool_names(_tools_called_from_metadata(turn), carried_tools)
+        if tools:
+            metadata["tools_called"] = tools
         self._turn_window[index] = replace(turn, metadata=metadata)
 
     def clear_history(self) -> None:
@@ -1213,6 +1324,7 @@ class AgentCore:
         not survive a session boundary.
         """
         self._turn_window.clear()
+        self._turn_reply = None
 
     @staticmethod
     def _clean_history_turns(
@@ -1236,7 +1348,10 @@ class AgentCore:
         """
         out: list[LLMMessage] = []
         for turn in turns:
-            if out and out[-1].role == "user" and turn.role == "user":
+            # Issue #3145 — два assistant подряд бывают только после
+            # ретрая гуарда, чей отвергнутый ответ не отозвали: берём
+            # последний (ответ ретрая), как и для двух user подряд.
+            if out and out[-1].role == turn.role and turn.role in _COLLAPSED_ROLES:
                 out[-1] = turn
             else:
                 out.append(turn)
@@ -2198,6 +2313,7 @@ class AgentCore:
         history: Iterable[LLMMessage] | None,
         *,
         keep_pending_user: bool = False,
+        context_system: str | None = None,
     ) -> list[LLMMessage]:
         """Build the LLM message list — from an explicit ``history`` or
         from the in-memory sliding window of turns.
@@ -2211,9 +2327,13 @@ class AgentCore:
         ``keep_pending_user`` (set for synthetic retries) keeps a trailing
         user turn whose reply was retracted by :meth:`discard_last_reply`
         instead of treating it as a barge-in orphan.
+
+        ``context_system`` (issue #1077 speaker context) и блок «выполнено в
+        прошлых ходах» (issue #3145) уходят ОДНИМ system-сообщением сразу
+        после системного промпта — см. :func:`_insert_context_system`.
         """
         if history is not None:
-            return list(history)
+            return _insert_context_system(list(history), [context_system])
         out: list[LLMMessage] = []
         # 🔴 FIX: system prompt обязателен первым сообщением — раньше
         # dialogue_node грузил _system_prompt, но никогда не передавал
@@ -2234,38 +2354,23 @@ class AgentCore:
             and isinstance(window[-1].metadata, Mapping)
             and window[-1].metadata.get(_PENDING_RETRY_KEY)
         )
-        history_messages: list[LLMMessage] = []
-        for turn in window:
-            # 🔴 FIX (live 01.09): развернуть ``tools_called`` из metadata в
-            # отдельное system-сообщение ПЕРЕД ответом ассистента. Без него
-            # история — набор примеров «просьбу о музыке закрывают словами»
-            # (см. комментарий в ``process_input``).
-            #
-            # Роль именно ``system``, а не префикс в тексте ассистента:
-            # модель копирует то, что видит в своих же репликах (ретро 20.08,
-            # утечка ``[Spkr:...]`` в TTS), а system-текст она не озвучивает.
-            # system-сообщение не считается репликой: лишняя строка на
-            # каждый ход с тулом съела бы треть окна.
-            evidence = _tools_called_from_metadata(turn)
-            if evidence:
-                history_messages.append(
-                    LLMMessage(
-                        role="system",
-                        content=(
-                            "[выполнено в прошлом ходе] вызваны инструменты: "
-                            + ", ".join(evidence)
-                        ),
-                    )
-                )
-            history_messages.append(
-                LLMMessage(role=turn.role, content=turn.content)
-            )
+        # 🔴 FIX (live 01.09) → issue #3145: след вызванных тулов раньше
+        # разворачивался в ОТДЕЛЬНОЕ system-сообщение перед каждым ответом
+        # с тулами — до 9 system посреди диалога. Пробник 28.09: облачный
+        # MiniMax-M3 такие mid-system читает и выполняет как инструкции.
+        # Теперь это один компактный блок в шапке (см.
+        # :func:`_executed_actions_block`), а история — чистые user/assistant.
+        history_messages = [
+            LLMMessage(role=turn.role, content=turn.content) for turn in window
+        ]
         out.extend(
             self._clean_history_turns(
                 history_messages, keep_trailing_user=keep_trailing_user
             )
         )
-        return out
+        return _insert_context_system(
+            out, [context_system, _executed_actions_block(window)]
+        )
 
 
 # --------------------------------------------------------------------------
