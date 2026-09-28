@@ -12,7 +12,7 @@ The tooling separates evidence from architectural decisions. A duplicate or unpa
 
 ## Audit layers
 
-1. Static inventory: Compose services, ROS packages, Python classes, node classes, launch entries and ROS interfaces.
+1. Static inventory: Compose services (every `docker/*/docker-compose*.y*ml`), ROS packages, Python classes, node classes, launch entries and ROS interfaces. Tests and examples (`test/`, `tests/`, `test_*.py`, `conftest.py`, `scripts/test_*`, `scripts/example_*`) are skipped and only counted as `skipped_test_files`.
 2. Structural review: multiple publishers, unpaired interfaces, duplicate class names, semantic identity-topic names and node packages without literal launch entries.
 3. Runtime graph: real ros2 node/topic/service/action output and verbose topic endpoints.
 4. Static/runtime diff: declared topics absent at runtime and runtime-only topics.

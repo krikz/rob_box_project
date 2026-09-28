@@ -60,7 +60,8 @@ jobs:
       - name: Architecture tool tests
         run: |
           python -m pip install --disable-pip-version-check pytest
-          python -m pytest tests/unit/scripts/test_architecture_runtime_snapshot.py \
+          python -m pytest tests/unit/scripts/test_architecture_audit.py \
+            tests/unit/scripts/test_architecture_runtime_snapshot.py \
             tests/unit/scripts/test_architecture_runtime_graph.py \
             tests/unit/scripts/test_architecture_class_metrics.py \
             tests/unit/scripts/test_architecture_runtime_findings.py \
