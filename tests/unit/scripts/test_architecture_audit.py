@@ -1,7 +1,8 @@
 """Tests for tools/architecture_audit.py and tools/architecture_runtime_diff.py.
 
 Before: 580 of 942 scanned files and 1939 of 2577 classes were tests, the
-compose list named a missing docker/quest file and skipped docker/monitoring,
+compose list named a missing docker/quest file and skipped docker/monitoring
+(docker/build is CI infrastructure and stays out),
 and runtime_diff wrote runtime-diff.json to a fixed path.
 """
 
@@ -52,6 +53,7 @@ def make_repo(root):
     write(root / "docker/vision/docker-compose.yml", "services:\n  oak-d:\n    image: c\n")
     write(root / "docker/main/docker-compose.override.yaml", "services:\n  extra:\n    image: d\n")
     write(root / "docker/main/Dockerfile", "FROM x\n")
+    write(root / "docker/build/docker-compose.yaml", "services:\n  github-runner-1:\n    image: e\n")
 
 
 def run_audit(root):
@@ -98,6 +100,7 @@ def test_compose_files_are_globbed(tmp_path):
         "docker/vision/docker-compose.yml",
     ]
     assert summary["containers"] == 4
+    assert "github-runner-1" not in {s["name"] for c in inventory["containers"] for s in c["services"]}
 
 
 def test_runtime_diff_writes_json_where_asked(tmp_path):

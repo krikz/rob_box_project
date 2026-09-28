@@ -14,6 +14,8 @@ NODE_BASES={"Node","LifecycleNode","ComposableNode"}
 # Same rule as architecture_class_metrics.TEST_PATH.
 TEST_PATH=re.compile(r"(^|/)(test|tests)/|(^|/)test_[^/]*\.py$|(^|/)conftest\.py$|/scripts/(example|test)_")
 COMPOSE_GLOB="docker/*/docker-compose*.y*ml"
+# docker/build is CI/registry infrastructure (runners, apt cache, registry), not robot containers.
+COMPOSE_EXCLUDE_DIRS={"build"}
 
 def literal(node):
     try: return ast.literal_eval(node)
@@ -106,6 +108,7 @@ def main():
     root=args.root.resolve()
     compose=[]
     for path in sorted(root.glob(COMPOSE_GLOB)):
+        if path.parent.name in COMPOSE_EXCLUDE_DIRS: continue
         services=scan_compose(path)
         if services: compose.append({"file":path.relative_to(root).as_posix(),"services":services})
     python_files,classes,interfaces,skipped_test_files=scan_python(root/"src"); packages=scan_packages(root/"src"); launches=scan_launch_files(root)
