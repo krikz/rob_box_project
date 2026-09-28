@@ -29,6 +29,35 @@ defaults:
   platform: linux/arm64
   apt_proxy: http://host.docker.internal:3142
 
+# ---------------------------------------------------------------------------
+# Базовые образы (".github/workflows/L-Build Base Images.yml").
+# Читаются `gen_build_matrix.py --mode base` — и workflow, и локальной
+# сборкой (scripts/build/build.sh base ...). До run 36351952819 список жил
+# ТОЛЬКО в тексте workflow (4 копии inline `docker buildx build`), локально
+# базы собрать было нечем.
+#
+# Теги (как были в workflow):
+#   <ghcr>:<name>-<ros_distro>-latest
+#   <local>:<name>-<ros_distro>-latest
+#   <local>:<name>-<ros_distro>          ← на него смотрят сервисы (base.family)
+# depends_on — ребро FROM: pcl собирается FROM <local>:ros2-zenoh-<distro>-latest.
+# ---------------------------------------------------------------------------
+base_images:
+  registry:
+    ghcr: ghcr.io/krikz/rob_box_base
+    # local — это defaults.base_registry (один источник, не дублируем).
+  build_context: docker/base
+  images:
+    ros2-zenoh:
+      dockerfile: docker/base/Dockerfile.ros2-zenoh
+    rtabmap:
+      dockerfile: docker/base/Dockerfile.rtabmap
+    depthai:
+      dockerfile: docker/base/Dockerfile.depthai
+    pcl:
+      dockerfile: docker/base/Dockerfile.pcl
+      depends_on: [ros2-zenoh]
+
 pis:
   # ---------------------------------------------------------------------
   # Vision Pi — 11 build-* job'ов в "L-Build Vision Pi Services.yml"

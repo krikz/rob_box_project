@@ -183,6 +183,18 @@ jobs:
       # звать ./.github/actions/l-build-service, иначе кто-то откатит одиночную
       # сборку назад на inline buildx (тот же класс дрейфа, что уже случился с
       # verify_in_registry — три копии разъехались на строку сообщения).
+      # run 36351952819: L-Build Base Images жил на своём inline buildx с
+      # host-gateway и упал на docker-container билдере, заведённом
+      # композитом. Guard: базы собираются только через композит (→
+      # scripts/build/buildx_build.sh), состав — из docker/build-manifest.yaml.
+      # Второй файл — локальный раннер workflow-шагов (scripts/ci/run_workflow_job.py).
+      - name: L-Build Base Images + local-run guards (run 36351952819)
+        run: |
+          python -m pytest tests/unit/test_l_build_base_images.py tests/unit/test_run_workflow_job.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: L-Build Single Service composite guard (хендофф 2026-09-21 §8)
         run: |
           python -m pytest tests/unit/test_l_build_single_service_composite.py \
@@ -385,29 +397,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install yamllint==1.35.1
 
-      - name: Create yamllint config
-        run: |
-          cat > .yamllint.yml << 'EOF'
-          extends: default
-          rules:
-            line-length:
-              max: 120
-              level: warning
-            indentation:
-              spaces: 2
-              indent-sequences: consistent
-            comments:
-              min-spaces-from-content: 1
-            document-start: disable
-            truthy:
-              allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
-          ignore: |
-            build/
-            install/
-            log/
-            .git/
-          EOF
-
+      # Конфиг — закоммиченный .yamllint.yml (тот же у pre-commit и у
+      # локального прогона scripts/ci/run_workflow_job.py). Раньше здесь был
+      # шаг, перезаписывавший его heredoc'ом с ДРУГИМИ правилами — CI и
+      # локальная проверка линтили по-разному.
       - name: Lint YAML files
         run: |
           echo "::group::yamllint check"
@@ -451,7 +444,8 @@ jobs:
           docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color \
             ".github/workflows/L-Build Vision Pi Services.yml" \
             ".github/workflows/L-Build Main Pi Services.yml" \
-            ".github/workflows/L-Build Single Service.yml"
+            ".github/workflows/L-Build Single Service.yml" \
+            ".github/workflows/L-Build Base Images.yml"
           echo "::endgroup::"
 
   # ============================================================================
@@ -472,19 +466,7 @@ jobs:
           chmod +x /tmp/hadolint
           sudo mv /tmp/hadolint /usr/local/bin/hadolint
 
-      - name: Create hadolint config
-        run: |
-          cat > .hadolint.yaml << 'EOF'
-          ignored:
-            - DL3008  # Pin versions in apt-get (too strict for ROS)
-            - DL3009  # Delete apt cache (handled by base images)
-            - DL3015  # Avoid additional packages (yq needed)
-            - SC2086  # Double quote to prevent globbing
-          trustedRegistries:
-            - docker.io
-            - ghcr.io
-          EOF
-
+      # Конфиг — закоммиченный .hadolint.yaml (см. комментарий у yamllint).
       - name: Lint Dockerfiles
         run: |
           echo "::group::Hadolint Dockerfile check"

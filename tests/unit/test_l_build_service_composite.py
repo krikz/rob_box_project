@@ -40,16 +40,22 @@ def _load_action_yaml() -> dict:
         return yaml.safe_load(fh)
 
 
+def _build_step(action: dict) -> dict:
+    """Return the single Build step of the composite."""
+    steps = action["runs"]["steps"]
+    return next(s for s in steps if s["name"].startswith("Build "))
+
+
 def _extract_build_step_bash(action: dict) -> str:
     """Return the `run:` body of the single Build step.
 
     The composite is buildx-only (clean+checkout live in the calling job), so
-    there is exactly one step whose name starts with "Build ". Strips the
-    leading indent so we can exec it via `bash -c` directly.
+    there is exactly one step whose name starts with "Build ". Since run
+    36351952819 the body is a one-liner that execs scripts/build/buildx_build.sh
+    (the SAME script local builds use); inputs arrive through the step's
+    `env:` block — see `_run_build_step`.
     """
-    steps = action["runs"]["steps"]
-    build_step = next(s for s in steps if s["name"].startswith("Build "))
-    return textwrap.dedent(build_step["run"])
+    return textwrap.dedent(_build_step(action)["run"])
 
 
 def _fake_docker(
@@ -102,6 +108,7 @@ def _fake_docker(
         # `buildx use` — тоже проба, не записываем: иначе старые тесты,
         # считающие ровно build+push вызовы, начнут видеть лишний.
         'if [ "$1" = "buildx" ] && [ "$2" = "use" ]; then\n'
+        f"  printf '%s\\n' \"$3\" >> \"{tmp_path / 'buildx_use.log'}\"\n"
         "  exit 0\n"
         "fi\n"
         # Probe 3: `docker network inspect bridge --format ...` — IP шлюза,
@@ -188,6 +195,7 @@ def _run_build_step(
     local_registry: str = "localhost:5000",
     cache: str = "true",
     cache_ref: str = "",
+    no_cache: str = "false",
 ) -> subprocess.CompletedProcess:
     """Substitute `${{ inputs.* }}` placeholders in bash_body with values.
 
@@ -209,18 +217,25 @@ def _run_build_step(
         "${{ inputs.local-registry }}": local_registry,
         "${{ inputs.cache }}": cache,
         "${{ inputs.cache-ref }}": cache_ref,
+        "${{ inputs.no-cache }}": no_cache,
     }
-    expanded = bash_body
-    for placeholder, value in substitutions.items():
-        expanded = expanded.replace(placeholder, value)
 
-    # Run with -e (errexit, like set -euo pipefail). Set HOME to something
-    # writable so mktemp works. We pass the FULL os.environ (not a stripped
-    # env): on Windows Git Bash fails to start without SystemRoot etc., so a
-    # minimal {HOME, PATH} env would break these tests on dev machines (they
-    # only passed on Linux CI where bash does not need Windows env vars).
+    def _expand(text: str) -> str:
+        for placeholder, value in substitutions.items():
+            text = text.replace(placeholder, value)
+        return text
+
+    expanded = _expand(bash_body)
+
+    # We pass the FULL os.environ (not a stripped env): on Windows Git Bash
+    # fails to start without SystemRoot etc. HOME must be writable for mktemp.
     env = dict(__import__("os").environ)
     env["HOME"] = "/tmp"
+    # GitHub sets GITHUB_ACTION_PATH to the composite's directory; the run
+    # body resolves scripts/build/buildx_build.sh relative to it.
+    env["GITHUB_ACTION_PATH"] = str(ACTION_YML.parent)
+    for key, value in (_build_step(_load_action_yaml()).get("env") or {}).items():
+        env[key] = _expand(str(value))
     return subprocess.run(
         ["bash", "-e", "-c", expanded],
         capture_output=True,
@@ -263,8 +278,9 @@ def test_action_declares_expected_inputs():
     """All inputs referenced by the bash step are declared in `inputs:`."""
     action = _load_action_yaml()
     declared = set(action["inputs"].keys())
-    bash_body = _extract_build_step_bash(action)
-    referenced = set(re.findall(r"\$\{\{\s*inputs\.([\w-]+)\s*\}\}", bash_body))
+    step = _build_step(action)
+    text = step["run"] + "\n" + "\n".join(str(v) for v in (step.get("env") or {}).values())
+    referenced = set(re.findall(r"\$\{\{\s*inputs\.([\w-]+)\s*\}\}", text))
     # Both must be non-empty and referenced must be subset of declared.
     assert referenced, "expected at least one input reference in build step"
     assert referenced <= declared, (
@@ -712,3 +728,60 @@ def test_cache_disabled_when_no_local_tag_to_derive_from(monkeypatch, tmp_path):
     build = _build_argv(log)
     assert "--cache-from" not in build, build
     assert "--cache-to" not in build, build
+
+# --- run 36351952819: утечка глобального билдера ------------------------
+
+
+def test_builder_is_passed_explicitly_not_via_buildx_use(monkeypatch, tmp_path):
+    """run 36351952819: `docker buildx use` в композите сохранял
+    docker-container билдер как ТЕКУЩИЙ в ~/.docker раннер-контейнера, и голый
+    `docker buildx build` в L-Build Base Images на том же раннере падал за
+    0 секунд: host-gateway is not supported by the docker-container driver.
+    Билдер обязан передаваться только через --builder — без глобального
+    состояния.
+    """
+    log = _fake_docker(monkeypatch, tmp_path, builder_exists=True)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+
+    assert not (tmp_path / "buildx_use.log").exists(), (
+        "docker buildx use меняет текущий билдер раннера для ВСЕХ следующих job'ов"
+    )
+    build = _build_argv(log)
+    assert _flag_values(build, "--builder"), build
+    assert _flag_values(build, "--builder")[0].startswith("robbox-"), build
+
+
+def test_host_gateway_is_resolved_even_when_cache_disabled(monkeypatch, tmp_path):
+    """Подмена host-gateway раньше жила внутри ветки cache=true: при
+    cache=false на docker-container билдере сборка падала так же, как в
+    run 36351952819. Драйвер от кеша не зависит."""
+    log = _fake_docker(
+        monkeypatch, tmp_path, builder_driver="docker-container", bridge_gateway="172.17.0.1"
+    )
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="pcl", tags=TAGS_TWO, cache="false")
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+
+    build = _build_argv(log)
+    assert "--add-host=host.docker.internal:172.17.0.1" in build, build
+    assert "--cache-from" not in build and "--cache-to" not in build, build
+
+
+def test_no_cache_input_adds_no_cache_flag(monkeypatch, tmp_path):
+    """no-cache=true (force_rebuild в L-Build Base Images) → buildx --no-cache."""
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="pcl", tags=TAGS_TWO, no_cache="true")
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    assert "--no-cache" in _build_argv(log)
+
+
+def test_composite_has_no_inline_buildx_logic():
+    """Composite — только переходник на scripts/build/buildx_build.sh: тот же
+    скрипт зовёт локальная сборка (scripts/build/build.sh). Своя копия bash
+    в action.yml = снова две разъезжающиеся реализации."""
+    run = _extract_build_step_bash(_load_action_yaml())
+    assert "scripts/build/buildx_build.sh" in run, run
+    assert "docker buildx build" not in run, run
