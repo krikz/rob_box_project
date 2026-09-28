@@ -14,6 +14,24 @@ LABEL org.opencontainers.image.title="Telegram Bot for Rob Box"
 LABEL org.opencontainers.image.description="Operator interface via Telegram for Rob Box autonomous rover"
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
+# APT через apt-cacher-ng на katana (APT_PROXY передаёт gen_build_matrix.py).
+# Базовый образ удаляет свой 02proxy, поэтому без этого блока apt ходил
+# напрямую, а прямой путь с katana ненадёжен: GPG error (run 34387765562),
+# Hash Sum mismatch у .deb того же размера (run 36421581380, nav2/voice-base).
+# Шаблон и причина Pipeline-Depth 0 — docker/base/Dockerfile.ros2-zenoh.
+ARG APT_PROXY=""
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            printf '%s\n' "Acquire::http::Proxy \"$APT_PROXY\";" 'Acquire::http::Timeout "10";' \
+                'Acquire::Retries "3";' 'Acquire::http::Pipeline-Depth "0";' > /etc/apt/apt.conf.d/02proxy; \
+            echo "✅ Using APT proxy: $APT_PROXY"; \
+        else \
+            echo "⚠️  APT proxy not accessible, will use direct connection"; \
+        fi \
+    fi
+
 # Системные зависимости (минимум)
 # ffmpeg — AV-23 (issue #1915): voice_transcode.ogg_to_pcm16k гоняет
 # через него OGG/Opus из Telegram в PCM 16k. Базовый образ
@@ -28,6 +46,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+RUN rm -f /etc/apt/apt.conf.d/02proxy
 
 # Python зависимости
 # vosk — локальный офлайн-фолбек STT (issue найден 2026-09-03: у Yandex
