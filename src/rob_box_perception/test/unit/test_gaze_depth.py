@@ -63,9 +63,12 @@ def _depth_msg(t: float, value_mm: int = 1500, w: int = W, h: int = H,
 
 
 def _info_msg(w: int = W, h: int = H, fx: float = 50.0):
+    # rclpy отдаёт поле фиксированной длины float64[9] как numpy.ndarray,
+    # а не list — именно на этом вся нода падала на роботе (#3126).
     return types.SimpleNamespace(
         header=_Header(0.0), width=w, height=h,
-        k=[fx, 0.0, w / 2.0, 0.0, fx, h / 2.0, 0.0, 0.0, 1.0],
+        k=np.array([fx, 0.0, w / 2.0, 0.0, fx, h / 2.0, 0.0, 0.0, 1.0],
+                   dtype=np.float64),
     )
 
 
@@ -168,6 +171,17 @@ def test_intrinsics_from_camera_info():
         50.0, 50.0, W / 2.0, H / 2.0, W, H,
     )
     assert gaze._intrinsics_from_camera_info(_info_msg(fx=0.0)) is None
+
+
+def test_intrinsics_from_camera_info_accepts_list_and_missing_k():
+    """K списком (не rclpy) и без K вовсе — без исключений (#3126)."""
+    msg = _info_msg()
+    msg.k = list(msg.k)
+    assert gaze._intrinsics_from_camera_info(msg) == (
+        50.0, 50.0, W / 2.0, H / 2.0, W, H,
+    )
+    msg.k = None
+    assert gaze._intrinsics_from_camera_info(msg) is None
 
 
 # ============================================================================
