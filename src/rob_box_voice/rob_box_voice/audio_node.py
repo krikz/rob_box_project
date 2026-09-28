@@ -10,6 +10,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Bool, Int32, String
 from audio_common_msgs.msg import AudioData
 import pyaudio
+import usb.core
 import threading
 import time
 from typing import Optional
@@ -1032,14 +1033,41 @@ class AudioNode(Node):
 
             # DoA - читаем с обработкой ошибок
             try:
-                direction = self.respeaker.get_direction()
+                direction = self.respeaker.get_doa()
                 if direction is not None:
                     msg = Int32()
                     msg.data = direction
                     self.direction_pub.publish(msg)
-            except Exception:
-                # Pipe error - пропускаем
-                pass
+            except (AttributeError, TypeError) as e:
+                # Баг в коде (например неверное имя метода на
+                # ReSpeakerInterface), а не USB/pipe ошибка - молчать
+                # тут же означает НИКОГДА не публиковать /audio/direction
+                # без единого следа в логах. Дросселируем ERROR через
+                # уже существующий VAD/DoA rate-limit (Issue #1125 /
+                # t_1bbc233a), чтобы не плодить новый механизм.
+                now = int(time.monotonic() * 1e9)
+                if (
+                    self._vad_doa_last_warn_ns is None
+                    or (now - self._vad_doa_last_warn_ns)
+                    >= self._vad_doa_warn_period_ns
+                ):
+                    self._vad_doa_last_warn_ns = now
+                    self.get_logger().error(
+                        f'DoA: баг в коде respeaker-интерфейса: {e}',
+                        exc_info=True,
+                    )
+            except (usb.core.USBError, OSError) as e:
+                # USB/pipe ошибка - как раньше пропускаем цикл, но с
+                # warn-троттлингом вместо полной тишины (тот же
+                # rate-limit, что и общий VAD/DoA WARN ниже).
+                now = int(time.monotonic() * 1e9)
+                if (
+                    self._vad_doa_last_warn_ns is None
+                    or (now - self._vad_doa_last_warn_ns)
+                    >= self._vad_doa_warn_period_ns
+                ):
+                    self._vad_doa_last_warn_ns = now
+                    self.get_logger().warn(f'DoA USB/pipe ошибка: {e}')
 
         except Exception as e:
             # Issue #1125 / t_1bbc233a: bare `pre` NameError регрессировал
