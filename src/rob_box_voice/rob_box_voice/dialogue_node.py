@@ -3299,8 +3299,10 @@ class DialogueNode(Node):
         self._dj.state.form_ends_at = (
             float(form_ends_at) if isinstance(form_ends_at, (int, float)) else None
         )
-        # Issue #3113 — остановка конечного трека: переход раньше неё.
+        # Issue #3113 — остановка конечного трека: переход раньше неё;
+        # сыгранная тема — в список «не повторять» сета.
         self._dj.note_form_stop(payload.get("stops_at"))
+        self._dj.note_track_name(payload.get("track"))
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).

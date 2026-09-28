@@ -948,8 +948,10 @@ class MCPServer(Node):
         form_msg.data = json.dumps({
             "form_ends_at": _music_form_ends_at_epoch(state),
             "playing": playing,
-            # Issue #3113: когда конечный трек замолчит (DJ-переход раньше).
+            # Issue #3113: когда конечный трек замолчит (DJ-переход раньше)
+            # и какая тема играет (DJ-сет не повторяет песню).
             "stops_at": _music_form_stops_at_epoch(state),
+            "track": state.get("track_name") if isinstance(state.get("track_name"), str) else None,
         })
         form_pub.publish(form_msg)
 

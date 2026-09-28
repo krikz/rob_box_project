@@ -4679,6 +4679,19 @@ class TestComposeMusicToolClubStyle:
         assert "Ошибка classic:" in result.error
         fake_exec.assert_not_called()
 
+    def test_state_track_name_is_library_title_then_cleared(self, mock_node):
+        """Issue #3113 п.5: имя темы уходит в state (→ /voice/music/form «track»)."""
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec"):
+            tool.execute(name="super mario bros", lead_synth="blip", bass_synth="retrobass", pad_synth="sinepad")
+        assert mgr.get_state()["track_name"] == "Super Mario Bros"
+        with patch("builtins.exec"):
+            tool.execute(style="club", seed=2)
+        assert mgr.get_state()["track_name"] is None
+
     def test_club_with_rtttl_plays_classic(self, mock_node):
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec") as fake_exec:

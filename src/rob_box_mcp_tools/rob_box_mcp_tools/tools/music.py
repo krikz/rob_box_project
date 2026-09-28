@@ -575,6 +575,12 @@ class MusicManager:
         # ``ComposeMusicTool._remember_last_track``, читает
         # ``ComposeMusicTool._inherit_last_track``.
         self.last_track_arrangement: Optional[Dict[str, Any]] = None
+        # Issue #3113 — название играющей темы (``compose_music(name=...)``,
+        # заголовок из библиотеки) для DJ-сета: dialogue_node копит сыгранные
+        # и не даёт модели повторить песню в том же сете. ``None`` — трек без
+        # имени (club, сочинённый, execute_music_code) или тишина; сбрасывает
+        # :meth:`clear_form_deadline` (новый код / стоп), пишет ComposeMusicTool.
+        self.current_track_name: Optional[str] = None
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -1453,6 +1459,7 @@ class MusicManager:
         """
         self._music_form_deadline_at = None
         self._music_form_cycle_ends_at = None
+        self.current_track_name = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -2053,6 +2060,8 @@ class MusicManager:
             # Issue #3113 — остаток до остановки конечного (repeat=False)
             # трека; ``None`` — зацикленный трек или ничего не играет.
             "form_stop_remaining_s": self.form_stop_remaining_s(),
+            # getattr: часть тестов собирает менеджер через __new__ без __init__.
+            "track_name": getattr(self, "current_track_name", None),
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -4362,6 +4371,9 @@ class ComposeMusicTool(MCPTool):
         """Хвост успешного ``execute``: тайминги формы, данные, сообщение."""
         duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
         self._apply_form_deadline(spec, duration_s)
+        # Issue #3113: имя играющей темы уходит в /voice/music/form — DJ-сет
+        # не повторяет уже сыгранную песню (живой прогон 28.09: Für Elise x2).
+        self._manager.current_track_name = (melody_title or name) if name else None
         self._notify_music_state()
         self._build_compose_result_data(spec, result, duration_s)
         # issue #2877: результат обязан называть РЕАЛЬНО сыгранную запись —

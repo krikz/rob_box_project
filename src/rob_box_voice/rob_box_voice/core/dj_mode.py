@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 
@@ -147,6 +147,10 @@ class DJState:
     form_stops_at: Optional[float] = None
     form_stops_seen_at: float = 0.0
     early_transition_for: Optional[float] = None
+    # Issue #3113 — названия тем, уже сыгранных в ЭТОМ сете (``track`` из
+    # ``/voice/music/form``), в порядке звучания. Промпт перехода запрещает
+    # их повтор (живой прогон 28.09: Für Elise дважды в одном сете).
+    played_names: list = field(default_factory=list)
 
 
 @dataclass
@@ -381,6 +385,7 @@ class DJModeController:
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
             self.state.set_root = ""
+            self.state.played_names = []
         bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
         if bpm is not None and bpm != self.state.set_bpm:
             # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113.
@@ -415,6 +420,7 @@ class DJModeController:
         self.state.form_ends_at = None
         self.state.form_stops_at = None
         self.state.early_transition_for = None
+        self.state.played_names = []
         # Issue #2856 — лимиты и отсчёт времени принадлежат одному сету.
         self.state.started_at = 0.0
         self.state.last_transition_at = 0.0
@@ -566,6 +572,31 @@ class DJModeController:
             # публикации — дрожит на миллисекунды, поэтому допуск 2 с).
             self.state.form_stops_seen_at = self._clock()
         self.state.form_stops_at = float(stops_at)
+
+    def note_track_name(self, name: Any) -> None:
+        """Issue #3113 — тема, которая сейчас играет (``track`` из ``/voice/music/form``).
+
+        Копится только пока DJ включён; повтор публикации той же темы (топик
+        приходит каждые ~5 с) не дублирует запись. Сравнение без регистра.
+        """
+        if not self.state.enabled or not isinstance(name, str) or not name.strip():
+            return
+        title = name.strip()
+        if title.casefold() in {p.casefold() for p in self.state.played_names}:
+            return
+        self.state.played_names.append(title)
+        self._logger.info(f"🎧 DJ в сете уже звучало: {self.state.played_names!r}")
+
+    def _played_line(self) -> str:
+        """Запрет повтора уже сыгранных в сете песен (issue #3113)."""
+        if not self.state.played_names:
+            return ""
+        names = ", ".join(f"«{n}»" for n in self.state.played_names)
+        return (
+            f"🚫 В этом сете уже звучали: {names} — НЕ играй их снова (ни через "
+            "name=, ни другим написанием того же названия). Если трек плана — "
+            "одна из них, вместо неё сыграй клубный трек. "
+        )
 
     def _early_gate(self, now: float) -> Optional[tuple]:
         """``(момент раннего перехода, stops_at)`` или ``None``.
@@ -947,6 +978,7 @@ class DJModeController:
             f"{club}Если юзер попросил конкретную песню — "
             f"compose_music(name=..., seed={self._track_seed(track_no)}, "
             f"bpm={self.state.set_bpm}, repeat=true) вместо клубного трека. "
+            f"{self._played_line()}"
         )
 
     def build_auto_prompt(self, n: int) -> str:
@@ -1002,7 +1034,8 @@ class DJModeController:
                 f"{plan_block}"
                 "План сета УЖЕ ЕСТЬ — НЕ исследуй материал (search_web / "
                 "gen_search_library не нужны) и НЕ составляй новый план. "
-                f"{track_line}{self._tempo_line()}{library_line} {stage_marker}{length_line} "
+                f"{track_line}{self._played_line()}{self._tempo_line()}{library_line} "
+                f"{stage_marker}{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
         if n == 1 and not plan_tracks:
@@ -1021,7 +1054,8 @@ class DJModeController:
                 "из ответа compose_music>). Потом сыграй "
                 f"трек #1 через {self._club_call(track_no)} "
                 f"— seed, чтобы повтор темы в другом сете звучал не тем же "
-                f"басом/пэдом/ударными. {self._tempo_line()}{library_line} {stage_marker}"
+                f"басом/пэдом/ударными. {self._played_line()}{self._tempo_line()}"
+                f"{library_line} {stage_marker}"
                 f"{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
@@ -1034,7 +1068,7 @@ class DJModeController:
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
-                f"{track_line}{self._tempo_line()}{library_line} "
+                f"{track_line}{self._played_line()}{self._tempo_line()}{library_line} "
                 "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
                 f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
                 "сама доводит его до спокойного финала и затухания, не проси "

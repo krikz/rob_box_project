@@ -682,8 +682,26 @@ def test_publish_music_form_is_null_when_no_active_form(monkeypatch):
     module.MCPServer.publish_music_state(server)
 
     payload = json.loads(server.music_form_pub.published[0])
-    # Issue #3113: + stops_at (остановка конечного трека) — тоже null.
-    assert payload == {"form_ends_at": None, "playing": False, "stops_at": None}
+    # Issue #3113: + stops_at (остановка конечного трека) и track — тоже null.
+    assert payload == {"form_ends_at": None, "playing": False, "stops_at": None, "track": None}
+
+
+@pytest.mark.unit
+def test_publish_music_form_carries_track_name(monkeypatch):
+    """Issue #3113 — имя играющей темы для DJ-сета (без повтора песни)."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 1.0,
+        "track_name": "Für Elise",
+    }
+    server._music_manager = manager
+    module.MCPServer.publish_music_state(server)
+    assert json.loads(server.music_form_pub.published[0])["track"] == "Für Elise"
 
 
 @pytest.mark.unit
