@@ -1,6 +1,6 @@
 """test_issue_3024_face_hint_suppresses_voice_recheck.py
 
-ADR-0135 / issue #3024 — «Робот поздоровался по имени (лицо), а через 26
+ADR-0139 / issue #3024 — «Робот поздоровался по имени (лицо), а через 26
 сек спрашивает „Дэнчик, это ты?"».
 
 Гипотеза подтверждена в t_ee583f20: лицо (Vision Pi) приходит в
@@ -9,7 +9,7 @@ ADR-0135 / issue #3024 — «Робот поздоровался по имени
 ``single``), и ``_handle_tentative_speaker`` (#2809/#2888) задаёт
 переспрос, потому что шов «Знакомый» не знал, что лицо уже подтвердило.
 
-Фикс (ADR-0135 §2-3): новый сигнал ``FaceSignal`` в ``IdentitySeam``
+Фикс (ADR-0139 §2-3): новый сигнал ``FaceSignal`` в ``IdentitySeam``
 (метод ``note_face_seen`` + ``recent_face_observation``), плюс
 короткая проверка перед блоком переспроса в ``_handle_tentative_speaker``:
 есть свежий face-hint с тем же именем и ``sim >= high_threshold`` →
@@ -108,7 +108,7 @@ def _make_node(identity: MemoryIdentitySeam) -> DialogueNode:
     )
     n._ask_tentative_identity = MagicMock()
     n._tag_tentative = MagicMock(return_value="[Speaker:tentative]")
-    # ADR-0135 параметры (дефолты карточки).
+    # ADR-0139 параметры (дефолты карточки).
     n._face_voice_hint_enabled = True
     n._face_voice_hint_window_sec = 30.0
     n._face_voice_hint_high_threshold = 0.78
@@ -132,7 +132,7 @@ def test_face_signal_and_observation_dataclasses_exist():
     """Красный шаг 1: импорт публичных типов из IdentitySeam.
 
     Пока реализации нет — ImportError на ``FaceSignal``/``FaceObservation``.
-    После реализации (ADR-0135 §2.1-2.2) — оба импорта проходят.
+    После реализации (ADR-0139 §2.1-2.2) — оба импорта проходят.
     """
     sig = FaceSignal(
         person_id="4ff0ddc5",
@@ -160,7 +160,7 @@ def test_face_signal_and_observation_dataclasses_exist():
 def test_identity_seam_note_face_seen_and_recent_observation_roundtrip():
     """Шов хранит последний face-signal per person_id, читается окном.
 
-    Это контракт ADR-0135 §2.2: ``note_face_seen`` кладёт наблюдение в
+    Это контракт ADR-0139 §2.2: ``note_face_seen`` кладёт наблюдение в
     кольцевой буфер, ``recent_face_observation(person_id)`` возвращает
     самое свежее (или ``None`` если пусто/протухло).
     """
@@ -194,7 +194,7 @@ def test_identity_seam_note_face_seen_and_recent_observation_roundtrip():
 
 
 def test_identity_seam_face_observation_confidence_bands():
-    """Полосы уверенности: high/tentative/low по порогам из ADR-0135 §2.4."""
+    """Полосы уверенности: high/tentative/low по порогам из ADR-0139 §2.4."""
     store = InMemoryStore()
     _run(store.init())
     seam = MemoryIdentitySeam(store)
@@ -298,7 +298,7 @@ def test_face_hint_suppresses_tentative_question_in_window():
     # confirmation path: переспрос НЕ задан, _confirm_tentative_speaker вызван.
     state = node._tentative_states["c9e981cb"]
     assert state["asked"] is True, (
-        "asked=True допустимо — блок ADR-0135 ставит asked=True перед "
+        "asked=True допустимо — блок ADR-0139 ставит asked=True перед "
         "вызовом _confirm_tentative_speaker (как и #2809 confirmation)."
     )
     assert state["confirmed"] is True
@@ -311,7 +311,7 @@ def test_face_hint_suppresses_tentative_question_in_window():
 
 
 def test_face_hint_outside_window_still_asks():
-    """Регрессия ADR-0135 §3 п.5: hint протух → голос переспрашивает."""
+    """Регрессия ADR-0139 §3 п.5: hint протух → голос переспрашивает."""
     store = InMemoryStore()
     _run(store.init())
     seam = MemoryIdentitySeam(store)
@@ -354,7 +354,7 @@ def test_face_hint_outside_window_still_asks():
 
 
 def test_face_hint_disabled_flag_falls_back_to_old_behavior():
-    """ADR-0135 §2.5: face_voice_hint.enabled=false → переспрос как раньше."""
+    """ADR-0139 §2.5: face_voice_hint.enabled=false → переспрос как раньше."""
     store = InMemoryStore()
     _run(store.init())
     seam = MemoryIdentitySeam(store)
@@ -387,7 +387,7 @@ def test_face_hint_disabled_flag_falls_back_to_old_behavior():
 
 
 def test_face_hint_low_similarity_does_not_suppress_question():
-    """ADR-0135 §2.4 полоса low (< 0.65) — hint игнорируется."""
+    """ADR-0139 §2.4 полоса low (< 0.65) — hint игнорируется."""
     store = InMemoryStore()
     _run(store.init())
     seam = MemoryIdentitySeam(store)
@@ -419,7 +419,7 @@ def test_face_hint_low_similarity_does_not_suppress_question():
 def test_face_hint_name_mismatch_does_not_suppress_question():
     """Hint для ДРУГОГО человека (тёзка/путаница) → НЕ подавляет переспрос.
 
-    ADR-0135 §2.4 условие: ``face_obs.name == tentative_name``.
+    ADR-0139 §2.4 условие: ``face_obs.name == tentative_name``.
     """
     store = InMemoryStore()
     _run(store.init())

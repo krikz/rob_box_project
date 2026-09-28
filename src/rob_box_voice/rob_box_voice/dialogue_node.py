@@ -77,7 +77,7 @@ from rob_box_harness.health import (
     check_deepseek_balance,
 )
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
-from rob_box_harness.identity.base import FaceSignal  # ADR-0135 §2.1
+from rob_box_harness.identity.base import FaceSignal  # ADR-0139 §2.1
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
@@ -719,10 +719,10 @@ class DialogueNode(Node):
         self._speaker_resolve_timeout_sec: float = float(
             self.get_parameter("speaker_resolve_timeout_sec").value
         )
-        # ADR-0135 §2.6 — face→voice hint: читаем namespace-параметры
+        # ADR-0139 §2.6 — face→voice hint: читаем namespace-параметры
         # (см. _declare_params ниже). При выключенном флаге логика
         # полностью отсутствует (note_face_seen не зовётся,
-        # _handle_tentative_speaker не ищет hint — ADR-0135 §2.5).
+        # _handle_tentative_speaker не ищет hint — ADR-0139 §2.5).
         self._face_voice_hint_enabled: bool = bool(
             self.get_parameter("face_voice_hint.enabled").value
         )
@@ -738,7 +738,7 @@ class DialogueNode(Node):
         self._face_voice_hint_buffer_capacity: int = int(
             self.get_parameter("face_voice_hint.buffer_capacity").value
         )
-        # Прокидываем параметры в сам шов — ADR-0135 §2.2. Вынесено в
+        # Прокидываем параметры в сам шов — ADR-0139 §2.2. Вынесено в
         # helper, чтобы __init__ оставался в CC-budget ADR-0021.
         self._configure_face_voice_hint()
         # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
@@ -1451,11 +1451,11 @@ class DialogueNode(Node):
         # в диалоге или, что было раньше, имя предыдущего собеседника).
         # 2.5с = запас x1.3 над верхней границей нормального диапазона.
         self.declare_parameter("speaker_resolve_timeout_sec", 2.5)
-        # ADR-0135 §2.6 — face→voice hint: свежее наблюдение лица в шов
+        # ADR-0139 §2.6 — face→voice hint: свежее наблюдение лица в шов
         # «Знакомый» отменяет голосовой переспрос #2809, если имя лица и
         # имя голосового кандидата совпадают и hint в окне. Дефолты из
         # ADR-0123 §6 (high=0.78) и ADR-0089 §2.2 (low=0.65 стаб-зеркало).
-        # Деградация к текущему поведению — ADR-0135 §2.5: false здесь
+        # Деградация к текущему поведению — ADR-0139 §2.5: false здесь
         # = подписка на /vision/hailo/events не зовёт note_face_seen,
         # _handle_tentative_speaker не ищет hint. Ключи dotted — стандарт
         # ROS2 для namespace-секций (см. test_yaml_param_consistency).
@@ -3939,7 +3939,7 @@ class DialogueNode(Node):
         user_input: str,
         utterance_id: Optional[str],
     ) -> bool:
-        """ADR-0135 — apply a fresh high-confidence face hint, if present."""
+        """ADR-0139 — apply a fresh high-confidence face hint, if present."""
         if not (
             getattr(self, "_face_voice_hint_enabled", False)
             and tentative_name
@@ -3956,7 +3956,7 @@ class DialogueNode(Node):
         state["confirmed"] = True
         state["name"] = tentative_name
         self.get_logger().info(
-            "👤 [issue #3024 ADR-0135] voice tentative suppressed "
+            "👤 [issue #3024 ADR-0139] voice tentative suppressed "
             "by recent face hint (name=%r, age=%.1fs, sim=%.3f); "
             "confirming as %r"
             % (face_obs.name, face_obs.age_sec(), face_obs.similarity, state["name"])
@@ -8742,7 +8742,7 @@ class DialogueNode(Node):
         событий в секунду на человека. Поэтому здесь только дешёвая
         проверка, а вся логика — в :meth:`_handle_meeting`.
 
-        ADR-0135 §2.3: дополнительно кладём наблюдение лица в шов
+        ADR-0139 §2.3: дополнительно кладём наблюдение лица в шов
         «Знакомый» (``self._identity.note_face_seen``), чтобы голосовой
         ``_handle_tentative_speaker`` мог снять переспрос #2809 при
         свежем face-hint с тем же именем (issue #3024). Колбэк дешёвый
@@ -8755,9 +8755,9 @@ class DialogueNode(Node):
         )
         if marker is None:
             return
-        # ADR-0135 §2.3 — note_face_seen через тот же подписочный путь,
+        # ADR-0139 §2.3 — note_face_seen через тот же подписочный путь,
         # что и _handle_meeting. Не плодим новый топик
-        # /perception/face/meeting (контракт Vision Pi, ADR-0135 §5.2).
+        # /perception/face/meeting (контракт Vision Pi, ADR-0139 §5.2).
         if self._face_voice_hint_enabled:
             try:
                 self._identity.note_face_seen(
@@ -8771,10 +8771,10 @@ class DialogueNode(Node):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                # ADR-0135 §2.5: hint — деградируемая функциональность,
+                # ADR-0139 §2.5: hint — деградируемая функциональность,
                 # падение не должно ронять основной поток _handle_meeting.
                 self.get_logger().debug(
-                    f"👤 [ADR-0135] note_face_seen failed (ignored): {exc!r}"
+                    f"👤 [ADR-0139] note_face_seen failed (ignored): {exc!r}"
                 )
         try:
             self._handle_meeting(marker)

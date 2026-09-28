@@ -35,7 +35,7 @@ dialogue_node:
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0
 
-    # ADR-0135 §2.6 / issue #3024 — face→voice hint: см. src/config/dialogue_node.yaml
+    # ADR-0139 §2.6 / issue #3024 — face→voice hint: см. src/config/dialogue_node.yaml
     face_voice_hint:
       enabled: true
       window_sec: 30.0

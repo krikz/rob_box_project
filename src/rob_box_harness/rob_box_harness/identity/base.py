@@ -50,7 +50,7 @@ from rob_box_harness.memory import (
     touch_speaker,
 )
 
-# ADR-0135 §2.4 — полосы уверенности для face hint.
+# ADR-0139 §2.4 — полосы уверенности для face hint.
 # Дефолты из ADR-0123 §6 (high) и ADR-0089 §2.2 (low стаб-зеркало).
 DEFAULT_FACE_HINT_HIGH = 0.78
 DEFAULT_FACE_HINT_LOW = 0.65
@@ -80,7 +80,7 @@ def _classify_face_band(
     high: float = DEFAULT_FACE_HINT_HIGH,
     low: float = DEFAULT_FACE_HINT_LOW,
 ) -> str:
-    """Полоса уверенности face-hint (ADR-0135 §2.4)."""
+    """Полоса уверенности face-hint (ADR-0139 §2.4)."""
     if similarity >= high:
         return "high"
     if similarity >= low:
@@ -92,7 +92,7 @@ def _classify_face_band(
 class FaceSignal:
     """Сырой сигнал лица из vision_node → ``IdentitySeam.note_face_seen``.
 
-    Структурно-типизирован (ADR-0135 §2.1): шов не зависит от
+    Структурно-типизирован (ADR-0139 §2.1): шов не зависит от
     ``rob_box_perception``, dataclass'ы достаточно для сериализации
     через ``/vision/hailo/events`` → ``parse_meeting_marker`` (см.
     ``dialogue_node._on_vision_event``).
@@ -110,7 +110,7 @@ class FaceSignal:
 class FaceObservation:
     """Наблюдение лица, прочитанное через ``IdentitySeam.recent_face_observation``.
 
-    Не пишется в долговременный стор (ADR-0135 §2.2: «наблюдение, а не
+    Не пишется в долговременный стор (ADR-0139 §2.2: «наблюдение, а не
     обновление профиля») — это in-memory подсказка для потребителей шва
     (``dialogue_node``) о том, что лицо только что видело кандидата с
     указанной уверенностью.
@@ -121,7 +121,7 @@ class FaceObservation:
     similarity: float
     captured_at: float
     is_new: bool
-    confidence_band: str   # "high" | "tentative" | "low" (см. ADR-0135 §2.4)
+    confidence_band: str   # "high" | "tentative" | "low" (см. ADR-0139 §2.4)
 
     def age_sec(self, *, now: Optional[float] = None) -> float:
         return (now if now is not None else time.time()) - self.captured_at
@@ -132,7 +132,7 @@ class FaceObservation:
         window_sec: float = DEFAULT_FACE_HINT_WINDOW_SEC,
         now: Optional[float] = None,
     ) -> bool:
-        """Свежесть в пределах окна ``window_sec`` (дефолт 30с, ADR-0135 §2.4)."""
+        """Свежесть в пределах окна ``window_sec`` (дефолт 30с, ADR-0139 §2.4)."""
         return self.age_sec(now=now) <= window_sec
 
 
@@ -145,7 +145,7 @@ class IdentitySeam(abc.ABC):
 
     def __init__(self, memory: MemoryStore) -> None:
         self._memory = memory
-        # ADR-0135 §2.2 — in-memory кольцевой буфер face-наблюдений per
+        # ADR-0139 §2.2 — in-memory кольцевой буфер face-наблюдений per
         # person_id. Ключ = person_id (Vision), потому что человек-человек
         # ещё не сшиты (см. ADR-0123 §6 Phase 2). Буфер живёт только в
         # памяти процесса — это НАБЛЮДЕНИЕ, а не обновление Acquaintance.
@@ -202,7 +202,7 @@ class IdentitySeam(abc.ABC):
         return 0, facts_moved
 
     # ------------------------------------------------------------------
-    # ADR-0135 §2.2 — FaceSignal → in-memory ring buffer
+    # ADR-0139 §2.2 — FaceSignal → in-memory ring buffer
     # ------------------------------------------------------------------
 
     def configure_face_hint(
@@ -215,10 +215,10 @@ class IdentitySeam(abc.ABC):
     ) -> None:
         """Задать параметры face-hint (вызывается из конфига ноды).
 
-        Те же дефолты, что в ADR-0135 §2.6. Метод аддитивный — старые
+        Те же дефолты, что в ADR-0139 §2.6. Метод аддитивный — старые
         швы без face-hint продолжают работать (если его не звали,
         буфер пуст и ``recent_face_observation`` всегда возвращает
-        ``None``, см. ADR-0135 §2.5 деградация).
+        ``None``, см. ADR-0139 §2.5 деградация).
         """
         self._face_buffer_capacity = int(buffer_capacity)
         self._face_high_threshold = float(high_threshold)
@@ -228,7 +228,7 @@ class IdentitySeam(abc.ABC):
     def note_face_seen(
         self, signal: FaceSignal, *, now: Optional[float] = None
     ) -> FaceObservation:
-        """Положить наблюдение лица в кольцевой буфер (ADR-0135 §2.2).
+        """Положить наблюдение лица в кольцевой буфер (ADR-0139 §2.2).
 
         Синхронная (in-memory), без записи в долговременный стор
         (это НАБЛЮДЕНИЕ, а не обновление ``Acquaintance``: лицо
@@ -283,7 +283,7 @@ class IdentitySeam(abc.ABC):
 
         Возвращает ``None``, если буфер пуст, ключа нет, или последнее
         наблюдение протухло (старше ``window_sec``). Дефолт окна — из
-        ``configure_face_hint`` (ADR-0135 §2.6 дефолт 30с).
+        ``configure_face_hint`` (ADR-0139 §2.6 дефолт 30с).
         """
         buf = self._face_observations.get(person_id)
         if not buf:
