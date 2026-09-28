@@ -363,7 +363,10 @@ def _intrinsics_from_camera_info(
     msg: Any,
 ) -> Optional[Tuple[float, float, float, float, int, int]]:
     """sensor_msgs/CameraInfo → (fx, fy, cx, cy, width, height) или None."""
-    k = list(getattr(msg, 'k', None) or [])
+    # rclpy отдаёт float64[9] как numpy.ndarray: ``k or []`` на нём бросает
+    # ValueError и роняет всю ноду (#3126), поэтому None проверяем явно.
+    raw_k = getattr(msg, 'k', None)
+    k = [] if raw_k is None else list(raw_k)
     if len(k) != 9 or float(k[0]) <= 0.0 or float(k[4]) <= 0.0:
         return None
     return (
