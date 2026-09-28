@@ -192,6 +192,7 @@ jobs:
           python tools/architecture_runtime_graph.py \
             --runtime architecture/runtime.json \
             --inventory architecture/inventory.json \
+            --repo-root . \
             --output-dir architecture
 
       - name: Upload local architecture evidence
@@ -212,6 +213,7 @@ jobs:
             architecture/runtime-diff.md
             architecture/runtime-overview.mmd
             architecture/runtime-graph.mmd
+            architecture/runtime-graph.md
 
       - name: Publish runtime summary
         run: |
@@ -222,13 +224,9 @@ jobs:
             cat architecture/runtime-diff.md
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # Container map + one collapsible diagram per container + placement
+          # evidence (tools/architecture_runtime_graph.py).
           {
             echo
-            echo "## ROS2 runtime architecture diagram"
-            echo
-            echo '```mermaid'
-            cat architecture/runtime-overview.mmd
-            echo '```'
-            echo
-            echo "Full Mermaid graph: architecture/runtime-graph.mmd in the architecture-local-runtime artifact."
+            cat architecture/runtime-graph.md
           } >> "$GITHUB_STEP_SUMMARY"

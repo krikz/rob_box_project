@@ -6,6 +6,7 @@ on:
       - "src/**"
       - "docker/**"
       - "tools/architecture_*.py"
+      - "tests/unit/scripts/test_architecture_runtime_graph.py"
       - "architecture/ownership.yml"
       - "docs/design/ARCHITECTURE_AUDIT.md"
       - ".github/workflows/G-Architecture Audit.yml"
@@ -15,6 +16,7 @@ on:
       - "src/**"
       - "docker/**"
       - "tools/architecture_*.py"
+      - "tests/unit/scripts/test_architecture_runtime_graph.py"
       - "architecture/ownership.yml"
       - "docs/design/ARCHITECTURE_AUDIT.md"
       - ".github/workflows/G-Architecture Audit.yml"
@@ -51,6 +53,13 @@ jobs:
           python tools/architecture_findings.py architecture/inventory.json --json architecture/findings.json --markdown architecture/findings.md
       - name: Render node and topic catalogs
         run: python tools/architecture_catalog.py architecture/inventory.json
+      - name: Runtime graph renderer tests
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest tests/unit/scripts/test_architecture_runtime_graph.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
       - name: Validate inventory
         run: |
           python - <<'PY'
