@@ -10,16 +10,27 @@
     на известном азимуте ``--angle`` (градусы, REP-103: 0° — вперёд по X
     base_link, против часовой положительно). Робот молчит (нет TTS/музыки —
     иначе audio_node гейтит VAD).
-  * Один «замер» = одна VAD-фраза: DOA копится только пока VAD == True,
-    первые ``--settle-s`` после фронта отбрасываются (оценка угла сходится),
-    оценка замера — круговое среднее отсчётов фразы.
+  * Один «замер» = одно окно речи, отмеренное оператором: скрипт ждёт
+    ``--start-delay-s`` (гаснет эхо своего TTS, оператор готовится), затем
+    ``--window-s`` секунд копит DOA. Отсчёт берётся, если VAD == True или с
+    последнего спада VAD прошло ≤ ``--hold-s``: VAD audio_node на сплошной
+    речи мерцает (фрагменты 0.1–0.3 с, 54–75 фронтов за 20 с — живой прогон
+    29.09.2026), и прежнее «одна VAD-фраза = один замер» не давало ни одного
+    замера. Окно делится на ``--splits`` равных подокон — каждое с
+    ≥ ``--min-samples`` отсчётов даёт свой замер; оценка замера — круговое
+    среднее его отсчётов.
   * Нужно ≥ 20 замеров суммарно по ≥ 4 углам (минимум 0/90/180/270).
+    Подокна одного окна не независимы (тот же человек, та же поза) — см.
+    ADR-0137 §2.3.
+  * Помещение влияет на результат (отражения тянут DOA к стенам): в большом
+    открытом помещении мерится точность самого массива, в рабочей комнате —
+    то, что увидит этап 5. Разные места — разные ``--csv``.
 
 Запуск на Vision Pi (скрипт в контейнер не смонтирован — копируем):
     docker cp scripts/maintenance/measure_doa.py voice-assistant:/tmp/measure_doa.py
     docker exec -it voice-assistant bash -lc \\
       'source /opt/ros/humble/setup.bash && \\
-       python3 /tmp/measure_doa.py measure --angle 90 --samples 3 --csv /tmp/doa.csv'
+       python3 /tmp/measure_doa.py measure --angle 90 --window-s 20 --splits 4 --csv /tmp/doa.csv'
     ... повторить для других углов (CSV дописывается) ...
     docker exec voice-assistant python3 /tmp/measure_doa.py summary --csv /tmp/doa.csv
 
@@ -29,7 +40,7 @@
 оно уже известно — ``--offset/--sign`` фиксируют его.
 
 Коды выхода: 0 — есть вердикт (или замер записан); 1 — нет rclpy;
-2 — данных недостаточно для вердикта;
+2 — данных недостаточно для вердикта (или окно не дало ни одного замера);
 3 — ``/audio/direction`` молчит (см. ADR-0137 §2.3 «предусловие»).
 
 Только стандартная библиотека (+ rclpy лениво внутри ``measure``).
@@ -123,11 +134,91 @@ def fit_mapping(pairs: Sequence[Tuple[float, float]]) -> Tuple[float, int]:
 
 @dataclass
 class Segment:
-    """Одна VAD-фраза = один замер."""
+    """Один замер: окно речи (или его подокно) на известном угле."""
 
     index: int
     true_deg: float
     samples: List[Tuple[float, float]] = field(default_factory=list)  # (ts, doa_deg)
+
+
+def speaking_mask(
+    vad_edges: Sequence[Tuple[float, bool]],
+    times: Sequence[float],
+    hold_s: float,
+) -> List[bool]:
+    """Для каждого момента ``times`` (по возрастанию) — «идёт речь?».
+
+    ``vad_edges`` — (t, active); ``/audio/vad`` шлёт только фронты, до
+    первого фронта считаем VAD == False. Речь идёт, если VAD == True или с
+    последнего спада прошло ≤ ``hold_s`` — это склеивает мерцание VAD на
+    сплошной речи в одно «говорит».
+    """
+    edges = sorted(vad_edges, key=lambda e: e[0])
+    out: List[bool] = []
+    i = 0
+    vad = False
+    last_fall: Optional[float] = None
+    for t in times:
+        while i < len(edges) and edges[i][0] <= t:
+            active = bool(edges[i][1])
+            if vad and not active:
+                last_fall = edges[i][0]
+            vad = active
+            i += 1
+        out.append(vad or (last_fall is not None and t - last_fall <= hold_s))
+    return out
+
+
+@dataclass
+class WindowResult:
+    segments: List[Segment]
+    discarded: int  # подокна, где отсчётов < min_samples
+    pooled: int  # отсчётов DOA в окне, пришедшихся на речь
+    silent: int  # отсчётов DOA в окне вне речи
+
+
+def pool_window(
+    vad_edges: Sequence[Tuple[float, bool]],
+    doa: Sequence[Tuple[float, float]],
+    true_deg: float,
+    start_t: float,
+    window_s: float,
+    splits: int = 1,
+    hold_s: float = 0.5,
+    min_samples: int = 3,
+) -> WindowResult:
+    """Нарезать одно окно речи [start_t, start_t + window_s) на замеры.
+
+    Отсчёты DOA вне окна игнорируются, в окне — берутся, если идёт речь
+    (``speaking_mask``). Окно делится на ``splits`` равных подокон; подокно
+    с ≥ ``min_samples`` отсчётов — замер (index 1..splits по времени),
+    иначе — в брак.
+    """
+    if window_s <= 0 or splits < 1:
+        raise ValueError("pool_window: нужно window_s > 0 и splits ≥ 1")
+    end_t = start_t + window_s
+    in_win = sorted((p for p in doa if start_t <= p[0] < end_t), key=lambda p: p[0])
+    mask = speaking_mask(vad_edges, [t for t, _ in in_win], hold_s)
+    pooled = [(t, float(d) % 360.0) for (t, d), m in zip(in_win, mask) if m]
+
+    sub_s = window_s / splits
+    buckets: List[List[Tuple[float, float]]] = [[] for _ in range(splits)]
+    for t, d in pooled:
+        buckets[min(int((t - start_t) / sub_s), splits - 1)].append((t, d))
+
+    segs: List[Segment] = []
+    discarded = 0
+    for k, b in enumerate(buckets, start=1):
+        if len(b) >= min_samples:
+            segs.append(Segment(index=k, true_deg=true_deg, samples=b))
+        else:
+            discarded += 1
+    return WindowResult(
+        segments=segs,
+        discarded=discarded,
+        pooled=len(pooled),
+        silent=len(in_win) - len(pooled),
+    )
 
 
 def segments_from_rows(rows: Iterable[Dict[str, str]]) -> List[Segment]:
@@ -215,55 +306,61 @@ def summarize(
 
 
 class DoaCollector:
-    """Копит DOA только внутри VAD-фраз. Без ROS: время передаётся явно.
+    """Копит сырые события одного окна; нарезка — чистой ``pool_window``.
 
-    ``/audio/vad`` приходит только на фронтах, поэтому держим последнее
-    состояние; до первого фронта считаем VAD == False.
+    Без ROS: время передаётся явно. Хранит всё пришедшее — что считать
+    речью, решается один раз по полному окну.
     """
 
-    def __init__(self, true_deg: float, settle_s: float = 0.3, min_samples: int = 3):
+    def __init__(
+        self,
+        true_deg: float,
+        start_t: float,
+        window_s: float,
+        splits: int = 1,
+        hold_s: float = 0.5,
+        min_samples: int = 3,
+    ):
         self.true_deg = true_deg
-        self.settle_s = settle_s
+        self.start_t = start_t
+        self.window_s = window_s
+        self.splits = splits
+        self.hold_s = hold_s
         self.min_samples = min_samples
-        self.vad = False
-        self._rise_t = 0.0
-        self._current: List[Tuple[float, float]] = []
-        self._seg_counter = 0
-        self.completed: List[Segment] = []
-        self.discarded = 0
+        self.vad_edges: List[Tuple[float, bool]] = []
+        self.doa: List[Tuple[float, float]] = []
         self.doa_msgs_total = 0
 
+    @property
+    def end_t(self) -> float:
+        return self.start_t + self.window_s
+
     def on_vad(self, active: bool, t: float) -> None:
-        if active and not self.vad:
-            self._rise_t = t
-            self._current = []
-        elif not active and self.vad:
-            self._close()
-        self.vad = active
+        self.vad_edges.append((t, bool(active)))
 
     def on_doa(self, doa_deg: float, t: float) -> None:
         self.doa_msgs_total += 1
-        if self.vad and (t - self._rise_t) >= self.settle_s:
-            self._current.append((t, float(doa_deg) % 360.0))
+        self.doa.append((t, float(doa_deg)))
 
-    def _close(self) -> None:
-        if len(self._current) >= self.min_samples:
-            self._seg_counter += 1
-            self.completed.append(
-                Segment(
-                    index=self._seg_counter,
-                    true_deg=self.true_deg,
-                    samples=self._current,
-                )
-            )
-        else:
-            self.discarded += 1
-        self._current = []
+    def result(self) -> WindowResult:
+        return pool_window(
+            self.vad_edges,
+            self.doa,
+            self.true_deg,
+            self.start_t,
+            self.window_s,
+            splits=self.splits,
+            hold_s=self.hold_s,
+            min_samples=self.min_samples,
+        )
+
+    def vad_edges_in_window(self) -> int:
+        return sum(1 for t, _ in self.vad_edges if self.start_t <= t < self.end_t)
 
     def rows(self, run_id: str) -> List[List[str]]:
         """Строки CSV (ts, true_deg, doa_deg, err_deg, segment) — err без отображения."""
         out = []
-        for seg in self.completed:
+        for seg in self.result().segments:
             for ts, doa in seg.samples:
                 out.append(
                     [
@@ -295,7 +392,7 @@ def format_summary(s: Summary, tolerance_deg: float = TOLERANCE_DEG) -> str:
     mapping = "подобрано по данным" if s.fitted else "задано вручную"
     return "\n".join(
         [
-            f"замеров (VAD-фраз): {s.n_segments}, отсчётов DOA: {s.n_samples}",
+            f"замеров (окон/подокон): {s.n_segments}, отсчётов DOA: {s.n_samples}",
             f"углы, °: {', '.join(f'{a:g}' for a in s.distinct_angles)}",
             f"отображение: bearing = {s.offset_deg:g} + ({s.sign:+d})·doa  [{mapping}]",
             f"|ошибка замера|, °: p50={s.p50:.1f} p95={s.p95:.1f} max={s.max_err:.1f}",
@@ -321,11 +418,16 @@ def _run_measure(args: argparse.Namespace) -> int:
         )
         return 1
 
-    collector = DoaCollector(
-        args.angle, settle_s=args.settle_s, min_samples=args.min_samples
-    )
     rclpy.init()
     node = rclpy.create_node("measure_doa")
+    collector = DoaCollector(
+        args.angle,
+        start_t=time.time() + args.start_delay_s,
+        window_s=args.window_s,
+        splits=args.splits,
+        hold_s=args.hold_s,
+        min_samples=args.min_samples,
+    )
     node.create_subscription(
         Bool, "/audio/vad", lambda m: collector.on_vad(bool(m.data), time.time()), 10
     )
@@ -333,18 +435,21 @@ def _run_measure(args: argparse.Namespace) -> int:
         Int32, "/audio/direction", lambda m: collector.on_doa(m.data, time.time()), 10
     )
 
-    start = time.time()
+    begin = time.time()
     print(
-        f"[measure_doa] угол {args.angle:g}°: говорите фразы по одной, нужно {args.samples} замеров"
-        f" (таймаут {args.timeout:g} с)"
+        f"[measure_doa] угол {args.angle:g}°: через {args.start_delay_s:g} с говорите "
+        f"непрерывно {args.window_s:g} с (подокон: {args.splits})"
     )
-    reported = 0
     rc = 0
+    announced = False
     try:
-        while len(collector.completed) < args.samples:
+        while time.time() < collector.end_t:
             rclpy.spin_once(node, timeout_sec=0.1)
             now = time.time()
-            if collector.doa_msgs_total == 0 and now - start > args.no_doa_timeout:
+            if not announced and now >= collector.start_t:
+                print("[measure_doa] ГОВОРИТЕ")
+                announced = True
+            if collector.doa_msgs_total == 0 and now - begin > args.no_doa_timeout:
                 print(
                     f"[measure_doa] FAIL: за {args.no_doa_timeout:g} с ни одного /audio/direction. "
                     "Предусловие ADR-0137 §2.3: audio_node должен публиковать DOA.",
@@ -352,32 +457,31 @@ def _run_measure(args: argparse.Namespace) -> int:
                 )
                 rc = 3
                 break
-            if now - start > args.timeout:
-                print(
-                    f"[measure_doa] таймаут: собрано {len(collector.completed)} из {args.samples}",
-                    file=sys.stderr,
-                )
-                break
-            if len(collector.completed) > reported:
-                seg = collector.completed[-1]
-                est = circular_mean([d for _, d in seg.samples])
-                print(
-                    f"  замер {len(collector.completed)}: {len(seg.samples)} отсчётов, "
-                    f"DOA≈{est:.0f}° (сырой, без отображения)"
-                )
-                reported = len(collector.completed)
     finally:
         node.destroy_node()
         rclpy.shutdown()
 
+    res = collector.result()
+    print("[measure_doa] СТОП")
+    for seg in res.segments:
+        est = circular_mean([d for _, d in seg.samples])
+        print(
+            f"  замер {seg.index}/{args.splits}: {len(seg.samples)} отсчётов, "
+            f"DOA≈{est:.0f}° (сырой, без отображения)"
+        )
     run_id = time.strftime("%Y%m%dT%H%M%S")
     rows = collector.rows(run_id)
     if rows:
         append_csv(args.csv, rows)
     print(
-        f"[measure_doa] записано {len(rows)} строк в {args.csv}; "
-        f"коротких фраз отброшено: {collector.discarded}; всего DOA-сообщений: {collector.doa_msgs_total}"
+        f"[measure_doa] записано {len(rows)} строк ({len(res.segments)} замеров) в {args.csv}; "
+        f"подокон в брак (< {args.min_samples} отсчётов): {res.discarded}; "
+        f"DOA в речи/вне речи: {res.pooled}/{res.silent}; "
+        f"фронтов VAD в окне: {collector.vad_edges_in_window()}; "
+        f"всего DOA-сообщений: {collector.doa_msgs_total}"
     )
+    if rc == 0 and not res.segments:
+        rc = 2
     return rc
 
 
@@ -407,20 +511,39 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="истинный азимут, ° (REP-103, от X base_link)",
     )
-    m.add_argument(
-        "--samples", type=int, default=3, help="сколько VAD-фраз собрать на этом угле"
-    )
     m.add_argument("--csv", default="doa_measurements.csv")
-    m.add_argument("--timeout", type=float, default=180.0)
+    m.add_argument(
+        "--window-s",
+        type=float,
+        default=20.0,
+        help="длительность окна речи, с (оператор говорит непрерывно)",
+    )
+    m.add_argument(
+        "--splits",
+        type=int,
+        default=4,
+        help="на сколько равных подокон делить окно (каждое — отдельный замер)",
+    )
+    m.add_argument(
+        "--start-delay-s",
+        type=float,
+        default=3.0,
+        help="пауза до начала окна, с (эхо своего TTS, оператор готовится)",
+    )
+    m.add_argument(
+        "--hold-s",
+        type=float,
+        default=0.5,
+        help="сколько после спада VAD ещё считать речью, с (мерцание VAD)",
+    )
     m.add_argument(
         "--no-doa-timeout",
         type=float,
         default=10.0,
         help="FAIL, если за это время нет ни одного /audio/direction",
     )
-    m.add_argument("--settle-s", type=float, default=0.3)
     m.add_argument(
-        "--min-samples", type=int, default=3, help="мин. отсчётов DOA в фразе"
+        "--min-samples", type=int, default=3, help="мин. отсчётов DOA в подокне"
     )
 
     s = sub.add_parser("summary", help="сводка и вердикт по CSV (без ROS)")
