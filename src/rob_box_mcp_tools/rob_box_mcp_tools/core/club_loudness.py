@@ -59,6 +59,12 @@ RMS по блокам, пик −9.0 dBFS; живой jack_rec 28.09 (``n1_club.
 санитайзера): где синт не дотягивает даже на потолке (``sinepad`` — самый
 тихий), модель это видит (:func:`kit_report`), и тест фиксирует остаток,
 а не прячет его.
+
+Шкала модели — мастер БЕЗ радио-динамики (``masterfilter`` ``dyn = 0``).
+На роботе поверх неё работает выравниватель/компрессор/лимитер мастер-шины
+(issue #3154, ``masterfilter.scd``): он сжимает оставшийся разброс секций
+примерно втрое и поднимает общий уровень; модель и калибровка его НЕ
+учитывают — их задача, чтобы до мастера доходил уже ровный микс.
 """
 
 from __future__ import annotations
@@ -70,7 +76,7 @@ from .arrangement_matrix import FULL, QUARTERS, ArrangementMatrix, cell_quarters
 
 #: Условия снятия :data:`LANE_DB_AT_UNIT` (для docstring'ов и отчёта).
 MODEL_SOURCE = (
-    "офлайн-рендер scsynth 3.14.1 NRT 16 кГц, renardo_lib 0.9.13, masterfilter gain=0.5, "
+    "офлайн-рендер scsynth 3.14.1 NRT 16 кГц, renardo_lib 0.9.13, masterfilter gain=0.5 dyn=0, "
     "dj_dave_32 блоки 8-10, 124 BPM, среднее по 5 тоникам (29.09.2026); не замер на роботе"
 )
 
