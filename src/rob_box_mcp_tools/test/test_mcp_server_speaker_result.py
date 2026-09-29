@@ -203,11 +203,73 @@ def _load_mcp_server_module():
     return module
 
 
+# Keys this module stuffs into ``sys.modules`` while bootstrapping
+# ``mcp_server.py`` (see ``_install_rclpy_stub`` / ``_load_mcp_server_module``
+# above). Collected here so ``_bootstrap_module_ns`` can snapshot and
+# restore them — without this, the fakes (a zero-arg registry, a
+# ``WaypointStore`` that takes no args, ``RequestAuthenticator`` with no
+# constructor, ...) leak into every test file collected afterwards and
+# get imported *instead of* the real modules, e.g. ``test_registry.py``
+# ends up asserting against ``fake_registry.MCPToolRegistry`` (always
+# ``len() == 0``, no ``get_tool``/``execute``) and
+# ``test_register_speaker_ros_mcp_utterance.py`` blows up on
+# ``RequestAuthenticator(_TOKEN, sender=...)`` with
+# ``TypeError: _Auth() takes no arguments``. Reproduced with the full
+# ``pytest test/`` run (order-dependent — every test in isolation
+# passes) and bisected to this file's module-level stubbing.
+_SYS_MODULES_KEYS_TOUCHED_BY_BOOTSTRAP = (
+    "rclpy",
+    "rclpy.node",
+    "rclpy.qos",
+    "rclpy.callback_groups",
+    "rcl_interfaces",
+    "rcl_interfaces.msg",
+    "std_msgs",
+    "std_msgs.msg",
+    _PKG_NAME,
+    f"{_PKG_NAME}.registry",
+    f"{_PKG_NAME}.tools",
+    f"{_PKG_NAME}.mcp_auth",
+    f"{_PKG_NAME}.waypoint_store",
+    f"{_PKG_NAME}.mapping_state",
+    f"{_PKG_NAME}.voice_state",
+    f"{_PKG_NAME}.mcp_server",
+    "rob_box_voice.core.voice_memory",
+    "rob_box_voice.core.faq_store",
+    "rob_box_voice.core.event_profile",
+)
+
+
+def _bootstrap_module_ns():
+    """Load ``mcp_server.py`` under the rclpy/registry/... stubs, then
+    put ``sys.modules`` back exactly as it was.
+
+    The loaded module object (and everything already pulled out of it,
+    e.g. ``MCPServer`` below) keeps working fine afterwards — Python
+    classes/functions don't need their defining module to stay in
+    ``sys.modules``. Only *other* test files doing a fresh
+    ``from rob_box_mcp_tools.xxx import Yyy`` need the real modules back.
+    """
+    _sentinel = object()
+    saved = {
+        key: sys.modules.get(key, _sentinel)
+        for key in _SYS_MODULES_KEYS_TOUCHED_BY_BOOTSTRAP
+    }
+    try:
+        _install_rclpy_stub()
+        return _load_mcp_server_module()
+    finally:
+        for key, value in saved.items():
+            if value is _sentinel:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = value
+
+
 # Bootstrap rclpy + module ONCE at import time so each test can grab
 # ``MCPServer`` directly. This mirrors the conftest pattern in
 # ``test_memory_speaker_id.py``.
-_install_rclpy_stub()
-_module_ns = _load_mcp_server_module()
+_module_ns = _bootstrap_module_ns()
 MCPServer = _module_ns.MCPServer
 
 
