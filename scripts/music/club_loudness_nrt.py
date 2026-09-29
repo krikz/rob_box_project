@@ -23,6 +23,14 @@ scsynth NRT на 16 кГц (как на роботе) и меряет RMS по �
 * ReSpeaker/ALSA после scsynth не моделируются (jack_rec тоже снимает
   цифровой выход scsynth, так что сравнение с ним честное по месту).
 
+Мастер-шина — ``masterfilter.scd`` из репо, как на роботе: по умолчанию с
+радио-динамикой (``--master-dyn 1``: выравниватель + компрессор + лимитер,
+issue #3154). Таблицы моделей громкости (``--sweep*``) всегда снимаются с
+``dyn 0`` — в шкале прежней цепочки tanh (динамика зависит от уровня и
+сломала бы аддитивность модели). ``--master '{"lvlTarget": -14}'`` —
+правка любого аргумента SynthDef. В отчёте ``render``: ``block_range_db``
+(размах блоков по 8 долей) и ``short_term`` (RMS окон 1 с: p5/p50/p95).
+
 Нужно: SuperCollider (sclang/scsynth), распакованный wheel renardo_lib
 0.9.13 (``--renardo``), сэмплы (``--samples``), numpy.
 
@@ -359,7 +367,7 @@ def osc_bundle(time: float, messages: Sequence[bytes]) -> bytes:
 
 
 def build_score(events: List[Event], samples: Path, def_dir: Path, duration: float,
-                master_gain: float) -> bytes:
+                master: Mapping[str, float]) -> bytes:
     """Бинарный OSC-score для ``scsynth -N`` (семантика нот Renardo ``get_bundle``)."""
     buffers: Dict[str, Tuple[int, str]] = {}
     for ev in events:
@@ -374,7 +382,8 @@ def build_score(events: List[Event], samples: Path, def_dir: Path, duration: flo
             head.append(osc_message("/b_allocRead", num, buffers[sym + "#path"][1]))
     out = [osc_bundle(0.0, head),
            osc_bundle(0.001, [osc_message("/g_new", 1, 0, 0)]),
-           osc_bundle(0.002, [osc_message("/s_new", "masterfilter", 999, 1, 0, "gain", float(master_gain))])]
+           osc_bundle(0.002, [osc_message("/s_new", "masterfilter", 999, 1, 0,
+                                          *[a for k, v in master.items() for a in (k, float(v))])])]
     node = 2000
     for k, ev in enumerate(sorted(events, key=lambda e: e.time)):
         bus = BUS_BASE + (k % BUS_POOL)
@@ -454,13 +463,24 @@ def _club_program(args: argparse.Namespace) -> Tuple[str, Dict[str, Any], str]:
     return code, {"seed": args.seed, "root": args.root, "kit": kit}, tag
 
 
+def master_args(args: argparse.Namespace) -> Dict[str, float]:
+    """Аргументы ``masterfilter`` для ``/s_new``: фейдер, динамика, правки ``--master``.
+
+    ``dyn`` 1 — как на роботе (радио-динамика issue #3154), 0 — прежняя
+    цепочка tanh: в ней сняты таблицы моделей громкости (``--sweep*``).
+    """
+    master = {"gain": float(args.master_gain), "dyn": float(getattr(args, "master_dyn", 1))}
+    master.update({k: float(v) for k, v in json.loads(getattr(args, "master", None) or "{}").items()})
+    return master
+
+
 def render_events(events: List[Event], synths: Sequence[str], args: argparse.Namespace, out: Path, tag: str,
                   duration: float) -> Path:
     """События → NRT-рендер scsynth → путь к wav (float, 16 кГц)."""
     wav, osc = out / f"{tag}.wav", out / f"{tag}.osc"
     def_dir = out / "defs"
     compile_defs(synths, Path(args.renardo), def_dir, args.sclang, args.timeout)
-    osc.write_bytes(build_score(events, Path(args.samples), def_dir, duration, args.master_gain))
+    osc.write_bytes(build_score(events, Path(args.samples), def_dir, duration, master_args(args)))
     scsynth = str(Path(args.sclang).with_name("scsynth.exe" if os.name == "nt" else "scsynth"))
     proc = subprocess.run([scsynth, "-N", str(osc), "_", str(wav), str(SAMPLE_RATE), "WAV", "float",
                            "-o", "2", "-i", "0", "-a", "1024", "-m", "262144", "-n", "65536", "-c", "16384"],
@@ -523,10 +543,35 @@ def render(args: argparse.Namespace) -> Dict[str, Any]:
     wav = render_events(events, synths, args, out, tag, form * beat_dur + 2.0)
     signal = read_wav(wav)
     body = signal[: int(form * beat_dur * SAMPLE_RATE)]
+    blocks = block_levels(signal, beat_dur, 8, int(form // 8))
     return dict(meta, bpm=bpm, only=args.only, events=len(events), wav=str(wav), form_beats=form,
-                form_rms_db=round(rms_db(body), 1),
+                master=master_args(args), form_rms_db=round(rms_db(body), 1),
                 peak_dbfs=round(20 * math.log10(float(np.max(np.abs(body))) or 1e-10), 1),
-                block_rms_db=block_levels(signal, beat_dur, 8, int(form // 8)))
+                block_rms_db=blocks, block_range_db=round(max(blocks) - min(blocks), 1),
+                short_term=short_term_spread(body))
+
+
+#: Окно «краткосрочного» уровня, с (порядок окна short-term у громкомеров).
+SHORT_TERM_S = 1.0
+#: Окна тише этого (dB RMS) — тишина, в разброс не входят.
+SHORT_TERM_SILENCE_DB = -70.0
+
+
+def short_term_spread(signal) -> Dict[str, float]:
+    """Разброс уровня внутри трека: RMS окон :data:`SHORT_TERM_S` (шаг ½ окна), p5/p50/p95.
+
+    ``p95 − p5`` — сколько dB между тихими и громкими секундами трека
+    (без тишины): то, что слушатель слышит как «скачет громкость».
+    """
+    import numpy as np
+
+    win = int(SHORT_TERM_S * SAMPLE_RATE)
+    levels = [rms_db(signal[i:i + win]) for i in range(0, max(1, len(signal) - win + 1), win // 2)]
+    levels = [db for db in levels if db > SHORT_TERM_SILENCE_DB]
+    if not levels:
+        return {"p5": -200.0, "p50": -200.0, "p95": -200.0, "spread_db": 0.0}
+    p5, p50, p95 = (float(np.percentile(levels, q)) for q in (5, 50, 95))
+    return {"p5": round(p5, 1), "p50": round(p50, 1), "p95": round(p95, 1), "spread_db": round(p95 - p5, 1)}
 
 
 _SWEEP_SLOTS = {"kick": "d1", "hats": "d2", "clap": "d3", "lead": "p1", "bass": "p2", "pad": "p3"}
@@ -576,7 +621,7 @@ def sweep(args: argparse.Namespace) -> Dict[str, Dict[str, Dict[str, float]]]:
         for name, amp in (("db", level), ("db_half", level / 2)):
             path = out / f"sweep_{lane}_{option}_{name}.py"
             path.write_text(_single_slot_program(code, _SWEEP_SLOTS[lane], amp), encoding="utf-8")
-            one = argparse.Namespace(**dict(vars(args), code=path, only=None, form=None))
+            one = argparse.Namespace(**dict(vars(args), code=path, only=None, form=None, master_dyn=0))
             row[name] = render(one)["form_rms_db"]
         row["level"] = level
         row["exponent"] = round((row["db"] - row["db_half"]) / (20 * math.log10(2)), 2)
@@ -826,6 +871,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--root", default="A#")
     parser.add_argument("--bpm", type=float, default=124)
     parser.add_argument("--master-gain", type=float, default=0.5)
+    parser.add_argument("--master-dyn", type=int, choices=(0, 1), default=1,
+                        help="радио-динамика masterfilter: 1 — как на роботе, 0 — прежняя цепочка tanh")
+    parser.add_argument("--master", default=None, help='правки аргументов masterfilter, JSON: {"lvlTarget": -18}')
     parser.add_argument("--kit", default=None, help='правка каркаса сида, JSON: {"lead": "blip"}')
     parser.add_argument("--levels", default=None, help='множители слоёв 0..1, JSON: {"pad": 0.5}')
     parser.add_argument("--code", type=Path, default=None, help="готовая программа (classic) вместо club")
@@ -850,6 +898,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_classic_table(notes_json, drums_json, target)
         print(target)
         return 0
+    if args.sweep or args.sweep_notes or args.sweep_drums:
+        args.master_dyn = 0  # таблицы моделей — в шкале прежней цепочки (без динамики)
     if args.sweep_notes:
         result: Any = sweep_notes(args, args.sweep_notes)
     elif args.sweep_drums:

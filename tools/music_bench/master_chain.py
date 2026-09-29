@@ -1,5 +1,10 @@
 """Python-модель мастер-шины ``masterfilter.scd`` (issue #2977).
 
+Модель — путь ``dyn = 0`` (прежняя цепочка без состояния). Радио-динамика
+issue #3154 (выравниватель + компрессор + лимитер, ``dyn = 1`` по умолчанию
+на роботе) здесь НЕ моделируется: её уровни — офлайн-рендер scsynth NRT
+``scripts/music/club_loudness_nrt.py --master-dyn 1``.
+
 Повторяет ЧЕТЫРЕ шага реального ``.scd`` (см. docstring файла в
 ``docker/vision/voice_assistant/custom_synthdefs/masterfilter.scd``):
 чистка NaN/Inf -> HPF 35 Гц -> LPF ``min(lpf, nyquist*0.55)`` -> мягкий
