@@ -14,6 +14,8 @@ from typing import List, TYPE_CHECKING
 if TYPE_CHECKING:
     from std_msgs.msg import String
 
+from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES
+
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, shared_publisher
 from ..voice_state import VoiceStateStore
 from ..animations import (
@@ -934,43 +936,10 @@ class RegisterSpeakerTool(MCPTool):
     # Сравнение — точное совпадение ЦЕЛОГО (уже lower()-нутого) имени,
     # НЕ substring/prefix — поэтому настоящие имена вроде "Юзеф" или
     # "Гостомысл" фильтр не задевают.
-    _NOISE_NAMES: frozenset[str] = frozenset(
-        {
-            "зовут",
-            "имя",
-            "меня",
-            "зовут-это",
-            "зовут меня",
-            "это",
-            "называю",
-            "зовут-меня",
-            "моё",
-            "мое",
-            "моё имя",
-            "мое имя",
-            "имя мне",
-            "имя моё",
-            "имя мое",
-            # Issue #2932 — заглушечные/служебные имена (плейсхолдеры).
-            "unknown",
-            "неизвестный",
-            "неизвестная",
-            "неизвестно",
-            "незнакомец",
-            "незнакомка",
-            "гость",
-            "user",
-            "пользователь",
-            "speaker",
-            "name",
-            "-",
-            "?",
-            # "null"/"none" не добавлены сюда намеренно: они уже
-            # перехватываются отдельной веткой (literal null/None,
-            # issue #1101) ВЫШЕ по коду, до проверки _NOISE_NAMES —
-            # тут они были бы недостижимым (dead) кодом.
-        }
-    )
+    # architecture audit 2026-09-29, ADR-0145: единый набор в rob_box_core.
+    # "null"/"none" перехватываются веткой выше (issue #1101) — в наборе они
+    # безвредны (dead-match), но синхронизируют все три копии.
+    _NOISE_NAMES: frozenset[str] = INVALID_SPEAKER_NAMES
 
     def execute(
         self,

@@ -50,9 +50,10 @@ jobs:
         run: |
           PYTHONPATH=src/rob_box_voice python scripts/lint/dialogue_skip_reasons.py
 
-      # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the five
+      # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the nine
       # active packages (rob_box_voice, rob_box_supervisor, rob_box_harness,
-      # rob_box_mcp_tools, rob_box_quest). Hard gate (no continue-on-error) —
+      # rob_box_mcp_tools, rob_box_quest, rob_box_perception, rob_box_telegram,
+      # rob_box_llm, rob_box_core; see _PACKAGE_ROOTS in cc_budget.py). Hard gate (no continue-on-error) —
       # new code with CC>15 (CC>20 for __init__) must fail the lint. Existing
       # over-limit methods are grandfathered in scripts/lint/cc_budget_baseline.json
       # (refactor cards track their removal).
@@ -81,6 +82,27 @@ jobs:
       - name: CC-budget ref-card guard self-tests
         run: |
           python -m unittest scripts.lint.test_cc_budget_refs -v
+
+      # Self-tests for cc_budget.py itself: ratchet on over-limit methods
+      # (recovered below baseline must refresh it), --update-baseline keeps
+      # _refactor_cards/_legacy_acknowledged, subset runs give no false phantoms.
+      - name: CC-budget guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_cc_budget -v
+
+      # ADR-0145: class-size budget. ADR-0021 bounds only per-method CC, so code
+      # was "extracted" into more private methods of the SAME class (DialogueNode:
+      # 4062 LOC/74 methods on 18.08 -> 9872 LOC/218 methods, WMC 1184). A class is
+      # big if WMC>80 or methods>40; existing big classes are grandfathered in
+      # scripts/lint/class_budget_baseline.json and may only shrink (with a
+      # baseline refresh in the same PR). Hard gate (no continue-on-error).
+      - name: Class-size budget (ADR-0145)
+        run: |
+          python scripts/lint/class_budget.py
+
+      - name: Class-size budget self-tests
+        run: |
+          python -m unittest scripts.lint.test_class_budget -v
 
       # ADR-0021 policy / issue #2118: "seam without consumer" guard — a ROS
       # topic published with no subscriber (or vice versa) anywhere in src/,

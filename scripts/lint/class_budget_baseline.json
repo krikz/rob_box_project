@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "created": "2026-09-29",
+  "base_sha": "65277563c6c7cc77f7f39193a3f1bca9dd6ed3d5",
+  "limits": {
+    "wmc": 80,
+    "methods": 40
+  },
+  "classes": {
+    "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
+      "wmc": 174,
+      "methods": 29
+    },
+    "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {
+      "wmc": 83,
+      "methods": 9
+    },
+    "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:MiniMaxTTSProvider": {
+      "wmc": 132,
+      "methods": 21
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/core/rtttl_library.py:RtttlLibrary": {
+      "wmc": 86,
+      "methods": 15
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
+      "wmc": 171,
+      "methods": 29
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:ComposeMusicTool": {
+      "wmc": 268,
+      "methods": 52
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
+      "wmc": 259,
+      "methods": 60
+    },
+    "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
+      "wmc": 81,
+      "methods": 18
+    },
+    "src/rob_box_perception/rob_box_perception/face_recognition.py:FaceRecognizer": {
+      "wmc": 86,
+      "methods": 15
+    },
+    "src/rob_box_perception/rob_box_perception/face_store.py:FaceStore": {
+      "wmc": 177,
+      "methods": 36
+    },
+    "src/rob_box_quest/rob_box_quest/quest_node.py:QuestBridge": {
+      "wmc": 175,
+      "methods": 59
+    },
+    "src/rob_box_quest/rob_box_quest/quest_node.py:QuestNode": {
+      "wmc": 173,
+      "methods": 36
+    },
+    "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer": {
+      "wmc": 220,
+      "methods": 54
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py:AvatarArbiter": {
+      "wmc": 96,
+      "methods": 34
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
+      "wmc": 321,
+      "methods": 63
+    },
+    "src/rob_box_telegram/rob_box_telegram/supervisor_client.py:SupervisorClient": {
+      "wmc": 133,
+      "methods": 31
+    },
+    "src/rob_box_telegram/rob_box_telegram/telegram_node.py:TelegramNode": {
+      "wmc": 81,
+      "methods": 20
+    },
+    "src/rob_box_voice/rob_box_voice/audio_node.py:AudioNode": {
+      "wmc": 131,
+      "methods": 24
+    },
+    "src/rob_box_voice/rob_box_voice/core/dj_mode.py:DJModeController": {
+      "wmc": 163,
+      "methods": 36
+    },
+    "src/rob_box_voice/rob_box_voice/core/faq_store.py:FAQStore": {
+      "wmc": 91,
+      "methods": 16
+    },
+    "src/rob_box_voice/rob_box_voice/core/voice_memory.py:VoiceMemory": {
+      "wmc": 153,
+      "methods": 31
+    },
+    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
+      "wmc": 1204,
+      "methods": 218
+    },
+    "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
+      "wmc": 137,
+      "methods": 26
+    },
+    "src/rob_box_voice/rob_box_voice/sound_node.py:SoundNode": {
+      "wmc": 88,
+      "methods": 20
+    },
+    "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
+      "wmc": 209,
+      "methods": 38
+    },
+    "src/rob_box_voice/rob_box_voice/stt_node.py:STTNode": {
+      "wmc": 228,
+      "methods": 42
+    },
+    "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
+      "wmc": 721,
+      "methods": 112
+    },
+    "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
+      "wmc": 99,
+      "methods": 27
+    }
+  }
+}

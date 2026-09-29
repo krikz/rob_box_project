@@ -113,6 +113,24 @@ _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
 _UNSET: Any = object()
 
 
+def _notify_music_state(tool: Any) -> None:
+    """Опубликовать /voice/music/state на сервере (issue 989 Fix C).
+
+    architecture audit 2026-09-29, ADR-0145: общее тело для
+    ``_notify_music_state`` в ExecuteMusicCodeTool / ComposeMusicTool /
+    StopMusicTool (методы остаются тонкими делегатами).
+    """
+    if tool.node is None:
+        return
+    publisher = getattr(tool.node, "publish_music_state", None)
+    if publisher is None:
+        return
+    try:
+        publisher()
+    except Exception as exc:  # noqa: BLE001
+        tool.log_warning(f"Не удалось опубликовать music_state: {exc}")
+
+
 def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
     """``locals()`` внутри ``execute(...)`` → только реально переданные ручки.
 
@@ -2777,16 +2795,8 @@ class ExecuteMusicCodeTool(MCPTool):
         return MCPToolResult(success=False, error=result["error"])
 
     def _notify_music_state(self) -> None:
-        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
-        if self.node is None:
-            return
-        publisher = getattr(self.node, "publish_music_state", None)
-        if publisher is None:
-            return
-        try:
-            publisher()
-        except Exception as exc:  # noqa: BLE001
-            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+        """Опубликовать /voice/music/state (issue 989 Fix C)."""
+        _notify_music_state(self)
 
 
 #: Параметры аранжировки, общие для compose_music и preview_arrangement
@@ -5079,15 +5089,7 @@ class ComposeMusicTool(MCPTool):
 
     def _notify_music_state(self) -> None:
         """Опубликовать /voice/music/state (issue 989 Fix C)."""
-        if self.node is None:
-            return
-        publisher = getattr(self.node, "publish_music_state", None)
-        if publisher is None:
-            return
-        try:
-            publisher()
-        except Exception as exc:  # noqa: BLE001
-            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+        _notify_music_state(self)
 
 
 class PreviewArrangementTool(MCPTool):
@@ -5564,16 +5566,8 @@ class StopMusicTool(MCPTool):
         return MCPToolResult(success=False, error=result["error"])
 
     def _notify_music_state(self) -> None:
-        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
-        if self.node is None:
-            return
-        publisher = getattr(self.node, "publish_music_state", None)
-        if publisher is None:
-            return
-        try:
-            publisher()
-        except Exception as exc:  # noqa: BLE001
-            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+        """Опубликовать /voice/music/state (issue 989 Fix C)."""
+        _notify_music_state(self)
 
     def _notify_sound_stop(self) -> None:
         """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392).

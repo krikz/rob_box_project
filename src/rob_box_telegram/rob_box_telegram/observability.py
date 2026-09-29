@@ -24,6 +24,8 @@ import logging
 import threading
 from typing import Any, Dict, TYPE_CHECKING
 
+from rob_box_core.metrics_server import start_metrics_http_server
+
 if TYPE_CHECKING:
     from prometheus_client import Counter as _Counter  # noqa: F401
 
@@ -67,21 +69,14 @@ def start_metrics_server(port: int) -> bool:
     """
     if not is_metrics_enabled():
         return False
-    with _http_server_lock:
-        if port in _http_server_started:
-            return True
-        try:
-            start_http_server(port)  # type: ignore[misc]
-        except OSError as exc:
-            _log.warning(
-                "prometheus_client.start_http_server(%d) failed: %s",
-                port,
-                exc,
-            )
-            return False
-        _http_server_started.add(port)
-        _log.info("Prometheus metrics server started on :%d/metrics", port)
-        return True
+    # architecture audit 2026-09-29, ADR-0145: тело — в rob_box_core.metrics_server.
+    return start_metrics_http_server(
+        port,
+        start_http_server=start_http_server,  # type: ignore[arg-type]
+        started=_http_server_started,
+        lock=_http_server_lock,
+        log=_log,
+    )
 
 
 def _get_counter(name: str, documentation: str, labelnames: tuple[str, ...]) -> Any:

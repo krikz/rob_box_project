@@ -21,11 +21,10 @@ from __future__ import annotations
 
 from typing import Mapping, Optional
 
-#: Speaker names that are not real names — resemblyzer may store junk
-#: values like "Null", "null", "None" in the DB (live 12.08 fix).
-INVALID_SPEAKER_NAMES: frozenset = frozenset(
-    {"null", "none", "undefined", "unknown", ""}
-)
+# architecture audit 2026-09-29, ADR-0145: единый набор в rob_box_core
+# (раньше здесь была своя, разошедшаяся копия). Имя оставлено как
+# re-export для существующих импортов.
+from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES  # noqa: F401
 
 EMOTION_TO_ANIMATION: dict = {
     "happy": "happy",

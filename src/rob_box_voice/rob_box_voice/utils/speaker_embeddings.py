@@ -62,6 +62,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES
+
 logger = logging.getLogger(__name__)
 
 # ── Tuning constants ─────────────────────────────────────────────────────────
@@ -75,32 +77,8 @@ IDENTIFY_THRESHOLD: float = 0.72    # cosine similarity to accept a match
 # если MCP-тул пропустит мусор (или кто-то вызовет db.register() в обход
 # MCP, из тестов/ноутбука/миграционного скрипта), в /data/speakers.db
 # не появится строки ``name='Зовут'``.
-_INVALID_SPEAKER_NAMES: frozenset = frozenset(
-    {
-        # — из dialogue.RegisterSpeakerTool._NOISE_NAMES (issue #1101) —
-        "зовут",
-        "имя",
-        "меня",
-        "зовут-это",
-        "зовут меня",
-        "это",
-        "называю",
-        "зовут-меня",
-        "моё",
-        "мое",
-        "моё имя",
-        "мое имя",
-        "имя мне",
-        "имя моё",
-        "имя мое",
-        # — из core.dialogue_helpers.INVALID_SPEAKER_NAMES (#1077/#1101) —
-        "null",
-        "none",
-        "undefined",
-        "unknown",
-        "",
-    }
-)
+# architecture audit 2026-09-29, ADR-0145: единый набор в rob_box_core.
+_INVALID_SPEAKER_NAMES: frozenset = INVALID_SPEAKER_NAMES
 # Issue #2348 / AC3 — короткие имена («Я», «О») и однобуквенные опечатки
 # не несут идентификационной ценности и плодят ложные дубли. Граница 2
 # символа — тест в dialogue.py использует тот же лимит для

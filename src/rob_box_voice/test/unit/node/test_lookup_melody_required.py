@@ -511,14 +511,22 @@ class TestHandleResultCCBaselineMatches:
             f"{dialogue_module.__file__}"
         )
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        # Source of truth: exemptions (since ADR-0021-r1 _handle_result lives in
+        # exemptions + _refactor_cards). Fallback to _legacy_acknowledged only
+        # if it is not found there.
         expected_cc = None
-        for entry in baseline.get("_legacy_acknowledged", []):
-            if (
-                entry.get("path", "").endswith("dialogue_node.py")
-                and entry.get("method") == "DialogueNode._handle_result"
-            ):
-                expected_cc = int(entry["cc"])
+        for path_key, methods in baseline.get("exemptions", {}).items():
+            if path_key.endswith("dialogue_node.py") and "DialogueNode._handle_result" in methods:
+                expected_cc = int(methods["DialogueNode._handle_result"])
                 break
+        if expected_cc is None:
+            for entry in baseline.get("_legacy_acknowledged", []):
+                if (
+                    entry.get("path", "").endswith("dialogue_node.py")
+                    and entry.get("method") == "DialogueNode._handle_result"
+                ):
+                    expected_cc = int(entry["cc"])
+                    break
         assert expected_cc is not None, (
             "_handle_result baseline не найден в cc_budget_baseline.json"
         )
@@ -569,7 +577,7 @@ class TestHandleResultCCBaselineMatches:
         assert actual_cc == expected_cc, (
             f"DialogueNode._handle_result CC drift: actual={actual_cc}, "
             f"baseline={expected_cc}. Update cc_budget_baseline.json "
-            f"(exemptions и _legacy_acknowledged) accordingly."
+            f"(exemptions) accordingly."
         )
 
 
