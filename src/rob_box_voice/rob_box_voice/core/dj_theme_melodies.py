@@ -35,6 +35,18 @@ Final Fantasy, но не у Bubble Bobble). Пул для тега ``game`` со
 строки темы, БЕЗ регулярных выражений (мораторий #3132 действует и на
 ``dj_mode``/эту его соседку). Первое совпадение по порядку правил
 побеждает.
+
+Уточнение координатора (PR-1, #3182): в архиве имя ``supermar`` — НЕ
+узнаваемая overworld-тема, а тот же (не культовый) рисунок, что и
+``supermar_6`` (Super Mario World) — оба начинаются ``a,8f.,16c,16d...``,
+не с культового «ми-ми-ми-до-ми-соль».
+Узнаваемый мотив — ``supermar_4`` (и ``supermar_2``): их RTTTL реально
+начинается ``e,e,...,c,e,...,g...`` (E-E-_-E-_-C-E-_-G — тот самый
+культовый рифф). Проверено по НАЧАЛУ RTTTL каждого id пула ``game``, а не
+по имени; заодно нашлась пустая мелодия ``dizzy`` (``Dizzy:d=32,o=5,
+b=300:`` — ноты после двоеточия отсутствуют, архивный брак) — заменена на
+``mortalko`` (валидный RTTTL, тоже без тега ``game`` в архиве — см.
+:mod:`rob_box_mcp_tools`-тест).
 """
 
 from __future__ import annotations
@@ -74,9 +86,9 @@ MELODY_POOLS: Dict[str, Tuple[str, ...]] = {
     # Денди/NES-сет (issue #3181 живой прогон 29.09) — узнаваемые темы
     # сначала: платформеры/аркады, потом менее известные.
     "game": (
-        "contra", "supermar", "tetris", "zelda", "doubledr", "teenagem",
+        "contra", "supermar_4", "tetris", "zelda", "doubledr", "teenagem",
         "donkeyko", "pacman", "mariobro", "circus", "commando",
-        "bubblebo", "dizzy", "arkanoid",
+        "bubblebo", "mortalko", "arkanoid",
     ),
     "movie": (
         "batman", "titanic", "superman", "terminat", "ghostbus",
