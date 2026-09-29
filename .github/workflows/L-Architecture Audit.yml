@@ -68,7 +68,7 @@ jobs:
       CAPTURE_VISION: ${{ inputs.capture_vision }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
@@ -99,7 +99,7 @@ jobs:
           echo "Vision Pi: $RUNTIME_USER@$VISION_HOST (capture_vision=$CAPTURE_VISION)"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -176,7 +176,7 @@ jobs:
       # continue); if-no-files-found only fires when nothing matches at all. Every
       # other file is produced by an earlier step that fails the job if it cannot.
       - name: Upload local architecture evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: architecture-local-runtime
           path: |
