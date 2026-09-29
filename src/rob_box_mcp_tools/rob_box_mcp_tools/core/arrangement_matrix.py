@@ -35,7 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import gcd
 from types import MappingProxyType
-from typing import Dict, List, Mapping, Tuple, Union
+from typing import Dict, List, Mapping, Sequence, Tuple, Union
 
 QUARTERS = 4
 FULL = 15
@@ -203,6 +203,33 @@ class ArrangementMatrix:
         if len(segments) == 1:
             return on_text if segments[0][0] == 1 else "0"
         values = ", ".join(on_text if state else "0" for state, _ in segments)
+        durations = ", ".join(_fmt_num(beats) for _, beats in segments)
+        return f"var([{values}], [{durations}])"
+
+    def gate_var_blocks(self, lane: str, levels: Sequence[float], digits: int = 3) -> str:
+        """Гейт слоя с уровнем ПО БЛОКАМ (issue #3154): ``levels[i]`` — уровень блока i.
+
+        Как :meth:`gate_var`, но звучащая четверть блока берёт уровень своего
+        блока; соседние отрезки с одинаковым значением склеены. Все блоки на
+        одном уровне → результат побайтно равен ``gate_var(lane, level)``.
+        """
+        masks = self._lane(lane)
+        if len(levels) != len(masks):
+            raise ValueError(f"Уровней {len(levels)}, а блоков в слое '{lane}' {len(masks)}")
+        if any(level < 0 for level in levels):
+            raise ValueError(f"Уровень гейта не может быть отрицательным: {list(levels)}")
+        segments: List[List] = []
+        for mask, level in zip(masks, levels):
+            text = _fmt_num(level, digits)
+            for on in cell_quarters(mask):
+                value = text if on else "0"
+                if segments and segments[-1][0] == value:
+                    segments[-1][1] += self.quarter_beats
+                else:
+                    segments.append([value, self.quarter_beats])
+        if len(segments) == 1:
+            return segments[0][0]
+        values = ", ".join(value for value, _ in segments)
         durations = ", ".join(_fmt_num(beats) for _, beats in segments)
         return f"var([{values}], [{durations}])"
 

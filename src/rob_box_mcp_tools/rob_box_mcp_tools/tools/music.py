@@ -4386,10 +4386,12 @@ class ComposeMusicTool(MCPTool):
             f"Композиция: style=club{', transition=fade' if fade else ''}, каркас seed={seed}: "
             + ", ".join(f"{k}={v}" for k, v in kit.items())
         )
+        # Issue #3154: fade из тишины (превью DJ-сета) стартует сразу, фейда нет.
+        fade_tail = fade_seconds(bpm) if fade and self._clock_has_players() else 0.0
         result = self._execute_with_clock_phase(code, form_beats)
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
-        duration_s = (form_beats - entry) * 60.0 / float(bpm) + (fade_seconds(bpm) if fade else 0.0)
+        duration_s = (form_beats - entry) * 60.0 / float(bpm) + fade_tail
         if repeat:
             self._manager.clear_form_deadline()
         else:
@@ -4486,6 +4488,21 @@ class ComposeMusicTool(MCPTool):
             f" Переход cut вместо fade: играющий трек сам кончается через {remaining:.0f} с, "
             f"а фейд занял бы {need:.0f} с — новый трек стартовал сразу, без тишины."
         )
+
+    def _clock_has_players(self) -> bool:
+        """Играет ли что-то сейчас (``Clock.playing`` Renardo) — до ``exec`` трека.
+
+        Issue #3154: ``wrap_with_fade`` при пустом ``Clock.playing`` запускает
+        трек сразу, без фейда, — тогда длина фейда в длину формы не входит.
+        Клок недоступен — считаем, что играет (как было до #3154).
+        """
+        playing = getattr(self._clock_or_none(), "playing", None)
+        if playing is None:
+            return True
+        try:
+            return len(playing) > 0
+        except TypeError:
+            return True
 
     def _clock_or_none(self) -> Any:
         getter = getattr(self._manager, "renardo_clock", None)

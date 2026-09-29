@@ -5253,6 +5253,33 @@ class TestComposeMusicToolClubStyle:
         assert param.enum == ["cut", "fade"]
         assert param.required is False
 
+    # ── Issue #3154: превью DJ-сета из тишины входит с блока полной бочки ─
+
+    @pytest.mark.parametrize("playing, with_tail", [([], False), ([object()], True)])
+    def test_preview_fade_from_silence_enters_at_kick_block(self, mock_node, monkeypatch, playing, with_tail):
+        """Роутер шлёт превью с ``transition="fade"``: с выровненным клоком трек
+        входит с доли :func:`club_entry_beats` (не с интро); из тишины фейда
+        нет — длина фейда в длину первого прохода не входит."""
+        from types import SimpleNamespace
+
+        from rob_box_mcp_tools.core.club_arranger import club_entry_beats, club_kit
+        from rob_box_mcp_tools.core.club_transition import fade_seconds
+
+        monkeypatch.setenv("ROB_BOX_MUSIC_ALIGN_CLOCK", "1")
+        seed = next(s for s in range(1, 50) if club_kit(s)["template"] == "long_build_32")
+        tool, mgr = self._make_tool(mock_node)
+        mgr._renardo_context["Clock"] = SimpleNamespace(playing=playing, bpm=124)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=seed, root="D", bpm=124, repeat=True, transition="fade")
+        assert result.success is True, result.error
+        code = fake_exec.call_args[0][0]
+        entry = club_entry_beats("long_build_32")
+        assert entry == 32
+        assert f"Clock.set_time((Clock.now() // 128 + 1) * 128 + {entry})" in code
+        assert "Clock.now_flag = True" in code
+        tail = fade_seconds(124) if with_tail else 0.0
+        assert result.data["duration_seconds"] == pytest.approx((128 - entry) * 60 / 124 + tail, abs=0.1)
+
 
 # ---------------------------------------------------------------------------
 # Issue #3166 — teardown fade-перехода и колбэк «трек стартовал»

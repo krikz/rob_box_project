@@ -62,6 +62,8 @@ def test_silence_starts_preview_then_dj_mode() -> None:
     assert compose.arguments["bpm"] == 124  # темп сета по умолчанию, #3113
     assert compose.arguments["seed"] >= 1  # seed=0 — эталон, не превью
     assert compose.arguments["root"] in CLUB_ROOTS
+    # Issue #3154: превью входит как DJ-переход — с блока полной бочки.
+    assert compose.arguments["transition"] == "fade"
     assert dj.arguments == {
         "enabled": True,
         "persona": "диджей Снупдог",

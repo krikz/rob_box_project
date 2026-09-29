@@ -299,7 +299,15 @@ class DJPreview:
     root: str
 
     def compose_call(self) -> MediaToolCall:
-        """``compose_music`` превью: зациклен, в темпе сета по умолчанию."""
+        """``compose_music`` превью: зациклен, в темпе сета по умолчанию.
+
+        ``transition="fade"`` (issue #3154): превью — трек #1 сета и входит
+        так же, как любой DJ-переход (#3166): с первого блока полной бочки
+        шаблона, а не с тихого интро. Из тишины ``wrap_with_fade`` фейда не
+        делает — трек стартует сразу (``core/club_transition``). Живой
+        прогон 29.09: превью ``long_build_32`` из тишины начиналось одной
+        нотой пэда и 3,4 с цифровой тишины.
+        """
         return MediaToolCall(
             "compose_music",
             {
@@ -308,6 +316,7 @@ class DJPreview:
                 "seed": self.seed,
                 "root": self.root,
                 "bpm": DJ_SET_DEFAULT_BPM,
+                "transition": "fade",
             },
             fail_text=DJ_PREVIEW_FAIL_TEXT,
         )

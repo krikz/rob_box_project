@@ -29,9 +29,13 @@ p3        pad         трезвучие на аккорд (2 такта), MIDI 
 
 Две громкостные оси, каждая на своём ключе (оба уже звучат вживую):
 
-* **секции** — ``amp=<ArrangementMatrix.gate_var(слой, уровень)>``
+* **секции** — ``amp=<ArrangementMatrix.gate_var_blocks(слой, уровни)>``
   (``amp=var([...], [...])``; санитайзер ``amp=var`` не капает, поэтому
-  уровни здесь сами ≤ :data:`MAX_LAYER_AMP`);
+  уровни здесь сами ≤ :data:`MAX_LAYER_AMP`). Уровень слоя по блокам — не
+  :data:`LAYER_LEVELS` как есть, а калибровка громкости по модели
+  (:mod:`core.club_loudness`, issue #3154): основной блок любого каркаса на
+  одном уровне (уровень громкой секции classic), тихие секции без бочки не
+  тише основного больше чем на ~8–10 dB;
 * **пампинг** — ``amplify=[16 значений]`` на плеерах с ``dur=1/4``: просадка
   1:3 ровно на шагах бочки. В renardo_lib ``Players.py`` (метод
   ``send_osc_message`` → ``packet["amp"] = packet["amp"] *
@@ -58,9 +62,11 @@ SamplePlayer``; ``sclang_file_synthdefs.py``: ``play.defaults["dur"]=.5``).
 from __future__ import annotations
 
 import random
+from functools import lru_cache
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
+from .club_loudness import calibrate_levels
 from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude, clock_entry_prelude
 
 #: Паттерны бочки: 16 шагов = такт 16-ми (при ``dur=1/4``).
@@ -505,14 +511,39 @@ def _pick_progression(rng: random.Random, name: Optional[str]) -> Tuple[str, Tup
     raise ValueError(f"Неизвестная прогрессия {name!r} (допустимо: {', '.join(n for n, _ in PROGRESSIONS)})")
 
 
-def _layer_level(lane: str, levels: Optional[Mapping[str, float]]) -> float:
-    """Уровень гейта слоя: LAYER_LEVELS × множитель 0..1 (``None`` — как есть)."""
+def _level_factor(lane: str, levels: Optional[Mapping[str, float]]) -> float:
+    """Множитель уровня слоя 0..1 из ручки ``levels`` (``None`` — 1)."""
     if not levels or lane not in levels:
-        return LAYER_LEVELS[lane]
+        return 1.0
     factor = levels[lane]
     if isinstance(factor, bool) or not isinstance(factor, (int, float)) or not 0.0 <= factor <= 1.0:
         raise ValueError(f"Множитель уровня {lane}={factor!r} вне 0..1")
-    return LAYER_LEVELS[lane] * float(factor)
+    return float(factor)
+
+
+@lru_cache(maxsize=512)
+def _calibrated(kit_items: Tuple[Tuple[str, str], ...]) -> Dict[str, Tuple[float, ...]]:
+    """Кэш калибровки: она зависит только от каркаса (шаблон + варианты), ~20 мс."""
+    kit = dict(kit_items)
+    levels = calibrate_levels(build_matrix(kit["template"]), kit, LAYER_LEVELS, MAX_LAYER_AMP)
+    return {lane: tuple(values) for lane, values in levels.items()}
+
+
+def calibrated_gates(
+    matrix: ArrangementMatrix, kit: Mapping[str, str], levels: Optional[Mapping[str, float]] = None,
+) -> Dict[str, str]:
+    """``amp=`` каждого слоя: калибровка громкости по модели (issue #3154) × ``levels``.
+
+    :func:`core.club_loudness.calibrate_levels` даёт уровень каждого слоя
+    по блокам (основной блок каркаса на уровне стиля, тихие секции подняты
+    слоями фактуры), ручка ``levels`` умножает поверх (0..1 — только тише).
+    """
+    block_levels = _calibrated(tuple(sorted(kit.items())))
+    gates = {}
+    for lane in LANE_SLOTS:
+        factor = _level_factor(lane, levels)
+        gates[lane] = matrix.gate_var_blocks(lane, [level * factor for level in block_levels[lane]])
+    return gates
 
 
 def render_club_kit(
@@ -549,7 +580,7 @@ def render_club_kit(
     tonic = VALID_ROOTS.index(root)
     kick_pattern = KICK_PATTERNS[kick]
     pump = _fmt_list(pump_weights(kick_pattern))
-    gate = {lane: matrix.gate_var(lane, _layer_level(lane, levels)) for lane in LANE_SLOTS}
+    gate = calibrated_gates(matrix, kit, levels)
 
     bass = " + ".join(
         f"[({n}, {n + 12})] * {CHORD_STEPS}" for n in (bass_root(tonic, c) for c in chords)
@@ -613,6 +644,7 @@ __all__ = [
     "LAYER_LEVELS",
     "PROGRESSIONS",
     "build_matrix",
+    "calibrated_gates",
     "REFERENCE_KIT",
     "ROLE_SYNTHS",
     "chord_pentatonic",
