@@ -10,6 +10,7 @@ from rob_box_mcp_tools.core.rtttl_library import (
     RtttlLibrary,
     covers_tokens,
     display_title,
+    human_track_title,
     match_info,
 )
 
@@ -650,3 +651,45 @@ def test_match_info_reports_words_the_search_never_saw(tmp_path):
     assert mi["matched"] == ["fur", "elise"]
     assert mi["unmatched"] == []
     assert mi["ignored"] == []  # алиас целиком стал английским запросом
+
+
+def test_human_track_title_uses_the_ru_alias_when_the_record_matches_it(tmp_path):
+    """Issue #3178: current_track_name/<music_state> говорят «Марио», не
+    архивный «Super Mario» — если запись реально резолвится тем же алиасом,
+    что робот знает по-русски."""
+    lib = _make_lib(tmp_path)
+    rec = lib.get("mario")
+    assert human_track_title(lib, rec) == "Марио"
+
+
+def test_human_track_title_falls_back_to_title_without_a_ru_alias(tmp_path):
+    """Запись, которую ни один канонический алиас не резолвит, — без
+    русского имени, ``human_track_title`` отдаёт архивный ``title``."""
+    lib = _make_lib(tmp_path)
+    rec = {"name": "not_aliased_key", "title": "Some Archive Title"}
+    assert lib.ru_alias_for("not_aliased_key") is None
+    assert human_track_title(lib, rec) == "Some Archive Title"
+
+
+def test_human_track_title_strips_technical_suffixes(tmp_path):
+    """«Hall Of The Mountain King (Alton Towers Theme) 2» — живой прогон
+    29.09.2026, issue #3178: номер повтора записи и скобки — не то, что
+    робот произносит вслух."""
+    lib = _make_lib(tmp_path)
+    rec = {"name": "hallofth_2", "title": "Hall Of The Mountain King (Alton Towers Theme) 2"}
+    assert human_track_title(lib, rec) == "Hall Of The Mountain King"
+
+
+def test_ru_alias_for_is_cached(tmp_path):
+    lib = _make_lib(tmp_path)
+    first = lib.ru_alias_for("mario")
+    assert first == "марио"
+    assert lib._ru_alias_cache["mario"] == "марио"  # noqa: SLF001 — тестовая проверка кэша
+    assert lib.ru_alias_for("mario") == first
+
+
+def test_human_track_title_with_real_archive_uses_fur_elise_alias(tmp_path):
+    lib = RtttlLibrary(db_path=str(tmp_path / "real4.db"))
+    rec = lib.get("fur elise")
+    assert rec is not None and rec["name"] == "furelise"
+    assert human_track_title(lib, rec) == "К элизе"
