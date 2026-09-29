@@ -355,10 +355,17 @@ def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> D
       запроса, которая покрылась. Частый токен вроде «theme» весит около
       нуля и почти не двигает coverage сам по себе — вес считается по
       корпусу архива, а не по списку слов.
+    - ``ignored`` — issue #3176: слова запроса, которые до поиска не дошли
+      вовсе: кириллица, не ставшая английским запросом через алиасы
+      (:func:`_tokens` её отбрасывает). «гимн германии» → алиас «гимн» →
+      «soviet anthem», а «германии» поиск не видел — ``matched`` при этом
+      полный, и без ``ignored`` сверка выглядела бы идеальной.
     """
-    tokens = _tokens(_normalize(query))
+    normalized = _normalize(query)
+    ignored = _ignored_words(normalized)
+    tokens = _tokens(normalized)
     if not tokens:
-        return {"matched": [], "unmatched": [], "coverage": 0.0}
+        return {"matched": [], "unmatched": [], "coverage": 0.0, "ignored": ignored}
     try:
         weights = library.token_weights()
     except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
@@ -382,7 +389,20 @@ def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> D
         else:
             unmatched.append(token)
     coverage = (matched_weight / total_weight) if total_weight > 0 else 0.0
-    return {"matched": matched, "unmatched": unmatched, "coverage": round(coverage, 3)}
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "coverage": round(coverage, 3),
+        "ignored": ignored,
+    }
+
+
+def _ignored_words(normalized: str) -> List[str]:
+    """Слова нормализованного запроса с кириллицей — поиск их не видит."""
+    return [
+        word for word in normalized.split()
+        if any("а" <= ch <= "я" or ch == "ё" for ch in word)
+    ]
 
 
 def _default_archive() -> Union[Path, Any]:

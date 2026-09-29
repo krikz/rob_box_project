@@ -489,8 +489,35 @@ class SttAdmission:
         ``new_context`` from the last PASS wins (so the dialogue node
         adapter sees the fully-mutated text).
         """
+        return self._run(self.steps, ctx, host)
+
+    def resume_after(
+        self,
+        step_name: str,
+        ctx: SttContext,
+        host: SttAdmissionHost,
+    ) -> SttOutcome:
+        """Досчитать шаги ПОСЛЕ ``step_name`` (issue #3176).
+
+        :class:`MediaCommandStep` забирает заказ по имени сразу, а есть ли
+        такая мелодия, узнаёт асинхронно (``lookup_melody``). Не нашлась —
+        реплика продолжает приём с того же места (backlog, barge-in,
+        FSM + SFX), как если бы шаг сказал ``PASS``. Шага с таким именем
+        нет — ``ValueError`` (ошибка вызывающего, не реплики).
+        """
+        names = [getattr(step, "name", "") for step in self.steps]
+        if step_name not in names:
+            raise ValueError(f"SttAdmission: no step named {step_name!r}")
+        return self._run(self.steps[names.index(step_name) + 1:], ctx, host)
+
+    def _run(
+        self,
+        steps: Sequence[SttStep],
+        ctx: SttContext,
+        host: SttAdmissionHost,
+    ) -> SttOutcome:
         current = ctx
-        for step in self.steps:
+        for step in steps:
             outcome = step.apply(current, host)
             if outcome.kind is SttOutcomeKind.PASS:
                 if outcome.new_context is not None:

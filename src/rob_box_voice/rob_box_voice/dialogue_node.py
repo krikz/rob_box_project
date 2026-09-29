@@ -20,6 +20,7 @@ import asyncio
 import concurrent.futures
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+import functools
 import json
 import logging
 import math
@@ -31,7 +32,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -104,6 +105,7 @@ from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
     DefaultSttAdmission,
+    MediaCommandStep,
     SttAdmission,
     SttAdmissionHost,
     SttContext,
@@ -208,7 +210,19 @@ from rob_box_voice.core.identity_ack import (
     identity_ack_plan,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
-from rob_box_voice.core.media_router import MediaPlan, MediaRouter, MediaState
+from rob_box_voice.core.media_router import (
+    MediaPlan,
+    MediaRouter,
+    MediaState,
+    MediaToolCall,
+)
+from rob_box_voice.core.named_play import (
+    COMPOSE_TOOL,
+    NamedPlayStatus,
+    play_fail_text,
+    play_ok_text,
+    run_named_play,
+)
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
 from rob_box_voice.core.turn_speech import (
@@ -3011,22 +3025,55 @@ class DialogueNode(Node):
             skip_counter=self._llm_skipped_counter,
         )
         host = _DialogueSttHost(self)
+        dispatch = {
+            "was_idle": was_idle,
+            "speaker_tag": speaker_tag,
+            "speaker_duration_s": speaker_duration_s,
+            "from_tg": bool(tg_chat_id is not None),
+            "backlog_pending": backlog_pending,
+            "utterance_id": utterance_id,
+        }
+        # Issue #3176 — заказ по имени, которого нет в базе мелодий, роутер
+        # возвращает в приём с того же места (после MediaCommandStep).
+        host.media_miss = functools.partial(
+            self._resume_stt_after_media, ctx, host, dispatch
+        )
         outcome = self._stt_admission.evaluate(ctx, host)
+        self._finish_stt_admission(outcome, text, dispatch)
+
+    def _finish_stt_admission(
+        self, outcome: SttOutcome, text: str, dispatch: Dict[str, Any]
+    ) -> None:
+        """Хвост приёма: не PASS — сводка пропусков, PASS — ход LLM."""
         if outcome.kind is not SttOutcomeKind.PASS:
             self._maybe_log_skip_summary()
             return
         # PASS — dispatch the cleaned phrase to LLM.
         new_ctx = outcome.new_context
         clean = new_ctx.text if new_ctx is not None else text
-        self._dispatch_cleaned(
-            clean=clean,
-            was_idle=was_idle,
-            speaker_tag=speaker_tag,
-            speaker_duration_s=speaker_duration_s,
-            from_tg=bool(tg_chat_id is not None),
-            backlog_pending=backlog_pending,
-            utterance_id=utterance_id,
+        self._dispatch_cleaned(clean=clean, **dispatch)
+
+    def _resume_stt_after_media(
+        self,
+        ctx: SttContext,
+        host: "_DialogueSttHost",
+        dispatch: Dict[str, Any],
+        clean: str,
+    ) -> None:
+        """Issue #3176 — заказ по имени не нашёлся: реплика идёт в LLM.
+
+        Досчитывает шаги приёма после :class:`MediaCommandStep` (backlog,
+        barge-in, FSM + «думаю»-SFX) и отдаёт реплику ходу LLM так же, как
+        это сделал бы ``_on_stt`` без роутера. Зовётся из loop'а плана
+        роутера — как и синтетические ретраи гуардов (``_dispatch_turn``).
+        """
+        self.get_logger().info(
+            f"🎛️ [media-router] play_named: мимо базы — реплика в LLM: {clean[:60]!r}"
         )
+        outcome = self._stt_admission.resume_after(
+            MediaCommandStep.name, ctx.with_text(clean), host
+        )
+        self._finish_stt_admission(outcome, clean, dispatch)
 
     # -- STT admission helpers -------------------------------------------
     # These three helpers keep ``_on_stt`` at CC≤15 (ADR-0021 R1). The
@@ -7373,12 +7420,16 @@ class DialogueNode(Node):
             ),
         )
 
-    def _route_media_command(self, text: str) -> bool:
+    def _route_media_command(self, text: str, on_miss: Any = None) -> bool:
         """Медиакоманду исполняет код, до LLM. ``True`` — в LLM не идёт.
 
         MCP-тулы вызываются тем же исполнителем, что и у LLM-хода
         (``SchedulerToolExecutor`` → ``ROSMCPToolProvider`` →
         ``LLMToolCallAdapter`` → подписанный ``/mcp/execute``).
+
+        ``on_miss`` — issue #3176: куда вернуть реплику, если заказ по имени
+        не нашёлся в базе мелодий (``callable(text)``). Без него заказ по
+        имени роутер не берёт — реплика сразу идёт в LLM, как раньше.
         """
         router = getattr(self, "_media_router", None)
         if router is None:
@@ -7387,6 +7438,8 @@ class DialogueNode(Node):
         if plan is None:
             return False
         executor = getattr(self, "_scheduler_executor", None)
+        if plan.play_name:
+            return self._start_play_named(plan, executor, text, on_miss)
         if plan.tool_calls and executor is None:
             self.get_logger().warning(
                 f"🎛️ [media-router] {plan.command.intent.value}: MCP-тулов нет "
@@ -7405,6 +7458,91 @@ class DialogueNode(Node):
             self._execute_media_plan(plan, executor, text), self._loop
         )
         return plan.handled
+
+    def _start_play_named(
+        self, plan: MediaPlan, executor: Any, text: str, on_miss: Any
+    ) -> bool:
+        """Issue #3176 — заказ по имени: забрать реплику и искать мелодию.
+
+        Реплика забирается сразу (``True``), а есть ли мелодия, выясняет
+        :meth:`_execute_play_named` в loop'е: не нашлась — ``on_miss``
+        возвращает её в приём, и отвечает LLM. Некуда вернуть (нет
+        ``on_miss``) или нечем искать (нет MCP-исполнителя) — реплику не
+        забираем вовсе.
+        """
+        if executor is None or not callable(on_miss):
+            self.get_logger().warning(
+                "🎛️ [media-router] play_named: нет MCP-исполнителя или пути "
+                "назад в приём — отдаю реплику LLM"
+            )
+            return False
+        self.get_logger().info(
+            f"🎛️ [media-router] intent=play_named name={plan.play_name!r} "
+            f"provider={self._media_router.provider_name} text={text[:60]!r}"
+        )
+        asyncio.run_coroutine_threadsafe(
+            self._execute_play_named(plan, executor, text, on_miss), self._loop
+        )
+        return True
+
+    async def _execute_play_named(
+        self, plan: MediaPlan, executor: Any, text: str, on_miss: Any
+    ) -> None:
+        """Issue #3176 — ``lookup_melody`` → ``compose_music`` или LLM.
+
+        * Нашлась целиком и заиграла — отменить идущий ход LLM (заказ его
+          заменяет), учесть трек (DJ-сет, cleanup) и сказать «Ставлю «X»».
+        * Не нашлась / совпала не целиком — ``on_miss(text)``: реплика
+          идёт в LLM, роутер НИЧЕГО не говорит (иначе двойной ответ).
+        * Нашлась, но не заиграла — честная фраза, без LLM.
+        """
+
+        async def _call(name: str, args: Dict[str, Any]) -> Tuple[bool, str]:
+            return await self._execute_media_tool_result(
+                executor, MediaToolCall(name, args)
+            )
+
+        begin_turn = getattr(executor, "begin_turn", None)
+        if callable(begin_turn):
+            # Лимит «один трек за ход» (#2859) снимается только на границе
+            # хода LLM: трек прошлого хода иначе отказал бы заказу.
+            begin_turn()
+        outcome = await run_named_play(_call, plan.play_name)
+        self.get_logger().info(
+            f"🎛️ [media-router] play_named {plan.play_name!r}: "
+            f"{outcome.status.value} {outcome.reason}".rstrip()
+        )
+        if outcome.status is NamedPlayStatus.MISS:
+            on_miss(text)
+            return
+        self._llm_skipped_counter["media_command"] += 1
+        self._cancel_run("media command play_named (issue 3176)", stop_tts=True)
+        title = outcome.hit.title if outcome.hit else plan.play_name
+        if outcome.status is NamedPlayStatus.PLAYED:
+            self._note_router_track_started()
+            phrase = play_ok_text(title)
+        else:
+            phrase = play_fail_text(title)
+        self._record_media_turn(plan, text, phrase, list(outcome.tools_done))
+        self._speak_direct(phrase)
+
+    def _note_router_track_started(self) -> None:
+        """Issue #3176 — трек запустил роутер, а не ход LLM: учесть так же.
+
+        * DJ-сет: ``note_turn_tools`` — тот же учёт, что после хода LLM с
+          ``compose_music`` без ``set_dj_mode``: заказ гостя
+          (``DJModeController._hold_for_user_track``) — сет не гасится,
+          переход ждёт конца формы заказа и не расходует трек плана;
+          название попадёт в ``played_names`` из ``/voice/music/form``.
+        * Cleanup: трек живёт до stop/конца формы, как у хода LLM с
+          музыкальным тулом (``_schedule_music_cleanup``) — отложенный
+          cleanup прошлого хода не должен погасить заказ после фразы.
+        """
+        dj = getattr(self, "_dj", None)
+        if dj is not None:
+            dj.note_turn_tools((COMPOSE_TOOL,), MUSIC_STARTING_TOOLS)
+        self._pending_music_cleanup = False
+        self._track_mode_music_active = True
 
     def _apply_media_plan_side_effects(self, plan: MediaPlan) -> None:
         """Синхронная часть плана: счётчик, отмена хода, DJ off при стопе."""
@@ -7545,6 +7683,13 @@ class DialogueNode(Node):
         )
 
     async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
+        ok, _content = await self._execute_media_tool_result(executor, call)
+        return ok
+
+    async def _execute_media_tool_result(
+        self, executor: Any, call: Any
+    ) -> Tuple[bool, str]:
+        """Вызвать MCP-тул роутера: ``(успех, текст результата)``."""
         tool_call = ToolCall(
             id=f"media-router-{uuid.uuid4().hex[:8]}",
             name=call.name,
@@ -7556,13 +7701,14 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"🎛️ [media-router] {call.name}({call.arguments}) упал: {exc}"
             )
-            return False
+            return False, ""
         ok = not bool(getattr(result, "is_error", False))
+        content = str(getattr(result, "content", "") or "")
         self.get_logger().info(
             f"🎛️ [media-router] {call.name}({call.arguments}) ok={ok} "
-            f"result={str(getattr(result, 'content', ''))[:160]!r}"
+            f"result={content[:160]!r}"
         )
-        return ok
+        return ok, content
 
     def _speak_music_retry_nudge(self, tools_called: tuple = ()) -> None:
         """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
@@ -10291,10 +10437,14 @@ class _DialogueSttHost:
     for the migration checklist.
     """
 
-    __slots__ = ("_node",)
+    __slots__ = ("_node", "media_miss")
 
     def __init__(self, node: "DialogueNode") -> None:
         self._node = node
+        # Issue #3176 — ``callable(clean_text)``: вернуть реплику в приём
+        # после MediaCommandStep (заказ по имени мимо базы мелодий).
+        # ``None`` — возвращать некуда (тестовые харнессы без ``_on_stt``).
+        self.media_miss = None
 
     # -- helpers --------------------------------------------------------
 
@@ -10392,7 +10542,7 @@ class _DialogueSttHost:
 
     def handle_media_command(self, text: str) -> bool:
         # Issue #3134 — медиакоманды кодом, до LLM (и в TG, и в DJ-режиме).
-        return self._node._route_media_command(text)
+        return self._node._route_media_command(text, on_miss=self.media_miss)
 
     def reset_session(
         self,

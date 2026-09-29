@@ -250,8 +250,14 @@ def test_open_dj_request_runs_set_dj_mode_then_llm() -> None:
 
 
 @pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
-def test_play_request_goes_to_llm(state: str) -> None:
-    assert MediaRouter().route("сыграй в пещере горного короля", STATES[state]) is None
+def test_play_request_is_play_named(state: str) -> None:
+    # Issue #3176: заказ по имени забирает роутер; есть ли мелодия, решает
+    # база (нода зовёт lookup_melody), промах возвращает реплику в LLM —
+    # см. test_issue_3176_play_named*.py.
+    plan = MediaRouter().route("сыграй в пещере горного короля", STATES[state])
+    assert plan is not None
+    assert plan.play_name == "в пещере горного короля"
+    assert plan.tool_calls == ()
 
 
 # ── 3. DecisionProvider ────────────────────────────────────────────────
