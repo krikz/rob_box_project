@@ -628,3 +628,25 @@ def test_match_info_self_query_never_false_negatives_on_sample(tmp_path):
         if mi["coverage"] < 0.99:
             low_coverage.append((title, rec["name"], mi))
     assert not low_coverage, low_coverage
+
+
+def test_match_info_reports_words_the_search_never_saw(tmp_path):
+    """Issue #3176: роутер медиакоманд играет заказ по имени без LLM и
+    должен знать, что ВСЁ название дошло до поиска. Кириллица без алиаса
+    отбрасывается токенизатором молча: «гимн германии» → алиас «гимн» →
+    «soviet anthem», а «германии» поиск не видел — ``matched`` полный,
+    ``unmatched`` пуст, и сверка выглядела бы идеальной. ``ignored``
+    называет такие слова."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "ignored.db"))
+    rec = lib.get("гимн германии")
+    assert rec is not None
+    mi = match_info(lib, rec, "гимн германии")
+    assert mi["unmatched"] == []
+    assert mi["ignored"] == ["германии"]
+
+    rec = lib.get("к элизе")
+    assert rec is not None and rec["name"] == "furelise"
+    mi = match_info(lib, rec, "к элизе")
+    assert mi["matched"] == ["fur", "elise"]
+    assert mi["unmatched"] == []
+    assert mi["ignored"] == []  # алиас целиком стал английским запросом

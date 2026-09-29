@@ -220,7 +220,8 @@ def test_open_dj_request_runs_set_dj_mode_and_still_reaches_llm(run_plans):
 @pytest.mark.parametrize(
     "phrase",
     [
-        "Робот, сыграй в пещере горного короля",
+        # «сыграй в пещере горного короля» — заказ по имени (#3176), путь
+        # через lookup_melody: test_issue_3176_play_named_node.py.
         "Робот, расскажи анекдот",
         "Робот, говори громче",
     ],

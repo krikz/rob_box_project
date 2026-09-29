@@ -1,7 +1,8 @@
 """media_router.py — детерминированный роутер медиакоманд ДО LLM (issue #3134).
 
 Шаг Ш2 из ``docs/design/2026-09-28-music-dj-systemic-analysis.md``: команды
-«громче / тише / на максимум / стоп / ты диджей X» исполняет код, модель их
+«громче / тише / на максимум / стоп / ты диджей X» и заказ мелодии по имени
+(«поставь к элизе», issue #3176) исполняет код, модель их
 не видит (как HA Assist «Prefer handling commands locally», OVOS OCP).
 Причина — ADR-0143: MiniMax игнорирует ``tool_choice``, поэтому «заставить
 LLM вызвать тул» нельзя, а ретраи-гуарды вокруг неё рождают новые баги.
@@ -136,6 +137,11 @@ class MediaPlan:
             играющего трека не знает — заявка уходит с ``preview_root=""``,
             контроллер тогда просто не трогает тонику сета). ``False`` —
             план не связан с DJ-стартом, заявку звать не нужно.
+        play_name: issue #3176 — заказ по имени: название мелодии словами
+            юзера. Непусто — нода исполняет не ``tool_calls``, а поток
+            :mod:`.named_play` (``lookup_melody`` → ``compose_music``):
+            нашлась — играет и говорит :func:`.named_play.play_ok_text`;
+            не нашлась — реплика уходит в LLM, роутер молчит.
     """
 
     command: MediaCommand
@@ -147,6 +153,7 @@ class MediaPlan:
     cancel_inflight: bool = False
     preview_root: str = ""
     claim_track_one: bool = False
+    play_name: str = ""
 
     @property
     def handled(self) -> bool:
@@ -270,8 +277,11 @@ class MediaRouter:
         if intent not in MEDIA_INTENT_OPTIONS or intent == MediaIntent.NONE.value:
             return NO_COMMAND
         # Провайдер (не регекс) нашёл команду, которую грамматика не
-        # разобрала: аргументов нет — DJ без персоны уходит в LLM.
+        # разобрала: аргументов нет — DJ без персоны уходит в LLM, заказ
+        # без названия (#3176) — не заказ.
         chosen = MediaIntent(intent)
+        if chosen is MediaIntent.PLAY_NAMED:
+            return NO_COMMAND
         return MediaCommand(intent=chosen, closed=chosen is not MediaIntent.DJ)
 
     def route(self, user_input: str, media: MediaState) -> Optional[MediaPlan]:
@@ -512,6 +522,18 @@ def _dj_plan(
     )
 
 
+def _play_named_plan(command: MediaCommand) -> MediaPlan:
+    """Issue #3176 — заказ по имени: исполняет нода, решает база мелодий.
+
+    Состояние плеера плану не нужно: заказ играет и в тишине, и поверх
+    трека, и посреди DJ-сета (там — как заказ гостя, сет не гасится; см.
+    ``DialogueNode._execute_play_named``). ``cancel_inflight`` — ``False``:
+    идущий ход LLM отменяется только когда мелодия нашлась; не нашлась —
+    реплика проходит оставшиеся шаги приёма (barge-in) как обычная.
+    """
+    return MediaPlan(command=command, play_name=command.name)
+
+
 def plan_media_command(
     command: MediaCommand,
     media: MediaState,
@@ -528,6 +550,8 @@ def plan_media_command(
         return _stop_plan(command, media)
     if command.intent is MediaIntent.DJ:
         return _dj_plan(command, media, preview)
+    if command.intent is MediaIntent.PLAY_NAMED and command.name:
+        return _play_named_plan(command)
     return None
 
 

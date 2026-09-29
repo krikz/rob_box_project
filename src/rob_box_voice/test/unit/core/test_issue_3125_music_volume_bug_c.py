@@ -107,7 +107,11 @@ class TestVolumeRequestDetector:
         ],
     )
     def test_not_volume_requests(self, text: str) -> None:
-        assert parse_media_command(text).intent is MediaIntent.NONE
+        # Issue #3176: «сыграй бетховена» теперь заказ по имени
+        # (PLAY_NAMED, решает база мелодий), но по-прежнему НЕ громкость.
+        assert parse_media_command(text).intent not in (
+            MediaIntent.VOLUME_UP, MediaIntent.VOLUME_DOWN, MediaIntent.VOLUME_MAX
+        )
 
     def test_extract_strips_tags_and_trailing_blocks(self) -> None:
         assert extract_user_utterance(LIVE_A_USER_INPUT) == "играй громче"
