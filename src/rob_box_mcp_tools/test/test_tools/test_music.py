@@ -5047,7 +5047,13 @@ class TestComposeMusicToolClubStyle:
         assert mgr.current_track_name
         assert "без названия" not in mgr.current_track_name
 
-    # ── Issue #3113: style=club + известная тема → classic с темой ───
+    # ── Issue #3181: style=club + известная тема → club с хуком темы ──
+    #
+    # Было (#3113 п.2, живой прогон 28.09): club чужих тем не умел, и
+    # ``style=club`` + тема уходил в classic — без клубного грува и без
+    # fade. Теперь lead club играет хук темы (core/club_hook), поэтому тема
+    # больше не отменяет стиль: вызов остаётся club, fade работает, ответ
+    # называет id и название темы.
 
     _MARIO = {
         "name": "smb",
@@ -5060,8 +5066,8 @@ class TestComposeMusicToolClubStyle:
         style="club", transition="fade", seed=101,
     )
 
-    def test_club_with_known_name_plays_the_theme_in_classic(self, mock_node):
-        """Живой вызов «8-битного монстра» 28.09: тема и синты должны звучать."""
+    def test_club_with_known_name_plays_the_hook_in_club(self, mock_node):
+        """Живой вызов «8-битного монстра» 28.09 — теперь клубный трек с хуком."""
         lib = Mock()
         lib.get.return_value = self._MARIO
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -5070,25 +5076,62 @@ class TestComposeMusicToolClubStyle:
             result = tool.execute(**self._MARIO_CALL)
         assert result.success is True, result.error
         code = fake_exec.call_args[0][0]
-        assert "# club:" not in code
-        assert "blip(" in code and "retrobass(" in code and "sinepad(" in code
-        assert result.data["style"] == "classic"
-        assert result.data["style_requested"] == "club"
-        assert result.message.startswith("⚠️ style=club НЕ применён: name='super mario bros'")
-        assert "Super Mario Bros" in result.message
+        assert "# club:" in code
+        assert "# хук smb «Super Mario Bros», 2 такта" in code
+        assert result.data["style"] == "club"
+        assert result.data["transition"] == "fade"
+        hook = result.data["club_hook"]
+        assert (hook["id"], hook["title"], hook["source"]) == ("smb", "Super Mario Bros", "library")
+        assert "Lead играет хук темы «Super Mario Bros» (id=smb)" in result.message
+        # тембры/форма classic club не играет — и честно это говорит
+        assert result.data["ignored_params"] == ["bass_synth", "drum_style", "form", "lead_synth", "pad_synth"]
+        assert result.message.startswith("⚠️ Проигнорировано в club")
+        assert "не найдено в библиотеке" not in result.message
 
-    def test_club_with_known_name_error_keeps_the_route_note(self, mock_node):
-        """Без синтов classic честно отказывает — и ошибка говорит, почему classic."""
+    def test_club_hook_code_is_render_club_with_the_hook(self, mock_node):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+        from rob_box_mcp_tools.core.club_hook import extract_hook
+
         lib = Mock()
         lib.get.return_value = self._MARIO
         mgr = _make_manager(sc_running=True, renardo_available=True)
         tool = ComposeMusicTool(mock_node, mgr, lib)
         with patch("builtins.exec") as fake_exec:
-            result = tool.execute(style="club", name="super mario bros")
+            result = tool.execute(style="club", name="super mario bros", root="C", seed=3)
+        assert result.success is True, result.error
+        hook = extract_hook(self._MARIO["rtttl"], 124, "smb", "Super Mario Bros")
+        assert fake_exec.call_args[0][0] == render_club(bpm=124, root="C", scale="minor", seed=3, hook=hook)
+        assert mgr.current_track_name == "клубный трек на тему «Super Mario Bros», 124 BPM, до минор"
+
+    def test_club_with_rtttl_plays_the_hook(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", rtttl=self._MARIO["rtttl"], name="марио")
+        assert result.success is True, result.error
+        assert "# хук марио «марио»" in fake_exec.call_args[0][0]
+        assert result.data["style"] == "club"
+        assert result.data["club_hook"]["source"] == "rtttl"
+        assert result.data["ignored_params"] == []
+
+    def test_club_with_broken_rtttl_is_honest_error(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", rtttl="not rtttl at all")
         assert result.success is False
-        assert result.error.startswith("style=club НЕ применён")
-        assert "Ошибка classic:" in result.error
+        assert result.error.startswith("style=club:")
         fake_exec.assert_not_called()
+
+    def test_classic_with_name_still_plays_the_theme(self, mock_node):
+        """Без style=club тема по-прежнему идёт в classic (#3181 его не трогает)."""
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(name="super mario bros", lead_synth="blip", bass_synth="retrobass", pad_synth="sinepad")
+        assert result.success is True, result.error
+        assert "# club:" not in fake_exec.call_args[0][0]
+        assert "club_hook" not in result.data
 
     def test_state_track_name_is_library_title_then_club_label(self, mock_node):
         """Issue #3113 п.5: имя темы уходит в state (→ /voice/music/form «track»).
@@ -5112,17 +5155,6 @@ class TestComposeMusicToolClubStyle:
         assert track_name != "Super Mario Bros"
         assert "без названия" not in track_name
         assert track_name.startswith("клубный трек")
-
-    def test_club_with_rtttl_plays_classic(self, mock_node):
-        tool, _ = self._make_tool(mock_node)
-        with patch("builtins.exec") as fake_exec:
-            result = tool.execute(
-                style="club", rtttl=self._MARIO["rtttl"],
-                lead_synth="blip", bass_synth="retrobass", pad_synth="sinepad",
-            )
-        assert result.success is True, result.error
-        assert "# club:" not in fake_exec.call_args[0][0]
-        assert result.data["style"] == "classic"
 
     def test_club_without_name_is_not_rerouted(self, mock_node):
         lib = Mock()

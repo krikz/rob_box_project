@@ -68,6 +68,7 @@ from ..core import renardo_sanitizer, sample_fx, sample_loops
 # кто-то подменит builtins.exec (тесты тула патчат его на время execute).
 from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
+from ..core.club_hook import ClubHook, extract_hook
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
     FADE_BARS,
@@ -3363,8 +3364,11 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
                     "секций и тембры) и repeat; остальные "
                     "параметры игнорируются — об этом сказано в начале "
-                    "ответа. С name= известной мелодии или rtttl= club не "
-                    "применяется: тема важнее стиля, трек играет classic."
+                    "ответа. С name= мелодии из библиотеки или rtttl= club "
+                    "играет вместо арпеджио узнаваемый хук темы (её начало, "
+                    "до 4 тактов) в тональности трека; ответ называет id и "
+                    "название темы. name=, которого нет в библиотеке, — "
+                    "только подпись, темы в треке нет."
                 ),
                 required=False,
                 enum=["classic", "club"],
@@ -4238,12 +4242,11 @@ class ComposeMusicTool(MCPTool):
         # Issue #3113: переход фейдом есть только у club; classic его не
         # знает — вынимаем до _execute_named и честно говорим в ответе.
         transition = kwargs.pop("transition", None)
-        style, route_note = self._route_named_club(kwargs.pop("style", None), kwargs)
-        club = self._style_branch(style, kwargs, transition)
+        # Issue #3181: style=club + тема (name из библиотеки / rtttl=) больше
+        # не уходит в classic (#3113 п.2) — club играет хук темы на lead.
+        club = self._style_branch(kwargs.pop("style", None), kwargs, transition)
         if club is not None:
             return club
-        if route_note:
-            return self._with_route_note(self._execute_classic(kwargs, transition), route_note)
         return self._execute_classic(kwargs, transition)
 
     def _execute_classic(self, kwargs: Dict[str, Any], transition: Optional[str]) -> MCPToolResult:
@@ -4269,54 +4272,9 @@ class ComposeMusicTool(MCPTool):
             self._remember_last_track(merged)
         return result
 
-    #: Параметры, которые ``style="club"`` реально использует.
-    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat")
-
-    def _route_named_club(
-        self, style: Optional[str], kwargs: Dict[str, Any],
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """Issue #3113 п.2 (живой прогон 28.09): ``style="club"`` + известная тема.
-
-        ``compose_music(name="super mario bros", style="club", ...)`` играл
-        анонимный клубный трек: club не умеет чужих тем, ``name`` и синты
-        уходили в «Проигнорировано» в хвосте ответа, модель считала, что
-        играет Марио. Юзер просил ТЕМУ — значит тема важнее стиля: если
-        ``rtttl=`` прислан или ``name=`` находится в RTTTL-библиотеке, вызов
-        уходит в classic (там тема, синты и ручки работают), а ответ честно
-        говорит, что club не применён. ``name``, которого нет в библиотеке
-        («club floor filler»), — просто подпись клубного трека: club
-        играет, ответ говорит, что темы в треке нет.
-
-        Returns:
-            ``(style, note)``: ``note`` — текст для ответа, если стиль сменён.
-        """
-        if style != "club":
-            return style, None
-        name = kwargs.get("name")
-        if kwargs.get("rtttl"):
-            label = f"rtttl= (присланные ноты{f', {name!r}' if name else ''})"
-        elif name and self._resolve_melody(name, kwargs.get("variants")) is not None:
-            label = f"name={name!r} — тема из библиотеки мелодий"
-        else:
-            return style, None
-        return "classic", (
-            f"style=club НЕ применён: {label}; клубный режим чужих тем не играет, "
-            "поэтому трек собран в style=classic с темой и твоими синтами/ручками, "
-            "переход — сразу, без фейда. Если нужен именно клубный трек без темы — "
-            "вызови compose_music(style='club') без name/rtttl."
-        )
-
-    @staticmethod
-    def _with_route_note(result: MCPToolResult, note: str) -> MCPToolResult:
-        """Поставить пометку о смене стиля В НАЧАЛО ответа (и в ошибку)."""
-        if result.success:
-            result.message = f"⚠️ {note} " + (result.message or "")
-            if isinstance(result.data, dict):
-                result.data["style"] = "classic"
-                result.data["style_requested"] = "club"
-        else:
-            result.error = f"{note} Ошибка classic: {result.error}"
-        return result
+    #: Параметры, которые ``style="club"`` реально использует. ``name``/
+    #: ``variants``/``rtttl`` — тема для хука lead (issue #3181).
+    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl")
 
     def _style_branch(
         self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
@@ -4403,7 +4361,7 @@ class ComposeMusicTool(MCPTool):
     _SCALE_NAMES_RU: Dict[str, str] = {"minor": "минор", "major": "мажор"}
 
     @classmethod
-    def _club_track_label(cls, bpm: float, root: str, scale: str) -> str:
+    def _club_track_label(cls, bpm: float, root: str, scale: str, hook_title: Optional[str] = None) -> str:
         """Issue #3169 — человеческое имя club-трека вместо «без названия».
 
         ``<music_state>`` (``music_state_prompt.py``) и ``/voice/music/form``
@@ -4414,7 +4372,7 @@ class ComposeMusicTool(MCPTool):
         тема (club её не имеет, см. ``_club_ignored_warning``), а честное
         описание звучания: темп и тональность, если они распознаны.
         """
-        label = "клубный трек"
+        label = f"клубный трек на тему «{hook_title}»" if hook_title else "клубный трек"
         try:
             bpm_i = int(round(float(bpm)))
         except (TypeError, ValueError):
@@ -4426,6 +4384,27 @@ class ComposeMusicTool(MCPTool):
         if root_ru and scale_ru:
             label += f", {root_ru} {scale_ru}"
         return label
+
+    def _club_publish_state(
+        self, kwargs: Dict[str, Any], bpm: float, duration_s: float, repeat: bool,
+        hook_info: Optional[Dict[str, Any]],
+    ) -> None:
+        """Дедлайн формы, имя трека и снимок состояния после старта club-трека."""
+        if repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(duration_s)
+        self._manager.set_form_cycle_end(duration_s)
+        if hook_info:
+            self.log_info(f"[#3181] club lead: хук {hook_info['id']} «{hook_info['title']}», {hook_info['label']}")
+        # Issue #3169 — club не наследует ``current_track_name`` от classic
+        # (``_compose_success``) и без него оставался None: снимок и
+        # ``<music_state>`` говорили «трек «без названия»».
+        self._manager.current_track_name = self._club_track_label(
+            bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
+            hook_info["title"] if hook_info else None,
+        )
+        self._notify_music_state()
 
     def _execute_club(self, kwargs: Dict[str, Any], fade: bool = False) -> MCPToolResult:
         """``style="club"``: код из :func:`core.club_arranger.render_club`.
@@ -4444,7 +4423,8 @@ class ComposeMusicTool(MCPTool):
         if fade_note:
             fade = False
         try:
-            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade)
+            hook, hook_info = self._club_hook(kwargs, bpm)
+            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook)
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
         self.log_info(
@@ -4457,28 +4437,62 @@ class ComposeMusicTool(MCPTool):
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
         duration_s = (form_beats - entry) * 60.0 / float(bpm) + fade_tail
-        if repeat:
-            self._manager.clear_form_deadline()
-        else:
-            self._manager.set_form_deadline(duration_s)
-        self._manager.set_form_cycle_end(duration_s)
-        # Issue #3169 — club не наследует ``current_track_name`` от classic
-        # (``_compose_success``) и без него оставался None: снимок и
-        # ``<music_state>`` говорили «трек «без названия»».
-        self._manager.current_track_name = self._club_track_label(
-            bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
-        )
-        self._notify_music_state()
+        self._club_publish_state(kwargs, bpm, duration_s, repeat, hook_info)
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
         result["club_kit"] = kit
+        result["club_hook"] = hook_info
         message = self._club_message(kwargs, result, duration_s, fade) + fade_note
         return MCPToolResult(success=True, data=result, message=message)
+
+    def _club_hook(
+        self, kwargs: Dict[str, Any], bpm: float,
+    ) -> Tuple[Optional[ClubHook], Optional[Dict[str, Any]]]:
+        """Issue #3181: хук темы для lead club — из ``rtttl=`` или ``name`` в библиотеке.
+
+        ``(None, None)`` — темы нет (``name`` не найден или не передан):
+        club играет сидированный риф, как раньше. ``rtttl=``, который не
+        разбирается, — ``ValueError`` (честная ошибка, не тихий риф).
+        """
+        name = kwargs.get("name")
+        rtttl = kwargs.get("rtttl")
+        if rtttl:
+            hook = extract_hook(rtttl, bpm, melody_id=str(name or ""), title=str(name or ""))
+            return hook, self._hook_info(hook, "rtttl", {})
+        if not name:
+            return None, None
+        rec = self._resolve_melody(name, kwargs.get("variants"))
+        if rec is None or not rec.get("rtttl"):
+            return None, None
+        title = str(rec.get("title") or rec.get("name") or name)
+        extra: Dict[str, Any] = {}
+        if self._rtttl_library is not None:
+            title = human_track_title(self._rtttl_library, rec)
+            extra["display_title"] = display_title(self._rtttl_library, rec)
+            extra["match"] = match_info(self._rtttl_library, rec, name)
+            extra["mismatch_note"] = _mismatch_note(extra["match"], name)
+        hook = extract_hook(rec["rtttl"], bpm, melody_id=str(rec.get("name") or name), title=title)
+        return hook, self._hook_info(hook, "library", extra)
+
+    @staticmethod
+    def _hook_info(hook: ClubHook, source: str, extra: Dict[str, Any]) -> Dict[str, Any]:
+        """Что именно играет lead — для ответа тула, лога и ``data``."""
+        info = {
+            "id": hook.melody_id, "title": hook.title, "source": source, "bars": hook.bars,
+            "key": hook.key_name, "time_scale": hook.time_scale,
+            "label": f"{hook.bars} такта, тема в {hook.key_name}" + (
+                ", мажорная тема звучит в параллельном мажоре тональности трека (от III ступени)"
+                if hook.key_mode == "major" else ", перенесена на тонику трека"
+            ),
+        }
+        info.update(extra)
+        return info
 
     @staticmethod
     def _club_program(
         kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
+        hook: Optional[ClubHook] = None,
     ) -> Tuple[str, int, int]:
         """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
 
@@ -4490,7 +4504,7 @@ class ComposeMusicTool(MCPTool):
         dj_entry = fade and align
         code = render_club(
             bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
-            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry,
+            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook,
         )
         form_beats = club_form_beats(template)
         entry = club_entry_beats(template) if dj_entry else 0
@@ -4513,6 +4527,12 @@ class ComposeMusicTool(MCPTool):
             f"тембры {kit['lead']}/{kit['bass']}/{kit['pad']}. "
             "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
         )
+        hook = result.get("club_hook")
+        if hook:
+            message += (
+                f" Lead играет хук темы «{hook['title']}» (id={hook['id']}): {hook['label']}. "
+                "Это клубная переработка мотива, а не вся песня."
+            )
         if fade:
             message += (
                 f" Переход fade: играющий трек уходит за {FADE_BARS} тактов фильтром и "
@@ -4578,11 +4598,14 @@ class ComposeMusicTool(MCPTool):
 
     def _club_ignored_warning(self, kwargs: Dict[str, Any], result: Dict[str, Any]) -> str:
         """Что из вызова club НЕ сыграл — текст для начала ответа (или ``""``)."""
-        ignored = [k for k in self._club_ignored(kwargs) if k != "name"]
+        ignored = self._club_ignored(kwargs)
         result["ignored_params"] = list(ignored)
         parts = []
         name = kwargs.get("name")
-        if name:
+        hook = result.get("club_hook")
+        if hook and hook.get("mismatch_note"):
+            parts.append(hook["mismatch_note"].replace("⚠️", "").strip())
+        if name and not hook:
             parts.append(
                 f"name={name!r} не найдено в библиотеке мелодий — в club это только "
                 "подпись, ТЕМЫ в треке нет (не говори юзеру, что играет эта песня)."
