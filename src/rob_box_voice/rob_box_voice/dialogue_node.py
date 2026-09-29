@@ -4559,17 +4559,20 @@ class DialogueNode(Node):
         # reminders[-1] как time-reminder, не сдвигаем его.
         # Issue #3161: «тег может быть stale» больше не правда — он из
         # снимка плеера; вместо этого учим отвечать про прошлое по last_*.
+        # Issue #3165: «ОБЯЗАТЕЛЬНО get_music_state» наказывало правильный
+        # ответ по снимку (Bug E → ретраи → «Не получилось выполнить»).
+        # Тул — только когда в теге ответа нет (playing="unknown").
         lines.append(
             "  <reminder>Если юзер спрашивает про состояние музыки "
             "(«тихо?», «тишина?», «тише?», «играет ли музыка?», «что играет?», "
             "«что сейчас играет?», «музыка включена?», «слышно что-нибудь?»): "
-            "ОБЯЗАТЕЛЬНО вызови get_music_state tool ПЕРЕД ответом, прочитай "
-            "результат и только потом отвечай через speak_text. <music_state> "
-            "— снимок плеера на начало хода: при playing=\"no\" НЕ говори "
-            "«сейчас играет». Про прошлое («что играло?», «что ты включал?») "
-            "отвечай по last_track / last_ended / last_ended_ago_s («минуту "
-            "назад играл …»). Tool call обязателен даже если кажется, что и "
-            "так ясно.</reminder>"
+            "ответ уже в <music_state> — это снимок плеера на начало хода. "
+            "playing=\"no\" — тишина, НЕ говори «сейчас играет»; "
+            "playing=\"yes\" — назови track. Про прошлое («что играло?», «что "
+            "ты включал?») отвечай по last_track / last_ended / "
+            "last_ended_ago_s («минуту назад играл …, я его остановил»). "
+            "get_music_state вызывай, только если в <music_state> ответа нет "
+            "(playing=\"unknown\").</reminder>"
         )
         # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
         # ``get_current_time`` уже возвращает ``formatted_time`` русской
@@ -5831,6 +5834,7 @@ class DialogueNode(Node):
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
             dj_active=dj_active,
+            music_playing=self._music_playing_known(),
         )
         if rule is None:
             return False
@@ -5946,7 +5950,7 @@ class DialogueNode(Node):
 
         hit = detect_universal_action_claim(
             spoken=spoken,
-            tools_called=tuple(tools_called or ()),
+            tools_called=self._claim_backing_tools(tools_called),
             tool_error_occurred=tool_error_occurred,
         )
         if hit is None:
@@ -6113,7 +6117,7 @@ class DialogueNode(Node):
         if not detect_phantom_action_claim(
             user_input=user_input,
             spoken=spoken,
-            tools_called=tuple(tools_called or ()),
+            tools_called=self._claim_backing_tools(tools_called),
         ):
             return False
 
@@ -7157,6 +7161,7 @@ class DialogueNode(Node):
             spoken=spoken,
             tool_error_occurred=tool_error_occurred,
             succeeded_tools=succeeded_tools,
+            music_playing=self._music_playing_known(),
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
@@ -7301,6 +7306,20 @@ class DialogueNode(Node):
         snapshot = getattr(self, "_music_player_state", None)
         return snapshot is not None and snapshot.is_playing()
 
+    def _music_playing_known(self) -> Optional[bool]:
+        """Issue #3165 — играет ли музыка по снимку плеера; ``None`` — снимка нет.
+
+        Для сверки заявлений о состоянии музыки (Bug E ``music_state``):
+        без снимка ``<music_state playing="unknown">`` и ответу не на что
+        опереться. AI-mp3 (``ai="playing: …"`` в теге) тоже считается
+        «играет»: его модель видит в том же теге.
+        """
+        snapshot = getattr(self, "_music_player_state", None)
+        if snapshot is None:
+            return None
+        gm = getattr(self, "_generated_music_state", None) or {}
+        return snapshot.is_playing() or gm.get("status") == "playing"
+
     # ── Issue #3134 — роутер медиакоманд до LLM ────────────────────────
 
     def _media_state(self) -> MediaState:
@@ -7358,7 +7377,7 @@ class DialogueNode(Node):
         self._apply_media_plan_side_effects(plan)
         self._prepare_dj_preview(plan, executor)
         asyncio.run_coroutine_threadsafe(
-            self._execute_media_plan(plan, executor), self._loop
+            self._execute_media_plan(plan, executor, text), self._loop
         )
         return plan.handled
 
@@ -7397,15 +7416,21 @@ class DialogueNode(Node):
         if dj is not None:
             dj.claim_preview(plan.preview_root)
 
-    async def _execute_media_plan(self, plan: MediaPlan, executor: Any) -> None:
+    async def _execute_media_plan(
+        self, plan: MediaPlan, executor: Any, text: str = ""
+    ) -> None:
         """Вызвать тулы плана по порядку и сказать фиксированную фразу.
 
         Тул с ``fail_text`` при неудаче обрывает план и говорит свою фразу
         (issue #3153: превью не встало — DJ не включаем).
+
+        Issue #3165: успешные тулы и сказанная фраза записываются для
+        модели и гуардов (:meth:`_record_media_turn`).
         """
-        ok, phrase = True, ""
+        ok, phrase, done = True, "", []
         for call in plan.tool_calls:
             if await self._execute_media_tool(executor, call):
+                done.append(call.name)
                 continue
             ok = False
             if call.fail_text:
@@ -7414,8 +7439,53 @@ class DialogueNode(Node):
         if not ok and plan.claim_track_one and getattr(self, "_dj", None) is not None:
             self._dj.drop_preview_claim()
         phrase = phrase or (plan.say_ok if ok else plan.say_fail)
+        self._record_media_turn(plan, text, phrase, done)
         if phrase:
             self._speak_direct(phrase)
+
+    # Issue #3165 — сколько секунд действие роутера подкрепляет заявление
+    # модели о нём («я остановил трек», «сделал громче») в ходе без тулов.
+    # Живой прогон 29.09: вопросы пришли через 11 и 33 с после стопа, ответ
+    # ретрая — через 48 с. Дольше двух минут «я остановил» — уже пересказ
+    # истории, и широкие гуарды #2549/#2559 снова требуют тул.
+    MEDIA_ACTION_BACKING_S = 120.0
+
+    def _record_media_turn(
+        self, plan: MediaPlan, text: str, phrase: str, done: list
+    ) -> None:
+        """Issue #3165 — ход роутера виден модели и гуардам.
+
+        * История модели: пара «реплика → фраза» с тулами в metadata
+          (``AgentCore.record_external_turn``), то есть строка в блоке
+          «выполнено в прошлых ходах». Только для закрытых роутером
+          реплик: при ``to_llm`` ту же реплику сейчас запишет ход модели.
+        * Журнал для гуардов #2549 / #2559 / #2949
+          (:meth:`_claim_backing_tools`): «я остановил» после стопа
+          роутером — не фантом.
+        """
+        now = time.time()
+        ledger = getattr(self, "_media_actions", None)
+        if ledger is None:
+            ledger = self._media_actions = deque(maxlen=16)
+        ledger.extend((now, name) for name in done)
+        record = getattr(getattr(self, "_core", None), "record_external_turn", None)
+        if plan.handled and callable(record):
+            record(text, phrase, done)
+
+    def _claim_backing_tools(self, tools_called: Any) -> tuple:
+        """Issue #3165 — тулы хода плюс свежие тулы роутера медиакоманд.
+
+        Для широких гуардов «заявил действие без тула» (#2549, #2559,
+        fallback #2949): модель честно пересказывает стоп/громкость/DJ,
+        исполненные роутером, а в её собственном ходе тулов нет.
+        """
+        horizon = time.time() - self.MEDIA_ACTION_BACKING_S
+        recent = tuple(
+            name
+            for at, name in getattr(self, "_media_actions", None) or ()
+            if at >= horizon
+        )
+        return tuple(tools_called or ()) + recent
 
     async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
         tool_call = ToolCall(
@@ -9327,13 +9397,17 @@ class DialogueNode(Node):
             return False
         hit = detect_universal_action_claim(
             spoken=spoken,
-            tools_called=tuple(tools_called or ()),
+            tools_called=self._claim_backing_tools(tools_called),
             tool_error_occurred=tool_error_occurred,
             repeated_call_args=repeated_call_args,
         )
         if hit is None:
             return False
-        fallback = build_action_claim_failure_fallback(hit)
+        # Issue #3165 — в ходе ни один тул не исполнялся и не падал:
+        # «Не получилось выполнить» было бы неправдой (попытки не было).
+        fallback = build_action_claim_failure_fallback(
+            hit, nothing_attempted=not tools_called and not tool_error_occurred
+        )
         self.get_logger().warning(
             "🛟 [issue 2949 fallback] action-claim повторился после "
             f"ретрая (tool_error_occurred={tool_error_occurred!r}) — "

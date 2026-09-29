@@ -10,8 +10,7 @@
   "expected_tool_calls": [
     "get_current_time",
     "get_battery_level",
-    "get_robot_status",
-    "get_music_state"
+    "get_robot_status"
   ],
   "must_not_call": [],
   "voice_provenance": {

@@ -490,7 +490,6 @@ class TestScenarioAcceptanceFiles:
         [
             ("act2", "n201_sasha_intro_long", ["register_speaker"]),
             ("act2", "n204_boris_intro_long", ["register_speaker"]),
-            ("act3", "n313_silence_restored", ["get_music_state"]),
             ("act4", "n401_list_voices", ["list_tts_voices"]),
         ],
     )
@@ -518,6 +517,28 @@ class TestScenarioAcceptanceFiles:
             f"discovery_tools={expected_discovery} for issue #2406 "
             f"regression coverage, got {actual}"
         )
+
+    def test_n313_checks_the_answer_not_the_tool(
+        self, scenarios: dict[str, Path],
+    ) -> None:
+        """Issue #3165: ``n313_silence_restored`` больше не требует
+        ``get_music_state`` ДО ответа.
+
+        ``<music_state>`` — снимок плеера (#3161, ADR-0141); живой прогон
+        29.09 показал, что обязательный тул наказывал верное «тишина»
+        ретраями и фразой «Не получилось выполнить». Шаг проверяет сам
+        ответ (``expected_keywords``) и запрет ложной фразы-отказа.
+        """
+        sc = json.loads(scenarios["act3"].read_text(encoding="utf-8"))
+        step = next(
+            s for s in sc["steps"] if s.get("label") == "n313_silence_restored"
+        )
+        acceptance = step["acceptance"]
+        assert "discovery_tools" not in acceptance
+        assert "get_music_state" not in acceptance["expected_tool_calls"]
+        assert any("тишин" in k for k in acceptance["expected_keywords"])
+        assert "не получилось выполнить" in acceptance["must_not_say"]
+        assert "stop_music" in acceptance["must_not_call"]
 
 
 # ── TestE2EScriptContract (sanity — паттерн в harness) ────────────────────

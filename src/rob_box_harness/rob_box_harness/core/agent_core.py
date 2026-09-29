@@ -1316,6 +1316,41 @@ class AgentCore:
             metadata["tools_called"] = tools
         self._turn_window[index] = replace(turn, metadata=metadata)
 
+    def record_external_turn(
+        self,
+        user_text: str,
+        reply: str,
+        tools_called: Iterable[str] = (),
+    ) -> None:
+        """Issue #3165 — записать в окно ход, исполненный МИМО модели.
+
+        Роутер медиакоманд (#3134) сам исполняет «стоп / громче / ты
+        диджей X» и говорит фиксированную фразу — модель этот ход не видела.
+        Живой прогон 29.09 00:10: через 11 с после «выключи музыку» модель
+        честно ответила «я останавливал трек», а гуард #2559 счёл это
+        фантомом — в её истории не было ни реплики, ни вызова. Теперь ход
+        ложится в окно как обычная пара user/assistant, а его тулы — в
+        metadata ответа, то есть в блок «выполнено в прошлых ходах»
+        (:func:`_executed_actions_block`).
+
+        ``_turn_reply`` не трогается: :meth:`discard_last_reply` отзывает
+        только ответ модели, а этот ход модель не писала.
+
+        Без реплики или без фразы ход не пишется: одинокий user-ход
+        :meth:`_clean_history_turns` всё равно выбросит как сироту, а
+        заглушка вместо фразы («done») учит модель отвечать заглушкой.
+        """
+        text = str(user_text or "").strip()
+        spoken = str(reply or "").strip()
+        if not text or not spoken:
+            return
+        tools = _merge_tool_names(name for name in tools_called if name)
+        metadata: dict[str, Any] = {"tools_called": tools} if tools else {}
+        self._turn_window.append(Turn(role="user", content=text, metadata={}))
+        self._turn_window.append(
+            Turn(role="assistant", content=spoken, metadata=metadata)
+        )
+
     def clear_history(self) -> None:
         """Drop all turns from the in-memory sliding window.
 

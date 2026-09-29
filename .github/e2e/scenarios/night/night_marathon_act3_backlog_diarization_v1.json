@@ -144,17 +144,18 @@
       "text": "Робот, теперь тихо?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
-        "discovery_tools": [
-          "get_music_state"
-        ],
         "must_not_call": [
           "execute_music_code",
           "stop_music"
         ],
-        "_comment": "Возврат к якорю тишины из акта 1 — акт не оставляет хвостов. issue #2406: discovery_tools — get_music_state должен быть вызван ДО голосового ответа (regression guard, тот же класс багов что и issue #2347)."
+        "must_not_say": [
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Возврат к якорю тишины из акта 1 — акт не оставляет хвостов. Issue #3165: ответ — из <music_state> (снимок плеера, #3161), get_music_state больше не обязателен (живой прогон 29.09: обязательный тул наказывал верное «тишина» ретраями и фразой «Не получилось выполнить»). Проверяем сам ответ."
       }
     }
   ]

@@ -1398,6 +1398,11 @@ ACTION_CLAIM_RULES: tuple = (
         tools=frozenset({"get_sound_info", "play_sound"}),
         what="список звуков (get_sound_info)",
     ),
+    # Issue #3165: альтернативы claim_re те же, что были, в том же порядке —
+    # их только разложили на две именованные группы (:data:`CLAIM_IDLE` /
+    # :data:`CLAIM_PLAYING`), чтобы сверить заявление со снимком плеера
+    # (:func:`_claim_agrees_with_player`). Новых шаблонов нет (мораторий
+    # #3132): что ловилось раньше, ловится и сейчас.
     ActionClaimRule(
         category="music_state",
         user_re=re.compile(
@@ -1406,7 +1411,8 @@ ACTION_CLAIM_RULES: tuple = (
             r"какая\s+(?:сейчас\s+)?музык|что\s+за\s+трек)",
             re.IGNORECASE),
         claim_re=re.compile(
-            r"тишин|ничего\s+не\s+игра|не\s+игра|игра\w*|звучит|включен",
+            r"(?P<idle>тишин|ничего\s+не\s+игра|не\s+игра)|"
+            r"(?P<playing>игра\w*|звучит|включен)",
             re.IGNORECASE),
         tools=frozenset({"get_music_state"}),
         what="состояние музыки (get_music_state)",
@@ -1503,12 +1509,46 @@ ACTION_CLAIM_RULES: tuple = (
 )
 
 
+#: Issue #3165 — имена групп ``claim_re``, которыми правило сообщает, ЧТО
+#: заявлено о воспроизведении: «тишина / не играет» или «играет X».
+CLAIM_IDLE = "idle"
+CLAIM_PLAYING = "playing"
+
+
+def _claim_agrees_with_player(
+    match: "re.Match[str]", music_playing: Optional[bool]
+) -> bool:
+    """Issue #3165 — заявление о состоянии музыки совпадает со снимком плеера.
+
+    Живой прогон 29.09 00:10: на «что сейчас играет» при снимке ``idle``
+    модель ответила «Сейчас тишина — ничего не играет.» — ровно то, что ей
+    показал ``<music_state playing="no">`` (#3161, ADR-0141). Bug E требовал
+    ``get_music_state``, ретраи увели ответ в выдумку и кончились «Не
+    получилось выполнить». Ответ, согласный со снимком, подкреплён данными
+    плеера — тул к нему ничего не добавит.
+
+    ``music_playing=None`` — снимка нет (``<music_state playing="unknown">``):
+    ответу не на что опереться, правило работает как раньше. Правило без
+    именованных групп (все, кроме ``music_state``) — тоже как раньше.
+    Сверяется ПЕРВОЕ заявление в ответе: оно и есть ответ на вопрос, дальше
+    обычно идёт прошлое («…последним играл клубный трек»).
+    """
+    if music_playing is None:
+        return False
+    if match.lastgroup == CLAIM_IDLE:
+        return not music_playing
+    if match.lastgroup == CLAIM_PLAYING:
+        return music_playing
+    return False
+
+
 def detect_unbacked_action_claim(
     *,
     user_input: Optional[str],
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
     dj_active: bool = False,
+    music_playing: Optional[bool] = None,
 ) -> Optional[ActionClaimRule]:
     """Issue #992 Bug E — LLM отчиталась о действии, не вызвав тул.
 
@@ -1533,6 +1573,10 @@ def detect_unbacked_action_claim(
     пишет prose без noun в user_input, LLM отвечает past-tense
     claim-verb) и НЕ даёт false-positive в быту: «сделала уборку»
     при ``dj_active=False`` остаётся неотфильтрованным.
+
+    Issue #3165: ``music_playing`` — играет ли музыка по снимку плеера
+    (``None`` — снимка нет). Заявление о состоянии музыки, согласное со
+    снимком, подкреплено и без тула (:func:`_claim_agrees_with_player`).
     """
     if not user_input or not spoken:
         return None
@@ -1553,9 +1597,10 @@ def detect_unbacked_action_claim(
         )
         if not skip_user_re and not rule.user_re.search(user_input):
             continue
-        if not rule.claim_re.search(spoken):
+        claim = rule.claim_re.search(spoken)
+        if claim is None or called & rule.tools:
             continue
-        if called & rule.tools:
+        if _claim_agrees_with_player(claim, music_playing):
             continue
         return rule
     return None
@@ -1604,6 +1649,7 @@ def is_phantom_music_action(
     user_input: Optional[str],
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
+    music_playing: Optional[bool] = None,
 ) -> Optional[ActionClaimRule]:
     """Issue #2565 — :func:`detect_unbacked_action_claim` для музыкальных
     категорий.
@@ -1621,11 +1667,15 @@ def is_phantom_music_action(
     Цена ложного срабатывания: лишний round-trip к LLM. Цена пропуска:
     воспроизведение issue #2565 — гасим музыку, на которую юзер
     только что рассчитывал.
+
+    Issue #3165: ``music_playing`` — снимок плеера, как у
+    :func:`detect_unbacked_action_claim`; ``None`` — прежнее поведение.
     """
     rule = detect_unbacked_action_claim(
         user_input=user_input,
         spoken=spoken,
         tools_called=tools_called,
+        music_playing=music_playing,
     )
     if rule is None:
         return None
@@ -1924,7 +1974,18 @@ def build_universal_action_claim_retry_prompt(
     )
 
 
-def build_action_claim_failure_fallback(hit: "UniversalActionClaimHit") -> str:
+#: Issue #3165 — фраза, когда в ходе НИЧЕГО не исполнялось и не падало.
+#: «Не получилось выполнить» значит «пытался и упал» — без попытки это
+#: неправда (живой прогон 29.09 00:13: так робот ответил на вопрос «что
+#: сейчас играет», хотя ни одного тула в ходе не было).
+ACTION_CLAIM_NOTHING_DONE_TEXT = (
+    "Я сейчас ничего не делал — скажи, пожалуйста, что нужно сделать."
+)
+
+
+def build_action_claim_failure_fallback(
+    hit: "UniversalActionClaimHit", *, nothing_attempted: bool = False
+) -> str:
     """Issue #2949 — честная фраза после исчерпания бюджета ретраев.
 
     Когда одноразовый ретрай :func:`build_universal_action_claim_retry_prompt`
@@ -1932,7 +1993,13 @@ def build_action_claim_failure_fallback(hit: "UniversalActionClaimHit") -> str:
     подкреплённом успешным тулом — публикуем это вместо заявления. Цена
     молчаливой деградации выше цены честного «не получилось»: ADR-0018
     («Честный FAIL лучше красивого PASS»).
+
+    Issue #3165: ``nothing_attempted=True`` — в ходе ни один тул не
+    исполнялся и не падал. «Не получилось выполнить» тогда само ложь
+    (попытки не было), звучит :data:`ACTION_CLAIM_NOTHING_DONE_TEXT`.
     """
+    if nothing_attempted:
+        return ACTION_CLAIM_NOTHING_DONE_TEXT
     return (
         "Не получилось выполнить — попробуй, пожалуйста, ещё раз "
         "чуть позже."
