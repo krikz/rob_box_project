@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+from .dj_theme_melodies import melody_pool_for_theme, pick_melody
+
 
 # States where DJ-mode should defer its transition by 15 seconds.
 _NON_IDLE_STATES = frozenset({"DIALOGUE", "SILENCED"})
@@ -151,6 +153,12 @@ class DJState:
     # ``/voice/music/form``), в порядке звучания. Промпт перехода запрещает
     # их повтор (живой прогон 28.09: Für Elise дважды в одном сете).
     played_names: list = field(default_factory=list)
+    # Issue #3181 — тег RTTTL-архива и пул id мелодий для темы сета
+    # (:func:`.dj_theme_melodies.melody_pool_for_theme`). ``""``/``()`` —
+    # тема не сопоставилась ни одному тегу или для тега нет пула: тогда
+    # ``_club_call`` не добавляет ``name=`` (побайтно как раньше).
+    melody_tag: str = ""
+    melody_pool: tuple = ()
     # Issue #3153 — сет начат мгновенным club-превью роутера медиакоманд:
     # трек #1 уже звучит, переход #1 — обычный переход к треку #2, без
     # исследования («СТАРТ ВЕЧЕРИНКИ» с search_web и т.п. не нужен).
@@ -234,8 +242,20 @@ class DJModeController:
 
     # ── Message handlers ────────────────────────────────────────────
 
-    def handle_message(self, payload: str) -> None:
-        """Parse a JSON ``/voice/dj_mode`` message and update the state."""
+    def handle_message(self, payload: str, *, raw_utterance: str = "") -> None:
+        """Parse a JSON ``/voice/dj_mode`` message and update the state.
+
+        ``raw_utterance`` — issue #3181: реплика юзера (как пришла в STT),
+        которая привела к этому вызову ``set_dj_mode`` — честный источник
+        темы, когда LLM включила DJ без ``theme=`` (живой лог 29.09:
+        «Ты диджей 8 битный монстр и у нас сегодня клубная вечеринка
+        любителей денди» → ``set_dj_mode(enabled=true,
+        next_transition_sec=45)`` без темы, «денди» потерялось). Нода
+        (``DialogueNode._on_dj_mode_msg``) передаёт свой
+        ``_last_stt_text`` — тот же текст, что видит ``media_router`` для
+        этой же реплики. Используется ТОЛЬКО как фолбэк на генуинном
+        старте сета без явной ``theme`` — см. :meth:`_apply_enable_payload`.
+        """
         try:
             data = json.loads(payload)
             enabled = bool(data.get("enabled", False))
@@ -250,7 +270,9 @@ class DJModeController:
         was_enabled = self.state.enabled
         self.state.enabled = enabled
         if enabled:
-            self._apply_enable_payload(data, is_fresh_start=not was_enabled)
+            self._apply_enable_payload(
+                data, is_fresh_start=not was_enabled, raw_utterance=raw_utterance
+            )
         else:
             # Issue #2835 — прощание только если DJ реально играл: «выключи»
             # по уже выключенному DJ (эхо собственной публикации ноды после
@@ -267,14 +289,22 @@ class DJModeController:
         self.state.farewell_at = None
         self._reset_state(farewell=False)
 
-    def _apply_enable_payload(self, data: dict, *, is_fresh_start: bool) -> None:
-        # 🔴 FIX (live 03.09 07:58): тема обновлялась ТОЛЬКО на генуинном
-        # старте (``is_fresh_start or not self.state.theme``) — внутри
-        # идущего сета «теперь тема Изнанка» меняло персону (у неё такого
-        # гейта нет) и НЕ меняло тему. ``build_auto_prompt`` продолжал
-        # подставлять `Тема вечеринки: "<старая>"` в каждый переход, и сет
-        # уезжал обратно к прошлой теме. Асимметрия persona/theme ничем не
-        # оправдана — обновляем так же безусловно.
+    def _apply_theme(
+        self, data: dict, *, is_fresh_start: bool, raw_utterance: str
+    ) -> None:
+        """Тема сета: явная из ``data``, иначе фолбэк из STT (issue #3181).
+
+        Вынесено из :meth:`_apply_enable_payload` — держать всю логику
+        темы в одном месте (CC-бюджет, ``scripts/lint/cc_budget.py``).
+
+        🔴 FIX (live 03.09 07:58): тема обновлялась ТОЛЬКО на генуинном
+        старте (``is_fresh_start or not self.state.theme``) — внутри
+        идущего сета «теперь тема Изнанка» меняло персону (у неё такого
+        гейта нет) и НЕ меняло тему. ``build_auto_prompt`` продолжал
+        подставлять `Тема вечеринки: "<старая>"` в каждый переход, и сет
+        уезжал обратно к прошлой теме. Асимметрия persona/theme ничем не
+        оправдана — обновляем так же безусловно.
+        """
         theme = data.get("theme")
         if theme and isinstance(theme, str) and theme.strip():
             new_theme = theme.strip()
@@ -283,6 +313,7 @@ class DJModeController:
                     self.state.theme and not is_fresh_start
                 )
                 self.state.theme = new_theme
+                self._update_melody_pool()
                 self._logger.info(f"🎧 DJ theme: {self.state.theme!r}")
                 if theme_changed_midset and self.state.set_plan:
                     # План прошлой темы («Трек 1: костры рябин...») в промпте
@@ -300,6 +331,25 @@ class DJModeController:
                         f"#{self.state.transition_count})"
                     )
                     self.state.set_plan = ""
+            return
+        if is_fresh_start and not self.state.theme and raw_utterance.strip():
+            # Issue #3181 (живой лог 29.09) — LLM включила DJ БЕЗ ``theme``
+            # на генуинном старте сета, хотя юзер тему назвал («у нас
+            # сегодня клубная вечеринка любителей денди»): «денди» дальше
+            # никуда не доходило. Честный источник — реплика юзера, как
+            # она пришла в STT (та же, что видел ``media_router`` для
+            # этого хода) — не переизобретаем разбор темы здесь.
+            self.state.theme = raw_utterance.strip()
+            self._update_melody_pool()
+            self._logger.info(
+                f"🎧 DJ theme (фолбэк из STT, set_dj_mode без theme): "
+                f"{self.state.theme!r}"
+            )
+
+    def _apply_enable_payload(
+        self, data: dict, *, is_fresh_start: bool, raw_utterance: str = ""
+    ) -> None:
+        self._apply_theme(data, is_fresh_start=is_fresh_start, raw_utterance=raw_utterance)
         # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
         # сохраняем, чтобы автопромпты использовали её вместо дефолта.
         persona = data.get("persona")
@@ -427,6 +477,8 @@ class DJModeController:
         self.state.next_transition_at = 0.0
         self.state.transition_count = 0
         self.state.theme = ""
+        self.state.melody_tag = ""
+        self.state.melody_pool = ()
         self.state.set_plan = ""
         self.state.persona = ""
         # Issue #2461 — не тащить дедлайн формы прошлого сета в следующий.
@@ -634,6 +686,20 @@ class DJModeController:
             return
         self.state.played_names.append(title)
         self._logger.info(f"🎧 DJ в сете уже звучало: {self.state.played_names!r}")
+
+    def _update_melody_pool(self) -> None:
+        """Issue #3181 — пересчитать пул мелодий для текущей темы сета.
+
+        Зовётся при каждом присвоении/смене ``DJState.theme`` (явной или
+        фолбэком из STT). Тема не сопоставилась тегу или для тега нет
+        курируемого пула (:mod:`.dj_theme_melodies`) — пул пуст,
+        ``_club_call`` не добавляет ``name=`` (побайтно как раньше).
+        """
+        tag, pool = melody_pool_for_theme(self.state.theme)
+        self.state.melody_tag = tag
+        self.state.melody_pool = pool
+        if pool:
+            self._logger.info(f"🎧 DJ тема → пул {tag}: {len(pool)} мелодий")
 
     def _played_line(self) -> str:
         """Запрет повтора уже сыгранных в сете песен (issue #3113)."""
@@ -918,11 +984,27 @@ class DJModeController:
         Темп — темп сета (не меняется между треками), тоника — по
         :func:`related_root`, ``seed`` — свой на трек (другие прогрессия и
         риф), ``transition="fade"`` — уходящий трек гаснет, а не обрывается.
+
+        Issue #3181 — тема сета с пулом мелодий (:mod:`.dj_theme_melodies`)
+        добавляет ``name="<id>"``: следующая ещё не сыгранная мелодия пула
+        (:func:`.dj_theme_melodies.pick_melody`), детерминированно от
+        ``track_no``. Без темы/пула — ``name=`` не добавляется, вызов
+        побайтно как раньше (регресс для существующих тестов/сетов).
+        ВАЖНО (план #3181, не трогать здесь): пока PR-1 не влит,
+        ``style="club"`` + известное ``name=`` уходит в classic (issue
+        #3113 п.2) — это ожидаемо, контракт этой функции — только строка
+        вызова.
         """
         root = related_root(self._set_root(), track_no)
+        melody = pick_melody(
+            self.state.melody_pool, track_no, self.state.played_names
+        )
+        name_part = f'name="{melody}", ' if melody else ""
+        if melody:
+            self._logger.info(f"🎧 DJ трек #{track_no} — мелодия {melody}")
         return (
-            f'compose_music(style="club", bpm={self.state.set_bpm}, root="{root}", '
-            f'scale="minor", seed={self._track_seed(track_no)}, '
+            f'compose_music(style="club", {name_part}bpm={self.state.set_bpm}, '
+            f'root="{root}", scale="minor", seed={self._track_seed(track_no)}, '
             f'repeat={"true" if repeat else "false"}, transition="fade")'
         )
 

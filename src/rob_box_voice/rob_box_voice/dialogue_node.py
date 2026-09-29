@@ -5231,7 +5231,15 @@ class DialogueNode(Node):
                 f"до «новой сессии» — игнорирую: {payload[:120]!r}"
             )
             return
-        self._dj.handle_message(payload)
+        # Issue #3181 — реплика юзера, как пришла в STT, для фолбэка темы
+        # (``DJModeController._apply_enable_payload``), когда LLM включила
+        # DJ без ``theme=``. ``_last_stt_text`` — последняя реплика,
+        # которую видел ``quick_decide`` (тот же текст, что и
+        # media_router для этого хода); DJ_AUTO-переходы STT не шлют, так
+        # что фолбэк срабатывает только на генуинном старте от юзера.
+        self._dj.handle_message(
+            payload, raw_utterance=getattr(self, "_last_stt_text", None) or ""
+        )
 
     def _publish_dj_off(self, reason: str) -> None:
         """Опубликовать ``/voice/dj_mode`` ``enabled=false``.

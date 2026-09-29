@@ -10,9 +10,6 @@
     "src/rob_box_voice/rob_box_voice/audio_node.py": {
       "AudioNode.check_vad_and_doa": 19
     },
-    "src/rob_box_voice/rob_box_voice/core/dj_mode.py": {
-      "DJModeController._apply_enable_payload": 18
-    },
     "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py": {
       "classify_sclang_log": 19
     },
@@ -110,12 +107,6 @@
       "path": "src/rob_box_voice/rob_box_voice/audio_node.py",
       "method": "AudioNode.check_vad_and_doa",
       "cc": 19,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/core/dj_mode.py",
-      "method": "DJModeController._apply_enable_payload",
-      "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
