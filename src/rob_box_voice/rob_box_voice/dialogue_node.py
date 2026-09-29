@@ -127,17 +127,15 @@ from rob_box_voice.core.llm_skip_reasons import (
     new_llm_skip_counter,
 )
 # ADR-0145 §4 (P1 step 1) -- ``quick_decide``/``QuickVerdict`` are no
-# longer called directly from this module (the call now lives in
-# :meth:`rob_box_voice.core.stt_admission_host._DialogueSttHost.
-# quick_decide_verdict`), but the names must stay importable/patchable
-# here: ``test_barge_in_policy.py::test_replace_policy_never_calls_
-# quick_decide`` does ``monkeypatch.setattr(dialogue_node, "quick_decide",
-# ...)``, which raises ``AttributeError`` if the name is not a module
-# attribute (``raising=True`` is the monkeypatch default).
-from rob_box_voice.scheduler.quick_decide import (  # noqa: F401
-    QuickVerdict as QuickVerdict,
-    quick_decide as quick_decide,
-)
+# longer imported here: the only call site
+# (``_DialogueSttHost.quick_decide_verdict``) moved to
+# :mod:`rob_box_voice.core.stt_admission_host`, which does its own
+# import. PR #3198 review caught that a stale re-export here would make
+# ``monkeypatch.setattr(dialogue_node, "quick_decide", ...)`` silently
+# stop intercepting the real call (vacuous test) -- see
+# ``test_barge_in_policy.py::test_replace_policy_never_calls_
+# quick_decide``, which now patches
+# ``rob_box_voice.core.stt_admission_host.quick_decide`` instead.
 from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
