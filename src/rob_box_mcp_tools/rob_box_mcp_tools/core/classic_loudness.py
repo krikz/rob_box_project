@@ -53,6 +53,9 @@ from .renardo_events import NoteEvent, ProgramError, program_events
 #: Тихая секция не ниже основного блока больше чем на столько dB (приёмка
 #: #3154 «~8–10 dB»; нижняя граница — запас на ошибку модели).
 SECTION_FLOOR_DB = 8.0
+#: Секции основного блока (с ударными) — в пределах ± столько dB от цели
+#: (приёмка #3154: соседние треки и основной блок ±3 dB).
+MAIN_SPREAD_DB = 3.0
 #: Потолок одного ``amp`` (``music_max_amp`` санитайзера по умолчанию).
 MAX_AMP = 0.85
 #: Санитайзер переименовывает эти синты перед исполнением (``renardo_sanitizer``).
@@ -324,9 +327,29 @@ class Calibration:
     unmodeled_events: int
 
 
+def _section_gain(section: SectionModel, gain: float, low: float, high: float) -> float:
+    """Множитель секции: от общего ``gain`` поднять до ``low`` или опустить до ``high``."""
+    if not section.power:
+        return gain
+    level = section.level_db(gain)
+    if level < low:
+        return _solve_gain(section.level_db, low, gain, max(gain, section.full_cap_gain()))
+    if level > high:
+        return _solve_gain(section.level_db, high, 1e-3, gain)
+    return gain
+
+
 def calibrate(model: FormModel, main_sections: Sequence[int],
-              target_db: float = TARGET_MAIN_DB, floor_db: float = SECTION_FLOOR_DB) -> Optional[Calibration]:
-    """Множители ``amp`` по секциям: основной блок на ``target_db``, тихие не ниже ``target − floor``.
+              target_db: float = TARGET_MAIN_DB, floor_db: float = SECTION_FLOOR_DB,
+              spread_db: float = MAIN_SPREAD_DB) -> Optional[Calibration]:
+    """Множители ``amp`` по секциям формы.
+
+    1. Общий множитель: средняя мощность основного блока (секции с ударными)
+       = ``target_db`` — общий множитель стиля classic ↔ club.
+    2. Каждая секция основного блока — в ``target ± spread`` (иначе в «К
+       Элизе» пик с басом забирал всё среднее, а секция ``main`` оставалась
+       на 8 dB ниже club — первая минута трека в DJ-сете).
+    3. Остальные секции — не ниже ``target − floor`` и не выше ``target + spread``.
 
     ``None`` — модели нечего сказать (ни одной ноты из таблицы).
     """
@@ -338,19 +361,16 @@ def calibrate(model: FormModel, main_sections: Sequence[int],
     main_secs = [sections[i] for i in main]
     main_gain = _solve_gain(lambda g: _mean(main_secs, lambda s: s.level_db(g)), target_db, 1e-3,
                             max(s.full_cap_gain() for s in main_secs))
-    floor = target_db - floor_db
-    gains: List[float] = []
-    for section in sections:
-        gain = main_gain
-        if section.power and section.level_db(gain) < floor:
-            top = max(main_gain, section.full_cap_gain())
-            gain = _solve_gain(section.level_db, floor, main_gain, top)
-        gains.append(gain)
+    high = target_db + spread_db
+    gains = [
+        _section_gain(section, main_gain, target_db - (spread_db if i in main else floor_db), high)
+        for i, section in enumerate(sections)
+    ]
     return Calibration(
         gains=gains, slot_caps=model.slot_caps(), main_sections=main, before_db=before,
         after_db=[round(s.level_db(g), 1) for s, g in zip(sections, gains)],
         main_before_db=round(_mean(main_secs, SectionModel.actual_db), 1),
-        main_after_db=round(_mean(main_secs, lambda s: s.level_db(main_gain)), 1),
+        main_after_db=round(_mean(main_secs, lambda s: s.level_db(gains[sections.index(s)])), 1),
         unmodeled_events=model.unmodeled,
     )
 

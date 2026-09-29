@@ -131,12 +131,19 @@ def test_model_matches_offline_render(key, stage):
 
 @pytest.mark.parametrize("key", sorted(NRT))
 def test_rendered_main_block_lands_on_club_level(key):
-    """Офлайн-рендер после калибровки: основной блок classic = уровень club ±1.5 dB."""
+    """Офлайн-рендер после калибровки: КАЖДАЯ секция с ударными — уровень club ±3.5 dB.
+
+    До калибровки у «К Элизе» среднее по основному блоку уже было −28 dB, но
+    его держал пик с басом, а секция ``main`` (первая минута в сете) была на
+    −37 — ровно то, что живой замер услышал как «classic тише на 13 dB».
+    """
     spec = _spec(key)
     plan, _bounds_, main = _bounds(spec)
     weights = [bars for _n, bars, _i in plan]
-    assert _mean(NRT[key]["nrt_after"], main, weights) == pytest.approx(TARGET_MAIN_DB, abs=1.5)
-    assert _mean(NRT[key]["nrt_before"], main, weights) < TARGET_MAIN_DB + 1.0
+    after = NRT[key]["nrt_after"]
+    assert _mean(after, main, weights) == pytest.approx(TARGET_MAIN_DB, abs=2.0)
+    assert all(abs(after[i] - TARGET_MAIN_DB) <= C.MAIN_SPREAD_DB + 0.5 for i in main), after
+    assert min(NRT[key]["nrt_before"][i] for i in main) < TARGET_MAIN_DB - C.MAIN_SPREAD_DB - 3
 
 
 @pytest.mark.parametrize("key", sorted(set(NRT) - ERRATIC))
@@ -156,8 +163,10 @@ def test_calibration_puts_main_on_target_and_lifts_quiet_sections(key):
     bpm = max(A.BPM_RANGE[0], min(A.BPM_RANGE[1], float(spec.bpm)))
     cal = C.section_gains(A.render(spec, calibrate=False), bounds, bpm, main)
     assert cal is not None and cal.unmodeled_events == 0
-    assert cal.main_after_db == pytest.approx(TARGET_MAIN_DB, abs=0.5)
-    assert min(cal.after_db) >= TARGET_MAIN_DB - C.SECTION_FLOOR_DB - 0.2
+    assert cal.main_after_db == pytest.approx(TARGET_MAIN_DB, abs=1.5)
+    for i, level in enumerate(cal.after_db):
+        low = C.MAIN_SPREAD_DB if i in cal.main_sections else C.SECTION_FLOOR_DB
+        assert TARGET_MAIN_DB - low - 0.2 <= level <= TARGET_MAIN_DB + C.MAIN_SPREAD_DB + 0.2, (i, cal.after_db)
     code = A.render(spec)
     for match in AMP.finditer(code):
         values = (match.group(2) or match.group(3)).split(",")
