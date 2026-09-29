@@ -283,6 +283,20 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # ADR-0144: набор размеченных сцен — разбор scene.yaml, атрибуция и
+      # метрики «2.0 лучше 1.1». Каталог tests/unit/maintenance/ не гонялся
+      # ни одним workflow (тот же дефект ADR-0057); подключены ТОЛЬКО файлы
+      # scene_set: остальные тесты каталога (setup_chrony, measure_load,
+      # measure_doa) на ubuntu-latest не проверялись — подключать отдельно.
+      # Нужны pytest + PyYAML (ставятся выше), ни ROS, ни робота.
+      - name: Scene set parser, metrics, conductor, replay isolation (ADR-0144)
+        run: |
+          python -m pytest tests/unit/maintenance/test_scene_set_spec_metrics.py \
+            tests/unit/maintenance/test_scene_set_replay_conductor.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # Issue #2865: проверка #2793 (memory_search по voice_facts) в акте 2
       # марафона не должна снова стать тавтологией — вопрос только после
       # сброса сессии, ключ не из вопроса, паттерн «поиск вернул хиты»
