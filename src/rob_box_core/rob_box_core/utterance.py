@@ -207,6 +207,31 @@ class Utterance:
         return payload
 
 
+#: Поля, без которых ``tts_node.dialogue_callback`` молча отбрасывает запрос
+#: из ``/voice/tts/request`` (лог «⚠ Chunk без SSML», звука нет). Единый
+#: источник правды для приёмника и продюсеров: 29.09.2026 инструмент ``say``
+#: слал ``{"text": ...}`` без ``ssml`` и отчитывался success=True, хотя
+#: робот молчал.
+TTS_REQUEST_REQUIRED_FIELDS: tuple[str, ...] = ("ssml",)
+
+
+def missing_tts_request_fields(payload: Any) -> list[str]:
+    """Каких обязательных полей не хватает TTS-запросу (пусто — принят).
+
+    Этой же функцией пользуется ``tts_node.dialogue_callback`` — поэтому
+    тест продюсера, прогнавший свой payload через неё, проверяет ровно тот
+    контракт, по которому приёмник решает «синтезировать / отбросить».
+
+    >>> missing_tts_request_fields({"ssml": "<speak>a</speak>"})
+    []
+    >>> missing_tts_request_fields({"text": "a"})
+    ['ssml']
+    """
+    if not isinstance(payload, dict):
+        return list(TTS_REQUEST_REQUIRED_FIELDS)
+    return [f for f in TTS_REQUEST_REQUIRED_FIELDS if f not in payload]
+
+
 __all__ = [
     "ALLOWED_PRIORITIES",
     "DEFAULT_PRIORITY",
@@ -215,5 +240,7 @@ __all__ = [
     "PRIORITY_OPERATOR",
     "PRIORITY_REPLACE",
     "Sink",
+    "TTS_REQUEST_REQUIRED_FIELDS",
     "Utterance",
+    "missing_tts_request_fields",
 ]

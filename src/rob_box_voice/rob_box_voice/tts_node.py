@@ -90,6 +90,7 @@ from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import strip_markdown, unsupported_language_notice
+from rob_box_core.utterance import missing_tts_request_fields
 
 # Issue #1709 — Unicode-script guard: не отправляем в TTS текст, который
 # в основном состоит из букв неподдерживаемых письменностей (CJK,
@@ -2632,7 +2633,9 @@ class TTSNode(Node):
             if self._dispatch_voice_tts_sink(msg, sink, raw):
                 return
 
-            if "ssml" not in chunk_data:
+            # Контракт общий с продюсерами (rob_box_core.utterance): тест
+            # каждого публикатора прогоняет свой payload через ту же функцию.
+            if missing_tts_request_fields(chunk_data):
                 self.get_logger().warn("⚠ Chunk без SSML")
                 return
 
