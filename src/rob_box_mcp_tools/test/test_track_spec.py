@@ -25,6 +25,8 @@ from rob_box_mcp_tools.core.club_arranger import (
     LAYER_LEVELS,
     PROGRESSIONS,
     ROLE_SYNTHS,
+    build_matrix,
+    calibrated_gates,
     club_form_beats,
     render_club,
     render_club_kit,
@@ -107,8 +109,11 @@ def test_level_multiplier_scales_gate_only_for_that_lane():
     raw["levels"] = {"lead": 0.5}
     base = render_spec(validate_spec(_base()))
     quiet = render_spec(validate_spec(raw))
-    lead_level = str(round(LAYER_LEVELS["lead"] * 0.5, 3))
-    assert lead_level in quiet
+    # Issue #3154: ``levels`` умножает откалиброванный гейт слоя (по блокам).
+    spec = validate_spec(raw)
+    matrix = build_matrix(spec.kit()["template"])
+    lead_gate = calibrated_gates(matrix, spec.kit(), {"lead": 0.5})["lead"]
+    assert f"amp={lead_gate}," in quiet
     changed = [(a, b) for a, b in zip(base.splitlines(), quiet.splitlines()) if a != b]
     assert len(changed) == 1 and changed[0][1].strip().startswith("amp=")
 

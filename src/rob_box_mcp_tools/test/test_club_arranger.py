@@ -30,6 +30,7 @@ from rob_box_mcp_tools.core.club_arranger import (
     REFERENCE_KIT,
     ROLE_SYNTHS,
     build_matrix,
+    calibrated_gates,
     chord_pentatonic,
     club_duration_seconds,
     club_kit,
@@ -153,11 +154,15 @@ def test_by_design_kick_steps_match_reference():
 def test_gate_durations_sum_to_matrix_length(template):
     code = render_club(template=template)
     matrix = build_matrix(template)
+    # Issue #3154: гейт — откалиброванные уровни по блокам (core/club_loudness).
+    gates = calibrated_gates(matrix, club_kit(0, template))
     for slot, lane in GATED.items():
         expr = _amp_expr(_player_block(code, slot))
-        assert expr == matrix.gate_var(lane, LAYER_LEVELS[lane])
+        assert expr == gates[lane]
         if expr.startswith("var("):
             assert sum(_var_durations(expr)) == pytest.approx(matrix.total_beats), slot
+            values = re.match(r"var\(\[([^\]]*)\]", expr).group(1).split(",")
+            assert max(float(v) for v in values) <= MAX_LAYER_AMP, slot
     assert f"Clock.future({int(matrix.total_beats)}, Clock.clear)" in code
 
 

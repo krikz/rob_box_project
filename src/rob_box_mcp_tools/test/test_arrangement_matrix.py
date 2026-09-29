@@ -173,3 +173,29 @@ class TestSanitizerCompat:
         m = ArrangementMatrix.from_specs({"a": "0 x"})
         code = f"p1 >> pluck([0], dur=1, amp={m.gate_var('a', 0.95)})"
         assert sanitize_renando(code, 0.85).code == code
+
+
+class TestGateVarBlocks:
+    """Issue #3154: гейт с уровнем по блокам (калибровка громкости club)."""
+
+    @pytest.mark.parametrize("template", sorted(SECTION_TEMPLATES))
+    def test_flat_levels_equal_gate_var(self, template):
+        m = ArrangementMatrix.from_specs(SECTION_TEMPLATES[template])
+        for lane in m.lanes:
+            assert m.gate_var_blocks(lane, [0.37] * m.n_blocks) == m.gate_var(lane, 0.37)
+
+    def test_levels_follow_blocks_and_merge(self):
+        m = ArrangementMatrix.from_specs({"a": "x x 12 0 x"})
+        # блок 2 — «12» (первые две четверти), блок 3 молчит
+        assert m.gate_var_blocks("a", [0.5, 0.5, 0.2, 0.9, 0.1]) == "var([0.5, 0.2, 0, 0.1], [16, 4, 12, 8])"
+
+    def test_all_on_same_level_is_plain_number(self):
+        m = ArrangementMatrix.from_specs({"a": "x!3"})
+        assert m.gate_var_blocks("a", [0.25, 0.25, 0.25]) == "0.25"
+
+    def test_rejects_wrong_length_and_negative(self):
+        m = ArrangementMatrix.from_specs({"a": "x x"})
+        with pytest.raises(ValueError, match="Уровней 1"):
+            m.gate_var_blocks("a", [0.5])
+        with pytest.raises(ValueError, match="отрицательным"):
+            m.gate_var_blocks("a", [0.5, -0.1])
