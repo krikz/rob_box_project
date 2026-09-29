@@ -83,7 +83,7 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
 from .utils.stderr_silence import ignore_stderr
@@ -595,13 +595,15 @@ except ImportError:
         return text
 
 
-def _parse_optional_int(value: object) -> int | None:
-    """Parse a ROS-stringy value into an ``int`` or ``None``.
+def _parse_optional_number(value: object, cast: Callable[[Any], Any]) -> Any:
+    """Parse a ROS-stringy value into ``cast(value)`` (``int``/``float``) or ``None``.
 
-    Used for ``minimax_pitch`` (issue #1780). Empty string / ``None`` →
-    ``None`` (field omitted from payload). Any other string / number is
-    coerced via :class:`int`; :class:`ValueError` is logged and treated
-    as "unset" so a typo in YAML doesn't take the whole node down.
+    architecture audit 2026-09-29, ADR-0145: общая реализация для
+    :func:`_parse_optional_int` / :func:`_parse_optional_float`.
+
+    Empty string / ``None`` → ``None`` (field omitted from payload).
+    Coercion failures are treated as "unset" so a typo in YAML doesn't
+    take the whole node down.
     """
     if value is None:
         return None
@@ -610,37 +612,31 @@ def _parse_optional_int(value: object) -> int | None:
         if not stripped:
             return None
         try:
-            return int(stripped)
+            return cast(stripped)
         except ValueError:
             return None
     try:
-        return int(value)  # type: ignore[arg-type]
+        return cast(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_optional_int(value: object) -> int | None:
+    """Parse a ROS-stringy value into an ``int`` or ``None``.
+
+    Used for ``minimax_pitch`` (issue #1780). See
+    :func:`_parse_optional_number`.
+    """
+    return _parse_optional_number(value, int)
 
 
 def _parse_optional_float(value: object) -> float | None:
     """Parse a ROS-stringy value into a ``float`` or ``None``.
 
-    Used for ``minimax_volume`` (issue #1780). Empty string / ``None`` →
-    ``None`` (field omitted from payload). Coercion failures are logged
-    as "unset" so a typo doesn't crash the node — the API still gets a
-    syntactically valid request.
+    Used for ``minimax_volume`` (issue #1780). See
+    :func:`_parse_optional_number`.
     """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return float(stripped)
-        except ValueError:
-            return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
+    return _parse_optional_number(value, float)
 
 
 def _parse_pronunciation_dict(value: object) -> dict | None:
