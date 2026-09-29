@@ -231,6 +231,13 @@ def _music_form_stops_at_epoch(state: Dict[str, Any]) -> Optional[float]:
     return _remaining_to_epoch(state.get("form_stop_remaining_s"))
 
 
+#: Issue #3174 — причины ``/mcp/music_cleanup``, которые означают конец речи
+#: или диалога, а не просьбу остановить музыку. По ним DJ-сет не гасится
+#: (см. ``MCPServer._cleanup_spares_dj_set``); остальные причины — явный стоп.
+SOFT_MUSIC_CLEANUP_REASONS = frozenset(
+    {"tts_batch_complete", "dialogue_end", "new_dialogue"}
+)
+
 #: Issue #3133 — сериализует перевзвод одноразового таймера конца формы
 #: (publish_music_state зовут потоки тулов, watchdog и сам таймер).
 _FORM_END_TIMER_LOCK = threading.Lock()
@@ -791,6 +798,8 @@ class MCPServer(Node):
         except (TypeError, ValueError):
             payload = {}
         reason = str(payload.get("reason", "dialogue_end")) if isinstance(payload, dict) else "dialogue_end"
+        if self._cleanup_spares_dj_set(reason):
+            return
         result = self._music_manager.stop_music_on_session_end()
         if result.get("was_active"):
             self.get_logger().warning(
@@ -805,6 +814,27 @@ class MCPServer(Node):
         # Renardo погашен — гасим и mp3-трек в sound_node (см. комментарий
         # у ``sound_stop_pub``).
         self.stop_generated_track_playback()
+
+    def _cleanup_spares_dj_set(self, reason: str) -> bool:
+        """Issue #3174 / ADR-0141 — мягкий cleanup не гасит идущий DJ-сет.
+
+        ``tts_batch_complete`` / ``dialogue_end`` / ``new_dialogue`` — конец
+        речи или диалога, а не просьба остановить. Стоп после речи нужен
+        только BACKING-музыке своего хода; DJ-сет живёт до явного стопа
+        (``stop_music``, ``user_stop_command``, ``stop_command_guard``,
+        ``new_session``, ``shutdown`` — они проходят). Живой прогон 29.09
+        05:00: ход «поставь к Элизе» без тулов взвёл cleanup, и сет,
+        запущенный роутером, замолчал на 38 с.
+        """
+        if reason not in SOFT_MUSIC_CLEANUP_REASONS:
+            return False
+        if getattr(self._music_manager, "dj_mode_enabled", False) is not True:
+            return False
+        self.get_logger().info(
+            f"🎧 [{reason}] DJ-сет идёт — мягкий cleanup музыку не трогает "
+            "(issue #3174, ADR-0141)"
+        )
+        return True
 
     def stop_generated_track_playback(self) -> None:
         """Остановить mp3 из библиотеки сгенерированной музыки.

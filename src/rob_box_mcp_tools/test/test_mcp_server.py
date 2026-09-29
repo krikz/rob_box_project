@@ -839,3 +839,66 @@ def test_publish_music_form_carries_finite_track_stop_as_epoch(monkeypatch):
     manager.get_state.return_value["form_stop_remaining_s"] = None  # repeat=True
     module.MCPServer.publish_music_state(server)
     assert json.loads(server.music_form_pub.published[1])["stops_at"] is None
+
+
+# ── Issue #3174 — мягкий music_cleanup не гасит DJ-сет ────────────────────
+
+
+def _cleanup_server(module, *, dj_enabled):
+    manager = MagicMock()
+    manager.dj_mode_enabled = dj_enabled
+    manager.stop_music_on_session_end.return_value = {
+        "was_active": True, "stopped_patterns": [], "message": "ok",
+    }
+    server = _FakeServer()
+    server._music_manager = manager
+    server._cleanup_spares_dj_set = (
+        lambda reason: module.MCPServer._cleanup_spares_dj_set(server, reason)
+    )
+    return server, manager
+
+
+def _send_cleanup(module, server, reason):
+    msg = module.String()
+    msg.data = json.dumps({"reason": reason})
+    module.MCPServer._on_music_cleanup(server, msg)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reason", ["tts_batch_complete", "dialogue_end", "new_dialogue"])
+def test_soft_cleanup_spares_running_dj_set(monkeypatch, reason):
+    """Живой прогон 29.09 05:00: DJ-сет роутера, ход без тулов → тишина 38 с."""
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, dj_enabled=True)
+
+    _send_cleanup(module, server, reason)
+
+    manager.stop_music_on_session_end.assert_not_called()
+    assert server.stop_generated_track_playback_calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason",
+    ["user_stop_command", "stop_command_guard", "new_session", "shutdown"],
+)
+def test_explicit_cleanup_still_stops_dj_set(monkeypatch, reason):
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, dj_enabled=True)
+
+    _send_cleanup(module, server, reason)
+
+    manager.stop_music_on_session_end.assert_called_once()
+    assert server.stop_generated_track_playback_calls == 1
+
+
+@pytest.mark.unit
+def test_soft_cleanup_still_stops_backing_without_dj(monkeypatch):
+    """BACKING под рэп (DJ выключен) гасится после речи, как раньше."""
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, dj_enabled=False)
+
+    _send_cleanup(module, server, "tts_batch_complete")
+
+    manager.stop_music_on_session_end.assert_called_once()
+    assert server.stop_generated_track_playback_calls == 1

@@ -164,6 +164,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_tool_call_markup,  # Issue #2760
     is_vocal_request,
     spoken_matches_claim_category,  # Issue #2780 п.3
+    UniversalActionClaimHit,  # Issue #3174
     user_wants_music,
     user_wants_performance,
 )
@@ -5948,9 +5949,9 @@ class DialogueNode(Node):
             # CRITICAL-тур вызовет пинг-понг.
             return False
 
-        hit = detect_universal_action_claim(
+        hit = self._universal_claim_hit(
             spoken=spoken,
-            tools_called=self._claim_backing_tools(tools_called),
+            tools_called=tools_called,
             tool_error_occurred=tool_error_occurred,
         )
         if hit is None:
@@ -6720,6 +6721,15 @@ class DialogueNode(Node):
                 "cleanup НЕ вооружаем (живёт до stop_music/watchdog/конца "
                 f"формы); плеер: playing={self._music_playing_now()}"
             )
+        elif self._music_not_started_by_this_turn():
+            # Issue #3174 / ADR-0141: музыкальных тулов в ходе нет, а плеер
+            # играет — значит, музыку запустил не этот ход (роутер, прошлый
+            # ход, DJ-переход). Стоп после речи — только для BACKING этого
+            # хода; чужой трек и DJ-сет живут до явного стопа.
+            self.get_logger().info(
+                "🎵 [issue 3174] ход без музыкальных тулов, плеер играет "
+                "(DJ-сет или трек не из этого хода) — cleanup НЕ вооружаем"
+            )
         elif not was_dj_auto and not self._pending_music_cleanup:
             self._pending_music_cleanup = True
             self.get_logger().info(
@@ -6730,6 +6740,21 @@ class DialogueNode(Node):
                 "🎵 [issue 992] music_cleanup already pending — "
                 "ignoring redundant re-arm"
             )
+
+    def _music_not_started_by_this_turn(self) -> bool:
+        """Issue #3174 — по снимку плеера играет музыка не из этого хода.
+
+        Вызывается только для хода БЕЗ музыкальных тулов: всё, что сейчас
+        звучит, запустил кто-то другой — роутер медиакоманд (#3134, #3153:
+        превью + ``set_dj_mode`` в обход LLM), прошлый ход или DJ-переход.
+        Источник — снимок ``/voice/music/state`` (ADR-0141) и DJ-флаг:
+        снимка нет и DJ выключен — ``False``, прежнее поведение.
+        """
+        snapshot = getattr(self, "_music_player_state", None)
+        if snapshot is not None and (snapshot.dj or snapshot.is_playing()):
+            return True
+        dj = getattr(self, "_dj", None)
+        return bool(dj is not None and getattr(dj.state, "enabled", False) is True)
 
     def _flush_music_cleanup_if_idle(self, was_dj_auto: bool) -> None:
         """Issue #992 — финальный flush, если cleanup вооружён и батчей нет.
@@ -7486,6 +7511,38 @@ class DialogueNode(Node):
             if at >= horizon
         )
         return tuple(tools_called or ()) + recent
+
+    def _universal_claim_hit(
+        self,
+        *,
+        spoken: str,
+        tools_called: Any,
+        tool_error_occurred: bool = False,
+        repeated_call_args: bool = False,
+    ) -> Optional[UniversalActionClaimHit]:
+        """Issue #2549 + #3165 + #3174 — не подкреплённое заявление действия.
+
+        Журнал роутера (:meth:`_claim_backing_tools`) подкрепляет только
+        ПЕРЕСКАЗ сделанного («я остановил трек», прошедшее время). Обещание
+        в будущем времени («Сейчас поставлю к Элизе!») — это действие ЭТОГО
+        хода, и превью с ``set_dj_mode`` роутера 30 с назад его не
+        выполняют. Живой прогон 29.09 05:00 (issue #3174): журнал роутера
+        заглушил гуард, обещание ушло в TTS с ``tools=[]``.
+        """
+        own = detect_universal_action_claim(
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+            tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_call_args,
+        )
+        if own is None or own.tense == "future":
+            return own
+        return detect_universal_action_claim(
+            spoken=spoken,
+            tools_called=self._claim_backing_tools(tools_called),
+            tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_call_args,
+        )
 
     async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
         tool_call = ToolCall(
@@ -9395,9 +9452,9 @@ class DialogueNode(Node):
             or not getattr(self, "_universal_action_claim_retry_used", False)
         ):
             return False
-        hit = detect_universal_action_claim(
+        hit = self._universal_claim_hit(
             spoken=spoken,
-            tools_called=self._claim_backing_tools(tools_called),
+            tools_called=tools_called,
             tool_error_occurred=tool_error_occurred,
             repeated_call_args=repeated_call_args,
         )
