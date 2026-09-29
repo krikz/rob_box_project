@@ -4323,6 +4323,45 @@ class ComposeMusicTool(MCPTool):
         except Exception:  # noqa: BLE001 — диагностика не ломает музыку
             pass
 
+    #: Issue #3169 — русские имена тоник (в порядке ``VALID_ROOTS``) для
+    #: человекочитаемого имени club-трека («ля-диез минор» вместо
+    #: «A# minor»). Club пока поддерживает только ``scale="minor"``
+    #: (``SUPPORTED_SCALES`` в ``club_arranger.py``) — маппинг лада на
+    #: случай будущего мажора.
+    _ROOT_NAMES_RU: Dict[str, str] = dict(zip(
+        VALID_ROOTS,
+        (
+            "до", "до-диез", "ре", "ре-диез", "ми", "фа",
+            "фа-диез", "соль", "соль-диез", "ля", "ля-диез", "си",
+        ),
+    ))
+    _SCALE_NAMES_RU: Dict[str, str] = {"minor": "минор", "major": "мажор"}
+
+    @classmethod
+    def _club_track_label(cls, bpm: float, root: str, scale: str) -> str:
+        """Issue #3169 — человеческое имя club-трека вместо «без названия».
+
+        ``<music_state>`` (``music_state_prompt.py``) и ``/voice/music/form``
+        берут имя из ``MusicManager.current_track_name`` — для club он
+        никогда не заполнялся (``_execute_club`` его не трогал, в отличие
+        от ``_compose_success`` у classic), поэтому робот отвечал «трек «без
+        названия»» на «что сейчас играет?» (живой прогон 29.09). Имя — не
+        тема (club её не имеет, см. ``_club_ignored_warning``), а честное
+        описание звучания: темп и тональность, если они распознаны.
+        """
+        label = "клубный трек"
+        try:
+            bpm_i = int(round(float(bpm)))
+        except (TypeError, ValueError):
+            bpm_i = None
+        if bpm_i:
+            label += f", {bpm_i} BPM"
+        root_ru = cls._ROOT_NAMES_RU.get(root)
+        scale_ru = cls._SCALE_NAMES_RU.get(scale)
+        if root_ru and scale_ru:
+            label += f", {root_ru} {scale_ru}"
+        return label
+
     def _execute_club(self, kwargs: Dict[str, Any], fade: bool = False) -> MCPToolResult:
         """``style="club"``: код из :func:`core.club_arranger.render_club`.
 
@@ -4356,6 +4395,12 @@ class ComposeMusicTool(MCPTool):
         else:
             self._manager.set_form_deadline(duration_s)
         self._manager.set_form_cycle_end(duration_s)
+        # Issue #3169 — club не наследует ``current_track_name`` от classic
+        # (``_compose_success``) и без него оставался None: снимок и
+        # ``<music_state>`` говорили «трек «без названия»».
+        self._manager.current_track_name = self._club_track_label(
+            bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
+        )
         self._notify_music_state()
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"

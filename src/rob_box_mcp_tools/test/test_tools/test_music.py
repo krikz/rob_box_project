@@ -4986,6 +4986,36 @@ class TestComposeMusicToolClubStyle:
         assert result.message.index("Проигнорировано") < result.message.index("Играю клубный трек")
         assert result.data["ignored_params"] == ["lead_synth"]
 
+    # ── Issue #3169: club несёт человеческое имя трека ────────────────
+
+    def test_club_sets_human_track_name_default(self, mock_node):
+        """По умолчанию (bpm=124, root=A#, scale=minor) — не «без названия»."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", seed=3)
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек, 124 BPM, ля-диез минор"
+        assert mgr.get_state()["track_name"] == mgr.current_track_name
+
+    def test_club_sets_human_track_name_with_bpm_and_root(self, mock_node):
+        """Явные bpm/root/scale попадают в имя — issue #3169."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", root="C", bpm=128, seed=1)
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек, 128 BPM, до минор"
+
+    def test_club_track_name_is_never_empty_string(self, mock_node):
+        """Регрессия issue #3169: снимок/форма не должны говорить «без
+        названия» — ``current_track_name`` всегда непустая строка после
+        успешного club-плея."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club")
+        assert result.success is True, result.error
+        assert mgr.current_track_name
+        assert "без названия" not in mgr.current_track_name
+
     # ── Issue #3113: style=club + известная тема → classic с темой ───
 
     _MARIO = {
@@ -5029,8 +5059,14 @@ class TestComposeMusicToolClubStyle:
         assert "Ошибка classic:" in result.error
         fake_exec.assert_not_called()
 
-    def test_state_track_name_is_library_title_then_cleared(self, mock_node):
-        """Issue #3113 п.5: имя темы уходит в state (→ /voice/music/form «track»)."""
+    def test_state_track_name_is_library_title_then_club_label(self, mock_node):
+        """Issue #3113 п.5: имя темы уходит в state (→ /voice/music/form «track»).
+
+        Issue #3169 (живой прогон 29.09): раньше переход в club ОЧИЩАЛ имя
+        (``track_name`` становился ``None``), и робот отвечал «трек «без
+        названия»» — теперь club ставит своё человеческое имя вместо
+        того, чтобы оставлять снимок безымянным.
+        """
         lib = Mock()
         lib.get.return_value = self._MARIO
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -5040,7 +5076,11 @@ class TestComposeMusicToolClubStyle:
         assert mgr.get_state()["track_name"] == "Super Mario Bros"
         with patch("builtins.exec"):
             tool.execute(style="club", seed=2)
-        assert mgr.get_state()["track_name"] is None
+        track_name = mgr.get_state()["track_name"]
+        assert track_name is not None
+        assert track_name != "Super Mario Bros"
+        assert "без названия" not in track_name
+        assert track_name.startswith("клубный трек")
 
     def test_club_with_rtttl_plays_classic(self, mock_node):
         tool, _ = self._make_tool(mock_node)
