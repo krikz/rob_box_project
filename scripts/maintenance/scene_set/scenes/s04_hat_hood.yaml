@@ -1,0 +1,15 @@
+scene: s04_hat_hood
+description: шапка или капюшон — закрытый лоб
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+steps:
+  - say: "Начинаю сцену четыре. Наденьте шапку или капюшон вне кадра."
+    wait_s: 8
+  - enter: owner
+    say: "Дэнчик, войдите в кадр в шапке и встаньте на метку полтора метра."
+    wait_s: 15
+  - mark: {type: hat_off, who: owner}
+    say: "Снимите шапку. Сейчас."
+    wait_s: 12
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."
