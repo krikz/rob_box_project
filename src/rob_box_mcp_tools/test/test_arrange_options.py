@@ -88,6 +88,11 @@ def _player_line(code: str, player: str) -> str:
     return next(line for line in code.splitlines() if line.startswith(f"{player} >>"))
 
 
+def _without_amp(line: str) -> str:
+    """Строка плеера без значений ``amp=`` (калибровка #3154 меняет только их)."""
+    return re.sub(r"\bamp=(var\(\[[^\]]*\], \[[^\]]*\]\)|[0-9.]+)", "amp=…", line)
+
+
 def _amps(line: str):
     match = re.search(r"amp=(var\(\[([^\]]*)\]|([0-9.]+))", line)
     raw = match.group(2) if match.group(2) is not None else match.group(3)
@@ -383,10 +388,15 @@ def test_bass_style_off_removes_bass_layer():
     assert got["harmony"].bass == ()
     spec = _spec(got)
     assert _layer(spec, "bass") is None
-    code, code_auto = render(spec), render(_spec(auto))
+    # Issue #3154: калибровка громкости выравнивает трек без баса заново
+    # (меняются только amp=), поэтому «остальное не тронуто» — без калибровки.
+    code, code_auto = render(spec, calibrate=False), render(_spec(auto), calibrate=False)
     assert "p1 >>" not in code and "p1 >>" in code_auto
     assert _player_line(code, "p2") == _player_line(code_auto, "p2")
     assert _player_line(code, "p3") == _player_line(code_auto, "p3")
+    calibrated = render(spec)
+    for player in ("p2", "p3"):
+        assert _without_amp(_player_line(calibrated, player)) == _without_amp(_player_line(code, player))
 
 
 def test_bass_approach_off_and_on():

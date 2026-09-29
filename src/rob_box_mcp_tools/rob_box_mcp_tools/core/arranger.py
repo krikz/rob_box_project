@@ -96,8 +96,8 @@ RC4 дал форме огибающую amp, но мелодия внутри �
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 #: 1 такт = 4 бита в дефолтном метре Renardo (``TempoClock.bar_length()``).
 BEATS_PER_BAR = 4
@@ -1078,11 +1078,33 @@ def form_role_plan_violations(
     return violations
 
 
+@dataclass(frozen=True)
+class SectionLevels:
+    """Калибровка громкости classic (issue #3154, :mod:`core.classic_loudness`).
+
+    ``gains[i]`` — множитель ``amp`` секции ``i`` формы; ``slot_caps`` —
+    потолок ``amp`` слота плеера (``max_amp`` санитайзера или ниже, если
+    синт за своими фильтрами выше обрывается). ``amp = min(потолок·level,
+    amp · gain)``: множители считаются по спеке БЕЗ ручки ``levels``, а
+    ручка умножает результат — «бас ×0.5» остаётся ровно вдвое тише.
+    """
+
+    gains: Tuple[float, ...]
+    slot_caps: Mapping[str, float] = field(default_factory=dict)
+    max_amp: float = 0.85
+
+    def apply(self, amp: float, section: int, slot: str, level: float = 1.0) -> float:
+        return min(self.slot_caps.get(slot, self.max_amp) * level, amp * self.gains[section])
+
+
 def _amp_envelope(
     role: str,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     base_amp: float,
     floor: float = 0.0,
+    section_levels: Optional[SectionLevels] = None,
+    slot: str = "",
+    level: float = 1.0,
 ) -> Tuple[List[float], List[int]]:
     """Собрать (значения amp, длительности в битах) для одной роли.
 
@@ -1094,12 +1116,18 @@ def _amp_envelope(
         floor: нижняя граница интенсивности, доля 0..1. Нужна
             фиксированной теме (:data:`FIXED_THEME_AMP_FLOOR`): форма
             вправе делать её тише, но не вправе выключить.
+        section_levels: калибровка громкости (issue #3154) — множитель
+            секции и потолок слота ``slot`` (потолок × ``level`` — ручка
+            ``levels``, уже вошедшая в ``base_amp``); ``None`` — как до калибровки.
     """
     amps: List[float] = []
     durs: List[int] = []
-    for _name, bars, intensities in plan:
+    for index, (_name, bars, intensities) in enumerate(plan):
         intensity = max(_section_intensity(role, intensities), float(floor))
-        amps.append(round(base_amp * intensity, 4))
+        amp = base_amp * intensity
+        if section_levels is not None and amp > 0:
+            amp = section_levels.apply(amp, index, slot, level)
+        amps.append(round(amp, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     return _merge_adjacent(amps, durs)
 
@@ -1696,6 +1724,7 @@ def _render_layer(
     use_filter: bool,
     level: float = 1.0,
     duck_expr: Optional[str] = None,
+    section_levels: Optional[SectionLevels] = None,
 ) -> Optional[str]:
     """Отрендерить одну строку Renardo-кода, либо None если слой молчит.
 
@@ -1727,7 +1756,8 @@ def _render_layer(
         floor = FIXED_THEME_AMP_FLOOR
         if layer.role == "counter":
             floor *= COUNTER_OF_LEAD
-    amps, durs = _amp_envelope(layer.role, plan, base_amp, floor=floor)
+    amps, durs = _amp_envelope(layer.role, plan, base_amp, floor=floor,
+                               section_levels=section_levels, slot=player, level=level)
     if not any(amps):
         # Роль не участвует ни в одной секции этой формы (например drums в
         # ambient) — плеер не создаём вовсе, чтобы не гонять тихие ноты.
@@ -1833,6 +1863,7 @@ def _render_loop_layer(
     bpm: float,
     player: str,
     level: float = 1.0,
+    section_levels: Optional[SectionLevels] = None,
 ) -> str:
     """Отрендерить жанровый луп: ``loop(имя, dur=N, beat_stretch=1, amp=...)``.
 
@@ -1854,7 +1885,8 @@ def _render_loop_layer(
         raise ArrangementError(f"groove_loop: неизвестный луп {layer.pattern!r}.")
     has_drums = any("drums" in intensities for _n, _b, intensities in plan)
     source, scale = ("drums", 1.0) if has_drums else ("pad", LOOP_PAD_FOLLOW)
-    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale * level)
+    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale * level,
+                               section_levels=section_levels, slot=player, level=level)
     amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
     beats = loops.loop_beats(info, bpm)
     return (
@@ -1875,6 +1907,7 @@ def _render_fx_layer(
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     player: str,
     level: float = 1.0,
+    section_levels: Optional[SectionLevels] = None,
 ) -> str:
     """Отрендерить одиночный FX-акцент (issue #2968): ``loop(<fx>, ...)``.
 
@@ -1922,9 +1955,11 @@ def _render_fx_layer(
 
     amps: List[float] = []
     durs: List[int] = []
-    for name, bars, _intensities in plan:
-        active = name.lower() in FX_BOUNDARY_SECTIONS
-        amps.append(round(FX_BASE_AMP * level, 4) if active else 0.0)
+    for index, (name, bars, _intensities) in enumerate(plan):
+        amp = FX_BASE_AMP * level if name.lower() in FX_BOUNDARY_SECTIONS else 0.0
+        if section_levels is not None and amp > 0:
+            amp = section_levels.apply(amp, index, player, level)
+        amps.append(round(amp, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     amps, durs = _merge_adjacent(amps, durs)
     amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
@@ -1978,6 +2013,7 @@ def _append_layer_lines(
     spec: CompositionSpec,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     bpm: float,
+    section_levels: Optional[SectionLevels] = None,
 ) -> int:
     """Дописать в ``lines`` строки всех слоёв; луп и FX — последними.
 
@@ -1998,7 +2034,7 @@ def _append_layer_lines(
         layer_duck = duck_expr if _duck_target(spec, layer.role) else None
         rendered = _render_layer(
             layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0),
-            duck_expr=layer_duck,
+            duck_expr=layer_duck, section_levels=section_levels,
         )
         if rendered is not None:
             lines.append(rendered)
@@ -2006,21 +2042,28 @@ def _append_layer_lines(
     for layer in spec.layers:
         if layer.role == LOOP_ROLE:
             lines.append(_render_loop_layer(
-                layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0)
+                layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0),
+                section_levels=section_levels,
             ))
             count += 1
     for layer in spec.layers:
         if layer.role == FX_ROLE:
             lines.append(_render_fx_layer(
                 layer, plan, _free_loop_slot(lines, what="fx"),
-                level=levels.get(FX_ROLE, 1.0),
+                level=levels.get(FX_ROLE, 1.0), section_levels=section_levels,
             ))
             count += 1
     return count
 
 
-def render(spec: CompositionSpec, *, align_clock: bool = False) -> str:
+def render(spec: CompositionSpec, *, align_clock: bool = False, calibrate: bool = True) -> str:
     """Развернуть спецификацию в Renardo-код с формой.
+
+    ``calibrate`` (issue #3154, по умолчанию вкл.): громкость секций
+    выравнивается моделью :mod:`core.classic_loudness` — основной блок
+    (секции с ударными) на уровне club, тихие секции не ниже него больше
+    чем на ~8 dB. Модель не разворачивает программу — код как до
+    калибровки.
 
     Args:
         align_clock: issue #3112 — сразу после ``Clock.clear()`` вставить
@@ -2039,8 +2082,47 @@ def render(spec: CompositionSpec, *, align_clock: bool = False) -> str:
         raise ArrangementError("Спецификация без слоёв — играть нечего.")
 
     bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm)))
-    root = spec.root if spec.root in VALID_ROOTS else "C"
     plan = resolve_form(spec.form, getattr(spec, "theme_bars", 0))
+    code = _render_program(spec, plan, bpm, align_clock, None)
+    if not calibrate:
+        return code
+    # Множители — по спеке без ручки ``levels`` (см. :class:`SectionLevels`).
+    neutral = replace(spec, levels={}) if getattr(spec, "levels", None) else spec
+    base_code = code if neutral is spec else _render_program(neutral, plan, bpm, align_clock, None)
+    levels = classic_section_levels(neutral, plan, bpm, base_code)
+    return code if levels is None else _render_program(spec, plan, bpm, align_clock, levels)
+
+
+def classic_section_levels(
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+    code: str,
+) -> Optional[SectionLevels]:
+    """Калибровка громкости по программе ``code`` (issue #3154); ``None`` — без калибровки."""
+    from .classic_loudness import MAX_AMP, section_gains
+
+    bounds = [0.0]
+    for _name, bars, _intensities in plan:
+        bounds.append(bounds[-1] + int(bars) * BEATS_PER_BAR)
+    has_drums = any(layer.role == "drums" for layer in spec.layers)
+    main = [i for i, (_n, _b, intensities) in enumerate(plan)
+            if has_drums and _section_intensity("drums", intensities) > 0]
+    calibration = section_gains(code, bounds, bpm, main)
+    if calibration is None:
+        return None
+    return SectionLevels(tuple(calibration.gains), dict(calibration.slot_caps), MAX_AMP)
+
+
+def _render_program(
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+    align_clock: bool,
+    section_levels: Optional[SectionLevels],
+) -> str:
+    """Код формы: шапка клока/тоники/лада + слои (с калибровкой, если есть)."""
+    root = spec.root if spec.root in VALID_ROOTS else "C"
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     total_beats = total_bars * BEATS_PER_BAR
 
@@ -2108,7 +2190,7 @@ def render(spec: CompositionSpec, *, align_clock: bool = False) -> str:
     # неё свои строки (issue #2837, живой прогон 23.09: с filter_sweep=True
     # шапка всегда 5 строк, и guard на ``len(lines) <= 4`` не срабатывал ни
     # при каком количестве слоёв).
-    rendered_players = _append_layer_lines(lines, spec, plan, bpm)
+    rendered_players = _append_layer_lines(lines, spec, plan, bpm, section_levels)
 
     if rendered_players == 0:
         raise _no_players_error(spec, plan)

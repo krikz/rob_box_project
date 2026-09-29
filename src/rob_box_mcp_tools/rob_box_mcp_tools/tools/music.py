@@ -59,6 +59,10 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
+# Issue #3154: arranger.render грузит модель громкости лениво (arranger.py
+# импортирует gen_tool_catalog без пакета) — предзагрузка здесь, до того как
+# кто-то подменит builtins.exec (тесты тула патчат его на время execute).
+from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
