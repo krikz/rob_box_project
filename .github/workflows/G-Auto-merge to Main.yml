@@ -22,12 +22,21 @@ jobs:
       - uses: actions/checkout@v7
       - name: Create PR to main
         run: |
-          gh pr create \
+          set +e
+          OUT=$(gh pr create \
             --base main \
             --head develop \
             --title "chore: release develop to main" \
-            --body "Auto-merge from develop" \
-            --label release,autobuild \
-            || true
+            --body "Auto-merge from develop" 2>&1)
+          RC=$?
+          echo "$OUT"
+          if [ $RC -ne 0 ]; then
+            if echo "$OUT" | grep -qi "already exists"; then
+              echo "PR develop→main already exists — nothing to do."
+            else
+              echo "::error::gh pr create failed (see output above)"
+              exit $RC
+            fi
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

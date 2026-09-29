@@ -7,9 +7,9 @@ on:
         description: "Попробовать подключить раннер к ROS2 wifi"
         required: false
         default: "true"
-  push:
-    branches:
-      - "feature/*"
+
+permissions:
+  contents: read
 
 jobs:
   diagnose:

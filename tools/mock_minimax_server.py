@@ -603,10 +603,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if base_url_env:
         _log.info("MINIMAX_BASE_URL=%s (env honoured; mock accepts any value)", base_url_env)
     if api_key_env:
-        # Don't log the actual key — just confirm presence for parity with
-        # production-side redaction (see test_minimax_tts_logging.py).
-        redacted = api_key_env[:4] + "***" if len(api_key_env) >= 4 else "***"
-        _log.info("MINIMAX_API_KEY=%s (env honoured; mock accepts any value)", redacted)
+        # Don't log any part of the key — just confirm presence for parity
+        # with production-side redaction (see test_minimax_tts_logging.py).
+        _log.info("MINIMAX_API_KEY set (env honoured; mock accepts any value)")
     if group_id_env:
         _log.info("MINIMAX_GROUP_ID=%s (env honoured)", group_id_env)
 

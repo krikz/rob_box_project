@@ -1,3 +1,7 @@
+# checkov:skip=CKV_OPENAPI_4: no global security scheme — server binds to 127.0.0.1 only
+#   (see http_server.py:45, docker/vision/docker-compose.yaml:458); auth is deferred
+#   per ADR-0011 §6.4 Q6.
+# checkov:skip=CKV_OPENAPI_5: same as CKV_OPENAPI_4 — no auth on a loopback-only sidecar.
 openapi: 3.0.3
 info:
   title: rob_box_voice Action Server (HTTP binding)
@@ -426,6 +430,8 @@ components:
         state:
           $ref: "#/components/schemas/ActionState"
         feedback:
+          # checkov:skip=CKV_OPENAPI_21: intentionally unbounded — feedback is an
+          #   append-only, never-truncated history by contract (see description).
           type: array
           description: |
             Append-only history of feedback events. Never truncated.
