@@ -59,8 +59,15 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
-from ..core.club_arranger import club_duration_seconds, club_form_beats, club_kit, render_club
-from ..core.club_transition import FADE_BARS, fade_seconds, wrap_with_fade
+from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
+from ..core.club_transition import (
+    FADE_AMPLIFY_TO,
+    FADE_BARS,
+    TRACK_STARTED_FN,
+    fade_seconds,
+    is_fade_wrapped,
+    wrap_with_fade,
+)
 from ..core.clock_phase import clock_phase_snapshot
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
@@ -859,6 +866,28 @@ class MusicManager:
             f"[music] SynthDefs still missing after {max_rounds} rounds: {missing}"
         )
 
+    def attach_logger(self, logger: Any) -> None:
+        """Логгер узла для сообщений менеджера (иначе — stderr, см. ниже).
+
+        Issue #3166: строка ``[#3112] … started …`` пишется из колбэка
+        ``_rbx_track_started`` в потоке клока Renardo — без логгера узла она
+        ушла бы только в stderr.
+        """
+        self._logger = logger
+
+    def _log_info(self, message: str) -> None:
+        """INFO через логгер узла, если он есть (иначе stderr, как warning)."""
+        logger = getattr(self, "_logger", None)
+        if logger is not None:
+            try:
+                logger.info(message)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        import sys as _sys
+        _sys.stderr.write(f"{message}\n")
+        _sys.stderr.flush()
+
     def _log_warning(self, message: str) -> None:
         """Log via the manager's logger when available (fallback to print)."""
         logger = getattr(self, "_logger", None)
@@ -1532,6 +1561,78 @@ class MusicManager:
         except Exception:
             pass
 
+    def _prepare_renardo_namespace(self) -> None:
+        """Колбэк ``_rbx_track_started`` в пространство имён и сброс ``now_flag``.
+
+        Issue #3166 / ADR-0142 §10.1. Колбэк кладётся перед КАЖДЫМ ``exec``
+        (а не только при бутстрапе): fade-обёртка зовёт его последней строкой
+        ``_rbx_next_track``, и ``NameError`` там сорвал бы старт трека.
+
+        ``Clock.now_flag``: программа с ``dj_entry`` поднимает его на время
+        создания плееров и опускает после. Если она упала посередине (в
+        потоке клока — ошибку Renardo только напечатает), флаг остался бы
+        поднятым, и плееры следующих треков вставали бы не на границу такта.
+        """
+        try:
+            self._renardo_context[TRACK_STARTED_FN] = self._on_track_started
+            clock = self._renardo_context.get("Clock")
+            if clock is not None and getattr(clock, "now_flag", False):
+                clock.now_flag = False
+        except Exception:  # noqa: BLE001 — не мешаем музыке
+            pass
+
+    def _on_track_started(self, form_beats: int = 0, entry_beats: int = 0) -> None:
+        """Колбэк «новый трек стартовал» из ``_rbx_next_track`` (issue #3166).
+
+        Исполняется в потоке клока Renardo ПОСЛЕ ``Clock.clear`` →
+        ``set_time`` → плееров нового трека (ADR-0142 §10.1, PR-1):
+
+        1. снимок фазы клока и INFO ``[#3112] трек started …`` — теперь
+           видно, где реально встал трек, а не где был клок в момент
+           ``exec`` обёртки;
+        2. teardown старых SC-нод (gate=0 → freeAll → g_new) — в отдельном
+           потоке, сразу: первые ноты нового трека материализуются в
+           scsynth через ``Clock.latency`` (0,25 с), конвейер
+           :meth:`_transition_cleanup` занимает ≈0,10 с.
+
+        Никогда не бросает: исключение здесь сорвало бы только лог, но
+        печаталось бы Renardo в поток клока.
+        """
+        try:
+            snapshot = self._track_started_snapshot(form_beats, entry_beats)
+            self._last_track_started = snapshot
+            self._log_info(self._format_track_started(snapshot))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            worker = threading.Thread(target=self._transition_cleanup, args=(1,), daemon=True)
+            worker.start()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _track_started_snapshot(self, form_beats: int, entry_beats: int) -> Dict[str, Any]:
+        """Доля клока и фаза внутри формы в момент старта трека."""
+        clock = self._renardo_context.get("Clock")
+        beat = float(clock.now()) if clock is not None else None
+        total = float(form_beats or 0)
+        phase = round(beat % total, 3) if beat is not None and total > 0 else None
+        return {
+            "clock_beat": None if beat is None else round(beat, 3),
+            "form_total_beats": total,
+            "phase_beats": phase,
+            "entry_beats": int(entry_beats or 0),
+            "now_flag": bool(getattr(clock, "now_flag", False)),
+            "latency_s": getattr(clock, "latency", None),
+        }
+
+    @staticmethod
+    def _format_track_started(snap: Dict[str, Any]) -> str:
+        return (
+            f"[#3112] трек started внутри _rbx_next_track: доля клока={snap['clock_beat']}, "
+            f"фаза в форме={snap['phase_beats']} из {snap['form_total_beats']:g} "
+            f"(ожидался вход с доли {snap['entry_beats']}), latency={snap['latency_s']}"
+        )
+
     def _schedule_transition_cleanup(self, group: int = 1) -> None:
         """Отложить ramp/freeAll старого трека до старта нового (issue #3137).
 
@@ -1888,6 +1989,11 @@ class MusicManager:
         # в scsynth сам по себе. После многих переходов 1024-нодовая таблица
         # SC забивается → "too many nodes" / "negative node IDs" → тишина.
         has_clock_clear = "Clock.clear()" in code
+        # Issue #3166: у fade-обёртки ``Clock.clear()`` нового трека стоит
+        # внутри ОТЛОЖЕННОГО ``_rbx_next_track`` — teardown старых нод делает
+        # колбэк ``_rbx_track_started`` в момент реального старта, а не мы
+        # здесь по клоку уходящего трека (это обрывало фейд, ADR-0142 §1 п.5).
+        deferred_start = is_fade_wrapped(code)
 
         # Issue #990: the music lifecycle is owned by the system
         # (tts_batch_complete → music_cleanup → stop_music_on_session_end).
@@ -1926,13 +2032,14 @@ class MusicManager:
         # scsynth ещё читает файл в буфер (Buffer UGen: no buffer data),
         # и на старте музыки слышен резкий свист/хруст (xrun-бурст).
         self._prewarm_sample_buffers(code)
+        self._prepare_renardo_namespace()
 
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
-        if has_clock_clear:
+        if has_clock_clear and not deferred_start:
             # Issue #3137: НЕ убиваем старые SC-ноды синхронно здесь —
             # планируем ramp/freeAll на момент, когда реально стартует новый
             # трек (_schedule_transition_cleanup), чтобы старый трек доигрывал
@@ -4229,31 +4336,21 @@ class ComposeMusicTool(MCPTool):
         seed = kwargs.get("seed") or 0
         # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры).
         kit = club_kit(seed)
-        try:
-            code = render_club(
-                bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
-                seed=seed, repeat=repeat,
-                align_clock=music_align_clock_enabled(),
-            )
-        except ValueError as exc:
-            return MCPToolResult(success=False, error=f"style=club: {exc}")
         fade_note = self._fade_outlives_form(bpm) if fade else ""
         if fade_note:
             fade = False
-        if fade:
-            # Issue #3113: фейд уходящего трека вместо жёсткой склейки
-            # (core/club_transition). Дедлайн формы — с запасом на фейд.
-            # Фаза клока (#3112) снимается в момент exec, а трек при фейде
-            # стартует позже — смещение в логе тогда описывает момент exec.
-            code = wrap_with_fade(code)
+        try:
+            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade)
+        except ValueError as exc:
+            return MCPToolResult(success=False, error=f"style=club: {exc}")
         self.log_info(
             f"Композиция: style=club{', transition=fade' if fade else ''}, каркас seed={seed}: "
             + ", ".join(f"{k}={v}" for k, v in kit.items())
         )
-        result = self._execute_with_clock_phase(code, club_form_beats(kit["template"]))
+        result = self._execute_with_clock_phase(code, form_beats)
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
-        duration_s = club_duration_seconds(bpm, kit["template"]) + (fade_seconds(bpm) if fade else 0.0)
+        duration_s = (form_beats - entry) * 60.0 / float(bpm) + (fade_seconds(bpm) if fade else 0.0)
         if repeat:
             self._manager.clear_form_deadline()
         else:
@@ -4266,6 +4363,32 @@ class ComposeMusicTool(MCPTool):
         result["club_kit"] = kit
         message = self._club_message(kwargs, result, duration_s, fade) + fade_note
         return MCPToolResult(success=True, data=result, message=message)
+
+    @staticmethod
+    def _club_program(
+        kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
+    ) -> Tuple[str, int, int]:
+        """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
+
+        Issue #3166: на DJ-переходе (``fade``) трек входит с секции основного
+        уровня и без lead-долей — только при выровненном клоке, иначе фаза
+        формы всё равно не наша (#3112) и доля входа 0.
+        """
+        align = music_align_clock_enabled()
+        dj_entry = fade and align
+        code = render_club(
+            bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
+            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry,
+        )
+        form_beats = club_form_beats(template)
+        entry = club_entry_beats(template) if dj_entry else 0
+        if fade:
+            # Issue #3113: фейд уходящего трека вместо жёсткой склейки
+            # (core/club_transition). Фаза клока (#3112) в туле снимается в
+            # момент exec; момент реального старта логирует колбэк
+            # _rbx_track_started (#3166).
+            code = wrap_with_fade(code, form_beats=form_beats, entry_beats=entry)
+        return code, form_beats, entry
 
     def _club_message(
         self, kwargs: Dict[str, Any], result: Dict[str, Any], duration_s: float, fade: bool,
@@ -4280,8 +4403,9 @@ class ComposeMusicTool(MCPTool):
         )
         if fade:
             message += (
-                f" Переход fade: играющий трек уходит за {FADE_BARS} тактов, новый "
-                "стартует после фейда (если ничего не играло — сразу)."
+                f" Переход fade: играющий трек уходит за {FADE_BARS} тактов фильтром и "
+                f"фейдером до {FADE_AMPLIFY_TO:g}, новый входит в ту же долю, без паузы "
+                "(если ничего не играло — сразу)."
             )
         warning = self._club_ignored_warning(kwargs, result)
         # Issue #3113 (живой прогон 28.09): хвост «Проигнорировано …» в

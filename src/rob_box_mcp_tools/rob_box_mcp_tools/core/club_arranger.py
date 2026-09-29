@@ -61,7 +61,7 @@ import random
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
-from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude
+from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude, clock_entry_prelude
 
 #: Паттерны бочки: 16 шагов = такт 16-ми (при ``dur=1/4``).
 KICK_PATTERNS: Dict[str, str] = {
@@ -415,6 +415,7 @@ def render_club(
     kick: Optional[str] = None,
     repeat: bool = False,
     align_clock: bool = False,
+    dj_entry: bool = False,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
 
@@ -425,12 +426,62 @@ def render_club(
     ``Clock.clear()`` — :func:`core.arranger.clock_align_prelude`, чтобы
     форма стартовала с позиции 0 при давно идущем клоке.
 
+    ``dj_entry`` (issue #3166, действует только вместе с ``align_clock``):
+    вход для DJ-перехода — клок ставится ровно на долю :func:`entry_beats`
+    (первая секция с полной бочкой, а не тихое интро), без lead-долей, и
+    плееры встают на ``now()`` (``Clock.now_flag``). См. :func:`_clock_lines`.
+
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
     return render_club_kit(
         club_kit(seed, template, kick), bpm=bpm, root=root, scale=scale,
-        seed=seed, repeat=repeat, align_clock=align_clock,
+        seed=seed, repeat=repeat, align_clock=align_clock, dj_entry=dj_entry,
+    )
+
+
+def entry_beats(matrix: ArrangementMatrix) -> int:
+    """Доля формы, с которой трек входит на DJ-переходе (issue #3166).
+
+    Первый блок, где бочка звучит ВЕСЬ блок (маска ``x``): с него микс на
+    основном уровне. Интро без бочки (у ``long_build_32`` — только пэд
+    0.11, живой замер 29.09: ~−40 dB к основному уровню) пропускается.
+    Бочки нет ни в одном полном блоке — 0 (вход с начала формы).
+    """
+    kick = matrix.lanes.get("kick", ())
+    for index, mask in enumerate(kick):
+        if mask == FULL:
+            return int(index * matrix.block_beats)
+    return 0
+
+
+def club_entry_beats(template: str = "dj_dave_32") -> int:
+    """:func:`entry_beats` шаблона по имени (дедлайн формы в туле)."""
+    return entry_beats(build_matrix(template))
+
+
+def _clock_lines(
+    matrix: ArrangementMatrix, align_clock: bool, dj_entry: bool,
+) -> Tuple[List[str], List[str], float]:
+    """Прелюдия клока, строки после плееров и длина до ``Clock.future``.
+
+    * без ``align_clock`` — ничего, форма ``total_beats`` (как было);
+    * ``align_clock`` — :func:`clock_align_prelude`, +``ALIGN_LEAD_BEATS``;
+    * ``align_clock`` + ``dj_entry`` (issue #3166) — клок ровно на
+      ``k·F + entry`` (:func:`clock_entry_prelude`), ``Clock.now_flag``
+      на время создания плееров: они встают на ``now()`` сразу, без
+      ожидания ``next_bar()``. Звучит ``F − entry`` долей.
+    """
+    total = matrix.total_beats
+    if not align_clock:
+        return [], [], total
+    if not dj_entry:
+        return [clock_align_prelude(total)], [], total + ALIGN_LEAD_BEATS
+    entry = entry_beats(matrix)
+    return (
+        [clock_entry_prelude(int(total), entry), "Clock.now_flag = True"],
+        ["", "Clock.now_flag = False"],
+        total - entry,
     )
 
 
@@ -475,6 +526,7 @@ def render_club_kit(
     levels: Optional[Mapping[str, float]] = None,
     repeat: bool = False,
     align_clock: bool = False,
+    dj_entry: bool = False,
 ) -> str:
     """Собрать клубный трек по ЯВНОМУ каркасу (issue #3136, ADR-0142 §4).
 
@@ -505,12 +557,13 @@ def render_club_kit(
     pads = ", ".join("(" + ", ".join(str(n) for n in pad_voicing(tonic, c)) + ")" for c in chords)
     hpf = predrop_hpf(matrix)
     hpf_arg = f" hpf={hpf}," if hpf else ""
+    prelude, epilogue, end_beats = _clock_lines(matrix, align_clock, dj_entry)
 
     lines = [
         f"# club: {template}, {root} {scale}, {prog_name}, бочка {kick}, seed={seed}",
         *("# " + row for row in matrix.to_text().splitlines()),
         "Clock.clear()",
-        *([clock_align_prelude(matrix.total_beats)] if align_clock else []),
+        *prelude,
         f"Clock.bpm = {_fmt(bpm)}",
         "",
         f'd1 >> play("{kick_pattern}", dur=1/4, amp={gate["kick"]})',
@@ -535,9 +588,9 @@ def render_club_kit(
             "scale=Scale.chromatic, root=0, oct=0, room=0.7, mix=0.4,",
             f"amp={gate['pad']})",
         ]),
+        *epilogue,
     ]
     if not repeat:
-        end_beats = matrix.total_beats + (ALIGN_LEAD_BEATS if align_clock else 0)
         lines += ["", f"Clock.future({_fmt(end_beats)}, Clock.clear)"]
     return "\n".join(lines) + "\n"
 
@@ -564,8 +617,10 @@ __all__ = [
     "ROLE_SYNTHS",
     "chord_pentatonic",
     "club_duration_seconds",
+    "club_entry_beats",
     "club_kit",
     "club_form_beats",
+    "entry_beats",
     "kick_steps",
     "peak_levels",
     "predrop_hpf",

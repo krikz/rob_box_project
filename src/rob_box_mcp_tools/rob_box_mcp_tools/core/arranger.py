@@ -129,6 +129,29 @@ def clock_align_prelude(form_total_beats: int) -> str:
     return f"Clock.set_time(((Clock.now() + {lead}) // {total} + 1) * {total} - {lead})"
 
 
+def clock_entry_prelude(form_total_beats: int, entry_beats: int) -> str:
+    """``Clock.set_time`` без lead-долей: клок встаёт РОВНО на долю ``k·F + entry``.
+
+    Issue #3166 (DJ-переход fade): с :func:`clock_align_prelude` плееры
+    ждут ``ALIGN_LEAD_BEATS`` долей до ``next_bar()`` — на 124 BPM это
+    ~0,97 с тишины на стыке. Здесь клок ставится прямо на границу такта
+    ``T = (now // F + 1)·F + entry``; вызывающий обязан сразу после этой
+    строки поднять ``Clock.now_flag`` (плееры встают на ``now()``, а не на
+    ``next_bar()``, ``Players.py:880``), иначе они подождут целый такт.
+    ``entry`` — доля формы, с которой трек входит (не с тихого интро).
+
+    Raises:
+        ValueError: F не кратно такту, entry не кратно такту или вне [0, F).
+    """
+    total = int(form_total_beats)
+    entry = int(entry_beats)
+    if total <= 0 or total % BEATS_PER_BAR:
+        raise ValueError(f"длина формы {form_total_beats!r} не кратна такту {BEATS_PER_BAR}")
+    if entry < 0 or entry >= total or entry % BEATS_PER_BAR:
+        raise ValueError(f"доля входа {entry_beats!r} не кратна такту или вне формы {total}")
+    return f"Clock.set_time((Clock.now() // {total} + 1) * {total} + {entry})"
+
+
 #: Роль -> (имя плеера, октава, базовая амплитуда).
 #:
 #: Плееры удержаны в d1-d3 / p1-p3 — это ограничение деплоя (d4+/p4+ на
