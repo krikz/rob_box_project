@@ -89,6 +89,13 @@ class TestCommandParserPastTenseNotStop:
             "остановите робота",
             "замрите",
             "робот замрите",
+            # Ревью PR #3170 (2й раунд) — «постой»/«постойте» ловились ДО
+            # #3169 подстрокой «стой» без границы слова; правка на границы
+            # слова случайно убрала их вместе с прошедшим временем.
+            "постой",
+            "постойте",
+            "постойте, робот",
+            "робот постой",
         ],
     )
     def test_imperative_forms_still_stop(self, text: str) -> None:
@@ -99,6 +106,25 @@ class TestCommandParserPastTenseNotStop:
         assert command.intent is IntentType.STOP, (
             f"CommandParser.parse({text!r}) должен остаться STOP "
             "(повелительная форма) — issue #3169 не трогает этот путь"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "стойка",
+            "стопка",
+            "постоянно",
+        ],
+    )
+    def test_lookalike_nouns_are_not_stop(self, text: str) -> None:
+        """Ревью PR #3170 (2й раунд) — «постой(?:те)?» не должен зацепить
+        слова, которые лишь НАЧИНАЮТСЯ похоже (постоянно) или содержат
+        корень стоп-глагола как часть другого слова (стойка/стопка)."""
+        parser = CommandParser()
+        command = parser.parse(text)
+        assert command.intent is not IntentType.STOP, (
+            f"CommandParser.parse({text!r}) НЕ должен быть STOP — "
+            "это не стоп-команда, а похожее слово (ревью PR #3170)"
         )
 
 
