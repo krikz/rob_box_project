@@ -6,6 +6,8 @@ Covers the pure provider-resolution helpers extracted from
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 
 from rob_box_voice.core.llm_config import (
@@ -47,13 +49,17 @@ def test_providers_registry_has_required_fields():
 
 def test_deepseek_points_to_deepseek_host():
     entry = PROVIDERS["deepseek"]
-    assert entry["base_url"].startswith("https://api.deepseek.com")
+    parsed = urlparse(entry["base_url"])
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "api.deepseek.com"
     assert "DEEPSEEK_API_KEY" in entry["env_vars"]
 
 
 def test_mimo_points_to_mimo_host():
     entry = PROVIDERS["mimo"]
-    assert entry["base_url"].startswith("https://api.xiaomimimo.com")
+    parsed = urlparse(entry["base_url"])
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "api.xiaomimimo.com"
     assert "MIMO_API_KEY" in entry["env_vars"]
 
 

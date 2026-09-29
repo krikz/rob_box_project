@@ -1,4 +1,11 @@
 # syntax=docker/dockerfile:1
+# checkov:skip=CKV_DOCKER_2: no HEALTHCHECK — this image is a build/test toolbox
+#   (colcon + pytest), never run as a long-lived service; there is nothing to probe.
+# checkov:skip=CKV_DOCKER_3: runs as root — GitHub Actions `container:` jobs need
+#   root to write into the mounted workspace and apt-managed rosdep state; this
+#   image is only ever pulled by trusted CI workflows in this repo, never exposed.
+# checkov:skip=CKV2_DOCKER_1: `sudo` is required by rosdep/ROS2 tooling conventions
+#   inside the CI container; same trust boundary as CKV_DOCKER_3 above.
 # ── CI Runner Image for Rob Box ────────────────────────────────────────
 # Contains ROS2 Humble + all test deps + Python packages.
 # Rebuilt weekly via .github/workflows/B-Build CI Image.yml.
