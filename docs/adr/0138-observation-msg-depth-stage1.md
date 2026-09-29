@@ -37,7 +37,7 @@
 - `i_publish_compressed: false` → публикуется обычный `sensor_msgs/Image`, а не только compressed;
 - `i_low_bandwidth: true` у стерео → на устройстве MJPEG-кодируется **8-битный disparity**, хост декодирует и переводит в глубину `baseline·10·fx / disparity`, кодировка `16UC1` (мм), `0` = нет данных.
 
-Вывод (исходники драйвера + замер 08.09 из `quest_node.py`): raw-топик `16UC1` есть, декодер `compressedDepth` не нужен и не пишется. Но глубина **квантована** (8 бит disparity) и прошла через сжатие с потерями (MJPEG, `quality: 90`): погрешность растёт примерно как Z², на краях объектов возможны артефакты. Числа погрешности на роботе не замерены (§7 п.2).
+Вывод (исходники драйвера + замер 08.09 из `quest_node.py`): raw-топик `16UC1` есть, декодер `compressedDepth` не нужен и не пишется. Но глубина **квантована** (8 бит disparity) и прошла через сжатие с потерями (MJPEG, `quality: 90`): погрешность растёт примерно как Z², на краях объектов возможны артефакты. **Дополнение 29.09.2026:** замер на роботе показал, что low-bandwidth глубина не просто квантована, а завышена в ×2.0–2.5 раза; `i_low_bandwidth` у depth выключен — см. §7 п.2.
 
 ---
 
@@ -176,7 +176,7 @@ OAK-D ─► /camera/camera/color/image_raw ──────┐
 - Safety stop ADR-0089 Phase 1 (`safety_stop_node`, twist_mux) — отдельный PR; этот этап только даёт ему `distance_m`. Требование к нему уже сейчас: `position_valid=false` — «неизвестно», не «свободно».
 - Покадровое `candidate_similarity`: `FaceRecognizer._annotate_identities` кладёт в `VisionEvent` только `embedding_id`/`display_name`; сходство есть лишь на кадре Встречи (`attributes_json.similarity`). Логику узнавания (`face_store.py`, `face_tracker.py`, `face_recognition.py`) этот этап не трогает — поэтому на остальных кадрах `candidate_similarity = −1` («не посчитано»). См. §7 п.4.
 - Миграция потребителей с `VisionEvent` (`context_aggregator_node`, `dialogue_node`, `mcp_tools`) — по мере появления трекера.
-- Изменения `oak_d_config.yaml` (в т.ч. `i_low_bandwidth` у depth) — вопрос к Шифу (§7 п.2).
+- Изменения `oak_d_config.yaml` (в т.ч. `i_low_bandwidth` у depth) — вопрос к Шифу (§7 п.2). *Закрыт 29.09.2026 отдельным PR: `depth.i_low_bandwidth: false`.*
 - Потолочная камера — глубины нет, статус честный; участвует ли она в восприятии людей — ADR-0130 §8 п.2.
 
 ---
@@ -185,6 +185,22 @@ OAK-D ─► /camera/camera/color/image_raw ──────┐
 
 1. **Реальный depth-топик и нагрузка — не проверено на роботе.** Сейчас raw-depth постоянно никто не читает (Quest/Telegram — `compressedDepth` по запросу), драйвер с `i_enable_lazy_publisher: true` в покое её, скорее всего, не публикует. После этого PR подписываются **две** ноды (`vision-hailo`, `vision-face`): драйвер начнёт хостовый декод MJPEG disparity → depth (CPU контейнера `oak-d`), а каждая нода будет копировать и десериализовать 1280×720×2 ≈ 1.8 МБ × 5 Гц. На Vision Pi (load ≈ 5 на 4 ядра, ADR-0130 §1.3) это нужно замерить (этап 0, замер CPU). Рычаг отката без пересборки — `DEPTH_ENABLED=false` / `depth_enabled: false`.
 2. **Точность глубины при `i_low_bandwidth: true`.** 8-битный disparity через MJPEG: квантование растёт ~Z², ближняя граница по disparity — порядка десятков сантиметров (не посчитано для конкретной калибровки). Для safety stop на 1.5 м может хватить, для трекера на 4–5 м — вопрос. Решение `i_low_bandwidth: false` для depth — после замера: трафик Vision→Main (причина включения в марте 2026) не затрагивается, пока на Main Pi никто не подписан на depth, но растёт USB/CPU.
+
+   **Ответ (замер 29.09.2026, Vision Pi, develop `3cb8bd509`).** Человек стоял на отмеренных рулеткой дистанциях от OAK-D Lite (рулетка — до груди от стекла камеры); значение — медиана `distance_m` из `/perception/observations` за 20 с (≈50–67 наблюдений, все `status ok`) и p50 сырой `16UC1` глубины в ядре bbox.
+
+   | Факт | `low_bandwidth: true` `distance_m` | сырой p50, мм | `low_bandwidth: false` `distance_m` | сырой p50, мм |
+   |---|---|---|---|---|
+   | 1.0 м | 2.523 | 2523 | 1.099 | 1122 |
+   | 2.0 м | 4.760 | — | 2.111 | 2082 |
+   | 3.0 м | 6.926 | — | 3.042 | 3020 |
+   | 4.0 м | 9.519 | — | 4.190 | 4164 |
+   | 1.5 м сбоку | 3.02 (~22° вправо) | — | 1.509 (30°; x=+0.56, z=1.40) | 1417 |
+
+   С `true` ошибка — множитель ×2.0–2.5 (непостоянный), плюс крупные ступени квантования (4453→4731, 8412→9463 мм). С `false` — смещение +0.05…+0.19 м, в пределах точности постановки замера. Переключение сделано на роботе в 13:16 UTC, после рестарта `ros2 param get /camera/camera depth.i_low_bandwidth` → `False`.
+
+   Причина по исходникам `depthai-ros` `v2.12.2-humble` (прочитаны 29.09.2026): при `i_low_bandwidth: true` `stereo.cpp::setXinXout` линкует `disparity` (а не `depth`) в MJPEG-энкодер, `stereo_param_handler.cpp` выключает subpixel; на хосте `ImageConverter::toRosMsgRawPtr` считает `depth = |baseline·10|·info.p[0] / disp`, где `info` — `camera_info`, построенный `sensor_helpers::getCalibInfo` для `i_board_socket_id` (CAM_A, RGB) в разрешении `i_width×i_height` = 1280×720. **Подтверждено по коду:** на хосте берётся fx RGB-камеры в 1280×720. **Не подтверждено:** что disparity с устройства при `setDepthAlign` остаётся в пикселях моно-сенсора (это поведение прошивки depthai-core, в исходниках драйвера его нет) и конкретное fx моно (OV7251 480P, по умолчанию драйвера) из калибровки этой камеры — отношение fx_RGB/fx_mono ≈ 2.2 согласуется с замером, но калибровку я не читал.
+
+   **Решение:** `depth.i_low_bandwidth: false` в `docker/vision/config/oak-d/oak_d_config.yaml` (RGB остаётся `true`). Потребители `compressedDepth` (`quest_node`, `telegram_node`) не зависят от режима: это плагин `image_transport` на том же издателе (`img_pub.cpp`: выбор издателя — по `i_publish_compressed`/IPC, не по `i_low_bandwidth`), их раскраска нормирует по перцентилям 2/98, от масштаба не зависит. **Цена не замерена:** CPU контейнера `oak-d` ~75–81 % ядра по трём сэмплам `docker stats` против 64.6 % в раннем 10-минутном замере в других условиях; Vision Pi 79.6 °C, load1 ~10. Корректный A/B по нагрузке — открыт.
 3. **Межпайный TF (ADR-0130 §8 п.5)** — переносится на этап 2: трекер будет искать `base_link ← <optical frame>` на Main Pi по `header.stamp` наблюдения; задержка TF и расхождение часов (chrony — этап 0) там и замеряются. Реальный `frame_id` RGB-кадра OAK-D с `i_publish_tf_from_calibration: false` и то, есть ли для него статический TF в URDF, **не проверены** — трекеру этапа 2 он нужен.
 4. **Покадровое сходство лица.** Нужно ли `candidate_similarity` на каждом кадре (одна строка в `_annotate_identities` — но это файл логики узнавания, этапы 3–4), или трекеру хватит `candidate_id` + сходства на Встрече?
 5. **Задержка depth относительно RGB** и уместность допуска 0.15 с — не замерены. Метрики доли статусов (`ok` / `depth_out_of_sync` / …) в Prometheus этим PR не добавляются; первая проверка на роботе — `ros2 topic echo /perception/observations --field position_status`.
