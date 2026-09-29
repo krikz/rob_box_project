@@ -345,6 +345,52 @@ def test_seed0_snapshot():
     assert render_club(seed=0) == SNAPSHOT.read_text(encoding="utf-8")
 
 
+# ── Issue #3166: вход DJ-перехода не с тихого интро и без lead-долей ─────
+
+def test_entry_beats_skip_quiet_intro():
+    from rob_box_mcp_tools.core.club_arranger import club_entry_beats
+
+    # long_build_32: блоки 0-3 — только пэд (живой замер 29.09: ~−40 dB)
+    assert club_entry_beats("long_build_32") == 32
+    assert club_entry_beats("dj_dave_32") == 16
+    assert club_entry_beats("drop_first_32") == 0
+
+
+def test_dj_entry_without_align_is_plain_render():
+    """Без выровненного клока вход не позиционируется — код прежний."""
+    for seed in (0, 3, 7):
+        assert render_club(seed=seed, dj_entry=True) == render_club(seed=seed)
+
+
+def test_dj_entry_prelude_has_no_lead_and_now_flag_around_players():
+    code = render_club(template="long_build_32", align_clock=True, dj_entry=True)
+    lines = code.splitlines()
+    clear = lines.index("Clock.clear()")
+    assert lines[clear + 1] == "Clock.set_time((Clock.now() // 128 + 1) * 128 + 32)"
+    assert lines[clear + 2] == "Clock.now_flag = True"
+    assert code.index("Clock.now_flag = True") < code.index("d1 >>")
+    assert code.index("p3 >>") < code.index("Clock.now_flag = False") < code.index("Clock.future(96, Clock.clear)")
+
+
+@pytest.mark.parametrize("total,entry", [(128, 3), (128, 128), (128, -4), (126, 0)])
+def test_clock_entry_prelude_rejects_bad_values(total, entry):
+    from rob_box_mcp_tools.core.arranger import clock_entry_prelude
+
+    with pytest.raises(ValueError):
+        clock_entry_prelude(total, entry)
+
+
+def test_clock_entry_prelude_lands_exactly_on_entry_bar():
+    """``T = (now // F + 1)·F + entry``: всегда вперёд, T ≡ entry (mod F), на такте."""
+    from rob_box_mcp_tools.core.arranger import clock_entry_prelude
+
+    line = clock_entry_prelude(128, 32)
+    expr = line[len("Clock.set_time("):-1]
+    for now in (0.0, 5.3, 127.9, 584.81, 620.0):
+        target = eval(expr, {"Clock": type("C", (), {"now": staticmethod(lambda n=now: n)})})  # noqa: S307
+        assert target > now and target % 128 == 32 and target % 4 == 0
+
+
 if __name__ == "__main__" and "--regen" in sys.argv:
     SNAPSHOT.write_text(render_club(seed=0), encoding="utf-8")
     print(f"записан {SNAPSHOT}")

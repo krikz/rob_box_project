@@ -1248,6 +1248,11 @@ class MCPServer(Node):
                 f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
             )
             return
+        # Issue #3166: лог «[#3112] трек started» идёт из потока клока Renardo.
+        # getattr: тестовые двойники MusicManager этого метода не имеют.
+        attach_logger = getattr(music_manager, "attach_logger", None)
+        if callable(attach_logger):
+            attach_logger(self.get_logger())
 
         # Expose the manager so the watchdog / DialogueNode can hook into
         # session cleanup. Issue #935: when the dialog finishes without

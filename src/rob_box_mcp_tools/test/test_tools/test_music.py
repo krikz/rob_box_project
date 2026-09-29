@@ -5092,21 +5092,61 @@ class TestComposeMusicToolClubStyle:
 
     # ── Issue #3113: переход fade вместо жёсткой склейки ──────────────
 
-    def test_club_fade_wraps_render_club_code(self, mock_node):
-        from rob_box_mcp_tools.core.club_arranger import render_club
+    def test_club_fade_wraps_render_club_code(self, mock_node, monkeypatch):
+        from rob_box_mcp_tools.core.club_arranger import club_form_beats, club_kit, render_club
         from rob_box_mcp_tools.core.club_transition import fade_seconds, wrap_with_fade
 
+        monkeypatch.delenv("ROB_BOX_MUSIC_ALIGN_CLOCK", raising=False)
         tool, mgr = self._make_tool(mock_node)
         with patch("builtins.exec") as fake_exec:
             result = tool.execute(style="club", root="C", seed=3, repeat=True, transition="fade")
         assert result.success is True, result.error
         executed = fake_exec.call_args[0][0]
-        assert executed == wrap_with_fade(render_club(bpm=124, root="C", scale="minor", seed=3, repeat=True))
+        form = club_form_beats(club_kit(3)["template"])
+        assert executed == wrap_with_fade(
+            render_club(bpm=124, root="C", scale="minor", seed=3, repeat=True), form_beats=form, entry_beats=0,
+        )
         assert result.data["transition"] == "fade"
         assert result.data["duration_seconds"] == pytest.approx(128 * 60 / 124 + fade_seconds(124), abs=0.1)
         assert "Переход fade" in result.message
         # transition не считается «проигнорированным» параметром club
         assert "Проигнорировано" not in result.message
+
+    # ── Issue #3166: DJ fade без провала в тишину ────────────────────
+
+    def test_aligned_fade_enters_from_main_section_without_lead(self, mock_node, monkeypatch):
+        """С выровненным клоком DJ-переход входит с секции полной бочки, без
+        lead-долей (``Clock.now_flag``), и форма короче на пропущенное интро."""
+        from rob_box_mcp_tools.core.club_arranger import club_entry_beats, club_kit
+        from rob_box_mcp_tools.core.club_transition import fade_seconds
+
+        monkeypatch.setenv("ROB_BOX_MUSIC_ALIGN_CLOCK", "1")
+        seed = next(s for s in range(50) if club_kit(s)["template"] == "long_build_32")
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=seed, repeat=False, transition="fade")
+        assert result.success is True, result.error
+        code = fake_exec.call_args[0][0]
+        entry = club_entry_beats("long_build_32")
+        assert entry == 32
+        assert f"Clock.set_time((Clock.now() // 128 + 1) * 128 + {entry})" in code
+        assert "- 2)" not in code  # ни одной lead-доли ALIGN_LEAD_BEATS
+        assert code.index("Clock.now_flag = True") < code.index("d1 >>") < code.index("Clock.now_flag = False")
+        assert f"Clock.future({128 - entry}, Clock.clear)" in code
+        assert f"_rbx_track_started(128, {entry})" in code
+        assert result.data["duration_seconds"] == pytest.approx(
+            (128 - entry) * 60 / 124 + fade_seconds(124), abs=0.1,
+        )
+
+    def test_cut_with_align_keeps_lead_prelude(self, mock_node, monkeypatch):
+        """Не-DJ путь (cut) не меняется: выравнивание #3112 с 2 lead-долями."""
+        monkeypatch.setenv("ROB_BOX_MUSIC_ALIGN_CLOCK", "1")
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            tool.execute(style="club", seed=1)
+        code = fake_exec.call_args[0][0]
+        assert "Clock.set_time(((Clock.now() + 2) // 128 + 1) * 128 - 2)" in code
+        assert "now_flag" not in code
 
     def test_fade_falls_back_to_cut_when_finite_track_ends_first(self, mock_node):
         """Issue #3113: уходящий repeat=False-трек замолчит раньше конца фейда —
@@ -5172,3 +5212,107 @@ class TestComposeMusicToolClubStyle:
         param = next(p for p in tool.parameters if p.name == "transition")
         assert param.enum == ["cut", "fade"]
         assert param.required is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #3166 — teardown fade-перехода и колбэк «трек стартовал»
+# ---------------------------------------------------------------------------
+
+
+class TestFadeTransitionTeardown:
+    """``execute_code`` не сносит ноды уходящего трека в начале фейда; это
+    делает колбэк ``_rbx_track_started`` в момент старта нового трека."""
+
+    @staticmethod
+    def _manager():
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._master_gain_applied = True
+        return mgr
+
+    @staticmethod
+    def _wrapped():
+        from rob_box_mcp_tools.core.club_arranger import render_club
+        from rob_box_mcp_tools.core.club_transition import wrap_with_fade
+
+        return wrap_with_fade(render_club(seed=1), form_beats=128, entry_beats=0)
+
+    def test_fade_wrapped_code_schedules_no_teardown(self):
+        mgr = self._manager()
+        with patch("builtins.exec"), \
+                patch.object(mgr, "_schedule_transition_cleanup") as sched, \
+                patch.object(mgr, "_transition_cleanup") as now_cleanup:
+            result = mgr.execute_code(self._wrapped())
+        assert result["success"] is True, result
+        sched.assert_not_called()
+        now_cleanup.assert_not_called()
+
+    def test_plain_clear_code_still_schedules_teardown(self):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+
+        mgr = self._manager()
+        with patch("builtins.exec"), patch.object(mgr, "_schedule_transition_cleanup") as sched:
+            result = mgr.execute_code(render_club(seed=1))
+        assert result["success"] is True, result
+        sched.assert_called_once_with(1)
+
+    def test_callback_injected_and_stuck_now_flag_reset_before_exec(self):
+        from rob_box_mcp_tools.core.club_transition import TRACK_STARTED_FN
+
+        mgr = self._manager()
+        clock = MagicMock()
+        clock.now_flag = True
+        mgr._renardo_context["Clock"] = clock
+        seen = {}
+
+        def fake_exec(code, ns):
+            seen["callback"] = ns.get(TRACK_STARTED_FN)
+            seen["now_flag"] = clock.now_flag
+
+        with patch("builtins.exec", side_effect=fake_exec), patch.object(mgr, "_schedule_transition_cleanup"):
+            mgr.execute_code(self._wrapped())
+        assert seen["callback"] == mgr._on_track_started
+        assert seen["now_flag"] is False
+
+    def test_track_started_logs_phase_and_tears_down_old_nodes(self):
+        mgr = self._manager()
+        clock = MagicMock()
+        clock.now.return_value = 1312.0  # 10·128 + 32
+        clock.now_flag = True
+        clock.latency = 0.25
+        mgr._renardo_context["Clock"] = clock
+        logger = MagicMock()
+        mgr.attach_logger(logger)
+        with patch.object(mgr, "_transition_cleanup") as cleanup:
+            mgr._on_track_started(128, 32)
+            for _ in range(100):
+                if cleanup.called:
+                    break
+                time.sleep(0.01)
+        cleanup.assert_called_once_with(1)
+        line = logger.info.call_args[0][0]
+        assert line.startswith("[#3112] трек started внутри _rbx_next_track")
+        assert "фаза в форме=32.0 из 128" in line
+        assert "ожидался вход с доли 32" in line
+        assert mgr._last_track_started["phase_beats"] == 32.0
+
+    def test_track_started_never_raises_without_clock(self):
+        mgr = self._manager()
+        with patch.object(mgr, "_transition_cleanup"):
+            mgr._on_track_started(128, 0)
+        assert mgr._last_track_started["clock_beat"] is None
+
+    def test_wrapped_exec_nothing_playing_calls_started_once(self):
+        """Без играющего трека обёртка зовёт трек и колбэк сразу, в самом exec."""
+        from rob_box_mcp_tools.core.club_transition import TRACK_STARTED_FN
+
+        program = "Clock.clear()\nClock.bpm = 124\n"
+        from rob_box_mcp_tools.core.club_transition import wrap_with_fade
+
+        code = wrap_with_fade(program, form_beats=128, entry_beats=16)
+        calls = []
+        clock = MagicMock()
+        clock.playing = []
+        ns = {"Clock": clock, TRACK_STARTED_FN: lambda *a: calls.append(a)}
+        exec(code, ns)  # noqa: S102
+        assert calls == [(128, 16)]
+        clock.clear.assert_called_once()
