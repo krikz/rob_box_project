@@ -7,7 +7,9 @@ Issue #2406 (umbrella) — LLM отвечает verbal-only на discovery/inqui
 - Run 363 / act2 / n201_sasha_intro_long — missing ``register_speaker`` в
   expected-списке (юзер назвал имя «Саша» в intro).
 - Run 364 / act3 / n301_wake_open (n313_silence_restored) — missing
-  ``get_music_state`` (тот же баг, что и в issue #2347).
+  ``get_music_state`` (тот же баг, что и в issue #2347). С issue #3165
+  ответ на «что играет?» — из ``<music_state>`` (снимок плеера), тул —
+  только если в теге ответа нет.
 - Run 365 / act4 / n401_list_voices — missing ``list_tts_voices`` (юзер
   спрашивал «какие голоса?»).
 
@@ -94,18 +96,25 @@ def test_discovery_rule_requires_list_tts_voices_first() -> None:
     )
 
 
-def test_discovery_rule_requires_get_music_state_first() -> None:
-    """«что играет?» → CALL get_music_state() ДО speak_text.
+def test_discovery_rule_music_state_answers_from_tag() -> None:
+    """«что играет?» — исключение: ответ из ``<music_state>``.
 
     Run 364 / n313_silence_restored — LLM опирался на stale <music_state>
-    XML-тег. Правило должно явно требовать tool-call, иначе e2e-гейт
-    падает на missing tool-call в трейсе.
+    XML-тег, и правило требовало ``get_music_state`` ДО speak_text. С
+    #3161 тег строится из снимка плеера (ADR-0141) и правдив; живой прогон
+    29.09 (issue #3165) показал, что обязательный тул наказывает верный
+    ответ «Сейчас тишина» ретраями. Тул остаётся — когда в теге ответа нет.
     """
     block = _discovery_rule_block()
     assert "get_music_state" in block, (
-        "RULE #DISCOVERY-TOOLS must mention get_music_state — otherwise "
-        "LLM answers «Сейчас тишина» from stale <music_state> tag "
-        "(issue #2406 run 364, same bug as #2347)"
+        "RULE #DISCOVERY-TOOLS must still mention get_music_state — for "
+        "the case when <music_state> has no answer (playing=\"unknown\")"
+    )
+    assert "<music_state>" in block
+    assert 'playing="unknown"' in block
+    assert "«Сейчас тишина»" not in block, (
+        "«Сейчас тишина» по снимку плеера — правильный ответ (issue #3165), "
+        "а не пример запрещённого verbal-only"
     )
 
 

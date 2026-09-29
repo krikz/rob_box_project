@@ -25,7 +25,7 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Union
 
-__all__ = ["RtttlLibrary", "covers_tokens", "match_info"]
+__all__ = ["RtttlLibrary", "covers_tokens", "display_title", "human_track_title", "match_info"]
 
 #: Имя архива внутри пакета ``rob_box_mcp_tools/data/``.
 _ARCHIVE_NAME = "rtttl_melodies.jsonl.gz"
@@ -83,6 +83,27 @@ _ALIASES = {
 }
 
 _ALIAS_SORTED = sorted(_ALIASES.items(), key=lambda kv: -len(kv[0]))
+
+#: issue #3178 — обратная связка канонический англ. запрос → первая (по
+#: порядку :data:`_ALIASES`) русская фраза на него. Используется, чтобы
+#: назвать играющий трек по-русски (:func:`human_track_title`), а не
+#: архивным ``title`` («Hall Of The Mountain King (Alton Towers Theme) 2»).
+#: ``dict.setdefault`` берёт САМУЮ первую фразу для каждого канонического
+#: запроса — у «soviet anthem» их пять, для голоса нужна одна.
+#: Нерусские ключи (``"russian"`` — обходной алиас для архивного
+#: написания, не разговорная фраза) сюда не попадают.
+_ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = {}
+for _ru_phrase, _canonical_query in _ALIASES.items():
+    if any("а" <= ch <= "я" or ch == "ё" for ch in _ru_phrase):
+        _ALIAS_CANONICAL_TO_RU_PHRASE.setdefault(_canonical_query, _ru_phrase)
+del _ru_phrase, _canonical_query
+
+#: issue #3178 — технические хвосты архивного ``title``, которые робот не
+#: должен произносить: номер повтора записи того же трека («… 2») и
+#: авторская ремарка в скобках («(Alton Towers Theme)»). Срезаются с конца
+#: title, по одному хвосту за проход (могут комбинироваться).
+_TRAILING_DUPLICATE_NUM_RE = re.compile(r"\s+\d+$")
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)$")
 
 #: Известные мусорные записи архива: под правдоподобным именем/тегами лежит
 #: вырожденная запись (короткий мотив, зациклённый N раз, «визжащая» октава).
@@ -330,6 +351,55 @@ def display_title(library: "RtttlLibrary", record: Dict[str, Any]) -> str:
     return title
 
 
+def _strip_technical_suffixes(title: str) -> str:
+    """Срезать технические хвосты архивного ``title`` (issue #3178).
+
+    «Hall Of The Mountain King (Alton Towers Theme) 2» → «Hall Of The
+    Mountain King»: номер повтора записи и авторская ремарка в скобках —
+    не то, что робот произносит вслух («что сейчас играет?»). Хвосты
+    срезаются по одному за проход (сначала номер, потом скобки), пока
+    что-то срезается — так снимается их комбинация в любом порядке.
+    """
+    cleaned = title
+    for _ in range(4):
+        next_cleaned = _TRAILING_DUPLICATE_NUM_RE.sub("", cleaned)
+        next_cleaned = _TRAILING_PAREN_RE.sub("", next_cleaned).strip()
+        if next_cleaned == cleaned or not next_cleaned:
+            break
+        cleaned = next_cleaned
+    return cleaned or title
+
+
+def human_track_title(library: "RtttlLibrary", record: Dict[str, Any]) -> str:
+    """Имя трека для голоса/``<music_state>`` (issue #3178) — не архивный ключ.
+
+    В отличие от :func:`display_title` (для СВЕРКИ найденной записи с
+    запросом модели, добавляет artist к неинформативному title), эта
+    функция — для того, что робот РЕАЛЬНО произносит про играющий трек
+    (``current_track_name`` → ``/voice/music/state`` → ``<music_state>``):
+    русский разговорный алиас записи (:data:`_ALIAS_CANONICAL_TO_RU_PHRASE`,
+    :meth:`RtttlLibrary.ru_alias_for`), если он есть в базе, иначе archив
+    ``title`` без технических хвостов (:func:`_strip_technical_suffixes`).
+    """
+    melody_key = str(record.get("name") or "")
+    alias: Optional[str] = None
+    if melody_key:
+        try:
+            found = library.ru_alias_for(melody_key)
+        except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
+            # в юнит-тестах (``Mock()`` без ``ru_alias_for``, как и
+            # ``token_weights()`` у :func:`display_title` выше) — без
+            # реальной базы честнее отдать title, чем упасть.
+            found = None
+        alias = found if isinstance(found, str) and found else None
+    if alias:
+        return alias[:1].upper() + alias[1:]
+    title = str(record.get("title") or "").strip()
+    if not title:
+        return melody_key
+    return _strip_technical_suffixes(title)
+
+
 def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> Dict[str, Any]:
     """Прозрачная (не вердиктная) сверка *record* с токенами *query*.
 
@@ -355,10 +425,17 @@ def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> D
       запроса, которая покрылась. Частый токен вроде «theme» весит около
       нуля и почти не двигает coverage сам по себе — вес считается по
       корпусу архива, а не по списку слов.
+    - ``ignored`` — issue #3176: слова запроса, которые до поиска не дошли
+      вовсе: кириллица, не ставшая английским запросом через алиасы
+      (:func:`_tokens` её отбрасывает). «гимн германии» → алиас «гимн» →
+      «soviet anthem», а «германии» поиск не видел — ``matched`` при этом
+      полный, и без ``ignored`` сверка выглядела бы идеальной.
     """
-    tokens = _tokens(_normalize(query))
+    normalized = _normalize(query)
+    ignored = _ignored_words(normalized)
+    tokens = _tokens(normalized)
     if not tokens:
-        return {"matched": [], "unmatched": [], "coverage": 0.0}
+        return {"matched": [], "unmatched": [], "coverage": 0.0, "ignored": ignored}
     try:
         weights = library.token_weights()
     except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
@@ -382,7 +459,20 @@ def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> D
         else:
             unmatched.append(token)
     coverage = (matched_weight / total_weight) if total_weight > 0 else 0.0
-    return {"matched": matched, "unmatched": unmatched, "coverage": round(coverage, 3)}
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "coverage": round(coverage, 3),
+        "ignored": ignored,
+    }
+
+
+def _ignored_words(normalized: str) -> List[str]:
+    """Слова нормализованного запроса с кириллицей — поиск их не видит."""
+    return [
+        word for word in normalized.split()
+        if any("а" <= ch <= "я" or ch == "ё" for ch in word)
+    ]
 
 
 def _default_archive() -> Union[Path, Any]:
@@ -435,6 +525,10 @@ class RtttlLibrary:
         self._lock = threading.Lock()
         # issue #2964 — IDF-вес токена по корпусу архива, см. _TokenWeights.
         self._token_weights = _TokenWeights(self)
+        # issue #3178 — кэш :meth:`ru_alias_for` (melody_key → русская фраза
+        # или ``None``): голая функция резолвит до десятка алиасов через
+        # :meth:`get` на каждый вызов, кэш экономит это на повторных треках.
+        self._ru_alias_cache: Dict[str, Optional[str]] = {}
 
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -726,6 +820,31 @@ class RtttlLibrary:
         if full is None:
             return None
         return self._to_dict(full, include_rtttl=True)
+
+    def ru_alias_for(self, melody_key: str) -> Optional[str]:
+        """Русская разговорная фраза, если она в базе резолвится ИМЕННО в эту запись.
+
+        issue #3178 — для голоса/``<music_state>`` (:func:`human_track_title`):
+        перебирает канонические запросы :data:`_ALIAS_CANONICAL_TO_RU_PHRASE`
+        (уникальные, по одной русской фразе на каждый) и вызывает :meth:`get`
+        на каждый — тот же путь, что реальный поиск по имени, поэтому
+        совпадение честное (не текстовое сравнение канонического запроса с
+        ``melody_key``, оно решает то же самое, что ``compose_music`` увидел
+        бы при заказе этой фразой). Результат кэшируется — эта запись не
+        меняется между вызовами внутри процесса.
+        """
+        if not melody_key:
+            return None
+        if melody_key in self._ru_alias_cache:
+            return self._ru_alias_cache[melody_key]
+        found: Optional[str] = None
+        for canonical, phrase in _ALIAS_CANONICAL_TO_RU_PHRASE.items():
+            rec = self.get(canonical)
+            if rec is not None and str(rec.get("name") or "") == melody_key:
+                found = phrase
+                break
+        self._ru_alias_cache[melody_key] = found
+        return found
 
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.

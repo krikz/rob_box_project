@@ -14,6 +14,7 @@ import {
   applyLayout,
   createLayoutSaver,
   PANEL_LAYOUT_STORAGE_KEY,
+  PANEL_LAYOUT_VERSION,
   PANEL_MAX_HEIGHT_M,
   PANEL_MAX_WIDTH_M,
   PANEL_MIN_HEIGHT_M,
@@ -73,7 +74,7 @@ describe("panel_layout_store — key & round-trip", () => {
       makePanel({ id: "p3", topic: "camera_oak_depth", size: { width: 0.8, height: 0.5 } })
     ];
     const serialized = serializeLayout(panels);
-    expect(serialized.version).toBe(1);
+    expect(serialized.version).toBe(PANEL_LAYOUT_VERSION);
     expect(serialized.panels.map((p) => p.id)).toEqual(["p1", "p2", "p3"]); // отсортированы по id
     const raw = JSON.stringify(serialized);
     const parsed = parseLayout(raw, KNOWN);
@@ -118,20 +119,34 @@ describe("panel_layout_store — degradation", () => {
   });
 
   it("returns null for unknown version", () => {
-    const raw = JSON.stringify({ version: 2, panels: [] });
+    const raw = JSON.stringify({ version: PANEL_LAYOUT_VERSION + 1, panels: [] });
+    expect(parseLayout(raw, KNOWN)).toBeNull();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("drops a v1 layout saved under the old defaults (depth −75° before the flank rebalance)", () => {
+    // Иначе у тех, кто уже летал на мостике, depth так и осталась бы перед
+    // крылом TARS1 — новые дефолты до них бы не доехали.
+    expect(PANEL_LAYOUT_VERSION).toBeGreaterThan(1);
+    const raw = JSON.stringify({
+      version: 1,
+      panels: [
+        { id: "p1", topic: "camera_rear", angleDeg: -75, heightM: 1.6, widthM: 1.2, heightPanelM: 0.7 }
+      ]
+    });
     expect(parseLayout(raw, KNOWN)).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
   });
 
   it("returns null when panels is not an array", () => {
-    const raw = JSON.stringify({ version: 1, panels: { not: "array" } });
+    const raw = JSON.stringify({ version: PANEL_LAYOUT_VERSION, panels: { not: "array" } });
     expect(parseLayout(raw, KNOWN)).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
   });
 
   it("drops panels with unknown topic and keeps the rest", () => {
     const raw = JSON.stringify({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "camera_rear", angleDeg: 0, heightM: 1.6, widthM: 1.2, heightPanelM: 0.7 },
         { id: "p2", topic: "camera_unknown", angleDeg: 30, heightM: 1.6, widthM: 1.0, heightPanelM: 0.7 },
@@ -146,7 +161,7 @@ describe("panel_layout_store — degradation", () => {
 
   it("returns null when every panel is unusable", () => {
     const raw = JSON.stringify({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "unknown_topic", angleDeg: 0, heightM: 1.6, widthM: 1.2, heightPanelM: 0.7 }
       ]
@@ -159,7 +174,7 @@ describe("panel_layout_store — degradation", () => {
     // size widthM=0.05 (ниже MIN) и heightPanelM=99 (выше MAX) — панель
     // не отбрасывается целиком, размер клампится.
     const raw = JSON.stringify({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         {
           id: "p1",
@@ -177,7 +192,7 @@ describe("panel_layout_store — degradation", () => {
     expect(parsed!.panels[0].heightPanelM).toBe(PANEL_MAX_HEIGHT_M);
     // И наоборот: widthM=99 → MAX.
     const raw2 = JSON.stringify({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         {
           id: "p1",
@@ -251,7 +266,7 @@ describe("panel_layout_store — applyLayout", () => {
     existing.set("extra", makePanel({ id: "extra", topic: "camera_oak_depth" }));
 
     const layout = {
-      version: 1 as const,
+      version: PANEL_LAYOUT_VERSION as typeof PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "camera_rear", angleDeg: 30, heightM: 1.7, widthM: 1.5, heightPanelM: 0.9 },
         { id: "p2", topic: "camera_oak_color", angleDeg: -30, heightM: 1.5, widthM: 1.0, heightPanelM: 0.6 }
@@ -282,7 +297,7 @@ describe("panel_layout_store — debounced saver", () => {
     const saver = createLayoutSaver(store, 500);
     let count = 0;
     const layout: PersistedLayout = {
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "camera_rear", angleDeg: 0, heightM: 1.6, widthM: 1.2, heightPanelM: 0.7 }
       ]
@@ -303,7 +318,7 @@ describe("panel_layout_store — debounced saver", () => {
     expect(count).toBe(1);
     expect(store.peek(PANEL_LAYOUT_STORAGE_KEY)).not.toBeNull();
     const parsed = JSON.parse(store.peek(PANEL_LAYOUT_STORAGE_KEY)!);
-    expect(parsed.version).toBe(1);
+    expect(parsed.version).toBe(PANEL_LAYOUT_VERSION);
     expect(parsed.panels[0].id).toBe("p1");
   });
 
@@ -311,13 +326,13 @@ describe("panel_layout_store — debounced saver", () => {
     const store = new MemoryStorage();
     const saver = createLayoutSaver(store, 1000);
     saver.schedule(() => ({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "camera_rear", angleDeg: 0, heightM: 1.6, widthM: 1.2, heightPanelM: 0.7 }
       ]
     }));
     saver.flush(() => ({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "camera_rear", angleDeg: 10, heightM: 1.5, widthM: 1.0, heightPanelM: 0.6 }
       ]
@@ -331,7 +346,7 @@ describe("panel_layout_store — debounced saver", () => {
     const store = new MemoryStorage();
     const saver = createLayoutSaver(store, 500);
     saver.schedule(() => ({
-      version: 1,
+      version: PANEL_LAYOUT_VERSION,
       panels: [
         { id: "p1", topic: "camera_rear", angleDeg: 0, heightM: 1.6, widthM: 1.2, heightPanelM: 0.7 }
       ]

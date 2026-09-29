@@ -85,9 +85,15 @@ def _install_mcp_base_stub() -> types.ModuleType:
             self.required = required
             self.enum = enum
 
+    def shared_publisher(node, msg_type, topic, qos):
+        # Issue #3108: dialogue.py берёт часть publisher'ов через
+        # base.shared_publisher. Кэш здесь не нужен — сквозной вызов.
+        return node.create_publisher(msg_type, topic, qos)
+
     base_module.MCPToolResult = MCPToolResult
     base_module.MCPTool = MCPTool
     base_module.MCPToolParameter = MCPToolParameter
+    base_module.shared_publisher = shared_publisher
     return base_module
 
 

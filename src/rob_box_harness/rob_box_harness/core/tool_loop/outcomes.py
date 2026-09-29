@@ -74,6 +74,12 @@ class _ToolLoopOutcome:
         discarded after feeding the babble filter (issue #1253) — now
         propagated so dialogue_node's action-claim guards can tell
         "called and worked" from "called and failed".
+    succeeded_tools:
+        Issue #3004 — имена тулов, чей вызов в этом ходе вернулся БЕЗ
+        ``is_error`` (уникальные, в порядке первого успеха). Нужен
+        music-гуарду: ошибка валидации ``compose_music`` и успешный повтор в
+        том же ходе — это успех, а один булев ``tool_error_occurred`` его
+        не отличает от провала.
     """
     spoken_text: str
     tools_called: list[str]
@@ -86,6 +92,7 @@ class _ToolLoopOutcome:
     track_name: str | None = None
     music_call_args: dict[str, Any] | None = None
     tool_error_occurred: bool = False
+    succeeded_tools: tuple[str, ...] = ()
 
 
 __all__ = ["_ToolLoopOutcome"]

@@ -20,6 +20,7 @@ import asyncio
 import concurrent.futures
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+import functools
 import json
 import logging
 import math
@@ -31,7 +32,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -77,7 +78,7 @@ from rob_box_harness.health import (
     check_deepseek_balance,
 )
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
-from rob_box_harness.identity.base import FaceSignal  # ADR-0135 §2.1
+from rob_box_harness.identity.base import FaceSignal  # ADR-0139 §2.1
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
@@ -95,13 +96,16 @@ from rob_box_harness.providers import (
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
-from rob_box_llm.provider import LLMMessage, LLMSettings
+from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.skill_router import SkillRouter
+from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
     DefaultSttAdmission,
+    MediaCommandStep,
     SttAdmission,
     SttAdmissionHost,
     SttContext,
@@ -162,6 +166,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_tool_call_markup,  # Issue #2760
     is_vocal_request,
     spoken_matches_claim_category,  # Issue #2780 п.3
+    UniversalActionClaimHit,  # Issue #3174
     user_wants_music,
     user_wants_performance,
 )
@@ -205,7 +210,22 @@ from rob_box_voice.core.identity_ack import (
     identity_ack_plan,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
+from rob_box_voice.core.media_router import (
+    MediaPlan,
+    MediaRouter,
+    MediaState,
+    MediaToolCall,
+)
+from rob_box_voice.core.named_play import (
+    COMPOSE_TOOL,
+    NamedPlayStatus,
+    play_fail_text,
+    play_ok_text,
+    run_named_play,
+    user_phrase_title,
+)
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
+from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
 )
@@ -271,28 +291,6 @@ from rob_box_voice.observability import (
     start_metrics_server,
     start_span,
 )
-
-
-def _xml_attr(value: str) -> str:
-    """Escape ``value`` for safe inclusion in an XML attribute (issue #1544).
-
-    Replaces the four characters that would break the ``<music_state …/>``
-    attribute syntax: ``"``, ``&``, ``<``, ``>``. Used by
-    :meth:`DialogueNode._build_music_state_snapshot` to safely embed user-
-    controlled theme names (``DJ-тема может содержать кавычки и амперсанды
-    из free-form ввода юзера)``) into the LLM-bound ``<system_context>``.
-
-    Cheap enough to call per-turn (~4 regex subs). Not a full XML escape —
-    we only render to LLM, not to a browser.
-    """
-    # ``str.replace`` chain is fine here — values are short (<200 chars).
-    return (
-        value
-        .replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 def _resolve_tts_voice_tag(
@@ -719,10 +717,10 @@ class DialogueNode(Node):
         self._speaker_resolve_timeout_sec: float = float(
             self.get_parameter("speaker_resolve_timeout_sec").value
         )
-        # ADR-0135 §2.6 — face→voice hint: читаем namespace-параметры
+        # ADR-0139 §2.6 — face→voice hint: читаем namespace-параметры
         # (см. _declare_params ниже). При выключенном флаге логика
         # полностью отсутствует (note_face_seen не зовётся,
-        # _handle_tentative_speaker не ищет hint — ADR-0135 §2.5).
+        # _handle_tentative_speaker не ищет hint — ADR-0139 §2.5).
         self._face_voice_hint_enabled: bool = bool(
             self.get_parameter("face_voice_hint.enabled").value
         )
@@ -738,7 +736,7 @@ class DialogueNode(Node):
         self._face_voice_hint_buffer_capacity: int = int(
             self.get_parameter("face_voice_hint.buffer_capacity").value
         )
-        # Прокидываем параметры в сам шов — ADR-0135 §2.2. Вынесено в
+        # Прокидываем параметры в сам шов — ADR-0139 §2.2. Вынесено в
         # helper, чтобы __init__ оставался в CC-budget ADR-0021.
         self._configure_face_voice_hint()
         # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
@@ -1030,8 +1028,22 @@ class DialogueNode(Node):
         # ретрай-промпт требовал ИЗМЕНИТЬ несуществующий трек, модель
         # отвечала словами — и робот произносил «я растерялся».
         # Теперь флаг следует за сервером, а не за догадкой.
+        #
+        # Issue #3133 (ADR-0141): «играет» диалог читает ТОЛЬКО из этого
+        # топика (``_music_player_state`` → ``_music_playing_now``). Latched,
+        # как у публикатора: после рестарта ноды снимок приходит сразу.
+        self._music_player_state = None
+        # Issue #3161 — те же снимки + имя темы из /voice/music/form → тег
+        # <music_state> для LLM (что играет и что замолчало недавно).
+        self._music_state_memory = MusicStateMemory()
         self.create_subscription(
-            String, "/voice/music/state", self._on_music_state, 10,
+            String, MUSIC_STATE_TOPIC, self._on_music_state,
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            ),
             callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
         # batch (rap, poetry), not after the first. tts_node publishes this
@@ -1066,10 +1078,9 @@ class DialogueNode(Node):
             String, "/voice/dj_mode",
             lambda m: self._on_dj_mode_msg(m.data), 10, callback_group=cbg)
         # Issue #2461 — структурный канал конца прохода формы для DJ-тикера.
-        # НАРОЧНО отдельный топик, не ``/voice/music/state``: тот несёт
-        # ровно "playing"/"idle" под ТОЧНОЕ РАВЕНСТВО в audio_node
-        # (``_on_music_state``, VAD-эхоподавление, issue #989) — любой
-        # суффикс/JSON там молча ломает порог. См. ``_on_music_form``.
+        # С issue #3133 те же form_ends_at/stops_at есть в снимке
+        # ``/voice/music/state``; DJState переедет на него в #3134, до тех
+        # пор читает этот топик. См. ``_on_music_form``.
         self.create_subscription(
             String, "/voice/music/form", self._on_music_form, 10,
             callback_group=cbg)
@@ -1128,6 +1139,10 @@ class DialogueNode(Node):
         # Флаг помнит, что живая музыка — это TRACK, и cleanup для неё не
         # вооружается. Потолок остаётся за watchdog'ом (idle TTL 300 s и
         # segments-дедлайн), явным stop_music и cleanup'ом нового диалога.
+        #
+        # Issue #3133 (ADR-0141): это ТОЛЬКО политика cleanup (TRACK vs
+        # BACKING). Играет ли музыка, флаг не говорит — это знает плеер,
+        # см. ``_music_player_state`` / ``_music_playing_now``.
         self._track_mode_music_active: bool = False
 
         # 🔴 FIX (live 30.08, e2e 33251879328): один флаг «в этом ходе гуард
@@ -1451,11 +1466,11 @@ class DialogueNode(Node):
         # в диалоге или, что было раньше, имя предыдущего собеседника).
         # 2.5с = запас x1.3 над верхней границей нормального диапазона.
         self.declare_parameter("speaker_resolve_timeout_sec", 2.5)
-        # ADR-0135 §2.6 — face→voice hint: свежее наблюдение лица в шов
+        # ADR-0139 §2.6 — face→voice hint: свежее наблюдение лица в шов
         # «Знакомый» отменяет голосовой переспрос #2809, если имя лица и
         # имя голосового кандидата совпадают и hint в окне. Дефолты из
         # ADR-0123 §6 (high=0.78) и ADR-0089 §2.2 (low=0.65 стаб-зеркало).
-        # Деградация к текущему поведению — ADR-0135 §2.5: false здесь
+        # Деградация к текущему поведению — ADR-0139 §2.5: false здесь
         # = подписка на /vision/hailo/events не зовёт note_face_seen,
         # _handle_tentative_speaker не ищет hint. Ключи dotted — стандарт
         # ROS2 для namespace-секций (см. test_yaml_param_consistency).
@@ -3011,22 +3026,55 @@ class DialogueNode(Node):
             skip_counter=self._llm_skipped_counter,
         )
         host = _DialogueSttHost(self)
+        dispatch = {
+            "was_idle": was_idle,
+            "speaker_tag": speaker_tag,
+            "speaker_duration_s": speaker_duration_s,
+            "from_tg": bool(tg_chat_id is not None),
+            "backlog_pending": backlog_pending,
+            "utterance_id": utterance_id,
+        }
+        # Issue #3176 — заказ по имени, которого нет в базе мелодий, роутер
+        # возвращает в приём с того же места (после MediaCommandStep).
+        host.media_miss = functools.partial(
+            self._resume_stt_after_media, ctx, host, dispatch
+        )
         outcome = self._stt_admission.evaluate(ctx, host)
+        self._finish_stt_admission(outcome, text, dispatch)
+
+    def _finish_stt_admission(
+        self, outcome: SttOutcome, text: str, dispatch: Dict[str, Any]
+    ) -> None:
+        """Хвост приёма: не PASS — сводка пропусков, PASS — ход LLM."""
         if outcome.kind is not SttOutcomeKind.PASS:
             self._maybe_log_skip_summary()
             return
         # PASS — dispatch the cleaned phrase to LLM.
         new_ctx = outcome.new_context
         clean = new_ctx.text if new_ctx is not None else text
-        self._dispatch_cleaned(
-            clean=clean,
-            was_idle=was_idle,
-            speaker_tag=speaker_tag,
-            speaker_duration_s=speaker_duration_s,
-            from_tg=bool(tg_chat_id is not None),
-            backlog_pending=backlog_pending,
-            utterance_id=utterance_id,
+        self._dispatch_cleaned(clean=clean, **dispatch)
+
+    def _resume_stt_after_media(
+        self,
+        ctx: SttContext,
+        host: "_DialogueSttHost",
+        dispatch: Dict[str, Any],
+        clean: str,
+    ) -> None:
+        """Issue #3176 — заказ по имени не нашёлся: реплика идёт в LLM.
+
+        Досчитывает шаги приёма после :class:`MediaCommandStep` (backlog,
+        barge-in, FSM + «думаю»-SFX) и отдаёт реплику ходу LLM так же, как
+        это сделал бы ``_on_stt`` без роутера. Зовётся из loop'а плана
+        роутера — как и синтетические ретраи гуардов (``_dispatch_turn``).
+        """
+        self.get_logger().info(
+            f"🎛️ [media-router] play_named: мимо базы — реплика в LLM: {clean[:60]!r}"
         )
+        outcome = self._stt_admission.resume_after(
+            MediaCommandStep.name, ctx.with_text(clean), host
+        )
+        self._finish_stt_admission(outcome, clean, dispatch)
 
     # -- STT admission helpers -------------------------------------------
     # These three helpers keep ``_on_stt`` at CC≤15 (ADR-0021 R1). The
@@ -3087,8 +3135,10 @@ class DialogueNode(Node):
         through ``_dispatch_turn`` → ``_run_turn`` for that purpose.
         """
         raw_user_command = clean
-        if self._dj.state.enabled:
-            clean = self._dj.preamble() + clean
+        # Issue #3145 — DJ-преамбула («[🎧 Музыкальный режим активен …]»)
+        # больше НЕ клеится к реплике: реплика уходит в историю, и префикс
+        # жил там до 10 ходов (82 штуки в логе 28.09). Состояние DJ подаётся
+        # только в текущем запросе — см. :meth:`_dj_turn_hint`.
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         # Issue #1766 — markers the operator / e2e harness grep for.
@@ -3237,30 +3287,25 @@ class DialogueNode(Node):
         self._generated_music_state = payload
 
     def _on_music_state(self, msg: String) -> None:
-        """Renardo-музыка остановилась на сервере — снять флаг «играет».
+        """Снимок плеера ``/voice/music/state`` (issue #3133, ADR-0141).
 
-        ``/voice/music/state`` публикует mcp_server: ``"playing"`` пока у
-        MusicManager есть открытая сессия или именованные паттерны, иначе
-        ``"idle"``. Раньше этот топик слушал только audio_node (порог VAD,
-        issue #989), а диалог вёл собственный ``_track_mode_music_active``
-        по своим догадкам — и расходился с реальностью каждый раз, когда
-        музыку останавливал не он: watchdog по idle_ttl, стоп из другого
-        клиента, падение паттерна.
-
-        Цена расхождения — ``build_music_retry_prompt``: при True он говорит
-        модели «музыка ИГРАЕТ, её надо ИЗМЕНИТЬ, а не заводить заново».
-        Сказанное про несуществующий трек уводит модель в описание вместо
-        вызова тула, ретраи выгорают, и робот произносит «я растерялся».
-
-        Только гасим. Взводит флаг по-прежнему ход диалога: там известно,
-        BACKING это или TRACK, а серверу такое различие не видно.
+        Единственный источник «играет» для диалога: ``_music_playing_now``,
+        гуард #3125 и Bug-C ретрай-промпт читают ``_music_player_state``.
+        При idle гасим и ``_track_mode_music_active`` — это теперь только
+        политика cleanup (TRACK живёт до стопа, BACKING гасится после
+        речи), а не «играет»: взводит его ход диалога, здесь только гасим.
         """
-        state = (msg.data or "").strip().lower()
-        if state.startswith("idle") and self._track_mode_music_active:
+        snapshot = parse_music_state(msg.data)
+        if snapshot is None:
+            return
+        self._music_player_state = snapshot
+        self._music_state_mem().observe_state(snapshot)
+        if snapshot.state == "idle" and self._track_mode_music_active:
             self._track_mode_music_active = False
             self.get_logger().info(
-                "🎵 [track-mode] сервер сообщил idle — снимаю флаг «играет» "
-                "(музыку остановил не диалог: watchdog/внешний стоп)"
+                "🎵 [track-mode] сервер сообщил idle — снимаю флаг TRACK "
+                f"(finished={snapshot.finished_track_id or '—'}: конец формы/"
+                "watchdog/внешний стоп)"
             )
 
     def _on_music_form(self, msg: String) -> None:
@@ -3268,11 +3313,9 @@ class DialogueNode(Node):
 
         ``/voice/music/form`` — ОТДЕЛЬНЫЙ от ``/voice/music/state`` топик
         (mcp_server публикует оба в одном месте, ``publish_music_state()``).
-        Заводить его пришлось потому, что ``/voice/music/state`` нельзя
-        трогать: ``audio_node._on_music_state`` сравнивает payload ТОЧНЫМ
-        РАВЕНСТВОМ (``state == "playing"``) для VAD-эхоподавления — любой
-        суффикс или JSON вместо плоской строки молча ломает порог (бит
-        начинает триггерить «речь»). Здесь же — JSON
+        Заводили его, пока ``/voice/music/state`` был плоской строкой; с
+        issue #3133 снимок плеера несёт те же поля, и DJState переедет на
+        него (#3134). Здесь — JSON
         ``{"form_ends_at": <epoch float|null>, "playing": bool}``.
 
         ``form_ends_at`` — уже АБСОЛЮТНОЕ стенное время: mcp_server сам
@@ -3296,6 +3339,16 @@ class DialogueNode(Node):
         self._dj.state.form_ends_at = (
             float(form_ends_at) if isinstance(form_ends_at, (int, float)) else None
         )
+        # Issue #3113 — остановка конечного трека: переход раньше неё;
+        # сыгранная тема — в список «не повторять» сета.
+        self._dj.note_form_stop(payload.get("stops_at"))
+        self._dj.note_track_name(payload.get("track"))
+        # Issue #3134 — название играющего трека для роутера медиакоманд
+        # («горный король погромче»); читается только через _media_state.
+        track = payload.get("track")
+        self._music_form_track = track if isinstance(track, str) and track else None
+        # Issue #3161 — имя играющей темы для <music_state>.
+        self._music_state_mem().observe_track_name(self._music_form_track)
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
@@ -3510,6 +3563,14 @@ class DialogueNode(Node):
         backlog_pending: bool = False,
         utterance_id: str | None = None,
     ) -> None:
+        # Issue #3144 — синтетический ретрай гуарда (Bug D/E, TurnGuards,
+        # tool-skipped, …), отправленный изнутри DJ-автоперехода, остаётся
+        # DJ-автопереходом. Иначе ретрай становился «ходом юзера», промпт
+        # DJ_AUTO — «запросом юзера», и Bug C выжигал бюджет до фразы
+        # «Музыка играет, а вот эту просьбу я выполнить не смог».
+        is_dj_auto = retry_is_dj_auto(
+            is_dj_auto=is_dj_auto, is_synthetic=is_synthetic
+        )
         # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
         # PR-B…F); сигнатура принимает ``occasion``, логирует только при
         # явной передаче. occasion=None → байт-в-байт прежнее поведение.
@@ -3546,6 +3607,10 @@ class DialogueNode(Node):
         if was_idle and not is_dj_auto and self._session_started_at is None:
             self._session_started_at = time.monotonic()
             self._session_end_reason = "success"
+        # Issue #3145 — синтетический ретрай значит «гуард отверг ответ
+        # этого хода»: ответ уходит из истории ДО ретрая, у всех гуардов.
+        if is_synthetic:
+            self._retract_rejected_reply()
 
         asyncio.run_coroutine_threadsafe(
             self._run_turn(
@@ -3939,7 +4004,7 @@ class DialogueNode(Node):
         user_input: str,
         utterance_id: Optional[str],
     ) -> bool:
-        """ADR-0135 — apply a fresh high-confidence face hint, if present."""
+        """ADR-0139 — apply a fresh high-confidence face hint, if present."""
         if not (
             getattr(self, "_face_voice_hint_enabled", False)
             and tentative_name
@@ -3956,7 +4021,7 @@ class DialogueNode(Node):
         state["confirmed"] = True
         state["name"] = tentative_name
         self.get_logger().info(
-            "👤 [issue #3024 ADR-0135] voice tentative suppressed "
+            "👤 [issue #3024 ADR-0139] voice tentative suppressed "
             "by recent face hint (name=%r, age=%.1fs, sim=%.3f); "
             "confirming as %r"
             % (face_obs.name, face_obs.age_sec(), face_obs.similarity, state["name"])
@@ -4284,84 +4349,38 @@ class DialogueNode(Node):
     #
     # Issue #1544 — LLM нужен честный обзор того, ЧТО играет прямо сейчас,
     # чтобы решать «стоп музыку» / «давай трек» / «хватит диджеить».
-    # До фикса был только <generated_music> для AI-генерации (issue #1392
-    # follow-up), и DJ-бит/Renardo оставались невидимыми → LLM говорил
-    # verbal «уже выключено» на стоп-команду, пока DJ-бит реально играл.
     #
-    # Четыре независимых источника истины:
-    #   * DJ-режим (``self._dj.state.enabled``) — autonomous DJ-сессия.
-    #   * AI-сгенерированная музыка (``self._generated_music_state`` dict)
-    #     — приходит из /voice/generated_music/state топика.
-    #   * Активный Renardo-бит — эвристика: либо cleanup-флаг
-    #     (``_pending_music_cleanup`` True → LLM запустил execute_music_code
-    #     и музыка ещё живёт), либо есть активные TTS-батчи в
-    #     ``_active_batches`` (музыка под backing-вокал).
-    #   * cleanup_in_progress — отложенный cleanup (cleanup=True означает
-    #     «бит был, сейчас будет остановлен после TTS batch_complete»).
+    # Issue #3161 (ADR-0141) — тег строится ТОЛЬКО из того, что публикует
+    # плеер: снимок ``/voice/music/state`` + имя темы из
+    # ``/voice/music/form`` (см. ``core/music_state_prompt.py``). Прежняя
+    # эвристика ``beat`` («играет», если взведён cleanup или живы
+    # TTS-батчи) врала после стопа: живой прогон 28.09 22:32 — через 10 с
+    # после «выключи музыку» модель прочла «играет» и так и сказала.
     #
-    # XML формат — компактный, один блок в <system_context>:
-    #
-    #   <music_state dj="playing: <theme>" ai="playing: <title>" beat="active" />
-    #   <music_state dj="off" ai="idle" beat="silent" />  ← idle
-    #
-    # Чтобы не путать LLM лишними атрибутами, всегда рендерим ВСЕ три
-    # (``dj``, ``ai``, ``beat``) — LLM видит «что есть» и «чего нет» одним
-    # взглядом, без чтения нескольких тегов.
-    DJ_THEME_UNKNOWN = "unknown theme"
+    #   <music_state playing="yes" track="клубный трек" repeat="once"
+    #                ends_in_s="42" dj="off" ai="idle" />
+    #   <music_state playing="no" dj="off" ai="idle" last_track="клубный трек"
+    #                last_ended="stopped" last_ended_ago_s="13" />
+
+    def _music_state_mem(self) -> MusicStateMemory:
+        """Память о снимках плеера (лениво — для стабов из ``__new__``)."""
+        memory = getattr(self, "_music_state_memory", None)
+        if memory is None:
+            memory = self._music_state_memory = MusicStateMemory()
+        return memory
 
     def _build_music_state_snapshot(self) -> str:
-        """Единый <music_state> snapshot для LLM (issue #1544).
+        """Единый ``<music_state>`` для LLM (issue #1544, #3161).
 
-        Возвращает строку вида::
-
-            <music_state dj="playing: <theme>" ai="playing: <title>"
-                         beat="active" cleanup="pending"/>
-
-        Все четыре атрибута рендерятся всегда (даже если ``off`` /
-        ``idle`` / ``silent``) — LLM не должен угадывать по отсутствию
-        тега.
-
-        Side effects: только чтение атрибутов; ничего не публикуется и
-        не модифицируется. Pure function of ``self.*`` state.
+        ``ai=`` — mp3 из AI-библиотеки играет в ``sound_node`` мимо
+        ``MusicManager`` и в снимок плеера не попадает; его состояние
+        публикует сам плеер mp3 (``/voice/generated_music/state``).
         """
-        # ── DJ-режим ──
-        dj_state = getattr(self, "_dj", None)
-        dj_inner = getattr(dj_state, "state", None) if dj_state else None
-        dj_enabled = bool(getattr(dj_inner, "enabled", False))
-        if dj_enabled:
-            dj_theme = (
-                getattr(dj_inner, "theme", None)
-                or self.DJ_THEME_UNKNOWN
-            )
-            dj_attr = f"playing: {dj_theme}"
-        else:
-            dj_attr = "off"
-
-        # ── AI-сгенерированная музыка (топик /voice/generated_music/state) ──
         gm = getattr(self, "_generated_music_state", None) or {}
+        title = None
         if gm.get("status") == "playing":
             title = gm.get("title") or "без названия"
-            ai_attr = f"playing: {title}"
-        else:
-            ai_attr = "idle"
-
-        # ── Активный Renardo-бит (не-DJ, не-AI) ──
-        # Эвристика: cleanup-флаг (LLM только что вызвал execute_music_code,
-        # бит ещё жив до tts_batch_complete) ИЛИ есть активные батчи
-        # TTS (музыка держится под вокал).
-        # Если _music_guard_budget или _pending_music_cleanup=False и
-        # _active_batches пуст — значит музыка уже не звучит.
-        pending_cleanup = bool(getattr(self, "_pending_music_cleanup", False))
-        active_batches = getattr(self, "_active_batches", None) or {}
-        beat_attr = "active" if (pending_cleanup or active_batches) else "silent"
-        cleanup_attr = "pending" if pending_cleanup else "none"
-
-        return (
-            f'  <music_state dj="{_xml_attr(dj_attr)}" '
-            f'ai="{_xml_attr(ai_attr)}" '
-            f'beat="{beat_attr}" '
-            f'cleanup="{cleanup_attr}" />'
-        )
+        return self._music_state_mem().render(generated_title=title)
 
     def _pending_identity_hint_lines(self) -> list:
         """Issue #2809 (продолжение) -- строки подсказки-гипотезы для
@@ -4556,9 +4575,9 @@ class DialogueNode(Node):
         # вызова stop_music tool. Один блок на весь turn — short enough.
         lines.append(
             "  <reminder>Если юзер говорит «стоп музыку / выключи / хватит "
-            "диджеить»: посмотри <music_state> выше — если НЕЧТО играет "
-            "(dj_active или ai_active или beat_active), ОБЯЗАТЕЛЬНО вызови "
-            "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
+            "диджеить»: посмотри <music_state> выше — если playing=\"yes\" "
+            "или ai=\"playing: …\", ОБЯЗАТЕЛЬНО вызови stop_music tool, а "
+            "потом коротко подтверди; если playing=\"no\" и ai=\"idle\" — "
             "verbal «уже выключено» без tool call.</reminder>"
         )
         # Issue #2406 (n201/n204 intro — register_speaker на discovery-шаге) —
@@ -4584,19 +4603,25 @@ class DialogueNode(Node):
         # Issue #2347 (n313 silence_restored) — SYSTEM REMINDER: на
         # state-запрос LLM по умолчанию делает verbal-only ответ из
         # <music_state> тега и пропускает get_music_state tool. e2e-гейт
-        # n313_silence_restored требует tool call в трейсе. Дублируем правило
-        # в dynamic context, чтобы LLM не «угадывал» ответ на основе stale
-        # snapshot. Ставим МЕЖДУ stop_music и time — test_issue_1777_time_format
-        # берёт reminders[-1] как time-reminder, не сдвигаем его.
+        # n313_silence_restored требует tool call в трейсе. Ставим МЕЖДУ
+        # stop_music и time — test_issue_1777_time_format берёт
+        # reminders[-1] как time-reminder, не сдвигаем его.
+        # Issue #3161: «тег может быть stale» больше не правда — он из
+        # снимка плеера; вместо этого учим отвечать про прошлое по last_*.
+        # Issue #3165: «ОБЯЗАТЕЛЬНО get_music_state» наказывало правильный
+        # ответ по снимку (Bug E → ретраи → «Не получилось выполнить»).
+        # Тул — только когда в теге ответа нет (playing="unknown").
         lines.append(
             "  <reminder>Если юзер спрашивает про состояние музыки "
             "(«тихо?», «тишина?», «тише?», «играет ли музыка?», «что играет?», "
             "«что сейчас играет?», «музыка включена?», «слышно что-нибудь?»): "
-            "ОБЯЗАТЕЛЬНО вызови get_music_state tool ПЕРЕД ответом, прочитай "
-            "результат и только потом отвечай через speak_text. НЕ угадывай "
-            "ответ по <music_state> тегу — он может быть stale (DJ переключился, "
-            "beat ещё держится под TTS-батчем, cleanup pending). Tool call "
-            "обязателен даже если кажется, что и так ясно.</reminder>"
+            "ответ уже в <music_state> — это снимок плеера на начало хода. "
+            "playing=\"no\" — тишина, НЕ говори «сейчас играет»; "
+            "playing=\"yes\" — назови track. Про прошлое («что играло?», «что "
+            "ты включал?») отвечай по last_track / last_ended / "
+            "last_ended_ago_s («минуту назад играл …, я его остановил»). "
+            "get_music_state вызывай, только если в <music_state> ответа нет "
+            "(playing=\"unknown\").</reminder>"
         )
         # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
         # ``get_current_time`` уже возвращает ``formatted_time`` русской
@@ -4786,6 +4811,9 @@ class DialogueNode(Node):
         if not self._admit_turn_epoch(session_epoch):
             return
         epoch_token = TURN_EPOCH.set(session_epoch)
+        # Issue #3144 — происхождение хода для ретраев гуардов (см.
+        # ``core/turn_origin.py``): ретрай наследует его через контекст.
+        dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
         with self._task_lock:
             self._run_task = asyncio.current_task()
         # Issue #2913 -- решения о речи speak_text -- по этому ходу.
@@ -5073,6 +5101,7 @@ class DialogueNode(Node):
                 tool_retry_dispatched=tool_retry_dispatched,
                 session_handed_over=self._take_session_handover(),
             )
+            TURN_IS_DJ_AUTO.reset(dj_auto_token)
             TURN_EPOCH.reset(epoch_token)
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
@@ -5142,6 +5171,15 @@ class DialogueNode(Node):
                 "post-turn ретраи (music/tool) не диспатчим: ждём ответ человека"
             )
             return False, False
+        if was_dj_auto and not self._dj_session_active():
+            # Issue #3144 — DJ-автопереход, а DJ уже выключен: Bug B
+            # неприменим, а Bug C/tool-skipped читали бы промпт DJ_AUTO
+            # как просьбу юзера (живой прогон 28.09 18:48).
+            self.get_logger().info(
+                "🎧 [issue 3144] DJ-автопереход при выключенном DJ — "
+                "music/tool ретраи не диспатчим: это не ход юзера"
+            )
+            return False, False
         tools_called = result.tools_called if result else ()
         music_retry_dispatched = self._apply_music_guard(
             was_dj_auto=was_dj_auto,
@@ -5161,13 +5199,18 @@ class DialogueNode(Node):
             tool_error_occurred=bool(
                 getattr(result, "tool_error_occurred", False)
             ),
+            # Issue #3004 — per-call success: validation error + successful
+            # retry of the music tool in the same turn is a success.
+            succeeded_tools=tuple(getattr(result, "succeeded_tools", None) or ()),
         )
         # Issue #1777 / #1762 — Bug C retry для non-music tool-based
         # запросов (``get_current_time`` / ``search_web`` / ``set_voice`` /
         # ``memory_search`` / ``faq_search``): ОДИН CRITICAL retry с явным
         # указанием нужного tool. Вызывается ПОСЛЕ music guard — чтобы не
         # дублировать retry для пересекающихся случаев.
-        tool_retry_dispatched = self._apply_tool_skipped_guard(
+        # Issue #3144 — на DJ-автопереходе промпт DJ_AUTO не просьба юзера:
+        # tool-skipped (Bug C для не-музыкальных тулов) его не читает.
+        tool_retry_dispatched = (not was_dj_auto) and self._apply_tool_skipped_guard(
             user_input=user_input,
             tools_called=tools_called,
             other_retry_dispatched=music_retry_dispatched,
@@ -5188,7 +5231,15 @@ class DialogueNode(Node):
                 f"до «новой сессии» — игнорирую: {payload[:120]!r}"
             )
             return
-        self._dj.handle_message(payload)
+        # Issue #3181 — реплика юзера, как пришла в STT, для фолбэка темы
+        # (``DJModeController._apply_enable_payload``), когда LLM включила
+        # DJ без ``theme=``. ``_last_stt_text`` — последняя реплика,
+        # которую видел ``quick_decide`` (тот же текст, что и
+        # media_router для этого хода); DJ_AUTO-переходы STT не шлют, так
+        # что фолбэк срабатывает только на генуинном старте от юзера.
+        self._dj.handle_message(
+            payload, raw_utterance=getattr(self, "_last_stt_text", None) or ""
+        )
 
     def _publish_dj_off(self, reason: str) -> None:
         """Опубликовать ``/voice/dj_mode`` ``enabled=false``.
@@ -5840,6 +5891,7 @@ class DialogueNode(Node):
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
             dj_active=dj_active,
+            music_playing=self._music_playing_known(),
         )
         if rule is None:
             return False
@@ -5953,9 +6005,9 @@ class DialogueNode(Node):
             # CRITICAL-тур вызовет пинг-понг.
             return False
 
-        hit = detect_universal_action_claim(
+        hit = self._universal_claim_hit(
             spoken=spoken,
-            tools_called=tuple(tools_called or ()),
+            tools_called=tools_called,
             tool_error_occurred=tool_error_occurred,
         )
         if hit is None:
@@ -6122,7 +6174,7 @@ class DialogueNode(Node):
         if not detect_phantom_action_claim(
             user_input=user_input,
             spoken=spoken,
-            tools_called=tuple(tools_called or ()),
+            tools_called=self._claim_backing_tools(tools_called),
         ):
             return False
 
@@ -6393,8 +6445,29 @@ class DialogueNode(Node):
         hold = getattr(self, "_turn_speech_hold", None)
         if hold is not None:
             hold.retract()
-        future =asyncio.run_coroutine_threadsafe(
-            self._core.discard_last_reply(), self._loop
+        self._retract_rejected_reply()
+
+    def _retract_rejected_reply(self) -> None:
+        """Issue #3145 — убрать из истории ответ, отвергнутый гуардом.
+
+        Раньше отзыв делали только music-гуарды; ретраи Bug D/E, TurnGuards,
+        tool-skipped и прочие оставляли плохой ответ в окне, и после ответа
+        ретрая в истории стояли два assistant подряд (живой лог 28.09 — 28
+        мест; «Клубняк в клубе, погнали дальше!» ~10 ходов висел ответом на
+        «ты диджей Снупдог»). Теперь это делает :meth:`_dispatch_turn` для
+        ЛЮБОГО синтетического ретрая.
+
+        ``AgentCore.discard_last_reply`` снимает только ответ последнего
+        хода (повторный вызов и ход без записанного ответа — no-op), поэтому
+        music-гуард, который и сам зовёт отзыв, второй ответ не снесёт.
+        Планируется на loop ДО ретрая — FIFO гарантирует, что ретрай уже не
+        увидит отвергнутый ответ.
+        """
+        core = getattr(self, "_core", None)
+        if core is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            core.discard_last_reply(), self._loop
         )
 
         def _log_if_failed(fut: "asyncio.Future[bool]") -> None:
@@ -6402,16 +6475,17 @@ class DialogueNode(Node):
                 removed = fut.result()
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(
-                    f"🎵 [issue 992] discard_last_reply failed: {exc}"
+                    f"🧹 [issue 3145] discard_last_reply failed: {exc}"
                 )
                 return
-            if not removed:
-                self.get_logger().debug(
-                    "🎵 [issue 992] discard_last_reply: no assistant turn "
-                    "found to retract"
+            if removed:
+                self.get_logger().info(
+                    "🧹 [issue 3145] отвергнутый гуардом ответ убран из истории"
                 )
 
-        future.add_done_callback(_log_if_failed)
+        # Тестовые стабы ``run_coroutine_threadsafe`` future не возвращают.
+        if future is not None:
+            future.add_done_callback(_log_if_failed)
 
     # ------------------------------------------------------------------
     # Issue #2241 / ADR-0080 §2.4 — TurnGuards bridge (voice-vr 19).
@@ -6528,7 +6602,8 @@ class DialogueNode(Node):
         assert state is not None  # for type-checkers (init above)
         turn = TurnContext(
             user_input=user_input or "",
-            is_dj_auto=False,
+            # Issue #3144 — происхождение хода, а не константа False.
+            is_dj_auto=TURN_IS_DJ_AUTO.get(),
         )
         reply = TurnReply(
             spoken=spoken or "",
@@ -6695,9 +6770,21 @@ class DialogueNode(Node):
                     "scheduled for this turn"
                 )
         elif getattr(self, "_track_mode_music_active", False):
+            # Issue #3133: флаг — политика cleanup, а не «играет»; правду
+            # о звуке пишем рядом из снимка плеера.
             self.get_logger().info(
-                "🎵 [track-mode] TRACK играет с прошлого хода — "
-                "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
+                "🎵 [track-mode] TRACK-режим с прошлого хода — "
+                "cleanup НЕ вооружаем (живёт до stop_music/watchdog/конца "
+                f"формы); плеер: playing={self._music_playing_now()}"
+            )
+        elif self._music_not_started_by_this_turn():
+            # Issue #3174 / ADR-0141: музыкальных тулов в ходе нет, а плеер
+            # играет — значит, музыку запустил не этот ход (роутер, прошлый
+            # ход, DJ-переход). Стоп после речи — только для BACKING этого
+            # хода; чужой трек и DJ-сет живут до явного стопа.
+            self.get_logger().info(
+                "🎵 [issue 3174] ход без музыкальных тулов, плеер играет "
+                "(DJ-сет или трек не из этого хода) — cleanup НЕ вооружаем"
             )
         elif not was_dj_auto and not self._pending_music_cleanup:
             self._pending_music_cleanup = True
@@ -6709,6 +6796,21 @@ class DialogueNode(Node):
                 "🎵 [issue 992] music_cleanup already pending — "
                 "ignoring redundant re-arm"
             )
+
+    def _music_not_started_by_this_turn(self) -> bool:
+        """Issue #3174 — по снимку плеера играет музыка не из этого хода.
+
+        Вызывается только для хода БЕЗ музыкальных тулов: всё, что сейчас
+        звучит, запустил кто-то другой — роутер медиакоманд (#3134, #3153:
+        превью + ``set_dj_mode`` в обход LLM), прошлый ход или DJ-переход.
+        Источник — снимок ``/voice/music/state`` (ADR-0141) и DJ-флаг:
+        снимка нет и DJ выключен — ``False``, прежнее поведение.
+        """
+        snapshot = getattr(self, "_music_player_state", None)
+        if snapshot is not None and (snapshot.dj or snapshot.is_playing()):
+            return True
+        dj = getattr(self, "_dj", None)
+        return bool(dj is not None and getattr(dj.state, "enabled", False) is True)
 
     def _flush_music_cleanup_if_idle(self, was_dj_auto: bool) -> None:
         """Issue #992 — финальный flush, если cleanup вооружён и батчей нет.
@@ -6994,7 +7096,24 @@ class DialogueNode(Node):
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
         dynamic_system = self._build_dynamic_system_context()
-        return user_input, dynamic_system
+        return user_input, self._dj_turn_hint(dynamic_system, was_dj_auto)
+
+    def _dj_turn_hint(self, dynamic_system: Any, was_dj_auto: bool) -> Any:
+        """Issue #3145 — DJ-преамбула как состояние ТЕКУЩЕГО хода.
+
+        Раньше (#3134) ``_dispatch_cleaned`` клеил ``DJModeController.preamble``
+        к тексту юзера, и префикс «[🎧 … Это ОБЫЧНАЯ команда юзера …]»
+        оседал в истории. Теперь он едет в ``dynamic_system``: AgentCore
+        склеивает его с репликой только в исходящем запросе
+        (``_compose_current_turn_message``), в окно пишутся дословные слова
+        юзера. На DJ-переходе преамбула не нужна — у него свой промпт.
+        """
+        if was_dj_auto or not self._dj_session_active():
+            return dynamic_system
+        hint = self._dj.preamble().strip()
+        if not dynamic_system:
+            return hint
+        return f"{dynamic_system}\n{hint}"
 
     def _inject_backlog_hint(self, user_input: str) -> str:
         """Issue #2779 — добавить ``[URGENT_BACKLOG]`` хинт в user-turn.
@@ -7029,6 +7148,7 @@ class DialogueNode(Node):
         tools_called: tuple,
         spoken: Optional[str] = None,
         tool_error_occurred: bool = False,
+        succeeded_tools: tuple = (),
     ) -> bool:
         """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
         side effects (dispatch, speak_direct, dialogue-reopen) out of
@@ -7121,6 +7241,8 @@ class DialogueNode(Node):
             build_dj_retry_prompt=self._build_dj_retry_prompt,
             spoken=spoken,
             tool_error_occurred=tool_error_occurred,
+            succeeded_tools=succeeded_tools,
+            music_playing=self._music_playing_known(),
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
@@ -7132,13 +7254,10 @@ class DialogueNode(Node):
             # общий budget `_synthetic_retries_left` иначе ping-pong
             # DJ_RETRY ↔ babble/code/tool даёт до 9 LLM-вызовов на
             # один переход без единого слова юзера (см. live-логи
-            # #1881). Декремент ДО диспатча, на исчерпании — spoken
-            # nudge, как в USER_RETRY ниже.
+            # #1881). Декремент ДО диспатча. Issue #3144: на исчерпании —
+            # тишина, а не nudge: юзер в этом ходе ничего не просил.
             if not self._consume_synthetic_retry(guard_name="music_dj"):
-                self._discard_last_music_reply()
-                self._speak_direct(
-                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
-                )
+                self._give_up_dj_transition_silently()
                 return False
             # Помечаем «в этом ходе ретрай уже отправлен» — иначе
             # babble-/tool-guards в следующем цикле guard'ов могут
@@ -7171,10 +7290,7 @@ class DialogueNode(Node):
                 # Бюджет исчерпан — публикуем spoken nudge (как при
                 # budget_exhausted внутри ``MusicGuard``) и НЕ
                 # диспатчим второй ретрай.
-                self._discard_last_music_reply()
-                self._speak_direct(
-                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
-                )
+                self._speak_music_retry_nudge(tools_called)
                 return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
@@ -7227,10 +7343,7 @@ class DialogueNode(Node):
             # :meth:`MusicGuard.evaluate` сейчас отдаёт FALLBACK
             # вместо NUDGE (issue #2561), но если где-то ещё живёт
             # кастомный guard, сюда он попадёт.
-            self._discard_last_music_reply()
-            self._speak_direct(
-                "Я тут растерялся — бит не запустился, попробуй ещё раз."
-            )
+            self._speak_music_retry_nudge(tools_called)
             return False
 
         # Issue #2967 — Bug B retry-budget exhausted on THIS DJ-transition
@@ -7242,6 +7355,419 @@ class DialogueNode(Node):
         # user did not request music, DJ off, etc.). Policy module already
         # logged the diagnostic.
         return False
+
+    #: Nudge после исчерпания бюджета, когда музыки НЕТ, а музыкальный тул
+    #: в этом ходе вызывался и упал — только тогда «бит не запустился» правда.
+    MUSIC_RETRY_NUDGE_TEXT = "Я тут растерялся — бит не запустился, попробуй ещё раз."
+    #: Issue #3161 — тот же момент, но музыкальных тулов в ходе не было:
+    #: ничего не запускалось, значит, и «не запустилось» нечему (живой
+    #: прогон 28.09 22:32 — фраза прозвучала в ответ на вопрос). Честно:
+    #: просьбу не выполнил, ничего не включал.
+    MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT = (
+        "Я тут растерялся и ничего не включил — скажи, пожалуйста, по-другому."
+    )
+    #: Issue #3125 — тот же момент, но музыка играет: «бит не запустился»
+    #: было бы враньём (живой сет 28.09: трек играл, робот 3 раза сказал,
+    #: что бит не запустился). Честно: музыка идёт, а просьбу не выполнил.
+    MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT = (
+        "Музыка играет, а вот эту просьбу я выполнить не смог — скажи по-другому."
+    )
+
+    def _music_playing_now(self) -> bool:
+        """Issue #3125 / #3133 — играет ли сейчас музыка, по словам плеера.
+
+        Источник — только снимок ``/voice/music/state`` (ADR-0141). До
+        #3133 здесь читался ``_track_mode_music_active``, который ставился
+        по ИМЕНАМ тулов (в т.ч. ``set_dj_mode(enabled=false)`` и упавшего
+        ``compose_music``) и снимался только по idle, а idle после конечного
+        трека приходил через 30 минут: робот говорил «Музыка играет» в
+        тишине. Снимка ещё нет — не играет. ``stops_at`` в прошлом —
+        не играет, даже если свежий idle не дошёл.
+        """
+        snapshot = getattr(self, "_music_player_state", None)
+        return snapshot is not None and snapshot.is_playing()
+
+    def _music_playing_known(self) -> Optional[bool]:
+        """Issue #3165 — играет ли музыка по снимку плеера; ``None`` — снимка нет.
+
+        Для сверки заявлений о состоянии музыки (Bug E ``music_state``):
+        без снимка ``<music_state playing="unknown">`` и ответу не на что
+        опереться. AI-mp3 (``ai="playing: …"`` в теге) тоже считается
+        «играет»: его модель видит в том же теге.
+        """
+        snapshot = getattr(self, "_music_player_state", None)
+        if snapshot is None:
+            return None
+        gm = getattr(self, "_generated_music_state", None) or {}
+        return snapshot.is_playing() or gm.get("status") == "playing"
+
+    # ── Issue #3134 — роутер медиакоманд до LLM ────────────────────────
+
+    def _media_state(self) -> MediaState:
+        """ЕДИНСТВЕННЫЙ аксессор состояния плеера для роутера медиакоманд.
+
+        Источники: «играет» — :meth:`_music_playing_now`, то есть снимок
+        плеера ``/voice/music/state`` (#3133, ADR-0141,
+        ``MusicPlayerState.is_playing``); название трека — последний
+        ``track`` из ``/voice/music/form`` (в снимке плеера только
+        непрозрачный ``track_id``); DJ — ``DJState``. ``form_ends_at`` —
+        issue #3153 (доп.): конец текущей формы из того же снимка плеера
+        (нужен роутеру, чтобы назначить переход #1 «ты диджей X» над уже
+        играющим треком на конец формы, а не на фиксированные 15 с).
+        Роутер других источников не читает: сменить источник — здесь и
+        только здесь.
+        """
+        dj = getattr(self, "_dj", None)
+        playing = self._music_playing_now()
+        snapshot = getattr(self, "_music_player_state", None)
+        return MediaState(
+            music_playing=playing,
+            dj_enabled=bool(dj is not None and dj.state.enabled),
+            track_name=getattr(self, "_music_form_track", None) if playing else None,
+            form_ends_at=(
+                getattr(snapshot, "form_ends_at", None) if playing else None
+            ),
+        )
+
+    def _route_media_command(self, text: str, on_miss: Any = None) -> bool:
+        """Медиакоманду исполняет код, до LLM. ``True`` — в LLM не идёт.
+
+        MCP-тулы вызываются тем же исполнителем, что и у LLM-хода
+        (``SchedulerToolExecutor`` → ``ROSMCPToolProvider`` →
+        ``LLMToolCallAdapter`` → подписанный ``/mcp/execute``).
+
+        ``on_miss`` — issue #3176: куда вернуть реплику, если заказ по имени
+        не нашёлся в базе мелодий (``callable(text)``). Без него заказ по
+        имени роутер не берёт — реплика сразу идёт в LLM, как раньше.
+        """
+        router = getattr(self, "_media_router", None)
+        if router is None:
+            router = self._media_router = MediaRouter()
+        plan = router.route(text, self._media_state())
+        if plan is None:
+            return False
+        executor = getattr(self, "_scheduler_executor", None)
+        if plan.play_name:
+            return self._start_play_named(plan, executor, text, on_miss)
+        if plan.tool_calls and executor is None:
+            self.get_logger().warning(
+                f"🎛️ [media-router] {plan.command.intent.value}: MCP-тулов нет "
+                "(tool_provider не ros_mcp) — отдаю реплику LLM"
+            )
+            return False
+        self.get_logger().info(
+            f"🎛️ [media-router] intent={plan.command.intent.value} "
+            f"closed={plan.command.closed} provider={router.provider_name} "
+            f"tools={[c.name for c in plan.tool_calls]} to_llm={plan.to_llm} "
+            f"text={text[:60]!r}"
+        )
+        self._apply_media_plan_side_effects(plan)
+        self._prepare_dj_preview(plan, executor)
+        asyncio.run_coroutine_threadsafe(
+            self._execute_media_plan(plan, executor, text), self._loop
+        )
+        return plan.handled
+
+    def _start_play_named(
+        self, plan: MediaPlan, executor: Any, text: str, on_miss: Any
+    ) -> bool:
+        """Issue #3176 — заказ по имени: забрать реплику и искать мелодию.
+
+        Реплика забирается сразу (``True``), а есть ли мелодия, выясняет
+        :meth:`_execute_play_named` в loop'е: не нашлась — ``on_miss``
+        возвращает её в приём, и отвечает LLM. Некуда вернуть (нет
+        ``on_miss``) или нечем искать (нет MCP-исполнителя) — реплику не
+        забираем вовсе.
+        """
+        if executor is None or not callable(on_miss):
+            self.get_logger().warning(
+                "🎛️ [media-router] play_named: нет MCP-исполнителя или пути "
+                "назад в приём — отдаю реплику LLM"
+            )
+            return False
+        self.get_logger().info(
+            f"🎛️ [media-router] intent=play_named name={plan.play_name!r} "
+            f"provider={self._media_router.provider_name} text={text[:60]!r}"
+        )
+        asyncio.run_coroutine_threadsafe(
+            self._execute_play_named(plan, executor, text, on_miss), self._loop
+        )
+        return True
+
+    async def _execute_play_named(
+        self, plan: MediaPlan, executor: Any, text: str, on_miss: Any
+    ) -> None:
+        """Issue #3176 — ``lookup_melody`` → ``compose_music`` или LLM.
+
+        * Нашлась целиком и заиграла — отменить идущий ход LLM (заказ его
+          заменяет), учесть трек (DJ-сет, cleanup) и сказать «Ставлю «X»».
+        * Не нашлась / совпала не целиком — ``on_miss(text)``: реплика
+          идёт в LLM, роутер НИЧЕГО не говорит (иначе двойной ответ).
+        * Нашлась, но не заиграла — честная фраза, без LLM.
+        """
+
+        async def _call(name: str, args: Dict[str, Any]) -> Tuple[bool, str]:
+            return await self._execute_media_tool_result(
+                executor, MediaToolCall(name, args)
+            )
+
+        begin_turn = getattr(executor, "begin_turn", None)
+        if callable(begin_turn):
+            # Лимит «один трек за ход» (#2859) снимается только на границе
+            # хода LLM: трек прошлого хода иначе отказал бы заказу.
+            begin_turn()
+        outcome = await run_named_play(_call, plan.play_name)
+        self.get_logger().info(
+            f"🎛️ [media-router] play_named {plan.play_name!r}: "
+            f"{outcome.status.value} {outcome.reason}".rstrip()
+        )
+        if outcome.status is NamedPlayStatus.MISS:
+            on_miss(text)
+            return
+        self._llm_skipped_counter["media_command"] += 1
+        self._cancel_run("media command play_named (issue 3176)", stop_tts=True)
+        # Issue #3178: слова юзера («к элизе»), не архивный title базы
+        # («Fur Elise») — юзер и так знает, что просил.
+        title = user_phrase_title(plan.play_name)
+        if outcome.status is NamedPlayStatus.PLAYED:
+            self._note_router_track_started()
+            phrase = play_ok_text(title)
+        else:
+            phrase = play_fail_text(title)
+        self._record_media_turn(plan, text, phrase, list(outcome.tools_done))
+        self._speak_direct(phrase)
+
+    def _note_router_track_started(self) -> None:
+        """Issue #3176 — трек запустил роутер, а не ход LLM: учесть так же.
+
+        * DJ-сет: ``note_turn_tools`` — тот же учёт, что после хода LLM с
+          ``compose_music`` без ``set_dj_mode``: заказ гостя
+          (``DJModeController._hold_for_user_track``) — сет не гасится,
+          переход ждёт конца формы заказа и не расходует трек плана;
+          название попадёт в ``played_names`` из ``/voice/music/form``.
+        * Cleanup: трек живёт до stop/конца формы, как у хода LLM с
+          музыкальным тулом (``_schedule_music_cleanup``) — отложенный
+          cleanup прошлого хода не должен погасить заказ после фразы.
+        """
+        dj = getattr(self, "_dj", None)
+        if dj is not None:
+            dj.note_turn_tools((COMPOSE_TOOL,), MUSIC_STARTING_TOOLS)
+        self._pending_music_cleanup = False
+        self._track_mode_music_active = True
+
+    def _apply_media_plan_side_effects(self, plan: MediaPlan) -> None:
+        """Синхронная часть плана: счётчик, отмена хода, DJ off при стопе."""
+        if plan.handled:
+            self._llm_skipped_counter["media_command"] += 1
+        if plan.cancel_inflight:
+            self._cancel_run("media command (issue 3134)", stop_tts=True)
+        if plan.dj_off:
+            # Как #2897: стоп юзера гасит DJ-режим в коде, молча.
+            self._force_dj_off_for_stop_command(reason="media_router_stop")
+
+    def _prepare_dj_preview(self, plan: MediaPlan, executor: Any) -> None:
+        """Issue #3153 (+доп.) — заявка «трек #1 сета»: подготовка до тулов.
+
+        * Заявка DJ-контроллеру: ``/voice/dj_mode`` от ``set_dj_mode``
+          приходит отдельным топиком, заявка должна лежать раньше него.
+          Два случая несут ``plan.claim_track_one=True``: мгновенное
+          club-превью в тишине (``plan.preview_root`` — своя тоника) и «ты
+          диджей X» поверх уже играющего обычного трека (тоника роутеру
+          неизвестна — ``preview_root=""``, контроллер её просто не
+          трогает).
+        * Сброс лимита «один трек за ход» (#2859) у исполнителя: он
+          снимается только на границе хода LLM, и трек прошлого хода
+          иначе отказал бы превью (отказ — не ошибка тула, робот сказал бы
+          «запускаю сет» в тишине). Идущий ход команда уже отменила
+          (``cancel_inflight``).
+        """
+        if not plan.claim_track_one:
+            return
+        begin_turn = getattr(executor, "begin_turn", None)
+        if callable(begin_turn):
+            begin_turn()
+        dj = getattr(self, "_dj", None)
+        if dj is not None:
+            dj.claim_preview(plan.preview_root)
+
+    async def _execute_media_plan(
+        self, plan: MediaPlan, executor: Any, text: str = ""
+    ) -> None:
+        """Вызвать тулы плана по порядку и сказать фиксированную фразу.
+
+        Тул с ``fail_text`` при неудаче обрывает план и говорит свою фразу
+        (issue #3153: превью не встало — DJ не включаем).
+
+        Issue #3165: успешные тулы и сказанная фраза записываются для
+        модели и гуардов (:meth:`_record_media_turn`).
+        """
+        ok, phrase, done = True, "", []
+        for call in plan.tool_calls:
+            if await self._execute_media_tool(executor, call):
+                done.append(call.name)
+                continue
+            ok = False
+            if call.fail_text:
+                phrase = call.fail_text
+                break
+        if not ok and plan.claim_track_one and getattr(self, "_dj", None) is not None:
+            self._dj.drop_preview_claim()
+        phrase = phrase or (plan.say_ok if ok else plan.say_fail)
+        self._record_media_turn(plan, text, phrase, done)
+        if phrase:
+            self._speak_direct(phrase)
+
+    # Issue #3165 — сколько секунд действие роутера подкрепляет заявление
+    # модели о нём («я остановил трек», «сделал громче») в ходе без тулов.
+    # Живой прогон 29.09: вопросы пришли через 11 и 33 с после стопа, ответ
+    # ретрая — через 48 с. Дольше двух минут «я остановил» — уже пересказ
+    # истории, и широкие гуарды #2549/#2559 снова требуют тул.
+    MEDIA_ACTION_BACKING_S = 120.0
+
+    def _record_media_turn(
+        self, plan: MediaPlan, text: str, phrase: str, done: list
+    ) -> None:
+        """Issue #3165 — ход роутера виден модели и гуардам.
+
+        * История модели: пара «реплика → фраза» с тулами в metadata
+          (``AgentCore.record_external_turn``), то есть строка в блоке
+          «выполнено в прошлых ходах». Только для закрытых роутером
+          реплик: при ``to_llm`` ту же реплику сейчас запишет ход модели.
+        * Журнал для гуардов #2549 / #2559 / #2949
+          (:meth:`_claim_backing_tools`): «я остановил» после стопа
+          роутером — не фантом.
+        """
+        now = time.time()
+        ledger = getattr(self, "_media_actions", None)
+        if ledger is None:
+            ledger = self._media_actions = deque(maxlen=16)
+        ledger.extend((now, name) for name in done)
+        record = getattr(getattr(self, "_core", None), "record_external_turn", None)
+        if plan.handled and callable(record):
+            record(text, phrase, done)
+
+    def _claim_backing_tools(self, tools_called: Any) -> tuple:
+        """Issue #3165 — тулы хода плюс свежие тулы роутера медиакоманд.
+
+        Для широких гуардов «заявил действие без тула» (#2549, #2559,
+        fallback #2949): модель честно пересказывает стоп/громкость/DJ,
+        исполненные роутером, а в её собственном ходе тулов нет.
+        """
+        horizon = time.time() - self.MEDIA_ACTION_BACKING_S
+        recent = tuple(
+            name
+            for at, name in getattr(self, "_media_actions", None) or ()
+            if at >= horizon
+        )
+        return tuple(tools_called or ()) + recent
+
+    def _universal_claim_hit(
+        self,
+        *,
+        spoken: str,
+        tools_called: Any,
+        tool_error_occurred: bool = False,
+        repeated_call_args: bool = False,
+    ) -> Optional[UniversalActionClaimHit]:
+        """Issue #2549 + #3165 + #3174 — не подкреплённое заявление действия.
+
+        Журнал роутера (:meth:`_claim_backing_tools`) подкрепляет только
+        ПЕРЕСКАЗ сделанного («я остановил трек», прошедшее время). Обещание
+        в будущем времени («Сейчас поставлю к Элизе!») — это действие ЭТОГО
+        хода, и превью с ``set_dj_mode`` роутера 30 с назад его не
+        выполняют. Живой прогон 29.09 05:00 (issue #3174): журнал роутера
+        заглушил гуард, обещание ушло в TTS с ``tools=[]``.
+        """
+        own = detect_universal_action_claim(
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+            tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_call_args,
+        )
+        if own is None or own.tense == "future":
+            return own
+        return detect_universal_action_claim(
+            spoken=spoken,
+            tools_called=self._claim_backing_tools(tools_called),
+            tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_call_args,
+        )
+
+    async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
+        ok, _content = await self._execute_media_tool_result(executor, call)
+        return ok
+
+    async def _execute_media_tool_result(
+        self, executor: Any, call: Any
+    ) -> Tuple[bool, str]:
+        """Вызвать MCP-тул роутера: ``(успех, текст результата)``."""
+        tool_call = ToolCall(
+            id=f"media-router-{uuid.uuid4().hex[:8]}",
+            name=call.name,
+            arguments=dict(call.arguments),
+        )
+        try:
+            result = await executor.execute(tool_call)
+        except Exception as exc:  # noqa: BLE001 — честная фраза вместо падения
+            self.get_logger().warning(
+                f"🎛️ [media-router] {call.name}({call.arguments}) упал: {exc}"
+            )
+            return False, ""
+        ok = not bool(getattr(result, "is_error", False))
+        content = str(getattr(result, "content", "") or "")
+        self.get_logger().info(
+            f"🎛️ [media-router] {call.name}({call.arguments}) ok={ok} "
+            f"result={content[:160]!r}"
+        )
+        return ok, content
+
+    def _speak_music_retry_nudge(self, tools_called: tuple = ()) -> None:
+        """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
+
+        Issue #3125: при играющей музыке «бит не запустился» не звучит —
+        вместо него честная фраза :attr:`MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT`.
+
+        Issue #3161: «бит не запустился» — только если в оценённом вызове
+        LLM был музыкальный тул (``MUSIC_STARTING_TOOLS``) и гуард не
+        засчитал его успехом, то есть он упал. Без такого тула ничего не
+        запускалось — звучит :attr:`MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT`.
+        """
+        self._discard_last_music_reply()
+        if self._music_playing_now():
+            self.get_logger().warning(
+                "🎵 [issue 3125] retry budget exhausted while music is playing "
+                "— NOT saying «бит не запустился»"
+            )
+            self._speak_direct(self.MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT)
+            return
+        if not set(tools_called or ()) & MUSIC_STARTING_TOOLS:
+            self.get_logger().warning(
+                "🎵 [issue 3161] retry budget exhausted, музыкальных тулов в "
+                f"ходе не было (tools={sorted(set(tools_called or ()))!r}) — "
+                "NOT saying «бит не запустился»"
+            )
+            self._speak_direct(self.MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT)
+            return
+        self._speak_direct(self.MUSIC_RETRY_NUDGE_TEXT)
+
+    def _give_up_dj_transition_silently(self) -> None:
+        """Issue #3144 — общий бюджет ретраев кончился на DJ-автопереходе.
+
+        Раньше здесь звучал :meth:`_speak_music_retry_nudge` — «Музыка
+        играет, а вот эту просьбу я выполнить не смог», хотя юзер в этом
+        ходе ничего не просил (живой прогон 28.09 18:48:57). Теперь ход
+        просто молчит (тот же флаг, что у исчерпания Bug B, #2967), а
+        следующий тик DJ попробует снова.
+
+        Ответ из истории НЕ отзываем: DJ-переход ответов в историю не
+        пишет (``AgentCore.process_input``, ``if not is_dj_auto``), и
+        ``discard_last_reply`` снёс бы чужой — последний ответ юзеру.
+        """
+        self.get_logger().warning(
+            "🎧 [issue 3144] бюджет ретраев исчерпан на DJ-автопереходе — "
+            "молчим (никакого «просьбу не смог»: юзер ничего не просил)"
+        )
+        self._dj_giveup_silent_in_turn = True
 
     def _mark_dj_giveup_silent_if_budget_exhausted(
         self, verdict: MusicGuardVerdict
@@ -7326,7 +7852,7 @@ class DialogueNode(Node):
         играет X» без вызова тула (e2e renardo_evolve rn03).
         """
         return build_music_retry_prompt(
-            user_input, music_playing=getattr(self, "_track_mode_music_active", False)
+            user_input, music_playing=self._music_playing_now()
         )
 
     def _build_dj_retry_prompt(self) -> str:
@@ -8742,7 +9268,7 @@ class DialogueNode(Node):
         событий в секунду на человека. Поэтому здесь только дешёвая
         проверка, а вся логика — в :meth:`_handle_meeting`.
 
-        ADR-0135 §2.3: дополнительно кладём наблюдение лица в шов
+        ADR-0139 §2.3: дополнительно кладём наблюдение лица в шов
         «Знакомый» (``self._identity.note_face_seen``), чтобы голосовой
         ``_handle_tentative_speaker`` мог снять переспрос #2809 при
         свежем face-hint с тем же именем (issue #3024). Колбэк дешёвый
@@ -8755,9 +9281,9 @@ class DialogueNode(Node):
         )
         if marker is None:
             return
-        # ADR-0135 §2.3 — note_face_seen через тот же подписочный путь,
+        # ADR-0139 §2.3 — note_face_seen через тот же подписочный путь,
         # что и _handle_meeting. Не плодим новый топик
-        # /perception/face/meeting (контракт Vision Pi, ADR-0135 §5.2).
+        # /perception/face/meeting (контракт Vision Pi, ADR-0139 §5.2).
         if self._face_voice_hint_enabled:
             try:
                 self._identity.note_face_seen(
@@ -8771,10 +9297,10 @@ class DialogueNode(Node):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                # ADR-0135 §2.5: hint — деградируемая функциональность,
+                # ADR-0139 §2.5: hint — деградируемая функциональность,
                 # падение не должно ронять основной поток _handle_meeting.
                 self.get_logger().debug(
-                    f"👤 [ADR-0135] note_face_seen failed (ignored): {exc!r}"
+                    f"👤 [ADR-0139] note_face_seen failed (ignored): {exc!r}"
                 )
         try:
             self._handle_meeting(marker)
@@ -9083,15 +9609,19 @@ class DialogueNode(Node):
             or not getattr(self, "_universal_action_claim_retry_used", False)
         ):
             return False
-        hit = detect_universal_action_claim(
+        hit = self._universal_claim_hit(
             spoken=spoken,
-            tools_called=tuple(tools_called or ()),
+            tools_called=tools_called,
             tool_error_occurred=tool_error_occurred,
             repeated_call_args=repeated_call_args,
         )
         if hit is None:
             return False
-        fallback = build_action_claim_failure_fallback(hit)
+        # Issue #3165 — в ходе ни один тул не исполнялся и не падал:
+        # «Не получилось выполнить» было бы неправдой (попытки не было).
+        fallback = build_action_claim_failure_fallback(
+            hit, nothing_attempted=not tools_called and not tool_error_occurred
+        )
         self.get_logger().warning(
             "🛟 [issue 2949 fallback] action-claim повторился после "
             f"ретрая (tool_error_occurred={tool_error_occurred!r}) — "
@@ -9918,10 +10448,14 @@ class _DialogueSttHost:
     for the migration checklist.
     """
 
-    __slots__ = ("_node",)
+    __slots__ = ("_node", "media_miss")
 
     def __init__(self, node: "DialogueNode") -> None:
         self._node = node
+        # Issue #3176 — ``callable(clean_text)``: вернуть реплику в приём
+        # после MediaCommandStep (заказ по имени мимо базы мелодий).
+        # ``None`` — возвращать некуда (тестовые харнессы без ``_on_stt``).
+        self.media_miss = None
 
     # -- helpers --------------------------------------------------------
 
@@ -10016,6 +10550,10 @@ class _DialogueSttHost:
             f"{text[:60]!r}"
         )
         return True
+
+    def handle_media_command(self, text: str) -> bool:
+        # Issue #3134 — медиакоманды кодом, до LLM (и в TG, и в DJ-режиме).
+        return self._node._route_media_command(text, on_miss=self.media_miss)
 
     def reset_session(
         self,

@@ -136,6 +136,10 @@ RUN if [ -n "$APT_PROXY" ]; then \
 #      весия 0.4.0. Раньше собиралось из upstream в voice_base (см. там
 #      коммент "пакет недоступен через apt для Humble" — это устарело,
 #      в jammy-pockets он появился; apt быстрее git clone + colcon build).
+#   7. ros-humble-nav2-msgs (issue #3151) — action NavigateToPose для nav-цели
+#      из VR (rob_box_quest/nav2_goal.py). Импорт ленивый: без пакета нода
+#      жива, но nav_goal отвечает nack nav2_unavailable. Тот же apt-пакет
+#      уже ставят docker/main/nav2 и docker/vision/voice_base.
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       openssl \
@@ -152,6 +156,7 @@ RUN apt-get update -qq \
       ros-${ROS_DISTRO}-geometry-msgs \
       ros-${ROS_DISTRO}-nav-msgs \
       ros-${ROS_DISTRO}-audio-common-msgs \
+      ros-${ROS_DISTRO}-nav2-msgs \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/apt/apt.conf.d/02proxy
 

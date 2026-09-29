@@ -22,13 +22,33 @@ voice-floor — карточка AV-27; в этом PR ``say`` публикуе�
 ``tts_node`` синтезирует независимо от dialogue_node state.
 """
 
-from typing import List, Optional, TYPE_CHECKING
+import json
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from std_msgs.msg import String
 
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+
+def build_say_request(text: str) -> Dict[str, Any]:
+    """Payload ``/voice/tts/request`` для реплики оператора.
+
+    ``tts_node.dialogue_callback`` принимает только запросы с полем ``ssml``
+    (контракт — ``rob_box_core.utterance.missing_tts_request_fields``);
+    голый ``{"text": ...}`` он отбрасывал с «⚠ Chunk без SSML», а ``say``
+    при этом отвечал success=True (живой робот, 29.09.2026). Поэтому SSML
+    собирает общий сборщик ``Utterance`` — с XML-экранированием ``&<>``.
+    ``source`` — маркер для метрик (avatar_agent_tool_calls_total).
+    """
+    from rob_box_core.utterance import Sink, Utterance
+
+    return Utterance(
+        text=text,
+        sink=Sink.SPEAKERS,
+        extra={"source": "operator"},
+    ).to_request()
 
 
 class SayTool(MCPTool):
@@ -113,18 +133,7 @@ class SayTool(MCPTool):
         from std_msgs.msg import String
 
         msg = String()
-        # Полезная нагрузка — JSON с маркером источника. tts_node читает
-        # тот же формат, что и от speak_text; дополнительное поле
-        # ``source`` нужно для метрик (avatar_agent_tool_calls_total).
-        import json
-
-        msg.data = json.dumps(
-            {
-                "text": text,
-                "source": "operator",
-            },
-            ensure_ascii=False,
-        )
+        msg.data = json.dumps(build_say_request(text), ensure_ascii=False)
         self._tts_pub.publish(msg)
 
         return MCPToolResult(
@@ -134,4 +143,4 @@ class SayTool(MCPTool):
         )
 
 
-__all__ = ["SayTool"]
+__all__ = ["SayTool", "build_say_request"]

@@ -28,7 +28,7 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core.generated_music_library import GeneratedMusicLibrary
 from ..core.minimax_music_client import (
     MinimaxMusicAPIError,
@@ -702,8 +702,9 @@ class GenPlayFromLibraryTool(MCPTool):
                 self._play_file_pub = node.create_publisher(
                     String, "/voice/sound/play_file", 10
                 )
-                self._music_state_pub = node.create_publisher(
-                    String, "/voice/generated_music/state", 10
+                # Issue #3108: общий с mcp_server/StopMusicTool publisher.
+                self._music_state_pub = shared_publisher(
+                    node, String, "/voice/generated_music/state", 10
                 )
         except Exception:  # noqa: BLE001 — unit tests / minimal install
             self._play_file_pub = None

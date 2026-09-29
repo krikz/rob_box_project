@@ -736,16 +736,10 @@ jobs:
           1. Review the workflow logs for specific error messages
           2. Check if base image is available: \`docker pull ${{ needs.prepare.outputs.base_image }}\`
           3. Verify Dockerfile syntax and dependencies
-          4. Test build locally:
+          4. Test build locally (same manifest + same buildx engine as this workflow):
              \`\`\`bash
-             cd ${{ needs.prepare.outputs.build_context }}
-             docker buildx build \\
-               --platform linux/arm64 \\
-               --file ${{ needs.prepare.outputs.dockerfile_path }} \\
-               --tag test:local \\
-               --build-arg BASE_IMAGE=${{ needs.prepare.outputs.base_image }} \\
-               --build-arg APT_PROXY=http://host.docker.internal:3142 \\
-               .
+             python3 scripts/build/build.py service ${{ needs.prepare.outputs.image_name }} --docker-tag local
+             # или: make build SERVICE=${{ needs.prepare.outputs.image_name }}
              \`\`\`
           5. Check recent changes to the service code or Dockerfile
           6. Verify build machine has sufficient resources

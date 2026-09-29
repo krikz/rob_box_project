@@ -782,6 +782,28 @@ chore(docker): update base images to latest versions
 - `docs/adr/0018-agent-honesty-culture.md` — обоснование, trade-offs.
 - `scripts/agent_flow/validate_honesty.sh` + `tests/test_validate_honesty.sh` — tooling.
 
+## 🎵 Мораторий на музыкальные регексы (issue #3132, 28.09.2026)
+
+> Ш0 из `docs/design/2026-09-28-music-dj-systemic-analysis.md` §6.
+
+Повторяющийся паттерн: LLM не вызвала тул → добавили regex-гуард →
+через 1–3 дня он сработал ложно (#2897→#2971, #2966→#3004, Bug C→#2834/
+#2999/#3125, Bug F→#2565, #1881→#1895). Вокруг ответа LLM уже ~27 точек
+принятия решений, из них ~20 — регекс или подстрока.
+
+- Новые `re.compile(...)` в `src/rob_box_voice/rob_box_voice/core/dialogue_guards.py`,
+  `core/music_guard.py`, `core/media_command_grammar.py` — **только с явного
+  разрешения товарища Шифу**, пока не закрыты шаги Ш1 и Ш2 того же плана.
+  (`core/music_volume_request.py` удалён в #3134: его грамматика переехала
+  в `media_command_grammar.py` — роутер медиакоманд до LLM.)
+- Проверяется механически: `src/rob_box_voice/test/unit/core/test_issue_3132_music_regex_moratorium.py`
+  считает `re.compile(` в этих файлах и падает, если их стало больше
+  зафиксированного в тесте числа. Понижать зафиксированное число — можно
+  и нужно (тест подсказывает, когда регексов стало меньше); повышать без
+  разрешения Шифу — нельзя.
+- Провалы с живого робота чинить через Ш1/Ш2 (архитектурные шаги плана),
+  не новым регексом.
+
 ## 🩹 Recovery cards (ADR-AF-0026, 23.08.2026)
 
 Recovery-карточка (создаётся orchestrator'ом или nadzor'ом, когда

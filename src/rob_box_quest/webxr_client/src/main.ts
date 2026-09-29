@@ -12,8 +12,14 @@
 //   - mode_manager — клиентский стор UI-состояния (voice mode / armed / current voice).
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
-import { Connection } from "./wire/connection";
-import { createCaptainBridge } from "./scene/captain_bridge";
+import type * as THREE from "three";
+import { Connection, type ConnectionOptions } from "./wire/connection";
+import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
+import {
+  SubscriptionManager,
+  videoPlaceholderLines,
+  type SubscriptionStorage
+} from "./state/subscription_manager";
 import { parseRobotStatus } from "./scene/status_hud";
 import {
   isUnknownState,
@@ -24,6 +30,8 @@ import {
 import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
+import { createDesktopWalk, type WalkPose } from "./input/desktop_walk";
+import { bridgeHotkey } from "./input/bridge_hotkeys";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
@@ -80,6 +88,7 @@ import {
 import type { JsonEvent, VoiceInfo, VoicePreset } from "./wire/messages";
 import type { JsonCmd } from "./wire/messages";
 import { buildVoicePipelineCmd } from "./wire/voice_pipeline_cmd";
+import { createEdge, navAimPressed } from "./nav/nav_xr_input";
 
 const CLIENT_VERSION = "0.1.0";
 // AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
@@ -96,6 +105,18 @@ const DEFAULT_VOICE_LANGUAGE: VoiceLanguage = "ru";
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
 const NON_VIDEO_TOPICS = ["lidar_2d", "map_2d", "robot_status", "voice_state"];
+// #3151: путь Nav2 на полу (0x1104). Отдельной константой — чтобы правка
+// списка выше соседними карточками не конфликтовала с этой.
+NON_VIDEO_TOPICS.push("nav_path");
+
+/** localStorage, если доступен (приватный режим / тесты — null). */
+function browserStorage(): SubscriptionStorage | null {
+  try {
+    return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
 
 interface BootstrapOptions {
   url?: string;
@@ -110,6 +131,11 @@ interface BootstrapOptions {
   body: HTMLElement;
   /** Опциональная кнопка "?" в HUD; клик тогглит help overlay. */
   helpToggle?: HTMLElement | null;
+  /**
+   * Подмена WebSocket — симулятор мостика (`?sim=1`, src/dev/) подсовывает
+   * сюда мок-робота. В проде не задаётся: Connection берёт globalThis.WebSocket.
+   */
+  WebSocketCtor?: ConnectionOptions["WebSocketCtor"];
 }
 
 export function bootstrap(opts: BootstrapOptions): {
@@ -118,6 +144,11 @@ export function bootstrap(opts: BootstrapOptions): {
    * wake-каналом (true = слушаем, false = подавлено).
    */
   setWakeListen(on: boolean): void;
+  /** Десктопная поза оператора (симулятор: осмотреться без pointer lock). */
+  setWalkPose(pose: Partial<WalkPose>): void;
+  getWalkPose(): WalkPose;
+  /** Сцена мостика — для отладочного хука симулятора (window.__robBoxSim). */
+  readonly scene: THREE.Scene;
   dispose(): void;
 } {
   const url = opts.url ?? deriveWsUrl();
@@ -405,18 +436,33 @@ export function bootstrap(opts: BootstrapOptions): {
     //      идемпотентно, см. ws_server._on_subscribe).
     //   3) Отписываемся от старого, если его больше никто не показывает.
     onPanelTopicChange: (_panelId, oldTopic, newTopic) => {
+      // issue #3150: подписками владеет SubscriptionManager — новый топик
+      // наследует настройки слота (вкл/частота), SUBSCRIBE/UNSUBSCRIBE он
+      // шлёт сам, если сокет подключён.
+      const stillUsed = bridge.videoTopics().includes(oldTopic);
+      subs.replaceTopic(oldTopic, newTopic, stillUsed);
       if (!conn || disconnected) return;
       // Мета-команда: UI запросил смену активного стрима. sendCmd логирует
-      // и гасит исключение, чтобы сбой отправки не уронил локальный обмен
-      // подписками ниже.
+      // и гасит исключение.
       sendCmd({ cmd: "stream_select", topic: newTopic, ts_ms: Date.now() });
-      conn.subscribe(newTopic);
-      const stillUsed = bridge.videoTopics().includes(oldTopic);
-      if (!stillUsed) conn.unsubscribe(oldTopic);
+    },
+    // issue #3150: сброс раскладки (R) сменил топики панелей — менеджер
+    // подписок переподписывается на новый набор (и снимает старые).
+    onVideoTopicsReset: (topics) => subs.setVideoTopics(topics),
+    // issue #3150: панель «ПОТОКИ» — профиль / вкл-выкл / частота.
+    onStreamsAction: (action) => {
+      if (action.kind === "profile") subs.applyProfile(action.profile);
+      else if (action.kind === "toggle") subs.toggle(action.topic);
+      else subs.cycleRate(action.topic);
     },
     // AV-27: клик по TTS picker'у. Сцена уже открыла/закрыла меню сама,
     // здесь остаётся то, что требует сокета и стора.
     onTtsPickerAction: (action) => handleTtsPickerAction(action),
+    // #3151: nav_goal / nav_cancel из навигационного слоя (жест лучом по
+    // полу, кнопка отмены, Shift+G). sendCmd объявлен ниже — вызов только
+    // по действию оператора, к тому времени bootstrap уже прошёл.
+    onNavCommand: (cmd) => sendCmd(cmd),
+    onNavNotify: (text, level) => toast.show(text, { level, autoHideMs: 4000 }),
     // Клик по кнопке панели супервизора (R14): маппим action → JSON_CMD.
     onSupervisorAction: (action) => {
       if (!conn || disconnected) return;
@@ -512,11 +558,23 @@ export function bootstrap(opts: BootstrapOptions): {
 
   // Указатель: на десктопе — мышь через камеру, в VR — луч контроллера
   // (см. XR-цикл ниже). Панели наводятся, выбираются и перетаскиваются.
-  const desktopPointer = createDesktopPointer({ canvas: opts.canvas, camera: bridge.camera });
+  // lockOnClick: клик захватывает мышь для ходьбы (#3149), дальше луч из
+  // центра экрана под прицелом.
+  const desktopPointer = createDesktopPointer({
+    canvas: opts.canvas,
+    camera: bridge.camera,
+    lockOnClick: true
+  });
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
   const xr: XrBootstrap = createXrBootstrap();
+  // Десктоп: WASD/мышь водят оператора по мостику (#3149); в VR выключено.
+  const desktopWalk = createDesktopWalk({
+    canvas: opts.canvas,
+    camera: bridge.camera,
+    isXrActive: () => xr.isActive()
+  });
   // Источник XR-луча: держит активную руку и гистерезис trigger'а между
   // кадрами (см. interaction/xr_pointer.ts — оба против ложных кликов).
   const xrPointer: XrPointerSource = createXrPointerSource();
@@ -657,6 +715,23 @@ export function bootstrap(opts: BootstrapOptions): {
   // Тик раз в секунду: крутит счётчик ожидания, гасит «✓ готово» и
   // переводит зависшую реплику в «нет ответа». Секунды достаточно —
   // счётчик показывается с точностью до секунды.
+  // issue #3150: подписки (профиль, частоты) + счётчик трафика по потокам.
+  const subs = new SubscriptionManager({
+    topics: [...bridge.videoTopics(), ...NON_VIDEO_TOPICS],
+    mainVideoTopic: MAIN_SCREEN_TOPIC,
+    storage: browserStorage()
+  });
+  const renderSubs = (): void => {
+    const view = subs.view();
+    bridge.renderStreams(view);
+    bridge.statusHud.setBandwidth(subs.totalKbps());
+    // Выключенный видеопоток — заглушка на его экранах, а не замёрзший кадр.
+    for (const t of bridge.videoTopics()) bridge.setVideoPlaceholder(t, videoPlaceholderLines(view, t));
+  };
+  subs.onChange(renderSubs);
+  renderSubs();
+  const subsTicker = setInterval(() => subs.tick(Date.now()), 1000);
+
   const utteranceTicker = setInterval(() => {
     dispatchUtterance({ kind: "tick", atMs: Date.now() });
     // Даже без смены стадии счётчик секунд должен идти.
@@ -1227,7 +1302,8 @@ export function bootstrap(opts: BootstrapOptions): {
         subprotocol: SUBPROTOCOL,
         clientVersion: CLIENT_VERSION,
         capabilities: ["webxr"],
-        pin: opts.pin
+        pin: opts.pin,
+        WebSocketCtor: opts.WebSocketCtor
       },
       {
         onStateChange: (state) => {
@@ -1236,9 +1312,13 @@ export function bootstrap(opts: BootstrapOptions): {
             setStatus("CONNECTED", "connected");
             // Phase 2.3: ошибка прячется при восстановлении коннекта.
             watchdog.markConnected();
-            for (const topic of [...bridge.videoTopics(), ...NON_VIDEO_TOPICS]) {
-              conn!.subscribe(topic);
-            }
+            // issue #3150: новая сессия сервера — менеджер подписывает
+            // включённые потоки с их max_hz.
+            const c = conn!;
+            subs.attach({
+              subscribe: (topic, maxHz) => c.subscribe(topic, undefined, { maxHz }),
+              unsubscribe: (topic) => c.unsubscribe(topic)
+            });
             // Каталог стримов → меню выбора на панелях (R10).
             conn!.requestStreamList();
             // AV-27: если picker открыт (например, разрыв случился при
@@ -1265,6 +1345,9 @@ export function bootstrap(opts: BootstrapOptions): {
             void exitVr();
           } else if (state === "reconnecting") {
             setStatus("RECONNECTING…", "connecting");
+            subs.detach();
+            // #3151: статус nav-цели после разрыва — не факт (ADR-0018).
+            bridge.nav.onDisconnected();
             // Старый RTT после разрыва — враньё: обнуляем до первого pong.
             bridge.statusHud.setRtt(null);
             // AV-19: на reconnect FSM предполагает «оптимистично» hasFloor=true;
@@ -1296,6 +1379,8 @@ export function bootstrap(opts: BootstrapOptions): {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
             setStatus("CLOSED", "lost");
+            subs.detach();
+            bridge.nav.onDisconnected(); // #3151
             bridge.statusHud.setRtt(null);
             disconnected = true;
             // AV-19: сброс FSM-state и тостов.
@@ -1352,8 +1437,14 @@ export function bootstrap(opts: BootstrapOptions): {
           }
           const topic = conn!.getTopicForStream(streamId);
           if (!topic) return;
+          subs.recordFrame(topic, payload.byteLength);
           if (topic === "lidar_2d") {
             bridge.lidar.ingestPayload(payload);
+            return;
+          }
+          if (topic === "nav_path") {
+            // #3151: глобальный путь Nav2 — светящаяся линия на полу.
+            bridge.nav.ingestPathPayload(payload);
             return;
           }
           if (topic === "map_2d") {
@@ -1411,6 +1502,8 @@ export function bootstrap(opts: BootstrapOptions): {
           // первым и не мешаем обработчикам ниже: voice_set_ack нужен
           // обоим — picker'у и панели пресетов AV-28.
           handleVoiceEvent(event as JsonEvent);
+          // #3151: nav_goal_ack / nav_goal_nack / nav_status / nav_cancel_ack.
+          if (bridge.nav.handleEvent(event)) return;
           // AV-18: ack/nack панели режимов — у них свои типы событий,
           // ниже по функции их уже не ждут.
           const t = (event as { type?: string }).type;
@@ -1700,19 +1793,33 @@ export function bootstrap(opts: BootstrapOptions): {
   // пересоздаёт панели). Слушаем на document, чтобы работало и в VR
   // (XR-сессия не глушит document keydown), и в desktop-режиме.
   document.addEventListener("keydown", (ev) => {
-    if (ev.repeat) return;
     const target = ev.target as HTMLElement | null;
     const tag = target?.tagName?.toLowerCase();
     if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
-    if (ev.key === "r" || ev.key === "R") {
-      ev.preventDefault();
-      bridge.resetPanelLayout();
-    }
-    // AV-27: V — открыть/закрыть TTS picker на десктопе. В VR та же
-    // операция делается кликом по вкладке VOICE (клавиатуры там нет).
-    if (ev.key === "v" || ev.key === "V") {
-      ev.preventDefault();
-      toggleTtsPicker();
+    // Раскладка клавиш — input/bridge_hotkeys.ts (сверяется с help_overlay).
+    const action = bridgeHotkey(ev);
+    if (!action) return;
+    ev.preventDefault();
+    switch (action) {
+      case "reset_layout":
+        bridge.resetPanelLayout();
+        break;
+      // AV-27: TTS picker. В VR — кликом по вкладке VOICE (клавиатуры нет).
+      case "tts_picker":
+        toggleTtsPicker();
+        break;
+      // #3151: прицел nav-цели (дальше ЛКМ по полу, потянуть — курс,
+      // отпустить — цель ушла); в VR то же делает A/X (pollXrNavAim).
+      case "nav_aim":
+        bridge.nav.toggleAim();
+        break;
+      case "nav_cancel":
+        bridge.nav.cancel();
+        break;
+      // #3150: панель «ПОТОКИ».
+      case "streams_panel":
+        bridge.toggleStreamsPanel();
+        break;
     }
   });
 
@@ -1865,6 +1972,7 @@ export function bootstrap(opts: BootstrapOptions): {
       const xrFrame = (_time: DOMHighResTimeStamp, frame: XRFrame): void => {
         if (!xr.isActive()) return;
         tickTeleop();
+        pollXrNavAim();
         // Луч указателя — из targetRaySpace активного контроллера.
         bridge.updatePointer(
           refSpace ? xrPointer.ray(frame, refSpace, xrInputSources) : null
@@ -1876,6 +1984,12 @@ export function bootstrap(opts: BootstrapOptions): {
       // eslint-disable-next-line no-console
       console.warn("[quest] requestSession failed:", err);
     }
+  }
+
+  // #3151: A/X (любая рука) — взвести/разрядить прицел nav-цели.
+  const xrNavAimEdge = createEdge();
+  function pollXrNavAim(): void {
+    if (xrNavAimEdge(navAimPressed(xrInputSources))) bridge.nav.toggleAim();
   }
 
   async function exitVr(): Promise<void> {
@@ -1926,10 +2040,14 @@ export function bootstrap(opts: BootstrapOptions): {
      * локально. Idempotent.
      */
     setWakeListen,
+    setWalkPose: (pose) => desktopWalk.setPose(pose),
+    getWalkPose: () => desktopWalk.getPose(),
+    scene: bridge.scene,
     dispose(): void {
       document.removeEventListener("keydown", onHotKey);
       stopRender();
       desktopTeleop.destroy();
+      desktopWalk.destroy();
       if (xrRafSession && xrRafId) {
         xrRafSession.cancelAnimationFrame(xrRafId);
       }
@@ -1940,6 +2058,7 @@ export function bootstrap(opts: BootstrapOptions): {
       // PCM в мост после dispose.
       voiceCapture.setWakeGate({ enabled: false, suppressed: true });
       clearInterval(utteranceTicker);
+      clearInterval(subsTicker);
       clearApplyTimeout();
       previewSink.dispose();
       // ADR-0078: operatorAudioSink.dispose() теперь закрывает AudioContext

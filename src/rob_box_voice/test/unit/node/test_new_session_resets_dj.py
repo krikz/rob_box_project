@@ -261,7 +261,9 @@ class TestCancelledTurnDoesNotRetry:
             ):
                 n._dispatch_turn("[CRITICAL] ...", is_synthetic=True)
             n._session_epoch_gate().advance()  # сброс до старта ретрая
-            await captured[0]
+            # Issue #3145 — синтетический ретрай сначала планирует отзыв
+            # отвергнутого ответа, ход ретрая — последний в очереди.
+            await captured[-1]
 
         asyncio.run(_parent_turn())
 

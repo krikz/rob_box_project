@@ -3,6 +3,10 @@ test_issue_2347_n313_music_state.py — Regression guards for issue #2347
 (n313 silence_restored): LLM должен звать `get_music_state` на state-вопросе,
 а не отвечать verbal-only на основе stale <music_state> тега.
 
+Issue #3165: тег теперь — снимок плеера (#3161, ADR-0141), и правило
+ослаблено: ответ из ``<music_state>``, ``get_music_state`` — только если
+там ответа нет (``playing="unknown"``).
+
 Покрывает:
 - В master_prompt_compact.txt есть RULE #MUSIC-STATE с триггер-словами.
 - В ``_build_dynamic_system_context()`` есть третий ``<reminder>`` блок
@@ -154,8 +158,16 @@ class TestPromptMusicStateRule:
         block = m.group(0)
         assert "get_music_state" in block
         assert "<music_state>" in block
-        # Rationale про stale тег — ключ к поведению LLM.
-        assert "stale" in block
+        # Issue #3161: тег строится из снимка плеера — «может быть stale»
+        # стало ложью и из правила убрано; вместо него — про прошлое.
+        assert "stale" not in block
+        assert "снимок плеера" in block
+        assert "last_track" in block
+        # Issue #3165: тул — только когда в теге ответа нет; «e2e-гейт
+        # проверяет tool call» и запрет отвечать по тегу убраны.
+        assert 'playing="unknown"' in block
+        assert "ДОЛЖЕН сначала вызвать" not in block
+        assert "e2e-гейт" not in block
 
     def test_rule_has_do_and_dont_examples(self, prompt_text: str):
         """В блоке есть ✅ и ❌ — модель учится на примерах."""
@@ -238,14 +250,37 @@ class TestDynamicContextMusicStateReminder:
                 f"trigger {trigger!r} missing from get_music_state reminder"
             )
 
-    def test_reminder_mentions_stale_rationale(self):
-        """Rationale про stale snapshot — ключ к поведению LLM."""
+    def test_reminder_explains_snapshot_and_past(self):
+        """Issue #3161 — тег из снимка плеера: «stale» больше не правда.
+
+        Вместо недоверия к тегу — как отвечать про прошлое (last_*) и
+        запрет «сейчас играет» при playing="no".
+        """
         n = _make_node()
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
         music_state_reminder = reminders[-2]
-        assert "stale" in music_state_reminder
+        assert "stale" not in music_state_reminder
+        assert "снимок плеера" in music_state_reminder
+        assert "last_track" in music_state_reminder
+        assert "сейчас играет" in music_state_reminder
+
+    def test_reminder_calls_tool_only_without_answer(self):
+        """Issue #3165 — «ОБЯЗАТЕЛЬНО get_music_state» ослаблено.
+
+        Живой прогон 29.09: правильный ответ «Сейчас тишина — ничего не
+        играет.» по снимку плеера был наказан ретраями и закончился «Не
+        получилось выполнить». Тул — только если в теге ответа нет.
+        """
+        n = _make_node()
+        ctx = n._build_dynamic_system_context()
+
+        reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
+        music_state_reminder = reminders[-2]
+        assert "ОБЯЗАТЕЛЬНО" not in music_state_reminder
+        assert "обязателен" not in music_state_reminder
+        assert 'playing="unknown"' in music_state_reminder
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -254,7 +289,8 @@ class TestDynamicContextMusicStateReminder:
 
 
 class TestComposerSkillMusicState:
-    """``composer.txt`` упоминает обязательность get_music_state на state-вопросе."""
+    """``composer.txt``: на state-вопрос — ответ по ``<music_state>``,
+    ``get_music_state`` — только если в теге ответа нет (issue #3165)."""
 
     def test_state_question_phrase_listed(self):
         path = _composer_path()
@@ -274,8 +310,11 @@ class TestComposerSkillMusicState:
         assert "тихо?" in block or "играет ли музыка?" in block, (
             "state-вопрос не упомянут в описании get_music_state"
         )
-        # Прямое указание обязательности — ключевое слово из спеки.
-        assert "ОБЯЗАТЕЛЬНО" in block
+        # Issue #3165: «вызывай ОБЯЗАТЕЛЬНО» наказывало правильный ответ
+        # по снимку плеера. Ответ — из <music_state>, тул — если там пусто.
+        assert "ОБЯЗАТЕЛЬНО" not in block
+        assert "<music_state>" in block
+        assert 'playing="unknown"' in block
 
 
 # ────────────────────────────────────────────────────────────────────────

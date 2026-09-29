@@ -61,6 +61,15 @@ vision_hailo_node:
   # Публикация VisionEvent.
   output_topic: /vision/hailo/events
 
+  # ADR-0138 (этап 1 ADR-0130): Observation — person/face с 3D-положением
+  # в optical frame камеры по выровненной глубине OAK-D, без имени.
+  # Потребитель — трекер Main Pi (этап 2). depth_enabled=false выключает
+  # подписку на depth/camera_info (наблюдения идут с
+  # position_status=no_depth_stream) — рычаг, если глубина съест CPU.
+  observation_topic: /perception/observations
+  depth_enabled: true
+  depth_sync_tolerance_sec: 0.15
+
 # Лицевая нода (ADR-0089 Phase 2, issue #2599 PR-A). Отдельный процесс
 # с retinaface_mobilenet_v1.hef. Публикует VisionEvent event_type="face"
 # на тот же output_topic (embedding_id/display_name пустые — это PR-B).
@@ -100,6 +109,12 @@ vision_face_node:
 
   # Тот же топик, что у person-детекции (issue #2599 acceptance).
   output_topic: /vision/hailo/events
+
+  # ADR-0138: наблюдения лица — тот же топик и те же правила глубины,
+  # что у vision_hailo_node (см. комментарий там).
+  observation_topic: /perception/observations
+  depth_enabled: true
+  depth_sync_tolerance_sec: 0.15
 
   # ---- ArcFace-узнавание (ADR-0123, issue #2599 PR-B) ----
   # Отдельный HEF от детекции: RetinaFace (hef_path выше) находит лицо на

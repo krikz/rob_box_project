@@ -1,0 +1,242 @@
+{
+ "furelise": {
+  "synths": {
+   "lead_synth": "pluck",
+   "bass_synth": "bass",
+   "pad_synth": "warmpad"
+  },
+  "sections": [
+   "intro",
+   "build",
+   "main",
+   "break",
+   "peak",
+   "outro"
+  ],
+  "bpm": 125.0,
+  "nrt_before": [
+   -42.7,
+   -41.9,
+   -37.0,
+   -33.1,
+   -24.6,
+   -34.9
+  ],
+  "model_before": [
+   -41.9,
+   -41.0,
+   -36.7,
+   -32.9,
+   -24.5,
+   -34.8
+  ],
+  "peak_before": -14.1,
+  "nrt_after": [
+   -37.2,
+   -37.3,
+   -31.7,
+   -33.4,
+   -25.4,
+   -35.1
+  ],
+  "model_after": [
+   -36.5,
+   -36.4,
+   -31.4,
+   -33.1,
+   -25.4,
+   -35.1
+  ],
+  "peak_after": -14.9
+ },
+ "odetojoy": {
+  "synths": {
+   "lead_synth": "pianovel",
+   "bass_synth": "subbass",
+   "pad_synth": "strings"
+  },
+  "sections": [
+   "intro",
+   "build",
+   "main",
+   "peak"
+  ],
+  "bpm": 100.0,
+  "nrt_before": [
+   -46.0,
+   -44.6,
+   -39.3,
+   -34.8
+  ],
+  "model_before": [
+   -46.1,
+   -44.7,
+   -39.4,
+   -36.8
+  ],
+  "peak_before": -18.8,
+  "nrt_after": [
+   -36.2,
+   -35.7,
+   -30.9,
+   -26.0
+  ],
+  "model_after": [
+   -36.4,
+   -35.8,
+   -30.9,
+   -26.8
+  ],
+  "peak_after": -10.8
+ },
+ "imperial": {
+  "synths": {
+   "lead_synth": "brass",
+   "bass_synth": "dub",
+   "pad_synth": "pads"
+  },
+  "sections": [
+   "intro",
+   "build",
+   "main",
+   "break",
+   "peak",
+   "outro"
+  ],
+  "bpm": 80.0,
+  "nrt_before": [
+   -47.3,
+   -45.9,
+   -38.7,
+   -43.7,
+   -27.9,
+   -45.9
+  ],
+  "model_before": [
+   -48.2,
+   -46.8,
+   -38.9,
+   -44.1,
+   -28.1,
+   -46.4
+  ],
+  "peak_before": -16.1,
+  "nrt_after": [
+   -35.6,
+   -35.6,
+   -31.2,
+   -36.2,
+   -25.6,
+   -36.2
+  ],
+  "model_after": [
+   -36.4,
+   -36.4,
+   -31.4,
+   -36.4,
+   -25.7,
+   -36.4
+  ],
+  "peak_after": -13.7
+ },
+ "tetris": {
+  "synths": {
+   "lead_synth": "blip",
+   "bass_synth": "retrobass",
+   "pad_synth": "sinepad"
+  },
+  "sections": [
+   "intro",
+   "build",
+   "main",
+   "break",
+   "peak",
+   "outro"
+  ],
+  "bpm": 160.0,
+  "nrt_before": [
+   -47.6,
+   -46.2,
+   -36.5,
+   -46.3,
+   -33.3,
+   -47.9
+  ],
+  "model_before": [
+   -47.5,
+   -46.1,
+   -36.4,
+   -46.5,
+   -33.9,
+   -48.0
+  ],
+  "peak_before": -18.2,
+  "nrt_after": [
+   -36.5,
+   -36.5,
+   -29.5,
+   -36.3,
+   -26.6,
+   -36.2
+  ],
+  "model_after": [
+   -36.4,
+   -36.4,
+   -29.4,
+   -36.4,
+   -26.9,
+   -36.4
+  ],
+  "peak_after": -12.4
+ },
+ "hallofth": {
+  "synths": {
+   "lead_synth": "marimba",
+   "bass_synth": "moogbass",
+   "pad_synth": "ambi"
+  },
+  "sections": [
+   "intro",
+   "build",
+   "main",
+   "break",
+   "peak",
+   "outro"
+  ],
+  "bpm": 130.0,
+  "nrt_before": [
+   -57.3,
+   -56.5,
+   -38.0,
+   -52.4,
+   -35.3,
+   -54.0
+  ],
+  "model_before": [
+   -63.4,
+   -63.2,
+   -38.0,
+   -56.2,
+   -35.3,
+   -55.3
+  ],
+  "peak_before": -21.1,
+  "nrt_after": [
+   -50.4,
+   -46.0,
+   -30.1,
+   -35.9,
+   -27.3,
+   -36.1
+  ],
+  "model_after": [
+   -45.8,
+   -46.7,
+   -30.0,
+   -36.4,
+   -27.2,
+   -36.7
+  ],
+  "peak_after": -13.7
+ }
+}

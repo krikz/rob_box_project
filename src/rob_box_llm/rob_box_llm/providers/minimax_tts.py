@@ -490,6 +490,24 @@ _BUILTIN_VOICES: tuple[TTSVoice, ...] = (
 )
 
 
+def _coerce_tts_timeout(value: "float | httpx.Timeout | None") -> "httpx.Timeout":
+    """Normalise the ``timeout`` constructor argument.
+
+    Accepts ``None`` (falls back to per-phase default), ``float``
+    (applied to every phase), or :class:`httpx.Timeout` (used as-is).
+    Mirrors :func:`rob_box_llm.providers.minimax._coerce_timeout`.
+    """
+    import httpx
+
+    if value is None:
+        return httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+    if isinstance(value, httpx.Timeout):
+        return value
+    return httpx.Timeout(timeout=float(value))
+
+
+# architecture audit 2026-09-29, ADR-0145: дублирующая заглушка класса удалена,
+# docstring (5 extension points) перенесён сюда.
 class MiniMaxTTSProvider(BaseTTSProvider):
     """MiniMax TTS via the T2A v2 HTTP endpoint.
 
@@ -550,26 +568,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         contract (synthesize / stream / aclose) is unchanged, so existing
         ROS callers in ``tts_node`` keep working without modification.
     """
-
-
-def _coerce_tts_timeout(value: "float | httpx.Timeout | None") -> "httpx.Timeout":
-    """Normalise the ``timeout`` constructor argument.
-
-    Accepts ``None`` (falls back to per-phase default), ``float``
-    (applied to every phase), or :class:`httpx.Timeout` (used as-is).
-    Mirrors :func:`rob_box_llm.providers.minimax._coerce_timeout`.
-    """
-    import httpx
-
-    if value is None:
-        return httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
-    if isinstance(value, httpx.Timeout):
-        return value
-    return httpx.Timeout(timeout=float(value))
-
-
-class MiniMaxTTSProvider(BaseTTSProvider):
-    """MiniMax Text-to-Speech provider (T2A v2)."""
 
     DEFAULT_BASE_URL = "https://api.minimax.io"
     DEFAULT_VOICE = "male-qn-qingse"

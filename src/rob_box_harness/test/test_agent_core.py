@@ -751,7 +751,11 @@ def test_process_input_result_reports_final_state(core: AgentCore) -> None:
 def test_agent_core_has_seven_method_interface() -> None:
     """DoD #1986: AgentCore exposes 7 agent methods and NOT the four
     wake/silence/timeout facades (``is_wake_word`` / ``handle_wake_word`` /
-    ``handle_silence`` / ``check_timeout``)."""
+    ``handle_silence`` / ``check_timeout``).
+
+    Issue #3165 добавил восьмой — ``record_external_turn``: ход, который
+    исполнил роутер медиакоманд мимо модели, ложится в её окно истории.
+    Имя теста оставлено, чтобы не терять историю по DoD #1986."""
 
     def public_members(cls: type) -> set[str]:
         out: set[str] = set()
@@ -774,6 +778,7 @@ def test_agent_core_has_seven_method_interface() -> None:
         "set_active_skill",
         "skill_load_counters",
         "known_skills",
+        "record_external_turn",  # issue #3165
     }
     removed = {"is_wake_word", "handle_wake_word", "handle_silence", "check_timeout"}
 
@@ -1505,6 +1510,84 @@ def test_tool_success_does_not_set_tool_error_occurred(
 
     assert result.error is None
     assert result.tool_error_occurred is False
+    assert result.succeeded_tools == ["save_arrangement_preset"]
+
+
+def test_issue_3004_validation_error_then_success_reports_succeeded_tool(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #3004 — живой ход 28.09 (``voice-assistant.log``, 1790611417 →
+    1790611425): ``compose_music`` с ``levels: lead=1.3`` отвергнут
+    валидацией, повтор с ``lead=1.0`` в ТОМ ЖЕ ходе прошёл. Один булев
+    ``tool_error_occurred`` не отличает это от провала — ``succeeded_tools``
+    должен назвать ``compose_music`` успешным."""
+    from rob_box_llm.provider import ToolResult
+
+    bad = {
+        "name": "Hall Of The Mountain King (Alton Towers Theme) 2",
+        "levels": "lead=1.3,bass=1.2,pad=0.9,drums=1.1,hats=1.0",
+        "seed": 101,
+    }
+    good = dict(bad, levels="lead=1.0,bass=1.0,pad=0.9,drums=1.0,hats=1.0")
+    llm.responses = [
+        LLMResponse(content="", tool_calls=(ToolCall(id="c1", name="compose_music", arguments=bad),)),
+        LLMResponse(content="", tool_calls=(ToolCall(id="c2", name="compose_music", arguments=good),)),
+        LLMResponse(content="Григ в пещере горного короля гремит на весь танцпол!", tool_calls=()),
+    ]
+
+    async def compose_handler(args: dict[str, object]) -> Any:
+        if "lead=1.3" in str(args.get("levels")):
+            return ToolResult(
+                tool_call_id="c1",
+                content="levels: lead=1.3 — нужен множитель 0..1 (1 — как есть).",
+                is_error=True,
+            )
+        return "ok"
+
+    tools_provider._handler_map = {"compose_music": compose_handler}
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(
+        core_obj.process_input("сыграй в пещере гороного короля погромче", history=[])
+    )
+
+    assert result.error is None
+    assert [c.arguments["levels"] for c in tools_provider.executed] == [
+        bad["levels"], good["levels"],
+    ]
+    assert result.tool_error_occurred is True
+    assert result.succeeded_tools == ["compose_music"]
+
+
+def test_issue_3004_only_failed_call_is_not_in_succeeded_tools(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Контраст: единственный вызов упал — ``succeeded_tools`` пуст."""
+    from rob_box_llm.provider import ToolResult
+
+    llm.responses = [
+        LLMResponse(content="", tool_calls=(ToolCall(id="c1", name="save_arrangement_preset", arguments={}),)),
+        LLMResponse(content="Записала пресет!", tool_calls=()),
+    ]
+
+    async def refusing_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(tool_call_id="c1", content="недоступен", is_error=True)
+
+    tools_provider._handler_map = {"save_arrangement_preset": refusing_handler}
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(core_obj.process_input("сохрани пресет", history=[]))
+
+    assert result.tool_error_occurred is True
+    assert result.succeeded_tools == []
 
 
 def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
@@ -2714,6 +2797,7 @@ def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
     историей и вызвала ``set_dj_mode(persona='Диджей Шафутинский')``.
     Юзер услышал, что робот «всё-таки Шафутинский».
     """
+    llm.response_text = "Диджей Векна в студии!"
     obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
@@ -2721,17 +2805,19 @@ def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
     obj._turn_window.extend([
         Turn(role="user", content="Ты диджей Шафутинский"),
         Turn(role="assistant", content="С вами диджей Шафутинский!"),
-        Turn(role="user", content="Ты диджей Векна, тема Изнанка"),
-        Turn(role="assistant", content="Диджей Векна в студии!"),
     ])
+    # Issue #3145 — отзывается ответ, записанный последним process_input.
+    _wake(obj)
+    asyncio.run(obj.process_input("Ты диджей Векна, тема Изнанка"))
 
     assert asyncio.run(obj.discard_last_reply()) is True
 
     _wake(obj)
     asyncio.run(obj.process_input("[CRITICAL] вызови музыкальный тул", is_synthetic=True))
 
-    contents = [m.content for m in llm.calls[0][0]]
+    contents = [m.content for m in llm.calls[1][0]]
     assert "Ты диджей Векна, тема Изнанка" in contents, contents
+    assert "Диджей Векна в студии!" not in contents, contents
 
 
 def test_orphaned_user_turn_is_still_dropped_on_an_ordinary_turn(
@@ -2776,18 +2862,17 @@ def test_pending_user_turn_is_not_resurrected_on_the_next_real_turn(
     идёт обычная реплика человека, и повисший запрос не должен конкурировать
     с ней за внимание модели.
     """
+    llm.response_text = "Диджей Векна в студии!"
     obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    obj._turn_window.extend([
-        Turn(role="user", content="Ты диджей Векна, тема Изнанка"),
-        Turn(role="assistant", content="Диджей Векна в студии!"),
-    ])
-    asyncio.run(obj.discard_last_reply())
+    _wake(obj)
+    asyncio.run(obj.process_input("Ты диджей Векна, тема Изнанка"))
+    assert asyncio.run(obj.discard_last_reply()) is True
 
     _wake(obj)
     asyncio.run(obj.process_input("сколько времени"))
 
-    contents = [m.content for m in llm.calls[0][0]]
+    contents = [m.content for m in llm.calls[1][0]]
     assert "Ты диджей Векна, тема Изнанка" not in contents, contents

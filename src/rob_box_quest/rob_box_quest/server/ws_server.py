@@ -29,6 +29,12 @@ from ..core.avatar_arbiter import (
     LocalAvatarArbiterClient,
 )
 from ..core.floor import AvatarFloorSnapshot, AvatarStateFloorCache, FloorViewUpdate
+from ..core.nav_goal import (
+    NACK_FLOOR_HELD,
+    NACK_NAV2_UNAVAILABLE,
+    NavGoalRequest,
+    parse_nav_goal,
+)
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
@@ -39,6 +45,7 @@ from .session import (
     ClientSession,
     generate_pin,
 )
+from .stream_rate import StreamRateLimiter, parse_max_hz
 from .voice_floor import FloorHolder, FloorState, VoiceFloorCache
 
 # AV-28 §P7 (issue #1920): whitelist voice-preset ID и языков вывода.
@@ -567,6 +574,22 @@ class Bridge(Protocol):
         """
         ...
 
+    # --- Captain Bridge волна 2 (issue #3151): nav-цель из VR ------------
+
+    def nav_goal(self, client_id: str, req: NavGoalRequest) -> Optional[str]:
+        """Отправить проверенную цель (кадр ``map``) в Nav2.
+
+        Floor-гейт уже пройден в ws_server; мост сам проверяет emergency
+        lock и доступность Nav2. ``None`` — цель ушла в Nav2, иначе
+        причина ``nav_goal_nack`` (``emergency_active`` /
+        ``nav2_unavailable``). Итог — асинхронно через ``nav_status``.
+        """
+        ...
+
+    def nav_cancel(self, client_id: str) -> bool:
+        """Отменить текущую nav-цель. ``False`` — отменять нечего."""
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -725,6 +748,13 @@ class NoOpBridge:
         # через subscribe_state-fake по сценарию в тестах.
         return None
 
+    def nav_goal(self, client_id: str, req: NavGoalRequest) -> Optional[str]:
+        # NoOpBridge: Nav2 нет — честный отказ, а не «цель принята».
+        return NACK_NAV2_UNAVAILABLE
+
+    def nav_cancel(self, client_id: str) -> bool:
+        return False
+
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
 # Phase 1.6 в start_quest.sh выводит его в docker logs.
@@ -803,6 +833,9 @@ class WSSServer:
         # loop — раньше кадр молча терялся (чёрный экран). Устанавливается
         # quest_node через set_send_loop().
         self._send_loop: Optional[asyncio.AbstractEventLoop] = None
+        # issue #3150: session_id → лимитер частоты кадров (SUBSCRIBE.max_hz).
+        # Отдельно от ClientSession: offer() зовётся из ROS-потоков.
+        self._rate_limiters: dict[str, StreamRateLimiter] = {}
         # AV-27 / issue #1919 — state для preview_voice + rate-limit.
         # ADR-0055 / issue #1993: общий per-stream реестр активных audio-запросов.
         # Внутри: stream → {request_id: (ws, opened_at)}. Два стрима
@@ -1506,9 +1539,55 @@ class WSSServer:
             frame = encode_frame(FrameType.BINARY_FRAME, stream_id, payload)
             # ws.send_bytes — coroutine. Из aiohttp-loop — await напрямую;
             # из другого потока — call_soon_threadsafe (Phase 1.5).
-            self._schedule_send(ws, frame)
-            count += 1
+            # issue #3150: SUBSCRIBE.max_hz — ранний кадр в слот ожидания.
+            if self._offer_rate_limited(sid, ui_name, ws, frame):
+                count += 1
         return count
+
+    def _offer_rate_limited(self, sid: str, ui_name: str, ws, frame: bytes) -> bool:
+        """Отправить кадр с учётом max_hz. True — ушёл сразу.
+
+        Отложенный кадр (слишком рано) лежит в слоте лимитера; flush
+        планируется на aiohttp-loop через ``call_later`` (issue #3150).
+        """
+        limiter = self._rate_limiters.get(sid)
+        if limiter is None:
+            self._schedule_send(ws, frame)
+            return True
+        decision = limiter.offer(ui_name, frame, time.monotonic())
+        if decision.send_now:
+            self._schedule_send(ws, frame)
+            return True
+        if decision.flush_in_s is not None:
+            self._schedule_rate_flush(sid, ui_name, decision.flush_in_s)
+        return False
+
+    def _schedule_rate_flush(self, sid: str, ui_name: str, delay_s: float) -> None:
+        loop = self._send_loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(
+                loop.call_later, delay_s, self._flush_rate_limited, sid, ui_name
+            )
+        except RuntimeError:
+            return  # loop закрыт — отложенный кадр теряем, ноду не роняем
+
+    def _flush_rate_limited(self, sid: str, ui_name: str) -> None:
+        """Вытолкнуть отложенный кадр (выполняется в aiohttp-loop)."""
+        limiter = self._rate_limiters.get(sid)
+        ws = self._ws_by_session.get(sid)
+        if limiter is None or ws is None:
+            return
+        frame, again_in_s = limiter.flush(ui_name, time.monotonic())
+        if again_in_s is not None:
+            self._schedule_rate_flush(sid, ui_name, again_in_s)
+        elif frame is not None:
+            self._schedule_send(ws, frame)
 
     # === AV-16: STATE_UPDATE broadcast =========================================
     # 0x33 STATE_UPDATE — broadcast для ВСЕХ v2-сессий (не stream: подписок
@@ -1655,6 +1734,7 @@ class WSSServer:
     def _register_session(self, session: ClientSession, ws) -> None:
         self._sessions[session.session_id] = session
         self._ws_by_session[session.session_id] = ws
+        self._rate_limiters[session.session_id] = StreamRateLimiter()
 
     def _unregister_session(self, session: ClientSession) -> None:
         # Освободить stream_id'ы этой сессии.
@@ -1687,6 +1767,7 @@ class WSSServer:
         session.close()
         self._sessions.pop(session.session_id, None)
         self._ws_by_session.pop(session.session_id, None)
+        self._rate_limiters.pop(session.session_id, None)
 
     async def _on_hello(
         self,
@@ -1789,18 +1870,22 @@ class WSSServer:
             sid = session.allocate_stream_id(_stream_ids_in_use)
             _stream_ids_in_use.add(sid)
             session.subscribed[topic] = sid
-        await self._send(
-            ws,
-            FrameType.JSON_EVENT,
-            0,
-            {
-                "type": "subscribe_ack",
-                "topic": topic,
-                "stream_id": sid,
-                "quality": quality,
-                "kind": spec.kind.value,
-            },
-        )
+        # issue #3150: max_hz — необязательный; повторный SUBSCRIBE
+        # обновляет лимит (отсутствие поля = снять лимит).
+        max_hz = parse_max_hz(payload_obj.get("max_hz"))
+        limiter = self._rate_limiters.get(session.session_id)
+        if limiter is not None:
+            limiter.set_limit(topic, max_hz)
+        ack: dict[str, Any] = {
+            "type": "subscribe_ack",
+            "topic": topic,
+            "stream_id": sid,
+            "quality": quality,
+            "kind": spec.kind.value,
+        }
+        if max_hz is not None:
+            ack["max_hz"] = max_hz
+        await self._send(ws, FrameType.JSON_EVENT, 0, ack)
         # voice_state: эмитим актуальный snapshot floor-а сразу при подписке
         # (а не ждём первого события) — UI должен сразу показать «робот
         # говорит» если кто-то уже держит floor. meta-quest-api.md §4
@@ -1863,6 +1948,9 @@ class WSSServer:
         sid = session.subscribed.pop(topic, None)
         if sid is not None:
             _stream_ids_in_use.discard(sid)
+        limiter = self._rate_limiters.get(session.session_id)
+        if limiter is not None:
+            limiter.remove(topic)
 
     async def _on_json_event(
         self,
@@ -2817,6 +2905,94 @@ JSON_CMD_HANDLERS.update(
         "set_voice": _json_cmd_set_voice,
         "voice_pipeline": _json_cmd_voice_pipeline,
         "preview_voice": _json_cmd_preview_voice,
+    }
+)
+
+
+# === Captain Bridge волна 2 (issue #3151): nav-цель из VR ================
+#
+# nav_goal проходит ТОТ ЖЕ гейт, что teleop_twist: ехать роботом (стиком
+# или целью Nav2) может только держатель teleop_floor. Отличие одно — вместо
+# rate-limited ERROR{FLOOR_HELD} отвечаем nav_goal_nack{reason:floor_held}:
+# цель — разовая команда, оператору нужен явный ответ именно на неё.
+# nav_cancel гейта не имеет — как stop_emergency, остановка не должна
+# упираться в то, у кого руль.
+
+
+def _session_holds_teleop_floor(server, session) -> bool:
+    """Гейт teleop_floor в той же форме, что в ``_json_cmd_teleop_twist``."""
+    if not server._require_teleop_floor:
+        return True
+    return server._avatar_arbiter.floor_holder == session.server_client_id
+
+
+async def _send_nav_goal_nack(server, ws, seq: Optional[int], reason: str) -> None:
+    body: dict[str, Any] = {
+        "type": "nav_goal_nack",
+        "reason": reason,
+        "ts_ms": int(time.time() * 1000),
+    }
+    if seq is not None:
+        body["seq"] = seq
+    await server._send(ws, FrameType.JSON_EVENT, 0, body)
+
+
+def _bridge_nav_goal(server, session, req: NavGoalRequest) -> Optional[str]:
+    """Вызвать ``bridge.nav_goal``; старый/тестовый мост без метода → nack."""
+    send = getattr(server.bridge, "nav_goal", None)
+    if send is None:
+        return NACK_NAV2_UNAVAILABLE
+    try:
+        return send(session.server_client_id or "", req)
+    except Exception as exc:  # noqa: BLE001 — сбой моста = честный отказ
+        log.warning("quest: nav_goal bridge failed: %s", exc)
+        return NACK_NAV2_UNAVAILABLE
+
+
+async def _json_cmd_nav_goal(server, ws, session, payload):
+    server.bridge.feed_client_alive()
+    raw_seq = payload.get("seq")
+    seq = raw_seq if isinstance(raw_seq, int) and not isinstance(raw_seq, bool) else None
+    parsed = parse_nav_goal(payload)
+    if isinstance(parsed, str):
+        await _send_nav_goal_nack(server, ws, seq, parsed)
+        return
+    if not _session_holds_teleop_floor(server, session):
+        await _send_nav_goal_nack(server, ws, parsed.seq, NACK_FLOOR_HELD)
+        return
+    reason = _bridge_nav_goal(server, session, parsed)
+    if reason is not None:
+        await _send_nav_goal_nack(server, ws, parsed.seq, reason)
+        return
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "nav_goal_ack", "seq": parsed.seq, "ts_ms": int(time.time() * 1000)},
+    )
+
+
+async def _json_cmd_nav_cancel(server, ws, session, payload):
+    server.bridge.feed_client_alive()
+    cancel = getattr(server.bridge, "nav_cancel", None)
+    had_goal = False
+    if cancel is not None:
+        try:
+            had_goal = bool(cancel(session.server_client_id or ""))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("quest: nav_cancel bridge failed: %s", exc)
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "nav_cancel_ack", "had_goal": had_goal, "ts_ms": int(time.time() * 1000)},
+    )
+
+
+JSON_CMD_HANDLERS.update(
+    {
+        "nav_goal": _json_cmd_nav_goal,
+        "nav_cancel": _json_cmd_nav_cancel,
     }
 )
 

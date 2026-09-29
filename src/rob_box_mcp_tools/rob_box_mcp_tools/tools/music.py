@@ -15,6 +15,7 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
+import inspect
 import json
 import os
 import re
@@ -38,10 +39,14 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
     register_sc_only_custom_synthdefs,
 )
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core.arranger import (
     FORMS,
+    FX_ROLE,
+    LEVEL_RANGE,
+    LOOP_ROLE,
     ON_OFF_AUTO,
+    ROLE_PROFILE,
     VALID_ROOTS,
     SCALE_INTERVALS,
     ArrangementError,
@@ -52,17 +57,46 @@ from ..core.arranger import (
     check_swing,
     form_duration_seconds,
     form_summary,
+    form_total_beats,
     normalize_synth,
     render,
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_fx, sample_loops
+# Issue #3154: arranger.render грузит модель громкости лениво (arranger.py
+# импортирует gen_tool_catalog без пакета) — предзагрузка здесь, до того как
+# кто-то подменит builtins.exec (тесты тула патчат его на время execute).
+from ..core import classic_loudness  # noqa: F401,E402
+from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
+from ..core.club_hook import ClubHook, extract_hook
+from ..core.club_transition import (
+    FADE_AMPLIFY_TO,
+    FADE_BARS,
+    TRACK_STARTED_FN,
+    fade_seconds,
+    is_fade_wrapped,
+    wrap_with_fade,
+)
+from ..core.clock_phase import clock_phase_snapshot
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
-from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
+from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
-from ..core.rtttl_library import RtttlLibrary, display_title, match_info
+from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
+
+#: Issue #3112 — флаг кандидата-фикса фазы клока (по умолчанию ВЫКЛ).
+_ALIGN_CLOCK_ENV = "ROB_BOX_MUSIC_ALIGN_CLOCK"
+
+
+def music_align_clock_enabled() -> bool:
+    """``ROB_BOX_MUSIC_ALIGN_CLOCK=1`` — аранжировщики ставят ``Clock.set_time``.
+
+    Читается здесь, а не в ``core``: ядро аранжировщика чистое и получает
+    флаг параметром (``render(..., align_clock=)``/``render_club``).
+    """
+    return os.environ.get(_ALIGN_CLOCK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -77,6 +111,24 @@ _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
 #: от «передано тем же значением, что дефолт», не теряя ни имени
 #: параметра, ни того, что он optional, для статического парсера.
 _UNSET: Any = object()
+
+
+def _notify_music_state(tool: Any) -> None:
+    """Опубликовать /voice/music/state на сервере (issue 989 Fix C).
+
+    architecture audit 2026-09-29, ADR-0145: общее тело для
+    ``_notify_music_state`` в ExecuteMusicCodeTool / ComposeMusicTool /
+    StopMusicTool (методы остаются тонкими делегатами).
+    """
+    if tool.node is None:
+        return
+    publisher = getattr(tool.node, "publish_music_state", None)
+    if publisher is None:
+        return
+    try:
+        publisher()
+    except Exception as exc:  # noqa: BLE001
+        tool.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
 def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
@@ -371,6 +423,12 @@ class MusicManager:
     #: ``SEGMENTS_DEADLINE_SAFETY_FACTOR``. Верхняя граница остаётся —
     #: музыка по-прежнему не может играть вечно.
     MIN_SEGMENTS_DEADLINE_SECONDS: float = 60.0
+    #: Issue #3133 — сериализует переходы жизненного цикла сессии: конец
+    #: формы (таймер/watchdog) против нового кода и стопа (потоки тулов).
+    #: На классе, а не в ``__init__``: часть тестов собирает менеджер через
+    #: ``__new__``; менеджер в процессе один (mcp_server). RLock — stop_all
+    #: зовут и изнутри других переходов.
+    _state_lock = threading.RLock()
     #: Во сколько раз дедлайн длиннее музыкальной длины, посчитанной по
     #: ``segments``. Оценка LLM — ориентир, а не контракт.
     SEGMENTS_DEADLINE_SAFETY_FACTOR: float = 2.0
@@ -557,6 +615,20 @@ class MusicManager:
         # ``ComposeMusicTool._remember_last_track``, читает
         # ``ComposeMusicTool._inherit_last_track``.
         self.last_track_arrangement: Optional[Dict[str, Any]] = None
+        # Issue #3113 — название играющей темы (``compose_music(name=...)``,
+        # заголовок из библиотеки) для DJ-сета: dialogue_node копит сыгранные
+        # и не даёт модели повторить песню в том же сете. ``None`` — трек без
+        # имени (club, сочинённый, execute_music_code) или тишина; сбрасывает
+        # :meth:`clear_form_deadline` (новый код / стоп), пишет ComposeMusicTool.
+        self.current_track_name: Optional[str] = None
+        # Issue #3133 (ADR-0141) — id того, что звучит сейчас: новый на
+        # каждый успешный execute_code, ``None`` после стопа/конца формы.
+        # ``last_finished_track_id`` — трек, который доиграл форму САМ
+        # (не остановлен); сбрасывается новым кодом и явным стопом.
+        self._track_seq: int = 0
+        self._track_id_prefix: str = format(int(time.time()), "x")
+        self.current_track_id: Optional[str] = None
+        self.last_finished_track_id: Optional[str] = None
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -820,6 +892,28 @@ class MusicManager:
         self._log_warning(
             f"[music] SynthDefs still missing after {max_rounds} rounds: {missing}"
         )
+
+    def attach_logger(self, logger: Any) -> None:
+        """Логгер узла для сообщений менеджера (иначе — stderr, см. ниже).
+
+        Issue #3166: строка ``[#3112] … started …`` пишется из колбэка
+        ``_rbx_track_started`` в потоке клока Renardo — без логгера узла она
+        ушла бы только в stderr.
+        """
+        self._logger = logger
+
+    def _log_info(self, message: str) -> None:
+        """INFO через логгер узла, если он есть (иначе stderr, как warning)."""
+        logger = getattr(self, "_logger", None)
+        if logger is not None:
+            try:
+                logger.info(message)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        import sys as _sys
+        _sys.stderr.write(f"{message}\n")
+        _sys.stderr.flush()
 
     def _log_warning(self, message: str) -> None:
         """Log via the manager's logger when available (fallback to print)."""
@@ -1258,6 +1352,371 @@ class MusicManager:
             # OSC_REPLY_TIMEOUT_SECONDS. Best-effort, никогда не бросает.
             self._log_scsynth_reply_if_any(sock)
 
+    #: Пауза (сек) между ``gate=0`` и ``/g_freeAll`` в :meth:`_ramp_down_group`
+    #: — issue #3137, столько же, сколько #1000 уже использовал в ``stop_all``.
+    RAMP_DOWN_RELEASE_SECONDS = 0.05
+
+    #: Пауза (сек) между ``/g_freeAll`` и ``/g_new`` в :meth:`_transition_cleanup`
+    #: — issue #778 (``FAILURE IN SERVER /g_new negative node IDs are
+    #: reserved``): UDP fire-and-forget, scsynth не успевает освободить ID
+    #: группы мгновенно, без паузы пересоздание группы гонится с ещё не
+    #: обработанным ``/g_freeAll``. Вынесено в именованную константу (было
+    #: инлайновым ``time.sleep(0.05)``), потому что issue #3137 R2 (живой
+    #: замер 28.09.2026) считает по ней :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`
+    #: — см. её docstring.
+    TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS = 0.05
+
+    #: Запас (сек) перед вычисленным дедлайном (``next_bar + Clock.latency``,
+    #: см. :meth:`_transition_cleanup_delay_seconds`) — issue #3137 R2
+    #: (живой замер 28.09.2026, второй раунд ревью координатора). Отложенный
+    #: ramp/freeAll обязан ЗАВЕРШИТЬСЯ в scsynth строго ДО момента, когда там
+    #: материализуется первая нота нового трека — иначе возможны два разных
+    #: отказа: (1) freeAll убьёт свежесозданную ноду нового трека вместо
+    #: старой (новый трек тоже щёлкнет/оборвётся); (2) хуже — если
+    #: материализация нового трека наступит РАНЬШЕ, чем наш ``/g_new``
+    #: пересоздаст группу 1 (см. :meth:`_transition_cleanup`), у scsynth
+    #: нет группы-цели, когда бандл нового трека пробует создать в ней свою
+    #: под-группу (``ServerManager.get_bundle``: первое сообщение бандла —
+    #: ``/g_new [group_id, 1, 1]``, ``target=1``) → тот же класс отказа, что
+    #: и issue #778 («target node not found»), только для НОВОГО трека, не
+    #: для пересоздания группы.
+    #:
+    #: Поэтому запас обязан целиком покрывать локальный конвейер
+    #: :meth:`_transition_cleanup` ОТ момента срабатывания таймера ДО
+    #: завершения ``/g_new`` — :data:`RAMP_DOWN_RELEASE_SECONDS` (пауза
+    #: перед freeAll) + :data:`TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS`
+    #: (пауза перед g_new, issue #778) = 0.10s, плюс буфер на джиттер треда
+    #: таймера и сам OSC round-trip отправки трёх сообщений. Старое значение
+    #: (0.08s, R1/#3148) было МЕНЬШЕ этих 0.10s — не баг для R1 (дедлайн
+    #: стоял ДО ``next_bar``, а реальная материализация — на ``next_bar +
+    #: latency``, ≈0.25s запаса набегало случайно), но стало бы гонкой для
+    #: R2, если бы margin не подняли вместе со сдвигом дедлайна на
+    #: ``+ latency``.
+    TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS = (
+        RAMP_DOWN_RELEASE_SECONDS + TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS + 0.05
+    )  # = 0.15
+
+    #: Потолок для :meth:`_transition_cleanup_delay_seconds` — реалистичный
+    #: разрыв (``ALIGN_LEAD_BEATS`` долей на разумном BPM) укладывается в
+    #: секунды, но ``bpm`` в ``Clock`` — внешнее, не наше состояние: если
+    #: оно когда-нибудь окажется вырожденным (около нуля, битый рантайм),
+    #: ``beats_until * 60 / bpm`` даёт секунды порядка ``1e11`` —
+    #: ``threading.Timer`` с таким интервалом падает в фоновом потоке
+    #: (``OverflowError: timestamp too large to convert to C _PyTime_t``,
+    #: живой баг этого ревью: ловится ``test_music_clock_phase.py`` с
+    #: ``FakeClock(bpm=1e-9)``). Потолок — и защита от зависшего таймера
+    #: (freeAll не должен откладываться дольше, чем не свалить node-table
+    #: scsynth, см. комментарий про «too many nodes» выше по файлу), и
+    #: защита от невалидного OSC-интервала.
+    TRANSITION_CLEANUP_MAX_DELAY_SECONDS = 5.0
+
+    #: Дефолт ``Clock.latency`` в Renardo (``renardo_lib/TempoClock.py``
+    #: 0.9.13, строка 121: ``self.latency = 0.25 # Time between starting
+    #: processing osc messages and sending to server``) — используется в
+    #: :meth:`_transition_cleanup_delay_seconds` ТОЛЬКО как fallback, если
+    #: у живого ``Clock`` почему-то нет атрибута ``latency`` (см. её
+    #: docstring — issue #3137, живой замер 28.09.2026 после #3148).
+    #: Обычное значение читается с самого ``clock.latency``, не хардкодится.
+    RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS = 0.25
+
+    def _ramp_down_group(self, group: int = 1) -> None:
+        """Плавно погасить живые SC-ноды группы перед ``/g_freeAll`` (anti-click).
+
+        Issue #3137 (живой стык двух треков дал окно −180 dBFS). Первая
+        версия этого фикса слала ``/n_set -1 "gate" 0.0``, по аналогии с
+        прецедентом — commit ``d922ee836``. Ревью координатора (issue
+        #3137, R2) поправило это: nodeID ``-1`` у ``/n_set`` НЕ означает
+        «все живые ноды» (в Server Command Reference это не документировано
+        как спецзначение для ``/n_set``; спецзначения ``-1``/``-2`` есть у
+        ``target`` в ``/g_new``/``/s_new``, не у самого ``/n_set``).
+        Правильный адресат — ГРУППА: ``/n_set <group> "gate" 0.0`` ставит
+        контрол ``gate`` всем нодам ВНУТРИ группы (Server Command
+        Reference, ``/n_set``: «Groups will substitute one message for each
+        node in the group»).
+
+        Второе уточнение (то же ревью): из ~370 synthdef'ов Renardo на
+        роботе (``SynthDefManagement/sclang_code/scsynth/*.scd``) только
+        ~60 имеют контрол ``gate`` — play/сэмплы и большинство мелодических
+        синтов (``pluck``, ``blip``, ``saw``, …) используют ``sus``-огибающую
+        с ``doneAction``, у них ``gate`` нет вовсе, и ``/n_set`` для них —
+        no-op (scsynth либо тихо игнорирует неизвестный контрол, либо не
+        находит его на синте). Поэтому для БОЛЬШИНСТВА живых нод этот шаг
+        ничего не смягчает — щелчок/обрыв решает не сам ``gate=0``, а то,
+        КОГДА вызывается ``freeAll`` относительно последней реальной ноты
+        (см. :meth:`_schedule_transition_cleanup` — главный фикс #3137).
+        ``gate=0`` остаётся полезным для той минорной доли синтов (включая
+        ``MdaPiano``/``rhpiano`` из issue #1000), у которых контрол есть.
+
+        Последовательность:
+
+        1. ``/n_set <group> "gate" 0.0`` — на нодах группы, у которых есть
+           ``gate``, запускает release-фазу ADSR; на остальных — no-op.
+        2. Пауза :data:`RAMP_DOWN_RELEASE_SECONDS` — дать release начаться.
+        3. ``/g_freeAll <group>`` — убить оставшиеся живые ноды группы.
+
+        Не блокирует надолго: суммарная пауза — десятки миллисекунд.
+
+        Args:
+            group: номер группы и адресат ``gate=0``/``freeAll`` (по
+                умолчанию Group 1 — куда Renardo шлёт все ноты).
+        """
+        try:
+            self._send_osc_raw("/n_set", group, "gate", 0.0)
+        except Exception:
+            pass  # если SC недоступен — freeAll ниже всё равно best-effort
+        try:
+            time.sleep(self.RAMP_DOWN_RELEASE_SECONDS)
+        except Exception:
+            pass
+        try:
+            self._send_osc_raw("/g_freeAll", group)
+        except Exception:
+            pass  # если SC недоступен — не критично, старые ноды умрут сами
+
+    def _transition_cleanup_delay_seconds(self) -> float:
+        """Секунд до дедлайна: ``next_bar + Clock.latency`` минус запас.
+
+        Корневая причина живого симптома (issue #3137, найдено ревью
+        координатора, R1): дело не в жёсткости ``/g_freeAll`` как такового,
+        а в МОМЕНТЕ его вызова. ``execute_code`` раньше слал ``freeAll``
+        сразу после ``exec`` — в этот момент старые SC-ноды ещё звучат, а
+        новые плееры (зарегистрированные тем же ``exec``) встают на
+        ``Clock.next_bar()`` (``Players.py:892``) и реально зазвучат не
+        раньше, чем клок дойдёт до этой доли. При типичном арранжировщике
+        (``core/arranger.py:clock_align_prelude``, ``ALIGN_LEAD_BEATS=2``)
+        это ``next_bar() - now() == 2`` доли, то есть ``2·60/BPM`` секунд —
+        ≈0.97с на 124 BPM. Freeall в момент exec убивает старый трек СРАЗУ,
+        а новый начинает звучать почти секунду спустя → окно цифровой
+        тишины (−180 dBFS), а не щелчок.
+
+        R1 (сдвиг teardown на ``next_bar - запас``, #3148) убрал окно
+        цифровой тишины на стыке, но живой замер 28.09.2026 (issue #3137,
+        деплой ``82c973e62``) нашёл остаточную просадку ≈0.5с до −75 dB.
+        Причина (R2, тот же живой комментарий): ``Clock.next_bar()`` — это
+        МОМЕНТ, когда Renardo-клок (``TempoClock.py:583``, фоновый тред
+        ``__run_block``) отправляет OSC-бандл с новыми нотами в scsynth —
+        не момент, когда они реально зазвучат. Сам бандл несёт таймстемп
+        ``osc_message_time() == time.time() + Clock.latency``
+        (``TempoClock.py:485-487``; дефолт ``Clock.latency = 0.25``,
+        ``TempoClock.py:121``) — это НАСТОЯЩИЙ NTP-таймстемп OSC bundle
+        (``ServerManager/__init__.py:get_bundle``: ``OSCBundle(time=
+        timestamp)``), а scsynth планирует его исполнение (создание своих
+        ``/g_new``+``/s_new`` нод — каждая нота у Renardo живёт в
+        собственной подгруппе группы 1, см. ``get_bundle``) НА этот момент
+        в будущем, не раньше. До этого момента у scsynth просто нет нод
+        нового трека — их физически нечем задеть немедленным
+        ``/g_freeAll``, поэтому teardown можно (и нужно) держать старый
+        трек живым ещё ``Clock.latency`` секунд ПОСЛЕ ``next_bar()``, а не
+        только до него.
+
+        Фикс: не звать ``freeAll`` синхронно, а посчитать здесь, сколько
+        секунд реально осталось до старта нового трека
+        (``next_bar + Clock.latency``), и запланировать ramp/freeAll на
+        этот момент минус запас (см. :meth:`_schedule_transition_cleanup`).
+        До дедлайна старый трек доигрывает сам — короткие ноты с
+        ``sus``/``doneAction`` успевают освободиться естественно, длинные
+        попадают под ramp/freeAll ровно на границе (перед тем, как в
+        scsynth материализуются ноды нового трека), а не секундой раньше и
+        не 0.25с раньше.
+
+        ``Clock.latency`` читается с живого ``clock`` (``getattr``), не
+        хардкодится — конкретное значение внешнее (Renardo/оператор могут
+        его менять, ``Clock.set_latency(...)``); дефолт Renardo
+        (:data:`RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS`) — только fallback,
+        если атрибута нет вовсе.
+
+        Returns:
+            Секунды до дедлайна, зажатые снизу нулём (``0.0`` — сигнал
+            вызвать teardown немедленно: Clock недоступен, BPM невалиден,
+            или диагностика упала) и сверху
+            :data:`TRANSITION_CLEANUP_MAX_DELAY_SECONDS`. Никогда не бросает.
+        """
+        try:
+            clock = self._renardo_context.get("Clock")
+            if clock is None:
+                return 0.0
+            now = float(clock.now())
+            next_bar = float(clock.next_bar())
+            bpm = float(self._renardo_bpm())
+            if bpm <= 0:
+                return 0.0
+            latency = float(
+                getattr(clock, "latency", self.RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS)
+            )
+            if latency < 0.0:
+                latency = 0.0
+            beats_until = max(0.0, next_bar - now)
+            seconds_until_bar = beats_until * 60.0 / bpm
+            seconds_until_first_note = seconds_until_bar + latency
+            delay = max(
+                0.0, seconds_until_first_note - self.TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS
+            )
+            return min(delay, self.TRANSITION_CLEANUP_MAX_DELAY_SECONDS)
+        except Exception:  # noqa: BLE001 — диагностика не должна ронять переход
+            return 0.0
+
+    def _transition_cleanup(self, group: int = 1) -> None:
+        """Снести СТАРЫЕ ноды группы и подготовить её для НОВОГО трека.
+
+        Тело исполняется либо сразу (``delay<=0`` в
+        :meth:`_schedule_transition_cleanup`), либо в потоке
+        ``threading.Timer`` — в обоих случаях после того, как
+        :meth:`_ramp_down_group` отработает, обязана остаться пауза
+        (:data:`TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS`) перед ``/g_new``
+        (issue #778): UDP fire-and-forget, scsynth не успевает освободить
+        ID группы мгновенно, без паузы ``/g_new`` (или первая нота нового
+        трека, целящаяся в ту же группу) придёт раньше, чем scsynth
+        обработает ``/g_freeAll`` → «FAILURE IN SERVER /g_new negative node
+        IDs are reserved».
+
+        Issue #3137 R2 (живой замер 28.09.2026): у ЭТОЙ паузы теперь есть
+        второй потребитель — :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`
+        считает по ней (вместе с :data:`RAMP_DOWN_RELEASE_SECONDS`), сколько
+        всего времени занимает весь конвейер этого метода, чтобы дедлайн в
+        :meth:`_transition_cleanup_delay_seconds` гарантированно оставлял
+        время на его завершение ДО того, как в scsynth материализуется
+        первая нота нового трека (её собственный ``/g_new`` целится в ЭТУ
+        группу — см. margin'а docstring).
+        """
+        self._ramp_down_group(group)
+        try:
+            time.sleep(self.TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS)
+        except Exception:
+            pass
+        try:
+            self._send_osc_raw("/g_new", group, 0, 0)
+        except Exception:
+            pass
+
+    def _prepare_renardo_namespace(self) -> None:
+        """Колбэк ``_rbx_track_started`` в пространство имён и сброс ``now_flag``.
+
+        Issue #3166 / ADR-0142 §10.1. Колбэк кладётся перед КАЖДЫМ ``exec``
+        (а не только при бутстрапе): fade-обёртка зовёт его последней строкой
+        ``_rbx_next_track``, и ``NameError`` там сорвал бы старт трека.
+
+        ``Clock.now_flag``: программа с ``dj_entry`` поднимает его на время
+        создания плееров и опускает после. Если она упала посередине (в
+        потоке клока — ошибку Renardo только напечатает), флаг остался бы
+        поднятым, и плееры следующих треков вставали бы не на границу такта.
+        """
+        try:
+            self._renardo_context[TRACK_STARTED_FN] = self._on_track_started
+            clock = self._renardo_context.get("Clock")
+            if clock is not None and getattr(clock, "now_flag", False):
+                clock.now_flag = False
+        except Exception:  # noqa: BLE001 — не мешаем музыке
+            pass
+
+    def _on_track_started(self, form_beats: int = 0, entry_beats: int = 0) -> None:
+        """Колбэк «новый трек стартовал» из ``_rbx_next_track`` (issue #3166).
+
+        Исполняется в потоке клока Renardo ПОСЛЕ ``Clock.clear`` →
+        ``set_time`` → плееров нового трека (ADR-0142 §10.1, PR-1):
+
+        1. снимок фазы клока и INFO ``[#3112] трек started …`` — теперь
+           видно, где реально встал трек, а не где был клок в момент
+           ``exec`` обёртки;
+        2. teardown старых SC-нод (gate=0 → freeAll → g_new) — в отдельном
+           потоке, сразу: первые ноты нового трека материализуются в
+           scsynth через ``Clock.latency`` (0,25 с), конвейер
+           :meth:`_transition_cleanup` занимает ≈0,10 с.
+
+        Никогда не бросает: исключение здесь сорвало бы только лог, но
+        печаталось бы Renardo в поток клока.
+        """
+        try:
+            snapshot = self._track_started_snapshot(form_beats, entry_beats)
+            self._last_track_started = snapshot
+            self._log_info(self._format_track_started(snapshot))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            worker = threading.Thread(target=self._transition_cleanup, args=(1,), daemon=True)
+            worker.start()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _track_started_snapshot(self, form_beats: int, entry_beats: int) -> Dict[str, Any]:
+        """Доля клока и фаза внутри формы в момент старта трека."""
+        clock = self._renardo_context.get("Clock")
+        beat = float(clock.now()) if clock is not None else None
+        total = float(form_beats or 0)
+        phase = round(beat % total, 3) if beat is not None and total > 0 else None
+        return {
+            "clock_beat": None if beat is None else round(beat, 3),
+            "form_total_beats": total,
+            "phase_beats": phase,
+            "entry_beats": int(entry_beats or 0),
+            "now_flag": bool(getattr(clock, "now_flag", False)),
+            "latency_s": getattr(clock, "latency", None),
+        }
+
+    @staticmethod
+    def _format_track_started(snap: Dict[str, Any]) -> str:
+        return (
+            f"[#3112] трек started внутри _rbx_next_track: доля клока={snap['clock_beat']}, "
+            f"фаза в форме={snap['phase_beats']} из {snap['form_total_beats']:g} "
+            f"(ожидался вход с доли {snap['entry_beats']}), latency={snap['latency_s']}"
+        )
+
+    def _schedule_transition_cleanup(self, group: int = 1) -> None:
+        """Отложить ramp/freeAll старого трека до старта нового (issue #3137).
+
+        Раньше ``execute_code`` звало ``/g_freeAll`` СРАЗУ после ``exec`` —
+        старые ноды умирали мгновенно, а новые начинали звучать секундой
+        позже (:meth:`_transition_cleanup_delay_seconds`), отсюда живой
+        симптом −180 dBFS. Теперь teardown откладывается на вычисленный
+        момент — старый трек доигрывает почти до самой границы, новый
+        стартует туда же, где старый замолк, дыры не остаётся.
+
+        Дедлайн выбран строго ДО момента, когда в scsynth реально
+        МАТЕРИАЛИЗУЕТСЯ первая нота нового трека (с запасом
+        :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`) — issue #3137 R2
+        (живой замер 28.09.2026): это НЕ ``Clock.next_bar()``, а
+        ``Clock.next_bar() + Clock.latency``. ``next_bar()`` — момент,
+        когда Renardo-клок ОТПРАВЛЯЕТ в scsynth OSC-бандл новой ноты; сам
+        бандл несёт NTP-таймстемп ``time.time() + Clock.latency``
+        (``renardo_lib/TempoClock.py:485-487``, дефолт ``latency=0.25s``,
+        строка 121) — и scsynth ставит его в свой внутренний планировщик,
+        создавая ноды бандла (``ServerManager.get_bundle``) РОВНО на этот
+        будущий момент, не раньше. До него у scsynth физически нет ни
+        одной ноды нового трека — немедленному ``/g_freeAll`` нечего
+        задеть, кроме старых, поэтому дедлайн можно (и нужно) держать на
+        ``next_bar + latency``, а не на самом ``next_bar`` (см.
+        :meth:`_transition_cleanup_delay_seconds` — там же обоснование
+        полного расчёта запаса). Это сознательный выбор между двумя
+        вариантами, предложенными ревью: (а) freeAll строго до первой
+        новой ноты — можно звать по номеру группы, не отслеживая
+        конкретные node ID; (б) free только СТАРЫХ node ID — потребовало
+        бы вести реестр ID нод на Python-стороне (scsynth сам назначает ID
+        при ``/s_new``, Renardo их не публикует) — отдельная инвазивная
+        правка ради временного окна в десятки миллисекунд. (а) даёт тот же
+        результат проще и без нового состояния, поэтому выбран он: пока
+        наш таймер (и весь его конвейер до завершения ``/g_new``, см.
+        margin) укладывается СТРОГО РАНЬШЕ, чем в scsynth материализуется
+        нода нового трека, ``/g_freeAll`` не может задеть ничего, кроме
+        старых нод, а группа-цель для новой ноды (``target=1`` в её
+        собственном ``/g_new``, см. :data:`TRANSITION_CLEANUP_SAFETY_MARGIN_SECONDS`)
+        успевает быть пересоздана заранее.
+
+        Никогда не блокирует вызывающий поток — либо выполняет teardown
+        сразу (``delay<=0``, включая любой сбой диагностики Clock —
+        поведение не хуже старого синхронного пути), либо планирует его
+        фоновым ``threading.Timer`` (не поток Renardo-клока и не поток
+        MCP-инструмента).
+
+        Args:
+            group: группа, которую разово освобождаем и пересоздаём.
+        """
+        delay = self._transition_cleanup_delay_seconds()
+        if delay <= 0.0:
+            self._transition_cleanup(group)
+            return
+        timer = threading.Timer(delay, self._transition_cleanup, args=(group,))
+        timer.daemon = True
+        timer.start()
+
     # ------------------------------------------------------------------
     # Master limiter fader
     # ------------------------------------------------------------------
@@ -1285,6 +1744,11 @@ class MusicManager:
             )
         except OSError as exc:  # UDP-сокет недоступен — не роняем музыку
             self._log_warning(f"master gain not applied: {exc}")
+        return self._master_gain
+
+    @property
+    def master_gain(self) -> float:
+        """Issue #3125 — текущий уровень мастер-фейдера (0.0-1.0)."""
         return self._master_gain
 
     # ------------------------------------------------------------------
@@ -1327,6 +1791,16 @@ class MusicManager:
     # ------------------------------------------------------------------
     # Issue #990 — segments safety-net
     # ------------------------------------------------------------------
+
+    def renardo_clock(self) -> Any:
+        """``Clock`` уже поднятого рантайма Renardo или ``None`` (issue #3112).
+
+        Только чтение для диагностики фазы — рантайм здесь не поднимается.
+        """
+        try:
+            return self._renardo_context.get("Clock")
+        except Exception:  # noqa: BLE001
+            return None
 
     def _renardo_bpm(self) -> float:
         """Current Renardo BPM (default 120 when Clock is unavailable)."""
@@ -1386,6 +1860,22 @@ class MusicManager:
         """
         self._music_form_cycle_ends_at = time.monotonic() + max(0.0, float(duration_seconds))
 
+    def form_stop_remaining_s(self) -> Optional[float]:
+        """Issue #3113 — сколько секунд до ОСТАНОВКИ конечного трека.
+
+        Только ``repeat=False`` (код трека кончается ``Clock.future(...,
+        Clock.clear)``, :meth:`set_form_deadline`); зацикленный трек сам не
+        замолкает — ``None``. Живой прогон 28.09: DJ-переход ждал конца такой
+        формы, и между треками было ~15 с тишины; dialogue_node получает это
+        значение (как epoch) в ``/voice/music/form`` и назначает переход
+        раньше остановки.
+        """
+        deadline = self._music_form_deadline_at
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        return remaining if remaining > 0 else None
+
     def clear_form_deadline(self) -> None:
         """Снять защиту «форма ещё не доиграла» (issue #1812).
 
@@ -1404,6 +1894,7 @@ class MusicManager:
         """
         self._music_form_deadline_at = None
         self._music_form_cycle_ends_at = None
+        self.current_track_name = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -1506,21 +1997,30 @@ class MusicManager:
                 "error": error,
             }
 
-        # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем новые
-        # паттерны), ПОТОМ посылаем /g_freeAll чтобы убить старые SC-ноды.
+        # Если код содержит Clock.clear() — СНАЧАЛА выполняем код (регистрируем
+        # новые паттерны), ПОТОМ ПЛАНИРУЕМ (не зовём синхронно!) ramp/freeAll
+        # старых SC-нод на момент, когда реально стартует новый трек.
         #
-        # Порядок важен для бесшовного перехода:
-        # 1. exec(code): Clock.clear() + новые паттерны зарегистрированы (мгновенно)
-        # 2. /g_freeAll: убиваем старые SC-синтезаторы (они играли пока LLM думал)
-        # 3. /g_new: пересоздаём Group 1 для новых нот
-        # При таком порядке нет тишины — новые паттерны уже ждут следующего beat,
-        # а /g_freeAll только убивает СТАРЫЕ ноды, которые overlap не нужен.
+        # Issue #3137 (корень, найден ревью координатора): раньше freeAll
+        # звался СРАЗУ после exec — старые ноды умирали мгновенно, а новые
+        # плееры встают на Clock.next_bar() и реально начинают звучать
+        # секундой(-ями) позже (см. ALIGN_LEAD_BEATS в core/arranger.py) —
+        # отсюда окно цифровой тишины (−180 dBFS), а не просто щелчок.
+        # _schedule_transition_cleanup вычисляет этот разрыв и откладывает
+        # teardown группы почти до самой границы — см. её докстринг и
+        # _transition_cleanup_delay_seconds для точной математики и выбора
+        # между вариантами фикса.
         #
-        # Почему нужен /g_freeAll: Clock.clear() останавливает планировщик Renardo,
-        # но НЕ посылает /g_freeAll в scsynth. Уже запущенные синтезаторы живут
-        # до конца sus-конверта. После многих переходов 1024-нодовая таблица SC
-        # забивается → "too many nodes" / "negative node IDs" → тишина.
+        # Почему freeAll вообще нужен (не только доиграть и забыть): Clock.
+        # clear() останавливает планировщик Renardo, но НЕ посылает freeAll
+        # в scsynth сам по себе. После многих переходов 1024-нодовая таблица
+        # SC забивается → "too many nodes" / "negative node IDs" → тишина.
         has_clock_clear = "Clock.clear()" in code
+        # Issue #3166: у fade-обёртки ``Clock.clear()`` нового трека стоит
+        # внутри ОТЛОЖЕННОГО ``_rbx_next_track`` — teardown старых нод делает
+        # колбэк ``_rbx_track_started`` в момент реального старта, а не мы
+        # здесь по клоку уходящего трека (это обрывало фейд, ADR-0142 §1 п.5).
+        deferred_start = is_fade_wrapped(code)
 
         # Issue #990: the music lifecycle is owned by the system
         # (tts_batch_complete → music_cleanup → stop_music_on_session_end).
@@ -1559,37 +2059,23 @@ class MusicManager:
         # scsynth ещё читает файл в буфер (Buffer UGen: no buffer data),
         # и на старте музыки слышен резкий свист/хруст (xrun-бурст).
         self._prewarm_sample_buffers(code)
+        self._prepare_renardo_namespace()
 
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
             return {"success": False, "error": f"Ошибка выполнения: {exc}"}
 
-        if has_clock_clear:
-            # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
-            try:
-                self._send_osc_raw("/g_freeAll", 1)
-            except Exception:
-                pass  # если SC недоступен — не критично, старые ноды умрут сами
-            # Пауза между /g_freeAll и /g_new обязательна (issue #778):
-            # UDP — fire-and-forget, scsynth обрабатывает /g_freeAll
-            # асинхронно и не освобождает ID Group 1 мгновенно. Без паузы
-            # наш /g_new (или любой /s_new от Renardo Player-а, который
-            # попытается вставить ноту в Group 1) приходит в scsynth, когда
-            # ID ещё занят → "FAILURE IN SERVER /g_new negative node IDs are
-            # reserved" в логах supercollider (старый баг, был
-            # замаскирован тем, что renardo при инициализации сначала
-            # пересоздаёт Group, и в среднем прокатывало). 50ms достаточно
-            # для scsynth обработать free и освободить ID.
-            try:
-                time.sleep(0.05)
-            except Exception:
-                pass
-            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
-            try:
-                self._send_osc_raw("/g_new", 1, 0, 0)
-            except Exception:
-                pass
+        if has_clock_clear and not deferred_start:
+            # Issue #3137: НЕ убиваем старые SC-ноды синхронно здесь —
+            # планируем ramp/freeAll на момент, когда реально стартует новый
+            # трек (_schedule_transition_cleanup), чтобы старый трек доигрывал
+            # почти до самой границы вместо мгновенного обрыва в цифровую
+            # тишину. Внутри — тот же anti-click ramp (gate=0 → пауза →
+            # freeAll → пауза #778 → /g_new), что раньше шёл здесь синхронно
+            # и что ``stop_all`` использует немедленно (там дыра не важна —
+            # явная остановка, а не переход между треками).
+            self._schedule_transition_cleanup(1)
 
         # Мастер-фейдер применяем лениво, на первом успешном выполнении:
         # ``foxdot_init.sc`` ставит синт ``masterlimiter`` через ~5 с после
@@ -1607,15 +2093,7 @@ class MusicManager:
         # when code executes successfully — even without pattern_name — so
         # the safety nets (dialogue-end hook + watchdog) can stop music that
         # the LLM started but didn't name.
-        now = time.monotonic()
-        self._last_music_activity_at = now
-        if self._music_session_active_since is None:
-            self._music_session_active_since = now
-        # Issue #1812 — fresh code replaces whatever was playing, so any
-        # earlier form-end protection no longer applies. ComposeMusicTool
-        # re-arms it right below via set_form_deadline() when the new
-        # composition is non-repeating.
-        self.clear_form_deadline()
+        self._stamp_new_track()
 
         # Issue #1016 — quality warnings surfaced to the LLM so it can fix
         # them on the next call (e.g. add dur=, add a developing pattern).
@@ -1790,20 +2268,108 @@ class MusicManager:
             }
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
+    def _stamp_new_track(self) -> None:
+        """Отметить успешно исполненный код: сессия жива, новый трек (#935, #3133)."""
+        with self._state_lock:
+            now = time.monotonic()
+            self._last_music_activity_at = now
+            if self._music_session_active_since is None:
+                self._music_session_active_since = now
+            # Issue #1812 — fresh code replaces whatever was playing, so any
+            # earlier form-end protection no longer applies. ComposeMusicTool
+            # re-arms it right below via set_form_deadline() when the new
+            # composition is non-repeating.
+            self.clear_form_deadline()
+            self._start_new_track_id()
+
+    def _end_music_session(self, now_m: float, finished_track_id: Optional[str] = None) -> None:
+        """Сбросить состояние сессии: музыки больше нет (стоп или конец формы).
+
+        Одна точка для :meth:`stop_all` и :meth:`finish_form_if_ended`
+        (issue #3133) — оба пути обязаны оставлять одинаковое «idle».
+        Renardo/SuperCollider не трогает. ``finished_track_id`` — трек
+        доиграл сам; при явном стопе ``None``.
+        """
+        with self._state_lock:
+            self._reset_session_fields(now_m)
+            self.last_finished_track_id = finished_track_id
+
+    def _reset_session_fields(self, now_m: float) -> None:
+        self._active_patterns.clear()
+        self._last_stop_at = now_m
+        # Issue #990 — a stop cancels the segments safety-net deadline:
+        # music is no longer playing, so there is nothing to backstop.
+        self._music_deadline_at = None
+        self._music_deadline_segments = None
+        # Issue #1812 — a stop also cancels the form-end deadline: there is
+        # no composition left to protect from the idle watchdog.
+        self.clear_form_deadline()
+        # Reset session only when the *whole* session is over so a partial
+        # ``stop_pattern``-then-restart sequence doesn't lose the timer
+        # (issue #935 — keeps audit trail of when music was active).
+        self._music_session_active_since = None
+        self._last_music_activity_at = None
+        self.current_track_id = None
+
+    def _start_new_track_id(self) -> None:
+        """Issue #3133 — новый id трека на каждый успешно исполненный код."""
+        self._track_seq = getattr(self, "_track_seq", 0) + 1
+        prefix = getattr(self, "_track_id_prefix", "t")
+        self.current_track_id = f"{prefix}-{self._track_seq}"
+        self.last_finished_track_id = None
+
+    def finish_form_if_ended(self, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Issue #3133 (ADR-0141) — конечный трек доиграл форму → сессия idle.
+
+        Трек ``repeat=False`` останавливает сам Renardo
+        (``Clock.future(end, Clock.clear)`` в сгенерированном коде), и
+        сервер раньше об этом не узнавал: «playing» держалось до idle-TTL
+        (30 мин). Теперь, как только наступил дедлайн формы
+        (:meth:`set_form_deadline`), сессия закрывается так же, как при
+        стопе, но БЕЗ обращения к Renardo — он уже замолчал сам, а
+        ``/g_freeAll`` оборвал бы хвосты релизов.
+
+        Зацикленный трек (``repeat=True``, DJ-сет) дедлайна не имеет —
+        здесь ничего не происходит. Новый код до дедлайна снимает его
+        (:meth:`clear_form_deadline` в ``execute_code``), так что сменённый
+        трек не «доигрывает» задним числом.
+
+        Returns:
+            ``{"track_id", "track_name", "reason": "form_end"}`` — сессия
+            закрыта сейчас; ``None`` — нечего закрывать.
+        """
+        with self._state_lock:
+            deadline = getattr(self, "_music_form_deadline_at", None)
+            if deadline is None:
+                return None
+            now_m = time.monotonic() if now is None else float(now)
+            if now_m < deadline:
+                return None
+            finished = {
+                "track_id": getattr(self, "current_track_id", None),
+                "track_name": getattr(self, "current_track_name", None),
+                "reason": "form_end",
+            }
+            self._end_music_session(now_m, finished_track_id=finished["track_id"])
+            return finished
+
     def stop_all(self) -> Dict[str, Any]:
         """Остановить всю музыку: плавный gate=0 ramp-down → freeAll.
 
         Issue #1000 (phase-3.2 anti-click):
             Hard ``/g_freeAll`` без ramp-down даёт щелчки на MdaPiano/rhpiano
-            (физ-модели — release-фаза ADSR не успевает затухнуть). Делаем
-            ``amp=0`` на всех плеерах → release → ~50ms → ``/g_freeAll``.
+            (физ-модели — release-фаза ADSR не успевает затухнуть).
 
         Этапы:
-        1. ``amp=0`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
-           запускает release-фазу ADSR, синты затухают естественно.
+        1. ``.stop()`` на всех живых плеерах (d1-d9, p1-p9, s1-s9, l1-l9) —
+           снимает их с планировщика Renardo (внутреннее состояние).
         2. ``Clock.clear()`` — убрать все запланированные события.
-        3. ~50ms sleep — дать ADSR release затухнуть.
-        4. OSC ``/g_freeAll`` — убить все живые синтезаторы в scsynth.
+        3-4. :meth:`_ramp_down_group` (issue #3137) — ``gate=0`` на ноды
+           группы 1 → ~50ms на release ADSR → ``/g_freeAll``. Вызывается
+           СИНХРОННО (в отличие от ``execute_code``'а — там тот же teardown
+           теперь откладывается до старта нового трека, потому что там
+           важна секунда тишины между треками; здесь явная остановка,
+           отложенность не нужна и не делается).
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
@@ -1849,32 +2415,12 @@ class MusicManager:
                 # still need to reset our own lifecycle fields. Issue #935.
                 clock_error = f"Clock.clear() failed: {exc}"
 
-            # Шаг 3: ~50ms на release ADSR (issue #1000 anti-click)
-            try:
-                time.sleep(0.05)
-            except Exception:
-                pass
+            # Шаг 3-4: gate=0 ramp-down → freeAll (issue #1000 anti-click,
+            # issue #3137 — общий хелпер, тот же путь, что execute_code).
+            self._ramp_down_group(1)
 
-            # Шаг 4: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
-            try:
-                self._send_osc_raw("/g_freeAll", 1)
-            except Exception:
-                pass  # если SC недоступен — не страшно, Clock уже очищен
-
-        self._active_patterns.clear()
-        self._last_stop_at = time.monotonic()
-        # Issue #990 — a stop cancels the segments safety-net deadline:
-        # music is no longer playing, so there is nothing to backstop.
-        self._music_deadline_at = None
-        self._music_deadline_segments = None
-        # Issue #1812 — a stop also cancels the form-end deadline: there is
-        # no composition left to protect from the idle watchdog.
-        self.clear_form_deadline()
-        # Reset session only when the *whole* session is over so a partial
-        # ``stop_pattern``-then-restart sequence doesn't lose the timer
-        # (issue #935 — keeps audit trail of when music was active).
-        self._music_session_active_since = None
-        self._last_music_activity_at = None
+        # Явный стоп — не «доиграл сам» (issue #3133): finished_track_id=None.
+        self._end_music_session(time.monotonic())
         if clock_error:
             return {
                 "success": False,
@@ -2001,6 +2547,15 @@ class MusicManager:
                 if self._music_form_cycle_ends_at is not None
                 else None
             ),
+            # Issue #3113 — остаток до остановки конечного (repeat=False)
+            # трека; ``None`` — зацикленный трек или ничего не играет.
+            "form_stop_remaining_s": self.form_stop_remaining_s(),
+            # getattr: часть тестов собирает менеджер через __new__ без __init__.
+            "track_name": getattr(self, "current_track_name", None),
+            # Issue #3133 (ADR-0141) — поля снимка /voice/music/state.
+            "track_id": getattr(self, "current_track_id", None),
+            "last_finished_track_id": getattr(self, "last_finished_track_id", None),
+            "dj_mode_enabled": bool(getattr(self, "_dj_mode_enabled", False)),
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -2240,16 +2795,8 @@ class ExecuteMusicCodeTool(MCPTool):
         return MCPToolResult(success=False, error=result["error"])
 
     def _notify_music_state(self) -> None:
-        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
-        if self.node is None:
-            return
-        publisher = getattr(self.node, "publish_music_state", None)
-        if publisher is None:
-            return
-        try:
-            publisher()
-        except Exception as exc:  # noqa: BLE001
-            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+        """Опубликовать /voice/music/state (issue 989 Fix C)."""
+        _notify_music_state(self)
 
 
 #: Параметры аранжировки, общие для compose_music и preview_arrangement
@@ -2813,6 +3360,44 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="style",
+                type="string",
+                description=(
+                    "Стиль аранжировки. classic (по умолчанию) — прежнее "
+                    "поведение. club — клубный трек по эталону DJ Dave "
+                    "«By Design»: синкопированная бочка, бас и арпеджио "
+                    "16-ми с пампингом под бочку, клэп+открытый хэт, пэд, "
+                    "форма из матрицы секций (build/predrop/drop/verse, "
+                    "32 такта). С club работают только bpm (по умолчанию "
+                    "124), root (по умолчанию A#), scale (только minor), "
+                    "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
+                    "секций и тембры) и repeat; остальные "
+                    "параметры игнорируются — об этом сказано в начале "
+                    "ответа. С name= мелодии из библиотеки или rtttl= club "
+                    "играет вместо арпеджио узнаваемый хук темы (её начало, "
+                    "до 4 тактов) в тональности трека; ответ называет id и "
+                    "название темы. name=, которого нет в библиотеке, — "
+                    "только подпись, темы в треке нет."
+                ),
+                required=False,
+                enum=["classic", "club"],
+                default="classic",
+            ),
+            MCPToolParameter(
+                name="transition",
+                type="string",
+                description=(
+                    "Только для style=club. cut (по умолчанию) — новый трек "
+                    "сразу заменяет играющий. fade — DJ-переход: играющий "
+                    "трек за 8 тактов уходит фильтром и громкостью, новый "
+                    "стартует с границы такта после фейда (если ничего не "
+                    "играет — сразу). В DJ-сете между треками — fade."
+                ),
+                required=False,
+                enum=["cut", "fade"],
+                default="cut",
+            ),
 ]
 
 
@@ -2959,6 +3544,57 @@ class ComposeMusicTool(MCPTool):
                 return rec
         return None
 
+    def _sanitize_loaded_knobs(self, knobs: Dict[str, Any], source: str) -> Dict[str, Any]:
+        """WARN-чинить негодные ``levels`` из сохранённых/унаследованных данных.
+
+        Issue #3178 — живой прогон 29.09.2026: пресет мелодии, сохранённый
+        ДО того, как потолок ``levels`` снизили с 2 до 1 (issue #2963,
+        24.09.2026), нёс ``lead=1.1``. Новый валидатор
+        (:class:`core.arranger.ArrangeOptions`) честно отказывал
+        ``compose_music(name=...)`` БЕЗ единой явной ручки этого вызова —
+        отказ обязан оставаться только для аргументов ВЫЗЫВАЮЩЕГО (см.
+        докстринги :meth:`_resolve_preset`/:meth:`_inherit_last_track`:
+        «явная ручка всегда побеждает»), а не для того, что тул сам
+        подмешал из старых данных на диске/в памяти. Здесь — единственная
+        точка, где эти данные попадают в вызов, поэтому единственная
+        точка починки: роль/значение вне диапазона клампится в допустимый
+        (0..1, :data:`core.arranger.LEVEL_RANGE`), неизвестная роль
+        отбрасывается — и то, и другое с WARN в лог, НЕ ошибкой.
+
+        *knobs* — уже отфильтрованный по «не передано явно этим вызовом»
+        словарь (:data:`PRESET_KNOB_FIELDS`); *source* — для текста лога
+        («пресет 'hallofth_2'», «наследование 'hallofth_2'»).
+        """
+        if "levels" not in knobs:
+            return knobs
+        try:
+            parsed = parse_levels(knobs["levels"])
+        except ValueError as exc:
+            self.log_warning(f"[#3178] {source}: levels нечитаемы ({exc}) — ручка отброшена.")
+            return {k: v for k, v in knobs.items() if k != "levels"}
+        known_roles = set(ROLE_PROFILE) | {LOOP_ROLE, FX_ROLE}
+        lo, hi = LEVEL_RANGE
+        fixed: Dict[str, float] = {}
+        for role, value in parsed.items():
+            if role not in known_roles:
+                self.log_warning(
+                    f"[#3178] {source}: levels — неизвестная роль {role!r} отброшена."
+                )
+                continue
+            clamped = min(hi, max(lo, float(value)))
+            if clamped != value:
+                self.log_warning(
+                    f"[#3178] {source}: levels {role}={value!r} вне {lo:g}..{hi:g}, "
+                    f"приведено к {clamped:g}."
+                )
+            fixed[role] = clamped
+        sanitized = dict(knobs)
+        if fixed:
+            sanitized["levels"] = ",".join(f"{r}={v:g}" for r, v in fixed.items())
+        else:
+            del sanitized["levels"]
+        return sanitized
+
     def _resolve_preset(
         self, kwargs: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Optional[str]]:
@@ -2985,6 +3621,9 @@ class ComposeMusicTool(MCPTool):
         applied = {
             k: v for k, v in (preset.get("knobs") or {}).items() if k not in explicit
         }
+        if not applied:
+            return kwargs, None
+        applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
         if not applied:
             return kwargs, None
         merged = {**kwargs, **applied}
@@ -3058,6 +3697,9 @@ class ComposeMusicTool(MCPTool):
         explicit = set(kwargs.keys())
         fields = last.get("fields") or {}
         inherited = {k: v for k, v in fields.items() if k not in explicit}
+        if not inherited:
+            return kwargs, None
+        inherited = self._sanitize_loaded_knobs(inherited, f"наследование {melody_key!r}")
         if not inherited:
             return kwargs, None
         merged = {**kwargs, **inherited}
@@ -3588,6 +4230,8 @@ class ComposeMusicTool(MCPTool):
         levels: Any = _UNSET,
         seed: Optional[int] = None,
         rtttl: Optional[str] = None,
+        style: Optional[str] = None,
+        transition: Optional[str] = None,
     ) -> MCPToolResult:
         """Точка входа тула (ADR-0132 PR-7): подмешать пресет, затем сыграть.
 
@@ -3605,6 +4249,18 @@ class ComposeMusicTool(MCPTool):
         :meth:`_execute_named`, единственном месте, которое их знает.
         """
         kwargs = _explicit_kwargs(locals())
+        # Issue #3113: переход фейдом есть только у club; classic его не
+        # знает — вынимаем до _execute_named и честно говорим в ответе.
+        transition = kwargs.pop("transition", None)
+        # Issue #3181: style=club + тема (name из библиотеки / rtttl=) больше
+        # не уходит в classic (#3113 п.2) — club играет хук темы на lead.
+        club = self._style_branch(kwargs.pop("style", None), kwargs, transition)
+        if club is not None:
+            return club
+        return self._execute_classic(kwargs, transition)
+
+    def _execute_classic(self, kwargs: Dict[str, Any], transition: Optional[str]) -> MCPToolResult:
+        """Путь ``style="classic"``: наследование, пресет, аранжировщик."""
         # Issue #2950: наследование от играющего трека — ДО пресета, чтобы
         # свежая подстройка сеанса («играл с bass_style=root минуту назад»)
         # перевешивала статичный сохранённый пресет мелодии, а не наоборот
@@ -3615,12 +4271,360 @@ class ComposeMusicTool(MCPTool):
         self._pending_preset_note = preset_note
         self._pending_inherited_note = inherited_note
         result = self._execute_named(**merged)
+        if result.success and transition == "fade":
+            result.message = (result.message or "") + (
+                " transition=fade есть только у style=club — этот трек сменил прежний сразу."
+            )
         if result.success:
             self._remember_played_preset(
                 merged.get("name"), result.data.get("title") if result.data else None, merged,
             )
             self._remember_last_track(merged)
         return result
+
+    #: Параметры, которые ``style="club"`` реально использует. ``name``/
+    #: ``variants``/``rtttl`` — тема для хука lead (issue #3181).
+    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl")
+
+    def _style_branch(
+        self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
+    ) -> Optional[MCPToolResult]:
+        """``None`` — играть classic дальше; иначе готовый результат club/ошибки."""
+        if transition not in (None, "cut", "fade"):
+            return MCPToolResult(
+                success=False, error=f"Неизвестный transition={transition!r}: допустимо cut или fade."
+            )
+        if style in (None, "classic"):
+            return None
+        if style != "club":
+            return MCPToolResult(
+                success=False, error=f"Неизвестный style={style!r}: допустимо classic или club."
+            )
+        return self._execute_club(kwargs, fade=transition == "fade")
+
+    def _club_ignored(self, kwargs: Dict[str, Any]) -> List[str]:
+        """Переданные вызовом параметры, которые club не использует (честно назвать)."""
+        defaults = inspect.signature(self.execute).parameters
+        return sorted(
+            k for k, v in kwargs.items()
+            if k not in self._CLUB_PARAMS and k in defaults and v != defaults[k].default
+        )
+
+    def _execute_with_clock_phase(self, code: str, form_beats: int) -> Dict[str, Any]:
+        """``execute_code`` трека + диагностика фазы клока (issue #3112, всегда вкл.).
+
+        Снимок до и после ``exec``: с какой доли встанут плееры и какое это
+        смещение внутри формы (0 — трек начнётся с интро). Ошибка снятия
+        фазы музыку не ломает: снимок просто ``None``.
+        """
+        before = self._clock_phase(form_beats)
+        result = self._manager.execute_code(code, pattern_name="composition")
+        if result.get("success"):
+            self._report_clock_phase(result, before, self._clock_phase(form_beats), code)
+        return result
+
+    def _clock_phase(self, form_beats: int) -> Optional[Dict[str, float]]:
+        getter = getattr(self._manager, "renardo_clock", None)
+        try:
+            clock = getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            clock = None
+        return clock_phase_snapshot(clock, form_beats)
+
+    def _report_clock_phase(
+        self,
+        result: Dict[str, Any],
+        before: Optional[Dict[str, float]],
+        after: Optional[Dict[str, float]],
+        code: str,
+    ) -> None:
+        """Положить фазу в результат тула и в INFO-лог (evidence для #3112)."""
+        try:
+            align = "Clock.set_time(" in code
+            snap = after or before
+            result["clock_phase"] = {"before_exec": before, "after_exec": after, "align_clock": align}
+            result["clock_phase_offset_beats"] = snap["phase_offset_beats"] if snap else None
+            if snap is None:
+                self.log_info("[#3112] фаза клока: Clock недоступен, смещение формы не измерено")
+                return
+            self.log_info(
+                f"[#3112] фаза клока: доля до exec={before['clock_beat'] if before else None}, "
+                f"после exec={snap['clock_beat']}, плееры встанут на долю {snap['start_beat']}, "
+                f"смещение в форме {snap['phase_offset_beats']} из {snap['form_total_beats']:g} долей "
+                f"(align_clock={'вкл' if align else 'выкл'})"
+            )
+        except Exception:  # noqa: BLE001 — диагностика не ломает музыку
+            pass
+
+    #: Issue #3169 — русские имена тоник (в порядке ``VALID_ROOTS``) для
+    #: человекочитаемого имени club-трека («ля-диез минор» вместо
+    #: «A# minor»). Club пока поддерживает только ``scale="minor"``
+    #: (``SUPPORTED_SCALES`` в ``club_arranger.py``) — маппинг лада на
+    #: случай будущего мажора.
+    _ROOT_NAMES_RU: Dict[str, str] = dict(zip(
+        VALID_ROOTS,
+        (
+            "до", "до-диез", "ре", "ре-диез", "ми", "фа",
+            "фа-диез", "соль", "соль-диез", "ля", "ля-диез", "си",
+        ),
+    ))
+    _SCALE_NAMES_RU: Dict[str, str] = {"minor": "минор", "major": "мажор"}
+
+    @classmethod
+    def _club_track_label(cls, bpm: float, root: str, scale: str, hook_title: Optional[str] = None) -> str:
+        """Issue #3169 — человеческое имя club-трека вместо «без названия».
+
+        ``<music_state>`` (``music_state_prompt.py``) и ``/voice/music/form``
+        берут имя из ``MusicManager.current_track_name`` — для club он
+        никогда не заполнялся (``_execute_club`` его не трогал, в отличие
+        от ``_compose_success`` у classic), поэтому робот отвечал «трек «без
+        названия»» на «что сейчас играет?» (живой прогон 29.09). Имя — не
+        тема (club её не имеет, см. ``_club_ignored_warning``), а честное
+        описание звучания: темп и тональность, если они распознаны.
+        """
+        label = f"клубный трек на тему «{hook_title}»" if hook_title else "клубный трек"
+        try:
+            bpm_i = int(round(float(bpm)))
+        except (TypeError, ValueError):
+            bpm_i = None
+        if bpm_i:
+            label += f", {bpm_i} BPM"
+        root_ru = cls._ROOT_NAMES_RU.get(root)
+        scale_ru = cls._SCALE_NAMES_RU.get(scale)
+        if root_ru and scale_ru:
+            label += f", {root_ru} {scale_ru}"
+        return label
+
+    def _club_publish_state(
+        self, kwargs: Dict[str, Any], bpm: float, duration_s: float, repeat: bool,
+        hook_info: Optional[Dict[str, Any]],
+    ) -> None:
+        """Дедлайн формы, имя трека и снимок состояния после старта club-трека."""
+        if repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(duration_s)
+        self._manager.set_form_cycle_end(duration_s)
+        if hook_info:
+            self.log_info(f"[#3181] club lead: хук {hook_info['id']} «{hook_info['title']}», {hook_info['label']}")
+        # Issue #3169 — club не наследует ``current_track_name`` от classic
+        # (``_compose_success``) и без него оставался None: снимок и
+        # ``<music_state>`` говорили «трек «без названия»».
+        self._manager.current_track_name = self._club_track_label(
+            bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
+            hook_info["title"] if hook_info else None,
+        )
+        self._notify_music_state()
+
+    def _execute_club(self, kwargs: Dict[str, Any], fade: bool = False) -> MCPToolResult:
+        """``style="club"``: код из :func:`core.club_arranger.render_club`.
+
+        Тот же путь исполнения, что у classic (``MusicManager.execute_code``
+        → санитайзер, состояние, стоп), те же тайминги формы. Пресеты и
+        наследование ручек classic-трека к club не применяются.
+        """
+        bpm = kwargs.get("bpm")
+        bpm = 124 if bpm is None else bpm
+        repeat = bool(kwargs.get("repeat", False))
+        seed = kwargs.get("seed") or 0
+        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры).
+        kit = club_kit(seed)
+        fade_note = self._fade_outlives_form(bpm) if fade else ""
+        if fade_note:
+            fade = False
+        try:
+            hook, hook_info = self._club_hook(kwargs, bpm)
+            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook)
+        except ValueError as exc:
+            return MCPToolResult(success=False, error=f"style=club: {exc}")
+        self.log_info(
+            f"Композиция: style=club{', transition=fade' if fade else ''}, каркас seed={seed}: "
+            + ", ".join(f"{k}={v}" for k, v in kit.items())
+        )
+        # Issue #3154: fade из тишины (превью DJ-сета) стартует сразу, фейда нет.
+        fade_tail = fade_seconds(bpm) if fade and self._clock_has_players() else 0.0
+        result = self._execute_with_clock_phase(code, form_beats)
+        if not result["success"]:
+            return MCPToolResult(success=False, error=result["error"])
+        duration_s = (form_beats - entry) * 60.0 / float(bpm) + fade_tail
+        self._club_publish_state(kwargs, bpm, duration_s, repeat, hook_info)
+        result["style"] = "club"
+        result["transition"] = "fade" if fade else "cut"
+        result["duration_seconds"] = round(duration_s, 1)
+        result["club_kit"] = kit
+        result["club_hook"] = hook_info
+        message = self._club_message(kwargs, result, duration_s, fade) + fade_note
+        return MCPToolResult(success=True, data=result, message=message)
+
+    def _club_hook(
+        self, kwargs: Dict[str, Any], bpm: float,
+    ) -> Tuple[Optional[ClubHook], Optional[Dict[str, Any]]]:
+        """Issue #3181: хук темы для lead club — из ``rtttl=`` или ``name`` в библиотеке.
+
+        ``(None, None)`` — темы нет (``name`` не найден или не передан):
+        club играет сидированный риф, как раньше. ``rtttl=``, который не
+        разбирается, — ``ValueError`` (честная ошибка, не тихий риф).
+        """
+        name = kwargs.get("name")
+        rtttl = kwargs.get("rtttl")
+        if rtttl:
+            hook = extract_hook(rtttl, bpm, melody_id=str(name or ""), title=str(name or ""))
+            return hook, self._hook_info(hook, "rtttl", {})
+        if not name:
+            return None, None
+        rec = self._resolve_melody(name, kwargs.get("variants"))
+        if rec is None or not rec.get("rtttl"):
+            return None, None
+        title = str(rec.get("title") or rec.get("name") or name)
+        extra: Dict[str, Any] = {}
+        if self._rtttl_library is not None:
+            title = human_track_title(self._rtttl_library, rec)
+            extra["display_title"] = display_title(self._rtttl_library, rec)
+            extra["match"] = match_info(self._rtttl_library, rec, name)
+            extra["mismatch_note"] = _mismatch_note(extra["match"], name)
+        hook = extract_hook(rec["rtttl"], bpm, melody_id=str(rec.get("name") or name), title=title)
+        return hook, self._hook_info(hook, "library", extra)
+
+    @staticmethod
+    def _hook_info(hook: ClubHook, source: str, extra: Dict[str, Any]) -> Dict[str, Any]:
+        """Что именно играет lead — для ответа тула, лога и ``data``."""
+        info = {
+            "id": hook.melody_id, "title": hook.title, "source": source, "bars": hook.bars,
+            "key": hook.key_name, "time_scale": hook.time_scale,
+            "label": f"{hook.bars} такта, тема в {hook.key_name}" + (
+                ", мажорная тема звучит в параллельном мажоре тональности трека (от III ступени)"
+                if hook.key_mode == "major" else ", перенесена на тонику трека"
+            ),
+        }
+        info.update(extra)
+        return info
+
+    @staticmethod
+    def _club_program(
+        kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
+        hook: Optional[ClubHook] = None,
+    ) -> Tuple[str, int, int]:
+        """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
+
+        Issue #3166: на DJ-переходе (``fade``) трек входит с секции основного
+        уровня и без lead-долей — только при выровненном клоке, иначе фаза
+        формы всё равно не наша (#3112) и доля входа 0.
+        """
+        align = music_align_clock_enabled()
+        dj_entry = fade and align
+        code = render_club(
+            bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
+            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook,
+        )
+        form_beats = club_form_beats(template)
+        entry = club_entry_beats(template) if dj_entry else 0
+        if fade:
+            # Issue #3113: фейд уходящего трека вместо жёсткой склейки
+            # (core/club_transition). Фаза клока (#3112) в туле снимается в
+            # момент exec; момент реального старта логирует колбэк
+            # _rbx_track_started (#3166).
+            code = wrap_with_fade(code, form_beats=form_beats, entry_beats=entry)
+        return code, form_beats, entry
+
+    def _club_message(
+        self, kwargs: Dict[str, Any], result: Dict[str, Any], duration_s: float, fade: bool,
+    ) -> str:
+        """Текст ответа club: предупреждение (если есть) — ПЕРВЫМ."""
+        kit = result["club_kit"]
+        message = (
+            f"Играю клубный трек (style=club), полная форма {duration_s:.0f} секунд, "
+            f"шаблон {kit['template']}, бочка {kit['kick']}, "
+            f"тембры {kit['lead']}/{kit['bass']}/{kit['pad']}. "
+            "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
+        )
+        hook = result.get("club_hook")
+        if hook:
+            message += (
+                f" Lead играет хук темы «{hook['title']}» (id={hook['id']}): {hook['label']}. "
+                "Это клубная переработка мотива, а не вся песня."
+            )
+        if fade:
+            message += (
+                f" Переход fade: играющий трек уходит за {FADE_BARS} тактов фильтром и "
+                f"фейдером до {FADE_AMPLIFY_TO:g}, новый входит в ту же долю, без паузы "
+                "(если ничего не играло — сразу)."
+            )
+        warning = self._club_ignored_warning(kwargs, result)
+        # Issue #3113 (живой прогон 28.09): хвост «Проигнорировано …» в
+        # конце ответа модель не замечала — предупреждение идёт ПЕРВЫМ.
+        return f"{warning} {message}" if warning else message
+
+    def _fade_outlives_form(self, bpm: float) -> str:
+        """Issue #3113: фейд длиннее остатка конечного уходящего трека → cut.
+
+        Уходящий ``repeat=False``-трек сам вызовет ``Clock.clear`` в конце
+        формы (``Clock.future(..., Clock.clear)``), а ``TempoClock.clear()``
+        чистит и очередь — запланированный фейдом старт нового трека
+        (``Clock.schedule(_rbx_next_track, ...)``) пропал бы, и музыка
+        замолчала бы совсем. Длина фейда — в долях ТЕКУЩЕГО клока (темп
+        уходящего трека); клок недоступен — темп нового трека.
+
+        Returns:
+            Пояснение для ответа (переход будет cut) или ``""`` — фейд можно.
+        """
+        getter = getattr(self._manager, "form_stop_remaining_s", None)
+        try:
+            remaining = getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001 — не мешаем музыке
+            remaining = None
+        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+            return ""
+        clock_bpm = getattr(self._clock_or_none(), "bpm", None)
+        old_bpm = clock_bpm if isinstance(clock_bpm, (int, float)) and clock_bpm > 0 else bpm
+        need = fade_seconds(old_bpm)
+        if remaining >= need:
+            return ""
+        return (
+            f" Переход cut вместо fade: играющий трек сам кончается через {remaining:.0f} с, "
+            f"а фейд занял бы {need:.0f} с — новый трек стартовал сразу, без тишины."
+        )
+
+    def _clock_has_players(self) -> bool:
+        """Играет ли что-то сейчас (``Clock.playing`` Renardo) — до ``exec`` трека.
+
+        Issue #3154: ``wrap_with_fade`` при пустом ``Clock.playing`` запускает
+        трек сразу, без фейда, — тогда длина фейда в длину формы не входит.
+        Клок недоступен — считаем, что играет (как было до #3154).
+        """
+        playing = getattr(self._clock_or_none(), "playing", None)
+        if playing is None:
+            return True
+        try:
+            return len(playing) > 0
+        except TypeError:
+            return True
+
+    def _clock_or_none(self) -> Any:
+        getter = getattr(self._manager, "renardo_clock", None)
+        try:
+            return getter() if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _club_ignored_warning(self, kwargs: Dict[str, Any], result: Dict[str, Any]) -> str:
+        """Что из вызова club НЕ сыграл — текст для начала ответа (или ``""``)."""
+        ignored = self._club_ignored(kwargs)
+        result["ignored_params"] = list(ignored)
+        parts = []
+        name = kwargs.get("name")
+        hook = result.get("club_hook")
+        if hook and hook.get("mismatch_note"):
+            parts.append(hook["mismatch_note"].replace("⚠️", "").strip())
+        if name and not hook:
+            parts.append(
+                f"name={name!r} не найдено в библиотеке мелодий — в club это только "
+                "подпись, ТЕМЫ в треке нет (не говори юзеру, что играет эта песня)."
+            )
+        if ignored:
+            parts.append(
+                "Проигнорировано в club (трек звучит БЕЗ них): " + ", ".join(ignored) + "."
+            )
+        return ("⚠️ " + " ".join(parts)) if parts else ""
 
     def _execute_named(
         self,
@@ -3690,7 +4694,10 @@ class ComposeMusicTool(MCPTool):
             "Композиция: "
             f"{form_summary(built.spec.form, getattr(built.spec, 'theme_bars', 0))}"
         )
-        result = self._manager.execute_code(built.code, pattern_name="composition")
+        result = self._execute_with_clock_phase(
+            built.code,
+            form_total_beats(built.spec.form, getattr(built.spec, "theme_bars", 0)),
+        )
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
 
@@ -3887,7 +4894,7 @@ class ComposeMusicTool(MCPTool):
                 fx=fx,
                 options=knobs.arrange,
             )
-            code = render(spec)
+            code = render(spec, align_clock=music_align_clock_enabled())
         except ArrangementError as exc:
             # Сообщение аранжировщика написано так, чтобы модель могла
             # исправиться следующим вызовом, а не гадать.
@@ -4008,6 +5015,16 @@ class ComposeMusicTool(MCPTool):
         """Хвост успешного ``execute``: тайминги формы, данные, сообщение."""
         duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
         self._apply_form_deadline(spec, duration_s)
+        # Issue #3113: имя играющей темы уходит в /voice/music/form — DJ-сет
+        # не повторяет уже сыгранную песню (живой прогон 28.09: Für Elise x2).
+        # Issue #3178: живой прогон 29.09 — робот называл трек архивным
+        # ключом/title («Hall Of The Mountain King (Alton Towers Theme) 2»)
+        # вместо человеческого имени; :func:`human_track_title` берёт
+        # русский алиас записи или title без технических хвостов.
+        human_name = melody_title
+        if name and self._rtttl_library is not None and self._pending_melody_record is not None:
+            human_name = human_track_title(self._rtttl_library, self._pending_melody_record)
+        self._manager.current_track_name = (human_name or name) if name else None
         self._notify_music_state()
         self._build_compose_result_data(spec, result, duration_s)
         # issue #2877: результат обязан называть РЕАЛЬНО сыгранную запись —
@@ -4072,15 +5089,7 @@ class ComposeMusicTool(MCPTool):
 
     def _notify_music_state(self) -> None:
         """Опубликовать /voice/music/state (issue 989 Fix C)."""
-        if self.node is None:
-            return
-        publisher = getattr(self.node, "publish_music_state", None)
-        if publisher is None:
-            return
-        try:
-            publisher()
-        except Exception as exc:  # noqa: BLE001
-            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+        _notify_music_state(self)
 
 
 class PreviewArrangementTool(MCPTool):
@@ -4238,6 +5247,8 @@ class PreviewArrangementTool(MCPTool):
         levels: Any = _UNSET,
         seed: Optional[int] = None,
         rtttl: Optional[str] = None,
+        style: Optional[str] = None,
+        transition: Optional[str] = None,
     ) -> MCPToolResult:
         """ADR-0132 PR-7 / issue #2950: партитура превью подмешивает то же
         наследование от играющего трека и тот же пресет, что применил бы
@@ -4249,6 +5260,17 @@ class PreviewArrangementTool(MCPTool):
         же сигнатура-с-сентинелом, что ``ComposeMusicTool.execute`` — см.
         его докстринг (общий AST-контракт ``tools/gen_tool_catalog.py``)."""
         kwargs = _explicit_kwargs(locals())
+        # Issue #3113: переход — про запуск звука, партитуре он не нужен.
+        kwargs.pop("transition", None)
+        if kwargs.pop("style", None) not in (None, "classic"):
+            # capability-honest: у club нет спецификации/партитуры — не
+            # показываем партитуру classic под видом клубного трека.
+            return MCPToolResult(
+                success=False,
+                error="preview_arrangement поддерживает только style=classic: "
+                "у клубного режима нет партитуры. Играй сразу "
+                "compose_music(style='club').",
+            )
         kwargs, inherited_note = self._composer._inherit_last_track(kwargs)
         merged, preset_note = self._composer._resolve_preset(kwargs)
         self._composer._pending_preset_note = preset_note
@@ -4480,11 +5502,12 @@ class StopMusicTool(MCPTool):
             from std_msgs.msg import String
 
             if hasattr(node, "create_publisher"):
-                self._sound_stop_pub = node.create_publisher(
-                    String, "/voice/sound/stop", 10
+                # Issue #3108: общие с mcp_server publisher'ы на этой ноде.
+                self._sound_stop_pub = shared_publisher(
+                    node, String, "/voice/sound/stop", 10
                 )
-                self._generated_music_state_pub = node.create_publisher(
-                    String, "/voice/generated_music/state", 10
+                self._generated_music_state_pub = shared_publisher(
+                    node, String, "/voice/generated_music/state", 10
                 )
         except Exception:  # noqa: BLE001 — unit tests / minimal install
             self._sound_stop_pub = None
@@ -4543,16 +5566,8 @@ class StopMusicTool(MCPTool):
         return MCPToolResult(success=False, error=result["error"])
 
     def _notify_music_state(self) -> None:
-        """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
-        if self.node is None:
-            return
-        publisher = getattr(self.node, "publish_music_state", None)
-        if publisher is None:
-            return
-        try:
-            publisher()
-        except Exception as exc:  # noqa: BLE001
-            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+        """Опубликовать /voice/music/state (issue 989 Fix C)."""
+        _notify_music_state(self)
 
     def _notify_sound_stop(self) -> None:
         """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392).
@@ -4687,6 +5702,140 @@ class GetMusicStateTool(MCPTool):
             success=True,
             data=state,
             message="\n".join(parts),
+        )
+
+
+class SetMusicVolumeTool(MCPTool):
+    """Issue #3125 — громкость МУЗЫКИ (мастер-фейдер scsynth), не голоса.
+
+    Живой сет 28.09.2026: «играй громче» во время DJ-сета — у LLM был только
+    ``set_volume``, а он крутит ``/tts_node volume_db``, то есть ГОЛОС. Уровень
+    музыки задавал лишь ROS-параметр ``music_master_gain`` при старте, до LLM
+    он не доходил, и модель честно выполнить просьбу не могла — фантазировала
+    «подкручиваю трек на максимум» при неизменном уровне.
+
+    Тул двигает тот же фейдер, что и параметр: ``MusicManager.set_master_gain``
+    → ``/n_set 999 gain <v>`` (синт ``masterlimiter``, сглаживание ``Lag.kr``,
+    без щелчка). Шаг ``louder``/``quieter`` — ±3 dB (×√2 по амплитуде), как у
+    ``set_volume`` для голоса. ``normal`` — значение ``music_master_gain``, с
+    которым стартовал сервер. Уровень клэмпится в [0, 1]: выше 1.0 фейдер
+    не поднимается (``set_master_gain``).
+
+    Issue #3154: фейдер стоит ПОСЛЕ радио-динамики ``masterfilter`` (лимитер
+    держит пик −1 dBFS до фейдера), поэтому шаг ±3 dB — ровно ±3 dB на
+    выходе, а не упор в лимитер; на ``max`` (1.0) пик выхода −1 dBFS.
+    """
+
+    #: ±3 dB по амплитуде.
+    STEP_FACTOR: float = 10 ** (3.0 / 20.0)
+    #: Нижний предел ШАГОВОГО «тише»: шаги не должны молча заглушить музыку
+    #: в ноль (для тишины есть ``stop_music``); явный ``level=0`` разрешён.
+    MIN_STEP_GAIN: float = 0.05
+    MAX_GAIN: float = 1.0
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+        #: Уровень «как было при старте» — значение ROS-параметра
+        #: ``music_master_gain``, которым сконструирован менеджер.
+        self._normal_gain: float = float(manager.master_gain)
+
+    @property
+    def name(self) -> str:
+        return "set_music_volume"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Громкость МУЗЫКИ (трек/бит/DJ-сет: compose_music, lookup_melody, "
+            "execute_music_code, load_track), а НЕ голоса робота. Юзер просит "
+            "«громче/тише/погромче/потише» и сейчас играет музыка, или прямо "
+            "говорит «музыку/трек/бит громче» — вызывай ЭТОТ тул, а не "
+            "set_volume (set_volume меняет только голос). Музыку не "
+            "перезапускает: играющий трек продолжает играть, меняется только "
+            "уровень. action: louder/quieter — шаг ±3 dB, max — максимум, "
+            "normal — стартовый уровень, set — абсолютный уровень level "
+            "0..100 (% от максимума). mp3 из MiniMax-библиотеки "
+            "(gen_play_from_library) этим тулом не регулируется."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="action",
+                type="string",
+                description=(
+                    "louder — громче на шаг, quieter — тише на шаг, max — на "
+                    "максимум, normal — стартовый уровень, set — выставить level"
+                ),
+                required=True,
+                enum=["louder", "quieter", "max", "normal", "set"],
+            ),
+            MCPToolParameter(
+                name="level",
+                type="integer",
+                description=(
+                    "Только для action=set: уровень музыки в процентах от "
+                    "максимума, 0..100 (значения вне диапазона обрезаются)."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def _target_gain(self, action: str, level: Optional[float], current: float):
+        """Целевой уровень для ``action`` или ``(None, error)``."""
+        if action == "louder":
+            return min(self.MAX_GAIN, current * self.STEP_FACTOR), None
+        if action == "quieter":
+            return max(self.MIN_STEP_GAIN, current / self.STEP_FACTOR), None
+        if action == "max":
+            return self.MAX_GAIN, None
+        if action == "normal":
+            return self._normal_gain, None
+        if action == "set":
+            if level is None:
+                return None, "action=set требует level 0..100"
+            try:
+                pct = float(level)
+            except (TypeError, ValueError):
+                return None, f"level должен быть числом 0..100, получено {level!r}"
+            return max(0.0, min(100.0, pct)) / 100.0 * self.MAX_GAIN, None
+        return None, f"Неизвестное действие: {action}"
+
+    def execute(self, action: str, level: Optional[float] = None) -> MCPToolResult:
+        """Изменить уровень мастер-фейдера музыки."""
+        current = float(self._manager.master_gain)
+        target, error = self._target_gain(action, level, current)
+        if error is not None:
+            return MCPToolResult(success=False, error=error)
+        applied = self._manager.set_master_gain(target)
+        self.log_info(
+            f"[set_music_volume] action={action} level={level} "
+            f"master_gain {current:.2f} → {applied:.2f}"
+        )
+        pct = round(applied / self.MAX_GAIN * 100)
+        if abs(applied - current) < 1e-3:
+            edge = "максимальная" if applied >= self.MAX_GAIN else "уже такая"
+            message = f"Громкость музыки не изменилась ({edge}, {pct}%)"
+        else:
+            message = f"Громкость музыки: {round(current / self.MAX_GAIN * 100)}% → {pct}%"
+        return MCPToolResult(
+            success=True,
+            data={"old_gain": round(current, 3), "new_gain": round(applied, 3), "percent": pct},
+            message=message,
         )
 
 
@@ -5885,6 +7034,16 @@ class SetDjModeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="bpm",
+                type="integer",
+                description=(
+                    "Темп ВСЕГО сета (60–180), по умолчанию 124. Передавай ТОЛЬКО если "
+                    "юзер сам попросил темп («быстрее», «давай 128») — сет держит "
+                    "один темп, переходы между треками его не меняют."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -5914,6 +7073,7 @@ class SetDjModeTool(MCPTool):
         plan: Optional[str],
         max_minutes: Optional[int] = None,
         max_tracks: Optional[int] = None,
+        bpm: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Собрать JSON-payload для /voice/dj_mode из аргументов LLM.
 
@@ -5938,11 +7098,11 @@ class SetDjModeTool(MCPTool):
             payload["plan"] = plan.strip()
         # Issue #2856 — явные лимиты сета от юзера. Клампит и валидирует
         # DJModeController (единственный потребитель), здесь — только
-        # пропуск осмысленных чисел.
-        if max_minutes is not None and not isinstance(max_minutes, bool):
-            payload["max_minutes"] = max_minutes
-        if max_tracks is not None and not isinstance(max_tracks, bool):
-            payload["max_tracks"] = max_tracks
+        # пропуск осмысленных чисел. Issue #3113 — ``bpm``: темп сета по
+        # явной просьбе юзера, клампит тоже DJModeController.
+        for key, value in (("max_minutes", max_minutes), ("max_tracks", max_tracks), ("bpm", bpm)):
+            if value is not None and not isinstance(value, bool):
+                payload[key] = value
         return payload
 
     @staticmethod
@@ -5968,7 +7128,7 @@ class SetDjModeTool(MCPTool):
             parts.append(f", лимит: {max_tracks} треков")
         return "".join(parts)
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None, max_minutes: Optional[int] = None, max_tracks: Optional[int] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None, max_minutes: Optional[int] = None, max_tracks: Optional[int] = None, bpm: Optional[int] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
         next_transition_sec = self._coerce_transition_seconds(
@@ -5976,7 +7136,7 @@ class SetDjModeTool(MCPTool):
         )
         payload = self._build_dj_payload(
             enabled, next_transition_sec, theme, persona, plan,
-            max_minutes=max_minutes, max_tracks=max_tracks,
+            max_minutes=max_minutes, max_tracks=max_tracks, bpm=bpm,
         )
         msg = _String()
         msg.data = json.dumps(payload)

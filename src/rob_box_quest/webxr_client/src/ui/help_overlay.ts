@@ -36,19 +36,24 @@ export interface HotkeyEntry {
 }
 
 export const DEFAULT_HOTKEYS: ReadonlyArray<HotkeyEntry> = Object.freeze([
-  { key: "W A S D", description: "Движение робота (desktop fallback)", category: "Desktop" },
-  { key: "Space", description: "Boost (×1.5, desktop)", category: "Desktop" },
+  { key: "Клик", description: "Захватить мышь: осмотреться, прицел по центру (клик = выбор панели)", category: "Desktop" },
+  { key: "W A S D", description: "Ходить по мостику (Shift — бегом)", category: "Desktop" },
+  { key: "Space + ← ↑ → ↓", description: "Вести робота (Space — deadman, без него стрелки не едут)", category: "Desktop" },
   { key: "E", description: "Emergency stop (desktop)", category: "Desktop" },
   { key: "M", description: "Показать / скрыть 3D-панель режима аватара", category: "Desktop" },
   { key: "R", description: "Сброс раскладки панелей к default", category: "Desktop" },
   { key: "V", description: "TTS picker: выбор голоса робота", category: "Desktop" },
+  { key: "G", description: "Nav-цель: взвести прицел → ЛКМ по полу, потянуть — курс, отпустить — цель уходит в Nav2", category: "Desktop" },
+  { key: "Shift + G", description: "Отменить nav-цель (или кнопка «✕ ОТМЕНА НАВ»)", category: "Desktop" },
+  { key: "P", description: "Показать / скрыть панель «ПОТОКИ» (подписки, частоты, трафик)", category: "Desktop" },
   { key: "L", description: "Left stick forward/back/strafe", category: "WebXR" },
   { key: "R stick click", description: "Arm / disarm teleop (toggle)", category: "WebXR" },
   { key: "L grip", description: "Voice mode: passthrough (рация)", category: "WebXR" },
   { key: "R grip", description: "Voice mode: robot_voice (STT→LLM→TTS)", category: "WebXR" },
   { key: "B / Y", description: "Emergency stop (controller)", category: "WebXR" },
+  { key: "A / X", description: "Nav-цель: взвести прицел, курок по полу (потянуть — курс)", category: "WebXR" },
   { key: "H", description: "Показать / скрыть эту подсказку", category: "Global" },
-  { key: "Esc", description: "Закрыть overlay / exit VR", category: "Global" }
+  { key: "Esc", description: "Отпустить мышь / закрыть overlay / exit VR", category: "Global" }
 ]);
 
 export function createHelpOverlay(

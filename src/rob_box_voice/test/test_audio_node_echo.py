@@ -319,6 +319,39 @@ class TestMusicStrictGate:
         assert audio_node.music_active is False
         audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
 
+    def test_json_player_snapshot_drives_music_active(self, audio_node):
+        """Issue #3133: /voice/music/state — JSON-снимок плеера (ADR-0141)."""
+        import json as _json
+        import time as _time
+
+        self._disable_barge_in_with_music(audio_node)
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
+
+        msg = MagicMock()
+        msg.data = _json.dumps({"state": "playing", "track_id": "a-1", "stops_at": None})
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is True
+        audio_node.respeaker.set_vad_threshold.assert_called_with(6.0)
+
+        msg.data = _json.dumps({"state": "idle", "finished_track_id": "a-1"})
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is False
+        audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
+
+        # «playing», но stops_at давно прошёл — порог не поднимаем (живой
+        # 28.09: 30 минут повышенного VAD после конца трека).
+        msg.data = _json.dumps({"state": "playing", "stops_at": _time.time() - 60})
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is False
+
+    def test_garbage_music_state_keeps_current_value(self, audio_node):
+        audio_node.music_active = True
+        msg = MagicMock()
+        msg.data = "{broken"
+        audio_node._on_music_state(msg)
+        assert audio_node.music_active is True
+
     def test_vad_suppressed_when_music_and_quiet_signal(self, audio_node):
         """Legacy Fix C: музыка активна + barge_in_with_music=False,
         уровень сигнала ниже music_vad_min_db → VAD подавлен."""
@@ -947,7 +980,9 @@ class TestTelemetrySilenceToPhrase:
         audio_node.respeaker = MagicMock()
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.get_vad = MagicMock(return_value=False)
-        audio_node.respeaker.get_direction = MagicMock(return_value=None)
+        # Issue DoA-баг: реальный ReSpeakerInterface не имеет get_direction(),
+        # только get_doa() (см. TestDirectionPublishUsesGetDoa ниже).
+        audio_node.respeaker.get_doa = MagicMock(return_value=None)
 
         audio_node.check_vad_and_doa()
 
@@ -958,3 +993,103 @@ class TestTelemetrySilenceToPhrase:
         assert "speech_continuation=3.0" in telemetry_line
         # time_since_stop = 3.5с (>= speech_continuation)
         assert "silence_to_phrase_s=3.50" in telemetry_line
+
+
+class TestDirectionPublishUsesGetDoa:
+    """DoA-баг: audio_node звал несуществующий respeaker.get_direction()
+
+    Реальный ReSpeakerInterface (rob_box_voice/utils/respeaker_interface.py)
+    имеет только get_doa() -> Optional[int]. Вызов get_direction() падал
+    AttributeError, который молча съедался `except Exception: pass`, из-за
+    чего /audio/direction никогда не публиковался (нарушение ADR-0130
+    §1.3/§2.9). MagicMock() без spec эту дыру не видел, поэтому здесь
+    используется MagicMock(spec=<настоящий ReSpeakerInterface>) — спек не
+    даёт подставить .get_direction и требует существования .get_doa.
+    """
+
+    class _FakeTime:
+        """Мини rclpy-time-подобный объект (только nanoseconds + sub)."""
+
+        def __init__(self, nanoseconds: int = 0):
+            self.nanoseconds = nanoseconds
+
+        def __sub__(self, other):
+            return TestDirectionPublishUsesGetDoa._FakeTime(
+                self.nanoseconds - other.nanoseconds
+            )
+
+    @classmethod
+    def _install_deterministic_clock(cls, audio_node):
+        """Без реального rclpy-времени `now - speech_stopped_time` на
+        default-фикстуре (get_clock -> MagicMock) даёт непредсказуемую
+        MagicMock-арифметику и метод падает раньше, чем доходит до DoA-
+        блока. Ставим предсказуемое «давно молчим» время (как в
+        test_issue_2701_audio_watchdog._install_fake_clock)."""
+        now = cls._FakeTime(0)
+        audio_node.get_clock = lambda: MagicMock(now=MagicMock(return_value=now))
+        audio_node.speech_stopped_time = cls._FakeTime(
+            -int((audio_node.speech_continuation + 1.0) * 1e9)
+        )
+
+    @staticmethod
+    def _real_respeaker_interface_class(monkeypatch):
+        """Достаёт настоящий класс ReSpeakerInterface, минуя sys.modules-mock.
+
+        _ensure_rclpy_mock (autouse-фикстура файла) подменяет
+        sys.modules['rob_box_voice.utils.respeaker_interface'] на
+        MagicMock(ReSpeakerInterface=MagicMock), иначе audio_node.py при
+        импорте потребовал бы реальный usb.core (pyusb). Для spec нам нужен
+        РЕАЛЬНЫЙ класс, поэтому временно убираем подмену и импортируем
+        модуль с диска (pyusb должен быть установлен в тестовом окружении -
+        он уже объявлен зависимостью rob_box_voice в requirements.txt).
+        """
+        import importlib
+
+        monkeypatch.delitem(
+            sys.modules, "rob_box_voice.utils.respeaker_interface", raising=False
+        )
+        real_module = importlib.import_module(
+            "rob_box_voice.utils.respeaker_interface"
+        )
+        return real_module.ReSpeakerInterface
+
+    def test_publishes_int32_from_get_doa(self, audio_node, monkeypatch):
+        """direction_pub.publish получает Int32 со значением get_doa()."""
+        self._install_deterministic_clock(audio_node)
+        real_cls = self._real_respeaker_interface_class(monkeypatch)
+
+        fake = MagicMock(spec=real_cls)
+        # spec запрещает несуществующие на реальном классе атрибуты - это
+        # и есть регресс-проверка: старый код падал бы тут AttributeError'ом.
+        assert not hasattr(fake, "get_direction")
+        fake.is_connected.return_value = True
+        fake.get_vad.return_value = False
+        fake.get_doa.return_value = 123
+
+        audio_node.respeaker = fake
+        audio_node.direction_pub = MagicMock()
+        audio_node.vad_pub = MagicMock()
+
+        audio_node.check_vad_and_doa()
+
+        audio_node.direction_pub.publish.assert_called_once()
+        published_msg = audio_node.direction_pub.publish.call_args[0][0]
+        assert published_msg.data == 123
+
+    def test_no_publish_when_get_doa_returns_none(self, audio_node, monkeypatch):
+        """Если get_doa() вернул None (ошибка чтения) - publish не вызывается."""
+        self._install_deterministic_clock(audio_node)
+        real_cls = self._real_respeaker_interface_class(monkeypatch)
+
+        fake = MagicMock(spec=real_cls)
+        fake.is_connected.return_value = True
+        fake.get_vad.return_value = False
+        fake.get_doa.return_value = None
+
+        audio_node.respeaker = fake
+        audio_node.direction_pub = MagicMock()
+        audio_node.vad_pub = MagicMock()
+
+        audio_node.check_vad_and_doa()
+
+        audio_node.direction_pub.publish.assert_not_called()

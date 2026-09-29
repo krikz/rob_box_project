@@ -153,7 +153,11 @@ class TestRetryChainIsSilent:
     def test_successful_retry_voices_only_final_answer(self):
         n = _make_node([
             _Result("Йо, погнали!"),  # музыку просили — тула нет → ретрай
-            _Result("Still Dre в эфире.", ["gen_play_from_library"]),
+            # Issue #2999 — «Ты диджей …» закрывает только set_dj_mode:
+            # разовый трек без него — ещё один DJ-ретрай (ADR-0140).
+            _Result(
+                "Still Dre в эфире.", ["set_dj_mode", "gen_play_from_library"]
+            ),
         ])
 
         _run_chain(n)

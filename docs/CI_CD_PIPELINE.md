@@ -194,6 +194,8 @@ push:
 **Runner:** `self-hosted` (локальный build machine)
 **Registry:** `localhost:5000/krikz/rob_box_base` + `ghcr.io/krikz/rob_box_base`
 **Особенности:**
+- Состав/теги — `docker/build-manifest.yaml` (`base_images`), сборка — composite
+  `l-build-service` → `scripts/build/buildx_build.sh` (локально: `make build-base`)
 - Использует локальный APT cache (`http://host.docker.internal:3142`)
 - В 2-3x быстрее чем GitHub Actions
 - Публикует в локальный registry для быстрого pull на Raspberry Pi
@@ -646,58 +648,68 @@ export IMAGE_TAG=dev
 
 ## Локальная разработка и сборка
 
+### Единый подход: CI и локально — один и тот же код
+
+С run [36351952819](https://github.com/krikz/rob_box_project/actions/runs/36351952819)
+(L-Build Base Images упал за 0 секунд: `host-gateway is not supported by the
+docker-container driver`) сборка и анализ устроены так, что у каждой операции
+ровно одна реализация, и её зовут и workflow, и человек/агент на своей машине:
+
+```
+docker/build-manifest.yaml            что собирать: сервисы (pis.*) + базы (base_images)
+  └─ scripts/ci/gen_build_matrix.py   теги / build-args / source_hash / pre_build
+       └─ scripts/build/buildx_build.sh   КАК собирать: buildx-билдер (--builder, без
+                                          `buildx use`), host-gateway → IP шлюза,
+                                          registry-кеш, --load + push только localhost:5000
+CI:      .github/actions/l-build-service  → buildx_build.sh   (все L-Build workflow)
+Локально: scripts/build/build.py          → buildx_build.sh
+```
+
+Проверки (lint/тесты/аудит) не копируются в скрипты: `scripts/ci/run_workflow_job.py`
+исполняет `run:`-шаги прямо из `.github/workflows/*.yml` в текущем чекауте.
+
 ### Локальная сборка Docker образов
 
-Для ускорения разработки можно собирать образы локально, не дожидаясь GitHub Actions:
-
 ```bash
-# Собрать один сервис
-./scripts/local-build.sh voice-assistant
+make build-list                        # что можно собрать (из манифеста)
+make build-base                        # 4 базы (pcl после ros2-zenoh); BASE=depthai — одну
+make build SERVICE=voice-assistant     # один сервис (Pi определяется сам)
+make build PI=vision                   # все сервисы Pi
+make build-all                         # базы + оба Pi
 
-# Собрать все Vision Pi сервисы
-./scripts/local-build.sh vision
-
-# Собрать все Main Pi сервисы
-./scripts/local-build.sh main
-
-# Собрать все сервисы
-./scripts/local-build.sh all
-
-# Собрать для конкретной платформы
-./scripts/local-build.sh voice-assistant linux/amd64
+# флаги — через BUILD_FLAGS (или напрямую scripts/build/build.py --help):
+make build SERVICE=oak-d BUILD_FLAGS="--dry-run"              # показать BUILD_*, не собирать
+make build SERVICE=oak-d BUILD_FLAGS="--platform linux/amd64 --no-push"
+make build-base BUILD_FLAGS="--no-cache"                      # = force_rebuild в CI
 ```
 
-**Примечание:** Локальная сборка создаёт образы с тегом `IMAGE_TAG=local`. Они будут использованы если запустить `docker-compose` с `IMAGE_TAG=local`.
+- Тег по умолчанию `local` (`--docker-tag dev|test|latest` — как в CI).
+- Сервисы собираются `FROM localhost:5000/krikz/rob_box_base:*`, а docker-container
+  билдер берёт `FROM` из registry, не из локального daemon. Поэтому, если
+  `localhost:5000` отвечает, push в него включён по умолчанию (`--push`/`--no-push` — явно).
+  Registry, если его нет: `docker run -d -p 5000:5000 --restart=always --name registry registry:2`.
+- Сборка `linux/arm64` на x86_64 требует binfmt:
+  `docker run --privileged --rm tonistiigi/binfmt --install arm64`.
+- `scripts/build/local-build.sh` оставлен как шим со старым интерфейсом → `build.py`.
 
-### Запуск GitHub Actions локально с act
-
-Установите [act](https://github.com/nektos/act) для запуска workflows локально:
+### Локальный запуск проверок CI
 
 ```bash
-# Установка
-brew install act  # macOS
-curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash  # Linux
-
-# Список всех workflows
-act -l
-
-# Запуск конкретного workflow (dry run)
-act -W ".github/workflows/L-Build Vision Pi Services.yml" -n
-
-# Запуск конкретного job (сервисы собираются одним matrix-job'ом `build`,
-# состав — docker/build-manifest.yaml; отдельного job'а на сервис, вроде
-# build-oak-d, в текущем пайплайне нет)
-act -j build
-
-# Запуск с секретами
-echo "GITHUB_TOKEN=ghp_xxx" > .secrets
-act --secret-file .secrets
+make ci-list                           # какие workflow/job'ы можно гонять локально (runs-on: ubuntu-*)
+make lint                              # G-Lint Code целиком
+make audit                             # G-Architecture Audit (статическая часть)
+make ci WF="G-Run Tests" JOB=unit-tests
+make lint CI_FLAGS="-j python-lint --step 'CC-budget'"
+make lint CI_FLAGS="--with-install"    # выполнить и шаги Install … (по умолчанию SKIP)
 ```
 
-**Важно:** 
-- Сборка ARM64 образов на x86_64 будет очень медленной через QEMU
-- Для разработки рекомендуется использовать `./scripts/local-build.sh` вместо act
-- act полезен для тестирования логики workflows, но не для реальной сборки образов
+Раннер печатает по каждому шагу PASS / FAIL / WARN (continue-on-error) / SKIP.
+SKIP — это не «прошло»: `uses:`-шаги, шаги с `${{ }}` и `Install …` не
+выполняются и так и помечаются. Self-hosted job'ы (сборка, деплой, робот)
+раннер не трогает — для сборки есть `build.py`.
+
+`act` (`.actrc`) по-прежнему работает для проверки логики workflow, но для
+повседневной локальной проверки не нужен.
 
 ### Быстрая итерация при разработке
 
@@ -708,7 +720,7 @@ act --secret-file .secrets
 source scripts/set-docker-tags.sh
 
 # 2. Собрать образ для x86_64 (быстрая разработка)
-IMAGE_TAG=local ./scripts/local-build.sh voice-assistant linux/amd64
+make build SERVICE=voice-assistant BUILD_FLAGS="--platform linux/amd64 --no-push"
 
 # 3. Протестировать локально
 cd docker/vision
@@ -741,7 +753,7 @@ cd ~/rob_box_project
 source scripts/set-docker-tags.sh
 
 # 4. Собрать образ локально (нативный ARM64)
-IMAGE_TAG=local ./scripts/local-build.sh voice-assistant
+make build SERVICE=voice-assistant
 
 # 5. Запустить
 cd docker/vision

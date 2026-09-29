@@ -51,9 +51,12 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             self.published.append(msg)
 
     class FakeSubscription:
-        def __init__(self, topic: str, callback: Any) -> None:
+        def __init__(self, topic: str, callback: Any, msg_type: Any = None) -> None:
             self.topic = topic
             self.callback = callback
+            # msg_type хранится, чтобы тесты могли проверить тип подписки
+            # (issue #3104: /odom был подписан как String вместо Odometry).
+            self.msg_type = msg_type
 
     class FakeTimer:
         def __init__(self, period: float, callback: Any) -> None:
@@ -114,7 +117,7 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             return pub
 
         def create_subscription(self, msg_type: Any, topic: str, callback: Any, qos: int = 10) -> FakeSubscription:
-            sub = FakeSubscription(topic, callback)
+            sub = FakeSubscription(topic, callback, msg_type)
             self._subscriptions.append(sub)
             return sub
 
@@ -214,6 +217,22 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
     mock_std_msgs_msg = types.SimpleNamespace(String=FakeStringMsg, Bool=FakeBoolMsg)
     mock_std_msgs = types.SimpleNamespace(msg=mock_std_msgs_msg)
+
+    # ── nav_msgs.msg.Odometry ─────────────────────────────────────────
+    # issue #3104: avatar_arbiter подписан на /odom типом nav_msgs/Odometry
+    # (издатель на роботе — /rtabmap/icp_odometry). Fake повторяет
+    # вложенность pose.pose.position.{x,y,z}, которую читает callback.
+    class FakeOdometryMsg:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            position = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+            orientation = types.SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)
+            pose = types.SimpleNamespace(position=position, orientation=orientation)
+            self.pose = types.SimpleNamespace(pose=pose, covariance=[0.0] * 36)
+            self.header = types.SimpleNamespace(frame_id="", stamp=None)
+            self.child_frame_id = ""
+
+    mock_nav_msgs_msg = types.SimpleNamespace(Odometry=FakeOdometryMsg)
+    mock_nav_msgs = types.SimpleNamespace(msg=mock_nav_msgs_msg)
 
     # ── std_srvs.srv.Trigger ──────────────────────────────────────────
     class FakeTriggerRequest:
@@ -437,6 +456,8 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
         "rclpy.qos": mock_rclpy_qos,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
+        "nav_msgs": mock_nav_msgs,
+        "nav_msgs.msg": mock_nav_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
         "rob_box_supervisor_msgs": mock_rob_box_supervisor_msgs,

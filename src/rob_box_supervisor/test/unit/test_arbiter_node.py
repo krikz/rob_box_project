@@ -32,6 +32,9 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock
 
+from nav_msgs.msg import Odometry
+from std_msgs.msg import String as RosString
+
 from rob_box_supervisor.core.fsm import Mode, ModeManager
 from rob_box_supervisor.arbiter_node import (
     MODE_TRANSITIONS,
@@ -51,6 +54,18 @@ def _make_string_msg(data: str) -> MagicMock:
     m = MagicMock()
     m.data = data
     return m
+
+
+def _make_odometry_msg(x: float, y: float) -> Any:
+    """Создать nav_msgs/Odometry (fake из conftest) с pose.pose.position.x/y.
+
+    issue #3104: /odom на роботе публикует /rtabmap/icp_odometry типом
+    nav_msgs/msg/Odometry, а не JSON в std_msgs/String.
+    """
+    msg = Odometry()
+    msg.pose.pose.position.x = x
+    msg.pose.pose.position.y = y
+    return msg
 
 
 # ── IDL-совместимые helper-ы (AV-12, типизированный контракт) ──────────
@@ -307,6 +322,18 @@ class TestAvatarArbiterTopology(unittest.TestCase):
     def test_odom_subscription_registered(self) -> None:
         topics = [s.topic for s in self.node._subscriptions]
         self.assertIn("/odom", topics)
+
+    def test_odom_subscription_uses_nav_msgs_odometry(self) -> None:
+        """issue #3104: тип подписки /odom обязан быть nav_msgs/Odometry.
+
+        Издатель на роботе — /rtabmap/icp_odometry (nav_msgs/msg/Odometry).
+        Подписка типом std_msgs/String не матчится и callback не вызывается.
+        """
+        odom_subs = [s for s in self.node._subscriptions if s.topic == "/odom"]
+        self.assertEqual(len(odom_subs), 1)
+        self.assertIs(odom_subs[0].msg_type, Odometry)
+        self.assertIsNot(odom_subs[0].msg_type, RosString)
+        self.assertEqual(odom_subs[0].callback, self.node._on_odom_msg)
 
     def test_device_snapshot_subscription_registered(self) -> None:
         topics = [s.topic for s in self.node._subscriptions]
@@ -611,7 +638,7 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
 
     def test_subscription_callbacks_feed_aggregator(self) -> None:
         """Сообщения в /odom, /device/snapshot, /voice/dialogue/state обновляют state."""
-        self.node._on_odom_msg(_make_string_msg(json.dumps({"x": 5.0, "y": -3.0})))
+        self.node._on_odom_msg(_make_odometry_msg(5.0, -3.0))
         self.node._on_device_snapshot_msg(_make_string_msg(json.dumps({"battery_pct": 73.2})))
         self.node._on_voice_state_msg(_make_string_msg(json.dumps({"state": "speaking"})))
         snap = self.node._aggregator.snapshot()
@@ -625,6 +652,21 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
         self.node._on_odom_msg(_make_string_msg("not-json"))
         self.node._on_device_snapshot_msg(_make_string_msg(""))
         self.node._on_voice_state_msg(_make_string_msg("{}"))
+
+    def test_odom_callback_reads_odometry_pose(self) -> None:
+        """issue #3104: callback берёт pose.pose.position.x/y из Odometry."""
+        sub = next(s for s in self.node._subscriptions if s.topic == "/odom")
+        sub.callback(_make_odometry_msg(1.25, -7.5))
+        self.assertEqual(self.node._aggregator.snapshot().pose_xy, (1.25, -7.5))
+
+    def test_odom_callback_ignores_legacy_json_string(self) -> None:
+        """Старый JSON-в-String контракт больше не принимается (issue #3104).
+
+        Объект без pose.pose.position не обновляет pose_xy и не валит ноду.
+        """
+        legacy = RosString(data=json.dumps({"x": 5.0, "y": -3.0}))
+        self.node._on_odom_msg(legacy)
+        self.assertIsNone(self.node._aggregator.snapshot().pose_xy)
 
 
 class TestAvatarArbiterDoesNotMutateExternalState(unittest.TestCase):

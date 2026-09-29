@@ -524,59 +524,53 @@ class TestBuildDynamicSystemContextTtsVoiceTag(object):
 #  _build_music_state_snapshot — issue #1544
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _FakeDJController:
-    """Замена ``DJModeController`` для unit-тестов (issue #1544).
-
-    Реальный класс дёргает ``DJHook.dispatch`` при инициализации, что
-    ломает test fixture. Для snapshot'а нужны только ``state.enabled`` и
-    ``state.theme`` — подменяем контроллер минимальным стабом.
-    """
-
-    def __init__(self, *, enabled: bool = False, theme: str = "") -> None:
-        # Тот же dataclass, что в dj_mode.DJModeController.state.
-        self.state = type("S", (), {"enabled": enabled, "theme": theme})()
-
-
 class TestBuildMusicStateSnapshot:
-    """Единый <music_state> snapshot для LLM (issue #1544).
+    """Единый <music_state> snapshot для LLM (issue #1544, #3161).
 
-    До фикса LLM не знал, играет DJ-бит или AI-генерация, и на команду
-    «стоп музыку» отвечал verbal-only (без вызова stop_music tool).
-    Снимок обязан показывать ВСЕ четыре источника истины:
-
-    * ``dj``  — DJ-режим (theme или off)
-    * ``ai``  — AI-сгенерированная музыка (title или idle)
-    * ``beat`` — активный Renardo-бит (active/silent)
-    * ``cleanup`` — отложен ли music_cleanup (pending/none)
-
-    Все атрибуты рендерятся всегда — LLM не должен угадывать по
-    отсутствию тега.
+    С #3161 тег строится ТОЛЬКО из того, что публикует плеер: снимок
+    ``/voice/music/state`` (+ имя темы из ``/voice/music/form``) и, для
+    mp3 из AI-библиотеки, ``/voice/generated_music/state``. Эвристики
+    ``beat``/``cleanup`` (cleanup-флаг, живые TTS-батчи) больше нет —
+    она врала «играет» после стопа (живой прогон 28.09 22:32).
+    Подробные сценарии — ``test_issue_3161_music_state_prompt.py`` (core).
     """
 
-    def test_all_idle_when_nothing_plays(self, node) -> None:
-        """Базовое состояние: всё молчит, snapshot показывает off/idle/silent."""
-        # node fixture уже инициализирует _dj=None, _pending_music_cleanup=False,
-        # _active_batches={}, _generated_music_state=None.
+    @staticmethod
+    def _feed_state(node, **kw) -> None:
+        from types import SimpleNamespace
+
+        from rob_box_voice.core.music_player_state import (
+            build_music_state_payload,
+        )
+
+        node._track_mode_music_active = False
+        payload = build_music_state_payload(**kw)
+        node._on_music_state(SimpleNamespace(data=payload))
+
+    def test_unknown_until_player_reports(self, node) -> None:
         snap = node._build_music_state_snapshot()
-        assert 'dj="off"' in snap
+        assert 'playing="unknown"' in snap
         assert 'ai="idle"' in snap
-        assert 'beat="silent"' in snap
-        assert 'cleanup="none"' in snap
-        # Корневой тег — один блок, не несколько.
         assert snap.count("<music_state") == 1
         assert snap.count("/>") == 1
 
-    def test_dj_active_with_theme(self, node) -> None:
-        """DJ-режим ON с theme → ``dj=playing: <theme>``."""
-        node._dj = _FakeDJController(enabled=True, theme="lofi study")
+    def test_playing_from_snapshot_with_name(self, node) -> None:
+        self._feed_state(node, playing=True, track_id="t-1", dj=True)
+        node._music_state_mem().observe_track_name("клубный трек")
         snap = node._build_music_state_snapshot()
-        assert 'dj="playing: lofi study"' in snap
+        assert 'playing="yes"' in snap
+        assert 'track="клубный трек"' in snap
+        assert 'dj="on"' in snap
 
-    def test_dj_active_without_theme_falls_back_to_unknown(self, node) -> None:
-        """DJ ON, но theme пустой → ``playing: unknown theme`` (не пустота)."""
-        node._dj = _FakeDJController(enabled=True, theme="")
+    def test_heuristic_flags_no_longer_claim_playing(self, node) -> None:
+        """Cleanup-флаг и TTS-батчи — не «играет»: плеер сказал idle."""
+        self._feed_state(node, playing=False)
+        node._pending_music_cleanup = True
+        node._active_batches = {"batch-1": 2}
         snap = node._build_music_state_snapshot()
-        assert 'dj="playing: unknown theme"' in snap
+        assert 'playing="no"' in snap
+        assert "beat=" not in snap
+        assert "cleanup=" not in snap
 
     def test_ai_generated_music_playing(self, node) -> None:
         """Топик /voice/generated_music/state сообщил playing → ``ai=playing: ...``."""
@@ -594,56 +588,16 @@ class TestBuildMusicStateSnapshot:
         snap = node._build_music_state_snapshot()
         assert 'ai="idle"' in snap
 
-    def test_beat_active_via_pending_cleanup(self, node) -> None:
-        """LLM вызвал execute_music_code → cleanup pending → beat=active.
-
-        Это САМЫЙ частый кейс для dj02 (issue #1544): LLM запустил Renardo-
-        бит, cleanup ещё не fired (ждёт tts_batch_complete), юзер говорит
-        «выключи музыку» → snapshot ОБЯЗАН показать beat=active, иначе LLM
-        скажет «уже выключено» вместо stop_music.
-        """
-        node._pending_music_cleanup = True
-        snap = node._build_music_state_snapshot()
-        assert 'beat="active"' in snap
-        assert 'cleanup="pending"' in snap
-
-    def test_beat_active_via_active_batches(self, node) -> None:
-        """TTS-батчи ещё живут → бит держится под вокал (backing mode)."""
-        node._active_batches = {"batch-1": 2, "batch-2": 3}
-        snap = node._build_music_state_snapshot()
-        assert 'beat="active"' in snap
-        # Cleanup ещё не scheduled, но батчи есть — бит держится.
-        assert 'cleanup="none"' in snap
-
-    def test_all_three_playing_simultaneously(self, node) -> None:
-        """DJ + AI + beat — все три источника активны (теоретический edge case)."""
-        node._dj = _FakeDJController(enabled=True, theme="ambient")
+    def test_title_with_quotes_is_xml_escaped(self, node) -> None:
+        """Название с кавычками/амперсандами НЕ ломает XML атрибут."""
         node._generated_music_state = {
             "status": "playing",
-            "title": "AI Beat",
-            "track_id": "deadbeef",
+            "title": 'Techno "rave" & more',
         }
-        node._pending_music_cleanup = True
         snap = node._build_music_state_snapshot()
-        assert 'dj="playing: ambient"' in snap
-        assert 'ai="playing: AI Beat"' in snap
-        assert 'beat="active"' in snap
-        assert 'cleanup="pending"' in snap
-
-    def test_theme_with_quotes_is_xml_escaped(self, node) -> None:
-        """Тема с кавычками/амперсандами НЕ ломает XML атрибут."""
-        # Если escape не сработает — pytest парсинг XML через поиск
-        # сломается (часть атрибута «отвалится»).
-        node._dj = _FakeDJController(
-            enabled=True,
-            theme='Techno "rave" & more',
-        )
-        snap = node._build_music_state_snapshot()
-        # Сырые кавычки/амперсанд внутри dj-значения → экранируются.
         assert "&quot;rave&quot;" in snap
         assert "&amp; more" in snap
-        # Сырых символов быть не должно.
-        assert 'theme="Techno "rave"' not in snap
+        assert 'Techno "rave"' not in snap
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -660,18 +614,21 @@ class TestBuildDynamicSystemContextMusicState:
         # Всегда есть reminder о том, как реагировать на «стоп музыку».
         assert "Если юзер говорит «стоп музыку" in ctx
 
-    def test_dj_active_reflected_in_system_context(self, node) -> None:
-        """DJ-режим виден в system_context (не только в snapshot helper)."""
-        node._dj = _FakeDJController(enabled=True, theme="deep house")
-        ctx = node._build_dynamic_system_context()
-        assert 'dj="playing: deep house"' in ctx
+    def test_player_snapshot_reflected_in_system_context(self, node) -> None:
+        """Снимок плеера (DJ, играет) виден в system_context (issue #3161)."""
+        from types import SimpleNamespace
 
-    def test_beat_pending_reflected_in_system_context(self, node) -> None:
-        """Pending cleanup отражается в system_context."""
-        node._pending_music_cleanup = True
+        from rob_box_voice.core.music_player_state import (
+            build_music_state_payload,
+        )
+
+        node._track_mode_music_active = False
+        node._on_music_state(SimpleNamespace(
+            data=build_music_state_payload(playing=True, track_id="t", dj=True)
+        ))
         ctx = node._build_dynamic_system_context()
-        assert 'cleanup="pending"' in ctx
-        assert 'beat="active"' in ctx
+        assert 'playing="yes"' in ctx
+        assert 'dj="on"' in ctx
 
     def test_legacy_generated_music_tag_replaced(self, node) -> None:
         """Issue #1392 follow-up: <generated_music> тег УДАЛЁН (заменён на <music_state>)."""

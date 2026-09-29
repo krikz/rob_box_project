@@ -214,3 +214,43 @@ brass/organ/tb303):
 - На live-роботе после merge: `bass_synth=fuzz`, `oct=0`, `dur=0.5`,
   `scale=chromatic` — играет без «пердения» и щелчков. Проверка
   трека «nirvana rape me» через `compose_music` (e2e-process после merge).
+
+## 8. Дополнение 28.09.2026 — почему патч не доехал до scsynth (регресс)
+
+Товарищ Шифу 27.09 снова услышал «пердение» fuzz. Разбор (по коду, на роботе
+не воспроизводилось):
+
+1. **fuzz в upstream — не файловый синт.** В `renardo_lib 0.9.13` он объявлен в
+   `runtime/synthdefs_initialisation/python_defined_synthdefs.py` (строки 233 и
+   590) как `DefaultPygenSynthDef("fuzz")` с `LFSaw.ar(LFSaw.kr(...))`.
+   `PygenSynthDefBaseClass.add()` = `write()` + `load()`: `write()` заново
+   пишет `sclang_code/tmp_code/scsynth/fuzz.scd` из Python, если содержимое
+   отличается (то есть затирает билдовый патч этого файла), `load()` шлёт
+   этот путь в sclang по `/foxdot`. `music.py` при старте музыки делает
+   `import renardo_lib.runtime` (все `.add()` при импорте) и затем ещё раз
+   `sdef.add()` по всему `SynthDefs`. Итог: прелоад грузил пропатченный
+   `scsynth/fuzz.scd`, а через секунды его в scsynth заменяла upstream-версия.
+   Патчи organ/tb303/brass живут, потому что эти синты — файловые.
+2. **Модулятор был `.kr`, а блок scsynth = 1024.** `start_supercollider.sh`
+   запускает scsynth с `-z 1024` → control rate 16000/1024 ≈ 15.6 Hz.
+   Модулятор `LFSaw.kr(freq/2)` на басу (20–40 Hz) дискретизируется ниже своей
+   частоты → высота несущей прыгает каждые 64 мс.
+
+Исправление:
+
+- `foxdot_init.sc`: `/foxdot` для имён из `pygenPatchedSynths` (сейчас
+  `fuzz`) и путей из `tmp_code/` перенаправляется на
+  `renardoSynthDir/<name>.scd` (пропатченный при сборке). Перенаправленный
+  путь же попадает в `loadedSynthPaths`, так что авто-реставр #1807 тоже
+  грузит патч. Список синхронизирован с `PYGEN_PATCHED_SYNTHS` в
+  `renardo_synthdef_patches.py` тестом `test_issue_3008_pygen_fuzz_redirect.py`.
+- `FUZZ_SYNTHDEF`: модулятор `LFSaw.ar` вместо `LFSaw.kr`.
+
+Не сделано (отдельной задачей): `-z 1024` влияет на ВСЕ `.kr`-огибающие,
+`Lag.kr` и фильтр-свипы (`linvar` → ступеньки по 64 мс). Скорее всего нужен
+`-Z 1024` (аппаратный буфер) и блок по умолчанию 64, но это надо мерить по CPU
+на Pi — вслепую не меняем.
+
+Проверка на роботе после деплоя (не выполнена): в `/tmp/sclang.log` после
+старта музыки должна быть строка `[#3008] /foxdot .../tmp_code/scsynth/fuzz.scd
+-> .../scsynth/fuzz.scd`; трек с `bass_synth=fuzz` — без «пердения».

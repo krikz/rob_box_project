@@ -1702,6 +1702,331 @@ class TestMusicManagerExecuteCode:
         assert "/g_freeAll" not in osc_calls
         assert "/g_new" not in osc_calls
 
+    # ----- gate=0 ramp-down before /g_freeAll (issue #3137) ---------------
+    #
+    # These tests use the default ``_renardo_context = {}`` from
+    # ``_make_manager`` — no "Clock" key, so
+    # ``_transition_cleanup_delay_seconds()`` returns 0.0 (Clock
+    # unavailable) and ``_schedule_transition_cleanup`` runs the teardown
+    # SYNCHRONOUSLY (the safe fallback — never worse than the old
+    # behaviour). This exercises ``_transition_cleanup``'s OSC ordering
+    # without needing a real/mocked Renardo Clock or a timer.
+
+    def test_execute_with_clock_clear_sends_gate_zero_before_g_freeAll(self):
+        """execute_code's transition path must NOT send a bare /g_freeAll.
+
+        Issue #3137: a live −180 dBFS window at a track transition was
+        traced to ``execute_code`` sending a naked ``/g_freeAll`` right
+        after ``exec`` — no release ramp, unlike ``stop_all`` (#1000).
+        The fix routes both through ``_ramp_down_group``: ``/n_set 1
+        "gate" 0.0`` (Group 1 — a group target sets the control on every
+        node inside it, per the OSC Server Command Reference; node ID -1
+        is NOT documented as "all nodes" for ``/n_set``, that was wrong in
+        the first cut of this fix — issue #3137 review) MUST be sent, and
+        it MUST come before ``/g_freeAll``.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append((address, args))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        addresses = [c[0] for c in osc_calls]
+        assert "/n_set" in addresses, (
+            "Expected a gate=0 /n_set ramp-down before /g_freeAll: " + str(osc_calls)
+        )
+        assert addresses.index("/n_set") < addresses.index("/g_freeAll"), (
+            "gate=0 must be sent BEFORE /g_freeAll: " + str(osc_calls)
+        )
+        # The gate=0 message targets Group 1, not nodeID -1 (issue #3137 R2).
+        n_set_call = next(c for c in osc_calls if c[0] == "/n_set")
+        assert n_set_call[1] == (1, "gate", 0.0)
+
+    def test_execute_with_clock_clear_sleeps_between_gate_zero_and_g_freeAll(self):
+        """A release pause MUST sit between gate=0 and /g_freeAll, so the
+        ADSR release actually starts before the nodes are freed —
+        otherwise gate=0 is sent and immediately undone by freeAll,
+        reproducing the original click (issue #3137).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        call_log = []
+
+        def _fake_send(address, *args):
+            call_log.append(("osc", address))
+
+        def _fake_sleep(seconds):
+            call_log.append(("sleep", seconds))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_fake_send
+        ), patch("rob_box_mcp_tools.tools.music.time.sleep", side_effect=_fake_sleep):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        try:
+            idx_gate = next(i for i, c in enumerate(call_log) if c == ("osc", "/n_set"))
+            idx_free = next(
+                i for i, c in enumerate(call_log) if c == ("osc", "/g_freeAll")
+            )
+        except StopIteration:
+            pytest.fail("Expected /n_set and /g_freeAll OSC sends, got: " + str(call_log))
+
+        assert idx_gate < idx_free
+        sleeps_between = [s for s in call_log[idx_gate + 1 : idx_free] if s[0] == "sleep"]
+        assert sleeps_between, (
+            "No release pause between gate=0 and /g_freeAll: " + str(call_log)
+        )
+        assert any(s[1] >= 0.05 for s in sleeps_between)
+
+    # ----- deferred cleanup: freeAll must NOT be synchronous (issue #3137 R2) --
+
+    def test_execute_with_clock_clear_does_not_send_freeAll_synchronously_when_clock_present(
+        self,
+    ):
+        """Root-cause fix (issue #3137 R2, coordinator review): the −180 dBFS
+        hole was never really about ``gate`` (most synthdefs on the robot
+        don't have a ``gate`` control at all — sus/doneAction envelopes).
+        It was about WHEN ``/g_freeAll`` fires: immediately after ``exec``,
+        while the new track's first note doesn't actually sound until
+        ``Clock.next_bar() + Clock.latency`` — up to ``ALIGN_LEAD_BEATS``
+        beats plus the OSC bundle's scheduling latency later (issue #3137
+        second review, live remeasure 28.09.2026: R1/#3148 fixed the beats
+        part but left a ≈0.5s dip because it didn't account for latency).
+
+        With a live Clock available, ``execute_code`` MUST NOT have sent
+        ``/g_freeAll`` (or the gate=0 ramp, or /g_new) by the time it
+        returns — that teardown has to be deferred to a background timer
+        so the old track's tail fills the gap instead of dead air.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        clock = Mock()
+        clock.now.return_value = 100.0
+        clock.next_bar.return_value = 102.0  # 2 beats away, like ALIGN_LEAD_BEATS
+        clock.bpm = 124
+        clock.latency = 0.25  # Renardo default (renardo_lib/TempoClock.py:121)
+        mgr._renardo_context = {"Clock": clock}
+        # Isolate the transition-cleanup OSC traffic from the unrelated
+        # lazy master-gain apply (execute_code sends its own /n_set on the
+        # masterlimiter node on the first successful call).
+        mgr._master_gain_applied = True
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append((address, args))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ), patch("rob_box_mcp_tools.tools.music.threading.Timer") as fake_timer_cls:
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        assert osc_calls == [], (
+            "execute_code must not touch scsynth synchronously when Clock "
+            "is live — teardown has to be scheduled, not immediate: " + str(osc_calls)
+        )
+        fake_timer_cls.assert_called_once()
+        args, kwargs = fake_timer_cls.call_args
+        delay = args[0] if args else kwargs["interval"]
+        # 2 beats @ 124 BPM = 0.9677s + 0.25s Clock.latency, minus the
+        # safety margin (0.15s — issue #3137 R2, covers the full
+        # _transition_cleanup pipeline: RAMP_DOWN_RELEASE_SECONDS +
+        # TRANSITION_CLEANUP_G_NEW_PAUSE_SECONDS + jitter buffer).
+        assert delay == pytest.approx(2.0 * 60.0 / 124.0 + 0.25 - 0.15, abs=1e-6)
+        fake_timer_cls.return_value.start.assert_called_once()
+
+    def test_transition_cleanup_delay_uses_clock_next_bar_bpm_and_latency(self):
+        """``_transition_cleanup_delay_seconds`` — the actual math (issue
+        #3137 R2, live remeasure 28.09.2026): seconds until
+        ``Clock.next_bar()`` at the current BPM, PLUS ``Clock.latency``
+        (the OSC bundle scheduling delay — the new track's first note
+        doesn't materialise in scsynth until ``next_bar + latency``, not
+        at ``next_bar`` itself), minus the safety margin.
+        """
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 10.0
+        clock.next_bar.return_value = 14.0  # 4 beats away
+        clock.bpm = 120
+        clock.latency = 0.25
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # 4 beats @ 120 BPM = 2.0s + 0.25s latency, minus 0.15s margin.
+        assert delay == pytest.approx(2.0 + 0.25 - 0.15, abs=1e-6)
+
+    def test_transition_cleanup_delay_reads_latency_from_clock_not_hardcoded(self):
+        """``Clock.latency`` must be read off the live Clock object, not
+        assumed to be Renardo's own default — a Clock configured with
+        ``Clock.set_latency(...)`` (or any other non-default value) has to
+        be honoured verbatim (issue #3137 R2)."""
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 0.0
+        clock.next_bar.return_value = 4.0  # 4 beats away
+        clock.bpm = 120
+        clock.latency = 0.5  # deliberately not the 0.25 Renardo default
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # 4 beats @ 120 BPM = 2.0s + 0.5s latency, minus 0.15s margin.
+        assert delay == pytest.approx(2.0 + 0.5 - 0.15, abs=1e-6)
+
+    def test_transition_cleanup_delay_falls_back_to_default_latency_when_clock_lacks_attribute(
+        self,
+    ):
+        """A Clock object with no ``latency`` attribute at all (a minimal
+        stub, or an exotic Renardo build) must not collapse the delay back
+        to the pre-latency (R1) math — fall back to Renardo's own
+        documented default (``RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS`` ==
+        0.25s, ``renardo_lib/TempoClock.py:121``), read via ``getattr``
+        rather than hardcoded inline."""
+
+        class _ClockWithoutLatency:
+            def now(self):
+                return 0.0
+
+            def next_bar(self):
+                return 4.0
+
+            bpm = 120
+
+        mgr = _make_manager()
+        mgr._renardo_context = {"Clock": _ClockWithoutLatency()}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        assert delay == pytest.approx(
+            2.0 + MusicManager.RENARDO_DEFAULT_CLOCK_LATENCY_SECONDS - 0.15, abs=1e-6
+        )
+
+    def test_transition_cleanup_delay_floors_at_latency_minus_margin_at_deadline(self):
+        """At (or past) ``Clock.next_bar()`` itself, the delay no longer
+        collapses to 0.0 the way R1 did (issue #3137 R2, live remeasure
+        28.09.2026): the new track's OSC bundle has already been queued in
+        scsynth timestamped ``send_time + Clock.latency`` — it won't
+        actually materialise for another ``latency`` seconds regardless of
+        how close (or how far past) ``next_bar`` already is, so teardown
+        still has to wait that long minus the safety margin. A literal
+        0.0 is now reserved for the "Clock unavailable/broken" fallback
+        paths (see the tests below), not for "deadline is imminent".
+        """
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 10.0
+        clock.next_bar.return_value = 10.01  # a few ms away, less than margin
+        clock.bpm = 124
+        clock.latency = 0.25
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # 0.01 beats @ 124 BPM = 0.00484s + 0.25s latency, minus 0.15s margin.
+        assert delay == pytest.approx(0.01 * 60.0 / 124.0 + 0.25 - 0.15, abs=1e-6)
+        assert delay > 0.0
+
+    def test_transition_cleanup_delay_falls_back_to_zero_without_clock(self):
+        """No Clock in context (degraded/mocked stack, or renardo not up
+        yet) -> 0.0 -> immediate teardown, same as the pre-#3137 behaviour.
+        Never worse than before.
+        """
+        mgr = _make_manager()
+        mgr._renardo_context = {}
+
+        assert mgr._transition_cleanup_delay_seconds() == 0.0
+
+    def test_transition_cleanup_delay_falls_back_to_zero_on_broken_clock(self):
+        """A Clock that raises (or has a garbage bpm) must not blow up the
+        transition — fall back to immediate teardown."""
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.side_effect = RuntimeError("scsynth gone")
+        mgr._renardo_context = {"Clock": clock}
+
+        assert mgr._transition_cleanup_delay_seconds() == 0.0
+
+    def test_transition_cleanup_delay_is_capped_for_degenerate_bpm(self):
+        """Regression (issue #3137 R2 review fallout): a near-zero BPM
+        (``FakeClock(bpm=1e-9)`` in ``test_music_clock_phase.py``, or any
+        corrupted live Clock) turns ``beats_until * 60 / bpm`` into ~1e11
+        seconds. Unclamped, ``threading.Timer(1e11, ...)`` raises
+        ``OverflowError: timestamp too large to convert to C _PyTime_t`` in
+        its background thread the moment it starts — an unhandled thread
+        exception that (observed live in this repo's own test suite) can
+        surface as flaky failures in unrelated, later-running tests. The
+        delay must be capped at ``TRANSITION_CLEANUP_MAX_DELAY_SECONDS``.
+        """
+        mgr = _make_manager()
+        clock = Mock()
+        clock.now.return_value = 0.0
+        clock.next_bar.return_value = 2.0  # 2 beats away
+        clock.bpm = 1e-9
+        clock.latency = 0.25
+        mgr._renardo_context = {"Clock": clock}
+
+        delay = mgr._transition_cleanup_delay_seconds()
+
+        # Unclamped this would be 2 beats * 60 / 1e-9 ~= 1.2e11 seconds;
+        # capped, it must land exactly at the ceiling.
+        assert delay == MusicManager.TRANSITION_CLEANUP_MAX_DELAY_SECONDS
+        assert delay < 1e6  # sanity: nowhere near the unclamped ~1e11s
+
+    def test_scheduled_transition_cleanup_runs_gate_then_freeAll_then_g_new(self):
+        """End-to-end (issue #3137 R2): when the deferred timer actually
+        fires, it must reproduce the exact OSC order that used to run
+        synchronously — gate=0 -> pause -> /g_freeAll -> #778 pause ->
+        /g_new — just later in wall time, not different in shape.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        clock = Mock()
+        clock.now.return_value = 0.0
+        clock.next_bar.return_value = 2.0
+        clock.bpm = 124
+        clock.latency = 0.25
+        mgr._renardo_context = {"Clock": clock}
+        mgr._master_gain_applied = True  # isolate from the lazy gain-apply /n_set
+        call_log = []
+
+        def _capture_send(address, *args):
+            call_log.append(("osc", address, args))
+
+        def _fake_sleep(seconds):
+            call_log.append(("sleep", seconds))
+
+        captured_timer_args = {}
+
+        class _FakeTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                captured_timer_args["interval"] = interval
+                captured_timer_args["function"] = function
+                captured_timer_args["args"] = args or ()
+
+            def start(self):
+                # Run synchronously in the test — same thread, no real wait.
+                captured_timer_args["function"](*captured_timer_args["args"])
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ), patch(
+            "rob_box_mcp_tools.tools.music.time.sleep", side_effect=_fake_sleep
+        ), patch("rob_box_mcp_tools.tools.music.threading.Timer", _FakeTimer):
+            mgr.execute_code("Clock.clear()\np1 >> pluck([0])", pattern_name="p1")
+
+        addresses = [c[1] for c in call_log if c[0] == "osc"]
+        assert addresses == ["/n_set", "/g_freeAll", "/g_new"], call_log
+        n_set_call = next(c for c in call_log if c[0] == "osc" and c[1] == "/n_set")
+        assert n_set_call[2] == (1, "gate", 0.0)
+        g_new_call = next(c for c in call_log if c[0] == "osc" and c[1] == "/g_new")
+        assert g_new_call[2] == (1, 0, 0)
+        sleeps = [c[1] for c in call_log if c[0] == "sleep"]
+        # Release pause (inside _ramp_down_group) + issue #778 pause before /g_new.
+        assert len(sleeps) == 2
+        assert all(s >= 0.05 for s in sleeps)
+
 
 # ---------------------------------------------------------------------------
 # MusicManager.known_synth_names() — live-инцидент 21.09.2026
@@ -2104,6 +2429,31 @@ class TestMusicManagerStop:
             result = mgr.stop_all()
         assert result["success"] is True
         assert len(mgr._active_patterns) == 0
+
+    def test_stop_all_uses_shared_ramp_down_gate_zero_before_g_freeAll(self):
+        """Issue #3137: stop_all's ramp-down now goes through the same
+        ``_ramp_down_group`` helper as execute_code's transition path —
+        gate=0 on Group 1 (not nodeID -1, fixed in review R2), then
+        /g_freeAll, in that order. Called SYNCHRONOUSLY (stop_all never
+        defers — explicit stop, the transition hole doesn't apply).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        osc_calls = []
+
+        def _capture_send(address, *args):
+            osc_calls.append((address, args))
+
+        with patch("builtins.exec"), patch.object(
+            mgr, "_send_osc_raw", side_effect=_capture_send
+        ):
+            mgr.stop_all()
+
+        addresses = [c[0] for c in osc_calls]
+        assert "/n_set" in addresses
+        assert "/g_freeAll" in addresses
+        assert addresses.index("/n_set") < addresses.index("/g_freeAll")
+        n_set_call = next(c for c in osc_calls if c[0] == "/n_set")
+        assert n_set_call[1] == (1, "gate", 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -3169,6 +3519,37 @@ class TestArrangementPresetApplication:
         result = preview.execute(name="fifth", **self._ARR)
         assert result.success is True
         assert "Пресет: Beethoven's Fifth (bass_style=root)" in result.data["score"]
+
+    def test_preset_levels_over_the_old_cap_are_clamped_with_warn(self, mock_node, tmp_path):
+        """Issue #3178 — живой прогон 29.09.2026.
+
+        Пресет, сохранённый до #2963 (потолок ``levels`` был 2), нёс
+        ``lead=1.1``. Новый валидатор (потолок 1) больше не отказывает
+        вызов без единой явной ручки — тихо клампит унаследованное
+        значение и говорит об этом WARN в лог, не ошибкой.
+        """
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"levels": "lead=1.1"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True, result.error
+        assert "lead×1" in tool.last_score["decisions"]["levels"]
+        warnings = mock_node.get_logger().warning_messages
+        assert any("lead=1.1" in w and "1" in w for w in warnings), warnings
+
+    def test_preset_unknown_level_role_is_dropped_with_warn(self, mock_node, tmp_path):
+        """Issue #3178 — роль, которой больше нет в ``ROLE_PROFILE``, не валит вызов."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"levels": "guitar=0.5"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True, result.error
+        assert tool.last_score["decisions"].get("levels") in (None, "")
+        warnings = mock_node.get_logger().warning_messages
+        assert any("guitar" in w for w in warnings), warnings
+
+    def test_explicit_invalid_levels_still_errors(self, mock_node, tmp_path):
+        """Явная ручка ВЫЗЫВАЮЩЕГО вне диапазона — по-прежнему честная ошибка."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"levels": "lead=1.1"})
+        result = tool.execute(name="fifth", levels="bass=3", **self._ARR)
+        assert result.success is False
+        assert "0..1" in result.error
 
 
 class TestSaveArrangementPresetTool:
@@ -4572,4 +4953,496 @@ class TestSetDjModeSetLimits:
         payload, _ = self._published_payload(enabled=True, next_transition_sec=45)
         assert "max_minutes" not in payload
         assert "max_tracks" not in payload
+        # Issue #3113: темп сета уходит только по явной просьбе.
+        assert "bpm" not in payload
 
+    def test_set_bpm_reaches_payload(self):
+        """Issue #3113 — set_dj_mode(bpm=...) несёт темп сета в DJModeController."""
+        payload, _ = self._published_payload(enabled=True, next_transition_sec=45, bpm=128)
+        assert payload["bpm"] == 128
+
+
+@pytest.mark.unit
+class TestComposeMusicToolClubStyle:
+    """style="club" — код из core.club_arranger.render_club через тот же
+    MusicManager.execute_code (санитайзер, состояние, тайминги формы)."""
+
+    def _make_tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr), mgr
+
+    def test_club_executes_render_club_code(self, mock_node):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", root="C", seed=3)
+        assert result.success is True, result.error
+        assert fake_exec.call_count == 1
+        executed = fake_exec.call_args[0][0]
+        assert executed == render_club(bpm=124, root="C", scale="minor", seed=3)
+        assert result.data["style"] == "club"
+        assert result.data["code"] == executed
+        assert result.data["duration_seconds"] == pytest.approx(128 * 60 / 124, abs=0.1)
+        # repeat=False → дедлайн формы взведён, как у classic
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_cycle_ends_at is not None
+
+    def test_club_repeat_has_no_clock_future_and_no_deadline(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", repeat=True, bpm=128)
+        assert result.success is True, result.error
+        executed = fake_exec.call_args[0][0]
+        assert "Clock.bpm = 128" in executed
+        assert "Clock.future" not in executed
+        assert mgr._music_form_deadline_at is None
+
+    def test_club_names_ignored_params(self, mock_node):
+        """Issue #3113 (живой прогон 28.09): неприменённое — В НАЧАЛЕ ответа.
+
+        Библиотеки мелодий нет → ``name`` не тема, а подпись: club играет,
+        ответ прямо говорит, что темы в треке нет. Раньше тот же вызов
+        заканчивался хвостом «Проигнорировано в club: lead_synth, name.»,
+        который модель не замечала.
+        """
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", name="imperial march", lead_synth="blip")
+        assert result.success is True, result.error
+        assert result.data["style"] == "club"
+        assert result.message.startswith("⚠️ name='imperial march' не найдено в библиотеке")
+        assert "ТЕМЫ в треке нет" in result.message
+        assert "Проигнорировано в club (трек звучит БЕЗ них): lead_synth." in result.message
+        assert result.message.index("Проигнорировано") < result.message.index("Играю клубный трек")
+        assert result.data["ignored_params"] == ["lead_synth"]
+
+    # ── Issue #3169: club несёт человеческое имя трека ────────────────
+
+    def test_club_sets_human_track_name_default(self, mock_node):
+        """По умолчанию (bpm=124, root=A#, scale=minor) — не «без названия»."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", seed=3)
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек, 124 BPM, ля-диез минор"
+        assert mgr.get_state()["track_name"] == mgr.current_track_name
+
+    def test_club_sets_human_track_name_with_bpm_and_root(self, mock_node):
+        """Явные bpm/root/scale попадают в имя — issue #3169."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", root="C", bpm=128, seed=1)
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек, 128 BPM, до минор"
+
+    def test_club_track_name_is_never_empty_string(self, mock_node):
+        """Регрессия issue #3169: снимок/форма не должны говорить «без
+        названия» — ``current_track_name`` всегда непустая строка после
+        успешного club-плея."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club")
+        assert result.success is True, result.error
+        assert mgr.current_track_name
+        assert "без названия" not in mgr.current_track_name
+
+    # ── Issue #3181: style=club + известная тема → club с хуком темы ──
+    #
+    # Было (#3113 п.2, живой прогон 28.09): club чужих тем не умел, и
+    # ``style=club`` + тема уходил в classic — без клубного грува и без
+    # fade. Теперь lead club играет хук темы (core/club_hook), поэтому тема
+    # больше не отменяет стиль: вызов остаётся club, fade работает, ответ
+    # называет id и название темы.
+
+    _MARIO = {
+        "name": "smb",
+        "title": "Super Mario Bros",
+        "rtttl": "smb:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g,8p",
+    }
+    _MARIO_CALL = dict(
+        name="super mario bros", lead_synth="blip", bass_synth="retrobass",
+        pad_synth="sinepad", form="buildup", drum_style="four_on_floor",
+        style="club", transition="fade", seed=101,
+    )
+
+    def test_club_with_known_name_plays_the_hook_in_club(self, mock_node):
+        """Живой вызов «8-битного монстра» 28.09 — теперь клубный трек с хуком."""
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(**self._MARIO_CALL)
+        assert result.success is True, result.error
+        code = fake_exec.call_args[0][0]
+        assert "# club:" in code
+        assert "# хук smb «Super Mario Bros», 2 такта" in code
+        assert result.data["style"] == "club"
+        assert result.data["transition"] == "fade"
+        hook = result.data["club_hook"]
+        assert (hook["id"], hook["title"], hook["source"]) == ("smb", "Super Mario Bros", "library")
+        assert "Lead играет хук темы «Super Mario Bros» (id=smb)" in result.message
+        # тембры/форма classic club не играет — и честно это говорит
+        assert result.data["ignored_params"] == ["bass_synth", "drum_style", "form", "lead_synth", "pad_synth"]
+        assert result.message.startswith("⚠️ Проигнорировано в club")
+        assert "не найдено в библиотеке" not in result.message
+
+    def test_club_hook_code_is_render_club_with_the_hook(self, mock_node):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+        from rob_box_mcp_tools.core.club_hook import extract_hook
+
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", name="super mario bros", root="C", seed=3)
+        assert result.success is True, result.error
+        hook = extract_hook(self._MARIO["rtttl"], 124, "smb", "Super Mario Bros")
+        assert fake_exec.call_args[0][0] == render_club(bpm=124, root="C", scale="minor", seed=3, hook=hook)
+        assert mgr.current_track_name == "клубный трек на тему «Super Mario Bros», 124 BPM, до минор"
+
+    def test_club_with_rtttl_plays_the_hook(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", rtttl=self._MARIO["rtttl"], name="марио")
+        assert result.success is True, result.error
+        assert "# хук марио «марио»" in fake_exec.call_args[0][0]
+        assert result.data["style"] == "club"
+        assert result.data["club_hook"]["source"] == "rtttl"
+        assert result.data["ignored_params"] == []
+
+    def test_club_with_broken_rtttl_is_honest_error(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", rtttl="not rtttl at all")
+        assert result.success is False
+        assert result.error.startswith("style=club:")
+        fake_exec.assert_not_called()
+
+    def test_classic_with_name_still_plays_the_theme(self, mock_node):
+        """Без style=club тема по-прежнему идёт в classic (#3181 его не трогает)."""
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(name="super mario bros", lead_synth="blip", bass_synth="retrobass", pad_synth="sinepad")
+        assert result.success is True, result.error
+        assert "# club:" not in fake_exec.call_args[0][0]
+        assert "club_hook" not in result.data
+
+    def test_state_track_name_is_library_title_then_club_label(self, mock_node):
+        """Issue #3113 п.5: имя темы уходит в state (→ /voice/music/form «track»).
+
+        Issue #3169 (живой прогон 29.09): раньше переход в club ОЧИЩАЛ имя
+        (``track_name`` становился ``None``), и робот отвечал «трек «без
+        названия»» — теперь club ставит своё человеческое имя вместо
+        того, чтобы оставлять снимок безымянным.
+        """
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec"):
+            tool.execute(name="super mario bros", lead_synth="blip", bass_synth="retrobass", pad_synth="sinepad")
+        assert mgr.get_state()["track_name"] == "Super Mario Bros"
+        with patch("builtins.exec"):
+            tool.execute(style="club", seed=2)
+        track_name = mgr.get_state()["track_name"]
+        assert track_name is not None
+        assert track_name != "Super Mario Bros"
+        assert "без названия" not in track_name
+        assert track_name.startswith("клубный трек")
+
+    def test_club_without_name_is_not_rerouted(self, mock_node):
+        lib = Mock()
+        lib.get.return_value = self._MARIO
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, lib)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=4)
+        assert result.success is True, result.error
+        assert "# club:" in fake_exec.call_args[0][0]
+        lib.get.assert_not_called()
+        assert "⚠️" not in result.message
+
+    def test_club_invalid_scale_is_honest_error(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", scale="major")
+        assert result.success is False
+        assert "style=club" in result.error and "major" in result.error
+        fake_exec.assert_not_called()
+
+    def test_classic_is_default_and_unchanged(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        kwargs = TestComposeMusicToolFormDeadline._COMMON_KWARGS
+        with patch("builtins.exec") as fake_default:
+            tool.execute(**kwargs)
+        with patch("builtins.exec") as fake_classic:
+            tool.execute(style="classic", **kwargs)
+        assert fake_default.call_args[0][0] == fake_classic.call_args[0][0]
+        assert "amplify=[" not in fake_default.call_args[0][0]
+
+    def test_preview_rejects_club_honestly(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        preview = PreviewArrangementTool(mock_node, mgr)
+        result = preview.execute(style="club")
+        assert result.success is False
+        assert "style=classic" in result.error
+
+    # ── Issue #3113: переход fade вместо жёсткой склейки ──────────────
+
+    def test_club_fade_wraps_render_club_code(self, mock_node, monkeypatch):
+        from rob_box_mcp_tools.core.club_arranger import club_form_beats, club_kit, render_club
+        from rob_box_mcp_tools.core.club_transition import fade_seconds, wrap_with_fade
+
+        monkeypatch.delenv("ROB_BOX_MUSIC_ALIGN_CLOCK", raising=False)
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", root="C", seed=3, repeat=True, transition="fade")
+        assert result.success is True, result.error
+        executed = fake_exec.call_args[0][0]
+        form = club_form_beats(club_kit(3)["template"])
+        assert executed == wrap_with_fade(
+            render_club(bpm=124, root="C", scale="minor", seed=3, repeat=True), form_beats=form, entry_beats=0,
+        )
+        assert result.data["transition"] == "fade"
+        assert result.data["duration_seconds"] == pytest.approx(128 * 60 / 124 + fade_seconds(124), abs=0.1)
+        assert "Переход fade" in result.message
+        # transition не считается «проигнорированным» параметром club
+        assert "Проигнорировано" not in result.message
+
+    # ── Issue #3166: DJ fade без провала в тишину ────────────────────
+
+    def test_aligned_fade_enters_from_main_section_without_lead(self, mock_node, monkeypatch):
+        """С выровненным клоком DJ-переход входит с секции полной бочки, без
+        lead-долей (``Clock.now_flag``), и форма короче на пропущенное интро."""
+        from rob_box_mcp_tools.core.club_arranger import club_entry_beats, club_kit
+        from rob_box_mcp_tools.core.club_transition import fade_seconds
+
+        monkeypatch.setenv("ROB_BOX_MUSIC_ALIGN_CLOCK", "1")
+        seed = next(s for s in range(50) if club_kit(s)["template"] == "long_build_32")
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=seed, repeat=False, transition="fade")
+        assert result.success is True, result.error
+        code = fake_exec.call_args[0][0]
+        entry = club_entry_beats("long_build_32")
+        assert entry == 32
+        assert f"Clock.set_time((Clock.now() // 128 + 1) * 128 + {entry})" in code
+        assert "- 2)" not in code  # ни одной lead-доли ALIGN_LEAD_BEATS
+        assert code.index("Clock.now_flag = True") < code.index("d1 >>") < code.index("Clock.now_flag = False")
+        assert f"Clock.future({128 - entry}, Clock.clear)" in code
+        assert f"_rbx_track_started(128, {entry})" in code
+        assert result.data["duration_seconds"] == pytest.approx(
+            (128 - entry) * 60 / 124 + fade_seconds(124), abs=0.1,
+        )
+
+    def test_cut_with_align_keeps_lead_prelude(self, mock_node, monkeypatch):
+        """Не-DJ путь (cut) не меняется: выравнивание #3112 с 2 lead-долями."""
+        monkeypatch.setenv("ROB_BOX_MUSIC_ALIGN_CLOCK", "1")
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            tool.execute(style="club", seed=1)
+        code = fake_exec.call_args[0][0]
+        assert "Clock.set_time(((Clock.now() + 2) // 128 + 1) * 128 - 2)" in code
+        assert "now_flag" not in code
+
+    def test_fade_falls_back_to_cut_when_finite_track_ends_first(self, mock_node):
+        """Issue #3113: уходящий repeat=False-трек замолчит раньше конца фейда —
+        его Clock.clear снял бы запланированный старт нового трека. Тогда cut."""
+        import time as _time
+
+        tool, mgr = self._make_tool(mock_node)
+        mgr._music_form_deadline_at = _time.monotonic() + 5.0
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=3, repeat=True, transition="fade")
+        assert result.success is True, result.error
+        assert "Master()" not in fake_exec.call_args[0][0]
+        assert result.data["transition"] == "cut"
+        assert "Переход cut вместо fade" in result.message
+
+    def test_fade_kept_when_finite_track_outlives_the_fade(self, mock_node):
+        import time as _time
+
+        tool, mgr = self._make_tool(mock_node)
+        mgr._music_form_deadline_at = _time.monotonic() + 100.0
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=3, repeat=True, transition="fade")
+        assert "Master()" in fake_exec.call_args[0][0]
+        assert result.data["transition"] == "fade"
+
+    def test_state_reports_finite_stop_only_for_repeat_false(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(style="club", seed=1)
+        assert mgr.get_state()["form_stop_remaining_s"] == pytest.approx(128 * 60 / 124, abs=1.0)
+        with patch("builtins.exec"):
+            tool.execute(style="club", seed=1, repeat=True)
+        assert mgr.get_state()["form_stop_remaining_s"] is None
+
+    def test_club_default_transition_is_cut(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=1)
+        assert result.data["transition"] == "cut"
+        assert "Master()" not in fake_exec.call_args[0][0]
+
+    def test_unknown_transition_is_honest_error(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", transition="crossfade")
+        assert result.success is False
+        assert "transition" in result.error and "crossfade" in result.error
+        fake_exec.assert_not_called()
+
+    def test_classic_with_fade_plays_and_says_fade_unsupported(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        kwargs = TestComposeMusicToolFormDeadline._COMMON_KWARGS
+        with patch("builtins.exec") as fake_plain:
+            tool.execute(**kwargs)
+        with patch("builtins.exec") as fake_fade:
+            result = tool.execute(transition="fade", **kwargs)
+        assert result.success is True, result.error
+        assert fake_fade.call_args[0][0] == fake_plain.call_args[0][0]
+        assert "transition=fade есть только у style=club" in result.message
+
+    def test_transition_in_schema(self, mock_node):
+        tool, _ = self._make_tool(mock_node)
+        param = next(p for p in tool.parameters if p.name == "transition")
+        assert param.enum == ["cut", "fade"]
+        assert param.required is False
+
+    # ── Issue #3154: превью DJ-сета из тишины входит с блока полной бочки ─
+
+    @pytest.mark.parametrize("playing, with_tail", [([], False), ([object()], True)])
+    def test_preview_fade_from_silence_enters_at_kick_block(self, mock_node, monkeypatch, playing, with_tail):
+        """Роутер шлёт превью с ``transition="fade"``: с выровненным клоком трек
+        входит с доли :func:`club_entry_beats` (не с интро); из тишины фейда
+        нет — длина фейда в длину первого прохода не входит."""
+        from types import SimpleNamespace
+
+        from rob_box_mcp_tools.core.club_arranger import club_entry_beats, club_kit
+        from rob_box_mcp_tools.core.club_transition import fade_seconds
+
+        monkeypatch.setenv("ROB_BOX_MUSIC_ALIGN_CLOCK", "1")
+        seed = next(s for s in range(1, 50) if club_kit(s)["template"] == "long_build_32")
+        tool, mgr = self._make_tool(mock_node)
+        mgr._renardo_context["Clock"] = SimpleNamespace(playing=playing, bpm=124)
+        with patch("builtins.exec") as fake_exec:
+            result = tool.execute(style="club", seed=seed, root="D", bpm=124, repeat=True, transition="fade")
+        assert result.success is True, result.error
+        code = fake_exec.call_args[0][0]
+        entry = club_entry_beats("long_build_32")
+        assert entry == 32
+        assert f"Clock.set_time((Clock.now() // 128 + 1) * 128 + {entry})" in code
+        assert "Clock.now_flag = True" in code
+        tail = fade_seconds(124) if with_tail else 0.0
+        assert result.data["duration_seconds"] == pytest.approx((128 - entry) * 60 / 124 + tail, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Issue #3166 — teardown fade-перехода и колбэк «трек стартовал»
+# ---------------------------------------------------------------------------
+
+
+class TestFadeTransitionTeardown:
+    """``execute_code`` не сносит ноды уходящего трека в начале фейда; это
+    делает колбэк ``_rbx_track_started`` в момент старта нового трека."""
+
+    @staticmethod
+    def _manager():
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._master_gain_applied = True
+        return mgr
+
+    @staticmethod
+    def _wrapped():
+        from rob_box_mcp_tools.core.club_arranger import render_club
+        from rob_box_mcp_tools.core.club_transition import wrap_with_fade
+
+        return wrap_with_fade(render_club(seed=1), form_beats=128, entry_beats=0)
+
+    def test_fade_wrapped_code_schedules_no_teardown(self):
+        mgr = self._manager()
+        with patch("builtins.exec"), \
+                patch.object(mgr, "_schedule_transition_cleanup") as sched, \
+                patch.object(mgr, "_transition_cleanup") as now_cleanup:
+            result = mgr.execute_code(self._wrapped())
+        assert result["success"] is True, result
+        sched.assert_not_called()
+        now_cleanup.assert_not_called()
+
+    def test_plain_clear_code_still_schedules_teardown(self):
+        from rob_box_mcp_tools.core.club_arranger import render_club
+
+        mgr = self._manager()
+        with patch("builtins.exec"), patch.object(mgr, "_schedule_transition_cleanup") as sched:
+            result = mgr.execute_code(render_club(seed=1))
+        assert result["success"] is True, result
+        sched.assert_called_once_with(1)
+
+    def test_callback_injected_and_stuck_now_flag_reset_before_exec(self):
+        from rob_box_mcp_tools.core.club_transition import TRACK_STARTED_FN
+
+        mgr = self._manager()
+        clock = MagicMock()
+        clock.now_flag = True
+        mgr._renardo_context["Clock"] = clock
+        seen = {}
+
+        def fake_exec(code, ns):
+            seen["callback"] = ns.get(TRACK_STARTED_FN)
+            seen["now_flag"] = clock.now_flag
+
+        with patch("builtins.exec", side_effect=fake_exec), patch.object(mgr, "_schedule_transition_cleanup"):
+            mgr.execute_code(self._wrapped())
+        assert seen["callback"] == mgr._on_track_started
+        assert seen["now_flag"] is False
+
+    def test_track_started_logs_phase_and_tears_down_old_nodes(self):
+        mgr = self._manager()
+        clock = MagicMock()
+        clock.now.return_value = 1312.0  # 10·128 + 32
+        clock.now_flag = True
+        clock.latency = 0.25
+        mgr._renardo_context["Clock"] = clock
+        logger = MagicMock()
+        mgr.attach_logger(logger)
+        with patch.object(mgr, "_transition_cleanup") as cleanup:
+            mgr._on_track_started(128, 32)
+            for _ in range(100):
+                if cleanup.called:
+                    break
+                time.sleep(0.01)
+        cleanup.assert_called_once_with(1)
+        line = logger.info.call_args[0][0]
+        assert line.startswith("[#3112] трек started внутри _rbx_next_track")
+        assert "фаза в форме=32.0 из 128" in line
+        assert "ожидался вход с доли 32" in line
+        assert mgr._last_track_started["phase_beats"] == 32.0
+
+    def test_track_started_never_raises_without_clock(self):
+        mgr = self._manager()
+        with patch.object(mgr, "_transition_cleanup"):
+            mgr._on_track_started(128, 0)
+        assert mgr._last_track_started["clock_beat"] is None
+
+    def test_wrapped_exec_nothing_playing_calls_started_once(self):
+        """Без играющего трека обёртка зовёт трек и колбэк сразу, в самом exec."""
+        from rob_box_mcp_tools.core.club_transition import TRACK_STARTED_FN
+
+        program = "Clock.clear()\nClock.bpm = 124\n"
+        from rob_box_mcp_tools.core.club_transition import wrap_with_fade
+
+        code = wrap_with_fade(program, form_beats=128, entry_beats=16)
+        calls = []
+        clock = MagicMock()
+        clock.playing = []
+        ns = {"Clock": clock, TRACK_STARTED_FN: lambda *a: calls.append(a)}
+        exec(code, ns)  # noqa: S102
+        assert calls == [(128, 16)]
+        clock.clear.assert_called_once()

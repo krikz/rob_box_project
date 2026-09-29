@@ -1,6 +1,7 @@
 // HTML-entry: bootstrap после загрузки DOM.
 
 import { bootstrap } from "./main";
+import { isSimRequested, simLatencyMs } from "./dev/sim_flag";
 
 function findEl<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -22,15 +23,16 @@ window.addEventListener("DOMContentLoaded", () => {
   const body = document.body;
   const helpToggle = document.getElementById("help-toggle");
 
-  bootstrap({
-    canvas,
-    pinOverlay,
-    pinForm,
-    pinInput,
-    pinError,
-    statusEl,
-    body,
-    helpToggle,
-    pin: ""
-  });
+  const common = { canvas, pinOverlay, pinForm, pinInput, pinError, statusEl, body, helpToggle };
+
+  // `?sim=1` — симулятор мостика без шлема и робота (#3149). Код мока
+  // грузится отдельным чанком только по флагу; без флага путь прежний.
+  if (isSimRequested(location.search)) {
+    void import("./dev/sim_entry").then(({ startSim }) =>
+      startSim(common, { latencyMs: simLatencyMs(location.search) })
+    );
+    return;
+  }
+
+  bootstrap({ ...common, pin: "" });
 });

@@ -605,11 +605,13 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "search_web",
         "get_music_state",
         "stop_music",
+        "set_music_volume",
     ),
     "dj": (
         "set_dj_mode",
         "get_music_state",
         "stop_music",
+        "set_music_volume",
     ),
     "player": (
         "gen_list_library",
@@ -647,6 +649,10 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     "voice-tts": (
         "set_voice",
         "set_volume",
+        # Issue #3125 — «громче» роутится в voice-tts, а при играющей
+        # музыке это просьба о МУЗЫКЕ: без этого тула в срезе модель
+        # видела только set_volume (голос) и фантазировала.
+        "set_music_volume",
         "set_pitch",
         "set_speed",
         "list_tts_voices",

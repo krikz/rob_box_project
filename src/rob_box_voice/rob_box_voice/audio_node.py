@@ -10,10 +10,12 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Bool, Int32, String
 from audio_common_msgs.msg import AudioData
 import pyaudio
+import usb.core
 import threading
 import time
 from typing import Optional
 
+from .core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
 from .utils.stderr_silence import ignore_stderr
@@ -153,9 +155,16 @@ class AudioNode(Node):
         # /voice/tts/state — "synthesizing"/"playing" пока робот говорит,
         # "ready"/"idle" после. Используем для grace period (Fix B).
         self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
-        # /voice/music/state — "playing"/"idle" от mcp_server (Fix C): при
-        # активной музыке поднимаем порог VAD, чтобы бит не триггерил речь.
-        self.create_subscription(String, '/voice/music/state', self._on_music_state, 10)
+        # /voice/music/state — снимок плеера от mcp_server (Fix C, с #3133 —
+        # JSON, ADR-0141): при активной музыке поднимаем порог VAD, чтобы бит
+        # не триггерил речь. Latched (TRANSIENT_LOCAL, depth 1) как у
+        # публикатора: после рестарта сразу знаем, играет ли музыка.
+        music_state_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, music_state_qos)
 
         # ReSpeaker interface
         self.respeaker = ReSpeakerInterface()
@@ -633,6 +642,57 @@ class AudioNode(Node):
         )
         self._reopen_audio_stream()
 
+    def _vad_doa_warn_throttle_ready(self) -> bool:
+        """Троттлинг VAD/DoA WARN/ERROR (Issue #1125/t_1bbc233a), один раз
+        в ``self._vad_doa_warn_period_ns``.
+
+        Общий помощник для всех мест, где мы дросселируем логи вокруг
+        VAD/DoA чтения (``_read_and_publish_doa`` и общий except в
+        ``check_vad_and_doa``) — раньше условие дублировалось в каждом
+        except-блоке, что тоже поднимало CC. ``time.monotonic()`` (не
+        ``get_clock()``), чтобы внутри except-блока не зависеть от rclpy.
+        Побочный эффект: при True обновляет ``_vad_doa_last_warn_ns``, так
+        что вызывающий обязан звать это ровно один раз перед логированием.
+        """
+        now = int(time.monotonic() * 1e9)
+        if (
+            self._vad_doa_last_warn_ns is None
+            or (now - self._vad_doa_last_warn_ns) >= self._vad_doa_warn_period_ns
+        ):
+            self._vad_doa_last_warn_ns = now
+            return True
+        return False
+
+    def _read_and_publish_doa(self) -> None:
+        """Прочитать DoA с ReSpeaker и опубликовать /audio/direction.
+
+        Вынесено из check_vad_and_doa (ADR-0021 R1 CC-budget guard, см.
+        _note_speech_accepted про тот же приём) — весь try/except с двумя
+        типами ошибок жил прямо в check_vad_and_doa и поднял его CC с
+        баз-лайна 19 до 24 (issue DoA-баг: get_direction → get_doa).
+        """
+        try:
+            direction = self.respeaker.get_doa()
+            if direction is not None:
+                msg = Int32()
+                msg.data = direction
+                self.direction_pub.publish(msg)
+        except (AttributeError, TypeError) as e:
+            # Баг в коде (например неверное имя метода на
+            # ReSpeakerInterface), а не USB/pipe ошибка - молчать тут же
+            # означает НИКОГДА не публиковать /audio/direction без
+            # единого следа в логах.
+            if self._vad_doa_warn_throttle_ready():
+                self.get_logger().error(
+                    f'DoA: баг в коде respeaker-интерфейса: {e}',
+                    exc_info=True,
+                )
+        except (usb.core.USBError, OSError) as e:
+            # USB/pipe ошибка - как раньше пропускаем цикл, но с
+            # warn-троттлингом вместо полной тишины.
+            if self._vad_doa_warn_throttle_ready():
+                self.get_logger().warn(f'DoA USB/pipe ошибка: {e}')
+
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream."""
         if status:
@@ -827,9 +887,13 @@ class AudioNode(Node):
         (Ch1 в 6-канальном режиме). Аппаратный VAD остаётся на дефолтном
         уровне; музыкальный фон уже подавлен AEC.
         """
-        state = (msg.data or "").strip()
+        # Issue #3133: payload — JSON-снимок плеера (ADR-0141); парсер
+        # понимает и старую плоскую строку. Мусор состояние не трогает.
+        snapshot = parse_music_state(msg.data)
+        if snapshot is None:
+            return
         was_active = self.music_active
-        self.music_active = state == "playing"
+        self.music_active = snapshot.is_playing()
         if self.music_active == was_active:
             return
         if self.music_active:
@@ -1030,16 +1094,9 @@ class AudioNode(Node):
                     # вызов).
                     self._note_empty_speech(len(buf))
 
-            # DoA - читаем с обработкой ошибок
-            try:
-                direction = self.respeaker.get_direction()
-                if direction is not None:
-                    msg = Int32()
-                    msg.data = direction
-                    self.direction_pub.publish(msg)
-            except Exception:
-                # Pipe error - пропускаем
-                pass
+            # DoA - читаем и публикуем (вынесено в _read_and_publish_doa,
+            # ADR-0021 R1 CC-budget guard).
+            self._read_and_publish_doa()
 
         except Exception as e:
             # Issue #1125 / t_1bbc233a: bare `pre` NameError регрессировал
@@ -1055,16 +1112,7 @@ class AudioNode(Node):
             if 'Pipe error' in str(e):
                 # Известная шумная ошибка USB-стека — пропускаем без лога.
                 return
-            # Используем time.monotonic (не get_clock), чтобы внутри
-            # except-блока не зависеть от rclpy — исключение в самом
-            # get_clock() привело бы к рекурсивному except.
-            now = int(time.monotonic() * 1e9)
-            if (
-                self._vad_doa_last_warn_ns is None
-                or (now - self._vad_doa_last_warn_ns)
-                >= self._vad_doa_warn_period_ns
-            ):
-                self._vad_doa_last_warn_ns = now
+            if self._vad_doa_warn_throttle_ready():
                 self.get_logger().warn(
                     f'VAD/DoA ошибка: {e}', exc_info=True,
                 )

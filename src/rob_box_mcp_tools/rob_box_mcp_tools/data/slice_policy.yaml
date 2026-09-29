@@ -90,6 +90,8 @@ slices:
     # локальная библиотека и продюсирование
     - compose_music
     - stop_music
+    # Issue #3125 — громкость музыки (мастер-фейдер), не голоса
+    - set_music_volume
     - set_vibe_preset
     - save_track
     - list_tracks

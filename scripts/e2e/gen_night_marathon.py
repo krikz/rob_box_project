@@ -104,6 +104,14 @@ def spk(name_stem: str) -> str:
 SPK_UNKNOWN = BACKLOG_ACC + r".*speaker='незнакомец'"
 
 
+#: Issue #3165 — ответ «тишина» на вопрос о состоянии музыки (n110, n313):
+#: альтернативы через «|», подстрокой по речи робота (см. keyword_hit).
+SILENCE_ANSWER = "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+#: Issue #3165 — «Не получилось выполнить» на вопрос, где ничего не
+#: исполнялось, — ложная фраза-отказ (fallback #2949).
+FALSE_FAILURE_PHRASE = "не получилось выполнить"
+
+
 def step(
     label: str,
     text: str,
@@ -429,7 +437,7 @@ act(
     "wake-слово «Робокс» (#1252), command-intent gate (#1279) и — ключевое — "
     "ЗАМЕР ТИШИНЫ: доказываем, что музыка не играет, до того как её включать.",
     "stable",
-    ["get_current_time", "get_battery_level", "get_robot_status", "get_music_state"],
+    ["get_current_time", "get_battery_level", "get_robot_status"],
     [
         step(
             "n101_wake_cold_start",
@@ -481,11 +489,14 @@ act(
         step(
             "n110_silence_baseline",
             "Робот, у тебя сейчас играет какая-нибудь музыка?",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
             must_not=["stop_music", "execute_music_code"],
-            why="ЯКОРЬ ТИШИНЫ. Робот обязан ПОСМОТРЕТЬ состояние, а не "
-            "рефлекторно дёрнуть stop_music на молчащем плеере. Всё, что "
-            "акты 5-8 делают с музыкой, отсчитывается от этого шага.",
+            must_not_say=[FALSE_FAILURE_PHRASE],
+            why="ЯКОРЬ ТИШИНЫ. Робот обязан ответить по состоянию плеера, а "
+            "не рефлекторно дёрнуть stop_music на молчащем плеере. Всё, что "
+            "акты 5-8 делают с музыкой, отсчитывается от этого шага. "
+            "Issue #3165: ответ — из <music_state> (снимок плеера), "
+            "get_music_state не обязателен; проверяем сам ответ «тишина».",
         ),
     ],
     [
@@ -803,7 +814,7 @@ act(
     "кого узнал, а кого нет. Затем — LRU-правило: явная команда, произнесённая "
     "в фоне без wake-слова, должна быть выполнена по следующему обращению.",
     "expected-partially-red",
-    ["stop_music", "get_music_state"],
+    ["stop_music"],
     [
         step(
             "n301_wake_open",
@@ -928,13 +939,14 @@ act(
             "n313_silence_restored",
             "Робот, теперь тихо?",
             voice=SASHA,
-            expect_tools=["get_music_state"],
-            discovery_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
             must_not=["execute_music_code", "stop_music"],
+            must_not_say=[FALSE_FAILURE_PHRASE],
             why="Возврат к якорю тишины из акта 1 — акт не оставляет хвостов. "
-            "issue #2406: discovery_tools — get_music_state должен быть "
-            "вызван ДО голосового ответа (regression guard, тот же класс "
-            "багов что и issue #2347).",
+            "Issue #3165: ответ — из <music_state> (снимок плеера, #3161), "
+            "get_music_state больше не обязателен (живой прогон 29.09: "
+            "обязательный тул наказывал верное «тишина» ретраями и фразой "
+            "«Не получилось выполнить»). Проверяем сам ответ.",
         ),
     ],
     [

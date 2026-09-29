@@ -12,8 +12,20 @@
 #   make lint-cc          — run the ADR-0021 CC-budget guard locally (CI mirror).
 #   make stt-tars-stats   — empirical STT-distortion summary for helm
 #                           wake-word «ТАРС» (ADR-0114 §2.3).
+#
+# Сборка и анализ — ТЕМ ЖЕ кодом, что в CI (run 36351952819):
+#   make build-list                  — что можно собрать (из docker/build-manifest.yaml)
+#   make build-base [BASE=depthai]   — базовые образы (по умолчанию все, pcl после ros2-zenoh)
+#   make build SERVICE=oak-d         — один сервис; PI=vision|main — весь Pi
+#   make build-all                   — базы + оба Pi
+#     BUILD_FLAGS='--dry-run|--no-push|--no-cache|--platform linux/amd64|--docker-tag dev'
+#   make ci-list                     — какие workflow/job'ы гоняются локально
+#   make lint                        — G-Lint Code целиком (те же run:-шаги из YAML)
+#   make audit                       — G-Architecture Audit (статическая часть)
+#   make ci WF='G-Run Tests' [JOB=…] — любой workflow; CI_FLAGS='--with-install --step …'
 
-.PHONY: test-tts test-tts-fast test-tts-verbose lint-cc stt-tars-stats help
+.PHONY: test-tts test-tts-fast test-tts-verbose lint-cc stt-tars-stats help \
+        build-list build-base build build-all build-help ci-list ci lint audit
 
 # Include the cross-provider conformance module explicitly: ``-k minimax``
 # selects only the MiniMax parametrisations and silently drops the
@@ -33,6 +45,12 @@ help:
 	@echo "  make lint-cc            Run ADR-0021 CC-budget guard (dialogue_node.py + new voice nodes)"
 	@echo "  make stt-tars-stats     Empirical STT-distortion summary for helm wake-word «ТАРС» (ADR-0114)."
 	@echo "                            Pass JSONL=<path> and/or YAML=<path>. Use --diff for candidates."
+	@echo ""
+	@echo "Build (same engine as CI: scripts/build/build.py → buildx_build.sh):"
+	@echo "  make build-list | build-base [BASE=x] | build SERVICE=x | build PI=vision | build-all"
+	@echo "  BUILD_FLAGS='--dry-run --no-push --no-cache --platform linux/amd64 --docker-tag dev'"
+	@echo "CI checks locally (scripts/ci/run_workflow_job.py — runs the workflow's own run: steps):"
+	@echo "  make ci-list | lint | audit | ci WF='G-Run Tests' [JOB=id] [CI_FLAGS='--with-install']"
 
 # ADR-0021 R1 (issue #1984): CC<=15 for methods, CC<=20 for __init__.
 # Baseline exemptions live in scripts/lint/cc_budget_baseline.json; run
@@ -62,3 +80,46 @@ JSONL ?= data/stt_tars_samples.jsonl
 ARGS  ?=
 stt-tars-stats:
 	python3 scripts/stt/tars_stats.py $(JSONL) $(ARGS)
+
+# ---- Сборка: тот же манифест и движок, что в L-Build workflow --------------
+BUILD_PY    := python3 scripts/build/build.py
+BUILD_FLAGS ?=
+BASE        ?= all
+
+build-help:
+	$(BUILD_PY) --help
+
+build-list:
+	$(BUILD_PY) list
+
+build-base:
+	$(BUILD_PY) base $(BASE) $(BUILD_FLAGS)
+
+build:
+ifdef SERVICE
+	$(BUILD_PY) service $(SERVICE) $(BUILD_FLAGS)
+else ifdef PI
+	$(BUILD_PY) pi $(PI) $(BUILD_FLAGS)
+else
+	@echo "usage: make build SERVICE=<name> | make build PI=vision|main (см. make build-list)"; exit 2
+endif
+
+build-all:
+	$(BUILD_PY) all $(BUILD_FLAGS)
+
+# ---- Анализ: run:-шаги прямо из .github/workflows (ни одной копии команд) ---
+CI_PY    := python3 scripts/ci/run_workflow_job.py
+CI_FLAGS ?=
+
+ci-list:
+	$(CI_PY) --list
+
+ci:
+	@test -n "$(WF)" || { echo "usage: make ci WF='<workflow>' [JOB=<id>] (см. make ci-list)"; exit 2; }
+	$(CI_PY) "$(WF)" $(if $(JOB),-j $(JOB)) $(CI_FLAGS)
+
+lint:
+	$(CI_PY) "G-Lint Code" $(CI_FLAGS)
+
+audit:
+	$(CI_PY) "G-Architecture Audit" $(CI_FLAGS)

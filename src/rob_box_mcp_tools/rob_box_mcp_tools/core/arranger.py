@@ -96,11 +96,61 @@ RC4 дал форме огибающую amp, но мелодия внутри �
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 #: 1 такт = 4 бита в дефолтном метре Renardo (``TempoClock.bar_length()``).
 BEATS_PER_BAR = 4
+
+#: Issue #3112: ``Clock.set_time`` ставит клок в середину такта за 2 доли до
+#: начала формы — ``next_bar()`` тогда даёт ровно k·F при любом сдвиге
+#: ``nudge`` в (-2, +2) долей (``_now`` считает время с nudge, а ``set_time``
+#: пишет ``bpm_start_time`` без него). Живёт здесь, а не в
+#: ``core/clock_phase``: модуль грузится ``tools/gen_tool_catalog.py`` как
+#: отдельный файл, без пакета — относительные импорты ему запрещены.
+ALIGN_LEAD_BEATS = 2
+
+
+def clock_align_prelude(form_total_beats: int) -> str:
+    """Строка Renardo, ставящая клок так, что ``next_bar()`` = k·F (issue #3112).
+
+    Цель ``T = ((now + 2) // F + 1) * F - 2``: всегда ``T > now`` (прыжок
+    только вперёд), ``T ≡ -2 (mod F)``. Обоснование —
+    ``docs/design/2026-09-28-music-clock-phase-3112.md``.
+
+    Raises:
+        ValueError: F не положительно или не кратно такту (тогда
+            ``next_bar`` не может совпасть с началом формы).
+    """
+    total = int(form_total_beats)
+    if total <= 0 or total % BEATS_PER_BAR:
+        raise ValueError(f"длина формы {form_total_beats!r} не кратна такту {BEATS_PER_BAR}")
+    lead = ALIGN_LEAD_BEATS
+    return f"Clock.set_time(((Clock.now() + {lead}) // {total} + 1) * {total} - {lead})"
+
+
+def clock_entry_prelude(form_total_beats: int, entry_beats: int) -> str:
+    """``Clock.set_time`` без lead-долей: клок встаёт РОВНО на долю ``k·F + entry``.
+
+    Issue #3166 (DJ-переход fade): с :func:`clock_align_prelude` плееры
+    ждут ``ALIGN_LEAD_BEATS`` долей до ``next_bar()`` — на 124 BPM это
+    ~0,97 с тишины на стыке. Здесь клок ставится прямо на границу такта
+    ``T = (now // F + 1)·F + entry``; вызывающий обязан сразу после этой
+    строки поднять ``Clock.now_flag`` (плееры встают на ``now()``, а не на
+    ``next_bar()``, ``Players.py:880``), иначе они подождут целый такт.
+    ``entry`` — доля формы, с которой трек входит (не с тихого интро).
+
+    Raises:
+        ValueError: F не кратно такту, entry не кратно такту или вне [0, F).
+    """
+    total = int(form_total_beats)
+    entry = int(entry_beats)
+    if total <= 0 or total % BEATS_PER_BAR:
+        raise ValueError(f"длина формы {form_total_beats!r} не кратна такту {BEATS_PER_BAR}")
+    if entry < 0 or entry >= total or entry % BEATS_PER_BAR:
+        raise ValueError(f"доля входа {entry_beats!r} не кратна такту или вне формы {total}")
+    return f"Clock.set_time((Clock.now() // {total} + 1) * {total} + {entry})"
+
 
 #: Роль -> (имя плеера, октава, базовая амплитуда).
 #:
@@ -114,23 +164,42 @@ BEATS_PER_BAR = 4
 #: Амплитуды — ОТНОСИТЕЛЬНЫЙ баланс ролей, а не абсолютная громкость.
 #: Сумму держит synthdef ``masterlimiter`` в scsynth, абсолютный уровень —
 #: ROS-параметр ``music_master_gain``.
+#:
+#: Режим мелодии (план 2026-09-28 §2 п.7, §7.7): лид — самая громкая роль,
+#: аккомпанемент тихий. Было drums .55 / bass .50 / lead .52 / pad .30 —
+#: сумма пиков одновременно звучащих ролей ≈2.4, весь микс постоянно
+#: сидел в tanh мастера, и бочка была громче темы. Теперь сумма пиков
+#: одновременного состава (d3 занят либо perc, либо counter) ≤ 1.2
+#: (:func:`role_peak_sum`), лид на первом месте. На слух не проверено.
 ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
-    "drums": ("d1", 0, 0.55),
-    "hats":  ("d2", 0, 0.24),
-    "perc":  ("d3", 0, 0.30),
-    "bass":  ("p1", 3, 0.50),
-    "lead":  ("p2", 5, 0.52),
-    "pad":   ("p3", 4, 0.30),
+    "drums": ("d1", 0, 0.22),
+    "hats":  ("d2", 0, 0.09),
+    "perc":  ("d3", 0, 0.11),
+    "bass":  ("p1", 3, 0.22),
+    "lead":  ("p2", 5, 0.42),
+    "pad":   ("p3", 4, 0.11),
     # Второй голос выведенной аранжировки. Слот d3 — потому что Renardo
     # даёт ровно 6 слотов (d1-d3/p1-p3, renardo_sanitizer::
     # _ALLOWED_PLAYER_SLOTS), и остальные пять уже заняты. Имя слота на
     # звук не влияет; конфликта с перкуссией нет, потому что выведенная
     # аранжировка перкуссию не добавляет (грув несут drums + hats).
-    "counter": ("d3", 4, 0.26),
+    "counter": ("d3", 4, 0.14),
 }
 
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
 DRUM_ROLES = frozenset({"drums", "hats", "perc"})
+
+
+def role_peak_sum() -> float:
+    """Сумма базовых amp одновременно звучащих ролей (худший случай).
+
+    Слот d3 делят ``perc`` и ``counter`` — одновременно звучит только один
+    из них, поэтому берётся больший. Это верхняя граница суммы пиков
+    (интенсивность секций ≤ 1), без лупа/FX — они добавляются по запросу.
+    """
+    shared = max(ROLE_PROFILE["perc"][2], ROLE_PROFILE["counter"][2])
+    rest = sum(amp for role, (_p, _o, amp) in ROLE_PROFILE.items() if role not in ("perc", "counter"))
+    return round(rest + shared, 4)
 
 
 def _octave_hz(octave: int) -> float:
@@ -173,9 +242,10 @@ ROLE_BAND: Dict[str, Tuple[str, float]] = {
 #: из d1-d3 (см. :func:`_render_loop_layer`).
 LOOP_ROLE = "loop"
 LOOP_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3")
-#: Базовая громкость лупа: тише бочки (0.55) — луп несёт фактуру, а не
-#: долю, и не должен перекрывать выведенный из темы бит.
-LOOP_BASE_AMP = 0.35
+#: Базовая громкость лупа: тише бочки — луп несёт фактуру, а не долю, и не
+#: должен перекрывать выведенный из темы бит. Было 0.35 при бочке 0.55; после
+#: ребаланса ролей (бочка 0.22, лид 0.42 — лид громче всех) масштаб тот же ×0.4.
+LOOP_BASE_AMP = 0.14
 #: В форме без ударных (ambient) луп идёт за подкладом, но тише.
 LOOP_PAD_FOLLOW = 0.6
 
@@ -187,10 +257,11 @@ LOOP_PAD_FOLLOW = 0.6
 #: оба через один и тот же ``loop(...)`` синт (нет отдельного FX-синта в
 #: Renardo — см. ``core/sample_fx.py``). Слот — тот же общий пул d1-d3.
 FX_ROLE = "fx"
-#: Базовая громкость FX-акцента — заметно тише лупа (0.35): по acceptance
+#: Базовая громкость FX-акцента — заметно тише лупа (было 0.28 при лупе 0.35,
+#: масштаб ×0.4 вместе с ударными — см. LOOP_BASE_AMP): по acceptance
 #: issue #2968 это «умеренная громкость», не перекрывающая микс, а не ещё
 #: один слой ударных.
-FX_BASE_AMP = 0.28
+FX_BASE_AMP = 0.11
 #: Секции формы, которые считаются «стыком» для FX-акцента (issue #2968:
 #: «редко, на стыках секций/break», не в каждом такте). Имена взяты из
 #: :data:`FORMS` — секция, где форма явно меняет характер (брейк, гэп,
@@ -290,6 +361,7 @@ def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
     index = int(degree)
     octave, step = divmod(index, size)
     return octave * 12 + intervals[step]
+
 
 #: Верхняя граница числа ОДНОВРЕМЕННО звучащих ролей в одной секции формы
 #: (issue #2978, инвентаризация статей по аранжировке 24.09.2026: «4-5
@@ -901,9 +973,13 @@ def form_duration_seconds(
         Длительность в секундах: ``total_bars * BEATS_PER_BAR * 60 / bpm``.
     """
     clamped_bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(bpm)))
+    return form_total_beats(name, theme_bars) * 60.0 / clamped_bpm
+
+
+def form_total_beats(name: Optional[str], theme_bars: int = 0) -> int:
+    """Длина одного прохода формы в долях — та же, что в ``Clock.future`` :func:`render`."""
     plan = resolve_form(name, theme_bars)
-    total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
-    return total_beats * 60.0 / clamped_bpm
+    return sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
 
 
 def _section_intensity(role: str, intensities: Dict[str, float]) -> float:
@@ -1002,11 +1078,33 @@ def form_role_plan_violations(
     return violations
 
 
+@dataclass(frozen=True)
+class SectionLevels:
+    """Калибровка громкости classic (issue #3154, :mod:`core.classic_loudness`).
+
+    ``gains[i]`` — множитель ``amp`` секции ``i`` формы; ``slot_caps`` —
+    потолок ``amp`` слота плеера (``max_amp`` санитайзера или ниже, если
+    синт за своими фильтрами выше обрывается). ``amp = min(потолок·level,
+    amp · gain)``: множители считаются по спеке БЕЗ ручки ``levels``, а
+    ручка умножает результат — «бас ×0.5» остаётся ровно вдвое тише.
+    """
+
+    gains: Tuple[float, ...]
+    slot_caps: Mapping[str, float] = field(default_factory=dict)
+    max_amp: float = 0.85
+
+    def apply(self, amp: float, section: int, slot: str, level: float = 1.0) -> float:
+        return min(self.slot_caps.get(slot, self.max_amp) * level, amp * self.gains[section])
+
+
 def _amp_envelope(
     role: str,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     base_amp: float,
     floor: float = 0.0,
+    section_levels: Optional[SectionLevels] = None,
+    slot: str = "",
+    level: float = 1.0,
 ) -> Tuple[List[float], List[int]]:
     """Собрать (значения amp, длительности в битах) для одной роли.
 
@@ -1018,12 +1116,18 @@ def _amp_envelope(
         floor: нижняя граница интенсивности, доля 0..1. Нужна
             фиксированной теме (:data:`FIXED_THEME_AMP_FLOOR`): форма
             вправе делать её тише, но не вправе выключить.
+        section_levels: калибровка громкости (issue #3154) — множитель
+            секции и потолок слота ``slot`` (потолок × ``level`` — ручка
+            ``levels``, уже вошедшая в ``base_amp``); ``None`` — как до калибровки.
     """
     amps: List[float] = []
     durs: List[int] = []
-    for _name, bars, intensities in plan:
+    for index, (_name, bars, intensities) in enumerate(plan):
         intensity = max(_section_intensity(role, intensities), float(floor))
-        amps.append(round(base_amp * intensity, 4))
+        amp = base_amp * intensity
+        if section_levels is not None and amp > 0:
+            amp = section_levels.apply(amp, index, slot, level)
+        amps.append(round(amp, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     return _merge_adjacent(amps, durs)
 
@@ -1282,7 +1386,12 @@ def _render_drum_layer(
             'например "X..o.X.o".'
         )
     head = f'play({layer.pattern!r}'
-    args: List[str] = []
+    # Рисунок — ровно один такт (16 шагов на такт, harmonize._STYLE_DRUMS;
+    # дакинг _duck_expr_from_drum_pattern тоже считает шаг = такт / длина).
+    # Без явного dur у play() в renardo_lib dur=0.5 (Players.py:602):
+    # 16 шагов шли восьмыми, рисунок длился 2 такта — бочка вдвое реже
+    # задуманного, а провалы дакинга (цикл в 1 такт) мимо ударов.
+    args: List[str] = [f"dur={_fmt(BEATS_PER_BAR / len(layer.pattern))}"]
     if layer.sample:
         args.append(f"sample={int(layer.sample)}")
     return head, args
@@ -1522,12 +1631,100 @@ def _append_space_args(
             args.append(f"echo={echo_expr}")
 
 
+#: Динамика по нотам темы (план 2026-09-28 §7.7, «Another Satellite»:
+#: опорные ноты 1.0, проходящие 0.5–0.7). Пишется ``amplify=[...]`` —
+#: множитель поверх секционного ``amp=var(...)``, тот же ключ, что у баса
+#: уже звучит на роботе (дакинг). Значения ≤ 0.85 (``max_amp`` санитайзера):
+#: даже если ``_cap_amp`` когда-нибудь начнёт капать и списки, отношение
+#: слабая/сильная (≈0.65) не сплющится.
+ACCENT_STRONG = 0.85
+ACCENT_MEDIUM = 0.7
+ACCENT_WEAK = 0.55
+
+#: Легато темы: звучание ноты — доля её длительности (``clip(.9)`` у
+#: eefano). Renardo по умолчанию тянет ``sus = dur`` — ноты смыкаются без
+#: артикуляции, а синты с долгим хвостом накладываются друг на друга.
+LEGATO_FRACTION = 0.9
+
+_EPS = 1e-6
+
+
+def _top_pitch(note) -> Optional[float]:
+    """Высота ноты для поиска вершины фразы: аккорд/октава — верхний тон."""
+    if note is None:
+        return None
+    if isinstance(note, (tuple, list)):
+        return float(max(note)) if note else None
+    return float(note)
+
+
+def _metric_weight(onset: float) -> int:
+    """2 — сильная доля такта, 1 — любая доля, 0 — между долями."""
+    if abs(onset - round(onset)) > _EPS:
+        return 0
+    return 2 if int(round(onset)) % BEATS_PER_BAR == 0 else 1
+
+
+def _is_local_peak(pitches: Sequence[Optional[float]], i: int) -> bool:
+    """Нота выше соседней слева и не ниже соседней справа (паузы — «ниже»)."""
+    here = pitches[i]
+    if here is None:
+        return False
+    left = pitches[i - 1] if i > 0 else None
+    right = pitches[i + 1] if i + 1 < len(pitches) else None
+    return (left is None or here > left) and (right is None or here >= right)
+
+
+def lead_accents(notes: Sequence[object], durs: Sequence[float]) -> List[float]:
+    """Вес каждой ноты темы: метр + длительность + вершина фразы.
+
+    Очки: сильная доля такта 2 (любая доля 1), нота от бита и длиннее 1,
+    локальная вершина 1. ≥2 — :data:`ACCENT_STRONG`, 1 — ACCENT_MEDIUM,
+    0 и паузы — ACCENT_WEAK. Эвристика по данным RTTTL, не по слуху.
+    """
+    pitches = [_top_pitch(n) for n in notes]
+    out: List[float] = []
+    onset = 0.0
+    for i, dur in enumerate(durs):
+        score = _metric_weight(onset) + int(float(dur) >= 1.0) + int(_is_local_peak(pitches, i))
+        if pitches[i] is None or score == 0:
+            out.append(ACCENT_WEAK)
+        else:
+            out.append(ACCENT_STRONG if score >= 2 else ACCENT_MEDIUM)
+        onset += float(dur)
+    return out
+
+
+def _lead_phrasing_args(layer: Layer, duck_expr: Optional[str]) -> List[str]:
+    """``amplify=[...]`` (акценты) и ``sus=[...]`` (легато) темы с точным ритмом.
+
+    Только роль ``lead`` с заданным ``durs`` (фиксированная тема — RTTTL
+    или ``lead_dur``): у сочинённой мелодии ритмом владеет :func:`_dur_var`,
+    и списки по нотам с ним не совпали бы. ``amplify`` не ставится, если
+    слой уже дакается (ключ занят огибающей дакинга); ``sus`` — если он
+    задан у слоя явно.
+    """
+    if layer.role != "lead" or layer.durs is None:
+        return []
+    notes = layer.midi if layer.midi is not None else layer.degrees
+    if len(notes) != len(layer.durs):
+        return []
+    args: List[str] = []
+    accents = lead_accents(notes, layer.durs)
+    if duck_expr is None and len(set(accents)) > 1:
+        args.append(f"amplify={_fmt_list(accents)}")
+    if layer.sus is None:
+        args.append(f"sus={_fmt_list([float(d) * LEGATO_FRACTION for d in layer.durs])}")
+    return args
+
+
 def _render_layer(
     layer: Layer,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     use_filter: bool,
     level: float = 1.0,
     duck_expr: Optional[str] = None,
+    section_levels: Optional[SectionLevels] = None,
 ) -> Optional[str]:
     """Отрендерить одну строку Renardo-кода, либо None если слой молчит.
 
@@ -1559,7 +1756,8 @@ def _render_layer(
         floor = FIXED_THEME_AMP_FLOOR
         if layer.role == "counter":
             floor *= COUNTER_OF_LEAD
-    amps, durs = _amp_envelope(layer.role, plan, base_amp, floor=floor)
+    amps, durs = _amp_envelope(layer.role, plan, base_amp, floor=floor,
+                               section_levels=section_levels, slot=player, level=level)
     if not any(amps):
         # Роль не участвует ни в одной секции этой формы (например drums в
         # ambient) — плеер не создаём вовсе, чтобы не гонять тихие ноты.
@@ -1582,6 +1780,7 @@ def _render_layer(
     # форма и дакинг не должны переписывать друг друга.
     if duck_expr is not None:
         args.append(f"amplify={duck_expr}")
+    args.extend(_lead_phrasing_args(layer, duck_expr))
 
     args.extend(_role_filter_args(layer, use_filter))
 
@@ -1664,6 +1863,7 @@ def _render_loop_layer(
     bpm: float,
     player: str,
     level: float = 1.0,
+    section_levels: Optional[SectionLevels] = None,
 ) -> str:
     """Отрендерить жанровый луп: ``loop(имя, dur=N, beat_stretch=1, amp=...)``.
 
@@ -1685,7 +1885,8 @@ def _render_loop_layer(
         raise ArrangementError(f"groove_loop: неизвестный луп {layer.pattern!r}.")
     has_drums = any("drums" in intensities for _n, _b, intensities in plan)
     source, scale = ("drums", 1.0) if has_drums else ("pad", LOOP_PAD_FOLLOW)
-    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale * level)
+    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale * level,
+                               section_levels=section_levels, slot=player, level=level)
     amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
     beats = loops.loop_beats(info, bpm)
     return (
@@ -1706,6 +1907,7 @@ def _render_fx_layer(
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     player: str,
     level: float = 1.0,
+    section_levels: Optional[SectionLevels] = None,
 ) -> str:
     """Отрендерить одиночный FX-акцент (issue #2968): ``loop(<fx>, ...)``.
 
@@ -1753,9 +1955,11 @@ def _render_fx_layer(
 
     amps: List[float] = []
     durs: List[int] = []
-    for name, bars, _intensities in plan:
-        active = name.lower() in FX_BOUNDARY_SECTIONS
-        amps.append(round(FX_BASE_AMP * level, 4) if active else 0.0)
+    for index, (name, bars, _intensities) in enumerate(plan):
+        amp = FX_BASE_AMP * level if name.lower() in FX_BOUNDARY_SECTIONS else 0.0
+        if section_levels is not None and amp > 0:
+            amp = section_levels.apply(amp, index, player, level)
+        amps.append(round(amp, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     amps, durs = _merge_adjacent(amps, durs)
     amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
@@ -1809,6 +2013,7 @@ def _append_layer_lines(
     spec: CompositionSpec,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     bpm: float,
+    section_levels: Optional[SectionLevels] = None,
 ) -> int:
     """Дописать в ``lines`` строки всех слоёв; луп и FX — последними.
 
@@ -1829,7 +2034,7 @@ def _append_layer_lines(
         layer_duck = duck_expr if _duck_target(spec, layer.role) else None
         rendered = _render_layer(
             layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0),
-            duck_expr=layer_duck,
+            duck_expr=layer_duck, section_levels=section_levels,
         )
         if rendered is not None:
             lines.append(rendered)
@@ -1837,21 +2042,34 @@ def _append_layer_lines(
     for layer in spec.layers:
         if layer.role == LOOP_ROLE:
             lines.append(_render_loop_layer(
-                layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0)
+                layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0),
+                section_levels=section_levels,
             ))
             count += 1
     for layer in spec.layers:
         if layer.role == FX_ROLE:
             lines.append(_render_fx_layer(
                 layer, plan, _free_loop_slot(lines, what="fx"),
-                level=levels.get(FX_ROLE, 1.0),
+                level=levels.get(FX_ROLE, 1.0), section_levels=section_levels,
             ))
             count += 1
     return count
 
 
-def render(spec: CompositionSpec) -> str:
+def render(spec: CompositionSpec, *, align_clock: bool = False, calibrate: bool = True) -> str:
     """Развернуть спецификацию в Renardo-код с формой.
+
+    ``calibrate`` (issue #3154, по умолчанию вкл.): громкость секций
+    выравнивается моделью :mod:`core.classic_loudness` — основной блок
+    (секции с ударными) на уровне club, тихие секции не ниже него больше
+    чем на ~8 dB. Модель не разворачивает программу — код как до
+    калибровки.
+
+    Args:
+        align_clock: issue #3112 — сразу после ``Clock.clear()`` вставить
+            :func:`core.arranger.clock_align_prelude`, чтобы форма
+            стартовала с позиции 0, а не с ``доля_клока mod длина_формы``.
+            По умолчанию выключено (флаг окружения читает ``tools/music.py``).
 
     Returns:
         Многострочный Renardo-код, готовый для ``execute_music_code``.
@@ -1864,12 +2082,58 @@ def render(spec: CompositionSpec) -> str:
         raise ArrangementError("Спецификация без слоёв — играть нечего.")
 
     bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm)))
-    root = spec.root if spec.root in VALID_ROOTS else "C"
     plan = resolve_form(spec.form, getattr(spec, "theme_bars", 0))
+    code = _render_program(spec, plan, bpm, align_clock, None)
+    if not calibrate:
+        return code
+    # Множители — по спеке без ручки ``levels`` (см. :class:`SectionLevels`).
+    neutral = replace(spec, levels={}) if getattr(spec, "levels", None) else spec
+    base_code = code if neutral is spec else _render_program(neutral, plan, bpm, align_clock, None)
+    levels = classic_section_levels(neutral, plan, bpm, base_code)
+    return code if levels is None else _render_program(spec, plan, bpm, align_clock, levels)
+
+
+def classic_section_levels(
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+    code: str,
+) -> Optional[SectionLevels]:
+    """Калибровка громкости по программе ``code`` (issue #3154); ``None`` — без калибровки."""
+    from .classic_loudness import MAX_AMP, section_gains
+
+    bounds = [0.0]
+    for _name, bars, _intensities in plan:
+        bounds.append(bounds[-1] + int(bars) * BEATS_PER_BAR)
+    has_drums = any(layer.role == "drums" for layer in spec.layers)
+    main = [i for i, (_n, _b, intensities) in enumerate(plan)
+            if has_drums and _section_intensity("drums", intensities) > 0]
+    calibration = section_gains(code, bounds, bpm, main)
+    if calibration is None:
+        return None
+    return SectionLevels(tuple(calibration.gains), dict(calibration.slot_caps), MAX_AMP)
+
+
+def _render_program(
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+    align_clock: bool,
+    section_levels: Optional[SectionLevels],
+) -> str:
+    """Код формы: шапка клока/тоники/лада + слои (с калибровкой, если есть)."""
+    root = spec.root if spec.root in VALID_ROOTS else "C"
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     total_beats = total_bars * BEATS_PER_BAR
 
-    lines: List[str] = ["Clock.clear()", f"Clock.bpm = {_fmt(bpm)}"]
+    lines: List[str] = ["Clock.clear()"]
+    end_beats = total_beats
+    if align_clock:
+        # #3112: строго между clear и ``Clock.bpm =`` — ``set_time`` чистит
+        # очередь, а смена темпа планируется в неё (TempoClock.py:420, 235).
+        lines.append(clock_align_prelude(total_beats))
+        end_beats += ALIGN_LEAD_BEATS
+    lines.append(f"Clock.bpm = {_fmt(bpm)}")
 
     if spec.swing > 0:
         # #1806 — ровные восьмые не читаются как джаз/блюз/шафл ни при
@@ -1926,7 +2190,7 @@ def render(spec: CompositionSpec) -> str:
     # неё свои строки (issue #2837, живой прогон 23.09: с filter_sweep=True
     # шапка всегда 5 строк, и guard на ``len(lines) <= 4`` не срабатывал ни
     # при каком количестве слоёв).
-    rendered_players = _append_layer_lines(lines, spec, plan, bpm)
+    rendered_players = _append_layer_lines(lines, spec, plan, bpm, section_levels)
 
     if rendered_players == 0:
         raise _no_players_error(spec, plan)
@@ -1934,7 +2198,7 @@ def render(spec: CompositionSpec) -> str:
     if not spec.repeat:
         # Функция, а не lambda: lambda режется AST-фильтром, а Clock.clear
         # передаётся как объект и вызывается планировщиком.
-        lines.append(f"Clock.future({total_beats}, Clock.clear)")
+        lines.append(f"Clock.future({end_beats}, Clock.clear)")
 
     return "\n".join(lines)
 
@@ -2299,6 +2563,112 @@ def _counter_enabled(mode: str, dense: bool) -> bool:
     return mode == "on"
 
 
+#: Минимальная пауза в конце темы перед её повтором, в битах (план
+#: 2026-09-28 §7.7 «Дыхание»). Тема, которая кончается звучащей нотой
+#: (или паузой короче бита), получает ещё один такт тишины у лида —
+#: целый такт, чтобы цикл темы остался кратен такту и не уехал от
+#: рисунка ударных (тот же принцип, что ``rtttl_compose._snap_to_bar``).
+BREATH_MIN_BEATS = 1.0
+
+#: Тема короче этого (в тактах) — риф, а не фраза: риф в 1–2 такта
+#: повторяется подряд (план §2 п.1, DJ Dave), такт тишины после каждого
+#: его прохода удлинил бы цикл в 1.5–2 раза и разорвал грув.
+BREATH_MIN_THEME_BARS = 4
+
+
+def breath_beats(lead: Sequence[Tuple[object, float]]) -> float:
+    """Сколько битов паузы дописать в конец темы до её повтора.
+
+    Сначала — добивка до границы такта (обычно 0: RTTTL-путь уже
+    выровнен). Если тема — фраза (не короче
+    :data:`BREATH_MIN_THEME_BARS`), а хвостовая пауза вместе с добивкой
+    короче :data:`BREATH_MIN_BEATS` — плюс целый такт.
+    """
+    total = round(sum(float(dur) for _note, dur in lead), 6)
+    gap = round((-total) % BEATS_PER_BAR, 6)
+    if gap > BEATS_PER_BAR - _EPS:
+        gap = 0.0
+    if total + gap < BREATH_MIN_THEME_BARS * BEATS_PER_BAR - _EPS:
+        return gap
+    tail = 0.0
+    for note, dur in reversed(tuple(lead)):
+        if note is not None:
+            break
+        tail += float(dur)
+    if tail + gap < BREATH_MIN_BEATS - _EPS:
+        gap += BEATS_PER_BAR
+    return gap
+
+
+def _append_hold(part: Sequence[Tuple[object, float]], note, beats: float) -> Tuple:
+    """Дописать в партию ``note`` длиной ``beats``; паузу — слить с хвостовой.
+
+    Слияние пауз — тот же механизм, что у RTTTL-пауз (``None`` в нотах):
+    отдельная запись ``(None, beats)``, а не новая конструкция Renardo.
+    """
+    part = tuple(part)
+    if beats <= 0 or not part:
+        return part
+    last_note, last_dur = part[-1]
+    if note is None and last_note is None:
+        return part[:-1] + ((None, float(last_dur) + float(beats)),)
+    return part + ((note, float(beats)),)
+
+
+def _chord_bar_hits(chords: Sequence[object], breath: float) -> Tuple:
+    """Пэд: один аккорд на такт (и на каждую смену аккорда внутри такта).
+
+    Окно гармонии режется по границам тактов; последнее окно тянется на
+    ``breath`` — аккомпанемент держит последний аккорд, пока лид дышит.
+    """
+    out: List[Tuple[Tuple[int, ...], float]] = []
+    for index, chord in enumerate(chords):
+        start = float(chord.start)
+        end = start + float(chord.beats) + (breath if index == len(chords) - 1 else 0.0)
+        cursor = start
+        while cursor < end - _EPS:
+            bar_end = (int(cursor / BEATS_PER_BAR + _EPS) + 1) * BEATS_PER_BAR
+            nxt = min(end, float(bar_end))
+            out.append((tuple(chord.tones), round(nxt - cursor, 6)))
+            cursor = nxt
+    return tuple(out)
+
+
+def _phrased_parts(harmony, counter_part, breath: float) -> Tuple[Dict[str, Tuple], Optional[float]]:
+    """Партии режима мелодии: дыхание между повторами и редкий пэд.
+
+    Лид и второй голос молчат ``breath`` битов, бас держит корень
+    последнего аккорда. Пэд в ``pad_style=auto`` — один аккорд на такт
+    (:func:`_chord_bar_hits`) и звучит всю длину (``sus`` не задаётся);
+    явные ``stab``/``sustain`` — прежние партии, только с дыханием.
+
+    Returns:
+        (роль → партия, ``sus`` пэда).
+    """
+    chords = tuple(getattr(harmony, "chords", ()) or ())
+    last_root = chords[-1].root_midi if chords else None
+    pad_part = tuple(harmony.pad)
+    pad_sus = getattr(harmony, "pad_sus", PAD_STAB_SUS)
+    style = (getattr(harmony, "decisions", None) or {}).get("knob_pad_style", "auto")
+    if pad_part and chords and style == "auto":
+        pad_part, pad_sus = _chord_bar_hits(chords, breath), None
+    elif pad_part:
+        pad_part = _append_hold(pad_part, pad_part[-1][0], breath)
+    parts = {
+        "bass": _append_hold(harmony.bass, last_root, breath),
+        "lead": _append_hold(harmony.lead, None, breath),
+        "pad": pad_part,
+        "counter": _append_hold(counter_part, None, breath),
+    }
+    return parts, pad_sus
+
+
+def _theme_bars(harmony, breath: float) -> int:
+    """Длина цикла темы в тактах вместе с дыханием."""
+    total = sum(float(dur) for _note, dur in harmony.lead) + float(breath)
+    return max(1, int(round(total / BEATS_PER_BAR)))
+
+
 def _add_derived_layers(
     layers: List[Layer],
     harmony,
@@ -2311,6 +2681,7 @@ def _add_derived_layers(
     drums_sample: int,
     hats_sample: int,
     options: Optional[ArrangeOptions] = None,
+    breath: float = 0.0,
 ) -> None:
     """Разложить готовую гармонизацию темы в слои аранжировки.
 
@@ -2338,12 +2709,13 @@ def _add_derived_layers(
     # См. harmonize::DENSE_ONSETS_PER_BEAT.
     dense = getattr(harmony, "dense", True)
     counter_part = harmony.counter if _counter_enabled(options.counter, dense) else ()
-    pad_sus = getattr(harmony, "pad_sus", PAD_STAB_SUS)
+    # План 2026-09-28 §7.7: дыхание между повторами темы, пэд — аккорд на такт.
+    parts, pad_sus = _phrased_parts(harmony, counter_part, breath)
     for role, synth, part in (
-        ("bass", bass_synth, harmony.bass),
-        ("lead", lead_synth, harmony.lead),
-        ("pad", pad_synth, harmony.pad),
-        ("counter", counter_synth, counter_part),
+        ("bass", bass_synth, parts["bass"]),
+        ("lead", lead_synth, parts["lead"]),
+        ("pad", pad_synth, parts["pad"]),
+        ("counter", counter_synth, parts["counter"]),
     ):
         if not (synth and synth.strip()) or not part:
             continue
@@ -2572,6 +2944,7 @@ def spec_from_flat(
             # отключение без фолбэка на lead_synth.
             "counter": _resolve_counter_synth_default(counter_synth, lead_synth),
         }
+        breath = breath_beats(harmony.lead)
         _add_derived_layers(
             layers,
             harmony,
@@ -2583,6 +2956,7 @@ def spec_from_flat(
             drums_sample=drums_sample,
             hats_sample=hats_sample,
             options=options,
+            breath=breath,
         )
         return CompositionSpec(
             bpm=float(bpm),
@@ -2595,7 +2969,7 @@ def spec_from_flat(
             # двигал бы ступени, для них не существует — и потому не
             # может увести аккомпанемент от фиксированной темы.
             progression=(),
-            theme_bars=int(harmony.bars),
+            theme_bars=_theme_bars(harmony, breath),
             repeat=bool(repeat),
             swing=swing,
             decisions=arrangement_decisions(

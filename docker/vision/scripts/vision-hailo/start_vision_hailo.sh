@@ -34,6 +34,10 @@ FIRST_FRAME_TIMEOUT_SEC="${FIRST_FRAME_TIMEOUT_SEC:-10.0}"
 # input_topic — back-compat (нода его НЕ использует; см. ADR-0104).
 INPUT_TOPIC="${INPUT_TOPIC:-/camera/camera/color/image_raw}"
 OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
+# ADR-0138: Observation + глубина OAK-D (дефолты = hailo_models.yaml).
+OBSERVATION_TOPIC="${OBSERVATION_TOPIC:-/perception/observations}"
+DEPTH_ENABLED="${DEPTH_ENABLED:-true}"
+DEPTH_SYNC_TOLERANCE_SEC="${DEPTH_SYNC_TOLERANCE_SEC:-0.15}"
 HAILO_MODELS_YAML="${HAILO_MODELS_YAML:-/config/hailo_models.yaml}"
 
 # ---------- source ROS workspace ----------
@@ -77,7 +81,9 @@ def emit(k, v):
     print(f'export {k.upper()}="{v}"')
 for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'confidence_threshold', 'input_topic', 'output_topic',
-            'gaze_source', 'first_frame_timeout_sec'):
+            'gaze_source', 'first_frame_timeout_sec',
+            # ADR-0138: Observation + глубина OAK-D.
+            'observation_topic', 'depth_enabled', 'depth_sync_tolerance_sec'):
     if key not in node:
         continue
     env_name = key.upper()
@@ -98,7 +104,8 @@ fi
 
 # ---------- summary ----------
 echo "[start_vision_hailo] config: HAILO_ENABLED=${HAILO_ENABLED} HEF_PATH=${HEF_PATH:-<none>}"
-echo "[start_vision_hailo] topics: input=${INPUT_TOPIC} output=${OUTPUT_TOPIC}"
+echo "[start_vision_hailo] topics: input=${INPUT_TOPIC} output=${OUTPUT_TOPIC} observations=${OBSERVATION_TOPIC}"
+echo "[start_vision_hailo] depth: enabled=${DEPTH_ENABLED} sync_tolerance=${DEPTH_SYNC_TOLERANCE_SEC}s"
 echo "[start_vision_hailo] confidence_threshold=${CONFIDENCE_THRESHOLD} stub_period=${STUB_PERIOD_SEC}"
 
 # ---------- capability-honest mode check (ADR-0018) ----------
@@ -167,6 +174,9 @@ LAUNCH_ARGS=(
     # input_topic — back-compat, нода игнорирует (ADR-0104).
     input_topic:=${INPUT_TOPIC}
     output_topic:=${OUTPUT_TOPIC}
+    observation_topic:=${OBSERVATION_TOPIC}
+    depth_enabled:=${DEPTH_ENABLED}
+    depth_sync_tolerance_sec:=${DEPTH_SYNC_TOLERANCE_SEC}
     # ADR-0104 acceptance #5 (issue #2703): в проде обязан быть false —
     # true маскирует недоступность источника кадра (нода бы публиковала
     # stub-события бесконечно, даже когда gaze_source мёртв). launch_factory

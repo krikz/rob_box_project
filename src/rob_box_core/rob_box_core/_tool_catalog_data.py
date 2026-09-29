@@ -1736,7 +1736,115 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'Тембры '
                                                                         '(lead_synth/bass_synth/pad_synth) '
                                                                         'и ручки — как '
-                                                                        'с name=.'}},
+                                                                        'с name=.'},
+                                            'style': {   'type': 'string',
+                                                         'description': 'Стиль '
+                                                                        'аранжировки. '
+                                                                        'classic (по '
+                                                                        'умолчанию) — '
+                                                                        'прежнее '
+                                                                        'поведение. '
+                                                                        'club — '
+                                                                        'клубный трек '
+                                                                        'по эталону DJ '
+                                                                        'Dave «By '
+                                                                        'Design»: '
+                                                                        'синкопированная '
+                                                                        'бочка, бас и '
+                                                                        'арпеджио '
+                                                                        '16-ми с '
+                                                                        'пампингом под '
+                                                                        'бочку, '
+                                                                        'клэп+открытый '
+                                                                        'хэт, пэд, '
+                                                                        'форма из '
+                                                                        'матрицы '
+                                                                        'секций '
+                                                                        '(build/predrop/drop/verse, '
+                                                                        '32 такта). С '
+                                                                        'club работают '
+                                                                        'только bpm '
+                                                                        '(по умолчанию '
+                                                                        '124), root '
+                                                                        '(по умолчанию '
+                                                                        'A#), scale '
+                                                                        '(только '
+                                                                        'minor), seed '
+                                                                        '(выбирает '
+                                                                        'прогрессию, '
+                                                                        'риф, бочку, '
+                                                                        'хэты, шаблон '
+                                                                        'секций и '
+                                                                        'тембры) и '
+                                                                        'repeat; '
+                                                                        'остальные '
+                                                                        'параметры '
+                                                                        'игнорируются '
+                                                                        '— об этом '
+                                                                        'сказано в '
+                                                                        'начале '
+                                                                        'ответа. С '
+                                                                        'name= мелодии '
+                                                                        'из библиотеки '
+                                                                        'или rtttl= '
+                                                                        'club играет '
+                                                                        'вместо '
+                                                                        'арпеджио '
+                                                                        'узнаваемый '
+                                                                        'хук темы (её '
+                                                                        'начало, до 4 '
+                                                                        'тактов) в '
+                                                                        'тональности '
+                                                                        'трека; ответ '
+                                                                        'называет id и '
+                                                                        'название '
+                                                                        'темы. name=, '
+                                                                        'которого нет '
+                                                                        'в библиотеке, '
+                                                                        '— только '
+                                                                        'подпись, темы '
+                                                                        'в треке нет.',
+                                                         'enum': ['classic', 'club'],
+                                                         'default': 'classic'},
+                                            'transition': {   'type': 'string',
+                                                              'description': 'Только '
+                                                                             'для '
+                                                                             'style=club. '
+                                                                             'cut (по '
+                                                                             'умолчанию) '
+                                                                             '— новый '
+                                                                             'трек '
+                                                                             'сразу '
+                                                                             'заменяет '
+                                                                             'играющий. '
+                                                                             'fade — '
+                                                                             'DJ-переход: '
+                                                                             'играющий '
+                                                                             'трек за '
+                                                                             '8 тактов '
+                                                                             'уходит '
+                                                                             'фильтром '
+                                                                             'и '
+                                                                             'громкостью, '
+                                                                             'новый '
+                                                                             'стартует '
+                                                                             'с '
+                                                                             'границы '
+                                                                             'такта '
+                                                                             'после '
+                                                                             'фейда '
+                                                                             '(если '
+                                                                             'ничего '
+                                                                             'не '
+                                                                             'играет — '
+                                                                             'сразу). '
+                                                                             'В '
+                                                                             'DJ-сете '
+                                                                             'между '
+                                                                             'треками '
+                                                                             '— fade.',
+                                                              'enum': ['cut', 'fade'],
+                                                              'default': 'cut'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -1779,7 +1887,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'lead_outliers',
                                        'levels',
                                        'seed',
-                                       'rtttl'],
+                                       'rtttl',
+                                       'style',
+                                       'transition'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -4979,7 +5089,115 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'Тембры '
                                                                         '(lead_synth/bass_synth/pad_synth) '
                                                                         'и ручки — как '
-                                                                        'с name=.'}},
+                                                                        'с name=.'},
+                                            'style': {   'type': 'string',
+                                                         'description': 'Стиль '
+                                                                        'аранжировки. '
+                                                                        'classic (по '
+                                                                        'умолчанию) — '
+                                                                        'прежнее '
+                                                                        'поведение. '
+                                                                        'club — '
+                                                                        'клубный трек '
+                                                                        'по эталону DJ '
+                                                                        'Dave «By '
+                                                                        'Design»: '
+                                                                        'синкопированная '
+                                                                        'бочка, бас и '
+                                                                        'арпеджио '
+                                                                        '16-ми с '
+                                                                        'пампингом под '
+                                                                        'бочку, '
+                                                                        'клэп+открытый '
+                                                                        'хэт, пэд, '
+                                                                        'форма из '
+                                                                        'матрицы '
+                                                                        'секций '
+                                                                        '(build/predrop/drop/verse, '
+                                                                        '32 такта). С '
+                                                                        'club работают '
+                                                                        'только bpm '
+                                                                        '(по умолчанию '
+                                                                        '124), root '
+                                                                        '(по умолчанию '
+                                                                        'A#), scale '
+                                                                        '(только '
+                                                                        'minor), seed '
+                                                                        '(выбирает '
+                                                                        'прогрессию, '
+                                                                        'риф, бочку, '
+                                                                        'хэты, шаблон '
+                                                                        'секций и '
+                                                                        'тембры) и '
+                                                                        'repeat; '
+                                                                        'остальные '
+                                                                        'параметры '
+                                                                        'игнорируются '
+                                                                        '— об этом '
+                                                                        'сказано в '
+                                                                        'начале '
+                                                                        'ответа. С '
+                                                                        'name= мелодии '
+                                                                        'из библиотеки '
+                                                                        'или rtttl= '
+                                                                        'club играет '
+                                                                        'вместо '
+                                                                        'арпеджио '
+                                                                        'узнаваемый '
+                                                                        'хук темы (её '
+                                                                        'начало, до 4 '
+                                                                        'тактов) в '
+                                                                        'тональности '
+                                                                        'трека; ответ '
+                                                                        'называет id и '
+                                                                        'название '
+                                                                        'темы. name=, '
+                                                                        'которого нет '
+                                                                        'в библиотеке, '
+                                                                        '— только '
+                                                                        'подпись, темы '
+                                                                        'в треке нет.',
+                                                         'enum': ['classic', 'club'],
+                                                         'default': 'classic'},
+                                            'transition': {   'type': 'string',
+                                                              'description': 'Только '
+                                                                             'для '
+                                                                             'style=club. '
+                                                                             'cut (по '
+                                                                             'умолчанию) '
+                                                                             '— новый '
+                                                                             'трек '
+                                                                             'сразу '
+                                                                             'заменяет '
+                                                                             'играющий. '
+                                                                             'fade — '
+                                                                             'DJ-переход: '
+                                                                             'играющий '
+                                                                             'трек за '
+                                                                             '8 тактов '
+                                                                             'уходит '
+                                                                             'фильтром '
+                                                                             'и '
+                                                                             'громкостью, '
+                                                                             'новый '
+                                                                             'стартует '
+                                                                             'с '
+                                                                             'границы '
+                                                                             'такта '
+                                                                             'после '
+                                                                             'фейда '
+                                                                             '(если '
+                                                                             'ничего '
+                                                                             'не '
+                                                                             'играет — '
+                                                                             'сразу). '
+                                                                             'В '
+                                                                             'DJ-сете '
+                                                                             'между '
+                                                                             'треками '
+                                                                             '— fade.',
+                                                              'enum': ['cut', 'fade'],
+                                                              'default': 'cut'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -5022,7 +5240,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'lead_outliers',
                                        'levels',
                                        'seed',
-                                       'rtttl'],
+                                       'rtttl',
+                                       'style',
+                                       'transition'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -5752,7 +5972,22 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              '→ 5), а '
                                                                              'списка '
                                                                              'треков '
-                                                                             'нет.'}},
+                                                                             'нет.'},
+                                            'bpm': {   'type': 'integer',
+                                                       'description': 'Темп ВСЕГО сета '
+                                                                      '(60–180), по '
+                                                                      'умолчанию 124. '
+                                                                      'Передавай '
+                                                                      'ТОЛЬКО если '
+                                                                      'юзер сам '
+                                                                      'попросил темп '
+                                                                      '(«быстрее», '
+                                                                      '«давай 128») — '
+                                                                      'сет держит один '
+                                                                      'темп, переходы '
+                                                                      'между треками '
+                                                                      'его не '
+                                                                      'меняют.'}},
                           'required': ['enabled'],
                           'additionalProperties': False},
         'signature': {   'params': [   'enabled',
@@ -5762,10 +5997,65 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'persona',
                                        'plan',
                                        'max_minutes',
-                                       'max_tracks'],
+                                       'max_tracks',
+                                       'bpm'],
                          'required': ['enabled'],
                          'accepts_kwargs': False},
         'skill': ('dj',)},
+    {   'llm_visible': True,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
+        'name': 'set_music_volume',
+        'description': 'Громкость МУЗЫКИ (трек/бит/DJ-сет: compose_music, '
+                       'lookup_melody, execute_music_code, load_track), а НЕ голоса '
+                       'робота. Юзер просит «громче/тише/погромче/потише» и сейчас '
+                       'играет музыка, или прямо говорит «музыку/трек/бит громче» — '
+                       'вызывай ЭТОТ тул, а не set_volume (set_volume меняет только '
+                       'голос). Музыку не перезапускает: играющий трек продолжает '
+                       'играть, меняется только уровень. action: louder/quieter — шаг '
+                       '±3 dB, max — максимум, normal — стартовый уровень, set — '
+                       'абсолютный уровень level 0..100 (% от максимума). mp3 из '
+                       'MiniMax-библиотеки (gen_play_from_library) этим тулом не '
+                       'регулируется.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'action': {   'type': 'string',
+                                                          'description': 'louder — '
+                                                                         'громче на '
+                                                                         'шаг, quieter '
+                                                                         '— тише на '
+                                                                         'шаг, max — '
+                                                                         'на максимум, '
+                                                                         'normal — '
+                                                                         'стартовый '
+                                                                         'уровень, set '
+                                                                         '— выставить '
+                                                                         'level',
+                                                          'enum': [   'louder',
+                                                                      'quieter',
+                                                                      'max',
+                                                                      'normal',
+                                                                      'set']},
+                                            'level': {   'type': 'integer',
+                                                         'description': 'Только для '
+                                                                        'action=set: '
+                                                                        'уровень '
+                                                                        'музыки в '
+                                                                        'процентах от '
+                                                                        'максимума, '
+                                                                        '0..100 '
+                                                                        '(значения вне '
+                                                                        'диапазона '
+                                                                        'обрезаются).'}},
+                          'required': ['action'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['action', 'level'],
+                         'required': ['action'],
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj', 'voice-tts')},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -5977,8 +6267,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_volume',
-        'description': 'Установить громкость голоса робота. Используй для команд '
-                       "'громче', 'тише', 'максимальная громкость'.",
+        'description': 'Громкость ГОЛОСА робота (речь TTS), НЕ музыки. Используй для '
+                       "'говори громче', 'тише говори', 'максимальная громкость "
+                       "голоса', а также для 'громче/тише', когда музыка НЕ играет. "
+                       'Если играет трек/бит/DJ-сет и юзер просит громче/тише музыку — '
+                       'вызывай set_music_volume, а не этот тул.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Действие с '

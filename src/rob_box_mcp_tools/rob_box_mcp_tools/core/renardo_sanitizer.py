@@ -449,6 +449,47 @@ def _remap_illegal_slots(code: str) -> Tuple[str, Optional[str]]:
 # ---------------------------------------------------------------------------
 
 
+_GROUP_CLOSE = {"(": ")", "[": "]", "{": "}", "|": "|"}
+
+
+def _play_steps(pattern: str) -> Optional[List[str]]:
+    """Разбить рисунок play() на шаги верхнего уровня.
+
+    Группа ``(ab)`` (чередование), ``[ab]`` (деление шага), ``{ab}``
+    (случайный выбор) и ``|x2|`` (выбор сэмпла) — это ОДИН шаг, а не
+    ``len`` символов. ``None`` — рисунок не разбирается (слои ``<..>``,
+    несбалансированные скобки): такой не трогаем.
+    """
+    if "<" in pattern or ">" in pattern:
+        return None
+    steps: List[str] = []
+    i = 0
+    while i < len(pattern):
+        opener = pattern[i]
+        if opener in ")]}":
+            return None
+        if opener not in _GROUP_CLOSE:
+            steps.append(opener)
+            i += 1
+            continue
+        depth, j = 0, i
+        while j < len(pattern):
+            ch = pattern[j]
+            if opener == "|" and j > i and ch == "|":
+                break
+            if opener != "|":
+                depth += ch == opener
+                depth -= ch == _GROUP_CLOSE[opener]
+                if depth == 0:
+                    break
+            j += 1
+        if j >= len(pattern):
+            return None
+        steps.append(pattern[i:j + 1])
+        i = j + 1
+    return steps
+
+
 def _fix_pattern_length(code: str) -> str:
     """Достроить рисунок play("...") до степени двойки (issue #1803).
 
@@ -456,6 +497,10 @@ def _fix_pattern_length(code: str) -> str:
     с соседними слоями. Длина приводится к ближайшей СВЕРХУ степени двойки;
     хвостовые паузы (``.``) снимаются до первой степени двойки. Добивка —
     только ``.`` (настоящая пауза), никогда ``-`` (звучащий сэмпл).
+
+    Длина считается в ШАГАХ (:func:`_play_steps`), а не в символах: раньше
+    ``"X..X..X..(.X)X....."`` (16 шагов, 19 символов) обрезался до 13
+    шагов, и бочка уплывала относительно такта.
     """
 
     def _pow2_at_least(value: int) -> int:
@@ -466,25 +511,23 @@ def _fix_pattern_length(code: str) -> str:
 
     def _pad(m: re.Match) -> str:
         ws, quote, pattern = m.group(1), m.group(2), m.group(3)
-        if len(pattern) <= 1:
+        steps = _play_steps(pattern)
+        if steps is None or len(steps) <= 1:
             return m.group(0)
 
-        trimmed = pattern
+        trimmed = list(steps)
         while (
             len(trimmed) > 1
             and _pow2_at_least(len(trimmed)) != len(trimmed)
             and trimmed[-1] == "."
         ):
-            trimmed = trimmed[:-1]
+            trimmed.pop()
 
         target = _pow2_at_least(len(trimmed))
-        if target == len(trimmed):
-            if trimmed == pattern:
-                return m.group(0)
-            return f"play({ws}{quote}{trimmed}{quote}"
-
-        padded = trimmed + "." * (target - len(trimmed))
-        return f"play({ws}{quote}{padded}{quote}"
+        fixed = "".join(trimmed) + "." * (target - len(trimmed))
+        if fixed == pattern:
+            return m.group(0)
+        return f"play({ws}{quote}{fixed}{quote}"
 
     return _PLAY_PATTERN_LEN_RE.sub(_pad, code)
 

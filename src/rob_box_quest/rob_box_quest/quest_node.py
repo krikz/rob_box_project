@@ -42,7 +42,7 @@ _KIND_SET_AVATAR_MODE: int = 3
 
 from audio_common_msgs.msg import AudioData
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
@@ -62,6 +62,7 @@ from rob_box_core.speech_segmentation import (
     PhraseSegmenter,
 )
 
+from .core.nav_goal import NACK_EMERGENCY, NACK_NAV2_UNAVAILABLE, NavGoalRequest  # noqa: E402
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
@@ -69,6 +70,14 @@ from .server.ws_server import NoOpBridge, WSSServer, build_app
 from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
 from .streams.battery import parse_battery_json, voltage_to_pct
 from .streams.lidar import scan_to_payload
+from .nav2_goal import Nav2GoalBridge, create_nav2_goal_bridge  # noqa: E402
+from .streams.nav_path import (  # noqa: E402
+    NAV_PATH_FRAME,
+    NavPathThrottle,
+    decimate_path,
+    encode_nav_path,
+    path_msg_points,
+)
 from .streams.depth import depth_compressed_to_jpeg
 from .streams.occupancy import encode_map_2d, grid_to_png
 from .streams.provider import CameraFrame, CameraProvider
@@ -394,6 +403,12 @@ class QuestBridge:
         # Сохраняем loop aiohttp для отправки STATE_UPDATE из ROS-callback-а.
         # None до тех пор, пока ``QuestNode._start_aiohttp()`` не сходится.
         self._aio_send_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Captain Bridge волна 2 (issue #3151): nav-цель → Nav2 и путь
+        # /plan → nav_path. ``_nav2`` = None в unit-тестах и в образе без
+        # nav2_msgs — тогда nav_goal честно nack'ается nav2_unavailable.
+        self._nav2: Optional[Nav2GoalBridge] = None
+        self._nav_path_throttle = NavPathThrottle()
+        self._nav_path_frame_warned = False
 
     def set_aio_send_loop(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
         """Запомнить aiohttp-loop для потокобезопасной отправки STATE_UPDATE.
@@ -451,9 +466,18 @@ class QuestBridge:
         self._emergency_published = False
 
     def emergency_stop(self) -> None:
-        """Зафиксировать emergency lock (клиент прислал stop_emergency)."""
+        """Зафиксировать emergency lock (клиент прислал stop_emergency).
+
+        #3151: вместе с телеопом отменяем и nav-цель. cmd_vel_emergency —
+        один Twist с timeout 0.1 с в twist_mux, после которого Nav2 снова
+        выиграл бы мультиплексор и поехал дальше. Watchdog-трип (оператор
+        пропал) идёт сюда же: цель, выставленная из VR, без оператора не
+        доезжает.
+        """
         self._teleop.emergency_stop()
         self._publish_zero()
+        if self._nav2 is not None and self._nav2.cancel():
+            self._node.get_logger().warning("🛑 emergency: nav-цель отменена")
 
     def publish_frame(self, ui_name: str, payload: bytes) -> None:
         """Bridge.publish_frame — пересылает payload в WS-подписчикам."""
@@ -1036,6 +1060,70 @@ class QuestBridge:
             png=png,
         )
         self.publish_frame("map_2d", payload)
+
+    # --- Captain Bridge волна 2 (issue #3151): Nav2 ------------------------
+
+    def attach_nav2(self, nav2: Optional[Nav2GoalBridge]) -> None:
+        """Подключить мост к Nav2 (создаётся в QuestNode после ws_server)."""
+        self._nav2 = nav2
+
+    def nav_goal(self, client_id: str, req: NavGoalRequest) -> Optional[str]:
+        """Bridge.nav_goal: emergency lock → nack; иначе цель в Nav2."""
+        if self._teleop.is_emergency:
+            return NACK_EMERGENCY
+        if self._nav2 is None:
+            return NACK_NAV2_UNAVAILABLE
+        self._node.get_logger().info(
+            f"🧭 nav_goal от {client_id}: seq={req.seq} "
+            f"map=({req.x:.2f}, {req.y:.2f}) yaw={req.yaw:.2f}"
+        )
+        return self._nav2.send_goal(req)
+
+    def nav_cancel(self, client_id: str) -> bool:
+        """Bridge.nav_cancel: ``False`` — активной цели не было."""
+        if self._nav2 is None:
+            return False
+        self._node.get_logger().info(f"🧭 nav_cancel от {client_id}")
+        return self._nav2.cancel()
+
+    def nav2_check_timeout(self) -> None:
+        """Тик таймера хоста (#3151): оборвать зависшую цель, если Nav2 молчит."""
+        if self._nav2 is not None:
+            self._nav2.check_timeout()
+
+    def on_nav_path(self, msg) -> None:
+        """ROS /plan (nav_msgs/Path) → nav_path (0x1104), ≤ 2 Гц, ≤ 200 точек.
+
+        Путь не в ``map`` не шлём вовсе: клиент кладёт точки по позе робота
+        в ``map`` — чужой кадр нарисовался бы уверенно и неправильно.
+        """
+        frame, points = path_msg_points(msg)
+        if frame.lstrip("/") != NAV_PATH_FRAME:
+            if not self._nav_path_frame_warned:
+                self._nav_path_frame_warned = True
+                self._node.get_logger().warning(
+                    f"nav_path: /plan в кадре {frame!r}, ожидался "
+                    f"{NAV_PATH_FRAME!r} — кадры пути не отправляются"
+                )
+            return
+        if not self._nav_path_throttle.admit(time.monotonic()):
+            return
+        self.publish_frame(
+            "nav_path",
+            encode_nav_path(
+                frame=NAV_PATH_FRAME,
+                points=decimate_path(points),
+                ts_ms=int(time.time() * 1000),
+            ),
+        )
+
+    def publish_nav_path_clear(self) -> None:
+        """Пустой nav_path — цель завершилась, линию на полу гасим."""
+        self._nav_path_throttle.admit(time.monotonic(), force=True)
+        self.publish_frame(
+            "nav_path",
+            encode_nav_path(frame=NAV_PATH_FRAME, points=[], ts_ms=int(time.time() * 1000)),
+        )
 
     # --- Periodic helpers (вызываются из QuestNode loop) -----------------
 
@@ -1954,10 +2042,17 @@ class QuestNode(Node):
                 _CAMERA_QOS,
             )
 
+        # nav_path (0x1104, issue #3151): глобальный план Nav2. planner_server
+        # публикует ``plan`` (reliable, volatile, depth 1) — подписываемся
+        # только пока шлем смотрит путь, тем же demand-механизмом, что камеры.
+        def _nav_path_sub():
+            return self.create_subscription(Path, "/plan", self._on_nav_plan, _RE)
+
         self._camera_factories = {
             "camera_rear": _camera_rear_sub,
             "camera_ceiling": _camera_ceiling_sub,
             "camera_oak_depth": _camera_oak_depth_sub,
+            "nav_path": _nav_path_sub,
         }
         # map_2d (0x1103): SLAM-карта rtabmap. Публикуется TRANSIENT_LOCAL
         # (latched) — подписка обязана совпадать, иначе уже опубликованная
@@ -2051,6 +2146,15 @@ class QuestNode(Node):
         )
         # Replace NoOpBridge на реальный (после создания обоих).
         self.ws_server.bridge = self.bridge
+        # issue #3151: nav-цели из VR → Nav2 NavigateToPose; nav_status —
+        # broadcast всем сессиям, по завершении цели гасим путь на полу.
+        self.bridge.attach_nav2(
+            create_nav2_goal_bridge(
+                self,
+                emit=self.ws_server.broadcast_json_event,
+                on_terminal=self.bridge.publish_nav_path_clear,
+            )
+        )
         self._camera_subs = DemandDrivenSubscriptions(
             self, self._camera_factories, self.ws_server.has_subscribers
         )
@@ -2099,6 +2203,9 @@ class QuestNode(Node):
         self._tick_timer = self.create_timer(PUBLISH_PERIOD_S, self._on_tick_timer)
         # Watchdog check (раз в 100 мс).
         self._watchdog_timer = self.create_timer(0.1, self._on_watchdog_timer)
+        # issue #3151: честный обрыв зависшей nav-цели, если Nav2 умер
+        # между accept и result (см. nav2_goal.NAV2_RESULT_TIMEOUT_S=15с).
+        self._nav2_timeout_timer = self.create_timer(1.0, self.bridge.nav2_check_timeout)
         # robot_status (1 Hz).
         self._status_timer = self.create_timer(1.0, self._on_status_timer)
         # AV-26 / R7: robot_alert evaluation — 1 Hz, чтобы не было мигающего
@@ -2239,6 +2346,10 @@ class QuestNode(Node):
     def _on_map(self, msg: OccupancyGrid) -> None:
         """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
         self.bridge.on_map(msg, self._map_pose())
+
+    def _on_nav_plan(self, msg: Path) -> None:
+        """ROS /plan → nav_path (0x1104), issue #3151."""
+        self.bridge.on_nav_path(msg)
 
     def _on_localization_pose(self, msg: PoseWithCovarianceStamped) -> None:
         """Лёгкий callback /rtabmap/localization_pose (issue #2618).

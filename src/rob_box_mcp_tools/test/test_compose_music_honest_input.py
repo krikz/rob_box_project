@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -327,6 +328,9 @@ def test_tool_name_with_explicit_key_reharmonizes(mock_node, themes):
     assert 'Root.default = "D"' in code and 'Scale.default = "minor"' in code
     assert code != auto_code
     lead_line = [ln for ln in auto_code.splitlines() if ln.startswith("p2 >>")]
-    assert lead_line and lead_line[0] in code.splitlines()  # тема не тронута
+    # Тема не тронута. amp= не сравниваем: калибровка громкости (#3154)
+    # пересчитывает его под новый бас/пэд другой тональности.
+    no_amp = re.compile(r"\bamp=(var\(\[[^\]]*\], \[[^\]]*\]\)|[0-9.]+)")
+    assert lead_line and no_amp.sub("amp=…", lead_line[0]) in [no_amp.sub("amp=…", ln) for ln in code.splitlines()]
     score = tool.last_score  # PR-4: структурная партитура — вне ответа модели
     assert score["decisions"]["key"] == "explicit→D minor (auto C major)"

@@ -43,6 +43,7 @@ from rob_box_voice.core.stt_admission import (
     CommandIntentGateStep,
     DispatchTriggerStep,
     EmptyTextStep,
+    MediaCommandStep,
     NewSessionStep,
     PASS,
     RejectedMarkerStep,
@@ -214,6 +215,7 @@ class _RecordingHost:
         state_idle: bool = True,
         music_stop_overrides: Tuple[str, ...] = (),
         silence_phrases: Tuple[str, ...] = ("замолчи",),
+        media_command: bool = False,
     ) -> None:
         self.calls: List[str] = []
         self._unsilence_ok = unsilence_ok
@@ -227,6 +229,7 @@ class _RecordingHost:
         self._state_idle = state_idle
         self._music_stop_overrides = music_stop_overrides
         self._silence_phrases = silence_phrases
+        self._media_command = media_command
         self.enqueued: List[str] = []
         self.cancel_calls: List[bool] = []
         self.publish_state_count = 0
@@ -262,6 +265,10 @@ class _RecordingHost:
     ) -> bool:
         self.calls.append(f"reset_session({text!r},{tg_chat_id!r})")
         return self._reset_session_match
+
+    def handle_media_command(self, text: str) -> bool:
+        self.calls.append(f"handle_media_command({text!r})")
+        return self._media_command
 
     def flush_pending_backlog(self) -> None:
         self.calls.append("flush_pending_backlog")
@@ -526,6 +533,65 @@ class TestNewSessionStep:
         assert out.kind is SttOutcomeKind.PASS
 
 
+class TestMediaCommandStep:
+    """Issue #3134 — роутер медиакоманд до LLM."""
+
+    def test_handles_media_command(self) -> None:
+        host = _RecordingHost(media_command=True)
+        out = MediaCommandStep().apply(
+            _ctx(text="играй громче", text_lower="играй громче"), host
+        )
+        assert out.kind is SttOutcomeKind.HANDLED
+        assert out.reason == "media_command"
+        assert host.calls == ["handle_media_command('играй громче')"]
+
+    def test_passes_non_media(self) -> None:
+        host = _RecordingHost(media_command=False)
+        out = MediaCommandStep().apply(_ctx(), host)
+        assert out.kind is SttOutcomeKind.PASS
+
+    def test_pipeline_media_command_skips_llm_dispatch_and_barge_in(self) -> None:
+        # Реплика закрыта роутером: ни cancel барж-ина, ни FSM/SFX-диспатча.
+        ctx = _ctx(
+            text="робот играй громче", text_lower="робот играй громче",
+            skip_counter={},
+        )
+        host = _RecordingHost(media_command=True)
+        out = _admission().evaluate(ctx, host)
+        assert out.kind is SttOutcomeKind.HANDLED
+        assert out.step_name == "media_command"
+        assert "handle_media_command('играй громче')" in host.calls
+        assert "transition_stt_result" not in host.calls
+        assert "quick_decide('играй громче')" not in host.calls
+        assert host.cancel_calls == []
+
+    def test_pipeline_tg_reaches_router(self) -> None:
+        ctx = _ctx(
+            text="выключи музыку", text_lower="выключи музыку",
+            tg_chat_id=42, skip_counter={},
+        )
+        host = _RecordingHost(media_command=True)
+        out = _admission().evaluate(ctx, host)
+        assert out.kind is SttOutcomeKind.HANDLED
+        assert out.step_name == "media_command"
+
+    def test_router_runs_before_classify_queue(self) -> None:
+        # HA core#139415: при barge_in_policy=classify команда во время хода
+        # не должна уйти в очередь PENDING_LLM — роутер стоит раньше.
+        ctx = _ctx(
+            text="робот потише", text_lower="робот потише", skip_counter={},
+        )
+        host = _RecordingHost(
+            media_command=True,
+            quick_decide=("pending_llm", False, True),
+            live_task_alive=True,
+        )
+        steps = default_steps(barge_in_policy="classify")
+        out = SttAdmission(steps=steps).evaluate(ctx, host)  # type: ignore[arg-type]
+        assert out.kind is SttOutcomeKind.HANDLED
+        assert host.enqueued == []
+
+
 class TestBacklogFlushStep:
     def test_flushes_when_backlog_pending(self) -> None:
         host = _RecordingHost()
@@ -744,6 +810,7 @@ class TestOrchestrator:
             "SilenceCommandStep",
             "CommandIntentGateStep",
             "NewSessionStep",
+            "MediaCommandStep",
             "BacklogFlushStep",
             "BargeInClassifyStep",
             "DispatchTriggerStep",

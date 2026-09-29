@@ -166,6 +166,10 @@ class MusicGuard:
         self._dj_retry_count: int = 0
         self._user_retry_count: int = 0
         self._logger = logger
+        # Issue #3165 — снимок плеера текущего :meth:`evaluate` (``None`` —
+        # неизвестен). Нужен сверке заявлений о состоянии музыки в
+        # :func:`is_phantom_music_action`.
+        self._music_playing: Optional[bool] = None
 
     # ------------------------------------------------------------------
     # Read-only accessors — used by the DialogueNode adapter for the
@@ -227,7 +231,7 @@ class MusicGuard:
     # ------------------------------------------------------------------
 
     def _user_music_already_satisfied(
-        self, user_input: str, tools_set: set
+        self, user_input: str, tools_set: set, spoken: Optional[str] = None
     ) -> Optional[str]:
         """Bug C — это вообще не просьба включить музыку, либо она закрыта?
 
@@ -277,18 +281,87 @@ class MusicGuard:
         # Read-only музыкальный тул ОТВЕЧАЕТ на такой вопрос, значит просьба
         # удовлетворена. Без тулов nudge остаётся как был: иначе мы
         # замаскируем настоящий случай «LLM вообще ничего не вызвала».
+        if not is_music_state_query(user_input):
+            return None
         _state_answered = tools_set & MUSIC_STATE_QUERY_TOOLS
-        if _state_answered and is_music_state_query(user_input):
+        if _state_answered:
             self._log_debug(
                 "🎵 [issue 992 Bug C] state query, LLM answered via "
                 f"{sorted(_state_answered)!r} — no nudge needed"
             )
             return "state_query_satisfied"
+        return self._state_query_answered_in_words(user_input, tools_set, spoken)
 
-        return None
+    def _state_query_answered_in_words(
+        self, user_input: str, tools_set: set, spoken: Optional[str]
+    ) -> Optional[str]:
+        """Issue #3161 — вопрос о состоянии, ответ словами без тулов.
+
+        Живой прогон 28.09 22:32: «а какую музыку ты сейчас включал?» через
+        13 с после стопа, модель ответила «Минуту назад играл клубный
+        трек…» без тулов — ответ ПРАВИЛЬНЫЙ, а Bug C дважды потребовал
+        ``execute_music_code`` и кончился фразой «бит не запустился».
+        Ретрай Bug C на вопросе всегда ведёт не туда: его промпт требует
+        ЗАПУСТИТЬ музыку, о чём юзер не просил. С #3161 ``<music_state>``
+        строится из снимка плеера, и ответ по тегу без тула — честный.
+
+        Условия (без новых регексов — только существующие детекторы):
+
+        * реплика — вопрос о состоянии (:func:`is_music_state_query`;
+          знак «?» не годится: Yandex STT работает с
+          ``TEXT_NORMALIZATION_DISABLED`` и пунктуацию не ставит);
+        * ответ модели известен и не заявляет музыкальное действие без тула
+          (:func:`is_phantom_music_action`, таблица Bug E). Ответ
+          неизвестен (``spoken=None``) — поведение прежнее (ретрай).
+
+        Заявления действий, которых эта таблица не знает, ловят
+        babble/Bug E/#2549-гуарды: они работают в том же ходе ДО
+        музыкального и, отправив ретрай, выключают его
+        (``_retry_dispatched_in_turn``).
+        """
+        if spoken is None:
+            return None
+        phantom = is_phantom_music_action(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=tuple(tools_set),
+            music_playing=self._music_playing,
+        )
+        if phantom is not None:
+            return None
+        self._log_info(
+            "🎵 [issue 3161 Bug C] вопрос о состоянии музыки, модель ответила "
+            f"словами без заявления действия (tools={sorted(tools_set)!r}) — "
+            "ретрай «включи музыку» не нужен"
+        )
+        return "state_query_answered_in_words"
+
+    def _music_call_succeeded(
+        self, music_started: set, succeeded_tools: Optional[Tuple[str, ...]]
+    ) -> bool:
+        """Issue #3004 — был ли в ходе УСПЕШНЫЙ вызов музыкального тула.
+
+        ``succeeded_tools`` — имена тулов, чей вызов в этом ходе вернулся без
+        ``is_error`` (``DialogResult.succeeded_tools``). ``None`` — харнесс
+        этого не сообщил (старый путь): считаем, что успеха не видно, и
+        правило #2966 работает как раньше.
+        """
+        if not succeeded_tools:
+            return False
+        ok = music_started & set(succeeded_tools)
+        if ok:
+            self._log_info(
+                "🎵 [issue 3004] tool error this turn, but music tool(s) "
+                f"{sorted(ok)!r} SUCCEEDED in the same turn (validation error "
+                "→ successful retry) — treating as success"
+            )
+        return bool(ok)
 
     def _music_started_verdict(
-        self, music_started: set, tool_error_occurred: bool
+        self,
+        music_started: set,
+        tool_error_occurred: bool,
+        succeeded_tools: Optional[Tuple[str, ...]] = None,
     ) -> Optional[MusicGuardVerdict]:
         """Issue #2966 — a music-starting tool NAME in ``tools_called``
         does NOT mean it succeeded.
@@ -315,7 +388,12 @@ class MusicGuard:
         """
         if not music_started:
             return None
-        if tool_error_occurred:
+        # Issue #3004 — ошибка валидации, после которой в том же ходе прошёл
+        # успешный вызов (``levels: lead=1.3`` → повтор с 1.0 → success), не
+        # провал: музыка играет. Провал — только если успешного нет.
+        if tool_error_occurred and not self._music_call_succeeded(
+            music_started, succeeded_tools
+        ):
             self._log_warning(
                 "🎵 [issue 2966] music tool in tools_called "
                 f"({sorted(music_started)!r}) but tool_error_occurred=True "
@@ -343,6 +421,8 @@ class MusicGuard:
         build_dj_retry_prompt=None,
         spoken: Optional[str] = None,
         tool_error_occurred: bool = False,
+        succeeded_tools: Optional[Tuple[str, ...]] = None,
+        music_playing: Optional[bool] = None,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -394,7 +474,15 @@ class MusicGuard:
                 synchronous retry instead of a silently wrong
                 announcement. ``False`` (default) keeps the legacy
                 behaviour for callers that don't thread this through yet.
-
+            succeeded_tools: Issue #3004 — names of tools whose call THIS
+                TURN returned without ``is_error``. When a music-starting
+                tool is among them, a ``tool_error_occurred`` from an
+                earlier failed attempt in the same turn does not make the
+                turn a failure. ``None`` — unknown (legacy #2966 rule).
+            music_playing: Issue #3165 — играет ли музыка по снимку плеера
+                (``None`` — снимка нет). Заявление «тишина» / «играет X»,
+                согласное со снимком, не считается фантомом (см.
+                :func:`is_phantom_music_action`).
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
             what to do and ``prompt`` (when applicable) carries the
@@ -423,6 +511,7 @@ class MusicGuard:
               no stop tool.
         """
         tools_set = set(tools_called or ())
+        self._music_playing = music_playing
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
@@ -432,7 +521,7 @@ class MusicGuard:
         # the extra "was it a real success or a swallowed error" branch,
         # evaluate() keeps a single ``if``, same shape as before.
         success_verdict = self._music_started_verdict(
-            _music_started, tool_error_occurred
+            _music_started, tool_error_occurred, succeeded_tools
         )
         if success_verdict is not None:
             return success_verdict
@@ -495,6 +584,7 @@ class MusicGuard:
                 user_input=user_input,
                 spoken=spoken,
                 tools_called=tuple(tools_set),
+                music_playing=self._music_playing,
             )
             if phantom is not None:
                 self._log_warning(
@@ -546,7 +636,9 @@ class MusicGuard:
                 reason="not_music_request",
             )
 
-        _skip_reason = self._user_music_already_satisfied(user_input, tools_set)
+        _skip_reason = self._user_music_already_satisfied(
+            user_input, tools_set, spoken
+        )
         if _skip_reason is not None:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,

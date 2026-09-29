@@ -409,6 +409,59 @@ class ScanFilesIntegrationTests(unittest.TestCase):
         self.assertTrue(scan.unresolved)
         self.assertEqual(scan.unresolved[0].kind, "pub")
 
+    def test_issue_3108_shared_publisher_counts_as_publisher(self):
+        # #3108: mcp_server tools publish via
+        # ``shared_publisher(node, Type, topic, qos)`` instead of a direct
+        # ``node.create_publisher``. Topic is arg 2, msg type is arg 1;
+        # both the bare-name and the attribute form must count, with the
+        # usual constant resolution for the topic.
+        scan, _ = self._scan(
+            {
+                "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/animation.py": (
+                    "from ..base import shared_publisher\n"
+                    "class PlayAnimationTool:\n"
+                    "    def __init__(self, node):\n"
+                    "        from std_msgs.msg import String\n"
+                    "        self.pub = shared_publisher(node, String, '/voice/animation/request', 10)\n"
+                ),
+                "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": (
+                    "from .. import base\n"
+                    "SET_PROVIDER_TOPIC = '/voice/tts/set_provider'\n"
+                    "class SetTtsProviderTool:\n"
+                    "    def __init__(self, node):\n"
+                    "        from std_msgs.msg import String\n"
+                    "        self.pub = base.shared_publisher(\n"
+                    "            node, String, SET_PROVIDER_TOPIC, 10\n"
+                    "        )\n"
+                ),
+                "src/rob_box_voice/rob_box_voice/tts_node.py": (
+                    "class TtsNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(String, '/voice/tts/set_provider', self.cb, 10)\n"
+                    "        self.create_subscription(String, '/voice/animation/request', self.cb, 10)\n"
+                ),
+            }
+        )
+        self.assertIn("/voice/animation/request", scan.pubs)
+        self.assertIn("/voice/tts/set_provider", scan.pubs)
+        hit = scan.pubs["/voice/animation/request"][0]
+        self.assertEqual(hit.kind, "pub")
+        self.assertEqual(hit.msg_type_id, "String")
+        self.assertEqual(scan.pubs["/voice/tts/set_provider"][0].msg_type_id, "String")
+        self.assertFalse(scan.unresolved)
+
+    def test_shared_publisher_with_too_few_args_is_unresolved(self):
+        scan, _ = self._scan(
+            {
+                "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/x.py": (
+                    "def f(node):\n    shared_publisher(node, String)\n"
+                ),
+            }
+        )
+        self.assertFalse(scan.pubs)
+        self.assertTrue(scan.unresolved)
+        self.assertEqual(scan.unresolved[0].kind, "pub")
+
 
 class TestPathClassificationTests(unittest.TestCase):
     def test_test_dir(self):

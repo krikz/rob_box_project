@@ -87,6 +87,10 @@ class _FakeServer:
     def publish_music_state(self):
         self.publish_music_state_calls += 1
 
+    def _arm_form_end_timer(self, remaining_s):
+        # Issue #3133 — записываем, на что взводился бы таймер конца формы.
+        self.__dict__.setdefault("armed_form_end", []).append(remaining_s)
+
 
 def _make_tool_class(tool_name):
     class _Tool:
@@ -599,13 +603,16 @@ def test_run_music_watchdog_survives_a_manager_exception(monkeypatch):
 
 
 @pytest.mark.unit
-def test_publish_music_state_keeps_the_exact_playing_idle_contract(monkeypatch):
-    """Регрессия контракта: audio_node._on_music_state (issue #989, VAD
-    эхоподавление) сравнивает payload ТОЧНЫМ равенством
-    ``state == "playing"``, не ``startswith``/JSON-парсингом. Issue #2461
-    добавил ВТОРОЙ топик (``/voice/music/form``) для конца формы именно
-    затем, чтобы не пришлось трогать этот payload. Этот тест ловит
-    будущую попытку «заодно» засунуть JSON и сюда."""
+def test_publish_music_state_is_the_player_snapshot_json(monkeypatch):
+    """Issue #3133 / ADR-0141 — контракт ``/voice/music/state``.
+
+    До #3133 payload был плоской строкой "playing"/"idle" (audio_node
+    сравнивал её точным равенством). Теперь это JSON-снимок плеера, и оба
+    подписчика разбирают его ``rob_box_voice.core.music_player_state.
+    parse_music_state`` — этот тест и есть round-trip публикатор → парсер.
+    """
+    from rob_box_voice.core.music_player_state import parse_music_state
+
     module = _load_mcp_server_module(monkeypatch)
     server = _FakeServer()
     server.music_state_pub = _FakePublisher()
@@ -617,17 +624,114 @@ def test_publish_music_state_keeps_the_exact_playing_idle_contract(monkeypatch):
         "active_patterns": ["p1"],
         "music_session_active_since": 123.0,
         "form_cycle_remaining_s": 42.0,
+        "form_stop_remaining_s": 42.0,
+        "track_id": "abc-7",
+        "dj_mode_enabled": True,
     }
+    before = module.time.time()
     module.MCPServer.publish_music_state(server)
-    assert server.music_state_pub.published == ["playing"]
+    payload = json.loads(server.music_state_pub.published[0])
+    assert set(payload) == {
+        "state", "track_id", "form_ends_at", "stops_at", "dj", "finished_track_id", "ts",
+    }
+    assert payload["state"] == "playing"
+    assert payload["track_id"] == "abc-7"
+    # Объект, а не bool: ADR-0142 добавит persona/theme/plan.
+    assert payload["dj"] == {"enabled": True}
+    assert before + 42.0 <= payload["stops_at"] <= before + 43.0
+    assert payload["finished_track_id"] is None
+    snap = parse_music_state(server.music_state_pub.published[0])
+    assert snap is not None and snap.is_playing(now=before) is True
+    # Таймер конца формы взводится на остаток до остановки конечного трека.
+    assert server.armed_form_end == [42.0]
 
     manager.get_state.return_value = {
         "active_patterns": [],
         "music_session_active_since": None,
         "form_cycle_remaining_s": None,
+        "track_id": None,
+        "last_finished_track_id": "abc-7",
     }
     module.MCPServer.publish_music_state(server)
-    assert server.music_state_pub.published == ["playing", "idle"]
+    idle = json.loads(server.music_state_pub.published[1])
+    assert idle["state"] == "idle"
+    assert idle["track_id"] is None
+    assert idle["stops_at"] is None
+    assert idle["finished_track_id"] == "abc-7"
+    assert server.armed_form_end == [42.0, None]
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_finishes_the_ended_form_before_publishing(monkeypatch):
+    """Issue #3133 — страховочный путь: конец формы ловит и watchdog."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.finish_form_if_ended.return_value = {
+        "track_id": "abc-7", "track_name": None, "reason": "form_end",
+    }
+    manager.auto_stop_idle_music.return_value = {"stopped": False}
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    manager.finish_form_if_ended.assert_called_once_with()
+    assert server.publish_music_state_calls == 1
+    assert any(
+        "finished track_id=abc-7" in m for m in server.get_logger().info_messages
+    )
+    # Конец формы — не стоп: mp3 в sound_node не трогаем.
+    assert server.stop_generated_track_playback_calls == 0
+
+
+@pytest.mark.unit
+def test_form_end_timer_fires_finish_and_publish(monkeypatch):
+    """Issue #3133 — одноразовый таймер: idle не ждёт тика watchdog'а (5 с)."""
+    import threading
+
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    fired = threading.Event()
+    server.FORM_END_TIMER_SLACK_S = 0.0
+    server._on_form_end_timer = fired.set
+
+    module.MCPServer._arm_form_end_timer(server, 0.05)
+
+    assert fired.wait(2.0), "таймер конца формы не сработал"
+
+
+@pytest.mark.unit
+def test_form_end_timer_is_cancelled_when_the_track_loops(monkeypatch):
+    import threading
+
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    fired = threading.Event()
+    server.FORM_END_TIMER_SLACK_S = 0.0
+    server._on_form_end_timer = fired.set
+
+    module.MCPServer._arm_form_end_timer(server, 0.2)
+    module.MCPServer._arm_form_end_timer(server, None)  # repeat=True / тишина
+
+    assert not fired.wait(0.5)
+    assert server._form_end_timer is None
+
+
+@pytest.mark.unit
+def test_on_form_end_timer_runs_the_same_path_as_watchdog(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    manager = MagicMock()
+    manager.finish_form_if_ended.return_value = {
+        "track_id": "abc-8", "track_name": "Club", "reason": "form_end",
+    }
+    server._music_manager = manager
+
+    module.MCPServer._on_form_end_timer(server)
+
+    manager.finish_form_if_ended.assert_called_once_with()
+    assert server.publish_music_state_calls == 1
 
 
 @pytest.mark.unit
@@ -682,4 +786,119 @@ def test_publish_music_form_is_null_when_no_active_form(monkeypatch):
     module.MCPServer.publish_music_state(server)
 
     payload = json.loads(server.music_form_pub.published[0])
-    assert payload == {"form_ends_at": None, "playing": False}
+    # Issue #3113: + stops_at (остановка конечного трека) и track — тоже null.
+    assert payload == {"form_ends_at": None, "playing": False, "stops_at": None, "track": None}
+
+
+@pytest.mark.unit
+def test_publish_music_form_carries_track_name(monkeypatch):
+    """Issue #3113 — имя играющей темы для DJ-сета (без повтора песни)."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 1.0,
+        "track_name": "Für Elise",
+    }
+    server._music_manager = manager
+    module.MCPServer.publish_music_state(server)
+    assert json.loads(server.music_form_pub.published[0])["track"] == "Für Elise"
+
+
+@pytest.mark.unit
+def test_publish_music_form_carries_finite_track_stop_as_epoch(monkeypatch):
+    """Issue #3113 — ``stops_at``: когда конечный (repeat=False) трек замолчит.
+
+    Живой прогон 28.09: DJ-переход ждал конца формы Star Wars (141 с), и
+    между треками было ~15 с тишины. dialogue_node назначает переход
+    раньше ``stops_at``; значение, как и ``form_ends_at``, — epoch.
+    """
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 1.0,
+        "form_cycle_remaining_s": 141.0,
+        "form_stop_remaining_s": 141.0,
+    }
+    server._music_manager = manager
+
+    before = module.time.time()
+    module.MCPServer.publish_music_state(server)
+    after = module.time.time()
+
+    payload = json.loads(server.music_form_pub.published[0])
+    assert before + 141.0 <= payload["stops_at"] <= after + 141.0 + 1.0
+
+    manager.get_state.return_value["form_stop_remaining_s"] = None  # repeat=True
+    module.MCPServer.publish_music_state(server)
+    assert json.loads(server.music_form_pub.published[1])["stops_at"] is None
+
+
+# ── Issue #3174 — мягкий music_cleanup не гасит DJ-сет ────────────────────
+
+
+def _cleanup_server(module, *, dj_enabled):
+    manager = MagicMock()
+    manager.dj_mode_enabled = dj_enabled
+    manager.stop_music_on_session_end.return_value = {
+        "was_active": True, "stopped_patterns": [], "message": "ok",
+    }
+    server = _FakeServer()
+    server._music_manager = manager
+    server._cleanup_spares_dj_set = (
+        lambda reason: module.MCPServer._cleanup_spares_dj_set(server, reason)
+    )
+    return server, manager
+
+
+def _send_cleanup(module, server, reason):
+    msg = module.String()
+    msg.data = json.dumps({"reason": reason})
+    module.MCPServer._on_music_cleanup(server, msg)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reason", ["tts_batch_complete", "dialogue_end", "new_dialogue"])
+def test_soft_cleanup_spares_running_dj_set(monkeypatch, reason):
+    """Живой прогон 29.09 05:00: DJ-сет роутера, ход без тулов → тишина 38 с."""
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, dj_enabled=True)
+
+    _send_cleanup(module, server, reason)
+
+    manager.stop_music_on_session_end.assert_not_called()
+    assert server.stop_generated_track_playback_calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason",
+    ["user_stop_command", "stop_command_guard", "new_session", "shutdown"],
+)
+def test_explicit_cleanup_still_stops_dj_set(monkeypatch, reason):
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, dj_enabled=True)
+
+    _send_cleanup(module, server, reason)
+
+    manager.stop_music_on_session_end.assert_called_once()
+    assert server.stop_generated_track_playback_calls == 1
+
+
+@pytest.mark.unit
+def test_soft_cleanup_still_stops_backing_without_dj(monkeypatch):
+    """BACKING под рэп (DJ выключен) гасится после речи, как раньше."""
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, dj_enabled=False)
+
+    _send_cleanup(module, server, "tts_batch_complete")
+
+    manager.stop_music_on_session_end.assert_called_once()
+    assert server.stop_generated_track_playback_calls == 1

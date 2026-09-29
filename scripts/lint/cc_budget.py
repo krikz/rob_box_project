@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CC-budget guard (ADR-0021 R1) for active voice/harness/supervisor/mcp packages.
+"""CC-budget guard (ADR-0021 R1) for the active rob_box_* packages (see ``_PACKAGE_ROOTS``).
 
 Cyclomatic complexity budget:
   * regular methods  -> CC <= 15
@@ -13,14 +13,22 @@ not in the baseline or has grown past its recorded grandfather value.
 Scope: every Python module under the active development packages
 (``src/rob_box_voice/rob_box_voice``, ``src/rob_box_supervisor/rob_box_supervisor``,
 ``src/rob_box_harness/rob_box_harness``, ``src/rob_box_mcp_tools/rob_box_mcp_tools``,
-``src/rob_box_quest/rob_box_quest``).
+``src/rob_box_quest/rob_box_quest``, ``src/rob_box_perception/rob_box_perception``,
+``src/rob_box_telegram/rob_box_telegram``, ``src/rob_box_llm/rob_box_llm``,
+``src/rob_box_core/rob_box_core``).
 ADR-0021 explicitly applies the rule to "``dialogue_node.py`` and any new voice
-nodes in ``rob_box_voice``"; extending it to the four sibling packages is the
+nodes in ``rob_box_voice``"; extending it to the sibling packages is the
 least-surprise scope: these are where active development is happening, and any
 new method added there must respect the budget. ``rob_box_quest`` (Meta Quest
 telepresence, ADR-0080) was added in issue #2186 — without it the gate silently
 fixes CC growth instead of stopping it (the ``WSSServer._on_json_cmd`` blast
-balloon reached CC=107 undetected).
+balloon reached CC=107 undetected). perception/telegram/llm/core were added on
+2026-09-29 after the architecture audit (their over-limit methods are
+grandfathered, see ``_legacy_acknowledged`` in the baseline).
+
+When run with explicit paths only the scanned files are considered: phantom
+detection and ``--update-baseline`` never touch baseline entries of files
+outside the scanned set.
 
 Usage:
   python scripts/lint/cc_budget.py                     # check (default scope)
@@ -49,11 +57,18 @@ _PACKAGE_ROOTS = (
     "src/rob_box_harness/rob_box_harness",
     "src/rob_box_mcp_tools/rob_box_mcp_tools",
     "src/rob_box_quest/rob_box_quest",
+    # Scope extension 2026-09-29 (architecture audit, G run 36577898577; ADR-0145):
+    # god classes also live here (MiniMaxTTSProvider.stream CC=38 ...).
+    "src/rob_box_perception/rob_box_perception",
+    "src/rob_box_telegram/rob_box_telegram",
+    "src/rob_box_llm/rob_box_llm",
+    "src/rob_box_core/rob_box_core",
 )
 DEFAULT_TARGETS: tuple[Path, ...] = tuple(REPO_ROOT / p for p in _PACKAGE_ROOTS)
 
 METHOD_LIMIT = 15  # ADR-0021 R1
 INIT_LIMIT = 20  # ADR-0021 R1, __init__ exemption
+HARD_EXEMPT_CC = 30  # R-1e: 2x METHOD_LIMIT, ADR anchor required above this
 
 _SKIP_DIR_NAMES = {"__pycache__", ".git"}
 
@@ -143,6 +158,11 @@ def _rel(path: Path) -> str:
         return resolved.as_posix()
 
 
+def _file_exists(rel: str) -> bool:
+    """Does a baseline path (repo-relative or absolute) still exist on disk?"""
+    return (REPO_ROOT / rel).exists()
+
+
 def _git_head() -> str:
     try:
         head = subprocess.run(
@@ -163,23 +183,119 @@ def _load_baseline() -> dict:
     return json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
 
 
+def _load_existing_baseline() -> dict:
+    if not BASELINE_FILE.exists():
+        return {}
+    return json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+
+
 def cmd_update_baseline(files: list[Path], base_sha: str) -> int:
-    """Snapshot every current over-limit method as a grandfathered entry."""
-    exemptions: dict[str, dict[str, int]] = {}
+    """Snapshot current over-limit methods of the *scanned* files.
+
+    * Underscore-prefixed metadata (``_refactor_cards``, ``_legacy_acknowledged``,
+      ``_adr_reference`` ...) is preserved.
+    * Exemptions of files outside the scanned set are left untouched.
+    * ``_legacy_acknowledged[].cc`` follows the measured value only when it went
+      DOWN; if it went UP the update is refused (ADR-0021-r1 R-1a).
+    * Legacy / ref-card entries of scanned methods that are no longer over-limit
+      are dropped (and printed).
+    * R-1e: a NEW exemption with CC>30 needs ``_adr_reference["path:method"]``.
+    """
+    old = _load_existing_baseline()
+    old_exempt: dict[str, dict[str, int]] = old.get("exemptions", {})
+    adr_refs = old.get("_adr_reference", {})
+    scanned = {_rel(path) for path in files}
+
+    new_over: dict[str, dict[str, int]] = {}
     for path in files:
         rel = _rel(path)
         over = {name: cc for name, cc in sorted(measure_file(path).items()) if cc > _limit_for(name)}
         if over:
-            exemptions[rel] = over
-    baseline = {
+            new_over[rel] = over
+
+    # Refusals first: nothing is written unless all checks pass.
+    errors: list[str] = []
+    legacy_cc = {(e.get("path"), e.get("method")): e.get("cc") for e in old.get("_legacy_acknowledged", [])}
+    for rel, over in new_over.items():
+        for name, cc in over.items():
+            prev = legacy_cc.get((rel, name))
+            if prev is not None and cc > prev:
+                errors.append(
+                    f"{rel}:{name} legacy CC grew {prev} -> {cc}; legacy cc is immutable upwards "
+                    f"(ADR-0021-r1 R-1a): reduce the method, or move it out of _legacy_acknowledged "
+                    f"into _refactor_cards with a real issue"
+                )
+            is_new = name not in old_exempt.get(rel, {})
+            if is_new and cc > HARD_EXEMPT_CC and f"{rel}:{name}" not in adr_refs:
+                errors.append(
+                    f"{rel}:{name} is a NEW exemption with CC={cc} > {HARD_EXEMPT_CC}; add "
+                    f'"{rel}:{name}": "docs/adr/NNNN-..." to _adr_reference in the baseline '
+                    f"(ADR-0021-r1 R-1e)"
+                )
+    if errors:
+        for err in errors:
+            print(f"  [REFUSE] {err}")
+        print(f"cc_budget: --update-baseline refused ({len(errors)} problem(s)); baseline not written.")
+        return 1
+
+    # Keep the existing file order (small diffs); new files are appended sorted.
+    exemptions: dict[str, dict[str, int]] = {}
+    for rel, methods in old_exempt.items():
+        if rel not in scanned:
+            if _file_exists(rel):
+                exemptions[rel] = dict(methods)
+            else:
+                print(f"  [drop] exemptions {rel} (file no longer exists)")
+        elif rel in new_over:
+            exemptions[rel] = new_over[rel]
+    for rel in sorted(new_over):
+        exemptions.setdefault(rel, new_over[rel])
+
+    def _still_over(rel: str, name: str) -> bool:
+        if rel not in scanned:
+            return _file_exists(rel)
+        return name in new_over.get(rel, {})
+
+    legacy_out: list[dict] = []
+    for entry in old.get("_legacy_acknowledged", []):
+        rel, name = entry.get("path", ""), entry.get("method", "")
+        if not _still_over(rel, name):
+            print(f"  [drop] _legacy_acknowledged {rel}:{name} (no longer over limit or file gone)")
+            continue
+        entry = dict(entry)
+        if rel in scanned:
+            cur = new_over[rel][name]
+            if entry.get("cc") != cur:
+                print(f"  [sync] _legacy_acknowledged {rel}:{name} cc {entry.get('cc')} -> {cur}")
+                entry["cc"] = cur
+        legacy_out.append(entry)
+
+    baseline: dict = {
         "version": 1,
         "created": date.today().isoformat(),
         "base_sha": base_sha or _git_head(),
         "limits": {"method": METHOD_LIMIT, "init": INIT_LIMIT},
         "exemptions": exemptions,
     }
-    BASELINE_FILE.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
-    print(f"cc_budget: baseline written to {BASELINE_FILE.relative_to(REPO_ROOT)}")
+    for key, value in old.items():
+        if key.startswith("_") and key not in ("_legacy_acknowledged", "_refactor_cards", "_adr_reference"):
+            baseline[key] = value
+    for key in ("_refactor_cards", "_adr_reference"):
+        if key not in old:
+            continue
+        kept = {}
+        for ref_key, value in old[key].items():
+            ref_path, _, ref_name = ref_key.rpartition(":")
+            if _still_over(ref_path, ref_name):
+                kept[ref_key] = value
+            else:
+                print(f"  [drop] {key} {ref_key} (no longer over limit or file gone)")
+        baseline[key] = kept
+    if "_legacy_acknowledged" in old:
+        baseline["_legacy_acknowledged"] = legacy_out
+
+    BASELINE_FILE.write_text(json.dumps(baseline, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"cc_budget: baseline written to {_rel(BASELINE_FILE)}")
     print(f"cc_budget: base_sha={baseline['base_sha']} created={baseline['created']}")
     return 0
 
@@ -187,12 +303,12 @@ def cmd_update_baseline(files: list[Path], base_sha: str) -> int:
 def cmd_check(files: list[Path], baseline: dict) -> int:
     """Report exceedances; fail on phantom/under-baseline/growth.
 
-    Five failure modes (ADR-0021 R1 baseline + R1-r1 ratchets, issue #2626):
+    Failure modes (ADR-0021 R1 baseline + R1-r1 ratchets, issue #2626):
 
     1. CC > limit and method not in baseline — new violation, refuse.
     2. CC > baseline entry — grew past grandfathered value, refuse.
-    3. CC ≤ limit but method appears in baseline — recovered below
-       limit without updating baseline. R-1b: previously a soft
+    3. CC < baseline entry (whether or not still over the limit) —
+       recovered without updating baseline. R-1b: previously a soft
        ``[info]`` that let regressions hide. Now FAIL so the author
        is forced to refresh the baseline (or remove the exempt).
     4. baseline has an entry for a function that does not exist in
@@ -205,7 +321,6 @@ def cmd_check(files: list[Path], baseline: dict) -> int:
        didn't stop the growth.
     """
     exempt = baseline.get("exemptions", {})
-    HARD_EXEMPT_CC = 30  # R-1e: 2× METHOD_LIMIT, ADR anchor required above this
     violations: list[tuple[str, str, int, int]] = []
 
     # R-1c: collect measured names per file so we can spot phantoms.
@@ -219,11 +334,7 @@ def cmd_check(files: list[Path], baseline: dict) -> int:
         for name, cc in sorted(measured.items()):
             limit = _limit_for(name)
             if cc <= limit:
-                # R-1b: under-baseline recovery — fail loudly so a silent
-                # 'recovered' doesn't paper over the fact that the
-                # baseline still claims a much higher CC. Author must
-                # run ``--update-baseline`` (or remove the entry) in the
-                # same PR.
+                # R-1b: recovered below the limit but baseline still claims more.
                 if name in allowed and cc < allowed[name]:
                     violations.append((rel, name, cc, limit))
                     print(
@@ -232,43 +343,53 @@ def cmd_check(files: list[Path], baseline: dict) -> int:
                         f"--update-baseline in the same PR (ADR-0021-r1 R-1b)"
                     )
                 continue
-            if name in allowed and cc <= allowed[name]:
-                # R-1e: even an in-baseline over-limit entry must respect
-                # the hard ceiling UNLESS the baseline already recorded
-                # it at this height (R-1e is for *new* exemptions).
-                if cc > HARD_EXEMPT_CC and allowed[name] <= HARD_EXEMPT_CC:
-                    violations.append((rel, name, cc, limit))
-                    print(
-                        f"  [FAIL] {rel}:{name} CC={cc} crossed hard ceiling "
-                        f"{HARD_EXEMPT_CC}; new exemptions above 2× limit "
-                        f"require ADR anchor (ADR-0021-r1 R-1e)"
-                    )
-                else:
-                    print(f"  [ok ] {rel}:{name} CC={cc} (limit {limit}, baseline {allowed[name]})")
-            elif name not in allowed:
-                # R-1e: a brand-new over-limit entry above the hard
-                # ceiling requires an ADR; surface as FAIL with the
-                # explicit hint.
+            if name not in allowed:
+                violations.append((rel, name, cc, limit))
                 if cc > HARD_EXEMPT_CC:
-                    violations.append((rel, name, cc, limit))
+                    # R-1e: a brand-new exemption above the hard ceiling needs an ADR.
                     print(
                         f"  [FAIL] {rel}:{name} CC={cc} exceeds limit {limit} "
                         f"and is not in baseline; CC>{HARD_EXEMPT_CC} requires "
                         f"an ADR per ADR-0021-r1 R-1e"
                     )
                 else:
-                    violations.append((rel, name, cc, limit))
                     print(f"  [FAIL] {rel}:{name} CC={cc} exceeds limit {limit} and is not in baseline")
-            else:
+            elif cc > allowed[name]:
                 violations.append((rel, name, cc, limit))
                 print(f"  [FAIL] {rel}:{name} CC={cc} grew past baseline {allowed[name]}")
+            elif cc < allowed[name]:
+                # R-1b ratchet (still over limit, but below baseline): the slack
+                # must not stay, otherwise the method can silently grow back.
+                violations.append((rel, name, cc, limit))
+                print(
+                    f"  [FAIL] {rel}:{name} CC={cc} dropped below baseline "
+                    f"{allowed[name]} (limit {limit}); refresh baseline with "
+                    f"--update-baseline in the same PR to lock the gain "
+                    f"(ADR-0021-r1 R-1b)"
+                )
+            else:
+                print(f"  [ok ] {rel}:{name} CC={cc} (limit {limit}, baseline {allowed[name]})")
 
     # R-1c phantom-detection: every (path, method) in baseline must
     # actually exist in the scanned files. Otherwise the baseline
     # keeps claiming protection for code that's gone — exactly the
     # ``_build_single_provider`` blind spot.
+    # Files outside the scanned set are skipped only while they still exist: a run
+    # with explicit paths must not report baseline entries of other files as
+    # phantoms, but a deleted/renamed file is a phantom in any run.
     for rel, allowed in sorted(exempt.items()):
-        measured = measured_per_file.get(rel, {})
+        if rel not in measured_per_file:
+            if _file_exists(rel):
+                continue  # outside the scanned set, still there: not our business
+            for name, baseline_cc in sorted(allowed.items()):
+                violations.append((rel, name, 0, baseline_cc))
+                print(
+                    f"  [FAIL] {rel}:{name} — phantom baseline entry "
+                    f"(file no longer exists); remove from "
+                    f"cc_budget_baseline.json:exemptions (ADR-0021-r1 R-1c)"
+                )
+            continue
+        measured = measured_per_file[rel]
         for name, baseline_cc in sorted(allowed.items()):
             if name not in measured:
                 violations.append((rel, name, 0, baseline_cc))
@@ -295,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         default=list(DEFAULT_TARGETS),
         help=(
             "Python files or package directories to scan "
-            "(default: the five active packages under src/)"
+            "(default: all active packages under src/, see _PACKAGE_ROOTS)"
         ),
     )
     parser.add_argument(

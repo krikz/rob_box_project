@@ -60,6 +60,8 @@ import threading
 import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+from rob_box_core.metrics_server import start_metrics_http_server
+
 if TYPE_CHECKING:
     from prometheus_client import Counter as _Counter  # noqa: F401
     from prometheus_client import Histogram as _Histogram  # noqa: F401
@@ -257,28 +259,15 @@ def start_metrics_server(port: int) -> bool:
     if not is_metrics_enabled():
         return False
 
-    with _HTTP_SERVER_LOCK:
-        if port in _HTTP_SERVER_STARTED:
-            return True
-        try:
-            # type: ignore[call-arg]  # start_http_server гарантированно
-            # callable здесь (см. ``is_metrics_enabled``)
-            start_http_server(port)  # type: ignore[misc]
-        except OSError as exc:
-            # Порт уже занят (другая нода в этом процессе или коллизия).
-            # Не считаем это фатальной ошибкой: метрики всё равно
-            # доступны по /metrics на той ноде, которая заняла порт.
-            _log.warning(
-                "prometheus_client.start_http_server(%d) failed: %s",
-                port, exc,
-            )
-            # Не помечаем как started: возможно следующий вызов
-            # попадёт в нормальную ситуацию. Но для типичного
-            # сценария "порт занят коллегой" — просто лог.
-            return False
-        _HTTP_SERVER_STARTED.add(port)
-        _log.info("Prometheus metrics server started on :%d/metrics", port)
-        return True
+    # architecture audit 2026-09-29, ADR-0145: тело — в rob_box_core.metrics_server;
+    # состояние и start_http_server остаются в этом модуле (патчится тестами).
+    return start_metrics_http_server(
+        port,
+        start_http_server=start_http_server,  # type: ignore[arg-type]
+        started=_HTTP_SERVER_STARTED,
+        lock=_HTTP_SERVER_LOCK,
+        log=_log,
+    )
 
 
 # ── Помощники для прод-кода ─────────────────────────────────────────────

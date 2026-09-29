@@ -53,7 +53,10 @@ class AnimationPlayer:
         self.loader = AnimationLoader(animations_dir)
         self.renderer = FrameRenderer()
 
-        # Publishers for each logical group
+        # logical group -> publisher. All groups map to the single
+        # /panel_image publisher below (issue #3108); the dict is kept as
+        # the "group is known" gate used by _playback_loop.
+        self._panel_image_pub: Optional[rclpy.publisher.Publisher] = None
         self.publishers: Dict[str, rclpy.publisher.Publisher] = {}
 
         # Playback state
@@ -217,13 +220,20 @@ class AnimationPlayer:
             logical_group = panel.logical_group
 
             if logical_group not in self.publishers:
-                pub = self.node.create_publisher(
-                    Image,
-                    '/panel_image',
-                    10
-                )
-                self.publishers[logical_group] = pub
-                self.node.get_logger().info(f'Created publisher for {logical_group}')
+                # Issue #3108: every logical group goes to the same
+                # /panel_image topic (frame_id carries the group), so they
+                # all share ONE publisher. Previously each new group got its
+                # own create_publisher() — 5 writers on one topic in the
+                # live graph (main_display + 4 wheels).
+                if self._panel_image_pub is None:
+                    self._panel_image_pub = self.node.create_publisher(
+                        Image,
+                        '/panel_image',
+                        10
+                    )
+                    self.node.get_logger().info('Created /panel_image publisher')
+                self.publishers[logical_group] = self._panel_image_pub
+                self.node.get_logger().info(f'Registered logical group {logical_group}')
 
     def play(self) -> bool:
         """

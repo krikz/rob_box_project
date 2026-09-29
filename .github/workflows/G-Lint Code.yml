@@ -50,9 +50,10 @@ jobs:
         run: |
           PYTHONPATH=src/rob_box_voice python scripts/lint/dialogue_skip_reasons.py
 
-      # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the five
+      # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the nine
       # active packages (rob_box_voice, rob_box_supervisor, rob_box_harness,
-      # rob_box_mcp_tools, rob_box_quest). Hard gate (no continue-on-error) —
+      # rob_box_mcp_tools, rob_box_quest, rob_box_perception, rob_box_telegram,
+      # rob_box_llm, rob_box_core; see _PACKAGE_ROOTS in cc_budget.py). Hard gate (no continue-on-error) —
       # new code with CC>15 (CC>20 for __init__) must fail the lint. Existing
       # over-limit methods are grandfathered in scripts/lint/cc_budget_baseline.json
       # (refactor cards track their removal).
@@ -81,6 +82,27 @@ jobs:
       - name: CC-budget ref-card guard self-tests
         run: |
           python -m unittest scripts.lint.test_cc_budget_refs -v
+
+      # Self-tests for cc_budget.py itself: ratchet on over-limit methods
+      # (recovered below baseline must refresh it), --update-baseline keeps
+      # _refactor_cards/_legacy_acknowledged, subset runs give no false phantoms.
+      - name: CC-budget guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_cc_budget -v
+
+      # ADR-0145: class-size budget. ADR-0021 bounds only per-method CC, so code
+      # was "extracted" into more private methods of the SAME class (DialogueNode:
+      # 4062 LOC/74 methods on 18.08 -> 9872 LOC/218 methods, WMC 1184). A class is
+      # big if WMC>80 or methods>40; existing big classes are grandfathered in
+      # scripts/lint/class_budget_baseline.json and may only shrink (with a
+      # baseline refresh in the same PR). Hard gate (no continue-on-error).
+      - name: Class-size budget (ADR-0145)
+        run: |
+          python scripts/lint/class_budget.py
+
+      - name: Class-size budget self-tests
+        run: |
+          python -m unittest scripts.lint.test_class_budget -v
 
       # ADR-0021 policy / issue #2118: "seam without consumer" guard — a ROS
       # topic published with no subscriber (or vice versa) anywhere in src/,
@@ -183,6 +205,18 @@ jobs:
       # звать ./.github/actions/l-build-service, иначе кто-то откатит одиночную
       # сборку назад на inline buildx (тот же класс дрейфа, что уже случился с
       # verify_in_registry — три копии разъехались на строку сообщения).
+      # run 36351952819: L-Build Base Images жил на своём inline buildx с
+      # host-gateway и упал на docker-container билдере, заведённом
+      # композитом. Guard: базы собираются только через композит (→
+      # scripts/build/buildx_build.sh), состав — из docker/build-manifest.yaml.
+      # Второй файл — локальный раннер workflow-шагов (scripts/ci/run_workflow_job.py).
+      - name: L-Build Base Images + local-run guards (run 36351952819)
+        run: |
+          python -m pytest tests/unit/test_l_build_base_images.py tests/unit/test_run_workflow_job.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: L-Build Single Service composite guard (хендофф 2026-09-21 §8)
         run: |
           python -m pytest tests/unit/test_l_build_single_service_composite.py \
@@ -267,6 +301,20 @@ jobs:
       - name: E2E harness false no_accept on accepted-but-unconfirmed cycle (issue #2933)
         run: |
           python -m pytest tests/unit/e2e_scripts/test_issue_2933_false_no_accept.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # ADR-0144: набор размеченных сцен — разбор scene.yaml, атрибуция и
+      # метрики «2.0 лучше 1.1». Каталог tests/unit/maintenance/ не гонялся
+      # ни одним workflow (тот же дефект ADR-0057); подключены ТОЛЬКО файлы
+      # scene_set: остальные тесты каталога (setup_chrony, measure_load,
+      # measure_doa) на ubuntu-latest не проверялись — подключать отдельно.
+      # Нужны pytest + PyYAML (ставятся выше), ни ROS, ни робота.
+      - name: Scene set parser, metrics, conductor, replay isolation (ADR-0144)
+        run: |
+          python -m pytest tests/unit/maintenance/test_scene_set_spec_metrics.py \
+            tests/unit/maintenance/test_scene_set_replay_conductor.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider
@@ -385,29 +433,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install yamllint==1.35.1
 
-      - name: Create yamllint config
-        run: |
-          cat > .yamllint.yml << 'EOF'
-          extends: default
-          rules:
-            line-length:
-              max: 120
-              level: warning
-            indentation:
-              spaces: 2
-              indent-sequences: consistent
-            comments:
-              min-spaces-from-content: 1
-            document-start: disable
-            truthy:
-              allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
-          ignore: |
-            build/
-            install/
-            log/
-            .git/
-          EOF
-
+      # Конфиг — закоммиченный .yamllint.yml (тот же у pre-commit и у
+      # локального прогона scripts/ci/run_workflow_job.py). Раньше здесь был
+      # шаг, перезаписывавший его heredoc'ом с ДРУГИМИ правилами — CI и
+      # локальная проверка линтили по-разному.
       - name: Lint YAML files
         run: |
           echo "::group::yamllint check"
@@ -451,7 +480,8 @@ jobs:
           docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color \
             ".github/workflows/L-Build Vision Pi Services.yml" \
             ".github/workflows/L-Build Main Pi Services.yml" \
-            ".github/workflows/L-Build Single Service.yml"
+            ".github/workflows/L-Build Single Service.yml" \
+            ".github/workflows/L-Build Base Images.yml"
           echo "::endgroup::"
 
   # ============================================================================
@@ -472,19 +502,7 @@ jobs:
           chmod +x /tmp/hadolint
           sudo mv /tmp/hadolint /usr/local/bin/hadolint
 
-      - name: Create hadolint config
-        run: |
-          cat > .hadolint.yaml << 'EOF'
-          ignored:
-            - DL3008  # Pin versions in apt-get (too strict for ROS)
-            - DL3009  # Delete apt cache (handled by base images)
-            - DL3015  # Avoid additional packages (yq needed)
-            - SC2086  # Double quote to prevent globbing
-          trustedRegistries:
-            - docker.io
-            - ghcr.io
-          EOF
-
+      # Конфиг — закоммиченный .hadolint.yaml (см. комментарий у yamllint).
       - name: Lint Dockerfiles
         run: |
           echo "::group::Hadolint Dockerfile check"

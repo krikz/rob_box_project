@@ -36,6 +36,12 @@ from typing import Optional, Tuple
 
 from rob_box_core.tool_catalog import TOOL_CATALOG
 
+from .media_command_grammar import (  # noqa: F401 — реэкспорт, issue #3134
+    MUSIC_STOP_COMMAND_RE,
+    MUSIC_STOP_OVERRIDES,
+    is_music_stop_command,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,17 +63,21 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
     entry.name for entry in TOOL_CATALOG if entry.starts_music
 )
 
-#: Tools that mean "this turn is no longer starting/managing TRACK-mode
-#: music" — used ONLY to clear ``dialogue_node._track_mode_music_active``
-#: bookkeeping (see the 31.08 fix at the call site) so a later Bug-C retry
-#: doesn't claim music is still playing when the turn just turned DJ
-#: orchestration off. ``set_dj_mode`` belongs here.
+#: Tools that end TRACK-mode — used ONLY to clear the cleanup-policy flag
+#: ``dialogue_node._track_mode_music_active`` (see the 31.08 fix at the
+#: call site).
+#:
+#: Issue #3133 (ADR-0141): ``set_dj_mode`` removed. It sat here AND in
+#: ``MUSIC_MODE_TOOLS`` at once; the starters branch runs after the stop
+#: branch and re-armed the flag anyway, so its presence here never cleared
+#: anything — it only made the set lie about what «stop» means. Whether
+#: music is playing is no longer derived from tool names at all: dialogue
+#: reads the player snapshot on ``/voice/music/state``.
 #:
 #: 🔴 Do NOT use this set to decide whether a stop-COMMAND was actually
 #: satisfied — see ``MUSIC_HARD_STOP_TOOLS`` below for why.
 MUSIC_STOP_TOOLS: frozenset = frozenset({
     "stop_music",
-    "set_dj_mode",
 })
 
 #: Tools that actually SILENCE currently-audible Renardo output. Used by
@@ -76,7 +86,7 @@ MUSIC_STOP_TOOLS: frozenset = frozenset({
 #:
 #: 🔴 FIX (live 01.09, issue #992): ``set_dj_mode`` used to count as a stop
 #: tool here (it was in ``MUSIC_STOP_TOOLS``, shared with the bookkeeping
-#: use above) on the theory that turning DJ mode off is "satisfied by
+#: use above — and left there until issue #3133) on the theory that turning DJ mode off is "satisfied by
 #: turning DJ mode off even when no Renardo pattern was running". That
 #: theory is false whenever DJ mode turns off WHILE a ``repeat=True``
 #: track from the last transition is still looping — which is the normal
@@ -316,67 +326,11 @@ MUSIC_GUARD_KEYWORDS: tuple = (
     "миниmax-music",
 )
 
-# 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
-# остановить музыку/DJ, а НЕ замолчать робота. Подстрока «хватит»
-# в silence_commands перехватывала такие команды до LLM. Эти фразы
-# пробивают silence-гейт и идут в LLM (который вызовет stop_music +
-# set_dj_mode(enabled=false)).
-#
-# 🔴 FIX (live 24.09, issue #2971): «диджеить», «диджея», «диджей режим»
-# ЗДЕСЬ БЫЛИ голыми подстроками без стоп-глагола — «для диджея», «у
-# диджея», «робота-диджея» (кусок системного промпта «Ты диджей PAUL
-# OAKENFOLD …», который юзер просто зачитывал роботу для копирования)
-# все содержат «диджея» и детерминированно гасили только что включённый
-# DJ-режим через :meth:`DialogueNode._force_dj_off_for_stop_command`.
-# Убраны из списка ФИКСИРОВАННЫХ фраз: :data:`MUSIC_STOP_COMMAND_RE`
-# ниже уже ловит все легитимные формы этих же фраз («хватит диджеить»,
-# «выключи диджея», «стоп диджей режим», …) ТРЕБУЯ рядом стоп-глагол —
-# то есть регресса нет, а класс ложных срабатываний на голое
-# существительное закрыт. Остальные фразы в списке ниже стоп-глагол уже
-# содержат («выключи», «стоп», «останови», «убери») и тем же классом
-# бага не страдают.
-MUSIC_STOP_OVERRIDES: tuple = (
-    "выключи музыку",
-    "выключ музыку",
-    "музыку выключ",
-    "стоп музык",
-    "останови музык",
-    "убери музык",
-)
-
-# 🔴 FIX (live 23.09, issue #2834): «стоп диджей» / «стоп диджей блядь» —
-# юзер (TG) написал это в 14:16:55, робот через пару секунд снова заиграл.
-# ``MUSIC_STOP_OVERRIDES`` — набор ФИКСИРОВАННЫХ фраз («выключи музыку»,
-# «стоп музык»...) и не содержал «стоп диджей» (стоп + голое «диджей», без
-# «ить»/«я»/«режим»). Хуже: ``user_input`` при этом СОВПАДАЛ по слову
-# «диджей» с ``MUSIC_GUARD_KEYWORDS`` (line ~264), поэтому
-# ``user_wants_music`` отвечал True, а ``is_music_stop_command`` — False.
-# Инверсия: гуард решал «юзер просит музыку» вместо «юзер просит
-# остановить музыку», и Bug C retry уходил в ``USER_RETRY`` вместо
-# ``FORCE_STOP`` (``music_guard.py:429`` требует
-# ``is_music_stop_command(...) is True`` до входа в FORCE_STOP-ветку).
-#
-# Решение — общий паттерн «стоп-глагол + музыкальное существительное» (в
-# любом порядке, с матом/хвостами между ними), а не расширение списка
-# фиксированных фраз до бесконечности: «стоп диджей», «стоп диджей
-# блядь», «хватит трек», «выключи сет» и любые будущие варианты ловятся
-# одним правилом. Список фиксированных фраз выше остаётся ТОЛЬКО для
-# устоявшихся полных словоформ со стоп-глаголом уже внутри строки
-# («выключи музыку», «стоп музык»...) — issue #2971 убрал из него голые
-# существительные без глагола («диджеить», «диджея», «диджей режим»),
-# которые ложно матчили «для диджея» / «робота-диджея» внутри обычной
-# реплики; эти формы со стоп-глаголом («хватит диджеить», «выключи
-# диджея») по-прежнему ловятся регэкспом ниже.
-_MUSIC_STOP_VERBS: str = (
-    r"стоп|хватит|выключ\w*|останов\w*|убер\w*|заглуш\w*|заверши\w*"
-)
-_MUSIC_STOP_NOUNS: str = r"музык\w*|дидж\w*|трек\w*|сет\b"
-
-MUSIC_STOP_COMMAND_RE = re.compile(
-    rf"\b(?:{_MUSIC_STOP_VERBS})\b.{{0,20}}?\b(?:{_MUSIC_STOP_NOUNS})"
-    rf"|\b(?:{_MUSIC_STOP_NOUNS})\b.{{0,20}}?\b(?:{_MUSIC_STOP_VERBS})\w*\b",
-    re.IGNORECASE,
-)
+# Стоп-грамматика («выключи музыку», «стоп диджей», «хватит диджеить»;
+# #1279 / #2834 / #2971) перенесена в :mod:`.media_command_grammar` (issue
+# #3134): закрытые стоп-реплики теперь исполняет роутер медиакоманд до LLM,
+# а широкий детектор ниже нужен силенс-гейту, command-гейту и Bug F.
+# Имена реэкспортируются для старых мест вызова.
 
 # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
 # speak_text достаточно — бит не обязателен (юзер мог попросить
@@ -936,24 +890,6 @@ def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None
     return False
 
 
-def is_music_stop_command(user_input: str) -> bool:
-    """Issue #992 Bug C — is this a music/DJ stop-command?
-
-    «хватит диджеить», «выключи музыку», «стоп музыку» — these are
-    requests to STOP music, not to START it. The music guard must
-    skip them entirely (otherwise a stop-command triggers a retry
-    that re-enables music).
-    """
-    if not user_input:
-        return False
-    low = user_input.lower()
-    if any(kw in low for kw in MUSIC_STOP_OVERRIDES):
-        return True
-    # Issue #2834 — общий паттерн «стоп-глагол + муз. существительное»,
-    # см. комментарий над :data:`MUSIC_STOP_COMMAND_RE`.
-    return bool(MUSIC_STOP_COMMAND_RE.search(low))
-
-
 def is_vocal_request(user_input: str) -> bool:
     """Issue #992 Bug C — is this a vocal («спой/пой/песня») request?
 
@@ -1462,6 +1398,11 @@ ACTION_CLAIM_RULES: tuple = (
         tools=frozenset({"get_sound_info", "play_sound"}),
         what="список звуков (get_sound_info)",
     ),
+    # Issue #3165: альтернативы claim_re те же, что были, в том же порядке —
+    # их только разложили на две именованные группы (:data:`CLAIM_IDLE` /
+    # :data:`CLAIM_PLAYING`), чтобы сверить заявление со снимком плеера
+    # (:func:`_claim_agrees_with_player`). Новых шаблонов нет (мораторий
+    # #3132): что ловилось раньше, ловится и сейчас.
     ActionClaimRule(
         category="music_state",
         user_re=re.compile(
@@ -1470,7 +1411,8 @@ ACTION_CLAIM_RULES: tuple = (
             r"какая\s+(?:сейчас\s+)?музык|что\s+за\s+трек)",
             re.IGNORECASE),
         claim_re=re.compile(
-            r"тишин|ничего\s+не\s+игра|не\s+игра|игра\w*|звучит|включен",
+            r"(?P<idle>тишин|ничего\s+не\s+игра|не\s+игра)|"
+            r"(?P<playing>игра\w*|звучит|включен)",
             re.IGNORECASE),
         tools=frozenset({"get_music_state"}),
         what="состояние музыки (get_music_state)",
@@ -1567,12 +1509,46 @@ ACTION_CLAIM_RULES: tuple = (
 )
 
 
+#: Issue #3165 — имена групп ``claim_re``, которыми правило сообщает, ЧТО
+#: заявлено о воспроизведении: «тишина / не играет» или «играет X».
+CLAIM_IDLE = "idle"
+CLAIM_PLAYING = "playing"
+
+
+def _claim_agrees_with_player(
+    match: "re.Match[str]", music_playing: Optional[bool]
+) -> bool:
+    """Issue #3165 — заявление о состоянии музыки совпадает со снимком плеера.
+
+    Живой прогон 29.09 00:10: на «что сейчас играет» при снимке ``idle``
+    модель ответила «Сейчас тишина — ничего не играет.» — ровно то, что ей
+    показал ``<music_state playing="no">`` (#3161, ADR-0141). Bug E требовал
+    ``get_music_state``, ретраи увели ответ в выдумку и кончились «Не
+    получилось выполнить». Ответ, согласный со снимком, подкреплён данными
+    плеера — тул к нему ничего не добавит.
+
+    ``music_playing=None`` — снимка нет (``<music_state playing="unknown">``):
+    ответу не на что опереться, правило работает как раньше. Правило без
+    именованных групп (все, кроме ``music_state``) — тоже как раньше.
+    Сверяется ПЕРВОЕ заявление в ответе: оно и есть ответ на вопрос, дальше
+    обычно идёт прошлое («…последним играл клубный трек»).
+    """
+    if music_playing is None:
+        return False
+    if match.lastgroup == CLAIM_IDLE:
+        return not music_playing
+    if match.lastgroup == CLAIM_PLAYING:
+        return music_playing
+    return False
+
+
 def detect_unbacked_action_claim(
     *,
     user_input: Optional[str],
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
     dj_active: bool = False,
+    music_playing: Optional[bool] = None,
 ) -> Optional[ActionClaimRule]:
     """Issue #992 Bug E — LLM отчиталась о действии, не вызвав тул.
 
@@ -1597,6 +1573,10 @@ def detect_unbacked_action_claim(
     пишет prose без noun в user_input, LLM отвечает past-tense
     claim-verb) и НЕ даёт false-positive в быту: «сделала уборку»
     при ``dj_active=False`` остаётся неотфильтрованным.
+
+    Issue #3165: ``music_playing`` — играет ли музыка по снимку плеера
+    (``None`` — снимка нет). Заявление о состоянии музыки, согласное со
+    снимком, подкреплено и без тула (:func:`_claim_agrees_with_player`).
     """
     if not user_input or not spoken:
         return None
@@ -1617,9 +1597,10 @@ def detect_unbacked_action_claim(
         )
         if not skip_user_re and not rule.user_re.search(user_input):
             continue
-        if not rule.claim_re.search(spoken):
+        claim = rule.claim_re.search(spoken)
+        if claim is None or called & rule.tools:
             continue
-        if called & rule.tools:
+        if _claim_agrees_with_player(claim, music_playing):
             continue
         return rule
     return None
@@ -1668,6 +1649,7 @@ def is_phantom_music_action(
     user_input: Optional[str],
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
+    music_playing: Optional[bool] = None,
 ) -> Optional[ActionClaimRule]:
     """Issue #2565 — :func:`detect_unbacked_action_claim` для музыкальных
     категорий.
@@ -1685,11 +1667,15 @@ def is_phantom_music_action(
     Цена ложного срабатывания: лишний round-trip к LLM. Цена пропуска:
     воспроизведение issue #2565 — гасим музыку, на которую юзер
     только что рассчитывал.
+
+    Issue #3165: ``music_playing`` — снимок плеера, как у
+    :func:`detect_unbacked_action_claim`; ``None`` — прежнее поведение.
     """
     rule = detect_unbacked_action_claim(
         user_input=user_input,
         spoken=spoken,
         tools_called=tools_called,
+        music_playing=music_playing,
     )
     if rule is None:
         return None
@@ -1817,6 +1803,9 @@ CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     # config
     "set_volume", "set_voice", "set_speed", "set_pitch",
     "set_tts_provider",
+    # issue #3125 — громкость музыки: «сделал трек громче» после реального
+    # вызова — не phantom-claim.
+    "set_music_volume",
     # memory / speaker
     "memory_save", "memory_search", "memory_context",
     "register_speaker", "faq_search", "search_web",
@@ -1985,7 +1974,18 @@ def build_universal_action_claim_retry_prompt(
     )
 
 
-def build_action_claim_failure_fallback(hit: "UniversalActionClaimHit") -> str:
+#: Issue #3165 — фраза, когда в ходе НИЧЕГО не исполнялось и не падало.
+#: «Не получилось выполнить» значит «пытался и упал» — без попытки это
+#: неправда (живой прогон 29.09 00:13: так робот ответил на вопрос «что
+#: сейчас играет», хотя ни одного тула в ходе не было).
+ACTION_CLAIM_NOTHING_DONE_TEXT = (
+    "Я сейчас ничего не делал — скажи, пожалуйста, что нужно сделать."
+)
+
+
+def build_action_claim_failure_fallback(
+    hit: "UniversalActionClaimHit", *, nothing_attempted: bool = False
+) -> str:
     """Issue #2949 — честная фраза после исчерпания бюджета ретраев.
 
     Когда одноразовый ретрай :func:`build_universal_action_claim_retry_prompt`
@@ -1993,7 +1993,13 @@ def build_action_claim_failure_fallback(hit: "UniversalActionClaimHit") -> str:
     подкреплённом успешным тулом — публикуем это вместо заявления. Цена
     молчаливой деградации выше цены честного «не получилось»: ADR-0018
     («Честный FAIL лучше красивого PASS»).
+
+    Issue #3165: ``nothing_attempted=True`` — в ходе ни один тул не
+    исполнялся и не падал. «Не получилось выполнить» тогда само ложь
+    (попытки не было), звучит :data:`ACTION_CLAIM_NOTHING_DONE_TEXT`.
     """
+    if nothing_attempted:
+        return ACTION_CLAIM_NOTHING_DONE_TEXT
     return (
         "Не получилось выполнить — попробуй, пожалуйста, ещё раз "
         "чуть позже."

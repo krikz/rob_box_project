@@ -6,9 +6,11 @@
 #   /camera/camera/depth/image_rect_raw — aligned depth (rs_compat renames stereo→depth)
 #
 # Bandwidth optimizations (2026-03-03):
-#   i_low_bandwidth: true  — on-chip H.264 encoding on OAK-D before USB transfer
+#   color.i_low_bandwidth: true  — on-chip MJPEG encoding on OAK-D before USB transfer
 #                            reduces eth0 Vision Pi → Main Pi from ~89 MB/s to ~15-20 MB/s
 #                            source: https://docs.luxonis.com/software/ros/depthai-ros/driver/
+#   depth.i_low_bandwidth: FALSE (2026-09-29, ADR-0138 §7 п.2) — low-bandwidth depth was
+#                            wrong by ×2.0–2.5 (1.0 m → 2.52 m), see the depth: section below.
 #   i_enable_lazy_publisher: true — skip publishing when no subscriber
 #   i_max_q_size: 1               — minimal buffer = lower latency
 #
@@ -56,8 +58,21 @@
       i_isp_num: 2
       i_isp_den: 3
     depth:    # rs_compat: stereo→depth (секция параметров)
-      i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~1-2 MB/s compressed
-      i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам
+      # false (29.09.2026, ADR-0138 §7 п.2). Замер на роботе, человек на рулетке,
+      # медиана distance_m из /perception/observations за 20 с:
+      #   факт, м          1.0    2.0    3.0    4.0
+      #   low_bw=true      2.523  4.760  6.926  9.519   (×2.0–2.5, ступени квантования)
+      #   low_bw=false     1.099  2.111  3.042  4.190   (смещение +0.05–0.19 м)
+      # Причина (исходники depthai-ros v2.12.2-humble): при low_bandwidth устройство шлёт
+      # 8-битный MJPEG-disparity (subpixel выключается), хост переводит его в глубину как
+      # baseline·10·P[0]/disp, где P[0] — fx camera_info RGB 1280×720, а disparity посчитан
+      # в пикселях моно-сенсора. На устройстве (false) глубину считает сам StereoDepth.
+      # Цена: хост не декодирует MJPEG, зато по USB едет raw 16UC1; CPU oak-d ~75–81 % ядра
+      # по 3 сэмплам docker stats — A/B-замер нагрузки ещё не сделан.
+      # Потребители compressedDepth (quest_node, telegram_node) не затронуты: это плагин
+      # image_transport на том же издателе, от i_low_bandwidth не зависит.
+      i_low_bandwidth: false
+      i_low_bandwidth_quality: 90      # не используется при i_low_bandwidth: false
       i_publish_compressed: false
       i_fps: 5.0                       # Sync с RGB fps (снижено с 10)
       i_max_q_size: 1

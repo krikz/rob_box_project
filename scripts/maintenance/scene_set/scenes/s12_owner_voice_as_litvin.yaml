@@ -1,0 +1,33 @@
+# Регрессия 29.09: голос, НЕ принадлежащий лицу в кадре, не должен дать
+# этому лицу имя. Владелец вне кадра искажённым голосом называется Литвином.
+# Разметка решает явно (ADR-0144 §3.1): маске не разрешено ни одно имя,
+# владельцу — только «Дэнчик» (и по голосу тоже).
+scene: s12_owner_voice_as_litvin
+description: владелец искажённым голосом «я Литвин», в кадре только маска
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+  - {label: mask, truth: Литвин, kind: mask, known_before: false, anchor_cx: [0.05, 0.40]}  # ПОДСТАВКА: сверить conductor.py --probe-anchor-s 10
+expected:
+  allowed_names:
+    mask: [{from: 0, names: []}]
+    owner: [{from: 0, names: [Дэнчик]}]
+steps:
+  - say: "Начинаю сцену двенадцать."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр с маской."
+    wait_s: 3
+  - enter: mask
+    say: "Поставьте маску на подставку."
+    wait_s: 3
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра. Маска остаётся."
+  - say: "Встаньте сбоку вне кадра."
+    wait_s: 8
+  - speech: owner
+    say: "Изменённым голосом скажите: Робот, запомни меня, меня зовут Литвин."
+    window_s: 10
+    wait_s: 15
+  - speech: owner
+    say: "Изменённым голосом скажите: Робот, кто я?"
+    window_s: 8
+    wait_s: 15

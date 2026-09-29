@@ -116,6 +116,21 @@ class TestTweakInheritsFromLastTrack:
         assert "унаследовано от текущего трека:" in tool.last_score["text"]
         assert "lead_synth=blip" in tool.last_score["text"]
 
+    def test_inherited_levels_over_the_old_cap_are_clamped_with_warn(self, mock_node):
+        """Issue #3178 — унаследованные ``levels`` вне текущего диапазона
+        (напр. пришедшие из состояния, записанного другой версией кода)
+        клампятся в 0..1 с WARN, не валят вызов без явной ручки."""
+        tool, mgr = _tool(mock_node, resolve=lambda _n, _v: _theme_rec())
+        mgr.last_track_arrangement = {
+            "melody_key": "theme",
+            "fields": {**_ARR, "root": "D", "scale": "dorian", "levels": "lead=1.1"},
+        }
+        result, _kwargs = _spec_kwargs(mock_node, tool, name="theme")
+        assert result.success is True, result.error
+        assert "lead×1" in tool.last_score["decisions"]["levels"]
+        warnings = mock_node.get_logger().warning_messages
+        assert any("lead=1.1" in w for w in warnings), warnings
+
     def test_explicit_value_wins_over_inherited(self, mock_node):
         tool, _mgr = _tool(mock_node, resolve=lambda _n, _v: _theme_rec())
 

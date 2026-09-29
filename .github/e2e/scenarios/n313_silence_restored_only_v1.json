@@ -1,6 +1,6 @@
 {
   "name": "n313_silence_restored_only",
-  "description": "Isolated test of n313_silence_restored prompt fix from PR #2387. Single-step scenario: user asks 'Робот, теперь тихо?' — LLM must call get_music_state BEFORE verbal answer. Pre-conditions: DJ mode disabled, stop_music called to ensure no music playing.",
+  "description": "Isolated test of n313_silence_restored. User asks 'Робот, теперь тихо?' — robot must answer «тишина» from <music_state> (player snapshot, issue #3165; before that PR #2387 required get_music_state). Pre-conditions: DJ mode disabled, stop_music called to ensure no music playing.",
   "stability": "expected-green",
   "steps": [
     {
@@ -19,9 +19,11 @@
       "text": "Робот, теперь тихо?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": ["get_music_state"],
+        "expected_tool_calls": [],
         "must_not_call": ["execute_music_code", "stop_music"],
-        "_comment": "Per issue #2347 / PR #2387 fix: prompt RULE #MUSIC-STATE must force get_music_state call before verbal answer about music state."
+        "expected_keywords": ["тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"],
+        "must_not_say": ["не получилось выполнить"],
+        "_comment": "Issue #3165 (was #2347 / PR #2387): <music_state> is the player snapshot (#3161, ADR-0141), so the answer comes from it; get_music_state is no longer mandatory. Live run 29.09: the mandatory tool punished the correct «тишина» with retries and «Не получилось выполнить». We check the answer itself."
       }
     }
   ]

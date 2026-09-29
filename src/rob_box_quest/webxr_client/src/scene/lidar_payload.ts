@@ -62,18 +62,20 @@ export function parseLidar2d(payload: Uint8Array): LidarScan {
       `payload truncated: expected ${expected} bytes for ${header.n_points} points, got ${payload.length}`
     );
   }
-  const ranges = new Float32Array(payload.buffer, payload.byteOffset + HEADER_BYTES, header.n_points);
-  const intensities = new Float32Array(
-    payload.buffer,
-    payload.byteOffset + HEADER_BYTES + header.n_points * 4,
-    header.n_points
-  );
-  // Копируем (буфер payload'а может быть переиспользован/усечён).
-  return {
-    header,
-    ranges: new Float32Array(ranges),
-    intensities: new Float32Array(intensities)
-  };
+  // Читаем через DataView, а не `new Float32Array(payload.buffer, offset)`:
+  // payload — это subarray кадра после 5-байтового заголовка и LEB128-длины
+  // (wire/protocol.ts decodeFrame), его byteOffset обычно НЕ кратен 4
+  // (5 + 2 байта LEB = 7). Float32Array-вью на таком смещении бросает
+  // RangeError, LidarOverlay.ingestPayload его глотает — и лидар молча
+  // не рисовался. Всплыло на симуляторе мостика (#3149).
+  const n = header.n_points;
+  const ranges = new Float32Array(n);
+  const intensities = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) {
+    ranges[i] = view.getFloat32(HEADER_BYTES + i * 4, true);
+    intensities[i] = view.getFloat32(HEADER_BYTES + n * 4 + i * 4, true);
+  }
+  return { header, ranges, intensities };
 }
 
 // Преобразует LiDAR-scan в точки СЦЕНЫ (x, z) вокруг центра робота.

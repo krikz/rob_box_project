@@ -14,14 +14,25 @@ import {
   type LayoutStorage
 } from "./panel_layout_store";
 import { FpsMeter } from "./fps_meter";
+import { createBridgeShell, type HudBezelRect } from "./bridge_shell";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
 import { createPointerBeam, type PointerBeamHandle } from "../interaction/pointer_beam";
 import { resizeSize } from "../interaction/pointer_math";
+import { createNavLayer, type NavLayerHandle } from "../nav/nav_layer";
+import type { NavCancelCmd, NavGoalCmd } from "../wire/protocol_generated";
 import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
 import { createTtsPickerMenu, type TtsPickerMenuHandle } from "./tts_picker_menu";
 import { parseTtsTargetId, type TtsPickerState, type TtsPickerTarget } from "../state/tts_picker_state";
 import { createSupervisorPanel, type SupervisorPanelHandle, PANEL_TARGET_PREFIX } from "./supervisor_panel";
+import {
+  createStreamsPanel,
+  parseStreamsTargetId,
+  STREAMS_TAB_TARGET_ID,
+  type StreamsAction,
+  type StreamsPanelHandle
+} from "./streams_panel";
+import type { SubscriptionsView } from "../state/subscription_manager";
 import {
   createVoicePipelinePanel,
   parsePipelineTargetId,
@@ -31,6 +42,9 @@ import {
 } from "./voice_pipeline_panel";
 import {
   loadBridgeAssets,
+  placeOnFloor,
+  fitScreenFrame,
+  BRIDGE_SCREEN_FACE,
   type BridgeAssetHandle,
 } from "./bridge_assets";
 import {
@@ -59,15 +73,32 @@ export const MAIN_SCREEN_TOPIC = "camera_rear";
 // CEILING_SCREEN_*).
 export const CEILING_SCREEN_TOPIC = "camera_ceiling";
 
+// Экран-стена: центр и размер видео-прямоугольника. Рамка
+// (bridge_screen.optimized.glb) подгоняется ровно под него (fitScreenFrame).
+export const MAIN_SCREEN_CENTER = { x: 0, y: 1.5, z: -3.9 } as const;
+export const MAIN_SCREEN_SIZE = { width: 4.8, height: 2.7 } as const;
+/** Толщина рамки экрана, м (модель 0.131 → ×0.6). */
+export const SCREEN_FRAME_DEPTH_M = 0.08;
+/** Зазор между передним кантом рамки и плоскостью видео, м. */
+export const SCREEN_FRAME_GAP_M = 0.01;
+/** Цвет палубы: графит вместо белого металла (см. placeHeroProps). */
+export const DECK_TINT = 0x5c6670;
+/** Потолок metalness рамки (IBL выключен — см. placeHeroProps). */
+const SCREEN_FRAME_MAX_METALNESS = 0.35;
+
 // Боковые панели (Wave 3.A). Экран-стена занимает фронт, потолочная
 // камера — верх, поэтому на свободную панель остаётся OAK-D depth.
 // `camera_oak_color` сюда не берём — это тот же сенсор, что и на
 // экране-стене (registry: 0x1001 через ROS vs 0x1003 через depthai).
 export const SIDE_PANEL_TOPICS = ["camera_oak_depth"] as const;
 
-// Углы боковых панелей: шире дефолтного полукруга (дизайн §3), чтобы
-// не перекрывать экран-стену во фронтальном секторе обзора.
-export const SIDE_PANEL_ANGLES_DEG = [-75];
+// Углы боковых панелей. Фронт до ±88° занят экраном-стеной и крыльями
+// TARS (tarsWingSectorDeg), поэтому depth стоит справа ЗА крылом TARS2:
+// на −75° она закрывала крыло TARS1 (панель 1.2 м на радиусе 2 м —
+// ±16.7°, сектор 91°…125°). Раскладка флангов целиком:
+//   слева  −100° «ГОЛОС» (рядом с TARS1 — речью), −145° режимы (M);
+//   справа +108° depth,                            +145° «ПОТОКИ».
+export const SIDE_PANEL_ANGLES_DEG = [108];
 
 // ── Потолочный экран ────────────────────────────────────────────────────
 //
@@ -134,6 +165,74 @@ export function ceilingScreenPitchRad(
  */
 export const CEILING_SCREEN_ROLL_RAD = 0;
 
+// ── Крылья TARS (issue #2113) ───────────────────────────────────────────
+// Копии главного экрана по бокам, шарнирно прижаты к его вертикальным
+// кромкам и отогнуты на 50° к оператору (подробности — у создания крыльев
+// в createCaptainBridge).
+export const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 } as const; // = как главный экран
+export const TARS_PANEL_Y = 1.5; // = как главный экран
+const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
+const TARS_MAIN_Z = -3.9; // плоскость главного экрана
+/** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
+export const TARS_FLARE_RAD = (50 * Math.PI) / 180;
+// Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
+export const TARS_WING_X =
+  TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
+export const TARS_WING_Z =
+  TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
+
+/**
+ * Сектор азимутов (градусы, 0 = прямо, модуль — в любую сторону), который
+ * крыло TARS занимает из глаз оператора в (0, 0). Чистая функция: панели
+ * на окружности вокруг оператора не должны заходить в этот сектор, иначе
+ * они закрывают крыло (так было с depth −75° и «ГОЛОС» +60°).
+ */
+export function tarsWingSectorDeg(): { min: number; max: number } {
+  const nearX = TARS_MAIN_EDGE_X;
+  const nearZ = TARS_MAIN_Z;
+  const farX = TARS_MAIN_EDGE_X + TARS_PANEL_SIZE.width * Math.cos(TARS_FLARE_RAD);
+  const farZ = TARS_MAIN_Z + TARS_PANEL_SIZE.width * Math.sin(TARS_FLARE_RAD);
+  const az = (x: number, z: number) => (Math.atan2(x, -z) * 180) / Math.PI;
+  return { min: az(nearX, nearZ), max: az(farX, farZ) };
+}
+
+/**
+ * Угловая полуширина панели шириной `widthM` на радиусе `radiusM`, градусы.
+ * Для проверки «панель не заходит в сектор крыла».
+ */
+export function panelHalfSpanDeg(widthM: number, radiusM: number): number {
+  return (Math.atan2(widthM / 2, radiusM) * 180) / Math.PI;
+}
+
+// ── HUD-полоса над экраном-стеной ──────────────────────────────────────
+// Статус (таблица), голос и ARM стоят в один ряд в «шапке» над рамкой
+// экрана-стены: верх рамки ≈ 3.04 м (fitScreenFrame), полоса — 3.10…3.60,
+// потолок оболочки — 3.8 (bridge_shell.ts). Раньше спрайты висели на
+// y = 2.85–2.95, наезжали на верх видео, а статус торчал выше потолка.
+/** Плоскость спрайтов полосы (чуть перед видео, z = −3.9). */
+export const HUD_STRIP_Z = -3.85;
+/** Центр полосы по высоте. */
+export const HUD_STRIP_Y = 3.35;
+/** Слоты полосы: центр по X и размер спрайта, м. Слева направо. */
+export const HUD_STRIP_SLOTS = {
+  status: { x: -0.95, width: 3.0, height: 0.5 },
+  voice: { x: 1.05, width: 0.8, height: 0.375 },
+  arm: { x: 1.95, width: 0.8, height: 0.375 }
+} as const;
+
+/** Прямоугольник, который занимает HUD-полоса (под подложку в оболочке). */
+export function hudStripBezel(): HudBezelRect {
+  const slots = Object.values(HUD_STRIP_SLOTS);
+  const left = Math.min(...slots.map((s) => s.x - s.width / 2));
+  const right = Math.max(...slots.map((s) => s.x + s.width / 2));
+  const height = Math.max(...slots.map((s) => s.height));
+  return {
+    center: { x: (left + right) / 2, y: HUD_STRIP_Y, z: HUD_STRIP_Z },
+    width: right - left,
+    height
+  };
+}
+
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
   enableXr?: boolean;
@@ -142,6 +241,12 @@ export interface CaptainBridgeOptions {
    * решает, что делать с подписками: сцена про WSS ничего не знает.
    */
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
+  /**
+   * Сброс раскладки (R) пересоздал панели с топиками по умолчанию — набор
+   * видеотопиков сцены мог поменяться целиком (#3150: менеджер подписок
+   * должен узнать об этом, иначе подписки остаются на старые топики).
+   */
+  onVideoTopicsReset?(topics: string[]): void;
   /**
    * AV-27: оператор ткнул лучом в TTS picker (строку/PREVIEW/APPLY/STOP/
    * CLOSE). Сцена не знает ни про WSS, ни про состояние стора — она только
@@ -167,6 +272,20 @@ export interface CaptainBridgeOptions {
    *   bootstrap (тот же контракт, что у `onSupervisorAction`).
    */
   onPipelineAction?(action: VoicePipelineAction): void;
+  /**
+   * Клик по панели «ПОТОКИ» (issue #3150): профиль / вкл-выкл потока /
+   * частота. Сцена не знает про подписки — это `SubscriptionManager` в
+   * bootstrap.
+   */
+  onStreamsAction?(action: StreamsAction): void;
+  /**
+   * #3151: навигационный слой просит отправить nav_goal / nav_cancel.
+   * `false` — связи нет (слой скажет оператору, что команда не ушла).
+   * Сцена транспорта не знает — как у остальных панелей.
+   */
+  onNavCommand?(cmd: NavGoalCmd | NavCancelCmd): boolean;
+  /** #3151: короткое уведомление навигационного слоя (тост). */
+  onNavNotify?(text: string, level: "info" | "warn"): void;
   /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
@@ -233,6 +352,21 @@ export interface CaptainBridgeHandle {
    * Всегда видима (это не HUD-оверлей, а панель на мостике).
    */
   voicePipeline: VoicePipelinePanelHandle;
+  /** 3D-панель «ПОТОКИ» (issue #3150): профили подписок, частоты, трафик. */
+  streamsPanel: StreamsPanelHandle;
+  /** Перерисовать панель «ПОТОКИ» (и перерегистрировать её кнопки). */
+  renderStreams(view: SubscriptionsView): void;
+  /**
+   * Показать/скрыть панель «ПОТОКИ» (клавиша P на десктопе, вкладка под
+   * панелью лучом в VR). Возвращает новое состояние.
+   */
+  toggleStreamsPanel(): boolean;
+  isStreamsPanelVisible(): boolean;
+  /**
+   * Поток видеотопика выключен (#3150): `lines` — текст заглушки на всех
+   * экранах этого топика; `null` — поток снова идёт.
+   */
+  setVideoPlaceholder(topic: string, lines: readonly string[] | null): void;
   /**
    * TARS 1 — текстовое полотно (issue #2113, quest #2112). Слева от
    * FRONT CAM, лицом к оператору. Показывает текст, который TARS
@@ -286,6 +420,11 @@ export interface CaptainBridgeHandle {
   updatePointer(ray: PointerRay | null): void;
   /** Слой указателя — сюда регистрируются будущие кликабельные объекты. */
   pointer: PointerSystem;
+  /**
+   * #3151: навигационный слой на полу — путь Nav2 (nav_path), след робота,
+   * nav-цель лучом (прицел A/X или G), кнопка отмены, строка NAV на HUD.
+   */
+  nav: NavLayerHandle;
   /**
    * Каталог доступных стримов (из `stream_list`) — наполняет меню выбора
    * стрима, которое всплывает по клику на панель.
@@ -351,6 +490,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const floor = new THREE.Mesh(floorGeom, floorMat);
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
+
+  // Оболочка мостика: стены по бокам и сзади, потолок, шапка под
+  // HUD-полосой (bridge_shell.ts). Процедурная — стоит и без GLB-окружения.
+  const shell = createBridgeShell({ hudBezel: hudStripBezel() });
+  scene.add(shell.object);
 
   // Маркер позиции пользователя.
   const origin = new THREE.Mesh(
@@ -443,6 +587,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     handlers: {
       onHover: () => refreshHighlights(),
       onSelect: (id) => {
+        // #3151: кнопка отмены nav-цели (nav:*).
+        if (id.startsWith("nav:")) {
+          navLayer.handleSelect(id);
+          return;
+        }
         // W6-2: клик по панели голосового пайплайна (vpl:*) — раньше
         // всего остального: его цели на том же слое указателя.
         const pipelineTarget = parsePipelineTargetId(id);
@@ -464,8 +613,20 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
           applyMenuChoice(menuTopic);
           return;
         }
+        // Вкладка «ПОТОКИ»: показать/скрыть панель лучом (в VR нет клавиши P).
+        if (id === STREAMS_TAB_TARGET_ID) {
+          toggleStreamsPanel();
+          refreshHighlights();
+          return;
+        }
         // Клик по кнопке панели супервизора (R14): маршрутизируем в
         // callback, который установлен через `onSupervisorAction`.
+        // issue #3150: кнопки панели «ПОТОКИ» (prefix `str:`).
+        const streamsAction = parseStreamsTargetId(id);
+        if (streamsAction !== null) {
+          opts.onStreamsAction?.(streamsAction);
+          return;
+        }
         if (id.startsWith(PANEL_TARGET_PREFIX)) {
           const action = id.slice(PANEL_TARGET_PREFIX.length);
           opts.onSupervisorAction?.(action, supervisorPanel);
@@ -533,6 +694,24 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // луч первыми (они ближе к камере), поэтому перетаскивание не мешает клику.
   pointer.addTarget({ id: PIPELINE_DRAG_TARGET_ID, object: voicePipeline.object, draggable: true });
 
+  // Панель «ПОТОКИ» (issue #3150): +145°, зеркально панели режимов (−145°).
+  // Набор строк меняется вместе с набором потоков, поэтому цели указателя
+  // перерегистрируются при каждой пересборке хит-мешей.
+  const streamsPanel = createStreamsPanel();
+  scene.add(streamsPanel.object);
+  // Вкладка «ПОТОКИ» под панелью — единственный способ скрыть/показать
+  // панель в VR (клавиатуры там нет). Видна и кликается всегда.
+  scene.add(streamsPanel.tab);
+  pointer.addTarget({ id: STREAMS_TAB_TARGET_ID, object: streamsPanel.tab, draggable: false });
+  let streamsTargetIds: string[] = [];
+  function renderStreams(view: SubscriptionsView): void {
+    if (!streamsPanel.render(view)) return;
+    for (const id of streamsTargetIds) pointer.removeTarget(id);
+    const targets = streamsPanel.targets();
+    for (const t of targets) pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+    streamsTargetIds = targets.map((t) => t.id);
+  }
+
   // Большой экран-стена перед оператором: на него выводим фронтальную
   // камеру. Стена мостика стоит на z = -4.56 (ROOM_D/2, ADR-0076 R1,
   // ROOM_D = 9.12); экран висит чуть ближе (z = -3.9), лицом к
@@ -541,14 +720,19 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     {
       id: "main_screen",
       topic: MAIN_SCREEN_TOPIC,
-      position: { x: 0, y: 1.5, z: -3.9 },
+      position: { ...MAIN_SCREEN_CENTER },
       facing: { x: 0, z: 1 },
-      size: { width: 4.8, height: 2.7 },
+      size: { ...MAIN_SCREEN_SIZE },
       selected: false
     },
     { showLabel: false, canvasWidth: 1280, canvasHeight: 720 }
   );
   scene.add(mainScreen.mesh);
+
+  // #3150: заглушки «поток выключен» по топику — держим здесь, чтобы
+  // панели, пересозданные syncPanels (сброс раскладки, смена топика),
+  // сразу получали актуальную заглушку, а не чёрный экран до следующего тика.
+  const videoPlaceholders = new Map<string, readonly string[]>();
 
   // Потолочный экран: тот же азимут, что у экрана-стены, но над головой —
   // «смотрю прямо» / «смотрю вверх» повторяет пару камер на роботе.
@@ -590,18 +774,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // поэтому декоративный короб комнаты расширен по ширине ROOM_W 7 → 11.6 м
   // (build_bridge_assets.mjs). ROOM_D не менялся (крылья не выходят за него:
   // far-z ≈ -0.22 лежит внутри [−4.56, +4.56]).
-  const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 }; // = как главный экран
-  const TARS_PANEL_Y = 1.5; // = как главный экран
-  const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
-  const TARS_MAIN_Z = -3.9; // плоскость главного экрана
-  /** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
-  const TARS_FLARE_RAD = THREE.MathUtils.degToRad(50);
-  // Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
-  const TARS_WING_X =
-    TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
-  const TARS_WING_Z =
-    TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
-
   // Левое крыло (TARS 1): local +X меша направлен к шарниру (краю главного),
   // разворот +50° вокруг вертикали уводит крыло влево-вперёд к оператору.
   const tars1Panel = createTars1TextPanel();
@@ -617,11 +789,12 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   tars2Panel.mesh.rotation.y = -TARS_FLARE_RAD;
   scene.add(tars2Panel.mesh);
 
-  // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
+  // Arm-state HUD: правый слот HUD-полосы над экраном-стеной.
   // Sprite всегда повёрнут к камере — читается из любой позы оператора.
+  // Канвас 512×240 — те же пропорции и стиль, что у индикатора голоса.
   const armCanvas = document.createElement("canvas");
   armCanvas.width = 512;
-  armCanvas.height = 128;
+  armCanvas.height = 240;
   const armCtx = armCanvas.getContext("2d");
   if (!armCtx) {
     throw new Error("captain_bridge: failed to acquire arm HUD 2D context");
@@ -632,25 +805,32 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const armSprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: armTexture, depthTest: false, transparent: true })
   );
-  // Правый верхний угол стены-экрана (mainScreen 4.8×2.7, центр y=1.5, z=-3.9).
-  armSprite.position.set(2.35, 2.95, -3.85);
-  armSprite.scale.set(1.1, 0.275, 1);
+  armSprite.position.set(HUD_STRIP_SLOTS.arm.x, HUD_STRIP_Y, HUD_STRIP_Z);
+  armSprite.scale.set(HUD_STRIP_SLOTS.arm.width, HUD_STRIP_SLOTS.arm.height, 1);
+  armSprite.renderOrder = 14; // поверх карты/лидара, как статус
   scene.add(armSprite);
 
   function drawArmHud(armed: boolean): void {
     const ctx = armCtx!;
     ctx.clearRect(0, 0, armCanvas.width, armCanvas.height);
-    // Тёмная подложка.
-    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+    const color = armed ? "#2ec27e" : "#8b98a5";
+    // Тёмная подложка + holo-кант — единый стиль HUD-полосы.
+    ctx.fillStyle = "rgba(10, 13, 17, 0.82)";
     ctx.fillRect(0, 0, armCanvas.width, armCanvas.height);
+    ctx.strokeStyle = "rgba(68, 221, 255, 0.55)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, armCanvas.width - 4, armCanvas.height - 4);
     // Цветной индикатор слева.
-    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
+    ctx.fillStyle = color;
     ctx.fillRect(0, 0, 16, armCanvas.height);
-    // Текст.
-    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
-    ctx.font = "bold 56px monospace";
+    // Подпись слота мелко сверху, состояние — крупно.
+    ctx.fillStyle = "#8b98a5";
+    ctx.font = "bold 30px monospace";
     ctx.textBaseline = "middle";
-    ctx.fillText(armed ? "ARM" : "DISARM", 44, armCanvas.height / 2);
+    ctx.fillText("TELEOP", 44, 48);
+    ctx.fillStyle = color;
+    ctx.font = "bold 72px monospace";
+    ctx.fillText(armed ? "ARM" : "DISARM", 44, armCanvas.height / 2 + 30);
     armTexture.needsUpdate = true;
   }
   drawArmHud(false);
@@ -660,20 +840,31 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   // Status HUD (Wave 3.A / R8): battery, Wi-Fi, скорость, RTT, режим.
-  // Зеркально ARM-индикатору — левый верх стены-экрана.
-  const statusHud = createStatusHud();
+  // Левый (широкий) слот HUD-полосы над экраном-стеной.
+  const statusHud = createStatusHud({
+    position: { x: HUD_STRIP_SLOTS.status.x, y: HUD_STRIP_Y, z: HUD_STRIP_Z },
+    scale: { x: HUD_STRIP_SLOTS.status.width, y: HUD_STRIP_SLOTS.status.height }
+  });
   scene.add(statusHud.sprite);
 
-  // Voice state indicator (AV-20): центр стены над экраном, между
-  // status_hud и arm-sprite. Позиция (0, 2.85, -3.85) — выше main screen
-  // (центр y=1.5) и не перекрывает ни ARM-sprite (x=2.35), ни status_hud
-  // (x=-2.35). Размер 1.1 × 0.5 — компактнее, чем статус/ARM: это не
-  // «главный HUD», а индикатор активности микрофона при работе с PTT на
-  // гриппах (аудит §4-bis).
-  const voiceIndicator: VoiceStateIndicator = createVoiceStateIndicator({
-    position: { x: 0, y: 2.85, z: -3.85 },
-    scale: { x: 1.1, y: 0.5 }
+  // #3151: навигационный слой (путь Nav2, след, nav-цель, отмена). Кормится
+  // позой из map_2d (ingestMapFrame) и лучом указателя (updatePointer).
+  const navLayer: NavLayerHandle = createNavLayer({
+    send: (cmd) => opts.onNavCommand?.(cmd) ?? false,
+    onStatusLine: (line) => statusHud.setNav(line),
+    notify: (text, level) => opts.onNavNotify?.(text, level),
+    pointer
   });
+  scene.add(navLayer.overlay.object);
+
+  // Voice state indicator (AV-20): средний слот HUD-полосы, между
+  // таблицей статуса и ARM. Компактнее статуса: это не «главный HUD», а
+  // индикатор активности микрофона при работе с PTT на гриппах (аудит §4-bis).
+  const voiceIndicator: VoiceStateIndicator = createVoiceStateIndicator({
+    position: { x: HUD_STRIP_SLOTS.voice.x, y: HUD_STRIP_Y, z: HUD_STRIP_Z },
+    scale: { x: HUD_STRIP_SLOTS.voice.width, y: HUD_STRIP_SLOTS.voice.height }
+  });
+  voiceIndicator.sprite.renderOrder = 14;
   scene.add(voiceIndicator.sprite);
 
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
@@ -687,37 +878,72 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   function placeHeroProps(env: BridgeAssetHandle): void {
     const g = env.groups;
 
-    const placeOnFloor = (group: THREE.Group, x: number, z: number, width?: number, height?: number): void => {
-      const box = new THREE.Box3().setFromObject(group);
-      const size = box.getSize(new THREE.Vector3());
-      let scale = 1;
-      if (width && size.x > 0) scale = width / size.x;
-      if (height && size.y > 0) scale = height / size.y;
-      group.scale.setScalar(scale);
-      group.position.set(x, -box.min.y * scale, z);
-    };
+    // Палуба (bridge_floor.glb) — белый металл без карты окружения, на
+    // экране выходила светло-серой плитой: карта и лидар на ней терялись.
+    // Притемняем до графита — голо-слои (карта аддитивная) читаются на ней.
+    g.floor?.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (mat && "color" in mat) {
+        mat.color.setHex(DECK_TINT);
+        mat.needsUpdate = true;
+      }
+    });
 
     // Подиум — под оператором (спавн (0,0,0)), диаметр ~2 м.
-    if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, 2);
+    if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, { width: 2 });
 
     // Голо-проекторы — слева и справа от оператора, высота ~0.9 м.
     if (g.heroHoloProjector) {
-      placeOnFloor(g.heroHoloProjector, -1, -1.8, undefined, 0.9);
+      placeOnFloor(g.heroHoloProjector, -1, -1.8, { height: 0.9 });
       heroHoloRight = g.heroHoloProjector.clone(true);
       heroHoloRight.name = "bridge_holo_projector_right";
-      placeOnFloor(heroHoloRight, 1, -1.8, undefined, 0.9);
+      // `clone(true)` deep-clones the Object3D graph but NOT materials
+      // (three.js shares them by reference) — deep-clone materials too so
+      // `environment.dispose()` (which walks `g.heroHoloProjector`) and the
+      // separate `heroHoloRight` dispose below each dispose their own
+      // material exactly once, never the same shared one twice (#3045).
+      heroHoloRight.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.material) {
+          mesh.material = Array.isArray(mesh.material)
+            ? mesh.material.map((m) => m.clone())
+            : mesh.material.clone();
+        }
+      });
+      placeOnFloor(heroHoloRight, 1, -1.8, { height: 0.9 });
       scene.add(heroHoloRight);
     }
 
-    // Рамка экрана — позади главного экрана: видео-панель (впереди)
-    // перекрывает «экранную» поверхность рамки, остаётся тонкий безель.
-    // Точная подгонка безеля — визуально на Quest; здесь базовая посадка
-    // по ширине главного экрана 4.8 м.
+    // Рамка экрана — ЗА главным экраном: полотно рамки ровно под видео
+    // (4.8 × 2.7, центр (0, 1.5, −3.9)), видео на 1 см впереди переднего
+    // канта, вокруг остаётся безель. Геометрия модели и почему масштаб
+    // раздельный по осям — BRIDGE_SCREEN_FACE / fitScreenFrame.
     if (g.heroScreen) {
-      const box = new THREE.Box3().setFromObject(g.heroScreen);
-      const size = box.getSize(new THREE.Vector3());
-      g.heroScreen.scale.setScalar(size.x > 0 ? 4.8 / size.x : 1);
-      g.heroScreen.position.set(0, 1.5, -3.95);
+      g.heroScreen.scale.setScalar(1);
+      g.heroScreen.position.set(0, 0, 0);
+      g.heroScreen.updateMatrixWorld(true);
+      const fit = fitScreenFrame(new THREE.Box3().setFromObject(g.heroScreen), BRIDGE_SCREEN_FACE, {
+        center: { ...MAIN_SCREEN_CENTER },
+        width: MAIN_SCREEN_SIZE.width,
+        height: MAIN_SCREEN_SIZE.height,
+        depth: SCREEN_FRAME_DEPTH_M,
+        gap: SCREEN_FRAME_GAP_M,
+      });
+      if (fit) {
+        g.heroScreen.scale.set(fit.scale.x, fit.scale.y, fit.scale.z);
+        g.heroScreen.position.set(fit.position.x, fit.position.y, fit.position.z);
+      }
+      // Материал модели — metalness 1 / roughness 1. IBL на мостике выключен
+      // (bridge_assets: HDR засвечивал стены), а чистый металл без карты
+      // окружения ambient/directional почти не отражает — безель выходил
+      // чёрным пятном на тёмной стене. Приглушаем металл, текстура остаётся.
+      g.heroScreen.traverse((obj) => {
+        const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+        if (mat && "metalness" in mat && mat.metalness > SCREEN_FRAME_MAX_METALNESS) {
+          mat.metalness = SCREEN_FRAME_MAX_METALNESS;
+          mat.needsUpdate = true;
+        }
+      });
     }
   }
 
@@ -760,6 +986,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         vp.setState(s);
       }
       vp.setLabel(s.topic);
+      vp.setPlaceholder(videoPlaceholders.get(s.topic) ?? null);
       vp.setHighlight(highlightFor(s.id, s.selected));
     }
     for (const [id, vp] of videoPanels.entries()) {
@@ -869,6 +1096,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // перезапуск клиента. Отдельный ключ — панель не видео-поток и живёт вне
   // PanelManager. Битый JSON/чужой version → дефолт (молча не молчим: warn).
   const PIPELINE_POS_STORAGE_KEY = "rob_box_quest.voice_pipeline_pos.v1";
+  // Версия записи. 2 — панель переехала с +60° на −100° (ребаланс флангов
+  // 29.09): сохранённая позиция v1 стояла бы перед крылом TARS2, её
+  // отбрасываем — как раскладку панелей (PANEL_LAYOUT_VERSION).
+  const PIPELINE_POS_VERSION = 2;
 
   // Диагностика 2026-09-08 (nightly-review-fix, issue "voice button stuck
   // on main screen"): в отличие от panel_layout_store (там позиция всегда
@@ -901,7 +1132,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     const p = voicePipeline.getPosition();
     layoutStorage.setItem(
       PIPELINE_POS_STORAGE_KEY,
-      JSON.stringify({ version: 1, x: p.x, y: p.y, z: p.z })
+      JSON.stringify({ version: PIPELINE_POS_VERSION, x: p.x, y: p.y, z: p.z })
     );
   }
 
@@ -913,7 +1144,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       const d = JSON.parse(raw) as { version?: number; x?: number; y?: number; z?: number };
       if (
         d &&
-        d.version === 1 &&
+        d.version === PIPELINE_POS_VERSION &&
         typeof d.x === "number" &&
         typeof d.y === "number" &&
         typeof d.z === "number"
@@ -930,6 +1161,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
           return;
         }
         voicePipeline.setPosition(d.x, d.y, d.z);
+      } else if (d && typeof d.version === "number" && d.version !== PIPELINE_POS_VERSION) {
+        // Позиция под старые дефолты — стираем, панель встаёт на новое место.
+        // eslint-disable-next-line no-console
+        console.info(`[captain_bridge] restorePipelinePos: version ${d.version} ≠ ${PIPELINE_POS_VERSION} — дефолтная позиция`);
+        layoutStorage.removeItem(PIPELINE_POS_STORAGE_KEY);
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -944,6 +1180,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     layoutSaver?.cancel();
     panelMgr.resetLayout();
     syncPanels();
+    opts.onVideoTopicsReset?.(videoTopics());
   }
 
   // ---------- меню выбора стрима (R10) ----------
@@ -1003,6 +1240,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     if (next && vp) {
       vp.setState(next);
       vp.setLabel(next.topic);
+      vp.setPlaceholder(videoPlaceholders.get(next.topic) ?? null);
     }
     opts.onPanelTopicChange?.(panelId, oldTopic, topic);
   }
@@ -1030,6 +1268,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     });
     pointer.update(ray);
     pointerBeam.update(ray, pointer.getHit());
+    // #3151: жест nav-цели. Панель/кнопка под лучом приоритетнее пола.
+    navLayer.updatePointer(ray, pointer.getHit().id !== null);
   }
 
   // ---------- AV-27: TTS picker (3D-меню выбора голоса) ----------
@@ -1110,7 +1350,26 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   function ingestMapFrame(payload: Uint8Array): boolean {
-    return floorOverlay.ingestMapPayload(payload);
+    const before = floorOverlay.lastMapFrame();
+    const ok = floorOverlay.ingestMapPayload(payload);
+    // #3151: поза робота → навигационный слой. Только из НОВОГО кадра:
+    // битый кадр не должен освежать старую позу.
+    const after = floorOverlay.lastMapFrame();
+    if (after && after !== before) navLayer.setPose(after.robot);
+    return ok;
+  }
+
+  function setVideoPlaceholder(topic: string, lines: readonly string[] | null): void {
+    if (lines) videoPlaceholders.set(topic, lines);
+    else videoPlaceholders.delete(topic);
+    if (topic === MAIN_SCREEN_TOPIC) mainScreen.setPlaceholder(lines);
+    if (topic === CEILING_SCREEN_TOPIC) ceilingScreen.setPlaceholder(lines);
+    for (const vp of videoPanels.values()) if (vp.topic === topic) vp.setPlaceholder(lines);
+  }
+
+  function toggleStreamsPanel(): boolean {
+    streamsPanel.setVisible(!streamsPanel.isVisible());
+    return streamsPanel.isVisible();
   }
 
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
@@ -1270,6 +1529,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     floorOverlay.dispose();
+    navLayer.dispose();
     streamMenu?.dispose();
     ttsPicker.dispose();
     pointerBeam.dispose();
@@ -1285,9 +1545,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       });
     }
     armTexture.dispose();
+    shell.dispose();
     statusHud.dispose();
     supervisorPanel.dispose();
     voicePipeline.dispose();
+    streamsPanel.dispose();
     voiceIndicator.dispose();
     tars1Panel.dispose();
     tars2Panel.dispose();
@@ -1310,8 +1572,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     resetPanelLayout,
     updatePointer,
     pointer,
+    nav: navLayer,
     supervisorPanel,
     voicePipeline,
+    streamsPanel,
+    renderStreams,
+    toggleStreamsPanel,
+    isStreamsPanelVisible: () => streamsPanel.isVisible(),
+    setVideoPlaceholder,
     tars1Panel,
     tars2Panel,
     setAvailableStreams,

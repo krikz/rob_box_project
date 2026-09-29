@@ -7,9 +7,23 @@ name: "L: Build Base Images"
 # имеет needs: build-ros2-zenoh. Это необходимая зависимость по данным
 # (FROM), а не искусственная последовательность.
 #
-# Кэширование: каждый job использует предыдущий pushed образ из local
-# registry как cache-from (cache-from: type=registry). Это даёт независимый
-# cache key для каждой базы: SHA слоёв не зависит от других jobs.
+# Сборка: через тот же composite ./.github/actions/l-build-service, что и
+# сервисы (→ scripts/build/buildx_build.sh — тот же скрипт, что у
+# ЛОКАЛЬНОЙ сборки `scripts/build/build.sh base <имя>`). Состав баз, теги и
+# build-args — из docker/build-manifest.yaml (секция base_images), через
+# `gen_build_matrix.py --mode base`.
+#
+# Почему не inline `docker buildx build`, как было: run 36351952819 — все
+# три base-job'а упали за 0 секунд с
+#   ERROR: unable to derive the IP value for host-gateway:
+#          host-gateway is not supported by the docker-container driver
+# composite делал `docker buildx use robbox-<host>` (docker-container), это
+# запоминалось в ~/.docker раннер-контейнера, и голый buildx с
+# --add-host=...:host-gateway в этом файле уезжал на тот же билдер. Теперь
+# билдер передаётся явно (--builder), а host-gateway подменяется IP шлюза.
+#
+# Кэширование: registry-кеш buildx (<local>/rob_box_base:<имя>-buildcache,
+# mode=max), как у сервисов. force_rebuild → --no-cache.
 #
 # rmw_zenoh_cpp 0.1.8 вендорится в docker/base/vendor/*.deb (см. ARG
 # RMW_ZENOH_VENDOR в Dockerfile'ах), что устраняет hot-fetch HTTP-only
@@ -51,9 +65,41 @@ env:
   ROS_DISTRO: humble
 
 jobs:
+  prepare:
+    runs-on: [self-hosted, rob-box]
+    outputs:
+      bases: ${{ steps.gen.outputs.bases }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Ensure PyYAML (зависимость scripts/ci/gen_build_matrix.py)
+        # Молчаливый фолбэк недопустим: пустой список баз = «собрано 0 образов»
+        # при зелёном workflow.
+        run: |
+          python3 -c "import yaml" 2>/dev/null && exit 0
+          python3 -m pip install --quiet --no-cache-dir --user pyyaml \
+            || python3 -m pip install --quiet --no-cache-dir --user --break-system-packages pyyaml \
+            || true
+          python3 -c "import yaml; print('PyYAML', yaml.__version__)"
+
+      - name: Resolve base images from docker/build-manifest.yaml
+        id: gen
+        run: |
+          BASES="$(python3 scripts/ci/gen_build_matrix.py \
+            --manifest docker/build-manifest.yaml \
+            --mode base \
+            --ros-distro "$ROS_DISTRO")"
+          echo "bases=${BASES}" >> "$GITHUB_OUTPUT"
+          echo "$BASES"
+
   # Сборка базового образа ROS 2 + Zenoh (общая база для всех)
   build-ros2-zenoh:
+    needs: prepare
     runs-on: [self-hosted, rob-box]
+    strategy:
+      matrix:
+        include: "${{ fromJSON(needs.prepare.outputs.bases)['ros2-zenoh'] }}"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -61,42 +107,27 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build ros2-zenoh base image
-        env:
-          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
-        run: |
-          echo "🏗️ Building ros2-zenoh base image..."
-
-          # Параллельно собирается 3 независимых образа (rtabmap, depthai, ros2-zenoh),
-          # поэтому buildx запускаем с load и одним исполнителем. Кэш —
-          # последний pushed образ из local registry.
-          if [ "${FORCE_REBUILD}" = "true" ]; then
-            CACHE_FLAGS="--no-cache"
-          else
-            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}"
-          fi
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.ros2-zenoh \
-            --tag "${IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            ${CACHE_FLAGS} \
-            docker/base
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest
-            docker push ${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}
-          fi
-          echo "✅ ros2-zenoh base image ready"
+      - name: Build ${{ matrix.name }} base image
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          tags: |
+            ${{ matrix.tags }}
+          build-args: |
+            ${{ matrix.build_args }}
+          # push_to_registry=false → только --load в daemon, без docker push.
+          load: ${{ !inputs.push_to_registry && 'true' || 'false' }}
+          no-cache: ${{ inputs.force_rebuild && 'true' || 'false' }}
 
   # Сборка базового образа RTAB-Map (для SLAM)
   build-rtabmap:
+    needs: prepare
     runs-on: [self-hosted, rob-box]
+    strategy:
+      matrix:
+        include: "${{ fromJSON(needs.prepare.outputs.bases)['rtabmap'] }}"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -104,39 +135,27 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build rtabmap base image
-        env:
-          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
-        run: |
-          echo "🏗️ Building rtabmap base image..."
-
-          if [ "${FORCE_REBUILD}" = "true" ]; then
-            CACHE_FLAGS="--no-cache"
-          else
-            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}"
-          fi
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.rtabmap \
-            --tag "${IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            ${CACHE_FLAGS} \
-            docker/base
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-latest
-            docker push ${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}
-          fi
-          echo "✅ rtabmap base image ready"
+      - name: Build ${{ matrix.name }} base image
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          tags: |
+            ${{ matrix.tags }}
+          build-args: |
+            ${{ matrix.build_args }}
+          # push_to_registry=false → только --load в daemon, без docker push.
+          load: ${{ !inputs.push_to_registry && 'true' || 'false' }}
+          no-cache: ${{ inputs.force_rebuild && 'true' || 'false' }}
 
   # Сборка базового образа DepthAI (для OAK-D камеры)
   build-depthai:
+    needs: prepare
     runs-on: [self-hosted, rob-box]
+    strategy:
+      matrix:
+        include: "${{ fromJSON(needs.prepare.outputs.bases)['depthai'] }}"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -144,40 +163,27 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build depthai base image
-        env:
-          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
-        run: |
-          echo "🏗️ Building depthai base image..."
+      - name: Build ${{ matrix.name }} base image
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          tags: |
+            ${{ matrix.tags }}
+          build-args: |
+            ${{ matrix.build_args }}
+          # push_to_registry=false → только --load в daemon, без docker push.
+          load: ${{ !inputs.push_to_registry && 'true' || 'false' }}
+          no-cache: ${{ inputs.force_rebuild && 'true' || 'false' }}
 
-          if [ "${FORCE_REBUILD}" = "true" ]; then
-            CACHE_FLAGS="--no-cache"
-          else
-            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:depthai-${ROS_DISTRO}"
-          fi
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.depthai \
-            --tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            ${CACHE_FLAGS} \
-            docker/base
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest
-            docker push ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}
-          fi
-          echo "✅ depthai base image ready"
-
-  # Сборка базового образа PCL (для лидаров)
+  # Сборка базового образа PCL (для лидаров): FROM ros2-zenoh → needs.
   build-pcl:
+    needs: [prepare, build-ros2-zenoh]
     runs-on: [self-hosted, rob-box]
-    needs: build-ros2-zenoh  # Зависит от ros2-zenoh базы (FROM ${BASE_IMAGE})
+    strategy:
+      matrix:
+        include: "${{ fromJSON(needs.prepare.outputs.bases)['pcl'] }}"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -185,36 +191,19 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build pcl base image
-        env:
-          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
-        run: |
-          echo "🏗️ Building pcl base image..."
-
-          if [ "${FORCE_REBUILD}" = "true" ]; then
-            CACHE_FLAGS="--no-cache"
-          else
-            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:pcl-${ROS_DISTRO}"
-          fi
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/base/Dockerfile.pcl \
-            --tag "${IMAGE_PREFIX}:pcl-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:pcl-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:pcl-${ROS_DISTRO}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            ${CACHE_FLAGS} \
-            docker/base
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:pcl-${ROS_DISTRO}-latest
-            docker push ${LOCAL_PREFIX}:pcl-${ROS_DISTRO}
-          fi
-          echo "✅ pcl base image ready"
+      - name: Build ${{ matrix.name }} base image
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          tags: |
+            ${{ matrix.tags }}
+          build-args: |
+            ${{ matrix.build_args }}
+          # push_to_registry=false → только --load в daemon, без docker push.
+          load: ${{ !inputs.push_to_registry && 'true' || 'false' }}
+          no-cache: ${{ inputs.force_rebuild && 'true' || 'false' }}
 
   # Итоговая сводка
   summary:

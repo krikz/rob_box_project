@@ -11,6 +11,7 @@ Executable Format) модели на NPU, публикует результат 
                                      --> [HEF loader]
                                      --> [post-process with unproject]
                                      --> /vision/hailo/events
+                                     --> /perception/observations (ADR-0138)
                                                        |
                                                        v
                                           [context_aggregator_node]
@@ -40,7 +41,9 @@ Touchpoints:
 - ADR-0089 §3 (touchpoint #3) — этот файл.
 - ADR-0104 (gaze.py, единый шов источника кадра).
 - ADR-0110 (launch-файл vision_hailo.launch.py — выбор gaze_source).
-- ROS msg: rob_box_perception_msgs/VisionEvent
+- ROS msg: rob_box_perception_msgs/VisionEvent (deprecated, ADR-0130)
+- ROS msg: rob_box_perception_msgs/Observation (ADR-0138: bbox + depth → 3D
+  в optical frame камеры, честный статус глубины, без имени)
 - Aggregator: context_aggregator_node.py (подписка на /vision/hailo/events)
 
 Hardware reference: https://www.raspberrypi.com/documentation/accessories/ai-hat-plus.html
@@ -49,14 +52,20 @@ Hailo model zoo:    https://github.com/hailo-ai/hailo_model_zoo
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 import rclpy
 from rclpy.node import Node
 
 from rob_box_perception.gaze import (
+    DEFAULT_DEPTH_SYNC_TOLERANCE_SEC,
     GazeSourceUnavailable,
     make_source,
+)
+from rob_box_perception.observation_geometry import (
+    OBSERVATION_FIELDS,
+    build_observation,
 )
 from rob_box_perception.utils.heartbeat import (
     FileHeartbeat,
@@ -66,6 +75,7 @@ from rob_box_perception.vision_hailo_loader import (
     HEFLoader,
     VISION_EVENT_FIELDS,
     filter_by_confidence,
+    is_stub_event,
     make_loader,
     normalize_event_dict,
 )
@@ -76,6 +86,13 @@ except ImportError:
     # Fallback для случая когда пакет ещё не собран через colcon —
     # позволяет импортировать модуль без workspace build (для тестов).
     VisionEventMsg = None
+
+try:
+    from rob_box_perception_msgs.msg import Observation as ObservationMsg
+except ImportError:
+    # Тот же fallback, что у VisionEvent: без colcon-сборки msg-пакета
+    # публикация Observation отключается с WARN, нода не падает.
+    ObservationMsg = None
 
 
 # Сколько секунд ждать первый кадр от gaze source (ADR-0104, capability-
@@ -113,6 +130,14 @@ class VisionHailoNode(Node):
             StubSource). ADR-0104 acceptance #1: единственный шов выбора
             источника кадра.
         output_topic (str, default "/vision/hailo/events"): куда слать.
+        observation_topic (str, default "/perception/observations"): куда
+            слать ``Observation`` (ADR-0138) — детекции person/face из
+            реального кадра с 3D-положением по глубине OAK-D.
+        depth_enabled (bool, default True): подписываться ли источнику
+            ``oak_d`` на выровненную глубину + camera_info. False —
+            наблюдения публикуются с ``position_status=no_depth_stream``.
+        depth_sync_tolerance_sec (float, default 0.15): допуск
+            |stamp_rgb − stamp_depth| при связывании кадров.
         first_frame_timeout_sec (float, default 10.0): сколько ждать
             первый кадр от real-источника перед fail-fast (capability-honest).
         publish_when_no_input (bool, default True): публиковать stub-события
@@ -147,6 +172,12 @@ class VisionHailoNode(Node):
         self.declare_parameter('confidence_threshold', self.DEFAULT_CONFIDENCE_THRESHOLD)
         self.declare_parameter('gaze_source', 'oak_d')
         self.declare_parameter('output_topic', '/vision/hailo/events')
+        # ADR-0138 (этап 1 ADR-0130): наблюдения с 3D-положением.
+        self.declare_parameter('observation_topic', '/perception/observations')
+        self.declare_parameter('depth_enabled', True)
+        self.declare_parameter(
+            'depth_sync_tolerance_sec', DEFAULT_DEPTH_SYNC_TOLERANCE_SEC
+        )
         self.declare_parameter('first_frame_timeout_sec', DEFAULT_FIRST_FRAME_TIMEOUT_SEC)
         self.declare_parameter('publish_when_no_input', True)
         # NMS IoU. Базовый YOLOv8n-нода не меняет дефолт; сабкласс
@@ -168,6 +199,13 @@ class VisionHailoNode(Node):
         )
         self.gaze_source_name = str(self.get_parameter('gaze_source').value)
         self.output_topic = str(self.get_parameter('output_topic').value)
+        self.observation_topic = str(
+            self.get_parameter('observation_topic').value
+        )
+        self.depth_enabled = bool(self.get_parameter('depth_enabled').value)
+        self.depth_sync_tolerance_sec = float(
+            self.get_parameter('depth_sync_tolerance_sec').value
+        )
         self.first_frame_timeout_sec = float(
             self.get_parameter('first_frame_timeout_sec').value
         )
@@ -216,6 +254,8 @@ class VisionHailoNode(Node):
                 name=self.gaze_source_name,
                 node=self,
                 timeout_sec=self.first_frame_timeout_sec,
+                depth_enabled=self.depth_enabled,
+                depth_sync_tolerance_sec=self.depth_sync_tolerance_sec,
             )
         except GazeSourceUnavailable as exc:
             if self._is_real_mode:
@@ -260,6 +300,17 @@ class VisionHailoNode(Node):
             )
             self._publisher = None
 
+        if ObservationMsg is not None:
+            self._observation_publisher = self.create_publisher(
+                ObservationMsg, self.observation_topic, 10
+            )
+        else:
+            self.get_logger().warning(
+                'Observation msg не найден — публикация наблюдений '
+                'отключена до сборки rob_box_perception_msgs через colcon.'
+            )
+            self._observation_publisher = None
+
         # ============ Таймер поллинга gaze source ============
         # Non-blocking poll (issue #2602): кадр складывается ROS-колбэком
         # источника в поле _latest, а _poll_gaze лишь читает его через
@@ -292,6 +343,8 @@ class VisionHailoNode(Node):
             f'gaze_source={self.gaze_source_name!r} → '
             f'topic={self._gaze.topic!r}, '
             f'output_topic={self.output_topic}, '
+            f'observation_topic={self.observation_topic}, '
+            f'depth_enabled={self.depth_enabled}, '
             f'confidence_threshold={self.confidence_threshold}, '
             f'publish_when_no_input={self.publish_when_no_input}, '
             f'heartbeat_path={self.heartbeat_path!r})'
@@ -380,11 +433,11 @@ class VisionHailoNode(Node):
         # Real-mode: передаём последний RGB-кадр от gaze (или None если
         # ещё ни одного). Stub-mode: image=None → _loader.infer сам знает,
         # что делать (heartbeat по stub_period_sec).
-        image_for_infer = (
-            self._latest_frame.rgb
-            if (self._is_real_mode and self._latest_frame is not None)
-            else None
-        )
+        # Кадр фиксируется ОДИН раз: на нём инференс, с его stamp/глубиной
+        # публикуется Observation (ADR-0130 §2.5 — время наблюдения, а не
+        # публикации). В stub-режиме кадра нет — наблюдений тоже.
+        frame = self._latest_frame if self._is_real_mode else None
+        image_for_infer = frame.rgb if frame is not None else None
 
         try:
             raw_events = self._loader.infer(
@@ -433,21 +486,69 @@ class VisionHailoNode(Node):
 
         filtered = filter_by_confidence(raw_events, self.confidence_threshold)
         for event_dict in filtered:
-            self._publish_event(event_dict)
+            self._publish_event(event_dict, frame)
 
     # ----------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------
 
-    def _publish_event(self, event_dict: Dict[str, Any]) -> None:
+    def _publish_event(
+        self, event_dict: Dict[str, Any], frame: Optional[Any] = None,
+    ) -> None:
+        """Опубликовать VisionEvent и, если есть кадр, Observation (ADR-0138).
+
+        ``frame`` — ``gaze.Frame``, на котором сделана детекция. Для
+        детекций из реального кадра ``VisionEvent.distance_m`` берётся из
+        той же оценки, что и ``Observation`` (−1 при невалидной глубине).
+        Выдуманные stub-события (ADR-0089 §2.2) не трогаются и в
+        наблюдения не попадают: кадра за ними нет.
+        """
         if self._publisher is None or VisionEventMsg is None:
             return
+        observation = None
+        if frame is not None and not is_stub_event(event_dict):
+            observation = build_observation(
+                event_dict,
+                source=frame.source_name,
+                image_width=frame.original_w,
+                image_height=frame.original_h,
+                depth_mm=frame.depth_mm,
+                intrinsics=frame.intrinsics,
+                depth_status=frame.depth_status,
+            )
+        if observation is not None:
+            event_dict = dict(event_dict, distance_m=observation['distance_m'])
+
         msg = VisionEventMsg()
         msg.stamp = self.get_clock().now().to_msg()
         norm = normalize_event_dict(event_dict)
         for field in VISION_EVENT_FIELDS:
             setattr(msg, field, norm[field])
         self._publisher.publish(msg)
+
+        if observation is not None:
+            self._publish_observation(observation, frame)
+
+    def _publish_observation(self, observation: Dict[str, Any], frame: Any) -> None:
+        """Observation-dict → msg; header = stamp и frame_id КАДРА."""
+        if self._observation_publisher is None or ObservationMsg is None:
+            return
+        msg = ObservationMsg()
+        sec = int(math.floor(frame.stamp))
+        nanosec = int(round((frame.stamp - sec) * 1e9))
+        if nanosec >= 1_000_000_000:
+            sec, nanosec = sec + 1, nanosec - 1_000_000_000
+        msg.header.stamp.sec = sec
+        msg.header.stamp.nanosec = nanosec
+        msg.header.frame_id = frame.frame_id
+        for field in OBSERVATION_FIELDS:
+            if field == 'position':
+                msg.position.x, msg.position.y, msg.position.z = (
+                    float(v) for v in observation['position']
+                )
+            else:
+                setattr(msg, field, observation[field])
+        self._observation_publisher.publish(msg)
 
     def destroy_node(self) -> bool:
         """Остановить gaze source при destroy (важно для тестов)."""

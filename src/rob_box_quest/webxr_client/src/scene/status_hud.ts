@@ -1,7 +1,10 @@
 // Status HUD (Wave 3.A / ADR-0027 R8): battery, Wi-Fi, скорость, режим, RTT.
 // + AV-17: MODE (avatar_supervisor), FLOOR T / FLOOR V.
 //
-// Живёт слева вверху на стене мостика — зеркально ARM-индикатору справа.
+// Живёт в «шапке» над экраном-стеной: широкая полоса-таблица (4 колонки ×
+// N строк) над рамкой видео, левая часть HUD-полосы мостика (справа от неё
+// — голос и ARM, см. HUD_STRIP в captain_bridge.ts). Раньше это был узкий
+// столбец 1.1 × 0.69 м, который наезжал на верх видео и торчал выше потолка.
 // Sprite всегда повёрнут к оператору, поэтому читается из любой позы.
 //
 // Разделение как в остальном клиенте: формат строк — чистая логика
@@ -49,11 +52,57 @@ const ALERT_BG = "rgba(225, 27, 36, 0.92)";
 const ALERT_BG_WARN = "rgba(245, 194, 17, 0.92)";
 const ALERT_TEXT_COLOR = "#0a0d11";
 
-/** Размеры алёрт-строки (в px канваса 512×320). */
+/** Размеры алёрт-строки (в px канваса STATUS_HUD_CANVAS_*). */
 const ALERT_LINE_HEIGHT = 56;
-const ALERT_PADDING_X = 16;
-const ALERT_PADDING_Y = 8;
-const ALERT_FONT = "bold 28px monospace";
+const ALERT_PADDING_X = 20;
+const ALERT_PADDING_Y = 6;
+const ALERT_FONT = "bold 36px monospace";
+
+/** Канвас полосы: 6:1, как спрайт 3.0 × 0.5 м (STATUS_HUD_SIZE_M). */
+export const STATUS_HUD_CANVAS_W = 1536;
+export const STATUS_HUD_CANVAS_H = 256;
+/** Размер спрайта по умолчанию, м. Пропорции = пропорции канваса. */
+export const STATUS_HUD_SIZE_M = { x: 3.0, y: 0.5 } as const;
+/** Колонок в таблице статуса: 11 строк (MODE…NAV) → 3 ряда. */
+export const STATUS_HUD_COLUMNS = 4;
+
+export interface GridCell {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Раскладка ячеек таблицы статуса в px канваса. Чистая функция.
+ * Строки идут по рядам слева направо (порядок = важность: MODE первым).
+ * `topOffset` — место под алёрт-плашку сверху.
+ */
+export function statusGridLayout(
+  count: number,
+  width = STATUS_HUD_CANVAS_W,
+  height = STATUS_HUD_CANVAS_H,
+  topOffset = 0,
+  columns = STATUS_HUD_COLUMNS
+): GridCell[] {
+  if (count <= 0) return [];
+  const rows = Math.ceil(count / columns);
+  const pad = 8;
+  const cellW = (width - pad * (columns + 1)) / columns;
+  const cellH = (height - topOffset - pad * (rows + 1)) / rows;
+  const cells: GridCell[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const c = i % columns;
+    const r = Math.floor(i / columns);
+    cells.push({
+      x: pad + c * (cellW + pad),
+      y: topOffset + pad + r * (cellH + pad),
+      w: cellW,
+      h: cellH
+    });
+  }
+  return cells;
+}
 
 /**
  * Разобрать msgpack-payload robot_status. `null` — кадр битый или не map;
@@ -87,7 +136,8 @@ export function parseRobotStatus(payload: Uint8Array): RobotStatus | null {
 export function formatStatusLines(
   status: RobotStatus | null,
   rttMs: number | null,
-  fps: number | null = null
+  fps: number | null = null,
+  netKbps: number | null = null
 ): StatusLine[] {
   const lines: StatusLine[] = [];
 
@@ -140,6 +190,16 @@ export function formatStatusLines(
       label: "FPS",
       value: `${Math.round(fps)}`,
       level: fps < 15 ? "bad" : fps < 30 ? "warn" : "ok"
+    });
+  }
+
+  // NET (issue #3150): суммарный входящий трафик подписок. Строки нет,
+  // пока счётчик не подключён (null) — не рисуем «0» вместо «не меряли».
+  if (netKbps !== null && Number.isFinite(netKbps)) {
+    lines.push({
+      label: "NET",
+      value: netKbps < 1000 ? `${Math.round(netKbps)} kbit/s` : `${(netKbps / 1000).toFixed(1)} Mbit/s`,
+      level: "ok"
     });
   }
 
@@ -254,6 +314,8 @@ export interface StatusHud {
   setRtt(rttMs: number | null): void;
   /** FPS из scene loop (`null` — данных ещё нет). AV-25. */
   setFps(fps: number | null): void;
+  /** Суммарный входящий трафик подписок, кбит/с (issue #3150). */
+  setBandwidth(kbps: number | null): void;
   /**
    * Supervisor-state (AV-17). `null` = STATE_UPDATE ещё не пришёл
    * (или сервер на v1 — тогда `degraded=true`).
@@ -265,20 +327,25 @@ export interface StatusHud {
   ): void;
   /** AV-26: вывести плашку с активным robot_alert. `null` — скрыть. */
   setAlert(alert: { text: string; level: "warn" | "error" } | null): void;
+  /**
+   * #3151: строка NAV (статус nav-цели, см. nav/nav_state.ts:navStatusLine).
+   * `null` — навигации нет, строку не рисуем.
+   */
+  setNav(line: StatusLine | null): void;
   dispose(): void;
 }
 
 export interface StatusHudOptions {
   /** Позиция спрайта в сцене (по умолчанию — левый верх стены-экрана). */
   position?: { x: number; y: number; z: number };
-  /** Размер спрайта в метрах (default 1.1 × 0.66). */
+  /** Размер спрайта в метрах (default STATUS_HUD_SIZE_M). */
   scale?: { x: number; y: number };
 }
 
 export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
   const canvas = document.createElement("canvas");
-  canvas.width = 512;
-  canvas.height = 320;
+  canvas.width = STATUS_HUD_CANVAS_W;
+  canvas.height = STATUS_HUD_CANVAS_H;
   const ctx2d = canvas.getContext("2d");
   if (!ctx2d) {
     throw new Error("status_hud: failed to acquire 2D context");
@@ -292,14 +359,18 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true })
   );
-  const pos = opts.position ?? { x: -2.35, y: 2.85, z: -3.85 };
-  const scale = opts.scale ?? { x: 1.1, y: 0.69 };
+  // Поверх карты/лидара (renderOrder 5–10, тоже без depth-теста): иначе
+  // точки скана, лежащие «за» полосой, прорисовывались бы по тексту.
+  sprite.renderOrder = 14;
+  const pos = opts.position ?? { x: -0.95, y: 3.35, z: -3.85 };
+  const scale = opts.scale ?? STATUS_HUD_SIZE_M;
   sprite.position.set(pos.x, pos.y, pos.z);
   sprite.scale.set(scale.x, scale.y, 1);
 
   let status: RobotStatus | null = null;
   let rttMs: number | null = null;
   let fps: number | null = null;
+  let netKbps: number | null = null;
   // AV-17: supervisor-state. `null` = неизвестно (STATE_UPDATE ещё не пришёл).
   let supervisor: SupervisorState | null = null;
   let supervisorMyClientId: string | null = null;
@@ -319,56 +390,71 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     voiceLabel = floorLabel(supervisor, "voice", supervisorMyClientId);
   }
   let alert: { text: string; level: "warn" | "error" } | null = null;
+  // #3151: строка NAV — последней, под статусом робота.
+  let navLine: StatusLine | null = null;
 
   function draw(): void {
     // AV-25 (FPS): передаём fps в formatStatusLines.
-    // AV-26: если есть активный алёрт — перекрашиваем фон HUD плашкой,
-    // обычные строки рисуем поверх (они не гаснут, оператор всё ещё
-    // видит заряд/связь/RTT/FPS).
-    const lines = formatStatusLines(status, rttMs, fps);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (alert !== null) {
-      ctx.fillStyle = alert.level === "error" ? ALERT_BG : ALERT_BG_WARN;
-      ctx.fillRect(0, 0, canvas.width, ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2);
-      ctx.fillStyle = ALERT_TEXT_COLOR;
-      ctx.font = ALERT_FONT;
-      ctx.textBaseline = "middle";
-      // Простейший wrap по длине строки — без измерений ширины глифов
-      // (canvas.measureText дорого в каждом кадре). Текст на русском,
-      // ~30 символов обычно влезает; дальше оператор увидит toast-стек.
-      const text = alert.text;
-      ctx.fillText(text, ALERT_PADDING_X, ALERT_LINE_HEIGHT / 2 + ALERT_PADDING_Y);
-    } else {
-      ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
+    // AV-26: если есть активный алёрт — сверху полосы плашка во всю ширину,
+    // таблица сжимается под неё (строки не гаснут: оператор всё ещё видит
+    // заряд/связь/RTT/FPS).
+    const lines = formatStatusLines(status, rttMs, fps, netKbps);
+    const W = canvas.width;
+    const H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(10, 13, 17, 0.82)";
+    ctx.fillRect(0, 0, W, H);
+    // Кант полосы — тот же holo, что у рамок мостика.
+    ctx.strokeStyle = "rgba(68, 221, 255, 0.55)";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(1.5, 1.5, W - 3, H - 3);
     ctx.textBaseline = "middle";
 
+    const alertH = ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2;
+    if (alert !== null) {
+      ctx.fillStyle = alert.level === "error" ? ALERT_BG : ALERT_BG_WARN;
+      ctx.fillRect(0, 0, W, alertH);
+      ctx.fillStyle = ALERT_TEXT_COLOR;
+      ctx.font = ALERT_FONT;
+      ctx.fillText(alert.text, ALERT_PADDING_X, alertH / 2);
+    }
+
     // AV-17: supervisor-строки идут ПЕРЕД robot_status — оператор хочет
-    // видеть «кто сейчас рулит» сверху (самый важный индикатор).
+    // видеть «кто сейчас рулит» первым (самый важный индикатор).
     if (supervisorDegraded) {
       lines.unshift({ label: "SUP", value: SUPERVISOR_DEGRADED_NOTE, level: "warn" });
     } else {
       const sup = formatSupervisorLines(supervisor, supervisorMyClientId, teleopLabel, voiceLabel);
       for (let i = sup.length - 1; i >= 0; i -= 1) lines.unshift(sup[i]);
     }
+    if (navLine !== null) lines.push(navLine);
 
-    // Если алёрт активен — строки сдвигаем вниз, чтобы не перекрывать.
-    const topOffset = alert !== null ? ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2 : 0;
-    const rowH = (canvas.height - topOffset) / lines.length;
+    const cells = statusGridLayout(lines.length, W, H, alert !== null ? alertH : 0);
     lines.forEach((line, i) => {
-      const y = topOffset + rowH * i + rowH / 2;
-      ctx.fillStyle = "#8b98a5";
-      ctx.font = "bold 28px monospace";
-      ctx.fillText(line.label, 20, y);
+      const c = cells[i];
+      const cy = c.y + c.h / 2;
+      ctx.fillStyle = "rgba(28, 33, 39, 0.9)";
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      // Цветная метка уровня слева — видно и без чтения значения.
       ctx.fillStyle = LEVEL_COLORS[line.level];
-      ctx.font = "bold 28px monospace";
-      // Длинный текст (SUPERVISOR: v1 …) чуть сжимаем, чтобы влез.
-      const fontPx = ctx.measureText(line.value).width;
-      if (fontPx > canvas.width - 130) {
-        ctx.font = "bold 22px monospace";
+      ctx.fillRect(c.x, c.y, 6, c.h);
+      const labelPx = Math.max(16, Math.min(26, Math.floor(c.h * 0.36)));
+      ctx.fillStyle = "#8b98a5";
+      ctx.font = `bold ${labelPx}px monospace`;
+      ctx.fillText(line.label, c.x + 16, cy);
+      const valueX = c.x + 16 + labelPx * 0.62 * 7 + 8;
+      const room = c.x + c.w - 10 - valueX;
+      // Значение — крупно, но длинный текст (SUPERVISOR: v1 …, NAV)
+      // ужимаем, чтобы он не вылезал в соседнюю ячейку.
+      let valuePx = Math.max(16, Math.min(38, Math.floor(c.h * 0.5)));
+      ctx.font = `bold ${valuePx}px monospace`;
+      const wText = ctx.measureText(line.value).width;
+      if (wText > room && wText > 0) {
+        valuePx = Math.max(14, Math.floor((valuePx * room) / wText));
+        ctx.font = `bold ${valuePx}px monospace`;
       }
-      ctx.fillText(line.value, 130, y);
+      ctx.fillStyle = LEVEL_COLORS[line.level];
+      ctx.fillText(line.value, valueX, cy);
     });
     texture.needsUpdate = true;
   }
@@ -389,6 +475,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
       fps = next;
       draw();
     },
+    setBandwidth(next: number | null): void {
+      netKbps = next;
+      draw();
+    },
     setSupervisor(
       next: SupervisorState | null,
       myClientId: string | null,
@@ -398,6 +488,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
       supervisorMyClientId = myClientId;
       supervisorDegraded = options?.degraded ?? false;
       recomputeFloorLabels();
+      draw();
+    },
+    setNav(next: StatusLine | null): void {
+      navLine = next;
       draw();
     },
     setAlert(next: { text: string; level: "warn" | "error" } | null): void {

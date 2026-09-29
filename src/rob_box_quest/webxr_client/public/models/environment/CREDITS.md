@@ -12,10 +12,13 @@ Raw glTF source files MUST NOT be committed — see `../README.md` and
 - License: CC0 1.0 Universal (public-domain dedication)
   https://creativecommons.org/publicdomain/zero/1.0/
 - Used as a smoke-test target for the asset pipeline only
-  (`tests/gltf_pipeline.test.ts`). The committed `Duck.optimized.glb` is
-  regenerated locally from a freshly downloaded CC0 source via
-  `npm run gltf:optimize` — it is not redistributed as a sample; the
-  pipeline round-trip is the point.
+  (`tests/gltf_pipeline.test.ts`). Lives at `tests/fixtures/Duck.optimized.glb`
+  — not under `public/models/`, since it's a test fixture, not a shipped
+  scene asset (moved there in the #3044-#3048 review pass so
+  `gltf-verify.mjs` / `bridge_environment.test.ts` don't have to special-case
+  it). The committed file is regenerated locally from a freshly downloaded
+  CC0 source via `npm run gltf:optimize` — it is not redistributed as a
+  sample; the pipeline round-trip is the point.
 
 ## Captain Bridge environment (Phase 2.1, kanban t_0bd54b80, issue #1677)
 

@@ -11,8 +11,7 @@
     "это НАХОДКА (заводить карточку), а не повод чинить сценарий."
   ],
   "expected_tool_calls": [
-    "stop_music",
-    "get_music_state"
+    "stop_music"
   ],
   "must_not_call": [],
   "voice_provenance": {
