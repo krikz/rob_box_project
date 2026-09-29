@@ -91,10 +91,15 @@ from .utils.stderr_silence import ignore_stderr
 from .core.speak_helpers import strip_markdown, unsupported_language_notice
 from rob_box_core.utterance import missing_tts_request_fields
 
-# ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/audio_utils.py``
-# (no behaviour change). Re-exported here for backward compatibility with
-# existing imports (``from rob_box_voice.tts_node import resample_audio``).
-from .utils.audio_utils import resample_audio  # noqa: F401 re-export
+# ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
+# (no behaviour change). NOT ``utils/audio_utils.py``: that module does
+# ``import pyaudio`` at top level, which ``tts_node.py`` never depended on
+# before this refactor — putting ``resample_audio`` there would silently
+# add a new import-time dependency on ``pyaudio`` for every consumer of
+# ``rob_box_voice.tts_node`` (caught in PR #3197 review). Re-exported here
+# for backward compatibility with existing imports (``from
+# rob_box_voice.tts_node import resample_audio``).
+from .utils.resample import resample_audio  # noqa: F401 re-export
 
 # ADR-0145 §4 TTSNode step 1 — SSML prosody (pitch/volume) conversion
 # helpers moved verbatim to ``tts_ssml.py`` (no behaviour change).
