@@ -166,6 +166,10 @@ class MusicGuard:
         self._dj_retry_count: int = 0
         self._user_retry_count: int = 0
         self._logger = logger
+        # Issue #3165 — снимок плеера текущего :meth:`evaluate` (``None`` —
+        # неизвестен). Нужен сверке заявлений о состоянии музыки в
+        # :func:`is_phantom_music_action`.
+        self._music_playing: Optional[bool] = None
 
     # ------------------------------------------------------------------
     # Read-only accessors — used by the DialogueNode adapter for the
@@ -318,7 +322,10 @@ class MusicGuard:
         if spoken is None:
             return None
         phantom = is_phantom_music_action(
-            user_input=user_input, spoken=spoken, tools_called=tuple(tools_set)
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=tuple(tools_set),
+            music_playing=self._music_playing,
         )
         if phantom is not None:
             return None
@@ -415,6 +422,7 @@ class MusicGuard:
         spoken: Optional[str] = None,
         tool_error_occurred: bool = False,
         succeeded_tools: Optional[Tuple[str, ...]] = None,
+        music_playing: Optional[bool] = None,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -471,6 +479,10 @@ class MusicGuard:
                 tool is among them, a ``tool_error_occurred`` from an
                 earlier failed attempt in the same turn does not make the
                 turn a failure. ``None`` — unknown (legacy #2966 rule).
+            music_playing: Issue #3165 — играет ли музыка по снимку плеера
+                (``None`` — снимка нет). Заявление «тишина» / «играет X»,
+                согласное со снимком, не считается фантомом (см.
+                :func:`is_phantom_music_action`).
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
             what to do and ``prompt`` (when applicable) carries the
@@ -499,6 +511,7 @@ class MusicGuard:
               no stop tool.
         """
         tools_set = set(tools_called or ())
+        self._music_playing = music_playing
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
@@ -571,6 +584,7 @@ class MusicGuard:
                 user_input=user_input,
                 spoken=spoken,
                 tools_called=tuple(tools_set),
+                music_playing=self._music_playing,
             )
             if phantom is not None:
                 self._log_warning(

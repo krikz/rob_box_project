@@ -751,7 +751,11 @@ def test_process_input_result_reports_final_state(core: AgentCore) -> None:
 def test_agent_core_has_seven_method_interface() -> None:
     """DoD #1986: AgentCore exposes 7 agent methods and NOT the four
     wake/silence/timeout facades (``is_wake_word`` / ``handle_wake_word`` /
-    ``handle_silence`` / ``check_timeout``)."""
+    ``handle_silence`` / ``check_timeout``).
+
+    Issue #3165 добавил восьмой — ``record_external_turn``: ход, который
+    исполнил роутер медиакоманд мимо модели, ложится в её окно истории.
+    Имя теста оставлено, чтобы не терять историю по DoD #1986."""
 
     def public_members(cls: type) -> set[str]:
         out: set[str] = set()
@@ -774,6 +778,7 @@ def test_agent_core_has_seven_method_interface() -> None:
         "set_active_skill",
         "skill_load_counters",
         "known_skills",
+        "record_external_turn",  # issue #3165
     }
     removed = {"is_wake_word", "handle_wake_word", "handle_silence", "check_timeout"}
 
