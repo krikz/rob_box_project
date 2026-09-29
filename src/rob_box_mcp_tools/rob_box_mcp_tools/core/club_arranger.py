@@ -15,7 +15,8 @@ d1        kick        синкопа By Design ``X..X..X..(.X)X.....`` или 4/
 d2        hats        16-е с дырами ``(-.)``
 d3        clap        клэп на 2 и 4 + открытый хэт на слабые 8-е (одна строка)
 p1        lead        арпеджио 16-ми: сидированный риф в пентатонике ТЕКУЩЕГО
-                      аккорда (chord-scale, §7.11), вариация во 2-м такте
+                      аккорда (chord-scale, §7.11), вариация во 2-м такте;
+                      с ``hook=`` — хук RTTTL-мелодии (issue #3181)
 p2        bass        16-е, корень аккорда слоем ``(n, n+12)``, MIDI 34..57
 p3        pad         трезвучие на аккорд (2 такта), MIDI 50..70, тихо
 ========  =========  =====================================================
@@ -63,11 +64,14 @@ from __future__ import annotations
 
 import random
 from functools import lru_cache
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
 from .club_loudness import calibrate_levels
 from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude, clock_entry_prelude
+
+if TYPE_CHECKING:  # club_hook импортирует константы отсюда — только для типов
+    from .club_hook import ClubHook
 
 #: Паттерны бочки: 16 шагов = такт 16-ми (при ``dur=1/4``).
 KICK_PATTERNS: Dict[str, str] = {
@@ -225,6 +229,16 @@ def pump_weights(pattern: str) -> List[float]:
     return [PUMP_LOW if i in hits else PUMP_HIGH for i in range(STEPS_PER_BAR)]
 
 
+def hook_pump_weights() -> List[float]:
+    """``amplify`` lead с хуком (issue #3181): ровно ``PUMP_HIGH`` на всех 16-х.
+
+    Пампинг рифа приглушает НОТУ целиком (``amp*amplify`` на событие), а у
+    хука на шагах бочки стоят его опорные ноты — 1:3 ломал бы акценты темы.
+    Уровень lead от этого не выше пика рифа (:func:`peak_levels`).
+    """
+    return [PUMP_HIGH] * STEPS_PER_BAR
+
+
 def peak_levels() -> Dict[str, float]:
     """Пиковый уровень каждого слоя (для бас/лида — с учётом пампинга)."""
     peaks = dict(LAYER_LEVELS)
@@ -364,10 +378,14 @@ def build_matrix(template: str) -> ArrangementMatrix:
     return ArrangementMatrix.from_specs({lane: specs[lane] for lane in LANE_SLOTS})
 
 
-def _lead_block(notes: List[int], synth: str = "pluck") -> str:
-    rows = [", ".join(str(n) for n in notes[i:i + STEPS_PER_BAR]) for i in range(0, len(notes), STEPS_PER_BAR)]
-    indent = " " * len(f"p1 >> {synth}([")
-    return "[" + (",\n" + indent).join(rows) + "]"
+def _grid_block(values: Sequence[object], indent: int) -> str:
+    """Список по 16 значений (такт) в строке, строки выровнены отступом ``indent``."""
+    rows = [", ".join(str(n) for n in values[i:i + STEPS_PER_BAR]) for i in range(0, len(values), STEPS_PER_BAR)]
+    return "[" + (",\n" + " " * indent).join(rows) + "]"
+
+
+def _lead_block(notes: Sequence[Optional[int]], synth: str = "pluck") -> str:
+    return _grid_block(notes, len(f"p1 >> {synth}(["))
 
 
 def club_kit(
@@ -422,6 +440,7 @@ def render_club(
     repeat: bool = False,
     align_clock: bool = False,
     dj_entry: bool = False,
+    hook: Optional["ClubHook"] = None,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
 
@@ -437,12 +456,15 @@ def render_club(
     (первая секция с полной бочкой, а не тихое интро), без lead-долей, и
     плееры встают на ``now()`` (``Clock.now_flag``). См. :func:`_clock_lines`.
 
+    ``hook`` (issue #3181) — хук RTTTL-мелодии (:mod:`core.club_hook`) на
+    слоте lead вместо сидированного рифа; ``None`` — побайтно как раньше.
+
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
     return render_club_kit(
         club_kit(seed, template, kick), bpm=bpm, root=root, scale=scale,
-        seed=seed, repeat=repeat, align_clock=align_clock, dj_entry=dj_entry,
+        seed=seed, repeat=repeat, align_clock=align_clock, dj_entry=dj_entry, hook=hook,
     )
 
 
@@ -546,6 +568,26 @@ def calibrated_gates(
     return gates
 
 
+def _lead_source(
+    rng: random.Random, tonic: int, chords: Sequence[Chord], synth: str, hook: Optional["ClubHook"],
+) -> Tuple[Tuple, str, List[str]]:
+    """Ноты lead и начало его аргументов: сидированный риф или хук (#3181).
+
+    Returns:
+        ``(шапка, первая строка плеера, строки до lpf)``; шапка — ``()`` для
+        рифа и ``("хук: <ступени>", аккорды хука, подпись)`` для хука.
+    """
+    if hook is None:
+        riff = riff_indices(rng)
+        first = _lead_block(lead_notes(tonic, chords, riff), synth) + ","
+        return (), first, ["dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.15,"]
+    arranged = hook.arrange(tonic)
+    first = _lead_block(list(arranged.lead), synth) + ","
+    sus = _grid_block([_fmt(v) for v in arranged.sus], len(f"p1 >> {synth}(sus=["))
+    header = (f"хук: {arranged.romans}", arranged.chords, arranged.label)
+    return header, first, ["dur=1/4, scale=Scale.chromatic, root=0, oct=0,", f"sus={sus},"]
+
+
 def render_club_kit(
     kit: Mapping[str, str],
     *,
@@ -558,6 +600,7 @@ def render_club_kit(
     repeat: bool = False,
     align_clock: bool = False,
     dj_entry: bool = False,
+    hook: Optional["ClubHook"] = None,
 ) -> str:
     """Собрать клубный трек по ЯВНОМУ каркасу (issue #3136, ADR-0142 §4).
 
@@ -566,6 +609,12 @@ def render_club_kit(
     ``progression`` — имя из :data:`PROGRESSIONS`; ``levels`` — множители
     0..1 к :data:`LAYER_LEVELS` по слоям. Без ``progression``/``levels``
     и с ``kit=club_kit(seed)`` результат побайтно равен ``render_club(seed=seed)``.
+
+    ``hook`` (issue #3181): lead играет хук мелодии (:meth:`ClubHook.arrange`
+    в тональности сета) вместо рифа, аккорды баса/пэда — подобранные к
+    хуку (``progression`` тогда не применяется). Гейт секций ``amp``,
+    калибровка громкости, ``dur=1/4`` и пред-дроп lead — те же; пампинг
+    lead ровный (:func:`hook_pump_weights`), у баса — как был.
 
     Raises:
         ValueError: значение вне палитры или вне диапазона.
@@ -576,8 +625,12 @@ def render_club_kit(
     matrix = build_matrix(template)
     rng = random.Random(seed)
     prog_name, chords = _pick_progression(rng, progression)
-    riff = riff_indices(rng)
     tonic = VALID_ROOTS.index(root)
+    header, lead_first, lead_opts = _lead_source(rng, tonic, chords, kit["lead"], hook)
+    hook_lines: List[str] = []
+    if hook is not None:
+        prog_name, chords, label = header
+        hook_lines = [f"# {label}"]
     kick_pattern = KICK_PATTERNS[kick]
     pump = _fmt_list(pump_weights(kick_pattern))
     gate = calibrated_gates(matrix, kit, levels)
@@ -592,6 +645,7 @@ def render_club_kit(
 
     lines = [
         f"# club: {template}, {root} {scale}, {prog_name}, бочка {kick}, seed={seed}",
+        *hook_lines,
         *("# " + row for row in matrix.to_text().splitlines()),
         "Clock.clear()",
         *prelude,
@@ -601,11 +655,11 @@ def render_club_kit(
         f'd2 >> play("{HATS_PATTERNS[kit["hats"]]}", dur=1/4, hpf=2500, amp={gate["hats"]})',
         f'd3 >> play("{CLAP_PATTERN}", dur=1/4, lpf=3000, room=0.25, amp={gate["clap"]})',
         "",
-        *_player("p1", kit["lead"], _lead_block(lead_notes(tonic, chords, riff), kit["lead"]) + ",", [
-            "dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.15,",
+        *_player("p1", kit["lead"], lead_first, [
+            *lead_opts,
             f"lpf=linvar([900, 4000], 31),{hpf_arg} room=0.6, mix=0.3,",
             f"amp={gate['lead']},",
-            f"amplify={pump})",
+            f"amplify={pump if hook is None else _fmt_list(hook_pump_weights())})",
         ]),
         "",
         *_player("p2", kit["bass"], f"{bass},", [
