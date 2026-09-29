@@ -1,0 +1,17 @@
+scene: s05_back_then_turn
+description: спиной, потом поворот лицом
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+steps:
+  - say: "Начинаю сцену пять."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр спиной вперёд и встаньте на метку полтора метра спиной к камере."
+    wait_s: 3
+  - mark: {type: turn_back, who: owner}
+    say: "Стойте спиной."
+    wait_s: 12
+  - mark: {type: turn_front, who: owner}
+    say: "Повернитесь лицом к камере. Сейчас."
+    wait_s: 15
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."

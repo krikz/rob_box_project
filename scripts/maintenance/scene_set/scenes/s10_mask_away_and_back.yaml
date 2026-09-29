@@ -1,0 +1,38 @@
+scene: s10_mask_away_and_back
+description: маску уносят и через минуту возвращают — одна повторная Встреча, та же запись
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+  - {label: mask, truth: Литвин, kind: mask, known_before: false, anchor_cx: [0.05, 0.40]}  # ПОДСТАВКА: сверить conductor.py --probe-anchor-s 10
+steps:
+  - say: "Начинаю сцену десять."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр с маской."
+    wait_s: 3
+  - enter: mask
+    say: "Поставьте маску на подставку."
+    wait_s: 3
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра. Маска остаётся."
+  - say: "Маска стоит. Ждём."
+    wait_s: 10
+  - enter: owner
+    say: "Дэнчик, войдите в кадр и возьмите маску."
+    wait_s: 3
+  - leave: mask
+    say: "Уберите маску с подставки."
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра с маской."
+  - say: "Ждём минуту."
+    wait_s: 60
+  - enter: owner
+    say: "Дэнчик, войдите в кадр с маской."
+    wait_s: 3
+  - enter: mask
+    say: "Поставьте маску на подставку."
+    wait_s: 3
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра. Маска остаётся."
+  - speech: mask
+    say: "Встаньте сбоку вне кадра. Включите запись эс десять, один."
+    window_s: 8
+    wait_s: 15

@@ -1,0 +1,12 @@
+scene: s01_owner_enter_leave
+description: владелец входит, стоит, уходит
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+steps:
+  - say: "Начинаю сцену один."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр и встаньте на метку полтора метра."
+    wait_s: 20
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."
+    wait_s: 3
