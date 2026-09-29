@@ -1,0 +1,21 @@
+scene: s03_glasses_on_off
+description: очки надеваются и снимаются в кадре — непрерывность при смене облика
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+steps:
+  - say: "Начинаю сцену три. Снимите очки и держите их в руке."
+    wait_s: 5
+  - enter: owner
+    say: "Дэнчик, войдите в кадр без очков и встаньте на метку полтора метра."
+    wait_s: 12
+  - mark: {type: glasses_on, who: owner}
+    say: "Наденьте очки. Сейчас."
+    wait_s: 15
+  - mark: {type: glasses_off, who: owner}
+    say: "Снимите очки. Сейчас."
+    wait_s: 12
+  - mark: {type: glasses_on, who: owner}
+    say: "Наденьте очки снова."
+    wait_s: 12
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."

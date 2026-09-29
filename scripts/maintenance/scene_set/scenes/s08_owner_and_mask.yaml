@@ -1,0 +1,32 @@
+scene: s08_owner_and_mask
+description: владелец и маска вместе в кадре
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: true}
+  - {label: mask, truth: Литвин, kind: mask, known_before: false, anchor_cx: [0.05, 0.40]}  # ПОДСТАВКА: сверить conductor.py --probe-anchor-s 10
+steps:
+  - say: "Начинаю сцену восемь."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр с маской."
+    wait_s: 3
+  - enter: mask
+    say: "Поставьте маску на подставку."
+    wait_s: 3
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра. Маска остаётся."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр и встаньте на метку полтора метра справа от маски."
+    wait_s: 15
+  - speech: mask
+    say: "Поднесите телефон к маске. Включите запись эс ноль восемь, один."
+    window_s: 8
+    wait_s: 5
+  - speech: owner
+    say: "Дэнчик, скажите: Робот, кто сейчас рядом со мной?"
+    window_s: 8
+    wait_s: 10
+  - speech: mask
+    say: "Включите запись эс ноль восемь, два."
+    window_s: 8
+    wait_s: 10
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."
