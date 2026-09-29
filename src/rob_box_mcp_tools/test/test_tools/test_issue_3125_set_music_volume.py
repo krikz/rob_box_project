@@ -13,30 +13,17 @@ SuperCollider: OSC-отправка перехвачена ``patch.object(_send_
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-for _mod in [
-    "rclpy",
-    "rclpy.node",
-    "rclpy.action",
-    "rclpy.qos",
-    "std_msgs",
-    "std_msgs.msg",
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "nav2_msgs",
-    "nav2_msgs.action",
-    "action_msgs",
-    "action_msgs.srv",
-    "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from .._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.tools.music import MusicManager, SetMusicVolumeTool  # noqa: E402
-from rob_box_mcp_tools.tools.system import SetVolumeTool  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.tools.music import MusicManager, SetMusicVolumeTool
+    from rob_box_mcp_tools.tools.system import SetVolumeTool
+_ros_stubs = _ros.fixture()
 
 
 def _manager(gain: float = 0.5) -> MusicManager:

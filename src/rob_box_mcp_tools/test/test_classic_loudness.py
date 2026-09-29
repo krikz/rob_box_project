@@ -29,6 +29,8 @@ from rob_box_mcp_tools.core import _classic_loudness_table as T
 from rob_box_mcp_tools.core.club_loudness import TARGET_MAIN_DB
 from rob_box_mcp_tools.core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 
+from ._ros_stubs import RosStubs
+
 _FIXTURES = Path(__file__).parent / "fixtures"
 NRT = json.loads((_FIXTURES / "classic_loudness_nrt.json").read_text(encoding="utf-8"))
 GOLDEN = {c["key"]: c["rtttl"] for c in json.loads(
@@ -76,13 +78,8 @@ def _mean(levels, sections, weights):
 
 
 def test_table_covers_the_synth_palette():
-    from unittest.mock import MagicMock
-
-    for mod in ("rclpy", "rclpy.node", "rclpy.action", "rclpy.qos", "std_msgs", "std_msgs.msg",
-                "geometry_msgs", "geometry_msgs.msg", "nav2_msgs", "nav2_msgs.action",
-                "action_msgs", "action_msgs.srv", "action_msgs.msg"):
-        sys.modules.setdefault(mod, MagicMock())
-    from rob_box_mcp_tools.tools.music import CRITICAL_SYNTHS
+    with RosStubs():
+        from rob_box_mcp_tools.tools.music import CRITICAL_SYNTHS
 
     for synth in CRITICAL_SYNTHS:
         name = C.SYNTH_ALIASES.get(synth, synth)

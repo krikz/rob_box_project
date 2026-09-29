@@ -20,23 +20,20 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-for _mod in [
-    "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos", "std_msgs",
-    "std_msgs.msg", "geometry_msgs", "geometry_msgs.msg", "nav2_msgs",
-    "nav2_msgs.action", "action_msgs", "action_msgs.srv", "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from ._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.core import arranger as arranger_mod  # noqa: E402
-from rob_box_mcp_tools.core import rtttl_compose  # noqa: E402
-from rob_box_mcp_tools.core.compose_knobs import KNOB_PARAMS  # noqa: E402
-from rob_box_mcp_tools.tools.music import ComposeMusicTool  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core import arranger as arranger_mod
+    from rob_box_mcp_tools.core import rtttl_compose
+    from rob_box_mcp_tools.core.compose_knobs import KNOB_PARAMS
+    from rob_box_mcp_tools.tools.music import ComposeMusicTool
+_ros_stubs = _ros.fixture()
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "arranger_golden.json"
 _ARR = dict(lead_synth="pluck", bass_synth="bass", pad_synth="strings")

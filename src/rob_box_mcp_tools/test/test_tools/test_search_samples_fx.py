@@ -17,32 +17,15 @@
 
 from __future__ import annotations
 
-import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
-# Mock ROS 2 modules before importing anything from rob_box_mcp_tools — тот
-# же приём, что test_music.py (tools/__init__.py тянет rclpy через другие
-# инструменты пакета, которых на CI/локально нет).
-for _mod in [
-    "rclpy",
-    "rclpy.node",
-    "rclpy.action",
-    "rclpy.qos",
-    "std_msgs",
-    "std_msgs.msg",
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "nav2_msgs",
-    "nav2_msgs.action",
-    "action_msgs",
-    "action_msgs.srv",
-    "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from .._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.tools.music import SearchSamplesTool  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.tools.music import SearchSamplesTool
+_ros_stubs = _ros.fixture()
 
 
 def _touch(path: Path) -> None:

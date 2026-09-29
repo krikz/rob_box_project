@@ -9,28 +9,25 @@ Renardo здесь нет — клок подделан, арифметика ``
 648).
 """
 
-import sys
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-for _mod in [
-    "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos", "std_msgs", "std_msgs.msg",
-    "geometry_msgs", "geometry_msgs.msg", "nav2_msgs", "nav2_msgs.action",
-    "action_msgs", "action_msgs.srv", "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from .._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.core import renardo_sanitizer  # noqa: E402
-from rob_box_mcp_tools.core.arranger import form_total_beats, render, spec_from_flat  # noqa: E402
-from rob_box_mcp_tools.core.clock_phase import (  # noqa: E402
-    ALIGN_LEAD_BEATS,
-    clock_align_prelude,
-    clock_phase_snapshot,
-)
-from rob_box_mcp_tools.core.club_arranger import club_form_beats, render_club  # noqa: E402
-from rob_box_mcp_tools.tools.music import ComposeMusicTool, music_align_clock_enabled  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core import renardo_sanitizer
+    from rob_box_mcp_tools.core.arranger import form_total_beats, render, spec_from_flat
+    from rob_box_mcp_tools.core.clock_phase import (
+        ALIGN_LEAD_BEATS,
+        clock_align_prelude,
+        clock_phase_snapshot,
+    )
+    from rob_box_mcp_tools.core.club_arranger import club_form_beats, render_club
+    from rob_box_mcp_tools.tools.music import ComposeMusicTool, music_align_clock_enabled
+_ros_stubs = _ros.fixture()
 
 from .test_music import _make_manager  # noqa: E402
 
