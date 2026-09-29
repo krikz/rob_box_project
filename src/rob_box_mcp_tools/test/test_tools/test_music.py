@@ -3520,6 +3520,37 @@ class TestArrangementPresetApplication:
         assert result.success is True
         assert "Пресет: Beethoven's Fifth (bass_style=root)" in result.data["score"]
 
+    def test_preset_levels_over_the_old_cap_are_clamped_with_warn(self, mock_node, tmp_path):
+        """Issue #3178 — живой прогон 29.09.2026.
+
+        Пресет, сохранённый до #2963 (потолок ``levels`` был 2), нёс
+        ``lead=1.1``. Новый валидатор (потолок 1) больше не отказывает
+        вызов без единой явной ручки — тихо клампит унаследованное
+        значение и говорит об этом WARN в лог, не ошибкой.
+        """
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"levels": "lead=1.1"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True, result.error
+        assert "lead×1" in tool.last_score["decisions"]["levels"]
+        warnings = mock_node.get_logger().warning_messages
+        assert any("lead=1.1" in w and "1" in w for w in warnings), warnings
+
+    def test_preset_unknown_level_role_is_dropped_with_warn(self, mock_node, tmp_path):
+        """Issue #3178 — роль, которой больше нет в ``ROLE_PROFILE``, не валит вызов."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"levels": "guitar=0.5"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True, result.error
+        assert tool.last_score["decisions"].get("levels") in (None, "")
+        warnings = mock_node.get_logger().warning_messages
+        assert any("guitar" in w for w in warnings), warnings
+
+    def test_explicit_invalid_levels_still_errors(self, mock_node, tmp_path):
+        """Явная ручка ВЫЗЫВАЮЩЕГО вне диапазона — по-прежнему честная ошибка."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"levels": "lead=1.1"})
+        result = tool.execute(name="fifth", levels="bass=3", **self._ARR)
+        assert result.success is False
+        assert "0..1" in result.error
+
 
 class TestSaveArrangementPresetTool:
     """ADR-0132 PR-7 — сохраняет ручки ПОСЛЕДНЕГО сыгранного трека.

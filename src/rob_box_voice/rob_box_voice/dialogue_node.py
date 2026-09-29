@@ -222,6 +222,7 @@ from rob_box_voice.core.named_play import (
     play_fail_text,
     play_ok_text,
     run_named_play,
+    user_phrase_title,
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
@@ -7517,7 +7518,9 @@ class DialogueNode(Node):
             return
         self._llm_skipped_counter["media_command"] += 1
         self._cancel_run("media command play_named (issue 3176)", stop_tts=True)
-        title = outcome.hit.title if outcome.hit else plan.play_name
+        # Issue #3178: слова юзера («к элизе»), не архивный title базы
+        # («Fur Elise») — юзер и так знает, что просил.
+        title = user_phrase_title(plan.play_name)
         if outcome.status is NamedPlayStatus.PLAYED:
             self._note_router_track_started()
             phrase = play_ok_text(title)

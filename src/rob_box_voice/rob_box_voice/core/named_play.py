@@ -81,6 +81,19 @@ class NamedPlayOutcome:
     reason: str = ""
 
 
+def user_phrase_title(play_name: str) -> str:
+    """Слова юзера из заказа → имя трека для реплики (issue #3178).
+
+    Живой прогон 29.09.2026: роутер называл трек архивным ``title`` базы
+    («Ставлю «Fur Elise».», «Нашёл «Hall Of The Mountain King (Alton
+    Towers Theme) 2»…») — не то слово, которым юзер попросил («к элизе»,
+    «в пещере горного короля»). Юзер и так знает, что просил — фраза
+    только подтверждает заказ его же словами, с заглавной буквы (русское
+    предложение, не английский Title Case каждого слова).
+    """
+    return play_name[:1].upper() + play_name[1:] if play_name else play_name
+
+
 def play_ok_text(title: str) -> str:
     """Короткая фраза после успешного заказа."""
     return f"Ставлю «{title}»."
@@ -173,4 +186,5 @@ __all__ = [
     "play_ok_text",
     "run_named_play",
     "tool_data",
+    "user_phrase_title",
 ]

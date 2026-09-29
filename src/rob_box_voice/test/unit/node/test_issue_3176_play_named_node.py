@@ -147,7 +147,7 @@ def test_found_melody_plays_without_llm(run_plans, playing):
         ("compose_music", {"name": "furelise"}),
     ]
     assert n._scheduler_executor.turns_begun == 1  # лимит #2859 снят
-    n._speak_direct.assert_called_once_with("Ставлю «Fur Elise».")
+    n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._cancel_run.assert_called_once()
     assert n._llm_skipped_counter["media_command"] == 1
     # отложенный cleanup прошлого хода не гасит заказ после фразы
@@ -162,7 +162,7 @@ def test_found_melody_without_preset_gets_default_timbres(run_plans):
     assert n._scheduler_executor.calls[-1] == (
         "compose_music", {"name": "furelise", **DEFAULT_ARRANGEMENT}
     )
-    n._speak_direct.assert_called_once_with("Ставлю «Fur Elise».")
+    n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._dispatch_turn.assert_not_called()
 
 
@@ -223,7 +223,7 @@ def test_order_mid_dj_set_does_not_stop_set(run_plans):
     n._dj.note_turn_tools.assert_called_once_with(
         ("compose_music",), MUSIC_STARTING_TOOLS
     )
-    n._speak_direct.assert_called_once_with("Ставлю «Fur Elise».")
+    n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._dispatch_turn.assert_not_called()
 
 

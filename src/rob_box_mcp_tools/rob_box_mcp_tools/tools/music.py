@@ -42,7 +42,11 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core.arranger import (
     FORMS,
+    FX_ROLE,
+    LEVEL_RANGE,
+    LOOP_ROLE,
     ON_OFF_AUTO,
+    ROLE_PROFILE,
     VALID_ROOTS,
     SCALE_INTERVALS,
     ArrangementError,
@@ -75,10 +79,10 @@ from ..core.club_transition import (
 from ..core.clock_phase import clock_phase_snapshot
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
-from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
+from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
-from ..core.rtttl_library import RtttlLibrary, display_title, match_info
+from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
 
 #: Issue #3112 — флаг кандидата-фикса фазы клока (по умолчанию ВЫКЛ).
 _ALIGN_CLOCK_ENV = "ROB_BOX_MUSIC_ALIGN_CLOCK"
@@ -3526,6 +3530,57 @@ class ComposeMusicTool(MCPTool):
                 return rec
         return None
 
+    def _sanitize_loaded_knobs(self, knobs: Dict[str, Any], source: str) -> Dict[str, Any]:
+        """WARN-чинить негодные ``levels`` из сохранённых/унаследованных данных.
+
+        Issue #3178 — живой прогон 29.09.2026: пресет мелодии, сохранённый
+        ДО того, как потолок ``levels`` снизили с 2 до 1 (issue #2963,
+        24.09.2026), нёс ``lead=1.1``. Новый валидатор
+        (:class:`core.arranger.ArrangeOptions`) честно отказывал
+        ``compose_music(name=...)`` БЕЗ единой явной ручки этого вызова —
+        отказ обязан оставаться только для аргументов ВЫЗЫВАЮЩЕГО (см.
+        докстринги :meth:`_resolve_preset`/:meth:`_inherit_last_track`:
+        «явная ручка всегда побеждает»), а не для того, что тул сам
+        подмешал из старых данных на диске/в памяти. Здесь — единственная
+        точка, где эти данные попадают в вызов, поэтому единственная
+        точка починки: роль/значение вне диапазона клампится в допустимый
+        (0..1, :data:`core.arranger.LEVEL_RANGE`), неизвестная роль
+        отбрасывается — и то, и другое с WARN в лог, НЕ ошибкой.
+
+        *knobs* — уже отфильтрованный по «не передано явно этим вызовом»
+        словарь (:data:`PRESET_KNOB_FIELDS`); *source* — для текста лога
+        («пресет 'hallofth_2'», «наследование 'hallofth_2'»).
+        """
+        if "levels" not in knobs:
+            return knobs
+        try:
+            parsed = parse_levels(knobs["levels"])
+        except ValueError as exc:
+            self.log_warning(f"[#3178] {source}: levels нечитаемы ({exc}) — ручка отброшена.")
+            return {k: v for k, v in knobs.items() if k != "levels"}
+        known_roles = set(ROLE_PROFILE) | {LOOP_ROLE, FX_ROLE}
+        lo, hi = LEVEL_RANGE
+        fixed: Dict[str, float] = {}
+        for role, value in parsed.items():
+            if role not in known_roles:
+                self.log_warning(
+                    f"[#3178] {source}: levels — неизвестная роль {role!r} отброшена."
+                )
+                continue
+            clamped = min(hi, max(lo, float(value)))
+            if clamped != value:
+                self.log_warning(
+                    f"[#3178] {source}: levels {role}={value!r} вне {lo:g}..{hi:g}, "
+                    f"приведено к {clamped:g}."
+                )
+            fixed[role] = clamped
+        sanitized = dict(knobs)
+        if fixed:
+            sanitized["levels"] = ",".join(f"{r}={v:g}" for r, v in fixed.items())
+        else:
+            del sanitized["levels"]
+        return sanitized
+
     def _resolve_preset(
         self, kwargs: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Optional[str]]:
@@ -3552,6 +3607,9 @@ class ComposeMusicTool(MCPTool):
         applied = {
             k: v for k, v in (preset.get("knobs") or {}).items() if k not in explicit
         }
+        if not applied:
+            return kwargs, None
+        applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
         if not applied:
             return kwargs, None
         merged = {**kwargs, **applied}
@@ -3625,6 +3683,9 @@ class ComposeMusicTool(MCPTool):
         explicit = set(kwargs.keys())
         fields = last.get("fields") or {}
         inherited = {k: v for k, v in fields.items() if k not in explicit}
+        if not inherited:
+            return kwargs, None
+        inherited = self._sanitize_loaded_knobs(inherited, f"наследование {melody_key!r}")
         if not inherited:
             return kwargs, None
         merged = {**kwargs, **inherited}
@@ -4923,7 +4984,14 @@ class ComposeMusicTool(MCPTool):
         self._apply_form_deadline(spec, duration_s)
         # Issue #3113: имя играющей темы уходит в /voice/music/form — DJ-сет
         # не повторяет уже сыгранную песню (живой прогон 28.09: Für Elise x2).
-        self._manager.current_track_name = (melody_title or name) if name else None
+        # Issue #3178: живой прогон 29.09 — робот называл трек архивным
+        # ключом/title («Hall Of The Mountain King (Alton Towers Theme) 2»)
+        # вместо человеческого имени; :func:`human_track_title` берёт
+        # русский алиас записи или title без технических хвостов.
+        human_name = melody_title
+        if name and self._rtttl_library is not None and self._pending_melody_record is not None:
+            human_name = human_track_title(self._rtttl_library, self._pending_melody_record)
+        self._manager.current_track_name = (human_name or name) if name else None
         self._notify_music_state()
         self._build_compose_result_data(spec, result, duration_s)
         # issue #2877: результат обязан называть РЕАЛЬНО сыгранную запись —
