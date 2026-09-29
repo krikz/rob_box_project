@@ -1,0 +1,26 @@
+# s00 — чистая регистрация владельца (ADR-0144 §3.1). Прогон этой сцены
+# с ПУСТЫМИ хранилищами даёт сид для всех остальных:
+#   replay.py --empty-seed --save-seed <id>
+# Живая 1.1 при съёмке пишет в свою /data — это живой профиль владельца, так и задумано.
+scene: s00_owner_registration
+description: лицо + «запомни меня»
+participants:
+  - {label: owner, truth: Дэнчик, kind: person, known_before: false}
+steps:
+  - say: "Начинаю сцену ноль. Регистрация."
+  - enter: owner
+    say: "Дэнчик, войдите в кадр и встаньте на метку полтора метра, лицом к камере."
+    wait_s: 8
+  - speech: owner
+    say: "Скажите: Робот, запомни меня, меня зовут Дэнчик."
+    window_s: 8
+    introduce: Дэнчик
+    wait_s: 15
+  - speech: owner
+    say: "Теперь скажите: Робот, как меня зовут?"
+    window_s: 6
+    wait_s: 12
+  - say: "Стойте на месте и смотрите в камеру."
+    wait_s: 20
+  - leave: owner
+    say: "Дэнчик, выйдите из кадра."
