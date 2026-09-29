@@ -164,6 +164,19 @@
     cmd: "admin_logs_stop";
     ts_ms: number;
   }
+  export interface NavGoalCmd {
+    cmd: "nav_goal";
+    ts_ms: number;
+    seq: number;
+    x: number;
+    y: number;
+    yaw: number;
+    frame: "map";
+  }
+  export interface NavCancelCmd {
+    cmd: "nav_cancel";
+    ts_ms: number;
+  }
 
 // JSON_EVENT — server → client (meta-quest-api.md §6)
   export interface SubscribeAckEvent {
@@ -172,6 +185,7 @@
     stream_id: number;
     quality: string;
     kind?: string;
+    max_hz?: number;
   }
   export interface SubscribeNackEvent {
     type: "subscribe_nack";
@@ -308,18 +322,45 @@
     service: string;
     ts_ms: number;
   }
+  export interface NavGoalAckEvent {
+    type: "nav_goal_ack";
+    seq: number;
+    ts_ms: number;
+  }
+  export interface NavGoalNackEvent {
+    type: "nav_goal_nack";
+    seq?: number;
+    reason: string;
+    ts_ms: number;
+  }
+  export interface NavStatusEvent {
+    type: "nav_status";
+    state: "accepted" | "rejected" | "active" | "succeeded" | "aborted" | "canceled";
+    seq: number;
+    x: number;
+    y: number;
+    yaw: number;
+    distance_remaining?: number;
+    reason?: string;
+    ts_ms: number;
+  }
+  export interface NavCancelAckEvent {
+    type: "nav_cancel_ack";
+    had_goal: boolean;
+    ts_ms: number;
+  }
 
 /** Discriminated union — every JSON_CMD the server accepts. */
-export type JsonCmdGenerated = PingCmd | StreamListCmd | StreamSelectCmd | TeleopTwistCmd | TeleopHeartbeatCmd | StopEmergencyCmd | VoicePttStartCmd | VoicePttStopCmd | VoiceModeCmd | VoiceListenStartCmd | VoiceListenStopCmd | SupervisorSetModeCmd | SupervisorAcquireFloorCmd | SupervisorReleaseFloorCmd | SupervisorGetStateCmd | ListVoicesCmd | SetVoiceCmd | VoicePipelineCmd | PreviewVoiceCmd | AvatarSetModeCmd | AvatarAcquireFloorCmd | AvatarReleaseFloorCmd | SetPanelTopicCmd | UiButtonCmd | AdminLogsCmd | AdminLogsStopCmd;
+export type JsonCmdGenerated = PingCmd | StreamListCmd | StreamSelectCmd | TeleopTwistCmd | TeleopHeartbeatCmd | StopEmergencyCmd | VoicePttStartCmd | VoicePttStopCmd | VoiceModeCmd | VoiceListenStartCmd | VoiceListenStopCmd | SupervisorSetModeCmd | SupervisorAcquireFloorCmd | SupervisorReleaseFloorCmd | SupervisorGetStateCmd | ListVoicesCmd | SetVoiceCmd | VoicePipelineCmd | PreviewVoiceCmd | AvatarSetModeCmd | AvatarAcquireFloorCmd | AvatarReleaseFloorCmd | SetPanelTopicCmd | UiButtonCmd | AdminLogsCmd | AdminLogsStopCmd | NavGoalCmd | NavCancelCmd;
 
 /** Discriminated union — every JSON_EVENT the server emits. */
-export type JsonEventGenerated = SubscribeAckEvent | SubscribeNackEvent | HeartbeatEvent | PingEvent | PongEvent | StreamListEvent | StreamSelectAckEvent | VoiceStateEvent | VoiceModeAckEvent | VoiceListenAckEvent | VoiceListEvent | VoiceSetAckEvent | VoiceSetNackEvent | VoicePipelineAckEvent | VoicePipelineNackEvent | PreviewVoiceAudioEvent | PreviewVoiceDoneEvent | PreviewVoiceErrorEvent | SupervisorStateEvent | SafetyStopEvent | RobotAlertEvent | FloorLostEvent | AdminLogsChunkEvent | AdminLogsEndEvent;
+export type JsonEventGenerated = SubscribeAckEvent | SubscribeNackEvent | HeartbeatEvent | PingEvent | PongEvent | StreamListEvent | StreamSelectAckEvent | VoiceStateEvent | VoiceModeAckEvent | VoiceListenAckEvent | VoiceListEvent | VoiceSetAckEvent | VoiceSetNackEvent | VoicePipelineAckEvent | VoicePipelineNackEvent | PreviewVoiceAudioEvent | PreviewVoiceDoneEvent | PreviewVoiceErrorEvent | SupervisorStateEvent | SafetyStopEvent | RobotAlertEvent | FloorLostEvent | AdminLogsChunkEvent | AdminLogsEndEvent | NavGoalAckEvent | NavGoalNackEvent | NavStatusEvent | NavCancelAckEvent;
 
 /** All ``cmd`` discriminant values the server knows. */
-export type CommandName = "ping" | "stream_list" | "stream_select" | "teleop_twist" | "teleop_heartbeat" | "stop_emergency" | "voice_ptt_start" | "voice_ptt_stop" | "voice_mode" | "voice_listen_start" | "voice_listen_stop" | "supervisor_set_mode" | "supervisor_acquire_floor" | "supervisor_release_floor" | "supervisor_get_state" | "list_voices" | "set_voice" | "voice_pipeline" | "preview_voice" | "avatar_set_mode" | "avatar_acquire_floor" | "avatar_release_floor" | "set_panel_topic" | "ui_button" | "admin_logs" | "admin_logs_stop";
+export type CommandName = "ping" | "stream_list" | "stream_select" | "teleop_twist" | "teleop_heartbeat" | "stop_emergency" | "voice_ptt_start" | "voice_ptt_stop" | "voice_mode" | "voice_listen_start" | "voice_listen_stop" | "supervisor_set_mode" | "supervisor_acquire_floor" | "supervisor_release_floor" | "supervisor_get_state" | "list_voices" | "set_voice" | "voice_pipeline" | "preview_voice" | "avatar_set_mode" | "avatar_acquire_floor" | "avatar_release_floor" | "set_panel_topic" | "ui_button" | "admin_logs" | "admin_logs_stop" | "nav_goal" | "nav_cancel";
 
 /** All ``type`` discriminant values the server emits. */
-export type EventName = "subscribe_ack" | "subscribe_nack" | "heartbeat" | "ping" | "pong" | "stream_list" | "stream_select_ack" | "voice_state" | "voice_mode_ack" | "voice_listen_ack" | "voice_list" | "voice_set_ack" | "voice_set_nack" | "voice_pipeline_ack" | "voice_pipeline_nack" | "preview_voice_audio" | "preview_voice_done" | "preview_voice_error" | "supervisor_state" | "safety_stop" | "robot_alert" | "floor_lost" | "admin_logs_chunk" | "admin_logs_end";
+export type EventName = "subscribe_ack" | "subscribe_nack" | "heartbeat" | "ping" | "pong" | "stream_list" | "stream_select_ack" | "voice_state" | "voice_mode_ack" | "voice_listen_ack" | "voice_list" | "voice_set_ack" | "voice_set_nack" | "voice_pipeline_ack" | "voice_pipeline_nack" | "preview_voice_audio" | "preview_voice_done" | "preview_voice_error" | "supervisor_state" | "safety_stop" | "robot_alert" | "floor_lost" | "admin_logs_chunk" | "admin_logs_end" | "nav_goal_ack" | "nav_goal_nack" | "nav_status" | "nav_cancel_ack";
 
 // Catalog tuples — single source of truth for whitelists.
   export const MODES = ["off", "telegram_active", "avatar_present", "mixed", "teleop_only", "voice_only"] as const;

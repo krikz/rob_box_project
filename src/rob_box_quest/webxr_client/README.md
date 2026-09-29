@@ -22,9 +22,12 @@ WSS protocol contract: [`docs/architecture/meta-quest-api.md`](../../../docs/arc
 - **Two-mode entry**: PIN form → if browser supports `immersive-vr`, auto-enter
   WebXR; otherwise stay in desktop fallback (WASD + 2D render).
 - **Scene graph**: Captain Bridge environment (5 CC0 GLB + HDR, ~70 KB total),
-  main wall-screen for the front camera, side video panels at ±75°
-  (`camera_oak_depth`, `camera_ceiling`), LiDAR overlay, ARM + status HUDs.
-- **Voice pipeline panel**: always-visible 3D panel on the right (+105°),
+  main wall-screen for the front camera (TARS wings hinged to its sides),
+  ceiling screen for `camera_ceiling`, side video panel at +108°
+  (`camera_oak_depth`, behind the TARS2 wing), LiDAR overlay, HUD strip
+  (status table · voice · ARM) above the wall-screen, procedural bridge shell
+  (side/back walls, ceiling — `scene/bridge_shell.ts`).
+- **Voice pipeline panel**: always-visible 3D panel on the left (−100°),
   showing `voice → STT → LLM → TTS → speaker` with per-stage toggles, six
   style presets + output language, and a TTS voice button opening the TTS
   picker. Only the PIN form is HTML — all panels live in the 3D scene.
@@ -69,8 +72,11 @@ Three DOM-overlay modules in `src/ui/`:
 | Где | Topic | Назначение |
 |---|---|---|
 | стена (z=-3.9) | `camera_rear` | фронтальная OAK-D color (через ROS) |
-| -75° | `camera_oak_depth` | OAK-D depth (depthai) |
-| +75° | `camera_ceiling` | потолочная USB-камера |
+| +108° | `camera_oak_depth` | OAK-D depth (depthai), справа за крылом TARS2 |
+| потолок | `camera_ceiling` | потолочная USB-камера (свой экран над головой) |
+
+Фланги (вне сектора крыльев TARS ≈ 32°…88°): слева −100° «ГОЛОС», −145°
+режимы (M); справа +108° depth, +145° «ПОТОКИ» (P / вкладка в VR).
 
 `camera_oak_color` (0x1003) не дублируется на панель — это тот же сенсор,
 что и на экране-стене.
@@ -103,8 +109,9 @@ Trigger свободен намеренно: grip'ы заняты голосом
 
 | Key | Action | Mode |
 |---|---|---|
-| WASD | Movement | Desktop |
-| Space | Boost (×1.5) | Desktop |
+| Click on canvas | Capture mouse (look around, crosshair = pointer, click = select) | Desktop |
+| WASD (+ Shift) | Walk around the bridge (run) — the operator, not the robot | Desktop |
+| Space + arrows | Drive the robot (Space = deadman; arrows alone do nothing) | Desktop |
 | E | Emergency stop | Desktop |
 | L stick | Move (forward/back/strafe) | WebXR |
 | R stick click | Arm / disarm toggle | WebXR |
@@ -112,9 +119,89 @@ Trigger свободен намеренно: grip'ы заняты голосом
 | R grip | Voice: robot_voice (STT→LLM→TTS) | WebXR |
 | B / Y | Emergency stop | WebXR |
 | H | Показать / скрыть help overlay | Global |
-| Esc | Закрыть overlay / exit VR | Global |
+| Esc | Отпустить мышь / закрыть overlay / exit VR | Global |
 
 Press H in the client to see this list interactively.
+
+### Симулятор без шлема
+
+Погулять по мостику без Quest и без робота (issue #3149):
+
+```bash
+npm run dev:sim            # vite + открыть http://127.0.0.1:5173/?sim=1
+# или вручную: npm run dev, затем /?sim=1 (&sim_latency=40 — задержка мок-сети, мс)
+```
+
+`?sim=1` пропускает PIN (симулятор вводит его сам), в шапке висит жёлтый
+бейдж **SIM · мок-робот**. Без флага прод-путь не меняется: код мока лежит
+в `src/dev/` и грузится отдельным чанком только по флагу.
+
+Что показывает. Мок-робот ездит по 2D-плану мастерской (комната → коридор →
+комната, стол, колонны, стеллаж, ящики) и шлёт стримы в **серверных**
+форматах, их разбирают штатные декодеры клиента:
+
+- `camera_rear` (экран-стена), `camera_oak_depth` (боковая панель),
+  `camera_ceiling` (потолок) — «вид из робота», псевдо-3D рейкаст по плану,
+  HUD с топиком, временем, позой, скоростью и водяным знаком SIM, JPEG ~10 fps;
+- `lidar_2d` — 360 лучей, 10 Гц; `map_2d` — карта открывается там, куда
+  робот посмотрел (поза — 5 Гц; полный PNG — только при значимом изменении
+  и не чаще раза в 5 с, как `MAP_PNG_MIN_PERIOD_S` сервера; занятость
+  клетки с гистерезисом, чтобы шум лидара не гонял 336 КБ PNG каждую секунду);
+- `nav_path` — план Nav2 в формате сервера (`{frame:"map", n, xy, ts_ms}`),
+  пересчёт раз в 1 с, пустой путь (`n = 0`) по завершении цели;
+- `robot_status` 1 Гц (батарея медленно садится, Wi-Fi хуже вдали от
+  «точки доступа», режим idle/teleop/emergency_stop), `voice_state` (idle),
+  STATE_UPDATE супервизора (руль наш), ответы на команды голосовой панели.
+
+`SUBSCRIBE.max_hz` мок соблюдает (прореживает стрим, эхо `max_hz` в
+`subscribe_ack`), так что профили панели «ПОТОКИ» (LAN / Интернет / Минимум)
+видно по счётчикам кбит/с и fps. Выключенный видеопоток показывает на своём
+экране заглушку «ПОТОК ВЫКЛЮЧЕН» с профилем, а не замёрзший кадр.
+
+**Навигация в симуляторе** (`src/dev/sim_nav.ts`). `nav_goal` планируется A*
+по той же «SLAM»-карте, что на полу (препятствия раздуты на радиус робота,
+неизвестные клетки проходимы, но дороже — как `allow_unknown` Nav2), путь
+сглаживается и едет pure-pursuit'ом с разворотом на месте и доворотом курса
+у цели. События — как у сервера: `nav_goal_ack` / `nav_goal_nack`
+(`bad_frame`, `bad_payload`, `emergency_active`), `nav_status`
+accepted → active (`distance_remaining`, ≤ 2 Гц) → succeeded / canceled /
+aborted (`sim_no_path` — цель в препятствии или отрезана; `sim_stuck` — 10 с
+без прогресса). Новая цель вытесняет старую молча, `nav_cancel` →
+`nav_cancel_ack{had_goal}` + canceled, **E** (аварийный стоп) отменяет цель.
+Телеоп цель **не** отменяет, а перебивает (twist_mux: quest 90 > nav 10):
+пока держишь Space+стрелки — едешь сам, отпустил — навигация продолжает.
+
+Управление: клик по канвасу — захват мыши (осмотреться, прицел в центре,
+клик = выбор/перетаскивание панели), **WASD** — ходить, **Shift** — бегом,
+**Esc** — отпустить мышь; робота ведут **стрелки при зажатом Space**,
+**E** — аварийный стоп (в симуляторе держится 3 с; у настоящего робота —
+до нового HELLO). **G** — взвести прицел nav-цели, затем ЛКМ по полу
+(потянуть — курс, отпустить — цель уходит), **Shift+G** или кнопка
+«✕ ОТМЕНА НАВ» — отменить; **P** — показать/скрыть панель «ПОТОКИ»;
+**R** — сброс раскладки; **M** — панель режимов; **H** — все клавиши.
+Ходьба зажата в пределах комнаты мостика и работает и на обычном десктопе,
+не только в симуляторе. В VR она выключена. Если браузер отказал в pointer
+lock (встроенная панель, iframe), клики работают как обычный курсор.
+
+Шов: мок подключается через `ConnectionOptions.WebSocketCtor`
+(`bootstrap({ WebSocketCtor })`) — логика `Connection` не форкается.
+Расширять: `robot.registerCommand(name, handler)`,
+`robot.registerStream(topic, source)`, частота подписки — единая
+`subscriptionPeriodMs()` в `src/dev/mock_robot.ts` (номинал стрима,
+прореженный до `max_hz`).
+
+Из консоли (только `?sim=1`): `window.__robBoxSim.robot.state`,
+`window.__robBoxSim.robot.nav.activeGoal()`,
+`window.__robBoxSim.lookAt(yawDeg, pitchDeg)` (0 — на экран-стену, + —
+налево/вверх), `window.__robBoxSim.teleport(x, z)`, `window.__robBoxSim.scene` —
+осмотреть мостик без pointer lock (скриншоты, визуальное ревью). Во
+встроенной вкладке, которая не видна, браузер замораживает
+`requestAnimationFrame` — для отладки можно подменить его таймером из консоли.
+
+Чего симулятор не умеет: голоса (микрофон/синтез), 3D-облака, TARS-панелей
+с Prometheus/Loki, floor_held у nav-цели (руль у сессии симулятора всегда
+свой) — такие команды получают честный `UNKNOWN_COMMAND` или
+`preview_voice_error`.
 
 ### Tooltips
 

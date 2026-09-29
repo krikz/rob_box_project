@@ -27,6 +27,7 @@ import {
   SUPERVISOR_PANEL_ANGLE_DEG,
   SUPERVISOR_PANEL_RADIUS_M
 } from "../src/scene/supervisor_panel";
+import { VOICE_PIPELINE_ANGLE_DEG } from "../src/scene/voice_pipeline_panel";
 
 /**
  * Минимальный msgpack-encoder для тестов: строки, числа, null, bool, map.
@@ -204,25 +205,20 @@ describe("panelGeometry", () => {
 
   it("places the panel on the left flank (negative x)", () => {
     const g = panelGeometry();
-    expect(g.position.x).toBeLessThan(-2);
+    // −145°: левый фланг за спиной-слева (x < 0, z > 0 — позади оператора).
+    expect(g.position.x).toBeLessThan(-1);
+    expect(g.position.z).toBeGreaterThan(1);
   });
 
-  it("does not collide with camera_oak_depth at -75°", () => {
-    // Конструкция: при −105° панель оказывается симметричной x=-2.32 и
-    // z=+0.62 относительно camera_oak_depth (−75°, x=-1.93, z=-0.52).
-    // Симметрия sin(−105°) = sin(−75°) даёт совпадение x — это by design,
-    // авторы карточки выбрали −105° именно для того, чтобы она ушла
-    // назад по z и не «светила» в зону прямого обзора оператора, где
-    // уже стоит экран-стена и боковая видео-панель. Проверяем, что
-    // позиции различаются по z (|Δz| ≥ 1 м) и не сливаются.
+  it("stays behind the voice pipeline panel on the left flank (no overlap)", () => {
+    // Ребаланс 29.09: слева −100° «ГОЛОС», за ним −145° режимы. Панели
+    // 0.95 м на радиусе 2.4 м — ±11.2° каждая, между центрами ≥ 22.4°.
     const g = panelGeometry();
-    const oakAngle = -75;
-    const oak = panelGeometry(oakAngle, SUPERVISOR_PANEL_RADIUS_M, g.position.y);
-    // sanity: углы действительно разные (Δz ≥ 1 м)
-    expect(Math.abs(g.position.z - oak.position.z)).toBeGreaterThanOrEqual(1.0);
+    const voice = panelGeometry(VOICE_PIPELINE_ANGLE_DEG, SUPERVISOR_PANEL_RADIUS_M, g.position.y);
+    expect(voice.position.x).toBeLessThan(0);
+    expect(Math.abs(SUPERVISOR_PANEL_ANGLE_DEG - VOICE_PIPELINE_ANGLE_DEG)).toBeGreaterThan(23);
     // sanity: горизонтальный радиус одинаковый — формула одна
     expect(Math.hypot(g.position.x, g.position.z)).toBeCloseTo(SUPERVISOR_PANEL_RADIUS_M, 5);
-    expect(Math.hypot(oak.position.x, oak.position.z)).toBeCloseTo(SUPERVISOR_PANEL_RADIUS_M, 5);
   });
 
   it("does not face into a wall (normal направлен к оператору)", () => {

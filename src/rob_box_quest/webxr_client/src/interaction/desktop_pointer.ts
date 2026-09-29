@@ -18,6 +18,16 @@ export interface DesktopPointerHandle {
 export interface DesktopPointerOptions {
   canvas: HTMLElement;
   camera: THREE.Camera;
+  /**
+   * Режим ходьбы (#3149, input/desktop_walk.ts): клик по канвасу без
+   * захвата мыши только захватывает её (requestPointerLock) и НЕ жмёт
+   * панель; при захвате луч идёт из центра экрана (прицел), клик = выбор.
+   * Если pointer lock в браузере нет или он отказал (pointerlockerror /
+   * отклонённый промис: встроенные панели, iframe без allow, политика) —
+   * дальше поведение как без флага, иначе ни один клик не доходил бы до
+   * сцены.
+   */
+  lockOnClick?: boolean;
 }
 
 export function createDesktopPointer(opts: DesktopPointerOptions): DesktopPointerHandle {
@@ -26,8 +36,14 @@ export function createDesktopPointer(opts: DesktopPointerOptions): DesktopPointe
   const raycaster = new THREE.Raycaster();
   let inside = false;
   let pressed = false;
+  /** Браузер отказал в pointer lock — дальше клики жмут, а не захватывают. */
+  let lockDenied = false;
+
+  const locked = (): boolean =>
+    typeof document !== "undefined" && document.pointerLockElement === canvas;
 
   function onMove(ev: MouseEvent): void {
+    if (locked()) return; // луч из центра, курсора нет
     const rect = canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
     ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -37,7 +53,28 @@ export function createDesktopPointer(opts: DesktopPointerOptions): DesktopPointe
 
   function onDown(ev: MouseEvent): void {
     if (ev.button !== 0) return; // только левая кнопка
+    if (opts.lockOnClick && !lockDenied && !locked() && typeof canvas.requestPointerLock === "function") {
+      // Захватывающий клик — только захват, панель под курсором не жмём.
+      try {
+        const p = canvas.requestPointerLock() as unknown;
+        if (p instanceof Promise) p.catch(() => (lockDenied = true));
+      } catch {
+        lockDenied = true; // браузер отказал — остаёмся в режиме курсора
+      }
+      return;
+    }
     pressed = true;
+  }
+
+  function onLockChange(): void {
+    // Захват снят (Esc) посреди драга — отпускаем панель.
+    pressed = false;
+    if (locked()) inside = true;
+    else inside = false;
+  }
+
+  function onLockError(): void {
+    lockDenied = true;
   }
 
   function onUp(ev: MouseEvent): void {
@@ -56,11 +93,15 @@ export function createDesktopPointer(opts: DesktopPointerOptions): DesktopPointe
   canvas.addEventListener("mousedown", onDown);
   window.addEventListener("mouseup", onUp);
   canvas.addEventListener("mouseleave", onLeave);
+  document.addEventListener("pointerlockchange", onLockChange);
+  document.addEventListener("pointerlockerror", onLockError);
+  const center = new THREE.Vector2(0, 0);
 
   return {
     poll(): PointerRay | null {
-      if (!inside) return null;
-      raycaster.setFromCamera(ndc, camera);
+      const isLocked = locked();
+      if (!inside && !isLocked) return null;
+      raycaster.setFromCamera(isLocked ? center : ndc, camera);
       const o = raycaster.ray.origin;
       const d = raycaster.ray.direction;
       return {
@@ -74,6 +115,8 @@ export function createDesktopPointer(opts: DesktopPointerOptions): DesktopPointe
       canvas.removeEventListener("mousedown", onDown);
       window.removeEventListener("mouseup", onUp);
       canvas.removeEventListener("mouseleave", onLeave);
+      document.removeEventListener("pointerlockchange", onLockChange);
+      document.removeEventListener("pointerlockerror", onLockError);
     }
   };
 }

@@ -136,8 +136,11 @@ export const LANG_LABELS: Readonly<Record<VoiceLanguage, string>> = {
 /** Ширина канваса-текстуры панели. Высота считается из раскладки (ниже). */
 export const CANVAS_W = 512;
 
-/** Геометрия панели: спереди-справа (+60°) от оператора. */
-export const VOICE_PIPELINE_ANGLE_DEG = 60;
+/**
+ * Геометрия панели: левый фланг (−100°), сразу за крылом TARS1 (речь TARS —
+ * рядом с голосовым пайплайном). На +60° панель закрывала крыло TARS2.
+ */
+export const VOICE_PIPELINE_ANGLE_DEG = -100;
 export const VOICE_PIPELINE_RADIUS_M = 2.4;
 export const VOICE_PIPELINE_Y_M = 1.4;
 export const VOICE_PIPELINE_W_M = 0.95;

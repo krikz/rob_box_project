@@ -1,7 +1,8 @@
 # Captain Bridge — ассеты для Tripo3D (Qwen → Tripo3D)
 
 > **Дата:** 2026-09-26
-> **Статус:** только ассеты, без интеграции в сцену.
+> **Статус:** ассеты + интеграция в сцену DONE (commits `ecfc454ba`,
+> `b73de1fa6`, см. §9); ревью-фиксы #3044/#3045/#3047/#3048 закрыты.
 > **Принцип:** минимум уникальных моделей — один экран на все экраны сцены, пол/стены процедурные.
 > **Ссылки:** `docs/architecture/captain-bridge.md`, ADR-0027/0032/0074/0117,
 > `src/rob_box_quest/webxr_client/scripts/build_bridge_assets.mjs`.
@@ -37,7 +38,8 @@
 1. **Qwen** — изображение по промту (раздел 6).
 2. **Tripo3D** — Retopo (Topology Quad, Polygon Count **1000–2000**) →
    Smart UV → Texture (**2K**, **Remove Lighting: ON**) → экспорт **GLB**.
-3. **Проверка** — `node scripts/gltf-inspect.mjs <file.glb>` (в `webxr_client`).
+3. **Проверка** — `npm run gltf:inspect -- <file.glb>` (в `webxr_client`,
+   `package.json` script добавлен в #3048).
    Критерии: треугольники ≤ 5 000, файл ≤ 1 MB.
 4. **Складываем** в `public/models/environment/_raw/` (gitignored) с именем из
    раздела 7. Пока **без** `gltf:optimize` и без подключения в сцену.
@@ -180,9 +182,29 @@ plain rectangle shape, no rounded corners, no notches, no cutouts, no buttons.
 - LiDAR-overlay, SLAM-карта на полу, HUD-спрайты (ARM / Status / Voice).
 - Панели голосового пайплайна и TTS-picker.
 
-## 9. Что будет позже (отдельный этап, сейчас НЕ делаем)
+## 9. Что сделано (этап интеграции — DONE)
 
-1. `npm run gltf:optimize` → Draco + Meshopt + WebP → `*.optimized.glb`.
-2. Расстановка по §8 + emissive-подсветка cyan-кромок
-   (`emissive: 0x2ec27e` — запечённый в текстуру цвет сам не светится).
-3. Интеграция в `captain_bridge.ts`.
+1. `npm run gltf:optimize` → Draco + Meshopt + WebP → `*.optimized.glb`
+   (commit `ecfc454ba`).
+2. Расстановка по §8 + интеграция в `captain_bridge.ts`
+   (`placeHeroProps()`, commit `b73de1fa6`).
+3. Ревью-фиксы (kanban t_2975c794, окно 2026-09-26→27):
+   - #3044 — дубликат bbox/scale-логики между `placeOnFloor` и
+     `heroScreen` устранён: `computeFitScale` + `placeOnFloor` вынесены
+     в `bridge_assets.ts` как чистые функции, `placeHeroProps` их
+     переиспользует (экран — только `computeFitScale`, т.к. у него
+     фиксированная высота 1.5 м, а не посадка на пол).
+   - #3045 — `heroHoloRight = heroHoloProjector.clone(true)` теперь
+     глубоко клонирует материалы (`clone(true)` не клонирует материалы
+     в three.js), так что `environment.dispose()` и dispose
+     `heroHoloRight` больше не трогают один и тот же shared material
+     дважды.
+   - #3047 — `computeFitScale`/`placeOnFloor` защищены от пустого/
+     вырожденного bbox (`Box3.makeEmpty()` → `+Infinity` для `min.y`
+     раньше давал `position.y = -Infinity`); покрыто тестами в
+     `tests/captain_bridge_place_hero.test.ts`.
+   - #3048 — `npm run gltf:inspect` зарегистрирован в `package.json`.
+
+Что НЕ делали в рамках этого этапа: emissive-подсветка cyan-кромок
+(`emissive: 0x2ec27e`) остаётся будущим шагом — цвет сейчас запечён в
+текстуру и сам не светится.

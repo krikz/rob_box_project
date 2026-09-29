@@ -81,6 +81,14 @@ export interface PointerSystemOptions {
 
 const DEFAULT_CENTER: Vec3 = { x: 0, y: 1.6, z: 0 };
 
+/** Объект и все его предки видимы (three.js рисует только такие). */
+function visibleInTree(object: THREE.Object3D): boolean {
+  for (let node: THREE.Object3D | null = object; node; node = node.parent) {
+    if (!node.visible) return false;
+  }
+  return true;
+}
+
 export class PointerSystem {
   private targets: PointerTarget[] = [];
   private raycaster = new THREE.Raycaster();
@@ -223,6 +231,9 @@ export class PointerSystem {
     if (hits.length === 0) return null;
     // Ищем, какому таргету принадлежит попавшийся меш (может быть ребёнком).
     for (const hit of hits) {
+      // Raycaster three.js видимость не проверяет: скрытая панель (M —
+      // режимы, P — потоки) иначе ловила бы луч невидимыми кнопками.
+      if (!visibleInTree(hit.object)) continue;
       const id = this.ownerOf(hit.object);
       if (!id) continue;
       const corner = hit.uv ? cornerFromUv(hit.uv) : null;

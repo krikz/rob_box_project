@@ -30,6 +30,7 @@
     "/rtabmap/grid_prob_map": "Публикует rtabmap_ros (внешний ROS2-пакет SLAM, не в src/).",
     "/rtabmap/localization_pose": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
     "/rtabmap/map": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
+    "/plan": "Публикует nav2 planner_server (внешний пакет, не в src/) — глобальный план, топик `plan` без namespace. Запуск: docker/main/scripts/nav2/start_nav2_direct.sh. Потребитель — quest_node nav_path (issue #3151).",
     "/rosout": "Встроенный топик логов ROS2 — публикуется рантаймом rclpy/rclcpp у КАЖДОГО узла автоматически, никогда через явный create_publisher(...). Подписчики (health_monitor.py, context_aggregator_node.py) легитимны.",
     "/sensors/motor_state/front_left": "Публикует vesc_nexus (VESC motor controller driver, src/vesc_nexus — git submodule, в этом чекауте не выкачан; сообщение vesc_msgs.VescStateStamped). Подписка в quest_node.py обёрнута в try/except ImportError на случай отсутствия vesc_msgs.",
     "/device/snapshot": "Публикует ESP32 sensor hub через micro-ROS мост (прошивка/железо, вне Python-скана src/). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py."

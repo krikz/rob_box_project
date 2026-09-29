@@ -11,6 +11,11 @@ import {
   WIFI_WEAK_DBM,
   RTT_WARN_MS,
   RTT_BAD_MS,
+  STATUS_HUD_CANVAS_H,
+  STATUS_HUD_CANVAS_W,
+  STATUS_HUD_COLUMNS,
+  STATUS_HUD_SIZE_M,
+  statusGridLayout,
   type RobotStatus
 } from "../src/scene/status_hud";
 import { parseSupervisorState } from "../src/state/supervisor_state";
@@ -235,5 +240,53 @@ describe("formatSupervisorLines (AV-17)", () => {
   it("degraded-плашка про v1 явно называет отсутствие координации", () => {
     expect(SUPERVISOR_DEGRADED_NOTE).toMatch(/v1/);
     expect(SUPERVISOR_DEGRADED_NOTE.toLowerCase()).toContain("no coordination");
+  });
+});
+
+describe("NET line (issue #3150)", () => {
+  it("absent until the meter is wired (null)", () => {
+    expect(formatStatusLines(null, null, null).find((l) => l.label === "NET")).toBeUndefined();
+  });
+  it("shows kbit/s and Mbit/s", () => {
+    expect(valueOf(formatStatusLines(null, null, null, 412.6), "NET").value).toBe("413 kbit/s");
+    expect(valueOf(formatStatusLines(null, null, null, 2400), "NET").value).toBe("2.4 Mbit/s");
+  });
+});
+
+describe("statusGridLayout (HUD-полоса над экраном-стеной)", () => {
+  it("canvas keeps the sprite's aspect (text is not stretched)", () => {
+    expect(STATUS_HUD_CANVAS_W / STATUS_HUD_CANVAS_H).toBeCloseTo(STATUS_HUD_SIZE_M.x / STATUS_HUD_SIZE_M.y, 5);
+  });
+
+  it("all 11 lines (MODE…NAV) fit in 3 rows, cells inside the canvas and not overlapping", () => {
+    const cells = statusGridLayout(11);
+    expect(cells).toHaveLength(11);
+    const rows = new Set(cells.map((c) => c.y));
+    expect(rows.size).toBe(Math.ceil(11 / STATUS_HUD_COLUMNS));
+    for (const c of cells) {
+      expect(c.x).toBeGreaterThanOrEqual(0);
+      expect(c.y).toBeGreaterThanOrEqual(0);
+      expect(c.x + c.w).toBeLessThanOrEqual(STATUS_HUD_CANVAS_W);
+      expect(c.y + c.h).toBeLessThanOrEqual(STATUS_HUD_CANVAS_H);
+    }
+    for (let i = 0; i < cells.length; i += 1) {
+      for (let j = i + 1; j < cells.length; j += 1) {
+        const a = cells[i];
+        const b = cells[j];
+        const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        expect(overlap).toBe(false);
+      }
+    }
+  });
+
+  it("alert banner pushes the grid down instead of covering it", () => {
+    const top = 68;
+    const cells = statusGridLayout(11, STATUS_HUD_CANVAS_W, STATUS_HUD_CANVAS_H, top);
+    for (const c of cells) expect(c.y).toBeGreaterThanOrEqual(top);
+    expect(Math.max(...cells.map((c) => c.y + c.h))).toBeLessThanOrEqual(STATUS_HUD_CANVAS_H);
+  });
+
+  it("empty → no cells", () => {
+    expect(statusGridLayout(0)).toEqual([]);
   });
 });

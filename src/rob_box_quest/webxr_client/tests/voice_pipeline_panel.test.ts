@@ -221,8 +221,8 @@ describe("hitTest", () => {
 });
 
 describe("геометрия панели", () => {
-  it("панель справа (+105°) и не в нуле", () => {
-    expect(VOICE_PIPELINE_ANGLE_DEG).toBeGreaterThan(0);
+  it("панель на левом фланге (−100°, рядом с крылом TARS1) и не в нуле", () => {
+    expect(VOICE_PIPELINE_ANGLE_DEG).toBeLessThan(0);
     expect(VOICE_PIPELINE_RADIUS_M).toBeGreaterThan(0);
     expect(VOICE_PIPELINE_Y_M).toBeGreaterThan(0);
     expect(VOICE_PIPELINE_W_M).toBeGreaterThan(0);

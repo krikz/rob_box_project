@@ -1,8 +1,32 @@
 import { NodeIO } from "@gltf-transform/core";
+import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
+import draco3d from "draco3dgltf";
 import { stat } from "node:fs/promises";
 
 const f = process.argv[2];
-const io = new NodeIO();
+
+const io = new NodeIO()
+  .registerExtensions(ALL_EXTENSIONS)
+  .registerDependencies({
+    "draco3d.decoder": await draco3d.createDecoderModule(),
+  });
+
+// Register meshopt decoder so committed EXT_meshopt_compression assets
+// (see scripts/gltf-optimize.mjs) can actually be read. Best-effort, same
+// as gltf-verify.mjs: skip silently if the package is unavailable and only
+// fail if an asset genuinely needs it.
+try {
+  const mod = await import("meshoptimizer");
+  const decoder = mod.MeshoptDecoder;
+  if (decoder && typeof decoder.ready !== "undefined") {
+    await decoder.ready;
+  }
+  io.registerDependencies({ "meshopt.decoder": decoder });
+} catch {
+  // meshopt decoder unavailable — will only fail if the asset actually
+  // uses EXT_meshopt_compression without a registered decoder.
+}
+
 const doc = await io.read(f);
 const r = doc.getRoot();
 

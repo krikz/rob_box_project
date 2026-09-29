@@ -198,6 +198,145 @@ export function validateBridgeMeta(raw: unknown): BridgeSceneMeta {
   return r as unknown as BridgeSceneMeta;
 }
 
+// ---------- hero-prop placement (pure, jsdom-testable) ----------
+
+/** Target size (metres) to fit a group's bounding box into, per axis. */
+export interface FitTarget {
+  width?: number; // X
+  height?: number; // Y
+  depth?: number; // Z
+}
+
+/**
+ * Uniform scale factor that fits `box`'s size to the given `target` axis
+ * (or axes; the last one with a positive target size wins — see #3044).
+ * Falls back to `1` (no scaling) for an empty/degenerate box instead of
+ * producing `NaN`/`Infinity` (#3047) — an empty GLB stays at its authored
+ * scale rather than silently vanishing or exploding.
+ */
+export function computeFitScale(box: THREE.Box3, target: FitTarget): number {
+  if (box.isEmpty()) return 1;
+  const size = box.getSize(new THREE.Vector3());
+  let scale = 1;
+  if (target.width && size.x > 0) scale = target.width / size.x;
+  if (target.height && size.y > 0) scale = target.height / size.y;
+  if (target.depth && size.z > 0) scale = target.depth / size.z;
+  return scale;
+}
+
+/**
+ * Places `group` on the floor (`y = 0`) at `(x, z)`, uniformly scaled to
+ * fit `target`. Shared by all floor-standing hero props (platform,
+ * holo-projectors) — previously each call site recomputed the bbox/scale
+ * by hand (#3044).
+ *
+ * Guards against an empty/degenerate bounding box: `box.min.y` is
+ * `+Infinity` for `Box3.makeEmpty()`, which would otherwise place the
+ * group at `y = -Infinity` (#3047). Such a group is left at `y = 0`.
+ */
+export function placeOnFloor(group: THREE.Object3D, x: number, z: number, target: FitTarget = {}): void {
+  const box = new THREE.Box3().setFromObject(group);
+  const scale = computeFitScale(box, target);
+  group.scale.setScalar(scale);
+  const floorY = box.isEmpty() || !Number.isFinite(box.min.y) ? 0 : -box.min.y * scale;
+  group.position.set(x, floorY, z);
+}
+
+// ---------- screen-frame fit (bridge_screen.optimized.glb) ----------
+
+/**
+ * Где у модели рамки экрана «экранное полотно» — в долях её bounding box.
+ *
+ * Замерено по геометрии `bridge_screen.optimized.glb` (Tripo3D, 2026-09-26;
+ * gltf-transform + meshopt, треугольники с нормалью +Z, сгруппированные по
+ * глубине). Модель — плоская «плита» 0.470 × 0.618 × 0.131 (ПОРТРЕТ, origin
+ * внизу по центру, лицом +Z):
+ *   - полотно (display face): z ≈ 0.130, x ∈ [−0.218, 0.218], y ∈ [0.040, 0.578];
+ *   - безель-кант: z ≈ 0.135 (на 5 мм впереди полотна), x ∈ ±0.233, y ∈ [0.006, 0.613];
+ *   - трапециевидные «ушки» сверху/снизу по центру — утоплены (z ≈ 0.115).
+ * bbox: x ∈ [−0.2351, 0.2352], y ∈ [0, 0.6184], z ∈ [0.0050, 0.1364].
+ *
+ * Раньше рамку масштабировали равномерно «по ширине 4.8 м» — ×10.2: плита
+ * вырастала в 6.3 м высотой и 1.3 м толщиной, вставала origin'ом (низом) на
+ * y = 1.5 и выпирала на 1.3 м К ОПЕРАТОРУ, закрывая верхнюю половину видео
+ * нижней перекладиной. Теперь масштаб по осям раздельный: полотно = прямо-
+ * угольник видео, толщина — отдельно (см. `fitScreenFrame`).
+ */
+export interface ScreenFaceFractions {
+  /** Полотно по X: [u0, u1] в долях ширины bbox (0 = min.x). */
+  u0: number;
+  u1: number;
+  /** Полотно по Y: [v0, v1] в долях высоты bbox (0 = min.y). */
+  v0: number;
+  v1: number;
+}
+
+export const BRIDGE_SCREEN_FACE: Readonly<ScreenFaceFractions> = Object.freeze({
+  u0: (0.2351 - 0.218) / 0.4703,
+  u1: (0.2351 + 0.218) / 0.4703,
+  v0: 0.04 / 0.6184,
+  v1: 0.578 / 0.6184,
+});
+
+export interface ScreenFrameTarget {
+  /** Центр видео-прямоугольника (мир), плоскость смотрит на +Z. */
+  center: { x: number; y: number; z: number };
+  width: number;
+  height: number;
+  /** Толщина рамки целиком, м. */
+  depth: number;
+  /** Зазор между передней точкой рамки и плоскостью видео, м (> 0). */
+  gap: number;
+  /**
+   * Полотно рамки меньше видео на эту долю (0.01 = 1 %): край видео
+   * заходит на кант, и под углом не видно щели между видео и безелем.
+   */
+  overlap?: number;
+}
+
+export interface ScreenFrameFit {
+  scale: { x: number; y: number; z: number };
+  position: { x: number; y: number; z: number };
+}
+
+/**
+ * Посадка рамки экрана «вокруг» видео-панели, лицом к оператору (+Z):
+ * полотно рамки ровно под видео-прямоугольником (центры совпадают), вся
+ * геометрия рамки — ЗА плоскостью видео (между оператором и видео ничего).
+ *
+ * `box` — bbox группы в её собственных координатах при scale = 1,
+ * position = 0 (как её отдаёт GLTFLoader). Масштаб по осям раздельный:
+ * пропорции модели (портрет 0.81) не совпадают с 16:9, а кант тонкий —
+ * неравномерное растяжение даёт безель ~0.17 м по бокам и ~0.2 м сверху/снизу.
+ * Пустой/вырожденный bbox → `null` (рамку не трогаем, как computeFitScale → 1).
+ */
+export function fitScreenFrame(
+  box: THREE.Box3,
+  face: ScreenFaceFractions,
+  target: ScreenFrameTarget,
+): ScreenFrameFit | null {
+  if (box.isEmpty()) return null;
+  const size = box.getSize(new THREE.Vector3());
+  const faceW = (face.u1 - face.u0) * size.x;
+  const faceH = (face.v1 - face.v0) * size.y;
+  if (!(faceW > 0) || !(faceH > 0) || !(size.z > 0)) return null;
+  const k = 1 - (target.overlap ?? 0.01);
+  const sx = (target.width * k) / faceW;
+  const sy = (target.height * k) / faceH;
+  const sz = target.depth / size.z;
+  const faceCx = box.min.x + ((face.u0 + face.u1) / 2) * size.x;
+  const faceCy = box.min.y + ((face.v0 + face.v1) / 2) * size.y;
+  return {
+    scale: { x: sx, y: sy, z: sz },
+    position: {
+      x: target.center.x - sx * faceCx,
+      y: target.center.y - sy * faceCy,
+      // Передняя точка рамки (box.max.z) — на `gap` позади видео.
+      z: target.center.z - target.gap - sz * box.max.z,
+    },
+  };
+}
+
 // ---------- GLB / HDR loader (browser-only; needs Web Worker for Draco) ----------
 
 /**

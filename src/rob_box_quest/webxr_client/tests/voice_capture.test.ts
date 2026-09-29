@@ -7,7 +7,7 @@
 // подсовываем fake-фабрику и руками дёргаем port.onmessage — это эквивалент
 // того, что worklet делает в audio-thread'е.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, type Mock } from "vitest";
 import {
   createVoiceCapture,
   resampleToInt16,
@@ -36,7 +36,7 @@ function driveFloat32(node: FakeDeps["nodes"][number], samples: Float32Array): v
 interface FakeDeps {
   track: { stop: ReturnType<typeof vi.fn> };
   stream: MediaStream;
-  getUserMedia: ReturnType<typeof vi.fn>;
+  getUserMedia: Mock<(constraints: MediaStreamConstraints) => Promise<MediaStream>>;
   audioWorklet: { addModule: ReturnType<typeof vi.fn> };
   audioCtx: {
     sampleRate: number;
@@ -60,7 +60,9 @@ interface FakeDeps {
 function makeFakeDeps(): FakeDeps {
   const track = { stop: vi.fn() };
   const stream = { getTracks: () => [track] } as unknown as MediaStream;
-  const getUserMedia = vi.fn().mockResolvedValue(stream);
+  const getUserMedia = vi
+    .fn<(constraints: MediaStreamConstraints) => Promise<MediaStream>>()
+    .mockResolvedValue(stream);
   const audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
   const nodes: FakeDeps["nodes"] = [];
   const audioCtx: FakeDeps["audioCtx"] = {

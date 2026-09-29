@@ -59,6 +59,35 @@ export interface VideoPanelOptions {
   canvasHeight?: number;
 }
 
+/** Заглушка «поток выключен»: тёмный фон, первая строка крупно. */
+export function drawPlaceholder(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  lines: readonly string[]
+): void {
+  ctx.fillStyle = "#0a0d11";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "#3a4450";
+  ctx.lineWidth = Math.max(2, Math.round(w / 320));
+  ctx.setLineDash([Math.round(w / 40), Math.round(w / 60)]);
+  ctx.strokeRect(w * 0.04, h * 0.06, w * 0.92, h * 0.88);
+  ctx.setLineDash([]);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const big = Math.round(h / 9);
+  const small = Math.round(h / 18);
+  const total = big + (lines.length - 1) * small * 1.5;
+  let y = h / 2 - total / 2 + big / 2;
+  lines.forEach((line, i) => {
+    ctx.fillStyle = i === 0 ? "#8b98a5" : "#5d6b7a";
+    ctx.font = `bold ${i === 0 ? big : small}px monospace`;
+    ctx.fillText(line, w / 2, y);
+    y += i === 0 ? big * 0.6 + small * 1.1 : small * 1.5;
+  });
+  ctx.textAlign = "start";
+}
+
 export class VideoPanel {
   readonly mesh: THREE.Mesh;
   /** Canvas-композит. null на быстром пути (без подписи). */
@@ -75,6 +104,8 @@ export class VideoPanel {
   private droppedCount = 0;
   private readonly showLabel: boolean;
   private readonly bitmapOptions: ImageBitmapOptions;
+  /** Текст заглушки «поток выключен»; null — показываем видео. */
+  private placeholderKey: string | null = null;
 
   constructor(state: PanelState, opts: VideoPanelOptions = {}) {
     this.state = state;
@@ -181,6 +212,49 @@ export class VideoPanel {
     return true;
   }
 
+  /**
+   * Заглушка вместо видео (#3150): поток выключен на панели «ПОТОКИ» —
+   * вместо замёрзшего последнего кадра честная надпись. `null` — снять
+   * заглушку: следующий кадр потока ляжет как обычно. Пока заглушка
+   * висит, запоздавшие кадры (уже летели до UNSUBSCRIBE) отбрасываются.
+   */
+  setPlaceholder(lines: readonly string[] | null): void {
+    const key = lines ? lines.join("\n") : null;
+    if (key === this.placeholderKey) return;
+    this.placeholderKey = key;
+    if (!lines) return;
+    const w = this.canvas?.width ?? 640;
+    const h = this.canvas?.height ?? 360;
+    let canvas = this.canvas;
+    let ctx = this.ctx;
+    if (!canvas || !ctx) {
+      canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      ctx = canvas.getContext("2d");
+      if (!ctx) return;
+    }
+    drawPlaceholder(ctx, w, h, lines);
+    if (this.ctx) {
+      // Панель с подписью: рисовали прямо в её canvas.
+      this.drawLabel(this.state.topic);
+    } else {
+      // Быстрый путь: кадр-битмап заменяем canvas-заглушкой.
+      if (this.currentBitmap) {
+        this.currentBitmap.close();
+        this.currentBitmap = null;
+      }
+      this.texture.flipY = true;
+      this.texture.image = canvas;
+    }
+    this.texture.needsUpdate = true;
+  }
+
+  /** Сейчас на панели заглушка (для тестов и HUD). */
+  hasPlaceholder(): boolean {
+    return this.placeholderKey !== null;
+  }
+
   getStats(): { frameCount: number; droppedCount: number } {
     return { frameCount: this.frameCount, droppedCount: this.droppedCount };
   }
@@ -228,7 +302,7 @@ export class VideoPanel {
 
   /** Декодированный кадр → текстура. */
   private presentFrame(frame: DecodedFrame): void {
-    if (this.disposed) {
+    if (this.disposed || this.placeholderKey !== null) {
       asBitmap(frame)?.close();
       return;
     }

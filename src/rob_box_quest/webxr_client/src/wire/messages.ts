@@ -106,6 +106,8 @@ export interface WelcomeMsg {
 export interface SubscribeMsg {
   topic: string;
   quality?: "low" | "med" | "high";
+  /** Лимит кадров/с на поток (issue #3150); поля нет — без лимита. */
+  max_hz?: number;
 }
 
 export interface UnsubscribeMsg {

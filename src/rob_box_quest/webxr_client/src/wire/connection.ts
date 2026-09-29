@@ -135,6 +135,17 @@ export class Connection {
   private topicToStreamId = new Map<string, number>();
   // topic → quality
   private topicToQuality = new Map<string, string>();
+  // topic → последний отправленный max_hz (null = без лимита), issue #3150.
+  // Нужен, чтобы повторный subscribe() с другой частотой дошёл до сервера.
+  private topicToMaxHz = new Map<string, number | null>();
+  // SUBSCRIBE ушёл, subscribe_ack ещё нет (stream_id неизвестен).
+  private pendingSubscribe = new Set<string>();
+  // unsubscribe() пришёл раньше subscribe_ack: UNSUBSCRIBE шлём, как только
+  // ack принесёт stream_id — иначе сервер так и лил бы «выключенный» поток.
+  private unsubscribeAfterAck = new Set<string>();
+  // Ack'и, которые придут на SUBSCRIBE, отменённый уже отправленным
+  // UNSUBSCRIBE (смена частоты → выкл до ack) — их игнорируем.
+  private staleAcks = new Set<string>();
   /**
    * Какая версия subprotocol реально выбрана сервером. До открытия
    * сокета = `null`; после — `"v1"` (наш v1 fallback) или `"v2"`.
@@ -320,6 +331,10 @@ export class Connection {
     this.streamIdToTopic.clear();
     this.topicToStreamId.clear();
     this.topicToQuality.clear();
+    this.topicToMaxHz.clear();
+    this.pendingSubscribe.clear();
+    this.unsubscribeAfterAck.clear();
+    this.staleAcks.clear();
     // После разрыва связи STATE_UPDATE мы больше не получали → supervisor-
     // state неизвестен (UI должен показать `?`, не выдумывать). Новый
     // сокет = новый серверный цикл STATE_UPDATE → неизвестно сброшено.
@@ -527,9 +542,16 @@ export class Connection {
       }
     } else if (type === "subscribe_ack") {
       const ack = ev as { topic: string; stream_id: number; quality?: string };
-      this.streamIdToTopic.set(ack.stream_id, ack.topic);
-      this.topicToStreamId.set(ack.topic, ack.stream_id);
-      this.topicToQuality.set(ack.topic, ack.quality ?? "med");
+      if (this.staleAcks.delete(ack.topic)) {
+        // ack на SUBSCRIBE, за которым уже ушёл UNSUBSCRIBE: сервер этот
+        // поток уже снял — не воскрешаем подписку на клиенте.
+      } else {
+        this.streamIdToTopic.set(ack.stream_id, ack.topic);
+        this.topicToStreamId.set(ack.topic, ack.stream_id);
+        this.topicToQuality.set(ack.topic, ack.quality ?? "med");
+        this.pendingSubscribe.delete(ack.topic);
+        if (this.unsubscribeAfterAck.delete(ack.topic)) this.unsubscribe(ack.topic);
+      }
     } else if (type === "stream_list") {
       const items = (ev as { items?: Array<Record<string, unknown>> }).items ?? [];
       const meta: StreamMeta[] = items.map((it) => ({
@@ -549,14 +571,29 @@ export class Connection {
   // Подписки: после успешного WELCOME.
   // ----------------------------------------------------------------
 
-  subscribe(topic: string, quality?: "low" | "med" | "high"): void {
+  /**
+   * SUBSCRIBE. `opts.maxHz` (issue #3150): `undefined` — частота не важна
+   * (повторный вызов на подписанный topic ничего не шлёт); `null` — без
+   * лимита; число — лимит кадров/с. Если частота изменилась, SUBSCRIBE
+   * уходит повторно — сервер обновит лимит, stream_id останется тем же.
+   */
+  subscribe(topic: string, quality?: "low" | "med" | "high", opts?: { maxHz?: number | null }): void {
     if (!this.ws || this.ws.readyState !== 1) return;
-    if (this.topicToStreamId.has(topic)) {
+    const maxHz = opts?.maxHz;
+    const rateUnchanged = maxHz === undefined || (this.topicToMaxHz.get(topic) ?? null) === maxHz;
+    if (this.topicToStreamId.has(topic) && rateUnchanged) {
       // уже подписаны — идемпотентно (см. ws_server._on_subscribe).
       return;
     }
+    // Повторная подписка отменяет отложенную отписку (выкл → вкл до ack).
+    this.unsubscribeAfterAck.delete(topic);
+    this.pendingSubscribe.add(topic);
     const sid = this.allocateClientStreamId();
     const msg: SubscribeMsg = quality ? { topic, quality } : { topic };
+    if (maxHz !== undefined) {
+      this.topicToMaxHz.set(topic, maxHz);
+      if (maxHz !== null) msg.max_hz = maxHz;
+    }
     const bytes = encodeJsonFrame(FrameType.SUBSCRIBE, sid, msg);
     this.ws.send(bytes as unknown as ArrayBuffer);
   }
@@ -564,13 +601,20 @@ export class Connection {
   unsubscribe(topic: string): void {
     if (!this.ws || this.ws.readyState !== 1) return;
     const sid = this.topicToStreamId.get(topic);
-    if (sid === undefined) return;
+    if (sid === undefined) {
+      // SUBSCRIBE ещё без ack — отпишемся, когда ack придёт.
+      if (this.pendingSubscribe.has(topic)) this.unsubscribeAfterAck.add(topic);
+      return;
+    }
     const msg: UnsubscribeMsg = { topic };
     const bytes = encodeJsonFrame(FrameType.UNSUBSCRIBE, sid, msg);
     this.ws.send(bytes as unknown as ArrayBuffer);
     this.topicToStreamId.delete(topic);
     this.topicToQuality.delete(topic);
+    this.topicToMaxHz.delete(topic);
     this.streamIdToTopic.delete(sid);
+    // Повторный SUBSCRIBE (смена max_hz) ещё без ack — его ack устарел.
+    if (this.pendingSubscribe.delete(topic)) this.staleAcks.add(topic);
   }
 
   requestStreamList(): void {

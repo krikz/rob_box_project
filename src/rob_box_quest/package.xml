@@ -16,6 +16,10 @@
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <!-- issue #3151: nav-цель из VR → Nav2 NavigateToPose (action client).
+       Импорт ленивый (nav2_goal.create_nav2_goal_bridge): без пакета нода
+       поднимается, а nav_goal честно отвечает nack nav2_unavailable. -->
+  <exec_depend>nav2_msgs</exec_depend>
 
   <!-- Python deps installed via pip in Dockerfile -->
   <exec_depend>python3-aiohttp</exec_depend>

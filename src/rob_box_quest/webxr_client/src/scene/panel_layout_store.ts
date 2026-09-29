@@ -4,9 +4,9 @@
 // раскладка должна переживать перезапуск клиента. Ключ —
 // `rob_box_quest.panel_layout.v1` (имя зафиксировано в аудите 30.08 B1).
 //
-// Схема (v1):
+// Схема (version = PANEL_LAYOUT_VERSION; поля панели не менялись с v1):
 //   {
-//     version: 1,
+//     version: 2,
 //     panels: [
 //       {
 //         id: string,            // стабильный id панели в PanelManager
@@ -31,6 +31,15 @@ import type { PanelId, PanelState } from "./panel_manager";
 
 export const PANEL_LAYOUT_STORAGE_KEY = "rob_box_quest.panel_layout.v1";
 
+/**
+ * Версия раскладки. Поднимается, когда меняются ДЕФОЛТЫ (углы/размеры
+ * панелей по умолчанию), а не только схема: сохранённая раскладка чужой
+ * версии отбрасывается, и оператор получает новые дефолты.
+ *   1 — исходная (depth −75°);
+ *   2 — ребаланс флангов 29.09 (depth +108°, за крылом TARS2).
+ */
+export const PANEL_LAYOUT_VERSION = 2;
+
 /** Минимально-разумные границы размера, чтобы resize не схлопнул панель. */
 export const PANEL_MIN_WIDTH_M = 0.4;
 export const PANEL_MAX_WIDTH_M = 3.0;
@@ -47,7 +56,7 @@ export interface PersistedPanel {
 }
 
 export interface PersistedLayout {
-  version: 1;
+  version: typeof PANEL_LAYOUT_VERSION;
   panels: PersistedPanel[];
 }
 
@@ -66,7 +75,7 @@ export interface LayoutStorage {
 export function serializeLayout(panels: ReadonlyArray<PanelState>): PersistedLayout {
   const sorted = [...panels].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return {
-    version: 1,
+    version: PANEL_LAYOUT_VERSION,
     panels: sorted.map((p) => ({
       id: p.id,
       topic: p.topic,
@@ -107,7 +116,7 @@ export function parseLayout(
     console.warn("[panel_layout_store] parseLayout: not an object, using default");
     return null;
   }
-  if (data.version !== 1) {
+  if (data.version !== PANEL_LAYOUT_VERSION) {
     // eslint-disable-next-line no-console
     console.warn(
       `[panel_layout_store] parseLayout: unknown version ${String(data.version)}, using default`
@@ -138,7 +147,7 @@ export function parseLayout(
     console.warn("[panel_layout_store] parseLayout: no usable panels, using default");
     return null;
   }
-  return { version: 1, panels: accepted };
+  return { version: PANEL_LAYOUT_VERSION, panels: accepted };
 }
 
 /**
