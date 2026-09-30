@@ -127,9 +127,10 @@ RUN if [ "${HAILO_INSTALL_C_DEV}" = "true" ]; then \
         echo "HAILO_INSTALL_C_DEV=false — пропускаем apt-шаг (offline build)"; \
     fi
 
-# Smoke-test `hailortcli` перенесён в start_vision_hailo.sh:100-110 — там он
-# запускается только когда HAILO_ENABLED=true, т.е. когда реально нужно проверить
-# наличие device. На CI Phase 1 (HAILO_ENABLED=false) smoke не имеет смысла.
+# Smoke-test устройства — в scripts/vision-hailo/hailo_device_smoke.sh (зовётся
+# из start_vision_hailo.sh только при HAILO_ENABLED=true). hailortcli в этот
+# образ НЕ ставится (он в hailort_*.deb, а здесь только wheel + .so), поэтому
+# smoke сканирует через hailo_platform.Device.scan() (#3090).
 
 # ---------- workspace (паттерн docker/main/perception) ----------
 WORKDIR /ws
