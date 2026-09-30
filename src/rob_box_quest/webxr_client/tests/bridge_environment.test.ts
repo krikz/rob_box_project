@@ -2,7 +2,7 @@
 // (kanban t_0bd54b80, issue #1677).
 //
 // What we test (without a WebXR / WebGL context — jsdom only):
-//   1. All 8 committed bridge_*.optimized.glb files exist on disk and
+//   1. All 7 committed bridge_*.optimized.glb files exist on disk and
 //      fit under the environment/ category budget (≤ 2 MB total per
 //      ADR-0032 §3.2).
 //   2. The bridge_scene_meta.json file is reachable, parses, and
@@ -51,7 +51,6 @@ const GLB_FILES = [
   "bridge_occluders.optimized.glb",
   "bridge_platform.optimized.glb",
   "bridge_screen.optimized.glb",
-  "bridge_holo_projector.optimized.glb",
 ] as const;
 
 const HDR_FILE = "hdr/bridge_env_1k.hdr";
@@ -128,6 +127,35 @@ describe("Captain Bridge environment — Phase 2.1 (kanban t_0bd54b80)", () => {
         expect(used).toContain("EXT_meshopt_compression");
       });
     }
+  });
+
+  describe("голо-проекторы убраны (30.09.2026, мешали обзору главного экрана)", () => {
+    it("модель bridge_holo_projector не лежит в environment/", () => {
+      expect(existsSync(join(ENV_DIR, "bridge_holo_projector.optimized.glb"))).toBe(false);
+    });
+
+    it("в bridge_scene_meta.json нет nav-точек kind=holo / id holo-*", () => {
+      const raw = JSON.parse(readFileSync(join(ENV_DIR, META_FILE), "utf8"));
+      for (const np of raw.nav_points as Array<{ id: string; kind: string; label: string }>) {
+        expect(np.kind).not.toBe("holo");
+        expect(np.id).not.toMatch(/holo/i);
+        expect(np.label).not.toMatch(/holo/i);
+      }
+    });
+
+    it("в GLB нет объектов с holo в имени и нет узлов props на месте проекторов (±1, −1.8)", async () => {
+      for (const f of GLB_FILES) {
+        const doc = await openGlb(join(ENV_DIR, f));
+        for (const n of doc.getRoot().listNodes()) {
+          expect(n.getName()).not.toMatch(/holo_?projector/i);
+        }
+      }
+      const props = await openGlb(join(ENV_DIR, "bridge_props.optimized.glb"));
+      for (const n of props.getRoot().listNodes()) {
+        const [x, , z] = n.getTranslation();
+        expect(Math.abs(x) > 0.9 && Math.abs(x) < 1.1 && Math.abs(z + 1.8) < 0.05).toBe(false);
+      }
+    });
   });
 
   describe("bridge_scene_meta.json — structural validation", () => {

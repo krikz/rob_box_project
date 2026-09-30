@@ -32,20 +32,19 @@ and three are Tripo3D hero props (AI-generated, see §Hero props below).
 | ----------------------------- | ---------------- | ------------------------------------------------------------------------------------------ |
 | `bridge_floor.optimized.glb`  | 22.0 KB          | Hex-grid floor (6×6 tiles, radius 0.6m, emissive cyan edges, central panel inlay).         |
 | `bridge_walls.optimized.glb`  | 20.9 KB          | Back/front/left/right walls + 2 viewports + console strips + wall panels.                  |
-| `bridge_props.optimized.glb`  | 45.9 KB          | Captain chair + curved main console (3 sectors) + 4 side terminals + 2 holo-projectors.   |
-| `bridge_nav.optimized.glb`    | 10.3 KB          | 8 AABB markers for `safe_walk_area` + XR teleport anchors (origin, console, terminals, entries, holo zones). |
+| `bridge_props.optimized.glb`  | 45.9 KB          | Captain chair + curved main console (3 sectors) + 4 side terminals (голо-проекторы убраны 30.09.2026). |
+| `bridge_nav.optimized.glb`    | 10.3 KB          | 6 AABB markers for `safe_walk_area` + XR teleport anchors (origin, console, terminals, entries). |
 | `bridge_occluders.optimized.glb` | 6.2 KB       | 4 semi-transparent planes coincident with walls — depth-write only, used to hide UI panels behind walls at runtime. |
 | `bridge_platform.optimized.glb` | 499.7 KB       | Tripo3D hero prop — central hex pedestal under the operator (spawn `(0,0,0)`). See §Hero props. |
 | `bridge_screen.optimized.glb`   | 244.2 KB       | Tripo3D hero prop — universal 16:9 screen frame; reused for main screen, TARS wings, ceiling and floating panels. See §Hero props. |
-| `bridge_holo_projector.optimized.glb` | 329.5 KB | Tripo3D hero prop — holographic projector base (emitter disc only; the translucent cone stays procedural in code). See §Hero props. |
 | `bridge_scene_meta.json`      |  5.1 KB          | Structured scene metadata: design palette, lighting plan, `safe_walk_area` AABB, nav-points, occluders, raw-size budgets. Loaded at runtime to drive navmesh / XR teleport anchors / UI panel placement. |
 | `hdr/bridge_env_1k.hdr`       | 1.63 MB          | Radiance HDR for IBL on metallic bridge parts. **Not** compressed — Phase 2.0 KTX2 path is opt-in; HDR lives outside the glTF ≤ 2 MB budget per ADR-0032 §3.2. |
 
-**Total committed `.glb` size: 1.18 MB** (8 files, 57.6% of the 2 MB
+**Total committed `.glb` size: 0.82 MB** (7 files, ~41% of the 2 MB
 `environment/` budget per ADR-0032 §3.2). Breakdown: 5 synthesized `.glb`
-= 105.2 KB (CC0 own code) + 3 Tripo3D hero props = 1,073.4 KB
+= 105.2 KB (CC0 own code) + 2 Tripo3D hero props = 743.9 KB
 (AI-generated, see §Hero props). Verified via `npm run gltf:verify`
-(9 assets compliant, including the Duck smoke-test); sizes are
+(assets compliant, including the Duck smoke-test); sizes are
 post-`gltf-transform` (Draco + Meshopt) and re-derivable from
 `du -bc public/models/environment/*.optimized.glb`.
 
@@ -54,7 +53,7 @@ post-`gltf-transform` (Draco + Meshopt) and re-derivable from
 | Asset                         | Source                                                                                          | License |
 | ----------------------------- | ------------------------------------------------------------------------------------------------ | ------- |
 | `bridge_floor/walls/props/nav/occluders/*.glb` | Synthesized procedurally from three.js primitives (BoxGeometry / ExtrudeGeometry / CylinderGeometry / PlaneGeometry) via `scripts/build_bridge_assets.mjs`. | **CC0 (own code, no third-party meshes)** |
-| `bridge_platform/screen/holo_projector/*.glb` | AI-generated via Tripo3D (image-to-3D) from Qwen-generated reference images. Source `.glb` live in `_raw/` (gitignored); committed `.optimized.glb` are produced by `npm run gltf:optimize`. | **AI-generated — license status unsettled** (see §Hero props; flag before any public redistribution) |
+| `bridge_platform/screen/*.glb` | AI-generated via Tripo3D (image-to-3D) from Qwen-generated reference images. Source `.glb` live in `_raw/` (gitignored); committed `.optimized.glb` are produced by `npm run gltf:optimize`. | **AI-generated — license status unsettled** (see §Hero props; flag before any public redistribution) |
 | `hdr/bridge_env_1k.hdr`       | Poly Haven — "Cayley Interior" (1K indoor studio interior HDRI). https://polyhaven.org/a/cayley_interior | **CC0 1.0 Universal (public-domain dedication)** |
 
 ### Why synthesized meshes instead of Quaternius packs
@@ -104,7 +103,7 @@ synthesized ones without changing the loader contract in
 
 ### Safe-walk-area (navmesh / XR teleport anchors)
 
-The 8 AABB markers in `bridge_nav.optimized.glb` plus the
+The 6 AABB markers in `bridge_nav.optimized.glb` plus the
 `safe_walk_area` block in `bridge_scene_meta.json` define where it's
 safe to walk in room-scale VR. Run-time: read `nav_points` from the
 JSON, walk their AABBs; treat points tagged `kind: "entry"` as
@@ -112,7 +111,7 @@ explicit teleport anchors (back / front of the room).
 
 ## Hero props (Tripo3D, 2026-09-26)
 
-Three hero props augment the procedural `bridge_props` scene. Generated via
+Two hero props augment the procedural `bridge_props` scene. Generated via
 Tripo3D (image-to-3D) from Qwen-generated reference images. No third-party
 meshes: source `.glb` live in `_raw/` (gitignored); committed `.optimized.glb`
 are produced by `npm run gltf:optimize`.
@@ -121,7 +120,6 @@ are produced by `npm run gltf:optimize`.
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `bridge_platform.optimized.glb` | Central hex pedestal under the operator (spawn `(0,0,0)`). |
 | `bridge_screen.optimized.glb`   | Universal 16:9 screen frame — reused for main screen, TARS wings, ceiling and floating panels. |
-| `bridge_holo_projector.optimized.glb` | Holographic projector base (emitter disc only; the translucent cone stays procedural in code). |
 
 **License note:** AI-generated (Tripo3D from Qwen reference images), no
 third-party meshes/textures. License status of AI-generated content is not yet
@@ -152,3 +150,4 @@ unsettled across jurisdictions. Per ADR-0136 each such asset MUST:
 Hub tags, GitHub releases, web deploys). See
 `docs/process/ai-generated-asset-handling.md` for the operational
 procedure.
+> 30.09.2026: голо-проекторы (`bridge_holo_projector.optimized.glb` и процедурные проекторы в `bridge_props`) убраны по решению Шифу — мешали обзору главного экрана.

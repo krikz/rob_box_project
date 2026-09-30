@@ -39,7 +39,7 @@ export interface BridgeNavPoint {
   id: string;
   position: [number, number, number];
   size: [number, number, number];
-  kind: "origin" | "console" | "terminal" | "entry" | "holo";
+  kind: "origin" | "console" | "terminal" | "entry";
   label: string;
 }
 
@@ -87,7 +87,6 @@ export interface BridgeAssetHandle {
     occluders?: THREE.Group;
     heroPlatform?: THREE.Group;
     heroScreen?: THREE.Group;
-    heroHoloProjector?: THREE.Group;
   };
   /** Nav-point AABB meshes (visible in dev, hidden in production). */
   readonly nav: THREE.Group;
@@ -132,7 +131,6 @@ const GLB_NAMES = [
 const HERO_GLB_NAMES = [
   "bridge_platform.optimized.glb",
   "bridge_screen.optimized.glb",
-  "bridge_holo_projector.optimized.glb",
 ] as const;
 
 // ---------- meta loader (testable in jsdom) ----------
@@ -226,8 +224,7 @@ export function computeFitScale(box: THREE.Box3, target: FitTarget): number {
 
 /**
  * Places `group` on the floor (`y = 0`) at `(x, z)`, uniformly scaled to
- * fit `target`. Shared by all floor-standing hero props (platform,
- * holo-projectors) — previously each call site recomputed the bbox/scale
+ * fit `target`. Shared by all floor-standing hero props (platform) — previously each call site recomputed the bbox/scale
  * by hand (#3044).
  *
  * Guards against an empty/degenerate bounding box: `box.min.y` is
@@ -410,13 +407,10 @@ export async function loadBridgeAssets(
   // captain_bridge.ts (their baked scale/origin are unknown at load time).
   const heroPlatform = await loadGlb(HERO_GLB_NAMES[0]);
   const heroScreen = await loadGlb(HERO_GLB_NAMES[1]);
-  const heroHoloProjector = await loadGlb(HERO_GLB_NAMES[2]);
   scene.add(heroPlatform);
   scene.add(heroScreen);
-  scene.add(heroHoloProjector);
   groups.heroPlatform = heroPlatform;
   groups.heroScreen = heroScreen;
-  groups.heroHoloProjector = heroHoloProjector;
 
   // HDR → PMREM environment map. Only if renderer supports PMREM and the
   // caller asked for it (tests pass loadHdr=false to skip the fetch).

@@ -152,36 +152,6 @@
       ],
       "kind": "entry",
       "label": "front entry (teleport anchor)"
-    },
-    {
-      "id": "holo-left",
-      "position": [
-        -1,
-        0.5,
-        -1.8
-      ],
-      "size": [
-        0.6,
-        1.2,
-        0.6
-      ],
-      "kind": "holo",
-      "label": "left holo-projector zone"
-    },
-    {
-      "id": "holo-right",
-      "position": [
-        1,
-        0.5,
-        -1.8
-      ],
-      "size": [
-        0.6,
-        1.2,
-        0.6
-      ],
-      "kind": "holo",
-      "label": "right holo-projector zone"
     }
   ],
   "occluders": [
@@ -284,13 +254,13 @@
     },
     {
       "name": "bridge_props.glb",
-      "size": 53744,
+      "size": 42792,
       "budget": 256000,
       "ok": true
     },
     {
       "name": "bridge_nav.glb",
-      "size": 12212,
+      "size": 9428,
       "budget": 30720,
       "ok": true
     },
