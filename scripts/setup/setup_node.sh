@@ -748,6 +748,18 @@ setup_hailo_ai_hat() {
         sudo apt-get install -y build-essential dkms
     fi
 
+    # #3090: без metapackage linux-headers-raspi unattended-upgrades ставит
+    # новый kernel без headers → DKMS не пересобирает hailo_pci → после ребута
+    # нет /dev/hailo0. С метапакетом headers едут вместе с каждым kernel.
+    # (Тот же шаг делает scripts/setup/ensure_hailo_driver.sh на каждом деплое.)
+    # shellcheck disable=SC2016  # ${Status} — формат dpkg-query
+    if dpkg-query -W -f='${Status}' linux-image-raspi 2>/dev/null | grep -q '^install ok installed$' \
+       && ! dpkg-query -W -f='${Status}' linux-headers-raspi 2>/dev/null | grep -q '^install ok installed$'; then
+        log_info "Устанавливаем linux-headers-raspi (headers для будущих kernel-апгрейдов, #3090)..."
+        sudo apt-get install -y linux-headers-raspi \
+            || log_warning "linux-headers-raspi не установился — следующий kernel-апгрейд может снова сломать Hailo-драйвер"
+    fi
+
     # 1) Драйвер + firmware: hailort-pcie-driver (DKMS).
     # В 4.24 firmware переехал внутрь драйвера; старый hailofw (4.20.x) владеет
     # /etc/modprobe.d/hailo_pci.conf и конфликтует — снимаем перед установкой.

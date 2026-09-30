@@ -25,10 +25,13 @@
 #   ROBBOX_VISION_BOOT_LOG      — путь к boot-summary (default /var/log/robbox-vision-boot.log)
 #   ROBBOX_VISION_METRICS_FILE  — Prometheus textfile (default $HOME/.local/state/robbox_vision_health.prom)
 #   ROBBOX_VISION_ALERT_LOG     — путь к alert-log (default $HOME/.local/state/robbox_vision_alerts.log)
+#   ROBBOX_VISION_HAILO_DEVICE  — char-device Hailo PCIe (default /dev/hailo0). Отсутствие → ALERT
+#                                 (#3090). Переопределяется в unit-тестах, чтобы они не зависели
+#                                 от реального /dev/hailo0 машины, на которой гоняются.
 #
 # Exit codes:
 #   0 — OK (контейнеры подняты ИЛИ мы в grace-периоде)
-#   1 — ALERT (0 контейнеров после grace-периода)
+#   1 — ALERT (0 контейнеров после grace-периода ИЛИ нет $ROBBOX_VISION_HAILO_DEVICE)
 #   2 — usage / config error
 # ============================================================================
 
@@ -51,6 +54,7 @@ GRACE_SECS="${ROBBOX_VISION_GRACE_SECS:-300}"
 BOOT_LOG="${ROBBOX_VISION_BOOT_LOG:-/var/log/robbox-vision-boot.log}"
 METRICS_FILE="${ROBBOX_VISION_METRICS_FILE:-$HOME/.local/state/robbox_vision_health.prom}"
 ALERT_LOG="${ROBBOX_VISION_ALERT_LOG:-$HOME/.local/state/robbox_vision_alerts.log}"
+HAILO_DEVICE="${ROBBOX_VISION_HAILO_DEVICE:-/dev/hailo0}"
 
 DRY_RUN=0
 JSON_OUT=0
@@ -183,7 +187,7 @@ robbox_vision_running_containers ${running}
 # HELP robbox_vision_grace_elapsed_seconds Seconds elapsed since the last robbox-vision.service start. Negative if service has never been started in this boot.
 # TYPE robbox_vision_grace_elapsed_seconds gauge
 robbox_vision_grace_elapsed_seconds ${grace_elapsed}
-# HELP robbox_vision_health_alert 1 if the health-check believes the stack failed to come up (0 running containers past grace), 0 otherwise.
+# HELP robbox_vision_health_alert 1 if the health-check believes the stack failed to come up (0 running containers past grace, or the Hailo device is missing), 0 otherwise.
 # TYPE robbox_vision_health_alert gauge
 robbox_vision_health_alert $([ "$verdict" = "alert" ] && echo 1 || echo 0)
 # HELP robbox_vision_health_check_timestamp_seconds Unix timestamp of the last health-check run.
@@ -217,10 +221,10 @@ running="$(count_running)"
 # leave the userspace package installed while hailo_pcie.ko is absent.
 hailo_device="0"
 hailo_reason=""
-if [ -e /dev/hailo0 ]; then
+if [ -e "$HAILO_DEVICE" ]; then
   hailo_device="1"
 else
-  hailo_reason="missing /dev/hailo0"
+  hailo_reason="missing $HAILO_DEVICE"
 fi
 
 # 2. Считаем сколько секунд прошло с момента start unit-а
