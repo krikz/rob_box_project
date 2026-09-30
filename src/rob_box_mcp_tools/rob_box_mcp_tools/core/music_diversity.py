@@ -50,7 +50,13 @@ HISTORY_FIELDS = (
     "set_id", "style", "melody_name", "fragment_offset", "hook_fingerprint",
     "progression", "template", "kick", "hats", "lead", "bass", "pad",
     "root", "bpm", "scale",
+    "clap", "lpf", "balance",  # issue #3226: пулы клэпа/lpf/баланса слоёв
 )
+
+#: Колонки, добавленные после первой версии схемы (#3226): старые БД
+#: дополняются ``ALTER TABLE ADD COLUMN`` (``CREATE TABLE IF NOT EXISTS``
+#: существующую таблицу не меняет).
+_ADDED_COLUMNS = (("clap", "TEXT"), ("lpf", "TEXT"), ("balance", "TEXT"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS music_history (
@@ -70,7 +76,10 @@ CREATE TABLE IF NOT EXISTS music_history (
     pad              TEXT,
     root             TEXT,
     bpm              REAL,
-    scale            TEXT
+    scale            TEXT,
+    clap             TEXT,
+    lpf              TEXT,
+    balance          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_music_history_ts ON music_history(ts);
 """
@@ -146,11 +155,20 @@ class MusicHistory:
             if db_path != ":memory:":
                 conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            MusicHistory._migrate(conn)
             conn.commit()
         except sqlite3.Error:
             conn.close()
             raise
         return conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Дописать колонки, которых нет в таблице, созданной старой версией."""
+        have = {row[1] for row in conn.execute("PRAGMA table_info(music_history)")}
+        for name, sql_type in _ADDED_COLUMNS:
+            if name not in have:
+                conn.execute(f"ALTER TABLE music_history ADD COLUMN {name} {sql_type}")
 
     @property
     def available(self) -> bool:

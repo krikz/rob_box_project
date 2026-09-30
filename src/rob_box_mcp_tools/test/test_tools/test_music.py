@@ -5324,9 +5324,9 @@ class TestComposeMusicToolClubStyle:
     def test_club_invalid_scale_is_honest_error(self, mock_node):
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec") as fake_exec:
-            result = tool.execute(style="club", scale="major")
+            result = tool.execute(style="club", scale="lydian")
         assert result.success is False
-        assert "style=club" in result.error and "major" in result.error
+        assert "style=club" in result.error and "lydian" in result.error
         fake_exec.assert_not_called()
 
     def test_classic_is_default_and_unchanged(self, mock_node):

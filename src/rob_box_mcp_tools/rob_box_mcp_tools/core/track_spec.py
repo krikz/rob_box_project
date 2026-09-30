@@ -37,7 +37,6 @@
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -47,18 +46,21 @@ from .club_arranger import (
     HATS_PATTERNS,
     KICK_PATTERNS,
     LAYER_LEVELS,
-    PROGRESSIONS,
     ROLE_SYNTHS,
-    SUPPORTED_SCALES,
     club_form_beats,
     club_kit,
     render_club_kit,
 )
+from .club_progressions import pick_progression_name, progressions_for
 
 SPEC_VERSION = 1
 SUPPORTED_STYLES: Tuple[str, ...] = ("club",)
 SUPPORTED_ENTRIES: Tuple[str, ...] = ("fresh",)
-PROGRESSION_NAMES: Tuple[str, ...] = tuple(name for name, _ in PROGRESSIONS)
+#: Issue #3226: банк club расширен ладами dorian/phrygian/major, но спека
+#: (JSON-схема для LLM и якоря ADR-0142) пока minor-only: новые лады идут
+#: через ``render_club`` (DJ-сет), а не через спеку — схема не менялась.
+SPEC_SCALES: Tuple[str, ...] = ("minor",)
+PROGRESSION_NAMES: Tuple[str, ...] = tuple(progressions_for("minor"))
 SEED_RANGE: Tuple[int, int] = (0, 2**31 - 1)
 NOTES_MAX_CHARS = 2000
 
@@ -164,7 +166,7 @@ def track_spec_schema() -> Dict[str, Any]:
         "style": _enum(SUPPORTED_STYLES),
         "bpm": {"type": "number", "minimum": BPM_RANGE[0], "maximum": BPM_RANGE[1]},
         "root": _enum(VALID_ROOTS),
-        "scale": _enum(SUPPORTED_SCALES),
+        "scale": _enum(SPEC_SCALES),
         "seed": {"type": "integer", "minimum": SEED_RANGE[0], "maximum": SEED_RANGE[1]},
         "form": _object({"template": _enum(SECTION_TEMPLATES)}, ["template"]),
         "progression": _enum(PROGRESSION_NAMES),
@@ -246,7 +248,7 @@ def _parse(raw: Any) -> TrackSpec:
         style=_one_of(top["style"], "style", SUPPORTED_STYLES),
         bpm=_number(top["bpm"], "bpm", *BPM_RANGE),
         root=_one_of(top["root"], "root", VALID_ROOTS),
-        scale=_one_of(top["scale"], "scale", SUPPORTED_SCALES),
+        scale=_one_of(top["scale"], "scale", SPEC_SCALES),
         seed=_integer(top["seed"], "seed", *SEED_RANGE),
         template=_one_of(form["template"], "form.template", tuple(SECTION_TEMPLATES)),
         progression=_one_of(top["progression"], "progression", PROGRESSION_NAMES),
@@ -299,7 +301,7 @@ def validate_spec(raw: Any, anchors: Optional[SpecAnchors] = None) -> TrackSpec:
 
 def seeded_progression(seed: int) -> str:
     """Имя прогрессии, которую выбрал бы ``render_club(seed=seed)``."""
-    return PROGRESSIONS[random.Random(seed).randrange(len(PROGRESSIONS))][0]
+    return pick_progression_name(seed)
 
 
 def seeded_spec(

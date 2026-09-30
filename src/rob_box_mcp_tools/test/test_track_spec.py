@@ -23,7 +23,6 @@ from rob_box_mcp_tools.core.club_arranger import (
     HATS_PATTERNS,
     KICK_PATTERNS,
     LAYER_LEVELS,
-    PROGRESSIONS,
     ROLE_SYNTHS,
     build_matrix,
     calibrated_gates,
@@ -33,6 +32,7 @@ from rob_box_mcp_tools.core.club_arranger import (
 )
 from rob_box_mcp_tools.core.renardo_sanitizer import sanitize_renando
 from rob_box_mcp_tools.core.track_spec import (
+    PROGRESSION_NAMES,
     SpecAnchors,
     SpecError,
     TrackSpec,
@@ -122,7 +122,7 @@ def test_explicit_progression_keeps_the_same_riff_rhythm():
     """Смена прогрессии не сдвигает поток сида: риф в индексах пула тот же."""
     a = _base()
     b = _base()
-    b["progression"] = next(n for n, _ in PROGRESSIONS if n != a["progression"])
+    b["progression"] = next(n for n in PROGRESSION_NAMES if n != a["progression"])
     code_a, code_b = render_spec(validate_spec(a)), render_spec(validate_spec(b))
     assert code_a != code_b
     assert code_a.count("\n") == code_b.count("\n")
@@ -134,7 +134,7 @@ def _random_spec(rng: random.Random) -> dict:
         "bpm": rng.choice([rng.randint(60, 180), round(rng.uniform(60, 180), 2)]),
         "root": rng.choice(VALID_ROOTS), "scale": "minor", "seed": rng.randint(0, 10**6),
         "form": {"template": rng.choice(sorted(SECTION_TEMPLATES))},
-        "progression": rng.choice([n for n, _ in PROGRESSIONS]),
+        "progression": rng.choice(PROGRESSION_NAMES),
         "groove": {"kick": rng.choice(sorted(KICK_PATTERNS)), "hats": rng.choice(sorted(HATS_PATTERNS))},
         "timbre": {role: rng.choice(synths) for role, synths in ROLE_SYNTHS.items()},
     }
