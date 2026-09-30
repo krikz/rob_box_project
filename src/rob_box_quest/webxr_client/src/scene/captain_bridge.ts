@@ -1216,7 +1216,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     // Цели регистрируем только на время показа: скрытый меш всё равно
     // ловил бы луч, и оператор кликал бы в невидимое меню.
     for (const t of streamMenu.targets()) {
-      pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+      pointer.addTarget({ id: t.id, object: t.object, draggable: false, modal: true });
     }
   }
 
@@ -1294,7 +1294,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     ttsTargetIds = [];
     if (!ttsPicker.isVisible()) return;
     for (const t of ttsPicker.targets()) {
-      pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+      pointer.addTarget({ id: t.id, object: t.object, draggable: false, modal: true });
       ttsTargetIds.push(t.id);
     }
   }
