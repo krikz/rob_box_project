@@ -141,6 +141,44 @@ def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in local_vars.items() if k != "self" and v is not _UNSET}
 
 
+def _knob_text(value: Any) -> str:
+    """Значение ручки для сравнения «вызов vs пресет» (без пробелов)."""
+    return str(value).replace(" ", "")
+
+
+def _split_preset_knobs(
+    kwargs: Dict[str, Any], preset_knobs: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Tuple[Any, Any]]]:
+    """Разложить ручки пресета относительно вызова (issue #2956).
+
+    Возвращает ``(applied, overridden)``: ``applied`` — ручки пресета,
+    которых в *kwargs* нет (их подставит пресет); ``overridden`` —
+    ``{ручка: (значение вызова, значение пресета)}`` там, где вызов задал
+    ручку ИНАЧЕ, чем пресет (совпадающее значение — не переопределение).
+    Вынесено из :class:`ComposeMusicTool` — бюджет размера класса ADR-0145.
+    """
+    applied = {k: v for k, v in preset_knobs.items() if k not in kwargs}
+    overridden = {
+        k: (kwargs[k], v) for k, v in preset_knobs.items()
+        if k in kwargs and _knob_text(kwargs[k]) != _knob_text(v)
+    }
+    return applied, overridden
+
+
+def _preset_note(
+    title: str, applied: Dict[str, Any], overridden: Dict[str, Tuple[Any, Any]]
+) -> str:
+    """Строка партитуры: «<title> (подставлено) (переопределено: k=вызов вместо пресет)»."""
+    note = title
+    if applied:
+        note += " (" + ", ".join(f"{k}={v}" for k, v in applied.items()) + ")"
+    if overridden:
+        note += " (переопределено: " + ", ".join(
+            f"{k}={mine} вместо {theirs}" for k, (mine, theirs) in overridden.items()
+        ) + ")"
+    return note
+
+
 #: Issue #2950 — поля, наследуемые подстройкой звучания ТЕКУЩЕГО трека
 #: (той же мелодии), если вызов их явно не задал: те же ручки, что живут
 #: в пресете (:data:`PRESET_KNOB_FIELDS` — тембры, ``drum_style``,
@@ -3624,28 +3662,15 @@ class ComposeMusicTool(MCPTool):
         preset = self._preset_store.get(melody_key) if melody_key else None
         if preset is None:
             return kwargs, None
-        preset_knobs = preset.get("knobs") or {}
-        explicit = set(kwargs.keys())
-        applied = {k: v for k, v in preset_knobs.items() if k not in explicit}
-        if applied:
-            applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
         # Issue #2956: по-параметрно, не «всё или ничего» — значение вызова
         # побеждает только СВОЮ ручку, и партитура это называет.
-        overridden = {
-            k: (kwargs[k], v) for k, v in preset_knobs.items()
-            if k in explicit and self._fmt(kwargs[k]) != self._fmt(v)
-        }
+        applied, overridden = _split_preset_knobs(kwargs, preset.get("knobs") or {})
+        if applied:
+            applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
         if not applied and not overridden:
             return kwargs, None
-        merged = {**kwargs, **applied}
-        note = str(preset.get("title") or melody_key)
-        if applied:
-            note += " (" + ", ".join(f"{k}={v}" for k, v in applied.items()) + ")"
-        if overridden:
-            note += " (переопределено: " + ", ".join(
-                f"{k}={mine} вместо {theirs}" for k, (mine, theirs) in overridden.items()
-            ) + ")"
-        return merged, note
+        note = _preset_note(str(preset.get("title") or melody_key), applied, overridden)
+        return {**kwargs, **applied}, note
 
     def _remember_played_preset(
         self, name: Optional[str], melody_title: Optional[str], effective: Dict[str, Any]
