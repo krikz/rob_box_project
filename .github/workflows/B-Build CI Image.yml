@@ -63,15 +63,19 @@ jobs:
           cache-to: type=gha,mode=max
 
       # ── Verify ────────────────────────────────────────────────────
+      # setup.bash читает $AMENT_TRACE_SETUP_FILES без дефолта — под `set -u`
+      # падает («unbound variable»), поэтому -u снимаем только на source.
+      # `ros2 --version` в Humble нет (exit 2) — проверяем, что ros2 находит
+      # пакет. Уже раз чинили (4f957ffa2) и потеряли при мерже e434547e1.
       - name: Smoke test
         run: |
           docker pull ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble
           docker run --rm ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble \
             bash -c "
               set -euo pipefail
-              source /opt/ros/humble/setup.bash
+              set +u; source /opt/ros/humble/setup.bash; set -u
               python3 -c 'import pytest; assert pytest.__version__ >= \"8\"'
               python3 -c 'import openai, httpx; print(\"OK\")'
-              ros2 --version
+              ros2 pkg prefix rclpy
               echo '=== SMOKE TEST PASSED ==='
             "
