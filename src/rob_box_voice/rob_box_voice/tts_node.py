@@ -5131,8 +5131,10 @@ class TTSNode(Node):
         if sink == "headset":
             # ADR-0078 §4: пробрасываем реальный rate в /avatar/tts/audio,
             # чтобы quest_node передал sample_rate в WS-meta для ручной
-            # сборки AudioBuffer в шлеме.
-            self._publish_headset_audio(topic_audio, sample_rate)
+            # сборки AudioBuffer в шлеме.  Rate — уже ПОСЛЕ ресэмпла
+            # (_prepare_audio_for_topic), а не исходный rate провайдера:
+            # иначе PCM 16 кГц подписывается 32 кГц и ТАРС звучит ×2 («хомяк»).
+            self._publish_headset_audio(topic_audio, self.audio_output_sample_rate)
         else:
             self._publish_audio(topic_audio)
         # Issue #1229 — после успешного синтеза публикуем фактического
@@ -6246,9 +6248,12 @@ class TTSNode(Node):
                     )
                     # ADR-0055 / issue #1993 — headset маршрут: вместо
                     # /voice/audio/speech публикуем в /avatar/tts/audio.
-                    # ADR-0078 §4: пробрасываем chunk_sample_rate в WS-meta.
+                    # ADR-0078 §4: пробрасываем в WS-meta rate ПОДГОТОВЛЕННОГО
+                    # PCM (после ресэмпла), а не chunk_sample_rate провайдера.
                     if sink == "headset":
-                        self._publish_headset_audio(topic_audio, chunk_sample_rate)
+                        self._publish_headset_audio(
+                            topic_audio, self.audio_output_sample_rate
+                        )
                     else:
                         self._publish_audio(topic_audio)
 
