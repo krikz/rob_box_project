@@ -10,6 +10,11 @@ import {
   MAIN_SCREEN_CENTER,
   MAIN_SCREEN_SIZE,
   SIDE_PANEL_ANGLES_DEG,
+  TARS_FLARE_RAD,
+  TARS_PANEL_SIZE,
+  TARS_WING_GAP_M,
+  TARS_WING_X,
+  TARS_WING_Z,
   hudStripBezel,
   panelHalfSpanDeg,
   tarsWingSectorDeg
@@ -53,9 +58,49 @@ function flankPanels(): Span[] {
 describe("TARS wing sector", () => {
   it("covers the flared wing from the main-screen edge to its far edge", () => {
     const s = tarsWingSectorDeg();
-    // Кромка главного экрана (2.4, −3.9) ≈ 31.6°, дальняя кромка ≈ 87.7°.
-    expect(s.min).toBeCloseTo(31.6, 0);
+    // Шарнир крыла (2.6, −3.9) — 0.2 м от кромки главного — ≈ 33.7°, дальняя кромка ≈ 87.7°.
+    expect(s.min).toBeCloseTo(33.7, 0);
     expect(s.max).toBeCloseTo(87.7, 0);
+  });
+});
+
+describe("TARS wings vs main screen", () => {
+  // Рамка главного экрана выступает за видео примерно на 0.05 м.
+  const FRAME_MARGIN_M = 0.05;
+  const MIN_VISIBLE_GAP_M = 0.15;
+
+  /** Вид сверху: отрезок крыла в XZ (центр ± половина ширины вдоль отгиба). */
+  function wingSegment(side: 1 | -1): { x0: number; x1: number; z0: number; z1: number } {
+    const hw = TARS_PANEL_SIZE.width / 2;
+    const dx = hw * Math.cos(TARS_FLARE_RAD);
+    const dz = hw * Math.sin(TARS_FLARE_RAD);
+    const cx = side * TARS_WING_X;
+    return { x0: cx - dx, x1: cx + dx, z0: TARS_WING_Z - dz, z1: TARS_WING_Z + dz };
+  }
+
+  it.each([1, -1] as const)("side %i: bbox крыла не пересекает bbox главного экрана, зазор >= порога", (side) => {
+    const seg = wingSegment(side);
+    const wingMinAbsX = Math.min(Math.abs(seg.x0), Math.abs(seg.x1));
+    const mainHalfW = MAIN_SCREEN_SIZE.width / 2;
+    const gapToVideo = wingMinAbsX - mainHalfW;
+    expect(gapToVideo).toBeGreaterThan(0);
+    expect(gapToVideo).toBeCloseTo(TARS_WING_GAP_M, 6);
+    // Зазор до рамки, а не только до видео.
+    expect(gapToVideo - FRAME_MARGIN_M).toBeGreaterThanOrEqual(MIN_VISIBLE_GAP_M);
+  });
+
+  it("крылья симметричны и не выходят за боковые стены оболочки", () => {
+    const l = wingSegment(-1);
+    const r = wingSegment(1);
+    expect(r.x1).toBeCloseTo(-l.x0, 6);
+    expect(Math.abs(r.x1)).toBeLessThan(SHELL_HALF_W);
+    expect(Math.max(r.z0, r.z1)).toBeLessThan(SHELL_HALF_D);
+  });
+
+  it("сектор крыла начинается за краем главного экрана (не заходит на видео)", () => {
+    const screenEdgeAz =
+      (Math.atan2(MAIN_SCREEN_SIZE.width / 2, -MAIN_SCREEN_CENTER.z) * 180) / Math.PI;
+    expect(tarsWingSectorDeg().min).toBeGreaterThan(screenEdgeAz);
   });
 });
 
