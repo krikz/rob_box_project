@@ -56,6 +56,9 @@ WORKFLOWS = [
 # `jobs.<tag-with-sha-and-update-image-versions>`.
 TAG_STEP_NAMES = ("Tag with SHA and update .image-versions",)
 
+# Shared registry-verify script all three workflows call (938d8331, #2726).
+VERIFY_SCRIPT = REPO_ROOT / "scripts/ci/verify-image-in-registry.sh"
+
 
 def _load(path: Path) -> dict:
     with path.open() as fh:
@@ -117,23 +120,32 @@ def test_registry_verify_present(workflow_path: Path) -> None:
 
     Without this guard, a missing tag silently reaches the deploy job and
     the robot falls back to a stale image (round-163 fallback to
-    ``voice-assistant-humble-test-83d4064f``).  We only require that the
-    step talks to ``${LOCAL_REGISTRY}/v2/.../manifests/...`` — the precise
-    helper name (``verify_in_registry``) is allowed to evolve.
+    ``voice-assistant-humble-test-83d4064f``).
+
+    Since 938d8331 (#2726, docs/plans/2026-09-15-image-versions-seam.md §7.4)
+    the check body lives in ONE shared script,
+    ``scripts/ci/verify-image-in-registry.sh`` — the three inline copies had
+    already drifted apart. ``scripts/ci/tests/test_verify_image_in_registry.py``
+    forbids workflows from talking to ``/v2/`` themselves, so here we require
+    that the step calls the shared script, and that the script is the
+    ``${REGISTRY}/v2/.../manifests/...`` HTTP-code gate.
     """
+    script = VERIFY_SCRIPT.read_text(encoding="utf-8")
+    assert "/v2/" in script and "/manifests/" in script, (
+        f"{VERIFY_SCRIPT.name}: registry manifest HEAD request missing "
+        "(issue #1482)."
+    )
+    # 200-OK gate (or non-200 fail) must be present.
+    assert re.search(r"http_code\s*=|HTTP_CODE=", script), (
+        f"{VERIFY_SCRIPT.name}: registry check does not capture an HTTP "
+        "status code — verify gate is incomplete."
+    )
     workflow = _load(workflow_path)
     for job_name, step in _find_tag_steps(workflow):
         run = step.get("run") or ""
-        # The exact tag name varies (NEW_TAG vs SHA_TAG); assert against the
-        # common shape: a v2 manifests HEAD request against the registry.
-        assert "/v2/" in run and "/manifests/" in run, (
-            f"{workflow_path.name} / job={job_name}: registry manifest HEAD "
-            "check missing — without it, a non-existent SHA-tag is written "
-            "to .image-versions and the robot stays on a stale image "
+        assert "scripts/ci/verify-image-in-registry.sh" in run, (
+            f"{workflow_path.name} / job={job_name}: registry verify missing "
+            "— without it, a non-existent SHA-tag is written to "
+            ".image-versions and the robot stays on a stale image "
             "(issue #1482)."
-        )
-        # 200-OK gate (or non-200 fail) must be present.
-        assert re.search(r"http_code\s*=|HTTP_CODE=", run), (
-            f"{workflow_path.name} / job={job_name}: registry check does "
-            "not capture an HTTP status code — verify gate is incomplete."
         )

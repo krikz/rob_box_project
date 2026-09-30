@@ -125,7 +125,10 @@ class CleanupContractTest(unittest.TestCase):
         flock_line = _line_of(text, r"^exec 9>")
         # Вызовы функций cleanup'а: в начале строки ровно 0 пробелов + имя.
         sweep_line = _line_of(text, r"^_wt_sweep_orphans \|\| true$")
-        check_line = _line_of(text, r"^_wt_disk_check \|\| exit 0$")
+        # С 990fd090 (#2329/#2337) ветка отказа не голый `exit 0`, а
+        # `{ af_summary_set ...; af_summary_emit 0; exit 0; }` — контракт
+        # (тик пропускается с rc=0) тот же.
+        check_line = _line_of(text, r"^_wt_disk_check \|\| .*\bexit 0\b")
         self.assertIsNotNone(check_line, "_wt_disk_check must be invoked")
         self.assertIsNotNone(flock_line, "flock line must exist")
         self.assertIsNotNone(sweep_line, "_wt_sweep_orphans must be invoked")

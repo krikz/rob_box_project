@@ -330,6 +330,49 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # ADR-0057 («тест написан, но не в CI»), закрытие класса целиком для
+      # tests/unit/: 34 из 57 файлов не гонял ни один workflow (pytest.ini
+      # сужает testpaths до src/rob_box_harness/test, а шаги выше и
+      # G-Architecture Audit подключают файлы поштучно). Незамеченными
+      # покраснели test_post_merge_build.py (#1625), test_image_versions_sha_contract.py
+      # (#2726), test_e2e_process_worktree_cleanup.py (#2329) — исправлены
+      # в этом же PR. Гоняем КАТАЛОГ: новый test_*.py подключается сам;
+      # исключения — только явно, с причиной. Файлы, уже подключённые
+      # поштучными шагами выше, здесь прогоняются повторно (секунды) —
+      # поштучные шаги можно убрать отдельным PR.
+      # tests/unit/core/test_tool_provider.py: async-тесты + импорт
+      # rob_box_core → pytest-asyncio и PYTHONPATH (только на этот шаг).
+      - name: tests/unit offline tests (ADR-0057 class)
+        run: |
+          pip install pytest-asyncio
+          EXCLUDE=(
+            # Эти тесты проходят gating и гоняют e2e_voice_test.sh ЦЕЛИКОМ:
+            # без ROBOT_SSH_OVERRIDE харнесс идёт настоящим ssh к роботу
+            # (на ubuntu-latest — timeout 15s, run 36684074181), а с фейком
+            # падает на изоляции акта #2890 (54d1a6f8): сброс окна
+            # dialogue_node читается обратно, фейк-ssh теста это не умеет
+            # (E2E_FATAL rc=2). Какой фейк-робот тут правильный — решение
+            # владельца; остальные тесты файла (схема, валидатор, gating,
+            # контракт скрипта) гоняются.
+            --deselect=tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py::TestE2EVoiceTestScriptGating::test_gating_skip_with_flag
+            --deselect=tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py::TestE2EVoiceTestScriptGating::test_gating_pass_with_acceptance_file
+            --deselect=tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py::TestE2EVoiceTestScriptGating::test_explicit_acceptance_bypasses_gating
+            --deselect=tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py::TestE2EVoiceTestScriptGating::test_text_only_does_not_require_acceptance
+            --deselect=tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py::TestGate1AggregateIntegration::test_aggregate_pass_when_expected_called
+            --deselect=tests/unit/e2e_scripts/test_e2e_voice_test_gate1.py::TestGate1AggregateIntegration::test_aggregate_fail_when_renardo_called
+            # На ubuntu-latest apt-версия ShellCheck ругается SC2002 (style,
+            # useless cat) на scripts/setup/setup_vision_pi_swap.sh:124,125,205
+            # (run 36684074181); ShellCheck 0.11 чист. Править скрипт или
+            # пинить версию — решение владельца:
+            --deselect=tests/unit/scripts/test_setup_vision_pi_swap.py::test_shellcheck_clean
+          )
+          PYTHONPATH="src/rob_box_core" \
+          python -m pytest tests/unit \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider \
+            "${EXCLUDE[@]}"
+
       # ADR-0144: набор размеченных сцен — разбор scene.yaml, атрибуция и
       # метрики «2.0 лучше 1.1». Каталог tests/unit/maintenance/ не гонялся
       # ни одним workflow (тот же дефект ADR-0057); подключены ТОЛЬКО файлы
