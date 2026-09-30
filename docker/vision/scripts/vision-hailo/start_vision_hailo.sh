@@ -132,17 +132,13 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
     fi
 fi
 
-# ---------- smoke check (hailortcli) ----------
+# ---------- smoke check (устройство Hailo видно?) ----------
+# #3090: в образе нет hailortcli (только wheel hailo_platform, ADR-0099),
+# поэтому проверка вынесена в hailo_device_smoke.sh: hailortcli scan, если
+# он есть, иначе hailo_platform.Device.scan(). Скрипт лежит рядом
+# (volume ./scripts/vision-hailo:/scripts), образ пересобирать не нужно.
 if [ "${HAILO_ENABLED}" = "true" ]; then
-    if command -v hailortcli >/dev/null 2>&1; then
-        echo "[start_vision_hailo] running hailortcli scan (smoke)..."
-        hailortcli scan || {
-            echo "[start_vision_hailo] ERROR: hailortcli scan failed — HAT не виден?" >&2
-            exit 1
-        }
-    else
-        echo "[start_vision_hailo] WARN: hailortcli не установлен, но HAILO_ENABLED=true" >&2
-    fi
+    bash "$(dirname "${BASH_SOURCE[0]}")/hailo_device_smoke.sh" || exit 1
 fi
 
 # ---------- launch ROS 2 node (ADR-0110) ----------
