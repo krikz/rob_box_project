@@ -44,7 +44,7 @@ def _enable(ctrl, **extra):
 
 
 def _club_calls(prompt):
-    return re.findall(r'compose_music\(style="club", bpm=(\d+), root="([A-G]#?)", '
+    return re.findall(r'compose_music\(style="club", (?:theme="[^"]*", )?bpm=(\d+), root="([A-G]#?)", '
                       r'scale="(\w+)", seed=(\d+), repeat=(true|false), transition="fade"\)', prompt)
 
 

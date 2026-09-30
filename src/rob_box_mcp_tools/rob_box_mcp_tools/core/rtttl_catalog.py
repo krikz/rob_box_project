@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
-__all__ = ["add_melody", "iter_melodies", "melody_by_rowid"]
+__all__ = ["add_melody", "iter_melodies", "melody_by_rowid", "melodies_by_tag"]
 
 
 def iter_melodies(library: Any, batch: int = 500) -> Iterator[Dict[str, Any]]:
@@ -63,3 +63,19 @@ def add_melody(
              rtttl.strip(), rtttl_name, now, now),
         )
     return cur.rowcount > 0
+
+
+def melodies_by_tag(library: Any, tag: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """Записи (с ``rtttl``), у которых в ``tags`` точно есть ``tag`` (issue #3228).
+
+    Поиск библиотеки токенизирует запрос по латинице (кириллица отбрасывается),
+    поэтому мелодию русской темы из веба он не находит — её ищут по тегу.
+    """
+    if not tag:
+        return []
+    needle = "%" + json.dumps(tag, ensure_ascii=False) + "%"
+    with library._lock:
+        rows = library._conn.execute(
+            "SELECT * FROM rtttl_melodies WHERE tags LIKE ? ORDER BY id LIMIT ?", (needle, int(limit)),
+        ).fetchall()
+    return [library._to_dict(row, include_rtttl=True) for row in rows]

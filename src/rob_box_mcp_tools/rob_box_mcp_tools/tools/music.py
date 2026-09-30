@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from rob_box_voice.core.music_stack_validation import (
     MusicStackStatus,
@@ -70,6 +70,7 @@ from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
 from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
+from ..core.web_melody import pick_theme
 from ..core.club_history import recent_club_rows, remember_club
 from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
@@ -3411,7 +3412,8 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "16-ми с пампингом под бочку, клэп+открытый хэт, пэд, "
                     "форма из матрицы секций (build/predrop/drop/verse, "
                     "32 такта). С club работают только bpm (по умолчанию "
-                    "124), root (по умолчанию A#), scale (только minor), "
+                    "124), root (по умолчанию A#), scale (minor по умолчанию, "
+                    "ещё dorian, phrygian, major), "
                     "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
                     "секций и тембры) и repeat; остальные "
                     "параметры игнорируются — об этом сказано в начале "
@@ -3438,6 +3440,18 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 required=False,
                 enum=["cut", "fade"],
                 default="cut",
+            ),
+            MCPToolParameter(
+                name="theme",
+                type="string",
+                description=(
+                    "Только для style=club без name=/rtttl=: тема сета («Очень "
+                    "странные дела», «денди»). Lead играет фрагмент мелодии на "
+                    "эту тему из архива; если темы в архиве нет — мелодию "
+                    "ищет в вебе (search_web) и запоминает. DJ-сет передаёт "
+                    "тему в готовом вызове — бери её как есть."
+                ),
+                required=False,
             ),
 ]
 
@@ -3541,9 +3555,11 @@ class ComposeMusicTool(MCPTool):
         #: вызовом ``_resolve_melody``. ``None`` — сочинённый трек без
         #: ``name=`` (наследовать/запоминать нечего).
         self._pending_melody_key: Optional[str] = None
-        #: Issue #3225: тема DJ-сета для поиска club-фрагмента (хук-точка; проводка
-        #: из voice в этой карточке не делается — присвоить ``tool.club_theme = "тема"``).
+        #: Issue #3225: тема по умолчанию для club-фрагмента (параметр ``theme`` вызова важнее).
         self.club_theme: Optional[str] = None
+        #: Issue #3228: ``search(query) -> [сниппеты]`` (``search_web``) — мелодия темы,
+        #: которой нет в архиве; ``None`` — веб не используется. Ставит ``mcp_server``.
+        self.web_search: Optional[Callable[[str], Any]] = None
         #: Issue #2964: сырая запись RTTTL-библиотеки, резолвленная ТЕКУЩЕЙ
         #: сборкой (:meth:`_resolve_rtttl_params`) — читается
         #: :meth:`_compose_success` для честной прозрачности результата
@@ -4283,6 +4299,7 @@ class ComposeMusicTool(MCPTool):
         rtttl: Optional[str] = None,
         style: Optional[str] = None,
         transition: Optional[str] = None,
+        theme: Optional[str] = None,
     ) -> MCPToolResult:
         """Точка входа тула (ADR-0132 PR-7): подмешать пресет, затем сыграть.
 
@@ -4308,6 +4325,7 @@ class ComposeMusicTool(MCPTool):
         club = self._style_branch(kwargs.pop("style", None), kwargs, transition)
         if club is not None:
             return club
+        kwargs.pop("theme", None)  # issue #3228: theme — только club, classic его не знает
         return self._execute_classic(kwargs, transition)
 
     def _execute_classic(self, kwargs: Dict[str, Any], transition: Optional[str]) -> MCPToolResult:
@@ -4335,7 +4353,7 @@ class ComposeMusicTool(MCPTool):
 
     #: Параметры, которые ``style="club"`` реально использует. ``name``/
     #: ``variants``/``rtttl`` — тема для хука lead (issue #3181).
-    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl")
+    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl", "theme")
 
     def _style_branch(
         self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
@@ -4409,9 +4427,8 @@ class ComposeMusicTool(MCPTool):
 
     #: Issue #3169 — русские имена тоник (в порядке ``VALID_ROOTS``) для
     #: человекочитаемого имени club-трека («ля-диез минор» вместо
-    #: «A# minor»). Club пока поддерживает только ``scale="minor"``
-    #: (``SUPPORTED_SCALES`` в ``club_arranger.py``) — маппинг лада на
-    #: случай будущего мажора.
+    #: «A# minor»). Лады club — ``SUPPORTED_SCALES``
+    #: (``club_progressions.py``): minor/dorian/phrygian/major (#3226).
     _ROOT_NAMES_RU: Dict[str, str] = dict(zip(
         VALID_ROOTS,
         (
@@ -4419,7 +4436,9 @@ class ComposeMusicTool(MCPTool):
             "фа-диез", "соль", "соль-диез", "ля", "ля-диез", "си",
         ),
     ))
-    _SCALE_NAMES_RU: Dict[str, str] = {"minor": "минор", "major": "мажор"}
+    _SCALE_NAMES_RU: Dict[str, str] = {
+        "minor": "минор", "major": "мажор", "dorian": "дорийский лад", "phrygian": "фригийский лад",
+    }
 
     @classmethod
     def _club_track_label(cls, bpm: float, root: str, scale: str, hook_title: Optional[str] = None) -> str:
@@ -4527,7 +4546,8 @@ class ComposeMusicTool(MCPTool):
         if not name:
             # Issue #3225: фрагмент RTTTL-мелодии вместо пентатоники (та — только фолбек).
             return pick_club_hook(
-                self._rtttl_library, bpm, seed, recent, self.club_theme, self.log_warning, self.log_info,
+                self._rtttl_library, bpm, seed, recent, pick_theme(kwargs, self.club_theme),
+                self.log_warning, self.log_info, self.web_search,
             )
         rec = self._resolve_melody(name, kwargs.get("variants"))
         if rec is None or not rec.get("rtttl"):

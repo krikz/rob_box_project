@@ -1804,8 +1804,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '124), root '
                                                                         '(по умолчанию '
                                                                         'A#), scale '
-                                                                        '(только '
-                                                                        'minor), seed '
+                                                                        '(minor по '
+                                                                        'умолчанию, '
+                                                                        'ещё dorian, '
+                                                                        'phrygian, '
+                                                                        'major), seed '
                                                                         '(выбирает '
                                                                         'прогрессию, '
                                                                         'риф, бочку, '
@@ -1880,7 +1883,33 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'треками '
                                                                              '— fade.',
                                                               'enum': ['cut', 'fade'],
-                                                              'default': 'cut'}},
+                                                              'default': 'cut'},
+                                            'theme': {   'type': 'string',
+                                                         'description': 'Только для '
+                                                                        'style=club '
+                                                                        'без '
+                                                                        'name=/rtttl=: '
+                                                                        'тема сета '
+                                                                        '(«Очень '
+                                                                        'странные '
+                                                                        'дела», '
+                                                                        '«денди»). '
+                                                                        'Lead играет '
+                                                                        'фрагмент '
+                                                                        'мелодии на '
+                                                                        'эту тему из '
+                                                                        'архива; если '
+                                                                        'темы в архиве '
+                                                                        'нет — мелодию '
+                                                                        'ищет в вебе '
+                                                                        '(search_web) '
+                                                                        'и запоминает. '
+                                                                        'DJ-сет '
+                                                                        'передаёт тему '
+                                                                        'в готовом '
+                                                                        'вызове — бери '
+                                                                        'её как '
+                                                                        'есть.'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -1925,7 +1954,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'seed',
                                        'rtttl',
                                        'style',
-                                       'transition'],
+                                       'transition',
+                                       'theme'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -5159,8 +5189,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '124), root '
                                                                         '(по умолчанию '
                                                                         'A#), scale '
-                                                                        '(только '
-                                                                        'minor), seed '
+                                                                        '(minor по '
+                                                                        'умолчанию, '
+                                                                        'ещё dorian, '
+                                                                        'phrygian, '
+                                                                        'major), seed '
                                                                         '(выбирает '
                                                                         'прогрессию, '
                                                                         'риф, бочку, '
@@ -5235,7 +5268,33 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'треками '
                                                                              '— fade.',
                                                               'enum': ['cut', 'fade'],
-                                                              'default': 'cut'}},
+                                                              'default': 'cut'},
+                                            'theme': {   'type': 'string',
+                                                         'description': 'Только для '
+                                                                        'style=club '
+                                                                        'без '
+                                                                        'name=/rtttl=: '
+                                                                        'тема сета '
+                                                                        '(«Очень '
+                                                                        'странные '
+                                                                        'дела», '
+                                                                        '«денди»). '
+                                                                        'Lead играет '
+                                                                        'фрагмент '
+                                                                        'мелодии на '
+                                                                        'эту тему из '
+                                                                        'архива; если '
+                                                                        'темы в архиве '
+                                                                        'нет — мелодию '
+                                                                        'ищет в вебе '
+                                                                        '(search_web) '
+                                                                        'и запоминает. '
+                                                                        'DJ-сет '
+                                                                        'передаёт тему '
+                                                                        'в готовом '
+                                                                        'вызове — бери '
+                                                                        'её как '
+                                                                        'есть.'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
