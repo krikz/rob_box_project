@@ -249,6 +249,16 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # issue #3013: парсер closing-keywords и логика авто-закрытия issues
+      # после merge в develop ("G-Auto-close Issues on Develop Merge.yml").
+      # gh подменён в тестах — сеть не нужна.
+      - name: Auto-close-on-develop-merge self-tests (issue 3013)
+        run: |
+          python -m pytest scripts/ci/tests/test_autoclose_issues.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # Третий случай того же дефекта: каталог tests/unit/docker/ не гонялся
       # НИ ОДНИМ workflow. Там живут проверки compose (mem_limit, issue #2621)
       # и Ресурсного пака (docs/plans/2026-09-15-resource-pack.md) — последние
@@ -489,6 +499,8 @@ jobs:
       # Метки self-hosted раннеров (rob-box, e2e) объявлены в
       # .github/actionlint.yaml — без этого файла actionlint считает ошибкой
       # каждый `runs-on: [self-hosted, rob-box]`.
+      # "G-Auto-close Issues on Develop Merge.yml" (issue 3013) добавлен в
+      # область сразу — новый файл, проходит actionlint+shellcheck чисто.
       - name: actionlint (build workflows, hard gate)
         run: |
           echo "::group::actionlint"
@@ -496,7 +508,8 @@ jobs:
             ".github/workflows/L-Build Vision Pi Services.yml" \
             ".github/workflows/L-Build Main Pi Services.yml" \
             ".github/workflows/L-Build Single Service.yml" \
-            ".github/workflows/L-Build Base Images.yml"
+            ".github/workflows/L-Build Base Images.yml" \
+            ".github/workflows/G-Auto-close Issues on Develop Merge.yml"
           echo "::endgroup::"
 
   # ============================================================================
