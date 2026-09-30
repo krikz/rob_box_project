@@ -5082,6 +5082,48 @@ class TestComposeMusicToolClubStyle:
         assert rows[0]["template"] == kits[-1]["template"] and rows[0]["style"] == "club"
         assert rows[0]["progression"] and rows[0]["root"] == "C" and rows[0]["bpm"] == 124
 
+    def test_club_without_name_plays_library_fragment_and_names_it(self, mock_node, tmp_path, caplog):
+        """Issue #3225: без name/rtttl lead = фрагмент из RtttlLibrary, 10 вызовов — 10 разных (мелодия, смещение)."""
+        import gzip
+        import json
+        import random
+
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        archive = tmp_path / "a.jsonl.gz"
+        with gzip.open(archive, "wt", encoding="utf-8") as fh:
+            for i in range(6):
+                rng, deg, notes = random.Random(40 + i), 2, []
+                for _ in range(96):
+                    deg = max(0, min(13, deg + rng.choice((-2, -1, -1, 1, 1, 2))))
+                    notes.append(f"8{'cdefgab'[deg % 7]}{5 + deg // 7}")
+                fh.write(json.dumps({"name": f"t{i}", "title": f"Tune {i}", "tags": [],
+                                     "rtttl": f"T{i}:d=8,o=5,b=124:" + ",".join(notes)}) + chr(10))
+        library = RtttlLibrary(db_path=str(tmp_path / "l.db"), archive_path=str(archive))
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, rtttl_library=library, music_history=history)
+        pairs = []
+        for _ in range(10):
+            with patch("builtins.exec"):
+                result = tool.execute(style="club", root="C", seed=0)
+            assert result.success is True, result.error
+            info = result.data["club_hook"]
+            assert info["source"] == "fragment" and info["title"] in result.message
+            pairs.append((info["id"], info["offset"]))
+        assert len(set(pairs)) == 10, pairs
+        rows = history.recent()
+        assert [(r["melody_name"], r["fragment_offset"]) for r in reversed(rows)] == pairs
+        assert all(r["hook_fingerprint"] for r in rows)
+
+    def test_club_without_name_and_library_falls_back_to_pentatonic_with_warning(self, mock_node):
+        tool, _mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"), patch.object(tool, "log_warning") as warn:
+            result = tool.execute(style="club", root="C", seed=3)
+        assert result.success is True and result.data["club_hook"] is None
+        assert any("pentatonic-fallback" in c.args[0] for c in warn.call_args_list)
+
     def test_club_executes_render_club_code(self, mock_node):
         from rob_box_mcp_tools.core.club_arranger import render_club
 
