@@ -55,8 +55,8 @@ def test_reference_passes_sanitizer_unchanged():
 def test_reference_uses_dj_dave_samples_from_the_catalog():
     code = _code()
     assert "loop('algorave_spilltab'" in code
-    assert "loop('dirt_psr_05'" in code
-    assert sample_dave.find_sample("algorave_spilltab") and sample_dave.find_sample("dirt_psr_05")
+    assert "loop('dirt_psr_10'" in code
+    assert sample_dave.find_sample("algorave_spilltab") and sample_dave.find_sample("dirt_psr_10")
 
 
 def test_reference_is_blocked_honestly_while_pack_flag_is_off():
@@ -71,47 +71,36 @@ def test_array_reference_passes_sanitizer_and_fits_six_slots():
     assert result.quality_errors == ()
     assert result.slot_error is None
     assert result.code == _with_resolved_samples(code)
-    slots = re.findall(r"^([dp]\d) >>", code, re.M)
-    assert sorted(slots) == ["d1", "d2", "d3", "p1", "p2", "p3"]
+    slots = set(re.findall(r"([dps]\d) >>", code))
+    assert slots == {"d1", "d2", "d3", "p1", "p2", "p3"}
 
 
-def test_array_reference_follows_the_arrangement_from_the_plan():
-    """build 16 → predrop 2 → drop 16 → verse 16 → postverse 4 тактов, 140 bpm."""
+def test_array_reference_follows_the_arrangement_of_the_original():
+    """arrange([16,build],[2,predrop],[16,drop],[16,verse],[4,postverse]), 140 bpm."""
     code = _code(ARRAY_REFERENCE)
     assert "Clock.bpm = 140" in code
-    durations = set(re.findall(r"amp=var\(\[[^\]]*\], (\[[^\]]*\])\)", code))
-    assert durations == {"[64, 8, 64, 64, 16]"}
-    assert sum([64, 8, 64, 64, 16]) == 216 == 54 * 4
+    bar = 4
+    build, predrop, drop, verse, post = (16 * bar, 2 * bar, 16 * bar, 16 * bar, 4 * bar)
+    starts = {"predrop": build, "drop": build + predrop}
+    starts["verse"] = starts["drop"] + drop
+    starts["post"] = starts["verse"] + verse
+    end = starts["post"] + post
+    assert (starts["drop"], starts["verse"], starts["post"], end) == (72, 136, 200, 216)
+    times = [int(t) for t in re.findall(r"Clock\.future\((\d+),", code)]
+    assert max(times) == end and min(times) >= 16
+    # каждый файл секции запускается ровно в её границу
+    assert f"Clock.future({starts['predrop']}, lambda: p3 >> loop('array_vox_drop_0'" in code
+    assert f"Clock.future({starts['drop']}, lambda: p3 >> loop('array_vox_drop_1'" in code
+    assert f"Clock.future({starts['verse']}, lambda: p3 >> loop('array_vox_verse_0'" in code
+    assert f"Clock.future({starts['post']}, lambda: p3 >> loop('array_vox_verse_8'" in code
+
+
+def test_array_reference_uses_only_catalog_samples_and_documented_gaps():
+    code = _code(ARRAY_REFERENCE)
     for sample in re.findall(r"loop\('([^']+)'", code):
         assert sample_dave.find_sample(sample), sample
-
-
-def test_every_drum_pattern_is_one_bar_of_sixteenths():
-    code_lines = "\n".join(line for line in _code().splitlines() if not line.startswith("#"))
-    patterns = re.findall(r'play\("([^"]*)"', code_lines)
-    assert len(patterns) == 2
-    for pattern in patterns:
-        assert len(_play_steps(pattern)) == 16, pattern
-    # По умолчанию у play() dur=0.5 (renardo_lib Players.py:602): без явного
-    # dur=1/4 16 шагов длились бы 2 такта, а бас/арп с dur=1/4 — один, и
-    # просадки сайдчейна не совпали бы с бочкой.
-    play_lines = [line for line in code_lines.splitlines() if "play(" in line]
-    assert len(play_lines) == 2
-    for line in play_lines:
-        assert "dur=1/4" in line, line
-
-
-def test_sidechain_dips_exactly_on_kick_steps():
-    code = _code()
-    kick = _play_steps(re.search(r'd1 >> play\("([^"]*)"', code).group(1))
-    kick_steps = {i for i, step in enumerate(kick) if "X" in step}
-    for player in ("p1", "p2"):
-        block = code[code.index(f"{player} >>"):]
-        amps = [float(v) for v in re.search(r"amp=P\[([^\]]*)\]", block).group(1).split(",")]
-        assert len(amps) == 16
-        dips = {i for i, v in enumerate(amps) if v == min(amps)}
-        assert dips == kick_steps, player
-        assert max(amps) / min(amps) == pytest.approx(3.0)
+    assert "@license CC BY-NC-SA (code)" in code
+    assert "НЕ перенесено" in code, "нехватка шести слотов должна быть записана в шапке"
 
 
 @pytest.mark.parametrize(

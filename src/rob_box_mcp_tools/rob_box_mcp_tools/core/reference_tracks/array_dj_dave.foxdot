@@ -1,43 +1,109 @@
-# Эталон формы DJ-режима: «Array (Lil Data Edit)», DJ_Dave / Lil Data, Strudel.
-# Лицензия оригинала — CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/);
-# перекладка — производная работа под той же лицензией, только как эталон
-# для сравнения на слух (docs/design/2026-09-28-dj-live-coding-quality-plan.md §7.3).
+# @title Array (Lil Data Edit)
+# @by DJ_Dave
+# @album Intercell [The Live Code Edits]
+# @license CC BY-NC-SA (code)
+# Перекладка Strudel → Renardo/FoxDot по оригинальному коду (получен от
+# товарища Шифу, issue #3219); производная работа под той же лицензией, только
+# как эталон для сравнения на слух. Стемы: lil-data/dj_dave-array_remix
+# (Ресурсный пак, запись dj-dave-samples; в git их нет).
 #
-# ЧЕСТНО ОБ ИСТОЧНИКЕ: полного кода Strudel-оригинала в issue #3219 нет, и
-# при работе он получен не был. Перекладка собрана из ТРЁХ вещей: разбора
-# плана §7.3 (arrange([16,build],[2,predrop],[16,drop],[16,verse],[4,postverse]),
-# euclid (5,16) с late у ударных дропа, маски "[1 [1 0!7]]" и "0!15 1"),
-# инвентаря стемов репозитория lil-data/dj_dave-array_remix и длительностей
-# самих файлов (1 доля = 0.4286 с = 140 bpm; build_* = 16 долей, drop_* и
-# verse_* = 8 долей). Ноты, аккорды и точный рисунок ударных оригинала
-# ВОССТАНОВЛЕНЫ НЕ БЫЛИ. Это эталон ФОРМЫ (секции по амплитуде на одних
-# стемах), а не копия трека.
+# Что перенесено по оригиналу:
+#   setbpm(140) → Clock.bpm = 140; 1 цикл Strudel = 1 такт = 4 доли.
+#   arrange([16,build],[2,predrop],[16,drop],[16,verse],[4,postverse])
+#       → 216 долей; секции запускаются Clock.future() от начала трека
+#       (фаза клока выровнена перед треком, #3112).
+#   loopAx(l) = loopAt(l).chop(l*8) → нативное воспроизведение файла
+#       (build_* = 16 долей, drop_*/verse_* = 8): loop(..., dur=<доли>).
+#       speed(0.99) не перенесён.
+#   build: bass/synth/vox × <0 1 2 3>, файл на 4 такта.
+#   predrop: vox drop_0. drop: vox drop_1..6 по 2 такта (mask cat(8).slow(16)
+#       оставляет только "1!6 0!2": drop_7/8 молчат), ударные euclid(5,16).slow(2)
+#       (kick, cp с late(3/32) = delay 0.375, sub) под маской
+#       cat(4).slow(8) → amp=var(...) по долям; note("[0 1]/4".add(36)) →
+#       rate=2^(k/12); первые 8 тактов: guitar (такт 1.5 и 7.5), break "0!15 1",
+#       hc*4 с ply на долях 12-26; вторые 8: shaker, sn по cat(4).slow(8)
+#       (второй элемент). verse: vox verse_0..7 по 2 такта; bass:[...]/8 и
+#       sub:[1 2]/8 по struct "x@3!5 x x@3!5 x" (после .slow(2): 12 ударов на
+#       64 доли) с note → rate. postverse: verse_8, drop_0 и
+#       bass_2/sub_2 по struct "[~@2 x@3!10]" с mask "[1!7 0]".
 #
-# Форма в долях (4 доли = такт): build 64 (16 тактов) → predrop 8 (2) →
-# drop 64 (16) → verse 64 (16) → postverse 16 (4) = 216 долей. Каждая секция —
-# один элемент amp=var([...], [64, 8, 64, 64, 16]) у каждого слоя.
-#
-# Слотов ровно шесть (d1-d3, p1-p3; санитайзер седьмого не даёт), а имя
-# файла в loop() — строковый литерал (подмена файла посреди трека
-# невозможна), поэтому один слот = один стем:
-#   d1 kick     — четыре четверти, дроп/куплет/пост
-#   d2 cp       — клэп на 2 и 4 (dur=2, delay=1), дроп/куплет/пост
-#   d3 hc       — евклид (5,16) на такт со сдвигом delay=0.25 («late»)
-#   p1 vox build_0 — вокал подъёма, build + predrop
-#   p2 vox drop_0  — вокальный чоп дропа, drop + postverse
-#   p3 vox verse_0 — вокал куплета
-# НЕ перенесено: бас (bass_*, sub_*), синт-подъём (synth/build_*), snare,
-# tom, shaker, break, guit*, маски-заикание — на них не хватило слотов.
-# НЕ проверено на слух и на роботе: delay= внутри dur=2, громкости на
-# 16 kHz DAC, тембр и совпадение фазы вокала с бочкой.
+# НЕ перенесено (слотов ровно шесть: d1-d3, p1-p3; имя файла в loop() —
+# литерал, смена файла — только через Clock.future, а не по паттерну):
+#   tom(5,16) (drop), s("cp:1") "[~!7 x] ~", второй break "[0!3 [0 1]] [0 [0 1] 0!2]"
+#   во второй половине дропа, sub.end(0.95)/tom.end(0.95).
+#   hc: ply-паттерн только первого элемента cat (остальные в 16 тактах дропа
+#   не звучат по маске [1 0]/16).
+# НЕ проверено на слух и на роботе: переназначение слота из Clock.future(lambda),
+# rate у loop, dur=PDur(5, 16) / 2, громкости на 16 kHz DAC, смена буферов
+# посреди трека (Samples.loadBuffer в момент вызова).
 Clock.clear()
 Clock.bpm = 140
 
-d1 >> loop('array_perc_kick', dur=1, amp=var([0, 0, 0.8, 0.6, 0.8], [64, 8, 64, 64, 16]))
-d2 >> loop('array_perc_cp', dur=2, delay=1, amp=var([0, 0, 0.35, 0.3, 0.35], [64, 8, 64, 64, 16]))
-d3 >> loop('array_perc_hc', dur=PDur(5, 16) / 4, delay=0.25,
-           amp=var([0, 0.2, 0.2, 0.15, 0.2], [64, 8, 64, 64, 16]))
+# --- BUILD (16 тактов = 64 доли): bass/synth/vox build_0..3, смена файла раз в 4 такта
+p1 >> loop('array_bass_build_0', dur=16, amp=0.5)
+p2 >> loop('array_synth_build_0', dur=16, amp=0.4)
+p3 >> loop('array_vox_build_0', dur=16, amp=0.6)
+Clock.future(16, lambda: p1 >> loop('array_bass_build_1', dur=16, amp=0.5))
+Clock.future(16, lambda: p2 >> loop('array_synth_build_1', dur=16, amp=0.4))
+Clock.future(16, lambda: p3 >> loop('array_vox_build_1', dur=16, amp=0.6))
+Clock.future(32, lambda: p1 >> loop('array_bass_build_2', dur=16, amp=0.5))
+Clock.future(32, lambda: p2 >> loop('array_synth_build_2', dur=16, amp=0.4))
+Clock.future(32, lambda: p3 >> loop('array_vox_build_2', dur=16, amp=0.6))
+Clock.future(48, lambda: p1 >> loop('array_bass_build_3', dur=16, amp=0.5))
+Clock.future(48, lambda: p2 >> loop('array_synth_build_3', dur=16, amp=0.4))
+Clock.future(48, lambda: p3 >> loop('array_vox_build_3', dur=16, amp=0.6))
 
-p1 >> loop('array_vox_build_0', dur=16, amp=var([0.5, 0.5, 0, 0, 0], [64, 8, 64, 64, 16]))
-p2 >> loop('array_vox_drop_0', dur=8, amp=var([0, 0, 0.5, 0, 0.5], [64, 8, 64, 64, 16]))
-p3 >> loop('array_vox_verse_0', dur=8, amp=var([0, 0, 0, 0.5, 0], [64, 8, 64, 64, 16]))
+# --- PREDROP (2 такта = 8 долей): vox drop_0
+Clock.future(64, lambda: p1.stop())
+Clock.future(64, lambda: p2.stop())
+Clock.future(64, lambda: p3 >> loop('array_vox_drop_0', dur=8, amp=0.6))
+
+# --- DROP (16 тактов, с 72-й доли): vox drop_1..6, ударные euclid(5,16) по маске, аксессуары
+Clock.future(72, lambda: p3 >> loop('array_vox_drop_1', dur=8, amp=0.6))
+Clock.future(80, lambda: p3 >> loop('array_vox_drop_2', dur=8, amp=0.6))
+Clock.future(88, lambda: p3 >> loop('array_vox_drop_3', dur=8, amp=0.6))
+Clock.future(96, lambda: p3 >> loop('array_vox_drop_4', dur=8, amp=0.6))
+Clock.future(104, lambda: p3 >> loop('array_vox_drop_5', dur=8, amp=0.6))
+Clock.future(112, lambda: p3 >> loop('array_vox_drop_6', dur=8, amp=0.6))
+Clock.future(120, lambda: p3.stop())
+Clock.future(72, lambda: d1 >> loop('array_perc_kick', dur=PDur(5, 16) / 2, amp=var([0, 0.7, 0, 0.7, 0, 0.7, 0, 0.7, 0], [72, 18, 14, 6, 6, 6, 6, 8, 80]), rate=var([1, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1], [72, 8, 8, 8, 8, 8, 8, 8, 8, 80])))
+Clock.future(72, lambda: d2 >> loop('array_perc_cp', dur=PDur(5, 16) / 2, delay=0.375, amp=var([0, 0.5, 0, 0.5, 0, 0.5, 0, 0.5, 0], [72, 18, 14, 6, 6, 6, 6, 8, 80]), rate=var([1, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1], [72, 8, 8, 8, 8, 8, 8, 8, 8, 80])))
+Clock.future(84, lambda: d3 >> loop('array_perc_hc', dur=1/2, amp=0.4))
+Clock.future(98, lambda: d3.stop())
+Clock.future(78, lambda: p1 >> loop('array_perc_guit1', dur=[2, 100], amp=[0.5, 0]))
+Clock.future(88, lambda: p2 >> loop('array_bass_sub_0', dur=PDur(5, 16) / 2, amp=0.5, rate=var([1, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1], [72, 8, 8, 8, 8, 8, 8, 8, 8, 80])))
+Clock.future(90, lambda: p2.stop())
+Clock.future(102, lambda: p1 >> loop('array_perc_guit2', dur=[2, 100], amp=[0.5, 0]))
+Clock.future(102, lambda: p2 >> loop('array_perc_break', dur=[2, 100], amp=[0.5, 0]))
+Clock.future(104, lambda: p1 >> loop('array_perc_shaker', dur=8, amp=0.4))
+Clock.future(108, lambda: d3 >> loop('array_perc_sn', dur=[10, 1, 3, 1, 2, 9, 1, 5], amp=0.6))
+Clock.future(120, lambda: p2 >> loop('array_bass_sub_0', dur=PDur(5, 16) / 2, amp=0.5, rate=var([1, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1], [72, 8, 8, 8, 8, 8, 8, 8, 8, 80])))
+Clock.future(122, lambda: p2.stop())
+Clock.future(128, lambda: p2 >> loop('array_bass_sub_0', dur=PDur(5, 16) / 2, amp=0.5, rate=var([1, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1, 1.0595, 1], [72, 8, 8, 8, 8, 8, 8, 8, 8, 80])))
+Clock.future(136, lambda: d1.stop())
+Clock.future(136, lambda: d2.stop())
+Clock.future(136, lambda: d3.stop())
+
+# --- VERSE (16 тактов, с 136-й доли): vox verse_0..7 по файлу на 2 такта; bass+sub по struct
+Clock.future(136, lambda: p3 >> loop('array_vox_verse_0', dur=8, amp=0.6))
+Clock.future(144, lambda: p3 >> loop('array_vox_verse_1', dur=8, amp=0.6))
+Clock.future(152, lambda: p3 >> loop('array_vox_verse_2', dur=8, amp=0.6))
+Clock.future(160, lambda: p3 >> loop('array_vox_verse_3', dur=8, amp=0.6))
+Clock.future(168, lambda: p3 >> loop('array_vox_verse_4', dur=8, amp=0.6))
+Clock.future(176, lambda: p3 >> loop('array_vox_verse_5', dur=8, amp=0.6))
+Clock.future(184, lambda: p3 >> loop('array_vox_verse_6', dur=8, amp=0.6))
+Clock.future(192, lambda: p3 >> loop('array_vox_verse_7', dur=8, amp=0.6))
+Clock.future(136, lambda: p1 >> loop('array_bass_0', dur=[6, 6, 6, 6, 6, 2, 6, 6], amp=0.6, rate=[1.0, 1.0, 1.0, 1.0595, 1.0595, 1.3348, 1.0, 1.0]))
+Clock.future(180, lambda: p1 >> loop('array_bass_1', dur=[6, 6], amp=0.6, rate=[1.0, 1.4983]))
+Clock.future(192, lambda: p1 >> loop('array_bass_2', dur=[6, 100], amp=0.6, rate=[1.3348, 2.0]))
+Clock.future(136, lambda: p2 >> loop('array_bass_sub_1', dur=[6, 6, 6, 6, 6, 2], amp=0.6, rate=[1.0, 1.0, 1.0, 1.0595, 1.0595, 1.3348]))
+Clock.future(168, lambda: p2 >> loop('array_bass_sub_2', dur=[6, 6, 6, 6, 6, 100], amp=0.6, rate=[1.0, 1.0, 1.0, 1.4983, 1.3348, 2.0]))
+
+# --- POSTVERSE (4 такта, с 200-й доли): verse_8 → drop_0, bass_2/sub_2 по struct
+Clock.future(200, lambda: p3 >> loop('array_vox_verse_8', dur=8, amp=0.6))
+Clock.future(208, lambda: p3 >> loop('array_vox_drop_0', dur=8, amp=0.6))
+Clock.future(201, lambda: p1 >> loop('array_bass_2', dur=[1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 100], amp=0.6, rate=[1.1225, 1.1225, 1.1225, 1.1225, 1.1225, 1.3348, 1.3348, 1.3348, 1.3348]))
+Clock.future(201, lambda: p2 >> loop('array_bass_sub_2', dur=[1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 100], amp=0.6, rate=[1.1225, 1.1225, 1.1225, 1.1225, 1.1225, 1.3348, 1.3348, 1.3348, 1.3348]))
+Clock.future(216, lambda: p1.stop())
+Clock.future(216, lambda: p2.stop())
+Clock.future(216, lambda: p3.stop())
