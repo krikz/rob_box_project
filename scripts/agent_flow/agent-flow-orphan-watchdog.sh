@@ -82,10 +82,14 @@
 #                              раскладываются install.sh, но НЕ являются
 #                              cron-job'ами (вызываются из launcher'а или
 #                              руками). Default:
-#                              "agent-flow-e2e-fail-streak-watchdog.sh"
+#                              "agent-flow-e2e-fail-streak-watchdog.sh
+#                               agent-flow-e2e-drift-watchdog.sh
+#                               agent-flow-rotation-watchdog.sh"
 #                              (ретро 28.08 t_faac94b0 — fail-streak
 #                              watchdog инвокается из
-#                              agent-flow-e2e-process-launcher.sh).
+#                              agent-flow-e2e-process-launcher.sh;
+#                              drift/rotation — observability-only, без
+#                              cron-job в install.sh, issue #3029).
 #   ALERT_LOG                 — путь к drift.alert.log (default:
 #                              /tmp/agent-flow-drift.alert.log)
 #   LOCK_FILE                 — flock guard (default:
@@ -147,10 +151,14 @@ GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 PROFILES_GLOB="${PROFILES_GLOB:-$HERMES_HOME/profiles/*/cron/jobs.json}"
 JOBS_FILE="${JOBS_FILE:-}"
 # Watchdog'и, которые раскладываются install.sh, но НЕ регистрируются
-# как cron-job (вызываются из launcher'а или руками). Default — fail-streak
-# watchdog: ретро 28.08 t_faac94b0, agent-flow-e2e-process-launcher.sh
-# инвокает его каждый tick после e2e-process.sh.
-NON_CRON_WATCHDOGS="${NON_CRON_WATCHDOGS:-agent-flow-e2e-fail-streak-watchdog.sh}"
+# как cron-job (вызываются из launcher'а или руками). Default:
+#   - fail-streak: ретро 28.08 t_faac94b0, agent-flow-e2e-process-launcher.sh
+#     инвокает его каждый tick после e2e-process.sh;
+#   - e2e-drift + rotation: observability-only (install.sh EXPECTED[],
+#     комментарий «Observability-вотчдоги»): ensure_*_cron для них нет,
+#     запуск руками или через cron, когда Шифу решит (issue #3029).
+# Если для них появится ensure_*_cron в install.sh — убрать отсюда.
+NON_CRON_WATCHDOGS="${NON_CRON_WATCHDOGS:-agent-flow-e2e-fail-streak-watchdog.sh agent-flow-e2e-drift-watchdog.sh agent-flow-rotation-watchdog.sh}"
 ALERT_LOG="${ALERT_LOG:-/tmp/agent-flow-drift.alert.log}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-orphan-watchdog.lock}"
 LOG_FILE="${LOG_FILE:-/tmp/agent-flow-orphan-watchdog.log}"
@@ -221,7 +229,7 @@ fi
 # 2a. self-skip: orphan-detector регистрируется отдельно, иначе вечный
 #     false-positive на первом тике.
 # 2b. NON_CRON_WATCHDOGS-skip: явно перечисленные watchdog'и (default:
-#     fail-streak), которые install.sh раскладывает, но НЕ регистрирует
+#     fail-streak, e2e-drift, rotation), которые install.sh раскладывает, но НЕ регистрирует
 #     как cron. Без этого фильтра детектор всегда будет алармить на них.
 WATCHDOG_FILES=()
 while IFS= read -r f; do
@@ -322,6 +330,39 @@ done
 
 _missing_count=${#_missing[@]}
 
+# Тело auto-issue для orphan-watchdog'а $1. Heredoc вместо однострочного
+# printf '...': раньше апостроф в «watchdog'ах» закрывал single-quoted
+# format-строку (shellcheck SC1011), аргументы сдвигались, и в issue
+# уходило тело без $MARKER_TAG в начале, без имени скрипта и с
+# «ensure__watchdog_cron» (follow-up #3029).
+_orphan_issue_body() {
+    local f="$1"
+    local slug="${f#agent-flow-}"
+    slug="${slug%.sh}"
+    slug="${slug//-/_}"
+    cat <<BODY_EOF
+$MARKER_TAG
+
+## Affected watchdog scripts (без cron)
+
+$f
+
+## Что делать
+
+1. Добавить в scripts/agent_flow/install.sh:
+   \`\`\`
+   ensure_${slug}_cron() {
+       ensure_cron_job <profile> "Agent Flow <Name> Watchdog" "$f" "every Nh" interval
+   }
+   ensure_${slug}_cron
+   \`\`\`
+   Где \`<profile>\` = \`devops\` (по умолчанию) или \`agent-flow\`.
+2. Запустить на хосте: \`bash scripts/agent_flow/install.sh\`.
+
+Регрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled), t_197de62a (cancel-on-provider-exhausted), t_4c796522 (orphan-watchdog false-positive на cross-profile watchdog'ах).
+BODY_EOF
+}
+
 # --- 4) emit alerts для каждого orphan -------------------------------------
 _alerts_emitted=0
 _errors=0
@@ -364,7 +405,7 @@ except Exception:
                     --repo "$GH_REPO" \
                     --label "agent-flow-watchdog-orphan" \
                     --title "🛡 agent-flow-orphan-watchdog: $f без cron-job" \
-                    --body "$(printf '%s\n\n## Affected watchdog scripts (без cron)\n\n%s\n\n## Что делать\n\n1. Добавить в scripts/agent_flow/install.sh:\n   ```\n   ensure_%s_watchdog_cron() {\n       ensure_cron_job <profile> \"Agent Flow <Name> Watchdog\" \"<basename>\" \"every Nh\" interval\n   }\n   ensure_%s_watchdog_cron\n   ```\n   Где `<profile>` = `devops` (по умолчанию) или `agent-flow`.\n2. Запустить на хосте: \`bash scripts/agent_flow/install.sh\`.\n\nРегрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled), t_197de62a (cancel-on-provider-exhausted), t_4c796522 (orphan-watchdog false-positive на cross-profile watchdog'ах).\n' "$MARKER_TAG" "$f" "${f#agent-flow-}" "${f%-watchdog.sh}" "${f#agent-flow-}" 2>&1 | head -3 | tr -d '\r')" ; then
+                    --body "$(_orphan_issue_body "$f")" ; then
                     _alerts_emitted=$((_alerts_emitted + 1))
                 else
                     _errors=$((_errors + 1))
