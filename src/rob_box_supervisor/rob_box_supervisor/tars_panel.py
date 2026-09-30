@@ -120,11 +120,32 @@ class TarsPanelDispatcher:
         self._panel_request_pub = node.create_publisher(String, panel_request_topic, 10)
         self._panel_url_pub = node.create_publisher(String, panel_url_topic, 10)
         self._panel_data_pub = node.create_publisher(String, panel_data_topic, 10)
+        # Своя ReentrantCallbackGroup, НЕ дефолтная группа ноды. LLM-ход
+        # оператора идёт внутри callback'а дефолтной MutuallyExclusive-группы
+        # (_on_avatar_command → _run_agent_sync → asyncio.run) и синхронно
+        # ждёт результат show_metrics, который mcp_server гонит через
+        # panel_request → panel_data. В дефолтной группе panel_request не
+        # мог стартовать до конца хода → mcp_server ловил таймаут 8 с, а
+        # ТАРС жаловался «avatar_supervisor не отвечает». Тот же класс бага,
+        # что #2131/ADR-0072 для /mcp/result. Reentrant: callback короткий
+        # (валидация + spawn потока), параллельные запросы не должны
+        # выстраиваться друг за другом.
+        sub_kwargs: dict[str, Any] = {}
+        try:
+            from rclpy.callback_groups import (  # noqa: PLC0415
+                ReentrantCallbackGroup,
+            )
+
+            self._callback_group = ReentrantCallbackGroup()
+            sub_kwargs["callback_group"] = self._callback_group
+        except ImportError:
+            self._callback_group = None  # стенд без rclpy
         node.create_subscription(
             String,
             panel_request_topic,
             self._on_panel_request,
             10,
+            **sub_kwargs,
         )
 
     # ─── Wire-level: обработка /avatar/tars/panel_request ──────────────

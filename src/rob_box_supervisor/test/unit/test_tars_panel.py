@@ -109,9 +109,10 @@ class _FakePublisher:
 
 
 class _FakeSubscription:
-    def __init__(self, topic: str, callback: Any) -> None:
+    def __init__(self, topic: str, callback: Any, callback_group: Any = None) -> None:
         self.topic = topic
         self.callback = callback
+        self.callback_group = callback_group
 
 
 class _FakeNode:
@@ -131,9 +132,14 @@ class _FakeNode:
         return pub
 
     def create_subscription(
-        self, msg_type: Any, topic: str, callback: Any, qos: int = 10
+        self,
+        msg_type: Any,
+        topic: str,
+        callback: Any,
+        qos: int = 10,
+        callback_group: Any = None,
     ) -> _FakeSubscription:
-        sub = _FakeSubscription(topic, callback)
+        sub = _FakeSubscription(topic, callback, callback_group)
         self._subscriptions.append(sub)
         return sub
 
@@ -520,3 +526,31 @@ def test_default_grafana_base_url_is_reachable_host() -> None:
 
     assert "prometheus.lan" not in DEFAULT_GRAFANA_BASE_URL
     assert DEFAULT_GRAFANA_BASE_URL.startswith("http")
+
+# ── Регресс: panel_request не должен жить в дефолтной callback group ──
+
+
+def test_panel_request_subscription_not_in_default_callback_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """show_metrics таймаутил 8 с: LLM-ход оператора выполняется внутри
+    callback'а дефолтной MutuallyExclusive-группы ноды и синхронно ждёт
+    panel_data, поэтому panel_request в той же группе не стартовал до конца
+    хода. Подписка обязана получить СВОЮ Reentrant-группу.
+
+    Тест СТРУКТУРНЫЙ (реального rclpy на CI нет — голодание executor'а не
+    воспроизводится): проверяем, что в create_subscription передан
+    callback_group, отличный от None (None = дефолтная группа ноды).
+    """
+    class _StubReentrantGroup:
+        pass
+
+    cbg = types.ModuleType("rclpy.callback_groups")
+    cbg.ReentrantCallbackGroup = _StubReentrantGroup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rclpy.callback_groups", cbg)
+
+    node = _FakeNode()
+    dispatcher = TarsPanelDispatcher(node, metrics=MagicMock(), spawn=lambda fn: fn())
+    sub = _subscription(node, "/avatar/tars/panel_request")
+    assert isinstance(sub.callback_group, _StubReentrantGroup)
+    assert dispatcher._callback_group is sub.callback_group
