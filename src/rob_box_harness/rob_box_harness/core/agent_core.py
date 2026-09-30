@@ -51,6 +51,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_harness.memory import MemoryStore, Turn
+from rob_box_harness.providers.reasoning import without_reasoning
 from rob_box_harness.tools import ToolProvider, ToolSpec
 from rob_box_llm.provider import (
     LLMMessage,
@@ -2126,7 +2127,8 @@ class AgentCore:
                 messages, tools=tools, settings=effective_settings
             )
             self._report_prompt(messages, tools, response.usage)
-            return response
+            # Issue #3220 — рассуждение (``<think>``) не речь и не разметка.
+            return without_reasoning(response)
         parts: list[str] = []
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
@@ -2185,14 +2187,16 @@ class AgentCore:
         # ПОСЛЕ finally, но до возврата — на пути отмены сюда не доходит,
         # и там учёт делает вызывающая сторона по своему усмотрению.
         self._report_prompt(messages, tools, usage)
-        return LLMResponse(
+        # Issue #3220 — рассуждение (``<think>``) вырезаем до гуардов,
+        # восстановления вызова из текста (#2760) и истории.
+        return without_reasoning(LLMResponse(
             content="".join(parts),
             tool_calls=tuple(tool_calls),
             finish_reason=finish_reason,
             usage=usage,
             raw=raw,
             truncated_tool_args=truncated_tool_args,
-        )
+        ))
 
     # ---- skills (Move A) -------------------------------------------------
 

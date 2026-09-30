@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # SSML — раньше здесь был ``f"<speak>{text}</speak>"`` без экранирования.
 # Теперь текст проходит через ``Utterance.ssml`` (XML-escape для ``&``/`<`/`>`).
 from rob_box_core.utterance import Sink, Utterance
+from rob_box_harness.providers.reasoning import strip_reasoning
 
 # Strip history marker prefix that some LLMs copy into output.
 _HISTORY_MARKER_RE = re.compile(
@@ -38,7 +39,10 @@ _HISTORY_MARKER_RE = re.compile(
 # Strip interleaved-thinking blocks (MiniMax M3 + Anthropic format).
 # After removal, the trailing "done" marker (if present) is what's left
 # — which the dialogue_node correctly recognises and skips from auto-TTS.
-_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
+# Issue #3220 — the stripping itself lives in the harness
+# (``rob_box_harness.providers.reasoning.strip_reasoning``): AgentCore cuts
+# the reasoning out of every LLM response, and this is the second line of
+# defence right before TTS.
 
 # Strip a leading speaker routing marker (``[Spkr:<имя>]``) that some
 # providers echo back from the voice-channel input format. Internal
@@ -142,10 +146,16 @@ def strip_thinking_blocks(text: str) -> str:
     like ``«Music started successfully. Now return "done" — no speak_text,
     no follow-up.»`` over TTS, and the user hears the model's internal
     monologue (often in English, even when the system prompt says Russian).
+
+    Issue #3220 — thinking is ON again for DJ transitions and music
+    requests, so two broken shapes are handled too: a block cut by
+    ``max_tokens`` (``<think>`` without ``</think>`` — everything after the
+    opening tag is reasoning) and a reply whose opening tag is missing
+    (everything up to the last ``</think>`` is reasoning).
     """
     if not text:
         return text
-    return _THINK_BLOCK_RE.sub("", text).strip()
+    return strip_reasoning(text).strip()
 
 
 def strip_meta_markers(text: str) -> str:

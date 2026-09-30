@@ -377,15 +377,24 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         their value wins. We deliberately keep thinking as an opt-in surface
         rather than promoting it to a typed ``MiniMaxOptions`` — that's a M3
         concern once we have multiple agents using different policies.
+
+        Issue #3220: ``extra={"thinking": None}`` means "send NO thinking
+        field" — the model's own default. That is the only thinking-on
+        shape observed live: from b5879b79 (05.08, ``thinking=None``) to
+        6901a14e (06.08) MiniMax-M3 answered with ``<think>`` blocks,
+        +10-20 s per turn. ``{"type": "enabled"}`` was never checked
+        against the API, so we do not send it.
         """
         if settings is None:
             settings = LLMSettings()
-        if self._thinking is None:
+        if self._thinking is None and "thinking" not in settings.extra:
             return settings
         # LLMSettings is frozen — rebuild it with merged ``extra``.
         merged_extra: dict[str, Any] = dict(settings.extra)
         if "thinking" not in merged_extra:
-            merged_extra["thinking"] = dict(self._thinking)
+            merged_extra["thinking"] = dict(self._thinking or {})
+        if merged_extra["thinking"] is None:
+            del merged_extra["thinking"]
         return dataclasses.replace(settings, extra=merged_extra)
 
 

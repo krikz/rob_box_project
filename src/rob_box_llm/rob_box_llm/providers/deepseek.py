@@ -186,6 +186,7 @@ def _trace_llm_request(
     *,
     provider: str,
     stream: bool,
+    thinking: str = "",
 ) -> None:
     """Dump the FULL context the model sees to stderr (docker logs).
 
@@ -205,8 +206,10 @@ def _trace_llm_request(
     import sys as _sys
 
     mode = "stream" if stream else "complete"
+    # Issue #3220 — по этой строке на живом прогоне видно, какие ходы думали.
+    thinking_part = f" thinking={thinking}" if thinking else ""
     _sys.stderr.write(
-        f"\U0001f50e LLM REQUEST START provider={provider} mode={mode}\n"
+        f"\U0001f50e LLM REQUEST START provider={provider} mode={mode}{thinking_part}\n"
     )
     for i, m in enumerate(messages):
         role = getattr(m, "role", "?")
@@ -424,7 +427,9 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
-        _trace_llm_request(messages, tools, provider=self.name, stream=False)
+        _trace_llm_request(
+            messages, tools, provider=self.name, stream=False, thinking=_thinking_label(kwargs)
+        )
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — convert to our domain errors
@@ -489,7 +494,9 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=True)
         kwargs = self._build_kwargs(messages, tools, settings, stream=True)
-        _trace_llm_request(messages, tools, provider=self.name, stream=True)
+        _trace_llm_request(
+            messages, tools, provider=self.name, stream=True, thinking=_thinking_label(kwargs)
+        )
         try:
             stream_obj = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
@@ -518,9 +525,9 @@ class _OpenAICompatibleProvider(LLMProvider):
             delta = choice.delta if choice else None
             finish = getattr(choice, "finish_reason", None)
             if delta is not None:
-                dcontent = getattr(delta, "content", None)
-                if dcontent:
-                    yield LLMChunk(content_delta=dcontent, finish_reason=None)
+                text_chunk = _content_chunk(delta)
+                if text_chunk is not None:
+                    yield text_chunk
                 # Aggregate tool-call deltas by index (OpenAI wire format).
                 dtool_calls = getattr(delta, "tool_calls", None)
                 if dtool_calls:
@@ -584,6 +591,47 @@ class _OpenAICompatibleProvider(LLMProvider):
         )
         if not already_closed:
             await self._client.close()
+
+
+def _thinking_label(kwargs: Mapping[str, Any]) -> str:
+    """Что ушло в запросе про thinking — для строки ``LLM REQUEST START`` (#3220).
+
+    ``model-default`` — поля нет (MiniMax думает сам, adaptive).
+    """
+    body = kwargs.get("extra_body") or {}
+    if "thinking" in body:
+        return json.dumps(body["thinking"], ensure_ascii=False, sort_keys=True)
+    if "enable_thinking" in body:
+        return f"enable_thinking={body['enable_thinking']}"
+    return "model-default"
+
+
+def _content_chunk(delta: Any) -> Optional[LLMChunk]:
+    """Текстовый чанк стрима из дельты или ``None``.
+
+    Issue #3220: рассуждение в отдельном поле (``reasoning_content`` /
+    ``reasoning_details``) текстом не отдаём, но пустой чанк говорит
+    «провайдер жив»: first-chunk-гуард #2718 иначе ждал бы первого слова
+    ответа и рубил ход с thinking на 10-й секунде.
+    """
+    dcontent = getattr(delta, "content", None)
+    if dcontent:
+        return LLMChunk(content_delta=dcontent, finish_reason=None)
+    if _is_reasoning_delta(delta):
+        return LLMChunk(content_delta="", finish_reason=None)
+    return None
+
+
+def _is_reasoning_delta(delta: Any) -> bool:
+    """Дельта несёт только рассуждение (``reasoning_content`` / ``reasoning_details``).
+
+    Issue #3220. Строки и списки — да; всё прочее (``None``, моки) — нет.
+    """
+    for attr in ("reasoning_content", "reasoning_details"):
+        value = getattr(delta, attr, None)
+        if isinstance(value, (str, list)) and value:
+            return True
+    return False
 
 
 def _safe_json(raw: Any) -> dict[str, Any]:
