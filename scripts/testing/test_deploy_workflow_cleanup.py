@@ -46,9 +46,17 @@ def test_deploy_pull_ignores_compose_pull_policy():
     пишет «Skipped Image is already present locally» и не обновляет :dev —
     деплой проходил зелёным, а робот оставался на старых образах."""
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Issue #2930: сам pull переехал в preflight-скрипт, который оба
+    # Pull-шага (Vision Pi и Main Pi) вызывают перед Stop Containers.
+    preflight = (Path(__file__).resolve().parents[2] / "scripts/deploy/preflight_pull_images.sh").read_text(encoding="utf-8")
+    assert workflow.count("scripts/deploy/preflight_pull_images.sh") >= 2, "ожидались pull-шаги для Vision Pi и Main Pi"
 
-    pulls = [line for line in workflow.splitlines() if "docker compose pull" in line and not line.strip().startswith("#")]
-    assert len(pulls) >= 2, "ожидались pull-шаги для Vision Pi и Main Pi"
+    pulls = [
+        line
+        for line in (workflow + "\n" + preflight).splitlines()
+        if "docker compose pull" in line and not line.strip().startswith("#") and "echo" not in line
+    ]
+    assert pulls, "docker compose pull не найден ни в workflow, ни в preflight"
     for line in pulls:
         assert "--policy always" in line, f"pull без --policy always: {line.strip()}"
 

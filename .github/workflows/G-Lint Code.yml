@@ -543,6 +543,12 @@ jobs:
         run: |
           bash scripts/agent_flow/tests/test_retro_intent_extractor.sh
 
+      # Issue #2930: деплой не должен делать `compose down`, пока не
+      # подтверждено, что все образы стека скачаны/лежат локально.
+      - name: Deploy preflight pull-before-stop (issue #2930)
+        run: |
+          bash scripts/deploy/tests/test_preflight_pull_images.sh
+
       - name: Lint shell scripts
         run: |
           echo "::group::ShellCheck"
