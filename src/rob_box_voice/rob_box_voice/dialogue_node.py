@@ -7580,6 +7580,8 @@ class DialogueNode(Node):
         if plan.dj_off:
             # Как #2897: стоп юзера гасит DJ-режим в коде, молча.
             self._force_dj_off_for_stop_command(reason="media_router_stop")
+        # Issue #3217 — DJ-команда роутера = ход текущей сессии (забор #2835).
+        self._session_epoch_gate().note_media_command(plan.tool_calls)
 
     def _prepare_dj_preview(self, plan: MediaPlan, executor: Any) -> None:
         """Issue #3153 (+доп.) — заявка «трек #1 сета»: подготовка до тулов.
