@@ -43,6 +43,23 @@ _TURN_UTTERANCE_ID = "c9b74f4044de"  # из лога issue #2842
 def _ensure_ros_stubs() -> None:
     try:
         importlib.import_module("rclpy")
+        # Issue: order-dependent test pollution — several unrelated test
+        # files (test_arranger.py and friends) unconditionally do
+        # ``sys.modules.setdefault("rclpy", MagicMock())`` at module scope
+        # with no cleanup, so by the time this file collects, ``rclpy`` can
+        # already be a bare MagicMock that doesn't carry the
+        # ``callback_groups`` submodule those files never stub. A plain
+        # ``import rclpy`` succeeds against that MagicMock, so the old
+        # early-return here left ``rclpy.callback_groups`` missing from
+        # ``sys.modules`` — and ``from rclpy.callback_groups import
+        # ReentrantCallbackGroup`` (llm_adapter.py:128, used by this file's
+        # own ``_production_adapter``) then fails with "'rclpy' is not a
+        # package", because Python falls back to treating the MagicMock as
+        # a real package once the submodule isn't already cached. Checking
+        # for ``rclpy.callback_groups`` specifically (not just ``rclpy``)
+        # catches that half-stubbed case and falls through to install the
+        # real stub below instead of trusting someone else's leftovers.
+        importlib.import_module("rclpy.callback_groups")
         importlib.import_module("std_msgs.msg")
         return
     except ImportError:
