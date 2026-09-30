@@ -4,10 +4,6 @@
   "note": "Known runtime findings. New ones are marked in runtime-findings.md; remove a key once it is fixed. Tracked in #3104-#3108.",
   "known": [
     {
-      "key": "type_mismatch|/odom|nav_msgs/msg/Odometry vs std_msgs/msg/String",
-      "scope": "repo"
-    },
-    {
       "key": "dead_input|/avatar/tts/control|",
       "scope": "repo"
     },
