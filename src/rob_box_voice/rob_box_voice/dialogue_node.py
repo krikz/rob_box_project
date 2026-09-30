@@ -2523,7 +2523,9 @@ class DialogueNode(Node):
             if held:
                 self._identity_ack_state().hold(plan)
                 # Issue #2913 -- и реплики speak_text этого хода тоже.
-                self._turn_speech_gate().mute()
+                # Вопрос «после ответа» ответ не заменяет -- глушить нечего.
+                if not plan.get("after_answer_only"):
+                    self._turn_speech_gate().mute()
         if not held:
             # Хода нет — его ответ (если был) уже прозвучал.
             self._speak_identity_question(plan, after_answer=True)
@@ -2601,6 +2603,16 @@ class DialogueNode(Node):
         if plan.get("kind") not in ("tentative", "register_retry"):
             self._identity_ack_state().arm(plan)
 
+    @staticmethod
+    def _reply_names_hypothesis(plan: dict, result: Any) -> bool:
+        """Ответ LLM называет имя-гипотезу как факт («С возвращением,
+        Саша») -- такой ответ по-прежнему заменяется вопросом (#2888)."""
+        name = str(plan.get("name") or "").strip().lower()
+        if not name:
+            return False
+        stem = name[:-1] if len(name) > 3 else name
+        return stem in str(getattr(result, "spoken_text", "") or "").lower()
+
     def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
         """Выдать ответ хода — или заменить его переспросом (issue #2828).
 
@@ -2614,7 +2626,18 @@ class DialogueNode(Node):
         if plan is None:
             self._handle_result(result, **kwargs)
             return
-        replaced = str(getattr(result, "spoken_text", "") or "")[:80]
+        if plan.get("after_answer_only") and not self._reply_names_hypothesis(
+            plan, result
+        ):
+            # Вопрос про личность не должен съедать ответ на вопрос
+            # человека («какой сегодня праздник» -- «это ты?»): ответ
+            # звучит как обычно, а вопрос остаётся придержанным и
+            # прозвучит последней репликой хода (leftover в _run_turn).
+            with self._task_lock:
+                self._identity_ack_state().hold(plan)
+            self._handle_result(result, **kwargs)
+            return
+        replaced =str(getattr(result, "spoken_text", "") or "")[:80]
         if plan.get("kind") == "register_retry":
             # Issue #2908 -- своя строка: харнесс (e2e_tool_match) по
             # строке #2828 решает «робот задал вопрос о личности, ретрай
@@ -4228,7 +4251,14 @@ class DialogueNode(Node):
         if not question:
             return
         held = self._queue_identity_question(
-            {"kind": "tentative", "question": question}
+            {
+                "kind": "tentative",
+                "question": question,
+                "name": name,
+                # contested: имени-гипотезы нет, отловить «Привет, Борис»
+                # в ответе нечем -- там по-прежнему замена (#2888).
+                "after_answer_only": kind == "single" and bool(name),
+            }
         )
         self.get_logger().info(
             f"👤 [issue #2888] identity question by robot: kind={kind} "

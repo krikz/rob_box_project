@@ -266,7 +266,8 @@ class TestCase2NoHypothesisQuestionOnOtherName:
         """#2888 не сломан: без представления вопрос звучит."""
         n = _node()
         _turn(n, "робот ты меня узнал", _tentative_sasha(), "utt-4")
-        assert n.tts == ["Саша, это ты?"]
+        assert n.tts[-1] == "Саша, это ты?"
+        assert len(n.tts) == 2, n.tts
         assert n.registered == []
 
 
