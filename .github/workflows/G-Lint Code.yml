@@ -426,11 +426,6 @@ jobs:
             --ignore=scripts/testing/test_echo_cancellation.py
             # Standalone-скрипт (main(), аргументы вместо фикстур) — запускается ниже:
             --ignore=scripts/testing/test_monitoring_config.py
-            # re-enable after #3209 merge (nav2 Dockerfile ещё ставит depthimage-to-laserscan):
-            --deselect=scripts/testing/test_nav2_current_depth_obstacles.py::test_nav2_image_has_no_depthimage_to_laserscan_package
-            # re-enable after #3206 merge (тесты ждут шаги Cleanup, слитые в один parallel):
-            --deselect=scripts/testing/test_deploy_workflow_cleanup.py::test_deploy_workflow_prunes_unused_docker_artifacts_on_both_pis
-            --deselect=scripts/testing/test_deploy_workflow_cleanup.py::test_deploy_workflow_cleans_up_before_stopping_containers
           )
           python -m pytest scripts/testing/ \
             -v \
