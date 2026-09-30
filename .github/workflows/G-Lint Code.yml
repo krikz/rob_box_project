@@ -355,6 +355,42 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # scripts/testing/*.py не гонял ни один workflow (тот же дефект, что
+      # ADR-0057: «скрипт/тест написан, но не в CI»): G-Run Tests упоминает
+      # каталог только в paths:, а pytest.ini сужает testpaths до
+      # src/rob_box_harness/test. Незамеченными покраснели
+      # test_nav2_current_depth_obstacles.py (с марта), test_deploy_workflow_cleanup.py,
+      # test_rtabmap_main_pi_has_no_camera_inputs.py, test_e2e_expected_keywords.py.
+      # Гоняем КАТАЛОГ (новый test_*.py подключается сам), исключения — явно.
+      # Нужны pytest + PyYAML (ставятся выше), ни ROS, ни робота.
+      - name: scripts/testing offline tests (ADR-0057 class)
+        run: |
+          EXCLUDE=(
+            # Ручные ROS-утилиты (rclpy + robot_sensor_hub_msg / живая
+            # LED-панель), не pytest — нужен ROS и железо:
+            --ignore=scripts/testing/test_sensor_hub.py
+            --ignore=scripts/testing/test_snake_alignment.py
+            # Интерактивный (input()) мониторинг Vision Pi по ssh — нужен робот:
+            --ignore=scripts/testing/test_echo_cancellation.py
+            # Standalone-скрипт (main(), аргументы вместо фикстур) — запускается ниже:
+            --ignore=scripts/testing/test_monitoring_config.py
+            # re-enable after #3209 merge (nav2 Dockerfile ещё ставит depthimage-to-laserscan):
+            --deselect=scripts/testing/test_nav2_current_depth_obstacles.py::test_nav2_image_has_no_depthimage_to_laserscan_package
+            # re-enable after #3206 merge (тесты ждут шаги Cleanup, слитые в один parallel):
+            --deselect=scripts/testing/test_deploy_workflow_cleanup.py::test_deploy_workflow_prunes_unused_docker_artifacts_on_both_pis
+            --deselect=scripts/testing/test_deploy_workflow_cleanup.py::test_deploy_workflow_cleans_up_before_stopping_containers
+          )
+          python -m pytest scripts/testing/ \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider \
+            "${EXCLUDE[@]}"
+          # Standalone-проверки с main() → exit code: pytest их не собирает
+          # (0 тестов), поэтому зовём напрямую.
+          python scripts/testing/test_monitoring_config.py
+          python scripts/testing/test_e2e_expected_keywords.py
+          python scripts/testing/test_vision_camera_pipeline.py
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v
