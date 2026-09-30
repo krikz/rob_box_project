@@ -537,11 +537,26 @@ def _fix_pattern_length(code: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _top_level_comma(text: str) -> int:
+    """Индекс первой запятой вне скобок ``[]``/``()``/``{}``; ``-1`` — нет такой."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return i
+    return -1
+
+
 def _cap_amp(code: str, max_amp: float) -> str:
     """Ограничить громкость/октаву в коде до безопасных пределов.
 
     - ``amp=0.9`` / ``amp=P[...]`` / ``amplify=var([...])`` / ``amplify=0.8``
-      → капаются до ``max_amp``.
+      → капаются до ``max_amp``. В ``amplify=var(levels, durs, ...)``
+      капаются только уровни (первый аргумент); длительности не трогаются
+      (issue #3173).
     - ``oct=9`` → ``oct=5`` (санитарный потолок; выше — алиасинг на 16 kHz).
 
     Потолок 5 покрывает регистры аранжировщика (бас 3, пэд 4, мелодия 5) —
@@ -567,8 +582,14 @@ def _cap_amp(code: str, max_amp: float) -> str:
         def _cap_num(n: re.Match) -> str:
             return f"{min(float(n.group()), max_amp):.3g}"
 
-        inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
-        return f"amplify=var({inner})"
+        # Issue #3173: капается только первый аргумент var() — уровни.
+        # Второй (длительности шагов) и всё дальше не трогаем, иначе
+        # ``var([1, 0.3], [0.875, 0.125])`` → 0.875 становится 0.85, цикл
+        # дакинга выходит 3.9 доли вместо 4 и уезжает от бочки.
+        split = _top_level_comma(inner)
+        levels, rest = (inner, "") if split < 0 else (inner[:split], inner[split:])
+        levels = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, levels)
+        return f"amplify=var({levels}{rest})"
 
     code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
 

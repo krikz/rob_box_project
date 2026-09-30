@@ -488,7 +488,15 @@ def test_counter_off_on_dense_theme():
     code_auto = render(_spec(params))
     code_off = render(_spec(params, ArrangeOptions(counter="off")))
     assert "d3 >>" in code_auto and "d3 >>" not in code_off
-    assert _player_line(code_off, "p1") == _player_line(code_auto, "p1")
+    # Партия баса та же; ``amp=`` — результат калибровки громкости classic по
+    # ВСЕЙ форме (#3154), контрмелодия чуть сдвигает уровни секций. Issue
+    # #3173: пока санитайзер резал длительности дакинга, амплитуды баса
+    # совпадали до 4-го знака; с верным дакингом разница ≤ 0.0002 (0.3496
+    # против 0.3497) — сравниваем приблизительно.
+    strip = re.compile(r"\bamp=(var\(\[[^\]]*\], \[[^\]]*\]\)|[0-9.]+)")
+    line_off, line_auto = _player_line(code_off, "p1"), _player_line(code_auto, "p1")
+    assert strip.sub("amp=_", line_off) == strip.sub("amp=_", line_auto)
+    assert _amps(line_off) == pytest.approx(_amps(line_auto), abs=1e-3)
 
 
 def test_counter_on_on_sparse_theme():
