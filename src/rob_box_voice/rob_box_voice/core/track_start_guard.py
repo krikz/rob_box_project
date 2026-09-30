@@ -23,9 +23,13 @@ Issue #2878 — тот же живой прогон, соседняя наход
 останавливал — ``speak_text`` не запускает трек. Этот же класс теперь
 считает и реплики DJ-хода:
 
-* «DJ-ход» — эвристика без пробрасывания ``is_dj_auto`` через AgentCore:
-  ход уже запустил трек (:attr:`TrackStartGuard.started_tool`) или уже
-  вызвал ``set_dj_mode`` в этом ходе (см. :meth:`record`);
+* «DJ-ход» — ход, запущенный DJ-автопереходом (``is_dj_auto``; флаг
+  берётся из ``TURN_IS_DJ_AUTO`` на границе хода, см.
+  ``SchedulerToolExecutor.begin_turn`` и :meth:`TrackStartGuard.reset`)
+  или уже вызвавший ``set_dj_mode`` (см. :meth:`record`). Сам по себе
+  запуск трека DJ-ходом НЕ считается (issue #3221): пользовательский
+  рэп/песня/стих под бит тоже запускает трек, и куплеты не должны
+  резаться лимитом и :func:`trim_dj_speech`;
 * в DJ-ходе разрешено :data:`DEFAULT_DJ_SPEAK_LIMIT` (1) вызовов
   ``speak_text``, кроме самого первого хода сета («[DJ_AUTO — СТАРТ
   ВЕЧЕРИНКИ]», распознаётся по ``set_dj_mode(plan=...)``) — там
@@ -167,6 +171,8 @@ class TrackStartGuard:
         self._speak_count: int = 0
         self._dj_mode_seen: bool = False
         self._dj_mode_plan_seen: bool = False
+        # Issue #3221 — ход запущен DJ-автопереходом (is_dj_auto).
+        self._dj_auto: bool = False
 
     @property
     def started_tool(self) -> Optional[str]:
@@ -175,13 +181,13 @@ class TrackStartGuard:
 
     @property
     def is_dj_turn(self) -> bool:
-        """``True`` — этот ход уже проявил себя как DJ-ход (issue #2878).
+        """``True`` — это DJ-ход (issue #2878, уточнено в #3221).
 
-        Эвристика (без пробрасывания ``is_dj_auto`` через AgentCore, см.
-        module docstring): ход уже запустил трек ИЛИ уже вызвал
-        ``set_dj_mode`` — оба возможны только в DJ-оркестрации.
+        Ход, запущенный DJ-автопереходом (:meth:`reset` ``dj_auto=True``),
+        ИЛИ уже вызвавший ``set_dj_mode``. Запуск трека сам по себе не
+        признак: пользовательский рэп под бит — не DJ-ход.
         """
-        return self._started is not None or self._dj_mode_seen
+        return self._dj_auto or self._dj_mode_seen
 
     @property
     def speak_count(self) -> int:
@@ -200,8 +206,12 @@ class TrackStartGuard:
             return PARTY_START_DJ_SPEAK_LIMIT
         return DEFAULT_DJ_SPEAK_LIMIT
 
-    def reset(self) -> None:
-        """Граница хода: следующий запуск снова разрешён."""
+    def reset(self, *, dj_auto: bool = False) -> None:
+        """Граница хода: следующий запуск снова разрешён.
+
+        *dj_auto* — ход запущен DJ-автопереходом (issue #3221).
+        """
+        self._dj_auto = dj_auto
         self._started = None
         self._speak_count = 0
         self._dj_mode_seen = False

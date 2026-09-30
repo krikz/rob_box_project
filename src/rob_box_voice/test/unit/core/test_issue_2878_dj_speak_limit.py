@@ -33,6 +33,7 @@ from rob_box_voice.core.track_start_guard import (
     speak_refusal_content,
     trim_dj_speech,
 )
+from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO
 from rob_box_voice.scheduler.task_scheduler import TaskScheduler
 from rob_box_voice.scheduler.tool_executor import SchedulerToolExecutor
 
@@ -81,11 +82,19 @@ def test_fresh_guard_is_not_a_dj_turn() -> None:
     assert guard.should_refuse_speak() is False
 
 
-def test_track_start_marks_dj_turn() -> None:
+def test_dj_auto_turn_with_track_start_is_dj_turn() -> None:
     guard = TrackStartGuard()
+    guard.reset(dj_auto=True)
     guard.record("compose_music", is_error=False)
     assert guard.is_dj_turn is True
     assert guard.speak_limit == DEFAULT_DJ_SPEAK_LIMIT
+
+
+def test_track_start_alone_does_not_mark_dj_turn() -> None:
+    """Issue #3221: пользовательский рэп под бит — не DJ-ход."""
+    guard = TrackStartGuard()
+    guard.record("compose_music", is_error=False)
+    assert guard.is_dj_turn is False
 
 
 def test_set_dj_mode_marks_dj_turn_even_when_track_not_started_yet() -> None:
@@ -103,6 +112,7 @@ def test_set_dj_mode_failure_still_marks_dj_turn() -> None:
 
 def test_default_dj_speak_limit_is_one() -> None:
     guard = TrackStartGuard()
+    guard.reset(dj_auto=True)
     guard.record("compose_music", is_error=False)
     assert guard.should_refuse_speak() is False
     guard.record_speak()
@@ -131,6 +141,7 @@ def test_set_dj_mode_without_plan_keeps_default_limit() -> None:
 
 def test_reset_clears_dj_turn_and_speak_count() -> None:
     guard = TrackStartGuard()
+    guard.reset(dj_auto=True)
     guard.record("compose_music", is_error=False)
     guard.record_speak()
     guard.reset()
@@ -176,7 +187,7 @@ def _speak(call_id: str, text: str = "Йо, народ!") -> ToolCall:
     return ToolCall(id=call_id, name="speak_text", arguments={"text": text})
 
 
-async def _with_scheduler(body):
+async def _with_scheduler(body, *, dj_auto: bool = True):
     """Run *body(executor, underlying)* against a real, shut-down-on-exit
     :class:`TaskScheduler` — ``speak_text`` is channel-routed (not bypass),
     so exercising it for real needs a live scheduler + drained pump, same
@@ -186,6 +197,8 @@ async def _with_scheduler(body):
     sched = TaskScheduler()
     sched.start()
     executor = SchedulerToolExecutor(underlying, scheduler=sched)
+    # Issue #3221: лимит реплик — только в DJ-ходе; _run_turn выставляет флаг.
+    TURN_IS_DJ_AUTO.set(dj_auto)
     try:
         result = await body(executor)
         await asyncio.wait_for(sched.wait_all(), timeout=2.0)
@@ -205,7 +218,7 @@ def test_non_dj_turn_speak_text_is_unlimited() -> None:
             await executor.execute(_speak("s3")),
         ]
 
-    results, _underlying = asyncio.run(_with_scheduler(_body))
+    results, _underlying = asyncio.run(_with_scheduler(_body, dj_auto=False))
     assert all(json.loads(r.content)["status"] == "queued" for r in results)
 
 
@@ -295,5 +308,58 @@ def test_either_track_start_or_dj_mode_call_enables_speak_guard(
         return first, second
 
     (first, second), _underlying = asyncio.run(_with_scheduler(_body))
+    assert json.loads(first.content)["status"] == "queued"
+    assert json.loads(second.content)["error"] == SPEAK_REFUSAL_ERROR_CODE
+
+
+def test_user_rap_turn_with_compose_music_is_not_limited() -> None:
+    """Issue #3221: пользовательский (не DJ-авто) ход, успешный
+    ``compose_music``, затем 4 ``speak_text`` — все исполняются, без
+    обрезки (рэп «Зачитай рэп» под бит)."""
+    verse = "Строка куплета про голодного робота и колбаску на проводе. " * 6
+
+    async def _body(executor: SchedulerToolExecutor):
+        executor.begin_turn()
+        await executor.execute(
+            ToolCall(id="cm", name="compose_music", arguments={"name": "x"}))
+        return [
+            await executor.execute(_speak(f"s{i}", verse)) for i in range(4)
+        ]
+
+    results, underlying = asyncio.run(_with_scheduler(_body, dj_auto=False))
+    assert all(json.loads(r.content)["status"] == "queued" for r in results)
+    spoken = [c for c in underlying.executed if c.name == "speak_text"]
+    assert len(spoken) == 4
+    assert all(c.arguments["text"] == verse for c in spoken)
+
+
+def test_dj_auto_turn_limited_even_without_set_dj_mode() -> None:
+    """DJ-авто ход лимитируется и без set_dj_mode / запуска трека."""
+
+    async def _body(executor: SchedulerToolExecutor):
+        executor.begin_turn()
+        return (
+            await executor.execute(_speak("s1")),
+            await executor.execute(_speak("s2")),
+        )
+
+    (first, second), _u = asyncio.run(_with_scheduler(_body, dj_auto=True))
+    assert json.loads(first.content)["status"] == "queued"
+    assert json.loads(second.content)["error"] == SPEAK_REFUSAL_ERROR_CODE
+
+
+def test_user_turn_with_set_dj_mode_is_still_limited() -> None:
+    """Юзер просит «стань диджеем»: set_dj_mode в ходе — лимит действует."""
+
+    async def _body(executor: SchedulerToolExecutor):
+        executor.begin_turn()
+        await executor.execute(
+            ToolCall(id="dj", name="set_dj_mode", arguments={"enabled": True}))
+        return (
+            await executor.execute(_speak("s1")),
+            await executor.execute(_speak("s2")),
+        )
+
+    (first, second), _u = asyncio.run(_with_scheduler(_body, dj_auto=False))
     assert json.loads(first.content)["status"] == "queued"
     assert json.loads(second.content)["error"] == SPEAK_REFUSAL_ERROR_CODE

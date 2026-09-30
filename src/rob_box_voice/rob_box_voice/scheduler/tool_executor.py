@@ -42,6 +42,7 @@ from rob_box_voice.core.track_start_guard import (
     speak_refusal_content,
     trim_dj_speech,
 )
+from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO
 from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, TurnSpeechGate
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
@@ -188,9 +189,11 @@ class SchedulerToolExecutor:
 
         Вызывается ``AgentCore._run_with_tools`` один раз в начале хода
         (в отличие от :meth:`begin_group`, который зовётся на каждую
-        пачку tool_calls). Снимает лимит «один трек за ход».
+        пачку tool_calls). Снимает лимит «один трек за ход». Происхождение
+        хода (DJ-авто или юзер, issue #3221) берётся из ``TURN_IS_DJ_AUTO``:
+        лимит реплик #2878 действует только в DJ-ходе.
         """
-        self._track_guard.reset()
+        self._track_guard.reset(dj_auto=TURN_IS_DJ_AUTO.get())
 
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
