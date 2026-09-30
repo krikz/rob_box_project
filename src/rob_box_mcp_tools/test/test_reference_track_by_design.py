@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from rob_box_mcp_tools.core import sample_dave
 from rob_box_mcp_tools.core.renardo_sanitizer import (
     _fix_pattern_length,
     _play_steps,
@@ -27,32 +28,75 @@ REFERENCE = (
     Path(__file__).resolve().parents[1]
     / "rob_box_mcp_tools" / "core" / "reference_tracks" / "by_design_dj_dave.foxdot"
 )
-SYNTHS = frozenset({"pluck", "bass", "sinepad"})
+ARRAY_REFERENCE = REFERENCE.with_name("array_dj_dave.foxdot")
+SYNTHS = frozenset({"pluck", "bass", "loop"})
 
 
-def _code() -> str:
-    return REFERENCE.read_text(encoding="utf-8")
+def _code(path: Path = REFERENCE) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _with_resolved_samples(code: str) -> str:
+    """Что санитайзер обязан сделать с именами сэмплов пака DJ_Dave (#3219)."""
+    for info in sample_dave.sample_catalog().values():
+        code = code.replace(f"loop('{info.name}'", f"loop({info.path!r}")
+    return code
 
 
 def test_reference_passes_sanitizer_unchanged():
-    result = sanitize_renando(_code(), 0.85, known_synths=SYNTHS)
+    """Ни слова не меняется, кроме имён сэмплов → пути до файла."""
+    result = sanitize_renando(_code(), 0.85, known_synths=SYNTHS, pack1_loops_enabled=True)
     assert result.security_error is None
     assert result.quality_errors == ()
     assert result.slot_error is None
-    assert result.code == _code()
+    assert result.code == _with_resolved_samples(_code())
+
+
+def test_reference_uses_dj_dave_samples_from_the_catalog():
+    code = _code()
+    assert "loop('algorave_spilltab'" in code
+    assert "loop('dirt_psr_05'" in code
+    assert sample_dave.find_sample("algorave_spilltab") and sample_dave.find_sample("dirt_psr_05")
+
+
+def test_reference_is_blocked_honestly_while_pack_flag_is_off():
+    result = sanitize_renando(_code(), 0.85, known_synths=SYNTHS)
+    assert result.quality_errors, "без флага ROB_BOX_PACK1_LOOPS трек с сэмплами играть нельзя"
+
+
+def test_array_reference_passes_sanitizer_and_fits_six_slots():
+    code = _code(ARRAY_REFERENCE)
+    result = sanitize_renando(code, 0.85, known_synths=SYNTHS, pack1_loops_enabled=True)
+    assert result.security_error is None
+    assert result.quality_errors == ()
+    assert result.slot_error is None
+    assert result.code == _with_resolved_samples(code)
+    slots = re.findall(r"^([dp]\d) >>", code, re.M)
+    assert sorted(slots) == ["d1", "d2", "d3", "p1", "p2", "p3"]
+
+
+def test_array_reference_follows_the_arrangement_from_the_plan():
+    """build 16 → predrop 2 → drop 16 → verse 16 → postverse 4 тактов, 140 bpm."""
+    code = _code(ARRAY_REFERENCE)
+    assert "Clock.bpm = 140" in code
+    durations = set(re.findall(r"amp=var\(\[[^\]]*\], (\[[^\]]*\])\)", code))
+    assert durations == {"[64, 8, 64, 64, 16]"}
+    assert sum([64, 8, 64, 64, 16]) == 216 == 54 * 4
+    for sample in re.findall(r"loop\('([^']+)'", code):
+        assert sample_dave.find_sample(sample), sample
 
 
 def test_every_drum_pattern_is_one_bar_of_sixteenths():
     code_lines = "\n".join(line for line in _code().splitlines() if not line.startswith("#"))
     patterns = re.findall(r'play\("([^"]*)"', code_lines)
-    assert len(patterns) == 3
+    assert len(patterns) == 2
     for pattern in patterns:
         assert len(_play_steps(pattern)) == 16, pattern
     # По умолчанию у play() dur=0.5 (renardo_lib Players.py:602): без явного
     # dur=1/4 16 шагов длились бы 2 такта, а бас/арп с dur=1/4 — один, и
     # просадки сайдчейна не совпали бы с бочкой.
     play_lines = [line for line in code_lines.splitlines() if "play(" in line]
-    assert len(play_lines) == 3
+    assert len(play_lines) == 2
     for line in play_lines:
         assert "dur=1/4" in line, line
 

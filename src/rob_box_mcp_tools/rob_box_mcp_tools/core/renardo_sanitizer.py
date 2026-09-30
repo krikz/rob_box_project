@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
-from . import sample_fx, sample_loops
+from . import sample_dave, sample_fx, sample_loops
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -333,6 +333,15 @@ def _validate_synth_names(code: str, known_synths: Optional[FrozenSet[str]]) -> 
 # ---------------------------------------------------------------------------
 
 
+#: Источники имён для ``loop(...)``: (поиск, причина отказа). Порядок важен:
+#: лупы → FX (#2968) → сэмплы DJ_Dave (#3219); имена в каталогах не пересекаются.
+_LOOP_SOURCES = (
+    (sample_loops.find_loop, sample_loops.loop_denial),
+    (sample_fx.find_fx, sample_fx.fx_denial),
+    (sample_dave.find_sample, sample_dave.sample_denial),
+)
+
+
 def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
     """Проверить каждый ``>> loop(...)`` и переписать имя в путь до файла.
 
@@ -345,7 +354,8 @@ def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
     Issue #2968: одиночные FX (выстрел/сирена/скрэтч/лазер) играются тем
     же ``loop(...)`` синтом (нет отдельного FX-синта в Renardo), но живут в
     отдельном каталоге ``core.sample_fx`` — имя ищется там ВТОРЫМ шагом,
-    если его нет среди лупов, тем же флагом пака 1.
+    если его нет среди лупов, тем же флагом пака 1. Issue #3219: третьим
+    шагом — сэмплы DJ_Dave (``core.sample_dave``), тот же флаг.
 
     Returns:
         ``(код, ошибки)`` — код с переписанными путями (при ошибках
@@ -363,24 +373,22 @@ def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
             )
             return match.group(0)
         name = literal.group("value")
-        loop_info = sample_loops.find_loop(name)
-        if loop_info is not None:
-            denial = sample_loops.loop_denial(name, pack1_enabled)
+        for find, denial_of in _LOOP_SOURCES:
+            info = find(name)
+            if info is None:
+                continue
+            denial = denial_of(name, pack1_enabled)
             if denial is not None:
                 errors.append(denial)
                 return match.group(0)
-            return f">> loop({loop_info.path!r}"
-        fx_info = sample_fx.find_fx(name)
-        if fx_info is not None:
-            denial = sample_fx.fx_denial(name, pack1_enabled)
-            if denial is not None:
-                errors.append(denial)
-                return match.group(0)
-            return f">> loop({fx_info.path!r}"
+            return f">> loop({info.path!r}"
         known = ", ".join(sorted(sample_loops.loop_catalog()) + sorted(sample_fx.fx_catalog()))
         errors.append(
             f"Лупа/FX {name!r} нет в каталоге — Renardo его не найдёт и "
-            f"сыграет тишину без ошибки. Доступные имена: {known}."
+            f"сыграет тишину без ошибки. Доступные имена: {known}; "
+            "сэмплы DJ_Dave — группы "
+            f"{', '.join(sorted(sample_dave.group_descriptions()))} "
+            "(имена algorave_*, array_*, dirt_*, tr808_*, ddm110_*)."
         )
         return match.group(0)
 
