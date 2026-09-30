@@ -80,6 +80,41 @@ def identity_ack_plan(ack: dict, question: str) -> dict:
     }
 
 
+def tentative_plan(question: str, kind: str, name: Optional[str]) -> dict:
+    """План tentative-вопроса «<Имя>, это ты?» / «Как тебя зовут?» (#2888).
+
+    ``after_answer_only`` (только ``single`` с именем): вопрос НЕ заменяет
+    ответ хода, а звучит после него -- LLM имени-гипотезы не получает, и
+    ответ на вопрос человека («какой сегодня праздник») терять незачем.
+    У ``contested`` имени нет, «Привет, Борис» в ответе нечем поймать --
+    там по-прежнему замена.
+    """
+    return {
+        "kind": "tentative",
+        "question": question,
+        "name": name,
+        "after_answer_only": kind == "single" and bool(name),
+    }
+
+
+def reply_names_hypothesis(plan: dict, spoken_text: Optional[str]) -> bool:
+    """Ответ LLM называет имя-гипотезу как факт («С возвращением,
+    Саша») -- такой ответ по-прежнему заменяется вопросом (#2888)."""
+    name = str(plan.get("name") or "").strip().lower()
+    if not name:
+        return False
+    stem = name[:-1] if len(name) > 3 else name
+    return stem in str(spoken_text or "").lower()
+
+
+def hold_question(state: "IdentityAckQuestion", gate, plan: dict) -> None:
+    """Ход идёт -- придержать вопрос. Заменяющий ответ вопрос заодно глушит
+    свободные реплики хода (#2913); вопрос «после ответа» -- нет."""
+    state.hold(plan)
+    if not plan.get("after_answer_only"):
+        gate.mute()
+
+
 def classify_identity_ack_answer(
     text: str, kind: str, yes_no: Optional[bool] = None
 ) -> Optional[bool]:
@@ -159,6 +194,21 @@ class IdentityAckQuestion:
         with self._lock:
             plan, self._held = self._held, None
             return plan
+
+    def take_held_to_replace(self, spoken_text: Optional[str]) -> Optional[dict]:
+        """Придержанный вопрос, который ЗАМЕНИТ ответ хода.
+
+        Вопрос ``after_answer_only`` ответ не заменяет: он остаётся
+        придержанным и прозвучит последней репликой хода (``take_held``
+        в конце хода), а здесь возвращается ``None``.
+        """
+        plan = self.take_held()
+        if plan and plan.get("after_answer_only") and not (
+            reply_names_hypothesis(plan, spoken_text)
+        ):
+            self.hold(plan)
+            return None
+        return plan
 
     def arm(self, plan: dict) -> None:
         """Вопрос прозвучал — ждём ответ следующей живой репликой."""

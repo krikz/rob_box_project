@@ -215,7 +215,9 @@ from rob_box_voice.core.turn import (
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.identity_ack import (
     IdentityAckQuestion,
+    hold_question,
     identity_ack_plan,
+    tentative_plan,
 )
 from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     # ADR-0145 §4 (P1 step 1) -- moved out of this module (pure move, no
@@ -2521,11 +2523,13 @@ class DialogueNode(Node):
         with self._task_lock:
             held = self._run_task is not None
             if held:
-                self._identity_ack_state().hold(plan)
-                # Issue #2913 -- и реплики speak_text этого хода тоже.
-                # Вопрос «после ответа» ответ не заменяет -- глушить нечего.
-                if not plan.get("after_answer_only"):
-                    self._turn_speech_gate().mute()
+                # Issue #2913 -- заменяющий вопрос глушит и реплики
+                # speak_text этого хода (см. hold_question).
+                hold_question(
+                    self._identity_ack_state(),
+                    self._turn_speech_gate(),
+                    plan,
+                )
         if not held:
             # Хода нет — его ответ (если был) уже прозвучал.
             self._speak_identity_question(plan, after_answer=True)
@@ -2603,16 +2607,6 @@ class DialogueNode(Node):
         if plan.get("kind") not in ("tentative", "register_retry"):
             self._identity_ack_state().arm(plan)
 
-    @staticmethod
-    def _reply_names_hypothesis(plan: dict, result: Any) -> bool:
-        """Ответ LLM называет имя-гипотезу как факт («С возвращением,
-        Саша») -- такой ответ по-прежнему заменяется вопросом (#2888)."""
-        name = str(plan.get("name") or "").strip().lower()
-        if not name:
-            return False
-        stem = name[:-1] if len(name) > 3 else name
-        return stem in str(getattr(result, "spoken_text", "") or "").lower()
-
     def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
         """Выдать ответ хода — или заменить его переспросом (issue #2828).
 
@@ -2622,19 +2616,13 @@ class DialogueNode(Node):
         одно из двух — вопрос, и робот ждёт ответа человека.
         """
         with self._task_lock:
-            plan = self._identity_ack_state().take_held()
+            # Вопрос про личность «после ответа» ответ не съедает
+            # («какой сегодня праздник» -- «это ты?»): план остаётся
+            # придержанным и прозвучит последней репликой хода.
+            plan = self._identity_ack_state().take_held_to_replace(
+                getattr(result, "spoken_text", None)
+            )
         if plan is None:
-            self._handle_result(result, **kwargs)
-            return
-        if plan.get("after_answer_only") and not self._reply_names_hypothesis(
-            plan, result
-        ):
-            # Вопрос про личность не должен съедать ответ на вопрос
-            # человека («какой сегодня праздник» -- «это ты?»): ответ
-            # звучит как обычно, а вопрос остаётся придержанным и
-            # прозвучит последней репликой хода (leftover в _run_turn).
-            with self._task_lock:
-                self._identity_ack_state().hold(plan)
             self._handle_result(result, **kwargs)
             return
         replaced =str(getattr(result, "spoken_text", "") or "")[:80]
@@ -4251,14 +4239,7 @@ class DialogueNode(Node):
         if not question:
             return
         held = self._queue_identity_question(
-            {
-                "kind": "tentative",
-                "question": question,
-                "name": name,
-                # contested: имени-гипотезы нет, отловить «Привет, Борис»
-                # в ответе нечем -- там по-прежнему замена (#2888).
-                "after_answer_only": kind == "single" and bool(name),
-            }
+tentative_plan(question, kind, name)
         )
         self.get_logger().info(
             f"👤 [issue #2888] identity question by robot: kind={kind} "
