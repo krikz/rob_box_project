@@ -330,6 +330,39 @@ done
 
 _missing_count=${#_missing[@]}
 
+# Тело auto-issue для orphan-watchdog'а $1. Heredoc вместо однострочного
+# printf '...': раньше апостроф в «watchdog'ах» закрывал single-quoted
+# format-строку (shellcheck SC1011), аргументы сдвигались, и в issue
+# уходило тело без $MARKER_TAG в начале, без имени скрипта и с
+# «ensure__watchdog_cron» (follow-up #3029).
+_orphan_issue_body() {
+    local f="$1"
+    local slug="${f#agent-flow-}"
+    slug="${slug%.sh}"
+    slug="${slug//-/_}"
+    cat <<BODY_EOF
+$MARKER_TAG
+
+## Affected watchdog scripts (без cron)
+
+$f
+
+## Что делать
+
+1. Добавить в scripts/agent_flow/install.sh:
+   \`\`\`
+   ensure_${slug}_cron() {
+       ensure_cron_job <profile> "Agent Flow <Name> Watchdog" "$f" "every Nh" interval
+   }
+   ensure_${slug}_cron
+   \`\`\`
+   Где \`<profile>\` = \`devops\` (по умолчанию) или \`agent-flow\`.
+2. Запустить на хосте: \`bash scripts/agent_flow/install.sh\`.
+
+Регрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled), t_197de62a (cancel-on-provider-exhausted), t_4c796522 (orphan-watchdog false-positive на cross-profile watchdog'ах).
+BODY_EOF
+}
+
 # --- 4) emit alerts для каждого orphan -------------------------------------
 _alerts_emitted=0
 _errors=0
@@ -372,7 +405,7 @@ except Exception:
                     --repo "$GH_REPO" \
                     --label "agent-flow-watchdog-orphan" \
                     --title "🛡 agent-flow-orphan-watchdog: $f без cron-job" \
-                    --body "$(printf '%s\n\n## Affected watchdog scripts (без cron)\n\n%s\n\n## Что делать\n\n1. Добавить в scripts/agent_flow/install.sh:\n   ```\n   ensure_%s_watchdog_cron() {\n       ensure_cron_job <profile> \"Agent Flow <Name> Watchdog\" \"<basename>\" \"every Nh\" interval\n   }\n   ensure_%s_watchdog_cron\n   ```\n   Где `<profile>` = `devops` (по умолчанию) или `agent-flow`.\n2. Запустить на хосте: \`bash scripts/agent_flow/install.sh\`.\n\nРегрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled), t_197de62a (cancel-on-provider-exhausted), t_4c796522 (orphan-watchdog false-positive на cross-profile watchdog'ах).\n' "$MARKER_TAG" "$f" "${f#agent-flow-}" "${f%-watchdog.sh}" "${f#agent-flow-}" 2>&1 | head -3 | tr -d '\r')" ; then
+                    --body "$(_orphan_issue_body "$f")" ; then
                     _alerts_emitted=$((_alerts_emitted + 1))
                 else
                     _errors=$((_errors + 1))

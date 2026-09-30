@@ -23,6 +23,11 @@
 #   C6. Явный override NON_CRON_WATCHDOGS=<только fail-streak> → drift и
 #       rotation снова флагаются (доказывает, что их пропускает именно
 #       default, а не что-то другое).
+#   C7. Тело auto-issue (`gh issue create --body`) — фейковый gh пишет
+#       --body в файл, тест сверяет его целиком с ожидаемым текстом.
+#       Регресс на SC1011: апостроф в «watchdog'ах» рвал single-quoted
+#       printf, и в issue уходило тело без marker-tag, без имени скрипта
+#       и с «ensure__watchdog_cron».
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_orphan_watchdog_scope.sh
@@ -293,6 +298,76 @@ for _obs in agent-flow-e2e-drift-watchdog.sh agent-flow-rotation-watchdog.sh; do
         fail_count=$((fail_count + 1))
     fi
 done
+
+# === C7: полный текст --body у gh issue create ===
+echo
+_log_marker "========== C7: gh issue create --body (fake gh captures args) =========="
+mkdir -p "$WORK/gh_capture"
+# Unquoted heredoc: $WORK вшивается в mock на момент создания (env -i его
+# не пробросит); \$ — переменные самого mock'а.
+cat > "$WORK/bin/gh" <<GH_EOF
+#!/bin/bash
+if [ "\$1 \$2" = "issue create" ]; then
+    while [ \$# -gt 0 ]; do
+        if [ "\$1" = "--body" ]; then
+            printf '%s' "\$2" > "$WORK/gh_capture/body.txt"
+        fi
+        shift
+    done
+fi
+exit 0
+GH_EOF
+chmod +x "$WORK/bin/gh"
+
+out_c7=$(env -i HOME="$WORK" PATH="$WORK/bin:$PATH" \
+    HERMES_HOME="$WORK/hermes" \
+    REPO_DIR="$WORK" \
+    ALERT_LOG="$WORK/alert_c7.log" \
+    LOCK_FILE="$WORK/wd.lock" \
+    LOG_FILE="$WORK/wd.log" \
+    DRY_RUN=false \
+    STALE_DEDUP_HOURS=999999 \
+    bash "$WATCHDOG_SH" 2>&1)
+rc_c7=$?
+echo "$out_c7" | grep '^watchdog-orphan-detector:' || true
+assert_eq "C7 exit code (1 missing → alert)" "2" "$rc_c7"
+
+# Ожидаемое тело для единственного orphan'а C2-набора (default MARKER_TAG).
+cat > "$WORK/gh_capture/expected.txt" <<'EXPECTED_EOF'
+🤖 watchdog-orphan-detector
+
+## Affected watchdog scripts (без cron)
+
+agent-flow-not-registered-anywhere-watchdog.sh
+
+## Что делать
+
+1. Добавить в scripts/agent_flow/install.sh:
+   ```
+   ensure_not_registered_anywhere_watchdog_cron() {
+       ensure_cron_job <profile> "Agent Flow <Name> Watchdog" "agent-flow-not-registered-anywhere-watchdog.sh" "every Nh" interval
+   }
+   ensure_not_registered_anywhere_watchdog_cron
+   ```
+   Где `<profile>` = `devops` (по умолчанию) или `agent-flow`.
+2. Запустить на хосте: `bash scripts/agent_flow/install.sh`.
+
+Регрессия: ретро t_6687a024 (stale-conflicting-watchdog-not-scheduled), t_197de62a (cancel-on-provider-exhausted), t_4c796522 (orphan-watchdog false-positive на cross-profile watchdog'ах).
+EXPECTED_EOF
+# $(...) в watchdog'е срезает хвостовой \n — сравниваем без него.
+printf '%s' "$(cat "$WORK/gh_capture/expected.txt")" > "$WORK/gh_capture/expected.trim"
+
+if [ ! -f "$WORK/gh_capture/body.txt" ]; then
+    echo "  FAIL  C7 fake gh did not receive 'issue create --body'"
+    fail_count=$((fail_count + 1))
+elif cmp -s "$WORK/gh_capture/expected.trim" "$WORK/gh_capture/body.txt"; then
+    echo "  PASS  C7 issue body matches expected text exactly ($(wc -c < "$WORK/gh_capture/body.txt") bytes)"
+    pass_count=$((pass_count + 1))
+else
+    echo "  FAIL  C7 issue body differs from expected:"
+    diff -u "$WORK/gh_capture/expected.trim" "$WORK/gh_capture/body.txt" | sed 's/^/    /'
+    fail_count=$((fail_count + 1))
+fi
 
 echo
 echo "=== test_orphan_watchdog_scope.sh: passed=$pass_count failed=$fail_count ==="
