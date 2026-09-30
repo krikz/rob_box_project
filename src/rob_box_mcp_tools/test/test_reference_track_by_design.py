@@ -103,6 +103,44 @@ def test_array_reference_uses_only_catalog_samples_and_documented_gaps():
     assert "НЕ перенесено" in code, "нехватка шести слотов должна быть записана в шапке"
 
 
+def test_every_drum_pattern_is_one_bar_of_sixteenths():
+    code_lines = "\n".join(line for line in _code().splitlines() if not line.startswith("#"))
+    patterns = re.findall(r'play\("([^"]*)"', code_lines)
+    assert len(patterns) == 2
+    for pattern in patterns:
+        assert len(_play_steps(pattern)) == 16, pattern
+    # По умолчанию у play() dur=0.5 (renardo_lib Players.py:602): без явного
+    # dur=1/4 16 шагов длились бы 2 такта, а бас/арп с dur=1/4 — один, и
+    # просадки сайдчейна не совпали бы с бочкой.
+    play_lines = [line for line in code_lines.splitlines() if "play(" in line]
+    assert len(play_lines) == 2
+    for line in play_lines:
+        assert "dur=1/4" in line, line
+
+
+def test_sidechain_dips_exactly_on_kick_steps():
+    code = _code()
+    kick = _play_steps(re.search(r'd1 >> play\("([^"]*)"', code).group(1))
+    kick_steps = {i for i, step in enumerate(kick) if "X" in step}
+    # p1/p2 и psr (d3, 16 ударов на такт с sidechain-постгейном оригинала)
+    for player in ("p1", "p2", "d3"):
+        block = code[code.index(f"{player} >>"):]
+        amps = [float(v) for v in re.search(r"amp=P\[([^\]]*)\]", block).group(1).split(",")]
+        assert len(amps) == 16
+        dips = {i for i, v in enumerate(amps) if v == min(amps)}
+        assert dips == kick_steps, player
+        assert max(amps) / min(amps) == pytest.approx(3.0)
+
+
+def test_spilltab_is_32_sequential_beat_chops_of_an_8_bar_file():
+    """loopAt(8).chop(32): 32 куска по доле; 19.2 с = 32 доли при 100 bpm."""
+    code = _code()
+    positions = re.search(r"algorave_spilltab', P\[([^\]]*)\]", code).group(1)
+    assert [int(v) for v in positions.split(",")] == list(range(32))
+    assert "dur=1," in code[code.index("algorave_spilltab"):]
+    assert sample_dave.find_sample("algorave_spilltab").seconds == pytest.approx(32 * 60 / 100)
+
+
 @pytest.mark.parametrize(
     "pattern, expected",
     [
