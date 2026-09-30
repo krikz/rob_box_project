@@ -69,6 +69,8 @@ from ..core import renardo_sanitizer, sample_fx, sample_loops
 from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
+from ..core.club_history import recent_club_rows, remember_club
+from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
     FADE_BARS,
@@ -3491,10 +3493,14 @@ class ComposeMusicTool(MCPTool):
         manager: MusicManager,
         rtttl_library: Optional[RtttlLibrary] = None,
         preset_store: Optional[ArrangementPresetStore] = None,
+        music_history: Optional[MusicHistory] = None,
     ) -> None:
         super().__init__(node)
         self._manager = manager
         self._rtttl_library = rtttl_library
+        #: Issue #3224 / ADR-0146: персистентная история сыгранного club-треков.
+        #: ``None`` (тесты, сборки без БД) — выбор каркаса без памяти, как раньше.
+        self._music_history = music_history
         #: ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned).
         #: ``None`` (тесты старых сборок) — пресеты просто не применяются,
         #: вызов ведёт себя как до PR-7.
@@ -4468,14 +4474,16 @@ class ComposeMusicTool(MCPTool):
         bpm = 124 if bpm is None else bpm
         repeat = bool(kwargs.get("repeat", False))
         seed = kwargs.get("seed") or 0
-        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры).
-        kit = club_kit(seed)
+        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры);
+        # issue #3224: со штрафом за то, что уже играло (история между запусками).
+        recent = recent_club_rows(self._music_history)
+        kit = club_kit(seed, recent=recent)
         fade_note = self._fade_outlives_form(bpm) if fade else ""
         if fade_note:
             fade = False
         try:
             hook, hook_info = self._club_hook(kwargs, bpm)
-            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook)
+            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent)
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
         self.log_info(
@@ -4489,6 +4497,7 @@ class ComposeMusicTool(MCPTool):
             return MCPToolResult(success=False, error=result["error"])
         duration_s = (form_beats - entry) * 60.0 / float(bpm) + fade_tail
         self._club_publish_state(kwargs, bpm, duration_s, repeat, hook_info)
+        self.log_info(remember_club(self._music_history, kwargs, kit, seed, bpm, hook_info, recent))
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
@@ -4543,7 +4552,7 @@ class ComposeMusicTool(MCPTool):
     @staticmethod
     def _club_program(
         kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
-        hook: Optional[ClubHook] = None,
+        hook: Optional[ClubHook] = None, recent: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, int, int]:
         """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
 
@@ -4555,7 +4564,7 @@ class ComposeMusicTool(MCPTool):
         dj_entry = fade and align
         code = render_club(
             bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
-            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook,
+            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook, recent=recent,
         )
         form_beats = club_form_beats(template)
         entry = club_entry_beats(template) if dj_entry else 0

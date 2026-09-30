@@ -146,6 +146,7 @@ except ImportError as _exc:  # noqa: BLE001
     GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
+from .core.music_diversity import MusicHistory
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
@@ -1312,8 +1313,12 @@ class MCPServer(Node):
 
         # Форма трека строится кодом, а не LLM (RC4 в
         # docs/analysis/2026-08-30-music-quality-audit.md).
+        # Issue #3224 / ADR-0146: персистентная история сыгранного (та же БД,
+        # что у RTTTL-библиотеки). Недоступна → WARNING в логе и выбор без памяти.
+        music_history = MusicHistory()
+        music_history.announce(self.get_logger())
         self._compose_music_tool = ComposeMusicTool(
-            self, music_manager, rtttl_library, preset_store
+            self, music_manager, rtttl_library, preset_store, music_history
         )
         self.registry.register(self._compose_music_tool)
         self.registry.register(
