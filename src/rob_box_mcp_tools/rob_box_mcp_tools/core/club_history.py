@@ -33,7 +33,9 @@ def remember_club(
     progression = None if hook_info else club_progression(seed, recent)
     stored = history is not None and history.record(
         style="club", progression=progression, root=kwargs.get("root") or "A#", bpm=bpm,
-        scale=kwargs.get("scale") or "minor", melody_name=hook_info["id"] if hook_info else None, **kit,
+        scale=kwargs.get("scale") or "minor", melody_name=hook_info["id"] if hook_info else None,
+        fragment_offset=hook_info.get("offset") if hook_info else None,
+        hook_fingerprint=hook_info.get("fingerprint") if hook_info else None, **kit,
     )
     return (
         f"[#3224] club выбор: seed={seed}, progression={progression}, "

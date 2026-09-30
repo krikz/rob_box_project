@@ -25,7 +25,9 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Union
 
-__all__ = ["RtttlLibrary", "covers_tokens", "display_title", "human_track_title", "match_info"]
+__all__ = [
+    "RtttlLibrary", "covers_tokens", "display_title", "human_track_title", "match_info", "melody_quality",
+]
 
 #: Имя архива внутри пакета ``rob_box_mcp_tools/data/``.
 _ARCHIVE_NAME = "rtttl_melodies.jsonl.gz"
@@ -211,6 +213,11 @@ def _melody_quality(rtttl: str) -> float:
     if default_octave >= 7 or default_octave <= 2:
         score -= abs(default_octave - 5) * 2.0
     return score
+
+
+def melody_quality(rtttl: str) -> float:
+    """Публичная обёртка :func:`_melody_quality` (issue #3225: отбор club-фрагментов)."""
+    return _melody_quality(rtttl)
 
 
 #: Английские стоп-слова, встречающиеся почти в каждом названии («of», «the»,
@@ -846,7 +853,7 @@ class RtttlLibrary:
         self._ru_alias_cache[melody_key] = found
         return found
 
-    def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 20, include_rtttl: bool = False) -> List[Dict[str, Any]]:
         """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.
 
         Сортировка: текстовый скор (главный ключ — решает семантику
@@ -896,4 +903,4 @@ class RtttlLibrary:
             return (-match, garbage, -quality, (row["title"] or "").lower())
 
         scored.sort(key=_sort_key)
-        return [self._to_dict(row) for _m, _g, row, _q in scored[:limit]]
+        return [self._to_dict(row, include_rtttl) for _m, _g, row, _q in scored[:limit]]
