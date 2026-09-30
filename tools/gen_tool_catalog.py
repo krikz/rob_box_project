@@ -602,6 +602,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "search_samples",
         "lookup_melody",
         "search_melody",
+        "add_music_material",
         "search_web",
         "get_music_state",
         "stop_music",
@@ -609,6 +610,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     ),
     "dj": (
         "set_dj_mode",
+        "add_music_material",
         "get_music_state",
         "stop_music",
         "set_music_volume",

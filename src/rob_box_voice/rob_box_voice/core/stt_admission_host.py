@@ -38,6 +38,16 @@ from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 if TYPE_CHECKING:  # pragma: no cover -- avoids a circular import at runtime
     from rob_box_voice.dialogue_node import DialogueNode
 
+class _NoIntake:
+    """Заглушка для нод/харнессов без ``_material_intake``."""
+
+    @staticmethod
+    def on_text(_text: str) -> bool:
+        return False
+
+
+_NO_INTAKE = _NoIntake()
+
 # S7 (scheduler-segments-merge, issue #968) — upper bound on
 # ``_pending_user_messages`` so a run of barge-ins during one very long
 # LLM turn cannot grow the queue unbounded. Appending past this cap
@@ -192,6 +202,9 @@ class _DialogueSttHost:
 
     def handle_media_command(self, text: str) -> bool:
         # Issue #3134 — медиакоманды кодом, до LLM (и в TG, и в DJ-режиме).
+        # Issue #3227 — попутно: музыкальный материал в реплике принимается
+        # кодом (реплика при этом идёт дальше — LLM ответит человеку).
+        getattr(self._node, "_material_intake", _NO_INTAKE).on_text(text)
         return self._node._route_media_command(text, on_miss=self.media_miss)
 
     def reset_session(

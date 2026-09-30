@@ -25,8 +25,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+from .dj_material import choose_melody, consume_material
 from .dj_set_walk import CLUB_ROOTS, apply_bpm_request, bpm_is_request, club_key, related_root, state_bpm  # noqa: F401 — реэкспорт
-from .dj_theme_melodies import melody_pool_for_theme, pick_melody
+from .dj_theme_melodies import melody_pool_for_theme
 
 
 # States where DJ-mode should defer its transition by 15 seconds.
@@ -161,6 +162,11 @@ class DJState:
     # трек #1 уже звучит, переход #1 — обычный переход к треку #2, без
     # исследования («СТАРТ ВЕЧЕРИНКИ» с search_web и т.п. не нужен).
     preview_started: bool = False
+    # Issue #3227 — имя присланного человеком материала (RTTTL-библиотека,
+    # source=user) и когда принят: ближайший переход играет его хук
+    # (:mod:`.dj_material`). ``""`` — материала нет.
+    pending_material: str = ""
+    pending_material_at: float = 0.0
 
 
 @dataclass
@@ -863,6 +869,7 @@ class DJModeController:
             self._hold_for_user_track()
             return False
         self.state.tracks_started += 1
+        consume_material(self.state)  # #3227: материал отдан треку сета
         self._logger.info(
             f"🎧 DJ трек #{self.state.tracks_started} запущен "
             f"(переход #{self.state.transition_count})"
@@ -995,9 +1002,7 @@ class DJModeController:
         #3113 п.2) — это ожидаемо, контракт этой функции — только строка
         вызова.
         """
-        melody = pick_melody(
-            self.state.melody_pool, track_no, self.state.played_names
-        )
+        melody = choose_melody(self.state, self._clock(), track_no)
         root, scale = club_key(self.state, self._set_root(), track_no, hooked=bool(melody))
         name_part = f'name="{melody}", ' if melody else ""
         if melody:

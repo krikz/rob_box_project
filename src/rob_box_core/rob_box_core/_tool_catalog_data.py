@@ -26,6 +26,42 @@ from typing import Any
 #: code that runs it.
 TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
+        'name': 'add_music_material',
+        'description': 'Принять музыкальный материал, который человек ПРИСЛАЛ в '
+                       'сообщении (RTTTL-строка, Strudel/Tidal-код '
+                       'note("...")/n("..."), или список нот «e4 g4 b4 c5»), и '
+                       'сохранить его в библиотеку мелодий. Возвращает name — им '
+                       'играется хук: compose_music(style="club", name=<name>). '
+                       'Передай text ДОСЛОВНО как прислал человек. Если не распознал — '
+                       'вернёт честную ошибку: скажи об этом и не выдумывай ноты.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'text': {   'type': 'string',
+                                                        'description': 'Текст '
+                                                                       'сообщения с '
+                                                                       'материалом '
+                                                                       'дословно (код, '
+                                                                       'RTTTL или '
+                                                                       'ноты).'},
+                                            'title': {   'type': 'string',
+                                                         'description': 'Название '
+                                                                        'материала '
+                                                                        '(необязательно; '
+                                                                        'иначе из '
+                                                                        'комментария в '
+                                                                        'коде).'}},
+                          'required': ['text'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['text', 'title'],
+                         'required': ['text'],
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj')},
+    {   'llm_visible': True,
+        'read_only': False,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
