@@ -139,9 +139,11 @@ plain rectangle shape, no rounded corners, no notches, no cutouts, no buttons.
 |---|---|---|
 | 1 | Подиум | `bridge_platform.glb` |
 | 2 | Экран | `bridge_screen.glb` |
-| 3 | Голо-проектор | `bridge_holo_projector.glb` |
+| 3 | Голо-проектор | `bridge_holo_projector.glb` — **убран 30.09.2026** по решению Шифу (мешал обзору экрана) |
 | 4 | Консоль-подиум | `bridge_console_podium.glb` |
 | 5 | Холо-кольцо | `bridge_holo_ring.glb` |
+
+> **30.09.2026:** голо-проекторы (Tripo3D `heroHoloProjector`/`heroHoloRight` и процедурные в `bridge_props`, а также nav-зоны `holo-left/right`) убраны со сцены по решению Шифу — мешали обзору главного экрана. Упоминания проектора ниже — историческая запись, не текущее состояние.
 
 ---
 

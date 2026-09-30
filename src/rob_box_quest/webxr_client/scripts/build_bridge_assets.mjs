@@ -31,7 +31,7 @@
 // Design (Senior UI/UX):
 //   - Hex-grid floor 7×8м, dark metal + emissive cyan lines (sci-fi command bridge)
 //   - Walls 4 шт + viewports + console strips
-//   - Props: captain chair + curved main console (3 sectors) + 4 side terminals + 2 holo-projectors
+//   - Props: captain chair + curved main console (3 sectors) + 4 side terminals (голо-проекторы убраны 30.09.2026 — мешали обзору экрана)
 //   - Nav-points: 7 точек (центр + консоль + side terminals + 2 входа в зону ходьбы)
 //   - Occluders: 4 плоскости рядом со стенами — при hide-UI панели уходят за стену
 //
@@ -425,38 +425,6 @@ function makeSideTerminal(x, z, rotY = 0) {
   return group;
 }
 
-function makeHoloProjector(x, z) {
-  const group = new THREE.Group();
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.15, 0.2, 0.2, 8),
-    new THREE.MeshStandardMaterial({ color: COL.console, roughness: 0.5, metalness: 0.8, flatShading: true })
-  );
-  base.position.y = 0.1;
-  group.add(base);
-  const emitter = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.08, 0.08, 0.1, 6),
-    new THREE.MeshStandardMaterial({
-      color: COL.holo, emissive: COL.holo, emissiveIntensity: 1.5,
-      roughness: 0.2, metalness: 0.3, flatShading: true,
-    })
-  );
-  emitter.position.y = 0.25;
-  group.add(emitter);
-  const holoDisc = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.45, 0.05, 0.6, 6, 1, true),
-    new THREE.MeshStandardMaterial({
-      color: COL.holo, emissive: COL.holo, emissiveIntensity: 1.0,
-      roughness: 0.2, metalness: 0.0,
-      transparent: true, opacity: 0.4, side: THREE.DoubleSide,
-      flatShading: true,
-    })
-  );
-  holoDisc.position.y = 0.65;
-  group.add(holoDisc);
-  group.position.set(x, 0, z);
-  return group;
-}
-
 function buildProps() {
   const group = new THREE.Group();
   group.name = "bridge_props";
@@ -469,8 +437,6 @@ function buildProps() {
   group.add(makeSideTerminal(-3.2, -0.5, Math.PI / 2));
   group.add(makeSideTerminal(3.2, 0.5, -Math.PI / 2));
   group.add(makeSideTerminal(3.2, -0.5, -Math.PI / 2));
-  group.add(makeHoloProjector(-1.0, -1.8));
-  group.add(makeHoloProjector(1.0, -1.8));
   return group;
 }
 
@@ -489,8 +455,6 @@ function buildNav() {
     { id: "terminal-r", pos: [3.2, 0.5, 0.5],      size: [0.7, 1.0, 0.5],  kind: "terminal", color: COL.navTerminal, label: "right side terminal" },
     { id: "entry-back", pos: [0, 0.05, -3.5],      size: [1.4, 0.1, 0.6],  kind: "entry",    color: COL.navEntry,    label: "back entry (teleport anchor)" },
     { id: "entry-front", pos: [0, 0.05, 3.5],      size: [1.4, 0.1, 0.6],  kind: "entry",    color: COL.navEntry,    label: "front entry (teleport anchor)" },
-    { id: "holo-left",  pos: [-1.0, 0.5, -1.8],    size: [0.6, 1.2, 0.6],  kind: "holo",     color: COL.navOrigin,   label: "left holo-projector zone" },
-    { id: "holo-right", pos: [1.0, 0.5, -1.8],     size: [0.6, 1.2, 0.6],  kind: "holo",     color: COL.navOrigin,   label: "right holo-projector zone" },
   ];
   const navPoints = [];
   for (const d of defs) {

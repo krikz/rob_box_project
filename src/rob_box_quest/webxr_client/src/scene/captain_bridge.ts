@@ -874,7 +874,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Hero props (Tripo3D, 2026-09-26) — расставляются после загрузки
   // environment-GLB. Масштаб моделей Tripo3D неизвестен заранее, поэтому
   // позиция/размер вычисляются из bounding box под целевые размеры сцены.
-  let heroHoloRight: THREE.Group | null = null;
   function placeHeroProps(env: BridgeAssetHandle): void {
     const g = env.groups;
 
@@ -891,28 +890,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
     // Подиум — под оператором (спавн (0,0,0)), диаметр ~2 м.
     if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, { width: 2 });
-
-    // Голо-проекторы — слева и справа от оператора, высота ~0.9 м.
-    if (g.heroHoloProjector) {
-      placeOnFloor(g.heroHoloProjector, -1, -1.8, { height: 0.9 });
-      heroHoloRight = g.heroHoloProjector.clone(true);
-      heroHoloRight.name = "bridge_holo_projector_right";
-      // `clone(true)` deep-clones the Object3D graph but NOT materials
-      // (three.js shares them by reference) — deep-clone materials too so
-      // `environment.dispose()` (which walks `g.heroHoloProjector`) and the
-      // separate `heroHoloRight` dispose below each dispose their own
-      // material exactly once, never the same shared one twice (#3045).
-      heroHoloRight.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (mesh.material) {
-          mesh.material = Array.isArray(mesh.material)
-            ? mesh.material.map((m) => m.clone())
-            : mesh.material.clone();
-        }
-      });
-      placeOnFloor(heroHoloRight, 1, -1.8, { height: 0.9 });
-      scene.add(heroHoloRight);
-    }
 
     // Рамка экрана — ЗА главным экраном: полотно рамки ровно под видео
     // (4.8 × 2.7, центр (0, 1.5, −3.9)), видео на 1 см впереди переднего
@@ -1536,14 +1513,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     hoverFrame.geometry.dispose();
     (hoverFrame.material as THREE.Material).dispose();
     environment?.dispose();
-    if (heroHoloRight) {
-      heroHoloRight.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        mesh.geometry?.dispose?.();
-        const mat = mesh.material as THREE.Material | undefined;
-        if (mat && "dispose" in mat && typeof mat.dispose === "function") mat.dispose();
-      });
-    }
     armTexture.dispose();
     shell.dispose();
     statusHud.dispose();
