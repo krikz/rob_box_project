@@ -7,7 +7,9 @@
 собирает тот же ответ тула, что и раньше.
 """
 
-from rob_box_mcp_tools.core.renardo_sanitizer import sanitize_renando
+import pytest
+
+from rob_box_mcp_tools.core.renardo_sanitizer import _cap_amp, sanitize_renando
 
 MAX_AMP = 0.7
 
@@ -179,3 +181,56 @@ def test_synth_missing_on_server_is_rejected_and_not_suggested():
     assert errors
     assert any("Синта 'sine' не существует" in e for e in errors)
     assert not any("имелся в виду 'sine'" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Issue #3173 — кап amplify=var(...) не трогает длительности
+# ---------------------------------------------------------------------------
+
+
+def test_cap_amplify_var_keeps_durations_untouched():
+    """Репро из issue #3173: 0.875 — длительность шага, не уровень."""
+    out = _cap_amp("p1 >> bass([0], amplify=var([1, 0.3], [0.875, 0.125]))", 0.85)
+    assert out == "p1 >> bass([0], amplify=var([0.85, 0.3], [0.875, 0.125]))"
+
+
+def test_cap_amplify_var_keeps_long_duck_cycle_of_the_arranger():
+    """Огибающая дакинга аранжировщика: сумма длительностей = 4 доли."""
+    code = (
+        "p1 >> bass([0], amplify=var([0.3, 1, 0.3, 1, 0.3, 1, 0.3, 1], "
+        "[0.125, 0.875, 0.125, 0.875, 0.125, 0.875, 0.125, 0.875]))"
+    )
+    out = _cap_amp(code, 0.85)
+    assert "[0.125, 0.875, 0.125, 0.875, 0.125, 0.875, 0.125, 0.875]" in out
+    assert "var([0.3, 0.85, 0.3, 0.85, 0.3, 0.85, 0.3, 0.85]," in out
+
+
+def test_cap_amplify_var_keeps_scalar_duration():
+    """``var(levels, 4)`` — скалярная длительность тоже не капается."""
+    out = _cap_amp("p1 >> bass([0], amplify=var([1, 0.3], 4))", 0.85)
+    assert out == "p1 >> bass([0], amplify=var([0.85, 0.3], 4))"
+
+
+def test_cap_amplify_var_single_list_still_capped():
+    out = _cap_amp("d1 >> play('X', amplify=var([1, 0.3]))", 0.7)
+    assert out == "d1 >> play('X', amplify=var([0.7, 0.3]))"
+
+
+def test_cap_amplify_plain_number_still_capped():
+    out = _cap_amp("d1 >> play('X', amplify=0.9)", 0.7)
+    assert out == "d1 >> play('X', amplify=0.7)"
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        # Вложенный var в уровнях: регэксп захватывает до первой ``)``,
+        # верхнеуровневой запятой в захвате нет — капается всё, как и раньше.
+        (
+            "p1 >> bass([0], amplify=var([1, var([0.9, 0.2])], [2, 2]))",
+            "p1 >> bass([0], amplify=var([0.85, var([0.85, 0.2])], [2, 2]))",
+        ),
+    ],
+)
+def test_cap_amplify_nested_var_behaviour_is_preserved(code, expected):
+    assert _cap_amp(code, 0.85) == expected
