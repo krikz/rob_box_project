@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
-from .dj_material import choose_melody, consume_material
+from .dj_material import choose_melody, consume_if_played_in_turn, consume_material
 from .dj_set_walk import CLUB_ROOTS, apply_bpm_request, bpm_is_request, club_key, related_root, state_bpm  # noqa: F401 — реэкспорт
 from .dj_theme_melodies import melody_pool_for_theme
 
@@ -864,6 +864,7 @@ class DJModeController:
         tools = set(tools_called)
         if not tools & set(music_tools):
             return False
+        consume_if_played_in_turn(self.state, turn_text)  # #3227: LLM сыграл материал сам
         set_turn = is_dj_auto or "[DJ_AUTO" in (turn_text or "")
         if not set_turn and "set_dj_mode" not in tools:
             self._hold_for_user_track()

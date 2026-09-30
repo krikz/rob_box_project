@@ -42,6 +42,34 @@ def test_chord_alternation_is_a_stack():
     assert cycles == 1 and sorted(t for _s, _d, t in events) == ["b2", "e2", "g2"]
 
 
+def _flat(text):
+    events, cycles = parse_events(text)
+    return cycles, [(str(s), str(d), t) for s, d, t in sorted(events, key=lambda e: (e[0], e[2]))]
+
+
+def test_nested_alternation_in_fast_group_follows_cycle_index():
+    # Strudel: [a <b c>] — b в цикле 0, c в цикле 1.
+    cycles, ev = _flat("[a <b c>]")
+    assert cycles == 2 and [t for _s, _d, t in ev] == ["a", "b", "a", "c"]
+    # Внутри *2 номер цикла c*2+k: b, c в ОДНОМ цикле.
+    cycles, ev = _flat("[a <b c>]*2")
+    assert cycles == 1 and [t for _s, _d, t in ev] == ["a", "b", "a", "c"]
+    cycles, ev = _flat("<b c>*2")
+    assert cycles == 1 and [t for _s, _d, t in ev] == ["b", "c"]
+
+
+def test_nested_alternation_lcm_with_layers():
+    cycles, ev = _flat("<a b>, [c <d e g>]")
+    assert cycles == 3
+    assert [t for _s, _d, t in ev if t in "deg"] == ["d", "e", "g"]
+    assert [t for _s, _d, t in ev if t in "ab"] == ["a", "b", "a"]
+
+
+def test_nested_alternation_fractional_weights_rejected():
+    with pytest.raises(Unsupported):
+        parse_events("[a <b@1.5 c>]")
+
+
 @pytest.mark.parametrize("bad", ["c*<2 3>", "c/2", "bd:6", "c?", "c(3,8)", "[c d", "c d]", "{c d}"])
 def test_outside_subset_is_rejected(bad):
     with pytest.raises(Unsupported):

@@ -12,9 +12,12 @@
 занимает ``w`` циклов, содержимое шага сжато в это время; ``<e2,g2,b2>`` —
 стек из одношаговых чередований, то есть аккорд, как в Strudel).
 
-Чередование ``<...>`` ВНУТРИ более быстрой группы (``[a <b c>]``) не
-разворачивается: берётся первый шаг (цикл 0) — это единственная
-неоднозначность, остальное соответствует Strudel.
+Чередование ``<...>`` ВНУТРИ более быстрой группы (``[a <b c>]``,
+``[a <b c>]*2``, ``<b c>*2``) выбирает шаг по номеру цикла, как Strudel
+(внутри ``*N`` номер цикла ``c*N+k``); длина результата — НОК периодов
+(``MAX_CYCLES``). Вложенное чередование должно иметь целые веса (``<a@1.5 b>``
+внутри группы — :class:`Unsupported`). Известное упрощение: вложенное
+чередование ВНУТРИ шага верхнеуровневого ``<...>`` берёт первый шаг.
 
 Всё, чего здесь нет (``/N``, ``?``, ``|``, ``(3,8)``, ``{}``, ``%``, ``..``,
 ``:``), — :class:`Unsupported`: разбор отвергается целиком, ноты не выдумываются.
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import re
 from fractions import Fraction
+from math import ceil, gcd
 from typing import Callable, List, Tuple
 
 __all__ = ["Event", "Unsupported", "parse_events"]
@@ -165,48 +169,88 @@ def _total_weight(steps: list) -> Fraction:
     return sum((w for _n, w in steps), Fraction(0))
 
 
+def _lcm(a: int, b: int) -> int:
+    return a * b // gcd(a, b)
+
+
+def _period(node: tuple) -> int:
+    """Через сколько циклов узел (без верхнеуровневого чередования) повторяется."""
+    kind = node[0]
+    if kind == "seq":
+        p = 1
+        for child, _w in node[1]:
+            p = _lcm(p, _period(child))
+    elif kind == "stack":
+        p = 1
+        for child in node[1]:
+            p = _lcm(p, _period(child))
+    elif kind == "fast":
+        inner = _period(node[1])
+        p = inner // gcd(inner, node[2])
+    elif kind == "alt":
+        total = _total_weight(node[1])
+        if total.denominator != 1:
+            raise Unsupported("вложенное чередование с дробными весами")
+        inner = 1
+        for child, _w in node[1]:
+            inner = _lcm(inner, _period(child))
+        p = int(total) * inner
+    else:
+        p = 1
+    if p > MAX_CYCLES:
+        raise Unsupported(f"период длиннее {MAX_CYCLES} циклов")
+    return p
+
+
 def _cycles(node: tuple) -> Fraction:
     """Сколько циклов занимает верхнеуровневый узел (чередование — сумма весов)."""
     if node[0] == "alt":
         return _total_weight(node[1])
     if node[0] == "stack":
         return max(_cycles(c) for c in node[1])
-    return Fraction(1)
+    return Fraction(_period(node))
 
 
-def _render(node: tuple, start: Fraction, span: Fraction, top: bool, emit: Callable) -> None:
+def _render(node: tuple, start: Fraction, span: Fraction, top: bool, emit: Callable, cyc: int = 0) -> None:
     kind = node[0]
     if kind == "atom":
         emit(start, span, node[1])
     elif kind == "seq":
-        _render_seq(node[1], start, span, top, emit)
+        _render_seq(node[1], start, span, top, emit, cyc)
     elif kind == "stack":
         for child in node[1]:
-            _render(child, start, span, top, emit)
+            _render(child, start, span, top, emit, cyc)
     elif kind == "fast":
         n = node[2]
         for k in range(n):
-            _render(node[1], start + span * k / n, span / n, False, emit)
+            _render(node[1], start + span * k / n, span / n, False, emit, cyc * n + k)
     elif kind == "alt":
-        _render_alt(node[1], start, span, top, emit)
+        _render_alt(node[1], start, span, top, emit, cyc)
 
 
-def _render_seq(steps: list, start: Fraction, span: Fraction, top: bool, emit: Callable) -> None:
+def _render_seq(steps: list, start: Fraction, span: Fraction, top: bool, emit: Callable, cyc: int = 0) -> None:
     total = _total_weight(steps)
     if top and len(steps) == 1 and steps[0][0][0] in ("alt", "stack"):
-        _render(steps[0][0], start, span, True, emit)
+        _render(steps[0][0], start, span, True, emit, cyc)
         return
     pos = start
     for child, w in steps:
-        _render(child, pos, span * w / total, False, emit)
+        _render(child, pos, span * w / total, False, emit, cyc)
         pos += span * w / total
 
 
-def _render_alt(steps: list, start: Fraction, span: Fraction, top: bool, emit: Callable) -> None:
-    if not top:
-        _render(steps[0][0], start, span, False, emit)
-        return
+def _render_alt(steps: list, start: Fraction, span: Fraction, top: bool, emit: Callable, cyc: int = 0) -> None:
     total = _total_weight(steps)
+    if not top:
+        # Вложенное чередование: шаг — по номеру цикла (как slowcat в Strudel).
+        idx = Fraction(cyc) % total
+        acc = Fraction(0)
+        for child, w in steps:
+            if idx < acc + w:
+                _render(child, start, span, False, emit, int(Fraction(cyc) // total))
+                return
+            acc += w
+        return
     if total > MAX_CYCLES:
         raise Unsupported(f"чередование длиннее {MAX_CYCLES} циклов")
     pos = start
@@ -230,10 +274,24 @@ def parse_events(text: str) -> Tuple[List[Event], Fraction]:
             raise Unsupported(f"больше {MAX_EVENTS} событий")
         events.append((start, dur, tok))
 
-    _render(tree, Fraction(0), Fraction(1), True, emit)
+    _render_top(tree, cycles, emit)
     if tree[0] == "stack" and cycles > 1:
         _loop_short_alts(tree, events, cycles)
     return events, cycles
+
+
+def _render_top(tree: tuple, cycles: Fraction, emit: Callable) -> None:
+    """Верхний уровень: чередования — последовательно; остальное — по циклам (вложенные ``<>``)."""
+    if tree[0] == "alt" or (tree[0] == "seq" and _period(tree) == 1):
+        _render(tree, Fraction(0), Fraction(1), True, emit)
+        return
+    layers = tree[1] if tree[0] == "stack" else [tree]
+    for layer in layers:
+        if layer[0] == "alt":
+            _render(layer, Fraction(0), Fraction(1), True, emit)
+            continue
+        for k in range(ceil(cycles)):
+            _render(layer, Fraction(k), Fraction(1), False, emit, k)
 
 
 def _loop_short_alts(tree: tuple, events: List[Event], cycles: Fraction) -> None:

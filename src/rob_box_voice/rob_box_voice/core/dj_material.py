@@ -34,6 +34,7 @@ __all__ = [
     "MATERIAL_TTL_S",
     "MaterialIntake",
     "choose_melody",
+    "consume_if_played_in_turn",
     "consume_material",
     "looks_like_material",
     "queue_material",
@@ -71,6 +72,16 @@ def _pending(state: Any, now: float) -> str:
 def consume_material(state: Any) -> None:
     """Трек сета запущен — материал отыгран (или отдан модели), очередь пуста."""
     state.pending_material = ""
+
+
+def consume_if_played_in_turn(state: Any, turn_text: str) -> None:
+    """Ход с материалом в реплике запустил музыку — LLM сыграл его сам, на переходе не повторять.
+
+    Честная оговорка: если приём (``MaterialIntake.ingest``) закончится ПОЗЖЕ
+    конца хода, материал встанет в очередь заново и сыграет один раз на переходе.
+    """
+    if "[DJ_AUTO" not in (turn_text or "") and looks_like_material(turn_text):
+        consume_material(state)
 
 
 def choose_melody(state: Any, now: float, track_no: int) -> str:

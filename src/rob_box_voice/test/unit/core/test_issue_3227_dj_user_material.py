@@ -108,6 +108,26 @@ def test_next_transition_uses_received_material_then_it_is_consumed():
     assert "user_" not in dispatched[-1]
 
 
+def test_material_played_by_llm_in_same_turn_is_not_repeated_on_transition():
+    ctrl, _clock, _d = _controller()
+    executor = FakeExecutor()
+    text = FIXTURE.read_text(encoding="utf-8")
+    asyncio.run(_intake(ctrl, executor).ingest(text, executor))
+    assert ctrl.state.pending_material
+    # Ход юзера (не DJ_AUTO, без set_dj_mode) с материалом в тексте: LLM сыграла его сама.
+    assert not ctrl.note_turn_tools(("compose_music",), ("compose_music",), turn_text=text)
+    assert ctrl.state.pending_material == ""
+    assert "user_" not in ctrl._club_call(1)  # заказ юзера держит переход — смотрим готовый вызов
+
+
+def test_unrelated_user_track_keeps_pending_material():
+    ctrl, _clock, _d = _controller()
+    executor = FakeExecutor()
+    asyncio.run(_intake(ctrl, executor).ingest('note("c e g b")', executor))
+    ctrl.note_turn_tools(("compose_music",), ("compose_music",), turn_text="сыграй тему марио")
+    assert ctrl.state.pending_material
+
+
 def test_unlaunched_material_is_offered_again_but_expires():
     ctrl, clock, dispatched = _controller()
     executor = FakeExecutor()
