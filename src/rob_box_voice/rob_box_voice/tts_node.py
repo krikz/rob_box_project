@@ -59,7 +59,6 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Mapping
 
 import grpc
 import numpy as np
@@ -83,7 +82,7 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
 from .utils.stderr_silence import ignore_stderr
@@ -91,6 +90,48 @@ from .utils.stderr_silence import ignore_stderr
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import strip_markdown, unsupported_language_notice
 from rob_box_core.utterance import missing_tts_request_fields
+
+# ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
+# (no behaviour change). NOT ``utils/audio_utils.py``: that module does
+# ``import pyaudio`` at top level, which ``tts_node.py`` never depended on
+# before this refactor — putting ``resample_audio`` there would silently
+# add a new import-time dependency on ``pyaudio`` for every consumer of
+# ``rob_box_voice.tts_node`` (caught in PR #3197 review). Re-exported here
+# for backward compatibility with existing imports (``from
+# rob_box_voice.tts_node import resample_audio``).
+from .utils.resample import resample_audio  # noqa: F401 re-export
+
+# ADR-0145 §4 TTSNode step 1 — SSML prosody (pitch/volume) conversion
+# helpers moved verbatim to ``tts_ssml.py`` (no behaviour change).
+# Re-exported here for backward compatibility with existing imports
+# (tests import ``_ssml_pitch_to_hz``, ``YANDEX_BASELINE_PITCH_HZ``,
+# ``normalize_silero_pitch``, etc. directly from ``tts_node``).
+from .tts_ssml import (  # noqa: F401 re-export
+    _SSML_NAMED_VOLUME_TO_DB,
+    _YANDEX_PITCH_SHIFT_MAX_HZ,
+    _YANDEX_VOLUME_MIN_LUFS,
+    YANDEX_BASELINE_PITCH_HZ,
+    YANDEX_BASELINE_VOLUME_LUFS,
+    _ssml_pitch_to_hz,
+    _ssml_volume_to_lufs_target,
+    normalize_silero_pitch,
+)
+
+# ADR-0145 §4 TTSNode step 1 — ROS-parameter / request-payload parsing
+# helpers moved verbatim to ``tts_params.py`` (no behaviour change).
+# Re-exported here for backward compatibility with existing imports
+# (``from rob_box_voice.tts_node import _parse_optional_int`` etc., and
+# ``test_minimax_integration.py`` calling ``tts_node._parse_optional_int``).
+from .tts_params import (  # noqa: F401 re-export
+    _TTS_PRIORITY_PREEMPTS,
+    _TTS_PRIORITY_VALUES,
+    _VOICE_TTS_SINK_ALIASES,
+    _normalize_tts_priority,
+    _parse_optional_float,
+    _parse_optional_int,
+    _parse_optional_number,
+    _parse_pronunciation_dict,
+)
 
 # Issue #1709 — Unicode-script guard: не отправляем в TTS текст, который
 # в основном состоит из букв неподдерживаемых письменностей (CJK,
@@ -362,226 +403,6 @@ from rob_box_voice.observability import (
 )
 
 
-def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
-    """
-    Resample audio from original sample rate to target sample rate using linear interpolation.
-
-    This is a lightweight resampling implementation suitable for TTS audio where:
-    - Low latency is important (no heavy dependencies like scipy/librosa)
-    - Audio quality is acceptable for voice synthesis
-    - Minimal artifacts for pitch shifting within reasonable range (1.0-3.0x)
-
-    For higher quality resampling, consider using scipy.signal.resample or librosa.resample.
-
-    Args:
-        audio: Audio data as numpy array (mono, float32, range -1.0 to 1.0)
-        orig_sr: Original sample rate (e.g., 22050 or 10022.7 for fractional rates)
-        target_sr: Target sample rate (e.g., 16000)
-
-    Returns:
-        Resampled audio at target sample rate
-    """
-    if abs(orig_sr - target_sr) < 0.01:  # Use epsilon comparison for floats
-        return audio
-
-    # Calculate the resampling ratio
-    duration = len(audio) / orig_sr
-    target_length = int(duration * target_sr)
-
-    # Create new time indices for interpolation
-    orig_indices = np.linspace(0, len(audio) - 1, len(audio))
-    target_indices = np.linspace(0, len(audio) - 1, target_length)
-
-    # Linear interpolation
-    resampled = np.interp(target_indices, orig_indices, audio)
-
-    return resampled
-
-
-_SILERO_PITCH_LEVELS = ("x-low", "low", "medium", "high", "x-high", "robot")
-
-
-# ── Issue #1780: Yandex gRPC v3 SSML → pitch/volume конвертация ────────────
-# Yandex Cloud TTS v3 ``Hints`` API поддерживает только:
-#   * ``pitch_shift`` — Hz-offset (range [-1000; 1000], default 0)
-#   * ``volume``      — LUFS dB-offset (range [-145; 0), default -19)
-#
-# SSML `<prosody>` оперирует относительными множителями/уровнями
-# (``pitch="+10%"``, ``volume="loud"``). Здесь мы приводим их к
-# Yandex-формату без потери смысла: «на сколько Hz поднять голос» и
-# «на сколько dB сделать громче/тише относительно дефолта».
-YANDEX_BASELINE_PITCH_HZ: float = (
-    130.0  # средняя основная частота голоса anton (~130 Hz)
-)
-YANDEX_BASELINE_VOLUME_LUFS: float = -19.0  # Yandex дефолт для LUFS-нормализации
-_YANDEX_PITCH_SHIFT_MAX_HZ: float = 1000.0  # абсолютный предел API
-_YANDEX_VOLUME_MIN_LUFS: float = -145.0  # нижний предел API
-
-
-def _ssml_pitch_to_hz(pitch) -> Optional[float]:
-    """SSML pitch → Hz-offset для Yandex gRPC v3 ``Hints.pitch_shift``.
-
-    Принимает те же формы, что и ``_parse_ssml_attributes``:
-    ``"+10%"``, ``"-25%"``, ``"1.2"``, ``"high"``, ``"low"``, ``"medium"``,
-    ``"x-high"``, ``"x-low"``, ``"robot"``, ``1.2`` (float), ``None``.
-    Возвращает число в ``[-1000; 1000]`` или ``None``, если вход не парсится.
-
-    Эвристика: дефолтный голос anton ≈ 130 Hz baseline; ``+10%`` →
-    ``+13 Hz``, ``high`` (~1.2×) → ``+26 Hz``, ``x-high`` (~1.5×) →
-    ``+65 Hz``. Отрицательные аналоги.
-    """
-    if pitch is None:
-        return None
-    factor: Optional[float] = None
-    if isinstance(pitch, (int, float)):
-        factor = float(pitch)
-    elif isinstance(pitch, str):
-        value = pitch.strip().lower()
-        # "robot" у Silero означает спец-эффект, не тон — для Yandex
-        # не имеет однозначного Hz-маппинга → None.
-        if value == "robot":
-            return None
-        if value in {"x-low", "low", "medium", "high", "x-high"}:
-            mapping = {
-                "x-low": 0.5,
-                "low": 0.8,
-                "medium": 1.0,
-                "high": 1.2,
-                "x-high": 1.5,
-            }
-            factor = mapping[value]
-        elif value.endswith("%"):
-            try:
-                factor = 1.0 + float(value[:-1]) / 100.0
-            except ValueError:
-                return None
-        else:
-            try:
-                factor = float(value)
-            except ValueError:
-                return None
-    else:
-        return None
-    if factor is None:
-        return None
-    hz = (factor - 1.0) * YANDEX_BASELINE_PITCH_HZ
-    # Clamp в валидный диапазон API.
-    return max(-_YANDEX_PITCH_SHIFT_MAX_HZ, min(_YANDEX_PITCH_SHIFT_MAX_HZ, hz))
-
-
-_SSML_NAMED_VOLUME_TO_DB: dict[str, float] = {
-    # SSML стандарт (https://www.w3.org/TR/speech-synthesis/#S3.2.4):
-    # silent (-∞, мы приравниваем к -145), x-soft (-12), soft (-6),
-    # medium (0), loud (+6), x-loud (+12). Шаг ~6 dB.
-    "silent": -145.0,
-    "x-soft": -12.0,
-    "soft": -6.0,
-    "medium": 0.0,
-    "loud": 6.0,
-    "x-loud": 12.0,
-}
-
-
-def _ssml_volume_to_lufs_target(volume) -> Optional[float]:
-    """SSML volume → абсолютная LUFS-цель для Yandex gRPC v3 ``Hints.volume``.
-
-    Yandex ``volume`` — абсолютная LUFS-цель в диапазоне ``[-145; 0)``.
-    SSML ``volume`` — относительный уровень (``"loud"`` = +6 dB относительно
-    дефолта). Возвращаем абсолютную LUFS-цель, от которой Yandex будет
-    нормализовать аудио (clamp в ``[-145; 0)``).
-
-    Поддерживает:
-    * числа в dB: ``"+5dB"``, ``"-3dB"``, ``"5"``, ``+5``, ``-3``;
-    * проценты: ``"+50%"``, ``"-25%"`` (100% = +6 dB);
-    * именованные уровни SSML: ``silent|x-soft|soft|medium|loud|x-loud``.
-    """
-    if volume is None:
-        return None
-    if isinstance(volume, (int, float)):
-        # Числовое значение — трактуем как dB-offset относительно baseline.
-        delta = float(volume)
-    elif isinstance(volume, str):
-        value = volume.strip().lower()
-        if value in _SSML_NAMED_VOLUME_TO_DB:
-            delta = _SSML_NAMED_VOLUME_TO_DB[value]
-        elif value.endswith("db"):
-            try:
-                delta = float(value[:-2].strip())
-            except ValueError:
-                return None
-        elif value.endswith("%"):
-            try:
-                pct = float(value[:-1])
-            except ValueError:
-                return None
-            # 100% = +6 dB (один SSML-шаг «громче»). Логарифмически 6 dB
-            # ≈ множитель 2× по амплитуде; для пользователя важнее
-            # линейная интерполяция в стопе «loud/soft» шагов.
-            delta = pct / 100.0 * 6.0
-        else:
-            try:
-                delta = float(value)
-            except ValueError:
-                return None
-    else:
-        return None
-    # Переводим смещение в абсолютную LUFS-цель.
-    target = YANDEX_BASELINE_VOLUME_LUFS + delta
-    # Clamp в валидный диапазон Yandex API: [-145; 0).
-    return max(_YANDEX_VOLUME_MIN_LUFS, min(-1.0, target))
-
-
-def normalize_silero_pitch(pitch) -> str:
-    """Привести SSML pitch к уровню, который принимает Silero v5.
-
-    Silero v5 ``apply_tts`` понимает в ``<prosody pitch="...">`` только
-    ``x-low|low|medium|high|x-high|robot``. LLM/MiniMax-стиль SSML
-    генерирует числовые множители (``1.2``, ``+10%``) — их прямая
-    передача роняет Silero с ``Invalid <prosody> tag``, и fallback
-    молчит (issue #1064). Здесь любой вход (число, процент, слово,
-    мусор) приводится к ближайшему допустимому уровню; нераспознанное
-    значение даёт безопасный дефолт ``medium``.
-
-    Args:
-        pitch: значение из ``ssml_attributes`` (float, int, str или None).
-
-    Returns:
-        Один из ``_SILERO_PITCH_LEVELS``.
-    """
-    if pitch is None:
-        return "medium"
-    if isinstance(pitch, str):
-        value = pitch.strip().lower()
-        if value in _SILERO_PITCH_LEVELS:
-            return value
-        if value.endswith("%"):
-            try:
-                factor = 1.0 + float(value[:-1]) / 100.0
-            except ValueError:
-                return "medium"
-        else:
-            try:
-                factor = float(value)
-            except ValueError:
-                return "medium"
-    elif isinstance(pitch, (int, float)):
-        factor = float(pitch)
-    else:
-        return "medium"
-
-    # Числовой множитель → ближайший уровень (симметрично _parse_ssml_attributes:
-    # "high"→1.2, "low"→0.8, "medium"→1.0).
-    if factor <= 0.6:
-        return "x-low"
-    if factor <= 0.85:
-        return "low"
-    if factor <= 1.15:
-        return "medium"
-    if factor <= 1.4:
-        return "high"
-    return "x-high"
-
-
 # Импортируем text_normalizer и Yandex gRPC
 scripts_path = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(scripts_path))
@@ -593,158 +414,6 @@ except ImportError:
     def normalize_for_tts(text):
         """Fallback если нет normalizer."""
         return text
-
-
-def _parse_optional_number(value: object, cast: Callable[[Any], Any]) -> Any:
-    """Parse a ROS-stringy value into ``cast(value)`` (``int``/``float``) or ``None``.
-
-    architecture audit 2026-09-29, ADR-0145: общая реализация для
-    :func:`_parse_optional_int` / :func:`_parse_optional_float`.
-
-    Empty string / ``None`` → ``None`` (field omitted from payload).
-    Coercion failures are treated as "unset" so a typo in YAML doesn't
-    take the whole node down.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return cast(stripped)
-        except ValueError:
-            return None
-    try:
-        return cast(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_optional_int(value: object) -> int | None:
-    """Parse a ROS-stringy value into an ``int`` or ``None``.
-
-    Used for ``minimax_pitch`` (issue #1780). See
-    :func:`_parse_optional_number`.
-    """
-    return _parse_optional_number(value, int)
-
-
-def _parse_optional_float(value: object) -> float | None:
-    """Parse a ROS-stringy value into a ``float`` or ``None``.
-
-    Used for ``minimax_volume`` (issue #1780). See
-    :func:`_parse_optional_number`.
-    """
-    return _parse_optional_number(value, float)
-
-
-def _parse_pronunciation_dict(value: object) -> dict | None:
-    """Parse the YAML/ROS string ``minimax_pronunciation_dict`` into a dict.
-
-    Used for ``minimax_pronunciation_dict`` (issue #1780). Accepts:
-
-    * Empty string / ``None`` → ``None`` (field omitted from payload).
-    * A JSON-encoded object — parsed via :mod:`json`; the MiniMax T2A v2
-      spec asks for ``{"tone": [...], "phoneme": [...], "contextual": [...]}``
-      so we expect ``Mapping[str, Sequence[str]]``-shaped payloads.
-    * Already a ``Mapping`` — passed through.
-
-    Anything else (``str`` that's not JSON, ``int``, ``list``) is logged
-    as "ignored" and we return ``None``. We deliberately do NOT raise
-    here: this is operator-config, not user-facing input; crashing the
-    node on a typo is worse than silently ignoring the malformed value.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            parsed = json.loads(stripped)
-        except (ValueError, TypeError):
-            return None
-    elif isinstance(value, Mapping):
-        parsed = value
-    else:
-        return None
-    if not isinstance(parsed, Mapping):
-        return None
-    return dict(parsed)
-
-
-# Issue #1996 / operator-agent step 7a — allowed values for the top-level
-# ``priority`` field of ``/voice/tts/request``.
-#
-# Набор ВЫРОВНЕН с ADR-0056: те же три значения, что валидирует
-# ``scheduler/pregen/pre_gen.py`` для вложенного ``pregenerate.priority``.
-# Раньше здесь был двухзначный набор, и top-level ``priority="personality"``
-# молча превращался в ``"normal"`` — молчаливая потеря значения на границе
-# двух контрактов. Решение владельца: держать полный набор.
-#
-# Прецеденция в FIFO-gate (см. ``TTSNode._assign_priority_play_seq``):
-#
-#   operator     — врезка: запрос встаёт сразу за играющим чанком.
-#                  Целевая архитектура §8а.3: «ТАРС не договаривается с
-#                  планировщиком личности, он просто говорит роботом».
-#   personality  — речь личности, хвост очереди.
-#   normal       — немаркированный / legacy-трафик, хвост очереди.
-#
-# ``personality`` и ``normal`` сегодня по порядку НЕ различаются — обоих
-# кладём в хвост. Значение сохраняется отдельно намеренно: оно доезжает до
-# планировщика предгенерации и метрик, которым важно, чья это реплика.
-# Если появится своя прецеденция у личности — менять здесь, тесты на
-# порядок уже есть.
-_TTS_PRIORITY_VALUES = frozenset({"operator", "personality", "normal"})
-
-#: Значения, дающие врезку. Отдельная константа, чтобы «кто прыгает
-#: очередь» читалось в одном месте, а не выводилось из сравнения строк.
-_TTS_PRIORITY_PREEMPTS = frozenset({"operator"})
-
-
-# Issue #2318 — whitelist поля ``sink`` в ``/voice/tts/request`` и его
-# канонизация. Ключ — то, что реально приходит в payload; значение —
-# каноническое имя, которым дальше по стеку оперируют
-# ``_submit_synthesis(sink=...)`` / ``_sap_publish_for_sink``.
-#
-# ``"speakers"`` — значение ``Sink.SPEAKERS`` из SoT-сборщика
-# ``rob_box_core.utterance`` (ADR-0080 §2.3). Продюсеры (dialogue_node,
-# telegram_node, stt_node, startup_greeting_node, core.speak_helpers)
-# перешли на него в voice-vr 12 (#2197), а consumer в voice-vr 13 (#2198)
-# остался на единственном числе ``"speaker"`` — рассинхрон контракта,
-# из-за которого КАЖДАЯ реплика в динамики уходила в DROP (deploy #2318:
-# «unknown sink='speakers' ... DROP»). Держим оба написания: SoT-имя и
-# исторический ``"speaker"`` (legacy-паблишеры и явный kwarg внутри
-# самого узла).
-#
-# Отсутствие поля и пустая строка → ``"speaker"`` (backward-compat, тот
-# же default, что и до фикса).
-_VOICE_TTS_SINK_ALIASES = {
-    "speaker": "speaker",
-    "speakers": "speaker",
-    "": "speaker",
-    "headset": "headset",
-    "preview": "preview",
-}
-
-
-def _normalize_tts_priority(raw: object) -> str:
-    """Whitelist-normalize the ``priority`` field of ``/voice/tts/request``.
-
-    Backward-compat contract (issue #1996 DoD): the field is optional, and
-    anything outside the whitelist — missing, ``None``, wrong case
-    (``"OPERATOR"``), or garbage — is treated as ``"normal"``. A malformed
-    payload must never raise or drop the request; it just loses the
-    priority bump.
-
-    Whitelist — ``{"operator", "personality", "normal"}``, тот же, что у
-    вложенного ``pregenerate.priority`` в ADR-0056. Значение возвращается
-    как есть, без схлопывания ``personality`` в ``normal``.
-    """
-    if raw in _TTS_PRIORITY_VALUES:
-        return raw  # type: ignore[return-value]
-    return "normal"
 
 
 # Yandex Cloud TTS API v3 (gRPC)
