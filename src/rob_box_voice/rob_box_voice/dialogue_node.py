@@ -94,6 +94,7 @@ from rob_box_harness.providers import (
     build_deepseek_provider,
     build_minimax_provider,
 )
+from rob_box_harness.providers.reasoning import TURN_REASONING
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
@@ -245,6 +246,7 @@ from rob_box_voice.core.named_play import (
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
+from rob_box_voice.core.turn_reasoning import turn_wants_reasoning
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
 )
@@ -3560,7 +3562,9 @@ class DialogueNode(Node):
         """
         if from_tick:
             self._music_guard.reset_for_new_dj_transition()
-        self._dispatch_turn(user_input, is_dj_auto=True)
+        # Issue #3220 — thinking только у свежего перехода (тик), не у
+        # ретрая Bug B: см. ``core/turn_reasoning.py``.
+        self._dispatch_turn(user_input, is_dj_auto=True, dj_transition=from_tick)
 
     def _dispatch_turn(
         self,
@@ -3578,6 +3582,7 @@ class DialogueNode(Node):
         occasion: "Occasion | None" = None,
         backlog_pending: bool = False,
         utterance_id: str | None = None,
+        dj_transition: bool = False,
     ) -> None:
         # Issue #3144 — синтетический ретрай гуарда (Bug D/E, TurnGuards,
         # tool-skipped, …), отправленный изнутри DJ-автоперехода, остаётся
@@ -3642,6 +3647,7 @@ class DialogueNode(Node):
                 from_tg=from_tg,
                 backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
+                dj_transition=dj_transition,
                 # Issue #2835 — поколение сессии, в котором родился ход
                 # (для ретрая изнутри хода — поколение родителя).
                 session_epoch=self._session_epoch_gate().epoch_for_dispatch(),
@@ -4821,6 +4827,7 @@ class DialogueNode(Node):
         backlog_pending: bool = False,
         utterance_id: str | None = None,
         session_epoch: int | None = None,
+        dj_transition: bool = False,
     ) -> None:
         # Issue #2835 — ход/ретрай, поставленный в loop до «новой сессии»,
         # а стартовавший после неё, не запускается вовсе.
@@ -4830,6 +4837,15 @@ class DialogueNode(Node):
         # Issue #3144 — происхождение хода для ретраев гуардов (см.
         # ``core/turn_origin.py``): ретрай наследует его через контекст.
         dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
+        # Issue #3220 — думает ли этот ход (thinking MiniMax); провайдер
+        # читает флаг из контекста хода.
+        reasoning_token = TURN_REASONING.set(turn_wants_reasoning(
+            is_dj_auto=is_dj_auto,
+            dj_transition=dj_transition,
+            is_synthetic=is_synthetic,
+            user_input=user_input,
+            raw_user_command=raw_user_command,
+        ))
         with self._task_lock:
             self._run_task = asyncio.current_task()
         # Issue #2913 -- решения о речи speak_text -- по этому ходу.
@@ -5118,6 +5134,7 @@ class DialogueNode(Node):
                 session_handed_over=self._take_session_handover(),
             )
             TURN_IS_DJ_AUTO.reset(dj_auto_token)
+            TURN_REASONING.reset(reasoning_token)
             TURN_EPOCH.reset(epoch_token)
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────

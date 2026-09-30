@@ -57,6 +57,12 @@ KEY_WALK = (0, 7, 0, 5)
 #: Бюджет хода модели на переходе, с. Живой лог 28.09: auto-transition →
 #: compose_music за 3-13 с (с ретраем Bug B).
 DJ_TURN_BUDGET_S = 20.0
+#: Issue #3220 — запас на рассуждение (thinking MiniMax) первой попытки
+#: перехода, с. Думает только ход тика (``core/turn_reasoning.py``), ретрай
+#: Bug B — нет, он укладывается в :data:`DJ_TURN_BUDGET_S`. 20 с — верх
+#: оценки «+10-20 с на ход» из комментария к ``DEFAULT_THINKING_POLICY``
+#: (06.08); это НЕ замер, число поправить по живым переходам с thinking.
+DJ_REASONING_BUDGET_S = 20.0
 #: Длина фейда перехода в тактах — ``core.club_transition.FADE_BARS`` в
 #: rob_box_mcp_tools (+1 такт до границы, как ``fade_seconds``).
 DJ_FADE_BARS = 8
@@ -66,8 +72,13 @@ DJ_MIN_TRACK_PLAY_S = 30.0
 
 
 def finite_form_lead_s(bpm: float) -> float:
-    """За сколько секунд до остановки конечного трека звать переход."""
-    return DJ_TURN_BUDGET_S + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
+    """За сколько секунд до остановки конечного трека звать переход.
+
+    Ход с рассуждением + быстрый ретрай + фейд: новый трек встаёт к
+    остановке уходящего, а не после тишины (#3113, #3220).
+    """
+    turn_s = DJ_REASONING_BUDGET_S + DJ_TURN_BUDGET_S
+    return turn_s + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
 
 
 def related_root(set_root: str, track_no: int) -> str:
