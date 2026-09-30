@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .club_arranger import club_progression
+from .club_pools import club_variant
 from .music_diversity import MusicHistory
 
 __all__ = ["CLUB_HISTORY_LIMIT", "recent_club_rows", "remember_club"]
@@ -30,16 +31,18 @@ def remember_club(
     С хуком мелодии прогрессию задаёт хук — в историю она пишется как
     ``None``, чтобы не штрафовать то, чего сид не выбирал.
     """
-    progression = None if hook_info else club_progression(seed, recent)
+    scale = kwargs.get("scale") or "minor"
+    progression = None if hook_info else club_progression(seed, recent, scale)
+    variant = club_variant(seed, recent)
     stored = history is not None and history.record(
         style="club", progression=progression, root=kwargs.get("root") or "A#", bpm=bpm,
-        scale=kwargs.get("scale") or "minor", melody_name=hook_info["id"] if hook_info else None,
+        scale=scale, melody_name=hook_info["id"] if hook_info else None,
         fragment_offset=hook_info.get("offset") if hook_info else None,
-        hook_fingerprint=hook_info.get("fingerprint") if hook_info else None, **kit,
+        hook_fingerprint=hook_info.get("fingerprint") if hook_info else None, **kit, **variant,
     )
     return (
         f"[#3224] club выбор: seed={seed}, progression={progression}, "
-        + ", ".join(f"{k}={v}" for k, v in kit.items())
+        + ", ".join(f"{k}={v}" for k, v in {**kit, **variant}.items())
         + f"; история учтена: {len(recent)} записей, "
         + ("записано" if stored else "НЕ записано (истории нет или БД недоступна)")
     )

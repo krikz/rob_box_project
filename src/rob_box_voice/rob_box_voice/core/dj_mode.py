@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+from .dj_set_walk import CLUB_ROOTS, apply_bpm_request, bpm_is_request, club_key, related_root, state_bpm  # noqa: F401 — реэкспорт
 from .dj_theme_melodies import melody_pool_for_theme, pick_melody
 
 
@@ -41,15 +42,9 @@ _PLAN_ENTRY_RE = re.compile(r"^\s*Трек\s*(\d+)\s*[:.)\-—–]\s*(.+?)\s*$")
 DJ_SET_DEFAULT_BPM = 124
 #: Допустимый темп сета (тот же, что ``arranger.BPM_RANGE``).
 DJ_SET_BPM_RANGE = (60, 180)
-#: Тоники в написании ``compose_music`` (``arranger.VALID_ROOTS``).
-CLUB_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-#: Обход тональностей по трекам сета, в полутонах от тоники сета:
-#: i → v → i → iv → … Соседи по квинтовому кругу: у минора и его
-#: доминантового/субдоминантового минора 6 из 7 нот общие — смена мягкая.
-#: Параллельный мажор (§7.5: G ↔ E minor) club не умеет — у него только
-#: ``scale="minor"``, поэтому «родственная» здесь = квинтовый сосед.
-KEY_WALK = (0, 7, 0, 5)
-
+#: Issue #3226 — тональность и темп трека двигаются по сету
+#: (:mod:`.dj_set_walk`): круг квинт + родственные лады, темп ±4 BPM.
+#: ``CLUB_ROOTS`` и :func:`related_root` живут там и реэкспортируются.
 # Issue #3113 (живой прогон 28.09, ~15 с тишины между треками): конечный
 # (``repeat=False``) трек сам замолкает ``Clock.future(..., Clock.clear)``,
 # а переход ждал конца его формы и только ПОТОМ звал модель. Переход к
@@ -79,17 +74,6 @@ def finite_form_lead_s(bpm: float) -> float:
     """
     turn_s = DJ_REASONING_BUDGET_S + DJ_TURN_BUDGET_S
     return turn_s + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
-
-
-def related_root(set_root: str, track_no: int) -> str:
-    """Тоника трека ``track_no`` (с 1) в сете с тоникой ``set_root``.
-
-    Детерминированно по :data:`KEY_WALK`; неизвестная тоника → как есть.
-    """
-    if set_root not in CLUB_ROOTS:
-        return set_root
-    shift = KEY_WALK[(max(1, track_no) - 1) % len(KEY_WALK)]
-    return CLUB_ROOTS[(CLUB_ROOTS.index(set_root) + shift) % len(CLUB_ROOTS)]
 
 
 def plan_entry(plan: str, track_no: int) -> str:
@@ -153,6 +137,9 @@ class DJState:
     # тоника (``""`` — ещё не выбрана) — от эпохи старта сета.
     set_bpm: int = DJ_SET_DEFAULT_BPM
     set_root: str = ""
+    # Issue #3226 — юзер явно попросил темп (``set_dj_mode(bpm=...)``): темп
+    # сета тогда фиксирован; иначе он дрейфует ±4 BPM (:func:`track_bpm`).
+    bpm_locked: bool = False
     # Issue #3113 — когда конечный (``repeat=False``) трек замолчит, epoch
     # (``stops_at`` из ``/voice/music/form``; ``None`` — зациклен/нет данных),
     # когда это значение впервые пришло, и для какого ``stops_at`` ранний
@@ -456,14 +443,15 @@ class DJModeController:
             self.state.final_track_no = 0
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
+            self.state.bpm_locked = False
             self.state.set_root = ""
             self.state.played_names = []
             self.state.preview_started = False
             self._take_preview_claim()
         bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
-        if bpm is not None and bpm != self.state.set_bpm:
-            # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113.
-            self.state.set_bpm = bpm
+        if apply_bpm_request(self.state, bpm):
+            # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113;
+            # с ней темп сета фиксирован, без дрейфа (#3226).
             self._logger.info(f"🎧 DJ темп сета: {bpm} BPM")
         minutes = self._clamped_int(
             data.get("max_minutes"), self.DJ_SET_MAX_MINUTES_RANGE
@@ -506,6 +494,7 @@ class DJModeController:
         self.state.tracks_started = 0
         self.state.final_track_no = 0
         self.state.set_bpm = DJ_SET_DEFAULT_BPM
+        self.state.bpm_locked = False
         self.state.set_root = ""
         self.state.preview_started = False
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
@@ -1006,27 +995,40 @@ class DJModeController:
         #3113 п.2) — это ожидаемо, контракт этой функции — только строка
         вызова.
         """
-        root = related_root(self._set_root(), track_no)
         melody = pick_melody(
             self.state.melody_pool, track_no, self.state.played_names
         )
+        root, scale = club_key(self.state, self._set_root(), track_no, hooked=bool(melody))
         name_part = f'name="{melody}", ' if melody else ""
         if melody:
             self._logger.info(f"🎧 DJ трек #{track_no} — мелодия {melody}")
         return (
-            f'compose_music(style="club", {name_part}bpm={self.state.set_bpm}, '
-            f'root="{root}", scale="minor", seed={self._track_seed(track_no)}, '
+            f'compose_music(style="club", {name_part}bpm={state_bpm(self.state, track_no)}, '
+            f'root="{root}", scale="{scale}", seed={self._track_seed(track_no)}, '
             f'repeat={"true" if repeat else "false"}, transition="fade")'
         )
 
     def _tempo_line(self) -> str:
-        """Issue #3113 — один темп на весь сет (DJ Dave: переходы фильтром,
-        не скачком темпа)."""
+        """Темп сета в промпте перехода.
+
+        Issue #3113: один темп на весь сет (DJ Dave: переходы фильтром, не
+        скачком). Issue #3226: пока юзер не назвал темп, он плавно дрейфует
+        около базового (±4 BPM, шаг ≤ 4) — модель берёт ``bpm`` из готового
+        вызова. Названный юзером темп фиксирует сет.
+        """
+        if self.state.bpm_locked:
+            return (
+                f"🎚 Темп сета {self.state.set_bpm} BPM — ОДИН на весь сет (юзер его назвал): "
+                "НЕ меняй bpm между треками. Сменить темп — только если юзер сам попросил: "
+                "тогда set_dj_mode(enabled=true, bpm=<новый>) и этот же bpm в "
+                "compose_music. "
+            )
         return (
-            f"🎚 Темп сета {self.state.set_bpm} BPM — ОДИН на весь сет: НЕ меняй "
-            "bpm между треками. Сменить темп — только если юзер сам попросил: "
-            "тогда set_dj_mode(enabled=true, bpm=<новый>) и этот же bpm в "
-            "compose_music. "
+            f"🎚 Темп сета плавно дрейфует около {self.state.set_bpm} BPM (±4, между "
+            "соседними треками не больше 4): бери bpm из готового вызова compose_music "
+            "как есть и НЕ передавай bpm в set_dj_mode. Задать один фиксированный темп — "
+            "только если юзер сам попросил: тогда set_dj_mode(enabled=true, bpm=<новый>) "
+            "и этот же bpm в compose_music. "
         )
 
     def _plan_track_line(self, track_no: int) -> str:
@@ -1062,7 +1064,7 @@ class DJModeController:
             "название конкретной песни/композиции (не жанр и не "
             "описание вайба) — действует RULE #KNOWN-MELODY (см. "
             "composer.txt): НЕ импровизируй по памяти, СНАЧАЛА "
-            f'compose_music(name="{entry}", seed={seed}) + bpm={self.state.set_bpm} '
+            f'compose_music(name="{entry}", seed={seed}) + bpm={state_bpm(self.state, track_no)} '
             "(темп сета) — тул сам ищет точные "
             f'ноты в RTTTL-базе; при сомнении в написании названия — '
             f'lookup_melody(name="{entry}") первым отдельным вызовом. '
@@ -1086,13 +1088,13 @@ class DJModeController:
             else (
                 f"Сыграй следующий трек через {self._club_call(track_no)} — "
                 "свой seed даёт новые прогрессию и риф, тоника — родственная "
-                "тональности сета, уходящий трек гаснет фейдом. "
+                "тональности сета (круг квинт, лад и темп уже в вызове), уходящий трек гаснет фейдом. "
             )
         )
         return (
             f"{club}Если юзер попросил конкретную песню — "
             f"compose_music(name=..., seed={self._track_seed(track_no)}, "
-            f"bpm={self.state.set_bpm}, repeat=true) вместо клубного трека. "
+            f"bpm={state_bpm(self.state, track_no)}, repeat=true) вместо клубного трека. "
             f"{self._played_line()}"
         )
 
