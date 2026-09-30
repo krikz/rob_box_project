@@ -6,51 +6,34 @@
 """
 
 import re
-import sys
-from unittest.mock import MagicMock
 
 import pytest
 
-# ``arranger`` itself is ROS-free by design, but TestGeneratedCodePassesExisting
-# Guards reaches into ``tools.music`` to run the real filters — and that import
-# chain pulls rclpy. Same stub block as test_tools/test_music.py.
-for _mod in [
-    "rclpy",
-    "rclpy.node",
-    "rclpy.action",
-    "rclpy.qos",
-    "std_msgs",
-    "std_msgs.msg",
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "nav2_msgs",
-    "nav2_msgs.action",
-    "action_msgs",
-    "action_msgs.srv",
-    "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from ._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.core.arranger import (  # noqa: E402
-    BARS_PER_CHORD,
-    BEATS_PER_BAR,
-    BPM_RANGE,
-    DEFAULT_FORM,
-    FORMS,
-    MAX_THEME_REPEATS,
-    OCTAVE_STEP,
-    ROLE_PROFILE,
-    ArrangementError,
-    CompositionSpec,
-    Layer,
-    normalize_synth,
-    parse_midi,
-    form_duration_seconds,
-    form_summary,
-    render,
-    resolve_form,
-    spec_from_flat,
-)
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core.arranger import (
+        BARS_PER_CHORD,
+        BEATS_PER_BAR,
+        BPM_RANGE,
+        DEFAULT_FORM,
+        FORMS,
+        MAX_THEME_REPEATS,
+        OCTAVE_STEP,
+        ROLE_PROFILE,
+        ArrangementError,
+        CompositionSpec,
+        Layer,
+        normalize_synth,
+        parse_midi,
+        form_duration_seconds,
+        form_summary,
+        render,
+        resolve_form,
+        spec_from_flat,
+    )
+_ros_stubs = _ros.fixture()
 
 
 def _all_degree_values(code: str, player: str):

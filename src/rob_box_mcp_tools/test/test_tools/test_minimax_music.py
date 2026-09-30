@@ -21,15 +21,10 @@ from urllib import error as urllib_error
 
 import pytest
 
+from .._ros_stubs import RosStubs
+
 # ── ROS-free mocking (matches existing test_music.py pattern) ───────────────
-for _mod in [
-    "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos",
-    "std_msgs", "std_msgs.msg",
-    "geometry_msgs", "geometry_msgs.msg",
-    "nav2_msgs", "nav2_msgs.action",
-    "action_msgs", "action_msgs.srv", "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+_ros = RosStubs()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,15 +45,6 @@ def _fake_node():
 
 # ── Imports under test (load minimax_music directly, bypassing
 #    tools/__init__.py which would pull in ros-bound .music + .navigation) ──
-
-from rob_box_mcp_tools.core.minimax_music_client import (  # noqa: E402
-    MinimaxMusicAPIError,
-    MinimaxMusicClient,
-    MinimaxMusicConfigError,
-    MinimaxMusicTrack,
-)
-from rob_box_mcp_tools.core.generated_music_library import GeneratedMusicLibrary  # noqa: E402
-
 
 def _load_minimax_music_module():
     """Load rob_box_mcp_tools.tools.minimax_music as a sub-package so its
@@ -91,7 +77,17 @@ def _load_minimax_music_module():
     return module
 
 
-_mm = _load_minimax_music_module()
+with _ros:
+    from rob_box_mcp_tools.core.minimax_music_client import (
+        MinimaxMusicAPIError,
+        MinimaxMusicClient,
+        MinimaxMusicConfigError,
+        MinimaxMusicTrack,
+    )
+    from rob_box_mcp_tools.core.generated_music_library import GeneratedMusicLibrary
+
+    _mm = _load_minimax_music_module()
+_ros_stubs = _ros.fixture()
 GenerateMusicTool = _mm.GenerateMusicTool
 GenListLibraryTool = _mm.GenListLibraryTool
 GenSearchLibraryTool = _mm.GenSearchLibraryTool

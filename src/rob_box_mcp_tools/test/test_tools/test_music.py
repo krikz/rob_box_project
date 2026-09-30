@@ -18,37 +18,24 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-# Mock ROS 2 modules before importing anything from rob_box_mcp_tools
-for _mod in [
-    "rclpy",
-    "rclpy.node",
-    "rclpy.action",
-    "rclpy.qos",
-    "std_msgs",
-    "std_msgs.msg",
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "nav2_msgs",
-    "nav2_msgs.action",
-    "action_msgs",
-    "action_msgs.srv",
-    "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from .._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.tools.music import (  # noqa: E402
-    MusicManager,
-    ComposeMusicTool,
-    ExecuteMusicCodeTool,
-    PreviewArrangementTool,
-    SaveArrangementPresetTool,
-    StopMusicTool,
-    SetVibePresetTool,
-    GetMusicStateTool,
-    LookupMelodyTool,
-    TrackLibrary,
-)
-from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.tools.music import (
+        MusicManager,
+        ComposeMusicTool,
+        ExecuteMusicCodeTool,
+        PreviewArrangementTool,
+        SaveArrangementPresetTool,
+        StopMusicTool,
+        SetVibePresetTool,
+        GetMusicStateTool,
+        LookupMelodyTool,
+        TrackLibrary,
+    )
+    from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore
+_ros_stubs = _ros.fixture()
 
 
 # ---------------------------------------------------------------------------
