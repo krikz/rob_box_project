@@ -114,6 +114,7 @@ from .tools import (
     SearchSamplesTool,
     LookupMelodyTool,
     SearchMelodyTool,
+    AddMusicMaterialTool,
     FaqSearchTool,
     SearchWebTool,
     # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
@@ -1301,6 +1302,7 @@ class MCPServer(Node):
         try:
             rtttl_library = RtttlLibrary()
             self.registry.register(SearchMelodyTool(self, rtttl_library))
+            self.registry.register(AddMusicMaterialTool(self, rtttl_library))  # #3227
             self.get_logger().info(f"🎵 RTTTL library: {rtttl_library.total()} мелодий")
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
