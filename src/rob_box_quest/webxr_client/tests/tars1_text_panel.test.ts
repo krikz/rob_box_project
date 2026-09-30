@@ -115,3 +115,61 @@ describe("tars1_text_panel", () => {
     expect(after).toBe(before);
   });
 });
+describe("tars1_text_panel — typewriter и статус", () => {
+  it("при typewriterCps append только копит хвост, tick печатает по темпу", () => {
+    const p = createTars1TextPanel({ canvasWidth: 256, canvasHeight: 96, typewriterCps: 100 });
+    p.append("abcdefghij\nxyz");
+    expect(p.getStats().pending).toBe(14);
+    expect(p.getStats().lineCount).toBe(1);
+    p.tick(1000); // первый тик — dt=0, печатается минимум 1 символ
+    expect(p.getStats().pending).toBe(13);
+    p.tick(1100); // 100 мс * 100 cps * boost ≈ 10 символов
+    expect(p.getStats().pending).toBeLessThan(5);
+    for (let t = 1200; t < 3000; t += 100) p.tick(t);
+    expect(p.getStats().pending).toBe(0);
+    expect(p.getStats().lineCount).toBe(2);
+  });
+
+  it("clear сбрасывает недопечатанный хвост", () => {
+    const p = createTars1TextPanel({ canvasWidth: 256, canvasHeight: 96, typewriterCps: 10 });
+    p.append("длинная реплика");
+    p.clear();
+    expect(p.getStats().pending).toBe(0);
+  });
+
+  it("setActivity/tick для всех состояний не бросают", () => {
+    const p = createTars1TextPanel({ canvasWidth: 256, canvasHeight: 96 });
+    for (const a of ["idle", "listening", "thinking", "speaking"] as const) {
+      expect(() => {
+        p.setActivity(a);
+        p.tick(5000);
+      }).not.toThrow();
+    }
+  });
+
+  it("перерисовка только при смене кадра: 2 Гц в покое", () => {
+    let fills = 0;
+    const orig = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function () {
+      return {
+        fillRect: () => {
+          fills += 1;
+        },
+        fillText: () => {},
+        measureText: (t: string) => ({ width: t.length * 7 })
+      } as unknown as CanvasRenderingContext2D;
+    } as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    try {
+      const p = createTars1TextPanel({ canvasWidth: 256, canvasHeight: 96 });
+      p.tick(10_000);
+      const after = fills;
+      p.tick(10_010); // тот же 530-мс слот — без перерисовки
+      p.tick(10_020);
+      expect(fills).toBe(after);
+      p.tick(10_600); // новый слот — перерисовка
+      expect(fills).toBeGreaterThan(after);
+    } finally {
+      HTMLCanvasElement.prototype.getContext = orig;
+    }
+  });
+});

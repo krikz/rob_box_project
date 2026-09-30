@@ -23,6 +23,7 @@
 // canvas-рендер и базовые стили.
 
 import * as THREE from "three";
+import { tarsActivityView, type TarsActivity } from "../state/tars_activity";
 
 export interface Tars1TextPanelOptions {
   /** Ширина canvas в пикселях (default 1280 — 16:9 как у основного экрана). */
@@ -33,6 +34,11 @@ export interface Tars1TextPanelOptions {
   maxLines?: number;
   /** Размер шрифта в пикселях (default 22). */
   fontSize?: number;
+  /**
+   * Скорость «печати» новых реплик, символов/с. 0 (default) — без эффекта,
+   * append применяется сразу (так работают юнит-тесты). Мост включает ~90.
+   */
+  typewriterCps?: number;
 }
 
 /**
@@ -44,7 +50,15 @@ export interface Tars1TextPanelHandle {
   append(text: string): void;
   clear(): void;
   setStreaming(streaming: boolean): void;
-  getStats(): { lineCount: number; streaming: boolean };
+  /** Состояние ТАРС для строки статуса на консоли (СЛУШАЕТ/ДУМАЕТ/ГОВОРИТ). */
+  setActivity(activity: TarsActivity): void;
+  /**
+   * Шаг анимации (печать, курсор, статус). Зовётся каждый кадр; canvas
+   * перерисовывается только при изменении: 2 Гц в покое, 8 Гц пока ТАРС
+   * не idle или печатает.
+   */
+  tick(nowMs: number): void;
+  getStats(): { lineCount: number; streaming: boolean; pending: number };
   dispose(): void;
 }
 
@@ -62,6 +76,7 @@ export function createTars1TextPanel(
   const canvasHeight = opts.canvasHeight ?? 720;
   const maxLines = opts.maxLines ?? 32;
   const fontSize = opts.fontSize ?? 22;
+  const typewriterCps = opts.typewriterCps ?? 0;
 
   const canvas = document.createElement("canvas");
   canvas.width = canvasWidth;
@@ -106,50 +121,156 @@ export function createTars1TextPanel(
   let partial = "";
   let streaming = false;
 
-  function render(): void {
-    // Подложка (тёмная «sci-fi» палитра — в Captain Bridge это ночная смена).
-    ctx!.fillStyle = "#0a0d11";
-    ctx!.fillRect(0, 0, canvasWidth, canvasHeight);
+  // Хакерская палитра: зелёный/циановый фосфор на почти чёрном.
+  const BG = "#020a07";
+  const FG = "#39ff88";
+  const FG_DIM = "#1f9c55";
+  const CYAN = "#33e0ff";
+  const PROMPT = "tars@robbox:~$";
 
-    // Рамка-индикатор стрима: сверху, тонкая полоса.
-    if (streaming) {
-      ctx!.fillStyle = "#2ec27e";
-      ctx!.fillRect(0, 0, canvasWidth, 4);
-    } else {
-      ctx!.fillStyle = "#444a52";
-      ctx!.fillRect(0, 0, canvasWidth, 4);
+  let activity: TarsActivity = "idle";
+  let lastNowMs = 0;
+  let lastFrameKey = "";
+  let lastTickMs = 0;
+  // Хвост печати: символы, ещё не «выведенные» на консоль.
+  let pending = "";
+
+  function render(nowMs: number = lastNowMs): void {
+    const c = ctx!;
+    c.fillStyle = BG;
+    c.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    const view = tarsActivityView(activity, nowMs);
+    const small = Math.round(fontSize * 0.7);
+    const pad = 12;
+
+    // Верхняя полоса: цвет = состояние.
+    c.fillStyle = streaming ? FG : view.color;
+    c.globalAlpha = activity === "listening" ? 0.4 + 0.6 * view.pulse : 1;
+    c.fillRect(0, 0, canvasWidth, 4);
+    c.globalAlpha = 1;
+
+    // Шапка: промпт + бейдж состояния справа.
+    c.textBaseline = "top";
+    c.font = `bold ${small}px monospace`;
+    c.fillStyle = CYAN;
+    c.shadowColor = CYAN;
+    c.shadowBlur = 6;
+    c.fillText(`${PROMPT} tail -f /tars1`, pad, 10);
+    c.shadowBlur = 0;
+
+    const badge = `[ ${view.label}${view.glyph ? " " + view.glyph : ""} ]`;
+    c.font = `bold ${Math.round(small * 1.15)}px monospace`;
+    const badgeW = c.measureText(badge).width;
+    const barsW = view.bars.length > 0 ? view.bars.length * 9 + 8 : 0;
+    const badgeX = canvasWidth - pad - badgeW;
+    c.fillStyle = view.color;
+    c.globalAlpha = view.pulse;
+    c.shadowColor = view.color;
+    c.shadowBlur = 8;
+    c.fillText(badge, badgeX, 8);
+    c.shadowBlur = 0;
+    c.globalAlpha = 1;
+    // Эквалайзер SPEAKING — столбики слева от бейджа.
+    const barH = Math.round(small * 1.1);
+    for (let i = 0; i < view.bars.length; i += 1) {
+      const h = Math.max(2, Math.round(barH * view.bars[i]));
+      c.fillRect(badgeX - barsW + i * 9, 8 + barH - h + 2, 6, h);
     }
 
-    // Заголовок канала.
-    ctx!.fillStyle = "#8fd4ff";
-    ctx!.font = `bold ${Math.round(fontSize * 0.7)}px monospace`;
-    ctx!.textBaseline = "top";
-    ctx!.fillText("TARS 1 ▸ ", 8, 8);
+    // Разделитель под шапкой.
+    const headH = 10 + Math.round(small * 1.5);
+    c.fillStyle = FG_DIM;
+    c.globalAlpha = 0.5;
+    c.fillRect(pad, headH, canvasWidth - pad * 2, 1);
+    c.globalAlpha = 1;
 
-    // Основной текст — monospace, белый, перенос по строкам буфера.
-    ctx!.fillStyle = "#e6edf3";
-    ctx!.font = `${fontSize}px monospace`;
+    // Тело консоли.
+    c.font = `${fontSize}px monospace`;
     const lineHeight = Math.round(fontSize * 1.25);
-    const startY = 8 + Math.round(fontSize * 1.0);
-    const maxWidth = canvasWidth - 16;
-    // visibleLines хранит уже разбитые по wrap'у строки (для длинных
-    // реплик LLM, не влезающих в ширину канвы).
-    const visibleLines: string[] = [];
+    const startY = headH + 8;
+    const prefix = "> ";
+    const prefixW = c.measureText(prefix).width;
+    const maxWidth = canvasWidth - pad * 2 - prefixW;
+    // Каждая логическая строка → wrap; первая визуальная строка получает
+    // «> », продолжения — отступ.
+    const rows: { text: string; first: boolean }[] = [];
     for (const raw of lines) {
-      visibleLines.push(...wrapLine(raw, ctx!, maxWidth));
+      const wrapped = wrapLine(raw, c, maxWidth);
+      wrapped.forEach((t, i) => rows.push({ text: t, first: i === 0 }));
     }
-    // Рисуем только хвост, который помещается: самая свежая строка снизу.
-    const capacity = Math.floor((canvasHeight - startY - 8) / lineHeight);
-    const tail = visibleLines.slice(-capacity);
+    const capacity = Math.max(1, Math.floor((canvasHeight - startY - 8) / lineHeight));
+    const tail = rows.slice(-capacity);
+    c.shadowColor = FG;
+    c.shadowBlur = 4;
     for (let i = 0; i < tail.length; i += 1) {
-      ctx!.fillText(tail[i] ?? "", 8, startY + i * lineHeight);
+      const y = startY + i * lineHeight;
+      if (tail[i].first) {
+        c.fillStyle = FG_DIM;
+        c.fillText(prefix, pad, y);
+      }
+      c.fillStyle = FG;
+      c.fillText(tail[i].text, pad + prefixW, y);
     }
+    c.shadowBlur = 0;
+
+    // Курсор: за последней строкой; при печати горит постоянно, иначе мигает.
+    const typing = pending.length > 0;
+    const blinkOn = typing || Math.floor(nowMs / 530) % 2 === 0;
+    if (blinkOn) {
+      const lastText = tail.length > 0 ? tail[tail.length - 1].text : "";
+      const cy = startY + Math.max(0, tail.length - 1) * lineHeight;
+      const cx = pad + prefixW + c.measureText(lastText).width + 2;
+      c.fillStyle = FG;
+      c.fillRect(cx, cy + 2, Math.round(fontSize * 0.55), lineHeight - 6);
+    }
+
+    // Сканлайны: тонкие тёмные полосы через 4 px — дёшево (~180 rect).
+    c.fillStyle = "rgba(0,0,0,0.22)";
+    for (let y = 1; y < canvasHeight; y += 4) c.fillRect(0, y, canvasWidth, 1);
 
     texture.needsUpdate = true;
   }
 
+  function tick(nowMs: number): void {
+    lastNowMs = nowMs;
+    const dt = lastTickMs > 0 ? Math.max(0, nowMs - lastTickMs) : 0;
+    lastTickMs = nowMs;
+    let dirty = false;
+    if (pending.length > 0) {
+      // Догоняем при большом хвосте, чтобы длинная реплика не печаталась минуту.
+      const boost = 1 + pending.length / 200;
+      const n = Math.max(1, Math.round((typewriterCps * dt * boost) / 1000));
+      commit(pending.slice(0, n));
+      pending = pending.slice(n);
+      dirty = true;
+    }
+    // Кадр анимации: 8 Гц пока что-то живое, иначе 2 Гц (мигание курсора).
+    const busy = activity !== "idle" || pending.length > 0 || streaming;
+    const key = busy ? `f${Math.floor(nowMs / 125)}` : `i${Math.floor(nowMs / 530)}`;
+    if (dirty || key !== lastFrameKey) {
+      lastFrameKey = key;
+      render(nowMs);
+    }
+  }
+
+  function setActivity(next: TarsActivity): void {
+    if (next === activity) return;
+    activity = next;
+    lastFrameKey = "";
+    render();
+  }
+
   function append(text: string): void {
     if (!text) return;
+    if (typewriterCps > 0) {
+      pending += text;
+      return;
+    }
+    commit(text);
+  }
+
+  function commit(text: string): void {
     partial += text;
     // Разделяем по \n: всё, что до последнего \n, идёт в буфер строк,
     // хвост после последнего \n остаётся в `partial` для следующего чанка.
@@ -175,13 +296,14 @@ export function createTars1TextPanel(
     }
     // Обрезаем старые строки (кольцевой буфер).
     while (lines.length > maxLines) lines.shift();
-    render();
+    if (typewriterCps <= 0) render();
   }
 
   function clear(): void {
     lines.length = 0;
     lines.push("");
     partial = "";
+    pending = "";
     streaming = false;
     render();
   }
@@ -192,8 +314,8 @@ export function createTars1TextPanel(
     render();
   }
 
-  function getStats(): { lineCount: number; streaming: boolean } {
-    return { lineCount: lines.length, streaming };
+  function getStats(): { lineCount: number; streaming: boolean; pending: number } {
+    return { lineCount: lines.length, streaming, pending: pending.length };
   }
 
   function dispose(): void {
@@ -210,6 +332,8 @@ export function createTars1TextPanel(
     append,
     clear,
     setStreaming,
+    setActivity,
+    tick,
     getStats,
     dispose
   };

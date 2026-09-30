@@ -172,20 +172,29 @@ export function createTars2MetricsPanel(
 
   // ─────────────────────── каркас панели ───────────────────────
 
+  // Терминальный стиль как у TARS 1: промпт вместо «TARS 2 ▸».
+  const HEADER = "tars@robbox:~$ metrics ";
+
+  /** Сканлайны поверх готового кадра (перерисовка редкая — по событию). */
+  function drawScanlines(): void {
+    ctx!.fillStyle = "rgba(0,0,0,0.22)";
+    for (let y = 1; y < canvasHeight; y += 4) ctx!.fillRect(0, y, canvasWidth, 1);
+  }
+
   function drawChrome(): void {
-    ctx!.fillStyle = "#0a0d11";
+    ctx!.fillStyle = "#020a07";
     ctx!.fillRect(0, 0, canvasWidth, canvasHeight);
     ctx!.fillStyle = stateColor[state];
     ctx!.fillRect(0, 0, canvasWidth, 8);
 
-    ctx!.fillStyle = "#8fd4ff";
+    ctx!.fillStyle = "#33e0ff";
     ctx!.font = `bold ${Math.round(fontSize * 0.9)}px monospace`;
     ctx!.textBaseline = "top";
-    ctx!.fillText("TARS 2 ▸ ", 12, 16);
+    ctx!.fillText(HEADER, 12, 16);
 
     ctx!.fillStyle = stateColor[state];
     ctx!.font = `bold ${Math.round(fontSize * 0.8)}px monospace`;
-    const labelX = 12 + ctx!.measureText("TARS 2 ▸ ").width;
+    const labelX = 12 + ctx!.measureText(HEADER).width;
     ctx!.fillText(state.toUpperCase(), labelX, 18);
   }
 
@@ -359,6 +368,14 @@ export function createTars2MetricsPanel(
   // ─────────────────────── рендер ───────────────────────
 
   function render(): void {
+    renderBody();
+    drawScanlines();
+    // CanvasTexture сам помечает себя только при создании — без этого
+    // setPanelData/setState после первого кадра не доезжали до GPU.
+    texture.needsUpdate = true;
+  }
+
+  function renderBody(): void {
     drawChrome();
 
     if (currentData) {
