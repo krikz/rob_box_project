@@ -5063,6 +5063,25 @@ class TestComposeMusicToolClubStyle:
         mgr = _make_manager(sc_running=True, renardo_available=True)
         return ComposeMusicTool(mock_node, mgr), mgr
 
+    def test_club_records_history_and_avoids_repeat(self, mock_node):
+        """Issue #3224: club пишет выбранное в music_history и не повторяет каркас подряд."""
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        kits = []
+        for _ in range(4):  # один и тот же сид четыре раза подряд (как в живом логе)
+            with patch("builtins.exec"):
+                result = tool.execute(style="club", root="C", seed=6261504)
+            assert result.success is True, result.error
+            kits.append(result.data["club_kit"])
+        rows = history.recent()
+        assert len(rows) == 4
+        assert all(a != b for a, b in zip(kits, kits[1:]))
+        assert rows[0]["template"] == kits[-1]["template"] and rows[0]["style"] == "club"
+        assert rows[0]["progression"] and rows[0]["root"] == "C" and rows[0]["bpm"] == 124
+
     def test_club_executes_render_club_code(self, mock_node):
         from rob_box_mcp_tools.core.club_arranger import render_club
 

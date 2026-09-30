@@ -64,11 +64,12 @@ from __future__ import annotations
 
 import random
 from functools import lru_cache
-from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
 from .club_loudness import calibrate_levels
 from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude, clock_entry_prelude
+from .music_diversity import weighted_pick
 
 if TYPE_CHECKING:  # club_hook импортирует константы отсюда — только для типов
     from .club_hook import ClubHook
@@ -388,8 +389,57 @@ def _lead_block(notes: Sequence[Optional[int]], synth: str = "pluck") -> str:
     return _grid_block(notes, len(f"p1 >> {synth}(["))
 
 
+_KIT_RETRIES = 8
+
+
+def _kit_options() -> Dict[str, Sequence[str]]:
+    """Палитра по ролям каркаса — в том же порядке, что и в :func:`club_kit`."""
+    return {
+        "template": CLUB_TEMPLATES,
+        "kick": sorted(KICK_PATTERNS),
+        "hats": sorted(HATS_PATTERNS),
+        "lead": ROLE_SYNTHS["lead"],
+        "bass": ROLE_SYNTHS["bass"],
+        "pad": ROLE_SYNTHS["pad"],
+    }
+
+
+def _diverse_kit(seed: int, recent: Sequence[Mapping[str, Any]]) -> Dict[str, str]:
+    """Каркас со штрафом за недавнее (#3224); равный предыдущему — перебросить."""
+    options = _kit_options()
+    last = {role: recent[0].get(role) for role in options}
+    kit: Dict[str, str] = {}
+    for attempt in range(_KIT_RETRIES):
+        rng = random.Random(f"club-kit:{seed}" if attempt == 0 else f"club-kit:{seed}:{attempt}")
+        kit = {role: weighted_pick(opts, [r.get(role) for r in recent], rng) for role, opts in options.items()}
+        if kit != last:
+            return kit
+    other = [k for k in options["kick"] if k != kit["kick"]]
+    kit["kick"] = other[seed % len(other)]
+    return kit
+
+
+def club_progression(
+    seed: int = 0, recent: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> str:
+    """Имя прогрессии трека: по сиду, а с историей — со штрафом за недавнее (#3224).
+
+    Без ``recent`` и при ``seed=0`` — ровно та, что :func:`render_club_kit`
+    берёт из ``random.Random(seed)``. Отдельный ГСЧ ``club-prog:<seed>``
+    не сдвигает поток рифа.
+    """
+    seeded = PROGRESSIONS[random.Random(seed).randrange(len(PROGRESSIONS))][0]
+    if seed == 0 or not recent:
+        return seeded
+    return weighted_pick(
+        [name for name, _ in PROGRESSIONS], [r.get("progression") for r in recent],
+        random.Random(f"club-prog:{seed}"),
+    )
+
+
 def club_kit(
     seed: int = 0, template: Optional[str] = None, kick: Optional[str] = None,
+    recent: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> Dict[str, str]:
     """Каркас трека по сиду: шаблон секций, бочка, хэты, тембры ролей.
 
@@ -402,10 +452,17 @@ def club_kit(
     * иначе — отдельный ГСЧ ``random.Random(f"club-kit:{seed}")``: выбор
       детерминирован и НЕ сдвигает поток ``random.Random(seed)``, из
       которого берутся прогрессия и риф (ноты у сида те же, что и раньше);
-    * явные ``template``/``kick`` побеждают выбор сида.
+    * явные ``template``/``kick`` побеждают выбор сида;
+    * ``recent`` (issue #3224) — история сыгранного, свежие первыми
+      (:meth:`core.music_diversity.MusicHistory.recent`): каждая роль
+      выбирается :func:`core.music_diversity.weighted_pick` со штрафом за
+      недавнее, каркас, равный предыдущему, не выдаётся. ``None``/пусто и
+      ``seed=0`` — поведение и байты как без истории.
     """
     if seed == 0:
         kit = dict(REFERENCE_KIT)
+    elif recent:
+        kit = _diverse_kit(seed, recent)
     else:
         rng = random.Random(f"club-kit:{seed}")
         kit = {
@@ -441,6 +498,7 @@ def render_club(
     align_clock: bool = False,
     dj_entry: bool = False,
     hook: Optional["ClubHook"] = None,
+    recent: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
 
@@ -459,12 +517,17 @@ def render_club(
     ``hook`` (issue #3181) — хук RTTTL-мелодии (:mod:`core.club_hook`) на
     слоте lead вместо сидированного рифа; ``None`` — побайтно как раньше.
 
+    ``recent`` (issue #3224) — история сыгранного: каркас и прогрессия
+    выбираются со штрафом за недавнее (:func:`club_kit`,
+    :func:`club_progression`); ``None``/пусто и ``seed=0`` — как раньше.
+
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
     return render_club_kit(
-        club_kit(seed, template, kick), bpm=bpm, root=root, scale=scale,
-        seed=seed, repeat=repeat, align_clock=align_clock, dj_entry=dj_entry, hook=hook,
+        club_kit(seed, template, kick, recent), bpm=bpm, root=root, scale=scale,
+        seed=seed, progression=club_progression(seed, recent) if recent else None,
+        repeat=repeat, align_clock=align_clock, dj_entry=dj_entry, hook=hook,
     )
 
 
@@ -705,6 +768,7 @@ __all__ = [
     "club_duration_seconds",
     "club_entry_beats",
     "club_kit",
+    "club_progression",
     "club_form_beats",
     "entry_beats",
     "kick_steps",
