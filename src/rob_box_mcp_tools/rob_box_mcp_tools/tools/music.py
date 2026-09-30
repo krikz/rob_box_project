@@ -5324,6 +5324,7 @@ class PreviewArrangementTool(MCPTool):
         rtttl: Optional[str] = None,
         style: Optional[str] = None,
         transition: Optional[str] = None,
+        theme: Optional[str] = None,
     ) -> MCPToolResult:
         """ADR-0132 PR-7 / issue #2950: партитура превью подмешивает то же
         наследование от играющего трека и тот же пресет, что применил бы
@@ -5337,6 +5338,7 @@ class PreviewArrangementTool(MCPTool):
         kwargs = _explicit_kwargs(locals())
         # Issue #3113: переход — про запуск звука, партитуре он не нужен.
         kwargs.pop("transition", None)
+        kwargs.pop("theme", None)  # issue #3228: тема — только club, партитуре не нужна
         if kwargs.pop("style", None) not in (None, "classic"):
             # capability-honest: у club нет спецификации/партитуры — не
             # показываем партитуру classic под видом клубного трека.
