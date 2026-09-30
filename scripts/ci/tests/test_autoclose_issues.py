@@ -106,6 +106,27 @@ def test_parse_closing_refs_ignores(text):
     assert ac.parse_closing_refs(text, REPO) == []
 
 
+def test_real_pr_3159_line():
+    # Дословная строка из тела PR 3159 (merged в develop 2026-09-29,
+    # issues 3044/3045/3047/3048 остались OPEN). Refs-номера и «см.» — не
+    # закрываются.
+    line = "Refs #3149 #3150 #3151 #3152 · Closes #3044 #3045 #3047 #3048 · ⚠ см. #3162"
+    assert ac.parse_closing_refs(line, REPO) == [3044, 3045, 3047, 3048]
+
+
+def test_mixed_code_spans_do_not_leak_refs():
+    # Регресс: тело ЭТОГО PR (#3013) — HTML-комментарий внутри inline-кода
+    # и inline-код с тройным бэктиком сбивали парность бэктиков, и
+    # `Fixes #2926` из цитаты утекал в «закрыть».
+    line = (
+        "Ссылки внутри ```` ``` ````/`~~~`-блоков игнорируются: цитаты "
+        "`Fixes #2926`; шаблон PR содержит `<!-- - Closes #1234 -->`)."
+    )
+    assert ac.parse_closing_refs(line, REPO) == []
+    assert ac.parse_closing_refs("````\nCloses #1\n````", REPO) == []
+    assert ac.parse_closing_refs("``Fixes #1`` then Fixes #2", REPO) == [2]
+
+
 def test_code_stripping_keeps_real_refs_around_quotes():
     body = "Цитата: `Fixes #1`\n```\nCloses #2\n```\nCloses #3\n<!-- fixes #4 -->"
     assert ac.parse_closing_refs(body, REPO) == [3]

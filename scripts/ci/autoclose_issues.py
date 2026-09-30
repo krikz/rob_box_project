@@ -86,16 +86,20 @@ _CLAUSE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_FENCED_RE = re.compile(r"(?ms)^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$")
-_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_FENCED_RE = re.compile(r"(?ms)^[ \t]*(`{3,}|~{3,}).*?^[ \t]*\1[^\n]*$")
+# Inline-код: открывающая и закрывающая серии бэктиков одной длины
+# (```` ``` ```` — валидный inline-код с тройным бэктиком внутри).
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)")
 _HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
 
 
 def _strip_quoted(text: str) -> str:
     """Убирает код и HTML-комментарии — там цитаты, а не намерение закрыть."""
-    text = _HTML_COMMENT_RE.sub(" ", text)
+    # Порядок важен: сначала код (внутри него `<!--` — просто текст),
+    # потом HTML-комментарии.
     text = _FENCED_RE.sub(" ", text)
     text = _INLINE_CODE_RE.sub(" ", text)
+    text = _HTML_COMMENT_RE.sub(" ", text)
     return text
 
 
