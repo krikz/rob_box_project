@@ -1,0 +1,997 @@
+{
+ "_comment": [
+  "Issue #3219 — lock сэмплов DJ_Dave для fetch_dj_dave_samples.py.",
+  "Файлы в git НЕ коммитятся (у источников нет лицензии, репозиторий публичный).",
+  "src — путь в репозитории-источнике на ПИННУТОМ коммите; dest — путь под target",
+  "(/opt/rob_box/samples/dj_dave); sha256/size сняты с реально скачанных файлов",
+  "30.09.2026 (raw.githubusercontent.com). Отброшены 2-байтные пустышки failsafe/*.",
+  "mp3 (array/*) НЕ конвертируются: libsndfile 1.2.2 в образе supercollider их читает",
+  "(ubuntu:26.04, sndfile-convert), sha256 здесь — sha256 исходного mp3."
+ ],
+ "files": [
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "cocaina/cocaina.wav",
+   "dest": "algorave/cocaina/cocaina.wav",
+   "size": 3769380,
+   "sha256": "d9696bc11e48b0d331f7fcf2c5e1b8a3f8fdf96194759fab889e1d3a2814836b"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "ecotone/ecotone.wav",
+   "dest": "algorave/ecotone/ecotone.wav",
+   "size": 3634806,
+   "sha256": "9a40e6ef342c923535ffe3a47dda55a1b53f471be16fc7c4ec3601ddfce553e7"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "failsafe/CHOPS.wav",
+   "dest": "algorave/failsafe/CHOPS.wav",
+   "size": 909562,
+   "sha256": "8096ff9904aa8bca7d3a725640661e7e475f404fcbf03911f3841d6bdb6cd194"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "failsafe/FX.wav",
+   "dest": "algorave/failsafe/FX.wav",
+   "size": 141280,
+   "sha256": "10726895b4f79d3d2932c766eb5dea5803f95bcc0ccb57281fb217d5dabb9a5f"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "forget/forget.wav",
+   "dest": "algorave/forget/forget.wav",
+   "size": 455344,
+   "sha256": "afd400ccaf307055e167629d288511d17eeccb2ca8bb3f0d506436f92b051eac"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "overgame/overgame.wav",
+   "dest": "algorave/overgame/overgame.wav",
+   "size": 1170072,
+   "sha256": "ae47a40d7181101bf0ff21def16340b0c1f13521e4c23f23f7cc4ec83d18fe76"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "technologic/technologic_vox.wav",
+   "dest": "algorave/technologic/technologic_vox.wav",
+   "size": 4070820,
+   "sha256": "c9b9c37f68bda6a9edd60a148fe605f4127202c972841be152a8dab666fab04a"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "whatuneed/beat.wav",
+   "dest": "algorave/whatuneed/beat.wav",
+   "size": 994710,
+   "sha256": "a7b0705c915fed5adee6a2d4646d4bbe9926b3065e6ba76237793af1e35232f4"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "whatuneed/noise.wav",
+   "dest": "algorave/whatuneed/noise.wav",
+   "size": 994710,
+   "sha256": "d39c8171d01e930d192892441c6fa24f8992d47e1b79a3dd746c6c938a432c53"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "bb9cc415136da984168b88c16aacdf759ef3dd8b",
+   "src": "whatuneed/vox.wav",
+   "dest": "algorave/whatuneed/vox.wav",
+   "size": 7949762,
+   "sha256": "83692a74b925b11b0d9e5d7f2f3654d3a079126583f644cbd7a13f6b6895e6bf"
+  },
+  {
+   "repo": "algorave-dave/samples",
+   "commit": "f1f83076bde52f7d285abeab1af7ecee47904c45",
+   "src": "spilltab/spilltab.wav",
+   "dest": "algorave/spilltab/spilltab.wav",
+   "size": 5088290,
+   "sha256": "a669d13e90b1bc3f62e42fe40d47f81d3d3c5b07d9b9a1059629f0579a42555e"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/bass_0.mp3",
+   "dest": "array/bass/bass_0.mp3",
+   "size": 8104,
+   "sha256": "c0115a3b6e5efc3f1972dadfaca68e3cced1acb5113cea3311cda6868123c9c3"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/bass_1.mp3",
+   "dest": "array/bass/bass_1.mp3",
+   "size": 11447,
+   "sha256": "290975079a9a96a013fd9a6e44ae54efddb8410cf219c4e3ce18bcde55e7aa17"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/bass_2.mp3",
+   "dest": "array/bass/bass_2.mp3",
+   "size": 11447,
+   "sha256": "7598c6d9176e244928eb6d04a7e8d32c52bb0f3af27a440ba4dad2b916ee2220"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/build_0.mp3",
+   "dest": "array/bass/build_0.mp3",
+   "size": 110922,
+   "sha256": "7fa7415c8f0f5a4cd8990d0f863dcbdf3c6766ac35857e09cd232bb4eac29699"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/build_1.mp3",
+   "dest": "array/bass/build_1.mp3",
+   "size": 110922,
+   "sha256": "ba9406d184d55fe2343a1b3bdcb44e12d37d387c331d7cb6b4ad488a23dc6d01"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/build_2.mp3",
+   "dest": "array/bass/build_2.mp3",
+   "size": 110922,
+   "sha256": "6fecc3c890c9d0eb2ef3b021566a5c20de6356d6d45d7e9094a33ee8d0ba8b0f"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/build_3.mp3",
+   "dest": "array/bass/build_3.mp3",
+   "size": 110922,
+   "sha256": "0c0f020482da8abc6b1172358f168c5b00b87626cb789489efc148ab0a830710"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/sub_0.mp3",
+   "dest": "array/bass/sub_0.mp3",
+   "size": 11447,
+   "sha256": "d2a05ed27cde85dce99303829bfdb24b3765b341b98ea8d2a85185c27b3e3cf3"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/sub_1.mp3",
+   "dest": "array/bass/sub_1.mp3",
+   "size": 14791,
+   "sha256": "b46c4de6afe5559b416378c48986cd290714809fa7ef88d271870883bb2e2e90"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/bass/sub_2.mp3",
+   "dest": "array/bass/sub_2.mp3",
+   "size": 14791,
+   "sha256": "7216e85ca4f7b673d4cc525feee8608e5e517f73d3d90696848128c15e0327a6"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/break.mp3",
+   "dest": "array/perc/break.mp3",
+   "size": 14791,
+   "sha256": "559202a4caeeec6a70c05231a7767c85f38664b08e745e008a23ddcbf218aa43"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/cp.mp3",
+   "dest": "array/perc/cp.mp3",
+   "size": 8104,
+   "sha256": "6717960d352753f6833e09b823a468a30ecb280241585bcc2cb8dd745db622bb"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/cp2.mp3",
+   "dest": "array/perc/cp2.mp3",
+   "size": 13305,
+   "sha256": "4662a3b5933398af2eb246fb1970618dd6546aad47ca9087204acc8b9f6a2fbc"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/guit1.mp3",
+   "dest": "array/perc/guit1.mp3",
+   "size": 14791,
+   "sha256": "52b36846b98de6c4cb5ebdf2d926fc07049f9ff1cfc1c8c79d8a9e100a6b2b24"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/guit2.mp3",
+   "dest": "array/perc/guit2.mp3",
+   "size": 14791,
+   "sha256": "c29e9a09012149cd9dddaf34797fc4056c2f369003917a9abe1e7047426241e1"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/hc.mp3",
+   "dest": "array/perc/hc.mp3",
+   "size": 4760,
+   "sha256": "6ef6f3c0bd273dd0c23bf22218dd31563ad740da9f87476578bf05b9351ad910"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/kick.mp3",
+   "dest": "array/perc/kick.mp3",
+   "size": 8104,
+   "sha256": "cf706e5317c7b96108656e74d05e068c5aa09cce0a92cfd71131070eb18062b9"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/shaker.mp3",
+   "dest": "array/perc/shaker.mp3",
+   "size": 56169,
+   "sha256": "07b3d8c21da7cdad43032c2cbc3de9a95c8ceea10a170f9161024cff36d4444b"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/sn.mp3",
+   "dest": "array/perc/sn.mp3",
+   "size": 8104,
+   "sha256": "5252f8d6c72825510757ac0c78e76eba7ee6a0f67536889deabf9d6b81cd6983"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/perc/tom.mp3",
+   "dest": "array/perc/tom.mp3",
+   "size": 8104,
+   "sha256": "9341824db36c8982a0c72c7ce35fd453e5ed5f42a1f0d1f3be476ccc7c1fc86b"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/synth/build_0.mp3",
+   "dest": "array/synth/build_0.mp3",
+   "size": 110922,
+   "sha256": "7ccce776006dd442176de52605f492dd88d8eaa9a50fc8276fc87f0ec9db2949"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/synth/build_1.mp3",
+   "dest": "array/synth/build_1.mp3",
+   "size": 110922,
+   "sha256": "b73d8f1be46e85bc4bc459bea174b2e5a7c9cec69c237ef7e8218c2438cf1f8c"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/synth/build_2.mp3",
+   "dest": "array/synth/build_2.mp3",
+   "size": 110922,
+   "sha256": "9f89487f04452d4e610669ac7b88a0105ff9b09c331a92b37e87ac0b767b7407"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/synth/build_3.mp3",
+   "dest": "array/synth/build_3.mp3",
+   "size": 110922,
+   "sha256": "d3668cd836b12352c85b07d55730753f7c291581e1e521177e9c80fe2a4abf29"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/build_0.mp3",
+   "dest": "array/vox/build_0.mp3",
+   "size": 110922,
+   "sha256": "2db8b94a65df20c3a0609e7756827aaa73563fa8fad17f7117145589697c2e76"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/build_1.mp3",
+   "dest": "array/vox/build_1.mp3",
+   "size": 110922,
+   "sha256": "649c3c4c140261df96571af872a5204bc2395fff752041cf4a2e2ad1d762c145"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/build_2.mp3",
+   "dest": "array/vox/build_2.mp3",
+   "size": 110922,
+   "sha256": "29037220e377d3bc4b0722349cbc57d473a68977eb2d0857b2ff674717d5d019"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/build_3.mp3",
+   "dest": "array/vox/build_3.mp3",
+   "size": 110922,
+   "sha256": "d1e77a29bac7889310b01fedcaee46aa2fb45c6eaad599de1246b4622cda9c52"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_0.mp3",
+   "dest": "array/vox/drop_0.mp3",
+   "size": 56169,
+   "sha256": "8af3345e8f341f44c20166ba5d5643ffa1ed461fecdd8a2ad18f9bb0ff4a3e2b"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_1.mp3",
+   "dest": "array/vox/drop_1.mp3",
+   "size": 56169,
+   "sha256": "bfd47107cb1e80bf12aa80203ce54130bd4d9a81c08d8dd1512c640b57e2de24"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_2.mp3",
+   "dest": "array/vox/drop_2.mp3",
+   "size": 56169,
+   "sha256": "06ce479a205acac8be45395774783a0e53e5c843818049174cff1bb21573b897"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_3.mp3",
+   "dest": "array/vox/drop_3.mp3",
+   "size": 56169,
+   "sha256": "0113fa8d515693bea584208ce8d0709134af40c7cfeb319740af0db5ab4b7c47"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_4.mp3",
+   "dest": "array/vox/drop_4.mp3",
+   "size": 56169,
+   "sha256": "dc8be7ebc7c48031d1aa4a81b2564066cafe802b284f24ea55366e6185e59835"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_5.mp3",
+   "dest": "array/vox/drop_5.mp3",
+   "size": 56169,
+   "sha256": "bc7fe19e8a2093f716871a60c873cdec60f32b8fcc0d48a5ba00083335036a56"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_6.mp3",
+   "dest": "array/vox/drop_6.mp3",
+   "size": 56169,
+   "sha256": "86ec0586d5d0f5400dfc028936cb29f6b51217ffd10127d652050ea6a30845f7"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_7.mp3",
+   "dest": "array/vox/drop_7.mp3",
+   "size": 56169,
+   "sha256": "534b48670e984e6e924f7371bb2f73d2c6b860f5d5c704aa2b79efcfcb73b1db"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/drop_8.mp3",
+   "dest": "array/vox/drop_8.mp3",
+   "size": 56169,
+   "sha256": "89496244fcc89260c765de73ebb79e2db2a0d8cfe91739ebe9078c818eab79ea"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_0.mp3",
+   "dest": "array/vox/verse_0.mp3",
+   "size": 56169,
+   "sha256": "65078b7d9432c308eedd11e5afca9528e0ea2a063093f5c48647409c755c3a11"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_1.mp3",
+   "dest": "array/vox/verse_1.mp3",
+   "size": 56169,
+   "sha256": "ff05c9b05e0577b03393ea5942bebd76c18b880403689237a0e1235355d563f9"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_2.mp3",
+   "dest": "array/vox/verse_2.mp3",
+   "size": 56169,
+   "sha256": "8d6f55d5eaf2dacaeba1b558546c9916b4f02a8cb8ef93d0f410ff717ffcc1f3"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_3.mp3",
+   "dest": "array/vox/verse_3.mp3",
+   "size": 56169,
+   "sha256": "bbb014bade09cc9925042103fc6649b5632c061ff607c2c0b7415d3b4e521f3b"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_4.mp3",
+   "dest": "array/vox/verse_4.mp3",
+   "size": 56169,
+   "sha256": "122c1d18c47c3975ee55d97fb1137c3577f4a5a6875665bc971297b97bbc1a90"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_5.mp3",
+   "dest": "array/vox/verse_5.mp3",
+   "size": 56169,
+   "sha256": "44ad5a5fc1dd47b1485be0ffa6ae0d90f226903a3d4b57ed1f7e0672f4b72f3b"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_6.mp3",
+   "dest": "array/vox/verse_6.mp3",
+   "size": 56169,
+   "sha256": "97d27f30bc222fc733cf0814951940bf99dffb83f1a23baef0719f24ceca285a"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_7.mp3",
+   "dest": "array/vox/verse_7.mp3",
+   "size": 56169,
+   "sha256": "a0559b319a186ede3827d48cb944242f7a9a18a7093ff338d69a2103be6be53f"
+  },
+  {
+   "repo": "lil-data/dj_dave-array_remix",
+   "commit": "44c3c30f87590fc80ed4e780080aaf9ef4bf480b",
+   "src": "snd/vox/verse_8.mp3",
+   "dest": "array/vox/verse_8.mp3",
+   "size": 56169,
+   "sha256": "af419bd320a2dd898092ce5a1be7a086045e29e2619dae11ec2940d984c27836"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "cp/HANDCLP0.wav",
+   "dest": "dirt/cp/HANDCLP0.wav",
+   "size": 39392,
+   "sha256": "e5d00e7fbb04ab43fb27921b960765a5ed223f7ec2f3e4cb0a0a5c08560fe281"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "cp/HANDCLPA.wav",
+   "dest": "dirt/cp/HANDCLPA.wav",
+   "size": 32312,
+   "sha256": "f4eb3703e1201391a2a1571fc9f32a74b91a839433c6ed439368bee7dde072d1"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/000_hh3closedhh.wav",
+   "dest": "dirt/hh/000_hh3closedhh.wav",
+   "size": 153960,
+   "sha256": "743aa181c2f7652a7c7f405277d1b66189a0bcfc1097d0b87850074be66d6d70"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/001_hh3crash.wav",
+   "dest": "dirt/hh/001_hh3crash.wav",
+   "size": 343168,
+   "sha256": "c0d2358801df4ec653b17bbaf4181a11798323e25329865873c2e18ee3759712"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/002_hh3hit1.wav",
+   "dest": "dirt/hh/002_hh3hit1.wav",
+   "size": 295524,
+   "sha256": "d7bc3698bfacdcccec8a620cb7ff9047b82dabd3eeb6ccc04dfbe2bff0be1065"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/003_hh3hit2.wav",
+   "dest": "dirt/hh/003_hh3hit2.wav",
+   "size": 263808,
+   "sha256": "162b26eeac71da16f7b4d6ef0ff821202701bd488557d363b6869404307b7b9f"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/004_hh3hit3.wav",
+   "dest": "dirt/hh/004_hh3hit3.wav",
+   "size": 422528,
+   "sha256": "fb39eaa397e4d03f26e3bb0ded26f09047d303c911e7605536b75a172486f5ae"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/005_hh3kick1.wav",
+   "dest": "dirt/hh/005_hh3kick1.wav",
+   "size": 81536,
+   "sha256": "4ad4e97a727a09d65ba1fd85ce0f56da4566a96d22a45c5e412a51be3e9242f2"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/006_hh3kick2.wav",
+   "dest": "dirt/hh/006_hh3kick2.wav",
+   "size": 25228,
+   "sha256": "f266644e986dbb1d7f7b8c8e3eb188527048c39fad1a0aafd4f26e087a357bf9"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/007_hh3openhh.wav",
+   "dest": "dirt/hh/007_hh3openhh.wav",
+   "size": 323200,
+   "sha256": "88be3cefa5dda83ad3bf145d27a156c1f49cf432ab5f25e9ce93e7e3f3f467a9"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/008_hh3rerc1.wav",
+   "dest": "dirt/hh/008_hh3rerc1.wav",
+   "size": 271488,
+   "sha256": "ae601ddd8dc27a157913a9b012a028a3b5b307a281bd696129964226aea2db31"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/009_hh3rerc2.wav",
+   "dest": "dirt/hh/009_hh3rerc2.wav",
+   "size": 313980,
+   "sha256": "e150202cfd26211271e991797bd8b7bd17674fb1f9b5aa7f80f337f70b33bfe0"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/010_hh3ride.wav",
+   "dest": "dirt/hh/010_hh3ride.wav",
+   "size": 352896,
+   "sha256": "7bd81f8cce86aa8e81150b4ebc9c42265810dc7b7dd97a996d5eaa7787ccefa6"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/011_hh3snare1.wav",
+   "dest": "dirt/hh/011_hh3snare1.wav",
+   "size": 247936,
+   "sha256": "01da31d5ec56fc7dd09235d542c8c4077a63c6c1d3f55250eed7768e240c65d2"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "hh/012_hh3snare2.wav",
+   "dest": "dirt/hh/012_hh3snare2.wav",
+   "size": 242304,
+   "sha256": "e78ac95460ea7019dfcf574325fd906114f325188aca08d5afc4817f72fb645c"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/000_01.wav",
+   "dest": "dirt/psr/000_01.wav",
+   "size": 51628,
+   "sha256": "9d843c527cec20afaacee421462530361e3ca0170818aff230fc928d6a8a28c9"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/001_02.wav",
+   "dest": "dirt/psr/001_02.wav",
+   "size": 32748,
+   "sha256": "04c4bce36664a8c8e5accf64615d14bdaf934d10a60a52e64ed4516bb02ebf7f"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/002_03.wav",
+   "dest": "dirt/psr/002_03.wav",
+   "size": 25772,
+   "sha256": "df21a511466c256bb6e908823bb9578a1af958fc4b0042ad1014f423d0a280eb"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/003_04.wav",
+   "dest": "dirt/psr/003_04.wav",
+   "size": 33132,
+   "sha256": "4a71eb5862bc05e371790c139dd2692431e081c20db57b158737b6ef8ab99776"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/004_05.wav",
+   "dest": "dirt/psr/004_05.wav",
+   "size": 26220,
+   "sha256": "18c947b23aaa2a0379e17c103fc3060a443474095e8a9fb234cc1311fd965eb7"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/005_06.wav",
+   "dest": "dirt/psr/005_06.wav",
+   "size": 24620,
+   "sha256": "2888be6689d0760160b32059f849448f1e3f528e9d298d41366c506ba13199e6"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/006_07.wav",
+   "dest": "dirt/psr/006_07.wav",
+   "size": 12236,
+   "sha256": "e61aa7ab366f12c32a29a7dda56a3042ecc19192fa90893649e3b4e93ecbdbdc"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/007_08.wav",
+   "dest": "dirt/psr/007_08.wav",
+   "size": 15148,
+   "sha256": "319092ae530263b467129dac9610a66ad8b9fb7327cc6a3121f7aa89921a935d"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/008_09.wav",
+   "dest": "dirt/psr/008_09.wav",
+   "size": 15212,
+   "sha256": "7b6e4d20bd17aa881b44ef0aa630a2ff82708a5c9f3737d6973cc4aa94bf4250"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/009_10.wav",
+   "dest": "dirt/psr/009_10.wav",
+   "size": 15852,
+   "sha256": "5121e2181b9e654b67e2bcb6c00be0470386be4f4631cd0571943ece92336b1c"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/010_11.wav",
+   "dest": "dirt/psr/010_11.wav",
+   "size": 2448,
+   "sha256": "0493fe6af636a28b1995b064b225f60c406bf88527edf893f3af05b4dc82d7b2"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/011_12.wav",
+   "dest": "dirt/psr/011_12.wav",
+   "size": 12524,
+   "sha256": "9c00e9cd4ff97d8076bf2675e5b0ca18ca6c3af37b055cd234391992b68c1013"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/012_13.wav",
+   "dest": "dirt/psr/012_13.wav",
+   "size": 6036,
+   "sha256": "2312f03d14bc3b427d749f5a390fd3a11184215049c47b06221ae2e3f4d94ffe"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/013_14.wav",
+   "dest": "dirt/psr/013_14.wav",
+   "size": 14988,
+   "sha256": "1b0fb01506ef97ee98631e350a2f7a39501adbd1fdd8d54305051edf45e9d218"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/014_15.wav",
+   "dest": "dirt/psr/014_15.wav",
+   "size": 9532,
+   "sha256": "e5c8355998773bf4d87f865702709281178e296b268d81ad2453d8c568220d39"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/015_16.wav",
+   "dest": "dirt/psr/015_16.wav",
+   "size": 17452,
+   "sha256": "8a412c9590cd54597e3b825de0ba66b16840517223ebda7c369cfce039b4788c"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/016_17.wav",
+   "dest": "dirt/psr/016_17.wav",
+   "size": 3572,
+   "sha256": "6ca036c17404ad180dd4fd641ec7e27dd2ed392019316a2d285d5d165a671dc8"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/017_18.wav",
+   "dest": "dirt/psr/017_18.wav",
+   "size": 8572,
+   "sha256": "f9adb8b62a1a048401002243fd6869858abbe1af21b594b142a4e9cf4c86bd7b"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/018_19.wav",
+   "dest": "dirt/psr/018_19.wav",
+   "size": 13260,
+   "sha256": "aab08844e1acb79b6254ffc72f32928fe56cea05b12dbbd31b6da0880810bb94"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/019_20.wav",
+   "dest": "dirt/psr/019_20.wav",
+   "size": 5076,
+   "sha256": "558c40b32d35c554447b33ae43a907b4aad05918ad10ab745c51ee211492d573"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/020_21.wav",
+   "dest": "dirt/psr/020_21.wav",
+   "size": 12732,
+   "sha256": "d2144b0c7791896291037e18f6f10b90911ee6542ab67985ad9714cb53740052"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/021_22.wav",
+   "dest": "dirt/psr/021_22.wav",
+   "size": 19116,
+   "sha256": "cc550a7a0ed1041e99e22652eff0e4faed3daad1737800786b1a005ec19e32e1"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/022_23.wav",
+   "dest": "dirt/psr/022_23.wav",
+   "size": 202576,
+   "sha256": "72441e09c2c88b79fb7fbec6db405f6a14556502733b8f99321c18454b5a57c0"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/023_24.wav",
+   "dest": "dirt/psr/023_24.wav",
+   "size": 276012,
+   "sha256": "ef236d38a4df8e496f738f1762ee524498b7d3cfb470d286dca3bb0733267f0d"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/024_25.wav",
+   "dest": "dirt/psr/024_25.wav",
+   "size": 5420,
+   "sha256": "287d11152188389c820d36f42f91f331f6950eba382e62e2c61fff47103b9e62"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/025_26.wav",
+   "dest": "dirt/psr/025_26.wav",
+   "size": 7468,
+   "sha256": "671bf00f616dcbf1a9590cd4ea227308f4b8c564eee81802557732c4759e4ef4"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/026_27.wav",
+   "dest": "dirt/psr/026_27.wav",
+   "size": 317996,
+   "sha256": "1c39b295cbbd455feb2868e16122c105ecfd710303f688f61a4b451089b9b58e"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/027_28.wav",
+   "dest": "dirt/psr/027_28.wav",
+   "size": 131116,
+   "sha256": "b0ba6981c4bbbe4e91ae1d1e9912d2d9357d31ccb2b89803cbbef39c2ccd79a4"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/028_29.wav",
+   "dest": "dirt/psr/028_29.wav",
+   "size": 9996,
+   "sha256": "76655a6416a4e15332fa465bdd10b7757360c45acf795a7aa23f2dcc46f69e8b"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "psr/029_30.wav",
+   "dest": "dirt/psr/029_30.wav",
+   "size": 5260,
+   "sha256": "2a408cba4d35da095d4fcf7ab5376de31492b5301b39771322c6908571e9f05a"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1closedhh.wav",
+   "dest": "dirt/tech/tn1closedhh.wav",
+   "size": 8896,
+   "sha256": "688e617be411763eb493db26e679603e455b1f114fa0931ed310f74b0a68cb59"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1crash.wav",
+   "dest": "dirt/tech/tn1crash.wav",
+   "size": 109696,
+   "sha256": "0e8a0fd2674f8ffb6b6d31ff175d86e88541b6400dc962391b5b4171d869f4b4"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1hit1.wav",
+   "dest": "dirt/tech/tn1hit1.wav",
+   "size": 56576,
+   "sha256": "424390d310df4ed1ced0214167879645fdcdbd03f532a3ad50e6f3017a98c23f"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1hit2.wav",
+   "dest": "dirt/tech/tn1hit2.wav",
+   "size": 316552,
+   "sha256": "6cd25fb8691e2260527680350e05fe55bb908cd40ff98e341ac27709f9b69a6c"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1hit3.wav",
+   "dest": "dirt/tech/tn1hit3.wav",
+   "size": 18852,
+   "sha256": "b0e44cbe41998a68b6d5ef3016eccd85415802b908105432a22d5164b5210c88"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1kick1.wav",
+   "dest": "dirt/tech/tn1kick1.wav",
+   "size": 40500,
+   "sha256": "f9634b0048b80bb0f419d63ba4a24c80c17d1c266b18be71ded6f328202de926"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1kick2.wav",
+   "dest": "dirt/tech/tn1kick2.wav",
+   "size": 69516,
+   "sha256": "454f1a14b1350218b6df0a88293f096a0abd8b5b858a5878fdf05bec100cc3f8"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1openhh.wav",
+   "dest": "dirt/tech/tn1openhh.wav",
+   "size": 57472,
+   "sha256": "0d90c823fc18c467ba718da98820ca0a74a2b165da6306d3ca072d481b7a3cd6"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1perc1.wav",
+   "dest": "dirt/tech/tn1perc1.wav",
+   "size": 59904,
+   "sha256": "620934102858ec740771580732e917457803c1910c8472fff4c01b4d1806708f"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1perc2.wav",
+   "dest": "dirt/tech/tn1perc2.wav",
+   "size": 125824,
+   "sha256": "a2adf8b794bbadf8f6a93e42541196163656ecb75af3a5731374d5c8626dd819"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1ride.wav",
+   "dest": "dirt/tech/tn1ride.wav",
+   "size": 107904,
+   "sha256": "f606d1ed99f5e9e76587b8aed4cd66ff98c07668e5cc3bce9702441014d16f3c"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1snare1.wav",
+   "dest": "dirt/tech/tn1snare1.wav",
+   "size": 138204,
+   "sha256": "dc34cd27dc60f7df7a65f9ee7f8a32349e4680672d93931c56e3eefbb9a1a074"
+  },
+  {
+   "repo": "tidalcycles/Dirt-Samples",
+   "commit": "c74fc80f8db8038f6a33648ffef5ac00a07ad402",
+   "src": "tech/tn1snare2.wav",
+   "dest": "dirt/tech/tn1snare2.wav",
+   "size": 10892,
+   "sha256": "a3e067e85c3f55eafcc208df34b1c8f95228e95b351af54639e941f11394ff85"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/KorgDDM110/korgddm110-cp/Clap.wav",
+   "dest": "machines/KorgDDM110/korgddm110-cp/Clap.wav",
+   "size": 13712,
+   "sha256": "2a7deacb1c371710f13f59ac397eaeda2ff32ab7531ea15304694ff1b7863dcc"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/KorgDDM110/korgddm110-hh/Hat Closed.wav",
+   "dest": "machines/KorgDDM110/korgddm110-hh/Hat Closed.wav",
+   "size": 36112,
+   "sha256": "7fef19913cb6cecdaf5a4c084e90ced30b73f7a5c479a19b14b3e6e65c9460b0"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/RolandTR808/rolandtr808-cp/cp0.wav",
+   "dest": "machines/RolandTR808/rolandtr808-cp/cp0.wav",
+   "size": 408278,
+   "sha256": "d500f303a5c59a42d18bf4055e2a98b779e37a6b732fc4dd471075e4909743c2"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/RolandTR808/rolandtr808-cp/cp1.wav",
+   "dest": "machines/RolandTR808/rolandtr808-cp/cp1.wav",
+   "size": 313559,
+   "sha256": "305451f30893014d8a964dc4afb9370b9cc06d07105fea75b7fa049f9601c7f4"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/RolandTR808/rolandtr808-cp/cp2.wav",
+   "dest": "machines/RolandTR808/rolandtr808-cp/cp2.wav",
+   "size": 427085,
+   "sha256": "0c7b477e5e6ed97d13bae279a76e2ba24070b8d2d85d1af38948dfb6aeca778c"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/RolandTR808/rolandtr808-cp/cp3.wav",
+   "dest": "machines/RolandTR808/rolandtr808-cp/cp3.wav",
+   "size": 30672,
+   "sha256": "4c4159dda24cd4cfd963f41b9b9f39f5401909053b9d20cf2b2c0284776d9381"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/RolandTR808/rolandtr808-cp/cp4.WAV",
+   "dest": "machines/RolandTR808/rolandtr808-cp/cp4.WAV",
+   "size": 176446,
+   "sha256": "376429bb81cb48d1f392a11cd066c32ffb7883d445b2488704ea52e46bb08286"
+  },
+  {
+   "repo": "ritchse/tidal-drum-machines",
+   "commit": "6577395a4d05031728ced2ec3e5637fa89d8be48",
+   "src": "machines/RolandTR808/rolandtr808-hh/CH.WAV",
+   "dest": "machines/RolandTR808/rolandtr808-hh/CH.WAV",
+   "size": 22094,
+   "sha256": "c9f30ff2b4d73b03f41960e504e03c54e9a59697af666fe4d155bab9cd1ccae6"
+  }
+ ]
+}

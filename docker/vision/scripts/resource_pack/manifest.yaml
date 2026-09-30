@@ -274,6 +274,40 @@ resources:
       - "supercollider (WAV buffers, /root/.config/renardo/samples:ro)"
       - "voice-assistant Renardo (src/rob_box_voice/rob_box_voice/core/sample_search.py)"
 
+  # ---------- открытые: сэмплы DJ_Dave (issue #3219, хук-фетчер) ----------
+  # Стемы algorave-dave, Array (Lil Data), tech/psr/hh/cp из Dirt-Samples и
+  # хэты/клэпы TR-808/DDM110. САМИ ФАЙЛЫ В GIT НЕ КОММИТЯТСЯ: у репозиториев-
+  # источников лицензии нет, в них вокальные стемы чужих песен, а наш
+  # репозиторий публичный (решение товарища Шифу). Качаются на хост рядом с
+  # Renardo-сэмплами и приезжают в контейнеры тем же bind-mount'ом
+  # /opt/rob_box/samples (в docker-compose менять нечего).
+  - name: dj-dave-samples
+    type: open
+    kind: sample-pack
+    fetch_hook: fetch_dj_dave_samples
+    # sha256 здесь ПУСТ не «потому что не сняли», а потому что
+    # apply_resource_pack.sh запрещает sha256 у записи с fetch_hook (одна
+    # сумма на каталог — фикция). Пофайловые эталоны (123 файла, пиннутые
+    # коммиты, sha256 и размер с реально скачанных файлов) лежат в
+    # dj_dave_samples.lock.json рядом, и хук проверяет КАЖДЫЙ файл: чужая
+    # сумма = файл не ставится, хук падает. mp3 Array не конвертируются
+    # (libsndfile 1.2.2 в образе supercollider их читает), в lock — sha
+    # исходного mp3.
+    sha256: ""
+    size_bytes: 39035618
+    # Маркер пишется хуком ТОЛЬКО когда все файлы сошлись с lock-файлом.
+    verify_file: .complete
+    target: /opt/rob_box/samples/dj_dave
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      Сэмплы DJ_Dave недоступны: loop() на имена algorave_*/array_*/dirt_*/
+      tr808_*/ddm110_* сыграл бы тишину. Остальная музыка (синты, пак 0/1)
+      и диалог не затронуты — деплой не блокируется.
+    consumers:
+      - "supercollider (буферы, /root/.config/renardo/samples/dj_dave:ro)"
+      - "mcp_server: core/sample_dave.py + renardo_sanitizer (loop('<имя>'))"
+
   # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
   # ЭТАП 4 ВЫПОЛНЕН ЧАСТИЧНО (21.09.2026): sha256 снят у двух записей
   # katana, у двух записей vision-pi снять НЕ С ЧЕГО — см. комментарии
