@@ -1344,7 +1344,11 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
-        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
+        # Issue #2956: тот же preset_store — lookup_melody говорит модели,
+        # что у мелодии есть сохранённый пресет (играть name= без синтов).
+        self.registry.register(
+            LookupMelodyTool(self, track_library, music_manager, rtttl_library, preset_store)
+        )
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,

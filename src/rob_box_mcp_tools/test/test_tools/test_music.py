@@ -3464,9 +3464,63 @@ class TestArrangementPresetApplication:
         result = tool.execute(name="fifth", bass_style="off", **self._ARR)
         assert result.success is True
         # Явная ручка выиграла — эффективное значение "off", а не "root" из
-        # пресета, и партитура не приписывает это решение пресету.
+        # пресета, и партитура не приписывает это решение пресету, а
+        # честно называет его переопределением (issue #2956).
         assert tool.last_score["decisions"]["bass_style"] == "off"
+        assert tool.last_score["preset"] == (
+            "Beethoven's Fifth (переопределено: bass_style=off вместо root)"
+        )
+
+    def test_explicit_knob_equal_to_preset_is_not_an_override(self, mock_node, tmp_path):
+        """Тот же параметр тем же значением — не «переопределено», строки нет."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", bass_style="root", **self._ARR)
+        assert result.success is True
         assert tool.last_score.get("preset") is None
+
+    # --- Issue #2956: пресет — база, явные параметры сильнее по-параметрно.
+
+    _PRESET_2956 = {
+        "lead_synth": "imperialbrass",
+        "bass_synth": "jbass",
+        "pad_synth": "strings",
+        "bass_style": "root",
+    }
+
+    def test_2956_name_only_call_plays_the_preset_sound(self, mock_node, tmp_path):
+        """Пресет + вызов БЕЗ синтов → звучание пресета (синты из пресета)."""
+        tool, mgr, _store = self._tool(mock_node, tmp_path, self._PRESET_2956)
+        result = tool.execute(name="fifth")
+        assert result.success is True, result.error
+        played = tool.last_played_preset["knobs"]
+        assert played["lead_synth"] == "imperialbrass"
+        assert played["bass_synth"] == "jbass"
+        assert played["pad_synth"] == "strings"
+        assert played["bass_style"] == "root"
+        code = mgr.execute_code.call_args.args[0]
+        assert "imperialbrass" in code and "jbass" in code
+        assert tool.last_score["preset"] == (
+            "Beethoven's Fifth (lead_synth=imperialbrass, bass_synth=jbass, "
+            "pad_synth=strings, bass_style=root)"
+        )
+        assert "переопределено" not in tool.last_score["text"]
+
+    def test_2956_explicit_lead_synth_keeps_rest_of_preset(self, mock_node, tmp_path):
+        """Пресет + явный lead_synth → lead из вызова, остальное из пресета."""
+        tool, mgr, _store = self._tool(mock_node, tmp_path, self._PRESET_2956)
+        result = tool.execute(name="fifth", lead_synth="pianovel")
+        assert result.success is True, result.error
+        played = tool.last_played_preset["knobs"]
+        assert played["lead_synth"] == "pianovel"
+        assert played["bass_synth"] == "jbass"
+        assert played["pad_synth"] == "strings"
+        assert played["bass_style"] == "root"
+        text = tool.last_score["text"]
+        assert (
+            "Пресет: Beethoven's Fifth (bass_synth=jbass, pad_synth=strings, "
+            "bass_style=root) (переопределено: lead_synth=pianovel вместо "
+            "imperialbrass)."
+        ) in text
 
     def test_no_matching_preset_is_a_silent_noop(self, mock_node, tmp_path):
         """Пресет-стор без ключа резолвленной мелодии — вызов не меняется."""
@@ -4164,6 +4218,57 @@ class TestLookupMelodyTool:
         assert result.data["rtttl"] == "StarWars:d=4,o=5,b=80:8d"
         assert result.data["title"] == "Imperial March"
         manager.execute_code.assert_not_called()  # lookup ничего не играет
+        # Без стора пресетов — подсказки о пресете нет (issue #2956).
+        assert result.data["preset"] is None
+        assert "ПРЕСЕТ" not in result.message
+
+    def _preset_store(self, tmp_path, knobs):
+        import json
+
+        shipped = tmp_path / "shipped.json"
+        shipped.write_text(
+            json.dumps({"starwars_3": {"title": "Имперский марш (наш)", "knobs": knobs}}),
+            encoding="utf-8",
+        )
+        return ArrangementPresetStore(
+            shipped_path=shipped, learned_root=str(tmp_path / "learned")
+        )
+
+    def _imperial_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "starwars_3",
+            "title": "Imperial March",
+            "rtttl": "StarWars:d=4,o=5,b=80:8d",
+        }
+        return rtttl_library
+
+    def test_2956_saved_preset_is_reported_to_the_model(self, mock_node, tmp_path):
+        """Issue #2956: модель узнаёт о пресете и о том, что синты не нужны."""
+        knobs = {"lead_synth": "imperialbrass", "bass_synth": "jbass", "levels": "bass=0.5"}
+        tool = LookupMelodyTool(
+            mock_node, Mock(), Mock(), self._imperial_library(),
+            self._preset_store(tmp_path, knobs),
+        )
+        result = tool.execute("imperial march")
+        assert result.success is True
+        assert result.data["preset"] == {"title": "Имперский марш (наш)", "knobs": knobs}
+        assert result.data["analysis"]["preset"] == result.data["preset"]
+        msg = result.message
+        assert "СОХРАНЁННЫЙ ПРЕСЕТ «Имперский марш (наш)»" in msg
+        assert "lead_synth=imperialbrass, bass_synth=jbass, levels=bass=0.5" in msg
+        assert "compose_music(name='imperial march') БЕЗ синтов и ручек" in msg
+
+    def test_2956_melody_without_preset_has_no_hint(self, mock_node, tmp_path):
+        store = ArrangementPresetStore(
+            shipped_path=tmp_path / "none.json", learned_root=str(tmp_path / "learned")
+        )
+        tool = LookupMelodyTool(mock_node, Mock(), Mock(), self._imperial_library(), store)
+        result = tool.execute("imperial march")
+        assert result.success is True
+        assert result.data["preset"] is None
+        assert "preset" not in result.data["analysis"]
+        assert "ПРЕСЕТ" not in result.message
 
     def test_miss_returns_honest_error(self, mock_node):
         library = Mock()

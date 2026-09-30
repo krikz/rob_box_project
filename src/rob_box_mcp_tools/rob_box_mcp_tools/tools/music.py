@@ -141,6 +141,44 @@ def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in local_vars.items() if k != "self" and v is not _UNSET}
 
 
+def _knob_text(value: Any) -> str:
+    """Значение ручки для сравнения «вызов vs пресет» (без пробелов)."""
+    return str(value).replace(" ", "")
+
+
+def _split_preset_knobs(
+    kwargs: Dict[str, Any], preset_knobs: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Tuple[Any, Any]]]:
+    """Разложить ручки пресета относительно вызова (issue #2956).
+
+    Возвращает ``(applied, overridden)``: ``applied`` — ручки пресета,
+    которых в *kwargs* нет (их подставит пресет); ``overridden`` —
+    ``{ручка: (значение вызова, значение пресета)}`` там, где вызов задал
+    ручку ИНАЧЕ, чем пресет (совпадающее значение — не переопределение).
+    Вынесено из :class:`ComposeMusicTool` — бюджет размера класса ADR-0145.
+    """
+    applied = {k: v for k, v in preset_knobs.items() if k not in kwargs}
+    overridden = {
+        k: (kwargs[k], v) for k, v in preset_knobs.items()
+        if k in kwargs and _knob_text(kwargs[k]) != _knob_text(v)
+    }
+    return applied, overridden
+
+
+def _preset_note(
+    title: str, applied: Dict[str, Any], overridden: Dict[str, Tuple[Any, Any]]
+) -> str:
+    """Строка партитуры: «<title> (подставлено) (переопределено: k=вызов вместо пресет)»."""
+    note = title
+    if applied:
+        note += " (" + ", ".join(f"{k}={v}" for k, v in applied.items()) + ")"
+    if overridden:
+        note += " (переопределено: " + ", ".join(
+            f"{k}={mine} вместо {theirs}" for k, (mine, theirs) in overridden.items()
+        ) + ")"
+    return note
+
+
 #: Issue #2950 — поля, наследуемые подстройкой звучания ТЕКУЩЕГО трека
 #: (той же мелодии), если вызов их явно не задал: те же ручки, что живут
 #: в пресете (:data:`PRESET_KNOB_FIELDS` — тембры, ``drum_style``,
@@ -3607,7 +3645,14 @@ class ComposeMusicTool(MCPTool):
 
         Возвращает ``(merged_kwargs, preset_note)``: ``preset_note`` —
         строка для партитуры («<title> (ручка=значение, …)»), заполнена,
-        только если пресет реально что-то подмешал.
+        если пресет реально что-то подмешал ИЛИ если параметры вызова
+        разошлись со значениями пресета. Issue #2956: на живом роботе
+        модель всегда передавала синты явно, и пресет молча проигрывал —
+        теперь партитура пишет «<title> (…) (переопределено: ручка=значение
+        вызова вместо значения пресета, …)», чтобы было видно, какие
+        решения пресета перебиты. «Параметры вызова» здесь — всё, что уже
+        лежит в *kwargs*, включая унаследованное от играющего трека
+        (:meth:`_inherit_last_track` отрабатывает раньше).
         """
         name = kwargs.get("name")
         if not name or self._preset_store is None:
@@ -3617,19 +3662,15 @@ class ComposeMusicTool(MCPTool):
         preset = self._preset_store.get(melody_key) if melody_key else None
         if preset is None:
             return kwargs, None
-        explicit = set(kwargs.keys())
-        applied = {
-            k: v for k, v in (preset.get("knobs") or {}).items() if k not in explicit
-        }
-        if not applied:
+        # Issue #2956: по-параметрно, не «всё или ничего» — значение вызова
+        # побеждает только СВОЮ ручку, и партитура это называет.
+        applied, overridden = _split_preset_knobs(kwargs, preset.get("knobs") or {})
+        if applied:
+            applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
+        if not applied and not overridden:
             return kwargs, None
-        applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
-        if not applied:
-            return kwargs, None
-        merged = {**kwargs, **applied}
-        title = preset.get("title") or melody_key
-        knob_text = ", ".join(f"{k}={v}" for k, v in applied.items())
-        return merged, f"{title} ({knob_text})"
+        note = _preset_note(str(preset.get("title") or melody_key), applied, overridden)
+        return {**kwargs, **applied}, note
 
     def _remember_played_preset(
         self, name: Optional[str], melody_title: Optional[str], effective: Dict[str, Any]
@@ -6159,11 +6200,48 @@ class LookupMelodyTool(MCPTool):
         library: TrackLibrary,
         manager: MusicManager,
         rtttl_library: Optional[RtttlLibrary] = None,
+        preset_store: Optional[ArrangementPresetStore] = None,
     ) -> None:
         super().__init__(node)
         self._library = library
         self._manager = manager
         self._rtttl_library = rtttl_library
+        #: Issue #2956: тот же стор пресетов, что у compose_music, — чтобы
+        #: сказать модели, что у найденной мелодии есть сохранённое
+        #: звучание. ``None`` — пресетов нет, результат как раньше.
+        self._preset_store = preset_store
+
+    def _preset_info(
+        self, melody_key: Optional[str], play_name: str
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Сохранённый пресет мелодии → ``(data['preset'], текст для message)``.
+
+        Issue #2956 — живая проверка 24.09.2026: модель не знала, что у
+        мелодии есть пресет, и всегда передавала синты явно, поэтому
+        пресет ни разу не применился. Здесь — единственная точка, где
+        модель узнаёт о нём ДО вызова ``compose_music``.
+        """
+        if self._preset_store is None or not melody_key:
+            return None, ""
+        try:
+            preset = self._preset_store.get(melody_key)
+        except Exception as exc:  # noqa: BLE001 — поиск нот важнее подсказки
+            self.log_warning(f"[#2956] пресет {melody_key!r} не прочитан: {exc!r}")
+            return None, ""
+        knobs = (preset or {}).get("knobs") or {}
+        if not knobs:
+            return None, ""
+        title = str(preset.get("title") or melody_key)
+        info = {"title": title, "knobs": dict(knobs)}
+        knob_text = ", ".join(f"{k}={v}" for k, v in knobs.items())
+        text = (
+            f" У этой мелодии есть СОХРАНЁННЫЙ ПРЕСЕТ «{title}» ({knob_text}). "
+            f"Чтобы сыграть её так, достаточно compose_music(name={play_name!r}) "
+            "БЕЗ синтов и ручек — пресет подставит их сам. Явно задавай только "
+            "то, что юзер просит поменять: каждая явная ручка перебивает "
+            "пресет по своему параметру."
+        )
+        return info, text
 
     @property
     def name(self) -> str:
@@ -6177,7 +6255,10 @@ class LookupMelodyTool(MCPTool):
             "делом, когда юзер просит сыграть конкретную мелодию: посмотри на "
             "ноты и подбери аранжировку (lead_synth, form, drums, bass, pad). "
             "Затем СЫГРАЙ через compose_music(name=..., lead_synth=..., "
-            "bass_synth=..., pad_synth=..., form=...). Ноты и рисунки "
+            "bass_synth=..., pad_synth=..., form=...). Если в ответе есть "
+            "data['preset'] (сохранённое звучание мелодии) — играй "
+            "compose_music(name=...) БЕЗ синтов и ручек, если юзер не просит "
+            "другое звучание. Ноты и рисунки "
             "ударных при name= система выводит из самой мелодии — не "
             "сочиняй их. lead_synth подбирай под характер "
             "мелодии (марш → imperialbrass, классика → pianovel, игра → blip). "
@@ -6267,6 +6348,9 @@ class LookupMelodyTool(MCPTool):
                 alternatives = _search_alternatives(self._rtttl_library, candidate, title)
                 match = match_info(self._rtttl_library, rec, candidate or name)
                 analysis = self._analysis(rec.get("rtttl"))
+                preset, preset_text = self._preset_info(rec.get("name"), candidate or name)
+                if preset is not None:
+                    analysis["preset"] = preset
                 return MCPToolResult(
                     success=True,
                     data={
@@ -6277,12 +6361,14 @@ class LookupMelodyTool(MCPTool):
                         "alternatives": alternatives,
                         "match": match,
                         "analysis": analysis,
+                        "preset": preset,
                     },
                     message=(
                         f"Нашёл «{shown_title}». Точные ноты в data['rtttl'] "
                         "(формат RTTTL, как разбирать — в системном "
                         f"промпте). Сыграй ноты сам, не импровизируй. "
                         + analysis["text"] + _mismatch_note(match, candidate or name)
+                        + preset_text
                     ),
                 )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).

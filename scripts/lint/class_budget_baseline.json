@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-29",
-  "base_sha": "65277563c6c7cc77f7f39193a3f1bca9dd6ed3d5",
+  "created": "2026-09-30",
+  "base_sha": "001dcf7ca88be6df59121ab60ea57a07b8c9b130",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -28,7 +28,7 @@
       "methods": 29
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:ComposeMusicTool": {
-      "wmc": 268,
+      "wmc": 266,
       "methods": 52
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
