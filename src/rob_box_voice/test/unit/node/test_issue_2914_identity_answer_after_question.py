@@ -189,7 +189,7 @@ def _second_question_asked(n, clock):
     """n702 → n703 → n704 → пауза 150 с → n705 (повторный вопрос)."""
     n.llm_reply = "С возвращением!"
     _turn(n, "робот ты меня узнаешь", utterance_id="utt-702")
-    assert n.tts == [QUESTION]
+    assert n.tts == ["С возвращением!", QUESTION]
 
     clock.now += 57.0
     n.llm_reply = "Рад тебя слышать, Саша."
@@ -317,16 +317,17 @@ def _run_dispatched(n):
 class TestNoGuardRetryOverIdentityQuestion:
     def test_memory_search_retry_does_not_speak_over_question(self, clock):
         """Лог n705: вопрос → ретрай memory_search → «Помню: ты Саша».
-        В TTS должен остаться только вопрос."""
+        Ответ хода звучит первым, вопрос -- следом; ретрай молчит."""
         n = _node_with_real_tool_guard()
         n.llm_reply = N705_LLM
         _turn(n, N705_TEXT, utterance_id="utt-705", raw_user_command=N705_RAW)
-        assert n.tts == [QUESTION], n.tts
+        first = list(n.tts)
+        assert first[-1] == QUESTION and len(first) == 2, n.tts
 
         n.llm_reply = RETRY_LLM
         _run_dispatched(n)
 
-        assert n.tts == [QUESTION], n.tts
+        assert n.tts == first, n.tts
         # Вопрос по-прежнему ждёт ответа человека.
         assert _state(n)["confirmed"] is None
 

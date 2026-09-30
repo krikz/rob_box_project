@@ -216,7 +216,9 @@ from rob_box_voice.core.turn import (
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.identity_ack import (
     IdentityAckQuestion,
+    hold_question,
     identity_ack_plan,
+    tentative_plan,
 )
 from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     # ADR-0145 §4 (P1 step 1) -- moved out of this module (pure move, no
@@ -2523,9 +2525,13 @@ class DialogueNode(Node):
         with self._task_lock:
             held = self._run_task is not None
             if held:
-                self._identity_ack_state().hold(plan)
-                # Issue #2913 -- и реплики speak_text этого хода тоже.
-                self._turn_speech_gate().mute()
+                # Issue #2913 -- заменяющий вопрос глушит и реплики
+                # speak_text этого хода (см. hold_question).
+                hold_question(
+                    self._identity_ack_state(),
+                    self._turn_speech_gate(),
+                    plan,
+                )
         if not held:
             # Хода нет — его ответ (если был) уже прозвучал.
             self._speak_identity_question(plan, after_answer=True)
@@ -2612,11 +2618,16 @@ class DialogueNode(Node):
         одно из двух — вопрос, и робот ждёт ответа человека.
         """
         with self._task_lock:
-            plan = self._identity_ack_state().take_held()
+            # Вопрос про личность «после ответа» ответ не съедает
+            # («какой сегодня праздник» -- «это ты?»): план остаётся
+            # придержанным и прозвучит последней репликой хода.
+            plan = self._identity_ack_state().take_held_to_replace(
+                getattr(result, "spoken_text", None)
+            )
         if plan is None:
             self._handle_result(result, **kwargs)
             return
-        replaced = str(getattr(result, "spoken_text", "") or "")[:80]
+        replaced =str(getattr(result, "spoken_text", "") or "")[:80]
         if plan.get("kind") == "register_retry":
             # Issue #2908 -- своя строка: харнесс (e2e_tool_match) по
             # строке #2828 решает «робот задал вопрос о личности, ретрай
@@ -4234,7 +4245,7 @@ class DialogueNode(Node):
         if not question:
             return
         held = self._queue_identity_question(
-            {"kind": "tentative", "question": question}
+tentative_plan(question, kind, name)
         )
         self.get_logger().info(
             f"👤 [issue #2888] identity question by robot: kind={kind} "

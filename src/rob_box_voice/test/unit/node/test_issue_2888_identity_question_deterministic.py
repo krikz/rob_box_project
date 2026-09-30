@@ -148,6 +148,18 @@ class TestSingleAsksDeterministically:
         assert NAME_AS_FACT not in n.tts
         n._handle_result.assert_not_called()
 
+    def test_plain_reply_is_kept_and_question_follows(self):
+        """Живой случай 30.09 «какой сегодня праздник»: ответ на вопрос
+        человека звучит первым, «это ты?» -- последней репликой."""
+        n = _node("Сегодня среда, тридцатое сентября.")
+
+        _turn(n, "Робот, какой сегодня праздник?")
+
+        assert n.tts == [
+            "Сегодня среда, тридцатое сентября.",
+            "Саша, это ты?",
+        ], n.tts
+
     def test_name_hypothesis_not_given_to_llm(self):
         """Имя-гипотеза не уходит в LLM — ни в контекст, ни в user_input."""
         n = _node(NAME_AS_FACT)
