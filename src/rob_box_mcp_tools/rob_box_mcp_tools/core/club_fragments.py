@@ -55,6 +55,7 @@ from .club_hook import ClubHook, HookNote, extract_hook
 from .music_diversity import weighted_pick
 from .rtttl_catalog import iter_melodies, melody_by_rowid
 from .rtttl_library import human_track_title, melody_quality
+from .web_melody import cached_web_melodies, fetch_web_melody
 
 __all__ = [
     "FRAGMENT_BARS",
@@ -192,7 +193,8 @@ def _human_title(library: Any, rec: Mapping[str, Any]) -> str:
 
 def _theme_candidates(library: Any, theme: str, bpm: float) -> List[Tuple[str, Mapping[str, Any], List[ClubHook]]]:
     try:
-        found = library.search(theme, limit=20, include_rtttl=True)
+        # Issue #3228: мелодия темы, ранее найденная в вебе, важнее нечёткого поиска (он латинский).
+        found = cached_web_melodies(library, theme) or library.search(theme, limit=20, include_rtttl=True)
     except Exception as exc:  # noqa: BLE001 — тема не должна ронять музыку
         _LOG.warning("club-фрагмент: поиск по теме %r не удался (%s) — берём любой качественный", theme, exc)
         return []
@@ -273,9 +275,27 @@ def _describe(library: Any, frag: Fragment) -> Dict[str, Any]:
     }
 
 
+#: Темы, по которым веб-поиск уже пробовали (библиотека, тема): без повтора на каждый трек сета.
+_WEB_TRIED: set = set()
+
+
+def _ensure_theme_melody(
+    library: Any, theme: str, bpm: float, web_search: Callable[[str], Sequence[Mapping[str, Any]]],
+    warn: Callable[[str], None], info: Callable[[str], None],
+) -> None:
+    """Темы нет в архиве → один раз найти её RTTTL в вебе и закэшировать (issue #3228)."""
+    key = (id(library), theme.strip().lower())
+    if key in _WEB_TRIED or _theme_candidates(library, theme, bpm):
+        return
+    _WEB_TRIED.add(key)
+    if fetch_web_melody(library, theme, web_search, warn, info):
+        info(f"[#3228] тема {theme!r} не найдена в архиве — мелодия из веба добавлена, выбираем из неё")
+
+
 def pick_club_hook(
     library: Any, bpm: float, seed: int, recent: Sequence[Mapping[str, Any]], theme: Optional[str] = None,
     warn: Optional[Callable[[str], None]] = None, info: Optional[Callable[[str], None]] = None,
+    web_search: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
 ) -> Tuple[Optional[ClubHook], Optional[Dict[str, Any]]]:
     """Хук-фрагмент для club-вызова без ``name``/``rtttl``.
 
@@ -290,6 +310,8 @@ def pick_club_hook(
         warn("club-хук: RTTTL-библиотеки нет — lead = пентатонное блуждание (pentatonic-fallback)")
         return None, None
     try:
+        if theme and theme.strip() and web_search is not None:
+            _ensure_theme_melody(library, theme, bpm, web_search, warn, info)
         frag = pick_fragment(library, bpm, seed, recent, theme)
         info(f"[#3225] club хук: fragment {frag.label} ({frag.source})")
         return frag.hook, _describe(library, frag)

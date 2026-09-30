@@ -148,6 +148,7 @@ except ImportError as _exc:  # noqa: BLE001
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
 from .core.music_diversity import MusicHistory
+from .core.web_melody import attach_web_search
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
@@ -1240,7 +1241,8 @@ class MCPServer(Node):
         # LLM extracts name from user_input and calls register_speaker(name=X)
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
         self.registry.register(RegisterSpeakerTool(self))
-        self.registry.register(SearchWebTool(self))
+        self._search_web_tool = SearchWebTool(self)
+        self.registry.register(self._search_web_tool)
         # Issue #2113 — TARS 2 metrics panel. ``show_metrics`` публикует
         # запрос в /avatar/tars/panel_request; TarsPanelDispatcher
         # (rob_box_supervisor.tars_panel) подписан на этот топик, парсит
@@ -1323,6 +1325,8 @@ class MCPServer(Node):
             self, music_manager, rtttl_library, preset_store, music_history
         )
         self.registry.register(self._compose_music_tool)
+        # Issue #3228: мелодия темы, которой нет в архиве, — через search_web (сниппеты).
+        attach_web_search(self._compose_music_tool, getattr(self, "_search_web_tool", None))
         self.registry.register(
             PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
         )

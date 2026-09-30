@@ -199,13 +199,13 @@ def test_dendy_set_transitions_use_game_pool_melodies():
 
 
 def test_no_theme_match_leaves_club_call_byte_identical():
-    """Тема без совпадения тега — вызов побайтно как до #3181 (нет name=)."""
+    """Тема без совпадения тега — нет name=; с #3228 тема уходит в theme= (веб/архив на стороне тула)."""
     ctrl, clock, dispatched = _controller()
     ctrl.handle_message(json.dumps({"enabled": True, "theme": "панк-вечеринка"}))
     clock["t"] += 60
     ctrl.tick()
     prompt = dispatched[-1]
-    assert 'compose_music(style="club", bpm=' in prompt
+    assert 'compose_music(style="club", theme="панк-вечеринка", bpm=' in prompt
     assert 'name=' not in prompt
 
 

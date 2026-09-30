@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import random
+import re
 from typing import Any, List, Optional, Tuple
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "bpm_is_request",
     "bpm_walk",
     "club_key",
+    "club_theme_arg",
     "related_root",
     "state_bpm",
     "track_bpm",
@@ -150,6 +152,20 @@ def club_key(state: Any, set_root: str, track_no: int, *, hooked: bool = False) 
     if hooked:
         return related_root(set_root, track_no), "minor"
     return track_key(set_root, track_no, _seed_key(state))
+
+
+def club_theme_arg(state: Any, hooked: bool = False) -> str:
+    """``theme="…", `` для вызова club-трека (issue #3228) или ``""``.
+
+    Тема идёт в ``compose_music``, только когда трек без ``name=`` (``hooked`` —
+    ``name=`` уже есть): тул берёт фрагмент мелодии на эту тему из архива, а
+    если её там нет — из веба. Тема — речь юзера (STT): кавычки, слэши и
+    переводы строк вычищаются, длина ограничена, чтобы вызов оставался
+    одной строкой без чужих аргументов.
+    """
+    raw = str(getattr(state, "theme", "") or "")
+    clean = " ".join(re.sub(r'[\\"<>{}()\[\]`]+', " ", raw).split())[:80]
+    return "" if hooked or not clean else f'theme="{clean}", '
 
 
 def bpm_is_request(state: Any, bpm: Optional[int]) -> bool:
