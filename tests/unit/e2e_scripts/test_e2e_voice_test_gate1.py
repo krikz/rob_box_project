@@ -96,15 +96,50 @@ def gate1_validate(acc: dict, logs: str) -> dict:
     }
 
 
-def make_fake_ssh(tmp_path: Path, log_content: str):
-    """Создаёт stub для ROBOT_SSH_OVERRIDE — печатает log_content.
-    Возвращает (Path к fake_ssh.sh, Path к logs.txt)."""
-    fake = tmp_path / "fake_ssh.sh"
-    fake.write_text("#!/bin/bash\ncat \"$LOG_FILE\"\n")
-    fake.chmod(0o755)
-    log_file = tmp_path / "logs.txt"
+#: Подставной робот для ROBOT_SSH_OVERRIDE (ADR-0057 / PR #3211): исполняет
+#: команду харнесса локальным bash с фейковыми docker/ros2 и СОСТОЯНИЕМ
+#: параметров узлов в каталоге — включая протокол изоляции акта #2890
+#: (set e2e_session_reset_token → get читает тот же токен обратно).
+#: Семантика — та же, что у FAKE_ROBOT в test_issue_2890_act_isolation.py.
+FAKE_ROBOT_SSH = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
+
+
+def use_fake_robot(monkeypatch, tmp_path: Path, log_content: str = "") -> Path:
+    """Направляет ВСЕ ssh-обращения e2e_voice_test.sh в fake_robot_ssh.sh.
+
+    Без этого харнесс идёт настоящим ssh к ${ROBOT_HOST} (на ubuntu-latest —
+    таймаут 15s, run 36684074181). ``log_content`` — то, что фейк отдаёт на
+    ``docker logs voice-assistant``. Возвращает каталог состояния робота
+    (``events`` — журнал WIPE/RESET/UNSUPPORTED, ``ssh_calls`` — все вызовы).
+    """
+    state = tmp_path / "fake_robot"
+    log_file = tmp_path / "fake_robot_docker_logs.txt"
     log_file.write_text(log_content)
-    return fake, log_file
+    monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(FAKE_ROBOT_SSH))
+    monkeypatch.setenv("FAKE_ROBOT_STATE", str(state))
+    monkeypatch.setenv("FAKE_ROBOT_LOG", str(log_file))
+    monkeypatch.delenv("FAKE_DIALOGUE_REJECT", raising=False)
+    return state
+
+
+def robot_events(state: Path) -> list:
+    events = state / "events"
+    return events.read_text().splitlines() if events.exists() else []
+
+
+def assert_act_isolated(state: Path, result) -> None:
+    """Харнесс прошёл gating и изоляцию акта #2890 на фейк-роботе: токен
+    сброса выставлен и прочитан обратно (иначе E2E_FATAL rc=2), и фейк не
+    получил ни одной команды, которую не умеет (иначе он тихо разошёлся бы
+    с настоящим роботом)."""
+    events = robot_events(state)
+    assert any(e.startswith("RESET /dialogue_node ") for e in events), (
+        f"изоляция акта не дошла до dialogue_node: events={events}\n"
+        f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
+    assert "окно диалога сброшено перед актом" in result.stdout, result.stdout
+    assert "E2E_FATAL" not in result.stderr, result.stderr
+    assert not [e for e in events if e.startswith("UNSUPPORTED")], events
 
 
 # --- Tests: schema validation -----------------------------------------------
@@ -251,6 +286,11 @@ class TestE2EVoiceTestScriptGating:
         """Скрипт требует YANDEX_API_KEY — подсовываем fake."""
         monkeypatch.setenv("YANDEX_API_KEY", "fake-key-for-test")
 
+    @pytest.fixture(autouse=True)
+    def fake_robot(self, monkeypatch, tmp_path):
+        """Ни один тест класса не ходит настоящим ssh к роботу."""
+        return use_fake_robot(monkeypatch, tmp_path)
+
     def test_gating_fail_when_scenario_without_acceptance(self, tmp_path):
         """--scenario задан, acceptance.json отсутствует → exit 1 + gating message."""
         scenario = tmp_path / "scenario.json"
@@ -266,7 +306,7 @@ class TestE2EVoiceTestScriptGating:
         assert "E2E_GATE1_MISSING_ACCEPTANCE" in result.stdout
         assert "acceptance.json" in result.stdout
 
-    def test_gating_skip_with_flag(self, tmp_path):
+    def test_gating_skip_with_flag(self, tmp_path, fake_robot):
         """--acceptance-skip обходит gating, но скрипт всё равно упадёт
         на синтезе Yandex (fake-key). Главное — НЕ gating error."""
         scenario = tmp_path / "scenario.json"
@@ -279,10 +319,13 @@ class TestE2EVoiceTestScriptGating:
         )
         # Без acceptance.json НЕ должно быть gating error
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        # ...и харнесс действительно пошёл дальше gating: изоляция акта
+        # #2890 на фейк-роботе (а не упал раньше по любой другой причине).
+        assert_act_isolated(fake_robot, result)
         # Скрипт ушёл дальше и упал на synth Yandex (fake-key) — это OK
         # (мы НЕ проверяем итоговый verdict, только что gating не сработал)
 
-    def test_gating_pass_with_acceptance_file(self, tmp_path):
+    def test_gating_pass_with_acceptance_file(self, tmp_path, fake_robot):
         """--acceptance <path> явно задан → gating проходит, aggregate check FAIL
         (нет реального робота, expected tool не вызван)."""
         scenario = tmp_path / "scenario.json"
@@ -305,6 +348,7 @@ class TestE2EVoiceTestScriptGating:
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
         # Aggregate check выполнился (даже если verdict FAIL — gating ОК)
         assert "E2E_GATE1" in result.stdout
+        assert_act_isolated(fake_robot, result)
 
     def test_no_auto_discovery_of_acceptance_json(self, tmp_path):
         """Issue #2300 (09.09.2026): harness НЕ имеет auto-discovery.
@@ -382,7 +426,7 @@ class TestE2EVoiceTestScriptGating:
             f"issue #2300. STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )
 
-    def test_explicit_acceptance_bypasses_gating(self, tmp_path):
+    def test_explicit_acceptance_bypasses_gating(self, tmp_path, fake_robot):
         """Если --acceptance <path> задан явно — gating проходит, aggregate
         check FAIL (нет робота). Это РАБОТАЕТ без auto-discovery.
 
@@ -411,6 +455,7 @@ class TestE2EVoiceTestScriptGating:
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in (
             result.stdout + result.stderr
         )
+        assert_act_isolated(fake_robot, result)
 
     def test_gating_message_points_to_e2e_process(self, tmp_path):
         """Issue #2300: gating-message должен указывать на e2e-process как
@@ -455,7 +500,7 @@ class TestE2EVoiceTestScriptGating:
                 f"{verdict}"
             )
 
-    def test_text_only_does_not_require_acceptance(self, tmp_path):
+    def test_text_only_does_not_require_acceptance(self, tmp_path, fake_robot):
         """--text (single-shot smoke) БЕЗ --scenario не требует acceptance.json
         (legitimate smoke-test use case)."""
         result = subprocess.run(
@@ -464,6 +509,13 @@ class TestE2EVoiceTestScriptGating:
         )
         # Не должно быть gating error даже без acceptance
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        # ...и харнесс дошёл до конца прогона (а не упал раньше gating).
+        assert "E2E_ARTIFACTS " in result.stdout, (
+            f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+        # Фейк-робот не получил команд, которых не умеет.
+        assert not [e for e in robot_events(fake_robot)
+                    if e.startswith("UNSUPPORTED")]
 
 
 # --- Tests: e2e_voice_test.sh aggregate check (full integration) -----------
@@ -484,14 +536,15 @@ class TestGate1AggregateIntegration:
             "expected_tool_calls": ["generate_music"],
             "must_not_call": ["execute_music_code"],
         }))
-        fake_ssh, log_file = make_fake_ssh(
-            tmp_path,
-            "2025-08-18 dialogue_node: Calling MCP tool: generate_music\n"
-            "2025-08-18 dialogue_node: MCP tool result: generate_music",
+        # Строки лога — в формате mcp_server, который матчит
+        # e2e_tool_match.tool_invoked (187c9a35: GATE-1 считает вызов, а не
+        # упоминание тула; старое «Calling MCP tool: X» им не матчится).
+        robot = use_fake_robot(
+            monkeypatch, tmp_path,
+            "[mcp_server-10] 📥 Запрос выполнения: generate_music с параметрами {}\n"
+            "[mcp_server-10] ✅ Инструмент generate_music выполнен успешно\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
-        monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(fake_ssh))
-        monkeypatch.setenv("LOG_FILE", str(log_file))
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario),
@@ -503,6 +556,7 @@ class TestGate1AggregateIntegration:
         assert "GATE-1: ✅" in result.stdout, (
             f"expected GATE-1 PASS in stdout:\n{result.stdout}"
         )
+        assert_act_isolated(robot, result)
         # $OUT_DIR/acceptance.json создаётся в /tmp/e2e_v2_<run_id>/
         import glob
         out_dirs = sorted(glob.glob("/tmp/e2e_v2_*"),
@@ -528,14 +582,14 @@ class TestGate1AggregateIntegration:
             "expected_tool_calls": ["generate_music"],
             "must_not_call": ["execute_music_code"],
         }))
-        fake_ssh, log_file = make_fake_ssh(
-            tmp_path,
-            "2025-08-18 dialogue_node: Calling MCP tool: execute_music_code\n"
-            "2025-08-18 dialogue_node: Renardo PTree.__init__()\n",
+        # Формат mcp_server (см. test_aggregate_pass_when_expected_called).
+        robot = use_fake_robot(
+            monkeypatch, tmp_path,
+            "[mcp_server-10] 📥 Запрос выполнения: execute_music_code с параметрами {}\n"
+            "[mcp_server-10] ✅ Инструмент execute_music_code выполнен успешно\n"
+            "[mcp_server-10] Renardo PTree.__init__()\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
-        monkeypatch.setenv("ROBOT_SSH_OVERRIDE", str(fake_ssh))
-        monkeypatch.setenv("LOG_FILE", str(log_file))
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario),
@@ -546,6 +600,7 @@ class TestGate1AggregateIntegration:
         assert "GATE-1: ❌" in result.stdout, (
             f"expected GATE-1 FAIL in stdout:\n{result.stdout}"
         )
+        assert_act_isolated(robot, result)
         # Проверяем acceptance.json артефакт
         import glob
         out_dirs = sorted(glob.glob("/tmp/e2e_v2_*"),
