@@ -305,6 +305,21 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #3090: тот же дефект ADR-0057 («тест написан, но не в CI»).
+      # test_robbox_vision_health_check.py не гонялся ни одним workflow, поэтому
+      # PR #3092 (проверка /dev/hailo0 в health-check) сделал 10 из 17 тестов
+      # красными на любой машине без Hailo — и никто не заметил. Теперь путь
+      # устройства подменяется через ROBBOX_VISION_HAILO_DEVICE, тесты
+      # герметичны. Второй файл — ensure_hailo_driver.sh (prevention #3090:
+      # linux-headers-raspi) на shell-фейках apt/dpkg. Нужен только bash.
+      - name: Vision health-check + Hailo driver preflight (issue #3090)
+        run: |
+          python -m pytest tests/unit/scripts/test_robbox_vision_health_check.py \
+            tests/unit/scripts/test_ensure_hailo_driver.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # ADR-0144: набор размеченных сцен — разбор scene.yaml, атрибуция и
       # метрики «2.0 лучше 1.1». Каталог tests/unit/maintenance/ не гонялся
       # ни одним workflow (тот же дефект ADR-0057); подключены ТОЛЬКО файлы

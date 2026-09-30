@@ -16,6 +16,11 @@ Acceptance покрытие:
   * boot-log + metrics file пишутся при non-dry-run
   * dry-run НЕ пишет на диск
   * shellcheck -S error чисто
+  * ALERT (exit 1) при отсутствии Hailo-устройства, даже если контейнеры
+    подняты (#3090). Путь к устройству подменяется через
+    ``ROBBOX_VISION_HAILO_DEVICE`` на файл в tmp_path — тесты НЕ смотрят на
+    реальный ``/dev/hailo0`` хоста (раньше 10 из 17 падали на любой машине
+    без Hailo: «ERROR missing /dev/hailo0»).
 """
 from __future__ import annotations
 
@@ -54,6 +59,10 @@ def sandbox(tmp_path: Path) -> "Sandbox":
     boot_log = tmp_path / "boot.log"
     metrics_file = tmp_path / "health.prom"
     alert_log = tmp_path / "alerts.log"
+    # Фейковое Hailo-устройство: по умолчанию «есть». Тест, которому нужно
+    # «устройство пропало», вызывает sandbox.remove_hailo_device().
+    hailo_device = tmp_path / "hailo0"
+    hailo_device.touch()
 
     sb = Sandbox(
         tmp_path=tmp_path,
@@ -61,18 +70,24 @@ def sandbox(tmp_path: Path) -> "Sandbox":
         boot_log=boot_log,
         metrics_file=metrics_file,
         alert_log=alert_log,
+        hailo_device=hailo_device,
     )
     return sb
 
 
 class Sandbox:
     def __init__(self, tmp_path: Path, fake_bin: Path, boot_log: Path,
-                 metrics_file: Path, alert_log: Path) -> None:
+                 metrics_file: Path, alert_log: Path, hailo_device: Path) -> None:
         self.tmp_path = tmp_path
+        self.hailo_device = hailo_device
         self.fake_bin = fake_bin
         self.boot_log = boot_log
         self.metrics_file = metrics_file
         self.alert_log = alert_log
+
+    def remove_hailo_device(self) -> None:
+        """Имитировать пропажу /dev/hailo0 (kernel обновился без DKMS, #3090)."""
+        self.hailo_device.unlink()
 
     def install_fake_docker(self, running_names: list[str]) -> Path:
         """Создать fake-``docker``, который ``docker ps --filter status=running --format '{{.Names}}'``
@@ -190,6 +205,8 @@ class Sandbox:
         env["ROBBOX_VISION_BOOT_LOG"] = str(self.boot_log)
         env["ROBBOX_VISION_METRICS_FILE"] = str(self.metrics_file)
         env["ROBBOX_VISION_ALERT_LOG"] = str(self.alert_log)
+        # Hermetic: не смотреть на реальный /dev/hailo0 хоста (#3090).
+        env["ROBBOX_VISION_HAILO_DEVICE"] = str(self.hailo_device)
         # Подменить HOME, чтобы дефолтные пути textfile не уходили в $HOME.
         env["HOME"] = str(self.tmp_path)
         if hasattr(self, "_running_env"):
@@ -452,3 +469,56 @@ def test_unknown_flag_exits_with_code_2(sandbox: Sandbox) -> None:
     run = sandbox.run("--bogus-flag")
     assert run.rc == 2, f"expected rc=2, got {run.rc}"
     assert "Unknown arg" in run.stderr
+
+
+# --------------------------------------------------------------------------- #
+# 5. Hailo device watchdog (#3090)
+# --------------------------------------------------------------------------- #
+
+
+def test_alert_when_hailo_device_missing_even_if_containers_running(
+    sandbox: Sandbox,
+) -> None:
+    """Нет Hailo-устройства → ALERT, exit=1, даже при running>0 и после grace.
+
+    Сценарий #3090: unattended-upgrades поставил новый kernel без headers,
+    DKMS не пересобрал hailo_pci.ko, после ребута /dev/hailo0 нет.
+    """
+    sandbox.install_fake_docker(["zenoh-router-vision", "voice-assistant"])
+    sandbox.install_fake_systemctl("started")
+    sandbox.remove_hailo_device()
+    run = sandbox.run("--dry-run", "--json")
+    assert run.rc == 1, f"expected rc=1 (alert), got {run.rc}\nstderr: {run.stderr}"
+    payload = json.loads(run.stdout.strip().splitlines()[-1])
+    assert payload["verdict"] == "alert", payload
+    assert payload["reason"] == f"missing {sandbox.hailo_device}", payload
+    assert payload["running_containers"] == 2
+
+
+def test_hailo_missing_writes_alert_log_and_metric(sandbox: Sandbox) -> None:
+    """Без --dry-run: пропажа устройства пишет ALERT и health_alert=1."""
+    sandbox.install_fake_docker(["zenoh-router-vision"])
+    sandbox.install_fake_systemctl("started")
+    sandbox.remove_hailo_device()
+    run = sandbox.run()
+    assert run.rc == 1, f"expected rc=1, got {run.rc}\nstderr: {run.stderr}"
+    assert "ALERT" in sandbox.alert_log.read_text(encoding="utf-8")
+    metrics = sandbox.metrics_file.read_text(encoding="utf-8")
+    assert re.search(r"^robbox_vision_health_alert 1$", metrics, re.MULTILINE), metrics
+
+
+def test_hailo_missing_suppressed_in_warn_only_mode(sandbox: Sandbox) -> None:
+    """--warn-only: verdict=alert остаётся, но exit=0."""
+    sandbox.install_fake_docker(["zenoh-router-vision"])
+    sandbox.install_fake_systemctl("started")
+    sandbox.remove_hailo_device()
+    run = sandbox.run("--dry-run", "--json", "--warn-only")
+    assert run.rc == 0
+    payload = json.loads(run.stdout.strip().splitlines()[-1])
+    assert payload["verdict"] == "alert"
+
+
+def test_default_hailo_device_is_dev_hailo0() -> None:
+    """Без override скрипт по-прежнему проверяет /dev/hailo0 (боевой дефолт)."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'HAILO_DEVICE="${ROBBOX_VISION_HAILO_DEVICE:-/dev/hailo0}"' in text
