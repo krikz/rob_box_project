@@ -346,18 +346,16 @@ jobs:
         run: |
           pip install pytest-asyncio
           EXCLUDE=(
-            # На ubuntu-latest apt-версия ShellCheck ругается SC2002 (style,
-            # useless cat) на scripts/setup/setup_vision_pi_swap.sh:124,125,205
-            # (run 36684074181); ShellCheck 0.11 чист. Править скрипт или
-            # пинить версию — решение владельца:
-            --deselect=tests/unit/scripts/test_setup_vision_pi_swap.py::test_shellcheck_clean
+            # Исключения — только явно, с причиной (--deselect=<nodeid>).
+            # Сейчас пусто: gate1-тесты харнесса герметичны на фейк-роботе
+            # tests/unit/e2e_scripts/fake_robot_ssh.sh (PR #3214).
           )
           PYTHONPATH="src/rob_box_core" \
           python -m pytest tests/unit \
             -v \
             -o addopts="" \
             -p no:cacheprovider \
-            "${EXCLUDE[@]}"
+            ${EXCLUDE[@]+"${EXCLUDE[@]}"}  # пустой массив безопасен и под set -u
 
       # ADR-0144: набор размеченных сцен — разбор scene.yaml, атрибуция и
       # метрики «2.0 лучше 1.1». Каталог tests/unit/maintenance/ не гонялся
