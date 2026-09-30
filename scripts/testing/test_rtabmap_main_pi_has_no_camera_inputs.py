@@ -13,7 +13,10 @@ def test_main_rtabmap_compose_has_no_camera_runtime_topics():
     command = "\n".join(compose["services"]["rtabmap"]["command"])
 
     assert "imu_topic:=/camera/imu/data" in command
-    assert "apriltag_topic:=/detections" in command
+    # Аргумент rtabmap.launch.py называется tag_topic; apriltag_topic молча
+    # игнорировался — переименован в 91e94a01 (#670, PR #1157).
+    assert "tag_topic:=/detections" in command
+    assert "apriltag_topic:=" not in command
     assert "subscribe_rgbd:=false" in command
     assert "depth:=false" in command
 
