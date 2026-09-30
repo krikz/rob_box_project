@@ -231,6 +231,7 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     _PENDING_USER_MESSAGES_MAX as _PENDING_USER_MESSAGES_MAX,
     _UTTERANCE_ID_WAIT_SEC as _UTTERANCE_ID_WAIT_SEC,
 )
+from rob_box_voice.core.dj_material import MaterialIntake
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.media_router import (
     MediaPlan,
@@ -1319,6 +1320,11 @@ class DialogueNode(Node):
                 on_stop=self._on_dj_stop_farewell,
             ),
             logger=self.get_logger(),
+        )
+        # Issue #3227 — материал из реплики (Strudel/RTTTL/ноты) → тул
+        # add_music_material → следующий DJ-переход играет его хук.
+        self._material_intake = MaterialIntake(
+            self._dj, lambda: self._scheduler_executor, lambda: self._loop, self.get_logger()
         )
         self.create_timer(5.0, self._on_inactivity_check)
         self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
