@@ -69,6 +69,7 @@ from ..core import renardo_sanitizer, sample_fx, sample_loops
 from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
+from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
 from ..core.club_history import recent_club_rows, remember_club
 from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
@@ -3540,6 +3541,9 @@ class ComposeMusicTool(MCPTool):
         #: вызовом ``_resolve_melody``. ``None`` — сочинённый трек без
         #: ``name=`` (наследовать/запоминать нечего).
         self._pending_melody_key: Optional[str] = None
+        #: Issue #3225: тема DJ-сета для поиска club-фрагмента (хук-точка; проводка
+        #: из voice в этой карточке не делается — присвоить ``tool.club_theme = "тема"``).
+        self.club_theme: Optional[str] = None
         #: Issue #2964: сырая запись RTTTL-библиотеки, резолвленная ТЕКУЩЕЙ
         #: сборкой (:meth:`_resolve_rtttl_params`) — читается
         #: :meth:`_compose_success` для честной прозрачности результата
@@ -4482,7 +4486,7 @@ class ComposeMusicTool(MCPTool):
         if fade_note:
             fade = False
         try:
-            hook, hook_info = self._club_hook(kwargs, bpm)
+            hook, hook_info = self._club_hook(kwargs, bpm, seed, recent)
             code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent)
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
@@ -4507,7 +4511,7 @@ class ComposeMusicTool(MCPTool):
         return MCPToolResult(success=True, data=result, message=message)
 
     def _club_hook(
-        self, kwargs: Dict[str, Any], bpm: float,
+        self, kwargs: Dict[str, Any], bpm: float, seed: int = 0, recent: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Optional[ClubHook], Optional[Dict[str, Any]]]:
         """Issue #3181: хук темы для lead club — из ``rtttl=`` или ``name`` в библиотеке.
 
@@ -4521,7 +4525,10 @@ class ComposeMusicTool(MCPTool):
             hook = extract_hook(rtttl, bpm, melody_id=str(name or ""), title=str(name or ""))
             return hook, self._hook_info(hook, "rtttl", {})
         if not name:
-            return None, None
+            # Issue #3225: фрагмент RTTTL-мелодии вместо пентатоники (та — только фолбек).
+            return pick_club_hook(
+                self._rtttl_library, bpm, seed, recent, self.club_theme, self.log_warning, self.log_info,
+            )
         rec = self._resolve_melody(name, kwargs.get("variants"))
         if rec is None or not rec.get("rtttl"):
             return None, None
@@ -4541,6 +4548,7 @@ class ComposeMusicTool(MCPTool):
         info = {
             "id": hook.melody_id, "title": hook.title, "source": source, "bars": hook.bars,
             "key": hook.key_name, "time_scale": hook.time_scale,
+            "offset": hook.offset, "fingerprint": hook_fingerprint(hook.notes),
             "label": f"{hook.bars} такта, тема в {hook.key_name}" + (
                 ", мажорная тема звучит в параллельном мажоре тональности трека (от III ступени)"
                 if hook.key_mode == "major" else ", перенесена на тонику трека"
@@ -4589,10 +4597,7 @@ class ComposeMusicTool(MCPTool):
         )
         hook = result.get("club_hook")
         if hook:
-            message += (
-                f" Lead играет хук темы «{hook['title']}» (id={hook['id']}): {hook['label']}. "
-                "Это клубная переработка мотива, а не вся песня."
-            )
+            message += club_hook_sentence(hook)
         if fade:
             message += (
                 f" Переход fade: играющий трек уходит за {FADE_BARS} тактов фильтром и "

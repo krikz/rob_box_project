@@ -159,6 +159,8 @@ class ClubHook:
     key_root: int
     key_mode: str
     time_scale: float
+    #: Смещение фрагмента от первой звучащей ноты, 16-х (issue #3225); 0 — начало темы.
+    offset: int = 0
 
     @property
     def key_name(self) -> str:
@@ -245,19 +247,35 @@ def _window(notes: Sequence[HookNote], bars: int) -> Tuple[HookNote, ...]:
     return tuple((s, min(ln, limit - s), m) for s, ln, m in notes if s < limit)
 
 
-def extract_hook(rtttl: str, bpm: float, melody_id: str = "", title: str = "") -> ClubHook:
+def _shift(notes: Sequence[HookNote], offset: int) -> List[HookNote]:
+    """Ноты с атакой от ``offset`` шагов, сдвинутые к нулю (звучавшие ДО окна — отброшены)."""
+    return [(s - offset, ln, m) for s, ln, m in notes if s >= offset]
+
+
+def extract_hook(
+    rtttl: str, bpm: float, melody_id: str = "", title: str = "", *, offset: int = 0, bars: Optional[int] = None,
+) -> ClubHook:
     """RTTTL → :class:`ClubHook` для темпа сета ``bpm``.
 
+    ``offset`` (issue #3225) — фрагмент со смещением в 16-х от первой
+    звучащей ноты (кратно шагу такта/доли); ``bars`` — длина окна (``None`` —
+    по правилу :func:`hook_bars`; для фрагментов ``CHORD_BARS``). При
+    ``offset=0, bars=None`` поведение прежнее (#3181).
+
     Raises:
-        ValueError: RTTTL не разбирается или в нём нет ни одной ноты.
+        ValueError: RTTTL не разбирается, в нём нет ни одной ноты или ``offset < 0``.
     """
+    if offset < 0:
+        raise ValueError(f"offset={offset} < 0")
     name, rtttl_bpm, notes = parse_rtttl(rtttl)
     sounding = [(m, d) for m, d in notes if m is not None]
     if not sounding:
         raise ValueError(f"В RTTTL {name!r} нет ни одной ноты — хук не из чего сделать")
     scale = time_scale(bpm, rtttl_bpm, [d for _m, d in sounding])
     grid = quantize(notes, scale)
-    bars = hook_bars(grid)
+    if offset:
+        grid = _shift(grid, offset)
+    bars = bars or hook_bars(grid)
     key_root, key_scale = detect_key([m for m, _d in notes], [d for _m, d in notes])
     return ClubHook(
         melody_id=melody_id or name,
@@ -267,6 +285,7 @@ def extract_hook(rtttl: str, bpm: float, melody_id: str = "", title: str = "") -
         key_root=VALID_ROOTS.index(key_root),
         key_mode="major" if key_scale == "major" else "minor",
         time_scale=scale,
+        offset=offset,
     )
 
 
