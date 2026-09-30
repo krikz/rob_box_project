@@ -17,6 +17,12 @@
 #       даже при отсутствии cron-job (он инвокается из launcher'а).
 #   C4. Реальный orphan (есть в EXPECTED[] install.sh, нет ни в одном
 #       profiles/*/cron/jobs.json, НЕ в NON_CRON_WATCHDOGS) → missing=1.
+#   C5. Default NON_CRON_WATCHDOGS покрывает observability-only
+#       e2e-drift-watchdog и rotation-watchdog (install.sh раскладывает их
+#       без ensure_*_cron, issue #3029) → не флагаются в C2.
+#   C6. Явный override NON_CRON_WATCHDOGS=<только fail-streak> → drift и
+#       rotation снова флагаются (доказывает, что их пропускает именно
+#       default, а не что-то другое).
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_orphan_watchdog_scope.sh
@@ -52,6 +58,8 @@ agent-flow-blocked-watchdog.sh
 agent-flow-stale-blocked-watchdog.sh
 agent-flow-needs-e2e-orphan-watchdog.sh
 agent-flow-e2e-fail-streak-watchdog.sh
+agent-flow-e2e-drift-watchdog.sh
+agent-flow-rotation-watchdog.sh
 agent-flow-not-registered-anywhere-watchdog.sh
 LIST
 fi
@@ -207,8 +215,9 @@ c2_with=$(echo "$out_c2" | grep -oE 'with_cron=[0-9]+' | head -1 | cut -d= -f2)
 assert_eq "C2 with_cron (4 registered: blocked, stale-blocked, needs-e2e + fail-streak skipped by NON_CRON)" "3" "$c2_with"
 
 c2_scanned=$(echo "$out_c2" | grep -oE 'scanned=[0-9]+' | head -1 | cut -d= -f2)
-# install.sh вернул 6 watchdog'ов: orphan-detector self-skip + fail-streak NON_CRON → scanned = 4.
-assert_eq "C2 scanned (6 - self - fail-streak = 4)" "4" "$c2_scanned"
+# install.sh вернул 8 watchdog'ов: orphan-detector self-skip + 3 default
+# NON_CRON (fail-streak, e2e-drift, rotation) → scanned = 4.
+assert_eq "C2 scanned (8 - self - fail-streak - e2e-drift - rotation = 4)" "4" "$c2_scanned"
 
 # C2 exit code: 2 (есть missing).
 assert_eq "C2 exit code (1 missing → alert)" "2" "$rc_c2"
@@ -237,6 +246,16 @@ else
     echo "  PASS  C2 alert.log clean of e2e-fail-streak-watchdog"
     pass_count=$((pass_count + 1))
 fi
+# C5: observability-only watchdog'и (issue #3029) не флагаются по default.
+for _obs in agent-flow-e2e-drift-watchdog.sh agent-flow-rotation-watchdog.sh; do
+    if grep -q "$_obs" "$WORK/alert.log" 2>/dev/null; then
+        echo "  FAIL  C5 alert.log should NOT contain $_obs (default NON_CRON_WATCHDOGS)"
+        fail_count=$((fail_count + 1))
+    else
+        echo "  PASS  C5 alert.log clean of $_obs"
+        pass_count=$((pass_count + 1))
+    fi
+done
 if grep -q "not-registered-anywhere-watchdog" "$WORK/alert.log" 2>/dev/null; then
     echo "  PASS  C2 alert.log DOES contain not-registered-anywhere (true orphan)"
     pass_count=$((pass_count + 1))
@@ -244,6 +263,36 @@ else
     echo "  FAIL  C2 alert.log missing not-registered-anywhere (should be flagged)"
     fail_count=$((fail_count + 1))
 fi
+
+# === C6: explicit override — только fail-streak → drift/rotation флагаются ===
+echo
+_log_marker "========== C6: NON_CRON_WATCHDOGS override (fail-streak only) =========="
+out_c6=$(env -i HOME="$WORK" PATH="$WORK/bin:$PATH" \
+    HERMES_HOME="$WORK/hermes" \
+    REPO_DIR="$WORK" \
+    ALERT_LOG="$WORK/alert_c6.log" \
+    LOCK_FILE="$WORK/wd.lock" \
+    LOG_FILE="$WORK/wd.log" \
+    DRY_RUN=false \
+    STALE_DEDUP_HOURS=999999 \
+    NON_CRON_WATCHDOGS="agent-flow-e2e-fail-streak-watchdog.sh" \
+    bash "$WATCHDOG_SH" 2>&1)
+rc_c6=$?
+echo "$out_c6" | grep '^watchdog-orphan-detector:' || true
+c6_scanned=$(echo "$out_c6" | grep -oE 'scanned=[0-9]+' | head -1 | cut -d= -f2)
+assert_eq "C6 scanned (8 - self - fail-streak = 6)" "6" "$c6_scanned"
+c6_missing=$(echo "$out_c6" | grep -oE 'missing=[0-9]+' | head -1 | cut -d= -f2)
+assert_eq "C6 missing (drift + rotation + not-registered)" "3" "$c6_missing"
+assert_eq "C6 exit code (3 missing → alert)" "2" "$rc_c6"
+for _obs in agent-flow-e2e-drift-watchdog.sh agent-flow-rotation-watchdog.sh; do
+    if grep -q "MISSING cron-job for $_obs" "$WORK/alert_c6.log" 2>/dev/null; then
+        echo "  PASS  C6 alert log flags $_obs when not in NON_CRON_WATCHDOGS"
+        pass_count=$((pass_count + 1))
+    else
+        echo "  FAIL  C6 alert log should flag $_obs when not in NON_CRON_WATCHDOGS"
+        fail_count=$((fail_count + 1))
+    fi
+done
 
 echo
 echo "=== test_orphan_watchdog_scope.sh: passed=$pass_count failed=$fail_count ==="

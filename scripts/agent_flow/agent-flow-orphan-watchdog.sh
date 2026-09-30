@@ -82,10 +82,14 @@
 #                              раскладываются install.sh, но НЕ являются
 #                              cron-job'ами (вызываются из launcher'а или
 #                              руками). Default:
-#                              "agent-flow-e2e-fail-streak-watchdog.sh"
+#                              "agent-flow-e2e-fail-streak-watchdog.sh
+#                               agent-flow-e2e-drift-watchdog.sh
+#                               agent-flow-rotation-watchdog.sh"
 #                              (ретро 28.08 t_faac94b0 — fail-streak
 #                              watchdog инвокается из
-#                              agent-flow-e2e-process-launcher.sh).
+#                              agent-flow-e2e-process-launcher.sh;
+#                              drift/rotation — observability-only, без
+#                              cron-job в install.sh, issue #3029).
 #   ALERT_LOG                 — путь к drift.alert.log (default:
 #                              /tmp/agent-flow-drift.alert.log)
 #   LOCK_FILE                 — flock guard (default:
@@ -147,10 +151,14 @@ GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 PROFILES_GLOB="${PROFILES_GLOB:-$HERMES_HOME/profiles/*/cron/jobs.json}"
 JOBS_FILE="${JOBS_FILE:-}"
 # Watchdog'и, которые раскладываются install.sh, но НЕ регистрируются
-# как cron-job (вызываются из launcher'а или руками). Default — fail-streak
-# watchdog: ретро 28.08 t_faac94b0, agent-flow-e2e-process-launcher.sh
-# инвокает его каждый tick после e2e-process.sh.
-NON_CRON_WATCHDOGS="${NON_CRON_WATCHDOGS:-agent-flow-e2e-fail-streak-watchdog.sh}"
+# как cron-job (вызываются из launcher'а или руками). Default:
+#   - fail-streak: ретро 28.08 t_faac94b0, agent-flow-e2e-process-launcher.sh
+#     инвокает его каждый tick после e2e-process.sh;
+#   - e2e-drift + rotation: observability-only (install.sh EXPECTED[],
+#     комментарий «Observability-вотчдоги»): ensure_*_cron для них нет,
+#     запуск руками или через cron, когда Шифу решит (issue #3029).
+# Если для них появится ensure_*_cron в install.sh — убрать отсюда.
+NON_CRON_WATCHDOGS="${NON_CRON_WATCHDOGS:-agent-flow-e2e-fail-streak-watchdog.sh agent-flow-e2e-drift-watchdog.sh agent-flow-rotation-watchdog.sh}"
 ALERT_LOG="${ALERT_LOG:-/tmp/agent-flow-drift.alert.log}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-orphan-watchdog.lock}"
 LOG_FILE="${LOG_FILE:-/tmp/agent-flow-orphan-watchdog.log}"
@@ -221,7 +229,7 @@ fi
 # 2a. self-skip: orphan-detector регистрируется отдельно, иначе вечный
 #     false-positive на первом тике.
 # 2b. NON_CRON_WATCHDOGS-skip: явно перечисленные watchdog'и (default:
-#     fail-streak), которые install.sh раскладывает, но НЕ регистрирует
+#     fail-streak, e2e-drift, rotation), которые install.sh раскладывает, но НЕ регистрирует
 #     как cron. Без этого фильтра детектор всегда будет алармить на них.
 WATCHDOG_FILES=()
 while IFS= read -r f; do
