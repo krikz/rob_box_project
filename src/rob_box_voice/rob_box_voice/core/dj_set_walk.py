@@ -40,6 +40,9 @@ import random
 import re
 from typing import Any, Callable, List, Optional, Tuple
 
+from rob_box_music.knowledge import ROOTS
+from rob_box_music.set_plan import FIFTH, root_shift
+
 __all__ = [
     "BPM_DRIFT_MAX_STEP",
     "BPM_DRIFT_SPAN",
@@ -61,11 +64,9 @@ __all__ = [
     "track_key",
 ]
 
-#: Тоники в написании ``compose_music`` (``arranger.VALID_ROOTS``).
-CLUB_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
-#: Шаг обхода по кругу квинт: чистая квинта вверх (полутонов).
-FIFTH = 7
+#: Тоники в написании ``compose_music`` (``arranger.VALID_ROOTS``) — таблица ``rob_box_music.knowledge``.
+#: Шаг по кругу квинт ``FIFTH`` и сам ход тоники — ``rob_box_music.set_plan`` (ADR-0149 §8.1, PR-3b).
+CLUB_ROOTS = ROOTS
 #: Тоника параллельного мажора относительно минорной (те же 7 нот).
 PARALLEL_MAJOR_SHIFT = 3
 
@@ -99,8 +100,7 @@ def related_root(set_root: str, track_no: int) -> str:
     """
     if set_root not in CLUB_ROOTS:
         return set_root
-    shift = FIFTH * (max(1, track_no) - 1)
-    return CLUB_ROOTS[(CLUB_ROOTS.index(set_root) + shift) % len(CLUB_ROOTS)]
+    return CLUB_ROOTS[(CLUB_ROOTS.index(set_root) + root_shift(track_no)) % len(CLUB_ROOTS)]
 
 
 def _mode_weights(prefer: str) -> Tuple[Tuple[str, float], ...]:

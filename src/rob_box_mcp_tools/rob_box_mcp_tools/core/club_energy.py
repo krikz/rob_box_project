@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from typing import Dict, Mapping, Optional, Tuple
 
+from rob_box_music import knowledge as kn
+
 __all__ = [
     "ENERGY_DENSITY",
     "ENERGY_LEVELS",
@@ -45,12 +47,11 @@ __all__ = [
     "validate_energy",
 ]
 
-#: Допустимые уровни энергии: 1 — интро/спад, 5 — пик сета.
-ENERGY_LEVELS: Tuple[int, ...] = (1, 2, 3, 4, 5)
-
-#: Смещение громкости трека ПОСЛЕ динамики мастер-шины, dB. Размах 9 dB —
-#: как медиана 6-мин окон эталона (8.9 dB). Только ≤ 0: пик не растёт.
-ENERGY_TRIM_DB: Dict[int, float] = {1: -9.0, 2: -6.0, 3: -4.0, 4: -2.0, 5: 0.0}
+#: Уровни энергии (1 — интро/спад, 5 — пик) и смещение громкости ПОСЛЕ динамики мастер-шины, dB
+#: (размах 9 dB — медиана 6-мин окон эталона, только ≤ 0) — одна таблица в ``rob_box_music.knowledge``
+#: (ADR-0149 §4.6 в, PR-3b); здесь импорт до удаления старого пути (PR-7).
+ENERGY_LEVELS = kn.ENERGY_LEVELS
+ENERGY_TRIM_DB = kn.ENERGY_TRIM_DB
 
 #: Плотность: множители 0..1 к откалиброванным уровням слоёв. Низкая
 #: энергия — без клэпа, реже хэты, тише лид; бочка и бас держат ритм

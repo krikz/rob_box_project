@@ -43,8 +43,15 @@ LEAD_MAX_MIDI = 88
 
 #: Ступени энергии трека в сете (ADR-0147): 1 — интро/спад, 5 — пик.
 ENERGY_LEVELS: Tuple[int, ...] = (1, 2, 3, 4, 5)
-#: Смещение громкости трека по энергии, дБ (``core/club_energy.ENERGY_TRIM_DB``).
+#: Смещение громкости трека по энергии, дБ, ПОСЛЕ динамики мастер-шины (ADR-0147 §3.2; проводка — PR-7).
+#: Источник для старого ``core/club_energy`` (там импорт отсюда, ADR-0149 §4.6 в).
 ENERGY_TRIM_DB: Mapping[int, float] = {1: -9.0, 2: -6.0, 3: -4.0, 4: -2.0, 5: 0.0}
+#: Волна энергии открытого сета по номеру трека (ADR-0147 §3.4, ADR-0149 §4.6): трек 1 — превью/интро (2),
+#: дальше период 5 «разгон → пик → спад»: 2 3 4 5 4 | 2 3 4 5 4 | …
+ENERGY_WAVE: Tuple[int, ...] = (2, 3, 4, 5, 4)
+#: Плотность по энергии — составом ролей секций, а не множителями уровней (ADR-0149 §4.6 б): роли, которых
+#: нет в треке такой энергии. Бочку и бас энергия не снимает (ADR-0147 §3.3).
+ENERGY_THIN_ROLES: Mapping[int, Tuple[str, ...]] = {1: ("clap",), 2: ("clap",)}
 
 #: Потолки уровней, дБ пика (К7). ``master_peak_db`` — потолок суммы одновременно
 #: звучащих ролей секции; остальное — потолок одной роли. Стартовые значения
@@ -72,6 +79,8 @@ class GenreWindow:
     bpm: Tuple[int, int]
     kick: str
     scales: Tuple[str, ...]
+    #: Свинг нечётных 16-х хэтов — доля восьмой (ADR-0149 §3.4: 5–10 %); величину на сет выбирает план.
+    swing: Tuple[float, float] = (0.05, 0.10)
 
 
 #: club 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138).
@@ -190,7 +199,7 @@ def role_ceiling(role: str) -> float:
 
 __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS", "ENERGY_TRIM_DB",
-    "DEFAULT_HOOKS", "GENRE_WINDOWS", "GenreWindow", "THEMES", "ThemeRow",
+    "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES", "ThemeRow",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
     "SCALES", "SYNTH_PALETTE", "SYNTH_TRAITS", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
