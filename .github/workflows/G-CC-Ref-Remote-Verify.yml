@@ -35,6 +35,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 jobs:
   cc-ref-remote-verify:
@@ -51,22 +52,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install gh CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh
-
-      - name: Authenticate gh CLI (read-only)
-        # ``gh api`` on issues works with the workflow's GITHUB_TOKEN
-        # scope (issues:read is enough for GET /repos/.../issues/N).
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "${GH_TOKEN}" | gh auth login --with-token
-
       - name: CC-budget ref-card remote verify (R-1d)
         env:
           GH_REPO: ${{ env.GH_REPO }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "::group::cc_budget_refs --verify-remote (GH_REPO=${GH_REPO})"
@@ -87,8 +76,8 @@ jobs:
             echo ""
             echo "If FAIL: см. логи шага \`CC-budget ref-card remote verify\`. "
             echo "Частые причины: ref-card ссылается на закрытую issue (state≠open), "
-            "либо \`since:\` legacy-записи ссылается на issue, которую закрыли. "
-            "Фикс: либо переоткрыть issue, либо вынести запись из "
-            "\`_legacy_acknowledged\`, либо перенести её в обычный exempt + "
-            "\`_refactor_cards\`."
+            echo "либо \`since:\` legacy-записи ссылается на issue, которую закрыли. "
+            echo "Фикс: либо переоткрыть issue, либо вынести запись из "
+            echo "\`_legacy_acknowledged\`, либо перенести её в обычный exempt + "
+            echo "\`_refactor_cards\`."
           } >> "$GITHUB_STEP_SUMMARY"
