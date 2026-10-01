@@ -88,6 +88,7 @@ from .streams.status import StatusAggregator
 from .streams.voice_state import normalize_voice_state
 from .streams.voice_picker import pick_voice
 from .streams.wifi import read_wifi_rssi
+from .tars_stage_relay import TarsStageRelay  # noqa: E402
 from .protocol.topics import encode_voice_state
 
 log = logging.getLogger(__name__)
@@ -130,6 +131,26 @@ WIRE_TO_VOICE_INPUT_MODE: dict[str, str] = {
 # выглядели в docker logs одинаково (тишина). Первый пакет — сразу INFO,
 # дальше сводка раз в это окно (см. QuestBridge._note_wake_audio_publish).
 WAKE_AUDIO_LOG_INTERVAL_S: float = 10.0
+
+# issue #3253 (Ш2) — стадии ТАРС-в-шлем (ADR-0078 §3.6).
+# supervisor публикует сюда thinking (старт LLM) и idle (ход без речи в шлем).
+AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
+# Конец синтеза реплики (tts_node, общий топик). Сопоставляется с
+# репликой ТАРС по speech_id из /avatar/tts/request.
+TTS_FINISHED_TOPIC: str = "/voice/tts/finished"
+# Период опроса трекера стадий: отложенный idle после конца звука.
+TARS_STAGE_TICK_S: float = 0.1
+
+
+def _notify_tars_barge_in(node: Any) -> None:
+    """issue #3253 (Ш2): PTT оборвал реплику ТАРС → реле стадий шлёт idle.
+
+    Модульная функция, а не метод QuestBridge: класс-бюджет ADR-0145.
+    В unit-тестах моста ``node`` — стаб без реле: тогда no-op.
+    """
+    relay = getattr(node, "_tars_relay", None)
+    if relay is not None:
+        relay.on_barge_in()
 
 
 class _AlwaysActiveWSServer:
@@ -505,6 +526,10 @@ class QuestBridge:
 
     def publish_voice_barge_in(self) -> None:
         """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        # issue #3253 (Ш2): клиент на PTT уже оборвал реплику ТАРС в шлеме —
+        # закрываем её стадию и на сервере (tars_state idle), иначе экран
+        # ждёт конца звука, которого не будет.
+        _notify_tars_barge_in(self._node)
         if self._tts_control_pub is None or self._sound_stop_pub is None:
             return
         self._tts_control_pub.publish(_stop_msg())
@@ -1856,6 +1881,21 @@ class QuestNode(Node):
             String, self._avatar_tts_request_topic,
             self._on_avatar_tts_request_meta, 10,
         )
+        # issue #3253 (Ш2) — сервер сам шлёт стадии ТАРС: thinking (старт
+        # LLM, от supervisor'а), speaking (первый чанк в шлем), idle +
+        # operator_tts_done (после конца звука / отмены / ошибки).
+        # Путь реплики и логика — в tars_stage_relay.py (ADR-0145: QuestNode
+        # не растим). ws_server — геттером: он создаётся ниже подписок.
+        self._tars_relay = TarsStageRelay(lambda: self.ws_server, self.get_logger())
+        self._tars_stage_sub = self.create_subscription(
+            String, AVATAR_TARS_STAGE_TOPIC, self._tars_relay.on_supervisor_stage, 10,
+        )
+        self._tts_finished_sub = self.create_subscription(
+            String, TTS_FINISHED_TOPIC, self._tars_relay.on_tts_finished, 10,
+        )
+        self._tars_stage_timer = self.create_timer(
+            TARS_STAGE_TICK_S, self._tars_relay.tick
+        )
         # issue #1988 (шаг 4а) — consumer /avatar/command_result: ответ ТАРС
         # (summary) транслируется всем WS-сессиям JSON_EVENT-ом
         # (type="avatar_command_result"). Поверхность на клиенте (панель
@@ -2586,6 +2626,8 @@ class QuestNode(Node):
 
         self._current_avatar_request_id = request_id
         self._current_avatar_ws = ws
+        # issue #3253 (Ш2): speech_id связывает реплику с /voice/tts/finished.
+        self._tars_relay.on_request(request_id, data.get("speech_id"))
         self.get_logger().debug(
             f"🎧 [ADR-0055] avatar TTS request зарегистрирован: "
             f"request_id={request_id[:8]}, ws={id(ws)}"
@@ -2635,7 +2677,7 @@ class QuestNode(Node):
             # если msg.data пустой/None (защитный default, в норме не срабатывает).
             raw_data = msg.data if msg.data is not None else b""
             audio_bytes = bytes(raw_data) if raw_data else b""
-            self.ws_server.deliver_audio(
+            delivered = self.ws_server.deliver_audio(
                 stream="operator_tts",
                 request_id=request_id,
                 audio_bytes=audio_bytes,
@@ -2645,6 +2687,11 @@ class QuestNode(Node):
                 total=0,
                 sample_rate=cached_sample_rate,  # ADR-0078 §4
                 ws=ws,
+            )
+            # issue #3253 (Ш2): первый доставленный чанк → tars_state speaking;
+            # каждый чанк двигает оценку конца звука в шлеме.
+            self._tars_relay.on_chunk(
+                delivered, request_id, len(audio_bytes), cached_sample_rate,
             )
             # Факт доставки в WS — оставляем info-лог, чтобы было видно
             # прохождение чанка до оператора (issue #2136 DoD).
@@ -2880,13 +2927,8 @@ class QuestNode(Node):
         ``{"request_id": str, "sample_rate": int, "ts_ms": int}``.
         Side-channel публикуется ДО каждого /avatar/tts/audio AudioData.
         Здесь кешируем ``request_id → sample_rate`` для последующего
-        ``_on_avatar_tts_audio`` и одновременно рассылаем в WS
-        ``tars_state accepted`` (оператор слышит «акцепт-тон» ДО речи ТАРС).
-
-        Гейт ``_current_avatar_request_id``: audio_meta приходит только
-        в рамках активного запроса (sink=headset). Если активного нет
-        (например, race-условие), молча дропаем — это просто лишний
-        side-channel, ничего не ломает.
+        ``_on_avatar_tts_audio``. WS-событий не шлёт (issue #3253: раньше
+        слал ``tars_state accepted`` на каждый чанк, см. комментарий ниже).
         """
         try:
             payload = json.loads(msg.data or "")
@@ -2913,21 +2955,11 @@ class QuestNode(Node):
             self._avatar_request_sample_rate = dict(
                 list(self._avatar_request_sample_rate.items())[-8:]
             )
-        # Активной сессии нет — meta вне контекста, drop без WS-event.
-        if self._current_avatar_request_id is None:
-            return
-        # WS-event: tars_state accepted (с request_id).
-        event = {
-            "type": "tars_state",
-            "stage": "accepted",
-            "request_id": request_id,
-            "sample_rate": int(sample_rate),
-            "ts_ms": int(time.time() * 1000),
-        }
-        try:
-            self.ws_server.broadcast_json_event(event)
-        except Exception as e:  # noqa: BLE001
-            self.get_logger().debug(f"tars_state accepted broadcast failed: {e}")
+        # issue #3253 (Ш2): tars_state accepted отсюда больше НЕ шлём.
+        # audio_meta публикуется ПЕРЕД КАЖДЫМ чанком, и accepted приходил
+        # клиенту на каждый кусок речи: перебивал speaking (экран мигал в
+        # THINKING) и щёлкал акцепт-тоном посреди фразы. accepted — только
+        # от /avatar/stt/result; речь — speaking на первом чанке.
 
     def _on_avatar_stt_result(self, msg: String) -> None:
         """ADR-0078 §3.6 follow-up (issue #2162): stt_node wake «ТАРС».

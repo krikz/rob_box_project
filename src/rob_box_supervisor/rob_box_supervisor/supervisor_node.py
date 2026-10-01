@@ -86,6 +86,8 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
     VOICE_LANGUAGES,  # re-export для обратной совместимости
     VOICE_PRESET_IDS,  # re-export для обратной совместимости
 )
+# issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
+from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0083 §2.3 — supervisor собирает AgentCore через build_agent(AgentSpec).
 # До этого PR у supervisor был свой ``_build_operator_llm`` (без persist_path),
 # свой ``_load_operator_system_prompt``, своя ``_load_operator_skill_prompts``
@@ -374,6 +376,13 @@ def _make_execute_response(
 # подписка на несуществующий топик безвредна). Payload v1 — как
 # /avatar/command, поэтому обработчик тот же (_on_avatar_command).
 AGENT_STT_RESULT_TOPIC: str = "/avatar/stt/result"
+# issue #3253 (Ш2, ADR-0078 §3.6) — стадии ТАРС-в-шлем от супервизора:
+# ``thinking`` — ход LLM начался; ``idle`` — ход закончился БЕЗ реплики в
+# шлем (агент выключен/недоступен, текстовый вход, пустой ответ). Если
+# реплика ушла в /avatar/tts/request, speaking/idle выводит quest_node
+# по чанкам и /voice/tts/finished. String JSON ``{stage, request_id,
+# reason?, ts_ms}``; потребитель — quest_node → WS ``tars_state``.
+AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 
 # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5 target-operator-agent-and-dialogue.md) ──
 # Прямоточный путь речи оператора с левого грипа: /avatar/ptt/result + конфиг
@@ -628,6 +637,11 @@ class AvatarSupervisor(Node):
         self.create_subscription(
             RosString, AGENT_STT_RESULT_TOPIC, self._on_avatar_command, 10
         )
+        # issue #3253 (Ш2): стадии ТАРС для экрана шлема (см. константу).
+        self._tars_stage_pub = self.create_publisher(
+            RosString, AVATAR_TARS_STAGE_TOPIC, 10
+        )
+        self._tars_stage = TarsStagePublisher(self._tars_stage_pub, RosString, self._log)
 
         # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5) ──────────────
         # Прямоточный путь, НЕ агентский цикл: ptt/result + конфиг панели →
@@ -2407,6 +2421,7 @@ class AvatarSupervisor(Node):
                 request_id=uuid.uuid4().hex,
                 body={"ok": False, "summary": "malformed_input", "tool_calls": []},
             )
+            self._tars_stage.idle("", "malformed_input")
             self._record_agent_command(source="unknown", result="malformed_input")
             return
 
@@ -2419,6 +2434,7 @@ class AvatarSupervisor(Node):
                 request_id=request_id,
                 body={"ok": False, "summary": "agent_disabled", "tool_calls": []},
             )
+            self._tars_stage.idle(request_id, "agent_disabled")
             self._record_agent_command(source=source, result="agent_disabled")
             return
 
@@ -2436,6 +2452,7 @@ class AvatarSupervisor(Node):
                 request_id=request_id,
                 body={"ok": False, "summary": "agent_unavailable", "tool_calls": []},
             )
+            self._tars_stage.idle(request_id, "agent_unavailable")
             self._record_agent_command(source=source, result="agent_unavailable")
             return
 
@@ -2448,6 +2465,8 @@ class AvatarSupervisor(Node):
         # знает свой FSM-стейт. Swap публикует ``pause`` на входе и
         # ``resume`` в finally без предварительного capture.
 
+        # issue #3253 (Ш2): ход LLM начинается здесь — экран шлема THINKING.
+        self._tars_stage.thinking(request_id)
         try:
             with self._dialogue_control_swap():
                 result = self._run_agent_sync(core, payload)
@@ -2496,7 +2515,11 @@ class AvatarSupervisor(Node):
         #
         # Озвучиваем только голосовой вход: на текстовую команду из Telegram
         # оператор ждёт текст, а не речь в наушниках.
-        self._maybe_speak_agent_reply(source, str(result.get("summary", "")))
+        # issue #3253 (Ш2): без реплики в шлем экран надо вернуть в idle.
+        self._tars_stage.finish_turn(
+            request_id,
+            self._maybe_speak_agent_reply(source, str(result.get("summary", ""))),
+        )
 
         # Журнал ТАРС (§5.4): что сделал, когда, чем кончилось.
         self._record_operator_journal(
@@ -2819,7 +2842,7 @@ class AvatarSupervisor(Node):
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"GripPipeline: voice_tts_request publish failed: {exc}")
 
-    def _maybe_speak_agent_reply(self, source: str, summary: str) -> None:
+    def _maybe_speak_agent_reply(self, source: str, summary: str) -> bool:
         """Озвучить ответ агента в шлем, если вход был голосовым (#2116).
 
         Вынесено из ``_on_avatar_command`` отдельным методом ради
@@ -2831,12 +2854,16 @@ class AvatarSupervisor(Node):
         Озвучиваем только голосовой вход: на текстовую команду из Telegram
         оператор ждёт текст, а не речь в наушниках. Пустой ``summary``
         отсекает сам ``_publish_avatar_tts`` (#2096).
+
+        Returns:
+            True, если реплика ушла в /avatar/tts/request (issue #3253:
+            иначе ``TarsStagePublisher.finish_turn`` шлёт шлему ``idle``).
         """
         if source != "quest":
-            return
+            return False
         if not self._param_bool("speak_agent_replies", True):
-            return
-        self._publish_avatar_tts(summary)
+            return False
+        return bool(self._publish_avatar_tts(summary))
 
     def _publish_avatar_tts(
         self,
@@ -2895,14 +2922,17 @@ class AvatarSupervisor(Node):
         # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
         # XML-экранирование &, <, > делает сам сборщик; sink приходит как
         # строка от вызывающего (headset|preview) — нормализуем через Sink.
-        # speech_id НЕ добавляем: tts_node генерит свой через
-        # ``chunk_data.get("speech_id", str(_uuid.uuid4()))``, а в payload'е
-        # request_id уже служит уникальным ключом.
+        # speech_id задаём сами (issue #3253): без него tts_node генерит
+        # случайный uuid4, и конец синтеза (/voice/tts/finished несёт только
+        # speech_id) не связать с request_id реплики.
+        # issue #3253 (Ш2): speech_id = f"tars-{rid}" — quest_node по нему
+        # сопоставляет /voice/tts/finished с репликой и отдаёт шлему idle.
         utterance = Utterance(
             text=text,
             sink=sink,
             voice=voice,
             language=language,
+            speech_id=f"tars-{rid}",
         )
         payload = {
             "request_id": rid,
