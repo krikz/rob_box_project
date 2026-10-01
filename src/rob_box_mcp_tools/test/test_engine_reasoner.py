@@ -80,7 +80,7 @@ def test_valid_tool_call_is_applied_and_logged_with_latency():
     assert got == [rz.validate(GOOD)]
     assert _outcomes(log) == ["ok"] and "provider=minimax" in log.lines[-1][1] and "p95_ms=" in log.lines[-1][1]
     (messages, tools, settings), = provider.calls
-    assert tools == [rz.tool()] and settings.tool_choice == "auto" and provider.closed == 1
+    assert tools == [rz.tool()] and settings.tool_choice == "auto"
     assert "«ночной город»" in messages[1].content
     assert r.metrics.latency("minimax").count == 1
 
@@ -130,7 +130,7 @@ def test_breaker_opens_after_three_failures_and_skips_the_provider_for_ten_minut
     for _ in range(3):
         r.request("s", "т", PLAN, lambda ref: None)
     assert r.request("s", "т", PLAN, lambda ref: None) == "circuit_open"
-    assert len(provider.calls) == 3 and len(built) == 3  # четвёртого похода в облако нет
+    assert len(provider.calls) == 3 and len(built) == 1  # клиент один; четвёртого похода в облако нет
     clock.t += 601
     provider.error, provider.response = None, _tool_reply(GOOD)
     assert r.request("s", "т", PLAN, lambda ref: None) == "started"  # пробный вызов после паузы

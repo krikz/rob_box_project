@@ -83,6 +83,9 @@ class SetReasoner:
         self.metrics = DecisionMetrics()
         self._clock = clock
         self._spawn = spawn
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # один loop на процесс: клиент LLM живёт в нём
+        self._client: Any = None
+        self._loop_lock = threading.Lock()
 
     def request(self, set_id: str, theme: str, plan: SetPlan,
                 on_ok: Callable[[rz.Refinement], None]) -> str:
@@ -97,7 +100,7 @@ class SetReasoner:
     def _run(self, set_id: str, theme: str, plan: SetPlan, on_ok: Callable[[rz.Refinement], None]) -> None:
         start = self._clock()
         try:
-            outcome, ref, detail = asyncio.run(self._ask(theme, plan))
+            outcome, ref, detail = asyncio.run_coroutine_threadsafe(self._ask(theme, plan), self._event_loop()).result()
         except Exception as exc:  # noqa: BLE001 — ризонер не роняет процесс плеера
             outcome, ref, detail = "error", None, f"{type(exc).__name__}: {exc}"
         latency_s = self._clock() - start
@@ -109,20 +112,27 @@ class SetReasoner:
             except Exception as exc:  # noqa: BLE001
                 self._log.warning(f"⚠️ [reasoner] {set_id} поправка не применена: {type(exc).__name__}: {exc}")
 
+    def _event_loop(self) -> asyncio.AbstractEventLoop:
+        """Свой поток с event loop на всё время процесса: HTTP-клиент не переживает чужой закрытый loop."""
+        with self._loop_lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                threading.Thread(target=self._loop.run_forever, name="rbx-reasoner-loop", daemon=True).start()
+            return self._loop
+
     async def _ask(self, theme: str, plan: SetPlan) -> Tuple[str, Optional[rz.Refinement], str]:
         from rob_box_llm.provider import LLMMessage, LLMSettings
 
         system, user = rz.prompt(theme, plan.profile, self.hype)
-        provider = self._provider()
+        if self._client is None:
+            self._client = self._provider()  # нет ключа — исключение, исход error; следующий сет попробует снова
         try:
-            response = await asyncio.wait_for(provider.complete(
+            response = await asyncio.wait_for(self._client.complete(
                 [LLMMessage("system", system), LLMMessage("user", user)],
                 tools=[rz.tool(plan.profile.genre, self.hype)],
                 settings=LLMSettings(tool_choice="auto", max_tokens=1024)), timeout=self._deadline)
         except asyncio.TimeoutError:
             return "late", None, f"нет ответа за {self._deadline:g} с"
-        finally:
-            await _close(provider)
         try:
             return "ok", rz.validate(payload_of(response), plan.profile.genre, self.hype), ""
         except rz.PlanInvalid as exc:
@@ -140,16 +150,13 @@ class SetReasoner:
         self.metrics.count(f"plan_outcome_{outcome}")
         lat = self.metrics.latency(PROVIDER)
         line = (f"🧠 [reasoner] {set_id} plan_outcome={outcome} provider={PROVIDER} latency_ms={latency_s * 1000:.0f}"
-                f" p50_ms={lat.p50_ms} p95_ms={lat.p95_ms} n={lat.count} {detail}".rstrip())
+                f" p50_ms={_ms(lat.p50_ms)} p95_ms={_ms(lat.p95_ms)} n={lat.count} {detail}".rstrip())
         (self._log.info if outcome in ("ok", "disabled") else self._log.warning)(line)
         return outcome
 
 
-async def _close(provider: Any) -> None:
-    try:
-        await provider.aclose()
-    except Exception:  # noqa: BLE001 — закрытие клиента не меняет исход
-        pass
+def _ms(value: Optional[float]) -> str:
+    return "-" if value is None else f"{value:.0f}"
 
 
 class SetPlanBox:
