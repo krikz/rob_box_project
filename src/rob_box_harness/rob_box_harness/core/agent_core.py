@@ -1656,7 +1656,10 @@ class AgentCore:
                 seen=seen,
                 tools_called=tools_called,
             )
-            speak_text_count, speak_text_real_count = counts[:2]
+            # Issue #3284 — дельты пачки, складываем за ход: присваивание
+            # (регресс #2639) обнуляло счёт, если последняя пачка без речи.
+            speak_text_count += counts[0]
+            speak_text_real_count += counts[1]
             for text in counts[2]:
                 spoken_texts.append(text)
             # Issue #2857 — cheap track-name capture for the DJ fallback;
