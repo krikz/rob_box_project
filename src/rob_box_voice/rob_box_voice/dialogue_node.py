@@ -6949,6 +6949,8 @@ tentative_plan(question, kind, name)
                 MUSIC_STARTING_TOOLS,
                 is_dj_auto=was_dj_auto,
                 turn_text=user_input,
+                # #3285: упавший compose_music трек сета не запускал.
+                succeeded_tools=getattr(result, "succeeded_tools", None),
             )
         if self._apply_stop_music_deferral(result):
             self._flush_music_cleanup_if_idle(was_dj_auto)
