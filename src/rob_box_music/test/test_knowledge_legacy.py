@@ -19,15 +19,17 @@ for pkg in ("rob_box_mcp_tools", "rob_box_voice"):
 if not (SRC / "rob_box_mcp_tools").is_dir():  # пакет поставлен отдельно от монорепо
     pytest.skip("нет src/rob_box_mcp_tools рядом с пакетом", allow_module_level=True)
 
-from rob_box_mcp_tools.core import club_energy, renardo_events, synth_traits  # noqa: E402
+from rob_box_mcp_tools.core import club_energy, synth_traits  # noqa: E402
 from rob_box_mcp_tools.core.club_arranger import KICK_PATTERNS, ROLE_PALETTE  # noqa: E402
 from rob_box_mcp_tools.core.harmonize import BASS_MIDI_FLOOR  # noqa: E402
-from rob_box_mcp_tools.core.arranger import BPM_RANGE, VALID_ROOTS  # noqa: E402
+from rob_box_mcp_tools.core.arranger import BPM_RANGE, SCALE_INTERVALS, VALID_ROOTS  # noqa: E402
 
 
 def test_scales_and_roots_match_legacy():
-    assert dict(kn.SCALES) == renardo_events.SCALES
-    assert kn.ROOTS == renardo_events.NOTE_NAMES == VALID_ROOTS
+    # renardo_events теперь реэкспорт из knowledge (PR-1b), сверяем с независимой таблицей аранжировщика.
+    scales = {k: v for k, v in kn.SCALES.items() if k != kn.CHROMATIC}
+    assert scales == {k: tuple(v) for k, v in SCALE_INTERVALS.items()}
+    assert kn.ROOTS == tuple(VALID_ROOTS)
 
 
 def test_synth_traits_match_legacy():
