@@ -44,6 +44,11 @@ from rob_box_harness.core.tool_loop import (
 from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-exported
     _ToolLoopOutcome,
 )
+from rob_box_harness.core.tool_loop.content_speech import (  # Issue #3269
+    ContentSpeech,
+    speak_closing_content,
+    speak_content_beside_set_voice,
+)
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -1526,6 +1531,9 @@ class AgentCore:
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
         spoken_texts: list[str] = []
+        # Issue #3269 — реплики, которые модель пишет в content рядом с
+        # set_voice (сказка разными голосами), озвучиваются как speak_text.
+        content_speech = ContentSpeech()
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
@@ -1599,6 +1607,13 @@ class AgentCore:
             # здесь, а не платим за ретрай двумя ходами позже (разбор и
             # границы дозволенного — в :mod:`.tool_loop.markup_recovery`).
             response = _recover_written_tool_calls(response, openai_tools)
+            # Issue #3269 — content рядом с set_voice-пачкой — реплика,
+            # а не служебный текст: первым вызовом пачки становится
+            # speak_text(content, voice=голос до этой пачки). См.
+            # :mod:`.tool_loop.content_speech`.
+            response = speak_content_beside_set_voice(
+                response, content_speech, openai_tools
+            )
             if not response.tool_calls:
                 break
 
@@ -1760,6 +1775,15 @@ class AgentCore:
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
             )
+
+        # Issue #3269 — финал сказки, чьи реплики шли из content: цикл его
+        # не исполняет, а dialogue_node после speak_text пропустит его как
+        # дубль (#988) — озвучиваем здесь, тем же голосом.
+        closing = await speak_closing_content(
+            response, content_speech, self._tools, spoken_texts
+        )
+        speak_text_count += closing
+        speak_text_real_count += closing
 
         # Issue #1253 — babble filter on tool error. A tool failed
         # (is_error=True) and the LLM answered with ONLY words: no retry
