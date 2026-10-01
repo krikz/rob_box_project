@@ -218,7 +218,8 @@ def generate_launch_description():
     # ⚠️ Workaround: Python entry points not recognized by ROS 2
     # Using ExecuteProcess instead of Node to run Python module directly
     mcp_server = ExecuteProcess(
-        cmd=['python3', '-m', 'rob_box_mcp_tools.mcp_server', '--ros-args', '--log-level', 'info'],
+        cmd=['python3', '-m', 'rob_box_mcp_tools.mcp_server', '--ros-args', '--log-level', 'info',
+             '--params-file', PathJoinSubstitution([config_dir, 'mcp_server.yaml'])],  # ADR-0149: music_engine
         output='screen',
         respawn=True,
         respawn_delay=5.0
