@@ -31,11 +31,13 @@ import re
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from .rtttl import parse_rtttl
-from .rtttl_catalog import add_melody, melodies_by_tag
+from .rtttl_catalog import add_melody, melodies_by_tag, purge_web_melodies
 
 __all__ = [
-    "MAX_WEB_RTTTL_CHARS", "MIN_WEB_NOTES", "as_search_callable", "attach_web_search", "pick_theme", "extract_rtttl_candidates",
-    "cached_web_melodies", "fetch_web_melody", "search_results_to_snippets", "theme_tag", "web_query",
+    "MAX_WEB_RTTTL_CHARS", "MIN_WEB_NOTES", "VERIFIED_TAG", "WEB_CACHE_TTL_S",
+    "as_search_callable", "attach_web_search",
+    "cached_web_melodies", "extract_rtttl_candidates", "fetch_web_melody", "is_relevant", "pick_theme",
+    "purge_stale_web_melodies", "search_results_to_snippets", "theme_tag", "web_query",
 ]
 
 #: Меньше звучащих нот — не мелодия (заголовок, обрывок).
@@ -44,6 +46,10 @@ MIN_WEB_NOTES = 12
 MAX_WEB_RTTTL_CHARS = 2000
 #: Сколько мелодий-кандидатов кэшируем за один поиск.
 MAX_CACHED = 2
+#: Веб-кэш не вечный (issue #3243): старше — удаляется и ищется заново (30 суток).
+WEB_CACHE_TTL_S = 30 * 24 * 3600
+#: Метка «релевантность проверена» (:func:`is_relevant`); записи без неё (до #3243) недоверенные.
+VERIFIED_TAG = "web-verified"
 #: Тема длиннее не уходит в поисковик (запрос идёт наружу).
 MAX_THEME_CHARS = 80
 
@@ -82,6 +88,25 @@ def extract_rtttl_candidates(text: str, truncated: bool = False) -> List[str]:
     return out
 
 
+def _stems(text: str) -> List[str]:
+    """Значимые слова темы (>= 4 букв), урезанные до основы (``космический`` ~ ``космос``)."""
+    words = [w for w in re.findall(r"\w+", str(text or "").lower()) if len(w) >= 4]
+    return [w[:4] if len(w) >= 5 else w for w in words]
+
+
+def is_relevant(theme: str, *evidence: str) -> bool:
+    """Подтверждают ли заголовок/сниппет/имя RTTTL тему (issue #3243).
+
+    Выдача по ``«<тема> rtttl»`` полна страниц про сам формат (демо библиотек,
+    генераторы): мелодия принимается, только если хотя бы половина значимых слов
+    темы встретилась в тексте-доказательстве. Тема без значимых слов проверке
+    не поддаётся — отказ (честнее, чем принять вслепую).
+    """
+    stems = _stems(theme)
+    hay = " ".join(str(e or "") for e in evidence).lower()
+    return bool(stems) and sum(1 for s in stems if s in hay) * 2 >= len(stems)
+
+
 def _valid(rtttl: str) -> bool:
     try:
         _name, bpm, notes = parse_rtttl(rtttl)
@@ -108,7 +133,17 @@ def theme_tag(theme: str) -> str:
 def cached_web_melodies(library: Any, theme: str) -> List[Any]:
     """Веб-мелодии, ранее закэшированные по этой теме (``source="web"``, тег темы)."""
     tag = theme_tag(theme)
-    return [r for r in melodies_by_tag(library, tag) if r.get("source") == "web"] if tag else []
+    if not tag:
+        return []
+    return [r for r in melodies_by_tag(library, tag) if r.get("source") == "web" and VERIFIED_TAG in r.get("tags", [])]
+
+
+def purge_stale_web_melodies(library: Any, theme: str, info: Optional[Callable[[str], None]] = None) -> int:
+    """Убрать из архива протухшие и непроверенные веб-мелодии темы (issue #3243); вернуть сколько."""
+    removed = purge_web_melodies(library, theme_tag(theme), WEB_CACHE_TTL_S, VERIFIED_TAG)
+    if removed and info:
+        info(f"[#3243] веб-кэш темы {theme!r}: удалено {removed} протухших/непроверенных мелодий")
+    return removed
 
 
 def fetch_web_melody(
@@ -130,18 +165,23 @@ def fetch_web_melody(
             warn(f"[#3228] веб-поиск мелодии по теме {theme!r} не удался ({type(exc).__name__}: {exc})")
         return 0
     found: List[Tuple[str, str]] = []
+    skipped = 0
     for snip in snippets:
         body = str(snip.get("body") or "")
+        if not is_relevant(theme, snip.get("title"), body):
+            skipped += 1
+            continue
         for rtttl in extract_rtttl_candidates(body, truncated=body.rstrip().endswith("...")):
             found.append((rtttl, str(snip.get("url") or "")))
     if not found:
         if warn:
-            warn(f"[#3228] в веб-выдаче по теме {theme!r} нет валидного RTTTL ({len(snippets)} сниппетов)")
+            warn(f"[#3228] в веб-выдаче по теме {theme!r} нет валидного RTTTL ({len(snippets)} сниппетов, "
+                 f"{skipped} отсеяно как не про тему [#3243])")
         return 0
     name = theme_tag(theme)
     added = 0
     for rtttl, url in found[:MAX_CACHED]:
-        if add_melody(library, rtttl, name=name, title=name, source="web", tags=["web", name]):
+        if add_melody(library, rtttl, name=name, title=name, source="web", tags=["web", VERIFIED_TAG, name]):
             added += 1
             if info:
                 info(f"[#3228] мелодия по теме {theme!r} из веба закэширована ({url[:80]})")

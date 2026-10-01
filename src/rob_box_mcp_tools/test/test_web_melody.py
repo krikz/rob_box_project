@@ -2,6 +2,7 @@
 
 import gzip
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -9,7 +10,8 @@ from rob_box_mcp_tools.core.club_fragments import _WEB_TRIED, pick_club_hook
 from rob_box_mcp_tools.core.club_progressions import SUPPORTED_SCALES
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.core.web_melody import (
-    as_search_callable, cached_web_melodies, extract_rtttl_candidates, fetch_web_melody, search_results_to_snippets, web_query,
+    as_search_callable, cached_web_melodies, extract_rtttl_candidates, fetch_web_melody, is_relevant,
+    search_results_to_snippets, web_query,
 )
 from ._ros_stubs import RosStubs
 
@@ -71,7 +73,10 @@ def test_fetch_caches_web_melody_with_tags(tmp_path):
 
     def search(q):
         queries.append(q)
-        return [{"body": f"Strange:{GOOD}", "url": "http://x"}, {"body": "no notes here"}]
+        return [
+            {"title": "Очень странные дела ringtone", "body": f"Strange:{GOOD}", "url": "http://x"},
+            {"body": "no notes here"},
+        ]
 
     assert fetch_web_melody(lib, "Очень странные дела", search) == 1
     assert queries == ["Очень странные дела rtttl"]
@@ -100,7 +105,7 @@ def test_pick_club_hook_uses_web_when_theme_not_in_archive(tmp_path):
 
     def search(q):
         calls.append(q)
-        return [{"body": f"Strange:{GOOD}", "url": "u"}]
+        return [{"title": "zzqq quux tune", "body": f"Strange:{GOOD}", "url": "u"}]
 
     hook, info = pick_club_hook(lib, BPM, 0, [], "zzqq quux", web_search=search)
     assert hook is not None and info["pick"] == "theme" and info["id"] == "zzqq quux"
@@ -156,7 +161,8 @@ def test_club_hook_passes_theme_param_and_web_search_to_picker(mock_node, tmp_pa
     _WEB_TRIED.clear()
     tool = _tool(mock_node, _library(tmp_path))
     calls = []
-    tool.web_search = lambda q: calls.append(q) or [{"body": f"Strange:{GOOD}", "url": "u"}]
+    row = {"title": "тема сета йцу", "body": f"Strange:{GOOD}", "url": "u"}
+    tool.web_search = lambda q: calls.append(q) or [row]
     hook, info = tool._club_hook({"theme": "тема сета йцу"}, BPM, 0, [])
     assert hook is not None and info["pick"] == "theme"
     assert calls == ["тема сета йцу rtttl"]
@@ -185,3 +191,41 @@ def test_scale_description_no_longer_says_only_minor(mock_node):
     params = {p.name: p for p in _tool(mock_node, None).parameters}
     assert "только minor" not in params["style"].description
     assert "dorian" in params["style"].description and "theme" in params
+
+
+def test_is_relevant_requires_theme_words_in_evidence():
+    assert is_relevant("космос", "Space ringtone", "космический корабль")
+    assert not is_relevant("космос", "rtttl.js demo", "Play RTTTL ringtones in the browser")
+    assert is_relevant("пираты в открытом море", "Пираты открытого моря", "")
+    assert not is_relevant("пираты в открытом море", "ringtone library", "dancing queen")
+    assert not is_relevant("а б в", "а б в")  # нет значимых слов — не принимаем вслепую
+
+
+def test_fetch_rejects_snippet_not_about_theme(tmp_path):
+    lib = _library(tmp_path)
+    warns = []
+    demo = [{"title": "rtttl.js", "body": f"Demo:{GOOD} play ringtones", "url": "https://1j01.github.io/rtttl.js/"}]
+    assert fetch_web_melody(lib, "космос", lambda q: demo, warn=warns.append) == 0
+    assert cached_web_melodies(lib, "космос") == []
+    assert len(warns) == 1 and "отсеяно как не про тему" in warns[0]
+
+
+def _add_web(lib, theme, tags, created_at):
+    from rob_box_mcp_tools.core.rtttl_catalog import add_melody
+    add_melody(lib, f"web:{GOOD}", name=theme, source="web", tags=tags)
+    with lib._lock, lib._conn:
+        lib._conn.execute("UPDATE rtttl_melodies SET created_at = ? WHERE source = 'web'", (created_at,))
+
+
+def test_purge_drops_unverified_and_expired_web_melodies(tmp_path):
+    from rob_box_mcp_tools.core.web_melody import purge_stale_web_melodies
+    lib = _library(tmp_path)
+    now = datetime.now(timezone.utc)
+    _add_web(lib, "космос", ["web", "космос"], now.isoformat())  # записано до #3243: без метки проверки
+    assert cached_web_melodies(lib, "космос") == []
+    assert purge_stale_web_melodies(lib, "космос") == 1
+    _add_web(lib, "космос", ["web", "web-verified", "космос"], (now - timedelta(days=40)).isoformat())
+    assert purge_stale_web_melodies(lib, "космос") == 1  # протухла
+    _add_web(lib, "космос", ["web", "web-verified", "космос"], now.isoformat())
+    assert purge_stale_web_melodies(lib, "космос") == 0 and len(cached_web_melodies(lib, "космос")) == 1
+    assert lib.total() == 2  # архивная запись и свежая веб-мелодия целы

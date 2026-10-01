@@ -55,7 +55,7 @@ from .club_hook import ClubHook, HookNote, extract_hook
 from .music_diversity import weighted_pick
 from .rtttl_catalog import iter_melodies, melody_by_rowid
 from .rtttl_library import human_track_title, melody_quality
-from .web_melody import cached_web_melodies, fetch_web_melody
+from .web_melody import cached_web_melodies, fetch_web_melody, purge_stale_web_melodies
 
 __all__ = [
     "FRAGMENT_BARS",
@@ -285,6 +285,8 @@ def _ensure_theme_melody(
 ) -> None:
     """Темы нет в архиве → один раз найти её RTTTL в вебе и закэшировать (issue #3228)."""
     key = (id(library), theme.strip().lower())
+    if key not in _WEB_TRIED:
+        purge_stale_web_melodies(library, theme, info)  # TTL и недоверенные записи до #3243
     if key in _WEB_TRIED or _theme_candidates(library, theme, bpm):
         return
     _WEB_TRIED.add(key)
