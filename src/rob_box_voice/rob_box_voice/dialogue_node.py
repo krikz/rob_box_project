@@ -248,7 +248,11 @@ from rob_box_voice.core.named_play import (
     user_phrase_title,
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
-from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
+from rob_box_voice.core.turn_origin import (
+    TURN_DJ_SET_FINAL,
+    TURN_IS_DJ_AUTO,
+    retry_is_dj_auto,
+)
 from rob_box_voice.core.turn_reasoning import turn_wants_reasoning
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
@@ -4854,6 +4858,9 @@ tentative_plan(question, kind, name)
         # Issue #3144 — происхождение хода для ретраев гуардов (см.
         # ``core/turn_origin.py``): ретрай наследует его через контекст.
         dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
+        # Issue #3247 — DJ_AUTO-ход после финального промпта сета: гард
+        # исполнителя тулов не даст ему снова включить DJ.
+        dj_final_token = TURN_DJ_SET_FINAL.set(self._turn_is_dj_final(is_dj_auto))
         # Issue #3220 — думает ли этот ход (thinking MiniMax); провайдер
         # читает флаг из контекста хода.
         reasoning_token = TURN_REASONING.set(turn_wants_reasoning(
@@ -5151,8 +5158,14 @@ tentative_plan(question, kind, name)
                 session_handed_over=self._take_session_handover(),
             )
             TURN_IS_DJ_AUTO.reset(dj_auto_token)
+            TURN_DJ_SET_FINAL.reset(dj_final_token)
             TURN_REASONING.reset(reasoning_token)
             TURN_EPOCH.reset(epoch_token)
+
+    def _turn_is_dj_final(self, is_dj_auto: bool) -> bool:
+        """Issue #3247 — флаг ``TURN_DJ_SET_FINAL`` для начинающегося хода."""
+        dj = getattr(self, "_dj", None)
+        return dj is not None and dj.is_final_turn(is_dj_auto) is True
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
 

@@ -129,6 +129,11 @@ class DJState:
     # номер трека, который объявлен финальным по лимиту (#2856).
     tracks_started: int = 0
     final_track_no: int = 0
+    # Issue #3247 — модели уже отдан промпт «ФИНАЛЬНЫЙ ТРЕК» этого сета.
+    # С этого момента DJ_AUTO-ход не может снова включить DJ
+    # (:meth:`DJModeController.is_final_turn`) — сет только завершается.
+    # Живёт до конца сета (``_reset_state`` / генуинный старт).
+    final_prompted: bool = False
     # Issue #2875 (дополнение) — отложенное прощание: стенное время, когда
     # его сказать (``None`` — не ждём), и персона, от чьего имени.
     farewell_at: Optional[float] = None
@@ -455,6 +460,7 @@ class DJModeController:
             # прошлого сета, не успевшее прозвучать, новому не нужно.
             self.state.tracks_started = 0
             self.state.final_track_no = 0
+            self.state.final_prompted = False
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
             self.state.bpm_locked = False
@@ -507,6 +513,7 @@ class DJModeController:
         self.state.final_dispatched = False
         self.state.tracks_started = 0
         self.state.final_track_no = 0
+        self.state.final_prompted = False
         self.state.set_bpm = DJ_SET_DEFAULT_BPM
         self.state.bpm_locked = False
         self.state.set_root = ""
@@ -1170,6 +1177,54 @@ class DJModeController:
             f"Затем представься как {persona} через speak_text."
         )
 
+    def _is_final_transition(self, n: int, plan_tracks: int, track_no: int) -> bool:
+        """Переход ``n`` играет последний трек сета (по плану или по лимиту).
+
+        Issue #2856 — финал по лимиту времени/треков (``final_dispatched``
+        взводит ``tick()``) звучит так же, как финал по плану.
+        """
+        if plan_tracks and track_no >= plan_tracks:
+            return True
+        return self.state.final_dispatched and n == self.state.transition_count
+
+    def _final_prompt(self, n: int, persona: str, body: str, track_no: int) -> str:
+        """Промпт ФИНАЛЬНОГО перехода; взводит ``final_prompted`` (#3247).
+
+        С этого момента сет только завершается: ``set_dj_mode(enabled=true)``
+        из DJ_AUTO-хода отклоняет гард исполнителя тулов
+        (:meth:`.track_start_guard.TrackStartGuard.should_refuse_dj_restart`,
+        флаг хода — :meth:`is_final_turn`). Правило в промпте ниже само по
+        себе не держит: живой прогон 30.09 — 1 из 6 финалов модель
+        перезапустила сет с темой прошлого сета.
+        """
+        self.state.final_prompted = True
+        return (
+            f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
+            f"Ты {persona}. {body}"
+            "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
+            f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
+            "сама доводит его до спокойного финала и затухания, не проси "
+            "зацикленный трек (трек плана с name= — тоже с repeat=false). "
+            "Тема и персона — только те, что выше в этом сообщении; темы "
+            "прошлых сетов не бери. "
+            "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
+            "DJ-режим завершается. НЕ вызывай set_dj_mode(enabled=true): "
+            "продолжить или перезапустить сет из финала нельзя, такой вызов "
+            "будет отклонён. Прощание НЕ говори и НЕ пиши текст, "
+            "и НЕ вызывай speak_text в этом ходе: система сама скажет "
+            "«вечеринка подошла к концу», когда трек доиграет. "
+            f"{_NO_STOP_RULE}"
+        )
+
+    def is_final_turn(self, is_dj_auto: bool) -> bool:
+        """Issue #3247 — DJ_AUTO-ход идёт после финального промпта сета.
+
+        Нода выставляет по нему ``TURN_DJ_SET_FINAL`` на время хода; гард
+        исполнителя тулов тогда не исполняет ``set_dj_mode(enabled=true)``.
+        Реплика человека (``is_dj_auto=False``) сет продлить может.
+        """
+        return bool(is_dj_auto) and self.state.final_prompted
+
     def build_auto_prompt(self, n: int) -> str:
         persona = self.state.persona or self._persona_default
         theme_line = (
@@ -1233,25 +1288,11 @@ class DJModeController:
                 library_line=library_line, stage_marker=stage_marker,
                 length_line=length_line,
             )
-        # Issue #2856 — финал по лимиту времени/треков (``final_dispatched``
-        # взводит ``tick()``) звучит так же, как финал по плану.
-        limit_final = (
-            self.state.final_dispatched and n == self.state.transition_count
-        )
-        if (plan_tracks and track_no >= plan_tracks) or limit_final:
-            return (
-                f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
-                f"Ты {persona}. {theme_line}{plan_block}"
-                f"{track_line}{self._played_line()}{self._tempo_line()}{library_line} "
-                "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
-                f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
-                "сама доводит его до спокойного финала и затухания, не проси "
-                "зацикленный трек (трек плана с name= — тоже с repeat=false). "
-                "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
-                "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст, "
-                "и НЕ вызывай speak_text в этом ходе: система сама скажет "
-                "«вечеринка подошла к концу», когда трек доиграет. "
-                f"{_NO_STOP_RULE}"
+        if self._is_final_transition(n, plan_tracks, track_no):
+            return self._final_prompt(
+                n, persona, f"{theme_line}{plan_block}{track_line}"
+                f"{self._played_line()}{self._tempo_line()}{library_line} ",
+                track_no,
             )
         return (
             f"[DJ_AUTO переход #{n}] "
