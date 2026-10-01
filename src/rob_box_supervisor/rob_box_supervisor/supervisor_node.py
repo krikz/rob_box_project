@@ -87,6 +87,7 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
     VOICE_PRESET_IDS,  # re-export для обратной совместимости
 )
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
+from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0083 §2.3 — supervisor собирает AgentCore через build_agent(AgentSpec).
 # До этого PR у supervisor был свой ``_build_operator_llm`` (без persist_path),
@@ -577,6 +578,8 @@ class AvatarSupervisor(Node):
         self.declare_parameter("sqlite_db_path", "/data/harness_voice.db")
         self.declare_parameter("operator_db_path", "/data/harness_voice.db")
         self.declare_parameter("journal_path", "/data/operator_journal.jsonl")
+        # Записи журнала старше N секунд не уходят в инжект ТАРС (#3297).
+        self.declare_parameter("journal_max_age_s", 1800)
         self._agent_enabled: bool = bool(
             self.get_parameter(self.AGENT_ENABLED_PARAM).value
         )
@@ -2086,6 +2089,14 @@ class AvatarSupervisor(Node):
                         f"[issue #2113] show_metrics tool registration "
                         f"failed: {exc}"
                     )
+            # Issue #3299 — ``list_faces``: список лиц из /data/faces (:ro).
+            # Локальный инструмент ТАРС (в MCP-каталог не попадает —
+            # личность его не видит, ADR-0123).
+            from rob_box_supervisor.face_roster_tool import (  # noqa: PLC0415
+                register_list_faces_tool,
+            )
+
+            register_list_faces_tool(registry)
             provider.update_tools(
                 [
                     {
@@ -2188,7 +2199,8 @@ class AvatarSupervisor(Node):
         from rob_box_supervisor.operator_journal import OperatorJournal  # noqa: PLC0415
 
         return OperatorJournal(
-            path=self._param_str("journal_path", "/data/operator_journal.jsonl")
+            path=self._param_str("journal_path", "/data/operator_journal.jsonl"),
+            max_age_s=self._param_int("journal_max_age_s", 1800),
         )
 
     def _render_journal_context(self) -> str:
@@ -2863,7 +2875,8 @@ class AvatarSupervisor(Node):
             return False
         if not self._param_bool("speak_agent_replies", True):
             return False
-        return bool(self._publish_avatar_tts(summary))
+        # issue #3296: вслух — речевая версия, полный текст остаётся на экране.
+        return bool(self._publish_avatar_tts(to_spoken(summary)))
 
     def _publish_avatar_tts(
         self,
