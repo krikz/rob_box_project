@@ -7,8 +7,9 @@
       "voice": "anton",
       "text": "Робот, сыграй что-нибудь романтичное.",
       "patterns": [
-        "generate_music"
-      ]
+        "Запрос выполнения: (compose_music|execute_music_code) с параметрами"
+      ],
+      "_why": "Issue #3248: generate_music снят с регистрации 22.08.2026 (db84ff590, MiniMax Music API 410 Gone) — LLM его не видит, старый паттерн не мог найтись никогда. Для музыки «без имени» composer.txt правило 4 велит импровизировать через compose_music / execute_music_code. Матчим строку mcp_server «📥 Запрос выполнения: <tool>» — реальный вызов, а не имя тула в дампе каталога tools(N)."
     },
     {
       "label": "ml02_list_library",

@@ -408,3 +408,124 @@ restore_node_params() {
         fi
     done < "$E2E_NODE_PARAM_ORIGINALS_FILE"
 }
+
+# --- issue #3248 — голос/провайдер TTS не должны переживать акт ----------------
+# voice_core_suite_v1 mv01 «говори голосом Алены» → set_voice(alena, yandex):
+# tts_node ставит Yandex первым в цепочку и ПЕРСИСТИТ это в
+# /data/tts_provider_state.json, а VoiceStateStore в mcp_server помнит голос.
+# После run 36775544782 робот так и остался на Yandex (ermil/anton) — следующий
+# акт и живые люди слышали чужой голос; марафон 29-30.09 упал 11/12 на той же
+# утечке. Вернуть голос фразой («верни голос») — снова LLM, тот же недетерминизм.
+#
+# Поэтому в trap EXIT: если за прогон РЕАЛЬНО звали set_voice / переключали
+# провайдера (строки mcp_server «[set_voice] voice=» / tts_node
+# «[issue 1765] set_provider: '»), харнесс сам, в обход LLM, вызывает тул
+# set_voice(voice=<дефолт провайдера>, provider=<tts_node.provider из
+# конфига>) — тем же путём, что LLM (/mcp/execute, подпись sender=harness,
+# как scripts/music/live_check_mcp_call.py). Цель — КОНФИГУРАЦИОННЫЙ дефолт
+# (param /tts_node provider + default_voice_for), а не «что было до акта»:
+# голос, выбранный set_voice, живёт только в памяти mcp_server и снаружи не
+# читается. Провал — не фатал (акт уже закончился), но громко (ADR-0018).
+#
+# Требует в окружении: robot_ros(), log(), ROBOT_SSH, E2E_RUN_BEFORE.
+
+# Код, исполняемый ВНУТРИ контейнера voice-assistant. Передаётся base64-строкой
+# (python3 -c "exec(b64decode(...))"), чтобы в командной строке ssh не было
+# переводов строк и $'…'-квотинга. argv[1] = провайдер. Печатает одну строку
+# JSON — ответ /mcp/result или {"error": ...}.
+_e2e_tts_restore_py() {
+    cat <<'TTSPY'
+import json, sys, time, uuid
+provider = sys.argv[1]
+from rob_box_voice.tts_voice_registry import default_voice_for
+voice = default_voice_for(provider)
+if not voice:
+    print(json.dumps({"error": "no default voice for provider %r" % provider}))
+    sys.exit(3)
+from rob_box_mcp_tools.mcp_auth import RequestAuthenticator
+auth = RequestAuthenticator.from_env(sender="harness")
+if not auth.can_sign:
+    print(json.dumps({"error": "no /mcp/execute secret to sign with"}))
+    sys.exit(3)
+import rclpy
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+rclpy.init()
+node = rclpy.create_node("e2e_tts_restore")
+qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+rid = "e2e-tts-restore-" + uuid.uuid4().hex[:12]
+box = {}
+def on_result(msg):
+    try:
+        payload = json.loads(msg.data)
+    except ValueError:
+        return
+    if payload.get("request_id") == rid:
+        box["payload"] = payload
+node.create_subscription(String, "/mcp/result", on_result, qos)
+pub = node.create_publisher(String, "/mcp/execute", qos)
+deadline = time.monotonic() + 10.0
+while time.monotonic() < deadline and pub.get_subscription_count() == 0:
+    rclpy.spin_once(node, timeout_sec=0.2)
+request = {"tool_name": "set_voice", "parameters": {"voice": voice, "provider": provider}, "request_id": rid}
+auth.sign(request)
+msg = String()
+msg.data = json.dumps(request, ensure_ascii=False)
+pub.publish(msg)
+deadline = time.monotonic() + 20.0
+while time.monotonic() < deadline and "payload" not in box:
+    rclpy.spin_once(node, timeout_sec=0.2)
+node.destroy_node()
+rclpy.shutdown()
+print(json.dumps(box.get("payload", {"error": "timeout: no /mcp/result for " + rid}), ensure_ascii=False))
+sys.exit(0 if "payload" in box else 2)
+TTSPY
+}
+
+restore_robot_tts_default() {
+    [ -n "${E2E_RUN_BEFORE:-}" ] || return 0
+    local logs provider code_b64 out result_line verdict
+    # Строки, доказывающие, что за прогон голос/провайдер МЕНЯЛИ (а не что
+    # тул есть в каталоге tools(N) — тот лежит в логе на каждом ходе).
+    local markers_re="\[set_voice\] voice=|\[issue 1765\] set_provider: '"
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${E2E_RUN_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+    if ! printf '%s' "$logs" | grep -qE "$markers_re"; then
+        log "🎙️ TTS: за прогон голос/провайдер не меняли — робот не трогаем"
+        return 0
+    fi
+    provider="$(_ros2_param_value "$(_ros2_param_get_raw /tts_node provider)")"
+    case "$provider" in
+        yandex|minimax|silero) ;;
+        *)
+            log "❌ ВНИМАНИЕ: TTS — акт менял голос, но /tts_node provider не прочитан ('${provider:-<пусто>}') — голос НЕ возвращён, робот говорит голосом из акта!"
+            return 0
+            ;;
+    esac
+    code_b64="$(_e2e_tts_restore_py | base64 | tr -d '\n\r')"
+    # robot_ros принимает ОДНУ строку команды (её разбирает eval на роботе,
+    # как у «ros2 param get '…'» выше) — кавычки ставим сами. В строке только
+    # base64-алфавит и имя провайдера из белого списка выше.
+    out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" '${provider}'" 2>/dev/null)"
+    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1)"
+    verdict="$(printf '%s' "$result_line" | python3 -c 'import json, sys
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    print("FAIL\tнет JSON-ответа"); sys.exit(0)
+r = p.get("result") if isinstance(p.get("result"), dict) else {}
+d = r.get("data") if isinstance(r.get("data"), dict) else {}
+if r.get("success") is True:
+    print("OK\t%s\t%s" % (d.get("provider", ""), d.get("voice_set", "")))
+else:
+    print("FAIL\t%s" % (p.get("error") or r.get("error") or r.get("message") or "success!=true"))
+' 2>/dev/null)"
+    case "$verdict" in
+        OK*)
+            log "🎙️ TTS: акт менял голос — возвращён дефолт set_voice в обход LLM: provider=$(printf '%s' "$verdict" | cut -f2) voice=$(printf '%s' "$verdict" | cut -f3)"
+            ;;
+        *)
+            log "❌ ВНИМАНИЕ: TTS — дефолтный голос НЕ возвращён ($(printf '%s' "$verdict" | cut -f2-)), робот говорит голосом из акта!"
+            log "   почини вручную: фразой «Робот, переключись на ${provider} и говори голосом по умолчанию» или set_voice через scripts/music/live_check_mcp_call.py"
+            ;;
+    esac
+}

@@ -328,6 +328,9 @@ def test_trap_is_armed_before_act_isolation():
     """E2E_FATAL сброса сессии после включённой e2e-БД обязан вернуть узлы на
     боевые БД — trap EXIT ставится ДО isolate_act_start."""
     src = E2E_SCRIPT.read_text(encoding="utf-8")
-    trap_at = src.index("trap 'restore_node_params; deactivate_e2e_speaker_db")
+    # Issue #3248: перед restore_node_params в trap стоит
+    # restore_robot_tts_default — ищем по самой связке restore/deactivate.
+    trap_at = src.index("restore_node_params; deactivate_e2e_speaker_db")
+    assert src.rfind("trap '", 0, trap_at) != -1
     call_at = src.index('isolate_act_start "$SCENARIO_FILE"')
     assert trap_at < call_at

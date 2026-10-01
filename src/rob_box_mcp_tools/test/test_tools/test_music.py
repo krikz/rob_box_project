@@ -5053,6 +5053,24 @@ class TestSetDjModeSetLimits:
         payload, _ = self._published_payload(enabled=True, next_transition_sec=45, bpm=128)
         assert payload["bpm"] == 128
 
+    def test_set_character_reaches_payload(self):
+        """Issue #3249 — характер темы (base_bpm/scale от LLM) идёт в DJModeController."""
+        payload, _ = self._published_payload(enabled=True, theme="детский праздник", base_bpm=132, scale=" major ")
+        assert payload["base_bpm"] == 132
+        assert payload["scale"] == "major"
+        assert "bpm" not in payload  # характер — не фиксация темпа
+
+    def test_set_character_scale_typo_does_not_fail_tool(self):
+        """Чужой лад не роняет включение DJ: enum не строгий, отклоняет контроллер."""
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        tool = SetDjModeTool(MagicMock())
+        scale = next(p for p in tool.parameters if p.name == "scale")
+        assert scale.enum == ["minor", "major", "dorian", "phrygian"]
+        assert scale.enum_strict is False
+        payload, result = self._published_payload(enabled=True, scale="мажор")
+        assert result.success and payload["scale"] == "мажор"
+
 
 @pytest.mark.unit
 class TestComposeMusicToolClubStyle:
@@ -5081,6 +5099,24 @@ class TestComposeMusicToolClubStyle:
         assert all(a != b for a, b in zip(kits, kits[1:]))
         assert rows[0]["template"] == kits[-1]["template"] and rows[0]["style"] == "club"
         assert rows[0]["progression"] and rows[0]["root"] == "C" and rows[0]["bpm"] == 124
+
+    def test_classic_track_is_written_to_music_history(self, mock_node):
+        """Issue #3245: первый трек сета идёт через classic и тоже попадает в music_history."""
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        with patch("builtins.exec"):
+            result = tool.execute(
+                bpm=118.0, root="A", scale="minor", form="buildup", lead_synth="cs80lead",
+                lead_notes="0,3,5,7,5,3,2,0", bass_synth="moogbass", bass_notes="0,4,0,5",
+                pad_synth="space", pad_notes="0,4,7", progression="0,5,3,4", drum_style="four_on_floor",
+            )
+        assert result.success is True, result.error
+        rows = history.recent()
+        assert len(rows) == 1, rows
+        assert (rows[0]["style"], rows[0]["root"], rows[0]["bpm"], rows[0]["scale"]) == ("classic", "A", 118, "minor")
 
     def test_club_without_name_plays_library_fragment_and_names_it(self, mock_node, tmp_path, caplog):
         """Issue #3225: без name/rtttl lead = фрагмент из RtttlLibrary, 10 вызовов — 10 разных (мелодия, смещение)."""

@@ -18,13 +18,27 @@
 
 Всё выводится из ``seed_key`` (эпоха старта сета) и номера трека: один и тот
 же сет воспроизводим, разные сеты ходят по-разному.
+
+Issue #3249 — ХАРАКТЕР СЕТА. Ночной прогон 30.09: 37 club-треков в 8 темах,
+все 120–128 BPM и 70 % минора — тема («детский праздник», «дождливый город»)
+до темпа и лада не доходила. Словаря «тема → BPM» здесь нет и не будет:
+характер темы выводит LLM по правилам скилла ``dj.txt`` и отдаёт в
+``set_dj_mode(base_bpm=..., scale=...)``; :func:`apply_set_character` честно
+принимает их, а дрейф и родственные лады (разнообразие ADR-0146/#3226)
+работают уже вокруг этого характера:
+
+* ``base_bpm`` — центр дрейфа (не фиксация, в отличие от ``bpm`` юзера);
+* ``scale`` — ПРЕДПОЧТЁННЫЙ лад: треки #1–#2 в нём, дальше он берёт
+  :data:`SET_SCALE_SHARE` треков, остальное — прежние родственные лады.
+
+Без характера (старые вызовы, тема не задана) — побайтно как раньше.
 """
 
 from __future__ import annotations
 
 import random
 import re
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 __all__ = [
     "BPM_DRIFT_MAX_STEP",
@@ -32,7 +46,11 @@ __all__ = [
     "CLUB_ROOTS",
     "FIFTH",
     "PARALLEL_MAJOR_SHIFT",
+    "SET_BASE_BPM_RANGE",
+    "SET_SCALES",
+    "SET_SCALE_SHARE",
     "apply_bpm_request",
+    "apply_set_character",
     "bpm_is_request",
     "bpm_walk",
     "club_key",
@@ -63,6 +81,15 @@ _MODE_WEIGHTS: Tuple[Tuple[str, float], ...] = (
 _PLAIN_TRACKS = 2
 _BPM_STEPS = (-4, -2, 2, 4)
 
+#: Issue #3249 — лады, которые сет может предпочесть (``SUPPORTED_SCALES`` club).
+SET_SCALES = tuple(mode for mode, _ in _MODE_WEIGHTS)
+#: Доля треков после #2 в предпочтённом ладу; остаток делят прочие лады
+#: в прежней пропорции — сет в мажоре всё ещё иногда уходит в минор/дорийский.
+SET_SCALE_SHARE = 0.7
+#: Допустимый базовый темп характера сета: дрейф ±4 остаётся внутри
+#: ``arranger.BPM_RANGE``, а club-грув не превращается в даб/драм-н-бейс.
+SET_BASE_BPM_RANGE = (90, 150)
+
 
 def related_root(set_root: str, track_no: int) -> str:
     """Минорная тоника трека ``track_no`` (с 1): круг квинт от тоники сета.
@@ -76,29 +103,42 @@ def related_root(set_root: str, track_no: int) -> str:
     return CLUB_ROOTS[(CLUB_ROOTS.index(set_root) + shift) % len(CLUB_ROOTS)]
 
 
-def _pick_mode(seed_key: int, track_no: int) -> str:
+def _mode_weights(prefer: str) -> Tuple[Tuple[str, float], ...]:
+    """Веса ладов: прежние или с долей :data:`SET_SCALE_SHARE` у ``prefer``."""
+    if prefer not in SET_SCALES:
+        return _MODE_WEIGHTS
+    rest = sum(w for mode, w in _MODE_WEIGHTS if mode != prefer)
+    return tuple(
+        (mode, SET_SCALE_SHARE if mode == prefer else (1.0 - SET_SCALE_SHARE) * w / rest)
+        for mode, w in _MODE_WEIGHTS
+    )
+
+
+def _pick_mode(seed_key: int, track_no: int, prefer: str = "") -> str:
     if track_no <= _PLAIN_TRACKS:
-        return "minor"
-    point = random.Random(f"dj-mode:{seed_key}:{track_no}").random() * sum(w for _, w in _MODE_WEIGHTS)
+        return prefer if prefer in SET_SCALES else "minor"
+    weights = _mode_weights(prefer)
+    point = random.Random(f"dj-mode:{seed_key}:{track_no}").random() * sum(w for _, w in weights)
     acc = 0.0
-    for mode, weight in _MODE_WEIGHTS:
+    for mode, weight in weights:
         acc += weight
         if point < acc:
             return mode
     return "minor"
 
 
-def track_key(set_root: str, track_no: int, seed_key: int = 0) -> Tuple[str, str]:
+def track_key(set_root: str, track_no: int, seed_key: int = 0, prefer: str = "") -> Tuple[str, str]:
     """``(root, scale)`` club-трека ``track_no`` (с 1) сета с тоникой ``set_root``.
 
     ``scale`` из ``club_arranger.SUPPORTED_SCALES``. Параллельный мажор
     получает тонику на 3 полутона выше минорной (A minor → C major): звукоряд
     тот же, смена тональности незаметна. Неизвестная тоника — ``(как есть, "minor")``.
+    ``prefer`` — лад характера сета (#3249), ``""`` — прежние веса.
     """
     minor_root = related_root(set_root, track_no)
     if minor_root not in CLUB_ROOTS:
         return minor_root, "minor"
-    mode = _pick_mode(seed_key, track_no)
+    mode = _pick_mode(seed_key, track_no, prefer)
     if mode != "major":
         return minor_root, mode
     return CLUB_ROOTS[(CLUB_ROOTS.index(minor_root) + PARALLEL_MAJOR_SHIFT) % len(CLUB_ROOTS)], "major"
@@ -151,7 +191,7 @@ def club_key(state: Any, set_root: str, track_no: int, *, hooked: bool = False) 
     """
     if hooked:
         return related_root(set_root, track_no), "minor"
-    return track_key(set_root, track_no, _seed_key(state))
+    return track_key(set_root, track_no, _seed_key(state), str(getattr(state, "set_scale", "") or ""))
 
 
 def club_theme_arg(state: Any, hooked: bool = False) -> str:
@@ -196,3 +236,50 @@ def apply_bpm_request(state: Any, bpm: Optional[int]) -> bool:
     changed = bpm != state.set_bpm
     state.set_bpm = bpm
     return changed
+
+
+def _base_bpm(value: Any) -> Optional[int]:
+    """``base_bpm`` от модели → int в :data:`SET_BASE_BPM_RANGE` или ``None``."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return max(SET_BASE_BPM_RANGE[0], min(SET_BASE_BPM_RANGE[1], number))
+
+
+def apply_set_character(
+    state: Any, data: dict, *, fresh: bool, new_theme: bool, log: Optional[Callable[[str], None]] = None
+) -> str:
+    """Issue #3249 — характер сета из ``set_dj_mode(base_bpm=..., scale=...)``.
+
+    Принимается только на генуинном старте (``fresh``) или с новой темой
+    (``new_theme``): модель повторяет аргументы на каждом переходе, и эхо не
+    должно двигать центр дрейфа. Итог пишется в ``log`` (контроллер DJ не
+    растёт ветками — ADR-0145). ``base_bpm`` не трогает темп, который назвал юзер
+    (``bpm_locked``). Неизвестный лад не применяется, но попадает в лог
+    («отклонён»), а не теряется молча.
+
+    Returns:
+        Хвост строки лога (``"scale=major, base_bpm=132"``) или ``""``.
+    """
+    if not (fresh or new_theme):
+        return ""
+    parts: List[str] = []
+    scale = str(data.get("scale") or "").strip().lower()
+    if scale in SET_SCALES:
+        state.set_scale = scale
+        parts.append(f"scale={scale}")
+    elif scale:
+        parts.append(f"scale={scale!r} отклонён (не из {', '.join(SET_SCALES)})")
+    base = _base_bpm(data.get("base_bpm"))
+    if base is not None and not state.bpm_locked:
+        state.set_bpm = base
+        parts.append(f"base_bpm={base}")
+    line = ", ".join(parts)
+    if line and log is not None:
+        log(f"🎧 DJ характер сета: {line}")
+    return line

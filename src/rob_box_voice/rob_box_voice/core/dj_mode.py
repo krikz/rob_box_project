@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 from .dj_material import choose_melody, consume_if_played_in_turn, consume_material
-from .dj_set_walk import CLUB_ROOTS, apply_bpm_request, bpm_is_request, club_key, club_theme_arg, related_root, state_bpm  # noqa: F401 — реэкспорт
+from .dj_set_walk import CLUB_ROOTS, apply_bpm_request, apply_set_character, bpm_is_request, club_key, club_theme_arg, related_root, state_bpm  # noqa: F401 — реэкспорт
 from .dj_theme_melodies import melody_pool_for_theme
 
 
@@ -141,6 +141,9 @@ class DJState:
     # Issue #3226 — юзер явно попросил темп (``set_dj_mode(bpm=...)``): темп
     # сета тогда фиксирован; иначе он дрейфует ±4 BPM (:func:`track_bpm`).
     bpm_locked: bool = False
+    # Issue #3249 — предпочтённый лад сета (характер темы, выведенный LLM:
+    # ``set_dj_mode(scale=...)``); ``""`` — прежние веса ладов (#3226).
+    set_scale: str = ""
     # Issue #3113 — когда конечный (``repeat=False``) трек замолчит, epoch
     # (``stops_at`` из ``/voice/music/form``; ``None`` — зациклен/нет данных),
     # когда это значение впервые пришло, и для какого ``stops_at`` ранний
@@ -303,8 +306,12 @@ class DJModeController:
 
     def _apply_theme(
         self, data: dict, *, is_fresh_start: bool, raw_utterance: str
-    ) -> None:
+    ) -> bool:
         """Тема сета: явная из ``data``, иначе фолбэк из STT (issue #3181).
+
+        Returns:
+            ``True`` — ``data`` принёс НОВУЮ явную тему (issue #3249: тогда
+            принимается и характер сета ``base_bpm``/``scale``).
 
         Вынесено из :meth:`_apply_enable_payload` — держать всю логику
         темы в одном месте (CC-бюджет, ``scripts/lint/cc_budget.py``).
@@ -343,7 +350,8 @@ class DJModeController:
                         f"#{self.state.transition_count})"
                     )
                     self.state.set_plan = ""
-            return
+                return True
+            return False
         if is_fresh_start and not self.state.theme and raw_utterance.strip():
             # Issue #3181 (живой лог 29.09) — LLM включила DJ БЕЗ ``theme``
             # на генуинном старте сета, хотя юзер тему назвал («у нас
@@ -357,11 +365,12 @@ class DJModeController:
                 f"🎧 DJ theme (фолбэк из STT, set_dj_mode без theme): "
                 f"{self.state.theme!r}"
             )
+        return False
 
     def _apply_enable_payload(
         self, data: dict, *, is_fresh_start: bool, raw_utterance: str = ""
     ) -> None:
-        self._apply_theme(data, is_fresh_start=is_fresh_start, raw_utterance=raw_utterance)
+        new_theme = self._apply_theme(data, is_fresh_start=is_fresh_start, raw_utterance=raw_utterance)
         # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
         # сохраняем, чтобы автопромпты использовали её вместо дефолта.
         persona = data.get("persona")
@@ -422,7 +431,7 @@ class DJModeController:
                 f"(был #{self.state.transition_count})"
             )
             self.state.transition_count = 0
-        self._apply_set_limits(data, is_fresh_start=is_fresh_start)
+        self._apply_set_limits(data, is_fresh_start=is_fresh_start, new_theme=new_theme)
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
     @staticmethod
@@ -439,8 +448,11 @@ class DJModeController:
         low, high = bounds
         return max(low, min(high, number))
 
-    def _apply_set_limits(self, data: dict, *, is_fresh_start: bool) -> None:
+    def _apply_set_limits(self, data: dict, *, is_fresh_start: bool, new_theme: bool = False) -> None:
         """Issue #2856 — старт отсчёта сета и явные лимиты юзера.
+
+        Issue #3249 — характер сета (``base_bpm``/``scale``) принимается на
+        генуинном старте и с новой темой; эхо на переходах его не двигает.
 
         ``max_minutes`` — общая длительность сета ОТ СТАРТА (не «ещё N минут
         от этого вызова»): модель повторяет аргументы на каждом переходе, и
@@ -458,10 +470,12 @@ class DJModeController:
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
             self.state.bpm_locked = False
+            self.state.set_scale = ""
             self.state.set_root = ""
             self.state.played_names = []
             self.state.preview_started = False
             self._take_preview_claim()
+        apply_set_character(self.state, data, fresh=is_fresh_start, new_theme=new_theme, log=self._logger.info)
         bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
         if apply_bpm_request(self.state, bpm):
             # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113;
@@ -509,6 +523,7 @@ class DJModeController:
         self.state.final_track_no = 0
         self.state.set_bpm = DJ_SET_DEFAULT_BPM
         self.state.bpm_locked = False
+        self.state.set_scale = ""
         self.state.set_root = ""
         self.state.preview_started = False
         # 🔴 FIX (live 11:46): без этого enabled оставался True после

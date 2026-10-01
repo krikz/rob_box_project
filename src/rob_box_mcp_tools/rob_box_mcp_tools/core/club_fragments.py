@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import weakref
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -240,19 +241,42 @@ def pick_fragment(
     by_name = {name: (rec, windows) for name, rec, windows in candidates}
     melody = weighted_pick(list(by_name), [r.get("melody_name") for r in recent], rng)
     rec, windows = by_name[melody]
-    seen_fp = {r.get("hook_fingerprint") for r in recent[:RECENT_FINGERPRINTS] if r.get("hook_fingerprint")}
-    fresh = [w for w in windows if hook_fingerprint(w.notes) not in seen_fp] or windows
-    recent_offsets = [r.get("fragment_offset") for r in recent if r.get("melody_name") == melody]
-    hook = _pick_by_offset(fresh, recent_offsets, rng)
+    hook = _pick_window(windows, melody, recent, rng)
     return Fragment(
         hook=hook, melody=melody, title=_human_title(library, rec), offset=hook.offset,
         fingerprint=hook_fingerprint(hook.notes), source=source,
     )
 
 
-def _pick_by_offset(windows: List[ClubHook], recent_offsets: Sequence[Any], rng: random.Random) -> ClubHook:
-    by_offset: Dict[int, ClubHook] = {w.offset: w for w in windows}
-    return by_offset[weighted_pick(list(by_offset), recent_offsets, rng)]
+def _not_just_played(windows: List[ClubHook], melody: str, recent: Sequence[Mapping[str, Any]]) -> List[ClubHook]:
+    """Окна без отпечатка/смещения предыдущего трека (если это не оставляет пустоту)."""
+    last = recent[0] if recent else {}
+    last_fp = last.get("hook_fingerprint")
+    last_off = last.get("fragment_offset") if last.get("melody_name") == melody else None
+    other_fp = [w for w in windows if not (last_fp and hook_fingerprint(w.notes) == last_fp)]
+    return [w for w in other_fp if w.offset != last_off] or other_fp or windows
+
+
+def _pick_window(
+    windows: List[ClubHook], melody: str, recent: Sequence[Mapping[str, Any]], rng: random.Random,
+) -> ClubHook:
+    """Окно мелодии со штрафом за недавний отпечаток и смещение (issue #3245).
+
+    1. Отпечаток/смещение ПРЕДЫДУЩЕГО трека не берём подряд, пока есть другое окно
+       (раньше, когда у короткой темы все отпечатки уже были в истории, жёсткий
+       фильтр сворачивался в «любое окно» и тот же фрагмент играл два трека подряд).
+    2. Среди оставшихся — :func:`weighted_pick` по давности отпечатка (а не
+       бинарное «видели/не видели»), при равенстве — по давности смещения.
+    """
+    allowed = _not_just_played(windows, melody, recent)
+    fps = [r.get("hook_fingerprint") for r in recent[:RECENT_FINGERPRINTS]]
+    by_fp: Dict[str, List[ClubHook]] = {}
+    for w in allowed:
+        by_fp.setdefault(hook_fingerprint(w.notes), []).append(w)
+    group = by_fp[weighted_pick(list(by_fp), fps, rng)]
+    by_offset: Dict[int, ClubHook] = {w.offset: w for w in group}
+    offsets = [r.get("fragment_offset") for r in recent if r.get("melody_name") == melody]
+    return by_offset[weighted_pick(list(by_offset), offsets, rng)]
 
 
 # ---------------------------------------------------------------------------
@@ -278,20 +302,49 @@ def _describe(library: Any, frag: Fragment) -> Dict[str, Any]:
 #: Темы, по которым веб-поиск уже пробовали (библиотека, тема): без повтора на каждый трек сета.
 _WEB_TRIED: set = set()
 
+#: Issue #3242: сколько секунд compose_music ждёт веб-поиск темы. Ход ждёт результат
+#: тула 10 с, а DuckDuckGo сам держит запрос до 10 с — синхронный поиск выбивал
+#: тул в таймаут, и Bug B-ретрай играл второй трек. Не уложился — трек из пула,
+#: поиск доезжает в фоне и кэширует мелодию для следующего трека темы.
+WEB_SEARCH_BUDGET_S = 4.0
+
+
+def _fetch_theme_melody(
+    library: Any, theme: str, web_search: Callable[[str], Sequence[Mapping[str, Any]]],
+    warn: Callable[[str], None], info: Callable[[str], None],
+) -> None:
+    try:
+        if fetch_web_melody(library, theme, web_search, warn, info):
+            info(f"[#3228] тема {theme!r} не найдена в архиве — мелодия из веба добавлена, выбираем из неё")
+    except Exception as exc:  # noqa: BLE001 — фоновый поток: сбой в лог, не в никуда
+        warn(f"[#3228] веб-мелодия по теме {theme!r} не записана ({type(exc).__name__}: {exc})")
+
 
 def _ensure_theme_melody(
     library: Any, theme: str, bpm: float, web_search: Callable[[str], Sequence[Mapping[str, Any]]],
     warn: Callable[[str], None], info: Callable[[str], None],
-) -> None:
-    """Темы нет в архиве → один раз найти её RTTTL в вебе и закэшировать (issue #3228)."""
+) -> Optional[threading.Thread]:
+    """Темы нет в архиве → один раз найти её RTTTL в вебе и закэшировать (issue #3228).
+
+    Поиск идёт в фоновом потоке и ждётся не дольше :data:`WEB_SEARCH_BUDGET_S`
+    (issue #3242). Возвращает поток поиска (``None`` — поиск не нужен).
+    """
     key = (id(library), theme.strip().lower())
     if key not in _WEB_TRIED:
         purge_stale_web_melodies(library, theme, info)  # TTL и недоверенные записи до #3243
     if key in _WEB_TRIED or _theme_candidates(library, theme, bpm):
-        return
+        return None
     _WEB_TRIED.add(key)
-    if fetch_web_melody(library, theme, web_search, warn, info):
-        info(f"[#3228] тема {theme!r} не найдена в архиве — мелодия из веба добавлена, выбираем из неё")
+    worker = threading.Thread(
+        target=_fetch_theme_melody, args=(library, theme, web_search, warn, info),
+        name="club-web-melody", daemon=True,
+    )
+    worker.start()
+    worker.join(WEB_SEARCH_BUDGET_S)
+    if worker.is_alive():
+        warn(f"[#3242] веб-поиск мелодии темы {theme!r} не уложился в {WEB_SEARCH_BUDGET_S:g} с — "
+             "этот трек берёт фрагмент из пула, найденная мелодия достанется следующему треку темы")
+    return worker
 
 
 def pick_club_hook(

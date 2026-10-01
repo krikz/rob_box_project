@@ -89,7 +89,7 @@
       "GetSoundInfoTool.execute": 19
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/web_search.py": {
-      "SearchWebTool.execute": 18
+      "SearchWebTool.execute": 17
     },
     "src/rob_box_supervisor/rob_box_supervisor/metrics_source.py": {
       "MetricsSource.query_logs": 16
@@ -362,7 +362,7 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/web_search.py",
       "method": "SearchWebTool.execute",
-      "cc": 18,
+      "cc": 17,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
