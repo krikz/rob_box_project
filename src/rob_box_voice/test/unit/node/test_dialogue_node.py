@@ -21,7 +21,6 @@ test_dialogue_node.py — Реальные unit-тесты DialogueNode (FA-5, i
 Не требует ROS2 — rclpy и openai замоканы в conftest.py.
 """
 
-import asyncio
 import json
 import time
 from pathlib import Path
@@ -29,11 +28,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from rob_box_voice.core.dialogue_guards import is_metalanguage_babble, user_wants_performance
 from rob_box_voice.dialogue_node import (
     BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS,
     DialogueNode,
-    _FallbackLLM,
     _LLM_SKIP_REASONS,
 )
 
@@ -276,77 +275,6 @@ class TestCancelRunSplit:
         n._tts_control_pub.publish.assert_not_called()
         n._effects.release_all_tts.assert_called_once()
         n._effects.clear_sound_event.assert_called_once()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  API error handling (legacy: test_api_error_handling) — _FallbackLLM
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestFallbackLLM:
-    def _make_failing_primary(self):
-        async def complete(self, messages, tools=None):
-            raise RuntimeError("Connection timeout")
-
-        async def stream(self, messages, tools=None):
-            raise RuntimeError("Connection timeout")
-            yield  # pragma: no cover
-
-        return type("Primary", (), {
-            "name": "primary",
-            "complete": complete,
-            "stream": stream,
-        })()
-
-    def _make_ok_fallback(self, text="Привет! Как дела?"):
-        async def complete(self, messages, tools=None):
-            return {"content": text}
-
-        async def stream(self, messages, tools=None):
-            yield {"content": text}
-
-        return type("Fallback", (), {
-            "name": "fallback",
-            "complete": complete,
-            "stream": stream,
-        })()
-
-    def test_complete_falls_back_on_primary_error(self):
-        llm = _FallbackLLM(
-            primary=self._make_failing_primary(),
-            fallback=self._make_ok_fallback(),
-            logger=MagicMock(),
-        )
-        result = asyncio.run(llm.complete([{"role": "user", "content": "Test"}]))
-        assert result["content"] == "Привет! Как дела?"
-        llm._log.warning.assert_called()
-
-    def test_complete_primary_success_no_fallback(self):
-        async def complete(self, messages, tools=None):
-            return {"content": "primary ok"}
-
-        primary = type("Primary", (), {
-            "name": "primary",
-            "complete": complete,
-            "stream": lambda messages, tools=None: (_ for _ in ()),
-        })()
-        fallback = self._make_ok_fallback()
-        llm = _FallbackLLM(primary=primary, fallback=fallback, logger=MagicMock())
-        result = asyncio.run(llm.complete([{"role": "user", "content": "Hi"}]))
-        assert result["content"] == "primary ok"
-        llm._log.warning.assert_not_called()
-
-    def test_stream_falls_back_on_primary_error(self):
-        llm = _FallbackLLM(
-            primary=self._make_failing_primary(),
-            fallback=self._make_ok_fallback(),
-            logger=MagicMock(),
-        )
-        chunks = list(asyncio.run(self._collect(llm.stream([], tools=None))))
-        assert chunks == [{"content": "Привет! Как дела?"}]
-
-    @staticmethod
-    async def _collect(agen):
-        return [c async for c in agen]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1007,21 +935,21 @@ class TestOnVad:
 class TestBabbleDetector:
     def test_metalanguage_opener_detected(self):
         n = _make_node()
-        assert n._is_metalanguage_babble("Зачитаю рэп про космос!")
-        assert n._is_metalanguage_babble("Сейчас устроим концерт")
-        assert n._is_metalanguage_babble("Слушай, давай я спою")
+        assert is_metalanguage_babble("Зачитаю рэп про космос!")
+        assert is_metalanguage_babble("Сейчас устроим концерт")
+        assert is_metalanguage_babble("Слушай, давай я спою")
 
     def test_normal_answer_not_babble(self):
         n = _make_node()
-        assert not n._is_metalanguage_babble("Черное море находится на юге России.")
-        assert not n._is_metalanguage_babble("")
-        assert not n._is_metalanguage_babble(None)
+        assert not is_metalanguage_babble("Черное море находится на юге России.")
+        assert not is_metalanguage_babble("")
+        assert not is_metalanguage_babble(None)
 
     def test_user_wants_performance(self):
         n = _make_node()
-        assert n._user_wants_performance("спой мне песню")
-        assert n._user_wants_performance("зачитай рэп")
-        assert not n._user_wants_performance("как дела?")
+        assert user_wants_performance("спой мне песню")
+        assert user_wants_performance("зачитай рэп")
+        assert not user_wants_performance("как дела?")
 
     def test_user_wants_music(self):
         n = _make_node()

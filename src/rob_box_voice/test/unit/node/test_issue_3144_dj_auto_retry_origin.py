@@ -203,32 +203,6 @@ class TestEveryGuardRetryPath:
         )
         assert calls[0]["is_dj_auto"] is False
 
-    def test_turn_guards_see_turn_origin(self):
-        """``_evaluate_turn_guards`` строит ``TurnContext`` из происхождения
-        хода, а не из константы ``False``."""
-        src = Path(dialogue_node_module.__file__).read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        method = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_evaluate_turn_guards"
-        )
-        ctx_calls = [
-            node
-            for node in ast.walk(method)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "TurnContext"
-        ]
-        assert ctx_calls
-        for call in ctx_calls:
-            kw = {k.arg: k.value for k in call.keywords}
-            assert not (
-                isinstance(kw.get("is_dj_auto"), ast.Constant)
-                and kw["is_dj_auto"].value is False
-            ), "TurnContext(is_dj_auto=False) — ретрай DJ-хода снова станет ходом юзера"
-
     def test_run_turn_publishes_its_origin(self):
         src = Path(dialogue_node_module.__file__).read_text(encoding="utf-8")
         tree = ast.parse(src)

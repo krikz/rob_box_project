@@ -49,6 +49,7 @@ from test_dialogue_shell import (  # noqa: E402
     _ScriptedLLMProvider,
     _TestableDialogueNode,
 )
+from rob_box_voice.core.dialogue_guards import is_metalanguage_babble, user_wants_performance  # noqa: E402
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent  # noqa: E402
 from rob_box_harness.core.agent_core import DialogResult  # noqa: E402
 from rob_box_harness.core.tool_registry import ToolSpec  # noqa: E402
@@ -68,14 +69,14 @@ def _published_texts(node: _TestableDialogueNode) -> List[str]:
 
 
 class TestBabbleDetectorPure(unittest.TestCase):
-    """Direct unit tests for ``_is_metalanguage_babble``.
+    """Direct unit tests for ``is_metalanguage_babble``.
 
     These pin down the substring matching rules without spinning up
     a full dialogue_node, so the failure modes are easy to read.
     """
 
     def _babble(self, text: str, node: _TestableDialogueNode) -> bool:
-        return node._is_metalanguage_babble(text)
+        return is_metalanguage_babble(text)
 
     def _make_node(self) -> _TestableDialogueNode:
         llm = _ScriptedLLMProvider([])
@@ -162,10 +163,10 @@ class TestBabbleDetectorPure(unittest.TestCase):
 
 
 class TestPerformanceKeywordHeuristic(unittest.TestCase):
-    """``_user_wants_performance`` decides whether babble is hard-fatal."""
+    """``user_wants_performance`` decides whether babble is hard-fatal."""
 
     def _wants(self, user_input: str, node: _TestableDialogueNode) -> bool:
-        return node._user_wants_performance(user_input)
+        return user_wants_performance(user_input)
 
     def _make_node(self) -> _TestableDialogueNode:
         llm = _ScriptedLLMProvider([])

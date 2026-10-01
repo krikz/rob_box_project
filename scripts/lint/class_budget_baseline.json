@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-01",
-  "base_sha": "a44e56436d16f03438814859d579e394539015ab",
+  "base_sha": "46cc064499c0e928a6dbcb822a576d7837b6b0ab",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -92,8 +92,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 1204,
-      "methods": 218
+      "wmc": 1125,
+      "methods": 210
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,

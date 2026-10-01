@@ -452,7 +452,7 @@ class SttAdmission:
     Construction takes the ordered list of steps. ``evaluate`` walks the
     list, returns the FIRST non-``PASS`` verdict, and threads the
     (possibly mutated) context between steps. Mirrors the orchestrator
-    pattern from :class:`rob_box_voice.core.turn.TurnGuards` (issue
+    pattern of the (removed) TurnGuards (issue
     #2241 / ADR-0080 §2.4).
 
     For ``DROP`` verdicts the orchestrator auto-increments
