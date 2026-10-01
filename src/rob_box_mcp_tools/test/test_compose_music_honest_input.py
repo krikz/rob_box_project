@@ -95,16 +95,20 @@ def test_default_call_has_no_explicit_key_record(themes):
     assert "key_source" not in params["decisions"]
 
 
-def test_explicit_key_reharmonizes_bass_and_pad_but_not_lead(themes):
+def test_explicit_key_transposes_lead_and_reharmonizes_bass_and_pad(themes):
     auto = _params(themes["national_2"])
     forced = _params(themes["national_2"], root="D", scale="minor")
 
     assert (forced["root"], forced["scale"]) == ("D", "minor")
     assert (forced["harmony"].root, forced["harmony"].scale) == ("D", "minor")
-    # Тема — та же самая, абсолютным MIDI.
-    assert forced["lead_midi"] == auto["lead_midi"]
+    # Тема — та же самая по ритму и контуру, но перенесена в тональность
+    # (issue #3293): интервалы между нотами сохранены.
+    assert forced["lead_midi"] != auto["lead_midi"]
     assert forced["lead_dur"] == auto["lead_dur"]
-    assert forced["harmony"].lead == auto["harmony"].lead
+    f_notes = [int(x) for x in forced["lead_midi"].split(", ") if x != "None"]
+    a_notes = [int(x) for x in auto["lead_midi"].split(", ") if x != "None"]
+    assert len({f - a for f, a in zip(f_notes, a_notes)}) == 1
+    assert forced["decisions"]["key_fit"] >= KEY_FIT_WARN
     # Аккомпанемент — другой и следует новой тональности: в ре-миноре
     # есть B♭ (10), которого нет в до-мажоре.
     assert forced["harmony"].bass != auto["harmony"].bass
@@ -183,15 +187,13 @@ def test_score_sheet_shows_explicit_key_and_detected(themes):
     assert not any("неуверенная" in w for w in sheet["warnings"])
 
 
-def test_conflicting_explicit_key_is_honored_with_warning(themes):
-    """Тема почти вся вне заданного лада: тональность всё равно выполнена
-    (решает модель), но партитура предупреждает."""
-    _spec, code, sheet = _sheet(themes["national_2"], "F#", "major")
+def test_distant_explicit_key_transposes_theme_instead_of_warning(themes):
+    """F# major на до-мажорной теме: тема переносится (issue #3293), а не
+    играет мимо аккомпанемента — спора с партитурой больше нет."""
+    spec, code, sheet = _sheet(themes["national_2"], "F#", "major")
     assert 'Root.default = "F#"' in code
-    assert sheet["key"]["fit"] < KEY_FIT_WARN
-    warn = [w for w in sheet["warnings"] if "спорит с темой" in w]
-    assert warn and "F# major" in warn[0] and "C major" in warn[0]
-    assert "спорит с темой" in sheet["text"]
+    assert sheet["key"]["fit"] >= KEY_FIT_WARN
+    assert not any("спорит с темой" in w for w in sheet["warnings"])
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +327,64 @@ def test_tool_name_with_explicit_key_reharmonizes(mock_node, themes):
     assert 'Root.default = "D"' in code and 'Scale.default = "minor"' in code
     assert code != auto_code
     lead_line = [ln for ln in auto_code.splitlines() if ln.startswith("p2 >>")]
-    # Тема не тронута. amp= не сравниваем: калибровка громкости (#3154)
-    # пересчитывает его под новый бас/пэд другой тональности.
-    no_amp = re.compile(r"\bamp=(var\(\[[^\]]*\], \[[^\]]*\]\)|[0-9.]+)")
-    assert lead_line and no_amp.sub("amp=…", lead_line[0]) in [no_amp.sub("amp=…", ln) for ln in code.splitlines()]
+    # Тема перенесена в заданную тональность (issue #3293) — строка лида другая.
+    assert lead_line and lead_line[0] not in code.splitlines()
     score = tool.last_score  # PR-4: структурная партитура — вне ответа модели
     assert score["decisions"]["key"] == "explicit→D minor (auto C major)"
+
+
+# ---------------------------------------------------------------------------
+# 4. Issue #3293: тема транспонируется под явную тонику, ответ честен
+# ---------------------------------------------------------------------------
+
+_JUMP_AMP = 'Jump&Amp:d=16,o=5,b=90:f#,c#,f#,f#,a#,f#,a#,c#6,b,a#,b,g#,g#,d#,g#,g#,b,g#,b,d#6,c#,b,a#,f#,f#,c#,f#,f#,a#,f#,a#,c#6,b,a#,b,a#,b,g#,c#6,b,a#,f#,f#,f#'  # реальная запись «Jump &Amp Let's Party» (F# major)
+
+
+def _lead_pcs(params):
+    return {int(x) % 12 for x in params["lead_midi"].split(", ") if x != "None"}
+
+
+def test_issue_3293_theme_follows_explicit_minor_key():
+    """F# major тема + root=A, scale=minor: тема в ладу, не какофония."""
+    params = _params(_JUMP_AMP, root="A", scale="minor")
+    dec = params["decisions"]
+    assert dec["key_detected"][0] == "F#"
+    assert dec["key_fit"] >= KEY_FIT_WARN
+    assert dec["key_transpose"] != 0
+    assert _lead_pcs(params) <= _scale_pcs("A", "minor")
+    assert (params["root"], params["scale"]) == ("A", "minor")
+
+
+def test_issue_3293_explicit_root_alone_moves_theme_keeps_scale():
+    params = _params(_JUMP_AMP, root="A")
+    assert (params["root"], params["scale"]) == ("A", "major")
+    assert _lead_pcs(params) <= _scale_pcs("A", "major")
+
+
+def test_issue_3293_lead_register_stays_in_working_range():
+    for root in VALID_ROOTS:
+        params = _params(_JUMP_AMP, root=root, scale="minor")
+        notes = [int(x) for x in params["lead_midi"].split(", ") if x != "None"]
+        assert 55 <= min(notes) and max(notes) <= 88, root
+
+
+def test_issue_3293_no_explicit_key_leaves_theme_untouched():
+    auto = _params(_JUMP_AMP)
+    assert "key_transpose" not in auto["decisions"]
+    same = _params(_JUMP_AMP, scale=None)
+    assert same["lead_midi"] == auto["lead_midi"]
+
+
+def test_issue_3293_key_honesty_note_in_compose_music_answer(mock_node):
+    """В ОТВЕТЕ compose_music (message), не только в партитуре."""
+    rec = {"name": "jump_amp", "title": "Jump", "rtttl": _JUMP_AMP}
+    tool, _mgr = _tool(mock_node)
+    tool._resolve_melody = lambda _n, _v: rec
+    result = tool.execute(name="slavonic party", root="A", scale="minor", **_ARR)
+    assert result.success is True, result.error
+    assert "Тональность" in result.message
+    assert "перенесена" in result.message and "относительный" in result.message
+    fresh, _m = _tool(mock_node)  # root/scale прошлого вызова наследуются
+    fresh._resolve_melody = lambda _n, _v: rec
+    plain = fresh.execute(name="slavonic party", **_ARR)
+    assert "Тональность" not in plain.message

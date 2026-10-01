@@ -88,7 +88,7 @@ from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStor
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
-from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
+from ..core.rtttl_compose import key_honesty_note, melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
 
 #: Issue #3112 — флаг кандидата-фикса фазы клока (по умолчанию ВЫКЛ).
@@ -2863,9 +2863,11 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "progression/perc указывать не нужно и не "
                     "импровизируй ноты по памяти — они будут проигнорированы. "
                     "root/scale при name= работают: аккомпанемент "
-                    "перегармонизируется в заданной тональности, тема "
-                    "играется как есть; без них тональность определится "
-                    "по нотам (видно в партитуре). drums/hats при name= "
+                    "строится в заданной тональности, а тема ПЕРЕНОСИТСЯ в неё "
+                    "целиком (тот же мотив, сдвиг по полутонам); если лад "
+                    "не ложится на тему, ответ скажет, что заменено; без "
+                    "них тональность определится по нотам (видно в "
+                    "партитуре). drums/hats при name= "
                     "заменяют выведенный рисунок ударных. Аранжировку "
                     "меняют ручки (key_detection, chords, harmonic_rhythm, "
                     "density, bass_style, bass_approach, pad_style, "
@@ -5016,7 +5018,7 @@ class ComposeMusicTool(MCPTool):
         # вместе: трек мог потерять и луп, и FX одним вызовом, и модель
         # должна узнать про оба, а не только про первый.
         combined_warning = " ".join(
-            w for w in (groove_loop_warning, fx_warning) if w
+            w for w in (groove_loop_warning, fx_warning, key_honesty_note(prep)) if w
         ) or None
         return None, ComposeMusicTool._ArrangementBuild(
             spec=spec,
