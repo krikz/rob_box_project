@@ -64,7 +64,8 @@ import type {
   VoicePresetInfo
 } from "./wire/messages";
 import { createToast, type Toast } from "./ui/toast";
-import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
+import { formatClock } from "./state/tars1_layout";
+import { floorLabel, supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
 import {
@@ -765,6 +766,7 @@ export function bootstrap(opts: BootstrapOptions): {
     // voice_input_mode=respeaker и dialogue_node его игнорирует (гонка).
     voicePttMode = next;
     tarsActivity.notePtt(next !== "none");
+    syncTarsInfo();
     if (next !== "none") {
       // Барж-ин: оператор заговорил — реплика ТАРС в шлеме обрывается
       // (operatorAudioSink.stop() ниже), «говорит» гасим сразу.
@@ -877,6 +879,23 @@ export function bootstrap(opts: BootstrapOptions): {
   }
   // TTL сигналов истекает сам по себе (сервер `idle` может не прислать).
   const tarsActivityTicker = setInterval(syncTarsActivity, 500);
+  // Правая колонка рамки ТАРС 1 (#3253 Ш1): только то, что клиент реально
+  // знает. llm/tts/wake/тема/кто рядом клиенту не приходят (Ш3) — панель
+  // нарисует прочерк, ничего не выдумываем.
+  let tarsLinkText: string | null = null;
+  let tarsLastReplyAtMs: number | null = null;
+  function syncTarsInfo(): void {
+    const sup = supervisorState;
+    bridge.tars1Panel.setInfo({
+      link: tarsLinkText,
+      floor: sup
+        ? `teleop ${floorLabel(sup, "teleop", supervisorMyClientId)} · voice ${floorLabel(sup, "voice", supervisorMyClientId)}`
+        : null,
+      mode: sup ? String(sup.mode) : null,
+      ptt: voicePttMode,
+      lastReplyAt: tarsLastReplyAtMs === null ? null : formatClock(tarsLastReplyAtMs)
+    });
+  }
   function logLastTarsEvent(): void {
     // no-op в проде; в dev-build можно подвесить на window.
     if (lastTarsEvent) {
@@ -1255,6 +1274,8 @@ export function bootstrap(opts: BootstrapOptions): {
 
   function setStatus(text: string, cls: "connected" | "connecting" | "lost"): void {
     opts.statusEl.textContent = text;
+    tarsLinkText = text;
+    syncTarsInfo();
     opts.statusEl.className = `status status--${cls}`;
   }
 
@@ -1266,6 +1287,7 @@ export function bootstrap(opts: BootstrapOptions): {
    */
   function applySupervisorState(next: SupervisorState | null): void {
     supervisorState = next;
+    syncTarsInfo();
     // Вся логика перехода — в чистом редьюсере (state/supervisor_state.ts),
     // здесь только применение эффектов к железу UI.
     const eff = supervisorEffect(prevTeleopLabel, next, supervisorMyClientId);
@@ -1710,6 +1732,8 @@ export function bootstrap(opts: BootstrapOptions): {
             };
             if (typeof t.text === "string" && t.text.length > 0) {
               bridge.tars1Panel.append(t.text);
+              tarsLastReplyAtMs = Date.now();
+              syncTarsInfo();
             }
             const tars1Streaming =
               typeof t.streaming === "boolean" ? t.streaming && !t.done : false;
