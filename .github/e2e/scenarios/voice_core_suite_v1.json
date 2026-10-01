@@ -48,19 +48,20 @@
       "voice": "anton",
       "text": "Робот, скажи привет",
       "patterns": [
-        "current_voice"
-      ]
+        "TTS: speech_id=.*, voice=alena,"
+      ],
+      "_why": "Issue #3248: старый паттерн current_voice ловил только строку смены голоса (dialogue_node «TTS current_voice →», её пишет set_voice), а mv02 голос не меняет — шаг краснел при правильном ответе (run 36775544782: tts_node «🔊 TTS: … voice=alena» есть, current_voice в окне шага нет). Проверяем то, что шаг и обещает: ответ синтезирован голосом из mv01. Строка — tts_node.py «🔊 TTS: speech_id=…, voice=…» (её нет в дампе каталога тулов/промпта, тавтологии нет)."
     },
     {
       "label": "mv03_skazka_raznymi_golosami",
       "voice": "anton",
       "text": "Робот, расскажи сказку про Красную Шапочку разными голосами",
-      "patterns": [
-        "voice_used"
-      ],
+      "patterns": [],
+      "_why": "Issue #3248: паттерн voice_used убран — эту строку пишет только tts_node при УСПЕШНОМ синтезе MiniMax (tts_node.py «MiniMax T2A v2 OK … voice_used=»), то есть он проверял провайдера, а не «разные голоса»: после mv01 робот на Yandex и паттерн не находится никогда, а на MiniMax находится от любой фразы. Сказку разными голосами проверяет acceptance: set_voice И speak_text реально вызваны (e2e_tool_match.tool_invoked — по строкам вызова, не по дампу каталога). RULE #VOICE-MULTI (master_prompt_compact.txt) требует set_voice МЕЖДУ speak_text-фрагментами; в run 36775544782 LLM вместо speak_text писала реплики в content рядом с set_voice — AgentCore такой текст не озвучивает, прозвучала только последняя реплика. Это продуктовый дефект, шаг обязан краснеть.",
       "acceptance": {
         "expected_tool_calls": [
-          "set_voice"
+          "set_voice",
+          "speak_text"
         ],
         "must_not_call": [],
         "expected_keywords": [
