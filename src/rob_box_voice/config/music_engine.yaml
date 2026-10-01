@@ -1,0 +1,13 @@
+# music_engine.yaml — флаг музыкального движка (ADR-0149 §9, эпик #3312), ОДНО значение на две ноды.
+#
+# Файл подаётся launch-ом и mcp_server, и dialogue_node; секция ``/**`` — для любой ноды, которая
+# объявила параметр (ADR-0004: один файл — одна секция). Две копии: docker/vision/config/voice_assistant/
+# (живой, docker) и src/rob_box_voice/config/ — менять синхронно (сверяет test_music_engine_flag.py).
+#
+# "v1" — дефолт до приёмки, всё как было. "v2" — владелец плеера v2 (engine/player_owner.py)
+# единственный писатель /voice/music/state и /voice/music/event, тул dj_set (SetSession), а
+# DJModeController.tick в dialogue_node не заводится (PR-5). Переключение: правка этого файла + рестарт
+# voice-assistant.
+/**:
+  ros__parameters:
+    music_engine: "v1"

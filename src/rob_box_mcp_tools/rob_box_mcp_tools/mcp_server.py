@@ -58,6 +58,7 @@ from rob_box_voice.core.music_player_state import (
 from .base import shared_publisher
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
+from .engine.tools_v2 import DjSetTool
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -322,6 +323,7 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
                         _string_publisher(node.music_event_pub), logger=node.get_logger())
     manager.osc_fail_listener = owner.on_server_fail
     node.music_state_pub = None  # старый путь больше не пишет снимок
+    node.registry.register(DjSetTool(node, owner))  # PR-5: сет v2 — SetSession поверх владельца
     owner.publish_state()
     node.get_logger().info(
         f"🎵 music_engine=v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "

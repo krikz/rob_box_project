@@ -15,6 +15,7 @@
 | `audit_wav.py file.wav [--win 8] [--bpm N]` | хост | Разбор по окнам (8 с): уровень, тональность, «вне лада», bpm, R, сдвиг фазы сетки; сводка. Показывает пик записи. |
 | `tracks.py setN.full.log rN.wav "<старт UTC из index.txt>"` | хост | Лог ↔ запись: по каждому треку каркас, сэмпл, хук, bpm и R по записи. |
 | `an_set.py set1.full.log [...]` | хост | Таймлайн DJ-сета из лога (STT, `set_dj_mode`, `compose_music`, `DJ TRACK`, мышление LLM), сводка каркасов и сэмплов. Только stdlib. |
+| `dj_set_v2.sh <каталог> [сек=1200] [тема]` | **Vision Pi**, под `flock -w 900 /tmp/music_test.lock` | Приёмка PR-5 ADR-0149: сет движка v2 через тул `dj_set` (`../live_check_mcp_call.py`, подпись `harness`) с записью `jack_rec` всего сета. Проверяет, что `/mcp_server` и `/dialogue_node` на `music_engine=v2` (иначе выход 2), гасит `oak-d`/`rob-box-quest`/`vision-face`. В `summary.txt`: тишина до/после, число `started`, фаза ≠ 0, темпы, продления, `rejected`, `artifact_stale`, `DJ_AUTO` (A3 = 0), `late`; в `accept.txt` — `accept.py` (A1) и `compare.py --chunk 60` (A5). С `TG_CHAT_ID` запись уходит в Telegram. Нужен образ с PR-5; переключение на v2 — `music_engine: "v2"` в `docker/vision/config/voice_assistant/music_engine.yaml` и рестарт `voice-assistant` (после прогона вернуть `v1`). |
 | `accept.py file.wav [...]` | хост | Числа приёмки, которых нет в остальных: A1 (макс. тишина < −50 dBFS), A6 (размах RMS по минутам в 6-мин окне), A7 (пик, клипы), A8 (L−R в дБ, Side/Mid 150–2000 Гц). Добавлен в PR-0. |
 
 ## Как запускать

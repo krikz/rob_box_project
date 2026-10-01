@@ -1,6 +1,7 @@
 """Адаптер Renardo для владельца плеера v2 (ADR-0149 §2.2, §4.3; эпик #3312, PR-4).
 
-Одна дека, старт программы на границе формы с фазы 0, проверка ресурсов до exec, спуск
+Старт программы на границе формы с фазы 0, стык следующего трека сета на другой деке ровно на
+границе формы уходящего (PR-5, без блэнда — он в PR-8), проверка ресурсов до exec, спуск
 ``gate=0 → /g_freeAll``. Сам Renardo (контекст, сокет к scsynth, палитра синтов,
 подтверждённая сервером) по-прежнему поднимает ``MusicManager``: адаптер получает его
 пространство имён, ``known_synth_names`` и ``_send_osc_raw`` как функции, второй
@@ -29,6 +30,10 @@ V2_CLOCK_LATENCY_S = 0.5
 
 #: Пауза между ``gate=0`` и ``/g_freeAll`` (#3137, как у #1000 в ``stop_all``).
 RAMP_DOWN_RELEASE_SECONDS = 0.05
+
+#: Уходящая дека снимается за 1/32 до доли стыка: её события на самой доле (повтор формы —
+#: бочка, аккорд пэда) не звучат поверх входящего трека (PR-5).
+HANDOFF_STOP_BEATS = 0.125
 
 #: Проблема с ресурсом до exec: ``(reason, detail)``.
 Problem = Tuple[str, str]
@@ -140,7 +145,7 @@ def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
 
 
 class RenardoAdapter:
-    """Одна дека на живом Renardo: проверка ресурсов, старт с фазы 0, стоп.
+    """Деки на живом Renardo: проверка ресурсов, старт с фазы 0, стык следующего трека, стоп.
 
     Args:
         namespace: функция → текущее пространство имён Renardo (``Clock``, ``Samples``, плееры).
@@ -160,6 +165,9 @@ class RenardoAdapter:
         self.latency_s = float(latency_s)
         self._lead_beats = float(lead_beats)
         self._live_slots: Tuple[str, ...] = ()
+        # Поколение: start/stop делают устаревшим всё, что раньше запланировано на клоке
+        # (стык, nearly_finished) — после стопа запланированный стык музыку не воскрешает.
+        self._generation = 0
 
     def check(self, program: Any) -> Optional[Problem]:
         """Синты и буферы программы есть на сервере? ``None`` — да; иначе ``(reason, detail)``."""
@@ -183,13 +191,15 @@ class RenardoAdapter:
         Старые плееры деки снимаются; клок ставится на ``k·form − lead`` (плееры нового трека
         встают на ``Clock.next_bar() = k·form``); ``on_started`` зовётся из потока клока на
         фактической доле старта плееров. Бросает исключение exec — владелец превратит его в
-        ``rejected``.
+        ``rejected``. Темп ставится здесь, один раз на сет: следующие треки сета — :meth:`cue`.
         """
         ns = self._namespace()
         clock = ns["Clock"]
+        self._generation += 1
         # Снять и прошлый трек, и слоты новой программы: играющий плеер на ``>>`` лишь меняет
         # атрибуты и продолжает с текущей доли — фаза не 0 (живой прогон 01.10: 126.25 из 128).
         self._stop_slots(ns, (*self._live_slots, *program.slots.values()))
+        self._live_slots = ()
         if getattr(clock, "now_flag", False):
             clock.now_flag = False  # иначе плееры встанут не на такт (#3166)
         clock.latency = self.latency_s
@@ -199,11 +209,71 @@ class RenardoAdapter:
         clock.set_time(((now + self._lead_beats) // form + 1) * form - self._lead_beats)
         exec(program.code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
         self._live_slots = tuple(program.slots.values())
-        starts = {slot: float(ns[slot].event_index) for slot in self._live_slots}
+        return self._arm_started(ns, program, on_started, origin=None)
+
+    def cue(self, program: Any, at_beat: float, on_started: Callable[[Dict[str, Any]], None],
+            on_failed: Callable[[str, str], None]) -> None:
+        """Следующий трек сета встык: плееры программы встают ровно на долю ``at_beat``.
+
+        ``at_beat`` — граница формы играющего трека (ADR-0149 §4.3). Программа исполняется в
+        потоке клока за ``lead_beats`` до неё (``Clock.next_bar()`` = ``at_beat``) на другой
+        деке; плееры уходящего снимаются за ``HANDOFF_STOP_BEATS`` до ``at_beat``. Без
+        ``set_time`` и без смены темпа: темп один на сет (§4.4). Ошибка exec → ``on_failed``,
+        уходящий трек при этом играет дальше (не тишина).
+        """
+        ns = self._namespace()
+        clock = ns["Clock"]
+        generation = self._generation
+
+        def _rbx_cue() -> None:
+            if generation != self._generation:
+                return  # стоп/рестарт раньше стыка
+            leaving = tuple(s for s in self._live_slots if s not in program.slots.values())
+            try:
+                self._stop_slots(ns, program.slots.values())
+                exec(program.code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
+            except Exception as exc:  # noqa: BLE001 — отказ громкий, уходящий трек играет дальше
+                on_failed("exec_error", f"{type(exc).__name__}: {exc}")
+                return
+            self._live_slots = tuple(program.slots.values())
+            info = self._arm_started(ns, program, on_started, origin=float(at_beat))
+            clock.schedule(lambda: self._stop_slots(ns, leaving), info["start_beat"] - HANDOFF_STOP_BEATS)
+
+        clock.schedule(_rbx_cue, float(at_beat) - self._lead_beats)
+
+    def at(self, beat: float, fn: Callable[[], None]) -> None:
+        """Позвать ``fn`` из потока клока на доле ``beat``, если до неё не было start/stop."""
+        generation = self._generation
+
+        def _rbx_at() -> None:
+            if generation == self._generation:
+                fn()
+
+        self._namespace()["Clock"].schedule(_rbx_at, float(beat))
+
+    def stop(self) -> None:
+        """Снять плееры деки и погасить группу 1 (``gate=0`` → ``/g_freeAll``)."""
+        self._generation += 1
+        self._stop_slots(self._namespace() or {}, self._live_slots)
+        self._live_slots = ()
+        ramp_down_group(self._send_osc, 1)
+
+    @staticmethod
+    def _arm_started(ns: Mapping[str, Any], program: Any, on_started: Callable[[Dict[str, Any]], None],
+                     origin: Optional[float]) -> Dict[str, Any]:
+        """Доля старта — из самих плееров после exec; колбэк ``started`` — на эту долю.
+
+        Фаза: у первого трека — остаток от формы; у стыка — сдвиг от ``origin`` (границы формы
+        уходящего); 0 — встал ровно на неё.
+        """
+        clock = ns["Clock"]
+        form = float(program.form_beats)
+        starts = {slot: float(ns[slot].event_index) for slot in program.slots.values()}
         start_beat = min(starts.values())
+        phase = start_beat % form if origin is None else start_beat - origin
         info = {"track_id": program.track_id, "deck": program.deck, "form_beats": form,
                 "start_beat": start_beat, "players_aligned": len(set(starts.values())) == 1,
-                "phase_in_form": round(start_beat % form, 3)}
+                "phase_in_form": round(phase, 3)}
 
         def _rbx_track_started() -> None:
             beat = float(clock.now())
@@ -213,20 +283,15 @@ class RenardoAdapter:
         clock.schedule(_rbx_track_started, start_beat)
         return info
 
-    def stop(self) -> None:
-        """Снять плееры деки и погасить группу 1 (``gate=0`` → ``/g_freeAll``)."""
-        self._stop_slots(self._namespace() or {}, self._live_slots)
-        ramp_down_group(self._send_osc, 1)
-
-    def _stop_slots(self, ns: Mapping[str, Any], slots: Iterable[str]) -> None:
+    @staticmethod
+    def _stop_slots(ns: Mapping[str, Any], slots: Iterable[str]) -> None:
         for slot in dict.fromkeys(slots):
             stop = getattr(ns.get(slot), "stop", None)
             if callable(stop):
                 stop()
-        self._live_slots = ()
 
 
 __all__ = [
-    "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S", "decode_osc_args",
-    "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "split_osc_address",
+    "HANDOFF_STOP_BEATS", "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S",
+    "decode_osc_args", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "split_osc_address",
 ]

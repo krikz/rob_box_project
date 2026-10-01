@@ -32,7 +32,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -511,6 +511,19 @@ def classify_identity_confirmation(text: str) -> Optional[bool]:
     if has_no and not has_yes:
         return False
     return None
+
+
+def start_dj_tick(node: Any, tick: Callable[[], None]) -> Optional[Any]:
+    """Таймер ``DJModeController.tick`` — только при ``music_engine: v1`` (ADR-0149 §9, PR-5).
+
+    При ``v2`` переходы сета ведёт ``SetSession`` в ``mcp_server`` по ``nearly_finished``;
+    тик старого пути (ход LLM на переходе, ``DJ_AUTO``) не заводится вовсе.
+    """
+    engine = str(node.get_parameter("music_engine").value or "v1")
+    if engine == "v2":
+        node.get_logger().info("🎧 music_engine=v2: DJModeController.tick не запускается — сет ведёт SetSession")
+        return None
+    return node.create_timer(DJModeController.DJ_TICK_INTERVAL_S, tick)
 
 
 class DialogueNode(Node):
@@ -1274,7 +1287,7 @@ class DialogueNode(Node):
             self._dj, lambda: self._scheduler_executor, lambda: self._loop, self.get_logger()
         )
         self.create_timer(5.0, self._on_inactivity_check)
-        self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
+        start_dj_tick(self, self._dj.tick)
         # 🔴 FIX (live 06.08): startup-приветствие внутри dialogue_node
         # (замена отдельной startup_greeting_node, #1003). Одноразовый
         # таймер: через startup_greeting_sec секунд после старта говорим
@@ -1532,6 +1545,9 @@ class DialogueNode(Node):
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
         self.declare_parameter("metrics_port", 9100)
+        # ADR-0149 §9 (PR-5): тот же флаг, что у mcp_server; значение — из music_engine.yaml
+        # (единственная секция ``/**``, файл подаётся обеим нодам). v2 → тик DJ старого пути не заводится.
+        self.declare_parameter("music_engine", "v1")
         # ADR-0066 §6.3 — `voice_input_mode` УДАЛЁН. Единственная связь
         # оператора с личностью — топик /dialogue/control (sub выше, в
         # __init__).
