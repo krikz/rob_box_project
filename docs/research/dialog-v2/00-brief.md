@@ -40,7 +40,7 @@
 - **Номер ADR — 0150**, свободен на `origin/develop`. Файл: `docs/adr/0150-<slug>.md`.
 - Код не трогать. Музыкальный код (`src/rob_box_music`, PR эпика #3312) тем более: его прямо
   сейчас меняет другая сессия.
-- Нарезка на PR — по [ADR-0013](../../adr/0013-incremental-delivery-over-big-bang.md):
+- Нарезка на PR — по [AF-0013](../../adr/AF-0013-incremental-delivery-over-big-bang.md):
   малые PR, strangler за флагом, как `music_engine` в ADR-0149. Каждый PR удаляет то, что заменил.
   Две реализации не держим.
 - Бюджет классов — [ADR-0145](../../adr/0145-class-budget-and-cc-scope.md).
