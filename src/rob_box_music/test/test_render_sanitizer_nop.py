@@ -31,7 +31,8 @@ def test_sanitizer_is_a_nop_on_v2_program(seed, deck):
                       melodies=MELODIES if seed % 2 else None, deck=deck)
     program = render(track, deck)
     known = frozenset(program.synths)
-    result = sanitize_renando(program.code, MAX_AMP, known_synths=known)
+    # Сэмплы DJ_Dave (PR-3d) — за флагом ROB_BOX_PACK1_LOOPS; на роботе он включён (#3254).
+    result = sanitize_renando(program.code, MAX_AMP, known_synths=known, pack1_loops_enabled=True)
     assert result.security_error is None
     assert result.quality_errors == () and result.slot_error is None
     assert result.code == program.code

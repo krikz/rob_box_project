@@ -16,8 +16,12 @@
 совпадает во всех звучащих секциях, — поэтому программа короткая, а события нот равны модели
 (тест на ``render.events``); fill-ы перед дропом удлиняют период рисунка до формы.
 
+Сэмплы (``sample``/``loop``/``fx``, PR-3d) — ``loop('<путь>')`` из ``knowledge.SAMPLE_CATALOG`` приёмами DJ_Dave
+(:func:`_sample_line`): луп — нарезка на восьмые (``chop``), psr — файл на каждую 16-ю из пула (``c1.buf``), FX —
+удар, звучащий один раз. Путь — от папки лупов пака 0 (``repr``).
+
 Не умеет (честная ошибка :class:`RenderError`, а не тихая потеря):
-роли ``sample``/``fx``, ноты вне сетки 16-х, ноту в секции, где роль молчит.
+ноты вне сетки 16-х, ноту в секции, где роль молчит.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..arrange.mix import alternate_pan, duck_envelope, voice_amp
-from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Part, Stereo, Track, validate
+from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Part, Stereo, Track, validate
 from .program import Program
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
@@ -34,7 +38,8 @@ STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 #: секции идут от первой доли трека, где бы он ни встал (стык и блэнд PR-8 ставят трек не на ``k·форма``).
 FORM_START = "Clock.next_bar()"
 #: Роль → индекс слота в ``knowledge.DECK_SLOTS[deck]``: d-слоты ударным, p-слоты тональным.
-ROLE_SLOT: Dict[str, int] = {"kick": 0, "hats": 1, "clap": 2, "perc": 2, "bass": 3, "pad": 4, "lead": 5}
+ROLE_SLOT: Dict[str, int] = {"kick": 0, "hats": 1, "clap": 2, "perc": 2, "bass": 3, "pad": 4, "lead": 5,
+                             "sample": 6, "fx": 7, "loop": 8}
 _UNSET = object()
 
 Cell = Tuple[Optional[Tuple[int, ...]], float, int]  # (ноты шага, sus в долях, акцент)
@@ -136,6 +141,55 @@ def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     return f'{slot} >> play("{text}", dur=1/4, ' + ", ".join(sample + opts) + ")"
 
 
+def _one_shot_sus(info: kn.SampleInfo, gap_beats: float, bpm: int) -> float:
+    """``sus`` удара: длина файла в долях, но не дольше шага — синт ``loop`` (``PlayBuf(loop: 1)`` на всю ``sus``,
+    ``loop.scd``) иначе крутит файл по кругу (раунд 2 PR-3d)."""
+    return min(info.seconds * bpm / 60.0, gap_beats)
+
+
+def _gap(steps) -> int:
+    on = [i for i, st in enumerate(steps) if st.on]
+    return min((on[(k + 1) % len(on)] - on[k]) % len(steps) or len(steps) for k in range(len(on)))
+
+
+def _chop_line(head: str, info: kn.SampleInfo, part: Part, gate: str) -> str:
+    """Луп нарезкой DJ_Dave (``loopAt(l).chop(l*8).legato(1)``): кусок — шаг сетки, каждый перезапускается на своей
+    доле с ``pos`` = начало куска в долях оригинала; ``tempo=`` — темп оригинала (Renardo: ``rate`` = bpm/tempo,
+    ``pos`` × tempo — ``Players.py`` LoopPlayer), ``sus`` = кусок (legato 1)."""
+    step = _gap(part.grid.steps) * STEP_BEATS
+    beats = info.beats or 4
+    pieces = _list(_num(k * step) for k in range(int(round(beats / step))))
+    return head + f"{pieces}, dur={_num(step)}, sus={_num(step)}, tempo={info.bpm}, {gate})"
+
+
+def _pool_line(slot: str, head: str, role: str, part: Part, track: Track, gate: str, stereo: List[str]) -> str:
+    """psr-пул DJ_Dave: удар на каждую 16-ю, файл события — ``c1.buf = [...]`` по кругу (``Player.__setattr__``),
+    ``sus`` — длина своего файла (≤ 16-й), ``amplify`` — акцент × сайдчейн-огибающая (как пэд и бас)."""
+    steps = part.grid.steps
+    gap = _gap(steps) * STEP_BEATS
+    sus = _list(_num(_one_shot_sus(kn.SAMPLE_CATALOG[n], gap, track.bpm)) for n in part.pool)
+    accents = [st.accent for st in steps]
+    amplify = _amplify(track, role, accents, len(set(accents)) > 1)
+    opts = [f"dur={_num(gap)}", f"sus={sus}", gate, f"amplify={_list(_num(a) for a in amplify)}"] + stereo
+    bufs = ", ".join(f"Samples.loadBuffer({kn.SAMPLE_CATALOG[n].loop_arg!r})" for n in part.pool)
+    return head + ", ".join(opts) + f")\n{slot}.buf = [{bufs}]"
+
+
+def _sample_line(slot: str, role: str, part: Part, track: Track) -> str:
+    """``loop()`` сэмпла каталога (PR-3d, приёмы DJ_Dave): ``loop`` — нарезка (:func:`_chop_line`), ``sample`` —
+    psr-пул на 16-х (:func:`_pool_line`), ``fx`` — одиночный удар, звучит один раз. Ширина — ``Mix.stereo``."""
+    info = kn.SAMPLE_CATALOG[part.synth_or_sample]
+    st = track.mix.stereo.get(role)
+    gate = f"amp={_gate(track, role, voice_amp(role, part, st.voices if st else 1))}"
+    head = f"{slot} >> loop({info.loop_arg!r}, "
+    if role == "loop":
+        return _chop_line(head, info, part, gate)
+    if part.pool:
+        return _pool_line(slot, head, role, part, track, gate, _stereo(st, None, track.bpm))
+    gap = _gap(part.grid.steps) * STEP_BEATS
+    return head + f"dur={_num(gap)}, sus={_num(_one_shot_sus(info, gap, track.bpm))}, {gate})"
+
+
 def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
     """Ноты партии по 16-м всей формы; проверка сетки и секций."""
     active = _active_steps(track, role)
@@ -211,15 +265,17 @@ def render(track: Track, deck: str) -> Program:
     lines = [f"# {track.track_id} {kn.ROOTS[key.root]} {key.mode} {track.bpm} BPM deck {deck}"]
     for role in sorted(track.parts, key=ROLE_SLOT.__getitem__):
         part = track.parts[role]
-        line = _tonal_line if role in kn.TONAL_ROLES else _drum_line
+        line = _tonal_line if role in kn.TONAL_ROLES else _sample_line if role in SAMPLE_ROLES else _drum_line
         lines.append(line(slots[role], role, part, track))
     tonal = {p.synth_or_sample for r, p in track.parts.items() if r in kn.TONAL_ROLES}
     drums = {kn.DRUM_SYMBOLS[r] + (f":{p.sample}" if p.sample else "")
-             for r, p in track.parts.items() if r not in kn.TONAL_ROLES}
+             for r, p in track.parts.items() if r in kn.DRUM_SYMBOLS}
+    files = {kn.SAMPLE_CATALOG[n].path for r, p in track.parts.items() if r in SAMPLE_ROLES
+             for n in (p.synth_or_sample, *p.pool)}
     return Program(
         code="\n".join(lines) + "\n", track_id=track.track_id, deck=deck, bpm=track.bpm,
         form_beats=float(track.form.bars_total * BEATS_PER_BAR), slots=slots,
-        synths=frozenset(tonal), samples=frozenset(drums),
+        synths=frozenset(tonal), samples=frozenset(drums), sample_files=frozenset(files),
     )
 
 

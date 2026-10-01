@@ -57,3 +57,21 @@ def test_loudness_model_and_pan_tables_are_one_object():
     from rob_box_music.arrange.mix import alternate_pan
     assert club_stereo.alternate_pan is alternate_pan, "PR-9: смена стороны по ударам — одна реализация"
     assert tuple(float(x) for x in kn.BPM_RANGE) == BPM_RANGE
+
+
+def test_dave_catalog_and_diversity_have_one_implementation():
+    """PR-3d: каталог DJ_Dave и ``weighted_pick``/``MusicHistory`` живут в ``rob_box_music``; старое — вид/реэкспорт."""
+    from rob_box_mcp_tools.core import club_samples, music_diversity, sample_dave
+    from rob_box_music import diversity
+
+    assert music_diversity.weighted_pick is diversity.weighted_pick
+    assert music_diversity.MusicHistory is diversity.MusicHistory
+    view = sample_dave.sample_catalog()
+    assert set(view) == set(kn.SAMPLE_CATALOG) and len(view) == 123
+    assert all(view[n].path == i.loop_arg and view[n].channels == i.channels for n, i in kn.SAMPLE_CATALOG.items())
+    assert sample_dave.group_descriptions() == dict(kn.SAMPLE_GROUPS)
+    kinds = {"perc": "step", "loop": "stretch", "vox": "chop"}
+    for layer in club_samples.SAMPLE_LAYERS.values():
+        info = kn.SAMPLE_CATALOG[layer.sample]
+        assert layer.kind == kinds[info.role] and layer.beats == (info.beats or 1)
+    assert club_samples.SAMPLE_LAYERS["spilltab_chop"].roots == ("A#",)

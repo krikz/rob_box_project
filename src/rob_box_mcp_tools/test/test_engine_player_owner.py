@@ -26,10 +26,11 @@ pytestmark = pytest.mark.unit
 SLOTS = {"kick": "d1", "bass": "p1"}
 
 
-def _program(track_id="v2:1:A:aaaa", synths=("bass",), samples=("X",), form_beats=128.0):
+def _program(track_id="v2:1:A:aaaa", synths=("bass",), samples=("X",), form_beats=128.0, files=()):
     code = 'd1 >> play("X...")\np1 >> bass([40, None])\n'
     return SimpleNamespace(code=code, track_id=track_id, deck="A", bpm=132, form_beats=form_beats,
-                           slots=dict(SLOTS), synths=frozenset(synths), samples=frozenset(samples))
+                           slots=dict(SLOTS), synths=frozenset(synths), samples=frozenset(samples),
+                           sample_files=frozenset(files))
 
 
 class FakeAdapter:
@@ -227,6 +228,22 @@ def test_adapter_preloads_the_sample_index_the_track_plays():
     assert adapter.check(_program(samples=("X:12", "-"))) is None
     assert sorted(loaded) == [("-", 0, 0), ("X", 0, 12)]
     assert adapter.check(_program(samples=("X:99",))) == ("missing_sample", "нет сэмплов для символов: X:99")
+
+
+def test_adapter_preloads_loop_files_of_the_program():
+    """PR-3d: файлы ``loop()`` (каталог DJ_Dave) грузятся до exec тем же путём, что в программе; нет файла — отказ."""
+    loaded = []
+
+    class Recording(FakeSamples):
+        def loadBuffer(self, filename, index=0, force=False):
+            loaded.append(filename)
+            return 0 if "nope" in filename else 12
+
+    adapter, ns, *_ = _adapter()
+    ns["Samples"] = Recording()
+    assert adapter.check(_program(files=("dj_dave/dirt/psr/009_10.wav",))) is None
+    assert loaded == ["../../dj_dave/dirt/psr/009_10.wav"]
+    assert adapter.check(_program(files=("dj_dave/nope.wav",)))[0] == "missing_sample"
 
 
 def test_adapter_starts_form_on_a_multiple_of_form_beats():

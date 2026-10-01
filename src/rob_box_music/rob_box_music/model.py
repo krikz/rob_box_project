@@ -20,6 +20,7 @@ BARS_TOTAL = (32, 48, 64)
 OUTRO_MIN_BARS = 8
 PHRASE_BARS = (8, 16, 32)
 APPROACH_MAX_BEATS = 0.5  # хроматический подход баса (ADR-0149 §3.5)
+SAMPLE_ROLES = ("sample", "loop", "fx")  # роли, чья партия — файл из ``knowledge.SAMPLE_CATALOG`` (§3.11)
 
 
 class TrackError(ValueError):
@@ -84,6 +85,8 @@ class Part:
     level_db: float  # dB RMS в шкале модели громкости (``knowledge.LANE_DB_AT_UNIT``), роль звучит всю секцию
     register: Tuple[int, int]
     sample: int = 0  # номер файла ``play()``-символа ударной роли (бочка — ``knowledge.KICK_SOUNDS``)
+    #: Файл каталога на каждое событие роли по кругу (psr-пул DJ_Dave, PR-3d); пусто — ``synth_or_sample``.
+    pool: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -142,11 +145,16 @@ class Transition:
 
 @dataclass(frozen=True)
 class HistoryKey:
+    """Оси ``music_history`` трека (ADR-0149 I17); тембры — синты партий (``diversity.track_history``)."""
+
     kit: str
     progression: str
     hook: Optional[str]
     sample: Optional[str]
     root: int
+    hook_fingerprint: Optional[str] = None  # отпечаток фрагмента хука/мотива без транспозиции (#3245)
+    fx: Optional[str] = None
+    perc: Optional[str] = None  # пул psr-слоя через запятую
 
 
 @dataclass(frozen=True)
@@ -256,6 +264,9 @@ def _check_parts(track: Track) -> None:
         else:
             _require(part.pitches is None, f"parts.{role}.pitches", "у ударной роли нет высот")
             _require(isinstance(part.sample, int) and part.sample >= 0, f"parts.{role}.sample", "номер сэмпла < 0")
+        if role in SAMPLE_ROLES:
+            unknown = sorted({part.synth_or_sample, *part.pool} - set(kn.SAMPLE_CATALOG))
+            _require(not unknown, f"parts.{role}.synth_or_sample", f"сэмплов {unknown} нет в knowledge.SAMPLE_CATALOG")
         _require(_finite(part.level_db) and part.level_db <= kn.role_ceiling(role), f"parts.{role}.level_db",
                  f"{part.level_db} дБ выше потолка роли {kn.role_ceiling(role)}")
         _require(track.mix.level_db.get(role) == part.level_db, f"mix.level_db.{role}",
@@ -267,8 +278,8 @@ def _check_parts(track: Track) -> None:
 
 def _check_duck(mix: Mix, parts: Mapping[str, Part]) -> None:
     roles = set(mix.duck_roles)
-    _require(roles <= set(parts) & set(kn.TONAL_ROLES), "mix.duck_roles",
-             f"сайдчейн только на тональных партиях трека: {sorted(roles)}")
+    _require(roles <= set(parts) & set(kn.DUCK_ROLES), "mix.duck_roles",
+             f"сайдчейн только на ролях knowledge.DUCK_ROLES, что есть в треке: {sorted(roles)}")
     trigger = mix.duck_trigger
     _require(all(isinstance(s, int) and 0 <= s < STEPS_PER_BAR for s in trigger)
              and list(trigger) == sorted(set(trigger)), "mix.duck_trigger", f"шаги {trigger} не 0..15 по возрастанию")

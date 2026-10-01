@@ -44,6 +44,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music import knowledge as kn
+
 from . import sample_dave
 from .club_stereo import PAN_HATS, pan_alternating, pan_list
 from .music_diversity import weighted_pick
@@ -90,19 +92,31 @@ class SampleLayer:
     roots: Tuple[str, ...] = ()
 
 
+#: Роль сэмпла в каталоге → вид слоя.
+_KIND_OF_ROLE = {"perc": "step", "loop": "stretch", "vox": "chop"}
+
+
+def _layer(sample: str, rel: float) -> SampleLayer:
+    """Слой из ``knowledge.SAMPLE_CATALOG``: вид — по роли, доли — по темпу оригинала, тоники — по тональности
+    (ADR-0149 PR-3d: метаданные сэмпла живут в одной таблице)."""
+    info = kn.SAMPLE_CATALOG[sample]
+    roots = (kn.ROOTS[info.key[0]],) if info.key else ()
+    return SampleLayer(sample, _KIND_OF_ROLE[info.role], info.beats or 1, rel, roots)
+
+
 #: Белый список слоя. Выбор: короткая перкуссия psr (номера из списка
 #: оригинала «By Design» ``psr:[2|5|6|...|29]``), шейкер и брейк Array
 #: (140 bpm в оригинале), бит whatuneed (8 долей при 128 bpm) и вокальный
-#: чоп spilltab. Длинные вокальные фразы Array/algorave с неизвестной
+#: чоп spilltab (A# minor). Длинные вокальные фразы Array/algorave с неизвестной
 #: тональностью сюда НЕ взяты — на чужой тонике они бы спорили с басом.
 SAMPLE_LAYERS: Mapping[str, SampleLayer] = {
-    "psr_10": SampleLayer("dirt_psr_10", "step", 1, 0.43),
-    "psr_06": SampleLayer("dirt_psr_06", "step", 1, 0.43),
-    "psr_25": SampleLayer("dirt_psr_25", "step", 1, 0.43),
-    "array_shaker": SampleLayer("array_perc_shaker", "stretch", 8, 0.4),
-    "array_break": SampleLayer("array_perc_break", "stretch", 2, 0.5),
-    "wun_beat": SampleLayer("algorave_wun_beat", "stretch", 8, 0.5),
-    "spilltab_chop": SampleLayer("algorave_spilltab", "chop", 32, 0.43, roots=("A#",)),
+    "psr_10": _layer("dirt_psr_10", 0.43),
+    "psr_06": _layer("dirt_psr_06", 0.43),
+    "psr_25": _layer("dirt_psr_25", 0.43),
+    "array_shaker": _layer("array_perc_shaker", 0.4),
+    "array_break": _layer("array_perc_break", 0.5),
+    "wun_beat": _layer("algorave_wun_beat", 0.5),
+    "spilltab_chop": _layer("algorave_spilltab", 0.43),
 }
 
 

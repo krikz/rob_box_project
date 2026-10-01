@@ -11,9 +11,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
-from typing import Mapping, Tuple
+from pathlib import Path
+from typing import Mapping, Optional, Tuple
 
 #: Тоники по высоте звука, индекс = pitch class 0..11 (``Root.default`` Renardo).
 ROOTS: Tuple[str, ...] = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -34,7 +36,7 @@ SCALES: Mapping[str, Tuple[int, ...]] = {
 }
 
 #: Роли партий трека (ADR-0149 §3.1); ритмические — сетка, тональные — высоты.
-ROLES: Tuple[str, ...] = ("kick", "hats", "clap", "perc", "bass", "pad", "lead", "sample", "fx")
+ROLES: Tuple[str, ...] = ("kick", "hats", "clap", "perc", "bass", "pad", "lead", "sample", "loop", "fx")
 TONAL_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
 
 #: Коридоры регистров MIDI (I13): бас < пэд < лид ≤ 88 (``harmonize.BASS_MIDI_FLOOR``,
@@ -62,7 +64,7 @@ ENERGY_THIN_ROLES: Mapping[int, Tuple[str, ...]] = {1: ("clap",), 2: ("clap",)}
 LEVEL_CEILINGS: Mapping[str, float] = {
     "master_peak_db": -3.0,
     "kick": -6.0, "bass": -8.0, "pad": -12.0, "lead": -10.0,
-    "hats": -14.0, "clap": -10.0, "perc": -14.0, "sample": -10.0, "fx": -14.0,
+    "hats": -14.0, "clap": -10.0, "perc": -14.0, "sample": -10.0, "loop": -10.0, "fx": -14.0,
 }
 
 #: Рисунки бочки, 16 шагов (``core/club_arranger.KICK_PATTERNS``).
@@ -175,16 +177,112 @@ PLAY_SYNTH = "play"
 #: Символ сэмпла ``play()`` ударной роли (Renardo: X — бочка, - — хэт, * — клэп, o — малый).
 DRUM_SYMBOLS: Mapping[str, str] = {"kick": "X", "hats": "-", "clap": "*", "perc": "o"}
 
-#: Слоты плееров деки (ADR-0149 §3.2): три ударных и три тональных. На роботе 01.10 звучат и
+#: Слоты плееров деки (ADR-0149 §3.2): три ударных, три тональных и два сэмпловых — ``sample`` и ``fx`` (PR-3d;
+#: ``c1/c2``, ``e1/e2`` санитайзер v1 не переставляет: он ловит только ``[dpsl]N``). На роботе 01.10 звучат и
 #: ``d4..p6``, и ``a1..b3`` (PR-2); дека B — ``a1..b3``, потому что ``d4..p6`` санитайзер v1 ещё
 #: переставляет в ``d1..p3`` (#1804), а v2 и v1 пока делят один Renardo.
 DECK_SLOTS: Mapping[str, Tuple[str, ...]] = {
-    "A": ("d1", "d2", "d3", "p1", "p2", "p3"),
-    "B": ("a1", "a2", "a3", "b1", "b2", "b3"),
+    "A": ("d1", "d2", "d3", "p1", "p2", "p3", "c1", "c2", "c3"),
+    "B": ("a1", "a2", "a3", "b1", "b2", "b3", "e1", "e2", "e3"),
 }
 
 #: Акцент шага сетки 0..3 → множитель ``amplify`` (ADR-0149 §3.4: сильные доли громче).
 ACCENT_AMPLIFY: Tuple[float, ...] = (0.4, 0.6, 0.8, 1.0)
+
+
+# --- Каркасы ударных и каталог сэмплов DJ_Dave (ADR-0149 §3.4, §3.11, §8.1; PR-3d) -------------------
+
+#: Каркас ударных поверх бочки и клэпа (бочку решает жанр, клэп — бэкбит 2/4): рисунки такта по 16 шагов.
+#: ``X``/``x`` — удар с акцентом 3/2, ``g`` — гоуст (акцент 0; на нечётной 16-й его качает свинг сета),
+#: ``.`` — пауза. ``perc`` — где бьёт слой одиночных сэмплов (``SampleInfo.role == "perc"``).
+#: Ось разнообразия «каркас» (I17, A13): два трека подряд с одним каркасом не играют.
+#: Стерео хэтов (PR-9) меняет сторону на каждом ударе: акценты делятся поровну между сторонами, либо ударов
+#: нечётно (тогда сторона удара меняется через проход) — баланс L/R по энергии 0 (``test_diversity``).
+DRUM_KITS: Mapping[str, Mapping[str, str]] = {
+    "offbeat": {"hats": "..X...xg..X...xg", "perc": "...x.......x..x."},
+    "sixteenths": {"hats": "ggXgggxgggXgggx.", "perc": ".......x.......x"},
+    "open": {"hats": "..X..gX...X..gX.", "perc": ".x.....x.x....x."},
+    "shuffle": {"hats": "..X.g.xg..X.g.x.", "perc": "......x.......x."},
+    "ride": {"hats": "x.Xgx.X.x.Xgx.X.", "perc": "...x..x....x...."},
+}
+#: psr DJ_Dave: список из её кода «Array» — ``s("psr:[2|5|6|7|8|9|10|11|12|16|24|25|28|29]")``.
+DAVE_PSR: Tuple[str, ...] = tuple(f"dirt_psr_{n:02d}" for n in (2, 5, 6, 7, 8, 9, 10, 11, 12, 16, 24, 25, 28, 29))
+
+#: Каталог DJ_Dave — данные (перенесены из ``rob_box_mcp_tools/data``, старый ``core/sample_dave`` — вид отсюда).
+#: Файлы кладёт на хост Ресурсный пак (ADR-0125/0126, запись ``dj-dave-samples``) в ``/opt/rob_box/samples/<пак>``,
+#: в контейнерах это корень сэмплов Renardo ``/root/.config/renardo/samples``.
+_SAMPLE_DATA = json.loads((Path(__file__).resolve().parent / "data" / "sample_dave.json").read_text(encoding="utf-8"))
+SAMPLE_PACK_DIR = str(_SAMPLE_DATA["pack_dir"])
+#: Роли сэмпла: ``perc`` — удар по сетке каркаса, ``loop`` — луп, растянутый на ``beats`` долей, ``fx`` —
+#: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
+#: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает жанр).
+SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick")
+
+
+@dataclass(frozen=True)
+class SampleInfo:
+    """Сэмпл пака: ``seconds``/``channels`` — ffprobe скачанного файла (30.09), ``peak_db``/``mean_db`` — ffmpeg
+    volumedetect файла на роботе (02.10), ``path`` — от корня сэмплов, ``bpm`` — темп оригинала, ``key`` — (тоника,
+    лад), если известна. Тональный сэмпл без ``key`` в трек не идёт."""
+
+    name: str
+    group: str
+    role: str
+    seconds: float
+    channels: int
+    path: str
+    peak_db: float
+    mean_db: float
+    bpm: Optional[int] = None
+    key: Optional[Tuple[int, str]] = None
+    tonal: bool = False
+
+    @property
+    def loop_arg(self) -> str:
+        """Аргумент ``loop()``: путь от папки лупов пака 0 (``spack=`` в Renardo — no-op, #2841)."""
+        return f"../../{self.path}"
+
+    @property
+    def beats(self) -> Optional[int]:
+        """Длина в долях при темпе оригинала (для ``beat_stretch``)."""
+        return round(self.seconds * self.bpm / 60.0) if self.bpm else None
+
+
+_SAMPLE_GROUP_ROLE = {
+    "algorave_vocal": "vox", "algorave_beat": "loop", "algorave_fx": "fx", "array_vox": "vox",
+    "array_bass": "bass", "array_synth": "synth",
+}
+_SAMPLE_ROLE_BY_NAME = {
+    **dict.fromkeys(("array_perc_shaker", "array_perc_break"), "loop"),
+    **dict.fromkeys(("array_perc_kick", "dirt_hh_hh3kick1", "dirt_hh_hh3kick2", "dirt_tech_tn1kick1",
+                     "dirt_tech_tn1kick2"), "kick"),
+    **dict.fromkeys(("dirt_hh_hh3crash", "dirt_hh_hh3hit1", "dirt_hh_hh3hit2", "dirt_hh_hh3hit3", "dirt_hh_hh3rerc1",
+                     "dirt_hh_hh3rerc2", "dirt_tech_tn1crash", "dirt_tech_tn1hit1", "dirt_tech_tn1hit3",
+                     "algorave_fx"), "fx"),
+    "dirt_tech_tn1hit2": "riser",
+}
+_SAMPLE_TONAL = frozenset({"array_perc_guit1", "array_perc_guit2"})
+#: Темп оригинала: Array (Lil Data) — 140, whatuneed — 128, spilltab — 100 (эталоны ``reference_tracks``).
+_SAMPLE_BPM = {"algorave_wun_beat": 128, "algorave_wun_noise": 128, "algorave_wun_vox": 128,
+               "algorave_spilltab": 100}
+#: spilltab в оригинале звучит в A# minor (эталон «By Design», ``root=10``).
+_SAMPLE_KEY = {"algorave_spilltab": (10, "minor")}
+
+
+def _sample_info(name: str, meta: Mapping[str, object]) -> SampleInfo:
+    group = str(meta["group"])
+    role = _SAMPLE_ROLE_BY_NAME.get(name) or _SAMPLE_GROUP_ROLE.get(group, "perc")
+    return SampleInfo(
+        name, group, role, float(meta["seconds"]), int(meta["channels"]), f"{SAMPLE_PACK_DIR}/{meta['path']}",
+        float(meta["peak_db"]), float(meta["mean_db"]),
+        _SAMPLE_BPM.get(name, 140 if name.startswith("array_") else None), _SAMPLE_KEY.get(name),
+        role in ("vox", "bass", "synth") or name in _SAMPLE_TONAL)
+
+
+#: Каталог сэмплов DJ_Dave: имя → :class:`SampleInfo`. Один на v1 (``core/sample_dave``) и v2.
+SAMPLE_CATALOG: Mapping[str, SampleInfo] = {n: _sample_info(n, m) for n, m in _SAMPLE_DATA["samples"].items()}
+#: Группа каталога → описание (подсказки модели в v1).
+SAMPLE_GROUPS: Mapping[str, str] = dict(_SAMPLE_DATA["groups"])
 
 
 def scale_pitch_classes(root: int, mode: str) -> frozenset:
@@ -201,11 +299,11 @@ def role_ceiling(role: str) -> float:
 
 
 __all__ = [
-    "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS", "ENERGY_TRIM_DB",
-    "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES", "ThemeRow",
-    "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
-    "SCALES", "SYNTH_PALETTE", "SYNTH_TRAITS", "SynthTraits", "TONAL_ROLES", "role_ceiling",
-    "scale_pitch_classes", "traits_of",
+    "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_KITS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
+    "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES",
+    "ThemeRow", "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES",
+    "ROOTS", "SAMPLE_CATALOG", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES", "SYNTH_PALETTE",
+    "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling", "scale_pitch_classes", "traits_of",
 ]
 
 
@@ -246,13 +344,19 @@ DRUM_LOUDNESS_KEY: Mapping[str, str] = {"kick": "four_on_floor", "hats": "offbea
 #: ``arrange.mix`` пишет в модель то, что синт может дать.
 ROLE_LEVEL_DB: Mapping[str, float] = {
     "kick": -36.0, "bass": -37.0, "pad": -44.0, "lead": -46.0, "clap": -46.0, "hats": -61.0,
+    # PR-3d: слой DJ_Dave — amp как в v1 club (``club_samples``: шейкер 0.15–0.21, psr 0.16–0.23; сеты 30.09–01.10,
+    # которые Шифу принял на слух). Замер A/B 02.10 (тот же трек без слоёв, 1–8 кГц): при −47/−45 слои дают
+    # +0.1…+0.8 дБ — не слышны; −37/−35 — те же amp, что у v1. FX-удар на границе секции на 2 дБ громче слоя.
+    # Раунд 5: psr-пул на 16-х и брейк-луп нарезкой — тот же уровень, что слой раунда 4 (A/B +1.7…+2.6 дБ).
+    "sample": -37.0, "loop": -37.0, "fx": -35.0,
 }
 
 #: Сайдчейн «S» (ADR-0149 §3.8): усиление 16-х после удара триггера при глубине 1 — атака мгновенная,
 #: подъём за 3 шага, дальше 1.0. Глубина ``d`` даёт ``1 − d·(1 − форма)``. Триггер — рисунок бочки жанра
 #: («призрачная бочка»: тот же рисунок и в брейке, и в такте fill-а — огибающая не дёргается).
 SIDECHAIN_SHAPE: Tuple[float, ...] = (0.3, 0.55, 0.8, 1.0)
-DUCK_ROLES: Tuple[str, ...] = ("bass", "pad")
+#: psr-слой DJ_Dave — под той же огибающей, что пэд и бас (``postgain(sidechain)``, PR-3d).
+DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample")
 DUCK_DEPTH = 1.0
 
 #: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека. Только
@@ -317,6 +421,9 @@ ROLE_STEREO: Mapping[str, Mapping[str, float]] = {
     "clap": {"pan": PAN_HATS, "first": -1},
     "perc": {"pan": PAN_HATS, "first": -1},
     "pad": {"pan": PAD_SPREAD, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS},
+    # psr-пул DJ_Dave (PR-3d): два голоса L/R с Хаасом (аналог ``jux``). Смена стороны по ударам под сайдчейном
+    # перекосила бы баланс: огибающая громче на нечётных 16-х, а они всегда на одной стороне.
+    "sample": {"pan": PAN_HATS, "haas_ms": PAD_HAAS_MS},
 }  # лида нет: на оси (§3.9)
 
 __all__ += [

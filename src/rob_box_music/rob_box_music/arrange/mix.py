@@ -24,7 +24,7 @@ from dataclasses import replace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..model import STEPS_PER_BAR, Mix, Part, Stereo
+from ..model import SAMPLE_ROLES, STEPS_PER_BAR, Mix, Part, Stereo
 
 
 def layer_db(unit_db: float, exponent: float, amp: float) -> float:
@@ -33,7 +33,11 @@ def layer_db(unit_db: float, exponent: float, amp: float) -> float:
 
 
 def _unit(role: str, part: Part) -> Tuple[float, float]:
-    """(dB при ``amp`` 1.0, показатель) партии: синт тональной роли, рисунок и сэмпл ударной."""
+    """(dB при ``amp`` 1.0, показатель) партии: синт тональной роли, рисунок и сэмпл ударной. Сэмпл DJ_Dave (PR-3d) —
+    средний уровень файла (``SampleInfo.mean_db``): синт ``loop`` даёт файл ≈ без усиления (``Mix`` стерео × 0.5);
+    это допущение, не замер — живой проход идёт через выравниватель мастера."""
+    if role in SAMPLE_ROLES:
+        return kn.SAMPLE_CATALOG[part.synth_or_sample].mean_db, 1.0
     option = part.synth_or_sample if role in kn.TONAL_ROLES else kn.DRUM_LOUDNESS_KEY[role]
     db = kn.LANE_DB_AT_UNIT[role][option]
     if role == "kick":

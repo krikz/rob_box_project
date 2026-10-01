@@ -152,11 +152,12 @@ def test_render_is_deterministic_and_deck_only_changes_slots():
         assert set(prog.slots.values()) == {kn.DECK_SLOTS[deck][ROLE_SLOT[r]] for r in track.parts}
     swap = dict(zip(kn.DECK_SLOTS["A"], kn.DECK_SLOTS["B"]))
     lines_a = a.code.splitlines()[1:]
-    assert [swap[ln.split()[0]] + ln[2:] for ln in lines_a] == b.code.splitlines()[1:]
+    # строка ``c1.buf = [...]`` (psr-пул, PR-3d) — тоже атрибут плеера деки
+    assert [swap[ln[:2]] + ln[2:] for ln in lines_a] == b.code.splitlines()[1:]
     # темп и клок — у владельца плеера: программа только читает долю старта плееров (``var`` секций, PR-8)
     assert a.code.count("Clock") == a.code.count(f"start={FORM_START}") > 0 and FORM_START == "Clock.next_bar()"
     drums = {kn.DRUM_SYMBOLS[r] + (f":{p.sample}" if p.sample else "")  # бочка — с номером файла (X:12)
-             for r, p in track.parts.items() if r not in kn.TONAL_ROLES}
+             for r, p in track.parts.items() if r in kn.DRUM_SYMBOLS}
     assert a.synths == {track.parts[r].synth_or_sample for r in kn.TONAL_ROLES} and a.samples == drums
     assert a.form_beats == track.form.bars_total * BEATS_PER_BAR
 

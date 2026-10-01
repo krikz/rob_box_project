@@ -69,11 +69,12 @@ def test_duck_envelope_rises_without_a_step(trigger, depth):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_sidechain_is_on_the_bass_and_pad_events_only(seed):
-    """``amp`` события ÷ гейт = акцент × огибающая по шагу такта для баса/пэда; бочка/хэты/лид без сайдчейна."""
+    """``amp`` события ÷ гейт = акцент × огибающая по шагу такта для баса/пэда; бочка/хэты/лид без сайдчейна.
+    psr-слой DJ_Dave (PR-3d) — тоже под огибающей (``test_diversity``)."""
     track = _track(seed)
     by_role = _events(track)
     env = mix.duck_envelope(track.mix.duck_trigger, track.mix.duck_depth)
-    assert track.mix.duck_roles == frozenset({"bass", "pad"}) and track.mix.duck_trigger == FOUR_ON_FLOOR
+    assert track.mix.duck_roles == frozenset({"bass", "pad", "sample"}) and track.mix.duck_trigger == FOUR_ON_FLOOR
     pad = [round(e.amp / e.gate, 3) for e in by_role["pad"]]
     assert set(pad) == set(kn.SIDECHAIN_SHAPE), "пэд — аккорд на каждой 16-й под огибающей"
     for ev in by_role["pad"]:

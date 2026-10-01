@@ -108,6 +108,7 @@ class NoteEvent:
     fx: Mapping[str, Any] = field(default_factory=dict)
     pan: float = 0.0
     detune: float = 0.0  # ``pshift`` голоса, полутоны (``midi`` — нота без расстройки)
+    pos: Optional[float] = None  # ``loop``: начало куска файла в долях темпа оригинала (``tempo=``, chop PR-3d)
 
 
 @dataclass
@@ -155,6 +156,14 @@ class _Scale(_Default):
         raise ProgramError(f"незнакомый лад Scale.{name}")
 
 
+class _Samples:
+    """``Samples.loadBuffer(путь)`` в программе v2 (psr-пул, PR-3d): в симуляторе номер буфера — сам путь."""
+
+    @staticmethod
+    def loadBuffer(path: str, *_a: Any, **_kw: Any) -> str:  # noqa: N802 — имя API Renardo
+        return path
+
+
 class _Slot:
     def __init__(self, name: str, sink: Dict[str, PlayerSpec]) -> None:
         self.name, self.sink = name, sink
@@ -162,16 +171,25 @@ class _Slot:
     def __rshift__(self, spec: PlayerSpec) -> None:
         self.sink[self.name] = spec
 
+    def __setattr__(self, attr: str, value: Any) -> None:
+        """``c1.buf = [...]`` после ``>>`` — атрибут плеера на каждое событие (как ``Player.__setattr__``)."""
+        if attr in ("name", "sink"):
+            object.__setattr__(self, attr, value)
+        else:
+            self.sink[self.name].kwargs[attr] = value
+
 
 def _namespace(players: Dict[str, PlayerSpec], clock: _Clock, root: _Default, scale: _Scale) -> Dict[str, Any]:
     class Synths(dict):
         def __missing__(self, name: str) -> Any:
             if name.startswith("_"):
                 raise ProgramError(f"имя {name!r} в программе")
-            return lambda degree=None, *_a, **kw: PlayerSpec(name, degree, kw)
+            # ``loop(файл, pos, ...)``: второй позиционный — начало куска (chop)
+            return lambda degree=None, *_a, **kw: PlayerSpec(name, degree, {**({"pos": _a[0]} if _a else {}), **kw})
 
     ns = Synths(
         __builtins__={}, Clock=clock, Root=root, Scale=scale,
+        Samples=_Samples(),
         var=lambda v, d, *_a, start=0.0: TimeVar(v, d, start=start),
         linvar=lambda v, d, *_a, start=0.0: TimeVar(v, d, linear=True, start=start),
         Pvar=lambda v, d, *_a: TimeVar(v, d),
@@ -325,10 +343,25 @@ def _notes(spec: PlayerSpec, program: Program, steps: Optional[List[str]], index
     return out
 
 
-def events_for(slot: str, spec: PlayerSpec, program: Program, form_beats: float) -> List[NoteEvent]:
-    """События одного плеера за ``form_beats`` долей (``loop`` не разворачивается)."""
+def _loop_events(spec: PlayerSpec, index: int, beat: float, base: Dict[str, Any]) -> List[NoteEvent]:
+    """Запуск файла ``loop`` (PR-3d): файл — ``buf`` события (psr-пул) или первый аргумент, ``pos`` — кусок,
+    голоса — ``pan``/``delay`` (два голоса — как у пэда)."""
     kw = spec.kwargs
-    if spec.synth == "loop":
+    sample = str(value_at(kw["buf"], index, beat)) if "buf" in kw else str(spec.degree)
+    pos = float(value_at(kw.get("pos", 0), index, beat))
+    packet = {k: value_at(kw.get(k, 0), index, beat) for k in VOICE_KEYS}
+    packet["degree"] = 0
+    voices = expand_voices(packet)
+    return [NoteEvent(synth="loop", sample=sample, pos=pos,
+                      **dict(base, beat=beat + float(v["delay"]), pan=float(v["pan"]), detune=0.0)) for v in voices]
+
+
+def events_for(slot: str, spec: PlayerSpec, program: Program, form_beats: float,
+               loops: bool = False) -> List[NoteEvent]:
+    """События одного плеера за ``form_beats`` долей. ``loop`` разворачивается только с ``loops=True`` (сэмплы v2,
+    PR-3d): событие = запуск файла ``NoteEvent.sample``; старые потребители (``classic_loudness``) лупы не считают."""
+    kw = spec.kwargs
+    if spec.synth == "loop" and not loops:
         return []
     steps = play_steps(spec.degree) if spec.synth == "play" else None
     if spec.synth == "play" and not steps:
@@ -345,21 +378,25 @@ def events_for(slot: str, spec: PlayerSpec, program: Program, form_beats: float)
         if amp > 0:
             sus = float(value_at(kw["sus"], index, beat)) if "sus" in kw else dur
             base = dict(slot=slot, amp=amp, gate=gate, sus_beats=sus, fx=_fx_at(kw, index, beat))
-            out += _notes(spec, program, steps, index, beat, base)
+            if spec.synth == "loop":
+                out += _loop_events(spec, index, beat, base)
+            else:
+                out += _notes(spec, program, steps, index, beat, base)
         index += 1
         beat += dur
     return out
 
 
-def program_events(code: str, form_beats: Optional[float] = None) -> Tuple[Program, List[NoteEvent]]:
-    """Программа → (плееры, события за одну форму)."""
+def program_events(code: str, form_beats: Optional[float] = None,
+                   loops: bool = False) -> Tuple[Program, List[NoteEvent]]:
+    """Программа → (плееры, события за одну форму); ``loops`` — разворачивать ли ``loop()``."""
     program = run_program(code)
     form = float(form_beats or program.form_beats or 0)
     if form <= 0:
         raise ProgramError("длина формы неизвестна (нет Clock.future и не передана)")
     events: List[NoteEvent] = []
     for slot, spec in program.players.items():
-        events.extend(events_for(slot, spec, program, form))
+        events.extend(events_for(slot, spec, program, form, loops))
     return program, events
 
 
