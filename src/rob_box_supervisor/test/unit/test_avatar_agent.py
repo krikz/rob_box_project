@@ -838,6 +838,23 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
         self._run("quest", summary="")
         self.assertEqual(_published_avatar_tts(self.node), [])
 
+    def test_long_markdown_reply_spoken_short_full_text_in_result(self) -> None:
+        """#3296: в TTS — короткая чистая версия, в command_result — полный текст."""
+        full = (
+            "Доступные запросы к Prometheus и Loki.\n\n"
+            "**Процесс:**\n- `cpu` — загрузка\n"
+            "- `rate(process_cpu_seconds_total[5m])` — скорость\n" * 5
+        )
+        self._run("quest", summary=full)
+        spoken = _published_avatar_tts(self.node)
+        self.assertEqual(len(spoken), 1)
+        ssml = spoken[0]["ssml"]
+        for bad in ("`", "**", "rate(", "[5m]"):
+            self.assertNotIn(bad, ssml)
+        self.assertIn("Доступные запросы к Prometheus и Loki.", ssml)
+        self.assertLess(len(ssml), len(full))
+        self.assertEqual(_published_results(self.node)[0]["summary"], full)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # ADR-0083 §2.3 — supervisor_node собирает AgentCore через build_agent(spec)
