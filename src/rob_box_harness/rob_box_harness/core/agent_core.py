@@ -312,6 +312,16 @@ def _request_window(turns: Iterable[Turn], include_window: bool) -> list[Turn]:
     return list(turns) if include_window else []
 
 
+def _keep_no_turns(turns: list[Turn]) -> list[Turn]:
+    """Фильтр :meth:`AgentCore.clear_history` по умолчанию — окно целиком."""
+    return []
+
+
+def _reply_if_kept(reply: Turn | None, kept: Iterable[Turn]) -> Turn | None:
+    """Отзываемый ответ хода живёт, только пока он ещё в окне."""
+    return reply if any(turn is reply for turn in kept) else None
+
+
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
     """Объединить имена тулов без повторов, сохранив порядок."""
     return list(dict.fromkeys(name for group in groups for name in group))
@@ -1369,15 +1379,23 @@ class AgentCore:
             Turn(role="assistant", content=spoken, metadata=metadata)
         )
 
-    def clear_history(self) -> None:
-        """Drop all turns from the in-memory sliding window.
+    def clear_history(
+        self, keep: Callable[[list[Turn]], list[Turn]] = _keep_no_turns
+    ) -> None:
+        """Drop turns from the in-memory sliding window.
 
         Called by the shell when the user starts a new session
         («новая сессия» / «/clear»). Turns are ephemeral and must
         not survive a session boundary.
+
+        ``keep`` (ADR-0129, issue #3000) — фильтр окна: ходы, которые
+        остаются. Смена DJ-сета убирает обмены прошлых сетов, не трогая
+        остальной разговор (``rob_box_voice.core.dj_set_boundary``).
         """
+        kept = list(keep(list(self._turn_window)))
         self._turn_window.clear()
-        self._turn_reply = None
+        self._turn_window.extend(kept)
+        self._turn_reply = _reply_if_kept(self._turn_reply, kept)
 
     @staticmethod
     def _clean_history_turns(
