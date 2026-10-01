@@ -5,8 +5,9 @@
 ``show_metrics`` / ``get_perception_context``. Модель либо вызывала
 несуществующее, либо отвечала «инструмента нет» про существующее.
 
-Каталог берём там же, где реестр оператора: ``llm_visible`` записи
-``rob_box_core.tool_catalog`` (их же предзаполняет ``ToolRegistry``) плюс
+Каталог берём там же, где реестр оператора: ``operator_visible_tools()``
+из ``rob_box_core.tool_catalog`` (llm-видимые + ``operator_visible``, в т.ч.
+``say``; их же предзаполняет ``ToolRegistry(for_operator=True)``) плюс
 два инструмента, которые добавляются не из каталога: ``show_metrics``
 (``TarsPanelDispatcher.register_tool``) и ``load_skill`` (``AgentCore``).
 """
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from rob_box_core.tool_catalog import llm_visible_tools, tool_names
+from rob_box_core.tool_catalog import operator_visible_tools, tool_names
 from rob_box_supervisor.metrics_source import (
     METRIC_DICTIONARY,
     QUERY_ALIASES,
@@ -37,7 +38,7 @@ _TOOL_NAME_RE = re.compile(r"([a-z][a-z0-9_]*)(?:\(.*\))?")
 
 
 def _operator_registry() -> set[str]:
-    return {e.name for e in llm_visible_tools()} | _EXTRA_OPERATOR_TOOLS
+    return {e.name for e in operator_visible_tools()} | _EXTRA_OPERATOR_TOOLS
 
 
 def _prompt_tool_names() -> set[str]:
@@ -64,12 +65,20 @@ def test_every_tool_named_in_prompt_is_in_operator_registry() -> None:
 
 
 def test_prompt_names_no_hidden_or_gone_tools() -> None:
-    """``say`` есть в каталоге, но скрыт от LLM — упоминать его нельзя."""
+    """Инструменты вне реестра оператора и удалённые — не упоминаются."""
     named = _prompt_tool_names()
     hidden = {n for n in tool_names() if n not in _operator_registry()}
     assert not (named & hidden)
-    for gone in ("say", "set_voice_preset", "set_voice_language", "preview_voice"):
+    for gone in ("set_voice_preset", "set_voice_language", "preview_voice"):
         assert gone not in named
+
+
+def test_say_is_in_prompt_and_in_operator_registry() -> None:
+    """#3305: ``say`` теперь и в промпте, и в реестре оператора."""
+    assert "say" in _prompt_tool_names()
+    assert "say" in _operator_registry()
+    text = _PROMPT.read_text(encoding="utf-8")
+    assert "этого не умеешь" not in text
 
 
 def test_prompt_keeps_speak_text_ban_and_stale_failure_rule() -> None:
