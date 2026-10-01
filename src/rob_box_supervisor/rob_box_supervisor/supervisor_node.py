@@ -87,6 +87,7 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
     VOICE_PRESET_IDS,  # re-export для обратной совместимости
 )
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
+from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0083 §2.3 — supervisor собирает AgentCore через build_agent(AgentSpec).
 # До этого PR у supervisor был свой ``_build_operator_llm`` (без persist_path),
@@ -2863,7 +2864,8 @@ class AvatarSupervisor(Node):
             return False
         if not self._param_bool("speak_agent_replies", True):
             return False
-        return bool(self._publish_avatar_tts(summary))
+        # issue #3296: вслух — речевая версия, полный текст остаётся на экране.
+        return bool(self._publish_avatar_tts(to_spoken(summary)))
 
     def _publish_avatar_tts(
         self,
