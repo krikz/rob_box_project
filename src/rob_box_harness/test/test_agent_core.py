@@ -2108,6 +2108,72 @@ def test_speak_text_real_count_zero_for_all_phantom_calls(
     assert result.spoken_text == "Это ошибка — пустой вызов. Выполню правильно."
 
 
+def _run_scripted_turn(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+    scripted: list[LLMResponse],
+) -> Any:
+    llm.responses = scripted
+
+    async def ok_handler(args: dict[str, object]) -> str:
+        return "ok"
+
+    tools_provider._handler_map = {"speak_text": ok_handler, "echo": ok_handler}
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+    return asyncio.run(core_obj.process_input("спой песенку", history=[]))
+
+
+def test_speak_text_counts_survive_a_later_batch_without_speech(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Счётчики — за ход, а не за последнюю пачку.
+
+    Регресс #2639: ``_run_with_tools`` присваивал счётчики последней пачки.
+    speak_text в первой пачке + пачка без речи → ``speak_text_real_count=0``,
+    и анти-дубль #988 в dialogue_node озвучивал финальный текст повторно.
+    """
+    result = _run_scripted_turn(llm, tools_provider, memory, dsm, [
+        LLMResponse(content="", tool_calls=(
+            ToolCall(id="c1", name="speak_text", arguments={"text": "Жил да был енот"}),
+        )),
+        LLMResponse(content="", tool_calls=(
+            ToolCall(id="c2", name="echo", arguments={"text": "x"}),
+        )),
+        LLMResponse(content="Жил да был енот", tool_calls=()),
+    ])
+
+    assert result.speak_text_count == 1
+    assert result.speak_text_real_count == 1
+
+
+def test_speak_text_counts_add_up_across_batches(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Два speak_text в разных пачках — это 2 (backing-режим #992 ждёт ≥2)."""
+    result = _run_scripted_turn(llm, tools_provider, memory, dsm, [
+        LLMResponse(content="", tool_calls=(
+            ToolCall(id="c1", name="speak_text", arguments={"text": "Куплет первый"}),
+        )),
+        LLMResponse(content="", tool_calls=(
+            ToolCall(id="c2", name="speak_text", arguments={"text": "Куплет второй"}),
+            ToolCall(id="c3", name="speak_text", arguments={}),
+        )),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+
+    assert result.speak_text_count == 3
+    assert result.speak_text_real_count == 2
+
+
 # ---------------------------------------------------------------------------
 # Honest conversation history + orphaned-user collapse
 # ---------------------------------------------------------------------------
