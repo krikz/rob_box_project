@@ -121,6 +121,7 @@ from .tools import (
     # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
     # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
     ShowMetricsTool,
+    SayTool,
 )
 
 # Issue #1392 — MiniMax music generation + generated-music library tools.
@@ -1251,6 +1252,10 @@ class MCPServer(Node):
         # Без этой регистрации mcp_server отвечал бы «unknown tool» на
         # show_metrics — даже если срез-гард пропускал avatar_supervisor.
         self.registry.register(ShowMetricsTool(self))
+        # Issue #3305 — ``say``: голос оператора (ТАРС). Публикует SSML в
+        # /voice/tts/request (нужен только node.create_publisher). Без
+        # регистрации /mcp/execute отвечал «unknown tool».
+        self.registry.register(SayTool(self))
         # Issue #968 (S6) — task_delta: schema-only registration so the
         # LLM sees the tool. Real execution is intercepted in-process by
         # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever

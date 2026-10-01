@@ -34,6 +34,7 @@ __all__ = [
     "CORE_SKILL",
     "get_tool",
     "llm_visible_tools",
+    "operator_visible_tools",
     "skill_names",
     "tool_names",
     "tools_for_skill",
@@ -56,6 +57,10 @@ class ToolCatalogEntry:
     #: over ``/mcp/execute`` while hiding it from the model — used for tools
     #: whose backend is gone (``generate_music``: MiniMax API 410 Gone).
     llm_visible: bool = True
+    #: Предъявлять ли инструмент оператору (ТАРС) сверх llm-видимых. Для
+    #: «ТАРС-только» инструментов (``llm_visible=False``), которые оператору
+    #: нужны (``say``). Реестр оператора = ``operator_visible_tools()``.
+    operator_visible: bool = False
     read_only: bool = False
     destructive: bool = True
     idempotent: bool = False
@@ -103,6 +108,7 @@ def _build() -> tuple[ToolCatalogEntry, ...]:
             description=raw["description"],
             parameters=MappingProxyType(dict(raw["parameters"])),
             llm_visible=raw.get("llm_visible", True),
+            operator_visible=raw.get("operator_visible", False),
             read_only=raw.get("read_only", False),
             destructive=raw.get("destructive", True),
             idempotent=raw.get("idempotent", False),
@@ -138,6 +144,18 @@ def get_tool(name: str) -> ToolCatalogEntry:
 def llm_visible_tools() -> tuple[ToolCatalogEntry, ...]:
     """Return the tools that should be offered to the LLM."""
     return tuple(entry for entry in TOOL_CATALOG if entry.llm_visible)
+
+
+def operator_visible_tools() -> tuple[ToolCatalogEntry, ...]:
+    """Вернуть инструменты оператора (ТАРС): llm-видимые ∪ operator_visible.
+
+    Личность по-прежнему видит только :func:`llm_visible_tools`.
+    """
+    return tuple(
+        entry
+        for entry in TOOL_CATALOG
+        if entry.llm_visible or entry.operator_visible
+    )
 
 
 def skill_names() -> tuple[str, ...]:
