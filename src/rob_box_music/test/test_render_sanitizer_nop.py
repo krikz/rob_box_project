@@ -9,8 +9,7 @@ import sys
 
 import pytest
 
-from melodies import MELODIES, profile
-from rob_box_music.arrange.compose import compose
+from melodies import MELODIES, compose_p, profile
 from rob_box_music.render.renardo import render
 
 SRC = pathlib.Path(__file__).resolve().parents[2]
@@ -28,7 +27,8 @@ MAX_AMP = 0.85
 @pytest.mark.parametrize("deck", ["A", "B"])
 @pytest.mark.parametrize("seed", range(20))
 def test_sanitizer_is_a_nop_on_v2_program(seed, deck):
-    track = compose(profile(root=seed % 12), 1, set_seed=seed, melodies=MELODIES if seed % 2 else None, deck=deck)
+    track = compose_p(profile(root=seed % 12), seed % 5 + 1, set_seed=seed,  # треки 1..5 — все энергии
+                      melodies=MELODIES if seed % 2 else None, deck=deck)
     program = render(track, deck)
     known = frozenset(program.synths)
     result = sanitize_renando(program.code, MAX_AMP, known_synths=known)

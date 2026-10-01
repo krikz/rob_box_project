@@ -98,6 +98,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'birthday») передай name (и variants) — система сама найдёт '
                        'точные ноты в базе RTTTL и построит аранжировку вокруг них. '
                        'execute_music_code нужен только для точного ручного кода.',
+        'music_engine': 'v1',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Название '
@@ -2100,6 +2101,43 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'satisfies_user_music': False,
         'execution_type': 'fast',
+        'name': 'dj_set',
+        'description': 'Диджей-сет: action=start — начать сет на тему theme (треки, '
+                       'переходы и темп решает код), action=stop — закончить сет и '
+                       'выключить музыку. Об успехе робот скажет сам, когда музыка '
+                       'реально заиграет; ok=false — музыка не заиграла.',
+        'music_engine': 'v2',
+        'parameters': {   'type': 'object',
+                          'properties': {   'action': {   'type': 'string',
+                                                          'description': 'start — '
+                                                                         'начать сет, '
+                                                                         'stop — '
+                                                                         'закончить',
+                                                          'enum': ['start', 'stop']},
+                                            'theme': {   'type': 'string',
+                                                         'description': 'Тема сета '
+                                                                        'словами '
+                                                                        'человека '
+                                                                        '(например '
+                                                                        '«космос»)'},
+                                            'persona': {   'type': 'string',
+                                                           'description': 'Имя диджея '
+                                                                          'для '
+                                                                          'реплик'}},
+                          'required': ['action'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['action', 'theme', 'persona'],
+                         'required': [],
+                         'accepts_kwargs': False},
+        'skill': ('dj',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
         'name': 'estimate_tts_duration',
         'description': 'Оценить длительность TTS-озвучки для заданного текста в '
                        'секундах. Используется для планирования аранжировки музыки под '
@@ -2150,6 +2188,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        "'p1 >> pluck([0, 2, 4], dur=0.5, amp=0.8)'. Опасные системные "
                        'команды автоматически блокируются. Укажи pattern_name чтобы '
                        'паттерн можно было остановить или изменить позже.',
+        'music_engine': 'v1',
         'parameters': {   'type': 'object',
                           'properties': {   'code': {   'type': 'string',
                                                         'description': 'Строка '
@@ -3568,6 +3607,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'вызывай на простую просьбу «сыграй X» (там играй сразу) и НЕ '
                        'вызывай при DJ-переходе (там партитура предыдущего трека уже '
                        'есть в результате прошлого compose_music).',
+        'music_engine': 'v1',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Название '
@@ -5590,6 +5630,54 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('memory',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
+        'name': 'request_music',
+        'description': 'Поставить музыку по просьбе человека: intent=track — клубный '
+                       'трек (темп, тональность и аранжировку решает код), '
+                       'intent=melody — известная мелодия по названию из text. text — '
+                       'слова человека дословно. Об успехе робот скажет сам, когда '
+                       'музыка реально заиграет; ok=false — музыка не заиграла.',
+        'music_engine': 'v2',
+        'parameters': {   'type': 'object',
+                          'properties': {   'intent': {   'type': 'string',
+                                                          'description': 'track — '
+                                                                         'трек, melody '
+                                                                         '— мелодия по '
+                                                                         'названию',
+                                                          'enum': ['track', 'melody']},
+                                            'text': {   'type': 'string',
+                                                        'description': 'Слова человека '
+                                                                       'дословно, без '
+                                                                       'пересказа'},
+                                            'mood': {   'type': 'string',
+                                                        'description': 'Настроение '
+                                                                       'трека',
+                                                        'enum': [   'bright',
+                                                                    'calm',
+                                                                    'dark',
+                                                                    'epic',
+                                                                    'groove',
+                                                                    'playful']},
+                                            'genre': {   'type': 'string',
+                                                         'description': 'Жанр; auto — '
+                                                                        'решает код',
+                                                         'enum': [   'auto',
+                                                                     'club',
+                                                                     'classical',
+                                                                     'folk']}},
+                          'required': ['intent', 'text'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['intent', 'text', 'mood', 'genre'],
+                         'required': [],
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj')},
     {   'llm_visible': False,
         'operator_visible': False,
         'read_only': True,
@@ -6027,6 +6115,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'enabled=true чтобы включить, enabled=false чтобы выключить. '
                        'Перед включением убедись что музыка уже играет (запусти трек '
                        'через execute_music_code).',
+        'music_engine': 'v1',
         'parameters': {   'type': 'object',
                           'properties': {   'enabled': {   'type': 'boolean',
                                                            'description': 'true — '

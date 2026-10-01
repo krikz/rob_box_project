@@ -2344,7 +2344,8 @@ class AgentCore:
         if skill in ("", "none"):
             return offered
         try:
-            allowed = {entry.name for entry in tools_for_skill(skill)}
+            # music_engine=None: ``offered`` уже каталог своего движка (ADR-0149 PR-6).
+            allowed = {entry.name for entry in tools_for_skill(skill, music_engine=None)}
         except KeyError:
             # Неизвестный домен: сузить не по чему — отдаём всё.
             return offered

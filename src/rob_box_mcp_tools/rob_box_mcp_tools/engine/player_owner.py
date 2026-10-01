@@ -13,8 +13,10 @@
 Каждый ``/fail`` логируется с ``track_id`` (I15). Публикация — через переданные функции:
 модуль без ROS, тесты гоняют его на фейковом адаптере.
 
-На этом шаге одна дека и бесконечный повтор формы: очередь, ``nearly_finished``,
-``finished`` — PR-5, блэнд двух дек — PR-8.
+PR-5: очередь из одного подготовленного трека (``queued``, токен ``expected_previous`` — I4,
+чужой артефакт выбрасывается с ``artifact_stale``), ``nearly_finished`` по доле клока и стык
+следующего трека на границе формы (:meth:`advance`). Что и когда ставить в очередь, решает
+``SetSession``; блэнд двух дек — PR-8, ``finished`` конечного трека — с финалом сета.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from rob_box_voice.core.music_player_state import build_music_event_payload, build_music_state_payload
 
@@ -58,6 +60,10 @@ class PlayerOwner:
         self._current: Optional[Dict[str, Any]] = None
         self._dj: Dict[str, Any] = {"enabled": False}
         self._rejected: set = set()
+        self._queued: Optional[Tuple[Any, str]] = None  # (программа N+1, expected_previous)
+        self._pending_dj: Optional[Dict[str, Any]] = None
+        #: Слушатель ``started`` (``SetSession``): зовётся из потока клока после публикации.
+        self.on_started: Optional[Callable[[Dict[str, Any]], None]] = None
 
     def play(self, program: Any, dj: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         """Проверить ресурсы и запустить программу на деке. Звук — по событию ``started``."""
@@ -67,6 +73,7 @@ class PlayerOwner:
         with self._lock:  # до start: колбэк клока может прийти раньше, чем start вернётся
             self._pending = program.track_id
             self._dj = {**(dj or {}), "enabled": bool((dj or {}).get("enabled"))}
+            self._queued, self._pending_dj = None, None
         try:
             self._adapter.start(program, self.track_started)
         except Exception as exc:  # noqa: BLE001 — отказ громкий, а не тишина
@@ -85,6 +92,8 @@ class PlayerOwner:
                 stale = False
                 self._pending = None
                 self._current = dict(snap, started_at=self._clock())
+                if self._pending_dj is not None:
+                    self._dj, self._pending_dj = self._pending_dj, None
         if stale:
             self._log.warning(f"⚠️ [music v2] started track_id={track_id} устарел — заменён до старта")
             return
@@ -94,6 +103,63 @@ class PlayerOwner:
         log(f"🎵 [music v2] started track_id={track_id} " + " ".join(f"{k}={v}" for k, v in fields.items()))
         self._publish_event(build_music_event_payload("started", track_id, ts=self._clock(), **fields))
         self.publish_state()
+        listener = self.on_started
+        if listener is not None:
+            listener(dict(snap))
+
+    def enqueue(self, program: Any, expected_previous: str) -> None:
+        """Трек N+1 отрендерен и проверен — в очередь (одно место), событие ``queued``."""
+        with self._lock:
+            self._queued = (program, expected_previous)
+        self._log.info(f"🎵 [music v2] queued track_id={program.track_id} expected_previous={expected_previous}")
+        self._publish_event(build_music_event_payload(
+            "queued", program.track_id, ts=self._clock(), expected_previous=expected_previous))
+
+    def advance(self, at_beat: float, dj: Optional[Mapping[str, Any]] = None) -> bool:
+        """Поставить трек из очереди встык на долю ``at_beat``. ``False`` — ставить нечего.
+
+        Исполняется только артефакт, у которого ``expected_previous`` = играющий трек (I4);
+        иначе ``WARNING artifact_stale`` и очередь пуста. Ресурс не прошёл проверку → ``rejected``.
+        """
+        with self._lock:
+            prepared, self._queued = self._queued, None
+            current = (self._current or {}).get("track_id")
+        if prepared is None:
+            return False
+        program, expected = prepared
+        if expected != current:
+            self._log.warning(f"⚠️ [music v2] artifact_stale track_id={program.track_id} "
+                              f"expected_previous={expected} играет={current}")
+            return False
+        problem = self._adapter.check(program)
+        if problem is not None:
+            self._reject(program.track_id, *problem)
+            return False
+        with self._lock:
+            self._pending = program.track_id
+            self._pending_dj = {**(dj or self._dj), "enabled": bool((dj or self._dj).get("enabled"))}
+        self._adapter.cue(program, at_beat, self.track_started,
+                          lambda reason, detail: self._reject(program.track_id, reason, detail))
+        self._log.info(f"🎵 [music v2] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat}")
+        return True
+
+    def watch(self, track_id: str, form_end_beat: float, lead_beats: float,
+              on_nearly_finished: Callable[[str, float], None]) -> None:
+        """``nearly_finished`` за ``lead_beats`` до ``form_end_beat``, если трек ещё играет."""
+        def _nearly() -> None:
+            with self._lock:
+                playing = (self._current or {}).get("track_id")
+            if playing != track_id:
+                return
+            self._publish_event(build_music_event_payload(
+                "nearly_finished", track_id, ts=self._clock(), form_end_beat=form_end_beat, lead_beats=lead_beats))
+            on_nearly_finished(track_id, form_end_beat)
+
+        self._adapter.at(form_end_beat - lead_beats, _nearly)
+
+    def reject(self, track_id: str, reason: str, detail: str) -> Dict[str, Any]:
+        """Громкий отказ артефакта, который до деки не дошёл (компоновка, рендер, чужой темп)."""
+        return self._reject(track_id, reason, detail)
 
     def on_server_fail(self, detail: str) -> None:
         """``/fail`` от scsynth → ``track_id`` (I15); «SynthDef not found» → ``rejected``."""
@@ -112,6 +178,7 @@ class PlayerOwner:
             self._current = None
             self._pending = None
             self._dj = {"enabled": False}
+            self._queued, self._pending_dj = None, None
         self._log.info(f"🎵 [music v2] stop track_id={last} reason={reason}")
         self.publish_state()
         return {"ok": True, "track_id": last}

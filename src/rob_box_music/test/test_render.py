@@ -10,10 +10,10 @@ from dataclasses import replace
 
 import pytest
 
-from melodies import MELODIES, profile
+from melodies import MELODIES, compose_p, profile
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.compose import club_track, compose
-from rob_box_music.model import BEATS_PER_BAR, Grid
+from rob_box_music.arrange.compose import club_track
+from rob_box_music.model import BEATS_PER_BAR
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import ROLE_SLOT, RenderError, render
 
@@ -22,8 +22,8 @@ SEEDS = range(40)
 
 def track_for(seed, deck="A", hooked=None):
     hooked = seed % 2 == 0 if hooked is None else hooked
-    return compose(profile(root=seed % 12, mode=("minor", "major", "dorian")[seed % 3]), 1, set_seed=seed,
-                   melodies=MELODIES if hooked else None, deck=deck)
+    return compose_p(profile(root=seed % 12, mode=("minor", "major", "dorian")[seed % 3]), 1, set_seed=seed,
+                     melodies=MELODIES if hooked else None, deck=deck)
 
 
 def _events(track, deck="A"):
@@ -79,7 +79,18 @@ def test_kick_four_on_floor_and_bass_off_the_kick(seed):
     _program, by_role = _events(track)
     kicks = {e.beat for e in by_role["kick"]}
     beats = range(int(track.form.bars_total * BEATS_PER_BAR))
-    assert kicks == {float(b) for b in beats if "kick" in _section_of(track, b).roles}, "бочка на каждой доле"
+
+    fill_beats, end = set(), 0  # PR-3b: последняя доля такта fill-а (перед дропом, конец трека) без бочки
+    for sec in track.form.sections:
+        end += sec.bars * BEATS_PER_BAR
+        if sec.fill_last_bar:
+            fill_beats.add(end - 1)
+
+    def fill_beat(b):
+        return b in fill_beats
+
+    expected = {float(b) for b in beats if "kick" in _section_of(track, b).roles and not fill_beat(b)}
+    assert kicks == expected, "бочка на каждой доле, кроме последней доли fill-а"
     bass = [e.beat for e in by_role["bass"]]
     assert bass and not kicks & set(bass), "бас не на шагах бочки"
     assert all(b % 1 == 0.5 for b in bass), "бас на «и» доли"
@@ -137,21 +148,20 @@ def test_render_is_deterministic_and_deck_only_changes_slots():
     track = track_for(7)
     a, b = render(track, "A"), render(track, "B")
     assert a == render(track, "A")
-    assert set(a.slots.values()) == set(kn.DECK_SLOTS["A"]) and set(b.slots.values()) == set(kn.DECK_SLOTS["B"])
+    for deck, prog in (("A", a), ("B", b)):  # трек 1 сета — энергия 2, без клэпа (PR-3b)
+        assert set(prog.slots.values()) == {kn.DECK_SLOTS[deck][ROLE_SLOT[r]] for r in track.parts}
     swap = dict(zip(kn.DECK_SLOTS["A"], kn.DECK_SLOTS["B"]))
     lines_a = a.code.splitlines()[1:]
     assert [swap[ln.split()[0]] + ln[2:] for ln in lines_a] == b.code.splitlines()[1:]
     assert "Clock" not in a.code, "темп и клок — у владельца плеера, не в программе трека"
-    assert a.synths == {"bass", "sinepad", "pluck"} and a.samples == {"X", "-", "*"}
+    drums = {kn.DRUM_SYMBOLS[r] + (f":{p.sample}" if p.sample else "")  # бочка — с номером файла (X:12)
+             for r, p in track.parts.items() if r not in kn.TONAL_ROLES}
+    assert a.synths == {track.parts[r].synth_or_sample for r in kn.TONAL_ROLES} and a.samples == drums
     assert a.form_beats == track.form.bars_total * BEATS_PER_BAR
 
 
 def test_render_refuses_what_it_cannot_express():
     track = track_for(3)
-    hats = track.parts["hats"]
-    swung = replace(hats, grid=Grid(tuple(replace(s, offset_ms=8) if s.on else s for s in hats.grid.steps)))
-    with pytest.raises(RenderError, match="свинг"):
-        render(replace(track, parts={**track.parts, "hats": swung}), "A")
     with pytest.raises(RenderError, match="деки"):
         render(track, "C")
     off_grid = replace(track.parts["lead"], pitches=tuple(

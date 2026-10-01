@@ -53,7 +53,9 @@ def generate_launch_description():
     sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
     command_node_yaml = PathJoinSubstitution([config_dir, 'command_node.yaml'])
     speaker_id_node_yaml = PathJoinSubstitution([config_dir, 'speaker_id_node.yaml'])
-    mcp_server_yaml = PathJoinSubstitution([config_dir, 'mcp_server.yaml'])  # ADR-0149: music_engine
+    mcp_server_yaml = PathJoinSubstitution([config_dir, 'mcp_server.yaml'])
+    # ADR-0149: флаг music_engine — один файл (секция /**) на mcp_server и dialogue_node
+    music_engine_yaml = PathJoinSubstitution([config_dir, 'music_engine.yaml'])
 
     # === Audio Node ===
     audio_node = Node(
@@ -104,7 +106,7 @@ def generate_launch_description():
         executable='dialogue_node',
         name='dialogue_node',
         namespace=namespace,
-        parameters=[dialogue_node_yaml],
+        parameters=[dialogue_node_yaml, music_engine_yaml],  # ADR-0149 PR-5
         output='screen',
         respawn=True,
         respawn_delay=5.0,
@@ -169,7 +171,7 @@ def generate_launch_description():
         executable='mcp_server',
         name='mcp_server',
         namespace=namespace,
-        parameters=[mcp_server_yaml],
+        parameters=[mcp_server_yaml, music_engine_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,

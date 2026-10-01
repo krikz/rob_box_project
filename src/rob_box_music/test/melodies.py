@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rob_box_music.arrange.compose import compose
+from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 
 
@@ -27,3 +29,8 @@ MELODIES = {"long": LONG, "short": SHORT, "chroma": CHROMATIC, "slow": SLOW}
 def profile(root: int = 9, mode: str = "minor", hooks=("long", "short", "slow", "chroma"), bpm: int = 132,
             row: str = "test") -> ThemeProfile:
     return ThemeProfile("тест", "club", bpm, root, mode, tuple(hooks), row)
+
+
+def compose_p(prof: ThemeProfile, track_no: int, set_seed: int = 0, **kw):
+    """``compose`` по seeded-плану профиля: так трек получают тесты PR-3a (тема → хук)."""
+    return compose(seeded_plan(prof, set_seed), track_no, **kw)

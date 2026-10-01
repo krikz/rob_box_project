@@ -82,8 +82,6 @@ def test_grammar_closed_commands(text: str, intent: MediaIntent) -> None:
     "text",
     [
         "",
-        "сыграй трек",
-        "включи музыку",
         "сыграй в пещере горного короля погромче",  # заказ трека
         "расскажи анекдот погромче",  # не про музыку
         "говори громче",  # голос робота — set_volume, решает LLM
@@ -101,6 +99,13 @@ def test_grammar_closed_commands(text: str, intent: MediaIntent) -> None:
 )
 def test_grammar_not_closed_command(text: str) -> None:
     assert parse_media_command(text).intent is MediaIntent.NONE
+
+
+@pytest.mark.parametrize("text", ["сыграй трек", "включи музыку"])
+def test_generic_music_request_is_v2_only(text: str) -> None:
+    """ADR-0149 PR-6: родовой заказ — ``REQUEST_MUSIC``; при v1 роутер его не берёт (LLM, как раньше)."""
+    assert parse_media_command(text).intent is MediaIntent.REQUEST_MUSIC
+    assert MediaRouter().route(text, QUIET) is None
 
 
 def test_track_name_tail_needs_current_track() -> None:

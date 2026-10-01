@@ -20,7 +20,10 @@
 * ``Pvar`` — список ступеней по времени, элемент — по номеру события;
   кортеж — аккорд (``PGroup``), ``None`` — пауза.
 
-Это не Renardo: ``Clock.latency``, ``nudge``/свинг, ``every``, ``P[...]``
+* ``delay`` (доли) сдвигает момент события, не меняя ``amp``/``sus`` — так рендер v2
+  выражает свинг (ADR-0149 §3.4); список — по номеру события, как ``amplify``.
+
+Это не Renardo: ``Clock.latency``, ``nudge``/``Clock.swing``, ``every``, ``P[...]``
 не моделируются. Программа исполняется с пустыми ``__builtins__`` —
 только заглушки из :func:`_namespace`; незнакомая конструкция →
 :class:`ProgramError` (вызывающий обязан решить, что делать без модели).
@@ -293,7 +296,8 @@ def events_for(slot: str, spec: PlayerSpec, program: Program, form_beats: float)
         amp = gate * float(value_at(kw.get("amplify", 1), index, beat))
         if amp > 0:
             sus = float(value_at(kw["sus"], index, beat)) if "sus" in kw else dur
-            base = dict(beat=beat, slot=slot, amp=amp, gate=gate, sus_beats=sus, fx=_fx_at(kw, index, beat))
+            onset = beat + float(value_at(kw.get("delay", 0), index, beat))
+            base = dict(beat=onset, slot=slot, amp=amp, gate=gate, sus_beats=sus, fx=_fx_at(kw, index, beat))
             if steps is not None:
                 symbol = _play_symbol(steps, index)
                 if symbol not in ". ":

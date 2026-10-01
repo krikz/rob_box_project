@@ -40,6 +40,18 @@ def test_synth_traits_match_legacy():
 def test_palette_kicks_energy_and_bass_floor_match_legacy():
     assert dict(kn.SYNTH_PALETTE) == dict(ROLE_PALETTE)
     assert dict(kn.KICK_PATTERNS) == KICK_PATTERNS
-    assert dict(kn.ENERGY_TRIM_DB) == club_energy.ENERGY_TRIM_DB
+    assert club_energy.ENERGY_TRIM_DB is kn.ENERGY_TRIM_DB, "PR-3b: старый club_energy импортирует таблицу"
     assert kn.REGISTERS["bass"][0] == BASS_MIDI_FLOOR
+
+
+def test_loudness_model_and_pan_tables_are_one_object():
+    """PR-3c: модель громкости (``club_loudness``) и таблицы панорамы (``club_stereo``) живут в knowledge."""
+    from rob_box_mcp_tools.core import club_arranger, club_loudness, club_stereo
+    from rob_box_music.arrange.mix import layer_db
+
+    assert club_loudness.LANE_DB_AT_UNIT is kn.LANE_DB_AT_UNIT and club_loudness.AMP_EXPONENT is kn.AMP_EXPONENT
+    assert club_loudness._MEASURED_DB is kn.LAYER_MEASURED_DB and club_loudness.MODEL_SOURCE is kn.LOUDNESS_SOURCE
+    assert club_loudness.layer_db is layer_db and club_arranger.MAX_LAYER_AMP is kn.MAX_LAYER_AMP
+    assert (club_stereo.PAN_HATS, club_stereo.PAN_PAD_WIDTH, club_stereo.PAD_PAN_BEATS) == (
+        kn.PAN_HATS, kn.PAN_PAD_WIDTH, kn.PAD_PAN_BEATS)
     assert tuple(float(x) for x in kn.BPM_RANGE) == BPM_RANGE

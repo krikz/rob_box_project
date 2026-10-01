@@ -39,9 +39,11 @@ ADR-0149 §2.3) пишет только владелец плеера v2: JSON
 from __future__ import annotations
 
 import json
+import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Optional
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Optional
 
 #: Имя топика — одно на публикатора и всех подписчиков.
 MUSIC_STATE_TOPIC = "/voice/music/state"
@@ -96,6 +98,8 @@ class MusicPlayerState:
     dj: bool = False  # dj.enabled
     finished_track_id: Optional[str] = None
     ts: Optional[float] = None
+    #: Поля ``dj`` целиком (v2: ``set_id``, ``track_no``, ``theme``, ``bpm``, ``title``…) — для ``<music_state>``.
+    dj_info: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
     def is_playing(self, now: Optional[float] = None) -> bool:
         """Звучит ли музыка по мнению плеера (с защитой по ``stops_at``).
@@ -176,4 +180,70 @@ def parse_music_state(data: Optional[str]) -> Optional[MusicPlayerState]:
         dj=_dj_enabled(payload.get("dj")),
         finished_track_id=_str_or_none(payload.get("finished_track_id")),
         ts=_epoch_or_none(payload.get("ts")),
+        dj_info=_dj_payload(payload.get("dj")),
     )
+
+
+@dataclass(frozen=True)
+class MusicEvent:
+    """Разобранное событие ``/voice/music/event`` (ADR-0149 §2.3)."""
+
+    event: str
+    track_id: Optional[str]
+    ts: Optional[float] = None
+    fields: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
+
+
+#: События, которые решают судьбу запуска трека: звук встал или отказ (I5, I25).
+DECISIVE_EVENTS = frozenset({"started", "rejected"})
+
+
+def parse_music_event(data: Optional[str]) -> Optional[MusicEvent]:
+    """Разобрать ``msg.data`` события; ``None`` — мусор или неизвестное событие."""
+    try:
+        payload = json.loads(data or "")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("event") not in MUSIC_EVENTS:
+        return None
+    rest = {k: v for k, v in payload.items() if k not in ("event", "track_id", "ts")}
+    return MusicEvent(payload["event"], _str_or_none(payload.get("track_id")),
+                      _epoch_or_none(payload.get("ts")), rest)
+
+
+class MusicEventLog:
+    """Последнее решающее событие (``started``/``rejected``) по ``track_id``; ждать его из другого потока.
+
+    Фраза об успехе запуска строится только по ``started`` (ADR-0149 §5.1, A14). Событие может
+    прийти раньше, чем ответ тула с этим ``track_id`` — поэтому лог помнит последние ``keep`` треков.
+    """
+
+    def __init__(self, keep: int = 32) -> None:
+        self._keep = keep
+        self._cond = threading.Condition()
+        self._by_track: "OrderedDict[str, MusicEvent]" = OrderedDict()
+
+    def observe(self, event: Optional[MusicEvent]) -> None:
+        if event is None or event.event not in DECISIVE_EVENTS or not event.track_id:
+            return
+        with self._cond:
+            self._by_track.pop(event.track_id, None)
+            self._by_track[event.track_id] = event
+            while len(self._by_track) > self._keep:
+                self._by_track.popitem(last=False)
+            self._cond.notify_all()
+
+    def observe_json(self, data: Optional[str]) -> None:
+        self.observe(parse_music_event(data))
+
+    def observe_msg(self, msg: Any) -> None:
+        """Колбэк подписки ``std_msgs/String``."""
+        self.observe_json(getattr(msg, "data", None))
+
+    def wait(self, track_id: Optional[str], timeout: float) -> Optional[MusicEvent]:
+        """``started``/``rejected`` трека или ``None`` — за ``timeout`` секунд ничего не пришло."""
+        if not track_id:
+            return None
+        with self._cond:
+            self._cond.wait_for(lambda: track_id in self._by_track, timeout=max(0.0, timeout))
+            return self._by_track.get(track_id)

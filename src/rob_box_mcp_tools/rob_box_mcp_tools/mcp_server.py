@@ -41,7 +41,7 @@ import math
 import os
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # Issue #2442 — единый шов «Встреча» вместо самостоятельного
 # ``current_speaker_id``. См. ``_on_speaker_result`` ниже и ADR-0105 §3.
@@ -52,12 +52,14 @@ from rob_box_harness.memory import InMemoryStore
 from rob_box_voice.core.music_player_state import (
     MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
+    MusicEventLog,
     build_music_state_payload,
 )
 
 from .base import shared_publisher
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
+from .engine.tools_v2 import DjSetTool, RequestMusicTool, named_play_classic
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -295,6 +297,18 @@ def _string_publisher(publisher: Any) -> Any:
     return publish
 
 
+#: Сколько тул v2 ждёт ``started`` своего трека, прежде чем ответить ``ok`` (A2 p100 ≤ 6 с, A14).
+V2_STARTED_WAIT_S = 6.0
+
+
+def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable[[str], None]:
+    """Публикация ``/voice/music/event`` + тот же поток в процессе: тулы v2 ждут ``started`` (ADR-0149 PR-6)."""
+    def publish_event(text: str) -> None:
+        publish(text)
+        log.observe_json(text)
+    return publish_event
+
+
 def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — ``music_engine: v2`` → владелец плеера v2.
 
@@ -318,10 +332,20 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     node.music_event_pub = node.create_publisher(String, MUSIC_EVENT_TOPIC, event_qos)
     adapter = RenardoAdapter(lambda: manager._renardo_context, manager.known_synth_names,
                              manager._send_osc_raw, latency_s=latency)
+    events = MusicEventLog()
     owner = PlayerOwner(adapter, _string_publisher(node.music_state_pub),
-                        _string_publisher(node.music_event_pub), logger=node.get_logger())
+                        _teed_events(_string_publisher(node.music_event_pub), events), logger=node.get_logger())
     manager.osc_fail_listener = owner.on_server_fail
     node.music_state_pub = None  # старый путь больше не пишет снимок
+
+    def confirm(track_id: Optional[str]) -> Any:
+        return events.wait(track_id, V2_STARTED_WAIT_S)
+
+    dj_set = DjSetTool(node, owner, confirm=confirm)
+    node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
+    # PR-6: одиночный club-трек v2; classic — старым путём (В5), через этот же реестр
+    node.registry.register(RequestMusicTool(node, owner, dj_set, confirm=confirm,
+                                            classic=named_play_classic(node.registry.execute)))
     owner.publish_state()
     node.get_logger().info(
         f"🎵 music_engine=v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "

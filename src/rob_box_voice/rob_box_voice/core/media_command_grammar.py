@@ -7,7 +7,9 @@
   в том числе с названием играющего трека («горный король погромче»);
 * стоп — «выключи музыку», «стоп диджей», «хватит диджеить»;
 * DJ — «ты диджей X», «запусти диджей-сет»;
-* заказ по имени — «поставь / сыграй / включи <название>» (issue #3176).
+* заказ по имени — «поставь / сыграй / включи <название>» (issue #3176);
+* заказ «какой-нибудь» музыки — «поставь клубный трек» (``REQUEST_MUSIC``, ADR-0149
+  PR-6: при ``music_engine: v2`` его исполняет ``request_music``, при v1 — LLM, как раньше).
 
 Раньше эти же правила жили внутри гуардов ПОСЛЕ ответа LLM
 (``music_volume_request.py`` — #3125, ``dj_request.is_dj_request`` — #2999,
@@ -24,7 +26,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Optional, Sequence, Tuple
 
@@ -39,6 +41,7 @@ class MediaIntent(str, Enum):
     STOP = "stop"
     DJ = "dj"
     PLAY_NAMED = "play_named"
+    REQUEST_MUSIC = "request_music"
 
 
 #: Порядок вариантов для ``ChoiceQuestion`` (DecisionProvider).
@@ -57,7 +60,13 @@ class MediaCommand:
         persona: для ``DJ`` — «диджей X» или ``""``.
         theme: для ``DJ`` — тема из «у нас сегодня …» или ``""``.
         name: для ``PLAY_NAMED`` — название мелодии словами юзера
-            («к элизе»), без глагола и служебных слов.
+            («к элизе»), без глагола и служебных слов; для ``REQUEST_MUSIC`` —
+            родовые слова заказа («клубный трек»).
+        set_theme: для ``DJ`` — тема из хвоста «… на тему X» / «… про X»
+            (ADR-0149 PR-6), непусто только если до неё реплика — закрытая
+            DJ-команда. ``closed``/``persona`` от неё не меняются (v1 как
+            раньше), роутер v2 считает такую реплику закрытой.
+        set_persona: персона из головы реплики до темы (для v2).
     """
 
     intent: MediaIntent
@@ -65,6 +74,8 @@ class MediaCommand:
     persona: str = ""
     theme: str = ""
     name: str = ""
+    set_theme: str = ""
+    set_persona: str = ""
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -385,7 +396,44 @@ def _cut(text: str, spans: Sequence[Optional[Tuple[int, int]]]) -> str:
     return out
 
 
+#: Слова, после которых в DJ-реплике идёт тема сета: «… на тему космос»,
+#: «… про космос» (ADR-0149 PR-6). Слова, не регексы (мораторий #3132).
+_THEME_LEADS: FrozenSet[str] = frozenset({
+    "тему", "тема", "темой", "тематику", "тематика", "тематикой", "про",
+})
+
+
+def _theme_split(text: str) -> Tuple[str, str]:
+    """``(голова, тема)`` по первому вводу темы: «ты диджей X на тему космос» → («ты диджей X», «космос»)."""
+    low = text.lower()
+    found = [
+        (i, i + len(pat))
+        for lead in _THEME_LEADS
+        for pat in (f" на {lead} ", f" {lead} ")
+        for i in (low.find(pat),)
+        if i >= 0
+    ]
+    if not found:
+        return text, ""
+    start, end = min(found)
+    return text[:start], " ".join(_words(text[end:]))
+
+
 def _dj_command(text: str) -> MediaCommand:
+    """DJ-команда: поля v1 как раньше + ``set_theme``/``set_persona`` для роутера v2."""
+    command = _dj_command_v1(text)
+    if command.theme:
+        return command
+    head, theme = _theme_split(text)
+    if not theme or not is_dj_request(head):
+        return command
+    head_command = _dj_command_v1(head)
+    if not head_command.closed:
+        return command
+    return replace(command, set_theme=theme, set_persona=head_command.persona)
+
+
+def _dj_command_v1(text: str) -> MediaCommand:
     persona, theme = extract_dj_request_hint(text)
     _name, persona_span = _persona_span(text)
     theme_m = _THEME_RE.search(text)
@@ -478,6 +526,14 @@ _NOT_A_TITLE: FrozenSet[str] = frozenset({
 #: Сколько слов может занимать название («в пещере горного короля» — 4).
 _MAX_TITLE_WORDS = 6
 
+#: Слова, без которых родовой заказ — не про музыку («включи звук», «поставь
+#: что-то»): ``REQUEST_MUSIC`` только с одним из них (ADR-0149 PR-6).
+_MUSIC_NOUNS: FrozenSet[str] = frozenset({
+    "музыку", "музыка", "музычку", "музон", "музончик", "трек", "трэк",
+    "треки", "бит", "биток", "биты", "микс", "клубняк", "техно", "хаус",
+    "транс", "диско", "электронику",
+})
+
 
 def _strip_lead_in(words: Sequence[str]) -> List[str]:
     """Срезать вежливое вступление до глагола заказа.
@@ -518,14 +574,26 @@ def _play_named_command(words: Sequence[str]) -> MediaCommand:
     if not body or body[0] not in _PLAY_NAMED_VERBS:
         return NO_COMMAND
     title = _title_words(body[1:])
-    if not title or len(title) > _MAX_TITLE_WORDS:
+    if all(w in _GENERIC_WORDS for w in title):  # и пустое название
+        return _request_music_command(body[1:])
+    if len(title) > _MAX_TITLE_WORDS:
         return NO_COMMAND
     if any(w in _NOT_A_TITLE or _word_class(w) is not None for w in title):
         return NO_COMMAND
-    if all(w in _GENERIC_WORDS for w in title):
-        return NO_COMMAND
     return MediaCommand(
         intent=MediaIntent.PLAY_NAMED, closed=True, name=" ".join(title)
+    )
+
+
+def _request_music_command(tail: Sequence[str]) -> MediaCommand:
+    """«поставь клубный трек» → ``REQUEST_MUSIC``: только родовые слова и хотя бы одно про музыку."""
+    words = [w for w in tail if w not in _PLAY_NAMED_FILLER]
+    if not words or len(words) > _MAX_TITLE_WORDS:
+        return NO_COMMAND
+    if not all(w in _GENERIC_WORDS for w in words) or not any(w in _MUSIC_NOUNS for w in words):
+        return NO_COMMAND
+    return MediaCommand(
+        intent=MediaIntent.REQUEST_MUSIC, closed=True, name=" ".join(words)
     )
 
 

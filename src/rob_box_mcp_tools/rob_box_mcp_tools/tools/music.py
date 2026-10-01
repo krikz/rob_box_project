@@ -2704,6 +2704,9 @@ class ExecuteMusicCodeTool(MCPTool):
         super().__init__(node)
         self._manager = manager
 
+    #: ADR-0149 §5.1/PR-6: при ``music_engine: v2`` LLM этот тул не видит (атрибут, не метод: бюджет класса).
+    music_engine = "v1"
+
     @property
     def name(self) -> str:
         return "execute_music_code"
@@ -3784,6 +3787,9 @@ class ComposeMusicTool(MCPTool):
         совпадение, эти альтернативы дают модели, чем сверить title.
         """
         return _search_alternatives(self._rtttl_library, name, chosen_title)
+
+    #: ADR-0149 §5.1/PR-6: при ``music_engine: v2`` LLM этот тул не видит (атрибут, не метод: бюджет класса).
+    music_engine = "v1"
 
     @property
     def name(self) -> str:
@@ -5198,6 +5204,9 @@ class PreviewArrangementTool(MCPTool):
         # тот же preset_store, что и у compose_music — превью подмешивает
         # ровно тот пресет, что применился бы при реальном проигрывании.
         self._composer = ComposeMusicTool(node, manager, rtttl_library, preset_store)
+
+    #: ADR-0149 §5.1/PR-6: при ``music_engine: v2`` LLM этот тул не видит (атрибут, не метод: бюджет класса).
+    music_engine = "v1"
 
     @property
     def name(self) -> str:
@@ -7053,6 +7062,9 @@ class SetDjModeTool(MCPTool):
         self._manager = manager
         from std_msgs.msg import String as _String
         self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
+
+    #: ADR-0149 §5.1/PR-6: при ``music_engine: v2`` LLM этот тул не видит (атрибут, не метод: бюджет класса).
+    music_engine = "v1"
 
     @property
     def name(self) -> str:

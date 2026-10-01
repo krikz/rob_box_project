@@ -354,6 +354,12 @@ class MCPTool(ABC):
         """
         return True
 
+    #: Музыкальный движок, при котором инструмент предъявляется LLM (ADR-0149 §9): ``""`` — при любом;
+    #: ``"v1"`` — старый путь (``compose_music`` & Co.: при ``music_engine: v2`` скрыт из каталога LLM,
+    #: но исполним по ``/mcp/execute``); ``"v2"`` — тулы движка v2 (``engine/tools_v2.py``).
+    #: Атрибут класса, не property: генератор каталога читает его из AST.
+    music_engine: str = ""
+
     @property
     def operator_visible(self) -> bool:
         """Показывать ли инструмент оператору (ТАРС) сверх llm-видимых.
