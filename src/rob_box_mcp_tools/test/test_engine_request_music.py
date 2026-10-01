@@ -1,0 +1,177 @@
+"""ADR-0149 PR-6 — ``request_music`` v2, ``ok`` только по ``started``, каталог тулов при v1/v2 (эпик #3312).
+
+Настоящие ``PlayerOwner`` + ``RenardoAdapter`` + ``compose``/``render`` на симуляторе клока из
+``test_engine_session``; события плеера — тот же ``MusicEventLog``, что слушает ``dialogue_node``.
+"""
+
+from unittest.mock import patch
+
+import pytest
+
+from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
+from rob_box_harness.core.tool_registry import ToolRegistry
+from rob_box_mcp_tools.base import MCPToolResult
+from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool, named_play_classic
+from rob_box_music import knowledge as kn
+from rob_box_voice.core.music_player_state import MusicEvent, MusicEventLog
+
+from .test_engine_session import _rig, _started
+
+pytestmark = pytest.mark.unit
+
+OLD_LLM_MUSIC_TOOLS = {"compose_music", "preview_arrangement", "execute_music_code", "set_dj_mode"}
+V2_TOOLS = {"dj_set", "request_music"}
+
+
+def _tools(rig, confirm=None, classic=None):
+    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, seed=lambda: 4242, confirm=confirm)
+    req = RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777, confirm=confirm,
+                           classic=classic)
+    return dj, req
+
+
+def test_request_music_plays_one_club_track_on_the_v2_deck():
+    rig = _rig()
+    _dj, req = _tools(rig)
+    result = req.execute(intent="track", text="поставь клубный трек")
+    assert result.success and result.data["track_id"].startswith("req00777:01:A:")
+    lo, hi = kn.GENRE_WINDOWS["club"].bpm
+    assert lo <= result.data["bpm"] <= hi and result.data["energy"] == kn.ENERGY_WAVE[0]
+    rig.clock.run_until(rig.clock.beat + 2)
+    started = _started(rig)
+    assert [e["track_id"] for e in started] == [result.data["track_id"]] and started[0]["phase_in_form"] == 0.0
+    assert rig.states[-1] and '"title"' in rig.states[-1]  # имя трека — в снимке для <music_state>
+
+
+def test_mood_picks_the_energy_of_the_track():
+    rig = _rig()
+    _dj, req = _tools(rig)
+    result = req.execute(intent="track", text="что-нибудь эпичное", mood="epic")
+    assert result.success and result.data["energy"] == kn.MOOD_ENERGY["epic"]
+    assert result.data["track_id"].split(":")[1] == f"{kn.ENERGY_WAVE.index(5) + 1:02d}"
+
+
+@pytest.mark.parametrize("event,ok,reason", [
+    (MusicEvent("started", "x", fields={}), True, None),
+    (MusicEvent("rejected", "x", fields={"reason": "server_fail", "detail": "/s_new not found"}), False, "server_fail"),
+    (None, False, "not_started"),
+])
+def test_ok_only_after_started_of_this_track(event, ok, reason):
+    rig = _rig()
+    asked = []
+    _dj, req = _tools(rig, confirm=lambda tid: asked.append(tid) or event)
+    result = req.execute(intent="track", text="поставь музыку")
+    assert asked == [result.data["track_id"]]  # ждали событие именно своего трека
+    assert result.success is ok and result.data.get("reason") == reason
+    assert result.data.get("started", False) is ok
+
+
+def test_rejected_before_exec_is_not_ok_and_nobody_waits():
+    rig = _rig()
+    asked = []
+    _dj, req = _tools(rig, confirm=lambda tid: asked.append(tid))
+    with patch.object(rig.adapter, "check", return_value=("missing_synth", "sinepad")):  # I15
+        result = req.execute(intent="track", text="поставь музыку")
+    assert result.success is False and asked == []
+    assert [e["event"] for e in rig.events] == ["rejected"]
+
+
+def test_dj_set_waits_for_started_too():
+    rig = _rig()
+    log = MusicEventLog()
+    dj, _req = _tools(rig, confirm=lambda tid: log.wait(tid, 0.05))
+    result = dj.execute(action="start", theme="космос")
+    assert result.success is False and result.data["reason"] == "not_started"  # клок не дошёл до такта
+    rig.clock.run_until(rig.clock.beat + 2)
+    log.observe(MusicEvent("started", _started(rig)[0]["track_id"]))
+    assert log.wait(_started(rig)[0]["track_id"], 0.0).event == "started"
+
+
+@pytest.mark.parametrize("args", [{"intent": "melody", "text": "поставь калинку"},
+                                  {"intent": "track", "text": "калинка", "genre": "folk"}])
+def test_classic_goes_to_the_old_named_path(args):
+    rig = _rig()
+    seen = []
+    _dj, req = _tools(rig, classic=lambda text: seen.append(text) or {"ok": True, "engine": "v1"})
+    result = req.execute(**args)
+    assert result.success and result.data["engine"] == "v1" and seen == [args["text"]]
+    assert rig.events == []  # дека v2 не тронута
+
+
+def test_classic_without_old_path_is_an_honest_error():
+    rig = _rig()
+    _dj, req = _tools(rig)
+    result = req.execute(intent="melody", text="поставь калинку")
+    assert result.success is False and "недоступны" in result.error
+
+
+def test_request_closes_a_running_set_and_dj_stop_stops_a_single_track():
+    rig = _rig()
+    dj, req = _tools(rig)
+    assert dj.execute(action="start", theme="космос").success
+    assert req.execute(intent="track", text="поставь клубный трек").success
+    assert dj._session is None  # один владелец деки: сет закрыт, играет заказ
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        stopped = dj.execute(action="stop")
+    assert stopped.success and stopped.data["was_playing"] is True
+    assert '"state": "idle"' in rig.states[-1]
+
+
+def _registry(results):
+    def execute(tool_name, **args):  # как MCPToolRegistry.execute(tool_name, **kwargs)
+        return results[tool_name](args)
+    return execute
+
+
+def test_named_play_classic_reuses_named_play():
+    calls = []
+
+    def lookup(args):
+        calls.append(("lookup_melody", args))
+        return MCPToolResult(success=True, data={"name": "kalinka", "title": "Kalinka",
+                                                 "match": {"unmatched": [], "ignored": []}})
+
+    def compose(args):
+        calls.append(("compose_music", args))
+        return MCPToolResult(success=True, data={"ok": True})
+
+    play = named_play_classic(_registry({"lookup_melody": lookup, "compose_music": compose}))
+    result = play("поставь калинку")
+    assert result["ok"] is True and result["engine"] == "v1"
+    assert calls == [("lookup_melody", {"name": "калинку"}), ("compose_music", {"name": "kalinka"})]
+
+
+def test_named_play_classic_miss_is_not_ok():
+    play = named_play_classic(_registry({"lookup_melody": lambda a: MCPToolResult(success=False, error="нет")}))
+    result = play("поставь нечто")
+    assert result["ok"] is False and result["reason"].startswith("miss")
+
+
+def test_catalog_hides_old_music_tools_from_llm_under_v2_only():
+    v1 = {e.name for e in llm_visible_tools("v1")}
+    v2 = {e.name for e in llm_visible_tools("v2")}
+    assert OLD_LLM_MUSIC_TOOLS <= v1 and not (V2_TOOLS & v1)
+    assert V2_TOOLS <= v2 and not (OLD_LLM_MUSIC_TOOLS & v2)
+    assert v1 - OLD_LLM_MUSIC_TOOLS == v2 - V2_TOOLS  # остальное не тронуто
+    assert {e.name for e in llm_visible_tools()} == v1  # дефолт — v1, как было
+    assert not (V2_TOOLS & {e.name for e in operator_visible_tools()})
+
+
+def test_dialogue_registry_offers_tools_of_its_engine():
+    v1 = {spec.name for spec in ToolRegistry().list_tools()}
+    v2 = {spec.name for spec in ToolRegistry(music_engine="v2").list_tools()}
+    assert "compose_music" in v1 and "dj_set" not in v1
+    assert {"dj_set", "request_music"} <= v2 and "compose_music" not in v2
+    narrowed = {spec.name for spec in ToolRegistry(music_engine="v2").list_tools(skills=("dj",))}
+    assert {"dj_set", "request_music"} <= narrowed
+
+
+def test_server_tees_player_events_to_the_in_process_log(monkeypatch):
+    from .test_mcp_server import _load_mcp_server_module
+
+    module = _load_mcp_server_module(monkeypatch)
+    published, log = [], MusicEventLog()
+    publish = module._teed_events(published.append, log)
+    publish('{"event": "started", "track_id": "t1", "ts": 1.0}')
+    assert published and log.wait("t1", 0.0).event == "started"
+    assert module.V2_STARTED_WAIT_S <= 6.0  # A2 p100

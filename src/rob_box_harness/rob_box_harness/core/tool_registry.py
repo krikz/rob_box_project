@@ -85,11 +85,14 @@ class ToolRegistry:
 
     name = "tool_registry"
 
-    def __init__(self, *, for_operator: bool = False) -> None:
+    def __init__(self, *, for_operator: bool = False, music_engine: str = "v1") -> None:
         # ``for_operator`` — реестр ТАРС: llm-видимые ∪ operator_visible
         # (issue #3305). По умолчанию — только то, что видит личность.
+        # ``music_engine`` — ADR-0149 §9: инструменты другого движка не предъявляются.
         source = (
-            operator_visible_tools() if for_operator else llm_visible_tools()
+            operator_visible_tools(music_engine)
+            if for_operator
+            else llm_visible_tools(music_engine)
         )
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {
             entry.name: (spec_from_catalog(entry), _default_handler)
@@ -118,7 +121,7 @@ class ToolRegistry:
         """
         if skills is None:
             return tuple(spec for spec, _ in self._tools.values())
-        wanted = {entry.name for entry in tools_for_skill(*skills)}
+        wanted = {entry.name for entry in tools_for_skill(*skills, music_engine=None)}
         return tuple(
             spec
             for name, (spec, _) in self._tools.items()

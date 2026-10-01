@@ -153,7 +153,8 @@ class MusicStateMemory:
         dj = "on" if snap.dj else "off"
         if not snap.is_playing(now):
             return [("playing", "no"), ("dj", dj)]
-        attrs = [("playing", "yes"), ("track", self._name or UNNAMED_TRACK)]
+        title = self._name or str(snap.dj_info.get("title") or "") or UNNAMED_TRACK
+        attrs = [("playing", "yes"), ("track", title)]
         if snap.stops_at is None:
             attrs.append(("repeat", "loop"))
         else:
@@ -161,7 +162,7 @@ class MusicStateMemory:
             left = max(0, round(snap.stops_at - now))
             attrs.append(("ends_in_s", str(left)))
         attrs.append(("dj", dj))
-        return attrs
+        return attrs + _set_attrs(snap)
 
     def _effective_last_ended(self, now: float) -> Optional[EndedTrack]:
         """Последний замолчавший трек, включая «доиграл, а idle не дошёл».
@@ -195,6 +196,16 @@ class MusicStateMemory:
             ("last_ended", ended.how),
             ("last_ended_ago_s", str(max(0, round(now - ended.at)))),
         ]
+
+
+#: Поля сета v2 из снимка (``dj`` владельца плеера, ADR-0149 §2.3) → атрибуты тега: имя в теге ← ключ снимка.
+SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("bpm", "bpm"), ("persona", "persona"))
+
+
+def _set_attrs(snap: MusicPlayerState) -> list:
+    """Сет v2 — из latched-снимка, не из догадки (ADR-0149 §5.2); у v1 этих полей в снимке нет."""
+    info = snap.dj_info
+    return [(attr, str(info[key])) for attr, key in SET_ATTRS if info.get(key) not in (None, "")]
 
 
 def _now(now: Optional[float]) -> float:

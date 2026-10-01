@@ -72,6 +72,11 @@ class ToolCatalogEntry:
     #: (напр. ``load_track``), не будучи универсальным «запустил музыку».
     satisfies_user_music: bool = False
     execution_type: str = "medium"
+    #: ADR-0149 §9 — инструмент только одного музыкального движка: ``"v1"`` —
+    #: старый путь (``compose_music`` & Co.), ``"v2"`` — движок v2 (``dj_set``,
+    #: ``request_music``); ``""`` — при любом. LLM видит инструменты своего
+    #: движка (:func:`llm_visible_tools`), остальные исполнимы, но не предъявлены.
+    music_engine: str = ""
     #: Доменные скиллы, в которые входит инструмент. Инструмент может
     #: входить в несколько (``stop_music`` — в composer, dj и player);
     #: описание при этом одно, оно здесь же, поэтому копии контракта,
@@ -115,6 +120,7 @@ def _build() -> tuple[ToolCatalogEntry, ...]:
             starts_music=raw.get("starts_music", False),
             satisfies_user_music=raw.get("satisfies_user_music", False),
             execution_type=raw.get("execution_type", "medium"),
+            music_engine=raw.get("music_engine", ""),
             skill=tuple(raw.get("skill", ())),
             signature=MappingProxyType(dict(raw.get("signature", {}))),
         )
@@ -141,12 +147,23 @@ def get_tool(name: str) -> ToolCatalogEntry:
         raise KeyError(f"tool {name!r} is not in the catalog") from None
 
 
-def llm_visible_tools() -> tuple[ToolCatalogEntry, ...]:
-    """Return the tools that should be offered to the LLM."""
-    return tuple(entry for entry in TOOL_CATALOG if entry.llm_visible)
+def _of_engine(entry: ToolCatalogEntry, music_engine: str) -> bool:
+    return entry.music_engine in ("", music_engine)
 
 
-def operator_visible_tools() -> tuple[ToolCatalogEntry, ...]:
+def llm_visible_tools(music_engine: str = "v1") -> tuple[ToolCatalogEntry, ...]:
+    """Return the tools that should be offered to the LLM.
+
+    ``music_engine`` — флаг ADR-0149 §9: инструменты другого движка LLM не видит.
+    """
+    return tuple(
+        entry
+        for entry in TOOL_CATALOG
+        if entry.llm_visible and _of_engine(entry, music_engine)
+    )
+
+
+def operator_visible_tools(music_engine: str = "v1") -> tuple[ToolCatalogEntry, ...]:
     """Вернуть инструменты оператора (ТАРС): llm-видимые ∪ operator_visible.
 
     Личность по-прежнему видит только :func:`llm_visible_tools`.
@@ -154,7 +171,8 @@ def operator_visible_tools() -> tuple[ToolCatalogEntry, ...]:
     return tuple(
         entry
         for entry in TOOL_CATALOG
-        if entry.llm_visible or entry.operator_visible
+        if (entry.llm_visible or entry.operator_visible)
+        and _of_engine(entry, music_engine)
     )
 
 
@@ -169,8 +187,12 @@ def skill_names() -> tuple[str, ...]:
 def tools_for_skill(
     *skills: str,
     include_core: bool = True,
+    music_engine: "str | None" = "v1",
 ) -> tuple[ToolCatalogEntry, ...]:
     """Вернуть llm_visible инструменты перечисленных скиллов.
+
+    ``music_engine`` — как у :func:`llm_visible_tools`; ``None`` — любого движка (сужение
+    ``AgentCore`` пересекается с уже предъявленным каталогом своего движка, ADR-0149 PR-6).
 
     ``include_core`` добавляет :data:`CORE_SKILL` — он нужен в любом ходу
     (речь, статус, время), поэтому по умолчанию входит всегда.
@@ -194,8 +216,10 @@ def tools_for_skill(
         )
     return tuple(
         entry
-        for entry in llm_visible_tools()
-        if requested.intersection(entry.skill)
+        for entry in TOOL_CATALOG
+        if entry.llm_visible
+        and (music_engine is None or _of_engine(entry, music_engine))
+        and requested.intersection(entry.skill)
     )
 
 
