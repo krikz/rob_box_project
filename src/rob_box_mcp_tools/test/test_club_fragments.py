@@ -155,6 +155,20 @@ def test_recent_fingerprint_is_avoided(library):
         assert pick_fragment(library, BPM, seed=seed, recent=recent).fingerprint != frag.fingerprint
 
 
+def test_same_fragment_not_repeated_back_to_back_even_when_all_fingerprints_seen(library):
+    """Issue #3245: у короткой темы все отпечатки уже в истории — подряд тот же не играет."""
+    first = pick_fragment(library, BPM, seed=1, recent=[], theme="Fixture Tune 3")
+    recent = []
+    last = first
+    for i in range(40):
+        recent.insert(0, {"id": i + 1, "melody_name": last.melody, "fragment_offset": last.offset,
+                          "hook_fingerprint": last.fingerprint})
+        nxt = pick_fragment(library, BPM, seed=i, recent=recent, theme="Fixture Tune 3")
+        assert (nxt.melody, nxt.offset) != (last.melody, last.offset), (i, nxt.label)
+        assert nxt.fingerprint != last.fingerprint
+        last = nxt
+
+
 def test_theme_search_wins_then_falls_back(library):
     hit = pick_fragment(library, BPM, seed=1, recent=[], theme="Fixture Tune 3")
     assert hit.source == "theme" and hit.melody == "fix3"

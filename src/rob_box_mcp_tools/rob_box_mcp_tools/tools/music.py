@@ -71,7 +71,7 @@ from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, re
 from ..core.club_hook import ClubHook, extract_hook
 from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
 from ..core.web_melody import pick_theme
-from ..core.club_history import recent_club_rows, remember_club
+from ..core.club_history import recent_club_rows, remember_classic, remember_club
 from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
@@ -4349,6 +4349,7 @@ class ComposeMusicTool(MCPTool):
                 merged.get("name"), result.data.get("title") if result.data else None, merged,
             )
             self._remember_last_track(merged)
+            remember_classic(self._music_history, merged)  # issue #3245
         return result
 
     #: Параметры, которые ``style="club"`` реально использует. ``name``/

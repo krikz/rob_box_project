@@ -11,7 +11,7 @@ from .club_arranger import club_progression
 from .club_pools import club_variant
 from .music_diversity import MusicHistory
 
-__all__ = ["CLUB_HISTORY_LIMIT", "recent_club_rows", "remember_club"]
+__all__ = ["CLUB_HISTORY_LIMIT", "recent_club_rows", "remember_classic", "remember_club"]
 
 #: Сколько последних записей ``music_history`` учитывает выбор club-каркаса.
 CLUB_HISTORY_LIMIT = 20
@@ -45,4 +45,21 @@ def remember_club(
         + ", ".join(f"{k}={v}" for k, v in {**kit, **variant}.items())
         + f"; история учтена: {len(recent)} записей, "
         + ("записано" if stored else "НЕ записано (истории нет или БД недоступна)")
+    )
+
+
+def remember_classic(history: Optional[MusicHistory], kwargs: Mapping[str, Any]) -> bool:
+    """Записать сыгранный classic-трек (issue #3245).
+
+    Первый трек DJ-сета идёт через ``style=classic`` (``form=buildup`` с явными
+    синтами) и раньше в историю не попадал: «помнить сыгранное» не покрывало
+    его. Каркас-поля (шаблон, бочка, …) и прогрессию не пишем — у classic их
+    нет в club-формате, штрафовать нечего; пишем стиль, имя мелодии, ключ, темп.
+    """
+    if history is None:
+        return False
+    name = kwargs.get("name")
+    return history.record(
+        style="classic", melody_name=str(name) if name else None, root=kwargs.get("root"),
+        bpm=kwargs.get("bpm"), scale=kwargs.get("scale"),
     )

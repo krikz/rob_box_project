@@ -5082,6 +5082,24 @@ class TestComposeMusicToolClubStyle:
         assert rows[0]["template"] == kits[-1]["template"] and rows[0]["style"] == "club"
         assert rows[0]["progression"] and rows[0]["root"] == "C" and rows[0]["bpm"] == 124
 
+    def test_classic_track_is_written_to_music_history(self, mock_node):
+        """Issue #3245: первый трек сета идёт через classic и тоже попадает в music_history."""
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        with patch("builtins.exec"):
+            result = tool.execute(
+                bpm=118.0, root="A", scale="minor", form="buildup", lead_synth="cs80lead",
+                lead_notes="0,3,5,7,5,3,2,0", bass_synth="moogbass", bass_notes="0,4,0,5",
+                pad_synth="space", pad_notes="0,4,7", progression="0,5,3,4", drum_style="four_on_floor",
+            )
+        assert result.success is True, result.error
+        rows = history.recent()
+        assert len(rows) == 1, rows
+        assert (rows[0]["style"], rows[0]["root"], rows[0]["bpm"], rows[0]["scale"]) == ("classic", "A", 118, "minor")
+
     def test_club_without_name_plays_library_fragment_and_names_it(self, mock_node, tmp_path, caplog):
         """Issue #3225: без name/rtttl lead = фрагмент из RtttlLibrary, 10 вызовов — 10 разных (мелодия, смещение)."""
         import gzip
