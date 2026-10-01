@@ -1,0 +1,15 @@
+# mcp_server.yaml — per-node ROS2 config ноды mcp_server (ADR-0004: <node>: ros__parameters:).
+#
+# Две копии: docker/vision/config/voice_assistant/ (живой, docker) и src/rob_box_voice/config/ —
+# менять синхронно (сверяет test_music_engine_flag.py). Ключи = declare_parameter()
+# в rob_box_mcp_tools/mcp_server.py.
+
+mcp_server:
+  ros__parameters:
+    # ADR-0149 §9 (эпик #3312) — музыкальный движок: "v1" (дефолт до приёмки, всё как было)
+    # или "v2" — владелец плеера v2 (engine/player_owner.py) единственный писатель
+    # /voice/music/state и /voice/music/event.
+    music_engine: "v1"
+    # Clock.latency Renardo при v2 (#3328): 0.5 с — опоздавших бандлов в scsynth 0 вместо
+    # ~250/мин при 0.25 (замеры PR-2 #3329, PR-4 #3330). При v1 не применяется.
+    music_v2_clock_latency: 0.5

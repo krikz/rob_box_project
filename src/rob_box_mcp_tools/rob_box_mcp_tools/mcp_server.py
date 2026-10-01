@@ -50,11 +50,14 @@ from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
 
 from rob_box_voice.core.music_player_state import (
+    MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
     build_music_state_payload,
 )
 
 from .base import shared_publisher
+from .engine.player_owner import PlayerOwner
+from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -283,6 +286,49 @@ def _finish_music_form(manager: Any, logger: Any) -> Optional[Dict[str, Any]]:
     return finished
 
 
+def _string_publisher(publisher: Any) -> Any:
+    """``text -> publisher.publish(String(data=text))`` — публикация для ``PlayerOwner``."""
+    def publish(text: str) -> None:
+        msg = String()
+        msg.data = text
+        publisher.publish(msg)
+    return publish
+
+
+def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
+    """ADR-0149 §9, PR-4b — ``music_engine: v2`` → владелец плеера v2.
+
+    При v2 ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
+    ``/voice/music/event``: latched-публикатор снимка уходит владельцу, а у ноды
+    ``music_state_pub`` становится ``None`` — :meth:`MCPServer.publish_music_state` старого
+    пути (и ``/voice/music/form``) при v2 молчит. Renardo по-прежнему поднимает ``MusicManager``:
+    адаптер берёт его контекст, палитру, подтверждённую сервером, ``_send_osc_raw`` и
+    слушатель ``/fail``. При v1 (дефолт) ничего не создаётся — поведение прежнее.
+    """
+    engine = str(node.get_parameter("music_engine").value or "v1")
+    if engine != "v2":
+        if engine != "v1":
+            node.get_logger().error(f"❌ music_engine={engine!r} — неизвестно, остаётся v1")
+        return None
+    if manager is None:
+        node.get_logger().error("❌ music_engine=v2, но MusicManager не поднялся — v2 выключен")
+        return None
+    latency = float(node.get_parameter("music_v2_clock_latency").value)
+    event_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+    node.music_event_pub = node.create_publisher(String, MUSIC_EVENT_TOPIC, event_qos)
+    adapter = RenardoAdapter(lambda: manager._renardo_context, manager.known_synth_names,
+                             manager._send_osc_raw, latency_s=latency)
+    owner = PlayerOwner(adapter, _string_publisher(node.music_state_pub),
+                        _string_publisher(node.music_event_pub), logger=node.get_logger())
+    manager.osc_fail_listener = owner.on_server_fail
+    node.music_state_pub = None  # старый путь больше не пишет снимок
+    owner.publish_state()
+    node.get_logger().info(
+        f"🎵 music_engine=v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "
+        f"{MUSIC_EVENT_TOPIC}; Clock.latency={latency} (ADR-0149 PR-4)")
+    return owner
+
+
 def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """``/voice/speaker/result`` → ``(меняет ли «кто сейчас», новый speaker_id)``.
 
@@ -331,6 +377,13 @@ class MCPServer(Node):
         # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
         # Внутренняя динамика микса при этом сохраняется.
         self.declare_parameter("music_master_gain", 0.5)
+        # ADR-0149 §9 — strangler-флаг нового музыкального движка: "v1" (дефолт до
+        # приёмки) — всё как было; "v2" — владелец плеера v2 (engine/player_owner.py)
+        # единственный писатель /voice/music/state и /voice/music/event.
+        # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры);
+        # при v1 latency не трогается (0.25).
+        self.declare_parameter("music_engine", "v1")
+        self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).
@@ -437,6 +490,7 @@ class MCPServer(Node):
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
+        self._player_owner = _attach_player_owner_v2(self, getattr(self, "_music_manager", None))
 
         # Issue #2461 — структурный канал конца прохода формы для
         # DJModeController.tick() (dialogue_node). С issue #3133 те же

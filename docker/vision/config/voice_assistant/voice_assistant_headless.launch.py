@@ -53,6 +53,7 @@ def generate_launch_description():
     sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
     command_node_yaml = PathJoinSubstitution([config_dir, 'command_node.yaml'])
     speaker_id_node_yaml = PathJoinSubstitution([config_dir, 'speaker_id_node.yaml'])
+    mcp_server_yaml = PathJoinSubstitution([config_dir, 'mcp_server.yaml'])  # ADR-0149: music_engine
 
     # === Audio Node ===
     audio_node = Node(
@@ -168,6 +169,7 @@ def generate_launch_description():
         executable='mcp_server',
         name='mcp_server',
         namespace=namespace,
+        parameters=[mcp_server_yaml],
         output='screen',
         respawn=True,
         respawn_delay=5.0,
