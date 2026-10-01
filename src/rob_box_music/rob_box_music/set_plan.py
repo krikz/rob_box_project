@@ -9,7 +9,7 @@
   :func:`root_shift` отсюда — одна реализация.
 * **Свинг сета** — в окне жанра, от сида; один на весь сет, как грув у диджея.
 
-Уточнение плана от LLM по JSON-схеме (``schema``/``validate_plan``) — PR-10.
+Уточнение плана от LLM по JSON-схеме — ``reasoner`` (PR-10): ``reasoner.apply`` меняет ``tracks``, не темп.
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ class SetPlan:
     tracks: Tuple[TrackPlan, ...]  # первые треки; дальше — :meth:`track`
 
     def track(self, no: int) -> TrackPlan:
-        """План трека ``no`` (с 1) — и за пределами ``tracks``: сет открытый."""
-        return track_plan(no)
+        """План трека ``no`` (с 1): из ``tracks`` (поправка LLM, PR-10), за их пределами — волна: сет открытый."""
+        return self.tracks[no - 1] if 1 <= no <= len(self.tracks) else track_plan(no)
 
     def root(self, no: int) -> int:
         """Тоника трека ``no``, pitch class 0..11."""
