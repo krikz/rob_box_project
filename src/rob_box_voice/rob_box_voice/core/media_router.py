@@ -26,6 +26,7 @@ LLM вызвать тул» нельзя, а ретраи-гуарды вокр�
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
@@ -197,6 +198,23 @@ def _state_utterance(state: Any) -> str:
     if isinstance(state, Mapping):
         return str(state.get("utterance") or "")
     return str(state or "")
+
+
+def media_tool_succeeded(is_error: bool, content: str) -> bool:
+    """Issue #3323 — удался ли тул роутера: транспорт И тело результата.
+
+    Отказ исполнителя (гард, MCP) приходит как ``is_error=False`` с JSON
+    ``{"success": false, ...}``; одного ``is_error`` мало — роутер писал
+    ``ok=True`` и говорил «остановил» поверх отказа. Не-JSON тело
+    (``'DJ-режим включён ...'``) — успех, как раньше.
+    """
+    if is_error:
+        return False
+    try:
+        body = json.loads(content)
+    except (TypeError, ValueError):
+        return True
+    return not (isinstance(body, dict) and body.get("success") is False)
 
 
 def media_intent_rules(
