@@ -120,6 +120,20 @@ SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
 #: Рисунок хэтов/клэпа — это сэмпл-плееры ``play``; синт ударных один.
 PLAY_SYNTH = "play"
 
+#: Символ сэмпла ``play()`` ударной роли (Renardo: X — бочка, - — хэт, * — клэп, o — малый).
+DRUM_SYMBOLS: Mapping[str, str] = {"kick": "X", "hats": "-", "clap": "*", "perc": "o"}
+
+#: Слоты плееров деки (ADR-0149 §3.2): три ударных и три тональных. На роботе 01.10 звучат и
+#: ``d4..p6``, и ``a1..b3`` (PR-2); дека B — ``a1..b3``, потому что ``d4..p6`` санитайзер v1 ещё
+#: переставляет в ``d1..p3`` (#1804), а v2 и v1 пока делят один Renardo.
+DECK_SLOTS: Mapping[str, Tuple[str, ...]] = {
+    "A": ("d1", "d2", "d3", "p1", "p2", "p3"),
+    "B": ("a1", "a2", "a3", "b1", "b2", "b3"),
+}
+
+#: Акцент шага сетки 0..3 → множитель ``amplify`` (ADR-0149 §3.4: сильные доли громче).
+ACCENT_AMPLIFY: Tuple[float, ...] = (0.4, 0.6, 0.8, 1.0)
+
 
 def scale_pitch_classes(root: int, mode: str) -> frozenset:
     """Множество pitch class лада от тоники ``root`` (0..11)."""
@@ -135,7 +149,8 @@ def role_ceiling(role: str) -> float:
 
 
 __all__ = [
-    "BPM_RANGE", "CHROMATIC", "ENERGY_LEVELS", "ENERGY_TRIM_DB", "GENRE_WINDOWS", "GenreWindow",
+    "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS", "ENERGY_TRIM_DB",
+    "GENRE_WINDOWS", "GenreWindow",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
     "SCALES", "SYNTH_PALETTE", "SYNTH_TRAITS", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",

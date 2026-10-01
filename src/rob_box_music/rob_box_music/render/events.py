@@ -31,10 +31,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from ..knowledge import ROOTS, SCALES
+from ..knowledge import DECK_SLOTS, ROOTS, SCALES
 
 NOTE_NAMES = ROOTS
-SLOTS = ("d1", "d2", "d3", "p1", "p2", "p3")
+SLOTS = tuple(slot for deck in sorted(DECK_SLOTS) for slot in DECK_SLOTS[deck])
 #: Настоящий ``exec`` на момент импорта: тесты тула патчат ``builtins.exec``
 #: (чтобы Renardo не исполнялся), а модели громкости нужен исполнитель.
 _EXEC = exec
