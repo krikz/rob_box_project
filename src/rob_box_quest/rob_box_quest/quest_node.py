@@ -1936,6 +1936,19 @@ class QuestNode(Node):
         self._speaker_result_sub = self.create_subscription(
             String, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
         )
+        # #3253 Ш3б: llm/wake-слова — latched-топики dialogue_node.
+        _tars_latched = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._llm_status_sub = self.create_subscription(
+            String, "/voice/llm_status", self._tars_status.on_llm_status, _tars_latched
+        )
+        self._wake_words_sub = self.create_subscription(
+            String, "/voice/wake_words", self._tars_status.on_wake_words, _tars_latched
+        )
         self._tars_status_timer = self.create_timer(1.0, self._tars_status.on_timer)
         self._tars_panel_url_sub = self.create_subscription(
             String,

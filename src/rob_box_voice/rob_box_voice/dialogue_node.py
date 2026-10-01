@@ -233,6 +233,7 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     _UTTERANCE_ID_WAIT_SEC as _UTTERANCE_ID_WAIT_SEC,
 )
 from rob_box_voice.core.dj_material import MaterialIntake
+from rob_box_voice.core.tars_status_feed import start_status_feeds
 from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn
 from rob_box_voice.core.media_router import (
     MediaPlan,
@@ -1373,6 +1374,11 @@ class DialogueNode(Node):
                     f"📊 Metrics port {self._metrics_port} not bound "
                     "(busy or prometheus_client missing)"
                 )
+        # #3253 Ш3б: настроенная LLM и wake-слова → latched-топики для экрана
+        # ТАРС 1 (quest_node → tars_status). Значения статичны до рестарта.
+        self._tars_status_feeds = start_status_feeds(
+            self, String, self._llm, self._wake_words
+        )
         self.get_logger().info("✅ DialogueNode shell ready (AgentCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit

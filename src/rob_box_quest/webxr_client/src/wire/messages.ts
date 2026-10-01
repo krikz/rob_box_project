@@ -192,9 +192,12 @@ export type JsonEvent =
   | JsonEventGenerated
   // issue #3253 Ш3 — служебная информация ТАРС 1 (в каталог пока не заехала,
   // как и tars_panel_data). Ключ есть только если у сервера есть источник;
-  // llm/wake не приходят вовсе.
+  // llm/wake приходят из latched-топиков dialogue_node (Ш3б), если нода уже
+  // их опубликовала.
   | {
       type: "tars_status";
+      llm?: string;
+      wake?: string;
       tts?: string;
       topic?: string;
       nearby?: string;

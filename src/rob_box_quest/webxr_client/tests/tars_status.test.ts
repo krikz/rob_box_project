@@ -15,6 +15,20 @@ describe("parseTarsStatus (#3253 Ш3)", () => {
     expect(f).toEqual({ tts: "minimax · voice1", topic: "DJ · рок", nearby: "Борис" });
   });
 
+  it("берёт llm и wake, если сервер их прислал", () => {
+    const f = parseTarsStatus({
+      type: "tars_status",
+      llm: "minimax · MiniMax-M2",
+      wake: "робот, робокс",
+      ts_ms: 2
+    });
+    expect(f).toEqual({ llm: "minimax · MiniMax-M2", wake: "робот, робокс" });
+    const rows = buildInfoRows({ ...f });
+    const m = new Map([...rows.service, ...rows.context].map((x) => [x.label, x.value]));
+    expect(m.get("llm")).toBe("minimax · MiniMax-M2");
+    expect(m.get("wake")).toBe("робот, робокс");
+  });
+
   it("не tars_status и мусор → null", () => {
     expect(parseTarsStatus({ type: "tars1_text" })).toBeNull();
     expect(parseTarsStatus(null)).toBeNull();
@@ -25,7 +39,7 @@ describe("parseTarsStatus (#3253 Ш3)", () => {
     expect(parseTarsStatus({ type: "tars_status", tts: "  ", topic: 5, nearby: null })).toEqual({});
   });
 
-  it("отсутствующие поля в панели — прочерк, llm и wake всегда прочерк", () => {
+  it("отсутствующие поля в панели — прочерк, в том числе llm и wake без источника", () => {
     const f = parseTarsStatus({ type: "tars_status", tts: "yandex" });
     const rows = buildInfoRows({ ...f });
     const m = new Map([...rows.service, ...rows.context].map((x) => [x.label, x.value]));
