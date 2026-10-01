@@ -232,7 +232,7 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     _UTTERANCE_ID_WAIT_SEC as _UTTERANCE_ID_WAIT_SEC,
 )
 from rob_box_voice.core.dj_material import MaterialIntake
-from rob_box_voice.core.dj_mode import DJHook, DJModeController
+from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn
 from rob_box_voice.core.media_router import (
     MediaPlan,
     MediaRouter,
@@ -4860,7 +4860,9 @@ tentative_plan(question, kind, name)
         dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
         # Issue #3247 — DJ_AUTO-ход после финального промпта сета: гард
         # исполнителя тулов не даст ему снова включить DJ.
-        dj_final_token = TURN_DJ_SET_FINAL.set(self._turn_is_dj_final(is_dj_auto))
+        dj_final_token = TURN_DJ_SET_FINAL.set(
+            dj_final_turn(getattr(self, "_dj", None), is_dj_auto)
+        )
         # Issue #3220 — думает ли этот ход (thinking MiniMax); провайдер
         # читает флаг из контекста хода.
         reasoning_token = TURN_REASONING.set(turn_wants_reasoning(
@@ -5161,11 +5163,6 @@ tentative_plan(question, kind, name)
             TURN_DJ_SET_FINAL.reset(dj_final_token)
             TURN_REASONING.reset(reasoning_token)
             TURN_EPOCH.reset(epoch_token)
-
-    def _turn_is_dj_final(self, is_dj_auto: bool) -> bool:
-        """Issue #3247 — флаг ``TURN_DJ_SET_FINAL`` для начинающегося хода."""
-        dj = getattr(self, "_dj", None)
-        return dj is not None and dj.is_final_turn(is_dj_auto) is True
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
 

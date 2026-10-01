@@ -303,6 +303,15 @@ _EXECUTED_ACTIONS_HEADER = (
 )
 
 
+def _request_window(turns: Iterable[Turn], include_window: bool) -> list[Turn]:
+    """Issue #3247 — ходы окна, которые идут в запрос (DJ_AUTO — никакие).
+
+    Модульная функция, а не ветка в ``AgentCore._resolve_history``: класс
+    не растёт (ADR-0145).
+    """
+    return list(turns) if include_window else []
+
+
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
     """Объединить имена тулов без повторов, сохранив порядок."""
     return list(dict.fromkeys(name for group in groups for name in group))
@@ -2396,7 +2405,7 @@ class AgentCore:
         # в messages не было [0] system.
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
-        window = list(self._turn_window) if include_window else []
+        window = _request_window(self._turn_window, include_window)
         # Хвостовой user-ход сохраняем только когда он ПОМЕЧЕН отзывом
         # ответа и мы действительно внутри синтетического ретрая: обычный
         # ход про сироту после barge-in рассуждает по-прежнему.

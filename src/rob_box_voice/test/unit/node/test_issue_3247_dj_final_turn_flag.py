@@ -1,8 +1,8 @@
 """Issue #3247 — нода выставляет ``TURN_DJ_SET_FINAL`` по DJ-контроллеру.
 
 ``_run_turn`` ставит флаг на время хода через
-:meth:`DialogueNode._turn_is_dj_final`; гард исполнителя тулов по нему не
-даёт финальному DJ_AUTO-ходу снова включить DJ (см.
+:func:`rob_box_voice.core.dj_mode.dj_final_turn`; гард исполнителя тулов
+по нему не даёт финальному DJ_AUTO-ходу снова включить DJ (см.
 ``test/unit/core/test_issue_3247_dj_final_no_restart.py``).
 """
 
@@ -15,9 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from rob_box_voice.core.dj_mode import DJModeController
 from rob_box_voice import dialogue_node as dialogue_node_module
-from rob_box_voice.dialogue_node import DialogueNode
+from rob_box_voice.core.dj_mode import DJModeController, dj_final_turn
 
 
 def _final_controller() -> DJModeController:
@@ -38,17 +37,16 @@ def _final_controller() -> DJModeController:
 
 
 def test_turn_flag_reads_controller() -> None:
-    node = SimpleNamespace(_dj=_final_controller())
-    assert DialogueNode._turn_is_dj_final(node, True) is True
-    assert DialogueNode._turn_is_dj_final(node, False) is False
+    dj = _final_controller()
+    assert dj_final_turn(dj, True) is True
+    assert dj_final_turn(dj, False) is False
 
 
 def test_turn_flag_false_without_real_controller() -> None:
     # Стаб-нода без DJ-контроллера и с MagicMock-контроллером — флаг не
     # взводится (MagicMock truthy, но не ``True``).
-    assert DialogueNode._turn_is_dj_final(SimpleNamespace(), True) is False
-    node = SimpleNamespace(_dj=MagicMock())
-    assert DialogueNode._turn_is_dj_final(node, True) is False
+    assert dj_final_turn(None, True) is False
+    assert dj_final_turn(MagicMock(), True) is False
 
 
 def test_run_turn_sets_and_resets_flag() -> None:
@@ -59,5 +57,5 @@ def test_run_turn_sets_and_resets_flag() -> None:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_turn"
     )
     body = ast.unparse(run_turn)
-    assert "TURN_DJ_SET_FINAL.set(self._turn_is_dj_final(is_dj_auto))" in body
+    assert "TURN_DJ_SET_FINAL.set(dj_final_turn(getattr(self, '_dj', None), is_dj_auto))" in body
     assert "TURN_DJ_SET_FINAL.reset(dj_final_token)" in body

@@ -9,7 +9,7 @@
 
 * финальный промпт взводит ``DJState.final_prompted``; конец сета и
   генуинный старт его снимают;
-* ``DJModeController.is_final_turn`` — только для DJ_AUTO-хода;
+* ``dj_mode.dj_final_turn`` — только для DJ_AUTO-хода;
 * ``track_start_guard.dj_restart_refused`` — только
   ``set_dj_mode(enabled=true)`` в финальном DJ_AUTO-ходе;
 * ``SchedulerToolExecutor`` такой вызов не исполняет и отдаёт модели
@@ -25,7 +25,7 @@ import logging
 import pytest
 
 from rob_box_llm.provider import ToolCall, ToolResult
-from rob_box_voice.core.dj_mode import DJModeController
+from rob_box_voice.core.dj_mode import DJModeController, dj_final_turn
 from rob_box_voice.core.track_start_guard import (
     DJ_AUTO_FORBIDDEN_ERROR_CODE,
     DJ_FINAL_RESTART_ERROR_CODE,
@@ -73,9 +73,9 @@ def test_final_prompt_marks_set_final_and_states_the_rule() -> None:
     assert "ФИНАЛЬНЫЙ ТРЕК" in prompt
     assert "НЕ вызывай set_dj_mode(enabled=true)" in prompt
     assert dj.state.final_prompted is True
-    assert dj.is_final_turn(True) is True
+    assert dj_final_turn(dj, True) is True
     # Реплика человека в финале («давай ещё!») гардом не режется.
-    assert dj.is_final_turn(False) is False
+    assert dj_final_turn(dj, False) is False
 
 
 def test_non_final_transition_does_not_mark() -> None:
@@ -83,14 +83,14 @@ def test_non_final_transition_does_not_mark() -> None:
     dj.state.tracks_started = 1
     prompt = dj.build_auto_prompt(2)
     assert "ФИНАЛЬНЫЙ ТРЕК" not in prompt
-    assert dj.is_final_turn(True) is False
+    assert dj_final_turn(dj, True) is False
 
 
 def test_set_end_clears_final_mark() -> None:
     dj, _ = _controller_on_final()
     dj.handle_message(json.dumps({"enabled": False}))
     assert dj.state.final_prompted is False
-    assert dj.is_final_turn(True) is False
+    assert dj_final_turn(dj, True) is False
 
 
 def test_fresh_start_clears_final_mark() -> None:
