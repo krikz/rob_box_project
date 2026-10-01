@@ -64,6 +64,7 @@ from rob_box_core.speech_segmentation import (
 
 from .core.nav_goal import NACK_EMERGENCY, NACK_NAV2_UNAVAILABLE, NavGoalRequest  # noqa: E402
 from .core.safety import Watchdog
+from .core.tars_status import TarsStatusRelay  # noqa: E402
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
@@ -1881,6 +1882,21 @@ class QuestNode(Node):
         # (tars_panel.py) публикует URL Grafana-панели после LLM tool call
         # show_metrics(query). Relay в JSON_EVENT (type="tars_panel_url");
         # клиент — tars2Panel.setPanelUrl/setState в main.ts.
+        # issue #3253 Ш3 — служебная информация экрана ТАРС 1: DJ-режим/тема
+        # и узнанный по голосу собеседник сводятся в событие tars_status
+        # (core/tars_status.py); клиент кладёт его в tars1Panel.setInfo.
+        self._tars_status = TarsStatusRelay(
+            lambda: (self.bridge._active_provider, self.bridge._active_voice),
+            lambda event: self.ws_server.broadcast_json_event(event),
+            lambda text: self.get_logger().debug(text),
+        )
+        self._dj_mode_sub = self.create_subscription(
+            String, "/voice/dj_mode", self._tars_status.on_dj_mode, 10
+        )
+        self._speaker_result_sub = self.create_subscription(
+            String, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
+        )
+        self._tars_status_timer = self.create_timer(1.0, self._tars_status.on_timer)
         self._tars_panel_url_sub = self.create_subscription(
             String,
             "/avatar/tars/panel_url",

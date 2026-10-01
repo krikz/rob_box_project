@@ -65,6 +65,7 @@ import type {
 } from "./wire/messages";
 import { createToast, type Toast } from "./ui/toast";
 import { formatClock } from "./state/tars1_layout";
+import { parseTarsStatus, type TarsStatusFields } from "./state/tars_status";
 import { floorLabel, supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
@@ -884,9 +885,13 @@ export function bootstrap(opts: BootstrapOptions): {
   // нарисует прочерк, ничего не выдумываем.
   let tarsLinkText: string | null = null;
   let tarsLastReplyAtMs: number | null = null;
+  // #3253 Ш3: tts/тема/рядом от сервера (tars_status); llm и wake сервер не
+  // шлёт — нет источника в графе, остаются прочерком.
+  let tarsStatus: TarsStatusFields = {};
   function syncTarsInfo(): void {
     const sup = supervisorState;
     bridge.tars1Panel.setInfo({
+      ...tarsStatus,
       link: tarsLinkText,
       floor: sup
         ? `teleop ${floorLabel(sup, "teleop", supervisorMyClientId)} · voice ${floorLabel(sup, "voice", supervisorMyClientId)}`
@@ -1724,6 +1729,13 @@ export function bootstrap(opts: BootstrapOptions): {
           // tts_node._publish_tars1_text). append() сам склеивает чанки по
           // \n; setStreaming только когда состояние меняется (см.
           // tars1_text_panel.ts).
+          // #3253 Ш3 — служебная информация ТАРС 1 (quest_node._on_tars_status_timer).
+          const tarsStatusEvent = parseTarsStatus(event);
+          if (tarsStatusEvent !== null) {
+            tarsStatus = tarsStatusEvent;
+            syncTarsInfo();
+            return;
+          }
           if ((event as { type?: string }).type === "tars1_text") {
             const t = event as {
               text?: string;
