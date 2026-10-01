@@ -51,12 +51,13 @@ HISTORY_FIELDS = (
     "progression", "template", "kick", "hats", "lead", "bass", "pad",
     "root", "bpm", "scale",
     "clap", "lpf", "balance",  # issue #3226: пулы клэпа/lpf/баланса слоёв
+    "sample",  # issue #3254: слой сэмплов DJ_Dave (core/club_samples)
 )
 
 #: Колонки, добавленные после первой версии схемы (#3226): старые БД
 #: дополняются ``ALTER TABLE ADD COLUMN`` (``CREATE TABLE IF NOT EXISTS``
 #: существующую таблицу не меняет).
-_ADDED_COLUMNS = (("clap", "TEXT"), ("lpf", "TEXT"), ("balance", "TEXT"))
+_ADDED_COLUMNS = (("clap", "TEXT"), ("lpf", "TEXT"), ("balance", "TEXT"), ("sample", "TEXT"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS music_history (
@@ -79,7 +80,8 @@ CREATE TABLE IF NOT EXISTS music_history (
     scale            TEXT,
     clap             TEXT,
     lpf              TEXT,
-    balance          TEXT
+    balance          TEXT,
+    sample           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_music_history_ts ON music_history(ts);
 """

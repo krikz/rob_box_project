@@ -5118,6 +5118,39 @@ class TestComposeMusicToolClubStyle:
         assert len(rows) == 1, rows
         assert (rows[0]["style"], rows[0]["root"], rows[0]["bpm"], rows[0]["scale"]) == ("classic", "A", 118, "minor")
 
+    def test_club_sample_layer_reported_and_in_code(self, mock_node, tmp_path, monkeypatch):
+        """Issue #3254: пак есть и флаг включён — d3 играет сэмпл DJ_Dave, ответ и data это называют."""
+        from rob_box_mcp_tools.core import sample_dave
+        from rob_box_mcp_tools.core.club_samples import SAMPLE_LAYERS
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        for layer in SAMPLE_LAYERS.values():
+            path = tmp_path / sample_dave.find_sample(layer.sample).path.replace("../../", "", 1)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"RIFF")
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        monkeypatch.setenv("RENARDO_SAMPLES_PATH", str(tmp_path))
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", root="C", seed=6261504)
+        assert result.success is True, result.error
+        info = result.data["club_sample"]
+        assert info["layer"] in SAMPLE_LAYERS and info["path"].startswith("../../dj_dave/")
+        assert f"Слой сэмплов DJ_Dave: {info['layer']}" in result.message
+        assert history.recent()[0]["sample"] == info["layer"]
+
+    def test_club_without_pack_flag_has_no_sample_layer(self, mock_node, monkeypatch):
+        """Issue #3254: флаг выключен — слоя нет, причина в ответе, трек играет."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        tool, _mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", root="C", seed=5)
+        assert result.success is True, result.error
+        assert result.data["club_sample"]["layer"] is None
+        assert "Слоя сэмплов DJ_Dave нет" in result.message
+
     def test_club_without_name_plays_library_fragment_and_names_it(self, mock_node, tmp_path, caplog):
         """Issue #3225: без name/rtttl lead = фрагмент из RtttlLibrary, 10 вызовов — 10 разных (мелодия, смещение)."""
         import gzip

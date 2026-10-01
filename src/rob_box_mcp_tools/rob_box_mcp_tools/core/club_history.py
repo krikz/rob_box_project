@@ -25,15 +25,19 @@ def recent_club_rows(history: Optional[MusicHistory]) -> List[Dict[str, Any]]:
 def remember_club(
     history: Optional[MusicHistory], kwargs: Mapping[str, Any], kit: Mapping[str, str], seed: int,
     bpm: float, hook_info: Optional[Mapping[str, Any]], recent: Sequence[Mapping[str, Any]],
+    sample: Optional[str] = None,
 ) -> str:
     """Записать сыгранный club-трек в историю; вернуть INFO-строку про выбор.
 
     С хуком мелодии прогрессию задаёт хук — в историю она пишется как
-    ``None``, чтобы не штрафовать то, чего сид не выбирал.
+    ``None``, чтобы не штрафовать то, чего сид не выбирал. То же с клэпом,
+    когда d3 занят слоем сэмплов DJ_Dave (``sample``, issue #3254).
     """
     scale = kwargs.get("scale") or "minor"
     progression = None if hook_info else club_progression(seed, recent, scale)
-    variant = club_variant(seed, recent)
+    variant: Dict[str, Optional[str]] = {**club_variant(seed, recent), "sample": sample}
+    if sample:
+        variant["clap"] = None
     stored = history is not None and history.record(
         style="club", progression=progression, root=kwargs.get("root") or "A#", bpm=bpm,
         scale=scale, melody_name=hook_info["id"] if hook_info else None,
