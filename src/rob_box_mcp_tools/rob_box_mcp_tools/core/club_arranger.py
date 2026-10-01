@@ -67,6 +67,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
+from .club_energy import apply_energy, energy_note
 from .club_loudness import calibrate_levels
 from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude, clock_entry_prelude
 from .club_pools import CLAP_PATTERNS, LPF_PROFILES, REFERENCE_VARIANT, club_variant, variant_levels
@@ -510,6 +511,7 @@ def render_club(
     recent: Optional[Sequence[Mapping[str, Any]]] = None,
     sample: Optional[str] = None,
     timbre: Optional[Mapping[str, str]] = None,
+    energy: Optional[int] = None,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
 
@@ -541,14 +543,18 @@ def render_club(
     (:data:`core.club_samples.SAMPLE_LAYERS`) в d3 вместо клэпа; ``None`` —
     побайтно как раньше. Выбор и проверка пака — :func:`core.club_samples.pick_club_sample`.
 
+    ``energy`` (issue #3311, ADR-0147) — уровень энергии трека в сете 1..5:
+    плотность слоёв и ``lpf``-развёртки (:func:`core.club_energy.apply_energy`);
+    ``None`` — побайтно как раньше.
+
     Raises:
-        ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
+        ValueError: неизвестные root/scale/template/kick, bpm или energy вне диапазона.
     """
     return render_club_kit(
         {**club_kit(seed, template, kick, recent), **(timbre or {})}, bpm=bpm, root=root, scale=scale,
         seed=seed, progression=club_progression(seed, recent, scale) if recent or scale != "minor" else None,
         repeat=repeat, align_clock=align_clock, dj_entry=dj_entry, hook=hook,
-        variant=club_variant(seed, recent), sample=sample,
+        variant=club_variant(seed, recent), sample=sample, energy=energy,
     )
 
 
@@ -711,6 +717,7 @@ def render_club_kit(
     hook: Optional["ClubHook"] = None,
     variant: Optional[Mapping[str, str]] = None,
     sample: Optional[str] = None,
+    energy: Optional[int] = None,
 ) -> str:
     """Собрать клубный трек по ЯВНОМУ каркасу (issue #3136, ADR-0142 §4).
 
@@ -734,6 +741,9 @@ def render_club_kit(
 
     ``sample`` (issue #3254) — слой сэмплов DJ_Dave в d3 вместо клэпа (:func:`_d3_line`).
 
+    ``energy`` (issue #3311, ADR-0147) — 1..5: плотность слоёв поверх ``levels``
+    и темнее ``lpf`` на низкой энергии; ``None`` — побайтно как раньше.
+
     Raises:
         ValueError: значение вне палитры или вне диапазона.
     """
@@ -754,8 +764,8 @@ def render_club_kit(
         hook_lines = [f"# {label}"]
     kick_pattern = KICK_PATTERNS[kick]
     pump = _fmt_list(pump_weights(kick_pattern))
+    (lead_lpf, bass_lpf), levels = apply_energy(energy, LPF_PROFILES[variant["lpf"]], levels)
     gate = calibrated_gates(matrix, kit, variant_levels(variant, levels))
-    lead_lpf, bass_lpf = LPF_PROFILES[variant["lpf"]]
 
     bass = " + ".join(
         f"[({n}, {n + 12})] * {CHORD_STEPS}" for n in (bass_root(tonic, c) for c in chords)
@@ -766,7 +776,7 @@ def render_club_kit(
     prelude, epilogue, end_beats = _clock_lines(matrix, align_clock, dj_entry)
 
     lines = [
-        f"# club: {template}, {root} {scale}, {prog_name}, бочка {kick}, seed={seed}",
+        f"# club: {template}, {root} {scale}, {prog_name}, бочка {kick}, seed={seed}{energy_note(energy)}",
         *hook_lines,
         *("# " + row for row in matrix.to_text().splitlines()),
         "Clock.clear()",
