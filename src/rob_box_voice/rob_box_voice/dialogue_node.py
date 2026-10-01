@@ -234,6 +234,12 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
 )
 from rob_box_voice.core.dj_material import MaterialIntake
 from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn
+from rob_box_voice.core.dj_set_boundary import (
+    DJSetBoundary,
+    apply_dj_mode_message,
+    dj_state_lines,
+    settle_dj_set_boundary,
+)
 from rob_box_voice.core.media_router import (
     MediaPlan,
     MediaRouter,
@@ -1326,6 +1332,9 @@ class DialogueNode(Node):
             ),
             logger=self.get_logger(),
         )
+        # ADR-0129 (issue #3000) — смена сета вычищает окно от прошлых
+        # сетов на ближайшем ходе и штампует <dj_state> в system_context.
+        self._dj_set_boundary = DJSetBoundary()
         # Issue #3227 — материал из реплики (Strudel/RTTTL/ноты) → тул
         # add_music_material → следующий DJ-переход играет его хук.
         self._material_intake = MaterialIntake(
@@ -4613,6 +4622,12 @@ tentative_plan(question, kind, name)
         # Issue #1392 follow-up (legacy): раньше был только <generated_music>
         # для AI-генерации; DJ/Renardo бит туда не попадал → баг #1544.
         lines.append(self._build_music_state_snapshot())
+        # ADR-0129 (issue #3000) — текущий DJ-сет или «сет не идёт» и
+        # правило «прошлые сеты завершены»: ходы старых сетов в окне не
+        # должны подсказывать тему/персону нового.
+        lines.extend(dj_state_lines(
+            getattr(self, "_dj_set_boundary", None), getattr(self, "_dj", None)
+        ))
         # Issue #1544 — SYSTEM REMINDER: «стоп музыку» ведёт себя по-разному
         # в зависимости от того, ИГРАЕТ ли сейчас что-то. Без этого LLM
         # решает «нечего останавливать» → verbal «уже выключено» вместо
@@ -5298,8 +5313,12 @@ tentative_plan(question, kind, name)
         # которую видел ``quick_decide`` (тот же текст, что и
         # media_router для этого хода); DJ_AUTO-переходы STT не шлют, так
         # что фолбэк срабатывает только на генуинном старте от юзера.
-        self._dj.handle_message(
-            payload, raw_utterance=getattr(self, "_last_stt_text", None) or ""
+        # ADR-0129 — граница сета сверяется до и после (dj_set_boundary).
+        apply_dj_mode_message(
+            getattr(self, "_dj_set_boundary", None),
+            self._dj,
+            payload,
+            raw_utterance=getattr(self, "_last_stt_text", None) or "",
         )
 
     def _publish_dj_off(self, reason: str) -> None:
@@ -7156,6 +7175,14 @@ tentative_plan(question, kind, name)
             self._register_self_intro(utterance_id)
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
+        # ADR-0129 (issue #3000) — сет сменился с прошлого хода: обмены
+        # прошлых сетов уходят из окна ДО сборки истории этого хода.
+        settle_dj_set_boundary(
+            getattr(self, "_dj_set_boundary", None),
+            getattr(self, "_dj", None),
+            getattr(self, "_core", None),
+            self.get_logger(),
+        )
         dynamic_system = self._build_dynamic_system_context()
         return user_input, self._dj_turn_hint(dynamic_system, was_dj_auto)
 
