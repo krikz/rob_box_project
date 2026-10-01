@@ -72,6 +72,7 @@ from ..core.club_hook import ClubHook, extract_hook
 from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
 from ..core.club_history import recent_club_rows, remember_classic, remember_club
 from ..core.web_melody import club_label_theme, pick_theme
+from ..core.club_samples import pick_club_sample, sample_sentence
 from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
@@ -4502,12 +4503,16 @@ class ComposeMusicTool(MCPTool):
         # issue #3224: со штрафом за то, что уже играло (история между запусками).
         recent = recent_club_rows(self._music_history)
         kit = club_kit(seed, recent=recent)
+        # Issue #3254: слой сэмплов DJ_Dave — ещё одна ось выбора (или причина, почему его нет).
+        sample = pick_club_sample(seed, recent, kwargs.get("root"))
         fade_note = self._fade_outlives_form(bpm) if fade else ""
         if fade_note:
             fade = False
         try:
             hook, hook_info = self._club_hook(kwargs, bpm, seed, recent)
-            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent)
+            code, form_beats, entry = self._club_program(
+                kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent, sample.name,
+            )
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
         self.log_info(
@@ -4521,13 +4526,16 @@ class ComposeMusicTool(MCPTool):
             return MCPToolResult(success=False, error=result["error"])
         duration_s = (form_beats - entry) * 60.0 / float(bpm) + fade_tail
         self._club_publish_state(kwargs, bpm, duration_s, repeat, hook_info)
-        self.log_info(remember_club(self._music_history, kwargs, kit, seed, bpm, hook_info, recent))
+        self.log_info(f"[#3254] club сэмплы DJ_Dave: {sample.info()}")
+        self.log_info(remember_club(self._music_history, kwargs, kit, seed, bpm, hook_info, recent, sample.name))
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
         result["club_kit"] = kit
         result["club_hook"] = hook_info
+        result["club_sample"] = sample.info()
         message = self._club_message(kwargs, result, duration_s, fade) + fade_note
+        message += sample_sentence(result["club_sample"])
         return MCPToolResult(success=True, data=result, message=message)
 
     def _club_hook(
@@ -4582,6 +4590,7 @@ class ComposeMusicTool(MCPTool):
     def _club_program(
         kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
         hook: Optional[ClubHook] = None, recent: Optional[List[Dict[str, Any]]] = None,
+        sample: Optional[str] = None,
     ) -> Tuple[str, int, int]:
         """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
 
@@ -4594,6 +4603,7 @@ class ComposeMusicTool(MCPTool):
         code = render_club(
             bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
             seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook, recent=recent,
+            sample=sample,
         )
         form_beats = club_form_beats(template)
         entry = club_entry_beats(template) if dj_entry else 0

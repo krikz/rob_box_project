@@ -70,6 +70,7 @@ from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
 from .club_loudness import calibrate_levels
 from .arranger import ALIGN_LEAD_BEATS, BPM_RANGE, VALID_ROOTS, clock_align_prelude, clock_entry_prelude
 from .club_pools import CLAP_PATTERNS, LPF_PROFILES, REFERENCE_VARIANT, club_variant, variant_levels
+from .club_samples import SAMPLE_LANE, sample_layer_line, sample_peak
 from .club_progressions import (
     LEGACY_PROGRESSIONS,
     PROGRESSIONS,
@@ -489,6 +490,7 @@ def render_club(
     dj_entry: bool = False,
     hook: Optional["ClubHook"] = None,
     recent: Optional[Sequence[Mapping[str, Any]]] = None,
+    sample: Optional[str] = None,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
 
@@ -514,6 +516,10 @@ def render_club(
     берутся из пулов (:func:`core.club_pools.club_variant`); ``scale`` —
     лад из :data:`SUPPORTED_SCALES`, прогрессия выбирается из его пула.
 
+    ``sample`` (issue #3254) — вариант слоя сэмплов DJ_Dave
+    (:data:`core.club_samples.SAMPLE_LAYERS`) в d3 вместо клэпа; ``None`` —
+    побайтно как раньше. Выбор и проверка пака — :func:`core.club_samples.pick_club_sample`.
+
     Raises:
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
@@ -521,7 +527,7 @@ def render_club(
         club_kit(seed, template, kick, recent), bpm=bpm, root=root, scale=scale,
         seed=seed, progression=club_progression(seed, recent, scale) if recent or scale != "minor" else None,
         repeat=repeat, align_clock=align_clock, dj_entry=dj_entry, hook=hook,
-        variant=club_variant(seed, recent),
+        variant=club_variant(seed, recent), sample=sample,
     )
 
 
@@ -632,6 +638,22 @@ def calibrated_gates(
     return gates
 
 
+def _d3_line(
+    kit: Mapping[str, str], gate: Mapping[str, str], variant: Mapping[str, str], pump: str, sample: Optional[str],
+) -> str:
+    """Слот d3: клэп с открытым хэтом или слой сэмплов DJ_Dave (issue #3254).
+
+    Слой сэмплов звучит по секциям слоя ``perc`` шаблона; уровень — доля
+    основного уровня бочки ПОСЛЕ калибровки (:func:`core.club_samples.sample_peak`).
+    """
+    if sample is None:
+        return f'd3 >> play("{CLAP_PATTERNS[variant["clap"]]}", dur=1/4, lpf=3000, room=0.25, amp={gate["clap"]})'
+    kick_main = max(_calibrated(tuple(sorted(kit.items())))["kick"])
+    level = sample_peak(sample, kick_main, PUMP_HIGH, MAX_LAYER_AMP)
+    perc = ArrangementMatrix.from_specs({SAMPLE_LANE: SECTION_TEMPLATES[kit["template"]][SAMPLE_LANE]})
+    return sample_layer_line(sample, perc.gate_var_blocks(SAMPLE_LANE, [level] * perc.n_blocks), pump)
+
+
 def _lead_source(
     rng: random.Random, tonic: int, chords: Sequence[Chord], synth: str, hook: Optional["ClubHook"],
 ) -> Tuple[Tuple, str, List[str]]:
@@ -666,6 +688,7 @@ def render_club_kit(
     dj_entry: bool = False,
     hook: Optional["ClubHook"] = None,
     variant: Optional[Mapping[str, str]] = None,
+    sample: Optional[str] = None,
 ) -> str:
     """Собрать клубный трек по ЯВНОМУ каркасу (issue #3136, ADR-0142 §4).
 
@@ -686,6 +709,8 @@ def render_club_kit(
 
     ``variant`` (issue #3226) — имена клэпа/lpf-профиля/баланса слоёв из
     :func:`core.club_pools.club_variant`; ``None`` — эталон, побайтно как раньше.
+
+    ``sample`` (issue #3254) — слой сэмплов DJ_Dave в d3 вместо клэпа (:func:`_d3_line`).
 
     Raises:
         ValueError: значение вне палитры или вне диапазона.
@@ -728,7 +753,7 @@ def render_club_kit(
         "",
         f'd1 >> play("{kick_pattern}", dur=1/4, amp={gate["kick"]})',
         f'd2 >> play("{HATS_PATTERNS[kit["hats"]]}", dur=1/4, hpf=2500, amp={gate["hats"]})',
-        f'd3 >> play("{CLAP_PATTERNS[variant["clap"]]}", dur=1/4, lpf=3000, room=0.25, amp={gate["clap"]})',
+        _d3_line(kit, gate, variant, pump, sample),
         "",
         *_player("p1", kit["lead"], lead_first, [
             *lead_opts,
