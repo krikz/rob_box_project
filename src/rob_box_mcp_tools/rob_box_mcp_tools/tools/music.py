@@ -137,6 +137,32 @@ def _notify_music_state(tool: Any) -> None:
         tool.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
+def _drop_orphan_seed(kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    """Issue #3316: ``seed`` без ``name=``/``rtttl=`` в classic — не ошибка.
+
+    Сид варьирует только аранжировку, выведенную из известной мелодии; у
+    сочинённого трека (``form=``) бас/пэд/ударные заданы нотами, сиду нечего
+    выбирать. DJ-промпт приучает модель ставить seed в каждый
+    compose_music сета, и отказ валил старт сета (живой прогон 01.10:
+    «Трек запустился» при упавшем треке). Сид отбрасывается, ответ тула
+    говорит об этом. Остальные name-only ручки по-прежнему дают ошибку.
+    """
+    if kwargs.get("seed") is None or kwargs.get("name") or kwargs.get("rtttl"):
+        return kwargs, ""
+    kept = {k: v for k, v in kwargs.items() if k != "seed"}
+    return kept, (
+        " seed проигнорирован: он варьирует только аранжировку по name=/rtttl=, "
+        "у сочинённого трека (form=) ему нечего выбирать."
+    )
+
+
+def _with_note_on_success(result: MCPToolResult, note: str) -> MCPToolResult:
+    """Дописать пометку к сообщению успешного ответа тула (пустая — не трогает)."""
+    if result.success and note:
+        result.message = (result.message or "") + note
+    return result
+
+
 def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
     """``locals()`` внутри ``execute(...)`` → только реально переданные ручки.
 
@@ -3383,8 +3409,9 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "seed = номер трека в сете (счёт с 1) в каждом "
                     "compose_music DJ-сета, и другой seed на повторный сет "
                     "той же темы — например seed = номер_сета*100 + "
-                    "номер_трека. Без name=/rtttl= — ошибка, ручке нечего "
-                    "варьировать. По умолчанию не задан (прежнее поведение)."
+                    "номер_трека. Без name=/rtttl= (сочинённый трек form=) — "
+                    "игнорируется, ответ скажет об этом. По умолчанию не задан "
+                    "(прежнее поведение)."
                 ),
                 required=False,
             ),
@@ -4348,9 +4375,10 @@ class ComposeMusicTool(MCPTool):
         # вызовом и не трогает их).
         kwargs, inherited_note = self._inherit_last_track(kwargs)
         merged, preset_note = self._resolve_preset(kwargs)
+        merged, seed_note = _drop_orphan_seed(merged)
         self._pending_preset_note = preset_note
         self._pending_inherited_note = inherited_note
-        result = self._execute_named(**merged)
+        result = _with_note_on_success(self._execute_named(**merged), seed_note)
         if result.success and transition == "fade":
             result.message = (result.message or "") + (
                 " transition=fade есть только у style=club — этот трек сменил прежний сразу."

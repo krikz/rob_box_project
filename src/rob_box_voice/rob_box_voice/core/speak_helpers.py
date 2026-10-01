@@ -312,6 +312,7 @@ def ensure_dj_music_response(
     is_dj_auto: bool = False,
     track_name: Optional[str] = None,
     transition_count: int = 0,
+    music_failed: bool = False,
 ) -> str:
     """Return a DJ-style fallback when music tools ran without real
     user-facing text (issue #2557; #2857 extends it — see below).
@@ -349,7 +350,10 @@ def ensure_dj_music_response(
     Designed to be the single source of truth so the dialogue_node
     change is a one-liner and stays under the CC budget.
     """
-    if tools_called is None:
+    # Issue #3316: музыкальный тул в ходе упал и ни один не прошёл — «Готово,
+    # играю.» / «Новый трек — X!» (имя берётся из АРГУМЕНТОВ вызова, успех не
+    # проверяется) были бы ложью. Подтверждение не выдумываем.
+    if tools_called is None or music_failed:
         return spoken
     # Defensive: mirror ``strip_done_marker`` contract — non-string
     # ``spoken`` is the caller's problem (the dialogue_node already
