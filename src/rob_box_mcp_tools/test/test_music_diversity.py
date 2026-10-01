@@ -174,10 +174,11 @@ def test_seed0_snapshot_unchanged_with_history_argument():
     assert render_club(seed=0, recent=[dict(REFERENCE_KIT)]).strip() == expected.strip()
 
 
-#: sha256[:16] render_club(seed=s) на develop ДО правки #3224 (снято со старого модуля).
+#: sha256[:16] render_club(seed=s). Исходно снято на develop ДО правки #3224; пересчитано
+#: в #3310 (добавлен ``pan`` у d2/d3/p3 — осознанное изменение вывода).
 _BASELINE = {
-    0: "b6a32c04ab1c8c66", 1: "9356ed6c412cc5c9", 7: "405aa492cfd4d514",
-    42: "8493f3b3560e071c", 6261504: "b0fa778a1de857dd",
+    0: "3dd03e9eb811d163", 1: "4dd4cf83d44266eb", 7: "277dac656ad037d3",
+    42: "08e1b77180332bf0", 6261504: "498278c9998878e0",
 }
 
 

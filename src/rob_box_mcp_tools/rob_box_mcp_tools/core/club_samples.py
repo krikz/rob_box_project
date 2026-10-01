@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from . import sample_dave
+from .club_stereo import PAN_HATS, pan_alternating, pan_list
 from .music_diversity import weighted_pick
 from .sample_loops import PACK1_LOOPS_ENV, pack1_loops_enabled
 
@@ -159,17 +160,23 @@ def pick_club_sample(
     return SamplePick(name, "выбран из пула со штрафом за недавнее")
 
 
+#: ``pan`` слоя-«step»: удар на каждую 16-ю, стороны чередуются (с левой, зеркально хэтам).
+_STEP_PAN = pan_list("x" * 16, PAN_HATS, -1)
+#: ``pan`` слоёв «stretch»/«chop»: одно событие = лупа/доля, стороны чередуются (с левой).
+_ALT_PAN = pan_alternating(PAN_HATS, mirror=True)
+
+
 def _step_line(layer: SampleLayer, gate: str, pump: str) -> str:
-    return f"{SAMPLE_SLOT} >> loop({layer.sample!r}, dur=1/4, amp={gate}, amplify={pump})"
+    return f"{SAMPLE_SLOT} >> loop({layer.sample!r}, dur=1/4, pan={_STEP_PAN}, amp={gate}, amplify={pump})"
 
 
 def _stretch_line(layer: SampleLayer, gate: str, pump: str) -> str:
-    return f"{SAMPLE_SLOT} >> loop({layer.sample!r}, dur={layer.beats}, beat_stretch=1, amp={gate})"
+    return f"{SAMPLE_SLOT} >> loop({layer.sample!r}, dur={layer.beats}, beat_stretch=1, pan={_ALT_PAN}, amp={gate})"
 
 
 def _chop_line(layer: SampleLayer, gate: str, pump: str) -> str:
     pos = ", ".join(str(i) for i in range(layer.beats))
-    return f"{SAMPLE_SLOT} >> loop({layer.sample!r}, P[{pos}], dur=1, amp={gate})"
+    return f"{SAMPLE_SLOT} >> loop({layer.sample!r}, P[{pos}], dur=1, pan={_ALT_PAN}, amp={gate})"
 
 
 _LINES = {"step": _step_line, "stretch": _stretch_line, "chop": _chop_line}
