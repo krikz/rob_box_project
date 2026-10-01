@@ -5053,6 +5053,24 @@ class TestSetDjModeSetLimits:
         payload, _ = self._published_payload(enabled=True, next_transition_sec=45, bpm=128)
         assert payload["bpm"] == 128
 
+    def test_set_character_reaches_payload(self):
+        """Issue #3249 — характер темы (base_bpm/scale от LLM) идёт в DJModeController."""
+        payload, _ = self._published_payload(enabled=True, theme="детский праздник", base_bpm=132, scale=" major ")
+        assert payload["base_bpm"] == 132
+        assert payload["scale"] == "major"
+        assert "bpm" not in payload  # характер — не фиксация темпа
+
+    def test_set_character_scale_typo_does_not_fail_tool(self):
+        """Чужой лад не роняет включение DJ: enum не строгий, отклоняет контроллер."""
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        tool = SetDjModeTool(MagicMock())
+        scale = next(p for p in tool.parameters if p.name == "scale")
+        assert scale.enum == ["minor", "major", "dorian", "phrygian"]
+        assert scale.enum_strict is False
+        payload, result = self._published_payload(enabled=True, scale="мажор")
+        assert result.success and payload["scale"] == "мажор"
+
 
 @pytest.mark.unit
 class TestComposeMusicToolClubStyle:
