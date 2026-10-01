@@ -9,10 +9,27 @@ conftest.py - Общие фикстуры и конфигурация для т�
 
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+# Соседние пакеты — из ЭТОГО чекаута, а не из того, куда смотрит
+# ``pip install -e``. На dev-машине editable-установка указывает на главный
+# чекаут; из git worktree тесты молча брали оттуда устаревший
+# ``rob_box_core`` и падали на свежем коде (test_tool_catalog_sync:
+# «registered tools absent from the catalog: ['add_music_material']» при
+# том, что в каталоге worktree тул есть). На colcon/CI рядом этих каталогов
+# может не быть — тогда ничего не трогаем.
+_SRC_DIR = Path(__file__).resolve().parents[2]
+_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core")
+for _pkg in _SIBLINGS:
+    _pkg_root = str(_SRC_DIR / _pkg)
+    _present = Path(_pkg_root, _pkg, "__init__.py").is_file()
+    if _present and _pkg_root not in sys.path:
+        sys.path.insert(0, _pkg_root)
 
 
 # ============================================================
