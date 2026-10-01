@@ -102,6 +102,16 @@ SPEAK_REFUSAL_MESSAGE = (
     "выполнен. Заверши ход: следующая реплика — на следующем переходе."
 )
 
+#: Issue #3246 — тулы, которые НЕЛЬЗЯ исполнять в DJ_AUTO-ходе (авто-переход,
+#: не реплика человека). Живой прогон 30.09: LLM на переходе #3 сам вызвал
+#: ``stop_music`` -> ~5 с цифровой тишины посреди сета. Останавливает сет
+#: только юзер (роутер/его ход) или финал по плану (``set_dj_mode(false)``).
+#: Список обобщаемый: добавлять сюда любой тул, рвущий звук без запроса юзера.
+DJ_AUTO_FORBIDDEN_TOOLS: frozenset = frozenset({"stop_music"})
+
+#: Машиночитаемый код отказа запрещённого в DJ_AUTO тула.
+DJ_AUTO_FORBIDDEN_ERROR_CODE = "tool_forbidden_in_dj_auto_turn"
+
 #: ~140 символов / 1-2 предложения (issue #2878 acceptance).
 DJ_SPEAK_MAX_CHARS = 140
 DJ_SPEAK_MAX_SENTENCES = 2
@@ -141,6 +151,24 @@ def _has_plan(args: Optional[Mapping[str, Any]]) -> bool:
         return False
     plan = args.get("plan")
     return bool(plan) if isinstance(plan, str) else bool(plan)
+
+
+def dj_auto_forbidden_content(tool_name: str) -> str:
+    """JSON-тело отказа тула, запрещённого в DJ_AUTO-ходе (issue #3246)."""
+    return json.dumps(
+        {
+            "success": False,
+            "error": DJ_AUTO_FORBIDDEN_ERROR_CODE,
+            "tool": tool_name,
+            "message": (
+                f"{tool_name} НЕ выполнен: в автоматическом DJ-переходе "
+                "останавливать музыку нельзя — сет останавливает только "
+                "юзер или финал по плану. Сыграй следующий трек "
+                "(compose_music / execute_music_code) и заверши ход."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def speak_refusal_content(speak_count: int, speak_limit: int) -> str:
@@ -220,6 +248,14 @@ class TrackStartGuard:
     def should_refuse(self, tool_name: str) -> bool:
         """``True`` — это повторный запуск трека в ходе, исполнять нельзя."""
         return tool_name in TRACK_STARTING_TOOLS and self._started is not None
+
+    def should_refuse_forbidden(self, tool_name: str) -> bool:
+        """``True`` — тул запрещён в DJ_AUTO-ходе (issue #3246).
+
+        Только ход, запущенный автопереходом (:meth:`reset` ``dj_auto``);
+        реплика юзера («стоп музыку») не затрагивается.
+        """
+        return self._dj_auto and tool_name in DJ_AUTO_FORBIDDEN_TOOLS
 
     def should_refuse_speak(self) -> bool:
         """``True`` — DJ-ход уже израсходовал лимит ``speak_text``.
