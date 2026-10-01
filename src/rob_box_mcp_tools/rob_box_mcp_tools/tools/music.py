@@ -4466,6 +4466,19 @@ class ComposeMusicTool(MCPTool):
             label += f", {root_ru} {scale_ru}"
         return label
 
+    def _club_label_theme(self, kwargs: Dict[str, Any], hook_info: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Issue #3244: «на тему «…»» в имени трека — заказанное, а не случайный хук.
+
+        Хук из пула (``pick_club_hook``) — деталь реализации: в сете про
+        пиратов трек звался «на тему «Pacman»». Хук даёт имя, только если его
+        заказали явно (``name``/``rtttl``); иначе — тема вызова (``theme``,
+        либо тема тула по умолчанию), а без неё имя без «на тему».
+        """
+        if hook_info and (kwargs.get("name") or kwargs.get("rtttl")):
+            return hook_info["title"]
+        theme = pick_theme(kwargs, self.club_theme)
+        return str(theme).strip() or None if theme else None
+
     def _club_publish_state(
         self, kwargs: Dict[str, Any], bpm: float, duration_s: float, repeat: bool,
         hook_info: Optional[Dict[str, Any]],
@@ -4483,7 +4496,7 @@ class ComposeMusicTool(MCPTool):
         # ``<music_state>`` говорили «трек «без названия»».
         self._manager.current_track_name = self._club_track_label(
             bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
-            hook_info["title"] if hook_info else None,
+            self._club_label_theme(kwargs, hook_info),
         )
         self._notify_music_state()
 
