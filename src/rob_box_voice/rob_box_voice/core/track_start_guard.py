@@ -354,7 +354,11 @@ def dj_auto_refusal_content(
 
     Модульная функция, а не метод гарда: класс не растёт (ADR-0145).
     """
-    if guard.should_refuse_forbidden(tool_name):
+    # Issue #3323 — происхождение берётся из контекста ИСПОЛНЯЕМОГО хода, а
+    # не из ``guard._dj_auto``: тот выставляет только ``begin_turn`` хода
+    # LLM и остаётся от последнего DJ-перехода, пока стоп человека через
+    # media-router (без begin_turn) уже идёт в контексте с origin=человек.
+    if TURN_IS_DJ_AUTO.get() and guard.should_refuse_forbidden(tool_name):
         return dj_auto_forbidden_content(tool_name)
     if dj_restart_refused(tool_name, args):
         return dj_final_restart_content()

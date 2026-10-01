@@ -248,6 +248,7 @@ from rob_box_voice.core.media_router import (
     MediaRouter,
     MediaState,
     MediaToolCall,
+    media_tool_succeeded,
 )
 from rob_box_voice.core.named_play import (
     COMPOSE_TOOL,
@@ -7723,6 +7724,9 @@ tentative_plan(question, kind, name)
         модели и гуардов (:meth:`_record_media_turn`).
         """
         ok, phrase, done = True, "", []
+        # Issue #3323 — команда человека: origin задан явно, а не унаследован
+        # (иначе запрет stop_music для DJ_AUTO-хода #3246 бьёт по человеку).
+        TURN_IS_DJ_AUTO.set(False)
         for call in plan.tool_calls:
             if await self._execute_media_tool(executor, call):
                 done.append(call.name)
@@ -7834,8 +7838,10 @@ tentative_plan(question, kind, name)
                 f"🎛️ [media-router] {call.name}({call.arguments}) упал: {exc}"
             )
             return False, ""
-        ok = not bool(getattr(result, "is_error", False))
         content = str(getattr(result, "content", "") or "")
+        ok = media_tool_succeeded(
+            bool(getattr(result, "is_error", False)), content
+        )
         self.get_logger().info(
             f"🎛️ [media-router] {call.name}({call.arguments}) ok={ok} "
             f"result={content[:160]!r}"
