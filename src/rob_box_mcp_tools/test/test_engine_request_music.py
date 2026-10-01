@@ -51,6 +51,12 @@ def test_mood_picks_the_energy_of_the_track():
     assert result.data["track_id"].split(":")[1] == f"{kn.ENERGY_WAVE.index(5) + 1:02d}"
 
 
+def test_mood_energy_is_levels_of_the_one_energy_table():
+    """``MOOD_ENERGY`` — только имена настроений; уровни — из ``ENERGY_LEVELS``, трек — по ``ENERGY_WAVE``."""
+    assert set(kn.MOOD_ENERGY.values()) <= set(kn.ENERGY_LEVELS)
+    assert set(kn.MOOD_ENERGY.values()) <= set(kn.ENERGY_WAVE)  # у каждого настроения есть трек волны
+
+
 @pytest.mark.parametrize("event,ok,reason", [
     (MusicEvent("started", "x", fields={}), True, None),
     (MusicEvent("rejected", "x", fields={"reason": "server_fail", "detail": "/s_new not found"}), False, "server_fail"),
