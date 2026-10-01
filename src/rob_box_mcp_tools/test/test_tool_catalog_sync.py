@@ -34,6 +34,8 @@ MCP_SERVER = (
     REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "mcp_server.py"
 )
 TOOLS_DIR = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools"
+#: ADR-0149 PR-6: узкие тулы движка v2 (каталог читает их так же, как ``tools/``).
+ENGINE_TOOLS = TOOLS_DIR.parent / "engine" / "tools_v2.py"
 
 #: ТАРС-только тулы, зарегистрированные на mcp_server для исполнения по
 #: /mcp/execute (их зовёт второй агент — avatar_supervisor), но скрытые из
@@ -145,7 +147,7 @@ def test_required_execute_arguments_are_advertised(catalog) -> None:
 def _registered_tool_names() -> set[str]:
     """Resolve ``self.registry.register(SomeTool(...))`` calls to tool names."""
     class_to_name: dict[str, str] = {}
-    for source in TOOLS_DIR.glob("*.py"):
+    for source in list(TOOLS_DIR.glob("*.py")) + [ENGINE_TOOLS]:
         tree = ast.parse(source.read_text(encoding="utf-8"))
         for cls in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
             if "MCPTool" not in {getattr(b, "id", getattr(b, "attr", "")) for b in cls.bases}:
@@ -158,14 +160,14 @@ def _registered_tool_names() -> set[str]:
                         class_to_name[cls.name] = node.value.value
 
     server = ast.parse(MCP_SERVER.read_text(encoding="utf-8"))
-    # `self.foo = SomeTool(...)` then `registry.register(self.foo)`
+    # `self.foo = SomeTool(...)` / `foo = SomeTool(...)` then `registry.register(self.foo)` / `register(foo)`
     attr_to_class: dict[str, str] = {}
     for node in ast.walk(server):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
             callee = getattr(node.value.func, "id", None)
             for target in node.targets:
-                if isinstance(target, ast.Attribute) and callee:
-                    attr_to_class[target.attr] = callee
+                if isinstance(target, (ast.Attribute, ast.Name)) and callee:
+                    attr_to_class[getattr(target, "attr", getattr(target, "id", ""))] = callee
 
     names: set[str] = set()
     for node in ast.walk(server):
@@ -176,8 +178,8 @@ def _registered_tool_names() -> set[str]:
         arg = node.args[0]
         if isinstance(arg, ast.Call):
             cls_name = getattr(arg.func, "id", None)
-        elif isinstance(arg, ast.Attribute):
-            cls_name = attr_to_class.get(arg.attr)
+        elif isinstance(arg, (ast.Attribute, ast.Name)):
+            cls_name = attr_to_class.get(getattr(arg, "attr", getattr(arg, "id", "")))
         else:
             continue
         if cls_name and cls_name in class_to_name:

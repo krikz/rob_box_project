@@ -50,6 +50,8 @@ ENERGY_TRIM_DB: Mapping[int, float] = {1: -9.0, 2: -6.0, 3: -4.0, 4: -2.0, 5: 0.
 #: Волна энергии открытого сета по номеру трека (ADR-0147 §3.4, ADR-0149 §4.6): трек 1 — превью/интро (2),
 #: дальше период 5 «разгон → пик → спад»: 2 3 4 5 4 | 2 3 4 5 4 | …
 ENERGY_WAVE: Tuple[int, ...] = (2, 3, 4, 5, 4)
+#: Настроение одиночного трека (``request_music.mood``, ADR-0149 §5.1) → энергия; перечисление тула — ключи.
+MOOD_ENERGY: Mapping[str, int] = {"calm": 2, "groove": 3, "bright": 3, "playful": 3, "dark": 4, "epic": 5}
 #: Плотность по энергии — составом ролей секций, а не множителями уровней (ADR-0149 §4.6 б): роли, которых
 #: нет в треке такой энергии. Бочку и бас энергия не снимает (ADR-0147 §3.3).
 ENERGY_THIN_ROLES: Mapping[int, Tuple[str, ...]] = {1: ("clap",), 2: ("clap",)}
@@ -201,7 +203,7 @@ def role_ceiling(role: str) -> float:
 __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS", "ENERGY_TRIM_DB",
     "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES", "ThemeRow",
-    "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
+    "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
     "SCALES", "SYNTH_PALETTE", "SYNTH_TRAITS", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
 ]

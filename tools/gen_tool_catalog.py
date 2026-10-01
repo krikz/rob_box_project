@@ -42,6 +42,8 @@ from typing import Any
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools"
 OUT_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_data.py"
+#: ADR-0149 PR-6: узкие тулы движка v2 живут в ``engine/``, а не в ``tools/`` — каталог читает и их.
+ENGINE_TOOL_SOURCES = (TOOLS_DIR.parent / "engine" / "tools_v2.py",)
 
 DYNAMIC = object()
 
@@ -485,6 +487,20 @@ def _harmonize_knob(knob: str):
     return resolve
 
 
+def _mood_values() -> list[str]:
+    """``request_music.mood`` enum — ключи ``rob_box_music.knowledge.MOOD_ENERGY`` (одна таблица знания)."""
+    import importlib.util
+
+    path = REPO_ROOT / "src" / "rob_box_music" / "rob_box_music" / "knowledge.py"
+    spec = importlib.util.spec_from_file_location("_knowledge_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return sorted(module.MOOD_ENERGY)
+
+
 def _on_off_auto() -> list[str]:
     """``compose_music.counter``/``theme_octaves`` enum — ``arranger.ON_OFF_AUTO``."""
     return list(_load_arranger().ON_OFF_AUTO)
@@ -523,6 +539,7 @@ DYNAMIC_ENUMS = {
     ("compose_music", "counter"): _on_off_auto,
     ("compose_music", "theme_octaves"): _on_off_auto,
     ("compose_music", "lead_octave"): _lead_octave_choices,
+    ("request_music", "mood"): _mood_values,
 }
 # ADR-0132 PR-5: preview_arrangement shares ``_ARRANGEMENT_PARAMETERS`` with
 # compose_music (see ``tools/music.py``) — same computed enums, same
@@ -594,6 +611,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "listen_for_response",
     ),
     "composer": (
+        "request_music",
         "compose_music",
         "preview_arrangement",
         "save_arrangement_preset",
@@ -609,6 +627,9 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "set_music_volume",
     ),
     "dj": (
+        # ADR-0149 PR-6: движок v2 (видны LLM только при music_engine=v2)
+        "dj_set",
+        "request_music",
         "set_dj_mode",
         "add_music_material",
         "get_music_state",
@@ -730,7 +751,7 @@ def extract_tools() -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     shared_constants = _collect_shared_constants()
 
-    for source in sorted(TOOLS_DIR.glob("*.py")):
+    for source in sorted(TOOLS_DIR.glob("*.py")) + list(ENGINE_TOOL_SOURCES):
         if source.name == "__init__.py":
             continue
         tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -787,6 +808,10 @@ def extract_tools() -> list[dict[str, Any]]:
             name = entry.get("name")
             if not isinstance(name, str) or not name:
                 continue
+            # ADR-0149 §9: ``music_engine = "v1"|"v2"`` — атрибут класса (не property: бюджет класса).
+            engine = _CLASS_CONSTANTS.get(cls.name, {}).get("music_engine")
+            if engine is not None and _literal(engine):
+                entry["music_engine"] = _literal(engine)
             if params is None:
                 raise ToolSourceError(f"{cls.name} ({source.name}) has no `parameters` property")
             if signature is None:

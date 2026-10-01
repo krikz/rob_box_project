@@ -91,7 +91,9 @@ class SetSession:
         self._preparing = False
 
     def dj_fields(self, track_no: int) -> Dict[str, Any]:
-        return {**self._dj, "enabled": True, "set_id": self.set_id, "track_no": track_no, "bpm": self.bpm}
+        title = f"{self._dj.get('theme') or 'диджей-сет'} · трек {track_no}"  # имя для <music_state> (ADR-0149 §2.3)
+        return {**self._dj, "enabled": True, "set_id": self.set_id, "track_no": track_no, "bpm": self.bpm,
+                "title": title}
 
     def start(self) -> Dict[str, Any]:
         """Трек 1 на деке A; звук — по ``started``. Отказ — ``{ok: False, reason}`` (громко, I25)."""

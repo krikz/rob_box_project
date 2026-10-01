@@ -101,7 +101,13 @@ from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser
 from rob_box_voice.core.skill_router import SkillRouter
-from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_voice.core.music_player_state import (
+    MUSIC_EVENT_TOPIC,
+    MUSIC_STATE_TOPIC,
+    MusicEventLog,
+    parse_music_state,
+)
+from rob_box_voice.core.media_plan_run import run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
@@ -511,6 +517,14 @@ def classify_identity_confirmation(text: str) -> Optional[bool]:
     if has_no and not has_yes:
         return False
     return None
+
+
+def music_engine_of(node: Any) -> str:
+    """Флаг ``music_engine`` ноды (ADR-0149 §9); стаб без параметра — ``v1``."""
+    try:
+        return str(node.get_parameter("music_engine").value or "v1")
+    except Exception:  # noqa: BLE001 — стабы из __new__ и ноды без параметра
+        return "v1"
 
 
 def start_dj_tick(node: Any, tick: Callable[[], None]) -> Optional[Any]:
@@ -1029,6 +1043,17 @@ class DialogueNode(Node):
                 durability=DurabilityPolicy.TRANSIENT_LOCAL,
                 history=HistoryPolicy.KEEP_LAST,
                 depth=1,
+            ),
+            callback_group=cbg)
+        # ADR-0149 PR-6: события владельца плеера v2 (started/rejected) — фраза
+        # роутера об успехе запуска только по ``started`` (core/media_plan_run.py).
+        self._music_events = MusicEventLog()
+        self.create_subscription(
+            String, MUSIC_EVENT_TOPIC, self._music_events.observe_msg,
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
             ),
             callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
@@ -2147,7 +2172,8 @@ class DialogueNode(Node):
         # ({type: function, function: {name, description,
         # parameters}}); build it from ToolRegistry.list_tools()
         # so the LLM-facing surface is the single source of truth.
-        registry = ToolRegistry()
+        # ADR-0149 PR-6: при v2 LLM видит dj_set/request_music, а не compose_music & Co.
+        registry = ToolRegistry(music_engine=music_engine_of(self))
         provider.update_tools(
             [
                 {
@@ -7306,7 +7332,7 @@ tentative_plan(question, kind, name)
         """
         router = getattr(self, "_media_router", None)
         if router is None:
-            router = self._media_router = MediaRouter()
+            router = self._media_router = MediaRouter(engine=music_engine_of(self))
         plan = router.route(text, self._media_state())
         if plan is None:
             return False
@@ -7467,21 +7493,16 @@ tentative_plan(question, kind, name)
         Issue #3165: успешные тулы и сказанная фраза записываются для
         модели и гуардов (:meth:`_record_media_turn`).
         """
-        ok, phrase, done = True, "", []
         # Issue #3323 — команда человека: origin задан явно, а не унаследован
         # (иначе запрет stop_music для DJ_AUTO-хода #3246 бьёт по человеку).
         TURN_IS_DJ_AUTO.set(False)
-        for call in plan.tool_calls:
-            if await self._execute_media_tool(executor, call):
-                done.append(call.name)
-                continue
-            ok = False
-            if call.fail_text:
-                phrase = call.fail_text
-                break
+        # ADR-0149 PR-6: при v2 фраза об успехе — только по событию ``started``.
+        ok, phrase, done = await run_media_plan(
+            plan, functools.partial(self._execute_media_tool_result, executor),
+            getattr(self, "_music_events", None), log=self.get_logger().info,
+        )
         if not ok and plan.claim_track_one and getattr(self, "_dj", None) is not None:
             self._dj.drop_preview_claim()
-        phrase = phrase or (plan.say_ok if ok else plan.say_fail)
         self._record_media_turn(plan, text, phrase, done)
         if phrase:
             self._speak_direct(phrase)
@@ -7561,10 +7582,6 @@ tentative_plan(question, kind, name)
             tool_error_occurred=tool_error_occurred,
             repeated_call_args=repeated_call_args,
         )
-
-    async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
-        ok, _content = await self._execute_media_tool_result(executor, call)
-        return ok
 
     async def _execute_media_tool_result(
         self, executor: Any, call: Any

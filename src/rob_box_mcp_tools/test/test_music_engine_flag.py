@@ -27,7 +27,7 @@ class _Node:
         self.music_state_pub = _FakePublisher()
         self.created = []
         self._logger = _FakeLogger()
-        self.registry = SimpleNamespace(tools=[])
+        self.registry = SimpleNamespace(tools=[], execute=lambda name, **kw: None)
         self.registry.register = self.registry.tools.append
 
     def get_parameter(self, name):
@@ -62,7 +62,8 @@ def test_v2_owner_is_the_only_state_writer(monkeypatch):
     owner = module._attach_player_owner_v2(node, manager)
     assert owner is not None and node.created == ["/voice/music/event"]
     assert manager.osc_fail_listener == owner.on_server_fail
-    assert [t.name for t in node.registry.tools] == ["dj_set"]  # PR-5: сет v2 поверх владельца
+    # PR-5: сет v2 поверх владельца; PR-6: одиночный club-трек v2
+    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music"]
     first = json.loads(state_pub.published[0])
     assert first["state"] == "idle" and first["dj"] == {"enabled": False}
     assert node.music_state_pub is None  # у старого пути публикатора снимка больше нет

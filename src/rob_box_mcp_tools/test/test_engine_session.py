@@ -274,7 +274,7 @@ def test_dj_set_tool_starts_and_stops_a_set():
     assert stopped.success and stopped.data["was_playing"] is True
     assert again.success and again.data["was_playing"] is False
     assert tool.execute(action="hotter").success is False
-    assert tool.slice == "personality" and tool.llm_visible is False
+    assert tool.slice == "personality" and tool.music_engine == "v2"  # PR-6: LLM видит его только при v2
 
 
 def test_library_melodies_take_only_exact_names():
