@@ -118,6 +118,27 @@ def test_otel_self_telemetry_prometheus_target_consistency(project_root):
     print(f"  ✓ otel self-telemetry {addr} == prometheus target {actual_target}")
 
 
+def test_monitoring_agents_deployed_and_loki_host_real(project_root):
+    """Issue #3300: cadvisor/promtail сидят в profile 'monitoring', а деплой
+    делал `compose up` без профиля и `docker rm -f` всего проекта — агенты
+    пропадали навсегда. Плюс LOKI_HOST=monitoring-machine не резолвится.
+    """
+    wf = (project_root / ".github/workflows/L-Deploy and Verify.yml").read_text(encoding="utf-8")
+    n = wf.count("compose --profile monitoring up -d cadvisor promtail")
+    assert n >= 2, (
+        f"L-Deploy and Verify.yml: шаг поднятия агентов мониторинга найден {n} раз, "
+        f"нужен на обоих Pi (Main + Vision). См. issue #3300."
+    )
+    for pi in ("main", "vision"):
+        env = (project_root / f"docker/{pi}/.env").read_text(encoding="utf-8")
+        loki = [l.split("=", 1)[1].strip() for l in env.splitlines() if l.startswith("LOKI_HOST=")]
+        assert loki and loki[0] != "monitoring-machine", (
+            f"docker/{pi}/.env: LOKI_HOST={loki!r} — плейсхолдер не резолвится, "
+            f"promtail не достучится до Loki. См. issue #3300."
+        )
+    print("  ✓ деплой поднимает profile monitoring; LOKI_HOST задан реальным адресом")
+
+
 def main():
     """Run all monitoring configuration tests."""
     print("=" * 60)
@@ -222,6 +243,16 @@ def main():
     # Issue #1730 — синхронизация otel-collector self-telemetry и prometheus target.
     try:
         test_otel_self_telemetry_prometheus_target_consistency(project_root)
+        results.append(True)
+    except AssertionError as e:
+        print(f"  ❌ {e}")
+        results.append(False)
+    except Exception as e:
+        print(f"  ❌ Unexpected error: {e}")
+        results.append(False)
+
+    try:
+        test_monitoring_agents_deployed_and_loki_host_real(project_root)
         results.append(True)
     except AssertionError as e:
         print(f"  ❌ {e}")

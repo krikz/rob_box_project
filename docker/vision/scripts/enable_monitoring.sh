@@ -23,7 +23,7 @@ fi
 # Проверяем наличие переменной LOKI_HOST
 if [ -z "${LOKI_HOST}" ]; then
     echo "⚠️  Внимание: переменная LOKI_HOST не установлена"
-    echo "   Используется значение по умолчанию: monitoring-machine"
+    echo "   Используется значение по умолчанию: 10.1.1.249"
     echo ""
     echo "   Для настройки добавьте в .env файл:"
     echo "   LOKI_HOST=<IP адрес машины мониторинга>"
@@ -56,7 +56,7 @@ echo ""
 echo "Локальный доступ:"
 echo "  • cAdvisor:   http://localhost:8080"
 echo ""
-echo "Данные отправляются на машину мониторинга (${LOKI_HOST:-monitoring-machine})"
+echo "Данные отправляются на машину мониторинга (${LOKI_HOST:-10.1.1.249})"
 echo "Для просмотра логов и метрик откройте Grafana на машине мониторинга"
 echo ""
 echo "Для остановки: ./scripts/disable_monitoring.sh"
