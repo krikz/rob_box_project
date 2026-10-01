@@ -1538,6 +1538,9 @@ check_patterns() {
     local before="$1"; shift
     local logs pat rc=0
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
+    logs="$(printf '%s
+' "$logs" | strip_llm_request_dump)"
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
