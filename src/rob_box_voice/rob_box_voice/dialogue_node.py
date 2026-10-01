@@ -193,6 +193,8 @@ from rob_box_voice.core.music_guard import (
     MusicGuardVerdict,
     MusicGuardVerdictKind,
     hurry_dj_set_start,
+    music_launch_failed,
+    withhold_text_of_failed_music_launch,
 )
 # Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
 # The legacy ``_*_retry_used`` flags and ``_consume_synthetic_retry``
@@ -7457,6 +7459,17 @@ tentative_plan(question, kind, name)
             logger=self.get_logger(),
         )
 
+        # Issue #3316 — музыкальный тул упал, сет включён: свободный текст хода
+        # («Трек запустился») не выпускаем, вместо него честная фраза.
+        withhold_text_of_failed_music_launch(
+            getattr(self, "_turn_speech_hold", None),
+            verdict,
+            tools_called=tools_called,
+            succeeded_tools=succeeded_tools,
+            tool_error_occurred=tool_error_occurred,
+            logger=self.get_logger(),
+        )
+
         # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
         # user did not request music, DJ off, etc.). Policy module already
         # logged the diagnostic.
@@ -8504,6 +8517,11 @@ tentative_plan(question, kind, name)
             is_dj_auto=is_dj_auto,
             track_name=(getattr(result, "track_name", None) or None),
             transition_count=getattr(_dj_state, "transition_count", 0) or 0,
+            music_failed=music_launch_failed(
+                tuple(tools_called),
+                getattr(result, "succeeded_tools", None),
+                bool(getattr(result, "tool_error_occurred", False)),
+            ),
         )
         if dj_fallback == spoken:
             return False

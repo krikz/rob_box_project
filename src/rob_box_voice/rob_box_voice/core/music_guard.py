@@ -762,6 +762,67 @@ class MusicGuard:
             self._logger.warning(msg)
 
 
+#: Issue #3316 — честная реплика вместо отозванного заявления «трек играет».
+FAILED_MUSIC_HONEST_PHRASE = "Секунду, ставлю трек."
+
+def music_launch_failed(
+    tools_called: Optional[Tuple[str, ...]],
+    succeeded_tools: Optional[Tuple[str, ...]],
+    tool_error_occurred: bool,
+) -> bool:
+    """Issue #3316 — в ходе вызывали музыкальный тул, и ни один не прошёл.
+
+    Единый список тулов — ``MUSIC_STARTING_TOOLS`` (без шестой копии).
+    ``succeeded_tools=None`` (харнесс не сообщил) — «не известно»: ``False``.
+    """
+    if not tool_error_occurred or succeeded_tools is None:
+        return False
+    started = set(tools_called or ()) & MUSIC_STARTING_TOOLS
+    return bool(started) and not started & set(succeeded_tools)
+
+
+def withhold_text_of_failed_music_launch(
+    hold,
+    verdict: "MusicGuardVerdict",
+    *,
+    tools_called: Optional[Tuple[str, ...]],
+    succeeded_tools: Optional[Tuple[str, ...]],
+    tool_error_occurred: bool,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    """Issue #3316 — упал музыкальный тул, сет включён: текст хода не звучит.
+
+    Живой прогон 01.10: ``compose_music`` упал (seed в classic), прошёл
+    ``set_dj_mode``; гард #2966 не признал успех, а ветка #3266
+    (:data:`DJ_SET_TAKES_OVER`, ретрай не нужен) отпустила из hold реплику
+    модели «Трек запустился» — две минуты тишины под ложное подтверждение.
+
+    Решает код по структуре хода, без разбора фраз (ADR-0148): вердикт
+    ``DJ_SET_TAKES_OVER`` + музыкальный тул в ходе (``MUSIC_STARTING_TOOLS``)
+    + ни один музыкальный вызов не прошёл → придержанный свободный текст
+    заменяется на :data:`FAILED_MUSIC_HONEST_PHRASE`: трек поставит
+    DJ-переход, это правда. Что модель в этом тексте утверждала — неважно.
+    ``succeeded_tools=None`` (не известно) и любые другие вердикты — без
+    изменений. ``hold`` — :class:`TurnSpeechHold` хода (``None`` вне хода).
+
+    Returns:
+        ``True`` — текст заменён.
+    """
+    if hold is None or hold.text is None:
+        return False
+    if verdict.reason != DJ_SET_TAKES_OVER:
+        return False
+    if not music_launch_failed(tools_called, succeeded_tools, tool_error_occurred):
+        return False
+    if logger is not None:
+        logger.warning(
+            "🎵 [issue 3316] музыкальный тул в ходе упал, сет включён — "
+            f"озвучиваю честную фразу вместо {hold.text[:80]!r}"
+        )
+    hold.hold(FAILED_MUSIC_HONEST_PHRASE, hold.user_input)
+    return True
+
+
 def hurry_dj_set_start(
     verdict: MusicGuardVerdict,
     dj_state,
@@ -804,6 +865,9 @@ def hurry_dj_set_start(
 
 
 __all__ = [
+    "FAILED_MUSIC_HONEST_PHRASE",
+    "withhold_text_of_failed_music_launch",
+    "music_launch_failed",
     "DJ_SET_TAKES_OVER",
     "hurry_dj_set_start",
     "MusicGuard",

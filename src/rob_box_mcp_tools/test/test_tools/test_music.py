@@ -3389,16 +3389,19 @@ class TestComposeMusicToolRtttlParam:
         assert tool.last_score["raw_decisions"]["harmony"]["seed"] == 7
         assert tool.last_score["decisions"]["seed"] == "7"
 
-    def test_seed_without_name_or_rtttl_is_rejected(self, mock_node):
-        """Сид варьирует ручки, выведенные из темы — без темы варьировать нечего."""
+    def test_seed_without_name_or_rtttl_is_ignored_with_note(self, mock_node):
+        """Сид варьирует ручки, выведенные из темы — без темы он игнорируется.
+
+        Issue #3316: раньше это был отказ, и DJ-старт с seed в classic падал.
+        """
         tool, mgr = self._make_tool(mock_node, rtttl_library=None)
         mgr.execute_code = Mock(return_value={"success": True})
         result = tool.execute(
             seed=7, bpm=100, root="C", scale="minor",
             lead_synth="blip", lead_notes="0,2,4,7",
         )
-        assert result.success is False
-        assert "name=" in result.error or "rtttl" in result.error
+        assert result.success is True, result.error
+        assert "seed проигнорирован" in result.message
 
     def test_two_calls_with_different_seeds_diverge(self, mock_node):
         """Acceptance issue #2969: тот же трек, разный seed → разный бас/пэд/ударные."""

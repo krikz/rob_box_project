@@ -236,6 +236,33 @@ def test_derived_arrangement_knob_without_name_is_an_error(mock_node, param, val
     mgr.execute_code.assert_not_called()
 
 
+_COMPOSED = dict(
+    bpm=110, root="A", scale="minor", drums="X...o...", lead_synth="pluck",
+    lead_notes="0, 2, 4, 7", pad_synth="warmpad", pad_notes="0, 2, 4",
+    bass_synth="dub", bass_notes="0, 4",
+)
+
+
+def test_seed_without_name_is_ignored_not_an_error(mock_node):
+    """Issue #3316: DJ-промпт просит seed в каждом compose_music; в classic
+    (без name=/rtttl=) сиду нечего варьировать — игнор с пометкой в ответе."""
+    tool, mgr = _tool(mock_node)
+    assert tool.execute(**_COMPOSED).success is True
+    base = mgr.execute_code.call_args[0][0]
+    result = tool.execute(seed=1, **_COMPOSED)
+    assert result.success is True, result.error
+    assert "seed проигнорирован" in result.message
+    assert mgr.execute_code.call_args[0][0] == base  # код трека тот же
+
+
+def test_other_orphan_knobs_still_error_when_seed_is_dropped(mock_node):
+    tool, mgr = _tool(mock_node)
+    result = tool.execute(seed=1, bass_style="root", **_COMPOSED)
+    assert result.success is False
+    assert "bass_style" in result.error and "seed" not in result.error
+    mgr.execute_code.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # 3. Умолчания = golden байт-в-байт
 # ---------------------------------------------------------------------------
