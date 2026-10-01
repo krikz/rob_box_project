@@ -65,6 +65,10 @@ DJ_FADE_BARS = 8
 #: Минимум, который конечный трек звучит до раннего перехода, с (короткий
 #: заказ юзера не должен уйти в фейд сразу после старта).
 DJ_MIN_TRACK_PLAY_S = 30.0
+#: Issue #3136 — окно «переход уже идёт», с. Живой замер 01.10: ход модели
+#: на переходе занимал 72-78 с; пока он идёт, конец уходящего трека не
+#: повод звать второй переход.
+DJ_TRANSITION_INFLIGHT_S = 90.0
 
 
 def finite_form_lead_s(bpm: float) -> float:
@@ -75,6 +79,39 @@ def finite_form_lead_s(bpm: float) -> float:
     """
     turn_s = DJ_REASONING_BUDGET_S + DJ_TURN_BUDGET_S
     return turn_s + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
+
+
+def dj_note_track_finished(dj: Optional["DJModeController"], snapshot: Any) -> bool:
+    """TEMP(ADR-0148, #3136/ADR-0142): страховка на старой схеме «таймер будит LLM»;
+    настоящий фикс — детерминированный DJ-движок.
+
+    Issue #3136 — трек доиграл сам (``finished_track_id``) в DJ-режиме.
+
+    Не ждать таймер (живой замер 01.10: форма кончилась на 97 с, переход
+    только на 203 с — 2 минуты тишины): снять гейты и назначить переход на
+    ближайший тик. Не трогает: выключенный DJ, повторный снимок того же
+    трека, переход, который уже в пути (:data:`DJ_TRANSITION_INFLIGHT_S`).
+    Возвращает True, если переход назначен.
+    """
+    if dj is None:
+        return False
+    state = dj.state
+    finished_id = getattr(snapshot, "finished_track_id", None) if getattr(snapshot, "state", None) == "idle" else None
+    if not state.enabled or not isinstance(finished_id, str) or not finished_id:
+        return False
+    if state.finished_handled_id == finished_id:
+        return False
+    state.finished_handled_id = finished_id
+    now = dj._clock()
+    if state.last_transition_at and now - state.last_transition_at < DJ_TRANSITION_INFLIGHT_S:
+        return False
+    state.form_ends_at = None
+    state.form_stops_at = None
+    state.next_transition_at = min(state.next_transition_at, now)
+    dj._logger.info(
+        f"🎧 DJ: трек {finished_id} доиграл сам — переход на ближайшем тике, без ожидания таймера (issue #3136)"
+    )
+    return True
 
 
 def plan_entry(plan: str, track_no: int) -> str:
@@ -138,6 +175,9 @@ class DJState:
     # пересчёта. ``None`` — данных нет (топик ещё не пришёл, форма не
     # играет) — тогда ``tick()`` этим полем не гейтится вообще.
     form_ends_at: Optional[float] = None
+    # Issue #3136 — id последнего доигравшего трека, на который DJ уже
+    # отреагировал немедленным переходом (повторный снимок idle — не повод).
+    finished_handled_id: Optional[str] = None
     # Issue #2856 — лимит сета по ВРЕМЕНИ. ``started_at`` — стенное время
     # генуинного старта сета (``0.0`` — неизвестно, ``tick()`` взведёт при
     # первом вызове). ``max_seconds`` / ``max_tracks`` — явный лимит от
@@ -1357,4 +1397,4 @@ def dj_final_turn(dj: Optional["DJModeController"], is_dj_auto: bool) -> bool:
     return bool(is_dj_auto) and getattr(state, "final_prompted", False) is True
 
 
-__all__ = ["DJModeController", "DJState", "DJHook", "dj_final_turn", "plan_entry"]
+__all__ = ["DJModeController", "DJState", "DJHook", "dj_final_turn", "dj_note_track_finished", "plan_entry"]
