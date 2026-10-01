@@ -137,7 +137,7 @@
     }
   },
   "_refactor_cards": {
-    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#2556 (handle_result decomp)"
+    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#3289 (handle_result decomp)"
   },
   "_adr_reference": {
     "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:MiniMaxTTSProvider.stream": "docs/adr/0145-class-budget-and-cc-scope.md"
@@ -261,7 +261,7 @@
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
       "cc": 21,
-      "since": "Bumped 29->22 after refactor in #2626 (CC-budget guard) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
+      "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; живая карточка долга: #3291) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
       "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
@@ -351,7 +351,7 @@
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
       "method": "MusicManager.execute_code",
       "cc": 19,
-      "since": "Bumped 23->22 after refactor in #2626 (CC-budget guard) — extracted volume-decision helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
+      "since": "Bumped 23->22 after refactor in issue 2626 (CC-budget guard, closed) — extracted volume-decision helper; живая карточка долга: #3290. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",
