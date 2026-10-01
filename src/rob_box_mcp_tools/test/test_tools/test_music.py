@@ -5251,18 +5251,19 @@ class TestComposeMusicToolClubStyle:
         Библиотеки мелодий нет → ``name`` не тема, а подпись: club играет,
         ответ прямо говорит, что темы в треке нет. Раньше тот же вызов
         заканчивался хвостом «Проигнорировано в club: lead_synth, name.»,
-        который модель не замечала.
+        который модель не замечала. (Issue #3268: lead_synth club теперь
+        играет — неприменённый параметр здесь bass_synth.)
         """
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec"):
-            result = tool.execute(style="club", name="imperial march", lead_synth="blip")
+            result = tool.execute(style="club", name="imperial march", bass_synth="dub")
         assert result.success is True, result.error
         assert result.data["style"] == "club"
         assert result.message.startswith("⚠️ name='imperial march' не найдено в библиотеке")
         assert "ТЕМЫ в треке нет" in result.message
-        assert "Проигнорировано в club (трек звучит БЕЗ них): lead_synth." in result.message
+        assert "Проигнорировано в club (трек звучит БЕЗ них): bass_synth." in result.message
         assert result.message.index("Проигнорировано") < result.message.index("Играю клубный трек")
-        assert result.data["ignored_params"] == ["lead_synth"]
+        assert result.data["ignored_params"] == ["bass_synth"]
 
     # ── Issue #3169: club несёт человеческое имя трека ────────────────
 
@@ -5330,8 +5331,11 @@ class TestComposeMusicToolClubStyle:
         hook = result.data["club_hook"]
         assert (hook["id"], hook["title"], hook["source"]) == ("smb", "Super Mario Bros", "library")
         assert "Lead играет хук темы «Super Mario Bros» (id=smb)" in result.message
-        # тембры/форма classic club не играет — и честно это говорит
-        assert result.data["ignored_params"] == ["bass_synth", "drum_style", "form", "lead_synth", "pad_synth"]
+        # форму/бас classic club не играет — и честно это говорит; тембр
+        # лида/пэда из палитры club играет (issue #3268)
+        assert result.data["ignored_params"] == ["bass_synth", "drum_style", "form"]
+        assert (result.data["club_kit"]["lead"], result.data["club_kit"]["pad"]) == ("blip", "sinepad")
+        assert "p1 >> blip(" in code and "p3 >> sinepad(" in code
         assert result.message.startswith("⚠️ Проигнорировано в club")
         assert "не найдено в библиотеке" not in result.message
 
