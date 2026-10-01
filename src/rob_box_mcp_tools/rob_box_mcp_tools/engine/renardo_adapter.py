@@ -126,21 +126,24 @@ def ramp_down_group(send_osc: Callable[..., None], group: int = 1,
 def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
     """Загрузить буферы символов ``play()`` до exec; вернуть символы без сэмпла.
 
-    ``"."`` — пауза, пробел — разделитель; ``"-"`` — звучащий хэт (#1815). Renardo отдаёт
-    буфер-заглушку ``nil`` с ``bufnum == 0``, когда файла нет (``BufferManagement.py:116,209``).
-    Повторный вызов — попадание в кэш Renardo.
+    ``"."`` — пауза, пробел — разделитель; ``"-"`` — звучащий хэт (#1815). ``"X:12"`` — символ с
+    номером файла ``sample=`` (``Program.samples`` v2, бочка ``knowledge.KICK_SOUNDS``): грузится тот
+    буфер, что прозвучит, а не нулевой. Renardo отдаёт буфер-заглушку ``nil`` с ``bufnum == 0``,
+    когда файла нет (``BufferManagement.py:116,209``). Повторный вызов — попадание в кэш Renardo.
     """
     missing: List[str] = []
-    for symbol in symbols:
+    for entry in symbols:
+        symbol, _, index = entry.partition(":") if len(entry) > 2 and entry[1] == ":" else (entry, "", "")
         if symbol.isspace() or symbol == ".":
             continue
         try:
-            buf = samples.getBufferFromSymbol(symbol, 0)
+            args = (symbol, 0, int(index)) if index else (symbol, 0)  # (символ, spack, номер файла)
+            buf = samples.getBufferFromSymbol(*args)
         except Exception:  # noqa: BLE001 — символ может не иметь сэмпла
-            missing.append(symbol)
+            missing.append(entry)
             continue
         if getattr(buf, "bufnum", None) == 0:
-            missing.append(symbol)
+            missing.append(entry)
     return missing
 
 
@@ -182,7 +185,7 @@ class RenardoAdapter:
             return "unknown_synth", f"синтов нет на сервере: {', '.join(unknown)}"
         missing = load_sample_buffers(ns["Samples"], sorted(program.samples))
         if missing:
-            return "missing_sample", f"нет сэмплов для символов: {''.join(missing)}"
+            return "missing_sample", f"нет сэмплов для символов: {' '.join(missing)}"
         return None
 
     def start(self, program: Any, on_started: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:

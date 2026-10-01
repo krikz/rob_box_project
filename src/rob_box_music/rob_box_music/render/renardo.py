@@ -193,7 +193,8 @@ def render(track: Track, deck: str) -> Program:
         line = _tonal_line if role in kn.TONAL_ROLES else _drum_line
         lines.append(line(slots[role], role, part, track))
     tonal = {p.synth_or_sample for r, p in track.parts.items() if r in kn.TONAL_ROLES}
-    drums = {kn.DRUM_SYMBOLS[r] for r in track.parts if r not in kn.TONAL_ROLES}
+    drums = {kn.DRUM_SYMBOLS[r] + (f":{p.sample}" if p.sample else "")
+             for r, p in track.parts.items() if r not in kn.TONAL_ROLES}
     return Program(
         code="\n".join(lines) + "\n", track_id=track.track_id, deck=deck, bpm=track.bpm,
         form_beats=float(track.form.bars_total * BEATS_PER_BAR), slots=slots,

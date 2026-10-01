@@ -255,13 +255,14 @@ DUCK_DEPTH = 1.0
 
 #: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека. Только
 #: синты с замером громкости (:data:`LANE_DB_AT_UNIT`), из палитры роли и не ``held`` (:data:`SYNTH_TRAITS`).
-#: Пэд звучит 16-ми под сайдчейн, поэтому только пэды, чей хвост равен ``sus`` (``sinepad``, ``space``);
-#: ``warmpad`` (хвост 1.2 с) размазал бы огибающую и сложил бы 10 голосов в один.
+#: Пэд звучит 16-ми под сайдчейн, поэтому только пэды, чей хвост равен ``sus``: ``warmpad`` (хвост 1.2 с)
+#: размазал бы огибающую и сложил бы 10 голосов в один. ``space`` убран по записям робота 02.10 (PR-3c):
+#: на нём середина перевешивала низ (0.54–0.60 при низе 0.39–0.43, A9 — низ ≥ 0.5) — громче модели на 4–6 дБ.
 TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("space",)},
-    "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("space", "sinepad")},
+    "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("sinepad",)},
+    "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("sinepad",)},
     "bright": {"lead": ("pluck", "blip"), "bass": ("bass",), "pad": ("sinepad",)},
-    "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad", "space")},
+    "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad",)},
 }
 #: Строка ``THEMES`` → семья тембров; тема не из таблицы — :data:`DEFAULT_TIMBRE`.
 THEME_TIMBRE: Mapping[str, str] = {"space": "dark", "cyber": "hard", "kids": "bright", "slavic": "warm",

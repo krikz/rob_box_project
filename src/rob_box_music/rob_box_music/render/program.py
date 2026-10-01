@@ -21,7 +21,7 @@ class Program:
     form_beats: float
     slots: Mapping[str, str]  # роль → слот деки
     synths: FrozenSet[str]  # SynthDef-ы тональных ролей (сверка с сервером)
-    samples: FrozenSet[str]  # символы play() ударных ролей
+    samples: FrozenSet[str]  # символы play() ударных ролей; ``X:12`` — с номером файла ``sample=``
 
 
 __all__ = ["Program"]

@@ -213,6 +213,22 @@ def test_adapter_check_passes_when_synths_and_buffers_exist():
     assert adapter.check(_program(samples=("X", "-", "."))) is None
 
 
+def test_adapter_preloads_the_sample_index_the_track_plays():
+    """PR-3c: бочка v2 — ``X:12``; грузится буфер файла 12, а не нулевой (иначе первый удар — без буфера)."""
+    loaded = []
+
+    class Recording:
+        def getBufferFromSymbol(self, symbol, spack, index=0):
+            loaded.append((symbol, spack, index))
+            return SimpleNamespace(bufnum=0 if (symbol, index) == ("X", 99) else 7)
+
+    adapter, ns, *_ = _adapter()
+    ns["Samples"] = Recording()
+    assert adapter.check(_program(samples=("X:12", "-"))) is None
+    assert sorted(loaded) == [("-", 0, 0), ("X", 0, 12)]
+    assert adapter.check(_program(samples=("X:99",))) == ("missing_sample", "нет сэмплов для символов: X:99")
+
+
 def test_adapter_starts_form_on_a_multiple_of_form_beats():
     adapter, ns, clock, _ = _adapter()
     got = []

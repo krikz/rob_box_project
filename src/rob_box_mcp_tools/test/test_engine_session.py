@@ -103,7 +103,7 @@ class Log:
 def _rig(source=None, submit=None, *, exec_fails=False):
     clock = SimClock()
     slots = [s for deck in kn.DECK_SLOTS.values() for s in deck]
-    ns = {"Clock": clock, "Samples": SimpleNamespace(getBufferFromSymbol=lambda s, i: SimpleNamespace(bufnum=7)),
+    ns = {"Clock": clock, "Samples": SimpleNamespace(getBufferFromSymbol=lambda *a: SimpleNamespace(bufnum=7)),
           "play": lambda *a, **k: None, "var": lambda *a, **k: None, "Scale": SimpleNamespace(chromatic=None)}
     ns.update({synth: (lambda *a, **k: None) for synth in V2_SYNTHS})  # тембры темы (PR-3c) — вся таблица
     ns.update({s: Player(clock, s) for s in slots})
