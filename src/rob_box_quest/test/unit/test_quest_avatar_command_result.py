@@ -62,12 +62,16 @@ class TestOnAvatarCommandResult(unittest.TestCase):
         )
         QuestNode._on_avatar_command_result(host, msg)
 
-        # Первым идёт avatar_command_result; следом — tars_console (#3253 Ш4):
-        # имя тула для консоли ТАРС 1 (покрыто в test_quest_tars_console.py).
+        # Первым идёт avatar_command_result; следом — tars_console (#3253 Ш4, #3296):
+        # событие хода (имя тула) и kind="reply" с полным текстом summary.
+        # Подробно покрыто в test_quest_tars_console.py.
         calls = host.ws_server.broadcast_json_event.call_args_list
         self.assertEqual(
-            [c.args[0]["type"] for c in calls], ["avatar_command_result", "tars_console"]
+            [c.args[0]["type"] for c in calls],
+            ["avatar_command_result", "tars_console", "tars_console"],
         )
+        console = [(c.args[0]["kind"], c.args[0]["text"]) for c in calls[1:]]
+        self.assertEqual(console, [("event", "tool: say"), ("reply", "Выполнено")])
         event = calls[0].args[0]
         self.assertEqual(event["type"], "avatar_command_result")
         self.assertEqual(event["request_id"], "quest:sid1:100")
@@ -93,6 +97,16 @@ class TestOnAvatarCommandResult(unittest.TestCase):
             host, _result_msg({"request_id": "r", "ok": False, "summary": "x"})
         )
         # Не упало — relay best-effort.
+
+    def test_failed_turn_sends_no_reply_event(self) -> None:
+        host = _stub_host()
+        QuestNode._on_avatar_command_result(
+            host, _result_msg({"request_id": "r", "ok": False, "summary": "llm_error: X"})
+        )
+        calls = host.ws_server.broadcast_json_event.call_args_list
+        kinds = [c.args[0].get("kind") for c in calls]
+        self.assertNotIn("reply", kinds)
+        self.assertEqual(kinds, [None, "event"])  # command_result + «ошибка хода»
 
 
 if __name__ == "__main__":
