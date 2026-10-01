@@ -2086,6 +2086,14 @@ class AvatarSupervisor(Node):
                         f"[issue #2113] show_metrics tool registration "
                         f"failed: {exc}"
                     )
+            # Issue #3299 — ``list_faces``: список лиц из /data/faces (:ro).
+            # Локальный инструмент ТАРС (в MCP-каталог не попадает —
+            # личность его не видит, ADR-0123).
+            from rob_box_supervisor.face_roster_tool import (  # noqa: PLC0415
+                register_list_faces_tool,
+            )
+
+            register_list_faces_tool(registry)
             provider.update_tools(
                 [
                     {

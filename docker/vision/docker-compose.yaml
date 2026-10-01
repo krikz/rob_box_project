@@ -532,6 +532,10 @@ services:
       # (``operator`` / ``personality``, миграция 011_agent_namespace.sql).
       # Тот же host-path, что у voice-assistant (./data/voice → /data).
       - ./data/voice:/data
+      # issue #3299 — инструмент ТАРС ``list_faces`` читает лицевую базу.
+      # Только чтение (как у telegram-bot, #3025): нода vision-face пишет сюда
+      # сама, supervisor не должен менять базу даже случайно (ADR-0123).
+      - ./data/faces:/data/faces:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]
     depends_on:
       zenoh-router:
