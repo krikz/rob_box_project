@@ -163,7 +163,7 @@ def test_resolve_query_bare_word() -> None:
     """Оператор сказал «cpu» — уходит рабочее выражение, а не голое слово."""
     src = MetricsSource(http_get=_fake_http())
     resolved, note = src.resolve_query("cpu")
-    assert resolved == "rate(process_cpu_seconds_total[5m])"
+    assert resolved == "100 * rate(process_cpu_seconds_total[5m])"
     assert note
 
 
@@ -187,7 +187,7 @@ def test_resolve_query_bare_alias_skips_catalog_fetch() -> None:
 
     src = MetricsSource(http_get=_get)
     resolved, note = src.resolve_query("cpu")
-    assert resolved == "rate(process_cpu_seconds_total[5m])"
+    assert resolved == "100 * rate(process_cpu_seconds_total[5m])"
     assert note
     assert calls == [], f"unexpected HTTP calls: {calls}"
 
