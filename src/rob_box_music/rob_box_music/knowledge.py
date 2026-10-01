@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping, Tuple
 
@@ -203,4 +204,101 @@ __all__ = [
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
     "SCALES", "SYNTH_PALETTE", "SYNTH_TRAITS", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
+]
+
+
+# ── Микс (PR-3c, ADR-0149 §3.8, §3.10, §8.1): громкость слоёв, уровни ролей, сайдчейн, тембры, бочка ────────
+
+#: Модель громкости слоя — перенос из ``core/club_loudness`` (старый модуль теперь импортирует отсюда).
+#: dB RMS слоя, звучащего весь блок, при уровне замера: ``{слой: (уровень, {вариант: dB})}``. Ключ ударных —
+#: рисунок, клэп один, тональных — синт. Это МОДЕЛЬ (офлайн-рендер), не замер на роботе: :data:`LOUDNESS_SOURCE`.
+LOUDNESS_SOURCE = (
+    "офлайн-рендер scsynth 3.14.1 NRT 16 кГц, renardo_lib 0.9.13, masterfilter gain=0.5 dyn=0, "
+    "dj_dave_32 блоки 8-10, 124 BPM, среднее по 5 тоникам (29.09.2026); не замер на роботе"
+)
+LAYER_MEASURED_DB: Mapping[str, Tuple[float, Mapping[str, float]]] = {
+    "kick": (0.6, {"by_design": -24.1, "four_on_floor": -24.6, "half_time": -27.6,
+                   "breakbeat": -24.6, "outrun": -23.7}),
+    "hats": (0.14, {"by_design": -68.4, "offbeat": -74.0, "eighths": -70.9, "shuffle": -70.0}),
+    "clap": (0.24, {"clap": -55.7}),
+    "lead": (0.28, {"pluck": -53.4, "blip": -55.0, "arpy": -56.3, "karp": -66.3, "marimba": -68.9}),
+    "bass": (0.4, {"bass": -24.4, "retrobass": -41.9, "dub": -24.8}),
+    "pad": (0.11, {"sinepad": -74.4, "warmpad": -43.1, "space": -54.5}),
+}
+#: Наклон громкости по ``amp``: ``dB = 20·p·log10(amp)``; у ``dub``/``karp``/``sinepad`` ``amp`` входит дважды.
+AMP_EXPONENT: Mapping[str, float] = {"dub": 2.0, "karp": 2.0, "sinepad": 2.0}
+#: dB RMS слоя при ``amp`` 1.0 — пересчёт замера: ``dB − 20·p·log10(уровень)``.
+LANE_DB_AT_UNIT: Mapping[str, Mapping[str, float]] = {
+    lane: {opt: round(db - 20.0 * AMP_EXPONENT.get(opt, 1.0) * math.log10(level), 2) for opt, db in table.items()}
+    for lane, (level, table) in LAYER_MEASURED_DB.items()
+}
+#: Потолок ``amp`` одного слоя (``max_amp`` санитайзера v1; ``club_arranger.MAX_LAYER_AMP`` импортирует отсюда).
+MAX_LAYER_AMP = 0.85
+
+#: Вариант модели громкости ударной роли v2: рисунок, ближайший к сетке ``arrange.rhythm`` (хэты — оффбит).
+DRUM_LOUDNESS_KEY: Mapping[str, str] = {"kick": "four_on_floor", "hats": "offbeat", "clap": "clap"}
+#: Уровень роли v2, dB RMS в шкале модели (роль звучит всю секцию). Бочка и бас держат низ, пэд и лид ниже.
+#: Подобрано по записям робота 02.10 (``compare.py``, цель A9 — низ 0.5–0.8, эталон 0.65/0.32/0.01): при пэде
+#: −40 и лиде −44 середина перевешивала низ (0.43–0.68 против 0.32–0.56), при хэтах на потолке L−R уходил за
+#: 1 дБ (статическая панорама хэтов). Недостижимый уровень (лид ``arpy`` на потолке −46.65) не прячется:
+#: ``arrange.mix`` пишет в модель то, что синт может дать.
+ROLE_LEVEL_DB: Mapping[str, float] = {
+    "kick": -36.0, "bass": -37.0, "pad": -44.0, "lead": -46.0, "clap": -46.0, "hats": -61.0,
+}
+
+#: Сайдчейн «S» (ADR-0149 §3.8): усиление 16-х после удара триггера при глубине 1 — атака мгновенная,
+#: подъём за 3 шага, дальше 1.0. Глубина ``d`` даёт ``1 − d·(1 − форма)``. Триггер — рисунок бочки жанра
+#: («призрачная бочка»: тот же рисунок и в брейке, и в такте fill-а — огибающая не дёргается).
+SIDECHAIN_SHAPE: Tuple[float, ...] = (0.3, 0.55, 0.8, 1.0)
+DUCK_ROLES: Tuple[str, ...] = ("bass", "pad")
+DUCK_DEPTH = 1.0
+
+#: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека. Только
+#: синты с замером громкости (:data:`LANE_DB_AT_UNIT`), из палитры роли и не ``held`` (:data:`SYNTH_TRAITS`).
+#: Пэд звучит 16-ми под сайдчейн, поэтому только пэды, чей хвост равен ``sus`` (``sinepad``, ``space``);
+#: ``warmpad`` (хвост 1.2 с) размазал бы огибающую и сложил бы 10 голосов в один.
+TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("space",)},
+    "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("space", "sinepad")},
+    "bright": {"lead": ("pluck", "blip"), "bass": ("bass",), "pad": ("sinepad",)},
+    "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad", "space")},
+}
+#: Строка ``THEMES`` → семья тембров; тема не из таблицы — :data:`DEFAULT_TIMBRE`.
+THEME_TIMBRE: Mapping[str, str] = {"space": "dark", "cyber": "hard", "kids": "bright", "slavic": "warm",
+                                   "winter": "bright"}
+DEFAULT_TIMBRE = "warm"
+
+
+@dataclass(frozen=True)
+class KickSound:
+    """Сэмпл бочки ``play(symbol, sample=N)`` и его замер на роботе (запись ``jack_rec``, бочка одна, 4/4 @130)."""
+
+    symbol: str
+    sample: int
+    file: str  # имя в ``0_foxdot_default/x/upper`` (сортировка Renardo ``_getFileInDir``)
+    loudness_offset_db: float  # энергия удара против ``X:0`` по файлу — поправка к модели ``four_on_floor``
+    low: float  # доля энергии записи < 250 Гц
+    sub: float  # доля энергии записи < 120 Гц
+
+
+#: Бочки, замеренные 02.10.2026 (Vision Pi, ``jack_rec``). ``X`` без ``sample=`` на роботе звучит щелчком:
+#: < 250 Гц 0.3 %, > 2 кГц 98 % записи, хотя файл ``000_Kick_HSS2_NoN.wav`` на 99 % ниже 250 Гц (причина не
+#: найдена, находка #3312). ``X:12`` — 94.5 % записи ниже 250 Гц, 5.5 % середины (атака), без гула 808.
+KICK_SOUNDS: Mapping[str, KickSound] = {
+    "house": KickSound("X", 12, "012_Kick_House_GhostFader.wav", 0.98, 0.945, 0.862),
+}
+#: Жанр → бочка из :data:`KICK_SOUNDS`.
+GENRE_KICK: Mapping[str, str] = {"club": "house"}
+
+#: Панорама (перенос таблиц ``core/club_stereo``; механика по ударам — PR-9): вынос хэтов/клэпа, полуширина
+#: пэда, период качания пэда (доли). ``ROLE_PAN`` — статическая панорама ролей v2 до PR-9.
+PAN_HATS = 0.4
+PAN_PAD_WIDTH = 0.6
+PAD_PAN_BEATS = 32
+ROLE_PAN: Mapping[str, float] = {"hats": 0.25, "clap": -0.2}
+
+__all__ += [
+    "AMP_EXPONENT", "DEFAULT_TIMBRE", "DRUM_LOUDNESS_KEY", "DUCK_DEPTH", "DUCK_ROLES", "GENRE_KICK", "KICK_SOUNDS",
+    "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "MAX_LAYER_AMP", "PAD_PAN_BEATS",
+    "PAN_HATS", "PAN_PAD_WIDTH", "ROLE_LEVEL_DB", "ROLE_PAN", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "TIMBRES",
 ]

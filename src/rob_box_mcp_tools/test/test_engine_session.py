@@ -82,6 +82,10 @@ class Player:
         self.stopped_at.append(self.clock.beat)
 
 
+#: Все синты тембров v2 (``knowledge.TIMBRES``): сервер-заглушка знает их все.
+V2_SYNTHS = frozenset(x for fam in kn.TIMBRES.values() for synths in fam.values() for x in synths)
+
+
 class Log:
     def __init__(self):
         self.lines = []
@@ -100,11 +104,11 @@ def _rig(source=None, submit=None, *, exec_fails=False):
     clock = SimClock()
     slots = [s for deck in kn.DECK_SLOTS.values() for s in deck]
     ns = {"Clock": clock, "Samples": SimpleNamespace(getBufferFromSymbol=lambda s, i: SimpleNamespace(bufnum=7)),
-          "play": lambda *a, **k: None, "var": lambda *a, **k: None, "Scale": SimpleNamespace(chromatic=None),
-          "bass": lambda *a, **k: None, "sinepad": lambda *a, **k: None, "pluck": lambda *a, **k: None}
+          "play": lambda *a, **k: None, "var": lambda *a, **k: None, "Scale": SimpleNamespace(chromatic=None)}
+    ns.update({synth: (lambda *a, **k: None) for synth in V2_SYNTHS})  # тембры темы (PR-3c) — вся таблица
     ns.update({s: Player(clock, s) for s in slots})
     sent = []
-    adapter = RenardoAdapter(lambda: ns, lambda: frozenset({"bass", "sinepad", "pluck"}), lambda *a: sent.append(a))
+    adapter = RenardoAdapter(lambda: ns, lambda: V2_SYNTHS, lambda *a: sent.append(a))
     states, events, log = [], [], Log()
     owner = PlayerOwner(adapter, states.append, lambda e: events.append(json.loads(e)), logger=log,
                         clock=lambda: 1000.0)

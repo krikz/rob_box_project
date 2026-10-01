@@ -3,7 +3,9 @@
 Подмножество Renardo: шесть присваиваний плеерам деки. Ударные — ``play("<сетка>")``
 по 16-м, тональные — список MIDI по 16-м (``None`` — пауза, кортеж — аккорд) в
 ``Scale.chromatic`` с ``root=0, oct=0``. Секции — ``amp=var([...], [доли])`` по
-``Section.roles``; акценты — ``amplify=[...]``; свинг ``offset_ms`` — ``delay=[...]`` в долях
+``Section.roles``, уровень ``amp`` — из уровня роли по модели громкости (``arrange.mix.level_amp``); акценты ×
+сайдчейн-огибающая ролей ``Mix.duck_roles`` — ``amplify=[...]`` (период списка свёрнут); бочка — ``sample=`` из
+``knowledge.KICK_SOUNDS``; свинг ``offset_ms`` — ``delay=[...]`` в долях
 (глобальный ``Clock.swing`` не используется: сайдчейн не должен уехать от бочки, ADR-0149 §3.4).
 Список нот и рисунок ударных свёрнуты до наименьшего периода в тактах, на котором модель
 совпадает во всех звучащих секциях, — поэтому программа короткая, а события нот равны модели
@@ -18,6 +20,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
+from ..arrange.mix import duck_envelope, level_amp
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Part, Track, validate
 from .program import Program
 
@@ -61,14 +64,30 @@ def _gate(track: Track, role: str, amp: float) -> str:
     return f"var({_list(v for v, _ in segments)}, {_list(_num(b) for _, b in segments)})"
 
 
-def _amp(part: Part) -> float:
-    return 10.0 ** (part.level_db / 20.0)
+def _period(values: Sequence[float]) -> List[float]:
+    """Наименьший период списка (Renardo зацикливает ``amplify`` по номеру события)."""
+    n = len(values)
+    for p in (p for p in range(1, n + 1) if n % p == 0):
+        if all(values[i] == values[i % p] for i in range(n)):
+            return list(values[:p])
+    return list(values)
 
 
-def _tail(track: Track, role: str, part: Part, accents: Sequence[int]) -> List[str]:
-    opts = [f"amp={_gate(track, role, _amp(part))}"]
-    if len(set(accents)) > 1:
-        opts.append(f"amplify={_list(_num(kn.ACCENT_AMPLIFY[a]) for a in accents)}")
+def _amplify(track: Track, role: str, accents: Sequence[int], varied: bool) -> List[float]:
+    """Акцент (если акценты ударов разные) × сайдчейн по шагу такта; ``accents`` — по 16-м свёрнутого рисунка."""
+    duck = duck_envelope(track.mix.duck_trigger, track.mix.duck_depth) if role in track.mix.duck_roles else None
+    out = []
+    for i, accent in enumerate(accents):
+        gain = kn.ACCENT_AMPLIFY[accent] if varied else 1.0
+        out.append(round(gain * (duck[i % STEPS_PER_BAR] if duck else 1.0), 3))
+    return _period(out)
+
+
+def _tail(track: Track, role: str, part: Part, accents: Sequence[int], varied: bool) -> List[str]:
+    opts = [f"amp={_gate(track, role, level_amp(role, part))}"]
+    amplify = _amplify(track, role, accents, varied)
+    if len(set(amplify)) > 1:
+        opts.append(f"amplify={_list(_num(a) for a in amplify)}")
     pan = track.mix.pan.get(role, 0.0)
     if pan:
         opts.append(f"pan={_num(pan)}")
@@ -87,12 +106,13 @@ def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     symbol = kn.DRUM_SYMBOLS[role]
     accents = [c[0] for c in pattern if c]
     full = [c[0] if c else 0 for c in pattern]
-    opts = _tail(track, role, part, full if len(set(accents)) > 1 else [0])
+    opts = _tail(track, role, part, full, len(set(accents)) > 1)
     delays = [_delay_beats(c[1], track.bpm) if c else 0.0 for c in pattern]
     if any(delays):
         opts.append(f"delay={_list(_num(d) for d in delays)}")
     text = "".join(symbol if c else "." for c in pattern)
-    return f'{slot} >> play("{text}", dur=1/4, ' + ", ".join(opts) + ")"
+    sample = [f"sample={part.sample}"] if part.sample else []
+    return f'{slot} >> play("{text}", dur=1/4, ' + ", ".join(sample + opts) + ")"
 
 
 def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
@@ -146,7 +166,7 @@ def _tonal_line(slot: str, role: str, part: Part, track: Track) -> str:
     sus_text = _num(sus[0]) if len(set(sus)) == 1 else _list(_num(s) for s in sus)
     opts = [f"dur=1/4, sus={sus_text}, scale=Scale.chromatic, root=0, oct=0"]
     onsets = {c[2] for c in pattern if c}
-    opts += _tail(track, role, part, accents if len(onsets) > 1 else [0])
+    opts += _tail(track, role, part, accents, len(onsets) > 1)
     return f"{slot} >> {part.synth_or_sample}({_list(_note(c) for c in pattern)}, " + ", ".join(opts) + ")"
 
 

@@ -66,6 +66,8 @@ import random
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music.knowledge import MAX_LAYER_AMP
+
 from .arrangement_matrix import FULL, SECTION_TEMPLATES, ArrangementMatrix
 from .club_energy import apply_energy, energy_note
 from .club_loudness import calibrate_levels
@@ -166,8 +168,7 @@ CLUB_SYNTHS = frozenset(s for synths in ROLE_PALETTE.values() for s in synths)
 
 # Стерео-раскладка партий — :mod:`core.club_stereo` (бочка/бас/лид без ``pan``).
 
-#: Потолок уровня одного слоя (тот же, что ``max_amp`` санитайзера).
-MAX_LAYER_AMP = 0.85
+# Потолок уровня одного слоя ``MAX_LAYER_AMP`` (тот же, что ``max_amp`` санитайзера) — импорт из knowledge.
 
 #: Пампинг: значения ``amplify`` вне/на шаге бочки (1:3, как в эталоне).
 PUMP_HIGH = 0.75

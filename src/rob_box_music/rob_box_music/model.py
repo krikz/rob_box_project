@@ -81,8 +81,9 @@ class Part:
     synth_or_sample: str
     grid: Grid
     pitches: Optional[Tuple[PitchEvent, ...]]  # только у тональных ролей
-    level_db: float
+    level_db: float  # dB RMS в шкале модели громкости (``knowledge.LANE_DB_AT_UNIT``), роль звучит всю секцию
     register: Tuple[int, int]
+    sample: int = 0  # номер файла ``play()``-символа ударной роли (бочка — ``knowledge.KICK_SOUNDS``)
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,8 @@ class Mix:
     pan: Mapping[str, float]  # -1..1
     duck_depth: float  # 0..1
     fx: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # имя секции → эффекты
+    duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
+    duck_trigger: Tuple[int, ...] = ()  # шаги такта 0..15, от которых считается огибающая (рисунок бочки)
 
 
 @dataclass(frozen=True)
@@ -223,6 +226,7 @@ def _check_parts(track: Track) -> None:
             _check_tonal(role, part, track)
         else:
             _require(part.pitches is None, f"parts.{role}.pitches", "у ударной роли нет высот")
+            _require(isinstance(part.sample, int) and part.sample >= 0, f"parts.{role}.sample", "номер сэмпла < 0")
         _require(_finite(part.level_db) and part.level_db <= kn.role_ceiling(role), f"parts.{role}.level_db",
                  f"{part.level_db} дБ выше потолка роли {kn.role_ceiling(role)}")
         _require(track.mix.level_db.get(role) == part.level_db, f"mix.level_db.{role}",
@@ -232,6 +236,16 @@ def _check_parts(track: Track) -> None:
         _require(not missing, f"form.sections[{i}].roles", f"роли без партии: {missing}")
 
 
+def _check_duck(mix: Mix, parts: Mapping[str, Part]) -> None:
+    roles = set(mix.duck_roles)
+    _require(roles <= set(parts) & set(kn.TONAL_ROLES), "mix.duck_roles",
+             f"сайдчейн только на тональных партиях трека: {sorted(roles)}")
+    trigger = mix.duck_trigger
+    _require(all(isinstance(s, int) and 0 <= s < STEPS_PER_BAR for s in trigger)
+             and list(trigger) == sorted(set(trigger)), "mix.duck_trigger", f"шаги {trigger} не 0..15 по возрастанию")
+    _require(not roles or bool(trigger), "mix.duck_trigger", "сайдчейн без триггера")
+
+
 def _check_levels(track: Track) -> None:
     limit = 10.0 ** (kn.LEVEL_CEILINGS["master_peak_db"] / 10.0)
     for i, sec in enumerate(track.form.sections):
@@ -239,6 +253,7 @@ def _check_levels(track: Track) -> None:
         _require(power <= limit, f"form.sections[{i}].roles",
                  f"сумма пиков {10 * math.log10(power):.1f} дБ выше потолка {kn.LEVEL_CEILINGS['master_peak_db']}")
     _require(0.0 <= track.mix.duck_depth <= 1.0, "mix.duck_depth", "глубина сайдчейна вне 0..1")
+    _check_duck(track.mix, track.parts)
     for role, pan in track.mix.pan.items():
         _require(-1.0 <= pan <= 1.0, f"mix.pan.{role}", f"панорама {pan} вне -1..1")
     for role in ("kick", "bass"):

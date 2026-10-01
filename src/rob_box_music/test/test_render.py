@@ -155,7 +155,7 @@ def test_render_is_deterministic_and_deck_only_changes_slots():
     assert [swap[ln.split()[0]] + ln[2:] for ln in lines_a] == b.code.splitlines()[1:]
     assert "Clock" not in a.code, "темп и клок — у владельца плеера, не в программе трека"
     drums = {kn.DRUM_SYMBOLS[r] for r in track.parts if r not in kn.TONAL_ROLES}
-    assert a.synths == {"bass", "sinepad", "pluck"} and a.samples == drums
+    assert a.synths == {track.parts[r].synth_or_sample for r in kn.TONAL_ROLES} and a.samples == drums
     assert a.form_beats == track.form.bars_total * BEATS_PER_BAR
 
 
