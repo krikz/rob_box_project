@@ -6,10 +6,10 @@ from collections import defaultdict
 
 import pytest
 
-from melodies import CHROMATIC, LONG, MELODIES, SHORT, SLOW, profile
+from melodies import CHROMATIC, LONG, MELODIES, SHORT, SLOW, compose_p, profile
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import hook as hooks
-from rob_box_music.arrange.compose import HOOK_REGISTER, SECTION_BARS, SECTIONS, compose
+from rob_box_music.arrange.compose import HOOK_REGISTER, SECTION_BARS, SECTIONS
 from rob_box_music.model import BEATS_PER_BAR, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
@@ -88,17 +88,17 @@ def test_out_of_scale_melody_is_refused_not_repaired():
 def test_a_theme_melody_becomes_the_hook_on_most_roots():
     """Тема отвергается только честно (не ложится в коридор лида/под ней нет места пэду), на большинстве тоник — хук."""
     for name in ("long", "short", "slow"):
-        got = [compose(profile(root=r, hooks=(name,)), 1, melodies=MELODIES).hook for r in range(12)]
+        got = [compose_p(profile(root=r, hooks=(name,)), 1, melodies=MELODIES).hook for r in range(12)]
         assert sum(1 for h in got if h and h.source == name) >= 8, name
 
 
-HOOKED_ROOTS = [r for r in range(12) if compose(profile(root=r, hooks=("long",)), 1, melodies=MELODIES).hook]
+HOOKED_ROOTS = [r for r in range(12) if compose_p(profile(root=r, hooks=("long",)), 1, melodies=MELODIES).hook]
 
 
 @pytest.mark.parametrize("root", HOOKED_ROOTS)
 def test_track_hook_heard_in_drop_and_developed_by_sections(root):
     """drop = хук; build = только начало хука и пауза перед дропом; break — медленнее; drop2 — в терциях."""
-    track = compose(profile(root=root, hooks=("long",)), 1, set_seed=root, melodies=MELODIES)
+    track = compose_p(profile(root=root, hooks=("long",)), 1, set_seed=root, melodies=MELODIES)
     validate(track)
     assert track.hook is not None and track.hook.source == "long"
     lead = _lead_events(track)
@@ -120,7 +120,7 @@ def test_track_hook_heard_in_drop_and_developed_by_sections(root):
 
 def test_sections_are_not_identical_bars_of_one_loop():
     """Хук не повтор ×16: среди тактов лида с хуком больше разных, чем тактов в мотиве."""
-    track = compose(profile(hooks=("long",)), 1, melodies=MELODIES)
+    track = compose_p(profile(hooks=("long",)), 1, melodies=MELODIES)
     lead = _lead_events(track)
     bars = [tuple(b) for b in _bars(lead, 0, track.form.bars_total) if b]
     assert len(set(bars)) > track.hook.bars
@@ -128,7 +128,7 @@ def test_sections_are_not_identical_bars_of_one_loop():
 
 @pytest.mark.parametrize("seed", range(20))
 def test_hook_track_keeps_bass_off_kick_and_pad_under_lead(seed):
-    track = compose(profile(root=seed % 12), seed % 3 + 1, set_seed=seed, melodies=MELODIES)
+    track = compose_p(profile(root=seed % 12), seed % 3 + 1, set_seed=seed, melodies=MELODIES)
     program = render(track, "A")
     _parsed, events = program_events(program.code, program.form_beats)
     by = defaultdict(list)
@@ -141,28 +141,28 @@ def test_hook_track_keeps_bass_off_kick_and_pad_under_lead(seed):
 
 
 def test_compose_is_deterministic_by_seed():
-    a = compose(profile(), 2, set_seed=5, melodies=MELODIES)
-    assert a == compose(profile(), 2, set_seed=5, melodies=MELODIES)
-    assert render(a, "A") == render(compose(profile(), 2, set_seed=5, melodies=MELODIES), "A")
+    a = compose_p(profile(), 2, set_seed=5, melodies=MELODIES)
+    assert a == compose_p(profile(), 2, set_seed=5, melodies=MELODIES)
+    assert render(a, "A") == render(compose_p(profile(), 2, set_seed=5, melodies=MELODIES), "A")
 
 
 def test_last_played_hook_is_not_repeated_while_another_fits():
     for seed in range(10):
-        first = compose(profile(), 1, set_seed=seed, melodies=MELODIES).hook.source
-        second = compose(profile(), 1, set_seed=seed, melodies=MELODIES, recent_hooks=(first,)).hook.source
+        first = compose_p(profile(), 1, set_seed=seed, melodies=MELODIES).hook.source
+        second = compose_p(profile(), 1, set_seed=seed, melodies=MELODIES, recent_hooks=(first,)).hook.source
         assert second != first
 
 
 def test_no_usable_melody_falls_back_to_the_lead_motif():
-    track = compose(profile(hooks=("chroma",)), 1, melodies=MELODIES)
+    track = compose_p(profile(hooks=("chroma",)), 1, melodies=MELODIES)
     assert track.hook is None and track.history_key.hook is None
     assert track.parts["lead"].pitches, "мотив лида звучит, тишины нет"
-    assert compose(profile(), 1, melodies=None).hook is None
+    assert compose_p(profile(), 1, melodies=None).hook is None
 
 
 def test_n_seeds_give_different_tracks():
     """Разнообразие внутри одной темы: хук, тональность, прогрессия меняются от трека к треку."""
-    tracks = [compose(profile(root=s % 12), s, set_seed=s, melodies=MELODIES) for s in range(1, 13)]
+    tracks = [compose_p(profile(root=s % 12), s, set_seed=s, melodies=MELODIES) for s in range(1, 13)]
     assert len({t.hook.source for t in tracks}) >= 3
     assert len({(t.key.root, t.key.mode) for t in tracks}) >= 6
     assert len({t.history_key.progression for t in tracks}) >= 2

@@ -3,11 +3,13 @@
 Подмножество Renardo: шесть присваиваний плеерам деки. Ударные — ``play("<сетка>")``
 по 16-м, тональные — список MIDI по 16-м (``None`` — пауза, кортеж — аккорд) в
 ``Scale.chromatic`` с ``root=0, oct=0``. Секции — ``amp=var([...], [доли])`` по
-``Section.roles``; акценты — ``amplify=[...]``. Список нот свёрнут до наименьшего
-периода в тактах, на котором модель совпадает во всех звучащих секциях, — поэтому
-программа короткая, а события нот равны модели (тест на ``render.events``).
+``Section.roles``; акценты — ``amplify=[...]``; свинг ``offset_ms`` — ``delay=[...]`` в долях
+(глобальный ``Clock.swing`` не используется: сайдчейн не должен уехать от бочки, ADR-0149 §3.4).
+Список нот и рисунок ударных свёрнуты до наименьшего периода в тактах, на котором модель
+совпадает во всех звучащих секциях, — поэтому программа короткая, а события нот равны модели
+(тест на ``render.events``); fill-ы перед дропом удлиняют период рисунка до формы.
 
-Не умеет (честная ошибка :class:`RenderError`, а не тихая потеря): свинг ``offset_ms``,
+Не умеет (честная ошибка :class:`RenderError`, а не тихая потеря):
 роли ``sample``/``fx``, ноты вне сетки 16-х, ноту в секции, где роль молчит.
 """
 
@@ -73,15 +75,24 @@ def _tail(track: Track, role: str, part: Part, accents: Sequence[int]) -> List[s
     return opts
 
 
+def _delay_beats(offset_ms: int, bpm: int) -> float:
+    return offset_ms * bpm / 60000.0
+
+
 def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
-    if any(st.offset_ms for st in part.grid.steps):
-        raise RenderError(f"parts.{role}.grid: свинг offset_ms рендер ещё не выражает (ADR-0149 PR-3)")
+    steps = part.grid.steps
+    total = track.form.bars_total * STEPS_PER_BAR
+    cells = [(st.accent, st.offset_ms) if st.on else None for st in steps * (total // len(steps))]
+    pattern = _fold(cells, _active_steps(track, role), track.form.bars_total)
     symbol = kn.DRUM_SYMBOLS[role]
-    pattern = "".join(symbol if st.on else "." for st in part.grid.steps)
-    accents = [st.accent for st in part.grid.steps if st.on]
-    full = [st.accent if st.on else 0 for st in part.grid.steps]
+    accents = [c[0] for c in pattern if c]
+    full = [c[0] if c else 0 for c in pattern]
     opts = _tail(track, role, part, full if len(set(accents)) > 1 else [0])
-    return f'{slot} >> play("{pattern}", dur=1/4, ' + ", ".join(opts) + ")"
+    delays = [_delay_beats(c[1], track.bpm) if c else 0.0 for c in pattern]
+    if any(delays):
+        opts.append(f"delay={_list(_num(d) for d in delays)}")
+    text = "".join(symbol if c else "." for c in pattern)
+    return f'{slot} >> play("{text}", dur=1/4, ' + ", ".join(opts) + ")"
 
 
 def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
@@ -104,7 +115,7 @@ def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
     return cells
 
 
-def _fold(cells: Sequence[Optional[Cell]], active: Sequence[bool], bars_total: int) -> List[Optional[Cell]]:
+def _fold(cells: Sequence[Optional[tuple]], active: Sequence[bool], bars_total: int) -> List[Optional[tuple]]:
     """Наименьший период в тактах, на котором звучащие шаги модели совпадают."""
     for bars in (b for b in range(1, bars_total + 1) if bars_total % b == 0):
         period = bars * STEPS_PER_BAR

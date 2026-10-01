@@ -40,6 +40,6 @@ def test_synth_traits_match_legacy():
 def test_palette_kicks_energy_and_bass_floor_match_legacy():
     assert dict(kn.SYNTH_PALETTE) == dict(ROLE_PALETTE)
     assert dict(kn.KICK_PATTERNS) == KICK_PATTERNS
-    assert dict(kn.ENERGY_TRIM_DB) == club_energy.ENERGY_TRIM_DB
+    assert club_energy.ENERGY_TRIM_DB is kn.ENERGY_TRIM_DB, "PR-3b: старый club_energy импортирует таблицу"
     assert kn.REGISTERS["bass"][0] == BASS_MIDI_FLOOR
     assert tuple(float(x) for x in kn.BPM_RANGE) == BPM_RANGE
