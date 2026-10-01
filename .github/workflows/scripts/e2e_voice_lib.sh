@@ -482,6 +482,18 @@ sys.exit(0 if "payload" in box else 2)
 TTSPY
 }
 
+# Issue #3270: убирает из лога voice-assistant дамп LLM-запроса
+# (deepseek.py::_dump_llm_request): строки START/END, «  [i] role: '...'» (текст
+# промпта, история и tool_calls прошлых ходов) и «  tools(N): имя, имя, ...».
+# Паттерн сценария должен находить СЛЕДЫ ВЫПОЛНЕНИЯ, а не имя тула в каталоге,
+# который печатается на каждом ходе (ml06: PATTERN_OK gen_get_track_info при
+# невызванном туле). Читает stdin, пишет stdout. Режем по форме строки, а не
+# блоком START..END: при обрезке --since END может отсутствовать, и блочный
+# фильтр съел бы весь остальной лог.
+strip_llm_request_dump() {
+    grep -vE '(LLM REQUEST (START|END))|^[[:space:]]*\[[0-9]+\] [A-Za-z_]+: |^[[:space:]]*tools\([0-9]+\): ' || true
+}
+
 restore_robot_tts_default() {
     [ -n "${E2E_RUN_BEFORE:-}" ] || return 0
     local logs provider code_b64 out result_line verdict
