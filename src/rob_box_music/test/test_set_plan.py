@@ -11,6 +11,7 @@ from melodies import MELODIES, profile
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import rhythm
 from rob_box_music.arrange.compose import compose
+from rob_box_music.arrange.mix import level_amp
 from rob_box_music.model import BEATS_PER_BAR
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
@@ -92,7 +93,10 @@ def test_low_energy_thins_roles_not_levels(seed):
     _p, peak_events = _by_role(peak)
     assert "clap" not in low.parts and not low_events["clap"]
     assert peak_events["clap"] and all("clap" in sec.roles for sec in peak.form.sections if sec.name == "drop2")
-    assert {r: p.level_db for r, p in low.parts.items()} == {r: peak.parts[r].level_db for r in low.parts}
+    for track in (low, peak):  # уровень — цель роли (или потолок синта), энергия его не трогает (PR-3c: тембры разные)
+        for role, part in track.parts.items():
+            capped = level_amp(role, part) == pytest.approx(kn.MAX_LAYER_AMP, rel=1e-3)
+            assert part.level_db == kn.ROLE_LEVEL_DB[role] or (part.level_db < kn.ROLE_LEVEL_DB[role] and capped)
 
 
 @pytest.mark.parametrize("seed", SEEDS)

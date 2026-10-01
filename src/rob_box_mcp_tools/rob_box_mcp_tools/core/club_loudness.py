@@ -72,51 +72,23 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Mapping, Sequence, Tuple
 
+from rob_box_music import knowledge as kn
+from rob_box_music.arrange.mix import layer_db
+
 from .arrangement_matrix import FULL, QUARTERS, ArrangementMatrix, cell_quarters
 
-#: Условия снятия :data:`LANE_DB_AT_UNIT` (для docstring'ов и отчёта).
-MODEL_SOURCE = (
-    "офлайн-рендер scsynth 3.14.1 NRT 16 кГц, renardo_lib 0.9.13, masterfilter gain=0.5 dyn=0, "
-    "dj_dave_32 блоки 8-10, 124 BPM, среднее по 5 тоникам (29.09.2026); не замер на роботе"
-)
-
-#: dB RMS слоя, звучащего весь блок, при ``amp``-гейте 1.0 (пампинг
-#: ``amplify`` у лида/баса — как в ``render_club_kit``). Получено из замера
-#: при уровне :data:`core.club_arranger.LAYER_LEVELS`: ``dB − 20·p·log10(L)``.
-#: Ключ слоя ударных — рисунок (``KICK_PATTERNS``/``HATS_PATTERNS``), клэп
-#: один (``clap``), мелодических — синт.
-_MEASURED_DB: Dict[str, Tuple[float, Dict[str, float]]] = {
-    # слой: (уровень замера, {вариант: dB RMS})
-    "kick": (0.6, {"by_design": -24.1, "four_on_floor": -24.6, "half_time": -27.6,
-                   "breakbeat": -24.6, "outrun": -23.7}),
-    "hats": (0.14, {"by_design": -68.4, "offbeat": -74.0, "eighths": -70.9, "shuffle": -70.0}),
-    "clap": (0.24, {"clap": -55.7}),
-    "lead": (0.28, {"pluck": -53.4, "blip": -55.0, "arpy": -56.3, "karp": -66.3, "marimba": -68.9}),
-    "bass": (0.4, {"bass": -24.4, "retrobass": -41.9, "dub": -24.8}),
-    "pad": (0.11, {"sinepad": -74.4, "warmpad": -43.1, "space": -54.5}),
-}
-
-#: Как громкость синта растёт с ``amp``: ``dB = 20·p·log10(amp)``. Замер —
-#: кривая «слой в одиночку на постоянном amp» 0.05/0.11/0.3/0.6/0.85
-#: (офлайн-рендер, 29.09): у ``dub`` (``amp*2`` и в осцилляторе, и в
-#: огибающей), ``karp`` и ``sinepad`` (``amp`` в ``mul`` и в огибающей)
-#: наклон 2 на участке 0.11…0.85 (у ``dub`` выше 0.3 — 1.6: tanh мастера);
-#: у остальных 1.0 (pluck, marimba, space, warmpad, хэты — сняты кривой,
-#: прочие — ×1 против ×0.5).
-AMP_EXPONENT: Dict[str, float] = {"dub": 2.0, "karp": 2.0, "sinepad": 2.0}
+#: Модель громкости слоёв — одна таблица в ``rob_box_music.knowledge`` (ADR-0149 §8.1, PR-3c): условия снятия,
+#: замер ``{слой: (уровень, {вариант: dB RMS})}``, наклон ``amp`` и dB при ``amp`` 1.0. Здесь — импорт до
+#: удаления старого пути; формула ``unit + 20·p·log10(amp)`` — ``rob_box_music.arrange.mix.layer_db``.
+MODEL_SOURCE = kn.LOUDNESS_SOURCE
+_MEASURED_DB = kn.LAYER_MEASURED_DB
+AMP_EXPONENT = kn.AMP_EXPONENT
+LANE_DB_AT_UNIT = kn.LANE_DB_AT_UNIT
 
 
 def _exponent(option: str) -> float:
     return AMP_EXPONENT.get(option, 1.0)
 
-
-LANE_DB_AT_UNIT: Dict[str, Dict[str, float]] = {
-    lane: {
-        option: round(db - 20.0 * _exponent(option) * math.log10(level), 2)
-        for option, db in table.items()
-    }
-    for lane, (level, table) in _MEASURED_DB.items()
-}
 
 #: Уровень громкой секции classic «К Элизе» (pluck/bass/warmpad, блоки
 #: 21–27 формы «arc», бас + бочка) в той же шкале офлайн-рендера. Тихие
@@ -163,7 +135,7 @@ def lane_db(kit: Mapping[str, str], lane: str, level: float) -> float:
     if level <= 0:
         return _SILENCE_DB
     db, exponent = unit_db(lane, lane_option(kit, lane))
-    return db + 20.0 * exponent * math.log10(level)
+    return layer_db(db, exponent, level)
 
 
 def _db_to_power(db: float) -> float:

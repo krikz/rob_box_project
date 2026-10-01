@@ -13,7 +13,11 @@
 Так рисунки ударных складываются в период 16 тактов — степень двойки, которую санитайзер v1 не трогает
 (``_fix_pattern_length``; на роботе программа v2 пока идёт через ``execute_music_code``).
 
-Не сделано здесь (PR-3c/3d): сайдчейн, mix, тембры, сэмплы и разнообразие через ``music_history``.
+Микс (PR-3c, ``arrange.mix``): уровни ролей по модели громкости, тембры по семье темы и сиду трека, бочка жанра
+с настоящим низом (``knowledge.KICK_SOUNDS``), сайдчейн-огибающая от рисунка бочки на басе и пэде. Пэд поэтому
+звучит аккордом на каждой 16-й (``sus`` — шаг): огибающая ``amplify`` живёт только на событиях.
+
+Не сделано здесь (PR-3d): сэмплы и разнообразие через ``music_history``.
 """
 
 from __future__ import annotations
@@ -25,11 +29,11 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..model import (
-    BEATS_PER_BAR, Form, Grid, Harmony, HistoryKey, Hook, Key, Mix, Part, PitchEvent, Section, Track, Transition,
+    BEATS_PER_BAR, Form, Grid, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
 )
 from ..set_plan import SetPlan, seeded_plan
 from ..theme import ThemeProfile
-from . import bass, harmony, hook as hooks, lead, rhythm
+from . import bass, harmony, hook as hooks, lead, mix, rhythm
 
 _DRUMS = frozenset({"kick", "hats"})
 _FULL = _DRUMS | {"clap", "bass", "pad", "lead"}
@@ -44,10 +48,9 @@ SECTIONS: Tuple[Tuple[str, int, frozenset], ...] = (
 )
 SECTION_BARS = 8
 CHORD_BARS = 2
-#: Уровни ролей, дБ пика (≤ потолков ``knowledge.LEVEL_CEILINGS``; сумма drop ≈ −3.2 дБ).
-LEVELS_DB: Dict[str, float] = {"kick": -6.0, "hats": -16.0, "clap": -13.0, "bass": -10.0, "pad": -18.0, "lead": -14.0}
-PAN: Dict[str, float] = {"hats": 0.25, "clap": -0.2}
-SYNTHS: Dict[str, str] = {"bass": "bass", "pad": "sinepad", "lead": "pluck"}
+#: Уровень партии до ``mix.mix_parts`` (он ставит уровень роли из ``knowledge.ROLE_LEVEL_DB``).
+_UNLEVELED = 0.0
+STEP_BEATS = BEATS_PER_BAR / 16
 PAD_GAP = 3  # верх пэда ниже лида на ≥ 3 полутона (ADR-0149 §3.6)
 LOOP_BEATS = CHORD_BARS * BEATS_PER_BAR * 4  # петля прогрессии — 4 аккорда
 #: Коридор хука: низ лида ≥ низ пэда + 9 (любое обращение трезвучия) + ``PAD_GAP`` — пэду есть где звучать.
@@ -82,26 +85,25 @@ def _bars_with(role: str) -> Iterator[int]:
             yield from range(start, start + SECTION_BARS)
 
 
-def _pad(chords, register) -> Part:
+def _pad(chords, register, synth: str) -> Part:
+    """Аккорд на каждой 16-й (``sus`` — шаг): сайдчейн-огибающая рендера ложится на каждое событие."""
     loop = len(chords) * CHORD_BARS
     events = tuple(
-        PitchEvent(m, bar * BEATS_PER_BAR, CHORD_BARS * BEATS_PER_BAR - 0.5, 2)
-        for bar in _bars_with("pad") if bar % CHORD_BARS == 0
+        PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, STEP_BEATS, 3)
+        for bar in _bars_with("pad") for step in range(16)
         for m in chords[(bar % loop) // CHORD_BARS].voicing
     )
-    grid = rhythm.grid(range(0, loop * 16, CHORD_BARS * 16), loop * 16)
-    return Part("pad", SYNTHS["pad"], grid, events, LEVELS_DB["pad"], register)
+    return Part("pad", synth, rhythm.grid(range(16)), events, _UNLEVELED, register)
 
 
-def _bass(key: Key, chords) -> Part:
+def _bass(key: Key, chords, synth: str) -> Part:
     loop = len(chords) * CHORD_BARS
     bars = [(bar, harmony.triad_pcs(key, chords[(bar % loop) // CHORD_BARS].degree)) for bar in _bars_with("bass")]
     events = bass.offbeat_bass(bars, kn.REGISTERS["bass"])
-    return Part("bass", SYNTHS["bass"], rhythm.grid(rhythm.OFFBEAT_STEPS), events, LEVELS_DB["bass"],
-                kn.REGISTERS["bass"])
+    return Part("bass", synth, rhythm.grid(rhythm.OFFBEAT_STEPS), events, _UNLEVELED, kn.REGISTERS["bass"])
 
 
-def _lead(motif: Hook, key: Key) -> Part:
+def _lead(motif: Hook, key: Key, synth: str) -> Part:
     """Хук (или мотив) по секциям с лидом: развитие ``arrange.hook.develop`` от начала каждой секции."""
     events: List[PitchEvent] = []
     for start, name, roles in _sections():
@@ -111,13 +113,13 @@ def _lead(motif: Hook, key: Key) -> Part:
                        for e in hooks.develop(motif, name, SECTION_BARS, key)]
     total = len(SECTIONS) * SECTION_BARS * 16
     grid = rhythm.grid({int(e.beat * 4) for e in events}, total)
-    return Part("lead", SYNTHS["lead"], grid, tuple(events), LEVELS_DB["lead"], kn.REGISTERS["lead"])
+    return Part("lead", synth, grid, tuple(events), _UNLEVELED, kn.REGISTERS["lead"])
 
 
-def _drums(form: Form, swing_ms: int) -> Dict[str, Part]:
+def _drums(form: Form, swing_ms: int, kick_bar: Grid) -> Dict[str, Part]:
     """Бочка и клэп — на всю форму (fill-ы), хэты — такт со свингом. Клэп-бэкбит — в дропах; в остальных
-    секциях клэп — только ролл fill-а."""
-    kick_bar, clap_bar = rhythm.kick_grid(kn.GENRE_WINDOWS["club"].kick), rhythm.clap_grid()
+    секциях клэп — только ролл fill-а. Бочка — сэмпл жанра с настоящим низом (``mix.kick_sound``)."""
+    clap_bar = rhythm.clap_grid()
     silent = rhythm.grid(())
 
     def kick(_sec: Section, fill: bool) -> Grid:
@@ -130,7 +132,9 @@ def _drums(form: Form, swing_ms: int) -> Dict[str, Part]:
     grids = {"kick": rhythm.form_grid(form.sections, kick), "hats": rhythm.hats_grid(swing_ms)}
     if any("clap" in sec.roles for sec in form.sections):
         grids["clap"] = rhythm.form_grid(form.sections, clap)
-    return {r: Part(r, kn.PLAY_SYNTH, g, None, LEVELS_DB[r], (0, 0)) for r, g in grids.items()}
+    kick = mix.kick_sound("club")
+    return {r: Part(r, kn.PLAY_SYNTH, g, None, _UNLEVELED, (0, 0), kick.sample if r == "kick" else 0)
+            for r, g in grids.items()}
 
 
 def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
@@ -147,9 +151,9 @@ def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: ran
             continue
 
 
-def _arrange(motif: Hook, key: Key, rng: random.Random):
+def _arrange(motif: Hook, key: Key, rng: random.Random, lead_synth: str):
     """Лид, прогрессия под мотив и пэд под лидом; пэд не помещается под лидом — ``ValueError``."""
-    lead_part = _lead(motif, key)
+    lead_part = _lead(motif, key, lead_synth)
     drop = [e for e in hooks.develop(motif, "drop", SECTION_BARS, key) if e.beat < LOOP_BEATS]
     degrees = harmony.fit_progression(key, drop, CHORD_BARS * BEATS_PER_BAR, rng)
     pad_top = min(kn.REGISTERS["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
@@ -167,10 +171,11 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     step = plan.track(track_no)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
     rng = random.Random(f"{plan.seed}:{track_no}")
+    synths = mix.timbres(profile.row, random.Random(f"timbre:{plan.seed}:{track_no}"))
     track_hook: Optional[Hook] = None
     for candidate, key in hook_candidates(profile, melodies or {}, rng, recent_hooks):
         try:
-            lead_part, degrees, pad_register, chords = _arrange(candidate, key, rng)
+            lead_part, degrees, pad_register, chords = _arrange(candidate, key, rng, synths["lead"])
         except ValueError:
             continue
         track_hook = candidate
@@ -178,16 +183,20 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     if track_hook is None:
         key = Key(profile.root, profile.mode)
         motif = Hook(lead.motif(key, rng, kn.REGISTERS["lead"]), lead.MOTIF_BARS, None)
-        lead_part, degrees, pad_register, chords = _arrange(motif, key, rng)
+        lead_part, degrees, pad_register, chords = _arrange(motif, key, rng, synths["lead"])
     form = _form(step.energy)
-    drums = _drums(form, rhythm.swing_offset_ms(plan.swing, plan.bpm))
-    parts = {**drums, "bass": _bass(key, chords), "pad": _pad(chords, pad_register), "lead": lead_part}
+    kick_bar = rhythm.kick_grid(kn.GENRE_WINDOWS["club"].kick)
+    drums = _drums(form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kick_bar)
+    parts, track_mix = mix.mix_parts(
+        {**drums, "bass": _bass(key, chords, synths["bass"]), "pad": _pad(chords, pad_register, synths["pad"]),
+         "lead": lead_part},
+        [i for i, st in enumerate(kick_bar.steps) if st.on])
     prog = "-".join(str(d) for d in degrees)
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]
     return Track(
         track_id=f"{plan.set_id}:{track_no:02d}:{deck}:{sha}", seed=plan.seed, bpm=plan.bpm, key=key, form=form,
         parts=parts, harmony=Harmony({n: chords for n, _e, _r in SECTIONS}), hook=track_hook,
-        mix=Mix({r: p.level_db for r, p in parts.items()}, {r: PAN.get(r, 0.0) for r in parts}, 0.0),
+        mix=track_mix,
         energy=step.energy, transition_in=Transition(8, 4, True), transition_out=Transition(8, 4, True),
         history_key=HistoryKey("club_v2", prog, track_hook.source if track_hook else None, None, key.root),
     )
@@ -201,4 +210,4 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
     return compose(seeded_plan(profile, seed, set_id=set_id), track_no, deck=deck)
 
 
-__all__ = ["HOOK_REGISTER", "LEVELS_DB", "SECTIONS", "club_track", "compose", "hook_candidates"]
+__all__ = ["HOOK_REGISTER", "SECTIONS", "club_track", "compose", "hook_candidates"]

@@ -43,15 +43,14 @@ from __future__ import annotations
 import re
 from typing import List
 
-#: Вынос хэтов/клэпа от центра. 0.4: заметно, но не «в одну колонку»
-#: (на двух колонках в комнате ±0.4 ещё держит картину).
-PAN_HATS = 0.4
+from rob_box_music import knowledge as kn
 
-#: Полуширина пэда. Шире хэтов: пэд — длинные ноты, там ширина слышнее всего.
-PAN_PAD_WIDTH = 0.6
-
-#: Период качания пэда, доли (8 тактов = 4 аккорда по 2 такта).
-PAD_PAN_BEATS = 32
+#: Таблицы панорамы — в ``rob_box_music.knowledge`` (ADR-0149 §8.1, PR-3c; механика — PR-9):
+#: вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну колонку»), полуширина пэда (шире хэтов:
+#: пэд — длинные ноты, там ширина слышнее всего), период качания пэда в долях (8 тактов = 4 аккорда по 2 такта).
+PAN_HATS = kn.PAN_HATS
+PAN_PAD_WIDTH = kn.PAN_PAD_WIDTH
+PAD_PAN_BEATS = kn.PAD_PAN_BEATS
 
 
 def _fmt(value: float) -> str:
