@@ -138,3 +138,35 @@ def test_relay_broadcast_failure_does_not_raise() -> None:
     relay = TarsStatusRelay(lambda: ("minimax", "v1"), boom, logs.append)
     relay.on_timer()
     assert logs and "ws down" in logs[0]
+
+
+def test_llm_and_wake_appear_only_after_latched_topics() -> None:
+    from rob_box_quest.core.tars_status import format_llm, format_wake
+
+    assert format_llm({"provider": "minimax", "model": "M2"}) == "minimax · M2"
+    assert format_llm({"provider": "deepseek"}) == "deepseek"
+    assert format_llm({"model": "M2"}) is None
+    assert format_llm("x") is None
+    assert format_wake({"words": ["робот", " робокс ", 5, ""]}) == "робот, робокс"
+    assert format_wake({"words": []}) is None
+    assert format_wake({"words": "робот"}) is None
+
+    agg = TarsStatusAggregator()
+    agg.note_llm({"provider": "minimax", "model": "M2", "chain": ["minimax"]})
+    agg.note_wake({"words": ["робот", "робокс"]})
+    ev = agg.poll(0.0, 7, None, None)
+    assert ev == {"type": "tars_status", "llm": "minimax · M2",
+                  "wake": "робот, робокс", "ts_ms": 7}
+
+
+def test_relay_routes_llm_and_wake_callbacks() -> None:
+    from types import SimpleNamespace
+
+    sent: list = []
+    relay = TarsStatusRelay(lambda: (None, None), sent.append, lambda _t: None)
+    relay.on_llm_status(SimpleNamespace(data=json.dumps({"provider": "deepseek", "model": "v4"})))
+    relay.on_wake_words(SimpleNamespace(data=json.dumps({"words": ["робот"]})))
+    relay.on_wake_words(SimpleNamespace(data="не json"))
+    relay.on_timer()
+    assert len(sent) == 1
+    assert sent[0]["llm"] == "deepseek · v4" and sent[0]["wake"] == "робот"

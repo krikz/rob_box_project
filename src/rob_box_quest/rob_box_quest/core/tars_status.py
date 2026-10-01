@@ -1,12 +1,12 @@
 """Служебная информация и контекст для экрана ТАРС 1 (issue #3253, Ш3).
 
 Чистая логика без ROS: собирает то, что quest_node реально слышит в графе
-(``/voice/dj_mode``, ``/voice/speaker/result``, ``/voice/tts/provider_state``),
-в событие ``tars_status`` и решает, пора ли его слать (троттлинг).
+(``/voice/dj_mode``, ``/voice/speaker/result``, ``/voice/tts/provider_state``,
+``/voice/llm_status``, ``/voice/wake_words``), в событие ``tars_status`` и решает, пора ли его слать (троттлинг).
 
 Правило ADR-0018: нет источника — нет ключа в событии, клиент рисует прочерк.
-llm и wake сюда НЕ попадают: в графе нет топика, который их публикует
-(модель LLM — параметр dialogue_node, wake-слова — yaml в dialogue_node).
+llm и wake приходят latched-топиками dialogue_node (Ш3б); пока их никто не
+опубликовал (нода не стартовала), ключей нет.
 """
 
 from __future__ import annotations
@@ -39,12 +39,29 @@ def format_tts(provider: Optional[str], voice: Optional[str]) -> Optional[str]:
     return f"{p} · {v}" if v else p
 
 
+def format_llm(payload: Any) -> Optional[str]:
+    """``/voice/llm_status`` → «provider · model»; без провайдера None."""
+    if not isinstance(payload, dict):
+        return None
+    return format_tts(payload.get("provider"), payload.get("model"))
+
+
+def format_wake(payload: Any) -> Optional[str]:
+    """``/voice/wake_words`` → «слово, слово»; пустой список — None."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("words"), list):
+        return None
+    words = [w for w in (_clean(x) for x in payload["words"]) if w]
+    return ", ".join(words) if words else None
+
+
 class TarsStatusAggregator:
     """Копит сигналы и отдаёт ``tars_status`` с троттлингом."""
 
     def __init__(self) -> None:
         self._dj_enabled: Optional[bool] = None  # None — dj_mode ещё не слышали
         self._dj_theme: Optional[str] = None
+        self._llm: Optional[str] = None
+        self._wake: Optional[str] = None
         self._nearby: Optional[str] = None
         self._nearby_at: float = 0.0
         self._last_sent: Optional[dict[str, Any]] = None
@@ -56,6 +73,18 @@ class TarsStatusAggregator:
             return
         self._dj_enabled = payload["enabled"]
         self._dj_theme = _clean(payload.get("theme")) if self._dj_enabled else None
+
+    def note_llm(self, payload: Any) -> None:
+        """``/voice/llm_status``: ``{provider, model?, ...}`` (latched)."""
+        value = format_llm(payload)
+        if value:
+            self._llm = value
+
+    def note_wake(self, payload: Any) -> None:
+        """``/voice/wake_words``: ``{words: [...]}`` (latched)."""
+        value = format_wake(payload)
+        if value:
+            self._wake = value
 
     def note_speaker(self, payload: Any, now: float) -> None:
         """``/voice/speaker/result``: узнанный по голосу человек.
@@ -84,6 +113,10 @@ class TarsStatusAggregator:
     ) -> dict[str, Any]:
         """Поля, для которых есть данные. Остальных ключей нет (→ прочерк)."""
         snap: dict[str, Any] = {}
+        if self._llm:
+            snap["llm"] = self._llm
+        if self._wake:
+            snap["wake"] = self._wake
         tts = format_tts(tts_provider, tts_voice)
         if tts:
             snap["tts"] = tts
@@ -143,6 +176,14 @@ class TarsStatusRelay:
     def on_dj_mode(self, msg: Any) -> None:
         """Колбэк ``/voice/dj_mode``."""
         self._agg.note_dj_mode(self._parse(msg))
+
+    def on_llm_status(self, msg: Any) -> None:
+        """Колбэк ``/voice/llm_status``."""
+        self._agg.note_llm(self._parse(msg))
+
+    def on_wake_words(self, msg: Any) -> None:
+        """Колбэк ``/voice/wake_words``."""
+        self._agg.note_wake(self._parse(msg))
 
     def on_speaker_result(self, msg: Any) -> None:
         """Колбэк ``/voice/speaker/result``."""
