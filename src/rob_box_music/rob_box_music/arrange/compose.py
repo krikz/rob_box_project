@@ -1,7 +1,9 @@
 """``compose(plan, track_no, ...)`` — трек сета по плану (ADR-0149 §3.3, §3.4, §4.4–§4.7; PR-3a, PR-3b).
 
-Форма 48 тактов по 8: intro (бочка, хэт, пэд) → build (+клэп, бас, начало хука) → drop (хук) → break (без
-бочки и баса, хук вдвое медленнее) → drop2 (хук в параллельных терциях) → outro (без лида). Хук — начало
+Форма 48 тактов: intro (хэт, пэд; 4 такта) → intro_low (+бочка, бас; 4) → build (+клэп, начало хука) → drop (хук)
+→ break (без бочки и баса, хук вдвое медленнее) → drop2 (хук в параллельных терциях) → outro (без лида; 4) →
+outro_tail (хэт, пэд; 4). Интро и аутро поделены под блэнд двух дек (PR-8, ``model.blend_bars``): хвост уходящего
+и начало входящего звучат вместе 8 тактов, бочка и бас меняются на такте свопа. Хук — начало
 мелодии темы из локальной RTTTL-библиотеки (``arrange.hook``); тональность трека — тоника профиля и лад
 хука. Нет годной мелодии темы — лид-мотив «вопрос/ответ» (PR-2) с тем же развитием, ``track.hook = None``.
 Прогрессия подбирается под хук (``harmony.fit_progression``), бас в оффбит, пэд с голосоведением.
@@ -9,7 +11,7 @@
 Из плана (``set_plan``): темп сета, тоника трека (ход по квинтам), энергия трека — сдвиг энергии секций и
 состав ролей (``knowledge.ENERGY_THIN_ROLES``), свинг хэтов. Секция перед дропом кончается fill-ом
 (``arrange.rhythm``): ролл клэпа, бочка снята на последней доле. Клэп-бэкбит — только в дропах, в build
-и break клэп звучит одним роллом fill-а; последний такт outro тоже без последней бочки (конец фразы трека).
+и break клэп звучит одним роллом fill-а.
 Так рисунки ударных складываются в период 16 тактов — степень двойки, которую санитайзер v1 не трогает
 (``_fix_pattern_length``; на роботе программа v2 пока идёт через ``execute_music_code``).
 
@@ -37,15 +39,24 @@ from . import bass, harmony, hook as hooks, lead, mix, rhythm
 
 _DRUMS = frozenset({"kick", "hats"})
 _FULL = _DRUMS | {"clap", "bass", "pad", "lead"}
-#: (имя, энергия 0..10, роли). Имена секций — ключи развития хука ``arrange.hook.DEVELOPMENT``.
-SECTIONS: Tuple[Tuple[str, int, frozenset], ...] = (
-    ("intro", 3, _DRUMS | {"pad"}),
-    ("build", 5, _FULL),
-    ("drop", 8, _FULL),
-    ("break", 4, frozenset({"hats", "pad", "lead"})),
-    ("drop2", 9, _FULL),
-    ("outro", 3, _DRUMS | {"bass", "pad"}),
+#: Переход трека (ADR-0149 §3.12, PR-8): блэнд 8 тактов, своп баса и бочки на 4-м — у входа и у выхода один.
+TRANSITION = Transition(8, 4, True)
+_SWAP = TRANSITION.bass_swap_bar
+_TAIL = TRANSITION.phrase_bars - _SWAP
+#: (имя, такты, энергия 0..10, роли). Имена секций — ключи развития хука ``arrange.hook.DEVELOPMENT``.
+#: Интро и аутро поделены под блэнд (``model.blend_bars``): входящий трек начинает хэтами и пэдом под хвостом
+#: уходящего (хэты + пэд, без лида), бочка и бас входят ровно на такте свопа — там, где их снимает уходящий.
+SECTIONS: Tuple[Tuple[str, int, int, frozenset], ...] = (
+    ("intro", _SWAP, 3, frozenset({"hats", "pad"})),
+    ("intro_low", TRANSITION.phrase_bars - _SWAP, 3, _DRUMS | {"bass", "pad"}),
+    ("build", 8, 5, _FULL),
+    ("drop", 8, 8, _FULL),
+    ("break", 8, 4, frozenset({"hats", "pad", "lead"})),
+    ("drop2", 8, 9, _FULL),
+    ("outro", 8 - _TAIL, 3, _DRUMS | {"bass", "pad"}),
+    ("outro_tail", _TAIL, 2, frozenset({"hats", "pad"})),
 )
+#: Длина секций с лидом (развитие хука считается от начала каждой).
 SECTION_BARS = 8
 CHORD_BARS = 2
 #: Уровень партии до ``mix.mix_parts`` (он ставит уровень роли из ``knowledge.ROLE_LEVEL_DB``).
@@ -66,23 +77,25 @@ def _form(energy: int) -> Form:
     дропом (клэп-ролл, если энергия не сняла клэп) и в конце трека."""
     thin = frozenset(kn.ENERGY_THIN_ROLES.get(energy, ()))
     out = []
-    for i, (name, base, roles) in enumerate(SECTIONS):
+    for i, (name, bars, base, roles) in enumerate(SECTIONS):
         roles = (roles | ({"clap"} if _before_drop(i) else set())) - thin
         fill = _before_drop(i) or i == len(SECTIONS) - 1
-        out.append(Section(name, SECTION_BARS, min(10, max(0, base + energy - 3)), frozenset(roles), fill))
+        out.append(Section(name, bars, min(10, max(0, base + energy - 3)), frozenset(roles), fill))
     return Form(tuple(out))
 
 
-def _sections() -> Iterator[Tuple[int, str, frozenset]]:
-    """(первый такт, имя, роли) по форме."""
-    for i, (name, _energy, roles) in enumerate(SECTIONS):
-        yield i * SECTION_BARS, name, roles
+def _sections() -> Iterator[Tuple[int, int, str, frozenset]]:
+    """(первый такт, такты, имя, роли) по форме."""
+    start = 0
+    for name, bars, _energy, roles in SECTIONS:
+        yield start, bars, name, roles
+        start += bars
 
 
 def _bars_with(role: str) -> Iterator[int]:
-    for start, _name, roles in _sections():
+    for start, bars, _name, roles in _sections():
         if role in roles:
-            yield from range(start, start + SECTION_BARS)
+            yield from range(start, start + bars)
 
 
 def _pad(chords, register, synth: str) -> Part:
@@ -106,12 +119,12 @@ def _bass(key: Key, chords, synth: str) -> Part:
 def _lead(motif: Hook, key: Key, synth: str) -> Part:
     """Хук (или мотив) по секциям с лидом: развитие ``arrange.hook.develop`` от начала каждой секции."""
     events: List[PitchEvent] = []
-    for start, name, roles in _sections():
+    for start, bars, name, roles in _sections():
         if "lead" in roles:
             offset = start * BEATS_PER_BAR
             events += [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent)
-                       for e in hooks.develop(motif, name, SECTION_BARS, key)]
-    total = len(SECTIONS) * SECTION_BARS * 16
+                       for e in hooks.develop(motif, name, bars, key)]
+    total = sum(bars for _n, bars, _e, _r in SECTIONS) * 16
     grid = rhythm.grid({int(e.beat * 4) for e in events}, total)
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, kn.REGISTERS["lead"])
 
@@ -195,9 +208,9 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]
     return Track(
         track_id=f"{plan.set_id}:{track_no:02d}:{deck}:{sha}", seed=plan.seed, bpm=plan.bpm, key=key, form=form,
-        parts=parts, harmony=Harmony({n: chords for n, _e, _r in SECTIONS}), hook=track_hook,
+        parts=parts, harmony=Harmony({n: chords for n, _b, _e, _r in SECTIONS}), hook=track_hook,
         mix=track_mix,
-        energy=step.energy, transition_in=Transition(8, 4, True), transition_out=Transition(8, 4, True),
+        energy=step.energy, transition_in=TRANSITION, transition_out=TRANSITION,
         history_key=HistoryKey("club_v2", prog, track_hook.source if track_hook else None, None, key.root),
     )
 
@@ -210,4 +223,4 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
     return compose(seeded_plan(profile, seed, set_id=set_id), track_no, deck=deck)
 
 
-__all__ = ["HOOK_REGISTER", "SECTIONS", "club_track", "compose", "hook_candidates"]
+__all__ = ["HOOK_REGISTER", "SECTIONS", "SECTION_BARS", "TRANSITION", "club_track", "compose", "hook_candidates"]

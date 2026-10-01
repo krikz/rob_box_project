@@ -16,7 +16,8 @@
 PR-5: очередь из одного подготовленного трека (``queued``, токен ``expected_previous`` — I4,
 чужой артефакт выбрасывается с ``artifact_stale``), ``nearly_finished`` по доле клока и стык
 следующего трека на границе формы (:meth:`advance`). Что и когда ставить в очередь, решает
-``SetSession``; блэнд двух дек — PR-8, ``finished`` конечного трека — с финалом сета.
+``SetSession``. PR-8: блэнд двух дек — входящий встаёт до границы формы, уходящая дека снимается
+на границе и освобождается (лог ``deck … free``); ``finished`` конечного трека — с финалом сета.
 """
 
 from __future__ import annotations
@@ -115,8 +116,12 @@ class PlayerOwner:
         self._publish_event(build_music_event_payload(
             "queued", program.track_id, ts=self._clock(), expected_previous=expected_previous))
 
-    def advance(self, at_beat: float, dj: Optional[Mapping[str, Any]] = None) -> bool:
-        """Поставить трек из очереди встык на долю ``at_beat``. ``False`` — ставить нечего.
+    def advance(self, at_beat: float, dj: Optional[Mapping[str, Any]] = None, *,
+                leave_at: Optional[float] = None) -> bool:
+        """Поставить трек из очереди на долю ``at_beat``. ``False`` — ставить нечего.
+
+        ``leave_at`` — блэнд: играющий трек звучит до этой доли (граница его формы), потом его
+        дека свободна; без него — стык встык на ``at_beat``.
 
         Исполняется только артефакт, у которого ``expected_previous`` = играющий трек (I4);
         иначе ``WARNING artifact_stale`` и очередь пуста. Ресурс не прошёл проверку → ``rejected``.
@@ -124,6 +129,7 @@ class PlayerOwner:
         with self._lock:
             prepared, self._queued = self._queued, None
             current = (self._current or {}).get("track_id")
+            leaving_deck = (self._current or {}).get("deck")
         if prepared is None:
             return False
         program, expected = prepared
@@ -139,8 +145,10 @@ class PlayerOwner:
             self._pending = program.track_id
             self._pending_dj = {**(dj or self._dj), "enabled": bool((dj or self._dj).get("enabled"))}
         self._adapter.cue(program, at_beat, self.track_started,
-                          lambda reason, detail: self._reject(program.track_id, reason, detail))
-        self._log.info(f"🎵 [music v2] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat}")
+                          lambda reason, detail: self._reject(program.track_id, reason, detail), leave_at=leave_at,
+                          on_left=lambda: self._log.info(f"🎵 [music v2] deck {leaving_deck} free track_id={current}"))
+        self._log.info(f"🎵 [music v2] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat} "
+                       f"leave_at={leave_at}")
         return True
 
     def watch(self, track_id: str, form_end_beat: float, lead_beats: float,

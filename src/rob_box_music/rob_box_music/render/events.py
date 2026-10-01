@@ -51,8 +51,9 @@ class ProgramError(ValueError):
 class TimeVar:
     """``var``/``linvar``/``Pvar`` renardo по доле клока (цикл по сумме длительностей)."""
 
-    def __init__(self, values: Sequence[Any], durs: Any, linear: bool = False) -> None:
+    def __init__(self, values: Sequence[Any], durs: Any, linear: bool = False, start: float = 0.0) -> None:
         self.values = list(values)
+        self.start = float(start)
         if isinstance(durs, (int, float)):
             durs = [durs] * len(self.values)
         self.durs = [float(d) for d in durs]
@@ -62,7 +63,7 @@ class TimeVar:
             raise ProgramError("var без значений или с нулевой длиной")
 
     def at(self, beat: float) -> Any:
-        pos = beat % self.total
+        pos = (beat - self.start) % self.total
         for i, dur in enumerate(self.durs):
             if pos < dur:
                 if not self.linear:
@@ -132,6 +133,9 @@ class _Clock:
     def now(self) -> float:
         return 0.0
 
+    def next_bar(self) -> float:
+        return 0.0  # плееры программы встают на долю 0 симулятора
+
 
 class _Default:
     default: Any = None
@@ -161,8 +165,8 @@ def _namespace(players: Dict[str, PlayerSpec], clock: _Clock, root: _Default, sc
 
     ns = Synths(
         __builtins__={}, Clock=clock, Root=root, Scale=scale,
-        var=lambda v, d, *_a: TimeVar(v, d),
-        linvar=lambda v, d, *_a: TimeVar(v, d, linear=True),
+        var=lambda v, d, *_a, start=0.0: TimeVar(v, d, start=start),
+        linvar=lambda v, d, *_a, start=0.0: TimeVar(v, d, linear=True, start=start),
         Pvar=lambda v, d, *_a: TimeVar(v, d),
     )
     for slot in SLOTS:

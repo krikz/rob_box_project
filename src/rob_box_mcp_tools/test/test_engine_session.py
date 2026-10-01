@@ -128,32 +128,74 @@ def _form(rig):
     return _started(rig)[0]["form_beats"]
 
 
-def test_three_tracks_play_back_to_back_on_form_boundaries_with_phase_zero():
+#: Блэнд соседних треков сета (PR-8): 8 тактов, своп баса на 4-м (``compose.TRANSITION``).
+BLEND = 8 * 4
+
+
+def test_three_tracks_blend_on_two_decks_with_phase_zero_and_the_leaving_deck_is_freed():
     rig = _rig()
     assert rig.session.start()["ok"] is True
     rig.clock.run_until(rig.clock.beat + 2)  # трек 1 встал
     first = _started(rig)[0]
     form, s0 = first["form_beats"], first["start_beat"]
-    rig.clock.run_until(s0 + 3 * form - 3)  # до исполнения трека 4 (за 2 доли до стыка)
+    rig.clock.run_until(s0 + form - BLEND / 2)  # середина блэнда 1→2
+    assert rig.ns["d1"].playing and rig.ns["a1"].playing, "оба трека звучат в блэнде"
+    rig.clock.run_until(s0 + 3 * form - 3 * BLEND - 3)  # до исполнения трека 4
     started = _started(rig)
-    assert [e["start_beat"] for e in started] == [s0, s0 + form, s0 + 2 * form]
-    assert [e["deck"] for e in started] == ["A", "B", "A"]  # стык на другой деке
+    # N+1 встаёт за 8 тактов до границы формы N, с фазой 0 на такте
+    assert [e["start_beat"] for e in started] == [s0, s0 + form - BLEND, s0 + 2 * form - 2 * BLEND]
+    assert [e["deck"] for e in started] == ["A", "B", "A"]  # блэнд на другой деке
     assert all(e["phase_in_form"] == 0.0 and e["players_aligned"] and e["late_beats"] == 0.0 for e in started)
     assert [e["track_id"].split(":")[1] for e in started] == ["01", "02", "03"]
     kinds = [e["event"] for e in rig.events]
-    # N+1 в очереди сразу после started(N), nearly_finished — до стыка (A3: переход без LLM, по событию)
+    # N+1 в очереди сразу после started(N), nearly_finished — до входа (A3: переход без LLM, по событию)
     assert kinds[:4] == ["started", "queued", "nearly_finished", "started"]
     nearly = [e for e in rig.events if e["event"] == "nearly_finished"]
     assert nearly[0]["form_end_beat"] == s0 + form and nearly[0]["lead_beats"] == NEARLY_LEAD_BEATS
     queued = [e for e in rig.events if e["event"] == "queued"]
     assert queued[0]["expected_previous"] == started[0]["track_id"]
-    # уходящая дека снята за 1/32 до стыка; играет только дека трека 3
+    # уходящая дека снята за 1/32 до границы СВОЕЙ формы (не до входа N+1) и освобождена
     assert s0 + form - HANDOFF_STOP_BEATS in rig.ns["d1"].stopped_at
-    assert rig.ns["a1"].stopped_at[-1] == s0 + 2 * form - HANDOFF_STOP_BEATS
+    assert rig.ns["a1"].stopped_at[-1] == started[1]["start_beat"] + form - HANDOFF_STOP_BEATS
     assert rig.ns["d1"].playing and not rig.ns["a1"].playing
+    infos = [m for level, m in rig.log.lines if level == "info"]
+    assert sum("deck A free" in m for m in infos) == 1 and sum("deck B free" in m for m in infos) == 1
+    assert sum("блэнд трек" in m for m in infos) == 3  # 1→2, 2→3 и уже поставленный 3→4
     snap = json.loads(rig.states[-1])
     assert snap["state"] == "playing" and snap["dj"]["track_no"] == 3 and snap["dj"]["set_id"] == "s7"
     assert not rig.log.warnings()
+
+
+def test_stop_during_a_blend_silences_both_decks():
+    rig = _rig()
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + form - BLEND / 2)
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        rig.session.stop()
+    rig.clock.run_until(s0 + 3 * form)
+    assert not any(p.playing for p in rig.ns.values() if isinstance(p, Player))
+    assert len(_started(rig)) == 2 and not any("free" in m for _level, m in rig.log.lines)
+
+
+def test_forms_that_do_not_mix_fall_back_to_a_splice_on_the_form_boundary():
+    """``blend_bars == 0`` (другая длина блэнда) — стык встык на границе формы (PR-5), громко в логе."""
+    good = compose_source(PLAN)
+
+    def source(no, deck):
+        track = good(no, deck)
+        return replace(track, transition_in=replace(track.transition_in, phrase_bars=16)) if no == 2 else track
+
+    rig = _rig(source=source)
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + form + 1)
+    started = _started(rig)
+    assert [e["start_beat"] for e in started] == [s0, s0 + form] and started[1]["phase_in_form"] == 0.0
+    assert any("блэнда нет" in w for w in rig.log.warnings())
+    assert rig.ns["d1"].stopped_at[-1] == s0 + form - HANDOFF_STOP_BEATS
 
 
 def test_one_tempo_per_set_is_set_once_and_never_by_set_time_on_transitions():
@@ -179,8 +221,8 @@ def test_next_not_ready_extends_the_playing_track_instead_of_silence():
     assert len(deferred) == 1  # повторная компоновка не плодится, пока первая в работе
     deferred.pop()()  # N+1 готов к середине второго прохода
     rig.clock.run_until(s0 + 2 * form + 1)
-    started = _started(rig)
-    assert [e["start_beat"] for e in started] == [s0, s0 + 2 * form] and started[1]["phase_in_form"] == 0.0
+    started = _started(rig)  # блэнд в конец второго прохода
+    assert [e["start_beat"] for e in started] == [s0, s0 + 2 * form - BLEND] and started[1]["phase_in_form"] == 0.0
     nearly = [e["form_end_beat"] for e in rig.events if e["event"] == "nearly_finished"]
     assert nearly == [s0 + form, s0 + 2 * form]
 
