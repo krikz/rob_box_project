@@ -2,13 +2,13 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Proposed (на утверждение товарищу Шифу). Только дизайн и план поставки, код не меняется. Ревизия 2 (02.10.2026) — по решениям Шифу В1–В11, см. §18 |
-| Дата | 2026-10-01; ревизия 2026-10-02 |
+| Статус | Proposed (на утверждение товарищу Шифу). Только дизайн и план поставки, код не меняется. Ревизия 2 (02.10.2026) — по решениям Шифу В1–В11, см. §18. Ревизия 3 (02.10.2026) — планировщик ресурсов и одновременное исполнение (§5.6) по материалу `07-action-scheduler.md` |
+| Дата | 2026-10-01; ревизии 2026-10-02 |
 | Автор | Claude Code (шисюн), по брифу товарища Шифу `docs/research/dialog-v2/00-brief.md` |
 | Issue | эпик — завести при принятии (аналог #3312 для музыки); входные карточки: #3266, #3271, #3297, #3145, #3144, #3108, #3109, #3000, #2754, #3269, #3296 (все open на 01.10) |
-| Основание | `docs/research/dialog-v2/01…06` (в git); аудиты CI run 36918223549 (статика, 01.10) и 36689419795 (рантайм, 30.09); код сверен на этом worktree, HEAD `0e7371fed` (ревизия 1 — `61fd84ff7`); история git по В1/В2/В10 — §18.1 |
+| Основание | `docs/research/dialog-v2/01…07` (в git; `07-action-scheduler.md` — планировщик, хотелки Х1–Х15); аудиты CI run 36918223549 (статика, 01.10) и 36689419795 (рантайм, 30.09); код сверен на этом worktree, HEAD `0e7371fed` (ревизия 1 — `61fd84ff7`); история git по В1/В2/В10 — §18.1 |
 | Родители | ADR-0148 (код решает, LLM говорит — обязателен), ADR-0149 (музыка v2: владелец плеера, события `started/rejected`, флаг `music_engine`), ADR-0141, ADR-0131 (`utterance_id`), ADR-0102/0103 («Повод»), ADR-0083 (`build_agent`), ADR-0051 (ТАРС), ADR-0145 (бюджет классов), ADR-AF-0013 (мелкие PR), ADR-0018 (честный FAIL) |
-| Заменяет после приёмки | ADR-0084 целиком; ADR-0021 целиком (R1–R5); ADR-0066 §2–§3 (pause/resume без владельца → типизированный `DialogControl` с полем `set_by` и TTL); ADR-0143 (ретраи Bug B/C как норма → режим команд по возможностям провайдера); ADR-0129-dj §2 (штамп персоны в промпт → кадр сцены); ADR-0140 остаток; ADR-0065 §2 (списки вейк-слов в `dialogue_text.py` → `rob_box_dialog.knowledge`); ADR-0001 §Telegram-харнес (телеграм-агент на общем движке, §9.2). Подробно — §13 |
+| Заменяет после приёмки | ADR-0084 целиком; ADR-0021 целиком (R1–R5); ADR-0066 §2–§3 (pause/resume без владельца → типизированный `DialogControl` с полем `set_by` и TTL); ADR-0143 (ретраи Bug B/C как норма → режим команд по возможностям провайдера); ADR-0129-dj §2 (штамп персоны в промпт → кадр сцены); ADR-0140 остаток; ADR-0065 §2 (списки вейк-слов в `dialogue_text.py` → `rob_box_dialog.knowledge`); ADR-0001 §Telegram-харнес (телеграм-агент на общем движке, §9.2); ADR-0011 (action protocol: HTTP-сайдкар и PASTE — заменяются планировщиком ресурсов §5.6, берётся контракт accepted/feedback/result/cancel и `commit` пред-генерации); ADR-0033 (MERGE не трогает музыку — заменяется таблицей `COMPOSITION`); ADR-0056/0092 §pregenerate (поле в payload чанка никто не публикует — заменяется пред-генерацией выступления §5.6.3). Подробно — §13 |
 
 ---
 
@@ -19,16 +19,16 @@
 2. Решение: границы, модули, владельцы
 3. Поток одной реплики (как будет)
 4. Что решает код, что — LLM; 4.4 канал речи: бейк-офф; 4.5 провайдер-агностик
-5. Исполнение, событие, фраза; 5.5 экспрессия и живость без LLM
-6. Речь, перебивание, тишина
+5. Исполнение, событие, фраза; 5.5 экспрессия и живость без LLM; **5.6 исполнение во времени: планировщик ресурсов** (ресурсы и владельцы, матрица одновременности, класс «выступление», политики APPEND/MERGE/REPLACE/REJECT, синхронизация с тактом, эталонные сценарии X3 и #993)
+6. Речь, перебивание, тишина (перебивание — по классу текущего действия)
 7. Сессия, сцены, персоны, история, память
 8. Провайдеры: возможности и честная деградация
 9. Интерфейс с музыкой (ADR-0149), Telegram-агент, ТАРС
 10. Типы сообщений: уход от JSON в `std_msgs/String`
-11. Миграция: strangler за флагом `dialog_engine`, план PR, зависимости от #3312
-12. Таблица костылей на удаление
-13. Какие ADR замещаются; что поправить в CONTEXT.md
-14. Приёмка числами (A1–A17)
+11. Миграция: strangler за флагом `dialog_engine`, план PR (в т.ч. PR-7b/7c планировщик), зависимости от #3312
+12. Таблица костылей на удаление (в т.ч. планировщик: мёртвые хуки, второй планировщик в tts_node, пять гардов исполнителя)
+13. Какие ADR замещаются (в т.ч. ADR-0011); что поправить в CONTEXT.md
+14. Приёмка числами (A1–A23) и трассировка хотелок Х1–Х15
 15. Что сохранить из старого
 16. Риски и откат
 17. Альтернативы (в том числе отвергнутое окно адресации без вейка — с доказательством)
@@ -71,6 +71,14 @@
 | V25 | Интерфейс LLM: `rob_box_llm/provider.py:226 class LLMProvider` с `capabilities -> ProviderCapabilities{text, streaming_text, tools, streaming_tools, image_input}` (`:78-94`); флагов `tool_choice/json_mode/structured_output` нет; адаптеры `providers/{deepseek,mimo,minimax}.py` | совпало — основа для §4.5 есть, расширяется |
 | V26 | Экспрессия: `KNOWN_ANIMATIONS` — 18 имён (`mcp_tools/animations.py:36`), `speak_text(text, animation, voice)` (`tools/dialogue.py:409`); `/voice/animation/request` читают `animation_player_node.py:66` (матрица) и `led_node.py:180` (кольцо ReSpeaker), `led_node` ещё читает `/voice/dialogue/state` и `/audio/direction` (`:165,172`); `animation_player` сам переключается по `/voice/tts/state` (`:74`); `/voice/sound/trigger` пишут `stt_node.py:608` («boop»), `dialogue_node.py:834`, `tools/sound.py:30` (+ `health_monitor` в рантайме), читает `sound_node.py:59`; алиас `boop → button_click` `sound_node.py:108` | совпало — 4 писателя звука, 2 исполнителя анимаций без владельца решения |
 | V27 | Telegram: `telegram_bot.yaml:llm_provider/llm_model/llm_max_history` присутствуют, но в `src/rob_box_telegram` ни один `.py` их не читает (grep пуст) — мёртвые с W7 (`07dfc28aa`) | совпало |
+| V28 | **Голосовая задача завершена в момент публикации**: `SpeakTextTool.execute` публикует чанки в `/voice/tts/request` и возвращает `success=True, data.async=True` (`tools/dialogue.py:625-645`); ожидание `tts/finished` отсутствует — `EffectAwaiterRegistry.register_tts` определён (`speak_helpers.py:663`), вызывающих вне определения нет (grep `register_tts` даёт только `def` и несвязанный `_register_tts_loop_atexit` в tts_node) | совпало — ключевое утверждение 07 §0 п.2 |
+| V29 | `barge_in_policy: "replace"` в боевом конфиге (`docker/vision/config/voice_assistant/dialogue_node.yaml:23`) — ветка `classify` (QUEUE/MERGE через `quick_decide`) выключена | совпало |
+| V30 | Планировщик: `scheduler/task_scheduler.py` 1 312 строк, `tool_executor.py` 691, `quick_decide.py` 137, `delta.py` 109, `event_bus.py` 45; каналы — `_VOICE_TOOLS={speak_text}`, `_MUSIC_TOOLS={stop_music}`, `_ANIM_TOOLS={play_animation}` (`tool_executor.py:82-97`), музыкальные стартеры в bypass; подключение `dialogue_node.py:2204-2215` | совпало (2 395 строк) |
+| V31 | `harness/decision/scheduler_shadow.py` — вне самого файла и тестов ссылок нет (grep `scheduler_shadow\|SchedulerShadow` = 0) | совпало — мёртвый PoC |
+| V32 | Поле `pregenerate` payload чанка: в `src` вне `scheduler/pregen` и тестов встречается только в комментариях/параметрах `tts_node.py:870-878,1478-1488`; публикатора поля нет | совпало — подключено, данных не получает |
+| V33 | `play_sound` отвечает `success=True, message="Звук запущен…"` сразу после `publish` (`tools/sound.py:145-151`); `sound_node.trigger_callback` молча `return` при активном голосовом стриме или если звук уже играет (`sound_node.py:221-228`) | совпало — класс честности К2 |
+| V34 | Гарды исполнителя: `track_start_guard.py` несёт #2859 (`:1`), #2878 (`:79,263`), #3221 (`:30,238,276`), #3246 (`:106,289`), #3247 (`:116,331`); гейт #2913 — `tool_executor.py:128`; `tts_node` держит второй планировщик: `priority` вклинивание (`:1435`), `_pending_speech_queue` чужих батчей (`:1468`) | совпало |
+| V35 | ADR-0011 — статус Accepted, транспорт HTTP-сайдкар `voice-action-server` вместо ROS2 Action (ADR-0002); пакет `action_server/{http,http_server,paste,server}.py` на месте; `PlayerOwner.track_started` — колбэк из потока клока «трек реально встал на долю `start_beat`» (`engine/player_owner.py:78-89`) — источник точки синхронизации для §5.6 | совпало |
 
 - **Ничего не запускалось** ни локально, ни на роботе. Все величины задержек, долей и частот — из тел issue, памяти проекта и материалов 01–06; где я их цитирую, стоит «(из материалов)».
 
@@ -85,6 +93,8 @@
 | 02 §4: «живого вызова `save_turn` нет» | вызовы `voice_memory.py:33,36` — докстринг; `VoiceMemoryAdapter.save_turn` — deprecated-заглушка по **директиве Шифу 02.09** («forbids persisting dialogue turns in production», `voice_memory_adapter.py:47-49`) | история не персистится намеренно; v2 — §7.4, решение В8 |
 | 02 §2.5: «Telegram-канал: отдельных ADR нет», 01 §17: «[TG] отдельно не разбирал» | история git: Telegram **имел собственную LLM** с 28.02 (`3c91ba155`) до W7 28.07 (`07dfc28aa`), потом стал мостом в `/voice/stt/result`; эхо удалено `88cecc91f`, возвращено #1195 (`def24baaa`) с маркером `[TG:chat_id]` | §9.2 возвращает телеграм-агента на новом движке (решение В10) |
 | 05 §1–§2: `Pipecat #5305`, `LiveKit FallbackAdapter` — «(поиск)» | не проверял | беру форму паттерна, не API |
+| Ревизия 2 этого ADR: §3 «`_order_tool_calls` переносится», §5.2 «одна `SpeechRequest` на ход», §4.1 «при действиях `speech` не озвучивается», §6.2 «вейк во время речи → отмена всегда» | 07 §9 показал: эти четыре формулировки делают «рэп под бит» и «дочитай и вплети» невозможными (Х1–Х5), а `_order_tool_calls` тащит холостой `deferred_call_ids` (`agent_core.py:426-431`) | исправлено в ревизии 3: §4.1 (класс «выступление»), §5.2 (последовательность сегментов), §5.6 (таблица `COMPOSITION` вместо перестановки), §6.2 (перебивание по классу) |
+| 07 §1.6 «`led_node` слушает `/voice/animation/request` — взято из ADR-0150, код не открывал» | я открывал: `led_node.py:180` (V26) | подтверждено |
 
 ---
 
@@ -116,6 +126,7 @@
 - **К5.** Контекст — смесь текста и разметки (`[Spkr:…]`, `[TG]`, `[URGENT_BACKLOG]`, `[CRITICAL]`), ~70k токенов на ход.
 - **К6.** Решение «принять ответ» — после генерации, эвристиками по тексту, с синтетическими ретраями (`_handle_result`, CC 82).
 - **К7.** Божественный узел и размазанное знание без механизма удаления.
+- **К8 (07 §0, §2).** Исполнение во времени без владельца: решение «все тулы через шедулер» (#968, 01.08) обросло заплатками и потерялось — планировщик (`scheduler/`, 2 395 строк, V30) в живом пути только раскладывает вызовы по трём FIFO и отвечает `{"status":"queued"}`; голосовая задача «завершена» в момент **публикации**, а не звучания (V28), поэтому MERGE/ETA/QUEUE недостижимы; реальная очередь речи живёт в `tts_node` как второй планировщик (V34); музыкальные стартеры выведены в bypass (19.08, `1579d56bf`); «дочитай, потом сделай» в бою невозможно — вейк во время речи = STOP + REPLACE (V29). Хотелки Х1–Х15 (07 §3): работает полностью 1, частично 4, сломано/не сделано 10.
 
 ADR-0148 §4 постановил: музыка — первая волна (ADR-0149), `DialogueNode` — следующая, на тех же принципах. Этот ADR — её дизайн.
 
@@ -137,6 +148,7 @@ ADR-0148 §4 постановил: музыка — первая волна (ADR
 10. **Знание — один модуль** `rob_box_dialog.knowledge`; копии удаляются с grep-доказательством.
 11. **Никаких регексов по тексту ответа LLM и синтетических ретраев** в v2. Невалидная команда → `Ask`-шаблон из кода, один раз, без второго вызова.
 12. **Адресация — только по вейк-слову** (решение В2). Окна адресации без вейка нет и флага под него нет; надёжность вейка (одна таблица, границы слов, искажения по логам) — в плане. Доказательство — §17 Ж.
+13. **Исполнение во времени — у планировщика ресурсов** (§5.6). Каждое действие занимает ресурс (голос, лицо, кольцо, SFX, музыка, движение); статус задачи — **событие владельца ресурса** (`SpeechEvent finished`, а не «опубликовал»); одновременность и порядок — таблица `COMPOSITION` (данные, одна на проект) с политиками APPEND/MERGE/REPLACE/REJECT по словарю BML; выступление (песня, рэп, сказка) — отдельный класс действия со связанным временем жизни подложки, речи и экспрессии и стартом на такте от владельца плеера v2 (ADR-0149). Политику выбирает код, LLM — максимум `when` из enum.
 
 ### 2.2 Пакеты и модули
 
@@ -155,6 +167,13 @@ src/rob_box_dialog/                      # НОВЫЙ пакет. Чистый P
     tools_view.py       # available_tools(session, capabilities) -> узкий срез каталога (имена + схемы из rob_box_core)
     context.py          # build_context(session, turn_log, facts) -> структурные блоки для LLM, окно озвученной истории
     execute.py          # Executor: actions -> ActionRequest; ожидание ActionEvent владельца; ActionResult{status, …}
+    plan/               # ПЛАНИРОВЩИК РЕСУРСОВ (§5.6) — замена scheduler/ (2 395 строк) и второго планировщика в tts_node
+      resources.py      #   ResourceState по снимкам владельцев: что занято, чем, с какой эпохой, граница (sentence|bar|now)
+      composition.py    #   compose(new_cls, busy_cls, tier1_hint, when) -> APPEND|MERGE|REPLACE|REJECT по knowledge.COMPOSITION
+      perform.py        #   Performance: сегменты (куплеты) PENDING/ACTIVE/DONE, подложка, экспрессия; MERGE только в PENDING;
+                        #   Parallel(success_count=1): речь кончилась → outro подложки → стоп; required: подложка не стартовала → отказ
+      sync.py           #   точки синхронизации: next_bar(started{bpm, beat_at}, output_latency) -> t; play(segment, at=t)
+      plan_events.py    #   /dialog/plan_event (BML blockProgress): block start/end, segment started/finished, prediction
     expression.py       # Reflexes: стадия хода → ExpressionRequest без LLM; слияние с Command.expression
     phrases/ru.yaml     # каталог фраз: {action_class}.{status}[.{reason}] с вариантами и слотами
     respond.py          # phrase_from_result(result, session) -> Utterance; speech_for(Command)
@@ -171,7 +190,9 @@ src/rob_box_voice/rob_box_voice/
     dialog_node.py      # НОВЫЙ тонкий хост v2 (≤ 600 строк, WMC ≤ 80): ROS-подписки/публикации, таймеры, вызовы rob_box_dialog
     core/stt_admission.py                              # ОСТАЁТСЯ: 12 шагов; WakeWordStep → address.py; MediaCommandStep → grammar.py
     core/media_command_grammar.py, media_router.py     # ОСТАЮТСЯ как Tier-1 для музыки; грамматика расширяется, не копируется
-    tts_node.py         # ВЛАДЕЛЕЦ РЕЧИ: один вход SpeechRequest, события SpeechEvent, отмена по speech_id/epoch
+    tts_node.py         # ВЛАДЕЛЕЦ РЕЧИ: один вход SpeechRequest (с полем at — «играть в момент t» и boundary — граница REPLACE),
+                        # события SpeechEvent, отмена по speech_id/epoch; пред-синтез без воспроизведения (commit=false);
+                        # собственная очередь/приоритеты/pending-батчи (второй планировщик) удаляются — порядок задаёт plan/
     stt_node.py         # STT + ProviderState(stt); STOP не шлёт — шлёт InterruptRequest; «boop» не шлёт — рефлекс у диалога
     command_node.py     # движение по /dialog/intent, а не по /voice/stt/result напрямую
     sound_node.py       # исполнитель earcon'ов по ExpressionRequest; /voice/sound/trigger остаётся только для mcp-тула play_sound
@@ -191,7 +212,8 @@ src/rob_box_telegram/                    # телеграм-агент — Agent
 | Сессия голосового диалога: эпоха, стек сцен, тишина (TTL, `set_by`), персона, голос `requested/applied`, собеседник | `dialog_node` (`rob_box_dialog.session`) | latched `/dialog/session` (`SessionState`) | tts_node, command_node, led_node, arbiter, quest, telegram-агент, супервизор |
 | Сессия телеграм-агента (на `chat_id`) и ТАРС | соответствующий агент; **не** `dialog_node` | свой `/telegram/session`, `/avatar/session` (`SessionState`, поле `agent`) | dialog_node читает для правил совместного доступа к речи (§9.2.3) |
 | Ход: `turn_id`, эпоха, стадия (`addressed → understood → executing → speaking → done/failed/cancelled`) | владелец соответствующей сессии | `/dialog/turn_event` (`TurnEvent`, поле `agent`) | экспрессия (рефлексы), ТАРС-журнал, e2e, метрики |
-| Речь робота: очередь, что звучит, сколько символов озвучено | **tts_node** | `/voice/speech/event` (`SpeechEvent`) | все агенты (история по `spoken_chars`), audio_node, stt_node, animation_player |
+| Речь робота: что звучит, сколько символов озвучено, пред-синтезированные сегменты | **tts_node** (исполнитель ресурса «голос») | `/voice/speech/event` (`SpeechEvent`) | все агенты (история по `spoken_chars`), audio_node, stt_node, animation_player, `plan/` |
+| **Расписание ресурсов**: кто занял голос/лицо/кольцо/SFX/музыку/движение, чем, политика при конфликте, границы; **выступление** (сегменты PENDING/ACTIVE, подложка, время жизни) | `rob_box_dialog.plan` в процессе агента-владельца хода (рекомендация, вопрос О6 — альтернатива: часть tts_node) | `/dialog/plan_event` (`PlanEvent`, BML `blockProgress`) | LLM-контекст (блок «что звучит / что в очереди / сколько осталось»), e2e, метрики A19–A23 |
 | Экспрессия: какая эмоция/жест/earcon сейчас | **решение** — агент-владелец хода (`expression.py`); **исполнение** — animation_player (матрица), led_node (кольцо), sound_node (earcon) | `/voice/expression/request` (`ExpressionRequest`, писатели — агенты через один клиент) → события `/voice/expression/event` | — |
 | Вход речи: сегмент, текст, провайдер STT, `utterance_id` | stt_node | `/voice/stt/utterance` (типизируется в PR-2) | dialog_node — **единственный** читатель |
 | Собеседник (биометрия) | speaker_id_node | `/voice/speaker/result` (ADR-0131) | dialog_node |
@@ -200,7 +222,7 @@ src/rob_box_telegram/                    # телеграм-агент — Agent
 | Floor / режим аватара | арбитр (образец) | `/avatar/state` | без изменений |
 | Громкость | три канала у трёх владельцев; **решение «какой канал»** — `grammar.py` по снимку | действия `set_volume(channel=…)` | — |
 
-Удаляются как топики без владельца: `/voice/current_dialogue_id`, `/voice/dialogue/response`, `/voice/tts/request`, `/voice/tts/control`, `/dialogue/control` + `/dialogue/control_ack`, `/voice/dj_mode` как писатель диалога, `/harness/task_events`, `/voice/animation/request` (заменён `ExpressionRequest`), «boop» в `/voice/sound/trigger`.
+Удаляются как топики без владельца: `/voice/current_dialogue_id`, `/voice/dialogue/response`, `/voice/tts/request`, `/voice/tts/control`, `/dialogue/control` + `/dialogue/control_ack`, `/voice/dj_mode` как писатель диалога, `/harness/task_events` (заменён `/dialog/plan_event`), `/voice/animation/request` (заменён `ExpressionRequest`), «boop» в `/voice/sound/trigger`, `/voice/tts/batch_registered` и `/voice/tts/batch_complete` (их публикует mcp_server, а не владелец речи, V28 — заменены `SpeechEvent finished` по сегменту и `PlanEvent block end`), `/mcp/music_cleanup`/`/mcp/music_fallback` (время жизни подложки — у выступления, §5.6.5).
 
 ---
 
@@ -255,12 +277,14 @@ flowchart TD
 | 14 кто говорит, спросить ли имя | код (после #2888) | код; вопрос — `Ask`-шаблон, ответ — Tier-1 |
 | 15 скилл | 27 регексов `skill_router` + LLM `load_skill` | сцена из грамматики/команды; `tools_view` даёт срез; `skill_router.py` удаляется |
 | **16 что сказать и какие тулы** | **LLM, свободно** | **LLM — одна команда**: речь + ≤ 3 действий + экспрессия; параметры — по узкой схеме с enum |
-| 17–18 порядок/очередь тулов | код | код (`ACTION_CLASSES`, `_order_tool_calls` переносится) |
+| 17–18 порядок/очередь тулов | код: `_order_tool_calls` (музыка вперёд, `stop_*` в конец) + три FIFO с `queued` | код: таблица `knowledge.COMPOSITION` и `plan/` (§5.6); `_order_tool_calls` и его холостой `deferred_call_ids` **не переносятся** |
 | **19 принять/переспросить/замьютить** | **эвристики по тексту, 14 ретраев** | **валидатор до исполнения; 0 ретраев** |
 | 20 сказать целиком/первое предложение | `decide_turn_speech` | длина `speech` ограничена схемой (280, В5), не промптом |
 | 21 провайдер TTS | tts_node | tts_node + `ProviderState(tts)` + фраза деградации |
 | 22 DJ-переход | таймер + LLM | **музыка v2** (ADR-0149), диалог только слушает события |
 | новое: экспрессия | LLM через `speak_text(animation=…)`, `play_animation`, `play_sound`; `animation_player` сам по `/voice/tts/state` | рефлексы кода по стадиям хода + enum в команде (§5.5) |
+| новое: новая команда во время исполнения | stt_node STOP на любой вейк → REPLACE всегда (V29) | `compose()` по классу занятого и нового действия + Tier-1; «стоп/хватит» — REPLACE, дополнение к выступлению — APPEND/MERGE на границе (§5.6.4) |
+| новое: когда завершено действие | публикация в топик (V28) | событие владельца ресурса (§5.6.2) |
 
 ---
 
@@ -273,16 +297,27 @@ flowchart TD
 class Expression:  emotion: Emotion = "neutral"; gesture: Gesture | None; earcon: Earcon | None   # enum из knowledge
 class ToolCall:    tool: str; args: Mapping[str, Any]                                            # тул из available_tools(session)
 
+class Performance:  # выступление (§5.6.3): речь ЗДЕСЬ — содержимое, а не отчёт об исполнении
+    kind: Literal["rap", "song", "tale", "poem"]
+    segments: tuple[str, ...]     # куплеты/абзацы, 2..12, каждый ≤ 400 символов; сегменты режет код, LLM отдаёт список
+    backing: Literal["beat", "calm", "none"] = "none"   # подложка → request_music(intent=backing, …), ADR-0149 §5.1
+    expression_per_segment: tuple[Expression, ...] | None
+
 @dataclass(frozen=True)
 class Command:
     speech: str | None            # ≤ 280 символов; реплика человеку. Транспорт — speech_channel (§4.4)
     ask: Ask | None               # вопрос с ожиданием: expects ∈ {"yes_no", "name", "free"}; открывает ожидание ответа С вейком
-    actions: tuple[ToolCall, ...] # ≤ 3; порядок исполнения назначает код; ≤ 1 действие класса action.media|motion
+    actions: tuple[ToolCall, ...] # ≤ 3; порядок и одновременность назначает код (§5.6); ≤ 1 действие класса action.media|motion
+    perform: Performance | None   # класс action.perform — длинная речь с подложкой; взаимоисключает speech
+    when: Literal["after_current", "now"] = "after_current"   # единственное, что LLM говорит о времени; валидатор режет now для непрерываемых
+    edit_pending: bool = False    # только для perform: править ещё не начатые сегменты текущего выступления (MERGE), не начинать новое
     expression: Expression        # всегда есть; дефолт neutral
     passed: Literal["not_addressed", "nothing_to_say", "unclear"] | None   # «молчать» — честный исход
 ```
 
 - **Правило речи при действиях (честность):** если `actions` непустой, `speech` **не озвучивается** — в этом ходе звучат только шаблоны по событиям (§5.4); `speech` уходит в лог и в текстовый канал (Telegram), где он не может выдать себя за отчёт об исполнении. Так LLM структурно не может сказать «Записала» до события. LLM-комментарий после действия — флаг `post_action_comment: false` (В6).
+- **Исключение — класс «выступление»** (исправление по 07 §9 п.1): в `perform` речь **и есть действие** — куплеты рэпа, строфы сказки. Они озвучиваются сегментами по расписанию планировщика (§5.6.3), лимит 280 на них не действует (лимит на сегмент — 400, на число сегментов — 12, оба в схеме). Правило честности сохраняется в другой форме: `perform.segments` не могут содержать отчёт об исполнении, потому что фраза «Включаю бит» / «Бит не завёлся — читаю без него» всё равно строится кодом по `started/rejected` подложки, а `perform.finished` — событие планировщика, не слова LLM. В6 (шаблон после действия) остаётся для обычных `actions`.
+- **Время — только `when`:** LLM выбирает `after_current` (дочитать текущее, потом исполнить — **дефолт**) или `now`; остальное (APPEND/MERGE/REPLACE/REJECT, граница, такт) решает `compose()` по таблице классов и Tier-1 (§5.6.4). `now` для непрерываемых классов занятого ресурса отклоняется валидатором с понятной ошибкой.
 - **Форма:** `degrade.py` по `ProviderCapabilities` выбирает: (а) `tool_calls` + `tool_choice="required"` с одним тулом `command` (или с набором `command`+узкие тулы); (б) `structured_output`/JSON-mode по схеме; (в) свободный текст с одним JSON-объектом — парсер `command.parse(text)` берёт первый валидный объект, остальное отбрасывается и не озвучивается. Режим — не правило в промпте, а ветка кода по возможностям.
 - **Валидатор** (`command.validate`): тулы ∈ `available_tools`; аргументы по JSON-схеме каталога (`rob_box_core.tool_catalog`), enum/границы в схеме — poka-yoke (05 §10); `expression.*` ∈ enum `knowledge`; `speech` без управляющих последовательностей (структурно). Невалидно → `Ask("Не понял, повтори")` из шаблона. **Одна** попытка LLM на ход.
 - **Query-цикл:** для тулов класса `query` результат возвращается LLM, она снова выдаёт одну команду (обычно `speech`). Максимум 2 итерации (Letta `MaxCountPerStepToolRule`, 05 §7). Итого ≤ 3 вызова LLM на фразу.
@@ -348,6 +383,7 @@ class Command:
 | `action.motion` | `navigate_to_waypoint`, `stop_motion` | Nav2 result (до 120 с) | «Еду к…» (обещание, ключ `motion.started`) → «Приехал»/«Не доехал: …» | **нет** (LiveKit `disallow_interruptions`); «стой» — Tier-1 |
 | `action.identity` | `register_speaker`, `merge_speaker` | событие speaker_id_node (`registered`) | шаблон | нет |
 | `action.speak_aloud` (только агенты operator/telegram) | `say_aloud(text, voice?)` | `SpeechEvent finished{spoken_chars, seconds}` | в канал агента: «Озвучил (12 с)» / «Не озвучил: тишина/занято» | да |
+| `action.perform` (§5.6.3) | `Performance{kind, segments, backing}` | `PlanEvent block_end{segments_done, spoken_chars}`; подложка `started/rejected` | `perform.backing_started` («Поехали!»), `perform.no_backing`, `perform.finished` — только шаблон; куплеты — речь LLM | на границе сегмента (REPLACE по Tier-1); MERGE в PENDING |
 
 ### 5.2 Контракт исполнителя
 
@@ -363,7 +399,7 @@ class ActionResult:
 
 - Для fire-and-forget тулов v1 (К2) владелец **обязан** ответить событием; нет события к дедлайну класса → `timeout` → шаблон «Не дождался …». Тул класса `action.*` без источника события в v2 не регистрируется (гард `seam_without_consumer.py` расширяется проверкой, PR-7).
 - **Идемпотентность по `turn_id`**: повторный `ActionRequest` отбрасывается владельцем (ADR-0149 I6).
-- Несколько действий в одной команде исполняются в порядке кода (`_order_tool_calls` переносится из `agent_core.py:395`): `local` → `identity` → `media` → `motion`; фразы по событиям собираются в одну реплику (`respond.join`) — одна `SpeechRequest` на ход.
+- Несколько действий в одной команде раскладывает **планировщик ресурсов** (§5.6) по `knowledge.COMPOSITION`: совместимые по ресурсам — параллельно (анимация + речь + подложка), конфликтующие — по политике класса. `_order_tool_calls` (`agent_core.py:395`, музыка вперёд, `stop_*` в конец, холостой `deferred_call_ids :426-431`) не переносится. Фразы по событиям обычных действий собираются в одну реплику (`respond.join`); выступление — последовательность сегментов с моментами старта (исправление по 07 §9 п.3).
 
 ### 5.3 Как событие возвращается в диалог
 
@@ -398,6 +434,77 @@ class ActionResult:
 
 **Приёмка:** A1 считает **только вызовы LLM**; невербальные действия — отдельно A17 (каждый адресованный ход имеет ≥ 1 рефлекс `addressed` ≤ 300 мс и ≥ 1 терминальный рефлекс `done|failed`). Порог A1 = 3 — **принят предварительно (В5), уточняется после замера в PR-8** на марафоне с включёнными рефлексами.
 
+### 5.6 Исполнение во времени: планировщик ресурсов
+
+Товарищ Шифу (02.10): «робот читает рэп про одно, а если ему в процессе нагрузить — чтоб он дочитывал… решение, что все тулы идут в шедулер, поросло заплатками и потерялось. Должно работать: робот проигрывает анимацию и говорит одновременно, либо запустил бит и читает рэпчик». Разбор — `07-action-scheduler.md`; здесь — дизайн.
+
+#### 5.6.1 Ресурсы и владельцы
+
+| Ресурс | Владелец-исполнитель | Событие владельца (статус задачи) | Что принимает |
+|---|---|---|---|
+| **Голос** (речь в динамик/наушник) | `tts_node` | `SpeechEvent queued/started/progress{spoken_chars}/finished/cancelled` (§6.1) | `SpeechRequest{…, at: время старта | null, boundary: sentence|none, commit: bool}` — новое: «играть в момент t» и пред-синтез без воспроизведения |
+| **Лицо** (матрица) | `animation_player_node` | `ExpressionEvent started/skipped{reason}` (§5.5) | `ExpressionRequest` |
+| **Кольцо LED** | `led_node` | `ExpressionEvent` | `ExpressionRequest` |
+| **SFX** | `sound_node` | `SoundEvent started/finished/skipped{busy|voice_stream}` — **честно вместо молчаливого `return`** (V33) | `ActionRequest play_sound` / `ExpressionRequest earcon` |
+| **Музыка** | `PlayerOwner` (mcp_server, ADR-0149) | `/voice/music/event started{bpm, beat_at, bar}/nearly_finished/finished/rejected/idle` | `request_music(intent=backing|track)`, `dj_set` |
+| **Движение** | Nav2 через command_node/mcp | результат action, `feedback` | `Intent`, `navigate_*` |
+| **Внешнее** (память, поиск, Telegram-текст) | свои сервисы | ответ тула | `ActionRequest` |
+| **Расписание** (кто что занял, политика, границы; выступление как целое) | `rob_box_dialog.plan` в процессе агента (рекомендация; О6) | `PlanEvent block start/end, segment started/finished, prediction` | команды агента |
+
+**Статус задачи приходит только от владельца ресурса.** `{"status":"queued"}` как ответ тула исчезает: в LLM возвращается `ActionResult` по событию, а для ещё не начатого — структурный блок «в очереди после X, старт ≈ через N с» (BML `predictionFeedback`). Канал `VOICE`, который считал задачу выполненной по публикации (V28), не существует.
+
+#### 5.6.2 Матрица одновременности (`knowledge.COMPOSITION`, данные)
+
+Обозначения: ✅ параллельно (MERGE); ⏭ после текущего (APPEND); ⟳ заменить на границе (REPLACE); ✖ отказ с фразой (REJECT).
+
+| новое ↓ \ занято → | голос: реплика | голос: **выступление** | лицо/кольцо | SFX | музыка: подложка выступления | музыка: трек/сет | движение |
+|---|---|---|---|---|---|---|---|
+| **реплика** | ⏭ (дефолт, О7) | ⏭ дочитать сегмент → реплика → продолжить; ⟳ на границе предложения только по Tier-1 «хватит/стоп» | ✅ | ✅ | ✅ (ducking — О8) | ✅ (ducking) | ✅ |
+| **выступление** | ⏭ | ⏭ по умолчанию; **MERGE в PENDING-сегменты**, если `edit_pending` («и про енота»); ⟳ только Tier-1 | ✅ | ✅ | ⟳ смена подложки на такте, речь продолжается | ⟳ подложка вытесняет трек на границе фразы (ADR-0149) **или** ✖ «сначала выключить трек?» — О9 | ✅ |
+| **экспрессия** | ✅ MERGE с TTL поверх рефлекса `speaking` | ✅ | MERGE | ✅ | ✅ | ✅ | ✅ |
+| **SFX** | ✅ | ✅ | ✅ | ⏭ или вытеснение по приоритету; всегда событие, не молчание | ✅ | ✅ | ✅ |
+| **музыка: старт** | ✅ | ⟳ подложка на такте, речь не рвётся (**#993**) | ✅ | ✅ | ⟳ на такте | ⟳ на фразе (ADR-0149) | ✅ |
+| **движение** («направо») | ✅ | ✅ параллельно (решение SCHEDULER_DESIGN v5 Q5, сегодня нарушено — 07 Х11) | ✅ | ✅ | ✅ | ✅ | ⟳ preempt Nav2 |
+| **«стой»** (Tier-1) | ⟳ сразу: речь, выступление, движение; музыка — `dj_set(stop)`/стоп подложки по снимку | | | | | | |
+| **query** | ✅ параллельно, отменяется при перебивании | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Непрерываемые классы (`motion`, `identity`) не вытесняются ничем, кроме «стой» (для `motion`). Таблица — единственное место знания об одновременности; тест проверяет поведение `compose()` на всех парах, а не текст промпта (ADR-0148 §3).
+
+#### 5.6.3 Класс действия «выступление» (`action.perform`)
+
+Песня, рэп, сказка, стих — **не N независимых `speak_text`**, а одно действие с тремя связанными частями и общим временем жизни:
+- **речь** — сегменты (куплеты/абзацы) из `Performance.segments`, режет код (сегмент ≤ 400 символов, по строфам/предложениям); состояние сегмента `PENDING → ACTIVE → DONE`;
+- **подложка** — `request_music(intent=backing, mood=…)` к `PlayerOwner`; форма ≥ Σ длительностей сегментов (из пред-синтеза) — с запасом на outro;
+- **экспрессия** — рефлекс `speaking` + `expression_per_segment`.
+
+Жизненный цикл — `Parallel(success_count=1)` (BehaviorTree.CPP): речь дочитана → подложке `outro` на границе фразы → `stop`; подложка кончилась раньше — продлевается проходом формы (ADR-0149 I1). **`required`** (BML): подложка `rejected` или не `started` за 6 с → выступление **не начинается «в тишину» молча**: код говорит шаблон `perform.no_backing` («Бит не завёлся — читаю так») и продолжает без подложки, либо, если `backing` обязателен для `kind=rap` (О10), отказывает честно. Это заменяет `_pending_music_cleanup`, `_active_batches`, отсрочку при живом ходе, `_track_mode_music_active`, `/mcp/music_cleanup` (07 П9).
+
+**Пред-генерация.** Все сегменты синтезируются заранее (`SpeechRequest commit=false` → `SpeechEvent synthesized{speech_id, duration_ms}`), воспроизводятся по `commit` в момент `at`. Длительности дают раскладку по тактам и ETA для блока LLM «осталось N с». Это единственная реализация пред-генерации: поле `pregenerate` payload чанка (ADR-0056/0092), которое никто не публикует (V32), **удаляется** вместе с `scheduler/pregen/decision|estimator|quality|speculative_executor` (решение по п.5 задания: оставлять неподключённый механизм рядом с подключённым — две реализации); `estimator.py` переносится как библиотечная функция оценки длительности до синтеза.
+
+**Старт на такте (X2).** `sync.next_bar(started{bpm, beat_at, bar}, output_latency_ms) → t`: первый сегмент стартует на ближайшей границе такта подложки после `now + output_latency`; каждый следующий — на ближайшем такте после `finished` предыдущего (Ableton Link quantized launch, BML `synchronize speech:start ↔ music:bar`). Источник доли — колбэк `PlayerOwner.track_started` из потока клока (V35) и далее `beat_at` в снимке; `output_latency_ms` **меряется** `jack_rec` (память «Аудит записей»), не угадывается. Старт на такте есть только у `PlayerOwner` v2 → при `music_engine: v1` выступление идёт **без квантования** (подложка v1 стартует сразу, сегменты — по `finished`), и это честно отражается в `PlanEvent.synced=false`.
+
+#### 5.6.4 Политики при новой команде во время исполнения (BML)
+
+| Политика | Смысл | Граница |
+|---|---|---|
+| **APPEND** | начать после конца текущего блока («а потом спой колыбельную», X4; реплика во время выступления) | конец блока / сегмента |
+| **MERGE** | исполнять вместе, не трогая начатое; для выступления — правка только **PENDING**-сегментов (`edit_pending`, X3 «и про енота») | сразу; правка — ближайший PENDING |
+| **REPLACE** | закончить текущее и начать новое | голос — конец предложения, не позже 3 с; музыка — такт; «стой» — сразу |
+| **REJECT** | не исполнять, честно сказать почему | — |
+
+**Кто решает (ADR-0148):** (1) код — `compose(new_cls, busy_cls)` по `COMPOSITION`; (2) Tier-1 переопределяет по закрытому списку: «стоп/хватит/замолчи» → REPLACE на границе, «стой» → REPLACE сразу, «потом/после/когда закончишь» → APPEND, «сейчас/прямо сейчас» → REPLACE на границе; (3) LLM — только `when ∈ {after_current, now}` и `edit_pending`; (4) фразу «Дочитаю и включу» / «Поставлю после куплета» строит код по `PlanEvent queued{after, eta}`. `stt_node` STOP на любой вейк (V29, `stt_node.py:2035-2045`), `barge_in_policy` с обеими ветками и `quick_decide` уходят: вейк во время речи = `interrupt_request` → `compose()`, а не STOP (§6.2).
+
+**Эталонные сценарии (тесты поведения `plan/` + e2e):**
+- **X3 «дочитай и вплети»** (#968 «комар + енот»): рэп 6 сегментов, на ACTIVE=2 приходит «Робби, и про енота!» → LLM `perform{edit_pending=true, segments=[новые 3..6]}` → MERGE: сегмент 2 дочитывается до конца, 3–6 заменяются, подложка не трогается; `PlanEvent segment replaced{3..6}`; A20.
+- **#993 «добавь музыку во время рэпа»**: рэп без подложки, на ACTIVE=1 «Робби, добавь бит» → `request_music(intent=backing)` класс `action.media` против занятого «выступление» → ⟳ подложка на такте, речь **не обрывается**, сегмент 2 стартует уже на такте; A22.
+- **X4 «а потом спой колыбельную»**: `when=after_current` → APPEND, фраза «Спою после рэпа», `PlanEvent queued{after=perform_1}`; A19.
+- **X5 «хватит, анекдот»**: Tier-1 «хватит» → REPLACE на границе предложения (≤ 3 с), outro подложки, затем новый ход; A21.
+- **X11 «направо» во время песни**: `motion` ✅ параллельно, песня не рвётся.
+
+#### 5.6.5 Что это удаляет (07 §1.6–1.7, П15)
+
+Канал `VOICE` с «завершено = опубликовано», `wait_until_idle`, `_pending_music_cleanup`/`_active_batches`/прелюдия/`_track_mode_music_active` (`dialogue_node.py:1085-1120, 3396-3460`), `batch_registered/batch_complete` из mcp_server, мёртвые хуки `TaskScheduler` (`cancel`, `set_llm_continue_hook`, `notify_event`, `set_eta_provider`, `set_group_boundary`, `set_frozen_touch_hook`), `task_delta` (тул, схема, скилл `scheduler.txt`), `[ACTIVE TASKS]/[SEGMENT PLAN]` с `eta=?`, `scheduler_shadow.py` (V31), `action_server/` + сайдкар `voice-action-server` (ADR-0011), `register_tts`, `deferred_call_ids`, пять гардов исполнителя (#2859 «один трек за ход», #2878/#3221 лимит DJ-реплик, #2913 гейт речи до регистрации, #3246/#3247 отказы DJ_AUTO — становятся полями `ACTION_CLASSES`/проверками валидатора или исчезают с ADR-0149), второй планировщик в `tts_node` (`priority`-вклинивание `:1435`, `_pending_speech_queue` `:1468`, буфер «STOP после синтеза» `:1868-1900`). PR и grep-критерии — §11 (PR-7b/7c).
+
 ---
 
 ## 6. Речь, перебивание, тишина
@@ -413,13 +520,14 @@ class ActionResult:
 
 | Сигнал | Кто решает | Действие |
 |---|---|---|
-| Фраза **с вейком** во время речи робота | `address.py` → `interrupt.py` | `SpeechCancel(epoch)` → речь ≤ 300 мс; стрим LLM отменяется по эпохе до HTTP-клиента (`AgentCore.cancel(epoch)`, #1280); `motion`/`identity` не отменяются, `query` — отменяется (Pipecat `cancel_on_interruption`) |
+| Фраза **с вейком** во время речи робота — **Tier-1 «стоп/хватит/замолчи/стой»** | `grammar.py` → `interrupt.py` | REPLACE: «стой» — `SpeechCancel(epoch)` сразу (≤ 300 мс); «хватит/стоп» — на границе предложения (≤ 3 с), outro подложки; стрим LLM отменяется по эпохе до HTTP-клиента (`AgentCore.cancel(epoch)`, #1280); `motion`/`identity` не отменяются (кроме «стой» для motion), `query` — отменяется (Pipecat `cancel_on_interruption`) |
+| Фраза **с вейком** во время речи робота — **не стоп** (дополнение, новая просьба) | `address.py` → ход LLM → `compose()` (§5.6.4) | речь **не отменяется** (исправление по 07 §9 п.2): во время **реплики** новая реплика — APPEND; во время **выступления** — APPEND после сегмента или MERGE в PENDING (`edit_pending`), подложка меняется на такте; действия, совместимые по ресурсу (анимация, движение, SFX) — параллельно. Рефлекс `addressed` (earcon) подтверждает, что услышал, пока дочитывает |
 | Фраза **без вейка** во время речи робота | `address.py` | игнор всегда (В2; `0326d7e9f`: без гейта робот прерывал сам себя эхом) |
 | «Стой/стоп» (Tier-1) | `grammar.py` | `stop_motion` + `SpeechCancel` + `dj_set(stop)` по снимку |
 | Эхо/короткий шум | audio/stt как сегодня (грейс 2.5 с, T2) | остаётся с `TEMP(ADR-0148`; ложное прерывание с возобновлением — не в этом витке (§17 Г) |
 | Новая сессия | `grammar.py` | `Session.reset()` → эпоха+1 |
 
-Писателей STOP становится: агенты через один клиент (было 4 ноды, V12). stt_node публикует `/dialog/interrupt_request{utterance_id}`, диалог решает за ≤ 20 мс. Если замер в PR-9 покажет > 300 мс до тишины — stt_node получает право прямой отмены **только по эпохе** из latched `/dialog/session` (§16).
+Писателей STOP становится: агенты через один клиент (было 4 ноды, V12). stt_node публикует `/dialog/interrupt_request{utterance_id}`, диалог решает за ≤ 20 мс: Tier-1 стоп-слово в первом сегменте STT → REPLACE немедленно; иначе ход идёт как обычно, речь продолжается. `barge_in_policy` (`replace`/`classify`, V29) и `quick_decide` удаляются — политика одна, табличная. Если замер в PR-9 покажет > 300 мс до тишины — stt_node получает право прямой отмены **только по эпохе** из latched `/dialog/session` (§16).
 
 ### 6.3 Тишина (решение В3)
 
@@ -491,6 +599,7 @@ class SessionSnapshot:
 - Фраза об успехе — из `started{track_id, title, bpm}` / `rejected{reason}` (`media.started`, `media.rejected.{reason}`); при `music_engine: v1` событий нет → `request_music` в `available_tools` отсутствует, работает только `MediaRouter` v1.
 - Диалог v2 **не вызывает** `MusicGuard`, `DJModeController.tick`, `dj_set_boundary` ни при каком флаге и **ничего из них не удаляет**: удаление — у эпика #3312 (PR-13…15 ADR-0149), «там обещали всё удалить и почистить» (Шифу 02.10). Зависимости — §11.1.
 - Кадр `DJ` создаётся/снимается по событиям плеера; `/voice/dj_mode` диалог не пишет.
+- **Подложка выступления** (§5.6.3) — `request_music(intent=backing)` к `PlayerOwner`; владелец плеера даёт `started{bpm, beat_at, bar}` для старта речи на такте (ADR-0149 I9, `player_owner.py:78-89`), `nearly_finished` для продления формы под длину речи и принимает `outro/stop` от планировщика выступления. Политика «подложка против играющего трека/сета» — О9. Ничего в движке музыки ради этого не меняется, кроме контракта `request_music(intent=backing, min_form_beats)` — если его нет в #3312 PR-6, это запрос к эпику, не правка здесь.
 
 ### 9.2 Telegram — отдельный агент на общем движке (решение В10)
 
@@ -526,9 +635,11 @@ class SessionSnapshot:
 
 | Тип | Поля (кратко) | Заменяет |
 |---|---|---|
-| `msg/SpeechRequest` | `speech_id, turn_id, epoch, agent, sink, priority, interruptible, text, voice, language, emotion, stamp` | `/voice/tts/request`, `/voice/dialogue/response` |
+| `msg/SpeechRequest` | `speech_id, turn_id, epoch, agent, sink, priority, interruptible, text, voice, language, emotion, at (время старта, 0 = сразу), boundary {none, sentence}, commit (false = только синтез), stamp` | `/voice/tts/request`, `/voice/dialogue/response`, поле `pregenerate` чанка |
+| `msg/PlanEvent` | `block_id, turn_id, epoch, agent, kind {block_start, block_end, segment_started, segment_finished, segment_replaced, queued, prediction, rejected}, segment_no, after_block, eta_ms, synced, reason, stamp` | `/harness/task_events`, `[ACTIVE TASKS]/[SEGMENT PLAN]` в контексте |
+| `msg/SoundEvent` | `request_id, kind {started, finished, skipped}, reason {busy, voice_stream}, sound` | молчаливый `return` в `sound_node.trigger_callback` (V33) |
 | `msg/SpeechCancel` | `speech_id, epoch, agent, reason` | `/voice/tts/control` STOP/IGNORE_STOP_MS |
-| `msg/SpeechEvent` | `kind {queued,started,progress,finished,cancelled,voice_changed,rejected}, speech_id, turn_id, epoch, agent, spoken_chars, text_len, seconds, voice_requested, voice_applied, provider, reason, stamp` | `/voice/tts/state`, `/finished`, `/batch_*`, `/current_voice`, часть `/provider_state` |
+| `msg/SpeechEvent` | `kind {queued,synthesized,started,progress,finished,cancelled,voice_changed,rejected}, duration_ms, speech_id, turn_id, epoch, agent, spoken_chars, text_len, seconds, voice_requested, voice_applied, provider, reason, stamp` | `/voice/tts/state`, `/finished`, `/batch_*`, `/current_voice`, часть `/provider_state` |
 | `msg/ExpressionRequest` / `msg/ExpressionEvent` | `turn_id, epoch, agent, emotion, gesture, earcon, ttl_ms` / `executor, kind {started,skipped}, reason` | `/voice/animation/request`, «boop» в `/voice/sound/trigger`, auto-switch по `/voice/tts/state` |
 | `msg/SessionState` | `agent, session_id, epoch, scenes[] (SceneFrame), voice_requested, voice_applied, speaker_id, speaker_name, pending_ask, stamp` | `/voice/dialogue/state`, `/voice/dialogue/barge_in_policy` |
 | `msg/SceneFrame` | `kind, set_by, ttl_until, payload_json` | — |
@@ -565,12 +676,14 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | **PR-1b** | провайдер-агностик: `ProviderCapabilities` += `tool_choice/json_mode/structured_output/thinking`; честные флаги у `deepseek/minimax/mimo`; `degrade.select_mode`; `speech_channel.py` с **двумя** классами (на время бейк-оффа); `test_llm_adapter_contract.py` (FakeProvider × 4 режима × эталонный набор = 100 %); `scripts/dialog/adapter_benchmark.py` | — (гард: `rob_box_dialog` не импортирует адаптеры — grep = 0) | pytest -v; benchmark по живым адаптерам (raw в PR) | A14 по провайдерам (первый замер) |
 | **PR-1c** | **бейк-офф канала речи** (§4.4): `speech_channel_bakeoff.py`, прогон {A, B} × все адаптеры × 3; отчёт `docs/dialog/speech_channel_bakeoff_<дата>.md`; amendment к этому ADR с победителем | — (решение; код канала-проигравшего удаляется в PR-7) | raw-таблица `delivered/leak/double/phantom/llm_calls/latency` | критерий §4.4 |
 | **PR-2** | `rob_box_dialog_msgs` (§10.1) + `ownership.yml` + `ownership_check.py`; `/voice/stt/utterance`, `/voice/speaker/result` типизированы с потребителем dialogue_node (v1) | String-версии этих топиков — grep = 0 | colcon build; `ownership_check`; `ros2 topic info -v` на роботе | A7 |
-| **PR-3** | tts_node — владелец речи: `SpeechRequest/Cancel/Event`, отмена по эпохе, `rob_box_core.speech_client`; все писатели → клиент; адаптер совместимости v1 | `IGNORE_STOP_MS` (T1), `/voice/current_dialogue_id` (D16), второй писатель `batch_complete` — grep = 0; `create_publisher(... "/voice/tts/request"` вне клиента = 0 | робот: 20 реплик из 3 источников; `spoken_chars` при отмене; рантайм-аудит `/voice/tts/*` | A6 (−5), A12 |
+| **PR-3** | tts_node — владелец речи: `SpeechRequest/Cancel/Event` (включая `synthesized{duration_ms}`, `at`, `boundary`, `commit`), отмена по эпохе, `rob_box_core.speech_client`; все писатели → клиент; адаптер совместимости v1 | `IGNORE_STOP_MS` (T1), `/voice/current_dialogue_id` (D16), `batch_registered/batch_complete` из mcp_server, `register_tts` (`speak_helpers.py:663`) — `grep -rn "IGNORE_STOP_MS\|current_dialogue_id\|register_tts\|batch_registered" src --include=*.py` = 0; `create_publisher(... "/voice/tts/request"` вне клиента = 0 | робот: 20 реплик из 3 источников; `spoken_chars` при отмене; `at` — старт в заданный момент с погрешностью (замер `jack_rec`, `output_latency_ms` в PR); рантайм-аудит `/voice/tts/*` | A6 (−5), A12; первый замер латентности вывода для A19 |
 | **PR-3b** | экспрессия: `ExpressionRequest/Event`, `expression_client`, рефлексы `expression.py` в dialogue_node v1 (чтобы живость появилась до v2), исполнители animation_player/led_node/sound_node | «boop» из stt_node (`stt_node.py:608`), `/voice/animation/request` (писатели `tools/dialogue.py:102`, `tools/animation.py:34`), auto-switch `animation_player` по `/voice/tts/state` (заменён `speaking`-рефлексом) — `grep -rn '"/voice/animation/request"' src` = 0; писателей `/voice/sound/trigger` 4 → 2 (play_sound, health_monitor) | робот: 20 фраз, лог `ExpressionEvent started` на `addressed ≤ 300 мс`, `done/failed` | A17 |
 | **PR-4** | `ProviderState` от tts/stt/агентов; `degrade.py`; `set_voice/set_tts_provider` → запрос + `voice_changed`; фраза деградации | `VoiceStateStore` (D6), «Голос установлен» (`tools/dialogue.py:1464`), мёртвые параметры `llm_timeout_sec`/`agent_max_turns`/`<provider>.*` — grep = 0; подстроки квоты вне адаптера MiniMax = 0 | робот: мёртвый ключ → одна фраза, `health=quota` | A11 |
 | **PR-5** | адресация: `address.py` (вейк по границам слов, одна таблица), stt_node → `interrupt_request`, command_node ← `/dialog/intent` | писатели STOP в stt/audio (`"/voice/tts/control"` = 1, адаптер v1), подстрочный матч в stt_node = 0, `DEFAULT_WAKE_WORDS` определён один раз | корпус «работает/робота-диджея» (#1292, #2971); «робот, хватит» → один ответ | A15, A16 |
 | **PR-6** | понимание: `grammar.py`, `tools_view`, `context.build_context`, режим команд по capabilities; подключается в dialogue_node v1 как замена `skill_router`/`skill_tool_narrowing` (ADR-0148 §2.4) | `skill_router.py` (27 `re.compile`), ключ `skill_tool_narrowing`, `_MUSIC_STOP_OVERRIDES`, U8, U9, T10 — grep = 0 | unit на грамматике; робот 30 фраз, `tools_visible ≤ 12` | A5 |
 | **PR-7** | исполнение и ответ: `execute.py`, `respond.py`, события владельцев (speaker_id `registered`, sound_node `started/finished`); **канал речи-победитель**, проигравший удалён; `seam` проверяет «action-тул имеет событие». **Ждёт #3312 PR-6** (узкие `request_music/dj_set`) для медиа-фраз — до него медиа через `MediaRouter` v1 | в v1-ноде: phantom/universal/`ACTION_CLAIM_RULES`, S4–S7, S12, done-маркеры ×5, R11, фолбэки — `re.compile` в `dialogue_guards.py` 34 → ≤ 15; `_retry_used` 10 → ≤ 3; `_SILENT_DONE_MARKERS` = 0; `speech_channel.py`: 1 класс | эталонный набор на роботе, `honesty_audit.py` | A3 = 0/60 |
+| **PR-7b** | **планировщик ресурсов** `rob_box_dialog/plan/{resources,composition,plan_events}.py` + `knowledge.COMPOSITION`, `RESOURCE_OF`; `compose()`; `PlanEvent`; статус задачи — от владельца; подключается в v1-ноде **вместо** `SchedulerToolExecutor` (роутинг тулов по ресурсам, без `queued`); `SoundEvent` в sound_node и `play_sound` по событию (V33) | `scheduler/task_scheduler.py` (1 312), `tool_executor.py` (691), `delta.py`, `event_bus.py`, `quick_decide.py`, `harness/decision/scheduler_shadow.py` (V31), `TaskDeltaTool` + `skills/scheduler.txt`, `_order_tool_calls`/`deferred_call_ids` (`agent_core.py:395-431`), `_VOICE_TOOLS/_MUSIC_TOOLS/_ANIM_TOOLS`, `_MUSIC_PRELUDE_TOOLS/_DEFER_TO_END_TOOLS` (`agent_core.py:189-203`), `[ACTIVE TASKS]/[SEGMENT PLAN]`, `/harness/task_events`, `barge_in_policy` + обе ветки, STOP из stt_node; «Звук запущен» (`tools/sound.py:151`) — `ls src/rob_box_voice/rob_box_voice/scheduler/{task_scheduler,tool_executor,delta,event_bus,quick_decide}.py` = нет; `grep -rn "status.*queued\|task_delta\|SEGMENT PLAN\|barge_in_policy\|scheduler_shadow\|_order_tool_calls" src --include=*.py` = 0; `grep -rn "Звук запущен" src` = 0 | unit: `compose()` на всех парах `COMPOSITION`; робот: речь + анимация + SFX в одной команде — все три `started` в логе (A23); `play_sound` при занятом SFX → `skipped{busy}` и честная фраза | A23, A3 (SFX) |
+| **PR-7c** | **выступление**: `plan/perform.py`, `plan/sync.py`, класс `action.perform`, пред-синтез всех сегментов (`commit=false`), `Parallel(success_count=1)` с подложкой, `required`, старт сегмента на такте по `started{beat_at}` при `music_engine: v2` (**ждёт #3312 PR-4/PR-6**: `started` со снимком фазы, `request_music(intent=backing)`), без квантования при v1; MERGE в PENDING (`edit_pending`); `estimator.py` → библиотека длительности | `_pending_music_cleanup`, `_active_batches`, прелюдия, `_track_mode_music_active` (`dialogue_node.py:1085-1120, 3396-3460`), `/mcp/music_cleanup`, `/mcp/music_fallback`; `scheduler/pregen/{decision,quality,speculative_executor,pre_gen}.py` и поле `pregenerate`; второй планировщик tts_node: `priority`-вклинивание (`:1435`), `_pending_speech_queue` (`:1468`), буфер «STOP после синтеза» (`:1868-1900`); пять гардов исполнителя: `track_start_guard.py` (#2859, #2878, #3221, #3246, #3247), гейт #2913 (`tool_executor.py:128`, `turn_speech_gate.py`) — переносятся как поля `ACTION_CLASSES`/валидатор или уходят с ADR-0149; `action_server/` + сайдкар `voice-action-server` (`docker-compose.yaml:448-460`, ADR-0011); правило промпта «rap ≥ 6 speak_text» (`master_prompt_compact.txt:445-456`) — `grep -rn "pregenerate\|_pending_music_cleanup\|_pending_speech_queue\|music_cleanup\|track_start_guard\|turn_speech_gate" src --include=*.py` = 0; `ls src/rob_box_voice/rob_box_voice/action_server` = нет; `grep -n voice-action-server docker/vision/docker-compose.yaml` = 0 | робот (`music_engine: v2` на стенде): 10 рэпов × 6 сегментов, запись `jack_rec`, `audit_wav.py` — смещение старта сегмента от такта (A19); сценарии X3 (A20), X5 (A21), #993 (A22) по 10 прогонов; `perform.no_backing` при подложенном отказе плеера | A19–A22, Х1–Х6 |
 | **PR-8** | `dialog_node` v2 за флагом: хост, `turn_log`, окно из озвученного, `TURN_DEADLINE_S`; e2e-БД текста по `e2e_db_path` вне `/data` (В8); launch по флагу | при `v2`: `dialogue_node` не стартует; старые топики не создаются (`ros2 topic list`, raw) | робот `v2`: акты 1–3 марафона; `turn_metrics.py`; **замер A1 с рефлексами → уточнение порога** | A1, A2, A4, A13, A14 (по провайдерам → выбор дефолта) |
 | **PR-9** | `interrupt.py`: отмена по эпохе до HTTP-стрима, классы прерываемости, «стой» по снимку | D14, ветка `barge_in_policy=classify`, `/voice/dialogue/barge_in_policy` — grep = 0 | 20 перебиваний; 0 тулов старой эпохи | A12 |
 | **PR-10** | сцены: `Silence(TTL 600, set_by)`, `Persona`, `DJ` по событиям музыки (**ждёт #3312 PR-5**: `nearly_finished/idle`), `OperatorHold`; `DialogControl.srv`; `reset()` | `DialogueStateMachine`, `_pause_reason/_paused_at_ms`, `dj_set_boundary.py`, `/dialogue/control*` — grep = 0 | марафон 12 актов: акт 8 — тишина кончается через 10 мин; голос акта 4 не доживает | A9, A10 |
@@ -588,6 +701,7 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | PR этого эпика | Ждёт из #3312 | Почему |
 |---|---|---|
 | PR-7 | PR-6 (`tools_v2.request_music/dj_set`, фраза по `started`) | медиа-фразы из событий; до него — `MediaRouter` v1 с текстами из `phrases` |
+| PR-7c (старт на такте, подложка) | PR-4 (`PlayerOwner.started` со снимком фазы — уже влит `96ff9e38a`), PR-6 (`request_music(intent=backing, min_form_beats)` — если поля нет, запрос к #3312), PR-5 (`nearly_finished` для продления под длину речи) | квантование речи по такту даёт только `PlayerOwner` v2 за `music_engine`; при v1 выступление идёт без квантования, A19 меряется только на стенде с v2 |
 | PR-10 | PR-5 (`nearly_finished`, `idle`, `SetSession`) | кадр `DJ` живёт по событиям плеера |
 | PR-14 | PR-12 (приёмка музыки, `music_engine: v2` дефолт) | марафон с DJ-актами на одном флаге |
 | PR-15…17 | PR-13…15 (удаление `music_guard.py`, DJ-веток `dialogue_guards.py`, `dj_mode.py`) | общие файлы удаляет один владелец — #3312 |
@@ -647,6 +761,15 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | D17 | призраки `slice_policy` | (г) | — | PR-13 |
 | новое (V26) | экспрессия: LLM-аргумент `animation`, auto-switch по TTS, «boop» из stt | (а) | рефлексы + enum в команде | PR-3b |
 | новое (V14, V27) | `[TG:chat_id]`, `tg_chat_id`, мёртвые `llm_*` | (а)/(г) | телеграм-агент | PR-12a |
+| 07 §1.6 | `TaskScheduler` FIFO с `{"status":"queued"}`, `wait_until_idle` (опрос 20 мс), `task_delta`/`TaskDeltaTool`/`skills/scheduler.txt`, `[ACTIVE TASKS]/[SEGMENT PLAN]` с `eta=?`, мёртвые хуки `cancel/set_llm_continue_hook/notify_event/set_eta_provider/set_group_boundary/set_frozen_touch_hook` | (а)/(г) | `plan/` + события владельцев | PR-7b |
+| 07 §1.4 | `barge_in_policy` (`replace`/`classify`), `quick_decide`, `_pending_user_messages`, STOP из stt_node на вейк | (а)/(г) | `compose()` + Tier-1 | PR-7b, PR-5 |
+| 07 §1.6 | `scheduler_shadow.py` (PoC без вызывающих), `register_tts`, `deferred_call_ids`, `action_server/` + сайдкар `voice-action-server` (ADR-0011) | (г) | — | PR-3, PR-7b, PR-7c |
+| 07 §1.5 | поле `pregenerate` чанка и `scheduler/pregen/{decision,quality,speculative_executor,pre_gen}` (подключено, данных нет) | (г) → одна реализация | пред-синтез сегментов `commit=false` (§5.6.3) | PR-7c |
+| 07 §1.7 | пять гардов исполнителя: #2859 «один трек за ход», #2878/#3221 лимит DJ-реплик, #2913 гейт речи до регистрации, #3246/#3247 отказы DJ_AUTO (`track_start_guard.py`, `tool_executor.py:128`) | (б) → поля `ACTION_CLASSES`/валидатор; (г) с ADR-0149 | правила класса, не исполнителя | PR-7c, #3312 |
+| 07 §1.7 | cleanup музыки по `batch_complete`, `_active_batches`, прелюдия, `_track_mode_music_active`, `/mcp/music_cleanup` | (а) | время жизни подложки = выступление (`Parallel`) | PR-7c |
+| 07 §1.2 | второй планировщик в `tts_node`: `priority`-вклинивание, `_pending_speech_queue` чужих батчей (#2553), буфер «STOP после синтеза» | (г) | порядок задаёт `plan/`, tts_node исполняет `at/boundary` | PR-7c |
+| 07 §1.2 | `play_sound` «Звук запущен» без события; `sound_node` молчаливый `return` | (а) честность | `SoundEvent started/skipped{reason}` | PR-7b |
+| 07 §1.5 | два списка «голосовых» слов (`_VOCAL_REQUEST_KEYWORDS`, `MUSIC_GUARD_VOCAL_KEYWORDS`) | (г) | `Performance.backing` — поле команды, слов не нужно | PR-7c |
 
 Метрика прогресса в каждом PR: `re.compile` в `dialogue_guards.py` (34 → 0), `_retry_used` (10 → 0), `Bug [A-F]` в диалоговых файлах (170 → 0), `#NNNN` в `src/rob_box_dialog` (≤ 20), `TEMP(ADR-0148` в диалоге (0 → ≤ 5 → 0).
 
@@ -670,9 +793,15 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | **0037** память | proposed | частично superseded §7.4 |
 | **0055/0128** одна БД / e2e-границы | — | 0055 подтверждается; e2e-БД текста вне `/data` (В8) |
 | **0114** искажения «ТАРС» по логам | proposed | подтверждается и расширяется на вейк Личности (не придумывать варианты) |
+| **0011** action protocol (ActionServer HTTP-сайдкар + PASTE) | Accepted post-factum; сайдкар `voice-action-server` — заглушка без клиентов (V35, 07 §1.6) | **Superseded** §2 (транспорт HTTP-сайдкар, отдельный процесс, plugin registry) и §PASTE (shadow queue). **Берётся**: семантика goal `accepted/rejected` синхронно → `feedback` → `result`, `cancel` по id (ADR-0002 §3.4, повторено ROS2 actions) — как форма `PlanEvent`/`ActionResult`; идея `prefetch без побочных эффектов + commit ровно одного` — как пред-синтез `commit=false` (§5.6.3). Реализация в `rob_box_dialog.plan`, не отдельный процесс |
+| **0002** ROS2 Action как транспорт планировщика | Proposed, перекрыт 0011 | Superseded вместе с 0011: транспорт — типизированные топики владельцев (§10), экшены ROS не вводятся |
+| **0033** MERGE не распространяется на музыкальный канал | Accepted | Superseded: границы одновременности — таблица `COMPOSITION` (§5.6.2); «подложка против трека» — О9 |
+| **0056/0092** `pregenerate` контракт | Proposed/Accepted; поле никто не публикует (V32) | Superseded §pregenerate: пред-генерация — `SpeechRequest commit=false` + `SpeechEvent synthesized` (§5.6.3); #2003 закрывается замером A19/A2 в PR-7c |
+| **0086** EventBus/ReflexLayer удалить | Accepted | подтверждается; внешние события (батарея) — П12 07, отдельный виток после PR-7c |
+| `SCHEDULER_DESIGN.md`, `W7_INTEGRATION_PLAN.md`, `docs/plans/2026-08-30-scheduler-integration-review.md` | design-документы #968 | помечаются «заменены ADR-0150 §5.6»; их решения (каналы, MERGE PENDING, события-источники, естественные границы) перенесены или отвергнуты явно в §5.6 |
 | **0148**, **0149** | proposed | родители |
 
-**CONTEXT.md:** «Ход» (`:109-116`) — без `TurnGuards`: «одна попытка понять и исполнить адресованную фразу: команда LLM {речь, вопрос, ≤ 3 действий, экспрессия}, валидатор, фраза из результата; владеет эпохой и дедлайном; ретраев не имеет». Добавить **Сессия**, **Сцена/кадр**, **Команда**, **Результат действия**, **Владелец речи**, **Экспрессия/рефлекс**, **Агент** (личность, ТАРС, телеграм — три спецификации одного движка), **Возможность**. «Срез» — функция; «AgentCore» — LLM-клиент; «Пауза» — кадр `OperatorHold`; «Вейк-слово» — источник `knowledge`, **единственный способ адресации голосом**.
+**CONTEXT.md:** «Планировщик» (`:99-104`) и «Канал» (`:106-107`) переписать: планировщик — `rob_box_dialog.plan`, владеет расписанием **ресурсов** (голос, лицо, кольцо, SFX, музыка, движение), статус задачи — событие владельца ресурса, политики APPEND/MERGE/REPLACE/REJECT по таблице; «канал» → «ресурс»; добавить **Выступление** (песня/рэп/сказка: сегменты + подложка + экспрессия, одно время жизни, старт на такте) и **Граница** (предложение / такт / сразу). «Ход» (`:109-116`) — без `TurnGuards`: «одна попытка понять и исполнить адресованную фразу: команда LLM {речь, вопрос, ≤ 3 действий, экспрессия}, валидатор, фраза из результата; владеет эпохой и дедлайном; ретраев не имеет». Добавить **Сессия**, **Сцена/кадр**, **Команда**, **Результат действия**, **Владелец речи**, **Экспрессия/рефлекс**, **Агент** (личность, ТАРС, телеграм — три спецификации одного движка), **Возможность**. «Срез» — функция; «AgentCore» — LLM-клиент; «Пауза» — кадр `OperatorHold`; «Вейк-слово» — источник `knowledge`, **единственный способ адресации голосом**.
 
 ---
 
@@ -700,8 +829,33 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | A16 | двойная обработка | «робот, хватит» → ровно 1 `SpeechRequest` | 2 (вывод из кода) | П1 |
 | A17 | **живость без LLM** | каждый адресованный ход: рефлекс `addressed` ≤ 300 мс и терминальный `done|failed`; `ExpressionEvent skipped` ≤ 5 %; 0 вызовов LLM ради экспрессии | анимация — аргумент `speak_text` | лог `ExpressionEvent` (П1) |
 | A18 | канал речи (бейк-офф) | `delivered = 100 %`, `leak = double = phantom = 0` на всех адаптерах | оба канала теряли речь (§18.1) | П8 |
+| A19 | **старт сегмента выступления на такте** (при `music_engine: v2`) | смещение начала каждого сегмента от ближайшей доли такта подложки: p50 ≤ 40 мс, p95 ≤ 80 мс (≈ 1/16 такта при 130 BPM = 115 мс); **порог предварительный — утверждает Шифу (О11)**; `PlanEvent.synced=true` у 100 % сегментов | привязки к такту нет (07 §1.5 п.3) | запись `jack_rec` цифрового выхода, `audit_wav.py` (сетка 16-х) + лог `SpeechEvent started` ↔ `started{beat_at}`; 10 рэпов × 6 сегментов (П9 — прогон PR-7c) |
+| A20 | **«дочитай и вплети» (X3)** | текущий ACTIVE-сегмент дочитан до конца в 10/10 прогонов (`spoken_chars == text_len`); PENDING заменены (`segment_replaced`); подложка не прерывалась (0 `music/event idle` до `block_end`); 0 новых выступлений с нуля | REPLACE всегда, «новая история с нуля» (29.08) | П9 сценарий X3, лог `PlanEvent` + `SpeechEvent` |
+| A21 | **REPLACE на границе (X5)** | после Tier-1 «хватит» речь кончается на границе предложения ≤ 3 с; outro подложки ≤ 1 фраза; «стой» — тишина ≤ 300 мс | мгновенный STOP посреди слова | П9 сценарий X5 + 20 «стой» |
+| A22 | **«добавь музыку» во время выступления (#993)** | речь не обрывается (0 `cancelled`); подложка `started` на границе такта; следующий сегмент `synced=true`; 10/10 | «не реагирует» (#993) / REPLACE | П9 сценарий #993 |
+| A23 | **одновременность речи и экспрессии** | в команде с `speech` + `expression` + `play_sound`: `ExpressionEvent started` и `SpeechEvent started` в пределах 150 мс друг от друга; `SoundEvent started` или честный `skipped{reason}` — 0 молчаливых пропусков; `motion` во время выступления не рвёт речь | ручная анимация сбрасывается на первом `ready`; звук молча пропускается (V33) | П1 + П9, лог событий |
 
-Необходимое условие сверх чисел — прослушивание товарищем Шифу живого диалога (10 фраз набора) и вердикт «не врёт, не молчит, не читает мусор, живой».
+Необходимое условие сверх чисел — прослушивание товарищем Шифу живого диалога (10 фраз набора) и вердикт «не врёт, не молчит, не читает мусор, живой», плюс один рэп под бит с «и про енота» посреди.
+
+### 14.1 Трассировка хотелок Х1–Х15 (07 §3)
+
+| # | Хотелка | Статус сейчас (07) | Чем закрывается | PR | Порог |
+|---|---|---|---|---|---|
+| Х1 | рэп под бит, бит гаснет после речи | частично, на заплатках | `action.perform` + `Parallel(success_count=1)`: outro после последнего сегмента (§5.6.3) | PR-7c | A22 (0 обрывов), `block_end` → `music idle` ≤ 1 фраза |
+| Х2 | начинать с начала такта, аранжировка под длину | не сделано | пред-синтез → длительности → форма подложки ≥ Σ; `sync.next_bar` | PR-7c (нужен #3312 PR-4/6) | A19 |
+| Х3 | догрузить во время рэпа, дочитать и вплести | сломано (REPLACE) | MERGE в PENDING (`edit_pending`), вейк ≠ STOP (§5.6.4, §6.2) | PR-7b (политика), PR-7c (сегменты) | A20 |
+| Х4 | «а потом спой колыбельную» | не сделано | `when=after_current` → APPEND, фраза `queued{after}` | PR-7b | `PlanEvent queued` + старт после `block_end`, 10/10 |
+| Х5 | «хватит, анекдот» — допеть фразу | не сделано | Tier-1 → REPLACE на границе предложения (`boundary=sentence`) | PR-3 (`boundary`), PR-7b | A21 |
+| Х6 | `stop_music` не режет речь | на заплатке cleanup | время жизни подложки у выступления; `stop_music` как явная команда — `compose()` против занятого голоса → APPEND/REPLACE на границе | PR-7c | A22, `grep music_cleanup` = 0 |
+| Х7 | анимация одновременно с речью | частично | `ExpressionRequest` параллельно речи, эмоция поверх рефлекса `speaking`, не сбрасывается `ready` | PR-3b | A23 (≤ 150 мс) |
+| Х8 | кольцо живёт со стадиями | не сделано | рефлексы `REFLEXES` (§5.5) | PR-3b | A17 |
+| Х9 | SFX поверх речи, честно | работает с враньём | `SoundEvent started/skipped`, `play_sound` по событию | PR-7b | A23 (0 молчаливых пропусков), A3 |
+| Х10 | батарея/события вплетаются в песню | не сделано, шина удалена | П12 07 — внешние события как APPEND-сегмент на границе; **отдельный виток после PR-7c** | — (следующий ADR/эпик) | — |
+| Х11 | «стой» гасит всё; «направо» во время песни — параллельно | «стой» работает; «направо» рвёт песню | «стой» — Tier-1 REPLACE сразу; `motion` ✅ в `COMPOSITION` | PR-7b | A21 («стой» ≤ 300 мс), A23 (motion не рвёт речь) |
+| Х12 | LLM видит, что звучит, очередь, ETA | номинально, `eta=?` | блок контекста из `PlanEvent prediction` и `ResourceState` (§5.6.1) | PR-7c | блок непустой во время выступления 100 %; `eta_ms` заполнен |
+| Х13 | не молчать, пока LLM думает над длинным | не сделано | пред-синтез сегмента 1 стартует, пока LLM отдаёт остальные? — **нет**: команда приходит целиком; живость — рефлекс `thinking` (§5.5); первый звук ≤ A2 | PR-3b, PR-8 | A2, A17 |
+| Х14 | операторская врезка после чанка без обрыва | в коде, не проверено | `SpeechRequest(agent=operator, priority)` → `compose()` реплика против реплики = APPEND на границе предложения (не внутри tts_node) | PR-7b, PR-13 | врезка стартует на границе предложения ≤ 3 с, 10/10 |
+| Х15 | DJ-фразы не обрывают друг друга | сделано в tts_node (#2553) | то же правило APPEND в `plan/`; `_pending_speech_queue` удаляется | PR-7c | 0 `cancelled` между DJ-фразами за сет |
 
 ---
 
@@ -721,7 +875,10 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | Эпоха сессии | `core/session_epoch.py:56-114` | `Session.epoch` |
 | Арбитр floor | `sup/core/locks.py`, `fsm.py` | без изменений |
 | STT-каскад | `stt_node.py:1446`, `stt_fallback.py` | + `ProviderState(stt)` |
-| Pregenerate TTS | `scheduler/pregen/*` | внутри владельца речи |
+| Оценка длительности речи до синтеза | `scheduler/pregen/estimator.py` | библиотечная функция для ETA (`plan/sync.py`); остальной `pregen/*` удаляется (§5.6.3) |
+| Снимок фазы, `started` из потока клока | `engine/player_owner.py:78-89`, `core/clock_phase.py` (ADR-0149) | источник `beat_at` для `sync.next_bar` — без изменений |
+| Семантика goal/feedback/result/cancel и `commit` пред-генерации | ADR-0011/0002 (контракт), `action_server/paste.py` (идея) | форма `PlanEvent`/`SpeechRequest.commit`; код сайдкара не переносится |
+| Квантизация и поиск сетки 16-х в записи | `audit_wav.py` (память «Аудит записей») | замер A19 |
 | Анимации и исполнители | `rob_box_animations`, `led_node.py`, `sound_node.py`, `KNOWN_ANIMATIONS` (`animations.py:36`) | исполнители `ExpressionRequest`; enum — в `knowledge` |
 | Телеграм: auth, камеры, карточки, floor-клиент, STT голосовых | `rob_box_telegram/{auth,camera_*,avatar_card,face_card,supervisor_client,voice_processor}.py` | как есть; меняется только мозг (агент) и выход |
 | Марафон и инъекция | `scripts/e2e/*` | П1 |
@@ -742,6 +899,10 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | Параллельный эпик #3312 | зависимости §11.1; общие файлы удаляет #3312 | — |
 | `develop` force-push; гарды красные после мержа соседа (память) | свежий `origin/develop`, локальные гарды перед пушем | — |
 | Директива о турнах | текст — только в e2e-БД вне `/data` при `e2e_mode` | — |
+| `at`-старт в tts_node не держит ±40 мс (планировщик Python, пул синтеза, USB-аудио `sleep(0.1)` T3) | пред-синтез убирает синтез из критического пути; замер латентности вывода в PR-3; порог A19 предварительный (О11); план Б — `at` исполняет sound-сервер (jack) по таймстампу, tts_node только отдаёт PCM | выступление без квантования (`synced=false`, честно в `PlanEvent`) |
+| `request_music(intent=backing, min_form_beats)` не появится в #3312 PR-6 в нужной форме | запрос к эпику #3312 заранее (при принятии этого ADR); до него подложка — любой трек v2, продление по `nearly_finished` | рэп без подложки с шаблоном `perform.no_backing` |
+| Удаление `scheduler/` ломает `pregen` и тесты tts_node | PR-7b/7c удаляют вместе с тестами и baseline `cc_budget`/`class_budget`; `estimator.py` переносится до удаления | `dialog_engine: v1` не помогает — планировщик общий; откат — revert PR |
+| MERGE в PENDING: LLM отдаёт «новые куплеты» не с того места (повтор уже спетого) | блок контекста содержит DONE/ACTIVE-сегменты дословно и номер первого PENDING; схема `edit_pending` требует `from_segment` ≥ ACTIVE+1 | валидатор отклоняет, выступление продолжается без правки, фраза `perform.edit_rejected` |
 
 ---
 
@@ -758,6 +919,9 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 | **Ж. Окно адресации без вейка** (ревизия 1 В2(б)/(в): N с после ответа робота или для подтверждённого собеседника; OVOS converse, HA `continue_conversation`) | отвечать на «громче» без «Робби» | меньше пропусков из-за неуслышанного вейка (память `act2-fails-on-robbi-wake-miss`) | **Шифу 02.10: «пробовали без Робби — он постоянно лез во все разговоры и мешал, когда несколько человек в помещении; выключали, пробовали забороть, вернули».** Доказательство в истории: `0326d7e9f` (31.07) — W5 сузил вейк-гейт до IDLE, в диалоге робот прерывал сам себя эхом → гейт возвращён «безусловно: только прямое обращение может начать или прервать диалог»; `9ca7fb295` (21.02) — `wake_words=[]` как bypass блокировал всё; 20.08 (`e0b20fa14`, `7e8d8c208`) — фразы без вейка **накапливаются**, а не отвечаются (аккумулятор); #1668 (26.08) — фоновый голос в комнате непрерывно заполняет бэклог, 16 e2e-фейлов подряд: любое окно без вейка в такой комнате ловило бы чужую речь; #1195 (13.08) — вейк-гейт снят **только** для текста из чата, для микрофона оставлен намеренно («защита от фоновой речи»). Карточки с формулировкой «лез во все разговоры» в трекере я не нашёл (§19) — свидетельство Шифу + коммиты | **отвергнуто**; флаг не закладывается. Пропуски вейка лечатся одной таблицей, границами слов и искажениями по логам (ADR-0114), A15 |
 | **З. Телеграм как канал ввода в голосовой диалог** (ревизия 1 §9.2; текущее состояние после W7) | один мозг на всё | нет второй LLM | «телеграм сейчас фигово работает» (Шифу); чат делит историю/персону/тишину с голосом, `[TG]`-маркеры в тексте (К5), 5 писателей в голосовые топики; в Feb–Jul своя LLM с `/say` работала (`3c91ba155`) | **отвергнуто** в пользу агента §9.2 |
 | **И. Выбрать канал речи в ADR** (ревизия 1 рекомендовала поле `Say`) | решить сейчас | нет бейк-оффа | история показывает потери речи у обоих каналов в зависимости от провайдера (§4.4); Шифу: «критерий — что даст 100 %» | **отвергнуто**; бейк-офф PR-1c |
+| **К. Починить существующий `TaskScheduler`** (подключить `register_tts`/`tts/finished` в канал VOICE, завести хуки, включить `classify`) | довести #968 как задумано | код уже написан и покрыт тестами (07 §1.6) | 13 модулей, подключены 4; каналы — по именам тулов, а не по ресурсам; MERGE через `task_delta` — решение у LLM (против ADR-0148); второй планировщик в tts_node остаётся; `queued` в LLM; история: 01.08→19.08→29.08→05.09 — каждое подключение добавляло заплатку, не убирало (07 §2) | **отвергнуто**; замена `plan/` с табличной политикой и статусом от владельца; переносится только `estimator.py` и идеи (каналы → ресурсы, MERGE PENDING) |
+| **Л. Выступление как отдельная ROS-нода/action-сервер** (ADR-0011 сайдкар) | изоляция процесса | goal/feedback/cancel «из коробки» | ещё один процесс и граница с клоком Renardo и очередью tts_node; сайдкар два месяца был заглушкой без клиентов (V35) | **отвергнуто**; `plan/` в процессе агента, форма контракта — из ADR-0011 |
+| **М. Выступление внутри tts_node** (владелец речи сам ведёт сегменты и подложку) | один процесс с аудио | минимальная латентность `at` | tts_node получает знание о музыке, экспрессии и командах LLM (сегодняшний второй планировщик — ровно этот путь, V34); WMC 694 уже над бюджетом | **не рекомендуется**, оставлено как вариант О6 для Шифу |
 
 ---
 
@@ -813,6 +977,13 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 - **О3. Пересмотр порога A1** после замера с рефлексами в PR-8 (В5: «надо тут подумать число») — Шифу решает по данным PR-8.
 - **О4. Победитель бейк-оффа** (PR-1c) — фиксируется amendment'ом к этому ADR; критерий задан, выбор — по данным.
 - **О5. Дефолтный провайдер** — по A14 в PR-8/14; стартовый кандидат DeepSeek.
+- **О6. Кто владеет ресурсом «выступление»** (07 §9 п.5): (а) модуль `rob_box_dialog.plan.perform` в процессе агента поверх `SpeechEvent` и `music/event` — **рекомендую**: планировщик видит все ресурсы и команды LLM, tts_node остаётся исполнителем с бюджетом ADR-0145, латентность `at` закрывается пред-синтезом и измеренной задержкой вывода; (б) часть tts_node (вариант М §17) — ближе к аудио, но tts_node получает знание о музыке и командах, WMC 694 уже над лимитом. Нужно к PR-7c.
+- **О7. Политика по умолчанию «речь во время речи»**: (а) APPEND — дочитать текущую реплику/сегмент, потом новую (07 П4 рекомендует) — **рекомендую**; (б) REPLACE на границе предложения. Tier-1 «стоп/хватит/стой» в любом случае REPLACE. Нужно к PR-7b.
+- **О8. Ducking музыки под речь** (сегодня `grep duck` в голосовом стеке = 0, 07 §4.1): (а) `PlayerOwner` принимает `duck(depth_db, ms)` от планировщика на `SpeechEvent started/finished` — запрос к #3312; (б) не делать, полагаться на уровни ролей ADR-0149 §3.10. **Рекомендую (а)**, но только после приёмки музыки v2 (PR-12 #3312).
+- **О9. Подложка выступления против играющего трека/сета**: (а) подложка вытесняет на границе фразы (ADR-0149), после выступления трек/сет не возвращается; (б) отказ с вопросом «сначала выключить трек?» (`Ask`); (в) выступление без подложки поверх играющего. **Рекомендую (а) для трека, (б) для DJ-сета** (сет — явно заказанная сцена). Нужно к PR-7c.
+- **О10. Рэп без подложки**: если `backing` не стартовал — читать без бита с фразой `perform.no_backing` (**рекомендую**) или отказывать целиком (`required`)? Нужно к PR-7c.
+- **О11. Порог A19** (смещение старта сегмента от такта): предлагаю p50 ≤ 40 мс / p95 ≤ 80 мс; альтернатива — «на слух» по записи (слепой A/B с квантованием и без, как ADR-0149 §7.3). Утверждает Шифу после первого замера латентности вывода в PR-3.
+- **О12. Поле `pregenerate` (ADR-0056/0092)**: удалить вместе с неподключённым `pregen/*` (**рекомендую**, §5.6.3: одна реализация — пред-синтез сегментов) или оставить как есть до PR-7c.
 
 ---
 
@@ -828,3 +999,4 @@ PR-2 заполняет `topics:` для `/dialog/*`, `/telegram/*`, `/avatar/se
 - Не пересчитывал музыкальный путь (`next_transition_at`, `rob_box_music`) — интерфейс §9.1 из ADR-0149.
 - Полевой состав `rob_box_dialog_msgs` (§10.1) — уточняется в PR-2 по фактическим JSON-полям v1.
 - Параметры LLM телеграм-агента (провайдер, история на чат) — из мёртвого yaml (V27) как стартовые; живая настройка — PR-12a.
+- По планировщику (07): не проверял на роботе, что канал `VOICE` пуст к приходу второй фразы и что деферрал `stop_music` холостой — вывод из кода (V28, `tool_executor.py:575-584`); не мерил латентность вывода звука и джиттер планировщика Python — порог A19 предварительный (О11); не проверял, что `tts_node` способен держать `at` без переноса воспроизведения в jack-сервер (риск §16); не проверял поведение `priority=operator` (#1996) и `_pending_speech_queue` (#2553) живьём — удаление в PR-7c опирается на то, что APPEND в `plan/` даёт то же поведение, это надо доказать сценарием Х14/Х15 до удаления; не читал первоисточники NAOqi `^wait`/`^run`, Nav2 `is_preempt_requested`, LiveKit `SpeechHandle` целиком — взято из 07 §6 с его пометками; не проверял, есть ли в #3312 PR-6 поле `min_form_beats` у `request_music` — зависимость §11.1 помечена как запрос.
