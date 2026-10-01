@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-01",
-  "base_sha": "46cc064499c0e928a6dbcb822a576d7837b6b0ab",
+  "base_sha": "c0bd8fd1f46c05a0ee93dd2ed83a2159d9d44c26",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -32,8 +32,8 @@
       "methods": 52
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
-      "wmc": 259,
-      "methods": 60
+      "wmc": 233,
+      "methods": 58
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
       "wmc": 81,

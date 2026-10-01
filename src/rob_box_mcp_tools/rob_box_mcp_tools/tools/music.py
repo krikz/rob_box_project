@@ -85,6 +85,7 @@ from ..core.club_transition import (
     wrap_with_fade,
 )
 from ..core.clock_phase import clock_phase_snapshot
+from ..engine import renardo_adapter
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
@@ -1114,66 +1115,20 @@ class MusicManager:
         Полный OSC-парсер не нужен — только различить ``/fail`` (реальный
         отказ, ту самую строку из логов supercollider, которую раньше
         никто не видел) от остального (``/done``, ``/synced`` и т.п. —
-        штатные подтверждения, шум для лога ошибок).
+        штатные подтверждения, шум для лога ошибок). Разбор — общий с
+        владельцем плеера v2 (``engine.renardo_adapter``, ADR-0149 PR-4);
+        он же получает отказ через ``osc_fail_listener`` (при v1 не задан).
         """
-        address, rest = self._split_osc_address(data)
-        if address != "/fail":
+        detail = renardo_adapter.osc_fail_detail(data)
+        if detail is None:
             return
-        args = self._decode_osc_args(rest)
-        detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
         self._log_warning(f"🔴 [scsynth] FAILURE IN SERVER: {detail}")
+        listener = getattr(self, "osc_fail_listener", None)
+        if callable(listener):
+            listener(detail)
 
-    @staticmethod
-    def _split_osc_address(data: bytes) -> Tuple[Optional[str], bytes]:
-        """Извлечь OSC-адрес из пакета; вернуть (адрес, остаток-с-выравниванием)."""
-        if not data or data[0:1] != b"/":
-            return None, b""
-        end = data.find(b"\x00")
-        if end == -1:
-            return None, b""
-        address = data[:end].decode("ascii", "replace")
-        consumed = end + 1
-        while consumed % 4:
-            consumed += 1
-        return address, data[consumed:]
-
-    @staticmethod
-    def _decode_osc_args(rest: bytes) -> List[Any]:
-        """Разобрать OSC type-tag строку (``,ssif``...) и аргументы за ней."""
-        if not rest or rest[0:1] != b",":
-            return []
-        end = rest.find(b"\x00")
-        if end == -1:
-            return []
-        tags = rest[1:end].decode("ascii", "replace")
-        offset = end + 1
-        while offset % 4:
-            offset += 1
-        args: List[Any] = []
-        for tag in tags:
-            if tag == "i":
-                if offset + 4 > len(rest):
-                    break
-                args.append(struct.unpack(">i", rest[offset:offset + 4])[0])
-                offset += 4
-            elif tag == "f":
-                if offset + 4 > len(rest):
-                    break
-                args.append(struct.unpack(">f", rest[offset:offset + 4])[0])
-                offset += 4
-            elif tag == "s":
-                str_end = rest.find(b"\x00", offset)
-                if str_end == -1:
-                    break
-                args.append(rest[offset:str_end].decode("utf-8", "replace"))
-                offset = str_end + 1
-                while offset % 4:
-                    offset += 1
-            else:
-                # blob (b) и прочие типы не разбираем — для лога достаточно
-                # того, что уже накопили; останавливаемся, а не падаем.
-                break
-        return args
+    _split_osc_address = staticmethod(renardo_adapter.split_osc_address)
+    _decode_osc_args = staticmethod(renardo_adapter.decode_osc_args)
 
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.
@@ -1531,18 +1486,7 @@ class MusicManager:
             group: номер группы и адресат ``gate=0``/``freeAll`` (по
                 умолчанию Group 1 — куда Renardo шлёт все ноты).
         """
-        try:
-            self._send_osc_raw("/n_set", group, "gate", 0.0)
-        except Exception:
-            pass  # если SC недоступен — freeAll ниже всё равно best-effort
-        try:
-            time.sleep(self.RAMP_DOWN_RELEASE_SECONDS)
-        except Exception:
-            pass
-        try:
-            self._send_osc_raw("/g_freeAll", group)
-        except Exception:
-            pass  # если SC недоступен — не критично, старые ноды умрут сами
+        renardo_adapter.ramp_down_group(self._send_osc_raw, group, self.RAMP_DOWN_RELEASE_SECONDS)
 
     def _transition_cleanup_delay_seconds(self) -> float:
         """Секунд до дедлайна: ``next_bar + Clock.latency`` минус запас.
@@ -2192,29 +2136,15 @@ class MusicManager:
         Args:
             code: FoxDot-код, который сейчас выполнится.
         """
+        # Issue #1815: "-" — звучащий хэт ("hyphen"), а не пауза; настоящая
+        # пауза — "." (разбор символов — renardo_adapter.load_sample_buffers,
+        # общий с проверкой ресурсов владельца плеера v2).
         try:
             samples = self._renardo_context.get("Samples")
             if samples is None:
                 return
             for match in _PLAY_SYMBOLS_RE.finditer(code):
-                for symbol in match.group(1):
-                    # 🔴 FIX (issue #1815): раньше тут пропускался и "-", с
-                    # комментарием "пауза (rest)" — НЕВЕРНО. "-" звучащий
-                    # сэмпл (renardo_gatherer/collections.py:27 маппит его
-                    # на каталог "hyphen", он есть в 0_foxdot_default/_/ и
-                    # в 1_pitchglitch_samples/_/ на роботе). Настоящая пауза
-                    # — "." (для неё каталога нет ни в одном сэмпл-паке).
-                    # "-" — САМЫЙ ходовой символ хэтов (`play("--.-")` почти
-                    # в каждом треке), то есть функция не прогревала буфер
-                    # именно там, где щелчок/xrun наиболее вероятен — ровно
-                    # тот риск, ради которого её и писали. Пробел — просто
-                    # разделитель форматирования паттерна, сэмплов не несёт.
-                    if symbol.isspace() or symbol == ".":
-                        continue
-                    try:
-                        samples.getBufferFromSymbol(symbol, 0)
-                    except Exception:  # noqa: BLE001 — символ может не иметь сэмпла
-                        continue
+                renardo_adapter.load_sample_buffers(samples, match.group(1))
         except Exception:  # noqa: BLE001 — предзагрузка не должна ломать exec
             return
 
