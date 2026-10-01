@@ -62,8 +62,13 @@ class TestOnAvatarCommandResult(unittest.TestCase):
         )
         QuestNode._on_avatar_command_result(host, msg)
 
-        host.ws_server.broadcast_json_event.assert_called_once()
-        event = host.ws_server.broadcast_json_event.call_args.args[0]
+        # Первым идёт avatar_command_result; следом — tars_console (#3253 Ш4):
+        # имя тула для консоли ТАРС 1 (покрыто в test_quest_tars_console.py).
+        calls = host.ws_server.broadcast_json_event.call_args_list
+        self.assertEqual(
+            [c.args[0]["type"] for c in calls], ["avatar_command_result", "tars_console"]
+        )
+        event = calls[0].args[0]
         self.assertEqual(event["type"], "avatar_command_result")
         self.assertEqual(event["request_id"], "quest:sid1:100")
         self.assertTrue(event["ok"])

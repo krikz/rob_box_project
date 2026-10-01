@@ -200,6 +200,16 @@ export type JsonEvent =
       nearby?: string;
       ts_ms: number;
     }
+  // issue #3253 Ш4 — строка консоли ТАРС 1: фраза оператора (STT из шлема)
+  // или короткое событие хода (имя тула, «ошибка хода»). Параметры тулов и
+  // текст ошибок на клиент не идут (core/tars_console.py).
+  | {
+      type: "tars_console";
+      kind: "operator" | "event";
+      text: string;
+      request_id: string;
+      ts_ms: number;
+    }
   // issue #2184 — TARS 2 metrics panel: РЯДЫ ТОЧЕК из Prometheus (series)
   // или строки из Loki (lines). Именно это клиент рисует на экране TARS 2;
   // tars_panel_url выше остался ссылкой «доглядеть с десктопа».

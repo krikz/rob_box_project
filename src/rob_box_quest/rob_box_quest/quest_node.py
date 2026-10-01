@@ -65,6 +65,7 @@ from rob_box_core.speech_segmentation import (
 from .core.nav_goal import NACK_EMERGENCY, NACK_NAV2_UNAVAILABLE, NavGoalRequest  # noqa: E402
 from .core.safety import Watchdog
 from .core.tars_status import TarsStatusRelay  # noqa: E402
+from .core import tars_console  # noqa: E402
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
@@ -2889,6 +2890,12 @@ class QuestNode(Node):
             self.ws_server.broadcast_json_event(event)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"avatar_command_result broadcast failed: {e}")
+        # issue #3253 (Ш4): имена тулов и ошибка хода -> консоль ТАРС 1.
+        tars_console.relay_events(
+            tars_console.turn_events(payload),
+            self.ws_server.broadcast_json_event,
+            self.get_logger().debug,
+        )
 
     def _on_tars1_text(self, msg: String) -> None:
         """ROS /tars1/text → JSON_EVENT (type=tars1_text) всем WS-сессиям.
@@ -3002,6 +3009,12 @@ class QuestNode(Node):
             self.ws_server.broadcast_json_event(event)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"tars_state stt accepted broadcast failed: {e}")
+        # issue #3253 (Ш4): фраза оператора -> консоль ТАРС 1 (до ответа ТАРС).
+        tars_console.relay_events(
+            tars_console.operator_events(payload),
+            self.ws_server.broadcast_json_event,
+            self.get_logger().debug,
+        )
 
     def _on_tars_panel_url(self, msg: String) -> None:
         """ROS /avatar/tars/panel_url → JSON_EVENT (type=tars_panel_url).

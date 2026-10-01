@@ -26,6 +26,11 @@ import * as THREE from "three";
 import { tarsActivityView, type TarsActivity } from "../state/tars_activity";
 import { TARS_SEGMENTS, tarsFigurePose } from "../state/tars_figure";
 import {
+  CONSOLE_STYLES,
+  ConsoleBuffer,
+  type ConsoleLineKind
+} from "../state/tars_console_lines";
+import {
   INFO_DASH,
   buildInfoRows,
   computeTars1Layout,
@@ -57,6 +62,13 @@ export interface Tars1TextPanelOptions {
 export interface Tars1TextPanelHandle {
   readonly mesh: THREE.Mesh;
   append(text: string): void;
+  /**
+   * Целая строка консоли с видом (#3253 Ш4): `operator` (фраза оператора,
+   * `you> `, циан) или `event` (короткое событие). Появляется сразу, без
+   * typewriter; недопечатанный хвост реплики ТАРС дописывается мгновенно,
+   * чтобы порядок строк не перепутался. kind="tars" == append(text).
+   */
+  appendLine(kind: ConsoleLineKind, text: string): void;
   clear(): void;
   setStreaming(streaming: boolean): void;
   /** Состояние ТАРС для строки статуса на консоли (СЛУШАЕТ/ДУМАЕТ/ГОВОРИТ). */
@@ -130,10 +142,7 @@ export function createTars1TextPanel(
   // Кольцевой буфер строк. Никогда не пустой — минимум одна пустая строка,
   // чтобы setStreaming индикатор рисовался корректно даже до первого
   // append.
-  const lines: string[] = [""];
-  // Частичный буфер для незакрытых переводом строки чанков: append может
-  // прийти как кусок «Привет, |как дела?», и до \n мы держим хвост здесь.
-  let partial = "";
+  const buffer = new ConsoleBuffer(maxLines);
   let streaming = false;
 
   // Хакерская палитра: зелёный/циановый фосфор на почти чёрном.
@@ -260,28 +269,30 @@ export function createTars1TextPanel(
     c.font = `${fontSize}px monospace`;
     const lineHeight = Math.round(fontSize * 1.25);
     const startY = cons.y + 4;
-    const prefix = "> ";
-    const prefixW = c.measureText(prefix).width;
-    const maxWidth = cons.w - prefixW;
     // Каждая логическая строка → wrap; первая визуальная строка получает
-    // «> », продолжения — отступ.
-    const crows: { text: string; first: boolean }[] = [];
-    for (const raw of lines) {
-      const wrapped = wrapLine(raw, c, maxWidth);
-      wrapped.forEach((t, i) => crows.push({ text: t, first: i === 0 }));
+    // префикс своего вида («> » / «you> » / «· »), продолжения — отступ.
+    const crows: { text: string; first: boolean; kind: ConsoleLineKind; prefixW: number }[] = [];
+    for (const row of buffer.lines) {
+      const style = CONSOLE_STYLES[row.kind];
+      const pw = c.measureText(style.prefix).width;
+      const wrapped = wrapLine(row.text, c, cons.w - pw);
+      wrapped.forEach((t, k) =>
+        crows.push({ text: t, first: k === 0, kind: row.kind, prefixW: pw })
+      );
     }
     const capacity = Math.max(1, Math.floor((cons.y + cons.h - startY) / lineHeight));
     const tail = crows.slice(-capacity);
-    c.shadowColor = FG;
     c.shadowBlur = 4;
     for (let i = 0; i < tail.length; i += 1) {
       const y = startY + i * lineHeight;
+      const style = CONSOLE_STYLES[tail[i].kind];
+      c.shadowColor = style.textColor;
       if (tail[i].first) {
-        c.fillStyle = FG_DIM;
-        c.fillText(prefix, pad, y);
+        c.fillStyle = style.prefixColor;
+        c.fillText(style.prefix, pad, y);
       }
-      c.fillStyle = FG;
-      c.fillText(tail[i].text, pad + prefixW, y);
+      c.fillStyle = style.textColor;
+      c.fillText(tail[i].text, pad + tail[i].prefixW, y);
     }
     c.shadowBlur = 0;
 
@@ -289,9 +300,13 @@ export function createTars1TextPanel(
     const typing = pending.length > 0;
     const blinkOn = typing || Math.floor(nowMs / 530) % 2 === 0;
     if (blinkOn) {
-      const lastText = tail.length > 0 ? tail[tail.length - 1].text : "";
+      const lastRow = tail.length > 0 ? tail[tail.length - 1] : null;
       const cy = startY + Math.max(0, tail.length - 1) * lineHeight;
-      const cx = pad + prefixW + c.measureText(lastText).width + 2;
+      const cx =
+        pad +
+        (lastRow ? lastRow.prefixW : c.measureText(CONSOLE_STYLES.tars.prefix).width) +
+        c.measureText(lastRow ? lastRow.text : "").width +
+        2;
       c.fillStyle = FG;
       c.fillRect(cx, cy + 2, Math.round(fontSize * 0.55), lineHeight - 6);
     }
@@ -350,38 +365,28 @@ export function createTars1TextPanel(
   }
 
   function commit(text: string): void {
-    partial += text;
-    // Разделяем по \n: всё, что до последнего \n, идёт в буфер строк,
-    // хвост после последнего \n остаётся в `partial` для следующего чанка.
-    const parts = partial.split("\n");
-    partial = parts.pop() ?? "";
-    for (const p of parts) {
-      lines.push(p);
-    }
-    // Текущая «незавершённая» строка рисуется как последний элемент lines:
-    // для этого мы НЕ пушим partial до перевода строки — но тогда оператор
-    // не видит стримящийся текст. Решение: держим отдельную «активную»
-    // строку как последний элемент lines, обновляем её на каждый append.
-    // Для этого выносим partial в lines[-1], не дожидаясь \n.
-    if (lines.length === 0) lines.push("");
-    // Убираем «виртуальную» пустую строку из capacity-расчёта.
-    // Если предыдущая строка была пустой (initial) — заменяем её, иначе
-    // добавляем.
-    if (lines.length === 1 && lines[0] === "" && partial) {
-      lines[0] = partial;
-      partial = "";
-    } else if (partial) {
-      lines[lines.length - 1] = partial;
-    }
-    // Обрезаем старые строки (кольцевой буфер).
-    while (lines.length > maxLines) lines.shift();
+    buffer.appendTars(text);
     if (typewriterCps <= 0) render();
   }
 
+  function appendLine(kind: ConsoleLineKind, text: string): void {
+    const clean = text.replace(/\s+/g, " ").trim();
+    if (!clean) return;
+    if (kind === "tars") {
+      append(clean);
+      return;
+    }
+    // Фраза оператора — сразу: недопечатанный хвост ТАРС дописываем мгновенно.
+    if (pending.length > 0) {
+      buffer.appendTars(pending);
+      pending = "";
+    }
+    buffer.pushLine(kind, clean);
+    render();
+  }
+
   function clear(): void {
-    lines.length = 0;
-    lines.push("");
-    partial = "";
+    buffer.clear();
     pending = "";
     streaming = false;
     render();
@@ -394,7 +399,7 @@ export function createTars1TextPanel(
   }
 
   function getStats(): { lineCount: number; streaming: boolean; pending: number } {
-    return { lineCount: lines.length, streaming, pending: pending.length };
+    return { lineCount: buffer.length, streaming, pending: pending.length };
   }
 
   function dispose(): void {
@@ -409,6 +414,7 @@ export function createTars1TextPanel(
   return {
     mesh,
     append,
+    appendLine,
     clear,
     setStreaming,
     setActivity,
