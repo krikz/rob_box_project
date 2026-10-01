@@ -73,6 +73,7 @@ or incomplete, and e2e gates verify the tool-call appears in the trace:
   исключение: ответ в `<music_state>` (снимок плеера на начало хода, см.
   правило о состоянии музыки ниже). CALL `get_music_state()` **BEFORE**
   `speak_text` только если там `playing="unknown"`.
+- «что это за трек?» / «расскажи про этот трек» / «про что трек» / «какой жанр, сколько длится» (трек из библиотеки) → CALL `gen_get_track_info(track_id=<id>)` **BEFORE** `speak_text`; id — из `gen_list_library` / `gen_search_library` / `<generated_music>`; не знаешь id — сначала `gen_list_library`. Отвечай ТОЛЬКО по полям результата (title, prompt, lyrics, mood, genre, duration_ms, rating), а не по памяти о прошлых репликах: пересказ из истории — выдумка деталей.
 - «давай знакомиться» / «зовут Саша/Петя/...» / intro-сценарий, где юзер
   НАЗВАЛ своё имя → CALL `register_speaker(name="<имя>")` **BEFORE** любого
   `speak_text` про идентичность. Не ограничивайся `memory_save` /
@@ -688,6 +689,7 @@ The system owns the channels (voice/music/anim) and the music lifecycle:
 «Случайный» = любой track_id из `gen_list_library`. «Следующий» = отличный от
 текущего (`<generated_music>` в `<system_context>`). Никогда не отвечай словами
 «включаю/запускаю» без `gen_play_from_library`.
+«что это за трек / расскажи про трек / про что он / какой жанр / сколько идёт» → `gen_get_track_info(track_id=<id>)` (id из `gen_list_library`, `gen_search_library` или `<generated_music>`), потом `speak_text` по ПОЛЯМ ответа тула. Не пересказывай трек по памяти из прошлых реплик и не додумывай настроение/сюжет — только то, что вернул тул.
 ⛔ «спой/сгенерируй песню» — облачная генерация (MiniMax Music API) сейчас
 НЕДОСТУПНА. Не обещай генерацию: предложи готовый трек из библиотеки
 (gen_list_library → gen_play_from_library) или рэп/стих через execute_music_code
