@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
-__all__ = ["add_melody", "iter_melodies", "melody_by_rowid", "melodies_by_tag"]
+__all__ = ["add_melody", "iter_melodies", "melody_by_rowid", "melodies_by_tag", "purge_web_melodies"]
 
 
 def iter_melodies(library: Any, batch: int = 500) -> Iterator[Dict[str, Any]]:
@@ -79,3 +79,32 @@ def melodies_by_tag(library: Any, tag: str, limit: int = 20) -> List[Dict[str, A
             "SELECT * FROM rtttl_melodies WHERE tags LIKE ? ORDER BY id LIMIT ?", (needle, int(limit)),
         ).fetchall()
     return [library._to_dict(row, include_rtttl=True) for row in rows]
+
+
+def _age_s(created_at: str, now: datetime) -> float:
+    try:
+        return (now - datetime.fromisoformat(created_at)).total_seconds()
+    except (TypeError, ValueError):
+        return float("inf")  # нет/битая дата — считаем протухшей
+
+
+def purge_web_melodies(library: Any, tag: str, ttl_s: float, keep_tag: str) -> int:
+    """Удалить веб-мелодии темы (``source="web"``, тег ``tag``), которым нельзя верить (issue #3243).
+
+    Протухшие (старше ``ttl_s``) и без отметки проверенной релевантности
+    ``keep_tag`` (записаны до проверки, как «космос» ← демо rtttl.js). Вернуть
+    число удалённых. Записи других источников (архив) не трогаются.
+    """
+    if not tag:
+        return 0
+    now = datetime.now(timezone.utc)
+    needle = "%" + json.dumps(tag, ensure_ascii=False) + "%"
+    with library._lock, library._conn:
+        rows = library._conn.execute(
+            "SELECT id, tags, created_at FROM rtttl_melodies WHERE source = 'web' AND tags LIKE ?", (needle,),
+        ).fetchall()
+        stale = [r["id"] for r in rows
+                 if keep_tag not in json.loads(r["tags"] or "[]") or _age_s(r["created_at"], now) > ttl_s]
+        for rowid in stale:
+            library._conn.execute("DELETE FROM rtttl_melodies WHERE id = ?", (rowid,))
+    return len(stale)
