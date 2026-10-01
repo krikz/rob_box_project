@@ -5153,6 +5153,31 @@ class TestComposeMusicToolClubStyle:
         assert [(r["melody_name"], r["fragment_offset"]) for r in reversed(rows)] == pairs
         assert all(r["hook_fingerprint"] for r in rows)
 
+    @staticmethod
+    def _pooled_pacman(tool):
+        from rob_box_mcp_tools.core.club_hook import extract_hook
+
+        hook = extract_hook("pac:d=8,o=5,b=124:c,e,g,c6,g,e,c,e", 124, "pacman", "Pacman")
+        return hook, tool._hook_info(hook, "fragment", {})
+
+    def test_club_track_label_uses_set_theme_not_pool_hook(self, mock_node):
+        """Issue #3244: сет про пиратов звался «на тему «Pacman»» — имя хука из пула."""
+        tool, mgr = self._make_tool(mock_node)
+        pooled = self._pooled_pacman(tool)
+        with patch("builtins.exec"), patch.object(tool, "_club_hook", return_value=pooled):
+            result = tool.execute(style="club", root="C", seed=1, theme="пираты")
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек на тему «пираты», 124 BPM, до минор"
+        assert "Pacman" not in mgr.current_track_name
+
+    def test_club_track_label_without_theme_does_not_claim_hook_as_theme(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        pooled = self._pooled_pacman(tool)
+        with patch("builtins.exec"), patch.object(tool, "_club_hook", return_value=pooled):
+            result = tool.execute(style="club", root="C", seed=1)
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек, 124 BPM, до минор"
+
     def test_club_without_name_and_library_falls_back_to_pentatonic_with_warning(self, mock_node):
         tool, _mgr = self._make_tool(mock_node)
         with patch("builtins.exec"), patch.object(tool, "log_warning") as warn:

@@ -70,8 +70,8 @@ from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
 from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
-from ..core.web_melody import pick_theme
 from ..core.club_history import recent_club_rows, remember_classic, remember_club
+from ..core.web_melody import club_label_theme, pick_theme
 from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
@@ -4483,7 +4483,7 @@ class ComposeMusicTool(MCPTool):
         # ``<music_state>`` говорили «трек «без названия»».
         self._manager.current_track_name = self._club_track_label(
             bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
-            hook_info["title"] if hook_info else None,
+            club_label_theme(kwargs, hook_info["title"] if hook_info else None, self.club_theme),
         )
         self._notify_music_state()
 

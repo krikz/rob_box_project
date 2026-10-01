@@ -199,6 +199,21 @@ def attach_web_search(compose_tool: Any, search_tool: Any) -> None:
         compose_tool.web_search = as_search_callable(search_tool)
 
 
+def club_label_theme(
+    kwargs: Mapping[str, Any], hook_title: Optional[str], default: Optional[str],
+) -> Optional[str]:
+    """Issue #3244: «на тему «…»» в имени трека — заказанное, а не случайный хук.
+
+    Хук из пула — деталь реализации: в сете про пиратов трек звался «на тему
+    «Pacman»». Хук даёт имя, только если его заказали явно (``name``/``rtttl``);
+    иначе — тема вызова (``theme`` или тема тула по умолчанию), без неё — None.
+    """
+    if hook_title and (kwargs.get("name") or kwargs.get("rtttl")):
+        return hook_title
+    theme = pick_theme(kwargs, default)
+    return (str(theme).strip() or None) if theme else None
+
+
 def pick_theme(kwargs: Mapping[str, Any], default: Optional[str]) -> Optional[str]:
     """Тема club-вызова: параметр ``theme`` важнее темы по умолчанию тула."""
     return kwargs.get("theme") or default
