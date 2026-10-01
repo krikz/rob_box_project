@@ -102,7 +102,8 @@ def test_track_hook_heard_in_drop_and_developed_by_sections(root):
     validate(track)
     assert track.hook is not None and track.hook.source == "long"
     lead = _lead_events(track)
-    start = {name: i * SECTION_BARS for i, (name, _e, _r) in enumerate(SECTIONS)}
+    starts = [sum(bars for _n, bars, _e, _r in SECTIONS[:i]) for i in range(len(SECTIONS))]
+    start = {name: at for at, (name, _b, _e, _r) in zip(starts, SECTIONS)}
     hook_bars = [sorted((round(e.beat % 4, 3), e.midi) for e in track.hook.notes if int(e.beat // 4) == b)
                  for b in range(track.hook.bars)]
     assert _bars(lead, start["drop"], track.hook.bars) == hook_bars
@@ -114,8 +115,9 @@ def test_track_hook_heard_in_drop_and_developed_by_sections(root):
     drop2 = _bars(lead, start["drop2"], SECTION_BARS)
     assert drop2 != _bars(lead, start["drop"], SECTION_BARS)
     assert {m for bar in drop2 for _b, m in bar} >= {m for bar in hook_bars for _b, m in bar}
-    for name in ("intro", "outro"):
-        assert all(not bar for bar in _bars(lead, start[name], SECTION_BARS)), name
+    for name, bars, _e, _r in SECTIONS:
+        if name.startswith(("intro", "outro")):
+            assert all(not bar for bar in _bars(lead, start[name], bars)), name
 
 
 def test_sections_are_not_identical_bars_of_one_loop():

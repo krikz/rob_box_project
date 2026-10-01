@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Tuple
+from typing import FrozenSet, List, Mapping, Optional, Tuple
 
 from . import knowledge as kn
 
@@ -175,10 +175,20 @@ def _check_form(form: Form) -> None:
         _require(0 <= sec.energy <= 10, f"{path}.energy", f"энергия {sec.energy} вне 0..10")
         unknown = sorted(set(sec.roles) - set(kn.ROLES))
         _require(not unknown, f"{path}.roles", f"неизвестные роли {unknown}")
-    last = form.sections[-1]
-    _require(last.name == "outro" and last.bars >= OUTRO_MIN_BARS, "form.sections[-1]",
-             f"последняя секция — outro ≥ {OUTRO_MIN_BARS} тактов (DJ-friendly)")
-    _require("lead" not in last.roles, "form.sections[-1].roles", "в outro нет лида")
+    outro = _outro(form)
+    _require(sum(s.bars for s in outro) >= OUTRO_MIN_BARS, "form.sections[-1]",
+             f"конец формы — outro ≥ {OUTRO_MIN_BARS} тактов (DJ-friendly)")
+    _require(all("lead" not in s.roles for s in outro), "form.sections[-1].roles", "в outro нет лида")
+
+
+def _outro(form: Form) -> Tuple[Section, ...]:
+    """Хвост формы из секций ``outro*`` (outro может делиться под своп баса блэнда)."""
+    tail: List[Section] = []
+    for sec in reversed(form.sections):
+        if not sec.name.startswith("outro"):
+            break
+        tail.insert(0, sec)
+    return tuple(tail)
 
 
 def _check_grid(role: str, grid: Grid, bars_total: int) -> None:
@@ -293,7 +303,50 @@ def validate(track: Track) -> None:
     _check_transitions(track)
 
 
+# ── Блэнд двух треков (ADR-0149 §3.12, §7.2 A4; PR-8) ─────────────────────────────────────────────────────────
+
+#: Длина блэнда в тактах (4–8): входящий трек звучит поверх хвоста уходящего.
+BLEND_BARS = (4, 8)
+#: Роли, которых в каждый такт блэнда ровно одна на две деки: никогда двух и никогда ни одной.
+BLEND_SINGLE_ROLES = ("kick", "bass")
+
+
+def roles_at_bar(track: Track, bar: int) -> FrozenSet[str]:
+    """Роли, заказанные формой на такте ``bar`` (0 — первый такт формы)."""
+    start = 0
+    for sec in track.form.sections:
+        if start <= bar < start + sec.bars:
+            return frozenset(sec.roles)
+        start += sec.bars
+    raise IndexError(f"такт {bar} вне формы ({track.form.bars_total} тактов)")
+
+
+def blend_bars(leaving: Track, incoming: Track) -> int:
+    """На сколько тактов ``incoming`` входит до конца формы ``leaving``; 0 — блэнд невозможен (стык встык).
+
+    Блэнд — свойство пары форм, а не движка: длина — ``leaving.transition_out.phrase_bars`` (должна совпасть с
+    ``incoming.transition_in``), темп один, в каждом такте блэнда оба трека звучат, ровно одна бочка и один бас
+    на две деки (своп на ``bass_swap_bar``: бас и бочка уходящего гаснут ровно там, где входят у входящего),
+    в хвосте уходящего нет лида.
+    """
+    out, inn = leaving.transition_out, incoming.transition_in
+    bars = out.phrase_bars
+    if (bars, out.bass_swap_bar) != (inn.phrase_bars, inn.bass_swap_bar) or leaving.bpm != incoming.bpm:
+        return 0
+    if not BLEND_BARS[0] <= bars <= BLEND_BARS[1] or bars > min(leaving.form.bars_total, incoming.form.bars_total):
+        return 0
+    tail = leaving.form.bars_total - bars
+    for bar in range(bars):
+        old, new = roles_at_bar(leaving, tail + bar), roles_at_bar(incoming, bar)
+        if not old or not new or "lead" in old:
+            return 0
+        if any((role in old) + (role in new) != 1 for role in BLEND_SINGLE_ROLES):
+            return 0
+    return bars
+
+
 __all__ = [
-    "Chord", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix", "Part", "PitchEvent", "Section",
-    "Step", "Track", "TrackError", "Transition", "validate",
+    "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
+    "Part", "PitchEvent", "Section", "Step", "Track", "TrackError", "Transition", "blend_bars", "roles_at_bar",
+    "validate",
 ]

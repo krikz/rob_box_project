@@ -2,8 +2,12 @@
 
 python tracks.py setN.full.log rN.wav "2026-10-01T12:20:00Z"
 (третий аргумент — старт записи из index.txt)
+
+Лог движка v2 (ADR-0149): трек — событие ``started`` владельца плеера (``/voice/music/event``, JSON с ``ts``),
+а не вызов ``compose_music``; при блэнде (PR-8) отрезок трека — от его входа до входа следующего.
 """
 import calendar
+import json
 import re
 import sys
 import time
@@ -31,6 +35,16 @@ def grid_R(flux, fs, bpm, s, e, step=4.0):
     return np.median(out) if out else float("nan")
 
 
+def v2_started(line, t_rec):
+    """Трек движка v2 из строки с событием ``started`` или ``None``."""
+    m = re.search(r'(\{"event": "started".*\})', line)
+    if not m:
+        return None
+    ev = json.loads(m.group(1))
+    return {"t": float(ev["ts"]) - t_rec, "bpm": round(float(ev["bpm"])), "sample": "—", "hook": "—",
+            "kit": f"v2 {ev['track_id']} {ev.get('deck')}", "key": ""}
+
+
 def main():
     log, wav, start = sys.argv[1:4]
     t_rec = calendar.timegm(time.strptime(start, "%Y-%m-%dT%H:%M:%SZ"))
@@ -38,6 +52,11 @@ def main():
     for line in open(log, encoding="utf-8", errors="replace"):
         m = TS.search(line)
         t = float(m.group(1)) if m else None
+        v2 = v2_started(line, t_rec)
+        if v2:
+            cur = v2
+            tracks.append(cur)
+            continue
         if "Запрос выполнения: compose_music" in line and t:
             cur = {"t": t - t_rec, "bpm": None, "sample": "—", "hook": "—", "kit": "", "key": ""}
             tracks.append(cur)

@@ -6,8 +6,11 @@
 сессия не читает.
 
 * На ``started(N)`` в фоне сразу компонуется и рендерится N+1 на другой деке → ``queued``.
-* ``nearly_finished(N)`` за ``lead_beats`` до конца формы: N+1 в очереди — стык ровно на
-  границе формы; не готов (не успел, отказ рендера, чужой темп) — **текущий трек играет ещё
+* ``nearly_finished(N)`` за ``lead_beats`` до конца формы: N+1 в очереди — **блэнд** (PR-8, §3.12):
+  N+1 встаёт за ``model.blend_bars(N, N+1)`` тактов до границы формы N (фаза 0 на такте), оба
+  трека звучат вместе, бочка и бас меняются на такте свопа (это свойство форм, а не движка),
+  дека N снимается на границе и свободна. Формы не сводятся (``blend_bars = 0``) — стык ровно на
+  границе формы (PR-5). Не готов (не успел, отказ рендера, чужой темп) — **текущий трек играет ещё
   проход формы** («продлить, а не замолчать», I1), проверка повторяется через проход.
 * Темп один на сет (I7, §4.4): его ставит первый трек (``Clock.update_tempo_now``), трек с
   другим темпом до деки не доходит — ``rejected{tempo_mismatch}`` и продление.
@@ -24,7 +27,7 @@ import threading
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from rob_box_music.arrange.compose import compose
-from rob_box_music.model import Track
+from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import SetPlan
 
@@ -87,6 +90,8 @@ class SetSession:
         self._lock = threading.Lock()
         self._active = False
         self._tracks: Dict[str, int] = {}  # track_id → номер в сете
+        self._models: Dict[str, Track] = {}  # track_id → модель (играющий и в очереди: длина блэнда)
+        self._next_id: Optional[str] = None  # что последним поставлено в очередь
         self._current: Optional[Dict[str, Any]] = None  # {track_id, no, deck, form_beats}
         self._preparing = False
 
@@ -127,7 +132,8 @@ class SetSession:
     def _prepare(self, track_no: int, deck: str) -> Optional[Any]:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
         try:
-            program = render(self._source(track_no, deck), deck)
+            track = self._source(track_no, deck)
+            program = render(track, deck)
         except Exception as exc:  # noqa: BLE001 — отказ громкий; музыка (если есть) играет дальше
             self._owner.reject(f"{self.set_id}:{track_no:02d}:{deck}", "compose_error", f"{type(exc).__name__}: {exc}")
             return None
@@ -136,6 +142,7 @@ class SetSession:
             return None
         with self._lock:
             self._tracks[program.track_id] = track_no
+            self._models[program.track_id] = track
         return program
 
     def _on_started(self, snap: Mapping[str, Any]) -> None:
@@ -147,6 +154,7 @@ class SetSession:
                 return
             self._current = {"track_id": track_id, "no": no, "deck": snap.get("deck"),
                              "form_beats": float(snap["form_beats"])}
+            self._models = {k: v for k, v in self._models.items() if k == track_id}
         form_end = float(snap["start_beat"]) + float(snap["form_beats"])
         self._log.info(f"🎧 [set v2] {self.set_id} трек {no} started track_id={track_id} form_end_beat={form_end}")
         self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
@@ -171,21 +179,41 @@ class SetSession:
         with self._lock:
             still = self._active and (self._current or {}).get("track_id") == current.get("track_id")
         if program is not None and still:
+            with self._lock:
+                self._next_id = program.track_id
             self._owner.enqueue(program, current["track_id"])
 
     def _on_nearly_finished(self, track_id: str, form_end: float) -> None:
-        """Поток клока: N+1 готов — стык на ``form_end``; нет — ещё проход формы N (I1)."""
+        """Поток клока: N+1 готов — блэнд до ``form_end`` (или стык на ней); нет — ещё проход формы N (I1)."""
         with self._lock:
             current = dict(self._current or {})
             if not self._active or current.get("track_id") != track_id:
                 return
-        advanced = self._owner.advance(form_end, dj=self.dj_fields(current["no"] + 1))
+        overlap = self._blend_beats(track_id)
+        advanced = self._owner.advance(form_end - overlap, dj=self.dj_fields(current["no"] + 1),
+                                       leave_at=form_end if overlap else None)
         if not advanced:
             self._log.warning(f"⚠️ [set v2] {self.set_id} трек {current['no'] + 1} не готов — "
                               f"продлеваю трек {current['no']} ещё на проход формы")
             self._pregenerate_soon()
+        elif overlap:
+            self._log.info(f"🎧 [set v2] {self.set_id} блэнд трек {current['no']}→{current['no'] + 1}: "
+                           f"{overlap / BEATS_PER_BAR:g} тактов с доли {form_end - overlap}")
         # Страховка и при стыке: не встанет N+1 (exec упал) — N играет, проверка через проход.
         self._owner.watch(track_id, form_end + current["form_beats"], self._lead, self._on_nearly_finished)
+
+    def _blend_beats(self, track_id: str) -> float:
+        """Доли блэнда играющего трека с тем, что в очереди; 0 — стык встык (формы не сводятся)."""
+        with self._lock:
+            leaving, incoming = self._models.get(track_id), self._models.get(self._next_id or "")
+        if leaving is None or incoming is None:
+            return 0.0
+        beats = float(blend_bars(leaving, incoming) * BEATS_PER_BAR)
+        if not beats or beats > self._lead - BEATS_PER_BAR:  # вход должен успеть встать на такт после события
+            self._log.warning(f"⚠️ [set v2] {self.set_id} блэнда нет ({leaving.track_id}→{incoming.track_id}: "
+                              f"{beats:g} долей при lead {self._lead:g}) — стык на границе формы")
+            return 0.0
+        return beats
 
 
 __all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "SetSession", "TrackSource", "compose_source"]

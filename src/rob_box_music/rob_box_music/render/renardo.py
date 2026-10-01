@@ -3,7 +3,8 @@
 Подмножество Renardo: шесть присваиваний плеерам деки. Ударные — ``play("<сетка>")``
 по 16-м, тональные — список MIDI по 16-м (``None`` — пауза, кортеж — аккорд) в
 ``Scale.chromatic`` с ``root=0, oct=0``. Секции — ``amp=var([...], [доли])`` по
-``Section.roles``, уровень ``amp`` — из уровня роли по модели громкости (``arrange.mix.level_amp``); акценты ×
+``Section.roles`` от начала формы (``start=Clock.next_bar()`` — доля, где встают плееры), уровень ``amp`` — из
+уровня роли по модели громкости (``arrange.mix.level_amp``); акценты ×
 сайдчейн-огибающая ролей ``Mix.duck_roles`` — ``amplify=[...]`` (период списка свёрнут); бочка — ``sample=`` из
 ``knowledge.KICK_SOUNDS``; свинг ``offset_ms`` — ``delay=[...]`` в долях
 (глобальный ``Clock.swing`` не используется: сайдчейн не должен уехать от бочки, ADR-0149 §3.4).
@@ -25,6 +26,9 @@ from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Part, Track, validate
 from .program import Program
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
+#: Начало формы для ``var`` секций: ``TimeVar`` Renardo считает доли от ``start``, плееры встают на ``next_bar`` —
+#: секции идут от первой доли трека, где бы он ни встал (стык и блэнд PR-8 ставят трек не на ``k·форма``).
+FORM_START = "Clock.next_bar()"
 #: Роль → индекс слота в ``knowledge.DECK_SLOTS[deck]``: d-слоты ударным, p-слоты тональным.
 ROLE_SLOT: Dict[str, int] = {"kick": 0, "hats": 1, "clap": 2, "perc": 2, "bass": 3, "pad": 4, "lead": 5}
 _UNSET = object()
@@ -61,7 +65,7 @@ def _gate(track: Track, role: str, amp: float) -> str:
             segments[-1][1] += sec.bars * BEATS_PER_BAR
         else:
             segments.append([value, sec.bars * BEATS_PER_BAR])
-    return f"var({_list(v for v, _ in segments)}, {_list(_num(b) for _, b in segments)})"
+    return f"var({_list(v for v, _ in segments)}, {_list(_num(b) for _, b in segments)}, start={FORM_START})"
 
 
 def _period(values: Sequence[float]) -> List[float]:
@@ -202,4 +206,4 @@ def render(track: Track, deck: str) -> Program:
     )
 
 
-__all__ = ["ROLE_SLOT", "RenderError", "render"]
+__all__ = ["FORM_START", "ROLE_SLOT", "RenderError", "render"]
