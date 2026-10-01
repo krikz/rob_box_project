@@ -39,6 +39,10 @@ from typing import Any, Mapping, Optional
 
 # Дефолт окна схлопывания: час (DoD-инвариант журнала).
 DEFAULT_COLLAPSE_WINDOW_S: float = 3600.0
+# Возраст записи (по last_ts_ms), старше которого render() её не отдаёт:
+# журнал — история, а не текущее состояние; многочасовое «не отвечает»
+# модель иначе повторяет как свежий факт (#3297).
+DEFAULT_MAX_AGE_S: float = 1800.0
 # Максимум записей в памяти: журнал — bounded-окно, не бесконечный лог.
 DEFAULT_MAX_ENTRIES: int = 500
 
@@ -86,6 +90,8 @@ class OperatorJournal:
     Args:
         collapse_window_s: окно схлопывания повторов в секундах (default 1 ч).
         max_entries: потолок числа записей в памяти (вытесняем старейшие).
+        max_age_s: записи старше этого возраста не попадают в ``render()``
+            (default 30 мин; ``<= 0`` — без фильтра). На диске остаются.
         path: опциональный путь JSONL-файла для персиста (''/None = memory-only).
         clock: источник времени (для тестов; default ``time.time``).
     """
@@ -97,11 +103,13 @@ class OperatorJournal:
         *,
         collapse_window_s: float = DEFAULT_COLLAPSE_WINDOW_S,
         max_entries: int = DEFAULT_MAX_ENTRIES,
+        max_age_s: float = DEFAULT_MAX_AGE_S,
         path: Optional[str] = None,
         clock: Any = None,
     ) -> None:
         self._collapse_window_s = float(collapse_window_s)
         self._max_entries = int(max_entries)
+        self._max_age_s = float(max_age_s)
         self._path: Optional[str] = path
         # ``clock()`` → float epoch-seconds. Тесты подменяют для
         # детерминизма окна схлопывания.
@@ -191,12 +199,16 @@ class OperatorJournal:
         """Компактный текст для инжекта в ``dynamic_system`` AgentCore.
 
         Строки вида: ``• 14:32 перезапустил voice-assistant ×3 (outcome)``.
-        Пустой журнал → пустая строка (ничего не вклеиваем).
+        Записи старше ``max_age_s`` отбрасываются (граница включительно:
+        возраст ровно ``max_age_s`` ещё отдаётся). Пусто после фильтра →
+        пустая строка (ничего не вклеиваем).
         """
-        entries = self.recent(limit=limit)
+        now = int(now_ms) if now_ms is not None else self._now_ms()
+        entries = _fresh_entries(
+            self.recent(limit=limit), now, self._max_age_s
+        )
         if not entries:
             return ""
-        now = int(now_ms) if now_ms is not None else self._now_ms()
         lines: list[str] = []
         for e in entries:
             when = _fmt_clock(e.last_ts_ms, now)
@@ -257,6 +269,16 @@ class OperatorJournal:
         return int(self._clock() * 1000)
 
 
+def _fresh_entries(
+    entries: list[JournalEntry], now_ms: int, max_age_s: float
+) -> list[JournalEntry]:
+    """Оставить записи не старше ``max_age_s`` (``<= 0`` — без фильтра)."""
+    if max_age_s <= 0:
+        return entries
+    limit_ms = max_age_s * 1000
+    return [e for e in entries if now_ms - e.last_ts_ms <= limit_ms]
+
+
 def _fmt_clock(ts_ms: int, now_ms: int) -> str:
     """Отформатировать ``ts_ms`` как HH:MM, либо «N мин назад» для свежих."""
     delta_min = max(0, int((now_ms - ts_ms) / 60_000))
@@ -272,6 +294,7 @@ def _fmt_clock(ts_ms: int, now_ms: int) -> str:
 
 __all__ = [
     "DEFAULT_COLLAPSE_WINDOW_S",
+    "DEFAULT_MAX_AGE_S",
     "DEFAULT_MAX_ENTRIES",
     "JournalEntry",
     "OperatorJournal",
