@@ -27,6 +27,14 @@ TURN_IS_DJ_AUTO: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "rob_box_turn_is_dj_auto", default=False
 )
 
+#: Issue #3247 — ``True`` на время DJ_AUTO-хода, идущего ПОСЛЕ промпта
+#: «ФИНАЛЬНЫЙ ТРЕК» сета (``DJModeController.is_final_turn``): такой ход
+#: сет только завершает, ``set_dj_mode(enabled=true)`` гард исполнителя
+#: тулов не исполняет. Ретраи хода наследуют флаг через контекст задачи.
+TURN_DJ_SET_FINAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rob_box_turn_dj_set_final", default=False
+)
+
 
 def retry_is_dj_auto(*, is_dj_auto: bool, is_synthetic: bool) -> bool:
     """Флаг ``is_dj_auto`` для хода, который сейчас диспатчится.
