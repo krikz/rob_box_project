@@ -4,10 +4,13 @@
 
 * мгновенное превью (seeded club роутера медиакоманд, #3153) и сами
   медиакоманды (#3134) идут БЕЗ LLM — сюда они не доходят вовсе;
-* думает ход, у которого есть время: DJ-переход по тику (LLM выбирает или
-  сочиняет следующий трек) и ход юзера с заказом музыки (сочинение, подбор);
-* остальные голосовые ходы — без thinking, как раньше: там важна
-  латентность ответа.
+* думает только ход, у которого есть запас времени: DJ-переход по тику
+  (LLM выбирает или сочиняет следующий трек, а предыдущий ещё звучит);
+* ход юзера — БЕЗ thinking, в том числе заказ музыки и старт DJ-сета по
+  реплике (issue #3265): человек ждёт в тишине. Живой замер 01.10: ход
+  ``[TG] Ты Диджей …`` с thinking — 76 с до пустого ответа + 39 с ретрая,
+  первый тул через 115 с; те же заказы без thinking — 3-15 с до первого
+  тула. Раньше (#3220) заказ музыки думал; это откатано.
 
 Ретраи — без thinking. Синтетический ретрай гуарда (Bug D/E, TurnGuards, …)
 и ретрай Bug B DJ-перехода (``_dispatch_dj_turn(from_tick=False)``) идут,
@@ -24,18 +27,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
-from .dialogue_guards import is_music_stop_command, user_wants_music
-
-__all__ = ["is_music_request", "turn_wants_reasoning"]
-
-
-def is_music_request(text: str) -> bool:
-    """Реплика заказывает музыку (сочинить, подобрать, развить), а не стоп."""
-    if not text:
-        return False
-    return user_wants_music(text) and not is_music_stop_command(text)
+__all__ = ["turn_wants_reasoning"]
 
 
 def turn_wants_reasoning(
@@ -43,8 +35,6 @@ def turn_wants_reasoning(
     is_dj_auto: bool,
     dj_transition: bool,
     is_synthetic: bool,
-    user_input: str,
-    raw_user_command: Optional[str] = None,
 ) -> bool:
     """Думать ли этому ходу.
 
@@ -52,13 +42,7 @@ def turn_wants_reasoning(
         is_dj_auto: ход DJ-автоперехода (или его ретрай).
         dj_transition: ход запущен тиком DJ — свежий переход, не ретрай Bug B.
         is_synthetic: синтетический ретрай гуарда.
-        user_input: текст хода (для DJ — промпт перехода).
-        raw_user_command: реплика юзера как пришла из STT, если есть —
-            по ней, а не по обёрнутому ``user_input``, узнаём заказ музыки.
     """
     if is_synthetic:
         return False
-    if is_dj_auto:
-        return dj_transition
-    text = raw_user_command if raw_user_command is not None else user_input
-    return is_music_request(text)
+    return is_dj_auto and dj_transition

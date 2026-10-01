@@ -32,6 +32,7 @@ from typing import Iterable
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings
 
 __all__ = [
+    "CORRECTION_PREFIX",
     "REASONING_COMPLETE_TIMEOUT_S",
     "REASONING_MAX_TOKENS_HEADROOM",
     "TURN_REASONING",
@@ -69,15 +70,28 @@ REASONING_MAX_TOKENS_HEADROOM: int = 4096
 REASONING_COMPLETE_TIMEOUT_S: float = 60.0
 
 
+#: Префикс коррекции агент-цикла (``tool_loop.retry``: пустой ответ, вызов
+#: тула текстом, срезанные аргументы). Это ``user``-сообщение, но реплики
+#: оно не читает — вызов с ним это ретрай.
+CORRECTION_PREFIX = "[SYSTEM CORRECTION]"
+
+
 def is_reasoning_call(messages: Iterable[LLMMessage]) -> bool:
-    """Думать ли этому вызову: ход с thinking и вызов читает реплику."""
+    """Думать ли этому вызову: ход с thinking и вызов читает реплику.
+
+    Ретрай-коррекция (issue #3265) не думает: живой ход 01.10 11:10 —
+    76 с thinking дали пустой ответ, ретрай с коррекцией думал снова
+    (+39 с, первый тул на 115-й секунде).
+    """
     if not TURN_REASONING.get():
         return False
-    last_role = None
+    last = None
     for message in messages:
         if message.role != "system":
-            last_role = message.role
-    return last_role == "user"
+            last = message
+    if last is None or last.role != "user":
+        return False
+    return not str(last.content or "").lstrip().startswith(CORRECTION_PREFIX)
 
 
 def reasoning_settings(settings: LLMSettings) -> LLMSettings:

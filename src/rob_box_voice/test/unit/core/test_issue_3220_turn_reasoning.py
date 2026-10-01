@@ -1,7 +1,7 @@
 """Issue #3220 — какой ход думает, рассуждение не звучит, переход с запасом.
 
-* политика ``turn_wants_reasoning``: DJ-переход по тику и заказ музыки —
-  думают; обычный голосовой ход, стоп, ретраи (Bug B, синтетические) — нет;
+* политика ``turn_wants_reasoning``: думает только DJ-переход по тику;
+  любой ход юзера (в т.ч. заказ музыки, #3265) и ретраи — нет;
 * ``strip_thinking_blocks`` (последняя линия перед TTS) снимает рассуждение
   во всех формах, и planning-narration гуард #1882 не глушит из-за него
   нормальный ответ;
@@ -40,27 +40,17 @@ DJ_PROMPT = "[DJ_AUTO — ПЕРЕХОД #3] Трек 3: кислотный ба
 @pytest.mark.parametrize(
     ("kwargs", "expected", "why"),
     [
-        (dict(is_dj_auto=True, dj_transition=True, is_synthetic=False, user_input=DJ_PROMPT),
+        (dict(is_dj_auto=True, dj_transition=True, is_synthetic=False),
          True, "DJ-переход по тику — время подумать есть"),
-        (dict(is_dj_auto=True, dj_transition=False, is_synthetic=False, user_input=DJ_PROMPT),
+        (dict(is_dj_auto=True, dj_transition=False, is_synthetic=False),
          False, "ретрай Bug B — бюджет перехода уже тратится"),
-        (dict(is_dj_auto=True, dj_transition=True, is_synthetic=True, user_input=DJ_PROMPT),
+        (dict(is_dj_auto=True, dj_transition=True, is_synthetic=True),
          False, "синтетический ретрай гуарда внутри DJ-хода"),
-        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=False,
-              user_input="[Speaker:Саша] сыграй что-нибудь про осень",
-              raw_user_command="сыграй что-нибудь про осень"),
-         True, "заказ музыки — сочинение/подбор"),
-        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=False,
-              user_input="давай грига", raw_user_command=None),
-         True, "заказ по имени композитора (#2834)"),
-        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=False,
-              user_input="выключи музыку", raw_user_command="выключи музыку"),
-         False, "стоп — не сочинение"),
-        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=False,
-              user_input="как тебя зовут", raw_user_command="как тебя зовут"),
-         False, "обычный голосовой ход — латентность"),
-        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=True,
-              user_input="[CRITICAL] retry", raw_user_command="сыграй про осень"),
+        # issue #3265: человек ждёт в тишине — заказ музыки / старт сета
+        # по реплике больше не думает (живой замер: 115 с до первого тула)
+        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=False),
+         False, "ход юзера (заказ музыки, старт DJ-сета, обычная реплика)"),
+        (dict(is_dj_auto=False, dj_transition=False, is_synthetic=True),
          False, "синтетический ретрай хода юзера"),
     ],
 )

@@ -5,7 +5,7 @@
 ``object.__new__``, как в ``test_issue_1195_tg_source.py``) и настоящий
 диспатч DJ-хода; ``process_input`` записывает флаг в момент вызова LLM.
 
-* обычный голосовой ход → ``False``; заказ музыки → ``True``;
+* ход юзера (обычный, заказ музыки, #3265) → ``False``;
 * DJ-переход по тику → ``True``; ретрай Bug B (``from_tick=False``) → ``False``;
 * синтетический ретрай → ``False``; после хода флаг сброшен.
 """
@@ -69,7 +69,8 @@ def _turn_node():
     ("text", "kwargs", "expected"),
     [
         ("как тебя зовут", {"raw_user_command": "как тебя зовут"}, False),
-        ("сыграй что-нибудь про осень", {"raw_user_command": "сыграй что-нибудь про осень"}, True),
+        # issue #3265: заказ музыки человеком не думает — он ждёт в тишине
+        ("сыграй что-нибудь про осень", {"raw_user_command": "сыграй что-нибудь про осень"}, False),
         ("[DJ_AUTO — ПЕРЕХОД #2] смени трек", {"is_dj_auto": True, "dj_transition": True}, True),
         ("[CRITICAL] DJ retry — call compose_music", {"is_dj_auto": True}, False),
         ("[CRITICAL] retry", {"is_synthetic": True, "raw_user_command": "сыграй про осень"}, False),

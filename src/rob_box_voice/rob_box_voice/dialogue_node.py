@@ -4869,8 +4869,6 @@ tentative_plan(question, kind, name)
             is_dj_auto=is_dj_auto,
             dj_transition=dj_transition,
             is_synthetic=is_synthetic,
-            user_input=user_input,
-            raw_user_command=raw_user_command,
         ))
         with self._task_lock:
             self._run_task = asyncio.current_task()
