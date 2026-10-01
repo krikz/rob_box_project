@@ -136,6 +136,55 @@ class TestPersistence(unittest.TestCase):
         self.assertIn("[журнал оператора]", text)
 
 
+class TestMaxAge(unittest.TestCase):
+    """#3297: записи старше порога не попадают в render()."""
+
+    def _journal(self, max_age_s: float = 1800.0):
+        clock = _FakeClock()
+        return OperatorJournal(max_age_s=max_age_s, clock=clock), clock
+
+    def test_old_entry_not_rendered(self) -> None:
+        j, clock = self._journal()
+        j.record("ответил оператору", outcome="avatar_supervisor не отвечает")
+        clock.advance(3 * 3600)
+        self.assertEqual(j.render(), "")
+
+    def test_fresh_entry_rendered(self) -> None:
+        j, clock = self._journal()
+        j.record("выполнил: show_metrics", outcome="ok")
+        clock.advance(600)
+        self.assertIn("show_metrics", j.render())
+
+    def test_boundary_inclusive_then_dropped(self) -> None:
+        j, clock = self._journal(max_age_s=1800)
+        j.record("a")
+        clock.advance(1800)
+        self.assertIn("a", j.render())
+        clock.advance(1)
+        self.assertEqual(j.render(), "")
+
+    def test_mixed_keeps_only_fresh(self) -> None:
+        j, clock = self._journal()
+        j.record("старое")
+        clock.advance(7200)
+        j.record("свежее")
+        text = j.render()
+        self.assertIn("свежее", text)
+        self.assertNotIn("старое", text)
+
+    def test_old_entry_kept_in_memory(self) -> None:
+        j, clock = self._journal()
+        j.record("старое")
+        clock.advance(7200)
+        self.assertEqual(len(j), 1)
+
+    def test_nonpositive_disables_filter(self) -> None:
+        j, clock = self._journal(max_age_s=0)
+        j.record("старое")
+        clock.advance(7200)
+        self.assertIn("старое", j.render())
+
+
 class TestSerialization(unittest.TestCase):
     def test_entry_dict_roundtrip(self) -> None:
         e = JournalEntry(

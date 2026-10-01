@@ -577,6 +577,8 @@ class AvatarSupervisor(Node):
         self.declare_parameter("sqlite_db_path", "/data/harness_voice.db")
         self.declare_parameter("operator_db_path", "/data/harness_voice.db")
         self.declare_parameter("journal_path", "/data/operator_journal.jsonl")
+        # Записи журнала старше N секунд не уходят в инжект ТАРС (#3297).
+        self.declare_parameter("journal_max_age_s", 1800)
         self._agent_enabled: bool = bool(
             self.get_parameter(self.AGENT_ENABLED_PARAM).value
         )
@@ -2188,7 +2190,8 @@ class AvatarSupervisor(Node):
         from rob_box_supervisor.operator_journal import OperatorJournal  # noqa: PLC0415
 
         return OperatorJournal(
-            path=self._param_str("journal_path", "/data/operator_journal.jsonl")
+            path=self._param_str("journal_path", "/data/operator_journal.jsonl"),
+            max_age_s=self._param_int("journal_max_age_s", 1800),
         )
 
     def _render_journal_context(self) -> str:
