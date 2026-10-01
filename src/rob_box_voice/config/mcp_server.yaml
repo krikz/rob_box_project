@@ -2,16 +2,7 @@
 #
 # Две копии: docker/vision/config/voice_assistant/ (живой, docker) и src/rob_box_voice/config/ —
 # менять синхронно (сверяет test_music_engine_flag.py). Ключи = declare_parameter()
-# в rob_box_mcp_tools/mcp_server.py.
-
-# ADR-0149 §9 (эпик #3312) — музыкальный движок, ОДНО значение на две ноды: файл подаётся и
-# mcp_server, и dialogue_node (launch), секция ``/**`` — для любой ноды, которая его объявила.
-# "v1" — дефолт до приёмки, всё как было; "v2" — владелец плеера v2 (engine/player_owner.py)
-# единственный писатель /voice/music/state и /voice/music/event, тул dj_set (SetSession),
-# а DJModeController.tick в dialogue_node не заводится (PR-5).
-/**:
-  ros__parameters:
-    music_engine: "v1"
+# в rob_box_mcp_tools/mcp_server.py. Флаг music_engine — в music_engine.yaml (общий с dialogue_node).
 
 mcp_server:
   ros__parameters:

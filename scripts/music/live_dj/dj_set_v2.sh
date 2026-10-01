@@ -2,8 +2,8 @@
 # Приёмка PR-5 ADR-0149 (эпик #3312): DJ-сет движка v2 на роботе — A1 (тишина ≤ 5 с), A3 (DJ_AUTO = 0),
 # A5 (один темп), переходы по nearly_finished, artifact_stale только при смене трека.
 #
-# Где: Vision Pi, ПОСЛЕ пересборки образа с PR-5 и с music_engine: "v2" (секция /** в
-# docker/vision/config/voice_assistant/mcp_server.yaml → рестарт voice-assistant).
+# Где: Vision Pi, ПОСЛЕ пересборки образа с PR-5 и с music_engine: "v2" (правка
+# docker/vision/config/voice_assistant/music_engine.yaml → рестарт voice-assistant).
 # Как: flock -w 900 /tmp/music_test.lock bash dj_set_v2.sh <каталог> [секунд=1200] [тема=космос]
 # Нужны рядом: accept.py, compare.py, audit_wav.py (эта папка) и ../live_check_mcp_call.py.
 # TG_CHAT_ID=<chat> — запись уйдёт Шифу голосовым через tgogg.sh.

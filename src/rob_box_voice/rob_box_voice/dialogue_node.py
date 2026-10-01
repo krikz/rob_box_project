@@ -1545,8 +1545,8 @@ class DialogueNode(Node):
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
         self.declare_parameter("metrics_port", 9100)
-        # ADR-0149 §9 (PR-5): тот же флаг, что у mcp_server; значение — из mcp_server.yaml
-        # (секция ``/**``, файл подаётся обеим нодам). v2 → тик DJ старого пути не заводится.
+        # ADR-0149 §9 (PR-5): тот же флаг, что у mcp_server; значение — из music_engine.yaml
+        # (единственная секция ``/**``, файл подаётся обеим нодам). v2 → тик DJ старого пути не заводится.
         self.declare_parameter("music_engine", "v1")
         # ADR-0066 §6.3 — `voice_input_mode` УДАЛЁН. Единственная связь
         # оператора с личностью — топик /dialogue/control (sub выше, в
