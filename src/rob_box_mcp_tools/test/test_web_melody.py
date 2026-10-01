@@ -3,9 +3,12 @@
 import gzip
 import json
 from datetime import datetime, timedelta, timezone
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from rob_box_mcp_tools.core import club_fragments
 from rob_box_mcp_tools.core.club_fragments import _WEB_TRIED, pick_club_hook
 from rob_box_mcp_tools.core.club_progressions import SUPPORTED_SCALES
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
@@ -18,6 +21,7 @@ from ._ros_stubs import RosStubs
 _ros = RosStubs()
 with _ros:
     from rob_box_mcp_tools.tools.music import ComposeMusicTool
+    from rob_box_mcp_tools.tools.web_search import SearchWebTool
 _ros_stubs = _ros.fixture()
 
 BPM = 124
@@ -133,6 +137,68 @@ def test_pick_club_hook_falls_back_to_pool_when_web_empty(tmp_path):
     warns = []
     hook, info = pick_club_hook(lib, BPM, 0, [], "nothing found", warns.append, web_search=lambda q: [])
     assert hook is not None and info["pick"] == "pool" and any("нет валидного RTTTL" in w for w in warns)
+
+
+def test_slow_web_search_does_not_hold_compose_past_budget(tmp_path, monkeypatch):
+    """Issue #3242: DDG висит дольше бюджета — трек сразу из пула, мелодия темы доезжает в фоне."""
+    _WEB_TRIED.clear()
+    monkeypatch.setattr(club_fragments, "WEB_SEARCH_BUDGET_S", 0.2)
+    lib = _library(tmp_path)
+    release = threading.Event()
+    calls, warns = [], []
+
+    def slow_search(q):
+        calls.append(q)
+        release.wait(10)
+        return [{"title": "slow theme ringtone", "body": f"Space:{GOOD}", "url": "u"}]
+
+    t0 = time.monotonic()
+    hook, info = pick_club_hook(lib, BPM, 0, [], "slow theme", warns.append, web_search=slow_search)
+    elapsed = time.monotonic() - t0
+    assert hook is not None and info["pick"] == "pool"
+    assert elapsed < 2.0, f"compose ждал веб {elapsed:.2f} с"
+    assert any("[#3242]" in w and "не уложился" in w for w in warns)
+    release.set()
+    deadline = time.monotonic() + 5
+    while not cached_web_melodies(lib, "slow theme") and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert cached_web_melodies(lib, "slow theme"), "фоновый поиск не закэшировал мелодию"
+    _hook, info = pick_club_hook(lib, BPM, 1, [], "slow theme", warns.append, web_search=slow_search)
+    assert info["pick"] == "theme" and calls == ["slow theme rtttl"]  # повторного поиска нет
+
+
+def test_fast_web_search_still_used_by_same_track(tmp_path):
+    """Поиск уложился в бюджет — текущий трек уже играет мелодию темы (поведение #3228 сохранено)."""
+    _WEB_TRIED.clear()
+    lib = _library(tmp_path)
+    warns = []
+    rows = [{"title": "fast theme ringtone", "body": f"F:{GOOD}", "url": "u"}]
+    _hook, info = pick_club_hook(lib, BPM, 0, [], "fast theme", warns.append, web_search=lambda q: rows)
+    assert info["pick"] == "theme" and not any("[#3242]" in w for w in warns)
+
+
+class _NoResultsDDGS:
+    def __init__(self, timeout):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def text(self, *_a, **_kw):
+        raise Exception("No results found.")  # так ddgs сообщает о пустой выдаче
+
+
+def test_search_web_no_results_is_empty_answer_not_error():
+    """Issue #3242: «No results found» от ddgs — пустой ответ (success), не [ERROR] «DDG недоступен»."""
+    node = Mock()
+    tool = SearchWebTool(node)
+    tool._ddgs_available, tool._ddgs_cls = True, _NoResultsDDGS
+    result = tool.execute(query="детский праздник rtttl")
+    assert result.success and result.data["results"] == []
+    node.get_logger.return_value.error.assert_not_called()
 
 
 def test_as_search_callable_wraps_tool():
