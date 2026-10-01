@@ -111,8 +111,40 @@ request_id). Иначе в очереди останется «накопило�
 * `_on_avatar_stt_result` (sub `/avatar/stt/result` от stt_node) →
   WS `tars_state accepted` с `text` и `request_id={client_id}:{ts_ms}`.
 * `_on_avatar_tts_audio_meta` (sub `/avatar/tts/audio_meta` от tts_node)
-  → кеш `request_id → sample_rate` + WS `tars_state accepted` с
-  `sample_rate`.
+  → кеш `request_id → sample_rate`. ~~+ WS `tars_state accepted`~~ —
+  снято в #3253: audio_meta идёт перед КАЖДЫМ чанком, accepted перебивал
+  speaking и щёлкал акцепт-тоном посреди фразы.
+
+### 3.6.1 Сервер шлёт все стадии (issue #3253, Ш2)
+
+Пункты «thinking не публикуем» и «speaking генерится на клиенте» выше —
+история. Теперь стадии приходят от сервера, клиентский вывод по TTL
+остаётся страховкой.
+
+| Стадия | Источник (факт) | Где |
+|---|---|---|
+| `accepted` | `/avatar/stt/result` — wake принят | `QuestNode._on_avatar_stt_result` |
+| `thinking` | supervisor начал ход LLM → `/avatar/tars/stage` | `AvatarSupervisor._on_avatar_command` → `TarsStagePublisher.thinking` → `TarsStageRelay.on_supervisor_stage` |
+| `speaking` | первый `/avatar/tts/audio`, доставленный в шлем (`deliver_audio` = True) | `QuestNode._on_avatar_tts_audio` → `TarsStageRelay.on_chunk` |
+| `idle` + `operator_tts_done` | `/voice/tts/finished` с `speech_id` реплики **и** оценка конца звука в шлеме (байты / 2 / sample_rate) + 0,5 с | `TarsStageRelay.on_tts_finished` + `tick` (таймер 10 Гц) |
+| `idle` + `operator_tts_error` | `/voice/tts/finished success=false` | то же |
+| `idle` (reason=`barge_in`) + `operator_tts_done` | PTT оператора (`QuestBridge.publish_voice_barge_in`) | `TarsStageRelay.on_barge_in` |
+| `idle` (reason=`agent_disabled`/`agent_unavailable`/`malformed_input`/`no_speech`) | ход без реплики в шлем | supervisor → `/avatar/tars/stage` |
+
+* Связь реплики с `/voice/tts/finished`: supervisor кладёт в
+  `/avatar/tts/request` `speech_id = "tars-<request_id>"`.
+* Почему `done` отложен до конца звука: клиент на `operator_tts_done`
+  зовёт `operatorAudioSink.stop()` и обрывает очередь, а MiniMax-стрим
+  синтезирует быстрее реального времени — `finished` приходит, когда в
+  шлеме ещё звучат секунды речи.
+* Страховки, чтобы экран не залипал: `finished` потерян → `idle`
+  (reason=`silence_timeout`) через 5 с тишины после конца звука; синтез
+  не дал ни чанка → `idle` (reason=`synth_timeout`) через 30 с.
+* В WS-событии появилось необязательное поле `reason` (клиент его
+  игнорирует). Логика — `rob_box_quest/core/tars_stages.py`
+  (`TarsStageTracker`, без часов), реле — `rob_box_quest/tars_stage_relay.py`.
+* Не проверено на шлеме/роботе: реальная задержка между `idle` и
+  фактическим концом звука в Quest.
 
 ## 4. sample_rate (side-channel audio_meta)
 
