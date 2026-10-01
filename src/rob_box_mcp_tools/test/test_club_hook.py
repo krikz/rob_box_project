@@ -53,15 +53,15 @@ THEMES = {"contra": CONTRA, "tetris": TETRIS, "zelda": ZELDA, "mario": MARIO}
 
 #: sha256 ``render_club(bpm=124, root, seed, **kw)`` на origin/develop ab1b48ff0.
 DEVELOP_SHA256 = {
-    (0, "A#", ()): "b6a32c04ab1c8c66f6ea75046858581bb60be94c62e8fb600db07a87f56a6882",
-    (0, "A#", ("repeat",)): "92c6422c0c8f4edf2c755a392959af1197c398fab13d528689e9f71c27c0e0b0",
-    (0, "A#", ("align_clock", "dj_entry")): "9a2f31d4d308dc211ceed94768e3f4b2aef51245ca1a1ef5d1fc4c86f80fc891",
-    (1, "C", ()): "53a3b83d46ef8cf4caea9b5ddde2c6613e473bbe3b5f90ba853344b0ff18852b",
-    (7, "F", ()): "61476fd467be81d296d5fc455c1aa5d719b00a02d847586ad7b246b1e7e33776",
-    (42, "D#", ("repeat",)): "9e0ccb070c7e70ac55dc7f77ddf4c30268f318a5d4b297dbdaa7fbabe9695d33",
-    (3113, "G", ("align_clock", "dj_entry")): "188f22edf9324b87a481239e44e4a989d97138d2fbebfb94a6e7861c7b9f37bc",
-    (7056510, "F", ()): "12318e5e3a63cd796318f7a74b72fbe9b4951b435f08e5d1602c01e60fab275b",
-    (7036511, "A#", ("align_clock", "dj_entry")): "0a714a6e16751e41300ab5c27d3bcffc3b2272e1a7498fcf22178ff35cf9242b",
+    (0, "A#", ()): "3dd03e9eb811d16312ffe60d5f2f83d7418c8535979d273f1c96a1877732011f",
+    (0, "A#", ("repeat",)): "d8a5af10eb8174718048bbefcfbb2508238836fa94542ac5dc65bff5bb2b5a70",
+    (0, "A#", ("align_clock", "dj_entry")): "28ac0b12a04ba8f29dd352dc896f9517f3fd9225ad72a2d8d0360fb3d6a71c44",
+    (1, "C", ()): "b4e10169f533ec41ddfd3bb5cfa414bd112c5379122d8ac696aac2bdfd065e9d",
+    (7, "F", ()): "36b61952513793c1e802407b8d2f15f71f8a5c83e6a283f05c1375cff71bf744",
+    (42, "D#", ("repeat",)): "fbc946ec471baa9fcfe8f691ebaa2fa1747a5b91ae3aea65b6770b612676022a",
+    (3113, "G", ("align_clock", "dj_entry")): "3d242398dea1cf19f1748fb236e9fcf4b9f0afdaa268f2f0e1aaffcc6ced11e1",
+    (7056510, "F", ()): "870e4c30186ef76e6124e11ca3f4c7c6c6384c90fcb10bdb8faef5ab1534cbb6",
+    (7036511, "A#", ("align_clock", "dj_entry")): "9aef354e5e94db39ae469e150c6a199ad4ee09ca662656eacd81eb49ab259273",
 }
 
 

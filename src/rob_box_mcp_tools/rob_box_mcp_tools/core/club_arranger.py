@@ -81,6 +81,7 @@ from .club_progressions import (
     pick_progression_name,
     progression_mode,
 )
+from .club_stereo import PAN_HATS, pad_pan, pan_list
 from .club_timbre import TIMBRE_EXTRAS
 from .music_diversity import weighted_pick
 
@@ -162,6 +163,8 @@ LANE_SLOTS: Dict[str, Tuple[str, str]] = {
 
 #: Синты, которые использует club, с палитрой явного выбора (все есть в ``CRITICAL_SYNTHS``).
 CLUB_SYNTHS = frozenset(s for synths in ROLE_PALETTE.values() for s in synths)
+
+# Стерео-раскладка партий — :mod:`core.club_stereo` (бочка/бас/лид без ``pan``).
 
 #: Потолок уровня одного слоя (тот же, что ``max_amp`` санитайзера).
 MAX_LAYER_AMP = 0.85
@@ -674,7 +677,9 @@ def _d3_line(
     основного уровня бочки ПОСЛЕ калибровки (:func:`core.club_samples.sample_peak`).
     """
     if sample is None:
-        return f'd3 >> play("{CLAP_PATTERNS[variant["clap"]]}", dur=1/4, lpf=3000, room=0.25, amp={gate["clap"]})'
+        clap = CLAP_PATTERNS[variant["clap"]]
+        pan = pan_list(clap, PAN_HATS, -1)
+        return f'd3 >> play("{clap}", dur=1/4, lpf=3000, room=0.25, pan={pan}, amp={gate["clap"]})'
     kick_main = max(_calibrated(tuple(sorted(kit.items())))["kick"])
     level = sample_peak(sample, kick_main, PUMP_HIGH, MAX_LAYER_AMP)
     perc = ArrangementMatrix.from_specs({SAMPLE_LANE: SECTION_TEMPLATES[kit["template"]][SAMPLE_LANE]})
@@ -763,6 +768,7 @@ def render_club_kit(
         prog_name, chords, label = header
         hook_lines = [f"# {label}"]
     kick_pattern = KICK_PATTERNS[kick]
+    hats = HATS_PATTERNS[kit["hats"]]
     pump = _fmt_list(pump_weights(kick_pattern))
     (lead_lpf, bass_lpf), levels = apply_energy(energy, LPF_PROFILES[variant["lpf"]], levels)
     gate = calibrated_gates(matrix, kit, variant_levels(variant, levels))
@@ -784,7 +790,7 @@ def render_club_kit(
         f"Clock.bpm = {_fmt(bpm)}",
         "",
         f'd1 >> play("{kick_pattern}", dur=1/4, amp={gate["kick"]})',
-        f'd2 >> play("{HATS_PATTERNS[kit["hats"]]}", dur=1/4, hpf=2500, amp={gate["hats"]})',
+        f'd2 >> play("{hats}", dur=1/4, hpf=2500, pan={pan_list(hats, PAN_HATS)}, amp={gate["hats"]})',
         _d3_line(kit, gate, variant, pump, sample),
         "",
         *_player("p1", kit["lead"], lead_first, [
@@ -803,6 +809,7 @@ def render_club_kit(
         "",
         *_player("p3", kit["pad"], f"[{pads}], dur={CHORD_BARS * BEATS_PER_BAR},", [
             "scale=Scale.chromatic, root=0, oct=0, room=0.7, mix=0.4,",
+            f"pan={pad_pan()},",
             f"amp={gate['pad']})",
         ]),
         *epilogue,
