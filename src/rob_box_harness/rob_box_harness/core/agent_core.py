@@ -303,6 +303,15 @@ _EXECUTED_ACTIONS_HEADER = (
 )
 
 
+def _request_window(turns: Iterable[Turn], include_window: bool) -> list[Turn]:
+    """Issue #3247 — ходы окна, которые идут в запрос (DJ_AUTO — никакие).
+
+    Модульная функция, а не ветка в ``AgentCore._resolve_history``: класс
+    не растёт (ADR-0145).
+    """
+    return list(turns) if include_window else []
+
+
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
     """Объединить имена тулов без повторов, сохранив порядок."""
     return list(dict.fromkeys(name for group in groups for name in group))
@@ -881,6 +890,13 @@ class AgentCore:
     ) -> DialogResult:
         """Process a single user turn.
 
+        ``is_dj_auto`` (issue #3247) — ещё и без окна ходов: DJ-промпт
+        самодостаточен (тема, план, сыгранное, темп), а окно — разговор с
+        людьми, в том числе про ПРОШЛЫЕ сеты. Живой прогон 30.09: финал
+        сета «море и чайки» прочитал в окне «включи диджей сет на тему
+        пираты» и «Пиратский сет … Maniac 126 BPM» из сета 40 минут назад и
+        перезапустил сет с темой «пираты».
+
         ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
         ``<system_context>...</system_context>`` snapshot собирается
         dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
@@ -1034,6 +1050,7 @@ class AgentCore:
                     history,
                     keep_pending_user=is_synthetic,
                     context_system=speaker_context,
+                    include_window=not is_dj_auto,
                 )
                 # Two-system-prompt pattern (live 10.08) — dynamic
                 # <system_context> snapshot: текущий спикер (resemblyzer),
@@ -2353,6 +2370,7 @@ class AgentCore:
         *,
         keep_pending_user: bool = False,
         context_system: str | None = None,
+        include_window: bool = True,
     ) -> list[LLMMessage]:
         """Build the LLM message list — from an explicit ``history`` or
         from the in-memory sliding window of turns.
@@ -2370,6 +2388,11 @@ class AgentCore:
         ``context_system`` (issue #1077 speaker context) и блок «выполнено в
         прошлых ходах» (issue #3145) уходят ОДНИМ system-сообщением сразу
         после системного промпта — см. :func:`_insert_context_system`.
+
+        ``include_window=False`` (issue #3247, DJ_AUTO) — окно ходов и блок
+        «выполнено в прошлых ходах» не идут в запрос: только системный
+        промпт и контекст спикера. Окно при этом не трогается — следующий
+        ход человека видит его целиком.
         """
         if history is not None:
             return _insert_context_system(list(history), [context_system])
@@ -2382,7 +2405,7 @@ class AgentCore:
         # в messages не было [0] system.
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
-        window = list(self._turn_window)
+        window = _request_window(self._turn_window, include_window)
         # Хвостовой user-ход сохраняем только когда он ПОМЕЧЕН отзывом
         # ответа и мы действительно внутри синтетического ретрая: обычный
         # ход про сироту после barge-in рассуждает по-прежнему.

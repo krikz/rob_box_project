@@ -38,7 +38,7 @@ from rob_box_llm.provider import ToolCall, ToolResult
 from rob_box_voice.core.track_start_guard import (
     SPEAK_TOOL,
     TrackStartGuard,
-    dj_auto_forbidden_content,
+    dj_auto_refusal_content,
     refusal_content,
     speak_refusal_content,
     trim_dj_speech,
@@ -249,18 +249,22 @@ class SchedulerToolExecutor:
                 return guarded
             call = guarded
 
-        # Issue #3246 — тулы, рвущие звук (stop_music), не исполняются в
-        # DJ_AUTO-ходе: жёсткий гард поверх промпта. Общий список
-        # ``DJ_AUTO_FORBIDDEN_TOOLS`` (до channel_for_tool: stop_music
-        # иначе уйдёт в очередь планировщика).
-        if self._track_guard.should_refuse_forbidden(call.name):
+        # Issue #3246 / #3247 — что DJ_AUTO-ходу нельзя, одной точкой
+        # (``dj_auto_refusal_content``): тулы, рвущие звук (stop_music), и
+        # set_dj_mode(enabled=true) после финального промпта сета (перезапуск
+        # сета с чужой темой). Жёсткий гард поверх промпта; до
+        # channel_for_tool: stop_music иначе уйдёт в очередь планировщика.
+        refusal = dj_auto_refusal_content(
+            self._track_guard, call.name, call.arguments
+        )
+        if refusal is not None:
             _LOG.warning(
-                "issue #3246: refusing %s — forbidden in DJ_AUTO turn",
+                "issue #3246/#3247: refusing %s — forbidden in this DJ_AUTO turn",
                 call.name,
             )
             return ToolResult(
                 tool_call_id=call.id,
-                content=dj_auto_forbidden_content(call.name),
+                content=refusal,
                 is_error=False,
             )
 

@@ -129,6 +129,11 @@ class DJState:
     # номер трека, который объявлен финальным по лимиту (#2856).
     tracks_started: int = 0
     final_track_no: int = 0
+    # Issue #3247 — модели уже отдан промпт «ФИНАЛЬНЫЙ ТРЕК» этого сета.
+    # С этого момента DJ_AUTO-ход не может снова включить DJ
+    # (:func:`dj_final_turn`) — сет только завершается.
+    # Живёт до конца сета (``_reset_state`` / генуинный старт).
+    final_prompted: bool = False
     # Issue #2875 (дополнение) — отложенное прощание: стенное время, когда
     # его сказать (``None`` — не ждём), и персона, от чьего имени.
     farewell_at: Optional[float] = None
@@ -198,6 +203,16 @@ _NO_STOP_RULE = (
     "НИКОГДА не вызывай stop_music в этом ходе — музыка не должна "
     "замолкать между треками; сет останавливает только юзер или финал "
     "по плану (stop_music всё равно будет отклонён)."
+)
+
+#: Issue #3247 — финал сета только завершает сет. Живой прогон 30.09:
+#: на «ФИНАЛЬНЫЙ ТРЕК» модель вызвала ``set_dj_mode(enabled=true,
+#: theme='пираты')`` (тема сета 40 минут назад) — сет шёл ещё 3 трека.
+#: Правило — подсказка; держит гард исполнителя тулов (1 из 6 без него).
+_FINAL_NO_RESTART_RULE = (
+    "Тема и персона — только те, что выше в этом сообщении; темы прошлых "
+    "сетов не бери. НЕ вызывай set_dj_mode(enabled=true): продолжить или "
+    "перезапустить сет из финала нельзя, такой вызов будет отклонён. "
 )
 
 
@@ -467,6 +482,7 @@ class DJModeController:
             # прошлого сета, не успевшее прозвучать, новому не нужно.
             self.state.tracks_started = 0
             self.state.final_track_no = 0
+            self.state.final_prompted = False
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
             self.state.bpm_locked = False
@@ -521,6 +537,7 @@ class DJModeController:
         self.state.final_dispatched = False
         self.state.tracks_started = 0
         self.state.final_track_no = 0
+        self.state.final_prompted = False
         self.state.set_bpm = DJ_SET_DEFAULT_BPM
         self.state.bpm_locked = False
         self.state.set_scale = ""
@@ -1254,6 +1271,11 @@ class DJModeController:
             self.state.final_dispatched and n == self.state.transition_count
         )
         if (plan_tracks and track_no >= plan_tracks) or limit_final:
+            # Issue #3247 — с этого промпта сет только завершается:
+            # ``set_dj_mode(enabled=true)`` из DJ_AUTO-хода не исполняет гард
+            # исполнителя тулов (:func:`dj_final_turn` →
+            # ``TURN_DJ_SET_FINAL`` → ``track_start_guard.dj_restart_refused``).
+            self.state.final_prompted = True
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
@@ -1262,6 +1284,7 @@ class DJModeController:
                 f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
                 "сама доводит его до спокойного финала и затухания, не проси "
                 "зацикленный трек (трек плана с name= — тоже с repeat=false). "
+                f"{_FINAL_NO_RESTART_RULE}"
                 "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
                 "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст, "
                 "и НЕ вызывай speak_text в этом ходе: система сама скажет "
@@ -1286,4 +1309,17 @@ class DJModeController:
         )
 
 
-__all__ = ["DJModeController", "DJState", "DJHook", "plan_entry"]
+def dj_final_turn(dj: Optional["DJModeController"], is_dj_auto: bool) -> bool:
+    """Issue #3247 — DJ_AUTO-ход идёт после финального промпта сета.
+
+    Нода (``_run_turn``) ставит по нему ``TURN_DJ_SET_FINAL`` на время хода;
+    гард исполнителя тулов тогда не исполняет ``set_dj_mode(enabled=true)``.
+    Реплика человека (``is_dj_auto=False``) сет продлить может. Без
+    настоящего контроллера (стаб-нода в тестах) — ``False``. Модульная
+    функция, а не метод: классы не растут (ADR-0145).
+    """
+    state = getattr(dj, "state", None)
+    return bool(is_dj_auto) and getattr(state, "final_prompted", False) is True
+
+
+__all__ = ["DJModeController", "DJState", "DJHook", "dj_final_turn", "plan_entry"]
