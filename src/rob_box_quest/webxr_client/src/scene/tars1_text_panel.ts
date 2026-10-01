@@ -28,6 +28,7 @@ import { TARS_SEGMENTS, tarsFigurePose } from "../state/tars_figure";
 import {
   CONSOLE_STYLES,
   ConsoleBuffer,
+  plainReplyText,
   type ConsoleLineKind
 } from "../state/tars_console_lines";
 import {
@@ -64,7 +65,8 @@ export interface Tars1TextPanelHandle {
   append(text: string): void;
   /**
    * Целая строка консоли с видом (#3253 Ш4): `operator` (фраза оператора,
-   * `you> `, циан) или `event` (короткое событие). Появляется сразу, без
+   * `you> `, циан), `event` (короткое событие) или `reply` (полный текст
+   * ответа ТАРС, многострочный, #3296). Появляется сразу, без
    * typewriter; недопечатанный хвост реплики ТАРС дописывается мгновенно,
    * чтобы порядок строк не перепутался. kind="tars" == append(text).
    */
@@ -277,7 +279,7 @@ export function createTars1TextPanel(
       const pw = c.measureText(style.prefix).width;
       const wrapped = wrapLine(row.text, c, cons.w - pw);
       wrapped.forEach((t, k) =>
-        crows.push({ text: t, first: k === 0, kind: row.kind, prefixW: pw })
+        crows.push({ text: t, first: k === 0 && !row.cont, kind: row.kind, prefixW: pw })
       );
     }
     const capacity = Math.max(1, Math.floor((cons.y + cons.h - startY) / lineHeight));
@@ -370,6 +372,18 @@ export function createTars1TextPanel(
   }
 
   function appendLine(kind: ConsoleLineKind, text: string): void {
+    if (kind === "reply") {
+      // Ответ ТАРС многострочный: переводы строк сохраняем (#3296).
+      const lines = plainReplyText(text);
+      if (lines.length === 0) return;
+      if (pending.length > 0) {
+        buffer.appendTars(pending);
+        pending = "";
+      }
+      buffer.pushBlock("reply", lines.join("\n"));
+      render();
+      return;
+    }
     const clean = text.replace(/\s+/g, " ").trim();
     if (!clean) return;
     if (kind === "tars") {

@@ -205,10 +205,11 @@ export type JsonEvent =
     }
   // issue #3253 Ш4 — строка консоли ТАРС 1: фраза оператора (STT из шлема)
   // или короткое событие хода (имя тула, «ошибка хода»). Параметры тулов и
-  // текст ошибок на клиент не идут (core/tars_console.py).
+  // текст ошибок на клиент не идут (core/tars_console.py). kind="reply" —
+  // полный текст ответа ТАРС (#3296), многострочный.
   | {
       type: "tars_console";
-      kind: "operator" | "event";
+      kind: "operator" | "event" | "reply";
       text: string;
       request_id: string;
       ts_ms: number;
