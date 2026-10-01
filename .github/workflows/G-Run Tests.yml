@@ -283,6 +283,21 @@ jobs:
             || { echo "❌ rob_box_core FAILED"; exit 1; }
           echo "✅ rob_box_core passed"
 
+          # rob_box_music (ADR-0149 PR-1): чистый Python-пакет модели музыки, без ROS/renardo/сети.
+          # pytest only, по образцу rob_box_core.
+          MUSIC_DIR="${{ github.workspace }}/test_ws/src/rob_box_music"
+          echo "=== pytest: rob_box_music (timeout 240s) ==="
+          ( cd "$MUSIC_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 240 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -q \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_music/pytest.xml" \
+              test/ ) \
+            || { echo "❌ rob_box_music FAILED"; exit 1; }
+          echo "✅ rob_box_music passed"
+
           # rob_box_supervisor: тесты в test/unit/ (issue #2232: conftest.py
           # ставит mock-rclpy + std_srvs; без rclpy CI-окружения тесты
           # импортируют supervisor_node через stub).
