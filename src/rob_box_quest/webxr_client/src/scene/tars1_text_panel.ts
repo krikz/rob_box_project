@@ -24,6 +24,15 @@
 
 import * as THREE from "three";
 import { tarsActivityView, type TarsActivity } from "../state/tars_activity";
+import { TARS_SEGMENTS, tarsFigurePose } from "../state/tars_figure";
+import {
+  INFO_DASH,
+  buildInfoRows,
+  computeTars1Layout,
+  type InfoRow,
+  type Rect,
+  type Tars1Info
+} from "../state/tars1_layout";
 
 export interface Tars1TextPanelOptions {
   /** Ширина canvas в пикселях (default 1280 — 16:9 как у основного экрана). */
@@ -53,8 +62,14 @@ export interface Tars1TextPanelHandle {
   /** Состояние ТАРС для строки статуса на консоли (СЛУШАЕТ/ДУМАЕТ/ГОВОРИТ). */
   setActivity(activity: TarsActivity): void;
   /**
+   * Служебная информация для правой колонки рамки (связь, floor, PTT, …).
+   * Незаданные/пустые поля рисуются прочерком «—». Перерисовка — по общему
+   * бюджету tick(), не на каждый вызов.
+   */
+  setInfo(info: Tars1Info): void;
+  /**
    * Шаг анимации (печать, курсор, статус). Зовётся каждый кадр; canvas
-   * перерисовывается только при изменении: 2 Гц в покое, 8 Гц пока ТАРС
+   * перерисовывается только при изменении: 4 Гц в покое («дыхание»), ~11 Гц (≤ 12) пока ТАРС
    * не idle или печатает.
    */
   tick(nowMs: number): void;
@@ -126,8 +141,10 @@ export function createTars1TextPanel(
   const FG = "#39ff88";
   const FG_DIM = "#1f9c55";
   const CYAN = "#33e0ff";
-  const PROMPT = "tars@robbox:~$";
 
+  const layout = computeTars1Layout(canvasWidth, canvasHeight);
+  let info: Tars1Info = {};
+  let infoKey = "{}";
   let activity: TarsActivity = "idle";
   let lastNowMs = 0;
   let lastFrameKey = "";
@@ -142,65 +159,119 @@ export function createTars1TextPanel(
 
     const view = tarsActivityView(activity, nowMs);
     const small = Math.round(fontSize * 0.7);
-    const pad = 12;
+    const pad = layout.console.x;
 
-    // Верхняя полоса: цвет = состояние.
-    c.fillStyle = streaming ? FG : view.color;
-    c.globalAlpha = activity === "listening" ? 0.4 + 0.6 * view.pulse : 1;
-    c.fillRect(0, 0, canvasWidth, 4);
-    c.globalAlpha = 1;
-
-    // Шапка: промпт + бейдж состояния справа.
+    // ── Рамка `╭─ TARS ─╮` ────────────────────────────────────────────
+    const f = layout.frame;
+    const T = 2; // толщина линии, px
+    const R = 16; // радиус скругления
+    const titleFont = `bold ${Math.round(small * 1.15)}px monospace`;
+    c.font = titleFont;
     c.textBaseline = "top";
-    c.font = `bold ${small}px monospace`;
+    const title = " TARS ";
+    const titleW = c.measureText(title).width;
+    const titleX = f.x + R + 14;
+    c.fillStyle = FG_DIM;
+    c.globalAlpha = 0.75;
+    // верхняя линия — с разрывом под заголовок
+    c.fillRect(f.x + R, f.y, titleX - f.x - R, T);
+    c.fillRect(titleX + titleW, f.y, f.x + f.w - R - titleX - titleW, T);
+    c.fillRect(f.x + R, f.y + f.h - T, f.w - R * 2, T);
+    c.fillRect(f.x, f.y + R, T, f.h - R * 2);
+    c.fillRect(f.x + f.w - T, f.y + R, T, f.h - R * 2);
+    drawCorner(c, f.x, f.y, R, T, 1, 1);
+    drawCorner(c, f.x + f.w, f.y, R, T, -1, 1);
+    drawCorner(c, f.x, f.y + f.h, R, T, 1, -1);
+    drawCorner(c, f.x + f.w, f.y + f.h, R, T, -1, -1);
+    // вертикальная линия между колонками
+    c.fillRect(layout.dividerX, f.y + T, 1, f.h - T * 2);
+    // горизонтальная линия между «служебное» и «контекст»
+    c.fillRect(layout.right.x - 4, layout.rightDividerY, layout.right.w + 8, 1);
+    c.globalAlpha = 1;
     c.fillStyle = CYAN;
     c.shadowColor = CYAN;
     c.shadowBlur = 6;
-    c.fillText(`${PROMPT} tail -f /tars1`, pad, 10);
+    c.fillText(title, titleX, f.y - Math.round(small * 0.6));
     c.shadowBlur = 0;
 
-    const badge = `[ ${view.label}${view.glyph ? " " + view.glyph : ""} ]`;
-    c.font = `bold ${Math.round(small * 1.15)}px monospace`;
+    // ── Левая колонка: персонаж + подпись состояния ──────────────────
+    const L = layout.left;
+    const labelFont = Math.round(small * 1.3);
+    const labelH = labelFont + 10;
+    const figH = Math.round((L.h - labelH - 6) * 0.8);
+    const segW = Math.max(6, Math.round(Math.min(L.w / 9, figH / 4)));
+    const gap = Math.round(segW * 0.55);
+    const totalW = TARS_SEGMENTS * segW + (TARS_SEGMENTS - 1) * gap;
+    const figX = L.x + Math.round((L.w - totalW) / 2);
+    const figCy = L.y + Math.round((L.h - labelH - 6) / 2);
+    const pose = tarsFigurePose(activity, nowMs);
+    c.fillStyle = view.color;
+    c.shadowColor = view.color;
+    for (let i = 0; i < pose.length; i += 1) {
+      const s = pose[i];
+      const sh = Math.max(4, Math.round(figH * s.h));
+      const sx = Math.round(figX + i * (segW + gap) + s.dx * segW);
+      const sy = Math.round(figCy - sh / 2 + s.dy * figH);
+      c.globalAlpha = 0.2 + 0.8 * s.glow;
+      c.shadowBlur = 4 + Math.round(12 * s.glow);
+      c.fillRect(sx, sy, segW, sh);
+    }
+    c.shadowBlur = 0;
+    c.globalAlpha = 1;
+    // Подпись состояния цветом из tarsActivityView.
+    const badge = `${view.label}${view.glyph ? " " + view.glyph : ""}`;
+    c.font = `bold ${labelFont}px monospace`;
     const badgeW = c.measureText(badge).width;
-    const barsW = view.bars.length > 0 ? view.bars.length * 9 + 8 : 0;
-    const badgeX = canvasWidth - pad - badgeW;
     c.fillStyle = view.color;
     c.globalAlpha = view.pulse;
     c.shadowColor = view.color;
     c.shadowBlur = 8;
-    c.fillText(badge, badgeX, 8);
+    c.fillText(badge, L.x + Math.round((L.w - badgeW) / 2), L.y + L.h - labelFont - 2);
     c.shadowBlur = 0;
     c.globalAlpha = 1;
-    // Эквалайзер SPEAKING — столбики слева от бейджа.
-    const barH = Math.round(small * 1.1);
-    for (let i = 0; i < view.bars.length; i += 1) {
-      const h = Math.max(2, Math.round(barH * view.bars[i]));
-      c.fillRect(badgeX - barsW + i * 9, 8 + barH - h + 2, 6, h);
-    }
 
-    // Разделитель под шапкой.
-    const headH = 10 + Math.round(small * 1.5);
-    c.fillStyle = FG_DIM;
-    c.globalAlpha = 0.5;
-    c.fillRect(pad, headH, canvasWidth - pad * 2, 1);
-    c.globalAlpha = 1;
+    // ── Правая колонка: служебное / контекст ────────────────────────
+    const rows = buildInfoRows(info);
+    const rowFont = Math.round(small * 1.05);
+    const rowH = rowFont + 5;
+    const drawBlock = (r: Rect, head: string, items: InfoRow[]): void => {
+      c.font = `bold ${rowFont}px monospace`;
+      c.fillStyle = CYAN;
+      c.fillText(head, r.x, r.y);
+      c.font = `${rowFont}px monospace`;
+      const labelW = c.measureText("реплика ").width + 6;
+      for (let i = 0; i < items.length; i += 1) {
+        const y = r.y + (i + 1) * rowH + 2;
+        if (y + rowFont > r.y + r.h + 2) break;
+        c.fillStyle = FG_DIM;
+        c.fillText(items[i].label, r.x, y);
+        const dash = items[i].value === INFO_DASH;
+        c.fillStyle = dash ? FG_DIM : FG;
+        c.globalAlpha = dash ? 0.6 : 1;
+        c.fillText(items[i].value, r.x + labelW, y);
+        c.globalAlpha = 1;
+      }
+    };
+    drawBlock(layout.service, "СЛУЖЕБНОЕ", rows.service);
+    drawBlock(layout.context, "КОНТЕКСТ", rows.context);
 
-    // Тело консоли.
+    // ── Консоль: нижняя часть canvas, под рамкой ─────────────────────
+    const cons = layout.console;
     c.font = `${fontSize}px monospace`;
     const lineHeight = Math.round(fontSize * 1.25);
-    const startY = headH + 8;
+    const startY = cons.y + 4;
     const prefix = "> ";
     const prefixW = c.measureText(prefix).width;
-    const maxWidth = canvasWidth - pad * 2 - prefixW;
+    const maxWidth = cons.w - prefixW;
     // Каждая логическая строка → wrap; первая визуальная строка получает
     // «> », продолжения — отступ.
-    const rows: { text: string; first: boolean }[] = [];
+    const crows: { text: string; first: boolean }[] = [];
     for (const raw of lines) {
       const wrapped = wrapLine(raw, c, maxWidth);
-      wrapped.forEach((t, i) => rows.push({ text: t, first: i === 0 }));
+      wrapped.forEach((t, i) => crows.push({ text: t, first: i === 0 }));
     }
-    const capacity = Math.max(1, Math.floor((canvasHeight - startY - 8) / lineHeight));
-    const tail = rows.slice(-capacity);
+    const capacity = Math.max(1, Math.floor((cons.y + cons.h - startY) / lineHeight));
+    const tail = crows.slice(-capacity);
     c.shadowColor = FG;
     c.shadowBlur = 4;
     for (let i = 0; i < tail.length; i += 1) {
@@ -245,9 +316,9 @@ export function createTars1TextPanel(
       pending = pending.slice(n);
       dirty = true;
     }
-    // Кадр анимации: 8 Гц пока что-то живое, иначе 2 Гц (мигание курсора).
+    // Кадр анимации: ~11 Гц (≤ 12) пока что-то живое, иначе 4 Гц («дыхание» + курсор).
     const busy = activity !== "idle" || pending.length > 0 || streaming;
-    const key = busy ? `f${Math.floor(nowMs / 125)}` : `i${Math.floor(nowMs / 530)}`;
+    const key = busy ? `f${Math.floor(nowMs / 90)}` : `i${Math.floor(nowMs / 250)}`;
     if (dirty || key !== lastFrameKey) {
       lastFrameKey = key;
       render(nowMs);
@@ -259,6 +330,14 @@ export function createTars1TextPanel(
     activity = next;
     lastFrameKey = "";
     render();
+  }
+
+  function setInfo(next: Tars1Info): void {
+    // Без перерисовки: данные подхватит ближайший кадр tick().
+    const k = JSON.stringify(next);
+    if (k === infoKey) return;
+    infoKey = k;
+    info = { ...next };
   }
 
   function append(text: string): void {
@@ -333,6 +412,7 @@ export function createTars1TextPanel(
     clear,
     setStreaming,
     setActivity,
+    setInfo,
     tick,
     getStats,
     dispose
@@ -340,6 +420,29 @@ export function createTars1TextPanel(
 }
 
 // ───────────────────────── helpers ─────────────────────────
+
+/**
+ * Скруглённый угол рамки из прямоугольников (только fillRect — без путей).
+ * (cx, cy) — угол рамки, (sx, sy) — направление внутрь: ±1.
+ */
+function drawCorner(
+  c: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  t: number,
+  sx: number,
+  sy: number
+): void {
+  for (let i = 0; i < r; i += 1) {
+    const a = r - Math.sqrt(r * r - (r - i) * (r - i));
+    const b = r - Math.sqrt(r * r - (r - i - 1) * (r - i - 1));
+    const h = Math.max(t, Math.ceil(b - a));
+    const x = sx > 0 ? cx + i : cx - i - 1;
+    const y = sy > 0 ? cy + a : cy - a - h;
+    c.fillRect(x, y, 1, h);
+  }
+}
 
 /**
  * Разбивает одну строку на массив строк, каждая из которых влезает в

@@ -173,3 +173,48 @@ describe("tars1_text_panel — typewriter и статус", () => {
     }
   });
 });
+
+describe("tars1_text_panel — рамка, персонаж, setInfo (#3253 Ш1)", () => {
+  it("setInfo не бросает, в т.ч. с прочерками и повтором; tick рисует", () => {
+    const p = createTars1TextPanel({ canvasWidth: 256, canvasHeight: 96 });
+    expect(() => {
+      p.setInfo({});
+      p.setInfo({ link: "CONNECTED", ptt: "none", lastReplyAt: null });
+      p.setInfo({ link: "CONNECTED", ptt: "none", lastReplyAt: null });
+      p.tick(1000);
+    }).not.toThrow();
+  });
+
+  it("в покое ≤ 4 Гц, при активности ≤ 12 Гц", () => {
+    const count = (act: "idle" | "speaking"): number => {
+      let fills = 0;
+      const orig = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function () {
+        return {
+          fillRect: () => {
+            fills += 1;
+          },
+          fillText: () => {},
+          measureText: (t: string) => ({ width: t.length * 7 })
+        } as unknown as CanvasRenderingContext2D;
+      } as unknown as typeof HTMLCanvasElement.prototype.getContext;
+      try {
+        const p = createTars1TextPanel({ canvasWidth: 256, canvasHeight: 96 });
+        p.setActivity(act);
+        let frames = 0;
+        let prev = fills;
+        for (let t = 10_000; t < 11_000; t += 8) {
+          p.tick(t);
+          if (fills !== prev) frames += 1;
+          prev = fills;
+        }
+        return frames;
+      } finally {
+        HTMLCanvasElement.prototype.getContext = orig;
+      }
+    };
+    expect(count("idle")).toBeLessThanOrEqual(4);
+    expect(count("speaking")).toBeLessThanOrEqual(12);
+    expect(count("speaking")).toBeGreaterThan(count("idle"));
+  });
+});
