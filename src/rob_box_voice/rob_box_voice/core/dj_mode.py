@@ -190,6 +190,14 @@ class DJHook:
     on_stop: Optional[Callable[[str], None]] = None  # (persona) -> None
 
 
+#: Issue #3246 — правило для LLM; жёсткий гард — ``DJ_AUTO_FORBIDDEN_TOOLS``.
+_NO_STOP_RULE = (
+    "НИКОГДА не вызывай stop_music в этом ходе — музыка не должна "
+    "замолкать между треками; сет останавливает только юзер или финал "
+    "по плану (stop_music всё равно будет отклонён)."
+)
+
+
 class DJModeController:
     """High-level façade around :class:`DJState` for the shell's timer hooks."""
 
@@ -1242,7 +1250,8 @@ class DJModeController:
                 "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
                 "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст, "
                 "и НЕ вызывай speak_text в этом ходе: система сама скажет "
-                "«вечеринка подошла к концу», когда трек доиграет."
+                "«вечеринка подошла к концу», когда трек доиграет. "
+                f"{_NO_STOP_RULE}"
             )
         return (
             f"[DJ_AUTO переход #{n}] "
@@ -1257,7 +1266,8 @@ class DJModeController:
             "пожар!»). НЕ пиши свободный текст ответа и НЕ комментируй, что "
             "ты делаешь — свободный текст не озвучивается, работает только "
             "speak_text. После этого вызови set_dj_mode(enabled=true, "
-            "next_transition_sec=<столько же секунд>) для следующего перехода."
+            "next_transition_sec=<столько же секунд>) для следующего перехода. "
+            f"{_NO_STOP_RULE}"
         )
 
 
