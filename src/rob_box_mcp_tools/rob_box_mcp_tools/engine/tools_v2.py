@@ -2,8 +2,9 @@
 
 Регистрируется только при ``music_engine: v2`` (``mcp_server._attach_player_owner_v2``).
 Параметры трека (темп, тоника, синты, сид) тул не принимает: тема → ``theme.seeded_profile``
-→ ``SetSession`` с источником ``compose_source``. LLM тул пока не видит (``llm_visible=False``):
-вызывают его роутер медиакоманд и LLM с PR-6, а до того — оператор/харнесс по ``/mcp/execute``.
+→ ``set_plan.seeded_plan`` → ``SetSession`` с источником ``compose_source(plan)``.
+LLM тул пока не видит (``llm_visible=False``): вызывают его роутер медиакоманд и LLM с PR-6,
+а до того — оператор/харнесс по ``/mcp/execute``.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -108,8 +110,9 @@ class DjSetTool(MCPTool):
         profile = seeded_profile(theme)
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
-        source = compose_source(profile, set_seed=set_seed, set_id=set_id, melodies=self._melodies(profile.hook_ids))
-        session = SetSession(self._owner, source, set_id=set_id, bpm=profile.bpm,
+        plan = seeded_plan(profile, set_seed, set_id=set_id)  # один план на сет = один темп
+        source = compose_source(plan, self._melodies(profile.hook_ids))
+        session = SetSession(self._owner, source, set_id=set_id, bpm=plan.bpm,
                              dj={"theme": theme, "persona": persona},
                              logger=self.node.get_logger() if self.node is not None else None)
         result = session.start()

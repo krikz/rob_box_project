@@ -6,6 +6,7 @@ Renardo — клок, который исполняет запланирован
 """
 
 import heapq
+from dataclasses import replace
 import itertools
 import json
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from rob_box_mcp_tools.engine.renardo_adapter import HANDOFF_STOP_BEATS, Renardo
 from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, SetSession, compose_source
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_melodies
 from rob_box_music import knowledge as kn
+from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 from rob_box_voice.core.music_player_state import parse_music_state
 
@@ -25,6 +27,7 @@ pytestmark = pytest.mark.unit
 
 BPM = 132
 PROFILE = ThemeProfile("тест", "club", BPM, 9, "minor", (), None)
+PLAN = seeded_plan(PROFILE, 7, set_id="s7")  # один план на сет — один темп
 
 
 class SimClock:
@@ -105,7 +108,7 @@ def _rig(source=None, submit=None, *, exec_fails=False):
     states, events, log = [], [], Log()
     owner = PlayerOwner(adapter, states.append, lambda e: events.append(json.loads(e)), logger=log,
                         clock=lambda: 1000.0)
-    source = source or compose_source(PROFILE, set_seed=7, set_id="s7")
+    source = source or compose_source(PLAN)
     session = SetSession(owner, source, set_id="s7", bpm=BPM, dj={"theme": "тест"},
                          submit=submit or (lambda fn: fn()), logger=log)
     rig = SimpleNamespace(clock=clock, ns=ns, sent=sent, owner=owner, states=states, events=events, log=log,
@@ -179,7 +182,7 @@ def test_next_not_ready_extends_the_playing_track_instead_of_silence():
 
 
 def _source_with(bad_no, make_bad):
-    good = compose_source(PROFILE, set_seed=7, set_id="s7")
+    good = compose_source(PLAN)
 
     def source(no, deck):
         return make_bad(no, deck) if no == bad_no else good(no, deck)
@@ -190,7 +193,7 @@ def _source_with(bad_no, make_bad):
 def _other_tempo(no, deck):
     from rob_box_music.arrange.compose import compose
 
-    return compose(ThemeProfile("тест", "club", BPM + 6, 9, "minor", (), None), no, set_seed=7, set_id="s7", deck=deck)
+    return compose(replace(PLAN, bpm=BPM + 4), no, deck=deck)  # чужой темп
 
 
 def _broken(no, deck):

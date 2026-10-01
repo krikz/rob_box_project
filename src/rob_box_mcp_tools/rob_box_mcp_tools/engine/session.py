@@ -13,8 +13,8 @@
   другим темпом до деки не доходит — ``rejected{tempo_mismatch}`` и продление.
 
 Источник следующего трека — шов ``TrackSource``: ``(track_no, deck) -> Track``. По умолчанию
-:func:`compose_source` (``arrange.compose`` от профиля темы и сида); план сета
-(``set_plan.seeded_plan``, PR-3b) подставляется сюда же, своей дуги здесь нет.
+:func:`compose_source` — ``arrange.compose`` по плану сета (``set_plan.seeded_plan``, PR-3b: темп,
+дуга энергии, тоника — там, своей копии плана здесь нет); план от LLM (PR-10) — тот же шов.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from rob_box_music.arrange.compose import compose
 from rob_box_music.model import Track
 from rob_box_music.render.renardo import render
-from rob_box_music.theme import ThemeProfile
+from rob_box_music.set_plan import SetPlan
 
 _LOG = logging.getLogger(__name__)
 
@@ -39,14 +39,12 @@ NEARLY_LEAD_BEATS = float((PHRASE_BARS + 1) * 4)
 TrackSource = Callable[[int, str], Track]
 
 
-def compose_source(profile: ThemeProfile, *, set_seed: int, set_id: str,
-                   melodies: Optional[Mapping[str, str]] = None) -> TrackSource:
-    """Треки сета из ``arrange.compose``; хук только что сыгранного трека — последним в выборе."""
+def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) -> TrackSource:
+    """Треки сета из ``arrange.compose`` по плану; хук только что сыгранного трека — последним в выборе."""
     recent: List[str] = []
 
     def next_track(track_no: int, deck: str) -> Track:
-        track = compose(profile, track_no, set_seed=set_seed, melodies=melodies, recent_hooks=tuple(recent),
-                        set_id=set_id, deck=deck)
+        track = compose(plan, track_no, melodies=melodies, recent_hooks=tuple(recent), deck=deck)
         if track.hook is not None and track.hook.source:
             recent.insert(0, track.hook.source)
         return track
