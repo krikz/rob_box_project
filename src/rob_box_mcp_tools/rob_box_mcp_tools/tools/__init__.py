@@ -30,6 +30,7 @@ try:
     from .music import *
 except (ImportError, ModuleNotFoundError):
     pass
+from .music_material import *  # #3227: add_music_material (без зависимости от music.py)
 from .scheduler import *
 from .web_search import *
 from .operator_admin import *  # ADR-0051 §6: operator.admin slice (ТАРС diagnostics)
@@ -91,6 +92,7 @@ __all__ = [
     "LoadTrackTool",
     "DeleteTrackTool",
     "SearchMelodyTool",
+    "AddMusicMaterialTool",
     # FAQ / Event tools
     "FaqSearchTool",
     # Web search tools (issue #1101)

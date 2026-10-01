@@ -36,6 +36,10 @@ TURN_EPOCH: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
 )
 
 
+#: Тул, включающий DJ (его ``enabled=true`` и режет забор).
+DJ_MODE_TOOL = "set_dj_mode"
+
+
 def _payload_enables_dj(payload: str) -> bool:
     """``True`` если JSON ``/voice/dj_mode`` включает DJ.
 
@@ -83,6 +87,19 @@ class SessionEpoch:
         """Ход текущего поколения начался — снимаем забор на DJ."""
         if not self.is_stale(epoch):
             self._dj_enable_fenced = False
+
+    def note_media_command(self, tool_calls) -> None:
+        """Команда юзера, исполняемая кодом без хода LLM (issue #3217).
+
+        Закрытая DJ-команда медиароутера («ты диджей X») приходит в
+        текущем поколении и есть генуинный ход новой сессии: её
+        ``set_dj_mode(enabled=true)`` не должен резаться забором. Снимаем
+        забор, только если среди тулов есть ``set_dj_mode``; поколение —
+        текущее, так что запоздалый ``enabled=true`` от хода ДО сброса
+        по-прежнему режется (его поколение не совпадает).
+        """
+        if any(c.name == DJ_MODE_TOOL for c in tool_calls):
+            self.note_turn_started(self._value)
 
     def retries_allowed(
         self, *, turn_epoch: Optional[int], cancelled: bool

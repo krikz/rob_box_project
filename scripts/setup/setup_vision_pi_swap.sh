@@ -121,8 +121,8 @@ cmd_status() {
   echo "── /sys/block/zram0 ──"
   if [[ -e /sys/block/zram0 ]]; then
     echo "disksize: $(bytes_to_mb "$(cat /sys/block/zram0/disksize)") MB"
-    echo "comp_algorithm: $(cat /sys/block/zram0/comp_algorithm | tr ' ' '\n' | grep -v '^$')"
-    echo "mem_used_total: $(bytes_to_mb "$(cat /sys/block/zram0/mm_stat 2>/dev/null | awk '{print $2}')") MB"
+    echo "comp_algorithm: $(tr ' ' '\n' < /sys/block/zram0/comp_algorithm | grep -v '^$')"
+    echo "mem_used_total: $(bytes_to_mb "$(awk '{print $2}' 2>/dev/null < /sys/block/zram0/mm_stat)") MB"
   else
     log_warn "/sys/block/zram0 не существует — модуль не загружен или устройство не создано"
   fi
@@ -202,7 +202,7 @@ detect_existing_zram() {
   fi
   local current_size_mb current_algo
   current_size_mb=$(bytes_to_mb "$(cat /sys/block/zram0/disksize)")
-  current_algo=$(cat /sys/block/zram0/comp_algorithm | grep -oE '\[?[a-z0-9]+\]?' | head -1 | tr -d '[]')
+  current_algo=$(grep -oE '\[?[a-z0-9]+\]?' < /sys/block/zram0/comp_algorithm | head -1 | tr -d '[]')
   echo "current_size_mb=$current_size_mb current_algo=$current_algo"
 }
 

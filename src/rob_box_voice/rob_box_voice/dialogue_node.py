@@ -94,11 +94,12 @@ from rob_box_harness.providers import (
     build_deepseek_provider,
     build_minimax_provider,
 )
+from rob_box_harness.providers.reasoning import TURN_REASONING
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
-from rob_box_voice.core.command_parser import CommandParser, IntentType
+from rob_box_voice.core.command_parser import CommandParser
 from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
@@ -119,7 +120,6 @@ from rob_box_voice.core.dialogue_text import (
     DEFAULT_WAKE_WORDS,
     has_wake_word,
     is_silence_command,
-    is_unsilence_command,
     resolve_wake_word_namespaces,
     strip_wake_word,
 )
@@ -127,7 +127,16 @@ from rob_box_voice.core.llm_skip_reasons import (
     LLMSkipReason,
     new_llm_skip_counter,
 )
-from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
+# ADR-0145 §4 (P1 step 1) -- ``quick_decide``/``QuickVerdict`` are no
+# longer imported here: the only call site
+# (``_DialogueSttHost.quick_decide_verdict``) moved to
+# :mod:`rob_box_voice.core.stt_admission_host`, which does its own
+# import. PR #3198 review caught that a stale re-export here would make
+# ``monkeypatch.setattr(dialogue_node, "quick_decide", ...)`` silently
+# stop intercepting the real call (vacuous test) -- see
+# ``test_barge_in_policy.py::test_replace_policy_never_calls_
+# quick_decide``, which now patches
+# ``rob_box_voice.core.stt_admission_host.quick_decide`` instead.
 from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
@@ -183,6 +192,7 @@ from rob_box_voice.core.music_guard import (
     MusicGuard,
     MusicGuardVerdict,
     MusicGuardVerdictKind,
+    hurry_dj_set_start,
 )
 # Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
 # The legacy ``_*_retry_used`` flags and ``_consume_synthetic_retry``
@@ -207,9 +217,30 @@ from rob_box_voice.core.turn import (
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.identity_ack import (
     IdentityAckQuestion,
+    hold_question,
     identity_ack_plan,
+    tentative_plan,
 )
-from rob_box_voice.core.dj_mode import DJHook, DJModeController
+from rob_box_voice.core.stt_admission_host import (  # noqa: F401
+    # ADR-0145 §4 (P1 step 1) -- moved out of this module (pure move, no
+    # behaviour change); re-exported so ``from rob_box_voice.dialogue_node
+    # import <name>`` keeps working for existing callers/tests.
+    # (``_PENDING_USER_MESSAGES_MAX`` has no other reference left in this
+    # module -- the queueing logic that used it now lives entirely in
+    # ``_DialogueSttHost.enqueue_pending`` -- hence the blanket noqa above.)
+    _DialogueSttHost as _DialogueSttHost,
+    _PENDING_USER_MESSAGES_MAX as _PENDING_USER_MESSAGES_MAX,
+    _UTTERANCE_ID_WAIT_SEC as _UTTERANCE_ID_WAIT_SEC,
+)
+from rob_box_voice.core.dj_material import MaterialIntake
+from rob_box_voice.core.tars_status_feed import start_status_feeds
+from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn
+from rob_box_voice.core.dj_set_boundary import (
+    DJSetBoundary,
+    apply_dj_mode_message,
+    dj_state_lines,
+    settle_dj_set_boundary,
+)
 from rob_box_voice.core.media_router import (
     MediaPlan,
     MediaRouter,
@@ -225,7 +256,12 @@ from rob_box_voice.core.named_play import (
     user_phrase_title,
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
-from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO, retry_is_dj_auto
+from rob_box_voice.core.turn_origin import (
+    TURN_DJ_SET_FINAL,
+    TURN_IS_DJ_AUTO,
+    retry_is_dj_auto,
+)
+from rob_box_voice.core.turn_reasoning import turn_wants_reasoning
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
 )
@@ -282,7 +318,6 @@ from rob_box_voice.observability import (
     record_hallucinated_midi,
     record_music_retry_exhausted,
     record_pending_queue_latency,
-    record_quick_decide_verdict,
     record_session_duration,
     record_task_updated,
     record_llm_prompt_tokens,
@@ -310,23 +345,21 @@ def _resolve_tts_voice_tag(
     return current_voice or default_voice_for(tts_provider)
 
 
+# ADR-0145 §4 (P1 step 1) -- this constant must stay defined HERE (not
+# re-exported): ``test_no_daemon_threads.py`` and ``test_bounded_fanout.py``
+# regex-scan this file's own source text for a literal
+# ``ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = <N>`` assignment line, so
+# moving the definition behind an import would silently break that
+# structural guard even though the runtime behaviour is unchanged.
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
-# S7 (scheduler-segments-merge, issue #968) — upper bound on
-# ``_pending_user_messages`` so a run of barge-ins during one very long
-# LLM turn cannot grow the queue unbounded. Appending past this cap
-# drops the OLDEST queued phrase (keep the most recent user intent) and
-# logs a warning — see _on_stt.
-_PENDING_USER_MESSAGES_MAX: int = 5
-
-# Issue #2862 — сколько ``_on_stt`` ждёт ``/voice/stt/utterance`` своей
-# фразы, если текст обогнал id. Оба топика публикуются stt_node подряд из
-# одного потока, расхождение — задержка планировщика executor'а (мс), а не
-# секунды. Текст без id вовсе (GUI/bench/инъекция харнесса) платит эту
-# задержку один раз и идёт с ``utterance_id=None``.
-_UTTERANCE_ID_WAIT_SEC: float = 0.5
+# ADR-0145 §4 (P1 step 1) -- ``_PENDING_USER_MESSAGES_MAX`` and
+# ``_UTTERANCE_ID_WAIT_SEC`` moved to
+# :mod:`rob_box_voice.core.stt_admission_host` together with
+# ``_DialogueSttHost`` (pure move, no behaviour change) and are
+# re-exported via the import above.
 
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
 # source; this tuple remains for callers that imported the merged #1395 symbol.
@@ -1300,6 +1333,14 @@ class DialogueNode(Node):
             ),
             logger=self.get_logger(),
         )
+        # ADR-0129 (issue #3000) — смена сета вычищает окно от прошлых
+        # сетов на ближайшем ходе и штампует <dj_state> в system_context.
+        self._dj_set_boundary = DJSetBoundary()
+        # Issue #3227 — материал из реплики (Strudel/RTTTL/ноты) → тул
+        # add_music_material → следующий DJ-переход играет его хук.
+        self._material_intake = MaterialIntake(
+            self._dj, lambda: self._scheduler_executor, lambda: self._loop, self.get_logger()
+        )
         self.create_timer(5.0, self._on_inactivity_check)
         self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
         # 🔴 FIX (live 06.08): startup-приветствие внутри dialogue_node
@@ -1342,6 +1383,11 @@ class DialogueNode(Node):
                     f"📊 Metrics port {self._metrics_port} not bound "
                     "(busy or prometheus_client missing)"
                 )
+        # #3253 Ш3б: настроенная LLM и wake-слова → latched-топики для экрана
+        # ТАРС 1 (quest_node → tars_status). Значения статичны до рестарта.
+        self._tars_status_feeds = start_status_feeds(
+            self, String, self._llm, self._wake_words
+        )
         self.get_logger().info("✅ DialogueNode shell ready (AgentCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
@@ -2505,9 +2551,13 @@ class DialogueNode(Node):
         with self._task_lock:
             held = self._run_task is not None
             if held:
-                self._identity_ack_state().hold(plan)
-                # Issue #2913 -- и реплики speak_text этого хода тоже.
-                self._turn_speech_gate().mute()
+                # Issue #2913 -- заменяющий вопрос глушит и реплики
+                # speak_text этого хода (см. hold_question).
+                hold_question(
+                    self._identity_ack_state(),
+                    self._turn_speech_gate(),
+                    plan,
+                )
         if not held:
             # Хода нет — его ответ (если был) уже прозвучал.
             self._speak_identity_question(plan, after_answer=True)
@@ -2594,11 +2644,16 @@ class DialogueNode(Node):
         одно из двух — вопрос, и робот ждёт ответа человека.
         """
         with self._task_lock:
-            plan = self._identity_ack_state().take_held()
+            # Вопрос про личность «после ответа» ответ не съедает
+            # («какой сегодня праздник» -- «это ты?»): план остаётся
+            # придержанным и прозвучит последней репликой хода.
+            plan = self._identity_ack_state().take_held_to_replace(
+                getattr(result, "spoken_text", None)
+            )
         if plan is None:
             self._handle_result(result, **kwargs)
             return
-        replaced = str(getattr(result, "spoken_text", "") or "")[:80]
+        replaced =str(getattr(result, "spoken_text", "") or "")[:80]
         if plan.get("kind") == "register_retry":
             # Issue #2908 -- своя строка: харнесс (e2e_tool_match) по
             # строке #2828 решает «робот задал вопрос о личности, ретрай
@@ -3544,7 +3599,9 @@ class DialogueNode(Node):
         """
         if from_tick:
             self._music_guard.reset_for_new_dj_transition()
-        self._dispatch_turn(user_input, is_dj_auto=True)
+        # Issue #3220 — thinking только у свежего перехода (тик), не у
+        # ретрая Bug B: см. ``core/turn_reasoning.py``.
+        self._dispatch_turn(user_input, is_dj_auto=True, dj_transition=from_tick)
 
     def _dispatch_turn(
         self,
@@ -3562,6 +3619,7 @@ class DialogueNode(Node):
         occasion: "Occasion | None" = None,
         backlog_pending: bool = False,
         utterance_id: str | None = None,
+        dj_transition: bool = False,
     ) -> None:
         # Issue #3144 — синтетический ретрай гуарда (Bug D/E, TurnGuards,
         # tool-skipped, …), отправленный изнутри DJ-автоперехода, остаётся
@@ -3626,6 +3684,7 @@ class DialogueNode(Node):
                 from_tg=from_tg,
                 backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
+                dj_transition=dj_transition,
                 # Issue #2835 — поколение сессии, в котором родился ход
                 # (для ретрая изнутри хода — поколение родителя).
                 session_epoch=self._session_epoch_gate().epoch_for_dispatch(),
@@ -4212,7 +4271,7 @@ class DialogueNode(Node):
         if not question:
             return
         held = self._queue_identity_question(
-            {"kind": "tentative", "question": question}
+tentative_plan(question, kind, name)
         )
         self.get_logger().info(
             f"👤 [issue #2888] identity question by robot: kind={kind} "
@@ -4569,6 +4628,12 @@ class DialogueNode(Node):
         # Issue #1392 follow-up (legacy): раньше был только <generated_music>
         # для AI-генерации; DJ/Renardo бит туда не попадал → баг #1544.
         lines.append(self._build_music_state_snapshot())
+        # ADR-0129 (issue #3000) — текущий DJ-сет или «сет не идёт» и
+        # правило «прошлые сеты завершены»: ходы старых сетов в окне не
+        # должны подсказывать тему/персону нового.
+        lines.extend(dj_state_lines(
+            getattr(self, "_dj_set_boundary", None), getattr(self, "_dj", None)
+        ))
         # Issue #1544 — SYSTEM REMINDER: «стоп музыку» ведёт себя по-разному
         # в зависимости от того, ИГРАЕТ ли сейчас что-то. Без этого LLM
         # решает «нечего останавливать» → verbal «уже выключено» вместо
@@ -4805,6 +4870,7 @@ class DialogueNode(Node):
         backlog_pending: bool = False,
         utterance_id: str | None = None,
         session_epoch: int | None = None,
+        dj_transition: bool = False,
     ) -> None:
         # Issue #2835 — ход/ретрай, поставленный в loop до «новой сессии»,
         # а стартовавший после неё, не запускается вовсе.
@@ -4814,6 +4880,18 @@ class DialogueNode(Node):
         # Issue #3144 — происхождение хода для ретраев гуардов (см.
         # ``core/turn_origin.py``): ретрай наследует его через контекст.
         dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
+        # Issue #3247 — DJ_AUTO-ход после финального промпта сета: гард
+        # исполнителя тулов не даст ему снова включить DJ.
+        dj_final_token = TURN_DJ_SET_FINAL.set(
+            dj_final_turn(getattr(self, "_dj", None), is_dj_auto)
+        )
+        # Issue #3220 — думает ли этот ход (thinking MiniMax); провайдер
+        # читает флаг из контекста хода.
+        reasoning_token = TURN_REASONING.set(turn_wants_reasoning(
+            is_dj_auto=is_dj_auto,
+            dj_transition=dj_transition,
+            is_synthetic=is_synthetic,
+        ))
         with self._task_lock:
             self._run_task = asyncio.current_task()
         # Issue #2913 -- решения о речи speak_text -- по этому ходу.
@@ -5102,6 +5180,8 @@ class DialogueNode(Node):
                 session_handed_over=self._take_session_handover(),
             )
             TURN_IS_DJ_AUTO.reset(dj_auto_token)
+            TURN_DJ_SET_FINAL.reset(dj_final_token)
+            TURN_REASONING.reset(reasoning_token)
             TURN_EPOCH.reset(epoch_token)
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
@@ -5237,8 +5317,12 @@ class DialogueNode(Node):
         # которую видел ``quick_decide`` (тот же текст, что и
         # media_router для этого хода); DJ_AUTO-переходы STT не шлют, так
         # что фолбэк срабатывает только на генуинном старте от юзера.
-        self._dj.handle_message(
-            payload, raw_utterance=getattr(self, "_last_stt_text", None) or ""
+        # ADR-0129 — граница сета сверяется до и после (dj_set_boundary).
+        apply_dj_mode_message(
+            getattr(self, "_dj_set_boundary", None),
+            self._dj,
+            payload,
+            raw_utterance=getattr(self, "_last_stt_text", None) or "",
         )
 
     def _publish_dj_off(self, reason: str) -> None:
@@ -6865,6 +6949,8 @@ class DialogueNode(Node):
                 MUSIC_STARTING_TOOLS,
                 is_dj_auto=was_dj_auto,
                 turn_text=user_input,
+                # #3285: упавший compose_music трек сета не запускал.
+                succeeded_tools=getattr(result, "succeeded_tools", None),
             )
         if self._apply_stop_music_deferral(result):
             self._flush_music_cleanup_if_idle(was_dj_auto)
@@ -7095,6 +7181,14 @@ class DialogueNode(Node):
             self._register_self_intro(utterance_id)
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
+        # ADR-0129 (issue #3000) — сет сменился с прошлого хода: обмены
+        # прошлых сетов уходят из окна ДО сборки истории этого хода.
+        settle_dj_set_boundary(
+            getattr(self, "_dj_set_boundary", None),
+            getattr(self, "_dj", None),
+            getattr(self, "_core", None),
+            self.get_logger(),
+        )
         dynamic_system = self._build_dynamic_system_context()
         return user_input, self._dj_turn_hint(dynamic_system, was_dj_auto)
 
@@ -7350,6 +7444,17 @@ class DialogueNode(Node):
         # attempt marks the turn silent (extracted to a helper so this
         # method's CC stays at its cc_budget baseline).
         self._mark_dj_giveup_silent_if_budget_exhausted(verdict)
+        # Issue #3266 — сет включён этим ходом, а его трек не заиграл:
+        # переход, который поставит трек, — скоро, а не по таймеру модели.
+        hurry_dj_set_start(
+            verdict,
+            self._dj.state,
+            tools_called=tools_called,
+            music_playing=self._music_playing_now(),
+            now=time.time(),
+            delay_s=DJModeController.POSTPONE_INTERVAL_S,
+            logger=self.get_logger(),
+        )
 
         # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
         # user did not request music, DJ off, etc.). Policy module already
@@ -7564,6 +7669,8 @@ class DialogueNode(Node):
         if plan.dj_off:
             # Как #2897: стоп юзера гасит DJ-режим в коде, молча.
             self._force_dj_off_for_stop_command(reason="media_router_stop")
+        # Issue #3217 — DJ-команда роутера = ход текущей сессии (забор #2835).
+        self._session_epoch_gate().note_media_command(plan.tool_calls)
 
     def _prepare_dj_preview(self, plan: MediaPlan, executor: Any) -> None:
         """Issue #3153 (+доп.) — заявка «трек #1 сета»: подготовка до тулов.
@@ -10414,247 +10521,12 @@ class DialogueNode(Node):
             super().destroy_node()
 
 
-# ---------------------------------------------------------------------------
-# _DialogueSttHost — adapter from SttAdmissionHost Protocol to DialogueNode
-# ---------------------------------------------------------------------------
-# Issue #2628 / ADR-0021 R1 — bridges the pure SttAdmission pipeline in
-# ``rob_box_voice.core.stt_admission`` to the ROS-bound surfaces of
-# DialogueNode (locks, FSM, publishers, accumulators).
-#
-# Lock discipline (single source of truth):
-#
-#   * ``_speaker_lock``  — held only inside ``accumulate_without_wake``,
-#     wrapping the snapshot of ``_current_speaker``. Released before any
-#     logger call or accumulator mutation.
-#   * ``_task_lock``     — held only inside ``enqueue_pending``, wrapping
-#     the read of ``_run_task`` and the ``_pending_user_messages``
-#     append (S7 segment-merge queue, issue #968). Released before
-#     ``_dispatch_turn``.
-#
-# No other lock is acquired while either is held → no inversion. The
-# orchestrator never sees a lock; it only calls into these methods.
-# ---------------------------------------------------------------------------
-
-
-class _DialogueSttHost:
-    """Adapter that satisfies :class:`SttAdmissionHost` for DialogueNode.
-
-    The orchestrator instantiates this once per ``_on_stt`` invocation
-    so the side effects share the per-call snapshot (``state``,
-    ``was_idle``, ``text``) without going through thread-locals.
-
-    Methods follow the byte-for-byte semantics of the inline branches
-    they replaced — see ``docs/adr/0021-cc-budget.md`` and issue #2628
-    for the migration checklist.
-    """
-
-    __slots__ = ("_node", "media_miss")
-
-    def __init__(self, node: "DialogueNode") -> None:
-        self._node = node
-        # Issue #3176 — ``callable(clean_text)``: вернуть реплику в приём
-        # после MediaCommandStep (заказ по имени мимо базы мелодий).
-        # ``None`` — возвращать некуда (тестовые харнессы без ``_on_stt``).
-        self.media_miss = None
-
-    # -- helpers --------------------------------------------------------
-
-    def _bump_counter(self, key: str) -> None:
-        """``self._llm_skipped_counter[key] += 1`` — log + counter."""
-        node = self._node
-        node._llm_skipped_counter[key] += 1
-
-    def _log(self, msg: str) -> None:
-        self._node.get_logger().info(msg)
-
-    # -- SttAdmissionHost callbacks -------------------------------------
-
-    def unsilence(self, text_lower: str) -> bool:
-        node = self._node
-        if not is_unsilence_command(text_lower):
-            return False
-        node._dsm.on_event(DialogueEvent.UNSILENCE)
-        node._publish_state()
-        return True
-
-    def accumulate_without_wake(
-        self,
-        speaker_tag: Optional[str],
-        text: str,
-    ) -> bool:
-        node = self._node
-        accumulator = getattr(node, "_speech_accumulator", None)
-        if not getattr(node, "_accumulate_no_wake_enabled", False):
-            return False
-        if accumulator is None:
-            return False
-        # Legacy L2256-2271 — speaker snapshot under _speaker_lock; emit
-        # diag log; add to accumulator; log acceptance.
-        with node._speaker_lock:
-            sp = dict(getattr(node, "_current_speaker", {}) or {})
-        sp_name = (
-            sanitize_speaker_name(sp.get("name")) if sp.get("is_known") else ""
-        )
-        node._emit_backlog_diag_log(sp, sp_name, speaker_tag, text)
-        accumulator.add(
-            text,
-            speaker_tag=speaker_tag,
-            speaker_name=sp_name or None,
-        )
-        node.get_logger().info(
-            f"🗒️ [backlog] accumulated (no_wake_word) "
-            f"tag={speaker_tag!r} speaker={sp_name or 'незнакомец'!r} "
-            f"text={text[:60]!r}"
-        )
-        return True
-
-    def handle_silence_command(self) -> bool:
-        node = self._node
-        # Legacy L2304-2296 — only true silence phrases reach here
-        # (music-stop override handled by SilenceCommandStep itself).
-        node._llm_skipped_counter["silence_command"] += 1
-        node._handle_silence()
-        return True
-
-    def is_music_stop_command(self, text_lower: str) -> bool:
-        # Issue #1279 — «хватит диджеить» is music-stop, not silence.
-        return is_music_stop_command(text_lower)
-
-    def handle_command_intent(self, text: str, text_lower: str) -> bool:
-        node = self._node
-        if not getattr(node, "_command_intent_gate_enabled", False):
-            return False
-        # 🔴 FIX (issue #2971): раньше сверялись только с
-        # ``node._MUSIC_STOP_OVERRIDES`` (голые фиксированные фразы) —
-        # после того как #2971 убрал из списка «диджеить»/«диджея»/
-        # «диджей режим» (ложные срабатывания на голое существительное
-        # без стоп-глагола), «хватит диджеить» перестало матчить ЭТУ
-        # проверку и команда уходила в command_intent gate вместо LLM.
-        # ``is_music_stop_command`` (списки ФИКСИРОВАННЫХ фраз + общий
-        # паттерн «стоп-глагол + муз. существительное») — единый
-        # источник правды, используемый везде в этом модуле.
-        if self.is_music_stop_command(text_lower):
-            return False
-        command = node._command_parser.parse(text)
-        if (
-            command.intent == IntentType.UNKNOWN
-            or command.confidence < node._command_intent_gate_confidence
-        ):
-            return False
-        node._llm_skipped_counter["command_intent"] += 1
-        node._cancel_run("command intent (issue 1279)", stop_tts=True)
-        node.get_logger().info(
-            f"🎯 [issue 1279] command intent="
-            f"{command.intent.value} conf={command.confidence:.2f} "
-            f"— LLM dispatch skipped (command_node handles): "
-            f"{text[:60]!r}"
-        )
-        return True
-
-    def handle_media_command(self, text: str) -> bool:
-        # Issue #3134 — медиакоманды кодом, до LLM (и в TG, и в DJ-режиме).
-        return self._node._route_media_command(text, on_miss=self.media_miss)
-
-    def reset_session(
-        self,
-        text: str,
-        text_lower: str,
-        tg_chat_id: Optional[int],
-    ) -> bool:
-        node = self._node
-        # Legacy uses ``clean``; ``StripWakeWordStep`` may have rewritten
-        # ``ctx.text``. We read ``text_lower`` as the orchestrator's
-        # ``text_lower`` is the cleaned lowercased snapshot — matches
-        # the legacy ``text_lower`` arg at L2342.
-        if not node._is_new_session_command(text, text_lower, tg_chat_id):
-            return False
-        node._llm_skipped_counter["new_session"] += 1
-        node._reset_dialogue_session()
-        node.get_logger().info(
-            f"🧹 [new-session] session reset: text={text[:60]!r} "
-            f"tg={bool(tg_chat_id)}"
-        )
-        return True
-
-    def flush_pending_backlog(self) -> None:
-        self._node._pending_backlog_flush = True
-
-    def quick_decide_verdict(
-        self, clean: str
-    ) -> Tuple[str, bool, bool]:
-        node = self._node
-        tg_chat_id = None  # set by caller via state, but quick_decide
-        # only needs ``source="stt" | "tg"``. We use ``source="stt"``
-        # because the orchestrator only calls us on mic path; TG input
-        # bypasses barge-in by design (no wake word = no barge-in).
-        verdict = quick_decide(
-            clean, source="stt",
-            active_group=None, clock=time.monotonic,
-            previous_text=getattr(node, "_last_stt_text", None),
-            previous_ts=getattr(node, "_last_stt_ts", None),
-        )
-        node._last_stt_text = clean
-        node._last_stt_ts = time.monotonic()
-        # W2-6 (issue #968) — record the verdict for metrics.
-        if is_metrics_enabled():
-            try:
-                record_quick_decide_verdict(verdict.value)
-            except Exception as _metric_exc:  # noqa: BLE001
-                node.get_logger().debug(
-                    f"⚠️ [metrics] record_quick_decide_verdict failed: "
-                    f"{_metric_exc!r}"
-                )
-        ignored = verdict is QuickVerdict.IGNORE
-        pending_llm = verdict is QuickVerdict.PENDING_LLM
-        return (verdict.value, ignored, pending_llm)
-
-    def enqueue_pending(self, clean: str) -> bool:
-        node = self._node
-        # S7 (scheduler-segments-merge) — under _task_lock snapshot the
-        # live task; if alive, queue; if queue is full, drop oldest.
-        with node._task_lock:
-            live_task = node._run_task
-        if live_task is None or live_task.done():
-            return False
-        if len(node._pending_user_messages) >= _PENDING_USER_MESSAGES_MAX:
-            dropped, _dropped_ts = node._pending_user_messages.popleft()
-            node.get_logger().warning(
-                f"⚠️ [S7] pending_user_messages overflow "
-                f"(max={_PENDING_USER_MESSAGES_MAX}), dropping "
-                f"oldest: {dropped[:60]!r}"
-            )
-        node._pending_user_messages.append((clean, time.monotonic()))
-        node.get_logger().info(
-            f"📥 [S7] turn in flight — queued: {clean[:60]!r}"
-        )
-        return True
-
-    def cancel_inflight(self, stop_tts: bool) -> None:
-        # Issue #2939 — за отменой всегда идёт DispatchTriggerStep:
-        # сессию принимает новый ход.
-        self._node._cancel_run("new STT input", stop_tts=stop_tts, hand_over=True)
-
-    def transition_idle_to_wake(self) -> bool:
-        node = self._node
-        if node._dsm.current_state != DialogueStateKind.IDLE:
-            return False
-        node._dsm.on_event(DialogueEvent.WAKE_WORD)
-        node._publish_state()
-        return True
-
-    def transition_stt_result(self) -> None:
-        node = self._node
-        node._dsm.on_event(DialogueEvent.STT_RESULT)
-        node._publish_state()
-
-    def publish_state(self) -> None:
-        self._node._publish_state()
-
-    def trigger_thinking_sfx(self) -> None:
-        node = self._node
-        sfx = String()
-        sfx.data = "thinking"
-        node._sound_trigger_pub.publish(sfx)
+# ADR-0145 §4 (P1 step 1) -- ``_DialogueSttHost`` (the adapter from the
+# ``SttAdmissionHost`` Protocol to DialogueNode, including the lock
+# discipline docstring: ``_speaker_lock`` in ``accumulate_without_wake``,
+# ``_task_lock`` in ``enqueue_pending``, no inversion) moved to
+# :mod:`rob_box_voice.core.stt_admission_host` (pure move, no behaviour
+# change) and is re-exported via the import above.
 
 
 def main(args: Optional[List[str]] = None) -> None:

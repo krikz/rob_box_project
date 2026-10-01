@@ -35,32 +35,16 @@ from __future__ import annotations
 
 import inspect
 import sys
-from unittest.mock import MagicMock
 
 import pytest
 
-# ``rob_box_mcp_tools.tools.music`` импортирует ``rclpy`` на уровне модуля
-# (через базовый класс) — мокаем ROS2 так же, как это уже делает
-# test_tools/test_music.py:20-35, чтобы не тянуть рантайм.
-for _mod in [
-    "rclpy",
-    "rclpy.node",
-    "rclpy.action",
-    "rclpy.qos",
-    "std_msgs",
-    "std_msgs.msg",
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "nav2_msgs",
-    "nav2_msgs.action",
-    "action_msgs",
-    "action_msgs.srv",
-    "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from ._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.core.arranger import spec_from_flat  # noqa: E402
-from rob_box_mcp_tools.tools.music import ComposeMusicTool  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core.arranger import spec_from_flat
+    from rob_box_mcp_tools.tools.music import ComposeMusicTool
+_ros_stubs = _ros.fixture()
 
 #: Параметры ``spec_from_flat``, которые ``ComposeMusicTool.execute()``
 #: заполняет САМ (из RTTTL-резолвинга по ``name=``), а не получает от

@@ -51,7 +51,17 @@ def load_keyword_hit(logs_low: str):
             f"FATAL: в {HARNESS} не найдена функция _keyword_hit — "
             "проверку expected_keywords переписали, тест надо обновить"
         )
-    namespace: dict = {"logs_low": logs_low}
+    # С 8e0f8674 (#2764) тело _keyword_hit — обёртка над
+    # e2e_tool_match.keyword_hit(logs, kw), который харнесс импортирует
+    # в том же heredoc. Даём exec'у те же имена, что видит харнесс.
+    sys.path.insert(0, str(HARNESS.parent))
+    from e2e_tool_match import keyword_hit
+
+    namespace: dict = {
+        "logs": logs_low,
+        "logs_low": logs_low,
+        "keyword_hit": keyword_hit,
+    }
     exec(match.group(0), namespace)  # noqa: S102 — исполняем свой же исходник
     return namespace["_keyword_hit"]
 

@@ -13,9 +13,11 @@
 //              sample_rate?, seq, total, ts_ms}
 //   BINARY_FRAME (stream_id = 0)
 //   ... повтор для каждого чанка ...
-//   operator_tts_done / operator_tts_error — НЕ публикуются в норме
-//     (зарезервированы для forward-compat с приоритетной очередью 07a /
-//      flush при supervised shutdown).
+//   operator_tts_done — после #3272 сервер шлёт его по концу реплики
+//     (quest_node, tars_stage_relay); клиент по нему переводит стадию в
+//     idle (main.ts), само проигрывание done не ждёт. operator_tts_error — по-прежнему не
+//     публикуется в норме (forward-compat / flush при supervised shutdown).
+//     Страховка по TTL в tars_activity.ts остаётся на случай потери done.
 //
 // BINARY_FRAME идёт со stream_id=0 (как и preview), и не имеет
 // topic'а в subscribe_ack — main.ts зеркалит нулевой stream в оба

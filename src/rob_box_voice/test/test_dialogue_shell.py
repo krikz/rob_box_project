@@ -320,6 +320,7 @@ class _TestableDialogueNode(DialogueNode):
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
+        dj_transition: bool = False,
     ) -> None:
         """Schedule the turn on the test loop directly.
 
@@ -357,6 +358,8 @@ class _TestableDialogueNode(DialogueNode):
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
                 from_tg=from_tg,
+                # Issue #3220 — свежий DJ-переход (тик) думает, ретрай нет.
+                dj_transition=dj_transition,
             ),
         )
 

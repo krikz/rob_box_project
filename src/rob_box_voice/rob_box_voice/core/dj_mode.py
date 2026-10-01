@@ -25,7 +25,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
-from .dj_theme_melodies import melody_pool_for_theme, pick_melody
+from .dj_material import choose_melody, consume_if_played_in_turn, consume_material
+from .dj_set_walk import CLUB_ROOTS, apply_bpm_request, apply_set_character, bpm_is_request, club_key, club_theme_arg, related_root, state_bpm  # noqa: F401 — реэкспорт
+from .dj_theme_melodies import melody_pool_for_theme
 
 
 # States where DJ-mode should defer its transition by 15 seconds.
@@ -41,15 +43,9 @@ _PLAN_ENTRY_RE = re.compile(r"^\s*Трек\s*(\d+)\s*[:.)\-—–]\s*(.+?)\s*$")
 DJ_SET_DEFAULT_BPM = 124
 #: Допустимый темп сета (тот же, что ``arranger.BPM_RANGE``).
 DJ_SET_BPM_RANGE = (60, 180)
-#: Тоники в написании ``compose_music`` (``arranger.VALID_ROOTS``).
-CLUB_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-#: Обход тональностей по трекам сета, в полутонах от тоники сета:
-#: i → v → i → iv → … Соседи по квинтовому кругу: у минора и его
-#: доминантового/субдоминантового минора 6 из 7 нот общие — смена мягкая.
-#: Параллельный мажор (§7.5: G ↔ E minor) club не умеет — у него только
-#: ``scale="minor"``, поэтому «родственная» здесь = квинтовый сосед.
-KEY_WALK = (0, 7, 0, 5)
-
+#: Issue #3226 — тональность и темп трека двигаются по сету
+#: (:mod:`.dj_set_walk`): круг квинт + родственные лады, темп ±4 BPM.
+#: ``CLUB_ROOTS`` и :func:`related_root` живут там и реэкспортируются.
 # Issue #3113 (живой прогон 28.09, ~15 с тишины между треками): конечный
 # (``repeat=False``) трек сам замолкает ``Clock.future(..., Clock.clear)``,
 # а переход ждал конца его формы и только ПОТОМ звал модель. Переход к
@@ -57,6 +53,12 @@ KEY_WALK = (0, 7, 0, 5)
 #: Бюджет хода модели на переходе, с. Живой лог 28.09: auto-transition →
 #: compose_music за 3-13 с (с ретраем Bug B).
 DJ_TURN_BUDGET_S = 20.0
+#: Issue #3220 — запас на рассуждение (thinking MiniMax) первой попытки
+#: перехода, с. Думает только ход тика (``core/turn_reasoning.py``), ретрай
+#: Bug B — нет, он укладывается в :data:`DJ_TURN_BUDGET_S`. 20 с — верх
+#: оценки «+10-20 с на ход» из комментария к ``DEFAULT_THINKING_POLICY``
+#: (06.08); это НЕ замер, число поправить по живым переходам с thinking.
+DJ_REASONING_BUDGET_S = 20.0
 #: Длина фейда перехода в тактах — ``core.club_transition.FADE_BARS`` в
 #: rob_box_mcp_tools (+1 такт до границы, как ``fade_seconds``).
 DJ_FADE_BARS = 8
@@ -66,19 +68,13 @@ DJ_MIN_TRACK_PLAY_S = 30.0
 
 
 def finite_form_lead_s(bpm: float) -> float:
-    """За сколько секунд до остановки конечного трека звать переход."""
-    return DJ_TURN_BUDGET_S + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
+    """За сколько секунд до остановки конечного трека звать переход.
 
-
-def related_root(set_root: str, track_no: int) -> str:
-    """Тоника трека ``track_no`` (с 1) в сете с тоникой ``set_root``.
-
-    Детерминированно по :data:`KEY_WALK`; неизвестная тоника → как есть.
+    Ход с рассуждением + быстрый ретрай + фейд: новый трек встаёт к
+    остановке уходящего, а не после тишины (#3113, #3220).
     """
-    if set_root not in CLUB_ROOTS:
-        return set_root
-    shift = KEY_WALK[(max(1, track_no) - 1) % len(KEY_WALK)]
-    return CLUB_ROOTS[(CLUB_ROOTS.index(set_root) + shift) % len(CLUB_ROOTS)]
+    turn_s = DJ_REASONING_BUDGET_S + DJ_TURN_BUDGET_S
+    return turn_s + (DJ_FADE_BARS + 1) * 4 * 60.0 / float(bpm)
 
 
 def plan_entry(plan: str, track_no: int) -> str:
@@ -88,6 +84,36 @@ def plan_entry(plan: str, track_no: int) -> str:
         if match and int(match.group(1)) == track_no:
             return match.group(2)
     return ""
+
+
+def music_started_in_turn(
+    tools: set,
+    music_tools: Iterable[str],
+    succeeded_tools: Optional[Iterable[str]],
+    logger: logging.Logger,
+) -> bool:
+    """Запустил ли ход музыку: музыкальный тул вызван И вернулся без ошибки.
+
+    Issue #3285: ``tools_called`` несёт только ИМЕНА — упавший вызов там тоже
+    есть. Живой лог 01.10 11:12:03: ``compose_music(name='Калинка')`` →
+    «не найдена в библиотеке», а сет записал «DJ трек #1 запущен»; ни один
+    Bug C-ретрай трек не запустил, и лимит сета кончился на трек раньше.
+    30.09 23:49:45: compose_music → «Timeout ожидания результата» → трек #3,
+    Bug B-ретрай того же перехода → трек #4.
+
+    ``succeeded_tools`` — ``DialogResult.succeeded_tools`` (#3004, вызовы без
+    ``is_error``). ``None`` — источник успех не сообщает (трек запустил
+    роутер, #3176): верим именам, как раньше.
+    """
+    called = tools & set(music_tools)
+    if not called or succeeded_tools is None:
+        return bool(called)
+    if called & set(succeeded_tools):
+        return True
+    logger.info(
+        f"🎧 DJ: {sorted(called)!r} в ходе упал — трек сета не засчитан (#3285)"
+    )
+    return False
 
 
 @dataclass
@@ -133,6 +159,11 @@ class DJState:
     # номер трека, который объявлен финальным по лимиту (#2856).
     tracks_started: int = 0
     final_track_no: int = 0
+    # Issue #3247 — модели уже отдан промпт «ФИНАЛЬНЫЙ ТРЕК» этого сета.
+    # С этого момента DJ_AUTO-ход не может снова включить DJ
+    # (:func:`dj_final_turn`) — сет только завершается.
+    # Живёт до конца сета (``_reset_state`` / генуинный старт).
+    final_prompted: bool = False
     # Issue #2875 (дополнение) — отложенное прощание: стенное время, когда
     # его сказать (``None`` — не ждём), и персона, от чьего имени.
     farewell_at: Optional[float] = None
@@ -142,6 +173,12 @@ class DJState:
     # тоника (``""`` — ещё не выбрана) — от эпохи старта сета.
     set_bpm: int = DJ_SET_DEFAULT_BPM
     set_root: str = ""
+    # Issue #3226 — юзер явно попросил темп (``set_dj_mode(bpm=...)``): темп
+    # сета тогда фиксирован; иначе он дрейфует ±4 BPM (:func:`track_bpm`).
+    bpm_locked: bool = False
+    # Issue #3249 — предпочтённый лад сета (характер темы, выведенный LLM:
+    # ``set_dj_mode(scale=...)``); ``""`` — прежние веса ладов (#3226).
+    set_scale: str = ""
     # Issue #3113 — когда конечный (``repeat=False``) трек замолчит, epoch
     # (``stops_at`` из ``/voice/music/form``; ``None`` — зациклен/нет данных),
     # когда это значение впервые пришло, и для какого ``stops_at`` ранний
@@ -163,6 +200,11 @@ class DJState:
     # трек #1 уже звучит, переход #1 — обычный переход к треку #2, без
     # исследования («СТАРТ ВЕЧЕРИНКИ» с search_web и т.п. не нужен).
     preview_started: bool = False
+    # Issue #3227 — имя присланного человеком материала (RTTTL-библиотека,
+    # source=user) и когда принят: ближайший переход играет его хук
+    # (:mod:`.dj_material`). ``""`` — материала нет.
+    pending_material: str = ""
+    pending_material_at: float = 0.0
 
 
 @dataclass
@@ -184,6 +226,24 @@ class DJHook:
     is_dialogue_active: Callable[[], bool]
     persona_default: str = "ДиДжей РОббокс"
     on_stop: Optional[Callable[[str], None]] = None  # (persona) -> None
+
+
+#: Issue #3246 — правило для LLM; жёсткий гард — ``DJ_AUTO_FORBIDDEN_TOOLS``.
+_NO_STOP_RULE = (
+    "НИКОГДА не вызывай stop_music в этом ходе — музыка не должна "
+    "замолкать между треками; сет останавливает только юзер или финал "
+    "по плану (stop_music всё равно будет отклонён)."
+)
+
+#: Issue #3247 — финал сета только завершает сет. Живой прогон 30.09:
+#: на «ФИНАЛЬНЫЙ ТРЕК» модель вызвала ``set_dj_mode(enabled=true,
+#: theme='пираты')`` (тема сета 40 минут назад) — сет шёл ещё 3 трека.
+#: Правило — подсказка; держит гард исполнителя тулов (1 из 6 без него).
+_FINAL_NO_RESTART_RULE = (
+    "Тема и персона — только те, что выше в этом сообщении; темы прошлых "
+    "сетов не бери. НЕ вызывай set_dj_mode(enabled=true): продолжить или "
+    "перезапустить сет из финала нельзя, такой вызов будет отклонён. "
+)
 
 
 class DJModeController:
@@ -291,8 +351,12 @@ class DJModeController:
 
     def _apply_theme(
         self, data: dict, *, is_fresh_start: bool, raw_utterance: str
-    ) -> None:
+    ) -> bool:
         """Тема сета: явная из ``data``, иначе фолбэк из STT (issue #3181).
+
+        Returns:
+            ``True`` — ``data`` принёс НОВУЮ явную тему (issue #3249: тогда
+            принимается и характер сета ``base_bpm``/``scale``).
 
         Вынесено из :meth:`_apply_enable_payload` — держать всю логику
         темы в одном месте (CC-бюджет, ``scripts/lint/cc_budget.py``).
@@ -331,7 +395,8 @@ class DJModeController:
                         f"#{self.state.transition_count})"
                     )
                     self.state.set_plan = ""
-            return
+                return True
+            return False
         if is_fresh_start and not self.state.theme and raw_utterance.strip():
             # Issue #3181 (живой лог 29.09) — LLM включила DJ БЕЗ ``theme``
             # на генуинном старте сета, хотя юзер тему назвал («у нас
@@ -345,11 +410,12 @@ class DJModeController:
                 f"🎧 DJ theme (фолбэк из STT, set_dj_mode без theme): "
                 f"{self.state.theme!r}"
             )
+        return False
 
     def _apply_enable_payload(
         self, data: dict, *, is_fresh_start: bool, raw_utterance: str = ""
     ) -> None:
-        self._apply_theme(data, is_fresh_start=is_fresh_start, raw_utterance=raw_utterance)
+        new_theme = self._apply_theme(data, is_fresh_start=is_fresh_start, raw_utterance=raw_utterance)
         # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
         # сохраняем, чтобы автопромпты использовали её вместо дефолта.
         persona = data.get("persona")
@@ -410,7 +476,7 @@ class DJModeController:
                 f"(был #{self.state.transition_count})"
             )
             self.state.transition_count = 0
-        self._apply_set_limits(data, is_fresh_start=is_fresh_start)
+        self._apply_set_limits(data, is_fresh_start=is_fresh_start, new_theme=new_theme)
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
     @staticmethod
@@ -427,8 +493,11 @@ class DJModeController:
         low, high = bounds
         return max(low, min(high, number))
 
-    def _apply_set_limits(self, data: dict, *, is_fresh_start: bool) -> None:
+    def _apply_set_limits(self, data: dict, *, is_fresh_start: bool, new_theme: bool = False) -> None:
         """Issue #2856 — старт отсчёта сета и явные лимиты юзера.
+
+        Issue #3249 — характер сета (``base_bpm``/``scale``) принимается на
+        генуинном старте и с новой темой; эхо на переходах его не двигает.
 
         ``max_minutes`` — общая длительность сета ОТ СТАРТА (не «ещё N минут
         от этого вызова»): модель повторяет аргументы на каждом переходе, и
@@ -443,16 +512,20 @@ class DJModeController:
             # прошлого сета, не успевшее прозвучать, новому не нужно.
             self.state.tracks_started = 0
             self.state.final_track_no = 0
+            self.state.final_prompted = False
             self.state.farewell_at = None
             self.state.set_bpm = DJ_SET_DEFAULT_BPM
+            self.state.bpm_locked = False
+            self.state.set_scale = ""
             self.state.set_root = ""
             self.state.played_names = []
             self.state.preview_started = False
             self._take_preview_claim()
+        apply_set_character(self.state, data, fresh=is_fresh_start, new_theme=new_theme, log=self._logger.info)
         bpm = self._clamped_int(data.get("bpm"), DJ_SET_BPM_RANGE)
-        if bpm is not None and bpm != self.state.set_bpm:
-            # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113.
-            self.state.set_bpm = bpm
+        if apply_bpm_request(self.state, bpm):
+            # Только явная просьба юзера (set_dj_mode(bpm=...)) — issue #3113;
+            # с ней темп сета фиксирован, без дрейфа (#3226).
             self._logger.info(f"🎧 DJ темп сета: {bpm} BPM")
         minutes = self._clamped_int(
             data.get("max_minutes"), self.DJ_SET_MAX_MINUTES_RANGE
@@ -494,7 +567,10 @@ class DJModeController:
         self.state.final_dispatched = False
         self.state.tracks_started = 0
         self.state.final_track_no = 0
+        self.state.final_prompted = False
         self.state.set_bpm = DJ_SET_DEFAULT_BPM
+        self.state.bpm_locked = False
+        self.state.set_scale = ""
         self.state.set_root = ""
         self.state.preview_started = False
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
@@ -828,6 +904,7 @@ class DJModeController:
         *,
         is_dj_auto: bool = False,
         turn_text: str = "",
+        succeeded_tools: Optional[Iterable[str]] = None,
     ) -> bool:
         """Учесть завершённый ход: запустил ли он трек в идущем сете.
 
@@ -850,19 +927,25 @@ class DJModeController:
         Музыкальная просьба юзера посреди сета без ``set_dj_mode``
         («сыграй тему марио») — заказ гостя, см. :meth:`_hold_for_user_track`.
 
+        Issue #3285: музыкальный тул, упавший в ходе (``succeeded_tools`` его
+        не содержит), трек не запускал — ход не считается ни треком сета, ни
+        заказом гостя (см. :func:`music_started_in_turn`).
+
         Returns:
             True — засчитан трек сета.
         """
         if not self.state.enabled or not tools_called:
             return False
         tools = set(tools_called)
-        if not tools & set(music_tools):
+        if not music_started_in_turn(tools, music_tools, succeeded_tools, self._logger):
             return False
+        consume_if_played_in_turn(self.state, turn_text)  # #3227: LLM сыграл материал сам
         set_turn = is_dj_auto or "[DJ_AUTO" in (turn_text or "")
         if not set_turn and "set_dj_mode" not in tools:
             self._hold_for_user_track()
             return False
         self.state.tracks_started += 1
+        consume_material(self.state)  # #3227: материал отдан треку сета
         self._logger.info(
             f"🎧 DJ трек #{self.state.tracks_started} запущен "
             f"(переход #{self.state.transition_count})"
@@ -995,27 +1078,38 @@ class DJModeController:
         #3113 п.2) — это ожидаемо, контракт этой функции — только строка
         вызова.
         """
-        root = related_root(self._set_root(), track_no)
-        melody = pick_melody(
-            self.state.melody_pool, track_no, self.state.played_names
-        )
-        name_part = f'name="{melody}", ' if melody else ""
+        melody = choose_melody(self.state, self._clock(), track_no)
+        root, scale = club_key(self.state, self._set_root(), track_no, hooked=bool(melody))
+        name_part = f'name="{melody}", ' if melody else club_theme_arg(self.state)
         if melody:
             self._logger.info(f"🎧 DJ трек #{track_no} — мелодия {melody}")
         return (
-            f'compose_music(style="club", {name_part}bpm={self.state.set_bpm}, '
-            f'root="{root}", scale="minor", seed={self._track_seed(track_no)}, '
+            f'compose_music(style="club", {name_part}bpm={state_bpm(self.state, track_no)}, '
+            f'root="{root}", scale="{scale}", seed={self._track_seed(track_no)}, '
             f'repeat={"true" if repeat else "false"}, transition="fade")'
         )
 
     def _tempo_line(self) -> str:
-        """Issue #3113 — один темп на весь сет (DJ Dave: переходы фильтром,
-        не скачком темпа)."""
+        """Темп сета в промпте перехода.
+
+        Issue #3113: один темп на весь сет (DJ Dave: переходы фильтром, не
+        скачком). Issue #3226: пока юзер не назвал темп, он плавно дрейфует
+        около базового (±4 BPM, шаг ≤ 4) — модель берёт ``bpm`` из готового
+        вызова. Названный юзером темп фиксирует сет.
+        """
+        if self.state.bpm_locked:
+            return (
+                f"🎚 Темп сета {self.state.set_bpm} BPM — ОДИН на весь сет (юзер его назвал): "
+                "НЕ меняй bpm между треками. Сменить темп — только если юзер сам попросил: "
+                "тогда set_dj_mode(enabled=true, bpm=<новый>) и этот же bpm в "
+                "compose_music. "
+            )
         return (
-            f"🎚 Темп сета {self.state.set_bpm} BPM — ОДИН на весь сет: НЕ меняй "
-            "bpm между треками. Сменить темп — только если юзер сам попросил: "
-            "тогда set_dj_mode(enabled=true, bpm=<новый>) и этот же bpm в "
-            "compose_music. "
+            f"🎚 Темп сета плавно дрейфует около {self.state.set_bpm} BPM (±4, между "
+            "соседними треками не больше 4): бери bpm из готового вызова compose_music "
+            "как есть и НЕ передавай bpm в set_dj_mode. Задать один фиксированный темп — "
+            "только если юзер сам попросил: тогда set_dj_mode(enabled=true, bpm=<новый>) "
+            "и этот же bpm в compose_music. "
         )
 
     def _plan_track_line(self, track_no: int) -> str:
@@ -1051,7 +1145,7 @@ class DJModeController:
             "название конкретной песни/композиции (не жанр и не "
             "описание вайба) — действует RULE #KNOWN-MELODY (см. "
             "composer.txt): НЕ импровизируй по памяти, СНАЧАЛА "
-            f'compose_music(name="{entry}", seed={seed}) + bpm={self.state.set_bpm} '
+            f'compose_music(name="{entry}", seed={seed}) + bpm={state_bpm(self.state, track_no)} '
             "(темп сета) — тул сам ищет точные "
             f'ноты в RTTTL-базе; при сомнении в написании названия — '
             f'lookup_melody(name="{entry}") первым отдельным вызовом. '
@@ -1075,13 +1169,13 @@ class DJModeController:
             else (
                 f"Сыграй следующий трек через {self._club_call(track_no)} — "
                 "свой seed даёт новые прогрессию и риф, тоника — родственная "
-                "тональности сета, уходящий трек гаснет фейдом. "
+                "тональности сета (круг квинт, лад и темп уже в вызове), уходящий трек гаснет фейдом. "
             )
         )
         return (
             f"{club}Если юзер попросил конкретную песню — "
             f"compose_music(name=..., seed={self._track_seed(track_no)}, "
-            f"bpm={self.state.set_bpm}, repeat=true) вместо клубного трека. "
+            f"bpm={state_bpm(self.state, track_no)}, repeat=true) вместо клубного трека. "
             f"{self._played_line()}"
         )
 
@@ -1212,6 +1306,11 @@ class DJModeController:
             self.state.final_dispatched and n == self.state.transition_count
         )
         if (plan_tracks and track_no >= plan_tracks) or limit_final:
+            # Issue #3247 — с этого промпта сет только завершается:
+            # ``set_dj_mode(enabled=true)`` из DJ_AUTO-хода не исполняет гард
+            # исполнителя тулов (:func:`dj_final_turn` →
+            # ``TURN_DJ_SET_FINAL`` → ``track_start_guard.dj_restart_refused``).
+            self.state.final_prompted = True
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
@@ -1220,10 +1319,12 @@ class DJModeController:
                 f"{self._club_call(track_no, repeat=False)} — repeat=false: форма "
                 "сама доводит его до спокойного финала и затухания, не проси "
                 "зацикленный трек (трек плана с name= — тоже с repeat=false). "
+                f"{_FINAL_NO_RESTART_RULE}"
                 "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
                 "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст, "
                 "и НЕ вызывай speak_text в этом ходе: система сама скажет "
-                "«вечеринка подошла к концу», когда трек доиграет."
+                "«вечеринка подошла к концу», когда трек доиграет. "
+                f"{_NO_STOP_RULE}"
             )
         return (
             f"[DJ_AUTO переход #{n}] "
@@ -1238,8 +1339,22 @@ class DJModeController:
             "пожар!»). НЕ пиши свободный текст ответа и НЕ комментируй, что "
             "ты делаешь — свободный текст не озвучивается, работает только "
             "speak_text. После этого вызови set_dj_mode(enabled=true, "
-            "next_transition_sec=<столько же секунд>) для следующего перехода."
+            "next_transition_sec=<столько же секунд>) для следующего перехода. "
+            f"{_NO_STOP_RULE}"
         )
 
 
-__all__ = ["DJModeController", "DJState", "DJHook", "plan_entry"]
+def dj_final_turn(dj: Optional["DJModeController"], is_dj_auto: bool) -> bool:
+    """Issue #3247 — DJ_AUTO-ход идёт после финального промпта сета.
+
+    Нода (``_run_turn``) ставит по нему ``TURN_DJ_SET_FINAL`` на время хода;
+    гард исполнителя тулов тогда не исполняет ``set_dj_mode(enabled=true)``.
+    Реплика человека (``is_dj_auto=False``) сет продлить может. Без
+    настоящего контроллера (стаб-нода в тестах) — ``False``. Модульная
+    функция, а не метод: классы не растут (ADR-0145).
+    """
+    state = getattr(dj, "state", None)
+    return bool(is_dj_auto) and getattr(state, "final_prompted", False) is True
+
+
+__all__ = ["DJModeController", "DJState", "DJHook", "dj_final_turn", "plan_entry"]

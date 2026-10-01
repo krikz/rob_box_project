@@ -136,8 +136,23 @@ class TestRos2NodeStatusTool:
         names = [p.name for p in tool.parameters]
         assert names == ["nodes"]
 
-    def test_fallback_uses_monitor_when_rclpy_missing(self, mock_node):
-        """Нет rclpy — должны использовать monitor, иначе честный missing."""
+    def test_fallback_uses_monitor_when_rclpy_missing(self, mock_node, monkeypatch):
+        """Нет rclpy — должны использовать monitor, иначе честный missing.
+
+        ``sys.modules["rclpy"] = None`` forces ``import rclpy`` to raise
+        ``ImportError`` for the duration of this test regardless of what
+        another test file left behind. Without this, a MagicMock stub
+        leaked into ``sys.modules`` by an unrelated file (e.g.
+        test_arranger.py's module-level
+        ``sys.modules.setdefault("rclpy", MagicMock())``, never cleaned
+        up) makes ``_probe_ros_node_names`` return ``[]`` instead of
+        ``None`` — ``Ros2NodeStatusTool.execute`` then takes the
+        "real rclpy" branch, whose summary dict has no ``source`` key,
+        and the assertion below fails with ``KeyError: 'source'``.
+        ``monkeypatch`` restores the previous ``sys.modules`` entry (or
+        removes it) automatically at teardown.
+        """
+        monkeypatch.setitem(sys.modules, "rclpy", None)
         monitor = FakeMonitor({
             "/audio_node": {"status": "active", "last_seen": 0},
             "/stt_node": {"status": "failed", "last_seen": 0},
@@ -157,8 +172,15 @@ class TestRos2NodeStatusTool:
         assert "/tts_node" in data["missing_list"]
         assert data["total"] == 3
 
-    def test_fallback_monitor_unavailable_returns_empty_active(self, mock_node):
-        """Monitor не зарегистрирован → все ноды missing + source=monitor_unavailable."""
+    def test_fallback_monitor_unavailable_returns_empty_active(self, mock_node, monkeypatch):
+        """Monitor не зарегистрирован → все ноды missing + source=monitor_unavailable.
+
+        Same forced-ImportError guard as
+        ``test_fallback_uses_monitor_when_rclpy_missing`` above — see its
+        docstring for why a leaked ``rclpy`` stub from another test file
+        would otherwise route this through the "real rclpy" branch.
+        """
+        monkeypatch.setitem(sys.modules, "rclpy", None)
         tool = Ros2NodeStatusTool(mock_node)
         result = tool.execute(nodes=["/audio_node"])
 

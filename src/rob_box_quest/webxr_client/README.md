@@ -309,8 +309,8 @@ panels.
 | ----------------------------- | -------------- | ---------------------------------------------------------------------- |
 | `bridge_floor.optimized.glb`  |  22 KB         | Hex-grid floor (6×6 tiles, dark metal + emissive cyan edges).          |
 | `bridge_walls.optimized.glb`  |  12 KB         | 4 walls + viewports + console strips.                                  |
-| `bridge_props.optimized.glb`  |  24 KB         | Captain chair + main console + side terminals + holo-projectors.       |
-| `bridge_nav.optimized.glb`    |   8 KB         | 8 AABB markers for `safe_walk_area` + XR teleport anchors.             |
+| `bridge_props.optimized.glb`  |  24 KB         | Captain chair + main console + side terminals.                          |
+| `bridge_nav.optimized.glb`    |   8 KB         | 6 AABB markers for `safe_walk_area` + XR teleport anchors.             |
 | `bridge_occluders.optimized.glb` |  4 KB      | 4 wall-coincident planes for hiding UI panels behind walls.            |
 | `bridge_scene_meta.json`      |   5 KB         | Runtime metadata (design, safe_walk_area, nav_points, occluders).      |
 | `hdr/bridge_env_1k.hdr`       | 1.6 MB         | Radiance HDR for IBL on metallic parts (Poly Haven CC0).               |

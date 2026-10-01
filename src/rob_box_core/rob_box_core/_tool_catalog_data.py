@@ -26,6 +26,42 @@ from typing import Any
 #: code that runs it.
 TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
+        'name': 'add_music_material',
+        'description': 'Принять музыкальный материал, который человек ПРИСЛАЛ в '
+                       'сообщении (RTTTL-строка, Strudel/Tidal-код '
+                       'note("...")/n("..."), или список нот «e4 g4 b4 c5»), и '
+                       'сохранить его в библиотеку мелодий. Возвращает name — им '
+                       'играется хук: compose_music(style="club", name=<name>). '
+                       'Передай text ДОСЛОВНО как прислал человек. Если не распознал — '
+                       'вернёт честную ошибку: скажи об этом и не выдумывай ноты.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'text': {   'type': 'string',
+                                                        'description': 'Текст '
+                                                                       'сообщения с '
+                                                                       'материалом '
+                                                                       'дословно (код, '
+                                                                       'RTTTL или '
+                                                                       'ноты).'},
+                                            'title': {   'type': 'string',
+                                                         'description': 'Название '
+                                                                        'материала '
+                                                                        '(необязательно; '
+                                                                        'иначе из '
+                                                                        'комментария в '
+                                                                        'коде).'}},
+                          'required': ['text'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['text', 'title'],
+                         'required': ['text'],
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj')},
+    {   'llm_visible': True,
+        'read_only': False,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
@@ -1768,15 +1804,54 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '124), root '
                                                                         '(по умолчанию '
                                                                         'A#), scale '
-                                                                        '(только '
-                                                                        'minor), seed '
+                                                                        '(minor по '
+                                                                        'умолчанию, '
+                                                                        'ещё dorian, '
+                                                                        'phrygian, '
+                                                                        'major, '
+                                                                        'minorPentatonic, '
+                                                                        'majorPentatonic '
+                                                                        '— '
+                                                                        'пентатоника: '
+                                                                        'риф и аккорды '
+                                                                        'не выходят из '
+                                                                        '5 ступеней), '
+                                                                        'seed '
                                                                         '(выбирает '
                                                                         'прогрессию, '
                                                                         'риф, бочку, '
                                                                         'хэты, шаблон '
                                                                         'секций и '
-                                                                        'тембры) и '
-                                                                        'repeat; '
+                                                                        'тембры), '
+                                                                        'repeat и '
+                                                                        'тембр под '
+                                                                        'тему поверх '
+                                                                        'выбора сида: '
+                                                                        'lead_synth '
+                                                                        '(pluck, blip, '
+                                                                        'arpy, karp, '
+                                                                        'marimba, '
+                                                                        'sitar, '
+                                                                        'epiano, '
+                                                                        'brass, '
+                                                                        'orient, '
+                                                                        'viola) и '
+                                                                        'pad_synth '
+                                                                        '(sinepad, '
+                                                                        'warmpad, '
+                                                                        'space, ambi, '
+                                                                        'strangerpulsepad); '
+                                                                        'другой тембр '
+                                                                        'не '
+                                                                        'применяется, '
+                                                                        'ответ назовёт '
+                                                                        'причину. Не '
+                                                                        'задан — '
+                                                                        'тембры '
+                                                                        'выбирает сид '
+                                                                        '(так треки '
+                                                                        'сета '
+                                                                        'разнообразнее); '
                                                                         'остальные '
                                                                         'параметры '
                                                                         'игнорируются '
@@ -1844,7 +1919,33 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'треками '
                                                                              '— fade.',
                                                               'enum': ['cut', 'fade'],
-                                                              'default': 'cut'}},
+                                                              'default': 'cut'},
+                                            'theme': {   'type': 'string',
+                                                         'description': 'Только для '
+                                                                        'style=club '
+                                                                        'без '
+                                                                        'name=/rtttl=: '
+                                                                        'тема сета '
+                                                                        '(«Очень '
+                                                                        'странные '
+                                                                        'дела», '
+                                                                        '«денди»). '
+                                                                        'Lead играет '
+                                                                        'фрагмент '
+                                                                        'мелодии на '
+                                                                        'эту тему из '
+                                                                        'архива; если '
+                                                                        'темы в архиве '
+                                                                        'нет — мелодию '
+                                                                        'ищет в вебе '
+                                                                        '(search_web) '
+                                                                        'и запоминает. '
+                                                                        'DJ-сет '
+                                                                        'передаёт тему '
+                                                                        'в готовом '
+                                                                        'вызове — бери '
+                                                                        'её как '
+                                                                        'есть.'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -1889,7 +1990,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'seed',
                                        'rtttl',
                                        'style',
-                                       'transition'],
+                                       'transition',
+                                       'theme'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -2890,14 +2992,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'ПЕРВЫМ делом, когда юзер просит сыграть конкретную мелодию: '
                        'посмотри на ноты и подбери аранжировку (lead_synth, form, '
                        'drums, bass, pad). Затем СЫГРАЙ через compose_music(name=..., '
-                       'lead_synth=..., bass_synth=..., pad_synth=..., form=...). Ноты '
-                       'и рисунки ударных при name= система выводит из самой мелодии — '
-                       'не сочиняй их. lead_synth подбирай под характер мелодии (марш '
-                       '→ imperialbrass, классика → pianovel, игра → blip). НЕ '
-                       'конвертируй RTTTL вручную в execute_music_code. Имя ищи на '
-                       'АНГЛИЙСКОМ или транслитом («имперский марш» → "imperial '
-                       'march"). Если не нашлось — честно скажи, что не знаешь точных '
-                       'нот.',
+                       'lead_synth=..., bass_synth=..., pad_synth=..., form=...). Если '
+                       "в ответе есть data['preset'] (сохранённое звучание мелодии) — "
+                       'играй compose_music(name=...) БЕЗ синтов и ручек, если юзер не '
+                       'просит другое звучание. Ноты и рисунки ударных при name= '
+                       'система выводит из самой мелодии — не сочиняй их. lead_synth '
+                       'подбирай под характер мелодии (марш → imperialbrass, классика '
+                       '→ pianovel, игра → blip). НЕ конвертируй RTTTL вручную в '
+                       'execute_music_code. Имя ищи на АНГЛИЙСКОМ или транслитом '
+                       '(«имперский марш» → "imperial march"). Если не нашлось — '
+                       'честно скажи, что не знаешь точных нот.',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Название '
@@ -5121,15 +5225,54 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '124), root '
                                                                         '(по умолчанию '
                                                                         'A#), scale '
-                                                                        '(только '
-                                                                        'minor), seed '
+                                                                        '(minor по '
+                                                                        'умолчанию, '
+                                                                        'ещё dorian, '
+                                                                        'phrygian, '
+                                                                        'major, '
+                                                                        'minorPentatonic, '
+                                                                        'majorPentatonic '
+                                                                        '— '
+                                                                        'пентатоника: '
+                                                                        'риф и аккорды '
+                                                                        'не выходят из '
+                                                                        '5 ступеней), '
+                                                                        'seed '
                                                                         '(выбирает '
                                                                         'прогрессию, '
                                                                         'риф, бочку, '
                                                                         'хэты, шаблон '
                                                                         'секций и '
-                                                                        'тембры) и '
-                                                                        'repeat; '
+                                                                        'тембры), '
+                                                                        'repeat и '
+                                                                        'тембр под '
+                                                                        'тему поверх '
+                                                                        'выбора сида: '
+                                                                        'lead_synth '
+                                                                        '(pluck, blip, '
+                                                                        'arpy, karp, '
+                                                                        'marimba, '
+                                                                        'sitar, '
+                                                                        'epiano, '
+                                                                        'brass, '
+                                                                        'orient, '
+                                                                        'viola) и '
+                                                                        'pad_synth '
+                                                                        '(sinepad, '
+                                                                        'warmpad, '
+                                                                        'space, ambi, '
+                                                                        'strangerpulsepad); '
+                                                                        'другой тембр '
+                                                                        'не '
+                                                                        'применяется, '
+                                                                        'ответ назовёт '
+                                                                        'причину. Не '
+                                                                        'задан — '
+                                                                        'тембры '
+                                                                        'выбирает сид '
+                                                                        '(так треки '
+                                                                        'сета '
+                                                                        'разнообразнее); '
                                                                         'остальные '
                                                                         'параметры '
                                                                         'игнорируются '
@@ -5197,7 +5340,33 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'треками '
                                                                              '— fade.',
                                                               'enum': ['cut', 'fade'],
-                                                              'default': 'cut'}},
+                                                              'default': 'cut'},
+                                            'theme': {   'type': 'string',
+                                                         'description': 'Только для '
+                                                                        'style=club '
+                                                                        'без '
+                                                                        'name=/rtttl=: '
+                                                                        'тема сета '
+                                                                        '(«Очень '
+                                                                        'странные '
+                                                                        'дела», '
+                                                                        '«денди»). '
+                                                                        'Lead играет '
+                                                                        'фрагмент '
+                                                                        'мелодии на '
+                                                                        'эту тему из '
+                                                                        'архива; если '
+                                                                        'темы в архиве '
+                                                                        'нет — мелодию '
+                                                                        'ищет в вебе '
+                                                                        '(search_web) '
+                                                                        'и запоминает. '
+                                                                        'DJ-сет '
+                                                                        'передаёт тему '
+                                                                        'в готовом '
+                                                                        'вызове — бери '
+                                                                        'её как '
+                                                                        'есть.'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {   'params': [   'name',
@@ -5242,7 +5411,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'seed',
                                        'rtttl',
                                        'style',
-                                       'transition'],
+                                       'transition',
+                                       'theme'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
@@ -5986,8 +6156,66 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                       'сет держит один '
                                                                       'темп, переходы '
                                                                       'между треками '
-                                                                      'его не '
-                                                                      'меняют.'}},
+                                                                      'его не меняют.'},
+                                            'base_bpm': {   'type': 'integer',
+                                                            'description': 'Характер '
+                                                                           'сета '
+                                                                           '(#3249): '
+                                                                           'базовый '
+                                                                           'темп '
+                                                                           '(90–150), '
+                                                                           'который ТЫ '
+                                                                           'выводишь '
+                                                                           'из '
+                                                                           'настроения '
+                                                                           'темы по '
+                                                                           'правилам '
+                                                                           'скилла dj, '
+                                                                           'когда юзер '
+                                                                           'темп НЕ '
+                                                                           'называл. '
+                                                                           'Темп '
+                                                                           'треков '
+                                                                           'дрейфует '
+                                                                           'около него '
+                                                                           '(±4). '
+                                                                           'Передавай '
+                                                                           'вместе с '
+                                                                           'theme при '
+                                                                           'первом '
+                                                                           'включении '
+                                                                           'или смене '
+                                                                           'темы; на '
+                                                                           'переходах '
+                                                                           'не '
+                                                                           'повторяй.'},
+                                            'scale': {   'type': 'string',
+                                                         'description': 'Характер сета '
+                                                                        '(#3249): '
+                                                                        'предпочтённый '
+                                                                        'лад клубных '
+                                                                        'треков — '
+                                                                        'minor | major '
+                                                                        '| dorian | '
+                                                                        'phrygian, по '
+                                                                        'настроению '
+                                                                        'темы (правила '
+                                                                        'скилла dj). '
+                                                                        'Остальные '
+                                                                        'треки сета '
+                                                                        'берут '
+                                                                        'родственные '
+                                                                        'лады. '
+                                                                        'Передавай '
+                                                                        'вместе с '
+                                                                        'theme при '
+                                                                        'первом '
+                                                                        'включении или '
+                                                                        'смене темы.',
+                                                         'enum': [   'minor',
+                                                                     'major',
+                                                                     'dorian',
+                                                                     'phrygian']}},
                           'required': ['enabled'],
                           'additionalProperties': False},
         'signature': {   'params': [   'enabled',
@@ -5998,7 +6226,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'plan',
                                        'max_minutes',
                                        'max_tracks',
-                                       'bpm'],
+                                       'bpm',
+                                       'base_bpm',
+                                       'scale'],
                          'required': ['enabled'],
                          'accepts_kwargs': False},
         'skill': ('dj',)},

@@ -23,9 +23,13 @@ Issue #2878 — тот же живой прогон, соседняя наход
 останавливал — ``speak_text`` не запускает трек. Этот же класс теперь
 считает и реплики DJ-хода:
 
-* «DJ-ход» — эвристика без пробрасывания ``is_dj_auto`` через AgentCore:
-  ход уже запустил трек (:attr:`TrackStartGuard.started_tool`) или уже
-  вызвал ``set_dj_mode`` в этом ходе (см. :meth:`record`);
+* «DJ-ход» — ход, запущенный DJ-автопереходом (``is_dj_auto``; флаг
+  берётся из ``TURN_IS_DJ_AUTO`` на границе хода, см.
+  ``SchedulerToolExecutor.begin_turn`` и :meth:`TrackStartGuard.reset`)
+  или уже вызвавший ``set_dj_mode`` (см. :meth:`record`). Сам по себе
+  запуск трека DJ-ходом НЕ считается (issue #3221): пользовательский
+  рэп/песня/стих под бит тоже запускает трек, и куплеты не должны
+  резаться лимитом и :func:`trim_dj_speech`;
 * в DJ-ходе разрешено :data:`DEFAULT_DJ_SPEAK_LIMIT` (1) вызовов
   ``speak_text``, кроме самого первого хода сета («[DJ_AUTO — СТАРТ
   ВЕЧЕРИНКИ]», распознаётся по ``set_dj_mode(plan=...)``) — там
@@ -50,6 +54,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STARTING_TOOLS,
     USER_MUSIC_SATISFYING_TOOLS,
 )
+from rob_box_voice.core.turn_origin import TURN_DJ_SET_FINAL, TURN_IS_DJ_AUTO
 
 #: Тулы, запускающие трек (каждый начинает с ``Clock.clear()`` / смены mp3).
 #: Оба набора выводятся из capability-флагов ``TOOL_CATALOG``, отдельного
@@ -98,6 +103,20 @@ SPEAK_REFUSAL_MESSAGE = (
     "выполнен. Заверши ход: следующая реплика — на следующем переходе."
 )
 
+#: Issue #3246 — тулы, которые НЕЛЬЗЯ исполнять в DJ_AUTO-ходе (авто-переход,
+#: не реплика человека). Живой прогон 30.09: LLM на переходе #3 сам вызвал
+#: ``stop_music`` -> ~5 с цифровой тишины посреди сета. Останавливает сет
+#: только юзер (роутер/его ход) или финал по плану (``set_dj_mode(false)``).
+#: Список обобщаемый: добавлять сюда любой тул, рвущий звук без запроса юзера.
+DJ_AUTO_FORBIDDEN_TOOLS: frozenset = frozenset({"stop_music"})
+
+#: Машиночитаемый код отказа запрещённого в DJ_AUTO тула.
+DJ_AUTO_FORBIDDEN_ERROR_CODE = "tool_forbidden_in_dj_auto_turn"
+
+#: Issue #3247 — машиночитаемый код отказа ``set_dj_mode(enabled=true)``
+#: в DJ_AUTO-ходе после финального промпта сета.
+DJ_FINAL_RESTART_ERROR_CODE = "dj_restart_forbidden_in_final_turn"
+
 #: ~140 символов / 1-2 предложения (issue #2878 acceptance).
 DJ_SPEAK_MAX_CHARS = 140
 DJ_SPEAK_MAX_SENTENCES = 2
@@ -139,6 +158,55 @@ def _has_plan(args: Optional[Mapping[str, Any]]) -> bool:
     return bool(plan) if isinstance(plan, str) else bool(plan)
 
 
+def dj_auto_forbidden_content(tool_name: str) -> str:
+    """JSON-тело отказа тула, запрещённого в DJ_AUTO-ходе (issue #3246)."""
+    return json.dumps(
+        {
+            "success": False,
+            "error": DJ_AUTO_FORBIDDEN_ERROR_CODE,
+            "tool": tool_name,
+            "message": (
+                f"{tool_name} НЕ выполнен: в автоматическом DJ-переходе "
+                "останавливать музыку нельзя — сет останавливает только "
+                "юзер или финал по плану. Сыграй следующий трек "
+                "(compose_music / execute_music_code) и заверши ход."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _wants_enable(args: Optional[Mapping[str, Any]]) -> bool:
+    """``True`` — вызов ``set_dj_mode`` ВКЛЮЧАЕТ DJ (``enabled`` истинно).
+
+    Строка «false»/«0» от модели — выключение, а не ``bool("false")``.
+    """
+    value = (args or {}).get("enabled")
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
+def dj_final_restart_content() -> str:
+    """JSON-тело отказа ``set_dj_mode(enabled=true)`` в финале сета (#3247)."""
+    return json.dumps(
+        {
+            "success": False,
+            "error": DJ_FINAL_RESTART_ERROR_CODE,
+            "tool": DJ_MODE_TOOL,
+            "message": (
+                "set_dj_mode(enabled=true) НЕ выполнен: это ФИНАЛЬНЫЙ "
+                "переход сета — сет завершается, продолжать или "
+                "перезапускать его (в том числе с другой темой) нельзя. "
+                "Сыграй завершающий трек через compose_music(repeat=false), "
+                "если ещё не сыграл, и вызови set_dj_mode(enabled=false). "
+                "Прощание не говори."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def speak_refusal_content(speak_count: int, speak_limit: int) -> str:
     """JSON-тело отказа лишнего ``speak_text`` в DJ-ходе."""
     return json.dumps(
@@ -167,6 +235,8 @@ class TrackStartGuard:
         self._speak_count: int = 0
         self._dj_mode_seen: bool = False
         self._dj_mode_plan_seen: bool = False
+        # Issue #3221 — ход запущен DJ-автопереходом (is_dj_auto).
+        self._dj_auto: bool = False
 
     @property
     def started_tool(self) -> Optional[str]:
@@ -175,13 +245,13 @@ class TrackStartGuard:
 
     @property
     def is_dj_turn(self) -> bool:
-        """``True`` — этот ход уже проявил себя как DJ-ход (issue #2878).
+        """``True`` — это DJ-ход (issue #2878, уточнено в #3221).
 
-        Эвристика (без пробрасывания ``is_dj_auto`` через AgentCore, см.
-        module docstring): ход уже запустил трек ИЛИ уже вызвал
-        ``set_dj_mode`` — оба возможны только в DJ-оркестрации.
+        Ход, запущенный DJ-автопереходом (:meth:`reset` ``dj_auto=True``),
+        ИЛИ уже вызвавший ``set_dj_mode``. Запуск трека сам по себе не
+        признак: пользовательский рэп под бит — не DJ-ход.
         """
-        return self._started is not None or self._dj_mode_seen
+        return self._dj_auto or self._dj_mode_seen
 
     @property
     def speak_count(self) -> int:
@@ -200,8 +270,12 @@ class TrackStartGuard:
             return PARTY_START_DJ_SPEAK_LIMIT
         return DEFAULT_DJ_SPEAK_LIMIT
 
-    def reset(self) -> None:
-        """Граница хода: следующий запуск снова разрешён."""
+    def reset(self, *, dj_auto: bool = False) -> None:
+        """Граница хода: следующий запуск снова разрешён.
+
+        *dj_auto* — ход запущен DJ-автопереходом (issue #3221).
+        """
+        self._dj_auto = dj_auto
         self._started = None
         self._speak_count = 0
         self._dj_mode_seen = False
@@ -210,6 +284,14 @@ class TrackStartGuard:
     def should_refuse(self, tool_name: str) -> bool:
         """``True`` — это повторный запуск трека в ходе, исполнять нельзя."""
         return tool_name in TRACK_STARTING_TOOLS and self._started is not None
+
+    def should_refuse_forbidden(self, tool_name: str) -> bool:
+        """``True`` — тул запрещён в DJ_AUTO-ходе (issue #3246).
+
+        Только ход, запущенный автопереходом (:meth:`reset` ``dj_auto``);
+        реплика юзера («стоп музыку») не затрагивается.
+        """
+        return self._dj_auto and tool_name in DJ_AUTO_FORBIDDEN_TOOLS
 
     def should_refuse_speak(self) -> bool:
         """``True`` — DJ-ход уже израсходовал лимит ``speak_text``.
@@ -245,6 +327,40 @@ class TrackStartGuard:
                 self._dj_mode_plan_seen = True
 
 
+def dj_restart_refused(tool_name: str, args: Optional[Mapping[str, Any]]) -> bool:
+    """``True`` — финальный DJ_AUTO-ход пытается снова включить DJ (#3247).
+
+    Живой прогон 30.09 (сет «море и чайки»): на «ФИНАЛЬНЫЙ ТРЕК» модель
+    вызвала ``set_dj_mode(enabled=true, theme='пираты')`` — тема сета
+    40 минут назад — и сет шёл ещё 3 трека. Флаги хода — из контекста
+    (``TURN_IS_DJ_AUTO`` / ``TURN_DJ_SET_FINAL`` ставит ``_run_turn``).
+    ``enabled=false`` и реплика человека («давай ещё!») не затрагиваются.
+    """
+    return (
+        tool_name == DJ_MODE_TOOL
+        and TURN_IS_DJ_AUTO.get()
+        and TURN_DJ_SET_FINAL.get()
+        and _wants_enable(args)
+    )
+
+
+def dj_auto_refusal_content(
+    guard: TrackStartGuard, tool_name: str, args: Optional[Mapping[str, Any]]
+) -> Optional[str]:
+    """Единая точка «что DJ_AUTO-ходу нельзя»: тело отказа или ``None``.
+
+    * #3246 — тулы из :data:`DJ_AUTO_FORBIDDEN_TOOLS` (``stop_music``);
+    * #3247 — ``set_dj_mode(enabled=true)`` после финального промпта сета.
+
+    Модульная функция, а не метод гарда: класс не растёт (ADR-0145).
+    """
+    if guard.should_refuse_forbidden(tool_name):
+        return dj_auto_forbidden_content(tool_name)
+    if dj_restart_refused(tool_name, args):
+        return dj_final_restart_content()
+    return None
+
+
 def refusal_content(tool_name: str, started_tool: Optional[str]) -> str:
     """JSON-тело отказа для ``ToolResult.content``."""
     return json.dumps(
@@ -261,6 +377,7 @@ def refusal_content(tool_name: str, started_tool: Optional[str]) -> str:
 
 __all__ = [
     "DEFAULT_DJ_SPEAK_LIMIT",
+    "DJ_FINAL_RESTART_ERROR_CODE",
     "DJ_MODE_TOOL",
     "DJ_SPEAK_MAX_CHARS",
     "DJ_SPEAK_MAX_SENTENCES",
@@ -272,6 +389,9 @@ __all__ = [
     "SPEAK_TOOL",
     "TRACK_STARTING_TOOLS",
     "TrackStartGuard",
+    "dj_auto_refusal_content",
+    "dj_final_restart_content",
+    "dj_restart_refused",
     "refusal_content",
     "speak_refusal_content",
     "trim_dj_speech",

@@ -241,7 +241,7 @@ def test_predrop_hpf_durations_cover_form():
     "kwargs, message",
     [
         (dict(root="H"), "тоника"),
-        (dict(scale="major"), "Лад"),
+        (dict(scale="lydian"), "Лад"),
         (dict(template="nope"), "шаблон"),
         (dict(kick="nope"), "бочки"),
         (dict(bpm=500), "bpm"),

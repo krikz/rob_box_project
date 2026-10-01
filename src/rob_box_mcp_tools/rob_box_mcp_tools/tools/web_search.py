@@ -21,6 +21,7 @@ from typing import List
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 
+
 class SearchWebTool(MCPTool):
     """DuckDuckGo general-purpose web search tool."""
 
@@ -95,6 +96,29 @@ class SearchWebTool(MCPTool):
 
     # ── Execution ────────────────────────────────────────────────────────
 
+    def _ddgs_text(self, DDGS_cls, query: str, max_results: int) -> list:
+        """Сырая выдача DDGS; пустая выдача — ``[]``, а не исключение (issue #3242).
+
+        ddgs сообщает о пустой выдаче ``DDGSException("No results found.")`` —
+        это не сбой сети: раньше он логировался ``[ERROR]`` и отвечал «DuckDuckGo
+        недоступен». Остальные исключения пробрасываются как раньше.
+        """
+        try:
+            with DDGS_cls(timeout=10) as ddgs:
+                return list(
+                    ddgs.text(
+                        query,
+                        max_results=max_results,
+                        region="wt-wt",
+                        backend="duckduckgo",
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            if "no results found" not in str(exc).lower():
+                raise
+            self.log_info(f"[search_web] query={query[:60]!r} → 0 results ({type(exc).__name__})")
+            return []
+
     def execute(
         self,
         query: str,
@@ -149,15 +173,7 @@ class SearchWebTool(MCPTool):
         max_results = max(1, min(int(max_results or 5), self._MAX_RESULTS))
 
         try:
-            with DDGS_cls(timeout=10) as ddgs:
-                raw = list(
-                    ddgs.text(
-                        query,
-                        max_results=max_results,
-                        region="wt-wt",
-                        backend="duckduckgo",
-                    )
-                )
+            raw = self._ddgs_text(DDGS_cls, query, max_results)
         except Exception as exc:  # noqa: BLE001
             self.log_error(f"[search_web] DDGS error: {type(exc).__name__}: {exc}")
             return MCPToolResult(

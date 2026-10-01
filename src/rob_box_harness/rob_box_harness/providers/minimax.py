@@ -55,6 +55,11 @@ from rob_box_harness.config import LLMConfig
 from rob_box_harness.errors import ConfigError
 from rob_box_harness.health import is_quota_exhausted
 from rob_box_harness.providers.first_chunk import await_with_deadline
+from rob_box_harness.providers.reasoning import (
+    REASONING_COMPLETE_TIMEOUT_S,
+    is_reasoning_call,
+    reasoning_settings,
+)
 # Ретрай-политика — одна на харнес (providers/retry.py). Раньше здесь
 # лежала своя копия класса, дословно совпадавшая с копией в deepseek.py,
 # но БУДУЧИ другим объектом (карточка W6-1). Имя оставлено в модуле:
@@ -402,12 +407,41 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
             )
+        messages = tuple(messages)
+        settings, reasoning = self._turn_settings(messages, settings)
         return await self._call_with_retry(
-            self._inner.complete, messages, tools=tools, settings=settings
+            self._inner.complete, messages, tools=tools, settings=settings,
+            deadline_s=self._complete_deadline_s(reasoning),
         )
 
+    def _turn_settings(
+        self, messages: tuple[LLMMessage, ...], settings: LLMSettings
+    ) -> tuple[LLMSettings, bool]:
+        """Issue #3220 — настройки вызова с учётом thinking хода.
+
+        ``(settings, reasoning)``: вызов с thinking получает настройки из
+        :func:`reasoning_settings` и строку в лог (по ней на живом прогоне
+        видно, какие ходы думали).
+        """
+        if not is_reasoning_call(messages):
+            return settings, False
+        settings = reasoning_settings(settings)
+        _log.info(
+            "🧠 [#3220] minimax: thinking=on (поле thinking не шлём — дефолт "
+            "модели), max_tokens=%s",
+            settings.max_tokens,
+        )
+        return settings, True
+
+    def _complete_deadline_s(self, reasoning: bool) -> float | None:
+        """Дедлайн first-chunk-гуарда для ``complete()`` (#2718, #3220)."""
+        base = self._first_chunk_timeout_s
+        if base is None or not reasoning:
+            return base
+        return max(base, REASONING_COMPLETE_TIMEOUT_S)
+
     async def _wrap_first_chunk(
-        self, awaitable: Any, *, op: str
+        self, awaitable: Any, *, op: str, timeout_s: float | None = None
     ) -> Any:
         """Race the FIRST byte/chunk against ``first_chunk_timeout_s``.
 
@@ -420,35 +454,38 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
 
         ``op`` — метка для лога (``complete`` / ``stream.peek``), чтобы
         можно было отличить «не дождались тела» от «стрим висит».
+        ``timeout_s`` — дедлайн этого вызова (issue #3220: ``complete()``
+        хода с thinking ждёт дольше); ``None`` — ``first_chunk_timeout_s``.
         """
-        if self._first_chunk_timeout_s is None:
+        deadline_s = timeout_s if timeout_s is not None else self._first_chunk_timeout_s
+        if deadline_s is None:
             return await awaitable
         try:
             # Issue #2939: НЕ asyncio.wait_for — тот ждёт, пока SDK
             # признает отмену, и живой ход провисел 3 мин вместо 10 с.
             return await await_with_deadline(
-                awaitable, self._first_chunk_timeout_s
+                awaitable, deadline_s
             )
         except asyncio.TimeoutError as exc:
             _log.warning(
                 "minimax: %s: no first byte within %.1fs — считаем провайдера "
                 "мёртвым и передаём в fallback-цепочку",
                 op,
-                self._first_chunk_timeout_s,
+                deadline_s,
             )
             # Та же метрика, что в _handle_failure / _note_429:
             # [llm_fallback_metric] — RcutilsLogger-friendly single-string.
             _log.info(
                 f"[llm_fallback_metric] provider=minimax "
                 f"reason=first_chunk_timeout op={op} "
-                f"timeout_s={self._first_chunk_timeout_s:.0f} action=fallback"
+                f"timeout_s={deadline_s:.0f} action=fallback"
             )
             # Raise as our domain TimeoutError so the health-aware
             # fallback chain classifies this as a transient failure
             # (TTL escalation from issue #2718 then kicks in).
             raise FirstChunkTimeoutError(
                 f"minimax: {op} first-byte timeout "
-                f"after {self._first_chunk_timeout_s:.1f}s",
+                f"after {deadline_s:.1f}s",
                 provider="minimax",
             ) from exc
 
@@ -478,6 +515,8 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
             )
+        messages = tuple(messages)
+        settings, _reasoning = self._turn_settings(messages, settings)
         # We can't decorate an async generator with the retry loop
         # without buffering chunks, so we isolate the initial request
         # call in a retryable wrapper. The upstream AsyncOpenAI stream
@@ -658,6 +697,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         *,
         tools: Iterable[Mapping[str, Any]],
         settings: LLMSettings | None,
+        deadline_s: float | None = None,
     ) -> LLMResponse:
         attempts = 0
         last_exc: BaseException | None = None
@@ -670,7 +710,8 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # single attempt. ``_wrap_first_chunk`` re-raises
                 # ``TimeoutError`` (our domain error) on deadline.
                 response = await self._wrap_first_chunk(
-                    fn(messages, tools=tools, settings=settings), op="complete"
+                    fn(messages, tools=tools, settings=settings), op="complete",
+                    timeout_s=deadline_s,
                 )
                 self._reset_429_counter()
                 return response

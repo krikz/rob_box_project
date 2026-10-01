@@ -7,9 +7,11 @@ dev-<sha> tags. Without the trigger (issue #1475 evidence: PR #1434 merge
 
 Contract pinned by these tests:
 
-* branch develop/main → `gh workflow run` is called once and exits 0;
+* branch main → `gh workflow run` is called once and exits 0;
+* branch develop → exit 0 WITHOUT calling `gh workflow run` (issue #1625,
+  ac550102: develop builds only by hand);
 * branch other (feature/test/copilot/round) → exit 0 WITHOUT calling
-  `gh workflow run` (only develop/main trigger build);
+  `gh workflow run` (only main triggers build);
 * `gh workflow run` failure (non-zero exit) AND no recent run visible via
   `gh run list` → retry up to MAX_ATTEMPTS (default 2) → exit 0
   with warning (non-fatal: merge-gate must continue);
@@ -164,16 +166,18 @@ def _run_script(args: list[str], env: dict | None = None) -> subprocess.Complete
 # --------------------------------------------------------------------------- #
 
 
-def test_develop_branch_triggers_build(gh_shim: Path, tmp_path: Path) -> None:
-    """PR merged into develop → exactly one gh workflow run."""
+def test_develop_branch_skips_build(gh_shim: Path, tmp_path: Path) -> None:
+    """PR merged into develop → exit 0, NO gh workflow run.
+
+    Issue #1625 (ac550102, #1626): develop post-merge build is no longer
+    triggered automatically — "develop builds only by hand".
+    """
     proc = _run_script(["1434", "develop"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    log = (tmp_path / "workflow_run.log").read_text()
-    assert "L-Build-All-Services.yml" in log, (
-        f"expected workflow name in log; got: {log!r}"
-    )
-    assert "--ref" in log
-    assert "develop" in log
+    log_path = tmp_path / "workflow_run.log"
+    log = log_path.read_text() if log_path.exists() else ""
+    assert log == "", f"expected no gh workflow run for develop; got: {log!r}"
+    assert "skipped post-merge build for develop" in proc.stderr, proc.stderr
 
 
 def test_main_branch_triggers_build(gh_shim: Path, tmp_path: Path) -> None:
@@ -215,7 +219,7 @@ def test_gh_workflow_run_failure_retries_but_exits_zero(
     """
     monkeypatch.setenv("GH_SHIM_WORKFLOW_RUN_RC", "1")
     proc = subprocess.run(
-        [str(SCRIPT), "1434", "develop"],
+        [str(SCRIPT), "1500", "main"],
         capture_output=True, text=True,
         env={**os.environ, "GH_SHIM_WORKFLOW_RUN_RC": "1"},
         timeout=30,
@@ -270,11 +274,12 @@ def test_recent_run_skips_dispatch(
     env["GH_SHIM_WORKFLOW_RUN_RC"] = "1"  # irrelevant: must skip before dispatch
 
     proc = subprocess.run(
-        [str(SCRIPT), "1434", "develop"],
+        [str(SCRIPT), "1500", "main"],
         capture_output=True, text=True, env=env, timeout=15,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    log = log_file.read_text()
+    # The shim creates the log only on `gh workflow run`: 0 calls → no file.
+    log = log_file.read_text() if log_file.exists() else ""
     # CRITICAL: exactly 0 invocations → the pre-dispatch guard skipped.
     assert log == "", f"expected 0 calls to gh workflow run; got: {log!r}"
     assert "skip" in proc.stderr, (
@@ -320,7 +325,7 @@ def test_old_run_outside_dedup_window_triggers_retry(
     env["GH_SHIM_WORKFLOW_RUN_RC"] = "1"
 
     proc = subprocess.run(
-        [str(SCRIPT), "1434", "develop"],
+        [str(SCRIPT), "1500", "main"],
         capture_output=True, text=True, env=env, timeout=30,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -348,7 +353,7 @@ def test_max_attempts_env_override(tmp_path: Path) -> None:
     env["GH_SHIM_WORKFLOW_RUN_RC"] = "1"  # always fail
 
     proc = subprocess.run(
-        [str(SCRIPT), "1434", "develop"],
+        [str(SCRIPT), "1500", "main"],
         capture_output=True, text=True, env=env, timeout=15,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -374,7 +379,7 @@ def test_workflow_not_found_exits_zero(tmp_path: Path) -> None:
     env["DRY_RUN"] = "false"
 
     proc = subprocess.run(
-        [str(SCRIPT), "1434", "develop"],
+        [str(SCRIPT), "1500", "main"],
         capture_output=True, text=True, env=env, timeout=15,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -396,7 +401,7 @@ def test_gh_auth_failure_exits_zero(tmp_path: Path) -> None:
     env["DRY_RUN"] = "false"
 
     proc = subprocess.run(
-        [str(SCRIPT), "1434", "develop"],
+        [str(SCRIPT), "1500", "main"],
         capture_output=True, text=True, env=env, timeout=15,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -406,7 +411,7 @@ def test_gh_auth_failure_exits_zero(tmp_path: Path) -> None:
 
 def test_dry_run_does_not_invoke_gh(gh_shim: Path, tmp_path: Path) -> None:
     """DRY_RUN=true → no real gh invocation, but the script prints intent."""
-    proc = _run_script(["1434", "develop"], env={"DRY_RUN": "true"})
+    proc = _run_script(["1500", "main"], env={"DRY_RUN": "true"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     log_path = tmp_path / "workflow_run.log"
     log = log_path.read_text() if log_path.exists() else ""
@@ -424,7 +429,7 @@ def test_missing_args_exits_64(gh_shim: Path) -> None:
 
 def test_push_to_registry_field_present(gh_shim: Path, tmp_path: Path) -> None:
     """The shim records --field push_to_registry=true to push to local registry."""
-    proc = _run_script(["1434", "develop"])
+    proc = _run_script(["1500", "main"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
     log = (tmp_path / "workflow_run.log").read_text()
     assert "push_to_registry=true" in log, (

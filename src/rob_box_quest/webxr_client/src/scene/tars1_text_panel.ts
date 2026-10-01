@@ -23,6 +23,21 @@
 // canvas-рендер и базовые стили.
 
 import * as THREE from "three";
+import { tarsActivityView, type TarsActivity } from "../state/tars_activity";
+import { TARS_SEGMENTS, tarsFigurePose } from "../state/tars_figure";
+import {
+  CONSOLE_STYLES,
+  ConsoleBuffer,
+  type ConsoleLineKind
+} from "../state/tars_console_lines";
+import {
+  INFO_DASH,
+  buildInfoRows,
+  computeTars1Layout,
+  type InfoRow,
+  type Rect,
+  type Tars1Info
+} from "../state/tars1_layout";
 
 export interface Tars1TextPanelOptions {
   /** Ширина canvas в пикселях (default 1280 — 16:9 как у основного экрана). */
@@ -33,6 +48,11 @@ export interface Tars1TextPanelOptions {
   maxLines?: number;
   /** Размер шрифта в пикселях (default 22). */
   fontSize?: number;
+  /**
+   * Скорость «печати» новых реплик, символов/с. 0 (default) — без эффекта,
+   * append применяется сразу (так работают юнит-тесты). Мост включает ~90.
+   */
+  typewriterCps?: number;
 }
 
 /**
@@ -42,9 +62,30 @@ export interface Tars1TextPanelOptions {
 export interface Tars1TextPanelHandle {
   readonly mesh: THREE.Mesh;
   append(text: string): void;
+  /**
+   * Целая строка консоли с видом (#3253 Ш4): `operator` (фраза оператора,
+   * `you> `, циан) или `event` (короткое событие). Появляется сразу, без
+   * typewriter; недопечатанный хвост реплики ТАРС дописывается мгновенно,
+   * чтобы порядок строк не перепутался. kind="tars" == append(text).
+   */
+  appendLine(kind: ConsoleLineKind, text: string): void;
   clear(): void;
   setStreaming(streaming: boolean): void;
-  getStats(): { lineCount: number; streaming: boolean };
+  /** Состояние ТАРС для строки статуса на консоли (СЛУШАЕТ/ДУМАЕТ/ГОВОРИТ). */
+  setActivity(activity: TarsActivity): void;
+  /**
+   * Служебная информация для правой колонки рамки (связь, floor, PTT, …).
+   * Незаданные/пустые поля рисуются прочерком «—». Перерисовка — по общему
+   * бюджету tick(), не на каждый вызов.
+   */
+  setInfo(info: Tars1Info): void;
+  /**
+   * Шаг анимации (печать, курсор, статус). Зовётся каждый кадр; canvas
+   * перерисовывается только при изменении: 4 Гц в покое («дыхание»), ~11 Гц (≤ 12) пока ТАРС
+   * не idle или печатает.
+   */
+  tick(nowMs: number): void;
+  getStats(): { lineCount: number; streaming: boolean; pending: number };
   dispose(): void;
 }
 
@@ -62,6 +103,7 @@ export function createTars1TextPanel(
   const canvasHeight = opts.canvasHeight ?? 720;
   const maxLines = opts.maxLines ?? 32;
   const fontSize = opts.fontSize ?? 22;
+  const typewriterCps = opts.typewriterCps ?? 0;
 
   const canvas = document.createElement("canvas");
   canvas.width = canvasWidth;
@@ -100,88 +142,252 @@ export function createTars1TextPanel(
   // Кольцевой буфер строк. Никогда не пустой — минимум одна пустая строка,
   // чтобы setStreaming индикатор рисовался корректно даже до первого
   // append.
-  const lines: string[] = [""];
-  // Частичный буфер для незакрытых переводом строки чанков: append может
-  // прийти как кусок «Привет, |как дела?», и до \n мы держим хвост здесь.
-  let partial = "";
+  const buffer = new ConsoleBuffer(maxLines);
   let streaming = false;
 
-  function render(): void {
-    // Подложка (тёмная «sci-fi» палитра — в Captain Bridge это ночная смена).
-    ctx!.fillStyle = "#0a0d11";
-    ctx!.fillRect(0, 0, canvasWidth, canvasHeight);
+  // Хакерская палитра: зелёный/циановый фосфор на почти чёрном.
+  const BG = "#020a07";
+  const FG = "#39ff88";
+  const FG_DIM = "#1f9c55";
+  const CYAN = "#33e0ff";
 
-    // Рамка-индикатор стрима: сверху, тонкая полоса.
-    if (streaming) {
-      ctx!.fillStyle = "#2ec27e";
-      ctx!.fillRect(0, 0, canvasWidth, 4);
-    } else {
-      ctx!.fillStyle = "#444a52";
-      ctx!.fillRect(0, 0, canvasWidth, 4);
+  const layout = computeTars1Layout(canvasWidth, canvasHeight);
+  let info: Tars1Info = {};
+  let infoKey = "{}";
+  let activity: TarsActivity = "idle";
+  let lastNowMs = 0;
+  let lastFrameKey = "";
+  let lastTickMs = 0;
+  // Хвост печати: символы, ещё не «выведенные» на консоль.
+  let pending = "";
+
+  function render(nowMs: number = lastNowMs): void {
+    const c = ctx!;
+    c.fillStyle = BG;
+    c.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    const view = tarsActivityView(activity, nowMs);
+    const small = Math.round(fontSize * 0.7);
+    const pad = layout.console.x;
+
+    // ── Рамка `╭─ TARS ─╮` ────────────────────────────────────────────
+    const f = layout.frame;
+    const T = 2; // толщина линии, px
+    const R = 16; // радиус скругления
+    const titleFont = `bold ${Math.round(small * 1.15)}px monospace`;
+    c.font = titleFont;
+    c.textBaseline = "top";
+    const title = " TARS ";
+    const titleW = c.measureText(title).width;
+    const titleX = f.x + R + 14;
+    c.fillStyle = FG_DIM;
+    c.globalAlpha = 0.75;
+    // верхняя линия — с разрывом под заголовок
+    c.fillRect(f.x + R, f.y, titleX - f.x - R, T);
+    c.fillRect(titleX + titleW, f.y, f.x + f.w - R - titleX - titleW, T);
+    c.fillRect(f.x + R, f.y + f.h - T, f.w - R * 2, T);
+    c.fillRect(f.x, f.y + R, T, f.h - R * 2);
+    c.fillRect(f.x + f.w - T, f.y + R, T, f.h - R * 2);
+    drawCorner(c, f.x, f.y, R, T, 1, 1);
+    drawCorner(c, f.x + f.w, f.y, R, T, -1, 1);
+    drawCorner(c, f.x, f.y + f.h, R, T, 1, -1);
+    drawCorner(c, f.x + f.w, f.y + f.h, R, T, -1, -1);
+    // вертикальная линия между колонками
+    c.fillRect(layout.dividerX, f.y + T, 1, f.h - T * 2);
+    // горизонтальная линия между «служебное» и «контекст»
+    c.fillRect(layout.right.x - 4, layout.rightDividerY, layout.right.w + 8, 1);
+    c.globalAlpha = 1;
+    c.fillStyle = CYAN;
+    c.shadowColor = CYAN;
+    c.shadowBlur = 6;
+    c.fillText(title, titleX, f.y - Math.round(small * 0.6));
+    c.shadowBlur = 0;
+
+    // ── Левая колонка: персонаж + подпись состояния ──────────────────
+    const L = layout.left;
+    const labelFont = Math.round(small * 1.3);
+    const labelH = labelFont + 10;
+    const figH = Math.round((L.h - labelH - 6) * 0.8);
+    const segW = Math.max(6, Math.round(Math.min(L.w / 9, figH / 4)));
+    const gap = Math.round(segW * 0.55);
+    const totalW = TARS_SEGMENTS * segW + (TARS_SEGMENTS - 1) * gap;
+    const figX = L.x + Math.round((L.w - totalW) / 2);
+    const figCy = L.y + Math.round((L.h - labelH - 6) / 2);
+    const pose = tarsFigurePose(activity, nowMs);
+    c.fillStyle = view.color;
+    c.shadowColor = view.color;
+    for (let i = 0; i < pose.length; i += 1) {
+      const s = pose[i];
+      const sh = Math.max(4, Math.round(figH * s.h));
+      const sx = Math.round(figX + i * (segW + gap) + s.dx * segW);
+      const sy = Math.round(figCy - sh / 2 + s.dy * figH);
+      c.globalAlpha = 0.2 + 0.8 * s.glow;
+      c.shadowBlur = 4 + Math.round(12 * s.glow);
+      c.fillRect(sx, sy, segW, sh);
     }
+    c.shadowBlur = 0;
+    c.globalAlpha = 1;
+    // Подпись состояния цветом из tarsActivityView.
+    const badge = `${view.label}${view.glyph ? " " + view.glyph : ""}`;
+    c.font = `bold ${labelFont}px monospace`;
+    const badgeW = c.measureText(badge).width;
+    c.fillStyle = view.color;
+    c.globalAlpha = view.pulse;
+    c.shadowColor = view.color;
+    c.shadowBlur = 8;
+    c.fillText(badge, L.x + Math.round((L.w - badgeW) / 2), L.y + L.h - labelFont - 2);
+    c.shadowBlur = 0;
+    c.globalAlpha = 1;
 
-    // Заголовок канала.
-    ctx!.fillStyle = "#8fd4ff";
-    ctx!.font = `bold ${Math.round(fontSize * 0.7)}px monospace`;
-    ctx!.textBaseline = "top";
-    ctx!.fillText("TARS 1 ▸ ", 8, 8);
+    // ── Правая колонка: служебное / контекст ────────────────────────
+    const rows = buildInfoRows(info);
+    const rowFont = Math.round(small * 1.05);
+    const rowH = rowFont + 5;
+    const drawBlock = (r: Rect, head: string, items: InfoRow[]): void => {
+      c.font = `bold ${rowFont}px monospace`;
+      c.fillStyle = CYAN;
+      c.fillText(head, r.x, r.y);
+      c.font = `${rowFont}px monospace`;
+      const labelW = c.measureText("реплика ").width + 6;
+      for (let i = 0; i < items.length; i += 1) {
+        const y = r.y + (i + 1) * rowH + 2;
+        if (y + rowFont > r.y + r.h + 2) break;
+        c.fillStyle = FG_DIM;
+        c.fillText(items[i].label, r.x, y);
+        const dash = items[i].value === INFO_DASH;
+        c.fillStyle = dash ? FG_DIM : FG;
+        c.globalAlpha = dash ? 0.6 : 1;
+        c.fillText(items[i].value, r.x + labelW, y);
+        c.globalAlpha = 1;
+      }
+    };
+    drawBlock(layout.service, "СЛУЖЕБНОЕ", rows.service);
+    drawBlock(layout.context, "КОНТЕКСТ", rows.context);
 
-    // Основной текст — monospace, белый, перенос по строкам буфера.
-    ctx!.fillStyle = "#e6edf3";
-    ctx!.font = `${fontSize}px monospace`;
+    // ── Консоль: нижняя часть canvas, под рамкой ─────────────────────
+    const cons = layout.console;
+    c.font = `${fontSize}px monospace`;
     const lineHeight = Math.round(fontSize * 1.25);
-    const startY = 8 + Math.round(fontSize * 1.0);
-    const maxWidth = canvasWidth - 16;
-    // visibleLines хранит уже разбитые по wrap'у строки (для длинных
-    // реплик LLM, не влезающих в ширину канвы).
-    const visibleLines: string[] = [];
-    for (const raw of lines) {
-      visibleLines.push(...wrapLine(raw, ctx!, maxWidth));
+    const startY = cons.y + 4;
+    // Каждая логическая строка → wrap; первая визуальная строка получает
+    // префикс своего вида («> » / «you> » / «· »), продолжения — отступ.
+    const crows: { text: string; first: boolean; kind: ConsoleLineKind; prefixW: number }[] = [];
+    for (const row of buffer.lines) {
+      const style = CONSOLE_STYLES[row.kind];
+      const pw = c.measureText(style.prefix).width;
+      const wrapped = wrapLine(row.text, c, cons.w - pw);
+      wrapped.forEach((t, k) =>
+        crows.push({ text: t, first: k === 0, kind: row.kind, prefixW: pw })
+      );
     }
-    // Рисуем только хвост, который помещается: самая свежая строка снизу.
-    const capacity = Math.floor((canvasHeight - startY - 8) / lineHeight);
-    const tail = visibleLines.slice(-capacity);
+    const capacity = Math.max(1, Math.floor((cons.y + cons.h - startY) / lineHeight));
+    const tail = crows.slice(-capacity);
+    c.shadowBlur = 4;
     for (let i = 0; i < tail.length; i += 1) {
-      ctx!.fillText(tail[i] ?? "", 8, startY + i * lineHeight);
+      const y = startY + i * lineHeight;
+      const style = CONSOLE_STYLES[tail[i].kind];
+      c.shadowColor = style.textColor;
+      if (tail[i].first) {
+        c.fillStyle = style.prefixColor;
+        c.fillText(style.prefix, pad, y);
+      }
+      c.fillStyle = style.textColor;
+      c.fillText(tail[i].text, pad + tail[i].prefixW, y);
     }
+    c.shadowBlur = 0;
+
+    // Курсор: за последней строкой; при печати горит постоянно, иначе мигает.
+    const typing = pending.length > 0;
+    const blinkOn = typing || Math.floor(nowMs / 530) % 2 === 0;
+    if (blinkOn) {
+      const lastRow = tail.length > 0 ? tail[tail.length - 1] : null;
+      const cy = startY + Math.max(0, tail.length - 1) * lineHeight;
+      const cx =
+        pad +
+        (lastRow ? lastRow.prefixW : c.measureText(CONSOLE_STYLES.tars.prefix).width) +
+        c.measureText(lastRow ? lastRow.text : "").width +
+        2;
+      c.fillStyle = FG;
+      c.fillRect(cx, cy + 2, Math.round(fontSize * 0.55), lineHeight - 6);
+    }
+
+    // Сканлайны: тонкие тёмные полосы через 4 px — дёшево (~180 rect).
+    c.fillStyle = "rgba(0,0,0,0.22)";
+    for (let y = 1; y < canvasHeight; y += 4) c.fillRect(0, y, canvasWidth, 1);
 
     texture.needsUpdate = true;
   }
 
+  function tick(nowMs: number): void {
+    lastNowMs = nowMs;
+    const dt = lastTickMs > 0 ? Math.max(0, nowMs - lastTickMs) : 0;
+    lastTickMs = nowMs;
+    let dirty = false;
+    if (pending.length > 0) {
+      // Догоняем при большом хвосте, чтобы длинная реплика не печаталась минуту.
+      const boost = 1 + pending.length / 200;
+      const n = Math.max(1, Math.round((typewriterCps * dt * boost) / 1000));
+      commit(pending.slice(0, n));
+      pending = pending.slice(n);
+      dirty = true;
+    }
+    // Кадр анимации: ~11 Гц (≤ 12) пока что-то живое, иначе 4 Гц («дыхание» + курсор).
+    const busy = activity !== "idle" || pending.length > 0 || streaming;
+    const key = busy ? `f${Math.floor(nowMs / 90)}` : `i${Math.floor(nowMs / 250)}`;
+    if (dirty || key !== lastFrameKey) {
+      lastFrameKey = key;
+      render(nowMs);
+    }
+  }
+
+  function setActivity(next: TarsActivity): void {
+    if (next === activity) return;
+    activity = next;
+    lastFrameKey = "";
+    render();
+  }
+
+  function setInfo(next: Tars1Info): void {
+    // Без перерисовки: данные подхватит ближайший кадр tick().
+    const k = JSON.stringify(next);
+    if (k === infoKey) return;
+    infoKey = k;
+    info = { ...next };
+  }
+
   function append(text: string): void {
     if (!text) return;
-    partial += text;
-    // Разделяем по \n: всё, что до последнего \n, идёт в буфер строк,
-    // хвост после последнего \n остаётся в `partial` для следующего чанка.
-    const parts = partial.split("\n");
-    partial = parts.pop() ?? "";
-    for (const p of parts) {
-      lines.push(p);
+    if (typewriterCps > 0) {
+      pending += text;
+      return;
     }
-    // Текущая «незавершённая» строка рисуется как последний элемент lines:
-    // для этого мы НЕ пушим partial до перевода строки — но тогда оператор
-    // не видит стримящийся текст. Решение: держим отдельную «активную»
-    // строку как последний элемент lines, обновляем её на каждый append.
-    // Для этого выносим partial в lines[-1], не дожидаясь \n.
-    if (lines.length === 0) lines.push("");
-    // Убираем «виртуальную» пустую строку из capacity-расчёта.
-    // Если предыдущая строка была пустой (initial) — заменяем её, иначе
-    // добавляем.
-    if (lines.length === 1 && lines[0] === "" && partial) {
-      lines[0] = partial;
-      partial = "";
-    } else if (partial) {
-      lines[lines.length - 1] = partial;
+    commit(text);
+  }
+
+  function commit(text: string): void {
+    buffer.appendTars(text);
+    if (typewriterCps <= 0) render();
+  }
+
+  function appendLine(kind: ConsoleLineKind, text: string): void {
+    const clean = text.replace(/\s+/g, " ").trim();
+    if (!clean) return;
+    if (kind === "tars") {
+      append(clean);
+      return;
     }
-    // Обрезаем старые строки (кольцевой буфер).
-    while (lines.length > maxLines) lines.shift();
+    // Фраза оператора — сразу: недопечатанный хвост ТАРС дописываем мгновенно.
+    if (pending.length > 0) {
+      buffer.appendTars(pending);
+      pending = "";
+    }
+    buffer.pushLine(kind, clean);
     render();
   }
 
   function clear(): void {
-    lines.length = 0;
-    lines.push("");
-    partial = "";
+    buffer.clear();
+    pending = "";
     streaming = false;
     render();
   }
@@ -192,8 +398,8 @@ export function createTars1TextPanel(
     render();
   }
 
-  function getStats(): { lineCount: number; streaming: boolean } {
-    return { lineCount: lines.length, streaming };
+  function getStats(): { lineCount: number; streaming: boolean; pending: number } {
+    return { lineCount: buffer.length, streaming, pending: pending.length };
   }
 
   function dispose(): void {
@@ -208,14 +414,41 @@ export function createTars1TextPanel(
   return {
     mesh,
     append,
+    appendLine,
     clear,
     setStreaming,
+    setActivity,
+    setInfo,
+    tick,
     getStats,
     dispose
   };
 }
 
 // ───────────────────────── helpers ─────────────────────────
+
+/**
+ * Скруглённый угол рамки из прямоугольников (только fillRect — без путей).
+ * (cx, cy) — угол рамки, (sx, sy) — направление внутрь: ±1.
+ */
+function drawCorner(
+  c: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  t: number,
+  sx: number,
+  sy: number
+): void {
+  for (let i = 0; i < r; i += 1) {
+    const a = r - Math.sqrt(r * r - (r - i) * (r - i));
+    const b = r - Math.sqrt(r * r - (r - i - 1) * (r - i - 1));
+    const h = Math.max(t, Math.ceil(b - a));
+    const x = sx > 0 ? cx + i : cx - i - 1;
+    const y = sy > 0 ? cy + a : cy - a - h;
+    c.fillRect(x, y, 1, h);
+  }
+}
 
 /**
  * Разбивает одну строку на массив строк, каждая из которых влезает в

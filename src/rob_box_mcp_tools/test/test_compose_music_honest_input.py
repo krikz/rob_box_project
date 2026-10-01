@@ -17,40 +17,37 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
-for _mod in [
-    "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos", "std_msgs",
-    "std_msgs.msg", "geometry_msgs", "geometry_msgs.msg", "nav2_msgs",
-    "nav2_msgs.action", "action_msgs", "action_msgs.srv", "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from ._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.core.arranger import (  # noqa: E402
-    BPM_RANGE,
-    FORMS,
-    SCALE_INTERVALS,
-    VALID_ROOTS,
-    ArrangementError,
-    check_bpm,
-    check_form,
-    check_root,
-    check_scale,
-    check_swing,
-    render,
-    spec_from_flat,
-)
-from rob_box_mcp_tools.core.rtttl_compose import (  # noqa: E402
-    key_fit,
-    melody_to_compose_params,
-    rtttl_to_melody,
-)
-from rob_box_mcp_tools.core.score_sheet import KEY_FIT_WARN, describe  # noqa: E402
-from rob_box_mcp_tools.tools.music import ComposeMusicTool  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core.arranger import (
+        BPM_RANGE,
+        FORMS,
+        SCALE_INTERVALS,
+        VALID_ROOTS,
+        ArrangementError,
+        check_bpm,
+        check_form,
+        check_root,
+        check_scale,
+        check_swing,
+        render,
+        spec_from_flat,
+    )
+    from rob_box_mcp_tools.core.rtttl_compose import (
+        key_fit,
+        melody_to_compose_params,
+        rtttl_to_melody,
+    )
+    from rob_box_mcp_tools.core.score_sheet import KEY_FIT_WARN, describe
+    from rob_box_mcp_tools.tools.music import ComposeMusicTool
+_ros_stubs = _ros.fixture()
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "arranger_golden.json"
 _ARR = dict(lead_synth="blip", bass_synth="moogbass", pad_synth="strings")

@@ -2,11 +2,11 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | **Proposed** (после merge PR в develop → Accepted) |
+| Статус | **Proposed** (после merge PR в develop → Accepted). Ревизия 01.10.2026 — реализация расходится с §2 по факту кода, см. «Ревизия 01.10.2026» ниже. |
 | Дата | 2026-09-24 |
 | Автор | architect (Hermes Agent); карточка `t_cb10cab2`, issue #3000 |
 | Контекст | Баг: `set_dj_mode(persona=X)` корректно обновляет `DJModeController.state.persona`, `build_auto_prompt(n)` использует свежую persona, но LLM продолжает говорить от лица ПРЕДЫДУЩЕЙ персоны. Наблюдалось на живом Vision Pi 2026-09-24 12:36–12:39 UTC: сет «Ля-Классик Мохнатый» → новый запрос «ты диджей 8-битный монстр» → spoken «Мяу, дорогие любители Моцарта» (старая персона). То же в DJ_AUTO-переходе #1 нового сета. |
-| Затрагивает | `src/rob_box_voice/rob_box_voice/core/dj_mode.py` (новый хук `on_persona_change`), `src/rob_box_voice/rob_box_voice/dialogue_node.py` (хук `core.clear_history()` + `_build_dynamic_system_context` пишет `<dj_state>`), `src/rob_box_harness/rob_box_harness/core/agent_core.py` (публичный метод `clear_history` уже есть), новый файл `src/rob_box_voice/test/unit/core/test_issue_3000_dj_persona_swap.py`. |
+| Затрагивает | (ревизия 01.10) новый `src/rob_box_voice/rob_box_voice/core/dj_set_boundary.py`; `src/rob_box_voice/rob_box_voice/dialogue_node.py` (три вызова модуля, без новых методов); `src/rob_box_harness/rob_box_harness/core/agent_core.py` (`clear_history(keep=...)`); тесты `src/rob_box_voice/test/unit/core/test_issue_3000_dj_persona_swap.py`, `src/rob_box_harness/test/test_issue_3000_clear_history_keep.py`. `dj_mode.py` не меняется. |
 | Родители | ADR-0037 (memory layers / DJ-scope), ADR-0001 §2.4.3 (MemoryStore port — частично пересекается), ADR-0013 (incremental delivery — это маленький, точечный фикс, не «перепишем диалоговый движок»). |
 | Связанные | issue #3000 (эта задача), issue #2997 (stale-context-leak в голосовых swap'ах — та же семья), `/memories/repo/dialogue-stale-context-leak.md` (root cause), ADR-0037 (5 слоёв памяти; этот ADR закрывает конкретный acceptance criteria #3000 в RAM-слое). |
 
@@ -20,6 +20,19 @@
 2. **`dynamic_system` (`<system_context>` в `_build_dynamic_system_context`) рендерит `<dj_state>`** с актуальной persona/theme/plan + явный **negation-instruction**: «LLM должна говорить ТОЛЬКО от лица ЭТОЙ персоны. Старые ходы диалога могут упоминать другого диджея — игнорируй.» `dynamic_system` стоит последним system-сообщением перед user-input — самая свежая инструкция, перевешивает 20 ходов истории.
 
 Третий слой — **тесты харнесса**: новый `test_issue_3000_dj_persona_swap.py` с моком `LLMProvider`: проверяет, что `messages`, доехавшие до LLM, после `set_dj_mode(persona=Y)` (а) **не содержат** старую persona и (б) **содержат** `<dj_state> persona=Y` в system.
+
+## Ревизия 01.10.2026 (реализация, issue #3000 переоткрыт)
+
+§2 писался 24.09; к реализации код ушёл вперёд, и решение уточнено по факту:
+
+1. **Живой повтор 01.10 10:47 — другой сценарий.** Сет «ВосьмиБитный монмтр / денди» закончился (финал, `DJ Mode OFF`), реплика «[TG] Ты Диджй Ускоглазый … Азидтской музыки» пошла в LLM (опечатка «Диджй» мимо роутера медиакоманд), и модель вызвала `set_dj_mode(theme='вечеринка любителей денди', persona='ВосьмиБитный монмтр')` — аргументы прошлого сета из окна. Хук «на смену персоны» здесь опоздал бы: сет ещё не включён, а аргументы уже выбраны. Нужна граница и на **конце** сета, и штамп «сет не идёт», а не только «текущая персона».
+2. **DJ_AUTO окна не видит** (#3247, PR #3261) — чистка нужна только ходам человека.
+3. **Не полный `clear_history`, а вычистка обменов прошлых сетов.** Обмен (реплика + ответ), где вызван `set_dj_mode`, — граница сета; такие обмены уходят из окна, при идущем сете последний (включивший текущий сет) остаётся. Остальной разговор («какой сегодня праздник», «останови музыку») не теряется. Ядро даёт общий шов `AgentCore.clear_history(keep=фильтр)`, знание про `set_dj_mode` — в `rob_box_voice`.
+4. **Отложенно, на ближайшем ходе, а не в колбэке.** `/voice/dj_mode` приходит в потоке ROS, ход LLM — в asyncio-цикле, а ход роутера пишется в окно позже топика. `DJSetBoundary` замечает смену `(enabled, persona, theme)` в `_on_dj_mode_msg` (до и после `handle_message` — «до» ловит `reset_silently` по стоп-команде #2897), а `settle_dj_set_boundary` чистит окно в `_prepare_user_input_context` перед сборкой истории хода. Эхо `set_dj_mode` на DJ_AUTO-переходах (те же тема/персона, новый план) границей не считается.
+5. **`<dj_state>` в `<system_context>` при включённом и выключенном DJ.** Включён — тема, персона и правило «это единственный текущий сет, прошлые завершены; не говори от их лица и не бери их тему». Выключен (после хотя бы одного сета) — «сет не идёт, все сеты в истории завершены; тему и персону для `set_dj_mode` бери ТОЛЬКО из текущей реплики». Отдельного `<dj_persona_rule>` нет — правило внутри `<dj_state>`.
+6. **Без хука `on_persona_change` в `DJHook`.** `DialogueNode`, `DJModeController`, `AgentCore` — в `class_budget_baseline.json` (ADR-0145): новые методы/ветки в них не проходят гард. Вся логика — в модуле `core/dj_set_boundary.py`.
+
+Не сделано: живой e2e-прогон («ты диджей X» после сета Y → говорит X) — нужен стенд.
 
 ## 1. Контекст и бизнес-проблема
 

@@ -103,9 +103,12 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip && \
         openai httpx requests pyyaml
 
 # ── Verify ─────────────────────────────────────────────────────────────
+# `source setup.bash` под SHELL -u и `ros2 --version` в Humble оба падают —
+# версию берём у dpkg, и отсутствие ros2cli роняет сборку, а не печать.
 RUN python3 -c "import pytest; assert pytest.__version__ >= '8', f'pytest={pytest.__version__}'" && \
+    ros2cli="$(dpkg-query -W -f='${Version}' ros-humble-ros2cli)" && \
     echo "=== CI image ready ===" && \
-    echo "ROS2: $(source /opt/ros/humble/setup.bash && ros2 --version 2>/dev/null || echo 'humble')" && \
+    echo "ROS2: humble, ros2cli ${ros2cli}" && \
     echo "pytest: $(python3 -c 'import pytest; print(pytest.__version__)')" && \
     echo "openai: $(python3 -c 'import openai; print(openai.__version__)')"
 

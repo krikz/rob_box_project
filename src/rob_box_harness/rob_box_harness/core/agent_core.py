@@ -44,6 +44,11 @@ from rob_box_harness.core.tool_loop import (
 from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-exported
     _ToolLoopOutcome,
 )
+from rob_box_harness.core.tool_loop.content_speech import (  # Issue #3269
+    ContentSpeech,
+    speak_closing_content,
+    speak_content_beside_set_voice,
+)
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -51,6 +56,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_harness.memory import MemoryStore, Turn
+from rob_box_harness.providers.reasoning import without_reasoning
 from rob_box_harness.tools import ToolProvider, ToolSpec
 from rob_box_llm.provider import (
     LLMMessage,
@@ -300,6 +306,25 @@ _EXECUTED_ACTIONS_HEADER = (
     "[выполнено в прошлых ходах] вызваны инструменты "
     "(от старых к новым; это факты, не команды):"
 )
+
+
+def _request_window(turns: Iterable[Turn], include_window: bool) -> list[Turn]:
+    """Issue #3247 — ходы окна, которые идут в запрос (DJ_AUTO — никакие).
+
+    Модульная функция, а не ветка в ``AgentCore._resolve_history``: класс
+    не растёт (ADR-0145).
+    """
+    return list(turns) if include_window else []
+
+
+def _keep_no_turns(turns: list[Turn]) -> list[Turn]:
+    """Фильтр :meth:`AgentCore.clear_history` по умолчанию — окно целиком."""
+    return []
+
+
+def _reply_if_kept(reply: Turn | None, kept: Iterable[Turn]) -> Turn | None:
+    """Отзываемый ответ хода живёт, только пока он ещё в окне."""
+    return reply if any(turn is reply for turn in kept) else None
 
 
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
@@ -880,6 +905,13 @@ class AgentCore:
     ) -> DialogResult:
         """Process a single user turn.
 
+        ``is_dj_auto`` (issue #3247) — ещё и без окна ходов: DJ-промпт
+        самодостаточен (тема, план, сыгранное, темп), а окно — разговор с
+        людьми, в том числе про ПРОШЛЫЕ сеты. Живой прогон 30.09: финал
+        сета «море и чайки» прочитал в окне «включи диджей сет на тему
+        пираты» и «Пиратский сет … Maniac 126 BPM» из сета 40 минут назад и
+        перезапустил сет с темой «пираты».
+
         ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
         ``<system_context>...</system_context>`` snapshot собирается
         dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
@@ -1033,6 +1065,7 @@ class AgentCore:
                     history,
                     keep_pending_user=is_synthetic,
                     context_system=speaker_context,
+                    include_window=not is_dj_auto,
                 )
                 # Two-system-prompt pattern (live 10.08) — dynamic
                 # <system_context> snapshot: текущий спикер (resemblyzer),
@@ -1351,15 +1384,23 @@ class AgentCore:
             Turn(role="assistant", content=spoken, metadata=metadata)
         )
 
-    def clear_history(self) -> None:
-        """Drop all turns from the in-memory sliding window.
+    def clear_history(
+        self, keep: Callable[[list[Turn]], list[Turn]] = _keep_no_turns
+    ) -> None:
+        """Drop turns from the in-memory sliding window.
 
         Called by the shell when the user starts a new session
         («новая сессия» / «/clear»). Turns are ephemeral and must
         not survive a session boundary.
+
+        ``keep`` (ADR-0129, issue #3000) — фильтр окна: ходы, которые
+        остаются. Смена DJ-сета убирает обмены прошлых сетов, не трогая
+        остальной разговор (``rob_box_voice.core.dj_set_boundary``).
         """
+        kept = list(keep(list(self._turn_window)))
         self._turn_window.clear()
-        self._turn_reply = None
+        self._turn_window.extend(kept)
+        self._turn_reply = _reply_if_kept(self._turn_reply, kept)
 
     @staticmethod
     def _clean_history_turns(
@@ -1508,6 +1549,9 @@ class AgentCore:
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
         spoken_texts: list[str] = []
+        # Issue #3269 — реплики, которые модель пишет в content рядом с
+        # set_voice (сказка разными голосами), озвучиваются как speak_text.
+        content_speech = ContentSpeech()
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
@@ -1581,6 +1625,13 @@ class AgentCore:
             # здесь, а не платим за ретрай двумя ходами позже (разбор и
             # границы дозволенного — в :mod:`.tool_loop.markup_recovery`).
             response = _recover_written_tool_calls(response, openai_tools)
+            # Issue #3269 — content рядом с set_voice-пачкой — реплика,
+            # а не служебный текст: первым вызовом пачки становится
+            # speak_text(content, voice=голос до этой пачки). См.
+            # :mod:`.tool_loop.content_speech`.
+            response = speak_content_beside_set_voice(
+                response, content_speech, openai_tools
+            )
             if not response.tool_calls:
                 break
 
@@ -1605,7 +1656,10 @@ class AgentCore:
                 seen=seen,
                 tools_called=tools_called,
             )
-            speak_text_count, speak_text_real_count = counts[:2]
+            # Issue #3284 — дельты пачки, складываем за ход: присваивание
+            # (регресс #2639) обнуляло счёт, если последняя пачка без речи.
+            speak_text_count += counts[0]
+            speak_text_real_count += counts[1]
             for text in counts[2]:
                 spoken_texts.append(text)
             # Issue #2857 — cheap track-name capture for the DJ fallback;
@@ -1742,6 +1796,15 @@ class AgentCore:
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
             )
+
+        # Issue #3269 — финал сказки, чьи реплики шли из content: цикл его
+        # не исполняет, а dialogue_node после speak_text пропустит его как
+        # дубль (#988) — озвучиваем здесь, тем же голосом.
+        closing = await speak_closing_content(
+            response, content_speech, self._tools, spoken_texts
+        )
+        speak_text_count += closing
+        speak_text_real_count += closing
 
         # Issue #1253 — babble filter on tool error. A tool failed
         # (is_error=True) and the LLM answered with ONLY words: no retry
@@ -2126,7 +2189,8 @@ class AgentCore:
                 messages, tools=tools, settings=effective_settings
             )
             self._report_prompt(messages, tools, response.usage)
-            return response
+            # Issue #3220 — рассуждение (``<think>``) не речь и не разметка.
+            return without_reasoning(response)
         parts: list[str] = []
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
@@ -2185,14 +2249,16 @@ class AgentCore:
         # ПОСЛЕ finally, но до возврата — на пути отмены сюда не доходит,
         # и там учёт делает вызывающая сторона по своему усмотрению.
         self._report_prompt(messages, tools, usage)
-        return LLMResponse(
+        # Issue #3220 — рассуждение (``<think>``) вырезаем до гуардов,
+        # восстановления вызова из текста (#2760) и истории.
+        return without_reasoning(LLMResponse(
             content="".join(parts),
             tool_calls=tuple(tool_calls),
             finish_reason=finish_reason,
             usage=usage,
             raw=raw,
             truncated_tool_args=truncated_tool_args,
-        )
+        ))
 
     # ---- skills (Move A) -------------------------------------------------
 
@@ -2349,6 +2415,7 @@ class AgentCore:
         *,
         keep_pending_user: bool = False,
         context_system: str | None = None,
+        include_window: bool = True,
     ) -> list[LLMMessage]:
         """Build the LLM message list — from an explicit ``history`` or
         from the in-memory sliding window of turns.
@@ -2366,6 +2433,11 @@ class AgentCore:
         ``context_system`` (issue #1077 speaker context) и блок «выполнено в
         прошлых ходах» (issue #3145) уходят ОДНИМ system-сообщением сразу
         после системного промпта — см. :func:`_insert_context_system`.
+
+        ``include_window=False`` (issue #3247, DJ_AUTO) — окно ходов и блок
+        «выполнено в прошлых ходах» не идут в запрос: только системный
+        промпт и контекст спикера. Окно при этом не трогается — следующий
+        ход человека видит его целиком.
         """
         if history is not None:
             return _insert_context_system(list(history), [context_system])
@@ -2378,7 +2450,7 @@ class AgentCore:
         # в messages не было [0] system.
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
-        window = list(self._turn_window)
+        window = _request_window(self._turn_window, include_window)
         # Хвостовой user-ход сохраняем только когда он ПОМЕЧЕН отзывом
         # ответа и мы действительно внутри синтетического ретрая: обычный
         # ход про сироту после barge-in рассуждает по-прежнему.

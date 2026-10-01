@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
-from . import sample_fx, sample_loops
+from . import sample_dave, sample_fx, sample_loops
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -333,6 +333,15 @@ def _validate_synth_names(code: str, known_synths: Optional[FrozenSet[str]]) -> 
 # ---------------------------------------------------------------------------
 
 
+#: Источники имён для ``loop(...)``: (поиск, причина отказа). Порядок важен:
+#: лупы → FX (#2968) → сэмплы DJ_Dave (#3219); имена в каталогах не пересекаются.
+_LOOP_SOURCES = (
+    (sample_loops.find_loop, sample_loops.loop_denial),
+    (sample_fx.find_fx, sample_fx.fx_denial),
+    (sample_dave.find_sample, sample_dave.sample_denial),
+)
+
+
 def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
     """Проверить каждый ``>> loop(...)`` и переписать имя в путь до файла.
 
@@ -345,7 +354,8 @@ def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
     Issue #2968: одиночные FX (выстрел/сирена/скрэтч/лазер) играются тем
     же ``loop(...)`` синтом (нет отдельного FX-синта в Renardo), но живут в
     отдельном каталоге ``core.sample_fx`` — имя ищется там ВТОРЫМ шагом,
-    если его нет среди лупов, тем же флагом пака 1.
+    если его нет среди лупов, тем же флагом пака 1. Issue #3219: третьим
+    шагом — сэмплы DJ_Dave (``core.sample_dave``), тот же флаг.
 
     Returns:
         ``(код, ошибки)`` — код с переписанными путями (при ошибках
@@ -363,24 +373,22 @@ def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
             )
             return match.group(0)
         name = literal.group("value")
-        loop_info = sample_loops.find_loop(name)
-        if loop_info is not None:
-            denial = sample_loops.loop_denial(name, pack1_enabled)
+        for find, denial_of in _LOOP_SOURCES:
+            info = find(name)
+            if info is None:
+                continue
+            denial = denial_of(name, pack1_enabled)
             if denial is not None:
                 errors.append(denial)
                 return match.group(0)
-            return f">> loop({loop_info.path!r}"
-        fx_info = sample_fx.find_fx(name)
-        if fx_info is not None:
-            denial = sample_fx.fx_denial(name, pack1_enabled)
-            if denial is not None:
-                errors.append(denial)
-                return match.group(0)
-            return f">> loop({fx_info.path!r}"
+            return f">> loop({info.path!r}"
         known = ", ".join(sorted(sample_loops.loop_catalog()) + sorted(sample_fx.fx_catalog()))
         errors.append(
             f"Лупа/FX {name!r} нет в каталоге — Renardo его не найдёт и "
-            f"сыграет тишину без ошибки. Доступные имена: {known}."
+            f"сыграет тишину без ошибки. Доступные имена: {known}; "
+            "сэмплы DJ_Dave — группы "
+            f"{', '.join(sorted(sample_dave.group_descriptions()))} "
+            "(имена algorave_*, array_*, dirt_*, tr808_*, ddm110_*)."
         )
         return match.group(0)
 
@@ -537,11 +545,26 @@ def _fix_pattern_length(code: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _top_level_comma(text: str) -> int:
+    """Индекс первой запятой вне скобок ``[]``/``()``/``{}``; ``-1`` — нет такой."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return i
+    return -1
+
+
 def _cap_amp(code: str, max_amp: float) -> str:
     """Ограничить громкость/октаву в коде до безопасных пределов.
 
     - ``amp=0.9`` / ``amp=P[...]`` / ``amplify=var([...])`` / ``amplify=0.8``
-      → капаются до ``max_amp``.
+      → капаются до ``max_amp``. В ``amplify=var(levels, durs, ...)``
+      капаются только уровни (первый аргумент); длительности не трогаются
+      (issue #3173).
     - ``oct=9`` → ``oct=5`` (санитарный потолок; выше — алиасинг на 16 kHz).
 
     Потолок 5 покрывает регистры аранжировщика (бас 3, пэд 4, мелодия 5) —
@@ -567,8 +590,14 @@ def _cap_amp(code: str, max_amp: float) -> str:
         def _cap_num(n: re.Match) -> str:
             return f"{min(float(n.group()), max_amp):.3g}"
 
-        inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
-        return f"amplify=var({inner})"
+        # Issue #3173: капается только первый аргумент var() — уровни.
+        # Второй (длительности шагов) и всё дальше не трогаем, иначе
+        # ``var([1, 0.3], [0.875, 0.125])`` → 0.875 становится 0.85, цикл
+        # дакинга выходит 3.9 доли вместо 4 и уезжает от бочки.
+        split = _top_level_comma(inner)
+        levels, rest = (inner, "") if split < 0 else (inner[:split], inner[split:])
+        levels = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, levels)
+        return f"amplify=var({levels}{rest})"
 
     code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
 

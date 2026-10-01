@@ -1538,6 +1538,9 @@ check_patterns() {
     local before="$1"; shift
     local logs pat rc=0
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
+    logs="$(printf '%s
+' "$logs" | strip_llm_request_dump)"
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
@@ -2612,7 +2615,10 @@ observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/he
 # Issue #2890 — trap ставится ДО изоляции акта: E2E_FATAL сброса сессии
 # (или памяти) после уже включённой e2e-БД дикторов обязан вернуть узел
 # на боевую, а не оставить мастерскую на e2e-базе.
-trap 'restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
+# Issue #3248 — restore_robot_tts_default (e2e_voice_lib.sh): акт, менявший
+# голос/провайдера (mv01 → Yandex alena), возвращает дефолт set_voice в обход
+# LLM; иначе следующий акт и живые люди слышат голос из этого акта.
+trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.

@@ -143,12 +143,27 @@ def lane_option(kit: Mapping[str, str], lane: str) -> str:
     return kit[KIT_KEY[lane]] if lane in KIT_KEY else lane
 
 
+def unit_db(lane: str, option: str) -> Tuple[float, float]:
+    """``(dB при гейте 1.0, показатель amp)`` варианта слоя.
+
+    Замер — :data:`LANE_DB_AT_UNIT`; тембр, выбранный моделью поверх пула
+    (issue #3268, ``core.club_timbre.TIMBRE_EXTRAS``), — оценка по таблице
+    классик-громкости (:func:`core.club_timbre.estimated_unit_db`).
+    """
+    measured = LANE_DB_AT_UNIT[lane]
+    if option in measured:
+        return measured[option], _exponent(option)
+    from .club_timbre import estimated_unit_db  # classic_loudness импортирует этот модуль
+
+    return estimated_unit_db(lane, option)
+
+
 def lane_db(kit: Mapping[str, str], lane: str, level: float) -> float:
     """dB RMS слоя, звучащего весь блок на уровне ``level`` (модель)."""
     if level <= 0:
         return _SILENCE_DB
-    option = lane_option(kit, lane)
-    return LANE_DB_AT_UNIT[lane][option] + 20.0 * _exponent(option) * math.log10(level)
+    db, exponent = unit_db(lane, lane_option(kit, lane))
+    return db + 20.0 * exponent * math.log10(level)
 
 
 def _db_to_power(db: float) -> float:
@@ -291,4 +306,5 @@ __all__ = [
     "lane_db",
     "main_blocks",
     "main_db",
+    "unit_db",
 ]

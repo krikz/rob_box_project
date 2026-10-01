@@ -18,31 +18,24 @@ issue: если однажды кто-то сделает кап зависим�
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock
+from ._ros_stubs import RosStubs
 
-for _mod in [
-    "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos",
-    "std_msgs", "std_msgs.msg",
-    "geometry_msgs", "geometry_msgs.msg",
-    "nav2_msgs", "nav2_msgs.action",
-    "action_msgs", "action_msgs.srv", "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
-
-from rob_box_mcp_tools.core.arranger import (  # noqa: E402
-    FORMS,
-    MAX_THEME_REPEATS,
-    form_duration_seconds,
-    form_summary,
-    render,
-    resolve_form,
-    spec_from_flat,
-)
-from rob_box_mcp_tools.core.rtttl_compose import (  # noqa: E402
-    melody_to_compose_params,
-    rtttl_to_melody,
-)
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core.arranger import (
+        FORMS,
+        MAX_THEME_REPEATS,
+        form_duration_seconds,
+        form_summary,
+        render,
+        resolve_form,
+        spec_from_flat,
+    )
+    from rob_box_mcp_tools.core.rtttl_compose import (
+        melody_to_compose_params,
+        rtttl_to_melody,
+    )
+_ros_stubs = _ros.fixture()
 
 #: Дословно из живого архива (data/rtttl_melodies.jsonl.gz, ключ
 #: "dropitli") — та самая запись из issue #2965, а не пересочинённая

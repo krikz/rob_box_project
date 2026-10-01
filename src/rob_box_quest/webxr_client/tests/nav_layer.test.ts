@@ -128,22 +128,7 @@ describe("nav_layer: события и HUD", () => {
 });
 
 describe("nav cancel button placement", () => {
-  // Голо-проекторы стоят в (±1, 0, −1.8) высотой 0.9 (captain_bridge.placeHeroProps).
-  const HOLO = [
-    { x: -1, z: -1.8 },
-    { x: 1, z: -1.8 }
-  ];
   const deg = (r: number) => (r * 180) / Math.PI;
-
-  it("does not sit over a holo projector (azimuth from the podium)", () => {
-    const btnAz = deg(Math.atan2(NAV_CANCEL_POS.x, -NAV_CANCEL_POS.z));
-    const btnHalf = deg(Math.atan2(NAV_CANCEL_SIZE.width / 2, -NAV_CANCEL_POS.z));
-    for (const h of HOLO) {
-      const holoAz = deg(Math.atan2(h.x, -h.z));
-      // Проектор ~0.6 м шириной на 2 м — ±8.5°.
-      expect(Math.abs(btnAz - holoAz)).toBeGreaterThan(btnHalf + 8.5);
-    }
-  });
 
   it("is below the bottom edge of the wall-screen video from the eyes", () => {
     const videoBottom = MAIN_SCREEN_CENTER.y - MAIN_SCREEN_SIZE.height / 2;

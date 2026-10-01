@@ -1,0 +1,80 @@
+// Stranger Things Intro Theme
+// https://youtube.com/@farhankk360
+setcpm(83/4)
+
+const openingPad = note("<e2,g2,b2>")
+  .sound("gm_pad_warm:6")
+  .trans(12)
+  .gain(.3)
+  .vib(1)
+  .vibmod(".25")
+  .lpf(320)
+
+const openingFx = note("[0 2 4 6 7 6 4 2]*4")
+  .scale("c5:major")
+  .sound("zzfx")
+  .gain(.02)
+
+OPENING_PADS: stack(openingPad, openingFx)
+  .mask("<1 0@12>")
+  .room(4)
+  .rsize(5)
+  ._pianoroll()
+
+HEART_BEAT: sound("[bd:6 bd:6 - -]*4")
+  .mask("<0 1@10 0@1>")
+  ._scope()
+
+BASS: note("[0 2 4 6 7 6 4 2]*2")
+  .scale("c3:major")
+  .sound("gm_synth_bass_1:9")
+  .lpf(slider(138, 100, 3000, 1))
+  .mask("<0 1@9.5 0>")
+  ._pianoroll()
+
+LEAD_ARP: note("[0 2 4 6 7 6 4 2]*2")
+  .scale("c3:major")
+  .sound("supersaw")
+  .trans(-12)
+  .distort(0.7)
+  .superimpose((x) => x.detune("<0.5>"))
+  .lpf(perlin.slow(10).range(1, 5))
+  .lpf(perlin.slow(10).range(100, 1000))
+  .gain(0.25)
+  .mask("<0 1@9.5 0>")
+  ._pianoroll()
+
+CHORDS: note("<~@1 [e2,g2, [b2 c3]*2,e3]@8 e2 ~@2>")
+  .sound("gm_synth_brass_1:3")
+  .gain(0.6)
+  ._pianoroll()
+
+FLUTE: note(`<
+  ~@1.25
+  [e2,g2,b2]@1.75
+  ~@2
+  [b2,e3,g3]@2
+  [[b3@0.2 c5],g3,e3@6 d5 c5]@2 b4
+  ~@0.5
+  [b3,g3]
+>`)
+  .sound("gm_flute:3")
+  .room(1.5)
+  .gain(125)
+  .rlp(5000)
+  .gain(.2)
+  ._pianoroll()
+
+BRASS_MELODY: note(`<
+  ~@3
+  [c2@7 d2]@2
+  [e2@7 d2]@2
+  [c2@6 d2 c2]@2 e1
+  ~@0.5
+  e1
+>`)
+  .sound("gm_synth_brass_2:4")
+  .room(0.8)
+  .rlp(5000)
+  .gain(1.5)
+  ._pianoroll()

@@ -191,11 +191,21 @@ class TestQuickDecideDispatch:
 
     def test_replace_policy_never_calls_quick_decide(self, node, monkeypatch):
         """policy=replace — quick_decide must not even be called (S1
-        regression path stays untouched)."""
-        import rob_box_voice.dialogue_node as dn
+        regression path stays untouched).
+
+        ADR-0145 §4 (P1 step 1) — the real call site moved from
+        ``dialogue_node`` to
+        ``_DialogueSttHost.quick_decide_verdict`` in
+        ``rob_box_voice.core.stt_admission_host`` (issue #3198 review:
+        patching ``dialogue_node.quick_decide`` no longer intercepts
+        anything, silently turning this into a vacuous pass — see the
+        mutation proof in the PR). Patch the name where it is actually
+        looked up.
+        """
+        import rob_box_voice.core.stt_admission_host as stt_admission_host
 
         called = MagicMock()
-        monkeypatch.setattr(dn, "quick_decide", called)
+        monkeypatch.setattr(stt_admission_host, "quick_decide", called)
         node._barge_in_policy = "replace"
         node._on_stt(_stt("робот угу"))
         called.assert_not_called()

@@ -38,10 +38,12 @@ from rob_box_llm.provider import ToolCall, ToolResult
 from rob_box_voice.core.track_start_guard import (
     SPEAK_TOOL,
     TrackStartGuard,
+    dj_auto_refusal_content,
     refusal_content,
     speak_refusal_content,
     trim_dj_speech,
 )
+from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO
 from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, TurnSpeechGate
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
@@ -188,9 +190,11 @@ class SchedulerToolExecutor:
 
         Вызывается ``AgentCore._run_with_tools`` один раз в начале хода
         (в отличие от :meth:`begin_group`, который зовётся на каждую
-        пачку tool_calls). Снимает лимит «один трек за ход».
+        пачку tool_calls). Снимает лимит «один трек за ход». Происхождение
+        хода (DJ-авто или юзер, issue #3221) берётся из ``TURN_IS_DJ_AUTO``:
+        лимит реплик #2878 действует только в DJ-ходе.
         """
-        self._track_guard.reset()
+        self._track_guard.reset(dj_auto=TURN_IS_DJ_AUTO.get())
 
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
@@ -244,6 +248,25 @@ class SchedulerToolExecutor:
             if isinstance(guarded, ToolResult):
                 return guarded
             call = guarded
+
+        # Issue #3246 / #3247 — что DJ_AUTO-ходу нельзя, одной точкой
+        # (``dj_auto_refusal_content``): тулы, рвущие звук (stop_music), и
+        # set_dj_mode(enabled=true) после финального промпта сета (перезапуск
+        # сета с чужой темой). Жёсткий гард поверх промпта; до
+        # channel_for_tool: stop_music иначе уйдёт в очередь планировщика.
+        refusal = dj_auto_refusal_content(
+            self._track_guard, call.name, call.arguments
+        )
+        if refusal is not None:
+            _LOG.warning(
+                "issue #3246/#3247: refusing %s — forbidden in this DJ_AUTO turn",
+                call.name,
+            )
+            return ToolResult(
+                tool_call_id=call.id,
+                content=refusal,
+                is_error=False,
+            )
 
         channel = channel_for_tool(call.name)
         if channel is None:

@@ -63,11 +63,19 @@ def _ensure_rclpy_stub() -> bool:
     """
     try:
         import rclpy  # noqa: F401
-        # Real rclpy: check it actually has C-backed executors.
-        try:
-            from rclpy.executors import MultiThreadedExecutor  # noqa: F401
-        except ImportError:
-            pass
+        # Real rclpy: check it actually has C-backed executors. Some other
+        # test file (e.g. test_arranger.py's module-level
+        # ``sys.modules.setdefault("rclpy", MagicMock())``, never cleaned
+        # up) can leave a fake, non-package ``rclpy`` behind in
+        # ``sys.modules`` — plain ``import rclpy`` succeeds against that
+        # too, so it alone doesn't prove rclpy is real. The inner import
+        # used to be wrapped in its own try/except that swallowed the
+        # failure and still returned False ("real"); that left
+        # ``_RCLPY_IS_REAL`` wrongly True and the Layer 2 fixture below hit
+        # the same missing-submodule error instead of skipping. Let a
+        # failure here fall through to the outer except so a half-stubbed
+        # ``rclpy`` is treated the same as "not installed".
+        from rclpy.executors import MultiThreadedExecutor  # noqa: F401
         return False
     except ImportError:
         pass

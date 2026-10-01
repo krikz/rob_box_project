@@ -576,6 +576,8 @@ jobs:
           scripts/testing/test_e2e_scenario_playable.sh
           scripts/testing/test_e2e_health_probe.sh
           scripts/testing/test_e2e_voice_safe_label.sh
+          scripts/testing/test_e2e_tts_restore.sh
+          scripts/testing/test_e2e_check_patterns_llm_dump.sh
           "
           rc=0
           {

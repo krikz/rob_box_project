@@ -28,6 +28,13 @@ export interface PointerTarget {
   object: THREE.Object3D;
   /** Можно ли тащить. Кнопки панели режимов — нет, видео-панели — да. */
   draggable?: boolean;
+  /**
+   * Всплывающее меню (выбор стрима, TTS picker). Пока такая цель
+   * зарегистрирована и видна, попадание в неё выигрывает у любых
+   * немодальных целей, даже если панель под меню ближе к оператору
+   * или лежит на той же глубине (меню всплывает в плоскости панели).
+   */
+  modal?: boolean;
 }
 
 export interface PointerRay {
@@ -230,19 +237,25 @@ export class PointerSystem {
     const hits = this.raycaster.intersectObjects(objects, true);
     if (hits.length === 0) return null;
     // Ищем, какому таргету принадлежит попавшийся меш (может быть ребёнком).
-    for (const hit of hits) {
-      // Raycaster three.js видимость не проверяет: скрытая панель (M —
-      // режимы, P — потоки) иначе ловила бы луч невидимыми кнопками.
-      if (!visibleInTree(hit.object)) continue;
-      const id = this.ownerOf(hit.object);
-      if (!id) continue;
-      const corner = hit.uv ? cornerFromUv(hit.uv) : null;
-      return {
-        id,
-        corner,
-        distance: hit.distance,
-        point: { x: hit.point.x, y: hit.point.y, z: hit.point.z }
-      };
+    // Два прохода: сначала модальные цели (меню), затем всё остальное.
+    // Иначе меню, всплывшее в плоскости панели, проигрывает ей хит-тест
+    // по дистанции (равной или меньшей) и клик прокликивается в панель.
+    for (const modalOnly of [true, false]) {
+      for (const hit of hits) {
+        // Raycaster three.js видимость не проверяет: скрытая панель (M —
+        // режимы, P — потоки) иначе ловила бы луч невидимыми кнопками.
+        if (!visibleInTree(hit.object)) continue;
+        const id = this.ownerOf(hit.object);
+        if (!id) continue;
+        if (modalOnly && !this.targets.find((t) => t.id === id)?.modal) continue;
+        const corner = hit.uv ? cornerFromUv(hit.uv) : null;
+        return {
+          id,
+          corner,
+          distance: hit.distance,
+          point: { x: hit.point.x, y: hit.point.y, z: hit.point.z }
+        };
+      }
     }
     return null;
   }

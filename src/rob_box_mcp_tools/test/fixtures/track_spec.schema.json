@@ -69,7 +69,13 @@
         "i-VI-III-VII",
         "i-VII-VI-VII",
         "i-iv-VI-v",
-        "VI-VII-i-i"
+        "VI-VII-i-i",
+        "i-VII-VI-v",
+        "i-III-VII-VI",
+        "i-iv-VII-III",
+        "i-v-VI-iv",
+        "VI-VII-i-v",
+        "i-III-iv-VII"
       ]
     },
     "groove": {

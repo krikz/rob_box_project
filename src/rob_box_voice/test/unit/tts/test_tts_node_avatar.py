@@ -687,3 +687,75 @@ def test_publish_headset_audio_signature_accepts_request_id_kwarg():
     assert "request_id" in params, (
         "_publish_headset_audio должен принимать request_id для audio_meta"
     )
+
+
+# ── audio_meta.sample_rate == rate реального PCM (баг «ТАРС-хомяк») ─────
+#
+# Провайдер (MiniMax) отдаёт 32000 Гц, но в топик уходит PCM после
+# ``_prepare_audio_for_topic`` (ресэмпл в ``audio_output_sample_rate``,
+# 16000).  Раньше в audio_meta попадал ИСХОДНЫЙ rate → quest_node
+# подписывал 16-кГц PCM как 32-кГц, шлем играл в 2 раза быстрее.
+
+
+def _make_resampling_node(request_id: str = "req-hamster"):
+    n = _make_publish_node()
+    n._avatar_tts_request_id = request_id
+    n._prepare_audio_for_topic = TTSNode._prepare_audio_for_topic.__get__(n)
+    return n
+
+
+def _assert_meta_matches_pcm(n, src_samples: int, src_rate: int):
+    assert len(n._avatar_audio_meta_pub.messages) == 1
+    meta = json.loads(n._avatar_audio_meta_pub.messages[0].data)
+    pcm_bytes = len(bytes(n._avatar_audio_pub.messages[0].data))
+    pcm_samples = pcm_bytes // 2
+    assert meta["sample_rate"] == 16000
+    # Длительность по meta совпадает с реальной длительностью реплики.
+    assert pcm_samples / meta["sample_rate"] == pytest.approx(
+        src_samples / src_rate, rel=0.02
+    )
+
+
+def test_sap_publish_for_sink_headset_meta_rate_matches_resampled_pcm():
+    n = _make_resampling_node()
+    src_rate = 32000
+    audio = np.zeros(src_rate, dtype=np.float32)  # 1 с @ 32 кГц
+
+    TTSNode._sap_publish_for_sink(
+        n, audio, src_rate, "headset", None, {}, None, None
+    )
+
+    _assert_meta_matches_pcm(n, len(audio), src_rate)
+
+
+def test_streaming_minimax_headset_meta_rate_matches_resampled_pcm():
+    import asyncio
+
+    from rob_box_llm.tts import TTSChunk, TTSFormat
+
+    n = _make_resampling_node()
+    n._decode_minimax_audio = TTSNode._decode_minimax_audio.__get__(n)
+    n._decoded_audio_to_float32 = TTSNode._decoded_audio_to_float32
+    src_rate = 32000
+    pcm = np.zeros(src_rate, dtype="<i2").tobytes()  # 1 с @ 32 кГц
+
+    async def fake_stream(text, ssml_attrs, voice=None, language=None):
+        yield TTSChunk(
+            samples=pcm,
+            sample_rate=src_rate,
+            format=TTSFormat.PCM,
+            finish_reason="stop",
+        )
+
+    n._stream_minimax_chunks = fake_stream
+
+    async def run():
+        return await asyncio.to_thread(
+            lambda: TTSNode._synthesize_minimax_streaming_publish(
+                n, "hello", {}, sink="headset"
+            )
+        )
+
+    asyncio.run(run())
+
+    _assert_meta_matches_pcm(n, src_rate, src_rate)

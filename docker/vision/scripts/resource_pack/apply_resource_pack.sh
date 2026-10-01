@@ -544,6 +544,15 @@ run_fetch_hook() {  # $1 = имя хука, $2 = целевой каталог; 
             python3 "${SCRIPT_DIR}/fetch_renardo_samples.py" --target "$tdir"
             return $?
             ;;
+        fetch_dj_dave_samples)
+            if ! command -v python3 >/dev/null 2>&1; then
+                err "хук ${hook}: python3 не найден — скачать сэмплы нечем"
+                return 127
+            fi
+            # stdlib-only; эталоны sha256 — dj_dave_samples.lock.json рядом.
+            python3 "${SCRIPT_DIR}/fetch_dj_dave_samples.py" --target "$tdir"
+            return $?
+            ;;
         *)
             err "неизвестный fetch_hook='${hook}' — манифест невалиден."
             err "  Хук — это имя, которое разрешается в код apply_resource_pack.sh"

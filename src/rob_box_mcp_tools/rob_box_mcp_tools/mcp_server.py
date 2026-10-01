@@ -114,6 +114,7 @@ from .tools import (
     SearchSamplesTool,
     LookupMelodyTool,
     SearchMelodyTool,
+    AddMusicMaterialTool,
     FaqSearchTool,
     SearchWebTool,
     # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
@@ -146,6 +147,8 @@ except ImportError as _exc:  # noqa: BLE001
     GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
+from .core.music_diversity import MusicHistory
+from .core.web_melody import attach_web_search
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
@@ -1238,7 +1241,8 @@ class MCPServer(Node):
         # LLM extracts name from user_input and calls register_speaker(name=X)
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
         self.registry.register(RegisterSpeakerTool(self))
-        self.registry.register(SearchWebTool(self))
+        self._search_web_tool = SearchWebTool(self)
+        self.registry.register(self._search_web_tool)
         # Issue #2113 — TARS 2 metrics panel. ``show_metrics`` публикует
         # запрос в /avatar/tars/panel_request; TarsPanelDispatcher
         # (rob_box_supervisor.tars_panel) подписан на этот топик, парсит
@@ -1300,6 +1304,7 @@ class MCPServer(Node):
         try:
             rtttl_library = RtttlLibrary()
             self.registry.register(SearchMelodyTool(self, rtttl_library))
+            self.registry.register(AddMusicMaterialTool(self, rtttl_library))  # #3227
             self.get_logger().info(f"🎵 RTTTL library: {rtttl_library.total()} мелодий")
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
@@ -1312,10 +1317,16 @@ class MCPServer(Node):
 
         # Форма трека строится кодом, а не LLM (RC4 в
         # docs/analysis/2026-08-30-music-quality-audit.md).
+        # Issue #3224 / ADR-0146: персистентная история сыгранного (та же БД,
+        # что у RTTTL-библиотеки). Недоступна → WARNING в логе и выбор без памяти.
+        music_history = MusicHistory()
+        music_history.announce(self.get_logger())
         self._compose_music_tool = ComposeMusicTool(
-            self, music_manager, rtttl_library, preset_store
+            self, music_manager, rtttl_library, preset_store, music_history
         )
         self.registry.register(self._compose_music_tool)
+        # Issue #3228: мелодия темы, которой нет в архиве, — через search_web (сниппеты).
+        attach_web_search(self._compose_music_tool, getattr(self, "_search_web_tool", None))
         self.registry.register(
             PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
         )
@@ -1344,7 +1355,11 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
-        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
+        # Issue #2956: тот же preset_store — lookup_melody говорит модели,
+        # что у мелодии есть сохранённый пресет (играть name= без синтов).
+        self.registry.register(
+            LookupMelodyTool(self, track_library, music_manager, rtttl_library, preset_store)
+        )
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,

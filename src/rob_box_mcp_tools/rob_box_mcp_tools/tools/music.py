@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from rob_box_voice.core.music_stack_validation import (
     MusicStackStatus,
@@ -67,8 +67,14 @@ from ..core import renardo_sanitizer, sample_fx, sample_loops
 # импортирует gen_tool_catalog без пакета) — предзагрузка здесь, до того как
 # кто-то подменит builtins.exec (тесты тула патчат его на время execute).
 from ..core import classic_loudness  # noqa: F401,E402
-from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
+from ..core.club_arranger import ROLE_PALETTE, club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
+from ..core.club_fragments import club_hook_sentence, hook_fingerprint, hook_scale_note, pick_club_hook
+from ..core.club_timbre import timbre_refusals, timbre_request, timbre_sentence
+from ..core.club_history import recent_club_rows, remember_classic, remember_club
+from ..core.web_melody import club_label_theme, pick_theme
+from ..core.club_samples import pick_club_sample, sample_sentence
+from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
     FADE_BARS,
@@ -139,6 +145,44 @@ def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
     или, для ручек аранжировки, :meth:`ComposeMusicTool._resolve_preset`).
     """
     return {k: v for k, v in local_vars.items() if k != "self" and v is not _UNSET}
+
+
+def _knob_text(value: Any) -> str:
+    """Значение ручки для сравнения «вызов vs пресет» (без пробелов)."""
+    return str(value).replace(" ", "")
+
+
+def _split_preset_knobs(
+    kwargs: Dict[str, Any], preset_knobs: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Tuple[Any, Any]]]:
+    """Разложить ручки пресета относительно вызова (issue #2956).
+
+    Возвращает ``(applied, overridden)``: ``applied`` — ручки пресета,
+    которых в *kwargs* нет (их подставит пресет); ``overridden`` —
+    ``{ручка: (значение вызова, значение пресета)}`` там, где вызов задал
+    ручку ИНАЧЕ, чем пресет (совпадающее значение — не переопределение).
+    Вынесено из :class:`ComposeMusicTool` — бюджет размера класса ADR-0145.
+    """
+    applied = {k: v for k, v in preset_knobs.items() if k not in kwargs}
+    overridden = {
+        k: (kwargs[k], v) for k, v in preset_knobs.items()
+        if k in kwargs and _knob_text(kwargs[k]) != _knob_text(v)
+    }
+    return applied, overridden
+
+
+def _preset_note(
+    title: str, applied: Dict[str, Any], overridden: Dict[str, Tuple[Any, Any]]
+) -> str:
+    """Строка партитуры: «<title> (подставлено) (переопределено: k=вызов вместо пресет)»."""
+    note = title
+    if applied:
+        note += " (" + ", ".join(f"{k}={v}" for k, v in applied.items()) + ")"
+    if overridden:
+        note += " (переопределено: " + ", ".join(
+            f"{k}={mine} вместо {theirs}" for k, (mine, theirs) in overridden.items()
+        ) + ")"
+    return note
 
 
 #: Issue #2950 — поля, наследуемые подстройкой звучания ТЕКУЩЕГО трека
@@ -3370,9 +3414,17 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "16-ми с пампингом под бочку, клэп+открытый хэт, пэд, "
                     "форма из матрицы секций (build/predrop/drop/verse, "
                     "32 такта). С club работают только bpm (по умолчанию "
-                    "124), root (по умолчанию A#), scale (только minor), "
+                    "124), root (по умолчанию A#), scale (minor по умолчанию, "
+                    "ещё dorian, phrygian, major, minorPentatonic, "
+                    "majorPentatonic — пентатоника: риф и аккорды не выходят "
+                    "из 5 ступеней), "
                     "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
-                    "секций и тембры) и repeat; остальные "
+                    "секций и тембры), repeat и тембр под тему поверх выбора "
+                    "сида: lead_synth (pluck, blip, arpy, karp, marimba, sitar, "
+                    "epiano, brass, orient, viola) и pad_synth (sinepad, "
+                    "warmpad, space, ambi, strangerpulsepad); другой "
+                    "тембр не применяется, ответ назовёт причину. Не задан — "
+                    "тембры выбирает сид (так треки сета разнообразнее); остальные "
                     "параметры игнорируются — об этом сказано в начале "
                     "ответа. С name= мелодии из библиотеки или rtttl= club "
                     "играет вместо арпеджио узнаваемый хук темы (её начало, "
@@ -3397,6 +3449,18 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 required=False,
                 enum=["cut", "fade"],
                 default="cut",
+            ),
+            MCPToolParameter(
+                name="theme",
+                type="string",
+                description=(
+                    "Только для style=club без name=/rtttl=: тема сета («Очень "
+                    "странные дела», «денди»). Lead играет фрагмент мелодии на "
+                    "эту тему из архива; если темы в архиве нет — мелодию "
+                    "ищет в вебе (search_web) и запоминает. DJ-сет передаёт "
+                    "тему в готовом вызове — бери её как есть."
+                ),
+                required=False,
             ),
 ]
 
@@ -3453,10 +3517,14 @@ class ComposeMusicTool(MCPTool):
         manager: MusicManager,
         rtttl_library: Optional[RtttlLibrary] = None,
         preset_store: Optional[ArrangementPresetStore] = None,
+        music_history: Optional[MusicHistory] = None,
     ) -> None:
         super().__init__(node)
         self._manager = manager
         self._rtttl_library = rtttl_library
+        #: Issue #3224 / ADR-0146: персистентная история сыгранного club-треков.
+        #: ``None`` (тесты, сборки без БД) — выбор каркаса без памяти, как раньше.
+        self._music_history = music_history
         #: ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned).
         #: ``None`` (тесты старых сборок) — пресеты просто не применяются,
         #: вызов ведёт себя как до PR-7.
@@ -3496,6 +3564,11 @@ class ComposeMusicTool(MCPTool):
         #: вызовом ``_resolve_melody``. ``None`` — сочинённый трек без
         #: ``name=`` (наследовать/запоминать нечего).
         self._pending_melody_key: Optional[str] = None
+        #: Issue #3225: тема по умолчанию для club-фрагмента (параметр ``theme`` вызова важнее).
+        self.club_theme: Optional[str] = None
+        #: Issue #3228: ``search(query) -> [сниппеты]`` (``search_web``) — мелодия темы,
+        #: которой нет в архиве; ``None`` — веб не используется. Ставит ``mcp_server``.
+        self.web_search: Optional[Callable[[str], Any]] = None
         #: Issue #2964: сырая запись RTTTL-библиотеки, резолвленная ТЕКУЩЕЙ
         #: сборкой (:meth:`_resolve_rtttl_params`) — читается
         #: :meth:`_compose_success` для честной прозрачности результата
@@ -3607,7 +3680,14 @@ class ComposeMusicTool(MCPTool):
 
         Возвращает ``(merged_kwargs, preset_note)``: ``preset_note`` —
         строка для партитуры («<title> (ручка=значение, …)»), заполнена,
-        только если пресет реально что-то подмешал.
+        если пресет реально что-то подмешал ИЛИ если параметры вызова
+        разошлись со значениями пресета. Issue #2956: на живом роботе
+        модель всегда передавала синты явно, и пресет молча проигрывал —
+        теперь партитура пишет «<title> (…) (переопределено: ручка=значение
+        вызова вместо значения пресета, …)», чтобы было видно, какие
+        решения пресета перебиты. «Параметры вызова» здесь — всё, что уже
+        лежит в *kwargs*, включая унаследованное от играющего трека
+        (:meth:`_inherit_last_track` отрабатывает раньше).
         """
         name = kwargs.get("name")
         if not name or self._preset_store is None:
@@ -3617,19 +3697,15 @@ class ComposeMusicTool(MCPTool):
         preset = self._preset_store.get(melody_key) if melody_key else None
         if preset is None:
             return kwargs, None
-        explicit = set(kwargs.keys())
-        applied = {
-            k: v for k, v in (preset.get("knobs") or {}).items() if k not in explicit
-        }
-        if not applied:
+        # Issue #2956: по-параметрно, не «всё или ничего» — значение вызова
+        # побеждает только СВОЮ ручку, и партитура это называет.
+        applied, overridden = _split_preset_knobs(kwargs, preset.get("knobs") or {})
+        if applied:
+            applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
+        if not applied and not overridden:
             return kwargs, None
-        applied = self._sanitize_loaded_knobs(applied, f"пресет {melody_key!r}")
-        if not applied:
-            return kwargs, None
-        merged = {**kwargs, **applied}
-        title = preset.get("title") or melody_key
-        knob_text = ", ".join(f"{k}={v}" for k, v in applied.items())
-        return merged, f"{title} ({knob_text})"
+        note = _preset_note(str(preset.get("title") or melody_key), applied, overridden)
+        return {**kwargs, **applied}, note
 
     def _remember_played_preset(
         self, name: Optional[str], melody_title: Optional[str], effective: Dict[str, Any]
@@ -4232,6 +4308,7 @@ class ComposeMusicTool(MCPTool):
         rtttl: Optional[str] = None,
         style: Optional[str] = None,
         transition: Optional[str] = None,
+        theme: Optional[str] = None,
     ) -> MCPToolResult:
         """Точка входа тула (ADR-0132 PR-7): подмешать пресет, затем сыграть.
 
@@ -4257,6 +4334,7 @@ class ComposeMusicTool(MCPTool):
         club = self._style_branch(kwargs.pop("style", None), kwargs, transition)
         if club is not None:
             return club
+        kwargs.pop("theme", None)  # issue #3228: theme — только club, classic его не знает
         return self._execute_classic(kwargs, transition)
 
     def _execute_classic(self, kwargs: Dict[str, Any], transition: Optional[str]) -> MCPToolResult:
@@ -4280,11 +4358,15 @@ class ComposeMusicTool(MCPTool):
                 merged.get("name"), result.data.get("title") if result.data else None, merged,
             )
             self._remember_last_track(merged)
+            remember_classic(self._music_history, merged)  # issue #3245
         return result
 
     #: Параметры, которые ``style="club"`` реально использует. ``name``/
     #: ``variants``/``rtttl`` — тема для хука lead (issue #3181).
-    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl")
+    #: Issue #3268: ``lead_synth``/``pad_synth`` — тембр под тему из ``ROLE_PALETTE``.
+    _CLUB_PARAMS: Tuple[str, ...] = (
+        "bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl", "theme", "lead_synth", "pad_synth",
+    )
 
     def _style_branch(
         self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
@@ -4358,9 +4440,8 @@ class ComposeMusicTool(MCPTool):
 
     #: Issue #3169 — русские имена тоник (в порядке ``VALID_ROOTS``) для
     #: человекочитаемого имени club-трека («ля-диез минор» вместо
-    #: «A# minor»). Club пока поддерживает только ``scale="minor"``
-    #: (``SUPPORTED_SCALES`` в ``club_arranger.py``) — маппинг лада на
-    #: случай будущего мажора.
+    #: «A# minor»). Лады club — ``SUPPORTED_SCALES``
+    #: (``club_progressions.py``): minor/dorian/phrygian/major (#3226).
     _ROOT_NAMES_RU: Dict[str, str] = dict(zip(
         VALID_ROOTS,
         (
@@ -4368,7 +4449,10 @@ class ComposeMusicTool(MCPTool):
             "фа-диез", "соль", "соль-диез", "ля", "ля-диез", "си",
         ),
     ))
-    _SCALE_NAMES_RU: Dict[str, str] = {"minor": "минор", "major": "мажор"}
+    _SCALE_NAMES_RU: Dict[str, str] = {
+        "minor": "минор", "major": "мажор", "dorian": "дорийский лад", "phrygian": "фригийский лад",
+        "minorPentatonic": "минорная пентатоника", "majorPentatonic": "мажорная пентатоника",
+    }
 
     @classmethod
     def _club_track_label(cls, bpm: float, root: str, scale: str, hook_title: Optional[str] = None) -> str:
@@ -4412,7 +4496,7 @@ class ComposeMusicTool(MCPTool):
         # ``<music_state>`` говорили «трек «без названия»».
         self._manager.current_track_name = self._club_track_label(
             bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
-            hook_info["title"] if hook_info else None,
+            club_label_theme(kwargs, hook_info["title"] if hook_info else None, self.club_theme),
         )
         self._notify_music_state()
 
@@ -4427,14 +4511,22 @@ class ComposeMusicTool(MCPTool):
         bpm = 124 if bpm is None else bpm
         repeat = bool(kwargs.get("repeat", False))
         seed = kwargs.get("seed") or 0
-        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры).
-        kit = club_kit(seed)
+        # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры);
+        # issue #3224: со штрафом за то, что уже играло (история между запусками).
+        recent = recent_club_rows(self._music_history)
+        # Issue #3268: тембр лида/пэда от модели (из палитры) поверх выбора сида.
+        timbre, refused = timbre_request(kwargs, ROLE_PALETTE)
+        kit = {**club_kit(seed, recent=recent), **timbre}
+        # Issue #3254: слой сэмплов DJ_Dave — ещё одна ось выбора (или причина, почему его нет).
+        sample = pick_club_sample(seed, recent, kwargs.get("root"))
         fade_note = self._fade_outlives_form(bpm) if fade else ""
         if fade_note:
             fade = False
         try:
-            hook, hook_info = self._club_hook(kwargs, bpm)
-            code, form_beats, entry = self._club_program(kwargs, kit["template"], bpm, seed, repeat, fade, hook)
+            hook, hook_info = self._club_hook(kwargs, bpm, seed, recent)
+            code, form_beats, entry = self._club_program(
+                kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent, sample.name, timbre,
+            )
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
         self.log_info(
@@ -4448,16 +4540,21 @@ class ComposeMusicTool(MCPTool):
             return MCPToolResult(success=False, error=result["error"])
         duration_s = (form_beats - entry) * 60.0 / float(bpm) + fade_tail
         self._club_publish_state(kwargs, bpm, duration_s, repeat, hook_info)
+        self.log_info(f"[#3254] club сэмплы DJ_Dave: {sample.info()}")
+        self.log_info(remember_club(self._music_history, kwargs, kit, seed, bpm, hook_info, recent, sample.name))
         result["style"] = "club"
         result["transition"] = "fade" if fade else "cut"
         result["duration_seconds"] = round(duration_s, 1)
         result["club_kit"] = kit
         result["club_hook"] = hook_info
+        result["club_sample"] = sample.info()
+        result["club_timbre"] = {"applied": timbre, "refused": refused}
         message = self._club_message(kwargs, result, duration_s, fade) + fade_note
+        message += sample_sentence(result["club_sample"])
         return MCPToolResult(success=True, data=result, message=message)
 
     def _club_hook(
-        self, kwargs: Dict[str, Any], bpm: float,
+        self, kwargs: Dict[str, Any], bpm: float, seed: int = 0, recent: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Optional[ClubHook], Optional[Dict[str, Any]]]:
         """Issue #3181: хук темы для lead club — из ``rtttl=`` или ``name`` в библиотеке.
 
@@ -4471,7 +4568,11 @@ class ComposeMusicTool(MCPTool):
             hook = extract_hook(rtttl, bpm, melody_id=str(name or ""), title=str(name or ""))
             return hook, self._hook_info(hook, "rtttl", {})
         if not name:
-            return None, None
+            # Issue #3225: фрагмент RTTTL-мелодии вместо пентатоники (та — только фолбек).
+            return pick_club_hook(
+                self._rtttl_library, bpm, seed, recent, pick_theme(kwargs, self.club_theme),
+                self.log_warning, self.log_info, self.web_search,
+            )
         rec = self._resolve_melody(name, kwargs.get("variants"))
         if rec is None or not rec.get("rtttl"):
             return None, None
@@ -4491,6 +4592,7 @@ class ComposeMusicTool(MCPTool):
         info = {
             "id": hook.melody_id, "title": hook.title, "source": source, "bars": hook.bars,
             "key": hook.key_name, "time_scale": hook.time_scale,
+            "offset": hook.offset, "fingerprint": hook_fingerprint(hook.notes),
             "label": f"{hook.bars} такта, тема в {hook.key_name}" + (
                 ", мажорная тема звучит в параллельном мажоре тональности трека (от III ступени)"
                 if hook.key_mode == "major" else ", перенесена на тонику трека"
@@ -4502,7 +4604,9 @@ class ComposeMusicTool(MCPTool):
     @staticmethod
     def _club_program(
         kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
-        hook: Optional[ClubHook] = None,
+        hook: Optional[ClubHook] = None, recent: Optional[List[Dict[str, Any]]] = None,
+        sample: Optional[str] = None,
+        timbre: Optional[Dict[str, str]] = None,
     ) -> Tuple[str, int, int]:
         """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
 
@@ -4514,7 +4618,8 @@ class ComposeMusicTool(MCPTool):
         dj_entry = fade and align
         code = render_club(
             bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
-            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook,
+            seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook, recent=recent,
+            sample=sample, timbre=timbre,
         )
         form_beats = club_form_beats(template)
         entry = club_entry_beats(template) if dj_entry else 0
@@ -4537,12 +4642,10 @@ class ComposeMusicTool(MCPTool):
             f"тембры {kit['lead']}/{kit['bass']}/{kit['pad']}. "
             "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
         )
+        message += timbre_sentence(result.get("club_timbre"))
         hook = result.get("club_hook")
         if hook:
-            message += (
-                f" Lead играет хук темы «{hook['title']}» (id={hook['id']}): {hook['label']}. "
-                "Это клубная переработка мотива, а не вся песня."
-            )
+            message += club_hook_sentence(hook) + hook_scale_note(kwargs.get("scale"))
         if fade:
             message += (
                 f" Переход fade: играющий трек уходит за {FADE_BARS} тактов фильтром и "
@@ -4620,6 +4723,7 @@ class ComposeMusicTool(MCPTool):
                 f"name={name!r} не найдено в библиотеке мелодий — в club это только "
                 "подпись, ТЕМЫ в треке нет (не говори юзеру, что играет эта песня)."
             )
+        parts.extend(timbre_refusals(result.get("club_timbre")))
         if ignored:
             parts.append(
                 "Проигнорировано в club (трек звучит БЕЗ них): " + ", ".join(ignored) + "."
@@ -5249,6 +5353,7 @@ class PreviewArrangementTool(MCPTool):
         rtttl: Optional[str] = None,
         style: Optional[str] = None,
         transition: Optional[str] = None,
+        theme: Optional[str] = None,
     ) -> MCPToolResult:
         """ADR-0132 PR-7 / issue #2950: партитура превью подмешивает то же
         наследование от играющего трека и тот же пресет, что применил бы
@@ -5262,6 +5367,7 @@ class PreviewArrangementTool(MCPTool):
         kwargs = _explicit_kwargs(locals())
         # Issue #3113: переход — про запуск звука, партитуре он не нужен.
         kwargs.pop("transition", None)
+        kwargs.pop("theme", None)  # issue #3228: тема — только club, партитуре не нужна
         if kwargs.pop("style", None) not in (None, "classic"):
             # capability-honest: у club нет спецификации/партитуры — не
             # показываем партитуру classic под видом клубного трека.
@@ -6159,11 +6265,48 @@ class LookupMelodyTool(MCPTool):
         library: TrackLibrary,
         manager: MusicManager,
         rtttl_library: Optional[RtttlLibrary] = None,
+        preset_store: Optional[ArrangementPresetStore] = None,
     ) -> None:
         super().__init__(node)
         self._library = library
         self._manager = manager
         self._rtttl_library = rtttl_library
+        #: Issue #2956: тот же стор пресетов, что у compose_music, — чтобы
+        #: сказать модели, что у найденной мелодии есть сохранённое
+        #: звучание. ``None`` — пресетов нет, результат как раньше.
+        self._preset_store = preset_store
+
+    def _preset_info(
+        self, melody_key: Optional[str], play_name: str
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Сохранённый пресет мелодии → ``(data['preset'], текст для message)``.
+
+        Issue #2956 — живая проверка 24.09.2026: модель не знала, что у
+        мелодии есть пресет, и всегда передавала синты явно, поэтому
+        пресет ни разу не применился. Здесь — единственная точка, где
+        модель узнаёт о нём ДО вызова ``compose_music``.
+        """
+        if self._preset_store is None or not melody_key:
+            return None, ""
+        try:
+            preset = self._preset_store.get(melody_key)
+        except Exception as exc:  # noqa: BLE001 — поиск нот важнее подсказки
+            self.log_warning(f"[#2956] пресет {melody_key!r} не прочитан: {exc!r}")
+            return None, ""
+        knobs = (preset or {}).get("knobs") or {}
+        if not knobs:
+            return None, ""
+        title = str(preset.get("title") or melody_key)
+        info = {"title": title, "knobs": dict(knobs)}
+        knob_text = ", ".join(f"{k}={v}" for k, v in knobs.items())
+        text = (
+            f" У этой мелодии есть СОХРАНЁННЫЙ ПРЕСЕТ «{title}» ({knob_text}). "
+            f"Чтобы сыграть её так, достаточно compose_music(name={play_name!r}) "
+            "БЕЗ синтов и ручек — пресет подставит их сам. Явно задавай только "
+            "то, что юзер просит поменять: каждая явная ручка перебивает "
+            "пресет по своему параметру."
+        )
+        return info, text
 
     @property
     def name(self) -> str:
@@ -6177,7 +6320,10 @@ class LookupMelodyTool(MCPTool):
             "делом, когда юзер просит сыграть конкретную мелодию: посмотри на "
             "ноты и подбери аранжировку (lead_synth, form, drums, bass, pad). "
             "Затем СЫГРАЙ через compose_music(name=..., lead_synth=..., "
-            "bass_synth=..., pad_synth=..., form=...). Ноты и рисунки "
+            "bass_synth=..., pad_synth=..., form=...). Если в ответе есть "
+            "data['preset'] (сохранённое звучание мелодии) — играй "
+            "compose_music(name=...) БЕЗ синтов и ручек, если юзер не просит "
+            "другое звучание. Ноты и рисунки "
             "ударных при name= система выводит из самой мелодии — не "
             "сочиняй их. lead_synth подбирай под характер "
             "мелодии (марш → imperialbrass, классика → pianovel, игра → blip). "
@@ -6267,6 +6413,9 @@ class LookupMelodyTool(MCPTool):
                 alternatives = _search_alternatives(self._rtttl_library, candidate, title)
                 match = match_info(self._rtttl_library, rec, candidate or name)
                 analysis = self._analysis(rec.get("rtttl"))
+                preset, preset_text = self._preset_info(rec.get("name"), candidate or name)
+                if preset is not None:
+                    analysis["preset"] = preset
                 return MCPToolResult(
                     success=True,
                     data={
@@ -6277,12 +6426,14 @@ class LookupMelodyTool(MCPTool):
                         "alternatives": alternatives,
                         "match": match,
                         "analysis": analysis,
+                        "preset": preset,
                     },
                     message=(
                         f"Нашёл «{shown_title}». Точные ноты в data['rtttl'] "
                         "(формат RTTTL, как разбирать — в системном "
                         f"промпте). Сыграй ноты сам, не импровизируй. "
                         + analysis["text"] + _mismatch_note(match, candidate or name)
+                        + preset_text
                     ),
                 )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
@@ -7044,6 +7195,33 @@ class SetDjModeTool(MCPTool):
                 ),
                 required=False,
             ),
+            MCPToolParameter(
+                name="base_bpm",
+                type="integer",
+                description=(
+                    "Характер сета (#3249): базовый темп (90–150), который ТЫ выводишь из "
+                    "настроения темы по правилам скилла dj, когда юзер темп НЕ называл. "
+                    "Темп треков дрейфует около него (±4). Передавай вместе с theme при "
+                    "первом включении или смене темы; на переходах не повторяй."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="scale",
+                type="string",
+                description=(
+                    "Характер сета (#3249): предпочтённый лад клубных треков — "
+                    "minor | major | dorian | phrygian, по настроению темы (правила "
+                    "скилла dj). Остальные треки сета берут родственные лады. "
+                    "Передавай вместе с theme при первом включении или смене темы."
+                ),
+                required=False,
+                enum=["minor", "major", "dorian", "phrygian"],
+                # Лад — второстепенный параметр: опечатка модели не должна
+                # ронять включение DJ; чужой лад отклоняет и логирует
+                # DJModeController (``apply_set_character``).
+                enum_strict=False,
+            ),
         ]
 
     @property
@@ -7074,6 +7252,8 @@ class SetDjModeTool(MCPTool):
         max_minutes: Optional[int] = None,
         max_tracks: Optional[int] = None,
         bpm: Optional[int] = None,
+        base_bpm: Optional[int] = None,
+        scale: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Собрать JSON-payload для /voice/dj_mode из аргументов LLM.
 
@@ -7088,19 +7268,21 @@ class SetDjModeTool(MCPTool):
         # 🔴 FIX (live 10:13 DJ): персона юзера («ты диджей Пёс») —
         # пробрасываем в DJState, чтобы автопромпты не перезаписывали
         # её дефолтом «ДиДжей РОббокс».
-        if theme and isinstance(theme, str) and theme.strip():
-            payload["theme"] = theme.strip()
-        if persona and isinstance(persona, str) and persona.strip():
-            payload["persona"] = persona.strip()
         # 🔴 FIX (live 15:30 06.08): план сета — DJ проходит по плану и
         # корректно завершается с финальным объявлением, а не молча по лимиту.
-        if plan and isinstance(plan, str) and plan.strip():
-            payload["plan"] = plan.strip()
+        # Issue #3249 — ``scale``: лад характера темы, выведенный LLM.
+        for key, text in (("theme", theme), ("persona", persona), ("plan", plan), ("scale", scale)):
+            if text and isinstance(text, str) and text.strip():
+                payload[key] = text.strip()
         # Issue #2856 — явные лимиты сета от юзера. Клампит и валидирует
         # DJModeController (единственный потребитель), здесь — только
         # пропуск осмысленных чисел. Issue #3113 — ``bpm``: темп сета по
         # явной просьбе юзера, клампит тоже DJModeController.
-        for key, value in (("max_minutes", max_minutes), ("max_tracks", max_tracks), ("bpm", bpm)):
+        # Issue #3249 — ``base_bpm``: темп характера темы от LLM; валидирует и
+        # применяет тоже DJModeController (``apply_set_character``).
+        for key, value in (
+            ("max_minutes", max_minutes), ("max_tracks", max_tracks), ("bpm", bpm), ("base_bpm", base_bpm),
+        ):
             if value is not None and not isinstance(value, bool):
                 payload[key] = value
         return payload
@@ -7128,7 +7310,7 @@ class SetDjModeTool(MCPTool):
             parts.append(f", лимит: {max_tracks} треков")
         return "".join(parts)
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None, max_minutes: Optional[int] = None, max_tracks: Optional[int] = None, bpm: Optional[int] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None, max_minutes: Optional[int] = None, max_tracks: Optional[int] = None, bpm: Optional[int] = None, base_bpm: Optional[int] = None, scale: Optional[str] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
         next_transition_sec = self._coerce_transition_seconds(
@@ -7137,6 +7319,7 @@ class SetDjModeTool(MCPTool):
         payload = self._build_dj_payload(
             enabled, next_transition_sec, theme, persona, plan,
             max_minutes=max_minutes, max_tracks=max_tracks, bpm=bpm,
+            base_bpm=base_bpm, scale=scale,
         )
         msg = _String()
         msg.data = json.dumps(payload)

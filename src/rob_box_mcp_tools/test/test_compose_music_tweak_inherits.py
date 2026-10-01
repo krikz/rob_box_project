@@ -20,22 +20,19 @@ counter/theme_octaves и т.д. — :data:`_TRACK_INHERIT_FIELDS`) из того
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
-for _mod in [
-    "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos", "std_msgs",
-    "std_msgs.msg", "geometry_msgs", "geometry_msgs.msg", "nav2_msgs",
-    "nav2_msgs.action", "action_msgs", "action_msgs.srv", "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from ._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.core import arranger as arranger_mod  # noqa: E402
-from rob_box_mcp_tools.core import rtttl_compose  # noqa: E402
-from rob_box_mcp_tools.tools.music import (  # noqa: E402
-    ComposeMusicTool,
-    PreviewArrangementTool,
-)
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.core import arranger as arranger_mod
+    from rob_box_mcp_tools.core import rtttl_compose
+    from rob_box_mcp_tools.tools.music import (
+        ComposeMusicTool,
+        PreviewArrangementTool,
+    )
+_ros_stubs = _ros.fixture()
 
 _THEME_RTTTL = "theme:d=4,o=5,b=120:8c,8d,8e,8f,8g,8a,8b,2c6"
 _OTHER_RTTTL = "other:d=4,o=5,b=100:8e,8f,8g,8a"

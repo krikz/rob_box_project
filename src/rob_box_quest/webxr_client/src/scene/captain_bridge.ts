@@ -172,12 +172,21 @@ export const CEILING_SCREEN_ROLL_RAD = 0;
 export const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 } as const; // = как главный экран
 export const TARS_PANEL_Y = 1.5; // = как главный экран
 const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
+/**
+ * Зазор между вертикальной кромкой главного экрана и шарниром крыла, м.
+ * Рамка главного экрана выступает за видео на ~0.05 м, поэтому 0.2 м
+ * оставляют видимую щель ~0.15 м между рамкой и панелью ТАРС (раньше
+ * крылья стояли вплотную и «торчали» в главный экран). Дальняя кромка
+ * при этом уходит в |x| ≈ 5.69 < SHELL_HALF_W 5.8.
+ */
+export const TARS_WING_GAP_M = 0.2;
+const TARS_HINGE_X = TARS_MAIN_EDGE_X + TARS_WING_GAP_M;
 const TARS_MAIN_Z = -3.9; // плоскость главного экрана
 /** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
 export const TARS_FLARE_RAD = (50 * Math.PI) / 180;
 // Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
 export const TARS_WING_X =
-  TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
+  TARS_HINGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
 export const TARS_WING_Z =
   TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
 
@@ -188,9 +197,9 @@ export const TARS_WING_Z =
  * они закрывают крыло (так было с depth −75° и «ГОЛОС» +60°).
  */
 export function tarsWingSectorDeg(): { min: number; max: number } {
-  const nearX = TARS_MAIN_EDGE_X;
+  const nearX = TARS_HINGE_X;
   const nearZ = TARS_MAIN_Z;
-  const farX = TARS_MAIN_EDGE_X + TARS_PANEL_SIZE.width * Math.cos(TARS_FLARE_RAD);
+  const farX = TARS_HINGE_X + TARS_PANEL_SIZE.width * Math.cos(TARS_FLARE_RAD);
   const farZ = TARS_MAIN_Z + TARS_PANEL_SIZE.width * Math.sin(TARS_FLARE_RAD);
   const az = (x: number, z: number) => (Math.atan2(x, -z) * 180) / Math.PI;
   return { min: az(nearX, nearZ), max: az(farX, farZ) };
@@ -768,15 +777,15 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // то есть крыло отогнуто на 50° от плоскости главного (эскиз Шифу:
   // «48 / 48 / 48 при 130°», R39 к главному).
   //
-  // Пересечений НЕТ по построению: крыло и главный экран делят только общую
-  // вертикальную кромку (segment-пересечение в XZ пусто, есть лишь точка-
-  // шарнир). Дальняя кромка крыла уходит в x = ±(2.4 + 4.8·cos 50°) ≈ ±5.49,
+  // Пересечений НЕТ по построению: шарнир крыла сдвинут от кромки главного
+  // на TARS_WING_GAP_M (0.2 м) — между ними явный зазор, они не касаются.
+  // Дальняя кромка крыла уходит в x = ±(2.6 + 4.8·cos 50°) ≈ ±5.69,
   // поэтому декоративный короб комнаты расширен по ширине ROOM_W 7 → 11.6 м
   // (build_bridge_assets.mjs). ROOM_D не менялся (крылья не выходят за него:
   // far-z ≈ -0.22 лежит внутри [−4.56, +4.56]).
   // Левое крыло (TARS 1): local +X меша направлен к шарниру (краю главного),
   // разворот +50° вокруг вертикали уводит крыло влево-вперёд к оператору.
-  const tars1Panel = createTars1TextPanel();
+  const tars1Panel = createTars1TextPanel({ typewriterCps: 90 });
   tars1Panel.mesh.position.set(-TARS_WING_X, TARS_PANEL_Y, TARS_WING_Z);
   tars1Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
   tars1Panel.mesh.rotation.y = TARS_FLARE_RAD;
@@ -874,7 +883,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Hero props (Tripo3D, 2026-09-26) — расставляются после загрузки
   // environment-GLB. Масштаб моделей Tripo3D неизвестен заранее, поэтому
   // позиция/размер вычисляются из bounding box под целевые размеры сцены.
-  let heroHoloRight: THREE.Group | null = null;
   function placeHeroProps(env: BridgeAssetHandle): void {
     const g = env.groups;
 
@@ -891,28 +899,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
     // Подиум — под оператором (спавн (0,0,0)), диаметр ~2 м.
     if (g.heroPlatform) placeOnFloor(g.heroPlatform, 0, 0, { width: 2 });
-
-    // Голо-проекторы — слева и справа от оператора, высота ~0.9 м.
-    if (g.heroHoloProjector) {
-      placeOnFloor(g.heroHoloProjector, -1, -1.8, { height: 0.9 });
-      heroHoloRight = g.heroHoloProjector.clone(true);
-      heroHoloRight.name = "bridge_holo_projector_right";
-      // `clone(true)` deep-clones the Object3D graph but NOT materials
-      // (three.js shares them by reference) — deep-clone materials too so
-      // `environment.dispose()` (which walks `g.heroHoloProjector`) and the
-      // separate `heroHoloRight` dispose below each dispose their own
-      // material exactly once, never the same shared one twice (#3045).
-      heroHoloRight.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (mesh.material) {
-          mesh.material = Array.isArray(mesh.material)
-            ? mesh.material.map((m) => m.clone())
-            : mesh.material.clone();
-        }
-      });
-      placeOnFloor(heroHoloRight, 1, -1.8, { height: 0.9 });
-      scene.add(heroHoloRight);
-    }
 
     // Рамка экрана — ЗА главным экраном: полотно рамки ровно под видео
     // (4.8 × 2.7, центр (0, 1.5, −3.9)), видео на 1 см впереди переднего
@@ -1216,7 +1202,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     // Цели регистрируем только на время показа: скрытый меш всё равно
     // ловил бы луч, и оператор кликал бы в невидимое меню.
     for (const t of streamMenu.targets()) {
-      pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+      pointer.addTarget({ id: t.id, object: t.object, draggable: false, modal: true });
     }
   }
 
@@ -1294,7 +1280,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     ttsTargetIds = [];
     if (!ttsPicker.isVisible()) return;
     for (const t of ttsPicker.targets()) {
-      pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+      pointer.addTarget({ id: t.id, object: t.object, draggable: false, modal: true });
       ttsTargetIds.push(t.id);
     }
   }
@@ -1410,6 +1396,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const fpsMeter = new FpsMeter({ windowSize: 60 });
 
   function tickFps(now: number): void {
+    // Один вызов на кадр и в desktop-loop, и в XR animation loop: печать/
+    // курсор/статус консоли ТАРС 1 (сама решает, нужна ли перерисовка).
+    tars1Panel.tick(now);
     fpsMeter.push(now);
     if (!fpsMeter.shouldUpdate(500, now)) return;
     const v = fpsMeter.value();
@@ -1536,14 +1525,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     hoverFrame.geometry.dispose();
     (hoverFrame.material as THREE.Material).dispose();
     environment?.dispose();
-    if (heroHoloRight) {
-      heroHoloRight.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        mesh.geometry?.dispose?.();
-        const mat = mesh.material as THREE.Material | undefined;
-        if (mat && "dispose" in mat && typeof mat.dispose === "function") mat.dispose();
-      });
-    }
     armTexture.dispose();
     shell.dispose();
     statusHud.dispose();

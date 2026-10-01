@@ -64,13 +64,17 @@ import type {
   VoicePresetInfo
 } from "./wire/messages";
 import { createToast, type Toast } from "./ui/toast";
-import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
+import { formatClock } from "./state/tars1_layout";
+import { parseTarsStatus, type TarsStatusFields } from "./state/tars_status";
+import { parseConsoleEvent } from "./state/tars_console_lines";
+import { floorLabel, supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
 import {
   createAcceptTonePlayer,
   type AcceptTonePlayer
 } from "./ui/accept_tone";
+import { createTarsActivityTracker } from "./state/tars_activity";
 import {
   parseTarsStateEvent,
   type TarsStage,
@@ -763,6 +767,15 @@ export function bootstrap(opts: BootstrapOptions): {
     // иначе STT, дораспознающий уже после release, приходит при
     // voice_input_mode=respeaker и dialogue_node его игнорирует (гонка).
     voicePttMode = next;
+    tarsActivity.notePtt(next !== "none");
+    syncTarsInfo();
+    if (next !== "none") {
+      // Барж-ин: оператор заговорил — реплика ТАРС в шлеме обрывается
+      // (operatorAudioSink.stop() ниже), «говорит» гасим сразу.
+      tarsActivity.noteTarsStage("idle", Date.now());
+      tarsActivity.noteTars1Stream(false, Date.now());
+    }
+    syncTarsActivity();
     if (next === "none") {
       // issue #1992 — раньше здесь стоял stop() у voiceCapture. ptt и wake
       // делят ОДИН mic-захват (см. комментарий у createVoiceCapture выше);
@@ -858,6 +871,37 @@ export function bootstrap(opts: BootstrapOptions): {
   // лога. Так ронялся КАЖДЫЙ чанк КАЖДОЙ реплики (полная тишина в шлеме,
   // хотя accept-тон — независимый локальный синтез — слышен нормально).
   let lastOperatorTtsRequestId: string | null = null;
+
+  // Индикатор «ТАРС слушает / думает / говорит» на консоли ТАРС 1. Только
+  // существующие сигналы клиента (см. state/tars_activity.ts): PTT оператора,
+  // voice_state моста, tars_state, чанки operator_tts_audio, tars1_text.
+  const tarsActivity = createTarsActivityTracker();
+  function syncTarsActivity(): void {
+    bridge.tars1Panel.setActivity(tarsActivity.state(Date.now()));
+  }
+  // TTL сигналов истекает сам по себе (сервер `idle` может не прислать).
+  const tarsActivityTicker = setInterval(syncTarsActivity, 500);
+  // Правая колонка рамки ТАРС 1 (#3253 Ш1): только то, что клиент реально
+  // знает. llm/tts/wake/тема/кто рядом клиенту не приходят (Ш3) — панель
+  // нарисует прочерк, ничего не выдумываем.
+  let tarsLinkText: string | null = null;
+  let tarsLastReplyAtMs: number | null = null;
+  // #3253 Ш3: tts/тема/рядом от сервера (tars_status); llm и wake сервер не
+  // шлёт — нет источника в графе, остаются прочерком.
+  let tarsStatus: TarsStatusFields = {};
+  function syncTarsInfo(): void {
+    const sup = supervisorState;
+    bridge.tars1Panel.setInfo({
+      ...tarsStatus,
+      link: tarsLinkText,
+      floor: sup
+        ? `teleop ${floorLabel(sup, "teleop", supervisorMyClientId)} · voice ${floorLabel(sup, "voice", supervisorMyClientId)}`
+        : null,
+      mode: sup ? String(sup.mode) : null,
+      ptt: voicePttMode,
+      lastReplyAt: tarsLastReplyAtMs === null ? null : formatClock(tarsLastReplyAtMs)
+    });
+  }
   function logLastTarsEvent(): void {
     // no-op в проде; в dev-build можно подвесить на window.
     if (lastTarsEvent) {
@@ -1149,6 +1193,8 @@ export function bootstrap(opts: BootstrapOptions): {
         // onBinaryFrame ниже и комментарий у lastOperatorTtsRequestId.
         // Байты этого чанка идут отдельным BINARY_FRAME ПОСЛЕ этой меты.
         lastOperatorTtsRequestId = e.request_id;
+        tarsActivity.noteTtsChunk(Date.now());
+        syncTarsActivity();
         // ADR-0078 §3.6: speaking-стадия tars_state на ПЕРВОМ чанке
         // реплики. Если стадия уже speaking/accepted — не обновляем.
         if (currentTarsStage !== "speaking") {
@@ -1167,9 +1213,10 @@ export function bootstrap(opts: BootstrapOptions): {
         // приходу. Метод play() уже мог быть вызван; тут только синхро-
         // низируем tars_state→idle (после последнего чанка опера услышала
         // ответ полностью).
-        // NB: реально сервер НЕ шлёт done в норме — этот case зарезерви-
-        // рован для forward-compat и для e2e-тестов.
+        // NB: после #3272 сервер шлёт done по концу реплики (tars_stage_relay).
         operatorAudioSink.stop();
+        tarsActivity.noteTarsStage("idle", Date.now());
+        syncTarsActivity();
         if (currentTarsStage !== "idle") {
           currentTarsStage = "idle";
           lastTarsEvent = {
@@ -1183,6 +1230,8 @@ export function bootstrap(opts: BootstrapOptions): {
       case "operator_tts_error": {
         const e = ev as { request_id: string; reason: string };
         operatorAudioSink.error(e.reason);
+        tarsActivity.noteTarsStage("idle", Date.now());
+        syncTarsActivity();
         if (currentTarsStage !== "idle") {
           currentTarsStage = "idle";
           lastTarsEvent = {
@@ -1199,6 +1248,8 @@ export function bootstrap(opts: BootstrapOptions): {
         if (!parsed) return true;
         currentTarsStage = parsed.stage;
         lastTarsEvent = parsed;
+        tarsActivity.noteTarsStage(parsed.stage, Date.now());
+        syncTarsActivity();
         if (parsed.stage === "accepted") {
           // Короткий «тик» в шлеме — Шифу слышит, что wake принят.
           void acceptTonePlayer.play();
@@ -1228,6 +1279,8 @@ export function bootstrap(opts: BootstrapOptions): {
 
   function setStatus(text: string, cls: "connected" | "connecting" | "lost"): void {
     opts.statusEl.textContent = text;
+    tarsLinkText = text;
+    syncTarsInfo();
     opts.statusEl.className = `status status--${cls}`;
   }
 
@@ -1239,6 +1292,7 @@ export function bootstrap(opts: BootstrapOptions): {
    */
   function applySupervisorState(next: SupervisorState | null): void {
     supervisorState = next;
+    syncTarsInfo();
     // Вся логика перехода — в чистом редьюсере (state/supervisor_state.ts),
     // здесь только применение эффектов к железу UI.
     const eff = supervisorEffect(prevTeleopLabel, next, supervisorMyClientId);
@@ -1462,6 +1516,8 @@ export function bootstrap(opts: BootstrapOptions): {
             // Парсинг внутри bridge.setVoiceState — битый payload не падает.
             const frame = bridge.setVoiceState(payload);
             if (frame) {
+              tarsActivity.noteVoiceState(frame.state, Date.now());
+              syncTarsActivity();
               dispatchUtterance({
                 kind: "voice_state",
                 state: frame.state,
@@ -1673,6 +1729,20 @@ export function bootstrap(opts: BootstrapOptions): {
           // tts_node._publish_tars1_text). append() сам склеивает чанки по
           // \n; setStreaming только когда состояние меняется (см.
           // tars1_text_panel.ts).
+          // #3253 Ш3 — служебная информация ТАРС 1 (quest_node._on_tars_status_timer).
+          const tarsStatusEvent = parseTarsStatus(event);
+          if (tarsStatusEvent !== null) {
+            tarsStatus = tarsStatusEvent;
+            syncTarsInfo();
+            return;
+          }
+          // #3253 Ш4 — фраза оператора / событие хода в консоль ТАРС 1
+          // (quest_node: tars_console, core/tars_console.py).
+          const consoleLine = parseConsoleEvent(event);
+          if (consoleLine !== null) {
+            bridge.tars1Panel.appendLine(consoleLine.kind, consoleLine.text);
+            return;
+          }
           if ((event as { type?: string }).type === "tars1_text") {
             const t = event as {
               text?: string;
@@ -1681,10 +1751,14 @@ export function bootstrap(opts: BootstrapOptions): {
             };
             if (typeof t.text === "string" && t.text.length > 0) {
               bridge.tars1Panel.append(t.text);
+              tarsLastReplyAtMs = Date.now();
+              syncTarsInfo();
             }
-            bridge.tars1Panel.setStreaming(
-              typeof t.streaming === "boolean" ? t.streaming && !t.done : false
-            );
+            const tars1Streaming =
+              typeof t.streaming === "boolean" ? t.streaming && !t.done : false;
+            bridge.tars1Panel.setStreaming(tars1Streaming);
+            tarsActivity.noteTars1Stream(tars1Streaming, Date.now());
+            syncTarsActivity();
             return;
           }
           // issue #2113 — TARS 2 panel URL от avatar_supervisor
@@ -2059,6 +2133,7 @@ export function bootstrap(opts: BootstrapOptions): {
       voiceCapture.setWakeGate({ enabled: false, suppressed: true });
       clearInterval(utteranceTicker);
       clearInterval(subsTicker);
+      clearInterval(tarsActivityTicker);
       clearApplyTimeout();
       previewSink.dispose();
       // ADR-0078: operatorAudioSink.dispose() теперь закрывает AudioContext

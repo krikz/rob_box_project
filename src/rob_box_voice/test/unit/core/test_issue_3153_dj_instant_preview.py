@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 
 import pytest
 
@@ -233,8 +234,8 @@ def test_first_transition_after_preview_does_not_research() -> None:
     for tool in RESEARCH_TOOLS:
         assert tool not in prompt, tool  # ни одного вызова ресёрча в промпте
     assert "НЕ исследуй" in prompt
-    # Играет трек #2 сета: его сид и тоника — квинта от тоники превью (KEY_WALK).
-    assert 'compose_music(style="club", bpm=124, root="C"' in prompt
+    # Играет трек #2 сета: его сид и тоника — квинта от тоники превью (круг квинт, #3226).
+    assert re.search(r'compose_music\(style="club", bpm=1[2]\d, root="C", scale="minor"', prompt)
     assert f"seed={ctrl._track_seed(2)}" in prompt
     # Свободный текст на этом переходе не озвучивается — диджей уже представился.
     assert ctrl.suppresses_free_text(ctrl.state.transition_count)

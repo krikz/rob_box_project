@@ -18,37 +18,24 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-# Mock ROS 2 modules before importing anything from rob_box_mcp_tools
-for _mod in [
-    "rclpy",
-    "rclpy.node",
-    "rclpy.action",
-    "rclpy.qos",
-    "std_msgs",
-    "std_msgs.msg",
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "nav2_msgs",
-    "nav2_msgs.action",
-    "action_msgs",
-    "action_msgs.srv",
-    "action_msgs.msg",
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+from .._ros_stubs import RosStubs
 
-from rob_box_mcp_tools.tools.music import (  # noqa: E402
-    MusicManager,
-    ComposeMusicTool,
-    ExecuteMusicCodeTool,
-    PreviewArrangementTool,
-    SaveArrangementPresetTool,
-    StopMusicTool,
-    SetVibePresetTool,
-    GetMusicStateTool,
-    LookupMelodyTool,
-    TrackLibrary,
-)
-from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore  # noqa: E402
+_ros = RosStubs()
+with _ros:
+    from rob_box_mcp_tools.tools.music import (
+        MusicManager,
+        ComposeMusicTool,
+        ExecuteMusicCodeTool,
+        PreviewArrangementTool,
+        SaveArrangementPresetTool,
+        StopMusicTool,
+        SetVibePresetTool,
+        GetMusicStateTool,
+        LookupMelodyTool,
+        TrackLibrary,
+    )
+    from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore
+_ros_stubs = _ros.fixture()
 
 
 # ---------------------------------------------------------------------------
@@ -3477,9 +3464,63 @@ class TestArrangementPresetApplication:
         result = tool.execute(name="fifth", bass_style="off", **self._ARR)
         assert result.success is True
         # Явная ручка выиграла — эффективное значение "off", а не "root" из
-        # пресета, и партитура не приписывает это решение пресету.
+        # пресета, и партитура не приписывает это решение пресету, а
+        # честно называет его переопределением (issue #2956).
         assert tool.last_score["decisions"]["bass_style"] == "off"
+        assert tool.last_score["preset"] == (
+            "Beethoven's Fifth (переопределено: bass_style=off вместо root)"
+        )
+
+    def test_explicit_knob_equal_to_preset_is_not_an_override(self, mock_node, tmp_path):
+        """Тот же параметр тем же значением — не «переопределено», строки нет."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", bass_style="root", **self._ARR)
+        assert result.success is True
         assert tool.last_score.get("preset") is None
+
+    # --- Issue #2956: пресет — база, явные параметры сильнее по-параметрно.
+
+    _PRESET_2956 = {
+        "lead_synth": "imperialbrass",
+        "bass_synth": "jbass",
+        "pad_synth": "strings",
+        "bass_style": "root",
+    }
+
+    def test_2956_name_only_call_plays_the_preset_sound(self, mock_node, tmp_path):
+        """Пресет + вызов БЕЗ синтов → звучание пресета (синты из пресета)."""
+        tool, mgr, _store = self._tool(mock_node, tmp_path, self._PRESET_2956)
+        result = tool.execute(name="fifth")
+        assert result.success is True, result.error
+        played = tool.last_played_preset["knobs"]
+        assert played["lead_synth"] == "imperialbrass"
+        assert played["bass_synth"] == "jbass"
+        assert played["pad_synth"] == "strings"
+        assert played["bass_style"] == "root"
+        code = mgr.execute_code.call_args.args[0]
+        assert "imperialbrass" in code and "jbass" in code
+        assert tool.last_score["preset"] == (
+            "Beethoven's Fifth (lead_synth=imperialbrass, bass_synth=jbass, "
+            "pad_synth=strings, bass_style=root)"
+        )
+        assert "переопределено" not in tool.last_score["text"]
+
+    def test_2956_explicit_lead_synth_keeps_rest_of_preset(self, mock_node, tmp_path):
+        """Пресет + явный lead_synth → lead из вызова, остальное из пресета."""
+        tool, mgr, _store = self._tool(mock_node, tmp_path, self._PRESET_2956)
+        result = tool.execute(name="fifth", lead_synth="pianovel")
+        assert result.success is True, result.error
+        played = tool.last_played_preset["knobs"]
+        assert played["lead_synth"] == "pianovel"
+        assert played["bass_synth"] == "jbass"
+        assert played["pad_synth"] == "strings"
+        assert played["bass_style"] == "root"
+        text = tool.last_score["text"]
+        assert (
+            "Пресет: Beethoven's Fifth (bass_synth=jbass, pad_synth=strings, "
+            "bass_style=root) (переопределено: lead_synth=pianovel вместо "
+            "imperialbrass)."
+        ) in text
 
     def test_no_matching_preset_is_a_silent_noop(self, mock_node, tmp_path):
         """Пресет-стор без ключа резолвленной мелодии — вызов не меняется."""
@@ -4177,6 +4218,57 @@ class TestLookupMelodyTool:
         assert result.data["rtttl"] == "StarWars:d=4,o=5,b=80:8d"
         assert result.data["title"] == "Imperial March"
         manager.execute_code.assert_not_called()  # lookup ничего не играет
+        # Без стора пресетов — подсказки о пресете нет (issue #2956).
+        assert result.data["preset"] is None
+        assert "ПРЕСЕТ" not in result.message
+
+    def _preset_store(self, tmp_path, knobs):
+        import json
+
+        shipped = tmp_path / "shipped.json"
+        shipped.write_text(
+            json.dumps({"starwars_3": {"title": "Имперский марш (наш)", "knobs": knobs}}),
+            encoding="utf-8",
+        )
+        return ArrangementPresetStore(
+            shipped_path=shipped, learned_root=str(tmp_path / "learned")
+        )
+
+    def _imperial_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "starwars_3",
+            "title": "Imperial March",
+            "rtttl": "StarWars:d=4,o=5,b=80:8d",
+        }
+        return rtttl_library
+
+    def test_2956_saved_preset_is_reported_to_the_model(self, mock_node, tmp_path):
+        """Issue #2956: модель узнаёт о пресете и о том, что синты не нужны."""
+        knobs = {"lead_synth": "imperialbrass", "bass_synth": "jbass", "levels": "bass=0.5"}
+        tool = LookupMelodyTool(
+            mock_node, Mock(), Mock(), self._imperial_library(),
+            self._preset_store(tmp_path, knobs),
+        )
+        result = tool.execute("imperial march")
+        assert result.success is True
+        assert result.data["preset"] == {"title": "Имперский марш (наш)", "knobs": knobs}
+        assert result.data["analysis"]["preset"] == result.data["preset"]
+        msg = result.message
+        assert "СОХРАНЁННЫЙ ПРЕСЕТ «Имперский марш (наш)»" in msg
+        assert "lead_synth=imperialbrass, bass_synth=jbass, levels=bass=0.5" in msg
+        assert "compose_music(name='imperial march') БЕЗ синтов и ручек" in msg
+
+    def test_2956_melody_without_preset_has_no_hint(self, mock_node, tmp_path):
+        store = ArrangementPresetStore(
+            shipped_path=tmp_path / "none.json", learned_root=str(tmp_path / "learned")
+        )
+        tool = LookupMelodyTool(mock_node, Mock(), Mock(), self._imperial_library(), store)
+        result = tool.execute("imperial march")
+        assert result.success is True
+        assert result.data["preset"] is None
+        assert "preset" not in result.data["analysis"]
+        assert "ПРЕСЕТ" not in result.message
 
     def test_miss_returns_honest_error(self, mock_node):
         library = Mock()
@@ -4961,6 +5053,24 @@ class TestSetDjModeSetLimits:
         payload, _ = self._published_payload(enabled=True, next_transition_sec=45, bpm=128)
         assert payload["bpm"] == 128
 
+    def test_set_character_reaches_payload(self):
+        """Issue #3249 — характер темы (base_bpm/scale от LLM) идёт в DJModeController."""
+        payload, _ = self._published_payload(enabled=True, theme="детский праздник", base_bpm=132, scale=" major ")
+        assert payload["base_bpm"] == 132
+        assert payload["scale"] == "major"
+        assert "bpm" not in payload  # характер — не фиксация темпа
+
+    def test_set_character_scale_typo_does_not_fail_tool(self):
+        """Чужой лад не роняет включение DJ: enum не строгий, отклоняет контроллер."""
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        tool = SetDjModeTool(MagicMock())
+        scale = next(p for p in tool.parameters if p.name == "scale")
+        assert scale.enum == ["minor", "major", "dorian", "phrygian"]
+        assert scale.enum_strict is False
+        payload, result = self._published_payload(enabled=True, scale="мажор")
+        assert result.success and payload["scale"] == "мажор"
+
 
 @pytest.mark.unit
 class TestComposeMusicToolClubStyle:
@@ -4970,6 +5080,143 @@ class TestComposeMusicToolClubStyle:
     def _make_tool(self, mock_node):
         mgr = _make_manager(sc_running=True, renardo_available=True)
         return ComposeMusicTool(mock_node, mgr), mgr
+
+    def test_club_records_history_and_avoids_repeat(self, mock_node):
+        """Issue #3224: club пишет выбранное в music_history и не повторяет каркас подряд."""
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        kits = []
+        for _ in range(4):  # один и тот же сид четыре раза подряд (как в живом логе)
+            with patch("builtins.exec"):
+                result = tool.execute(style="club", root="C", seed=6261504)
+            assert result.success is True, result.error
+            kits.append(result.data["club_kit"])
+        rows = history.recent()
+        assert len(rows) == 4
+        assert all(a != b for a, b in zip(kits, kits[1:]))
+        assert rows[0]["template"] == kits[-1]["template"] and rows[0]["style"] == "club"
+        assert rows[0]["progression"] and rows[0]["root"] == "C" and rows[0]["bpm"] == 124
+
+    def test_classic_track_is_written_to_music_history(self, mock_node):
+        """Issue #3245: первый трек сета идёт через classic и тоже попадает в music_history."""
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        with patch("builtins.exec"):
+            result = tool.execute(
+                bpm=118.0, root="A", scale="minor", form="buildup", lead_synth="cs80lead",
+                lead_notes="0,3,5,7,5,3,2,0", bass_synth="moogbass", bass_notes="0,4,0,5",
+                pad_synth="space", pad_notes="0,4,7", progression="0,5,3,4", drum_style="four_on_floor",
+            )
+        assert result.success is True, result.error
+        rows = history.recent()
+        assert len(rows) == 1, rows
+        assert (rows[0]["style"], rows[0]["root"], rows[0]["bpm"], rows[0]["scale"]) == ("classic", "A", 118, "minor")
+
+    def test_club_sample_layer_reported_and_in_code(self, mock_node, tmp_path, monkeypatch):
+        """Issue #3254: пак есть и флаг включён — d3 играет сэмпл DJ_Dave, ответ и data это называют."""
+        from rob_box_mcp_tools.core import sample_dave
+        from rob_box_mcp_tools.core.club_samples import SAMPLE_LAYERS
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+
+        for layer in SAMPLE_LAYERS.values():
+            path = tmp_path / sample_dave.find_sample(layer.sample).path.replace("../../", "", 1)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"RIFF")
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        monkeypatch.setenv("RENARDO_SAMPLES_PATH", str(tmp_path))
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, music_history=history)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", root="C", seed=6261504)
+        assert result.success is True, result.error
+        info = result.data["club_sample"]
+        assert info["layer"] in SAMPLE_LAYERS and info["path"].startswith("../../dj_dave/")
+        assert f"Слой сэмплов DJ_Dave: {info['layer']}" in result.message
+        assert history.recent()[0]["sample"] == info["layer"]
+
+    def test_club_without_pack_flag_has_no_sample_layer(self, mock_node, monkeypatch):
+        """Issue #3254: флаг выключен — слоя нет, причина в ответе, трек играет."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        tool, _mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(style="club", root="C", seed=5)
+        assert result.success is True, result.error
+        assert result.data["club_sample"]["layer"] is None
+        assert "Слоя сэмплов DJ_Dave нет" in result.message
+
+    def test_club_without_name_plays_library_fragment_and_names_it(self, mock_node, tmp_path, caplog):
+        """Issue #3225: без name/rtttl lead = фрагмент из RtttlLibrary, 10 вызовов — 10 разных (мелодия, смещение)."""
+        import gzip
+        import json
+        import random
+
+        from rob_box_mcp_tools.core.music_diversity import MusicHistory
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        archive = tmp_path / "a.jsonl.gz"
+        with gzip.open(archive, "wt", encoding="utf-8") as fh:
+            for i in range(6):
+                rng, deg, notes = random.Random(40 + i), 2, []
+                for _ in range(96):
+                    deg = max(0, min(13, deg + rng.choice((-2, -1, -1, 1, 1, 2))))
+                    notes.append(f"8{'cdefgab'[deg % 7]}{5 + deg // 7}")
+                fh.write(json.dumps({"name": f"t{i}", "title": f"Tune {i}", "tags": [],
+                                     "rtttl": f"T{i}:d=8,o=5,b=124:" + ",".join(notes)}) + chr(10))
+        library = RtttlLibrary(db_path=str(tmp_path / "l.db"), archive_path=str(archive))
+        history = MusicHistory(":memory:")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = ComposeMusicTool(mock_node, mgr, rtttl_library=library, music_history=history)
+        pairs = []
+        for _ in range(10):
+            with patch("builtins.exec"):
+                result = tool.execute(style="club", root="C", seed=0)
+            assert result.success is True, result.error
+            info = result.data["club_hook"]
+            assert info["source"] == "fragment" and info["title"] in result.message
+            pairs.append((info["id"], info["offset"]))
+        assert len(set(pairs)) == 10, pairs
+        rows = history.recent()
+        assert [(r["melody_name"], r["fragment_offset"]) for r in reversed(rows)] == pairs
+        assert all(r["hook_fingerprint"] for r in rows)
+
+    @staticmethod
+    def _pooled_pacman(tool):
+        from rob_box_mcp_tools.core.club_hook import extract_hook
+
+        hook = extract_hook("pac:d=8,o=5,b=124:c,e,g,c6,g,e,c,e", 124, "pacman", "Pacman")
+        return hook, tool._hook_info(hook, "fragment", {})
+
+    def test_club_track_label_uses_set_theme_not_pool_hook(self, mock_node):
+        """Issue #3244: сет про пиратов звался «на тему «Pacman»» — имя хука из пула."""
+        tool, mgr = self._make_tool(mock_node)
+        pooled = self._pooled_pacman(tool)
+        with patch("builtins.exec"), patch.object(tool, "_club_hook", return_value=pooled):
+            result = tool.execute(style="club", root="C", seed=1, theme="пираты")
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек на тему «пираты», 124 BPM, до минор"
+        assert "Pacman" not in mgr.current_track_name
+
+    def test_club_track_label_without_theme_does_not_claim_hook_as_theme(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        pooled = self._pooled_pacman(tool)
+        with patch("builtins.exec"), patch.object(tool, "_club_hook", return_value=pooled):
+            result = tool.execute(style="club", root="C", seed=1)
+        assert result.success is True, result.error
+        assert mgr.current_track_name == "клубный трек, 124 BPM, до минор"
+
+    def test_club_without_name_and_library_falls_back_to_pentatonic_with_warning(self, mock_node):
+        tool, _mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"), patch.object(tool, "log_warning") as warn:
+            result = tool.execute(style="club", root="C", seed=3)
+        assert result.success is True and result.data["club_hook"] is None
+        assert any("pentatonic-fallback" in c.args[0] for c in warn.call_args_list)
 
     def test_club_executes_render_club_code(self, mock_node):
         from rob_box_mcp_tools.core.club_arranger import render_club
@@ -5004,18 +5251,19 @@ class TestComposeMusicToolClubStyle:
         Библиотеки мелодий нет → ``name`` не тема, а подпись: club играет,
         ответ прямо говорит, что темы в треке нет. Раньше тот же вызов
         заканчивался хвостом «Проигнорировано в club: lead_synth, name.»,
-        который модель не замечала.
+        который модель не замечала. (Issue #3268: lead_synth club теперь
+        играет — неприменённый параметр здесь bass_synth.)
         """
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec"):
-            result = tool.execute(style="club", name="imperial march", lead_synth="blip")
+            result = tool.execute(style="club", name="imperial march", bass_synth="dub")
         assert result.success is True, result.error
         assert result.data["style"] == "club"
         assert result.message.startswith("⚠️ name='imperial march' не найдено в библиотеке")
         assert "ТЕМЫ в треке нет" in result.message
-        assert "Проигнорировано в club (трек звучит БЕЗ них): lead_synth." in result.message
+        assert "Проигнорировано в club (трек звучит БЕЗ них): bass_synth." in result.message
         assert result.message.index("Проигнорировано") < result.message.index("Играю клубный трек")
-        assert result.data["ignored_params"] == ["lead_synth"]
+        assert result.data["ignored_params"] == ["bass_synth"]
 
     # ── Issue #3169: club несёт человеческое имя трека ────────────────
 
@@ -5083,8 +5331,11 @@ class TestComposeMusicToolClubStyle:
         hook = result.data["club_hook"]
         assert (hook["id"], hook["title"], hook["source"]) == ("smb", "Super Mario Bros", "library")
         assert "Lead играет хук темы «Super Mario Bros» (id=smb)" in result.message
-        # тембры/форма classic club не играет — и честно это говорит
-        assert result.data["ignored_params"] == ["bass_synth", "drum_style", "form", "lead_synth", "pad_synth"]
+        # форму/бас classic club не играет — и честно это говорит; тембр
+        # лида/пэда из палитры club играет (issue #3268)
+        assert result.data["ignored_params"] == ["bass_synth", "drum_style", "form"]
+        assert (result.data["club_kit"]["lead"], result.data["club_kit"]["pad"]) == ("blip", "sinepad")
+        assert "p1 >> blip(" in code and "p3 >> sinepad(" in code
         assert result.message.startswith("⚠️ Проигнорировано в club")
         assert "не найдено в библиотеке" not in result.message
 
@@ -5171,9 +5422,9 @@ class TestComposeMusicToolClubStyle:
     def test_club_invalid_scale_is_honest_error(self, mock_node):
         tool, _ = self._make_tool(mock_node)
         with patch("builtins.exec") as fake_exec:
-            result = tool.execute(style="club", scale="major")
+            result = tool.execute(style="club", scale="lydian")
         assert result.success is False
-        assert "style=club" in result.error and "major" in result.error
+        assert "style=club" in result.error and "lydian" in result.error
         fake_exec.assert_not_called()
 
     def test_classic_is_default_and_unchanged(self, mock_node):

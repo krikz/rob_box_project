@@ -284,17 +284,6 @@ jobs:
 
       # ==================== VISION PI DEPLOYMENT ====================
 
-      - name: "[Vision Pi] Stop Containers"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🛑 Stopping Vision Pi containers..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' \
-            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
-
       - name: "[Vision Pi] Update Code"
         if: '!inputs.dry_run'
         run: |
@@ -496,7 +485,7 @@ jobs:
           # без единого сетевого запроса.
           RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
           rp_rc=0
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples" || rp_rc=$?
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples" || rp_rc=$?
 
           # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
           # маркер тот же, на котором стоит идемпотентность фетчера.
@@ -530,7 +519,11 @@ jobs:
           # Если файла нет — compose возьмёт голые теги (fallback).
 
       - name: "[Vision Pi] Pull Docker Images"
-        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
+        # Issue #2930: шаг — preflight перед Stop Containers. Pull без
+        # --ignore-pull-failures + проверка, что каждый образ стека лежит
+        # локально (для registry_source=skip — только проверка). Упал ⇒
+        # Stop/Start не выполняются, работающие контейнеры не тронуты.
+        if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # --policy always обязателен: у сервисов vision стоит
@@ -546,8 +539,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --policy always --ignore-pull-failures" \
-            || echo "⚠️  Warning: Some images may not be available"
+             REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       # ==================== TIME SYNC ====================
 
@@ -572,6 +564,23 @@ jobs:
                echo '⚠️  sync_time.sh not found (old code) — skipping'; \
              fi" \
             || echo "⚠️  Warning: time sync failed on Vision Pi"
+
+      # Issue #2930: Stop стоит ПОСЛЕ Pull Docker Images — `down` выполняется,
+      # только если preflight подтвердил, что все образы стека лежат локально.
+      # Раньше down шёл первым, и при отсутствии образов в реестре стек
+      # оставался лежать (Main Pi, 24.09). `down` (а не голый `up -d`)
+      # сохраняем: Start ниже рассчитан на чистый слот имён (#2499) и
+      # --force-recreate (новые bind-mount конфиги из Update Code).
+      - name: "[Vision Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Vision Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
       - name: "[Vision Pi] Start Containers"
         if: '!inputs.dry_run'
@@ -625,17 +634,6 @@ jobs:
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
-      - name: "[Main Pi] Stop Containers"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🛑 Stopping Main Pi containers..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' \
-            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
-
       - name: "[Main Pi] Update Code"
         if: '!inputs.dry_run'
         run: |
@@ -669,7 +667,11 @@ jobs:
           # compose возьмёт голые теги (fallback).
 
       - name: "[Main Pi] Pull Docker Images"
-        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
+        # Issue #2930: шаг — preflight перед Stop Containers. Pull без
+        # --ignore-pull-failures + проверка, что каждый образ стека лежит
+        # локально (для registry_source=skip — только проверка). Упал ⇒
+        # Stop/Start не выполняются, работающие контейнеры не тронуты.
+        if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📦 Pulling Docker images on Main Pi..."
@@ -681,8 +683,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --policy always --ignore-pull-failures" \
-            || echo "⚠️  Warning: Some images may not be available"
+             REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       # ==================== TIME SYNC ====================
 
@@ -707,6 +708,23 @@ jobs:
                echo '⚠️  sync_time.sh not found (old code) — skipping'; \
              fi" \
             || echo "⚠️  Warning: time sync failed on Main Pi"
+
+      # Issue #2930: Stop стоит ПОСЛЕ Pull Docker Images — `down` выполняется,
+      # только если preflight подтвердил, что все образы стека лежат локально.
+      # Раньше down шёл первым, и при отсутствии образов в реестре стек
+      # оставался лежать (Main Pi, 24.09). `down` (а не голый `up -d`)
+      # сохраняем: Start ниже рассчитан на чистый слот имён (#2499) и
+      # --force-recreate (новые bind-mount конфиги из Update Code).
+      - name: "[Main Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Main Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
       - name: "[Main Pi] Start Containers"
         if: '!inputs.dry_run'
