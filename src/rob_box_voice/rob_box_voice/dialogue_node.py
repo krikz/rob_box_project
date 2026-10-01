@@ -192,6 +192,7 @@ from rob_box_voice.core.music_guard import (
     MusicGuard,
     MusicGuardVerdict,
     MusicGuardVerdictKind,
+    hurry_dj_set_start,
 )
 # Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
 # The legacy ``_*_retry_used`` flags and ``_consume_synthetic_retry``
@@ -7410,6 +7411,17 @@ tentative_plan(question, kind, name)
         # attempt marks the turn silent (extracted to a helper so this
         # method's CC stays at its cc_budget baseline).
         self._mark_dj_giveup_silent_if_budget_exhausted(verdict)
+        # Issue #3266 — сет включён этим ходом, а его трек не заиграл:
+        # переход, который поставит трек, — скоро, а не по таймеру модели.
+        hurry_dj_set_start(
+            verdict,
+            self._dj.state,
+            tools_called=tools_called,
+            music_playing=self._music_playing_now(),
+            now=time.time(),
+            delay_s=DJModeController.POSTPONE_INTERVAL_S,
+            logger=self.get_logger(),
+        )
 
         # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
         # user did not request music, DJ off, etc.). Policy module already

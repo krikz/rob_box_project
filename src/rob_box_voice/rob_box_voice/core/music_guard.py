@@ -49,6 +49,11 @@ from .dialogue_guards import (
 )
 
 
+#: Issue #3266 — ``reason`` вердикта ``SKIP_NOT_APPLICABLE``: просьбу о
+#: музыке закрыл ``set_dj_mode`` этого хода, трек поставит DJ-переход.
+DJ_SET_TAKES_OVER = "dj_set_takes_over"
+
+
 class MusicGuardVerdictKind(str, Enum):
     """Action the adapter (:meth:`DialogueNode._apply_music_guard`) must take."""
 
@@ -170,6 +175,10 @@ class MusicGuard:
         # неизвестен). Нужен сверке заявлений о состоянии музыки в
         # :func:`is_phantom_music_action`.
         self._music_playing: Optional[bool] = None
+        # Issue #3266 — включён ли DJ и какие тулы хода прошли без ошибки
+        # (снимок текущего :meth:`evaluate`), для :meth:`_dj_set_takes_over`.
+        self._dj_enabled: bool = False
+        self._succeeded_tools: Optional[Tuple[str, ...]] = None
 
     # ------------------------------------------------------------------
     # Read-only accessors — used by the DialogueNode adapter for the
@@ -270,6 +279,9 @@ class MusicGuard:
             )
             return "vocal_satisfied"
 
+        if self._dj_set_takes_over():
+            return DJ_SET_TAKES_OVER
+
         # 🔴 FIX (e2e 35665111906, night-marathon акт 1, шаг
         # n110_silence_baseline): ВОПРОС о состоянии («у тебя сейчас играет
         # какая-нибудь музыка?») — не просьба включить. LLM правильно
@@ -291,6 +303,39 @@ class MusicGuard:
             )
             return "state_query_satisfied"
         return self._state_query_answered_in_words(user_input, tools_set, spoken)
+
+    def _dj_set_takes_over(self) -> bool:
+        """Issue #3266 — сет включён в этом ходе: трек сыграет DJ-переход.
+
+        Живой прогон 01.10 11:12 («Ты диджей Русс Иван … калинка …»): в
+        одном ходе ``compose_music`` упал («Калинка не найдена») и прошёл
+        ``set_dj_mode(enabled=true)``. Bug C трижды потребовал «вызови
+        музыкальный тул», модель на ретраях отвечала «гармонь и балалайка
+        уже в эфире» без тулов, все ответы отозваны (#2874) — человек минуту
+        слышал тишину, а потом переход «СТАРТ ВЕЧЕРИНКИ» всё равно включил
+        музыку.
+
+        Просьбу «включи сет» закрыл сам ``set_dj_mode``: DJ включён, первый
+        трек поставит переход. Ретрай здесь ничего не запускает, только
+        выманивает у модели враньё «уже в эфире». Звучит ответ хода — его
+        модель писала, видя результаты тулов (в живом случае — честное «не
+        нашёл в нотах»).
+
+        Условия — оба: ``set_dj_mode`` в ``succeeded_tools`` ЭТОГО хода (без
+        ``is_error``) и DJ сейчас включён (``/voice/dj_mode`` доходит до
+        ноды раньше результата хода). ``set_dj_mode(enabled=false)`` и
+        отказ не проходят второе условие. Заказ гостя посреди идущего сета
+        без ``set_dj_mode`` («сыграй тему марио») — первое: там Bug C
+        работает как раньше. ``succeeded_tools`` неизвестны (``None``) —
+        тоже как раньше.
+        """
+        if not self._dj_enabled or "set_dj_mode" not in (self._succeeded_tools or ()):
+            return False
+        self._log_info(
+            "🎧 [issue 3266 Bug C] set_dj_mode в ходе прошёл, DJ включён — "
+            "трек поставит DJ-переход, ретрай «вызови музыкальный тул» не нужен"
+        )
+        return True
 
     def _state_query_answered_in_words(
         self, user_input: str, tools_set: set, spoken: Optional[str]
@@ -512,6 +557,8 @@ class MusicGuard:
         """
         tools_set = set(tools_called or ())
         self._music_playing = music_playing
+        self._dj_enabled = dj_enabled
+        self._succeeded_tools = succeeded_tools
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
@@ -715,7 +762,50 @@ class MusicGuard:
             self._logger.warning(msg)
 
 
+def hurry_dj_set_start(
+    verdict: MusicGuardVerdict,
+    dj_state,
+    *,
+    tools_called: Optional[Tuple[str, ...]],
+    music_playing: bool,
+    now: float,
+    delay_s: float,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    """Issue #3266 — сет включён, а трек хода не заиграл: переход — скоро.
+
+    ``next_transition_sec`` модель выбрала в расчёте на свой трек (живой
+    случай 01.10: 50 с под «Калинку», которая упала с «не найдена»). Трека
+    нет — переход по этому таймеру дал бы те же 50 с тишины. Подтягиваем его
+    на ``now + delay_s``; тик DJ сам подождёт, пока договорит ответ хода.
+
+    Только когда музыкальный тул в ходе БЫЛ и не запустил трек (иначе
+    вердикт был бы ``SKIP``), и плеер молчит. ``set_dj_mode`` без
+    музыкального тула — модель сама отдала старт переходу, её задержку не
+    трогаем. Таймер только приближаем, не отодвигаем.
+
+    Returns:
+        ``True`` — ``dj_state.next_transition_at`` подтянут.
+    """
+    if verdict.reason != DJ_SET_TAKES_OVER or music_playing:
+        return False
+    if not set(tools_called or ()) & MUSIC_STARTING_TOOLS:
+        return False
+    due_at = now + delay_s
+    if dj_state.next_transition_at <= due_at:
+        return False
+    if logger is not None:
+        logger.info(
+            "🎧 [issue 3266] трек хода не заиграл, сет включён — переход "
+            f"через {delay_s:.0f}с вместо {dj_state.next_transition_at - now:.0f}с"
+        )
+    dj_state.next_transition_at = due_at
+    return True
+
+
 __all__ = [
+    "DJ_SET_TAKES_OVER",
+    "hurry_dj_set_start",
     "MusicGuard",
     "MusicGuardVerdict",
     "MusicGuardVerdictKind",
