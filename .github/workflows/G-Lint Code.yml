@@ -401,7 +401,7 @@ jobs:
       - name: mcp_server voice_memory e2e isolation (issue #2781/#2890)
         run: |
           pip install httpx openai
-          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools" \
+          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools:src/rob_box_music" \
           python -m pytest src/rob_box_mcp_tools/test/test_issue_2781_voice_memory_e2e_isolation.py \
             -v \
             -o addopts="" \

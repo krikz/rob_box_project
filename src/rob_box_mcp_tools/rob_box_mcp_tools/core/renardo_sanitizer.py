@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
+from rob_box_music.render.events import play_steps
+
 from . import sample_dave, sample_fx, sample_loops
 
 # ---------------------------------------------------------------------------
@@ -457,45 +459,8 @@ def _remap_illegal_slots(code: str) -> Tuple[str, Optional[str]]:
 # ---------------------------------------------------------------------------
 
 
-_GROUP_CLOSE = {"(": ")", "[": "]", "{": "}", "|": "|"}
-
-
-def _play_steps(pattern: str) -> Optional[List[str]]:
-    """Разбить рисунок play() на шаги верхнего уровня.
-
-    Группа ``(ab)`` (чередование), ``[ab]`` (деление шага), ``{ab}``
-    (случайный выбор) и ``|x2|`` (выбор сэмпла) — это ОДИН шаг, а не
-    ``len`` символов. ``None`` — рисунок не разбирается (слои ``<..>``,
-    несбалансированные скобки): такой не трогаем.
-    """
-    if "<" in pattern or ">" in pattern:
-        return None
-    steps: List[str] = []
-    i = 0
-    while i < len(pattern):
-        opener = pattern[i]
-        if opener in ")]}":
-            return None
-        if opener not in _GROUP_CLOSE:
-            steps.append(opener)
-            i += 1
-            continue
-        depth, j = 0, i
-        while j < len(pattern):
-            ch = pattern[j]
-            if opener == "|" and j > i and ch == "|":
-                break
-            if opener != "|":
-                depth += ch == opener
-                depth -= ch == _GROUP_CLOSE[opener]
-                if depth == 0:
-                    break
-            j += 1
-        if j >= len(pattern):
-            return None
-        steps.append(pattern[i:j + 1])
-        i = j + 1
-    return steps
+# Разбор рисунка play() живёт в одном месте — rob_box_music.render.events (ADR-0149 §9 PR-1b).
+_play_steps = play_steps
 
 
 def _fix_pattern_length(code: str) -> str:
