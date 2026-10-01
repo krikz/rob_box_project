@@ -6,7 +6,7 @@ positions:
   filename: /tmp/positions.yaml
 
 clients:
-  - url: http://${LOKI_HOST:-monitoring-machine}:3100/loki/api/v1/push
+  - url: http://${LOKI_HOST:-10.1.1.249}:3100/loki/api/v1/push
     # Настройки для graceful handling недоступного Loki сервера
     timeout: 10s
     backoff_config:

@@ -759,7 +759,7 @@ services:
     pull_policy: if_not_present
     network_mode: host
     environment:
-      - LOKI_HOST=${LOKI_HOST:-monitoring-machine}
+      - LOKI_HOST=${LOKI_HOST:-10.1.1.249}
     volumes:
       - ./config/monitoring/promtail-config.yaml:/etc/promtail/config.yml:ro
       - /var/log:/var/log:ro
