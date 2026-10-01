@@ -70,8 +70,8 @@ from ..core import classic_loudness  # noqa: F401,E402
 from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
 from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
-from ..core.web_melody import pick_theme
 from ..core.club_history import recent_club_rows, remember_classic, remember_club
+from ..core.web_melody import club_label_theme, pick_theme
 from ..core.music_diversity import MusicHistory
 from ..core.club_transition import (
     FADE_AMPLIFY_TO,
@@ -4466,19 +4466,6 @@ class ComposeMusicTool(MCPTool):
             label += f", {root_ru} {scale_ru}"
         return label
 
-    def _club_label_theme(self, kwargs: Dict[str, Any], hook_info: Optional[Dict[str, Any]]) -> Optional[str]:
-        """Issue #3244: «на тему «…»» в имени трека — заказанное, а не случайный хук.
-
-        Хук из пула (``pick_club_hook``) — деталь реализации: в сете про
-        пиратов трек звался «на тему «Pacman»». Хук даёт имя, только если его
-        заказали явно (``name``/``rtttl``); иначе — тема вызова (``theme``,
-        либо тема тула по умолчанию), а без неё имя без «на тему».
-        """
-        if hook_info and (kwargs.get("name") or kwargs.get("rtttl")):
-            return hook_info["title"]
-        theme = pick_theme(kwargs, self.club_theme)
-        return str(theme).strip() or None if theme else None
-
     def _club_publish_state(
         self, kwargs: Dict[str, Any], bpm: float, duration_s: float, repeat: bool,
         hook_info: Optional[Dict[str, Any]],
@@ -4496,7 +4483,7 @@ class ComposeMusicTool(MCPTool):
         # ``<music_state>`` говорили «трек «без названия»».
         self._manager.current_track_name = self._club_track_label(
             bpm, kwargs.get("root") or "A#", kwargs.get("scale") or "minor",
-            self._club_label_theme(kwargs, hook_info),
+            club_label_theme(kwargs, hook_info["title"] if hook_info else None, self.club_theme),
         )
         self._notify_music_state()
 
