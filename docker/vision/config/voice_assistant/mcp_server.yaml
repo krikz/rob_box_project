@@ -9,3 +9,9 @@ mcp_server:
     # Clock.latency Renardo при v2 (#3328): 0.5 с — опоздавших бандлов в scsynth 0 вместо
     # ~250/мин при 0.25 (замеры PR-2 #3329, PR-4 #3330). При v1 не применяется.
     music_v2_clock_latency: 0.5
+    # ADR-0149 PR-10: фоновый ризонер плана сета (MiniMax, общий кошелёк с голосом — решение Шифу В1).
+    # false — ноль вызовов LLM, сет целиком seeded. Дедлайн — до nearly_finished трека 1.
+    music_v2_reasoner: true
+    music_v2_reasoner_deadline_s: 45.0
+    # Выкрик hype_line на первом треке по профилю LLM — решение Шифу В2: по умолчанию тишина.
+    music_v2_hype_line: false

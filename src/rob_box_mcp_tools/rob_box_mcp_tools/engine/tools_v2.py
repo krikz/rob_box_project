@@ -11,6 +11,9 @@ LLM — только при v2 (``music_engine = "v2"``), старые ``compose
 Classic-мелодии («поставь Калинку») v2 пока не играет (PR-11, решение Шифу В5): ``request_music``
 с ``intent=melody``/``genre=classical|folk`` отдаёт их старому пути (``classic`` — ``named_play``:
 ``lookup_melody`` → ``compose_music``), без второй реализации.
+
+PR-10: после ``started`` сета ``dj_set`` в фоне спрашивает ``SetReasoner`` (LLM) профиль сета; ответ ок —
+план подменяется со следующего несыгранного трека (``SetSession.replan``), иначе сет целиком seeded.
 """
 
 from __future__ import annotations
@@ -26,7 +29,8 @@ from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-from .session import SetSession, compose_source
+from .reasoner import SetPlanBox, SetReasoner
+from .session import SetSession, plan_source
 
 #: Мелодии по ``id`` для хука темы: ``ids -> {id: rtttl}``.
 MelodyLookup = Callable[[Iterable[str]], Dict[str, str]]
@@ -114,9 +118,12 @@ class DjSetTool(MCPTool):
     music_engine = "v2"
 
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
-                 seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None) -> None:
+                 seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
+                 reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None) -> None:
         super().__init__(node)
         self._owner = owner
+        self._reasoner = reasoner or SetReasoner(enabled=False)
+        self._speak = speak
         self._melodies = melodies or library_melodies(_rtttl_library)
         self._seed = seed
         self._confirm = confirm
@@ -173,13 +180,18 @@ class DjSetTool(MCPTool):
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
         plan = seeded_plan(profile, set_seed, set_id=set_id)  # один план на сет = один темп
-        source = compose_source(plan, self._melodies(profile.hook_ids))
-        session = SetSession(self._owner, source, set_id=set_id, bpm=plan.bpm,
-                             dj={"theme": theme, "persona": persona},
-                             logger=self.node.get_logger() if self.node is not None else None)
+        logger = self.node.get_logger() if self.node is not None else None
+        box = SetPlanBox(plan, self._melodies, speak=self._speak, logger=logger)
+        base = plan_source(box.current)
+        session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck)), set_id=set_id,
+                             bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
+                             on_track_started=box.on_started)
         result = session.start()
         self._session = session if result.get("ok") else None
-        return {**result, "theme": theme, "theme_source": profile.source, "seed": set_seed}
+        reasoner = None
+        if self._session is not None:  # звук уже поставлен seeded-планом; LLM — в фоне (§4.8)
+            reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
+        return {**result, "theme": theme, "theme_source": profile.source, "seed": set_seed, "reasoner": reasoner}
 
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""

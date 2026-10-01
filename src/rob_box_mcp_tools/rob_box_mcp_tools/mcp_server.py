@@ -59,6 +59,7 @@ from rob_box_voice.core.music_player_state import (
 from .base import shared_publisher
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
+from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.tools_v2 import DjSetTool, RequestMusicTool, named_play_classic
 from .registry import MCPToolRegistry
 from .tools import (
@@ -309,6 +310,18 @@ def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable
     return publish_event
 
 
+def _set_reasoner(node: Any) -> SetReasoner:
+    """PR-10: ризонер плана сета по параметрам ноды; ``music_v2_reasoner: false`` — ноль вызовов LLM."""
+    return SetReasoner(enabled=bool(node.get_parameter("music_v2_reasoner").value),
+                       deadline_s=float(node.get_parameter("music_v2_reasoner_deadline_s").value),
+                       hype=bool(node.get_parameter("music_v2_hype_line").value), logger=node.get_logger())
+
+
+def _speaker(node: Any) -> Callable[[str], None]:
+    """Выкрик (под флагом В2) — тем же ``speak_text``, что у LLM: один путь в TTS."""
+    return lambda line: node.registry.execute("speak_text", text=line)
+
+
 def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — ``music_engine: v2`` → владелец плеера v2.
 
@@ -341,7 +354,7 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     def confirm(track_id: Optional[str]) -> Any:
         return events.wait(track_id, V2_STARTED_WAIT_S)
 
-    dj_set = DjSetTool(node, owner, confirm=confirm)
+    dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
     # PR-6: одиночный club-трек v2; classic — старым путём (В5), через этот же реестр
     node.registry.register(RequestMusicTool(node, owner, dj_set, confirm=confirm,
@@ -408,6 +421,10 @@ class MCPServer(Node):
         # при v1 latency не трогается (0.25).
         self.declare_parameter("music_engine", "v1")
         self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
+        # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax) и выкрик hype_line (В2, выкл).
+        self.declare_parameter("music_v2_reasoner", True)
+        self.declare_parameter("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
+        self.declare_parameter("music_v2_hype_line", False)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).

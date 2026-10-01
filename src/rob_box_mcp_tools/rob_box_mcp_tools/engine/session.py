@@ -17,14 +17,16 @@
 
 Источник следующего трека — шов ``TrackSource``: ``(track_no, deck) -> Track``. По умолчанию
 :func:`compose_source` — ``arrange.compose`` по плану сета (``set_plan.seeded_plan``, PR-3b: темп,
-дуга энергии, тоника — там, своей копии плана здесь нет); план от LLM (PR-10) — тот же шов.
+дуга энергии, тоника — там, своей копии плана здесь нет). План от LLM (PR-10) — тот же шов:
+:func:`plan_source` читает текущий план на каждый трек, а :meth:`SetSession.replan` перегенерирует ещё не
+сыгранный N+1 (§4.2).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from rob_box_music.arrange.compose import compose
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
@@ -40,13 +42,21 @@ NEARLY_LEAD_BEATS = float((PHRASE_BARS + 1) * 4)
 
 #: Источник следующего трека: ``(track_no, deck) -> Track``.
 TrackSource = Callable[[int, str], Track]
+#: Текущий план сета и мелодии его хуков: ``() -> (SetPlan, {id: rtttl})``.
+PlanNow = Callable[[], Tuple[SetPlan, Optional[Mapping[str, str]]]]
 
 
 def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) -> TrackSource:
-    """Треки сета из ``arrange.compose`` по плану; хук только что сыгранного трека — последним в выборе."""
+    """Треки сета из ``arrange.compose`` по одному плану на весь сет."""
+    return plan_source(lambda: (plan, melodies))
+
+
+def plan_source(current: PlanNow) -> TrackSource:
+    """Треки по плану, который сейчас у сета; хук только что сыгранного трека — последним в выборе."""
     recent: List[str] = []
 
     def next_track(track_no: int, deck: str) -> Track:
+        plan, melodies = current()
         track = compose(plan, track_no, melodies=melodies, recent_hooks=tuple(recent), deck=deck)
         if track.hook is not None and track.hook.source:
             recent.insert(0, track.hook.source)
@@ -74,11 +84,13 @@ class SetSession:
         dj: поля снимка ``dj`` (персона, тема…); ``set_id``/``track_no``/``bpm`` дописываются.
         submit: где компоновать N+1 (по умолчанию — фоновый поток: клок не ждёт рендера).
         lead_beats: за сколько долей до конца формы ``nearly_finished``.
+        on_track_started: ``track_id -> str`` на ``started`` — пометка в лог (``source=…``, PR-10).
     """
 
     def __init__(self, owner: Any, source: TrackSource, *, set_id: str, bpm: int,
                  dj: Optional[Mapping[str, Any]] = None, submit: Callable[[Callable[[], None]], None] = _start_thread,
-                 lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None) -> None:
+                 lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None,
+                 on_track_started: Callable[[str], str] = lambda _track_id: "") -> None:
         self._owner = owner
         self._source = source
         self.set_id = set_id
@@ -87,6 +99,7 @@ class SetSession:
         self._submit = submit
         self._lead = float(lead_beats)
         self._log = logger or _LOG
+        self._note = on_track_started
         self._lock = threading.Lock()
         self._active = False
         self._tracks: Dict[str, int] = {}  # track_id → номер в сете
@@ -118,6 +131,10 @@ class SetSession:
         self._deactivate()
         self._log.info(f"🎧 [set v2] {self.set_id} stop reason={reason}")
         return {**self._owner.stop(reason), "set_id": self.set_id}
+
+    def replan(self) -> None:
+        """План сменился (LLM, PR-10): N+1, ещё не сыгранный, компонуется заново (ADR-0149 §4.2)."""
+        self._pregenerate_soon()
 
     @property
     def active(self) -> bool:
@@ -156,7 +173,8 @@ class SetSession:
                              "form_beats": float(snap["form_beats"])}
             self._models = {k: v for k, v in self._models.items() if k == track_id}
         form_end = float(snap["start_beat"]) + float(snap["form_beats"])
-        self._log.info(f"🎧 [set v2] {self.set_id} трек {no} started track_id={track_id} form_end_beat={form_end}")
+        self._log.info(f"🎧 [set v2] {self.set_id} трек {no} started track_id={track_id} form_end_beat={form_end} "
+                       f"{self._note(track_id)}".rstrip())
         self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
         self._pregenerate_soon()
 
@@ -216,4 +234,5 @@ class SetSession:
         return beats
 
 
-__all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "SetSession", "TrackSource", "compose_source"]
+__all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "PlanNow", "SetSession", "TrackSource", "compose_source",
+           "plan_source"]

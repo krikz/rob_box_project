@@ -23,7 +23,8 @@ CONFIG_DIRS = [REPO / "src/rob_box_voice/config", REPO / "docker/vision/config/v
 
 class _Node:
     def __init__(self, engine):
-        self.params = {"music_engine": engine, "music_v2_clock_latency": 0.5}
+        self.params = {"music_engine": engine, "music_v2_clock_latency": 0.5, "music_v2_reasoner": True,
+                       "music_v2_reasoner_deadline_s": 45.0, "music_v2_hype_line": False}
         self.music_state_pub = _FakePublisher()
         self.created = []
         self._logger = _FakeLogger()
@@ -89,10 +90,15 @@ def test_yaml_copies_match_and_are_declared_with_the_same_types():
     # ADR-0004: один файл — одна секция. Флаг — отдельный файл с единственной секцией /** (две ноды),
     # у mcp_server.yaml — только своя секция.
     assert _load("music_engine.yaml") == {"/**": {"ros__parameters": {"music_engine": "v1"}}}
-    assert _load("mcp_server.yaml") == {"mcp_server": {"ros__parameters": {"music_v2_clock_latency": 0.5}}}
+    assert _load("mcp_server.yaml") == {"mcp_server": {"ros__parameters": {
+        "music_v2_clock_latency": 0.5, "music_v2_reasoner": True, "music_v2_reasoner_deadline_s": 45.0,
+        "music_v2_hype_line": False}}}
     src = (REPO / "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py").read_text(encoding="utf-8")
     assert re.search(r'declare_parameter\("music_engine", "v1"\)', src)
     assert re.search(r'declare_parameter\("music_v2_clock_latency", V2_CLOCK_LATENCY_S\)', src)
+    assert re.search(r'declare_parameter\("music_v2_reasoner", True\)', src)
+    assert re.search(r'declare_parameter\("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S\)', src)
+    assert re.search(r'declare_parameter\("music_v2_hype_line", False\)', src)  # В2: выкрик выключен
     dialogue = (REPO / "src/rob_box_voice/rob_box_voice/dialogue_node.py").read_text(encoding="utf-8")
     assert re.search(r'declare_parameter\("music_engine", "v1"\)', dialogue)
 
