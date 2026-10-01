@@ -31,6 +31,7 @@ from rob_box_mcp_tools.core.club_pools import (
 )
 from rob_box_mcp_tools.core.club_progressions import (
     LEGACY_PROGRESSIONS,
+    SCALE_PENTATONIC,
     pick_progression_name,
     progression_mode,
     progressions_for,
@@ -79,7 +80,10 @@ def test_every_supported_scale_has_progressions_and_minor_is_wider():
 @pytest.mark.parametrize("scale", SUPPORTED_SCALES)
 def test_mode_progressions_start_and_use_their_mode_colour(scale):
     """Дорийская содержит мажорную IV, фригийская — мажорную bII, мажор — мажорную тонику."""
-    marker = {"minor": None, "dorian": (5, "M"), "phrygian": (1, "M"), "major": (0, "M")}[scale]
+    marker = {
+        "minor": None, "dorian": (5, "M"), "phrygian": (1, "M"), "major": (0, "M"),
+        "minorPentatonic": (0, "m"), "majorPentatonic": (0, "M"),  # #3268: тоника лада
+    }[scale]
     bank = dict(PROGRESSIONS)
     for name in progressions_for(scale):
         chords = bank[name]
@@ -111,7 +115,8 @@ def test_lead_follows_chord_pentatonic_in_every_scale(scale):
         notes = _lead_notes(code)
         tonic = VALID_ROOTS.index(root)
         for idx, (offset, quality) in enumerate(chords):
-            allowed = {(tonic + offset + i) % 12 for i in PENTATONIC[quality]}
+            steps = SCALE_PENTATONIC.get(scale) or [offset + i for i in PENTATONIC[quality]]  # #3268: лад-пентатоника
+            allowed = {(tonic + i) % 12 for i in steps}
             assert {n % 12 for n in notes[idx * 32:(idx + 1) * 32]} <= allowed, (name, idx)
 
 

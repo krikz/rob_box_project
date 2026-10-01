@@ -74,11 +74,13 @@ from .club_samples import SAMPLE_LANE, sample_layer_line, sample_peak
 from .club_progressions import (
     LEGACY_PROGRESSIONS,
     PROGRESSIONS,
+    SCALE_PENTATONIC,
     SUPPORTED_SCALES,
     Chord,
     pick_progression_name,
     progression_mode,
 )
+from .club_timbre import TIMBRE_EXTRAS
 from .music_diversity import weighted_pick
 
 if TYPE_CHECKING:  # club_hook импортирует константы отсюда — только для типов
@@ -124,6 +126,13 @@ ROLE_SYNTHS: Dict[str, Tuple[str, ...]] = {
     "pad": ("sinepad", "warmpad", "space"),
 }
 
+#: Issue #3268: палитра тембров роли для ЯВНОГО выбора (``lead_synth``/``pad_synth``
+#: от модели под тему) — пул сида плюс :data:`core.club_timbre.TIMBRE_EXTRAS`.
+#: Сид по-прежнему выбирает только из :data:`ROLE_SYNTHS` (ADR-0146).
+ROLE_PALETTE: Dict[str, Tuple[str, ...]] = {
+    role: synths + TIMBRE_EXTRAS.get(role, ()) for role, synths in ROLE_SYNTHS.items()
+}
+
 #: Клубные шаблоны секций, из которых выбирает сид (все по 32 такта).
 #: ``lofi_froos`` сюда не входит — это lofi-форма на 56 тактов, не клуб.
 CLUB_TEMPLATES: Tuple[str, ...] = ("dj_dave_32", "drop_first_32", "long_build_32")
@@ -150,8 +159,8 @@ LANE_SLOTS: Dict[str, Tuple[str, str]] = {
     "pad": ("p3", "sinepad"),
 }
 
-#: Синты, которые использует club (все есть в ``CRITICAL_SYNTHS``).
-CLUB_SYNTHS = frozenset(s for synths in ROLE_SYNTHS.values() for s in synths)
+#: Синты, которые использует club, с палитрой явного выбора (все есть в ``CRITICAL_SYNTHS``).
+CLUB_SYNTHS = frozenset(s for synths in ROLE_PALETTE.values() for s in synths)
 
 #: Потолок уровня одного слоя (тот же, что ``max_amp`` санитайзера).
 MAX_LAYER_AMP = 0.85
@@ -192,7 +201,7 @@ PENTATONIC: Dict[str, Tuple[int, ...]] = {
     "m": (0, 3, 5, 7, 10),
     "M": (0, 2, 4, 7, 9),
 }
-TRIAD: Dict[str, Tuple[int, ...]] = {"m": (0, 3, 7), "M": (0, 4, 7)}
+TRIAD: Dict[str, Tuple[int, ...]] = {"m": (0, 3, 7), "M": (0, 4, 7), "s": (0, 5, 7)}
 
 # ---------------------------------------------------------------------------
 # Чистые помощники (публичны для тестов)
@@ -244,10 +253,17 @@ def peak_levels() -> Dict[str, float]:
     return peaks
 
 
-def chord_pentatonic(tonic_pc: int, chord: Chord) -> List[int]:
-    """Пул нот лида для аккорда: 11 нот пентатоники аккорда от LEAD_LOW вверх."""
+def chord_pentatonic(tonic_pc: int, chord: Chord, scale: str = "minor") -> List[int]:
+    """Пул нот лида для аккорда: 11 нот пентатоники аккорда от LEAD_LOW вверх.
+
+    Лад-пентатоника (#3268, :data:`SCALE_PENTATONIC`) — пентатоника ТОНИКИ на
+    любом аккорде: ноты лида не выходят из лада.
+    """
     offset, quality = chord
-    classes = {(tonic_pc + offset + i) % 12 for i in PENTATONIC[quality]}
+    if scale in SCALE_PENTATONIC:
+        classes = {(tonic_pc + i) % 12 for i in SCALE_PENTATONIC[scale]}
+    else:
+        classes = {(tonic_pc + offset + i) % 12 for i in PENTATONIC[quality]}
     pool: List[int] = []
     note = LEAD_LOW
     while len(pool) < LEAD_POOL_SIZE:
@@ -295,11 +311,13 @@ def riff_indices(rng: random.Random) -> Tuple[List[int], List[int]]:
     return theme, variation
 
 
-def lead_notes(tonic_pc: int, chords: Sequence[Chord], riff: Tuple[List[int], List[int]]) -> List[int]:
+def lead_notes(
+    tonic_pc: int, chords: Sequence[Chord], riff: Tuple[List[int], List[int]], scale: str = "minor",
+) -> List[int]:
     """Лид на всю прогрессию: риф в пентатонике КАЖДОГО аккорда (chord-scale)."""
     notes: List[int] = []
     for chord in chords:
-        pool = chord_pentatonic(tonic_pc, chord)
+        pool = chord_pentatonic(tonic_pc, chord, scale)
         for bar in riff:
             notes.extend(pool[i] for i in bar)
     return notes
@@ -491,6 +509,7 @@ def render_club(
     hook: Optional["ClubHook"] = None,
     recent: Optional[Sequence[Mapping[str, Any]]] = None,
     sample: Optional[str] = None,
+    timbre: Optional[Mapping[str, str]] = None,
 ) -> str:
     """Собрать клубный трек. Одинаковые аргументы → побайтно одинаковый код.
 
@@ -512,6 +531,8 @@ def render_club(
     ``recent`` (issue #3224) — история сыгранного: каркас и прогрессия
     выбираются со штрафом за недавнее (:func:`club_kit`,
     :func:`club_progression`); ``None``/пусто и ``seed=0`` — как раньше.
+    ``timbre`` (issue #3268) — тембры ролей поверх выбора сида
+    (``{"lead": "sitar"}``, только из :data:`ROLE_PALETTE`); ``None`` — как раньше.
     Issue #3226: с историей клэп, баланс слоёв и lpf-огибающие тоже
     берутся из пулов (:func:`core.club_pools.club_variant`); ``scale`` —
     лад из :data:`SUPPORTED_SCALES`, прогрессия выбирается из его пула.
@@ -524,7 +545,7 @@ def render_club(
         ValueError: неизвестные root/scale/template/kick или bpm вне диапазона.
     """
     return render_club_kit(
-        club_kit(seed, template, kick, recent), bpm=bpm, root=root, scale=scale,
+        {**club_kit(seed, template, kick, recent), **(timbre or {})}, bpm=bpm, root=root, scale=scale,
         seed=seed, progression=club_progression(seed, recent, scale) if recent or scale != "minor" else None,
         repeat=repeat, align_clock=align_clock, dj_entry=dj_entry, hook=hook,
         variant=club_variant(seed, recent), sample=sample,
@@ -580,7 +601,7 @@ def _validate_kit(kit: Mapping[str, str]) -> None:
     """Каркас из явной спеки (issue #3136): ключи и значения — только из палитры."""
     if kit.get("hats") not in HATS_PATTERNS:
         raise ValueError(f"Неизвестный рисунок хэтов {kit.get('hats')!r} (допустимо: {', '.join(HATS_PATTERNS)})")
-    for role, synths in ROLE_SYNTHS.items():
+    for role, synths in ROLE_PALETTE.items():
         if kit.get(role) not in synths:
             raise ValueError(f"Синт {kit.get(role)!r} не из палитры роли {role} (допустимо: {', '.join(synths)})")
 
@@ -656,6 +677,7 @@ def _d3_line(
 
 def _lead_source(
     rng: random.Random, tonic: int, chords: Sequence[Chord], synth: str, hook: Optional["ClubHook"],
+    scale: str = "minor",
 ) -> Tuple[Tuple, str, List[str]]:
     """Ноты lead и начало его аргументов: сидированный риф или хук (#3181).
 
@@ -665,7 +687,7 @@ def _lead_source(
     """
     if hook is None:
         riff = riff_indices(rng)
-        first = _lead_block(lead_notes(tonic, chords, riff), synth) + ","
+        first = _lead_block(lead_notes(tonic, chords, riff, scale), synth) + ","
         return (), first, ["dur=1/4, scale=Scale.chromatic, root=0, oct=0, sus=0.15,"]
     arranged = hook.arrange(tonic)
     first = _lead_block(list(arranged.lead), synth) + ","
@@ -725,7 +747,7 @@ def render_club_kit(
     rng = random.Random(seed)
     prog_name, chords = _pick_progression(rng, progression, scale)
     tonic = VALID_ROOTS.index(root)
-    header, lead_first, lead_opts = _lead_source(rng, tonic, chords, kit["lead"], hook)
+    header, lead_first, lead_opts = _lead_source(rng, tonic, chords, kit["lead"], hook, scale)
     hook_lines: List[str] = []
     if hook is not None:
         prog_name, chords, label = header
@@ -801,6 +823,7 @@ __all__ = [
     "build_matrix",
     "calibrated_gates",
     "REFERENCE_KIT",
+    "ROLE_PALETTE",
     "ROLE_SYNTHS",
     "chord_pentatonic",
     "club_duration_seconds",

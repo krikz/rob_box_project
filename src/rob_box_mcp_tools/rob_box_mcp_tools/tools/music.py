@@ -67,9 +67,10 @@ from ..core import renardo_sanitizer, sample_fx, sample_loops
 # импортирует gen_tool_catalog без пакета) — предзагрузка здесь, до того как
 # кто-то подменит builtins.exec (тесты тула патчат его на время execute).
 from ..core import classic_loudness  # noqa: F401,E402
-from ..core.club_arranger import club_entry_beats, club_form_beats, club_kit, render_club
+from ..core.club_arranger import ROLE_PALETTE, club_entry_beats, club_form_beats, club_kit, render_club
 from ..core.club_hook import ClubHook, extract_hook
-from ..core.club_fragments import club_hook_sentence, hook_fingerprint, pick_club_hook
+from ..core.club_fragments import club_hook_sentence, hook_fingerprint, hook_scale_note, pick_club_hook
+from ..core.club_timbre import timbre_refusals, timbre_request, timbre_sentence
 from ..core.club_history import recent_club_rows, remember_classic, remember_club
 from ..core.web_melody import club_label_theme, pick_theme
 from ..core.club_samples import pick_club_sample, sample_sentence
@@ -3414,9 +3415,16 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "форма из матрицы секций (build/predrop/drop/verse, "
                     "32 такта). С club работают только bpm (по умолчанию "
                     "124), root (по умолчанию A#), scale (minor по умолчанию, "
-                    "ещё dorian, phrygian, major), "
+                    "ещё dorian, phrygian, major, minorPentatonic, "
+                    "majorPentatonic — пентатоника: риф и аккорды не выходят "
+                    "из 5 ступеней), "
                     "seed (выбирает прогрессию, риф, бочку, хэты, шаблон "
-                    "секций и тембры) и repeat; остальные "
+                    "секций и тембры), repeat и тембр под тему поверх выбора "
+                    "сида: lead_synth (pluck, blip, arpy, karp, marimba, sitar, "
+                    "epiano, brass, orient, viola) и pad_synth (sinepad, "
+                    "warmpad, space, ambi, strangerpulsepad); другой "
+                    "тембр не применяется, ответ назовёт причину. Не задан — "
+                    "тембры выбирает сид (так треки сета разнообразнее); остальные "
                     "параметры игнорируются — об этом сказано в начале "
                     "ответа. С name= мелодии из библиотеки или rtttl= club "
                     "играет вместо арпеджио узнаваемый хук темы (её начало, "
@@ -4355,7 +4363,10 @@ class ComposeMusicTool(MCPTool):
 
     #: Параметры, которые ``style="club"`` реально использует. ``name``/
     #: ``variants``/``rtttl`` — тема для хука lead (issue #3181).
-    _CLUB_PARAMS: Tuple[str, ...] = ("bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl", "theme")
+    #: Issue #3268: ``lead_synth``/``pad_synth`` — тембр под тему из ``ROLE_PALETTE``.
+    _CLUB_PARAMS: Tuple[str, ...] = (
+        "bpm", "root", "scale", "seed", "repeat", "name", "variants", "rtttl", "theme", "lead_synth", "pad_synth",
+    )
 
     def _style_branch(
         self, style: Optional[str], kwargs: Dict[str, Any], transition: Optional[str] = None,
@@ -4440,6 +4451,7 @@ class ComposeMusicTool(MCPTool):
     ))
     _SCALE_NAMES_RU: Dict[str, str] = {
         "minor": "минор", "major": "мажор", "dorian": "дорийский лад", "phrygian": "фригийский лад",
+        "minorPentatonic": "минорная пентатоника", "majorPentatonic": "мажорная пентатоника",
     }
 
     @classmethod
@@ -4502,7 +4514,9 @@ class ComposeMusicTool(MCPTool):
         # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры);
         # issue #3224: со штрафом за то, что уже играло (история между запусками).
         recent = recent_club_rows(self._music_history)
-        kit = club_kit(seed, recent=recent)
+        # Issue #3268: тембр лида/пэда от модели (из палитры) поверх выбора сида.
+        timbre, refused = timbre_request(kwargs, ROLE_PALETTE)
+        kit = {**club_kit(seed, recent=recent), **timbre}
         # Issue #3254: слой сэмплов DJ_Dave — ещё одна ось выбора (или причина, почему его нет).
         sample = pick_club_sample(seed, recent, kwargs.get("root"))
         fade_note = self._fade_outlives_form(bpm) if fade else ""
@@ -4511,7 +4525,7 @@ class ComposeMusicTool(MCPTool):
         try:
             hook, hook_info = self._club_hook(kwargs, bpm, seed, recent)
             code, form_beats, entry = self._club_program(
-                kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent, sample.name,
+                kwargs, kit["template"], bpm, seed, repeat, fade, hook, recent, sample.name, timbre,
             )
         except ValueError as exc:
             return MCPToolResult(success=False, error=f"style=club: {exc}")
@@ -4534,6 +4548,7 @@ class ComposeMusicTool(MCPTool):
         result["club_kit"] = kit
         result["club_hook"] = hook_info
         result["club_sample"] = sample.info()
+        result["club_timbre"] = {"applied": timbre, "refused": refused}
         message = self._club_message(kwargs, result, duration_s, fade) + fade_note
         message += sample_sentence(result["club_sample"])
         return MCPToolResult(success=True, data=result, message=message)
@@ -4591,6 +4606,7 @@ class ComposeMusicTool(MCPTool):
         kwargs: Dict[str, Any], template: str, bpm: float, seed: int, repeat: bool, fade: bool,
         hook: Optional[ClubHook] = None, recent: Optional[List[Dict[str, Any]]] = None,
         sample: Optional[str] = None,
+        timbre: Optional[Dict[str, str]] = None,
     ) -> Tuple[str, int, int]:
         """Код club-трека, длина формы и доля входа (``ValueError`` — плохие ручки).
 
@@ -4603,7 +4619,7 @@ class ComposeMusicTool(MCPTool):
         code = render_club(
             bpm=bpm, root=kwargs.get("root") or "A#", scale=kwargs.get("scale") or "minor",
             seed=seed, repeat=repeat, align_clock=align, dj_entry=dj_entry, hook=hook, recent=recent,
-            sample=sample,
+            sample=sample, timbre=timbre,
         )
         form_beats = club_form_beats(template)
         entry = club_entry_beats(template) if dj_entry else 0
@@ -4626,9 +4642,10 @@ class ComposeMusicTool(MCPTool):
             f"тембры {kit['lead']}/{kit['bass']}/{kit['pad']}. "
             "Музыка уже звучит — НЕ вызывай execute_music_code после этого."
         )
+        message += timbre_sentence(result.get("club_timbre"))
         hook = result.get("club_hook")
         if hook:
-            message += club_hook_sentence(hook)
+            message += club_hook_sentence(hook) + hook_scale_note(kwargs.get("scale"))
         if fade:
             message += (
                 f" Переход fade: играющий трек уходит за {FADE_BARS} тактов фильтром и "
@@ -4706,6 +4723,7 @@ class ComposeMusicTool(MCPTool):
                 f"name={name!r} не найдено в библиотеке мелодий — в club это только "
                 "подпись, ТЕМЫ в треке нет (не говори юзеру, что играет эта песня)."
             )
+        parts.extend(timbre_refusals(result.get("club_timbre")))
         if ignored:
             parts.append(
                 "Проигнорировано в club (трек звучит БЕЗ них): " + ", ".join(ignored) + "."
