@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import weakref
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -278,20 +279,49 @@ def _describe(library: Any, frag: Fragment) -> Dict[str, Any]:
 #: Темы, по которым веб-поиск уже пробовали (библиотека, тема): без повтора на каждый трек сета.
 _WEB_TRIED: set = set()
 
+#: Issue #3242: сколько секунд compose_music ждёт веб-поиск темы. Ход ждёт результат
+#: тула 10 с, а DuckDuckGo сам держит запрос до 10 с — синхронный поиск выбивал
+#: тул в таймаут, и Bug B-ретрай играл второй трек. Не уложился — трек из пула,
+#: поиск доезжает в фоне и кэширует мелодию для следующего трека темы.
+WEB_SEARCH_BUDGET_S = 4.0
+
+
+def _fetch_theme_melody(
+    library: Any, theme: str, web_search: Callable[[str], Sequence[Mapping[str, Any]]],
+    warn: Callable[[str], None], info: Callable[[str], None],
+) -> None:
+    try:
+        if fetch_web_melody(library, theme, web_search, warn, info):
+            info(f"[#3228] тема {theme!r} не найдена в архиве — мелодия из веба добавлена, выбираем из неё")
+    except Exception as exc:  # noqa: BLE001 — фоновый поток: сбой в лог, не в никуда
+        warn(f"[#3228] веб-мелодия по теме {theme!r} не записана ({type(exc).__name__}: {exc})")
+
 
 def _ensure_theme_melody(
     library: Any, theme: str, bpm: float, web_search: Callable[[str], Sequence[Mapping[str, Any]]],
     warn: Callable[[str], None], info: Callable[[str], None],
-) -> None:
-    """Темы нет в архиве → один раз найти её RTTTL в вебе и закэшировать (issue #3228)."""
+) -> Optional[threading.Thread]:
+    """Темы нет в архиве → один раз найти её RTTTL в вебе и закэшировать (issue #3228).
+
+    Поиск идёт в фоновом потоке и ждётся не дольше :data:`WEB_SEARCH_BUDGET_S`
+    (issue #3242). Возвращает поток поиска (``None`` — поиск не нужен).
+    """
     key = (id(library), theme.strip().lower())
     if key not in _WEB_TRIED:
         purge_stale_web_melodies(library, theme, info)  # TTL и недоверенные записи до #3243
     if key in _WEB_TRIED or _theme_candidates(library, theme, bpm):
-        return
+        return None
     _WEB_TRIED.add(key)
-    if fetch_web_melody(library, theme, web_search, warn, info):
-        info(f"[#3228] тема {theme!r} не найдена в архиве — мелодия из веба добавлена, выбираем из неё")
+    worker = threading.Thread(
+        target=_fetch_theme_melody, args=(library, theme, web_search, warn, info),
+        name="club-web-melody", daemon=True,
+    )
+    worker.start()
+    worker.join(WEB_SEARCH_BUDGET_S)
+    if worker.is_alive():
+        warn(f"[#3242] веб-поиск мелодии темы {theme!r} не уложился в {WEB_SEARCH_BUDGET_S:g} с — "
+             "этот трек берёт фрагмент из пула, найденная мелодия достанется следующему треку темы")
+    return worker
 
 
 def pick_club_hook(
