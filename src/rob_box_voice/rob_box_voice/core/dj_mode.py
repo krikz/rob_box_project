@@ -86,6 +86,36 @@ def plan_entry(plan: str, track_no: int) -> str:
     return ""
 
 
+def music_started_in_turn(
+    tools: set,
+    music_tools: Iterable[str],
+    succeeded_tools: Optional[Iterable[str]],
+    logger: logging.Logger,
+) -> bool:
+    """Запустил ли ход музыку: музыкальный тул вызван И вернулся без ошибки.
+
+    Issue #3285: ``tools_called`` несёт только ИМЕНА — упавший вызов там тоже
+    есть. Живой лог 01.10 11:12:03: ``compose_music(name='Калинка')`` →
+    «не найдена в библиотеке», а сет записал «DJ трек #1 запущен»; ни один
+    Bug C-ретрай трек не запустил, и лимит сета кончился на трек раньше.
+    30.09 23:49:45: compose_music → «Timeout ожидания результата» → трек #3,
+    Bug B-ретрай того же перехода → трек #4.
+
+    ``succeeded_tools`` — ``DialogResult.succeeded_tools`` (#3004, вызовы без
+    ``is_error``). ``None`` — источник успех не сообщает (трек запустил
+    роутер, #3176): верим именам, как раньше.
+    """
+    called = tools & set(music_tools)
+    if not called or succeeded_tools is None:
+        return bool(called)
+    if called & set(succeeded_tools):
+        return True
+    logger.info(
+        f"🎧 DJ: {sorted(called)!r} в ходе упал — трек сета не засчитан (#3285)"
+    )
+    return False
+
+
 @dataclass
 class DJState:
     """Plain-Python state bag for the autonomous DJ state machine."""
@@ -874,6 +904,7 @@ class DJModeController:
         *,
         is_dj_auto: bool = False,
         turn_text: str = "",
+        succeeded_tools: Optional[Iterable[str]] = None,
     ) -> bool:
         """Учесть завершённый ход: запустил ли он трек в идущем сете.
 
@@ -896,13 +927,17 @@ class DJModeController:
         Музыкальная просьба юзера посреди сета без ``set_dj_mode``
         («сыграй тему марио») — заказ гостя, см. :meth:`_hold_for_user_track`.
 
+        Issue #3285: музыкальный тул, упавший в ходе (``succeeded_tools`` его
+        не содержит), трек не запускал — ход не считается ни треком сета, ни
+        заказом гостя (см. :func:`music_started_in_turn`).
+
         Returns:
             True — засчитан трек сета.
         """
         if not self.state.enabled or not tools_called:
             return False
         tools = set(tools_called)
-        if not tools & set(music_tools):
+        if not music_started_in_turn(tools, music_tools, succeeded_tools, self._logger):
             return False
         consume_if_played_in_turn(self.state, turn_text)  # #3227: LLM сыграл материал сам
         set_turn = is_dj_auto or "[DJ_AUTO" in (turn_text or "")
