@@ -82,6 +82,46 @@ BPM_RANGE = (60, 180)  # ``arranger.BPM_RANGE``: за пределами Renardo
 
 
 @dataclass(frozen=True)
+class ThemeRow:
+    """Строка закрытой таблицы тем (ADR-0149 §4.7): основы слов, окно темпа, лад плана, хуки темы.
+
+    ``hooks`` — ``name`` мелодий ЛОКАЛЬНОЙ RTTTL-библиотеки (архив ``rtttl_melodies.jsonl.gz``):
+    поиск по русским словам темы в латинском архиве не находит ничего (тема → хук 0/14, эпик #3312),
+    поэтому тема указывает мелодии явно. Каждая годится в хук ``arrange.hook.from_rtttl``
+    (``test_theme.py`` сверяет с архивом).
+    """
+
+    stems: Tuple[str, ...]
+    bpm: Tuple[int, int]
+    mode: str
+    hooks: Tuple[str, ...]
+
+
+#: Темы сета → материал. Порядок строк решает ничью по числу совпавших основ.
+THEMES: Mapping[str, ThemeRow] = {
+    "space": ThemeRow(
+        ("косм", "звёзд", "звезд", "галакт", "планет", "ракет", "луна", "марс", "space", "star"), (128, 132), "minor",
+        ("starwars_6", "starwars_2", "the_x_files", "xfiles1", "startrek_3", "startrek_5",
+         "deepspac", "spacecha", "doctorwh")),
+    "cyber": ThemeRow(
+        ("кибер", "робот", "матриц", "неон", "техно", "будущ", "cyber", "robot"), (134, 138), "phrygian",
+        ("axelf_3", "axel_f", "robotroc", "robot", "popcorn", "popcorn_6", "aroundth_3")),
+    "kids": ThemeRow(
+        ("детск", "дети", "детей", "праздн", "рожден", "мульт", "игрушк", "kids"), (128, 132), "major",
+        ("happybir", "chickend", "macarena", "yellowsu", "teletubb", "bobthebu", "spongebo", "flintsto_2",
+         "barbiegi")),
+    "slavic": ThemeRow(
+        ("славян", "русск", "народн", "калинк", "балалайк", "деревен", "казач"), (130, 136), "minor",
+        ("kalinkav", "kalinkav_2", "tetris", "tetris_2")),
+    "winter": ThemeRow(
+        ("новогод", "новый", "зим", "рождеств", "ёлк", "елк", "снег", "мороз"), (128, 132), "major",
+        ("jinglebe_6", "jinglebe_3", "lastchri_5", "haveyour")),
+}
+#: Хуки без темы (тема не из таблицы): узнаваемые мелодии, тоже из локальной библиотеки.
+DEFAULT_HOOKS: Tuple[str, ...] = ("tetris", "axelf_3", "popcorn", "macarena", "nokiatun_2", "aroundth_3", "robot")
+
+
+@dataclass(frozen=True)
 class SynthTraits:
     """Свойства SynthDef: ``tail`` — held|fixed|short, ``register`` — роль, ``tail_note`` — текст."""
 
@@ -150,7 +190,7 @@ def role_ceiling(role: str) -> float:
 
 __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS", "ENERGY_TRIM_DB",
-    "GENRE_WINDOWS", "GenreWindow",
+    "DEFAULT_HOOKS", "GENRE_WINDOWS", "GenreWindow", "THEMES", "ThemeRow",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "PLAY_SYNTH", "REGISTERS", "ROLES", "ROOTS",
     "SCALES", "SYNTH_PALETTE", "SYNTH_TRAITS", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",

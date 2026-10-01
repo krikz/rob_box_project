@@ -1,4 +1,7 @@
-"""PR-2 ADR-0149: ``render(track, deck)`` и первый club-трек — свойства на событиях нот, без снапшотов."""
+"""PR-2/PR-3a ADR-0149: ``render(track, deck)`` и club-трек ``compose`` — свойства на событиях нот, без снапшотов.
+
+Чётные сиды — трек с хуком из тестовых мелодий, нечётные — без мелодий (мотив лида PR-2).
+"""
 
 from __future__ import annotations
 
@@ -7,13 +10,20 @@ from dataclasses import replace
 
 import pytest
 
+from melodies import MELODIES, profile
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.compose import club_track
+from rob_box_music.arrange.compose import club_track, compose
 from rob_box_music.model import BEATS_PER_BAR, Grid
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import ROLE_SLOT, RenderError, render
 
 SEEDS = range(40)
+
+
+def track_for(seed, deck="A", hooked=None):
+    hooked = seed % 2 == 0 if hooked is None else hooked
+    return compose(profile(root=seed % 12, mode=("minor", "major", "dorian")[seed % 3]), 1, set_seed=seed,
+                   melodies=MELODIES if hooked else None, deck=deck)
 
 
 def _events(track, deck="A"):
@@ -39,7 +49,7 @@ def _section_of(track, beat):
 @pytest.mark.parametrize("seed", SEEDS)
 def test_events_equal_the_model(seed):
     """Свёрнутая программа звучит ровно как модель: каждая нота, доля и sus."""
-    track = club_track(seed)
+    track = track_for(seed)
     _program, by_role = _events(track)
     for role in kn.TONAL_ROLES:
         heard = sorted((e.beat, e.midi, e.sus_beats) for e in by_role[role])
@@ -49,7 +59,7 @@ def test_events_equal_the_model(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_key_registers_and_order(seed):
-    track = club_track(seed)
+    track = track_for(seed)
     _program, by_role = _events(track)
     pcs = kn.scale_pitch_classes(track.key.root, track.key.mode)
     span = {}
@@ -65,10 +75,11 @@ def test_key_registers_and_order(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_kick_four_on_floor_and_bass_off_the_kick(seed):
-    track = club_track(seed)
+    track = track_for(seed)
     _program, by_role = _events(track)
     kicks = {e.beat for e in by_role["kick"]}
-    assert kicks == {float(b) for b in range(int(track.form.bars_total * BEATS_PER_BAR))}
+    beats = range(int(track.form.bars_total * BEATS_PER_BAR))
+    assert kicks == {float(b) for b in beats if "kick" in _section_of(track, b).roles}, "бочка на каждой доле"
     bass = [e.beat for e in by_role["bass"]]
     assert bass and not kicks & set(bass), "бас не на шагах бочки"
     assert all(b % 1 == 0.5 for b in bass), "бас на «и» доли"
@@ -80,22 +91,24 @@ def test_kick_four_on_floor_and_bass_off_the_kick(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_lead_is_a_motif_with_rests(seed):
-    track = club_track(seed)
+    """Без мелодии лид — мотив PR-2: ≤ 4 атак в такте, пауза в половине тактов, пул ≤ 4 нот (без терций drop2)."""
+    track = track_for(seed, hooked=False)
     _program, by_role = _events(track)
     per_bar = defaultdict(int)
-    for ev in by_role["lead"]:
-        assert "lead" in _section_of(track, ev.beat).roles
-        per_bar[int(ev.beat // BEATS_PER_BAR)] += 1
+    for beat in {ev.beat for ev in by_role["lead"]}:  # атаки, а не голоса (drop2 — терции)
+        assert "lead" in _section_of(track, beat).roles
+        per_bar[int(beat // BEATS_PER_BAR)] += 1
     assert per_bar and max(per_bar.values()) <= 4, "лид ≤ 4 нот на такт"
     lead_bars = [b for b in range(track.form.bars_total) if "lead" in _section_of(track, b * 4).roles]
     assert sum(1 for b in lead_bars if per_bar[b] == 0) >= len(lead_bars) // 2, "второй такт фразы — пауза"
-    assert len({e.midi for e in by_role["lead"]}) <= 4, "пул ≤ 4 нот"
+    drop = [e.midi for e in by_role["lead"] if _section_of(track, e.beat).name != "drop2"]
+    assert len(set(drop)) <= 4, "пул ≤ 4 нот"
 
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_pad_voice_leading_moves_little(seed):
     """Ни один голос пэда не прыгает дальше большой терции, включая стык петли (старый вид — до 11)."""
-    track = club_track(seed)
+    track = track_for(seed)
     chords = track.harmony.progression["drop"]
     for prev, nxt in zip(chords, chords[1:] + chords[:1]):
         moves = [abs(a - b) for a, b in zip(prev.voicing, nxt.voicing)]
@@ -105,14 +118,14 @@ def test_pad_voice_leading_moves_little(seed):
 def test_pad_voice_leading_on_average_is_a_step():
     ring = []
     for seed in range(200):
-        chords = club_track(seed).harmony.progression["drop"]
+        chords = track_for(seed).harmony.progression["drop"]
         ring += [sum(abs(a - b) for a, b in zip(p.voicing, n.voicing)) for p, n in zip(chords, chords[1:] + chords[:1])]
     assert sum(ring) / len(ring) <= 4.5
 
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_tempo_window_and_sections_gate(seed):
-    track = club_track(seed)
+    track = track_for(seed)
     lo, hi = kn.GENRE_WINDOWS["club"].bpm
     assert lo <= track.bpm <= hi
     _program, by_role = _events(track)
@@ -121,7 +134,7 @@ def test_tempo_window_and_sections_gate(seed):
 
 
 def test_render_is_deterministic_and_deck_only_changes_slots():
-    track = club_track(7)
+    track = track_for(7)
     a, b = render(track, "A"), render(track, "B")
     assert a == render(track, "A")
     assert set(a.slots.values()) == set(kn.DECK_SLOTS["A"]) and set(b.slots.values()) == set(kn.DECK_SLOTS["B"])
@@ -134,7 +147,7 @@ def test_render_is_deterministic_and_deck_only_changes_slots():
 
 
 def test_render_refuses_what_it_cannot_express():
-    track = club_track(3)
+    track = track_for(3)
     hats = track.parts["hats"]
     swung = replace(hats, grid=Grid(tuple(replace(s, offset_ms=8) if s.on else s for s in hats.grid.steps)))
     with pytest.raises(RenderError, match="свинг"):
@@ -146,3 +159,10 @@ def test_render_refuses_what_it_cannot_express():
     with pytest.raises(RenderError, match="вне сетки"):
         render(replace(track, parts={**track.parts, "lead": off_grid}), "A")
     assert set(ROLE_SLOT) >= set(track.parts)
+
+
+def test_club_track_wrapper_is_compose_without_theme():
+    """``club_track(seed)`` (проверки плеера PR-4) — тот же ``compose`` без темы: мотив лида, окно club."""
+    track = club_track(11, deck="B")
+    assert track.hook is None and track.track_id.split(":")[2] == "B"
+    assert track == club_track(11, deck="B") and render(track, "B").code

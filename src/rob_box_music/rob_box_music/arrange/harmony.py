@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import itertools
+import random
 from typing import List, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..model import Chord, Key
+from ..model import Chord, Key, PitchEvent
 
 #: Прогрессии club по ступеням лада, аккорд на 2 такта (8-тактовая петля).
 PROGRESSIONS: Tuple[Tuple[int, ...], ...] = ((0, 5, 2, 6), (0, 3, 5, 4), (0, 5, 3, 4), (0, 6, 5, 6))
@@ -57,4 +58,19 @@ def pad_chords(key: Key, degrees: Sequence[int], register: Tuple[int, int]) -> T
     return tuple(Chord(d, v) for d, v in zip(degrees, best))
 
 
-__all__ = ["PROGRESSIONS", "pad_chords", "triad_pcs", "voicings"]
+def fit_progression(key: Key, notes: Sequence[PitchEvent], chord_beats: float, rng: random.Random) -> Tuple[int, ...]:
+    """Прогрессия из :data:`PROGRESSIONS`, трезвучия которой покрывают больше всего звучания хука.
+
+    ``notes`` — хук в долях от начала петли, аккорд держится ``chord_beats`` долей. Без нот или при
+    ничьей — выбор сидом среди лучших.
+    """
+    def score(degrees: Tuple[int, ...]) -> float:
+        triads = [set(triad_pcs(key, d)) for d in degrees]
+        return sum(e.dur_beats for e in notes if e.midi % 12 in triads[int(e.beat // chord_beats) % len(triads)])
+
+    scores = {degrees: score(degrees) for degrees in PROGRESSIONS}
+    best = max(scores.values())
+    return rng.choice([d for d in PROGRESSIONS if scores[d] == best])
+
+
+__all__ = ["PROGRESSIONS", "fit_progression", "pad_chords", "triad_pcs", "voicings"]
