@@ -240,19 +240,42 @@ def pick_fragment(
     by_name = {name: (rec, windows) for name, rec, windows in candidates}
     melody = weighted_pick(list(by_name), [r.get("melody_name") for r in recent], rng)
     rec, windows = by_name[melody]
-    seen_fp = {r.get("hook_fingerprint") for r in recent[:RECENT_FINGERPRINTS] if r.get("hook_fingerprint")}
-    fresh = [w for w in windows if hook_fingerprint(w.notes) not in seen_fp] or windows
-    recent_offsets = [r.get("fragment_offset") for r in recent if r.get("melody_name") == melody]
-    hook = _pick_by_offset(fresh, recent_offsets, rng)
+    hook = _pick_window(windows, melody, recent, rng)
     return Fragment(
         hook=hook, melody=melody, title=_human_title(library, rec), offset=hook.offset,
         fingerprint=hook_fingerprint(hook.notes), source=source,
     )
 
 
-def _pick_by_offset(windows: List[ClubHook], recent_offsets: Sequence[Any], rng: random.Random) -> ClubHook:
-    by_offset: Dict[int, ClubHook] = {w.offset: w for w in windows}
-    return by_offset[weighted_pick(list(by_offset), recent_offsets, rng)]
+def _not_just_played(windows: List[ClubHook], melody: str, recent: Sequence[Mapping[str, Any]]) -> List[ClubHook]:
+    """Окна без отпечатка/смещения предыдущего трека (если это не оставляет пустоту)."""
+    last = recent[0] if recent else {}
+    last_fp = last.get("hook_fingerprint")
+    last_off = last.get("fragment_offset") if last.get("melody_name") == melody else None
+    other_fp = [w for w in windows if not (last_fp and hook_fingerprint(w.notes) == last_fp)]
+    return [w for w in other_fp if w.offset != last_off] or other_fp or windows
+
+
+def _pick_window(
+    windows: List[ClubHook], melody: str, recent: Sequence[Mapping[str, Any]], rng: random.Random,
+) -> ClubHook:
+    """Окно мелодии со штрафом за недавний отпечаток и смещение (issue #3245).
+
+    1. Отпечаток/смещение ПРЕДЫДУЩЕГО трека не берём подряд, пока есть другое окно
+       (раньше, когда у короткой темы все отпечатки уже были в истории, жёсткий
+       фильтр сворачивался в «любое окно» и тот же фрагмент играл два трека подряд).
+    2. Среди оставшихся — :func:`weighted_pick` по давности отпечатка (а не
+       бинарное «видели/не видели»), при равенстве — по давности смещения.
+    """
+    allowed = _not_just_played(windows, melody, recent)
+    fps = [r.get("hook_fingerprint") for r in recent[:RECENT_FINGERPRINTS]]
+    by_fp: Dict[str, List[ClubHook]] = {}
+    for w in allowed:
+        by_fp.setdefault(hook_fingerprint(w.notes), []).append(w)
+    group = by_fp[weighted_pick(list(by_fp), fps, rng)]
+    by_offset: Dict[int, ClubHook] = {w.offset: w for w in group}
+    offsets = [r.get("fragment_offset") for r in recent if r.get("melody_name") == melody]
+    return by_offset[weighted_pick(list(by_offset), offsets, rng)]
 
 
 # ---------------------------------------------------------------------------
