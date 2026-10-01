@@ -25,6 +25,8 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Union
 
+from .translit_ru import strip_version_tail, transliterate_ru
+
 __all__ = [
     "RtttlLibrary", "covers_tokens", "display_title", "human_track_title", "match_info", "melody_quality",
 ]
@@ -231,6 +233,16 @@ _STOPWORDS = frozenset({
 
 
 def _normalize(query: str) -> str:
+    """Алиасы → канонический англ. запрос; остальная кириллица — транслитом.
+
+    issue #3264: архив хранит русские песни латиницей («Калинка» →
+    ``kalinkav``), поэтому слово без алиаса не отбрасывается, а
+    транслитерируется (:mod:`.translit_ru`), хвост версии («v1.0») срезается.
+    """
+    return strip_version_tail(transliterate_ru(_alias_normalize(query)))
+
+
+def _alias_normalize(query: str) -> str:
     """Нижний регистр + замена русских/жаргонных имён на канонический англ.
 
     Замена — по границам СЛОВ (``\\b``), не голой подстрокой: латинские
@@ -369,7 +381,7 @@ def _strip_technical_suffixes(title: str) -> str:
     """
     cleaned = title
     for _ in range(4):
-        next_cleaned = _TRAILING_DUPLICATE_NUM_RE.sub("", cleaned)
+        next_cleaned = strip_version_tail(_TRAILING_DUPLICATE_NUM_RE.sub("", cleaned))
         next_cleaned = _TRAILING_PAREN_RE.sub("", next_cleaned).strip()
         if next_cleaned == cleaned or not next_cleaned:
             break
@@ -439,10 +451,10 @@ def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> D
       полный, и без ``ignored`` сверка выглядела бы идеальной.
     """
     normalized = _normalize(query)
-    ignored = _ignored_words(normalized)
+    cyrillic_words = _ignored_words(_alias_normalize(query))
     tokens = _tokens(normalized)
     if not tokens:
-        return {"matched": [], "unmatched": [], "coverage": 0.0, "ignored": ignored}
+        return {"matched": [], "unmatched": [], "coverage": 0.0, "ignored": cyrillic_words}
     try:
         weights = library.token_weights()
     except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
@@ -466,12 +478,30 @@ def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> D
         else:
             unmatched.append(token)
     coverage = (matched_weight / total_weight) if total_weight > 0 else 0.0
+    unmatched, ignored = _split_transliterated(cyrillic_words, unmatched)
     return {
         "matched": matched,
         "unmatched": unmatched,
         "coverage": round(coverage, 3),
         "ignored": ignored,
     }
+
+
+def _split_transliterated(cyrillic_words: List[str], unmatched: List[str]) -> tuple:
+    """Транслит-токены, не нашедшие записи, — в ``ignored`` (#3176), не в ``unmatched``.
+
+    «гимн германии»: «германии» → ``germanii`` в записи нет. Это по-прежнему
+    «слово, которого поиск не видел» (контракт ``ignored``), а не английский
+    токен, не нашедшийся в записи; русские слова, нашедшие запись («Калинка»),
+    в ``ignored`` не попадают.
+    """
+    unmatched_set = set(unmatched)
+    ignored = [
+        word for word in cyrillic_words
+        if unmatched_set & set(_tokens(transliterate_ru(word)))
+    ]
+    translit_tokens = {t for word in ignored for t in _tokens(transliterate_ru(word))}
+    return [t for t in unmatched if t not in translit_tokens], ignored
 
 
 def _ignored_words(normalized: str) -> List[str]:
