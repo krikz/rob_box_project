@@ -383,15 +383,19 @@ def melody_to_compose_params(
     выбросы, ранжированные кандидаты тональности. Только запись: на ноты
     и на аккомпанемент она не влияет (golden-тест ``test_arranger_golden``).
 
-    ``root`` / ``scale`` (ADR-0132 PR-2) — явная тональность от модели:
-    аккомпанемент ПЕРЕГАРМОНИЗИРУЕТСЯ в ней вместо определённой по теме
-    (тема играется как есть — абсолютным MIDI). Заданная только тоника
-    берёт лад определённой тональности, заданный только лад — её тонику.
-    Значения должны быть уже проверены (``arranger.check_root`` /
-    ``check_scale``). Оба ``None`` — прежнее поведение байт-в-байт.
-    Спорная с мелодией тональность не отклоняется — решает модель, а в
-    ``decisions`` пишутся ``key_detected`` и ``key_fit`` (доля
-    длительности темы в заданном ладу) для предупреждения партитуры.
+    ``root`` / ``scale`` (ADR-0132 PR-2, issue #3293) — явная тональность
+    от модели. При заданной тонике ТЕМА ТРАНСПОНИРУЕТСЯ целиком (та же
+    мелодия, сдвиг ближайший по регистру, :func:`_transpose_theme_to_key`),
+    а аккомпанемент строится в итоговой тональности. Если заданный лад не
+    ложится на тему (major↔minor), берётся относительная тональность
+    (F# major → «A minor» = тема в C major), иначе — лад темы с заданной
+    тоникой; замена пишется в ``decisions`` (``key_transpose``,
+    ``key_scale_kept``, ``key_relative``). Заданная только тоника берёт
+    лад определённой тональности, заданный только лад — её тонику (тема не
+    двигается). Значения должны быть уже проверены (``arranger.check_root``
+    / ``check_scale``). Оба ``None`` — прежнее поведение байт-в-байт.
+    В ``decisions`` пишутся ``key_detected`` и ``key_fit`` (доля
+    длительности темы в итоговом ладу) для предупреждения партитуры.
 
     ``options`` (ADR-0132 PR-3) — ручки :class:`core.harmonize.HarmonizeOptions`:
     ``key_detection``/``lead_octave``/``lead_outliers`` исполняются здесь,
@@ -413,6 +417,11 @@ def melody_to_compose_params(
         method=options.key_detection,
     )
     explicit = root is not None or scale is not None
+    key_moves: Dict[str, object] = {}
+    if root is not None:
+        melody, root, scale, key_moves = _transpose_theme_to_key(
+            melody, ranked[0], root, scale
+        )
     root = root or ranked[0].root
     scale = scale or ranked[0].scale
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
@@ -427,6 +436,7 @@ def melody_to_compose_params(
     )
     if explicit:
         decisions.update(_explicit_key_decisions(melody, ranked[0], root, scale))
+        decisions.update(key_moves)
     return {
         "bpm": melody.bpm,
         "root": root,
@@ -439,6 +449,110 @@ def melody_to_compose_params(
         ),
         "decisions": decisions,
     }
+
+
+def _shift_melody(melody: RtttlMelody, shift: int) -> RtttlMelody:
+    if not shift:
+        return melody
+    return RtttlMelody(
+        bpm=melody.bpm,
+        notes=tuple((None if m is None else m + shift, d) for m, d in melody.notes),
+    )
+
+
+def _nearest_shift(melody: RtttlMelody, from_pc: int, to_pc: int) -> int:
+    """Сдвиг в полутонах ``from_pc → to_pc``: ближайший (−6..+5), регистр в рамках."""
+    shift = (to_pc - from_pc + 6) % 12 - 6
+    pitches = [m for m, _ in melody.notes if m is not None]
+    if not pitches:
+        return shift
+    lo, hi = min(pitches), max(pitches)
+    if hi + shift > _LEAD_MAX_CEILING and lo + shift - 12 >= _LEAD_MIN_FLOOR:
+        shift -= 12
+    elif lo + shift < _LEAD_MIN_FLOOR and hi + shift + 12 <= _LEAD_MAX_CEILING:
+        shift += 12
+    return shift
+
+
+def _transpose_theme_to_key(
+    melody: RtttlMelody, detected: KeyCandidate, root: str, scale: Optional[str]
+) -> Tuple[RtttlMelody, str, Optional[str], Dict[str, object]]:
+    """Перенести ТЕМУ в заданную тонику (issue #3293); вернуть итоговые root/scale.
+
+    Раньше явная тональность перегармонизировала только аккомпанемент, а
+    тема играла абсолютным MIDI — лид F# major поверх Am/Em (key_fit 0.2).
+    Кандидаты по порядку: тоника темы → ``root`` (лад как просили); если
+    лад темы другой — относительная тональность (тема ложится в ноты
+    заданной «root scale»); иначе лад темы с заданной тоникой. Берётся
+    первый с ``key_fit ≥`` :data:`_KEY_FIT_OK`.
+    """
+    tonic = VALID_ROOTS.index(detected.root)
+    target = VALID_ROOTS.index(root)
+    want = scale or detected.scale
+    cands: List[Tuple[int, str, str]] = [(target, want, "")]
+    rel = {("major", "minor"): 3, ("minor", "major"): -3}.get((detected.scale, want))
+    if rel is not None:
+        cands.append(((target + rel) % 12, want, "relative"))
+    cands.append((target, detected.scale, "scale_kept"))
+    best: Optional[Tuple[float, RtttlMelody, int, str, str]] = None
+    for pc, sc, tag in cands:
+        moved = _shift_melody(melody, _nearest_shift(melody, tonic, pc))
+        fit = key_fit(moved.notes, root, sc)
+        if best is None or fit > best[0] + 1e-9:
+            best = (fit, moved, pc, sc, tag)
+        if fit >= _KEY_FIT_OK:
+            best = (fit, moved, pc, sc, tag)
+            break
+    assert best is not None
+    _fit, moved, _pc, sc, tag = best
+    moves: Dict[str, object] = {"key_transpose": _nearest_shift(melody, tonic, _pc)}
+    if tag == "relative":
+        moves["key_relative"] = True
+    if tag == "scale_kept" and scale is not None and sc != scale:
+        moves["key_scale_kept"] = sc
+    return moved, root, sc, moves
+
+
+#: Минимальный key_fit, при котором транспонированная тема считается «в ладу».
+_KEY_FIT_OK = 0.9
+
+
+def key_honesty_note(prep: Optional[Dict[str, object]]) -> str:
+    """Строка для ОТВЕТА ``compose_music``: что сделали с явной тональностью.
+
+    ``prep`` — результат :func:`melody_to_compose_params` (или ``None``).
+    Пусто, если явной тональности не было, либо она применена как просили и
+    тема в ней сидит. Иначе — честно: сдвиг, замена лада, остаточный спор.
+    """
+    decisions = (prep or {}).get("decisions") or {}
+    if not isinstance(decisions, dict) or decisions.get("key_source") != "explicit":
+        return ""
+    det = decisions.get("key_detected") or ("?", "?")
+    exp = decisions.get("key_explicit") or ("?", "?")
+    parts: List[str] = []
+    shift = decisions.get("key_transpose")
+    if shift:
+        parts.append(
+            f"тема (в оригинале {det[0]} {det[1]}) перенесена на {shift:+d} пт "
+            "под заданную тональность"
+        )
+    if decisions.get("key_relative"):
+        parts.append(
+            f"лад «{exp[1]}» ложится на тему только как относительный — "
+            f"тоника звучит иначе, чем {exp[0]}"
+        )
+    kept = decisions.get("key_scale_kept")
+    if kept:
+        parts.append(
+            f"заданный лад не ложится на тему и ЗАМЕНЁН на «{kept}» "
+            f"(тоника {exp[0]})"
+        )
+    fit = decisions.get("key_fit")
+    if isinstance(fit, (int, float)) and fit < 0.7:
+        parts.append(f"тема всё равно в ладу лишь на {fit:.0%} длительности")
+    if not parts:
+        return ""
+    return "Тональность: " + "; ".join(parts) + "."
 
 
 def _apply_lead_octave(melody: "RtttlMelody", mode: object) -> "RtttlMelody":
