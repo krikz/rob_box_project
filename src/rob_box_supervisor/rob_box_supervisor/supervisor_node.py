@@ -2075,7 +2075,7 @@ class AvatarSupervisor(Node):
         try:
             bridge = LLMToolCallAdapter(self)
             provider = ROSMCPToolProvider(bridge)
-            registry = ToolRegistry()
+            registry = ToolRegistry(for_operator=True)
             # Issue #2113 (quest #2112) — TARS 2 tool: ``show_metrics``.
             # Регистрируется ДО ``provider.update_tools``, чтобы у LLM
             # уже была актуальная спецификация. Dispatcher уже создан в

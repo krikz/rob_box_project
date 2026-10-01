@@ -747,6 +747,7 @@ def extract_tools() -> list[dict[str, Any]]:
 
             entry: dict[str, Any] = {
                 "llm_visible": True,
+                "operator_visible": False,
                 "read_only": False,
                 "destructive": True,
                 "idempotent": False,
@@ -769,6 +770,7 @@ def extract_tools() -> list[dict[str, Any]]:
                     "destructive",
                     "idempotent",
                     "llm_visible",
+                    "operator_visible",
                     "starts_music",
                     "satisfies_user_music",
                 ):

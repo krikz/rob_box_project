@@ -201,6 +201,51 @@ def test_every_llm_visible_tool_is_registered_on_the_server(catalog) -> None:
     )
 
 
+def test_every_operator_visible_tool_is_registered_on_the_server(
+    catalog,
+) -> None:
+    """Инструмент, который предъявлен оператору (ТАРС), обязан исполняться.
+
+    ``say`` был ``llm_visible=False`` и не зарегистрирован в mcp_server:
+    оператор его не видел, а вызов вернул бы «unknown tool» (issue #3305).
+    Теперь явный признак ``operator_visible`` + этот гард.
+    """
+    registered = _registered_tool_names()
+    operator_only = {entry.name for entry in catalog if entry.operator_visible}
+    assert operator_only, "ожидался operator_visible инструмент (say)"
+    unexecutable = operator_only - registered
+    assert not unexecutable, (
+        "operator_visible инструменты, которые mcp_server не регистрирует: "
+        f"{sorted(unexecutable)}"
+    )
+
+
+def test_operator_visible_tools_are_hidden_from_personality(catalog) -> None:
+    """operator_visible — «ТАРС-только»: личность их не видит."""
+    leaked = sorted(
+        entry.name
+        for entry in catalog
+        if entry.operator_visible and entry.llm_visible
+    )
+    assert not leaked, (
+        f"operator_visible имеет смысл только при llm_visible=False: {leaked}"
+    )
+
+
+def test_say_is_operator_visible_and_hidden_from_personality(catalog) -> None:
+    from rob_box_core.tool_catalog import (
+        llm_visible_tools,
+        operator_visible_tools,
+    )
+
+    say = next(entry for entry in catalog if entry.name == "say")
+    assert say.operator_visible is True
+    assert say.llm_visible is False
+    assert "say" not in {e.name for e in llm_visible_tools()}
+    assert "say" in {e.name for e in operator_visible_tools()}
+    assert "say" in _registered_tool_names()
+
+
 def test_registered_tools_are_not_hidden_from_the_llm(catalog) -> None:
     """A registered tool should be in the catalog and visible, or explicitly hidden.
 
@@ -216,7 +261,9 @@ def test_registered_tools_are_not_hidden_from_the_llm(catalog) -> None:
     hidden = sorted(
         name
         for name in registered
-        if not by_name[name].llm_visible and name not in _TARS_ONLY_HIDDEN_TOOLS
+        if not by_name[name].llm_visible
+        and not by_name[name].operator_visible
+        and name not in _TARS_ONLY_HIDDEN_TOOLS
     )
     assert not hidden, (
         "registered tools hidden from the LLM without an explicit reason: "

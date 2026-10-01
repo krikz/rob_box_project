@@ -22,7 +22,11 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_core.tool_catalog import TOOL_CATALOG, llm_visible_tools
+from rob_box_core.tool_catalog import (
+    TOOL_CATALOG,
+    llm_visible_tools,
+    operator_visible_tools,
+)
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.tools import ToolHandler, ToolSpec
 
@@ -231,3 +235,23 @@ def test_registry_adapts_to_fake_tool_provider() -> None:
     discovered = asyncio.run(provider.discover())
     names = {s.name for s in discovered}
     assert {entry.name for entry in llm_visible_tools()}.issubset(names)
+
+# ---------------------------------------------------------------------------
+# Реестр оператора (ТАРС): llm-видимые ∪ operator_visible (issue #3305)
+# ---------------------------------------------------------------------------
+
+
+def test_operator_registry_is_llm_visible_union_operator_visible() -> None:
+    registry = ToolRegistry(for_operator=True)
+    names = {spec.name for spec in registry.list_tools()}
+    expected = {entry.name for entry in operator_visible_tools()}
+    assert names == expected
+    assert {entry.name for entry in llm_visible_tools()} <= names
+
+
+def test_say_is_in_operator_registry_but_not_in_personality_registry() -> None:
+    operator = ToolRegistry(for_operator=True)
+    operator_names = {s.name for s in operator.list_tools()}
+    personality_names = {s.name for s in ToolRegistry().list_tools()}
+    assert "say" in operator_names
+    assert "say" not in personality_names

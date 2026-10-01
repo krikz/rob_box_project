@@ -355,6 +355,19 @@ class MCPTool(ABC):
         return True
 
     @property
+    def operator_visible(self) -> bool:
+        """Показывать ли инструмент оператору (ТАРС) сверх llm-видимых.
+
+        Реестр оператора = ``llm_visible`` ∪ ``operator_visible``. Нужен
+        инструментам «ТАРС-только» (``llm_visible=False``, но оператору
+        они нужны), например ``say``. Дефолт ``False``: без явного
+        решения инструмент оператору не предъявляется. Каждый
+        ``operator_visible`` инструмент обязан быть зарегистрирован в
+        ``mcp_server`` — иначе вызов вернёт «unknown tool».
+        """
+        return False
+
+    @property
     def blocking(self) -> bool:
         """
         Требуется ли ждать результата перед продолжением диалога
