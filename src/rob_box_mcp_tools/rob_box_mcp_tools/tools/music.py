@@ -79,6 +79,7 @@ from ..core.club_transition import (
     FADE_AMPLIFY_TO,
     FADE_BARS,
     TRACK_STARTED_FN,
+    club_repeat_requested,
     fade_seconds,
     is_fade_wrapped,
     wrap_with_fade,
@@ -4511,7 +4512,7 @@ class ComposeMusicTool(MCPTool):
         """
         bpm = kwargs.get("bpm")
         bpm = 124 if bpm is None else bpm
-        repeat = bool(kwargs.get("repeat", False))
+        repeat = club_repeat_requested(kwargs, self._manager)
         seed = kwargs.get("seed") or 0
         # Issue #3113: сид выбирает и каркас (шаблон, бочку, хэты, тембры);
         # issue #3224: со штрафом за то, что уже играло (история между запусками).

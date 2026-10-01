@@ -234,7 +234,7 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
 )
 from rob_box_voice.core.dj_material import MaterialIntake
 from rob_box_voice.core.tars_status_feed import start_status_feeds
-from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn
+from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn, dj_note_track_finished
 from rob_box_voice.core.dj_set_boundary import (
     DJSetBoundary,
     apply_dj_mode_message,
@@ -3355,6 +3355,7 @@ class DialogueNode(Node):
             return
         self._music_player_state = snapshot
         self._music_state_mem().observe_state(snapshot)
+        dj_note_track_finished(getattr(self, "_dj", None), snapshot)
         if snapshot.state == "idle" and self._track_mode_music_active:
             self._track_mode_music_active = False
             self.get_logger().info(

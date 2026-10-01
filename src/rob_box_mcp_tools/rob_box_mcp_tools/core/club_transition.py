@@ -229,8 +229,24 @@ def wrap_with_fade(
     return "\n".join(lines) + "\n"
 
 
+def club_repeat_requested(kwargs, manager) -> bool:
+    """TEMP(ADR-0148, #3136/ADR-0142): страховка до детерминированного DJ-движка.
+
+    Issue #3136 — ``repeat`` club-трека с учётом DJ-режима.
+
+    В DJ-сете трек не должен доигрывать до тишины: живой замер 01.10 —
+    club без ``repeat`` (ход человека) замолчал на 97 с, следующий переход
+    был на 203 с. Пока DJ-режим включён, форма зацикливается независимо от
+    аргумента модели; переход всё равно заменяет трек. Вне DJ-режима —
+    ``repeat`` по выбору модели, как раньше.
+    """
+    if bool(kwargs.get("repeat", False)):
+        return True
+    return getattr(manager, "dj_mode_enabled", False) is True
+
+
 __all__ = [
-    "FADE_AMPLIFY_TO",
+    "club_repeat_requested",    "FADE_AMPLIFY_TO",
     "FADE_BARS",
     "FADE_BARS_RANGE",
     "NEXT_TRACK_FN",
