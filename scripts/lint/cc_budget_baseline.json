@@ -18,9 +18,6 @@
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
-      "DialogueNode._continue_after_tool_calls": 22,
-      "DialogueNode._do_recursive_streaming": 22,
-      "DialogueNode._execute_tool_calls": 18,
       "DialogueNode._handle_result": 82
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
@@ -165,24 +162,6 @@
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._build_dynamic_system_context",
       "cc": 24,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._continue_after_tool_calls",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._do_recursive_streaming",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._execute_tool_calls",
-      "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

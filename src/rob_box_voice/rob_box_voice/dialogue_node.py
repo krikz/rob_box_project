@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 import functools
 import json
 import logging
@@ -168,7 +168,6 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     detect_universal_action_claim,
     extract_renardo_code_lines,
-    is_metalanguage_babble,
     is_music_stop_command,
     is_planning_narration,
     is_system_template_regurgitated,
@@ -177,7 +176,6 @@ from rob_box_voice.core.dialogue_guards import (
     spoken_matches_claim_category,  # Issue #2780 п.3
     UniversalActionClaimHit,  # Issue #3174
     user_wants_music,
-    user_wants_performance,
 )
 from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION as EMOTION_TO_ANIMATION,
@@ -196,24 +194,11 @@ from rob_box_voice.core.music_guard import (
     music_launch_failed,
     withhold_text_of_failed_music_launch,
 )
-# Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
-# The legacy ``_*_retry_used`` flags and ``_consume_synthetic_retry``
-# remain the source of truth during the incremental migration; the bridge
-# helpers added below (``_evaluate_turn_guards``,
-# ``_dispatch_turn_guards_retry``) are wired OFF by default so the
-# existing regression suite (``test_dialogue_guards.py``,
-# ``test_issue_992_*``, ``test_issue_1777_*``,
-# ``test_issue_1881_synthetic_retry_budget.py``) is unchanged until the
-# next voice-vr card flips the flag for a single catch site.
+# Issue #2266 / ADR-0021 R2 — чистая политика babble-ретрая и бюджета.
+# ADR-0148 §2.4: оркестратор ``TurnGuards`` удалён (был выключен с 09.09).
 from rob_box_voice.core.turn import (
-    Reply as TurnReply,
-    TurnContext as TurnContext,
-    TurnGuards as TurnGuards,
     TurnState as TurnState,
-    VerdictKind as TurnVerdictKind,
     begin_babble_retry as begin_babble_retry,
-    default_guards as turn_guards_default_order,
-    music_guard_adapter as turn_guards_music_adapter,
     reset_budget as turn_guards_reset_budget,
 )
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
@@ -388,54 +373,6 @@ def _has_singing_intent(text: "str | None") -> bool:
 # they are imported at the top of this module so
 # ``dialogue_node.BABBLE_BANNED_OPENERS`` / ``BABBLE_PERFORMANCE_KEYWORDS``
 # keep working for external importers and tests.
-
-
-class _FallbackLLM:
-    """LLM-обёртка с fallback-цепочкой (live 06.08).
-
-    Primary (MiniMax) → при ЛЮБОЙ ошибке (429 Token Plan limit, таймаут,
-    5xx) переключается на fallback (DeepSeek), чтобы робот не немел, пока
-    primary недоступен. ``LLMConfig.fallback`` декларативно существует,
-    но ``_build_llm`` его не использовал → 429 оставлял робота немым.
-
-    Оба метода (``complete`` / ``stream``) пробуют primary, при исключении
-    логируют и отдают fallback.
-
-    .. deprecated::
-        Заменён на :class:`rob_box_harness.health.HealthAwareFallbackLLM`
-        (issue #1082) — реактивная цепочка «пробуем → падаем →
-        переключаемся» тратила 15-19с на retry мёртвого MiniMax.
-        Класс оставлен для обратной совместимости, ``_build_llm`` его
-        больше не использует.
-    """
-
-    def __init__(self, primary: Any, fallback: Any, logger: Any) -> None:
-        self._primary = primary
-        self._fallback = fallback
-        self._log = logger
-        self._pname = getattr(primary, "name", type(primary).__name__)
-        self._fname = getattr(fallback, "name", type(fallback).__name__)
-
-    async def complete(self, messages, tools=None):
-        try:
-            return await self._primary.complete(messages, tools=tools)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(
-                f"🔄 LLM {self._pname} упал: {exc} — fallback {self._fname}"
-            )
-            return await self._fallback.complete(messages, tools=tools)
-
-    async def stream(self, messages, tools=None):
-        try:
-            async for chunk in self._primary.stream(messages, tools=tools):
-                yield chunk
-            return
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(
-                f"🔄 LLM {self._pname} stream упал: {exc} — fallback {self._fname}"
-            )
-        async for chunk in self._fallback.stream(messages, tools=tools):
-            yield chunk
 
 
 # 🔴 FIX (13.08, надзор): monkey-patch `_rclpy_logger_safe` УДАЛЁН.
@@ -684,7 +621,7 @@ class DialogueNode(Node):
         )
 
         self._loop = asyncio.new_event_loop()
-        self._asyncio_loop_executor = concurrent.futures.ThreadPoolExecutor(
+        self._asyncio_loop_executor = ThreadPoolExecutor(
             max_workers=ASYNCIO_LOOP_DRIVER_MAX_WORKERS,
             thread_name_prefix=ASYNCIO_LOOP_DRIVER_NAME_PREFIX,
         )
@@ -1223,16 +1160,8 @@ class DialogueNode(Node):
         # до «новой сессии», после неё не запускается и не включает DJ.
         self._session_epoch = SessionEpoch()
 
-        # Issue #2241 / ADR-0080 §2.4 — TurnGuards is the future home of the
-        # guard order + retry budget. During the incremental migration
-        # (voice-vr 19 → 23) the orchestrator is constructed but NOT used by
-        # the existing ``_check_*_and_retry`` path — ``_evaluate_turn_guards``
-        # below is the single bridge call that flips behaviour for one
-        # catch-site at a time. ``_use_turn_guards`` is OFF by default so
-        # the legacy behaviour (and its regression suite) is preserved
-        # bit-for-bit until a later card turns the flag on.
-        self._use_turn_guards: bool = False
-        self._turn_guards: Optional[TurnGuards] = None
+        # Issue #2266 — ``core/``-зеркало бюджета синтетических ретраев
+        # (читает ``begin_babble_retry``); сбрасывается на user-turn.
         self._turn_state: Optional[TurnState] = None
 
         # Issue #992 Bug D — metalanguage / babble detector.
@@ -3625,7 +3554,7 @@ class DialogueNode(Node):
         utterance_id: str | None = None,
         dj_transition: bool = False,
     ) -> None:
-        # Issue #3144 — синтетический ретрай гуарда (Bug D/E, TurnGuards,
+        # Issue #3144 — синтетический ретрай гуарда (Bug D/E,
         # tool-skipped, …), отправленный изнутри DJ-автоперехода, остаётся
         # DJ-автопереходом. Иначе ретрай становился «ходом юзера», промпт
         # DJ_AUTO — «запросом юзера», и Bug C выжигал бюджет до фразы
@@ -5620,42 +5549,6 @@ tentative_plan(question, kind, name)
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
 
-    def _is_metalanguage_babble(self, spoken_text: str) -> bool:
-        """Issue #992 Bug D — does this LLM output read as meta-talk?
-
-        Returns ``True`` when the LLM final response text starts with a
-        known metalanguage opener («зачита», «могу», «хочешь»,
-        «сейчас», «устроим», «погнали», «давай», «слушай», «окей»,
-        «так», «переключ», «ну что ж»). The check operates on the
-        first 80 chars after :func:`strip_markdown` so a lone "**"
-        that survived cleaning cannot mask the opener.
-
-        The detector is intentionally *conservative*: a normal answer
-        that happens to contain «слушай» somewhere in the middle is
-        safe — only the first 80 chars are inspected. When in doubt,
-        return ``False``; :meth:`_check_babble_and_retry` will fall
-        through to the standard TTS publish path.
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.is_metalanguage_babble`
-        (TD-1 decomposition).
-        """
-        return is_metalanguage_babble(spoken_text)
-
-    def _user_wants_performance(self, user_input: str) -> bool:
-        """Issue #992 Bug D — does the user request a *performance*?
-
-        Used to decide whether a metalanguage reply is a hard bug
-        (user asked for a rap, robot returned "Зачитаю рэп про X!") or
-        just a stylistic miss (user asked "что нового?", robot replied
-        "Слушай, у меня тут..." — still answer-shaped, just informal).
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.user_wants_performance`
-        (TD-1 decomposition).
-        """
-        return user_wants_performance(user_input)
-
     def _check_babble_and_retry(
         self,
         *,
@@ -5702,15 +5595,11 @@ tentative_plan(question, kind, name)
         The predicate chain (incl. the 02.09 «planning narration»
         carve-out and the 30.08 «promise-only» carve-out) is
         covered by :class:`BabbleGuard` — see ``core/turn.py`` and the
-        ``TestBabbleIntegrationViaTurnGuards`` + ``TestBeginBabbleRetry``
-        suites in ``test/unit/core/test_turn.py``.
+        ``TestBeginBabbleRetry`` suite in ``test/unit/core/test_turn.py``.
         """
-        # Lazy init for the ``core/``-side TurnState mirror. Until
-        # ``_use_turn_guards`` flips, the bridge in
-        # :meth:`_evaluate_turn_guards` is the only place that
-        # populates ``self._turn_state``; for the babble shell to be
-        # self-contained we initialize it here on first use. After
-        # the first call ``_turn_state`` follows the legitimate
+        # Lazy init for the ``core/``-side TurnState mirror: the babble
+        # shell is self-contained, so initialize it here on first use.
+        # After the first call ``_turn_state`` follows the legitimate
         # reset-on-user-turn path in :meth:`_run_turn``. ``getattr`` with
         # ``None`` default keeps ``__new__``-style test fixtures
         # (``test_issue_1882_planning_narration.py`` et al.) working.
@@ -6538,7 +6427,7 @@ tentative_plan(question, kind, name)
     def _retract_rejected_reply(self) -> None:
         """Issue #3145 — убрать из истории ответ, отвергнутый гуардом.
 
-        Раньше отзыв делали только music-гуарды; ретраи Bug D/E, TurnGuards,
+        Раньше отзыв делали только music-гуарды; ретраи Bug D/E,
         tool-skipped и прочие оставляли плохой ответ в окне, и после ответа
         ретрая в истории стояли два assistant подряд (живой лог 28.09 — 28
         мест; «Клубняк в клубе, погнали дальше!» ~10 ходов висел ответом на
@@ -6576,165 +6465,6 @@ tentative_plan(question, kind, name)
             future.add_done_callback(_log_if_failed)
 
     # ------------------------------------------------------------------
-    # Issue #2241 / ADR-0080 §2.4 — TurnGuards bridge (voice-vr 19).
-    #
-    # ``_evaluate_turn_guards`` is the single switch between the legacy
-    # ``_*_retry_used`` path and the new :class:`TurnGuards` orchestrator.
-    # Until a follow-up card flips ``_use_turn_guards`` for a specific
-    # catch site, this method is a no-op stub that lets the rest of
-    # :class:``DialogueNode`` keep using the existing ``_check_*_and_retry``
-    # methods byte-for-byte. Once the flag is on, the helper instantiates
-    # :class:`TurnGuards` lazily (one TurnGuards instance per Node lifetime),
-    # reads the budget from the still-authoritative
-    # ``_synthetic_retries_left`` field, and either:
-    #
-    # * returns :data:`TurnVerdictKind.ACCEPT` (caller publishes the reply),
-    # * returns :data:`TurnVerdictKind.RETRY` after translating the
-    #   orchestrator's verdict into a real ``_dispatch_turn`` call and
-    #   decrementing the legacy counter so the regression tests still see
-    #   consistent state, or
-    # * returns :data:`TurnVerdictKind.DISCARD` so the caller suppresses
-    #   the spoken text without a retry.
-    #
-    # Why a single switch: ADR-0021 records that «вынос чистых функций
-    # бюджет не снизил» — moving the orchestration out of dialogue_node
-    # did NOT reduce dialogue_node's CC. The migration therefore has to be
-    # proven with the regressions in place BEFORE we delete the legacy
-    # state, not at the same time. Once voice-vr 19 lands and the budget
-    # plumbing is verified, voice-vr 20+ flips the flag for one catch
-    # site at a time and deletes the now-redundant fields.
-    # ------------------------------------------------------------------
-
-    def _ensure_turn_guards(self) -> TurnGuards:
-        """Lazy-init the :class:`TurnGuards` orchestrator.
-
-        The music-guard slot is wrapped via :func:`music_guard_adapter`
-        so the existing :class:`MusicGuard` instance is reused — we do NOT
-        re-implement music detection here. Construction is cheap (one
-        list of dataclasses) and the result is memoised on ``self``.
-        """
-        if self._turn_guards is not None:
-            return self._turn_guards
-        music_adapter = turn_guards_music_adapter(
-            evaluate_fn=lambda turn, reply: self._music_guard.evaluate(
-                was_dj_auto=turn.is_dj_auto,
-                user_input=turn.user_input,
-                tools_called=reply.tools_called,
-                dj_enabled=self._dj.state.enabled,
-                build_music_retry_prompt=self._build_music_retry_prompt,
-                build_dj_retry_prompt=self._build_dj_retry_prompt,
-            ),
-        )
-        self._turn_guards = TurnGuards(
-            guards=turn_guards_default_order(
-                music_guard=music_adapter,
-                logger=self.get_logger(),
-            ),
-        )
-        return self._turn_guards
-
-    def _reset_turn_budget(self) -> None:
-        """Refresh :class:`TurnState` at the start of a user-initiated turn.
-
-        Mirrors the legacy ``_synthetic_retries_left = DEFAULT_SYNTHETIC_RETRIES``
-        reset at :meth:`_run_turn` (issue #1881). Until ``_use_turn_guards``
-        is True for some catch site this stays a no-op so the existing
-        resets (the source of truth) keep firing.
-        """
-        self._turn_state = turn_guards_reset_budget(
-            self.DEFAULT_SYNTHETIC_RETRIES
-        )
-
-    def _evaluate_turn_guards(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-        speak_text_real: int,
-    ) -> Optional[str]:
-        """Run :class:`TurnGuards` on the current reply.
-
-        Returns:
-            * ``None`` — orchestrator is OFF for this catch site or every
-              guard deferred (caller continues with its own checks).
-            * ``"retry:<guard_name>"`` — a guard fired; the caller MUST
-              return early and let the dispatched retry produce the
-              user-facing answer.
-            * ``"discard"`` — a guard hard-muted the reply (e.g. planning
-              narration, issue #1882); the caller MUST drop the spoken
-              text without retrying.
-
-        The method deliberately mirrors the contract of the legacy
-        ``_check_*_and_retry`` family so a one-line switch in the catch
-        site (e.g. :meth:`_handle_result`) is enough to migrate.
-        """
-        # ``getattr`` with default ``False`` so test fixtures that build
-        # ``DialogueNode`` via ``object.__new__`` (e.g.
-        # ``test_issue_1882_planning_narration.py``) keep working — they
-        # skip ``__init__`` and therefore don't get the attribute set.
-        # Production paths go through ``__init__`` where
-        # ``self._use_turn_guards = False`` is declared explicitly.
-        if not getattr(self, "_use_turn_guards", False):
-            return None
-        guards = self._ensure_turn_guards()
-        # ``__new__``-style test fixtures may bypass ``__init__`` and
-        # leave ``self._turn_state`` unset; mirror the same defensive
-        # ``getattr`` pattern used in ``_check_babble_and_retry``.
-        if getattr(self, "_turn_state", None) is None:
-            # Bridge started mid-test or before _run_turn fired its
-            # budget reset. Defensive default — keeps the verdict
-            # surface deterministic for the very first call.
-            self._reset_turn_budget()
-        state = self._turn_state
-        assert state is not None  # for type-checkers (init above)
-        turn = TurnContext(
-            user_input=user_input or "",
-            # Issue #3144 — происхождение хода, а не константа False.
-            is_dj_auto=TURN_IS_DJ_AUTO.get(),
-        )
-        reply = TurnReply(
-            spoken=spoken or "",
-            tools_called=tuple(tools_called or ()),
-            speak_text_real=int(speak_text_real or 0),
-        )
-        verdict = guards.evaluate(reply, turn, state)
-        if verdict.kind is TurnVerdictKind.RETRY:
-            # Translate to the legacy ``_check_*_and_retry`` side effects
-            # so the surrounding ``_run_turn.finally`` keeps seeing the
-            # same ``_retry_dispatched_in_turn`` / budget state it has
-            # always seen. ``_dispatch_turn`` re-enters ``_run_turn``
-            # recursively; we mark the flag here for the parent.
-            if self._synthetic_retries_left <= 0:
-                # Mirrors ``_consume_synthetic_retry``'s False return:
-                    # no budget left → no retry, even if a guard asked.
-                    # Already logged by TurnGuards itself.
-                    return None
-            self._synthetic_retries_left -= 1
-            self._retry_dispatched_in_turn = True
-            self._reopen_dialogue_for_retry()
-            self.get_logger().warning(
-                f"🛂 [turn-guards] {verdict.guard_name!r} → synthetic retry "
-                f"(budget_left={self._synthetic_retries_left}) "
-                f"head={spoken[:80]!r}"
-            )
-            self._dispatch_turn(
-                verdict.prompt or "",
-                is_action_claim_retry=(
-                    verdict.guard_name == "unbacked_action_claim"
-                ),
-                is_synthetic=True,
-                raw_user_command=user_input,
-            )
-            return f"retry:{verdict.guard_name}"
-        if verdict.kind is TurnVerdictKind.DISCARD:
-            self.get_logger().warning(
-                f"🤐 [turn-guards] {verdict.guard_name!r} → hard-mute "
-                f"reason={verdict.reason!r} head={spoken[:80]!r}"
-            )
-            return "discard"
-        return None  # ACCEPT — caller publishes as-is.
-
     # ── Issue #2631 / ADR-0021 R1 — _run_turn decomp helpers ────────────
     # Цель: удержать CC ``_run_turn`` ≤15 (текущий CC=59; см.
     # ``cc_budget_baseline.json`` и ADR-0021). Каждый helper извлекает
@@ -6775,9 +6505,7 @@ tentative_plan(question, kind, name)
         # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
         # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
         # fresh ``babble_retry_consumed=False`` on every user-initiated
-        # turn. Until ``_use_turn_guards`` flips for the babble
-        # catch-site, this is the only reset path that exercises
-        # ``TurnState``.
+        # turn.
         self._turn_state = turn_guards_reset_budget(
             self.DEFAULT_SYNTHETIC_RETRIES
         )
@@ -8115,12 +7843,6 @@ tentative_plan(question, kind, name)
         return True
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  Agent loop methods (unit-test contracts — test_agent_loop.py)
-    # ═══════════════════════════════════════════════════════════════════════
-
-    #: Maximum tool-call iterations before forced stop (agent loop guard).
-    MAX_ITERATIONS: int = 30
-
     #: Issue #1881 — лимит синтетических ретраев на ОДИН user-initiated turn.
     #:
     #: Раньше каждый guard (babble / action-claim / code-speech / tool /
@@ -8137,354 +7859,6 @@ tentative_plan(question, kind, name)
     #: любой) → «растерялся». Больше 2 — уже деградация UX, как раз то,
     #: что увидели 02.09 на 8 вызовах.
     DEFAULT_SYNTHETIC_RETRIES: int = 2
-
-    def _continue_after_tool_calls(
-        self,
-        messages: list,
-        tool_calls: list,
-        tool_results: list,
-    ) -> None:
-        """Continue the agent loop after tool results are available.
-
-        Implements the recursive LLM-call loop: executes the requested
-        tools, feeds their results back to the LLM, and repeats until a
-        final text response is produced or ``MAX_ITERATIONS`` is reached.
-        Honours ``interrupt_agent_loop`` for early exit and ``listen_for_response``
-        for waiting on the user.
-        """
-        # 1. Honour explicit interrupt.
-        if getattr(self, "interrupt_agent_loop", False):
-            self.interrupt_agent_loop = False
-            self.llm_processing = False
-            self.dialogue_in_progress = False
-            return
-
-        # 2. Listen-for-response short-circuit: leave the loop, wait for the user.
-        for tr in (tool_results or []):
-            if tr.get("tool_name") == "listen_for_response":
-                # The test contract (test_listen_for_response_stops_loop) asserts
-                # that ``_listen_response_waiting`` is False immediately after
-                # this method returns. We therefore do NOT set the flag here —
-                # it's only used as a transient guard inside the agent loop.
-                self.llm_processing = False
-                # dialogue_in_progress stays True — wait for user reply.
-                return
-
-        max_iter = int(getattr(self.__class__, "MAX_ITERATIONS", 30))
-        current_tool_calls = list(tool_calls or [])
-        current_tool_results = list(tool_results or [])
-        current_messages = list(messages or [])
-        iteration = 0
-        last_response_text = ""
-
-        while iteration < max_iter:
-            iteration += 1
-
-            # Execute any pending tool calls.
-            if current_tool_calls:
-                # Pass both ``tool_calls`` and ``messages`` positionally.
-                # Why positional: ``test_max_iterations_exceeded`` injects
-                # ``node._execute_tool_calls = lambda tc, msgs: [...]``
-                # (a 2-positional mock) and calls into this code path.
-                # The real :meth:`_execute_tool_calls` keeps
-                # ``messages=None`` as a kwarg so direct test calls
-                # like ``node._execute_tool_calls(tc, messages=[])``
-                # (TestExecuteToolCalls) still work.
-                new_results = self._execute_tool_calls(
-                    current_tool_calls, current_messages
-                )
-                current_tool_results.extend(new_results)
-
-            # Stream the next LLM turn with the tool results in context.
-            result_dict: dict = {
-                "full_response": "",
-                "chunk_count": 0,
-                "tool_calls": None,
-                "error": None,
-            }
-
-            timeout_s = float(getattr(self, "_llm_timeout_sec", 90.0))
-            # Retry-once for transient LLM errors (timeout / 5xx). Test
-            # contract (``test_timeout_then_success_on_retry``): the first
-            # attempt may fail with ``error='timeout'``; the second attempt
-            # mutates ``result_dict`` to a clean success payload. We
-            # therefore retry as long as the producer left an error AND
-            # we still have attempts left, and stop on the first success.
-            #
-            # The synthesised ``_streaming_wrapper`` closure binds
-            # ``result_dict`` / ``current_messages`` / ``current_tool_results``
-            # as **kwargs defaults** so the test mock
-            # (``test_agent_loop.py``'s FakeExecutor) can read
-            # ``fn.__defaults__[0]`` to inject deterministic chunks into
-            # ``result_dict`` without ever running the real
-            # ``_do_recursive_streaming`` body. This is the only way the
-            # structural contract of
-            # ``test_plain_text_saved_to_history`` works.
-            #
-            # We also stash the result dict on self so that the test
-            # fixtures which build a bare ``_Stub`` (no real
-            # ``_do_recursive_streaming``) can still find it without
-            # chasing the closure.
-            self._current_streaming_result = result_dict
-            self._current_streaming_messages = current_messages
-            self._current_streaming_tool_results = current_tool_results
-            def _streaming_wrapper(
-                _result=result_dict,
-                _messages=current_messages,
-                _tool_results=current_tool_results,
-            ):
-                self._do_recursive_streaming(_result, _messages, _tool_results)
-            max_attempts = 2
-            for _attempt in range(max_attempts):
-                # NOTE: we deliberately do NOT use ``with ThreadPoolExecutor(...)``
-                # here. The unit-test harness (``test_agent_loop.py``) replaces
-                # ``ThreadPoolExecutor`` with a ``FakeExecutor`` that implements
-                # ``submit``/``shutdown`` but NOT the context-manager protocol
-                # (``__enter__``/``__exit__``). Using ``with`` would raise
-                # ``AttributeError: __enter__`` and the retry/result hand-off
-                # would never run. We manage the executor lifecycle manually.
-                executor = ThreadPoolExecutor(max_workers=1)
-                try:
-                    future = executor.submit(_streaming_wrapper)
-                    future.result(timeout=timeout_s)
-                except concurrent.futures.TimeoutError:
-                    result_dict["error"] = "timeout"
-                except Exception as exc:  # noqa: BLE001
-                    result_dict["error"] = str(exc)
-                finally:
-                    executor.shutdown(wait=False)
-                # Stop retrying on first success.
-                if not result_dict.get("error"):
-                    break
-
-            if result_dict.get("error"):
-                self._speak_simple(
-                    "Извините, произошла ошибка при обращении к сервису. Попробуйте ещё раз."
-                )
-                break
-
-            # LLM produced more tool_calls → execute them and loop again.
-            next_calls = result_dict.get("tool_calls")
-            if next_calls:
-                current_tool_calls = next_calls
-                current_tool_results = []
-                continue
-
-            last_response_text = result_dict.get("full_response", "")
-            chunk_count = result_dict.get("chunk_count", 0)
-
-            # Persist the assistant turn to conversation history.
-            if last_response_text:
-                # ``ConversationHistory`` exposes ``add_assistant_message``
-                # (not a generic ``add_message``); use the typed helper
-                # so the test ``test_plain_text_saved_to_history`` can find
-                # the entry via ``get_messages()``.
-                add_assistant = getattr(
-                    self.conversation_history, "add_assistant_message", None
-                )
-                if add_assistant is not None:
-                    add_assistant(last_response_text)
-                else:
-                    # Fallback to a generic attribute (older harnesses).
-                    self.conversation_history.add_message("assistant", last_response_text)
-
-            # Streamed chunks already published via SSML; if zero chunks fell
-            # through we publish a simple one-shot response.
-            if chunk_count == 0 and last_response_text:
-                self._speak_simple(last_response_text)
-            break
-
-        if iteration >= max_iter:
-            self._speak_simple(
-                "Извините, возникла проблема с обработкой запроса. Попробуйте ещё раз."
-            )
-
-        # Cleanup flags in a finally-style block.
-        self.llm_processing = False
-        if not getattr(self, "_listen_response_waiting", False):
-            self.dialogue_in_progress = False
-        self._listen_response_waiting = False
-
-    def _do_recursive_streaming(
-        self,
-        _result: dict = None,
-        _messages: list = None,
-        _tool_results: list = None,
-    ) -> None:
-        """Streaming call to the LLM, mutating ``_result`` in-place.
-
-        Called inside a ``ThreadPoolExecutor`` by ``_continue_after_tool_calls``
-        so the test mock can inject deterministic chunks via
-        ``fn.__defaults__[0]`` to inspect the ``_result`` dict.
-
-        Default values are required (not just ``None``) because the
-        test contract (``test_agent_loop.py``'s FakeExecutor) reads
-        ``fn.__defaults__[0]`` to mutate the result dict in-place. If
-        the param has no default, ``__defaults__`` is an empty tuple
-        and the mock gets no chance to inject text into ``_result``.
-        We therefore declare ``_result=None`` as a default so the mock
-        route is reachable; production code always passes ``_result``
-        as a kwarg explicitly.
-        """
-        if _result is None:
-            _result = {}
-        client = getattr(self, "client", None)
-        if client is None:
-            _result["error"] = "no LLM client configured"
-            return
-
-        msgs = list(_messages or [])
-        for tr in (_tool_results or []):
-            msgs.append({
-                "role": "tool",
-                "tool_call_id": tr.get("tool_call_id", ""),
-                "content": json.dumps(tr, ensure_ascii=False),
-            })
-
-        try:
-            stream = client.chat.completions.create(
-                model=getattr(self, "model", "default"),
-                messages=msgs,
-                temperature=getattr(self, "temperature", 0.7),
-                max_tokens=getattr(self, "max_tokens", 500),
-                stream=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _result["error"] = str(exc)
-            return
-
-        full_text = ""
-        chunk_count = 0
-        tool_calls_acc: dict = {}
-
-        try:
-            for chunk in stream:
-                choices = getattr(chunk, "choices", None) or []
-                if not choices:
-                    continue
-                delta = choices[0].delta
-                if delta is None:
-                    continue
-                content = getattr(delta, "content", None)
-                if content:
-                    full_text += content
-                    chunk_count += 1
-                tcs = getattr(delta, "tool_calls", None)
-                if tcs:
-                    for tc in tcs:
-                        idx = getattr(tc, "index", 0)
-                        slot = tool_calls_acc.setdefault(idx, {
-                            "id": getattr(tc, "id", "") or "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        })
-                        if getattr(tc, "id", None):
-                            slot["id"] = tc.id
-                        fn = getattr(tc, "function", None)
-                        if fn is not None:
-                            name = getattr(fn, "name", "")
-                            args = getattr(fn, "arguments", "")
-                            if name:
-                                slot["function"]["name"] += name
-                            if args:
-                                slot["function"]["arguments"] += args
-                if choices[0].finish_reason == "tool_calls":
-                    _result["tool_calls"] = list(tool_calls_acc.values())
-        except Exception as exc:  # noqa: BLE001
-            _result["error"] = str(exc)
-            return
-
-        _result["full_response"] = full_text
-        _result["chunk_count"] = chunk_count
-        if not _result.get("tool_calls"):
-            _result["tool_calls"] = None
-
-    def _execute_tool_calls(self, tool_calls: list, messages: list = None) -> list:
-        """Execute a batch of MCP tool calls.
-
-        Returns a list of result dicts with keys ``tool_call_id``,
-        ``tool_name``, ``success``, ``message`` (and ``error`` on failure).
-
-        Test contract: ``messages`` is **optional** — tests pass it as
-        a kwarg (``_execute_tool_calls(tool_calls, messages=[])``) when
-        exercising the full loop, and a positional ``messages`` arg
-        (``lambda tc, msgs: [...]``) when substituting a mock. The
-        parameter is currently captured for forward-compatibility (no
-        current logic depends on it).
-
-        Hard caps: only the first ``MAX_TOOL_CALLS`` calls are dispatched
-        and the loop aborts after ``MAX_CONSECUTIVE_ERRORS`` failures.
-        """
-        # Silence the "unused argument" lint while keeping the test-
-        # compatible signature.
-        del messages
-        MAX_TOOL_CALLS = 5
-        MAX_CONSECUTIVE_ERRORS = 3
-
-        results: list = []
-        consecutive_errors = 0
-        truncated = list(tool_calls or [])[:MAX_TOOL_CALLS]
-
-        for tc in truncated:
-            tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
-            func_info = tc.get("function", {}) if isinstance(tc, dict) else {}
-            func_name = func_info.get("name", "unknown") if isinstance(func_info, dict) else "unknown"
-            func_args_str = func_info.get("arguments", "{}") if isinstance(func_info, dict) else "{}"
-
-            try:
-                args = json.loads(func_args_str)
-            except (json.JSONDecodeError, TypeError):
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": False,
-                    "error": "Ошибка формата аргументов",
-                })
-                consecutive_errors += 1
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    break
-                continue
-
-            adapter = getattr(self, "mcp_adapter", None)
-            if adapter is None or not hasattr(adapter, "execute_tool_call_sync"):
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": False,
-                    "error": "no MCP adapter available",
-                })
-                consecutive_errors += 1
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    break
-                continue
-
-            try:
-                result = adapter.execute_tool_call_sync(func_name, args)
-                success = bool(result.get("success", False)) if isinstance(result, dict) else False
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": success,
-                    "message": result.get("message", "") if isinstance(result, dict) else "",
-                    "data": result.get("data") if isinstance(result, dict) else None,
-                })
-                if not success:
-                    consecutive_errors += 1
-                else:
-                    consecutive_errors = 0
-            except Exception as exc:  # noqa: BLE001
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": False,
-                    "error": str(exc),
-                })
-                consecutive_errors += 1
-
-            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                break
-
-        return results
 
     def _publish_dj_fallback(
         self,
@@ -8868,11 +8242,7 @@ tentative_plan(question, kind, name)
         # over the pure ``core.turn.begin_babble_retry``, so the
         # orchestration (predicates + budget + one-shot flag) already
         # lives in ``core/`` while this call site keeps the exact
-        # signature and ``bool`` contract it had before. Adding a
-        # second ``_evaluate_turn_guards`` branch here would inflate
-        # ``_handle_result`` (CC 65 → 69) — the opposite of what
-        # ADR-0021 asks for. The bridge stays available for voice-vr 23
-        # when ``_use_turn_guards`` flips for ALL catch-sites at once.
+        # signature and ``bool`` contract it had before.
         if spoken and self._check_babble_and_retry(
             spoken=spoken,
             # Issue #1204: на синтетических ретрай-турах юзер-интент

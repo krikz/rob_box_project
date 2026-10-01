@@ -300,7 +300,7 @@ _EXECUTED_ACTIONS_QUOTE = 60
 
 #: Заголовок блока. Слова «выполнено в прошл…» и «вызваны инструменты»
 #: оставлены намеренно: их уже знает страховочный детектор пересказа
-#: служебного текста (``is_service_context_paraphrased`` в rob_box_voice,
+#: служебного текста (бывший ``is_service_context_paraphrased``, удалён,
 #: #2766/#2817), новых регексов для него не нужно (мораторий #3132).
 _EXECUTED_ACTIONS_HEADER = (
     "[выполнено в прошлых ходах] вызваны инструменты "
@@ -1292,7 +1292,7 @@ class AgentCore:
         fake-confirmation turn before it becomes a few-shot example for
         the next similar request. Removed directly from the in-memory window.
 
-        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (Bug D/E, TurnGuards,
+        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (Bug D/E,
         music, tool-skipped…), не только из music-путей: иначе после ответа
         ретрая в окне два assistant подряд (живой лог 28.09 — 28 мест), и
         модель перечитывает собственную неправду как пример. Снимается

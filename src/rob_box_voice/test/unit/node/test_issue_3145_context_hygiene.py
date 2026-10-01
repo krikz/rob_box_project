@@ -28,8 +28,6 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_llm.provider import LLMResponse
-from rob_box_voice.core.turn import Verdict as TurnVerdict
-from rob_box_voice.core.turn import VerdictKind as TurnVerdictKind
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -175,33 +173,6 @@ class TestRejectedReplyLeavesHistory:
         _assert_clean_window(
             core, rejected="Погнали, сейчас зачитаю!",
             accepted="Йо, вот мой куплет.", request="зачитай рэп про кота",
-        )
-
-    def test_turn_guards_retry(self, loop):
-        node, core, llm, done = _setup(
-            loop, ["Сохранил.", "Сохраняю заметку."]
-        )
-        node._use_turn_guards = True
-        node._turn_guards = SimpleNamespace(
-            evaluate=lambda reply, turn, state: TurnVerdict(
-                kind=TurnVerdictKind.RETRY,
-                guard_name="unbacked_action_claim",
-                prompt="Повтори действие через тул.",
-            )
-        )
-        node._turn_state = object()
-        _user_turn(loop, core, "запомни что я люблю джаз")
-        verdict = node._evaluate_turn_guards(
-            spoken="Сохранил.",
-            user_input="запомни что я люблю джаз",
-            tools_called=(),
-            speak_text_real=0,
-        )
-        assert verdict == "retry:unbacked_action_claim"
-        assert done.wait(5)
-        _assert_clean_window(
-            core, rejected="Сохранил.",
-            accepted="Сохраняю заметку.", request="запомни что я люблю джаз",
         )
 
     def test_retry_on_unpersisted_turn_keeps_older_reply(self, loop):
