@@ -5,8 +5,9 @@
 // панель ТАРС 1 рисует результат. Что из чего выводится (и что НЕ видно):
 //
 //   ГОВОРИТ  ← tars_state=speaking | tars1_text streaming | чанк
-//              operator_tts_audio пришёл недавно (сервер operator_tts_done
-//              в норме не шлёт, поэтому у аудио — TTL, а не «до done»).
+//              operator_tts_audio пришёл недавно (после #3272 сервер шлёт
+//              tars_state idle и operator_tts_done по концу реплики; TTL
+//              у аудио остаётся страховкой на случай потери этих событий).
 //   ДУМАЕТ   ← tars_state=accepted|thinking | voice_state=thinking.
 //   СЛУШАЕТ  ← грип/PTT зажат у оператора | voice_state=listening.
 //   ЖДЁТ     ← ничего из вышеперечисленного свежее TTL.

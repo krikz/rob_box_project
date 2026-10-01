@@ -66,6 +66,7 @@ import type {
 import { createToast, type Toast } from "./ui/toast";
 import { formatClock } from "./state/tars1_layout";
 import { parseTarsStatus, type TarsStatusFields } from "./state/tars_status";
+import { parseConsoleEvent } from "./state/tars_console_lines";
 import { floorLabel, supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
@@ -1212,8 +1213,7 @@ export function bootstrap(opts: BootstrapOptions): {
         // приходу. Метод play() уже мог быть вызван; тут только синхро-
         // низируем tars_state→idle (после последнего чанка опера услышала
         // ответ полностью).
-        // NB: реально сервер НЕ шлёт done в норме — этот case зарезерви-
-        // рован для forward-compat и для e2e-тестов.
+        // NB: после #3272 сервер шлёт done по концу реплики (tars_stage_relay).
         operatorAudioSink.stop();
         tarsActivity.noteTarsStage("idle", Date.now());
         syncTarsActivity();
@@ -1734,6 +1734,13 @@ export function bootstrap(opts: BootstrapOptions): {
           if (tarsStatusEvent !== null) {
             tarsStatus = tarsStatusEvent;
             syncTarsInfo();
+            return;
+          }
+          // #3253 Ш4 — фраза оператора / событие хода в консоль ТАРС 1
+          // (quest_node: tars_console, core/tars_console.py).
+          const consoleLine = parseConsoleEvent(event);
+          if (consoleLine !== null) {
+            bridge.tars1Panel.appendLine(consoleLine.kind, consoleLine.text);
             return;
           }
           if ((event as { type?: string }).type === "tars1_text") {
