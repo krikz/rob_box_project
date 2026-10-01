@@ -190,6 +190,16 @@ export type JsonEvent =
   // Ряд типов, добавленных позже (#2184 и т.п.), пока не заехали в каталог —
   // докидываем их руками до следующего regen (tools/gen_bridge_protocol_ts.py).
   | JsonEventGenerated
+  // issue #3253 Ш3 — служебная информация ТАРС 1 (в каталог пока не заехала,
+  // как и tars_panel_data). Ключ есть только если у сервера есть источник;
+  // llm/wake не приходят вовсе.
+  | {
+      type: "tars_status";
+      tts?: string;
+      topic?: string;
+      nearby?: string;
+      ts_ms: number;
+    }
   // issue #2184 — TARS 2 metrics panel: РЯДЫ ТОЧЕК из Prometheus (series)
   // или строки из Loki (lines). Именно это клиент рисует на экране TARS 2;
   // tars_panel_url выше остался ссылкой «доглядеть с десктопа».
