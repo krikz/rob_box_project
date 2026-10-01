@@ -131,6 +131,7 @@ def generate_launch_description():
         namespace=namespace,
         parameters=[
             dialogue_node_yaml,
+            PathJoinSubstitution([config_dir, 'mcp_server.yaml']),  # ADR-0149 PR-5: music_engine из /**
             {'tool_provider': LaunchConfiguration('tool_provider')},
         ],
         output='screen',

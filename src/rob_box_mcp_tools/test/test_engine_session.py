@@ -1,0 +1,284 @@
+"""DJ-сет v2 на симуляторе клока Renardo (ADR-0149 PR-5, эпик #3312).
+
+Настоящие ``SetSession`` + ``PlayerOwner`` + ``RenardoAdapter`` + ``compose``/``render``; вместо
+Renardo — клок, который исполняет запланированное по долям (как ``TempoClock``: ``set_time``
+чистит очередь), и плееры, встающие на ``next_bar``. Без ROS и без звука.
+"""
+
+import heapq
+import itertools
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from rob_box_mcp_tools.engine.player_owner import PlayerOwner
+from rob_box_mcp_tools.engine.renardo_adapter import HANDOFF_STOP_BEATS, RenardoAdapter
+from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, SetSession, compose_source
+from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_melodies
+from rob_box_music import knowledge as kn
+from rob_box_music.theme import ThemeProfile
+from rob_box_voice.core.music_player_state import parse_music_state
+
+pytestmark = pytest.mark.unit
+
+BPM = 132
+PROFILE = ThemeProfile("тест", "club", BPM, 9, "minor", (), None)
+
+
+class SimClock:
+    """Очередь по долям; ``run_until`` исполняет запланированное по порядку."""
+
+    meter = (4, 4)
+
+    def __init__(self, beat=37.3):
+        self.beat, self.bpm, self.latency, self.now_flag = beat, 120.0, 0.25, False
+        self.calls, self._queue, self._seq = [], [], itertools.count()
+
+    def now(self):
+        return self.beat
+
+    def next_bar(self):
+        return self.beat + (4 - self.beat % 4)
+
+    def update_tempo_now(self, bpm):
+        self.calls.append(("tempo", bpm))
+        self.bpm = float(bpm)
+
+    def set_time(self, beat):
+        self.calls.append(("set_time", beat))
+        self._queue.clear()  # как TempoClock.set_time
+        self.beat = beat
+
+    def get_bpm(self):
+        return self.bpm
+
+    def schedule(self, fn, beat):
+        heapq.heappush(self._queue, (float(beat), next(self._seq), fn))
+
+    def run_until(self, target):
+        while self._queue and self._queue[0][0] <= target:
+            beat, _, fn = heapq.heappop(self._queue)
+            self.beat = beat
+            fn()
+        self.beat = target
+
+
+class Player:
+    def __init__(self, clock, name):
+        self.clock, self.name, self.event_index, self.playing, self.stops = clock, name, None, False, 0
+        self.stopped_at = []
+
+    def __rshift__(self, _other):
+        self.event_index, self.playing = self.clock.next_bar(), True
+        return self
+
+    def stop(self):
+        self.playing, self.stops = False, self.stops + 1
+        self.stopped_at.append(self.clock.beat)
+
+
+class Log:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg):
+        self.lines.append(("info", msg))
+
+    def warning(self, msg):
+        self.lines.append(("warning", msg))
+
+    def warnings(self):
+        return [m for level, m in self.lines if level == "warning"]
+
+
+def _rig(source=None, submit=None, *, exec_fails=False):
+    clock = SimClock()
+    slots = [s for deck in kn.DECK_SLOTS.values() for s in deck]
+    ns = {"Clock": clock, "Samples": SimpleNamespace(getBufferFromSymbol=lambda s, i: SimpleNamespace(bufnum=7)),
+          "play": lambda *a, **k: None, "var": lambda *a, **k: None, "Scale": SimpleNamespace(chromatic=None),
+          "bass": lambda *a, **k: None, "sinepad": lambda *a, **k: None, "pluck": lambda *a, **k: None}
+    ns.update({s: Player(clock, s) for s in slots})
+    sent = []
+    adapter = RenardoAdapter(lambda: ns, lambda: frozenset({"bass", "sinepad", "pluck"}), lambda *a: sent.append(a))
+    states, events, log = [], [], Log()
+    owner = PlayerOwner(adapter, states.append, lambda e: events.append(json.loads(e)), logger=log,
+                        clock=lambda: 1000.0)
+    source = source or compose_source(PROFILE, set_seed=7, set_id="s7")
+    session = SetSession(owner, source, set_id="s7", bpm=BPM, dj={"theme": "тест"},
+                         submit=submit or (lambda fn: fn()), logger=log)
+    rig = SimpleNamespace(clock=clock, ns=ns, sent=sent, owner=owner, states=states, events=events, log=log,
+                          session=session, adapter=adapter)
+    return rig
+
+
+def _started(rig):
+    return [e for e in rig.events if e["event"] == "started"]
+
+
+def _form(rig):
+    return _started(rig)[0]["form_beats"]
+
+
+def test_three_tracks_play_back_to_back_on_form_boundaries_with_phase_zero():
+    rig = _rig()
+    assert rig.session.start()["ok"] is True
+    rig.clock.run_until(rig.clock.beat + 2)  # трек 1 встал
+    first = _started(rig)[0]
+    form, s0 = first["form_beats"], first["start_beat"]
+    rig.clock.run_until(s0 + 3 * form - 3)  # до исполнения трека 4 (за 2 доли до стыка)
+    started = _started(rig)
+    assert [e["start_beat"] for e in started] == [s0, s0 + form, s0 + 2 * form]
+    assert [e["deck"] for e in started] == ["A", "B", "A"]  # стык на другой деке
+    assert all(e["phase_in_form"] == 0.0 and e["players_aligned"] and e["late_beats"] == 0.0 for e in started)
+    assert [e["track_id"].split(":")[1] for e in started] == ["01", "02", "03"]
+    kinds = [e["event"] for e in rig.events]
+    # N+1 в очереди сразу после started(N), nearly_finished — до стыка (A3: переход без LLM, по событию)
+    assert kinds[:4] == ["started", "queued", "nearly_finished", "started"]
+    nearly = [e for e in rig.events if e["event"] == "nearly_finished"]
+    assert nearly[0]["form_end_beat"] == s0 + form and nearly[0]["lead_beats"] == NEARLY_LEAD_BEATS
+    queued = [e for e in rig.events if e["event"] == "queued"]
+    assert queued[0]["expected_previous"] == started[0]["track_id"]
+    # уходящая дека снята за 1/32 до стыка; играет только дека трека 3
+    assert s0 + form - HANDOFF_STOP_BEATS in rig.ns["d1"].stopped_at
+    assert rig.ns["a1"].stopped_at[-1] == s0 + 2 * form - HANDOFF_STOP_BEATS
+    assert rig.ns["d1"].playing and not rig.ns["a1"].playing
+    snap = json.loads(rig.states[-1])
+    assert snap["state"] == "playing" and snap["dj"]["track_no"] == 3 and snap["dj"]["set_id"] == "s7"
+    assert not rig.log.warnings()
+
+
+def test_one_tempo_per_set_is_set_once_and_never_by_set_time_on_transitions():
+    rig = _rig()
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + 3 * form - 1)
+    assert [c for c in rig.clock.calls if c[0] == "tempo"] == [("tempo", BPM)]
+    assert len([c for c in rig.clock.calls if c[0] == "set_time"]) == 1  # только старт сета
+    assert {e["bpm"] for e in _started(rig)} == {float(BPM)}
+
+
+def test_next_not_ready_extends_the_playing_track_instead_of_silence():
+    deferred = []
+    rig = _rig(submit=deferred.append)
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + form + 8)  # граница формы прошла, N+1 так и не скомпонован
+    assert len(_started(rig)) == 1 and rig.ns["d1"].playing  # трек 1 играет второй проход
+    assert any("продлеваю" in w for w in rig.log.warnings())
+    assert len(deferred) == 1  # повторная компоновка не плодится, пока первая в работе
+    deferred.pop()()  # N+1 готов к середине второго прохода
+    rig.clock.run_until(s0 + 2 * form + 1)
+    started = _started(rig)
+    assert [e["start_beat"] for e in started] == [s0, s0 + 2 * form] and started[1]["phase_in_form"] == 0.0
+    nearly = [e["form_end_beat"] for e in rig.events if e["event"] == "nearly_finished"]
+    assert nearly == [s0 + form, s0 + 2 * form]
+
+
+def _source_with(bad_no, make_bad):
+    good = compose_source(PROFILE, set_seed=7, set_id="s7")
+
+    def source(no, deck):
+        return make_bad(no, deck) if no == bad_no else good(no, deck)
+
+    return source
+
+
+def _other_tempo(no, deck):
+    from rob_box_music.arrange.compose import compose
+
+    return compose(ThemeProfile("тест", "club", BPM + 6, 9, "minor", (), None), no, set_seed=7, set_id="s7", deck=deck)
+
+
+def _broken(no, deck):
+    raise ValueError("пэд не лёг")
+
+
+@pytest.mark.parametrize("make_bad,reason", [(_other_tempo, "tempo_mismatch"), (_broken, "compose_error")])
+def test_rejected_next_track_is_loud_and_the_set_does_not_go_silent(make_bad, reason):
+    rig = _rig(source=_source_with(2, make_bad))
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + 2 * form - 1)
+    rejected = [e for e in rig.events if e["event"] == "rejected"]
+    assert len(rejected) >= 1 and {e["reason"] for e in rejected} == {reason}
+    assert len(_started(rig)) == 1 and rig.ns["d1"].playing  # трек 1 продлён, тишины нет
+    assert [c for c in rig.clock.calls if c[0] == "tempo"] == [("tempo", BPM)]  # чужой темп не применён
+
+
+def test_stop_closes_the_set_and_nothing_scheduled_revives_it():
+    rig = _rig()
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + form - NEARLY_LEAD_BEATS + 1)  # N+1 в очереди, стык запланирован
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        result = rig.session.stop()
+    assert result["ok"] is True and result["set_id"] == "s7"
+    rig.clock.run_until(s0 + 4 * form)
+    assert len(_started(rig)) == 1
+    assert not any(p.playing for name, p in rig.ns.items() if isinstance(p, Player))
+    assert [a[0] for a in rig.sent] == ["/n_set", "/g_freeAll"]
+    snap = parse_music_state(rig.states[-1])
+    assert snap.state == "idle" and json.loads(rig.states[-1])["dj"] == {"enabled": False}
+    assert rig.session.active is False and rig.owner.on_started is None
+
+
+def test_exec_failure_at_handoff_is_rejected_and_the_old_track_keeps_playing():
+    rig = _rig()
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.ns.pop("sinepad")  # синт исчез из контекста между проверкой и стыком
+    with patch.object(rig.adapter, "check", return_value=None):
+        rig.clock.run_until(s0 + form + 4)
+    rejected = [e for e in rig.events if e["event"] == "rejected"]
+    assert [e["reason"] for e in rejected] == ["exec_error"]
+    assert len(_started(rig)) == 1 and rig.ns["d1"].playing
+
+
+def test_queued_artifact_for_another_track_is_dropped_as_stale():
+    rig = _rig(submit=lambda fn: None)
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    program = SimpleNamespace(track_id="s7:02:B:x", deck="B", bpm=BPM, form_beats=192.0, slots={}, synths=frozenset(),
+                              samples=frozenset(), code="")
+    rig.owner.enqueue(program, "s7:01:A:чужой")
+    assert rig.owner.advance(9999.0) is False
+    assert any("artifact_stale" in w for w in rig.log.warnings())
+    assert rig.owner.advance(9999.0) is False  # очередь пуста
+
+
+def test_dj_set_tool_starts_and_stops_a_set():
+    rig = _rig()
+    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, seed=lambda: 123456)
+    started = tool.execute(action="start", theme="космос")
+    assert started.success and started.data["set_id"] == "set23456" and started.data["ok"] is True
+    assert started.data["theme_source"] in ("theme", "pool")
+    rig.clock.run_until(rig.clock.beat + 2)
+    assert len(_started(rig)) == 1
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        stopped = tool.execute(action="stop")
+        again = tool.execute(action="stop")
+    assert stopped.success and stopped.data["was_playing"] is True
+    assert again.success and again.data["was_playing"] is False
+    assert tool.execute(action="hotter").success is False
+    assert tool.slice == "personality" and tool.llm_visible is False
+
+
+def test_library_melodies_take_only_exact_names():
+    class Lib:
+        def get(self, name):
+            records = {"tetris": {"name": "tetris", "rtttl": "t:d=4:c"},
+                       "robot": {"name": "robocop", "rtttl": "r:d=4:c"}}  # «лучший по словам» — чужая мелодия
+            return records.get(name)
+
+    opened = []
+    lookup = library_melodies(lambda: opened.append(1) or Lib())
+    assert lookup(["tetris", "robot", "nope"]) == {"tetris": "t:d=4:c"}
+    lookup(["tetris"])
+    assert opened == [1]  # библиотека открыта один раз

@@ -72,6 +72,8 @@ slices:
     - set_pitch
     - set_speed
     - set_dj_mode
+    # ADR-0149 PR-5: DJ-сет движка v2 (регистрируется только при music_engine=v2)
+    - dj_set
     # поиск / память
     - search_web
     - faq_search

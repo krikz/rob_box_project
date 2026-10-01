@@ -104,7 +104,7 @@ def generate_launch_description():
         executable='dialogue_node',
         name='dialogue_node',
         namespace=namespace,
-        parameters=[dialogue_node_yaml],
+        parameters=[dialogue_node_yaml, mcp_server_yaml],  # ADR-0149 PR-5: music_engine из /**
         output='screen',
         respawn=True,
         respawn_delay=5.0,
