@@ -38,7 +38,14 @@ ALL_7_GEN_TOOLS = (
     "gen_delete_from_library",
     "gen_get_track_info",
 )
-EXERCISED_GEN_TOOLS = tuple(t for t in ALL_7_GEN_TOOLS if t != "gen_play_from_library")
+# Issue #3248: ``generate_music`` снят с регистрации 22.08.2026 (db84ff590,
+# MiniMax Music API 410 Gone) — LLM его не видит, в AND-агрегате GATE-1 он
+# гарантирует вечный FAIL так же, как неиспользуемый gen_play_from_library.
+UNREGISTERED_TOOLS = ("generate_music",)
+EXERCISED_GEN_TOOLS = tuple(
+    t for t in ALL_7_GEN_TOOLS
+    if t != "gen_play_from_library" and t not in UNREGISTERED_TOOLS
+)
 
 
 def _acceptance_path() -> Path:
@@ -99,6 +106,12 @@ class TestGate1TopLevelSchema:
             "gen_play_from_library must NOT be in top-level expected_tool_calls: "
             "the scenario music_library_suite_v1.json does not exercise it "
             "(GATE-1 aggregate is AND-semantics → false FAIL otherwise)."
+        )
+        dead = expected & set(UNREGISTERED_TOOLS)
+        assert not dead, (
+            f"Top-level expected_tool_calls lists unregistered tools {sorted(dead)}: "
+            "LLM never sees them, GATE-1 aggregate would FAIL on every run "
+            "(issue #3248, run 36777967495)."
         )
 
     def test_gen_steps_forbid_execute_music_code_per_step(self) -> None:

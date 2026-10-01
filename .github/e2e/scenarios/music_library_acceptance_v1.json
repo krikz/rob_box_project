@@ -29,10 +29,15 @@
     "follow-up suite once the scenario gains a «сыграй последний трек» step.",
     "",
     "Voice file format: 48kHz opus OGG, ≤4s, VAD max=12s, volume≥150 (per",
-    "VOICE_COMMANDS_RESEARCH.md). Pre-recorded with edge-tts ru-RU-DmitryNeural"
+    "VOICE_COMMANDS_RESEARCH.md). Pre-recorded with edge-tts ru-RU-DmitryNeural",
+    "",
+    "Issue #3248: generate_music УБРАН из top-level expected_tool_calls — тул снят",
+    "с регистрации 22.08.2026 (db84ff590, MiniMax Music API 410 Gone), LLM его не",
+    "видит, и GATE-1 aggregate (AND) краснел на каждом прогоне (run 36777967495).",
+    "Per-step блоки ниже (ml01/ml02 → generate_music) — историческая документация",
+    "контракта PR #1398, харнесс их не читает (GATE-1 берёт только top-level)."
   ],
   "expected_tool_calls": [
-    "generate_music",
     "gen_list_library",
     "gen_search_library",
     "gen_save_to_library",
