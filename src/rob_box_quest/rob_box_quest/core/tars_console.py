@@ -5,7 +5,9 @@
 
 * ``/avatar/stt/result``     -> ``kind="operator"``: распознанная фраза оператора;
 * ``/avatar/command_result`` -> ``kind="event"``: имена вызванных тулов и
-  признак неудачного хода.
+  признак неудачного хода;
+* ``/avatar/command_result`` -> ``kind="reply"``: полный текст ответа ТАРС
+  (``summary``), чтобы вслух можно было говорить коротко (#3296).
 
 Правила ADR-0018 и безопасности: в событие идёт только имя тула (параметры
 могут нести подписи/секреты), текст ошибки не пересылается вообще — только
@@ -21,6 +23,10 @@ EVENT_TYPE = "tars_console"
 # Имя тула в консоли: обрезаем, чтобы чужой мусор не растягивал строку.
 MAX_TOOL_NAME = 48
 MAX_OPERATOR_TEXT = 400
+# Полный ответ ТАРС на экран: несколько КБ, без вырезания содержания.
+MAX_REPLY_TEXT = 4000
+# Служебные «summary» супервизора — это не ответ, а код исхода.
+_NON_REPLY_SUMMARIES = frozenset({"ok", "no_tool", "empty_input"})
 
 
 def _event(kind: str, text: str, request_id: str, ts_ms: Optional[int] = None) -> dict:
@@ -61,8 +67,18 @@ def _tool_name(item: Any) -> Optional[str]:
     return name or None
 
 
+def _reply_event(payload: dict, request_id: str) -> Optional[dict]:
+    """Полный текст ответа из ``summary``; коды исхода и ошибки — не ответ."""
+    if payload.get("ok") is not True:
+        return None
+    text = str(payload.get("summary", "") or "").strip()
+    if not text or text in _NON_REPLY_SUMMARIES:
+        return None
+    return _event("reply", text[:MAX_REPLY_TEXT], request_id)
+
+
 def turn_events(payload: Any) -> list[dict]:
-    """События хода из /avatar/command_result: tool-вызовы и ошибка."""
+    """События хода из /avatar/command_result: tool-вызовы, ответ и ошибка."""
     if not isinstance(payload, dict):
         return []
     request_id = str(payload.get("request_id", "") or "")
@@ -72,6 +88,9 @@ def turn_events(payload: Any) -> list[dict]:
         name = _tool_name(item)
         if name:
             out.append(_event("event", f"tool: {name}", request_id))
+    reply = _reply_event(payload, request_id)
+    if reply is not None:
+        out.append(reply)
     if payload.get("ok") is False:
         out.append(_event("event", "ошибка хода", request_id))
     return out

@@ -47,8 +47,9 @@ def test_turn_events_only_tool_names_no_params() -> None:
         ],
     }
     evs = tc.turn_events(payload)
-    assert [e["text"] for e in evs] == ["tool: play_music", "tool: set_volume"]
-    assert all(e["kind"] == "event" and e["request_id"] == "r1" for e in evs)
+    assert [e["text"] for e in evs] == ["tool: play_music", "tool: set_volume", "готово"]
+    assert [e["kind"] for e in evs] == ["event", "event", "reply"]
+    assert all(e["request_id"] == "r1" for e in evs)
     blob = json.dumps(evs)
     assert "SECRET" not in blob and "token" not in blob
 
@@ -59,8 +60,27 @@ def test_turn_events_failure_has_no_error_text() -> None:
     assert "sk-123" not in json.dumps(evs)
 
 
-def test_turn_events_ok_without_tools_is_silent() -> None:
-    assert tc.turn_events({"ok": True, "summary": "привет", "tool_calls": []}) == []
+def test_turn_events_summary_becomes_reply_event() -> None:
+    full = "**Prometheus:**\n- `cpu` — общий CPU\n- `up` — статус"
+    evs = tc.turn_events({"request_id": "r3", "ok": True, "summary": f"  {full}  ", "tool_calls": []})
+    assert len(evs) == 1
+    assert evs[0]["kind"] == "reply" and evs[0]["text"] == full
+    assert evs[0]["request_id"] == "r3"
+
+
+def test_turn_events_reply_capped_not_cut_below_cap() -> None:
+    evs = tc.turn_events({"ok": True, "summary": "а" * 9000, "tool_calls": []})
+    assert len(evs[0]["text"]) == tc.MAX_REPLY_TEXT
+    evs = tc.turn_events({"ok": True, "summary": "б" * 3000, "tool_calls": []})
+    assert len(evs[0]["text"]) == 3000
+
+
+def test_turn_events_empty_or_code_summary_has_no_reply() -> None:
+    for summary in ("", "   ", None, "ok", "no_tool", "empty_input"):
+        assert tc.turn_events({"ok": True, "summary": summary, "tool_calls": []}) == []
+    # Код ошибки при ok=false — не ответ ТАРС.
+    evs = tc.turn_events({"ok": False, "summary": "llm_error: X", "tool_calls": []})
+    assert [e["kind"] for e in evs] == ["event"]
     assert tc.turn_events({"summary": "нет ok"}) == []
     assert tc.turn_events([]) == []
 
