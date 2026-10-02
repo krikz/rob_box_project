@@ -316,7 +316,7 @@ def test_real_archive_weak_match_table(tmp_path):
     не нашлось, поэтому ``get()`` больше не отказывает молча: он всегда
     возвращает лучшего по тексту кандидата (как до #2882), а прозрачность
     для модели (title + alternatives) обеспечивают вызывающие тулы
-    (``ComposeMusicTool``/``LookupMelodyTool``, см. ``tools/music.py``) и
+    (``LookupMelodyTool``, см. ``tools/music.py``) и
     промпт скилла composer — не сама библиотека. Таблица — на РЕАЛЬНОМ
     архиве (``RtttlLibrary()`` без ``archive_path``, тот же бандл
     ``data/rtttl_melodies.jsonl.gz``)."""

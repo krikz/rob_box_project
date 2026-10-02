@@ -4,11 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from rob_box_mcp_tools.core.club_fragments import is_musical
-from rob_box_mcp_tools.core.club_hook import extract_hook
 from rob_box_mcp_tools.core.mini_notation import Unsupported, parse_events
 from rob_box_mcp_tools.core.music_material import (
-    material_name, material_to_rtttl, parse_material, parse_scale, pattern_score,
+    _hook_like, material_name, material_to_rtttl, parse_material, parse_scale, pattern_score,
 )
 from rob_box_mcp_tools.core.rtttl import parse_rtttl
 
@@ -140,8 +138,7 @@ def test_fixture_rtttl_roundtrip_and_hook(stranger):
     midis = [m for m, _d in notes]
     assert all(60 <= m <= 107 for m in midis)  # октавы RTTTL 4…7
     assert [m % 12 for m in midis] == [m % 12 for m in stranger.sounding()]
-    hook = extract_hook(rtttl, 124)
-    assert len(hook.notes) >= 6 and is_musical(hook.notes, hook.bars)
+    assert _hook_like(notes)  # начало мелодии годится как хук
 
 
 def test_rtttl_quantization_handles_rests_and_long_notes():

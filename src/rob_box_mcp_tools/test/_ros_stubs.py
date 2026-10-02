@@ -13,7 +13,7 @@ import ...`` («'rclpy' is not a package»). CI этого не видит — �
 
     _ros = RosStubs()
     with _ros:
-        from rob_box_mcp_tools.tools.music import ComposeMusicTool
+        from rob_box_mcp_tools.tools.music import MusicManager
     _ros_stubs = _ros.fixture()
 
 Убираются и возвращаются только сами заглушки. Настоящие модули,

@@ -4,11 +4,11 @@
 
     11:12:03  «[TG] Ты Диджей Русс Иван и сегодня у нас чисто славянская
               вечеринка полька калинка …»
-              compose_music(name='Калинка') → ❌ «не найдена в библиотеке»
+              execute_music_code(name='Калинка') → ❌ «не найдена в библиотеке»
               set_dj_mode(enabled=True, next_transition_sec=50) → ✅
               🎧 DJ Mode ON — next transition in 50s
     11:12:05  spoken='Калинку я не нашёл в нотах — сыграю её в духе народной
-              плясовой, …' tools=['compose_music', 'set_dj_mode']
+              плясовой, …' tools=['execute_music_code', 'set_dj_mode']
               [issue 2966] … falling through to Bug B/C
               [issue 992 Bug C] … synchronous retry 1/3
               [issue 2874] ответ хода не озвучиваю (retracted=True)
@@ -45,7 +45,7 @@ LIVE_SPOKEN = (
     "Калинку я не нашёл в нотах — сыграю её в духе народной плясовой,"
     "132 удара, гармошка, бас гудит."
 )
-LIVE_TOOLS = ("compose_music", "set_dj_mode")
+LIVE_TOOLS = ("execute_music_code", "set_dj_mode")
 MID_SET_ORDER = "сыграй калинку"
 
 
@@ -98,7 +98,7 @@ class TestGuardPolicy:
             # Заказ гостя посреди идущего сета: set_dj_mode в ходе нет.
             {
                 "user_input": MID_SET_ORDER,
-                "tools_called": ("compose_music",),
+                "tools_called": ("execute_music_code",),
                 "succeeded_tools": (),
             },
         ],

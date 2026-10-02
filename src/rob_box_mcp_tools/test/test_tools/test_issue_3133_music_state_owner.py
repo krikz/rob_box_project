@@ -19,7 +19,7 @@ from .._ros_stubs import RosStubs
 
 _ros = RosStubs()
 with _ros:
-    from rob_box_mcp_tools.tools.music import ComposeMusicTool, MusicManager
+    from rob_box_mcp_tools.tools.music import MusicManager
 _ros_stubs = _ros.fixture()
 
 
@@ -32,7 +32,6 @@ def _make_manager() -> MusicManager:
     mgr._pattern_history = {}
     mgr._active_patterns = set()
     mgr._synthdefs_added = set()
-    mgr._current_preset = None
     mgr._renardo_available = True
     mgr._renardo_last_error = None
     mgr._renardo_context = {}
@@ -50,30 +49,25 @@ def _make_manager() -> MusicManager:
     mgr._music_deadline_segments = None
     mgr._music_form_deadline_at = None
     mgr._music_form_cycle_ends_at = None
-    mgr.last_track_arrangement = None
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=True)
     return mgr
 
 
-_COMMON_KWARGS = dict(
-    bpm=100,
-    root="C",
-    scale="minor",
-    form="arc",
-    drums="X..o.X.o",
-    bass_synth="dub",
-    bass_notes="0, 0, 3, -2",
-    lead_synth="blip",
-    lead_notes="0, 2, 4, 7",
-)
+#: Длина формы трека в секундах (раньше считал удалённый ``compose_music``, ADR-0149 PR-13b).
+_FORM_SECONDS = 60.0
 
 
 def _compose(mock_node, mgr, *, repeat: bool):
-    tool = ComposeMusicTool(mock_node, mgr)
+    """Трек как его запускал старый ``compose_music``: код + тайминги формы на менеджере."""
     with patch("builtins.exec"):
-        result = tool.execute(repeat=repeat, **_COMMON_KWARGS)
-    assert result.success is True, result.error
+        result = mgr.execute_code("Clock.clear()\np1 >> blip([0, 2, 4, 7])", "composition")
+    assert result["success"] is True, result.get("error")
+    if repeat:
+        mgr.clear_form_deadline()
+    else:
+        mgr.set_form_deadline(_FORM_SECONDS)
+    mgr.set_form_cycle_end(_FORM_SECONDS)
     return result
 
 

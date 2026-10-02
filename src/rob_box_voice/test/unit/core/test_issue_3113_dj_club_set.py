@@ -190,13 +190,14 @@ def test_prompt_root_follows_rule_and_seed_differs_per_track():
 def test_roots_match_arranger_spelling():
     """Константы читаются из исходника AST-ом: в полном прогоне voice-сьюта
     другие тесты подменяют ``rob_box_mcp_tools`` заглушкой в sys.modules."""
-    src = Path(__file__).resolve().parents[4] / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "arranger.py"
-    consts = {
-        node.targets[0].id: ast.literal_eval(node.value)
-        for node in ast.parse(src.read_text(encoding="utf-8")).body
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") in {"VALID_ROOTS", "BPM_RANGE"}
-    }
-    assert CLUB_ROOTS == consts["VALID_ROOTS"]
+    # PR-13b ADR-0149: arranger.py удалён, тоники и темп — одна таблица ``rob_box_music.knowledge``.
+    src = Path(__file__).resolve().parents[4] / "rob_box_music" / "rob_box_music" / "knowledge.py"
+    consts = {}
+    for node in ast.parse(src.read_text(encoding="utf-8")).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if getattr(target, "id", "") in {"ROOTS", "BPM_RANGE"}:
+            consts[target.id] = ast.literal_eval(node.value)
+    assert CLUB_ROOTS == consts["ROOTS"]
     assert DJ_SET_BPM_RANGE == tuple(int(x) for x in consts["BPM_RANGE"])
 
 

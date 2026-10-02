@@ -41,7 +41,8 @@ from rob_box_music.tonality import (  # noqa: F401 — _pitch_weights/_profile_s
     key_fit,
 )
 
-from .arranger import BEATS_PER_BAR, VALID_ROOTS
+from rob_box_music.knowledge import ROOTS as VALID_ROOTS
+from rob_box_music.model import BEATS_PER_BAR
 from .harmonize import (
     AUTO,
     DEFAULT_DRUM_STYLE,
@@ -128,7 +129,7 @@ def melody_to_compose_params(
     тоникой; замена пишется в ``decisions`` (``key_transpose``,
     ``key_scale_kept``, ``key_relative``). Заданная только тоника берёт
     лад определённой тональности, заданный только лад — её тонику (тема не
-    двигается). Значения должны быть уже проверены (``arranger.check_root``
+    двигается). Значения должны быть уже проверены (``harmonize.check_root``
     / ``check_scale``). Оба ``None`` — прежнее поведение байт-в-байт.
     В ``decisions`` пишутся ``key_detected`` и ``key_fit`` (доля
     длительности темы в итоговом ладу) для предупреждения партитуры.
@@ -985,7 +986,7 @@ def _anacrusis_lead_in(melody: RtttlMelody) -> RtttlMelody:
 
     Величина паузы — ровно столько долей, чтобы онсет первой сильной ноты
     (считая паузы между затактом и ней) стал кратен такту
-    (:data:`~core.arranger.BEATS_PER_BAR`): затакт оказывается в хвосте
+    (:data:`rob_box_music.model.BEATS_PER_BAR`): затакт оказывается в хвосте
     нового вступительного такта (доигрывает его последними долями — «или
     в intro», см. issue), а первая сильная нота начинает СЛЕДУЮЩИЙ такт
     ровно с доли 0, синхронно с ударными и первой сменой аккорда пэда.

@@ -135,7 +135,7 @@ def _load_mcp_server_module():
     # Tools package: empty namespace + a dummy attribute for each name
     # imported in mcp_server.py (we never call any of them).  We parse
     # the import list directly so this stub stays in sync with develop
-    # as new tools get added (TaskDeltaTool, ComposeMusicTool, ...).
+    # as new tools get added (TaskDeltaTool, ...).
     import re as _re
     _src = src_path.read_text(encoding="utf-8")
     # Match both top-level and indented ``<Name>Tool,`` / ``MusicManager,``
@@ -145,9 +145,7 @@ def _load_mcp_server_module():
         m.group(1)
         for m in _re.finditer(r"^\s+([A-Z]\w+Tool),\s*$", _src, flags=_re.M)
     ))
-    # ADR-0132 PR-7: ArrangementPresetStore isn't a *Tool class (the regex
-    # above only catches those), so it needs listing here like the others.
-    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary", "ArrangementPresetStore"]
+    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary"]
     # Plus the Gen* tools from the inner try-import (different pattern):
     _gen_names = sorted(set(
         m.group(1)

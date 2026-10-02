@@ -59,7 +59,7 @@ def test_user_request_mid_set_is_not_a_set_track() -> None:
     node = _node_with_dj()
 
     _finalize(
-        node, ["compose_music"], was_dj_auto=False,
+        node, ["execute_music_code"], was_dj_auto=False,
         user_input="[TG] сыграй тему марио",
     )
 
@@ -70,7 +70,7 @@ def test_retry_of_dj_transition_counts_via_turn_text() -> None:
     node = _node_with_dj()
 
     _finalize(
-        node, ["compose_music"], was_dj_auto=False,
+        node, ["execute_music_code"], was_dj_auto=False,
         user_input="[Speaker:unknown] [DJ_AUTO переход #2] ...",
     )
 
@@ -80,7 +80,7 @@ def test_retry_of_dj_transition_counts_via_turn_text() -> None:
 def test_turn_that_started_music_counts_a_track() -> None:
     node = _node_with_dj()
 
-    _finalize(node, ["speak_text", "compose_music"])
+    _finalize(node, ["speak_text", "execute_music_code"])
 
     assert node._dj.state.tracks_started == 1
 
@@ -97,7 +97,7 @@ def test_turn_without_music_start_does_not_count() -> None:
 def test_music_outside_dj_set_is_not_counted() -> None:
     node = _node_with_dj(enabled=False)
 
-    _finalize(node, ["compose_music"])
+    _finalize(node, ["execute_music_code"])
 
     assert node._dj.state.tracks_started == 0
 
@@ -106,4 +106,4 @@ def test_node_without_dj_controller_does_not_crash() -> None:
     node = _node_with_dj()
     del node._dj
 
-    _finalize(node, ["compose_music"])
+    _finalize(node, ["execute_music_code"])

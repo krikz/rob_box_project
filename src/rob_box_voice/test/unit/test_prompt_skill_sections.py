@@ -292,12 +292,10 @@ _KNOWN_FOREIGN_MENTIONS: dict[str, dict[str, str]] = {
         "play_sound": "контраст: «play_sound только для эффектов <5s»",
         "estimate_tts_duration": "voice-tts; подсказка про длину куплета",
     },
-    "### Готовые AI-треки из библиотеки (gen_*)": {
-        "execute_music_code": "маршрут в composer, когда генерация недоступна",
-    },
+    # «Готовые AI-треки (gen_*)» упоминает execute_music_code, но с PR-13b ADR-0149 тул LLM не виден
+    # (харнесс) и в каталог скиллов не входит — чужим он больше не считается.
     "### DJ MODE": {
-        "compose_music": "ТРЕБУЕТСЯ диджею: свежий трек через compose_music (форма)",
-        "execute_music_code": "запрет: «не пиши ручной execute_music_code» — маршрут в compose_music",
+        # compose_music удалён, execute_music_code LLM не виден (PR-13b ADR-0149) — чужими не считаются.
         "search_samples": "ТРЕБУЕТСЯ диджею: сэмплы под стиль",
         "load_track": "запрет: «НЕ вызывай load_track в DJ-режиме»",
         "list_tracks": "запрет: там же",

@@ -2,10 +2,10 @@
 
 Живой прогон 01.10.2026 14:18Z::
 
-    compose_music {'form': 'arc', ..., 'seed': 1}
-    ❌ compose_music: Ручки seed действуют только с name= ...
+    execute_music_code {'form': 'arc', ..., 'seed': 1}
+    ❌ execute_music_code: Ручки seed действуют только с name= ...
     spoken='Трек запустился. Вот славянская вечеринка — поехали!'
-    tools=['load_skill', 'compose_music', 'set_dj_mode']
+    tools=['load_skill', 'execute_music_code', 'set_dj_mode']
     [issue 2966] ... NOT treating as success
     [issue 3266 Bug C] set_dj_mode в ходе прошёл ...
     TTS: 'Трек запустился. Во…'   → 2 минуты тишины
@@ -33,7 +33,7 @@ from rob_box_voice.core.turn_speech import TurnSpeechHold
 
 LIVE_INPUT = "Робот включи диджей сет на тему славянская вечеринка"
 LIVE_SPOKEN = "Трек запустился. Вот славянская вечеринка — поехали!"
-LIVE_TOOLS = ("load_skill", "compose_music", "set_dj_mode")
+LIVE_TOOLS = ("load_skill", "execute_music_code", "set_dj_mode")
 LIVE_OK = ("load_skill", "set_dj_mode")
 TAKES_OVER = MusicGuardVerdict(
     kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE, reason=DJ_SET_TAKES_OVER
@@ -80,7 +80,7 @@ def test_through_real_guard_live_turn_takes_over_and_is_withheld() -> None:
     [
         {"tool_error_occurred": False},
         {"succeeded_tools": None},
-        {"succeeded_tools": ("compose_music", "set_dj_mode")},
+        {"succeeded_tools": ("execute_music_code", "set_dj_mode")},
         {"tools_called": ("set_dj_mode",)},
     ],
     ids=["no_error", "unknown_success", "music_tool_ok", "no_music_tool"],
@@ -101,7 +101,7 @@ def test_other_verdicts_and_empty_hold_untouched() -> None:
 
 def test_music_launch_failed_helper() -> None:
     assert music_launch_failed(LIVE_TOOLS, LIVE_OK, True)
-    assert not music_launch_failed(LIVE_TOOLS, ("compose_music",), True)
+    assert not music_launch_failed(LIVE_TOOLS, ("execute_music_code",), True)
     assert not music_launch_failed(LIVE_TOOLS, None, True)
     assert not music_launch_failed(LIVE_TOOLS, LIVE_OK, False)
 
@@ -110,7 +110,7 @@ def test_music_launch_failed_helper() -> None:
 
 
 def test_dj_fallback_silent_when_music_tool_failed() -> None:
-    tools = ["compose_music", "set_dj_mode"]
+    tools = ["execute_music_code", "set_dj_mode"]
     # Контроль: без отказа фраза прежняя.
     assert ensure_dj_music_response("", tools) == "Готово, играю."
     assert ensure_dj_music_response(
