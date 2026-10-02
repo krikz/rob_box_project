@@ -122,8 +122,8 @@ def song_track(material: SongMaterial, *, seed: int, deck: str = "A") -> Track:
     tonal = {"lead": _tonal("lead", synths["lead"], material.lead, form, beats),
              "bass": _tonal("bass", synths["bass"], material.bass, form, beats),
              "pad": _tonal("pad", synths["pad"], material.pad, form, beats, material.pad_sus)}
-    parts, track_mix = mix.mix_parts({**drums, **{r: p for r, p in tonal.items() if p is not None}}, ())
-    track_mix = replace(track_mix, duck_depth=0.0, duck_roles=frozenset(), duck_trigger=())  # песня без «качания»
+    # песня без «качания» и без клубного LPF-свипа: mix_parts по форме песни (PR-7)
+    parts, track_mix = mix.mix_parts({**drums, **{r: p for r, p in tonal.items() if p is not None}}, form)
     form = replace(form, sections=tuple(replace(s, roles=frozenset(s.roles & set(parts))) for s in form.sections))
     key = Key(material.root, material.mode)
     hook = Hook(tuple(_events(material.lead, 0.0)), theme_bars, material.melody_id)

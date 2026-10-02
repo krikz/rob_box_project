@@ -106,7 +106,7 @@ def test_song_stereo_goes_through_role_stereo():
     track, _program, by_role = _song("long")
     assert dict(track.mix.stereo) == {r: s for r, s in track.mix.stereo.items() if r in kn.ROLE_STEREO}
     assert {e.pan for e in by_role["pad"]} == {-kn.PAD_SPREAD, kn.PAD_SPREAD}
-    assert {e.pan for e in by_role["bass"]} == {0.0} and track.mix.duck_depth == 0.0
+    assert {e.pan for e in by_role["bass"]} == {0.0} and track.mix.duck == () and not track.mix.duck_roles
 
 
 def _library(record):
