@@ -13,8 +13,6 @@ import pytest
 from rob_box_voice.core.media_router import ENGINE_V1, ENGINE_V2, MediaRouter, MediaState
 from rob_box_voice.core.named_play import NamedPlayStatus, run_named_play
 
-pytestmark = pytest.mark.unit
-
 HIT = "{'name': 'kalinkav_2', 'title': 'Kalinka V2.0', 'match': {'unmatched': [], 'ignored': []}}"
 MISS = "{'name': 'national', 'title': 'Soviet Anthem', 'match': {'unmatched': [], 'ignored': ['германии']}}"
 
