@@ -1,0 +1,2 @@
+# .sh на Windows-чекауте не должен превращаться в CRLF (bash падает на ).
+scripts/**/*.sh text eol=lf

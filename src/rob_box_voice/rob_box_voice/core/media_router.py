@@ -642,9 +642,12 @@ def _dj_plan_v2(command: MediaCommand) -> Optional[MediaPlan]:
 
 def _request_plan_v2(command: MediaCommand, text: str) -> MediaPlan:
     """«поставь клубный трек» → ``request_music`` (club v2); слова человека — дословно."""
+    args = {"intent": "track", "text": text}
+    if command.mood:  # «музыку для танцев» → настроение из таблицы грамматики
+        args["mood"] = command.mood
     return MediaPlan(
         command=command,
-        tool_calls=(MediaToolCall(REQUEST_MUSIC_TOOL, {"intent": "track", "text": text}),),
+        tool_calls=(MediaToolCall(REQUEST_MUSIC_TOOL, args),),
         say_ok=f"Включаю {command.name}." if command.name else "Включаю музыку.",
         say_fail=REQUEST_FAIL_TEXT,
         cancel_inflight=True,
