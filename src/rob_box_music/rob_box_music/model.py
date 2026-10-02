@@ -133,13 +133,25 @@ class Stereo:
 
 
 @dataclass(frozen=True)
+class Duck:
+    """Сайдчейн секции: глубина 0..1 и шаги такта 0..15, от которых считается огибающая (рисунок бочки вида)."""
+
+    depth: float
+    trigger: Tuple[int, ...]
+
+
+#: LPF роли в секции: (срез в начале, срез в конце) Гц; ``0`` — фильтр снят (``knowledge.LPF_OPEN``).
+Sweep = Tuple[float, float]
+
+
+@dataclass(frozen=True)
 class Mix:
     level_db: Mapping[str, float]
     stereo: Mapping[str, Stereo]  # роль → ширина; бочки и баса здесь нет (центр)
-    duck_depth: float  # 0..1
+    duck: Tuple[Duck, ...] = ()  # по секциям формы (вид секции, ``knowledge.LOOKS``)
     fx: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # имя секции → эффекты
     duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
-    duck_trigger: Tuple[int, ...] = ()  # шаги такта 0..15, от которых считается огибающая (рисунок бочки)
+    lpf: Mapping[str, Tuple[Sweep, ...]] = field(default_factory=dict)  # роль → свип по секциям формы
 
 
 @dataclass(frozen=True)
@@ -313,14 +325,29 @@ def _check_parts(track: Track) -> None:
         _require(not missing, f"form.sections[{i}].roles", f"роли без партии: {missing}")
 
 
-def _check_duck(mix: Mix, parts: Mapping[str, Part]) -> None:
+def _check_duck(mix: Mix, parts: Mapping[str, Part], n_sections: int) -> None:
     roles = set(mix.duck_roles)
     _require(roles <= set(parts) & set(kn.DUCK_ROLES), "mix.duck_roles",
              f"сайдчейн только на ролях knowledge.DUCK_ROLES, что есть в треке: {sorted(roles)}")
-    trigger = mix.duck_trigger
-    _require(all(isinstance(s, int) and 0 <= s < STEPS_PER_BAR for s in trigger)
-             and list(trigger) == sorted(set(trigger)), "mix.duck_trigger", f"шаги {trigger} не 0..15 по возрастанию")
-    _require(not roles or bool(trigger), "mix.duck_trigger", "сайдчейн без триггера")
+    _require(not roles or len(mix.duck) == n_sections, "mix.duck", f"{len(mix.duck)} секций, а в форме {n_sections}")
+    for i, duck in enumerate(mix.duck):
+        trigger = duck.trigger
+        _require(0.0 <= duck.depth <= 1.0, f"mix.duck[{i}].depth", "глубина сайдчейна вне 0..1")
+        _require(all(isinstance(s, int) and 0 <= s < STEPS_PER_BAR for s in trigger)
+                 and list(trigger) == sorted(set(trigger)), f"mix.duck[{i}].trigger",
+                 f"шаги {trigger} не 0..15 по возрастанию")
+        _require(not duck.depth or bool(trigger), f"mix.duck[{i}].trigger", "сайдчейн без триггера")
+
+
+def _check_lpf(mix: Mix, parts: Mapping[str, Part], n_sections: int) -> None:
+    lo, hi = kn.LPF_RANGE_HZ
+    for role, sweeps in mix.lpf.items():
+        path = f"mix.lpf.{role}"
+        _require(role in parts and role != "kick", path, "свип только на партиях трека, бочка без фильтра")
+        _require(len(sweeps) == n_sections, path, f"{len(sweeps)} секций, а в форме {n_sections}")
+        for i, sweep in enumerate(sweeps):
+            _require(all(hz == kn.LPF_OPEN or lo <= hz <= hi for hz in sweep), f"{path}[{i}]",
+                     f"срез {sweep} не 0 и не в {lo:g}..{hi:g} Гц")
 
 
 def _check_levels(track: Track) -> None:
@@ -329,8 +356,8 @@ def _check_levels(track: Track) -> None:
         power = sum(10.0 ** (track.parts[r].level_db / 10.0) for r in sec.roles)
         _require(power <= limit, f"form.sections[{i}].roles",
                  f"сумма пиков {10 * math.log10(power):.1f} дБ выше потолка {kn.LEVEL_CEILINGS['master_peak_db']}")
-    _require(0.0 <= track.mix.duck_depth <= 1.0, "mix.duck_depth", "глубина сайдчейна вне 0..1")
-    _check_duck(track.mix, track.parts)
+    _check_duck(track.mix, track.parts, len(track.form.sections))
+    _check_lpf(track.mix, track.parts, len(track.form.sections))
     for role, st in track.mix.stereo.items():
         path = f"mix.stereo.{role}"
         _require(role not in ("kick", "bass"), path, "низ — строго в центре (ADR-0149 §3.9)")
@@ -416,7 +443,7 @@ def blend_bars(leaving: Track, incoming: Track) -> int:
 
 
 __all__ = [
-    "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
-    "Part", "PitchEvent", "Section", "Step", "Stereo", "Track", "TrackError", "Transition", "blend_bars",
+    "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Duck", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
+    "Part", "PitchEvent", "Section", "Step", "Stereo", "Sweep", "Track", "TrackError", "Transition", "blend_bars",
     "roles_at_bar", "validate",
 ]

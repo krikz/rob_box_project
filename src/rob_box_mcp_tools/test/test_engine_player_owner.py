@@ -11,7 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from rob_box_mcp_tools.engine.player_owner import PlayerOwner
-from rob_box_mcp_tools.engine.renardo_adapter import RenardoAdapter, osc_fail_detail
+from rob_box_mcp_tools.engine.renardo_adapter import MASTER_NODE, RenardoAdapter, osc_fail_detail
+from rob_box_music import knowledge as kn
 from rob_box_voice.core.music_player_state import parse_music_state
 
 from ._ros_stubs import RosStubs
@@ -270,7 +271,25 @@ def test_adapter_restarts_players_of_the_new_program_and_stop_ramps_group():
     with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
         adapter.stop()
     assert ns["d1"].stops == 3
-    assert [a[0] for a in sent] == ["/n_set", "/g_freeAll"]
+    group = [a[:2] for a in sent if a[1] != MASTER_NODE]
+    assert group == [("/n_set", 1), ("/g_freeAll", 1)]
+    master = [dict(zip(a[2::2], a[3::2])) for a in sent if a[:2] == ("/n_set", MASTER_NODE)]
+    assert master[0] == master[-1] == {"trimLag": kn.TRIM_LAG_S, **kn.MASTER_DEFAULTS}, "старт процесса и стоп"
+    assert sent.index(next(a for a in sent if a[0] == "/g_freeAll")) < len(sent) - 1, "trim 0 — после спуска"
+
+
+def test_track_start_sets_its_master_controls_and_a_plain_track_resets_them():
+    """PR-7: ручки мастер-шины — на доле старта трека; трек без ``master`` (вне сета) — дефолты, trim 0."""
+    adapter, ns, clock, sent = _adapter()
+    set_track = _program()
+    set_track.master = {"trim": -6.0, "lvlRatio": 1.5, "lvlUp": 8.0}
+    for program in (set_track, _program("plain")):
+        sent.clear()
+        adapter.start(program, lambda s: None)
+        assert not [a for a in sent if a[1] == MASTER_NODE], "до доли старта мастер не трогаем"
+        clock.scheduled[-1][0]()
+        (msg,) = [dict(zip(a[2::2], a[3::2])) for a in sent if a[:2] == ("/n_set", MASTER_NODE)]
+        assert msg == {"trimLag": kn.TRIM_LAG_S, **kn.MASTER_DEFAULTS, **getattr(program, "master", {})}
 
 
 def _osc(address, *strings):

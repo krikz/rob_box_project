@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import FrozenSet, Mapping
 
 
@@ -24,6 +24,9 @@ class Program:
     samples: FrozenSet[str]  # символы play() ударных ролей; ``X:12`` — с номером файла ``sample=``
     #: Файлы ``loop()`` от корня сэмплов (``dj_dave/...``): владелец плеера сверяет их с диском до exec (I15, §3.11).
     sample_files: FrozenSet[str] = frozenset()
+    #: Ручки мастер-шины на время трека поверх ``knowledge.MASTER_DEFAULTS`` (``trim`` энергии сета, профиль
+    #: выравнивателя; PR-7). Пусто — дефолты: трек вне сета громкость DJ-трека не наследует.
+    master: Mapping[str, float] = field(default_factory=dict)
 
 
 __all__ = ["Program"]

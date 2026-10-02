@@ -6,7 +6,8 @@
 ``Section.roles`` от начала формы (``start=Clock.next_bar()`` — доля, где встают плееры), уровень ``amp`` — из
 уровня роли по модели громкости (``arrange.mix.level_amp``); акценты ×
 сайдчейн-огибающая ролей ``Mix.duck_roles`` — ``amplify=[...]`` (период списка свёрнут); бочка — ``sample=`` из
-``knowledge.KICK_SOUNDS``; свинг ``offset_ms`` — ``delay=[...]`` в долях
+``knowledge.KICK_SOUNDS``; LPF-свип ``Mix.lpf`` — ``lpf=var([...], [доли])`` по долям (PR-7);
+свинг ``offset_ms`` — ``delay=[...]`` в долях
 (глобальный ``Clock.swing`` не используется: сайдчейн не должен уехать от бочки, ADR-0149 §3.4).
 Стерео ``Mix.stereo`` (§3.9): ударные — ``pan=[...]`` со сменой стороны на каждом ударе; два голоса тональной роли —
 вложенные группы ``pan=((-w, w),), pshift=((0, d),), delay=((0, Хаас),)`` (Renardo раскрывает их на КАЖДУЮ ноту
@@ -89,14 +90,49 @@ def _period(values: Sequence[float]) -> List[float]:
     return list(values)
 
 
-def _amplify(track: Track, role: str, accents: Sequence[int], varied: bool) -> List[float]:
-    """Акцент (если акценты ударов разные) × сайдчейн по шагу такта; ``accents`` — по 16-м свёрнутого рисунка."""
-    duck = duck_envelope(track.mix.duck_trigger, track.mix.duck_depth) if role in track.mix.duck_roles else None
+def _section_steps(track: Track) -> List[int]:
+    """Номер секции на каждой 16-й формы."""
+    out: List[int] = []
+    for i, sec in enumerate(track.form.sections):
+        out += [i] * (sec.bars * STEPS_PER_BAR)
+    return out
+
+
+def _amplify(track: Track, role: str, accents: Sequence[int], varied: bool,
+             gains: Optional[Sequence[float]] = None) -> List[float]:
+    """Акцент (если акценты ударов разные) × сайдчейн вида секции по шагу такта; ``accents`` — по 16-м свёрнутого
+    рисунка, ``gains`` — готовые усиления на всю форму (рисунок-объединение ударных, :func:`_drum_fold`).
+    Огибающая своя у каждой секции (``Mix.duck``), поэтому список свёрнут по звучащим шагам формы."""
+    envs = [duck_envelope(d.trigger, d.depth) for d in track.mix.duck] if role in track.mix.duck_roles else None
     out = []
-    for i, accent in enumerate(accents):
-        gain = kn.ACCENT_AMPLIFY[accent] if varied else 1.0
-        out.append(round(gain * (duck[i % STEPS_PER_BAR] if duck else 1.0), 3))
-    return _period(out)
+    for i, sec in enumerate(_section_steps(track)):
+        if gains is not None:
+            gain = gains[i]
+        else:
+            gain = kn.ACCENT_AMPLIFY[accents[i % len(accents)]] if varied else 1.0
+        out.append(round(gain * (envs[sec][i % STEPS_PER_BAR] if envs else 1.0), 3))
+    folded = _fold(out, _active_steps(track, role), track.form.bars_total)
+    return _period([1.0 if g is None else g for g in folded])
+
+
+def _lpf(track: Track, role: str) -> List[str]:
+    """``lpf=var([...], [доли])`` свипа роли по секциям (``Mix.lpf``): шаг — доля, кривая — экспонента (ровно по
+    слуху), ``0`` — фильтр снят. ``var``, а не ``linvar``: скачок на границе секции без промежуточного сегмента."""
+    sweeps = track.mix.lpf.get(role)
+    if not sweeps:
+        return []
+    values: List[List] = []
+    for sec, (a, b) in zip(track.form.sections, sweeps):
+        beats = sec.bars * BEATS_PER_BAR
+        steps = [a] * beats if a == b or not a or not b else [
+            a * (b / a) ** (k / (beats - 1)) for k in range(beats)]
+        for hz in steps:
+            hz = _num(round(hz))
+            if values and values[-1][0] == hz:
+                values[-1][1] += 1
+            else:
+                values.append([hz, 1])
+    return [f"lpf=var({_list(v for v, _ in values)}, {_list(_num(n) for _, n in values)}, start={FORM_START})"]
 
 
 def _stereo(st: Optional[Stereo], hits: Optional[Sequence[bool]], bpm: int) -> List[str]:
@@ -114,28 +150,48 @@ def _stereo(st: Optional[Stereo], hits: Optional[Sequence[bool]], bpm: int) -> L
 
 
 def _tail(track: Track, role: str, part: Part, accents: Sequence[int], varied: bool,
-          hits: Optional[Sequence[bool]] = None) -> List[str]:
+          hits: Optional[Sequence[bool]] = None, gains: Optional[Sequence[float]] = None) -> List[str]:
     st = track.mix.stereo.get(role)
     opts = [f"amp={_gate(track, role, voice_amp(role, part, st.voices if st else 1))}"]
-    amplify = _amplify(track, role, accents, varied)
+    amplify = _amplify(track, role, accents, varied, gains)
     if len(set(amplify)) > 1:
         opts.append(f"amplify={_list(_num(a) for a in amplify)}")
-    return opts + _stereo(st, hits, track.bpm)
+    return opts + _stereo(st, hits, track.bpm) + _lpf(track, role)
 
 
 def _delay_beats(offset_ms: int, bpm: int) -> float:
     return offset_ms * bpm / 60000.0
 
 
+def _drum_fold(cells: Sequence[Optional[tuple]], active: Sequence[bool],
+               bars_total: int) -> Tuple[List[Optional[tuple]], Optional[List[float]]]:
+    """Рисунок ``play()`` с периодом — степенью двойки шагов (фаза слоёв; санитайзер v1 #1803 его бы достроил).
+
+    Секции с разными рисунками (вид build ↔ drop, PR-7) складываются в период формы (48 тактов — не степень
+    двойки). Тогда рисунок — объединение ударов на наибольшем периоде-степени двойки, а удары, которых в секции
+    нет, глушит ``amplify`` 0: второй список — усиления на всю форму (акцент удара или 0)."""
+    pattern = _fold(cells, active, bars_total)
+    if not len(pattern) & (len(pattern) - 1):
+        return pattern, None
+    period = max(b for b in range(1, bars_total + 1) if bars_total % b == 0 and not b & (b - 1)) * STEPS_PER_BAR
+    union: List[Optional[tuple]] = [None] * period
+    for i, cell in enumerate(cells):
+        if active[i] and cell is not None and union[i % period] is None:
+            union[i % period] = cell
+    gains = [1.0 if union[i % period] is None else (kn.ACCENT_AMPLIFY[cell[0]] if cell else 0.0)
+             for i, cell in enumerate(cells)]
+    return union, gains
+
+
 def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     steps = part.grid.steps
     total = track.form.bars_total * STEPS_PER_BAR
     cells = [(st.accent, st.offset_ms) if st.on else None for st in steps * (total // len(steps))]
-    pattern = _fold(cells, _active_steps(track, role), track.form.bars_total)
+    pattern, gains = _drum_fold(cells, _active_steps(track, role), track.form.bars_total)
     symbol = kn.DRUM_SYMBOLS[role]
     accents = [c[0] for c in pattern if c]
     full = [c[0] if c else 0 for c in pattern]
-    opts = _tail(track, role, part, full, len(set(accents)) > 1, [c is not None for c in pattern])
+    opts = _tail(track, role, part, full, len(set(accents)) > 1, [c is not None for c in pattern], gains)
     delays = [_delay_beats(c[1], track.bpm) if c else 0.0 for c in pattern]
     if any(delays):
         opts.append(f"delay={_list(_num(d) for d in delays)}")

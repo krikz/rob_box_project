@@ -90,6 +90,16 @@
 // сигнал: шаг «громче» ±3 dB честно даёт ±3 dB и в лимитер не упирается;
 // на максимуме (gain 1.0) пик выхода = `ceiling` (−1 dBFS), без клипа.
 //
+// ЭНЕРГИЯ ТРЕКА В СЕТЕ (ADR-0147 §3.2, ADR-0149 §3.10 п.3, PR-7): `trim` (dB)
+// стоит ПОСЛЕ динамики и рядом с фейдером — выравниватель его не «съедает»,
+// а лимитер не видит. Движок v2 выставляет его на доле старта каждого трека
+// (энергия 1..5 → −9…0 dB, `knowledge.ENERGY_TRIM_DB`), в блэнде громкость
+// переезжает за `trimLag` = длина блэнда; трек вне сета и стоп — `trim 0`.
+// Только ≤ 0 dB (clip): подъём над потолком лимитера невозможен (A7). NaN в
+// `/n_set trim` → 0 dB (правило 1). Дефолт `trim = 0` — v1 звучит как раньше.
+// DJ-профиль выравнивателя (ADR-0147 §3.5) — те же ручки `lvlRatio`/`lvlUp`
+// через `/n_set` (`knowledge.DJ_LEVELER`), SynthDef для него не меняется.
+//
 // РАЗМЕЩЕНИЕ: Synth в ХВОСТЕ RootNode (node 0), см. foxdot_init.sc.
 // Renardo играет в группе 1 и чистит только её, поэтому фильтр переживает
 // Clock.clear(), stop_music() и DJ-переходы. На шине только музыка: TTS и
@@ -106,8 +116,9 @@ SynthDef.new(\masterfilter, {
      lvlTarget = -12, lvlRatio = 3, lvlBoost = 15, lvlCut = 9, lvlGate = -55,
      lvlDetect = 1.5, lvlUp = 3.0, lvlDown = 1.0,
      cmpThresh = -20, cmpRatio = 4, cmpAttack = 0.005, cmpRelease = 0.2, makeup = 9,
-     ceiling = -1, limLook = 0.002, limRelease = 0.06|
-    var sig, bad, nyquist, cutoff, safe;
+     ceiling = -1, limLook = 0.002, limRelease = 0.06,
+     trim = 0, trimLag = 0.5|
+    var sig, bad, nyquist, cutoff, safe, trimDb;
     var pow, lvlDb, want, x, peak, cmpDb, ceilAmp, delayed, limGain, wet, wetBad, out;
     // Вход каждого элемента С СОСТОЯНИЕМ (Gate/LagUD/Amplitude) — через
     // clean: NaN/Inf → 0. Так порча (например, NaN в /n_set параметра)
@@ -174,6 +185,10 @@ SynthDef.new(\masterfilter, {
 
     // Мастер-фейдер. Lag.kr — чтобы смена gain не давала щелчок.
     out = out * Lag.kr(gain, lag);
+
+    // Энергия трека в сете — после динамики (см. шапку). NaN → 0 dB, только вниз.
+    trimDb = Select.kr(CheckBadValues.kr(trim, 0, 0).min(1), [trim, DC.kr(0)]).clip(-40, 0);
+    out = out * Lag.kr(trimDb.dbamp, trimLag);
 
     ReplaceOut.ar(bus, out);
 }).add;

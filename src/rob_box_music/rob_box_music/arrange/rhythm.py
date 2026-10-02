@@ -32,11 +32,10 @@ def grid(on_steps: Iterable[int], length: int = STEPS_PER_BAR, accents: Optional
     return Grid(tuple(Step(i in on, acc.get(i, 2) if i in on else 0) for i in range(length)))
 
 
-def kick_grid(kick: str) -> Grid:
-    """Бочка из ``knowledge.KICK_PATTERNS``; доли 1 и 3 — с акцентом 3."""
-    pattern = kn.KICK_PATTERNS[kick]
-    if len(pattern) != STEPS_PER_BAR:
-        raise ValueError(f"рисунок бочки {kick!r} не 16 простых шагов")
+def kick_grid(pattern: str) -> Grid:
+    """Такт бочки по рисунку 16 шагов (``knowledge.KICK_PATTERNS``, вид секции ``LOOKS``); доли 1 и 3 — акцент 3."""
+    if len(pattern) != STEPS_PER_BAR or set(pattern) - {"X", "."}:
+        raise ValueError(f"рисунок бочки {pattern!r} не 16 простых шагов")
     return grid((i for i, ch in enumerate(pattern) if ch == "X"), accents={0: 3, 8: 3})
 
 

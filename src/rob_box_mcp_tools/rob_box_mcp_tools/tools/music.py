@@ -452,7 +452,7 @@ class MusicManager:
     #: и только вверх (``ServerManager.nextnodeID``), поэтому коллизии быть
     #: не может, а ``/g_freeAll 1`` (Clock.clear / stop_all) чистит только
     #: группу 1 и лимитер не трогает.
-    MASTER_LIMITER_NODE: int = 999
+    MASTER_LIMITER_NODE: int = renardo_adapter.MASTER_NODE  # одно число на оба пути (PR-7)
     #: Уровень мастер-фейдера ПОСЛЕ лимитера. Именно он задаёт громкость
     #: музыки относительно речи (issue #986), а не покомпонентные капы amp.
     DEFAULT_MASTER_GAIN: float = 0.5

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections import Counter, defaultdict
 
@@ -147,10 +148,17 @@ def test_psr_takes_a_random_pool_file_on_every_sixteenth_under_the_sidechain(fif
         by_path = {kn.SAMPLE_CATALOG[n].loop_arg: kn.SAMPLE_CATALOG[n] for n in pool}
         assert all(ev.sus_beats <= by_path[ev.sample].seconds * track.bpm / 60 + 1e-3 for ev in events)
         assert "sample" in track.mix.duck_roles
-        duck = duck_envelope(track.mix.duck_trigger, track.mix.duck_depth)
-        on_kick = [ev.amp for ev in events if round(ev.beat * 4) % 16 in track.mix.duck_trigger]
-        off_kick = [ev.amp for ev in events if duck[round(ev.beat * 4) % 16] == 1.0]
-        assert on_kick and off_kick and max(on_kick) < min(off_kick)
+        starts = list(itertools.accumulate(sec.bars * 4 for sec in track.form.sections))
+
+        def look(beat):  # сайдчейн вида секции (PR-7): триггер и глубина — свои у каждой секции
+            return track.mix.duck[next(i for i, end in enumerate(starts) if beat < end)]
+
+        for duck in set(track.mix.duck):
+            env = duck_envelope(duck.trigger, duck.depth)
+            mine = [ev for ev in events if look(ev.beat) == duck]
+            on_kick = [ev.amp for ev in mine if round(ev.beat * 4) % 16 in duck.trigger]
+            off_kick = [ev.amp for ev in mine if env[round(ev.beat * 4) % 16] == 1.0]
+            assert not mine or (on_kick and off_kick and max(on_kick) < min(off_kick)), duck
 
 
 def test_psr_is_two_voices_left_and_right_from_role_stereo(fifty):

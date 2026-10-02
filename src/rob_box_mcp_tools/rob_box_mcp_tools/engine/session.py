@@ -12,6 +12,8 @@
   дека N снимается на границе и свободна. Формы не сводятся (``blend_bars = 0``) — стык ровно на
   границе формы (PR-5). Не готов (не успел, отказ рендера, чужой темп) — **текущий трек играет ещё
   проход формы** («продлить, а не замолчать», I1), проверка повторяется через проход.
+* Энергия трека плана → ``trim`` мастер-шины после динамики и профиль выравнивателя сета (PR-7, §3.10, §4.6):
+  ``Program.master``, выставляет адаптер на доле старта трека.
 * Темп один на сет (I7, §4.4): его ставит первый трек (``Clock.update_tempo_now``), трек с
   другим темпом до деки не доходит — ``rejected{tempo_mismatch}`` и продление.
 
@@ -26,9 +28,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import replace
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from rob_box_music.arrange.compose import compose
+from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import track_history
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
@@ -154,7 +158,7 @@ class SetSession:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
         try:
             track = self._source(track_no, deck)
-            program = render(track, deck)
+            program = replace(render(track, deck), master=set_master(track.energy))  # энергия трека → trim (PR-7)
         except Exception as exc:  # noqa: BLE001 — отказ громкий; музыка (если есть) играет дальше
             self._owner.reject(f"{self.set_id}:{track_no:02d}:{deck}", "compose_error", f"{type(exc).__name__}: {exc}")
             return None

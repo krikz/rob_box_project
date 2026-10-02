@@ -357,7 +357,51 @@ ROLE_LEVEL_DB: Mapping[str, float] = {
 SIDECHAIN_SHAPE: Tuple[float, ...] = (0.3, 0.55, 0.8, 1.0)
 #: psr-слой DJ_Dave — под той же огибающей, что пэд и бас (``postgain(sidechain)``, PR-3d).
 DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample")
-DUCK_DEPTH = 1.0
+
+
+@dataclass(frozen=True)
+class Look:
+    """«Вид» секции (приём DJ_Dave, интервью 02.10): одна ось энергии переключает и рисунок бочки, и сайдчейн."""
+
+    kick: str  # рисунок бочки 16 шагов — он же триггер огибающей сайдчейна
+    duck_depth: float  # 0..1
+
+
+#: Энергия секции (0..10) → вид: (порог, вид), первый подходящий сверху. Дроп — прямая бочка и полный «насос»;
+#: build — бочка на 1 и 3 и мягкий насос (подъём держат фильтр и ролл клэпа); интро/аутро (блэнд двух дек) —
+#: ровная прямая бочка, под которую сводятся треки.
+LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["four_on_floor"], 1.0)),
+    (5, Look("X.......X.......", 0.5)),
+    (0, Look(KICK_PATTERNS["four_on_floor"], 0.6)),
+)
+
+#: LPF-свип на басе и нотах (DJ_Dave: «один слайдер на оба»; ADR-0149 §3.12): секция → (от, до) Гц, 0 — фильтр
+#: снят. Build открывается к дропу, дроп открыт, брейк прикрыт, хвост уходящей деки закрывается 4000→300 за блэнд.
+#: Потолок свипа ниже среза мастер-шины (``masterfilter`` LPF 0.55·Найквиста = 4400 Гц на 16 кГц): выше — не слышно,
+#: а срез выше Найквиста у ``RLPF`` неустойчив. Шаг свипа — доля (``var``, не ``linvar``: скачок на границе секции
+#: у ``linvar`` требует сегмента, и нота на нём получила бы промежуточный срез).
+LPF_OPEN = 0.0
+LPF_TOP_HZ = 4000.0
+LPF_RANGE_HZ = (200.0, LPF_TOP_HZ)
+SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    "build": (400.0, LPF_TOP_HZ), "break": (1200.0, 1200.0), "outro_tail": (LPF_TOP_HZ, 300.0),
+}
+#: Роли под свипом секции; в хвосте блэнда (``outro_tail``) — всё, что звучит, кроме бочки (§3.12).
+LPF_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
+LPF_TAIL_SECTIONS: Tuple[str, ...] = ("outro_tail",)
+
+# ── Мастер-шина (``custom_synthdefs/masterfilter.scd``, node 999): ADR-0149 §3.10, ADR-0147 §3.2, §3.5; PR-7 ───────
+#: Ручки мастер-шины, которые выставляет движок v2, и их значения по умолчанию — ровно дефолты SynthDef
+#: (сверяет ``test_master.py``): каждый старт трека и стоп выставляют их заново, поэтому трек вне сета не наследует
+#: ``trim`` и профиль выравнивателя от DJ-трека (правило сброса ADR-0147 §3.2).
+MASTER_DEFAULTS: Mapping[str, float] = {"trim": 0.0, "lvlRatio": 3.0, "lvlUp": 3.0}
+#: DJ-профиль выравнивателя (ADR-0147 §3.5): из 10 дБ брейк/дроп остаётся ~6.7 вместо ~3.5, тихое не тянется
+#: за секунду. Включается только по замеру ``dyn 0/1`` (решение Шифу В3) — :data:`SET_LEVELER`.
+DJ_LEVELER: Mapping[str, float] = {"lvlRatio": 1.5, "lvlUp": 8.0}
+SET_LEVELER: Mapping[str, float] = DJ_LEVELER
+#: ``trimLag`` при старте трека встык, с; в блэнде громкость переезжает за длину блэнда.
+TRIM_LAG_S = 0.5
 
 #: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека. Только
 #: синты с замером громкости (:data:`LANE_DB_AT_UNIT`), из палитры роли и не ``held`` (:data:`SYNTH_TRAITS`).
@@ -427,8 +471,10 @@ ROLE_STEREO: Mapping[str, Mapping[str, float]] = {
 }  # лида нет: на оси (§3.9)
 
 __all__ += [
-    "AMP_EXPONENT", "DEFAULT_TIMBRE", "DRUM_LOUDNESS_KEY", "DUCK_DEPTH", "DUCK_ROLES", "GENRE_KICK", "KICK_SOUNDS",
-    "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "MAX_LAYER_AMP",
+    "AMP_EXPONENT", "DEFAULT_TIMBRE", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "DUCK_ROLES", "GENRE_KICK", "KICK_SOUNDS",
+    "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOOKS", "LOUDNESS_SOURCE", "LPF_OPEN",
+    "LPF_RANGE_HZ", "LPF_ROLES", "LPF_TAIL_SECTIONS", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP",
+    "SECTION_LPF", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "ROLE_LEVEL_DB",
     "ROLE_STEREO", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "TIMBRES",
 ]
