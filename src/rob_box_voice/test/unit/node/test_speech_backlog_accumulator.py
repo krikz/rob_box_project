@@ -19,8 +19,6 @@ def node():
     n._wake_words = ["робок", "робот", "роббокс", "робокс", "robbox", "rob box"]
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.IDLE
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._cancel_run = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._publish_state = MagicMock()

@@ -14,21 +14,15 @@
 Issue #3134: «ты диджей X» исполняет роутер медиакоманд кодом ДО LLM
 (``set_dj_mode``), поэтому DJ-ретрай ``MusicGuard.evaluate_turn``, его
 промпт/фолбэк и особая обёртка хода удалены. Здесь остались: детектор
-(перенесён в ``core/media_command_grammar.py``), утечка CRITICAL в TTS и
-смена персоны на идущем сете в ``DJModeController``. Роутер — в
-``test_issue_3134_media_router.py``.
+(перенесён в ``core/media_command_grammar.py``) и утечка CRITICAL в TTS.
+``DJModeController`` удалён в ADR-0149 PR-13a (сет ведёт движок v2). Роутер —
+в ``test_issue_3134_media_router.py``.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-from unittest.mock import MagicMock
-
 import pytest
 
-from rob_box_voice.core.dialogue_guards import MUSIC_STARTING_TOOLS
-from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.media_command_grammar import (
     extract_dj_request_hint,
     is_dj_request,
@@ -38,10 +32,6 @@ from rob_box_voice.core.turn_speech import decide_turn_speech, is_retry_prompt_l
 LIVE_A = "[TG] Ты диджей Снупдог и у нас сегодня вечеринка ганкста в чорном квартале"
 LIVE_B = "[TG] Ты диджей Анакен скайвокер и у нас сегодня имперский слет в клубе"
 LIVE_DIVE = "[TG] Ты диджей Дайв и у нас сегодня вечеринка в клубе"
-DJ_AUTO = (
-    '[DJ_AUTO переход #2] Ты диджей Дайв. Тема вечеринки: "клубная вечеринка". '
-    "Сейчас по плану — Трек 2"
-)
 
 
 # ── 1. Детектор: таблица ────────────────────────────────────────────────
@@ -89,7 +79,6 @@ def test_is_dj_request_positive(text: str) -> None:
         "сыграй трек",
         "включи музыку",
         "сделай громче",
-        DJ_AUTO,
     ],
 )
 def test_is_dj_request_negative(text) -> None:
@@ -131,75 +120,3 @@ def test_normal_dj_reply_is_spoken() -> None:
     reply = "Йо, Анакен на связи, имперский слет начинается!"
     assert not is_retry_prompt_leak(reply)
     assert decide_turn_speech(reply, n_chunks=1) == reply
-
-
-# ── 5. Обёртка хода и смена персоны на идущем сете ─────────────────────
-
-
-def _dj(on_stop=None) -> DJModeController:
-    clock = MagicMock(return_value=1_000_000.0)
-    return DJModeController(
-        hook=DJHook(
-            dispatch=MagicMock(),
-            is_active=lambda: False,
-            is_dialogue_active=lambda: False,
-            on_stop=on_stop,
-        ),
-        logger=logging.getLogger("test_2999"),
-        clock=clock,
-    )
-
-
-def _dive_set(dj: DJModeController) -> None:
-    dj.handle_message(json.dumps({
-        "enabled": True, "persona": "диджей Дайв", "theme": "клубная вечеринка",
-        "bpm": 128, "plan": "Трек 1: клуб\nТрек 2: клуб", "next_transition_sec": 45,
-    }))
-
-
-def test_preamble_is_single_neutral_wrapper() -> None:
-    dj = _dj()
-    _dive_set(dj)
-    assert "Не вызывай set_dj_mode" in dj.preamble()
-
-
-def test_set_dj_mode_on_active_set_switches_persona_theme_without_reset() -> None:
-    on_stop = MagicMock()
-    dj = _dj(on_stop)
-    _dive_set(dj)
-    dj.state.transition_count = 3
-    dj.state.tracks_started = 2
-    started = dj.state.started_at
-
-    # Ровно то, что вызывает роутер медиакоманд (#3134) — без bpm.
-    dj.handle_message(json.dumps({
-        "enabled": True, "persona": "диджей Анакен скайвокер",
-        "theme": "имперский слет в клубе",
-    }))
-
-    s = dj.state
-    assert s.enabled is True
-    assert s.persona == "диджей Анакен скайвокер"
-    assert s.theme == "имперский слет в клубе"
-    assert s.set_bpm == 128  # #3113 — темп сета сохранён
-    assert s.started_at == started
-    assert s.transition_count == 3 and s.tracks_started == 2
-    assert s.set_plan == ""  # план старой темы сброшен
-    on_stop.assert_not_called()  # не «конец вечеринки», музыка не глушится
-    prompt = dj.build_auto_prompt(4)
-    assert "Анакен" in prompt and "имперский слет" in prompt
-    assert "Дайв" not in prompt and "клубная вечеринка" not in prompt
-
-
-def test_persona_change_turn_counts_as_set_track() -> None:
-    dj = _dj()
-    _dive_set(dj)
-    before = dj.state.tracks_started
-    counted = dj.note_turn_tools(
-        ("set_dj_mode", "compose_music"),
-        sorted(MUSIC_STARTING_TOOLS),
-        is_dj_auto=False,
-        turn_text=LIVE_B,
-    )
-    assert counted is True
-    assert dj.state.tracks_started == before + 1

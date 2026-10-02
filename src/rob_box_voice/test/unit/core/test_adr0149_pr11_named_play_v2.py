@@ -1,26 +1,23 @@
-"""ADR-0149 PR-11 — заказ мелодии по имени при ``music_engine: v2`` играет движок v2 (эпик #3312).
+"""ADR-0149 PR-11 — заказ мелодии по имени играет движок v2 (эпик #3312).
 
-Роутинг v1/v2: при v1 всё как было (``lookup_melody`` → ``compose_music``), при v2 — тот же поиск и то же
-правило промаха (реплика в LLM), а играет ``request_music(intent=melody)`` движка v2. Без ROS: тулы — фейк.
+Поиск ``lookup_melody`` и правило промаха (реплика в LLM), играет ``request_music(intent=melody)`` движка v2;
+старый шаг ``compose_music`` удалён в PR-13a. Без ROS: тулы — фейк.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from rob_box_voice.core.media_router import ENGINE_V1, ENGINE_V2, MediaRouter, MediaState
+from rob_box_voice.core.media_router import MediaRouter, MediaState
 from rob_box_voice.core.named_play import NamedPlayStatus, run_named_play
 
 HIT = "{'name': 'kalinkav_2', 'title': 'Kalinka V2.0', 'match': {'unmatched': [], 'ignored': []}}"
 MISS = "{'name': 'national', 'title': 'Soviet Anthem', 'match': {'unmatched': [], 'ignored': ['германии']}}"
 
 
-@pytest.mark.parametrize("engine,expected", [(ENGINE_V1, "v1"), (ENGINE_V2, "v2")])
-def test_router_sends_play_named_to_the_engine_of_the_flag(engine, expected):
-    plan = MediaRouter(engine=engine).route("робот поставь калинка", MediaState())
-    assert plan is not None and plan.play_name == "калинка" and plan.play_engine == expected
+def test_router_sends_play_named_to_the_named_play_flow():
+    plan = MediaRouter().route("робот поставь калинка", MediaState())
+    assert plan is not None and plan.play_name == "калинка"
     assert plan.tool_calls == ()  # заказ исполняет поток named_play, не план тулов
 
 
@@ -36,24 +33,21 @@ def _executor(lookup_content, play_ok=True):
     return execute, calls
 
 
-@pytest.mark.parametrize("engine,tool,args", [
-    ("v1", "compose_music", {"name": "kalinkav_2"}),
-    ("v2", "request_music", {"intent": "melody", "text": "калинка"}),
-])
-def test_found_melody_is_played_by_the_engine_tool(engine, tool, args):
+def test_found_melody_is_played_by_the_engine_tool():
+    tool, args = "request_music", {"intent": "melody", "text": "калинка"}
     execute, calls = _executor(HIT)
-    outcome = asyncio.run(run_named_play(execute, "калинка", engine))
+    outcome = asyncio.run(run_named_play(execute, "калинка"))
     assert outcome.status is NamedPlayStatus.PLAYED and outcome.tools_done == ("lookup_melody", tool)
     assert calls == [("lookup_melody", {"name": "калинка"}), (tool, args)]
 
 
 def test_v2_miss_goes_to_llm_without_touching_the_player():
     execute, calls = _executor(MISS)
-    outcome = asyncio.run(run_named_play(execute, "гимн германии", "v2"))
+    outcome = asyncio.run(run_named_play(execute, "гимн германии"))
     assert outcome.status is NamedPlayStatus.MISS and [c[0] for c in calls] == ["lookup_melody"]
 
 
 def test_v2_found_but_not_started_is_an_honest_failure():
     execute, _calls = _executor(HIT, play_ok=False)
-    outcome = asyncio.run(run_named_play(execute, "калинка", "v2"))
+    outcome = asyncio.run(run_named_play(execute, "калинка"))
     assert outcome.status is NamedPlayStatus.FAILED and "request_music" in outcome.reason

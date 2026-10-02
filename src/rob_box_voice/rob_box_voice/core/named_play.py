@@ -13,15 +13,9 @@
    слово не осталось непонятым для поиска (``ignored`` пуст — кириллица,
    которой нет в алиасах, до поиска просто не доходит: «гимн германии»
    без этой проверки сыграл бы гимн СССР). Иначе — промах.
-2. ``compose_music(name=<ключ записи>)`` — ключ записи из шага 1, чтобы
-   сыграла та же запись. Сначала без тембров: сохранённый пресет мелодии
-   и подстройка играющего трека (ADR-0132 PR-7, #2950) подставляются
-   тулом сами. Если тул ответил «найдена, но не задана аранжировка» —
-   второй вызов с тембрами по умолчанию (:data:`DEFAULT_ARRANGEMENT`).
-
-ADR-0149 PR-11 — при ``music_engine: v2`` шаг 2 другой: ``request_music(intent="melody", text=<название>)``
-играет песню движка v2 и отвечает ``ok`` только по ``started`` (поиск в туле — то же правило
-:func:`melody_hit`). Шаг 1 и промах — те же.
+2. ``request_music(intent="melody", text=<название>)`` (ADR-0149 PR-11) — играет
+   песню движка v2 и отвечает ``ok`` только по ``started`` (поиск в туле — то же
+   правило :func:`melody_hit`). Старый шаг ``compose_music(name=…)`` удалён в PR-13a.
 
 Промах — реплика уходит в LLM, как до #3176, и роутер ничего не говорит
 (иначе был бы двойной ответ). Поток чистый: без ROS и без I/O, тулы
@@ -35,26 +29,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-#: Тембры для ``compose_music(name=…)``, если у мелодии нет пресета.
-#: Тул требует ``lead_synth`` + ``bass_synth`` + ``pad_synth`` при
-#: ``name=`` (``ComposeMusicTool._missing_arrangement_fields``). Лид —
-#: фортепиано: сухой соло-инструмент из ``MELODIC_LEAD_SYNTHS``, годится
-#: для классики, игровых и киношных тем; бас и пэд — нейтральные из
-#: описаний параметров тула.
-DEFAULT_ARRANGEMENT: Mapping[str, str] = {
-    "lead_synth": "pianovel",
-    "bass_synth": "bass",
-    "pad_synth": "warmpad",
-}
-
-#: Маркер ответа ``compose_music``: мелодия найдена, тембров не хватает.
-ARRANGEMENT_MISSING_MARKER = "не задана аранжировка"
-
 LOOKUP_TOOL = "lookup_melody"
-COMPOSE_TOOL = "compose_music"
 REQUEST_TOOL = "request_music"
-#: Значение флага ``music_engine``, при котором мелодию играет движок v2 (ADR-0149 §9).
-ENGINE_V2 = "v2"
 
 ToolExec = Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, str]]]
 
@@ -66,7 +42,7 @@ class NamedPlayStatus(str, Enum):
     PLAYED = "played"
     #: Нет в базе или совпало не целиком — реплика в LLM, роутер молчит.
     MISS = "miss"
-    #: Нашлась, но ``compose_music`` не прошёл — честная фраза.
+    #: Нашлась, но ``request_music`` не прошёл — честная фраза.
     FAILED = "failed"
 
 
@@ -151,22 +127,8 @@ def melody_hit(data: Optional[Mapping[str, Any]]) -> Tuple[Optional[MelodyHit], 
     return MelodyHit(key=key, title=title), ""
 
 
-async def _compose(execute: ToolExec, hit: MelodyHit) -> bool:
-    ok, content = await execute(COMPOSE_TOOL, {"name": hit.key})
-    if ok or ARRANGEMENT_MISSING_MARKER not in (content or ""):
-        return ok
-    args: Dict[str, Any] = {"name": hit.key, **DEFAULT_ARRANGEMENT}
-    ok, _content = await execute(COMPOSE_TOOL, args)
-    return ok
-
-
-async def _request_v2(execute: ToolExec, name: str) -> bool:
-    ok, _content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
-    return ok
-
-
-async def run_named_play(execute: ToolExec, name: str, engine: str = "v1") -> NamedPlayOutcome:
-    """``lookup_melody`` → (полное совпадение) → ``compose_music`` (v1) или ``request_music`` (v2)."""
+async def run_named_play(execute: ToolExec, name: str) -> NamedPlayOutcome:
+    """``lookup_melody`` → (полное совпадение) → ``request_music(intent="melody")``."""
     ok, content = await execute(LOOKUP_TOOL, {"name": name})
     if not ok:
         return NamedPlayOutcome(NamedPlayStatus.MISS, reason="lookup: не найдена")
@@ -175,23 +137,18 @@ async def run_named_play(execute: ToolExec, name: str, engine: str = "v1") -> Na
         return NamedPlayOutcome(
             NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason
         )
-    v2 = engine == ENGINE_V2
-    play_tool = REQUEST_TOOL if v2 else COMPOSE_TOOL
-    if await (_request_v2(execute, name) if v2 else _compose(execute, hit)):
+    played, _content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
+    if played:
         return NamedPlayOutcome(
-            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, play_tool)
+            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, REQUEST_TOOL)
         )
     return NamedPlayOutcome(
         NamedPlayStatus.FAILED, hit=hit, tools_done=(LOOKUP_TOOL,),
-        reason=f"{play_tool} не прошёл",
+        reason=f"{REQUEST_TOOL} не прошёл",
     )
 
 
 __all__ = [
-    "ARRANGEMENT_MISSING_MARKER",
-    "COMPOSE_TOOL",
-    "DEFAULT_ARRANGEMENT",
-    "ENGINE_V2",
     "LOOKUP_TOOL",
     "MelodyHit",
     "NamedPlayOutcome",

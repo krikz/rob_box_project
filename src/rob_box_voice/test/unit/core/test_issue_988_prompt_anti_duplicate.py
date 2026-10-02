@@ -72,8 +72,9 @@ def test_master_prompt_has_few_shot_correct_and_wrong_examples() -> None:
     # ❌ Wrong: post-amble duplication — full example with the banned phrase.
     assert "⛔ WRONG — post-amble duplication (NEVER do this!):" in content
     assert "← ДУБЛЬ! Весь текст уже озвучен." in content
-    # The music section repeats the same anti-duplicate for BACKING.
-    assert "NO \"Повторю слова:\" / \"Вот и песенка!\" post-ambles!" in content
+    # ADR-0149 PR-13a: §5 MUSIC старого пути удалён; секция музыки v2
+    # ссылается на канонический §2.
+    assert "ANTI-DUP для музыки с текстом — see §2" in content
 
 
 def test_master_prompt_done_marker_rule_is_adjacent_to_speak_text() -> None:
@@ -105,11 +106,3 @@ def test_master_prompt_has_library_playback_example() -> None:
     assert "из библиотеки" in content
 
 
-def test_master_prompt_dj_mode_forbids_load_track() -> None:
-    """DJ-переходы не должны грузить сохранённые треки: ``load_track`` СРАЗУ
-    запускает трек из базы → резкая вставка между треками (жалоба Шифу)."""
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "ГЕНЕРИРУЙ СВЕЖИЙ ТРЕК" in content
-    assert "НЕ вызывай `load_track`" in content
-    assert "резкую вставку" in content

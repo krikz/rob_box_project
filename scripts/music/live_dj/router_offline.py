@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Офлайн-прогон фраз через роутер медиакоманд v2 (ADR-0149 PR-6): решение и задержка до вызова тула.
 
-Без ROS и без звука: фраза → ``strip_wake_word`` (как приём STT) → ``MediaRouter(engine=…).route``
+Без ROS и без звука: фраза → ``strip_wake_word`` (как приём STT) → ``MediaRouter().route``
 → тул движка v2 (``dj_set``/``request_music``) с настоящими ``compose``/``render`` и фейковым
 владельцем плеера (``play`` принимает программу сразу). Это НЕ замер A2 на роботе: CPU хоста,
 нет Renardo, нет старта на границе такта (Clock.latency 0.5 с + до такта ≈ 1.9 с при 130 BPM).
 
 Запуск из корня репо (пакеты своего чекаута):
     PYTHONUTF8=1 PYTHONPATH="src/rob_box_music;src/rob_box_core;src/rob_box_voice;src/rob_box_harness;\
-src/rob_box_mcp_tools" python scripts/music/live_dj/router_offline.py [--engine v2] [фраза ...]
+src/rob_box_mcp_tools" python scripts/music/live_dj/router_offline.py [фраза ...]
 """
 
 from __future__ import annotations
@@ -60,14 +60,14 @@ def _tools(owner):
     return {"dj_set": dj, "request_music": RequestMusicTool(None, owner, dj, melodies=lambda ids: {})}
 
 
-def run(phrase: str, engine: str) -> dict:
+def run(phrase: str) -> dict:
     owner = _Owner()
     tools = _tools(owner)
     t0 = time.perf_counter()
     text = strip_wake_word(phrase)
-    plan = MediaRouter(engine=engine).route(text, MediaState())
+    plan = MediaRouter().route(text, MediaState())
     t_route = time.perf_counter() - t0
-    row = {"phrase": phrase, "engine": engine, "route_ms": round(t_route * 1000, 2)}
+    row = {"phrase": phrase, "route_ms": round(t_route * 1000, 2)}
     if plan is None:
         return {**row, "decision": "LLM (роутер не взял)"}
     calls = [(c.name, c.arguments) for c in plan.tool_calls]
@@ -86,10 +86,9 @@ def run(phrase: str, engine: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("phrases", nargs="*")
-    parser.add_argument("--engine", default="v2", choices=("v1", "v2"))
     opts = parser.parse_args()
     for phrase in opts.phrases or PHRASES:
-        print(json.dumps(run(phrase, opts.engine), ensure_ascii=False))
+        print(json.dumps(run(phrase), ensure_ascii=False))
 
 
 if __name__ == "__main__":

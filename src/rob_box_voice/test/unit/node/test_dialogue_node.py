@@ -93,8 +93,6 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
 
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.IDLE
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
 
     n._run_task = None
     n._run_cancelled = False
@@ -951,11 +949,6 @@ class TestBabbleDetector:
         assert user_wants_performance("зачитай рэп")
         assert not user_wants_performance("как дела?")
 
-    def test_user_wants_music(self):
-        n = _make_node()
-        assert n._user_wants_music("включи музыку")
-        assert not n._user_wants_music("расскажи анекдот")
-
 
 class TestMusicCleanup:
     def test_publish_music_cleanup_noop_without_pub(self):
@@ -969,16 +962,6 @@ class TestMusicCleanup:
         n._publish_music_cleanup(reason="dialogue_end")
         msg = n._music_cleanup_pub.publish.call_args[0][0]
         assert json.loads(msg.data) == {"reason": "dialogue_end"}
-
-
-class TestDjFarewell:
-    def test_on_dj_stop_farewell_publishes_response(self):
-        n = _make_node()
-        n._publish_response = MagicMock()
-        n._on_dj_stop_farewell("Роббокс")
-        n._publish_response.assert_called_once()
-        text = n._publish_response.call_args[0][0]
-        assert "выключается" in text
 
 
 class TestPublishState:

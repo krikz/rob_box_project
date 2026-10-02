@@ -26,8 +26,6 @@ from rob_box_voice.core.media_command_grammar import (
     parse_media_command,
 )
 from rob_box_voice.core.media_router import (
-    DJ_PREVIEW_FORM_SEC,
-    DJ_START_TRANSITION_SEC,
     NOTHING_PLAYING_TEXT,
     MediaRouter,
     MediaState,
@@ -102,10 +100,10 @@ def test_grammar_not_closed_command(text: str) -> None:
 
 
 @pytest.mark.parametrize("text", ["сыграй трек", "включи музыку"])
-def test_generic_music_request_is_v2_only(text: str) -> None:
-    """ADR-0149 PR-6: родовой заказ — ``REQUEST_MUSIC``; при v1 роутер его не берёт (LLM, как раньше)."""
+def test_generic_music_request_goes_to_request_music(text: str) -> None:
+    """ADR-0149 PR-6: родовой заказ — ``REQUEST_MUSIC`` → ``request_music`` движка v2."""
     assert parse_media_command(text).intent is MediaIntent.REQUEST_MUSIC
-    assert MediaRouter().route(text, QUIET) is None
+    assert [c.name for c in MediaRouter().route(text, QUIET).tool_calls] == ["request_music"]
 
 
 def test_track_name_tail_needs_current_track() -> None:
@@ -172,7 +170,7 @@ def test_wide_stop_detector_still_catches_mixed_phrases() -> None:
 @pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
 def test_volume_plan(text: str, action: str, state: str) -> None:
     plan = MediaRouter().route(text, STATES[state])
-    assert plan is not None and plan.handled and not plan.to_llm
+    assert plan is not None
     if state == "quiet":
         assert plan.tool_calls == ()
         assert plan.say_ok == NOTHING_PLAYING_TEXT
@@ -193,65 +191,25 @@ def test_track_name_volume_plan_only_while_that_track_plays() -> None:
 @pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
 def test_stop_plan(state: str) -> None:
     plan = MediaRouter().route("выключи музыку", STATES[state])
-    assert plan is not None and plan.handled
-    assert _calls(plan) == [("stop_music", {})]
-    assert plan.dj_off and plan.cancel_inflight
+    assert plan is not None
+    assert _calls(plan) == [("dj_set", {"action": "stop"}), ("stop_music", {})]
+    assert plan.cancel_inflight
     assert ("ничего не играет" in plan.say_ok) is (state == "quiet")
 
 
-def test_dj_plan_in_silence_starts_set() -> None:
-    # Issue #3153: в тишине сет стартует мгновенным club-превью, затем
-    # set_dj_mode (подробно — test_issue_3153_dj_instant_preview.py).
-    plan = MediaRouter().route("ты диджей Снупдог, давай сет", QUIET)
-    assert plan.handled
-    assert [c.name for c in plan.tool_calls] == ["compose_music", "set_dj_mode"]
-    assert _calls(plan)[1] == (
-        "set_dj_mode",
-        {
-            "enabled": True,
-            "persona": "диджей Снупдог",
-            "next_transition_sec": DJ_PREVIEW_FORM_SEC,
-        },
-    )
-    assert "Снупдог" in plan.say_ok
+@pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
+def test_dj_plan_starts_engine_set(state: str) -> None:
+    # PR-13a: ни превью compose_music, ни set_dj_mode — сет ведёт движок v2.
+    plan = MediaRouter().route("ты диджей Снупдог, давай сет", STATES[state])
+    assert _calls(plan) == [("dj_set", {"action": "start", "persona": "диджей Снупдог"})]
+    assert plan.confirm_started and "Снупдог" in plan.say_ok
 
 
-def test_dj_plan_over_playing_track_starts_set() -> None:
-    # Issue #3153 (доп.): играющий трек засчитан треком #1 сета — подробно
-    # test_issue_3153_dj_instant_preview.py.
-    plan = MediaRouter().route("ты диджей Снупдог, давай сет", PLAYING)
-    assert _calls(plan)[0][1]["next_transition_sec"] == DJ_START_TRANSITION_SEC
-    assert plan.claim_track_one is True
-
-
-def test_dj_plan_mid_set_switches_persona_without_stop() -> None:
-    plan = MediaRouter().route(
-        "Ты диджей Анакен скайвокер и у нас сегодня имперский слет в клубе", DJ_SET
-    )
-    assert plan.handled
-    assert _calls(plan) == [(
-        "set_dj_mode",
-        {
-            "enabled": True,
-            "persona": "диджей Анакен скайвокер",
-            "theme": "имперский слет в клубе",
-        },
-    )]
-    names = [c.name for c in plan.tool_calls]
-    assert "stop_music" not in names
-    assert "bpm" not in plan.tool_calls[0].arguments  # темп сета — #3113
-    assert not plan.dj_off
-    assert plan.say_ok.startswith("Теперь я диджей Анакен")
-
-
-def test_open_dj_request_runs_set_dj_mode_then_llm() -> None:
+def test_open_dj_request_goes_to_llm() -> None:
     plan = MediaRouter().route(
         "Ты диджей PAUL OAKENFOLD, сыграй Still Dre и Next Episode на 10 минут", QUIET
     )
-    assert plan.to_llm and not plan.handled
-    assert [c.name for c in plan.tool_calls] == ["set_dj_mode"]
-    assert plan.say_ok == ""  # отвечает LLM
-    assert not plan.cancel_inflight
+    assert plan is None
 
 
 @pytest.mark.parametrize("state", ["playing", "quiet", "dj"])

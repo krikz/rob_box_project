@@ -6,6 +6,7 @@
     Факт 1. «Робот что сейчас играет» (плеер: idle)
       spoken='Сейчас тишина — ничего не играет.' tools=[]
       Bug E music_state → retry → retry → «Не получилось выполнить…»
+      (правило music_state удалено в ADR-0149 PR-13a — ответ по снимку)
     Факт 2. «Робот выключи музыку» → роутер stop_music ✅
             «Робот а какую музыку ты сейчас включал»
       spoken='Одиннадцать секунд назад я останавливал трек без названия…'
@@ -30,7 +31,6 @@ from rob_box_harness.core.agent_core import DialogResult
 from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.dialogue_guards import ACTION_CLAIM_NOTHING_DONE_TEXT
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
-from rob_box_voice.core.music_guard import MusicGuard
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
@@ -69,11 +69,8 @@ def _make_node(*, playing: bool) -> DialogueNode:
     n._sound_trigger_pub = MagicMock()
     n._tts_control_pub = MagicMock()
     n._music_cleanup_pub = MagicMock()
-    n._dj_mode_pub = None
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._active_batches = {}
@@ -81,7 +78,6 @@ def _make_node(*, playing: bool) -> DialogueNode:
     n._verbose_llm = False
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
@@ -90,16 +86,12 @@ def _make_node(*, playing: bool) -> DialogueNode:
     n._consume_synthetic_retry = MagicMock(return_value=True)
     n._dispatch_turn = MagicMock()
     n._check_babble_and_retry = MagicMock(return_value=False)
-    n._check_embedded_renardo_code_and_retry = MagicMock(return_value=False)
-    n._music_guard = MusicGuard()
     n._generated_music_state = None
     n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
     # роутер медиакоманд (#3134)
     n._llm_skipped_counter = new_llm_skip_counter()
     n._cancel_run = MagicMock()
-    n._force_dj_off_for_stop_command = MagicMock()
     n._speak_direct = MagicMock()
-    n._music_form_track = None
     n._scheduler_executor = _FakeExecutor()
     n._loop = MagicMock()
     n._core = MagicMock()
@@ -156,26 +148,6 @@ def test_fact1_idle_answer_goes_to_tts_without_retry() -> None:
     assert FAILURE_PHRASE not in _said(n)
 
 
-def test_idle_player_but_model_says_playing_still_retries() -> None:
-    """Ложь против снимка по-прежнему ловит Bug E ``music_state``."""
-    n = _make_node(playing=False)
-    n._handle_result(
-        _result("Сейчас играет клубный трек."), user_input=LIVE_QUESTION
-    )
-
-    n._dispatch_turn.assert_called_once()
-    assert "клубный трек" not in _said(n)
-
-
-def test_no_snapshot_keeps_old_retry() -> None:
-    """Снимка нет (``playing="unknown"``) — прежнее поведение, ретрай."""
-    n = _make_node(playing=False)
-    n._music_player_state = None
-    n._handle_result(_result(LIVE_IDLE_ANSWER), user_input=LIVE_QUESTION)
-
-    n._dispatch_turn.assert_called_once()
-
-
 # ── Факт 2: стоп роутером, потом «что ты включал» ──────────────────────
 
 
@@ -183,10 +155,10 @@ def test_fact2_router_stop_backs_the_true_claim(run_plans) -> None:
     n = _make_node(playing=True)
     assert n._route_media_command("выключи музыку") is True
     run_plans()
-    assert n._scheduler_executor.calls == ["stop_music"]
-    # Ход роутера записан для модели: реплика, фраза, вызванный тул.
+    assert n._scheduler_executor.calls == ["dj_set", "stop_music"]
+    # Ход роутера записан для модели: реплика, фраза, вызванные тулы.
     n._core.record_external_turn.assert_called_once_with(
-        "выключи музыку", "Выключил музыку.", ["stop_music"]
+        "выключи музыку", "Выключил музыку.", ["dj_set", "stop_music"]
     )
 
     n._music_player_state = MusicPlayerState(state="idle")
@@ -251,7 +223,6 @@ def test_failed_tool_keeps_honest_failure_phrase() -> None:
         tools_called=("save_arrangement_preset",),
         user_input="сохрани пресет",
         raw_user_command="сохрани пресет",
-        is_dj_auto=False,
         has_error=False,
         speak_text_real=0,
         tool_error_occurred=True,

@@ -5,8 +5,9 @@
 ``MediaCommandStep`` → ``_route_media_command`` → ``_execute_play_named``;
 мок — исполнитель тулов (вместо ``SchedulerToolExecutor`` →
 ``/mcp/execute``), ``_dispatch_turn`` (вход LLM-хода), ``_speak_direct``
-(TTS) и DJ-контроллер. Ответ ``lookup_melody`` — в формате адаптера
-(``message`` + ``repr(data)``, ``core_adapter._result_content``).
+(TTS). Ответ ``lookup_melody`` — в формате адаптера
+(``message`` + ``repr(data)``, ``core_adapter._result_content``). Играет
+``request_music`` движка v2 (PR-11; ``compose_music`` удалён в PR-13a).
 """
 
 from __future__ import annotations
@@ -21,8 +22,6 @@ from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
 from rob_box_voice.core.music_player_state import MusicPlayerState
-from rob_box_voice.core.named_play import DEFAULT_ARRANGEMENT
-from rob_box_voice.core.track_start_guard import MUSIC_STARTING_TOOLS
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
 
@@ -37,11 +36,10 @@ _FUR_ELISE = {
 class _MelodyExecutor:
     """``execute(ToolCall)`` с базой из одной мелодии — «к элизе»."""
 
-    def __init__(self, *, compose_ok: bool = True, needs_timbres: bool = False) -> None:
+    def __init__(self, *, play_ok: bool = True) -> None:
         self.calls = []
         self.turns_begun = 0
-        self._compose_ok = compose_ok
-        self._needs_timbres = needs_timbres
+        self._play_ok = play_ok
 
     def begin_turn(self) -> None:
         self.turns_begun += 1
@@ -53,12 +51,10 @@ class _MelodyExecutor:
             if args["name"] == "к элизе":
                 return self._ok(call, f"Нашёл «Fur Elise».\n{_FUR_ELISE!r}")
             return self._err(call, f"Мелодия {args['name']!r} не найдена в библиотеке.")
-        if call.name == "compose_music":
-            if self._needs_timbres and "lead_synth" not in args:
-                return self._err(call, "Мелодия 'furelise' найдена, но не задана аранжировка")
-            if self._compose_ok:
-                return self._ok(call, "Играет «Fur Elise»")
-            return self._err(call, "SuperCollider недоступен")
+        if call.name == "request_music":
+            if self._play_ok:
+                return self._ok(call, "{'ok': True, 'track_id': 'mel:01:A:aa'}")
+            return self._err(call, "мелодия не заиграла: not_started")
         return self._err(call, f"unexpected tool {call.name}")
 
     @staticmethod
@@ -82,20 +78,19 @@ def _make_node(*, playing=False, dj=False, track=None, state_name="IDLE", **exec
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
     n._dsm.current_state.name = state_name
-    n._dj = MagicMock()
-    n._dj.state.enabled = dj
     n._cancel_run = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._publish_state = MagicMock()
-    n._publish_dj_off = MagicMock()
     n._dispatch_turn = MagicMock()
     n._speak_direct = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
     n._pending_music_cleanup = True  # хвост прошлого хода
     n._track_mode_music_active = False
-    n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
-    n._music_form_track = track
+    n._music_player_state = MusicPlayerState(
+        state="playing" if playing else "idle", dj=dj,
+        dj_info={"enabled": dj, "title": track} if track else {"enabled": dj},
+    )
     n._scheduler_executor = _MelodyExecutor(**exec_kw)
     n._loop = MagicMock()
     return n
@@ -131,7 +126,7 @@ def _stt(node: DialogueNode, text: str) -> None:
     node._on_stt(msg)
 
 
-# ── найдена → compose без LLM ──────────────────────────────────────────
+# ── найдена → request_music без LLM ──────────────────────────────────────────
 
 
 @pytest.mark.parametrize("playing", [False, True])
@@ -144,7 +139,7 @@ def test_found_melody_plays_without_llm(run_plans, playing):
     n._dispatch_turn.assert_not_called()
     assert n._scheduler_executor.calls == [
         ("lookup_melody", {"name": "к элизе"}),
-        ("compose_music", {"name": "furelise"}),
+        ("request_music", {"intent": "melody", "text": "к элизе"}),
     ]
     assert n._scheduler_executor.turns_begun == 1  # лимит #2859 снят
     n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
@@ -153,17 +148,6 @@ def test_found_melody_plays_without_llm(run_plans, playing):
     # отложенный cleanup прошлого хода не гасит заказ после фразы
     assert n._pending_music_cleanup is False
     assert n._track_mode_music_active is True
-
-
-def test_found_melody_without_preset_gets_default_timbres(run_plans):
-    n = _make_node(needs_timbres=True)
-    _stt(n, "Робот, поставь к элизе")
-    run_plans()
-    assert n._scheduler_executor.calls[-1] == (
-        "compose_music", {"name": "furelise", **DEFAULT_ARRANGEMENT}
-    )
-    n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
-    n._dispatch_turn.assert_not_called()
 
 
 # ── общее название → LLM, роутер не трогает ────────────────────────────
@@ -197,32 +181,24 @@ def test_unknown_melody_goes_to_llm_silently(run_plans, state_name):
 
 
 def test_found_but_not_started_is_said_honestly(run_plans):
-    n = _make_node(compose_ok=False)
+    n = _make_node(play_ok=False)
     _stt(n, "Робот, поставь к элизе")
     run_plans()
     n._dispatch_turn.assert_not_called()
     n._speak_direct.assert_called_once()
     assert "не получилось" in n._speak_direct.call_args[0][0]
-    n._dj.note_turn_tools.assert_not_called()
 
 
-# ── DJ-сет: заказ — трек гостя, сет живёт ──────────────────────────────
+# ── DJ-сет: заказ не останавливает сет ──────────────────────────────────
 
 
 def test_order_mid_dj_set_does_not_stop_set(run_plans):
     n = _make_node(playing=True, dj=True, track="club #3", state_name="DIALOGUE")
     _stt(n, "Робот, поставь к элизе")
     run_plans()
-    assert [c[0] for c in n._scheduler_executor.calls] == ["lookup_melody", "compose_music"]
+    assert [c[0] for c in n._scheduler_executor.calls] == ["lookup_melody", "request_music"]
     assert "stop_music" not in [c[0] for c in n._scheduler_executor.calls]
-    assert "set_dj_mode" not in [c[0] for c in n._scheduler_executor.calls]
-    n._dj.reset_silently.assert_not_called()
-    n._publish_dj_off.assert_not_called()
-    # тот же учёт, что после хода LLM с compose_music: заказ гостя —
-    # переход ждёт конца его формы (DJModeController._hold_for_user_track)
-    n._dj.note_turn_tools.assert_called_once_with(
-        ("compose_music",), MUSIC_STARTING_TOOLS
-    )
+    assert "dj_set" not in [c[0] for c in n._scheduler_executor.calls]
     n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._dispatch_turn.assert_not_called()
 

@@ -154,7 +154,6 @@ def _node(script):
     n._retry_dispatched_in_turn = False
     n._drain_pending_user_messages = MagicMock(return_value=False)
     n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_music_guard = MagicMock(return_value=False)
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     # Сбой стенда не маскируется под «задумался» — падает тест.

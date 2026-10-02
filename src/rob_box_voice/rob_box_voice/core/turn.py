@@ -70,8 +70,6 @@ class TurnContext:
         user_input: Original user command. Used to build retry prompts that
             echo the request. On retry turns this is still the ORIGINAL
             command, not the synthetic CRITICAL prompt (issue #1204).
-        is_dj_auto: ``True`` for DJ-mode tick transitions (Bug B path). The
-            music guard uses it; everything else ignores it.
         has_error: ``True`` when ``DialogResult.error is not None`` for this
             turn. Issue #2549 — :class:`UniversalActionClaimGuard` must NOT
             retry on an already-errored turn (mirrors the legacy
@@ -91,7 +89,6 @@ class TurnContext:
     """
 
     user_input: str
-    is_dj_auto: bool = False
     has_error: bool = False
     speech_id: Optional[str] = None
     tool_error_occurred: bool = False
@@ -299,7 +296,6 @@ def begin_babble_retry(
         ),
         turn=TurnContext(
             user_input=user_input or "",
-            is_dj_auto=False,
             tool_error_occurred=bool(tool_error_occurred),
         ),
         state=state,

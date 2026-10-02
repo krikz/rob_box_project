@@ -146,21 +146,6 @@ class TestHandleResultDegradedFallback:
         joined = " | ".join(published).lower()
         assert "привет" in joined and "интернет" in joined
 
-    def test_dj_auto_suppresses_degraded_phrase(self):
-        # 13.08: DJ auto-transition — юзер ничего не говорил, голосовой
-        # ответ каждые ~45с был бы шумом. ProviderError на DJ-тике НЕ
-        # озвучиваем (никакой degraded-фразы).
-        n = _make_node()
-        result = _make_result(error=ProviderError(_HEALTH_AWARE_MSG))
-        n._handle_result(
-            result,
-            user_input="[DJ_AUTO] ...",
-            is_dj_auto=True,
-            raw_user_command=None,
-        )
-
-        published = [c.args[0].data for c in n._response_pub.publish.call_args_list]
-        assert published == [], f"DJ-auto не должен озвучивать degraded: {published!r}"
 
     def test_ordinary_error_still_falls_to_prinyal(self):
         # Обычная ошибка (не ProviderError) — поведение как раньше:

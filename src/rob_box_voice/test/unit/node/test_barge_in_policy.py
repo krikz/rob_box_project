@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
-from rob_box_voice.core.music_guard import MusicGuard
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -27,8 +26,6 @@ def node():
     n._wake_words = ["робок", "робот", "роббокс", "робокс", "robbox", "rob box"]
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._sound_trigger_pub = MagicMock()
     n._publish_state = MagicMock()
     n._dispatch_turn = MagicMock()
@@ -72,7 +69,6 @@ def node():
     # ``_check_embedded_renardo_code_and_retry`` in chain order.
     n._track_mode_music_active = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     return n
 
 
@@ -338,7 +334,6 @@ def _make_turn_node() -> DialogueNode:
     n._task_lock = threading.Lock()
     n._run_cancelled = False
     n._babble_retry_used = False
-    n._music_guard = MusicGuard()
     n._pending_music_cleanup = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
@@ -350,7 +345,6 @@ def _make_turn_node() -> DialogueNode:
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
-    n._apply_music_guard = MagicMock(return_value=False)
     n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
@@ -371,7 +365,6 @@ def _make_turn_node() -> DialogueNode:
     # ``_handle_result`` if the test ever crosses it.
     n._track_mode_music_active = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     return n
 
 

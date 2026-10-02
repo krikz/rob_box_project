@@ -13,11 +13,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from rob_box_voice.core.dialogue_guards import (
-    MUSIC_HARD_STOP_TOOLS,
-    MUSIC_MODE_TOOLS,
-    MUSIC_STOP_TOOLS,
-)
+from rob_box_voice.core.dialogue_guards import MUSIC_MODE_TOOLS, MUSIC_STOP_TOOLS
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -74,32 +70,8 @@ class TestMusicPlayingNowFromPlayer:
         assert n._track_mode_music_active is False
 
 
-class TestRetryPromptUsesPlayer:
-    def test_retry_prompt_says_not_playing_after_track_finished(self):
-        n = _node()
-        n._track_mode_music_active = True  # старый источник врал бы «играет»
-        n._on_music_state(_msg({"state": "idle", "finished_track_id": "a-1"}))
-        from rob_box_voice.core.dialogue_guards import build_music_retry_prompt
-
-        assert n._build_music_retry_prompt("играй громче") == build_music_retry_prompt(
-            "играй громче", music_playing=False
-        )
-
-    def test_retry_prompt_says_playing_while_player_plays(self):
-        from rob_box_voice.core.dialogue_guards import build_music_retry_prompt
-
-        n = _node()
-        n._on_music_state(_msg({"state": "playing"}))
-        assert n._build_music_retry_prompt("играй громче") == build_music_retry_prompt(
-            "играй громче", music_playing=True
-        )
-
-
-class TestSetDjModeIsNotAStopTool:
-    def test_set_dj_mode_left_music_stop_tools(self):
-        assert "set_dj_mode" not in MUSIC_STOP_TOOLS
-        assert "stop_music" in MUSIC_STOP_TOOLS
-
-    def test_hard_stop_and_mode_sets_unchanged(self):
-        assert MUSIC_HARD_STOP_TOOLS == frozenset({"stop_music"})
-        assert "set_dj_mode" in MUSIC_MODE_TOOLS
+class TestStopAndModeToolSets:
+    def test_set_dj_mode_is_neither_stop_nor_mode_tool(self):
+        # ADR-0149 PR-13a: set_dj_mode — тул старого пути, DJ-сет ведёт dj_set движка v2.
+        assert "set_dj_mode" not in MUSIC_STOP_TOOLS | MUSIC_MODE_TOOLS
+        assert MUSIC_STOP_TOOLS == frozenset({"stop_music"})

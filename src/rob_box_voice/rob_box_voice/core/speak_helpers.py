@@ -22,7 +22,7 @@ import json
 import re
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единое место сборки
 # SSML — раньше здесь был ``f"<speak>{text}</speak>"`` без экранирования.
@@ -147,8 +147,8 @@ def strip_thinking_blocks(text: str) -> str:
     no follow-up.»`` over TTS, and the user hears the model's internal
     monologue (often in English, even when the system prompt says Russian).
 
-    Issue #3220 — thinking is ON again for DJ transitions and music
-    requests, so two broken shapes are handled too: a block cut by
+    Issue #3220 — thinking may be ON for a turn, so two broken shapes
+    are handled too: a block cut by
     ``max_tokens`` (``<think>`` without ``</think>`` — everything after the
     opening tag is reasoning) and a reply whose opening tag is missing
     (everything up to the last ``</think>`` is reasoning).
@@ -238,161 +238,6 @@ def strip_done_marker(text: str) -> str:
     if not isinstance(text, str) or not text:
         return text
     return _DONE_MARKER_RE.sub("", text).rstrip()
-
-
-# Issue #2557 (DJ live round 3, 2026-09-15): the LLM sometimes returns
-# ``spoken='done'`` (or ``\n\ndone`` / «готово» / «всё» / …) AFTER calling
-# music tools WITHOUT ``speak_text`` — the user hears music start but no
-# audible acknowledgement. The cycle-end equality check in
-# ``_handle_result`` correctly suppresses the marker from auto-TTS, but
-# the user is left with silence after a music action. The DJ fallback
-# (issue #2547) only fired when ``spoken`` was already empty post-strip
-# AND the turn was NOT ``is_dj_auto`` — which is exactly the opposite of
-# what we want here: on a DJ transition the announcement IS the
-# information (track changed), not noise. This helper is called by
-# ``_handle_result`` to replace the spoken text with a short
-# DJ-appropriate phrase when the model called music tools but produced
-# a degenerate (``done`` / empty) answer.
-#
-# The set below mirrors ``agent_core._MUSIC_LAUNCH_TOOLS`` plus the
-# pure-DJ controls (``set_dj_mode``, ``stop_music``, ``lookup_melody``,
-# ``load_skill``). Keep both lists in sync when adding a new music
-# tool — otherwise the fallback won't fire and the user will hear
-# silence again.
-_DJ_MUSIC_TOOLS: frozenset[str] = frozenset({
-    # Music launchers (agent_core._MUSIC_LAUNCH_TOOLS).
-    "execute_music_code", "generate_music",
-    "gen_play_from_library", "set_vibe_preset", "load_track",
-    # Pure-DJ controls.
-    "compose_music", "set_dj_mode", "stop_music",
-    "lookup_melody", "load_skill",
-})
-#: Degenerate marker that the master-prompt cycle-end contract tells the
-#: LLM to emit after the LAST ``speak_text``. Same set as the equality
-#: check in ``_handle_result`` (``done`` / «готово» / «всё» / …). Used
-#: here to recognise the «tools called but marker only» shape that
-#: falls through to silence.
-_DJ_DEGENERATE_MARKERS: frozenset[str] = frozenset({
-    "done", "task complete", "task_complete",
-    "готово", "готов", "готова",
-    "всё", "выполнено", "завершено", "завершена",
-})
-#: Short DJ announcement when the model changed the music without
-#: speaking. Tuned to be informative without claiming a specific
-#: action: «Готово, играю.» confirms the music change reached TTS, then
-#: the rest of the ``spoken`` (when present and non-degenerate) follows.
-#: No emoji / no exclamation — keeps the tone neutral and matches the
-#: other DJ hooks (``Принял.``, «Понял.»).
-_DJ_FALLBACK_PHRASE: str = "Готово, играю."
-
-#: Issue #2857 (round 2, live 23.09.2026 review) — templates for the
-#: DJ auto-transition announcement. A single fixed template
-#: («{persona}: дальше — {theme}!») turned out just as robotic as the
-#: generic phrase it replaced once ``theme`` (a whole party description,
-#: not a track) got stuffed into it, AND the persona name was repeated
-#: on every single transition. Fixed by:
-#: * NEVER using ``theme`` as a track substitute (it's a party
-#:   description, not a song title — too long, wrong shape);
-#: * dropping the persona prefix entirely (it was the same words every
-#:   transition — exactly the dull repetition being fixed);
-#: * rotating through a few short templates, chosen deterministically
-#:   by the transition number so tests stay stable and the phrase
-#:   still varies across a DJ set instead of repeating verbatim.
-_DJ_TRACK_TEMPLATES: Tuple[str, ...] = (
-    "Дальше — {track}!",
-    "Следом — {track}!",
-    "Новый трек — {track}!",
-)
-
-
-def ensure_dj_music_response(
-    spoken: str,
-    tools_called: Optional[List[str]],
-    *,
-    is_dj_auto: bool = False,
-    track_name: Optional[str] = None,
-    transition_count: int = 0,
-    music_failed: bool = False,
-) -> str:
-    """Return a DJ-style fallback when music tools ran without real
-    user-facing text (issue #2557; #2857 extends it — see below).
-
-    Contract:
-
-    * ``spoken`` is the post-strip, post-cycle-marker-equal text
-      (already passed through ``strip_done_marker`` etc.). May be
-      empty, whitespace, or one of :data:`_DJ_DEGENERATE_MARKERS`.
-    * ``tools_called`` is the list of tool names the LLM called this
-      turn (may be ``None``).
-
-    Returns the cleaned ``spoken`` if it looks like a real reply;
-    otherwise returns a fallback when ``tools_called`` intersects
-    :data:`_DJ_MUSIC_TOOLS`.
-
-    Issue #2857 — live 23.09.2026: ``speak_text`` was called AND
-    voiced a real DJ line this turn, but the post-strip ``spoken``
-    field still ended up empty/``done`` (the LLM's cycle-end
-    contract), and the fallback stomped the already-spoken line with
-    a second, duller phrase. If ``speak_text`` is in ``tools_called``
-    at all, this turn already had its say — never override it here,
-    regardless of what ``spoken`` looks like.
-
-    Issue #2857 also replaces the flat ``"Готово, играю."`` on
-    autonomous DJ transitions (``is_dj_auto=True``): the generic
-    phrase is only appropriate when the USER directly asked for music
-    and got no reply text. On a DJ auto-transition, a short,
-    templated line names the actual track (``track_name`` — the real
-    ``compose_music(name=...)`` argument, NOT ``theme``, which is a
-    whole party description). If no track name is available, stay
-    silent (``""``) rather than repeat a dull phrase every transition.
-
-    Pure / no ROS, no side effects — caller decides whether to publish.
-    Designed to be the single source of truth so the dialogue_node
-    change is a one-liner and stays under the CC budget.
-    """
-    # Issue #3316: музыкальный тул в ходе упал и ни один не прошёл — «Готово,
-    # играю.» / «Новый трек — X!» (имя берётся из АРГУМЕНТОВ вызова, успех не
-    # проверяется) были бы ложью. Подтверждение не выдумываем.
-    if tools_called is None or music_failed:
-        return spoken
-    # Defensive: mirror ``strip_done_marker`` contract — non-string
-    # ``spoken`` is the caller's problem (the dialogue_node already
-    # does ``result.spoken_text or ""`` upstream), but if it slips
-    # through here we pass it through untouched rather than crash on
-    # ``.strip()``.
-    if not isinstance(spoken, str):
-        return spoken
-    called = set(tools_called)
-    if "speak_text" in called:
-        # Issue #2857 — speak_text already voiced this turn's line (the
-        # live bug: 'Йоу, народ, гангста-драйв качает!' via speak_text,
-        # then 'Готово, играю.' stomped on top of it). Never publish a
-        # second, generic line over an already-spoken one.
-        return spoken
-    if not (called & _DJ_MUSIC_TOOLS):
-        return spoken
-    # Real user-facing reply? Leave it alone — the master-prompt contract
-    # allows the model to call music tools AND speak (e.g. «Запускаю
-    # Баха!»). Only intervene when the reply is empty or one of the
-    # cycle-end markers the LLM uses to signal turn end without
-    # producing speech.
-    stripped = spoken.strip()
-    if stripped and stripped.lower() not in _DJ_DEGENERATE_MARKERS:
-        return spoken
-    if not is_dj_auto:
-        # Direct user request ("сыграй что-нибудь") with no reply text —
-        # the generic confirmation is still the right call here.
-        return _DJ_FALLBACK_PHRASE
-    # DJ auto-transition without any spoken line: prefer a short,
-    # track-specific announcement over the generic phrase; silence
-    # beats a robotic "Готово, играю." repeated every ~45s. ``theme``
-    # is deliberately NOT used here — it's a party description
-    # ("гангста-вечеринка в чёрном квартале..."), not a track title.
-    name = (track_name or "").strip()
-    if not name:
-        return ""
-    template = _DJ_TRACK_TEMPLATES[transition_count % len(_DJ_TRACK_TEMPLATES)]
-    return template.format(track=name)
 
 
 #: Regexes applied by :func:`strip_markdown` in order. Each tuple is

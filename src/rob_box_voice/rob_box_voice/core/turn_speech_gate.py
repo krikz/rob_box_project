@@ -43,6 +43,9 @@ from typing import Callable, Optional
 #: Имя тула, после которого исход приходит асинхронно (ack speaker_id_node).
 REGISTER_TOOL = "register_speaker"
 
+#: Тул реплики, которую придерживает гейт.
+SPEAK_TOOL = "speak_text"
+
 #: Сколько реплика ждёт исхода регистрации. speaker_id_node ждёт эмбеддинг
 #: фразы до ``_REGISTER_UTTERANCE_WAIT_SEC`` = 1.5 с, плюс сама запись в БД.
 #: Обычно ack приходит за десятки миллисекунд (run 35923157899: 17 мс).
@@ -151,5 +154,6 @@ class TurnSpeechGate:
 __all__ = [
     "REGISTER_OUTCOME_TIMEOUT_S",
     "REGISTER_TOOL",
+    "SPEAK_TOOL",
     "TurnSpeechGate",
 ]

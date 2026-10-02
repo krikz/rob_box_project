@@ -5,8 +5,8 @@
 подряд; на исчерпании retry-budget (#1881) сырой ответ ушёл целиком
 (11 TTS-чанков, ~40 с монолога).
 
-Прогоняем настоящие ``_run_turn`` + ``_apply_music_guard`` + MusicGuard
-(max_user_retries=3, как в проде) и считаем, что реально ушло в TTS.
+Прогоняем настоящий ``_run_turn`` + tool-skipped гуард (музыкальный Bug C
+удалён в ADR-0149 PR-13a) и считаем, что реально ушло в TTS.
 ``_handle_result`` заменён хвостом, который зовёт ``_voice_turn_text`` —
 ровно так заканчивается настоящий ``_handle_result``.
 
@@ -22,7 +22,7 @@ from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
-from rob_box_voice.core.music_guard import MusicGuard
+from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 
 _USER = (
@@ -47,7 +47,6 @@ def _make_node(replies):
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._music_guard = MusicGuard(max_user_retries=3)
     n._pending_music_cleanup = False
     n._track_mode_music_active = False
     n._speaker_id_enabled = False
@@ -67,8 +66,6 @@ def _make_node(replies):
     n._dispatch_turn = MagicMock()
     n._reopen_dialogue_for_retry = MagicMock()
     n._pending_user_messages = deque()
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._loop = MagicMock()
     # Всё, что звучит: авто-TTS ответа хода + прямые фразы гуардов.
     n._tts = MagicMock()
@@ -103,9 +100,9 @@ def _run(n, text, **kw):
         asyncio.run(n._run_turn(text, session_epoch=0, **kw))
 
 
-def _run_chain(n):
+def _run_chain(n, text=_USER):
     """Юзерский ход + ретраи, которые ход задиспатчил (как в проде)."""
-    _run(n, _USER)
+    _run(n, text)
     while n._dispatch_turn.call_count:
         call = n._dispatch_turn.call_args
         n._dispatch_turn.reset_mock()
@@ -117,55 +114,39 @@ def _run_chain(n):
 
 
 class TestRetryChainIsSilent:
-    def test_three_retry_chain_voices_at_most_one_phrase(self):
-        """Живой лог 17:30: 3 фразы + 11 чанков → теперь максимум одна."""
+    """Ход с синхронным ретраем молчит, звучит только итог цепочки.
+
+    ADR-0149 PR-13a: музыкальный Bug C (``MusicGuard``), на котором был снят
+    живой лог, удалён; механизм «придержать ответ до решения post-turn
+    гуардов» тот же для tool-skipped гуарда (#1777).
+    """
+
+    def _real_tool_guard(self, n):
+        del n._apply_tool_skipped_guard  # настоящий гуард
+        n._tool_retry_used = False
+
+    def test_turn_with_retry_is_silent_and_retry_answer_is_voiced(self):
         n = _make_node([
-            _Result("Вечеринка начинается, трек номер раз — Still Dre.",
-                    ["set_dj_mode"]),
-            _Result("Йо, gangsta party, Снупдог на пульте! Погнали!"),
-            _Result(_MONOLOGUE),
+            _Result("Сейчас около трёх часов."),  # время из головы, без тула
+            _Result("Сейчас пятнадцать ноль семь.", ["get_current_time"]),
         ])
+        self._real_tool_guard(n)
 
-        _run_chain(n)
+        _run_chain(n, "который час")
 
-        assert n._core.process_input.await_count == 3
-        voiced = _voiced(n)
-        assert len(voiced) <= 1, voiced
-        # Сырой монолог не прозвучал ни целиком, ни батчем.
+        assert n._core.process_input.await_count == 2
+        n._publish_response.assert_called_once_with("Сейчас пятнадцать ноль семь.")
+        assert "около трёх" not in str(_voiced(n))
+
+    def test_exhausted_chain_does_not_speak_raw_monologue(self):
+        n = _make_node([_Result(_MONOLOGUE)])
+        self._real_tool_guard(n)
+        n._tool_retry_used = True  # ретрай уже потрачен — гуард молчит
+        n._retry_budget_exhausted_in_turn = True
+
+        _run(n, "который час")
+
         n._publish_response_batch.assert_not_called()
-        for c in voiced:
-            assert "mp3-библиотеки" not in str(c)
-
-    def test_exhausted_chain_speaks_short_fallback_not_raw(self):
-        n = _make_node([
-            _Result("Вечеринка начинается!", ["set_dj_mode"]),
-            _Result("Йо, Снупдог на пульте!"),
-            _Result(_MONOLOGUE),
-        ])
-
-        _run_chain(n)
-
-        n._speak_direct.assert_called_once()
-        fallback = n._speak_direct.call_args.args[0]
-        assert len(fallback) <= 120
-        n._publish_response.assert_not_called()
-
-    def test_successful_retry_voices_only_final_answer(self):
-        n = _make_node([
-            _Result("Йо, погнали!"),  # музыку просили — тула нет → ретрай
-            # Issue #2999 — «Ты диджей …» закрывает только set_dj_mode:
-            # разовый трек без него — ещё один DJ-ретрай (ADR-0140).
-            _Result(
-                "Still Dre в эфире.", ["set_dj_mode", "gen_play_from_library"]
-            ),
-        ])
-
-        _run_chain(n)
-
-        assert _voiced(n) == [
-            c for c in n._tts.mock_calls if c[0] == "response"
-        ]
-        n._publish_response.assert_called_once_with("Still Dre в эфире.")
 
 
 class TestNormalTurnUnchanged:
@@ -215,6 +196,8 @@ class TestBudgetExhaustedAndMusicTrim:
     def test_long_monologue_in_music_context_trimmed(self):
         n = _make_node([])
         n._turn_speech_hold = None
+        # Музыкальный контекст — по снимку плеера (идёт DJ-сет движка v2).
+        n._music_player_state = MusicPlayerState(state="playing", dj=True)
 
         n._voice_turn_text(_MONOLOGUE, user_input=_USER)
 

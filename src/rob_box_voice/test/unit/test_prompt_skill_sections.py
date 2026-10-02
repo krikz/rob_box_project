@@ -34,7 +34,7 @@ _MASTER = _PROMPTS / "master_prompt_compact.txt"
 _SKILLS_DIR = _PROMPTS / "skills"
 
 #: Секции, которые уезжают в скиллы (задачи 5.1 и 5.2).
-_MOVED_MARKERS = ("# 5. MUSIC", "### DJ MODE", "# 6. WAYPOINTS")
+_MOVED_MARKERS = ("# 5. MUSIC", "### Музыка движка v2", "# 6. WAYPOINTS")
 
 #: Инварианты — остаются в системном промпте при любом флаге (задача 5.3).
 _INVARIANTS = (
@@ -43,7 +43,6 @@ _INVARIANTS = (
     "RULE #LANG",
     "RULE #UNICODE-SPEECH",
     "RULE #SYSCTX",
-    "RULE #MUSIC",
 )
 
 
@@ -125,10 +124,9 @@ def test_moved_sections_land_in_declared_skills(enabled) -> None:
     """Задача 5.1/5.2: §5 → composer/dj/player, §6 → navigation."""
     by_skill = enabled.by_skill()
     assert set(by_skill) == {"composer", "dj", "player", "navigation"}
-    assert "execute_music_code" in by_skill["composer"]
-    assert "set_vibe_preset" in by_skill["composer"]
+    assert "request_music" in by_skill["composer"]
     assert "gen_play_from_library" in by_skill["player"]
-    assert "set_dj_mode" in by_skill["dj"]
+    assert "dj_set" in by_skill["dj"]
     assert "navigate_to_waypoint" in by_skill["navigation"]
 
 
@@ -143,11 +141,11 @@ def test_every_target_is_a_declared_skill(enabled) -> None:
         )
 
 
-def test_renardo_rules_reach_the_dj_too(enabled) -> None:
-    """DJ генерирует свежий трек кодом — без палитры синтов он слеп."""
+def test_engine_rules_reach_the_dj_too(enabled) -> None:
+    """ADR-0149 PR-13a: правила музыки движка v2 общие для composer и dj."""
     dj = enabled.by_skill()["dj"]
-    assert "Synth palette" in dj
-    assert "FIRE-AND-FORGET" in dj
+    assert "Музыка движка v2" in dj
+    assert "request_music" in dj and "dj_set" in dj
 
 
 def test_nothing_is_lost_when_the_sections_move(disabled, enabled) -> None:
@@ -245,7 +243,7 @@ def test_orientation_explains_where_the_domain_rules_went(enabled) -> None:
 def test_disabled_orientation_keeps_the_old_routing(disabled) -> None:
     """При выключенных скиллах §0 маршрутизирует как раньше."""
     prompt = disabled.system_prompt
-    assert "§5 MUSIC (Renardo + library + DJ)" in prompt
+    assert "§5 MUSIC (`request_music` + library)" in prompt
     assert "§6 WAYPOINTS" in prompt
     assert "load_skill" not in prompt
 
@@ -260,8 +258,9 @@ def test_effective_fragment_keeps_the_tool_contract(enabled) -> None:
     )
     composer = merged["composer"]
     assert composer.startswith("[СКИЛЛ composer")
-    assert "Synth palette" in composer
-    assert "compose_music" in composer
+    assert "Музыка движка v2" in composer
+    assert "request_music" in composer
+    assert "compose_music" not in composer
 
 
 #: Инструменты, которые переехавшие секции называют, НЕ владея ими.
@@ -288,20 +287,6 @@ def _mentions_tool(text: str, name: str) -> bool:
 
 
 _KNOWN_FOREIGN_MENTIONS: dict[str, dict[str, str]] = {
-    "### Renardo (execute_music_code) — local synth, ~1s start": {
-        "play_sound": "контраст: «play_sound только для эффектов <5s»",
-        "estimate_tts_duration": "voice-tts; подсказка про длину куплета",
-    },
-    "### Готовые AI-треки из библиотеки (gen_*)": {
-        "execute_music_code": "маршрут в composer, когда генерация недоступна",
-    },
-    "### DJ MODE": {
-        "compose_music": "ТРЕБУЕТСЯ диджею: свежий трек через compose_music (форма)",
-        "execute_music_code": "запрет: «не пиши ручной execute_music_code» — маршрут в compose_music",
-        "search_samples": "ТРЕБУЕТСЯ диджею: сэмплы под стиль",
-        "load_track": "запрет: «НЕ вызывай load_track в DJ-режиме»",
-        "list_tracks": "запрет: там же",
-    },
     "# 6. WAYPOINTS": {
         "memory_save": "контраст: «PLACE → save_waypoint, НЕ memory_save»",
     },
@@ -311,23 +296,20 @@ _KNOWN_FOREIGN_MENTIONS: dict[str, dict[str, str]] = {
 def test_foreign_tool_mentions_in_moved_sections_are_declared(enabled) -> None:
     """Переехавшая секция не должна тайком рекламировать чужой инструмент.
 
-    Две записи выше помечены ТРЕБУЕТСЯ: инструкции DJ прямо велят писать
-    трек через ``execute_music_code`` и брать сэмплы ``search_samples``,
-    а каталог даёт скиллу ``dj`` только ``set_dj_mode``/``get_music_state``/
-    ``stop_music``. Пока Move B выключен, это ничего не ломает; при
-    включении сужения диджей получит инструкцию, которую нечем исполнить.
-    Это условие входа в задачу 7.5, а не дефект фазы 5.
+    ADR-0149 PR-13a: секции старого пути (Renardo, DJ MODE), велевшие диджею
+    звать чужие инструменты, удалены; сверка — с каталогом движка v2,
+    который голосовая сторона предъявляет LLM.
     """
     catalog = {
         entry.name
         for skill in skill_names()
-        for entry in tools_for_skill(skill, include_core=True)
+        for entry in tools_for_skill(skill, include_core=True, music_engine="v2")
     }
     for section in enabled.sections:
         own = {
             entry.name
             for skill in section.skills
-            for entry in tools_for_skill(skill, include_core=True)
+            for entry in tools_for_skill(skill, include_core=True, music_engine="v2")
         }
         lowered = section.text.lower()
         foreign = {name for name in catalog - own if _mentions_tool(lowered, name)}
@@ -346,6 +328,9 @@ def test_system_prompt_actually_gets_smaller(disabled, enabled) -> None:
     """Ради этого всё и затевалось — цифра, а не ощущение."""
     before = len(disabled.system_prompt)
     after = len(enabled.system_prompt)
-    assert after < before * 0.85, (
+    # ADR-0149 PR-13a: §5 MUSIC старого пути (Renardo, DJ MODE — ~2 тыс.
+    # токенов) удалён, переезжающих секций стало мало: требуем только, чтобы
+    # раскол не увеличивал системный промпт.
+    assert after < before, (
         f"системный промпт {before} → {after} симв: раскол не дал выигрыша"
     )

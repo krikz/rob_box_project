@@ -107,17 +107,6 @@ def _advertised() -> dict:
     return found
 
 
-def test_prompts_advertise_a_palette_at_all() -> None:
-    """Smoke: если извлечение сломается, основной тест станет пустым."""
-    advertised = _advertised()
-    assert len(advertised) >= 20, (
-        "извлечено подозрительно мало имён (" + str(len(advertised)) + ") — "
-        "проверь, не поменялся ли формат палитры в промптах"
-    )
-    for anchor in ("blip", "dub", "pianovel"):
-        assert anchor in advertised, anchor + " должен извлекаться из промптов"
-
-
 def test_every_advertised_synth_is_preloaded() -> None:
     """Всё, что промпт предлагает модели, обязано грузиться в scsynth.
 

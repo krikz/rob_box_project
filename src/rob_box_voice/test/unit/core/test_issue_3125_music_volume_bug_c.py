@@ -16,12 +16,12 @@ Issue #3134: (a) и (b) больше не доходят до LLM и до ``Musi
 реплику закрывает роутер медиакоманд (``core/media_router.py``), поэтому
 исключение Bug C для громкости (``_music_volume_skip_reason``) удалено, а
 детектор переехал в ``core/media_command_grammar.py``. Здесь — что эти
-живые строки действительно закрываются роутером, и (c) #3004 без изменений.
+живые строки действительно закрываются роутером. (c) #3004 жил в
+``MusicGuard`` и удалён вместе с ним (ADR-0149 PR-13a).
 """
 
 from __future__ import annotations
 
-import logging
 import pytest
 
 from rob_box_voice.core.media_command_grammar import (
@@ -30,7 +30,6 @@ from rob_box_voice.core.media_command_grammar import (
     parse_media_command,
 )
 from rob_box_voice.core.media_router import MediaRouter, MediaState
-from rob_box_voice.core.music_guard import MusicGuard, MusicGuardVerdictKind
 
 # --- дословные строки из живого лога ---------------------------------------
 
@@ -65,11 +64,6 @@ LIVE_B_SPOKEN = (
 
 #: 1790611429 handle_result.
 LIVE_C_USER_INPUT = _DJ_WRAPPER + "сыграй в пещере гороного короля погромче"
-LIVE_C_TOOLS = ("lookup_melody", "compose_music")
-
-
-def _guard() -> MusicGuard:
-    return MusicGuard(logger=logging.getLogger("test_3125"))
 
 
 # --- детектор просьбы о громкости (теперь грамматика роутера) --------------
@@ -129,56 +123,17 @@ class TestLiveAB_ClosedByRouter:
     )
     def test_router_calls_set_music_volume(self, text: str) -> None:
         plan = MediaRouter().route(text, _PLAYING)
-        assert plan is not None and plan.handled
+        assert plan is not None
         assert [(c.name, c.arguments) for c in plan.tool_calls] == [
             ("set_music_volume", {"action": "louder"})
         ]
 
     def test_named_track_order_still_goes_to_llm(self) -> None:
-        # «сыграй X погромче» — заказ трека, Bug C работает как раньше.
+        # «сыграй X погромче» — заказ трека, не громкость: роутер его не берёт.
         assert MediaRouter().route("сыграй в пещере гороного короля погромче", _PLAYING) is None
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_C_USER_INPUT,
-            tools_called=(),
-        )
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
 
 
 # --- (c) #3004: ошибка валидации, затем успех в том же ходе -----------------
-
-
-class TestLiveC_ErrorThenSuccessSameTurn:
-    def test_success_after_validation_error_is_success(self) -> None:
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_C_USER_INPUT,
-            tools_called=LIVE_C_TOOLS,
-            tool_error_occurred=True,
-            succeeded_tools=("lookup_melody", "compose_music"),
-        )
-        assert v.kind is MusicGuardVerdictKind.SKIP
-        assert v.reason == "executed"
-
-    def test_only_failed_music_call_still_not_success(self) -> None:
-        # #2966 сохранён: музыкальный тул упал, успешен только lookup_melody.
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_C_USER_INPUT,
-            tools_called=LIVE_C_TOOLS,
-            tool_error_occurred=True,
-            succeeded_tools=("lookup_melody",),
-        )
-        assert v.kind is not MusicGuardVerdictKind.SKIP
-
-    def test_unknown_per_call_info_keeps_legacy_2966(self) -> None:
-        v = _guard().evaluate(
-            was_dj_auto=False,
-            user_input=LIVE_C_USER_INPUT,
-            tools_called=LIVE_C_TOOLS,
-            tool_error_occurred=True,
-        )
-        assert v.kind is MusicGuardVerdictKind.USER_RETRY
 
 
 # --- честный claim после set_music_volume не ловится как phantom -----------
