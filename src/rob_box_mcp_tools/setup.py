@@ -19,13 +19,13 @@ setup(
     package_data={
         # sample_loops.json — каталог лупов и белый список pack 1 (#2841).
         # sample_fx.json — каталог FX-одиночек pack 1 (#2968).
-        # sample_dave.json — каталог сэмплов DJ_Dave (#3219).
+        # sample_dave.json (DJ_Dave, #3219) переехал в rob_box_music (ADR-0149 PR-3d).
         # arrangement_presets.json — shipped-пресеты ручек compose_music
         # (ADR-0132 PR-7): рецепты под конкретные песни, вынесенные из
         # composer.txt.
         'rob_box_mcp_tools.data': [
             '*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json',
-            'sample_fx.json', 'sample_dave.json',
+            'sample_fx.json',
             'arrangement_presets.json',
         ],
     },

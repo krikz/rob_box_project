@@ -8,6 +8,9 @@
   квинт делят 6 из 7 нот (Camelot +1), за 12 треков все 12 тоник. Старый ``dj_set_walk`` импортирует
   :func:`root_shift` отсюда — одна реализация.
 * **Свинг сета** — в окне жанра, от сида; один на весь сет, как грув у диджея.
+* **Тоника сета** (PR-3d, ось «тоника» ``music_history``): тоника темы, если её не было в последних
+  ``TONIC_MEMORY`` треках истории; иначе — выбор сидом (``diversity.weighted_pick``) среди тоник, которых там не
+  было. Темп сета от истории не зависит.
 
 Уточнение плана от LLM по JSON-схеме — ``reasoner`` (PR-10): ``reasoner.apply`` меняет ``tracks``, не темп.
 """
@@ -15,15 +18,18 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, replace
+from typing import Mapping, Sequence, Tuple
 
 from . import knowledge as kn
+from .diversity import recent_values, weighted_pick
 from .theme import ThemeProfile
 
 #: Шаг тоники между соседними треками: чистая квинта вверх, полутонов.
 FIFTH = 7
 DEFAULT_TRACKS = 10
+#: Сколько последних треков истории не должна повторять тоника нового сета.
+TONIC_MEMORY = 4
 
 
 @dataclass(frozen=True)
@@ -65,8 +71,20 @@ def track_plan(no: int) -> TrackPlan:
     return TrackPlan(no, track_energy(no), root_shift(no))
 
 
-def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2") -> SetPlan:
-    """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed)``."""
+def set_root(profile: ThemeProfile, seed: int, history: Sequence[Mapping] = ()) -> int:
+    """Тоника сета: тоника темы, если её не было в последних ``TONIC_MEMORY`` треках, иначе — сидом из остальных."""
+    recent = recent_values(history[:TONIC_MEMORY], "root")
+    if kn.ROOTS[profile.root] not in recent:
+        return profile.root
+    options = [r for r in kn.ROOTS if r not in recent]
+    return kn.ROOTS.index(weighted_pick(options, recent, random.Random(f"root:{seed}:{profile.theme}")))
+
+
+def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
+                history: Sequence[Mapping] = ()) -> SetPlan:
+    """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
+    ``music_history`` (свежие первыми)."""
+    profile = replace(profile, root=set_root(profile, seed, history))
     window = kn.GENRE_WINDOWS[profile.genre]
     lo, hi = window.bpm
     bpm = min(max(profile.bpm, lo), hi)
@@ -76,5 +94,5 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     return SetPlan(set_id, seed, profile, bpm, swing, tracks)
 
 
-__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TrackPlan", "root_shift", "seeded_plan", "track_energy",
-           "track_plan"]
+__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "root_shift", "seeded_plan", "set_root",
+           "track_energy", "track_plan"]

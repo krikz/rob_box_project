@@ -14,22 +14,22 @@ tech/psr/hh/cp из Dirt-Samples, хэты и клэпы TR-808/DDM110) клад
 прослушан на 16 kHz DAC робота, отдельная ручка для «ещё не прослушано»
 только множит состояния.
 
-Каталог — данные (``data/sample_dave.json``). Соответствие имён файлам на
-хосте держит тест против lock-файла фетчера
-(``docker/vision/scripts/resource_pack/dj_dave_samples.lock.json``).
+Каталог — одна таблица знания ``rob_box_music.knowledge.SAMPLE_CATALOG``
+(ADR-0149 §3.11, §8.1, PR-3d; данные ``rob_box_music/data/sample_dave.json``):
+роль, длина, темп и тональность там; здесь — только вид каталога для
+санитайзера ``loop()``. Соответствие имён файлам на хосте держит тест против
+lock-файла фетчера (``docker/vision/scripts/resource_pack/dj_dave_samples.lock.json``).
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from .sample_loops import PACK1_LOOPS_ENV
+from rob_box_music import knowledge as kn
 
-_CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "sample_dave.json"
+from .sample_loops import PACK1_LOOPS_ENV
 
 
 @dataclass(frozen=True)
@@ -52,30 +52,18 @@ class DaveSample:
 
 
 @lru_cache(maxsize=1)
-def _raw_catalog() -> dict:
-    return json.loads(_CATALOG_FILE.read_text(encoding="utf-8"))
-
-
-@lru_cache(maxsize=1)
 def sample_catalog() -> Dict[str, DaveSample]:
-    """Каталог пака (кешируется; путь от ``__file__`` — как у sample_fx)."""
-    raw = _raw_catalog()
-    pack_dir = str(raw["pack_dir"])
+    """Каталог пака — вид ``knowledge.SAMPLE_CATALOG`` (кешируется)."""
     return {
-        name: DaveSample(
-            name=name,
-            group=str(meta["group"]),
-            seconds=float(meta["seconds"]),
-            channels=int(meta["channels"]),
-            path=f"../../{pack_dir}/{meta['path']}",
-        )
-        for name, meta in raw["samples"].items()
+        name: DaveSample(name=name, group=info.group, seconds=info.seconds, channels=info.channels,
+                         path=info.loop_arg)
+        for name, info in kn.SAMPLE_CATALOG.items()
     }
 
 
 def group_descriptions() -> Dict[str, str]:
     """Группа → человекочитаемое описание (для подсказок модели)."""
-    return dict(_raw_catalog()["groups"])
+    return dict(kn.SAMPLE_GROUPS)
 
 
 def find_sample(arg: str) -> Optional[DaveSample]:

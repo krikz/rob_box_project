@@ -45,13 +45,22 @@ def swing_offset_ms(swing: float, bpm: int) -> int:
     return int(round(swing * 30000.0 / bpm))
 
 
-def hats_grid(swing_ms: int = 0) -> Grid:
-    """Оффбит-хэт с акцентами 3/2 и тихие гоуст-ноты на нечётных 16-х, опоздавшие на ``swing_ms``."""
-    accents = {2: 3, 6: 2, 10: 3, 14: 2}
+#: Символ рисунка каркаса (``knowledge.DRUM_KITS``) → акцент; ``.`` — пауза.
+_KIT_ACCENT = {"X": 3, "x": 2, "g": 0}
+
+
+def pattern_grid(pattern: str, swing_ms: int = 0) -> Grid:
+    """Такт по рисунку каркаса: ``X``/``x``/``g`` — акцент 3/2/0; гоуст на нечётной 16-й опаздывает на ``swing_ms``."""
+    if len(pattern) != STEPS_PER_BAR or set(pattern) - set(_KIT_ACCENT) - {"."}:
+        raise ValueError(f"рисунок каркаса {pattern!r} не 16 шагов из X x g .")
     return Grid(tuple(
-        Step(True, accents[i]) if i in accents else
-        Step(True, 0, swing_ms) if i in GHOST_HAT_STEPS else Step(False)
-        for i in range(STEPS_PER_BAR)))
+        Step(False) if ch == "." else Step(True, _KIT_ACCENT[ch], swing_ms if ch == "g" and i % 2 else 0)
+        for i, ch in enumerate(pattern)))
+
+
+def hats_grid(swing_ms: int = 0, kit: str = "offbeat") -> Grid:
+    """Хэты каркаса: по умолчанию оффбит с акцентами 3/2 и гоуст-нотами на 7 и 15, опоздавшими на ``swing_ms``."""
+    return pattern_grid(kn.DRUM_KITS[kit]["hats"], swing_ms)
 
 
 def clap_grid() -> Grid:
@@ -79,4 +88,5 @@ def form_grid(sections: Sequence[Section], bar_of: Callable[[Section, bool], Gri
 
 
 __all__ = ["BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_STEPS",
-           "clap_fill", "clap_grid", "form_grid", "grid", "hats_grid", "kick_fill", "kick_grid", "swing_offset_ms"]
+           "clap_fill", "clap_grid", "form_grid", "grid", "hats_grid", "kick_fill", "kick_grid", "pattern_grid",
+           "swing_offset_ms"]

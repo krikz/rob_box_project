@@ -10,6 +10,7 @@ from melodies import CHROMATIC, LONG, MELODIES, SHORT, SLOW, compose_p, profile
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import hook as hooks
 from rob_box_music.arrange.compose import HOOK_REGISTER, SECTION_BARS, SECTIONS
+from rob_box_music.diversity import track_history
 from rob_box_music.model import BEATS_PER_BAR, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
@@ -150,9 +151,9 @@ def test_compose_is_deterministic_by_seed():
 
 def test_last_played_hook_is_not_repeated_while_another_fits():
     for seed in range(10):
-        first = compose_p(profile(), 1, set_seed=seed, melodies=MELODIES).hook.source
-        second = compose_p(profile(), 1, set_seed=seed, melodies=MELODIES, recent_hooks=(first,)).hook.source
-        assert second != first
+        first = compose_p(profile(), 1, set_seed=seed, melodies=MELODIES)
+        second = compose_p(profile(), 1, set_seed=seed, melodies=MELODIES, history=[track_history(first)])
+        assert second.hook.source != first.hook.source
 
 
 def test_no_usable_melody_falls_back_to_the_lead_motif():

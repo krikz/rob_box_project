@@ -4,7 +4,8 @@
   "их кладёт на хост Ресурсный пак (запись dj-dave-samples), пути = dest из",
   "docker/vision/scripts/resource_pack/dj_dave_samples.lock.json (сверяет тест).",
   "seconds/channels сняты ffprobe с реально скачанных файлов 30.09.2026.",
-  "НИ ОДИН сэмпл не прослушан на 16 kHz DAC робота; за флагом ROB_BOX_PACK1_LOOPS."
+  "НИ ОДИН сэмпл не прослушан на 16 kHz DAC робота; за флагом ROB_BOX_PACK1_LOOPS.",
+  "peak_db/mean_db — ffmpeg volumedetect (max/mean_volume) файлов на роботе 02.10.2026 (ADR-0149 PR-3d); пробы loop() 02.10: моно (psr_10) и mp3 (shaker) звучат."
  ],
  "pack_dir": "dj_dave",
  "groups": {
@@ -29,739 +30,985 @@
    "path": "algorave/cocaina/cocaina.wav",
    "seconds": 14.222,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -15.8,
+   "mean_db": -29.6
   },
   "algorave_ecotone": {
    "path": "algorave/ecotone/ecotone.wav",
    "seconds": 13.714,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -14.4,
+   "mean_db": -28.2
   },
   "algorave_chops": {
    "path": "algorave/failsafe/CHOPS.wav",
    "seconds": 3.429,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -3.6,
+   "mean_db": -18.3
   },
   "algorave_fx": {
    "path": "algorave/failsafe/FX.wav",
    "seconds": 0.518,
    "channels": 2,
-   "group": "algorave_fx"
+   "group": "algorave_fx",
+   "peak_db": -9.8,
+   "mean_db": -24.2
   },
   "algorave_forget": {
    "path": "algorave/forget/forget.wav",
    "seconds": 1.714,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -4.0,
+   "mean_db": -15.5
   },
   "algorave_overgame": {
    "path": "algorave/overgame/overgame.wav",
    "seconds": 4.412,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -16.5,
+   "mean_db": -30.5
   },
   "algorave_technologic_vox": {
    "path": "algorave/technologic/technologic_vox.wav",
    "seconds": 15.36,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -15.2,
+   "mean_db": -32.8
   },
   "algorave_wun_beat": {
    "path": "algorave/whatuneed/beat.wav",
    "seconds": 3.75,
    "channels": 2,
-   "group": "algorave_beat"
+   "group": "algorave_beat",
+   "peak_db": -12.0,
+   "mean_db": -32.8
   },
   "algorave_wun_noise": {
    "path": "algorave/whatuneed/noise.wav",
    "seconds": 3.75,
    "channels": 2,
-   "group": "algorave_beat"
+   "group": "algorave_beat",
+   "peak_db": -21.7,
+   "mean_db": -40.8
   },
   "algorave_wun_vox": {
    "path": "algorave/whatuneed/vox.wav",
    "seconds": 30.0,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -10.1,
+   "mean_db": -29.5
   },
   "algorave_spilltab": {
    "path": "algorave/spilltab/spilltab.wav",
    "seconds": 19.2,
    "channels": 2,
-   "group": "algorave_vocal"
+   "group": "algorave_vocal",
+   "peak_db": -9.9,
+   "mean_db": -25.9
   },
   "array_bass_0": {
    "path": "array/bass/bass_0.mp3",
    "seconds": 0.429,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.4,
+   "mean_db": -8.4
   },
   "array_bass_1": {
    "path": "array/bass/bass_1.mp3",
    "seconds": 0.643,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.4,
+   "mean_db": -9.6
   },
   "array_bass_2": {
    "path": "array/bass/bass_2.mp3",
    "seconds": 0.643,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.4,
+   "mean_db": -8.9
   },
   "array_bass_build_0": {
    "path": "array/bass/build_0.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.4,
+   "mean_db": -14.3
   },
   "array_bass_build_1": {
    "path": "array/bass/build_1.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -1.5,
+   "mean_db": -14.3
   },
   "array_bass_build_2": {
    "path": "array/bass/build_2.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -2.5,
+   "mean_db": -15.2
   },
   "array_bass_build_3": {
    "path": "array/bass/build_3.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.5,
+   "mean_db": -15.1
   },
   "array_bass_sub_0": {
    "path": "array/bass/sub_0.mp3",
    "seconds": 0.643,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.0,
+   "mean_db": -2.8
   },
   "array_bass_sub_1": {
    "path": "array/bass/sub_1.mp3",
    "seconds": 0.857,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.5,
+   "mean_db": -9.6
   },
   "array_bass_sub_2": {
    "path": "array/bass/sub_2.mp3",
    "seconds": 0.857,
    "channels": 2,
-   "group": "array_bass"
+   "group": "array_bass",
+   "peak_db": -0.5,
+   "mean_db": -6.6
   },
   "array_perc_break": {
    "path": "array/perc/break.mp3",
    "seconds": 0.857,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.5,
+   "mean_db": -16.5
   },
   "array_perc_cp": {
    "path": "array/perc/cp.mp3",
    "seconds": 0.433,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.0,
+   "mean_db": -15.2
   },
   "array_perc_cp2": {
    "path": "array/perc/cp2.mp3",
    "seconds": 0.778,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": 0.0,
+   "mean_db": -14.0
   },
   "array_perc_guit1": {
    "path": "array/perc/guit1.mp3",
    "seconds": 0.857,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.5,
+   "mean_db": -15.0
   },
   "array_perc_guit2": {
    "path": "array/perc/guit2.mp3",
    "seconds": 0.857,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.6,
+   "mean_db": -14.6
   },
   "array_perc_hc": {
    "path": "array/perc/hc.mp3",
    "seconds": 0.214,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -1.5,
+   "mean_db": -24.2
   },
   "array_perc_kick": {
    "path": "array/perc/kick.mp3",
    "seconds": 0.429,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.1,
+   "mean_db": -8.8
   },
   "array_perc_shaker": {
    "path": "array/perc/shaker.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.6,
+   "mean_db": -21.6
   },
   "array_perc_sn": {
    "path": "array/perc/sn.mp3",
    "seconds": 0.429,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": 0.0,
+   "mean_db": -16.0
   },
   "array_perc_tom": {
    "path": "array/perc/tom.mp3",
    "seconds": 0.433,
    "channels": 2,
-   "group": "array_perc"
+   "group": "array_perc",
+   "peak_db": -0.0,
+   "mean_db": -12.1
   },
   "array_synth_build_0": {
    "path": "array/synth/build_0.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_synth"
+   "group": "array_synth",
+   "peak_db": -20.2,
+   "mean_db": -44.2
   },
   "array_synth_build_1": {
    "path": "array/synth/build_1.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_synth"
+   "group": "array_synth",
+   "peak_db": -8.7,
+   "mean_db": -29.8
   },
   "array_synth_build_2": {
    "path": "array/synth/build_2.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_synth"
+   "group": "array_synth",
+   "peak_db": -1.3,
+   "mean_db": -20.9
   },
   "array_synth_build_3": {
    "path": "array/synth/build_3.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_synth"
+   "group": "array_synth",
+   "peak_db": -1.0,
+   "mean_db": -18.8
   },
   "array_vox_build_0": {
    "path": "array/vox/build_0.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -4.9,
+   "mean_db": -16.0
   },
   "array_vox_build_1": {
    "path": "array/vox/build_1.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -4.8,
+   "mean_db": -15.1
   },
   "array_vox_build_2": {
    "path": "array/vox/build_2.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -4.1,
+   "mean_db": -15.6
   },
   "array_vox_build_3": {
    "path": "array/vox/build_3.mp3",
    "seconds": 6.857,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.4,
+   "mean_db": -18.9
   },
   "array_vox_drop_0": {
    "path": "array/vox/drop_0.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.9,
+   "mean_db": -16.0
   },
   "array_vox_drop_1": {
    "path": "array/vox/drop_1.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.5,
+   "mean_db": -17.6
   },
   "array_vox_drop_2": {
    "path": "array/vox/drop_2.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -1.7,
+   "mean_db": -15.9
   },
   "array_vox_drop_3": {
    "path": "array/vox/drop_3.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -2.6,
+   "mean_db": -17.1
   },
   "array_vox_drop_4": {
    "path": "array/vox/drop_4.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.6,
+   "mean_db": -16.7
   },
   "array_vox_drop_5": {
    "path": "array/vox/drop_5.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -1.1,
+   "mean_db": -17.9
   },
   "array_vox_drop_6": {
    "path": "array/vox/drop_6.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.6,
+   "mean_db": -17.1
   },
   "array_vox_drop_7": {
    "path": "array/vox/drop_7.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -5.2,
+   "mean_db": -19.3
   },
   "array_vox_drop_8": {
    "path": "array/vox/drop_8.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -8.8,
+   "mean_db": -23.6
   },
   "array_vox_verse_0": {
    "path": "array/vox/verse_0.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -1.5,
+   "mean_db": -17.2
   },
   "array_vox_verse_1": {
    "path": "array/vox/verse_1.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -2.3,
+   "mean_db": -19.2
   },
   "array_vox_verse_2": {
    "path": "array/vox/verse_2.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -2.2,
+   "mean_db": -18.6
   },
   "array_vox_verse_3": {
    "path": "array/vox/verse_3.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -1.3,
+   "mean_db": -17.9
   },
   "array_vox_verse_4": {
    "path": "array/vox/verse_4.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.4,
+   "mean_db": -17.6
   },
   "array_vox_verse_5": {
    "path": "array/vox/verse_5.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -0.5,
+   "mean_db": -18.0
   },
   "array_vox_verse_6": {
    "path": "array/vox/verse_6.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -2.1,
+   "mean_db": -16.6
   },
   "array_vox_verse_7": {
    "path": "array/vox/verse_7.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -1.0,
+   "mean_db": -17.0
   },
   "array_vox_verse_8": {
    "path": "array/vox/verse_8.mp3",
    "seconds": 3.429,
    "channels": 2,
-   "group": "array_vox"
+   "group": "array_vox",
+   "peak_db": -1.6,
+   "mean_db": -19.3
   },
   "dirt_cp_HANDCLP0": {
    "path": "dirt/cp/HANDCLP0.wav",
    "seconds": 0.446,
    "channels": 1,
-   "group": "dirt_cp"
+   "group": "dirt_cp",
+   "peak_db": -0.3,
+   "mean_db": -21.3
   },
   "dirt_cp_HANDCLPA": {
    "path": "dirt/cp/HANDCLPA.wav",
    "seconds": 0.366,
    "channels": 1,
-   "group": "dirt_cp"
+   "group": "dirt_cp",
+   "peak_db": -1.0,
+   "mean_db": -27.3
   },
   "dirt_hh_hh3closedhh": {
    "path": "dirt/hh/000_hh3closedhh.wav",
    "seconds": 0.872,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -13.9,
+   "mean_db": -41.7
   },
   "dirt_hh_hh3crash": {
    "path": "dirt/hh/001_hh3crash.wav",
    "seconds": 1.945,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -12.8,
+   "mean_db": -35.9
   },
   "dirt_hh_hh3hit1": {
    "path": "dirt/hh/002_hh3hit1.wav",
    "seconds": 1.675,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -14.5,
+   "mean_db": -37.0
   },
   "dirt_hh_hh3hit2": {
    "path": "dirt/hh/003_hh3hit2.wav",
    "seconds": 1.495,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -17.0,
+   "mean_db": -38.8
   },
   "dirt_hh_hh3hit3": {
    "path": "dirt/hh/004_hh3hit3.wav",
    "seconds": 2.395,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -11.3,
+   "mean_db": -37.2
   },
   "dirt_hh_hh3kick1": {
    "path": "dirt/hh/005_hh3kick1.wav",
    "seconds": 0.461,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -6.1,
+   "mean_db": -20.1
   },
   "dirt_hh_hh3kick2": {
    "path": "dirt/hh/006_hh3kick2.wav",
    "seconds": 0.142,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -11.1,
+   "mean_db": -19.0
   },
   "dirt_hh_hh3openhh": {
    "path": "dirt/hh/007_hh3openhh.wav",
    "seconds": 1.831,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -15.9,
+   "mean_db": -42.1
   },
   "dirt_hh_hh3rerc1": {
    "path": "dirt/hh/008_hh3rerc1.wav",
    "seconds": 1.538,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -13.7,
+   "mean_db": -43.0
   },
   "dirt_hh_hh3rerc2": {
    "path": "dirt/hh/009_hh3rerc2.wav",
    "seconds": 1.779,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -14.2,
+   "mean_db": -40.7
   },
   "dirt_hh_hh3ride": {
    "path": "dirt/hh/010_hh3ride.wav",
    "seconds": 2.0,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -11.2,
+   "mean_db": -42.7
   },
   "dirt_hh_hh3snare1": {
    "path": "dirt/hh/011_hh3snare1.wav",
    "seconds": 1.405,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -12.1,
+   "mean_db": -32.4
   },
   "dirt_hh_hh3snare2": {
    "path": "dirt/hh/012_hh3snare2.wav",
    "seconds": 1.373,
    "channels": 2,
-   "group": "dirt_hh"
+   "group": "dirt_hh",
+   "peak_db": -10.4,
+   "mean_db": -31.4
   },
   "dirt_psr_01": {
    "path": "dirt/psr/000_01.wav",
    "seconds": 0.585,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -10.5,
+   "mean_db": -22.8
   },
   "dirt_psr_02": {
    "path": "dirt/psr/001_02.wav",
    "seconds": 0.371,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -10.5,
+   "mean_db": -28.1
   },
   "dirt_psr_03": {
    "path": "dirt/psr/002_03.wav",
    "seconds": 0.292,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -10.5,
+   "mean_db": -22.3
   },
   "dirt_psr_04": {
    "path": "dirt/psr/003_04.wav",
    "seconds": 0.375,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -21.9
   },
   "dirt_psr_05": {
    "path": "dirt/psr/004_05.wav",
    "seconds": 0.297,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.8,
+   "mean_db": -18.6
   },
   "dirt_psr_06": {
    "path": "dirt/psr/005_06.wav",
    "seconds": 0.279,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.6,
+   "mean_db": -13.1
   },
   "dirt_psr_07": {
    "path": "dirt/psr/006_07.wav",
    "seconds": 0.138,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -15.2
   },
   "dirt_psr_08": {
    "path": "dirt/psr/007_08.wav",
    "seconds": 0.171,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -16.3
   },
   "dirt_psr_09": {
    "path": "dirt/psr/008_09.wav",
    "seconds": 0.172,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -19.0
   },
   "dirt_psr_10": {
    "path": "dirt/psr/009_10.wav",
    "seconds": 0.179,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -23.3
   },
   "dirt_psr_11": {
    "path": "dirt/psr/010_11.wav",
    "seconds": 0.027,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -17.5
   },
   "dirt_psr_12": {
    "path": "dirt/psr/011_12.wav",
    "seconds": 0.141,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -12.2
   },
   "dirt_psr_13": {
    "path": "dirt/psr/012_13.wav",
    "seconds": 0.068,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -11.1
   },
   "dirt_psr_14": {
    "path": "dirt/psr/013_14.wav",
    "seconds": 0.169,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.8,
+   "mean_db": -16.9
   },
   "dirt_psr_15": {
    "path": "dirt/psr/014_15.wav",
    "seconds": 0.108,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.6,
+   "mean_db": -16.1
   },
   "dirt_psr_16": {
    "path": "dirt/psr/015_16.wav",
    "seconds": 0.197,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -15.9
   },
   "dirt_psr_17": {
    "path": "dirt/psr/016_17.wav",
    "seconds": 0.04,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -12.3
   },
   "dirt_psr_18": {
    "path": "dirt/psr/017_18.wav",
    "seconds": 0.097,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -13.8
   },
   "dirt_psr_19": {
    "path": "dirt/psr/018_19.wav",
    "seconds": 0.15,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -7.2,
+   "mean_db": -17.8
   },
   "dirt_psr_20": {
    "path": "dirt/psr/019_20.wav",
    "seconds": 0.057,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -16.7
   },
   "dirt_psr_21": {
    "path": "dirt/psr/020_21.wav",
    "seconds": 0.144,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -14.3
   },
   "dirt_psr_22": {
    "path": "dirt/psr/021_22.wav",
    "seconds": 0.216,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.8,
+   "mean_db": -10.7
   },
   "dirt_psr_23": {
    "path": "dirt/psr/022_23.wav",
    "seconds": 2.296,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -4.6,
+   "mean_db": -22.7
   },
   "dirt_psr_24": {
    "path": "dirt/psr/023_24.wav",
    "seconds": 3.129,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -21.0,
+   "mean_db": -33.4
   },
   "dirt_psr_25": {
    "path": "dirt/psr/024_25.wav",
    "seconds": 0.061,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -19.4
   },
   "dirt_psr_26": {
    "path": "dirt/psr/025_26.wav",
    "seconds": 0.084,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -20.0
   },
   "dirt_psr_27": {
    "path": "dirt/psr/026_27.wav",
    "seconds": 3.605,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -10.5,
+   "mean_db": -24.4
   },
   "dirt_psr_28": {
    "path": "dirt/psr/027_28.wav",
    "seconds": 1.486,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -11.6,
+   "mean_db": -26.2
   },
   "dirt_psr_29": {
    "path": "dirt/psr/028_29.wav",
    "seconds": 0.113,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -16.1
   },
   "dirt_psr_30": {
    "path": "dirt/psr/029_30.wav",
    "seconds": 0.059,
    "channels": 1,
-   "group": "dirt_psr"
+   "group": "dirt_psr",
+   "peak_db": -2.5,
+   "mean_db": -14.5
   },
   "dirt_tech_tn1closedhh": {
    "path": "dirt/tech/tn1closedhh.wav",
    "seconds": 0.05,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -24.1,
+   "mean_db": -40.4
   },
   "dirt_tech_tn1crash": {
    "path": "dirt/tech/tn1crash.wav",
    "seconds": 0.621,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -21.3,
+   "mean_db": -40.2
   },
   "dirt_tech_tn1hit1": {
    "path": "dirt/tech/tn1hit1.wav",
    "seconds": 0.32,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -24.7,
+   "mean_db": -39.2
   },
   "dirt_tech_tn1hit2": {
    "path": "dirt/tech/tn1hit2.wav",
    "seconds": 1.794,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -25.7,
+   "mean_db": -41.2
   },
   "dirt_tech_tn1hit3": {
    "path": "dirt/tech/tn1hit3.wav",
    "seconds": 0.106,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -25.7,
+   "mean_db": -38.5
   },
   "dirt_tech_tn1kick1": {
    "path": "dirt/tech/tn1kick1.wav",
    "seconds": 0.229,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -10.5,
+   "mean_db": -19.1
   },
   "dirt_tech_tn1kick2": {
    "path": "dirt/tech/tn1kick2.wav",
    "seconds": 0.393,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -7.0,
+   "mean_db": -19.9
   },
   "dirt_tech_tn1openhh": {
    "path": "dirt/tech/tn1openhh.wav",
    "seconds": 0.325,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -17.9,
+   "mean_db": -36.3
   },
   "dirt_tech_tn1perc1": {
    "path": "dirt/tech/tn1perc1.wav",
    "seconds": 0.339,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -21.3,
+   "mean_db": -43.6
   },
   "dirt_tech_tn1perc2": {
    "path": "dirt/tech/tn1perc2.wav",
    "seconds": 0.713,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -23.0,
+   "mean_db": -44.8
   },
   "dirt_tech_tn1ride": {
    "path": "dirt/tech/tn1ride.wav",
    "seconds": 0.611,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -20.7,
+   "mean_db": -41.1
   },
   "dirt_tech_tn1snare1": {
    "path": "dirt/tech/tn1snare1.wav",
    "seconds": 0.783,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -10.2,
+   "mean_db": -32.1
   },
   "dirt_tech_tn1snare2": {
    "path": "dirt/tech/tn1snare2.wav",
    "seconds": 0.061,
    "channels": 2,
-   "group": "dirt_tech"
+   "group": "dirt_tech",
+   "peak_db": -12.6,
+   "mean_db": -22.3
   },
   "ddm110_cp_Clap": {
    "path": "machines/KorgDDM110/korgddm110-cp/Clap.wav",
    "seconds": 0.077,
    "channels": 2,
-   "group": "ddm110_cp"
+   "group": "ddm110_cp",
+   "peak_db": 0.0,
+   "mean_db": -5.5
   },
   "ddm110_hh_HatClosed": {
    "path": "machines/KorgDDM110/korgddm110-hh/Hat Closed.wav",
    "seconds": 0.204,
    "channels": 2,
-   "group": "ddm110_hh"
+   "group": "ddm110_hh",
+   "peak_db": -0.0,
+   "mean_db": -17.7
   },
   "tr808_cp_cp0": {
    "path": "machines/RolandTR808/rolandtr808-cp/cp0.wav",
    "seconds": 3.086,
    "channels": 1,
-   "group": "tr808_cp"
+   "group": "tr808_cp",
+   "peak_db": -0.0,
+   "mean_db": -29.9
   },
   "tr808_cp_cp1": {
    "path": "machines/RolandTR808/rolandtr808-cp/cp1.wav",
    "seconds": 2.37,
    "channels": 1,
-   "group": "tr808_cp"
+   "group": "tr808_cp",
+   "peak_db": -0.0,
+   "mean_db": -30.7
   },
   "tr808_cp_cp2": {
    "path": "machines/RolandTR808/rolandtr808-cp/cp2.wav",
    "seconds": 3.228,
    "channels": 1,
-   "group": "tr808_cp"
+   "group": "tr808_cp",
+   "peak_db": -0.0,
+   "mean_db": -31.9
   },
   "tr808_cp_cp3": {
    "path": "machines/RolandTR808/rolandtr808-cp/cp3.wav",
    "seconds": 0.174,
    "channels": 2,
-   "group": "tr808_cp"
+   "group": "tr808_cp",
+   "peak_db": -0.0,
+   "mean_db": -19.1
   },
   "tr808_cp_cp4": {
    "path": "machines/RolandTR808/rolandtr808-cp/cp4.WAV",
    "seconds": 2.0,
    "channels": 1,
-   "group": "tr808_cp"
+   "group": "tr808_cp",
+   "peak_db": -3.0,
+   "mean_db": -31.6
   },
   "tr808_hh_CH": {
    "path": "machines/RolandTR808/rolandtr808-hh/CH.WAV",
    "seconds": 0.25,
    "channels": 1,
-   "group": "tr808_hh"
+   "group": "tr808_hh",
+   "peak_db": -5.0,
+   "mean_db": -30.0
   }
  }
 }

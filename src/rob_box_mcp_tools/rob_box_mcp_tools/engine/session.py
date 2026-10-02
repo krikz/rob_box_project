@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from rob_box_music.arrange.compose import compose
+from rob_box_music.diversity import track_history
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import SetPlan
@@ -52,14 +53,17 @@ def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) 
 
 
 def plan_source(current: PlanNow) -> TrackSource:
-    """Треки по плану, который сейчас у сета; хук только что сыгранного трека — последним в выборе."""
-    recent: List[str] = []
+    """Треки по плану, который сейчас у сета, с историей сета по всем осям (``diversity.track_history``, PR-3d):
+    каркас, прогрессия, хук, сэмплы не повторяются подряд. История — строки треков с МЕНЬШИМ номером (свежие
+    первыми): повторная компоновка того же N+1 (``replan``, повтор после отказа) заменяет его строку и не видит
+    саму себя. Запись в ``music_history`` между сетами — отдельный шаг владельца (по ``started``)."""
+    rows: Dict[int, Dict[str, Any]] = {}
 
     def next_track(track_no: int, deck: str) -> Track:
         plan, melodies = current()
-        track = compose(plan, track_no, melodies=melodies, recent_hooks=tuple(recent), deck=deck)
-        if track.hook is not None and track.hook.source:
-            recent.insert(0, track.hook.source)
+        history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < track_no)
+        track = compose(plan, track_no, melodies=melodies, history=history, deck=deck)
+        rows[track_no] = track_history(track, plan.set_id)
         return track
 
     return next_track

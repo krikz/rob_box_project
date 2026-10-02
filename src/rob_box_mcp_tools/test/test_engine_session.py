@@ -103,8 +103,10 @@ class Log:
 def _rig(source=None, submit=None, *, exec_fails=False):
     clock = SimClock()
     slots = [s for deck in kn.DECK_SLOTS.values() for s in deck]
-    ns = {"Clock": clock, "Samples": SimpleNamespace(getBufferFromSymbol=lambda *a: SimpleNamespace(bufnum=7)),
-          "play": lambda *a, **k: None, "var": lambda *a, **k: None, "Scale": SimpleNamespace(chromatic=None)}
+    samples = SimpleNamespace(getBufferFromSymbol=lambda *a: SimpleNamespace(bufnum=7), loadBuffer=lambda *a: 7)
+    ns = {"Clock": clock, "Samples": samples,
+          "play": lambda *a, **k: None, "var": lambda *a, **k: None, "Scale": SimpleNamespace(chromatic=None),
+          "loop": lambda *a, **k: None}  # слои сэмплов DJ_Dave (PR-3d)
     ns.update({synth: (lambda *a, **k: None) for synth in V2_SYNTHS})  # тембры темы (PR-3c) — вся таблица
     ns.update({s: Player(clock, s) for s in slots})
     sent = []
@@ -331,3 +333,30 @@ def test_library_melodies_take_only_exact_names():
     assert lookup(["tetris", "robot", "nope"]) == {"tetris": "t:d=4:c"}
     lookup(["tetris"])
     assert opened == [1]  # библиотека открыта один раз
+
+
+def test_replan_recomposes_next_track_with_the_same_set_history():
+    """PR-3d × PR-10: история сета — треки с меньшим номером; повторная компоновка N+1 (``replan``) не видит
+    саму себя, а следующий трек видит уже новую версию N+1."""
+    import rob_box_mcp_tools.engine.session as session_mod
+    from rob_box_mcp_tools.engine.session import plan_source
+
+    seen = []
+    real = session_mod.compose
+
+    def spy(plan, no, **kw):
+        seen.append((no, [row["kit"] for row in kw["history"]]))
+        return real(plan, no, **kw)
+
+    plans = [PLAN]
+    source = plan_source(lambda: (plans[0], None))
+    with patch.object(session_mod, "compose", spy):
+        t1 = source(1, "A")
+        t2 = source(2, "B")
+        plans[0] = replace(PLAN, seed=PLAN.seed + 1)  # новый план (LLM) — N+1 компонуется заново
+        t2b = source(2, "B")
+        source(3, "A")
+    k1, k2b = t1.history_key.kit, t2b.history_key.kit
+    assert seen[:3] == [(1, []), (2, [k1]), (2, [k1])]
+    assert seen[3] == (3, [k2b, k1])
+    assert t2.history_key.kit != k1 and k2b != k1

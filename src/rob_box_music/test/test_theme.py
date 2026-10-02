@@ -14,6 +14,7 @@ import pytest
 
 from melodies import compose_p
 from rob_box_music import knowledge as kn
+from rob_box_music.diversity import track_history
 from rob_box_music.theme import match_row, seeded_profile
 
 #: Темы серии приёмки (ADR-0149 §7.1) и ещё одна → строка таблицы.
@@ -85,5 +86,5 @@ def test_theme_hooks_exist_in_the_local_library_and_sound(library, row):
         prof = base.__class__(**{**base.__dict__, "root": root})
         first = compose_p(prof, 1, set_seed=root, melodies=melodies)
         assert first.hook is not None and first.hook.source in hooks_ids, (row, root)
-        second = compose_p(prof, 2, set_seed=root, melodies=melodies, recent_hooks=(first.hook.source,))
+        second = compose_p(prof, 2, set_seed=root, melodies=melodies, history=[track_history(first)])
         assert second.hook is not None and second.hook.source != first.hook.source, (row, root)

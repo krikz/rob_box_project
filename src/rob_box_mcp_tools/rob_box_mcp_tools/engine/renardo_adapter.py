@@ -131,6 +131,8 @@ def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
     номером файла ``sample=`` (``Program.samples`` v2, бочка ``knowledge.KICK_SOUNDS``): грузится тот
     буфер, что прозвучит, а не нулевой. Renardo отдаёт буфер-заглушку ``nil`` с ``bufnum == 0``,
     когда файла нет (``BufferManagement.py:116,209``). Повторный вызов — попадание в кэш Renardo.
+    Путь с ``/`` — файл ``loop()`` от корня сэмплов (``Program.sample_files`` v2, каталог DJ_Dave, PR-3d):
+    ``loadBuffer('../../<путь>')`` — тот же путь, что в программе; ``0`` — файла нет.
     """
     missing: List[str] = []
     for entry in symbols:
@@ -138,12 +140,15 @@ def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
         if symbol.isspace() or symbol == ".":
             continue
         try:
-            args = (symbol, 0, int(index)) if index else (symbol, 0)  # (символ, spack, номер файла)
-            buf = samples.getBufferFromSymbol(*args)
+            if "/" in entry:
+                bufnum = samples.loadBuffer(f"../../{entry}")
+            else:
+                args = (symbol, 0, int(index)) if index else (symbol, 0)  # (символ, spack, номер файла)
+                bufnum = getattr(samples.getBufferFromSymbol(*args), "bufnum", None)
         except Exception:  # noqa: BLE001 — символ может не иметь сэмпла
             missing.append(entry)
             continue
-        if getattr(buf, "bufnum", None) == 0:
+        if bufnum == 0:
             missing.append(entry)
     return missing
 
@@ -185,7 +190,7 @@ class RenardoAdapter:
         unknown = sorted(s for s in program.synths if s.lower() not in known or not callable(ns.get(s)))
         if unknown:
             return "unknown_synth", f"синтов нет на сервере: {', '.join(unknown)}"
-        missing = load_sample_buffers(ns["Samples"], sorted(program.samples))
+        missing = load_sample_buffers(ns["Samples"], sorted(program.samples | program.sample_files))
         if missing:
             return "missing_sample", f"нет сэмплов для символов: {' '.join(missing)}"
         return None

@@ -7,10 +7,18 @@ import random
 from typing import List, Sequence, Tuple
 
 from .. import knowledge as kn
+from ..diversity import weighted_pick
 from ..model import Chord, Key, PitchEvent
 
 #: Прогрессии club по ступеням лада, аккорд на 2 такта (8-тактовая петля).
 PROGRESSIONS: Tuple[Tuple[int, ...], ...] = ((0, 5, 2, 6), (0, 3, 5, 4), (0, 5, 3, 4), (0, 6, 5, 6))
+#: Одна прогрессия — не больше ``PROGRESSION_CAP`` раз за ``PROGRESSION_WINDOW`` треков подряд (ADR-0149 A13).
+PROGRESSION_CAP, PROGRESSION_WINDOW = 3, 10
+
+
+def progression_name(degrees: Sequence[int]) -> str:
+    """Имя прогрессии в ``music_history.progression``: ступени через дефис."""
+    return "-".join(str(d) for d in degrees)
 
 
 def triad_pcs(key: Key, degree: int) -> Tuple[int, ...]:
@@ -58,19 +66,25 @@ def pad_chords(key: Key, degrees: Sequence[int], register: Tuple[int, int]) -> T
     return tuple(Chord(d, v) for d, v in zip(degrees, best))
 
 
-def fit_progression(key: Key, notes: Sequence[PitchEvent], chord_beats: float, rng: random.Random) -> Tuple[int, ...]:
+def fit_progression(key: Key, notes: Sequence[PitchEvent], chord_beats: float, rng: random.Random,
+                    recent: Sequence[str] = ()) -> Tuple[int, ...]:
     """Прогрессия из :data:`PROGRESSIONS`, трезвучия которой покрывают больше всего звучания хука.
 
-    ``notes`` — хук в долях от начала петли, аккорд держится ``chord_beats`` долей. Без нот или при
-    ничьей — выбор сидом среди лучших.
+    ``notes`` — хук в долях от начала петли, аккорд держится ``chord_beats`` долей. ``recent`` — прогрессии
+    прошлых треков (свежие первыми): сыгранная ``PROGRESSION_CAP`` раз за окно не берётся, при ничьей —
+    выбор сидом со штрафом за недавнее (``diversity.weighted_pick``).
     """
     def score(degrees: Tuple[int, ...]) -> float:
         triads = [set(triad_pcs(key, d)) for d in degrees]
         return sum(e.dur_beats for e in notes if e.midi % 12 in triads[int(e.beat // chord_beats) % len(triads)])
 
-    scores = {degrees: score(degrees) for degrees in PROGRESSIONS}
+    window = list(recent)[:PROGRESSION_WINDOW - 1]
+    allowed = [d for d in PROGRESSIONS if window.count(progression_name(d)) < PROGRESSION_CAP] or list(PROGRESSIONS)
+    scores = {degrees: score(degrees) for degrees in allowed}
     best = max(scores.values())
-    return rng.choice([d for d in PROGRESSIONS if scores[d] == best])
+    top = {progression_name(d): d for d in allowed if scores[d] == best}
+    return top[weighted_pick(list(top), window, rng)]
 
 
-__all__ = ["PROGRESSIONS", "fit_progression", "pad_chords", "triad_pcs", "voicings"]
+__all__ = ["PROGRESSIONS", "PROGRESSION_CAP", "PROGRESSION_WINDOW", "fit_progression", "pad_chords",
+           "progression_name", "triad_pcs", "voicings"]
