@@ -83,7 +83,7 @@ class Player:
 
 
 #: Все синты тембров v2 (``knowledge.TIMBRES``): сервер-заглушка знает их все.
-V2_SYNTHS = frozenset(x for fam in kn.TIMBRES.values() for synths in fam.values() for x in synths)
+V2_SYNTHS = frozenset(x for fam in (*kn.TIMBRES.values(), kn.SONG_TIMBRES) for synths in fam.values() for x in synths)
 
 
 class Log:

@@ -60,7 +60,7 @@ from .base import shared_publisher
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
-from .engine.tools_v2 import DjSetTool, RequestMusicTool, named_play_classic
+from .engine.tools_v2 import DjSetTool, RequestMusicTool
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -356,9 +356,8 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
 
     dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
-    # PR-6: одиночный club-трек v2; classic — старым путём (В5), через этот же реестр
-    node.registry.register(RequestMusicTool(node, owner, dj_set, confirm=confirm,
-                                            classic=named_play_classic(node.registry.execute)))
+    # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
+    node.registry.register(RequestMusicTool(node, owner, dj_set, confirm=confirm))
     owner.publish_state()
     node.get_logger().info(
         f"🎵 music_engine=v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "

@@ -50,6 +50,12 @@ class Section:
 @dataclass(frozen=True)
 class Form:
     sections: Tuple[Section, ...]
+    #: ``club`` — клубная форма (32/48/64 такта, outro); ``song`` — classic: мелодия целиком по куплетам (PR-11).
+    kind: str = kn.FORM_CLUB
+
+    @property
+    def song(self) -> bool:
+        return self.kind == kn.FORM_SONG
 
     @property
     def bars_total(self) -> int:
@@ -193,8 +199,22 @@ def _check_key(track: Track) -> None:
     _require(track.energy in kn.ENERGY_LEVELS, "energy", f"энергия {track.energy!r} вне 1..5")
 
 
+def _check_song_form(form: Form) -> None:
+    """Песня: длина — от мелодии (куплет = вся мелодия), outro не нужен — песня не стыкуется в сете."""
+    _require(0 < form.bars_total <= kn.SONG_MAX_BARS, "form.bars_total",
+             f"{form.bars_total} тактов вне 1..{kn.SONG_MAX_BARS}")
+    for i, sec in enumerate(form.sections):
+        _require(sec.bars > 0 and 0 <= sec.energy <= 10, f"form.sections[{i}]", "такты ≤ 0 или энергия вне 0..10")
+        unknown = sorted(set(sec.roles) - set(kn.ROLES))
+        _require(not unknown, f"form.sections[{i}].roles", f"неизвестные роли {unknown}")
+
+
 def _check_form(form: Form) -> None:
     _require(bool(form.sections), "form.sections", "нет секций")
+    _require(form.kind in (kn.FORM_CLUB, kn.FORM_SONG), "form.kind", f"форма {form.kind!r} не club/song")
+    if form.song:
+        _check_song_form(form)
+        return
     _require(form.bars_total in BARS_TOTAL, "form.bars_total", f"{form.bars_total} тактов не из {BARS_TOTAL}")
     for i, sec in enumerate(form.sections):
         path = f"form.sections[{i}]"
@@ -228,28 +248,45 @@ def _check_grid(role: str, grid: Grid, bars_total: int) -> None:
         _require(isinstance(st.offset_ms, int), f"{path}[{i}].offset_ms", "сдвиг не в целых мс")
 
 
-def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float, part: Part) -> None:
+def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool) -> None:
     path = f"parts.{role}.pitches[{i}]"
     _require(_finite(ev.beat) and _finite(ev.dur_beats), path, "доли не конечные числа")
     _require(ev.dur_beats > 0 and 0 <= ev.beat and ev.beat + ev.dur_beats <= limit_beats + 1e-9,
              f"{path}.beat", f"нота {ev.beat}+{ev.dur_beats} вне формы ({limit_beats} долей)")
     lo, hi = part.register
     _require(lo <= ev.midi <= hi, f"{path}.midi", f"MIDI {ev.midi} вне регистра партии {lo}..{hi}")
+    if song:  # мелодия звучит как записана; лад аккомпанемента — долей (``_check_song_key``)
+        return
     in_scale = ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
     approach = role == "bass" and ev.dur_beats <= APPROACH_MAX_BEATS
     _require(in_scale or approach, f"{path}.midi", f"MIDI {ev.midi} не в ладе {kn.ROOTS[key.root]} {key.mode}")
 
 
+def _check_song_key(role: str, part: Part, key: Key) -> None:
+    """Аккомпанемент песни — в тональности мелодии: доля длительности в ладу ≥ ``knowledge.SONG_KEY_FIT_MIN``."""
+    if role == "lead":
+        return
+    scale = kn.scale_pitch_classes(key.root, key.mode)
+    total = sum(ev.dur_beats for ev in part.pitches or ())
+    inside = sum(ev.dur_beats for ev in part.pitches or () if ev.midi % 12 in scale)
+    fit = inside / total if total else 1.0
+    _require(fit >= kn.SONG_KEY_FIT_MIN, f"parts.{role}.pitches",
+             f"в ладу {kn.ROOTS[key.root]} {key.mode} {fit:.2f} длительности < {kn.SONG_KEY_FIT_MIN}")
+
+
 def _check_tonal(role: str, part: Part, track: Track) -> None:
-    corridor = kn.REGISTERS[role]
+    song = track.form.song
+    corridor = (kn.SONG_REGISTERS if song else kn.REGISTERS)[role]
     lo, hi = part.register
     _require(corridor[0] <= lo <= hi <= corridor[1], f"parts.{role}.register",
              f"регистр {part.register} вне коридора {corridor}")
-    _require(hi <= kn.LEAD_MAX_MIDI, f"parts.{role}.register", f"верх {hi} выше {kn.LEAD_MAX_MIDI}")
+    _require(song or hi <= kn.LEAD_MAX_MIDI, f"parts.{role}.register", f"верх {hi} выше {kn.LEAD_MAX_MIDI}")
     _require(bool(part.pitches), f"parts.{role}.pitches", "тональная партия без нот")
     limit = float(track.form.bars_total * BEATS_PER_BAR)
     for i, ev in enumerate(part.pitches or ()):
-        _check_pitch(role, i, ev, track.key, limit, part)
+        _check_pitch(role, i, ev, track.key, limit, part, song)
+    if song:
+        _check_song_key(role, part, track.key)
     palette = kn.SYNTH_PALETTE.get(role, ())
     _require(part.synth_or_sample in palette or part.synth_or_sample in kn.SYNTH_TRAITS,
              f"parts.{role}.synth_or_sample", f"синт {part.synth_or_sample!r} не из палитры")
@@ -312,7 +349,8 @@ def _check_hook_and_harmony(track: Track) -> None:
     hook = track.hook
     if hook is None:
         return
-    _require(4 <= hook.bars <= 8, "hook.bars", f"хук {hook.bars} тактов вне 4..8")
+    lo, hi = (1, kn.SONG_MAX_BARS) if track.form.song else (4, 8)  # хук песни — вся мелодия
+    _require(lo <= hook.bars <= hi, "hook.bars", f"хук {hook.bars} тактов вне {lo}..{hi}")
     for i, ev in enumerate(hook.notes):
         _require(ev.dur_beats > 0 and 0 <= ev.beat and ev.beat + ev.dur_beats <= hook.bars * BEATS_PER_BAR + 1e-9,
                  f"hook.notes[{i}].beat", "нота вне длины мотива")

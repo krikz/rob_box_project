@@ -8,9 +8,9 @@ LLM — только при v2 (``music_engine = "v2"``), старые ``compose
 
 Результат ``ok: true`` — только когда плеер прислал ``started`` этого трека (``confirm``, A14:
 ни одного ``ok:true`` без звука); ``rejected`` или тишина за время ожидания — ``ok: false``.
-Classic-мелодии («поставь Калинку») v2 пока не играет (PR-11, решение Шифу В5): ``request_music``
-с ``intent=melody``/``genre=classical|folk`` отдаёт их старому пути (``classic`` — ``named_play``:
-``lookup_melody`` → ``compose_music``), без второй реализации.
+Classic («поставь Калинку», PR-11): ``request_music`` с ``intent=melody``/``genre=classical|folk`` играет
+песню движка v2 (``engine.classic``: поиск и ``harmonize`` старой библиотеки → ``arrange.song`` → ``render``),
+один проход формы, потом ``finished``. Не нашлась — ``ok: false, found: false`` (I16).
 
 PR-10: после ``started`` сета ``dj_set`` в фоне спрашивает ``SetReasoner`` (LLM) профиль сета; ответ ок —
 план подменяется со следующего несыгранного трека (``SetSession.replan``), иначе сет целиком seeded.
@@ -29,6 +29,7 @@ from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from .classic import ClassicPick, classic_picker
 from .reasoner import SetPlanBox, SetReasoner
 from .session import SetSession, plan_source
 
@@ -37,7 +38,7 @@ MelodyLookup = Callable[[Iterable[str]], Dict[str, str]]
 #: ``track_id -> MusicEvent(started|rejected) | None`` — ждёт событие плеера (``MusicEventLog.wait``).
 Confirm = Callable[[Optional[str]], Any]
 
-#: ``request_music`` к старому пути (classic, В5).
+#: ``request_music`` в classic-песню (PR-11).
 CLASSIC_GENRES = ("classical", "folk")
 
 
@@ -66,32 +67,6 @@ def _rtttl_library() -> Any:
     from ..core.rtttl_library import RtttlLibrary
 
     return RtttlLibrary()
-
-
-def named_play_classic(execute_tool: Callable[..., Any]) -> Callable[[str], Dict[str, Any]]:
-    """Classic по просьбе LLM — тот же ``named_play``, что у роутера (``lookup_melody`` → ``compose_music``).
-
-    ``execute_tool(name, **args) -> MCPToolResult`` — реестр ``mcp_server``. Название берёт грамматика
-    заказа по имени («поставь калинку» → «калинку»); не разобрала — ищутся слова целиком.
-    """
-    import asyncio
-
-    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
-    from rob_box_voice.core.named_play import NamedPlayStatus, run_named_play
-
-    async def call(name: str, args: Dict[str, Any]) -> Any:
-        result = execute_tool(name, **args)
-        return bool(result.success), repr(result.data if result.data is not None else result.error)
-
-    def play(text: str) -> Dict[str, Any]:
-        command = parse_media_command(text)
-        title = command.name if command.intent is MediaIntent.PLAY_NAMED else text
-        outcome = asyncio.run(run_named_play(call, title))
-        played = outcome.status is NamedPlayStatus.PLAYED
-        return {"ok": played, "engine": "v1", "title": title,
-                "reason": None if played else f"{outcome.status.value}: {outcome.reason}".rstrip(": ")}
-
-    return play
 
 
 def confirmed(result: Dict[str, Any], confirm: Optional[Confirm]) -> Dict[str, Any]:
@@ -216,14 +191,14 @@ class RequestMusicTool(MCPTool):
 
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
-                 classic: Optional[Callable[[str], Dict[str, Any]]] = None) -> None:
+                 classic: Optional[Callable[..., ClassicPick]] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
         self._melodies = melodies or library_melodies(_rtttl_library)
         self._seed = seed
         self._confirm = confirm
-        self._classic = classic
+        self._classic = classic or classic_picker(_rtttl_library)
 
     @property
     def name(self) -> str:
@@ -262,9 +237,9 @@ class RequestMusicTool(MCPTool):
 
     def execute(self, intent: str = "track", text: str = "", mood: Optional[str] = None,
                 genre: Optional[str] = None) -> MCPToolResult:
-        if intent == "melody" or genre in CLASSIC_GENRES:
-            return self._play_classic(text)
         self._dj.close_set("request_music")
+        if intent == "melody" or genre in CLASSIC_GENRES:
+            return tool_result(confirmed(self._play_classic(text), self._confirm), "мелодия не заиграла")
         return tool_result(confirmed(self._play_club(text, mood), self._confirm), "музыка не заиграла")
 
     def _play_club(self, text: str, mood: Optional[str]) -> Dict[str, Any]:
@@ -283,12 +258,27 @@ class RequestMusicTool(MCPTool):
         result = self._owner.play(program, dj={"enabled": False, "title": title})
         return {**result, "title": title, "bpm": plan.bpm, "energy": energy, "theme_source": profile.source}
 
-    def _play_classic(self, text: str) -> MCPToolResult:
-        """Classic — старый путь (В5): ``named_play`` через реестр, та же реализация, что у роутера."""
-        if self._classic is None:
-            return MCPToolResult(success=False, error="мелодии по названию сейчас недоступны")
-        return tool_result(self._classic(text), "мелодия не заиграла")
+    def _play_classic(self, text: str) -> Dict[str, Any]:
+        """Мелодия по названию: песня v2 (темп и тональность — из RTTTL), один проход формы.
+
+        Название берёт грамматика заказа по имени («поставь калинку» → «калинку»); не разобрала — ищутся
+        слова целиком. Поиск — тот же, что у ``lookup_melody`` (``engine.classic.find_record``).
+        """
+        from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+        command = parse_media_command(text)
+        query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
+        seed = self._seed()
+        try:
+            pick = self._classic(query, seed=seed)
+        except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
+            return self._owner.reject(f"classic:{query}", "compose_error", f"{type(exc).__name__}: {exc}")
+        if not pick.found:
+            return {"ok": False, "found": False, "reason": "not_found", "detail": pick.reason, "query": query}
+        result = self._owner.play(pick.program, dj={"enabled": False, "title": pick.title}, once=True)
+        return {**result, "found": True, "title": pick.title, "melody_id": pick.melody_id, "bpm": pick.bpm,
+                "key": pick.key}
 
 
 __all__ = ["CLASSIC_GENRES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "confirmed",
-           "library_melodies", "named_play_classic", "tool_result"]
+           "library_melodies", "tool_result"]

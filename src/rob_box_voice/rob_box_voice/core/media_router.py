@@ -24,7 +24,7 @@ LLM вызвать тул» нельзя, а ретраи-гуарды вокр�
 ADR-0149 PR-6 — при ``music_engine: v2`` (:func:`plan_media_command_v2`) «включи
 диджей сет на тему X» / «ты диджей X» → ``dj_set(start)``, «поставь клубный трек» →
 ``request_music``, стоп → ``dj_set(stop)`` + ``stop_music``; заказ по имени
-(classic) остаётся на старом пути до PR-11 (решение Шифу В5). Фраза об успехе
+(classic) — PR-11: поиск тот же, играет ``request_music`` движка v2 (``MediaPlan.play_engine``). Фраза об успехе
 запуска — только по событию ``started`` плеера (``MediaPlan.confirm_started``,
 исполняет :mod:`.media_plan_run`), при ``rejected`` — честный отказ.
 
@@ -150,6 +150,8 @@ class MediaPlan:
             :mod:`.named_play` (``lookup_melody`` → ``compose_music``):
             нашлась — играет и говорит :func:`.named_play.play_ok_text`;
             не нашлась — реплика уходит в LLM, роутер молчит.
+        play_engine: ADR-0149 PR-11 — чем играть заказ по имени: ``v1`` —
+            ``compose_music``, ``v2`` — ``request_music`` движка v2.
         confirm_started: ADR-0149 PR-6 — ``say_ok`` только после события
             ``started`` с ``track_id`` из ответа первого тула; ``rejected`` →
             ``say_fail``; события нет — :data:`NOT_STARTED_TEXT` (A14).
@@ -165,6 +167,7 @@ class MediaPlan:
     preview_root: str = ""
     claim_track_one: bool = False
     play_name: str = ""
+    play_engine: str = "v1"
     confirm_started: bool = False
 
     @property
@@ -658,7 +661,9 @@ def _stop_plan_v2(command: MediaCommand, media: MediaState) -> MediaPlan:
 def plan_media_command_v2(
     command: MediaCommand, media: MediaState, text: str
 ) -> Optional[MediaPlan]:
-    """План при ``music_engine: v2``. Громкость и заказ по имени — как при v1."""
+    """План при ``music_engine: v2``. Громкость — как при v1; заказ по имени играет движок v2 (PR-11)."""
+    if command.intent is MediaIntent.PLAY_NAMED and command.name:
+        return replace(_play_named_plan(command), play_engine=ENGINE_V2)
     if command.intent is MediaIntent.DJ:
         return _dj_plan_v2(command)
     if command.intent is MediaIntent.REQUEST_MUSIC:

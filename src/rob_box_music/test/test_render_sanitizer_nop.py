@@ -36,3 +36,15 @@ def test_sanitizer_is_a_nop_on_v2_program(seed, deck):
     assert result.security_error is None
     assert result.quality_errors == () and result.slot_error is None
     assert result.code == program.code
+
+
+@pytest.mark.parametrize("deck", ["A", "B"])
+def test_sanitizer_is_a_nop_on_a_song_program(deck):
+    """PR-11: песня (списки ``dur``/``sus``, ноты не на сетке 16-х) санитайзер тоже не трогает."""
+    from rob_box_music.arrange.song import song_track
+    from test_song import material
+
+    program = render(song_track(material(), seed=3, deck=deck), deck)
+    result = sanitize_renando(program.code, MAX_AMP, known_synths=frozenset(program.synths))
+    assert result.security_error is None and result.quality_errors == () and result.slot_error is None
+    assert result.code == program.code

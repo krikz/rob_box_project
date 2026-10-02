@@ -19,6 +19,10 @@
    тулом сами. Если тул ответил «найдена, но не задана аранжировка» —
    второй вызов с тембрами по умолчанию (:data:`DEFAULT_ARRANGEMENT`).
 
+ADR-0149 PR-11 — при ``music_engine: v2`` шаг 2 другой: ``request_music(intent="melody", text=<название>)``
+играет песню движка v2 и отвечает ``ok`` только по ``started`` (поиск в туле — то же правило
+:func:`melody_hit`). Шаг 1 и промах — те же.
+
 Промах — реплика уходит в LLM, как до #3176, и роутер ничего не говорит
 (иначе был бы двойной ответ). Поток чистый: без ROS и без I/O, тулы
 вызывает переданная корутина ``execute(name, args) -> (ok, content)``.
@@ -48,6 +52,9 @@ ARRANGEMENT_MISSING_MARKER = "не задана аранжировка"
 
 LOOKUP_TOOL = "lookup_melody"
 COMPOSE_TOOL = "compose_music"
+REQUEST_TOOL = "request_music"
+#: Значение флага ``music_engine``, при котором мелодию играет движок v2 (ADR-0149 §9).
+ENGINE_V2 = "v2"
 
 ToolExec = Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, str]]]
 
@@ -153,8 +160,13 @@ async def _compose(execute: ToolExec, hit: MelodyHit) -> bool:
     return ok
 
 
-async def run_named_play(execute: ToolExec, name: str) -> NamedPlayOutcome:
-    """``lookup_melody`` → (полное совпадение) → ``compose_music``."""
+async def _request_v2(execute: ToolExec, name: str) -> bool:
+    ok, _content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
+    return ok
+
+
+async def run_named_play(execute: ToolExec, name: str, engine: str = "v1") -> NamedPlayOutcome:
+    """``lookup_melody`` → (полное совпадение) → ``compose_music`` (v1) или ``request_music`` (v2)."""
     ok, content = await execute(LOOKUP_TOOL, {"name": name})
     if not ok:
         return NamedPlayOutcome(NamedPlayStatus.MISS, reason="lookup: не найдена")
@@ -163,13 +175,15 @@ async def run_named_play(execute: ToolExec, name: str) -> NamedPlayOutcome:
         return NamedPlayOutcome(
             NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason
         )
-    if await _compose(execute, hit):
+    v2 = engine == ENGINE_V2
+    play_tool = REQUEST_TOOL if v2 else COMPOSE_TOOL
+    if await (_request_v2(execute, name) if v2 else _compose(execute, hit)):
         return NamedPlayOutcome(
-            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, COMPOSE_TOOL)
+            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, play_tool)
         )
     return NamedPlayOutcome(
         NamedPlayStatus.FAILED, hit=hit, tools_done=(LOOKUP_TOOL,),
-        reason="compose_music не прошёл",
+        reason=f"{play_tool} не прошёл",
     )
 
 
@@ -177,10 +191,12 @@ __all__ = [
     "ARRANGEMENT_MISSING_MARKER",
     "COMPOSE_TOOL",
     "DEFAULT_ARRANGEMENT",
+    "ENGINE_V2",
     "LOOKUP_TOOL",
     "MelodyHit",
     "NamedPlayOutcome",
     "NamedPlayStatus",
+    "REQUEST_TOOL",
     "melody_hit",
     "play_fail_text",
     "play_ok_text",

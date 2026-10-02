@@ -18,6 +18,8 @@ PR-5: очередь из одного подготовленного трека
 следующего трека на границе формы (:meth:`advance`). Что и когда ставить в очередь, решает
 ``SetSession``. PR-8: блэнд двух дек — входящий встаёт до границы формы, уходящая дека снимается
 на границе и освобождается (лог ``deck … free``); ``finished`` конечного трека — с финалом сета.
+PR-11: конечный трек (``play(..., once=True)``, classic-песня) — один проход формы, на её конце дека
+снимается, событие ``finished`` и снимок ``idle`` с ``finished_track_id`` (как v1 ``repeat=False``).
 """
 
 from __future__ import annotations
@@ -63,11 +65,15 @@ class PlayerOwner:
         self._rejected: set = set()
         self._queued: Optional[Tuple[Any, str]] = None  # (программа N+1, expected_previous)
         self._pending_dj: Optional[Dict[str, Any]] = None
+        self._once: Optional[str] = None  # track_id, который играет один проход формы
         #: Слушатель ``started`` (``SetSession``): зовётся из потока клока после публикации.
         self.on_started: Optional[Callable[[Dict[str, Any]], None]] = None
 
-    def play(self, program: Any, dj: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-        """Проверить ресурсы и запустить программу на деке. Звук — по событию ``started``."""
+    def play(self, program: Any, dj: Optional[Mapping[str, Any]] = None, *, once: bool = False) -> Dict[str, Any]:
+        """Проверить ресурсы и запустить программу на деке. Звук — по событию ``started``.
+
+        ``once`` — один проход формы, потом ``finished`` (иначе форма повторяется до стопа или следующего трека).
+        """
         problem = self._adapter.check(program)
         if problem is not None:
             return self._reject(program.track_id, *problem)
@@ -75,6 +81,7 @@ class PlayerOwner:
             self._pending = program.track_id
             self._dj = {**(dj or {}), "enabled": bool((dj or {}).get("enabled"))}
             self._queued, self._pending_dj = None, None
+            self._once = program.track_id if once else None
         try:
             self._adapter.start(program, self.track_started)
         except Exception as exc:  # noqa: BLE001 — отказ громкий, а не тишина
@@ -107,6 +114,19 @@ class PlayerOwner:
         listener = self.on_started
         if listener is not None:
             listener(dict(snap))
+        if track_id == self._once:
+            self._adapter.at(float(snap["start_beat"]) + float(snap["form_beats"]), lambda: self._finish(track_id))
+
+    def _finish(self, track_id: str) -> None:
+        """Поток клока: конечный трек доиграл форму — дека свободна, ``finished`` и ``idle``."""
+        with self._lock:
+            if (self._current or {}).get("track_id") != track_id:
+                return
+            self._current, self._once, self._dj = None, None, {"enabled": False}
+        self._adapter.stop()
+        self._log.info(f"🎵 [music v2] finished track_id={track_id}")
+        self._publish_event(build_music_event_payload("finished", track_id, ts=self._clock()))
+        self.publish_state(finished_track_id=track_id)
 
     def enqueue(self, program: Any, expected_previous: str) -> None:
         """Трек N+1 отрендерен и проверен — в очередь (одно место), событие ``queued``."""
@@ -185,13 +205,13 @@ class PlayerOwner:
             last = (self._current or {}).get("track_id") or self._pending
             self._current = None
             self._pending = None
-            self._dj = {"enabled": False}
+            self._dj, self._once = {"enabled": False}, None
             self._queued, self._pending_dj = None, None
         self._log.info(f"🎵 [music v2] stop track_id={last} reason={reason}")
         self.publish_state()
         return {"ok": True, "track_id": last}
 
-    def publish_state(self) -> None:
+    def publish_state(self, finished_track_id: Optional[str] = None) -> None:
         """Опубликовать latched-снимок (после старта, стопа и при подключении к ROS)."""
         now = self._clock()
         with self._lock:
@@ -204,7 +224,7 @@ class PlayerOwner:
             form_ends_at = current["started_at"] + passes * pass_s
         self._publish_state(build_music_state_payload(
             playing=current is not None, track_id=(current or {}).get("track_id"),
-            form_ends_at=form_ends_at, dj=dj, ts=now))
+            form_ends_at=form_ends_at, dj=dj, finished_track_id=finished_track_id, ts=now))
 
     def _reject(self, track_id: str, reason: str, detail: str) -> Dict[str, Any]:
         with self._lock:
