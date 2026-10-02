@@ -134,13 +134,16 @@ def set_master(energy: int) -> Dict[str, float]:
 
 
 def mix_parts(parts: Mapping[str, Part], form: Form) -> Tuple[Dict[str, Part], Mix]:
-    """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн и свип по видам секций формы."""
+    """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн и свип по видам секций формы.
+
+    Песня (``form.song``, PR-11) — без клубного вида: ни сайдчейна, ни LPF-свипа; энергия куплетов (``SONG_VERSES``)
+    — только состав ролей. ``trim`` у песни — дефолт 0: она играет вне сета (``Program.master`` пуст)."""
     leveled = {role: replace(part, level_db=_level(role, part)) for role, part in parts.items()}
-    ducked = frozenset(r for r in kn.DUCK_ROLES if r in leveled)
+    ducked = frozenset() if form.song else frozenset(r for r in kn.DUCK_ROLES if r in leveled)
     stereo = {r: Stereo(**kn.ROLE_STEREO[r]) for r in leveled if r in kn.ROLE_STEREO}
     duck = tuple(Duck(look(sec.energy).duck_depth, kick_steps(look(sec.energy).kick)) for sec in form.sections)
     mix = Mix({r: p.level_db for r, p in leveled.items()}, stereo, duck if ducked else (), duck_roles=ducked,
-              lpf=lpf_sweeps(form, sorted(leveled)))
+              lpf={} if form.song else lpf_sweeps(form, sorted(leveled)))
     return leveled, mix
 
 

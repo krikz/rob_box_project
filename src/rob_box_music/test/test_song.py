@@ -34,6 +34,20 @@ def test_song_form_is_verses_of_the_whole_melody():
     assert [s.bars for s in track.form.sections] == [2, 2, 2] and track.hook.bars == 2
 
 
+def test_song_has_no_club_look_no_sidechain_and_no_sweep():
+    """PR-7 × PR-11: у песни нет клубного вида секции — ни сайдчейна (``amplify`` по огибающей), ни LPF-свипа;
+    уровень по куплетам меняет только состав ролей. ``trim`` — дефолт: песня вне сета (``Program.master`` пуст)."""
+    track = song_track(material(), seed=1)
+    assert track.mix.duck == () and track.mix.duck_roles == frozenset() and track.mix.lpf == {}
+    program = render(track, "A")
+    _p, events = program_events(program.code, program.form_beats)
+    assert events and all("lpf" not in e.fx for e in events)
+    assert "lpf=" not in program.code and program.master == {}
+    for role in ("bass", "pad"):
+        assert {round(e.amp / e.gate, 3) for e in events if e.slot == program.slots[role]} <= {1.0} | set(
+            kn.ACCENT_AMPLIFY), role
+
+
 def test_off_grid_melody_is_heard_note_for_note():
     track = song_track(material(), seed=1)
     program = render(track, "B")
