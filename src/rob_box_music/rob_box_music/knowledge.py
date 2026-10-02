@@ -432,3 +432,44 @@ __all__ += [
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "ROLE_LEVEL_DB",
     "ROLE_STEREO", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "TIMBRES",
 ]
+
+
+# ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──
+
+#: ``Form.kind``: клубная форма (32/48/64 такта, outro ≥ 8) и песня по куплетам (длина — от мелодии).
+FORM_CLUB = "club"
+FORM_SONG = "song"
+#: Куплетов в песне: столько проходов мелодии, чтобы форма была около :data:`SONG_TARGET_BARS` тактов, но не
+#: больше, чем строк в :data:`SONG_VERSES` (длинная тема — один куплет; ср. бюджет повторов v1
+#: ``arranger._snap_plan_to_theme``).
+SONG_TARGET_BARS = 32
+#: Самая длинная песня, которую принимает модель (архив 02.10: 10448 тем, p99 — 22 такта, максимум — 158).
+SONG_MAX_BARS = 256
+_SONG_FULL = frozenset({"kick", "hats", "clap", "bass", "pad", "lead"})
+#: Куплеты по их числу: (имя, энергия секции 0..10, роли). Первый куплет — тема поверх пэда и баса, потом
+#: входят ударные, последний — полный состав (план состава v1 ``arranger.FORMS``, #2978).
+SONG_VERSES: Mapping[int, Tuple[Tuple[str, int, frozenset], ...]] = {
+    1: (("verse", 7, _SONG_FULL),),
+    2: (("verse", 5, frozenset({"hats", "bass", "pad", "lead"})), ("chorus", 8, _SONG_FULL)),
+    3: (("verse", 4, frozenset({"bass", "pad", "lead"})),
+        ("verse2", 6, frozenset({"kick", "hats", "bass", "pad", "lead"})), ("chorus", 8, _SONG_FULL)),
+}
+#: Коридоры регистров песни. Мелодия звучит, как записана (регистр уже нормализовал ``rtttl_compose``, но архив
+#: 02.10 даёт лид 36..106, p1–p99 56..92) — коридор лида = клавиатура фортепиано A0..C8. Бас — от
+#: ``harmonize.BASS_MIDI_FLOOR`` (архив: 36..54), пэд — ``harmonize.PAD_REGISTER_LIMITS`` (архив: 48..82).
+SONG_REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 60), "pad": (36, 96), "lead": (21, 108)}
+#: Аккомпанемент песни в тональности мелодии: доля длительности баса и пэда в ладу трека не ниже порога. Порог
+#: ловит чужую тональность, а не заимствованные аккорды ``harmonize``: архив 02.10 — бас min 0.42 / p1 0.81,
+#: пэд min 0.50 / p1 0.83.
+SONG_KEY_FIT_MIN = 0.4
+#: Тембры песни (только синты с замером громкости :data:`LANE_DB_AT_UNIT`); лид выбирается по сиду.
+SONG_TIMBRES: Mapping[str, Tuple[str, ...]] = {"lead": ("pluck", "marimba", "karp"), "bass": ("bass",),
+                                               "pad": ("warmpad",)}
+#: Символ рисунка ударных ``harmonize`` (16 шагов на такт) → роль v2: ``X`` — бочка, ``o`` (малый) — клэп
+#: (у малого нет замера громкости), ``-`` — хэты.
+SONG_DRUM_SYMBOLS: Mapping[str, str] = {"X": "kick", "o": "clap", "-": "hats"}
+
+__all__ += [
+    "FORM_CLUB", "FORM_SONG", "SONG_DRUM_SYMBOLS", "SONG_KEY_FIT_MIN", "SONG_MAX_BARS", "SONG_REGISTERS",
+    "SONG_TARGET_BARS", "SONG_TIMBRES", "SONG_VERSES",
+]

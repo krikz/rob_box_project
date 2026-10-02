@@ -10,8 +10,7 @@ import pytest
 
 from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
 from rob_box_harness.core.tool_registry import ToolRegistry
-from rob_box_mcp_tools.base import MCPToolResult
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool, named_play_classic
+from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_voice.core.music_player_state import MusicEvent, MusicEventLog
 
@@ -93,24 +92,6 @@ def test_dj_set_waits_for_started_too():
     assert log.wait(_started(rig)[0]["track_id"], 0.0).event == "started"
 
 
-@pytest.mark.parametrize("args", [{"intent": "melody", "text": "поставь калинку"},
-                                  {"intent": "track", "text": "калинка", "genre": "folk"}])
-def test_classic_goes_to_the_old_named_path(args):
-    rig = _rig()
-    seen = []
-    _dj, req = _tools(rig, classic=lambda text: seen.append(text) or {"ok": True, "engine": "v1"})
-    result = req.execute(**args)
-    assert result.success and result.data["engine"] == "v1" and seen == [args["text"]]
-    assert rig.events == []  # дека v2 не тронута
-
-
-def test_classic_without_old_path_is_an_honest_error():
-    rig = _rig()
-    _dj, req = _tools(rig)
-    result = req.execute(intent="melody", text="поставь калинку")
-    assert result.success is False and "недоступны" in result.error
-
-
 def test_request_closes_a_running_set_and_dj_stop_stops_a_single_track():
     rig = _rig()
     dj, req = _tools(rig)
@@ -121,36 +102,6 @@ def test_request_closes_a_running_set_and_dj_stop_stops_a_single_track():
         stopped = dj.execute(action="stop")
     assert stopped.success and stopped.data["was_playing"] is True
     assert '"state": "idle"' in rig.states[-1]
-
-
-def _registry(results):
-    def execute(tool_name, **args):  # как MCPToolRegistry.execute(tool_name, **kwargs)
-        return results[tool_name](args)
-    return execute
-
-
-def test_named_play_classic_reuses_named_play():
-    calls = []
-
-    def lookup(args):
-        calls.append(("lookup_melody", args))
-        return MCPToolResult(success=True, data={"name": "kalinka", "title": "Kalinka",
-                                                 "match": {"unmatched": [], "ignored": []}})
-
-    def compose(args):
-        calls.append(("compose_music", args))
-        return MCPToolResult(success=True, data={"ok": True})
-
-    play = named_play_classic(_registry({"lookup_melody": lookup, "compose_music": compose}))
-    result = play("поставь калинку")
-    assert result["ok"] is True and result["engine"] == "v1"
-    assert calls == [("lookup_melody", {"name": "калинку"}), ("compose_music", {"name": "kalinka"})]
-
-
-def test_named_play_classic_miss_is_not_ok():
-    play = named_play_classic(_registry({"lookup_melody": lambda a: MCPToolResult(success=False, error="нет")}))
-    result = play("поставь нечто")
-    assert result["ok"] is False and result["reason"].startswith("miss")
 
 
 def test_catalog_hides_old_music_tools_from_llm_under_v2_only():

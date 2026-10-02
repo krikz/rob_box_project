@@ -20,8 +20,11 @@
 (:func:`_sample_line`): луп — нарезка на восьмые (``chop``), psr — файл на каждую 16-ю из пула (``c1.buf``), FX —
 удар, звучащий один раз. Путь — от папки лупов пака 0 (``repr``).
 
+Песня (``Form.kind == song``, classic PR-11): тональные роли — последовательность нот всей формы с ``dur``/``sus``
+списками (мелодия как записана, ноты не на сетке 16-х тоже), ударные — как у club; сэмплов у песни нет.
+
 Не умеет (честная ошибка :class:`RenderError`, а не тихая потеря):
-ноты вне сетки 16-х, ноту в секции, где роль молчит.
+ноты вне сетки 16-х в club, ноту в секции, где роль молчит.
 """
 
 from __future__ import annotations
@@ -234,7 +237,44 @@ def _note(cell: Optional[Cell]) -> str:
     return str(notes[0]) if len(notes) == 1 else "(" + ", ".join(str(n) for n in notes) + ")"
 
 
+def _exact(value: float) -> str:
+    """Доли песни без округления: длительности RTTTL двоичные (4/d, ×1.5), сумма списка = форма до бита."""
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _sequence(role: str, part: Part, track: Track) -> List[Cell]:
+    """Ноты партии песни подряд: (ноты, dur до следующей атаки, sus) с паузами; аккорд — одна атака."""
+    active = _active_steps(track, role)
+    total = float(track.form.bars_total * BEATS_PER_BAR)
+    onsets: Dict[float, List] = {}
+    for ev in part.pitches or ():
+        if not active[min(int(ev.beat / STEP_BEATS), len(active) - 1)]:
+            raise RenderError(f"parts.{role}: нота на доле {ev.beat} в секции, где роль молчит")
+        onsets.setdefault(ev.beat, []).append(ev)
+    beats = sorted(onsets)
+    out: List[Cell] = [(None, beats[0], 0)] if beats and beats[0] > 0 else []
+    for i, beat in enumerate(beats):
+        evs = onsets[beat]
+        if len({e.dur_beats for e in evs}) != 1:
+            raise RenderError(f"parts.{role}: аккорд на доле {beat} с разными sus")
+        nxt = beats[i + 1] if i + 1 < len(beats) else total
+        out.append((tuple(sorted(e.midi for e in evs)), nxt - beat, evs[0].dur_beats))
+    return out
+
+
+def _song_line(slot: str, role: str, part: Part, track: Track) -> str:
+    seq = _sequence(role, part, track)
+    notes = _list("None" if c[0] is None else _note(c) for c in seq)
+    durs = _list(_exact(c[1]) for c in seq)
+    sus = _list(_exact(c[2]) for c in seq)
+    opts = [f"dur={durs}, sus={sus}, scale=Scale.chromatic, root=0, oct=0"] + _tail(track, role, part, (), False)
+    return f"{slot} >> {part.synth_or_sample}({notes}, " + ", ".join(opts) + ")"
+
+
 def _tonal_line(slot: str, role: str, part: Part, track: Track) -> str:
+    if track.form.song:
+        return _song_line(slot, role, part, track)
     pattern = _fold(_cells(role, part, track), _active_steps(track, role), track.form.bars_total)
     sus = [c[1] if c else STEP_BEATS for c in pattern]
     accents = [c[2] if c else 0 for c in pattern]

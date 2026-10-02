@@ -7406,7 +7406,7 @@ tentative_plan(question, kind, name)
             # Лимит «один трек за ход» (#2859) снимается только на границе
             # хода LLM: трек прошлого хода иначе отказал бы заказу.
             begin_turn()
-        outcome = await run_named_play(_call, plan.play_name)
+        outcome = await run_named_play(_call, plan.play_name, plan.play_engine)
         self.get_logger().info(
             f"🎛️ [media-router] play_named {plan.play_name!r}: "
             f"{outcome.status.value} {outcome.reason}".rstrip()
