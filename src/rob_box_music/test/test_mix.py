@@ -45,6 +45,21 @@ def _step(beat):
     return int(round(beat * 4)) % STEPS_PER_BAR
 
 
+def _section(track, beat):
+    """Номер секции формы, где звучит доля ``beat``."""
+    start = 0.0
+    for i, sec in enumerate(track.form.sections):
+        start += sec.bars * 4
+        if beat < start - 1e-9:
+            return i
+    raise AssertionError(beat)
+
+
+def _env(track, beat):
+    duck = track.mix.duck[_section(track, beat)]
+    return mix.duck_envelope(duck.trigger, duck.depth)
+
+
 @pytest.mark.parametrize("trigger", [FOUR_ON_FLOOR, (0, 10), (0, 3, 6, 10, 13), (4, 12)])
 @pytest.mark.parametrize("depth", [1.0, 0.6, 0.3])
 def test_duck_envelope_rises_without_a_step(trigger, depth):
@@ -73,15 +88,14 @@ def test_sidechain_is_on_the_bass_and_pad_events_only(seed):
     psr-слой DJ_Dave (PR-3d) — тоже под огибающей (``test_diversity``)."""
     track = _track(seed)
     by_role = _events(track)
-    env = mix.duck_envelope(track.mix.duck_trigger, track.mix.duck_depth)
-    assert track.mix.duck_roles == frozenset({"bass", "pad", "sample"}) and track.mix.duck_trigger == FOUR_ON_FLOOR
-    pad = [round(e.amp / e.gate, 3) for e in by_role["pad"]]
-    assert set(pad) == set(kn.SIDECHAIN_SHAPE), "пэд — аккорд на каждой 16-й под огибающей"
-    for ev in by_role["pad"]:
-        assert ev.amp / ev.gate == pytest.approx(env[_step(ev.beat)]) and ev.sus_beats == 0.25
+    assert track.mix.duck_roles == frozenset({"bass", "pad", "sample"})
+    assert len(track.mix.duck) == len(track.form.sections)
+    for ev in by_role["pad"]:  # пэд — аккорд на каждой 16-й под огибающей вида своей секции
+        assert ev.amp / ev.gate == pytest.approx(_env(track, ev.beat)[_step(ev.beat)], abs=1e-3)
+        assert ev.sus_beats == 0.25
     accents = {(p.beat, p.midi): p.accent for p in track.parts["bass"].pitches}
     for ev in by_role["bass"]:
-        want = kn.ACCENT_AMPLIFY[accents[(ev.beat, ev.midi)]] * env[_step(ev.beat)]
+        want = kn.ACCENT_AMPLIFY[accents[(ev.beat, ev.midi)]] * _env(track, ev.beat)[_step(ev.beat)]
         assert ev.amp / ev.gate == pytest.approx(want, abs=1e-3)
     for role in ("kick", "lead"):
         assert {round(e.amp / e.gate, 3) for e in by_role[role]} <= set(kn.ACCENT_AMPLIFY) | {1.0}, role
@@ -96,10 +110,12 @@ def test_pad_dips_only_on_the_trigger(seed):
     kicks = {round(e.beat, 6) for e in by_role["kick"]}
     pad = sorted({(round(e.beat, 6), round(e.amp / e.gate, 3)) for e in by_role["pad"]})
     dips = [b1 for (_b0, r0), (b1, r1) in zip(pad, pad[1:]) if r1 < r0]
-    assert dips and all(_step(b) in FOUR_ON_FLOOR for b in dips)
+    trigger = {b: track.mix.duck[_section(track, b)].trigger for b, _r in pad}
+    assert dips and all(_step(b) in trigger[b] for b in dips)
     assert any(b in kicks for b in dips)
     for (b0, r0), (b1, r1) in zip(pad, pad[1:]):
-        if _step(b1) not in FOUR_ON_FLOOR and b1 - b0 <= 0.25 + 1e-9:
+        same_look = track.mix.duck[_section(track, b0)] == track.mix.duck[_section(track, b1)]
+        if _step(b1) not in trigger[b1] and b1 - b0 <= 0.25 + 1e-9 and same_look:
             assert r1 >= r0, (b1, r0, r1)
 
 
@@ -153,7 +169,7 @@ def test_same_level_whatever_the_timbre():
     track = _track(3)
     for role, synths in (("bass", ("bass", "dub")), ("pad", ("sinepad", "space"))):
         parts = [replace(track.parts[role], synth_or_sample=s) for s in synths]
-        leveled = [mix.mix_parts({role: p}, FOUR_ON_FLOOR)[0][role] for p in parts]
+        leveled = [mix.mix_parts({role: p}, track.form)[0][role] for p in parts]
         assert leveled[0].level_db == leveled[1].level_db == kn.ROLE_LEVEL_DB[role]
         assert mix.level_amp(role, leveled[0]) != mix.level_amp(role, leveled[1])
 
@@ -205,9 +221,12 @@ def test_validator_guards_the_sidechain():
     track = _track(1)
     with pytest.raises(TrackError, match="mix.duck_roles"):
         validate(replace(track, mix=replace(track.mix, duck_roles=frozenset({"kick"}))))
-    with pytest.raises(TrackError, match="mix.duck_trigger"):
-        validate(replace(track, mix=replace(track.mix, duck_trigger=(4, 0))))
-    with pytest.raises(TrackError, match="mix.duck_trigger"):
-        validate(replace(track, mix=replace(track.mix, duck_trigger=())))
+    first = track.mix.duck[0]
+    with pytest.raises(TrackError, match=r"mix.duck\[0\].trigger"):
+        validate(replace(track, mix=replace(track.mix, duck=(replace(first, trigger=(4, 0)),) + track.mix.duck[1:])))
+    with pytest.raises(TrackError, match=r"mix.duck\[0\].trigger"):
+        validate(replace(track, mix=replace(track.mix, duck=(replace(first, trigger=()),) + track.mix.duck[1:])))
+    with pytest.raises(TrackError, match="mix.duck"):
+        validate(replace(track, mix=replace(track.mix, duck=track.mix.duck[1:])))
     with pytest.raises(TrackError, match="parts.kick.sample"):
         validate(replace(track, parts={**track.parts, "kick": replace(track.parts["kick"], sample=-1)}))

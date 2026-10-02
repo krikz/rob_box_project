@@ -9,6 +9,7 @@ import heapq
 from dataclasses import replace
 import itertools
 import json
+import pathlib
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -168,6 +169,50 @@ def test_three_tracks_blend_on_two_decks_with_phase_zero_and_the_leaving_deck_is
     assert not rig.log.warnings()
 
 
+def _master(rig):
+    """``/n_set 999`` движка: [(доля клока, {ручка: значение})]."""
+    return [(beat, dict(zip(a[2::2], a[3::2]))) for beat, a in rig.master]
+
+
+def test_track_energy_moves_the_master_trim_over_the_blend_and_stop_resets_it():
+    """PR-7, ADR-0149 §3.10/§4.6: энергия трека плана → ``trim`` после динамики на доле его старта; в блэнде
+    громкость переезжает за длину блэнда; профиль выравнивателя сета; стоп — дефолты (правило сброса)."""
+    rig = _rig()
+    rig.master = []
+    send = rig.adapter._send_osc
+    rig.adapter._send_osc = lambda *a: (rig.master.append((rig.clock.beat, a)) if a[1] == 999 else None, send(*a))
+    rig.session.start()
+    first = rig.clock.beat + 2
+    rig.clock.run_until(first)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + 2 * form - BLEND + 1)  # трек 3 встал
+    starts = [e["start_beat"] for e in _started(rig)]
+    sets = _master(rig)
+    assert [b for b, _m in sets] == starts, "мастер — ровно на долях старта треков"
+    energies = [PLAN.track(no).energy for no in (1, 2, 3)]
+    assert [m["trim"] for _b, m in sets] == [kn.ENERGY_TRIM_DB[e] for e in energies]
+    assert all({k: m[k] for k in kn.SET_LEVELER} == kn.SET_LEVELER for _b, m in sets)
+    assert sets[0][1]["trimLag"] == kn.TRIM_LAG_S
+    assert all(m["trimLag"] == pytest.approx(BLEND * 60.0 / BPM) for _b, m in sets[1:]), "переезд за блэнд"
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        rig.session.stop()
+    assert _master(rig)[-1][1] == {"trimLag": kn.TRIM_LAG_S, **kn.MASTER_DEFAULTS}
+
+
+def test_master_defaults_are_the_synthdef_defaults_and_trim_sits_after_the_dynamics():
+    """Дефолты ручек движка = дефолты ``masterfilter.scd`` (v1 без движка звучит как раньше: trim 0)."""
+    root = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "docker").is_dir())
+    scd = (root / "docker/vision/voice_assistant/custom_synthdefs/masterfilter.scd").read_text(encoding="utf-8")
+    code = "\n".join(line.split("//", 1)[0] for line in scd.splitlines())
+    head = code.index("|", code.index("SynthDef.new(\\masterfilter"))
+    args = dict(item.split("=") for item in "".join(code[head + 1:code.index("|", head + 1)].split()).split(","))
+    assert {k: float(args[k]) for k in kn.MASTER_DEFAULTS} == dict(kn.MASTER_DEFAULTS)
+    assert float(args["trim"]) == 0.0 and "trimLag" in args
+    assert code.index("out = out * Lag.kr(gain, lag);") < code.index("Lag.kr(trimDb.dbamp, trimLag)") < code.index(
+        "ReplaceOut.ar(")
+    assert ".clip(-40, 0)" in code, "trim только вниз: пик не выше потолка лимитера (A7)"
+
+
 def test_stop_during_a_blend_silences_both_decks():
     rig = _rig()
     rig.session.start()
@@ -273,7 +318,8 @@ def test_stop_closes_the_set_and_nothing_scheduled_revives_it():
     rig.clock.run_until(s0 + 4 * form)
     assert len(_started(rig)) == 1
     assert not any(p.playing for name, p in rig.ns.items() if isinstance(p, Player))
-    assert [a[0] for a in rig.sent] == ["/n_set", "/g_freeAll"]
+    assert [a[:2] for a in rig.sent if a[1] != 999] == [("/n_set", 1), ("/g_freeAll", 1)]
+    assert dict(zip(rig.sent[-1][2::2], rig.sent[-1][3::2]))["trim"] == 0.0, "после стопа trim 0 (PR-7)"
     snap = parse_music_state(rig.states[-1])
     assert snap.state == "idle" and json.loads(rig.states[-1])["dj"] == {"enabled": False}
     assert rig.session.active is False and rig.owner.on_started is None

@@ -36,7 +36,7 @@ def test_kick_and_bass_are_strictly_centred_single_voices(seed):
     _track, by_role = _events(seed)
     for role in ("kick", "bass"):
         assert by_role[role], role
-        assert all(e.pan == 0 and e.detune == 0 and not e.fx for e in by_role[role]), role
+        assert all(e.pan == 0 and e.detune == 0 and set(e.fx) <= {"lpf"} for e in by_role[role]), role  # свип PR-7
 
 
 @pytest.mark.parametrize("seed", SEEDS)

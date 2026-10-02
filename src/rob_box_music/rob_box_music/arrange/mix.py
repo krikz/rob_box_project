@@ -9,6 +9,11 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Сайдчейн «S».** Огибающая по 16-м от шагов триггера (:func:`duck_envelope`): мгновенная атака на ударе,
   подъём ``knowledge.SIDECHAIN_SHAPE`` — без ступеньки «на всю ноту» (v1: 0.25/0.75, ``club_arranger.pump_weights``).
   Рендер умножает на неё ``amplify`` ролей ``Mix.duck_roles``.
+* **Вид секции (DJ_Dave, PR-7).** Энергия секции выбирает вид ``knowledge.LOOKS`` (:func:`look`): рисунок бочки и
+  глубину сайдчейна сразу — build ↔ drop одним переключением; триггер огибающей — бочка вида (``Mix.duck``).
+* **LPF-свип (PR-7, ADR-0149 §3.12).** ``knowledge.SECTION_LPF`` на басе и нотах одним «слайдером»
+  (:func:`lpf_sweeps`): build открывается к дропу, дроп открыт, брейк прикрыт, хвост блэнда закрывается.
+* **Мастер-шина (PR-7, §3.10).** :func:`set_master` — ``trim`` по энергии трека сета и профиль выравнивателя.
 * **Тембры.** Семья тембров темы (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека (:func:`timbres`).
 * **Бочка.** Сэмпл жанра из ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`).
 * **Стерео (PR-9, §3.9).** Ширина ролей — ``knowledge.ROLE_STEREO`` → ``Mix.stereo``; бочка и бас в центре.
@@ -24,7 +29,7 @@ from dataclasses import replace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..model import SAMPLE_ROLES, STEPS_PER_BAR, Mix, Part, Stereo
+from ..model import SAMPLE_ROLES, STEPS_PER_BAR, Duck, Form, Mix, Part, Stereo, Sweep
 
 
 def layer_db(unit_db: float, exponent: float, amp: float) -> float:
@@ -100,14 +105,44 @@ def kick_sound(genre: str) -> kn.KickSound:
     return kn.KICK_SOUNDS[kn.GENRE_KICK[genre]]
 
 
-def mix_parts(parts: Mapping[str, Part], trigger: Sequence[int]) -> Tuple[Dict[str, Part], Mix]:
-    """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн от ``trigger``."""
+def look(energy: int) -> kn.Look:
+    """Вид секции энергии ``energy`` (0..10): первый порог ``knowledge.LOOKS`` не выше энергии."""
+    return next(v for threshold, v in kn.LOOKS if energy >= threshold)
+
+
+def kick_steps(pattern: str) -> Tuple[int, ...]:
+    return tuple(i for i, ch in enumerate(pattern) if ch == "X")
+
+
+def lpf_sweeps(form: Form, roles: Sequence[str]) -> Dict[str, Tuple[Sweep, ...]]:
+    """Свип роли по секциям: ``SECTION_LPF`` на ``LPF_ROLES``, в хвосте блэнда — на всём, кроме бочки."""
+    out: Dict[str, Tuple[Sweep, ...]] = {}
+    for role in roles:
+        if role == "kick":
+            continue
+        sweeps = tuple(kn.SECTION_LPF.get(sec.name, (kn.LPF_OPEN, kn.LPF_OPEN))
+                       if role in kn.LPF_ROLES or sec.name in kn.LPF_TAIL_SECTIONS else (kn.LPF_OPEN, kn.LPF_OPEN)
+                       for sec in form.sections)
+        if any(hz != kn.LPF_OPEN for sweep in sweeps for hz in sweep):
+            out[role] = sweeps
+    return out
+
+
+def set_master(energy: int) -> Dict[str, float]:
+    """Ручки мастер-шины трека сета энергии ``energy``: ``trim`` после динамики и профиль выравнивателя сета."""
+    return {"trim": kn.ENERGY_TRIM_DB[energy], **kn.SET_LEVELER}
+
+
+def mix_parts(parts: Mapping[str, Part], form: Form) -> Tuple[Dict[str, Part], Mix]:
+    """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн и свип по видам секций формы."""
     leveled = {role: replace(part, level_db=_level(role, part)) for role, part in parts.items()}
     ducked = frozenset(r for r in kn.DUCK_ROLES if r in leveled)
     stereo = {r: Stereo(**kn.ROLE_STEREO[r]) for r in leveled if r in kn.ROLE_STEREO}
-    mix = Mix({r: p.level_db for r, p in leveled.items()}, stereo,
-              kn.DUCK_DEPTH if ducked else 0.0, duck_roles=ducked, duck_trigger=tuple(sorted(set(trigger))))
+    duck = tuple(Duck(look(sec.energy).duck_depth, kick_steps(look(sec.energy).kick)) for sec in form.sections)
+    mix = Mix({r: p.level_db for r, p in leveled.items()}, stereo, duck if ducked else (), duck_roles=ducked,
+              lpf=lpf_sweeps(form, sorted(leveled)))
     return leveled, mix
 
 
-__all__ = ["alternate_pan", "duck_envelope", "kick_sound", "layer_db", "level_amp", "mix_parts", "timbres", "voice_amp"]
+__all__ = ["alternate_pan", "duck_envelope", "kick_sound", "kick_steps", "layer_db", "level_amp", "look", "lpf_sweeps",
+           "mix_parts", "set_master", "timbres", "voice_amp"]

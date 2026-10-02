@@ -23,11 +23,16 @@ import struct
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from rob_box_music import knowledge as kn
+
 from ..core.arranger import ALIGN_LEAD_BEATS
 
 #: ``Clock.latency`` при v2 (#3328): на живом роботе 01.10 опоздавших бандлов в scsynth
 #: 250/мин при 0.25 с и 2/мин при 0.5 с (PR-2, #3329). Цена — реакция на 0.25 с позже.
 V2_CLOCK_LATENCY_S = 0.5
+
+#: Узел мастер-шины ``masterfilter`` (``foxdot_init.sc``: ниже 1000, Renardo его не переиспользует).
+MASTER_NODE = 999
 
 #: Пауза между ``gate=0`` и ``/g_freeAll`` (#3137, как у #1000 в ``stop_all``).
 RAMP_DOWN_RELEASE_SECONDS = 0.05
@@ -124,6 +129,22 @@ def ramp_down_group(send_osc: Callable[..., None], group: int = 1,
         pass
 
 
+def set_master_controls(send_osc: Callable[..., None], master: Mapping[str, float], lag_s: float) -> None:
+    """``/n_set 999`` — ручки мастер-шины трека поверх ``knowledge.MASTER_DEFAULTS`` (ADR-0149 §3.10, PR-7).
+
+    Все ручки выставляются каждый раз, поэтому трек вне сета получает ``trim 0`` и обычный выравниватель (правило
+    сброса ADR-0147 §3.2). ``trimLag`` — время переезда громкости (в блэнде — его длина). Образ без ``trim`` в
+    ``masterfilter.scd`` неизвестную ручку молча пропускает. Best-effort: SC недоступен — музыку не роняем.
+    """
+    args: List[Any] = ["trimLag", float(lag_s)]
+    for name, value in {**kn.MASTER_DEFAULTS, **master}.items():
+        args += [name, float(value)]
+    try:
+        send_osc("/n_set", MASTER_NODE, *args)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
     """Загрузить буферы символов ``play()`` до exec; вернуть символы без сэмпла.
 
@@ -178,6 +199,8 @@ class RenardoAdapter:
         # Поколение: start/stop делают устаревшим всё, что раньше запланировано на клоке
         # (стык, nearly_finished) — после стопа запланированный стык музыку не воскрешает.
         self._generation = 0
+        # Прошлый процесс мог упасть посреди сета с ``trim −9`` на мастер-шине: она переживает рестарт mcp_server.
+        set_master_controls(send_osc, {}, kn.TRIM_LAG_S)
 
     def check(self, program: Any) -> Optional[Problem]:
         """Синты и буферы программы есть на сервере? ``None`` — да; иначе ``(reason, detail)``."""
@@ -219,7 +242,7 @@ class RenardoAdapter:
         clock.set_time(((now + self._lead_beats) // form + 1) * form - self._lead_beats)
         exec(program.code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
         self._live_slots = tuple(program.slots.values())
-        return self._arm_started(ns, program, on_started, origin=None)
+        return self._arm_started(ns, program, on_started, origin=None, lag_s=kn.TRIM_LAG_S)
 
     def cue(self, program: Any, at_beat: float, on_started: Callable[[Dict[str, Any]], None],
             on_failed: Callable[[str, str], None], *, leave_at: Optional[float] = None,
@@ -250,8 +273,11 @@ class RenardoAdapter:
                 on_failed("exec_error", f"{type(exc).__name__}: {exc}")
                 return
             self._live_slots, self._leaving = tuple(program.slots.values()), leaving
-            info = self._arm_started(ns, program, on_started, origin=float(at_beat))
-            leave = info["start_beat"] if leave_at is None else float(leave_at)
+            leave = float(at_beat) if leave_at is None else float(leave_at)
+            # Громкость энергии переезжает за блэнд: уходящий трек звучит под той же мастер-шиной.
+            lag = max(kn.TRIM_LAG_S, (leave - float(at_beat)) * 60.0 / float(program.bpm))
+            info = self._arm_started(ns, program, on_started, origin=float(at_beat), lag_s=lag)
+            leave = info["start_beat"] if leave_at is None else leave
 
             def _rbx_deck_free() -> None:
                 # Своей группы SC у деки нет: ``gate=0``/``/g_freeAll 1`` сняли бы и входящий трек.
@@ -283,14 +309,14 @@ class RenardoAdapter:
         self._stop_slots(self._namespace() or {}, (*self._live_slots, *self._leaving))
         self._live_slots, self._leaving = (), ()
         ramp_down_group(self._send_osc, 1)
+        set_master_controls(self._send_osc, {}, kn.TRIM_LAG_S)  # тишина: trim 0 и обычный выравниватель
 
-    @staticmethod
-    def _arm_started(ns: Mapping[str, Any], program: Any, on_started: Callable[[Dict[str, Any]], None],
-                     origin: Optional[float]) -> Dict[str, Any]:
+    def _arm_started(self, ns: Mapping[str, Any], program: Any, on_started: Callable[[Dict[str, Any]], None],
+                     origin: Optional[float], lag_s: float) -> Dict[str, Any]:
         """Доля старта — из самих плееров после exec; колбэк ``started`` — на эту долю.
 
         Фаза: у первого трека — остаток от формы; у стыка — сдвиг от ``origin`` (границы формы
-        уходящего); 0 — встал ровно на неё.
+        уходящего); 0 — встал ровно на неё. На той же доле — ручки мастер-шины трека (``Program.master``).
         """
         clock = ns["Clock"]
         form = float(program.form_beats)
@@ -302,6 +328,7 @@ class RenardoAdapter:
                 "phase_in_form": round(phase, 3)}
 
         def _rbx_track_started() -> None:
+            set_master_controls(self._send_osc, getattr(program, "master", {}), lag_s)
             beat = float(clock.now())
             on_started(dict(info, clock_beat=round(beat, 3), late_beats=round(beat - start_beat, 3),
                             bpm=float(clock.get_bpm()), latency_s=float(clock.latency)))
@@ -318,6 +345,7 @@ class RenardoAdapter:
 
 
 __all__ = [
-    "HANDOFF_STOP_BEATS", "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S",
-    "decode_osc_args", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "split_osc_address",
+    "HANDOFF_STOP_BEATS", "MASTER_NODE", "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S",
+    "decode_osc_args", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "set_master_controls",
+    "split_osc_address",
 ]

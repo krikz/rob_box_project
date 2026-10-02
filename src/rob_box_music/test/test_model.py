@@ -6,7 +6,9 @@ import pytest
 from track_factory import make_track
 
 from rob_box_music.knowledge import LEVEL_CEILINGS, scale_pitch_classes
-from rob_box_music.model import Form, Grid, Part, PitchEvent, Section, Step, Stereo, Transition, TrackError, validate
+from rob_box_music.model import (
+    Duck, Form, Grid, Part, PitchEvent, Section, Step, Stereo, Transition, TrackError, validate,
+)
 
 SEEDS = range(1000)
 
@@ -65,7 +67,9 @@ CASES = {
     "parts.kick.pitches": lambda t: _with_part(t, "kick", pitches=(PitchEvent(40, 0.0, 1.0),)),
     "parts.pad.level_db": lambda t: _with_part(t, "pad", level_db=0.0),
     "mix.level_db.hats": lambda t: replace(t, mix=replace(t.mix, level_db={**t.mix.level_db, "hats": -1.0})),
-    "mix.duck_depth": lambda t: replace(t, mix=replace(t.mix, duck_depth=2.0)),
+    "mix.duck[0].depth": lambda t: replace(t, mix=replace(t.mix, duck=(Duck(2.0, (0,)),) + t.mix.duck[1:])),
+    "mix.lpf.pad[0]": lambda t: replace(t, mix=replace(t.mix, lpf={"pad": ((9000.0, 0.0),) * len(t.form.sections)})),
+    "mix.lpf.kick": lambda t: replace(t, mix=replace(t.mix, lpf={"kick": ((400.0, 400.0),) * len(t.form.sections)})),
     "mix.stereo.bass": lambda t: replace(t, mix=replace(t.mix, stereo={**t.mix.stereo, "bass": Stereo(0.3)})),
     "mix.stereo.kick": lambda t: replace(t, mix=replace(t.mix, stereo={**t.mix.stereo, "kick": Stereo(0.0, -1)})),
     "mix.stereo.pad": lambda t: replace(t, mix=replace(t.mix, stereo={**t.mix.stereo, "pad": Stereo(0.9, haas_ms=45)})),

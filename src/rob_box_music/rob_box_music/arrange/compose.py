@@ -51,15 +51,17 @@ _TAIL = TRANSITION.phrase_bars - _SWAP
 #: (имя, такты, энергия 0..10, роли). Имена секций — ключи развития хука ``arrange.hook.DEVELOPMENT``.
 #: Интро и аутро поделены под блэнд (``model.blend_bars``): входящий трек начинает хэтами и пэдом под хвостом
 #: уходящего (хэты + пэд, без лида), бочка и бас входят ровно на такте свопа — там, где их снимает уходящий.
+#: Энергия секции — ось вида (``knowledge.LOOKS``, PR-7): интро/аутро (блэнд) при любой энергии трека ≤ 4 — ровная
+#: прямая бочка, build 4..7, дроп ≥ 7 — полный «насос».
 SECTIONS: Tuple[Tuple[str, int, int, frozenset], ...] = (
-    ("intro", _SWAP, 3, frozenset({"hats", "pad"})),
-    ("intro_low", TRANSITION.phrase_bars - _SWAP, 3, _DRUMS | {"bass", "pad"}),
+    ("intro", _SWAP, 2, frozenset({"hats", "pad"})),
+    ("intro_low", TRANSITION.phrase_bars - _SWAP, 2, _DRUMS | {"bass", "pad"}),
     ("build", 8, 5, _FULL),
     ("drop", 8, 8, _FULL),
     ("break", 8, 4, frozenset({"hats", "pad", "lead"})),
     ("drop2", 8, 9, _FULL),
-    ("outro", 8 - _TAIL, 3, _DRUMS | {"bass", "pad"}),
-    ("outro_tail", _TAIL, 2, frozenset({"hats", "pad"})),
+    ("outro", 8 - _TAIL, 2, _DRUMS | {"bass", "pad"}),
+    ("outro_tail", _TAIL, 1, frozenset({"hats", "pad"})),
 )
 #: Длина секций с лидом (развитие хука считается от начала каждой).
 SECTION_BARS = 8
@@ -135,14 +137,16 @@ def _lead(motif: Hook, key: Key, synth: str) -> Part:
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, kn.REGISTERS["lead"])
 
 
-def _drums(form: Form, swing_ms: int, kick_bar: Grid, kit: str) -> Dict[str, Part]:
-    """Бочка и клэп — на всю форму (fill-ы), хэты каркаса ``kit`` — такт со свингом. Клэп-бэкбит — в дропах; в
-    остальных секциях клэп — только ролл fill-а. Бочка — сэмпл жанра с настоящим низом (``mix.kick_sound``)."""
+def _drums(form: Form, swing_ms: int, kit: str) -> Dict[str, Part]:
+    """Бочка и клэп — на всю форму (fill-ы), хэты каркаса ``kit`` — такт со свингом. Бочка секции — рисунок её вида
+    (``mix.look``: build ↔ drop). Клэп-бэкбит — в дропах; в остальных секциях клэп — только ролл fill-а.
+    Бочка — сэмпл жанра с настоящим низом (``mix.kick_sound``)."""
     clap_bar = rhythm.clap_grid()
     silent = rhythm.grid(())
 
-    def kick(_sec: Section, fill: bool) -> Grid:
-        return rhythm.kick_fill(kick_bar) if fill else kick_bar
+    def kick(sec: Section, fill: bool) -> Grid:
+        bar = rhythm.kick_grid(mix.look(sec.energy).kick)
+        return rhythm.kick_fill(bar) if fill else bar
 
     def clap(sec: Section, fill: bool) -> Grid:
         bar = clap_bar if sec.name.startswith("drop") else silent
@@ -229,13 +233,11 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     perc = samples.perc_pool(key, history, axis["sample"])
     loop = samples.pick(samples.LOOP_ROLES, key, history, "sample", axis["loop"])
     fx = samples.pick(samples.FX_ROLES, key, history, "fx", axis["fx"])
-    kick_bar = rhythm.kick_grid(kn.GENRE_WINDOWS["club"].kick)
-    drums = _drums(form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kick_bar, kit)
+    drums = _drums(form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit)
     parts, track_mix = mix.mix_parts(
         {**drums, "bass": _bass(key, chords, synths["bass"]), "pad": _pad(chords, pad_register, synths["pad"]),
          "lead": lead_part, "sample": samples.perc_part(perc, kit, axis["sample"]),
-         "loop": samples.loop_part(loop), "fx": samples.fx_part(fx, SECTION_BARS)},
-        [i for i, st in enumerate(kick_bar.steps) if st.on])
+         "loop": samples.loop_part(loop), "fx": samples.fx_part(fx, SECTION_BARS)}, form)
     prog = harmony.progression_name(degrees)
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]
     return Track(
