@@ -44,9 +44,11 @@ import re
 from typing import List
 
 from rob_box_music import knowledge as kn
+from rob_box_music.arrange.mix import alternate_pan
 
-#: Таблицы панорамы — в ``rob_box_music.knowledge`` (ADR-0149 §8.1, PR-3c; механика — PR-9):
-#: вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну колонку»), полуширина пэда (шире хэтов:
+#: Смена стороны по ударам — ``rob_box_music.arrange.mix.alternate_pan`` (PR-9, одна реализация с v2); здесь —
+#: только строки Renardo v1. Таблицы — в ``rob_box_music.knowledge`` (ADR-0149 §8.1, PR-3c): вынос хэтов/клэпа
+#: от центра (0.4: заметно, но не «в одну колонку»), полуширина пэда (шире хэтов:
 #: пэд — длинные ноты, там ширина слышнее всего), период качания пэда в долях (8 тактов = 4 аккорда по 2 такта).
 PAN_HATS = kn.PAN_HATS
 PAN_PAD_WIDTH = kn.PAN_PAD_WIDTH
@@ -65,13 +67,7 @@ def pan_steps(pattern: str, width: float, first: int = 1) -> List[float]:
     ``(-.)`` считается ударом. Счёт идёт сквозь оба такта. ``first`` —
     сторона первого удара (+1 вправо, -1 влево).
     """
-    side, out = -first, []  # флип происходит ДО записи удара
-    for _ in range(2):
-        for tok in re.findall(r"\([^)]*\)|.", pattern):
-            if tok != ".":
-                side = -side
-            out.append(side * width)
-    return out
+    return alternate_pan([tok != "." for tok in re.findall(r"\([^)]*\)|.", pattern)], width, first)
 
 
 def pan_list(pattern: str, width: float, first: int = 1) -> str:

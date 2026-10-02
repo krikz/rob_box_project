@@ -7,7 +7,7 @@ import random
 
 from rob_box_music import knowledge as kn
 from rob_box_music.model import (
-    Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Mix, Part, PitchEvent, Section, Step, Track, Transition,
+    Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Mix, Part, PitchEvent, Section, Step, Stereo, Track, Transition,
 )
 
 _MIDDLE = ("build", "drop", "break", "drop")
@@ -83,7 +83,8 @@ def make_track(seed: int) -> Track:
         hook = Hook((PitchEvent(rng.randint(60, 80), 0.0, 1.0, 1), PitchEvent(62, 4.0, 2.0, 0)),
                     rng.randint(4, 8), rng.choice((None, "spott_ci")))
     mix = Mix({r: p.level_db for r, p in parts.items()},
-              {r: (0.0 if r in ("kick", "bass") else rng.uniform(-0.8, 0.8)) for r in parts},
+              {r: Stereo(rng.uniform(0.0, 0.9), rng.choice((-1, 1)), 0.125 * rng.randint(0, 1), rng.uniform(0, 20))
+              for r in parts if r not in ("kick", "bass")},
               rng.random(), {"drop": ("room",)})
     tr = Transition(rng.choice((8, 16, 32)), 0, True)
     return Track(f"set1:{seed:02d}:A:{seed:08x}", seed, rng.randint(*kn.GENRE_WINDOWS["club"].bpm), key,

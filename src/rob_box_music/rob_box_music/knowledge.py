@@ -293,15 +293,35 @@ KICK_SOUNDS: Mapping[str, KickSound] = {
 #: Жанр → бочка из :data:`KICK_SOUNDS`.
 GENRE_KICK: Mapping[str, str] = {"club": "house"}
 
-#: Панорама (перенос таблиц ``core/club_stereo``; механика по ударам — PR-9): вынос хэтов/клэпа, полуширина
-#: пэда, период качания пэда (доли). ``ROLE_PAN`` — статическая панорама ролей v2 до PR-9.
+#: Панорама (перенос таблиц ``core/club_stereo``): вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну
+#: колонку»), полуширина и период (доли) треугольного качания пэда v1 (``club_stereo.pad_pan``; в v2 пэд — два голоса).
 PAN_HATS = 0.4
 PAN_PAD_WIDTH = 0.6
 PAD_PAN_BEATS = 32
-ROLE_PAN: Mapping[str, float] = {"hats": 0.25, "clap": -0.2}
+
+# ── Стерео v2 (PR-9, ADR-0149 §3.9): ширина от декоррелированного материала, низ в центре ──────────────────────────
+#: Почему не панорама: панорама моносигнала даёт корреляцию L/R 1.00 (замер PR-8: LR 1.00, Side/Mid −31 дБ против
+#: 0.04 и −0.4 дБ у эталона). Пэд — два голоса как ``Player.spread()`` Renardo (``pan=(-w, w)``, ``pshift=(0, d)``),
+#: второй ещё и позже на Хаас — пересборка образа не нужна. Стерео-реверба НЕТ: эффект ``room2`` Renardo (FreeVerb2)
+#: на роботе глушит ВЕСЬ выход, пока звучит хоть одна нота с ним (замер 02.10: −180 dBFS, ``late``/``/fail`` 0;
+#: с ``revatk=0.01`` то же) — собственный ``rbx_verb2.scd`` требует пересборки (ADR-0149 §3.9, остаток PR-9).
+#: Выход робота — ReSpeaker 16 кГц: выше 8 кГц не слышно, поэтому ширина делается в середине (пэд), а не «воздухом».
+#: Бочка и бас в таблицу не входят (центр, I11).
+PAD_SPREAD = 1.0  # полуширина двух голосов пэда (как spread() Renardo; 0.9 дал Side/Mid −8.6 дБ под бочкой)
+PAD_DETUNE = 0.125  # 1/8 полутона (ADR-0149 §3.6; spread() Renardo — то же)
+PAD_HAAS_MS = 15.0  # Хаас 12–20 мс (§3.9)
+HAAS_MAX_MS = 30.0  # больше — уже слышимое эхо, а не ширина
+#: Роль → поля ``model.Stereo``. Клэп/перкуссия начинают с другой стороны, чем хэты (сумма двух слоёв не перекошена).
+ROLE_STEREO: Mapping[str, Mapping[str, float]] = {
+    "hats": {"pan": PAN_HATS, "first": 1},
+    "clap": {"pan": PAN_HATS, "first": -1},
+    "perc": {"pan": PAN_HATS, "first": -1},
+    "pad": {"pan": PAD_SPREAD, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS},
+}  # лида нет: на оси (§3.9)
 
 __all__ += [
     "AMP_EXPONENT", "DEFAULT_TIMBRE", "DRUM_LOUDNESS_KEY", "DUCK_DEPTH", "DUCK_ROLES", "GENRE_KICK", "KICK_SOUNDS",
-    "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "MAX_LAYER_AMP", "PAD_PAN_BEATS",
-    "PAN_HATS", "PAN_PAD_WIDTH", "ROLE_LEVEL_DB", "ROLE_PAN", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "TIMBRES",
+    "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "MAX_LAYER_AMP",
+    "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "ROLE_LEVEL_DB",
+    "ROLE_STEREO", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "TIMBRES",
 ]

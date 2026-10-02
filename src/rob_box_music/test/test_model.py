@@ -6,7 +6,7 @@ import pytest
 from track_factory import make_track
 
 from rob_box_music.knowledge import LEVEL_CEILINGS, scale_pitch_classes
-from rob_box_music.model import Form, Grid, Part, PitchEvent, Section, Step, Transition, TrackError, validate
+from rob_box_music.model import Form, Grid, Part, PitchEvent, Section, Step, Stereo, Transition, TrackError, validate
 
 SEEDS = range(1000)
 
@@ -66,7 +66,9 @@ CASES = {
     "parts.pad.level_db": lambda t: _with_part(t, "pad", level_db=0.0),
     "mix.level_db.hats": lambda t: replace(t, mix=replace(t.mix, level_db={**t.mix.level_db, "hats": -1.0})),
     "mix.duck_depth": lambda t: replace(t, mix=replace(t.mix, duck_depth=2.0)),
-    "mix.pan.bass": lambda t: replace(t, mix=replace(t.mix, pan={**t.mix.pan, "bass": 0.3})),
+    "mix.stereo.bass": lambda t: replace(t, mix=replace(t.mix, stereo={**t.mix.stereo, "bass": Stereo(0.3)})),
+    "mix.stereo.kick": lambda t: replace(t, mix=replace(t.mix, stereo={**t.mix.stereo, "kick": Stereo(0.0, -1)})),
+    "mix.stereo.pad": lambda t: replace(t, mix=replace(t.mix, stereo={**t.mix.stereo, "pad": Stereo(0.9, haas_ms=45)})),
     "hook.bars": lambda t: replace(t, hook=replace(t.hook, bars=12)),
     "harmony.progression.nowhere": lambda t: replace(t, harmony=replace(t.harmony, progression={"nowhere": ()})),
     "transition_in.phrase_bars": lambda t: replace(t, transition_in=Transition(5, 0, True)),

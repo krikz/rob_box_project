@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections import defaultdict
 from dataclasses import replace
@@ -137,8 +138,13 @@ def test_levels_come_from_one_table(seed):
             assert amp == pytest.approx(kn.MAX_LAYER_AMP)
         assert mix.layer_db(unit, exponent, amp) == pytest.approx(part.level_db, abs=0.01)
         assert track.mix.level_db[role] == part.level_db
+        st = track.mix.stereo.get(role)
+        voices = st.voices if st else 1
+        player_amp = mix.voice_amp(role, part, voices)
+        assert mix.layer_db(unit, exponent, player_amp) + 10 * math.log10(voices) == pytest.approx(
+            min(part.level_db, mix.layer_db(unit, exponent, kn.MAX_LAYER_AMP) + 10 * math.log10(voices)), abs=0.01)
         line = next(ln for ln in program.code.splitlines() if ln.startswith(program.slots[role] + " "))
-        assert f"{round(amp, 3):g}" in line.split("amp=var(")[1].split(")")[0], role
+        assert f"{round(player_amp, 3):g}" in line.split("amp=var(")[1].split(")")[0], role
 
 
 def test_same_level_whatever_the_timbre():

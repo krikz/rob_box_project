@@ -48,11 +48,11 @@ def _section_of(track, beat):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_events_equal_the_model(seed):
-    """Свёрнутая программа звучит ровно как модель: каждая нота, доля и sus."""
+    """Свёрнутая программа звучит ровно как модель: каждая нота, доля и sus (первый голос; второй — PR-9 стерео)."""
     track = track_for(seed)
     _program, by_role = _events(track)
     for role in kn.TONAL_ROLES:
-        heard = sorted((e.beat, e.midi, e.sus_beats) for e in by_role[role])
+        heard = sorted((e.beat, e.midi, e.sus_beats) for e in by_role[role] if e.detune == 0 and e.pan <= 0)
         model = sorted((p.beat, p.midi, p.dur_beats) for p in track.parts[role].pitches)
         assert heard == model, role
 
