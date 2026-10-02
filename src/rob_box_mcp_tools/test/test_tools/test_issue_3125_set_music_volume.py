@@ -165,4 +165,4 @@ class TestCatalogAndSlices:
 
         auth = load_default_authority()
         assert auth.is_allowed("dialogue_node", "set_music_volume").allowed
-        assert auth.is_allowed("dialogue_node", "compose_music").allowed
+        assert auth.is_allowed("dialogue_node", "request_music").allowed

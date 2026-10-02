@@ -1,14 +1,14 @@
 {
   "version": 1,
   "created": "2026-10-02",
-  "base_sha": "fca5e2e5e1552d378c07ab78378dee0b970c1933",
+  "base_sha": "660dbff9433d952235dfa2bbad41ed5fa3331c5c",
   "limits": {
     "wmc": 80,
     "methods": 40
   },
   "classes": {
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
-      "wmc": 174,
+      "wmc": 172,
       "methods": 29
     },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {
@@ -27,13 +27,9 @@
       "wmc": 171,
       "methods": 29
     },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:ComposeMusicTool": {
-      "wmc": 266,
-      "methods": 52
-    },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
-      "wmc": 233,
-      "methods": 58
+      "wmc": 208,
+      "methods": 52
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
       "wmc": 81,

@@ -73,7 +73,7 @@ class ToolCatalogEntry:
     satisfies_user_music: bool = False
     execution_type: str = "medium"
     #: ADR-0149 §9 — инструмент только одного музыкального движка: ``"v1"`` —
-    #: старый путь (``compose_music`` & Co.), ``"v2"`` — движок v2 (``dj_set``,
+    #: старый путь (удалён PR-13b ADR-0149), ``"v2"`` — движок v2 (``dj_set``,
     #: ``request_music``); ``""`` — при любом. LLM видит инструменты своего
     #: движка (:func:`llm_visible_tools`), остальные исполнимы, но не предъявлены.
     music_engine: str = ""

@@ -8,7 +8,7 @@
 (b) ``1790611314..319`` — phantom-claim «Подкручиваю музыку на максимум» при
     ``tools=[]`` → Bug C 1/3, 2/3 → retry-budget → «Я тут растерялся — бит не
     запустился», хотя бит играл.
-(c) ``1790611417..429`` — ``compose_music`` с ``levels: lead=1.3`` отвергнут,
+(c) ``1790611417..429`` — ``execute_music_code`` с ``levels: lead=1.3`` отвергнут,
     повтор в том же ходе успешен, но правило #2966 (``tool_error_occurred``)
     сочло ход провалом → Bug C.
 
@@ -65,7 +65,7 @@ LIVE_B_SPOKEN = (
 
 #: 1790611429 handle_result.
 LIVE_C_USER_INPUT = _DJ_WRAPPER + "сыграй в пещере гороного короля погромче"
-LIVE_C_TOOLS = ("lookup_melody", "compose_music")
+LIVE_C_TOOLS = ("lookup_melody", "execute_music_code")
 
 
 def _guard() -> MusicGuard:
@@ -155,7 +155,7 @@ class TestLiveC_ErrorThenSuccessSameTurn:
             user_input=LIVE_C_USER_INPUT,
             tools_called=LIVE_C_TOOLS,
             tool_error_occurred=True,
-            succeeded_tools=("lookup_melody", "compose_music"),
+            succeeded_tools=("lookup_melody", "execute_music_code"),
         )
         assert v.kind is MusicGuardVerdictKind.SKIP
         assert v.reason == "executed"

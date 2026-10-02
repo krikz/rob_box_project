@@ -176,34 +176,15 @@ def test_master_prompt_contains_tb303_safety_guidance() -> None:
     assert "echo" in content.lower()
 
 
-def test_composer_prompt_imperial_march_is_now_a_shipped_preset() -> None:
-    """ADR-0132 PR-7 — the Imperial March ``execute_music_code`` recipe
-    (hardcoded ``midinote`` arrays, synth choices, A/A'/bridge/B structure
-    text) is retired from the prompt. ``imperial march`` resolves cleanly
-    via RTTTL (``rtttl_library.get('imperial march') → name='starwars_4'``,
-    see ``test_rtttl_library.py``), so it becomes a real shipped
-    ``ArrangementPresetStore`` entry instead: ``compose_music(name="imperial
-    march", ...)`` now gets its knobs (lead/bass/pad synth, drum_style=march,
-    ...) from ``rob_box_mcp_tools/data/arrangement_presets.json``, visible in
-    the score sheet as ``Пресет: ...``, not from prompt text. The old
-    SC-only-guidance test (``test_composer_prompt_contains_imperial_march_sc_only_guidance``)
-    is intentionally retired, not just failing — this replaces it.
-    """
-    import json
+def test_composer_prompt_has_no_imperial_march_recipe() -> None:
+    """ADR-0132 PR-7 — рецепт Imperial March (``midinote``-массивы, A/A'/bridge) из промпта убран.
 
+    Пресеты ручек (``arrangement_presets.json``) удалены вместе с ``compose_music`` (ADR-0149 PR-13b):
+    мелодию по названию играет ``request_music`` движка v2.
+    """
     content = COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
     assert "p1 >> imperialbrass(midinote=[67,67,67,63,70,67,63,70,67]" not in content
     assert "A -> A' -> bridge -> answer phrase" not in content
-
-    presets_path = (
-        REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools"
-        / "data" / "arrangement_presets.json"
-    )
-    presets = json.loads(presets_path.read_text(encoding="utf-8"))
-    assert "starwars_4" in presets
-    knobs = presets["starwars_4"]["knobs"]
-    assert knobs["drum_style"] == "march"
-    assert knobs["lead_synth"] and knobs["bass_synth"] and knobs["pad_synth"]
 
 
 def test_master_prompt_mentions_estimate_tts_duration() -> None:

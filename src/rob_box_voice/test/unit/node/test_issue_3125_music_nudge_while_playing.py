@@ -34,7 +34,7 @@ LIVE_B_SPOKEN = (
     "чтоб стены тряслись!"
 )
 LIVE_C_USER_INPUT = _DJ_WRAPPER + "сыграй в пещере гороного короля погромче"
-LIVE_C_TOOLS = ("lookup_melody", "compose_music")
+LIVE_C_TOOLS = ("lookup_melody", "execute_music_code")
 
 
 # --- nudge «бит не запустился» не звучит при играющей музыке ----------------
@@ -104,7 +104,7 @@ class TestNudgeWhileMusicPlaying:
         n._apply_music_guard(
             was_dj_auto=False,
             user_input=LIVE_C_USER_INPUT,
-            tools_called=("compose_music",),
+            tools_called=("execute_music_code",),
             tool_error_occurred=True,
         )
         assert _spoken(n) == ["Я тут растерялся — бит не запустился, попробуй ещё раз."]
@@ -126,7 +126,7 @@ class TestNudgeWhileMusicPlaying:
             user_input=LIVE_C_USER_INPUT,
             tools_called=LIVE_C_TOOLS,
             tool_error_occurred=True,
-            succeeded_tools=("lookup_melody", "compose_music"),
+            succeeded_tools=("lookup_melody", "execute_music_code"),
         )
         assert dispatched is False
         n._dispatch_turn.assert_not_called()

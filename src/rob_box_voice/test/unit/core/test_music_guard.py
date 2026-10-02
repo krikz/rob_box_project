@@ -69,7 +69,7 @@ def test_music_starting_tools_derived_from_catalog() -> None:
 
     expected = {e.name for e in TOOL_CATALOG if e.starts_music}
     assert MUSIC_STARTING_TOOLS == frozenset(expected)
-    assert {"execute_music_code", "compose_music"} <= MUSIC_STARTING_TOOLS
+    assert "execute_music_code" in MUSIC_STARTING_TOOLS  # compose_music удалён (PR-13b ADR-0149)
     # lookup_melody — read-only (возвращает ноты), музыку НЕ запускает.
     assert "lookup_melody" not in MUSIC_STARTING_TOOLS
 
@@ -246,7 +246,7 @@ class TestEvaluateToolErrorDuringDjAuto:
         verdict = guard.evaluate(
             was_dj_auto=True,
             user_input="DJ auto prompt",
-            tools_called=("compose_music", "set_dj_mode"),
+            tools_called=("execute_music_code",),
             dj_enabled=True,
             build_dj_retry_prompt=_dj_prompt,
             tool_error_occurred=True,
@@ -261,7 +261,7 @@ class TestEvaluateToolErrorDuringDjAuto:
         verdict = guard.evaluate(
             was_dj_auto=True,
             user_input="DJ auto prompt",
-            tools_called=("compose_music", "set_dj_mode"),
+            tools_called=("execute_music_code",),
             dj_enabled=True,
             build_dj_retry_prompt=_dj_prompt,
             tool_error_occurred=False,
@@ -276,7 +276,7 @@ class TestEvaluateToolErrorDuringDjAuto:
         verdict = guard.evaluate(
             was_dj_auto=True,
             user_input="DJ auto prompt",
-            tools_called=("compose_music",),
+            tools_called=("execute_music_code",),
             dj_enabled=True,
             build_dj_retry_prompt=_dj_prompt,
         )

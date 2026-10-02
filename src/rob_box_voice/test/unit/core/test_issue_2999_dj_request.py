@@ -9,7 +9,7 @@
 * **B (28.09.2026, 1790611527)** — DJ включён («диджей Дайв»). «Ты диджей
   Анакен скайвокер и у нас сегодня имперский слет в клубе» → обёртка
   «Не вызывай set_dj_mode», ``tools=[]`` → ``['lookup_melody']`` →
-  разовый ``compose_music``; персона/тема сета не сменились.
+  разовый ``execute_music_code``; персона/тема сета не сменились.
 
 Issue #3134: «ты диджей X» исполняет роутер медиакоманд кодом ДО LLM
 (``set_dj_mode``), поэтому DJ-ретрай ``MusicGuard.evaluate_turn``, его
@@ -196,7 +196,7 @@ def test_persona_change_turn_counts_as_set_track() -> None:
     _dive_set(dj)
     before = dj.state.tracks_started
     counted = dj.note_turn_tools(
-        ("set_dj_mode", "compose_music"),
+        ("set_dj_mode", "execute_music_code"),
         sorted(MUSIC_STARTING_TOOLS),
         is_dj_auto=False,
         turn_text=LIVE_B,

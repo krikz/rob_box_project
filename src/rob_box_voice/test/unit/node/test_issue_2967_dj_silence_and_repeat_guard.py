@@ -15,7 +15,7 @@ Two systemic fixes (не под конкретные фразы из лога �
    он не завёл музыку, значит не финальный ход сета. Опирается на ФАКТ
    «музыкальный тул не вызван в этом ходе», а не на конкретный текст.
 2. ``DialogueNode._repeated_music_call_args`` — сравнение аргументов
-   ПОСЛЕДОВАТЕЛЬНЫХ вызовов ``compose_music`` (кросс-ходовое состояние),
+   ПОСЛЕДОВАТЕЛЬНЫХ вызовов ``execute_music_code`` (кросс-ходовое состояние),
    используется guard'ом #2549 (см. ``test_issue_2549_universal_action_claim_guard.py``
    в ``test/unit/core`` для чистой логики; здесь — только интеграция с
    реальным ``DialogueNode``, которому нужны rclpy-заглушки).
@@ -152,7 +152,7 @@ class TestDjRetryBudgetExhaustedStaysSilent:
         n, dispatched = _make_node(
             [
                 _Result("Йоу, народ!"),
-                _Result("Погнали!", tools=["compose_music"]),
+                _Result("Погнали!", tools=["execute_music_code"]),
             ]
         )
 
@@ -182,7 +182,7 @@ class TestDjRetryBudgetExhaustedStaysSilent:
         assert n._dsm.on_event.called
 
 
-# ── Part 3 (integration slice) — repeated compose_music args ────────────
+# ── Part 3 (integration slice) — repeated execute_music_code args ────────────
 
 
 class TestRepeatedMusicCallArgsHelperIntegration:
@@ -235,7 +235,7 @@ class TestRepeatedMusicCallArgsHelperIntegration:
     def test_session_reset_clears_baseline(self):
         """``_reset_session_music_and_dj`` (issue #2835) тоже сбрасывает
         ``_last_music_call_args`` — прошлая сессия не должна «забраковывать»
-        первый ``compose_music`` новой сессии."""
+        первый ``execute_music_code`` новой сессии."""
         node = self._make_bare_node()
         node._dj = MagicMock()
         node._publish_dj_off = MagicMock()

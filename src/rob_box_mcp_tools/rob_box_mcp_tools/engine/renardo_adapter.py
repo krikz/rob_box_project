@@ -25,7 +25,10 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 
-from ..core.arranger import ALIGN_LEAD_BEATS
+#: Issue #3112: ``Clock.set_time`` ставит клок в середину такта за 2 доли до начала формы —
+#: ``next_bar()`` тогда даёт ровно k·F при любом ``nudge`` в (-2, +2) долей (перенесено из
+#: ``core/arranger.py`` при удалении старого пути, PR-13b ADR-0149).
+ALIGN_LEAD_BEATS = 2
 
 #: ``Clock.latency`` при v2 (#3328): на живом роботе 01.10 опоздавших бандлов в scsynth
 #: 250/мин при 0.25 с и 2/мин при 0.5 с (PR-2, #3329). Цена — реакция на 0.25 с позже.
