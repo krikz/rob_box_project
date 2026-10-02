@@ -241,15 +241,15 @@ src/rob_box_telegram/                    # телеграм-агент — Agent
 
 ```mermaid
 flowchart TD
-  MIC[ReSpeaker] --> AN[audio_node: VAD, сегмент]
-  AN -- "/audio/speech_audio" --> STT[stt_node: minimax→yandex→vosk<br/>+ ProviderState(stt)]
-  AN -- "/audio/speech_audio" --> SID[speaker_id_node]
+  MIC["ReSpeaker"] --> AN["audio_node: VAD, сегмент"]
+  AN -- "/audio/speech_audio" --> STT["stt_node: minimax→yandex→vosk<br/>+ ProviderState(stt)"]
+  AN -- "/audio/speech_audio" --> SID["speaker_id_node"]
   STT -- "/voice/stt/utterance (utterance_id, text)" --> ADM
   SID -- "/voice/speaker/result (utterance_id)" --> ADM
   STT -- "InterruptRequest, если речь робота звучит" --> INT
 
   subgraph DN["dialog_node (тонкий хост) + rob_box_dialog"]
-    ADM["SttAdmission (12 шагов)<br/>WakeWordStep → address.py: ТОЛЬКО вейк"] -->|"не адресовано"| BL[бэклог/drop]
+    ADM["SttAdmission (12 шагов)<br/>WakeWordStep → address.py: ТОЛЬКО вейк"] -->|"не адресовано"| BL["бэклог/drop"]
     ADM -->|"адресовано"| RX1["expression: рефлекс addressed<br/>earcon «услышал» + кольцо, без LLM"]
     RX1 --> T1{"Tier-1 grammar.py<br/>стоп · тишина · громкость · голос ·<br/>новая сессия · диджей · да/нет"}
     T1 -- "распознано" --> EXE
@@ -269,8 +269,8 @@ flowchart TD
   SP -- "/voice/speech/request" --> TTS["tts_node — владелец речи"]
   SP -- "/voice/expression/request" --> EXP["animation_player · led_node · sound_node"]
   TTS -- "/voice/speech/event" --> DN
-  TTS --> SPK[динамики]
-  EXE -- "/mcp/execute (ActionRequest)" --> MCP[mcp_server: тулы, PlayerOwner, память]
+  TTS --> SPK["динамики"]
+  EXE -- "/mcp/execute (ActionRequest)" --> MCP["mcp_server: тулы, PlayerOwner, память"]
   MCP -- "/mcp/result + /voice/music/event" --> EXE
 ```
 
