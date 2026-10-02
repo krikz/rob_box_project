@@ -22,6 +22,9 @@
 
 * ``delay`` (доли) сдвигает момент события, не меняя ``amp``/``sus`` — так рендер v2
   выражает свинг (ADR-0149 §3.4); список — по номеру события, как ``amplify``.
+* кортеж в ``pan``/``pshift``/``delay`` — голоса одного события (``Player.send_osc_message``): все кортежи
+  события раскрываются вместе по индексу (по модулю длины), вложенный — ещё раз на каждый элемент, поэтому
+  ``pan=((-w, w),)`` при аккорде даёт два голоса на КАЖДУЮ ноту (проверено пробой на роботе, PR-9).
 
 Это не Renardo: ``Clock.latency``, ``nudge``/``Clock.swing``, ``every``, ``P[...]``
 не моделируются. Программа исполняется с пустыми ``__builtins__`` —
@@ -42,6 +45,8 @@ SLOTS = tuple(slot for deck in sorted(DECK_SLOTS) for slot in DECK_SLOTS[deck])
 #: (чтобы Renardo не исполнялся), а модели громкости нужен исполнитель.
 _EXEC = exec
 FX_KEYS = ("hpf", "lpf", "echo", "room")
+#: Аргументы, кортеж в которых — голоса события (раскрываются вместе со ступенью).
+VOICE_KEYS = ("pan", "pshift", "delay")
 
 
 class ProgramError(ValueError):
@@ -101,6 +106,8 @@ class NoteEvent:
     midi: Optional[float] = None
     sample: Optional[str] = None
     fx: Mapping[str, Any] = field(default_factory=dict)
+    pan: float = 0.0
+    detune: float = 0.0  # ``pshift`` голоса, полутоны (``midi`` — нота без расстройки)
 
 
 @dataclass
@@ -261,6 +268,17 @@ def _fx_at(kw: Mapping[str, Any], index: int, beat: float) -> Dict[str, Any]:
     return fx
 
 
+def expand_voices(packet: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """``Player.send_osc_message``: кортежи пакета раскрываются вместе по индексу (по модулю), вложенные — ещё раз."""
+    size = max((len(v) for v in packet.values() if isinstance(v, tuple)), default=0)
+    if size == 0:
+        return [dict(packet)]
+    out: List[Dict[str, Any]] = []
+    for i in range(size):
+        out += expand_voices({k: v[i % len(v)] if isinstance(v, tuple) else v for k, v in packet.items()})
+    return out
+
+
 def _play_symbol(steps: Sequence[str], index: int) -> str:
     step = steps[index % len(steps)]
     if step.startswith("("):
@@ -269,16 +287,42 @@ def _play_symbol(steps: Sequence[str], index: int) -> str:
     return step
 
 
-def _pitches(spec: PlayerSpec, program: Program, index: int, beat: float) -> List[float]:
-    kw = spec.kwargs
+def _degree(spec: PlayerSpec, index: int, beat: float) -> Any:
     degree = value_at(spec.degree, 0, beat) if isinstance(spec.degree, TimeVar) else spec.degree
-    if isinstance(degree, list):
-        degree = degree[index % len(degree)]
-    notes = degree if isinstance(degree, tuple) else (degree,)
+    return degree[index % len(degree)] if isinstance(degree, list) else degree
+
+
+def _midi(degree: Any, spec: PlayerSpec, program: Program, index: int, beat: float) -> float:
+    kw = spec.kwargs
     scale = kw.get("scale") or value_at(program.scale, 0, beat) or "major"
     root = _root_semitone(kw["root"] if "root" in kw else program.root, beat)
     oct_ = float(value_at(kw.get("oct", 5), index, beat))
-    return [degree_to_midi(float(n), oct_, root, scale) for n in notes if n is not None]
+    return degree_to_midi(float(degree), oct_, root, scale)
+
+
+def _voices(spec: PlayerSpec, index: int, beat: float) -> List[Dict[str, Any]]:
+    """Голоса события: ступень (``None`` — пауза у ``play``-символа не бывает) и ``pan``/``pshift``/``delay``."""
+    packet = {k: value_at(spec.kwargs.get(k, 0), index, beat) for k in VOICE_KEYS}
+    packet["degree"] = None if spec.synth == "play" else _degree(spec, index, beat)
+    return expand_voices(packet)
+
+
+def _notes(spec: PlayerSpec, program: Program, steps: Optional[List[str]], index: int, beat: float,
+           base: Dict[str, Any]) -> List[NoteEvent]:
+    """События одного шага плеера: голоса × ноты аккорда (тональный) или удар сэмпла (``play``)."""
+    out: List[NoteEvent] = []
+    if steps is not None:
+        symbol = _play_symbol(steps, index)
+        if symbol in ". ":
+            return out
+        base = dict(base, synth="play", sample=f"{symbol}{int(value_at(spec.kwargs.get('sample', 0), index, beat))}")
+    for v in _voices(spec, index, beat):
+        voice = dict(base, beat=beat + float(v["delay"]), pan=float(v["pan"]), detune=float(v["pshift"]))
+        if steps is not None:
+            out.append(NoteEvent(**voice))
+        elif v["degree"] is not None:
+            out.append(NoteEvent(synth=spec.synth, midi=_midi(v["degree"], spec, program, index, beat), **voice))
+    return out
 
 
 def events_for(slot: str, spec: PlayerSpec, program: Program, form_beats: float) -> List[NoteEvent]:
@@ -300,15 +344,8 @@ def events_for(slot: str, spec: PlayerSpec, program: Program, form_beats: float)
         amp = gate * float(value_at(kw.get("amplify", 1), index, beat))
         if amp > 0:
             sus = float(value_at(kw["sus"], index, beat)) if "sus" in kw else dur
-            onset = beat + float(value_at(kw.get("delay", 0), index, beat))
-            base = dict(beat=onset, slot=slot, amp=amp, gate=gate, sus_beats=sus, fx=_fx_at(kw, index, beat))
-            if steps is not None:
-                symbol = _play_symbol(steps, index)
-                if symbol not in ". ":
-                    sample = int(value_at(kw.get("sample", 0), index, beat))
-                    out.append(NoteEvent(synth="play", sample=f"{symbol}{sample}", **base))
-            else:
-                out.extend(NoteEvent(synth=spec.synth, midi=m, **base) for m in _pitches(spec, program, index, beat))
+            base = dict(slot=slot, amp=amp, gate=gate, sus_beats=sus, fx=_fx_at(kw, index, beat))
+            out += _notes(spec, program, steps, index, beat, base)
         index += 1
         beat += dur
     return out
@@ -333,6 +370,7 @@ __all__ = [
     "TimeVar",
     "degree_to_midi",
     "events_for",
+    "expand_voices",
     "program_events",
     "run_program",
     "value_at",

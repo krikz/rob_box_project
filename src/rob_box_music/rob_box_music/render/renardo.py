@@ -8,6 +8,10 @@
 сайдчейн-огибающая ролей ``Mix.duck_roles`` — ``amplify=[...]`` (период списка свёрнут); бочка — ``sample=`` из
 ``knowledge.KICK_SOUNDS``; свинг ``offset_ms`` — ``delay=[...]`` в долях
 (глобальный ``Clock.swing`` не используется: сайдчейн не должен уехать от бочки, ADR-0149 §3.4).
+Стерео ``Mix.stereo`` (§3.9): ударные — ``pan=[...]`` со сменой стороны на каждом ударе; два голоса тональной роли —
+вложенные группы ``pan=((-w, w),), pshift=((0, d),), delay=((0, Хаас),)`` (Renardo раскрывает их на КАЖДУЮ ноту
+аккорда: ``Player.send_osc_message``, проверено пробой на роботе). ``room2`` не используется: глушит выход
+(``knowledge.ROLE_STEREO``).
 Список нот и рисунок ударных свёрнуты до наименьшего периода в тактах, на котором модель
 совпадает во всех звучащих секциях, — поэтому программа короткая, а события нот равны модели
 (тест на ``render.events``); fill-ы перед дропом удлиняют период рисунка до формы.
@@ -21,8 +25,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..arrange.mix import duck_envelope, level_amp
-from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Part, Track, validate
+from ..arrange.mix import alternate_pan, duck_envelope, voice_amp
+from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Part, Stereo, Track, validate
 from .program import Program
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
@@ -87,15 +91,28 @@ def _amplify(track: Track, role: str, accents: Sequence[int], varied: bool) -> L
     return _period(out)
 
 
-def _tail(track: Track, role: str, part: Part, accents: Sequence[int], varied: bool) -> List[str]:
-    opts = [f"amp={_gate(track, role, level_amp(role, part))}"]
+def _stereo(st: Optional[Stereo], hits: Optional[Sequence[bool]], bpm: int) -> List[str]:
+    """Аргументы ширины: ``hits`` — удары свёрнутого рисунка ударной роли, ``None`` — тональная роль."""
+    if st is None:
+        return []
+    opts = []
+    if hits is not None and st.pan:
+        opts.append(f"pan={_list(_num(p) for p in alternate_pan(hits, st.pan, st.first))}")
+    elif st.voices == 2:
+        haas = _delay_beats(st.haas_ms, bpm)
+        opts += [f"pan=(({_num(-st.pan)}, {_num(st.pan)}),)", f"pshift=((0, {_num(st.detune)}),)"]
+        opts += [f"delay=((0, {_num(haas)}),)"] if haas else []
+    return opts
+
+
+def _tail(track: Track, role: str, part: Part, accents: Sequence[int], varied: bool,
+          hits: Optional[Sequence[bool]] = None) -> List[str]:
+    st = track.mix.stereo.get(role)
+    opts = [f"amp={_gate(track, role, voice_amp(role, part, st.voices if st else 1))}"]
     amplify = _amplify(track, role, accents, varied)
     if len(set(amplify)) > 1:
         opts.append(f"amplify={_list(_num(a) for a in amplify)}")
-    pan = track.mix.pan.get(role, 0.0)
-    if pan:
-        opts.append(f"pan={_num(pan)}")
-    return opts
+    return opts + _stereo(st, hits, track.bpm)
 
 
 def _delay_beats(offset_ms: int, bpm: int) -> float:
@@ -110,7 +127,7 @@ def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     symbol = kn.DRUM_SYMBOLS[role]
     accents = [c[0] for c in pattern if c]
     full = [c[0] if c else 0 for c in pattern]
-    opts = _tail(track, role, part, full, len(set(accents)) > 1)
+    opts = _tail(track, role, part, full, len(set(accents)) > 1, [c is not None for c in pattern])
     delays = [_delay_beats(c[1], track.bpm) if c else 0.0 for c in pattern]
     if any(delays):
         opts.append(f"delay={_list(_num(d) for d in delays)}")

@@ -105,9 +105,28 @@ class Hook:
 
 
 @dataclass(frozen=True)
+class Stereo:
+    """Ширина роли (ADR-0149 §3.9): от декоррелированного материала, а не от постоянной панорамы.
+
+    Ударная роль: ``pan`` — вынос, стороны чередуются на каждом ударе, ``first`` — сторона первого (+1 вправо).
+    Тональная роль с ``pan`` > 0: два голоса на ``-pan``/``+pan``, второй расстроен на ``detune`` полутона и сдвинут
+    на ``haas_ms``. Отсутствие роли в ``Mix.stereo`` — центр.
+    """
+
+    pan: float = 0.0  # 0..1
+    first: int = 1  # ±1
+    detune: float = 0.0  # полутоны
+    haas_ms: float = 0.0
+
+    @property
+    def voices(self) -> int:
+        return 2 if self.pan > 0 and (self.detune or self.haas_ms) else 1
+
+
+@dataclass(frozen=True)
 class Mix:
     level_db: Mapping[str, float]
-    pan: Mapping[str, float]  # -1..1
+    stereo: Mapping[str, Stereo]  # роль → ширина; бочки и баса здесь нет (центр)
     duck_depth: float  # 0..1
     fx: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # имя секции → эффекты
     duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
@@ -264,10 +283,12 @@ def _check_levels(track: Track) -> None:
                  f"сумма пиков {10 * math.log10(power):.1f} дБ выше потолка {kn.LEVEL_CEILINGS['master_peak_db']}")
     _require(0.0 <= track.mix.duck_depth <= 1.0, "mix.duck_depth", "глубина сайдчейна вне 0..1")
     _check_duck(track.mix, track.parts)
-    for role, pan in track.mix.pan.items():
-        _require(-1.0 <= pan <= 1.0, f"mix.pan.{role}", f"панорама {pan} вне -1..1")
-    for role in ("kick", "bass"):
-        _require(track.mix.pan.get(role, 0.0) == 0.0, f"mix.pan.{role}", "низ — строго в центре (ADR-0149 §3.9)")
+    for role, st in track.mix.stereo.items():
+        path = f"mix.stereo.{role}"
+        _require(role not in ("kick", "bass"), path, "низ — строго в центре (ADR-0149 §3.9)")
+        _require(0.0 <= st.pan <= 1.0 and st.first in (-1, 1), path, f"вынос {st.pan} вне 0..1 или сторона {st.first}")
+        _require(0.0 <= st.haas_ms <= kn.HAAS_MAX_MS and 0.0 <= st.detune <= 0.5, path,
+                 f"Хаас {st.haas_ms} мс или расстройка {st.detune} вне пределов")
 
 
 def _check_hook_and_harmony(track: Track) -> None:
@@ -347,6 +368,6 @@ def blend_bars(leaving: Track, incoming: Track) -> int:
 
 __all__ = [
     "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
-    "Part", "PitchEvent", "Section", "Step", "Track", "TrackError", "Transition", "blend_bars", "roles_at_bar",
-    "validate",
+    "Part", "PitchEvent", "Section", "Step", "Stereo", "Track", "TrackError", "Transition", "blend_bars",
+    "roles_at_bar", "validate",
 ]

@@ -54,4 +54,6 @@ def test_loudness_model_and_pan_tables_are_one_object():
     assert club_loudness.layer_db is layer_db and club_arranger.MAX_LAYER_AMP is kn.MAX_LAYER_AMP
     assert (club_stereo.PAN_HATS, club_stereo.PAN_PAD_WIDTH, club_stereo.PAD_PAN_BEATS) == (
         kn.PAN_HATS, kn.PAN_PAD_WIDTH, kn.PAD_PAN_BEATS)
+    from rob_box_music.arrange.mix import alternate_pan
+    assert club_stereo.alternate_pan is alternate_pan, "PR-9: смена стороны по ударам — одна реализация"
     assert tuple(float(x) for x in kn.BPM_RANGE) == BPM_RANGE
