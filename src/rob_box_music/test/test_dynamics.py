@@ -134,7 +134,8 @@ def test_trim_follows_track_energy_and_never_boosts():
     assert trims == [kn.ENERGY_TRIM_DB[e] for e in kn.ENERGY_LEVELS]
     assert all(a < b for a, b in zip(trims, trims[1:])) and trims[-1] == 0.0 and max(trims) <= 0.0
     assert trims[-1] - trims[0] >= 6.0, "A6: волна энергии сама даёт ≥ 6 дБ между спадом и пиком"
-    assert set(mix.set_master(3)) == {"trim"} | set(kn.SET_LEVELER) and set(kn.SET_LEVELER) <= set(kn.MASTER_DEFAULTS)
+    assert set(mix.set_master(3)) == {"trim"} | set(kn.SET_LEVELER)
+    assert set(kn.SET_LEVELER) | set(kn.DJ_LEVELER) <= set(kn.MASTER_DEFAULTS), "профиль — ручки SynthDef"
     assert kn.MASTER_DEFAULTS["trim"] == 0.0, "дефолт — v1 звучит как раньше"
 
 
