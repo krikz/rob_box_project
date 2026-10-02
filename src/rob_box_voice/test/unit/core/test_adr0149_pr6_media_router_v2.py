@@ -222,3 +222,35 @@ def test_music_state_tag_v1_snapshot_has_no_set_fields():
     memory.observe_state(snap, now=100.0)
     tag = memory.render(now=101.0)
     assert 'track="без названия"' in tag and "set_theme" not in tag and "bpm=" not in tag
+
+
+@pytest.mark.parametrize("text,mood", [
+    ("включи музыку для танцев", "groove"),
+    ("Робот включи музыку для танцев", "groove"),
+    ("поставь музыку для работы", "calm"),
+    ("включи музыку для сна", "calm"),
+    ("поставь музыку для тренировки", "epic"),
+])
+def test_music_for_occasion_is_request_music_with_mood(text, mood):
+    from rob_box_music import knowledge
+    command = parse_media_command(text)
+    assert command.intent is MediaIntent.REQUEST_MUSIC and command.closed and command.mood == mood
+    assert mood in knowledge.MOOD_ENERGY
+    plan = V2.route(text, MediaState())
+    assert [c.name for c in plan.tool_calls] == ["request_music"]
+    assert plan.tool_calls[0].arguments["mood"] == mood and plan.confirm_started
+
+
+@pytest.mark.parametrize("text,name", [
+    ("поставь калинку", "калинку"),
+    ("включи песню калинка", "калинка"),
+    ("поставь к элизе", "к элизе"),
+])
+def test_named_play_is_unchanged_by_occasion_rule(text, name):
+    command = parse_media_command(text)
+    assert command.intent is MediaIntent.PLAY_NAMED and command.name == name and command.mood == ""
+
+
+@pytest.mark.parametrize("text", ["включи музыку для Маши", "включи музыку для танцев на тему космос"])
+def test_unknown_occasion_is_not_request_music(text):
+    assert parse_media_command(text).intent is not MediaIntent.REQUEST_MUSIC

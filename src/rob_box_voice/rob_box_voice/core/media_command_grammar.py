@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import FrozenSet, List, Optional, Sequence, Tuple
+from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 
 class MediaIntent(str, Enum):
@@ -67,6 +67,8 @@ class MediaCommand:
             DJ-команда. ``closed``/``persona`` от неё не меняются (v1 как
             раньше), роутер v2 считает такую реплику закрытой.
         set_persona: персона из головы реплики до темы (для v2).
+        mood: для ``REQUEST_MUSIC`` из «музыку для танцев» — ключ
+            ``knowledge.MOOD_ENERGY`` или ``""`` (дефолт решает движок).
     """
 
     intent: MediaIntent
@@ -76,6 +78,7 @@ class MediaCommand:
     name: str = ""
     set_theme: str = ""
     set_persona: str = ""
+    mood: str = ""
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -534,6 +537,15 @@ _MUSIC_NOUNS: FrozenSet[str] = frozenset({
     "транс", "диско", "электронику",
 })
 
+#: «музыку ДЛЯ <занятия>» → настроение (ключи ``knowledge.MOOD_ENERGY``).
+#: Занятия вне таблицы («для Маши») — не заказ по настроению, решает LLM.
+_OCCASION_MOOD: Mapping[str, str] = {
+    "танцев": "groove", "танцы": "groove", "вечеринки": "playful", "праздника": "playful",
+    "работы": "calm", "учёбы": "calm", "учебы": "calm", "сна": "calm", "отдыха": "calm",
+    "расслабления": "calm", "медитации": "calm", "чтения": "calm",
+    "тренировки": "epic", "спорта": "epic", "зарядки": "epic",
+}
+
 
 def _strip_lead_in(words: Sequence[str]) -> List[str]:
     """Срезать вежливое вступление до глагола заказа.
@@ -574,6 +586,8 @@ def _play_named_command(words: Sequence[str]) -> MediaCommand:
     if not body or body[0] not in _PLAY_NAMED_VERBS:
         return NO_COMMAND
     title = _title_words(body[1:])
+    if title and title[0] == "для" and any(w in _MUSIC_NOUNS for w in body[1:]):
+        return _occasion_command(title[1:])
     if all(w in _GENERIC_WORDS for w in title):  # и пустое название
         return _request_music_command(body[1:])
     if len(title) > _MAX_TITLE_WORDS:
@@ -582,6 +596,16 @@ def _play_named_command(words: Sequence[str]) -> MediaCommand:
         return NO_COMMAND
     return MediaCommand(
         intent=MediaIntent.PLAY_NAMED, closed=True, name=" ".join(title)
+    )
+
+
+def _occasion_command(occasion: Sequence[str]) -> MediaCommand:
+    """«включи музыку для танцев» → ``REQUEST_MUSIC`` с настроением занятия."""
+    mood = next((_OCCASION_MOOD[w] for w in occasion if w in _OCCASION_MOOD), "")
+    if not mood or len(occasion) > 3:
+        return NO_COMMAND
+    return MediaCommand(
+        intent=MediaIntent.REQUEST_MUSIC, closed=True, name="музыку для " + " ".join(occasion), mood=mood
     )
 
 

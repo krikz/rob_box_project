@@ -11,6 +11,7 @@ set -u
 OUT=${1:?каталог результата}; DUR=${2:-1200}; THEME=${3:-космос}
 HERE=$(cd "$(dirname "$0")" && pwd)
 VA="docker exec voice-assistant bash -c"
+VAI="docker exec -i voice-assistant bash -c"  # -i: без него stdin (< скрипт) не доходит до python3 -
 ROS='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash'
 mkdir -p "$OUT"
 rms() { python3 - "$1" <<'PY'
@@ -22,13 +23,15 @@ PY
 rec() { docker exec supercollider sh -c "rm -f /tmp/$1.wav; jack_rec -f /tmp/$1.wav -d $2 -b 16 jack:out_1 jack:out_2 >/dev/null 2>&1"
         docker cp supercollider:/tmp/"$1".wav "$OUT/$1.wav"; docker exec supercollider rm -f /tmp/"$1".wav; }
 call() {  # call <json> — dj_set по /mcp/execute (подпись harness), ответ одной строкой JSON
-  $VA "$ROS; python3 - dj_set $(printf '%s' "$1" | base64 -w 0) 60" < "$HERE/../live_check_mcp_call.py"
+  $VAI "$ROS; python3 - dj_set $(printf '%s' "$1" | base64 -w 0) 60" < "$HERE/../live_check_mcp_call.py"
 }
 
 for node in "${MCP_NODE:-/mcp_server}" "${DIALOGUE_NODE:-/dialogue_node}"; do
-  v=$($VA "$ROS; ros2 param get $node music_engine" 2>&1 | tail -1)
+  # строка лога zenoh бывает последней — берём именно «String value is: <значение>»
+  v=$($VA "$ROS; ros2 param get $node music_engine" 2>&1 | grep 'String value is:' | tail -1)
+  v=$(printf '%s' "${v#*String value is:}" | tr -d " '\"\r")
   echo "$node music_engine: $v" | tee -a "$OUT/summary.txt"
-  case "$v" in *v2*) ;; *) echo "СТОП: $node не на v2 — прогон не имеет смысла" | tee -a "$OUT/summary.txt"; exit 2;; esac
+  case "$v" in v2) ;; *) echo "СТОП: $node не на v2 — прогон не имеет смысла" | tee -a "$OUT/summary.txt"; exit 2;; esac
 done
 up=$(docker ps --format '{{.Names}}' | grep -xE 'oak-d|rob-box-quest|vision-face' || true)
 [ -n "$up" ] && { echo "гашу (политика стенда): $up"; docker stop $up >/dev/null; }
@@ -61,10 +64,10 @@ docker logs -t voice-assistant --since "$T0" 2>&1 | grep -E "\[music v2\]|\[set 
 docker exec voice-assistant mkdir -p /tmp/dj_set_v2
 docker cp "$HERE/." voice-assistant:/tmp/dj_set_v2/
 docker cp "$OUT/set.wav" voice-assistant:/tmp/dj_set_v2/set.wav
-$VA 'cd /tmp/dj_set_v2 && python3 accept.py set.wav && python3 compare.py set.wav --chunk 60' | tee "$OUT/accept.txt"
+$VA 'cd /tmp/dj_set_v2 && python3 accept.py --inside-music set.wav && python3 compare.py set.wav --chunk 60' | tee "$OUT/accept.txt"
 docker exec voice-assistant rm -rf /tmp/dj_set_v2
 if [ -n "${TG_CHAT_ID:-}" ]; then
-  A1=$(grep -m1 -oE 'A1[^|]*' "$OUT/accept.txt" | head -1)
+  A1=$(grep -m1 -oE 'A1_inside_music.*' "$OUT/accept.txt" | head -1)
   TG_CHAT_ID=$TG_CHAT_ID bash "$HERE/tgogg.sh" "$OUT/set.wav" \
     "PR-5 #3312, сет v2 ${DUR} с, тема «$THEME». $(tr '\n' ' ' < "$OUT/summary.txt" | cut -c1-700) | $A1"
 fi
