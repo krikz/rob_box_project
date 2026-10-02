@@ -31,7 +31,7 @@ Acceptance criteria:
   3. ретрай ещё НЕ потрачен → fallback молчит (стреляет сам guard);
   4. юзер не просил запоминать → fallback молчит, даже если
      ``_action_claim_retry_used`` остался True от другой категории;
-  5. ``result.error`` / ``is_dj_auto`` → fallback молчит;
+  5. ``result.error`` → fallback молчит;
   6. честное признание (реплика 2) → fallback молчит;
   7. на синтетическом ретрай-туре гейт смотрит в ``raw_user_command``,
      а не в CRITICAL-промпт;
@@ -94,12 +94,9 @@ def _make_node() -> DialogueNode:
     n._sound_trigger_pub = MagicMock()
     n._tts_control_pub = MagicMock()
     n._music_cleanup_pub = MagicMock()
-    n._dj_mode_pub = None
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
-    n._dj = MagicMock()
     # Память — не музыка: DJ-сессии в этом сценарии нет и быть не должно.
-    n._dj.state.enabled = False
     n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._active_batches = {}
@@ -109,7 +106,6 @@ def _make_node() -> DialogueNode:
     n._verbose_llm = False
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
@@ -328,19 +324,6 @@ class TestFactMemorySaveFallbackStaysSilent:
 
         assert FALLBACK_MARKER not in _published_blob(n)
 
-    def test_no_fallback_on_dj_auto_turn(self) -> None:
-        """Acceptance #5: ``is_dj_auto=True`` — юзер молчал, просьбы
-        запомнить в этом ходе не было вообще."""
-        n = _make_node()
-        n._action_claim_retry_used = True
-
-        n._handle_result(
-            _make_result(N206_REPLY_3_FALSE, tools=N206_TOOLS_READ_ONLY),
-            user_input=N206_USER,
-            is_dj_auto=True,
-        )
-
-        assert FALLBACK_MARKER not in _published_blob(n)
 
     def test_honest_confession_is_not_replaced(self) -> None:
         """Acceptance #6: реплика 2 — робот САМ признаётся в сбое.
@@ -391,34 +374,10 @@ class TestFactMemorySaveFallbackStaysSilent:
 # ---------------------------------------------------------------------------
 
 class TestDispatcherKeepsBothBranches:
-
-    def test_music_branch_still_reachable(self) -> None:
-        """#2548: музыкальный fallback ходит через тот же диспетчер."""
+    def test_memory_branch_reachable(self) -> None:
+        """memory-ход доезжает до своей ветки диспетчера fallback'ов
+        (музыкальный fallback #2548 удалён в ADR-0149 PR-13a)."""
         n = _make_node()
-        n._dj.state.enabled = True
-        n._action_claim_retry_used = True
-
-        n._handle_result(
-            _make_result(
-                "Вплела тему Грига как второй голос над пульсом.",
-                tools=[],
-            ),
-            user_input="вплетай их красиво",
-        )
-
-        blob = _published_blob(n)
-        assert "Не получилось изменить музыку" in blob, (
-            f"диспетчер #2780 проглотил музыкальную ветку #2548: {blob!r}"
-        )
-        assert FALLBACK_MARKER not in blob, (
-            "музыкальный claim подменён memory-фразой — ветки перепутаны"
-        )
-
-    def test_memory_branch_not_shadowed_by_music(self) -> None:
-        """Обратная сторона: memory-ход не должен уйти в музыкальный
-        fallback даже при активной DJ-сессии (юзер просил ЗАПОМНИТЬ)."""
-        n = _make_node()
-        n._dj.state.enabled = True
         n._action_claim_retry_used = True
 
         n._handle_result(

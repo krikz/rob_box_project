@@ -27,24 +27,15 @@ silence the robot.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import uuid
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional
 
 from rob_box_llm.provider import ToolCall, ToolResult
 
-from rob_box_voice.core.track_start_guard import (
-    SPEAK_TOOL,
-    TrackStartGuard,
-    dj_auto_refusal_content,
-    refusal_content,
-    speak_refusal_content,
-    trim_dj_speech,
-)
-from rob_box_voice.core.turn_origin import TURN_IS_DJ_AUTO
-from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, TurnSpeechGate
+from rob_box_voice.core.track_start_guard import TrackStartGuard, refusal_content
+from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, SPEAK_TOOL, TurnSpeechGate
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
@@ -190,11 +181,9 @@ class SchedulerToolExecutor:
 
         Вызывается ``AgentCore._run_with_tools`` один раз в начале хода
         (в отличие от :meth:`begin_group`, который зовётся на каждую
-        пачку tool_calls). Снимает лимит «один трек за ход». Происхождение
-        хода (DJ-авто или юзер, issue #3221) берётся из ``TURN_IS_DJ_AUTO``:
-        лимит реплик #2878 действует только в DJ-ходе.
+        пачку tool_calls). Снимает лимит «один трек за ход».
         """
-        self._track_guard.reset(dj_auto=TURN_IS_DJ_AUTO.get())
+        self._track_guard.reset()
 
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
@@ -237,36 +226,6 @@ class SchedulerToolExecutor:
         # a fire-and-forget {"status": "queued"}.
         if call.name == "task_delta":
             return await self._execute_task_delta(call)
-
-        # Issue #2878 — DJ-ход: не больше одной (двух на старте сета)
-        # реплики speak_text, и та, что проходит, обрезана до ~140
-        # символов. speak_text маршрутизируется на VOICE-канал ниже (не
-        # bypass-путём, см. ``_execute_direct``), поэтому гард стоит
-        # именно тут, до ``channel_for_tool``.
-        if call.name == SPEAK_TOOL:
-            guarded = self._apply_dj_speak_guard(call)
-            if isinstance(guarded, ToolResult):
-                return guarded
-            call = guarded
-
-        # Issue #3246 / #3247 — что DJ_AUTO-ходу нельзя, одной точкой
-        # (``dj_auto_refusal_content``): тулы, рвущие звук (stop_music), и
-        # set_dj_mode(enabled=true) после финального промпта сета (перезапуск
-        # сета с чужой темой). Жёсткий гард поверх промпта; до
-        # channel_for_tool: stop_music иначе уйдёт в очередь планировщика.
-        refusal = dj_auto_refusal_content(
-            self._track_guard, call.name, call.arguments
-        )
-        if refusal is not None:
-            _LOG.warning(
-                "issue #3246/#3247: refusing %s — forbidden in this DJ_AUTO turn",
-                call.name,
-            )
-            return ToolResult(
-                tool_call_id=call.id,
-                content=refusal,
-                is_error=False,
-            )
 
         channel = channel_for_tool(call.name)
         if channel is None:
@@ -364,44 +323,8 @@ class SchedulerToolExecutor:
             # Запрос не ушёл (name=None → «спроси имя», шумовое имя,
             # ошибка) — ack не будет, речь хода ждать нечего.
             gate.registration_settled()
-        guard.record(call.name, is_error=bool(result.is_error), args=call.arguments)
+        guard.record(call.name, is_error=bool(result.is_error))
         return result
-
-    def _apply_dj_speak_guard(
-        self, call: ToolCall
-    ) -> Union[ToolResult, ToolCall]:
-        """Enforce the DJ-turn ``speak_text`` limit (issue #2878).
-
-        Returns a refusal :class:`ToolResult` once the turn's
-        :meth:`TrackStartGuard.speak_limit` is spent, otherwise the same
-        (or text-trimmed, see :func:`trim_dj_speech`) call to execute.
-        Non-DJ turns (:attr:`TrackStartGuard.is_dj_turn` ``False``) are
-        untouched — trimming and the limit both apply to DJ turns only.
-        """
-        guard = self._track_guard
-        if not guard.is_dj_turn:
-            return call
-        if guard.should_refuse_speak():
-            _LOG.warning(
-                "issue #2878: refusing speak_text — DJ speak limit (%d) "
-                "reached this turn (%d already said)",
-                guard.speak_limit,
-                guard.speak_count,
-            )
-            return ToolResult(
-                tool_call_id=call.id,
-                content=speak_refusal_content(guard.speak_count, guard.speak_limit),
-                is_error=False,
-            )
-        guard.record_speak()
-        text = call.arguments.get("text")
-        if isinstance(text, str):
-            trimmed = trim_dj_speech(text)
-            if trimmed != text:
-                call = dataclasses.replace(
-                    call, arguments={**call.arguments, "text": trimmed}
-                )
-        return call
 
     async def _execute_task_delta(self, call: ToolCall) -> ToolResult:
         """S6.2 — apply ``task_delta`` directly via ``TaskScheduler.update``.

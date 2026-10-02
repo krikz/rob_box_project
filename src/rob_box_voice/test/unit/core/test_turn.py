@@ -43,12 +43,10 @@ def _reply(
 
 def _turn(
     user_input: str = "",
-    is_dj_auto: bool = False,
     tool_error_occurred: bool = False,
 ) -> TurnContext:
     return TurnContext(
         user_input=user_input,
-        is_dj_auto=is_dj_auto,
         tool_error_occurred=tool_error_occurred,
     )
 

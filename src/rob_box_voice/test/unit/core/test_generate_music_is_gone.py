@@ -30,10 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from rob_box_voice.core.dialogue_guards import (
-    build_babble_retry_prompt,
-    build_music_retry_prompt,
-)
+from rob_box_voice.core.dialogue_guards import build_babble_retry_prompt
 
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -70,22 +67,8 @@ def test_server_still_does_not_register_generate_music() -> None:
     """
     assert not _server_registers_generate_music(), (
         "mcp_server снова регистрирует generate_music — верни его в "
-        "промпт (composer.txt) и в build_music_retry_prompt, затем поправь "
-        "этот тест"
+        "промпты, затем поправь этот тест"
     )
-
-
-def test_music_retry_prompt_does_not_demand_a_dead_tool() -> None:
-    """CRITICAL-ретрай Bug C не должен требовать несуществующий тул."""
-    if _server_registers_generate_music():
-        pytest.skip("generate_music снова зарегистрирован")
-    prompt = build_music_retry_prompt("спой песню про денчика")
-    assert DEAD_TOOL not in prompt, (
-        "build_music_retry_prompt требует generate_music, которого нет на "
-        "сервере — модель не сможет его вызвать и ответит прозой"
-    )
-    # И указывает на то, что действительно работает.
-    assert "compose_music" in prompt
 
 
 def test_babble_retry_prompt_does_not_demand_a_dead_tool() -> None:

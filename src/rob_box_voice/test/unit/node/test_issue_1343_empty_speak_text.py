@@ -51,7 +51,6 @@ def _make_node() -> DialogueNode:
     # AttributeError before we ever get to the assertion.
     n._track_mode_music_active = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     return n
 
 

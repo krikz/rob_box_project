@@ -42,8 +42,6 @@ def _make_node() -> DialogueNode:
     n._dj_mode_pub = None
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._active_batches = {}
@@ -55,7 +53,6 @@ def _make_node() -> DialogueNode:
     # ``_check_*_and_retry`` не упал в AttributeError.
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None

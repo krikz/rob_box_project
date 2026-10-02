@@ -37,7 +37,6 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_llm.provider import LLMChunk, LLMProvider, LLMResponse, ProviderCapabilities
-from rob_box_voice.core.music_guard import MusicGuard
 from rob_box_voice.dialogue_node import DialogueNode, _DialogueSttHost
 
 
@@ -77,7 +76,6 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     n._task_lock = threading.Lock()
     n._run_task = None
     n._run_cancelled = False
-    n._music_guard = MusicGuard()
     n._pending_music_cleanup = False
     n._track_mode_music_active = False
     n._speaker_id_enabled = False
@@ -88,7 +86,6 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     n._active_batches = {}
     n._dsm = DialogueStateMachine()
     n._publish_state = MagicMock()
-    n._apply_music_guard = MagicMock(return_value=False)
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
@@ -102,12 +99,9 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
     n._pending_user_messages = deque()
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._tts_control_pub = MagicMock()
     n._effects = MagicMock()
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     return n
 
 

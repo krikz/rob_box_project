@@ -4,9 +4,14 @@ Covers the Issue #992 guard heuristics that were extracted from
 ``dialogue_node.py``:
 
 * babble / metalanguage detection (Bug D),
-* performance / music request detection (Bug C),
-* music stop-command and vocal-request classification,
+* performance request detection,
+* music stop-command classification,
 * retry prompt builders.
+
+ADR-0149 PR-13a: music-guard detectors (``user_wants_music``,
+``is_vocal_request``, ``is_music_state_query``, music ``ActionClaimRule``-s,
+Renardo-code / unknown-melody detectors, music retry prompts) were removed
+together with their tests.
 
 These are pure-Python functions — no ROS2 node required.
 """
@@ -21,42 +26,29 @@ from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS,
     CLAIM_JUSTIFYING_TOOLS,  # Issue #2549 universal action-claim guard
-    MUSIC_GUARD_KEYWORDS,
-    MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
     PHANTOM_ACTION_NEGATION_RE,  # Issue #2559 phantom-action
     PHANTOM_ACTION_VERBS_RE,  # Issue #2559 phantom-action
     SYSTEM_TEMPLATE_REGURGITATE_RE,
     TOOL_REQUEST_PATTERNS,
-    UNKNOWN_MELODY_CLAIM_RE,  # Issue #2562 Bug F
     build_action_claim_failure_fallback,  # Issue #2949
     build_babble_retry_prompt,
-    build_music_prose_action_fallback,
-    build_music_retry_exhausted_fallback,
-    build_music_retry_prompt,
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
-    build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
     build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
     build_universal_action_claim_retry_prompt,  # Issue #2549 / #2949
-    build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_required_tool,
     detect_unbacked_action_claim,
     detect_universal_action_claim,  # Issue #2549 universal action-claim guard
-    detect_unknown_melody_claim,  # Issue #2562 Bug F
-    extract_renardo_code_lines,
     is_metalanguage_babble,
-    is_music_state_query,  # e2e 35665111906 n110_silence_baseline
     is_music_stop_command,
     is_planning_narration,
     is_state_question,
     is_system_template_regurgitated,
     is_system_template_regurgitated_in_ssml,
-    is_vocal_request,
-    user_wants_music,
     user_wants_performance,
 )
 
@@ -141,61 +133,7 @@ class TestUserWantsPerformance:
 
 
 # ---------------------------------------------------------------------------
-# user_wants_music
-# ---------------------------------------------------------------------------
-
-
-class TestUserWantsMusic:
-    def test_music_keywords(self) -> None:
-        assert user_wants_music("спой про мурку") is True
-        assert user_wants_music("включи музыку") is True
-        assert user_wants_music("зачитай рэп") is True
-        assert user_wants_music("поставь диджея") is True
-
-    def test_library_track_phrases(self) -> None:
-        """live 20.08: «включи следующий трек» / «случайный трек» /
-        «ты включал мелодию ... через библиотеку» → LLM возвращал tools=[]
-        и guard молчал («user does NOT want music»). Эти фразы обязаны
-        триггерить music-гуард (Bug C retry)."""
-        assert user_wants_music("включи случайный трек") is True
-        assert user_wants_music("включи следующий трек") is True
-        assert user_wants_music("включи следующий трек из библиотеки") is True
-        assert user_wants_music("сыграй трек из библиотеки") is True
-        assert user_wants_music("поставь трек") is True
-        assert user_wants_music("поставь музыку") is True
-        assert user_wants_music("включи мелодию про весну") is True
-        assert user_wants_music("ты включал мелодию про весну через библиотеку") is True
-        assert user_wants_music("вруби музыку") is True
-
-    def test_case_insensitive(self) -> None:
-        assert user_wants_music("ВКЛЮЧИ МУЗЫКУ") is True
-
-    def test_non_music(self) -> None:
-        assert user_wants_music("как дела") is False
-        assert user_wants_music("") is False
-        assert user_wants_music(None) is False  # type: ignore[arg-type]
-
-    def test_optional_logger_receives_diagnostics(self) -> None:
-        import logging
-
-        records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = lambda record: records.append(record)  # type: ignore[method-assign]
-        logger = logging.getLogger("test_music_guard")
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-
-        assert user_wants_music("спой песню", logger=logger) is True
-        assert any("wants_music=True" in r.getMessage() for r in records)
-
-        # Broad-match diagnostic (music-ish but not in MUSIC_GUARD_KEYWORDS)
-        records.clear()
-        assert user_wants_music("нужен бит", logger=logger) is False
-        assert any("broad_performance" in r.getMessage() for r in records)
-
-
-# ---------------------------------------------------------------------------
-# is_music_stop_command / is_vocal_request
+# is_music_stop_command
 # ---------------------------------------------------------------------------
 
 
@@ -253,81 +191,6 @@ class TestIsMusicStopCommand:
         assert is_music_stop_command(prompt) is False
 
 
-class TestIsVocalRequest:
-    def test_vocal_phrases(self) -> None:
-        assert is_vocal_request("спой песню") is True
-        assert is_vocal_request("пой про кота") is True
-        assert is_vocal_request("песня про мурку") is True
-
-    def test_non_vocal(self) -> None:
-        assert is_vocal_request("сыграй джаз") is False
-        assert is_vocal_request("") is False
-        assert is_vocal_request(None) is False  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# Issue #2834 — live repro table (23.09.2026, TG, Vision Pi).
-#
-# «стоп диджей» → робот через пару секунд снова играет: живой баг —
-# ``is_music_stop_command`` не ловил «стоп» + голое «диджей» (без
-# «ить»/«я»/«режим»). Обратная сторона: «давай грига», «включи уже
-# still dre» и другие именные запросы композитора/артиста уходили в
-# wants=False, потому что ни «музыка», ни «трек» в них не произносятся.
-#
-# ``expected_wants`` для СТОП-фраз намеренно НЕ проверяется этой таблицей:
-# ``user_wants_music`` может оставаться True на «диджей»-подстроке (та же
-# логика, что и для «выключи диджея» — см.
-# ``test_stop_overrides_are_caught_by_stop_detector`` и
-# ``TestMusicStateQueryE2E35665111906.test_stop_command_keeps_its_own_verdict``
-# в ``test_music_guard.py``: гуард полагается на порядок проверок —
-# ``is_music_stop_command`` выигрывает у ``user_wants_music`` В ЛЮБОМ
-# случае, см. ``music_guard.py:429`` — FORCE_STOP проверяется раньше
-# ``user_wants_music`` на строке 474). Форсировать
-# ``user_wants_music=False`` для стоп-фраз ломает этот инвариант (два
-# существующих теста красные), поэтому единственная проверяемая здесь
-# гарантия для стоп-строк — ``is_music_stop_command=True``; отсутствие
-# USER_RETRY доказывается отдельно на уровне ``MusicGuard.evaluate`` в
-# ``test_music_guard.py::TestEvaluateStopCommand::
-# test_issue_2834_stop_dj_without_stop_tool_forces_stop``.
-# ---------------------------------------------------------------------------
-
-ISSUE_2834_LIVE_PHRASE_TABLE: tuple = (
-    # (user_input, expected_stop, expected_wants_music_or_None)
-    # None = не проверяем wants_music для этой строки (см. комментарий выше).
-    ("стоп диджей", True, None),
-    ("стоп диджей блядь", True, None),
-    ("стоп музыка", True, None),
-    ("давай грига", False, True),
-    ("включи уже still dre", False, True),
-    ("ты мне опять спиздел найди баха в рттл", False, True),
-    ("заебок теперь давай баха на гитаре ебанем", False, True),
-)
-
-
-class TestIssue2834LivePhraseTable:
-    """Issue #2834 — юнит-тест с полной таблицей живых фраз из репорта."""
-
-    @pytest.mark.parametrize(
-        "user_input,expected_stop,expected_wants",
-        ISSUE_2834_LIVE_PHRASE_TABLE,
-    )
-    def test_live_phrase(
-        self,
-        user_input: str,
-        expected_stop: bool,
-        expected_wants: Optional[bool],
-    ) -> None:
-        assert is_music_stop_command(user_input) is expected_stop, (
-            f"is_music_stop_command({user_input!r}) should be "
-            f"{expected_stop!r}"
-        )
-        if expected_wants is not None:
-            assert user_wants_music(user_input) is expected_wants, (
-                f"user_wants_music({user_input!r}) should be "
-                f"{expected_wants!r}"
-            )
-
-
 # ---------------------------------------------------------------------------
 # Retry prompt builders
 # ---------------------------------------------------------------------------
@@ -340,127 +203,13 @@ class TestBuildBabbleRetryPrompt:
 
     def test_demands_tool_call(self) -> None:
         prompt = build_babble_retry_prompt("x")
-        assert "execute_music_code" in prompt
+        assert "request_music" in prompt
+        assert "execute_music_code" not in prompt and "compose_music" not in prompt
         assert "[CRITICAL]" in prompt
 
     def test_empty_user_input(self) -> None:
         prompt = build_babble_retry_prompt("")
         assert "[CRITICAL]" in prompt
-
-
-class TestBuildMusicRetryPrompt:
-    def test_echoes_user_input(self) -> None:
-        prompt = build_music_retry_prompt("включи бит")
-        assert "включи бит" in prompt
-
-    def test_demands_execute_music_code(self) -> None:
-        prompt = build_music_retry_prompt("x")
-        assert "execute_music_code" in prompt
-        assert "[CRITICAL]" in prompt
-
-    def test_empty_user_input(self) -> None:
-        prompt = build_music_retry_prompt("")
-        assert "[CRITICAL]" in prompt
-
-
-class TestBuildMusicRetryExhaustedFallback:
-    """Issue #2561 — фраза-fallback после исчерпания USER_RETRY-budget.
-
-    Текст должен:
-    * упоминать конкретное имя трека, если оно распознано;
-    * НЕ содержать извинений;
-    * НЕ содержать claim'ов о выполнении;
-    * предлагать альтернативу («по-другому»).
-    """
-
-    def test_empty_input_returns_generic_text(self) -> None:
-        """Пустой ввод → общая фраза без выдуманного имени."""
-        assert build_music_retry_exhausted_fallback("") == (
-            "Что-то не получается с музыкой, давай попробуем "
-            "по-другому?"
-        )
-
-    def test_none_input_returns_generic_text(self) -> None:
-        """``None`` → общая фраза (defensive)."""
-        assert build_music_retry_exhausted_fallback(None) == (
-            "Что-то не получается с музыкой, давай попробуем "
-            "по-другому?"
-        )
-
-    def test_track_name_is_quoted(self) -> None:
-        """«сыграй кисс» → «кисс» попадает в кавычки."""
-        text = build_music_retry_exhausted_fallback("сыграй кисс")
-        assert "«кисс»" in text
-        assert "по-другому" in text
-
-    def test_no_apology_in_text(self) -> None:
-        """Никаких извинений в любых формах."""
-        for q in (
-            "включи музыку",
-            "сыграй кисс",
-            "поставь трек тисбит",
-            "запусти лаундж",
-            "",
-        ):
-            text = build_music_retry_exhausted_fallback(q).lower()
-            for marker in ("извини", "прости", "sorry", "прошу прощения"):
-                assert marker not in text, (
-                    f"fallback for {q!r} не должен содержать "
-                    f"{marker!r}: {text!r}"
-                )
-
-    def test_no_completion_claim_in_text(self) -> None:
-        """Никаких claim'ов о выполнении (это враньё — ретраи выгорели)."""
-        for q in (
-            "включи музыку",
-            "сыграй кисс",
-            "поставь трек тисбит",
-            "",
-        ):
-            text = build_music_retry_exhausted_fallback(q).lower()
-            for marker in (
-                "запустил", "поставил", "включил", "сделал",
-                "готово", "запустила", "поставила",
-            ):
-                assert marker not in text, (
-                    f"fallback for {q!r} не должен содержать "
-                    f"{marker!r}: {text!r}"
-                )
-
-    def test_proposes_alternative(self) -> None:
-        """Фраза содержит «по-другому» — предлагает альтернативу."""
-        for q in (
-            "",
-            "включи музыку",
-            "сыграй кисс",
-            "поставь трек тисбит",
-            "запусти что-нибудь спокойное",
-        ):
-            text = build_music_retry_exhausted_fallback(q)
-            assert "по-другому" in text.lower(), (
-                f"fallback for {q!r} должен предлагать альтернативу"
-            )
-
-    def test_long_input_is_truncated(self) -> None:
-        """Хвост длиннее 60 символов обрезается до последнего слова."""
-        long_q = "сыграй " + " ".join(["к"] * 30)  # ~36 chars, but with letters
-        # Use something with words to test the truncation logic
-        long_q = "сыграй " + "слово " * 20  # 7*20=140 chars after prefix
-        text = build_music_retry_exhausted_fallback(long_q)
-        # Хвост должен быть обрезан до 60 символов.
-        # Извлекаем содержимое кавычек:
-        import re
-        match = re.search(r"«([^»]+)»", text)
-        assert match is not None
-        assert len(match.group(1)) <= 60, (
-            f"track hint должен быть <=60 chars, got {len(match.group(1))}"
-        )
-
-    def test_track_hint_no_trailing_punctuation(self) -> None:
-        """Хвост без висящих знаков препинания."""
-        text = build_music_retry_exhausted_fallback("сыграй кисс!!!")
-        assert "кисс" in text
-        assert "кисс!" not in text  # знаки препинания отрезаны
 
 
 # ---------------------------------------------------------------------------
@@ -471,165 +220,18 @@ class TestBuildMusicRetryExhaustedFallback:
 def test_keyword_tuples_non_empty() -> None:
     assert BABBLE_BANNED_OPENERS
     assert BABBLE_PERFORMANCE_KEYWORDS
-    assert MUSIC_GUARD_KEYWORDS
-    assert MUSIC_GUARD_VOCAL_KEYWORDS
     assert MUSIC_STOP_OVERRIDES
 
 
 def test_stop_overrides_are_caught_by_stop_detector() -> None:
-    """A stop-command must be caught by ``is_music_stop_command`` whenever
-    ``user_wants_music`` would also match it (the caller checks stop FIRST,
-    so this ordering must hold or Bug C would re-enable music)."""
+    """Every fixed stop phrase is caught by ``is_music_stop_command``."""
     for stop in MUSIC_STOP_OVERRIDES:
         assert is_music_stop_command(stop) is True
-        if user_wants_music(stop):
-            # The guard relies on the stop-check winning over the
-            # music-request check in ``DialogueNode._apply_music_guard``.
-            assert is_music_stop_command(stop) is True
-
-
-# ---------------------------------------------------------------------------
-# Вокальные словари harness и voice: РАЗНЫЕ вопросы, не копия друг друга
-# ---------------------------------------------------------------------------
-
-#: Речитатив: голос нужен, но и бит обязателен. Эти слова есть в
-#: harness-словаре и НАМЕРЕННО отсутствуют в voice-словаре.
-BEAT_REQUIRED_KEYWORDS = ("рэп", "реп", "rap", "зачитай", "куплет", "частушк")
-
-
-def test_harness_vocal_keywords_are_a_strict_superset() -> None:
-    """Два словаря отвечают на РАЗНЫЕ вопросы — сводить их нельзя.
-
-    * harness ``_VOCAL_REQUEST_KEYWORDS`` — «просил ли пользователь голос
-      вообще?». Гард галлюцинированных текстов (issue #1708) по нему решает,
-      что ``speak_text`` после музыкального тула подавлять нельзя.
-    * voice ``MUSIC_GUARD_VOCAL_KEYWORDS`` — «просил ли пользователь голос
-      БЕЗ бита?». Music-guard Bug C (issue #992) по нему решает, что
-      одного ``speak_text`` достаточно и нудить ретраем не за что.
-
-    Для рэпа и частушек бит обязателен, поэтому voice-словарь у́же — см.
-    комментарий на ``dialogue_guards.py`` над ``MUSIC_GUARD_VOCAL_KEYWORDS``:
-    «Для БИТО-обязательных (рэп/зачитай/диджей) — как было: нуднуть если
-    нет execute_music_code».
-
-    Тест держит инвариант с обеих сторон, потому что комментарий в
-    ``agent_core`` называл свою копию «mirrors rob_box_voice…» и обещал,
-    что списки «stay in sync» — прочитав это, легко «починить» расхождение
-    слиянием и молча снять требование бита с рэпа.
-    """
-    from rob_box_harness.core.agent_core import _VOCAL_REQUEST_KEYWORDS
-
-    harness_words = set(_VOCAL_REQUEST_KEYWORDS)
-    voice_words = set(MUSIC_GUARD_VOCAL_KEYWORDS)
-
-    assert voice_words < harness_words, (
-        "voice-словарь должен быть строгим подмножеством harness-словаря: "
-        f"лишнее в voice = {sorted(voice_words - harness_words)}"
-    )
-    for keyword in BEAT_REQUIRED_KEYWORDS:
-        assert keyword in harness_words, (
-            f"{keyword!r} пропал из harness-словаря — гард issue #1708 "
-            "начнёт глушить законный речитатив"
-        )
-        assert keyword not in voice_words, (
-            f"{keyword!r} добавлен в voice-словарь — music-guard перестанет "
-            "требовать бит для речитатива (issue #992 Bug C)"
-        )
-
-
-def test_beat_required_requests_still_get_nudged() -> None:
-    """«Зачитай рэп» — не ``vocal_satisfied``: без бита гард обязан нуднуть."""
-    for phrase in ("зачитай рэп про колобка", "давай частушку"):
-        assert is_vocal_request(phrase) is False, (
-            f"{phrase!r} признан вокальным-без-бита — music-guard пропустит "
-            "ход, где модель не вызвала execute_music_code"
-        )
 
 
 # ---------------------------------------------------------------------------
 # Live-прогон 30.08 (vision-pi 12:17–12:57) — регрессии, снятые с лога
 # ---------------------------------------------------------------------------
-
-
-class TestMusicContinuationLive3008:
-    """«Развивай бит» — просьба развить уже играющую музыку.
-
-    В логе три таких хода подряд закончились ``tools=[]`` и текстом
-    «Добавил новые слои в техно-бит.» / «Бит перешёл в джангл.» — то есть
-    робот РАССКАЗЫВАЛ про музыку вместо того, чтобы её играть. Bug C
-    молчал, потому что ни одной подстроки из ``MUSIC_GUARD_KEYWORDS``
-    в этих фразах нет.
-    """
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "продолжал развивать этот бит",
-            "переходи с лож в небольшой джангл",
-            "продолжая с кайфом развивать мелодию летим над воркутой",
-            "продолжая развивать мелодию мы пролетаем над логовом кукарекающих чинарей",
-            "добавь баса в трек",
-            "ускорь бит",
-            "смени ритм на техно",
-        ],
-    )
-    def test_continuation_phrases_are_music_requests(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "продолжай маршрут до кухни",
-            "расскажи про битву при бородино",
-            "перечисли все точки которые ты запомнил",
-            "запомни что я люблю зеленый чай без сахара",
-            "добавь эту точку в карту",
-        ],
-    )
-    def test_non_music_continuations_stay_false(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is False
-
-
-class TestGenreStartLive3108:
-    """«Замути кайфовый джаз» → робот сказал «Кайфовый джаз пошёл» с tools=[].
-
-    Живой прогон 31.08: guard решил «user does NOT want music», Bug-C ретрай
-    не сработал, музыка не запускалась, и робот соврал про неё словами.
-    Две дыры сразу: глагола «замути» не знал ни один список, а «джаз»
-    отсутствовал среди жанров — при том что техно, хаус, эмбиент, фанк и
-    регги там были.
-    """
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "замути кайфовый джаз",
-            "замути музыку",
-            "замути бит",
-            "запили техно",
-            "накидай рок",
-            "поставь блюз",
-            "сообрази что-нибудь под вальс",
-            "организуй немного диско",
-        ],
-    )
-    def test_colloquial_genre_requests_are_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            # Жанры дописаны через \b, иначе «сорок» ловится как «рок».
-            "добавь сорок процентов яркости",
-            "едь вперёд на сорок сантиметров",
-            # Глаголы старта сами по себе ничего не значат.
-            "замути чай",
-            "выдай отчёт по батарее",
-            "поставь будильник на семь",
-        ],
-    )
-    def test_start_verbs_alone_are_not_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is False
 
 
 class TestStateQuestionLive3008:
@@ -653,81 +255,6 @@ class TestStateQuestionLive3008:
     def test_answer_still_looks_like_babble_in_isolation(self) -> None:
         """Опенер сам по себе не изменился — фильтрует именно запрос."""
         assert is_metalanguage_babble("Сейчас тишина — ничего не играет.") is True
-
-
-class TestMusicStateQueryE2E35665111906:
-    """«Робот, у тебя сейчас играет какая-нибудь музыка?» — это ВОПРОС.
-
-    Ночной марафон, акт 1, шаг ``n110_silence_baseline`` (якорь тишины):
-    робот обязан ПОСМОТРЕТЬ состояние, а ``execute_music_code`` у шага
-    лежит в ``must_not_call``. ``user_wants_music`` на этой фразе True
-    (пара «играет … музыка» ловится ``MUSIC_CONTINUATION_RE``), поэтому
-    Bug C требовал запуска музыки на правильном ответе.
-    """
-
-    def test_live_n110_phrase_is_a_state_query(self) -> None:
-        phrase = "Робот, у тебя сейчас играет какая-нибудь музыка?"
-        assert is_music_state_query(phrase) is True
-        # Контекст бага: именно из-за True здесь гуард и доходил до Bug C.
-        assert user_wants_music(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "играет ли сейчас музыка",
-            "что играет",
-            "что сейчас играет",
-            "что сейчас звучит",
-            "что там играет",
-            "какая музыка сейчас",
-            "какой трек",
-            "что за трек играет",
-            "музыка играет?",
-            "трек всё ещё играет",
-            "играет что-нибудь",
-            "у тебя играет что-то",
-            "звучит ли что-нибудь",
-        ],
-    )
-    def test_state_query_phrasings(self, phrase: str) -> None:
-        assert is_music_state_query(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            # Императив запуска — не вопрос, Bug C обязан остаться.
-            "включи музыку",
-            "включи какую-нибудь музыку",
-            "поставь что-нибудь",
-            "поставь мелодию",
-            "вруби трек погромче",
-            "включи следующий трек",
-            "сыграй джаз",
-            "замути кайфовый джаз",
-            "сгенерируй трек про космос",
-            "спой песенку про котика",
-            "зачитай рэп",
-            "пусть музыка играет",
-            # Просьба развить уже играющее — тоже не вопрос о состоянии.
-            "продолжай развивать этот бит",
-            "переходи в джангл",
-            "добавь барабанов",
-            # Стоп-команды и обычный chit-chat.
-            "выключи музыку",
-            "останови музыку",
-            "что делаешь",
-            "что нового",
-            "как дела",
-            "какая погода в москве",
-            "который час",
-            "поехали вперёд на метр",
-        ],
-    )
-    def test_not_a_state_query(self, phrase: str) -> None:
-        assert is_music_state_query(phrase) is False
-
-    def test_empty_input(self) -> None:
-        assert is_music_state_query("") is False
 
 
 class TestUnbackedActionClaimLive3008:
@@ -802,7 +329,7 @@ class TestUnbackedActionClaimLive3008:
             # NB: «перечисли точки» переехало в TestReadOnlyClaims... —
             # e2e 33251879328 показал, что это ТОЖЕ баг: робот отвечал
             # «Точек пока нет» при tools=[], хотя точка уже сохранялась.
-            # Стоп-команду закрывает FORCE_STOP в MusicGuard, не Bug E.
+            # Стоп-команду исполняет роутер медиакоманд, не Bug E.
             ("останови музыку", "Музыка выключена."),
             # Разговор про удаление, но не команда удалить.
             ("а ты умеешь удалять треки", "Умею."),
@@ -847,323 +374,9 @@ class TestUnbackedActionClaimLive3008:
             assert rule.what
 
 
-class TestMusicProseActionLive1509:
-    """Issue #2548 — prose-action-claim в DJ-сессии при tools=[].
-
-    Live 15.09 (TG → Vision Pi, DJ-сет «Пауля Оакенфольда», 4 из 8
-    попыток «докрутить Григ» отвечали spoken-ом без вызова
-    инструментов). Модель отчитывалась past/future action-verb'ом о
-    работе с музыкой, но ``tools_called=[]`` — то есть музыка не
-    менялась, юзер слышал «всё готово» при неизменном бите.
-
-    Существующий ``track_load`` rule не ловит эти случаи:
-    ``track_load.user_re`` требует явный «загрузи/включи + трек» —
-    «вплетай их красиво» мимо; ``track_load.claim_re`` ловит только
-    «играет/звучит/запустил/включил/поставил/загрузил» — «вплела» и
-    «перезапущу» мимо. Новый ``music_prose_action`` rule закрывает
-    эту дыру, при этом защищён от false-positive двойным гейтом
-    (``requires_dj_or_music_kw=True`` + ``dj_active=True`` /
-    ``user_wants_music(user_input)``).
-    """
-
-    # ---- Acceptance #1: ловим 4 кейса из live-лога (DJ-сессия) ---------
-
-    @pytest.mark.parametrize(
-        "user_input,spoken",
-        [
-            (
-                "вплетай их красиво",
-                "Вплела тему Грига как второй голос над пульсом. "
-                "Бочкинса — должно звучать плотно и в кассовом ключе.",
-            ),
-            (
-                "так что получается?",
-                "Вплела тему Грига как второй голос над пульсом.",
-            ),
-            (
-                "пока ничего не звучит",
-                "Понимаю, пока не звучит — дай минуту, проверю "
-                "состояние и перезапущу.",
-            ),
-            (
-                "давай старайся",
-                "Сделала два pass подряд: сначала один темп-каркас с "
-                "heartbeat, потом второй.",
-            ),
-            (
-                "давай старайся",
-                "Ок, давай я снова перезапущу. Бочкинс с Григом "
-                "наверху — стартуя заново.",
-            ),
-        ],
-    )
-    def test_dj_active_catches_all_live_examples(
-        self, user_input: str, spoken: str
-    ) -> None:
-        """Acceptance #1: при ``dj_active=True`` ВСЕ 5 prose-claim
-        реплик из живого лога ловятся — это те 4 «промаха» из
-        карточки #2548 (восьмая попытка попадала в babble-retry)."""
-        rule = detect_unbacked_action_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=(),
-            dj_active=True,
-        )
-        assert rule is not None, (
-            f"dj_active=True должен ловить prose-action claim в "
-            f"DJ-сессии, но пропустил: user={user_input!r} "
-            f"spoken={spoken[:80]!r}"
-        )
-        assert rule.category == "music_prose_action", (
-            f"должен сработать именно music_prose_action, "
-            f"получили: {rule.category}"
-        )
-
-    def test_tools_called_satisfies_claim_no_retry(self) -> None:
-        """Acceptance #2 негатив: если LLM ВСЁ-ТАКИ вызвала
-        ``compose_music``, правило молчит (action claim оправдан)."""
-        rule = detect_unbacked_action_claim(
-            user_input="давай старайся",
-            spoken="Сделала два pass подряд.",
-            tools_called=("compose_music",),
-            dj_active=True,
-        )
-        assert rule is None, (
-            f"compose_music в tools_called должен оправдывать "
-            f"action-claim, но rule={rule!r}"
-        )
-
-    # ---- Negative cases: НЕ ловим бытовые prose-action-verb'ы ---------
-
-    @pytest.mark.parametrize(
-        "user_input,spoken",
-        [
-            (
-                "давай уберу квартиру",
-                "Сделала уборку и вымыла пол.",
-            ),
-            (
-                "помой посуду",
-                "Сделала.",
-            ),
-            (
-                "что нового в магазине?",
-                "Сходила и обновила список покупок.",
-            ),
-            (
-                "как там погода?",
-                "Поменяла настройки термометра.",
-            ),
-            (
-                "перезапусти браузер",
-                "Перезапустила.",
-            ),
-        ],
-    )
-    def test_no_dj_no_music_kw_no_match(
-        self, user_input: str, spoken: str
-    ) -> None:
-        """Бытовое «сделала/обновила/поменяла/перезапустила» БЕЗ
-        DJ-сессии и БЕЗ music-keyword в user_input → правило молчит.
-        Иначе каждая бытовая реплика триггерила бы ложный ретрай."""
-        rule = detect_unbacked_action_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=(),
-            dj_active=False,
-        )
-        assert rule is None, (
-            f"бытовая реплика НЕ должна ловиться action-claim guard'ом: "
-            f"user={user_input!r} spoken={spoken[:60]!r} rule={rule!r}"
-        )
-
-    def test_dj_inactive_works_for_legacy_rules(self) -> None:
-        """Существующие правила (waypoint_save и т.п.) НЕ зависят от
-        ``dj_active`` — регресс-страховка: dj_active=True не должен
-        сломать контракт legacy правил."""
-        rule = detect_unbacked_action_claim(
-            user_input="запомни эту точку как тесточка",
-            spoken="Точка сохранена.",
-            tools_called=(),
-            dj_active=True,
-        )
-        assert rule is not None
-        assert rule.category == "waypoint_save"
-
-    def test_music_kw_in_user_input_enables_match_even_without_dj(
-        self, dj_active: bool = False
-    ) -> None:
-        """Если ``user_input`` содержит явный music-keyword
-        («обнови бит»), правило срабатывает даже без DJ-сессии —
-        гейт ``user_wants_music`` снимает ограничение."""
-        rule = detect_unbacked_action_claim(
-            user_input="обнови бит пожалуйста",
-            spoken="Обновила бит — теперь звучит плотнее.",
-            tools_called=(),
-            dj_active=False,
-        )
-        assert rule is not None
-        assert rule.category == "music_prose_action"
-
-    def test_requires_dj_or_music_kw_gate_is_set(self) -> None:
-        """Сам fact, что правило помечено как требующее DJ-контекст,
-        — это часть контракта. Если кто-то случайно уберёт флаг,
-        тест напомнит: rule может сжечь бытовой «сделала»."""
-        music_rule = next(
-            r for r in ACTION_CLAIM_RULES
-            if r.category == "music_prose_action"
-        )
-        assert music_rule.requires_dj_or_music_kw is True
-
-    def test_default_dj_active_is_false_backwards_compat(self) -> None:
-        """Без явного ``dj_active=`` — поведение прежнее
-        (False). Чтобы старые call-sites, которые передают только
-        ``user_input / spoken / tools_called``, работали как раньше."""
-        rule = detect_unbacked_action_claim(
-            user_input="вплетай их красиво",
-            spoken="Вплела тему Грига.",
-            tools_called=(),
-        )
-        assert rule is None, (
-            f"по умолчанию dj_active=False → rule не должен сработать "
-            f"для prose без music-kw, но got {rule!r}"
-        )
-
-    def test_empty_inputs_safe_with_dj_active(self) -> None:
-        """С ``dj_active=True`` пустые входы тоже не падают."""
-        assert (
-            detect_unbacked_action_claim(
-                user_input=None, spoken="x", tools_called=(),
-                dj_active=True,
-            ) is None
-        )
-        assert (
-            detect_unbacked_action_claim(
-                user_input="x", spoken=None, tools_called=(),
-                dj_active=True,
-            ) is None
-        )
-
-
-class TestBuildMusicProseActionFallback:
-    """Issue #2548 — fallback spoken когда action-claim ретрай
-    уже потрачен, а claim повторился."""
-
-    def test_returns_short_honest_phrase(self) -> None:
-        text = build_music_prose_action_fallback("давай старайся")
-        # Acceptance #2: «Не получилось изменить музыку — попробую
-        # ещё раз». Без claim о выполнении, без извинений.
-        assert text == "Не получилось изменить музыку — попробую ещё раз."
-
-    def test_no_claim_of_completion(self) -> None:
-        r"""Фраза НЕ должна содержать past-tense action-verb'ов
-        (впл\w*, сдела\w*, обнов\w*, перезапущ\w*) — иначе мы
-        говорим то же, что и до фикса, просто другими словами."""
-        text = build_music_prose_action_fallback("вплетай их красиво")
-        for verb in ("вплел", "вплела", "сделал", "обновил",
-                     "перезапустил", "поменял", "изменил"):
-            assert verb not in text.lower(), (
-                f"fallback фраза содержит claim '{verb}' — "
-                f"должна быть констатацией без claim: {text!r}"
-            )
-
-    def test_no_apology_marker(self) -> None:
-        """Карточка явно требует «БЕЗ извинений». Проверяем."""
-        text = build_music_prose_action_fallback("включи музыку")
-        for apology in ("извин", "прости", "sorry", "прошу прощения"):
-            assert apology not in text.lower(), (
-                f"fallback содержит apology-маркер '{apology}': {text!r}"
-            )
-
-
-class TestExtractRenardoCodeLines:
-    """Bug C′ — Renardo-код, попавший в реплику вместо execute_music_code."""
-
-    def test_extracts_code_after_strip_markdown(self) -> None:
-        # После strip_markdown ``` уже нет, а код остался.
-        spoken = (
-            "Мелодия для души — мягкие клавиши.\n\n"
-            "renardo\n"
-            "Clock.bpm = 72\n"
-            'Scale.default = "major"\n'
-            'Root.default = "D"\n'
-            "p1 >> keys([0, 2, 4, 7], dur=0.5, amp=0.4)\n"
-            "p2 >> bell([4, 7, 11, 9, 7], dur=2, oct=5, amp=0.25)\n"
-            "p3 >> warmpad([0, 4, 7], dur=8, amp=0.2)"
-        )
-        code = extract_renardo_code_lines(spoken)
-        assert code is not None
-        assert "Clock.bpm = 72" in code
-        assert "p1 >> keys" in code
-        assert "p3 >> warmpad" in code
-        assert "Мелодия" not in code  # проза не попадает в код
-
-    def test_none_when_no_code(self) -> None:
-        assert extract_renardo_code_lines("Расскажи анекдот про кота.") is None
-        assert extract_renardo_code_lines("") is None
-        assert extract_renardo_code_lines(None) is None
-
-    def test_root_default_set_call(self) -> None:
-        code = extract_renardo_code_lines(
-            'Root.default.set("A")\nScale.default.set("minor")\np1 >> saw([0,1,2])'
-        )
-        assert code is not None
-        assert "Root.default.set" in code
-
-    def test_plain_text_with_clock_word_is_not_code(self) -> None:
-        # «Clock.bpm» должно быть реальным присваиванием, а не прозой.
-        assert extract_renardo_code_lines("включи бит и поставь темп") is None
-
-    def test_live_3008_generated_code_is_recognised(self) -> None:
-        """Код из живого лога 30.08 — тот, что робот сыграл правильно.
-        Если бы он приехал в реплику, детектор обязан его увидеть."""
-        code = extract_renardo_code_lines(
-            "Clock.bpm = 128\n"
-            'Scale.default.set("minor")\n'
-            "p1 >> sawbass([0, -2, 0, 3], dur=0.5, amp=0.4, oct=3)\n"
-            'd1 >> play("X..X.o..", sample=2, amp=0.3)'
-        )
-        assert code is not None
-        assert "sawbass" in code
-
-
-class TestBuildRenardoCodeRetryPrompt:
-    def test_contains_code_and_demands_tool(self) -> None:
-        prompt = build_renardo_code_retry_prompt("p1 >> blip([0,2,4])")
-        assert "execute_music_code" in prompt
-        assert "p1 >> blip([0,2,4])" in prompt
-        assert "[CRITICAL]" in prompt
-
 class TestLive3008E2eSecondRound:
     """Прогон 30.08 16:00-16:05 — уже с раскатанными первыми фиксами."""
 
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            # 15:56: лаунж играл 94 с и замолчал ровно на этой фразе —
-            # пары «глагол + существительное» в ней нет.
-            "продолжай лабать мы летим над парижем",
-            "полабай ещё",
-            "залабай что-нибудь",
-            "лабай дальше",
-            "продолжай лаунж",
-        ],
-    )
-    def test_music_slang_is_a_music_request(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            # «лаб» как подстрока живёт в «ослабь» и «слабее» —  плюс
-            # список приставок обязаны их отсечь.
-            "ослабь громкость",
-            "стало слабее слышно",
-            "сходи в лабораторию",
-        ],
-    )
-    def test_slab_lookalikes_are_not_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is False
 
     def test_search_claim_without_tool_is_detected(self) -> None:
         """16:04: «найди в библиотеке сэмплы барабанов» → «Сэмплы ударных
@@ -1219,8 +432,6 @@ class TestReadOnlyClaimsFromE2e33251879328:
                 "Умею эмоции, интерфейсные сигналы, спецэффекты.",
                 "sound_info",
             ),
-            ("играет ли сейчас музыка", "Нет, сейчас тишина.", "music_state"),
-            ("загрузи и включи трек тисбит", "Трек играет.", "track_load"),
         ],
     )
     def test_state_claim_without_tool_is_detected(
@@ -1237,18 +448,6 @@ class TestReadOnlyClaimsFromE2e33251879328:
         [
             ("перечисли все точки", "Точек пока нет.", "list_waypoints"),
             ("какие звуки ты умеешь", "Умею эмоции.", "get_sound_info"),
-            ("играет ли сейчас музыка", "Нет, тишина.", "get_music_state"),
-            ("загрузи и включи трек тисбит", "Трек играет.", "load_track"),
-            (
-                "загрузи и включи трек тисбит",
-                "Трек играет.",
-                "gen_play_from_library",
-            ),
-            (
-                "загрузи и включи трек тисбит",
-                "Трек играет.",
-                "execute_music_code",
-            ),
         ],
     )
     def test_state_claim_with_the_tool_is_fine(
@@ -1267,8 +466,10 @@ class TestReadOnlyClaimsFromE2e33251879328:
             # Рассказ о своих возможностях — не запрос живого состояния.
             ("что ты умеешь делать расскажи по пунктам",
              "Умею говорить, петь, играть музыку."),
-            # Запрос сыграть закрывается music-гуардом, не Bug E.
+            # Музыкальные правила Bug E удалены (ADR-0149 PR-13a).
             ("сыграй техно для души", "Бит качает."),
+            ("играет ли сейчас музыка", "Нет, сейчас тишина."),
+            ("загрузи и включи трек тисбит", "Трек играет."),
             ("расскажи анекдот", "Колобок повесился."),
             ("поехали вперед", "Еду."),
         ],
@@ -1282,70 +483,6 @@ class TestReadOnlyClaimsFromE2e33251879328:
             )
             is None
         )
-
-class TestMusicRetryPromptNamesBothLibraries:
-    """🔴 e2e tc10_load_track: промпт звал только в mp3-библиотеку.
-
-    «тисбит» сохранялся через save_track — то есть в Renardo-медиатеку, а
-    промпт предлагал gen_list_library. LLM звали туда, где трека нет, и
-    она сдавалась, повторяя «Трек тисбит играет.» с tools=[].
-    """
-
-    def test_prompt_names_the_renardo_library_first(self) -> None:
-        prompt = build_music_retry_prompt("загрузи и включи трек тисбит")
-        assert "list_tracks" in prompt
-        assert "load_track" in prompt
-        assert "save_track" in prompt, "надо объяснить, ГДЕ лежит сохранённый трек"
-
-    def test_prompt_still_names_the_mp3_library(self) -> None:
-        prompt = build_music_retry_prompt("включи случайный трек")
-        assert "gen_list_library" in prompt
-        assert "gen_play_from_library" in prompt
-
-    def test_prompt_forbids_inventing_success(self) -> None:
-        """Обе библиотеки пусты — честный ответ, а не «трек играет»."""
-        prompt = build_music_retry_prompt("включи трек которого нет")
-        assert "ЗАПРЕЩЕНО" in prompt
-
-class TestRetryPromptKnowsIfMusicIsPlaying:
-    """🔴 e2e renardo_evolve rn03 (живой прогон 30.08).
-
-    «Переходи в лёгкий джангл» при играющем рассвете. Промпт утверждал
-    «Музыка сейчас НЕ играет», модель видела обратное, отвечала «Окей,
-    играет лёгкий джангл» с tools=[] — и так дважды, до nudge. Джангла не
-    случилось. Утверждение стало ложью ровно тогда, когда TRACK-музыка
-    научилась переживать чужой ход.
-    """
-
-    def test_silence_asks_to_start(self) -> None:
-        prompt = build_music_retry_prompt("сыграй техно")
-        assert "НЕ играет" in prompt
-
-    def test_playing_asks_to_change(self) -> None:
-        prompt = build_music_retry_prompt(
-            "переходи в лёгкий джангл", music_playing=True
-        )
-        assert "НЕ играет" not in prompt
-        assert "ИГРАЕТ" in prompt
-        assert "ИЗМЕНИТЬ" in prompt
-
-    def test_playing_explains_why_a_tool_is_still_needed(self) -> None:
-        """Модель должна понять, что само оно не поменяется."""
-        prompt = build_music_retry_prompt("добавь баса", music_playing=True)
-        assert "НОВЫЙ код" in prompt
-
-    def test_default_stays_backward_compatible(self) -> None:
-        """Без флага поведение прежнее — вызовы из старого кода не ломаются."""
-        assert build_music_retry_prompt("сыграй бит") == build_music_retry_prompt(
-            "сыграй бит", music_playing=False
-        )
-
-    def test_both_variants_keep_the_shared_prefix(self) -> None:
-        """``_run_turn`` матчит префикс, чтобы не сбрасывать бюджет ретраев."""
-        from rob_box_voice.core.dialogue_guards import MUSIC_RETRY_PROMPT_PREFIX
-        for playing in (False, True):
-            p = build_music_retry_prompt("сыграй бит", music_playing=playing)
-            assert p.startswith(MUSIC_RETRY_PROMPT_PREFIX)
 
 
 # Issue #1777 / #1762 — non-music tool guard
@@ -1500,14 +637,8 @@ class TestBuildToolRetryPrompt:
         prompt = build_tool_retry_prompt("любой", "evil_tool_name")
         assert prompt == ""
 
-    def test_both_prompts_use_same_critical_prefix(self) -> None:
-        """Sanity-check: оба retry-промпта должны иметь одинаковый
-        MUSIC_RETRY_PROMPT_PREFIX — это нужно для того, чтобы
-        dialogue_node._run_turn не сбрасывал retry budget на синтетическом
-        ретрае (см. issue #992 Bug C)."""
-        music_prompt = build_music_retry_prompt("x")
+    def test_tool_prompt_uses_the_shared_critical_prefix(self) -> None:
         tool_prompt = build_tool_retry_prompt("x", "get_current_time")
-        assert music_prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
         assert tool_prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
 
 
@@ -1660,100 +791,6 @@ class TestWatchdogStopClearsTheFlagLive3108:
             "обработчик не должен взводить флаг — сервер не различает "
             "BACKING (гасится после речи) и TRACK (живёт до стопа)"
         )
-
-
-class TestLive0109PlayVerbAndDjangoGenre:
-    """🔴 Живой лог vision-pi, 01.09 09:22 и 09:35 — две дыры подряд.
-
-    ``переходи в легкий джанго`` и ``играем легкий джаз``: обе фразы гуард
-    посчитал не-музыкой («user does NOT want music» в логе), Bug-C ретрай не
-    сработал, и робот рассказал про гитару и саксофон с ``tools=[]``. Ровно
-    та жалоба, с которой пришёл Шифу: «рассказывает про джаз, но ничего не
-    пускает».
-
-    Причины разные:
-
-    * ``джанго`` — цыганский джаз Джанго Рейнхардта. В списке жанров лежал
-      ``джангл`` (drum-n-bass), одна буква разницы, и её хватило.
-    * ``играем`` — в ``MUSIC_GUARD_KEYWORDS`` есть ``играй``, но подстрокой
-      в «играем» он не входит, а основы ``игра`` среди глаголов не было
-      вовсе. Основу добавили в парные глаголы, а не в ключевые слова:
-      «играем в шахматы» музыкой быть не должно.
-    """
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "переходи в легкий джанго",
-            "играем легкий джаз",
-            "играем техно",
-            "поиграем немного блюз",
-            "включи джаз",
-            "включи что-нибудь под фанк",
-        ],
-    )
-    def test_missed_music_requests_are_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "играем в шахматы",
-            "поиграем в города",
-            "давай сыграем в настолку",
-            "включи свет",
-            "включи лампу на кухне",
-            "продолжай маршрут до кухни",
-        ],
-    )
-    def test_non_music_stays_non_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is False
-
-
-class TestLive0109DevelopTheThemeAndPseudoCall:
-    """🔴 Живой лог vision-pi, 01.09 09:55 и 10:17.
-
-    ``развивай тему`` при играющем джанго: гуард сказал «user does NOT want
-    music», ретрая не было, ход пропал молча. «Тема» — обычное музыкальное
-    слово, но в общий список жанров его класть нельзя: оно склеится с
-    «смени», и разговорное «смени тему» станет просьбой о музыке. Поэтому
-    пара только с глаголами РАЗВИТИЯ материала.
-
-    Там же 10:17: на ``развивай мелодию`` модель трижды подряд вернула
-    ТЕКСТ ``<compose_music composition here>`` с ``tools=[]``. CRITICAL-промпт
-    про такой промах молчал, поэтому и ретрай его повторял.
-    """
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "развивай тему",
-            "продолжай тему",
-            "доработай тему",
-            "тему развивай",
-            "усложни тему",
-        ],
-    )
-    def test_developing_a_theme_is_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is True
-
-    @pytest.mark.parametrize(
-        "phrase",
-        [
-            "смени тему",
-            "давай сменим тему",
-            "поменяй тему разговора",
-            "какая тема",
-            "темно на улице",
-        ],
-    )
-    def test_changing_the_subject_is_not_music(self, phrase: str) -> None:
-        assert user_wants_music(phrase) is False
-
-    def test_retry_prompt_says_text_is_not_a_call(self) -> None:
-        prompt = build_music_retry_prompt("развивай мелодию", music_playing=True)
-        assert "function calling" in prompt
-        assert "НЕ " in prompt and "вызов" in prompt
 
 
 class TestPlanningNarration:
@@ -2016,269 +1053,6 @@ class TestBuildSystemRegurgitateRetryPrompt:
 # «10 промптов с неизвестными композиторами → fallback с поиском или
 # альтернативой».
 # ---------------------------------------------------------------------------
-
-
-class TestUnknownMelodyClaimLive1509:
-    """Issue #2562 Bug F — live-примеры из round 3."""
-
-    @pytest.mark.parametrize(
-        "user_input,spoken",
-        [
-            # Дословно из лога 15.09.2026 round 3 (live check).
-            (
-                "сыграй григ в пещере горного короля",
-                "Не знаю такой мелодии — могу сыграть что-то похожее. "
-                "Что ближе — расслабленный фанк или драйв?",
-            ),
-            (
-                "включи мелодию из фильма Интерстеллар",
-                "Не знаю этой мелодии, к сожалению.",
-            ),
-            (
-                "сыграй имперский марш но в стиле регги",
-                "Не помню точно нот имперского марша в регги-стиле.",
-            ),
-            (
-                "давай тему из тетриса",
-                "Не знаю этой композиции наизусть, попробую поискать.",
-            ),
-            (
-                "сыграй саундтрек из Гарри Поттера",
-                "Нет в моей памяти точных нот.",
-            ),
-            (
-                "играй кантри-мелодию про техас",
-                "Не знаю наизусть такой мелодии.",
-            ),
-        ],
-    )
-    def test_live_round3_claim_without_tool_is_detected(
-        self, user_input: str, spoken: str
-    ) -> None:
-        """6 live-примеров из round 3 — все ловятся детектором."""
-        assert detect_unknown_melody_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=(),
-        ) is True
-
-    @pytest.mark.parametrize(
-        "user_input,spoken,tools",
-        [
-            # LLM ЧЕСТНО попыталась — lookup_melody был вызван, но вернул
-            # пусто. Это легитимный «не нашёл», НЕ Bug F.
-            (
-                "сыграй григ в пещере горного короля",
-                "Не знаю такой мелодии — в RTTTL её нет.",
-                ("lookup_melody",),
-            ),
-            (
-                "сыграй какую-то супер редкую мелодию",
-                "Не знаю этой композиции. Ничего не нашлось.",
-                ("lookup_melody", "search_web"),
-            ),
-            (
-                "включи мелодию из фильма",
-                "Не знаю какой именно — в библиотеке пусто.",
-                ("gen_search_library",),
-            ),
-            # LLM нашла и играет через compose_music — это легитимный
-            # финал, даже если «не знала изначально».
-            (
-                "сыграй мелодию из Марио",
-                "Сейчас сыграю похожее в духе игры.",
-                ("compose_music",),
-            ),
-            (
-                "давай что-то в стиле кантри",
-                "Запускаю кантри-импровизацию.",
-                ("execute_music_code",),
-            ),
-        ],
-    )
-    def test_claim_with_search_or_play_tool_is_not_a_bug(
-        self, user_input: str, spoken: str, tools: tuple
-    ) -> None:
-        """Если хотя бы один поисковый/композиторский тул вызван —
-        это легитимный путь, Bug F НЕ срабатывает."""
-        assert detect_unknown_melody_claim(
-            user_input=user_input, spoken=spoken, tools_called=tools
-        ) is False
-
-    @pytest.mark.parametrize(
-        "user_input,spoken",
-        [
-            # user_input БЕЗ явной просьбы мелодии по имени — Bug F НЕ
-            # срабатывает (на «как дела?» не должно быть ретрая).
-            ("как дела", "Не знаю, что тебе рассказать."),
-            ("расскажи анекдот", "Не знаю ни одного анекдота сейчас."),
-            # «не знаю» в spoken, но user_input — не запрос мелодии.
-            ("что ты умеешь", "Не знаю, получится ли объяснить."),
-            # user_input — запрос мелодии, но spoken не содержит
-            # «не-знания» (нормальный ответ «сейчас поищу»).
-            (
-                "сыграй григ в пещере горного короля",
-                "Сейчас поищу ноты и сыграю.",
-            ),
-            # Играем уже сейчас (tools_called непуст) — Bug F не сработает,
-            # но тут tools_called=() как edge case — spoken должен быть
-            # «играю», а не «не знаю».
-            (
-                "сыграй техно",
-                "Запускаю басовый техно-бит.",
-            ),
-        ],
-    )
-    def test_no_false_positives(self, user_input: str, spoken: str) -> None:
-        """Детектор не должен ловить не-мелодийные случаи и обычные
-        «играю/ищу» ответы — иначе каждый ответ «не знаю что подарить»
-        на общий вопрос уйдёт в ретрай."""
-        assert detect_unknown_melody_claim(
-            user_input=user_input, spoken=spoken, tools_called=()
-        ) is False
-
-    def test_empty_inputs_are_safe(self) -> None:
-        """Краевые случаи: None/пусто — детектор не падает."""
-        assert (
-            detect_unknown_melody_claim(
-                user_input=None, spoken="x", tools_called=()
-            )
-            is False
-        )
-        assert (
-            detect_unknown_melody_claim(
-                user_input="x", spoken=None, tools_called=()
-            )
-            is False
-        )
-        assert (
-            detect_unknown_melody_claim(
-                user_input="", spoken="", tools_called=()
-            )
-            is False
-        )
-
-    @pytest.mark.parametrize(
-        "user_input,spoken",
-        [
-            # Acceptance criteria: 10 промптов с неизвестными композиторами
-            # → Bug F должен сработать (т.к. tools=[] и spoken содержит
-            # «не знаю»). Каждый кейс — отдельный подтип «не знаю» для
-            # разнообразия pattern matching.
-            ("сыграй Баха токкату ре минор", "Не знаю такой мелодии наизусть."),
-            ("включи Pink Floyd Time", "Не помню этой композиции."),
-            ("сыграй Рахманинова прелюдию", "Не знаю точных нот."),
-            ("давай Битлз Yesterday", "Не знаю этой мелодии, к сожалению."),
-            ("сыграй Шопена ноктюрн", "Не знаю наизусть ноктюрна Шопена."),
-            ("включи Леди Гага Poker Face", "Не припоминаю этой песни."),
-            ("играй Вивальди Времена года", "Не знаю этой мелодии из Вивальди."),
-            ("сыграй Билли Айдол", "Не знаю этого трека."),
-            ("включи Элвис Пресли Can't Help", "Не знаю этой песни."),
-            ("сыграй Виктор Цой Звезда по имени", "Не знаю этой композиции наизусть."),
-        ],
-    )
-    def test_acceptance_10_prompts_with_unknown_composers(
-        self, user_input: str, spoken: str
-    ) -> None:
-        """Issue #2562 acceptance: «10 промптов с неизвестными композиторами
-        → fallback с поиском или альтернативой». Bug F ловит ВСЕ 10 —
-        то есть НИ ОДИН из них не уйдёт в TTS как «не знаю» без ретрая."""
-        # NB: в этом тесте каждый параметризованный кейс имеет свой
-        # spoken (соответствующий стилю композитора), а не общий
-        # «Не знаю такой мелодии, могу сыграть что-то похожее.» —
-        # чтобы регексп прошёл по разным подтипам «не знаю/не помню».
-        assert detect_unknown_melody_claim(
-            user_input=user_input, spoken=spoken, tools_called=()
-        ) is True
-
-
-class TestBuildUnknownMelodyRetryPrompt:
-    """Issue #2562 Bug F — CRITICAL-ретрай «не знаю → сначала поиск»."""
-
-    def test_prompt_contains_critical_marker(self) -> None:
-        """Тот же контракт, что у babble/action-claim ретраев: префикс
-        [CRITICAL] + явное требование СНАЧАЛА искать."""
-        prompt = build_unknown_melody_retry_prompt("сыграй григ")
-        assert "[CRITICAL]" in prompt
-        assert "lookup_melody" in prompt
-        assert "search_web" in prompt
-        assert "gen_search_library" in prompt
-        assert "search_melody" in prompt
-
-    def test_prompt_echoes_original_user_input(self) -> None:
-        """Юзер-интент в ретрае — оригинальная команда (та же логика, что
-        у build_babble_retry_prompt — strip предыдущего [CRITICAL])."""
-        prompt = build_unknown_melody_retry_prompt(
-            "сыграй имперский марш но в стиле регги"
-        )
-        assert "сыграй имперский марш но в стиле регги" in prompt
-
-    def test_prompt_orders_search_tools_by_effectiveness(self) -> None:
-        """Порядок тулов в ретрае — RTTTL → search_melody → mp3-library
-        → web (от эффективного к менее надёжному). Это подсказывает
-        LLM, с чего начинать."""
-        prompt = build_unknown_melody_retry_prompt("сыграй хит 80х")
-        # lookup_melody упоминается раньше search_web (первый в списке).
-        lookup_pos = prompt.index("lookup_melody")
-        search_web_pos = prompt.index("search_web")
-        assert lookup_pos < search_web_pos, (
-            "lookup_melody (RTTTL) должен упоминаться ДО search_web — "
-            "иначе LLM не поймёт приоритет"
-        )
-
-    def test_prompt_forbids_empty_answer(self) -> None:
-        """❌ ЗАПРЕЩЕНО «не знаю» без действия — это и есть фикс."""
-        prompt = build_unknown_melody_retry_prompt("сыграй хит 80х")
-        assert "ЗАПРЕЩЕНО" in prompt
-        # Не должно быть фразы типа «можно сказать не знаю» — должен
-        # быть явный запрет.
-        assert "не знаю" in prompt.lower()
-
-    def test_prompt_offers_alternative_path(self) -> None:
-        """Если поиск пуст — LLM должна предложить альтернативы через
-        speak_text + compose_music improvisation. Эта ветка ОБЯЗАТЕЛЬНА."""
-        prompt = build_unknown_melody_retry_prompt("сыграй хит 80х")
-        assert "speak_text" in prompt
-        assert "compose_music" in prompt
-        # Альтернативы 2-3, не одна.
-        assert "2-3" in prompt or "альтернатив" in prompt.lower()
-
-    def test_prompt_handles_none_user_input(self) -> None:
-        """None / пустая строка — крайний случай, не должен падать."""
-        prompt = build_unknown_melody_retry_prompt(None)
-        assert "[CRITICAL]" in prompt
-        assert "lookup_melody" in prompt
-        prompt2 = build_unknown_melody_retry_prompt("")
-        assert "[CRITICAL]" in prompt2
-
-    def test_prompt_strips_previous_critical_block(self) -> None:
-        """Если в user_input уже есть предыдущий [CRITICAL]-блок
-        (вложенный ретрай), он обрезается — иначе модель читает
-        противоречивые инструкции. Контракт тот же, что у babble-retry
-        / regurgitate-retry."""
-        prompt = build_unknown_melody_retry_prompt(
-            "оригинал\n\n[CRITICAL] предыдущий блок"
-        )
-        assert prompt.count("[CRITICAL]") == 1
-        assert "предыдущий блок" not in prompt
-
-    def test_unknown_melody_regex_covers_all_live_variants(self) -> None:
-        """UNKNOWN_MELODY_CLAIM_RE покрывает все варианты «не знаю»
-        из реального лога 15.09.2026 — регексп не сломан."""
-        live_phrases = [
-            "Не знаю такой мелодии — могу сыграть похожее.",
-            "Не знаю этой мелодии, к сожалению.",
-            "Не помню точных нот этой композиции.",
-            "Не припоминаю этой песни.",
-            "Нет в моей памяти точных нот.",
-            "Не знаю наизусть.",
-            "Не знаю точных нот, могу сыграть в похожем духе.",
-        ]
-        for phrase in live_phrases:
-            assert UNKNOWN_MELODY_CLAIM_RE.search(phrase), (
-                f"UNKNOWN_MELODY_CLAIM_RE должен ловить {phrase!r} "
-                "— иначе Bug F не сработает в проде"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -3097,37 +1871,10 @@ class TestBuildActionClaimFailureFallback:
 class TestPhantomActionVsBugEOverlap:
     """Issue #2559 vs #992 Bug E — разные скоупы, но оба ловят action-claim.
 
-    Bug E узкий (только music-context с ``user_re``∧``claim_re`` ∧ tools пуст).
-    Phantom-action шире (любой action-verb в spoken + tools пуст +
-    не negation), пересекается с Bug E в music-сценариях — там оба
-    дадут ``True``/``rule``. Главное, что phantom-action НЕ СБИВАЕТ
-    music-only контракт Bug E.
+    Bug E узкий (``user_re``∧``claim_re`` ∧ tools пуст). Phantom-action шире
+    (любой action-verb в spoken + tools пуст + не negation).
     """
 
-    def test_music_claim_both_detectors_fire(self) -> None:
-        """Music claim + tools=[]: оба detector'а должны сработать."""
-        user_input = "обнови бит"
-        spoken = "Обновил бочку и хет."
-        # Bug E — по правилу music_prose_action.
-        bug_e_rule = detect_unbacked_action_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=(),
-            dj_active=True,
-        )
-        assert bug_e_rule is not None, (
-            "Bug E должен ловить music_prose_action при dj_active=True"
-        )
-        # Phantom — общий detector.
-        phantom = detect_phantom_action_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=(),
-        )
-        assert phantom is True, (
-            "phantom-action guard тоже должен сработать — общий "
-            "(НЕ music-only) detector"
-        )
 
     def test_non_music_claim_only_phantom_fires(self) -> None:
         """«перезгружу роутер» — Bug E молчит (нет music правила), phantom срабатывает.
@@ -3138,13 +1885,11 @@ class TestPhantomActionVsBugEOverlap:
         user_input = "не открывается сайт"
         spoken = "Перезагружу роутер и проверю через минуту."
         # Bug E — НЕ должен сработать (правило «waypoint_save» не подходит,
-        # «library_search» не подходит, «music_prose_action» требует
-        # music-kw или dj_active).
+        # «library_search» не подходит; музыкальные правила удалены).
         bug_e_rule = detect_unbacked_action_claim(
             user_input=user_input,
             spoken=spoken,
             tools_called=(),
-            dj_active=False,
         )
         assert bug_e_rule is None, (
             "Bug E НЕ должен ловить бытовой «перезагружу роутер» — "
@@ -3174,13 +1919,11 @@ class TestPhantomActionVsBugEOverlap:
             tools_called=(),
         )
         # Bug E — посмотрим: «не надо ставить будильник» не подходит ни под
-        # какое правило (нет save_waypoint / нет library_search / нет
-        # music_prose_action без music-kw и т.п.).
+        # какое правило (нет save_waypoint / нет library_search и т.п.).
         bug_e_rule = detect_unbacked_action_claim(
             user_input=user_input,
             spoken=spoken,
             tools_called=(),
-            dj_active=False,
         )
         # Оба — False. Главное: phantom НЕ сработал из-за negation.
         assert phantom is False, (
