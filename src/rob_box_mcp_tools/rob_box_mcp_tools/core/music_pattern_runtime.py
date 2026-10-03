@@ -77,9 +77,11 @@ from . import renardo_sanitizer, sample_loops
 # ``.``-паузы и пробелы внутри, см. renardo_adapter.py:148).
 from ..engine import renardo_adapter
 
-# Module-level: символы ``play("x-o-")`` для предзагрузки буферов (issue
-# #1815, live 13.08). ``-`` — звучащий символ, ``.`` — настоящая пауза.
-_PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
+# Module-level: символы ``play("x-o-")`` / ``play('x-o-')`` для предзагрузки
+# буферов (issue #1815, live 13.08). ``-`` — звучащий символ, ``.`` —
+# настоящая пауза. Renardo в обоих вариантах кавычек принимает одинаково,
+# поэтому фильтр-плейсхолдер совпадает с любыми.
+_PLAY_SYMBOLS_RE = re.compile(r'play\(\s*["\']([^"\']*)["\']')
 
 #: Renardo player namespace: d1-d9, p1-p9, s1-s9, l1-l9. Тот же
 #: набор, что в ``tools/music.py`` (RCE-защита, issue G-MUSIC).

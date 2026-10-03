@@ -86,6 +86,15 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
+    # Phase 4 (ADR-0134) — runtime паттернов вынесен в
+    # ``core.music_pattern_runtime.MusicPatternRuntime``. ``_make_manager``
+    # обходит ``__init__`` через ``__new__``, поэтому обязана сама
+    # навесить ``_runtime`` — иначе wrapper'ы ``MusicManager.execute_code``
+    # и пр. упадут на ``AttributeError: 'MusicManager' object has no
+    # attribute '_runtime'``. Без этого — тесты test_music.py не пройдут
+    # после рефактора (все 4575 строк завязаны на wrapper'ы).
+    from rob_box_mcp_tools.core.music_pattern_runtime import MusicPatternRuntime
+    mgr._runtime = MusicPatternRuntime(mgr)
     return mgr
 
 

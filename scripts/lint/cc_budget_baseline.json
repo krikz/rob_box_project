@@ -80,7 +80,6 @@
       "GenSaveToLibraryTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
-      "MusicManager.execute_code": 19
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -325,12 +324,6 @@
       "method": "GenSaveToLibraryTool.execute",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
-      "method": "MusicManager.execute_code",
-      "cc": 19,
-      "since": "Bumped 23->22 after refactor in issue 2626 (CC-budget guard, closed) — extracted volume-decision helper; живая карточка долга: #3290. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",
