@@ -53,6 +53,12 @@ def _make_manager() -> MusicManager:
     mgr.last_track_arrangement = None
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=True)
+    # Phase 4 (ADR-0134) — ``MusicManager.execute_code``/etc. стали
+    # 1-строчными wrapper'ами ``return self._runtime.<method>(...)``.
+    # ``_make_manager`` обходит ``__init__`` через ``__new__``, поэтому
+    # обязана сама навесить ``_runtime`` (см. test_music.py::_make_manager).
+    from rob_box_mcp_tools.core.music_pattern_runtime import MusicPatternRuntime
+    mgr._runtime = MusicPatternRuntime(mgr)
     return mgr
 
 
