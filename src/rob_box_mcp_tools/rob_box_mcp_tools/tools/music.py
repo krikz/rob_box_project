@@ -85,6 +85,7 @@ from ..core.club_transition import (
     wrap_with_fade,
 )
 from ..core.clock_phase import clock_phase_snapshot
+from ..core.music_code_filter import MusicCodeFilter
 from ..engine import renardo_adapter
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
@@ -551,6 +552,12 @@ class MusicManager:
         #: высокий: слоям снова можно быть разной громкости, иначе микс
         #: получается плоским (RC1 в аудите).
         self._max_amp: float = max(0.0, min(1.0, max_amp))
+        # ADR-0134 / Issue #3014 phase 1 — code-safety / music-quality
+        # passes live on ``self._code_filter`` (см. core/music_code_filter.py).
+        # ``renardo_sanitizer`` всё ещё публичный API для arranger'а, тестов
+        # и превью, но MusicManager больше не делегирует ему эти шесть
+        # проходов напрямую — это seam для phase 6, где обе копии сольются.
+        self._code_filter = MusicCodeFilter(max_amp=self._max_amp)
         #: Уровень мастер-фейдера лимитера.
         self._master_gain: float = max(
             0.0,
@@ -1767,41 +1774,50 @@ class MusicManager:
         return self._master_gain
 
     # ------------------------------------------------------------------
-    # Code safety filter — логика вынесена в core/renardo_sanitizer
-    # (единый seam). Обёртки ниже оставлены для обратной совместимости
-    # тестов, которые зовут приватные методы напрямую.
+    # Code safety filter / music-quality passes — ADR-0134 / issue #3014
+    # phase 1. Реальная логика живёт в ``self._code_filter``
+    # (см. core/music_code_filter.py); ``renardo_sanitizer`` остаётся
+    # публичным API для arranger'а, превью и тестов, и в phase 6 обе
+    # копии сольются. Ниже — однострочные forward'ы для обратной
+    # совместимости тестов, которые зовут приватные методы напрямую.
     # ------------------------------------------------------------------
 
+    # SHIM-remove-after-#3014-phase-6: forward to MusicCodeFilter
     def _filter_code(self, code: str) -> Tuple[bool, str]:
-        return renardo_sanitizer._filter_code(code)
+        return self._code_filter._filter_code(code)
 
+    # SHIM-remove-after-#3014-phase-6: forward to MusicCodeFilter
     @staticmethod
     def _filter_code_ast(code: str) -> Tuple[bool, str]:
-        return renardo_sanitizer._filter_code_ast(code)
+        return MusicCodeFilter._filter_code_ast(code)
 
     # ------------------------------------------------------------------
     # Issue #1016 — music-quality guardrail (dramaturgy validator)
     # ------------------------------------------------------------------
 
+    # SHIM-remove-after-#3014-phase-6: forward to MusicCodeFilter
     def _validate_music_code(self, code: str) -> Tuple[List[str], List[str]]:
-        return renardo_sanitizer._validate_music_code(code)
+        return self._code_filter._validate_music_code(code)
 
     # ------------------------------------------------------------------
     # Issue #1804 — d4+/p4+ не звучат на роботе, кода-стражи не было
     # ------------------------------------------------------------------
 
+    # SHIM-remove-after-#3014-phase-6: forward to MusicCodeFilter
     def _remap_illegal_slots(self, code: str) -> Tuple[str, Optional[str]]:
-        return renardo_sanitizer._remap_illegal_slots(code)
+        return self._code_filter._remap_illegal_slots(code)
 
     # ------------------------------------------------------------------
     # Issue #1803 — рисунок play(...), который не делит такт, плывёт
     # ------------------------------------------------------------------
 
+    # SHIM-remove-after-#3014-phase-6: forward to MusicCodeFilter
     def _fix_pattern_length(self, code: str) -> str:
-        return renardo_sanitizer._fix_pattern_length(code)
+        return self._code_filter._fix_pattern_length(code)
 
+    # SHIM-remove-after-#3014-phase-6: forward to MusicCodeFilter
     def _cap_amp(self, code: str) -> str:
-        return renardo_sanitizer._cap_amp(code, self._max_amp)
+        return self._code_filter._cap_amp(code)
 
     # ------------------------------------------------------------------
     # Issue #990 — segments safety-net

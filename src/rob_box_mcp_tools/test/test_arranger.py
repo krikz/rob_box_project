@@ -550,9 +550,14 @@ class TestGeneratedCodePassesExistingGuards:
     @pytest.fixture
     def manager(self):
         from rob_box_mcp_tools.tools.music import MusicManager
+        from rob_box_mcp_tools.core.music_code_filter import MusicCodeFilter
 
         mgr = MusicManager.__new__(MusicManager)
         mgr._max_amp = 0.85
+        # ADR-0134 / Issue #3014 phase 1 — code-safety / music-quality
+        # passes now live on ``mgr._code_filter`` (см. core/music_code_filter.py).
+        # Tests must mirror the real ``__init__``.
+        mgr._code_filter = MusicCodeFilter(max_amp=mgr._max_amp)
         return mgr
 
     @pytest.mark.parametrize("form", sorted(FORMS))
