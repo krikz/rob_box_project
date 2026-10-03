@@ -711,12 +711,13 @@ class MusicRenardoBridge:
                         единичный сбой (мусорный пакет) — вызывающий
                         решает, продолжать ли цикл.
 
-        Буфер 4096 байт — ``OSC_REPLY_MAX_BYTES``, см. обоснование у
-        объявления константы. Никаких side-effects: ни логов, ни
-        dispatch'а ответов — это задача ``_route_osc_reply``.
+        Буфер 4096 байт (как в старом коде ``MusicManager._log_scsynth_reply_if_any``
+        и ``_renardo_reply_listener_loop`` — один OSC-пакет редко больше).
+        Никаких side-effects: ни логов, ни dispatch'а ответов — это задача
+        ``_route_osc_reply``.
         """
         try:
-            data, _addr = sock.recvfrom(self.OSC_REPLY_MAX_BYTES)
+            data, _addr = sock.recvfrom(4096)
             return data
         except OSError:
             return None
