@@ -243,7 +243,7 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 
 | # | Риск | Вероятность | Влияние | Митигация |
 |---|---|---|---|---|
-| R1 | Hailo PCIe driver конфликт с kernel 6.x (есть BLE-баг в HARDWARE.md) | Средняя | Высокое | Проверить `uname -r` перед PR; в CI smoke-test `hailortcli scan` |
+| R1 | Hailo PCIe driver конфликт с kernel 6.x (есть BLE-баг в HARDWARE.md, флапающий регресс #3090: после `apt upgrade linux-image-*-raspi` DKMS-модуль не пересобирается для активного kernel → `/dev/hailo0` пропадает) | Средняя | Высокое | `scripts/setup/setup_node.sh::setup_hailo_ai_hat` — проверка `/lib/modules/$(uname -r)/{extra,updates}/hailo_pci.ko` перед `modinfo`, `dkms autoinstall` + reinstall .deb fallback + APT `DPkg::Post-Invoke` hook `/etc/apt/apt.conf.d/99hailort-dkms-autoinstall`. Watchdog `scripts/monitoring/robbox_hailo_driver_check.sh` (systemd timer `robbox-hailo-driver.timer`, метрика `robbox_hailo_driver_alert`). Pre-deploy fail-fast `.github/scripts/check_hailo_driver.sh` в `L-Deploy and Verify.yml` перед `Start Containers`. |
 | R2 | HailoRT arm64 deb не в официальном Docker registry, custom base image | Высокая | Среднее | `docker/vision/vision-hailo/Dockerfile` собирает из hailort deb + ross_jazzy-pkgs |
 | R3 | Vision-wake-word конфликтует с ADR-0070 voice wake-gate | Средняя | Среднее | **В этом ADR не делаем** vision-trigger. Vision events идут **только** в `PerceptionEvent`, не в wake-gate. ADR-0070 остаётся source-of-truth для wake. |
 | R4 | Whisper-tiny на русском — низкое качество (если делаем Phase 4) | Средняя | Среднее | Phase 4 **out of scope** этого ADR; fallback Vosk остаётся primary |
