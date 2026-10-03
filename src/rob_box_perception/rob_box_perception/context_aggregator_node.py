@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 
 from control_msgs.msg import DynamicJointState
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 from nav_msgs.msg import Odometry
 
@@ -92,7 +92,7 @@ class ContextAggregatorNode(Node):
 
         # ============ Текущее состояние (кэш) ============
         self.current_vision: Optional[Dict] = None
-        self.current_pose: Optional[PoseStamped] = None
+        self.current_pose: Optional[PoseWithCovarianceStamped] = None
         self.current_odom: Optional[Odometry] = None
         self.current_sensors: Dict = {}
         self.last_apriltags: List[int] = []
@@ -142,8 +142,13 @@ class ContextAggregatorNode(Node):
         )
 
         # Pose
+        # Issue #2826: rtabmap публикует PoseWithCovarianceStamped
+        # (а не PoseStamped). Подписка на PoseStamped на rmw_zenoh не
+        # получает ни одного сообщения, и поле pose в /perception/
+        # context_update остаётся пустым. Сверялся с quest_node, который
+        # подписан так же; см. также ros2 topic info на роботе.
         self.pose_sub = self.create_subscription(
-            PoseStamped,
+            PoseWithCovarianceStamped,
             '/rtabmap/localization_pose',
             self.on_robot_pose,
             10
@@ -318,11 +323,18 @@ class ContextAggregatorNode(Node):
             e for e in self._hailo_events if e['time'] > cutoff
         ]
 
-    def on_robot_pose(self, msg: PoseStamped):
-        """Обновление позиции."""
+    def on_robot_pose(self, msg: PoseWithCovarianceStamped):
+        """Обновление позиции.
+
+        ``msg`` — ``PoseWithCovarianceStamped``: ``msg.pose.pose.position``
+        это ``Point``, ``msg.pose.covariance`` — массив 36×1 ковариаций
+        (см. geometry_msgs/PoseWithCovarianceStamped). Поле ``pose``
+        агрегата — ``geometry_msgs/Pose`` (см. PerceptionEvent.msg), и
+        берётся из ``msg.pose.pose``.
+        """
         self.current_pose = msg
-        x = msg.pose.position.x
-        y = msg.pose.position.y
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
         self.get_logger().debug(f'📍 Pose: ({x:.2f}, {y:.2f})')
 
     def on_odometry(self, msg: Odometry):
@@ -564,8 +576,10 @@ class ContextAggregatorNode(Node):
         )
 
         # Pose
+        # PerceptionEvent.pose имеет тип geometry_msgs/Pose, а
+        # current_pose — PoseWithCovarianceStamped: нужно .pose.pose.
         if self.current_pose:
-            event.pose = self.current_pose.pose
+            event.pose = self.current_pose.pose.pose
 
         # Velocity & Moving
         if self.current_odom:

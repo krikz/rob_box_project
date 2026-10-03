@@ -214,6 +214,20 @@ class _TwistWithCovariance:
         self.twist = _Twist()
 
 
+class _PoseWithCovariance:
+
+    def __init__(self):
+        self.pose = _Pose()
+        self.covariance = [0.0] * 36
+
+
+class _PoseWithCovarianceStamped:
+
+    def __init__(self):
+        self.pose = _PoseWithCovariance()
+        self.header = MagicMock()
+
+
 _geom_msg.Vector3 = _Vector3
 _geom_msg.Point = _Point
 _geom_msg.Quaternion = _Quaternion
@@ -221,6 +235,8 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
+_geom_msg.PoseWithCovariance = _PoseWithCovariance
+_geom_msg.PoseWithCovarianceStamped = _PoseWithCovarianceStamped
 sys.modules['geometry_msgs'] = _geom
 sys.modules['geometry_msgs.msg'] = _geom_msg
 
@@ -301,7 +317,12 @@ sys.modules['rob_box_perception_msgs.msg'] = _msgs_msg
 # have already imported the node against ITS stubs (conftest.py rolls the
 # stubs back after each module, but not the real module bound to them).
 sys.modules.pop('rob_box_perception.context_aggregator_node', None)
-from geometry_msgs.msg import Point, PoseStamped, Quaternion  # noqa: E402
+from geometry_msgs.msg import (  # noqa: E402
+    Point,
+    PoseStamped,
+    PoseWithCovarianceStamped,
+    Quaternion,
+)
 from nav_msgs.msg import Odometry  # noqa: E402
 import rclpy  # noqa: E402  — resolves to the shim module registered above
 from rob_box_perception.context_aggregator_node import ContextAggregatorNode  # noqa: E402, E501
@@ -370,11 +391,19 @@ class TestContextAggregator(unittest.TestCase):
         self.assertIsNotNone(self.node.current_vision)
 
     def test_pose_subscription(self):
-        """Тест: Подписка на позицию (localization_pose)."""
-        # Создаём pose сообщение
-        pose_msg = PoseStamped()
-        pose_msg.pose.position = Point(x=1.0, y=2.0, z=0.0)
-        pose_msg.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+        """Тест: Подписка на позицию (localization_pose).
+
+        Issue #2826: rtabmap публикует PoseWithCovarianceStamped.
+        context_aggregator должен подписываться на тот же тип, иначе
+        DDS не связывает издателя и подписчика (на rmw_zenoh подписка
+        на PoseStamped не получит ни одного сообщения).
+        """
+        # Создаём pose сообщение в формате rtabmap
+        pose_msg = PoseWithCovarianceStamped()
+        pose_msg.pose.pose.position = Point(x=1.0, y=2.0, z=0.0)
+        pose_msg.pose.pose.orientation = Quaternion(
+            x=0.0, y=0.0, z=0.0, w=1.0
+        )
 
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_robot_pose'))
@@ -382,9 +411,206 @@ class TestContextAggregator(unittest.TestCase):
         # Вызываем callback
         self.node.on_robot_pose(pose_msg)
 
-        # Проверяем что позиция сохранена
+        # Проверяем что позиция сохранена в правильном формате
         self.assertIsNotNone(self.node.current_pose)
-        self.assertEqual(self.node.current_pose.pose.position.x, 1.0)
+        # PoseWithCovarianceStamped: .pose.pose.position (а не .pose.position)
+        self.assertEqual(
+            self.node.current_pose.pose.pose.position.x, 1.0
+        )
+        self.assertEqual(
+            self.node.current_pose.pose.pose.position.y, 2.0
+        )
+
+    def test_localization_pose_subscription_uses_correct_type(self):
+        """Тест: тип подписки на /rtabmap/localization_pose совпадает с тем,
+        что публикует rtabmap.
+
+        Issue #2826: rtabmap публикует PoseWithCovarianceStamped.
+        Контракт ниже — страж от регрессии: подписка обязана быть
+        на ``PoseWithCovarianceStamped``, иначе DDS-мост (особенно
+        rmw_zenoh) не доставит ни одного сообщения, и поле pose в
+        /perception/context_update останется пустым. ``quest_node``
+        подписан аналогично; см. ros2 topic info на роботе.
+
+        NB: ``PoseStamped`` и ``PoseWithCovarianceStamped`` в этом тест-
+        файле — шим-классы, зарезолвленные на module-level (см. шапку
+        файла). После ``conftest.py`` откатывает стабы из ``sys.modules``
+        (для следующих тест-файлов), но имена в namespace модуля уже
+        живут как обычные Python-объекты, и мы используем их напрямую.
+        """
+        import pathlib
+        import re
+        import rob_box_perception  # noqa: F401 — для __file__
+
+        sub = self.node.pose_sub
+        self.assertIsNotNone(sub, 'pose_sub не создан')
+        self.assertEqual(sub.topic, '/rtabmap/localization_pose')
+        self.assertTrue(
+            callable(sub.callback),
+            'callback подписки должен быть callable',
+        )
+        # До прихода первого сообщения current_pose == None.
+        self.assertIsNone(
+            self.node.current_pose,
+            'до прихода первого сообщения current_pose = None',
+        )
+
+        # Главный регрессионный страж: ``create_subscription`` в
+        # исходнике ноды должен получать ``PoseWithCovarianceStamped``,
+        # а не ``PoseStamped``. Проверяем по исходнику, потому что
+        # mock-rclpy в тесте не хранит тип подписки.
+        src_path = (
+            pathlib.Path(rob_box_perception.__file__).parent
+            / 'context_aggregator_node.py'  # noqa: W503
+        )
+        src = src_path.read_text(encoding='utf-8')
+        # Ищем блок ``self.create_subscription(...PoseXxxStamped,
+        # '/rtabmap/localization_pose', ...)``. С учётом переноса строк
+        # и любых пробелов. Конкретный тип — в первой строке аргументов.
+        m = re.search(
+            r"create_subscription\("
+            r"\s*([A-Za-z_][A-Za-z0-9_]*)"
+            r"\s*,\s*"
+            r"['\"]/rtabmap/localization_pose['\"]",
+            src,
+        )
+        self.assertIsNotNone(
+            m,
+            (
+                'create_subscription для /rtabmap/localization_pose '
+                'не найден в исходнике (issue #2826)'
+            ),
+        )
+        assert m is not None
+        sub_msg_type = m.group(1).strip()
+        self.assertEqual(
+            sub_msg_type, 'PoseWithCovarianceStamped',
+            (
+                f'create_subscription на /rtabmap/localization_pose '
+                f'использует {sub_msg_type}, а должен '
+                f'PoseWithCovarianceStamped (issue #2826)'
+            ),
+        )
+        # И отдельно — что ``PoseStamped`` рядом с этим топиком
+        # точно не фигурирует. Защита от регрессии «вернули обратно
+        # случайно».
+        self.assertNotIn(
+            'PoseStamped', sub_msg_type,
+            'тип подписки не должен быть PoseStamped (issue #2826)',
+        )
+
+        # Дополнительно: callback on_robot_pose должен быть аннотирован
+        # PoseWithCovarianceStamped (см. test_pose_msg_type_matches_
+        # rtabmap), но мы дублируем и тут, чтобы страж стоял рядом
+        # с create_subscription, а не в другом тесте.
+        import inspect
+        sig = inspect.signature(ContextAggregatorNode.on_robot_pose)
+        msg_param = list(sig.parameters.values())[1]
+        self.assertIs(
+            msg_param.annotation, PoseWithCovarianceStamped,
+            (
+                'on_robot_pose должен быть аннотирован '
+                'PoseWithCovarianceStamped (issue #2826)'
+            ),
+        )
+
+    def test_pose_msg_type_matches_rtabmap(self):
+        """Тест: статический контракт — current_pose и аргумент on_robot_pose
+        суть PoseWithCovarianceStamped.
+
+        Issue #2826: rtabmap публикует PoseWithCovarianceStamped.
+        Если кто-то снова подпишется на PoseStamped, ниже будет
+        ``AssertionError`` — это и есть «тест на тип подписки» из
+        acceptance criteria карточки.
+
+        NB: см. docstring ``test_localization_pose_subscription_uses_
+        correct_type`` — ``PoseStamped`` / ``PoseWithCovarianceStamped``
+        в этом тест-файле шим-классы; сравниваем с ними напрямую.
+        """
+        import inspect
+
+        # ``inspect.signature`` на bound-методе возвращает сигнатуру
+        # без ``self`` (только ``msg``); на классе — с ``self + msg``.
+        # Используем класс, чтобы получить обе аннотации.
+        unbound = ContextAggregatorNode.on_robot_pose
+        sig = inspect.signature(unbound)
+        self.assertEqual(len(sig.parameters), 2)  # self + msg
+        msg_param = list(sig.parameters.values())[1]
+        self.assertIsNot(
+            msg_param.annotation, PoseStamped,
+            (
+                'on_robot_pose не должен быть аннотирован PoseStamped '
+                '(issue #2826)'
+            ),
+        )
+        # ``from __future__ import annotations`` отсутствует, поэтому
+        # аннотация уже резолвлена в класс.
+        self.assertIs(
+            msg_param.annotation, PoseWithCovarianceStamped,
+            (
+                'on_robot_pose должен быть аннотирован '
+                'PoseWithCovarianceStamped (issue #2826)'
+            ),
+        )
+
+        # 2) Контракт через ``self.current_pose`` — читаем исходник ноды
+        #    и ищем аннотацию атрибута. Python 3.14 без
+        #    ``from __future__ import annotations`` не сохраняет
+        #    аннотации локальных переменных в ``__annotations__``
+        #    функции (только class-level); inspect.get_annotations
+        #    на ``__init__`` вернёт ``{}``. Поэтому проверяем
+        #    содержимое исходника напрямую.
+        import pathlib
+        import rob_box_perception  # noqa: F401 — для __file__
+        src_path = (
+            pathlib.Path(rob_box_perception.__file__).parent
+            / 'context_aggregator_node.py'  # noqa: W503
+        )
+        src = src_path.read_text(encoding='utf-8')
+        # Ищем строку вида
+        # ``self.current_pose: Optional[PoseWithCovarianceStamped] = None``
+        # (или с другим Optional, главное — PoseWithCovarianceStamped,
+        # а не PoseStamped).
+        import re
+        match = re.search(
+            r'self\.current_pose\s*:\s*Optional\[([^\]]+)\]\s*=',
+            src,
+        )
+        self.assertIsNotNone(
+            match,
+            (
+                'self.current_pose должна быть аннотирована '
+                'Optional[<type>] (issue #2826)'
+            ),
+        )
+        assert match is not None  # для type-checker'а
+        annotated_type_name = match.group(1).strip()
+        self.assertNotEqual(
+            annotated_type_name, 'PoseStamped',
+            (
+                'self.current_pose аннотирован Optional[PoseStamped] — '
+                'регрессия issue #2826'
+            ),
+        )
+        self.assertIn(
+            'PoseWithCovarianceStamped', annotated_type_name,
+            (
+                'self.current_pose должен быть аннотирован '
+                'Optional[PoseWithCovarianceStamped]'
+            ),
+        )
+
+        # 3) Реальный кольцевой сценарий: подкидываем сообщение в
+        #    callback и проверяем, что оно сохранилось как
+        #    PoseWithCovarianceStamped, а не как что-то другое.
+        msg = PoseWithCovarianceStamped()
+        msg.pose.pose.position = Point(x=3.5, y=-1.2, z=0.0)
+        self.node.on_robot_pose(msg)
+        self.assertIsInstance(
+            self.node.current_pose, PoseWithCovarianceStamped
+        )
+        # msg_param.annotation — это класс (не Optional) и не строка.
+        self.assertIsInstance(msg_param.annotation, type)
 
     def test_odometry_subscription(self):
         """Тест: Подписка на одометрию."""
@@ -449,8 +675,8 @@ class TestContextAggregator(unittest.TestCase):
         self.node.on_vision_context(vision_msg)
 
         # Pose
-        pose_msg = PoseStamped()
-        pose_msg.pose.position = Point(x=5.0, y=6.0, z=0.0)
+        pose_msg = PoseWithCovarianceStamped()
+        pose_msg.pose.pose.position = Point(x=5.0, y=6.0, z=0.0)
         self.node.on_robot_pose(pose_msg)
 
         # Проверяем что все данные сохранены
