@@ -660,18 +660,25 @@ class MusicRenardoBridge:
         Сокет Renardo обычно блокирующий (без ``settimeout``) — поток тихо
         спит между ответами, CPU не тратит. Если сокет закроют (например,
         Renardo пересоздаст ``Server.client`` при повторной инициализации),
-        ``recvfrom`` бросит ``OSError`` — поток завершается сам, без шума.
+        ``_pump_one_message`` вернёт ``None`` (recvfrom бросит ``OSError``)
+        и поток завершается сам, без шума.
+
+        Декомпозиция (issue #1808 follow-up #3371):
+          * чтение из сокета вынесено в ``_pump_one_message`` — единственная
+            точка, где мы знаем про ``recvfrom`` / ``OSError``;
+          * разбор и лог вынесены в ``_route_osc_reply`` (один путь на оба
+            источника — фоновый поток и короткий таймаут из ``_send_osc_raw``),
+            а предикат синтезаторных ошибок — в ``_is_scsynth_synthdef_log``.
+            Сам цикл остаётся CC-дешёвым (≤12), а главное — каждое решение
+            тестируется изолированно в ``test_music.py``.
         """
         while True:
+            data = self._pump_one_message(sock)
+            if data is None:
+                return  # сокет закрыт или невосстановимая OSError
             try:
-                data, _addr = sock.recvfrom(4096)
-            except OSError:
-                return
+                self._route_osc_reply(data, when_iso=None)
             except Exception:  # noqa: BLE001 — единичный кривой пакет не должен убивать поток
-                continue
-            try:
-                self._log_osc_reply(data)
-            except Exception:  # noqa: BLE001
                 continue
 
     def _log_scsynth_reply_if_any(self, sock: "socket.socket") -> None:
@@ -680,32 +687,106 @@ class MusicRenardoBridge:
         Таймаут короткий (``OSC_REPLY_TIMEOUT_SECONDS``) — см. обоснование
         у объявления константы. Полностью best-effort: таймаут/любая ошибка
         чтения — это НОРМА (большинство успешных admin-команд scsynth не
-        подтверждает вовсе), а не повод помешать вызывающему коду.
+        подтверждает вовсе), а не повод мешать вызывающему коду.
         """
         try:
             sock.settimeout(self.OSC_REPLY_TIMEOUT_SECONDS)
-            data, _addr = sock.recvfrom(4096)
-        except Exception:  # noqa: BLE001 — таймаут = scsynth принял молча (норма)
+        except Exception:  # noqa: BLE001 — best-effort, не мешаем вызывающему коду
+            return
+        data = self._pump_one_message(sock)
+        if data is None:
             return
         try:
-            self._log_osc_reply(data)
+            self._route_osc_reply(data, when_iso=None)
         except Exception:  # noqa: BLE001
             pass
 
-    def _log_osc_reply(self, data: bytes) -> None:
-        """Разобрать ответ scsynth; залогировать, если это ``/fail``.
+    def _pump_one_message(self, sock: "socket.socket") -> Optional[bytes]:
+        """Один проход чтения из UDP-сокета; вернуть payload или sentinel ``None``.
 
-        Полный OSC-парсер не нужен — только различить ``/fail`` (реальный
-        отказ, ту самую строку из логов supercollider, которую раньше
-        никто не видел) от остального (``/done``, ``/synced`` и т.п. —
-        штатные подтверждения, шум для лога ошибок).
+        Возвращает:
+          * ``bytes`` — успешно прочитанный один OSC-пакет;
+          * ``None``  — ``OSError`` (сокет закрыт / пересоздан — поток
+                        слушателя должен тихо завершиться) или любой
+                        единичный сбой (мусорный пакет) — вызывающий
+                        решает, продолжать ли цикл.
+
+        Буфер 4096 байт — ``OSC_REPLY_MAX_BYTES``, см. обоснование у
+        объявления константы. Никаких side-effects: ни логов, ни
+        dispatch'а ответов — это задача ``_route_osc_reply``.
         """
-        address, rest = _split_osc_address(data)
+        try:
+            data, _addr = sock.recvfrom(self.OSC_REPLY_MAX_BYTES)
+            return data
+        except OSError:
+            return None
+        except Exception:  # noqa: BLE001 — единичный кривой пакет не должен убивать поток
+            return None
+
+    def _is_scsynth_synthdef_log(self, reply: bytes) -> bool:
+        """Предикат: этот OSC-ответ — отказ из-за ненайденного SynthDef?
+
+        scsynth отдаёт «SynthDef not found» именно как ``/fail`` с тремя
+        строковыми аргументами вида ``["/s_new", "SynthDef not found",
+        "<имя>"]`` (см. ``docker/.../foxdot_init.sc`` комментарий строки
+        27: «FAILURE IN SERVER /s_new SynthDef not found»). Это самое
+        частое из «трёх тишины» в нашем логе инцидентов — выделяем его
+        в отдельный канал, чтобы в логе было сразу видно «синтезатор не
+        загружен», без разбора неструктурированного ``detail``.
+
+        Чистый предикат (только OSC-байты → bool), CC≤12.
+        """
+        address, rest = _split_osc_address(reply)
+        if address != "/fail":
+            return False
+        args = _decode_osc_args(rest)
+        return any("SynthDef" in str(a) for a in args)
+
+    def _route_osc_reply(self, reply: bytes, when_iso: Optional[str]) -> None:
+        """Диспетчер одного OSC-ответа scsynth: synthdef-fail / /fail / noop.
+
+        Единственная точка принятия решения «логировать или нет». Вызывается
+        из обоих источников (фоновый поток + короткий таймаут после
+        собственного ``sendto``) — раньше эта логика была размазана между
+        ``_renardo_reply_listener_loop`` и ``_log_scsynth_reply_if_any``
+        прямой цепочкой ``→ _log_osc_reply``, что мешало расширять (issue
+        #1808 follow-up).
+
+        Категории:
+          * synthdef-fail (``/fail`` + ``"SynthDef"`` в тексте) — отдельный
+            лог-канал для быстрой диагностики «не загружен синтезатор»;
+          * ``/fail`` (прочие — «too many nodes», «Group N not found») —
+            стандартный ``🔴 FAILURE IN SERVER``;
+          * остальное (``/done``, ``/synced`` и т.п.) — подавляем: шум.
+
+        ``when_iso`` — зарезервировано для follow-up «безопасная привязка
+        ответа к вызову тула по времени» (issue #1808 §follow-up). Пока
+        не используется — потребителей нет, ложные срабатывания хуже
+        молчания. Параметр в сигнатуре, чтобы будущий код не правил
+        вызывающие сайты.
+        """
+        if self._is_scsynth_synthdef_log(reply):
+            address, rest = _split_osc_address(reply)
+            args = _decode_osc_args(rest)
+            detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
+            self._log_warning(f"🎹 [scsynth] SynthDef FAILURE: {detail}")
+            return
+        address, rest = _split_osc_address(reply)
         if address != "/fail":
             return
         args = _decode_osc_args(rest)
         detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
         self._log_warning(f"🔴 [scsynth] FAILURE IN SERVER: {detail}")
+
+    def _log_osc_reply(self, data: bytes) -> None:
+        """Тонкая обёртка над ``_route_osc_reply`` (для обратной совместимости).
+
+        Исторический entry-point, на который завязан тонкий proxy из
+        ``MusicManager`` (``mgr._renardo._log_osc_reply`` через ``setattr``)
+        и существующие тесты ``test_music.py::test_log_osc_reply_*``. Сама
+        логика — в ``_route_osc_reply`` (issue #1808 follow-up #3371).
+        """
+        self._route_osc_reply(data, when_iso=None)
 
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.
