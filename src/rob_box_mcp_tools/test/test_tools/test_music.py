@@ -57,18 +57,75 @@ from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore  #
 
 
 def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) -> MusicManager:
-    """Create a MusicManager with patched infrastructure."""
+    """Create a MusicManager with patched infrastructure.
+
+    Build a ``MusicRenardoBridge`` via ``__new__`` (skip its ``__init__``,
+    which would try to import renardo_lib.runtime and connect to a real
+    scsynth — neither is available in the unit-test environment) and
+    poke the same attributes the production ``MusicManager.__init__``
+    shadows on the bridge. The bridge's ``_synthdefs_added``,
+    ``_renardo_*`` slots then back the manager's shadow-properties, so the
+    existing tests that read/write ``mgr._synthdefs_added`` (and the
+    proxy methods that read ``self._renardo.<X>()``) see consistent
+    values through the same single source of truth.
+
+    All bridge methods that touch the live Renardo/SC runtime
+    (``_initialize_renardo``, ``_ensure_renardo_available``,
+    ``_check_supercollider``, ``_attach_renardo_reply_listener``) are
+    installed as ``Mock``s on the bridge instance so the manager's
+    proxies forward to no-ops in the unit-test environment — tests that
+    need to exercise a specific path (e.g. ``_initialize_renardo``
+    raising, ``_ensure_renardo_available`` returning False) override
+    those bridge Mocks on the instance after this helper returns.
+    """
+    from unittest.mock import MagicMock
+
     from rob_box_voice.core.music_stack_validation import MusicStackStatus
 
+    from rob_box_mcp_tools.core.music_renardo_bridge import MusicRenardoBridge
+
     mgr = MusicManager.__new__(MusicManager)
+    bridge = MusicRenardoBridge.__new__(MusicRenardoBridge)
+    # Bridge attributes that the manager's shadow-properties read/write —
+    # keep them aligned with ``MusicManager.__init__`` defaults so the
+    # manager-property reads return the same values the legacy
+    # ``__new__``-built mocks did.
+    bridge._synthdefs_added = set()
+    bridge._renardo_available = renardo_available
+    bridge._renardo_last_error = None
+    bridge._renardo_context = {}
+    bridge._renardo_reply_sock = None
+    bridge._server_confirmed_synths = None
+    bridge._music_stack_status = MusicStackStatus(
+        is_healthy=True,
+        oscdef_registered=True,
+        missing_synths=(),
+        fatal_errors=(),
+    )
+    bridge._critical_synths = MusicManager.DEFAULT_CRITICAL_SYNTHS
+    bridge._require_healthy = True
+    # Bridge methods that must not touch a live Renardo/SC stack in the
+    # unit-test environment — install MagicMocks so the manager's proxy
+    # forwards land on them. Tests that need custom behaviour
+    # (``Mock(side_effect=...)``, ``Mock(return_value=...)``) override
+    # these via ``mgr._renardo._initialize_renardo = ...``.
+    #
+    # ``_check_supercollider`` honors the ``sc_running`` kwarg so callers
+    # that say ``sc_running=True`` actually exercise the post-OSC path
+    # (e.g. ``test_execute_retries_renardo_initialization_before_failing``
+    # — it needs the manager to believe SC is up so the body proceeds to
+    # the renardo-availability retry). The default (``sc_running=False``)
+    # preserves the historical behaviour of
+    # ``test_execute_fails_if_sc_not_running`` (which now exercises the
+    # short-circuit at the top of ``execute_code`` before the
+    # renardo-availability retry).
+    bridge._check_supercollider = MagicMock(return_value=sc_running)
+    bridge._send_osc_raw = MagicMock()
+    mgr._renardo = bridge
     mgr._max_amp = 0.7
     mgr._pattern_history = {}
     mgr._active_patterns = set()
-    mgr._synthdefs_added = set()
     mgr._current_preset = None
-    mgr._renardo_available = renardo_available
-    mgr._renardo_last_error = None
-    mgr._renardo_context = {}
     # issue G-MUSIC — music-stack health (must match __init__ defaults).
     # Tests that need a degraded manager should overwrite _music_stack_status
     # and/or _require_healthy directly.
@@ -143,11 +200,24 @@ def _build_osc_message(address: str, tags: str = "", *args: object) -> bytes:
 def _manager_with_captured_warnings():
     """A ``_make_manager()`` instance whose ``_log_warning`` calls are
     captured into a list instead of hitting stderr — used by the #1808
-    OSC-reply tests below."""
+    OSC-reply tests below.
+
+    Issue G-MUSIC refactor: ``_log_osc_reply`` / ``_log_scsynth_reply_if_any``
+    now live on ``MusicRenardoBridge`` and call ``self._log_warning``
+    against the bridge. We therefore install the lambda on
+    ``mgr._renardo._log_warning`` (the bridge) in addition to keeping the
+    legacy ``mgr._log_warning`` shim — the bridge-side override is what
+    the proxy actually routes through.
+    """
     mgr = _make_manager()
     mgr._logger = None
     logged: list = []
     mgr._log_warning = lambda message: logged.append(message)
+    # Bridge-side override so ``MusicRenardoBridge._log_osc_reply`` /
+    # ``_log_scsynth_reply_if_any`` route their diagnostics into the same
+    # ``logged`` list (proxy ``MusicManager._log_osc_reply`` →
+    # ``mgr._renardo._log_osc_reply`` → ``self._log_warning`` on bridge).
+    mgr._renardo._log_warning = lambda message: logged.append(message)
     return mgr, logged
 
 
@@ -584,7 +654,23 @@ class TestMusicManagerSCCheck:
     """Тесты проверки SuperCollider."""
 
     def _make_raw_manager(self):
+        # Issue G-MUSIC refactor: ``_check_supercollider`` /
+        # ``_send_osc_raw`` live on ``MusicRenardoBridge`` now, so we
+        # build a bridge via ``__new__`` (skip its real ``__init__``,
+        # which would try to import renardo_lib) and install it on the
+        # manager. The bridge-side ``socket.socket`` is overridden at
+        # every ``with patch(...)`` site in the tests below.
+        from rob_box_mcp_tools.core.music_renardo_bridge import MusicRenardoBridge
+
         mgr = MusicManager.__new__(MusicManager)
+        bridge = MusicRenardoBridge.__new__(MusicRenardoBridge)
+        bridge._synthdefs_added = set()
+        bridge._renardo_available = False
+        bridge._renardo_last_error = None
+        bridge._renardo_context = {}
+        bridge._renardo_reply_sock = None
+        bridge._server_confirmed_synths = None
+        mgr._renardo = bridge
         mgr._pattern_history = {}
         mgr._active_patterns = set()
         mgr._current_preset = None
@@ -605,6 +691,15 @@ class TestMusicManagerSCCheck:
     def test_sc_running_returns_true(self):
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -615,6 +710,15 @@ class TestMusicManagerSCCheck:
     def test_sc_not_running_returns_false(self):
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -626,6 +730,15 @@ class TestMusicManagerSCCheck:
         """Verify the correct OSC /status message is sent to scsynth."""
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -644,6 +757,15 @@ class TestMusicManagerSCCheck:
 
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -657,6 +779,15 @@ class TestMusicManagerSCCheck:
         """/status style: address only, no args. Packet must be 4-byte aligned."""
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -672,6 +803,15 @@ class TestMusicManagerSCCheck:
         """/g_freeAll 1: type tag ',i' + 4-byte big-endian int."""
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -691,6 +831,15 @@ class TestMusicManagerSCCheck:
         """
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -712,6 +861,15 @@ class TestMusicManagerSCCheck:
 
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -765,6 +923,15 @@ class TestMusicManagerSCCheck:
 
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock = MagicMock()
             mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
             mock_sock_class.return_value.__exit__ = Mock(return_value=False)
@@ -786,6 +953,15 @@ class TestMusicManagerSCCheck:
         """
         mgr = self._make_raw_manager()
         with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            # Issue G-MUSIC refactor: ``_check_supercollider`` and
+            # ``_send_osc_raw`` now live on ``MusicRenardoBridge``, whose
+            # ``import socket`` is a SEPARATE reference from
+            # ``rob_box_mcp_tools.tools.music.socket``. Patch both so the
+            # bridge's socket calls land on the same mock.
+            from unittest.mock import patch as _patch
+            with _patch("rob_box_mcp_tools.core.music_renardo_bridge.socket.socket") as mock_sock_class_bridge:
+                mock_sock_class_bridge.return_value.__enter__ = mock_sock_class.return_value.__enter__
+                mock_sock_class_bridge.return_value.__exit__ = mock_sock_class.return_value.__exit__
             mock_sock_class.return_value.__enter__ = Mock(
                 side_effect=OSError("network unreachable")
             )
@@ -1052,7 +1228,15 @@ class TestAttachRenardoReplyListener:
 
                 assert mgr._renardo_reply_sock is real_sock
                 _args, kwargs = mock_thread_cls.call_args
-                assert kwargs["target"] == mgr._renardo_reply_listener_loop
+                # ``mgr._renardo_reply_listener_loop`` is a thin proxy that
+                # forwards to ``mgr._renardo._renardo_reply_listener_loop``
+                # (issue G-MUSIC refactor: Renardo/SuperCollider plumbing
+                # moved to ``MusicRenardoBridge``). The thread's ``target``
+                # must therefore point at the bridge's loop function —
+                # not at the manager's proxy, which would create a new
+                # bound-method wrapper each time it's accessed and break
+                # the identity check.
+                assert kwargs["target"] == mgr._renardo._renardo_reply_listener_loop
                 assert kwargs["args"] == (real_sock,)
                 assert kwargs["daemon"] is True
                 mock_thread.start.assert_called_once()
@@ -1180,6 +1364,12 @@ class TestMusicManagerRenardoInitialize:
         fake_sock = MagicMock()
         fake_sock.recvfrom.side_effect = socket.timeout
         monkeypatch.setattr(music_mod.socket, "socket", lambda *a, **k: fake_sock)
+        # Issue G-MUSIC refactor: ``_initialize_renardo`` (and the
+        # ``_verify_and_retry_synthdefs`` it calls) live on
+        # ``MusicRenardoBridge`` — patch the bridge's socket too so the
+        # probe sockets inside the bridge hit our ``fake_sock``.
+        from rob_box_mcp_tools.core import music_renardo_bridge as bridge_mod
+        monkeypatch.setattr(bridge_mod.socket, "socket", lambda *a, **k: fake_sock)
 
         mgr._initialize_renardo()
 
@@ -1218,6 +1408,8 @@ class TestMusicManagerRenardoInitialize:
         fake_sock = MagicMock()
         fake_sock.recvfrom.side_effect = socket.timeout
         monkeypatch.setattr(music_mod.socket, "socket", lambda *a, **k: fake_sock)
+        from rob_box_mcp_tools.core import music_renardo_bridge as bridge_mod
+        monkeypatch.setattr(bridge_mod.socket, "socket", lambda *a, **k: fake_sock)
 
         mgr._initialize_renardo()
         mgr._initialize_renardo()
@@ -1287,6 +1479,17 @@ class TestVerifyAndRetrySynthdefsProbe:
         monkeypatch.setattr(
             music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
         )
+        # Issue G-MUSIC refactor: ``_verify_and_retry_synthdefs`` now lives
+        # on ``MusicRenardoBridge`` (not on the manager), so its
+        # ``socket.socket(...)`` call also needs the same monkeypatch.
+        # We patch via the *original* ``socket`` module attribute so both
+        # ``music_mod.socket.socket`` and ``music_renardo_bridge_mod.socket``
+        # (which are the same ``socket`` module under the hood) see the
+        # override.
+        from rob_box_mcp_tools.core import music_renardo_bridge as bridge_mod
+        monkeypatch.setattr(
+            bridge_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
         mgr = _make_manager()
         rt = self._fake_rt()
 
@@ -1339,6 +1542,17 @@ class TestVerifyAndRetrySynthdefsProbe:
 
         monkeypatch.setattr(
             music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
+        # Issue G-MUSIC refactor: ``_verify_and_retry_synthdefs`` now lives
+        # on ``MusicRenardoBridge`` (not on the manager), so its
+        # ``socket.socket(...)`` call also needs the same monkeypatch.
+        # We patch via the *original* ``socket`` module attribute so both
+        # ``music_mod.socket.socket`` and ``music_renardo_bridge_mod.socket``
+        # (which are the same ``socket`` module under the hood) see the
+        # override.
+        from rob_box_mcp_tools.core import music_renardo_bridge as bridge_mod
+        monkeypatch.setattr(
+            bridge_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
         )
         mgr = _make_manager()
         rt = self._fake_rt()
@@ -1833,6 +2047,11 @@ class TestKnownSynthNamesServerTruth:
         mgr, _ = self._mgr(tmp_path)
         warnings: list = []
         mgr._log_warning = warnings.append
+        # Bridge calls ``self._log_warning`` internally when the proxy
+        # ``MusicManager._log_synth_truth_discrepancy`` → ``self._renardo.
+        # _log_synth_truth_discrepancy`` dispatches — route its diagnostics
+        # into the same list so the test can assert on the combined output.
+        mgr._renardo._log_warning = warnings.append
         mgr._log_synth_truth_discrepancy()
         assert len(warnings) == 1
         assert "#2838" in warnings[0]
@@ -1850,6 +2069,8 @@ class TestKnownSynthNamesServerTruth:
         assert {"pluck", "sine"} <= mgr.known_synth_names()
         warnings: list = []
         mgr._log_warning = warnings.append
+        # Same dispatch-chain note as ``test_unconfirmed_synths_are_logged_at_startup``.
+        mgr._renardo._log_warning = warnings.append
         mgr._log_synth_truth_discrepancy()
         assert "не проверен сервером" in warnings[0]
 
