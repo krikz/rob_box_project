@@ -1,0 +1,78 @@
+{
+  "name": "2826_perception_context_pose_smoke_v1",
+  "stability": "stable",
+  "description": "Deploy smoke-test: после фикса #2826 context_aggregator подписан на PoseWithCovarianceStamped (тип, который публикует rtabmap), и поле pose в /perception/context_update перестаёт быть пустым. Без фикса DDS-мост (rmw_zenoh) не связывает PoseStamped-подписчика с PoseWithCovarianceStamped-издателем, и pose в агрегате всегда None — поза не доходит. Этот сценарий — контракт для e2e-process: после deploy Шифу убедиться, что pose действительно приходит на /perception/context_update, а не только в CI (CI ловит ament_* + unit-тесты, но не ловит runtime DDS-бридж).",
+  "scope": "deploy",
+  "robot_host": "10.1.1.21",
+  "robot_ssh": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21",
+  "image": "10.1.1.249:5000/krikz/rob_box:perception-humble-dev",
+  "compose_service": "rob-box-perception",
+  "acceptance": {
+    "before": "docker exec perception ros2 topic echo /perception/context_update --once --field pose.position.x показывает 0.0 (или None / пусто) — DDS-бридж не связал подписку PoseStamped с издателем PoseWithCovarianceStamped",
+    "after": "docker exec perception ros2 topic echo /perception/context_update --once --field pose.position.x показывает число, отличное от 0.0 (идеально — реальная SLAM-поза робота), в течение 5 секунд после рестарта perception-контейнера"
+  },
+  "steps": [
+    {
+      "label": "pull_new_image",
+      "description": "Загрузить свежий perception image с registry билдовой машины 10.1.1.249",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker pull 10.1.1.249:5000/krikz/rob_box:perception-humble-dev'",
+      "timeout_seconds": 300,
+      "patterns": [
+        "Status: Downloaded newer image",
+        "Status: Image is up to date"
+      ]
+    },
+    {
+      "label": "restart_perception_container",
+      "description": "Перезапустить rob-box-perception через docker compose, чтобы подхватить новый context_aggregator_node с PoseWithCovarianceStamped",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'cd ~/robbox && docker compose restart rob-box-perception'",
+      "timeout_seconds": 60,
+      "patterns": [
+        "Container .* Restarting",
+        "Container .* Started"
+      ]
+    },
+    {
+      "label": "wait_for_stable_state",
+      "description": "Подождать пока контейнер устаканится и DDS-discovery завершится (rtabmap публикует на ~1 Гц, нужно ≥2 Гц окно для гарантии, что хотя бы один echo успеет)",
+      "command": "sleep 15",
+      "timeout_seconds": 30
+    },
+    {
+      "label": "check_pose_subscription_type",
+      "description": "Проверить, что context_aggregator подписан на PoseWithCovarianceStamped (анти-регрессия issue #2826)",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker exec perception ros2 topic info -v /rtabmap/localization_pose --no-daemon | grep -A1 context_aggregator'",
+      "timeout_seconds": 30,
+      "patterns": [
+        "context_aggregator.*PoseWithCovarianceStamped.*SUBSCRIPTION"
+      ],
+      "must_not_match": [
+        "context_aggregator.*PoseStamped.*SUBSCRIPTION"
+      ]
+    },
+    {
+      "label": "check_pose_in_context_update",
+      "description": "Главная проверка acceptance: /perception/context_update должен содержать непустую позу (pose.position.x != 0)",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker exec perception timeout 10 ros2 topic echo /perception/context_update --no-daemon 2>/dev/null | head -3 | tee /tmp/perception_ctx.txt && echo --- && grep -E \"pose:|position:\" /tmp/perception_ctx.txt | head -10'",
+      "timeout_seconds": 30,
+      "patterns": [
+        "pose:",
+        "position:"
+      ],
+      "must_not_match": [
+        "pose:\nposition: x: 0.0\\ny: 0.0\\nz: 0.0"
+      ]
+    },
+    {
+      "label": "check_no_pose_type_mismatch_warnings",
+      "description": "В логах perception не должно быть новых warning'ов про 'incompatible QoS' / 'type mismatch' / 'no messages received' (косвенный сигнал, что DDS-бридж работает)",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker logs --since 2m rob-box-perception 2>&1 | grep -iE \"(incompatible type|type mismatch|no messages received on /rtabmap/localization_pose)\" || echo NO_POSE_WARNINGS'",
+      "timeout_seconds": 30,
+      "patterns": [
+        "NO_POSE_WARNINGS"
+      ]
+    }
+  ],
+  "rollback": "Если smoke-test FAIL (pose.position.x остался 0.0, или context_aggregator снова подписан на PoseStamped): не мержим PR #3358 в develop, оставляем открытым для ревью фикса. Скорее всего — неверно выкатили image, либо colcon build не пересобрал rob_box_perception.",
+  "_comment": "Issue #2826: context_aggregator был подписан на PoseStamped, rtabmap публикует PoseWithCovarianceStamped — DDS-бридж не связывал, pose в /perception/context_update всегда None. Этот smoke-test — контракт для e2e-process после deploy Шифу. Логика: после рестарта perception-контейнера подписка должна быть на PoseWithCovarianceStamped И pose в echo /perception/context_update не должна быть (0, 0, 0)."
+}
