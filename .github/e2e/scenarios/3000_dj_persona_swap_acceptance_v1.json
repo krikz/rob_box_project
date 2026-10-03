@@ -1,0 +1,24 @@
+{
+  "name": "3000_dj_persona_swap_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0129 / PR #3280 / Issue #3000 — e2e acceptance: смена DJ-персоны вытесняет старую.",
+    "Сценарий: .github/e2e/scenarios/3000_dj_persona_swap_v1.json (двухшаговый: Ля-Классик → 8-битный монстр).",
+    "Acceptance-паттерны (spoken + логи) живут в steps[].patterns сценария; этот файл — служебный.",
+    "Логика проверки: после шага 2 (s2_swap_to_chiptune_monster) spoken содержит маркер новой персоны",
+    "(8-бит / монстр) и НЕ содержит маркеров старой (Ля-Классик / Моцарт / Штраус / Мяу / Дамы и господа).",
+    "Прогон должен идти на develop, где PR #3280 уже вмержен (фикс clear_history + <dj_state> stamp)."
+  ],
+  "expected_tool_calls": [
+    "set_dj_mode",
+    "speak_text"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 150,
+    "llm": "minimax-m3",
+    "stt": "yandex"
+  }
+}
