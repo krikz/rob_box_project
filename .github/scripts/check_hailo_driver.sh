@@ -68,8 +68,6 @@ log() { printf '[check_hailo_driver] %s %s\n' "$(date -Iseconds)" "$*" >&2; }
 # Один SSH-вызов — собрать всё состояние Pi для атомарности (нет гонки
 # между sample1/sample2 как в check_container_status.sh). Для pre-deploy
 # достаточно single-snapshot.
-remote_state_marker="" # unused placeholder reserved for future hooks
-sentinel_magic="magic_sentinel_no_hailo_lspci" # unused placeholder for diagnostic
 # Запускаем sshpass в под-оболочке чтобы перехватить exit code; внутри
 # $() set -e/-o pipefail НЕ действуют, поэтому сохраняем код явно. И
 # отключаем set -e вокруг всей подстановки: в bash compound
@@ -144,7 +142,6 @@ uptime_secs="$(echo "$remote_state" | awk '/^=== uptime ===/ {getline; print; ex
 # --------------------------------------------------------------------------- #
 # Step 3: verdict — 4 checks
 # --------------------------------------------------------------------------- #
-findings_jsonl=""
 FAILED_COUNT=0
 REASONS=()
 

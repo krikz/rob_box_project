@@ -27,8 +27,6 @@
 #                                 default 120 (kernel init + DKMS build)
 #   ROBBOX_HAILO_DEVICE_PATH   — путь к PCIe device node
 #                                 (default /dev/hailo0)
-#   ROBBOX_HAILO_EXPECTED_VERSION — ожидаемая версия драйвера из modinfo
-#                                 (default 4.24.0 — match setup_node.sh)
 #
 # Exit codes:
 #   0 — OK (Hailo device present, DKMS kernel→.ko match, hailortcli видит чип)
@@ -43,7 +41,6 @@ set -euo pipefail
 # --------------------------------------------------------------------------- #
 GRACE_SECS="${ROBBOX_HAILO_GRACE_SECS:-120}"
 DEVICE_PATH="${ROBBOX_HAILO_DEVICE_PATH:-/dev/hailo0}"
-EXPECTED_VERSION="${ROBBOX_HAILO_EXPECTED_VERSION:-4.24.0}"
 BOOT_LOG="${ROBBOX_HAILO_BOOT_LOG:-/var/log/robbox-hailo-driver-boot.log}"
 METRICS_FILE="${ROBBOX_HAILO_METRICS_FILE:-$HOME/.local/state/robbox_hailo_driver.prom}"
 ALERT_LOG="${ROBBOX_HAILO_ALERT_LOG:-$HOME/.local/state/robbox_hailo_alerts.log}"
