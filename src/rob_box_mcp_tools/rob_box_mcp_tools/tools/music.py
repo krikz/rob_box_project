@@ -34,8 +34,42 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core import renardo_sanitizer, sample_loops
 from ..engine import renardo_adapter
+from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
+from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
+from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
+from ..core.music_stack_health import MusicStackHealth  # ADR-0134 §5 Phase 2
+from ..core.rtttl_compose import key_honesty_note, melody_to_compose_params, rtttl_to_melody
+from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
+from ..core.score_sheet import analyze_melody, describe
 from ..engine.search import find
-from ..core.rtttl_library import RtttlLibrary, display_title, match_info
+
+
+def _ensure_health_for(mgr: "MusicManager") -> MusicStackHealth:
+    """Module-level helper that lazily builds ``MusicManager._health``.
+
+    Lives outside the class on purpose: it lets the host class drop one
+    named method while still tolerating ``MusicManager.__new__``-bypassed
+    instances (the test factory ``_make_manager`` in
+    ``test_tools/test_music.py``). ADR-0134 §5 Phase 2 + ADR-0145.
+    """
+    health = getattr(mgr, "_health", None)
+    if health is None:
+        health = MusicStackHealth(mgr)
+        object.__setattr__(mgr, "_health", health)
+    return health
+
+
+#: Issue #3112 — флаг кандидата-фикса фазы клока (по умолчанию ВЫКЛ).
+_ALIGN_CLOCK_ENV = "ROB_BOX_MUSIC_ALIGN_CLOCK"
+
+
+def music_align_clock_enabled() -> bool:
+    """``ROB_BOX_MUSIC_ALIGN_CLOCK=1`` — аранжировщики ставят ``Clock.set_time``.
+
+    Читается здесь, а не в ``core``: ядро аранжировщика чистое и получает
+    флаг параметром (``render(..., align_clock=)``/``render_club``).
+    """
+    return os.environ.get(_ALIGN_CLOCK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -428,8 +462,23 @@ class MusicManager:
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
-        # Music stack health (issue G-MUSIC, architect review v3)
+        # DJ mode flag — единственный владелец: ``set_dj_mode()`` (см.
+        # ниже). Ставится двумя адаптерами одного шва: ``SetDjModeTool``
+        # (напрямую) и ``MCPServer._on_dj_mode`` (из топика /voice/dj_mode,
+        # который dialogue_node публикует в stop-fallback). Читается в
+        # ``auto_stop_idle_music``: пока DJ включён, segments-дедлайн #990
+        # не должен гасить непрерывный сет.
         # ------------------------------------------------------------------
+        self._dj_mode_enabled: bool = False
+        # ------------------------------------------------------------------
+        # Music stack health (issue G-MUSIC, architect review v3, ADR-0134 §5)
+        # ------------------------------------------------------------------
+        # Phase 2 decomposition: the 5 health-related methods now live on
+        # ``MusicStackHealth`` (core/music_stack_health.py). We hold a
+        # reference here so the rest of ``MusicManager`` can keep using
+        # ``self._health`` (delegations on the host stay as shims, see
+        # ``# SHIM-remove-after-#3014-phase-6``).
+        self._health: MusicStackHealth = MusicStackHealth(self)
         # If sclang already wrote a startup log and it's degraded, refuse to
         # initialize Renardo and surface a clear "music unavailable" error.
         # We do this BEFORE calling _initialize_renardo() so a broken
@@ -849,145 +898,49 @@ class MusicManager:
     # валидации имён синтов в renardo_sanitizer._validate_synth_names)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # SHIM-remove-after-#3014-phase-6: thin delegations to
+    # ``MusicStackHealth`` (ADR-0134 §5 Phase 2). Bodies live in
+    # ``core/music_stack_health.py``; these shims keep the public API of
+    # ``MusicManager`` byte-identical for callers (and tests) while the
+    # host class is being slimmed down across phases 3-6.
+    #
+    # The helper lazily builds ``self._health`` if a caller used
+    # ``MusicManager.__new__`` to bypass ``__init__`` (matches the test
+    # factory ``_make_manager`` in test_tools/test_music.py).
+    # ------------------------------------------------------------------
+
+    def _ensure_health(self) -> "MusicStackHealth":
+        health = getattr(self, "_health", None)
+        if health is None:
+            health = MusicStackHealth(self)
+            self._health = health
+        return health
+
     def known_synth_names(self) -> Optional[frozenset]:
-        """Множество SynthDef-имён, реально загруженных в scsynth.
-
-        Issue #2838 (живой прогон 23.09.2026): раньше сюда шёл весь
-        ``self._synthdefs_added`` — то, что Python-сторона renardo
-        ОТПРАВИЛА через ``sdef.add()`` (UDP ``/foxdot`` → sclang, без
-        подтверждения). Часть этих пакетов теряется на порту sclang
-        (drops в ``/proc/net/udp``), и потерянный ``sine`` остался
-        «известным»: валидатор сам подсказал его LLM, та им сыграла —
-        235 × "SynthDef sine not found".
-
-        Теперь источник истины — ``self._server_confirmed_synths``: имена,
-        которые sclang подтвердил в scsynth строкой прелоада "SynthDef in
-        scsynth: X" (печатается после ``Server.sync``, см.
-        ``foxdot_init.sc``). Пересекаем его с тем, для чего есть
-        Python-обёртка (``_synthdefs_added`` ∪ ``CUSTOM_SC_ONLY_SYNTH_NAMES``):
-        синт без обёртки код всё равно не вызовет. Это же отсекает
-        служебные шины ``masterlimiter``/``masterfilter`` — они есть на
-        сервере, но не тембры для ``lead_synth``/``bass_synth``/``pad_synth``.
-
-        Если подтверждения нет (sclang-лог недоступен / прелоад не
-        завершён) — прежнее поведение: ``_synthdefs_added`` ∪
-        ``CUSTOM_SC_ONLY_SYNTH_NAMES``. Оно НЕ проверено сервером; на
-        старте это логируется (``_log_synth_truth_discrepancy``).
-
-        Returns:
-            ``None``, пока ``_synthdefs_added`` пуст (Renardo ещё не
-            инициализирован, или тест создал ``MusicManager`` через
-            ``__new__`` в обход ``__init__``) — вызывающая сторона должна
-            трактовать это как «набор неизвестен», а не «ничего не
-            разрешено», иначе валидатор блокировал бы ЛЮБОЙ синт до
-            завершения инициализации. Иначе — frozenset имён (нижний
-            регистр — как их печатает sclang).
-        """
-        added = getattr(self, "_synthdefs_added", None)
-        if not added:
-            return None
-        wrapped = frozenset(added) | frozenset(CUSTOM_SC_ONLY_SYNTH_NAMES)
-        confirmed = getattr(self, "_server_confirmed_synths", None)
-        if confirmed is None:
-            return wrapped
-        return wrapped & confirmed
+        # SHIM-remove-after-#3014-phase-6
+        return self._ensure_health().known_synth_names()
 
     def _log_synth_truth_discrepancy(self) -> None:
-        """Issue #2838: залогировать расхождение «отправлено» vs «на сервере».
-
-        Вызывается один раз в конце успешного ``_initialize_renardo``.
-        Ничего не меняет — только делает видимым, какие синты Python-сторона
-        считает добавленными, но sclang не подтвердил в scsynth (валидатор
-        их отклоняет и не подсказывает).
-        """
-        confirmed = getattr(self, "_server_confirmed_synths", None)
-        if confirmed is None:
-            self._log_warning(
-                "[music #2838] нет подтверждения прелоада SynthDef-ов в "
-                "sclang-логе — валидатор синтов работает по списку "
-                "ОТПРАВЛЕННЫХ (sdef.add()), он не проверен сервером"
-            )
-            return
-        unconfirmed = sorted(set(self._synthdefs_added) - confirmed)
-        wrapped = set(self._synthdefs_added) | set(CUSTOM_SC_ONLY_SYNTH_NAMES)
-        no_wrapper = sorted(confirmed - wrapped)
-        sent = len(self._synthdefs_added)
-        allowed = len(self.known_synth_names() or ())
-        self._log_warning(
-            f"[music #2838] SynthDef truth: подтверждено в scsynth "
-            f"{len(confirmed)}, отправлено renardo {sent}, "
-            f"разрешено валидатору {allowed}; "
-            f"без подтверждения ({len(unconfirmed)}, отклоняются): "
-            f"{unconfirmed}; на сервере без Python-обёртки: {no_wrapper}"
-        )
-
-    # ------------------------------------------------------------------
-    # Music-stack health (issue G-MUSIC, architect review v3)
-    # ------------------------------------------------------------------
+        # SHIM-remove-after-#3014-phase-6
+        self._ensure_health()._log_synth_truth_discrepancy()
 
     def _evaluate_music_stack_health(
         self,
         sclang_log_path: Optional[str] = None,
     ) -> MusicStackStatus:
-        """Snapshot sclang health from the startup log and mark the manager.
-
-        When ``is_healthy is False`` AND ``_require_healthy`` is True, this
-        will also clear ``_renardo_available`` (without touching
-        ``_renardo_last_error``) so downstream tools see consistent state.
-
-        Args:
-            sclang_log_path: Override log location. Falls back to
-                ``SCLANG_LOG_PATH`` env var, then ``/tmp/sclang.log``.
-
-        Returns:
-            The :class:`MusicStackStatus` that was applied.
-        """
-
-        status = load_sclang_health(
-            sclang_log_path,
-            critical_synths=list(self._critical_synths),
+        # SHIM-remove-after-#3014-phase-6
+        return self._ensure_health()._evaluate_music_stack_health(
+            sclang_log_path=sclang_log_path,
         )
-        self._music_stack_status = status
-        self._server_confirmed_synths = load_confirmed_synths(sclang_log_path)
-
-        if not status.is_healthy and self._require_healthy:
-            # Mark Renardo as unavailable WITHOUT clearing the existing
-            # last_error (which might be informative for diagnostics). The
-            # operator should see both "music stack degraded" AND any
-            # subsequent renardo init failure that follows.
-            self._renardo_available = False
-
-        return status
 
     def is_music_stack_healthy(self) -> bool:
-        """True if the sclang startup log was healthy at the last check."""
-
-        return bool(self._music_stack_status.is_healthy)
+        # SHIM-remove-after-#3014-phase-6
+        return self._ensure_health().is_music_stack_healthy()
 
     def music_stack_unavailable_error(self) -> Dict[str, str]:
-        """Build a stable error payload for ``music unavailable`` replies.
-
-        Used by ``execute_code`` / ``stop_music`` so
-        the LLM gets a single, recognizable error message rather than
-        a different string for each entry-point.
-        """
-
-        status = self._music_stack_status
-        details: List[str] = []
-        if status.fatal_errors:
-            details.append("; ".join(status.fatal_errors[:3]))
-        if status.missing_synths:
-            details.append(f"missing SynthDefs: {', '.join(status.missing_synths)}")
-        detail_str = (" — " + "; ".join(details)) if details else ""
-        log_path = os.environ.get("SCLANG_LOG_PATH", "/tmp/sclang.log")
-        return {
-            "success": False,
-            "error": (
-                "Музыка недоступна: sclang стартовал в degraded-режиме "
-                "(syntax error в startup-логе Renardo/FoxDot)"
-                f"{detail_str}. См. {log_path}."
-            ),
-        }
+        # SHIM-remove-after-#3014-phase-6
+        return self._ensure_health().music_stack_unavailable_error()
 
     # ------------------------------------------------------------------
     # SuperCollider check
