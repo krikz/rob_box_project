@@ -71,8 +71,13 @@ log() { printf '[check_hailo_driver] %s %s\n' "$(date -Iseconds)" "$*" >&2; }
 remote_state_marker="" # unused placeholder reserved for future hooks
 sentinel_magic="magic_sentinel_no_hailo_lspci" # unused placeholder for diagnostic
 # Запускаем sshpass в под-оболочке чтобы перехватить exit code; внутри
-# $() set -e/-o pipefail НЕ действуют, поэтому сохраняем код явно.
+# $() set -e/-o pipefail НЕ действуют, поэтому сохраняем код явно. И
+# отключаем set -e вокруг всей подстановки: в bash compound
+# `var=$(failing_cmd)` заставляет set -e убить скрипт ДО нашего `if`, и
+# тогда workflow получает exit 1 БЕЗ JSON (parse error в `jq -r .healthy`).
+# ADR-0018: логика fail-fast и JSON-output живёт в коде, а не в обёртке.
 _ssh_rc=0
+set +e
 remote_state="$(sshpass -p "$PI_PASSWORD" ssh $PI_SSH_OPTS "${PI_USER}@${PI_HOST}" <<'REMOTE_SCRIPT'
 echo "=== uname ==="
 uname -r
@@ -116,6 +121,7 @@ echo "=== uptime ==="
 awk '{print int($1)}' /proc/uptime
 REMOTE_SCRIPT
 )"; _ssh_rc=$?
+set -e
 
 if [ "$_ssh_rc" -ne 0 ] || [ -z "$remote_state" ]; then
   log "ERROR: SSH to ${PI_HOST} failed rc=${_ssh_rc}, no state gathered"
