@@ -767,12 +767,76 @@ setup_hailo_ai_hat() {
         log_info "Снимаем старый hailofw (firmware теперь в hailort-pcie-driver)..."
         sudo apt-get remove -y hailofw
     fi
-    if modinfo hailo_pci 2>/dev/null | grep -q "version:.*${hailo_version}"; then
-        log_success "Драйвер hailo_pci ${hailo_version} уже установлен"
+
+    # Issue #3090: проверка `modinfo` сравнивает только версию пакета, но не
+    # проверяет, что .ko собран ДЛЯ АКТИВНОГО kernel. После `apt upgrade
+    # linux-image-*-raspi` DKMS-модуль остаётся для старого kernel
+    # (например 6.8.0-138-generic), а на новом (6.8.0-1065-raspi) его нет →
+    # `modprobe hailo_pci` падает с "Module not found in /lib/modules/$(uname -r)".
+    #
+    # Правильный precondition: kernel→.ko соответствие. Сначала проверяем
+    # что /lib/modules/$(uname -r)/extra/hailo_pci.ko (или updates/) существует
+    # И modinfo для активного kernel отвечает ожидаемой версией. Если
+    # mismatch — DKMS пересборка для активного kernel; если и она не даёт .ko —
+    # reinstall .deb (dkms autoinstall в postinst).
+    local active_kernel
+    active_kernel="$(uname -r)"
+    local kernel_module_path="/lib/modules/${active_kernel}/extra/hailo_pci.ko"
+    local kernel_updates_path="/lib/modules/${active_kernel}/updates/hailo_pci.ko"
+    local module_present=0
+    if [ -f "$kernel_module_path" ] || [ -f "$kernel_updates_path" ]; then
+        module_present=1
+    fi
+
+    if [ "$module_present" = "1" ] && modinfo hailo_pci 2>/dev/null | grep -q "version:.*${hailo_version}"; then
+        log_success "Драйвер hailo_pci ${hailo_version} собран для активного kernel ${active_kernel}"
     else
-        log_info "Устанавливаем hailort-pcie-driver ${hailo_version} (DKMS-сборка)..."
-        sudo apt-get install -y "$hailo_driver_deb"
-        log_success "Драйвер и firmware установлены"
+        if [ "$module_present" = "0" ]; then
+            log_warning "Драйвер hailo_pci отсутствует для активного kernel ${active_kernel} (issue #3090 root cause)"
+            log_info "DKMS-пересборка для активного kernel..."
+            if command -v dkms >/dev/null 2>&1 && dkms status 2>/dev/null | grep -q "hailort-pcie-driver"; then
+                sudo dkms autoinstall --kernel "${active_kernel}" || true
+            fi
+        else
+            log_info "Версия драйвера hailo_pci не совпадает с ожидаемой ${hailo_version} — переустанавливаем .deb"
+        fi
+        # Если .ko всё ещё не появился — переустановить .deb, его postinst
+        # сделает `dkms autoinstall`.
+        if [ ! -f "$kernel_module_path" ] && [ ! -f "$kernel_updates_path" ]; then
+            log_info "Устанавливаем hailort-pcie-driver ${hailo_version} (DKMS-сборка)..."
+            sudo apt-get install -y --reinstall "$hailo_driver_deb"
+            log_success "Драйвер и firmware установлены / пересобраны для ${active_kernel}"
+        else
+            log_success "Драйвер hailo_pci пересобран DKMS для ${active_kernel}"
+        fi
+    fi
+
+    # Issue #3090 prevention: регистрируем apt-dkms hook для hailo_pci, чтобы
+    # при `apt upgrade linux-image-*` DKMS автоматически пересобирал модуль
+    # для нового активного kernel ДО следующего reboot. Без этого hook'а
+    # пользователь узнаёт о проблеме только post-boot, когда /dev/hailo0
+    # уже отсутствует.
+    #
+    # Hook на DPkg::Post-Invoke (а не APT::Update::Pre-Invoke) — он
+    # срабатывает ПОСЛЕ `dpkg` install/upgrade пакета, т.е. после того
+    # как новый linux-image-* уже распакован и его headers доступны.
+    # `dkms autoinstall` идемпотентен: если для kernel модуль уже есть,
+    # noop. Имя 99-* гарантирует, что hook исполнится ПОСЛЕ стандартного
+    # пакета `dkms` (88-dkms autoinstall), как fallback.
+    local hook_dir="/etc/apt/apt.conf.d"
+    local hook_file="${hook_dir}/99hailort-dkms-autoinstall"
+    if [ -f "$hook_file" ]; then
+        log_info "apt-dkms hook для hailo_pci уже установлен: $hook_file"
+    else
+        sudo tee "$hook_file" >/dev/null <<'HOOKEOF'
+// Issue #3090: после `apt upgrade linux-image-*` (или новых headers в DKMS)
+// DKMS должен автоматически пересобрать hailo_pci для нового активного
+// kernel ДО reboot. Без этого hook'а пользователь узнаёт о проблеме
+// только post-boot, когда /dev/hailo0 уже отсутствует.
+// Идемпотентен: `dkms autoinstall` noop если модуль уже собран.
+DPkg::Post-Invoke { "if [ -x /usr/sbin/dkms ] && ls /usr/src/ 2>/dev/null | grep -q hailort-pcie-driver; then /usr/sbin/dkms autoinstall || true; fi"; };
+HOOKEOF
+        log_success "apt-dkms hook установлен: $hook_file (auto dkms autoinstall при apt upgrade)"
     fi
 
     # 2) HailoRT (runtime + hailortcli)
