@@ -33,43 +33,10 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core import renardo_sanitizer, sample_loops
-from ..engine import renardo_adapter
-from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
-from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
-from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
 from ..core.music_stack_health import MusicStackHealth  # ADR-0134 §5 Phase 2
-from ..core.rtttl_compose import key_honesty_note, melody_to_compose_params, rtttl_to_melody
-from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
-from ..core.score_sheet import analyze_melody, describe
+from ..engine import renardo_adapter
 from ..engine.search import find
-
-
-def _ensure_health_for(mgr: "MusicManager") -> MusicStackHealth:
-    """Module-level helper that lazily builds ``MusicManager._health``.
-
-    Lives outside the class on purpose: it lets the host class drop one
-    named method while still tolerating ``MusicManager.__new__``-bypassed
-    instances (the test factory ``_make_manager`` in
-    ``test_tools/test_music.py``). ADR-0134 §5 Phase 2 + ADR-0145.
-    """
-    health = getattr(mgr, "_health", None)
-    if health is None:
-        health = MusicStackHealth(mgr)
-        object.__setattr__(mgr, "_health", health)
-    return health
-
-
-#: Issue #3112 — флаг кандидата-фикса фазы клока (по умолчанию ВЫКЛ).
-_ALIGN_CLOCK_ENV = "ROB_BOX_MUSIC_ALIGN_CLOCK"
-
-
-def music_align_clock_enabled() -> bool:
-    """``ROB_BOX_MUSIC_ALIGN_CLOCK=1`` — аранжировщики ставят ``Clock.set_time``.
-
-    Читается здесь, а не в ``core``: ядро аранжировщика чистое и получает
-    флаг параметром (``render(..., align_clock=)``/``render_club``).
-    """
-    return os.environ.get(_ALIGN_CLOCK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -224,6 +191,23 @@ CRITICAL_SYNTHS: tuple = (
     "bass", "gong", "pluck", "saw", "square", "faim", "viola",
     "noise", "scatter", "orient", "creep", "play1", "play2",
 )
+
+
+
+def _ensure_health_for(mgr: "MusicManager") -> MusicStackHealth:
+    """Module-level helper that lazily builds ``MusicManager._health``.
+
+    Lives outside the class on purpose: it lets the host class drop one
+    named method while still tolerating ``MusicManager.__new__``-bypassed
+    instances (the test factory ``_make_manager`` in
+    ``test_tools/test_music.py``). ADR-0134 §5 Phase 2 + ADR-0145.
+    """
+    health = getattr(mgr, "_health", None)
+    if health is None:
+        health = MusicStackHealth(mgr)
+        object.__setattr__(mgr, "_health", health)
+    return health
+
 
 
 class MusicManager:
@@ -462,15 +446,6 @@ class MusicManager:
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
-        # DJ mode flag — единственный владелец: ``set_dj_mode()`` (см.
-        # ниже). Ставится двумя адаптерами одного шва: ``SetDjModeTool``
-        # (напрямую) и ``MCPServer._on_dj_mode`` (из топика /voice/dj_mode,
-        # который dialogue_node публикует в stop-fallback). Читается в
-        # ``auto_stop_idle_music``: пока DJ включён, segments-дедлайн #990
-        # не должен гасить непрерывный сет.
-        # ------------------------------------------------------------------
-        self._dj_mode_enabled: bool = False
-        # ------------------------------------------------------------------
         # Music stack health (issue G-MUSIC, architect review v3, ADR-0134 §5)
         # ------------------------------------------------------------------
         # Phase 2 decomposition: the 5 health-related methods now live on
@@ -479,6 +454,9 @@ class MusicManager:
         # ``self._health`` (delegations on the host stay as shims, see
         # ``# SHIM-remove-after-#3014-phase-6``).
         self._health: MusicStackHealth = MusicStackHealth(self)
+        # ------------------------------------------------------------------
+        # Music stack health (issue G-MUSIC, architect review v3)
+        # ------------------------------------------------------------------
         # If sclang already wrote a startup log and it's degraded, refuse to
         # initialize Renardo and surface a clear "music unavailable" error.
         # We do this BEFORE calling _initialize_renardo() so a broken
@@ -905,42 +883,41 @@ class MusicManager:
     # ``MusicManager`` byte-identical for callers (and tests) while the
     # host class is being slimmed down across phases 3-6.
     #
-    # The helper lazily builds ``self._health`` if a caller used
-    # ``MusicManager.__new__`` to bypass ``__init__`` (matches the test
-    # factory ``_make_manager`` in test_tools/test_music.py).
+    # The five shims are kept as *named* methods (rather than a single
+    # ``__getattr__`` dispatcher) so ``unittest.mock.patch.object`` can
+    # rebind them on the class — ``patch.object`` checks
+    # ``hasattr(MusicManager, name)`` which is not affected by
+    # ``__getattr__`` (it is only consulted for instance attribute
+    # lookups). The ``_ensure_health`` helper that lived here in the
+    # initial Phase-2 cut was moved to a module-level
+    # ``_ensure_health_for`` so the host class shrinks by one method
+    # (ADR-0145 class-size ratchet).
     # ------------------------------------------------------------------
-
-    def _ensure_health(self) -> "MusicStackHealth":
-        health = getattr(self, "_health", None)
-        if health is None:
-            health = MusicStackHealth(self)
-            self._health = health
-        return health
 
     def known_synth_names(self) -> Optional[frozenset]:
         # SHIM-remove-after-#3014-phase-6
-        return self._ensure_health().known_synth_names()
+        return _ensure_health_for(self).known_synth_names()
 
     def _log_synth_truth_discrepancy(self) -> None:
         # SHIM-remove-after-#3014-phase-6
-        self._ensure_health()._log_synth_truth_discrepancy()
+        _ensure_health_for(self)._log_synth_truth_discrepancy()
 
     def _evaluate_music_stack_health(
         self,
         sclang_log_path: Optional[str] = None,
     ) -> MusicStackStatus:
         # SHIM-remove-after-#3014-phase-6
-        return self._ensure_health()._evaluate_music_stack_health(
+        return _ensure_health_for(self)._evaluate_music_stack_health(
             sclang_log_path=sclang_log_path,
         )
 
     def is_music_stack_healthy(self) -> bool:
         # SHIM-remove-after-#3014-phase-6
-        return self._ensure_health().is_music_stack_healthy()
+        return _ensure_health_for(self).is_music_stack_healthy()
 
     def music_stack_unavailable_error(self) -> Dict[str, str]:
         # SHIM-remove-after-#3014-phase-6
-        return self._ensure_health().music_stack_unavailable_error()
+        return _ensure_health_for(self).music_stack_unavailable_error()
 
     # ------------------------------------------------------------------
     # SuperCollider check
