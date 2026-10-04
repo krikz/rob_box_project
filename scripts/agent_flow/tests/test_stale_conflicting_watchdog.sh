@@ -186,6 +186,11 @@ PYEOF
     # BOARD default 'robbox' → передаём явно, чтобы mock-hermes видел board.
     WATCHDOG_BOARD="test-board"
     export WATCHDOG_BOARD
+    # Отключаем REST-fallback (ретро t_6ea502e3): без этого S1 (MOCK_GH_PRS_JSON=[])
+    # уходит в реальный REST → scanned=25, тест ломается. Здесь gh mock означает
+    # "выключи оба канала" — тестируем чистую логику.
+    DISABLE_REST_FALLBACK=1
+    export DISABLE_REST_FALLBACK
 
     _ALL_WORKS+=("$WORK")
 }
@@ -526,6 +531,144 @@ STUBEOF
     fi
 }
 test_S10_per_pr_idempotency_key; _ALL_WORKS+=("$WORK")
+
+# ------------------- S11: REST fallback when gh returns [] ---------------
+# Ретро t_6ea502e3: gh GraphQL rate-limit → scanned=0 → PR #3370/#3372/#3373
+# пропущены. После фикса при MOCK_GH_PRS_JSON=[] (mock gh) — если fallback
+# включён — реальный REST должен сработать. Но в тестах мы НЕ хотим ходить
+# в GitHub: проверяем, что fallback _используется_ (в логах rest_fallback=true)
+# И при этом НЕ создаёт карточки (потому что реальный REST либо даёт пустой
+# dirty+stale список, либо rate-limited).
+test_S11_rest_fallback_attempted_on_empty() {
+    run_test S11
+    # MOCK_GH_PRS_JSON=[] → gh вернёт [] → fallback сработает
+    MOCK_GH_PRS_JSON="$WORK/s11.json"; export MOCK_GH_PRS_JSON
+    echo '[]' > "$MOCK_GH_PRS_JSON"
+    # ВАЖНО: НЕ отключаем DISABLE_REST_FALLBACK — хотим проверить, что
+    # fallback действительно срабатывает (его trace пишется в stderr).
+    unset DISABLE_REST_FALLBACK 2>/dev/null || true
+    set +e
+    DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s11.out 2>/tmp/s11.err
+    _rc=$?
+    set -e
+    # rc может быть 0 (если REST тоже пустой) или 2 (если REST дал dirty+stale).
+    # Главное — в stderr должен быть признак fallback.
+    if grep -q "REST fallback" /tmp/s11.err; then
+        pass "S11 REST fallback triggered (gh вернул [] → REST attempted)"
+    else
+        fail "S11 expected 'REST fallback' in stderr, got: $(cat /tmp/s11.err | tail -3)"
+    fi
+    if grep -q "rest_fallback=true" /tmp/s11.err; then
+        pass "S11 summary rest_fallback=true"
+    else
+        fail "S11 expected rest_fallback=true in summary, got: $(cat /tmp/s11.err | tail -1)"
+    fi
+}
+test_S11_rest_fallback_attempted_on_empty; _ALL_WORKS+=("$WORK")
+
+# ------------------- S12: dedup-done filter (kanban-retro-create) --------
+# Ретро t_6ea502e3: t_e2fd3c24 (rebase #3359) → status=done. pre-check
+# в kanban-retro-create.sh РАНЬШЕ skip'ал done-карточку → новая не создавалась.
+# После фикса: done НЕ блокирует → карточка создаётся.
+test_S12_dedup_done_does_not_block() {
+    run_test S12
+    # Подготовка kanban DB: одна done-карточка с marker'ом "ретро-key: rebase-pr-2639".
+    python3 - "$KANBAN_DB_PATH" <<PYEOF
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ("t_donedummy", "rebase PR #2639 (CONFLICTING 4h, t_a7d642cd)",
+     "old body\nретро-key: rebase-pr-2639", "devops", "done",
+     1000, 1800, 1000, "scratch", "sess1"))
+con.commit()
+con.close()
+PYEOF
+    MOCK_GH_PRS_JSON="$WORK/s12.json"; export MOCK_GH_PRS_JSON
+    _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+    cat > "$MOCK_GH_PRS_JSON" <<EOF
+[{"number":2639,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2630","baseRefName":"develop","updatedAt":"$_updated","title":"harness refactor"}]
+EOF
+    set +e
+    DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s12.out 2>/tmp/s12.err
+    _rc=$?
+    set -e
+    if [ "$_rc" = "2" ]; then pass "S12 exit=2 (created despite done-card)"
+    else fail "S12 expected exit=2, got $_rc (stderr=$(cat /tmp/s12.err | tail -1))"; fi
+    if grep -q "CREATE title='rebase PR #2639" "$JOURNAL_FILE"; then
+        pass "S12 created new card (done-card did not block)"
+    else
+        fail "S12 expected CREATE for PR #2639, JOURNAL: $(cat "$JOURNAL_FILE")"
+    fi
+}
+test_S12_dedup_done_does_not_block; _ALL_WORKS+=("$WORK")
+
+# ------------------- S13: dedup-running/todo blocks (regression) ------
+# Контр-тест: running/todo карточка ДОЛЖНА блокировать (это и есть
+# "active" dedup). Archived/done НЕ блокируют (тест D и ретро t_6ea502e3).
+test_S13_dedup_running_blocks() {
+    run_test S13
+    # 1) В sqlite пишем running-карточку.
+    # 2) В mock-hermes переопределяем: list → возвращает эту карточку.
+    python3 - "$KANBAN_DB_PATH" <<PYEOF
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ("t_runningdummy", "rebase PR #2639 (CONFLICTING 4h, t_a7d642cd)",
+     "old body\nретро-key: rebase-pr-2639", "devops", "running",
+     1000, 1800, 1000, "scratch", "sess1"))
+con.commit()
+con.close()
+PYEOF
+    # Перезаписываем mock-hermes: list возвращает running-задачу.
+    cat > "$WORK/bin/hermes" <<'MOCKEOF'
+#!/bin/bash
+JOURNAL="${JOURNAL_FILE:-/dev/null}"
+_subcmd="${4:-}"
+case "$1:${_subcmd}" in
+    kanban:list)
+        cat <<'JSON'
+[{"id":"t_runningdummy","title":"rebase PR #2639 (CONFLICTING 4h, t_a7d642cd)","body":"old body\nретро-key: rebase-pr-2639","status":"running","assignee":"devops"}]
+JSON
+        ;;
+    kanban:create)
+        _title=""
+        _seen_create=0
+        for _arg in "$@"; do
+            if [ "$_seen_create" -eq 1 ] && [ -z "$_title" ] && [ "$_arg" != "--body" ]; then
+                _title="$_arg"
+                break
+            fi
+            [ "$_arg" = "create" ] && _seen_create=1
+        done
+        printf '%s\n' "CREATE title='${_title}'" >> "$JOURNAL"
+        _fake_id="t_$(printf '%s' "$_title" | md5sum | cut -c1-8)"
+        echo "{\"id\":\"${_fake_id}\",\"title\":\"${_title}\"}"
+        ;;
+    *)
+        printf '%s\n' "MOCKED_UNKNOWN: $*" >> "$JOURNAL"
+        exit 0
+        ;;
+esac
+MOCKEOF
+    chmod +x "$WORK/bin/hermes"
+    MOCK_GH_PRS_JSON="$WORK/s13.json"; export MOCK_GH_PRS_JSON
+    _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+    cat > "$MOCK_GH_PRS_JSON" <<EOF
+[{"number":2639,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2630","baseRefName":"develop","updatedAt":"$_updated","title":"harness refactor"}]
+EOF
+    set +e
+    DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s13.out 2>/tmp/s13.err
+    _rc=$?
+    set -e
+    if [ "$_rc" = "0" ]; then pass "S13 exit=0 (running-card blocked — correct regression)"
+    else fail "S13 expected exit=0 (running blocks), got $_rc (stderr=$(cat /tmp/s13.err | tail -1))"; fi
+    if [ ! -s "$JOURNAL_FILE" ]; then
+        pass "S13 no create (running-card blocks as before)"
+    else
+        fail "S13 expected no create (running blocks), JOURNAL: $(cat "$JOURNAL_FILE")"
+    fi
+}
+test_S13_dedup_running_blocks; _ALL_WORKS+=("$WORK")
 
 echo
 echo "=== summary: $_pass passed, $_fail failed ==="
