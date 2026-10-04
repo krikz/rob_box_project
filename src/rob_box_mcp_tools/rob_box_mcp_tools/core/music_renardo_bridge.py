@@ -30,6 +30,7 @@ What did NOT move:
 
 from __future__ import annotations
 
+import functools
 import logging as _logging_module  # noqa: F401  — kept for tests that patch it
 import os
 import socket
@@ -385,23 +386,7 @@ class MusicRenardoBridge:
                 dst_dir = samples_base / letter / case_dir
                 if not src_dir.exists():
                     continue
-                self._merge_sample_letter(src_dir, dst_dir)
-
-    @staticmethod
-    def _merge_sample_letter(src_dir: Any, dst_dir: Any) -> None:
-        """Скопировать ``*.wav`` из ``src_dir`` в ``dst_dir`` поверх существующих.
-
-        Использует «set уже-имеющихся имён → copy2 только новых», чтобы
-        не тратить I/O на повторную перезапись 100+ файлов при каждом
-        старте контейнера.
-        """
-        import shutil as _shutil
-
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        dst_wavs = {f.name for f in dst_dir.glob("*.wav")}
-        for wav in src_dir.glob("*.wav"):
-            if wav.name not in dst_wavs:
-                _shutil.copy2(wav, dst_dir / wav.name)
+                _merge_sample_letter(src_dir, dst_dir)  # module-level helper
 
     def _import_and_connect_renardo(self) -> Any:
         """Импортировать renardo_lib.runtime и подключиться к scsynth.
@@ -454,7 +439,10 @@ class MusicRenardoBridge:
         register_sc_only_custom_synthdefs(_rt, self._renardo_context)
         self._renardo_available = True
         self._renardo_last_error = None
-        self._log_synth_truth_discrepancy()
+        _log_synth_truth_discrepancy(
+            *self._known_synth_truth_discrepancy_state(),
+            log_warning=functools.partial(_bridge_log_warning, self),
+        )
 
     def _verify_and_retry_synthdefs(
         self,
@@ -541,8 +529,9 @@ class MusicRenardoBridge:
             missing = _probe_missing(missing)
             if not missing:
                 return
-            self._log_warning(
-                f"[music] round {round_no + 1}: missing SynthDefs: {missing} — re-sending"
+            _log_warning(
+                f"[music] round {round_no + 1}: missing SynthDefs: {missing} — re-sending",
+                getattr(self, "_logger", None),
             )
             for name in missing:
                 try:
@@ -566,22 +555,10 @@ class MusicRenardoBridge:
                     continue
                 _time.sleep(0.3)
             _time.sleep(5)  # время на компиляцию
-        self._log_warning(
-            f"[music] SynthDefs still missing after {max_rounds} rounds: {missing}"
+        _log_warning(
+            f"[music] SynthDefs still missing after {max_rounds} rounds: {missing}",
+            getattr(self, "_logger", None),
         )
-
-    def _log_warning(self, message: str) -> None:
-        """Log via the bridge's logger when available (fallback to print)."""
-        logger = getattr(self, "_logger", None)
-        if logger is not None:
-            try:
-                logger.warning(message)
-                return
-            except Exception:  # noqa: BLE001
-                pass
-        import sys as _sys
-        _sys.stderr.write(f"{message}\n")
-        _sys.stderr.flush()
 
     # ------------------------------------------------------------------
     # Issue #1808 — слушатель ответов scsynth (/fail, /done)
@@ -670,42 +647,14 @@ class MusicRenardoBridge:
             except Exception:  # noqa: BLE001 — единичный кривой пакет не должен убивать поток
                 continue
             try:
-                self._log_osc_reply(data)
+                _log_osc_reply(
+                    data,
+                    functools.partial(
+                        _bridge_log_warning, self
+                    ),
+                )
             except Exception:  # noqa: BLE001
                 continue
-
-    def _log_scsynth_reply_if_any(self, sock: "socket.socket") -> None:
-        """После собственного ``sendto`` кратко послушать тот же сокет на /fail.
-
-        Таймаут короткий (``OSC_REPLY_TIMEOUT_SECONDS``) — см. обоснование
-        у объявления константы. Полностью best-effort: таймаут/любая ошибка
-        чтения — это НОРМА (большинство успешных admin-команд scsynth не
-        подтверждает вовсе), а не повод помешать вызывающему коду.
-        """
-        try:
-            sock.settimeout(self.OSC_REPLY_TIMEOUT_SECONDS)
-            data, _addr = sock.recvfrom(4096)
-        except Exception:  # noqa: BLE001 — таймаут = scsynth принял молча (норма)
-            return
-        try:
-            self._log_osc_reply(data)
-        except Exception:  # noqa: BLE001
-            pass
-
-    def _log_osc_reply(self, data: bytes) -> None:
-        """Разобрать ответ scsynth; залогировать, если это ``/fail``.
-
-        Полный OSC-парсер не нужен — только различить ``/fail`` (реальный
-        отказ, ту самую строку из логов supercollider, которую раньше
-        никто не видел) от остального (``/done``, ``/synced`` и т.п. —
-        штатные подтверждения, шум для лога ошибок).
-        """
-        address, rest = _split_osc_address(data)
-        if address != "/fail":
-            return
-        args = _decode_osc_args(rest)
-        detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
-        self._log_warning(f"🔴 [scsynth] FAILURE IN SERVER: {detail}")
 
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.
@@ -767,33 +716,13 @@ class MusicRenardoBridge:
             return wrapped
         return wrapped & confirmed
 
-    def _log_synth_truth_discrepancy(self) -> None:
-        """Issue #2838: залогировать расхождение «отправлено» vs «на сервере».
-
-        Вызывается один раз в конце успешного ``_initialize_renardo``.
-        Ничего не меняет — только делает видимым, какие синты Python-сторона
-        считает добавленными, но sclang не подтвердил в scsynth (валидатор
-        их отклоняет и не подсказывает).
-        """
+    def _known_synth_truth_discrepancy_state(self) -> tuple:
+        """Собрать state для ``_log_synth_truth_discrepancy`` (вынесен в module-level)."""
         confirmed = getattr(self, "_server_confirmed_synths", None)
-        if confirmed is None:
-            self._log_warning(
-                "[music #2838] нет подтверждения прелоада SynthDef-ов в "
-                "sclang-логе — валидатор синтов работает по списку "
-                "ОТПРАВЛЕННЫХ (sdef.add()), он не проверен сервером"
-            )
-            return
-        unconfirmed = sorted(set(self._synthdefs_added) - confirmed)
-        wrapped = set(self._synthdefs_added) | set(CUSTOM_SC_ONLY_SYNTH_NAMES)
-        no_wrapper = sorted(confirmed - wrapped)
-        sent = len(self._synthdefs_added)
-        allowed = len(self.known_synth_names() or ())
-        self._log_warning(
-            f"[music #2838] SynthDef truth: подтверждено в scsynth "
-            f"{len(confirmed)}, отправлено renardo {sent}, "
-            f"разрешено валидатору {allowed}; "
-            f"без подтверждения ({len(unconfirmed)}, отклоняются): "
-            f"{unconfirmed}; на сервере без Python-обёртки: {no_wrapper}"
+        return (
+            self._synthdefs_added,
+            confirmed,
+            self.known_synth_names() or (),
         )
 
     # ------------------------------------------------------------------
@@ -952,4 +881,131 @@ class MusicRenardoBridge:
             sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
             # Issue #1808 — см. docstring выше и обоснование у
             # OSC_REPLY_TIMEOUT_SECONDS. Best-effort, никогда не бросает.
-            self._log_scsynth_reply_if_any(sock)
+            _log_scsynth_reply_if_any(
+                sock,
+                functools.partial(
+                    _log_osc_reply,
+                    log_warning=functools.partial(_bridge_log_warning, self),
+                ),
+            )
+
+    # ------------------------------------------------------------------
+    # Sample-letter merge (module-level, было staticmethod; вынесено
+    # чтобы уменьшить WMC MusicRenardoBridge — ADR-0145).
+    # ------------------------------------------------------------------
+
+
+def _merge_sample_letter(src_dir: Any, dst_dir: Any) -> None:
+    """Скопировать ``*.wav`` из ``src_dir`` в ``dst_dir`` поверх существующих.
+
+    Использует «set уже-имеющихся имён → copy2 только новых», чтобы
+    не тратить I/O на повторную перезапись 100+ файлов при каждом
+    старте контейнера.
+    """
+    import shutil as _shutil
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst_wavs = {f.name for f in dst_dir.glob("*.wav")}
+    for wav in src_dir.glob("*.wav"):
+        if wav.name not in dst_wavs:
+            _shutil.copy2(wav, dst_dir / wav.name)
+
+
+# ---------------------------------------------------------------------------
+# Log / OSC-reply helpers (module-level — were methods on MusicRenardoBridge;
+# вынесены чтобы уменьшить WMC класса — ADR-0145). ``log_warning`` принимается
+# callable, чтобы зовущая сторона могла прокинуть свой (своя ``_logger``,
+# capture в тестах и т.п.); аналогично ``log_osc_reply`` пробрасывается
+# callback'ом в ``_log_scsynth_reply_if_any``.
+# ---------------------------------------------------------------------------
+
+
+def _log_warning(message: str, logger: Any) -> None:
+    """Log via the bridge's logger when available (fallback to stderr)."""
+    if logger is not None:
+        try:
+            logger.warning(message)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    import sys as _sys
+    _sys.stderr.write(f"{message}\n")
+    _sys.stderr.flush()
+
+
+def _log_osc_reply(data: bytes, log_warning: Any) -> None:
+    """Разобрать ответ scsynth; залогировать, если это ``/fail``.
+
+    Полный OSC-парсер не нужен — только различить ``/fail`` (реальный
+    отказ, ту самую строку из логов supercollider, которую раньше
+    никто не видел) от остального (``/done``, ``/synced`` и т.п. —
+    штатные подтверждения, шум для лога ошибок).
+    """
+    address, rest = _split_osc_address(data)
+    if address != "/fail":
+        return
+    args = _decode_osc_args(rest)
+    detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
+    log_warning(f"🔴 [scsynth] FAILURE IN SERVER: {detail}")
+
+
+def _log_scsynth_reply_if_any(sock: "socket.socket", log_osc_reply: Any) -> None:
+    """Read 1 datagram from ``sock`` with the OSC-reply timeout; never raise.
+
+    Используется в ``_send_osc_raw`` (наши admin-сообщения /g_new, /n_set
+    мастер-фейдера) — успешные /g_new и /n_set не получают ответа, таймаут
+    это штатный happy-path, а не ошибка.
+    """
+    timeout = MusicRenardoBridge.OSC_REPLY_TIMEOUT_SECONDS
+    sock.settimeout(timeout)
+    try:
+        data, _ = sock.recvfrom(512)
+    except (socket.timeout, OSError):
+        return
+    try:
+        log_osc_reply(data)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _bridge_log_warning(bridge: Any, message: str) -> None:
+    """Adapter: bind ``_log_warning`` to a bridge instance, returning a 1-arg callable.
+
+    Используется как ``log_osc_reply=_bridge_log_warning`` shorthand в
+    call-sites, чтобы не плодить вложенные ``lambda``.
+    """
+    _log_warning(message, getattr(bridge, "_logger", None))
+
+
+def _log_synth_truth_discrepancy(
+    synthdefs_added: Any,
+    server_confirmed_synths: Any,
+    known_synth_names: Any,
+    log_warning: Any,
+) -> None:
+    """Issue #2838: залогировать расхождение «отправлено» vs «на сервере».
+
+    Вызывается один раз в конце успешного ``_initialize_renardo``.
+    Ничего не меняет — только делает видимым, какие синты Python-сторона
+    считает добавленными, но sclang не подтвердил в scsynth (валидатор
+    их отклоняет и не подсказывает).
+    """
+    if server_confirmed_synths is None:
+        log_warning(
+            "[music #2838] нет подтверждения прелоада SynthDef-ов в "
+            "sclang-логе — валидатор синтов работает по списку "
+            "ОТПРАВЛЕННЫХ (sdef.add()), он не проверен сервером"
+        )
+        return
+    unconfirmed = sorted(set(synthdefs_added) - server_confirmed_synths)
+    wrapped = set(synthdefs_added) | set(CUSTOM_SC_ONLY_SYNTH_NAMES)
+    no_wrapper = sorted(server_confirmed_synths - wrapped)
+    sent = len(synthdefs_added)
+    allowed = len(known_synth_names or ())
+    log_warning(
+        f"[music #2838] SynthDef truth: подтверждено в scsynth "
+        f"{len(server_confirmed_synths)}, отправлено renardo {sent}, "
+        f"разрешено валидатору {allowed}; "
+        f"без подтверждения ({len(unconfirmed)}, отклоняются): "
+        f"{unconfirmed}; на сервере без Python-обёртки: {no_wrapper}"
+    )
