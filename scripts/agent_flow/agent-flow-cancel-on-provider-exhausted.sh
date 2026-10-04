@@ -101,6 +101,30 @@ EXHAUST_SIGNATURES=(
 # чтобы recover-фаза могла искать «свои» блоки и не unblock-ать ручные.
 RETRO_TAG="<!-- retro-key:${RETRO_KEY} -->"
 
+# -------- auto-issue (ADR-0019, kanban t_4aaeeef6) --------
+# Если env PROVIDER_EXHAUST_AUTO_ISSUE не задан → OFF (safe-by-default).
+# Шифу/Юзер включает через PROVIDER_EXHAUST_AUTO_ISSUE=1 (env в cron-job) после
+# merge PR; до этого поведение точно такое же, как в ретро t_197de62a.
+# Ретро t_4aaeeef6 (incident 2026-10-03): 5-й рецидив MiniMax/DeepSeek исчерпания
+# прошёл МОЛЧА — воркеры писали «провайдер исчерпан, ждать» в комментариях карточек,
+# но НИКТО не открыл incident-tracking issue, чтобы у Шифу был сигнал/триггер
+# на пополнение. Карточки заблокировались (cancel), а Шифу узнал только из ночного
+# ревью. Auto-issue закрывает этот process-gap.
+GH_REPO_DEFAULT="krikz/rob_box_project"
+GH_REPO="${GH_REPO:-$GH_REPO_DEFAULT}"
+PROVIDER_EXHAUST_AUTO_ISSUE="${PROVIDER_EXHAUST_AUTO_ISSUE:-0}"
+# Лейбл нового issue (раздельный с e2e-fail-streak, чтобы Шифу мог фильтровать).
+RECURRENT_INCIDENT_LABEL="${RECURRENT_INCIDENT_LABEL:-recurrent-incident}"
+# Cooldown между auto-create (default 24ч — компромисс между видимостью и штормом).
+# Ретро t_4aaeeef6: 14ч-блокировка фаз #3014 (несколько рецидивов в окне). При
+# cooldown 4ч (как у fail-streak) — будет 1 issue за ночь; 24ч — 1 issue за
+# инцидент, что и хочется Шифу.
+PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS="${PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS:-24}"
+ISSUE_COOLDOWN_FILE_DEFAULT="${HERMES_HOME}/state/agent-flow-cancel-provider-exhausted-last-issue"
+ISSUE_COOLDOWN_FILE="${ISSUE_COOLDOWN_FILE:-$ISSUE_COOLDOWN_FILE_DEFAULT}"
+# assignees (опционально, дефолт без).
+PROVIDER_EXHAUST_ISSUE_ASSIGNEES="${PROVIDER_EXHAUST_ISSUE_ASSIGNEES:-}"
+
 # -------- helpers --------
 
 # MAINTENANCE gate (issue #3009). Inline-проверка без source
@@ -145,17 +169,28 @@ Modes:
               task_runs.summary of non-blocked tasks, then:
                 1) block (kind=capability, reason='$BLOCK_REASON')
                 2) post sentinel-marked comment on linked issue ref
+                3) if PROVIDER_EXHAUST_AUTO_ISSUE=1 AND actions>0 AND
+                   no OPEN recurrent-incident issue exists AND cooldown
+                   aged > ${PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS}h:
+                     create ONE GitHub incident issue (label=$RECURRENT_INCIDENT_LABEL)
               IDEMPOTENT: re-runs are no-op for already-blocked tasks with
-              existing sentinel comment.
+              existing sentinel comment. Auto-issue guarded by cooldown
+              file + gh-truth (open-issue list) — safe to re-run.
   --recover   companion: scan blocked tasks with sentinel comment +
               block_kind=capability + prov-alive signal → unblock back to ready.
   --dry-run   same scan as default, but print what WOULD be done; no side effects.
   --help      this message.
 
 Env knobs:
-  HERMES_BIN           hermes CLI (default: $HERMES_BIN)
-  KANBAN_BOARDS_DIR    boards dir (default: $KANBAN_BOARDS_DIR)
-  LOCK_FILE / LOG_FILE override defaults
+  HERMES_BIN                          hermes CLI (default: $HERMES_BIN)
+  KANBAN_BOARDS_DIR                   boards dir (default: $KANBAN_BOARDS_DIR)
+  GH_REPO                             owner/repo for auto-issue (default: ${GH_REPO_DEFAULT:-krikz/rob_box_project})
+  LOCK_FILE / LOG_FILE                override defaults
+  PROVIDER_EXHAUST_AUTO_ISSUE         1 to enable auto-create incident-issue (default: 0/OFF)
+  PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS  cooldown between auto-issues (default: 24)
+  RECURRENT_INCIDENT_LABEL            label for auto-issue (default: recurrent-incident)
+  PROVIDER_EXHAUST_ISSUE_ASSIGNEES    comma-separated assignees (default: empty)
+  ISSUE_COOLDOWN_FILE                 override path to cooldown file
 EOF
 }
 
@@ -466,6 +501,209 @@ PYEOF
 #   Прочитать $ACTIONS_FILE и выполнить kanban block + comment.
 #   Для --dry-run только печатаем план.
 # ============================================================================
+# ============================================================================
+# auto_create_recurrent_incident (ADR-0019, kanban t_4aaeeef6)
+#   Если включён PROVIDER_EXHAUST_AUTO_ISSUE=1 И есть хотя бы один cancel-action
+#   в этом тике (т.е. НЕ silent tick), то проверяем два guard'а:
+#     (a) ISSUE_COOLDOWN_FILE mtime — если свежий (< cooldown-hours) → SKIP
+#     (b) gh issue list --label recurrent-incident --state open — если ≥1 → SKIP
+#   Если оба guard'а пропускают → собираем body (timeline cancel-actions за
+#   этот tick + root cause link на #1193 + develop HEAD + что делать блок)
+#   и вызываем `gh issue create` с label=recurrent-incident + agent:devops +
+#   hermes + assignee из env. Записываем cooldown.
+#
+#   Ретро t_4aaeeef6: карточки cancel'ились, но incident-issue не появлялся → Шифу
+#   узнавал из ночного ревью. Auto-issue закрывает process-gap.
+#
+#   Output: _auto_issue_url (если создан) или пусто.
+# ============================================================================
+_gh_truth_open_issues_count() {
+    local label="$1"
+    if [ -z "$label" ]; then
+        echo 0; return
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        echo 0; return
+    fi
+    # Требуется GH_CONFIG_DIR (как и в _post_github_issue_comment). Без него — 0
+    # (это safe-by-default: лучше no-op чем сгутить и создать дубль).
+    GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue list --repo "$GH_REPO" --state open \
+        --label "$label" --limit 1 --json number 2>/dev/null \
+        | python3 -c 'import json,sys; a=json.load(sys.stdin); print(len(a))' \
+        2>/dev/null || echo 0
+}
+
+# Возвращает 0 (true) если cooldown свежий (НЕ прошло PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS).
+_cooldown_is_active() {
+    if [ ! -f "$ISSUE_COOLDOWN_FILE" ]; then
+        return 1  # нет файла → cooldown не активен
+    fi
+    local _epoch _age_s _limit_s
+    _epoch="$(stat -c '%Y' "$ISSUE_COOLDOWN_FILE" 2>/dev/null || echo 0)"
+    _age_s=$(( $(date -u +%s) - ${_epoch:-0} ))
+    _limit_s=$(( PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS * 3600 ))
+    if [ "${_age_s:-0}" -lt "${_limit_s}" ]; then
+        return 0  # активен
+    fi
+    return 1
+}
+
+# Собрать markdown-таблицу cancel-actions (заголовок|task_id|board|signal|issue).
+# Reuse ACTIONS_FILE.
+_format_cancel_table() {
+    python3 - "$ACTIONS_FILE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+actions_file = sys.argv[1]
+shown = 0
+try:
+    with open(actions_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            tid = o.get("task_id", "")[:18]
+            board = o.get("board", "")[:16]
+            issue = o.get("issue", "")
+            signal = o.get("signal", "")
+            title = (o.get("title", "") or "")[:60]
+            print(f"| `{tid}` | `{board}` | #{issue or '?'} | `{signal}` | {title} |")
+            shown += 1
+except Exception:
+    pass
+PYEOF
+}
+
+auto_create_recurrent_incident() {
+    local dry_run="$1"  # "yes" | "no"
+
+    if [ "${PROVIDER_EXHAUST_AUTO_ISSUE}" != "1" ]; then
+        log "AUTO_ISSUE: PROVIDER_EXHAUST_AUTO_ISSUE=${PROVIDER_EXHAUST_AUTO_ISSUE} (off) — skip"
+        return 0
+    fi
+
+    # Если нет cancel-actions за этот тик — нечего auto-issue'ить (silent tick).
+    if [ ! -s "$ACTIONS_FILE" ]; then
+        log "AUTO_ISSUE: empty ACTIONS_FILE — skip"
+        return 0
+    fi
+
+    # gh CLI / auth gate
+    if ! command -v gh >/dev/null 2>&1; then
+        log "AUTO_ISSUE: gh CLI not in PATH — skip"
+        return 0
+    fi
+    if ! GH_CONFIG_DIR="$GH_CONFIG_DIR" gh auth status >/dev/null 2>&1; then
+        log "AUTO_ISSUE: gh auth failed — skip (check $GH_CONFIG_DIR)"
+        return 0
+    fi
+
+    # (a) cooldown guard
+    if _cooldown_is_active; then
+        log "AUTO_ISSUE: cooldown active ($(stat -c %Y "$ISSUE_COOLDOWN_FILE" 2>/dev/null)) — skip"
+        return 0
+    fi
+
+    # (b) gh-truth guard
+    local _existing
+    _existing="$(_gh_truth_open_issues_count "$RECURRENT_INCIDENT_LABEL")"
+    if [ "${_existing:-0}" -gt 0 ] 2>/dev/null; then
+        log "AUTO_ISSUE: open '$RECURRENT_INCIDENT_LABEL' issues: $_existing — skip"
+        return 0
+    fi
+
+    # Собрать body
+    local _today _action_count _table _develop_head _title
+    _today="$(date -u +%Y-%m-%d)"
+    _action_count="$(grep -c . "$ACTIONS_FILE" 2>/dev/null || echo 0)"
+    _table="$(_format_cancel_table)"
+    _develop_head="$(git -C "${REPO_DIR:-$HERMES_HOME}" rev-parse --short=7 origin/develop 2>/dev/null \
+        || git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+
+    _title="[recurrent-incident] MiniMax/DeepSeek provider exhausted ${_today} (${_action_count} cards blocked, root: ${ROOT_ISSUE})"
+
+    local _body
+    _body=$(cat <<ISSUE_BODY_MARKER
+🤖 [agent:devops] script=agent-flow-cancel-on-provider-exhausted action=auto-create-issue
+
+## Recurrent provider-exhaust incident ${_today}
+
+MiniMax/DeepSeek LLM-провайдер вернул **402/429** (или эквивалентный provider-exhaust сигнал) для **${_action_count}** задач(и) за последний tick. Это **5-й рецидив** с момента закрытия issue ${ROOT_ISSUE} (13.08.2026, completed).
+
+- **Тип:** operational, не code-task. Worker'ы уже блокируют свои kanban-карточки автоматически через \`agent-flow-cancel-on-provider-exhausted\`.
+- **Root cause:** исчерпание Token Plan / Billing на стороне MiniMax (см. issue ${ROOT_ISSUE}).
+- **develop HEAD:** \`${_develop_head}\`
+- **Cooldown:** ${PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS}ч между auto-issue (file: \`${ISSUE_COOLDOWN_FILE}\`)
+- **Метка:** \`${RECURRENT_INCIDENT_LABEL}\`
+
+## Заблокированные карточки (this tick)
+
+| task_id | board | linked issue | signal | title |
+|---|---|---|---|---|
+${_table}
+
+## Что нужно от Шифу
+
+1. **Пополнить MiniMax/Token Plan** (или поднять DeepSeek бюджет) — внешнее действие, не код.
+2. **Подождать ~5-15 мин** после пополнения, чтобы провайдер увидел новое состояние.
+3. **Запустить разблокировку**:
+   \`\`\`bash
+   bash scripts/agent_flow/agent-flow-cancel-on-provider-exhausted.sh --recover
+   \`\`\`
+   Это разбудит все \`blocked(kind=capability)\` карточки с sentinel-marker'ом
+   обратно в \`ready\`.
+4. **Закрыть этот issue** (\`gh issue close <this> --reason 'completed'\`) — после восстановления воркеры смогут продолжить.
+
+## Связанные
+
+- ${ROOT_ISSUE} — root cause: исчерпание MiniMax Token Plan (закрыт completed 2026-08-13, fallback на deepseek сработал).
+- Скрипт-страж: \`scripts/agent_flow/agent-flow-cancel-on-provider-exhausted.sh\`.
+- ADR-0019 — формализация этого поведения.
+
+> 🤖 Создано автоматически. Если в течение ${PROVIDER_EXHAUST_ISSUE_COOLDOWN_HOURS}ч будет ещё рецидив — НЕ будет создан новый issue (cooldown/gh-truth guards).
+ISSUE_BODY_MARKER
+)
+
+    # gh args
+    local -a _create_args
+    _create_args=(--repo "$GH_REPO" --title "$_title" --label "$RECURRENT_INCIDENT_LABEL,hermes,agent:devops" --body "$_body")
+    if [ -n "${PROVIDER_EXHAUST_ISSUE_ASSIGNEES}" ]; then
+        # comma-separated: gh принимает --assignee один раз; повторяем флаг для нескольких.
+        IFS=',' read -ra _assignees <<< "$PROVIDER_EXHAUST_ISSUE_ASSIGNEES"
+        for _a in "${_assignees[@]}"; do
+            _a="$(printf '%s' "$_a" | xargs)"  # trim
+            [ -n "$_a" ] && _create_args+=(--assignee "$_a")
+        done
+    fi
+
+    if [ "$dry_run" = "yes" ]; then
+        log "AUTO_ISSUE [DRY-RUN] would: gh issue create --label ${RECURRENT_INCIDENT_LABEL} (cards=${_action_count}, develop=${_develop_head})"
+        log "AUTO_ISSUE [DRY-RUN] would: title='${_title}'"
+        return 0
+    fi
+
+    local _create_out _create_rc
+    _create_out=""
+    _create_rc=0
+    _create_out="$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue create "${_create_args[@]}" 2>&1)" || _create_rc=$?
+    if [ "${_create_rc}" = "0" ]; then
+        local _issue_url
+        _issue_url="$(printf '%s' "$_create_out" | grep -oE 'https://github.com/[^ ]+/issues/[0-9]+' | head -n 1 || true)"
+        log "🚨 AUTO-CREATED recurrent-incident issue: ${_issue_url:-${_create_out}}"
+        mkdir -p "$(dirname "$ISSUE_COOLDOWN_FILE")" 2>/dev/null || true
+        date -u +%s > "$ISSUE_COOLDOWN_FILE" 2>/dev/null \
+            && log "AUTO_ISSUE: cooldown written: $ISSUE_COOLDOWN_FILE" \
+            || log "AUTO_ISSUE: WARN cannot write cooldown file $ISSUE_COOLDOWN_FILE"
+    else
+        log "AUTO_ISSUE: ERROR gh issue create failed (rc=${_create_rc}): ${_create_out}"
+    fi
+    unset _create_rc
+    return 0
+}
+
 apply_cancel() {
     local dry_run="$1"  # "yes" | "no"
     local count=0 blocked=0 commented=0 skipped=0
@@ -543,6 +781,10 @@ Recovery после пополнения MiniMax: \`bash scripts/agent_flow/agen
     done < "$ACTIONS_FILE"
 
     log "summary: scanned=$count blocked=$blocked commented=$commented skipped=$skipped"
+    # auto-issue: запускаем ПОСЛЕ apply_cancel (нужны ACTIONS_FILE + log чтобы
+    # знать, был ли это silent tick). Dry-run пробрасывается — payload печатается,
+    # но НЕ выполняется gh-вызов.
+    auto_create_recurrent_incident "$dry_run"
 }
 
 apply_recover() {

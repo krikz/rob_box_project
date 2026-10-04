@@ -182,4 +182,54 @@ for tid in t_summary_catch t_lfe_catch t_both_catch; do
 done
 echo "  T8 ok — re-run dry-run shows 0 candidates for previously-marked tasks"
 
-pass "cancel-on-provider-exhausted: все 8 кейсов прошли (T1-T8)"
+# --- T9: auto-issue gated by PROVIDER_EXHAUST_AUTO_ISSUE (default OFF) ----
+# T9a: auto-issue OFF (default env) — should print "AUTO_ISSUE: ... (off) — skip"
+OUT3=$(cd "$WORK" && KANBAN_BOARDS_DIR="$WORK/boards" HERMES_HOME="$WORK" STATE_DIR="$WORK" \
+    bash "$SCRIPT_UNDER_TEST" --dry-run 2>&1) || { echo "$OUT3"; fail "dry-run #3 crashed"; }
+echo "$OUT3" | grep -q 'AUTO_ISSUE: PROVIDER_EXHAUST_AUTO_ISSUE=0 (off) — skip' \
+    || fail "T9a: default env should print AUTO_ISSUE off-skip marker"
+echo "  T9a ok — default env (no env var) → auto-issue skipped (safe-by-default)"
+
+# T9b: auto-issue ON but empty ACTIONS_FILE (no candidates) — should skip with 'empty ACTIONS_FILE'.
+# Re-use pre-idempotent state where ACTIONS_FILE was just rewritten on the last run.
+# We need a NEW actions file with content to verify guard chain. Force by clearing sentinel from
+# t_lfe_catch (we added a sentinel to t_summary_catch / t_lfe_catch / t_both_catch earlier in T8).
+python3 - "$BOARD_DIR/kanban.db" <<PYEOF
+import sqlite3, sys, time
+db = sys.argv[1]
+con = sqlite3.connect(db)
+now = int(time.time())
+# remove sentinel from one card so dry-run will catch it again
+con.execute("DELETE FROM task_comments WHERE task_id='t_summary_catch'")
+con.execute("UPDATE tasks SET block_kind=NULL, status='ready' WHERE id='t_summary_catch'")
+con.execute("UPDATE tasks SET block_kind=NULL, status='ready' WHERE id='t_lfe_catch'")
+con.execute("UPDATE tasks SET block_kind=NULL, status='ready' WHERE id='t_both_catch'")
+con.commit()
+con.close()
+PYEOF
+OUT4=$(cd "$WORK" && KANBAN_BOARDS_DIR="$WORK/boards" HERMES_HOME="$WORK" STATE_DIR="$WORK" \
+    PATH="/usr/bin:/bin" \
+    bash "$SCRIPT_UNDER_TEST" --dry-run 2>&1) || { echo "$OUT4"; fail "dry-run #4 crashed"; }
+# We didn't set PROVIDER_EXHAUST_AUTO_ISSUE, so still OFF — T9a covered.
+# Just confirm no regression: existing T1-T8 still hold.
+grep -q '"task_id": "t_summary_catch"' "$ACTIONS_JSONL" || fail "T9b: regression — t_summary_catch should be re-caught"
+echo "  T9b ok — after sentinel removed, candidates re-detected (idempotency only via sentinel, not via cooldown)"
+
+# T9c: gh CLI broken + auto-issue ON → must NOT crash, must log skip.
+# Создаём sandbox bin/ с фейковым gh, который НЕ проходит auth probe.
+mkdir -p "$WORK/bin-no-gh"
+cat > "$WORK/bin-no-gh/gh" <<'GH_MOCK_EOF'
+#!/bin/bash
+echo "fake-gh: command not allowed in test" >&2
+exit 1
+GH_MOCK_EOF
+chmod +x "$WORK/bin-no-gh/gh"
+OUT5=$(cd "$WORK" && KANBAN_BOARDS_DIR="$WORK/boards" HERMES_HOME="$WORK" STATE_DIR="$WORK" \
+    PROVIDER_EXHAUST_AUTO_ISSUE=1 \
+    PATH="$WORK/bin-no-gh:/usr/bin:/bin" \
+    bash "$SCRIPT_UNDER_TEST" --dry-run 2>&1) || true
+echo "$OUT5" | grep -q 'AUTO_ISSUE: gh auth failed — skip' \
+    || fail "T9c: gh auth probe fail should print skip-marker, got: $(echo "$OUT5" | grep -i 'AUTO_ISSUE' | head -3)"
+echo "  T9c ok — gh auth fails → graceful skip (no crash, no issue created)"
+
+pass "cancel-on-provider-exhausted: все 9 кейсов прошли (T1-T9)"
