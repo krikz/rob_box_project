@@ -104,6 +104,19 @@ E2E_FAIL_STREAK_ISSUE_ASSIGNEE="${E2E_FAIL_STREAK_ISSUE_ASSIGNEE:-}"
 E2E_FLAKY_DETECT_MIN="${E2E_FLAKY_DETECT_MIN:-3}"
 E2E_FLAKY_DETECT_RATIO="${E2E_FLAKY_DETECT_RATIO:-0.6}"
 E2E_FLAKY_DETECT_LABEL="${E2E_FLAKY_DETECT_LABEL:-e2e:flaky-detection}"
+# Stuck-deploy override (ретро #3377, t_699d567a): если streak длинный, до
+# даже если flaky-detect решает «flaky» (большинство fails на одном headSha —
+# что в норме означает race/timing), на самом деле может быть «никто не
+# двигает develop HEAD и deploy застрял». Fall-through к auto-create с
+# дополнительной меткой `e2e-fail-streak:stuck`, чтобы triage не считал это
+# «просто flaky».
+E2E_FAIL_STREAK_STUCK_THRESHOLD="${E2E_FAIL_STREAK_STUCK_THRESHOLD:-7}"
+E2E_FAIL_STREAK_STUCK_LABEL="${E2E_FAIL_STREAK_STUCK_LABEL:-e2e-fail-streak:stuck}"
+# Flaky-detect defaults (issue t_f33ecbf8, порт из ~/.hermes/scripts/):
+# эти переменные ОБЯЗАНЫ быть экспортированы ДО subshell `$(... env python3)`,
+# иначе `os.environ["E2E_FLAKY_DETECT_MIN"]` в python поднимет KeyError
+# (видел в ретро t_699d567a / #3377: KeyError → silent-fallback → никакого
+# алерта не уходило 11 дней подряд).
 E2E_FLAKY_DEDUP_HOURS="${E2E_FLAKY_DEDUP_HOURS:-24}"
 HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 REPO_DIR="${REPO_DIR:-}"     # for `git -C` (develop HEAD + recent merges)
@@ -111,8 +124,9 @@ DRY_RUN="${FAIL_STREAK_DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-fail-streak-watchdog.lock}"
 PAUSE_SENTINEL="${PAUSE_SENTINEL:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-pause}"
 ISSUE_COOLDOWN_FILE="${ISSUE_COOLDOWN_FILE:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-last-issue}"
-# Flaky-dedup state (issue t_f33ecbf8): используем тот же mtime-механизм,
-# что и ISSUE_COOLDOWN_FILE, но с другим лимитом (24ч по умолчанию).
+# Flaky-dedup state (ретро t_f33ecbf8, порт из ~/.hermes/scripts/):
+# используем mtime-механизм с другим лимитом (24ч по умолчанию), чтобы
+# [flaky-detect] комментарии не спамили существующий issue.
 FLAKY_DEDUP_FILE="${FLAKY_DEDUP_FILE:-${HERMES_HOME}/state/agent-flow-e2e-flaky-dedup}"
 MARKER_TAG="🤖 [agent:devops] script=agent-flow-e2e-fail-streak-watchdog streak=${E2E_FAIL_STREAK_WARN}+"
 
@@ -257,6 +271,11 @@ fi
 # в существующий открытый fail-streak issue (если есть) с 24h dedup.
 # Cooldown НЕ обновляется — реальная регрессия, случившаяся после flaky,
 # не должна быть замаскирована пропущенным issue-create.
+# STUCK-OVERRIDE (ретро #3377, t_699d567a): если streak длинный, до
+# даже если flaky-detect решает «flaky» — на самом деле это может быть «застрял
+# один headSha в деплое», и легко проглядеть руками. Fall-through к auto-create
+# с label `e2e-fail-streak:stuck` (дополнительная к обычной), чтобы triage не
+# считал это «просто flaky».
 if [ "${_streak:-0}" -ge "$E2E_FAIL_STREAK_ISSUE_THRESHOLD" ] 2>/dev/null; then
     _flaky_decision="$(E2E_FLAKY_DETECT_MIN="$E2E_FLAKY_DETECT_MIN" \
         E2E_FLAKY_DETECT_RATIO="$E2E_FLAKY_DETECT_RATIO" \
@@ -267,9 +286,15 @@ try:
     runs = json.load(sys.stdin)
 except Exception:
     print("silent"); raise SystemExit(0)
-flaky_min = int(os.environ["E2E_FLAKY_DETECT_MIN"])
-flaky_ratio = float(os.environ["E2E_FLAKY_DETECT_RATIO"])
-threshold = int(os.environ["E2E_FAIL_STREAK_ISSUE_THRESHOLD"])
+# Защита от KeyError, если env не пробросился (видел в ретро t_699d567a):
+# subshell `$(VAR=X cmd1 | cmd2)` ставит VAR только для cmd1, не для cmd2.
+# Если когда-то вернулось — не падаем traceback, а silent.
+try:
+    flaky_min = int(os.environ["E2E_FLAKY_DETECT_MIN"])
+    flaky_ratio = float(os.environ["E2E_FLAKY_DETECT_RATIO"])
+    threshold = int(os.environ["E2E_FAIL_STREAK_ISSUE_THRESHOLD"])
+except KeyError:
+    print("silent-env"); raise SystemExit(0)
 streak = 0
 seen_shas = {}
 for r in runs:
@@ -300,59 +325,79 @@ else:
         _fd_sha="${_flaky_decision#flaky|}"
         _fd_sha="${_fd_sha%%|*}"
         _rest="${_flaky_decision#flaky|*|}"
-        _fd_count="${_rest%%|*}"; _rest="${_rest#*|}"
-        _fd_ratio="${_rest%%|*}"; _rest="${_rest#*|}"
-        _fd_streak="${_rest%%|*}"; _fd_runs_on_sha="${_rest#*|}"
+        _fd_count="${_rest%%|*}"
+        _fd_ratio="${_rest#*|}"
+        # _fd_ratio could be "ratio|streak" — strip streak suffix
+        _fd_ratio="${_fd_ratio%%|*}"
+        _fd_streak="${_rest##*|}"
+        _fd_stuck="false"
 
-        log "flaky-detect: streak=${_fd_streak} same-headsha=${_fd_count}/${_fd_streak} sha=${_fd_sha} ratio=${_fd_ratio} → suppress auto-create e2e-fail-streak"
-
-        # 24h dedup против шума
-        _fd_dedup_ok="true"
-        if [ -f "$FLAKY_DEDUP_FILE" ]; then
-            _fd_epoch="$(stat -c '%Y' "$FLAKY_DEDUP_FILE" 2>/dev/null || echo 0)"
-            _fd_age=$(( $(date -u +%s) - ${_fd_epoch:-0} ))
-            _fd_limit=$(( E2E_FLAKY_DEDUP_HOURS * 3600 ))
-            if [ "${_fd_age:-0}" -lt "${_fd_limit}" ]; then
-                log "FLAKY_DEDUP active: ${_fd_age}s < ${_fd_limit}s — skip flaky comment"
-                _fd_dedup_ok="false"
-            fi
-        fi
-
-        if [ "$_fd_dedup_ok" = "true" ]; then
-            # Найти открытый fail-streak issue (если есть) — пишем в него comment.
-            _fd_issue="$(gh issue list --repo "$GH_REPO" --state open \
-                --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --limit 1 \
-                --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-            _fd_marker_body="🤖 [agent:devops] flaky-detect: ${_fd_streak} fails подряд, ${_fd_count}/${_fd_streak} на sha=${_fd_sha} (ratio=${_fd_ratio}). Это НЕ регрессия — auto-create \`${E2E_FAIL_STREAK_ISSUE_LABEL}\` подавлен (retros t_f33ecbf8). Реальный run на одном headSha мигнул, скорее всего race/timing (speaker_id_node / STT latency / robot 10.1.1.21). Ручной разбор Шифу: если 2/3 retry успешны на свежем прогоне — закрыть как flaky (close --reason 'not_planned'); если реальная регрессия — следующий tick увидит свежие fails, dedup не помешает."
-            if [ -n "$_fd_issue" ]; then
-                if [ "$DRY_RUN" = "true" ]; then
-                    log "DRY-RUN would: gh issue comment ${_fd_issue} with [flaky-detect] marker"
-                else
-                    if gh issue comment "$_fd_issue" --repo "$GH_REPO" \
-                        --body "$_fd_marker_body" >/dev/null 2>&1; then
-                        log "issue #${_fd_issue}: flaky comment posted (streak=${_fd_streak})"
-                    else
-                        log "issue #${_fd_issue}: WARNING flaky comment failed (will retry next tick)"
-                    fi
+        # STUCK-OVERRIDE: streak ≥ E2E_FAIL_STREAK_STUCK_THRESHOLD →
+        # flaky-detect НЕ подавляет auto-create (даже при 100% same-sha).
+        # Просто логируем, fall through дальше к auto-create ветке; ниже
+        # в коде добавляется label `e2e-fail-streak:stuck` (вместо flaky-marker
+        # comment), чтобы triage-процесс понимал приоритет.
+        if [ "${_fd_streak:-0}" -ge "${E2E_FAIL_STREAK_STUCK_THRESHOLD:-7}" ] 2>/dev/null; then
+            log "STUCK-OVERRIDE: streak=${_fd_streak} ≥ ${E2E_FAIL_STREAK_STUCK_THRESHOLD} даже при flaky-detect (same-headsha=${_fd_count}/${_fd_streak} sha=${_fd_sha} ratio=${_fd_ratio}) → fall through to auto-create с label ${E2E_FAIL_STREAK_STUCK_LABEL}"
+            _fd_stuck="true"
+            # сохраняем для дальнейшего логирования
+            _STUCK_DOMINANT_SHA="${_fd_sha}"
+            _STUCK_DOMINANT_COUNT="${_fd_count}"
+            _STUCK_RATIO="${_fd_ratio}"
+        else
+            log "flaky-detect: streak=${_fd_streak} same-headsha=${_fd_count}/${_fd_streak} sha=${_fd_sha} ratio=${_fd_ratio} → suppress auto-create e2e-fail-streak"
+            # 24h dedup против шума (как в ~/.hermes/scripts/)
+            _fd_dedup_ok="true"
+            if [ -f "$FLAKY_DEDUP_FILE" ]; then
+                _fd_epoch="$(stat -c '%Y' "$FLAKY_DEDUP_FILE" 2>/dev/null || echo 0)"
+                _fd_age=$(( $(date -u +%s) - ${_fd_epoch:-0} ))
+                _fd_limit=$(( E2E_FLAKY_DEDUP_HOURS * 3600 ))
+                if [ "${_fd_age:-0}" -lt "${_fd_limit}" ]; then
+                    log "FLAKY_DEDUP active: ${_fd_age}s < ${_fd_limit}s — skip flaky comment"
+                    _fd_dedup_ok="false"
                 fi
-            else
-                log "no open ${E2E_FAIL_STREAK_ISSUE_LABEL} issue — flaky marker log-only (${_fd_count} run IDs на sha=${_fd_sha}: ${_fd_runs_on_sha})"
             fi
-            # Записать dedup mtime (НО НЕ ISSUE_COOLDOWN_FILE — реальная
-            # регрессия после flaky не должна быть замаскирована).
-            mkdir -p "$(dirname "$FLAKY_DEDUP_FILE")" 2>/dev/null || true
-            if date -u +%s > "$FLAKY_DEDUP_FILE" 2>/dev/null; then
-                log "flaky-dedup written: $FLAKY_DEDUP_FILE"
-            else
-                log "WARN: cannot write flaky-dedup file"
+
+            if [ "$_fd_dedup_ok" = "true" ]; then
+                _fd_issue="$(gh issue list --repo "$GH_REPO" --state open \
+                    --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --limit 1 \
+                    --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+                _fd_marker_body="🤖 [agent:devops] flaky-detect: ${_fd_streak} fails подряд, ${_fd_count}/${_fd_streak} на sha=${_fd_sha} (ratio=${_fd_ratio}). Это НЕ регрессия — auto-create \`${E2E_FAIL_STREAK_ISSUE_LABEL}\` подавлен (retros t_f33ecbf8). Реальный run на одном headSha мигнул, скорее всего race/timing (speaker_id_node / STT latency / robot 10.1.1.21). Ручной разбор Шифу: если 2/3 retry успешны на свежем прогоне — закрыть как flaky (close --reason 'not_planned'); если реальная регрессия — следующий tick увидит свежие fails, dedup не помешает."
+                if [ -n "$_fd_issue" ]; then
+                    if [ "$DRY_RUN" = "true" ]; then
+                        log "DRY-RUN would: gh issue comment ${_fd_issue} with [flaky-detect] marker"
+                    else
+                        if gh issue comment "$_fd_issue" --repo "$GH_REPO" \
+                            --body "$_fd_marker_body" >/dev/null 2>&1; then
+                            log "issue #${_fd_issue}: flaky comment posted (streak=${_fd_streak})"
+                        else
+                            log "issue #${_fd_issue}: WARNING flaky comment failed (will retry next tick)"
+                        fi
+                    fi
+                else
+                    log "no open ${E2E_FAIL_STREAK_ISSUE_LABEL} issue — flaky marker log-only (${_fd_count} run IDs на sha=${_fd_sha}: ${_fd_runs_on_sha:-})"
+                fi
+                mkdir -p "$(dirname "$FLAKY_DEDUP_FILE")" 2>/dev/null || true
+                if date -u +%s > "$FLAKY_DEDUP_FILE" 2>/dev/null; then
+                    log "flaky-dedup written: $FLAKY_DEDUP_FILE"
+                else
+                    log "WARN: cannot write flaky-dedup file"
+                fi
             fi
+            [ "$_streak_action" = "noop" ] && _streak_action="flaky-skip"
+            log "tick done: streak=${_streak} action=${_streak_action} (flaky path)"
+            exit 0
         fi
-        [ "$_streak_action" = "noop" ] && _streak_action="flaky-skip"
-        log "tick done: streak=${_streak} action=${_streak_action} (flaky path)"
-        exit 0
+        # STUCK path: НЕ exit 0, fall through to auto-create ниже; запомнить
+        # флаг для label-override.
+        _FLAKY_DOMINANT_SHA="${_fd_sha}"
+        _FLAKY_DOMINANT_COUNT="${_fd_count}"
+        _FLAKY_RATIO="${_fd_ratio}"
+        export _FLAKY_DETECT_STUCK="true"
     fi
-    # decision: regression — fall through to existing auto-create ветку.
-    log "flaky-detect: decision=regression (no dominant headSha ≥ ${E2E_FLAKY_DETECT_MIN} с ratio ≥ ${E2E_FLAKY_DETECT_RATIO}) — proceed with auto-create"
+    if [ "${_flaky_decision%%|*}" = "regression" ]; then
+        log "flaky-detect: decision=regression (no dominant headSha ≥ ${E2E_FLAKY_DETECT_MIN:-3} с ratio ≥ ${E2E_FLAKY_DETECT_RATIO:-0.6}) — proceed with auto-create"
+    fi
 fi
 
 # Найти issue для alert: открытые issues с label needs-e2e (в ротации) ИЛИ
@@ -426,7 +471,7 @@ try:
             print(f"{n}\t{t}")
 except Exception:
     pass
-' 2>/dev/null)
+' 2>/tmp/_fderr.log)
 fi
 
 # --- AUTO-CREATE ISSUE: idempotent + rate-limited (ADR-FS-001, t_401e52de) ---
@@ -471,6 +516,28 @@ if [ "${_streak:-0}" -ge "$E2E_FAIL_STREAK_ISSUE_THRESHOLD" ] 2>/dev/null; then
             | grep -oE '#[0-9]+' | sort -u | tr '\n' ' ' | head -c 400 || echo "")"
         _failed_table="$(format_failed_runs_table "$_runs_json" 8 "$GH_REPO")"
 
+        # STUCK path (ретро #3377, t_699d567a): если flaky-detect сработал,
+        # но streak ≥ stuck-threshold — добавляем отдельную секцию hypothesis
+        # и лейбл `e2e-fail-streak:stuck`, чтобы triage видел приоритет.
+        _stuck_section=""
+        _stuck_extra_label=""
+        if [ "${_FLAKY_DETECT_STUCK:-false}" = "true" ]; then
+            _stuck_section="
+
+## STUCK-OVERRIDE hypothesis (ретро #3377, t_699d567a)
+
+⚠️ Этот issue создан через STUCK-OVERRIDE, потому что flaky-detect gate (ретро t_f33ecbf8) маскировал auto-create.
+
+- **Доминирующий sha**: \`${_STUCK_DOMINANT_SHA:-?}\` — ${_STUCK_DOMINANT_COUNT:-?}/${_streak} runs (ratio=${_STUCK_RATIO:-?})
+- **Сценарий**: в develop долго не пушили новые коммиты, один и тот же headSha мигает 7+ раз
+- **Корень**: либо (a) develop HEAD застрял и никто не мёрджит, либо (b) flaky и нужны 2-3 retry на свежем прогоне
+
+Шифу: если retry 2/3 успешны на новом прогоне — close --reason 'not_planned' (это реально flaky).
+Если retry тоже падает — это regression на этом headSha, нужен ручной разбор + PR-фикс.
+"
+            _stuck_extra_label=" --label ${E2E_FAIL_STREAK_STUCK_LABEL}"
+        fi
+
         _create_body="🤖 [agent:devops] script=agent-flow-e2e-fail-streak-watchdog action=auto-create-issue
 
 ## fail-streak alert
@@ -479,7 +546,7 @@ L: E2E Voice Test (\`${E2E_WORKFLOW}\`) упал **${_streak}** раз подр�
 - **Last success:** ${_last_success_at:-NONE}
 - **develop HEAD:** \`${_develop_head}\`
 - **Threshold:** streak ≥ ${E2E_FAIL_STREAK_ISSUE_THRESHOLD}
-- **Rate-limit:** ${E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS}ч (cooldown file: \`${ISSUE_COOLDOWN_FILE}\`)
+- **Rate-limit:** ${E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS}ч (cooldown file: \`${ISSUE_COOLDOWN_FILE}\`)${_stuck_section}
 
 ## Timeline (last 8 failed runs)
 
@@ -511,10 +578,13 @@ ${_failed_table}
 "
 
         if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would: gh issue create --label ${E2E_FAIL_STREAK_ISSUE_LABEL} (streak=${_streak}, develop=${_develop_head})"
+            log "DRY-RUN would: gh issue create --label ${E2E_FAIL_STREAK_ISSUE_LABEL}${_stuck_extra_label} (streak=${_streak}, develop=${_develop_head})"
             [ "$_streak_action" = "noop" ] && _streak_action="issue-dry-run"
         else
             _create_args=(--repo "$GH_REPO" --title "[e2e-fail-streak] L: E2E Voice Test — ${_streak} fails подряд (develop ${_develop_head})" --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --body "$_create_body")
+            if [ "${_FLAKY_DETECT_STUCK:-false}" = "true" ]; then
+                _create_args+=(--label "$E2E_FAIL_STREAK_STUCK_LABEL")
+            fi
             if [ -n "${E2E_FAIL_STREAK_ISSUE_ASSIGNEE:-}" ]; then
                 _create_args+=(--assignee "$E2E_FAIL_STREAK_ISSUE_ASSIGNEE")
             fi
