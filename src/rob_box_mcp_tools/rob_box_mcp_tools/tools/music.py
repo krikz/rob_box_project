@@ -90,6 +90,7 @@ from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStor
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
+from ..core.music_renardo_bridge import MusicRenardoBridge
 from ..core.rtttl_compose import key_honesty_note, melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
 
@@ -520,21 +521,11 @@ class MusicManager:
     #: in degraded mode (non-critical SynthDef parse errors don't block).
     #: Set to ``1`` to fail-fast on any sclang startup error.
     REQUIRE_HEALTHY_DEFAULT = False
-    #: Critical SynthDefs the music subsystem depends on. Mirrors the list
-    #: used by ``start_voice_assistant.sh`` — keep them in sync.
-    DEFAULT_CRITICAL_SYNTHS: Tuple[str, ...] = (
-        "strings",
-        "wobblebass",
-        "pianovel",
-        "warmpad",
-        "retrobass",
-        "supersawlead",
-        "imperialbrass",
-        "marchstrings",
-        "strangerpulsepad",
-        "strangerarp",
-        "strangerbrass",
-    )
+    #: Critical SynthDefs живут на ``MusicRenardoBridge.DEFAULT_CRITICAL_SYNTHS``
+    #: (см. :class:`MusicRenardoBridge`). ``MusicManager`` ссылается на
+    #: единственный источник истины через ``MusicRenardoBridge.DEFAULT_CRITICAL_SYNTHS``
+    #: в ``__init__``. Список — boot-time health-check, используется
+    #: ``start_voice_assistant.sh`` (keep them in sync).
 
     def __init__(
         self,
@@ -611,7 +602,7 @@ class MusicManager:
                     name.strip() for name in env_synths.split(",") if name.strip()
                 )
             else:
-                self._critical_synths = self.DEFAULT_CRITICAL_SYNTHS
+                self._critical_synths = MusicRenardoBridge.DEFAULT_CRITICAL_SYNTHS
         else:
             self._critical_synths = tuple(critical_synths)
         # ------------------------------------------------------------------
