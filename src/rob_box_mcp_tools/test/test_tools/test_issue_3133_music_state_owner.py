@@ -19,6 +19,7 @@ from .._ros_stubs import RosStubs
 
 _ros = RosStubs()
 with _ros:
+    from rob_box_mcp_tools.core.music_renardo_bridge import MusicRenardoBridge
     from rob_box_mcp_tools.tools.music import ComposeMusicTool, MusicManager
 _ros_stubs = _ros.fixture()
 
@@ -40,7 +41,7 @@ def _make_manager() -> MusicManager:
         is_healthy=True, oscdef_registered=True, missing_synths=(), fatal_errors=(),
     )
     mgr._require_healthy = True
-    mgr._critical_synths = MusicManager.DEFAULT_CRITICAL_SYNTHS
+    mgr._critical_synths = MusicRenardoBridge.DEFAULT_CRITICAL_SYNTHS
     mgr._auto_stop_ttl_seconds = 300
     mgr._music_session_active_since = None
     mgr._last_music_activity_at = None
