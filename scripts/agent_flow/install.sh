@@ -138,6 +138,16 @@ EXPECTED=(
     # был в SOT репо → не раскладывался в профили, не контролировался
     # drift-detect'ом, и CRON НЕ регистрировался. Теперь — SOT +
     # cron every 5m в devops-профиле (см. ensure_cancel_provider_exhausted_cron).
+    #
+    # ADR-0019 (2026-10-04, kanban t_4aaeeef6): добавлен optional auto-create
+    # GitHub incident-issue (`PROVIDER_EXHAUST_AUTO_ISSUE=1`, default OFF
+    # safe-by-default) с label=recurrent-incident,hermes,agent:devops +
+    # guard'ами (a) ISSUE_COOLDOWN_FILE mtime 24h + (b) gh-truth
+    # (`gh issue list --label recurrent-incident --state open`). Закрывает
+    # process-gap: рецидив MiniMax/DeepSeek исчерпания 2026-10-03 прошёл
+    # молча без incident-issue, Шифу узнал только из ночного ревью.
+    # 6 фазовых карточек #3014 были заблокированы 14+ часов. Включается
+    # Шифу руками через env cron-job после merge.
     agent-flow-cancel-on-provider-exhausted.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
