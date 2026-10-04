@@ -29,6 +29,7 @@ with _ros:
         LookupMelodyTool,
         TrackLibrary,
     )
+from rob_box_mcp_tools.core.music_renardo_bridge import MusicRenardoBridge  # noqa: E402
 _ros_stubs = _ros.fixture()
 
 
@@ -59,7 +60,7 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
         fatal_errors=(),
     )
     mgr._require_healthy = True
-    mgr._critical_synths = MusicManager.DEFAULT_CRITICAL_SYNTHS
+    mgr._critical_synths = MusicRenardoBridge.DEFAULT_CRITICAL_SYNTHS
     # issue #935 — music session lifecycle (must match __init__ defaults
     # to keep tests faithful; see ``MusicManager.__init__``)
     mgr._auto_stop_ttl_seconds = 300
