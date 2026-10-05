@@ -18,10 +18,12 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.rtttl import contour
 
 from ..core.rtttl_library import _alias_normalize
 from ..core.translit_ru import strip_version_tail, transliterate_ru
@@ -31,6 +33,9 @@ FOUND_MIN = 0.5
 SEARCH_LIMIT = 50
 #: Сколько найденных по теме мелодий получает профиль сета (кандидаты хука и LLM).
 THEME_HOOKS = 8
+#: Нот в контуре начала для «консенсуса версий» (#3427): при 7 версии «Terminator» theme_177/theme_178 совпадают,
+#: а повторные ноты «Space Quest» и «Exploration Of Space» уже различаются (при 6 — нет; при 8 расходятся 177/178).
+CONTOUR_NOTES = 7
 _WORD_MIN = 4  # русское слово короче («год», «дом», «чип») — не название: совпадений по звуку слишком много
 _STEM_MIN = 5  # основа короче («мисс» от «миссия») сверяется только целым словом, не основой
 _PREFIX_SLACK = 4  # слово архива длиннее основы не больше чем на столько букв
@@ -192,14 +197,35 @@ def find(library: Any, text: str, limit: int = 5) -> Found:
     return Found(True, round(confidence, 3), record, alternatives, query)
 
 
+def consensus_order(hits: Sequence[Tuple[float, Dict[str, Any]]], limit: int = THEME_HOOKS) -> List[str]:
+    """Первые ``limit`` найденных записей ``(confidence, запись с rtttl)`` — в порядке хуков темы (#3427, «консенсус
+    версий»); набор тот же, меняется только порядок.
+
+    Внутри одной доли слов: сначала мелодии, чей контур начала (:func:`rob_box_music.rtttl.contour`,
+    :data:`CONTOUR_NOTES` нот) есть ещё хотя бы у одной найденной записи (считаются все ``hits``), — по одной версии
+    на контур, затем их повторные версии, затем одиночные; при равенстве — порядок поиска (ближе к названию).
+    Узнаваемая тема лежит в архиве в нескольких версиях («Terminator» theme_177/theme_178: d e f e c f), случайный
+    рингтон с тем же словом в названии — в одной (terminat)."""
+    contours = [contour(str(r.get("rtttl") or ""), CONTOUR_NOTES) for _c, r in hits]
+    copies = Counter(c for c in contours if c is not None)
+    versions: Counter = Counter()
+    keys = []
+    for i, ((confidence, _r), shape) in enumerate(zip(hits[:limit], contours)):
+        single = shape is None or copies[shape] < 2
+        keys.append((-confidence, single, 0 if single else versions[shape], i))
+        versions[shape] += 1
+    return [hits[i][1]["name"] for *_rank, i in sorted(keys)]
+
+
 def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
-    """Мелодии по словам темы сета для хука (``theme.seeded_profile(found=…)``): записи, покрывающие не меньше
-    :data:`FOUND_MIN` слов темы, лучшие первыми. Ни одной — пусто, сет возьмёт пул по хешу темы."""
+    """Мелодии по словам темы сета для хука (``theme.seeded_profile(found=…)``): первые ``limit`` записей, покрывающих
+    не меньше :data:`FOUND_MIN` слов темы, в порядке :func:`consensus_order`. Ни одной — пусто, сет возьмёт пул по
+    хешу темы."""
     query_terms = terms(library, theme)
     if not query_terms:
         return ()
-    return tuple(r["name"] for c, r, _q in ranked(library, query_terms) if c >= FOUND_MIN)[:limit]
+    return tuple(consensus_order([(c, r) for c, r, _q in ranked(library, query_terms) if c >= FOUND_MIN], limit))
 
 
-__all__ = ["FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "Term", "coverage", "find", "ranked", "sound_key",
-           "stem", "terms", "theme_hooks"]
+__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "Term", "consensus_order", "coverage",
+           "find", "ranked", "sound_key", "stem", "terms", "theme_hooks"]

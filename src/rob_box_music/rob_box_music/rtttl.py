@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
-__all__ = ["parse_rtttl"]
+__all__ = ["contour", "parse_rtttl"]
 
 #: Смещение буквы ноты в полутонах от C.
 _NOTE_SEMITONE = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11}
@@ -96,3 +96,17 @@ def parse_rtttl(rtttl: str) -> Tuple[str, int, List[Tuple[Optional[int], float]]
         midi = None if note == "p" else _to_midi(note, acc, octave)
         notes.append((midi, beats))
     return name, bpm, notes
+
+
+def contour(rtttl: str, notes: int) -> Optional[Tuple[int, ...]]:
+    """Контур начала мелодии (#3427): интервалы между первыми ``notes`` нотами — без транспозиции, пауз и
+    длительностей: у двух версий одной темы в разных тональностях и ритмической записи он один. Нот меньше
+    ``notes`` или строка не RTTTL — ``None``."""
+    try:
+        _name, _bpm, events = parse_rtttl(rtttl)
+    except ValueError:
+        return None
+    pitches = [midi for midi, _beats in events if midi is not None][:notes]
+    if len(pitches) < notes:
+        return None
+    return tuple(b - a for a, b in zip(pitches, pitches[1:]))

@@ -77,8 +77,9 @@ def test_section_energy_follows_the_track_energy(seed):
     plan = seeded_plan(profile(root=seed % 12), seed)
     tracks = {plan.track(no).energy: compose(plan, no) for no in range(1, 6)}
     for low, high in zip(sorted(tracks), sorted(tracks)[1:]):
-        for a, b in zip(tracks[low].form.sections, tracks[high].form.sections):
-            assert a.energy <= b.energy, (a.name, low, high)
+        high_energy = {s.name: s.energy for s in tracks[high].form.sections}  # порядок секций трека 1 другой (#3427)
+        for a in tracks[low].form.sections:
+            assert a.energy <= high_energy[a.name], (a.name, low, high)
     for track in tracks.values():
         e = {s.name: s.energy for s in track.form.sections}
         assert e["intro"] < e["build"] < e["drop"] and e["break"] < e["drop2"], e
