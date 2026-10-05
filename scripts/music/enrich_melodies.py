@@ -63,7 +63,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _find_repo_root() -> Path:
+    """Корень репо — ближайший предок с ``src/rob_box_music``; вне репо (``/tmp/enrich_melodies.py``) — текущий каталог."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "src" / "rob_box_music").is_dir():
+            return parent
+    return Path.cwd()
+
+
+_REPO_ROOT = _find_repo_root()
 for _pkg in ("rob_box_music", "rob_box_mcp_tools", "rob_box_harness", "rob_box_llm"):
     _p = str(_REPO_ROOT / "src" / _pkg)
     if _p not in sys.path:
@@ -485,6 +494,7 @@ class MinimaxLlm(Llm):
         from rob_box_mcp_tools.engine.reasoner import minimax_provider
         self._client = minimax_provider(timeout_s)()
         self._timeout = timeout_s
+        self._loop = asyncio.new_event_loop()  # один loop на весь прогон: async-клиент привязан к первому loop
 
     def complete(self, system: str, user: str) -> dict:
         from rob_box_llm.provider import LLMMessage, LLMSettings
@@ -493,7 +503,10 @@ class MinimaxLlm(Llm):
             return await asyncio.wait_for(self._client.complete(
                 [LLMMessage("system", system), LLMMessage("user", user)],
                 settings=LLMSettings(max_tokens=2048, temperature=0.0)), timeout=self._timeout)
-        return parse_json_reply(getattr(asyncio.run(run()), "content", "") or "")
+        return parse_json_reply(getattr(self._loop.run_until_complete(run()), "content", "") or "")
+
+    def close(self) -> None:
+        self._loop.close()
 
 
 def parse_json_reply(text: str) -> dict:
@@ -681,6 +694,7 @@ def run(records: Sequence[dict], out: Path, *, fetch_factory: Callable[[State], 
     except BudgetExceeded as exc:
         _LOG.warning("бюджет запросов исчерпан (%s); состояние сохранено, повторный запуск продолжит", exc)
     write_artifact(state, out)
+    getattr(llm, "close", lambda: None)()
     return summarize(state, fetch.requests)
 
 

@@ -274,3 +274,32 @@ def test_work_type_must_follow_instance_of_label():
     ok = {"field": "work_type", "value": "film_theme", "source_id": "Q10", "quote": '"instance_of":["film score"]'}
     assert em.accept_field(ok, {"Q10": doc}, anchor) == (True, "")
     assert em.accept_field(dict(ok, value="game_theme"), {"Q10": doc}, anchor) == (False, "work_type_not_supported")
+
+
+def test_minimax_llm_uses_one_event_loop_for_all_calls(monkeypatch):
+    import asyncio
+    import types
+
+    class LoopBoundClient:
+        """Как async http-клиент провайдера: привязан к loop первого вызова, на другом падает."""
+        loop = None
+
+        async def complete(self, messages, settings=None, **kw):
+            running = asyncio.get_running_loop()
+            if self.loop is None:
+                self.loop = running
+            if running is not self.loop:
+                raise RuntimeError("Event loop is closed")
+            return types.SimpleNamespace(content='{"ok": 1}')
+
+    fake = types.ModuleType("rob_box_mcp_tools.engine.reasoner")
+    fake.minimax_provider = lambda timeout: (lambda: LoopBoundClient())
+    monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.engine.reasoner", fake)
+    llm = em.MinimaxLlm()
+    assert llm.complete("s", "u") == {"ok": 1}
+    assert llm.complete("s", "u") == {"ok": 1}
+    llm.close()
+
+
+def test_repo_root_does_not_crash_outside_repo():
+    assert isinstance(em._find_repo_root(), Path)
