@@ -59,7 +59,7 @@ def _fast(monkeypatch):
 
 def test_theme_miss_during_set_starts_set_with_theme_and_persona(run_plans):
     n = _set_node()
-    _stt(n, "Робот, давай тему терминатора")
+    _stt(n, "Робот, поставь терминатора")  # без слова «тема» — промах базы (#3400)
     run_plans()
     assert n._scheduler_executor.calls == [
         ("lookup_melody", {"name": "терминатора"}),
@@ -69,6 +69,47 @@ def test_theme_miss_during_set_starts_set_with_theme_and_persona(run_plans):
     n._speak_direct.assert_called_once_with("Я Снупдог, включаю сет. Тема — терминатора.")
     n._cancel_run.assert_called_once()
     assert n._llm_skipped_counter["media_command"] == 1
+
+
+def test_theme_word_during_set_switches_theme_without_lookup(run_plans):
+    """#3410: «давай тему X» в сете — тема сета, даже если X есть в базе мелодий."""
+    n = _set_node()
+    _stt(n, "Робот, давай тему терминатора")
+    run_plans()
+    assert n._scheduler_executor.calls == [
+        ("dj_set", {"action": "start", "theme": "терминатора", "persona": "Снупдог"}),
+    ]
+    n._dispatch_turn.assert_not_called()
+    n._speak_direct.assert_called_once_with("Я Снупдог, включаю сет. Тема — терминатора.")
+
+
+def test_order_without_theme_word_during_set_plays_melody_over_set(run_plans):
+    n = _set_node()
+    _stt(n, "Робот, поставь терминатора")
+    run_plans()
+    assert n._scheduler_executor.calls[0][0] == "lookup_melody"
+
+
+def test_grammar_keeps_theme_marker():
+    from rob_box_voice.core.media_command_grammar import parse_media_command
+
+    for phrase in ("Робот, давай тему терминатора", "Робот, включи тему терминатора",
+                   "Робот, поставь на тему терминатора"):
+        cmd = parse_media_command(phrase)
+        assert (cmd.intent, cmd.name, cmd.themed) == (MediaIntent.PLAY_NAMED, "терминатора", True), phrase
+    plain = parse_media_command("Робот, поставь терминатора")
+    assert (plain.name, plain.themed) == ("терминатора", False)
+    assert parse_media_command("Робот, включи тему").themed is False
+
+
+def test_router_theme_marker_only_switches_inside_set():
+    from rob_box_voice.core.media_router import plan_media_command
+
+    cmd = MediaCommand(intent=MediaIntent.PLAY_NAMED, name="терминатора", themed=True)
+    inside = plan_media_command(cmd, MediaState(music_playing=True, dj_enabled=True, dj_persona="Снупдог"))
+    assert inside.tool_calls[0].arguments == {"action": "start", "theme": "терминатора", "persona": "Снупдог"}
+    outside = plan_media_command(cmd, MediaState(music_playing=True))
+    assert outside.play_name == "терминатора" and not outside.tool_calls
 
 
 def test_theme_during_set_rejected_is_honest_and_not_llm(run_plans):

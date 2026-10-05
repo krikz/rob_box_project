@@ -404,7 +404,10 @@ def plan_media_command(
     if command.intent is MediaIntent.REQUEST_MUSIC:
         return _request_plan(command, text)
     if command.intent is MediaIntent.PLAY_NAMED and command.name:
-        return _play_named_plan(command)
+        plan = _play_named_plan(command)
+        if command.themed:  # #3410: «давай тему X» посреди сета — смена темы, без lookup
+            return dj_theme_switch_plan(plan, media) or plan
+        return plan
     return None
 
 
