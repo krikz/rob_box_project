@@ -95,7 +95,7 @@ def test_evaluation_model_always_yes_never_weakens_stop_navigation():
         if row["tool"] == "stop_navigation":
             assert row["guarded"] is ConfirmationKind.PASS_THROUGH
             assert row["model_only"] is ConfirmationKind.REQUIRE  # вот почему model-only запрещён
-    # «всегда да» эскалирует и delete_track → опасных промахов нет, но review растёт.
+    # «всегда да» эскалирует и delete_waypoint → опасных промахов нет, но review растёт.
     assert report["summary"]["guarded"]["false_safe"] == []
     assert report["summary"]["guarded"]["human_review"] > report["summary"]["deterministic"]["human_review"]
 

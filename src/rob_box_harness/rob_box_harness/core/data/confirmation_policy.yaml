@@ -140,21 +140,6 @@ tools:
   list_waypoints:
     class: pass_through
     reason: "🟢 read-only"
-  list_tracks:
-    class: pass_through
-    reason: "🟢 read-only"
   stop_music:
     class: notify
     reason: "🟡 останавливает музыку — озвучиваем, но не блокируем (аварийная семантика)"
-  search_samples:
-    class: pass_through
-    reason: "🟢 read-only"
-  save_track:
-    class: pass_through
-    reason: "🟢 обратимо"
-  load_track:
-    class: pass_through
-    reason: "🟢 обратимо"
-  delete_track:
-    class: pass_through
-    reason: "🟢 обратимо (можно пересоздать)"

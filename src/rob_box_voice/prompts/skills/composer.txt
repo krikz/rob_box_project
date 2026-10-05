@@ -22,6 +22,6 @@
 
 Диджей-сет — скилл dj; готовые mp3 из библиотеки — скилл player.
 
-Служебные тулы старого аранжировщика (`set_vibe_preset`, `search_samples`,
+Служебные тулы старого аранжировщика (`set_vibe_preset`,
 `save_arrangement_preset`, `add_music_material`) для музыки движка v2 не
 нужны — не вызывай их.

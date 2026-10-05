@@ -105,11 +105,6 @@ from .tools import (
     StopMusicTool,
     GetMusicStateTool,
     SetMusicVolumeTool,
-    SaveTrackTool,
-    ListTracksTool,
-    LoadTrackTool,
-    DeleteTrackTool,
-    SearchSamplesTool,
     LookupMelodyTool,
     SearchMelodyTool,
     AddMusicMaterialTool,
@@ -1086,7 +1081,6 @@ class MCPServer(Node):
         self.registry.register(GetMusicStateTool(self, music_manager))
         # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
         self.registry.register(SetMusicVolumeTool(self, music_manager))
-        self.registry.register(SearchSamplesTool(self))
 
         try:
             track_library = TrackLibrary()
@@ -1098,10 +1092,6 @@ class MCPServer(Node):
 
         self._track_library = track_library
         self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
-        self.registry.register(SaveTrackTool(self, track_library, music_manager))
-        self.registry.register(ListTracksTool(self, track_library))
-        self.registry.register(LoadTrackTool(self, track_library, music_manager))
-        self.registry.register(DeleteTrackTool(self, track_library))
         self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
         # Issue #1392 — MiniMax music generation + persistent library.

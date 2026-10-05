@@ -126,7 +126,7 @@ def test_sc_only_custom_synthdef_files_exist_for_repo_owned_palette() -> None:
 # The skill prompt told the model to research artists with
 # ``search_artist_style(...)`` and to pick samples with
 # ``renardo_search_samples(...)``. Neither tool has ever existed: the real
-# names are ``search_web`` and ``search_samples``. ``_validate_tools_in_prompt``
+# name for research is ``search_web``. ``_validate_tools_in_prompt``
 # did not catch it — it only warns about registered tools *missing* from the
 # prompt, never about invented ones present in it. So the model was told to
 # call a tool that would fail, and fell back to inventing a melody instead of

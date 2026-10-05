@@ -156,7 +156,6 @@ class TestCatalogAndSlices:
 
         entry = next(e for e in TOOL_CATALOG if e.name == "set_music_volume")
         assert entry.starts_music is False
-        assert entry.satisfies_user_music is False
         # «громче» роутится в voice-tts (skill_router) — тул обязан быть там.
         assert {"voice-tts", "dj", "composer"} <= set(entry.skill)
 

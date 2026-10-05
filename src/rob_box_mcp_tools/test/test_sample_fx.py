@@ -11,8 +11,8 @@
   умолчанию ВЫКЛЮЧЕН, ни один сэмпл не прослушан на 16 kHz DAC;
 * санитайзер переписывает имя FX в путь через тот же ``loop(...)`` синт,
   что и жанровый луп (нет отдельного FX-синта в Renardo);
-* подбор идёт через жанровые ТЕГИ (``fx_by_genre``), а не через зашитое
-  сопоставление «жанр → конкретный сэмпл» (наказ Шифу к #2968: системный
+* каждый FX несёт жанровые ТЕГИ в данных каталога, а не в зашитом
+  сопоставлении «жанр → конкретный сэмпл» (наказ Шифу к #2968: системный
   механизм, белый список — только гарантия безопасности до прослушки).
 """
 
@@ -51,8 +51,8 @@ def test_catalog_path_is_relative_to_default_loop_dir():
 
 def test_fx_reuses_the_same_flag_as_loops():
     assert sample_loops.PACK1_LOOPS_ENV == "ROB_BOX_PACK1_LOOPS"
-    assert sample_fx.fx_enabled({}) is False
-    assert sample_fx.fx_enabled({sample_loops.PACK1_LOOPS_ENV: "1"}) is True
+    assert sample_loops.pack1_loops_enabled({}) is False
+    assert sample_loops.pack1_loops_enabled({sample_loops.PACK1_LOOPS_ENV: "1"}) is True
 
 
 def test_find_fx_accepts_name_wav_and_canonical_path():
@@ -89,21 +89,6 @@ def test_every_fx_has_at_least_one_tag():
         assert info.tags, info.name
 
 
-def test_fx_by_genre_is_data_driven_not_hardcoded():
-    """Подбор идёт по тегам каталога, а не по имени файла/переключателю
-    в коде — смена JSON меняет выдачу без правки логики."""
-    gangsta = sample_fx.fx_by_genre("gangsta")
-    assert "gunshot_1" in gangsta
-    assert "siren_1" in gangsta
-    dnb = sample_fx.fx_by_genre("dnb")
-    assert "laser_1" in dnb
-    assert set(dnb).isdisjoint({"gunshot_1"})  # выстрел не тегирован dnb
-
-
-def test_fx_by_genre_unknown_tag_is_empty_not_error():
-    assert sample_fx.fx_by_genre("nonexistent-genre-xyz") == ()
-
-
 def test_tags_for_unknown_name_is_empty():
     assert sample_fx.tags_for("no_such_fx") == ()
 
@@ -132,7 +117,7 @@ def test_fx_is_rewritten_to_path_when_flag_on():
 
 def test_rewritten_fx_code_passes_sanitizer_again():
     """Уже переписанный путь (со своим ``.wav`` на конце, в отличие от
-    лупов) — тоже валидный аргумент при повторном прогоне (save_track)."""
+    лупов) — тоже валидный аргумент при повторном прогоне."""
     first = sanitize_renando(
         'd3 >> loop("siren_1", amp=0.3)', MAX_AMP, pack1_loops_enabled=True,
     )

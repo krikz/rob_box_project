@@ -115,7 +115,6 @@ def test_get_tools_are_pass_through() -> None:
         "get_sound_info",
         "get_perception_context",
         "list_waypoints",
-        "list_tracks",
     ):
         assert policy.classify(name).kind is ConfirmationKind.PASS_THROUGH, name
 

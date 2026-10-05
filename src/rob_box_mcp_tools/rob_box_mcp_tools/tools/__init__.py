@@ -83,12 +83,6 @@ __all__ = [
     "ExecuteMusicCodeTool",
     "StopMusicTool",
     "GetMusicStateTool",
-    "SearchSamplesTool",
-    # Track library tools
-    "SaveTrackTool",
-    "ListTracksTool",
-    "LoadTrackTool",
-    "DeleteTrackTool",
     "SearchMelodyTool",
     "AddMusicMaterialTool",
     # FAQ / Event tools

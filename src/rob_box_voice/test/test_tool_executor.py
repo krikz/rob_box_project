@@ -7,8 +7,7 @@ Covers the SchedulerToolExecutor contract from
   no ``await`` on the side effect — «LLM свободна»);
 * ``stop_music`` is deferred until the VOICE channel drains (e2e v36
   regression: stop_music must not outrun the TTS chunk);
-* music starters (``execute_music_code`` / ``set_vibe_preset`` /
-  ``load_track``) bypass the scheduler and execute blocking (party
+* music starters (``execute_music_code`` / ``set_vibe_preset``) bypass the scheduler and execute blocking (party
   regression live 19.08 — the LLM must see the real result);
 * bypass tools (memory_* / search_* / get_*) execute directly;
 * a scheduler failure fails OPEN — the underlying provider is called
@@ -95,7 +94,6 @@ def test_channel_for_tool_bypasses_music_starters() -> None:
     # result — only stop_music stays on the scheduler (party regression).
     assert channel_for_tool("execute_music_code") is None
     assert channel_for_tool("set_vibe_preset") is None
-    assert channel_for_tool("load_track") is None
 
 
 def test_channel_for_tool_bypasses_unknown_and_instant_tools() -> None:

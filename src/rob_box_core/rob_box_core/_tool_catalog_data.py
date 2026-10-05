@@ -30,7 +30,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'add_music_material',
         'description': 'Принять музыкальный материал, который человек ПРИСЛАЛ в '
@@ -67,7 +66,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'clear_waypoints',
         'description': 'Удалить ВСЕ сохранённые точки на текущей карте. Используй '
@@ -85,7 +83,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'container_status',
         'description': 'Получить статус контейнеров (restart-count, CPU, RAM, uptime) '
@@ -109,7 +106,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'continue_mapping',
         'description': 'Продолжить картографирование территории (режим SLAM). '
@@ -126,29 +122,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
-        'execution_type': 'fast',
-        'name': 'delete_track',
-        'description': 'Удалить трек из медиатеки робота. Действие необратимо. '
-                       'Используй list_tracks чтобы уточнить имя перед удалением.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'name': {   'type': 'string',
-                                                        'description': 'Имя трека для '
-                                                                       'удаления '
-                                                                       '(slug)'}},
-                          'required': ['name'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['name'],
-                         'required': ['name'],
-                         'accepts_kwargs': False},
-        'skill': ('renardo-library',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': False,
-        'destructive': True,
-        'idempotent': False,
-        'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'delete_waypoint',
         'description': 'Удалить сохранённую точку по имени. Используй когда '
@@ -169,7 +142,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'dj_set',
         'description': 'Диджей-сет: action=start — начать сет на тему theme (треки, '
@@ -205,7 +177,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'estimate_tts_duration',
         'description': 'Оценить длительность TTS-озвучки для заданного текста в '
@@ -246,7 +217,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': True,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'execute_music_code',
         'description': 'Выполнить готовый Renardo-код (харнесс живой проверки, LLM не '
@@ -350,7 +320,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'faq_search',
         'description': 'Поиск по FAQ активного мероприятия. Используй когда '
@@ -384,7 +353,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'finish_mapping',
         'description': 'Завершить картографирование и перейти в режим навигации по '
@@ -407,7 +375,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'gen_delete_from_library',
         'description': 'Удалить трек из библиотеки сгенерированной музыки: запись в '
@@ -439,7 +406,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': True,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'gen_get_track_info',
         'description': 'Получить подробные метаданные одного трека: title, prompt, '
@@ -471,7 +437,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': True,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'gen_list_library',
         'description': 'Показать список треков из библиотеки сгенерированной музыки '
@@ -519,7 +484,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': True,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'gen_play_from_library',
         'description': 'Воспроизвести mp3-трек из библиотеки сгенерированной музыки '
@@ -552,7 +516,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'gen_save_to_library',
         'description': 'Обновить метаданные (tags, rating, notes, mood, genre) для уже '
@@ -623,7 +586,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': True,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'gen_search_library',
         'description': 'Искать треки в библиотеке сгенерированной музыки по ключевому '
@@ -653,7 +615,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': True,
-        'satisfies_user_music': False,
         'execution_type': 'long',
         'name': 'generate_music',
         'description': 'Сгенерировать новый музыкальный трек через MiniMax Music API и '
@@ -804,7 +765,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'get_battery_level',
         'description': 'Получить текущий уровень заряда батареи робота в процентах.',
@@ -820,7 +780,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'get_current_pose',
         'description': 'Получить текущую позицию робота (x, y, theta) в системе '
@@ -838,7 +797,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'get_current_time',
         'description': 'Получить текущее время и дату. Используй когда пользователь '
@@ -856,7 +814,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'get_music_state',
         'description': 'Получить текущее состояние музыкального менеджера: доступность '
@@ -874,7 +831,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'get_perception_context',
         'description': 'Что робот сейчас видит камерой и чувствует: лица и объекты в '
@@ -895,7 +851,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'get_robot_status',
         'description': 'Получить текущий статус робота (позиция, батарея, состояние '
@@ -912,7 +867,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'get_sound_info',
         'description': 'Получить информацию о доступных звуковых эффектах. Используй '
@@ -954,44 +908,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'skill': ('expression',)},
     {   'llm_visible': True,
         'operator_visible': False,
-        'read_only': True,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': False,
-        'satisfies_user_music': False,
-        'execution_type': 'fast',
-        'name': 'list_tracks',
-        'description': 'Просмотреть все треки в медиатеке робота. Можно фильтровать по '
-                       'тегу или минимальному рейтингу. Показывает: название, теги, '
-                       'рейтинг, количество воспроизведений, заметки.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'tag': {   'type': 'string',
-                                                       'description': 'Фильтр по тегу '
-                                                                      '(например: '
-                                                                      "'full_track', "
-                                                                      "'chill', "
-                                                                      "'robot_authored')"},
-                                            'min_rating': {   'type': 'integer',
-                                                              'description': 'Показать '
-                                                                             'только '
-                                                                             'треки с '
-                                                                             'рейтингом '
-                                                                             'не ниже '
-                                                                             'указанного '
-                                                                             '(0-5)'}},
-                          'required': [],
-                          'additionalProperties': False},
-        'signature': {   'params': ['tag', 'min_rating'],
-                         'required': [],
-                         'accepts_kwargs': False},
-        'skill': ('renardo-library',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
         'read_only': False,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'list_tts_voices',
         'description': 'Список доступных голосов TTS. Без аргументов — голоса '
@@ -1025,7 +945,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'list_waypoints',
         'description': 'Получить список всех сохранённых точек (waypoints) для '
@@ -1042,7 +961,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'listen_for_response',
         'description': 'Ждать ответ пользователя через речь. Робот активирует микрофон '
@@ -1077,7 +995,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'long',
         'name': 'load_map',
         'description': 'Загрузить сохранённую карту и перейти в режим локализации '
@@ -1101,37 +1018,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'skill': ('mapping',)},
     {   'llm_visible': True,
         'operator_visible': False,
-        'read_only': False,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': False,
-        'satisfies_user_music': True,
-        'execution_type': 'fast',
-        'name': 'load_track',
-        'description': 'Загрузить трек из медиатеки и воспроизвести его через Renardo. '
-                       'Трек идентифицируется по имени (slug). Используй list_tracks '
-                       'чтобы узнать доступные имена. Счётчик воспроизведений '
-                       'обновляется автоматически.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'name': {   'type': 'string',
-                                                        'description': 'Имя трека для '
-                                                                       'загрузки '
-                                                                       '(slug, '
-                                                                       'например: '
-                                                                       "'csm_132_full_track')"}},
-                          'required': ['name'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['name'],
-                         'required': ['name'],
-                         'accepts_kwargs': False},
-        'skill': ('renardo-library',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
         'read_only': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'lookup_melody',
         'description': 'Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты '
@@ -1194,7 +1084,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'memory_context',
         'description': 'Получить контекст памяти из предыдущих сессий: последние '
@@ -1257,7 +1146,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'memory_save',
         'description': 'Сохранить факт или предпочтение пользователя в долгосрочную '
@@ -1322,7 +1210,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'memory_search',
         'description': 'Поиск по долгосрочной памяти: сохранённые факты о пользователе '
@@ -1381,7 +1268,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'long',
         'name': 'move_direction',
         'description': 'Движение робота в указанном направлении. Используй для команд '
@@ -1416,7 +1302,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'long',
         'name': 'navigate_to_coordinates',
         'description': 'Навигация робота к произвольным координатам (x, y, theta) в '
@@ -1447,7 +1332,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'long',
         'name': 'navigate_to_waypoint',
         'description': 'Навигация робота к именованной точке (waypoint) из базы. '
@@ -1473,7 +1357,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'long',
         'name': 'optimize_map',
         'description': 'Оптимизировать карту после завершения картографирования: поиск '
@@ -1491,7 +1374,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'play_animation',
         'description': 'Запустить LED анимацию на матрице робота (381 LED) на '
@@ -1557,7 +1439,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'play_sound',
         'description': 'Воспроизвести звуковой эффект. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ для '
@@ -1649,7 +1530,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'read_logs',
         'description': 'Получить логи конкретной ROS2-ноды или контейнера. Используй '
@@ -1692,7 +1572,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'register_speaker',
         'description': 'Зарегистрировать голос текущего собеседника в voice biometric '
@@ -1761,7 +1640,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'request_music',
         'description': 'Поставить музыку по просьбе человека: intent=track — клубный '
@@ -1808,7 +1686,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'ros2_node_status',
         'description': 'Получить статус ROS2-нод робота (active/missing/failed). '
@@ -1840,117 +1717,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': False,
-        'satisfies_user_music': False,
-        'execution_type': 'fast',
-        'name': 'save_track',
-        'description': 'Сохранить Renardo-трек в медиатеку робота для повторного '
-                       'воспроизведения. Если code не передан — сохраняется код '
-                       'последнего выполненного паттерна из истории. Медиатека '
-                       'хранится в /config/music_library.json (персистентно между '
-                       'перезапусками). Используй для сохранения понравившихся треков, '
-                       'заготовок или процедурных шедевров.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'name': {   'type': 'string',
-                                                        'description': 'Имя трека — '
-                                                                       'передавай '
-                                                                       'РОВНО ТО '
-                                                                       'СЛОВО, которым '
-                                                                       'его назвал '
-                                                                       'пользователь, '
-                                                                       'включая '
-                                                                       'русское '
-                                                                       '(«тисбит», '
-                                                                       '«мурка»). '
-                                                                       'Библиотека '
-                                                                       'сама '
-                                                                       'транслитерирует '
-                                                                       'и нормализует '
-                                                                       'его в slug, '
-                                                                       'так что '
-                                                                       '«Тисбит», '
-                                                                       '«ТисБит» и '
-                                                                       '«тисбит» '
-                                                                       'попадут в ОДНУ '
-                                                                       'запись, и '
-                                                                       '«удали трек '
-                                                                       'тисбит» её '
-                                                                       'найдёт. ❌ НЕ '
-                                                                       'придумывай '
-                                                                       'свою латинскую '
-                                                                       'транскрипцию: '
-                                                                       'живой лог '
-                                                                       '30.08 — один и '
-                                                                       'тот же '
-                                                                       '«тисбит» лёг в '
-                                                                       'базу четырьмя '
-                                                                       'записями '
-                                                                       '(tisbeat, '
-                                                                       'tisbit, '
-                                                                       'thisbit, '
-                                                                       'tinbit), и '
-                                                                       'удалить его '
-                                                                       'стало нечем.'},
-                                            'code': {   'type': 'string',
-                                                        'description': 'Renardo-код '
-                                                                       'трека. Если не '
-                                                                       'передан — '
-                                                                       'берётся из '
-                                                                       'истории '
-                                                                       'паттернов по '
-                                                                       'ключу '
-                                                                       'pattern_name '
-                                                                       'или последний '
-                                                                       'выполненный '
-                                                                       'код.'},
-                                            'title': {   'type': 'string',
-                                                         'description': 'Читаемое '
-                                                                        'название '
-                                                                        'трека '
-                                                                        '(например: '
-                                                                        "'Night Drive "
-                                                                        "в C minor')"},
-                                            'description': {   'type': 'string',
-                                                               'description': 'Описание '
-                                                                              'трека: '
-                                                                              'настроение, '
-                                                                              'структура, '
-                                                                              'особенности'},
-                                            'tags': {   'type': 'array',
-                                                        'description': 'Список тегов '
-                                                                       '(например: '
-                                                                       "['chill', "
-                                                                       "'minor', "
-                                                                       "'90bpm', "
-                                                                       "'full_track'])"},
-                                            'rating': {   'type': 'integer',
-                                                          'description': 'Оценка трека '
-                                                                         'от 0 до 5'},
-                                            'notes': {   'type': 'string',
-                                                         'description': 'Личные '
-                                                                        'заметки о '
-                                                                        'треке'}},
-                          'required': ['name'],
-                          'additionalProperties': False},
-        'signature': {   'params': [   'name',
-                                       'code',
-                                       'title',
-                                       'description',
-                                       'tags',
-                                       'rating',
-                                       'notes'],
-                         'required': ['name'],
-                         'accepts_kwargs': False},
-        'skill': ('renardo-library',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': False,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'save_waypoint',
         'description': 'Сохранить текущую позицию робота как именованную точку. '
@@ -1976,7 +1745,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'instant',
         'name': 'say',
         'description': 'Произнести текст голосом от имени оператора робота. Используй, '
@@ -2011,7 +1779,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'search_melody',
         'description': 'Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу '
@@ -2040,62 +1807,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'skill': ('composer',)},
     {   'llm_visible': True,
         'operator_visible': False,
-        'read_only': True,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': False,
-        'satisfies_user_music': False,
-        'execution_type': 'fast',
-        'name': 'search_samples',
-        'description': 'Поиск Renardo-сэмплов по ключевому слову в имени файла. '
-                       'Возвращает букву, sample_index и готовый play_code. Используй '
-                       "когда нужно найти неизвестную букву/индекс сэмпла. query='*' — "
-                       'обзор всех доступных букв и количества сэмплов в паке. Для '
-                       "pack='1_pitchglitch_samples' запрос дополнительно ищет по "
-                       'ЖАНРОВЫМ ТЕГАМ белого списка FX (issue #2968) — например '
-                       "query='dnb' или query='gangsta' находит подходящие FX-одиночки "
-                       '(выстрел/сирена/скрэтч/лазер) по тегу, а не по имени файла; '
-                       "результат — в data['fx_by_tag'], с рабочим play_code через "
-                       'compose_music(fx=...) (spack= в паке 1 не работает, см. '
-                       '#2841).',
-        'parameters': {   'type': 'object',
-                          'properties': {   'query': {   'type': 'string',
-                                                         'description': 'Ключевое '
-                                                                        'слово: kick, '
-                                                                        'snare, hat, '
-                                                                        'bass, synth, '
-                                                                        'vocal, '
-                                                                        'glitch, dist, '
-                                                                        "loop. '*' — "
-                                                                        'компактный '
-                                                                        'обзор всех '
-                                                                        'букв.'},
-                                            'pack': {   'type': 'string',
-                                                        'description': 'Имя пакета: '
-                                                                       "'0_foxdot_default' "
-                                                                       '(стандартный) '
-                                                                       'или '
-                                                                       "'1_pitchglitch_samples' "
-                                                                       '(расширенный, '
-                                                                       'включает '
-                                                                       'вокал/FX).'},
-                                            'case': {   'type': 'string',
-                                                        'description': 'Регистр буквы: '
-                                                                       "'lower' или "
-                                                                       "'upper'."}},
-                          'required': ['query'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['query', 'pack', 'case'],
-                         'required': ['query'],
-                         'accepts_kwargs': False},
-        'skill': ('composer',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
         'read_only': False,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'search_web',
         'description': 'Поиск в интернете через DuckDuckGo. Возвращает до N сниппетов '
@@ -2108,8 +1823,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'Москве»), факты и даты («когда день города в Ростове»). ТАКЖЕ '
                        'для музыки: ноты незнакомой мелодии («<название> ноты», '
                        '«<name> melody notes MIDI») и стиль/темп артиста или группы. '
-                       'НЕ используй для: подбора сэмплов (буква/индекс — используй '
-                       'search_samples), личных фактов о собеседнике '
+                       'НЕ используй для: личных фактов о собеседнике '
                        '(memory_search/memory_context).',
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
@@ -2141,19 +1855,18 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_music_volume',
-        'description': 'Громкость МУЗЫКИ (трек/DJ-сет: request_music, dj_set, '
-                       'load_track), а НЕ голоса робота. Юзер просит '
-                       '«громче/тише/погромче/потише» и сейчас играет музыка, или '
-                       'прямо говорит «музыку/трек/бит громче» — вызывай ЭТОТ тул, а '
-                       'не set_volume (set_volume меняет только голос). Музыку не '
-                       'перезапускает: играющий трек продолжает играть, меняется '
-                       'только уровень. action: louder/quieter — шаг ±3 dB, max — '
-                       'максимум, normal — стартовый уровень, set — абсолютный уровень '
-                       'level 0..100 (% от максимума). mp3 из MiniMax-библиотеки '
-                       '(gen_play_from_library) этим тулом не регулируется.',
+        'description': 'Громкость МУЗЫКИ (трек/DJ-сет: request_music, dj_set), а НЕ '
+                       'голоса робота. Юзер просит «громче/тише/погромче/потише» и '
+                       'сейчас играет музыка, или прямо говорит «музыку/трек/бит '
+                       'громче» — вызывай ЭТОТ тул, а не set_volume (set_volume меняет '
+                       'только голос). Музыку не перезапускает: играющий трек '
+                       'продолжает играть, меняется только уровень. action: '
+                       'louder/quieter — шаг ±3 dB, max — максимум, normal — стартовый '
+                       'уровень, set — абсолютный уровень level 0..100 (% от '
+                       'максимума). mp3 из MiniMax-библиотеки (gen_play_from_library) '
+                       'этим тулом не регулируется.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'louder — '
@@ -2195,7 +1908,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_pitch',
         'description': "Установить высоту голоса робота. Используй для команд 'говори "
@@ -2220,7 +1932,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_speed',
         'description': "Установить скорость речи робота. Используй для команд 'говори "
@@ -2245,7 +1956,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_tts_provider',
         'description': 'Переключить активного TTS-провайдера (yandex ↔ minimax ↔ '
@@ -2277,7 +1987,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_voice',
         'description': 'Установить голос TTS на диалог (персистентно, пока не сменят). '
@@ -2359,7 +2068,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'set_volume',
         'description': 'Громкость ГОЛОСА робота (речь TTS), НЕ музыки. Используй для '
@@ -2387,7 +2095,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'show_metrics',
         'description': 'Показать телеметрию робота на боковом экране TARS 2 (Captain '
@@ -2439,7 +2146,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'speak_text',
         'description': 'Произнести текст голосом через TTS. ИСПОЛЬЗУЙ ЭТО вместо '
@@ -2564,7 +2270,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'start_mapping',
         'description': 'Начать физическое сканирование и построение карты помещения '
@@ -2623,7 +2328,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'stop_music',
         'description': 'Остановить музыкальный паттерн по имени или всю музыку. Если '
@@ -2660,7 +2364,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'stop_navigation',
         'description': 'Остановить текущую навигацию робота. Используй для команд '
@@ -2677,7 +2380,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'starts_music': False,
-        'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'task_delta',
         'description': 'Изменить PENDING-сегменты активного многочастного выступления '

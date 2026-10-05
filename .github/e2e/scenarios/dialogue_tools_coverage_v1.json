@@ -71,50 +71,6 @@
       }
     },
     {
-      "label": "tc07_search_samples",
-      "voice": "anton",
-      "text": "Робот, найди в своей библиотеке семплы барабанов",
-      "patterns": ["search_samples"],
-      "acceptance": {
-        "expected_tool_calls": ["search_samples"],
-        "must_not_call": [],
-        "_comment": "Не покрыт. Тул упоминается в §4.1 спека как часть research перед сетом, но ни один сценарий его не трогал."
-      }
-    },
-    {
-      "label": "tc08_save_track",
-      "voice": "anton",
-      "text": "Робот, сыграй короткий бит на рендардо и сохрани его как трек тестбит",
-      "patterns": ["execute_music_code", "save_track"],
-      "acceptance": {
-        "expected_tool_calls": ["save_track"],
-        "must_not_call": [],
-        "_comment": "save_track не покрыт. Двухшаговое намерение (сыграть + сохранить) проверяет заодно, что LLM не теряет вторую половину запроса."
-      }
-    },
-    {
-      "label": "tc09_list_tracks",
-      "voice": "anton",
-      "text": "Робот, покажи список сохранённых треков",
-      "patterns": ["list_tracks"],
-      "acceptance": {
-        "expected_tool_calls": ["list_tracks"],
-        "must_not_call": [],
-        "_comment": "Не покрыт. Должен увидеть тестбит из tc08."
-      }
-    },
-    {
-      "label": "tc10_load_track",
-      "voice": "anton",
-      "text": "Робот, загрузи и включи трек тестбит",
-      "patterns": ["load_track"],
-      "acceptance": {
-        "expected_tool_calls": ["load_track"],
-        "must_not_call": [],
-        "_comment": "Не покрыт."
-      }
-    },
-    {
       "label": "tc11_stop_after_load",
       "voice": "anton",
       "text": "Робот, останови музыку",
@@ -123,17 +79,6 @@
         "expected_tool_calls": ["stop_music"],
         "must_not_call": [],
         "_comment": "Гигиена: гарантируем тишину до следующих шагов, иначе музыка испортит распознавание."
-      }
-    },
-    {
-      "label": "tc12_delete_track",
-      "voice": "anton",
-      "text": "Робот, удали трек тестбит из сохранённых",
-      "patterns": ["delete_track"],
-      "acceptance": {
-        "expected_tool_calls": ["delete_track"],
-        "must_not_call": [],
-        "_comment": "Не покрыт. Замыкает жизненный цикл save → list → load → delete, чтобы прогон не оставлял мусор."
       }
     },
     {
