@@ -74,10 +74,9 @@ def test_v2_owner_is_the_only_state_writer(monkeypatch):
     assert [t.name for t in node.registry.tools] == ["dj_set", "request_music"]
     first = json.loads(state_pub.published[0])
     assert first["state"] == "idle" and first["dj"] == {"enabled": False}
-    assert node.music_state_pub is None  # у старого пути публикатора снимка больше нет
-    node._music_manager = manager
-    module.MCPServer.publish_music_state(node)  # старый путь при v2 молчит
-    assert len(state_pub.published) == 1
+    assert node.music_state_pub is None  # публикатор снимка — только у владельца
+    assert not hasattr(module.MCPServer, "publish_music_state")  # старого писателя нет (PR-13)
+    assert node._dj_set_tool is node.registry.tools[0]
 
 
 def _load(name):

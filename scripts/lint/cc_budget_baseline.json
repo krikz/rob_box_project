@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-02",
-  "base_sha": "660dbff9433d952235dfa2bbad41ed5fa3331c5c",
+  "created": "2026-10-05",
+  "base_sha": "1243adaf1e7d45f6ff5ce1ecbb0706e1b41bd037",
   "limits": {
     "method": 15,
     "init": 20
@@ -18,7 +18,7 @@
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
-      "DialogueNode._handle_result": 82
+      "DialogueNode._handle_result": 59
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22

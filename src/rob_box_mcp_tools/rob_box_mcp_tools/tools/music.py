@@ -45,37 +45,6 @@ from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
 
 
-def _notify_music_state(tool: Any) -> None:
-    """Опубликовать /voice/music/state на сервере (issue 989 Fix C).
-
-    architecture audit 2026-09-29, ADR-0145: общее тело для
-    ``_notify_music_state`` в ExecuteMusicCodeTool /
-    StopMusicTool (методы остаются тонкими делегатами).
-    """
-    if tool.node is None:
-        return
-    publisher = getattr(tool.node, "publish_music_state", None)
-    if publisher is None:
-        return
-    try:
-        publisher()
-    except Exception as exc:  # noqa: BLE001
-        tool.log_warning(f"Не удалось опубликовать music_state: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# issue #2896 — прозрачность RTTTL-поиска для модели
-# ---------------------------------------------------------------------------
-# ``RtttlLibrary.get()`` больше не отказывает молча на слабое текстовое
-# совпадение (фикс под одно слабое совпадение, issue #2877, системно ломал
-# сильные — «super mario», «star wars», issue #2896). Он всегда возвращает
-# лучшего по тексту кандидата; ответственность «эта ли песня» переходит на
-# вызывающую сторону — ``lookup_melody`` отдаёт модели
-# ``title`` найденной записи (что и раньше) плюс несколько соседей по
-# ``search()``, чтобы модель могла сверить название с тем, что просил юзер,
-# и переспросить/выбрать другой вариант, если title явно не та песня.
-
-
 def _search_alternatives(
     library: Optional["RtttlLibrary"],
     query: Optional[str],
@@ -455,56 +424,8 @@ class MusicManager:
         self._music_deadline_at: Optional[float] = None
         #: segments value that produced the deadline (diagnostics only).
         self._music_deadline_segments: Optional[int] = None
-        # Issue #1812 — form-end deadline for a non-repeating compose_music()
-        # track. Wall-clock monotonic timestamp after which the composition
-        # has naturally finished playing its one pass of the form. While
-        # ``time.monotonic() < self._music_form_deadline_at``, the idle-TTL
-        # watchdog must NOT auto-stop the track even if dialogue has been
-        # silent for longer than the TTL — silently listening to a track is
-        # the expected use, not an abandoned session. None = no active
-        # form-end protection (repeat=True composition, or raw
-        # execute_music_code — the idle TTL alone governs those).
-        self._music_form_deadline_at: Optional[float] = None
-        # Issue #2461 — момент конца ОДНОГО прохода формы, НЕЗАВИСИМО от
-        # repeat. ``_music_form_deadline_at`` выше умышленно остаётся
-        # None при repeat=True (watchdog'у нечего защищать — зацикленный
-        # трек сам себя не остановит), но DJ-режим играет ИМЕННО
-        # repeat=True треки, и без отдельного поля момент «форма
-        # доиграла один раз» не виден нигде за пределами одной LLM-сессии
-        # (модель должна прочитать duration_seconds из текста и сама
-        # скопировать его в next_transition_sec — issue #2461). Значение
-        # то же самое, что ушло бы в set_form_deadline при repeat=False:
-        # form_duration_seconds() не принимает repeat вообще, длительность
-        # одного прохода формы от него не зависит. Взводится безусловно
-        # в ``ComposeMusicTool._apply_form_deadline`` на каждый успешный
-        # compose_music(). None = музыка не игралась (или была остановлена/
-        # заменена — см. clear_form_deadline()).
-        self._music_form_cycle_ends_at: Optional[float] = None
-        # Issue #3113 — название играющей темы (``compose_music(name=...)``,
-        # заголовок из библиотеки) для DJ-сета: dialogue_node копит сыгранные
-        # и не даёт модели повторить песню в том же сете. ``None`` — трек без
-        # имени (club, сочинённый, execute_music_code) или тишина; сбрасывает
-        # :meth:`clear_form_deadline` (новый код / стоп), пишет ComposeMusicTool.
-        self.current_track_name: Optional[str] = None
-        # Issue #3133 (ADR-0141) — id того, что звучит сейчас: новый на
-        # каждый успешный execute_code, ``None`` после стопа/конца формы.
-        # ``last_finished_track_id`` — трек, который доиграл форму САМ
-        # (не остановлен); сбрасывается новым кодом и явным стопом.
-        self._track_seq: int = 0
-        self._track_id_prefix: str = format(int(time.time()), "x")
-        self.current_track_id: Optional[str] = None
-        self.last_finished_track_id: Optional[str] = None
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
-        # ------------------------------------------------------------------
-        # DJ mode flag — единственный владелец: ``set_dj_mode()`` (см.
-        # ниже). Ставится двумя адаптерами одного шва: ``SetDjModeTool``
-        # (напрямую) и ``MCPServer._on_dj_mode`` (из топика /voice/dj_mode,
-        # который dialogue_node публикует в stop-fallback). Читается в
-        # ``auto_stop_idle_music``: пока DJ включён, segments-дедлайн #990
-        # не должен гасить непрерывный сет.
-        # ------------------------------------------------------------------
-        self._dj_mode_enabled: bool = False
         # ------------------------------------------------------------------
         # Music stack health (issue G-MUSIC, architect review v3)
         # ------------------------------------------------------------------
@@ -514,20 +435,6 @@ class MusicManager:
         # upstream .scd file cannot manifest as silent exec errors later.
         self._evaluate_music_stack_health(sclang_log_path=sclang_log_path)
         self._initialize_renardo()
-
-    # ------------------------------------------------------------------
-    # DJ Mode — issue #1000
-    # ------------------------------------------------------------------
-
-    @property
-    def dj_mode_enabled(self) -> bool:
-        """True when DJ mode is active — ``auto_stop_idle_music`` skips the segments-deadline."""
-        return self._dj_mode_enabled
-
-    def set_dj_mode(self, enabled: bool) -> None:
-        """Единственная точка записи DJ-флага. Called by :class:`SetDjModeTool`
-        and :meth:`MCPServer._on_dj_mode`."""
-        self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -1559,70 +1466,6 @@ class MusicManager:
         self._music_deadline_segments = int(segments)
 
     # ------------------------------------------------------------------
-    # Issue #1812 — form-end deadline for non-repeating compose_music()
-    # ------------------------------------------------------------------
-
-    def set_form_deadline(self, duration_seconds: float) -> None:
-        """Записать момент, когда доиграет одна форма ``repeat=False``.
-
-        Вызывается из ``ComposeMusicTool`` сразу после успешного
-        ``execute_code`` для трека без зацикливания: длительность формы
-        известна заранее (сумма тактов формы в битах / темп), и до её
-        истечения watchdog не должен считать молчание диалога простоем.
-        """
-        self._music_form_deadline_at = time.monotonic() + max(0.0, float(duration_seconds))
-
-    def set_form_cycle_end(self, duration_seconds: float) -> None:
-        """Issue #2461 — записать момент конца ОДНОГО прохода формы.
-
-        В отличие от :meth:`set_form_deadline` (только watchdog-защита от
-        cut-off, только при ``repeat=False``), это поле взводится на
-        КАЖДЫЙ успешный ``compose_music`` независимо от ``repeat`` —
-        DJ-сет всегда играет зацикленные треки, и без отдельного канала
-        момент «форма отыграла один раз» иначе виден только модели,
-        которая должна сама скопировать число в следующий вызов
-        (см. докстринг поля ``_music_form_cycle_ends_at``). Читается
-        наружу через :meth:`get_state`.
-        """
-        self._music_form_cycle_ends_at = time.monotonic() + max(0.0, float(duration_seconds))
-
-    def form_stop_remaining_s(self) -> Optional[float]:
-        """Issue #3113 — сколько секунд до ОСТАНОВКИ конечного трека.
-
-        Только ``repeat=False`` (код трека кончается ``Clock.future(...,
-        Clock.clear)``, :meth:`set_form_deadline`); зацикленный трек сам не
-        замолкает — ``None``. Живой прогон 28.09: DJ-переход ждал конца такой
-        формы, и между треками было ~15 с тишины; dialogue_node получает это
-        значение (как epoch) в ``/voice/music/form`` и назначает переход
-        раньше остановки.
-        """
-        deadline = self._music_form_deadline_at
-        if deadline is None:
-            return None
-        remaining = deadline - time.monotonic()
-        return remaining if remaining > 0 else None
-
-    def clear_form_deadline(self) -> None:
-        """Снять защиту «форма ещё не доиграла» (issue #1812).
-
-        Вызывается автоматически из ``execute_code`` в начале каждого
-        успешного выполнения (новый код заменяет то, что играло — старая
-        форма больше не актуальна) и из ``stop_all`` (музыка остановлена
-        явно — защищать больше нечего). ``ComposeMusicTool`` включает
-        защиту заново через :meth:`set_form_deadline`, если новый трек тоже
-        ``repeat=False``.
-
-        Заодно сбрасывает ``_music_form_cycle_ends_at`` (issue #2461) — оба
-        поля описывают состояние ОДНОЙ формы, и на тех же двух точках
-        (новый код / явный стоп) прежняя форма перестаёт существовать.
-        ``ComposeMusicTool`` взводит его заново через
-        :meth:`set_form_cycle_end` безусловно, на любой ``repeat``.
-        """
-        self._music_form_deadline_at = None
-        self._music_form_cycle_ends_at = None
-        self.current_track_name = None
-
-    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -1975,89 +1818,27 @@ class MusicManager:
         return {"success": True, "message": f"Паттерн '{pattern_name}' остановлен"}
 
     def _stamp_new_track(self) -> None:
-        """Отметить успешно исполненный код: сессия жива, новый трек (#935, #3133)."""
+        """Отметить успешно исполненный код: сессия жива (#935)."""
         with self._state_lock:
             now = time.monotonic()
             self._last_music_activity_at = now
             if self._music_session_active_since is None:
                 self._music_session_active_since = now
-            # Issue #1812 — fresh code replaces whatever was playing, so any
-            # earlier form-end protection no longer applies. ComposeMusicTool
-            # re-arms it right below via set_form_deadline() when the new
-            # composition is non-repeating.
-            self.clear_form_deadline()
-            self._start_new_track_id()
 
-    def _end_music_session(self, now_m: float, finished_track_id: Optional[str] = None) -> None:
-        """Сбросить состояние сессии: музыки больше нет (стоп или конец формы).
-
-        Одна точка для :meth:`stop_all` и :meth:`finish_form_if_ended`
-        (issue #3133) — оба пути обязаны оставлять одинаковое «idle».
-        Renardo/SuperCollider не трогает. ``finished_track_id`` — трек
-        доиграл сам; при явном стопе ``None``.
-        """
+    def _end_music_session(self, now_m: float) -> None:
+        """Сбросить состояние сессии: музыки больше нет. Renardo/SuperCollider не трогает."""
         with self._state_lock:
-            self._reset_session_fields(now_m)
-            self.last_finished_track_id = finished_track_id
-
-    def _reset_session_fields(self, now_m: float) -> None:
-        self._active_patterns.clear()
-        self._last_stop_at = now_m
-        # Issue #990 — a stop cancels the segments safety-net deadline:
-        # music is no longer playing, so there is nothing to backstop.
-        self._music_deadline_at = None
-        self._music_deadline_segments = None
-        # Issue #1812 — a stop also cancels the form-end deadline: there is
-        # no composition left to protect from the idle watchdog.
-        self.clear_form_deadline()
-        # Reset session only when the *whole* session is over so a partial
-        # ``stop_pattern``-then-restart sequence doesn't lose the timer
-        # (issue #935 — keeps audit trail of when music was active).
-        self._music_session_active_since = None
-        self._last_music_activity_at = None
-        self.current_track_id = None
-
-    def _start_new_track_id(self) -> None:
-        """Issue #3133 — новый id трека на каждый успешно исполненный код."""
-        self._track_seq = getattr(self, "_track_seq", 0) + 1
-        prefix = getattr(self, "_track_id_prefix", "t")
-        self.current_track_id = f"{prefix}-{self._track_seq}"
-        self.last_finished_track_id = None
-
-    def finish_form_if_ended(self, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
-        """Issue #3133 (ADR-0141) — конечный трек доиграл форму → сессия idle.
-
-        Трек ``repeat=False`` останавливает сам Renardo
-        (``Clock.future(end, Clock.clear)`` в сгенерированном коде), и
-        сервер раньше об этом не узнавал: «playing» держалось до idle-TTL
-        (30 мин). Теперь, как только наступил дедлайн формы
-        (:meth:`set_form_deadline`), сессия закрывается так же, как при
-        стопе, но БЕЗ обращения к Renardo — он уже замолчал сам, а
-        ``/g_freeAll`` оборвал бы хвосты релизов.
-
-        Зацикленный трек (``repeat=True``, DJ-сет) дедлайна не имеет —
-        здесь ничего не происходит. Новый код до дедлайна снимает его
-        (:meth:`clear_form_deadline` в ``execute_code``), так что сменённый
-        трек не «доигрывает» задним числом.
-
-        Returns:
-            ``{"track_id", "track_name", "reason": "form_end"}`` — сессия
-            закрыта сейчас; ``None`` — нечего закрывать.
-        """
-        with self._state_lock:
-            deadline = getattr(self, "_music_form_deadline_at", None)
-            if deadline is None:
-                return None
-            now_m = time.monotonic() if now is None else float(now)
-            if now_m < deadline:
-                return None
-            finished = {
-                "track_id": getattr(self, "current_track_id", None),
-                "track_name": getattr(self, "current_track_name", None),
-                "reason": "form_end",
-            }
-            self._end_music_session(now_m, finished_track_id=finished["track_id"])
-            return finished
+            self._active_patterns.clear()
+            self._last_stop_at = now_m
+            # Issue #990 — a stop cancels the segments safety-net deadline:
+            # music is no longer playing, so there is nothing to backstop.
+            self._music_deadline_at = None
+            self._music_deadline_segments = None
+            # Reset session only when the *whole* session is over so a partial
+            # ``stop_pattern``-then-restart sequence doesn't lose the timer
+            # (issue #935 — keeps audit trail of when music was active).
+            self._music_session_active_since = None
+            self._last_music_activity_at = None
 
     def stop_all(self) -> Dict[str, Any]:
         """Остановить всю музыку: плавный gate=0 ramp-down → freeAll.
@@ -2187,28 +1968,6 @@ class MusicManager:
             # Issue #990 — segments safety-net deadline (None = no deadline).
             "music_deadline_at": self._music_deadline_at,
             "music_deadline_segments": self._music_deadline_segments,
-            # Issue #2461 — момент/остаток конца одного прохода формы,
-            # взводится на любой compose_music() независимо от repeat (см.
-            # докстринг ``_music_form_cycle_ends_at``). Это тот структурный
-            # канал, которого не хватало DJModeController.tick(): пока сам
-            # tick() не подписан ни на что (межпроцессный шаг issue #2461
-            # ещё не сделан), поле хотя бы читаемо в процессе mcp_server —
-            # через get_music_state и для будущего /voice/music/state.
-            "form_cycle_ends_at": self._music_form_cycle_ends_at,
-            "form_cycle_remaining_s": (
-                self._music_form_cycle_ends_at - time.monotonic()
-                if self._music_form_cycle_ends_at is not None
-                else None
-            ),
-            # Issue #3113 — остаток до остановки конечного (repeat=False)
-            # трека; ``None`` — зацикленный трек или ничего не играет.
-            "form_stop_remaining_s": self.form_stop_remaining_s(),
-            # getattr: часть тестов собирает менеджер через __new__ без __init__.
-            "track_name": getattr(self, "current_track_name", None),
-            # Issue #3133 (ADR-0141) — поля снимка /voice/music/state.
-            "track_id": getattr(self, "current_track_id", None),
-            "last_finished_track_id": getattr(self, "last_finished_track_id", None),
-            "dj_mode_enabled": bool(getattr(self, "_dj_mode_enabled", False)),
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -2266,18 +2025,8 @@ class MusicManager:
         # tts_batch_complete → no music_cleanup). Stop music so it cannot
         # play forever. This takes priority over the idle TTL because the
         # deadline is the more precise contract the LLM asked for.
-        # 🔴 FIX (live 10:13 DJ): при активном DJ-режиме дедлайн
-        # ИГНОРИРУЕТСЯ — DJ-сет непрерывен (переходы каждые 30-120с),
-        # segments-дедлайн #990 (~30с) убивал музыку посреди сета.
-        # DJ-флаг ставится через set_dj_mode() (одна точка записи).
         deadline = self._music_deadline_at
         if deadline is not None and now_m >= deadline:
-            if self.dj_mode_enabled:
-                # DJ живёт по idle-TTL; сбросим дедлайн — следующий
-                # переход продлит сессию.
-                self._music_deadline_at = None
-                self._music_deadline_segments = None
-                return result
             segments_for_log = self._music_deadline_segments
             stop_result = self.stop_all()
             result["stopped"] = True
@@ -2288,18 +2037,6 @@ class MusicManager:
             result["auto_stop_count"] = self._auto_stop_count
             return result
         if idle < ttl:
-            return result
-        # Issue #1812 — a non-repeating compose_music() track has a
-        # computable finite length (form bars * beats-per-bar / bpm).
-        # Listening to it in silence is the expected use, not an abandoned
-        # dialogue session, so the idle TTL alone must not cut it off
-        # before its one pass of the form has actually finished playing.
-        # Only gates the *idle_ttl* stop below — the segments_deadline
-        # emergency stop above (hung TTS) still takes priority.
-        form_deadline = self._music_form_deadline_at
-        if form_deadline is not None and now_m < form_deadline:
-            result["held_reason"] = "form_not_finished"
-            result["form_deadline_remaining_s"] = form_deadline - now_m
             return result
         # Auto-stop — call the existing stop_all() so the closure logic
         # (3-stage clean: per-player stop + Clock.clear() + /g_freeAll)
@@ -2448,15 +2185,8 @@ class ExecuteMusicCodeTool(MCPTool):
             code, pattern_name, segments=segments, duration_sec=duration_sec
         )
         if result["success"]:
-            # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
-            # активна — VAD threshold поднимается без ожидания watchdog.
-            self._notify_music_state()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
-
-    def _notify_music_state(self) -> None:
-        """Опубликовать /voice/music/state (issue 989 Fix C)."""
-        _notify_music_state(self)
 
 
 class StopMusicTool(MCPTool):
@@ -2528,17 +2258,10 @@ class StopMusicTool(MCPTool):
             result = self._manager.stop_pattern(pattern_name)
 
         if result["success"]:
-            # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
-            # остановлена — VAD threshold возвращается к обычному.
-            self._notify_music_state()
             # Issue #1392 follow-up: останавливаем и mp3-трек в sound_node.
             self._notify_sound_stop()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
-
-    def _notify_music_state(self) -> None:
-        """Опубликовать /voice/music/state (issue 989 Fix C)."""
-        _notify_music_state(self)
 
     def _notify_sound_stop(self) -> None:
         """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392).

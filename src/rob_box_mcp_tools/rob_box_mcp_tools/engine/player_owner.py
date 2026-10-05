@@ -198,6 +198,11 @@ class PlayerOwner:
         if first and _missing_synth_fail(detail):
             self._reject(track_id, "server_fail", detail)
 
+    def is_playing(self) -> bool:
+        """Дека занята: трек звучит или поставлен и ждёт ``started``."""
+        with self._lock:
+            return self._current is not None or self._pending is not None
+
     def stop(self, reason: str = "user_stop") -> Dict[str, Any]:
         """Снять деку и опубликовать ``idle``."""
         self._adapter.stop()

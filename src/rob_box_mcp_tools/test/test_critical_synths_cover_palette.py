@@ -1,4 +1,4 @@
-"""Every synth the prompt offers must be one the robot can re-send.
+"""Every synth the engine can pick must be one the robot can re-send.
 
 Live 30.08: the robot played a beat with no melody. The model had picked
 ``supersawlead`` for the lead, scsynth did not hold that SynthDef, ``/s_new``
@@ -19,7 +19,6 @@ between copies has silenced the robot, so it is pinned here.
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -33,9 +32,6 @@ def _repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
-MASTER_PROMPT = (
-    REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
-)
 MUSIC_PY = (
     REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools" / "music.py"
 )
@@ -64,31 +60,28 @@ CRITICAL_SYNTHS = _critical_synths()
 
 
 def _advertised_palette() -> set[str]:
-    """Synth names the master prompt offers the model, from its palette block."""
-    text = MASTER_PROMPT.read_text(encoding="utf-8")
-    match = re.search(
-        r"- Synth palette —(.*?)(?=\n- [A-ZА-Я])", text, re.DOTALL
-    )
-    assert match, "palette block not found in master_prompt_compact.txt"
-    block = match.group(1)
-    # Names are lowercase words in comma-separated runs after each category
-    # label; the labels themselves ("melody", "Bass") are filtered by the
-    # explicit skip set below.
-    names = set(re.findall(r"\b([a-z][a-z0-9]{2,20})\b", block))
-    return names - {"melody", "bass", "pads", "brass", "glitch"} | {"bass", "pads", "brass"}
+    """Синты, которые движок v2 может поставить в трек (ADR-0149).
+
+    До PR-13 палитру читали из текста промпта: синт выбирала модель. Теперь
+    его выбирает код из ``rob_box_music.knowledge.SYNTH_PALETTE`` — это и есть
+    единственный список, который обязан покрываться досылкой.
+    """
+    from rob_box_music.knowledge import PLAY_SYNTH, SYNTH_PALETTE
+
+    names = {synth for pool in SYNTH_PALETTE.values() for synth in pool}
+    return names - {PLAY_SYNTH}
 
 
-def test_the_palette_block_is_still_parseable() -> None:
-    """Guard the regex itself — a silently empty palette would pass everything."""
+def test_the_palette_is_not_empty() -> None:
+    """Пустая палитра прошла бы все проверки ниже."""
     palette = _advertised_palette()
-    assert len(palette) >= 30, f"palette looks truncated: {sorted(palette)}"
-    assert "supersawlead" in palette
+    assert len(palette) >= 5, f"palette looks truncated: {sorted(palette)}"
 
 
 @pytest.mark.parametrize("synth", sorted(_advertised_palette()))
 def test_every_advertised_synth_can_be_resent(synth: str) -> None:
     assert synth in CRITICAL_SYNTHS, (
-        f"{synth!r} рекламируется палитрой, но его нет в CRITICAL_SYNTHS — "
+        f"{synth!r} стоит в палитре движка, но его нет в CRITICAL_SYNTHS — "
         "если scsynth его потеряет, досылка не сработает и слой замолчит"
     )
 

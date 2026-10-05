@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-02",
-  "base_sha": "660dbff9433d952235dfa2bbad41ed5fa3331c5c",
+  "created": "2026-10-05",
+  "base_sha": "1243adaf1e7d45f6ff5ce1ecbb0706e1b41bd037",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,12 +24,12 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 171,
-      "methods": 29
+      "wmc": 135,
+      "methods": 25
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
-      "wmc": 208,
-      "methods": 52
+      "wmc": 189,
+      "methods": 43
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
       "wmc": 81,
@@ -75,10 +75,6 @@
       "wmc": 131,
       "methods": 24
     },
-    "src/rob_box_voice/rob_box_voice/core/dj_mode.py:DJModeController": {
-      "wmc": 163,
-      "methods": 36
-    },
     "src/rob_box_voice/rob_box_voice/core/faq_store.py:FAQStore": {
       "wmc": 91,
       "methods": 16
@@ -88,8 +84,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 1119,
-      "methods": 209
+      "wmc": 917,
+      "methods": 178
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,

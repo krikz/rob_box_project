@@ -1931,9 +1931,6 @@ class QuestNode(Node):
             lambda event: self.ws_server.broadcast_json_event(event),
             lambda text: self.get_logger().debug(text),
         )
-        self._dj_mode_sub = self.create_subscription(
-            String, "/voice/dj_mode", self._tars_status.on_dj_mode, 10
-        )
         self._speaker_result_sub = self.create_subscription(
             String, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
         )
@@ -1943,6 +1940,10 @@ class QuestNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        # DJ-режим и тема — из latched-снимка плеера (ADR-0149: писатель один, PlayerOwner).
+        self._music_state_sub = self.create_subscription(
+            String, "/voice/music/state", self._tars_status.on_music_state, _tars_latched
         )
         self._llm_status_sub = self.create_subscription(
             String, "/voice/llm_status", self._tars_status.on_llm_status, _tars_latched

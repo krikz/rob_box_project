@@ -1,7 +1,7 @@
 """Служебная информация и контекст для экрана ТАРС 1 (issue #3253, Ш3).
 
 Чистая логика без ROS: собирает то, что quest_node реально слышит в графе
-(``/voice/dj_mode``, ``/voice/speaker/result``, ``/voice/tts/provider_state``,
+(``/voice/music/state``, ``/voice/speaker/result``, ``/voice/tts/provider_state``,
 ``/voice/llm_status``, ``/voice/wake_words``), в событие ``tars_status`` и решает, пора ли его слать (троттлинг).
 
 Правило ADR-0018: нет источника — нет ключа в событии, клиент рисует прочерк.
@@ -58,7 +58,7 @@ class TarsStatusAggregator:
     """Копит сигналы и отдаёт ``tars_status`` с троттлингом."""
 
     def __init__(self) -> None:
-        self._dj_enabled: Optional[bool] = None  # None — dj_mode ещё не слышали
+        self._dj_enabled: Optional[bool] = None  # None — снимок плеера ещё не слышали
         self._dj_theme: Optional[str] = None
         self._llm: Optional[str] = None
         self._wake: Optional[str] = None
@@ -67,12 +67,13 @@ class TarsStatusAggregator:
         self._last_sent: Optional[dict[str, Any]] = None
         self._last_sent_at: float = 0.0
 
-    def note_dj_mode(self, payload: Any) -> None:
-        """``/voice/dj_mode``: ``{enabled, theme?, ...}``."""
-        if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+    def note_music_state(self, payload: Any) -> None:
+        """``/voice/music/state`` (latched-снимок плеера): поле ``dj`` — ``{enabled, theme?, ...}``."""
+        dj = payload.get("dj") if isinstance(payload, dict) else None
+        if not isinstance(dj, dict) or not isinstance(dj.get("enabled"), bool):
             return
-        self._dj_enabled = payload["enabled"]
-        self._dj_theme = _clean(payload.get("theme")) if self._dj_enabled else None
+        self._dj_enabled = dj["enabled"]
+        self._dj_theme = _clean(dj.get("theme")) if self._dj_enabled else None
 
     def note_llm(self, payload: Any) -> None:
         """``/voice/llm_status``: ``{provider, model?, ...}`` (latched)."""
@@ -173,9 +174,9 @@ class TarsStatusRelay:
         except (json.JSONDecodeError, TypeError, AttributeError):
             return None
 
-    def on_dj_mode(self, msg: Any) -> None:
-        """Колбэк ``/voice/dj_mode``."""
-        self._agg.note_dj_mode(self._parse(msg))
+    def on_music_state(self, msg: Any) -> None:
+        """Колбэк ``/voice/music/state``."""
+        self._agg.note_music_state(self._parse(msg))
 
     def on_llm_status(self, msg: Any) -> None:
         """Колбэк ``/voice/llm_status``."""
