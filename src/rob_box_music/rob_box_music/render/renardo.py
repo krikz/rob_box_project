@@ -19,7 +19,9 @@
 
 Сэмплы (``sample``/``loop``/``fx``, PR-3d) — ``loop('<путь>')`` из ``knowledge.SAMPLE_CATALOG`` приёмами DJ_Dave
 (:func:`_sample_line`): луп — нарезка на восьмые (``chop``), psr — файл на каждую 16-ю из пула (``c1.buf``), FX —
-удар, звучащий один раз. Путь — от папки лупов пака 0 (``repr``).
+удар, звучащий один раз. Путь — от папки лупов пака 0 (``repr``). Края огибающей — ``atk``/``rel`` из
+``knowledge.SAMPLE_EDGE_S`` внутри ``sus`` (патч синта ``loop``, #3432); луп и psr — под сайдчейном
+(``Mix.duck_roles``), файл пула громче эталона уровня — тише на разницу по каталогу (``arrange.mix.file_gain``).
 
 Песня (``Form.kind == song``, classic PR-11): тональные роли — последовательность нот всей формы с ``dur``/``sus``
 списками (мелодия как записана, ноты не на сетке 16-х тоже), ударные — как у club; сэмплов у песни нет.
@@ -33,7 +35,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..arrange.mix import alternate_pan, duck_envelope, section_arc, voice_amp
+from ..arrange.mix import alternate_pan, duck_envelope, file_gain, section_arc, voice_amp
 from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Part, Stereo, Track, validate
 from .program import Program
 
@@ -211,25 +213,55 @@ def _gap(steps) -> int:
     return min((on[(k + 1) % len(on)] - on[k]) % len(steps) or len(steps) for k in range(len(on)))
 
 
-def _chop_line(head: str, info: kn.SampleInfo, part: Part, gate: str) -> str:
+def _edges() -> str:
+    """Края огибающей синта ``loop`` внутри ``sus`` (``knowledge.SAMPLE_EDGE_S``, патч ``loop.scd`` #3432), с."""
+    atk, rel = kn.SAMPLE_EDGE_S
+    return f"atk={_num(atk)}, rel={_num(rel)}"
+
+
+def _event_amplify(track: Track, role: str, gap: int, gains: Sequence[float]) -> List[float]:
+    """``amplify`` плеера сэмпла с событием на каждом ``gap``-м шаге 16-х (Renardo индексирует номером события):
+    ``gains`` — усиление события на всю форму (акцент × уровень файла), × сайдчейн секции на его шаге, если роль в
+    ``Mix.duck_roles``; период свёрнут по звучащим событиям."""
+    if STEPS_PER_BAR % gap:
+        raise RenderError(f"parts.{role}: шаг {gap} 16-х не делит такт")
+    envs = [duck_envelope(d.trigger, d.depth) for d in track.mix.duck] if role in track.mix.duck_roles else None
+    sections = _section_steps(track)
+    out = [round(g * (envs[sections[s]][s % STEPS_PER_BAR] if envs else 1.0), 3)
+           for g, s in zip(gains, range(0, len(sections), gap))]
+    folded = _fold(out, _active_steps(track, role)[::gap], track.form.bars_total, STEPS_PER_BAR // gap)
+    return _period([1.0 if g is None else g for g in folded])
+
+
+def _chop_line(head: str, info: kn.SampleInfo, part: Part, gate: str, track: Track, role: str) -> str:
     """Луп нарезкой DJ_Dave (``loopAt(l).chop(l*8).legato(1)``): кусок — шаг сетки, каждый перезапускается на своей
     доле с ``pos`` = начало куска в долях оригинала; ``tempo=`` — темп оригинала (Renardo: ``rate`` = bpm/tempo,
-    ``pos`` × tempo — ``Players.py`` LoopPlayer), ``sus`` = кусок (legato 1)."""
-    step = _gap(part.grid.steps) * STEP_BEATS
+    ``pos`` × tempo — ``Players.py`` LoopPlayer), ``sus`` = кусок (legato 1), края — :func:`_edges`; под
+    сайдчейном — ``amplify`` по кускам."""
+    gap = _gap(part.grid.steps)
+    step = gap * STEP_BEATS
     beats = info.beats or 4
     pieces = _list(_num(k * step) for k in range(int(round(beats / step))))
-    return head + f"{pieces}, dur={_num(step)}, sus={_num(step)}, tempo={info.bpm}, {gate})"
+    amplify = _event_amplify(track, role, gap, [1.0] * (track.form.bars_total * STEPS_PER_BAR // gap))
+    duck = [f", amplify={_list(_num(a) for a in amplify)}"] if len(set(amplify)) > 1 else []
+    return head + f"{pieces}, dur={_num(step)}, sus={_num(step)}, {_edges()}, tempo={info.bpm}, {gate}{''.join(duck)})"
 
 
 def _pool_line(slot: str, head: str, role: str, part: Part, track: Track, gate: str, stereo: List[str]) -> str:
     """psr-пул DJ_Dave: удар на каждую 16-ю, файл события — ``c1.buf = [...]`` по кругу (``Player.__setattr__``),
-    ``sus`` — длина своего файла (≤ 16-й), ``amplify`` — акцент × сайдчейн-огибающая (как пэд и бас)."""
+    ``sus`` — длина своего файла (≤ 16-й), ``amplify`` — акцент × уровень файла (:func:`file_gain`) × сайдчейн-
+    огибающая (как пэд и бас)."""
     steps = part.grid.steps
-    gap = _gap(steps) * STEP_BEATS
-    sus = _list(_num(_one_shot_sus(kn.SAMPLE_CATALOG[n], gap, track.bpm)) for n in part.pool)
+    gap = _gap(steps)
+    sus = _list(_num(_one_shot_sus(kn.SAMPLE_CATALOG[n], gap * STEP_BEATS, track.bpm)) for n in part.pool)
     accents = [st.accent for st in steps]
-    amplify = _amplify(track, role, accents, len(set(accents)) > 1)
-    opts = [f"dur={_num(gap)}", f"sus={sus}", gate, f"amplify={_list(_num(a) for a in amplify)}"] + stereo
+    varied = len(set(accents)) > 1
+    gains = [(kn.ACCENT_AMPLIFY[accents[(e * gap) % len(accents)]] if varied else 1.0)
+             * file_gain(part.pool[e % len(part.pool)], part.synth_or_sample)
+             for e in range(track.form.bars_total * STEPS_PER_BAR // gap)]
+    amplify = _event_amplify(track, role, gap, gains)
+    opts = [f"dur={_num(gap * STEP_BEATS)}", f"sus={sus}", _edges(), gate,
+            f"amplify={_list(_num(a) for a in amplify)}"] + stereo
     bufs = ", ".join(f"Samples.loadBuffer({kn.SAMPLE_CATALOG[n].loop_arg!r})" for n in part.pool)
     return head + ", ".join(opts) + f")\n{slot}.buf = [{bufs}]"
 
@@ -242,11 +274,11 @@ def _sample_line(slot: str, role: str, part: Part, track: Track) -> str:
     gate = f"amp={_gate(track, role, voice_amp(role, part, st.voices if st else 1))}"
     head = f"{slot} >> loop({info.loop_arg!r}, "
     if role == "loop":
-        return _chop_line(head, info, part, gate)
+        return _chop_line(head, info, part, gate, track, role)
     if part.pool:
         return _pool_line(slot, head, role, part, track, gate, _stereo(st, None, track.bpm))
     gap = _gap(part.grid.steps) * STEP_BEATS
-    return head + f"dur={_num(gap)}, sus={_num(_one_shot_sus(info, gap, track.bpm))}, {gate})"
+    return head + f"dur={_num(gap)}, sus={_num(_one_shot_sus(info, gap, track.bpm))}, {_edges()}, {gate})"
 
 
 def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
@@ -269,10 +301,11 @@ def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
     return cells
 
 
-def _fold(cells: Sequence[Optional[tuple]], active: Sequence[bool], bars_total: int) -> List[Optional[tuple]]:
-    """Наименьший период в тактах, на котором звучащие шаги модели совпадают."""
+def _fold(cells: Sequence[Optional[tuple]], active: Sequence[bool], bars_total: int,
+          per_bar: int = STEPS_PER_BAR) -> List[Optional[tuple]]:
+    """Наименьший период в тактах, на котором звучащие шаги модели совпадают (``per_bar`` — ячеек на такт)."""
     for bars in (b for b in range(1, bars_total + 1) if bars_total % b == 0):
-        period = bars * STEPS_PER_BAR
+        period = bars * per_bar
         pattern: List[object] = [_UNSET] * period
         for i, cell in enumerate(cells):
             if not active[i]:

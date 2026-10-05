@@ -219,6 +219,12 @@ SAMPLE_PACK_DIR = str(_SAMPLE_DATA["pack_dir"])
 #: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
 #: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль).
 SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick")
+#: Края огибающей запуска файла синтом ``loop``, с: (атака, спад) — ВНУТРИ ``sus`` (патч ``loop.scd``, #3432).
+#: Как у сэмплов Strudel DJ_Dave: удар с первого отсчёта (атака 2 мс не съедает щелчок psr), кусок ``chop``
+#: кончается к следующему (``legato(1)``: спад 5 мс до начала следующего куска, без наложения). Штатный синт
+#: Renardo 0.9.13 — 50 мс атаки и 50 мс спада ПОСЛЕ ``sus``: удар psr на 16-й (109 мс при 138 BPM) нарастал до
+#: середины шага и наползал на следующий, а файл короче ``sus`` + 50 мс начинался заново (``PlayBuf(loop: 1)``).
+SAMPLE_EDGE_S: Tuple[float, float] = (0.002, 0.005)
 
 
 @dataclass(frozen=True)
@@ -305,7 +311,8 @@ __all__ = [
     "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "THEMES",
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
-    "ROOTS", "SAMPLE_CATALOG", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES", "SEARCH_STOPWORDS",
+    "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
+    "SEARCH_STOPWORDS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
 ]
@@ -417,8 +424,10 @@ _CLUB_ROLE_LEVEL_DB: Mapping[str, float] = {
 #: подъём за 3 шага, дальше 1.0. Глубина ``d`` даёт ``1 − d·(1 − форма)``. Триггер — рисунок бочки вида секции
 #: («призрачная бочка»: тот же рисунок и в брейке, и в такте fill-а — огибающая не дёргается).
 SIDECHAIN_SHAPE: Tuple[float, ...] = (0.3, 0.55, 0.8, 1.0)
-#: psr-слой DJ_Dave — под той же огибающей, что пэд и бас (``postgain(sidechain)``, PR-3d).
-_CLUB_DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample")
+#: psr-слой DJ_Dave — под той же огибающей, что пэд и бас (``postgain(sidechain)``, PR-3d). Луп нарезкой — тоже
+#: (#3432): у Дэйва брейк-луп короткой вставкой, у нас он звучит весь второй дроп (и шумовой ``wun_noise``) —
+#: без провала на ударе он заливает место бочки ровной текстурой.
+_CLUB_DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample", "loop")
 
 
 @dataclass(frozen=True)

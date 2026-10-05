@@ -85,10 +85,10 @@ def test_duck_envelope_rises_without_a_step(trigger, depth):
 @pytest.mark.parametrize("seed", SEEDS)
 def test_sidechain_is_on_the_bass_and_pad_events_only(seed):
     """``amp`` события ÷ гейт = акцент × огибающая по шагу такта для баса/пэда; бочка/хэты/лид без сайдчейна.
-    psr-слой DJ_Dave (PR-3d) — тоже под огибающей (``test_diversity``)."""
+    psr-слой (PR-3d) и луп нарезкой (#3432) — тоже под огибающей (``test_diversity``, ``test_sample_render``)."""
     track = _track(seed)
     by_role = _events(track)
-    assert track.mix.duck_roles == frozenset({"bass", "pad", "sample"})
+    assert track.mix.duck_roles == frozenset({"bass", "pad", "sample", "loop"}) & set(track.parts)
     assert len(track.mix.duck) == len(track.form.sections)
     for ev in by_role["pad"]:  # пэд — аккорд на каждой 16-й под огибающей вида своей секции
         assert ev.amp / ev.gate == pytest.approx(_env(track, ev.beat)[_step(ev.beat)], abs=1e-3)

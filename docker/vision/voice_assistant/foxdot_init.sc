@@ -88,7 +88,8 @@ var loadedSynthPaths = Set.new;
 // upstream-версию поверх нашего патча (renardo_synthdef_patches.py). Для имён
 // из списка /foxdot перенаправляется на пропатченный renardoSynthDir/<name>.scd.
 // Синхронно с PYGEN_PATCHED_SYNTHS в renardo_synthdef_patches.py (тест).
-var pygenPatchedSynths = ["fuzz"];
+// #3432: loop (LoopPygenSynthDef) — тот же класс: огибающая краёв внутри sus.
+var pygenPatchedSynths = ["fuzz", "loop"];
 var redirectPatchedPygenPath = { |path|
     var name = path.basename.splitext[0];
     var patched = renardoSynthDir ++ "/" ++ name ++ ".scd";

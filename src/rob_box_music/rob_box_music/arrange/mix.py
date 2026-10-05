@@ -59,6 +59,14 @@ def level_amp(role: str, part: Part) -> float:
     return min(kn.MAX_LAYER_AMP, 10.0 ** ((part.level_db - unit) / (20.0 * exponent)))
 
 
+def file_gain(name: str, reference: str) -> float:
+    """Усиление файла пула против файла уровня партии (``Part.synth_or_sample``, #3432): ``amp`` роли выведен из
+    ``mean_db`` эталона, файл громче него по каталогу тише на разницу. Тише — не поднимается: у файла длиннее удара
+    ``mean_db`` занижен хвостом, а ``sus`` режет его до шага (psr_24: 3.1 с, −33 дБ — начало громче среднего)."""
+    diff = kn.SAMPLE_CATALOG[reference].mean_db - kn.SAMPLE_CATALOG[name].mean_db
+    return min(1.0, 10.0 ** (diff / 20.0))
+
+
 def voice_amp(role: str, part: Part, voices: int) -> float:
     """``amp`` одного из ``voices`` декоррелированных голосов: их мощности складываются (+10·lg N дБ)."""
     return level_amp(role, replace(part, level_db=part.level_db - 10.0 * math.log10(voices)))
@@ -167,5 +175,5 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form) -> Tuple[D
     return leveled, mix
 
 
-__all__ = ["alternate_pan", "duck_envelope", "kick_sound", "kick_steps", "layer_db", "level_amp", "look", "lpf_sweeps",
-           "mix_parts", "section_arc", "set_master", "timbres", "voice_amp"]
+__all__ = ["alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db", "level_amp", "look",
+           "lpf_sweeps", "mix_parts", "section_arc", "set_master", "timbres", "voice_amp"]
