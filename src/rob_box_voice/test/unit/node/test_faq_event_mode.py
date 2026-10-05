@@ -85,7 +85,7 @@ def test_render_event_instructions_requires_faq_before_stylization() -> None:
 
     assert "сначала подними факты из FAQ" in rendered
     assert "рэп" in rendered
-    assert "execute_music_code" in rendered
+    assert "request_music" in rendered
 
 
 def test_build_event_faq_prefetch_context_uses_store_results() -> None:
@@ -117,7 +117,7 @@ def test_build_event_faq_prefetch_context_uses_store_results() -> None:
     )
     assert "FAQ для текущего запроса уже проверен" in context
     assert "Что рассказывают про госслужбу?" in context
-    assert "execute_music_code" in context
+    assert "request_music" in context
 
 
 def test_build_event_faq_prefetch_context_returns_none_without_store_matches() -> None:

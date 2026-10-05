@@ -6,6 +6,8 @@ import collections
 import re
 import sys
 
+import v2log as V
+
 TS = re.compile(r"\[(\d{10})\.(\d+)\]")
 ALL_SAMPLES = collections.Counter()
 ALL_SKELETONS = []
@@ -21,6 +23,7 @@ def main():
         lines = open(f, encoding="utf-8", errors="replace").read().splitlines()
         t0 = None
         tracks = []
+        v2_tracks = []
         print("=" * 20, f)
         last_ts = None
         for line in lines:
@@ -34,6 +37,19 @@ def main():
             if t0 is None or "tools(61)" in line or re.match(r"^\[dialogue_node-\d+\]\s+\[\d+\]", line):
                 continue
             rel = f"{(last_ts or t0) - t0:+6.1f}"
+            v2 = V.parse_started(line)
+            if v2:
+                v2_tracks.append(v2)
+                print(f"  {rel}   V2 TRACK {v2['track_id']} bpm={v2['bpm']} deck={v2['deck']}")
+                continue
+            sv = V.parse_set_started(line)
+            if sv:
+                print(f"  {rel}   V2 SET {sv[0]} source={sv[1]}")
+                continue
+            pl = V.parse_plan(line)
+            if pl:
+                print(f"  {rel}   V2 PLAN row={pl['row']} mode={pl['mode']} hooks={pl['hooks'][:120]}")
+                continue
             m = re.search(r"Запрос выполнения: (\w+) с параметрами (.*)", line)
             if m:
                 name, args = m.groups()
@@ -71,7 +87,7 @@ def main():
             m = re.search(r"DJ трек #(\d+)", line)
             if m:
                 print(f"  {rel}   DJ TRACK #{m.group(1)}")
-        print(f"  треков compose_music: {len(tracks)}")
+        print(f"  треков compose_music: {len(tracks)}, треков v2 (started): {len(v2_tracks)}")
     print("=" * 20, "КАРКАСЫ (template, kick, hats, lead, bass, pad)")
     seen = collections.Counter(sk for _f, sk in ALL_SKELETONS)
     for (f, sk) in ALL_SKELETONS:
