@@ -32,3 +32,11 @@ def test_set_started():
 
 def test_plan():
     assert v2log.parse_plan(PLAN) == {"row": "cyber", "mode": "minor", "hooks": "['a', 'b']"}
+
+
+def test_composition_is_parsed_from_the_started_line_even_with_spaces_in_values():
+    line = SET + ' composition={"pad":"sinepad","hook":"Super Mario Bros","bpm":128,"energy":3}'
+    assert v2log.parse_composition(line) == {"pad": "sinepad", "hook": "Super Mario Bros", "bpm": 128, "energy": 3}
+    assert v2log.parse_set_started(line) == ("set12076:02:B:7e3c14d8", "theme")  # прежний разбор не сломан
+    assert v2log.parse_composition(SET) is None
+    assert v2log.parse_composition(line[:-10]) is None  # оборванный JSON - не состав

@@ -1,4 +1,5 @@
 """Самопроверка diversity.py: ``python -m pytest scripts/music/live_dj/test_diversity.py -v``."""
+import json
 import os
 import sys
 
@@ -77,4 +78,21 @@ def test_offline_set_vector_has_all_axes():
     rec = {"title": "Test Tune", "rtttl": "t:d=8,o=5,b=140:c,e,g,e,c,e,g,e,a,c6,a,e,a,c6,a,e,f,a,c6,a,f,a,c6,a"}
     vecs = D.offline_set(rec, "t", seed=7, tracks=3)
     assert len(vecs) == 3
-    assert set(vecs[0]) == set(D.AXES)
+    assert set(D.AXES) <= set(vecs[0])  # + hook_fp (отпечаток, не ось)
+
+
+def test_log_composition_reads_every_axis_from_started_lines(tmp_path):
+    comp = {a: f"{a}{i}" for i, a in enumerate(D.AXES)}
+    comp.update(bpm=128, energy=3)
+    other = dict(comp, pad="other")
+    lines = []
+    for n, c in enumerate((comp, other, comp)):
+        lines.append(f"[mcp_server-10] [INFO] [17912121{n}0.1] [mcp_server]: [set v2] s трек {n} started "
+                     f"track_id=s:0{n}:A:ab form_end_beat=1.0 source=theme "
+                     f"composition={json.dumps(c, ensure_ascii=False)}")
+    log = tmp_path / "set1.full.log"
+    log.write_text("\n".join(lines), encoding="utf-8")
+    vecs = D.log_composition(str(log))
+    assert len(vecs) == 3 and all(set(v) == set(D.AXES) for v in vecs)
+    idx = D.diversity_index(vecs)
+    assert idx["distinct"]["pad"] == 2 and idx["distinct"]["lead"] == 1
