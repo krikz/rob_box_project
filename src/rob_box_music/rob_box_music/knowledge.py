@@ -325,12 +325,62 @@ LAYER_MEASURED_DB: Mapping[str, Tuple[float, Mapping[str, float]]] = {
                    "breakbeat": -24.6, "outrun": -23.7}),
     "hats": (0.14, {"by_design": -68.4, "offbeat": -74.0, "eighths": -70.9, "shuffle": -70.0}),
     "clap": (0.24, {"clap": -55.7}),
-    "lead": (0.28, {"pluck": -53.4, "blip": -55.0, "arpy": -56.3, "karp": -66.3, "marimba": -68.9}),
-    "bass": (0.4, {"bass": -24.4, "retrobass": -41.9, "dub": -24.8}),
-    "pad": (0.11, {"sinepad": -74.4, "warmpad": -43.1, "space": -54.5}),
+    # 05.10 (#3422, ``loudness_nrt_v2.py --sweep``): новые строки — та же рамка 29.09 с подменой синта, scsynth
+    # 3.11.2 образа voice-assistant (arm64/qemu на katana), renardo_lib с патчами робота. Регресс рамки 29.09:
+    # sinepad −0.16, pluck −1.24, bass +0.06, four_on_floor +0.01 дБ; прочие строки 29.09: blip −0.43, arpy −0.11,
+    # karp −1.66 (вне ±1.5, причина не найдена), marimba −0.38, retrobass +0.02, dub +0.08, warmpad +0.06,
+    # space −0.10. Строки 29.09 не менялись.
+    "lead": (0.28, {"pluck": -53.4, "blip": -55.0, "arpy": -56.3, "karp": -66.3, "marimba": -68.9,
+                    "strangerarp": -32.7, "strangerbrass": -35.5, "imperialbrass": -36.3, "supersawlead": -37.4,
+                    "tubularbell": -39.9, "ecello": -41.6, "organ": -46.3, "rhpiano": -49.2, "brass": -50.8,
+                    "epiano": -51.6, "kalimba": -52.0, "cs80lead": -52.2, "orient": -52.8, "hoover": -53.3,
+                    "eoboe": -53.6, "pulse": -53.9, "fuzz": -55.4, "organ2": -56.5, "steeldrum": -57.7,
+                    "soprano": -57.8, "keys": -58.8, "saw": -58.8, "creep": -62.9, "rave": -64.9, "varsaw": -66.1,
+                    "bell": -67.3, "sitar": -69.2, "viola": -71.5, "flute": -72.5, "square": -72.5}),
+    "bass": (0.4, {"bass": -24.4, "retrobass": -41.9, "dub": -24.8,
+                   "jbass": -32.9, "wobblebass": -35.7, "tb303": -36.2, "subbass": -42.7, "moogbass": -56.3}),
+    "pad": (0.11, {"sinepad": -74.4, "warmpad": -43.1, "space": -54.5,
+                   "marchstrings": -38.1, "mhpad": -38.9, "strangerpulsepad": -43.0, "ambi": -56.5, "strings": -59.5,
+                   "pads": -64.0}),
+}
+#: Границы полос замера слоя, Гц: низ < 150, середина 150–2000, верх ≥ 2000 (как ``live_dj/compare.profile``).
+LAYER_BANDS_HZ: Tuple[float, float] = (150.0, 2000.0)
+#: Доли энергии слоя по полосам :data:`LAYER_BANDS_HZ` — тот же рендер, что :data:`LAYER_MEASURED_DB`
+#: (``scripts/music/loudness_nrt_v2.py --sweep``, ADR-0152 §3.1): ``{роль: {синт: (низ, середина, верх)}}``.
+#: Данные для модели микса (A9), выбор синтов от них пока не зависит.
+#: ``kick`` — рисунок ``four_on_floor`` рамки 29.09 (бочка ``X`` без ``sample=``; на роботе она звучит иначе,
+#: ``KICK_SOUNDS``). ``moogbass`` — разброс по тоникам 8.1 дБ, ``sinepad``/``mhpad``/``marchstrings`` — 3–4 дБ.
+LAYER_BANDS: Mapping[str, Mapping[str, Tuple[float, float, float]]] = {
+    "kick": {"four_on_floor": (0.952, 0.045, 0.003)},
+    "lead": {
+        "pluck": (0.0, 0.984, 0.016), "blip": (0.0, 0.984, 0.016), "arpy": (0.007, 0.829, 0.164),
+        "karp": (0.01, 0.983, 0.007), "marimba": (0.004, 0.976, 0.02), "strangerarp": (0.0, 0.997, 0.003),
+        "strangerbrass": (0.0, 0.992, 0.008), "imperialbrass": (0.0, 0.99, 0.01), "supersawlead": (0.0, 0.972, 0.028),
+        "tubularbell": (0.0, 0.998, 0.002), "ecello": (0.905, 0.095, 0.0), "organ": (0.0, 0.998, 0.002),
+        "rhpiano": (0.0, 1.0, 0.0), "brass": (0.0, 0.999, 0.001), "epiano": (0.0, 1.0, 0.0),
+        "kalimba": (0.001, 0.992, 0.007), "cs80lead": (0.0, 0.984, 0.016), "orient": (0.013, 0.924, 0.063),
+        "hoover": (0.011, 0.966, 0.023), "eoboe": (0.0, 0.968, 0.032), "pulse": (0.0, 0.979, 0.021),
+        "fuzz": (0.121, 0.853, 0.026), "organ2": (0.004, 0.972, 0.024), "steeldrum": (0.0, 0.998, 0.002),
+        "soprano": (0.0, 0.971, 0.029), "keys": (0.0, 0.999, 0.001), "saw": (0.0, 0.967, 0.033),
+        "creep": (0.002, 0.578, 0.42), "rave": (0.037, 0.813, 0.15), "varsaw": (0.0, 0.99, 0.01),
+        "bell": (0.009, 0.51, 0.481), "sitar": (0.002, 0.868, 0.13), "viola": (0.0, 0.844, 0.156),
+        "flute": (0.253, 0.673, 0.074), "square": (0.0, 0.983, 0.017),
+    },
+    "bass": {
+        "bass": (0.957, 0.043, 0.0), "retrobass": (0.589, 0.411, 0.0), "dub": (0.999, 0.001, 0.0),
+        "jbass": (0.994, 0.006, 0.0), "wobblebass": (0.9, 0.099, 0.001), "tb303": (0.521, 0.472, 0.007),
+        "subbass": (0.996, 0.004, 0.0), "moogbass": (0.99, 0.01, 0.0),
+    },
+    "pad": {
+        "sinepad": (0.001, 0.999, 0.0), "warmpad": (0.085, 0.915, 0.0), "space": (0.0, 1.0, 0.0),
+        "marchstrings": (0.107, 0.893, 0.0), "mhpad": (0.009, 0.991, 0.0), "strangerpulsepad": (0.058, 0.942, 0.0),
+        "ambi": (0.052, 0.948, 0.0), "strings": (0.009, 0.986, 0.005), "pads": (0.0, 0.394, 0.606),
+    },
 }
 #: Наклон громкости по ``amp``: ``dB = 20·p·log10(amp)``; у ``dub``/``karp``/``sinepad`` ``amp`` входит дважды.
-AMP_EXPONENT: Mapping[str, float] = {"dub": 2.0, "karp": 2.0, "sinepad": 2.0}
+#: 05.10 (#3422): наклон по уровню и его половине, ``p`` ≥ 1.5 → 2.0 (замер 2.00–2.04).
+AMP_EXPONENT: Mapping[str, float] = {"dub": 2.0, "karp": 2.0, "sinepad": 2.0, "sitar": 2.0, "viola": 2.0,
+                                     "soprano": 2.0, "square": 2.0, "varsaw": 2.0, "rave": 2.0, "subbass": 2.0}
 #: dB RMS слоя при ``amp`` 1.0 — пересчёт замера: ``dB − 20·p·log10(уровень)``.
 LANE_DB_AT_UNIT: Mapping[str, Mapping[str, float]] = {
     lane: {opt: round(db - 20.0 * AMP_EXPONENT.get(opt, 1.0) * math.log10(level), 2) for opt, db in table.items()}
