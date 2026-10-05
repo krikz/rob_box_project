@@ -69,6 +69,8 @@ class MediaCommand:
         set_persona: персона из головы реплики до темы.
         mood: для ``REQUEST_MUSIC`` из «музыку для танцев» — ключ
             ``knowledge.MOOD_ENERGY`` или ``""`` (дефолт решает движок).
+        themed: для ``PLAY_NAMED`` — человек сказал слово «тема» («давай тему
+            терминатора»): посреди DJ-сета это смена темы сета, не мелодия (#3410).
     """
 
     intent: MediaIntent
@@ -79,6 +81,7 @@ class MediaCommand:
     set_theme: str = ""
     set_persona: str = ""
     mood: str = ""
+    themed: bool = False
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -490,7 +493,7 @@ _GENERIC_WORDS: FrozenSet[str] = frozenset({
     "музыку", "музыка", "музычку", "музон", "музончик", "трек", "трэк",
     "треки", "бит", "биток", "биты", "песню", "песенку", "песни",
     "песня", "мелодию", "мелодийку", "мелодия", "композицию", "мотив",
-    "тему", "микс", "сет", "плейлист", "радио", "звук", "что", "то",
+    "тему", "тема", "темы", "микс", "сет", "плейлист", "радио", "звук", "что", "то",
     "нибудь", "либо", "чего", "какую", "какой", "какое", "какие", "любую",
     "любое", "любой", "свою", "своё", "свое", "мою", "нашу", "новую",
     "новое", "новый", "старую", "старое", "весёлое", "веселое", "весёлую",
@@ -557,6 +560,18 @@ def _strip_lead_in(words: Sequence[str]) -> List[str]:
     return out
 
 
+#: Слова «тема» в заказе: «давай тему X», «включи сет на тему X» (#3410).
+_THEME_WORDS: FrozenSet[str] = frozenset({"тему", "тема", "темы"})
+
+
+def _split_theme_marker(tail: Sequence[str]) -> Tuple[Sequence[str], bool]:
+    """``(хвост после слова «тема», было ли оно)``; без слова — хвост как есть."""
+    for i, word in enumerate(tail):
+        if word in _THEME_WORDS:
+            return tail[i + 1:], True
+    return tail, False
+
+
 def _title_words(tail: Sequence[str]) -> List[str]:
     """Хвост после глагола без служебных слов по краям и ведущих родовых."""
     out = list(tail)
@@ -565,6 +580,26 @@ def _title_words(tail: Sequence[str]) -> List[str]:
     while out and out[-1] in _PLAY_NAMED_FILLER:
         out.pop()
     return out
+
+
+def _is_untitled(title: Sequence[str]) -> bool:
+    """Название не годится: длинное, условие/ссылка на контекст, громкость/стоп."""
+    return (
+        len(title) > _MAX_TITLE_WORDS
+        or any(w in _NOT_A_TITLE or _word_class(w) is not None for w in title)
+        or all(w in _GENERIC_WORDS for w in title)
+    )
+
+
+def _themed_command(tail: Sequence[str]) -> Optional[MediaCommand]:
+    """«давай тему X» → ``PLAY_NAMED(name=X, themed=True)``; без слова «тема» — ``None``."""
+    rest, themed = _split_theme_marker(tail)
+    title = _title_words(rest)
+    if not themed or not title or _is_untitled(title):
+        return None
+    return MediaCommand(
+        intent=MediaIntent.PLAY_NAMED, closed=True, name=" ".join(title), themed=True
+    )
 
 
 def _play_named_command(words: Sequence[str]) -> MediaCommand:
@@ -579,6 +614,9 @@ def _play_named_command(words: Sequence[str]) -> MediaCommand:
     body = _strip_lead_in(words)
     if not body or body[0] not in _PLAY_NAMED_VERBS:
         return NO_COMMAND
+    themed = _themed_command(body[1:])
+    if themed is not None:
+        return themed
     title = _title_words(body[1:])
     if title and title[0] == "для" and any(w in _MUSIC_NOUNS for w in body[1:]):
         return _occasion_command(title[1:])
