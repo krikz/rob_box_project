@@ -114,16 +114,16 @@ def test_old_music_tools_are_gone_and_v2_tools_are_the_music_path():
                  "save_arrangement_preset"} & names)
     harness_only = next(e for e in TOOL_CATALOG if e.name == "execute_music_code")
     assert harness_only.llm_visible is False and not harness_only.operator_visible
-    v2 = {e.name for e in llm_visible_tools("v2")}
-    assert V2_TOOLS <= v2 and not (OLD_LLM_MUSIC_TOOLS & v2)
-    assert not (OLD_LLM_MUSIC_TOOLS & {e.name for e in llm_visible_tools("v1")})
-    assert not (V2_TOOLS & {e.name for e in operator_visible_tools()})
+    visible = {e.name for e in llm_visible_tools()}
+    assert V2_TOOLS <= visible and not (OLD_LLM_MUSIC_TOOLS & visible)
+    # PR-15: фильтра по движку нет — реестр оператора (ТАРС) тоже предъявляет тулы v2
+    assert V2_TOOLS <= {e.name for e in operator_visible_tools()}
 
 
 def test_dialogue_registry_offers_tools_of_its_engine():
-    v2 = {spec.name for spec in ToolRegistry(music_engine="v2").list_tools()}
+    v2 = {spec.name for spec in ToolRegistry().list_tools()}
     assert {"dj_set", "request_music"} <= v2 and not (OLD_LLM_MUSIC_TOOLS & v2)
-    narrowed = {spec.name for spec in ToolRegistry(music_engine="v2").list_tools(skills=("dj",))}
+    narrowed = {spec.name for spec in ToolRegistry().list_tools(skills=("dj",))}
     assert {"dj_set", "request_music"} <= narrowed
 
 

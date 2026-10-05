@@ -582,10 +582,6 @@ def extract_tools() -> list[dict[str, Any]]:
             name = entry.get("name")
             if not isinstance(name, str) or not name:
                 continue
-            # ADR-0149 §9: ``music_engine = "v1"|"v2"`` — атрибут класса (не property: бюджет класса).
-            engine = _CLASS_CONSTANTS.get(cls.name, {}).get("music_engine")
-            if engine is not None and _literal(engine):
-                entry["music_engine"] = _literal(engine)
             if params is None:
                 raise ToolSourceError(f"{cls.name} ({source.name}) has no `parameters` property")
             if signature is None:
