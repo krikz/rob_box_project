@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import FrozenSet, Mapping
+from typing import FrozenSet, Mapping, Tuple
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,9 @@ class Program:
     #: Ручки мастер-шины на время трека поверх ``knowledge.MASTER_DEFAULTS`` (``trim`` энергии сета, профиль
     #: выравнивателя; PR-7). Пусто — дефолты: трек вне сета громкость DJ-трека не наследует.
     master: Mapping[str, float] = field(default_factory=dict)
+    #: Дуга громкости по секциям: (доля от начала формы, смещение ``trim`` дБ, время переезда с) —
+    #: ``mix.section_arc``. Пусто (песня) — ``trim`` трека держится весь трек.
+    arc: Tuple[Tuple[float, float, float], ...] = ()
 
 
 __all__ = ["Program"]

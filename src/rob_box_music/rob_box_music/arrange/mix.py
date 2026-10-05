@@ -14,6 +14,8 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **LPF-свип (PR-7, ADR-0149 §3.12).** ``knowledge.SECTION_LPF`` на басе и нотах одним «слайдером»
   (:func:`lpf_sweeps`): build открывается к дропу, дроп открыт, брейк прикрыт, хвост блэнда закрывается.
 * **Мастер-шина (PR-7, §3.10).** :func:`set_master` — ``trim`` по энергии трека сета и профиль выравнивателя.
+* **Дуга громкости.** :func:`section_arc` — смещение ``trim`` по секциям (``knowledge.SECTION_TRIM_DB``): build
+  поднимается к дропу, брейк проваливается, второй дроп — пик.
 * **Тембры.** Семья тембров темы (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека (:func:`timbres`).
 * **Бочка.** Сэмпл жанра из ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`).
 * **Стерео (PR-9, §3.9).** Ширина ролей — ``knowledge.ROLE_STEREO`` → ``Mix.stereo``; бочка и бас в центре.
@@ -29,7 +31,7 @@ from dataclasses import replace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..model import SAMPLE_ROLES, STEPS_PER_BAR, Duck, Form, Mix, Part, Stereo, Sweep
+from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Duck, Form, Mix, Part, Stereo, Sweep
 
 
 def layer_db(unit_db: float, exponent: float, amp: float) -> float:
@@ -133,6 +135,22 @@ def set_master(energy: int) -> Dict[str, float]:
     return {"trim": kn.ENERGY_TRIM_DB[energy], **kn.SET_LEVELER}
 
 
+def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...]:
+    """Дуга громкости формы: на доле начала секции — смещение ``trim`` и время переезда, с.
+
+    ``knowledge.SECTION_TRIM_DB``: секция с подъёмом едет к своему уровню всю длину (build → дроп), остальные
+    встают за ``TRIM_LAG_S``. Песня — без дуги: её динамику делает состав куплетов."""
+    if form.song:
+        return ()
+    out, beat = [], 0.0
+    for sec in form.sections:
+        beats = float(sec.bars * BEATS_PER_BAR)
+        offset, rise = kn.SECTION_TRIM_DB.get(sec.name, (0.0, False))
+        out.append((beat, offset, round(beats * 60.0 / bpm, 3) if rise else kn.TRIM_LAG_S))
+        beat += beats
+    return tuple(out)
+
+
 def mix_parts(parts: Mapping[str, Part], form: Form) -> Tuple[Dict[str, Part], Mix]:
     """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн и свип по видам секций формы.
 
@@ -148,4 +166,4 @@ def mix_parts(parts: Mapping[str, Part], form: Form) -> Tuple[Dict[str, Part], M
 
 
 __all__ = ["alternate_pan", "duck_envelope", "kick_sound", "kick_steps", "layer_db", "level_amp", "look", "lpf_sweeps",
-           "mix_parts", "set_master", "timbres", "voice_amp"]
+           "mix_parts", "section_arc", "set_master", "timbres", "voice_amp"]

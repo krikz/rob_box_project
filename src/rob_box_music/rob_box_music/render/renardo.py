@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..arrange.mix import alternate_pan, duck_envelope, voice_amp
+from ..arrange.mix import alternate_pan, duck_envelope, section_arc, voice_amp
 from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Part, Stereo, Track, validate
 from .program import Program
 
@@ -372,6 +372,7 @@ def render(track: Track, deck: str) -> Program:
         code="\n".join(lines) + "\n", track_id=track.track_id, deck=deck, bpm=track.bpm,
         form_beats=float(track.form.bars_total * BEATS_PER_BAR), slots=slots,
         synths=frozenset(tonal), samples=frozenset(drums), sample_files=frozenset(files),
+        arc=section_arc(track.form, track.bpm),
     )
 
 
