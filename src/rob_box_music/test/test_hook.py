@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 
 import pytest
 
-from melodies import CHROMATIC, LONG, MELODIES, SHORT, SLOW, compose_p, profile
+from melodies import CHROMATIC, LONG, MELODIES, PASSING, SHORT, SLOW, SPREAD, WIDE, compose_p, profile
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import hook as hooks
 from rob_box_music.arrange.compose import HOOK_REGISTER, SECTION_BARS, SECTIONS
 from rob_box_music.diversity import track_history
-from rob_box_music.model import BEATS_PER_BAR, validate
+from rob_box_music.model import BEATS_PER_BAR, Key, TrackError, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
 from rob_box_music.rtttl import parse_rtttl
+from rob_box_music.tonality import key_fit
 
 
 def _intervals(midis):
@@ -80,10 +82,61 @@ def test_short_melody_becomes_phrase_and_answer_in_the_scale():
 
 
 def test_out_of_scale_melody_is_refused_not_repaired():
-    with pytest.raises(hooks.HookError, match="вне лада"):
+    with pytest.raises(hooks.HookError, match="вне лада.*key_fit 0.58"):
         hooks.from_rtttl(CHROMATIC, "chroma", 132, 0, "minor")
     with pytest.raises(hooks.HookError, match="RTTTL"):
         hooks.from_rtttl("мусор", "x", 132, 0, "minor")
+
+
+@pytest.mark.parametrize("root", range(12))
+def test_passing_chromatic_notes_stay_in_the_hook(root):
+    """I12 (#3409): проходящие полутона темы не повод отказа — key_fit ≥ 0.6, ноты и интервалы те же."""
+    hook, key = hooks.from_rtttl(PASSING, "passing", 132, root, "minor", HOOK_REGISTER)
+    _n, _bpm, notes = parse_rtttl(PASSING)
+    melody = [m for m, _d in notes if m is not None][:len(hook.notes)]
+    assert _intervals([e.midi for e in hook.notes]) == _intervals(melody)
+    assert kn.HOOK_KEY_FIT_MIN <= hook.key_fit < 1.0
+    assert hook.key_fit == key_fit([(e.midi, e.dur_beats) for e in hook.notes], kn.ROOTS[key.root], key.mode)
+    assert {e.midi % 12 for e in hook.notes} - kn.scale_pitch_classes(key.root, key.mode), "хроматика не вычищена"
+
+
+@pytest.mark.parametrize("root", range(12))
+def test_wide_melody_is_folded_into_the_lead_corridor_by_octaves(root):
+    """§3.3 (#3409): тема шире коридора — переносы октавой отдельных нот, не отказ; остальные интервалы целы."""
+    hook, key = hooks.from_rtttl(WIDE, "wide", 132, root, "minor", HOOK_REGISTER)
+    _n, _bpm, notes = parse_rtttl(WIDE)
+    melody = [m for m, _d in notes if m is not None][:len(hook.notes)]
+    got = [e.midi for e in hook.notes]
+    assert all(HOOK_REGISTER[0] <= m <= HOOK_REGISTER[1] for m in got)
+    assert len({(g - m) % 12 for g, m in zip(got, melody)}) == 1, "те же ноты, сдвиг одной транспозицией"
+    shift = max(set(g - m for g, m in zip(got, melody)), key=[g - m for g, m in zip(got, melody)].count)
+    folded = sum(g - m != shift for g, m in zip(got, melody))
+    assert 0 < folded <= hooks.MAX_FOLDED_SHARE * len(got)
+    kept = sum(a == b for a, b in zip(_intervals(got), _intervals(melody)))
+    assert kept >= len(got) - 1 - 2 * folded, "перенос задевает только интервалы к перенесённой ноте"
+
+
+def test_motif_that_folding_would_break_is_refused():
+    with pytest.raises(hooks.HookError, match="мотив ломается"):
+        hooks.from_rtttl(SPREAD, "spread", 132, 0, "minor", HOOK_REGISTER)
+
+
+def test_diatonic_moves_a_chromatic_note_with_its_scale_neighbour():
+    c_major = Key(0, "major")
+    assert hooks.diatonic(61, c_major, 2) == 65 and hooks.diatonic(66, c_major, -2) == 63
+    assert hooks.diatonic(64, c_major, 2) == 67
+
+
+def test_lead_key_fit_is_checked_by_duration_not_note_by_note():
+    """Валидатор (I12): лид с проходящими проходит, лид в чужом ладу (всё на полутон ниже) — нет."""
+    track = compose_p(profile(hooks=("passing",)), 1, melodies={"passing": PASSING})
+    assert track.hook is not None and track.hook.source == "passing"
+    validate(track)
+    lead = track.parts["lead"]
+    off = tuple(replace(e, midi=e.midi - 1) for e in lead.pitches)
+    with pytest.raises(TrackError) as err:
+        validate(replace(track, parts={**track.parts, "lead": replace(lead, pitches=off)}))
+    assert err.value.path == "parts.lead.pitches" and "в ладу" in err.value.reason
 
 
 def test_a_theme_melody_becomes_the_hook_on_most_roots():
@@ -184,3 +237,14 @@ def test_recent_hooks_of_past_sets_go_last():
     for seed in range(8):
         order = [h.source for h, _k in hook_candidates(prof, MELODIES, random.Random(seed), history)]
         assert order == ["short", "slow", "long"], seed
+
+
+def test_hook_outcome_is_logged_with_key_fit(caplog):
+    """I12: key_fit принятого хука и причина отказа — в логе (замер приёмки по логу, не по слуху)."""
+    caplog.set_level("INFO", logger="rob_box_music.arrange.hook")
+    hook, _key = hooks.from_rtttl(PASSING, "passing", 132, 0, "minor", HOOK_REGISTER)
+    with pytest.raises(hooks.HookError):
+        hooks.from_rtttl(CHROMATIC, "chroma", 132, 0, "minor")
+    lines = [r.getMessage() for r in caplog.records]
+    assert any("melody=passing" in m and f"key_fit={hook.key_fit:.2f}" in m for m in lines), lines
+    assert any("melody=chroma" in m and "отказ" in m and "key_fit" in m for m in lines), lines

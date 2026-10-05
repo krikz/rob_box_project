@@ -41,6 +41,8 @@ TONAL_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
 #: ``rtttl_compose._LEAD_MAX_CEILING``, ADR-0149 §3.5–§3.7).
 REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (50, 70), "lead": (58, 84)}
 LEAD_MAX_MIDI = 88
+#: Хук темы в тональности трека (I12): доля длительности нот лида в ладу не ниже порога; хроматика — проходящие.
+HOOK_KEY_FIT_MIN = 0.6
 
 #: Ступени энергии трека в сете (ADR-0147): 1 — интро/спад, 5 — пик.
 ENERGY_LEVELS: Tuple[int, ...] = (1, 2, 3, 4, 5)
@@ -317,7 +319,8 @@ def role_ceiling(role: str) -> float:
 __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_KITS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
     "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES",
-    "ThemeRow", "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES",
+    "ThemeRow", "HOOK_KEY_FIT_MIN",
+    "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES", "SEARCH_STOPWORDS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
