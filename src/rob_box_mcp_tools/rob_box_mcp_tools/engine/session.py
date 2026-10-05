@@ -32,6 +32,7 @@ from dataclasses import replace
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from rob_box_music.arrange.compose import compose
+from rob_box_music.arrange.harmony import PROGRESSION_WINDOW
 from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import track_history
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
@@ -56,18 +57,44 @@ def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) 
     return plan_source(lambda: (plan, melodies))
 
 
-def plan_source(current: PlanNow) -> TrackSource:
+class SetMemory:
+    """Строки треков прошлых сетов (свежие первыми) — разнообразие МЕЖДУ сетами, пока жив процесс.
+
+    Приёмка 02.10 (A13): история жила только внутри сета, и окно «прогрессия ≤ 3 из 10 треков подряд» на стыке
+    сетов не держалось (5 из 10). Глубина — окно этого критерия. Перезапуск процесса память обнуляет.
+    """
+
+    def __init__(self, depth: int = PROGRESSION_WINDOW) -> None:
+        self._depth = depth
+        self._past: Tuple[Dict[str, Any], ...] = ()
+        self._rows: Dict[int, Dict[str, Any]] = {}
+
+    def begin(self) -> Tuple[Dict[str, Any], ...]:
+        """Новый сет: треки прошлого уходят в память; вернуть её (свежие первыми)."""
+        last = tuple(self._rows[no] for no in sorted(self._rows, reverse=True))
+        self._past, self._rows = (last + self._past)[:self._depth], {}
+        return self._past
+
+    def remember(self, track_no: int, row: Dict[str, Any]) -> None:
+        self._rows[track_no] = row
+
+
+def plan_source(current: PlanNow, memory: Optional[SetMemory] = None) -> TrackSource:
     """Треки по плану, который сейчас у сета, с историей сета по всем осям (``diversity.track_history``, PR-3d):
     каркас, прогрессия, хук, сэмплы не повторяются подряд. История — строки треков с МЕНЬШИМ номером (свежие
     первыми): повторная компоновка того же N+1 (``replan``, повтор после отказа) заменяет его строку и не видит
-    саму себя. Запись в ``music_history`` между сетами — отдельный шаг владельца (по ``started``)."""
+    саму себя; за ними — треки прошлых сетов из ``memory``. Запись в ``music_history`` (между перезапусками) —
+    отдельный шаг владельца (по ``started``)."""
     rows: Dict[int, Dict[str, Any]] = {}
+    past = memory.begin() if memory is not None else ()
 
     def next_track(track_no: int, deck: str) -> Track:
         plan, melodies = current()
-        history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < track_no)
+        history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < track_no) + past
         track = compose(plan, track_no, melodies=melodies, history=history, deck=deck)
         rows[track_no] = track_history(track, plan.set_id)
+        if memory is not None:
+            memory.remember(track_no, rows[track_no])
         return track
 
     return next_track
@@ -242,5 +269,5 @@ class SetSession:
         return beats
 
 
-__all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "PlanNow", "SetSession", "TrackSource", "compose_source",
+__all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "PlanNow", "SetMemory", "SetSession", "TrackSource", "compose_source",
            "plan_source"]

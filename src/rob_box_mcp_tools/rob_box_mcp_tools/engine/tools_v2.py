@@ -31,7 +31,7 @@ from rob_box_music.theme import seeded_profile
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
 from .reasoner import SetPlanBox, SetReasoner
-from .session import SetSession, plan_source
+from .session import SetMemory, SetSession, plan_source
 
 #: Мелодии по ``id`` для хука темы: ``ids -> {id: rtttl}``.
 MelodyLookup = Callable[[Iterable[str]], Dict[str, str]]
@@ -104,6 +104,7 @@ class DjSetTool(MCPTool):
         self._confirm = confirm
         self._lock = threading.Lock()
         self._session: Optional[SetSession] = None
+        self._memory = SetMemory()  # треки прошлых сетов: разнообразие между сетами (A13)
 
     @property
     def name(self) -> str:
@@ -157,7 +158,7 @@ class DjSetTool(MCPTool):
         plan = seeded_plan(profile, set_seed, set_id=set_id)  # один план на сет = один темп
         logger = self.node.get_logger() if self.node is not None else None
         box = SetPlanBox(plan, self._melodies, speak=self._speak, logger=logger)
-        base = plan_source(box.current)
+        base = plan_source(box.current, self._memory)
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck)), set_id=set_id,
                              bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
                              on_track_started=box.on_started)

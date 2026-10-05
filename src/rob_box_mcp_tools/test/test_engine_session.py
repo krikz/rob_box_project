@@ -406,3 +406,41 @@ def test_replan_recomposes_next_track_with_the_same_set_history():
     assert seen[:3] == [(1, []), (2, [k1]), (2, [k1])]
     assert seen[3] == (3, [k2b, k1])
     assert t2.history_key.kit != k1 and k2b != k1
+
+
+def test_progression_cap_holds_across_sets_with_set_memory():
+    """A13 (приёмка 02.10): 5 сетов × 6 треков подряд — в любом окне из 10 треков одна прогрессия не чаще 3 раз.
+
+    Без памяти между сетами история обнулялась на каждом сете, и на стыке выходило 5 из 10.
+    """
+    from rob_box_music.arrange.harmony import PROGRESSION_CAP, PROGRESSION_WINDOW
+    from rob_box_mcp_tools.engine.session import SetMemory, plan_source
+
+    themes = ("космос", "ночной город", "лес", "океан", "завод")
+    for run in range(3):  # разные сиды — не один удачный расклад
+        memory, played = SetMemory(), []
+        for i, theme in enumerate(themes):
+            seed = 1000 * run + 17 * i + 3
+            plan = seeded_plan(ThemeProfile(theme, "club", BPM, (i * 5) % 12, "minor", (), None), seed,
+                               set_id=f"set{seed}")
+            source = plan_source(lambda plan=plan: (plan, None), memory)
+            played += [source(no, "AB"[no % 2]).history_key.progression for no in range(1, 7)]
+        assert len(played) == 30
+        for start in range(len(played) - PROGRESSION_WINDOW + 1):
+            window = played[start:start + PROGRESSION_WINDOW]
+            worst = max(window.count(name) for name in set(window))
+            assert worst <= PROGRESSION_CAP, (run, start, window)
+
+
+def test_set_memory_keeps_past_sets_newest_first_and_bounded():
+    from rob_box_mcp_tools.engine.session import SetMemory
+
+    memory = SetMemory(depth=3)
+    assert memory.begin() == ()
+    memory.remember(1, {"n": "a1"})
+    memory.remember(2, {"n": "a2"})
+    memory.remember(2, {"n": "a2b"})  # повторная компоновка заменяет строку
+    assert [r["n"] for r in memory.begin()] == ["a2b", "a1"]
+    memory.remember(1, {"n": "b1"})
+    memory.remember(2, {"n": "b2"})
+    assert [r["n"] for r in memory.begin()] == ["b2", "b1", "a2b"]
