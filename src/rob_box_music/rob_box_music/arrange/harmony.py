@@ -11,7 +11,11 @@ from ..diversity import weighted_pick
 from ..model import Chord, Key, PitchEvent
 
 #: Прогрессии club по ступеням лада, аккорд на 2 такта (8-тактовая петля).
-PROGRESSIONS: Tuple[Tuple[int, ...], ...] = ((0, 5, 2, 6), (0, 3, 5, 4), (0, 5, 3, 4), (0, 6, 5, 6))
+#: Приёмка 02.10 (A13): при четырёх прогрессиях одна занимала 5 треков из 10 — пул расширен до восьми.
+PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
+    (0, 5, 2, 6), (0, 3, 5, 4), (0, 5, 3, 4), (0, 6, 5, 6),
+    (0, 2, 6, 5), (0, 3, 6, 2), (0, 4, 5, 3), (0, 6, 3, 5),
+)
 #: Одна прогрессия — не больше ``PROGRESSION_CAP`` раз за ``PROGRESSION_WINDOW`` треков подряд (ADR-0149 A13).
 PROGRESSION_CAP, PROGRESSION_WINDOW = 3, 10
 
