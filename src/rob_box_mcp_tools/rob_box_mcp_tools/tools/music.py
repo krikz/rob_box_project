@@ -90,6 +90,7 @@ from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStor
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices, parse_levels
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
+from ..core.music_renardo_bridge import MusicRenardoBridge
 from ..core.rtttl_compose import key_honesty_note, melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary, display_title, human_track_title, match_info
 
@@ -104,7 +105,6 @@ def music_align_clock_enabled() -> bool:
     флаг параметром (``render(..., align_clock=)``/``render_club``).
     """
     return os.environ.get(_ALIGN_CLOCK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -558,40 +558,30 @@ class MusicManager:
         )
         #: Отправлен ли ``/n_set`` с мастер-фейдером хотя бы раз.
         self._master_gain_applied: bool = False
+        # ------------------------------------------------------------------
+        # Renardo/SuperCollider plumbing is delegated to ``MusicRenardoBridge``
+        # (issue chain: G-MUSIC → refactor). Мост владеет всеми ``_*_renardo``
+        # полями (``_renardo_context``, ``_renardo_available``, ``_synthdefs_added``
+        # и т.д.). Менеджер НЕ дублирует эти поля как instance-attrs —
+        # ``MusicRenardoBridge`` уже сделал ``_evaluate_music_stack_health``
+        # и ``_initialize_renardo`` в своём ``__init__``, и после
+        # ``MusicManager.__init__`` ``MusicManager._renardo_context`` /
+        # ``MusicManager._renardo_available`` и т.д. становятся property,
+        # которые всегда читают/пишут в ``self._renardo``. Тонкие lambda-
+        # прокси на одноимённые методы (``_initialize_renardo`` и т.д.)
+        # устанавливаются после ``class MusicManager: ...``, чтобы не
+        # ломать публичный API (Фаза 6/cleanup удалит оригиналы).
+        self._renardo = MusicRenardoBridge(
+            critical_synths=critical_synths,
+            require_healthy=require_healthy,
+            sclang_log_path=sclang_log_path,
+        )
         #: pattern_name -> последний выполненный код
         self._pattern_history: Dict[str, str] = {}
         #: множество имён активных паттернов
         self._active_patterns: set = set()
-        #: SynthDef-ы, уже загруженные через sdef.add(). Повторный add()
-        #: мутирует UGen-граф (osc*env) → компаундинг ("too big for
-        #: sending") → scsynth не тянет → "late" и троттл (live 20.08).
-        self._synthdefs_added: set = set()
-        #: Issue #2838 — SynthDef-ы, приход которых в scsynth подтвердил
-        #: sclang (строки прелоада "SynthDef in scsynth: X" после
-        #: Server.sync). ``None`` — подтверждения нет (лог недоступен или
-        #: прелоад не завершён). Пишет ``_evaluate_music_stack_health``.
-        self._server_confirmed_synths: Optional[frozenset] = None
         #: имя текущего пресета
         self._current_preset: Optional[str] = None
-        #: контекст выполнения для renardo
-        self._renardo_context: Dict[str, Any] = {}
-        #: True если renardo доступен, False/None иначе
-        self._renardo_available: Optional[bool] = None
-        #: Последняя ошибка инициализации renardo для диагностики
-        self._renardo_last_error: Optional[str] = None
-        #: Issue #1808 — сокет Renardo, к которому подключён фоновый
-        #: слушатель ответов scsynth (см. ``_attach_renardo_reply_listener``).
-        self._renardo_reply_sock: Optional[Any] = None
-        #: Music-stack health snapshot (from ``load_sclang_health``). When
-        #: ``is_healthy is False``, ``execute_music_code`` / ``set_vibe_preset``
-        #: short-circuit with a clear "music unavailable" error so the LLM
-        #: doesn't keep retrying against a broken Renardo/FoxDot upstream.
-        self._music_stack_status: MusicStackStatus = MusicStackStatus(
-            is_healthy=True,
-            oscdef_registered=True,
-            missing_synths=(),
-            fatal_errors=(),
-        )
         #: When True, ``execute_code`` / ``set_vibe_preset`` reject calls when
         #: ``_music_stack_status.is_healthy`` is False. Set False only for
         #: tests / dev environments where we explicitly want degraded mode.
@@ -715,12 +705,17 @@ class MusicManager:
         # ------------------------------------------------------------------
         # Music stack health (issue G-MUSIC, architect review v3)
         # ------------------------------------------------------------------
-        # If sclang already wrote a startup log and it's degraded, refuse to
-        # initialize Renardo and surface a clear "music unavailable" error.
-        # We do this BEFORE calling _initialize_renardo() so a broken
-        # upstream .scd file cannot manifest as silent exec errors later.
-        self._evaluate_music_stack_health(sclang_log_path=sclang_log_path)
-        self._initialize_renardo()
+        # До рефакторинга ``MusicRenardoBridge`` здесь шли два вызова —
+        # ``_evaluate_music_stack_health(sclang_log_path=...)`` и
+        # ``_initialize_renardo()``. Оба уже сделаны конструктором моста
+        # (``self._renardo = MusicRenardoBridge(...)`` выше), повторный
+        # запуск через proxy затрёт его внутреннее состояние
+        # (``synthdefs_added``, ``server_confirmed_synths``,
+        # ``_renardo_reply_sock``, фоновый listener-поток) — поэтому
+        # здесь только no-op, а «теневые» атрибуты менеджера сделаны
+        # property, читающими/пишущими в мост (см. блок после
+        # ``class MusicManager: ...``).
+        pass
 
     # ------------------------------------------------------------------
     # DJ Mode — issue #1000
@@ -741,115 +736,33 @@ class MusicManager:
     # ------------------------------------------------------------------
 
     def _initialize_renardo(self) -> None:
-        """Попытка инициализировать Renardo-контекст и загрузить SynthDef-ы в SC.
+        """Тонкая обёртка над ``MusicRenardoBridge._initialize_renardo``.
 
-        Pipeline:
-        1. Создаём директории семплов (иначе renardo_lib.runtime падает при импорте).
-        2. Импортируем renardo_lib.runtime.
-        3. Подключаемся к scsynth через Server.init_connection().
-        4. Создаём Group 1 в scsynth через raw OSC (иначе /s_new падает).
-        5. Загружаем все SynthDef-ы: sdef.add() → write(.scd) + load() →
-           OSC /foxdot → sclang компилирует .scd → /d_recv → scsynth.
-        6. Ждём 5 секунд пока sclang скомпилирует все 188 SynthDef-ов.
+        Реальная имплементация (импорт ``renardo_lib.runtime``, проверка
+        ``Server.booted``, загрузка ``SynthDef``-ов через ``sdef.add()``,
+        ``/foxdot``-→-``sclang``-→-``/d_recv``, верификация с досылкой
+        пропавших, ``EffectManager.reload``, фоновый listener ответов
+        ``/fail``) живёт в :class:`MusicRenardoBridge` (см.
+        ``core/music_renardo_bridge.py``). Менеджер держит только эту
+        обёртку, чтобы:
 
-        NOTE: SynthDefs — это plain dict, НЕ объект с методом .reload()!
-        Правильный способ: for sdef in SynthDefs.values(): sdef.add()
+        1. Сохранить публичный API ``MusicManager._initialize_renardo``
+           (Фаза 6/cleanup удалит её, но прямо сейчас нельзя — затронет
+           легаси-тесты, которые ставят ``mgr._initialize_renardo = Mock(...)``
+           для подмены поведения в одном сценарии, см.
+           ``test_execute_retries_renardo_initialization_before_failing``).
+        2. Дать легаси-тестам нормальный instance-mock-контракт: ``__dict__``
+           менеджера перекрывает class attr, поэтому подмена
+           ``mgr._initialize_renardo = Mock(...)`` срабатывает без
+           касания моста.
+        3. Не блокировать ``MusicManager.__init__``: тяжёлая инициализация
+           делается в ``MusicRenardoBridge.__init__`` один раз; этот
+           метод здесь — только delegator.
         """
-        try:
-            # renardo_lib.runtime при импорте пытается листить директории сэмплов.
-            # Если 0_foxdot_default не установлен — падает FileNotFoundError.
-            # Создаём пустую структуру директорий заранее, чтобы импорт проходил.
-            import pathlib
-            import shutil
-
-            samples_base = pathlib.Path.home() / ".config" / "renardo" / "samples" / "0_foxdot_default"
-            _SAMPLE_SUBDIRS = ["_", "_loop_"] + list("abcdefghijklmnopqrstuvwxyz")
-            for subdir in _SAMPLE_SUBDIRS:
-                (samples_base / subdir).mkdir(parents=True, exist_ok=True)
-
-            # Renardo всегда ищет сэмплы ТОЛЬКО в 0_foxdot_default/ (sample_path_from_symbol
-            # захардкожена на DEFAULT_SAMPLES_PACK_NAME). Буква 'c' (vokals) отсутствует
-            # в foxdot_default, но есть в 1_pitchglitch_samples/c/.
-            # Копируем отсутствующие файлы чтобы play("c   ") находило вокальные сэмплы.
-            pitchglitch = pathlib.Path.home() / ".config" / "renardo" / "samples" / "1_pitchglitch_samples"
-            if pitchglitch.exists():
-                for letter in list("abcdefghijklmnopqrstuvwxyz"):
-                    for case_dir in ("lower", "upper"):
-                        src_dir = pitchglitch / letter / case_dir
-                        dst_dir = samples_base / letter / case_dir
-                        if not src_dir.exists():
-                            continue
-                        dst_dir.mkdir(parents=True, exist_ok=True)
-                        dst_wavs = set(f.name for f in dst_dir.glob("*.wav"))
-                        for wav in src_dir.glob("*.wav"):
-                            if wav.name not in dst_wavs:
-                                shutil.copy2(wav, dst_dir / wav.name)
-
-            # renardo_lib само по себе пустое; нужен renardo_lib.runtime
-            import renardo_lib.runtime as _rt
-
-            # Подключаемся к scsynth (Server.booted = True после этого)
-            if not _rt.Server.booted:
-                _rt.Server.init_connection()
-
-            # 🔴 FIX (issue #1808): Renardo шлёт ноты в scsynth
-            # fire-and-forget и никогда не читает ответы — все отказы
-            # звукового тракта («SynthDef X not found», «too many nodes»,
-            # «Group N not found») уходили только в лог контейнера
-            # supercollider, куда никто не смотрит при разборе (см.
-            # docstring ``_attach_renardo_reply_listener``). Best-effort,
-            # ничего не ломает при неудаче.
-            self._attach_renardo_reply_listener(_rt)
-
-            # Создаём Group 1 в scsynth — renardo отправляет все ноты в эту группу.
-            # Без неё scsynth возвращает "Group 1 not found" на каждый /s_new.
-            self._send_osc_raw("/g_new", 1, 0, 0)
-
-            # Загружаем все SynthDef-ы через sclang.
-            # SynthDefs — это plain Python dict, НЕ объект с .reload()!
-            # sdef.add() = write(.scd файл на диск) + load() (отправляет путь
-            # через OSC /foxdot → sclang → компилирует → /d_recv → scsynth)
-            # 🔴 FIX (live 12.08): 188 sdef.add() залпом роняют UDP-буфер sclang
-            # (drops >500 в /proc/net/udp) — часть SynthDef-ов (pads, bass, karp,
-            # bell...) не доезжает до scsynth → "SynthDef not found" → ТИШИНА.
-            # Пейсинг 0.1с между отправками + верификация с досылкой пропавших.
-            for idx, (name, sdef) in enumerate(_rt.SynthDefs.items()):
-                if name in self._synthdefs_added:
-                    continue
-                sdef.add()
-                self._synthdefs_added.add(name)
-                if idx % 5 == 4:
-                    time.sleep(0.1)
-
-            # Загружаем эффекты (reverb/volume) — иначе scsynth отвечает
-            # "SynthDef reverb not found" / "SynthDef volume not found" на каждый
-            # Player с room=/amp-fx и музыка молчит (live 05.08: все e2e-прогоны
-            # после деплоя тихие, TTS работает, музыка нет).
-            # EffectManager.reload() = effect.load() для каждого эффекта +
-            # In() + Out() (служебные bus-ноды).
-            try:
-                _rt.effect_manager.reload()
-            except Exception as exc:  # noqa: BLE001
-                self._renardo_last_error = f"effect_manager.reload failed: {exc}"
-
-            # Ждём компиляции всех 188 SynthDef-ов через sclang.
-            # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
-            time.sleep(5)
-
-            # 🔴 FIX (live 12.08): верификация — пробуем /s_new на критичные
-            # синты и досылаем пропавшие через sdef.add() (до 3 раундов).
-            # Без этого музыка тихо молчит при "SynthDef not found".
-            self._verify_and_retry_synthdefs(_rt, self._send_osc_raw)
-
-            self._renardo_context = vars(_rt).copy()
-            register_sc_only_custom_synthdefs(_rt, self._renardo_context)
-            self._renardo_available = True
-            self._renardo_last_error = None
-            self._log_synth_truth_discrepancy()
-        except (ImportError, Exception) as exc:
-            self._renardo_available = False
-            self._renardo_context = {}
-            self._renardo_last_error = str(exc)
+        renardo = getattr(self, "_renardo", None)
+        if renardo is None:
+            return  # legacy ``__new__``-built mgr без моста (test stubs)
+        renardo._initialize_renardo()
 
     def _verify_and_retry_synthdefs(
         self,
@@ -1131,16 +1044,27 @@ class MusicManager:
     _decode_osc_args = staticmethod(renardo_adapter.decode_osc_args)
 
     def _ensure_renardo_available(self) -> bool:
-        """Retry Renardo initialization when a previous startup attempt failed.
+        """Тонкая обёртка над ``MusicRenardoBridge._ensure_renardo_available``.
 
-        This avoids a permanent degraded state when container startup races cause
-        the first one-shot initialization to fail before scsynth/sclang are fully ready.
+        Полная имплементация (retry-логика при провале первой попытки
+        инициализации scsynth/sclang во время race-conditions старта
+        контейнера) живёт в :class:`MusicRenardoBridge`. Менеджер
+        держит только короткий wrapper, чтобы:
+
+        1. Сохранить публичный API ``MusicManager._ensure_renardo_available``
+           и совместимость с легаси-тестами, которые подменяют
+           ``mgr._ensure_renardo_available = Mock(return_value=False)`` —
+           instance attr менеджера перекрывает class attr, и подмена
+           срабатывает без правки моста.
+        2. Корректно работать в связке с ``_initialize_renardo`` выше:
+           если тест замокал ``_initialize_renardo`` (но НЕ
+           ``_ensure_renardo_available``), вызов ``self._initialize_renardo()``
+           идёт через Mock-менеджера, а не через мост, и подмена
+           тестового сценария не теряется вглубине bridge-а.
         """
-
-        if self._renardo_available:
+        if self._renardo_available:  # property → читает self._renardo
             return True
-
-        self._initialize_renardo()
+        self._initialize_renardo()  # property? нет, method — Mock-подмена
         return bool(self._renardo_available)
 
     # ------------------------------------------------------------------
@@ -2690,6 +2614,151 @@ class MusicManager:
                 "Активной музыки не обнаружено — stop_all вызван профилактически (issue #935)."
             ),
         }
+
+
+# ---------------------------------------------------------------------------
+# ``MusicRenardoBridge`` proxy overrides — issue chain: G-MUSIC → refactor
+# ---------------------------------------------------------------------------
+# После ``class MusicManager: ...`` (см. ``__init__``) мы заменяем
+# одноимённые методы и атрибуты тонкими property / lambda-обёртками,
+# которые читают/пишут в ``self._renardo``. Цель — карточка i-карточки
+# G-MUSIC: «не ломаем публичный API менеджера, всю Renardo/SC plumbing
+# держим в ``MusicRenardoBridge``».
+#
+# Перечень методов (proxy на ``self._renardo.<name>()``):
+#   _initialize_renardo, _verify_and_retry_synthdefs,
+#   _attach_renardo_reply_listener, _renardo_reply_listener_loop,
+#   _log_scsynth_reply_if_any, _log_osc_reply, _ensure_renardo_available,
+#   _check_supercollider, _send_osc_raw, known_synth_names,
+#   _log_synth_truth_discrepancy, _evaluate_music_stack_health,
+#   is_music_stack_healthy, music_stack_unavailable_error.
+#
+# Перечень «теневых» атрибутов (property read/write в ``self._renardo``):
+#   _renardo_context, _renardo_available, _renardo_last_error,
+#   _renardo_reply_sock, _synthdefs_added, _server_confirmed_synths,
+#   _music_stack_status, _critical_synths, _require_healthy.
+#
+# Сами оригинальные методы остаются в теле класса до Фазы 6/cleanup
+# (когда карточка refactor'а закроет перенос и их можно удалить, не
+# ломая публичный API) — сейчас они просто недостижимы.
+# Исключения (НЕ ставим proxy, оборачиваем тонким wrapper-ом прямо в
+# теле класса):
+#   _initialize_renardo, _ensure_renardo_available — это критичная
+#   пара для test-mock-контракта: легаси-тесты подменяют
+#   ``mgr._initialize_renardo = Mock(side_effect=...)``, ожидая, что
+#   ``_ensure_renardo_available`` увидит подмену через instance-attr
+#   lookup (``__dict__``-fallback). Proxy на мосте перебил бы эту
+#   семантику, потому что мост не знает про Mock на менеджере.
+#   Поэтому оба живут в ``MusicManager`` как тонкие delegator-ы.
+from typing import Callable  # noqa: E402  — local import for proxy block
+
+
+def _make_renardo_method_proxy(attr_name: str) -> Callable[..., Any]:
+    """Build a method forwarding ``self.<attr_name>()`` to ``self._renardo.<attr_name>()``.
+
+    Fallback: легаси-тесты иногда ставят ``mgr._x = Mock(...)`` (instance
+    attr менеджера) — например ``mgr._initialize_renardo = Mock(...)``
+    чтобы переопределить поведение для одного теста, не меняя helper.
+    Чтобы не ломать этот контракт, proxy сначала ищет instance attr
+    ``self.__dict__[attr_name]`` (тестовая подмена), затем
+    ``self._renardo.<attr_name>()`` (продакшен), и только потом падает.
+    """
+
+    def _proxy(self: "MusicManager", *args: Any, **kwargs: Any) -> Any:
+        # 1) Legacy test mocks (``mgr._check_supercollider = Mock(...)``)
+        instance_override = self.__dict__.get(attr_name)
+        if instance_override is not None:
+            return instance_override(*args, **kwargs)
+        # 2) Production bridge
+        renardo = getattr(self, "_renardo", None)
+        if renardo is not None:
+            bridge_method = getattr(renardo, attr_name, None)
+            if bridge_method is not None:
+                return bridge_method(*args, **kwargs)
+        raise AttributeError(
+            f"MusicManager.{attr_name} has no bridge and no instance override"
+        )
+
+    _proxy.__name__ = attr_name
+    _proxy.__qualname__ = f"MusicManager.{attr_name}"
+    return _proxy
+
+
+_RENARDO_PROXY_METHODS: Tuple[str, ...] = (
+    # _initialize_renardo / _ensure_renardo_available — оставлены в
+    # ``MusicManager`` как тонкие delegator-ы (см. комментарий выше).
+    # Всё остальное — listener-loop и OSC plumbing — ставим через proxy.
+    "_verify_and_retry_synthdefs",
+    "_attach_renardo_reply_listener",
+    "_renardo_reply_listener_loop",
+    "_log_scsynth_reply_if_any",
+    "_log_osc_reply",
+    "_check_supercollider",
+    "_send_osc_raw",
+    "known_synth_names",
+    "_log_synth_truth_discrepancy",
+    "_evaluate_music_stack_health",
+    "is_music_stack_healthy",
+    "music_stack_unavailable_error",
+)
+for _method_name in _RENARDO_PROXY_METHODS:
+    setattr(MusicManager, _method_name, _make_renardo_method_proxy(_method_name))
+
+
+def _make_shadow_property(attr_name: str) -> Any:
+    """Build a property that proxies reads/writes through ``self._renardo``.
+
+    Setter fallback: если ``self._renardo`` ещё нет (тесты строят
+    ``MusicManager`` через ``__new__`` в обход ``__init__``), пишем в
+    instance-dict напрямую — иначе ``mgr._synthdefs_added = set()``
+    в тестах ронял бы ``AttributeError``. Property на ``_renardo_*``
+    делает менеджер «честной фасадной обёрткой» над мостом, но при
+    этом не ломает легаси-тесты, которые конструируют мок без
+    ``MusicRenardoBridge``.
+    """
+
+    def _getter(self: "MusicManager") -> Any:
+        renardo = getattr(self, "_renardo", None)
+        if renardo is None:
+            # No bridge yet — fall back to the legacy instance-attr (used by
+            # tests that build ``MusicManager`` via ``__new__``).
+            try:
+                return self.__dict__[attr_name]
+            except KeyError:
+                # Default for the various _renardo_* slots matches the
+                # original ``MusicManager.__init__`` defaults.
+                if attr_name == "_synthdefs_added":
+                    return set()
+                if attr_name in {"_renardo_context"}:
+                    return {}
+                return None
+        return getattr(renardo, attr_name)
+
+    def _setter(self: "MusicManager", value: Any) -> None:
+        renardo = getattr(self, "_renardo", None)
+        if renardo is None:
+            # Legacy ``__new__``-built mgr — write to instance dict so the
+            # test mock state is reachable through the property.
+            self.__dict__[attr_name] = value
+            return
+        setattr(renardo, attr_name, value)
+
+    return property(_getter, _setter)
+
+
+_SHADOW_ATTRS: Tuple[str, ...] = (
+    "_renardo_context",
+    "_renardo_available",
+    "_renardo_last_error",
+    "_renardo_reply_sock",
+    "_synthdefs_added",
+    "_server_confirmed_synths",
+    "_music_stack_status",
+    "_critical_synths",
+    "_require_healthy",
+)
+for _attr_name in _SHADOW_ATTRS:
+    setattr(MusicManager, _attr_name, _make_shadow_property(_attr_name))
 
 
 # ---------------------------------------------------------------------------
