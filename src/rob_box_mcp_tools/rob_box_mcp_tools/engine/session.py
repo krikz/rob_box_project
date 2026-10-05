@@ -26,7 +26,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 from dataclasses import replace
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
@@ -34,7 +36,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.harmony import PROGRESSION_WINDOW
 from rob_box_music.arrange.mix import set_master
-from rob_box_music.diversity import HISTORY_FIELDS, track_history
+from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import SetPlan
@@ -55,6 +57,24 @@ PlanNow = Callable[[], Tuple[SetPlan, Optional[Mapping[str, str]]]]
 def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) -> TrackSource:
     """Треки сета из ``arrange.compose`` по одному плану на весь сет."""
     return plan_source(lambda: (plan, melodies))
+
+
+#: Сколько файлов ``<track_id>.json`` держит каталог треков (старые удаляются по mtime).
+TRACK_FILES_KEEP = 200
+
+
+def write_track_file(directory: str, track: Track, keep: int = TRACK_FILES_KEEP) -> str:
+    """Полная модель трека в ``<directory>/<track_id>.json`` (ADR-0152 §2.3, I24); ротация — не больше ``keep`` файлов.
+    ``track_id`` содержит ``:`` — в имени файла он заменён на ``_``. Возвращает путь."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, track.track_id.replace(":", "_") + ".json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(track_json(track))
+    files = sorted((os.path.join(directory, n) for n in os.listdir(directory) if n.endswith(".json")),
+                   key=os.path.getmtime)
+    for old in files[:max(len(files) - keep, 0)]:
+        os.remove(old)
+    return path
 
 
 class SetMemory:
@@ -126,12 +146,14 @@ class SetSession:
         submit: где компоновать N+1 (по умолчанию — фоновый поток: клок не ждёт рендера).
         lead_beats: за сколько долей до конца формы ``nearly_finished``.
         on_track_started: ``track_id -> str`` на ``started`` — пометка в лог (``source=…``, PR-10).
+        tracks_dir: каталог ``<track_id>.json`` с полной моделью трека (``None`` — не писать, ADR-0152 §2.3).
     """
 
     def __init__(self, owner: Any, source: TrackSource, *, set_id: str, bpm: int,
                  dj: Optional[Mapping[str, Any]] = None, submit: Callable[[Callable[[], None]], None] = _start_thread,
                  lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None,
-                 on_track_started: Callable[[str], str] = lambda _track_id: "") -> None:
+                 on_track_started: Callable[[str], str] = lambda _track_id: "",
+                 tracks_dir: Optional[str] = None) -> None:
         self._owner = owner
         self._source = source
         self.set_id = set_id
@@ -141,6 +163,7 @@ class SetSession:
         self._lead = float(lead_beats)
         self._log = logger or _LOG
         self._note = on_track_started
+        self._tracks_dir = tracks_dir
         self._lock = threading.Lock()
         self._active = False
         self._tracks: Dict[str, int] = {}  # track_id → номер в сете
@@ -212,12 +235,24 @@ class SetSession:
                 return
             self._current = {"track_id": track_id, "no": no, "deck": snap.get("deck"),
                              "form_beats": float(snap["form_beats"])}
+            model = self._models.get(track_id)
             self._models = {k: v for k, v in self._models.items() if k == track_id}
         form_end = float(snap["start_beat"]) + float(snap["form_beats"])
         self._log.info(f"🎧 [set v2] {self.set_id} трек {no} started track_id={track_id} form_end_beat={form_end} "
-                       f"{self._note(track_id)}".rstrip())
+                       f"{self._note(track_id)} {self._composition_note(model)}".rstrip())
         self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
         self._pregenerate_soon()
+
+    def _composition_note(self, model: Optional[Track]) -> str:
+        """``composition={…}`` одной строкой JSON (+ файл модели, если задан каталог); сбой записи — в лог."""
+        if model is None:
+            return ""
+        if self._tracks_dir:
+            try:
+                write_track_file(self._tracks_dir, model)
+            except OSError as exc:
+                self._log.warning(f"⚠️ [set v2] {self.set_id} модель трека не записана: {type(exc).__name__}: {exc}")
+        return "composition=" + json.dumps(track_composition(model), ensure_ascii=False, separators=(",", ":"))
 
     def _pregenerate_soon(self) -> None:
         with self._lock:

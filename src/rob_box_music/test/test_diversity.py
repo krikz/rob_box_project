@@ -209,8 +209,9 @@ def test_history_is_written_on_every_axis(fifty):
     for row in rows:
         assert row["style"] == "club_v2"
         for axis in ("kit", "progression", "hook_fingerprint", "sample", "fx", "perc", "root", "scale", "bpm",
-                     "lead", "bass", "pad", "set_id"):
+                     "lead", "bass", "pad", "set_id", "kick"):
             assert row[axis] not in (None, ""), (axis, row)
+        assert row["kick"] in kn.KICK_SOUNDS, row
     assert {r["set_id"] for r in rows} == {f"s{n}" for n in range(SETS)}
 
 

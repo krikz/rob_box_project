@@ -126,7 +126,8 @@ class DjSetTool(MCPTool):
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None,
-                 finder: Optional[ThemeFinder] = None, history: Any = None) -> None:
+                 finder: Optional[ThemeFinder] = None, history: Any = None,
+                 tracks_dir: Optional[str] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._reasoner = reasoner or SetReasoner(enabled=False)
@@ -135,6 +136,7 @@ class DjSetTool(MCPTool):
         self._melodies = melodies or library_melodies(library)
         self._find = finder or theme_finder(library)
         self._seed = seed
+        self._tracks_dir = tracks_dir or None
         self._confirm = confirm
         self._lock = threading.Lock()
         self._session: Optional[SetSession] = None
@@ -209,7 +211,7 @@ class DjSetTool(MCPTool):
         base = plan_source(box.current, self._memory)
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck)), set_id=set_id,
                              bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
-                             on_track_started=box.on_started)
+                             on_track_started=box.on_started, tracks_dir=self._tracks_dir)
         result = session.start()
         self._session = session if result.get("ok") else None
         reasoner = None

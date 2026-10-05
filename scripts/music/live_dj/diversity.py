@@ -12,8 +12,9 @@
 * ``--offline N``: N случайных мелодий из RTTTL-архива -> seeded-профиль -> сет из 5 треков -> вектор состава
   (без звука и ROS): сколько разных синтов пэда/лида/баса, бочек, форм, каркасов хэтов.
 
-Состав по логу: лог движка хранит только bpm, источник и план reasoner (строка/лад/хуки) - синты и бочку
-он не пишет, их даёт только ``--offline`` (реконструкция ``seeded_plan`` -> ``compose``).
+Состав по логу (ADR-0152 §2.3): строка ``[set v2] ... started`` несёт ``composition={...}`` - синты, бочку, форму,
+прогрессию и т.д. читает ``v2log.parse_composition``, офлайн-реконструкция не нужна. Лог старого движка без
+``composition=`` даёт только bpm/лад/хуки плана. ``--offline`` строит тот же вектор через ``track_composition``.
 """
 from __future__ import annotations
 
@@ -33,8 +34,9 @@ import v2log as V
 SR = 16000
 WINDOW_S = 60.0
 #: Оси состава трека (``composition``): значение оси - hashable.
-AXES = ("pad", "lead", "bass", "kick", "hats", "form", "bpm", "mode", "root", "hook")
-SYNTH_AXES = ("pad", "lead", "bass", "kick", "form", "hats")
+AXES = ("pad", "lead", "bass", "kick", "kit", "form", "bpm", "mode", "root", "hook", "prog", "sample", "perc", "fx",
+        "energy")
+SYNTH_AXES = ("pad", "lead", "bass", "kick", "form", "kit")
 
 
 # ── звук ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -180,6 +182,20 @@ def run_audio(args: argparse.Namespace) -> int:
     return 0
 
 
+def print_log_composition(logs: Sequence[Sequence[Mapping[str, object]]]) -> None:
+    """Состав по логам серии: полный (``composition=`` в ``started``) или только bpm/лад/хуки плана (старый лог)."""
+    flat = [v for vecs in logs for v in vecs]
+    full = [v for v in flat if all(a in v for a in AXES)]
+    if full:
+        idx = diversity_index(full)
+        print(f"\nСостав по логам (composition= в started): треков {idx['n']} из {len(flat)}, разных по осям "
+              f"{idx['distinct']}, индекс {idx['index']:.3f}")
+        return
+    idx = diversity_index(flat, ("bpm", "mode", "hook"))
+    print(f"\nСостав по логам (composition= нет - только bpm/лад/хуки плана): треков {idx['n']}, "
+          f"разных {idx['distinct']}")
+
+
 def print_stats(name: str, st: Mapping[str, float], ref: Optional[Mapping[str, float]] = None) -> None:
     line = (f"  {name:<18} n={int(st['n']):>3}  соседние: медиана {st['adj_median']:.3f} мин {st['adj_min']:.3f}  "
             f"все пары: медиана {st['all_median']:.3f} мин {st['all_min']:.3f}")
@@ -190,18 +206,11 @@ def print_stats(name: str, st: Mapping[str, float], ref: Optional[Mapping[str, f
 
 # ── состав ──────────────────────────────────────────────────────────────────────────────────────────────
 
-def form_signature(track) -> str:
-    return f"{track.form.kind}:" + ",".join(f"{s.name}{s.bars}" for s in track.form.sections)
-
-
 def composition(track) -> Dict[str, object]:
-    """Вектор состава ``Track`` v2 по осям :data:`AXES`."""
-    parts = track.parts
-    hook = track.history_key.hook
-    return {"pad": parts["pad"].synth_or_sample, "lead": parts["lead"].synth_or_sample,
-            "bass": parts["bass"].synth_or_sample, "kick": parts["kick"].sample, "hats": track.history_key.kit,
-            "form": form_signature(track), "bpm": track.bpm, "mode": track.key.mode, "root": track.key.root,
-            "hook": hook or "-"}
+    """Вектор состава ``Track`` v2 по осям :data:`AXES` - тот же ``track_composition``, что пишет лог движка."""
+    from rob_box_music.diversity import track_composition
+
+    return track_composition(track)
 
 
 def diversity_index(vectors: Sequence[Mapping[str, object]], axes: Sequence[str] = AXES) -> Dict[str, object]:
@@ -213,7 +222,7 @@ def diversity_index(vectors: Sequence[Mapping[str, object]], axes: Sequence[str]
 
 
 def log_composition(log_path: str) -> List[Dict[str, object]]:
-    """Что лог знает о составе: bpm, источник, строка/лад/хуки плана. Синтов и бочки в логе нет (ключи ``-``)."""
+    """Состав треков по логу: ``composition={...}`` строки ``started`` (все оси), иначе bpm/лад/хуки плана."""
     out: List[Dict[str, object]] = []
     plan: Dict[str, str] = {}
     with open(log_path, encoding="utf-8", errors="replace") as fh:
@@ -221,6 +230,10 @@ def log_composition(log_path: str) -> List[Dict[str, object]]:
             p = V.parse_plan(line)
             if p:
                 plan = p
+            comp = V.parse_composition(line)
+            if comp:
+                out.append(comp)
+                continue
             s = V.parse_started(line)
             if s:
                 out.append({"bpm": s["bpm"], "mode": plan.get("mode", "-"), "hook": plan.get("hooks", "-"),
@@ -300,7 +313,7 @@ def run_offline(args: argparse.Namespace) -> int:
         per_set.append(diversity_index(vecs))
         title = archive[name]["title"][:28]
         print(f"  {i:>2}. {title:<28} pad={vecs[0]['pad']:<8} lead={sorted({v['lead'] for v in vecs})} "
-              f"bass={sorted({v['bass'] for v in vecs})} hats={len({v['hats'] for v in vecs})} bpm={vecs[0]['bpm']}")
+              f"bass={sorted({v['bass'] for v in vecs})} kit={len({v['kit'] for v in vecs})} bpm={vecs[0]['bpm']}")
     total = diversity_index(every)
     print(f"\nВсего треков {total['n']} (сетов {len(per_set)}). Разных значений по оси / доля уникальных:")
     for axis in AXES:

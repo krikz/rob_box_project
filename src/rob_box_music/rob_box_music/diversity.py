@@ -23,7 +23,9 @@ Issue #3224 (карточка (а) umbrella #3223, ADR-0146). Живой лог 
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
 import logging
 import os
 import sqlite3
@@ -39,8 +41,11 @@ __all__ = [
     "HISTORY_FIELDS",
     "MusicHistory",
     "fingerprint",
+    "kick_name",
     "recent_values",
+    "track_composition",
     "track_history",
+    "track_json",
     "weighted_pick",
 ]
 
@@ -268,12 +273,52 @@ def recent_values(rows: Sequence[Mapping[str, Any]], field: str) -> List[Any]:
     return [row.get(field) for row in rows]
 
 
+def kick_name(sample: int) -> str:
+    """Имя бочки из ``knowledge.KICK_SOUNDS`` по номеру файла ``Part.sample``; неизвестный номер — ``#<n>``."""
+    return next((name for name, k in kn.KICK_SOUNDS.items() if k.sample == sample), f"#{sample}")
+
+
+def _form_signature(form: Any) -> str:
+    return f"{form.kind}:" + ",".join(f"{s.name}{s.bars}" for s in form.sections)
+
+
+def track_composition(track: Any) -> Dict[str, Any]:
+    """Вектор состава трека v2 одной строкой (ADR-0152 §2.3, I24): синты ролей, бочка, каркас хэтов, форма, темп,
+    лад, тоника, хук, прогрессия, сэмплы, энергия. Единственный источник оси «состав»: лог ``started`` и
+    ``scripts/music/live_dj/diversity.py`` читают его же."""
+    key = track.history_key
+    parts = track.parts
+
+    def synth(role: str) -> str:
+        return parts[role].synth_or_sample if role in parts else "-"  # песня classic: ролей меньше
+
+    return {
+        "pad": synth("pad"), "lead": synth("lead"), "bass": synth("bass"),
+        "kick": kick_name(parts["kick"].sample) if "kick" in parts else "-", "kit": key.kit,
+        "form": _form_signature(track.form), "bpm": track.bpm, "mode": track.key.mode, "root": kn.ROOTS[key.root],
+        "hook": key.hook or "-", "hook_fp": key.hook_fingerprint or "-", "prog": key.progression,
+        "sample": key.sample or "-", "perc": key.perc or "-", "fx": key.fx or "-", "energy": track.energy,
+    }
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=str)
+    raise TypeError(f"{type(value).__name__} не сериализуется")
+
+
+def track_json(track: Any) -> str:
+    """Полная модель ``Track`` как JSON (I24): все партии, сетки, форма, гармония, микс."""
+    return json.dumps(dataclasses.asdict(track), default=_json_default, ensure_ascii=False)
+
+
 def track_history(track: Any, set_id: Optional[str] = None) -> Dict[str, Any]:
     """Запись ``music_history`` трека v2 по всем осям — поля ``MusicHistory.record``."""
     key = track.history_key
     synths = {role: part.synth_or_sample for role, part in track.parts.items() if role in kn.TONAL_ROLES}
     return {
         "set_id": set_id, "style": "club_v2", "kit": key.kit, "progression": key.progression,
+        "kick": kick_name(track.parts["kick"].sample) if "kick" in track.parts else None,
         "melody_name": key.hook, "hook_fingerprint": key.hook_fingerprint, "sample": key.sample, "fx": key.fx,
         "perc": key.perc,
         "root": kn.ROOTS[key.root], "bpm": float(track.bpm), "scale": track.key.mode, **synths,

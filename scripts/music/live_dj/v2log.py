@@ -2,6 +2,7 @@
 
 Лог пишет ``[node] [INFO] [<epoch>.<ns>] [logger]: <текст>``; JSON-событий в нём нет.
 """
+import json
 import re
 
 TS = re.compile(r"\[(\d{10})\.(\d+)\]")
@@ -38,6 +39,19 @@ def parse_set_started(line):
     if "track_id" not in kv:
         return None
     return kv["track_id"], kv.get("source", "—")
+
+
+def parse_composition(line):
+    """Состав трека из ``[set v2] … started … composition={…}`` (ADR-0152 §2.3) или ``None``.
+
+    JSON разбирается ``raw_decode`` от ``composition=``, а не ``KV``: значения (id хука) могут содержать пробелы."""
+    if "[set v2]" not in line or " started " not in line or "composition=" not in line:
+        return None
+    try:
+        value, _end = json.JSONDecoder().raw_decode(line.split("composition=", 1)[1])
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def parse_plan(line):

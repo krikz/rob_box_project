@@ -9,6 +9,7 @@ import heapq
 from dataclasses import replace
 import itertools
 import json
+import os
 import pathlib
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -511,3 +512,38 @@ def test_set_memory_with_store_survives_restart():
     memory.remember(2, {"melody_name": "theme_177", "kit": "k2"})
     memory.begin()
     assert [r["melody_name"] for r in SetMemory(depth=3, store=store).begin()] == ["theme_177", "terminat"]
+
+
+def _composition_of(line):
+    return json.loads(line.split("composition=", 1)[1])
+
+
+def test_started_line_carries_one_line_composition_json_of_every_axis(tmp_path):
+    rig = _rig()
+    rig.session._tracks_dir = str(tmp_path)
+    assert rig.session.start()["ok"] is True
+    rig.clock.run_until(rig.clock.beat + 2)
+    lines = [m for _l, m in rig.log.lines if "[set v2]" in m and " started track_id=" in m]
+    assert len(lines) == 1 and "\n" not in lines[0]
+    comp = _composition_of(lines[0])
+    for axis in ("pad", "lead", "bass", "kick", "kit", "form", "bpm", "mode", "root", "hook", "prog", "sample",
+                 "perc", "fx", "energy"):
+        assert comp[axis] not in (None, ""), (axis, comp)
+    assert comp["bpm"] == BPM and comp["kick"] in kn.KICK_SOUNDS
+    track_id = lines[0].split("track_id=")[1].split()[0]
+    model = json.loads((tmp_path / (track_id.replace(":", "_") + ".json")).read_text(encoding="utf-8"))
+    assert model["track_id"] == track_id and model["parts"]["kick"]["sample"] == kn.KICK_SOUNDS[comp["kick"]].sample
+
+
+def test_track_files_rotate_and_no_dir_means_no_files(tmp_path):
+    from rob_box_mcp_tools.engine.session import write_track_file
+
+    track = compose_source(PLAN)(1, "A")
+    for n in range(5):
+        write_track_file(str(tmp_path), replace(track, track_id=f"s:{n}"), keep=3)
+        os.utime(tmp_path / f"s_{n}.json", (n, n))
+    assert len(list(tmp_path.glob("*.json"))) == 3
+    rig = _rig()  # tracks_dir не задан: строка с composition есть, файлов нет
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    assert any("composition={" in m for _l, m in rig.log.lines)
