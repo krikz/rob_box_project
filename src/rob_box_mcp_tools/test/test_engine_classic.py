@@ -102,9 +102,9 @@ def test_first_verse_is_the_theme_over_pad_and_bass_last_is_full():
 
 
 def test_song_stereo_goes_through_role_stereo():
-    """Ширина — та же таблица ``knowledge.ROLE_STEREO``, что у club: пэд в два голоса, бас и бочка в центре."""
+    """Ширина — та же таблица ``Style.stereo``, что у club: пэд в два голоса, бас и бочка в центре."""
     track, _program, by_role = _song("long")
-    assert dict(track.mix.stereo) == {r: s for r, s in track.mix.stereo.items() if r in kn.ROLE_STEREO}
+    assert dict(track.mix.stereo) == {r: s for r, s in track.mix.stereo.items() if r in kn.STYLES["club"].stereo}
     assert {e.pan for e in by_role["pad"]} == {-kn.PAD_SPREAD, kn.PAD_SPREAD}
     assert {e.pan for e in by_role["bass"]} == {0.0} and track.mix.duck == () and not track.mix.duck_roles
 

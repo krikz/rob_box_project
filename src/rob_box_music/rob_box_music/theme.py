@@ -4,7 +4,7 @@
 ``knowledge.THEMES`` по основам (``космический`` ~ ``косм``); совпала строка — темп из её окна, лад
 плана и хуки строки. Хуки темы — ещё и мелодии, которые по словам темы нашёл поиск по всей RTTTL-библиотеке
 (``found``: ``engine.search.theme_hooks`` в процессе плеера, #3399): «терминатор» → ``terminat``. Ни строки, ни
-находок — окно жанра и пул из :data:`HOOK_POOL` по хешу темы (``source="pool"``, а не «тема»): у разных тем
+находок — окно стиля и пул из :data:`HOOK_POOL` по хешу темы (``source="pool"``, а не «тема»): у разных тем
 разные хуки, а не одни и те же семь. Темп, тоника и пул — от sha256 текста темы: одна тема даёт один профиль
 на любом процессе (``hash()`` Python солёный).
 """
@@ -28,7 +28,7 @@ POOL_HOOKS = 7
 @dataclass(frozen=True)
 class ThemeProfile:
     theme: str
-    genre: str
+    style: str  # ключ ``knowledge.STYLES`` (ADR-0153)
     bpm: int
     root: int  # 0..11
     mode: str  # лад плана; лад трека с хуком берётся у хука (arrange.hook.track_key)
@@ -57,16 +57,16 @@ def match_row(theme_text: str) -> Optional[str]:
     return best[1]
 
 
-def seeded_profile(theme_text: str, genre: str = "club", found: Sequence[str] = ()) -> ThemeProfile:
+def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = ()) -> ThemeProfile:
     """Профиль темы за микросекунды, без сети и LLM; ``found`` — мелодии по словам темы (поиск, лучшие первыми).
-    Пустая тема без находок — профиль жанра с пулом по хешу."""
+    Пустая тема без находок — профиль стиля с пулом по хешу."""
     text = " ".join(theme_text.lower().split())
-    window = kn.GENRE_WINDOWS[genre]
+    window = kn.STYLES[style]
     name = match_row(text)
     digest = _digest(text)
     if name is None:
         lo, hi = window.bpm
-        mode = window.scales[digest % len(window.scales)]
+        mode = window.modes[digest % len(window.modes)]
         row_hooks: Tuple[str, ...] = ()
     else:
         row = kn.THEMES[name]
@@ -75,7 +75,7 @@ def seeded_profile(theme_text: str, genre: str = "club", found: Sequence[str] = 
     theme_hooks = tuple(dict.fromkeys((*found, *row_hooks)))
     hooks = theme_hooks or tuple(random.Random(digest).sample(HOOK_POOL, POOL_HOOKS))
     bpm = lo + (digest >> 8) % (hi - lo + 1)
-    return ThemeProfile(text, genre, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks)
+    return ThemeProfile(text, style, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks)
 
 
 __all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "seeded_profile"]

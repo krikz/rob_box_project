@@ -14,11 +14,13 @@ from rob_box_mcp_tools.engine.session import plan_source
 from rob_box_mcp_tools.engine.tools_v2 import library_melodies
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import hook as hooks
-from rob_box_music.arrange.compose import HOOK_REGISTER
+from rob_box_music.arrange.compose import hook_register
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 from rob_box_music.tonality import key_fit
+
+HOOK_REGISTER = hook_register(kn.STYLES["club"])
 
 pytestmark = pytest.mark.unit
 

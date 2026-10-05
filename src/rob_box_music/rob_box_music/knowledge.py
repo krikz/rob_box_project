@@ -1,7 +1,7 @@
 """Одна таблица знания аранжировщика v2 (ADR-0149 §2.1, §2.2; ADR-0148).
 
 Лады, тоники, роли, палитра синтов и их свойства, коридоры регистров, потолки
-уровней, жанровые окна. Остальные модули пакета только импортируют отсюда.
+уровней, стили аранжировщика (``STYLES``, ADR-0153). Остальные модули пакета только импортируют отсюда.
 
 Значения перенесены из старого кода (ADR-0149 §9); старые таблицы удалены вместе
 со старым путём (PR-13b), источник истины — этот модуль.
@@ -39,7 +39,7 @@ TONAL_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
 
 #: Коридоры регистров MIDI (I13): бас < пэд < лид ≤ 88 (``harmonize.BASS_MIDI_FLOOR``,
 #: ``rtttl_compose._LEAD_MAX_CEILING``, ADR-0149 §3.5–§3.7).
-REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (50, 70), "lead": (58, 84)}
+_CLUB_REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (50, 70), "lead": (58, 84)}
 LEAD_MAX_MIDI = 88
 #: Хук темы в тональности трека (I12): доля длительности нот лида в ладу не ниже порога; хроматика — проходящие.
 HOOK_KEY_FIT_MIN = 0.6
@@ -76,22 +76,6 @@ KICK_PATTERNS: Mapping[str, str] = {
     "outrun": "X...X...X...X..X",
 }
 
-
-@dataclass(frozen=True)
-class GenreWindow:
-    """Жанровое окно: темп, бочка по умолчанию, допустимые лады."""
-
-    bpm: Tuple[int, int]
-    kick: str
-    scales: Tuple[str, ...]
-    #: Свинг нечётных 16-х хэтов — доля восьмой (ADR-0149 §3.4: 5–10 %); величину на сет выбирает план.
-    swing: Tuple[float, float] = (0.05, 0.10)
-
-
-#: club 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138).
-GENRE_WINDOWS: Mapping[str, GenreWindow] = {
-    "club": GenreWindow((128, 138), "four_on_floor", ("minor", "dorian", "phrygian", "major")),
-}
 BPM_RANGE = (60, 180)  # ``arranger.BPM_RANGE``: за пределами Renardo-тракт не принимает темп.
 
 
@@ -210,13 +194,13 @@ ACCENT_AMPLIFY: Tuple[float, ...] = (0.4, 0.6, 0.8, 1.0)
 
 # --- Каркасы ударных и каталог сэмплов DJ_Dave (ADR-0149 §3.4, §3.11, §8.1; PR-3d) -------------------
 
-#: Каркас ударных поверх бочки и клэпа (бочку решает жанр, клэп — бэкбит 2/4): рисунки такта по 16 шагов.
+#: Каркас ударных поверх бочки и клэпа (бочку решает стиль, клэп — бэкбит 2/4): рисунки такта по 16 шагов.
 #: ``X``/``x`` — удар с акцентом 3/2, ``g`` — гоуст (акцент 0; на нечётной 16-й его качает свинг сета),
 #: ``.`` — пауза. ``perc`` — где бьёт слой одиночных сэмплов (``SampleInfo.role == "perc"``).
 #: Ось разнообразия «каркас» (I17, A13): два трека подряд с одним каркасом не играют.
 #: Стерео хэтов (PR-9) меняет сторону на каждом ударе: акценты делятся поровну между сторонами, либо ударов
 #: нечётно (тогда сторона удара меняется через проход) — баланс L/R по энергии 0 (``test_diversity``).
-DRUM_KITS: Mapping[str, Mapping[str, str]] = {
+_CLUB_KITS: Mapping[str, Mapping[str, str]] = {
     "offbeat": {"hats": "..X...xg..X...xg", "perc": "...x.......x..x."},
     "sixteenths": {"hats": "ggXgggxgggXgggx.", "perc": ".......x.......x"},
     "open": {"hats": "..X..gX...X..gX.", "perc": ".x.....x.x....x."},
@@ -233,7 +217,7 @@ _SAMPLE_DATA = json.loads((Path(__file__).resolve().parent / "data" / "sample_da
 SAMPLE_PACK_DIR = str(_SAMPLE_DATA["pack_dir"])
 #: Роли сэмпла: ``perc`` — удар по сетке каркаса, ``loop`` — луп, растянутый на ``beats`` долей, ``fx`` —
 #: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
-#: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает жанр).
+#: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль).
 SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick")
 
 
@@ -317,10 +301,10 @@ def role_ceiling(role: str) -> float:
 
 
 __all__ = [
-    "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_KITS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
-    "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES",
+    "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
+    "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "THEMES",
     "ThemeRow", "HOOK_KEY_FIT_MIN",
-    "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES",
+    "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES", "SEARCH_STOPWORDS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
@@ -362,7 +346,7 @@ DRUM_LOUDNESS_KEY: Mapping[str, str] = {"kick": "four_on_floor", "hats": "offbea
 #: −40 и лиде −44 середина перевешивала низ (0.43–0.68 против 0.32–0.56), при хэтах на потолке L−R уходил за
 #: 1 дБ (статическая панорама хэтов). Недостижимый уровень (лид ``arpy`` на потолке −46.65) не прячется:
 #: ``arrange.mix`` пишет в модель то, что синт может дать.
-ROLE_LEVEL_DB: Mapping[str, float] = {
+_CLUB_ROLE_LEVEL_DB: Mapping[str, float] = {
     # Приёмка 02.10 (A9) и отзыв эксперта 05.10 («с ударными слабовато»): лид −46 → −50 (он забивал середину в
     # дропах: без лида доля низа 0.18 → 0.33), клэп −46 → −43 и хэты −61 → −57 (ударные были на 10–25 дБ ниже бочки).
     # Перемер 05.10 (#3401, после #3394/#3396): низ в дропах 0.42, во втором дропе 0.37 (A9 ≥ 0.5). Лид уже не
@@ -380,11 +364,11 @@ ROLE_LEVEL_DB: Mapping[str, float] = {
 }
 
 #: Сайдчейн «S» (ADR-0149 §3.8): усиление 16-х после удара триггера при глубине 1 — атака мгновенная,
-#: подъём за 3 шага, дальше 1.0. Глубина ``d`` даёт ``1 − d·(1 − форма)``. Триггер — рисунок бочки жанра
+#: подъём за 3 шага, дальше 1.0. Глубина ``d`` даёт ``1 − d·(1 − форма)``. Триггер — рисунок бочки вида секции
 #: («призрачная бочка»: тот же рисунок и в брейке, и в такте fill-а — огибающая не дёргается).
 SIDECHAIN_SHAPE: Tuple[float, ...] = (0.3, 0.55, 0.8, 1.0)
 #: psr-слой DJ_Dave — под той же огибающей, что пэд и бас (``postgain(sidechain)``, PR-3d).
-DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample")
+_CLUB_DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample")
 
 
 @dataclass(frozen=True)
@@ -398,7 +382,7 @@ class Look:
 #: Энергия секции (0..10) → вид: (порог, вид), первый подходящий сверху. Дроп — прямая бочка и полный «насос»;
 #: build — бочка на 1 и 3 и мягкий насос (подъём держат фильтр и ролл клэпа); интро/аутро (блэнд двух дек) —
 #: ровная прямая бочка, под которую сводятся треки.
-LOOKS: Tuple[Tuple[int, Look], ...] = (
+_CLUB_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (7, Look(KICK_PATTERNS["four_on_floor"], 1.0)),
     (5, Look("X.......X.......", 0.5)),
     (0, Look(KICK_PATTERNS["four_on_floor"], 0.6)),
@@ -412,12 +396,12 @@ LOOKS: Tuple[Tuple[int, Look], ...] = (
 LPF_OPEN = 0.0
 LPF_TOP_HZ = 4000.0
 LPF_RANGE_HZ = (200.0, LPF_TOP_HZ)
-SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+_CLUB_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
     "build": (400.0, LPF_TOP_HZ), "break": (1200.0, 1200.0), "outro_tail": (LPF_TOP_HZ, 300.0),
 }
 #: Роли под свипом секции; в хвосте блэнда (``outro_tail``) — всё, что звучит, кроме бочки (§3.12).
-LPF_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
-LPF_TAIL_SECTIONS: Tuple[str, ...] = ("outro_tail",)
+_CLUB_LPF_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
+_CLUB_LPF_TAIL_SECTIONS: Tuple[str, ...] = ("outro_tail",)
 
 # ── Мастер-шина (``custom_synthdefs/masterfilter.scd``, node 999): ADR-0149 §3.10, ADR-0147 §3.2, §3.5; PR-7 ───────
 #: Ручки мастер-шины, которые выставляет движок v2, и их значения по умолчанию — ровно дефолты SynthDef
@@ -449,16 +433,15 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 #: Пэд звучит 16-ми под сайдчейн, поэтому только пэды, чей хвост равен ``sus``: ``warmpad`` (хвост 1.2 с)
 #: размазал бы огибающую и сложил бы 10 голосов в один. ``space`` убран по записям робота 02.10 (PR-3c):
 #: на нём середина перевешивала низ (0.54–0.60 при низе 0.39–0.43, A9 — низ ≥ 0.5) — громче модели на 4–6 дБ.
-TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+_CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("sinepad",)},
     "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("sinepad",)},
     "bright": {"lead": ("pluck", "blip"), "bass": ("bass",), "pad": ("sinepad",)},
     "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad",)},
 }
-#: Строка ``THEMES`` → семья тембров; тема не из таблицы — :data:`DEFAULT_TIMBRE`.
+#: Строка ``THEMES`` → семья тембров стиля; тема не из таблицы — ``Style.default_timbre``.
 THEME_TIMBRE: Mapping[str, str] = {"space": "dark", "cyber": "hard", "kids": "bright", "slavic": "warm",
                                    "winter": "bright"}
-DEFAULT_TIMBRE = "warm"
 
 
 @dataclass(frozen=True)
@@ -479,8 +462,6 @@ class KickSound:
 KICK_SOUNDS: Mapping[str, KickSound] = {
     "house": KickSound("X", 12, "012_Kick_House_GhostFader.wav", 0.98, 0.945, 0.862),
 }
-#: Жанр → бочка из :data:`KICK_SOUNDS`.
-GENRE_KICK: Mapping[str, str] = {"club": "house"}
 
 #: Панорама (перенос таблиц ``core/club_stereo``): вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну
 #: колонку»), полуширина и период (доли) треугольного качания пэда v1 (``club_stereo.pad_pan``; в v2 пэд — два голоса).
@@ -501,7 +482,7 @@ PAD_DETUNE = 0.125  # 1/8 полутона (ADR-0149 §3.6; spread() Renardo —
 PAD_HAAS_MS = 15.0  # Хаас 12–20 мс (§3.9)
 HAAS_MAX_MS = 30.0  # больше — уже слышимое эхо, а не ширина
 #: Роль → поля ``model.Stereo``. Клэп/перкуссия начинают с другой стороны, чем хэты (сумма двух слоёв не перекошена).
-ROLE_STEREO: Mapping[str, Mapping[str, float]] = {
+_CLUB_STEREO: Mapping[str, Mapping[str, float]] = {
     "hats": {"pan": PAN_HATS, "first": 1},
     "clap": {"pan": PAN_HATS, "first": -1},
     "perc": {"pan": PAN_HATS, "first": -1},
@@ -512,13 +493,112 @@ ROLE_STEREO: Mapping[str, Mapping[str, float]] = {
 }  # лида нет: на оси (§3.9)
 
 __all__ += [
-    "AMP_EXPONENT", "DEFAULT_TIMBRE", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "DUCK_ROLES", "GENRE_KICK", "KICK_SOUNDS",
-    "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOOKS", "LOUDNESS_SOURCE", "LPF_OPEN",
-    "LPF_RANGE_HZ", "LPF_ROLES", "LPF_TAIL_SECTIONS", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP",
-    "SECTION_LPF", "SET_LEVELER", "TRIM_LAG_S",
-    "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "ROLE_LEVEL_DB",
-    "ROLE_STEREO", "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "TIMBRES",
+    "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS",
+    "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
+    "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
+    "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
+    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE",
 ]
+
+
+# ── Стили аранжировщика (ADR-0153 §2.1, S0): стиль — запись таблицы, генераторы ``arrange`` — функции от неё ──────
+
+#: Форма клубного трека (ADR-0149 §3.3, PR-3a): (имя, такты, энергия 0..10, роли). Имена секций — ключи развития
+#: хука ``arrange.hook.DEVELOPMENT``. Интро и аутро поделены под блэнд (``model.blend_bars``, ``Style.blend``):
+#: входящий трек начинает хэтами и пэдом под хвостом уходящего, бочка и бас входят ровно на такте свопа — там, где
+#: их снимает уходящий. Энергия секции — ось вида (``Style.looks``, PR-7): интро/аутро (блэнд) — ровная прямая
+#: бочка, build 4..7, дроп ≥ 7 — полный «насос».
+_CLUB_BLEND = (8, 4)  # (phrase_bars, bass_swap_bar) блэнда двух дек (ADR-0149 §3.12, PR-8)
+_CLUB_DRUMS = frozenset({"kick", "hats"})
+_CLUB_FULL = _CLUB_DRUMS | {"clap", "bass", "pad", "lead"}
+_CLUB_FORM: Tuple[Tuple[str, int, int, frozenset], ...] = (
+    ("intro", _CLUB_BLEND[1], 2, frozenset({"hats", "pad"})),
+    ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 2, _CLUB_DRUMS | {"bass", "pad"}),
+    # Состав растёт по форме: build без баса — низ возвращается ударом в дроп; брейк-луп (``Style.layer_sections``)
+    # вступает только во втором дропе — он плотнее первого. До этой правки build и оба дропа играли одним составом
+    # и на записи не различались (робот 05.10: build −23.9 дБ, дроп −24.5, drop2 −26.0; слух Шифу и отзыв
+    # эксперта: «нет восхождения, кульминации»).
+    ("build", 8, 5, _CLUB_FULL - {"bass"}),
+    ("drop", 8, 8, _CLUB_FULL),
+    ("break", 8, 4, frozenset({"hats", "pad", "lead"})),
+    ("drop2", 8, 9, _CLUB_FULL),
+    ("outro", 8 - (_CLUB_BLEND[0] - _CLUB_BLEND[1]), 2, _CLUB_DRUMS | {"bass", "pad"}),
+    ("outro_tail", _CLUB_BLEND[0] - _CLUB_BLEND[1], 1, frozenset({"hats", "pad"})),
+)
+#: Секции слоёв DJ_Dave (``arrange.samples``, PR-3d): psr-слой — build, дропы и break; брейк-луп — только второй
+#: дроп (им он плотнее первого); FX — первая доля дропов (в блэнде PR-8 intro/outro звучат на двух деках).
+_CLUB_LAYER_SECTIONS: Mapping[str, Tuple[str, ...]] = {"sample": ("build", "drop", "break", "drop2"),
+                                                       "loop": ("drop2",), "fx": ("drop", "drop2")}
+#: Прогрессии club по ступеням лада, аккорд на 2 такта (8-тактовая петля).
+#: Приёмка 02.10 (A13): при четырёх прогрессиях одна занимала 5 треков из 10 — пул расширен до восьми.
+_CLUB_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
+    (0, 5, 2, 6), (0, 3, 5, 4), (0, 5, 3, 4), (0, 6, 5, 6),
+    (0, 2, 6, 5), (0, 3, 6, 2), (0, 4, 5, 3), (0, 6, 3, 5),
+)
+
+
+@dataclass(frozen=True)
+class Style:
+    """Стиль аранжировщика v2 (ADR-0153 §2.1): все стилевые константы, сгруппированные по читателю.
+
+    Фигуры — ключи реестров генераторов ``arrange.compose`` (``*_GENERATORS``): генератор выбирается по ключу из
+    таблицы, а не ветвлением по стилю. Пулы стиля (тембры, каркасы, прогрессии) — то, из чего выбирает разнообразие.
+    """
+
+    # Время: окно темпа сета, свинг гоуст-16-х (доля восьмой; величину на сет выбирает план), лады плана.
+    bpm: Tuple[int, int]
+    swing: Tuple[float, float]
+    modes: Tuple[str, ...]
+    # Ритм-секция: бочка (ключ :data:`KICK_SOUNDS`), вид секции по энергии, каркасы хэтов/перкуссии.
+    kick_sound: str
+    looks: Tuple[Tuple[int, Look], ...]
+    kits: Mapping[str, Mapping[str, str]]
+    # Роли и тембры: коридоры регистров, семьи тембров {семья → {роль → синты}} и семья темы не из таблицы.
+    registers: Mapping[str, Tuple[int, int]]
+    timbres: Mapping[str, Mapping[str, Tuple[str, ...]]]
+    default_timbre: str
+    # Фигуры: ключи генераторов ролей (первый — фигура стиля; выбор из пула — ADR-0152 PR-5).
+    bass_figures: Tuple[str, ...]
+    pad_figures: Tuple[str, ...]
+    lead_figures: Tuple[str, ...]
+    # Гармония: звуков в аккорде (терциями лада), прогрессии по ступеням.
+    chord_size: int
+    progressions: Tuple[Tuple[int, ...], ...]
+    # Форма: секции, блэнд (phrase_bars, bass_swap_bar), секции слоёв сэмплов.
+    form: Tuple[Tuple[str, int, int, frozenset], ...]
+    blend: Tuple[int, int]
+    layer_sections: Mapping[str, Tuple[str, ...]]
+    # Микс: уровни ролей, роли под сайдчейном, LPF-свип секций, стерео ролей.
+    role_level_db: Mapping[str, float]
+    duck_roles: Tuple[str, ...]
+    section_lpf: Mapping[str, Tuple[float, float]]
+    lpf_roles: Tuple[str, ...]
+    lpf_tail_sections: Tuple[str, ...]
+    stereo: Mapping[str, Mapping[str, float]]
+
+
+#: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
+#: (``test_style_same_tracks``): 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138); свинг
+#: 5–10 % (ADR-0149 §3.4).
+STYLES: Mapping[str, Style] = {
+    "club": Style(
+        bpm=(128, 138), swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
+        kick_sound="house", looks=_CLUB_LOOKS, kits=_CLUB_KITS,
+        registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
+        bass_figures=("offbeat",), pad_figures=("pumped16",), lead_figures=("motif",),
+        chord_size=3, progressions=_CLUB_PROGRESSIONS,
+        form=_CLUB_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
+        role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
+        lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
+    ),
+}
+DEFAULT_STYLE = "club"
+#: Коридоры регистров и роли под сайдчейном для валидатора модели (I13, ``model.validate``): ``Track`` пока не несёт
+#: ключ стиля, поэтому — регистры стиля по умолчанию и объединение ролей сайдчейна всех стилей (ADR-0153 S1+).
+REGISTERS: Mapping[str, Tuple[int, int]] = STYLES[DEFAULT_STYLE].registers
+DUCK_ROLES: Tuple[str, ...] = tuple(dict.fromkeys(r for st in STYLES.values() for r in st.duck_roles))
+
+__all__ += ["DEFAULT_STYLE", "DUCK_ROLES", "REGISTERS", "STYLES", "Style"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

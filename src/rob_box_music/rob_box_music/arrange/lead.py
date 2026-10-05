@@ -28,9 +28,9 @@ def pool(key: Key, register: Tuple[int, int]) -> Tuple[int, ...]:
     return (tonic, tonic + scale[2], tonic + scale[4], tonic + scale[-1] - 12)
 
 
-def motif(key: Key, rng: random.Random, register: Tuple[int, int]) -> Tuple[PitchEvent, ...]:
-    """Мотив на ``MOTIF_BARS`` тактов, доли от начала мотива."""
-    notes = pool(key, register)
+def motif(style: kn.Style, key: Key, rng: random.Random) -> Tuple[PitchEvent, ...]:
+    """Мотив на ``MOTIF_BARS`` тактов в регистре лида стиля, доли от начала мотива."""
+    notes = pool(key, style.registers["lead"])
     rhythm = rng.choice(RHYTHMS)
     contour = [rng.choice(notes) for _ in rhythm[:-1]]
     question = contour + [rng.choice(notes[1:])]

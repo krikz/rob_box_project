@@ -35,7 +35,7 @@ def test_request_music_plays_one_club_track_on_the_v2_deck():
     _dj, req = _tools(rig)
     result = req.execute(intent="track", text="поставь клубный трек")
     assert result.success and result.data["track_id"].startswith("req00777:01:A:")
-    lo, hi = kn.GENRE_WINDOWS["club"].bpm
+    lo, hi = kn.STYLES["club"].bpm
     assert lo <= result.data["bpm"] <= hi and result.data["energy"] == kn.ENERGY_WAVE[0]
     rig.clock.run_until(rig.clock.beat + 2)
     started = _started(rig)

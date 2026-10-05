@@ -25,6 +25,8 @@ from . import mix, rhythm
 #: Песня не стыкуется в DJ-сете; переход — только чтобы трек прошёл валидатор модели.
 SONG_TRANSITION = Transition(8, 4, False)
 SONG_ENERGY = 3
+#: Стиль песни: бочка и уровни ролей (ADR-0153 §4.3: песенная форма стилей — второй шаг; пока стиль по умолчанию).
+SONG_STYLE = kn.STYLES[kn.DEFAULT_STYLE]
 #: Ноты партии ``harmonize``: ``(midi | None, доли)``; у пэда вместо midi — кортеж аккорда.
 Line = Sequence[Tuple[object, float]]
 
@@ -86,7 +88,7 @@ def _tonal(role: str, synth: str, line: Line, form: Form, theme_beats: float,
 
 
 def _drums(material: SongMaterial) -> Dict[str, Part]:
-    """Рисунки ``harmonize`` → сетки ролей (такт); бочка — сэмпл жанра с настоящим низом (``mix.kick_sound``)."""
+    """Рисунки ``harmonize`` → сетки ролей (такт); бочка — сэмпл стиля с настоящим низом (``mix.kick_sound``)."""
     steps: Dict[str, List[int]] = {}
     for pattern in (material.drums, material.hats):
         if pattern and len(pattern) != STEPS_PER_BAR:
@@ -95,7 +97,7 @@ def _drums(material: SongMaterial) -> Dict[str, Part]:
             role = kn.SONG_DRUM_SYMBOLS.get(symbol)
             if role is not None:
                 steps.setdefault(role, []).append(i)
-    kick = mix.kick_sound("club")
+    kick = mix.kick_sound(SONG_STYLE)
     return {role: Part(role, kn.PLAY_SYNTH, rhythm.grid(on, accents={0: 3}), None, 0.0, (0, 0),
                        kick.sample if role == "kick" else 0)
             for role, on in steps.items()}
@@ -123,7 +125,7 @@ def song_track(material: SongMaterial, *, seed: int, deck: str = "A") -> Track:
              "bass": _tonal("bass", synths["bass"], material.bass, form, beats),
              "pad": _tonal("pad", synths["pad"], material.pad, form, beats, material.pad_sus)}
     # песня без «качания» и без клубного LPF-свипа: mix_parts по форме песни (PR-7)
-    parts, track_mix = mix.mix_parts({**drums, **{r: p for r, p in tonal.items() if p is not None}}, form)
+    parts, track_mix = mix.mix_parts(SONG_STYLE, {**drums, **{r: p for r, p in tonal.items() if p is not None}}, form)
     form = replace(form, sections=tuple(replace(s, roles=frozenset(s.roles & set(parts))) for s in form.sections))
     key = Key(material.root, material.mode)
     hook = Hook(tuple(_events(material.lead, 0.0)), theme_bars, material.melody_id)

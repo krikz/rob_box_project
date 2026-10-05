@@ -38,8 +38,8 @@ def test_unknown_theme_is_pool_not_a_fake_theme():
     prof = seeded_profile("бухгалтерский отчёт")
     assert prof.row is None and prof.source == "pool" and prof.theme_hooks == ()
     assert len(prof.hook_ids) == POOL_HOOKS and set(prof.hook_ids) <= set(HOOK_POOL)
-    lo, hi = kn.GENRE_WINDOWS["club"].bpm
-    assert lo <= prof.bpm <= hi and prof.mode in kn.GENRE_WINDOWS["club"].scales
+    lo, hi = kn.STYLES["club"].bpm
+    assert lo <= prof.bpm <= hi and prof.mode in kn.STYLES["club"].modes
 
 
 def test_profile_is_deterministic_and_case_insensitive():
@@ -48,7 +48,7 @@ def test_profile_is_deterministic_and_case_insensitive():
 
 
 def test_theme_windows_inside_club_window():
-    lo, hi = kn.GENRE_WINDOWS["club"].bpm
+    lo, hi = kn.STYLES["club"].bpm
     for name, row in kn.THEMES.items():
         assert lo <= row.bpm[0] <= row.bpm[1] <= hi, name
         assert row.mode in kn.SCALES and len(row.hooks) >= 3, name

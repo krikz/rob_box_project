@@ -1,10 +1,15 @@
-"""Бас: 4 ноты на такт в оффбит, тоника/квинта аккорда (ADR-0149 §3.5, research 4.1)."""
+"""Бас: фигуры баса — генераторы ``(style, key, bar_chords, synth, register) -> Part`` (ADR-0153 §2.2).
+
+``offbeat`` — 4 ноты на такт в оффбит, тоника/квинта аккорда (ADR-0149 §3.5, research 4.1).
+"""
 
 from __future__ import annotations
 
 from typing import List, Sequence, Tuple
 
-from ..model import BEATS_PER_BAR, STEPS_PER_BAR, PitchEvent
+from .. import knowledge as kn
+from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Chord, Key, Part, PitchEvent
+from . import harmony, rhythm
 from .rhythm import OFFBEAT_STEPS
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
@@ -31,4 +36,11 @@ def offbeat_bass(bars: Sequence[Tuple[int, Tuple[int, ...]]], register: Tuple[in
     return tuple(out)
 
 
-__all__ = ["NOTE_BEATS", "bar_notes", "offbeat_bass"]
+def offbeat(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+            register: Tuple[int, int]) -> Part:
+    """Бас в оффбит по тактам формы ``bar_chords`` — (такт, аккорд); уровень ставит ``arrange.mix``."""
+    bars = [(bar, harmony.chord_pcs(style, key, chord.degree)) for bar, chord in bar_chords]
+    return Part("bass", synth, rhythm.grid(OFFBEAT_STEPS), offbeat_bass(bars, register), 0.0, register)
+
+
+__all__ = ["NOTE_BEATS", "bar_notes", "offbeat", "offbeat_bass"]

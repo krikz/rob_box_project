@@ -80,7 +80,7 @@ def schema(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfi
     props: Dict[str, Any] = {
         "theme_row": {"type": "string", "enum": [*kn.THEMES, NO_ROW],
                       "description": "строка таблицы тем, ближайшая к теме человека; none — ни одна"},
-        "mode": {"type": "string", "enum": list(kn.GENRE_WINDOWS[genre].scales), "description": "лад сета"},
+        "mode": {"type": "string", "enum": list(kn.STYLES[genre].modes), "description": "лад сета"},
         "hooks": {"type": "array", "items": {"type": "string", "enum": _all_hooks(profile)}, "minItems": 1,
                   "maxItems": MAX_HOOKS, "description": "узнаваемые мелодии-хуки под тему, только из кандидатов"},
         "energy": {"type": "array", "items": {"type": "integer", "minimum": lo, "maximum": hi},
@@ -158,7 +158,7 @@ def validate(payload: Any, genre: str = "club", hype: bool = False,
     if extra:
         raise PlanInvalid(extra[0], "поля нет в схеме")
     row = _enum(payload, "theme_row", [*kn.THEMES, NO_ROW])
-    mode = _enum(payload, "mode", kn.GENRE_WINDOWS[genre].scales)
+    mode = _enum(payload, "mode", kn.STYLES[genre].modes)
     return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks"), profile),
                       _energy(payload.get("energy")), _hype(payload, hype))
 
