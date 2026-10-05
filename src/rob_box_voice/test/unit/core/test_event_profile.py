@@ -226,7 +226,7 @@ class TestRenderEventInstructions:
         assert "FAQ retrieval tool" in out
         # `handle_music` was a Compositor facade with no executor; the
         # event prompt must name tools the LLM can actually call.
-        assert "execute_music_code" in out
+        assert "request_music" in out
 
     def test_faq_guidance_absent_when_no_store(self) -> None:
         profile = EventProfile(

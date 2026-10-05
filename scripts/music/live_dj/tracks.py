@@ -3,11 +3,11 @@
 python tracks.py setN.full.log rN.wav "2026-10-01T12:20:00Z"
 (третий аргумент — старт записи из index.txt)
 
-Лог движка v2 (ADR-0149): трек — событие ``started`` владельца плеера (``/voice/music/event``, JSON с ``ts``),
-а не вызов ``compose_music``; при блэнде (PR-8) отрезок трека — от его входа до входа следующего.
+Лог движка v2 (ADR-0149): трек — строка ``[music v2] started track_id=… bpm=… deck=…`` (время — ROS-штамп),
+источник (колонка «сэмпл») — ``[set v2] … started … source=…``, хуки/тон — ``[reasoner] … план применён``;
+не вызов ``compose_music``; при блэнде (PR-8) отрезок трека — от его входа до входа следующего.
 """
 import calendar
-import json
 import re
 import sys
 import time
@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 import audit_wav as A
+import v2log as V
 
 TS = re.compile(r"\[(\d{10})\.(\d+)\]")
 
@@ -36,24 +37,38 @@ def grid_R(flux, fs, bpm, s, e, step=4.0):
 
 
 def v2_started(line, t_rec):
-    """Трек движка v2 из строки с событием ``started`` или ``None``."""
-    m = re.search(r'(\{"event": "started".*\})', line)
-    if not m:
+    """Трек движка v2 из строки ``[music v2] started`` или ``None``."""
+    r = V.parse_started(line)
+    if not r:
         return None
-    ev = json.loads(m.group(1))
-    return {"t": float(ev["ts"]) - t_rec, "bpm": round(float(ev["bpm"])), "sample": "—", "hook": "—",
-            "kit": f"v2 {ev['track_id']} {ev.get('deck')}", "key": ""}
+    return {"t": r["t_abs"] - t_rec, "bpm": r["bpm"], "sample": "—", "hook": "—", "id": r["track_id"],
+            "kit": f"v2 {r['track_id']} {r['deck']}", "key": ""}
 
 
 def main():
     log, wav, start = sys.argv[1:4]
     t_rec = calendar.timegm(time.strptime(start, "%Y-%m-%dT%H:%M:%SZ"))
-    tracks, cur = [], None
+    tracks, cur, plan, sources = [], None, None, {}
     for line in open(log, encoding="utf-8", errors="replace"):
         m = TS.search(line)
         t = float(m.group(1)) if m else None
+        sv = V.parse_set_started(line)
+        if sv:
+            sources[sv[0]] = sv[1]
+            for tr in tracks:
+                if tr.get("id") == sv[0]:
+                    tr["sample"] = sv[1]
+            continue
+        pl = V.parse_plan(line)
+        if pl:
+            plan = pl
+            continue
         v2 = v2_started(line, t_rec)
         if v2:
+            v2["sample"] = sources.get(v2["id"], "—")
+            if plan:
+                v2["key"] = f"{plan['row']} {plan['mode']}"
+                v2["hook"] = plan["hooks"][:22]
             cur = v2
             tracks.append(cur)
             continue

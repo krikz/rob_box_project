@@ -2232,12 +2232,12 @@ class DialogueNode(Node):
                 "ВАЖНО: сначала подними факты из FAQ (faq_search), "
                 "потом стилизуй ответ. Для стилизации можешь "
                 "использовать рэп или стихи. "
-                "Для музыки используй execute_music_code."
+                "Для музыки вызывай request_music."
             )
         else:
             parts.append(
                 "Для стилизации используй рэп или стихи. "
-                "Для музыки используй execute_music_code."
+                "Для музыки вызывай request_music."
             )
 
         parts.append(base_prompt)
@@ -2267,7 +2267,7 @@ class DialogueNode(Node):
             if a:
                 lines.append(f"  A: {a}")
         lines.append(
-            "Для музыкального оформления используй execute_music_code."
+            "Для музыкального оформления вызывай request_music."
         )
         return "\n".join(lines)
 
