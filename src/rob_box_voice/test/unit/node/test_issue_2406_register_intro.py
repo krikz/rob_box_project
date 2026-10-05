@@ -292,7 +292,8 @@ class TestIntroPhraseContract:
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        assert len(reminders) >= 4
+        # ADR-0149 PR-13: музыкальные reminder-ы удалены вместе с v1 — остались знакомство и время.
+        assert len(reminders) >= 2
         register_reminder = reminders[0]
         missing = [t for t in self.REMINDER_TRIGGERS if t not in register_reminder]
         assert not missing, (
