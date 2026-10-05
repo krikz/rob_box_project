@@ -70,11 +70,13 @@ class MediaState:
             (``_music_playing_now``, #3133 / ADR-0141).
         dj_enabled: идёт ли DJ-сет (поле ``dj.enabled`` снимка плеера v2).
         track_name: название играющего трека, если известно.
+        dj_persona: имя диджея идущего сета (поле ``dj.persona`` снимка), если есть.
     """
 
     music_playing: bool = False
     dj_enabled: bool = False
     track_name: Optional[str] = None
+    dj_persona: str = ""
 
 
 @dataclass(frozen=True)
@@ -337,6 +339,43 @@ def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
     )
 
 
+def media_state_from_snapshot(playing: bool, snapshot: Any) -> MediaState:
+    """Снимок плеера (``MusicPlayerState`` или ``None``) → :class:`MediaState`."""
+    info = snapshot.dj_info if snapshot is not None else {}
+    title = str(info.get("title") or "")
+    return MediaState(
+        music_playing=playing,
+        dj_enabled=snapshot is not None and bool(snapshot.dj),
+        track_name=title if playing and title else None,
+        dj_persona=str(info.get("persona") or ""),
+    )
+
+
+def dj_theme_switch_plan(plan: MediaPlan, media: MediaState) -> Optional[MediaPlan]:
+    """Issue #3400 — заказ «X» мимо базы мелодий посреди сета, значит тема X: ``dj_set(start, theme=X)``, без LLM.
+
+    ``None`` — сета нет: реплика уходит в LLM, как раньше. Мелодия из базы
+    сет не трогает (#3176) — сюда доходит только промах поиска.
+    Персона идущего сета сохраняется. Фразу об успехе строит код по событию
+    ``started`` (как у «включи сет на тему X»), отказ — честная ``DJ_FAIL_TEXT``.
+    """
+    if not (media.dj_enabled and plan.play_name):
+        return None
+    command = MediaCommand(intent=MediaIntent.DJ, closed=True, theme=plan.play_name)
+    persona = media.dj_persona
+    args: Dict[str, Any] = {"action": "start", "theme": plan.play_name}
+    if persona:
+        args["persona"] = persona
+    return MediaPlan(
+        command=command,
+        tool_calls=(MediaToolCall(DJ_SET_TOOL, args),),
+        say_ok=dj_started_text(persona, plan.play_name),
+        say_fail=DJ_FAIL_TEXT,
+        cancel_inflight=True,
+        confirm_started=True,
+    )
+
+
 def _request_plan(command: MediaCommand, text: str) -> MediaPlan:
     """«поставь клубный трек» → ``request_music`` (club v2); слова человека — дословно."""
     args = {"intent": "track", "text": text}
@@ -382,6 +421,8 @@ __all__ = [
     "REQUEST_FAIL_TEXT",
     "REQUEST_MUSIC_TOOL",
     "default_media_provider",
+    "dj_theme_switch_plan",
+    "media_state_from_snapshot",
     "dj_started_text",
     "media_intent_rules",
     "plan_media_command",

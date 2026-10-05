@@ -209,6 +209,8 @@ from rob_box_voice.core.media_router import (
     MediaRouter,
     MediaState,
     MediaToolCall,
+    dj_theme_switch_plan,
+    media_state_from_snapshot,
     media_tool_succeeded,
 )
 from rob_box_voice.core.named_play import (
@@ -5964,13 +5966,8 @@ tentative_plan(question, kind, name)
         ADR-0149 §2.3). Роутер других источников не читает: сменить
         источник — здесь и только здесь.
         """
-        playing = self._music_playing_now()
-        snapshot = getattr(self, "_music_player_state", None)
-        title = str(snapshot.dj_info.get("title") or "") if snapshot is not None else ""
-        return MediaState(
-            music_playing=playing,
-            dj_enabled=bool(snapshot is not None and snapshot.dj),
-            track_name=title if playing and title else None,
+        return media_state_from_snapshot(
+            self._music_playing_now(), getattr(self, "_music_player_state", None)
         )
 
     def _route_media_command(self, text: str, on_miss: Any = None) -> bool:
@@ -6064,7 +6061,13 @@ tentative_plan(question, kind, name)
             f"{outcome.status.value} {outcome.reason}".rstrip()
         )
         if outcome.status is NamedPlayStatus.MISS:
-            on_miss(text)
+            # Issue #3400: мимо базы посреди сета — это тема сета, решает код.
+            switch = dj_theme_switch_plan(plan, self._media_state())
+            if switch is None:
+                on_miss(text)
+                return
+            self._apply_media_plan_side_effects(switch)
+            await self._execute_media_plan(switch, executor, text)
             return
         self._llm_skipped_counter["media_command"] += 1
         self._cancel_run("media command play_named (issue 3176)", stop_tts=True)
