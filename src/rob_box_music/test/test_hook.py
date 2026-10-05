@@ -166,7 +166,8 @@ HOOKED_ROOTS = [r for r in range(12) if compose_p(profile(root=r, hooks=("long",
 @pytest.mark.parametrize("root", HOOKED_ROOTS)
 def test_track_hook_heard_in_drop_and_developed_by_sections(root, track_no):
     """drop = хук; build = только начало хука и пауза перед дропом; break — медленнее; drop2 — в терциях."""
-    track = compose_p(profile(root=root, hooks=("long",)), track_no, set_seed=root, melodies=MELODIES)
+    set_root = (root - 7 * (track_no - 1)) % 12  # тоника трека ``track_no`` = ``root`` (ход по квинтам)
+    track = compose_p(profile(root=set_root, hooks=("long",)), track_no, set_seed=root, melodies=MELODIES)
     validate(track)
     assert track.hook is not None and track.hook.source == "long"
     lead = _lead_events(track)
