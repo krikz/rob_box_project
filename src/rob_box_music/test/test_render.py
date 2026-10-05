@@ -137,7 +137,7 @@ def test_pad_voice_leading_on_average_is_a_step():
 @pytest.mark.parametrize("seed", SEEDS)
 def test_tempo_window_and_sections_gate(seed):
     track = track_for(seed)
-    lo, hi = kn.GENRE_WINDOWS["club"].bpm
+    lo, hi = kn.STYLES["club"].bpm
     assert lo <= track.bpm <= hi
     _program, by_role = _events(track)
     for role, events in by_role.items():

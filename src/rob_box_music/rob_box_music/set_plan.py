@@ -1,13 +1,13 @@
 """План сета ``SetPlan`` и ``seeded_plan(profile, seed)`` без LLM (ADR-0149 §4.4–§4.6; PR-3b).
 
-* **Один темп на сет** (§4.4, решение Шифу В6): ``SetPlan.bpm`` — темп профиля темы в окне жанра
-  (club 128–138). У треков своего темпа нет: ``compose`` берёт его из плана.
+* **Один темп на сет** (§4.4, решение Шифу В6): ``SetPlan.bpm`` — темп профиля темы в окне стиля
+  (``knowledge.STYLES``, club 128–138). У треков своего темпа нет: ``compose`` берёт его из плана.
 * **Дуга энергии** (ADR-0147 §3.4, встроена по §4.6): волна ``knowledge.ENERGY_WAVE`` по номеру трека —
   сет открытый, длина заранее не известна, поэтому волна повторяется.
 * **Ход тоники** (§8.1: перенос ``dj_set_walk.related_root``): чистая квинта вверх на трек — соседи по кругу
   квинт делят 6 из 7 нот (Camelot +1), за 12 треков все 12 тоник. Старый ``dj_set_walk`` импортирует
   :func:`root_shift` отсюда — одна реализация.
-* **Свинг сета** — в окне жанра, от сида; один на весь сет, как грув у диджея.
+* **Свинг сета** — в окне стиля, от сида; один на весь сет, как грув у диджея.
 * **Тоника сета** (PR-3d, ось «тоника» ``music_history``): тоника темы, если её не было в последних
   ``TONIC_MEMORY`` треках истории; иначе — выбор сидом (``diversity.weighted_pick``) среди тоник, которых там не
   было. Темп сета от истории не зависит.
@@ -56,6 +56,11 @@ class SetPlan:
         """Тоника трека ``no``, pitch class 0..11."""
         return (self.profile.root + self.track(no).root_shift) % 12
 
+    @property
+    def style(self) -> str:
+        """Ключ ``knowledge.STYLES`` сета (ADR-0153: один стиль на сет) — стиль профиля темы."""
+        return self.profile.style
+
 
 def track_energy(no: int) -> int:
     """Энергия трека ``no`` (с 1) по волне ``knowledge.ENERGY_WAVE``."""
@@ -85,7 +90,7 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
     ``music_history`` (свежие первыми)."""
     profile = replace(profile, root=set_root(profile, seed, history))
-    window = kn.GENRE_WINDOWS[profile.genre]
+    window = kn.STYLES[profile.style]
     lo, hi = window.bpm
     bpm = min(max(profile.bpm, lo), hi)
     s_lo, s_hi = window.swing

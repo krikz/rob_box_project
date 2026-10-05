@@ -10,7 +10,7 @@
 * ``fx`` — одиночный крэш/хит на первой доле дропов: не в intro/outro — в блэнде PR-8 они звучат на двух деках.
 
 Синт ``loop`` Renardo — ``PlayBuf(loop: 1)`` на всю ``sus``: у удара ``sus`` ≤ длины файла (звучит один раз,
-см. ``render.renardo``). Уровень — ``arrange.mix`` по модели громкости (``knowledge.ROLE_LEVEL_DB``).
+см. ``render.renardo``). Уровень — ``arrange.mix`` по модели громкости (``Style.role_level_db``).
 Тональные банки (build/drop-вокал Array, вокал-чопы) в трек не идут: тональность у них не размечена, на чужой
 тонике они спорят с басом (кроме spilltab в A# minor). Моно и mp3 звучат (проба 02.10).
 """
@@ -34,10 +34,6 @@ POOL_SIZE = 8
 SEQUENCE_STEPS = 2 * STEPS_PER_BAR
 #: Кусок нарезки лупа — восьмая (``chop(l*8)`` на такт), в шагах 16-х.
 CHOP_STEPS = 2
-#: Секции ролей. FX — первая доля дропов (в блэнде PR-8 intro/outro звучат на двух деках; intro — хэты и пэд).
-SECTIONS: Mapping[str, Tuple[str, ...]] = {"sample": ("build", "drop", "break", "drop2"),
-                                           "loop": ("drop2",),
-                                           "fx": ("drop", "drop2")}
 #: Уровень партии до ``arrange.mix.mix_parts`` (он ставит уровень роли по модели громкости).
 _UNLEVELED = 0.0
 #: Память оси «сэмплы»: затухание штрафа и глубина истории (у остальных осей ``DEFAULT_DECAY``).
@@ -74,10 +70,10 @@ def perc_pool(key: Key, history: Sequence[Mapping], rng: random.Random) -> Tuple
     return tuple(sorted(chosen))
 
 
-def perc_part(names: Sequence[str], kit: str, rng: random.Random) -> Part:
+def perc_part(style: kn.Style, names: Sequence[str], kit: str, rng: random.Random) -> Part:
     """psr-слой: удар на каждую 16-ю, файл — случайный из пула на каждый шаг (``SEQUENCE_STEPS``, по кругу; каждый
-    файл пула звучит хотя бы раз), акцент на шагах рисунка ``perc`` каркаса ``kit``, остальные тише."""
-    accents = kn.DRUM_KITS[kit]["perc"]
+    файл пула звучит хотя бы раз), акцент на шагах рисунка ``perc`` каркаса ``kit`` стиля, остальные тише."""
+    accents = style.kits[kit]["perc"]
     grid = rhythm.grid(range(STEPS_PER_BAR), accents={i: 3 if ch == "x" else 1 for i, ch in enumerate(accents)})
     sequence = list(names) + [rng.choice(list(names)) for _ in range(SEQUENCE_STEPS - len(names))]
     rng.shuffle(sequence)
@@ -97,5 +93,5 @@ def fx_part(name: str, section_bars: int) -> Part:
     return Part("fx", name, rhythm.grid([0], section_bars * STEPS_PER_BAR), None, _UNLEVELED, (0, 0))
 
 
-__all__ = ["CHOP_STEPS", "DECAY", "FX_ROLES", "HISTORY", "LOOP_ROLES", "POOL_SIZE", "SECTIONS", "SEQUENCE_STEPS",
+__all__ = ["CHOP_STEPS", "DECAY", "FX_ROLES", "HISTORY", "LOOP_ROLES", "POOL_SIZE", "SEQUENCE_STEPS",
            "TICK_SECONDS", "fx_part", "loop_part", "perc_part", "perc_pool", "pick", "pool", "usable"]

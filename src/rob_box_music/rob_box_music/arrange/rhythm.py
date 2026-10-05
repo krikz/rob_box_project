@@ -1,4 +1,4 @@
-"""Ритм-сетки 16 шагов × такт (ADR-0149 §3.4): жанр решает бочку, хэты в оффбит, свинг, fill-ы.
+"""Ритм-сетки 16 шагов × такт (ADR-0149 §3.4): стиль решает бочку, хэты в оффбит, свинг, fill-ы.
 
 Fill — последний такт секции с ``Section.fill_last_bar`` (8-тактовая фраза перед дропом): ролл клэпа
 16-ми на третьей и четвёртой долях с нарастающим акцентом, бочка снимается на последней доле. Свинг —
@@ -37,7 +37,8 @@ def grid(on_steps: Iterable[int], length: int = STEPS_PER_BAR, accents: Optional
 
 
 def kick_grid(pattern: str) -> Grid:
-    """Такт бочки по рисунку 16 шагов (``knowledge.KICK_PATTERNS``, вид секции ``LOOKS``); доли 1 и 3 — акцент 3."""
+    """Такт бочки по рисунку 16 шагов (``knowledge.KICK_PATTERNS``, вид секции ``Style.looks``); доли 1 и 3 —
+    акцент 3."""
     if len(pattern) != STEPS_PER_BAR or set(pattern) - {"X", "."}:
         raise ValueError(f"рисунок бочки {pattern!r} не 16 простых шагов")
     return grid((i for i, ch in enumerate(pattern) if ch == "X"), accents={0: 3, 8: 3})
@@ -48,7 +49,7 @@ def swing_offset_ms(swing: float, bpm: int) -> int:
     return int(round(swing * 30000.0 / bpm))
 
 
-#: Символ рисунка каркаса (``knowledge.DRUM_KITS``) → акцент; ``.`` — пауза.
+#: Символ рисунка каркаса (``Style.kits``) → акцент; ``.`` — пауза.
 _KIT_ACCENT = {"X": 3, "x": 2, "g": 0}
 
 
@@ -61,9 +62,10 @@ def pattern_grid(pattern: str, swing_ms: int = 0) -> Grid:
         for i, ch in enumerate(pattern)))
 
 
-def hats_grid(swing_ms: int = 0, kit: str = "offbeat") -> Grid:
-    """Хэты каркаса: по умолчанию оффбит с акцентами 3/2 и гоуст-нотами на 7 и 15, опоздавшими на ``swing_ms``."""
-    return pattern_grid(kn.DRUM_KITS[kit]["hats"], swing_ms)
+def hats_grid(style: kn.Style, swing_ms: int = 0, kit: str = "offbeat") -> Grid:
+    """Хэты каркаса ``style.kits``: по умолчанию оффбит с акцентами 3/2 и гоуст-нотами на 7 и 15, опоздавшими
+    на ``swing_ms``."""
+    return pattern_grid(style.kits[kit]["hats"], swing_ms)
 
 
 def clap_grid() -> Grid:

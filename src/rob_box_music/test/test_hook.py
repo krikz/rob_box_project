@@ -10,13 +10,16 @@ import pytest
 from melodies import CHROMATIC, LONG, MELODIES, PASSING, SHORT, SLOW, SPREAD, WIDE, compose_p, profile
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import hook as hooks
-from rob_box_music.arrange.compose import HOOK_REGISTER, SECTION_BARS, SECTIONS
+from rob_box_music.arrange.compose import SECTION_BARS, hook_register
 from rob_box_music.diversity import track_history
 from rob_box_music.model import BEATS_PER_BAR, Key, TrackError, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
 from rob_box_music.rtttl import parse_rtttl
 from rob_box_music.tonality import key_fit
+
+HOOK_REGISTER = hook_register(kn.STYLES["club"])
+SECTIONS = kn.STYLES["club"].form
 
 
 def _intervals(midis):

@@ -3,9 +3,11 @@
 import pytest
 
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.harmony import (PROGRESSION_CAP, PROGRESSION_WINDOW, PROGRESSIONS, pad_chords,
-                                           progression_name)
+from rob_box_music.arrange.harmony import PROGRESSION_CAP, PROGRESSION_WINDOW, pad_chords, progression_name
 from rob_box_music.model import Key
+
+CLUB = kn.STYLES["club"]
+PROGRESSIONS = CLUB.progressions
 
 
 def test_pool_is_wide_enough_for_the_cap():
@@ -20,5 +22,5 @@ def test_pool_is_wide_enough_for_the_cap():
 def test_every_progression_fits_the_pad_register_in_every_key(degrees):
     for mode in kn.SCALES:
         for root in range(12):
-            chords = pad_chords(Key(root, mode), degrees, kn.REGISTERS["pad"])
+            chords = pad_chords(CLUB, Key(root, mode), degrees, CLUB.registers["pad"])
             assert [c.degree for c in chords] == list(degrees)

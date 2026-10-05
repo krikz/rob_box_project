@@ -12,7 +12,8 @@ import statistics
 
 import pytest
 
-from rob_box_music.arrange import mix, samples
+from rob_box_music import knowledge as kn
+from rob_box_music.arrange import mix
 from rob_box_music.arrange.compose import compose
 from rob_box_music.model import SAMPLE_ROLES
 from rob_box_music.set_plan import seeded_plan
@@ -31,7 +32,7 @@ def _section_power(track, i):
     out = {}
     for role, db in track.mix.level_db.items():
         if role in SAMPLE_ROLES:
-            if role == "fx" or sec.name not in samples.SECTIONS[role]:
+            if role == "fx" or sec.name not in kn.STYLES["club"].layer_sections[role]:
                 continue
         elif role not in sec.roles:
             continue
@@ -39,7 +40,7 @@ def _section_power(track, i):
         if role in track.mix.duck_roles:
             p *= duck_power
         if role == "kick":
-            p *= mix.look(sec.energy).kick.count("X") / 4
+            p *= mix.look(kn.STYLES["club"], sec.energy).kick.count("X") / 4
         out[role] = p
     return out
 

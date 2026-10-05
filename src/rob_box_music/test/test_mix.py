@@ -144,14 +144,14 @@ def test_no_silent_window_inside_the_track_or_at_the_form_seam(seed, track_no):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_levels_come_from_one_table(seed):
-    """Уровень роли — ``ROLE_LEVEL_DB`` (или честный потолок синта); гейт рендера даёт этот уровень по модели."""
+    """Уровень роли — ``Style.role_level_db`` (или честный потолок синта); гейт рендера даёт этот уровень по модели."""
     track = _track(seed, track_no=1 + seed % 5)
     program = render(track, "A")
     for role, part in track.parts.items():
         unit, exponent = mix._unit(role, part)
         amp = mix.level_amp(role, part)
-        assert part.level_db <= kn.ROLE_LEVEL_DB[role]
-        if part.level_db < kn.ROLE_LEVEL_DB[role]:
+        assert part.level_db <= kn.STYLES["club"].role_level_db[role]
+        if part.level_db < kn.STYLES["club"].role_level_db[role]:
             assert amp == pytest.approx(kn.MAX_LAYER_AMP)
         assert mix.layer_db(unit, exponent, amp) == pytest.approx(part.level_db, abs=0.01)
         assert track.mix.level_db[role] == part.level_db
@@ -169,8 +169,8 @@ def test_same_level_whatever_the_timbre():
     track = _track(3)
     for role, synths in (("bass", ("bass", "dub")), ("pad", ("sinepad", "space"))):
         parts = [replace(track.parts[role], synth_or_sample=s) for s in synths]
-        leveled = [mix.mix_parts({role: p}, track.form)[0][role] for p in parts]
-        assert leveled[0].level_db == leveled[1].level_db == kn.ROLE_LEVEL_DB[role]
+        leveled = [mix.mix_parts(kn.STYLES["club"], {role: p}, track.form)[0][role] for p in parts]
+        assert leveled[0].level_db == leveled[1].level_db == kn.STYLES["club"].role_level_db[role]
         assert mix.level_amp(role, leveled[0]) != mix.level_amp(role, leveled[1])
 
 
@@ -178,7 +178,7 @@ def test_same_level_whatever_the_timbre():
                                    "просто вечеринка"])
 def test_timbre_follows_the_theme_and_is_deterministic(theme):
     prof = seeded_profile(theme)
-    family = kn.TIMBRES[kn.THEME_TIMBRE.get(prof.row or "", kn.DEFAULT_TIMBRE)]
+    family = kn.STYLES["club"].timbres[kn.THEME_TIMBRE.get(prof.row or "", kn.STYLES["club"].default_timbre)]
     seen = set()
     for seed in range(8):
         plan = seeded_plan(prof, seed)
@@ -189,15 +189,17 @@ def test_timbre_follows_the_theme_and_is_deterministic(theme):
         seen.add(tuple(sorted(synths.items())))
     if any(len(v) > 1 for v in family.values()):
         assert len(seen) > 1, "сид меняет тембр внутри семьи темы"
-    assert mix.timbres(prof.row, random.Random(5)) == mix.timbres(prof.row, random.Random(5))
+    club = kn.STYLES["club"]
+    assert mix.timbres(club, prof.row, random.Random(5)) == mix.timbres(club, prof.row, random.Random(5))
 
 
 def test_timbre_table_is_playable():
     """Каждый синт семьи — из палитры роли, с замером громкости и не ``held``; пэд — без фиксированного хвоста
     (``warmpad`` 1.2 с размазал бы сайдчейн 16-х)."""
-    assert set(kn.THEME_TIMBRE) == set(kn.THEMES) and set(kn.THEME_TIMBRE.values()) | {kn.DEFAULT_TIMBRE} <= set(
-        kn.TIMBRES)
-    for family in kn.TIMBRES.values():
+    club = kn.STYLES["club"]
+    assert set(kn.THEME_TIMBRE) == set(kn.THEMES)
+    assert set(kn.THEME_TIMBRE.values()) | {club.default_timbre} <= set(club.timbres)
+    for family in kn.STYLES["club"].timbres.values():
         assert set(family) == set(kn.TONAL_ROLES)
         for role, synths in family.items():
             for synth in synths:
@@ -209,8 +211,8 @@ def test_timbre_table_is_playable():
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_kick_is_the_genre_sample_from_the_table(seed):
-    """Бочка — ``KICK_SOUNDS[GENRE_KICK['club']]`` (замер: низ ≥ 0.9 записи), а не ``X`` без ``sample``."""
-    kick = kn.KICK_SOUNDS[kn.GENRE_KICK["club"]]
+    """Бочка — ``KICK_SOUNDS[STYLES['club'].kick_sound]`` (замер: низ ≥ 0.9 записи), а не ``X`` без ``sample``."""
+    kick = kn.KICK_SOUNDS[kn.STYLES["club"].kick_sound]
     track = _track(seed)
     assert track.parts["kick"].sample == kick.sample and kick.low >= 0.9
     assert {e.sample for e in _events(track)["kick"]} == {f"{kick.symbol}{kick.sample}"}

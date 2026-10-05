@@ -51,7 +51,7 @@ def test_kit_never_repeats_back_to_back(fifty):
     kits = [t.history_key.kit for t in fifty[0]]
     assert len(kits) == SETS * TRACKS
     assert all(a != b for a, b in zip(kits, kits[1:])), kits
-    assert set(kits) == set(kn.DRUM_KITS)
+    assert set(kits) == set(kn.STYLES["club"].kits)
 
 
 def test_progression_at_most_three_in_any_ten(fifty):
@@ -110,9 +110,10 @@ def test_layers_sound_only_in_their_sections(fifty):
             events = by_slot[program.slots[role]]
             assert events, role
             for ev in events:
-                assert any(lo <= ev.beat < hi for name, (lo, hi) in spans.items() if name in samples.SECTIONS[role])
+                assert any(lo <= ev.beat < hi for name, (lo, hi) in spans.items()
+                           if name in kn.STYLES["club"].layer_sections[role])
         fx_beats = sorted({ev.beat for ev in by_slot[program.slots["fx"]]})
-        assert fx_beats == sorted(spans[n][0] for n in samples.SECTIONS["fx"])
+        assert fx_beats == sorted(spans[n][0] for n in kn.STYLES["club"].layer_sections["fx"])
         assert program.sample_files == {kn.SAMPLE_CATALOG[n].path for n in _used(track)}
 
 
@@ -162,7 +163,7 @@ def test_psr_takes_a_random_pool_file_on_every_sixteenth_under_the_sidechain(fif
 
 
 def test_psr_is_two_voices_left_and_right_from_role_stereo(fifty):
-    """Ширина psr — ``knowledge.ROLE_STEREO`` (два голоса с Хаасом, аналог ``jux``): баланс L/R по энергии 0."""
+    """Ширина psr — ``Style.stereo`` (два голоса с Хаасом, аналог ``jux``): баланс L/R по энергии 0."""
     for track in fifty[0][:6]:
         program, by_slot = _events_by_slot(track)
         events = by_slot[program.slots["sample"]]
@@ -175,7 +176,7 @@ def test_kits_hats_are_balanced_left_right(fifty):
     """PR-9 меняет сторону хэта на каждом ударе: акценты каркаса делятся между сторонами поровну."""
     from rob_box_music.arrange import rhythm
     from rob_box_music.arrange.mix import alternate_pan
-    for name, kit in kn.DRUM_KITS.items():
+    for name, kit in kn.STYLES["club"].kits.items():
         grid = rhythm.pattern_grid(kit["hats"])
         hits = [st.on for st in grid.steps]
         pans = alternate_pan(hits, 1.0)
@@ -229,7 +230,7 @@ def test_seed_changes_material_not_tempo():
     for seed in (1, 2):
         plan = seeded_plan(prof, seed)
         sets.append([compose(plan, no, melodies=MELODIES) for no in range(1, 6)])
-    lo, hi = kn.GENRE_WINDOWS["club"].bpm
+    lo, hi = kn.STYLES["club"].bpm
     assert {t.bpm for s in sets for t in s} == {prof.bpm} and lo <= prof.bpm <= hi
     material = [[(t.history_key.kit, t.history_key.sample, t.history_key.fx, t.history_key.perc) for t in s]
                 for s in sets]
@@ -264,7 +265,7 @@ def _kw(line, key):
 
 
 def test_sample_level_comes_from_the_loudness_model_and_the_file_mean(fifty):
-    """Одна ось громкости (PR-3c): уровень роли ``knowledge.ROLE_LEVEL_DB``, ``amp`` — из среднего уровня файла
+    """Одна ось громкости (PR-3c): уровень роли ``Style.role_level_db``, ``amp`` — из среднего уровня файла
     (у psr — по медиане пула), у двух голосов — мощность делится пополам."""
     import re
     for track in fifty[0][:10]:
@@ -277,7 +278,7 @@ def test_sample_level_comes_from_the_loudness_model_and_the_file_mean(fifty):
             voices = 2 if role == "sample" else 1
             want = min(kn.MAX_LAYER_AMP, 10 ** ((part.level_db - 10 * math.log10(voices) - info.mean_db) / 20))
             assert amp == pytest.approx(want, rel=1e-2, abs=1e-3)
-            assert part.level_db <= kn.ROLE_LEVEL_DB[role]
+            assert part.level_db <= kn.STYLES["club"].role_level_db[role]
     assert all(-60 < i.peak_db <= 0 and i.mean_db < i.peak_db for i in kn.SAMPLE_CATALOG.values())
 
 

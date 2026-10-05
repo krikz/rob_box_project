@@ -71,7 +71,7 @@ def _fit_levels(parts: dict, sections: list) -> dict:
 
 def make_track(seed: int) -> Track:
     rng = random.Random(seed)
-    key = Key(rng.randrange(12), rng.choice(kn.GENRE_WINDOWS["club"].scales))
+    key = Key(rng.randrange(12), rng.choice(kn.STYLES["club"].modes))
     bars_total = rng.choice((32, 48, 64))
     sections = _sections(rng, bars_total)
     used = sorted({r for s in sections for r in s.roles})
@@ -88,6 +88,6 @@ def make_track(seed: int) -> Track:
               for r in parts if r not in ("kick", "bass")},
               tuple(Duck(rng.random(), (0, 4, 8, 12)) for _ in sections), {"drop": ("room",)})
     tr = Transition(rng.choice((8, 16, 32)), 0, True)
-    return Track(f"set1:{seed:02d}:A:{seed:08x}", seed, rng.randint(*kn.GENRE_WINDOWS["club"].bpm), key,
+    return Track(f"set1:{seed:02d}:A:{seed:08x}", seed, rng.randint(*kn.STYLES["club"].bpm), key,
                  Form(tuple(sections)), parts, Harmony(prog), hook, mix, rng.randint(1, 5), tr, tr,
                  HistoryKey("kit", "prog", None, None, key.root))

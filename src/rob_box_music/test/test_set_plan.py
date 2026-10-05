@@ -43,7 +43,7 @@ def _section_spans(track):
 @pytest.mark.parametrize("theme", THEMES)
 def test_one_tempo_for_the_whole_set_in_the_club_window(theme):
     """Один темп на сет (В6: club 128–138) для всех сидов; у каждого трека и программы — темп плана."""
-    lo, hi = kn.GENRE_WINDOWS["club"].bpm
+    lo, hi = kn.STYLES["club"].bpm
     for seed in SEEDS:
         plan = seeded_plan(seeded_profile(theme), seed)
         assert lo <= plan.bpm <= hi
@@ -96,7 +96,8 @@ def test_low_energy_thins_roles_not_levels(seed):
     for track in (low, peak):  # уровень — цель роли (или потолок синта), энергия его не трогает (PR-3c: тембры разные)
         for role, part in track.parts.items():
             capped = level_amp(role, part) == pytest.approx(kn.MAX_LAYER_AMP, rel=1e-3)
-            assert part.level_db == kn.ROLE_LEVEL_DB[role] or (part.level_db < kn.ROLE_LEVEL_DB[role] and capped)
+            target = kn.STYLES["club"].role_level_db[role]
+            assert part.level_db == target or (part.level_db < target and capped)
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -144,7 +145,7 @@ def test_fill_roll_accent_builds_up():
 def test_swing_moves_only_the_off_beat_sixteenths(seed):
     """Свинг плана сдвигает нечётные 16-е хэтов на ``swing`` восьмой; доли, оффбит-хэты и бочка на месте."""
     plan = seeded_plan(profile(root=seed % 12), seed)
-    assert kn.GENRE_WINDOWS["club"].swing[0] <= plan.swing <= kn.GENRE_WINDOWS["club"].swing[1]
+    assert kn.STYLES["club"].swing[0] <= plan.swing <= kn.STYLES["club"].swing[1]
     straight = compose(replace(plan, swing=0.0), 3)
     swung = compose(plan, 3)
     _p, ev0 = _by_role(straight)

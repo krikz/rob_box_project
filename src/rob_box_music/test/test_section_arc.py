@@ -1,12 +1,13 @@
 """Дуга громкости трека по секциям (``mix.section_arc``, ``knowledge.SECTION_TRIM_DB``)."""
 
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.compose import SECTIONS, compose
+from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.mix import section_arc
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 
+SECTIONS = kn.STYLES["club"].form
 PLAN = seeded_plan(ThemeProfile("тест", "club", 132, 9, "minor", (), None), 7, set_id="s7")
 
 
@@ -31,6 +32,6 @@ def test_arc_of_a_club_track_starts_each_section_and_ramps_the_build():
 
 def test_lead_sits_under_the_drums_and_bass():
     """A9 (приёмка 02.10): лид забивал середину в дропах; ударные слышны (отзыв эксперта 05.10)."""
-    lv = kn.ROLE_LEVEL_DB
+    lv = kn.STYLES["club"].role_level_db
     assert lv["lead"] <= lv["kick"] - 12 and lv["lead"] <= lv["clap"] - 6
     assert lv["hats"] >= -58 and lv["clap"] >= -44

@@ -53,7 +53,7 @@ def _track(seed, track_no):
 
 def test_looks_switch_kick_and_sidechain_on_one_energy_axis():
     """Чем выше энергия секции, тем «насос» глубже; build — бочка на 1 и 3, дроп и интро/аутро — прямая."""
-    looks = [mix.look(e) for e in range(11)]
+    looks = [mix.look(kn.STYLES["club"], e) for e in range(11)]
     assert [lk.duck_depth for lk in looks[:5]] == [0.6] * 5 and looks[5] == looks[6] and looks[7] == looks[10]
     assert looks[5].duck_depth < looks[0].duck_depth < looks[7].duck_depth == 1.0
     assert mix.kick_steps(looks[7].kick) == (0, 4, 8, 12) == mix.kick_steps(looks[0].kick)
@@ -79,7 +79,7 @@ def test_build_and_drop_differ_in_kick_and_pump(seed, track_no):
         return min(e.amp / e.gate for e in _in(by_role["pad"], spans[name]))
 
     assert kicks_per_bar("drop") == 4 and kicks_per_bar("intro_low") == 4 and kicks_per_bar("outro") == 4
-    if mix.look(build.energy) == mix.look(drop.energy):
+    if mix.look(kn.STYLES["club"], build.energy) == mix.look(kn.STYLES["club"], drop.energy):
         assert kicks_per_bar("build") == 4 and track.energy == 5
     else:
         assert kicks_per_bar("build") == 2
@@ -97,7 +97,7 @@ def test_lpf_opens_through_the_build_is_off_in_drops_and_half_closed_in_the_brea
     track = _track(seed, track_no)
     by_role, spans = _events(track), _spans(track)
     curves = {}
-    for role in kn.LPF_ROLES:
+    for role in kn.STYLES["club"].lpf_roles:
         build = _in(by_role[role], spans["build"])
         if not build:
             continue

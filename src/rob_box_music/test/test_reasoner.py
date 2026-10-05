@@ -58,7 +58,7 @@ def test_schema_is_built_from_knowledge_and_has_no_tempo():
     s = rz.schema()
     assert s["additionalProperties"] is False and "bpm" not in s["properties"]
     assert s["properties"]["theme_row"]["enum"] == [*kn.THEMES, "none"]
-    assert s["properties"]["mode"]["enum"] == list(kn.GENRE_WINDOWS["club"].scales)
+    assert s["properties"]["mode"]["enum"] == list(kn.STYLES["club"].modes)
     hooks = set(s["properties"]["hooks"]["items"]["enum"])
     assert hooks == {h for row in kn.THEMES.values() for h in row.hooks} | set(kn.DEFAULT_HOOKS)
     assert rz.tool()["function"]["name"] == rz.SUBMIT_TOOL

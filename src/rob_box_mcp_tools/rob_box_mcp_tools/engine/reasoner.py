@@ -129,12 +129,12 @@ class SetReasoner:
         try:
             response = await asyncio.wait_for(self._client.complete(
                 [LLMMessage("system", system), LLMMessage("user", user)],
-                tools=[rz.tool(plan.profile.genre, self.hype, plan.profile)],
+                tools=[rz.tool(plan.style, self.hype, plan.profile)],
                 settings=LLMSettings(tool_choice="auto", max_tokens=1024)), timeout=self._deadline)
         except asyncio.TimeoutError:
             return "late", None, f"нет ответа за {self._deadline:g} с"
         try:
-            return "ok", rz.validate(payload_of(response), plan.profile.genre, self.hype, plan.profile), ""
+            return "ok", rz.validate(payload_of(response), plan.style, self.hype, plan.profile), ""
         except rz.PlanInvalid as exc:
             return "invalid", None, f"plan_invalid{{{exc.path}}} {exc}"
 

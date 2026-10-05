@@ -85,7 +85,8 @@ class Player:
 
 
 #: Все синты тембров v2 (``knowledge.TIMBRES``): сервер-заглушка знает их все.
-V2_SYNTHS = frozenset(x for fam in (*kn.TIMBRES.values(), kn.SONG_TIMBRES) for synths in fam.values() for x in synths)
+V2_SYNTHS = frozenset(x for fam in (*kn.STYLES["club"].timbres.values(), kn.SONG_TIMBRES)
+                      for synths in fam.values() for x in synths)
 
 
 class Log:
@@ -132,7 +133,7 @@ def _form(rig):
     return _started(rig)[0]["form_beats"]
 
 
-#: Блэнд соседних треков сета (PR-8): 8 тактов, своп баса на 4-м (``compose.TRANSITION``).
+#: Блэнд соседних треков сета (PR-8): 8 тактов, своп баса на 4-м (``compose.transition``).
 BLEND = 8 * 4
 
 
@@ -210,7 +211,7 @@ def _tap_master(rig):
 def test_section_arc_moves_the_trim_inside_the_track_and_the_newest_track_owns_it():
     """Дуга громкости (отзыв эксперта 05.10, A6/A9): build поднимается к дропу всю секцию, брейк проваливается,
     второй дроп — пик трека; после старта следующего трека дугу ведёт он — хвост уходящего мастер не трогает."""
-    from rob_box_music.arrange.compose import SECTIONS
+    SECTIONS = kn.STYLES["club"].form
 
     rig = _rig()
     _tap_master(rig)

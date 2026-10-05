@@ -150,7 +150,7 @@ Sweep = Tuple[float, float]
 class Mix:
     level_db: Mapping[str, float]
     stereo: Mapping[str, Stereo]  # роль → ширина; бочки и баса здесь нет (центр)
-    duck: Tuple[Duck, ...] = ()  # по секциям формы (вид секции, ``knowledge.LOOKS``)
+    duck: Tuple[Duck, ...] = ()  # по секциям формы (вид секции, ``Style.looks``)
     fx: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # имя секции → эффекты
     duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
     lpf: Mapping[str, Tuple[Sweep, ...]] = field(default_factory=dict)  # роль → свип по секциям формы
