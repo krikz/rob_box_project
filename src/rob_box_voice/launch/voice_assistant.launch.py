@@ -131,7 +131,6 @@ def generate_launch_description():
         namespace=namespace,
         parameters=[
             dialogue_node_yaml,
-            PathJoinSubstitution([config_dir, 'music_engine.yaml']),  # ADR-0149 PR-5: флаг движка
             {'tool_provider': LaunchConfiguration('tool_provider')},
         ],
         output='screen',
@@ -220,8 +219,7 @@ def generate_launch_description():
     # Using ExecuteProcess instead of Node to run Python module directly
     mcp_server = ExecuteProcess(
         cmd=['python3', '-m', 'rob_box_mcp_tools.mcp_server', '--ros-args', '--log-level', 'info',
-             '--params-file', PathJoinSubstitution([config_dir, 'mcp_server.yaml']),
-             '--params-file', PathJoinSubstitution([config_dir, 'music_engine.yaml'])],  # ADR-0149: флаг движка
+             '--params-file', PathJoinSubstitution([config_dir, 'mcp_server.yaml'])],
         output='screen',
         respawn=True,
         respawn_delay=5.0

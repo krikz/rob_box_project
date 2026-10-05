@@ -479,24 +479,6 @@ def classify_identity_confirmation(text: str) -> Optional[bool]:
     return None
 
 
-#: ADR-0149 PR-13a — голосовая сторона знает только движок v2 (старый путь удалён).
-#: Параметр ``music_engine`` остаётся в yaml до PR-15; иное значение — громкое предупреждение.
-MUSIC_ENGINE = "v2"
-
-
-def warn_legacy_music_engine(node: Any) -> None:
-    """``music_engine`` ≠ v2 в yaml больше ничего не включает на голосовой стороне — сказать громко."""
-    try:
-        value = str(node.get_parameter("music_engine").value or "")
-    except Exception:  # noqa: BLE001 — стабы из __new__ и ноды без параметра
-        return
-    if value != MUSIC_ENGINE:
-        node.get_logger().warning(
-            f"⚠️ music_engine={value!r}: старый путь музыки удалён (ADR-0149 PR-13a) — "
-            f"диалог работает с движком {MUSIC_ENGINE}"
-        )
-
-
 class DialogueNode(Node):
     # Issue #2829 (ADR-0131 PR-2) -- явный список ``register_error``
     # причин, которые озвучиваем ("не расслышал, повтори"): намеренно
@@ -1438,10 +1420,6 @@ class DialogueNode(Node):
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
         self.declare_parameter("metrics_port", 9100)
-        # ADR-0149 §9: тот же флаг, что у mcp_server (music_engine.yaml); голосовая сторона после
-        # PR-13a знает только v2 — параметр живёт до PR-15, иное значение только предупреждает.
-        self.declare_parameter("music_engine", "v1")
-        warn_legacy_music_engine(self)
         # ADR-0066 §6.3 — `voice_input_mode` УДАЛЁН. Единственная связь
         # оператора с личностью — топик /dialogue/control (sub выше, в
         # __init__).
@@ -1683,10 +1661,7 @@ class DialogueNode(Node):
         for skill, text in sorted(fragments.items()):
             lowered = text.lower()
             try:
-                tools = tools_for_skill(
-                    skill, include_core=(skill == CORE_SKILL),
-                    music_engine=MUSIC_ENGINE,
-                )
+                tools = tools_for_skill(skill, include_core=(skill == CORE_SKILL))
             except KeyError:
                 self.get_logger().warning(
                     f"⚠️ [skills] фрагмент {skill!r} не соответствует ни "
@@ -2029,7 +2004,7 @@ class DialogueNode(Node):
         # parameters}}); build it from ToolRegistry.list_tools()
         # so the LLM-facing surface is the single source of truth.
         # ADR-0149 PR-6: LLM видит dj_set/request_music движка v2, а не compose_music & Co.
-        registry = ToolRegistry(music_engine=MUSIC_ENGINE)
+        registry = ToolRegistry()
         provider.update_tools(
             [
                 {

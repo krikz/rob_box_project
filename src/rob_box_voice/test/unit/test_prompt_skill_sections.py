@@ -303,13 +303,13 @@ def test_foreign_tool_mentions_in_moved_sections_are_declared(enabled) -> None:
     catalog = {
         entry.name
         for skill in skill_names()
-        for entry in tools_for_skill(skill, include_core=True, music_engine="v2")
+        for entry in tools_for_skill(skill, include_core=True)
     }
     for section in enabled.sections:
         own = {
             entry.name
             for skill in section.skills
-            for entry in tools_for_skill(skill, include_core=True, music_engine="v2")
+            for entry in tools_for_skill(skill, include_core=True)
         }
         lowered = section.text.lower()
         foreign = {name for name in catalog - own if _mentions_tool(lowered, name)}

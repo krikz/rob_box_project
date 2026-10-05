@@ -1,7 +1,7 @@
 """Узкие MCP-тулы движка v2 (ADR-0149 §5.1): ``dj_set(start|stop)`` (PR-5), ``request_music`` (PR-6).
 
-Регистрируются только при ``music_engine: v2`` (``mcp_server._attach_player_owner_v2``); в каталоге
-LLM — только при v2 (``music_engine = "v2"``), старые ``compose_music`` & Co. при v2 скрыты.
+Регистрируются ``mcp_server._attach_player_owner_v2``; старый путь (``compose_music`` & Co.)
+удалён вместе с флагом выбора движка (PR-13/PR-15).
 Параметры трека (темп, тоника, синты, сид) тулы не принимают: тема → ``theme.seeded_profile``
 → ``set_plan.seeded_plan`` → ``arrange.compose`` → ``render``. Вызывают их роутер медиакоманд
 (без LLM) и LLM.
@@ -89,8 +89,6 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
 
 class DjSetTool(MCPTool):
     """«Ты диджей» v2: сет без LLM на пути звука; один сет за раз."""
-
-    music_engine = "v2"
 
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
@@ -186,8 +184,6 @@ class DjSetTool(MCPTool):
 
 class RequestMusicTool(MCPTool):
     """«Поставь клубный трек» v2: один club-трек из ``compose``/``render``, без LLM на пути звука."""
-
-    music_engine = "v2"
 
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
