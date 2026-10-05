@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import FrozenSet, List, Mapping, Optional, Tuple
 
 from . import knowledge as kn
+from .tonality import key_fit
 
 BEATS_PER_BAR = 4
 STEPS_PER_BAR = 16
@@ -111,6 +112,7 @@ class Hook:
     notes: Tuple[PitchEvent, ...]  # доли от начала мотива
     bars: int  # 4..8
     source: Optional[str]  # id мелодии RTTTL или None
+    key_fit: Optional[float] = None  # доля длительности хука темы в ладу трека (I12); у мотива лида — None
 
 
 @dataclass(frozen=True)
@@ -267,23 +269,19 @@ def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float
              f"{path}.beat", f"нота {ev.beat}+{ev.dur_beats} вне формы ({limit_beats} долей)")
     lo, hi = part.register
     _require(lo <= ev.midi <= hi, f"{path}.midi", f"MIDI {ev.midi} вне регистра партии {lo}..{hi}")
-    if song:  # мелодия звучит как записана; лад аккомпанемента — долей (``_check_song_key``)
+    if song or role == "lead":  # мелодия/хук темы — с хроматикой; лад — долей длительности (``_check_key_fit``)
         return
     in_scale = ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
     approach = role == "bass" and ev.dur_beats <= APPROACH_MAX_BEATS
     _require(in_scale or approach, f"{path}.midi", f"MIDI {ev.midi} не в ладе {kn.ROOTS[key.root]} {key.mode}")
 
 
-def _check_song_key(role: str, part: Part, key: Key) -> None:
-    """Аккомпанемент песни — в тональности мелодии: доля длительности в ладу ≥ ``knowledge.SONG_KEY_FIT_MIN``."""
-    if role == "lead":
-        return
-    scale = kn.scale_pitch_classes(key.root, key.mode)
-    total = sum(ev.dur_beats for ev in part.pitches or ())
-    inside = sum(ev.dur_beats for ev in part.pitches or () if ev.midi % 12 in scale)
-    fit = inside / total if total else 1.0
-    _require(fit >= kn.SONG_KEY_FIT_MIN, f"parts.{role}.pitches",
-             f"в ладу {kn.ROOTS[key.root]} {key.mode} {fit:.2f} длительности < {kn.SONG_KEY_FIT_MIN}")
+def _check_key_fit(role: str, part: Part, key: Key, minimum: float) -> None:
+    """Партия в тональности трека долей длительности в ладу ≥ ``minimum`` (``tonality.key_fit``): аккомпанемент
+    песни — ``knowledge.SONG_KEY_FIT_MIN``, лид клубного трека (хук темы с проходящими) — ``HOOK_KEY_FIT_MIN``."""
+    fit = key_fit([(ev.midi, ev.dur_beats) for ev in part.pitches or ()], kn.ROOTS[key.root], key.mode)
+    _require(fit >= minimum, f"parts.{role}.pitches",
+             f"в ладу {kn.ROOTS[key.root]} {key.mode} {fit:.2f} длительности < {minimum}")
 
 
 def _check_tonal(role: str, part: Part, track: Track) -> None:
@@ -297,8 +295,10 @@ def _check_tonal(role: str, part: Part, track: Track) -> None:
     limit = float(track.form.bars_total * BEATS_PER_BAR)
     for i, ev in enumerate(part.pitches or ()):
         _check_pitch(role, i, ev, track.key, limit, part, song)
-    if song:
-        _check_song_key(role, part, track.key)
+    if role == "lead" and not song:
+        _check_key_fit(role, part, track.key, kn.HOOK_KEY_FIT_MIN)
+    elif song and role != "lead":
+        _check_key_fit(role, part, track.key, kn.SONG_KEY_FIT_MIN)
     palette = kn.SYNTH_PALETTE.get(role, ())
     _require(part.synth_or_sample in palette or part.synth_or_sample in kn.SYNTH_TRAITS,
              f"parts.{role}.synth_or_sample", f"синт {part.synth_or_sample!r} не из палитры")

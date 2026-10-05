@@ -4,8 +4,11 @@
 узнают. Ритм ринг-тона подгоняется к темпу трека степенью двойки (чтобы «быстрая» тема не стала вдвое
 медленнее), ноты встают на сетку 16-х. Тональность темы — :func:`rob_box_music.tonality.detect_key`; тема
 переносится на тонику трека целиком (интервалы сохраняются), лад трека — лад темы (#3293: явная тональность
-транспонирует тему, а не только аккомпанемент). Тема, которая не ложится в лад или в коридор лида без ломки
-интервалов, честно отвергается :class:`HookError` — вызывающий берёт следующую мелодию, а не «чинит» ноты.
+транспонирует тему, а не только аккомпанемент). Хроматика темы — проходящие: ``key_fit`` (доля длительности в
+ладу трека) ≥ ``knowledge.HOOK_KEY_FIT_MIN`` (I12). Регистр клампится в коридор лида: тема встаёт целиком на
+октаву с наименьшим числом нот вне коридора, оставшиеся переносятся октавой — ближе к соседней ноте (контур). Тема
+чужого лада (``key_fit`` ниже порога) или мотив, который перенос ломает (больше :data:`MAX_FOLDED_SHARE` нот),
+честно отвергается :class:`HookError` — вызывающий берёт следующую мелодию.
 
 Развитие (:func:`develop`) — детерминированные операции над мотивом по имени секции: ``build`` — первые
 2 такта мотива и пауза перед дропом; ``drop`` — мотив целиком; ``break`` — начало мотива вдвое медленнее
@@ -14,14 +17,16 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
 from ..rtttl import parse_rtttl
-from ..tonality import detect_key
+from ..tonality import detect_key, key_fit
 
+_LOG = logging.getLogger(__name__)
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 #: Длины мотива в тактах, по убыванию предпочтения (ADR-0149 §3.3: 4–8 тактов от начала).
 HOOK_BARS: Tuple[int, ...] = (8, 4)
@@ -33,6 +38,8 @@ MIN_RANGE = 3
 #: Предпочтительный низ мотива: верх пэда = низ лида − 3 (ADR-0149 §3.6), пэду нужно место для трезвучия.
 PREFERRED_LOW = 62
 TARGET_CENTER = 72
+#: Перенос октавой — не больше трети нот мотива; дальше это уже не та мелодия (#3409: «Терминатор» — до 0.29).
+MAX_FOLDED_SHARE = 1 / 3
 BUILD_BARS = 2
 #: Короткая мелодия: фраза на столько тактов и ответ на IV (вверх) или V (вниз) ступени.
 PHRASE_BARS = 2
@@ -87,11 +94,13 @@ def _window(onsets: List[Tuple[float, float, int]]) -> Tuple[int, List[Tuple[flo
 
 
 def diatonic(midi: int, key: Key, steps: int) -> int:
-    """Нота лада на ``steps`` ступеней выше (ниже) ``midi``; ``midi`` — звук лада ``key``."""
+    """Нота лада на ``steps`` ступеней выше (ниже) ``midi``; хроматическая (проходящая темы) идёт вместе с
+    ближайшим звуком лада снизу и остаётся на том же расстоянии от него."""
     scale = [(key.root + st) % 12 for st in kn.SCALES[key.mode]]
-    idx = scale.index(midi % 12) + steps
-    base = midi - (midi - key.root) % 12
-    return base + (idx // len(scale)) * 12 + (scale[idx % len(scale)] - key.root) % 12
+    below = next(midi - k for k in range(12) if (midi - k) % 12 in scale)
+    idx = scale.index(below % 12) + steps
+    base = below - (below - key.root) % 12
+    return base + (idx // len(scale)) * 12 + (scale[idx % len(scale)] - key.root) % 12 + (midi - below)
 
 
 def _answer(cut: List[Tuple[float, float, int]], key: Key, register: Tuple[int, int]) -> List[Tuple[float, float, int]]:
@@ -119,40 +128,72 @@ def track_key(hook_root: int, hook_mode: str, root: int, mode: str) -> Key:
     return Key(root, hook_mode)
 
 
-def _placement(pitches: Sequence[int], shift: int, register: Tuple[int, int]) -> int:
-    """Сдвиг на октавы, при котором тема в коридоре лида; предпочтение — низ ≥ :data:`PREFERRED_LOW`."""
+def _placement(pitches: Sequence[int], shift: int, register: Tuple[int, int]) -> Tuple[List[int], int]:
+    """Тема в коридоре лида и число нот, перенесённых октавой.
+
+    Тема целиком сдвигается на ``shift`` плюс октавы — там, где меньше всего нот вне коридора (при равенстве низ
+    ≥ :data:`PREFERRED_LOW`, середина ближе к :data:`TARGET_CENTER`); оставшиеся вне коридора ноты переносятся
+    октавой в коридор — на ту, что ближе к предыдущей ноте (контур мотива сохраняется где можно).
+    """
     lo, hi = register
-    options = [shift + 12 * k for k in range(-6, 7) if lo <= min(pitches) + shift + 12 * k
-               and max(pitches) + shift + 12 * k <= hi]
-    if not options:
-        raise HookError(f"тема ({max(pitches) - min(pitches)} полутонов) на этой тонике не ложится в коридор "
-                        f"{register} целыми октавами")
-    return max(options, key=lambda s: (min(pitches) + s >= PREFERRED_LOW,
-                                       -abs((min(pitches) + max(pitches)) / 2 + s - TARGET_CENTER)))
+    center = (min(pitches) + max(pitches)) / 2
+
+    def outside(s: int) -> int:
+        return sum(1 for m in pitches if not lo <= m + s <= hi)
+
+    best = min((shift + 12 * k for k in range(-6, 7)),
+               key=lambda s: (outside(s), min(pitches) + s < PREFERRED_LOW, abs(center + s - TARGET_CENTER)))
+    placed: List[int] = []
+    for midi in pitches:
+        m = midi + best
+        if not lo <= m <= hi:
+            near = placed[-1] if placed else TARGET_CENTER
+            m = min((m + 12 * k for k in range(-9, 10) if lo <= m + 12 * k <= hi), key=lambda c: abs(c - near))
+        placed.append(m)
+    return placed, outside(best)
 
 
 def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
                register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Tuple[Hook, Key]:
-    """Хук и тональность трека из RTTTL. ``root``/``mode`` — тональность плана; лад трека берётся у темы."""
+    """Хук и тональность трека из RTTTL. ``root``/``mode`` — тональность плана; лад трека берётся у темы.
+
+    Исход в логе (I12): принятый хук — с ``key_fit``, отказ — с причиной.
+    """
+    try:
+        hook, key = _hook(rtttl, melody_id, bpm, root, mode, register)
+    except HookError as exc:
+        _LOG.info("🎵 [music v2] hook melody=%s отказ: %s", melody_id, exc)
+        raise
+    _LOG.info("🎵 [music v2] hook melody=%s key=%s %s key_fit=%.2f bars=%d", melody_id, kn.ROOTS[key.root], key.mode,
+              hook.key_fit, hook.bars)
+    return hook, key
+
+
+def _hook(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
+          register: Tuple[int, int]) -> Tuple[Hook, Key]:
     try:
         _name, melody_bpm, notes = parse_rtttl(rtttl)
     except ValueError as exc:
         raise HookError(f"RTTTL не разбирается: {exc}") from exc
     bars, cut, answered = _window(_onsets(notes, time_scale(melody_bpm, bpm)))
     _check_musical(cut)
-    tonic, hook_mode = detect_key([m for _b, _d, m in cut], [d for _b, d, _m in cut])
-    key = track_key(kn.ROOTS.index(tonic), hook_mode, root, mode)
     pitches = [m for _b, _d, m in cut]
-    shift = _placement(pitches, (key.root - kn.ROOTS.index(tonic) + 6) % 12 - 6, register)
-    scale = kn.scale_pitch_classes(key.root, key.mode)
-    outside = sorted({(m + shift) % 12 for m in pitches} - scale)
-    if outside:
-        raise HookError(f"тема вне лада {kn.ROOTS[key.root]} {key.mode}: ноты {[kn.ROOTS[p] for p in outside]}")
-    moved = [(b, d, m + shift) for b, d, m in cut]
+    tonic, hook_mode = detect_key(pitches, [d for _b, d, _m in cut])
+    key = track_key(kn.ROOTS.index(tonic), hook_mode, root, mode)
+    shift = (key.root - kn.ROOTS.index(tonic) + 6) % 12 - 6
+    fit = key_fit([(m + shift, d) for _b, d, m in cut], kn.ROOTS[key.root], key.mode)
+    if fit < kn.HOOK_KEY_FIT_MIN:
+        raise HookError(f"тема вне лада {kn.ROOTS[key.root]} {key.mode}: key_fit {fit:.2f} < {kn.HOOK_KEY_FIT_MIN}")
+    placed, folded = _placement(pitches, shift, register)
+    if folded > MAX_FOLDED_SHARE * len(placed):
+        raise HookError(f"мотив ломается: {folded} из {len(placed)} нот не помещаются в коридор {register} "
+                        f"без переноса октавой")
+    moved = [(b, d, m) for (b, d, _m), m in zip(cut, placed)]
+    _check_musical(moved)
     if answered:
         moved += _answer(moved, key, register)
     events = tuple(PitchEvent(m, b, d, 3 if b % BEATS_PER_BAR == 0 else 2) for b, d, m in moved)
-    return Hook(events, bars, melody_id), key
+    return Hook(events, bars, melody_id, fit), key
 
 
 def _loop(notes: Sequence[PitchEvent], period_beats: float, length_beats: float) -> List[PitchEvent]:
@@ -206,4 +247,5 @@ def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, 
     return tuple(sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi)))  # type: ignore[operator]
 
 
-__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "develop", "diatonic", "from_rtttl", "time_scale", "track_key"]
+__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "develop", "diatonic", "from_rtttl",
+           "time_scale", "track_key"]
