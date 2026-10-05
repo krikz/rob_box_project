@@ -61,3 +61,23 @@ def test_set_on_a_theme_plays_its_melodies(melodies, theme, seed):
         render(track, "A")  # render валидирует трек (I12: key_fit лида)
     sources = [t.hook.source if t.hook else None for t in tracks]
     assert sum(s in ids for s in sources) >= 4, sources
+
+
+def test_terminator_theme_from_real_library_cannot_be_displaced_by_table_row(tmp_path):
+    """#3418: хуки «терминатора» из настоящей библиотеки; ответ LLM row=cyber hooks=robotroc/robot отвергается."""
+    from rob_box_mcp_tools.engine.search import theme_hooks
+    from rob_box_music import reasoner as rz
+    from rob_box_music.theme import seeded_profile
+
+    lib = RtttlLibrary(db_path=str(tmp_path / "voice_memory.db"))
+    found = theme_hooks(lib, "терминатора")
+    assert "terminat" in found
+    profile = seeded_profile("терминатора", found=found)
+    assert set(rz.schema(profile=profile)["properties"]["hooks"]["items"]["enum"]) == set(profile.theme_hooks)
+    assert not {"robot", "robotroc"} & set(profile.theme_hooks)
+    bad = {"theme_row": "cyber", "mode": profile.mode, "hooks": ["terminat", "robotroc", "robot"], "energy": [3]}
+    with pytest.raises(rz.PlanInvalid) as err:
+        rz.validate(bad, profile=profile)
+    assert err.value.path == "hooks"
+    good = rz.validate({**bad, "hooks": ["terminat"]}, profile=profile)
+    assert good.row == "cyber" and good.hook_ids == ("terminat",)
