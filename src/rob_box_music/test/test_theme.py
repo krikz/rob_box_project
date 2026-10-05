@@ -15,7 +15,7 @@ import pytest
 from melodies import compose_p
 from rob_box_music import knowledge as kn
 from rob_box_music.diversity import track_history
-from rob_box_music.theme import match_row, seeded_profile
+from rob_box_music.theme import HOOK_POOL, POOL_HOOKS, match_row, seeded_profile
 
 #: Темы серии приёмки (ADR-0149 §7.1) и ещё одна → строка таблицы.
 THEMES = {
@@ -36,7 +36,8 @@ def test_theme_words_pick_the_row(text, row):
 
 def test_unknown_theme_is_pool_not_a_fake_theme():
     prof = seeded_profile("бухгалтерский отчёт")
-    assert prof.row is None and prof.source == "pool" and prof.hook_ids == kn.DEFAULT_HOOKS
+    assert prof.row is None and prof.source == "pool" and prof.theme_hooks == ()
+    assert len(prof.hook_ids) == POOL_HOOKS and set(prof.hook_ids) <= set(HOOK_POOL)
     lo, hi = kn.GENRE_WINDOWS["club"].bpm
     assert lo <= prof.bpm <= hi and prof.mode in kn.GENRE_WINDOWS["club"].scales
 
@@ -78,13 +79,27 @@ def _melodies(library, ids):
 @pytest.mark.parametrize("row", [*kn.THEMES, None])
 def test_theme_hooks_exist_in_the_local_library_and_sound(library, row):
     """Хук темы — из локальной библиотеки на любой тонике сета (было 0/14), и не одна и та же мелодия подряд."""
-    hooks_ids = kn.THEMES[row].hooks if row else kn.DEFAULT_HOOKS
-    melodies = _melodies(library, hooks_ids)
     text = next((t for t, r in THEMES.items() if r == row), "без темы")
     base = seeded_profile(text)
+    hooks_ids = kn.THEMES[row].hooks if row else base.hook_ids
+    melodies = _melodies(library, hooks_ids)
     for root in range(12):
         prof = base.__class__(**{**base.__dict__, "root": root})
         first = compose_p(prof, 1, set_seed=root, melodies=melodies)
         assert first.hook is not None and first.hook.source in hooks_ids, (row, root)
         second = compose_p(prof, 2, set_seed=root, melodies=melodies, history=[track_history(first)])
         assert second.hook is not None and second.hook.source != first.hook.source, (row, root)
+
+
+def test_found_melodies_are_theme_hooks_first():
+    """#3399: мелодии по словам темы (поиск плеера) — хуки темы и ``source=theme``, строка таблицы — следом."""
+    prof = seeded_profile("космос терминатор", found=("terminat", "theme_177"))
+    assert prof.hook_ids[:2] == ("terminat", "theme_177") and prof.source == "theme"
+    assert prof.theme_hooks == prof.hook_ids and set(kn.THEMES["space"].hooks) <= set(prof.hook_ids)
+    alone = seeded_profile("терминатор", found=("terminat",))
+    assert alone.row is None and alone.hook_ids == alone.theme_hooks == ("terminat",)
+
+
+def test_unknown_themes_get_different_pools():
+    pools = {seeded_profile(t).hook_ids for t in ("Angine de Poitrine", "бухгалтерский отчёт", "лес", "завод")}
+    assert len(pools) == 4

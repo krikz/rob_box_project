@@ -17,6 +17,13 @@ from .test_mcp_server import _FakeLogger, _FakePublisher, _load_mcp_server_modul
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _history_in_memory(monkeypatch):
+    """``music_history`` сета (#3399) — не в общую ``/data`` хоста."""
+    monkeypatch.setenv("VOICE_MEMORY_DB_PATH", ":memory:")
+
+
 REPO = Path(__file__).resolve().parents[3]
 CONFIG_DIRS = [REPO / "src/rob_box_voice/config", REPO / "docker/vision/config/voice_assistant"]
 

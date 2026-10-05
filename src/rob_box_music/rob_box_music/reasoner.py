@@ -10,7 +10,8 @@
 * ``theme_row`` — строку закрытой таблицы тем (``knowledge.THEMES``) или ``none``: тема человека словами,
   которых нет в таблице («ночной город»), получает тембры и хуки ближайшей строки;
 * ``mode`` — лад плана из окна жанра;
-* ``hooks`` — до :data:`MAX_HOOKS` хуков только из кандидатов, которые показал код (:func:`hook_candidates`);
+* ``hooks`` — до :data:`MAX_HOOKS` хуков только из кандидатов, которые показал код (:func:`hook_candidates`):
+  первыми — хуки seeded-профиля, найденные по словам темы во всей RTTTL-библиотеке (#3399);
 * ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``);
 * ``hype_line`` — выкрик ≤ :data:`HYPE_MAX` символов, только когда он включён (§12 В2, по умолчанию выкл).
 
@@ -54,23 +55,28 @@ class Refinement:
     hype_line: Optional[str] = None
 
 
-def hook_candidates() -> Dict[str, Tuple[str, ...]]:
-    """Хуки, из которых LLM выбирает: по строкам таблицы тем и общий пул (``pool``)."""
-    return {**{name: row.hooks for name, row in kn.THEMES.items()}, "pool": kn.DEFAULT_HOOKS}
+#: Ключ кандидатов профиля сета: хуки, которые код выбрал по словам темы (или пул по хешу).
+SEEDED = "seeded"
 
 
-def _all_hooks() -> List[str]:
-    return list(dict.fromkeys(h for hooks in hook_candidates().values() for h in hooks))
+def hook_candidates(profile: Optional[ThemeProfile] = None) -> Dict[str, Tuple[str, ...]]:
+    """Хуки, из которых LLM выбирает: профиля сета (``seeded``), по строкам таблицы тем и общий пул (``pool``)."""
+    seeded = {SEEDED: profile.hook_ids} if profile is not None and profile.hook_ids else {}
+    return {**seeded, **{name: row.hooks for name, row in kn.THEMES.items()}, "pool": kn.DEFAULT_HOOKS}
 
 
-def schema(genre: str = "club", hype: bool = False) -> Dict[str, Any]:
+def _all_hooks(profile: Optional[ThemeProfile] = None) -> List[str]:
+    return list(dict.fromkeys(h for hooks in hook_candidates(profile).values() for h in hooks))
+
+
+def schema(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfile] = None) -> Dict[str, Any]:
     """JSON-схема ответа: перечисления из ``knowledge`` — одна таблица знания."""
     lo, hi = ENERGY_RANGE
     props: Dict[str, Any] = {
         "theme_row": {"type": "string", "enum": [*kn.THEMES, NO_ROW],
                       "description": "строка таблицы тем, ближайшая к теме человека; none — ни одна"},
         "mode": {"type": "string", "enum": list(kn.GENRE_WINDOWS[genre].scales), "description": "лад сета"},
-        "hooks": {"type": "array", "items": {"type": "string", "enum": _all_hooks()}, "minItems": 1,
+        "hooks": {"type": "array", "items": {"type": "string", "enum": _all_hooks(profile)}, "minItems": 1,
                   "maxItems": MAX_HOOKS, "description": "узнаваемые мелодии-хуки под тему, только из кандидатов"},
         "energy": {"type": "array", "items": {"type": "integer", "minimum": lo, "maximum": hi},
                    "minItems": 1, "maxItems": DEFAULT_TRACKS, "description": "энергия треков 1, 2, … (1..5)"},
@@ -81,11 +87,11 @@ def schema(genre: str = "club", hype: bool = False) -> Dict[str, Any]:
             "additionalProperties": False}
 
 
-def tool(genre: str = "club", hype: bool = False) -> Dict[str, Any]:
+def tool(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfile] = None) -> Dict[str, Any]:
     """Схема как функция в формате OpenAI-совместимых провайдеров."""
     return {"type": "function", "function": {
         "name": SUBMIT_TOOL, "description": "Отдать профиль DJ-сета по теме. Вызвать ровно один раз.",
-        "parameters": schema(genre, hype)}}
+        "parameters": schema(genre, hype, profile)}}
 
 
 def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, str]:
@@ -96,7 +102,7 @@ def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, s
               f"{SUBMIT_TOOL}, без текста.")
     if hype:
         system += f" hype_line — короткий выкрик диджея по-русски, не длиннее {HYPE_MAX} символов."
-    rows = "\n".join(f"- {name}: {', '.join(hooks)}" for name, hooks in hook_candidates().items())
+    rows = "\n".join(f"- {name}: {', '.join(hooks)}" for name, hooks in hook_candidates(seeded).items())
     user = (f"Тема: «{theme}».\nБез тебя код выбрал: строка={seeded.row or NO_ROW}, лад={seeded.mode}, "
             f"хуки={', '.join(seeded.hook_ids)}.\nКандидаты хуков по строкам:\n{rows}")
     return system, user
@@ -109,8 +115,8 @@ def _enum(payload: Mapping[str, Any], key: str, allowed: Any) -> Any:
     return value
 
 
-def _hooks(value: Any) -> Tuple[str, ...]:
-    allowed = set(_all_hooks())
+def _hooks(value: Any, profile: Optional[ThemeProfile]) -> Tuple[str, ...]:
+    allowed = set(_all_hooks(profile))
     if not isinstance(value, list) or not 0 < len(value) <= MAX_HOOKS:
         raise PlanInvalid("hooks", f"нужен список из 1..{MAX_HOOKS}")
     bad = [h for h in value if h not in allowed]
@@ -137,8 +143,10 @@ def _hype(payload: Mapping[str, Any], hype: bool) -> Optional[str]:
     return line.strip()
 
 
-def validate(payload: Any, genre: str = "club", hype: bool = False) -> Refinement:
-    """Ответ LLM → :class:`Refinement` или ``PlanInvalid(path)``; лишних полей схема не допускает."""
+def validate(payload: Any, genre: str = "club", hype: bool = False,
+             profile: Optional[ThemeProfile] = None) -> Refinement:
+    """Ответ LLM → :class:`Refinement` или ``PlanInvalid(path)``; лишних полей схема не допускает. ``profile`` —
+    seeded-профиль сета: его хуки (найденные по теме) тоже кандидаты."""
     if not isinstance(payload, Mapping):
         raise PlanInvalid("$", f"ожидался объект, пришёл {type(payload).__name__}")
     extra = sorted(set(payload) - set(schema(genre, hype)["properties"]))
@@ -146,7 +154,7 @@ def validate(payload: Any, genre: str = "club", hype: bool = False) -> Refinemen
         raise PlanInvalid(extra[0], "поля нет в схеме")
     row = _enum(payload, "theme_row", [*kn.THEMES, NO_ROW])
     mode = _enum(payload, "mode", kn.GENRE_WINDOWS[genre].scales)
-    return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks")),
+    return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks"), profile),
                       _energy(payload.get("energy")), _hype(payload, hype))
 
 
@@ -159,5 +167,5 @@ def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
     return replace(plan, profile=profile, tracks=tracks)
 
 
-__all__ = ["HYPE_MAX", "MAX_HOOKS", "NO_ROW", "PlanInvalid", "Refinement", "SUBMIT_TOOL", "apply",
+__all__ = ["HYPE_MAX", "MAX_HOOKS", "NO_ROW", "PlanInvalid", "Refinement", "SEEDED", "SUBMIT_TOOL", "apply",
            "hook_candidates", "prompt", "schema", "tool", "validate"]

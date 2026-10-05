@@ -170,3 +170,17 @@ def test_n_seeds_give_different_tracks():
     assert len({(t.key.root, t.key.mode) for t in tracks}) >= 6
     assert len({t.history_key.progression for t in tracks}) >= 2
     assert len({render(t, "A").code for t in tracks}) == len(tracks)
+
+
+def test_recent_hooks_of_past_sets_go_last():
+    """I17 (#3399): хук недавних сетов (история в БД) — в конце очереди, давний раньше свежего."""
+    import random
+
+    from melodies import MELODIES, profile
+    from rob_box_music.arrange.compose import hook_candidates
+
+    prof = profile(hooks=("long", "short", "slow"))
+    history = [{"melody_name": "other"}, {"melody_name": "long"}, {"melody_name": "slow"}]
+    for seed in range(8):
+        order = [h.source for h, _k in hook_candidates(prof, MELODIES, random.Random(seed), history)]
+        assert order == ["short", "slow", "long"], seed

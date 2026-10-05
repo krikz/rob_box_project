@@ -405,7 +405,7 @@ def test_queued_artifact_for_another_track_is_dropped_as_stale():
 
 def test_dj_set_tool_starts_and_stops_a_set():
     rig = _rig()
-    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, seed=lambda: 123456)
+    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 123456)
     started = tool.execute(action="start", theme="космос")
     assert started.success and started.data["set_id"] == "set23456" and started.data["ok"] is True
     assert started.data["theme_source"] in ("theme", "pool")
@@ -497,3 +497,17 @@ def test_set_memory_keeps_past_sets_newest_first_and_bounded():
     memory.remember(1, {"n": "b1"})
     memory.remember(2, {"n": "b2"})
     assert [r["n"] for r in memory.begin()] == ["b2", "b1", "a2b"]
+
+
+def test_set_memory_with_store_survives_restart():
+    """I17 (#3399): треки сета уходят в ``music_history`` на старте следующего; новый процесс видит их."""
+    from rob_box_mcp_tools.engine.session import SetMemory
+    from rob_box_music.diversity import MusicHistory
+
+    store = MusicHistory(":memory:")
+    memory = SetMemory(depth=3, store=store)
+    memory.begin()
+    memory.remember(1, {"melody_name": "terminat", "kit": "k1", "n": "не поле истории"})
+    memory.remember(2, {"melody_name": "theme_177", "kit": "k2"})
+    memory.begin()
+    assert [r["melody_name"] for r in SetMemory(depth=3, store=store).begin()] == ["theme_177", "terminat"]

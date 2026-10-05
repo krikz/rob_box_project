@@ -1,6 +1,7 @@
 """Поиск мелодии по словам человека: ``find(library, text)`` (ADR-0149 §3.3, I16; #3399).
 
-Одна реализация для заказа по имени (``engine.classic.find_record``, ``lookup_melody``) и для хуков темы сета.
+Одна реализация для заказа по имени (``engine.classic.find_record``, ``lookup_melody``) и для хуков темы сета
+(:func:`theme_hooks`).
 Сначала запрос как есть — ``RtttlLibrary.get`` (его RU-алиасы и ранжирование не меняются). Если найденная
 запись покрывает не все значимые слова, слова разбирает код:
 
@@ -28,6 +29,8 @@ from ..core.translit_ru import strip_version_tail, transliterate_ru
 #: Доля значимых слов запроса, которую должна покрыть запись, чтобы считаться найденной.
 FOUND_MIN = 0.5
 SEARCH_LIMIT = 50
+#: Сколько найденных по теме мелодий получает профиль сета (кандидаты хука и LLM).
+THEME_HOOKS = 8
 _WORD_MIN = 4  # русское слово короче («год», «дом», «чип») — не название: совпадений по звуку слишком много
 _STEM_MIN = 5  # основа короче («мисс» от «миссия») сверяется только целым словом, не основой
 _PREFIX_SLACK = 4  # слово архива длиннее основы не больше чем на столько букв
@@ -189,4 +192,14 @@ def find(library: Any, text: str, limit: int = 5) -> Found:
     return Found(True, round(confidence, 3), record, alternatives, query)
 
 
-__all__ = ["FOUND_MIN", "Found", "SEARCH_LIMIT", "Term", "coverage", "find", "ranked", "sound_key", "stem", "terms"]
+def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
+    """Мелодии по словам темы сета для хука (``theme.seeded_profile(found=…)``): записи, покрывающие не меньше
+    :data:`FOUND_MIN` слов темы, лучшие первыми. Ни одной — пусто, сет возьмёт пул по хешу темы."""
+    query_terms = terms(library, theme)
+    if not query_terms:
+        return ()
+    return tuple(r["name"] for c, r, _q in ranked(library, query_terms) if c >= FOUND_MIN)[:limit]
+
+
+__all__ = ["FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "Term", "coverage", "find", "ranked", "sound_key",
+           "stem", "terms", "theme_hooks"]

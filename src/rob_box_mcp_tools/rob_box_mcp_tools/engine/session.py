@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.harmony import PROGRESSION_WINDOW
 from rob_box_music.arrange.mix import set_master
-from rob_box_music.diversity import track_history
+from rob_box_music.diversity import HISTORY_FIELDS, track_history
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import SetPlan
@@ -58,20 +58,26 @@ def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) 
 
 
 class SetMemory:
-    """Строки треков прошлых сетов (свежие первыми) — разнообразие МЕЖДУ сетами, пока жив процесс.
+    """Строки треков прошлых сетов (свежие первыми) — разнообразие МЕЖДУ сетами (A13, I17).
 
     Приёмка 02.10 (A13): история жила только внутри сета, и окно «прогрессия ≤ 3 из 10 треков подряд» на стыке
-    сетов не держалось (5 из 10). Глубина — окно этого критерия. Перезапуск процесса память обнуляет.
+    сетов не держалось (5 из 10). Глубина — окно этого критерия. ``store`` — ``diversity.MusicHistory``
+    (таблица ``music_history``): память переживает перезапуск процесса, треки сета пишутся в неё на старте
+    следующего (#3399: хуки недавних сетов уходят в конец очереди ``compose.hook_candidates``).
     """
 
-    def __init__(self, depth: int = PROGRESSION_WINDOW) -> None:
+    def __init__(self, depth: int = PROGRESSION_WINDOW, store: Any = None) -> None:
         self._depth = depth
-        self._past: Tuple[Dict[str, Any], ...] = ()
+        self._store = store
+        self._past: Tuple[Dict[str, Any], ...] = tuple(store.recent(depth)) if store is not None else ()
         self._rows: Dict[int, Dict[str, Any]] = {}
 
     def begin(self) -> Tuple[Dict[str, Any], ...]:
-        """Новый сет: треки прошлого уходят в память; вернуть её (свежие первыми)."""
+        """Новый сет: треки прошлого уходят в память (и в ``store``); вернуть её (свежие первыми)."""
         last = tuple(self._rows[no] for no in sorted(self._rows, reverse=True))
+        if self._store is not None:
+            for row in reversed(last):
+                self._store.record(**{k: v for k, v in row.items() if k in HISTORY_FIELDS})
         self._past, self._rows = (last + self._past)[:self._depth], {}
         return self._past
 
