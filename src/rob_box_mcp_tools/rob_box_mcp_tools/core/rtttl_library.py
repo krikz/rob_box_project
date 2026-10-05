@@ -566,6 +566,7 @@ class RtttlLibrary:
         # или ``None``): голая функция резолвит до десятка алиасов через
         # :meth:`get` на каждый вызов, кэш экономит это на повторных треках.
         self._ru_alias_cache: Dict[str, Optional[str]] = {}
+        self._vocabulary: Optional[frozenset] = None
 
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -680,6 +681,18 @@ class RtttlLibrary:
     def token_weights(self) -> "_TokenWeights":
         """Взвешиватель токенов (issue #2964) — с кэшем на этом инстансе."""
         return self._token_weights
+
+    def vocabulary(self) -> frozenset:
+        """Слова опознавательных полей всех записей (``name/title/artist/rtttl_name``) — для разбора
+        русских слов запроса в токены архива (``engine.search``, #3399). Считается один раз на инстанс."""
+        if self._vocabulary is None:
+            with self._lock:
+                rows = self._conn.execute("SELECT name, title, artist, rtttl_name FROM rtttl_melodies").fetchall()
+            words = set()
+            for row in rows:
+                words.update(re.findall(r"[a-z0-9]{2,}", " ".join(str(v or "") for v in row).lower()))
+            self._vocabulary = frozenset(words)
+        return self._vocabulary
 
     @staticmethod
     def _score(row: sqlite3.Row, tokens: List[str]) -> int:

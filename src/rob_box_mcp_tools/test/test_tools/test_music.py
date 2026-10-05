@@ -2870,6 +2870,8 @@ class TestLookupMelodyTool:
             "title": "Imperial March",
             "rtttl": "StarWars:d=4,o=5,b=80:8d",
         }
+        rtttl_library.vocabulary.return_value = frozenset({"imperial", "march"})
+        rtttl_library.search.return_value = []
         manager = Mock()
         tool = LookupMelodyTool(mock_node, Mock(), manager, rtttl_library)
 
@@ -2895,18 +2897,19 @@ class TestLookupMelodyTool:
         library = Mock()
         library.find_melody.return_value = None
         rtttl_library = Mock()
-        rtttl_library.get.side_effect = [
-            None,  # primary name не нашёлся
-            {
-                "name": "starwars_3",
-                # issue #2964: covers_tokens() сверяет запись с кандидатом,
-                # который её реально нашёл («darth vader») — title обязан
-                # покрывать оба его токена, иначе честный резолв отклонит
-                # совпадение как вероятно другую песню.
-                "title": "Imperial March (Darth Vader Theme)",
-                "rtttl": "x:d=4,o=5,b=80:c",
-            },
-        ]
+        vader = {
+            "name": "starwars_3",
+            # issue #2964: covers_tokens() сверяет запись с кандидатом,
+            # который её реально нашёл («darth vader») — title обязан
+            # покрывать оба его токена, иначе честный резолв отклонит
+            # совпадение как вероятно другую песню.
+            "title": "Imperial March (Darth Vader Theme)",
+            "rtttl": "x:d=4,o=5,b=80:c",
+        }
+        # primary name не нашёлся ни как есть, ни поиском по словам (#3399: engine.search.find)
+        rtttl_library.get.side_effect = lambda q: vader if q == "darth vader" else None
+        rtttl_library.search.return_value = []
+        rtttl_library.vocabulary.return_value = frozenset()
         manager = Mock()
         tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
 
@@ -2916,6 +2919,7 @@ class TestLookupMelodyTool:
         assert result.data["name"] == "starwars_3"
         # Останавливаемся на первом совпадении — третий вариант не нужен.
         assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",  # engine.search.find
             "imperial march",
             "darth vader",
         ]

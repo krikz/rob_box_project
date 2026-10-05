@@ -132,6 +132,24 @@ THEMES: Mapping[str, ThemeRow] = {
 #: Хуки без темы (тема не из таблицы): узнаваемые мелодии, тоже из локальной библиотеки.
 DEFAULT_HOOKS: Tuple[str, ...] = ("tetris", "axelf_3", "popcorn", "macarena", "nokiatun_2", "aroundth_3", "robot")
 
+#: Слова просьбы и темы, которые не называют мелодию (#3399: «вечеринка по темам терминатора» искала
+#: «по»/«темам» и находила мусор). Сверка — по основе слова (``engine.search.stem``): падежи не перечисляются.
+SEARCH_STOPWORDS: Tuple[str, ...] = (
+    "вечеринка", "тусовка", "дискотека", "сет", "тема", "по", "для", "любители", "любитель", "играем", "играть",
+    "сыграй", "поиграй", "давай", "включи", "включай", "поставь", "запусти", "хочу", "хотим", "мне", "нам", "нас",
+    "диджей", "диджейский", "музыка", "музыкальный", "трек", "мелодия", "песня", "песенка", "про", "на", "в", "во",
+    "и", "с", "со", "у", "о", "об", "от", "из", "к", "ко", "за", "как", "стиль", "стиле", "жанр", "ну", "а", "это",
+    "этот", "эта", "сегодня", "будет", "будем", "пожалуйста", "робби", "чтобы", "чтоб", "типа", "вайб",
+    "party", "set", "theme", "dj", "music", "song", "track", "style", "play", "the", "of", "a", "an", "and", "in",
+    "on", "for", "to", "with", "from", "at", "by", "de", "la", "le", "du", "des",
+)
+#: Понятия темы без мелодии с таким словом в названии → английский запрос к архиву (несколько слов — любое).
+#: Ключ — начало основы слова темы.
+THEME_CONCEPTS: Mapping[str, str] = {
+    "косм": "space", "денди": "mario contra zelda", "dendy": "mario contra zelda", "приставк": "mario contra zelda",
+    "нинтенд": "mario zelda", "nintendo": "mario zelda",
+}
+
 
 @dataclass(frozen=True)
 class SynthTraits:
@@ -300,8 +318,9 @@ __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_KITS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
     "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "GENRE_WINDOWS", "GenreWindow", "THEMES",
     "ThemeRow", "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "REGISTERS", "ROLES",
-    "ROOTS", "SAMPLE_CATALOG", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES", "SYNTH_PALETTE",
-    "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling", "scale_pitch_classes", "traits_of",
+    "ROOTS", "SAMPLE_CATALOG", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES", "SEARCH_STOPWORDS",
+    "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
+    "scale_pitch_classes", "traits_of",
 ]
 
 

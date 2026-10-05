@@ -1,0 +1,192 @@
+"""Поиск мелодии по словам человека: ``find(library, text)`` (ADR-0149 §3.3, I16; #3399).
+
+Одна реализация для заказа по имени (``engine.classic.find_record``, ``lookup_melody``) и для хуков темы сета.
+Сначала запрос как есть — ``RtttlLibrary.get`` (его RU-алиасы и ранжирование не меняются). Если найденная
+запись покрывает не все значимые слова, слова разбирает код:
+
+* служебные слова просьбы и темы (``knowledge.SEARCH_STOPWORDS``) отбрасываются по основе слова;
+* понятие без мелодии в названии («космос», «денди») → английский запрос (``knowledge.THEME_CONCEPTS``);
+* русское слово → транслит слова, затем его основы (падежное окончание снято) → слова архива с тем же
+  звуковым ключом (``gadzhet`` ~ ``gadget``, ``inspektor`` ~ ``inspector``); основа сверяется и по началу.
+  Слово, которого в архиве нет, ничего не находит (подстрока транслита давала «дела» → «Abdelazer»).
+
+``confidence`` — доля значимых слов запроса, нашедшихся в опознавательных полях записи; ``found`` — не
+меньше :data:`FOUND_MIN`. Промах — ``found=False`` без записи (I16), а не «лучшее по тексту».
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from rob_box_music import knowledge as kn
+
+from ..core.rtttl_library import _alias_normalize
+from ..core.translit_ru import transliterate_ru
+
+#: Доля значимых слов запроса, которую должна покрыть запись, чтобы считаться найденной.
+FOUND_MIN = 0.5
+SEARCH_LIMIT = 50
+_WORD_MIN = 4  # русское слово короче («год», «дом», «чип») — не название: совпадений по звуку слишком много
+_STEM_MIN = 5  # основа короче («мисс» от «миссия») сверяется только целым словом, не основой
+_PREFIX_SLACK = 4  # слово архива длиннее основы не больше чем на столько букв
+_MAX_ALTS = 4
+_WORD_RE = re.compile(r"[a-z0-9а-я]+")
+_CYR_RE = re.compile(r"[а-я]")
+#: Падежные и родовые окончания, длинные первыми; основа короче трёх букв не остаётся.
+_ENDINGS = tuple(sorted((
+    "иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими", "ией", "ах", "ях", "ов", "ев", "ей", "ой", "ий",
+    "ый", "ая", "яя", "ое", "ее", "ую", "юю", "ом", "ем", "ам", "ям", "ия", "ие", "ию", "ии", "ы", "и", "а", "я",
+    "у", "ю", "е", "о", "ь", "й"), key=len, reverse=True))
+_ADJ_ENDINGS = ("ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие", "ых", "их", "ым", "им")
+#: Звуковой ключ латиницы: русский транслит и английское написание одного слова совпадают.
+_KEY_RULES = (("dzh", "j"), ("zh", "j"), ("dg", "j"), ("dj", "j"), ("ch", "4"), ("kh", "h"), ("ph", "f"),
+              ("th", "t"), ("ck", "k"), ("c", "k"), ("q", "k"), ("x", "ks"), ("w", "v"), ("y", "i"), ("ee", "i"),
+              ("oo", "u"))
+_IDENTITY = ("name", "title", "artist", "rtttl_name")
+
+
+def stem(word: str) -> str:
+    """Основа русского слова: снято одно окончание из :data:`_ENDINGS`; латиница — как есть."""
+    if not _CYR_RE.search(word):
+        return word
+    for end in _ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 3:
+            return word[:-len(end)]
+    return word
+
+
+def sound_key(latin: str) -> str:
+    key = latin
+    for src, dst in _KEY_RULES:
+        key = key.replace(src, dst)
+    return re.sub(r"(.)\1+", r"\1", key)
+
+
+_STOP = frozenset(stem(w.replace("ё", "е")) for w in kn.SEARCH_STOPWORDS) | frozenset(kn.SEARCH_STOPWORDS)
+
+
+@dataclass(frozen=True)
+class Term:
+    """Значимое слово запроса и его написания в архиве (любое совпало — слово найдено)."""
+
+    word: str
+    alts: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Found:
+    """Структурный исход поиска (ADR-0149 §3.3); ``query`` — строка, по которой нашлась запись."""
+
+    found: bool
+    confidence: float
+    record: Optional[Dict[str, Any]]
+    alternatives: Tuple[Dict[str, Any], ...] = ()
+    query: str = ""
+
+
+class _Vocab:
+    def __init__(self, words: Iterable[str]) -> None:
+        self.by_key: Dict[str, List[str]] = {}
+        for word in sorted(words):
+            self.by_key.setdefault(sound_key(word), []).append(word)
+
+    def exact(self, latin: str) -> Tuple[str, ...]:
+        return tuple(self.by_key.get(sound_key(latin), ()))
+
+    def prefix(self, latin: str) -> Tuple[str, ...]:
+        key = sound_key(latin)
+        hits = sorted((len(k), k) for k in self.by_key if k.startswith(key) and len(k) - len(key) <= _PREFIX_SLACK)
+        return tuple(w for _n, k in hits for w in self.by_key[k])
+
+
+_VOCAB_CACHE: Dict[int, Tuple[frozenset, _Vocab]] = {}
+
+
+def _vocab(library: Any) -> _Vocab:
+    words = library.vocabulary()
+    cached = _VOCAB_CACHE.get(id(words))
+    if cached is None or cached[0] is not words:
+        _VOCAB_CACHE.clear()
+        cached = _VOCAB_CACHE[id(words)] = (words, _Vocab(words))
+    return cached[1]
+
+
+def _concept(word_stem: str) -> Tuple[str, ...]:
+    for key, query in kn.THEME_CONCEPTS.items():
+        if word_stem.startswith(key):
+            return tuple(query.split())
+    return ()
+
+
+def _resolve(vocab: _Vocab, word: str, word_stem: str) -> Tuple[str, ...]:
+    """Русское слово → слова архива: ключ слова (не прилагательного: «новый» ≠ «Novy»), основы, затем начало
+    основы. Не нашлось — пусто: слово остаётся в знаменателе ``confidence`` и ни с чем не совпадает."""
+    if not word.endswith(_ADJ_ENDINGS) and vocab.exact(transliterate_ru(word)):
+        return vocab.exact(transliterate_ru(word))[:_MAX_ALTS]
+    latin_stem = transliterate_ru(word_stem)
+    if len(word_stem) >= _STEM_MIN:
+        hits = vocab.exact(latin_stem) or vocab.prefix(latin_stem)
+        if hits:
+            return hits[:_MAX_ALTS]
+    return ()
+
+
+def terms(library: Any, text: str) -> List[Term]:
+    """Значимые слова запроса после алиасов библиотеки, без служебных слов (:data:`_STOP`)."""
+    vocab = _vocab(library)
+    out: List[Term] = []
+    for word in _WORD_RE.findall(_alias_normalize(text).replace("ё", "е")):
+        word_stem = stem(word)
+        if word in _STOP or word_stem in _STOP:
+            continue
+        alts = _concept(word) or _concept(word_stem)
+        if not alts and _CYR_RE.search(word):
+            if len(word) < _WORD_MIN:
+                continue
+            alts = _resolve(vocab, word, word_stem)
+        out.append(Term(word, alts if _CYR_RE.search(word) else alts or (word,)))
+    return out
+
+
+def coverage(record: Dict[str, Any], query_terms: List[Term]) -> float:
+    """Доля слов запроса, нашедшихся в опознавательных полях записи."""
+    if not query_terms:
+        return 0.0
+    hay = " ".join(str(record.get(f) or "") for f in _IDENTITY).lower()
+    return sum(1 for t in query_terms if any(a in hay for a in t.alts)) / len(query_terms)
+
+
+def ranked(library: Any, query_terms: List[Term], direct: Optional[Dict[str, Any]] = None,
+           text: str = "") -> List[Tuple[float, Dict[str, Any], str]]:
+    """Кандидаты ``(confidence, запись, запрос)``: запись ``get`` как есть (первой при равной доле), затем
+    поиск по словам архива — он же даёт альтернативы."""
+    pool = [(coverage(direct, query_terms), direct, text)] if direct else []
+    query = " ".join(dict.fromkeys(a for t in query_terms for a in t.alts))
+    if query:
+        pool += [(coverage(r, query_terms), r, query)
+                 for r in library.search(query, limit=SEARCH_LIMIT, include_rtttl=True)]
+    seen, out = set(), []
+    for item in sorted(pool, key=lambda it: -it[0]):  # sorted устойчив: при равной доле — порядок библиотеки
+        name = item[1].get("name")
+        if name not in seen:
+            seen.add(name)
+            out.append(item)
+    return out
+
+
+def find(library: Any, text: str, limit: int = 5) -> Found:
+    """Мелодия по словам человека: ``found``, ``confidence``, ``record`` и до ``limit - 1`` альтернатив."""
+    query_terms = terms(library, text)
+    if not query_terms:
+        return Found(False, 0.0, None)
+    hits = ranked(library, query_terms, library.get(text) if text.strip() else None, text)
+    if not hits or hits[0][0] < FOUND_MIN:
+        return Found(False, hits[0][0] if hits else 0.0, None)
+    confidence, record, query = hits[0]
+    alternatives = tuple(r for c, r, _q in hits[1:limit] if c >= FOUND_MIN)
+    return Found(True, round(confidence, 3), record, alternatives, query)
+
+
+__all__ = ["FOUND_MIN", "Found", "SEARCH_LIMIT", "Term", "coverage", "find", "ranked", "sound_key", "stem", "terms"]

@@ -1,7 +1,7 @@
 """Classic v2 — «поставь Калинку» на движке v2 (ADR-0149 §3.3, §9 PR-11; решение Шифу В5).
 
 Поиск, разбор и гармонизация — СТАРЫЕ библиотеки, вызываются как есть (ADR-0149 §8.1: 10+ вшитых фиксов не
-переписывать): ``RtttlLibrary.get`` + ``match_info`` (поиск по имени, RU-алиасы, транслит ``translit_ru``),
+переписывать): ``engine.search.find`` (``RtttlLibrary.get`` как есть, затем слова запроса по основам) + ``match_info`` (поиск по имени, RU-алиасы, транслит ``translit_ru``),
 решение «это та самая мелодия» — ``named_play.melody_hit`` (одно правило с роутером v1: совпали все значимые
 слова, ни одно не осталось вне поиска), ``rtttl_compose.melody_to_compose_params`` (темп из RTTTL, затакт,
 регистр, контур, тональность) → ``harmonize`` (бас, пэд, рисунки ударных). Отсюда — только перекладка
@@ -21,6 +21,7 @@ from rob_box_music.render.renardo import render
 
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import human_track_title, match_info
+from .search import find
 
 
 @dataclass(frozen=True)
@@ -38,14 +39,17 @@ class ClassicPick:
 
 
 def find_record(library: Any, query: str) -> tuple:
-    """``(запись, "")`` — нашлась ровно та мелодия, иначе ``(None, причина)``; правило — ``named_play.melody_hit``."""
+    """``(запись, "")`` — нашлась ровно та мелодия, иначе ``(None, причина)``. Поиск — ``engine.search.find``
+    (падежи, транслит, служебные слова), правило «та самая» — ``named_play.melody_hit`` по строке, которая
+    запись нашла."""
     from rob_box_voice.core.named_play import melody_hit
 
-    record = library.get(query) if query.strip() else None
-    if not record:
+    found = find(library, query)
+    if not found.found:
         return None, "lookup: не найдена"
+    record = found.record
     hit, reason = melody_hit({"name": record.get("name"), "title": record.get("title"),
-                              "match": match_info(library, record, query)})
+                              "match": match_info(library, record, found.query)})
     return (record, "") if hit is not None else (None, reason)
 
 
