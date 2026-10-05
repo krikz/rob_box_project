@@ -23,7 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from rob_box_music import knowledge as kn
 
 from ..core.rtttl_library import _alias_normalize
-from ..core.translit_ru import transliterate_ru
+from ..core.translit_ru import strip_version_tail, transliterate_ru
 
 #: Доля значимых слов запроса, которую должна покрыть запись, чтобы считаться найденной.
 FOUND_MIN = 0.5
@@ -134,10 +134,10 @@ def _resolve(vocab: _Vocab, word: str, word_stem: str) -> Tuple[str, ...]:
 
 
 def terms(library: Any, text: str) -> List[Term]:
-    """Значимые слова запроса после алиасов библиотеки, без служебных слов (:data:`_STOP`)."""
+    """Значимые слова запроса после алиасов библиотеки, без хвоста версии («V2.0») и служебных слов."""
     vocab = _vocab(library)
     out: List[Term] = []
-    for word in _WORD_RE.findall(_alias_normalize(text).replace("ё", "е")):
+    for word in _WORD_RE.findall(strip_version_tail(_alias_normalize(text)).replace("ё", "е")):
         word_stem = stem(word)
         if word in _STOP or word_stem in _STOP:
             continue
