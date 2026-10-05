@@ -136,7 +136,7 @@ def test_loop_is_chopped_into_eighths_each_restarted_on_its_beat(fifty):
 def test_psr_takes_a_random_pool_file_on_every_sixteenth_under_the_sidechain(fifty):
     """psr-слой: удар на каждой 16-й, файл — из пула трека и меняется от удара к удару; ``sus`` ≤ длины файла
     (звучит один раз); громкость качает та же огибающая, что пэд и бас (тише на ударе бочки)."""
-    from rob_box_music.arrange.mix import duck_envelope
+    from rob_box_music.arrange.mix import duck_envelope, file_gain
     for track in fifty[0][::5]:
         program, by_slot = _events_by_slot(track)
         pool = set(track.history_key.perc.split(","))
@@ -157,8 +157,10 @@ def test_psr_takes_a_random_pool_file_on_every_sixteenth_under_the_sidechain(fif
         for duck in set(track.mix.duck):
             env = duck_envelope(duck.trigger, duck.depth)
             mine = [ev for ev in events if look(ev.beat) == duck]
-            on_kick = [ev.amp for ev in mine if round(ev.beat * 4) % 16 in duck.trigger]
-            off_kick = [ev.amp for ev in mine if env[round(ev.beat * 4) % 16] == 1.0]
+            # уровень файла пула (#3432: громче эталона — тише) — не сайдчейн: сравнение без него
+            level = {kn.SAMPLE_CATALOG[n].loop_arg: file_gain(n, track.parts["sample"].synth_or_sample) for n in pool}
+            on_kick = [ev.amp / level[ev.sample] for ev in mine if round(ev.beat * 4) % 16 in duck.trigger]
+            off_kick = [ev.amp / level[ev.sample] for ev in mine if env[round(ev.beat * 4) % 16] == 1.0]
             assert not mine or (on_kick and off_kick and max(on_kick) < min(off_kick)), duck
 
 

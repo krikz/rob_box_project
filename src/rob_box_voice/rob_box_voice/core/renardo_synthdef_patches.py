@@ -105,6 +105,35 @@ FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
 """
 
 
+# Issue #3432: upstream renardo_lib 0.9.13 ``loop`` (LoopPygenSynthDef) has a
+# hard-coded ``Env([0,1,1,0],[0.05, sus-0.05, 0.05])``: a 50 ms fade-in that
+# swallows the transient of a short hit, and a 50 ms release AFTER ``sus`` —
+# every psr hit on a 16th (109 ms at 138 BPM) overlapped the next one by half a
+# step, every ``chop`` piece overlapped the next piece, and a file shorter than
+# ``sus`` + 50 ms restarted its head inside the release (``PlayBuf(loop: 1)``).
+# DJ_Dave's Strudel samples start on the first sample and ``legato(1)`` ends a
+# piece where the next begins. The patch keeps the upstream argument list and
+# playback; the envelope uses the ``atk``/``rel`` args (seconds, Renardo sends
+# the SynthDef defaults 0.01 when the player does not set them) and fits INSIDE
+# ``sus``: total length == ``sus``.
+LOOP_SYNTHDEF = """SynthDef.new(\\loop,
+{|amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=1.0, bus=0, blur=1, beat_dur=1,
+atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, buf=0, pos=0, room=0.1, sample=0, spack=0, beat_stretch=0|
+var osc, edgeA, edgeR;
+sus = sus * blur;
+rate = In.kr(bus, 1);
+rate = (rate * (1-(beat_stretch>0))) + ((BufDur.kr(buf) / sus) * (beat_stretch>0));
+osc = PlayBuf.ar(2, buf, BufRateScale.kr(buf) * rate, startPos: BufSampleRate.kr(buf) * pos, loop: 1.0);
+edgeA = atk.clip(0.001, sus * 0.5);
+edgeR = rel.clip(0.001, sus * 0.5);
+osc = osc * EnvGen.ar(Env([0, 1, 1, 0], [edgeA, sus - edgeA - edgeR, edgeR]));
+osc = (osc * amp);
+osc = Mix(osc) * 0.5;
+osc = Pan2.ar(osc, pan);
+\tReplaceOut.ar(bus, osc)}).add;
+"""
+
+
 # Issue #3008 (regression 27.09): some synths are NOT file-based in upstream
 # renardo_lib — they are Python-generated (``DefaultPygenSynthDef`` in
 # ``runtime/synthdefs_initialisation/python_defined_synthdefs.py``). Their
@@ -114,7 +143,7 @@ FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
 # scsynth. foxdot_init.sc therefore redirects ``/foxdot`` for these names to
 # the patched file. Keep in sync with ``pygenPatchedSynths`` in
 # docker/vision/voice_assistant/foxdot_init.sc (guarded by a unit test).
-PYGEN_PATCHED_SYNTHS: tuple[str, ...] = ("fuzz",)
+PYGEN_PATCHED_SYNTHS: tuple[str, ...] = ("fuzz", "loop")
 
 
 def resolve_conflicted_scd_content(content: str) -> str:
@@ -184,6 +213,15 @@ def patch_fuzz_scd_content(content: str) -> str:
     return FUZZ_SYNTHDEF
 
 
+def patch_loop_scd_content(content: str) -> str:
+    """Replace loop.scd with the edges-inside-``sus`` envelope (issue #3432)."""
+
+    if "\\loop" not in content:
+        return content
+
+    return LOOP_SYNTHDEF
+
+
 def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
     """Patch broken Renardo .scd files in place and return modified file names."""
 
@@ -207,6 +245,9 @@ def apply_renardo_synthdef_patches(sclang_dir: Path) -> list[str]:
 
         if scd_file.name == "fuzz.scd":
             updated = patch_fuzz_scd_content(updated)
+
+        if scd_file.name == "loop.scd":
+            updated = patch_loop_scd_content(updated)
 
         if updated != original:
             scd_file.write_text(updated, encoding="utf-8")
