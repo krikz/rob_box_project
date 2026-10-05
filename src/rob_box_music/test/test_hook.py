@@ -139,6 +139,17 @@ def test_lead_key_fit_is_checked_by_duration_not_note_by_note():
     assert err.value.path == "parts.lead.pitches" and "в ладу" in err.value.reason
 
 
+def test_hook_outcome_is_logged_with_key_fit(caplog):
+    """I12: key_fit принятого хука и причина отказа — в логе (замер приёмки по логу, не по слуху)."""
+    caplog.set_level("INFO", logger="rob_box_music.arrange.hook")
+    hook, _key = hooks.from_rtttl(PASSING, "passing", 132, 0, "minor", HOOK_REGISTER)
+    with pytest.raises(hooks.HookError):
+        hooks.from_rtttl(CHROMATIC, "chroma", 132, 0, "minor")
+    lines = [r.getMessage() for r in caplog.records]
+    assert any("melody=passing" in m and f"key_fit={hook.key_fit:.2f}" in m for m in lines), lines
+    assert any("melody=chroma" in m and "отказ" in m and "key_fit" in m for m in lines), lines
+
+
 def test_a_theme_melody_becomes_the_hook_on_most_roots():
     """Тема отвергается только честно (не ложится в коридор лида/под ней нет места пэду), на большинстве тоник — хук."""
     for name in ("long", "short", "slow"):
@@ -237,14 +248,3 @@ def test_recent_hooks_of_past_sets_go_last():
     for seed in range(8):
         order = [h.source for h, _k in hook_candidates(prof, MELODIES, random.Random(seed), history)]
         assert order == ["short", "slow", "long"], seed
-
-
-def test_hook_outcome_is_logged_with_key_fit(caplog):
-    """I12: key_fit принятого хука и причина отказа — в логе (замер приёмки по логу, не по слуху)."""
-    caplog.set_level("INFO", logger="rob_box_music.arrange.hook")
-    hook, _key = hooks.from_rtttl(PASSING, "passing", 132, 0, "minor", HOOK_REGISTER)
-    with pytest.raises(hooks.HookError):
-        hooks.from_rtttl(CHROMATIC, "chroma", 132, 0, "minor")
-    lines = [r.getMessage() for r in caplog.records]
-    assert any("melody=passing" in m and f"key_fit={hook.key_fit:.2f}" in m for m in lines), lines
-    assert any("melody=chroma" in m and "отказ" in m and "key_fit" in m for m in lines), lines
