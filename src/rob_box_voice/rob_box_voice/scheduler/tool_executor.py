@@ -6,8 +6,8 @@ ownership is enforced between the LLM and the ROS side-effect layer:
 * ``speak_text``            → VOICE channel (FIFO, strictly sequential)
 * ``stop_music``            → MUSIC channel (deferred until VOICE drains)
 * ``play_animation``        → ANIM channel
-* music starters (``execute_music_code`` / ``set_vibe_preset`` /
-  ``load_track``) and everything else (memory / search / get_* /
+* music starters (``execute_music_code`` / ``set_vibe_preset``)
+  and everything else (memory / search / get_* /
   estimate_* / nav …)       → executed directly, blocking (bypass)
 
 The key contract (W7_INTEGRATION_PLAN.md §W7b): :meth:`execute` does NOT
@@ -75,7 +75,7 @@ _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 #: Tools that own the MUSIC channel.
 #
 # 🔴 FIX (party regression, live 19.08): the music *starters*
-# (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``) must run
+# (``execute_music_code`` / ``set_vibe_preset``) must run
 # BLOCKING so the LLM sees the real result («Код выполнен успешно») instead
 # of a fire-and-forget «queued». The queued contract blinded the DJ LLM —
 # it never got confirmation that music actually started and kept skipping

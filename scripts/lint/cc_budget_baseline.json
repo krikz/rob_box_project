@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-05",
-  "base_sha": "1243adaf1e7d45f6ff5ce1ecbb0706e1b41bd037",
+  "base_sha": "d54ae3d7bcd2d3da2dd901a6a9e7bb7604a27b15",
   "limits": {
     "method": 15,
     "init": 20
@@ -12,9 +12,6 @@
     },
     "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py": {
       "classify_sclang_log": 19
-    },
-    "src/rob_box_voice/rob_box_voice/core/sample_search.py": {
-      "search_renardo_samples": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
@@ -150,12 +147,6 @@
       "path": "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py",
       "method": "classify_sclang_log",
       "cc": 19,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/core/sample_search.py",
-      "method": "search_renardo_samples",
-      "cc": 31,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

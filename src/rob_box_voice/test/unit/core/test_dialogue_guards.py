@@ -301,11 +301,6 @@ class TestUnbackedActionClaimLive3008:
             (
                 "удали трек тисбит из сохраненных",
                 "«Тисбит» удалён.",
-                ("delete_track",),
-            ),
-            (
-                "удали трек тисбит из сохраненных",
-                "«Тисбит» удалён.",
                 ("gen_delete_from_library",),
             ),
         ],
@@ -390,7 +385,7 @@ class TestLive3008E2eSecondRound:
         assert rule.category == "library_search"
 
     @pytest.mark.parametrize(
-        "tool", ["search_samples", "list_tracks", "gen_search_library"],
+        "tool", ["gen_list_library", "gen_search_library"],
     )
     def test_search_claim_with_any_search_tool_is_fine(self, tool: str) -> None:
         assert (
@@ -1369,8 +1364,8 @@ class TestPhantomActionClaimLive2559:
             ("Перезагружу сервис микрофона.", "restart_mic"),
             ("Запущу мелодию.", "execute_music_code"),
             ("Остановлю воспроизведение.", "stop_music"),
-            ("Поменяю плейлист.", "load_track"),
-            ("Загружу новый трек.", "load_track"),
+            ("Поменяю плейлист.", "gen_play_from_library"),
+            ("Загружу новый трек.", "gen_play_from_library"),
             ("Обновлю партию.", "compose_music"),
         ],
     )

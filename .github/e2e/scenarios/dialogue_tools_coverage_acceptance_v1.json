@@ -20,12 +20,7 @@
     "memory_search",
     "get_sound_info",
     "get_music_state",
-    "search_samples",
-    "save_track",
-    "list_tracks",
-    "load_track",
     "stop_music",
-    "delete_track",
     "list_waypoints",
     "save_waypoint",
     "delete_waypoint"

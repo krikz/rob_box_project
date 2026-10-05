@@ -41,8 +41,8 @@
   tools_any: [gen_list_library, gen_search_library, gen_play_from_library]
   tools_none: [execute_music_code]
   note: |
-    Два конфликтующих словаря «трек»: mp3-библиотека (gen_*) и Renardo
-    (load_track). Просьба про библиотеку не должна уходить в синтез.
+    Два конфликтующих словаря «трек»: mp3-библиотека (gen_*) и синтез
+    Renardo. Просьба про библиотеку не должна уходить в синтез.
 
 - id: player-random
   say: "робот поставь случайный трек"
@@ -54,10 +54,9 @@
   say: "робот будь диджеем устрой вечеринку"
   domain: dj
   tools_any: [set_dj_mode]
-  tools_none: [load_track, list_tracks]
   note: |
-    DJ-режим генерирует свежий трек, а не грузит сохранённый: load_track
-    даёт резкую вставку между треками. Плюс plan обязателен.
+    DJ-режим генерирует свежий трек, а не грузит сохранённый.
+    Плюс plan обязателен.
 
 - id: dj-stop
   say: "робот хватит диджеить"

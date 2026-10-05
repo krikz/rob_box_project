@@ -392,7 +392,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     ),
     "composer": (
         "request_music",
-        "search_samples",
         "lookup_melody",
         "search_melody",
         "add_music_material",
@@ -418,12 +417,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "gen_save_to_library",
         "gen_delete_from_library",
         "stop_music",
-    ),
-    "renardo-library": (
-        "save_track",
-        "list_tracks",
-        "load_track",
-        "delete_track",
     ),
     "navigation": (
         "navigate_to_waypoint",
@@ -547,7 +540,6 @@ def extract_tools() -> list[dict[str, Any]]:
                 "destructive": True,
                 "idempotent": False,
                 "starts_music": False,
-                "satisfies_user_music": False,
                 "execution_type": "medium",
             }
             params: list[dict[str, Any]] | None = None
@@ -567,7 +559,6 @@ def extract_tools() -> list[dict[str, Any]]:
                     "llm_visible",
                     "operator_visible",
                     "starts_music",
-                    "satisfies_user_music",
                 ):
                     value = _returned_literal(fn)
                     if isinstance(value, bool):

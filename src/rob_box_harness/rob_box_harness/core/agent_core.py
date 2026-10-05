@@ -168,7 +168,7 @@ PromptObserver = Callable[[PromptStats], None]
 # (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
 # re-ordering fixes the *intra-batch* race:
 #
-# * music tools (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``)
+# * music tools (``execute_music_code`` / ``set_vibe_preset``)
 #   run FIRST so the prelude starts before speech,
 # * ordinary tools keep their relative order,
 # * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
@@ -176,7 +176,7 @@ PromptObserver = Callable[[PromptStats], None]
 #   the flag tells the scheduler not to fire the side effect until the voice
 #   channel is empty.
 _MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
-    {"execute_music_code", "set_vibe_preset", "load_track"}
+    {"execute_music_code", "set_vibe_preset"}
 )
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 # Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
@@ -528,7 +528,7 @@ _ACCEPT_PHRASE_MAX_CHARS: int = 40
 #: hallucinated-lyrics guard must fire for ANY music tool that leaves
 #: the user hearing lyrics on top of audio (issue #1708 / #1561).
 _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
-    "execute_music_code", "set_vibe_preset", "load_track",
+    "execute_music_code", "set_vibe_preset",
     "generate_music", "gen_play_from_library",
 })
 
@@ -2511,7 +2511,7 @@ def _is_hallucinated_speak_text(
 
     * The call is ``speak_text`` (other tools are passed through).
     * A music-launch tool (``execute_music_code`` / ``set_vibe_preset``
-      / ``load_track`` / ``generate_music`` / ``gen_play_from_library``)
+      / ``generate_music`` / ``gen_play_from_library``)
       appears in the SAME LLM batch (either before OR after this
       ``speak_text`` call) — ``same_batch_music_calls`` carries those
       names. The order in the batch does NOT matter: the LLM

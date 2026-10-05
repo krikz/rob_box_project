@@ -190,11 +190,6 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "ExecuteMusicCodeTool": "execute_music_code",
         "StopMusicTool": "stop_music",
         "GetMusicStateTool": "get_music_state",
-        "SaveTrackTool": "save_track",
-        "ListTracksTool": "list_tracks",
-        "LoadTrackTool": "load_track",
-        "DeleteTrackTool": "delete_track",
-        "SearchSamplesTool": "search_samples",
         "FaqSearchTool": "faq_search",
         "SearchWebTool": "search_web",
     }
@@ -283,8 +278,6 @@ def test_register_tools_skips_track_library_failures_without_crashing(monkeypatc
     assert "start_mapping" in server.registry.tools
     assert "execute_music_code" in server.registry.tools
     assert "lookup_melody" not in server.registry.tools  # нужна библиотека треков
-    assert "save_track" not in server.registry.tools
-    assert "list_tracks" not in server.registry.tools
     assert any("Music library disabled" in msg for msg in server.get_logger().error_messages)
 
 
@@ -304,25 +297,6 @@ def test_recommended_executor_threads_uses_affinity_when_available(monkeypatch):
     monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
 
     assert module._recommended_executor_threads() == 4
-
-
-# ---------------------------------------------------------------------------
-# Issue #1016 — empty-response music fallback (/mcp/music_fallback)
-# ---------------------------------------------------------------------------
-
-
-class _FakeLibrary:
-    def __init__(self, tracks):
-        self._tracks = tracks
-
-    def list_tracks(self, min_rating=0):
-        return {"success": True, "tracks": self._tracks, "total": len(self._tracks)}
-
-    def load_track(self, name):
-        for t in self._tracks:
-            if t["name"] == name:
-                return {"success": True, "code": f"# {name} code", "track": t}
-        return {"success": False, "error": f"Трек '{name}' не найден"}
 
 
 # ---------------------------------------------------------------------------

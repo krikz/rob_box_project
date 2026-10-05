@@ -5,7 +5,7 @@
 Живой сет 24.09.2026: Шифу попросил «добавь выстрелы пистолетов» на
 гангста-вечеринке — модель не вызвала ни одного тула (см. #2968), но даже
 попытавшись, упёрлась бы в то же самое, что #2841 нашёл для лупов:
-``search_samples`` для пака 1 отдаёт ``play_code`` со ``spack=1``, а в
+``play_code`` со ``spack=1`` для пака 1 не работает, а в
 установленной ``renardo_lib`` ``spack`` — no-op (``getBufferFromSymbol``
 всегда строит путь от ``0_foxdot_default``, см. ``core/sample_loops.py``).
 
@@ -35,9 +35,9 @@ import json
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from .sample_loops import PACK1_LOOPS_ENV, pack1_loops_enabled
+from .sample_loops import PACK1_LOOPS_ENV
 
 _CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "sample_fx.json"
 
@@ -124,35 +124,16 @@ def fx_denial(arg: str, enabled: bool) -> Optional[str]:
     return None
 
 
-def fx_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Включён ли белый список FX — тот же флаг, что у лупов пака 1."""
-    return pack1_loops_enabled(environ)
-
-
 def tags_for(name: str) -> Tuple[str, ...]:
     """Жанровые метки FX-сэмпла (пусто, если имени нет в каталоге)."""
     info = fx_catalog().get(name)
     return info.tags if info is not None else ()
 
 
-def fx_by_genre(genre: str) -> Tuple[str, ...]:
-    """Имена FX, у которых в тегах есть данный жанр (без учёта регистра)."""
-    needle = genre.strip().lower()
-    if not needle:
-        return ()
-    return tuple(
-        info.name
-        for info in fx_catalog().values()
-        if needle in {t.lower() for t in info.tags}
-    )
-
-
 __all__ = [
     "FxInfo",
     "find_fx",
-    "fx_by_genre",
     "fx_catalog",
     "fx_denial",
-    "fx_enabled",
     "tags_for",
 ]

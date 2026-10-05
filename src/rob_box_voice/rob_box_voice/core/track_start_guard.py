@@ -31,17 +31,12 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from rob_box_voice.core.dialogue_guards import (
-    MUSIC_STARTING_TOOLS,
-    USER_MUSIC_SATISFYING_TOOLS,
-)
+from rob_box_voice.core.dialogue_guards import MUSIC_STARTING_TOOLS
 
 #: Тулы, запускающие трек (каждый начинает с ``Clock.clear()`` / смены mp3).
-#: Оба набора выводятся из capability-флагов ``TOOL_CATALOG``, отдельного
-#: рукописного списка здесь нет (``starts_music`` и ``satisfies_user_music``).
-TRACK_STARTING_TOOLS: frozenset = (
-    MUSIC_STARTING_TOOLS | USER_MUSIC_SATISFYING_TOOLS
-)
+#: Набор выводится из capability-флага ``starts_music`` в ``TOOL_CATALOG``,
+#: отдельного рукописного списка здесь нет.
+TRACK_STARTING_TOOLS: frozenset = MUSIC_STARTING_TOOLS
 
 #: Машиночитаемый код отказа в ответе тула.
 REFUSAL_ERROR_CODE = "track_already_started_this_turn"

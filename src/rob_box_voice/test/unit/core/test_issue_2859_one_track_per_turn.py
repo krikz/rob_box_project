@@ -151,7 +151,7 @@ def _refusals(contents: list[str]) -> list[dict]:
 
 def test_track_starting_tools_cover_issue_list() -> None:
     expected = {
-        "execute_music_code", "execute_music_code", "load_track",
+        "execute_music_code", "generate_music",
         "gen_play_from_library",
     }
     assert expected <= TRACK_STARTING_TOOLS
@@ -164,7 +164,7 @@ def test_guard_allows_first_success_then_refuses() -> None:
     assert not guard.should_refuse("execute_music_code")
     guard.record("execute_music_code", is_error=False)
     assert guard.should_refuse("execute_music_code")
-    assert guard.should_refuse("load_track")
+    assert guard.should_refuse("gen_play_from_library")
     assert not guard.should_refuse("set_dj_mode")
     assert guard.started_tool == "execute_music_code"
 
@@ -203,7 +203,7 @@ def test_executor_refuses_second_start_without_calling_provider() -> None:
         first = await executor.execute(
             ToolCall(id="a", name="execute_music_code", arguments={}))
         second = await executor.execute(
-            ToolCall(id="b", name="load_track", arguments={}))
+            ToolCall(id="b", name="gen_play_from_library", arguments={}))
         return first, second
 
     first, second = asyncio.run(_go())

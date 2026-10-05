@@ -143,8 +143,8 @@ def test_pack1_loop_is_rewritten_to_path_when_flag_on():
 
 
 def test_rewritten_code_passes_sanitizer_again():
-    """Уже переписанный путь — тоже валидный аргумент (код, сохранённый
-    через save_track, проходит санитайзер повторно)."""
+    """Уже переписанный путь — тоже валидный аргумент (повторный прогон
+    уже переписанного кода проходит санитайзер)."""
     first = sanitize_renando(
         'd3 >> loop("hiphop_1", dur=4)', MAX_AMP, pack1_loops_enabled=True
     )

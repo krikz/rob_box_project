@@ -2232,12 +2232,12 @@ class DialogueNode(Node):
                 "ВАЖНО: сначала подними факты из FAQ (faq_search), "
                 "потом стилизуй ответ. Для стилизации можешь "
                 "использовать рэп или стихи. "
-                "Для музыки используй execute_music_code / load_track."
+                "Для музыки используй execute_music_code."
             )
         else:
             parts.append(
                 "Для стилизации используй рэп или стихи. "
-                "Для музыки используй execute_music_code / load_track."
+                "Для музыки используй execute_music_code."
             )
 
         parts.append(base_prompt)
@@ -2267,7 +2267,7 @@ class DialogueNode(Node):
             if a:
                 lines.append(f"  A: {a}")
         lines.append(
-            "Для музыкального оформления используй execute_music_code / load_track."
+            "Для музыкального оформления используй execute_music_code."
         )
         return "\n".join(lines)
 
@@ -6451,7 +6451,7 @@ tentative_plan(question, kind, name)
         # in sync if a new music tool is added to the manifest.
         _music_tool_names = {
             "execute_music_code", "generate_music",
-            "gen_play_from_library", "set_vibe_preset", "load_track",
+            "gen_play_from_library", "set_vibe_preset",
         }
         _has_music_tool = any(
             name in _music_tool_names for name in tools_called

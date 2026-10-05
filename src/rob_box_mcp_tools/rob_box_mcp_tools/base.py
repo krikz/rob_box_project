@@ -312,17 +312,6 @@ class MCPTool(ABC):
         return False
 
     @property
-    def satisfies_user_music(self) -> bool:
-        """Инструмент закрывает пользовательскую просьбу «включи X».
-
-        Отдельно от ``starts_music``: ``load_track`` запускает Renardo, но
-        в DJ-переходе не должен засчитываться за «музыка пошла» (DJ обязан
-        играть через compose_music/lookup_melody), поэтому у него
-        ``starts_music=False``, а ``satisfies_user_music=True``.
-        """
-        return False
-
-    @property
     def destructive(self) -> bool:
         """
         Инструмент выполняет разрушительные операции (destructiveHint)

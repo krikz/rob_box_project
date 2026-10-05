@@ -52,7 +52,7 @@ _CASE = {
     "id": "composer-beat",
     "domain": "composer",
     "tools_any": ["execute_music_code", "compose_music"],
-    "tools_none": ["load_track"],
+    "tools_none": ["gen_play_from_library"],
 }
 
 
@@ -104,7 +104,7 @@ def test_wrong_tool_scores_between_nothing_and_right() -> None:
 
 
 def test_forbidden_tool_costs_half_of_its_criterion() -> None:
-    result = score_turn(_CASE, _turn(tools=["execute_music_code", "load_track"]))
+    result = score_turn(_CASE, _turn(tools=["execute_music_code", "gen_play_from_library"]))
     assert result.score == pytest.approx(1.0 - WEIGHTS["prohibitions"] * 0.5)
 
 

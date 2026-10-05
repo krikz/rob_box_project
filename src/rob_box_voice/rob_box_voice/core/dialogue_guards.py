@@ -80,15 +80,8 @@ MUSIC_STOP_TOOLS: frozenset = frozenset({
 #: Tools that put existing playback into a mode rather than starting it.
 #: They keep music alive for the cleanup logic.
 MUSIC_MODE_TOOLS: frozenset = frozenset({
-    "load_track",
     "set_vibe_preset",
 })
-
-#: Тулы, которые закрывают ПОЛЬЗОВАТЕЛЬСКУЮ просьбу «включи трек X».
-#: Источник — capability-флаг ``satisfies_user_music`` (напр. ``load_track``).
-USER_MUSIC_SATISFYING_TOOLS: frozenset = frozenset(
-    entry.name for entry in TOOL_CATALOG if entry.satisfies_user_music
-)
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +144,7 @@ PLANNING_NARRATION_TOOL_NAMES: tuple = (
     "execute_music_code",
     "speak_text",
     "set_dj_mode",
-    "search_samples",
     "stop_music",
-    "load_track",
-    "list_tracks",
-    "save_track",
     "gen_play_from_library",
     "gen_search_library",
     "set_vibe_preset",
@@ -621,8 +610,8 @@ ACTION_CLAIM_RULES: tuple = (
             re.IGNORECASE),
         claim_re=re.compile(
             r"(?:удал|стёр|стер|убра)\w*", re.IGNORECASE),
-        tools=frozenset({"delete_track", "gen_delete_from_library"}),
-        what="удаление трека (delete_track / gen_delete_from_library)",
+        tools=frozenset({"gen_delete_from_library"}),
+        what="удаление трека (gen_delete_from_library)",
     ),
     ActionClaimRule(
         category="library_search",
@@ -639,11 +628,10 @@ ACTION_CLAIM_RULES: tuple = (
         # Любой поисковый тул закрывает заявку — какой именно, решает LLM
         # по тому, где искать (сэмплы, медиатека, память, интернет).
         tools=frozenset({
-            "search_samples", "list_tracks", "load_track",
             "gen_search_library", "gen_list_library", "gen_get_track_info",
             "memory_search", "memory_context", "faq_search", "search_web",
         }),
-        what="поиск (search_samples / list_tracks / gen_search_library)",
+        what="поиск (gen_search_library / memory_search / search_web)",
     ),
     # ---- Issue #2755: «Записала» без memory_save --------------------------
     # Прогон 35699257202 (акт 2 night-marathon, 22.09.2026), два шага подряд:
@@ -852,8 +840,7 @@ _ACTION_VERBS_FUTURE = re.compile(
 #
 # Категории из существующего кода:
 #   - music (request_music, dj_set — движок v2, ADR-0149; set_vibe_preset,
-#     search_samples, lookup_melody, load_track, stop_music, save_track,
-#     delete_track, list_tracks, play_sound, play_animation)
+#     lookup_melody, stop_music, play_sound, play_animation)
 #   - nav (navigate_to_waypoint, navigate_to_coordinates, move_direction,
 #     start_mapping, stop_mapping, save_waypoint)
 #   - sensors / state (get_music_state, get_battery_level, get_current_time,
@@ -865,9 +852,8 @@ CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     # music (ADR-0149 PR-13a: тулы движка v2 вместо compose_music &
     # execute_music_code & set_dj_mode старого пути)
     "request_music", "dj_set",
-    "set_vibe_preset", "search_samples", "lookup_melody",
-    "load_track", "stop_music", "save_track", "delete_track",
-    "list_tracks", "play_sound", "play_animation",
+    "set_vibe_preset", "lookup_melody",
+    "stop_music", "play_sound", "play_animation",
     "generate_music", "gen_play_from_library", "gen_delete_from_library",
     "gen_search_library", "gen_list_library", "gen_get_track_info",
     # issue #2942 — save_arrangement_preset (ADR-0132 PR-7): claim
@@ -1334,7 +1320,7 @@ def build_phantom_action_retry_prompt(user_input: Optional[str]) -> str:
         "установить голос, переключить трек, проверить состояние через "
         "get_music_state и т.п.) — вызови соответствующий tool "
         "(request_music / stop_music / save_waypoint / set_voice / "
-        "load_track / get_music_state и др.).\n"
+        "get_music_state и др.).\n"
         "  2) Если инструмент НЕ нужен — ответь БЕЗ action-verb'ов "
         "(«Подумаю», «Сейчас разберусь», «Минутку») или используй "
         "speak_text(...) для устного ответа.\n"
@@ -1428,9 +1414,9 @@ def build_babble_retry_prompt(user_input: str) -> str:
         "  • анекдот → speak_text(...) × N,\n"
         "  • уже существующий/сохранённый трек по имени или теме — "
         "НЕ сочиняй новый: если в этом диалоге уже был вызов "
-        "gen_search_library/gen_list_library/list_tracks с подходящим "
-        "результатом, возьми его track_id/name и вызови "
-        "gen_play_from_library(track_id=...) или load_track(name=...); "
+        "gen_search_library/gen_list_library с подходящим "
+        "результатом, возьми его track_id и вызови "
+        "gen_play_from_library(track_id=...); "
         "иначе вызови поиск сейчас, а не request_music.\n"
         "После последнего speak_text верни 'done'. Никаких "
         "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "

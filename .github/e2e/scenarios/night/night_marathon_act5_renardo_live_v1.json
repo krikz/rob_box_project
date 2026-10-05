@@ -3,7 +3,7 @@
   "stability": "new-unproven",
   "act": 5,
   "title": "Живой музыкант",
-  "description": "Полный жизненный цикл живой музыки на renardo, без единого «выключи» вслепую: тишина → старт → подтверждение что играет → развитие темы → смена вайба → посторонний вопрос ПОД музыкой (музыка обязана продолжать играть) → save_track → list_tracks → stop → подтверждение тишины → load_track → stop → delete_track. Прогон не оставляет мусора в треках.",
+  "description": "Полный жизненный цикл живой музыки на renardo, без единого «выключи» вслепую: тишина → старт → подтверждение что играет → развитие темы → смена вайба → посторонний вопрос ПОД музыкой (музыка обязана продолжать играть) → stop → подтверждение тишины.",
   "generated_by": "scripts/e2e/gen_night_marathon.py",
   "inherits_previous_act": true,
   "_inherits_previous_act_reason": "issue #2890: ночной марафон — одна история; акт продолжает разговор предыдущих актов (манифест: акт N опирается на состояние актов < N), поэтому харнесс НЕ сбрасывает окно диалога перед ним",
@@ -120,45 +120,6 @@
       }
     },
     {
-      "label": "n508_search_samples",
-      "voice": "anton",
-      "text": "Робот, найди у себя в библиотеке семплы барабанов посуше.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "search_samples"
-        ],
-        "must_not_call": [
-          "stop_music"
-        ]
-      }
-    },
-    {
-      "label": "n509_save_track",
-      "voice": "anton",
-      "text": "Робот, сохрани этот бит под именем ночная смена.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "save_track"
-        ],
-        "must_not_call": [],
-        "_comment": "Имя трека «ночная смена» используется в n511 и n513 — цепочка замкнута, мусора не остаётся."
-      }
-    },
-    {
-      "label": "n510_list_tracks",
-      "voice": "anton",
-      "text": "Робот, покажи, что у тебя лежит в сохранённых треках.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "list_tracks"
-        ],
-        "must_not_call": []
-      }
-    },
-    {
       "label": "n511_stop_music",
       "voice": "anton",
       "text": "Робот, всё, глуши музыку, у меня уши в трубочку.",
@@ -183,45 +144,6 @@
           "stop_music",
           "execute_music_code"
         ]
-      }
-    },
-    {
-      "label": "n513_load_track",
-      "voice": "anton",
-      "text": "Робот, а включи обратно трек ночная смена, я его ещё раз послушаю.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "load_track"
-        ],
-        "must_not_call": [
-          "generate_music"
-        ]
-      }
-    },
-    {
-      "label": "n514_stop_again",
-      "voice": "anton",
-      "text": "Робот, понял, хватит, останавливай.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "stop_music"
-        ],
-        "must_not_call": []
-      }
-    },
-    {
-      "label": "n515_delete_track",
-      "voice": "anton",
-      "text": "Робот, удали трек ночная смена, он всё-таки не получился.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "delete_track"
-        ],
-        "must_not_call": [],
-        "_comment": "Уборка за собой: следующий ночной прогон стартует с чистой библиотекой треков."
       }
     }
   ]

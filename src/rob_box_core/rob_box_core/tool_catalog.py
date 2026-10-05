@@ -68,9 +68,6 @@ class ToolCatalogEntry:
     #: ``dialogue_guards.MUSIC_STARTING_TOOLS`` — единственный источник для
     #: post-turn music guard'а (был дублирован в frozenset'ах и дрейфовал).
     starts_music: bool = False
-    #: Инструмент закрывает пользовательскую просьбу «включи X»
-    #: (напр. ``load_track``), не будучи универсальным «запустил музыку».
-    satisfies_user_music: bool = False
     execution_type: str = "medium"
     #: Доменные скиллы, в которые входит инструмент. Инструмент может
     #: входить в несколько (``stop_music`` — в composer, dj и player);
@@ -113,7 +110,6 @@ def _build() -> tuple[ToolCatalogEntry, ...]:
             destructive=raw.get("destructive", True),
             idempotent=raw.get("idempotent", False),
             starts_music=raw.get("starts_music", False),
-            satisfies_user_music=raw.get("satisfies_user_music", False),
             execution_type=raw.get("execution_type", "medium"),
             skill=tuple(raw.get("skill", ())),
             signature=MappingProxyType(dict(raw.get("signature", {}))),

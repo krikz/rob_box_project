@@ -91,11 +91,8 @@ _PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(r"\bкартир\w*", re.I),
         re.compile(r"\b(построй|создай|сделай|загрузи)\s+карт", re.I),
     ),
-    "renardo-library": (
-        re.compile(r"\bмедиатек\w*", re.I),
-    ),
     "player": (
-        re.compile(r"\bбиблиотек\w*", re.I),
+        re.compile(r"\b(библиотек|медиатек)\w*", re.I),
         re.compile(r"\b(что|какие)\b.{0,20}\bтрек", re.I),
         re.compile(r"\b(тот|этот|прошл\w+|раньше)\b.{0,20}\bтрек", re.I),
         re.compile(r"\bпослуша(ть|ем)\b.{0,20}\bещ[её]\b", re.I),
@@ -207,8 +204,6 @@ class SkillRouter:
             return "dj"
         if any(pattern.search(text) for pattern in _PATTERNS["player"]):
             return "player"
-        if any(pattern.search(text) for pattern in _PATTERNS["renardo-library"]):
-            return "renardo-library"
         if user_wants_performance(text):
             return "composer"
         return None

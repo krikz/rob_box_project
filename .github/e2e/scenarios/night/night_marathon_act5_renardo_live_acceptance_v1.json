@@ -9,11 +9,7 @@
   "expected_tool_calls": [
     "get_music_state",
     "execute_music_code",
-    "save_track",
-    "list_tracks",
-    "stop_music",
-    "load_track",
-    "delete_track"
+    "stop_music"
   ],
   "must_not_call": [],
   "voice_provenance": {
