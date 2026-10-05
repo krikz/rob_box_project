@@ -575,6 +575,11 @@ _CLUB_FORM: Tuple[Tuple[str, int, int, frozenset], ...] = (
     ("outro", 8 - (_CLUB_BLEND[0] - _CLUB_BLEND[1]), 2, _CLUB_DRUMS | {"bass", "pad"}),
     ("outro_tail", _CLUB_BLEND[0] - _CLUB_BLEND[1], 1, frozenset({"hats", "pad"})),
 )
+#: Форма первого трека сета — ``dropfirst48`` (ADR-0152 §3.5; #3427): блэнда на входе у него нет, а тему человек ждёт
+#: сразу — дроп с хуком целиком идёт после интро (такт 8, ~14 с при 138 BPM, а не такт 16 — ~28 с), build — перед
+#: вторым дропом. Интро и аутро те же, что у :data:`_CLUB_FORM`: блэнд с любым следующим треком не меняется.
+_CLUB_OPENING_FORM: Tuple[Tuple[str, int, int, frozenset], ...] = (
+    *_CLUB_FORM[:2], _CLUB_FORM[3], _CLUB_FORM[4], _CLUB_FORM[2], *_CLUB_FORM[5:])
 #: Секции слоёв DJ_Dave (``arrange.samples``, PR-3d): psr-слой — build, дропы и break; брейк-луп — только второй
 #: дроп (им он плотнее первого); FX — первая доля дропов (в блэнде PR-8 intro/outro звучат на двух деках).
 _CLUB_LAYER_SECTIONS: Mapping[str, Tuple[str, ...]] = {"sample": ("build", "drop", "break", "drop2"),
@@ -614,8 +619,10 @@ class Style:
     # Гармония: звуков в аккорде (терциями лада), прогрессии по ступеням.
     chord_size: int
     progressions: Tuple[Tuple[int, ...], ...]
-    # Форма: секции, блэнд (phrase_bars, bass_swap_bar), секции слоёв сэмплов.
+    # Форма: секции, форма первого трека сета (тема раньше, #3427), блэнд (phrase_bars, bass_swap_bar), секции
+    # слоёв сэмплов.
     form: Tuple[Tuple[str, int, int, frozenset], ...]
+    opening_form: Tuple[Tuple[str, int, int, frozenset], ...]
     blend: Tuple[int, int]
     layer_sections: Mapping[str, Tuple[str, ...]]
     # Микс: уровни ролей, роли под сайдчейном, LPF-свип секций, стерео ролей.
@@ -637,7 +644,7 @@ STYLES: Mapping[str, Style] = {
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
         bass_figures=("offbeat",), pad_figures=("pumped16",), lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
-        form=_CLUB_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
+        form=_CLUB_FORM, opening_form=_CLUB_OPENING_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
     ),

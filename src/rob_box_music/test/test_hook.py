@@ -19,7 +19,6 @@ from rob_box_music.rtttl import parse_rtttl
 from rob_box_music.tonality import key_fit
 
 HOOK_REGISTER = hook_register(kn.STYLES["club"])
-SECTIONS = kn.STYLES["club"].form
 
 
 def _intervals(midis):
@@ -163,15 +162,18 @@ def test_a_theme_melody_becomes_the_hook_on_most_roots():
 HOOKED_ROOTS = [r for r in range(12) if compose_p(profile(root=r, hooks=("long",)), 1, melodies=MELODIES).hook]
 
 
+@pytest.mark.parametrize("track_no", [1, 2])  # первый трек — ``Style.opening_form`` (#3427), остальные — ``form``
 @pytest.mark.parametrize("root", HOOKED_ROOTS)
-def test_track_hook_heard_in_drop_and_developed_by_sections(root):
+def test_track_hook_heard_in_drop_and_developed_by_sections(root, track_no):
     """drop = хук; build = только начало хука и пауза перед дропом; break — медленнее; drop2 — в терциях."""
-    track = compose_p(profile(root=root, hooks=("long",)), 1, set_seed=root, melodies=MELODIES)
+    set_root = (root - 7 * (track_no - 1)) % 12  # тоника трека ``track_no`` = ``root`` (ход по квинтам)
+    track = compose_p(profile(root=set_root, hooks=("long",)), track_no, set_seed=root, melodies=MELODIES)
     validate(track)
     assert track.hook is not None and track.hook.source == "long"
     lead = _lead_events(track)
-    starts = [sum(bars for _n, bars, _e, _r in SECTIONS[:i]) for i in range(len(SECTIONS))]
-    start = {name: at for at, (name, _b, _e, _r) in zip(starts, SECTIONS)}
+    sections = [(s.name, s.bars, s.energy, s.roles) for s in track.form.sections]
+    starts = [sum(bars for _n, bars, _e, _r in sections[:i]) for i in range(len(sections))]
+    start = {name: at for at, (name, _b, _e, _r) in zip(starts, sections)}
     hook_bars = [sorted((round(e.beat % 4, 3), e.midi) for e in track.hook.notes if int(e.beat // 4) == b)
                  for b in range(track.hook.bars)]
     assert _bars(lead, start["drop"], track.hook.bars) == hook_bars
@@ -183,7 +185,7 @@ def test_track_hook_heard_in_drop_and_developed_by_sections(root):
     drop2 = _bars(lead, start["drop2"], SECTION_BARS)
     assert drop2 != _bars(lead, start["drop"], SECTION_BARS)
     assert {m for bar in drop2 for _b, m in bar} >= {m for bar in hook_bars for _b, m in bar}
-    for name, bars, _e, _r in SECTIONS:
+    for name, bars, _e, _r in sections:
         if name.startswith(("intro", "outro")):
             assert all(not bar for bar in _bars(lead, start[name], bars)), name
 

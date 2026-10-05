@@ -11,6 +11,7 @@ import pytest
 
 from rob_box_llm.provider import LLMResponse, ToolCall
 from rob_box_mcp_tools.engine.reasoner import SetPlanBox, SetReasoner, payload_of
+from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
 from rob_box_music import reasoner as rz
 from rob_box_music.set_plan import seeded_plan
@@ -152,7 +153,7 @@ def test_payload_of_takes_only_the_submit_call():
 
 def _dj(rig, reasoner, speak=None):
     node = SimpleNamespace(get_logger=lambda: rig.log)  # логи сессии и ризонера — в лог рига
-    return DjSetTool(node, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 123456,
+    return DjSetTool(node, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 123456,
                      reasoner=reasoner, speak=speak)
 
 

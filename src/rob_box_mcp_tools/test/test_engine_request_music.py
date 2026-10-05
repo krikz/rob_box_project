@@ -10,6 +10,7 @@ import pytest
 
 from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
 from rob_box_harness.core.tool_registry import ToolRegistry
+from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_voice.core.music_player_state import MusicEvent, MusicEventLog
@@ -23,7 +24,7 @@ V2_TOOLS = {"dj_set", "request_music"}
 
 
 def _tools(rig, confirm=None, classic=None):
-    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 4242,
+    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242,
                    confirm=confirm)
     req = RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777, confirm=confirm,
                            classic=classic)
