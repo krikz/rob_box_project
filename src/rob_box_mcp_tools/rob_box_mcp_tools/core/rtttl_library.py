@@ -328,6 +328,26 @@ class _TokenWeights:
         return weight
 
 
+class _ArchiveWords:
+    """Слова опознавательных полей всех записей (``name/title/artist/rtttl_name``) — для разбора русских слов
+    запроса в токены архива (``engine.search``, #3399). Считаются один раз на инстанс библиотеки."""
+
+    def __init__(self, library: "RtttlLibrary") -> None:
+        self._library = library
+        self._words: Optional[frozenset] = None
+
+    def __call__(self) -> frozenset:
+        if self._words is None:
+            lib = self._library
+            with lib._lock:
+                rows = lib._conn.execute("SELECT name, title, artist, rtttl_name FROM rtttl_melodies").fetchall()
+            words = set()
+            for row in rows:
+                words.update(re.findall(r"[a-z0-9]{2,}", " ".join(str(v or "") for v in row).lower()))
+            self._words = frozenset(words)
+        return self._words
+
+
 def _is_informative_title(weights: "_TokenWeights", title: str) -> bool:
     """Хотя бы один токен title достаточно редок в корпусе (не «Theme»)?
 
@@ -566,6 +586,8 @@ class RtttlLibrary:
         # или ``None``): голая функция резолвит до десятка алиасов через
         # :meth:`get` на каждый вызов, кэш экономит это на повторных треках.
         self._ru_alias_cache: Dict[str, Optional[str]] = {}
+        # #3399 — слова архива для разбора русских слов запроса (``engine.search``), см. _ArchiveWords.
+        self.vocabulary = _ArchiveWords(self)
 
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)

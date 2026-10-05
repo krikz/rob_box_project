@@ -113,6 +113,9 @@ def _library(record):
     library = Mock()
     library.get.side_effect = lambda q: record
     library.ru_alias_for.return_value = None
+    library.search.return_value = []
+    library.vocabulary.return_value = frozenset(" ".join(str(v) for k, v in (record or {}).items()
+                                                         if k in ("name", "title")).lower().replace("_", " ").split())
     return library
 
 
