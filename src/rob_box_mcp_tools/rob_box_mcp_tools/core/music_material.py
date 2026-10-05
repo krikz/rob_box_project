@@ -3,8 +3,8 @@
 Человек присылает в чат материал «для продолжения сэта»: RTTTL-строку,
 Strudel/Tidal-код (``note("...")``), или просто список нот. :func:`parse_material`
 превращает его в :class:`Material`, :func:`material_to_rtttl` — в RTTTL-строку,
-дальше идёт существующий путь ``compose_music(rtttl=...)`` / ``name=`` →
-``club_hook.extract_hook``. Нераспознанное — ``None``, ноты не выдумываются.
+дальше мелодия живёт в RTTTL-каталоге (её играет ``request_music`` по названию).
+Нераспознанное — ``None``, ноты не выдумываются.
 
 Соглашения Strudel (по документации): цикл = один такт из 4 долей;
 ``setcpm(X)`` — X циклов в минуту, значит ``bpm = X * 4``; идиома
@@ -27,8 +27,8 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import List, Optional, Sequence, Tuple
 
-from .club_fragments import is_musical
-from .club_hook import extract_hook
+from rob_box_music.arrange.hook import MIN_NOTES, MIN_PITCHES, MIN_RANGE
+
 from .mini_notation import Unsupported, parse_events
 from .rtttl_catalog import add_melody
 from .rtttl import parse_rtttl
@@ -297,6 +297,44 @@ def _usable(mat: Material) -> bool:
     return len(pitches) >= MIN_SOUNDING and len(set(pitches)) >= MIN_DISTINCT and mat.bpm > 0
 
 
+#: Доля звучащих 16-х в окне хука, ниже которой это «одни паузы» (порог клубного хука v1, #3225).
+MIN_FILL = 0.35
+#: Окно хука: 4 такта, если мелодия не короче, иначе 2 (как у клубного хука v1, #3181).
+HOOK_WINDOW_BARS = (4, 2)
+STEPS_PER_BAR = 16
+
+
+def _grid(notes: Sequence[Tuple[Optional[int], float]]) -> List[Tuple[int, int, int]]:
+    """Атаки ``(шаг 16-х, конец, MIDI)`` от первой звучащей ноты; партия быстрее 16-х растянута вдвое."""
+    sounding = [d for m, d in notes if m is not None]
+    scale = 2.0 if sounding and min(sounding) < 0.25 - 1e-9 else 1.0
+    timed: List[Tuple[int, int, int]] = []
+    cursor, start = 0.0, None
+    for midi, beats in notes:
+        if midi is not None:
+            start = cursor if start is None else start
+            onset = round((cursor - start) * scale * 4)
+            if not timed or onset > timed[-1][0]:
+                timed.append((onset, round((cursor - start + beats) * scale * 4), midi))
+        cursor += beats
+    return timed
+
+
+def _hook_like(notes: Sequence[Tuple[Optional[int], float]]) -> bool:
+    """Начало мелодии годится как хук: нот ≥ ``MIN_NOTES``, высот ≥ ``MIN_PITCHES``, диапазон ≥ ``MIN_RANGE``
+    (пороги хука v2), звучащих 16-х ≥ ``MIN_FILL`` окна. Ноты — ``(MIDI | None, доли)`` в своём темпе."""
+    timed = _grid(notes)
+    if not timed:
+        return False
+    long_enough = timed[-1][1] >= HOOK_WINDOW_BARS[0] * STEPS_PER_BAR
+    limit = (HOOK_WINDOW_BARS[0] if long_enough else HOOK_WINDOW_BARS[1]) * STEPS_PER_BAR
+    nexts = [on for on, _end, _m in timed[1:]] + [limit]
+    window = [(min(end, nxt, limit) - on, m) for (on, end, m), nxt in zip(timed, nexts) if on < limit]
+    pitches = [m for _ln, m in window]
+    return (len(window) >= MIN_NOTES and len(set(pitches)) >= MIN_PITCHES and max(pitches) - min(pitches) >= MIN_RANGE
+            and sum(max(1, ln) for ln, _m in window) >= MIN_FILL * limit)
+
+
 def pattern_score(mat: Material) -> Tuple[int, int, int, int]:
     """Чем больше — тем мелодичнее: ``(годится как хук, разных высот ≤ 8, число атак ≤ 16, не быстрее 16-х)``.
 
@@ -304,14 +342,12 @@ def pattern_score(mat: Material) -> Tuple[int, int, int, int]:
     равных нотах с основной партией темп нечитаем; при полном равенстве
     побеждает паттерн, стоящий в тексте раньше.
 
-    «Годится как хук» — :func:`club_fragments.is_musical` на окне, каким его
-    возьмёт ``extract_hook``. Пэд из держащихся аккордов и партии с длинными
-    паузами проигрывают короткому плотному мотиву: у них мало атак и низкая
-    заполненность окна.
+    «Годится как хук» — :func:`_hook_like`: окно начала мелодии на сетке 16-х с порогами хука движка v2
+    (``rob_box_music.arrange.hook``) и заполненностью. Пэд из держащихся аккордов и партии с длинными
+    паузами проигрывают короткому плотному мотиву: у них мало атак и низкая заполненность окна.
     """
     try:
-        hook = extract_hook(material_to_rtttl(mat), mat.bpm)
-        musical = int(is_musical(hook.notes, hook.bars))
+        musical = int(_hook_like(parse_rtttl(material_to_rtttl(mat))[2]))
     except ValueError:
         musical = 0
     pitches = mat.sounding()

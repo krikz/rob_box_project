@@ -84,9 +84,6 @@ tools:
   optimize_map:
     class: notify
     reason: "долгая обработка — уведомление без блокировки"
-  set_dj_mode:
-    class: notify
-    reason: "смена режима — обратимо"
 
   # ── 🟢 PASS_THROUGH: read-only / безопасные / аварийные ────────────
   stop_navigation:
@@ -149,9 +146,6 @@ tools:
   stop_music:
     class: notify
     reason: "🟡 останавливает музыку — озвучиваем, но не блокируем (аварийная семантика)"
-  set_vibe_preset:
-    class: pass_through
-    reason: "🟢 обратимо"
   search_samples:
     class: pass_through
     reason: "🟢 read-only"

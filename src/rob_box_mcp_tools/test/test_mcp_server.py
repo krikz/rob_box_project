@@ -198,13 +198,11 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "MemoryContextTool": "memory_context",
         "ExecuteMusicCodeTool": "execute_music_code",
         "StopMusicTool": "stop_music",
-        "SetVibePresetTool": "set_vibe_preset",
         "GetMusicStateTool": "get_music_state",
         "SaveTrackTool": "save_track",
         "ListTracksTool": "list_tracks",
         "LoadTrackTool": "load_track",
         "DeleteTrackTool": "delete_track",
-        "SetDjModeTool": "set_dj_mode",
         "SearchSamplesTool": "search_samples",
         "FaqSearchTool": "faq_search",
         "SearchWebTool": "search_web",
@@ -293,7 +291,7 @@ def test_register_tools_skips_track_library_failures_without_crashing(monkeypatc
 
     assert "start_mapping" in server.registry.tools
     assert "execute_music_code" in server.registry.tools
-    assert "set_dj_mode" in server.registry.tools
+    assert "lookup_melody" not in server.registry.tools  # нужна библиотека треков
     assert "save_track" not in server.registry.tools
     assert "list_tracks" not in server.registry.tools
     assert any("Music library disabled" in msg for msg in server.get_logger().error_messages)

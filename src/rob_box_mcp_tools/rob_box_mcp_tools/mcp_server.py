@@ -104,19 +104,13 @@ from .tools import (
     TrackLibrary,
     RtttlLibrary,
     ExecuteMusicCodeTool,
-    ComposeMusicTool,
-    PreviewArrangementTool,
-    SaveArrangementPresetTool,
-    ArrangementPresetStore,
     StopMusicTool,
-    SetVibePresetTool,
     GetMusicStateTool,
     SetMusicVolumeTool,
     SaveTrackTool,
     ListTracksTool,
     LoadTrackTool,
     DeleteTrackTool,
-    SetDjModeTool,
     SearchSamplesTool,
     LookupMelodyTool,
     SearchMelodyTool,
@@ -154,8 +148,6 @@ except ImportError as _exc:  # noqa: BLE001
     GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
-from .core.music_diversity import MusicHistory
-from .core.web_melody import attach_web_search
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
@@ -323,22 +315,18 @@ def _speaker(node: Any) -> Callable[[str], None]:
 
 
 def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
-    """ADR-0149 §9, PR-4b — ``music_engine: v2`` → владелец плеера v2.
+    """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
-    При v2 ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
+    ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
     ``/voice/music/event``: latched-публикатор снимка уходит владельцу, а у ноды
     ``music_state_pub`` становится ``None`` — :meth:`MCPServer.publish_music_state` старого
-    пути (и ``/voice/music/form``) при v2 молчит. Renardo по-прежнему поднимает ``MusicManager``:
+    пути (и ``/voice/music/form``) молчит. Renardo по-прежнему поднимает ``MusicManager``:
     адаптер берёт его контекст, палитру, подтверждённую сервером, ``_send_osc_raw`` и
-    слушатель ``/fail``. При v1 (дефолт) ничего не создаётся — поведение прежнее.
+    слушатель ``/fail``. Старый путь удалён (PR-13b), поэтому параметр ``music_engine`` здесь
+    больше не читается (сам параметр и yaml убирает PR-15).
     """
-    engine = str(node.get_parameter("music_engine").value or "v1")
-    if engine != "v2":
-        if engine != "v1":
-            node.get_logger().error(f"❌ music_engine={engine!r} — неизвестно, остаётся v1")
-        return None
     if manager is None:
-        node.get_logger().error("❌ music_engine=v2, но MusicManager не поднялся — v2 выключен")
+        node.get_logger().error("❌ MusicManager не поднялся — музыкальный движок v2 выключен")
         return None
     latency = float(node.get_parameter("music_v2_clock_latency").value)
     event_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
@@ -360,7 +348,7 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     node.registry.register(RequestMusicTool(node, owner, dj_set, confirm=confirm))
     owner.publish_state()
     node.get_logger().info(
-        f"🎵 music_engine=v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "
+        f"🎵 движок v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "
         f"{MUSIC_EVENT_TOPIC}; Clock.latency={latency} (ADR-0149 PR-4)")
     return owner
 
@@ -1396,9 +1384,7 @@ class MCPServer(Node):
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
 
         # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
-        # SQLite. Поиск по имени/жанру + конвертация RTTTL→Renardo при игре.
-        # Создаём ДО ComposeMusicTool: композитор по name= сам ищет точные
-        # ноты известной мелодии в этой библиотеке.
+        # SQLite. Поиск по имени/жанру; играет мелодию v2 (``request_music``).
         rtttl_library: Optional[RtttlLibrary] = None
         try:
             rtttl_library = RtttlLibrary()
@@ -1408,36 +1394,10 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
 
-        # ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned,
-        # $MUSIC_LIBRARY_PATH — та же персистентная точка, что TrackLibrary
-        # ниже). Один экземпляр — общий для compose_music/preview_arrangement
-        # (тот же пресет, что реально применится) и save_arrangement_preset.
-        preset_store = ArrangementPresetStore()
-
-        # Форма трека строится кодом, а не LLM (RC4 в
-        # docs/analysis/2026-08-30-music-quality-audit.md).
-        # Issue #3224 / ADR-0146: персистентная история сыгранного (та же БД,
-        # что у RTTTL-библиотеки). Недоступна → WARNING в логе и выбор без памяти.
-        music_history = MusicHistory()
-        music_history.announce(self.get_logger())
-        self._compose_music_tool = ComposeMusicTool(
-            self, music_manager, rtttl_library, preset_store, music_history
-        )
-        self.registry.register(self._compose_music_tool)
-        # Issue #3228: мелодия темы, которой нет в архиве, — через search_web (сниппеты).
-        attach_web_search(self._compose_music_tool, getattr(self, "_search_web_tool", None))
-        self.registry.register(
-            PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
-        )
-        self.registry.register(
-            SaveArrangementPresetTool(self, self._compose_music_tool, preset_store)
-        )
         self.registry.register(StopMusicTool(self, music_manager))
-        self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
         # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
         self.registry.register(SetMusicVolumeTool(self, music_manager))
-        self.registry.register(SetDjModeTool(self, music_manager))
         self.registry.register(SearchSamplesTool(self))
 
         try:
@@ -1454,11 +1414,7 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
-        # Issue #2956: тот же preset_store — lookup_melody говорит модели,
-        # что у мелодии есть сохранённый пресет (играть name= без синтов).
-        self.registry.register(
-            LookupMelodyTool(self, track_library, music_manager, rtttl_library, preset_store)
-        )
+        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,

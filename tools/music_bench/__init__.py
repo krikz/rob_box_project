@@ -42,26 +42,15 @@ NRT-рендер в CI-контейнере, либо чистая Python-мод
 
 Из чего строятся ноты
 ======================
-:mod:`tools.music_bench.note_extract` берёт готовый
-``core.arranger.CompositionSpec`` (тот же объект, что уходит в
-``arranger.render()`` для реального Renardo-кода) и напрямую читает его
-слои/форму — а не парсит сгенерированный текст (парсинг Renardo-кода
-регексами уже один раз чуть не сломал музыкальный валидатор, см. историю
-``tools/music.py::_PLAYER_LINE_RE`` в аудите). Для тем из RTTTL-библиотеки
-(``core.harmonize.Harmonization``) это особенно точно: бас/пэд/лид/
-контрголос там уже абсолютные MIDI + биты, ровно то, что реально играет
-Renardo — транспонировать ступени лада не нужно вовсе.
-
-Модуль не меняет ни ``core.arranger``, ни ``masterfilter.scd`` — только
-читает их (импорт, не правка) и измеряет.
+Источник нот — вызывающий код (:class:`tools.music_bench.synth.NoteEvent`). Старый источник
+``note_extract`` читал ``core.arranger.CompositionSpec`` и удалён вместе с аранжировщиком v1
+(PR-13b ADR-0149); замеры v2 на роботе — ``scripts/music/live_dj/``.
 """
 
 from __future__ import annotations
 
 __all__ = [
-    "note_extract",
     "synth",
     "master_chain",
     "metrics",
-    "sampler",
 ]
