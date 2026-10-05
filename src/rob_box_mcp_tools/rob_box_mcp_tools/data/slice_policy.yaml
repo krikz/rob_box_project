@@ -71,10 +71,8 @@ slices:
     - set_volume
     - set_pitch
     - set_speed
-    - set_dj_mode
-    # ADR-0149 PR-5: DJ-сет движка v2 (регистрируется только при music_engine=v2)
+    # ADR-0149: музыка — движок v2 (DJ-сет и одиночный трек/мелодия)
     - dj_set
-    # ADR-0149 PR-6: одиночный трек движка v2 (тоже только при music_engine=v2)
     - request_music
     # поиск / память
     - search_web
@@ -90,13 +88,12 @@ slices:
     - gen_play_from_library
     - gen_delete_from_library
     - gen_get_track_info
+    # харнесс живой проверки (LLM не виден, ADR-0149 PR-13b)
     - execute_music_code
-    # локальная библиотека и продюсирование
-    - compose_music
+    # локальная библиотека
     - stop_music
     # Issue #3125 — громкость музыки (мастер-фейдер), не голоса
     - set_music_volume
-    - set_vibe_preset
     - save_track
     - list_tracks
     - load_track
@@ -105,8 +102,6 @@ slices:
     - lookup_melody
     - search_melody
     - add_music_material
-    - save_arrangement_preset
-    - preview_arrangement
     # навигация и mapping
     - navigate_to_waypoint
     - navigate_to_coordinates

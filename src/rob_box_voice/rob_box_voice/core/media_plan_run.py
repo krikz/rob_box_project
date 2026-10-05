@@ -34,21 +34,15 @@ async def run_media_plan(
     events: Optional[MusicEventLog] = None,
     log: Callable[[str], None] = lambda _msg: None,
 ) -> Tuple[bool, str, List[str]]:
-    """Тулы плана по порядку → ``(успех, фраза, исполненные тулы)``.
-
-    Тул с ``fail_text`` при неудаче обрывает план и говорит свою фразу (issue #3153).
-    """
+    """Тулы плана по порядку → ``(успех, фраза, исполненные тулы)``."""
     ok, phrase, done, contents = True, "", [], {}
     for call in plan.tool_calls:
         call_ok, content = await call_tool(call)
         if call_ok:
             done.append(call.name)
             contents[call.name] = content
-            continue
-        ok = False
-        if call.fail_text:
-            phrase = call.fail_text
-            break
+        else:
+            ok = False
     if ok and plan.confirm_started:
         ok, phrase = await _confirm_started(plan, contents, events, log)
     return ok, phrase or (plan.say_ok if ok else plan.say_fail), done

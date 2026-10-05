@@ -82,9 +82,7 @@ __all__ = [
     "MusicManager",
     "ExecuteMusicCodeTool",
     "StopMusicTool",
-    "SetVibePresetTool",
     "GetMusicStateTool",
-    "SetDjModeTool",
     "SearchSamplesTool",
     # Track library tools
     "SaveTrackTool",

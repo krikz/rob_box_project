@@ -35,21 +35,21 @@ def test_format_tts() -> None:
     assert format_tts(None, "alena") is None
 
 
-def test_dj_mode_topic() -> None:
+def test_dj_topic_from_music_state() -> None:
     agg = TarsStatusAggregator()
-    agg.note_dj_mode({"enabled": True, "theme": " рок 80-х "})
+    agg.note_music_state({"dj": {"enabled": True, "theme": " рок 80-х "}})
     assert agg.snapshot(0.0, None, None) == {"topic": "DJ · рок 80-х"}
-    agg.note_dj_mode({"enabled": True})
+    agg.note_music_state({"dj": {"enabled": True}})
     assert agg.snapshot(0.0, None, None) == {"topic": "DJ"}
-    agg.note_dj_mode({"enabled": False, "theme": "старая"})
+    agg.note_music_state({"state": "idle", "dj": {"enabled": False, "theme": "старая"}})
     assert agg.snapshot(0.0, None, None) == {"topic": "обычный режим"}
 
 
-def test_dj_mode_garbage_ignored() -> None:
+def test_music_state_garbage_ignored() -> None:
     agg = TarsStatusAggregator()
-    agg.note_dj_mode(None)
-    agg.note_dj_mode("x")
-    agg.note_dj_mode({"enabled": "yes"})
+    agg.note_music_state(None)
+    agg.note_music_state("x")
+    agg.note_music_state({"dj": {"enabled": "yes"}})
     assert agg.snapshot(0.0, None, None) == {}
 
 
@@ -107,7 +107,7 @@ def _relay(tts=("minimax", "v1")):
 
 def test_relay_timer_broadcasts_status_from_topics() -> None:
     relay, sent, _ = _relay()
-    relay.on_dj_mode(_Msg(json.dumps({"enabled": True, "theme": "джаз"})))
+    relay.on_music_state(_Msg(json.dumps({"state": "playing", "dj": {"enabled": True, "theme": "джаз"}})))
     relay.on_speaker_result(_Msg(json.dumps({"is_known": True, "name": "Борис"})))
     relay.on_timer()
     assert len(sent) == 1
@@ -123,7 +123,7 @@ def test_relay_timer_broadcasts_status_from_topics() -> None:
 
 def test_relay_silent_without_data_and_survives_bad_json() -> None:
     relay, sent, _ = _relay(tts=("", ""))
-    relay.on_dj_mode(_Msg("не json"))
+    relay.on_music_state(_Msg("не json"))
     relay.on_speaker_result(_Msg(""))
     relay.on_timer()
     assert sent == []

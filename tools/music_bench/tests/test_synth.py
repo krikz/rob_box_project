@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from tools.music_bench.note_extract import NoteEvent
+from tools.music_bench.synth import NoteEvent
 from tools.music_bench.synth import render_events, sum_buffers
 
 SR = 16000

@@ -41,7 +41,9 @@ ENGINE_TOOLS = TOOLS_DIR.parent / "engine" / "tools_v2.py"
 #: /mcp/execute (их зовёт второй агент — avatar_supervisor), но скрытые из
 #: каталога личности через ``llm_visible=False``. Личность их видеть не
 #: должна (ADR-0051 §6, #2001/#2113).
-_TARS_ONLY_HIDDEN_TOOLS: frozenset[str] = frozenset({"show_metrics"})
+#: ``execute_music_code`` — харнесс живой проверки (подпись ``harness``, ``live_check_mcp_call.py``):
+#: LLM код больше не пишет (ADR-0149 §8.2, PR-13b).
+_TARS_ONLY_HIDDEN_TOOLS: frozenset[str] = frozenset({"show_metrics", "execute_music_code"})
 
 pytestmark = pytest.mark.skipif(
     not GENERATOR.exists() or not MCP_SERVER.exists(),

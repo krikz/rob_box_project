@@ -22,6 +22,10 @@
 
 Сторона ``mcp_server`` (мягкий cleanup не гасит DJ-сет) —
 ``rob_box_mcp_tools/test/test_mcp_server.py``.
+
+ADR-0149 PR-13a: сет запускает ``dj_set`` движка v2 (без превью
+``compose_music`` и ``set_dj_mode``), локального DJ-флага у диалога нет —
+«сет идёт» знает только снимок плеера.
 """
 
 from __future__ import annotations
@@ -35,7 +39,6 @@ import pytest
 from rob_box_harness.core.agent_core import DialogResult
 from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
-from rob_box_voice.core.music_guard import MusicGuard
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
@@ -71,11 +74,8 @@ def _make_node(snapshot) -> DialogueNode:
     n._sound_trigger_pub = MagicMock()
     n._tts_control_pub = MagicMock()
     n._music_cleanup_pub = MagicMock()
-    n._dj_mode_pub = None
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._active_batches = {}
@@ -83,7 +83,6 @@ def _make_node(snapshot) -> DialogueNode:
     n._verbose_llm = False
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._code_speech_retry_used = False
     n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
@@ -92,15 +91,11 @@ def _make_node(snapshot) -> DialogueNode:
     n._consume_synthetic_retry = MagicMock(return_value=True)
     n._dispatch_turn = MagicMock()
     n._check_babble_and_retry = MagicMock(return_value=False)
-    n._check_embedded_renardo_code_and_retry = MagicMock(return_value=False)
-    n._music_guard = MusicGuard()
     n._generated_music_state = None
     n._music_player_state = snapshot
     n._llm_skipped_counter = new_llm_skip_counter()
     n._cancel_run = MagicMock()
-    n._force_dj_off_for_stop_command = MagicMock()
     n._speak_direct = MagicMock()
-    n._music_form_track = None
     n._scheduler_executor = _FakeExecutor()
     n._loop = MagicMock()
     n._core = MagicMock()
@@ -108,7 +103,7 @@ def _make_node(snapshot) -> DialogueNode:
 
 
 def _dj_set_snapshot() -> MusicPlayerState:
-    """Снимок плеера после превью + ``set_dj_mode`` роутера."""
+    """Снимок плеера после ``dj_set(start)`` роутера."""
     return MusicPlayerState(state="playing", track_id="t1", dj=True)
 
 
@@ -130,7 +125,6 @@ def _cleanups(node: DialogueNode) -> list:
 def _finalize(node: DialogueNode, result, user_input: str) -> None:
     node._finalize_music_cleanup_policy(
         result=result,
-        was_dj_auto=False,
         raw_user_command=user_input,
         user_input=user_input,
     )
@@ -170,7 +164,7 @@ def _start_dj_set_via_router(node: DialogueNode, run_plans) -> None:
     node._music_player_state = MusicPlayerState(state="idle")
     assert node._route_media_command(LIVE_DJ_COMMAND) is True
     run_plans()
-    assert node._scheduler_executor.calls == ["compose_music", "set_dj_mode"]
+    assert node._scheduler_executor.calls == ["dj_set"]
     node._music_player_state = _dj_set_snapshot()
 
 
@@ -197,17 +191,6 @@ def test_foreign_track_playing_without_dj_is_not_stopped_either():
     assert _cleanups(n) == []
 
 
-def test_local_dj_flag_alone_also_spares_the_set():
-    """Снимка ещё нет, но DJState включён — сет не гасим."""
-    n = _make_node(None)
-    n._dj.state.enabled = True
-
-    _finalize(n, _result("Привет!"), "[Speaker:unknown] как дела")
-
-    assert n._pending_music_cleanup is False
-    assert _cleanups(n) == []
-
-
 @pytest.mark.parametrize(
     "snapshot", [None, MusicPlayerState(state="idle")], ids=["no_snapshot", "idle"]
 )
@@ -226,7 +209,7 @@ def test_backing_under_rap_is_still_stopped_after_speech():
 
     _finalize(
         n,
-        _result("", tools=("compose_music", "speak_text"), speak_text_count=2),
+        _result("", tools=("gen_play_from_library", "speak_text"), speak_text_count=2),
         "[Speaker:unknown] зачитай рэп про котов под бит",
     )
 

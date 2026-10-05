@@ -113,20 +113,3 @@ def test_intentional_exceptions_are_still_real_skill_tools(skill_tools):
         f"_INTENTIONAL_EXCEPTIONS lists tools no longer in SKILL_TOOLS: {stale} "
         "— remove them, they are not exempting anything anymore"
     )
-
-
-def test_save_arrangement_preset_and_preview_arrangement_allowed_for_dialogue_node():
-    """Issue #2947 regression pin: the two tools the live log actually named.
-
-    Narrower than the generic sweep above, and worded around the exact log
-    line from the ADR-0132 PR-5/PR-7 night check, so a future revert of just
-    this pair shows up with an unambiguous failure message even if the
-    generic sweep is ever weakened.
-    """
-    authority = load_default_authority()
-    for tool in ("save_arrangement_preset", "preview_arrangement"):
-        decision = authority.is_allowed("dialogue_node", tool)
-        assert decision.allowed is True, (
-            f"dialogue_node обязан мочь вызвать {tool} (issue #2947); "
-            f"получили reason={decision.reason!r}"
-        )

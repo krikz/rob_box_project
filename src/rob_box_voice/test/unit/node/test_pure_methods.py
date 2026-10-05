@@ -611,8 +611,9 @@ class TestBuildDynamicSystemContextMusicState:
         ctx = node._build_dynamic_system_context()
         assert "<music_state" in ctx
         assert "</system_context>" in ctx
-        # Всегда есть reminder о том, как реагировать на «стоп музыку».
-        assert "Если юзер говорит «стоп музыку" in ctx
+        # ADR-0149 PR-13a: музыкальных reminder'ов больше нет — стоп исполняет
+        # роутер медиакоманд, состояние уже в <music_state>.
+        assert "Если юзер говорит «стоп музыку" not in ctx
 
     def test_player_snapshot_reflected_in_system_context(self, node) -> None:
         """Снимок плеера (DJ, играет) виден в system_context (issue #3161)."""

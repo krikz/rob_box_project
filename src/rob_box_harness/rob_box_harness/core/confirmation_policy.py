@@ -18,7 +18,7 @@ Three policy classes, matching the §8.2 table of
   ``start_mapping``.
 * ``notify`` — reversible calls that warrant a spoken announcement
   but do **not** block execution. Examples: ``set_speed``,
-  ``set_dj_mode``, ``set_volume``.
+  ``set_volume``.
 * ``pass_through`` — read-only, safe, or emergency calls. The segment
   goes straight to ``PENDING → ACTIVE``. Examples: ``speak_text``,
   ``stop_navigation`` (🟢 аварийный, см. §8.2 golden rule),

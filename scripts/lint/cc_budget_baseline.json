@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-29",
-  "base_sha": "2865630f57854997aa5aef9cb3c4d80ab468241b",
+  "created": "2026-10-05",
+  "base_sha": "1243adaf1e7d45f6ff5ce1ecbb0706e1b41bd037",
   "limits": {
     "method": 15,
     "init": 20
@@ -18,7 +18,7 @@
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
-      "DialogueNode._handle_result": 82
+      "DialogueNode._handle_result": 59
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
@@ -80,7 +80,7 @@
       "GenSaveToLibraryTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
-      "MusicManager.execute_code": 19
+      "MusicManager.execute_code": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -329,7 +329,7 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
       "method": "MusicManager.execute_code",
-      "cc": 19,
+      "cc": 18,
       "since": "Bumped 23->22 after refactor in issue 2626 (CC-budget guard, closed) — extracted volume-decision helper; живая карточка долга: #3290. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {

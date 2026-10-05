@@ -104,21 +104,25 @@ def test_request_closes_a_running_set_and_dj_stop_stops_a_single_track():
     assert '"state": "idle"' in rig.states[-1]
 
 
-def test_catalog_hides_old_music_tools_from_llm_under_v2_only():
-    v1 = {e.name for e in llm_visible_tools("v1")}
+def test_old_music_tools_are_gone_and_v2_tools_are_the_music_path():
+    """PR-13b ADR-0149 §8.2: ``compose_music``/``preview_arrangement``/``set_dj_mode`` удалены из каталога;
+    ``execute_music_code`` остался только для харнессов (``llm_visible=False``)."""
+    from rob_box_core.tool_catalog import TOOL_CATALOG
+
+    names = {e.name for e in TOOL_CATALOG}
+    assert not ({"compose_music", "preview_arrangement", "set_dj_mode", "set_vibe_preset",
+                 "save_arrangement_preset"} & names)
+    harness_only = next(e for e in TOOL_CATALOG if e.name == "execute_music_code")
+    assert harness_only.llm_visible is False and not harness_only.operator_visible
     v2 = {e.name for e in llm_visible_tools("v2")}
-    assert OLD_LLM_MUSIC_TOOLS <= v1 and not (V2_TOOLS & v1)
     assert V2_TOOLS <= v2 and not (OLD_LLM_MUSIC_TOOLS & v2)
-    assert v1 - OLD_LLM_MUSIC_TOOLS == v2 - V2_TOOLS  # остальное не тронуто
-    assert {e.name for e in llm_visible_tools()} == v1  # дефолт — v1, как было
+    assert not (OLD_LLM_MUSIC_TOOLS & {e.name for e in llm_visible_tools("v1")})
     assert not (V2_TOOLS & {e.name for e in operator_visible_tools()})
 
 
 def test_dialogue_registry_offers_tools_of_its_engine():
-    v1 = {spec.name for spec in ToolRegistry().list_tools()}
     v2 = {spec.name for spec in ToolRegistry(music_engine="v2").list_tools()}
-    assert "compose_music" in v1 and "dj_set" not in v1
-    assert {"dj_set", "request_music"} <= v2 and "compose_music" not in v2
+    assert {"dj_set", "request_music"} <= v2 and not (OLD_LLM_MUSIC_TOOLS & v2)
     narrowed = {spec.name for spec in ToolRegistry(music_engine="v2").list_tools(skills=("dj",))}
     assert {"dj_set", "request_music"} <= narrowed
 

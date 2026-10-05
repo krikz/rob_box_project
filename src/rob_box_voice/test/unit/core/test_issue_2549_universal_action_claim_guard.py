@@ -115,7 +115,6 @@ class _MiniDialogueNode:
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
-        repeated_call_args: bool = False,
     ) -> bool:
         if not spoken:
             return False
@@ -131,7 +130,6 @@ class _MiniDialogueNode:
         hit = detect_universal_action_claim(
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
-            repeated_call_args=repeated_call_args,
         )
         if hit is None:
             return False
@@ -154,7 +152,6 @@ class _MiniDialogueNode:
                 user_input=user_input,
                 spoken=spoken,
                 hit=hit,
-                repeated_call_args=repeated_call_args,
             ),
             is_action_claim_retry=False,
             is_synthetic=True,
@@ -215,13 +212,13 @@ class TestUniversalActionClaimDetector(unittest.TestCase):
         self.assertIsNone(hit)
 
     def test_tools_called_justifies_no_retry(self):
-        """Если LLM вызвала compose_music — spoken-action оправдан."""
+        """Если LLM вызвала request_music — spoken-action оправдан."""
         from rob_box_voice.core.dialogue_guards import \
             detect_universal_action_claim
 
         hit = detect_universal_action_claim(
             spoken="Запустил новый трек.",
-            tools_called=("compose_music",),
+            tools_called=("request_music",),
         )
         self.assertIsNone(hit)
 
@@ -357,13 +354,13 @@ class TestGuardRetry(unittest.TestCase):
         self.assertEqual(call.raw_user_command, "включи музыку")
 
     def test_tool_called_no_retry(self):
-        """Acceptance #2: «Запустил новый трек» + tools=[compose_music] →
+        """Acceptance #2: «Запустил новый трек» + tools=[request_music] →
         НЕ retry (action оправдан)."""
         node = _MiniDialogueNode()
         result = node._check_universal_action_claim_and_retry(
             spoken="Запустил новый трек.",
             user_input="включи музыку",
-            tools_called=("compose_music",),
+            tools_called=("request_music",),
         )
         self.assertFalse(result)
         self.assertEqual(node._dispatched, [])
@@ -555,7 +552,7 @@ class TestGuardIssue2549Scenarios(unittest.TestCase):
             node._check_universal_action_claim_and_retry(
                 spoken="Запустил новый трек.",
                 user_input="включи",
-                tools_called=("execute_music_code",),
+                tools_called=("request_music",),
             )
         )
 
@@ -728,7 +725,7 @@ class TestExtendedVerbsCoverage(unittest.TestCase):
     # ---------- Integration: new verbs compose with tool whitelist -----
 
     def test_new_verb_with_music_tool_does_not_trigger(self):
-        """Если LLM вызвала compose_music — guard НЕ ретраит даже на новые
+        """Если LLM вызвала request_music — guard НЕ ретраит даже на новые
         verbs."""
         from rob_box_voice.core.dialogue_guards import \
             detect_universal_action_claim
@@ -750,95 +747,3 @@ class TestExtendedVerbsCoverage(unittest.TestCase):
         )
         assert hit is not None  # noqa: S101
         self.assertEqual(hit.verb.lower(), "переключу")
-
-
-# -----------------------------------------------------------------------
-# Issue #2967 — расширение #2549: заявление о действии с аргументами,
-# идентичными прошлому вызову compose_music, не подкреплено переменой.
-#
-# Systemic fix (товарищ Шифу, 24.09.2026): гард опирается на ФАКТ
-# сравнения аргументов вызова, а не на список конкретных фраз из лога —
-# ``repeated_call_args`` приходит уже готовым фактом от вызывающего
-# кода (dialogue_node сравнивает ``result.music_call_args`` с
-# сохранённым прошлым вызовом), детектор его не вычисляет сам.
-# -----------------------------------------------------------------------
-
-
-class TestRepeatedCallArgsGuard(unittest.TestCase):
-    """Issue #2967 — ``repeated_call_args=True`` заставляет guard
-    сработать, даже когда ``CLAIM_JUSTIFYING_TOOLS`` формально вызван."""
-
-    def test_repeated_args_triggers_despite_tool_called(self):
-        from rob_box_voice.core.dialogue_guards import \
-            detect_universal_action_claim
-
-        hit = detect_universal_action_claim(
-            spoken="Поменяла аранжировку, теперь звучит иначе.",
-            tools_called=("compose_music",),
-            repeated_call_args=True,
-        )
-        self.assertIsNotNone(hit)
-
-    def test_non_repeated_args_with_tool_does_not_trigger(self):
-        """Контраст: тот же тул, но аргументы РАЗНЫЕ — не повтор, guard молчит."""
-        from rob_box_voice.core.dialogue_guards import \
-            detect_universal_action_claim
-
-        hit = detect_universal_action_claim(
-            spoken="Поменяла аранжировку, теперь звучит иначе.",
-            tools_called=("compose_music",),
-            repeated_call_args=False,
-        )
-        self.assertIsNone(hit)
-
-    def test_repeated_args_with_tool_error_still_triggers(self):
-        """Оба сигнала (ошибка тула И повтор аргументов) — оба ловятся,
-        одно из них достаточно."""
-        from rob_box_voice.core.dialogue_guards import \
-            detect_universal_action_claim
-
-        hit = detect_universal_action_claim(
-            spoken="Поменяла аранжировку.",
-            tools_called=("compose_music",),
-            tool_error_occurred=True,
-            repeated_call_args=True,
-        )
-        self.assertIsNotNone(hit)
-
-    def test_repeated_args_without_action_verb_still_silent(self):
-        """Повтор аргументов сам по себе не триггерит без action-verb в spoken."""
-        from rob_box_voice.core.dialogue_guards import \
-            detect_universal_action_claim
-
-        hit = detect_universal_action_claim(
-            spoken="Как тебе такой вариант?",
-            tools_called=("compose_music",),
-            repeated_call_args=True,
-        )
-        self.assertIsNone(hit)
-
-    def test_dispatched_prompt_names_the_repeat(self):
-        """Ретрай-промпт для repeated_call_args называет ИМЕННО повтор
-        аргументов, а не «tools=[]» (модель ведь тул вызвала)."""
-        node = _MiniDialogueNode()
-        self.assertTrue(
-            node._check_universal_action_claim_and_retry(
-                spoken="Поменяла трек.",
-                user_input="переделай, это плохо",
-                tools_called=("compose_music",),
-                repeated_call_args=True,
-            )
-        )
-        prompt = node._dispatched[0].user_input
-        self.assertIn("ТЕМИ ЖЕ АРГУМЕНТАМИ", prompt)
-
-
-# ``DialogueNode._repeated_music_call_args`` (the code that COMPUTES
-# ``repeated_call_args`` from ``result.music_call_args``) needs a real
-# ``DialogueNode`` instance, which imports ``rclpy`` — that coverage
-# lives in ``test/unit/node/test_issue_2967_dj_silence_and_repeat_guard.py``
-# where the rclpy stubs are installed, not here.
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -118,7 +118,6 @@ _TOOL_KIND: Mapping[str, SegmentKind] = {
     "listen_for_response": SegmentKind.VOICE,
     "execute_music_code": SegmentKind.MUSIC,
     "stop_music": SegmentKind.MUSIC,
-    "set_vibe_preset": SegmentKind.MUSIC,
     "search_samples": SegmentKind.MUSIC,
     "save_track": SegmentKind.MUSIC,
     "load_track": SegmentKind.MUSIC,

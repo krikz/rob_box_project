@@ -85,11 +85,6 @@ def test_set_volume_is_notify() -> None:
     assert policy.classify("set_volume").kind is ConfirmationKind.NOTIFY
 
 
-def test_set_dj_mode_is_notify() -> None:
-    policy = load_default_policy()
-    assert policy.classify("set_dj_mode").kind is ConfirmationKind.NOTIFY
-
-
 def test_speak_text_is_pass_through() -> None:
     """§11.2 acceptance: speak_text is 🟢 pass_through (no confirm)."""
     policy = load_default_policy()

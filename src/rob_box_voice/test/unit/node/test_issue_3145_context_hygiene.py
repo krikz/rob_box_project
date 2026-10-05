@@ -5,7 +5,7 @@ TurnGuards не отзывали отвергнутый ответ — ``discard
 только music-гуарды. После ответа ретрая в окне стояли два assistant подряд
 (28 мест), «Клубняк в клубе, погнали дальше!» ~10 ходов висел ответом на
 «ты диджей Снупдог». Плюс префикс «[🎧 Музыкальный режим активен …]» жил в
-user-ходах истории (82 штуки).
+user-ходах истории (82 штуки) — DJ-преамбула удалена в ADR-0149 PR-13a.
 
 Здесь нода работает с НАСТОЯЩИМ ``AgentCore`` (фейковая LLM) на отдельном
 asyncio-лупе — ровно как в проде: гуард зовёт ``_dispatch_turn``, отзыв и
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -193,61 +192,22 @@ class TestRejectedReplyLeavesHistory:
         assert "Привет!" in contents, contents
 
 
-class TestDjPreambleNotInHistory:
-    def _dj_node(self, *, dj_enabled: bool):
-        node = object.__new__(DialogueNode)
-        node.get_logger = lambda: MagicMock()
-        node._dj = MagicMock()
-        node._dj.state = SimpleNamespace(enabled=dj_enabled)
-        node._dj.preamble.return_value = (
-            "[🎧 Музыкальный режим активен — фоновая музыка играет. "
-            "Это ОБЫЧНАЯ команда юзера, не DJ-переход.] "
-        )
-        node._verbose_llm = False
-        node._dispatch_turn = MagicMock()
-        return node
+class TestUserWordsVerbatimInHistory:
+    """Реплика уходит в ход дословно — без префиксов состояния.
+
+    ADR-0149 PR-13a: DJ-преамбула («[🎧 Музыкальный режим активен …]») удалена
+    вместе с DJ-контроллером; состояние музыки — в ``<music_state>``.
+    """
 
     def test_dispatch_keeps_user_words_verbatim(self):
-        node = self._dj_node(dj_enabled=True)
+        node = object.__new__(DialogueNode)
+        node.get_logger = lambda: MagicMock()
+        node._verbose_llm = False
+        node._dispatch_turn = MagicMock()
         node._dispatch_cleaned(
             clean="горный король погромче", was_idle=False,
             speaker_tag=None, speaker_duration_s=0.0, from_tg=False,
             backlog_pending=False,
         )
-        args, kwargs = node._dispatch_turn.call_args
+        args, _kwargs = node._dispatch_turn.call_args
         assert args[0] == "горный король погромче"
-        assert "[🎧" not in args[0]
-
-    def test_preamble_rides_in_turn_context(self):
-        node = self._dj_node(dj_enabled=True)
-        hint = node._dj_turn_hint("<system_context/>", False)
-        assert hint.startswith("<system_context/>")
-        assert "[🎧 Музыкальный режим активен" in hint
-
-    @pytest.mark.parametrize("dj_enabled,was_dj_auto", [(False, False), (True, True)])
-    def test_no_preamble_off_dj_or_on_dj_transition(self, dj_enabled, was_dj_auto):
-        node = self._dj_node(dj_enabled=dj_enabled)
-        assert node._dj_turn_hint("<system_context/>", was_dj_auto) == (
-            "<system_context/>"
-        )
-
-    def test_history_gets_words_request_gets_state(self, loop):
-        """Сквозной: реплика в окне — дословно, преамбула — только в запросе."""
-        node = self._dj_node(dj_enabled=True)
-        llm = _FakeLLM(["Громче!"])
-        core = AgentCore(
-            llm=llm, tools=_NoTools(), memory=_NoMemory(),
-            dsm=DialogueStateMachine(), system_prompt="ПРОМПТ",
-        )
-        dynamic = node._dj_turn_hint("<system_context/>", False)
-
-        async def _go():
-            core._dsm.on_event(DialogueEvent.WAKE_WORD)
-            await core.process_input(
-                "горный король погромче", dynamic_system=dynamic
-            )
-
-        asyncio.run_coroutine_threadsafe(_go(), loop).result(timeout=5)
-        users = [t.content for t in core._turn_window if t.role == "user"]
-        assert users == ["горный король погромче"]
-        assert "[🎧" in llm.calls[0][-1].content

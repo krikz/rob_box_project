@@ -1,8 +1,7 @@
 """Флаг ``music_engine`` и проводка владельца плеера v2 в ``mcp_server`` (ADR-0149 PR-4b, #3312).
 
-При v1 — ничего нового (нет ``/voice/music/event``, снимок пишет старый путь); при v2 —
-``PlayerOwner`` единственный писатель снимка, ``/fail`` идёт к нему, yaml в обеих копиях
-совпадает и объявлен нодой с теми же типами.
+С PR-13b старый путь удалён: ``PlayerOwner`` — единственный писатель снимка при любом значении флага,
+``/fail`` идёт к нему; yaml в обеих копиях совпадает и объявлен нодой с теми же типами (флаг убирает PR-15).
 """
 
 import json
@@ -47,13 +46,21 @@ def _manager():
                            _send_osc_raw=lambda *a: None)
 
 
-def test_v1_attaches_nothing(monkeypatch):
+@pytest.mark.parametrize("engine", ["v1", "v2", "v3"])
+def test_owner_attaches_whatever_the_flag_says(monkeypatch, engine):
+    """PR-13b: старый путь удалён — владелец плеера v2 единственный, параметр ``music_engine`` не читается."""
     module = _load_mcp_server_module(monkeypatch)
-    node, manager = _Node("v1"), _manager()
-    assert module._attach_player_owner_v2(node, manager) is None
-    assert node.created == [] and node.music_state_pub.published == []
-    assert not hasattr(manager, "osc_fail_listener")
-    assert node.registry.tools == []  # dj_set при v1 не регистрируется
+    node, manager = _Node(engine), _manager()
+    assert module._attach_player_owner_v2(node, manager) is not None
+    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music"]
+
+
+def test_no_manager_attaches_nothing_loudly(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    node = _Node("v2")
+    assert module._attach_player_owner_v2(node, None) is None
+    assert node.created == [] and node.registry.tools == []
+    assert any("MusicManager" in m for m in node._logger.error_messages)
 
 
 def test_v2_owner_is_the_only_state_writer(monkeypatch):
@@ -67,17 +74,9 @@ def test_v2_owner_is_the_only_state_writer(monkeypatch):
     assert [t.name for t in node.registry.tools] == ["dj_set", "request_music"]
     first = json.loads(state_pub.published[0])
     assert first["state"] == "idle" and first["dj"] == {"enabled": False}
-    assert node.music_state_pub is None  # у старого пути публикатора снимка больше нет
-    node._music_manager = manager
-    module.MCPServer.publish_music_state(node)  # старый путь при v2 молчит
-    assert len(state_pub.published) == 1
-
-
-def test_unknown_engine_stays_v1_loudly(monkeypatch):
-    module = _load_mcp_server_module(monkeypatch)
-    node = _Node("v3")
-    assert module._attach_player_owner_v2(node, _manager()) is None
-    assert any("v3" in m for m in node._logger.error_messages)
+    assert node.music_state_pub is None  # публикатор снимка — только у владельца
+    assert not hasattr(module.MCPServer, "publish_music_state")  # старого писателя нет (PR-13)
+    assert node._dj_set_tool is node.registry.tools[0]
 
 
 def _load(name):

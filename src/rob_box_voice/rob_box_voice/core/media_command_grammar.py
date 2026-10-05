@@ -9,7 +9,7 @@
 * DJ — «ты диджей X», «запусти диджей-сет»;
 * заказ по имени — «поставь / сыграй / включи <название>» (issue #3176);
 * заказ «какой-нибудь» музыки — «поставь клубный трек» (``REQUEST_MUSIC``, ADR-0149
-  PR-6: при ``music_engine: v2`` его исполняет ``request_music``, при v1 — LLM, как раньше).
+  PR-6: его исполняет ``request_music`` движка v2).
 
 Раньше эти же правила жили внутри гуардов ПОСЛЕ ответа LLM
 (``music_volume_request.py`` — #3125, ``dj_request.is_dj_request`` — #2999,
@@ -64,9 +64,9 @@ class MediaCommand:
             родовые слова заказа («клубный трек»).
         set_theme: для ``DJ`` — тема из хвоста «… на тему X» / «… про X»
             (ADR-0149 PR-6), непусто только если до неё реплика — закрытая
-            DJ-команда. ``closed``/``persona`` от неё не меняются (v1 как
-            раньше), роутер v2 считает такую реплику закрытой.
-        set_persona: персона из головы реплики до темы (для v2).
+            DJ-команда. ``closed``/``persona`` от неё не меняются, роутер
+            считает такую реплику закрытой.
+        set_persona: персона из головы реплики до темы.
         mood: для ``REQUEST_MUSIC`` из «музыку для танцев» — ключ
             ``knowledge.MOOD_ENERGY`` или ``""`` (дефолт решает движок).
     """
@@ -299,10 +299,6 @@ def _stop_command(words: Sequence[str]) -> MediaCommand:
 # DJ (перенесено из dj_request.py, #2999 / ADR-0140)
 # ---------------------------------------------------------------------------
 
-#: Маркер авто-перехода DJ: его промпт начинается с «Ты диджей <персона>»,
-#: но это НЕ запрос юзера.
-_DJ_AUTO_MARKER = "[dj_auto"
-
 #: «диджей», «диджеем», «ди-джей», «диджэй», латиница «dj». Глагол
 #: «диджеить» сюда НЕ входит — «хватит диджеить» это стоп.
 _DJ_WORD = r"(?:ди-?дж[еэ](?:й|ем)|dj)"
@@ -358,8 +354,6 @@ def is_dj_request(user_input: Optional[str]) -> bool:
     if not user_input:
         return False
     low = user_input.lower()
-    if _DJ_AUTO_MARKER in low:
-        return False
     return bool(_PERSONA_RE.search(low) or _SET_START_RE.search(low))
 
 
@@ -382,7 +376,7 @@ def _persona_span(text: str) -> Tuple[str, Optional[Tuple[int, int]]]:
 def extract_dj_request_hint(user_input: Optional[str]) -> Tuple[str, str]:
     """``(persona, theme)`` из DJ-запроса; пустые строки — не нашлось.
 
-    Персона — с префиксом «диджей», как её пишет ``set_dj_mode``.
+    Персона — с префиксом «диджей».
     """
     text = (user_input or "").strip()
     name, _span = _persona_span(text)
@@ -423,20 +417,20 @@ def _theme_split(text: str) -> Tuple[str, str]:
 
 
 def _dj_command(text: str) -> MediaCommand:
-    """DJ-команда: поля v1 как раньше + ``set_theme``/``set_persona`` для роутера v2."""
-    command = _dj_command_v1(text)
+    """DJ-команда: персона/тема/закрытость + ``set_theme``/``set_persona`` из «… на тему X»."""
+    command = _dj_head_command(text)
     if command.theme:
         return command
     head, theme = _theme_split(text)
     if not theme or not is_dj_request(head):
         return command
-    head_command = _dj_command_v1(head)
+    head_command = _dj_head_command(head)
     if not head_command.closed:
         return command
     return replace(command, set_theme=theme, set_persona=head_command.persona)
 
 
-def _dj_command_v1(text: str) -> MediaCommand:
+def _dj_head_command(text: str) -> MediaCommand:
     persona, theme = extract_dj_request_hint(text)
     _name, persona_span = _persona_span(text)
     theme_m = _THEME_RE.search(text)

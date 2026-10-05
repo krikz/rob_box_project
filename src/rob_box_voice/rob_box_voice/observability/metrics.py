@@ -415,8 +415,7 @@ def record_skill_activation(
 
     :param skill: имя скилла (``"none"`` — активации не было).
     :param source: ``"router"`` — сработал детерминированный
-        пред-роутер; ``"dj-auto"`` — DJ_AUTO-ход форсировал composer
-        (issue #2441); ``"llm"`` — домен пришлось грузить вызовом
+        пред-роутер; ``"llm"`` — домен пришлось грузить вызовом
         ``load_skill``, то есть роутер промахнулся; ``"miss"`` — LLM
         запросила несуществующий домен.
 
@@ -558,42 +557,6 @@ def record_session_duration(
     hist.labels(result=result).observe(duration_s)
 
 
-def record_music_retry_exhausted(
-    guard_name: str,
-    *,
-    reason: str,
-    user_input_kind: str = "unknown",
-) -> None:
-    """Учёт исчерпания retry-budget для music-guard'а (#2561).
-
-    Live 15.09: на 16 Bug C-триггеров в час 6 (38%) НЕ закрываются
-    retry'ем — модель снова отвечает spoken-фразой при tools_called=[].
-    Метрика даёт видимость, насколько часто retry-цепочка выгорает.
-
-    :param guard_name: имя guard'а, который выгорел
-        (``"music_user"`` для Bug C). Лейбл — чтобы можно было
-        отделить от других мест, где тот же приём может появиться.
-    :param reason: короткий тег причины исчерпания
-        (``"retry_exhausted"`` для обычного случая;
-        ``"dj_retry_exhausted"`` — для Bug B path).
-    :param user_input_kind: тип user_input'а (``"track_name"`` /
-        ``"genre"`` / ``"vocal"`` / ``"general"`` / ``"unknown"``) —
-        чтобы видеть, на каких запросах retry выгорает чаще.
-    """
-    counter = get_metric(
-        "counter",
-        "voice_music_retry_exhausted_total",
-        "Music-guard retry-budget exhaustion events "
-        "(issue #2561 — babble-retry success rate ~62%).",
-        labelnames=("guard_name", "reason", "user_input_kind"),
-    )
-    counter.labels(
-        guard_name=guard_name,
-        reason=reason,
-        user_input_kind=user_input_kind or "unknown",
-    ).inc()
-
-
 def record_telegram_message(
     direction: str,
     *,
@@ -731,37 +694,3 @@ def record_pending_queue_latency(latency_s: float) -> None:
     hist.observe(latency_s)
 
 
-def record_hallucinated_midi(*, source: str, action: str) -> None:
-    """Issue #2560 — учёт одного случая «модель выдумала MIDI-паттерн».
-
-    Hallucinated MIDI — режим, при котором LLM при запросе известной
-    мелодии (Григ «В пещере горного короля», Бетховен «К Элизе», etc.)
-    пишет выдуманные MIDI-ноты в ``execute_music_code(code=...)``
-    (FoxDot/renardo-синтаксис вида ``p1 >> strangerarp(...)``,
-    ``pe<номер>le<номер>f`` и т.п.) вместо того, чтобы СНАЧАЛА
-    вызвать ``lookup_melody`` и достать реальные ноты из RTTTL-библиотеки.
-
-    Текстовое правило ``RULE #KNOWN-MELODY`` в composer.txt
-    (issue #2550 → PR #2551) этот баг НЕ устранило: модель иногда
-    читает правило и тут же нарушает. ``hallucinated_midi_total`` —
-    последний рубеж: ``dialogue_node._check_hallucinated_midi_and_retry``
-    детектирует паттерн по regex ``pe[0-9]+le[0-9]+f``, требует
-    один CRITICAL-ретрай с «сначала lookup_melody» и инкрементит
-    этот счётчик. Prometheus-алерт: ``rate(...) > 0`` за 1ч
-    ⇒ расследование (issue #2560 acceptance criteria).
-
-    :param source: ``"guard"`` (сработал ``_check_hallucinated_midi_and_retry``)
-        или ``"skip"`` (бюджет исчерпан, ретрай не отправлен).
-    :param action: ``"retry"`` (CRITICAL-ретрай ушёл в LLM),
-        ``"publish"`` (юзер всё-таки услышал babble), ``"skipped"``
-        (бюджет/флаг не пустили ретрай).
-    """
-    counter = get_metric(
-        "counter",
-        "voice_composer_hallucinated_midi_total",
-        "Hallucinated MIDI patterns (FoxDot pe<num>le<num>f) emitted by LLM "
-        "instead of lookup_melody (issue #2560). Labels: source (guard|skip), "
-        "action (retry|publish|skipped).",
-        labelnames=("source", "action"),
-    )
-    counter.labels(source=source, action=action).inc()

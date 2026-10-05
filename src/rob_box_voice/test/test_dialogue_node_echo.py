@@ -191,8 +191,6 @@ def _make_dialogue_node_stub():
     node._wake_words = ["робок", "робот", "роббокс"]
     node._dsm = MagicMock()
     node._dsm.current_state = MagicMock()
-    node._dj = MagicMock()
-    node._dj.state.enabled = False
     node._cancel_run = MagicMock()
     node._sound_trigger_pub = MagicMock()
     node._publish_state = MagicMock()

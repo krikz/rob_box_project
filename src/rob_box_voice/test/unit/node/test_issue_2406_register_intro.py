@@ -8,12 +8,10 @@ test_issue_2406_register_intro.py — Regression guards for issue #2406
 Покрывает:
 - В ``master_prompt_compact.txt`` есть RULE #REGISTER с триггер-словами
   («давай знакомиться», «меня зовут …», и т.п.).
-- В ``_build_dynamic_system_context()`` есть четвёртый ``<reminder>`` блок
-  про ``register_speaker``, МЕЖДУ stop_music и get_music_state reminders.
-- Позиция: новый reminder идёт ПОСЛЕ stop_music, НО ПЕРЕД get_music_state —
-  это сохраняет оба существующих контракта:
-    * ``reminders[-1] == time-reminder`` (test_issue_1777_time_format)
-    * ``reminders[-2] == get_music_state-reminder`` (test_issue_2347)
+- В ``_build_dynamic_system_context()`` есть ``<reminder>`` блок про
+  ``register_speaker`` — первым; ``reminders[-1] == time-reminder``
+  (test_issue_1777_time_format). Музыкальные reminder'ы удалены в
+  ADR-0149 PR-13a.
 
 Не требует ROS2 — rclpy замокан в conftest.py; dataclass mutable-default
 bug в rob_box_core.tool_catalog даёт skip на Python 3.11+ (CI на 3.10).
@@ -211,54 +209,22 @@ class TestDynamicContextRegisterReminder:
             "register_speaker reminder отсутствует в dynamic system context"
         )
 
-    def test_reminder_position_between_stop_music_and_get_music_state(self):
-        """КРИТИЧНО: новый reminder идёт МЕЖДУ stop_music и get_music_state.
+    def test_reminder_position_first_and_time_last(self):
+        """register_speaker-reminder — reminders[0], time — reminders[-1].
 
-        Контракты существующих тестов:
-          * ``reminders[-1] == time-reminder`` (test_issue_1777_time_format)
-          * ``reminders[-2] == get_music_state-reminder`` (test_issue_2347)
-
-        Новый reminder для register_speaker занимает ``reminders[1]``
-        (сразу после stop_music, ПЕРЕД get_music_state). При таком
-        расположении оба контракта выше остаются зелёными.
-
-        Если Шифу однажды переставит reminder — упадёт либо
-        test_issue_1777_time_format, либо test_issue_2347, плюс наш
-        новый тест ниже.
+        ADR-0149 PR-13a: музыкальные reminder'ы (stop_music,
+        get_music_state) удалены, контракт test_issue_1777_time_format
+        (``reminders[-1] == time-reminder``) сохраняется.
         """
         n = _make_node()
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        # Текущее количество reminder'ов после PR #2406: 4
-        # (stop_music, register_speaker, get_music_state, time).
-        assert len(reminders) >= 4, (
-            f"expected ≥4 reminder blocks (stop_music, register_speaker, "
-            f"get_music_state, time), got {len(reminders)}"
-        )
-        # Последний — по-прежнему time.
-        time_reminder = reminders[-1]
-        assert "get_current_time" in time_reminder, (
-            "reminders[-1] должен быть time-reminder; "
-            "новый reminder не должен сдвигать его"
-        )
-        # reminders[-2] — по-прежнему get_music_state.
-        music_state_reminder = reminders[-2]
-        assert "get_music_state" in music_state_reminder, (
-            f"reminders[-2] должен содержать get_music_state; "
-            f"got: {music_state_reminder[:200]!r}"
-        )
-        # reminders[0] — по-прежнему stop_music.
-        stop_music_reminder = reminders[0]
-        assert "stop_music" in stop_music_reminder, (
-            "reminders[0] должен быть stop_music reminder"
-        )
-        # Новый reminders[1] — register_speaker.
-        register_reminder = reminders[1]
-        assert "register_speaker" in register_reminder, (
-            f"reminders[1] должен содержать register_speaker; "
-            f"got: {register_reminder[:200]!r}"
-        )
+        assert len(reminders) == 2, reminders
+        assert "register_speaker" in reminders[0]
+        assert "get_current_time" in reminders[-1]
+        assert "stop_music" not in ctx.split("<reminder>", 1)[1]
+        assert "get_music_state" not in ctx.split("<reminder>", 1)[1]
 
     def test_reminder_lists_intro_trigger_phrases(self):
         """Ключевые intro-фразы из acceptance перечислены в reminder'е."""
@@ -266,7 +232,7 @@ class TestDynamicContextRegisterReminder:
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        register_reminder = reminders[1]
+        register_reminder = reminders[0]
         # Минимум: «давай знакомиться» + «меня зовут» — самые частотные
         # формулировки из acceptance (n201, n204).
         for trigger in ("давай знакомиться", "меня зовут"):
@@ -280,7 +246,7 @@ class TestDynamicContextRegisterReminder:
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        register_reminder = reminders[1]
+        register_reminder = reminders[0]
         assert "stale" in register_reminder, (
             "register_speaker reminder должен упоминать stale <name> тег"
         )
@@ -326,8 +292,9 @@ class TestIntroPhraseContract:
         ctx = n._build_dynamic_system_context()
 
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        assert len(reminders) >= 4
-        register_reminder = reminders[1]
+        # ADR-0149 PR-13: музыкальные reminder-ы удалены вместе с v1 — остались знакомство и время.
+        assert len(reminders) >= 2
+        register_reminder = reminders[0]
         missing = [t for t in self.REMINDER_TRIGGERS if t not in register_reminder]
         assert not missing, (
             f"triggers missing from register_speaker reminder: {missing}"
@@ -372,22 +339,3 @@ class TestExistingRemindersUnaffected:
         assert "get_current_time" in time_reminder
         assert "formatted_time" in time_reminder
 
-    def test_get_music_state_reminder_still_second_to_last(self):
-        """get_music_state-reminder остаётся reminders[-2] (контракт PR #2347)."""
-        n = _make_node()
-        ctx = n._build_dynamic_system_context()
-
-        reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        music_state_reminder = reminders[-2]
-        assert "get_music_state" in music_state_reminder
-        # Issue #3161: «stale» убрано из reminder намеренно (тег — снимок
-        # плеера); контракт здесь — только позиция reminder'а.
-
-    def test_stop_music_reminder_still_first(self):
-        """stop_music-reminder остаётся reminders[0] (контракт PR #1544)."""
-        n = _make_node()
-        ctx = n._build_dynamic_system_context()
-
-        reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
-        stop_music_reminder = reminders[0]
-        assert "stop_music" in stop_music_reminder

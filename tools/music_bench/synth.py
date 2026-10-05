@@ -12,12 +12,32 @@ audit.md`` — «пила/меандр алиасят в слышимой пол
 
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from dataclasses import dataclass
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.signal import butter, lfilter
 
-from .note_extract import NoteEvent, ROLE_WAVEFORM
+#: Роль -> архетип волны (до PR-13b ADR-0149 жил в ``note_extract``, который читал удалённый
+#: ``core.arranger.CompositionSpec``; источник нот теперь — вызывающий код).
+ROLE_WAVEFORM = {
+    "bass": "sine",
+    "pad": "soft",
+    "lead": "saw",
+    "counter": "triangle",
+}
+
+
+@dataclass(frozen=True)
+class NoteEvent:
+    """Одно событие: тон (мелодическая роль) или удар (ударная роль). Времена — в битах от начала формы."""
+
+    role: str
+    start_beat: float
+    dur_beat: float
+    amp: float
+    freqs_hz: Tuple[float, ...] = ()  # пусто -> шумовой удар
+    noise_band_hz: Optional[Tuple[float, float]] = None
 
 #: Огибающая одного события: линейный attack/release, без щелчков на
 #: границах. Коротка относительно типичной длительности ноты (>= 1/16
