@@ -56,7 +56,11 @@ _TAIL = TRANSITION.phrase_bars - _SWAP
 SECTIONS: Tuple[Tuple[str, int, int, frozenset], ...] = (
     ("intro", _SWAP, 2, frozenset({"hats", "pad"})),
     ("intro_low", TRANSITION.phrase_bars - _SWAP, 2, _DRUMS | {"bass", "pad"}),
-    ("build", 8, 5, _FULL),
+    # Состав растёт по форме: build без баса — низ возвращается ударом в дроп; брейк-луп (``samples.SECTIONS``)
+    # вступает только во втором дропе — он плотнее первого. До этой правки build и оба дропа играли одним составом
+    # и на записи не различались (робот 05.10: build −23.9 дБ, дроп −24.5, drop2 −26.0; слух Шифу и отзыв
+    # эксперта: «нет восхождения, кульминации»).
+    ("build", 8, 5, _FULL - {"bass"}),
     ("drop", 8, 8, _FULL),
     ("break", 8, 4, frozenset({"hats", "pad", "lead"})),
     ("drop2", 8, 9, _FULL),
@@ -138,23 +142,33 @@ def _lead(motif: Hook, key: Key, synth: str) -> Part:
 
 
 def _drums(form: Form, swing_ms: int, kit: str) -> Dict[str, Part]:
-    """Бочка и клэп — на всю форму (fill-ы), хэты каркаса ``kit`` — такт со свингом. Бочка секции — рисунок её вида
-    (``mix.look``: build ↔ drop). Клэп-бэкбит — в дропах; в остальных секциях клэп — только ролл fill-а.
-    Бочка — сэмпл жанра с настоящим низом (``mix.kick_sound``)."""
+    """Бочка и клэп — на всю форму, хэты каркаса ``kit`` — такт со свингом. Бочка секции — рисунок её вида
+    (``mix.look``: build ↔ drop). Клэп-бэкбит — в дропах; в остальных секциях клэп — только ролл: перед дропом —
+    два такта (восьмые, затем 16-е, акцент растёт), в конце трека — полтакта. Бочка — сэмпл жанра с настоящим
+    низом (``mix.kick_sound``)."""
     clap_bar = rhythm.clap_grid()
     silent = rhythm.grid(())
+    index = {sec.name: i for i, sec in enumerate(form.sections)}
 
-    def kick(sec: Section, fill: bool) -> Grid:
+    def before_drop(sec: Section) -> bool:
+        i = index[sec.name]
+        return i + 1 < len(form.sections) and form.sections[i + 1].name.startswith("drop")
+
+    def kick(sec: Section, bars_left: int) -> Grid:
         bar = rhythm.kick_grid(mix.look(sec.energy).kick)
-        return rhythm.kick_fill(bar) if fill else bar
+        return rhythm.kick_fill(bar) if sec.fill_last_bar and bars_left == 1 else bar
 
-    def clap(sec: Section, fill: bool) -> Grid:
+    def clap(sec: Section, bars_left: int) -> Grid:
         bar = clap_bar if sec.name.startswith("drop") else silent
-        return rhythm.clap_fill(bar) if fill else bar
+        if not sec.fill_last_bar:
+            return bar
+        if before_drop(sec) and bars_left <= rhythm.ROLL_BARS:
+            return rhythm.clap_roll(rhythm.ROLL_BARS - bars_left)
+        return rhythm.clap_fill(bar) if bars_left == 1 else bar
 
-    grids = {"kick": rhythm.form_grid(form.sections, kick), "hats": rhythm.hats_grid(swing_ms, kit)}
+    grids = {"kick": rhythm.form_bars(form.sections, kick), "hats": rhythm.hats_grid(swing_ms, kit)}
     if any("clap" in sec.roles for sec in form.sections):
-        grids["clap"] = rhythm.form_grid(form.sections, clap)
+        grids["clap"] = rhythm.form_bars(form.sections, clap)
     kick = mix.kick_sound("club")
     return {r: Part(r, kn.PLAY_SYNTH, g, None, _UNLEVELED, (0, 0), kick.sample if r == "kick" else 0)
             for r, g in grids.items()}

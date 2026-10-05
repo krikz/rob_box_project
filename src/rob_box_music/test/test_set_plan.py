@@ -101,8 +101,8 @@ def test_low_energy_thins_roles_not_levels(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_fills_sit_on_phrase_boundaries_before_drops(seed):
-    """Fill — последний такт 8-тактовой фразы перед дропом: ролл клэпа 16-ми на долях 3–4, бочка молчит на
-    последней доле; вне fill-ов клэп — только бэкбит дропов (2 и 4)."""
+    """Fill перед дропом — два последних такта 8-тактовой фразы: ролл клэпа восьмыми, затем 16-ми; бочка молчит
+    на последней доле; вне роллов клэп — только бэкбит дропов (2 и 4)."""
     plan = seeded_plan(profile(root=seed % 12), seed)
     track = compose(plan, 4, melodies=MELODIES if seed % 2 else None)  # энергия 5: клэп есть
     _program, events = _by_role(track)
@@ -110,17 +110,22 @@ def test_fills_sit_on_phrase_boundaries_before_drops(seed):
     kicks = {e.beat for e in events["kick"]}
     roll = {i * STEP for i in rhythm.ROLL_STEPS}
     fill_bars = 0
-    for sec, start, end in _section_spans(track):
+    spans = list(_section_spans(track))
+    for i, (sec, start, end) in enumerate(spans):
+        before_drop = i + 1 < len(spans) and spans[i + 1][0].name.startswith("drop")
         last_bar = end - BEATS_PER_BAR
+        roll_from = end - rhythm.ROLL_BARS * BEATS_PER_BAR if before_drop else last_bar
         in_bar = {round(b - last_bar, 6) for b in claps if last_bar <= b < end}
         if sec.fill_last_bar and "clap" in sec.roles:
             fill_bars += 1
             assert (end // BEATS_PER_BAR) % 8 == 0, "fill на границе 8-тактовой фразы"
             assert roll <= in_bar, (sec.name, in_bar)
+            eighths = {round(b - roll_from, 6) for b in claps if roll_from <= b < last_bar}
+            assert eighths == {i * 0.5 for i in range(8)}, "предпоследний такт — ролл восьмыми"
         if sec.fill_last_bar and "kick" in sec.roles:
             assert end - 1 not in kicks and end - 2 in kicks, sec.name
         for b in claps:
-            if start <= b < end and not (sec.fill_last_bar and b >= last_bar):
+            if start <= b < end and not (sec.fill_last_bar and b >= roll_from):
                 assert sec.name.startswith("drop") and b % BEATS_PER_BAR in (1.0, 3.0), (sec.name, b)
     assert fill_bars == 2, "fill перед drop и перед drop2"
 
@@ -186,3 +191,19 @@ def test_seed_changes_the_groove_but_not_the_tempo():
     plans = [seeded_plan(prof, s) for s in range(12)]
     assert len({p.bpm for p in plans}) == 1
     assert len({p.swing for p in plans}) >= 6
+
+
+def test_the_line_up_grows_from_build_to_the_second_drop():
+    """Развитие формы (слух Шифу и отзыв эксперта 05.10): build и оба дропа играли одним составом. Теперь состав
+    растёт: build без баса и лупа, первый дроп возвращает бас, второй добавляет брейк-луп."""
+    track = compose(seeded_plan(profile(), 3), 4)
+    line_up = {sec.name: set(sec.roles) for sec in track.form.sections}
+    assert "bass" not in line_up["build"] and "loop" not in line_up["build"]
+    assert {"kick", "pad", "lead", "clap"} <= line_up["build"]
+    assert "bass" in line_up["drop"] and "loop" not in line_up["drop"]
+    assert line_up["drop2"] == line_up["drop"] | {"loop"}
+    assert line_up["build"] < line_up["drop"] < line_up["drop2"], "каждая ступень добавляет слой"
+    _program, events = _by_role(track)
+    spans = {sec.name: (start, end) for sec, start, end in _section_spans(track)}
+    bass_in = {name: sum(1 for e in events["bass"] if lo <= e.beat < hi) for name, (lo, hi) in spans.items()}
+    assert bass_in["build"] == 0 and bass_in["drop"] > 0 and bass_in["drop2"] > 0

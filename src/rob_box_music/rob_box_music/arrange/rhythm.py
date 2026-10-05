@@ -23,6 +23,10 @@ ROLL_STEPS = tuple(range(8, 16))
 ROLL_ACCENTS = (1, 1, 2, 2, 2, 3, 3, 3)
 #: С этого шага такта fill-а бочка молчит: последняя доля перед дропом.
 KICK_CUT_STEP = 12
+#: Ролл клэпа перед дропом, такты: предпоследний — восьмые, последний — 16-е; акцент растёт к дропу.
+ROLL_BARS = 2
+_ROLL_EIGHTHS = {step: 1 for step in range(0, STEPS_PER_BAR, 2)}
+_ROLL_SIXTEENTHS = {step: (1, 2, 2, 3)[step // 4] for step in range(STEPS_PER_BAR)}
 
 
 def grid(on_steps: Iterable[int], length: int = STEPS_PER_BAR, accents: Optional[Mapping[int, int]] = None) -> Grid:
@@ -72,6 +76,12 @@ def clap_fill(bar: Grid) -> Grid:
     return Grid(head + tuple(Step(True, a) for a in ROLL_ACCENTS))
 
 
+def clap_roll(bar_no: int) -> Grid:
+    """Такт ``bar_no`` (0..``ROLL_BARS`` − 1) ролла перед дропом: восьмые, затем 16-е."""
+    accents = _ROLL_EIGHTHS if bar_no < ROLL_BARS - 1 else _ROLL_SIXTEENTHS
+    return grid(accents, accents=accents)
+
+
 def kick_fill(bar: Grid) -> Grid:
     """Такт fill-а бочки: последняя доля перед дропом пустая."""
     return Grid(tuple(Step(False) if i >= KICK_CUT_STEP else st for i, st in enumerate(bar.steps)))
@@ -86,6 +96,15 @@ def form_grid(sections: Sequence[Section], bar_of: Callable[[Section, bool], Gri
     return Grid(tuple(steps))
 
 
-__all__ = ["BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_STEPS",
-           "clap_fill", "clap_grid", "form_grid", "grid", "hats_grid", "kick_fill", "kick_grid", "pattern_grid",
-           "swing_offset_ms"]
+def form_bars(sections: Sequence[Section], bar_of: Callable[[Section, int], Grid]) -> Grid:
+    """Сетка на всю форму: ``bar_of(секция, тактов до конца секции, считая этот)`` даёт такт (16 шагов)."""
+    steps = []
+    for sec in sections:
+        for i in range(sec.bars):
+            steps += bar_of(sec, sec.bars - i).steps
+    return Grid(tuple(steps))
+
+
+__all__ = ["BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_BARS",
+           "ROLL_STEPS", "clap_fill", "clap_grid", "clap_roll", "form_bars", "form_grid", "grid", "hats_grid",
+           "kick_fill", "kick_grid", "pattern_grid", "swing_offset_ms"]
