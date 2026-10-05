@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-02",
-  "base_sha": "fca5e2e5e1552d378c07ab78378dee0b970c1933",
+  "created": "2026-10-03",
+  "base_sha": "e9dd26491355c5f546ea9db10cdc51e2b9749724",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -19,6 +19,10 @@
       "wmc": 132,
       "methods": 21
     },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/core/music_pattern_runtime.py:MusicPatternRuntime": {
+      "wmc": 87,
+      "methods": 22
+    },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/rtttl_library.py:RtttlLibrary": {
       "wmc": 86,
       "methods": 15
@@ -32,7 +36,7 @@
       "methods": 52
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
-      "wmc": 233,
+      "wmc": 171,
       "methods": 58
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
