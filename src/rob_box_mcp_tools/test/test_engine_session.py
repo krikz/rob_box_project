@@ -187,16 +187,69 @@ def test_track_energy_moves_the_master_trim_over_the_blend_and_stop_resets_it():
     s0, form = _started(rig)[0]["start_beat"], _form(rig)
     rig.clock.run_until(s0 + 2 * form - BLEND + 1)  # трек 3 встал
     starts = [e["start_beat"] for e in _started(rig)]
-    sets = _master(rig)
-    assert [b for b, _m in sets] == starts, "мастер — ровно на долях старта треков"
+    sets = [(b, m) for b, m in _master(rig) if b in starts]  # между стартами — дуга секций (тест ниже)
+    assert [b for b, _m in sets] == starts, "мастер трека — на доле его старта"
     energies = [PLAN.track(no).energy for no in (1, 2, 3)]
-    assert [m["trim"] for _b, m in sets] == [kn.ENERGY_TRIM_DB[e] for e in energies]
+    intro = kn.SECTION_TRIM_DB["intro"][0]
+    assert [m["trim"] for _b, m in sets] == [kn.ENERGY_TRIM_DB[e] + intro for e in energies]
     assert all({k: m[k] for k in kn.SET_LEVELER} == kn.SET_LEVELER for _b, m in sets)
     assert sets[0][1]["trimLag"] == kn.TRIM_LAG_S
     assert all(m["trimLag"] == pytest.approx(BLEND * 60.0 / BPM) for _b, m in sets[1:]), "переезд за блэнд"
     with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
         rig.session.stop()
     assert _master(rig)[-1][1] == {"trimLag": kn.TRIM_LAG_S, **kn.MASTER_DEFAULTS}
+
+
+def _tap_master(rig):
+    rig.master = []
+    send = rig.adapter._send_osc
+    rig.adapter._send_osc = lambda *a: (rig.master.append((rig.clock.beat, a)) if a[1] == 999 else None, send(*a))
+
+
+def test_section_arc_moves_the_trim_inside_the_track_and_the_newest_track_owns_it():
+    """Дуга громкости (отзыв эксперта 05.10, A6/A9): build поднимается к дропу всю секцию, брейк проваливается,
+    второй дроп — пик трека; после старта следующего трека дугу ведёт он — хвост уходящего мастер не трогает."""
+    from rob_box_music.arrange.compose import SECTIONS
+
+    rig = _rig()
+    _tap_master(rig)
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.clock.run_until(s0 + form - BLEND + 1)  # трек 2 встал
+    start2 = _started(rig)[1]["start_beat"]
+    base = kn.ENERGY_TRIM_DB[PLAN.track(1).energy]
+    expected, beat = [], 0.0
+    for name, bars, _energy, _roles in SECTIONS:
+        offset, rise = kn.SECTION_TRIM_DB[name]
+        lag = bars * 4 * 60.0 / BPM if rise else kn.TRIM_LAG_S
+        if 0 < beat and s0 + beat < start2:
+            expected.append((s0 + beat, base + offset, pytest.approx(lag, abs=1e-3)))
+        beat += bars * 4
+    inside = [(b, m["trim"], m["trimLag"]) for b, m in _master(rig) if s0 < b < start2]
+    assert inside == expected and len(expected) >= 4
+    trims = {name: base + kn.SECTION_TRIM_DB[name][0] for name in kn.SECTION_TRIM_DB}
+    assert trims["build"] < trims["drop"] < trims["drop2"] == base, "восхождение к пику"
+    assert trims["break"] <= trims["drop"] - 4, "брейк проваливается"
+    assert all(m["trim"] <= kn.ENERGY_TRIM_DB[5] for _b, m in _master(rig)), "громче trim трека не бывает"
+    # хвост трека 1 (outro, outro_tail) приходится на блэнд: мастер уже ведёт трек 2
+    rig.clock.run_until(start2 + 4)
+    tail = [m["trim"] for b, m in _master(rig) if b > start2]
+    assert tail == []
+
+
+def test_stop_ends_the_arc():
+    rig = _rig()
+    _tap_master(rig)
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0 = _started(rig)[0]["start_beat"]
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        rig.session.stop()
+    seen = len(_master(rig))
+    assert _master(rig)[-1][1] == {"trimLag": kn.TRIM_LAG_S, **kn.MASTER_DEFAULTS}
+    rig.clock.run_until(s0 + _form(rig))
+    assert len(_master(rig)) == seen, "после стопа дуга молчит: trim 0 остаётся"
 
 
 def test_master_defaults_are_the_synthdef_defaults_and_trim_sits_after_the_dynamics():

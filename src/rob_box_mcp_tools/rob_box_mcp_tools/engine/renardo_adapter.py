@@ -202,6 +202,7 @@ class RenardoAdapter:
         # Поколение: start/stop делают устаревшим всё, что раньше запланировано на клоке
         # (стык, nearly_finished) — после стопа запланированный стык музыку не воскрешает.
         self._generation = 0
+        self._arc_track: Optional[str] = None  # чей ``Program.arc`` ведёт мастер-шину
         # Прошлый процесс мог упасть посреди сета с ``trim −9`` на мастер-шине: она переживает рестарт mcp_server.
         set_master_controls(send_osc, {}, kn.TRIM_LAG_S)
 
@@ -319,7 +320,8 @@ class RenardoAdapter:
         """Доля старта — из самих плееров после exec; колбэк ``started`` — на эту долю.
 
         Фаза: у первого трека — остаток от формы; у стыка — сдвиг от ``origin`` (границы формы
-        уходящего); 0 — встал ровно на неё. На той же доле — ручки мастер-шины трека (``Program.master``).
+        уходящего); 0 — встал ровно на неё. На той же доле — ручки мастер-шины трека (``Program.master``),
+        дальше по долям секций — дуга громкости (``Program.arc``): её ведёт последний вставший трек.
         """
         clock = ns["Clock"]
         form = float(program.form_beats)
@@ -330,8 +332,38 @@ class RenardoAdapter:
                 "start_beat": start_beat, "players_aligned": len(set(starts.values())) == 1,
                 "phase_in_form": round(phase, 3)}
 
+        master = dict(getattr(program, "master", {}))
+        arc = tuple(getattr(program, "arc", ()))
+        generation = self._generation
+
+        def trimmed(offset_db: float) -> Dict[str, float]:
+            return {**master, "trim": master.get("trim", kn.MASTER_DEFAULTS["trim"]) + offset_db}
+
+        def owns_master() -> bool:
+            """Дугу ведёт последний вставший трек; стоп и рестарт её обрывают."""
+            return generation == self._generation and self._arc_track == program.track_id
+
+        def _rbx_section(offset_db: float, section_lag_s: float) -> None:
+            if owns_master():
+                set_master_controls(self._send_osc, trimmed(offset_db), section_lag_s)
+
+        def _rbx_arc_pass(pass_start: float) -> None:
+            """Секции одного прохода формы; трек на повторе (вне сета) получает дугу заново."""
+            if not owns_master():
+                return
+            for at, offset_db, section_lag_s in arc[1:]:
+                clock.schedule(lambda o=offset_db, s=section_lag_s: _rbx_section(o, s), pass_start + at)
+            clock.schedule(lambda: (_rbx_section(arc[0][1], arc[0][2]), _rbx_arc_pass(pass_start + form)),
+                           pass_start + form)
+
+        # Мастер переходит к треку уже сейчас, до его первой доли: секция уходящего, попавшая на ту же долю
+        # (его outro = начало блэнда), не должна спорить со стартом входящего.
+        self._arc_track = program.track_id
+
         def _rbx_track_started() -> None:
-            set_master_controls(self._send_osc, getattr(program, "master", {}), lag_s)
+            set_master_controls(self._send_osc, trimmed(arc[0][1]) if arc else master, lag_s)
+            if arc:
+                _rbx_arc_pass(start_beat)
             beat = float(clock.now())
             on_started(dict(info, clock_beat=round(beat, 3), late_beats=round(beat - start_beat, 3),
                             bpm=float(clock.get_bpm()), latency_s=float(clock.latency)))
