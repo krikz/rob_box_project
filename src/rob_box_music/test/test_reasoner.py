@@ -92,3 +92,25 @@ def test_hooks_found_by_theme_words_are_llm_candidates_and_nothing_else_is_added
     with pytest.raises(rz.PlanInvalid) as err:
         rz.validate({**VALID, "hooks": ["terminat"]})  # без профиля — не кандидат
     assert err.value.path == "hooks"
+
+
+def test_found_theme_hooks_are_the_only_candidates_and_table_rows_do_not_displace_them():
+    """ADR-0152 §5 (#3418): код нашёл хуки темы — схема и валидатор допускают только их; строка таблицы не подменяет."""
+    prof = seeded_profile("терминатор", found=("terminat", "theme_178", "theme_177"))
+    assert prof.theme_hooks[:3] == ("terminat", "theme_178", "theme_177")
+    assert rz.hook_candidates(prof) == {rz.SEEDED: prof.theme_hooks}
+    assert set(rz.schema(profile=prof)["properties"]["hooks"]["items"]["enum"]) == set(prof.theme_hooks)
+    for hooks in (["terminat", "robotroc", "robot"], ["robot"], ["axelf_3"]):
+        with pytest.raises(rz.PlanInvalid) as err:
+            rz.validate({**VALID, "hooks": hooks}, profile=prof)
+        assert err.value.path == "hooks"
+    ref = rz.validate({**VALID, "hooks": ["theme_177", "terminat"]}, profile=prof)  # порядок и подмножество - за LLM
+    assert ref.hook_ids == ("theme_177", "terminat")
+    assert rz.apply(seeded_plan(prof, 42, set_id="s"), ref).profile.hook_ids == ("theme_177", "terminat")
+
+
+def test_without_found_theme_hooks_candidates_are_table_rows_and_pool():
+    prof = seeded_profile("ночной город")
+    assert not prof.theme_hooks
+    assert set(rz.hook_candidates(prof)) >= {*kn.THEMES, "pool"}
+    assert rz.validate(VALID, profile=prof).hook_ids == ("axelf_3", "robot")

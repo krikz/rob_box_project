@@ -11,7 +11,8 @@
   которых нет в таблице («ночной город»), получает тембры и хуки ближайшей строки;
 * ``mode`` — лад плана из окна жанра;
 * ``hooks`` — до :data:`MAX_HOOKS` хуков только из кандидатов, которые показал код (:func:`hook_candidates`):
-  первыми — хуки seeded-профиля, найденные по словам темы во всей RTTTL-библиотеке (#3399);
+  нашёл код хуки по словам темы (#3399) — кандидаты ТОЛЬКО они (ADR-0152 §5), строки таблицы и пул — при
+  пустых находках; ``theme_row`` хуки не подменяет (хуки плана берутся из ``hooks``);
 * ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``);
 * ``hype_line`` — выкрик ≤ :data:`HYPE_MAX` символов, только когда он включён (§12 В2, по умолчанию выкл).
 
@@ -60,7 +61,11 @@ SEEDED = "seeded"
 
 
 def hook_candidates(profile: Optional[ThemeProfile] = None) -> Dict[str, Tuple[str, ...]]:
-    """Хуки, из которых LLM выбирает: профиля сета (``seeded``), по строкам таблицы тем и общий пул (``pool``)."""
+    """Хуки, из которых LLM выбирает. Код нашёл хуки по теме (``profile.theme_hooks``) — кандидаты только они
+    (ADR-0152 §5, ADR-0148: решение кода, LLM берёт порядок и подмножество). Находок нет — строки таблицы тем
+    и общий пул (``pool``)."""
+    if profile is not None and profile.theme_hooks:
+        return {SEEDED: profile.theme_hooks}
     seeded = {SEEDED: profile.hook_ids} if profile is not None and profile.hook_ids else {}
     return {**seeded, **{name: row.hooks for name, row in kn.THEMES.items()}, "pool": kn.DEFAULT_HOOKS}
 
@@ -97,8 +102,8 @@ def tool(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfile
 def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, str]:
     """``(system, user)``: правила выбора — в промпте, решение проверяет :func:`validate`."""
     system = ("Ты музыкальный редактор DJ-сета робота. Темп сета уже выбран кодом и не меняется. По теме "
-              f"человека выбери строку таблицы тем, лад, до {MAX_HOOKS} хуков из кандидатов этой строки (или "
-              "других, если они ближе к теме) и дугу энергии: разгон, пик, спад. Ответ — один вызов "
+              f"человека выбери строку таблицы тем, лад, до {MAX_HOOKS} хуков только из кандидатов "
+              "ниже (если код нашёл хуки по теме, других нет) и дугу энергии: разгон, пик, спад. Ответ — один вызов "
               f"{SUBMIT_TOOL}, без текста.")
     if hype:
         system += f" hype_line — короткий выкрик диджея по-русски, не длиннее {HYPE_MAX} символов."
