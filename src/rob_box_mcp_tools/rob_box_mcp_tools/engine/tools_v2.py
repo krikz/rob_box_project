@@ -2,7 +2,8 @@
 
 Регистрируются ``mcp_server._attach_player_owner_v2``; старый путь (``compose_music`` & Co.)
 удалён вместе с флагом выбора движка (PR-13/PR-15).
-Параметры трека (темп, тоника, синты, сид) тулы не принимают: тема → ``theme.seeded_profile``
+Параметры трека (темп, тоника, синты, сид) тулы не принимают: тема → мелодии по её словам
+(``engine.search.theme_hooks``, #3399) → ``theme.seeded_profile``
 → ``set_plan.seeded_plan`` → ``arrange.compose`` → ``render``. Вызывают их роутер медиакоманд
 (без LLM) и LLM.
 
@@ -18,23 +19,29 @@ PR-10: после ``started`` сета ``dj_set`` в фоне спрашивае
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
-from rob_box_music.theme import seeded_profile
+from rob_box_music.theme import ThemeProfile, seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
 from .reasoner import SetPlanBox, SetReasoner
+from .search import theme_hooks
 from .session import SetMemory, SetSession, plan_source
+
+_LOG = logging.getLogger(__name__)
 
 #: Мелодии по ``id`` для хука темы: ``ids -> {id: rtttl}``.
 MelodyLookup = Callable[[Iterable[str]], Dict[str, str]]
+#: Мелодии по словам темы: ``тема -> (id, …)`` (лучшие первыми).
+ThemeFinder = Callable[[str], Tuple[str, ...]]
 #: ``track_id -> MusicEvent(started|rejected) | None`` — ждёт событие плеера (``MusicEventLog.wait``).
 Confirm = Callable[[Optional[str]], Any]
 
@@ -61,6 +68,32 @@ def library_melodies(library_factory: Callable[[], Any]) -> MelodyLookup:
         return found
 
     return lookup
+
+
+def theme_finder(library_factory: Callable[[], Any]) -> ThemeFinder:
+    """``тема -> id`` мелодий по её словам (``engine.search.theme_hooks``); библиотека — при первой теме."""
+    box: Dict[str, Any] = {}
+
+    def find(theme: str) -> Tuple[str, ...]:
+        if not theme.strip():
+            return ()
+        if "lib" not in box:
+            box["lib"] = library_factory()
+        return theme_hooks(box["lib"], theme)
+
+    return find
+
+
+def _shared(factory: Callable[[], Any]) -> Callable[[], Any]:
+    """Одна библиотека на хуки и поиск темы: открывается при первом обращении."""
+    box: Dict[str, Any] = {}
+
+    def get() -> Any:
+        if "lib" not in box:
+            box["lib"] = factory()
+        return box["lib"]
+
+    return get
 
 
 def _rtttl_library() -> Any:
@@ -92,17 +125,21 @@ class DjSetTool(MCPTool):
 
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
-                 reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None) -> None:
+                 reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None,
+                 finder: Optional[ThemeFinder] = None, history: Any = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._reasoner = reasoner or SetReasoner(enabled=False)
         self._speak = speak
-        self._melodies = melodies or library_melodies(_rtttl_library)
+        library = _shared(_rtttl_library)
+        self._melodies = melodies or library_melodies(library)
+        self._find = finder or theme_finder(library)
         self._seed = seed
         self._confirm = confirm
         self._lock = threading.Lock()
         self._session: Optional[SetSession] = None
-        self._memory = SetMemory()  # треки прошлых сетов: разнообразие между сетами (A13)
+        # треки прошлых сетов (``history`` — music_history в БД): разнообразие между сетами (A13, I17)
+        self._memory = SetMemory(store=history)
 
     @property
     def name(self) -> str:
@@ -147,10 +184,23 @@ class DjSetTool(MCPTool):
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         return tool_result(confirmed(result, self._confirm), "сет не начался")  # ждём started вне замка
 
+    def theme_profile(self, theme: str) -> ThemeProfile:
+        """Seeded-профиль темы с мелодиями по её словам; поиск упал — профиль без находок, причина в лог."""
+        log = self.node.get_logger() if self.node is not None else _LOG
+        try:
+            found = self._find(theme)
+        except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
+            log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
+            found = ()
+        profile = seeded_profile(theme, found=found)
+        log.info(f"🎛️ [dj_set] тема «{theme}»: source={profile.source} row={profile.row} "
+                 f"хуки={list(profile.hook_ids)}")
+        return profile
+
     def _start(self, theme: str, persona: Optional[str]) -> Dict[str, Any]:
         if self._session is not None:
             self._session.stop("new_set")
-        profile = seeded_profile(theme)
+        profile = self.theme_profile(theme)
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
         plan = seeded_plan(profile, set_seed, set_id=set_id)  # один план на сет = один темп
@@ -241,7 +291,7 @@ class RequestMusicTool(MCPTool):
 
     def _play_club(self, text: str, mood: Optional[str]) -> Dict[str, Any]:
         """Трек плана с энергией настроения: ``compose`` → ``render`` → дека A."""
-        profile = seeded_profile(text)
+        profile = self._dj.theme_profile(text)
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
@@ -277,5 +327,5 @@ class RequestMusicTool(MCPTool):
                 "key": pick.key}
 
 
-__all__ = ["CLASSIC_GENRES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "confirmed",
-           "library_melodies", "tool_result"]
+__all__ = ["CLASSIC_GENRES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed",
+           "library_melodies", "theme_finder", "tool_result"]

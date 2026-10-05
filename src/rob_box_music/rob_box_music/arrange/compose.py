@@ -176,10 +176,14 @@ def _drums(form: Form, swing_ms: int, kit: str) -> Dict[str, Part]:
 
 def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
                     history: Sequence[Mapping] = ()) -> Iterator[Tuple[Hook, Key]]:
-    """Годные мелодии темы в порядке сида; хук прошлого трека (мелодия или фрагмент) подряд не повторяется."""
+    """Годные мелодии темы: несыгранные — в порядке сида, недавние (история сета и прошлых сетов, I17) — в конце,
+    давние раньше свежих; хук прошлого трека (мелодия или фрагмент) подряд не повторяется."""
     last = history[0] if history else {}
+    recent = [h for h in recent_values(history, "melody_name") if h]
     ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
-    for melody_id in rng.sample(ids, len(ids)):
+    fresh = [i for i in ids if i not in recent]
+    stale = sorted((i for i in ids if i in recent), key=recent.index, reverse=True)
+    for melody_id in rng.sample(fresh, len(fresh)) + stale:
         try:
             hook, key = hooks.from_rtttl(melodies[melody_id], melody_id, profile.bpm, profile.root, profile.mode,
                                          HOOK_REGISTER)

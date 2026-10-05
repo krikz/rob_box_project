@@ -76,8 +76,19 @@ def test_apply_keeps_tempo_seed_tonic_and_swing():
     assert (new.bpm, new.seed, new.swing, new.set_id) == (PLAN.bpm, PLAN.seed, PLAN.swing, PLAN.set_id)
     assert new.profile.bpm == PLAN.profile.bpm and new.profile.root == PLAN.profile.root
     assert (new.profile.row, new.profile.mode, new.profile.hook_ids) == ("cyber", "phrygian", ("axelf_3", "robot"))
-    assert new.profile.source == "theme"
+    assert new.profile.source == PLAN.profile.source == "pool"  # строка от LLM — не слова темы (A11, #3399)
     assert [new.track(n).energy for n in range(1, 5)] == [3, 4, 5, 4]
     assert [new.root(n) for n in range(1, 13)] == [PLAN.root(n) for n in range(1, 13)]  # ход по квинтам тот же
     assert new.track(5) == PLAN.track(5) == track_plan(5)  # дальше — волна seeded
     assert new.track(50) == track_plan(50)  # сет открытый
+
+
+def test_hooks_found_by_theme_words_are_llm_candidates_and_nothing_else_is_added():
+    """#3399: хуки seeded-профиля (найдены по словам темы во всей библиотеке) — в перечислении схемы и валидатора."""
+    prof = seeded_profile("терминатор", found=("terminat", "theme_177"))
+    assert rz.hook_candidates(prof)[rz.SEEDED] == ("terminat", "theme_177")
+    assert {"terminat", "theme_177"} <= set(rz.schema(profile=prof)["properties"]["hooks"]["items"]["enum"])
+    assert rz.validate({**VALID, "hooks": ["terminat"]}, profile=prof).hook_ids == ("terminat",)
+    with pytest.raises(rz.PlanInvalid) as err:
+        rz.validate({**VALID, "hooks": ["terminat"]})  # без профиля — не кандидат
+    assert err.value.path == "hooks"

@@ -135,7 +135,7 @@ def test_pick_classic_renders_the_found_song():
 
 
 def _tools(rig, classic):
-    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, seed=lambda: 4242)
+    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 4242)
     return dj, RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 5, classic=classic)
 
 

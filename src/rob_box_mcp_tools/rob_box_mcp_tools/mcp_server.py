@@ -47,6 +47,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from rob_box_harness.encounter import EncounterSeam, EncounterChannel
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
+from rob_box_music.diversity import MusicHistory
 
 from rob_box_voice.core.music_player_state import (
     MUSIC_EVENT_TOPIC,
@@ -261,7 +262,10 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     def confirm(track_id: Optional[str]) -> Any:
         return events.wait(track_id, V2_STARTED_WAIT_S)
 
-    dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node))
+    history = MusicHistory()  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
+    history.announce(node.get_logger())
+    dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
+                       history=history)
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
     node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
