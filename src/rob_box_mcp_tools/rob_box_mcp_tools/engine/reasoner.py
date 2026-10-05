@@ -11,8 +11,8 @@ seeded, ADR-0148); исключения наружу не выходят; circui
 и он пропускается 10 мин (§4.8), сет этого не замечает. ``enabled=False`` — ноль вызовов.
 
 Метрики — в лог одной строкой на сет: ``plan_outcome=ok|late|invalid|error|circuit_open|disabled``,
-``provider``, ``latency_ms`` и p50/p95 по провайдеру; у каждого стартовавшего трека — ``source=theme|seeded``
-(A11: доля треков по профилю темы от LLM).
+``provider``, ``latency_ms`` и p50/p95 по провайдеру; у каждого стартовавшего трека — ``source=theme|pool|motif``
+(A11: доля треков с хуком, найденным по словам темы) и ``plan=llm|seeded``.
 """
 
 from __future__ import annotations
@@ -129,12 +129,12 @@ class SetReasoner:
         try:
             response = await asyncio.wait_for(self._client.complete(
                 [LLMMessage("system", system), LLMMessage("user", user)],
-                tools=[rz.tool(plan.profile.genre, self.hype)],
+                tools=[rz.tool(plan.profile.genre, self.hype, plan.profile)],
                 settings=LLMSettings(tool_choice="auto", max_tokens=1024)), timeout=self._deadline)
         except asyncio.TimeoutError:
             return "late", None, f"нет ответа за {self._deadline:g} с"
         try:
-            return "ok", rz.validate(payload_of(response), plan.profile.genre, self.hype), ""
+            return "ok", rz.validate(payload_of(response), plan.profile.genre, self.hype, plan.profile), ""
         except rz.PlanInvalid as exc:
             return "invalid", None, f"plan_invalid{{{exc.path}}} {exc}"
 
@@ -169,8 +169,8 @@ class SetPlanBox:
         self._lookup = lookup
         self._melodies: Mapping[str, str] = lookup(plan.profile.hook_ids)
         self._refined: Optional[rz.Refinement] = None
-        self._sources: Dict[str, str] = {}  # track_id → theme|seeded на момент компоновки
-        self._played: Dict[str, str] = {}
+        self._sources: Dict[str, Tuple[str, str]] = {}  # track_id → (хук: theme|pool|motif, план: llm|seeded)
+        self._played: Dict[str, Tuple[str, str]] = {}
         self._speak = speak
         self._log = logger or _LOG
 
@@ -179,8 +179,11 @@ class SetPlanBox:
             return self._plan, self._melodies
 
     def compose_mark(self, track: Any) -> Any:
+        """``source=theme`` (A11) — только хук, найденный по словам темы (``profile.theme_hooks``), а не любой."""
+        hook = getattr(getattr(track, "hook", None), "source", None)
         with self._lock:
-            self._sources[track.track_id] = "theme" if self._refined else "seeded"
+            source = "theme" if hook in self._plan.profile.theme_hooks else "pool" if hook else "motif"
+            self._sources[track.track_id] = (source, "llm" if self._refined else "seeded")
         return track
 
     def apply(self, ref: rz.Refinement) -> None:
@@ -195,13 +198,13 @@ class SetPlanBox:
     def on_started(self, track_id: str) -> str:
         """Пометка ``source=…`` для лога ``started``; первый трек по профилю LLM — выкрик, если включён."""
         with self._lock:
-            source = self._sources.get(track_id, "seeded")
-            first_theme = source == "theme" and "theme" not in self._played.values()
-            self._played[track_id] = source
+            source, plan = self._sources.get(track_id, ("motif", "seeded"))
+            first_llm = plan == "llm" and not any(p == "llm" for _s, p in self._played.values())
+            self._played[track_id] = (source, plan)
             line = self._refined.hype_line if self._refined else None
-            theme = sum(1 for s in self._played.values() if s == "theme")
-            note = f"source={source} A11={theme}/{len(self._played)}"
-        if first_theme and line and self._speak is not None:
+            theme = sum(1 for s, _p in self._played.values() if s == "theme")
+            note = f"source={source} plan={plan} A11={theme}/{len(self._played)}"
+        if first_llm and line and self._speak is not None:
             threading.Thread(target=self._say, args=(line,), name="rbx-hype", daemon=True).start()
             note += " hype=on"
         return note

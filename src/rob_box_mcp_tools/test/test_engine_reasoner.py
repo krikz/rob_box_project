@@ -80,7 +80,7 @@ def test_valid_tool_call_is_applied_and_logged_with_latency():
     assert got == [rz.validate(GOOD)]
     assert _outcomes(log) == ["ok"] and "provider=minimax" in log.lines[-1][1] and "p95_ms=" in log.lines[-1][1]
     (messages, tools, settings), = provider.calls
-    assert tools == [rz.tool()] and settings.tool_choice == "auto"
+    assert tools == [rz.tool("club", False, PLAN.profile)] and settings.tool_choice == "auto"
     assert "«ночной город»" in messages[1].content
     assert r.metrics.latency("minimax").count == 1
 
@@ -152,7 +152,8 @@ def test_payload_of_takes_only_the_submit_call():
 
 def _dj(rig, reasoner, speak=None):
     node = SimpleNamespace(get_logger=lambda: rig.log)  # логи сессии и ризонера — в лог рига
-    return DjSetTool(node, rig.owner, melodies=lambda ids: {}, seed=lambda: 123456, reasoner=reasoner, speak=speak)
+    return DjSetTool(node, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 123456,
+                     reasoner=reasoner, speak=speak)
 
 
 def _queued(rig):
@@ -192,8 +193,9 @@ def test_plan_from_llm_replaces_the_queued_next_track_and_keeps_one_tempo():
     assert {e["bpm"] for e in started} == {first["bpm"]}  # один темп на сет
     assert [c for c in rig.clock.calls if c[0] == "tempo"] == [("tempo", first["bpm"])]
     notes = _notes(rig)
-    assert "source=seeded A11=0/1" in notes[0] and "source=theme A11=1/2" in notes[1]
-    assert "source=theme A11=2/3" in notes[2]
+    # мелодий нет — хук не из темы: A11 не растёт от того, что план пришёл от LLM (#3399)
+    assert "source=motif plan=seeded A11=0/1" in notes[0] and "source=motif plan=llm A11=0/2" in notes[1]
+    assert "plan=llm A11=0/3" in notes[2]
 
 
 def test_late_llm_leaves_the_whole_set_seeded():
@@ -205,7 +207,7 @@ def test_late_llm_leaves_the_whole_set_seeded():
     first = _started(rig)[0]
     _wait(lambda: len(_queued(rig)) == 1)
     rig.clock.run_until(first["start_beat"] + first["form_beats"] + 1)
-    assert all("source=seeded" in n for n in _notes(rig)) and len(_notes(rig)) == 2
+    assert all("plan=seeded" in n for n in _notes(rig)) and len(_notes(rig)) == 2
     assert any("plan_outcome=late" in m for _l, m in rig.log.lines)
 
 
