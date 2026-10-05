@@ -3,7 +3,7 @@
 Регистрируются ``mcp_server._attach_player_owner_v2``; старый путь (``compose_music`` & Co.)
 удалён вместе с флагом выбора движка (PR-13/PR-15).
 Параметры трека (темп, тоника, синты, сид) тулы не принимают: тема → мелодии по её словам
-(``engine.search.theme_hooks``, #3399) → ``theme.seeded_profile``
+(``engine.search.theme_search``, #3399, #3427) → ``theme.seeded_profile``
 → ``set_plan.seeded_plan`` → ``arrange.compose`` → ``render``. Вызывают их роутер медиакоманд
 (без LLM) и LLM.
 
@@ -33,15 +33,15 @@ from rob_box_music.theme import ThemeProfile, seeded_profile
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
 from .reasoner import SetPlanBox, SetReasoner
-from .search import theme_hooks
+from .search import ThemeHits, theme_search
 from .session import SetMemory, SetSession, plan_source
 
 _LOG = logging.getLogger(__name__)
 
 #: Мелодии по ``id`` для хука темы: ``ids -> {id: rtttl}``.
 MelodyLookup = Callable[[Iterable[str]], Dict[str, str]]
-#: Мелодии по словам темы: ``тема -> (id, …)`` (лучшие первыми).
-ThemeFinder = Callable[[str], Tuple[str, ...]]
+#: Мелодии по словам темы: ``тема -> ThemeHits`` (id лучшие первыми, точное совпадение названия).
+ThemeFinder = Callable[[str], ThemeHits]
 #: ``track_id -> MusicEvent(started|rejected) | None`` — ждёт событие плеера (``MusicEventLog.wait``).
 Confirm = Callable[[Optional[str]], Any]
 
@@ -71,15 +71,15 @@ def library_melodies(library_factory: Callable[[], Any]) -> MelodyLookup:
 
 
 def theme_finder(library_factory: Callable[[], Any]) -> ThemeFinder:
-    """``тема -> id`` мелодий по её словам (``engine.search.theme_hooks``); библиотека — при первой теме."""
+    """``тема -> ThemeHits`` по её словам (``engine.search.theme_search``); библиотека — при первой теме."""
     box: Dict[str, Any] = {}
 
-    def find(theme: str) -> Tuple[str, ...]:
+    def find(theme: str) -> ThemeHits:
         if not theme.strip():
-            return ()
+            return ThemeHits()
         if "lib" not in box:
             box["lib"] = library_factory()
-        return theme_hooks(box["lib"], theme)
+        return theme_search(box["lib"], theme)
 
     return find
 
@@ -190,11 +190,11 @@ class DjSetTool(MCPTool):
         """Seeded-профиль темы с мелодиями по её словам; поиск упал — профиль без находок, причина в лог."""
         log = self.node.get_logger() if self.node is not None else _LOG
         try:
-            found = self._find(theme)
+            hits = self._find(theme)
         except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
             log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
-            found = ()
-        profile = seeded_profile(theme, found=found)
+            hits = ThemeHits()
+        profile = seeded_profile(theme, found=hits.names, exact=hits.exact)
         log.info(f"🎛️ [dj_set] тема «{theme}»: source={profile.source} row={profile.row} "
                  f"хуки={list(profile.hook_ids)}")
         return profile

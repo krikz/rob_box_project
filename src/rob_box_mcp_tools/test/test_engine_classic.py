@@ -16,6 +16,7 @@ import pytest
 
 from rob_box_mcp_tools.core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from rob_box_mcp_tools.engine.classic import ClassicPick, find_record, pick_classic, song_material
+from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.song import song_track, verse_count
@@ -135,7 +136,7 @@ def test_pick_classic_renders_the_found_song():
 
 
 def _tools(rig, classic):
-    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 4242)
+    dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242)
     return dj, RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 5, classic=classic)
 
 

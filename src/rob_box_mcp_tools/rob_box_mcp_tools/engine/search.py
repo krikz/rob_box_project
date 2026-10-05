@@ -217,15 +217,65 @@ def consensus_order(hits: Sequence[Tuple[float, Dict[str, Any]]], limit: int = T
     return [hits[i][1]["name"] for *_rank, i in sorted(keys)]
 
 
-def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
-    """Мелодии по словам темы сета для хука (``theme.seeded_profile(found=…)``): первые ``limit`` записей, покрывающих
-    не меньше :data:`FOUND_MIN` слов темы, в порядке :func:`consensus_order`. Ни одной — пусто, сет возьмёт пул по
-    хешу темы."""
+@dataclass(frozen=True)
+class ThemeHits:
+    """Мелодии темы сета (``theme.seeded_profile(found=names, exact=exact)``); ``exact`` — тема и есть название записи
+    архива: хуки — эта запись и её версии, строка таблицы тем их не дополняет (#3427)."""
+
+    names: Tuple[str, ...] = ()
+    exact: bool = False
+
+
+def title_key(text: str) -> str:
+    """Название для сравнения целиком: нижний регистр, ё → е, только слова (знаки и регистр не различают)."""
+    return " ".join(_WORD_RE.findall(str(text or "").lower().replace("ё", "е")))
+
+
+def _is_exact(record: Dict[str, Any], key: str) -> bool:
+    return key in (title_key(record.get("title")), title_key(record.get("name")))
+
+
+def _identity_words(record: Dict[str, Any]) -> set:
+    """Слова опознавательных полей записи (название, исполнитель, имена) — «Theme» от «Terminator Soundtrack»."""
+    return {w for f in _IDENTITY for w in title_key(record.get(f)).split()}
+
+
+def _pool(library: Any, theme: str, query_terms: List[Term]) -> List[Tuple[float, Dict[str, Any]]]:
+    """Найденные по словам темы (доля ≥ :data:`FOUND_MIN`) и — точные по названию записи из поиска по строке темы
+    как есть: точная запись в набор входит, даже если слова темы её не выделили («Give In To Me» без «in», «to»)."""
+    pool = [(c, r) for c, r, _q in ranked(library, query_terms) if c >= FOUND_MIN]
+    seen = {r.get("name") for _c, r in pool}
+    key = title_key(theme)
+    extra = [r for r in library.search(theme, limit=SEARCH_LIMIT, include_rtttl=True)
+             if _is_exact(r, key) and r.get("name") not in seen]
+    return [(1.0, r) for r in extra] + pool
+
+
+def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHits:
+    """Мелодии по словам темы сета для хука, лучшие первыми (#3427):
+
+    1. точное совпадение названия записи (``title`` или ``name``, :func:`title_key`) с темой — всегда первым;
+       тогда в набор идут ещё только записи, в опознавательных полях которых есть все слова темы, — совпадения по
+       одному общему слову («remix», «give») отсекаются;
+    2. затем — :func:`consensus_order` (версии одной мелодии выше одиночной записи).
+    Ни одной — пусто, сет возьмёт пул по хешу темы."""
     query_terms = terms(library, theme)
     if not query_terms:
-        return ()
-    return tuple(consensus_order([(c, r) for c, r, _q in ranked(library, query_terms) if c >= FOUND_MIN], limit))
+        return ThemeHits()
+    pool = _pool(library, theme, query_terms)
+    key = title_key(theme)
+    exact = [hit for hit in pool if _is_exact(hit[1], key)]
+    if not exact:
+        return ThemeHits(tuple(consensus_order(pool, limit)))
+    words = set(key.split())
+    rest = [hit for hit in pool if not _is_exact(hit[1], key) and words <= _identity_words(hit[1])]
+    return ThemeHits(tuple((consensus_order(exact, limit) + consensus_order(rest, limit))[:limit]), True)
 
 
-__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "Term", "consensus_order", "coverage",
-           "find", "ranked", "sound_key", "stem", "terms", "theme_hooks"]
+def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
+    """Имена мелодий темы (:func:`theme_search`)."""
+    return theme_search(library, theme, limit).names
+
+
+__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "Term", "ThemeHits", "consensus_order",
+           "coverage", "find", "ranked", "sound_key", "stem", "terms", "theme_hooks", "theme_search", "title_key"]

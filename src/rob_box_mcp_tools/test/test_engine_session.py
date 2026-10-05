@@ -18,6 +18,7 @@ import pytest
 
 from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 from rob_box_mcp_tools.engine.renardo_adapter import HANDOFF_STOP_BEATS, RenardoAdapter
+from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, SetSession, compose_source
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_melodies
 from rob_box_music import knowledge as kn
@@ -409,7 +410,7 @@ def test_queued_artifact_for_another_track_is_dropped_as_stale():
 
 def test_dj_set_tool_starts_and_stops_a_set():
     rig = _rig()
-    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: (), seed=lambda: 123456)
+    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 123456)
     started = tool.execute(action="start", theme="космос")
     assert started.success and started.data["set_id"] == "set23456" and started.data["ok"] is True
     assert started.data["theme_source"] in ("theme", "pool")

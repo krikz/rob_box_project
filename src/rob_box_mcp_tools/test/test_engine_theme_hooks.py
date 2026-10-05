@@ -135,6 +135,36 @@ def test_other_themes_keep_a_recognisable_first_hook(library, theme, first):
     assert theme_hooks(library, theme)[0] in first
 
 
+@pytest.mark.parametrize("theme,expected", [
+    # живой тест 05.10 ~23:40: точная запись giveinto была седьмой среди «Give Me A Reason/Sign/The Light»
+    ("Give In To Me", ("giveinto",)),
+    # запись называется ``king`` (title «kingcastle»): точное совпадение по title
+    ("kingcastle", ("king",)),
+    # хвост «remix2, remix_3, …» по одному общему слову отсечён
+    ("the colin remix", ("thecolin",)),
+    # четыре версии одного названия, без starwars/x-files из строки ``space`` («star»)
+    ("Twinkle Twinkle Little Star", ("twinklet_5", "twinklet", "twinklet_2", "twinklet_3")),
+])
+def test_exact_title_comes_first_and_cuts_one_word_matches(library, theme, expected):
+    from rob_box_mcp_tools.engine.search import theme_search
+    from rob_box_music.theme import seeded_profile
+
+    hits = theme_search(library, theme)
+    assert hits.exact and hits.names == expected
+    profile = seeded_profile(theme, found=hits.names, exact=hits.exact)
+    assert profile.row is None and profile.hook_ids == expected  # строка таблицы тем не добавляет хуков
+
+
+def test_concept_theme_without_exact_title_keeps_the_table_row(library):
+    """«космос» — понятие, а не название: точного совпадения нет, строка ``space`` таблицы тем по-прежнему действует."""
+    from rob_box_mcp_tools.engine.search import theme_search
+    from rob_box_music.theme import seeded_profile
+
+    hits = theme_search(library, "космос")
+    assert not hits.exact and hits.names
+    assert seeded_profile("космос", found=hits.names, exact=hits.exact).row == "space"
+
+
 @pytest.mark.parametrize("seed", range(5))
 def test_first_track_of_terminator_set_plays_the_canonical_theme(library, seed):
     """Seeded-план из настоящей библиотеки: трек 1 — хук №1 (канон), не мелодия по сиду."""

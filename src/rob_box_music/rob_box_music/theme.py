@@ -57,12 +57,15 @@ def match_row(theme_text: str) -> Optional[str]:
     return best[1]
 
 
-def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = ()) -> ThemeProfile:
+def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = (),
+                   exact: bool = False) -> ThemeProfile:
     """Профиль темы за микросекунды, без сети и LLM; ``found`` — мелодии по словам темы (поиск, лучшие первыми).
-    Пустая тема без находок — профиль стиля с пулом по хешу."""
+    ``exact`` — тема и есть название найденной записи («Twinkle Twinkle Little Star»): строка таблицы тем («star» →
+    ``space``) не применяется — ни её хуки, ни темп и лад (#3427). Пустая тема без находок — профиль стиля с пулом
+    по хешу."""
     text = " ".join(theme_text.lower().split())
     window = kn.STYLES[style]
-    name = match_row(text)
+    name = None if exact and found else match_row(text)
     digest = _digest(text)
     if name is None:
         lo, hi = window.bpm
