@@ -34,9 +34,6 @@ from rob_box_core.tool_catalog import (
 
 _PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 
-#: ADR-0149 PR-13a: голосовая сторона предъявляет LLM каталог движка v2
-#: (``dialogue_node.MUSIC_ENGINE``) — фрагменты сверяются с ним.
-MUSIC_ENGINE = "v2"
 _SKILLS_DIR = _PROMPTS / "skills"
 
 #: Правила, которые обязаны жить ТОЛЬКО в мастер-промпте. Фрагмент скилла,
@@ -109,9 +106,7 @@ def test_every_tool_of_a_skill_is_named_in_its_fragment(skill: str) -> None:
     # core добавляется к каждому скиллу на предъявлении, но описывать его
     # инструменты обязан только сам core — иначе каждый фрагмент пришлось
     # бы дублировать speak_text и статусные тулы.
-    tools = tools_for_skill(
-        skill, include_core=(skill == CORE_SKILL), music_engine=MUSIC_ENGINE
-    )
+    tools = tools_for_skill(skill, include_core=(skill == CORE_SKILL))
     missing = sorted(e.name for e in tools if e.name.lower() not in text)
     assert not missing, (
         f"скилл {skill!r} включает инструменты, не упомянутые в "
@@ -131,12 +126,12 @@ def test_fragment_does_not_name_tools_it_does_not_own(skill: str) -> None:
     text = _fragment_text(skill).lower()
     own = {
         e.name
-        for e in tools_for_skill(skill, include_core=True, music_engine=MUSIC_ENGINE)
+        for e in tools_for_skill(skill, include_core=True)
     }
     foreign = sorted(
         e.name
         for other in skill_names()
-        for e in tools_for_skill(other, include_core=False, music_engine=MUSIC_ENGINE)
+        for e in tools_for_skill(other, include_core=False)
         if e.name not in own and _mentions_tool(text, e.name)
     )
     assert not foreign, (

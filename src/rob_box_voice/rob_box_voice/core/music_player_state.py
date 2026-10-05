@@ -14,7 +14,7 @@ Issue #3133. Владелец состояния «играет / какой т�
       "track_id": str | null,          # id трека, который звучит сейчас
       "form_ends_at": float | null,    # epoch конца прохода формы (любой repeat)
       "stops_at": float | null,        # epoch остановки конечного трека
-      "dj": {"enabled": bool, ...},    # DJ-режим; при music_engine=v2 владелец
+      "dj": {"enabled": bool, ...},    # DJ-режим; владелец
                                        # плеера кладёт сюда и сет (ADR-0149 §2.3)
       "finished_track_id": str | null, # idle потому, что этот трек доиграл сам
       "ts": float                      # epoch публикации

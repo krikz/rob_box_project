@@ -176,7 +176,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'переходы и темп решает код), action=stop — закончить сет и '
                        'выключить музыку. Об успехе робот скажет сам, когда музыка '
                        'реально заиграет; ok=false — музыка не заиграла.',
-        'music_engine': 'v2',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'start — '
@@ -1770,7 +1769,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'intent=melody — известная мелодия по названию из text. text — '
                        'слова человека дословно. Об успехе робот скажет сам, когда '
                        'музыка реально заиграет; ok=false — музыка не заиграла.',
-        'music_engine': 'v2',
         'parameters': {   'type': 'object',
                           'properties': {   'intent': {   'type': 'string',
                                                           'description': 'track — '

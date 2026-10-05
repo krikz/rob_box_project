@@ -247,8 +247,7 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     ``/voice/music/event``: latched-публикатор снимка уходит владельцу, у ноды
     ``music_state_pub`` становится ``None``. Renardo по-прежнему поднимает ``MusicManager``:
     адаптер берёт его контекст, палитру, подтверждённую сервером, ``_send_osc_raw`` и
-    слушатель ``/fail``. Старый путь удалён (PR-13), параметр ``music_engine`` здесь
-    не читается (сам параметр и yaml убирает PR-15).
+    слушатель ``/fail``. Старый путь удалён (PR-13), движок один.
     """
     if manager is None:
         node.get_logger().error("❌ MusicManager не поднялся — музыкальный движок v2 выключен")
@@ -327,12 +326,9 @@ class MCPServer(Node):
         # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
         # Внутренняя динамика микса при этом сохраняется.
         self.declare_parameter("music_master_gain", 0.5)
-        # ADR-0149 §9 — strangler-флаг нового музыкального движка: "v1" (дефолт до
-        # приёмки) — всё как было; "v2" — владелец плеера v2 (engine/player_owner.py)
-        # единственный писатель /voice/music/state и /voice/music/event.
-        # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры);
-        # при v1 latency не трогается (0.25).
-        self.declare_parameter("music_engine", "v1")
+        # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
+        # /voice/music/state и /voice/music/event.
+        # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
         self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
         # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax) и выкрик hype_line (В2, выкл).
         self.declare_parameter("music_v2_reasoner", True)
