@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
