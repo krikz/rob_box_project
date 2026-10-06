@@ -123,6 +123,9 @@ class Hook:
     bars: int  # 4..8
     source: Optional[str]  # id мелодии RTTTL или None
     key_fit: Optional[float] = None  # доля длительности хука темы в ладу трека (I12); у мотива лида — None
+    #: Ответ хуку из материала партитуры (ADR-0154 Н10, развитие ``rhythm``): ритм хука, высоты следующей фразы; пусто
+    #: — ответа нет. Вне ``repr``: хук без ответа выглядит как до PR-4 (эталон ``test_style_same_tracks`` тот же).
+    answer: Tuple[PitchEvent, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)

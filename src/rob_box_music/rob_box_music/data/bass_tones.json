@@ -1,0 +1,37 @@
+{
+ "provenance": {
+  "corpus": "musetrainer/library (PD) + 2 Interstellar (локально, не в git); docs/music/research_score_material.md",
+  "scores": 70,
+  "modes": {
+   "major": 32,
+   "minor": 38
+  },
+  "corpus_sha256": "25385b8fcf6045df6c60110b38076b8cf495b1bfdf9ff721dd0ba600f75cff85",
+  "stats": "stats.json",
+  "date": "2026-10-06",
+  "script": "scripts/music/research/score_bass_tones.py --write-table",
+  "relations": "низшая звучащая нота онсета против трезвучия полутакта (score_material_probe.analyze); approach — полутон к первой доле такта"
+ },
+ "tables": {
+  "major": {
+   "root": 0.441,
+   "third": 0.1952,
+   "fifth": 0.1831,
+   "other": 0.1807,
+   "approach_per_bar": 0.1177,
+   "notes": 11801,
+   "bars": 2439,
+   "approaches": 287
+  },
+  "minor": {
+   "root": 0.4035,
+   "third": 0.1956,
+   "fifth": 0.2093,
+   "other": 0.1916,
+   "approach_per_bar": 0.0947,
+   "notes": 23915,
+   "bars": 3792,
+   "approaches": 359
+  }
+ }
+}

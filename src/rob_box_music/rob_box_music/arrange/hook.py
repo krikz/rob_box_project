@@ -12,13 +12,17 @@
 
 Развитие (:func:`develop`) — детерминированные операции над мотивом по имени секции: ``build`` — первые
 2 такта мотива и пауза перед дропом; ``drop`` — мотив целиком; ``break`` — начало мотива вдвое медленнее
-(увеличение); ``drop2`` — мотив в параллельных терциях лада; остальные секции — без хука.
+(увеличение); ``drop2`` — мотив в параллельных терциях лада; остальные секции — без хука. Хук из материала
+партитуры с ответом (``Hook.answer``, :func:`rhythm_answer`) в ``drop2`` звучит развитием ``rhythm``: ритм хука,
+контур следующей фразы (ADR-0154 Н10).
 """
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
+from dataclasses import replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
@@ -252,15 +256,23 @@ def _drop2(hook: Hook, bars: int, key: Key, register: Tuple[int, int]) -> List[P
     return base + voices
 
 
+def _rhythm(hook: Hook, bars: int, key: Key, register: Tuple[int, int]) -> List[PitchEvent]:
+    """Ритм хука с контуром следующей фразы материала (``Hook.answer``, Н10: самый частый приём корпуса, 31 %)."""
+    return _loop(hook.answer, hook.bars * BEATS_PER_BAR, bars * BEATS_PER_BAR)
+
+
 #: Развитие хука по имени секции; ``build2``/``break2`` форм ``long64`` — то же развитие, что у ``build``/``break``.
+#: ``rhythm`` — не секция, а вариант секций :data:`RHYTHM_SECTIONS` у хука с ответом материала.
 DEVELOPMENT: Dict[str, object] = {"build": _build, "build2": _build, "drop": _drop, "break": _break,
-                                  "break2": _break, "drop2": _drop2}
+                                  "break2": _break, "drop2": _drop2, "rhythm": _rhythm}
+#: Секции, где хук с ответом (``Hook.answer``) звучит развитием ``rhythm`` вместо своего (ADR-0154 §3.3).
+RHYTHM_SECTIONS: Tuple[str, ...] = ("drop2",)
 
 
 def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]
             ) -> Tuple[PitchEvent, ...]:
     """Ноты мотива в секции ``section`` длиной ``bars`` тактов, доли от начала секции."""
-    op = DEVELOPMENT.get(section)
+    op = DEVELOPMENT.get("rhythm" if hook.answer and section in RHYTHM_SECTIONS else section)
     if op is None:
         return ()
     return tuple(sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi)))  # type: ignore[operator]
@@ -313,14 +325,66 @@ def _phrase_notes(material: ScoreMaterial, phrase: Phrase) -> List[Tuple[Optiona
     return out
 
 
+def rhythm_answer(material: ScoreMaterial, phrase: Phrase, hook: Hook, key: Key, bpm: int,
+                  register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Tuple[PitchEvent, ...]:
+    """Ответ хуку (Н10 «rhythm»): ритм хука, высоты следующей фразы материала той же длины — нота, начавшаяся
+    последней к доле каждой ноты хука; перенос в тонику трека и коридор — как у хука (:func:`_placement`), но не
+    ниже низа хука (октавой выше), чтобы пэд под лидом не терял места.
+
+    Нет следующей фразы, ответ вне лада трека (``HOOK_KEY_FIT_MIN``), ломается переносом
+    (:data:`MAX_FOLDED_SHARE`), не встаёт не ниже хука, не мотив или совпал с хуком — ``()`` (секция звучит своим
+    развитием); причина — в логе (I12)."""
+    try:
+        placed = _answer_pitches(material, phrase, hook, key, bpm, register)
+    except HookError as exc:
+        _LOG.info("🎵 [music v2] hook melody=%s ответ rhythm нет: %s", material.material_id, exc)
+        return ()
+    _LOG.info("🎵 [music v2] hook melody=%s ответ rhythm: %d нот", material.material_id, len(placed))
+    return tuple(PitchEvent(m, e.beat, e.dur_beats, e.accent) for e, m in zip(hook.notes, placed))
+
+
+def _contour(material: ScoreMaterial, phrase: Phrase, hook: Hook, bpm: int) -> List[int]:
+    """Высоты следующей фразы материала на долях нот хука (нота, начавшаяся последней к доле)."""
+    contour = _onsets(_phrase_notes(material, Phrase(phrase.bar + phrase.bars, phrase.bars, "new")),
+                      time_scale(material.bpm or bpm, bpm))
+    if len(contour) < MIN_NOTES:
+        raise HookError(f"в следующей фразе {len(contour)} нот — не мотив")
+    starts = [b for b, _d, _m in contour]
+    return [contour[max(0, bisect.bisect_right(starts, e.beat) - 1)][2] for e in hook.notes]
+
+
+def _answer_pitches(material: ScoreMaterial, phrase: Phrase, hook: Hook, key: Key, bpm: int,
+                    register: Tuple[int, int]) -> List[int]:
+    pitches = _contour(material, phrase, hook, bpm)
+    shift = (key.root - material.key.root + 6) % 12 - 6
+    fit = key_fit([(m + shift, e.dur_beats) for m, e in zip(pitches, hook.notes)], kn.ROOTS[key.root], key.mode)
+    if fit < kn.HOOK_KEY_FIT_MIN:
+        raise HookError(f"ответ вне лада: key_fit {fit:.2f} < {kn.HOOK_KEY_FIT_MIN}")
+    placed, folded = _placement(pitches, shift, register)
+    if folded > MAX_FOLDED_SHARE * len(placed):
+        raise HookError(f"ответ ломается: {folded} из {len(placed)} нот перенесены октавой")
+    floor = min(e.midi for e in hook.notes)
+    if min(placed) < floor:  # ниже хука — пэд под лидом потеряет место (compose: верх пэда от низа лида)
+        placed = [m + 12 for m in placed]
+        if max(placed) > register[1] or min(placed) < floor:
+            raise HookError("ответ не встаёт в коридор не ниже хука")
+    _check_musical([(e.beat, e.dur_beats, m) for e, m in zip(hook.notes, placed)])
+    if placed == [e.midi for e in hook.notes]:
+        raise HookError("следующая фраза — буквальный повтор")
+    return placed
+
+
 def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
                   register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Tuple[Hook, Key]:
     """Хук и тональность трека из материала партитуры: фраза по :func:`pick_phrase`, тональность — материала
-    (Н2), остальное — общий путь :func:`from_notes`. ``Hook.source`` — ``material_id``."""
+    (Н2), остальное — общий путь :func:`from_notes`. ``Hook.source`` — ``material_id``; ``Hook.answer`` —
+    :func:`rhythm_answer` (развитие ``rhythm`` в :data:`RHYTHM_SECTIONS`)."""
     validate_material(material)
-    notes = _phrase_notes(material, pick_phrase(material))
-    return from_notes(notes, material.bpm or bpm, material.material_id, bpm, root, mode, register, material.key)
+    phrase = pick_phrase(material)
+    hook, key = from_notes(_phrase_notes(material, phrase), material.bpm or bpm, material.material_id, bpm, root,
+                           mode, register, material.key)
+    return replace(hook, answer=rhythm_answer(material, phrase, hook, key, bpm, register)), key
 
 
-__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "develop", "diatonic", "from_material",
-           "from_notes", "from_rtttl", "pick_phrase", "time_scale", "track_key"]
+__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "develop", "diatonic",
+           "from_material", "from_notes", "from_rtttl", "pick_phrase", "rhythm_answer", "time_scale", "track_key"]
