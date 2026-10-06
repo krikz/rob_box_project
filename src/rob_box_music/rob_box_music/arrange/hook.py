@@ -22,6 +22,7 @@ import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
+from ..material import Phrase, ScoreMaterial, bar_beats, validate_material
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
 from ..rtttl import parse_rtttl
 from ..tonality import detect_key, key_fit
@@ -153,14 +154,33 @@ def _placement(pitches: Sequence[int], shift: int, register: Tuple[int, int]) ->
     return placed, outside(best)
 
 
+Notes = Sequence[Tuple[Optional[int], float]]
+
+
 def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
                register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Tuple[Hook, Key]:
     """Хук и тональность трека из RTTTL. ``root``/``mode`` — тональность плана; лад трека берётся у темы.
 
-    Исход в логе (I12): принятый хук — с ``key_fit``, отказ — с причиной.
+    Разбор строки — здесь, всё остальное — :func:`from_notes` (общий путь с материалом партитуры, ADR-0154 §3.3).
     """
     try:
-        hook, key = _hook(rtttl, melody_id, bpm, root, mode, register)
+        _name, melody_bpm, notes = parse_rtttl(rtttl)
+    except ValueError as exc:
+        _LOG.info("🎵 [music v2] hook melody=%s отказ: RTTTL не разбирается: %s", melody_id, exc)
+        raise HookError(f"RTTTL не разбирается: {exc}") from exc
+    return from_notes(notes, melody_bpm, melody_id, bpm, root, mode, register)
+
+
+def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, mode: str,
+               register: Tuple[int, int] = kn.REGISTERS["lead"], known_key: Optional[Key] = None) -> Tuple[Hook, Key]:
+    """Хук и тональность трека из нот ``(MIDI | None для паузы, длительность в четвертях)`` мелодии в темпе
+    ``melody_bpm`` — единственный путь получения хука из нот для любого источника (RTTTL, партитура).
+
+    ``known_key`` — тональность источника, если она известна (партитура, ADR-0154 Н2); иначе ``detect_key`` по
+    нотам окна. Исход в логе (I12): принятый хук — с ``key_fit``, отказ — с причиной.
+    """
+    try:
+        hook, key = _hook(notes, melody_bpm, melody_id, bpm, root, mode, register, known_key)
     except HookError as exc:
         _LOG.info("🎵 [music v2] hook melody=%s отказ: %s", melody_id, exc)
         raise
@@ -169,16 +189,13 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
     return hook, key
 
 
-def _hook(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
-          register: Tuple[int, int]) -> Tuple[Hook, Key]:
-    try:
-        _name, melody_bpm, notes = parse_rtttl(rtttl)
-    except ValueError as exc:
-        raise HookError(f"RTTTL не разбирается: {exc}") from exc
+def _hook(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, mode: str,
+          register: Tuple[int, int], known_key: Optional[Key] = None) -> Tuple[Hook, Key]:
     bars, cut, answered = _window(_onsets(notes, time_scale(melody_bpm, bpm)))
     _check_musical(cut)
     pitches = [m for _b, _d, m in cut]
-    tonic, hook_mode = detect_key(pitches, [d for _b, d, _m in cut])
+    tonic, hook_mode = ((kn.ROOTS[known_key.root], known_key.mode) if known_key
+                        else detect_key(pitches, [d for _b, d, _m in cut]))
     key = track_key(kn.ROOTS.index(tonic), hook_mode, root, mode)
     shift = (key.root - kn.ROOTS.index(tonic) + 6) % 12 - 6
     fit = key_fit([(m + shift, d) for _b, d, m in cut], kn.ROOTS[key.root], key.mode)
@@ -249,5 +266,61 @@ def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, 
     return tuple(sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi)))  # type: ignore[operator]
 
 
-__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "develop", "diatonic", "from_rtttl",
-           "time_scale", "track_key"]
+# ── Хук из материала партитуры (ADR-0154 §3.3) ────────────────────────────────────────────────────────────────
+
+#: Имена текстовых секций, где «живёт» тема: фраза оттуда предпочтительнее при любых повторах (Н12).
+THEME_SECTIONS: Tuple[str, ...] = ("theme", "main")
+
+
+def _in_theme_section(material: ScoreMaterial, phrase: Phrase) -> bool:
+    return any(s.origin == "text" and s.name.strip().lower() in THEME_SECTIONS
+               and s.bar <= phrase.bar < s.bar + s.bars for s in material.sections)
+
+
+def pick_phrase(material: ScoreMaterial) -> Phrase:
+    """Фраза-хук: длиной из :data:`HOOK_BARS` в секции темы, затем с наибольшим ``repeats`` (Н9), ничья — раньше
+    в пьесе. Нет подходящих фраз — начало мелодии, как у RTTTL (``HOOK_BARS[0]`` тактов)."""
+    fit = [p for p in material.phrases if p.bars in HOOK_BARS]
+    if not fit:
+        return Phrase(0, HOOK_BARS[0], "new", 1)
+    return min(fit, key=lambda p: (not _in_theme_section(material, p), -p.repeats, p.bar))
+
+
+#: Размеры, которые хук переводит в 4/4 клуба: 4/4 и 2/2 как есть, 3/4 — паузой на 4-й доле (В5 (б)).
+SUPPORTED_METERS: Tuple[Tuple[int, int], ...] = ((4, 4), (2, 2), (3, 4))
+
+
+def _phrase_notes(material: ScoreMaterial, phrase: Phrase) -> List[Tuple[Optional[int], float]]:
+    """Ноты фразы как ``(MIDI | None, длительность)`` в тактах 4/4; 3/4 дополняется паузой на 4-й доле, длительность
+    не переходит за свой такт. Размер вне :data:`SUPPORTED_METERS` честно отвергается (ADR-0154 §3.6)."""
+    if material.meter not in SUPPORTED_METERS:
+        raise HookError(f"размер {material.meter[0]}/{material.meter[1]} не переводится в 4/4 клуба (ADR-0154 §3.6)")
+    bar = bar_beats(material.meter)
+    first, last = phrase.bar * bar, (phrase.bar + phrase.bars) * bar
+    placed: List[Tuple[float, float, int]] = []  # (доля в 4/4, длительность до конца такта, MIDI)
+    for e in material.melody:
+        if first <= e.beat < last:
+            bar_idx, offset = divmod(e.beat - first, bar)
+            placed.append((bar_idx * BEATS_PER_BAR + offset, min(e.dur_beats, bar - offset), e.midi))
+    out: List[Tuple[Optional[int], float]] = []
+    cursor = 0.0
+    for i, (start, dur, midi) in enumerate(placed):
+        dur = min(dur, placed[i + 1][0] - start) if i + 1 < len(placed) else dur
+        if start > cursor + 1e-9:
+            out.append((None, start - cursor))
+        out.append((midi, dur))
+        cursor = start + dur
+    return out
+
+
+def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
+                  register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Tuple[Hook, Key]:
+    """Хук и тональность трека из материала партитуры: фраза по :func:`pick_phrase`, тональность — материала
+    (Н2), остальное — общий путь :func:`from_notes`. ``Hook.source`` — ``material_id``."""
+    validate_material(material)
+    notes = _phrase_notes(material, pick_phrase(material))
+    return from_notes(notes, material.bpm or bpm, material.material_id, bpm, root, mode, register, material.key)
+
+
+__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "develop", "diatonic", "from_material",
+           "from_notes", "from_rtttl", "pick_phrase", "time_scale", "track_key"]
