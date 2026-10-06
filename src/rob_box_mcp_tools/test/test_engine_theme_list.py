@@ -217,3 +217,49 @@ def test_garbage_theme_stays_pool_honestly(library):
     hits = theme_search(library, garbage)
     assert hits.names == () and hits.parts == ()
     assert seeded_profile(garbage, found=hits.names).source != "theme"
+
+
+# ---------------------------------------------------------------------------
+# Живой сет 06.10: «денди и классическая музыка» играл одни игры — «классика» была стоп-словом
+# ---------------------------------------------------------------------------
+
+DENDY_CLASSIC = "8-битный Dendy чиптюн и классическая музыка, вечеринка любителей ретро-игр"
+
+
+def _classical(library):
+    from rob_box_mcp_tools.engine.search import genre_hooks
+    return set(genre_hooks(library, "classical", 10000))
+
+
+def test_dendy_and_classical_theme_alternates_games_and_classics(library):
+    """Хуки живого лога были зельда/контра/марио ×8; классическая музыка — отдельная часть, сет чередует."""
+    hits = theme_search(library, DENDY_CLASSIC)
+    classical = _classical(library)
+    kinds = ["classic" if h in classical else "game" for h in hits.names[:8]]
+    assert kinds[:2] == ["game", "classic"], hits.names
+    assert kinds.count("classic") >= 3 and kinds.count("game") >= 3, hits.names
+    assert hits.missing == ()
+    assert len(hits.parts) == 2 and set(hits.parts[1]) <= classical
+
+
+def test_classical_only_theme_takes_the_catalog_category(library):
+    classical = _classical(library)
+    for theme in ("классическая музыка", "классика", "classical music"):
+        hits = theme_search(library, theme)
+        assert len(hits.names) >= 8 and set(hits.names) <= classical, (theme, hits.names)
+    assert {"1812over", "5thsymph"} <= classical and not {"raindrop", "bachelor", "mundiant"} & classical
+    artists = [library.get(n)["artist"] for n in theme_search(library, "классика").names[:6]]
+    assert len(set(artists)) >= 5, artists  # разные композиторы подряд, а не версии одного
+
+
+def test_games_only_theme_is_unchanged_by_genre_part(library):
+    hits = theme_search(library, "8-битный Dendy чиптюн, вечеринка любителей ретро-игр")
+    assert hits.names[:3] == ("zelda", "contra", "supermar_4") and not set(hits.names) & _classical(library)
+
+
+def test_short_dendy_and_classic(library):
+    classical = _classical(library)
+    hits = theme_search(library, "денди и классика")
+    assert [h in classical for h in hits.names[:4]] == [False, True, False, True], hits.names
+    assert theme_parts(library, "денди и классика") == ["денди", "классика"]
+    assert theme_parts(library, "денди классическая музыка") == ["денди", "классическая"]
