@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
-from .model import Key, PitchEvent
+from .model import BEATS_PER_BAR, Key, PitchEvent
 
 SCHEMA_VERSION = 1
 #: Качества аккордов материала (ADR-0154 §3.1); ``degree`` — ступень диатонического аккорда в ``key`` или None.
@@ -104,6 +104,14 @@ def license_usable(license: object) -> bool:
 def bar_beats(meter: Tuple[int, int]) -> float:
     """Длина такта размера ``meter`` в четвертях."""
     return meter[0] * 4 / meter[1]
+
+
+def club_beat(meter: Tuple[int, int], beat: float) -> float:
+    """Доля материала → доля в тактах 4/4 клуба (ADR-0154 §3.6, В5 (б)): такт материала встаёт в такт 4/4 с начала,
+    короткий (3/4) дополняется паузой. Одна формула для хука и гармонии."""
+    bar = bar_beats(meter)
+    bar_idx, offset = divmod(beat, bar)
+    return bar_idx * BEATS_PER_BAR + offset
 
 
 # ── валидатор ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -286,5 +294,5 @@ def from_json(text: str) -> ScoreMaterial:
 
 
 __all__ = ["BPM_RANGE", "CHORD_QUALITIES", "ChordSpan", "MaterialError", "MaterialStats", "PHRASE_RELATIONS",
-           "Phrase", "SCHEMA_VERSION", "SECTION_ORIGINS", "ScoreMaterial", "ScoreSection", "bar_beats", "from_dict",
-           "from_json", "license_usable", "to_dict", "to_json", "validate_material"]
+           "Phrase", "SCHEMA_VERSION", "SECTION_ORIGINS", "ScoreMaterial", "ScoreSection", "bar_beats", "club_beat",
+           "from_dict", "from_json", "license_usable", "to_dict", "to_json", "validate_material"]

@@ -22,7 +22,7 @@ import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..material import Phrase, ScoreMaterial, bar_beats, validate_material
+from ..material import Phrase, ScoreMaterial, bar_beats, club_beat, validate_material
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
 from ..rtttl import parse_rtttl
 from ..tonality import detect_key, key_fit
@@ -300,8 +300,8 @@ def _phrase_notes(material: ScoreMaterial, phrase: Phrase) -> List[Tuple[Optiona
     placed: List[Tuple[float, float, int]] = []  # (доля в 4/4, длительность до конца такта, MIDI)
     for e in material.melody:
         if first <= e.beat < last:
-            bar_idx, offset = divmod(e.beat - first, bar)
-            placed.append((bar_idx * BEATS_PER_BAR + offset, min(e.dur_beats, bar - offset), e.midi))
+            offset = (e.beat - first) % bar
+            placed.append((club_beat(material.meter, e.beat - first), min(e.dur_beats, bar - offset), e.midi))
     out: List[Tuple[Optional[int], float]] = []
     cursor = 0.0
     for i, (start, dur, midi) in enumerate(placed):

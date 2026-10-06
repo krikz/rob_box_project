@@ -9,15 +9,26 @@
 подбор на той же выборке честно виден), потолок пула шаблонов, «везде тоника».
 
     python scripts/music/research/score_markov_harmony.py stats.json
+    python scripts/music/research/score_markov_harmony.py stats.json \
+        --write-table src/rob_box_music/rob_box_music/data/progression_transitions.json
+
+``--write-table`` — таблица ``knowledge.PROGRESSION_TRANSITIONS`` по ВСЕМ партитурам (ADR-0154 §3.4, PR-3).
+Оговорка: эмиссия здесь (:func:`emissions`) считает трезвучия от C, а не от тоники партитуры — вклад мелодии в
+этом опыте занижен для не-C; Витерби кода (``arrange.harmony.viterbi``) берёт тонику, его замер —
+``score_harmony_m3.py``.
 """
 
 from __future__ import annotations
 
+import argparse
 import collections
+import datetime
+import hashlib
 import json
 import math
+import pathlib
 import sys
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 MAJOR = (0, 2, 4, 5, 7, 9, 11)
 MINOR = (0, 2, 3, 5, 7, 8, 10)
@@ -28,15 +39,24 @@ def triad(scale: Sequence[int], degree: int) -> set:
     return {scale[(degree + 2 * k) % 7] % 12 for k in range(3)}
 
 
-def transitions(rows: List[Dict], skip: str, mode: str) -> List[List[float]]:
+def corpus_counts(rows: List[Dict], mode: str, skip: str = "") -> Tuple[List[float], List[List[float]]]:
+    """Счёт первых ступеней и переходов лада ``mode`` со сглаживанием +1; ``skip`` — партитура вне обучения."""
     counts = [[1.0] * 7 for _ in range(7)]
+    starts = [1.0] * 7
     for r in rows:
         if r["file"] == skip or r["mode"] != mode:
             continue
         seq = r["degree_seq"]
+        if seq and seq[0] is not None:
+            starts[seq[0]] += 1
         for a, b in zip(seq, seq[1:]):
             if a is not None and b is not None:
                 counts[a][b] += 1
+    return starts, counts
+
+
+def transitions(rows: List[Dict], skip: str, mode: str) -> List[List[float]]:
+    _starts, counts = corpus_counts(rows, mode, skip)
     return [[math.log(c / sum(row)) for c in row] for row in counts]
 
 
@@ -64,19 +84,49 @@ def viterbi(em: List[List[float]], trans: List[List[float]], w: float, prior: Se
     return path[::-1]
 
 
+def corpus_table(rows: List[Dict], mode: str, skip: str = "") -> Dict[str, List]:
+    """Таблица лада ``mode`` для ``knowledge.PROGRESSION_TRANSITIONS``: вероятности (не логарифмы) с тем же
+    сглаживанием +1, что в leave-one-out опыте; ``skip`` — партитура, исключённая из обучения."""
+    starts, counts = corpus_counts(rows, mode, skip)
+    return {"start": [round(s / sum(starts), 4) for s in starts],
+            "next": [[round(c / sum(row), 4) for c in row] for row in counts]}
+
+
+def write_table(rows: List[Dict], stats_path: str, out: str) -> None:
+    """Выученная таблица — данные пакета (ADR-0154 §3.4). Обучение детерминировано (подсчёт, без ГСЧ); провенанс —
+    число партитур, sha256 входа (файлы + лады + последовательности ступеней), дата и команда."""
+    corpus = sorted((r["file"], r["mode"], r["degree_seq"]) for r in rows)
+    digest = hashlib.sha256(json.dumps(corpus, ensure_ascii=False).encode()).hexdigest()
+    table = {
+        "provenance": {
+            "corpus": "musetrainer/library (PD) + 2 Interstellar (локально, не в git); "
+                      "docs/music/research_score_material.md",
+            "scores": len(rows), "modes": dict(collections.Counter(r["mode"] for r in rows)),
+            "corpus_sha256": digest, "stats": pathlib.Path(stats_path).name, "date": datetime.date.today().isoformat(),
+            "script": "scripts/music/research/score_markov_harmony.py --write-table", "smoothing": "+1",
+            "degrees": "индекс ступени 0..6 в ладу; аккорд полутакта — score_material_probe.chords_per_half_bar"},
+        "tables": {mode: corpus_table(rows, mode) for mode in ("major", "minor")},
+    }
+    pathlib.Path(out).write_text(json.dumps(table, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    print(f"таблица → {out}: партитур {len(rows)}, sha256 корпуса {digest[:12]}")
+
+
 def main() -> int:
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("stats")
+    ap.add_argument("--write-table", default="", help="записать таблицу переходов (JSON knowledge) по всему корпусу")
+    args = ap.parse_args()
+    data = json.load(open(args.stats, encoding="utf-8"))
     rows = [r for r in data["rows"] if "error" not in r and r.get("our_progression")]
+    if args.write_table:
+        write_table(rows, args.stats, args.write_table)
     score = collections.Counter()
     slots = 0
     for r in rows:
         scale = MAJOR if r["mode"] == "major" else MINOR
         trans = transitions(rows, r["file"], r["mode"])
         # априорная ступень первого слота: как часто ступень открывает последовательность у остальных
-        starts = [1.0] * 7
-        for o in rows:
-            if o["file"] != r["file"] and o["mode"] == r["mode"] and o["degree_seq"] and o["degree_seq"][0] is not None:
-                starts[o["degree_seq"][0]] += 1
+        starts, _counts = corpus_counts(rows, r["mode"], r["file"])
         prior = [math.log(s / sum(starts)) for s in starts]
         for win in r["our_progression"]["dump"]:
             em = emissions(win, scale)
