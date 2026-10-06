@@ -172,7 +172,7 @@ SYNTH_TRAITS: Mapping[str, SynthTraits] = {
 SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
     "lead": ("pluck", "blip", "arpy", "karp", "marimba", "sitar", "epiano", "brass", "orient", "viola",
              "rhpiano", "kalimba", "hoover", "keys", "cs80lead"),
-    "bass": ("bass", "retrobass", "dub", "jbass", "wobblebass", "subbass"),
+    "bass": ("bass", "retrobass", "dub", "jbass", "wobblebass", "subbass", "tb303"),
     "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings"),
 }
 
@@ -509,11 +509,11 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 #: ``strangerarp``/``supersawlead`` размазал бы мотив), с долей низа < 0.05, достающий цель роли на потолке
 #: ``amp`` (самый тихий — ``keys``: −49.2 при цели −50). Бас — доля низа ≥ 0.9 (#3430): ``retrobass`` (0.59) и ``tb303``
 #: (0.52) держат A9-модель трека на 0.72/0.67 при любом пэде (``a9_trim`` упирается в потолок ``amp``) — в семьи не
-#: идут, ``tb303`` ждёт ``acid16`` (PR-9); ``moogbass`` — разброс замера по тоникам 8 дБ.
+#: идут; ``tb303`` (PR-9) — только в ``hard`` и только рисунком ``acid16`` (:data:`BASS_FIGURE_SYNTHS`); ``moogbass`` — разброс замера по тоникам 8 дБ.
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("dub", "subbass", "jbass"),
              "pad": ("sinepad", "space", "strangerpulsepad")},
-    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "dub"),
+    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "dub", "tb303"),
              "pad": ("sinepad", "strings", "strangerpulsepad")},
     "bright": {"lead": ("pluck", "blip", "kalimba", "epiano"), "bass": ("bass", "jbass"),
                "pad": ("strings", "ambi", "sinepad")},
@@ -583,8 +583,29 @@ class BassFigure:
 
     steps: Tuple[int, ...]
     fifth_last: bool
+    #: Акцент каждой ноты такта (``PitchEvent.accent``); пусто — первая нота 3, остальные 2.
+    accents: Tuple[int, ...] = ()
+    #: Номера нот такта, которые звучат октавой выше (если вышли бы в регистр баса; иначе — тоникой).
+    lift: Tuple[int, ...] = ()
+    #: Срез фильтра каждой ноты, Гц, на цикл ``2 × len(steps)`` нот (чётный такт, нечётный); пусто — без среза на ноту
+    #: (общий свип секции ``Style.section_lpf``). Рисунок со своим срезом свип секции на басе заменяет.
+    lpf: Tuple[float, ...] = ()
 
 
+def _acid_lpf(accents: Tuple[int, ...], low: float, high: float, accent_gain: float) -> Tuple[float, ...]:
+    """Срез ``acid16``: треугольная волна по нотам двух тактов от ``low`` до ``high`` Гц, нота с акцентом 3 —
+    на ``accent_gain`` шире; срез открывается к середине цикла и закрывается к его концу."""
+    n = 2 * len(accents)
+    out = []
+    for i in range(n):
+        wave = 1.0 - abs(2.0 * i / (n - 1) - 1.0)
+        hz = (low + (high - low) * wave) * (accent_gain if accents[i % len(accents)] == 3 else 1.0)
+        out.append(float(round(min(hz, LPF_TOP_HZ) / 10.0) * 10))
+    return tuple(out)
+
+
+_ACID_STEPS = (1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15)  # 16-е мимо долей: на долях бочка (ADR-0149 §3.4)
+_ACID_ACCENTS = (3, 2, 2) * 4
 #: Рисунки баса: ``offbeat`` — «и» каждой доли, полдоли, тоника ×3 + квинта (как до PR-6); ``rolling8`` — восемь нот
 #: такта тоникой без октавы, «и» и «а» каждой доли по 16-й: сама восьмая доли занята бочкой, поэтому ролл сдвинут
 #: на «и». Звучащее время у обоих — полдоли на долю: модель громкости роли (бас звучит всю секцию) у них одна.
@@ -593,7 +614,15 @@ BASS_FIGURES: Mapping[str, BassFigure] = {
     "rolling8": BassFigure(steps=(2, 3, 6, 7, 10, 11, 14, 15), fifth_last=False),
     # PR-8: бас ломаной бочки (``breakbeat``: шаги 0, 2, 10, 13) — ни одна нота не на шаге этой бочки и не на доле.
     "broken": BassFigure(steps=(1, 6, 9, 14), fifth_last=True),
+    # PR-9: кислотная 16-я линия ``tb303`` — тоника на каждой 16-й мимо долей, акцент на первой 16-й каждой доли,
+    # последняя 16-я доли — октавой выше, срез на каждую ноту волной в два такта (``lpf=[...]``).
+    "acid16": BassFigure(steps=_ACID_STEPS, fifth_last=False, accents=_ACID_ACCENTS, lift=(2, 5, 8, 11),
+                         lpf=_acid_lpf(_ACID_ACCENTS, 500.0, 2400.0, 1.5)),
 }
+#: Рисунок баса ↔ синт (ADR-0152 PR-9, одна таблица): рисунок из таблицы звучит только перечисленными синтами, а
+#: синт из таблицы — только рисунками, которые его называют (``arrange.mix.bass_pair_ok``). ``tb303`` держит низ на
+#: 0.52 (:data:`LAYER_BANDS`) — соло-линия ``acid16`` с огибающей на ноту, а не ровный бас ``offbeat``/``rolling8``.
+BASS_FIGURE_SYNTHS: Mapping[str, Tuple[str, ...]] = {"acid16": ("tb303",)}
 
 
 @dataclass(frozen=True)
@@ -664,7 +693,7 @@ __all__ += [
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
     "PAD_ROBOT_DB_UNMEASURED", "A9_MIN_GAIN", "A9_STEP_DB",
-    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BassFigure", "FormSpec",
+    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BASS_FIGURE_SYNTHS", "BassFigure", "FormSpec",
 ]
 
 
@@ -758,8 +787,9 @@ class GenreWindow:
 #: подмножества :data:`KICK_SOUNDS`; темпы окон — решение координатора (deep 120–126: 128 уже окно ``club``;
 #: breaks 130–138).
 _CLUB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
-    "club": GenreWindow((128, 138), ("house", "deep", "techno", "garage"), _CLUB_LOOKS, ("offbeat", "rolling8"),
-                       ("pumped16", "held", "stabs")),
+    "club": GenreWindow((128, 138), ("house", "deep", "techno", "garage"), _CLUB_LOOKS,
+                        ("offbeat", "rolling8", "acid16"),
+                        ("pumped16", "held", "stabs")),
     "deep": GenreWindow((120, 126), ("deep", "house"), _CLUB_LOOKS, ("offbeat", "rolling8"),
                        ("held", "held", "pumped16")),
     "breaks": GenreWindow((130, 138), ("techno", "garage"), _looks("breakbeat"), ("broken",),
@@ -824,7 +854,8 @@ STYLES: Mapping[str, Style] = {
         bpm=(128, 138), swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
         kick_pool=("house", "deep", "techno", "garage"), looks=_CLUB_LOOKS, kits=_CLUB_KITS,
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
-        bass_figures=("offbeat", "rolling8"), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
+        bass_figures=("offbeat", "rolling8", "acid16"), pad_figures=("pumped16", "held", "stabs"),
+        lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
         forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS,
         blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS, genre_windows=_CLUB_GENRE_WINDOWS,

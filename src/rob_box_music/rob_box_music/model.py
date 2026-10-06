@@ -81,6 +81,9 @@ class PitchEvent:
     beat: float  # доля от начала трека
     dur_beats: float
     accent: int = 0
+    #: Срез фильтра ноты, Гц (``lpf=[...]`` по нотам, ADR-0152 PR-9); 0 — не задан. Вне ``repr``: событие без среза
+    #: выглядит как до PR-9 (отпечаток трека и эталон ``test_style_same_tracks`` у басов без ``acid16`` те же).
+    lpf: float = field(default=0.0, repr=False)
 
 
 @dataclass(frozen=True)
@@ -275,6 +278,8 @@ def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float
     _require(_finite(ev.beat) and _finite(ev.dur_beats), path, "доли не конечные числа")
     _require(ev.dur_beats > 0 and 0 <= ev.beat and ev.beat + ev.dur_beats <= limit_beats + 1e-9,
              f"{path}.beat", f"нота {ev.beat}+{ev.dur_beats} вне формы ({limit_beats} долей)")
+    _require(ev.lpf == kn.LPF_OPEN or kn.LPF_RANGE_HZ[0] <= ev.lpf <= kn.LPF_RANGE_HZ[1], f"{path}.lpf",
+             f"срез ноты {ev.lpf} не 0 и не в {kn.LPF_RANGE_HZ[0]:g}..{kn.LPF_RANGE_HZ[1]:g} Гц")
     lo, hi = part.register
     _require(lo <= ev.midi <= hi, f"{path}.midi", f"MIDI {ev.midi} вне регистра партии {lo}..{hi}")
     if song or role == "lead":  # мелодия/хук темы — с хроматикой; лад — долей длительности (``_check_key_fit``)

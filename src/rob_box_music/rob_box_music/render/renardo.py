@@ -48,7 +48,7 @@ ROLE_SLOT: Dict[str, int] = {"kick": 0, "hats": 1, "clap": 2, "perc": 2, "bass":
                              "sample": 6, "fx": 7, "loop": 8}
 _UNSET = object()
 
-Cell = Tuple[Optional[Tuple[int, ...]], float, int]  # (ноты шага, sus в долях, акцент)
+Cell = Tuple[Optional[Tuple[int, ...]], float, int, float]  # (ноты шага, sus в долях, акцент, срез ноты Гц или 0)
 
 
 class RenderError(ValueError):
@@ -135,6 +135,16 @@ def _lpf(track: Track, role: str) -> List[str]:
             else:
                 values.append([hz, 1])
     return [f"lpf=var({_list(v for v, _ in values)}, {_list(_num(n) for _, n in values)}, start={FORM_START})"]
+
+
+def _note_lpf(role: str, cutoffs: Sequence[float], opts: Sequence[str]) -> List[str]:
+    """``lpf=[...]`` — срез на каждое событие свёрнутого рисунка (``PitchEvent.lpf``, пауза — 0); нет срезов у нот —
+    ничего. Свип секции на той же роли (``Mix.lpf``) занял бы тот же ключ: оба сразу — ``RenderError``."""
+    if not any(cutoffs):
+        return []
+    if any(o.startswith("lpf=") for o in opts):
+        raise RenderError(f"parts.{role}: срез на ноту и свип секции одновременно")
+    return [f"lpf={_list(_num(round(hz)) for hz in cutoffs)}"]
 
 
 def _stereo(st: Optional[Stereo], hits: Optional[Sequence[bool]], bpm: int) -> List[str]:
@@ -295,9 +305,9 @@ def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
         grouped.setdefault(step, []).append(ev)
     cells: List[Optional[Cell]] = [None] * len(active)
     for step, evs in grouped.items():
-        if len({(e.dur_beats, e.accent) for e in evs}) != 1:
-            raise RenderError(f"parts.{role}: аккорд на доле {step * STEP_BEATS} с разными sus/акцентом")
-        cells[step] = (tuple(sorted(e.midi for e in evs)), evs[0].dur_beats, evs[0].accent)
+        if len({(e.dur_beats, e.accent, e.lpf) for e in evs}) != 1:
+            raise RenderError(f"parts.{role}: аккорд на доле {step * STEP_BEATS} с разными sus/акцентом/срезом")
+        cells[step] = (tuple(sorted(e.midi for e in evs)), evs[0].dur_beats, evs[0].accent, evs[0].lpf)
     return cells
 
 
@@ -371,6 +381,7 @@ def _tonal_line(slot: str, role: str, part: Part, track: Track) -> str:
     opts = [f"dur=1/4, sus={sus_text}, scale=Scale.chromatic, root=0, oct=0"]
     onsets = {c[2] for c in pattern if c}
     opts += _tail(track, role, part, accents, len(onsets) > 1)
+    opts += _note_lpf(role, [c[3] if c else 0.0 for c in pattern], opts)
     return f"{slot} >> {part.synth_or_sample}({_list(_note(c) for c in pattern)}, " + ", ".join(opts) + ")"
 
 
