@@ -341,7 +341,7 @@ def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
 
 
 #: Факты играющего трека сета в снимке (``dj``), которыми код отвечает на «что играет / когда будет X».
-SET_FACTS = ("track_no", "tracks", "melody", "next_melodies", "not_found")
+SET_FACTS = ("track_no", "tracks", "theme", "melody", "played", "next_melodies", "next_known", "not_found")
 
 
 def _fold() -> Any:
