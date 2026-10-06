@@ -2845,6 +2845,16 @@ class TestGetMusicStateTool:
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
 
+    def test_execute_tells_that_the_dj_set_ended(self, mock_node):
+        """06.10: сет конечный — состояние сета движка v2 (``DjSetTool.status``) первым в ответе, фраза от кода."""
+        status = {"active": False, "ended": True, "set_id": "set1", "tracks": 3, "track_no": 3,
+                  "message": "Диджей-сет закончился сам: сыграны все 3 из 3."}
+        mock_node._dj_set_tool = SimpleNamespace(status=lambda: status)
+        tool, _ = self._make_tool(mock_node)
+        result = tool.execute()
+        assert result.data["dj_set"] == status
+        assert result.message.splitlines()[0] == "Диджей-сет закончился сам: сыграны все 3 из 3."
+
 
 class TestLookupMelodyTool:
     """Тул поиска известной мелодии — возвращает ноты, НЕ играет."""

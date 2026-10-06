@@ -170,6 +170,9 @@ class MCPToolParameter:
     #: нормализуют вход: напр. ``speak_text(animation=...)`` принимает
     #: русские названия и псевдонимы и приводит их к реальной анимации.
     enum_strict: bool = True
+    #: Границы ``type="integer"|"number"`` в JSON Schema (узкая схема, ADR-0148); проверяет сам инструмент.
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата."""
@@ -183,6 +186,11 @@ class MCPToolParameter:
 
         if self.default is not None:
             schema["default"] = self.default
+
+        if self.minimum is not None:
+            schema["minimum"] = self.minimum
+        if self.maximum is not None:
+            schema["maximum"] = self.maximum
 
         if self.type == "object" and self.properties:
             schema["properties"] = {name: param.to_json_schema() for name, param in self.properties.items()}

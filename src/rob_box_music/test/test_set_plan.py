@@ -15,7 +15,7 @@ from rob_box_music.arrange.mix import level_amp
 from rob_box_music.model import BEATS_PER_BAR
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
-from rob_box_music.set_plan import FIFTH, root_shift, seeded_plan, track_energy
+from rob_box_music.set_plan import FIFTH, MAX_TRACKS, arc_energy, root_shift, seeded_plan, set_tracks, track_energy
 from rob_box_music.theme import seeded_profile
 
 THEMES = ("космос", "киберпанк", "детский праздник", "славянская вечеринка", "новый год", "что-то своё", "")
@@ -70,7 +70,29 @@ def test_energy_wave_rises_to_the_peak_then_falls():
         assert max(wave) == 5 and all(a < b for a, b in zip(wave[:peak], wave[1:peak + 1])), wave
         assert all(a > b for a, b in zip(wave[peak:], wave[peak + 1:])), wave
     plan = seeded_plan(profile(), 3, n_tracks=7)
-    assert [t.energy for t in plan.tracks] == energies[:7] and plan.track(42).energy == track_energy(42)
+    assert [t.energy for t in plan.tracks] == energies[:6] + [2] and plan.track(42).energy == track_energy(42)
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 4, 5, 6, 7, 10, 12, 20, MAX_TRACKS])
+def test_finite_set_arc_ends_in_a_cooldown_and_peaks_before_it(n):
+    """06.10: сет конечный — план длиной в сет, последний трек — спад к уровню интро; пик 5 — до спада и не позже
+    ``peak_by_track`` (короткий сет начинает волну позже), длинный сет повторяет волну."""
+    plan = seeded_plan(profile(), 3, n_tracks=n)
+    energies = [t.energy for t in plan.tracks]
+    assert len(plan.tracks) == n and energies == [arc_energy(no, n) for no in range(1, n + 1)]
+    if n == 1:
+        return
+    assert energies[-1] == kn.ENERGY_WAVE[0] and max(energies[:-1]) == 5
+    assert energies.index(5) + 1 <= min(n - 1, kn.STYLES["club"].peak_by_track)
+    if n >= len(kn.ENERGY_WAVE):
+        assert energies[:-1] == [track_energy(no) for no in range(1, n)]  # волна та же, что у открытого сета
+
+
+def test_set_tracks_accepts_only_whole_numbers_in_range():
+    assert set_tracks(3) == 3 and set_tracks("20") == 20 and set_tracks(MAX_TRACKS) == MAX_TRACKS
+    for bad in (0, -1, MAX_TRACKS + 1, 2.5, True, "три", None):
+        with pytest.raises(ValueError, match="tracks="):
+            set_tracks(bad)
 
 
 @pytest.mark.parametrize("seed", range(10))

@@ -31,7 +31,6 @@ def test_none_row_means_theme_outside_the_table():
     ({k: v for k, v in VALID.items() if k != "mode"}, "mode"),
     ({**VALID, "mode": "lydian"}, "mode"),
     ({**VALID, "hooks": []}, "hooks"),
-    ({**VALID, "hooks": ["axelf_3", "robot", "tetris", "popcorn"]}, "hooks"),
     ({**VALID, "hooks": ["never_gonna_give"]}, "hooks"),  # только кандидаты, которые показал код
     ({**VALID, "hooks": "axelf_3"}, "hooks"),
     ({**VALID, "energy": [0, 3]}, "energy"),
@@ -77,7 +76,19 @@ def test_apply_keeps_tempo_seed_tonic_and_swing():
     assert [new.root(n) for n in range(1, 13)] == [PLAN.root(n) for n in range(1, 13)]  # ход по квинтам тот же
     assert new.track(5) == PLAN.track(5)  # бочка плана остаётся
     assert replace(new.track(5), kick="", template="") == track_plan(5)  # дальше — волна seeded
-    assert new.track(50) == track_plan(50)  # сет открытый
+    assert len(new.tracks) == len(PLAN.tracks) and new.track(50) == track_plan(50)  # за концом плана — волна
+
+
+@pytest.mark.parametrize("n", [1, 3, 10, 20])
+def test_llm_arc_neither_lengthens_the_set_nor_touches_its_cooldown(n):
+    """06.10: длина сета — решение кода; дуга LLM (до 10 треков) правит треки до последнего, последний — спад
+    seeded-дуги, треки длинного сета за концом дуги LLM — seeded."""
+    plan = seeded_plan(seeded_profile("ночной город"), 42, n_tracks=n, set_id="s")
+    new = rz.apply(plan, rz.validate({**VALID, "energy": [3, 4, 5, 4, 3, 3, 4, 5, 4, 3]}))
+    assert len(new.tracks) == n and new.tracks[-1].energy == plan.tracks[-1].energy == kn.ENERGY_WAVE[0] or n == 1
+    shaped = min(10, n - 1)
+    assert [t.energy for t in new.tracks[:shaped]] == [3, 4, 5, 4, 3, 3, 4, 5, 4, 3][:shaped]
+    assert new.tracks[shaped:] == plan.tracks[shaped:]
 
 
 def test_hooks_found_by_theme_words_are_llm_candidates_and_nothing_else_is_added():
@@ -142,3 +153,19 @@ def test_seeded_plan_always_peaks_within_window(style):
     for seed in range(40):
         plan = seeded_plan(seeded_profile("ночной город", style=style), seed)
         assert 5 in [plan.track(no).energy for no in range(1, kn.STYLES[style].peak_by_track + 1)]
+
+
+def test_extra_llm_hooks_are_truncated_not_invalid():
+    """MiniMax не соблюдает maxItems: 5 хуков из кандидатов — план валиден, взяты первые MAX_HOOKS."""
+    five = ["axelf_3", "robot", "tetris", "popcorn", "axelf_3"]
+    ref = rz.validate({**VALID, "hooks": five})
+    assert ref.hook_ids == ("axelf_3", "robot", "tetris")
+    assert len(ref.hook_ids) == rz.MAX_HOOKS
+    assert ref.mode == "phrygian" and ref.energy == (3, 4, 5, 4)  # лад и энергия плана уцелели
+
+
+def test_non_list_hooks_still_invalid():
+    for bad in ("axelf_3", None, {"a": 1}, 5):
+        with pytest.raises(rz.PlanInvalid) as err:
+            rz.validate({**VALID, "hooks": bad})
+        assert err.value.path == "hooks"

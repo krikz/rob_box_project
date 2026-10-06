@@ -13,6 +13,10 @@ Classic («поставь Калинку», PR-11): ``request_music`` с ``inten
 песню движка v2 (``engine.classic``: поиск и ``harmonize`` старой библиотеки → ``arrange.song`` → ``render``),
 один проход формы, потом ``finished``. Не нашлась — ``ok: false, found: false`` (I16).
 
+Длина сета (06.10, сет без конца дошёл до 53-го трека): ``dj_set(tracks)`` — целое 1..``MAX_TRACKS`` из фразы
+человека (роутер разбирает число кодом, LLM передаёт его узким параметром); без числа — ``DEFAULT_TRACKS``, а посреди
+идущего сета (смена темы) — сколько треков ему оставалось: длина считается от начала сета (:meth:`DjSetTool.set_length`).
+
 PR-10: после ``started`` сета ``dj_set`` в фоне спрашивает ``SetReasoner`` (LLM) профиль сета; ответ ок —
 план подменяется со следующего несыгранного трека (``SetSession.replan``), иначе сет целиком seeded.
 """
@@ -27,7 +31,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
-from rob_box_music.set_plan import seeded_plan
+from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
 from rob_box_music.theme import ThemeProfile, match_style, seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -157,6 +161,7 @@ class DjSetTool(MCPTool):
         self._confirm = confirm
         self._lock = threading.Lock()
         self._session: Optional[SetSession] = None
+        self._last: Optional[SetSession] = None  # последний начатый сет (и доигравший сам): для ``status``
         # треки прошлых сетов (``history`` — music_history в БД): разнообразие между сетами (A13, I17)
         self._memory = SetMemory(store=history)
 
@@ -167,6 +172,7 @@ class DjSetTool(MCPTool):
     @property
     def description(self) -> str:
         return ("Диджей-сет: action=start — начать сет на тему theme (треки, переходы и темп решает код), "
+                "tracks — сколько треков, только если человек назвал число (без числа длину решает код); "
                 "action=stop — закончить сет и выключить музыку. Об успехе робот скажет сам, когда музыка "
                 "реально заиграет; ok=false — музыка не заиграла.")
 
@@ -180,6 +186,8 @@ class DjSetTool(MCPTool):
             MCPToolParameter(name="persona", type="string", description="Имя диджея для реплик", required=False),
             MCPToolParameter(name="style", type="string", required=False, enum=list(STYLE_CHOICES),
                              description="Стиль сета (один на весь сет); auto — по словам темы, иначе клубный"),
+            MCPToolParameter(name="tracks", type="integer", required=False, minimum=1, maximum=MAX_TRACKS,
+                             description="Сколько треков в сете — только если человек назвал число"),
         ]
 
     @property
@@ -195,16 +203,18 @@ class DjSetTool(MCPTool):
         return False
 
     def execute(self, action: str = "start", theme: Optional[str] = None,
-                persona: Optional[str] = None, style: Optional[str] = None) -> MCPToolResult:
+                persona: Optional[str] = None, style: Optional[str] = None,
+                tracks: Optional[int] = None) -> MCPToolResult:
         with self._lock:
             if action == "stop":
                 return self._stop()
             if action == "start":
                 try:
                     key = set_style(style, theme or "")
+                    named = None if tracks is None else set_tracks(tracks)
                 except ValueError as exc:
                     return MCPToolResult(success=False, error=str(exc))
-                result = self._start(theme or "", persona, key)
+                result = self._start(theme or "", persona, key, named)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         return tool_result(confirmed(result, self._confirm), "сет не начался")  # ждём started вне замка
@@ -225,26 +235,56 @@ class DjSetTool(MCPTool):
         self._missing = hits.missing
         return profile
 
-    def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE) -> Dict[str, Any]:
+    def set_length(self, named: Optional[int]) -> Tuple[int, str]:
+        """``(длина, откуда)`` нового сета — решает код: число человека; без числа посреди идущего сета (смена
+        темы, #3404/#3412) — сколько ему оставалось, считая играющий трек сыгранным (не меньше 1): «сет на 20»,
+        сменивший тему на 8-м треке, доиграет 12; иначе :data:`DEFAULT_TRACKS`."""
+        if named is not None:
+            return named, "названо"
+        session = self._session
+        if session is not None and session.active:
+            return max(1, session.tracks - session.track_no), f"остаток {session.set_id}"
+        return DEFAULT_TRACKS, "по умолчанию"
+
+    def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
+               tracks: Optional[int] = None) -> Dict[str, Any]:
+        length, why = self.set_length(tracks)
         if self._session is not None:
             self._session.stop("new_set")
         profile = self.theme_profile(theme, style)
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
-        plan = seeded_plan(profile, set_seed, set_id=set_id, history=self._memory.peek())  # темп и окно — на сет
+        plan = seeded_plan(profile, set_seed, n_tracks=length, set_id=set_id,  # темп и окно — на сет
+                           history=self._memory.peek())
         logger = self.node.get_logger() if self.node is not None else None
+        (logger or _LOG).info(f"🎛️ [dj_set] {set_id} длина сета: {length} ({why}), "
+                              f"энергия={[t.energy for t in plan.tracks]}")
         box = SetPlanBox(plan, self._melodies, lines=self._transition_lines(persona, logger), logger=logger)
         base = plan_source(box.current, self._memory)
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck), no), set_id=set_id,
                              bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
-                             on_track_started=box.on_started, tracks_dir=self._tracks_dir)
+                             on_track_started=box.on_started, tracks_dir=self._tracks_dir, tracks=length)
         result = session.start()
         self._session = session if result.get("ok") else None
+        self._last = self._session or self._last
         reasoner = None
         if self._session is not None:  # звук уже поставлен seeded-планом; LLM — в фоне (§4.8)
             reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
         return {**result, "theme": theme, "style": plan.style, "genre": plan.genre, "theme_source": profile.source,
-                "seed": set_seed, "reasoner": reasoner}
+                "seed": set_seed, "tracks": length, "reasoner": reasoner}
+
+    def status(self) -> Dict[str, Any]:
+        """Сет для ``get_music_state``: идёт (трек N из M), окончен сам или его нет; фразу строит код (ADR-0148)."""
+        session = self._last
+        if session is None:
+            return {"active": False, "message": "Диджей-сета не было."}
+        info = {"set_id": session.set_id, "tracks": session.tracks, "track_no": session.track_no}
+        if session.active:
+            return {**info, "active": True, "message": f"Идёт диджей-сет: трек {session.track_no} из {session.tracks}."}
+        if session.ended:
+            return {**info, "active": False, "ended": True,
+                    "message": f"Диджей-сет закончился сам: сыграны все {session.tracks} из {session.tracks}."}
+        return {**info, "active": False, "ended": False, "message": "Диджей-сет остановлен."}
 
     def _transition_lines(self, persona: Optional[str], logger: Any) -> Optional[TransitionLines]:
         """Реплики сета: факты — из плана и библиотеки, раскраска — LLM ризонера (его breaker); нечем говорить или
@@ -266,7 +306,7 @@ class DjSetTool(MCPTool):
     def _stop(self) -> MCPToolResult:
         """Стоп сета, а без сета — деки v2 (одиночный трек ``request_music``)."""
         session, self._session = self._session, None
-        if session is None:
+        if session is None or not session.active:  # сета нет или он доиграл сам — стоп деки v2
             result = self._owner.stop("user_stop")
             return MCPToolResult(success=True, data={**result, "was_playing": result.get("track_id") is not None})
         return MCPToolResult(success=True, data={**session.stop("user_stop"), "was_playing": True})

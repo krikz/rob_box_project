@@ -15,7 +15,8 @@
   пустых находках; ``theme_row`` хуки не подменяет. Хуки плана сета LLM не урезает (:func:`plan_hooks`): найденные
   по теме остаются все и в порядке кода, без находок выбор LLM идёт первым, пул по хешу — следом (06.10: план из
   трёх хуков LLM крутил 50 треков по кругу);
-* ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``); кульминация (5) обязана быть не позже
+* ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``) в пределах длины сета, кроме последнего трека
+  (спад, ``set_plan.arc_energy``); длину сета LLM не меняет; кульминация (5) обязана быть не позже
   ``Style.peak_by_track``-го трека (A6, #3459): дугу без пика в этом окне :func:`validate` отвергает
   (``PlanInvalid("energy")``, сет играет seeded-волну с пиком на 4-м треке) — LLM не может выключить кульминацию;
 
@@ -27,6 +28,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -37,6 +39,7 @@ from .theme import ThemeProfile
 #: Имя структурного выхода; это не тул исполнения — ризонер ничего не исполняет (ADR-0142 §9).
 SUBMIT_TOOL = "submit_set_profile"
 MAX_HOOKS = 3
+_LOG = logging.getLogger(__name__)
 NO_ROW = "none"
 ENERGY_RANGE = (1, 5)
 
@@ -123,12 +126,18 @@ def _enum(payload: Mapping[str, Any], key: str, allowed: Any) -> Any:
 
 def _hooks(value: Any, profile: Optional[ThemeProfile]) -> Tuple[str, ...]:
     allowed = set(_all_hooks(profile))
-    if not isinstance(value, list) or not 0 < len(value) <= MAX_HOOKS:
-        raise PlanInvalid("hooks", f"нужен список из 1..{MAX_HOOKS}")
+    """Выбор хуков LLM. Схема просит ``maxItems: MAX_HOOKS``, но MiniMax её не соблюдает, а порядок хуков сета решает
+    код (:func:`plan_hooks`): лишние хуки не губят весь план (лад, энергию) — берутся первые :data:`MAX_HOOKS`
+    (без повторов), остальное отбрасывается с записью в лог. Пустое, не список и неизвестные хуки — ``PlanInvalid``."""
+    if not isinstance(value, list) or not value:
+        raise PlanInvalid("hooks", f"нужен непустой список (до {MAX_HOOKS})")
     bad = [h for h in value if h not in allowed]
     if bad:
         raise PlanInvalid("hooks", f"не из кандидатов: {bad}")
-    return tuple(dict.fromkeys(value))
+    uniq = tuple(dict.fromkeys(value))
+    if len(uniq) > MAX_HOOKS:
+        _LOG.info("hooks обрезаны: %d→%d", len(uniq), MAX_HOOKS)
+    return uniq[:MAX_HOOKS]
 
 
 def _energy(value: Any) -> Tuple[int, ...]:
@@ -178,8 +187,10 @@ def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
     прежние."""
     profile = replace(plan.profile, row=ref.row, mode=ref.mode, hook_ids=plan_hooks(plan.profile, ref))
     timbre = kn.THEME_TIMBRE.get(ref.row or "", plan.family)  # строка от LLM — её семья; none — прежняя семья сета
-    n = max(len(plan.tracks), len(ref.energy))
-    tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= len(ref.energy) else plan.track(no)
+    # длина сета — решение кода (``seeded_plan(n_tracks)``): дуга LLM её не удлиняет и не трогает последний трек —
+    # спад закрывает сет (``set_plan.arc_energy``); треки за концом дуги LLM — по seeded-дуге
+    n, shaped = len(plan.tracks), min(len(ref.energy), len(plan.tracks) - 1)
+    tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= shaped else plan.track(no)
                    for no in range(1, n + 1))
     return replace(plan, profile=profile, tracks=tracks, timbre=timbre)
 

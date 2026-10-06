@@ -145,9 +145,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'execution_type': 'fast',
         'name': 'dj_set',
         'description': 'Диджей-сет: action=start — начать сет на тему theme (треки, '
-                       'переходы и темп решает код), action=stop — закончить сет и '
-                       'выключить музыку. Об успехе робот скажет сам, когда музыка '
-                       'реально заиграет; ok=false — музыка не заиграла.',
+                       'переходы и темп решает код), tracks — сколько треков, только '
+                       'если человек назвал число (без числа длину решает код); '
+                       'action=stop — закончить сет и выключить музыку. Об успехе '
+                       'робот скажет сам, когда музыка реально заиграет; ok=false — '
+                       'музыка не заиграла.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'start — '
@@ -173,10 +175,19 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'клубный',
                                                          'enum': [   'auto',
                                                                      'club',
-                                                                     'rave']}},
+                                                                     'rave']},
+                                            'tracks': {   'type': 'integer',
+                                                          'description': 'Сколько '
+                                                                         'треков в '
+                                                                         'сете — '
+                                                                         'только если '
+                                                                         'человек '
+                                                                         'назвал число',
+                                                          'minimum': 1,
+                                                          'maximum': 60}},
                           'required': ['action'],
                           'additionalProperties': False},
-        'signature': {   'params': ['action', 'theme', 'persona', 'style'],
+        'signature': {   'params': ['action', 'theme', 'persona', 'style', 'tracks'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('dj',)},
