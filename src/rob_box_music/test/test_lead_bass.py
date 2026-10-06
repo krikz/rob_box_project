@@ -76,7 +76,7 @@ def test_families_have_three_to_four_leads_and_two_to_three_basses():
         paired = {s for synths in kn.BASS_FIGURE_SYNTHS.values() for s in synths}  # PR-9: ``tb303`` — в ``hard``
         assert 3 <= len(family["lead"]) <= 4 and 2 <= len(set(family["bass"]) - paired) <= 3, name
         assert all(kn.LAYER_BANDS["lead"][s][0] < 0.05 for s in family["lead"]), name
-        assert all(kn.LAYER_BANDS["bass"][s][0] >= 0.9 for s in family["bass"] if s not in paired), name
+        assert all(kn.bass_low_on_robot(s) >= kn.BASS_MIN_LOW for s in family["bass"] if s not in paired), name
         # лид достаёт цель роли на потолке ``amp`` (иначе в модели он тише, чем задумано)
         lead = CLUB.role_level_db["lead"]
         assert all(mix.layer_db(kn.LANE_DB_AT_UNIT["lead"][s], kn.AMP_EXPONENT.get(s, 1.0), kn.MAX_LAYER_AMP) >= lead

@@ -57,7 +57,7 @@ def test_rave_timbres_lead_with_hoover_rave_supersaw_and_every_family_has_acid_t
     paired = {s for synths in kn.BASS_FIGURE_SYNTHS.values() for s in synths}
     for name, fam in RAVE.timbres.items():
         assert "tb303" in fam["bass"] and "acid16" in mix.bass_figures(RAVE, None), name
-        assert all(kn.LAYER_BANDS["bass"][s][0] >= 0.9 for s in fam["bass"] if s not in paired), name
+        assert all(kn.bass_low_on_robot(s) >= kn.BASS_MIN_LOW for s in fam["bass"] if s not in paired), name
         assert all(kn.LAYER_BANDS["lead"][s][0] < 0.05 for s in fam["lead"]), name
         assert all(mix.layer_db(kn.LANE_DB_AT_UNIT["lead"][s], kn.AMP_EXPONENT.get(s, 1.0), kn.MAX_LAYER_AMP)
                    >= RAVE.role_level_db["lead"] for s in fam["lead"]), name
