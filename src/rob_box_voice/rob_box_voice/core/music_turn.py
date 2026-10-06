@@ -173,6 +173,12 @@ def next_turn_id(current: Optional[str], *retry_flags: bool) -> str:
     return current if current and any(retry_flags) else uuid.uuid4().hex
 
 
+def turn_heard_text(current: Optional[str], user_input: str, is_synthetic: bool) -> Optional[str]:
+    """Реплика хода для скрытого ``heard_text`` MCP-тулов: реплика человека; синтетический ретрай продолжает ход,
+    его служебный текст репликой не становится."""
+    return current if is_synthetic else user_input
+
+
 def speech_refusal_content() -> str:
     """JSON-тело отказа ``speak_text`` для ``ToolResult.content``."""
     return json.dumps(
@@ -192,6 +198,7 @@ __all__ = [
     "is_launch",
     "launch_requested",
     "next_turn_id",
+    "turn_heard_text",
     "ok_text",
     "speech_refusal_content",
     "turn_reply",

@@ -56,7 +56,8 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
     # и сет шёл 10 треков «по умолчанию».
     # ``turn_id`` — ход LLM: ``request_music`` не снимает сет, заигравший в этом
     # же ходе (06.10 set98207: dj_set → request_music → тишина).
-    "dj_set": ("heard_tracks", "turn_id"),
+    # ``heard_text`` — реплика хода: тема сета не из неё (из истории диалога, 06.10 18:04) заменяется темой реплики.
+    "dj_set": ("heard_tracks", "turn_id", "heard_text"),
     "request_music": ("turn_id",),
 }
 

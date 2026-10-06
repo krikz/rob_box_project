@@ -309,6 +309,20 @@ def genre_of(text: str) -> Optional[str]:
     return None
 
 
+def content_stems(text: str) -> frozenset:
+    """Значимые основы слов текста: без служебных слов темы (``knowledge.SEARCH_STOPWORDS``) и стиля («8-бит»),
+    жанр — меткой ``genre:<тег>`` (:func:`genre_of`: «классическая» и «классика» — одна основа). Сверка темы сета
+    с репликой человека (``engine.theme_grounding``): общая основа — тема опирается на реплику."""
+    out = set()
+    for word in _WORD_RE.findall(_STYLE_RE.sub(" ", text.lower().replace("ё", "е"))):
+        tag = genre_of(word)
+        if tag:
+            out.add(f"genre:{tag}")
+        elif len(word) >= 3 and word not in _STOP and stem(word) not in _STOP:
+            out.add(stem(word))
+    return frozenset(out)
+
+
 def _genre_only(library: Any, part: str) -> Optional[str]:
     """Метка жанра, если часть темы называет только жанр («классическая музыка»), иначе ``None``."""
     words = {t.word for t in terms(library, part)} - set(kn.GENRE_FILLER)

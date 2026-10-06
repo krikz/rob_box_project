@@ -198,3 +198,12 @@ def test_executor_lets_speech_through_after_a_started_launch_and_forgets_at_turn
 
     assert _run(_turns()) == []
     assert underlying.executed == ["request_music", "speak_text"]
+
+
+def test_turn_heard_text_is_the_human_phrase_and_retry_keeps_it():
+    """06.10 18:04: скрытый ``heard_text`` dj_set — реплика человека; синтетический ретрай её не затирает."""
+    from rob_box_voice.core.music_turn import turn_heard_text
+
+    assert turn_heard_text("старая", "новая реплика", False) == "новая реплика"
+    assert turn_heard_text("реплика хода", "служебный ретрай", True) == "реплика хода"
+    assert turn_heard_text(None, "первая", False) == "первая"

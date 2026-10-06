@@ -47,6 +47,7 @@ from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .search import ThemeHits, theme_search
 from .session import SetMemory, SetSession, plan_source
+from .theme_grounding import grounded_theme
 
 _LOG = logging.getLogger(__name__)
 
@@ -224,11 +225,14 @@ class DjSetTool(MCPTool):
     def execute(self, action: str = "start", theme: Optional[str] = None,
                 persona: Optional[str] = None, style: Optional[str] = None,
                 tracks: Optional[int] = None, heard_tracks: Optional[int] = None,
-                turn_id: Optional[str] = None) -> MCPToolResult:
-        """``heard_tracks`` и ``turn_id`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): длина сета
-        из слов человека по грамматике (``set_length_words``; есть — она решает, а не ``tracks`` от LLM, ADR-0148)
-        и ход, запустивший сет (:meth:`started_in_turn`)."""
+                turn_id: Optional[str] = None, heard_text: Optional[str] = None) -> MCPToolResult:
+        """``heard_tracks``, ``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``):
+        длина сета из слов человека по грамматике (``set_length_words``; есть — она решает, а не ``tracks`` от LLM,
+        ADR-0148), ход, запустивший сет (:meth:`started_in_turn`), и реплика хода: тема LLM не из неё (взята из
+        истории диалога, 06.10 18:04) — тема реплики (``theme_grounding``)."""
         tracks = heard_tracks or tracks
+        if action == "start":
+            theme = self._heard_theme(theme, heard_text)
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -244,6 +248,15 @@ class DjSetTool(MCPTool):
         result = confirmed(result, self._confirm)  # ждём started вне замка
         self._session_turn = turn_id if result.get("ok") else None
         return tool_result(result, "сет не начался")
+
+    def _heard_theme(self, theme: Optional[str], heard_text: Optional[str]) -> Optional[str]:
+        """Тема сета, опирающаяся на реплику хода; подмену код пишет в лог честной строкой."""
+        grounded, replaced = grounded_theme(theme, heard_text)
+        if not replaced:
+            return theme
+        logger = self.node.get_logger() if self.node is not None else None
+        (logger or _LOG).warning(f"🎛️ [dj_set] тема LLM не из текущей реплики → из реплики: LLM={theme!r} → {grounded!r}")
+        return grounded
 
     @property
     def running(self) -> bool:
