@@ -30,7 +30,18 @@ pytestmark = pytest.mark.unit
 
 BPM = 132
 PROFILE = ThemeProfile("тест", "club", BPM, 9, "minor", (), None)
-PLAN = seeded_plan(PROFILE, 7, set_id="s7")  # один план на сет — один темп
+
+
+def _forms(plan, *templates):
+    """План с формами ``templates`` у треков 2.. (ADR-0152 PR-7: форму выбирает план; трек 1 — ``opening_form``)."""
+    tracks = tuple(replace(t, template=templates[(t.no - 2) % len(templates)]) if t.no > 1 else t
+                   for t in plan.tracks)
+    return replace(plan, tracks=tracks)
+
+
+# Один план на сет — один темп. Формы треков 2.. — club48: длины форм в тестах ниже одинаковы (48 тактов);
+# разные длины — ``test_tracks_of_different_forms_start_one_blend_before_the_previous_form_ends``.
+PLAN = _forms(seeded_plan(PROFILE, 7, set_id="s7"), "club48")
 
 
 class SimClock:
@@ -136,6 +147,21 @@ def _form(rig):
 
 #: Блэнд соседних треков сета (PR-8): 8 тактов, своп баса на 4-м (``compose.transition``).
 BLEND = 8 * 4
+
+
+def test_tracks_of_different_forms_start_one_blend_before_the_previous_form_ends():
+    """Формы 32/64/48 тактов (PR-7): каждый следующий трек встаёт за BLEND до конца формы предыдущего."""
+    plan = _forms(seeded_plan(PROFILE, 7, set_id="s7"), "short32", "long64", "short32")
+    rig = _rig(compose_source(plan))
+    assert rig.session.start()["ok"] is True
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0 = _started(rig)[0]["start_beat"]
+    rig.clock.run_until(s0 + 48 * 4 + 32 * 4 + 64 * 4 - 3 * BLEND - 3)
+    started = _started(rig)
+    assert [e["form_beats"] for e in started[:3]] == [48 * 4, 32 * 4, 64 * 4]
+    starts = [e["start_beat"] for e in started[:3]]
+    assert starts == [s0, s0 + 48 * 4 - BLEND, s0 + 48 * 4 - BLEND + 32 * 4 - BLEND]
+    assert all(e["phase_in_form"] == 0.0 and e["players_aligned"] for e in started[:3])
 
 
 def test_three_tracks_blend_on_two_decks_with_phase_zero_and_the_leaving_deck_is_freed():

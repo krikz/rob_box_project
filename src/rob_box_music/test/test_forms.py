@@ -54,10 +54,10 @@ def test_validator_rejects_an_unknown_template_and_a_short_outro():
     track = _tracks()["club48"]
     with pytest.raises(TrackError):
         validate(replace(track, history_key=replace(track.history_key, template="zzz")))
-    short = replace(track.form.sections[-2], bars=4)
-    form = replace(track.form, sections=track.form.sections[:-2] + (short,) + track.form.sections[-1:-1])
+    secs = _tracks()["short32"].form.sections  # без outro: 4 такта хвоста уходят в дроп, всего всё те же 32
+    form = replace(_tracks()["short32"].form, sections=secs[:3] + (replace(secs[3], bars=12), secs[-1]))
     with pytest.raises(TrackError) as err:
-        validate(replace(track, form=form))
+        validate(replace(_tracks()["short32"], form=form))
     assert "outro" in str(err.value)
 
 
