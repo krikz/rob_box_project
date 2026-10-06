@@ -115,6 +115,48 @@ _DONE_MARKER_RE = re.compile(
 )
 
 
+# Bracketed aside ``[...]`` ANYWHERE in the reply (not only a prefix).
+# MiniMax sometimes writes its own reasoning into ``content`` as
+# ``[… §2 ANTI-DUP …]`` — it must never be voiced (live 06.10, PR #3474).
+# ``](`` is excluded so Markdown links ``[text](url)`` survive for
+# ``strip_markdown``. Service markers stay visible to the downstream
+# service-text guard unless the caller is the last line of defence.
+_SERVICE_BRACKET = r"(?!\s*(?:CRITICAL|Spkr:|SYSTEM\b))"
+_BRACKET_ASIDE_RE = re.compile(
+    r"\[" + _SERVICE_BRACKET + r"[^\[\]]*\](?!\()", flags=re.IGNORECASE)
+_BRACKET_ASIDE_ANY_RE = re.compile(r"\[[^\[\]]*\](?!\()")
+# Unclosed ``[`` — reasoning cut off by max_tokens: drop the tail.
+_BRACKET_TAIL_RE = re.compile(r"\[" + _SERVICE_BRACKET + r"[^\]]*$", flags=re.IGNORECASE)
+_BRACKET_TAIL_ANY_RE = re.compile(r"\[[^\]]*$")
+
+
+def strip_bracket_asides(text: str, *, keep_service: bool = True) -> str:
+    """Remove every ``[...]`` aside from *text*, wherever it sits.
+
+    Single place for the rule «square-bracket insertions are never spoken».
+    ``keep_service=True`` (dialogue pipeline) leaves ``[CRITICAL]`` /
+    ``[SYSTEM ...]`` / ``[Spkr:...]`` for the service-text guard;
+    ``keep_service=False`` (TTS node, last line of defence) removes them too.
+    """
+    if not isinstance(text, str) or "[" not in text:
+        return text
+    aside = _BRACKET_ASIDE_RE if keep_service else _BRACKET_ASIDE_ANY_RE
+    tail = _BRACKET_TAIL_RE if keep_service else _BRACKET_TAIL_ANY_RE
+    out = text
+    for _ in range(4):  # nested brackets peel from the inside
+        new = aside.sub(" ", out)
+        if new == out:
+            break
+        out = new
+    out = tail.sub("", out)
+    return re.sub(r"[ 	]{2,}", " ", out).strip()
+
+
+# Spoken when the LLM produced neither a reply nor a tool call. No action
+# happened, so the phrase must not claim acceptance («Принял.» did).
+EMPTY_REPLY_PHRASE = "Не получилось ответить, повтори, пожалуйста."
+
+
 def strip_history_marker(text: str) -> str:
     """Return *text* with the leading ``[выполнено через: ...]`` marker removed."""
     if not text:
@@ -202,7 +244,7 @@ def strip_meta_markers(text: str) -> str:
         if new == out:
             break
         out = new
-    return out
+    return strip_bracket_asides(out)
 
 
 def strip_done_marker(text: str) -> str:
@@ -569,6 +611,8 @@ __all__ = [
     "strip_history_marker",
     "strip_markdown",
     "strip_meta_markers",
+    "strip_bracket_asides",
+    "EMPTY_REPLY_PHRASE",
     "strip_done_marker",
     "split_into_chunks",
     "build_ssml_payload",

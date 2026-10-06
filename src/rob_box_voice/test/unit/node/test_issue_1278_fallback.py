@@ -160,7 +160,8 @@ class TestHandleResultDegradedFallback:
 
         published = [c.args[0].data for c in n._response_pub.publish.call_args_list]
         joined = " | ".join(published).lower()
-        assert "принял" in joined, f"ожидался «Принял.» для обычной ошибки: {joined!r}"
+        assert "не получилось ответить" in joined, f"ожидался честный фолбэк: {joined!r}"
+        assert "принял" not in joined
 
 
 if __name__ == "__main__":

@@ -236,6 +236,7 @@ from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
     split_into_chunks,
     strip_done_marker, strip_history_marker, strip_markdown,
+    EMPTY_REPLY_PHRASE,
     strip_meta_markers,  # Issue #2547 — strip internal section headers
     strip_speaker_tag, strip_thinking_blocks,
 )
@@ -6742,7 +6743,7 @@ tentative_plan(question, kind, name)
                 # 🔴 FIX (live 12.08): этот вызов ВНЕ внутреннего try/except
                 # и выполняется ВСЕГДА — даже если логгер или память упали.
                 try:
-                    self._publish_response("Принял.", animation="neutral")
+                    self._publish_response(EMPTY_REPLY_PHRASE, animation="neutral")
                 except Exception as exc:  # noqa: BLE001
                     try:
                         self.get_logger().warning(
