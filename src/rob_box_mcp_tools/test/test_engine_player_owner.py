@@ -111,6 +111,61 @@ def test_exec_error_is_rejected():
     assert [e["event"] for e in events] == ["rejected"]
 
 
+class RclpyLikeLogger:
+    """Как rcutils_logger: severity кэшируется по месту вызова, смена -> ValueError."""
+
+    def __init__(self):
+        self.sites, self.lines = {}, []
+
+    def _log(self, level, msg):
+        import sys
+        f = sys._getframe(2)
+        site = (f.f_code.co_filename, f.f_lineno)
+        if self.sites.setdefault(site, level) != level:
+            raise ValueError("Logger severity cannot be changed between calls.")
+        self.lines.append((level, msg))
+
+    def info(self, msg):
+        self._log("info", msg)
+
+    def warning(self, msg):
+        self._log("warning", msg)
+
+
+class BrokenLogger:
+    """Падает только на строке про started (остальной жизненный цикл логируется нормально)."""
+
+    def info(self, msg):
+        if "started track_id" in msg:
+            raise ValueError("Logger severity cannot be changed between calls.")
+
+    warning = info
+
+
+@pytest.mark.parametrize("sequence", [[True, False], [False, True, False, True]])
+def test_started_logging_never_changes_severity_of_one_call_site(sequence):
+    logger = RclpyLikeLogger()
+    for aligned in sequence:
+        adapter = FakeAdapter()
+        owner = PlayerOwner(adapter, lambda s: None, lambda e: None, logger=logger, clock=lambda: 1.0)
+        owner.play(_program(), dj={"enabled": True, "set_id": "s1"})
+        adapter.fire(aligned=aligned)
+    started = [lv for lv, m in logger.lines if "started track_id" in m]
+    assert started == ["info" if a else "warning" for a in sequence]
+
+
+def test_started_event_survives_logger_failure_when_players_not_aligned():
+    adapter = FakeAdapter()
+    states, events, got = [], [], []
+    owner = PlayerOwner(adapter, states.append, lambda e: events.append(json.loads(e)),
+                        logger=BrokenLogger(), clock=lambda: 1.0)
+    owner.on_started = got.append
+    owner.play(_program(), dj={"enabled": True, "set_id": "s1"})
+    adapter.fire(aligned=False)
+    assert [e["event"] for e in events] == ["started"]
+    assert states and len(got) == 1
+
+
 def test_started_of_a_replaced_track_is_ignored():
     adapter = FakeAdapter()
     owner, states, events, _ = _owner(adapter)

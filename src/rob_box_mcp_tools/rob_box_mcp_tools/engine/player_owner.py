@@ -111,8 +111,16 @@ class PlayerOwner:
             return
         fields = {k: snap.get(k) for k in ("clock_beat", "start_beat", "phase_in_form", "late_beats",
                                            "bpm", "deck", "form_beats", "players_aligned", "latency_s")}
-        log = self._log.info if snap.get("phase_in_form") == 0 and snap.get("players_aligned") else self._log.warning
-        log(f"🎵 [music v2] started track_id={track_id} " + " ".join(f"{k}={v}" for k, v in fields.items()))
+        line = f"🎵 [music v2] started track_id={track_id} " + " ".join(f"{k}={v}" for k, v in fields.items())
+        # rclpy кэширует severity по месту вызова: info и warning — из РАЗНЫХ строк (иначе ValueError).
+        # Сбой логгера не должен терять событие started (06.10: сет завис на первом треке).
+        try:
+            if snap.get("phase_in_form") == 0 and snap.get("players_aligned"):
+                self._log.info(line)
+            else:
+                self._log.warning(line)
+        except Exception:  # noqa: BLE001 — только логирование; ошибки логики ниже не глотаются
+            pass
         self._publish_event(build_music_event_payload("started", track_id, ts=self._clock(), **fields))
         self.publish_state()
         listener = self.on_started

@@ -140,8 +140,11 @@ class TransitionLines:
                 line = dl.validate_line(line_payload(response), facts, self._fold)
             except dl.LineInvalid as exc:
                 outcome, detail = "invalid", f"line_invalid{{{exc.reason}}} {exc}"
-        (self._log.info if outcome == "ok" else self._log.warning)(
-            f"🗣️ [dj line] {track_id} line_outcome={outcome} {detail}".rstrip())
+        text = f"🗣️ [dj line] {track_id} line_outcome={outcome} {detail}".rstrip()
+        if outcome == "ok":  # rclpy: severity привязана к месту вызова — info и warning из разных строк
+            self._log.info(text)
+        else:
+            self._log.warning(text)
         return line
 
     def on_started(self, track_id: str) -> str:

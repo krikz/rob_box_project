@@ -174,7 +174,10 @@ class SetReasoner:
         lat = self.metrics.latency(PROVIDER)
         line = (f"🧠 [reasoner] {set_id} plan_outcome={outcome} provider={PROVIDER} latency_ms={latency_s * 1000:.0f}"
                 f" p50_ms={_ms(lat.p50_ms)} p95_ms={_ms(lat.p95_ms)} n={lat.count} {detail}".rstrip())
-        (self._log.info if outcome in ("ok", "disabled") else self._log.warning)(line)
+        if outcome in ("ok", "disabled"):  # rclpy: severity привязана к месту вызова
+            self._log.info(line)
+        else:
+            self._log.warning(line)
         return outcome
 
 
