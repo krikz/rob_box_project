@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
+from .media_phrases import play_ok_text
+
 LOOKUP_TOOL = "lookup_melody"
 REQUEST_TOOL = "request_music"
 
@@ -75,11 +77,6 @@ def user_phrase_title(play_name: str) -> str:
     предложение, не английский Title Case каждого слова).
     """
     return play_name[:1].upper() + play_name[1:] if play_name else play_name
-
-
-def play_ok_text(title: str) -> str:
-    """Короткая фраза после успешного заказа."""
-    return f"Ставлю «{title}»."
 
 
 def play_fail_text(title: str) -> str:
