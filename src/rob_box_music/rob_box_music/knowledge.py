@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
@@ -444,11 +444,17 @@ class Look:
 #: Энергия секции (0..10) → вид: (порог, вид), первый подходящий сверху. Дроп — прямая бочка и полный «насос»;
 #: build — бочка на 1 и 3 и мягкий насос (подъём держат фильтр и ролл клэпа); интро/аутро (блэнд двух дек) —
 #: ровная прямая бочка, под которую сводятся треки.
-_CLUB_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["four_on_floor"], 1.0)),
-    (5, Look("X.......X.......", 0.5)),
-    (0, Look(KICK_PATTERNS["four_on_floor"], 0.6)),
-)
+def _looks(drop_kick: str) -> Tuple[Tuple[int, Look], ...]:
+    """Виды секций по энергии с рисунком бочки дропа ``drop_kick`` (ключ :data:`KICK_PATTERNS`): build и интро/аутро
+    (блэнд двух дек — одна бочка на такт) от жанра окна не зависят."""
+    return (
+        (7, Look(KICK_PATTERNS[drop_kick], 1.0)),
+        (5, Look("X.......X.......", 0.5)),
+        (0, Look(KICK_PATTERNS["four_on_floor"], 0.6)),
+    )
+
+
+_CLUB_LOOKS: Tuple[Tuple[int, Look], ...] = _looks("four_on_floor")
 
 #: LPF-свип на басе и нотах (DJ_Dave: «один слайдер на оба»; ADR-0149 §3.12): секция → (от, до) Гц, 0 — фильтр
 #: снят. Build открывается к дропу, дроп открыт, брейк прикрыт, хвост уходящей деки закрывается 4000→300 за блэнд.
@@ -585,6 +591,8 @@ class BassFigure:
 BASS_FIGURES: Mapping[str, BassFigure] = {
     "offbeat": BassFigure(steps=(2, 6, 10, 14), fifth_last=True),
     "rolling8": BassFigure(steps=(2, 3, 6, 7, 10, 11, 14, 15), fifth_last=False),
+    # PR-8: бас ломаной бочки (``breakbeat``: шаги 0, 2, 10, 13) — ни одна нота не на шаге этой бочки и не на доле.
+    "broken": BassFigure(steps=(1, 6, 9, 14), fifth_last=True),
 }
 
 
@@ -728,6 +736,38 @@ _CLUB_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
 
 
 @dataclass(frozen=True)
+class GenreWindow:
+    """Жанровое окно клуба (ADR-0152 §3.5, PR-8): данные, которыми сет подменяет поля :class:`Style`
+    (:func:`genre_style`).
+
+    Окно выбирает план на СЕТ (``SetPlan.genre``, один темп и один грув на сет, ADR-0149 I7), внутри сета оно не
+    меняется. Это ось «жанр клуба» и не стиль (ADR-0153: ``Style`` — набор таблиц; окна — подвыбор внутри стиля).
+    ``pad_figures`` — пул с повторами: повтор = вес выбора (``weighted_pick`` берёт каждую запись пула отдельно).
+    """
+
+    bpm: Tuple[int, int]
+    kick_pool: Tuple[str, ...]
+    looks: Tuple[Tuple[int, Look], ...]
+    bass_figures: Tuple[str, ...]  # ни один шаг рисунка баса не совпадает с шагом рисунка бочки дропа окна
+    pad_figures: Tuple[str, ...]
+
+
+#: Окна клуба. ``club`` — сегодняшние таблицы (``_CLUB_*``, побайтно); ``deep`` — мягкие бочки, пэд
+#: ``held``/``pumped16``
+#: чаще; ``breaks`` — ломаная бочка (``KICK_PATTERNS["breakbeat"]``) в дропе, пэд ``stabs`` чаще. Пулы бочек —
+#: подмножества :data:`KICK_SOUNDS`; темпы окон — решение координатора (deep 120–126: 128 уже окно ``club``;
+#: breaks 130–138).
+_CLUB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "club": GenreWindow((128, 138), ("house", "deep", "techno", "garage"), _CLUB_LOOKS, ("offbeat", "rolling8"),
+                       ("pumped16", "held", "stabs")),
+    "deep": GenreWindow((120, 126), ("deep", "house"), _CLUB_LOOKS, ("offbeat", "rolling8"),
+                       ("held", "held", "pumped16")),
+    "breaks": GenreWindow((130, 138), ("techno", "garage"), _looks("breakbeat"), ("broken",),
+                          ("stabs", "stabs", "pumped16", "held")),
+}
+
+
+@dataclass(frozen=True)
 class Style:
     """Стиль аранжировщика v2 (ADR-0153 §2.1): все стилевые константы, сгруппированные по читателю.
 
@@ -763,6 +803,8 @@ class Style:
     energy_forms: Mapping[int, Tuple[str, ...]]
     blend: Tuple[int, int]
     layer_sections: Mapping[str, Tuple[str, ...]]
+    # Жанровые окна внутри стиля (первое — окно по умолчанию, поля выше совпадают с ним): ``genre_style``.
+    genre_windows: Mapping[str, GenreWindow]
     # Микс: уровни ролей, роли под сайдчейном, LPF-свип секций, стерео ролей.
     role_level_db: Mapping[str, float]
     duck_roles: Tuple[str, ...]
@@ -785,7 +827,7 @@ STYLES: Mapping[str, Style] = {
         bass_figures=("offbeat", "rolling8"), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
         forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS,
-        blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
+        blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS, genre_windows=_CLUB_GENRE_WINDOWS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
         # A9′ (низ дропа на роботе ≥ 0.5) + запас на остаток модели (σ 0.08 доли на дроп, #3441)
@@ -793,6 +835,18 @@ STYLES: Mapping[str, Style] = {
     ),
 }
 DEFAULT_STYLE = "club"
+#: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
+DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))
+
+
+def genre_style(style: Style, genre: str = DEFAULT_GENRE) -> Style:
+    """Стиль сета в окне ``genre``: темп, пул бочек, виды секций (рисунок бочки), пул рисунков пэда — из окна.
+    Единственная точка подстановки: ``arrange/*`` читают поля ``Style`` и о жанре не знают."""
+    window = style.genre_windows[genre]
+    return replace(style, bpm=window.bpm, kick_pool=window.kick_pool, looks=window.looks,
+                   bass_figures=window.bass_figures, pad_figures=window.pad_figures)
+
+
 #: Коридоры регистров и роли под сайдчейном для валидатора модели (I13, ``model.validate``): ``Track`` пока не несёт
 #: ключ стиля, поэтому — регистры стиля по умолчанию и объединение ролей сайдчейна всех стилей (ADR-0153 S1+).
 REGISTERS: Mapping[str, Tuple[int, int]] = STYLES[DEFAULT_STYLE].registers
@@ -800,8 +854,11 @@ DUCK_ROLES: Tuple[str, ...] = tuple(dict.fromkeys(r for st in STYLES.values() fo
 
 #: Все шаблоны форм всех стилей (валидатор ``model.validate``: ``HistoryKey.template`` — известная форма).
 FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.forms)
+#: Все жанровые окна всех стилей (валидатор: ``HistoryKey.genre`` — известное окно).
+GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.genre_windows)
 
-__all__ += ["DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "REGISTERS", "STYLES", "Style"]
+__all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
+            "REGISTERS", "STYLES", "Style", "genre_style"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

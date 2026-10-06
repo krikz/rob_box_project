@@ -45,16 +45,18 @@ def test_one_tempo_for_the_whole_set_in_the_club_window(theme):
     """Один темп на сет (В6: club 128–138) для всех сидов; у каждого трека и программы — темп плана."""
     lo, hi = kn.STYLES["club"].bpm
     for seed in SEEDS:
-        plan = seeded_plan(seeded_profile(theme), seed)
+        plan = seeded_plan(seeded_profile(theme), seed, genre="club")
         assert lo <= plan.bpm <= hi
         for no in (1, 2, 5, 11):
             track = compose(plan, no)
             assert track.bpm == plan.bpm and render(track, "A").bpm == plan.bpm
 
 
-def test_tempo_outside_the_window_is_clamped_not_kept():
-    assert seeded_plan(profile(bpm=120), 0).bpm == 128
-    assert seeded_plan(profile(bpm=150), 0).bpm == 138
+def test_tempo_outside_the_window_is_seeded_inside_it_not_kept():
+    for bpm in (120, 150):
+        bpms = {seeded_plan(profile(bpm=bpm), s, genre="club").bpm for s in range(20)}
+        assert bpms <= set(range(128, 139)) and len(bpms) > 1
+    assert seeded_plan(profile(bpm=131), 0, genre="club").bpm == 131
 
 
 def test_energy_wave_rises_to_the_peak_then_falls():
@@ -108,7 +110,7 @@ def test_low_energy_thins_roles_not_levels(seed):
 def test_fills_sit_on_phrase_boundaries_before_drops(seed):
     """Fill перед дропом — два последних такта 8-тактовой фразы: ролл клэпа восьмыми, затем 16-ми; бочка молчит
     на последней доле; вне роллов клэп — только бэкбит дропов (2 и 4)."""
-    plan = seeded_plan(profile(root=seed % 12), seed)
+    plan = seeded_plan(profile(root=seed % 12), seed, genre="club")  # fill с прямой бочкой: ломаная — отдельно
     track = compose(plan, 4, melodies=MELODIES if seed % 2 else None)  # энергия 5: клэп есть
     _program, events = _by_role(track)
     claps = sorted(e.beat for e in events["clap"])
@@ -193,7 +195,7 @@ def test_plan_and_tracks_are_deterministic_by_seed(seed):
 
 def test_seed_changes_the_groove_but_not_the_tempo():
     prof = seeded_profile("киберпанк")
-    plans = [seeded_plan(prof, s) for s in range(12)]
+    plans = [seeded_plan(prof, s, genre="club") for s in range(12)]
     assert len({p.bpm for p in plans}) == 1
     assert len({p.swing for p in plans}) >= 6
 

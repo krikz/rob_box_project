@@ -52,8 +52,8 @@ def with_template(plan, track_no: int, template: str):
     return replace(plan, tracks=tracks)
 
 
-def compose_p(prof: ThemeProfile, track_no: int, set_seed: int = 0, template: str = "", **kw):
+def compose_p(prof: ThemeProfile, track_no: int, set_seed: int = 0, template: str = "", genre=None, **kw):
     """``compose`` по seeded-плану профиля: так трек получают тесты PR-3a (тема → хук). ``template`` — форма трека
     (по умолчанию её выбирает план)."""
-    plan = seeded_plan(prof, set_seed)
+    plan = seeded_plan(prof, set_seed, genre=genre)
     return compose(with_template(plan, track_no, template) if template else plan, track_no, **kw)

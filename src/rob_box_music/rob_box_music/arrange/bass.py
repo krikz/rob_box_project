@@ -5,8 +5,9 @@
 
 * ``offbeat`` — 4 ноты на такт в оффбит, тоника/квинта аккорда (ADR-0149 §3.5, research 4.1).
 * ``rolling8`` — 8 нот на такт тоникой, «и» и «а» каждой доли.
+* ``broken`` — 4 ноты мимо шагов ломаной бочки ``breakbeat`` (окно ``breaks``, ADR-0152 PR-8).
 
-Оба комплементарны прямой бочке: ни одной ноты на доле, нота кончается к доле (ADR-0149 §3.4).
+Все комплементарны бочке (прямой или ломаной): ни одной ноты на доле, нота кончается к доле (ADR-0149 §3.4).
 """
 
 from __future__ import annotations
@@ -72,4 +73,11 @@ def rolling8(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]],
     return _part("rolling8", style, key, bar_chords, synth, register)
 
 
-__all__ = ["bar_notes", "figure_bass", "note_beats", "offbeat", "rolling8"]
+def broken(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+           register: Tuple[int, int]) -> Part:
+    """Бас в обход ломаной бочки (``breaks``): тоника ×3 + квинта на шагах 1, 6, 9, 14, мимо шагов
+    рисунка ``breakbeat``; уровень ставит ``arrange.mix``."""
+    return _part("broken", style, key, bar_chords, synth, register)
+
+
+__all__ = ["bar_notes", "broken", "figure_bass", "note_beats", "offbeat", "rolling8"]

@@ -47,7 +47,7 @@ def test_kick_of_every_track_is_from_the_style_pool(theme):
 
 def test_plan_carries_the_kick_and_compose_plays_it():
     plan = _plan("космос", 4)
-    assert [t.kick for t in plan.tracks] == list(plan_kicks(STYLE, 4, "космос", len(plan.tracks)))
+    assert [t.kick for t in plan.tracks] == list(plan_kicks(plan.table, 4, "космос", len(plan.tracks)))
     for step in plan.tracks:
         track = compose(plan, step.no)
         assert track.parts["kick"].sample == kn.KICK_SOUNDS[step.kick].sample

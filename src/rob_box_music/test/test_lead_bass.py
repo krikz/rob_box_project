@@ -21,6 +21,8 @@ from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
 CLUB = kn.STYLES["club"]
+#: Рисунки баса всех жанровых окон клуба (PR-8): ``broken`` — только окно ``breaks`` (бас мимо ломаной бочки).
+WINDOW_BASS = {f for w in CLUB.genre_windows.values() for f in w.bass_figures}
 THEMES = ("космос", "киберпанк", "детский праздник", "калинка", "бухгалтерский отчёт")
 SEEDS = range(30)
 TRACKS = 3
@@ -64,7 +66,7 @@ def test_every_theme_gets_four_leads_and_both_bass_figures(sets):
         figures = {t.history_key.bass_figure for t in tracks}
         assert len(leads) >= 4 and leads <= set(family["lead"]), (theme, leads)
         assert basses == set(family["bass"]) and len(basses) >= 2, (theme, basses)
-        assert figures == set(CLUB.bass_figures), (theme, figures)
+        assert figures == WINDOW_BASS, (theme, figures)
         basses_all |= basses
     assert len(basses_all) >= 3, basses_all
 
@@ -93,7 +95,7 @@ def test_history_penalises_the_last_choice(field, role):
     """Значение прошлого трека повторяется редко: вес свежего повтора — ``DEFAULT_FLOOR`` (3 %)."""
     repeats = 0
     for seed in SEEDS:
-        plan = seeded_plan(seeded_profile("киберпанк"), seed, set_id="h")
+        plan = seeded_plan(seeded_profile("киберпанк"), seed, set_id="h", genre="club")  # у breaks один рисунок
         first = compose(plan, 2)
         last = first.history_key.bass_figure if field == "bass_figure" else _synth(first, role)
         again = compose(plan, 2, history=[track_history(first, "h")])
@@ -117,14 +119,14 @@ def test_bass_never_on_a_kick_step_and_ends_by_the_next_beat(sets):
         for track in tracks:
             pitches = track.parts["bass"].pitches
             for sec, start in _bass_sections(track):
-                kick = set(mix.kick_steps(mix.look(CLUB, sec.energy).kick))
+                kick = set(mix.kick_steps(mix.look(kn.genre_style(CLUB, track.history_key.genre), sec.energy).kick))
                 lo, hi = start * BEATS_PER_BAR, (start + sec.bars) * BEATS_PER_BAR
                 for e in (e for e in pitches if lo <= e.beat < hi):
                     step = round(e.beat / STEP_BEATS) % STEPS_PER_BAR
                     assert step not in kick, (track.history_key.bass_figure, sec.name, e)
                     assert e.beat + e.dur_beats <= int(e.beat) + 1 + 1e-9, e
             checked.add(track.history_key.bass_figure)
-    assert checked == set(CLUB.bass_figures)
+    assert checked == WINDOW_BASS
 
 
 def test_bass_stays_in_register(sets):

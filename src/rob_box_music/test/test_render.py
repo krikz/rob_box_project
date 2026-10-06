@@ -20,10 +20,10 @@ from rob_box_music.render.renardo import FORM_START, ROLE_SLOT, RenderError, ren
 SEEDS = range(40)
 
 
-def track_for(seed, deck="A", hooked=None):
+def track_for(seed, deck="A", hooked=None, genre=None):
     hooked = seed % 2 == 0 if hooked is None else hooked
     return compose_p(profile(root=seed % 12, mode=("minor", "major", "dorian")[seed % 3]), 1, set_seed=seed,
-                     melodies=MELODIES if hooked else None, deck=deck)
+                     melodies=MELODIES if hooked else None, deck=deck, genre=genre)
 
 
 def _events(track, deck="A"):
@@ -75,7 +75,7 @@ def test_key_registers_and_order(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_kick_four_on_floor_and_bass_off_the_kick(seed):
-    track = track_for(seed)
+    track = track_for(seed, genre="club")  # прямая бочка — окно club (у breaks в дропе ломаная, test_genre_windows)
     _program, by_role = _events(track)
     kicks = {e.beat for e in by_role["kick"]}
     beats = range(int(track.form.bars_total * BEATS_PER_BAR))
@@ -138,7 +138,7 @@ def test_pad_voice_leading_on_average_is_a_step():
 @pytest.mark.parametrize("seed", SEEDS)
 def test_tempo_window_and_sections_gate(seed):
     track = track_for(seed)
-    lo, hi = kn.STYLES["club"].bpm
+    lo, hi = kn.STYLES["club"].genre_windows[track.history_key.genre].bpm
     assert lo <= track.bpm <= hi
     _program, by_role = _events(track)
     for role, events in by_role.items():

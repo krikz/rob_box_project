@@ -205,7 +205,7 @@ class DjSetTool(MCPTool):
         profile = self.theme_profile(theme)
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
-        plan = seeded_plan(profile, set_seed, set_id=set_id)  # один план на сет = один темп
+        plan = seeded_plan(profile, set_seed, set_id=set_id, history=self._memory.peek())  # темп и окно — на сет
         logger = self.node.get_logger() if self.node is not None else None
         box = SetPlanBox(plan, self._melodies, speak=self._speak, logger=logger)
         base = plan_source(box.current, self._memory)
