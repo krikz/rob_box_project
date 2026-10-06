@@ -11,6 +11,7 @@ import itertools
 import json
 import os
 import pathlib
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -22,7 +23,7 @@ from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.session import NEARLY_LEAD_BEATS, SetSession, compose_source
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, library_melodies
 from rob_box_music import knowledge as kn
-from rob_box_music.set_plan import seeded_plan
+from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan
 from rob_box_music.theme import ThemeProfile
 from rob_box_voice.core.music_player_state import parse_music_state
 
@@ -115,7 +116,7 @@ class Log:
         return [m for level, m in self.lines if level == "warning"]
 
 
-def _rig(source=None, submit=None, *, exec_fails=False):
+def _rig(source=None, submit=None, *, exec_fails=False, tracks=10):
     clock = SimClock()
     slots = [s for deck in kn.DECK_SLOTS.values() for s in deck]
     samples = SimpleNamespace(getBufferFromSymbol=lambda *a: SimpleNamespace(bufnum=7), loadBuffer=lambda *a: 7)
@@ -131,7 +132,7 @@ def _rig(source=None, submit=None, *, exec_fails=False):
                         clock=lambda: 1000.0)
     source = source or compose_source(PLAN)
     session = SetSession(owner, source, set_id="s7", bpm=BPM, dj={"theme": "тест"},
-                         submit=submit or (lambda fn: fn()), logger=log)
+                         submit=submit or (lambda fn: fn()), logger=log, tracks=tracks)
     rig = SimpleNamespace(clock=clock, ns=ns, sent=sent, owner=owner, states=states, events=events, log=log,
                           session=session, adapter=adapter)
     return rig
@@ -433,6 +434,121 @@ def test_queued_artifact_for_another_track_is_dropped_as_stale():
     assert rig.owner.advance(9999.0) is False
     assert any("artifact_stale" in w for w in rig.log.warnings())
     assert rig.owner.advance(9999.0) is False  # очередь пуста
+
+
+def _counting(source):
+    """Источник, который помнит номера скомпонованных треков."""
+    composed = []
+
+    def counted(no, deck):
+        composed.append(no)
+        return source(no, deck)
+
+    return counted, composed
+
+
+def _play_to_the_end(rig, passes=6):
+    rig.clock.run_until(rig.clock.beat + 2)
+    rig.clock.run_until(_started(rig)[0]["start_beat"] + passes * _form(rig))
+
+
+def test_set_of_three_tracks_plays_the_last_form_once_and_ends_idle_without_a_fourth():
+    """06.10: сет set80093 дошёл до 53-го трека. Сет на 3 трека: три ``started``, последний трек — один проход формы,
+    ``finished``, снимок ``idle`` с ``finished_track_id``; 4-й трек не компонуется и не ставится, сет закрыт."""
+    source, composed = _counting(compose_source(PLAN))
+    rig = _rig(source, tracks=3)
+    assert rig.session.start()["ok"] is True
+    _play_to_the_end(rig)
+    started = _started(rig)
+    assert [e["track_id"].split(":")[1] for e in started] == ["01", "02", "03"]
+    assert composed == [1, 2, 3]
+    kinds = [e["event"] for e in rig.events]
+    assert kinds.count("queued") == 2 and kinds[-1] == "finished"
+    finished = [e for e in rig.events if e["event"] == "finished"]
+    assert [e["track_id"] for e in finished] == [started[2]["track_id"]]
+    # последний трек звучит ровно форму: дека снята на её конце
+    last = started[2]
+    assert not any(p.playing for p in rig.ns.values() if isinstance(p, Player))
+    assert not [e for e in rig.events if e["event"] == "nearly_finished" and e["track_id"] == last["track_id"]]
+    snap = json.loads(rig.states[-1])
+    assert snap["state"] == "idle" and snap["finished_track_id"] == last["track_id"] and snap["dj"] == {"enabled": False}
+    infos = [m for level, m in rig.log.lines if level == "info"]
+    assert "🎧 [set v2] s7 сет окончен: 3 трека" in infos
+    assert sum("трек 3 последний" in m for m in infos) == 1
+    assert rig.session.active is False and rig.session.ended is True
+    assert rig.owner.on_started is None and rig.owner.on_finished is None
+    assert not rig.log.warnings()
+
+
+def test_set_of_one_track_is_a_finite_track():
+    source, composed = _counting(compose_source(PLAN))
+    rig = _rig(source, tracks=1)
+    rig.session.start()
+    _play_to_the_end(rig, passes=3)
+    assert composed == [1] and len(_started(rig)) == 1
+    assert [e["event"] for e in rig.events][-1] == "finished" and rig.session.ended is True
+    assert json.loads(rig.states[-1])["state"] == "idle"
+
+
+def test_replan_does_not_reset_the_set_length_and_composes_nothing_after_the_last_track():
+    """Поправка плана LLM (``replan``) перекомпонует ещё не сыгранный N+1, но длину сета не трогает: на последнем
+    треке перекомпоновывать нечего, сет на 3 трека кончается на 3-м."""
+    source, composed = _counting(compose_source(PLAN))
+    rig = _rig(source, tracks=3)
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    s0, form = _started(rig)[0]["start_beat"], _form(rig)
+    rig.session.replan()  # LLM ответила на 1-м треке: N+1 = 2 заново
+    rig.clock.run_until(s0 + 2 * form - 2 * BLEND + 1)  # встал 3-й, последний
+    assert len(_started(rig)) == 3
+    rig.session.replan()  # поздний ответ LLM на последнем треке
+    rig.clock.run_until(s0 + 6 * form)
+    assert composed == [1, 2, 2, 3] and len(_started(rig)) == 3
+    assert rig.session.ended is True and json.loads(rig.states[-1])["state"] == "idle"
+
+
+def test_dj_set_length_is_decided_by_code_named_default_or_what_was_left():
+    """``tracks`` — число человека (1..MAX_TRACKS); без числа — 10; смена темы посреди сета без нового числа —
+    остаток сета (длина считается от начала сета); число вне границ — отказ с понятной ошибкой."""
+    rig = _rig()
+    seeds = iter(range(100, 200))
+    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(),
+                     seed=lambda: next(seeds))
+    first = tool.execute(action="start", theme="космос")
+    assert first.data["tracks"] == DEFAULT_TRACKS and tool.set_length(None) == (DEFAULT_TRACKS - 1, "остаток set00100")
+    assert tool.execute(action="start", theme="котики", tracks=20).data["tracks"] == 20
+    rig.clock.run_until(rig.clock.beat + 2)  # трек 1 сета на 20 играет
+    switched = tool.execute(action="start", theme="терминатор")  # смена темы: числа нет — остаток
+    assert switched.data["tracks"] == 19
+    assert tool.status()["active"] is True and tool.status()["tracks"] == 19
+    for bad in (0, MAX_TRACKS + 1, "много"):
+        result = tool.execute(action="start", theme="космос", tracks=bad)
+        assert result.success is False and "tracks=" in result.error
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        tool.execute(action="stop")
+    assert tool.set_length(None) == (DEFAULT_TRACKS, "по умолчанию")
+    assert tool.parameters[-1].to_json_schema() == {
+        "type": "integer", "minimum": 1, "maximum": MAX_TRACKS,
+        "description": "Сколько треков в сете — только если человек назвал число"}
+
+
+def test_dj_set_status_tells_the_set_ended_and_stop_after_the_end_is_idle():
+    rig = _rig()
+    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242)
+    assert tool.status() == {"active": False, "message": "Диджей-сета не было."}
+    assert tool.execute(action="start", theme="Марио, Тетрис, Зельда", tracks=2).data["tracks"] == 2
+    assert tool.status()["message"] == "Идёт диджей-сет: трек 1 из 2."
+    end = rig.clock.beat + 2 + 6 * 64 * 4
+    while rig.clock.beat < end:  # тул компонует N+1 в фоновом потоке: шаг клока — после его конца
+        rig.clock.run_until(rig.clock.beat + 4)
+        for thread in threading.enumerate():
+            if thread.name == "rbx-set-pregen":
+                thread.join(30)
+    status = tool.status()
+    assert status["ended"] is True and status["active"] is False and status["tracks"] == 2
+    assert status["message"] == "Диджей-сет закончился сам: сыграны все 2 из 2."
+    stopped = tool.execute(action="stop")
+    assert stopped.success and stopped.data["was_playing"] is False
 
 
 def test_dj_set_tool_starts_and_stops_a_set():

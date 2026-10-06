@@ -6,7 +6,8 @@
 * громкость музыки — «громче / тише / потише / погромче / на максимум»,
   в том числе с названием играющего трека («горный король погромче»);
 * стоп — «выключи музыку», «стоп диджей», «хватит диджеить»;
-* DJ — «ты диджей X», «запусти диджей-сет»;
+* DJ — «ты диджей X», «запусти диджей-сет»; длина сета — «сет на 3 трека», «на полчаса» (``tracks``, разбор —
+  :mod:`.set_length_words`), тема-перечисление после двоеточия — «сет на 3 трека: Марио, Тетрис, Зельда»;
 * заказ по имени — «поставь / сыграй / включи <название>» (issue #3176);
 * заказ «какой-нибудь» музыки — «поставь клубный трек» (``REQUEST_MUSIC``, ADR-0149
   PR-6: его исполняет ``request_music`` движка v2).
@@ -32,6 +33,8 @@ from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music.theme import match_style
+
+from .set_length_words import split_set_length
 
 
 class MediaIntent(str, Enum):
@@ -77,6 +80,8 @@ class MediaCommand:
         style: для ``DJ`` — ключ ``knowledge.STYLES`` из слов стиля («рейв»,
             «эйсид», «в стиле хардкор», ADR-0153 S1) или ``""`` (решает тул).
             Слова стиля в тему не попадают.
+        tracks: для ``DJ`` — длина сета, названная человеком («на 3 трека», «три
+            десятка», «на полчаса»), ``0`` — не названа (длину решает тул).
     """
 
     intent: MediaIntent
@@ -89,6 +94,7 @@ class MediaCommand:
     mood: str = ""
     themed: bool = False
     style: str = ""
+    tracks: int = 0
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -805,6 +811,28 @@ def parse_media_command(
     text = extract_user_utterance(user_input)
     if not text:
         return NO_COMMAND
+    tracks, rest = split_set_length(text)  # «сет на 3 трека»: длину решает код, грамматика видит реплику без неё
+    command = (_listed_set(rest) or _parse_text(rest, track_name)) if tracks else NO_COMMAND
+    if command.intent is MediaIntent.DJ:
+        return replace(command, tracks=tracks)
+    return _listed_set(text) or _parse_text(text, track_name)
+
+
+def _listed_set(text: str) -> Optional[MediaCommand]:
+    """«включи сет: Марио, Тетрис, Зельда» → DJ-сет, тема — перечисление как сказано (запятые нужны поиску по
+    частям, ``engine.search.theme_parts``). Голова до двоеточия — закрытая DJ-команда без темы, иначе ``None``."""
+    head, sep, listed = text.partition(":")
+    listed = listed.strip(" .!?…")
+    if not sep or not listed or all(w in _DJ_FILLER or w in _PLAY_NAMED_FILLER for w in _words(listed)):
+        return None
+    command = _parse_text(head, None)
+    if command.intent is not MediaIntent.DJ or not command.closed or command.theme or command.set_theme:
+        return None
+    return replace(command, set_theme=listed, set_persona=command.persona)
+
+
+def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
+    """Разбор реплики без длины сета и перечисления (:func:`parse_media_command`)."""
     if is_dj_request(text):
         return _dj_command(text)
     words = _words(text)

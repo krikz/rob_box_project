@@ -77,7 +77,7 @@ def _param_from_call(call: ast.Call) -> dict[str, Any]:
     """Turn one ``MCPToolParameter(...)`` call into a plain dict."""
     kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
     param: dict[str, Any] = {}
-    for key in ("name", "type", "description", "required", "enum", "default", "enum_strict"):
+    for key in ("name", "type", "description", "required", "enum", "default", "enum_strict", "minimum", "maximum"):
         if key in kwargs:
             value = _literal(kwargs[key])
             if value is DYNAMIC:
@@ -332,6 +332,17 @@ def _style_values() -> list[str]:
     return ["auto", *_knowledge().STYLES]
 
 
+def _set_max_tracks() -> int:
+    """``dj_set.tracks`` maximum — ``knowledge.SET_MAX_TRACKS`` (``set_plan.MAX_TRACKS``)."""
+    return _knowledge().SET_MAX_TRACKS
+
+
+#: ``(tool_name, param_name, "minimum"|"maximum")`` → resolver for bounds named by a constant from another module.
+DYNAMIC_BOUNDS = {
+    ("dj_set", "tracks", "maximum"): _set_max_tracks,
+}
+
+
 #: ``(tool_name, param_name)`` → resolver, for enums built from runtime data
 #: rather than from a literal in the tool module.
 DYNAMIC_ENUMS = {
@@ -356,6 +367,9 @@ def _json_schema(param: dict[str, Any]) -> dict[str, Any]:
         schema["enum"] = list(param["enum"])
     if param.get("default") is not None:
         schema["default"] = param["default"]
+    for bound in ("minimum", "maximum"):
+        if param.get(bound) is not None:
+            schema[bound] = param[bound]
     if param.get("type") == "object" and param.get("properties"):
         schema["properties"] = {name: _json_schema(sub) for name, sub in param["properties"].items()}
         schema["required"] = [name for name, sub in param["properties"].items() if sub.get("required")]
@@ -610,6 +624,13 @@ def extract_tools() -> list[dict[str, Any]]:
                             "the same values the tool validates against"
                         )
                     param["enum"] = resolver()
+                for bound in ("minimum", "maximum"):
+                    if param.get(bound) is DYNAMIC:
+                        bound_resolver = DYNAMIC_BOUNDS.get((name, param.get("name"), bound))
+                        if bound_resolver is None:
+                            raise ToolSourceError(f"{name}.{param.get('name')} has a computed {bound} and no "
+                                                  "resolver in DYNAMIC_BOUNDS")
+                        param[bound] = bound_resolver()
 
             entry["parameters"] = _parameters_schema(params)
             entry["signature"] = signature

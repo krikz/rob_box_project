@@ -2334,7 +2334,12 @@ class GetMusicStateTool(MCPTool):
     def execute(self) -> MCPToolResult:
         """Вернуть текущее состояние музыки."""
         state = self._manager.get_state()
+        dj_set = getattr(self.node, "_dj_set_tool", None)  # движок v2: сет идёт / окончен сам / остановлен
+        status = dj_set.status() if dj_set is not None else None
+        if isinstance(status, dict):
+            state["dj_set"] = status
         parts = [
+            *([state["dj_set"]["message"]] if "dj_set" in state else []),
             f"Renardo: {'доступен' if state['renardo_available'] else 'недоступен'}",
             f"SuperCollider: {'запущен' if state['supercollider_running'] else 'не запущен'}",
             f"Активные паттерны: {', '.join(state['active_patterns']) or 'нет'}",

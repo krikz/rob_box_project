@@ -2,8 +2,10 @@
 
 * **Один темп на сет** (§4.4, решение Шифу В6): ``SetPlan.bpm`` — темп профиля темы в окне стиля
   (``knowledge.STYLES``, club 128–138). У треков своего темпа нет: ``compose`` берёт его из плана.
-* **Дуга энергии** (ADR-0147 §3.4, встроена по §4.6): волна ``knowledge.ENERGY_WAVE`` по номеру трека —
-  сет открытый, длина заранее не известна, поэтому волна повторяется.
+* **Длина сета и дуга энергии** (ADR-0147 §3.4, встроена по §4.6): сет конечный — ``n_tracks`` треков (по
+  умолчанию :data:`DEFAULT_TRACKS`, число из фразы человека — :data:`MAX_TRACKS` максимум; 06.10 сет без конца дошёл
+  до 53-го трека). Энергия — волна ``knowledge.ENERGY_WAVE`` по номеру трека (длинный сет повторяет её), последний
+  трек — спад к уровню интро (:func:`arc_energy`); короткий сет начинает волну позже, чтобы пик был перед спадом.
 * **Ход тоники** (§8.1: перенос ``dj_set_walk.related_root``): чистая квинта вверх на трек — соседи по кругу
   квинт делят 6 из 7 нот (Camelot +1), за 12 треков все 12 тоник. Старый ``dj_set_walk`` импортирует
   :func:`root_shift` отсюда — одна реализация.
@@ -31,7 +33,10 @@ from .theme import ThemeProfile
 
 #: Шаг тоники между соседними треками: чистая квинта вверх, полутонов.
 FIFTH = 7
-DEFAULT_TRACKS = 10
+#: Длина сета без числа, потолок и средний трек — из ``knowledge`` (одна таблица знания), здесь — короткие имена.
+DEFAULT_TRACKS = kn.SET_TRACKS
+MAX_TRACKS = kn.SET_MAX_TRACKS
+TRACK_SECONDS = kn.SET_TRACK_SECONDS
 #: Сколько последних треков истории не должна повторять тоника нового сета.
 TONIC_MEMORY = 4
 
@@ -57,7 +62,8 @@ class SetPlan:
     timbre: str = ""  # семья тембров сета (ключ ``Style.timbres``); пусто — по строке темы (:attr:`family`)
 
     def track(self, no: int) -> TrackPlan:
-        """План трека ``no`` (с 1): из ``tracks`` (поправка LLM, PR-10), за их пределами — волна: сет открытый."""
+        """План трека ``no`` (с 1): из ``tracks`` (поправка LLM, PR-10); за концом сета — волна (одиночный трек
+        ``request_music`` и тесты)."""
         return self.tracks[no - 1] if 1 <= no <= len(self.tracks) else track_plan(no)
 
     def root(self, no: int) -> int:
@@ -85,13 +91,34 @@ def track_energy(no: int) -> int:
     return kn.ENERGY_WAVE[(max(1, no) - 1) % len(kn.ENERGY_WAVE)]
 
 
+def arc_energy(no: int, n_tracks: int) -> int:
+    """Энергия трека ``no`` (с 1) сета из ``n_tracks`` треков: волна ``ENERGY_WAVE``, последний трек — спад к уровню
+    интро (``ENERGY_WAVE[0]``). Сет короче волны начинает её позже — пик на предпоследнем треке: 3 трека → 4, 5, 2."""
+    wave = kn.ENERGY_WAVE
+    if n_tracks > 1 and no >= n_tracks:
+        return wave[0]
+    shift = max(0, wave.index(max(wave)) - (n_tracks - 2))
+    return wave[(shift + max(1, no) - 1) % len(wave)]
+
+
+def set_tracks(tracks: object) -> int:
+    """Длина сета, названная человеком: целое 1..:data:`MAX_TRACKS` (строка из цифр — тоже), иначе ``ValueError`` с
+    понятной причиной."""
+    if isinstance(tracks, str) and tracks.strip().isdigit():
+        tracks = int(tracks)
+    if type(tracks) is not int or not 1 <= tracks <= MAX_TRACKS:
+        raise ValueError(f"tracks={tracks!r}: длина сета — целое число треков от 1 до {MAX_TRACKS}")
+    return tracks
+
+
 def root_shift(no: int) -> int:
     """Сдвиг тоники трека ``no`` (с 1) от тоники сета: трек 1 — 0, каждый следующий — квинта выше."""
     return FIFTH * (max(1, no) - 1) % 12
 
 
-def track_plan(no: int) -> TrackPlan:
-    return TrackPlan(no, track_energy(no), root_shift(no))
+def track_plan(no: int, n_tracks: int = 0) -> TrackPlan:
+    """План трека ``no``; ``n_tracks`` — длина сета (дуга :func:`arc_energy`), 0 — волна без конца."""
+    return TrackPlan(no, arc_energy(no, n_tracks) if n_tracks else track_energy(no), root_shift(no))
 
 
 def set_root(profile: ThemeProfile, seed: int, history: Sequence[Mapping] = ()) -> int:
@@ -194,8 +221,8 @@ def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[in
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
                 history: Sequence[Mapping] = (), genre: Optional[str] = None) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
-    ``music_history`` (свежие первыми). ``genre`` — окно, заданное явно (тема, оператор);
-    ``None`` — :func:`pick_genre`."""
+    ``music_history`` (свежие первыми). ``n_tracks`` — длина сета: треков в плане столько, сколько сыграет сет.
+    ``genre`` — окно, заданное явно (тема, оператор); ``None`` — :func:`pick_genre`."""
     profile = replace(profile, root=set_root(profile, seed, history))
     base = kn.STYLES[profile.style]
     genre = pick_genre(base, history, random.Random(f"genre:{seed}:{profile.theme}")) if genre is None else genre
@@ -205,13 +232,14 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     swing = round(s_lo + random.Random(f"plan:{seed}:{profile.theme}").random() * (s_hi - s_lo), 3)
     n = max(1, n_tracks)
     kicks = plan_kicks(window, seed, profile.theme, n, history)
-    plans = [track_plan(no) for no in range(1, n + 1)]
+    plans = [track_plan(no, n) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
     tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1]) for p in plans)
     timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{profile.theme}"))
     return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre)
 
 
-__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_genre", "pick_kick",
+__all__ = ["DEFAULT_TRACKS", "FIFTH", "MAX_TRACKS", "SetPlan", "TONIC_MEMORY", "TRACK_SECONDS", "TrackPlan", "arc_energy",
+           "pick_genre", "pick_kick",
            "pick_template", "pick_timbre", "plan_bpm", "plan_kicks", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
-           "set_root", "track_energy", "track_plan"]
+           "set_root", "set_tracks", "track_energy", "track_plan"]
