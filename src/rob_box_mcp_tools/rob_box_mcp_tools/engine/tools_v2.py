@@ -28,7 +28,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
-from rob_box_music.theme import ThemeProfile, seeded_profile
+from rob_box_music.theme import ThemeProfile, match_style, seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
@@ -47,6 +47,19 @@ Confirm = Callable[[Optional[str]], Any]
 
 #: ``request_music`` в classic-песню (PR-11).
 CLASSIC_GENRES = ("classical", "folk")
+#: ``dj_set(style)``: ключи ``knowledge.STYLES`` (ADR-0153 §4.1) и ``auto`` — стиль по словам темы, иначе клуб.
+AUTO_STYLE = "auto"
+STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
+
+
+def set_style(style: Optional[str], theme: str) -> str:
+    """Стиль сета решает код (ADR-0148): названный ключ ``STYLES``; ``auto``/пусто — по словам темы
+    (``theme.match_style``), слов стиля нет — ``DEFAULT_STYLE``. Ключ не из перечня — ``ValueError``."""
+    if style and style != AUTO_STYLE:
+        if style not in kn.STYLES:
+            raise ValueError(f"style={style!r}: есть только {list(STYLE_CHOICES)}")
+        return style
+    return match_style(theme.split()) or kn.DEFAULT_STYLE
 
 
 def library_melodies(library_factory: Callable[[], Any]) -> MelodyLookup:
@@ -161,6 +174,8 @@ class DjSetTool(MCPTool):
             MCPToolParameter(name="theme", type="string", description="Тема сета словами человека (например «космос»)",
                              required=False),
             MCPToolParameter(name="persona", type="string", description="Имя диджея для реплик", required=False),
+            MCPToolParameter(name="style", type="string", required=False, enum=list(STYLE_CHOICES),
+                             description="Стиль сета (один на весь сет); auto — по словам темы, иначе клубный"),
         ]
 
     @property
@@ -176,17 +191,21 @@ class DjSetTool(MCPTool):
         return False
 
     def execute(self, action: str = "start", theme: Optional[str] = None,
-                persona: Optional[str] = None) -> MCPToolResult:
+                persona: Optional[str] = None, style: Optional[str] = None) -> MCPToolResult:
         with self._lock:
             if action == "stop":
                 return self._stop()
             if action == "start":
-                result = self._start(theme or "", persona)
+                try:
+                    key = set_style(style, theme or "")
+                except ValueError as exc:
+                    return MCPToolResult(success=False, error=str(exc))
+                result = self._start(theme or "", persona, key)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         return tool_result(confirmed(result, self._confirm), "сет не начался")  # ждём started вне замка
 
-    def theme_profile(self, theme: str) -> ThemeProfile:
+    def theme_profile(self, theme: str, style: str = kn.DEFAULT_STYLE) -> ThemeProfile:
         """Seeded-профиль темы с мелодиями по её словам; поиск упал — профиль без находок, причина в лог."""
         log = self.node.get_logger() if self.node is not None else _LOG
         try:
@@ -194,15 +213,15 @@ class DjSetTool(MCPTool):
         except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
             log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
             hits = ThemeHits()
-        profile = seeded_profile(theme, found=hits.names, exact=hits.exact)
-        log.info(f"🎛️ [dj_set] тема «{theme}»: source={profile.source} row={profile.row} "
+        profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact)
+        log.info(f"🎛️ [dj_set] тема «{theme}»: style={profile.style} source={profile.source} row={profile.row} "
                  f"хуки={list(profile.hook_ids)}")
         return profile
 
-    def _start(self, theme: str, persona: Optional[str]) -> Dict[str, Any]:
+    def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE) -> Dict[str, Any]:
         if self._session is not None:
             self._session.stop("new_set")
-        profile = self.theme_profile(theme)
+        profile = self.theme_profile(theme, style)
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
         plan = seeded_plan(profile, set_seed, set_id=set_id, history=self._memory.peek())  # темп и окно — на сет
@@ -217,7 +236,8 @@ class DjSetTool(MCPTool):
         reasoner = None
         if self._session is not None:  # звук уже поставлен seeded-планом; LLM — в фоне (§4.8)
             reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
-        return {**result, "theme": theme, "theme_source": profile.source, "seed": set_seed, "reasoner": reasoner}
+        return {**result, "theme": theme, "style": plan.style, "genre": plan.genre, "theme_source": profile.source,
+                "seed": set_seed, "reasoner": reasoner}
 
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""
@@ -329,5 +349,5 @@ class RequestMusicTool(MCPTool):
                 "key": pick.key}
 
 
-__all__ = ["CLASSIC_GENRES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed",
-           "library_melodies", "theme_finder", "tool_result"]
+__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "STYLE_CHOICES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed",
+           "library_melodies", "set_style", "theme_finder", "tool_result"]

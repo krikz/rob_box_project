@@ -200,7 +200,7 @@ def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     total = track.form.bars_total * STEPS_PER_BAR
     cells = [(st.accent, st.offset_ms) if st.on else None for st in steps * (total // len(steps))]
     pattern, gains = _drum_fold(cells, _active_steps(track, role), track.form.bars_total)
-    symbol = kn.DRUM_SYMBOLS[role]
+    symbol = part.play_symbol
     accents = [c[0] for c in pattern if c]
     full = [c[0] if c else 0 for c in pattern]
     opts = _tail(track, role, part, full, len(set(accents)) > 1, [c is not None for c in pattern], gains)
@@ -408,7 +408,7 @@ def render(track: Track, deck: str) -> Program:
         line = _tonal_line if role in kn.TONAL_ROLES else _sample_line if role in SAMPLE_ROLES else _drum_line
         lines.append(line(slots[role], role, part, track))
     tonal = {p.synth_or_sample for r, p in track.parts.items() if r in kn.TONAL_ROLES}
-    drums = {kn.DRUM_SYMBOLS[r] + (f":{p.sample}" if p.sample else "")
+    drums = {p.play_symbol + (f":{p.sample}" if p.sample else "")
              for r, p in track.parts.items() if r in kn.DRUM_SYMBOLS}
     files = {kn.SAMPLE_CATALOG[n].path for r, p in track.parts.items() if r in SAMPLE_ROLES
              for n in (p.synth_or_sample, *p.pool)}

@@ -163,11 +163,20 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         '«космос»)'},
                                             'persona': {   'type': 'string',
                                                            'description': 'Имя диджея '
-                                                                          'для '
-                                                                          'реплик'}},
+                                                                          'для реплик'},
+                                            'style': {   'type': 'string',
+                                                         'description': 'Стиль сета '
+                                                                        '(один на весь '
+                                                                        'сет); auto — '
+                                                                        'по словам '
+                                                                        'темы, иначе '
+                                                                        'клубный',
+                                                         'enum': [   'auto',
+                                                                     'club',
+                                                                     'rave']}},
                           'required': ['action'],
                           'additionalProperties': False},
-        'signature': {   'params': ['action', 'theme', 'persona'],
+        'signature': {   'params': ['action', 'theme', 'persona', 'style'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('dj',)},

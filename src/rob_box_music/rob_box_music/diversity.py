@@ -1,7 +1,7 @@
 """Разнообразие: память о сыгранном и выбор со штрафом за недавнее (ADR-0149 §3.3, §3.11, I17; ADR-0146).
 
 Перенос ``rob_box_mcp_tools/core/music_diversity.py`` (ADR-0149 §8.1, PR-3d): одна реализация, старый
-модуль — реэкспорт. История v2 (``style="club_v2"``) пишется по всем осям трека — :func:`track_history`:
+модуль — реэкспорт. История v2 (``style`` — ключ ``knowledge.STYLES`` трека, ADR-0153 S1) пишется по всем осям трека — :func:`track_history`:
 каркас ударных, прогрессия, хук (мелодия и отпечаток фрагмента), тембры, сэмплы, тоника.
 
 Issue #3224 (карточка (а) umbrella #3223, ADR-0146). Живой лог 30.09: из
@@ -280,9 +280,15 @@ def recent_values(rows: Sequence[Mapping[str, Any]], field: str) -> List[Any]:
     return [row.get(field) for row in rows]
 
 
-def kick_name(sample: int) -> str:
-    """Имя бочки из ``knowledge.KICK_SOUNDS`` по номеру файла ``Part.sample``; неизвестный номер — ``#<n>``."""
-    return next((name for name, k in kn.KICK_SOUNDS.items() if k.sample == sample), f"#{sample}")
+def kick_name(sample: int, symbol: str = "X") -> str:
+    """Имя бочки из ``knowledge.KICK_SOUNDS`` по символу и номеру файла (``Part.play_symbol``/``Part.sample``);
+    неизвестная — ``<символ>#<n>``."""
+    return kn.kick_of(symbol, sample) or f"{symbol}#{sample}"
+
+
+def _kick(parts: Mapping[str, Any]) -> Optional[str]:
+    kick = parts.get("kick")
+    return kick_name(kick.sample, kick.play_symbol) if kick is not None else None
 
 
 def _form_signature(form: Any) -> str:
@@ -301,7 +307,7 @@ def track_composition(track: Any) -> Dict[str, Any]:
 
     return {
         "pad": synth("pad"), "lead": synth("lead"), "bass": synth("bass"),
-        "kick": kick_name(parts["kick"].sample) if "kick" in parts else "-", "kit": key.kit,
+        "kick": _kick(parts) or "-", "kit": key.kit, "style": track.style,
         "form": _form_signature(track.form), "bpm": track.bpm, "mode": track.key.mode, "root": kn.ROOTS[key.root],
         "hook": key.hook or "-", "hook_fp": key.hook_fingerprint or "-", "prog": key.progression,
         "sample": key.sample or "-", "perc": key.perc or "-", "fx": key.fx or "-", "energy": track.energy,
@@ -327,8 +333,8 @@ def track_history(track: Any, set_id: Optional[str] = None) -> Dict[str, Any]:
     key = track.history_key
     synths = {role: part.synth_or_sample for role, part in track.parts.items() if role in kn.TONAL_ROLES}
     return {
-        "set_id": set_id, "style": "club_v2", "kit": key.kit, "progression": key.progression,
-        "kick": kick_name(track.parts["kick"].sample) if "kick" in track.parts else None,
+        "set_id": set_id, "style": track.style, "kit": key.kit, "progression": key.progression,
+        "kick": _kick(track.parts),
         "melody_name": key.hook, "hook_fingerprint": key.hook_fingerprint, "sample": key.sample, "fx": key.fx,
         "perc": key.perc, "pad_figure": key.pad_figure, "bass_figure": key.bass_figure, "template": key.template,
         "genre": key.genre, "root": kn.ROOTS[key.root], "bpm": float(track.bpm), "scale": track.key.mode, **synths,

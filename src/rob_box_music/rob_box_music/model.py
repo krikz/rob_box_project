@@ -97,6 +97,13 @@ class Part:
     sample: int = 0  # номер файла ``play()``-символа ударной роли (бочка — ``knowledge.KICK_SOUNDS``)
     #: Файл каталога на каждое событие роли по кругу (psr-пул DJ_Dave, PR-3d); пусто — ``synth_or_sample``.
     pool: Tuple[str, ...] = ()
+    #: Символ ``play()`` ударной роли (бочка рейва — ``A``/``W``, ``knowledge.KICK_SOUNDS``, ADR-0153 S1); пусто —
+    #: ``knowledge.DRUM_SYMBOLS`` роли. Вне ``repr``, как ``PitchEvent.lpf``: отпечаток трека клуба тот же, что до S1.
+    symbol: str = field(default="", repr=False)
+
+    @property
+    def play_symbol(self) -> str:
+        return self.symbol or kn.DRUM_SYMBOLS[self.role]
 
 
 @dataclass(frozen=True)
@@ -186,6 +193,9 @@ class HistoryKey:
     bass_figure: Optional[str] = None  # рисунок баса (``knowledge.BASS_FIGURES``, ADR-0152 PR-6)
     template: Optional[str] = None  # шаблон формы (``Style.forms``, ADR-0152 PR-7)
     genre: Optional[str] = None  # жанровое окно сета (``Style.genre_windows``, ADR-0152 PR-8)
+    #: Ключ ``knowledge.STYLES`` трека (ADR-0153 S1): по нему валидатор берёт регистры, сайдчейн и пул бочек.
+    #: Вне ``repr``, как ``PitchEvent.lpf``: модель трека клуба выглядит как до S1 (эталон ``test_style_same_tracks``).
+    style: str = field(default=kn.DEFAULT_STYLE, repr=False)
 
 
 @dataclass(frozen=True)
@@ -203,6 +213,11 @@ class Track:
     transition_in: Transition
     transition_out: Transition
     history_key: HistoryKey
+
+    @property
+    def style(self) -> str:
+        """Ключ ``knowledge.STYLES`` трека (один стиль на сет, ADR-0153 §4.3)."""
+        return self.history_key.style
 
 
 def _require(ok: bool, path: str, reason: str) -> None:
@@ -299,7 +314,7 @@ def _check_key_fit(role: str, part: Part, key: Key, minimum: float) -> None:
 
 def _check_tonal(role: str, part: Part, track: Track) -> None:
     song = track.form.song
-    corridor = (kn.SONG_REGISTERS if song else kn.REGISTERS)[role]
+    corridor = (kn.SONG_REGISTERS if song else kn.STYLES[track.style].registers)[role]
     lo, hi = part.register
     _require(corridor[0] <= lo <= hi <= corridor[1], f"parts.{role}.register",
              f"регистр {part.register} вне коридора {corridor}")
@@ -327,8 +342,7 @@ def _check_parts(track: Track) -> None:
             _require(part.pitches is None, f"parts.{role}.pitches", "у ударной роли нет высот")
             _require(isinstance(part.sample, int) and part.sample >= 0, f"parts.{role}.sample", "номер сэмпла < 0")
             if role == "kick":
-                _require(part.sample in {k.sample for k in kn.KICK_SOUNDS.values()}, "parts.kick.sample",
-                         "бочка не из knowledge.KICK_SOUNDS")
+                _check_kick(track, part)
         if role in SAMPLE_ROLES:
             unknown = sorted({part.synth_or_sample, *part.pool} - set(kn.SAMPLE_CATALOG))
             _require(not unknown, f"parts.{role}.synth_or_sample", f"сэмплов {unknown} нет в knowledge.SAMPLE_CATALOG")
@@ -341,10 +355,18 @@ def _check_parts(track: Track) -> None:
         _require(not missing, f"form.sections[{i}].roles", f"роли без партии: {missing}")
 
 
-def _check_duck(mix: Mix, parts: Mapping[str, Part], n_sections: int) -> None:
+def _check_kick(track: Track, part: Part) -> None:
+    """Бочка — из ``knowledge.KICK_SOUNDS`` (символ и файл) и из пулов окон стиля трека."""
+    name = kn.kick_of(part.play_symbol, part.sample)
+    _require(name is not None, "parts.kick.sample", "бочка не из knowledge.KICK_SOUNDS")
+    pools = {k for w in kn.STYLES[track.style].genre_windows.values() for k in w.kick_pool}
+    _require(name in pools, "parts.kick.sample", f"бочка {name!r} не из пула стиля {track.style!r}")
+
+
+def _check_duck(mix: Mix, parts: Mapping[str, Part], n_sections: int, style: kn.Style) -> None:
     roles = set(mix.duck_roles)
-    _require(roles <= set(parts) & set(kn.DUCK_ROLES), "mix.duck_roles",
-             f"сайдчейн только на ролях knowledge.DUCK_ROLES, что есть в треке: {sorted(roles)}")
+    _require(roles <= set(parts) & set(style.duck_roles), "mix.duck_roles",
+             f"сайдчейн только на ролях Style.duck_roles, что есть в треке: {sorted(roles)}")
     _require(not roles or len(mix.duck) == n_sections, "mix.duck", f"{len(mix.duck)} секций, а в форме {n_sections}")
     for i, duck in enumerate(mix.duck):
         trigger = duck.trigger
@@ -372,7 +394,7 @@ def _check_levels(track: Track) -> None:
         power = sum(10.0 ** (track.parts[r].level_db / 10.0) for r in sec.roles)
         _require(power <= limit, f"form.sections[{i}].roles",
                  f"сумма пиков {10 * math.log10(power):.1f} дБ выше потолка {kn.LEVEL_CEILINGS['master_peak_db']}")
-    _check_duck(track.mix, track.parts, len(track.form.sections))
+    _check_duck(track.mix, track.parts, len(track.form.sections), kn.STYLES[track.style])
     _check_lpf(track.mix, track.parts, len(track.form.sections))
     for role, st in track.mix.stereo.items():
         path = f"mix.stereo.{role}"
@@ -408,6 +430,7 @@ def _check_transitions(track: Track) -> None:
 
 def validate(track: Track) -> None:
     """Проверить инварианты трека; нарушение — :class:`TrackError` (путь + причина)."""
+    _require(track.style in kn.STYLES, "history_key.style", f"стиль {track.style!r} не из knowledge.STYLES")
     _check_key(track)
     _check_form(track.form)
     _require(track.history_key.template in (None, *kn.FORM_NAMES), "history_key.template",

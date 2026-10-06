@@ -213,7 +213,7 @@ def test_history_is_written_on_every_axis(fifty):
     rows = fifty[1].recent(SETS * TRACKS)
     assert len(rows) == SETS * TRACKS
     for row in rows:
-        assert row["style"] == "club_v2"
+        assert row["style"] == "club"  # ключ knowledge.STYLES трека (ADR-0153 S1; было «club_v2»)
         for axis in ("kit", "progression", "hook_fingerprint", "sample", "fx", "perc", "root", "scale", "bpm",
                      "lead", "bass", "pad", "set_id", "kick"):
             assert row[axis] not in (None, ""), (axis, row)
