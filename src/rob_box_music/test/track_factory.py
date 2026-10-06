@@ -58,14 +58,15 @@ def _part(rng: random.Random, role: str, key: Key, bars_total: int) -> Part:
         register = (lo, rng.randint(lo + 12, c_hi))
         pitches = _pitches(rng, role, key, register, limit)
     level = kn.role_ceiling(role) - rng.uniform(0.0, 6.0)
-    return Part(role, synth, _grid(rng), pitches, level, register)
+    sample = kn.KICK_SOUNDS["house"].sample if role == "kick" else 0
+    return Part(role, synth, _grid(rng), pitches, level, register, sample)
 
 
 def _fit_levels(parts: dict, sections: list) -> dict:
     limit = kn.LEVEL_CEILINGS["master_peak_db"]
     worst = max(10 * math.log10(sum(10 ** (parts[r].level_db / 10) for r in s.roles)) for s in sections)
     shift = min(0.0, limit - 0.1 - worst)  # 0.1 дБ запаса от плавающей точки на границе
-    return {r: Part(p.role, p.synth_or_sample, p.grid, p.pitches, p.level_db + shift, p.register)
+    return {r: Part(p.role, p.synth_or_sample, p.grid, p.pitches, p.level_db + shift, p.register, p.sample)
             for r, p in parts.items()}
 
 

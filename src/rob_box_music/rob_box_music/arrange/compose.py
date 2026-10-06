@@ -44,7 +44,7 @@ from ..model import (
     BEATS_PER_BAR, Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
 )
 from ..diversity import fingerprint, recent_values, weighted_pick
-from ..set_plan import SetPlan, seeded_plan
+from ..set_plan import SetPlan, pick_kick, seeded_plan
 from ..theme import ThemeProfile
 from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 
@@ -126,7 +126,7 @@ def _lead(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, synth: str) ->
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, style.registers["lead"])
 
 
-def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str) -> Dict[str, Part]:
+def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Optional[str] = None) -> Dict[str, Part]:
     """Бочка и клэп — на всю форму, хэты каркаса ``kit`` — такт со свингом. Бочка секции — рисунок её вида
     (``mix.look``: build ↔ drop). Клэп-бэкбит — в дропах; в остальных секциях клэп — только ролл: перед дропом —
     два такта (восьмые, затем 16-е, акцент растёт), в конце трека — полтакта. Бочка — сэмпл стиля с настоящим
@@ -154,7 +154,7 @@ def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str) -> Dict[str, Pa
     grids = {"kick": rhythm.form_bars(form.sections, kick), "hats": rhythm.hats_grid(style, swing_ms, kit)}
     if any("clap" in sec.roles for sec in form.sections):
         grids["clap"] = rhythm.form_bars(form.sections, clap)
-    kick = mix.kick_sound(style)
+    kick = mix.kick_sound(style, kick_name)
     return {r: Part(r, kn.PLAY_SYNTH, g, None, _UNLEVELED, (0, 0), kick.sample if r == "kick" else 0)
             for r, g in grids.items()}
 
@@ -243,7 +243,8 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     perc = samples.perc_pool(key, history, axis["sample"])
     loop = samples.pick(samples.LOOP_ROLES, key, history, "sample", axis["loop"])
     fx = samples.pick(samples.FX_ROLES, key, history, "fx", axis["fx"])
-    drums = _drums(style, form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit)
+    kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
+    drums = _drums(style, form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit, kick)
     bass_part = BASS_GENERATORS[style.bass_figures[0]](
         style, key, _bar_chords(spec, "bass", chords), synths["bass"], style.registers["bass"])
     pad_part = PAD_GENERATORS[style.pad_figures[0]](

@@ -1,6 +1,7 @@
 """Схема и валидатор поправки плана от LLM (ADR-0149 §4.5, §4.7; PR-10). Без сети."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -79,7 +80,8 @@ def test_apply_keeps_tempo_seed_tonic_and_swing():
     assert new.profile.source == PLAN.profile.source == "pool"  # строка от LLM — не слова темы (A11, #3399)
     assert [new.track(n).energy for n in range(1, 5)] == [3, 4, 5, 4]
     assert [new.root(n) for n in range(1, 13)] == [PLAN.root(n) for n in range(1, 13)]  # ход по квинтам тот же
-    assert new.track(5) == PLAN.track(5) == track_plan(5)  # дальше — волна seeded
+    assert new.track(5) == PLAN.track(5)  # бочка плана остаётся
+    assert replace(new.track(5), kick="") == track_plan(5)  # дальше — волна seeded
     assert new.track(50) == track_plan(50)  # сет открытый
 
 
