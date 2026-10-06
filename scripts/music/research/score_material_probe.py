@@ -14,6 +14,9 @@
 * наш аранжировщик на этом материале: ``hook.from_rtttl`` на первых 8 тактах skyline (RTTTL из партитуры),
   ``harmony.fit_progression`` (стиль club) против аккордов оригинала по 2-тактовым окнам.
 
+Разбор партитуры живёт в ``scripts/music/score_import.py`` (ADR-0154 PR-2); здесь — только исследовательская
+статистика и сравнение с нашим аранжировщиком.
+
 Запуск (нужен ``pip install music21``; ``PYTHONPATH`` на ``src/rob_box_music``):
 
     python scripts/music/research/score_material_probe.py <каталог|файл>... [--out stats.json] [--limit N]
@@ -31,12 +34,18 @@ import random
 import sys
 import time
 import warnings
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 warnings.filterwarnings("ignore")
 
-from music21 import chord as m21chord, converter, expressions, key as m21key  # noqa: E402
-from music21 import meter as m21meter, tempo as m21tempo  # noqa: E402
+from music21 import converter  # noqa: E402
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+# Разбор партитуры (skyline, аккорды, бас, фактуры, фразы) — одна реализация, в импортёре ADR-0154 PR-2.
+from score_import import (DEGREE_NAMES, MAJOR, MINOR, STEP, TRIADS, bar_fingerprints, bar_map, bar_of,  # noqa: E402,F401
+                          bass_line, best_triad, chords_per_half_bar, degree_name, key_signature, load_notes,
+                          meters_of, phrase_relation, skyline, tempos_of, texture_of_bar, text_marks,
+                          window_weights)
 
 try:
     from rob_box_music import knowledge as kn
@@ -46,206 +55,6 @@ try:
     HAVE_ARRANGER = True
 except ImportError:  # pragma: no cover - без PYTHONPATH сравнение с аранжировщиком пропускается
     HAVE_ARRANGER = False
-
-MAJOR = (0, 2, 4, 5, 7, 9, 11)
-MINOR = (0, 2, 3, 5, 7, 8, 10)
-DEGREE_NAMES = ("I", "bII", "II", "bIII", "III", "IV", "bV", "V", "bVI", "VI", "bVII", "VII")
-STEP = 0.25  # 16-я в четвертях
-TRIADS = [((r, (r + t) % 12, (r + 7) % 12), t == 4) for r in range(12) for t in (4, 3)]
-
-
-# ------------------------------------------------------------------ загрузка и ноты
-
-def load_notes(score):
-    """Все звучащие ноты: (offset_ql, dur_ql, midi, part_index)."""
-    out = []
-    for pi, part in enumerate(score.parts):
-        flat = part.flatten()
-        for el in flat.notes:
-            if el.isRest:
-                continue
-            off = float(el.offset)
-            dur = float(el.duration.quarterLength)
-            if dur <= 0:
-                continue
-            if isinstance(el, m21chord.Chord):
-                for p in el.pitches:
-                    out.append((off, dur, int(p.midi), pi))
-            else:
-                out.append((off, dur, int(el.pitch.midi), pi))
-    out.sort()
-    return out
-
-
-def bar_map(score):
-    """(offsets тактов, длины тактов в четвертях) по первой партии."""
-    measures = list(score.parts[0].getElementsByClass("Measure"))
-    offs = [float(m.offset) for m in measures]
-    lens = [float(m.barDuration.quarterLength) for m in measures]
-    return offs, lens
-
-
-def bar_of(offs: Sequence[float], off: float) -> int:
-    import bisect
-    return max(0, bisect.bisect_right(offs, off + 1e-6) - 1)
-
-
-def meters_of(score) -> List[str]:
-    return sorted({ts.ratioString for ts in score.flatten().getElementsByClass(m21meter.TimeSignature)})
-
-
-def tempos_of(score) -> List[float]:
-    return sorted({float(t.number) for t in score.flatten().getElementsByClass(m21tempo.MetronomeMark)
-                   if t.number})
-
-
-def key_signature(score) -> Optional[str]:
-    for ks in score.flatten().getElementsByClass(m21key.KeySignature):
-        try:
-            k = ks.asKey()
-            return f"{k.tonic.name} {k.mode}"
-        except Exception:  # noqa: BLE001
-            return f"{ks.sharps} sharps"
-    return None
-
-
-def text_marks(score) -> List[Tuple[int, str]]:
-    offs, _ = bar_map(score)
-    out = []
-    for el in score.flatten().getElementsByClass((expressions.TextExpression, expressions.RehearsalMark)):
-        text = getattr(el, "content", None)
-        if text is None and isinstance(el, expressions.RehearsalMark):
-            text = f"[{el.content if hasattr(el, 'content') else el}]"
-        if text:
-            out.append((bar_of(offs, float(el.offset)) + 1, str(text)))
-    return out
-
-
-# ------------------------------------------------------------------ мелодия (skyline)
-
-def skyline(notes) -> List[Tuple[float, float, int, int]]:
-    """Верхняя нота на каждом онсете (онсеты на сетке 16-х); длительность — до следующего онсета skyline."""
-    by_onset: Dict[float, List[Tuple[int, float, int]]] = collections.defaultdict(list)
-    for off, dur, midi, pi in notes:
-        q = round(off / STEP) * STEP
-        by_onset[q].append((midi, dur, pi))
-    out = []
-    for q in sorted(by_onset):
-        midi, dur, pi = max(by_onset[q])
-        out.append([q, dur, midi, pi])
-    for i in range(len(out) - 1):
-        out[i][1] = min(out[i][1], out[i + 1][0] - out[i][0])
-    return [tuple(x) for x in out if x[1] > 0]
-
-
-# ------------------------------------------------------------------ гармония
-
-def window_weights(notes, start: float, end: float) -> Dict[int, float]:
-    w: Dict[int, float] = collections.defaultdict(float)
-    for off, dur, midi, _pi in notes:
-        a, b = max(off, start), min(off + dur, end)
-        if b > a:
-            w[midi % 12] += b - a
-    return w
-
-
-def best_triad(weights: Dict[int, float], previous: Optional[Tuple[int, ...]]) -> Optional[Tuple[int, ...]]:
-    if not weights:
-        return previous
-    best, best_score = None, -1.0
-    for pcs, _major in TRIADS:
-        score = sum(weights.get(pc, 0.0) for pc in pcs) + 0.5 * weights.get(pcs[0], 0.0)
-        if previous is not None and pcs == previous:
-            score += 0.15 * sum(weights.values())
-        if score > best_score:
-            best, best_score = pcs, score
-    return best
-
-
-def degree_name(root_pc: int, tonic: int) -> str:
-    return DEGREE_NAMES[(root_pc - tonic) % 12]
-
-
-def chords_per_half_bar(notes, offs, lens, tonic: int):
-    """Аккорд каждой половины такта: (bar, half, triad, ступень, major?)."""
-    out = []
-    prev = None
-    for i, (o, ln) in enumerate(zip(offs, lens)):
-        for h in range(2):
-            tri = best_triad(window_weights(notes, o + h * ln / 2, o + (h + 1) * ln / 2), prev)
-            if tri is None:
-                continue
-            out.append((i, h, tri, degree_name(tri[0], tonic) + ("" if (tri[1] - tri[0]) % 12 == 4 else "m")))
-            prev = tri
-    return out
-
-
-# ------------------------------------------------------------------ бас
-
-def bass_line(notes) -> List[Tuple[float, float, int]]:
-    """Басовый голос: на каждом онсете — низшая ЗВУЧАЩАЯ нота; берётся, только если она начинается здесь
-    (онсет одной мелодии над тянущимся басом басовой нотой не считается)."""
-    by_onset: Dict[float, List[Tuple[int, float]]] = collections.defaultdict(list)
-    for off, dur, midi, _pi in notes:
-        by_onset[round(off / STEP) * STEP].append((midi, dur))
-    out = []
-    active: List[Tuple[float, int]] = []  # (конец, midi) тянущихся нот
-    for q in sorted(by_onset):
-        active = [(end, m) for end, m in active if end > q + 1e-6]
-        lowest_start = min(by_onset[q])
-        if not active or lowest_start[0] <= min(m for _e, m in active):
-            out.append((q, lowest_start[1], lowest_start[0]))
-        active += [(q + dur, m) for m, dur in by_onset[q]]
-    return out
-
-
-# ------------------------------------------------------------------ фактура
-
-def texture_of_bar(acc_notes) -> str:
-    """``acc_notes`` — (off, dur, midi) аккомпанемента такта."""
-    if not acc_notes:
-        return "none"
-    onsets = collections.defaultdict(list)
-    for off, dur, midi in acc_notes:
-        onsets[round(off / STEP)].append(midi)
-    n_on = len(onsets)
-    simul = sum(len(v) for v in onsets.values()) / n_on
-    if n_on <= 2 and simul >= 2:
-        return "sustained"
-    if simul >= 2.5:
-        return "block"
-    if n_on >= 4 and simul < 1.5:
-        return "broken"
-    return "mixed"
-
-
-# ------------------------------------------------------------------ структура
-
-def bar_fingerprints(mel, offs, lens):
-    bars: Dict[int, List[Tuple[int, int, int]]] = collections.defaultdict(list)
-    for off, dur, midi, _pi in mel:
-        b = bar_of(offs, off)
-        bars[b].append((int(round((off - offs[b]) / STEP)), int(round(dur / STEP)), midi))
-    return [tuple(bars.get(i, ())) for i in range(len(offs))]
-
-
-def phrase_relation(a, b) -> str:
-    """Отношение соседних фраз (списки отпечатков тактов)."""
-    fa = [n for bar in a for n in bar]
-    fb = [n for bar in b for n in bar]
-    if not fa or not fb:
-        return "empty"
-    if a == b:
-        return "repeat"
-    ra = [(s, d) for s, d, _m in fa]
-    rb = [(s, d) for s, d, _m in fb]
-    if len(fa) == len(fb):
-        diffs = {mb - ma for (_s, _d, ma), (_s2, _d2, mb) in zip(fa, fb)}
-        if len(diffs) == 1 and ra == rb:
-            return "sequence"
-        if ra == rb:
-            return "rhythm"
-    return "new"
 
 
 # ------------------------------------------------------------------ наш аранжировщик
@@ -449,7 +258,7 @@ def analyze(path: pathlib.Path) -> Dict[str, object]:
         "bass_octave_jumps": round(jumps / max(1, len(bl)), 3),
         "textures": dict(textures), "unique_bar_share": round(unique / max(1, len(nonempty)), 3),
         "repeat_gaps_top": collections.Counter(repeat_gaps).most_common(5), "phrase_relations": dict(relations),
-        "text_marks": text_marks(score)[:20], "seconds": round(time.time() - t0, 1),
+        "text_marks": text_marks(score, offs)[:20], "seconds": round(time.time() - t0, 1),
     }
     scale = MAJOR if mode == "major" else MINOR
     out["mode"] = mode
