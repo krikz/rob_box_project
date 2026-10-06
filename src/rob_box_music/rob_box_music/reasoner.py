@@ -179,10 +179,11 @@ def validate(payload: Any, genre: str = "club", hype: bool = False,
 def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
     """План сета с поправкой: тема/лад/хуки и дуга энергии; темп, сид, тоника и свинг — прежние."""
     profile = replace(plan.profile, row=ref.row, mode=ref.mode, hook_ids=ref.hook_ids)
+    timbre = kn.THEME_TIMBRE.get(ref.row or "", plan.family)  # строка от LLM — её семья; none — прежняя семья сета
     n = max(len(plan.tracks), len(ref.energy))
     tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= len(ref.energy) else plan.track(no)
                    for no in range(1, n + 1))
-    return replace(plan, profile=profile, tracks=tracks)
+    return replace(plan, profile=profile, tracks=tracks, timbre=timbre)
 
 
 def _with_energy(step: TrackPlan, energy: int) -> TrackPlan:

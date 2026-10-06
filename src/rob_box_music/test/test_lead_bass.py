@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -37,7 +38,8 @@ def sets():
         profile = seeded_profile(theme)
         tracks = []
         for seed in SEEDS:
-            plan = seeded_plan(profile, seed, set_id=f"lb{seed}")
+            # семья темы одна на все сиды (темы вне таблицы выбирают её по сиду, #3460 — отдельный тест)
+            plan = replace(seeded_plan(profile, seed, set_id=f"lb{seed}"), timbre=kn.family_of(CLUB, profile.row))
             history: list = []
             for no in range(1, TRACKS + 1):
                 track = compose(plan, no, history=history)
@@ -66,7 +68,7 @@ def test_every_theme_gets_four_leads_and_both_bass_figures(sets):
         figures = {t.history_key.bass_figure for t in tracks}
         assert len(leads) >= 4 and leads <= set(family["lead"]), (theme, leads)
         assert basses == set(family["bass"]) and len(basses) >= 2, (theme, basses)
-        assert figures == set(mix.bass_figures(CLUB, seeded_profile(theme).row)) | {"broken"}, (theme, figures)
+        assert figures == set(mix.bass_figures(CLUB, kn.family_of(CLUB, seeded_profile(theme).row))) | {"broken"}, (theme, figures)
         basses_all |= basses
     assert len(basses_all) >= 3, basses_all
 

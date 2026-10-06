@@ -54,6 +54,7 @@ class SetPlan:
     swing: float  # доля восьмой, на которую опаздывают нечётные 16-е хэтов
     tracks: Tuple[TrackPlan, ...]  # первые треки; дальше — :meth:`track`
     genre: str = kn.DEFAULT_GENRE  # жанровое окно клуба сета (``Style.genre_windows``), не меняется внутри сета
+    timbre: str = ""  # семья тембров сета (ключ ``Style.timbres``); пусто — по строке темы (:attr:`family`)
 
     def track(self, no: int) -> TrackPlan:
         """План трека ``no`` (с 1): из ``tracks`` (поправка LLM, PR-10), за их пределами — волна: сет открытый."""
@@ -62,6 +63,11 @@ class SetPlan:
     def root(self, no: int) -> int:
         """Тоника трека ``no``, pitch class 0..11."""
         return (self.profile.root + self.track(no).root_shift) % 12
+
+    @property
+    def family(self) -> str:
+        """Семья тембров сета: выбранная планом (:func:`pick_timbre`) или, если её нет, по строке темы."""
+        return self.timbre or kn.family_of(kn.STYLES[self.style], self.profile.row)
 
     @property
     def style(self) -> str:
@@ -97,18 +103,36 @@ def set_root(profile: ThemeProfile, seed: int, history: Sequence[Mapping] = ()) 
     return kn.ROOTS.index(weighted_pick(options, recent, random.Random(f"root:{seed}:{profile.theme}")))
 
 
-def recent_genres(history: Sequence[Mapping]) -> list:
-    """Окна прошлых СЕТОВ, свежие первыми: строки истории (свежие первыми) свёрнуты по ``set_id`` (у сета одно окно);
-    строки без окна (записаны до PR-8) пропускаются."""
+def recent_set_values(history: Sequence[Mapping], field: str) -> list:
+    """Значения оси ``field`` прошлых СЕТОВ, свежие первыми: строки истории (свежие первыми) свёрнуты по ``set_id``
+    (у сета одно значение); строки без значения (записаны до появления оси) пропускаются."""
     out: list = []
     last = object()
     for row in history:
-        genre, set_id = row.get("genre"), row.get("set_id")
-        if not genre or (out and set_id == last):
+        value, set_id = row.get(field), row.get("set_id")
+        if not value or (out and set_id == last):
             continue
-        out.append(genre)
+        out.append(value)
         last = set_id
     return out
+
+
+def recent_genres(history: Sequence[Mapping]) -> list:
+    """Окна прошлых СЕТОВ, свежие первыми (:func:`recent_set_values`)."""
+    return recent_set_values(history, "genre")
+
+
+def pick_timbre(style: kn.Style, row: Optional[str], history: Sequence[Mapping], rng: random.Random) -> str:
+    """Семья тембров сета (#3460, A16b). Тема из таблицы — её семья (``knowledge.THEME_TIMBRE``). Тема вне таблицы —
+    сид (``rng`` от сида и темы) со штрафом за семьи прошлых сетов (``weighted_pick``, ось ``timbre``); с прошлым
+    сетом подряд одна семья не повторяется. Раньше такие темы всегда получали ``default_timbre`` (все пять тем
+    случайной серии 06.10 звучали ``warm``)."""
+    if row in kn.THEME_TIMBRE:
+        return kn.THEME_TIMBRE[row]
+    recent = recent_set_values(history, "timbre")
+    families = tuple(style.timbres)
+    options = [f for f in families if not recent or f != recent[0]] or list(families)
+    return weighted_pick(options, recent, rng)
 
 
 def pick_genre(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str:
@@ -184,9 +208,10 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     plans = [track_plan(no) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
     tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1]) for p in plans)
-    return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre)
+    timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{profile.theme}"))
+    return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre)
 
 
 __all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_genre", "pick_kick",
-           "pick_template", "plan_bpm", "plan_kicks", "plan_templates", "recent_genres", "root_shift", "seeded_plan",
+           "pick_template", "pick_timbre", "plan_bpm", "plan_kicks", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
            "set_root", "track_energy", "track_plan"]

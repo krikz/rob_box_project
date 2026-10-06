@@ -156,7 +156,9 @@ def test_levels_come_from_one_table(seed):
     for role, part in track.parts.items():
         unit, exponent = mix._unit(role, part)
         amp = mix.level_amp(role, part)
-        target = mix.target_db(kn.STYLES["club"], role, track.history_key.pad_figure) + track.mix.a9_trim.get(role, 0)
+        # поправка A9 отсчитывается от уровня после потолка синта (``mix._level``): ``min(цель, потолок) + поправка``
+        target = mix._level(kn.STYLES["club"], role, part, track.history_key.pad_figure)
+        target += track.mix.a9_trim.get(role, 0)
         assert part.level_db <= target + 1e-9
         if part.level_db < target - 1e-9:
             assert amp == pytest.approx(kn.MAX_LAYER_AMP)
@@ -185,21 +187,22 @@ def test_same_level_whatever_the_timbre():
                                    "просто вечеринка"])
 def test_timbre_follows_the_theme_and_is_deterministic(theme):
     prof = seeded_profile(theme)
-    family = kn.STYLES["club"].timbres[kn.THEME_TIMBRE.get(prof.row or "", kn.STYLES["club"].default_timbre)]
-    seen = set()
+    seen, families = set(), set()
     for seed in range(8):
         plan = seeded_plan(prof, seed)
+        families.add(plan.family)
+        family = kn.STYLES["club"].timbres[plan.family]  # тема вне таблицы — семья по сиду (#3460)
         track = compose(plan, 1 + seed % 3)
         synths = {r: track.parts[r].synth_or_sample for r in kn.TONAL_ROLES}
         assert all(synths[r] in family[r] for r in synths), (theme, synths)
         assert synths == {r: compose(plan, 1 + seed % 3).parts[r].synth_or_sample for r in kn.TONAL_ROLES}
         seen.add(tuple(sorted(synths.items())))
-    if any(len(v) > 1 for v in family.values()):
+    if any(len(v) > 1 for f in families for v in kn.STYLES["club"].timbres[f].values()):
         assert len(seen) > 1, "сид меняет тембр внутри семьи темы"
     club = kn.STYLES["club"]
     for role in ("bass", "lead"):
-        assert (mix.role_timbre(club, prof.row, role, (), random.Random(5))
-                == mix.role_timbre(club, prof.row, role, (), random.Random(5)))
+        assert (mix.role_timbre(club, kn.family_of(club, prof.row), role, (), random.Random(5))
+                == mix.role_timbre(club, kn.family_of(club, prof.row), role, (), random.Random(5)))
 
 
 def test_timbre_table_is_playable():
@@ -216,7 +219,7 @@ def test_timbre_table_is_playable():
                 assert synth in kn.SYNTH_PALETTE[role] and synth in kn.LANE_DB_AT_UNIT[role], (role, synth)
                 assert traits is None or traits.tail != "held", synth
                 assert role != "pad" or traits is None or traits.tail == "short" or all(
-                    synth not in mix.pad_synths(club, row, figure) for row in kn.THEME_TIMBRE
+                    synth not in mix.pad_synths(club, kn.family_of(club, row), figure) for row in kn.THEME_TIMBRE
                     for figure in club.pad_figures if not kn.PAD_FIGURES[figure].long_tails), synth
 
 

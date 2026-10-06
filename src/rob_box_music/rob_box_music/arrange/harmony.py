@@ -13,6 +13,12 @@ from ..model import Chord, Key, PitchEvent
 
 #: Одна прогрессия — не больше ``PROGRESSION_CAP`` раз за ``PROGRESSION_WINDOW`` треков подряд (ADR-0149 A13).
 PROGRESSION_CAP, PROGRESSION_WINDOW = 3, 10
+#: Сколько скомпонованных, но не сыгранных треков может затесаться в окно (#3460, A13: 4/10 на случайной серии): N+1
+#: компонуется заранее и в ``history`` попадает, а сет остановили/сменили до его старта — в записи его нет, и окно из
+#: 9 прошлых записей по ``history`` покрывает меньше сыгранных треков. По одному на сет, окно из 10 — до трёх сетов.
+PROGRESSION_SKIPPED = 3
+#: Сколько прошлых треков ``history`` видит подбор прогрессии (и сколько хранит ``SetMemory``).
+PROGRESSION_LOOKBACK = PROGRESSION_WINDOW - 1 + PROGRESSION_SKIPPED
 
 
 def progression_name(degrees: Sequence[int]) -> str:
@@ -71,14 +77,14 @@ def fit_progression(style: kn.Style, key: Key, notes: Sequence[PitchEvent], chor
     """Прогрессия из ``style.progressions``, аккорды которой покрывают больше всего звучания хука.
 
     ``notes`` — хук в долях от начала петли, аккорд держится ``chord_beats`` долей. ``recent`` — прогрессии
-    прошлых треков (свежие первыми): сыгранная ``PROGRESSION_CAP`` раз за окно не берётся, при ничьей —
+    прошлых треков (свежие первыми): сыгранная ``PROGRESSION_CAP`` раз за ``PROGRESSION_LOOKBACK`` не берётся, при ничьей —
     выбор сидом со штрафом за недавнее (``diversity.weighted_pick``).
     """
     def score(degrees: Tuple[int, ...]) -> float:
         triads = [set(chord_pcs(style, key, d)) for d in degrees]
         return sum(e.dur_beats for e in notes if e.midi % 12 in triads[int(e.beat // chord_beats) % len(triads)])
 
-    window = list(recent)[:PROGRESSION_WINDOW - 1]
+    window = list(recent)[:PROGRESSION_LOOKBACK]
     pool = style.progressions
     allowed = [d for d in pool if window.count(progression_name(d)) < PROGRESSION_CAP] or list(pool)
     scores = {degrees: score(degrees) for degrees in allowed}
@@ -87,5 +93,5 @@ def fit_progression(style: kn.Style, key: Key, notes: Sequence[PitchEvent], chor
     return top[weighted_pick(list(top), window, rng)]
 
 
-__all__ = ["PROGRESSION_CAP", "PROGRESSION_WINDOW", "chord_pcs", "fit_progression", "pad_chords", "progression_name",
+__all__ = ["PROGRESSION_CAP", "PROGRESSION_LOOKBACK", "PROGRESSION_SKIPPED", "PROGRESSION_WINDOW", "chord_pcs", "fit_progression", "pad_chords", "progression_name",
            "voicings"]

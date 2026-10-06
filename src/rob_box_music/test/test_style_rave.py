@@ -56,7 +56,7 @@ def test_rave_timbres_lead_with_hoover_rave_supersaw_and_every_family_has_acid_t
     assert {"hoover", "rave", "supersawlead"} <= leads and leads <= set(kn.SYNTH_PALETTE["lead"])
     paired = {s for synths in kn.BASS_FIGURE_SYNTHS.values() for s in synths}
     for name, fam in RAVE.timbres.items():
-        assert "tb303" in fam["bass"] and "acid16" in mix.bass_figures(RAVE, None), name
+        assert "tb303" in fam["bass"] and "acid16" in mix.bass_figures(RAVE, kn.family_of(RAVE, None)), name
         assert all(kn.LAYER_BANDS["bass"][s][0] >= 0.9 for s in fam["bass"] if s not in paired), name
         assert all(kn.LAYER_BANDS["lead"][s][0] < 0.05 for s in fam["lead"]), name
         assert all(mix.layer_db(kn.LANE_DB_AT_UNIT["lead"][s], kn.AMP_EXPONENT.get(s, 1.0), kn.MAX_LAYER_AMP)
@@ -71,9 +71,9 @@ def test_rave_set_tempo_kicks_and_synths_come_from_the_rave_tables(theme):
         assert plan.style == "rave" and plan.genre in RAVE.genre_windows
         assert window.bpm[0] <= plan.bpm <= window.bpm[1] and 140 <= plan.bpm <= 160, (seed, plan.genre, plan.bpm)
         assert all(t.kick in window.kick_pool for t in plan.tracks)
-    family = _family(RAVE, theme)
     for seed in range(3):
         plan = _plan(theme, seed)
+        family = RAVE.timbres[plan.family]  # тема вне таблицы — семья по сиду (#3460)
         history: list = []
         for no in (1, 2, 3):
             track = compose(plan, no, history=history)

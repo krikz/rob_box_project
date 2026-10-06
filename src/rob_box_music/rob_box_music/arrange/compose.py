@@ -219,20 +219,20 @@ def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, rng: random
     return lead_part, degrees, pad_register, harmony.pad_chords(style, key, degrees, pad_register)
 
 
-def _pad(style: kn.Style, row: Optional[str], bar_chords: List[Tuple[int, Chord]], key: Key,
+def _pad(style: kn.Style, family: str, bar_chords: List[Tuple[int, Chord]], key: Key,
          register: Tuple[int, int], history: Sequence[Mapping], seed: str) -> Tuple[str, Part]:
     """Рисунок пэда и партия: рисунок и синт семьи под него — со штрафом за недавние, свой ГСЧ сида на ось."""
     figure = weighted_pick(style.pad_figures, recent_values(history, "pad_figure"), random.Random(f"{seed}:pad_figure"))
-    synth = mix.pad_timbre(style, row, figure, recent_values(history, "pad"), random.Random(f"{seed}:pad"))
+    synth = mix.pad_timbre(style, family, figure, recent_values(history, "pad"), random.Random(f"{seed}:pad"))
     return figure, PAD_GENERATORS[figure](style, key, bar_chords, synth, register)
 
 
-def _bass(style: kn.Style, row: Optional[str], bar_chords: List[Tuple[int, Chord]], key: Key,
+def _bass(style: kn.Style, family: str, bar_chords: List[Tuple[int, Chord]], key: Key,
           history: Sequence[Mapping], seed: str) -> Tuple[str, Part]:
     """Рисунок баса и партия: рисунок и синт семьи — со штрафом за недавние, свой ГСЧ сида на ось."""
-    figure = weighted_pick(mix.bass_figures(style, row), recent_values(history, "bass_figure"),
+    figure = weighted_pick(mix.bass_figures(style, family), recent_values(history, "bass_figure"),
                            random.Random(f"{seed}:bass_figure"))
-    synth = weighted_pick(mix.bass_synths(style, row, figure), recent_values(history, "bass"),
+    synth = weighted_pick(mix.bass_synths(style, family, figure), recent_values(history, "bass"),
                           random.Random(f"{seed}:bass"))
     return figure, BASS_GENERATORS[figure](style, key, bar_chords, synth, style.registers["bass"])
 
@@ -260,7 +260,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
     rng = random.Random(f"{plan.seed}:{track_no}")
     seed = f"{plan.seed}:{track_no}"
-    lead_synth = mix.role_timbre(style, profile.row, "lead", recent_values(history, "lead"),
+    lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
     track_hook: Optional[Hook] = None
     for candidate, key in hook_candidates(profile, melodies or {}, rng, history, opening=track_no == 1):
@@ -283,8 +283,8 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     fx = samples.pick(samples.FX_ROLES, key, history, "fx", axis["fx"])
     kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
     drums = _drums(style, form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit, kick)
-    bass_figure, bass_part = _bass(style, profile.row, _bar_chords(spec, "bass", chords), key, history, seed)
-    figure, pad_part = _pad(style, profile.row, _bar_chords(spec, "pad", chords), key, pad_register, history, seed)
+    bass_figure, bass_part = _bass(style, plan.family, _bar_chords(spec, "bass", chords), key, history, seed)
+    figure, pad_part = _pad(style, plan.family, _bar_chords(spec, "pad", chords), key, pad_register, history, seed)
     parts, track_mix = mix.mix_parts(style, {
         **drums, "bass": bass_part, "pad": pad_part, "lead": lead_part,
         "sample": samples.perc_part(style, perc, kit, axis["sample"]),
@@ -298,7 +298,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         energy=step.energy, transition_in=transition(style), transition_out=transition(style),
         history_key=HistoryKey(kit, prog, track_hook.source if track_hook else None, loop, key.root,
                                fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure, template, plan.genre,
-                               plan.style),
+                               plan.style, plan.family),
     )
 
 

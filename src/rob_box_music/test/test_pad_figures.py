@@ -73,11 +73,11 @@ def test_families_have_two_pads_and_every_figure_a_synth():
     """≥ 2 пэда на семью; у каждого рисунка есть синт семьи; синт с хвостом — только в ``held``."""
     assert all(len(family["pad"]) >= 2 for family in CLUB.timbres.values())
     for row, figure in itertools.product((*kn.THEME_TIMBRE, None), CLUB.pad_figures):
-        synths = mix.pad_synths(CLUB, row, figure)
+        synths = mix.pad_synths(CLUB, kn.family_of(CLUB, row), figure)
         assert synths, (row, figure)
         if not kn.PAD_FIGURES[figure].long_tails:
             assert all(mix.sustains_to_sus(s) for s in synths), (row, figure, synths)
-    assert not all(mix.sustains_to_sus(s) for s in mix.pad_synths(CLUB, "slavic", "held")), "warmpad — в held"
+    assert not all(mix.sustains_to_sus(s) for s in mix.pad_synths(CLUB, "warm", "held")), "warmpad — в held"
     for synth in kn.SYNTH_PALETTE["pad"]:
         assert synth in kn.LANE_DB_AT_UNIT["pad"] and synth in kn.LAYER_BANDS["pad"], synth
 

@@ -532,6 +532,12 @@ THEME_TIMBRE: Mapping[str, str] = {"space": "dark", "cyber": "hard", "kids": "br
                                    "winter": "bright"}
 
 
+def family_of(style: "Style", row: Optional[str]) -> str:
+    """Семья тембров темы из таблицы (:data:`THEME_TIMBRE`); строки нет — ``Style.default_timbre``. Темы вне таблицы
+    получают семью по сиду со штрафом за прошлые сеты (``set_plan.pick_timbre``, #3460) — это лишь запасное значение."""
+    return THEME_TIMBRE.get(row or "", style.default_timbre)
+
+
 @dataclass(frozen=True)
 class PadFigure:
     """Рисунок пэда (ADR-0152 §3.2): генератор — ``arrange.compose.PAD_GENERATORS[ключ]``.
@@ -720,7 +726,7 @@ __all__ += [
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
-    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
+    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "family_of", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
     "PAD_ROBOT_DB_UNMEASURED", "A9_MIN_GAIN", "A9_STEP_DB",
     "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BASS_FIGURE_SYNTHS", "BassFigure", "FormSpec",
 ]

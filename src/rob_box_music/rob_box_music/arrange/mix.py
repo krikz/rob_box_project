@@ -17,7 +17,7 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Мастер-шина (PR-7, §3.10).** :func:`set_master` — ``trim`` по энергии трека сета и профиль выравнивателя.
 * **Дуга громкости.** :func:`section_arc` — смещение ``trim`` по секциям (``knowledge.SECTION_TRIM_DB``): build
   поднимается к дропу, брейк проваливается, второй дроп — пик.
-* **Тембры.** Семья тембров стиля по теме (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека со штрафом за
+* **Тембры.** Семья тембров сета (``SetPlan.family``: строка темы — ``knowledge.THEME_TIMBRE``, вне таблицы — сид со штрафом, #3460) → синт роли по сиду трека со штрафом за
   недавние: бас и лид — :func:`role_timbre` (ADR-0152 PR-6), пэд — по рисунку (:func:`pad_timbre`, §3.2).
 * **Рисунок пэда (ADR-0152 PR-5).** ``knowledge.PAD_FIGURES``: ``held`` не под сайдчейном, цель уровня рисунка —
   цель роли + ``level_offset_db`` (громкость как у ``pumped16``).
@@ -125,15 +125,15 @@ def duck_envelope(trigger: Sequence[int], depth: float) -> Tuple[float, ...]:
     return tuple(out)
 
 
-def _family(style: kn.Style, theme_row: Optional[str]) -> Mapping[str, Tuple[str, ...]]:
-    return style.timbres[kn.THEME_TIMBRE.get(theme_row or "", style.default_timbre)]
+def _family(style: kn.Style, family: str) -> Mapping[str, Tuple[str, ...]]:
+    return style.timbres[family]
 
 
-def role_timbre(style: kn.Style, theme_row: Optional[str], role: str, recent: Sequence[Optional[str]],
+def role_timbre(style: kn.Style, family: str, role: str, recent: Sequence[Optional[str]],
                 rng: random.Random) -> str:
     """Синт роли ``role`` (бас, лид) из семьи тембров стиля по теме со штрафом за недавние (``recent`` — свежие
     первыми, ``music_history.<роль>``); ГСЧ — сид трека на ось."""
-    return weighted_pick(_family(style, theme_row)[role], recent, rng)
+    return weighted_pick(_family(style, family)[role], recent, rng)
 
 
 def bass_pair_ok(figure: str, synth: str) -> bool:
@@ -144,14 +144,14 @@ def bass_pair_ok(figure: str, synth: str) -> bool:
     return synth in table[figure] if figure in table else synth not in paired
 
 
-def bass_synths(style: kn.Style, theme_row: Optional[str], figure: str) -> Tuple[str, ...]:
-    """Басы семьи темы, которые играют рисунок ``figure``."""
-    return tuple(s for s in _family(style, theme_row)["bass"] if bass_pair_ok(figure, s))
+def bass_synths(style: kn.Style, family: str, figure: str) -> Tuple[str, ...]:
+    """Басы семьи, которые играют рисунок ``figure``."""
+    return tuple(s for s in _family(style, family)["bass"] if bass_pair_ok(figure, s))
 
 
-def bass_figures(style: kn.Style, theme_row: Optional[str]) -> Tuple[str, ...]:
+def bass_figures(style: kn.Style, family: str) -> Tuple[str, ...]:
     """Рисунки пула стиля, у которых в семье темы есть бас (``acid16`` — только где в семье ``tb303``)."""
-    return tuple(f for f in style.bass_figures if bass_synths(style, theme_row, f))
+    return tuple(f for f in style.bass_figures if bass_synths(style, family, f))
 
 
 def sustains_to_sus(synth: str) -> bool:
@@ -160,16 +160,16 @@ def sustains_to_sus(synth: str) -> bool:
     return traits is None or traits.tail == "short"
 
 
-def pad_synths(style: kn.Style, theme_row: Optional[str], figure: str) -> Tuple[str, ...]:
-    """Пэды семьи темы, которые звучат рисунком ``figure``: синт с хвостом — только где ``long_tails``."""
+def pad_synths(style: kn.Style, family: str, figure: str) -> Tuple[str, ...]:
+    """Пэды семьи, которые звучат рисунком ``figure``: синт с хвостом — только где ``long_tails``."""
     long_tails = kn.PAD_FIGURES[figure].long_tails
-    return tuple(s for s in _family(style, theme_row)["pad"] if long_tails or sustains_to_sus(s))
+    return tuple(s for s in _family(style, family)["pad"] if long_tails or sustains_to_sus(s))
 
 
-def pad_timbre(style: kn.Style, theme_row: Optional[str], figure: str, recent: Sequence[Optional[str]],
+def pad_timbre(style: kn.Style, family: str, figure: str, recent: Sequence[Optional[str]],
                rng: random.Random) -> str:
     """Синт пэда рисунка ``figure`` со штрафом за недавние (``recent`` — свежие первыми)."""
-    return weighted_pick(pad_synths(style, theme_row, figure), recent, rng)
+    return weighted_pick(pad_synths(style, family, figure), recent, rng)
 
 
 def kick_sound(style: kn.Style, name: Optional[str] = None) -> kn.KickSound:
