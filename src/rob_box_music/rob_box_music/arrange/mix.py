@@ -18,7 +18,7 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Дуга громкости.** :func:`section_arc` — смещение ``trim`` по секциям (``knowledge.SECTION_TRIM_DB``): build
   поднимается к дропу, брейк проваливается, второй дроп — пик.
 * **Тембры.** Семья тембров стиля по теме (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека (:func:`timbres`).
-* **Бочка.** Сэмпл стиля из ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`).
+* **Бочка.** Сэмпл из пула стиля ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`), выбор — ``TrackPlan.kick``.
 * **Стерео (PR-9, §3.9).** Ширина ролей — ``Style.stereo`` → ``Mix.stereo``; бочка и бас в центре.
   Ударные — сторона меняется на каждом ударе (:func:`alternate_pan`, перенос ``core/club_stereo.pan_steps``);
   тональная роль с двумя голосами — уровень делится на голоса (:func:`voice_amp`), громкость роли та же.
@@ -112,8 +112,12 @@ def timbres(style: kn.Style, theme_row: Optional[str], rng: random.Random) -> Di
     return {role: rng.choice(family[role]) for role in kn.TONAL_ROLES}
 
 
-def kick_sound(style: kn.Style) -> kn.KickSound:
-    return kn.KICK_SOUNDS[style.kick_sound]
+def kick_sound(style: kn.Style, name: Optional[str] = None) -> kn.KickSound:
+    """Бочка трека: ``name`` из пула стиля (выбор плана, ``TrackPlan.kick``) или первая бочка пула."""
+    name = name or style.kick_pool[0]
+    if name not in style.kick_pool:
+        raise ValueError(f"бочка {name!r} не из пула стиля {style.kick_pool}")
+    return kn.KICK_SOUNDS[name]
 
 
 def look(style: kn.Style, energy: int) -> kn.Look:
