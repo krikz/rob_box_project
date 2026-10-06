@@ -479,8 +479,12 @@ def _with_style(command: MediaCommand, text: str) -> MediaCommand:
 
 
 def _dj_command(text: str) -> MediaCommand:
-    """DJ-команда со стилем (:func:`_with_style`)."""
-    return _with_style(_dj_theme_command(text), text)
+    """DJ-команда со стилем (:func:`_with_style`); заказ сета с темой словами человека — закрыт
+    (:func:`is_spoken_theme_set`)."""
+    command = _dj_theme_command(text)
+    if not (command.closed or command.theme or command.set_theme) and is_spoken_theme_set(text):
+        command = replace(command, closed=True)
+    return _with_style(command, text)
 
 
 def _dj_theme_command(text: str) -> MediaCommand:
@@ -796,6 +800,45 @@ def _named_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
 
 
 # ---------------------------------------------------------------------------
+# Заказ сета, тема которого — слова человека (живой замер 06.10 19:08 UTC)
+# ---------------------------------------------------------------------------
+# «Ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки замути сэт на 30 минут»:
+# STT записал «и нас» вместо «у нас», тема не выделилась, реплика ушла в LLM — load_skill + dj_set, 14 с тишины
+# до первого трека. Просьба одна — «замути сэт», остальное — тема. Тему из слов реплики выделяет dj_set
+# (``engine.theme_grounding.heard_theme`` по скрытому ``heard_text``) — той же функцией, что на пути LLM.
+
+#: Глаголы просьбы: второй такой глагол — вторая просьба («… замути сэт и поставь X»), решает LLM.
+#: «давай» — вступление («давай замути сэт»), не просьба.
+_ORDER_VERBS: FrozenSet[str] = (_SET_VERBS | _PLAY_NAMED_VERBS) - {"давай", "давайте"}
+#: С ними слова реплики — не тема: отрицание, ссылка на контекст, условие (как у названия; «про» — ввод темы),
+#: голос робота.
+_NOT_THEME: FrozenSet[str] = (_NOT_A_TITLE - _THEME_LEADS) | _VOICE_WORDS
+#: Классы слов громкости и стопа: «замути сэт погромче» — не только заказ сета.
+_NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"up", "down", "max", "topic", "stop"})
+
+
+def is_spoken_theme_set(text: str) -> bool:
+    """Реплика — заказ сета и ничего больше: ровно одна просьба, и это «<глагол> сет» («замути сэт», «включи мне
+    сет»); остальные слова — тема (и персона «ты диджей X»). Вопрос, отрицание, ссылка на контекст, громкость/стоп,
+    вторая просьба — ``False``, решает LLM."""
+    if "?" in text:
+        return False
+    words = _words(text)
+    verbs = [i for i, w in enumerate(words) if w in _ORDER_VERBS]
+    if len(verbs) != 1 or any(w in _NOT_THEME or _word_class(w) in _NOT_THEME_CLASSES for w in words):
+        return False
+    after = [w for w in words[verbs[0] + 1:] if w not in _PLAY_NAMED_FILLER]
+    return bool(after) and after[0] in _SET_WORDS
+
+
+def _spoken_set_command(text: str) -> Optional[MediaCommand]:
+    """«ретро Mario Tetris замути сэт» → DJ-сет без темы в команде: тему из слов реплики решает dj_set."""
+    if not is_spoken_theme_set(text):
+        return None
+    return _with_style(MediaCommand(intent=MediaIntent.DJ, closed=True), text)
+
+
+# ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
 
@@ -879,7 +922,8 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
         return now
     theme_words = _theme_words(text)  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
-    return _style_set_command(theme_words) or _named_set_command(theme_words) or _play_named_command(theme_words)
+    return (_style_set_command(theme_words) or _named_set_command(theme_words) or _spoken_set_command(text)
+            or _play_named_command(theme_words))
 
 
 __all__ = [
@@ -893,5 +937,6 @@ __all__ = [
     "extract_user_utterance",
     "is_dj_request",
     "is_music_stop_command",
+    "is_spoken_theme_set",
     "parse_media_command",
 ]

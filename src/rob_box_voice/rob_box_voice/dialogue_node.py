@@ -107,7 +107,7 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
     parse_music_state,
 )
-from rob_box_voice.core.media_plan_run import run_media_plan
+from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
@@ -6110,10 +6110,13 @@ tentative_plan(question, kind, name)
         Issue #3165: успешные тулы и сказанная фраза записываются для
         модели и гуардов (:meth:`_record_media_turn`).
         """
+        # Команда вместо хода LLM — свой ход для скрытых аргументов тулов (тема/длина сета из ЭТОЙ реплики).
+        vars(self).update(command_turn_context(plan, text))
         # ADR-0149 PR-6: фраза об успехе запуска — только по событию ``started``.
         _ok, phrase, done = await run_media_plan(
             plan, functools.partial(self._execute_media_tool_result, executor),
             getattr(self, "_music_events", None), log=self.get_logger().info,
+            begin_turn=getattr(executor, "begin_turn", None),
         )
         self._record_media_turn(plan, text, phrase, done)
         if phrase:
