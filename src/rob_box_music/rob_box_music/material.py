@@ -94,6 +94,13 @@ class ScoreMaterial:
     stats: MaterialStats = field(default_factory=MaterialStats)
 
 
+def license_usable(license: object) -> bool:
+    """Лицензия, с которой материал можно использовать и класть в индекс: не пусто, не ``unknown``, не ``…conflict``.
+    Одно правило на валидатор материала и на ``works.write_score_index`` (ADR-0154 M6)."""
+    lic = license.strip().lower() if isinstance(license, str) else ""
+    return lic not in ("", "unknown", "na", "nan", "none") and "conflict" not in lic
+
+
 def bar_beats(meter: Tuple[int, int]) -> float:
     """Длина такта размера ``meter`` в четвертях."""
     return meter[0] * 4 / meter[1]
@@ -122,8 +129,7 @@ def _check_identity(m: ScoreMaterial) -> None:
     _require(isinstance(m.material_id, str) and bool(_ID_RE.match(m.material_id)), "material_id",
              f"{m.material_id!r} — ожидается 'pdmx:<id>' или 'local:<id>'")
     _require(isinstance(m.title, str) and bool(m.title.strip()), "title", "пустое название")
-    lic = m.license.strip().lower() if isinstance(m.license, str) else ""
-    _require(lic not in ("", "unknown") and "conflict" not in lic, "license",
+    _require(license_usable(m.license), "license",
              f"лицензия {m.license!r} не позволяет использовать материал (ADR-0154 §3.7)")
 
 
@@ -289,5 +295,4 @@ def from_json(text: str) -> ScoreMaterial:
 
 __all__ = ["BPM_RANGE", "CHORD_QUALITIES", "ChordSpan", "MaterialError", "MaterialStats", "PHRASE_RELATIONS",
            "Phrase", "SCHEMA_VERSION", "SECTION_ORIGINS", "ScoreMaterial", "ScoreSection", "bar_beats", "club_beat",
-           "from_dict",
-           "from_json", "to_dict", "to_json", "validate_material"]
+           "from_dict", "from_json", "license_usable", "to_dict", "to_json", "validate_material"]
