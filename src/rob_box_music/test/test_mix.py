@@ -88,11 +88,15 @@ def test_sidechain_is_on_the_bass_and_pad_events_only(seed):
     psr-слой (PR-3d) и луп нарезкой (#3432) — тоже под огибающей (``test_diversity``, ``test_sample_render``)."""
     track = _track(seed)
     by_role = _events(track)
-    assert track.mix.duck_roles == frozenset({"bass", "pad", "sample", "loop"}) & set(track.parts)
+    figure = kn.PAD_FIGURES[track.history_key.pad_figure]  # held — без насоса (ADR-0152 §3.2)
+    ducked = {"bass", "pad", "sample", "loop"} - (set() if figure.ducked else {"pad"})
+    assert track.mix.duck_roles == frozenset(ducked) & set(track.parts)
     assert len(track.mix.duck) == len(track.form.sections)
-    for ev in by_role["pad"]:  # пэд — аккорд на каждой 16-й под огибающей вида своей секции
-        assert ev.amp / ev.gate == pytest.approx(_env(track, ev.beat)[_step(ev.beat)], abs=1e-3)
-        assert ev.sus_beats == 0.25
+    for ev in by_role["pad"]:  # пэд под огибающей вида своей секции (или ровно 1.0 у held)
+        want = _env(track, ev.beat)[_step(ev.beat)] if figure.ducked else 1.0
+        assert ev.amp / ev.gate == pytest.approx(want, abs=1e-3)
+        assert ev.sus_beats == {"pumped16": 0.25, "stabs": 1.0, "held": 8.0}[track.history_key.pad_figure] or (
+            track.history_key.pad_figure == "stabs" and ev.sus_beats == 0.5), ev
     accents = {(p.beat, p.midi): p.accent for p in track.parts["bass"].pitches}
     for ev in by_role["bass"]:
         want = kn.ACCENT_AMPLIFY[accents[(ev.beat, ev.midi)]] * _env(track, ev.beat)[_step(ev.beat)]
@@ -105,7 +109,8 @@ def test_sidechain_is_on_the_bass_and_pad_events_only(seed):
 def test_pad_dips_only_on_the_trigger(seed):
     """Пэд проваливается только на шаге удара триггера (рисунок бочки), между ударами только растёт; там, где
     бочка звучит, провал пэда совпадает с ударом бочки."""
-    track = _track(seed)
+    # провал на 16-х — у pumped16 (stabs и held — ``test_pad_figures``): первый такой трек сета сида
+    track = next(t for t in map(lambda n: _track(seed, n), range(1, 11)) if t.history_key.pad_figure == "pumped16")
     by_role = _events(track)
     kicks = {round(e.beat, 6) for e in by_role["kick"]}
     pad = sorted({(round(e.beat, 6), round(e.amp / e.gate, 3)) for e in by_role["pad"]})
@@ -150,8 +155,9 @@ def test_levels_come_from_one_table(seed):
     for role, part in track.parts.items():
         unit, exponent = mix._unit(role, part)
         amp = mix.level_amp(role, part)
-        assert part.level_db <= kn.STYLES["club"].role_level_db[role]
-        if part.level_db < kn.STYLES["club"].role_level_db[role]:
+        target = mix.target_db(kn.STYLES["club"], role, track.history_key.pad_figure) + track.mix.a9_trim.get(role, 0)
+        assert part.level_db <= target + 1e-9
+        if part.level_db < target - 1e-9:
             assert amp == pytest.approx(kn.MAX_LAYER_AMP)
         assert mix.layer_db(unit, exponent, amp) == pytest.approx(part.level_db, abs=0.01)
         assert track.mix.level_db[role] == part.level_db
@@ -194,8 +200,8 @@ def test_timbre_follows_the_theme_and_is_deterministic(theme):
 
 
 def test_timbre_table_is_playable():
-    """Каждый синт семьи — из палитры роли, с замером громкости и не ``held``; пэд — без фиксированного хвоста
-    (``warmpad`` 1.2 с размазал бы сайдчейн 16-х)."""
+    """Каждый синт семьи — из палитры роли, с замером громкости и не ``held``; пэд с фиксированным хвостом
+    (``warmpad`` 1.2 с размазал бы сайдчейн 16-х) — только в рисунке ``held`` (``mix.pad_synths``, ADR-0152 §3.2)."""
     club = kn.STYLES["club"]
     assert set(kn.THEME_TIMBRE) == set(kn.THEMES)
     assert set(kn.THEME_TIMBRE.values()) | {club.default_timbre} <= set(club.timbres)
@@ -206,7 +212,9 @@ def test_timbre_table_is_playable():
                 traits = kn.traits_of(synth)
                 assert synth in kn.SYNTH_PALETTE[role] and synth in kn.LANE_DB_AT_UNIT[role], (role, synth)
                 assert traits is None or traits.tail != "held", synth
-                assert role != "pad" or traits is None or traits.tail == "short", synth
+                assert role != "pad" or traits is None or traits.tail == "short" or all(
+                    synth not in mix.pad_synths(club, row, figure) for row in kn.THEME_TIMBRE
+                    for figure in club.pad_figures if not kn.PAD_FIGURES[figure].long_tails), synth
 
 
 @pytest.mark.parametrize("seed", SEEDS)

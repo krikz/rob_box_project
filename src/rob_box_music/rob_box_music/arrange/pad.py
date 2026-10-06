@@ -1,23 +1,36 @@
 """Пэд: фигуры аккомпанемента — генераторы ``(style, key, bar_chords, synth, register) -> Part`` (ADR-0153 §2.2).
 
-``pumped16`` — аккорд на каждой 16-й (``sus`` — шаг): сайдчейн-огибающая рендера живёт только на событиях, поэтому
-клубный пэд звучит под ней каждой 16-й (ADR-0149 §3.6, §3.8). Обращения аккордов — ``harmony.pad_chords``.
+Рисунки — ``knowledge.PAD_FIGURES`` (ADR-0152 §3.2), генератор выбирается по ключу из реестра
+``arrange.compose.PAD_GENERATORS``:
+
+* ``pumped16`` — аккорд на каждой 16-й (``sus`` — шаг): сайдчейн-огибающая рендера живёт только на событиях, поэтому
+  пэд под ней звучит каждой 16-й (ADR-0149 §3.6, §3.8).
+* ``held`` — аккорд держится до смены (аккорд петли — 2 такта, ``sus`` 8 долей), без сайдчейна: в ~30 раз меньше
+  событий, синты с собственным хвостом (``warmpad``, ``strangerpulsepad``) звучат как задуманы.
+* ``stabs`` — аккорд на «и» каждой доли под сайдчейном, звучит до следующего «и» (четверть): короче — окно тишины
+  ≥ 50 мс там, где пэд единственный тональный слой (интро и хвост блэнда, A4/I8 ``test_no_silent_window``); отрезок
+  пэда начинается подхватом на первой доле.
+
+Обращения аккордов — ``harmony.pad_chords``; уровень ставит ``arrange.mix``.
 """
 
 from __future__ import annotations
 
-from typing import Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Chord, Key, Part, PitchEvent
 from . import rhythm
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
+#: «И» каждой доли (оффбит-восьмые); стэб звучит до следующего «и».
+STAB_STEPS = (2, 6, 10, 14)
+STAB_SUS_STEPS = 4
 
 
 def pumped16(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
              register: Tuple[int, int]) -> Part:
-    """Аккорд такта на каждой 16-й по тактам формы ``bar_chords`` — (такт, аккорд); уровень ставит ``arrange.mix``."""
+    """Аккорд такта на каждой 16-й по тактам формы ``bar_chords`` — (такт, аккорд)."""
     events = tuple(
         PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, STEP_BEATS, 3)
         for bar, chord in bar_chords for step in range(STEPS_PER_BAR) for m in chord.voicing
@@ -25,4 +38,38 @@ def pumped16(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]],
     return Part("pad", synth, rhythm.grid(range(STEPS_PER_BAR)), events, 0.0, register)
 
 
-__all__ = ["pumped16"]
+def stabs(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+          register: Tuple[int, int]) -> Part:
+    """Аккорд такта на «и» каждой доли, до следующего «и»; в начале отрезка, где пэд звучит, — подхват на первой доле
+    (до «и»), в конце — последний стэб до конца такта: без окна тишины на стыке формы и за её пределы."""
+    bars = {bar for bar, _chord in bar_chords}
+    events = []
+    for bar, chord in bar_chords:
+        hits = [(0, STAB_STEPS[0])] if bar - 1 not in bars else []
+        hits += [(step, min(STAB_SUS_STEPS, STEPS_PER_BAR - step) if bar + 1 not in bars else STAB_SUS_STEPS)
+                 for step in STAB_STEPS]
+        events += [PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, sus * STEP_BEATS, 3)
+                   for step, sus in hits for m in chord.voicing]
+    return Part("pad", synth, rhythm.grid(STAB_STEPS), tuple(events), 0.0, register)
+
+
+def _runs(bar_chords: Sequence[Tuple[int, Chord]]) -> List[Tuple[int, int, Chord]]:
+    """(первый такт, тактов, аккорд): подряд идущие такты с одним аккордом — одна нота."""
+    runs: List[List] = []
+    for bar, chord in bar_chords:
+        if runs and runs[-1][0] + runs[-1][1] == bar and runs[-1][2] == chord:
+            runs[-1][1] += 1
+        else:
+            runs.append([bar, 1, chord])
+    return [(b, n, c) for b, n, c in runs]
+
+
+def held(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+         register: Tuple[int, int]) -> Part:
+    """Аккорд держится, пока он не сменится и пэд звучит (``sus`` = длина отрезка)."""
+    events = tuple(PitchEvent(m, bar * BEATS_PER_BAR, bars * BEATS_PER_BAR, 3)
+                   for bar, bars, chord in _runs(bar_chords) for m in chord.voicing)
+    return Part("pad", synth, rhythm.grid((0,)), events, 0.0, register)
+
+
+__all__ = ["STAB_STEPS", "held", "pumped16", "stabs"]

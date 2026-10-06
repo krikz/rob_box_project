@@ -154,6 +154,10 @@ class Mix:
     fx: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # имя секции → эффекты
     duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
     lpf: Mapping[str, Tuple[Sweep, ...]] = field(default_factory=dict)  # роль → свип по секциям формы
+    #: A9-модель трека (ADR-0152 §4 п.2): поправка уровня роли, дБ (уже в ``level_db``), и доля низа худшего дропа
+    #: после неё в шкале калибровки (``arrange.mix.a9_model``); ``None`` — песня, без модели.
+    a9_trim: Mapping[str, float] = field(default_factory=dict)
+    a9_model: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +179,7 @@ class HistoryKey:
     hook_fingerprint: Optional[str] = None  # отпечаток фрагмента хука/мотива без транспозиции (#3245)
     fx: Optional[str] = None
     perc: Optional[str] = None  # пул psr-слоя через запятую
+    pad_figure: Optional[str] = None  # рисунок пэда (``knowledge.PAD_FIGURES``, ADR-0152 PR-5)
 
 
 @dataclass(frozen=True)

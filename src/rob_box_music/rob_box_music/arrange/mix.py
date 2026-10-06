@@ -17,7 +17,12 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Мастер-шина (PR-7, §3.10).** :func:`set_master` — ``trim`` по энергии трека сета и профиль выравнивателя.
 * **Дуга громкости.** :func:`section_arc` — смещение ``trim`` по секциям (``knowledge.SECTION_TRIM_DB``): build
   поднимается к дропу, брейк проваливается, второй дроп — пик.
-* **Тембры.** Семья тембров стиля по теме (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека (:func:`timbres`).
+* **Тембры.** Семья тембров стиля по теме (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека (:func:`timbres`);
+  пэд — по рисунку и истории (:func:`pad_timbre`, ADR-0152 §3.2).
+* **Рисунок пэда (ADR-0152 PR-5).** ``knowledge.PAD_FIGURES``: ``held`` не под сайдчейном, цель уровня рисунка —
+  цель роли + ``level_offset_db`` (громкость как у ``pumped16``).
+* **A9-модель трека (ADR-0152 §4 п.2).** Доля низа каждого дропа по полосам слоёв (:func:`a9_model`); ниже
+  ``Style.a9_model_low`` — пэд тише, потом бас громче (:func:`a9_trim`), поправка — ``Mix.a9_trim``.
 * **Бочка.** Сэмпл стиля из ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`).
 * **Стерео (PR-9, §3.9).** Ширина ролей — ``Style.stereo`` → ``Mix.stereo``; бочка и бас в центре.
   Ударные — сторона меняется на каждом ударе (:func:`alternate_pan`, перенос ``core/club_stereo.pan_steps``);
@@ -29,9 +34,10 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import replace
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
+from ..diversity import weighted_pick
 from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Duck, Form, Mix, Part, Stereo, Sweep
 
 
@@ -87,10 +93,21 @@ def alternate_pan(hits: Sequence[bool], width: float, first: int = 1) -> List[fl
     return out
 
 
-def _level(style: kn.Style, role: str, part: Part) -> float:
-    """Цель роли стиля, но не громче того, что синт даёт на потолке ``amp``."""
+def _cap(role: str, part: Part) -> float:
+    """Громче не бывает: потолок роли и то, что синт даёт на потолке ``amp``."""
     unit, exponent = _unit(role, part)
-    return round(min(style.role_level_db[role], layer_db(unit, exponent, kn.MAX_LAYER_AMP)), 2)
+    return min(kn.role_ceiling(role), layer_db(unit, exponent, kn.MAX_LAYER_AMP))
+
+
+def target_db(style: kn.Style, role: str, pad_figure: Optional[str] = None) -> float:
+    """Цель уровня роли: ``Style.role_level_db``, у пэда — + ``level_offset_db`` рисунка (до поправки A9)."""
+    offset = kn.PAD_FIGURES[pad_figure].level_offset_db if role == "pad" and pad_figure else 0.0
+    return style.role_level_db[role] + offset
+
+
+def _level(style: kn.Style, role: str, part: Part, pad_figure: Optional[str]) -> float:
+    """Цель роли (:func:`target_db`), но не громче :func:`_cap`."""
+    return round(min(target_db(style, role, pad_figure), _cap(role, part)), 2)
 
 
 def duck_envelope(trigger: Sequence[int], depth: float) -> Tuple[float, ...]:
@@ -106,10 +123,32 @@ def duck_envelope(trigger: Sequence[int], depth: float) -> Tuple[float, ...]:
     return tuple(out)
 
 
+def _family(style: kn.Style, theme_row: Optional[str]) -> Mapping[str, Tuple[str, ...]]:
+    return style.timbres[kn.THEME_TIMBRE.get(theme_row or "", style.default_timbre)]
+
+
 def timbres(style: kn.Style, theme_row: Optional[str], rng: random.Random) -> Dict[str, str]:
-    """Синт тональных ролей из семьи тембров стиля по теме; выбор внутри семьи — ``rng`` (сид трека)."""
-    family = style.timbres[kn.THEME_TIMBRE.get(theme_row or "", style.default_timbre)]
-    return {role: rng.choice(family[role]) for role in kn.TONAL_ROLES}
+    """Синт баса и лида из семьи тембров стиля по теме; выбор внутри семьи — ``rng`` (сид трека)."""
+    family = _family(style, theme_row)
+    return {role: rng.choice(family[role]) for role in ("bass", "lead")}
+
+
+def sustains_to_sus(synth: str) -> bool:
+    """Синт звучит ровно ``sus`` — без собственного хвоста (``knowledge.SYNTH_TRAITS``)."""
+    traits = kn.traits_of(synth)
+    return traits is None or traits.tail == "short"
+
+
+def pad_synths(style: kn.Style, theme_row: Optional[str], figure: str) -> Tuple[str, ...]:
+    """Пэды семьи темы, которые звучат рисунком ``figure``: синт с хвостом — только где ``long_tails``."""
+    long_tails = kn.PAD_FIGURES[figure].long_tails
+    return tuple(s for s in _family(style, theme_row)["pad"] if long_tails or sustains_to_sus(s))
+
+
+def pad_timbre(style: kn.Style, theme_row: Optional[str], figure: str, recent: Sequence[Optional[str]],
+               rng: random.Random) -> str:
+    """Синт пэда рисунка ``figure`` со штрафом за недавние (``recent`` — свежие первыми)."""
+    return weighted_pick(pad_synths(style, theme_row, figure), recent, rng)
 
 
 def kick_sound(style: kn.Style) -> kn.KickSound:
@@ -160,20 +199,108 @@ def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...
     return tuple(out)
 
 
-def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form) -> Tuple[Dict[str, Part], Mix]:
-    """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн и свип по видам секций формы.
+def _layer_low(role: str, part: Part) -> float:
+    """Доля низа (< 150 Гц) слоя: бочка — целиком (так снята калибровка #3401; полосы NRT бочки — ``X`` без
+    ``sample=``, на роботе другой звук), тональные — ``knowledge.LAYER_BANDS``, ударные и сэмплы — 0 (замера нет)."""
+    if role == "kick":
+        return 1.0
+    return kn.LAYER_BANDS[role][part.synth_or_sample][0] if role in kn.TONAL_ROLES else 0.0
 
-    Песня (``form.song``, PR-11) — без клубного вида: ни сайдчейна, ни LPF-свипа; энергия куплетов (``SONG_VERSES``)
-    — только состав ролей. ``trim`` у песни — дефолт 0: она играет вне сета (``Program.master`` пуст)."""
-    leveled = {role: replace(part, level_db=_level(style, role, part)) for role, part in parts.items()}
-    ducked = frozenset() if form.song else frozenset(r for r in style.duck_roles if r in leveled)
-    stereo = {r: Stereo(**style.stereo[r]) for r in leveled if r in style.stereo}
+
+def _sounds(style: kn.Style, role: str, section_name: str, roles: frozenset) -> bool:
+    if role in SAMPLE_ROLES:  # FX — один удар на секцию, не в счёт
+        return role != "fx" and section_name in style.layer_sections.get(role, ())
+    return role in roles
+
+
+def low_share(style: kn.Style, parts: Mapping[str, Part], form: Form, i: int, duck: Duck, ducked: frozenset,
+              pad_offset_db: float) -> float:
+    """Доля низа секции ``i`` в мощности модели: роль звучит всю секцию на ``level_db``, под сайдчейном — × средняя
+    мощность огибающей, бочка вида build — по числу ударов; пэд — без прибавки рисунка (шкала ``pumped16``)."""
+    sec = form.sections[i]
+    env = duck_envelope(duck.trigger, duck.depth)
+    duck_power = sum(g * g for g in env) / len(env)
+    low = total = 0.0
+    for role, part in parts.items():
+        if not _sounds(style, role, sec.name, sec.roles):
+            continue
+        power = 10.0 ** ((part.level_db - (pad_offset_db if role == "pad" else 0.0)) / 10.0)
+        power *= duck_power if role in ducked else 1.0
+        power *= look(style, sec.energy).kick.count("X") / 4 if role == "kick" else 1.0
+        total += power
+        low += power * _layer_low(role, part)
+    return low / total if total else 0.0
+
+
+def a9_model(style: kn.Style, parts: Mapping[str, Part], form: Form, duck: Sequence[Duck], ducked: frozenset,
+             pad_offset_db: float) -> float:
+    """Доля низа худшего дропа (секции ``drop*``) — A9 по дропам (ADR-0152 §4 п.1) в шкале калибровки."""
+    shares = [low_share(style, parts, form, i, duck[i], ducked, pad_offset_db)
+              for i, sec in enumerate(form.sections) if sec.name.startswith("drop")]
+    return round(min(shares), 3) if shares else 1.0
+
+
+def _a9_phases(parts: Mapping[str, Part]) -> Iterator[Iterator[Tuple[str, float]]]:
+    """Ступени поправки по фазам: пэд тише до ``A9_PAD_FLOOR_DB``, потом бас громче до ``A9_BASS_BOOST_DB``."""
+    step = kn.A9_STEP_DB
+    if "pad" in parts:
+        yield (("pad", -step * k) for k in range(1, int(-kn.A9_PAD_FLOOR_DB / step) + 1))
+    if "bass" in parts:
+        yield (("bass", step * k) for k in range(1, int(kn.A9_BASS_BOOST_DB / step) + 1))
+
+
+def a9_trim(style: kn.Style, parts: Mapping[str, Part], form: Form, duck: Sequence[Duck], ducked: frozenset,
+            pad_offset_db: float) -> Tuple[Dict[str, Part], Dict[str, float], float]:
+    """Партии с поправкой A9: ступенями до порога ``Style.a9_model_low``. Ступень, которая не поднимает долю низа хотя
+    бы на ``A9_MIN_GAIN`` (бас на потолке ``amp``, середину держит не пэд), не применяется и кончает фазу — пэд не
+    глушится зря; не дотянули — доля честно ниже порога. Возвращает (партии, поправка роли в дБ, доля низа)."""
+    out, share = dict(parts), a9_model(style, parts, form, duck, ducked, pad_offset_db)
+    for phase in _a9_phases(parts):
+        for role, db in phase:
+            if share >= style.a9_model_low:
+                break
+            level = round(min(parts[role].level_db + db, _cap(role, parts[role])), 2)
+            candidate = {**out, role: replace(parts[role], level_db=level)}
+            gained = a9_model(style, candidate, form, duck, ducked, pad_offset_db)
+            if gained - share < kn.A9_MIN_GAIN:
+                break
+            out, share = candidate, gained
+    applied = {r: round(out[r].level_db - parts[r].level_db, 2) for r in ("pad", "bass")
+               if r in parts and out[r].level_db != parts[r].level_db}
+    return out, applied, share
+
+
+def _ducked(style: kn.Style, form: Form, roles: Sequence[str], figure: Optional[kn.PadFigure]) -> frozenset:
+    """Роли под сайдчейном: стиля, что есть в треке; пэд рисунка без насоса (``held``) — нет; песня — никто."""
+    if form.song:
+        return frozenset()
+    return frozenset(r for r in style.duck_roles if r in roles and not (r == "pad" and figure and not figure.ducked))
+
+
+def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
+              pad_figure: Optional[str] = None) -> Tuple[Dict[str, Part], Mix]:
+    """Партии с уровнями ролей и ``Mix`` трека: уровни, ширина ролей, сайдчейн и свип по видам секций формы,
+    рисунок пэда ``pad_figure`` (``knowledge.PAD_FIGURES``) и A9-модель трека (если есть бочка и бас).
+
+    Песня (``form.song``, PR-11) — без клубного вида: ни сайдчейна, ни LPF-свипа, ни A9-модели; энергия куплетов
+    (``SONG_VERSES``) — только состав ролей. ``trim`` у песни — дефолт 0: она играет вне сета (``Program.master``
+    пуст)."""
+    figure = kn.PAD_FIGURES[pad_figure] if pad_figure else None
+    offset = figure.level_offset_db if figure else 0.0
+    leveled = {role: replace(part, level_db=_level(style, role, part, pad_figure)) for role, part in parts.items()}
+    ducked = _ducked(style, form, list(leveled), figure)
     looks = [look(style, sec.energy) for sec in form.sections]
     duck = tuple(Duck(v.duck_depth, kick_steps(v.kick)) for v in looks)
+    trim: Dict[str, float] = {}
+    a9: Optional[float] = None
+    if not form.song and {"kick", "bass"} <= set(leveled):
+        leveled, trim, a9 = a9_trim(style, leveled, form, duck, ducked, offset)
+    stereo = {r: Stereo(**style.stereo[r]) for r in leveled if r in style.stereo}
     mix = Mix({r: p.level_db for r, p in leveled.items()}, stereo, duck if ducked else (), duck_roles=ducked,
-              lpf={} if form.song else lpf_sweeps(style, form, sorted(leveled)))
+              lpf={} if form.song else lpf_sweeps(style, form, sorted(leveled)), a9_trim=trim, a9_model=a9)
     return leveled, mix
 
 
-__all__ = ["alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db", "level_amp", "look",
-           "lpf_sweeps", "mix_parts", "section_arc", "set_master", "timbres", "voice_amp"]
+__all__ = ["a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
+           "level_amp", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "section_arc",
+           "set_master", "sustains_to_sus", "target_db", "timbres", "voice_amp"]

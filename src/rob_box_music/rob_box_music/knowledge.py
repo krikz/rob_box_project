@@ -170,7 +170,7 @@ SYNTH_TRAITS: Mapping[str, SynthTraits] = {
 SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
     "lead": ("pluck", "blip", "arpy", "karp", "marimba", "sitar", "epiano", "brass", "orient", "viola"),
     "bass": ("bass", "retrobass", "dub"),
-    "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad"),
+    "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings"),
 }
 
 #: Рисунок хэтов/клэпа — это сэмпл-плееры ``play``; синт ударных один.
@@ -487,20 +487,61 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
     "break": (-5.0, False), "drop2": (0.0, False), "outro": (-3.0, False), "outro_tail": (-4.0, False),
 }
 
-#: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека. Только
-#: синты с замером громкости (:data:`LANE_DB_AT_UNIT`), из палитры роли и не ``held`` (:data:`SYNTH_TRAITS`).
-#: Пэд звучит 16-ми под сайдчейн, поэтому только пэды, чей хвост равен ``sus``: ``warmpad`` (хвост 1.2 с)
-#: размазал бы огибающую и сложил бы 10 голосов в один. ``space`` убран по записям робота 02.10 (PR-3c):
-#: на нём середина перевешивала низ (0.54–0.60 при низе 0.39–0.43, A9 — низ ≥ 0.5) — громче модели на 4–6 дБ.
+#: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека со штрафом за
+#: недавнее (пэд, ADR-0152 §3.2). Только синты с замером громкости и полос (:data:`LANE_DB_AT_UNIT`,
+#: :data:`LAYER_BANDS`) из палитры роли. Пэд с собственным хвостом (``warmpad`` 1.2 с, ``strangerpulsepad`` 1.6 с,
+#: :data:`SYNTH_TRAITS`) звучит только рисунком, который это допускает (``PadFigure.long_tails`` — ``held``): под
+#: сайдчейном 16-х хвост размазал бы огибающую. ``space`` вернулся (В9 ADR-0152): громче модели на 4–6 дБ он был в
+#: рисунке 16-х — тот же сдвиг, что у ``sinepad`` (+6.3, #3430); долю низа дропа держит A9-модель трека
+#: (``arrange.mix.a9_trim``), а не исключение из палитры. ≥ 2 пэда на семью, у каждого рисунка ≥ 1.
+#: ``mhpad``/``marchstrings`` замерены (#3430), но не в досылке ``CRITICAL_SYNTHS`` — в пул не идут.
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("sinepad",)},
-    "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("sinepad",)},
-    "bright": {"lead": ("pluck", "blip"), "bass": ("bass",), "pad": ("sinepad",)},
-    "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad",)},
+    "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("sinepad", "space", "strangerpulsepad")},
+    "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("sinepad", "strings", "strangerpulsepad")},
+    "bright": {"lead": ("pluck", "blip"), "bass": ("bass",), "pad": ("strings", "ambi", "sinepad")},
+    "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad", "ambi", "warmpad")},
 }
 #: Строка ``THEMES`` → семья тембров стиля; тема не из таблицы — ``Style.default_timbre``.
 THEME_TIMBRE: Mapping[str, str] = {"space": "dark", "cyber": "hard", "kids": "bright", "slavic": "warm",
                                    "winter": "bright"}
+
+
+@dataclass(frozen=True)
+class PadFigure:
+    """Рисунок пэда (ADR-0152 §3.2): генератор — ``arrange.compose.PAD_GENERATORS[ключ]``.
+
+    ``ducked`` — пэд под сайдчейном (``Style.duck_roles``); ``long_tails`` — допускает синты с собственным хвостом;
+    ``level_offset_db`` — прибавка к цели роли, при которой пэд звучит так же громко, как ``pumped16`` на цели:
+    модель громкости 29.09 снята на пэде, держащем аккорд 8 долей, а ``pumped16`` на роботе громче модели на 6.3 дБ
+    (харнесс ``loudness_nrt_v2.py --track 7``, #3430). Той же прибавкой A9-модель (``arrange.mix``) возвращает
+    рисунок в шкалу калибровки 0.62 (снята на ``pumped16``, #3401).
+    """
+
+    ducked: bool
+    long_tails: bool
+    level_offset_db: float
+
+
+#: Рисунки пэда: ``pumped16`` — аккорд на каждой 16-й под сайдчейном (как до PR-5); ``held`` — аккорд держится до
+#: смены (2 такта), без насоса — качают бас и psr; ``stabs`` — аккорд на «и» каждой доли до следующего «и» под
+#: сайдчейном. ``stabs`` +3.0 — ГИПОТЕЗА (4 атаки на такт против 16 у ``pumped16`` и 1 на 2 такта у ``held``; взята
+#: середина — пэд скорее тише, чем громче, доля низа не страдает), не замер: перемерить ``loudness_nrt_v2.py --track``
+#: на треке со ``stabs``.
+PAD_FIGURES: Mapping[str, PadFigure] = {
+    "pumped16": PadFigure(ducked=True, long_tails=False, level_offset_db=0.0),
+    "held": PadFigure(ducked=False, long_tails=True, level_offset_db=6.3),
+    "stabs": PadFigure(ducked=True, long_tails=False, level_offset_db=3.0),
+}
+#: A9-модель трека (ADR-0152 §4 п.2): доля низа каждого дропа в шкале калибровки #3401 (робот = 0.62 модели) —
+#: ниже порога ``Style.a9_model_low`` пэд тише ступенями ``A9_STEP_DB`` до ``A9_PAD_FLOOR_DB`` от своей цели, затем
+#: бас громче до ``A9_BASS_BOOST_DB`` (бас под сайдчейном на роботе тише модели на 6.7 дБ, #3430). Не дотянули —
+#: трек играет, ``Mix.a9_model`` честно ниже порога. Ступень, поднимающая долю меньше ``A9_MIN_GAIN``, не
+#: применяется: у ``retrobass`` (низ 0.59, на потолке ``amp`` −35.3 при цели −32) доля 0.73 не растёт ни от пэда −12,
+#: ни от баса — глушить пэд зря нельзя, это задача палитры басов (ADR-0152 PR-6).
+A9_MIN_GAIN = 0.005
+A9_STEP_DB = 2.0
+A9_PAD_FLOOR_DB = -12.0
+A9_BASS_BOOST_DB = 4.0
 
 
 @dataclass(frozen=True)
@@ -525,6 +566,10 @@ KICK_SOUNDS: Mapping[str, KickSound] = {
 #: Панорама (перенос таблиц ``core/club_stereo``): вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну
 #: колонку»), полуширина и период (доли) треугольного качания пэда v1 (``club_stereo.pad_pan``; в v2 пэд — два голоса).
 PAN_HATS = 0.4
+#: psr-пул DJ_Dave — два голоса на полных L/R, как ``jux`` Strudel (#3424): при выносе 0.4 корреляция голосов с
+#: Хаасом ≈ cos(0.4·π/2) = 0.81, при 1.0 — ≈ 0 (Хаас 15 мс декоррелирует удары); слой на 6 дБ ниже бочки — ширина
+#: возвращается без басов и бочки в стороне.
+PAN_PSR = 1.0
 PAN_PAD_WIDTH = 0.6
 PAD_PAN_BEATS = 32
 
@@ -548,7 +593,7 @@ _CLUB_STEREO: Mapping[str, Mapping[str, float]] = {
     "pad": {"pan": PAD_SPREAD, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS},
     # psr-пул DJ_Dave (PR-3d): два голоса L/R с Хаасом (аналог ``jux``). Смена стороны по ударам под сайдчейном
     # перекосила бы баланс: огибающая громче на нечётных 16-х, а они всегда на одной стороне.
-    "sample": {"pan": PAN_HATS, "haas_ms": PAD_HAAS_MS},
+    "sample": {"pan": PAN_PSR, "haas_ms": PAD_HAAS_MS},
 }  # лида нет: на оси (§3.9)
 
 __all__ += [
@@ -556,7 +601,8 @@ __all__ += [
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
-    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE",
+    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "A9_MIN_GAIN", "A9_STEP_DB",
+    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR",
 ]
 
 
@@ -621,7 +667,8 @@ class Style:
     registers: Mapping[str, Tuple[int, int]]
     timbres: Mapping[str, Mapping[str, Tuple[str, ...]]]
     default_timbre: str
-    # Фигуры: ключи генераторов ролей (первый — фигура стиля; выбор из пула — ADR-0152 PR-5).
+    # Фигуры: ключи генераторов ролей. Пэд — пул :data:`PAD_FIGURES` (выбор по сиду трека с историей, ADR-0152
+    # PR-5); бас и лид — первый ключ (PR-6).
     bass_figures: Tuple[str, ...]
     pad_figures: Tuple[str, ...]
     lead_figures: Tuple[str, ...]
@@ -641,6 +688,8 @@ class Style:
     lpf_roles: Tuple[str, ...]
     lpf_tail_sections: Tuple[str, ...]
     stereo: Mapping[str, Mapping[str, float]]
+    # A9-модель трека (ADR-0152 §4): нижняя граница доли низа каждого дропа в шкале калибровки (``arrange.mix``).
+    a9_model_low: float
 
 
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
@@ -651,11 +700,13 @@ STYLES: Mapping[str, Style] = {
         bpm=(128, 138), swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
         kick_sound="house", looks=_CLUB_LOOKS, kits=_CLUB_KITS,
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
-        bass_figures=("offbeat",), pad_figures=("pumped16",), lead_figures=("motif",),
+        bass_figures=("offbeat",), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
         form=_CLUB_FORM, opening_form=_CLUB_OPENING_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
+        # 0.5 (A9 на роботе) / 0.62 (робот на модель, #3401) — порог ``test_low_share``
+        a9_model_low=0.8,
     ),
 }
 DEFAULT_STYLE = "club"

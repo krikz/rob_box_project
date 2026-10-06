@@ -9,7 +9,7 @@ import pytest
 
 from melodies import MELODIES, profile
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange import rhythm
+from rob_box_music.arrange import mix, rhythm
 from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.mix import level_amp
 from rob_box_music.model import BEATS_PER_BAR
@@ -97,8 +97,10 @@ def test_low_energy_thins_roles_not_levels(seed):
     for track in (low, peak):  # уровень — цель роли (или потолок синта), энергия его не трогает (PR-3c: тембры разные)
         for role, part in track.parts.items():
             capped = level_amp(role, part) == pytest.approx(kn.MAX_LAYER_AMP, rel=1e-3)
-            target = kn.STYLES["club"].role_level_db[role]
-            assert part.level_db == target or (part.level_db < target and capped)
+            # цель роли (пэд — + прибавка рисунка) и поправка A9-модели трека (ADR-0152 PR-5)
+            target = mix.target_db(kn.STYLES["club"], role, track.history_key.pad_figure)
+            target += track.mix.a9_trim.get(role, 0)
+            assert part.level_db == pytest.approx(target, abs=0.011) or (part.level_db < target and capped)
 
 
 @pytest.mark.parametrize("seed", SEEDS)
