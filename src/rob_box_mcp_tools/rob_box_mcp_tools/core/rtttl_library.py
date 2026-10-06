@@ -889,21 +889,20 @@ class RtttlLibrary:
         на каждый — тот же путь, что реальный поиск по имени, поэтому
         совпадение честное (не текстовое сравнение канонического запроса с
         ``melody_key``, оно решает то же самое, что ``compose_music`` увидел
-        бы при заказе этой фразой). Результат кэшируется — эта запись не
-        меняется между вызовами внутри процесса.
+        бы при заказе этой фразой). Обратная таблица «запись → фраза» строится один раз на процесс (по одному
+        :meth:`get` на алиас, первый алиас побеждает — как прежний перебор): раньше каждый ключ перебирал все
+        алиасы заново, и названия 30 хуков сета на Pi не успевали к ``started`` трека 1 (живой прогон 06.10).
         """
         if not melody_key:
             return None
-        if melody_key in self._ru_alias_cache:
-            return self._ru_alias_cache[melody_key]
-        found: Optional[str] = None
-        for canonical, phrase in _ALIAS_CANONICAL_TO_RU_PHRASE.items():
-            rec = self.get(canonical)
-            if rec is not None and str(rec.get("name") or "") == melody_key:
-                found = phrase
-                break
-        self._ru_alias_cache[melody_key] = found
-        return found
+        if not self._ru_alias_cache:
+            for canonical, phrase in _ALIAS_CANONICAL_TO_RU_PHRASE.items():
+                rec = self.get(canonical)
+                name = str((rec or {}).get("name") or "")
+                if name:
+                    self._ru_alias_cache.setdefault(name, phrase)
+            self._ru_alias_cache.setdefault("", None)  # таблица построена (даже пустая)
+        return self._ru_alias_cache.get(melody_key)
 
     def search(self, query: str, limit: int = 20, include_rtttl: bool = False) -> List[Dict[str, Any]]:
         """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.

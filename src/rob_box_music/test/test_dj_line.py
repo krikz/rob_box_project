@@ -117,7 +117,26 @@ def test_now_playing_text_is_built_from_facts():
 
 
 def test_when_text_answers_only_from_facts():
-    assert dl.when_text(SET, "контру") == "«Контра» по плану через 2 трека."
+    assert dl.when_text(SET, "контру") == "«Контра» по плану через 2 трека — трек 4."
     assert dl.when_text(SET, "марио").startswith("«Марио» в библиотеке мелодий не нашлось")
     assert dl.when_text(SET, "тетрис").startswith("«Тетрис» играет прямо сейчас — трек 2 из 4")
     assert dl.when_text(SET, "зельда") is None
+
+
+def test_when_text_on_last_track_of_two_track_set():
+    last = {"theme": "Марио, Тетрис", "track_no": 2, "tracks": 2, "melody": "Марио Ворлд",
+            "played": [[1, "Тетрис"]], "next_melodies": [], "not_found": []}
+    expected = "«Тетрис» уже был — трек 1. «Тетрис» в этом сете больше не будет по плану — это последний трек сета."
+    assert dl.when_text(last, "тетрис") == expected
+    assert dl.when_text(last, "марио").startswith("«Марио Ворлд» играет прямо сейчас — трек 2 из 2")
+    assert dl.now_playing_text(last) == "Сейчас трек 2 из 2: «Марио Ворлд». Это последний трек сета."
+
+
+def test_when_text_next_only_when_next_track_is_composed_with_it():
+    first = {"theme": "Марио, Тетрис", "track_no": 1, "tracks": 2, "melody": "Тетрис", "played": [],
+             "next_melodies": ["Марио Ворлд"], "next_known": False}
+    assert dl.when_text(first, "марио") == "«Марио Ворлд» по плану через 1 трек — трек 2."
+    assert dl.when_text({**first, "next_known": True}, "марио") == "«Марио Ворлд» будет следующим — трек 2."
+    # тема названа, а в оставшихся треках этого нет — «больше не будет», не выдумка
+    assert dl.when_text({**first, "next_melodies": []}, "марио") == ("«Марио» в этом сете больше не будет по плану — "
+                                                                     "до конца сета 1 трек.")

@@ -84,12 +84,13 @@ def test_llm_failure_or_lie_falls_back_to_template_with_same_facts(outcome):
     assert any("line_outcome=" in m and "line_outcome=ok" not in m for _l, m in log.lines)
 
 
-def test_without_llm_every_track_still_gets_a_template_line():
+def test_without_llm_every_transition_still_gets_a_template_line():
     lines, said = _lines(ask=None)
-    for no, hook in ((1, "supermar"), (2, "tetris_2"), (3, None)):
+    for no, hook in ((1, "supermar"), (2, "tetris_2"), (3, "supermar"), (4, None)):
         lines.prepare(f"h:0{no}:A:x", no, PLAN, hook)
         lines.on_started(f"h:0{no}:A:x")
-    assert len(said) == 3 and "Super Mario Bros" in said[0] and "Тетрис" in said[1]
+    # трек 1 — без реплики: старт сета озвучивает фраза запуска (06.10: две реплики за 6 с)
+    assert len(said) == 3 and "Тетрис" in said[0] and "Super Mario Bros" in said[1]
     assert len(set(said)) == 3
 
 
@@ -114,8 +115,8 @@ def test_speak_failure_does_not_escape():
     log = Log()
     lines = TransitionLines(lambda _t: (_ for _ in ()).throw(RuntimeError("tts")), titles=_titles,
                             logger=log, spawn=lambda fn: fn(), grace_s=0.01)
-    lines.prepare("h:01", 1, PLAN, None)
-    lines.on_started("h:01")
+    lines.prepare("h:02", 2, PLAN, None)
+    lines.on_started("h:02")
     assert any("не озвучена" in m for m in log.warnings())
 
 
@@ -133,9 +134,9 @@ def test_reasoner_ask_shares_breaker_and_is_off_when_disabled():
 def test_plan_box_hands_composed_track_to_lines():
     lines, said = _lines()
     box = SetPlanBox(PLAN, lambda ids: {}, lines=lines, logger=Log())
-    track = SimpleNamespace(track_id="h:01:A:x", hook=SimpleNamespace(source="tetris_2"))
-    box.compose_mark(track, 1)
-    assert "dj_line=on" in box.on_started("h:01:A:x") and "Тетрис" in said[0]
+    track = SimpleNamespace(track_id="h:02:A:x", hook=SimpleNamespace(source="tetris_2"))
+    box.compose_mark(track, 2)
+    assert "dj_line=on" in box.on_started("h:02:A:x") and "Тетрис" in said[0]
 
 
 def test_dj_set_speaks_on_every_started_and_never_stops_music():
@@ -146,16 +147,16 @@ def test_dj_set_speaks_on_every_started_and_never_stops_music():
                      reasoner=SetReasoner(enabled=False), speak=said.append, titles=_titles)
     assert tool.execute(action="start", theme="космос").success
     rig.clock.run_until(rig.clock.beat + 2)
-    _wait(lambda: len(said) == 1)
     first = _started(rig)[0]
     for k in (1, 2):
         _wait(lambda: len([e for e in rig.events if e["event"] == "queued"]) == k)
         rig.clock.run_until(first["start_beat"] + k * first["form_beats"] + 1)
-    _wait(lambda: len(said) == 3)
-    assert len(_started(rig)) == 3 and len(said) == 3  # одна реплика на каждый трек, включая первый
+    _wait(lambda: len(said) == 2)
+    # одна реплика на каждый переход; старт сета (трек 1) озвучивает фраза запуска, а не вторая реплика
+    assert len(_started(rig)) == 3 and len(said) == 2
     assert not [e for e in rig.events if e["event"] in ("stopped", "finished", "rejected")]
     assert rig.owner.is_playing()  # реплика не ставит музыку на паузу и не глушит её
-    assert "трек 1/" in _spoken_log(rig.log)[0]
+    assert "трек 2/" in _spoken_log(rig.log)[0] and "трек 3/" in _spoken_log(rig.log)[1]
 
 
 def test_dj_set_lines_off_by_parameter():
@@ -223,3 +224,68 @@ def test_dj_set_status_message_is_built_from_facts():
     assert status["active"] and status["melody"] == ""  # мелодий нет — мотив, не выдумка
     assert "свой мотив диджея" in status["message"] and "Не нашлось в библиотеке: «Марио»" in status["message"]
     assert json.loads(rig.states[-1])["dj"]["not_found"] == ["Марио"]  # те же факты — в снимке для <music_state>
+
+
+# ---------------------------------------------------------------------------
+# Живой прогон 06.10, сет на 2 трека «Марио, Тетрис»: трек 1 без фактов, «Тетрис будет следующим» на последнем
+# ---------------------------------------------------------------------------
+
+TWO = seeded_plan(replace(seeded_profile("Марио, Тетрис"), hook_ids=("tetris_2", "supermar"),
+                          theme_hooks=("tetris_2", "supermar")), 1, n_tracks=2, set_id="t")
+
+
+def _two_track_set():
+    published = []
+    lines = TransitionLines(lambda _t: None, titles=_titles, publish=lambda t, f: published.append((t, dict(f))),
+                            fold=latin_fold, logger=Log(), spawn=lambda fn: fn(), grace_s=0.01)
+    return lines, published
+
+
+def test_first_track_of_set_has_the_same_facts_as_queued_tracks():
+    lines, published = _two_track_set()
+    lines.prepare("t:01:A:x", 1, TWO, "tetris_2")  # трек 1 — через play(), не через очередь
+    assert lines.on_started("t:01:A:x") == "dj_line=start_phrase"  # одна фраза на старт — фраза запуска
+    facts = published[-1][1]
+    assert (facts["melody"], facts["track_no"], facts["tracks"]) == ("Тетрис", 1, 2)
+    assert facts["next_melodies"] == ["Super Mario Bros"] and facts["played"] == []
+    assert dl.now_playing_text(facts) == "Сейчас трек 1 из 2: «Тетрис». Дальше по плану: «Super Mario Bros»."
+
+
+def test_facts_not_ready_claim_no_melody():
+    lines = TransitionLines(None, titles=_titles, logger=Log(), spawn=lambda fn: None, grace_s=0.01)
+    lines.prepare("t:01:A:x", 1, TWO, "tetris_2")  # фон не запущен — фактов нет
+    import rob_box_mcp_tools.engine.dj_lines as mod
+    old, mod.KNOWN_WAIT_S = mod.KNOWN_WAIT_S, 0.01
+    try:
+        lines._say("t:01:A:x", lines._entries["t:01:A:x"])
+    finally:
+        mod.KNOWN_WAIT_S = old
+    assert "melody" not in lines.now()
+    assert dl.now_playing_text(lines.now()) == "Сейчас трек 1 из 2."  # не «свой мотив»: это было бы выдумкой
+
+
+def _ask_on_last_track():
+    lines, published = _two_track_set()
+    lines.prepare("t:01:A:x", 1, TWO, "tetris_2")
+    lines.on_started("t:01:A:x")
+    on_first = dict(lines.now())
+    lines.prepare("t:02:B:x", 2, TWO, "supermar")  # N+1 скомпонован, пока играет трек 1
+    on_first_queued = dict(lines.now())
+    lines.on_started("t:02:B:x")
+    return on_first, on_first_queued, lines.now()
+
+
+def test_when_questions_on_first_and_last_track_of_two_track_set():
+    on_first, on_first_queued, on_last = _ask_on_last_track()
+    fold = latin_fold
+    # трек 1: Тетрис играет, Марио — следующий, но «следующим» только когда трек 2 уже скомпонован с ним
+    assert dl.when_text(on_first, "тетрис", fold).startswith("«Тетрис» играет прямо сейчас — трек 1 из 2")
+    assert dl.when_text(on_first, "марио", fold) == "«Super Mario Bros» по плану через 1 трек — трек 2."
+    assert dl.when_text(on_first_queued, "марио", fold) == "«Super Mario Bros» будет следующим — трек 2."
+    # трек 2 из 2: Марио играет, Тетрис уже был, дальше ничего
+    assert on_last["played"] == [[1, "Тетрис"]] and on_last["next_melodies"] == []
+    assert dl.when_text(on_last, "марио", fold).startswith("«Super Mario Bros» играет прямо сейчас — трек 2 из 2")
+    expected = "«Тетрис» уже был — трек 1. «Тетрис» в этом сете больше не будет по плану — это последний трек сета."
+    assert dl.when_text(on_last, "тетрис", fold) == expected
+    assert "следующ" not in dl.when_text(on_last, "тетрис", fold)
+    assert dl.now_playing_text(on_last) == "Сейчас трек 2 из 2: «Super Mario Bros». Это последний трек сета."
