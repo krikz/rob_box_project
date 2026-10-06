@@ -230,6 +230,7 @@ from rob_box_voice.core.self_intro import (
     extract_self_intro_name,
     same_person_name,
 )
+from rob_box_voice.core.set_length_words import heard_set_length
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
     split_into_chunks,
@@ -1905,6 +1906,9 @@ class DialogueNode(Node):
                 getattr(self, "_turn_intro_registered", False)
             ),
             "known_speaker_name": self._confident_speaker_name(uid),
+            # 06.10: длина сета из слов человека («замути сэт на 30 минут») —
+            # решает грамматика, а не LLM: dj_set без tracks брал 10.
+            "heard_tracks": getattr(self, "_turn_set_tracks", None),
         }
 
     def _confident_speaker_name(
@@ -4521,6 +4525,7 @@ tentative_plan(question, kind, name)
         # _prepare_user_input_context (_note_self_intro).
         self._turn_self_intro = None
         self._turn_intro_registered = False
+        self._turn_set_tracks = None
         self._run_cancelled = False
         # Issue #992 Bug D — reset the babble-retry budget only at the
         # TOP of a *user-initiated* turn. When ``is_babble_retry=True``
@@ -5891,6 +5896,9 @@ tentative_plan(question, kind, name)
 
         Возвращает ``(user_input, dynamic_system)``.
         """
+        # 06.10: число треков/минут сета из СЫРОЙ реплики -- скрытый
+        # аргумент dj_set (llm_adapter.TURN_CONTEXT_ARGS).
+        self._turn_set_tracks = heard_set_length(user_input)
         if from_tg:
             user_input = f"[TG] {user_input}"
         elif self._speaker_id_enabled:

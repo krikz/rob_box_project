@@ -532,6 +532,25 @@ def test_dj_set_length_is_decided_by_code_named_default_or_what_was_left():
         "description": "Сколько треков в сете — только если человек назвал число"}
 
 
+def test_dj_set_length_from_the_persons_words_on_the_llm_path(caplog):
+    """06.10: «… замути сэт на 30 минут» закрыла LLM, ``dj_set`` без ``tracks`` → «длина сета: 10 (по умолчанию)».
+    Длину из реплики решает грамматика (``set_length_words``) и везёт скрытый аргумент хода ``heard_tracks``
+    (``llm_adapter.TURN_CONTEXT_ARGS``, test_register_speaker_ros_mcp_utterance): 30 мин / 75 с = 24 трека."""
+    from rob_box_music.knowledge import SET_TRACK_SECONDS
+    from rob_box_voice.core.set_length_words import split_set_length
+
+    phrase = ("Ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки, "
+              "замути сэт на 30 минут")
+    heard, _rest = split_set_length(phrase)
+    assert heard == 30 * 60 // SET_TRACK_SECONDS == 24
+    tool = DjSetTool(None, _rig().owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 7)
+    with caplog.at_level("INFO"):
+        result = tool.execute(action="start", theme="денди", heard_tracks=heard)
+    assert result.data["tracks"] == 24
+    assert "длина сета: 24 (названо)" in caplog.text
+    assert tool.execute(action="start", theme="денди", tracks=5, heard_tracks=12).data["tracks"] == 12
+
+
 def test_dj_set_status_tells_the_set_ended_and_stop_after_the_end_is_idle():
     rig = _rig()
     tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242)

@@ -312,3 +312,17 @@ def test_other_tools_parameters_untouched() -> None:
     assert apply_turn_context(
         "speak_text", args, lambda: {"utterance_id": _TURN_UTTERANCE_ID}
     ) == args
+
+
+def test_dj_set_length_rides_as_hidden_turn_arg() -> None:
+    """06.10: длина сета из реплики («сэт на 30 минут» → 24) едет скрытым
+    аргументом ``heard_tracks``: значение LLM вырезается, у хода без числа —
+    не подставляется."""
+    from rob_box_mcp_tools.llm_adapter import apply_turn_context
+
+    llm = {"action": "start", "theme": "денди", "heard_tracks": 99}
+    assert apply_turn_context("dj_set", llm, lambda: {"heard_tracks": 24}) == {
+        "action": "start", "theme": "денди", "heard_tracks": 24}
+    assert apply_turn_context(
+        "dj_set", llm, lambda: {"heard_tracks": None}
+    ) == {"action": "start", "theme": "денди"}

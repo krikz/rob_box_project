@@ -206,7 +206,10 @@ class DjSetTool(MCPTool):
 
     def execute(self, action: str = "start", theme: Optional[str] = None,
                 persona: Optional[str] = None, style: Optional[str] = None,
-                tracks: Optional[int] = None) -> MCPToolResult:
+                tracks: Optional[int] = None, heard_tracks: Optional[int] = None) -> MCPToolResult:
+        """``heard_tracks`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``): длина сета из слов
+        человека по грамматике (``set_length_words``); есть — она решает, а не ``tracks`` от LLM (ADR-0148)."""
+        tracks = heard_tracks or tracks
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -229,7 +232,7 @@ class DjSetTool(MCPTool):
         except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
             log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
             hits = ThemeHits()
-        profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact)
+        profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact, parts=hits.parts)
         log.info(f"🎛️ [dj_set] тема «{theme}»: style={profile.style} source={profile.source} row={profile.row} "
                  f"хуки={list(profile.hook_ids)}")
         if hits.missing:  # часть темы-перечисления без мелодий: честно в лог, не подмена (I16)

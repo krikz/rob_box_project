@@ -11,9 +11,10 @@ from __future__ import annotations
 import pytest
 
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
-from rob_box_mcp_tools.engine.search import THEME_LIST_HOOKS, round_robin, theme_parts, theme_search
+from rob_box_mcp_tools.engine.search import THEME_LIST_HOOKS, round_robin, terms, theme_parts, theme_search
 from rob_box_mcp_tools.engine.session import plan_source
 from rob_box_mcp_tools.engine.tools_v2 import library_melodies
+from rob_box_music.arrange.compose import compose
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
@@ -69,7 +70,7 @@ def test_megaset_theme_finds_mario_first_and_five_franchises_in_first_five(libra
 def test_chiptune_theme_keeps_found_parts_and_reports_the_rest(library):
     hits = theme_search(library, CHIPTUNE)
     assert {"contra", "supermar_4", "zelda"} <= set(hits.names[:5])
-    assert "Чайковского" in hits.missing
+    assert "tchaikov" in hits.names and hits.missing == ()  # «Чайковского» — через THEME_CONCEPTS (06.10)
     profile = seeded_profile(CHIPTUNE, found=hits.names, exact=hits.exact)
     assert profile.source == "theme" and profile.hook_ids[:len(hits.names)] == hits.names
 
@@ -99,3 +100,73 @@ def test_set_on_a_list_theme_walks_the_found_hooks_without_repeats(library):
     sources = [h.source for h in played if h is not None]
     assert len(sources) == 12 and len(set(sources)) == 12
     assert len({owner[h] for h in sources[:5]}) >= 4 and "Марио" in {owner[h] for h in sources[:5]}
+
+
+# ---------------------------------------------------------------------------
+# Живой сет 06.10 ~14:05: описание стиля не ищется, цифра — целым словом, «Darkwing Duck» — не «Ducktoy»
+# ---------------------------------------------------------------------------
+
+RETRO = "ретро 8-бит: Mario, Tetris, Aladdin, Contra, Darkwing Duck, Commando, Frogger"
+
+
+def test_style_prefix_is_not_a_part_and_digit_is_a_whole_word(library):
+    """«ретро 8-бит» — стиль сета, не мелодия: «8» искало «1812 Overture», «8 Days Of Christmas», «Sk8er Boi»;
+    «Darkwing Duck» по слову «duck» давало «Ducktoy» (Hampenberg) и «Nice Weather For Ducks» — подмена, а не находка."""
+    assert theme_parts(library, RETRO) == ["Mario", "Tetris", "Aladdin", "Contra", "Darkwing Duck", "Commando",
+                                           "Frogger"]
+    assert terms(library, "ретро 8-бит") == [] and terms(library, "8 бит чиптюн для геймеров") == []
+    hits = theme_search(library, RETRO)
+    noise = {"1812over", "1812over_2", "8daysofc", "8daysofc_2", "sk8erboi", "sk8rboi_2", "8mile", "niceweat",
+             "ducktoy", "ducktoyv", "racke_du"}
+    assert not noise & set(hits.names)
+    assert hits.missing == ("Darkwing Duck",)
+    owner = _franchise(library, RETRO)
+    assert [owner[h] for h in hits.names[:4]] == ["Mario", "Tetris", "Aladdin", "Contra"]
+    assert [owner[p[0]] for p in hits.parts] == ["Mario", "Tetris", "Aladdin", "Contra", "Commando", "Frogger"]
+    assert sorted(h for p in hits.parts for h in p) == sorted(hits.names)
+
+
+def test_composers_by_russian_name(library):
+    """«Чайковского» не находилось (транслит ≠ «Tchaikovsky»), «Баха» находило Baha Men."""
+    assert set(theme_search(library, "Чайковского").names) >= {"tchaikov", "swanlake_2"}
+    bach = theme_search(library, "Баха").names
+    assert {"brandenb", "j_s_bach"} <= set(bach) and not any(n.startswith("wholet") for n in bach)
+
+
+# ---------------------------------------------------------------------------
+# Живой сет 06.10 ~13:57: «сет на 2 трека: Марио, Тетрис» → Тетрис и снова Тетрис
+# ---------------------------------------------------------------------------
+
+def _tracks(library, theme: str, history, n: int):
+    hits = theme_search(library, theme)
+    profile = seeded_profile(theme, found=hits.names, exact=hits.exact, parts=hits.parts)
+    plan = seeded_plan(profile, 7, n_tracks=n)
+    melodies = library_melodies(lambda: library)(plan.profile.hook_ids)
+    rows = list(history)
+    out = []
+    for no in range(1, n + 1):
+        hook = compose(plan, no, melodies=melodies, history=rows).hook
+        out.append(hook.source)
+        rows.insert(0, {"melody_name": hook.source})
+    return out
+
+
+def test_named_franchises_alternate_even_if_played_before(library):
+    """Версии Марио и «tetris» сыграны в прошлых сетах (свежие первыми): трек 1 — Марио (первым назван, наименее
+    недавняя версия), трек 2 — Тетрис, а не вторая версия Тетриса."""
+    hits = theme_search(library, "Марио, Тетрис")
+    assert hits.names[0].startswith("supermar")  # «Tetris» по теме целиком (полслова) не встаёт первым
+    history = [{"melody_name": "tetris"}, {"melody_name": "supermar_4"}, {"melody_name": "supermar"}]
+    first, second = _tracks(library, "Марио, Тетрис", history, 2)
+    mario, tetris = hits.parts
+    assert first in mario and first not in {"supermar", "supermar_4"}
+    assert second in tetris and second != "tetris"
+
+
+def test_parts_rotate_before_repeating_a_franchise(library):
+    """Шесть треков по «Марио, Тетрис, Контра»: части по кругу, версия внутри части не повторяется."""
+    played = _tracks(library, "Марио, Тетрис, Контра", [], 6)
+    hits = theme_search(library, "Марио, Тетрис, Контра")
+    part_of = {h: i for i, p in enumerate(hits.parts) for h in p}
+    assert [part_of[h] for h in played] == [0, 1, 2, 0, 1, 2]
+    assert len(set(played)) == 6
