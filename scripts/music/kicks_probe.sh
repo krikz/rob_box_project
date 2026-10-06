@@ -12,10 +12,12 @@
 #   scp -r ros2@10.1.1.21:/tmp/kicks_probe ./kicks_probe && python scripts/music/kicks_probe.py kicks_probe/kick_*.wav
 #
 # Эталон — X:12 (House_GhostFader): уровень остальных меряют против него.
+# Папка символа — SYM (по умолчанию X). Бочки рейва ADR-0153 S1: SYM=A ... 14 15 17 и SYM=W ... 1; файлы
+# kick_<SYM><N>.wav (у X — kick_<N>.wav, как раньше). Эталон X:12 снимать в том же прогоне.
 set -u
 OUT=${1:?каталог результата}; shift
 SAMPLES=${*:?номера сэмплов X:N}
-BPM=${BPM:-130}; SECS=${SECS:-8}
+BPM=${BPM:-130}; SECS=${SECS:-8}; SYM=${SYM:-X}
 VAI="docker exec -i voice-assistant bash -c"
 ROS='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash'
 mkdir -p "$OUT"
@@ -35,15 +37,16 @@ trap restore EXIT
 
 call stop_music '{}' >/dev/null
 for n in $SAMPLES; do
-  code="Clock.bpm = $BPM\nk1 >> play('X...X...X...X...', dur=1/4, sample=$n)"
-  docker exec supercollider sh -c "rm -f /tmp/kick_$n.wav; jack_rec -f /tmp/kick_$n.wav -d $SECS -b 16 jack:out_1 jack:out_2 >/dev/null 2>&1" &
+  code="Clock.bpm = $BPM\nk1 >> play('$SYM...$SYM...$SYM...$SYM...', dur=1/4, sample=$n)"
+  f=kick_${SYM#X}$n
+  docker exec supercollider sh -c "rm -f /tmp/$f.wav; jack_rec -f /tmp/$f.wav -d $SECS -b 16 jack:out_1 jack:out_2 >/dev/null 2>&1" &
   REC=$!
   sleep 1
-  call execute_music_code "{\"code\":\"$code\",\"pattern_name\":\"kick_probe\"}" | tee "$OUT/call_$n.json" | cut -c1-200
+  call execute_music_code "{\"code\":\"$code\",\"pattern_name\":\"kick_probe\"}" | tee "$OUT/call_$f.json" | cut -c1-200
   wait $REC
   call stop_music '{}' >/dev/null
-  docker exec supercollider cat /tmp/kick_$n.wav > "$OUT/kick_$n.wav"
-  docker exec supercollider rm -f /tmp/kick_$n.wav
+  docker exec supercollider cat /tmp/$f.wav > "$OUT/$f.wav"
+  docker exec supercollider rm -f /tmp/$f.wav
   sleep 1
 done
 ls -l "$OUT"

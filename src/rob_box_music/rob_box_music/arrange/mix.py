@@ -55,8 +55,9 @@ def _unit(role: str, part: Part) -> Tuple[float, float]:
         return kn.SAMPLE_CATALOG[part.synth_or_sample].mean_db, 1.0
     option = part.synth_or_sample if role in kn.TONAL_ROLES else kn.DRUM_LOUDNESS_KEY[role]
     db = kn.LANE_DB_AT_UNIT[role][option]
-    if role == "kick":
-        db += next((k.loudness_offset_db for k in kn.KICK_SOUNDS.values() if k.sample == part.sample), 0.0)
+    kick = kn.kick_of(part.play_symbol, part.sample) if role == "kick" else None
+    if kick is not None:
+        db += kn.KICK_SOUNDS[kick].loudness_offset_db
     return db, kn.AMP_EXPONENT.get(option, 1.0)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections import defaultdict
 from dataclasses import replace
@@ -31,7 +32,9 @@ def test_pool_has_measured_kicks_with_a_real_low_end():
     assert 3 <= len(STYLE.kick_pool) <= 4 and set(STYLE.kick_pool) <= set(kn.KICK_SOUNDS)
     assert len({k.sample for k in kn.KICK_SOUNDS.values()}) == len(kn.KICK_SOUNDS), "номера сэмплов разные"
     for name, kick in kn.KICK_SOUNDS.items():
-        assert kick.low >= 0.8 and kick.sub >= 0.6 and kick.sample > 0, name  # sample=0 рендер отбрасывает
+        assert kick.low >= 0.8 and kick.sample > 0, name  # sample=0 рендер отбрасывает
+        # ADR-0153 S1: бочки рейва на роботе не мерены — ``low`` по файлу, ``sub`` неизвестна (не выдумана)
+        assert kick.sub >= 0.6 if kick.measured else math.isnan(kick.sub), name
 
 
 @pytest.mark.parametrize("theme", THEMES)

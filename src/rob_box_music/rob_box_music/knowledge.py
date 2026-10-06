@@ -171,7 +171,9 @@ SYNTH_TRAITS: Mapping[str, SynthTraits] = {
 #: робота (``sclang_robot_2026-09-23.log``: «SynthDef in scsynth»), досылка ``CRITICAL_SYNTHS``.
 SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
     "lead": ("pluck", "blip", "arpy", "karp", "marimba", "sitar", "epiano", "brass", "orient", "viola",
-             "rhpiano", "kalimba", "hoover", "keys", "cs80lead"),
+             "rhpiano", "kalimba", "hoover", "keys", "cs80lead",
+             # ADR-0153 S1: лиды стиля ``rave`` (замер #3430, досылка ``CRITICAL_SYNTHS``).
+             "rave", "supersawlead"),
     "bass": ("bass", "retrobass", "dub", "jbass", "wobblebass", "subbass", "tb303"),
     "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings"),
 }
@@ -640,6 +642,9 @@ class KickSound:
     loudness_offset_db: float  # энергия удара против ``X:0`` по файлу — поправка к модели ``four_on_floor``
     low: float  # доля энергии записи < 250 Гц
     sub: float  # доля энергии записи < 120 Гц
+    #: ``False`` — на роботе не мерено: ``loudness_offset_db`` — оценка, ``low`` — доля < 200 Гц ФАЙЛА (опись
+    #: сэмплов 05.10, ``scan.json``), ``sub`` неизвестна (``nan``). Замер — ``scripts/music/kicks_probe.sh``.
+    measured: bool = True
 
 
 #: Бочки, замеренные 02.10.2026 (Vision Pi, ``jack_rec``). ``X`` без ``sample=`` на роботе звучит щелчком:
@@ -656,7 +661,21 @@ KICK_SOUNDS: Mapping[str, KickSound] = {
     "deep": KickSound("X", 3, "003_Kick_AK_GhostFader.wav", 1.38, 0.999, 0.938),
     "techno": KickSound("X", 30, "030_Kick_KHS_TechnoV1.wav", 0.48, 0.985, 0.803),
     "garage": KickSound("X", 18, "018_Kick_Garage_GhostFader.wav", -0.92, 0.943, 0.806),
+    # ADR-0153 S1, стиль ``rave``: жёсткие бочки из ``a/upper`` (символ ``A``) и ``w/upper`` (``W``) пака
+    # ``0_foxdot_default``. Отбор по описи 05.10 (``scan.json``, файл, не запись): длина 0.4–0.5 с, доля < 200 Гц
+    # ≥ 0.8, > 4 кГц ≈ 0, центроид < 120 Гц; номер файла — индекс в отсортированной папке (как у ``X``), разный у
+    # всех бочек таблицы. НА РОБОТЕ НЕ МЕРЕНЫ (``measured=False``): поправка громкости — оценка «как ``house``»
+    # (+0.98), до ``kicks_probe.sh`` (``SYM=A``/``SYM=W``). Перегруз в файле — пик/RMS могут быть выше оценки.
+    "hardtechno": KickSound("A", 17, "017_Kick_DistHardcord_Jochnhardtechno.wav", 0.98, 0.989, math.nan, False),
+    "hardstyle": KickSound("A", 14, "014_Kick_DistHardstyle_Harddancewarrior.wav", 0.98, 0.962, math.nan, False),
+    "hardcore": KickSound("A", 15, "015_Kick_DistHardcore_NoN.wav", 0.98, 0.819, math.nan, False),
+    "acid": KickSound("W", 1, "001_Kick_KickAcid_Blackie666.wav", 0.98, 0.996, math.nan, False),
 }
+
+
+def kick_of(symbol: str, sample: int) -> Optional[str]:
+    """Имя бочки :data:`KICK_SOUNDS` по символу ``play()`` и номеру файла; нет такой — ``None``."""
+    return next((name for name, k in KICK_SOUNDS.items() if (k.symbol, k.sample) == (symbol, sample)), None)
 
 #: Панорама (перенос таблиц ``core/club_stereo``): вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну
 #: колонку»), полуширина и период (доли) треугольного качания пэда v1 (``club_stereo.pad_pan``; в v2 пэд — два голоса).
@@ -692,7 +711,7 @@ _CLUB_STEREO: Mapping[str, Mapping[str, float]] = {
 }  # лида нет: на оси (§3.9)
 
 __all__ += [
-    "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS",
+    "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS", "kick_of",
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
@@ -851,6 +870,37 @@ class Style:
     a9_model_low: float
 
 
+# ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
+#: Окна рейва 140–160 (ADR-0153 §3): ``rave`` — жёсткая прямая бочка и стэбы, ``acid`` — линия ``tb303`` чаще,
+#: ``hardcore`` — 150–160, перегруженная бочка. Виды секций (рисунок бочки, насос) — клубные: механика та же.
+#: Бас в окне ``acid`` — ``acid16`` весом 2 (повтор в пуле = вес выбора, как у ``pad_figures``).
+_RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "rave": GenreWindow((140, 150), ("hardtechno", "hardstyle", "acid"), _CLUB_LOOKS,
+                        ("offbeat", "rolling8", "acid16"), ("stabs", "stabs", "pumped16", "held")),
+    "acid": GenreWindow((140, 148), ("acid", "hardtechno"), _CLUB_LOOKS,
+                        ("acid16", "acid16", "offbeat"), ("stabs", "pumped16", "held")),
+    "hardcore": GenreWindow((150, 160), ("hardcore", "hardstyle"), _CLUB_LOOKS,
+                            ("offbeat", "rolling8"), ("stabs", "stabs", "pumped16")),
+}
+#: Тембры рейва: те же семьи тем (``THEME_TIMBRE``), что у клуба. Лиды — ``hoover``/``rave``/``supersawlead``
+#: (замер #3430: доля низа < 0.05, на потолке ``amp`` достают цель −50), ``tb303`` с ``acid16`` — в каждой семье
+#: (лицо стиля), низ держат басы с долей низа ≥ 0.9 (``subbass``/``dub``/``jbass``/``wobblebass``) рисунками
+#: ``offbeat``/``rolling8``. Пэды — клубные (стэб-пэд на синтах лида ``rave``/``saw`` требует замера роли ``pad``,
+#: ADR-0152 §3.1 — не сделан). ``supersawlead`` держит хвост (``SYNTH_TRAITS`` «held») — мотив может смазываться,
+#: проверка на слух.
+_RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("hoover", "rave", "cs80lead"), "bass": ("subbass", "dub", "tb303"),
+             "pad": _CLUB_TIMBRES["dark"]["pad"]},
+    "hard": {"lead": ("hoover", "rave", "supersawlead", "arpy"), "bass": ("wobblebass", "jbass", "tb303"),
+             "pad": _CLUB_TIMBRES["hard"]["pad"]},
+    "bright": {"lead": ("supersawlead", "rave", "arpy", "blip"), "bass": ("jbass", "subbass", "tb303"),
+               "pad": _CLUB_TIMBRES["bright"]["pad"]},
+    "warm": {"lead": ("supersawlead", "hoover", "pluck"), "bass": ("dub", "subbass", "tb303"),
+             "pad": _CLUB_TIMBRES["warm"]["pad"]},
+}
+#: Каркасы рейва — клубные без качающихся (``shuffle``/``ride``): рейв ровный (S2 ADR-0153: свинг-ratio ≤ 1.2).
+_RAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "sixteenths", "open")}
+
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
 #: (``test_style_same_tracks``): 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138); свинг
 #: 5–10 % (ADR-0149 §3.4).
@@ -870,8 +920,30 @@ STYLES: Mapping[str, Style] = {
         # при 0.55 ser7 терял ожидаемый LR дропов (0.64 → 0.56), при 0.6 LR ни в одном сете трёх серий не хуже
         a9_model_low=0.6,
     ),
+    # ADR-0153 S1: поля стиля — первое окно (``rave``), как у клуба; всё окно стиля — 140–160 (три окна).
+    # Свинг почти нулевой, лады — минор/фригийский (§3). Микс клубный: уровни ролей, сайдчейн, свип, стерео;
+    # A9-модель — нижняя граница нормы рейва 0.6–0.85 (§2.1, гипотеза до эталона В1) = клубный порог.
+    "rave": Style(
+        bpm=(140, 150), swing=(0.0, 0.03), modes=("minor", "phrygian"),
+        kick_pool=_RAVE_GENRE_WINDOWS["rave"].kick_pool, looks=_CLUB_LOOKS, kits=_RAVE_KITS,
+        registers=_CLUB_REGISTERS, timbres=_RAVE_TIMBRES, default_timbre="hard",
+        bass_figures=_RAVE_GENRE_WINDOWS["rave"].bass_figures, pad_figures=_RAVE_GENRE_WINDOWS["rave"].pad_figures,
+        lead_figures=("motif",),
+        chord_size=3, progressions=_CLUB_PROGRESSIONS,
+        forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS,
+        blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS, genre_windows=_RAVE_GENRE_WINDOWS,
+        role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
+        lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
+        a9_model_low=0.6,
+    ),
 }
 DEFAULT_STYLE = "club"
+#: Слова фразы человека → стиль (ADR-0153 §4.1): основа слова (начало) → ключ :data:`STYLES`. Одна таблица:
+#: грамматика роутера и ``dj_set`` берут стиль отсюда (``theme.match_style``); слов нет — :data:`DEFAULT_STYLE`.
+STYLE_WORDS: Mapping[str, str] = {
+    "рейв": "rave", "рэйв": "rave", "rave": "rave", "эйсид": "rave", "эсид": "rave", "acid": "rave",
+    "хардкор": "rave", "hardcore": "rave",
+}
 #: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
 DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))
 
@@ -884,8 +956,8 @@ def genre_style(style: Style, genre: str = DEFAULT_GENRE) -> Style:
                    bass_figures=window.bass_figures, pad_figures=window.pad_figures)
 
 
-#: Коридоры регистров и роли под сайдчейном для валидатора модели (I13, ``model.validate``): ``Track`` пока не несёт
-#: ключ стиля, поэтому — регистры стиля по умолчанию и объединение ролей сайдчейна всех стилей (ADR-0153 S1+).
+#: Коридоры регистров стиля по умолчанию (умолчание хука ``arrange.hook``) и объединение ролей сайдчейна всех
+#: стилей. Валидатор модели берёт регистры и сайдчейн из стиля трека (``Track.style``, ADR-0153 S1).
 REGISTERS: Mapping[str, Tuple[int, int]] = STYLES[DEFAULT_STYLE].registers
 DUCK_ROLES: Tuple[str, ...] = tuple(dict.fromkeys(r for st in STYLES.values() for r in st.duck_roles))
 
@@ -895,7 +967,7 @@ FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.
 GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.genre_windows)
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
-            "REGISTERS", "STYLES", "Style", "genre_style"]
+            "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

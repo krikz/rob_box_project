@@ -329,6 +329,8 @@ def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
         args["theme"] = theme
     if persona:
         args["persona"] = persona
+    if command.style:  # «рейв на тему X» — стиль решила грамматика (ADR-0153 S1)
+        args["style"] = command.style
     return MediaPlan(
         command=command,
         tool_calls=(MediaToolCall(DJ_SET_TOOL, args),),

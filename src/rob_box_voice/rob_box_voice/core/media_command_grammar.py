@@ -30,6 +30,8 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music.theme import match_style
+
 
 class MediaIntent(str, Enum):
     """Закрытый набор интентов роутера (варианты ``ChoiceQuestion``)."""
@@ -71,6 +73,9 @@ class MediaCommand:
             ``knowledge.MOOD_ENERGY`` или ``""`` (дефолт решает движок).
         themed: для ``PLAY_NAMED`` — человек сказал слово «тема» («давай тему
             терминатора»): посреди DJ-сета это смена темы сета, не мелодия (#3410).
+        style: для ``DJ`` — ключ ``knowledge.STYLES`` из слов стиля («рейв»,
+            «эйсид», «в стиле хардкор», ADR-0153 S1) или ``""`` (решает тул).
+            Слова стиля в тему не попадают.
     """
 
     intent: MediaIntent
@@ -82,6 +87,7 @@ class MediaCommand:
     set_persona: str = ""
     mood: str = ""
     themed: bool = False
+    style: str = ""
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -419,7 +425,46 @@ def _theme_split(text: str) -> Tuple[str, str]:
     return text[:start], " ".join(_words(text[end:]))
 
 
+#: Слова перед названием стиля: «в стиле рейв» (ADR-0153 S1). Вместе со
+#: словом стиля из темы и из «закрытости» реплики выпадают.
+_STYLE_LEAD: FrozenSet[str] = frozenset({"в", "стиле", "стиль", "стилем"})
+
+
+def _is_style_word(word: str) -> bool:
+    return match_style([word]) is not None
+
+
+def _style_words(words: Sequence[str]) -> Tuple[str, List[str]]:
+    """``(стиль, слова без «в стиле рейв»)``; стиля нет — ``("", слова)``."""
+    style = match_style(words) or ""
+    out: List[str] = []
+    for word in words:
+        if style and _is_style_word(word):
+            while out and out[-1] in _STYLE_LEAD:
+                out.pop()
+            continue
+        out.append(word)
+    return style, out
+
+
+def _with_style(command: MediaCommand, text: str) -> MediaCommand:
+    """DJ-команда со стилем из слов реплики; слова стиля убраны из темы."""
+    style, _rest = _style_words(_words(text))
+    if not style:
+        return command
+
+    def unstyled(theme: str) -> str:
+        return " ".join(_style_words(_words(theme))[1]) if theme else theme
+
+    return replace(command, style=style, theme=unstyled(command.theme), set_theme=unstyled(command.set_theme))
+
+
 def _dj_command(text: str) -> MediaCommand:
+    """DJ-команда со стилем (:func:`_with_style`)."""
+    return _with_style(_dj_theme_command(text), text)
+
+
+def _dj_theme_command(text: str) -> MediaCommand:
     """DJ-команда: персона/тема/закрытость + ``set_theme``/``set_persona`` из «… на тему X»."""
     command = _dj_head_command(text)
     if command.theme:
@@ -443,7 +488,7 @@ def _dj_head_command(text: str) -> MediaCommand:
         theme_m.span() if theme_m else None,
         start_m.span() if start_m else None,
     ])
-    closed = all(w in _DJ_FILLER for w in _words(rest))
+    closed = all(w in _DJ_FILLER or w in _STYLE_LEAD or _is_style_word(w) for w in _words(rest))
     return MediaCommand(
         intent=MediaIntent.DJ, closed=closed, persona=persona, theme=theme
     )
@@ -653,6 +698,35 @@ def _request_music_command(tail: Sequence[str]) -> MediaCommand:
     )
 
 
+#: Слова при названии стиля вместо «диджей-сета»: «включи рейв-сет», «поставь
+#: эйсид музыку» (ADR-0153 S1).
+_STYLE_SET_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | frozenset({
+    "сет", "сета", "диджей", "dj", "set", "диджейский", "музыку", "музыка",
+    "музычку", "трек", "треки", "микс", "вечеринку", "вечеринка",
+})
+
+
+def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«включи рейв», «давай эйсид на тему космос», «рейв-сет про котов» → DJ-сет стиля (ADR-0153 S1).
+
+    Голова до ввода темы — слово стиля, глагол заказа и служебные слова, и
+    ничего больше; иначе ``None`` (решают другие правила или LLM). Стиль —
+    один на сет: такая реплика посреди сета начинает новый сет этого стиля.
+    """
+    body = _strip_lead_in(words)
+    if body and body[0] in _PLAY_NAMED_VERBS:
+        body = body[1:]
+    lead = next((i for i, w in enumerate(body) if w in _THEME_LEADS), len(body))
+    head = list(body[:lead])
+    if head and head[-1] == "на":
+        head.pop()
+    style, rest = _style_words(head)
+    if not style or any(w not in _STYLE_SET_FILLER and w not in _STYLE_LEAD for w in rest):
+        return None
+    theme = _style_words(body[lead + 1:])[1]
+    return MediaCommand(intent=MediaIntent.DJ, closed=True, style=style, set_theme=" ".join(theme))
+
+
 # ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
@@ -679,7 +753,7 @@ def parse_media_command(
     volume = _volume_command(words, track_name)
     if volume.intent is not MediaIntent.NONE:
         return volume
-    return _play_named_command(words)
+    return _style_set_command(words) or _play_named_command(words)
 
 
 __all__ = [

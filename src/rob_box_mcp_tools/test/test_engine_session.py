@@ -96,8 +96,8 @@ class Player:
         self.stopped_at.append(self.clock.beat)
 
 
-#: Все синты тембров v2 (``knowledge.TIMBRES``): сервер-заглушка знает их все.
-V2_SYNTHS = frozenset(x for fam in (*kn.STYLES["club"].timbres.values(), kn.SONG_TIMBRES)
+#: Все синты тембров v2 всех стилей (``Style.timbres``): сервер-заглушка знает их все.
+V2_SYNTHS = frozenset(x for fam in (*(f for st in kn.STYLES.values() for f in st.timbres.values()), kn.SONG_TIMBRES)
                       for synths in fam.values() for x in synths)
 
 
@@ -450,6 +450,29 @@ def test_dj_set_tool_starts_and_stops_a_set():
     assert again.success and again.data["was_playing"] is False
     assert tool.execute(action="hotter").success is False
     assert tool.slice == "personality"
+
+
+@pytest.mark.parametrize("theme,style,want", [
+    ("космос", None, "club"), ("космос", "auto", "club"), ("космос", "rave", "rave"),
+    ("рейв про космос", None, "rave"), ("эйсид вечеринка", "auto", "rave")])
+def test_dj_set_style_is_decided_by_code_and_the_set_plays_in_its_window(theme, style, want):
+    """ADR-0153 S1: ``style`` — ключ ``STYLES`` из перечня тула или ``auto``: тогда стиль по словам темы, без них —
+    клуб. Сет играет в окне стиля, результат называет стиль и окно."""
+    rig = _rig()
+    tool = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 77)
+    assert [p.enum for p in tool.parameters if p.name == "style"] == [["auto", *kn.STYLES]]
+    started = tool.execute(action="start", theme=theme, style=style)
+    assert started.success and started.data["ok"] is True and started.data["style"] == want
+    window = kn.STYLES[want].genre_windows[started.data["genre"]]
+    assert window.bpm[0] <= rig.clock.bpm <= window.bpm[1]
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        tool.execute(action="stop")
+
+
+def test_dj_set_rejects_a_style_outside_the_table():
+    tool = DjSetTool(None, _rig().owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 7)
+    result = tool.execute(action="start", theme="космос", style="jazz")
+    assert result.success is False and "style" in result.error
 
 
 def test_library_melodies_take_only_exact_names():

@@ -171,7 +171,8 @@ def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Opti
     if any("clap" in sec.roles for sec in form.sections):
         grids["clap"] = rhythm.form_bars(form.sections, clap)
     kick = mix.kick_sound(style, kick_name)
-    return {r: Part(r, kn.PLAY_SYNTH, g, None, _UNLEVELED, (0, 0), kick.sample if r == "kick" else 0)
+    return {r: Part(r, kn.PLAY_SYNTH, g, None, _UNLEVELED, (0, 0), kick.sample if r == "kick" else 0,
+                    symbol=kick.symbol if r == "kick" else "")
             for r, g in grids.items()}
 
 
@@ -296,7 +297,8 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         mix=track_mix,
         energy=step.energy, transition_in=transition(style), transition_out=transition(style),
         history_key=HistoryKey(kit, prog, track_hook.source if track_hook else None, loop, key.root,
-                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure, template, plan.genre),
+                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure, template, plan.genre,
+                               plan.style),
     )
 
 

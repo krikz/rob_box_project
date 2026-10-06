@@ -57,6 +57,17 @@ def match_row(theme_text: str) -> Optional[str]:
     return best[1]
 
 
+def match_style(words: Sequence[str]) -> Optional[str]:
+    """Стиль по словам фразы (ADR-0153 §4.1, ADR-0148: решает код): первое слово, начинающееся с основы
+    ``knowledge.STYLE_WORDS``; ни одного — ``None`` (вызывающий берёт ``knowledge.DEFAULT_STYLE``)."""
+    for word in words:
+        low = word.lower()
+        style = next((st for stem, st in kn.STYLE_WORDS.items() if low.startswith(stem)), None)
+        if style is not None:
+            return style
+    return None
+
+
 def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = (),
                    exact: bool = False) -> ThemeProfile:
     """Профиль темы за микросекунды, без сети и LLM; ``found`` — мелодии по словам темы (поиск, лучшие первыми).
@@ -74,11 +85,13 @@ def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequen
     else:
         row = kn.THEMES[name]
         lo, hi = row.bpm
-        mode, row_hooks = row.mode, row.hooks
+        # лад строки — если он есть у стиля (у клуба есть все), иначе лад стиля по хешу (рейв: минор/фригийский)
+        mode = row.mode if row.mode in window.modes else window.modes[digest % len(window.modes)]
+        row_hooks = row.hooks
     theme_hooks = tuple(dict.fromkeys((*found, *row_hooks)))
     hooks = theme_hooks or tuple(random.Random(digest).sample(HOOK_POOL, POOL_HOOKS))
     bpm = lo + (digest >> 8) % (hi - lo + 1)
     return ThemeProfile(text, style, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks)
 
 
-__all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "seeded_profile"]
+__all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "seeded_profile"]

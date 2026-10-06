@@ -308,8 +308,8 @@ def _sound_pack_triggers() -> list[str]:
     return triggers
 
 
-def _mood_values() -> list[str]:
-    """``request_music.mood`` enum — ключи ``rob_box_music.knowledge.MOOD_ENERGY`` (одна таблица знания)."""
+def _knowledge() -> Any:
+    """``rob_box_music.knowledge`` из дерева репо (одна таблица знания), без установки пакета."""
     import importlib.util
 
     path = REPO_ROOT / "src" / "rob_box_music" / "rob_box_music" / "knowledge.py"
@@ -319,7 +319,17 @@ def _mood_values() -> list[str]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return sorted(module.MOOD_ENERGY)
+    return module
+
+
+def _mood_values() -> list[str]:
+    """``request_music.mood`` enum — ключи ``rob_box_music.knowledge.MOOD_ENERGY`` (одна таблица знания)."""
+    return sorted(_knowledge().MOOD_ENERGY)
+
+
+def _style_values() -> list[str]:
+    """``dj_set.style`` enum — ``auto`` и ключи ``knowledge.STYLES`` (ADR-0153 S1; ``tools_v2.STYLE_CHOICES``)."""
+    return ["auto", *_knowledge().STYLES]
 
 
 #: ``(tool_name, param_name)`` → resolver, for enums built from runtime data
@@ -327,6 +337,7 @@ def _mood_values() -> list[str]:
 DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("request_music", "mood"): _mood_values,
+    ("dj_set", "style"): _style_values,
 }
 
 
