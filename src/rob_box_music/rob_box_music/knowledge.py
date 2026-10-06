@@ -39,7 +39,12 @@ TONAL_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
 
 #: Коридоры регистров MIDI (I13): бас < пэд < лид ≤ 88 (``harmonize.BASS_MIDI_FLOOR``,
 #: ``rtttl_compose._LEAD_MAX_CEILING``, ADR-0149 §3.5–§3.7).
-_CLUB_REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (50, 70), "lead": (58, 84)}
+#: Пэд: обычный низ — ``registers["pad"][0] + PAD_WIDEN``; коридор пэда на ``PAD_WIDEN`` полутонов ниже. Под низким лидом
+#: (верх пэда = низ лида − 3) окно 50..59 не содержит нот C и C#, и трезвучие с ними негде поставить; окно в 12 нот
+#: (верх − 11) содержит каждый звук лада, поэтому пэд опускается ниже обычного низа только когда иначе не помещается
+#: (``arrange.compose._pad_chords``), остальные треки звучат как раньше. 48 = C3 (бас клуба — до 52).
+PAD_WIDEN = 2
+_CLUB_REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (48, 70), "lead": (58, 84)}
 LEAD_MAX_MIDI = 88
 #: Хук темы в тональности трека (I12): доля длительности нот лида в ладу не ниже порога; хроматика — проходящие.
 HOOK_KEY_FIT_MIN = 0.6
@@ -1062,7 +1067,7 @@ FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.
 GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.genre_windows)
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
-            "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style"]
+            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──
