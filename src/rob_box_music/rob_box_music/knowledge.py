@@ -526,7 +526,7 @@ class PadFigure:
     ``level_offset_db`` — прибавка к цели роли, при которой пэд звучит так же громко, как ``pumped16`` на цели:
     модель громкости 29.09 снята на пэде, держащем аккорд 8 долей, а ``pumped16`` на роботе громче модели на 6.3 дБ
     (харнесс ``loudness_nrt_v2.py --track 7``, #3430). Той же прибавкой A9-модель (``arrange.mix``) возвращает
-    рисунок в шкалу калибровки 0.62 (снята на ``pumped16``, #3401).
+    рисунок в шкалу ``pumped16``, где пэд на роботе громче модели на :data:`PAD_ROBOT_DB`.
     """
 
     ducked: bool
@@ -536,15 +536,25 @@ class PadFigure:
 
 #: Рисунки пэда: ``pumped16`` — аккорд на каждой 16-й под сайдчейном (как до PR-5); ``held`` — аккорд держится до
 #: смены (2 такта), без насоса — качают бас и psr; ``stabs`` — аккорд на «и» каждой доли до следующего «и» под
-#: сайдчейном. ``stabs`` +3.0 — ГИПОТЕЗА (4 атаки на такт против 16 у ``pumped16`` и 1 на 2 такта у ``held``; взята
-#: середина — пэд скорее тише, чем громче, доля низа не страдает), не замер: перемерить ``loudness_nrt_v2.py --track``
-#: на треке со ``stabs``.
+#: сайдчейном. Прибавки — по записи робота 06.10 (серия ser6, #3441: 46 дропов, подгонка низа дропа моделью
+#: :func:`arrange.mix.low_share` с :data:`PAD_ROBOT_DB`): при +6.3 ``held`` был громче ``pumped16`` того же синта на
+#: 2.4 дБ, ``stabs`` при +3.0 (гипотеза PR-5) — на 0.9 дБ. ``held`` опирается на 3 дропа ``ambi`` (у ``warmpad``
+#: другого рисунка нет) — перемерить, когда наберутся.
 PAD_FIGURES: Mapping[str, PadFigure] = {
     "pumped16": PadFigure(ducked=True, long_tails=False, level_offset_db=0.0),
-    "held": PadFigure(ducked=False, long_tails=True, level_offset_db=6.3),
-    "stabs": PadFigure(ducked=True, long_tails=False, level_offset_db=3.0),
+    "held": PadFigure(ducked=False, long_tails=True, level_offset_db=3.9),
+    "stabs": PadFigure(ducked=True, long_tails=False, level_offset_db=2.1),
 }
-#: A9-модель трека (ADR-0152 §4 п.2): доля низа каждого дропа в шкале калибровки #3401 (робот = 0.62 модели) —
+#: На сколько дБ пэд рисунка ``pumped16`` на роботе громче своего ``level_db`` (модель громкости — NRT аккорда на
+#: 8 долей, :data:`LAYER_MEASURED_DB`): подгонка низа 46 дропов серии ser6 06.10 (#3441), остаток σ 0.08 доли.
+#: Сдвиг у синтов разный (``ambi`` на 7 дБ громче ``sinepad``), причина не найдена — замер, не модель. Калибровка
+#: «робот = 0.62 модели» (#3401) снята на одном ``sinepad`` и на ``ambi``/``warmpad`` не переносится: при ней
+#: A9-модель давала 0.81–0.87 всем трекам ser6, а запись — 0.75 ``sinepad`` и 0.33–0.49 ``ambi``/``warmpad``.
+#: Пэд палитры без замера на роботе (``space``, ``strangerpulsepad``, ``strings``) берёт худший замеренный сдвиг
+#: (:data:`PAD_ROBOT_DB_UNMEASURED`): A9-модель скорее приглушит пэд, чем пропустит дроп без низа.
+PAD_ROBOT_DB: Mapping[str, float] = {"sinepad": 8.5, "warmpad": 11.5, "ambi": 15.6}
+PAD_ROBOT_DB_UNMEASURED = max(PAD_ROBOT_DB.values())
+#: A9-модель трека (ADR-0152 §4 п.2): доля низа каждого дропа в шкале робота (пэд — с :data:`PAD_ROBOT_DB`) —
 #: ниже порога ``Style.a9_model_low`` пэд тише ступенями ``A9_STEP_DB`` до ``A9_PAD_FLOOR_DB`` от своей цели, затем
 #: бас громче до ``A9_BASS_BOOST_DB`` (бас под сайдчейном на роботе тише модели на 6.7 дБ, #3430). Не дотянули —
 #: трек играет, ``Mix.a9_model`` честно ниже порога. Ступень, поднимающая долю меньше ``A9_MIN_GAIN``, не
@@ -643,7 +653,8 @@ __all__ += [
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
-    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "A9_MIN_GAIN", "A9_STEP_DB",
+    "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
+    "PAD_ROBOT_DB_UNMEASURED", "A9_MIN_GAIN", "A9_STEP_DB",
     "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BassFigure",
 ]
 
@@ -731,7 +742,7 @@ class Style:
     lpf_roles: Tuple[str, ...]
     lpf_tail_sections: Tuple[str, ...]
     stereo: Mapping[str, Mapping[str, float]]
-    # A9-модель трека (ADR-0152 §4): нижняя граница доли низа каждого дропа в шкале калибровки (``arrange.mix``).
+    # A9-модель трека (ADR-0152 §4): нижняя граница доли низа каждого дропа на роботе (``arrange.mix``).
     a9_model_low: float
 
 
@@ -748,8 +759,8 @@ STYLES: Mapping[str, Style] = {
         form=_CLUB_FORM, opening_form=_CLUB_OPENING_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
-        # 0.5 (A9 на роботе) / 0.62 (робот на модель, #3401) — порог ``test_low_share``
-        a9_model_low=0.8,
+        # A9′ (низ дропа на роботе ≥ 0.5) + запас на остаток модели (σ 0.08 доли на дроп, #3441)
+        a9_model_low=0.55,
     ),
 }
 DEFAULT_STYLE = "club"
