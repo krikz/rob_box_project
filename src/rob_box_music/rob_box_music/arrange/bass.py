@@ -6,6 +6,8 @@
 * ``offbeat`` — 4 ноты на такт в оффбит, тоника/квинта аккорда (ADR-0149 §3.5, research 4.1).
 * ``rolling8`` — 8 нот на такт тоникой, «и» и «а» каждой доли.
 * ``broken`` — 4 ноты мимо шагов ломаной бочки ``breakbeat`` (окно ``breaks``, ADR-0152 PR-8).
+* ``acid16`` — 12 16-х на такт мимо долей с акцентами, октавными прыжками и срезом фильтра на каждую ноту; только
+  ``tb303`` семьи ``hard`` (``knowledge.BASS_FIGURE_SYNTHS``, ADR-0152 PR-9).
 
 Все комплементарны бочке (прямой или ломаной): ни одной ноты на доле, нота кончается к доле (ADR-0149 §3.4).
 """
@@ -49,8 +51,10 @@ def figure_bass(figure: kn.BassFigure, bars: Sequence[Tuple[int, Tuple[int, ...]
     for bar, pcs in bars:
         notes = bar_notes(pcs[0], pcs[2], register, len(steps), figure.fifth_last)
         for i, (step, midi) in enumerate(zip(steps, notes)):
-            accent = 3 if i == 0 else 2
-            out.append(PitchEvent(midi, bar * BEATS_PER_BAR + step * STEP_BEATS, note_beats(steps, i), accent))
+            accent = figure.accents[i] if figure.accents else 3 if i == 0 else 2
+            lifted = midi + 12 if i in figure.lift and midi + 12 <= register[1] else midi
+            lpf = figure.lpf[(bar % 2) * len(steps) + i] if figure.lpf else 0.0
+            out.append(PitchEvent(lifted, bar * BEATS_PER_BAR + step * STEP_BEATS, note_beats(steps, i), accent, lpf))
     return tuple(out)
 
 
@@ -73,6 +77,13 @@ def rolling8(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]],
     return _part("rolling8", style, key, bar_chords, synth, register)
 
 
+def acid16(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+           register: Tuple[int, int]) -> Part:
+    """Кислотная линия ``tb303``: 12 16-х на такт мимо долей, акцент первой 16-й доли, последняя 16-я доли — октавой
+    выше; у каждой ноты свой срез фильтра (``PitchEvent.lpf``), волна в два такта; уровень ставит ``arrange.mix``."""
+    return _part("acid16", style, key, bar_chords, synth, register)
+
+
 def broken(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
            register: Tuple[int, int]) -> Part:
     """Бас в обход ломаной бочки (``breaks``): тоника ×3 + квинта на шагах 1, 6, 9, 14, мимо шагов
@@ -80,4 +91,4 @@ def broken(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], s
     return _part("broken", style, key, bar_chords, synth, register)
 
 
-__all__ = ["bar_notes", "broken", "figure_bass", "note_beats", "offbeat", "rolling8"]
+__all__ = ["acid16", "bar_notes", "broken", "figure_bass", "note_beats", "offbeat", "rolling8"]

@@ -135,6 +135,24 @@ def role_timbre(style: kn.Style, theme_row: Optional[str], role: str, recent: Se
     return weighted_pick(_family(style, theme_row)[role], recent, rng)
 
 
+def bass_pair_ok(figure: str, synth: str) -> bool:
+    """Рисунок баса и синт сочетаются (``knowledge.BASS_FIGURE_SYNTHS``): названное в таблице звучит только вместе —
+    рисунок с перечисленными синтами, синт с рисунками, которые его называют."""
+    table = kn.BASS_FIGURE_SYNTHS
+    paired = {s for synths in table.values() for s in synths}
+    return synth in table[figure] if figure in table else synth not in paired
+
+
+def bass_synths(style: kn.Style, theme_row: Optional[str], figure: str) -> Tuple[str, ...]:
+    """Басы семьи темы, которые играют рисунок ``figure``."""
+    return tuple(s for s in _family(style, theme_row)["bass"] if bass_pair_ok(figure, s))
+
+
+def bass_figures(style: kn.Style, theme_row: Optional[str]) -> Tuple[str, ...]:
+    """Рисунки пула стиля, у которых в семье темы есть бас (``acid16`` — только где в семье ``tb303``)."""
+    return tuple(f for f in style.bass_figures if bass_synths(style, theme_row, f))
+
+
 def sustains_to_sus(synth: str) -> bool:
     """Синт звучит ровно ``sus`` — без собственного хвоста (``knowledge.SYNTH_TRAITS``)."""
     traits = kn.traits_of(synth)
@@ -168,6 +186,11 @@ def look(style: kn.Style, energy: int) -> kn.Look:
 
 def kick_steps(pattern: str) -> Tuple[int, ...]:
     return tuple(i for i, ch in enumerate(pattern) if ch == "X")
+
+
+def _note_lpf(part: Part) -> bool:
+    """Партия со срезом на каждую ноту (``PitchEvent.lpf``, ``acid16``): общий свип секции на ней не нужен."""
+    return any(ev.lpf for ev in part.pitches or ())
 
 
 def lpf_sweeps(style: kn.Style, form: Form, roles: Sequence[str]) -> Dict[str, Tuple[Sweep, ...]]:
@@ -311,10 +334,10 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
         leveled, trim, a9 = a9_trim(style, leveled, form, duck, ducked, offset)
     stereo = {r: Stereo(**style.stereo[r]) for r in leveled if r in style.stereo}
     mix = Mix({r: p.level_db for r, p in leveled.items()}, stereo, duck if ducked else (), duck_roles=ducked,
-              lpf={} if form.song else lpf_sweeps(style, form, sorted(leveled)), a9_trim=trim, a9_model=a9)
+              lpf={} if form.song else lpf_sweeps(style, form, [r for r in sorted(leveled) if not _note_lpf(leveled[r])]), a9_trim=trim, a9_model=a9)
     return leveled, mix
 
 
 __all__ = ["a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
-           "level_amp", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_timbre",
+           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_timbre",
            "section_arc", "set_master", "sustains_to_sus", "target_db", "voice_amp"]

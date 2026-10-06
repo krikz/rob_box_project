@@ -29,7 +29,7 @@ RTTTL-библиотеки (``arrange.hook``); тональность трека
 по сиду со штрафом за недавнее (``music_history.pad_figure``/``pad``); A9-модель трека правит уровни пэда и баса
 (``mix.mix_parts``).
 Лид и бас (ADR-0152 PR-6): синт семьи темы (``Style.timbres``) и рисунок баса (``Style.bass_figures``:
-``offbeat``/``rolling8``) — по сиду со штрафом за недавнее (``music_history.lead``/``bass``/``bass_figure``).
+``offbeat``/``rolling8``/``acid16``; пары рисунок ↔ синт — ``knowledge.BASS_FIGURE_SYNTHS``) — по сиду со штрафом за недавнее (``music_history.lead``/``bass``/``bass_figure``).
 
 Разнообразие (PR-3d, ADR-0149 I17, A12, A13): ``history`` — строки ``music_history`` (свежие первыми). Каркас
 ударных (``Style.kits``) не повторяет прошлый трек; прогрессия — не больше 3 раз за 10 треков; хук-фрагмент
@@ -57,7 +57,7 @@ from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 #: Генераторы ролей по ключу фигуры стиля (``Style.*_figures``, ADR-0153 §2.2). Тональные — ``(style, key,
 #: bar_chords, synth, register) -> Part``; мотив лида без хука — ``(style, key, rng) -> ноты``.
 BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
-    "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken}
+    "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken, "acid16": bass.acid16}
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {"pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
 #: Длина секций с лидом (развитие хука считается от начала каждой).
@@ -229,9 +229,10 @@ def _pad(style: kn.Style, row: Optional[str], bar_chords: List[Tuple[int, Chord]
 def _bass(style: kn.Style, row: Optional[str], bar_chords: List[Tuple[int, Chord]], key: Key,
           history: Sequence[Mapping], seed: str) -> Tuple[str, Part]:
     """Рисунок баса и партия: рисунок и синт семьи — со штрафом за недавние, свой ГСЧ сида на ось."""
-    figure = weighted_pick(style.bass_figures, recent_values(history, "bass_figure"),
+    figure = weighted_pick(mix.bass_figures(style, row), recent_values(history, "bass_figure"),
                            random.Random(f"{seed}:bass_figure"))
-    synth = mix.role_timbre(style, row, "bass", recent_values(history, "bass"), random.Random(f"{seed}:bass"))
+    synth = weighted_pick(mix.bass_synths(style, row, figure), recent_values(history, "bass"),
+                          random.Random(f"{seed}:bass"))
     return figure, BASS_GENERATORS[figure](style, key, bar_chords, synth, style.registers["bass"])
 
 

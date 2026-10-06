@@ -132,7 +132,8 @@ def _combinations():
     for family, figure in itertools.product(CLUB.timbres, CLUB.pad_figures):
         pads = [s for s in CLUB.timbres[family]["pad"] if kn.PAD_FIGURES[figure].long_tails or mix.sustains_to_sus(s)]
         for pad, bass, bass_figure in itertools.product(pads, CLUB.timbres[family]["bass"], CLUB.bass_figures):
-            yield family, figure, pad, bass, bass_figure
+            if mix.bass_pair_ok(bass_figure, bass):  # PR-9: ``tb303`` — только ``acid16`` и только в ``hard``
+                yield family, figure, pad, bass, bass_figure
 
 
 @pytest.fixture(scope="module")
