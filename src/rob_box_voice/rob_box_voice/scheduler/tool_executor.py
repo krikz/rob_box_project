@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 
 from rob_box_llm.provider import ToolCall, ToolResult
 
+from rob_box_voice.core.music_turn import MusicTurn, speech_refusal_content
 from rob_box_voice.core.track_start_guard import TrackStartGuard, refusal_content
 from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, SPEAK_TOOL, TurnSpeechGate
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
@@ -175,15 +176,19 @@ class SchedulerToolExecutor:
         self._current_seg_idx: int = 0
         # Issue #2859 — не больше одного успешного запуска трека за ход.
         self._track_guard = TrackStartGuard()
+        # ADR-0148 (06.10 set98207) — запуски музыки хода и речь о них.
+        self.music_turn = MusicTurn()
 
     def begin_turn(self) -> None:
         """Граница хода LLM (issue #2859).
 
         Вызывается ``AgentCore._run_with_tools`` один раз в начале хода
         (в отличие от :meth:`begin_group`, который зовётся на каждую
-        пачку tool_calls). Снимает лимит «один трек за ход».
+        пачку tool_calls). Снимает лимит «один трек за ход» и забывает
+        запуски музыки прошлого хода (:class:`MusicTurn`).
         """
         self._track_guard.reset()
+        self.music_turn.reset()
 
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
@@ -226,6 +231,11 @@ class SchedulerToolExecutor:
         # a fire-and-forget {"status": "queued"}.
         if call.name == "task_delta":
             return await self._execute_task_delta(call)
+        if call.name == SPEAK_TOOL and not self.music_turn.speech_allowed():
+            # ADR-0148: запуск музыки хода не удался — «запустил» модели нечем
+            # подкрепить; фразу о музыке скажет нода по MusicTurn.phrase().
+            _LOG.warning("music turn: speak_text refused — last music launch failed")
+            return ToolResult(tool_call_id=call.id, content=speech_refusal_content(), is_error=True)
 
         channel = channel_for_tool(call.name)
         if channel is None:
@@ -324,6 +334,10 @@ class SchedulerToolExecutor:
             # ошибка) — ack не будет, речь хода ждать нечего.
             gate.registration_settled()
         guard.record(call.name, is_error=bool(result.is_error))
+        self.music_turn.record(
+            call.name, call.arguments,
+            is_error=bool(result.is_error), content=str(result.content or ""),
+        )
         return result
 
     async def _execute_task_delta(self, call: ToolCall) -> ToolResult:

@@ -134,12 +134,20 @@ def decide_turn_speech(
     return text
 
 
+def final_text_skipped_log(text: str, verbose: bool) -> str:
+    """Issue #988 — строка лога: ``speak_text`` уже прозвучал, финальный текст хода не озвучиваем."""
+    if verbose:
+        return f"🔇 [issue 988] speak_text called in cycle — skipping auto-TTS of final text: {text[:200]!r}"
+    return f"🔇 [issue 988] speak_text called — final text skipped (anti-duplicate): {text[:80]!r}"
+
+
 __all__ = [
     "FIRST_SENTENCE_LIMIT",
     "MUSIC_MAX_CHUNKS",
     "TurnSpeechHold",
     "RETRY_PROMPT_LEAK_MARKER",
     "decide_turn_speech",
+    "final_text_skipped_log",
     "first_sentence",
     "is_retry_prompt_leak",
     "wants_lyrics",

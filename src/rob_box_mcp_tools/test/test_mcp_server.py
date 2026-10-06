@@ -457,6 +457,7 @@ class _Deck:
 class _DjSet:
     def __init__(self):
         self.closed = []
+        self.running = False
 
     def close_set(self, reason):
         self.closed.append(reason)
@@ -512,6 +513,20 @@ def test_explicit_cleanup_stops_deck_through_its_owner(monkeypatch, reason):
     assert server._player_owner.stopped == [reason]
     manager.stop_music_on_session_end.assert_called_once()
     assert server.stop_generated_track_playback_calls == 1
+
+
+@pytest.mark.unit
+def test_soft_cleanup_spares_a_running_set_even_if_the_deck_looks_idle(monkeypatch):
+    """06.10 15:30 UTC: ход ``tools=[]`` → ``tts_batch_complete`` погасил идущий сет. Идёт ли сет — знает его
+    владелец ``DjSetTool.running``, а не только отметка ``started`` деки."""
+    module = _load_mcp_server_module(monkeypatch)
+    server, manager = _cleanup_server(module, deck_playing=False)
+    server._dj_set_tool.running = True
+
+    _send_cleanup(module, server, "tts_batch_complete")
+
+    manager.stop_music_on_session_end.assert_not_called()
+    assert server._dj_set_tool.closed == [] and server._player_owner.stopped == []
 
 
 @pytest.mark.unit

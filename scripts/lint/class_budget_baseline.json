@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-05",
-  "base_sha": "7b735704dddc2067375e8ec28e26fda1431d19f9",
+  "created": "2026-10-06",
+  "base_sha": "4ec203bacf6d9235b26bb12e960b2a42c4be2a92",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,7 +24,7 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 135,
+      "wmc": 134,
       "methods": 25
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
@@ -84,8 +84,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 913,
-      "methods": 178
+      "wmc": 908,
+      "methods": 177
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,

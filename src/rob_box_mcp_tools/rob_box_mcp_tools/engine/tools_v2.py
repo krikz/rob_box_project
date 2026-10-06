@@ -19,6 +19,12 @@ Classic («поставь Калинку», PR-11): ``request_music`` с ``inten
 
 PR-10: после ``started`` сета ``dj_set`` в фоне спрашивает ``SetReasoner`` (LLM) профиль сета; ответ ок —
 план подменяется со следующего несыгранного трека (``SetSession.replan``), иначе сет целиком seeded.
+
+Ход LLM (06.10 14:50, set98207): в одном ходе ``dj_set`` → ``request_music('1812 Overture')`` — заказ гасил
+только что запущенный сет, сам не заигрывал, и наступала тишина. Теперь решает владелец деки (ADR-0148):
+``turn_id`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``); сет, заигравший в этом же ходе,
+``request_music`` не снимает — отказ :data:`SET_PLAYING`. Заказ сначала собирается (поиск, компоновка, рендер),
+и только собранный снимает идущий сет: «не нашлось» и ошибка компоновки сет не гасят.
 """
 
 from __future__ import annotations
@@ -56,6 +62,9 @@ CLASSIC_GENRES = ("classical", "folk")
 #: ``dj_set(style)``: ключи ``knowledge.STYLES`` (ADR-0153 §4.1) и ``auto`` — стиль по словам темы, иначе клуб.
 AUTO_STYLE = "auto"
 STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
+#: Код отказа ``request_music``: сет запущен в этом же ходе и играет — заказ его не снимает. Сторона голоса
+#: строит по нему фразу (``rob_box_voice.core.media_phrases.SET_PLAYING_REASON``, равенство держит тест).
+SET_PLAYING = "set_playing"
 
 
 def set_style(style: Optional[str], theme: str) -> str:
@@ -133,6 +142,13 @@ def confirmed(result: Dict[str, Any], confirm: Optional[Confirm]) -> Dict[str, A
     return {**result, "started": True}
 
 
+def music_busy(owner: Any, dj: Any) -> bool:
+    """Музыка движка идёт: дека играет (``PlayerOwner.is_playing``) или идёт сет (``DjSetTool.running``) — между
+    ``started`` треков сета дека может выглядеть пустой (06.10 15:30 UTC: мягкий cleanup погасил идущий сет)."""
+    deck = owner is not None and owner.is_playing() is True
+    return deck or getattr(dj, "running", False) is True
+
+
 def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
     if data.get("ok"):
         return MCPToolResult(success=True, data=data)
@@ -163,6 +179,7 @@ class DjSetTool(MCPTool):
         self._confirm = confirm
         self._lock = threading.Lock()
         self._session: Optional[SetSession] = None
+        self._session_turn: Optional[str] = None  # ход LLM, в котором сет ``self._session`` заиграл (``started``)
         self._last: Optional[SetSession] = None  # последний начатый сет (и доигравший сам): для ``status``
         # треки прошлых сетов (``history`` — music_history в БД): разнообразие между сетами (A13, I17)
         self._memory = SetMemory(store=history)
@@ -206,9 +223,11 @@ class DjSetTool(MCPTool):
 
     def execute(self, action: str = "start", theme: Optional[str] = None,
                 persona: Optional[str] = None, style: Optional[str] = None,
-                tracks: Optional[int] = None, heard_tracks: Optional[int] = None) -> MCPToolResult:
-        """``heard_tracks`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``): длина сета из слов
-        человека по грамматике (``set_length_words``); есть — она решает, а не ``tracks`` от LLM (ADR-0148)."""
+                tracks: Optional[int] = None, heard_tracks: Optional[int] = None,
+                turn_id: Optional[str] = None) -> MCPToolResult:
+        """``heard_tracks`` и ``turn_id`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): длина сета
+        из слов человека по грамматике (``set_length_words``; есть — она решает, а не ``tracks`` от LLM, ADR-0148)
+        и ход, запустивший сет (:meth:`started_in_turn`)."""
         tracks = heard_tracks or tracks
         with self._lock:
             if action == "stop":
@@ -222,7 +241,22 @@ class DjSetTool(MCPTool):
                 result = self._start(theme or "", persona, key, named)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
-        return tool_result(confirmed(result, self._confirm), "сет не начался")  # ждём started вне замка
+        result = confirmed(result, self._confirm)  # ждём started вне замка
+        self._session_turn = turn_id if result.get("ok") else None
+        return tool_result(result, "сет не начался")
+
+    @property
+    def running(self) -> bool:
+        """Сет идёт: начат и не остановлен, не доиграл сам (между ``started`` треков дека может быть пуста)."""
+        session = self._session
+        return session is not None and session.active
+
+    def started_in_turn(self, turn_id: Optional[str]) -> Optional[str]:
+        """``set_id`` сета, который заиграл в ходе ``turn_id`` и идёт сейчас; иначе ``None`` (хода нет — ``None``)."""
+        session = self._session
+        if not turn_id or session is None or not session.active or self._session_turn != turn_id:
+            return None
+        return session.set_id
 
     def theme_profile(self, theme: str, style: str = kn.DEFAULT_STYLE) -> ThemeProfile:
         """Seeded-профиль темы с мелодиями по её словам; поиск упал — профиль без находок, причина в лог."""
@@ -254,6 +288,7 @@ class DjSetTool(MCPTool):
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
                tracks: Optional[int] = None) -> Dict[str, Any]:
         length, why = self.set_length(tracks)
+        self._session_turn = None
         if self._session is not None:
             self._session.stop("new_set")
         profile = self.theme_profile(theme, style)
@@ -307,7 +342,7 @@ class DjSetTool(MCPTool):
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""
         with self._lock:
-            session, self._session = self._session, None
+            session, self._session, self._session_turn = self._session, None, None
         if session is not None:
             session.stop(reason)
 
@@ -370,14 +405,25 @@ class RequestMusicTool(MCPTool):
         return False
 
     def execute(self, intent: str = "track", text: str = "", mood: Optional[str] = None,
-                genre: Optional[str] = None) -> MCPToolResult:
-        self._dj.close_set("request_music")
-        if intent == "melody" or genre in CLASSIC_GENRES:
-            return tool_result(confirmed(self._play_classic(text), self._confirm), "мелодия не заиграла")
-        return tool_result(confirmed(self._play_club(text, mood), self._confirm), "музыка не заиграла")
+                genre: Optional[str] = None, turn_id: Optional[str] = None) -> MCPToolResult:
+        """``turn_id`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не снимается."""
+        set_id = self._dj.started_in_turn(turn_id)
+        if set_id is not None:
+            return tool_result({"ok": False, "reason": SET_PLAYING, "set_id": set_id,
+                                "detail": "сет запущен в этом ходе и играет — заказ его не заменяет"},
+                               "музыка не заменена")
+        classic = intent == "melody" or genre in CLASSIC_GENRES
+        what = "мелодия не заиграла" if classic else "музыка не заиграла"
+        staged = self._stage_classic(text) if classic else self._stage_club(text, mood)
+        if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
+            return tool_result(staged, what)
+        program, once = staged.pop("program"), staged.pop("once")
+        self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
+        result = self._owner.play(program, dj={"enabled": False, "title": staged["title"]}, once=once)
+        return tool_result(confirmed({**result, **staged}, self._confirm), what)
 
-    def _play_club(self, text: str, mood: Optional[str]) -> Dict[str, Any]:
-        """Трек плана с энергией настроения: ``compose`` → ``render`` → дека A."""
+    def _stage_club(self, text: str, mood: Optional[str]) -> Dict[str, Any]:
+        """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен."""
         profile = self._dj.theme_profile(text)
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
@@ -389,11 +435,11 @@ class RequestMusicTool(MCPTool):
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
         title = f"{profile.theme or 'клубный трек'} · {plan.bpm} BPM"
-        result = self._owner.play(program, dj={"enabled": False, "title": title})
-        return {**result, "title": title, "bpm": plan.bpm, "energy": energy, "theme_source": profile.source}
+        return {"program": program, "once": False, "title": title, "bpm": plan.bpm, "energy": energy,
+                "theme_source": profile.source}
 
-    def _play_classic(self, text: str) -> Dict[str, Any]:
-        """Мелодия по названию: песня v2 (темп и тональность — из RTTTL), один проход формы.
+    def _stage_classic(self, text: str) -> Dict[str, Any]:
+        """Мелодия по названию: песня v2 (темп и тональность — из RTTTL), один проход формы — собрана, не запущена.
 
         Название берёт грамматика заказа по имени («поставь калинку» → «калинку»); не разобрала — ищутся
         слова целиком. Поиск — тот же, что у ``lookup_melody`` (``engine.classic.find_record``).
@@ -409,10 +455,9 @@ class RequestMusicTool(MCPTool):
             return self._owner.reject(f"classic:{query}", "compose_error", f"{type(exc).__name__}: {exc}")
         if not pick.found:
             return {"ok": False, "found": False, "reason": "not_found", "detail": pick.reason, "query": query}
-        result = self._owner.play(pick.program, dj={"enabled": False, "title": pick.title}, once=True)
-        return {**result, "found": True, "title": pick.title, "melody_id": pick.melody_id, "bpm": pick.bpm,
-                "key": pick.key}
+        return {"program": pick.program, "once": True, "found": True, "title": pick.title,
+                "melody_id": pick.melody_id, "bpm": pick.bpm, "key": pick.key}
 
 
-__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "STYLE_CHOICES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed",
-           "library_melodies", "set_style", "theme_finder", "tool_result"]
+__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "SET_PLAYING", "STYLE_CHOICES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed",
+           "library_melodies", "music_busy", "set_style", "theme_finder", "tool_result"]

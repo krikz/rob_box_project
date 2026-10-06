@@ -194,13 +194,16 @@ def test_foreign_track_playing_without_dj_is_not_stopped_either():
 @pytest.mark.parametrize(
     "snapshot", [None, MusicPlayerState(state="idle")], ids=["no_snapshot", "idle"]
 )
-def test_silent_player_keeps_old_cleanup_arming(snapshot):
-    """Ничего не играет — прежнее поведение (#935, профилактический cleanup)."""
+def test_turn_that_did_not_touch_music_never_arms_cleanup(snapshot):
+    """06.10 15:30 UTC: «…замути сэт на 30 минут» → ``tools=[]``, снимок плеера «не играет» (отстал), а
+    профилактический cleanup по ``tts_batch_complete`` погасил идущий сет. Ход музыку не менял — стопа нет."""
     n = _make_node(snapshot)
 
-    _finalize(n, _result("Привет!"), "[Speaker:unknown] как дела")
+    _finalize(n, _result("Сет идёт — 30 минут ретро-ностальгии!"),
+              "ретро 8-бит Mario Tetris Aladdin Contra замути сэт на 30 минут")
 
-    assert _cleanups(n) == ["tts_batch_complete"]
+    assert n._pending_music_cleanup is False
+    assert _cleanups(n) == []
 
 
 def test_backing_under_rap_is_still_stopped_after_speech():
