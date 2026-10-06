@@ -226,6 +226,8 @@ class DjSetTool(MCPTool):
         profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact)
         log.info(f"🎛️ [dj_set] тема «{theme}»: style={profile.style} source={profile.source} row={profile.row} "
                  f"хуки={list(profile.hook_ids)}")
+        if hits.missing:  # часть темы-перечисления без мелодий: честно в лог, не подмена (I16)
+            log.info(f"🎛️ [dj_set] тема «{theme}»: не найдено: {', '.join(f'«{p}»' for p in hits.missing)}")
         return profile
 
     def set_length(self, named: Optional[int]) -> Tuple[int, str]:

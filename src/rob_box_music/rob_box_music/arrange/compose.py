@@ -176,18 +176,28 @@ def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Opti
             for r, g in grids.items()}
 
 
+def _hook_queue(profile: ThemeProfile, ids: Sequence[str], history: Sequence[Mapping],
+                rng: random.Random) -> List[str]:
+    """Очередь мелодий не первого трека: несыгранные (найденные по теме — в порядке профиля, пул — сидом), затем
+    недавние, давние раньше свежих."""
+    recent = [h for h in recent_values(history, "melody_name") if h]
+    fresh = [i for i in ids if i not in recent]
+    stale = sorted((i for i in ids if i in recent), key=recent.index, reverse=True)
+    return (fresh if profile.theme_hooks else rng.sample(fresh, len(fresh))) + stale
+
+
 def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
                     history: Sequence[Mapping] = (), opening: bool = False) -> Iterator[Tuple[Hook, Key]]:
     """Годные мелодии темы: несыгранные — в порядке сида, недавние (история сета и прошлых сетов, I17) — в конце,
     давние раньше свежих; хук прошлого трека (мелодия или фрагмент) подряд не повторяется. Первый трек сета
-    (``opening``) берёт мелодии в порядке профиля — хук №1 темы первым (#3427: порядок ``search.theme_hooks``)."""
+    (``opening``) берёт мелодии в порядке профиля — хук №1 темы первым (#3427: порядок ``search.theme_hooks``).
+    Хуки найдены по словам темы (``profile.theme_hooks``) — несыгранные идут в порядке профиля, а не сида: сет
+    обходит найденные по очереди (у темы-перечисления — по кругу частей, ``search.round_robin``), повтор — только
+    когда несыгранные кончились (06.10: 50 треков по кругу из трёх хуков)."""
     last = history[0] if history else {}
     register = hook_register(kn.STYLES[profile.style])
-    recent = [h for h in recent_values(history, "melody_name") if h]
     ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
-    fresh = [i for i in ids if i not in recent]
-    stale = sorted((i for i in ids if i in recent), key=recent.index, reverse=True)
-    for melody_id in ids if opening else rng.sample(fresh, len(fresh)) + stale:
+    for melody_id in ids if opening else _hook_queue(profile, ids, history, rng):
         try:
             hook, key = hooks.from_rtttl(melodies[melody_id], melody_id, profile.bpm, profile.root, profile.mode,
                                          register)
