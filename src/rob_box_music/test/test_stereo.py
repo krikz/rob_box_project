@@ -31,12 +31,33 @@ def _events(seed, deck="A"):
     return track, by_role
 
 
+def _assert_two_voices(events, width, haas_ms, bpm, role):
+    """Роль из ``SYNTH_STEREO``: нота — два голоса ``-w``/``+w``; ``+w`` с расстройкой и позже на Хаас (если он задан)."""
+    fields = {"pan": width["pan"], "detune": width["detune"]}
+    left = [e for e in events if e.pan < 0]
+    right = [e for e in events if e.pan > 0]
+    assert left and len(left) == len(right) == len(events) // 2, role
+    assert {e.pan for e in left} == {-fields["pan"]} and {e.pan for e in right} == {fields["pan"]}, role
+    assert {e.detune for e in left} == {0.0} and {e.detune for e in right} == {fields["detune"]}, role
+    haas = haas_ms * bpm / 60000.0
+    pairs = sorted((round(e.beat, 2), e.midi) for e in left)
+    shifted = sorted((round(e.beat - haas, 2), e.midi) for e in right)
+    assert pairs == shifted, (role, "второй голос — та же нота, позже на Хаас (у баса — без него)")
+
+
 @pytest.mark.parametrize("seed", SEEDS)
-def test_kick_and_bass_are_strictly_centred_single_voices(seed):
-    _track, by_role = _events(seed)
-    for role in ("kick", "bass"):
-        assert by_role[role], role
-        assert all(e.pan == 0 and e.detune == 0 and set(e.fx) <= {"lpf"} for e in by_role[role]), role  # свип PR-7
+def test_kick_is_centred_and_bass_is_centred_unless_its_synth_is_wide(seed):
+    """Бочка всегда в центре. Бас вне ``SYNTH_STEREO`` — центр одним голосом; ``tb303`` — два голоса ±w без Хааса."""
+    track, by_role = _events(seed)
+    assert by_role["kick"] and all(e.pan == 0 and e.detune == 0 and set(e.fx) <= {"lpf"} for e in by_role["kick"])
+    assert by_role["bass"]
+    synth = track.parts["bass"].synth_or_sample
+    if synth in kn.SYNTH_STEREO:
+        assert "haas_ms" not in kn.SYNTH_STEREO[synth], "низ двух голосов — в фазе, без Хааса"
+        assert all(set(e.fx) <= {"lpf"} for e in by_role["bass"])
+        _assert_two_voices(by_role["bass"], kn.SYNTH_STEREO[synth], 0.0, track.bpm, "bass")
+    else:
+        assert all(e.pan == 0 and e.detune == 0 and set(e.fx) <= {"lpf"} for e in by_role["bass"])  # свип PR-7
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -57,9 +78,17 @@ def test_pad_is_two_detuned_voices_on_opposite_sides_with_haas(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_lead_stays_on_axis_without_room2(seed):
-    """Лид на оси; ``room2`` нет ни у кого — на роботе он глушит весь выход (замер 02.10)."""
+    """Лид вне ``SYNTH_STEREO`` — на оси одним голосом; из таблицы — два голоса с Хаасом. ``room2`` нет ни у кого —
+    на роботе он глушит весь выход (замер 02.10)."""
     track, by_role = _events(seed)
-    assert by_role["lead"] and all(e.pan == 0 and e.detune == 0 for e in by_role["lead"])
+    assert by_role["lead"]
+    synth = track.parts["lead"].synth_or_sample
+    if synth in kn.SYNTH_STEREO:
+        width = kn.SYNTH_STEREO[synth]
+        assert width["haas_ms"] > 0, "у лидов Хаас обязателен"
+        _assert_two_voices(by_role["lead"], width, width["haas_ms"], track.bpm, "lead")
+    else:
+        assert all(e.pan == 0 and e.detune == 0 for e in by_role["lead"])
     assert "room2" not in render(track, "A").code
 
 
