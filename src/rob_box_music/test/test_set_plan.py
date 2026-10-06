@@ -101,7 +101,8 @@ def test_low_energy_thins_roles_not_levels(seed):
         for role, part in track.parts.items():
             capped = level_amp(role, part) == pytest.approx(kn.MAX_LAYER_AMP, rel=1e-3)
             # цель роли (пэд — + прибавка рисунка) и поправка A9-модели трека (ADR-0152 PR-5)
-            target = mix.target_db(kn.STYLES["club"], role, track.history_key.pad_figure)
+            # поправка A9 отсчитывается от уровня после потолка синта (``mix._level``)
+            target = mix._level(kn.STYLES["club"], role, part, track.history_key.pad_figure)
             target += track.mix.a9_trim.get(role, 0)
             assert part.level_db == pytest.approx(target, abs=0.011) or (part.level_db < target and capped)
 
@@ -214,3 +215,60 @@ def test_the_line_up_grows_from_build_to_the_second_drop():
     spans = {sec.name: (start, end) for sec, start, end in _section_spans(track)}
     bass_in = {name: sum(1 for e in events["bass"] if lo <= e.beat < hi) for name, (lo, hi) in spans.items()}
     assert bass_in["build"] == 0 and bass_in["drop"] > 0 and bass_in["drop2"] > 0
+
+
+# --- #3460 (A16b): семья тембров темы вне таблицы -----------------------------------------------------------------
+OUT_OF_TABLE = ("Mozart 40", "House Some More", "Baby One More Time", "In Your Eyes", "Mambo Nr 5")
+
+
+def _timbres_of_series(themes, base_seed=20261010):
+    """Семьи тембров серии сетов подряд: история — строки прошлых треков (свежие первыми), как у плеера."""
+    history, out = [], []
+    for n, theme in enumerate(themes):
+        plan = seeded_plan(seeded_profile(theme), base_seed + n, set_id=f"s{n}", history=history)
+        out.append(plan.family)
+        history.insert(0, {"set_id": f"s{n}", "timbre": plan.family})
+    return out
+
+
+def test_theme_outside_the_table_is_not_always_the_default_family():
+    """Приёмка 06.10: все пять тем случайной серии (row=None) звучали ``warm`` — A16b требует ≥ 3 семей."""
+    assert all(seeded_profile(t).row is None for t in OUT_OF_TABLE)
+    families = _timbres_of_series(OUT_OF_TABLE)
+    assert len(set(families)) >= 3, families
+    assert all(a != b for a, b in zip(families, families[1:])), families  # с прошлым сетом подряд семья не та же
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_series_of_unknown_themes_covers_three_families(seed):
+    assert len(set(_timbres_of_series(OUT_OF_TABLE, base_seed=seed * 1000 + 7))) >= 3
+
+
+def test_table_theme_keeps_its_family_and_plan_is_deterministic():
+    for theme, row in (("космос", "space"), ("киберпанк", "cyber"), ("детский праздник", "kids")):
+        plan = seeded_plan(seeded_profile(theme), 5)
+        assert plan.family == kn.THEME_TIMBRE[row]
+    again = _timbres_of_series(OUT_OF_TABLE)
+    assert again == _timbres_of_series(OUT_OF_TABLE)
+
+
+def test_family_reaches_the_track_synths_and_history_axis():
+    """Семья плана — не только метка: синты лида/баса/пэда трека из неё, ось ``timbre`` пишется в историю."""
+    from rob_box_music.diversity import track_history
+
+    for seed in range(12):
+        plan = seeded_plan(seeded_profile("Mambo Nr 5"), seed)
+        track = compose(plan, 1)
+        family = plan.table.timbres[plan.family]
+        for role in kn.TONAL_ROLES:
+            assert track.parts[role].synth_or_sample in family[role], (seed, role)
+        assert track.history_key.timbre == plan.family and track_history(track, plan.set_id)["timbre"] == plan.family
+
+
+def test_reasoner_row_sets_its_family_and_none_keeps_the_sets_own():
+    from rob_box_music import reasoner as rz
+
+    plan = seeded_plan(seeded_profile("Mambo Nr 5"), 3)
+    ref = rz.Refinement("cyber", plan.profile.mode, plan.profile.hook_ids, (2, 3, 4, 5))
+    assert rz.apply(plan, ref).family == kn.THEME_TIMBRE["cyber"]
+    assert rz.apply(plan, replace(ref, row=None)).family == plan.family

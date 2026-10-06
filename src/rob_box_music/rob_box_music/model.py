@@ -196,6 +196,8 @@ class HistoryKey:
     #: Ключ ``knowledge.STYLES`` трека (ADR-0153 S1): по нему валидатор берёт регистры, сайдчейн и пул бочек.
     #: Вне ``repr``, как ``PitchEvent.lpf``: модель трека клуба выглядит как до S1 (эталон ``test_style_same_tracks``).
     style: str = field(default=kn.DEFAULT_STYLE, repr=False)
+    #: Семья тембров сета (``SetPlan.family``, #3460): ось «между сетами» для тем вне таблицы. Вне ``repr``, как ``style``.
+    timbre: Optional[str] = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

@@ -47,9 +47,9 @@ def test_acid16_and_tb303_exist_only_in_the_hard_family():
     assert [n for n, bass in families.items() if "tb303" in bass] == ["hard"]
     for theme in THEMES:
         family = CLUB.timbres[kn.THEME_TIMBRE.get(_row(theme) or "", CLUB.default_timbre)]["bass"]
-        assert ("acid16" in mix.bass_figures(CLUB, _row(theme))) == ("tb303" in family), theme
-        assert mix.bass_synths(CLUB, _row(theme), "acid16") == (("tb303",) if "tb303" in family else ())
-        assert all("tb303" not in mix.bass_synths(CLUB, _row(theme), f) for f in CLUB.bass_figures if f != "acid16")
+        assert ("acid16" in mix.bass_figures(CLUB, kn.family_of(CLUB, _row(theme)))) == ("tb303" in family), theme
+        assert mix.bass_synths(CLUB, kn.family_of(CLUB, _row(theme)), "acid16") == (("tb303",) if "tb303" in family else ())
+        assert all("tb303" not in mix.bass_synths(CLUB, kn.family_of(CLUB, _row(theme)), f) for f in CLUB.bass_figures if f != "acid16")
 
 
 def test_acid16_is_in_the_registry_and_in_the_club_window_only():
@@ -58,12 +58,15 @@ def test_acid16_is_in_the_registry_and_in_the_club_window_only():
 
 
 def test_tracks_of_other_families_never_play_tb303_or_acid():
+    """Темы вне таблицы получают семью по сиду (#3460): ``hard`` среди них законна — проверяется семья ПЛАНА."""
     for theme in ("космос", "детский праздник", "калинка", "бухгалтерский отчёт", ""):
         for seed in range(15):
             plan = seeded_plan(seeded_profile(theme), seed, set_id=f"o{seed}")
             for no in (1, 2, 3):
                 track = compose(plan, no)
-                assert track.parts["bass"].synth_or_sample != "tb303" and track.history_key.bass_figure != "acid16"
+                tb303 = track.parts["bass"].synth_or_sample == "tb303"
+                assert tb303 == (track.history_key.bass_figure == "acid16")
+                assert plan.family == "hard" or not tb303, (theme, seed, plan.family)
 
 
 def test_hard_tracks_pair_tb303_with_acid16_and_nothing_else(acid_tracks):

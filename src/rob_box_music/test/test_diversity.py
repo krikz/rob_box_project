@@ -307,3 +307,32 @@ def test_weighted_pick_prefers_the_unplayed():
     rng = random.Random(0)
     picks = Counter(weighted_pick(["a", "b"], ["a"] * 5, rng) for _ in range(200))
     assert picks["b"] > picks["a"] * 5
+
+
+def played_progressions(depth: int, sets: int = 10, played: int = 5, composed: int = 6, base_seed: int = 0):
+    """Прогрессии СЫГРАННЫХ треков при том, как работает плеер: трек N+1 компонуется заранее и попадает в историю,
+    а сет сменяется до его старта (в записи его нет). ``depth`` — память между сетами (``SetMemory``)."""
+    past, progs = (), []
+    for n in range(sets):
+        root, mode, hooked = SET_PROFILES[n % len(SET_PROFILES)]
+        plan = seeded_plan(profile(root=root, mode=mode), base_seed + n, set_id=f"s{n}", history=past)
+        rows = {}
+        for no in range(1, composed + 1):
+            history = tuple(rows[k] for k in sorted(rows, reverse=True)) + past
+            track = compose(plan, no, melodies=MELODIES if hooked else None, history=history)
+            rows[no] = track_history(track, plan.set_id)
+            if no <= played:
+                progs.append(track.history_key.progression)
+        past = (tuple(rows[k] for k in sorted(rows, reverse=True)) + past)[:depth]
+    return progs
+
+
+def worst_in_ten(progs):
+    return max(Counter(progs[i:i + 10]).most_common(1)[0][1] for i in range(len(progs) - 9))
+
+
+def test_played_progression_at_most_three_in_ten_when_next_track_is_never_played():
+    """A13 (приёмка 06.10, #3460): 4/10 в сыгранных треках случайной серии. Скомпонованный, но не сыгранный N+1
+    занимает место в окне истории, и 9 прошлых строк покрывали меньше 10 сыгранных треков."""
+    from rob_box_music.arrange.harmony import PROGRESSION_CAP, PROGRESSION_LOOKBACK
+    assert worst_in_ten(played_progressions(PROGRESSION_LOOKBACK)) <= PROGRESSION_CAP

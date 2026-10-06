@@ -29,7 +29,15 @@ def _lead_events(track):
     program = render(track, "A")
     _parsed, events = program_events(program.code, program.form_beats)
     slot = program.slots["lead"]
-    return [e for e in events if e.slot == slot]
+    # Лид в два голоса (``knowledge.SYNTH_STEREO``, #3465): второй голос — та же нота с задержкой Хааса меньше
+    # 1/16 доли. Мелодию считаем по сетке 16-х, одна нота на (16-я, высота).
+    seen, out = set(), []
+    for e in events:
+        key = (round(e.beat * 4), e.midi)
+        if e.slot == slot and key not in seen:
+            seen.add(key)
+            out.append(e)
+    return out
 
 
 def _bars(events, first_bar, n_bars):

@@ -91,7 +91,7 @@ def test_kick_four_on_floor_and_bass_off_the_kick(seed):
 
     expected = {float(b) for b in beats if "kick" in _section_of(track, b).roles and not fill_beat(b)}
     assert kicks == expected, "бочка на каждой доле, кроме последней доли fill-а"
-    bass = [e.beat for e in by_role["bass"]]
+    bass = sorted({e.beat for e in by_role["bass"]})  # tb303 (SYNTH_STEREO) — два голоса на одной доле, нота одна
     assert bass and not kicks & set(bass), "бас не на шагах бочки"
     steps = kn.BASS_FIGURES[track.history_key.bass_figure].steps  # рисунок баса трека (ADR-0152 PR-6)
     assert all(round(b % BEATS_PER_BAR * 4) in steps for b in bass), "бас на шагах своего рисунка (не на доле)"
@@ -107,7 +107,9 @@ def test_lead_is_a_motif_with_rests(seed):
     track = track_for(seed, hooked=False)
     _program, by_role = _events(track)
     per_bar = defaultdict(int)
-    for beat in {ev.beat for ev in by_role["lead"]}:  # атаки, а не голоса (drop2 — терции)
+    # атаки, а не голоса: drop2 — терции, hard-лиды (SYNTH_STEREO) — второй голос позже на Хаас < 1/16 доли
+    for slot16 in {round(ev.beat * 4) for ev in by_role["lead"]}:
+        beat = slot16 / 4
         assert "lead" in _section_of(track, beat).roles
         per_bar[int(beat // BEATS_PER_BAR)] += 1
     assert per_bar and max(per_bar.values()) <= 4, "лид ≤ 4 нот на такт"

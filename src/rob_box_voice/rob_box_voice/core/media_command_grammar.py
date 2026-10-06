@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -114,6 +115,17 @@ def extract_user_utterance(user_input: str) -> str:
 
 def _words(text: str) -> List[str]:
     return [w.lower() for w in _WORD_RE.findall(text or "")]
+
+
+def _theme_words(text: str) -> List[str]:
+    """Слова темы сета: цифры — отдельные слова, на границе букв и цифр слово делится: «Mozart40» -> «mozart 40»,
+    «Mambo Nr 5» -> «mambo nr 5» (#3460: ``_words`` вырезал цифры, тема приходила как «mozart»/«mambo nr»).
+    Без регексов (мораторий #3132): буквы — как в ``_WORD_RE`` (латиница, кириллица), цифры — ``0-9``."""
+    def kind(ch: str) -> str:
+        low = ch.lower()
+        return "d" if ch in "0123456789" else "a" if "a" <= low <= "z" or "а" <= low <= "я" or low == "ё" else ""
+
+    return ["".join(g).lower() for k, g in itertools.groupby(text or "", kind) if k]
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +434,7 @@ def _theme_split(text: str) -> Tuple[str, str]:
     if not found:
         return text, ""
     start, end = min(found)
-    return text[:start], " ".join(_words(text[end:]))
+    return text[:start], " ".join(_theme_words(text[end:]))
 
 
 #: Слова перед названием стиля: «в стиле рейв» (ADR-0153 S1). Вместе со
@@ -454,7 +466,7 @@ def _with_style(command: MediaCommand, text: str) -> MediaCommand:
         return command
 
     def unstyled(theme: str) -> str:
-        return " ".join(_style_words(_words(theme))[1]) if theme else theme
+        return " ".join(_style_words(_theme_words(theme))[1]) if theme else theme
 
     return replace(command, style=style, theme=unstyled(command.theme), set_theme=unstyled(command.set_theme))
 
@@ -802,7 +814,8 @@ def parse_media_command(
     volume = _volume_command(words, track_name)
     if volume.intent is not MediaIntent.NONE:
         return volume
-    return _style_set_command(words) or _named_set_command(words) or _play_named_command(words)
+    theme_words = _theme_words(text)  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
+    return _style_set_command(theme_words) or _named_set_command(theme_words) or _play_named_command(words)
 
 
 __all__ = [
