@@ -181,6 +181,7 @@ class HistoryKey:
     perc: Optional[str] = None  # пул psr-слоя через запятую
     pad_figure: Optional[str] = None  # рисунок пэда (``knowledge.PAD_FIGURES``, ADR-0152 PR-5)
     bass_figure: Optional[str] = None  # рисунок баса (``knowledge.BASS_FIGURES``, ADR-0152 PR-6)
+    template: Optional[str] = None  # шаблон формы (``Style.forms``, ADR-0152 PR-7)
 
 
 @dataclass(frozen=True)
@@ -403,6 +404,8 @@ def validate(track: Track) -> None:
     """Проверить инварианты трека; нарушение — :class:`TrackError` (путь + причина)."""
     _check_key(track)
     _check_form(track.form)
+    _require(track.history_key.template in (None, *kn.FORM_NAMES), "history_key.template",
+             f"форма {track.history_key.template!r} не из Style.forms")
     _check_parts(track)
     _check_levels(track)
     _check_hook_and_harmony(track)

@@ -7,12 +7,12 @@ from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 
-SECTIONS = kn.STYLES["club"].form
+SECTIONS = [sec for spec in kn.STYLES["club"].forms.values() for sec in spec]
 PLAN = seeded_plan(ThemeProfile("тест", "club", 132, 9, "minor", (), None), 7, set_id="s7")
 
 
 def test_every_club_section_has_a_trim_and_none_is_above_the_track():
-    assert {name for name, *_ in SECTIONS} == set(kn.SECTION_TRIM_DB)
+    assert {name for name, *_ in SECTIONS} == set(kn.SECTION_TRIM_DB)  # все формы PR-7
     assert max(offset for offset, _rise in kn.SECTION_TRIM_DB.values()) == 0.0
     assert kn.SECTION_TRIM_DB["intro"][0] == kn.SECTION_TRIM_DB["outro_tail"][0], "блэнд двух дек без скачка"
 

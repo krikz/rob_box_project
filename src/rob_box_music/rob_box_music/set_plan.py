@@ -38,6 +38,7 @@ class TrackPlan:
     energy: int  # 1..5
     root_shift: int  # полутонов от тоники сета, 0..11
     kick: str = ""  # бочка из пула стиля (``knowledge.KICK_SOUNDS``); пусто — ``compose`` выбирает по истории сам
+    template: str = ""  # форма трека (ключ ``Style.forms``); пусто — ``compose`` выбирает по энергии и истории сам
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,28 @@ def plan_kicks(style: kn.Style, seed: int, theme: str, n_tracks: int,
     return tuple(kicks)
 
 
+def pick_template(style: kn.Style, energy: int, history: Sequence[Mapping], rng: random.Random) -> str:
+    """Форма трека энергии ``energy`` из ``Style.energy_forms``: сид + штраф за недавние (ось ``template``), с
+    прошлым треком подряд не повторяется."""
+    recent = recent_values(history, "template")
+    allowed = style.energy_forms.get(energy) or tuple(style.forms)
+    options = [t for t in allowed if not recent or t != recent[0]] or list(allowed)
+    return weighted_pick(options, recent, rng)
+
+
+def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[int],
+                   history: Sequence[Mapping] = ()) -> Tuple[str, ...]:
+    """Формы первых треков сета (энергия — по номеру): трек 1 — ``Style.opening_form`` (блэнда на входе нет, тему
+    человек ждёт сразу, #3427), остальные — :func:`pick_template` со штрафом за прошлые сеты и предыдущие треки."""
+    recent = [t for t in recent_values(history, "template") if t]
+    out = []
+    for no, energy in enumerate(energies, 1):
+        rows = [{"template": t} for t in out[::-1] + recent]
+        out.append(style.opening_form if no == 1
+                   else pick_template(style, energy, rows, random.Random(f"template:{seed}:{theme}:{no}")))
+    return tuple(out)
+
+
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
                 history: Sequence[Mapping] = ()) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
@@ -117,9 +140,11 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     swing = round(s_lo + random.Random(f"plan:{seed}:{profile.theme}").random() * (s_hi - s_lo), 3)
     n = max(1, n_tracks)
     kicks = plan_kicks(window, seed, profile.theme, n, history)
-    tracks = tuple(replace(track_plan(no), kick=kicks[no - 1]) for no in range(1, n + 1))
+    plans = [track_plan(no) for no in range(1, n + 1)]
+    forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
+    tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1]) for p in plans)
     return SetPlan(set_id, seed, profile, bpm, swing, tracks)
 
 
-__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_kick", "plan_kicks", "root_shift",
-           "seeded_plan", "set_root", "track_energy", "track_plan"]
+__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_kick", "pick_template", "plan_kicks", "plan_templates",
+           "root_shift", "seeded_plan", "set_root", "track_energy", "track_plan"]

@@ -146,7 +146,7 @@ def base_tracks():
 
 
 def _remix(track, no, figure, pad, bass, bass_figure=None, lead=None):
-    spec = form_spec(CLUB, no)
+    spec = form_spec(CLUB, track.history_key.template)
     chords = track.harmony.progression[track.form.sections[0].name]
     parts = dict(track.parts)
     parts["pad"] = PAD_GENERATORS[figure](CLUB, track.key, _bar_chords(spec, "pad", chords), pad,

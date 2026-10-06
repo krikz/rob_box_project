@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from . import knowledge as kn
-from .set_plan import DEFAULT_TRACKS, SetPlan
+from .set_plan import DEFAULT_TRACKS, SetPlan, TrackPlan
 from .theme import ThemeProfile
 
 #: Имя структурного выхода; это не тул исполнения — ризонер ничего не исполняет (ADR-0142 §9).
@@ -167,9 +167,14 @@ def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
     """План сета с поправкой: тема/лад/хуки и дуга энергии; темп, сид, тоника и свинг — прежние."""
     profile = replace(plan.profile, row=ref.row, mode=ref.mode, hook_ids=ref.hook_ids)
     n = max(len(plan.tracks), len(ref.energy))
-    tracks = tuple(replace(plan.track(no), energy=ref.energy[no - 1]) if no <= len(ref.energy) else plan.track(no)
+    tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= len(ref.energy) else plan.track(no)
                    for no in range(1, n + 1))
     return replace(plan, profile=profile, tracks=tracks)
+
+
+def _with_energy(step: TrackPlan, energy: int) -> TrackPlan:
+    """Трек с новой энергией; форма плана подбиралась под старую — при смене ``compose`` выберет её заново."""
+    return step if energy == step.energy else replace(step, energy=energy, template="")
 
 
 __all__ = ["HYPE_MAX", "MAX_HOOKS", "NO_ROW", "PlanInvalid", "Refinement", "SEEDED", "SUBMIT_TOOL", "apply",

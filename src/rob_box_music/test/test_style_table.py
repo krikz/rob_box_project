@@ -45,8 +45,10 @@ def test_style_record_is_consistent(name):
     assert set(style.kick_pool) <= set(kn.KICK_SOUNDS) and len(style.kick_pool) >= 2
     assert style.default_timbre in style.timbres and set(kn.THEME_TIMBRE.values()) <= set(style.timbres)
     assert all(set(fam) == set(kn.TONAL_ROLES) for fam in style.timbres.values())
-    assert all(roles <= set(kn.ROLES) for _n, _b, _e, roles in style.form)
-    names = {n for n, *_ in style.form}
+    assert style.opening_form in style.forms and set(style.energy_forms) == set(range(1, 6))
+    assert all(set(allowed) <= set(style.forms) for allowed in style.energy_forms.values())
+    assert all(roles <= set(kn.ROLES) for spec in style.forms.values() for _n, _b, _e, roles in spec)
+    names = {n for spec in style.forms.values() for n, *_ in spec}
     assert all(set(secs) <= names for secs in style.layer_sections.values())
     assert set(style.duck_roles) <= set(kn.DUCK_ROLES) and set(style.registers) == set(kn.TONAL_ROLES)
     phrase, swap = style.blend

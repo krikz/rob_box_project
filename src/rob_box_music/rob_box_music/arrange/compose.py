@@ -1,9 +1,11 @@
 """``compose(plan, track_no, ...)`` — трек сета по плану (ADR-0149 §3.3, §3.4, §4.4–§4.7; PR-3a, PR-3b).
 
-Форма 48 тактов: intro (хэт, пэд; 4 такта) → intro_low (+бочка, бас; 4) → build (+клэп, начало хука) → drop (хук)
+Форма трека — шаблон ``Style.forms`` (ADR-0152 §3.5, PR-7: ``club48``/``short32``/``long64``/``dropfirst48``), ключ
+``TrackPlan.template`` (план выбирает по энергии трека и истории, :func:`set_plan.pick_template`). База ``club48``,
+48 тактов: intro (хэт, пэд; 4 такта) → intro_low (+бочка, бас; 4) → build (+клэп, начало хука) → drop (хук)
 → break (без бочки и баса, хук вдвое медленнее) → drop2 (хук в параллельных терциях) → outro (без лида; 4) →
-outro_tail (хэт, пэд; 4). Первый трек сета — ``Style.opening_form`` (#3427): дроп сразу после интро, build — перед
-drop2, и хук №1 темы (порядок ``search.theme_hooks``), а не мелодия по сиду.
+outro_tail (хэт, пэд; 4). Первый трек сета — ``Style.opening_form`` (``dropfirst48``, #3427): дроп сразу после интро,
+build — перед drop2, и хук №1 темы (порядок ``search.theme_hooks``), а не мелодия по сиду.
 Интро и аутро поделены под блэнд двух дек (PR-8, ``model.blend_bars``): хвост уходящего и начало входящего
 звучат вместе 8 тактов, бочка и бас меняются на такте свопа. Хук — начало мелодии темы из локальной
 RTTTL-библиотеки (``arrange.hook``); тональность трека — тоника профиля и лад хука.
@@ -48,7 +50,7 @@ from ..model import (
     BEATS_PER_BAR, Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
 )
 from ..diversity import fingerprint, recent_values, weighted_pick
-from ..set_plan import SetPlan, pick_kick, seeded_plan
+from ..set_plan import SetPlan, TrackPlan, pick_kick, pick_template, seeded_plan
 from ..theme import ThemeProfile
 from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 
@@ -76,13 +78,22 @@ def transition(style: kn.Style) -> Transition:
     return Transition(*style.blend, True)
 
 
-#: Секции формы стиля: (имя, такты, энергия, роли) — ``Style.form`` или ``Style.opening_form``.
-FormSpec = Sequence[Tuple[str, int, int, frozenset]]
+#: Секции формы стиля: (имя, такты, энергия, роли) — значение ``Style.forms``.
+FormSpec = kn.FormSpec
 
 
-def form_spec(style: kn.Style, track_no: int) -> FormSpec:
-    """Форма трека ``track_no`` сета: первый — ``Style.opening_form`` (тема раньше, #3427), остальные — ``form``."""
-    return style.opening_form if track_no == 1 else style.form
+def form_spec(style: kn.Style, template: str) -> FormSpec:
+    """Секции шаблона формы ``template`` (ключ ``Style.forms``)."""
+    return style.forms[template]
+
+
+def track_template(style: kn.Style, step: TrackPlan, track_no: int, history: Sequence[Mapping],
+                   rng: random.Random) -> str:
+    """Форма трека: из плана; план не назвал — первый трек сета ``Style.opening_form`` (тема раньше, #3427), остальные
+    по энергии и истории (``pick_template``)."""
+    if step.template:
+        return step.template
+    return style.opening_form if track_no == 1 else pick_template(style, step.energy, history, rng)
 
 
 def _before_drop(spec: FormSpec, i: int) -> bool:
@@ -241,7 +252,8 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     """
     step = plan.track(track_no)
     style = kn.STYLES[plan.style]
-    spec = form_spec(style, track_no)
+    template = track_template(style, step, track_no, history, random.Random(f"{plan.seed}:{track_no}:template"))
+    spec = form_spec(style, template)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
     rng = random.Random(f"{plan.seed}:{track_no}")
     seed = f"{plan.seed}:{track_no}"
@@ -282,7 +294,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         mix=track_mix,
         energy=step.energy, transition_in=transition(style), transition_out=transition(style),
         history_key=HistoryKey(kit, prog, track_hook.source if track_hook else None, loop, key.root,
-                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure),
+                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure, template),
     )
 
 
@@ -295,4 +307,4 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
 
 
 __all__ = ["BASS_GENERATORS", "FormSpec", "LEAD_GENERATORS", "PAD_GENERATORS", "SECTION_BARS", "club_track",
-           "compose", "form_spec", "hook_candidates", "hook_register", "transition"]
+           "compose", "form_spec", "hook_candidates", "hook_register", "track_template", "transition"]

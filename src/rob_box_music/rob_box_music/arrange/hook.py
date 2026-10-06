@@ -235,7 +235,9 @@ def _drop2(hook: Hook, bars: int, key: Key, register: Tuple[int, int]) -> List[P
     return base + voices
 
 
-DEVELOPMENT: Dict[str, object] = {"build": _build, "drop": _drop, "break": _break, "drop2": _drop2}
+#: Развитие хука по имени секции; ``build2``/``break2`` форм ``long64`` — то же развитие, что у ``build``/``break``.
+DEVELOPMENT: Dict[str, object] = {"build": _build, "build2": _build, "drop": _drop, "break": _break,
+                                  "break2": _break, "drop2": _drop2}
 
 
 def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]

@@ -75,6 +75,7 @@ def test_energy_wave_rises_to_the_peak_then_falls():
 def test_section_energy_follows_the_track_energy(seed):
     """Энергия секций растёт с энергией трека; форма внутри трека — intro < build < drop, break < drop2."""
     plan = seeded_plan(profile(root=seed % 12), seed)
+    plan = replace(plan, tracks=tuple(replace(t, template="club48") for t in plan.tracks))  # одна форма (PR-7)
     tracks = {plan.track(no).energy: compose(plan, no) for no in range(1, 6)}
     for low, high in zip(sorted(tracks), sorted(tracks)[1:]):
         high_energy = {s.name: s.energy for s in tracks[high].form.sections}  # порядок секций трека 1 другой (#3427)

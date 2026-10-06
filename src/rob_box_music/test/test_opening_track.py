@@ -11,7 +11,7 @@ import random
 
 import pytest
 
-from melodies import MELODIES, profile
+from melodies import MELODIES, profile, with_template
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose, hook_candidates
 from rob_box_music.model import BEATS_PER_BAR, blend_bars, validate
@@ -35,7 +35,8 @@ def _start_bar(track, name):
 def test_first_track_drops_with_the_hook_after_the_intro(seed):
     """Трек 1: дроп с хуком — сразу после интро (такт 8, не 16); интро и аутро — как у остальных (блэнд)."""
     plan = seeded_plan(profile(hooks=HOOKS), seed)
-    first, second = compose(plan, 1, melodies=MELODIES), compose(plan, 2, melodies=MELODIES)
+    first = compose(plan, 1, melodies=MELODIES)
+    second = compose(with_template(plan, 2, "club48"), 2, melodies=MELODIES)  # любая форма — с дропом после build
     for track in (first, second):
         validate(track)
     blend = STYLE.blend[0]
@@ -60,6 +61,7 @@ def test_first_track_takes_theme_hook_number_one(seed):
 def test_every_pair_of_forms_blends(theme):
     """Блэнд — свойство пары форм: opening→club, club→club, а также club→opening и opening→opening."""
     plan = seeded_plan(seeded_profile(theme), 3, set_id="o")
+    plan = with_template(with_template(plan, 2, "club48"), 3, "club48")
     opening, club, club2 = (compose(plan, no, deck="AB"[no % 2]) for no in (1, 2, 3))
     for leaving, incoming in ((opening, club), (club, club2), (club, opening), (opening, opening)):
         assert blend_bars(leaving, incoming) == STYLE.blend[0]

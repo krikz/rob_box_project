@@ -289,7 +289,7 @@ def _form_signature(form: Any) -> str:
 
 def track_composition(track: Any) -> Dict[str, Any]:
     """Вектор состава трека v2 одной строкой (ADR-0152 §2.3, I24): синты ролей, бочка, каркас хэтов, форма, темп,
-    лад, тоника, хук, прогрессия, сэмплы, энергия; рисунки пэда и баса и A9-модель трека (ADR-0152 PR-5/PR-6).
+    лад, тоника, хук, прогрессия, сэмплы, энергия; шаблон формы (PR-7), рисунки пэда и баса и A9-модель трека (ADR-0152 PR-5/PR-6).
     Единственный источник оси «состав»: лог ``started`` и ``scripts/music/live_dj/diversity.py`` читают его же."""
     key = track.history_key
     parts = track.parts
@@ -303,7 +303,8 @@ def track_composition(track: Any) -> Dict[str, Any]:
         "form": _form_signature(track.form), "bpm": track.bpm, "mode": track.key.mode, "root": kn.ROOTS[key.root],
         "hook": key.hook or "-", "hook_fp": key.hook_fingerprint or "-", "prog": key.progression,
         "sample": key.sample or "-", "perc": key.perc or "-", "fx": key.fx or "-", "energy": track.energy,
-        "pad_figure": key.pad_figure or "-", "bass_figure": key.bass_figure or "-", "a9_model": track.mix.a9_model,
+        "pad_figure": key.pad_figure or "-", "bass_figure": key.bass_figure or "-", "template": key.template or "-",
+        "a9_model": track.mix.a9_model,
         "a9_trim": dict(track.mix.a9_trim),
     }
 
@@ -327,6 +328,6 @@ def track_history(track: Any, set_id: Optional[str] = None) -> Dict[str, Any]:
         "set_id": set_id, "style": "club_v2", "kit": key.kit, "progression": key.progression,
         "kick": kick_name(track.parts["kick"].sample) if "kick" in track.parts else None,
         "melody_name": key.hook, "hook_fingerprint": key.hook_fingerprint, "sample": key.sample, "fx": key.fx,
-        "perc": key.perc, "pad_figure": key.pad_figure, "bass_figure": key.bass_figure,
+        "perc": key.perc, "pad_figure": key.pad_figure, "bass_figure": key.bass_figure, "template": key.template,
         "root": kn.ROOTS[key.root], "bpm": float(track.bpm), "scale": track.key.mode, **synths,
     }

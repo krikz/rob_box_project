@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from rob_box_music.arrange.compose import compose
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
@@ -44,6 +46,14 @@ def profile(root: int = 9, mode: str = "minor", hooks=("long", "short", "slow", 
     return ThemeProfile("тест", "club", bpm, root, mode, tuple(hooks), row)
 
 
-def compose_p(prof: ThemeProfile, track_no: int, set_seed: int = 0, **kw):
-    """``compose`` по seeded-плану профиля: так трек получают тесты PR-3a (тема → хук)."""
-    return compose(seeded_plan(prof, set_seed), track_no, **kw)
+def with_template(plan, track_no: int, template: str):
+    """План с формой ``template`` у трека ``track_no`` (ADR-0152 PR-7: форму выбирает план, а не номер трека)."""
+    tracks = tuple(replace(t, template=template) if t.no == track_no else t for t in plan.tracks)
+    return replace(plan, tracks=tracks)
+
+
+def compose_p(prof: ThemeProfile, track_no: int, set_seed: int = 0, template: str = "", **kw):
+    """``compose`` по seeded-плану профиля: так трек получают тесты PR-3a (тема → хук). ``template`` — форма трека
+    (по умолчанию её выбирает план)."""
+    plan = seeded_plan(prof, set_seed)
+    return compose(with_template(plan, track_no, template) if template else plan, track_no, **kw)

@@ -459,7 +459,8 @@ LPF_OPEN = 0.0
 LPF_TOP_HZ = 4000.0
 LPF_RANGE_HZ = (200.0, LPF_TOP_HZ)
 _CLUB_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
-    "build": (400.0, LPF_TOP_HZ), "break": (1200.0, 1200.0), "outro_tail": (LPF_TOP_HZ, 300.0),
+    "build": (400.0, LPF_TOP_HZ), "build2": (400.0, LPF_TOP_HZ), "break": (1200.0, 1200.0),
+    "break2": (1200.0, 1200.0), "outro_tail": (LPF_TOP_HZ, 300.0),
 }
 #: Роли под свипом секции; в хвосте блэнда (``outro_tail``) — всё, что звучит, кроме бочки (§3.12).
 _CLUB_LPF_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
@@ -486,8 +487,8 @@ TRIM_LAG_S = 0.5
 #: Build поднимается всю секцию к дропу, второй дроп — пик трека; интро и хвост равны: в блэнде двух дек (мастер
 #: общий) громкость не прыгает. Брейк −5, не глубже: в шумной мастерской тихое пропадает (#3154, решение В3).
 SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
-    "intro": (-4.0, False), "intro_low": (-4.0, False), "build": (-1.5, True), "drop": (-1.0, False),
-    "break": (-5.0, False), "drop2": (0.0, False), "outro": (-3.0, False), "outro_tail": (-4.0, False),
+    "intro": (-4.0, False), "intro_low": (-4.0, False), "build": (-1.5, True), "build2": (-1.5, True), "drop": (-1.0, False),
+    "break": (-5.0, False), "break2": (-5.0, False), "drop2": (0.0, False), "outro": (-3.0, False), "outro_tail": (-4.0, False),
 }
 
 #: Тембры по теме (ADR-0149 §4.7 ``timbre_family``): роль → синты семьи; выбор внутри — по сиду трека со штрафом за
@@ -655,7 +656,7 @@ __all__ += [
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
     "PAD_ROBOT_DB_UNMEASURED", "A9_MIN_GAIN", "A9_STEP_DB",
-    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BassFigure",
+    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BassFigure", "FormSpec",
 ]
 
 
@@ -669,28 +670,54 @@ __all__ += [
 _CLUB_BLEND = (8, 4)  # (phrase_bars, bass_swap_bar) блэнда двух дек (ADR-0149 §3.12, PR-8)
 _CLUB_DRUMS = frozenset({"kick", "hats"})
 _CLUB_FULL = _CLUB_DRUMS | {"clap", "bass", "pad", "lead"}
-_CLUB_FORM: Tuple[Tuple[str, int, int, frozenset], ...] = (
-    ("intro", _CLUB_BLEND[1], 2, frozenset({"hats", "pad"})),
-    ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 2, _CLUB_DRUMS | {"bass", "pad"}),
-    # Состав растёт по форме: build без баса — низ возвращается ударом в дроп; брейк-луп (``Style.layer_sections``)
-    # вступает только во втором дропе — он плотнее первого. До этой правки build и оба дропа играли одним составом
-    # и на записи не различались (робот 05.10: build −23.9 дБ, дроп −24.5, drop2 −26.0; слух Шифу и отзыв
-    # эксперта: «нет восхождения, кульминации»).
-    ("build", 8, 5, _CLUB_FULL - {"bass"}),
-    ("drop", 8, 8, _CLUB_FULL),
-    ("break", 8, 4, frozenset({"hats", "pad", "lead"})),
-    ("drop2", 8, 9, _CLUB_FULL),
+FormSpec = Tuple[Tuple[str, int, int, frozenset], ...]
+#: Хвост всех форм клуба (блэнд ``Style.blend``): outro с ударными и басом, затем хэты и пэд — входящий трек
+#: начинает хэтами и пэдом под ним. В хвосте нет лида; ``outro`` длиннее 4 тактов (``long64``) блэнда не касается.
+_CLUB_TAIL: FormSpec = (
     ("outro", 8 - (_CLUB_BLEND[0] - _CLUB_BLEND[1]), 2, _CLUB_DRUMS | {"bass", "pad"}),
     ("outro_tail", _CLUB_BLEND[0] - _CLUB_BLEND[1], 1, frozenset({"hats", "pad"})),
 )
-#: Форма первого трека сета — ``dropfirst48`` (ADR-0152 §3.5; #3427): блэнда на входе у него нет, а тему человек ждёт
-#: сразу — дроп с хуком целиком идёт после интро (такт 8, ~14 с при 138 BPM, а не такт 16 — ~28 с), build — перед
-#: вторым дропом. Интро и аутро те же, что у :data:`_CLUB_FORM`: блэнд с любым следующим треком не меняется.
-_CLUB_OPENING_FORM: Tuple[Tuple[str, int, int, frozenset], ...] = (
-    *_CLUB_FORM[:2], _CLUB_FORM[3], _CLUB_FORM[4], _CLUB_FORM[2], *_CLUB_FORM[5:])
+_CLUB_INTRO: FormSpec = (
+    ("intro", _CLUB_BLEND[1], 2, frozenset({"hats", "pad"})),
+    ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 2, _CLUB_DRUMS | {"bass", "pad"}),
+)
+# Состав растёт по форме: build без баса — низ возвращается ударом в дроп; брейк-луп (``Style.layer_sections``)
+# вступает только во втором дропе — он плотнее первого. До этой правки build и оба дропа играли одним составом
+# и на записи не различались (робот 05.10: build −23.9 дБ, дроп −24.5, drop2 −26.0; слух Шифу и отзыв
+# эксперта: «нет восхождения, кульминации»).
+_CLUB_BUILD: FormSpec = (("build", 8, 5, _CLUB_FULL - {"bass"}),)
+_CLUB_DROP: FormSpec = (("drop", 8, 8, _CLUB_FULL),)
+_CLUB_BREAK: FormSpec = (("break", 8, 4, frozenset({"hats", "pad", "lead"})),)
+_CLUB_DROP2: FormSpec = (("drop2", 8, 9, _CLUB_FULL),)
+#: Формы клубного трека (ADR-0152 §3.5, PR-7): имя → секции ``(имя, такты, энергия 0..10, роли)``. Имена секций —
+#: ключи развития хука ``arrange.hook.DEVELOPMENT``, дуги ``SECTION_TRIM_DB``, LPF ``section_lpf`` и слоёв
+#: ``layer_sections``. Блэнд — свойство пары форм: у каждой интро 4+4 и хвост outro/outro_tail 4+4 (``model.blend_bars``,
+#: проверено на всех парах ``test_forms``). Энергия секции — ось вида (``Style.looks``): интро/аутро (блэнд) — ровная
+#: прямая бочка, build 4..7, дроп ≥ 7 — полный «насос».
+#:  * ``club48`` — база: build, drop, break, drop2 (48 тактов);
+#:  * ``short32`` — «проходной» трек без брейка и второго дропа (32);
+#:  * ``long64`` — пик сета: два подъёма и длинный брейк под ``held`` (64, outro 8);
+#:  * ``dropfirst48`` — дроп сразу после интро (такт 8, ~14 с при 138 BPM, а не такт 16), build — перед вторым
+#:    дропом (#3427): тему человек ждёт сразу. Это форма первого трека сета (``Style.opening_form``).
+_CLUB_FORMS: Mapping[str, FormSpec] = {
+    "club48": (*_CLUB_INTRO, *_CLUB_BUILD, *_CLUB_DROP, *_CLUB_BREAK, *_CLUB_DROP2, *_CLUB_TAIL),
+    "short32": (*_CLUB_INTRO, *_CLUB_BUILD, *_CLUB_DROP, *_CLUB_TAIL),
+    "long64": (*_CLUB_INTRO, *_CLUB_BUILD, *_CLUB_DROP, *_CLUB_BREAK,
+               ("build2", 8, 6, _CLUB_FULL - {"bass"}), *_CLUB_DROP2,
+               ("break2", 4, 4, frozenset({"hats", "pad", "lead"})),
+               ("outro", 8, 2, _CLUB_DRUMS | {"bass", "pad"}), _CLUB_TAIL[1]),
+    "dropfirst48": (*_CLUB_INTRO, *_CLUB_DROP, *_CLUB_BREAK, *_CLUB_BUILD, *_CLUB_DROP2, *_CLUB_TAIL),
+}
+_CLUB_OPENING_FORM = "dropfirst48"
+#: Энергия трека 1..5 (``ENERGY_WAVE``) → формы, из которых выбирает план (со штрафом за недавние): проходные —
+#: на спаде и в начале, ``long64`` — только у пика; ``dropfirst48`` — со середины волны.
+_CLUB_ENERGY_FORMS: Mapping[int, Tuple[str, ...]] = {
+    1: ("short32", "club48"), 2: ("short32", "club48"), 3: ("short32", "club48", "dropfirst48"),
+    4: ("short32", "club48", "dropfirst48", "long64"), 5: ("long64", "club48", "dropfirst48"),
+}
 #: Секции слоёв DJ_Dave (``arrange.samples``, PR-3d): psr-слой — build, дропы и break; брейк-луп — только второй
 #: дроп (им он плотнее первого); FX — первая доля дропов (в блэнде PR-8 intro/outro звучат на двух деках).
-_CLUB_LAYER_SECTIONS: Mapping[str, Tuple[str, ...]] = {"sample": ("build", "drop", "break", "drop2"),
+_CLUB_LAYER_SECTIONS: Mapping[str, Tuple[str, ...]] = {"sample": ("build", "build2", "drop", "break", "break2", "drop2"),
                                                        "loop": ("drop2",), "fx": ("drop", "drop2")}
 #: Прогрессии club по ступеням лада, аккорд на 2 такта (8-тактовая петля).
 #: Приёмка 02.10 (A13): при четырёх прогрессиях одна занимала 5 треков из 10 — пул расширен до восьми.
@@ -729,10 +756,11 @@ class Style:
     # Гармония: звуков в аккорде (терциями лада), прогрессии по ступеням.
     chord_size: int
     progressions: Tuple[Tuple[int, ...], ...]
-    # Форма: секции, форма первого трека сета (тема раньше, #3427), блэнд (phrase_bars, bass_swap_bar), секции
-    # слоёв сэмплов.
-    form: Tuple[Tuple[str, int, int, frozenset], ...]
-    opening_form: Tuple[Tuple[str, int, int, frozenset], ...]
+    # Форма: шаблоны форм (ADR-0152 §3.5), ключ формы первого трека сета (тема раньше, #3427), формы по энергии
+    # трека, блэнд (phrase_bars, bass_swap_bar), секции слоёв сэмплов.
+    forms: Mapping[str, FormSpec]
+    opening_form: str
+    energy_forms: Mapping[int, Tuple[str, ...]]
     blend: Tuple[int, int]
     layer_sections: Mapping[str, Tuple[str, ...]]
     # Микс: уровни ролей, роли под сайдчейном, LPF-свип секций, стерео ролей.
@@ -756,7 +784,8 @@ STYLES: Mapping[str, Style] = {
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
         bass_figures=("offbeat", "rolling8"), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
-        form=_CLUB_FORM, opening_form=_CLUB_OPENING_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
+        forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS,
+        blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
         # A9′ (низ дропа на роботе ≥ 0.5) + запас на остаток модели (σ 0.08 доли на дроп, #3441)
@@ -769,7 +798,10 @@ DEFAULT_STYLE = "club"
 REGISTERS: Mapping[str, Tuple[int, int]] = STYLES[DEFAULT_STYLE].registers
 DUCK_ROLES: Tuple[str, ...] = tuple(dict.fromkeys(r for st in STYLES.values() for r in st.duck_roles))
 
-__all__ += ["DEFAULT_STYLE", "DUCK_ROLES", "REGISTERS", "STYLES", "Style"]
+#: Все шаблоны форм всех стилей (валидатор ``model.validate``: ``HistoryKey.template`` — известная форма).
+FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.forms)
+
+__all__ += ["DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "REGISTERS", "STYLES", "Style"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

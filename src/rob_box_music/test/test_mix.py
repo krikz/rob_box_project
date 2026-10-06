@@ -28,7 +28,8 @@ FOUR_ON_FLOOR = (0, 4, 8, 12)
 
 def _track(seed, track_no=1):
     hooks = MELODIES if seed % 2 == 0 else None
-    return compose_p(profile(root=seed % 12), track_no, set_seed=seed, melodies=hooks)
+    return compose_p(profile(root=seed % 12), track_no, set_seed=seed, melodies=hooks,
+                     template="" if track_no == 1 else "club48")  # структура club48 (PR-7: формы — test_forms)
 
 
 def _events(track):
