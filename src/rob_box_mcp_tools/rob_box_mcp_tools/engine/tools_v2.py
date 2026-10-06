@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
@@ -32,6 +32,7 @@ from rob_box_music.theme import ThemeProfile, match_style, seeded_profile
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
+from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .search import ThemeHits, theme_search
 from .session import SetMemory, SetSession, plan_source
@@ -140,7 +141,7 @@ class DjSetTool(MCPTool):
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None,
                  finder: Optional[ThemeFinder] = None, history: Any = None,
-                 tracks_dir: Optional[str] = None) -> None:
+                 tracks_dir: Optional[str] = None, titles: Optional[Titles] = None, lines: bool = True) -> None:
         super().__init__(node)
         self._owner = owner
         self._reasoner = reasoner or SetReasoner(enabled=False)
@@ -148,6 +149,9 @@ class DjSetTool(MCPTool):
         library = _shared(_rtttl_library)
         self._melodies = melodies or library_melodies(library)
         self._find = finder or theme_finder(library)
+        self._titles = titles or library_titles(library)
+        self._missing: Tuple[str, ...] = ()  # части темы-перечисления без мелодий (последний сет): их не называть
+        self._lines = lines  # реплика диджея на каждом переходе (§12 В2, решение Шифу 06.10)
         self._seed = seed
         self._tracks_dir = tracks_dir or None
         self._confirm = confirm
@@ -218,6 +222,7 @@ class DjSetTool(MCPTool):
                  f"хуки={list(profile.hook_ids)}")
         if hits.missing:  # часть темы-перечисления без мелодий: честно в лог, не подмена (I16)
             log.info(f"🎛️ [dj_set] тема «{theme}»: не найдено: {', '.join(f'«{p}»' for p in hits.missing)}")
+        self._missing = hits.missing
         return profile
 
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE) -> Dict[str, Any]:
@@ -228,9 +233,9 @@ class DjSetTool(MCPTool):
         set_id = f"set{set_seed % 100000:05d}"
         plan = seeded_plan(profile, set_seed, set_id=set_id, history=self._memory.peek())  # темп и окно — на сет
         logger = self.node.get_logger() if self.node is not None else None
-        box = SetPlanBox(plan, self._melodies, speak=self._speak, logger=logger)
+        box = SetPlanBox(plan, self._melodies, lines=self._transition_lines(persona, logger), logger=logger)
         base = plan_source(box.current, self._memory)
-        session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck)), set_id=set_id,
+        session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck), no), set_id=set_id,
                              bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
                              on_track_started=box.on_started, tracks_dir=self._tracks_dir)
         result = session.start()
@@ -240,6 +245,16 @@ class DjSetTool(MCPTool):
             reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
         return {**result, "theme": theme, "style": plan.style, "genre": plan.genre, "theme_source": profile.source,
                 "seed": set_seed, "reasoner": reasoner}
+
+    def _transition_lines(self, persona: Optional[str], logger: Any) -> Optional[TransitionLines]:
+        """Реплики сета: факты — из плана и библиотеки, раскраска — LLM ризонера (его breaker); нечем говорить или
+        выключено параметром — ``None``."""
+        if not self._lines or self._speak is None:
+            return None
+        missing = self._missing
+        ask = self._reasoner.ask if self._reasoner.enabled else None
+        return TransitionLines(self._speak, titles=self._titles, ask=ask, persona=persona,
+                               theme_names=lambda _theme: missing, fold=latin_fold, logger=logger)
 
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""

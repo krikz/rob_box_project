@@ -228,11 +228,11 @@ def _set_reasoner(node: Any) -> SetReasoner:
     """PR-10: ризонер плана сета по параметрам ноды; ``music_v2_reasoner: false`` — ноль вызовов LLM."""
     return SetReasoner(enabled=bool(node.get_parameter("music_v2_reasoner").value),
                        deadline_s=float(node.get_parameter("music_v2_reasoner_deadline_s").value),
-                       hype=bool(node.get_parameter("music_v2_hype_line").value), logger=node.get_logger())
+                       logger=node.get_logger())
 
 
 def _speaker(node: Any) -> Callable[[str], None]:
-    """Выкрик (под флагом В2) — тем же ``speak_text``, что у LLM: один путь в TTS."""
+    """Реплика диджея на переходе (§12 В2) — тем же ``speak_text``, что у LLM: один путь в TTS (SSML строит тул)."""
     return lambda line: node.registry.execute("speak_text", text=line)
 
 
@@ -265,7 +265,8 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     history = MusicHistory()  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
     history.announce(node.get_logger())
     dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
-                       history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value))
+                       history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
+                       lines=bool(node.get_parameter("music_v2_dj_lines").value))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
     node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
@@ -329,10 +330,12 @@ class MCPServer(Node):
         # /voice/music/state и /voice/music/event.
         # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
         self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
-        # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax) и выкрик hype_line (В2, выкл).
+        # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax). §12 В2 (решение Шифу 06.10): реплика диджея на
+        # каждом переходе — факты из плана, LLM ризонера раскрашивает, иначе шаблон; музыку не трогает.
+        # Старый ключ music_v2_hype_line (выкрик один раз за сет) больше не читается.
         self.declare_parameter("music_v2_reasoner", True)
         self.declare_parameter("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
-        self.declare_parameter("music_v2_hype_line", False)
+        self.declare_parameter("music_v2_dj_lines", True)
         # ADR-0152 §2.3: полная модель каждого трека сета — <track_id>.json (ротация); "" — не писать.
         self.declare_parameter("music_v2_tracks_dir", "/data/music_v2/tracks")
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
