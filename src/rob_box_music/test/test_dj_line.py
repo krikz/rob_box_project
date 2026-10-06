@@ -4,8 +4,6 @@ import pytest
 
 from rob_box_music import dj_line as dl
 
-pytestmark = pytest.mark.unit
-
 NAMES = ("Super Mario Bros", "Тетрис", "Аладдин", "Марио")
 TETRIS = dl.LineFacts(2, 4, "Марио, Тетрис, Аладдин", "Тетрис", 4, 3, NAMES)
 
