@@ -214,7 +214,7 @@ def test_section_arc_moves_the_trim_inside_the_track_and_the_newest_track_owns_i
     второй дроп — пик трека; после старта следующего трека дугу ведёт он — хвост уходящего мастер не трогает."""
     from rob_box_music.arrange.compose import form_spec
 
-    SECTIONS = form_spec(kn.STYLES["club"], 1)  # дуга трека 1 — его форма (#3427: дроп после интро)
+    SECTIONS = form_spec(kn.STYLES["club"], kn.STYLES["club"].opening_form)  # дуга трека 1 — его форма (#3427: дроп после интро)
 
     rig = _rig()
     _tap_master(rig)

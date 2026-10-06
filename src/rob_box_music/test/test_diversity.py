@@ -108,19 +108,22 @@ def test_layers_sound_only_in_their_sections(fifty):
         spans = _section_spans(track)
         for role in ("sample", "loop", "fx"):
             events = by_slot[program.slots[role]]
+            if not any(n in spans for n in kn.STYLES["club"].layer_sections[role]):
+                assert not events, role  # форма без секций слоя (``short32``: нет drop2 под луп)
+                continue
             assert events, role
             for ev in events:
                 assert any(lo <= ev.beat < hi for name, (lo, hi) in spans.items()
                            if name in kn.STYLES["club"].layer_sections[role])
         fx_beats = sorted({ev.beat for ev in by_slot[program.slots["fx"]]})
-        assert fx_beats == sorted(spans[n][0] for n in kn.STYLES["club"].layer_sections["fx"])
+        assert fx_beats == sorted(spans[n][0] for n in kn.STYLES["club"].layer_sections["fx"] if n in spans)
         assert program.sample_files == {kn.SAMPLE_CATALOG[n].path for n in _used(track)}
 
 
 def test_loop_is_chopped_into_eighths_each_restarted_on_its_beat(fifty):
     """DJ_Dave ``loopAt(l).chop(l*8).legato(1)``: событие на каждой восьмой, кусок ``pos`` = доля от начала лупа
     по модулю его длины, ``sus`` = восьмая, ``tempo`` = темп оригинала; без ``beat_stretch``."""
-    for track in fifty[0][::5]:
+    for track in (t for t in fifty[0][::5] if any(s.name == "drop2" for s in t.form.sections)):  # луп — в drop2
         program, by_slot = _events_by_slot(track)
         info = kn.SAMPLE_CATALOG[track.parts["loop"].synth_or_sample]
         events = by_slot[program.slots["loop"]]
@@ -272,7 +275,10 @@ def test_sample_level_comes_from_the_loudness_model_and_the_file_mean(fifty):
     import re
     for track in fifty[0][:10]:
         code = render(track, "A").code
+        names = {s.name for s in track.form.sections}
         for role in ("sample", "loop", "fx"):
+            if not names & set(kn.STYLES["club"].layer_sections[role]):
+                continue  # форма без секций слоя (``short32``: нет drop2 под луп)
             part = track.parts[role]
             info = kn.SAMPLE_CATALOG[part.synth_or_sample]
             line = next(ln for ln in code.splitlines() if ln.startswith(render(track, "A").slots[role] + " >>"))
