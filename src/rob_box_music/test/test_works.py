@@ -176,3 +176,54 @@ def test_report_names_every_field_and_says_no_network():
     records, built = _registry()
     text = w.report(records, built)
     assert all(f in text for f in w.FIELDS) and "запросов в сеть: 0" in text
+
+
+# ── score_index (ADR-0154 §3.2, M6) ───────────────────────────────────────────────────────────────────────────
+
+def _score_row(mid="pdmx:QmA", license="cc-zero", title="Cheers", **over):
+    return w.ScoreIndexRow(material_id=mid, title=title, composer="", meter="4/4", key="C major", bars=8,
+                           license=license, phrase_count=2, file=mid.replace(":", "_") + ".json", **over)
+
+
+def test_score_index_takes_only_usable_licenses_and_names_each_rejection():
+    """M6: пустая лицензия, unknown и конфликт в индекс не попадают; причина названа."""
+    conn = sqlite3.connect(":memory:")
+    rows = [_score_row("pdmx:good1"), _score_row("pdmx:empty", license=""), _score_row("pdmx:unk", license="unknown"),
+            _score_row("pdmx:nan", license="NA"), _score_row("pdmx:conf", license="license_conflict"),
+            _score_row("pdmx:good2", license="publicdomain", rating=4.5)]
+    written, rejected = w.write_score_index(conn, rows)
+    assert written == 2 and [m for m, _why in rejected] == ["pdmx:empty", "pdmx:unk", "pdmx:nan", "pdmx:conf"]
+    assert all("лицензия" in why for _m, why in rejected)
+    assert [r[0] for r in conn.execute("SELECT material_id FROM score_index ORDER BY 1")] == ["pdmx:good1", "pdmx:good2"]
+
+
+def test_score_index_row_is_built_from_material_with_the_most_repeated_phrase_as_hook():
+    from rob_box_music import material as mt
+    from rob_box_music.model import Key, PitchEvent
+    m = mt.ScoreMaterial("pdmx:QmB", "Тема", "Автор", "PDMX QmB", "publicdomain", (3, 4), 96, Key(9, "minor"),
+                         (PitchEvent(69, 0.0, 1.0, 3),),
+                         phrases=(mt.Phrase(0, 4, "new", 1), mt.Phrase(4, 4, "repeat", 3), mt.Phrase(8, 4, "repeat", 3)),
+                         stats=mt.MaterialStats(rating=4.0, n_views=7, complexity=2))
+    row = w.score_index_row(m, bars=12, file="pdmx_QmB.json", genres="folk", n_ratings=5, keysig="0 sharps")
+    assert (row.meter, row.key, row.bpm, row.phrase_count, row.hook_phrase_bar) == ("3/4", "A minor", 96, 3, 4)
+    assert (row.rating, row.n_ratings, row.n_views, row.keysig, row.license) == (4.0, 5, 7, "0 sharps", "publicdomain")
+
+
+def test_score_index_is_idempotent_and_upserts():
+    conn = sqlite3.connect(":memory:")
+    w.write_score_index(conn, [_score_row(rating=3.0)])
+    w.write_score_index(conn, [_score_row(rating=4.0)])
+    assert conn.execute("SELECT COUNT(*), MAX(rating) FROM score_index").fetchone() == (1, 4.0)
+
+
+def test_scores_are_linked_to_works_as_unconfirmed_proposals_and_survive_registry_rebuild():
+    records, built = _registry()
+    conn = sqlite3.connect(":memory:")
+    w.write_registry(conn, built)
+    w.write_score_index(conn, [_score_row("pdmx:QmA", title="Cheers"), _score_row("pdmx:QmZ", title="Нет такой")])
+    rows = conn.execute("SELECT material_id, kind, link_level, confirmed FROM work_sources "
+                        "WHERE kind='pdmx'").fetchall()
+    assert rows == [("pdmx:QmA", "pdmx", "exact", 0)]  # только по названию; «Нет такой» — без произведения
+    w.write_registry(conn, built)  # перестройка реестра стирает work_sources и подвязывает партитуры заново
+    assert conn.execute("SELECT COUNT(*) FROM work_sources WHERE kind='pdmx'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM work_sources WHERE kind='rtttl'").fetchone()[0] == 4

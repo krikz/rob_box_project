@@ -23,8 +23,9 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, RU_ALIASES, TAG_WORK_TYPE,
-                        THEMES)
+from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, ROOTS, RU_ALIASES,
+                        TAG_WORK_TYPE, THEMES)
+from .material import ScoreMaterial, license_usable
 from .rtttl import consensus_order
 
 FACT_SOURCES = ("rtttl", "pdmx", "derived", "manual", "wikidata", "mb")
@@ -323,7 +324,98 @@ def write_registry(conn: sqlite3.Connection, works: Iterable[Work]) -> int:
             conn.executemany("INSERT INTO work_facts VALUES (?,?,?,?,?,?,?,?)",
                              [(w.work_id, f, x.value, x.source, x.source_id, x.fetched_at, x.rules_version,
                                int(x.verified)) for f in FIELDS for x in [w.fact(f)] if x])
+    link_score_sources(conn)  # перестройка стирает work_sources целиком — партитуры из score_index подвязываем заново
     return len(works)
+
+
+# ── Индекс партитур (ADR-0154 §3.2): ``score_index`` в той же SQLite, партитура — источник ``pdmx:<id>`` произведения ──
+
+_SCORE_INDEX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS score_index (material_id TEXT PRIMARY KEY, title TEXT NOT NULL, composer TEXT NOT NULL,
+    genres TEXT NOT NULL, rating REAL, n_ratings INTEGER, n_views INTEGER, complexity INTEGER, meter TEXT NOT NULL,
+    bpm INTEGER, key TEXT NOT NULL, keysig TEXT, bars INTEGER NOT NULL, license TEXT NOT NULL,
+    phrase_count INTEGER NOT NULL, hook_phrase_bar INTEGER, file TEXT NOT NULL);
+"""
+_SCORE_COLUMNS = ("material_id", "title", "composer", "genres", "rating", "n_ratings", "n_views", "complexity",
+                  "meter", "bpm", "key", "keysig", "bars", "license", "phrase_count", "hook_phrase_bar", "file")
+
+
+@dataclass(frozen=True)
+class ScoreIndexRow:
+    """Строка ``score_index``: то, чем ищут и ранжируют партитуру, не открывая её JSON (``file`` — имя в каталоге)."""
+
+    material_id: str
+    title: str
+    composer: str
+    meter: str
+    key: str
+    bars: int
+    license: str
+    phrase_count: int
+    file: str
+    genres: str = ""
+    rating: Optional[float] = None
+    n_ratings: Optional[int] = None
+    n_views: Optional[int] = None
+    complexity: Optional[int] = None
+    bpm: Optional[int] = None
+    keysig: Optional[str] = None  # ключевые знаки партитуры ("2 sharps"), не вывод анализатора; ``key`` — вывод
+    hook_phrase_bar: Optional[int] = None  # такт самой повторяемой фразы — кандидат в хук (Н9)
+
+
+def score_index_row(m: ScoreMaterial, *, bars: int, file: str, genres: str = "", n_ratings: Optional[int] = None,
+                    keysig: Optional[str] = None) -> ScoreIndexRow:
+    """Строка индекса из материала; хук-фраза — самая повторяемая, при равенстве — самая ранняя."""
+    best = max(m.phrases, key=lambda p: (p.repeats, -p.bar), default=None)
+    return ScoreIndexRow(m.material_id, m.title, m.composer, f"{m.meter[0]}/{m.meter[1]}",
+                         f"{ROOTS[m.key.root]} {m.key.mode}", bars, m.license, len(m.phrases), file, genres,
+                         m.stats.rating, n_ratings, m.stats.n_views, m.stats.complexity, m.bpm, keysig,
+                         best.bar if best else None)
+
+
+def write_score_index(conn: sqlite3.Connection, rows: Iterable[ScoreIndexRow]) -> Tuple[int, List[Tuple[str, str]]]:
+    """Записать строки в ``score_index`` (upsert по ``material_id``). Строка без пригодной лицензии
+    (:func:`material.license_usable`: пусто, ``unknown``, ``…conflict``) в индекс не попадает (ADR-0154 M6) —
+    возвращается ``(записано, [(material_id, причина), ...])``."""
+    rejected: List[Tuple[str, str]] = []
+    good = []
+    for r in rows:
+        if license_usable(r.license):
+            good.append(r)
+        else:
+            rejected.append((r.material_id, f"лицензия {r.license!r} не годится для индекса"))
+    with conn:
+        conn.executescript(_SCORE_INDEX_SCHEMA)
+        conn.executemany(f"INSERT OR REPLACE INTO score_index ({','.join(_SCORE_COLUMNS)}) "
+                         f"VALUES ({','.join('?' * len(_SCORE_COLUMNS))})",
+                         [tuple(getattr(r, c) for c in _SCORE_COLUMNS) for r in good])
+    link_score_sources(conn)
+    return len(good), rejected
+
+
+def link_score_sources(conn: sqlite3.Connection) -> int:
+    """Подвязать партитуры ``score_index`` к произведениям реестра как источники ``pdmx:<id>`` — **предложением**
+    (ADR-0155 В6): ``exact_artist`` — название совпало и композитор пересёкся с автором/исполнителем, ``exact`` —
+    только название; ``confirmed`` не ставится (подтверждает человек, ``manual``). Возвращает число связей;
+    без ``score_index`` или ``works`` — 0."""
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"score_index", "works", "work_sources"} <= have:
+        return 0
+    by_title: Dict[str, List[Tuple[str, str]]] = {}
+    for wid, title, artist, composer in conn.execute("SELECT work_id, title, artist, composer FROM works"):
+        by_title.setdefault(norm(title), []).append((wid, artist + " " + composer))
+    out = []
+    with conn:
+        conn.execute("DELETE FROM work_sources WHERE kind='pdmx'")
+        ranks = dict(conn.execute("SELECT work_id, MAX(rank) FROM work_sources GROUP BY work_id"))
+        for mid, title, composer in conn.execute("SELECT material_id, title, composer FROM score_index ORDER BY "
+                                                 "COALESCE(rating, 0) DESC, material_id").fetchall():
+            for wid, authors in by_title.get(norm(title), []):
+                same = bool(_words(composer) & _words(authors))
+                ranks[wid] = ranks.get(wid, -1) + 1
+                out.append((wid, mid, "pdmx", "exact_artist" if same else "exact", 0.9 if same else 0.6, 0, ranks[wid]))
+        conn.executemany("INSERT OR REPLACE INTO work_sources VALUES (?,?,?,?,?,?,?)", out)
+    return len(out)
 
 
 def read_db_records(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
@@ -361,9 +453,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-__all__ = ["Fact", "FIELDS", "GATE_SHARE", "Gate", "Identity", "LINK_LEVELS", "LOOKUP_TTL_DAYS", "RULES_VERSION", "Work",
-           "WorkSource", "alias_pairs", "aliases_of", "build_works", "clean_identity", "gate", "holes", "norm",
-           "report", "ru_phrase_by_query", "work_id_of", "work_key", "working_ids", "write_registry"]
+__all__ = ["Fact", "FIELDS", "GATE_SHARE", "Gate", "Identity", "LINK_LEVELS", "LOOKUP_TTL_DAYS", "RULES_VERSION",
+           "ScoreIndexRow", "Work", "WorkSource", "alias_pairs", "aliases_of", "build_works", "clean_identity", "gate",
+           "holes", "link_score_sources", "norm", "report", "ru_phrase_by_query", "score_index_row", "work_id_of",
+           "work_key", "working_ids", "write_registry", "write_score_index"]
 
 if __name__ == "__main__":
     sys.exit(main())
