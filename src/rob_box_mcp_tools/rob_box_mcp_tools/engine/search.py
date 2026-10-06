@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -31,8 +31,15 @@ from ..core.translit_ru import strip_version_tail, transliterate_ru
 #: Доля значимых слов запроса, которую должна покрыть запись, чтобы считаться найденной.
 FOUND_MIN = 0.5
 SEARCH_LIMIT = 50
-#: Сколько найденных по теме мелодий получает профиль сета (кандидаты хука и LLM).
+#: Сколько найденных по теме мелодий получает профиль сета (кандидаты хука и LLM); у темы-перечисления — на часть.
 THEME_HOOKS = 8
+#: Хуков темы-перечисления («Марио, Аладдин, Тетрис, Контра»): «мегасет» — десятки три трека. Трек сета ≈ 75 с
+#: (живой прогон 06.10: 5–6 треков ≈ 7 мин), 30 треков ≈ 37 мин без повтора хука; дольше — по кругу (давние
+#: первыми, ``compose.hook_candidates``). Больше не нужно: каждый хук — RTTTL из библиотеки на старте сета.
+THEME_LIST_HOOKS = 30
+#: Разделители частей темы-перечисления: знаки списка, скобки, тире (дефис — только с пробелами: «8-бит» — одно
+#: слово), союзы «и»/«and». Тема 06.10 «… разных игр — Марио, Аладдин, Тетрис, Чёрный Плащ, Контра, Dendy и другие».
+_PART_RE = re.compile(r"[,;:/+()\[\]\n—–]|\s-\s|\b(?:и|and)\b", re.IGNORECASE)
 #: Нот в контуре начала для «консенсуса версий» (#3427): при 7 версии «Terminator» theme_177/theme_178 совпадают,
 #: а повторные ноты «Space Quest» и «Exploration Of Space» уже различаются (при 6 — нет; при 8 расходятся 177/178).
 CONTOUR_NOTES = 7
@@ -224,6 +231,7 @@ class ThemeHits:
 
     names: Tuple[str, ...] = ()
     exact: bool = False
+    missing: Tuple[str, ...] = ()  # части темы-перечисления, по которым не нашлось ни одной мелодии
 
 
 def title_key(text: str) -> str:
@@ -251,14 +259,13 @@ def _pool(library: Any, theme: str, query_terms: List[Term]) -> List[Tuple[float
     return [(1.0, r) for r in extra] + pool
 
 
-def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHits:
-    """Мелодии по словам темы сета для хука, лучшие первыми (#3427):
+def _whole_search(library: Any, theme: str, limit: int) -> ThemeHits:
+    """Мелодии по словам темы целиком, лучшие первыми (#3427):
 
     1. точное совпадение названия записи (``title`` или ``name``, :func:`title_key`) с темой — всегда первым;
        тогда в набор идут ещё только записи, в опознавательных полях которых есть все слова темы, — совпадения по
        одному общему слову («remix», «give») отсекаются;
-    2. затем — :func:`consensus_order` (версии одной мелодии выше одиночной записи).
-    Ни одной — пусто, сет возьмёт пул по хешу темы."""
+    2. затем — :func:`consensus_order` (версии одной мелодии выше одиночной записи)."""
     query_terms = terms(library, theme)
     if not query_terms:
         return ThemeHits()
@@ -272,10 +279,55 @@ def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHit
     return ThemeHits(tuple((consensus_order(exact, limit) + consensus_order(rest, limit))[:limit]), True)
 
 
+def theme_parts(library: Any, theme: str) -> List[str]:
+    """Части темы-перечисления (:data:`_PART_RE`) со значимыми словами; части из одних служебных слов
+    («мегасет для игроков из RTTTL-мелодий разных игр», «и другие») выпадают."""
+    parts = (" ".join(p.split()) for p in _PART_RE.split(theme) if p)
+    return [p for p in parts if p and terms(library, p)]
+
+
+def round_robin(lists: Sequence[Sequence[str]], limit: int) -> List[str]:
+    """Слияние по кругу: первая не взятая мелодия каждой части, затем вторая… — первые треки сета из разных
+    франшиз, а не восемь версий «Марио» подряд; повтор (одна мелодия в двух частях) берётся один раз."""
+    queues = [deque(names) for names in lists]
+    out: List[str] = []
+    while len(out) < limit and any(queues):
+        for queue in queues:
+            while queue and queue[0] in out:
+                queue.popleft()
+            if queue and len(out) < limit:
+                out.append(queue.popleft())
+    return out
+
+
+def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHits:
+    """Мелодии по словам темы сета для хука, лучшие первыми.
+
+    Точное совпадение темы с названием записи — приоритет (#3427, :func:`_whole_search`). Тема-перечисление
+    (две и больше частей со значимыми словами, :func:`theme_parts`) ищется по частям — каждая до ``limit`` мелодий,
+    слияние :func:`round_robin` до :data:`THEME_LIST_HOOKS`: одна мелодия не покрывает половину слов темы «Марио,
+    Тетрис, Контра», и целиком тема не находила ничего (06.10). Часть без находок — в ``missing`` (в лог), не
+    подменяется. Ни одной мелодии — пусто, сет возьмёт пул по хешу темы."""
+    whole = _whole_search(library, theme, limit)
+    parts = [] if whole.exact else theme_parts(library, theme)
+    if len(parts) < 2:
+        return whole
+    found = [whole.names] if whole.names else []
+    missing = []
+    for part in parts:
+        names = _whole_search(library, part, limit).names
+        if names:
+            found.append(names)
+        else:
+            missing.append(part)
+    return ThemeHits(tuple(round_robin(found, THEME_LIST_HOOKS)), False, tuple(missing))
+
+
 def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
     """Имена мелодий темы (:func:`theme_search`)."""
     return theme_search(library, theme, limit).names
 
 
-__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "Term", "ThemeHits", "consensus_order",
-           "coverage", "find", "ranked", "sound_key", "stem", "terms", "theme_hooks", "theme_search", "title_key"]
+__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS", "Term",
+           "ThemeHits", "consensus_order", "coverage", "find", "ranked", "round_robin", "sound_key", "stem", "terms",
+           "theme_hooks", "theme_parts", "theme_search", "title_key"]

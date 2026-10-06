@@ -12,7 +12,9 @@
 * ``mode`` — лад плана из окна жанра;
 * ``hooks`` — до :data:`MAX_HOOKS` хуков только из кандидатов, которые показал код (:func:`hook_candidates`):
   нашёл код хуки по словам темы (#3399) — кандидаты ТОЛЬКО они (ADR-0152 §5), строки таблицы и пул — при
-  пустых находках; ``theme_row`` хуки не подменяет (хуки плана берутся из ``hooks``);
+  пустых находках; ``theme_row`` хуки не подменяет. Хуки плана сета LLM не урезает (:func:`plan_hooks`): найденные
+  по теме остаются все и в порядке кода, без находок выбор LLM идёт первым, пул по хешу — следом (06.10: план из
+  трёх хуков LLM крутил 50 треков по кругу);
 * ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``); кульминация (5) обязана быть не позже
   ``Style.peak_by_track``-го трека (A6, #3459): дугу без пика в этом окне :func:`validate` отвергает
   (``PlanInvalid("energy")``, сет играет seeded-волну с пиком на 4-м треке) — LLM не может выключить кульминацию;
@@ -105,7 +107,8 @@ def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, s
     """``(system, user)``: правила выбора — в промпте, решение проверяет :func:`validate`."""
     system = ("Ты музыкальный редактор DJ-сета робота. Темп сета уже выбран кодом и не меняется. По теме "
               f"человека выбери строку таблицы тем, лад, до {MAX_HOOKS} хуков только из кандидатов "
-              "ниже (если код нашёл хуки по теме, других нет) и дугу энергии: разгон, пик, спад; пик 5 — не позже "
+              "ниже (если код нашёл хуки по теме, других нет; найденные код сыграет все по очереди) и дугу энергии: "
+              "разгон, пик, спад; пик 5 — не позже "
               f"трека {kn.STYLES[kn.DEFAULT_STYLE].peak_by_track}, иначе дуга отвергается. Ответ — один вызов "
               f"{SUBMIT_TOOL}, без текста.")
     if hype:
@@ -176,9 +179,20 @@ def validate(payload: Any, genre: str = "club", hype: bool = False,
                       _hype(payload, hype))
 
 
+def plan_hooks(profile: ThemeProfile, ref: Refinement) -> Tuple[str, ...]:
+    """Хуки плана после поправки — решает код (ADR-0148): нашёл код хуки по словам темы — все найденные в его
+    порядке (у темы-перечисления — по кругу частей, ``search.round_robin``); выбор LLM их не урезает и не
+    переставляет: три хука LLM из одной франшизы подряд ломают круг. Находок нет — хуки LLM первыми, затем
+    пул по хешу темы (не короче seeded-плана)."""
+    if profile.theme_hooks:
+        return profile.hook_ids
+    return tuple(dict.fromkeys((*ref.hook_ids, *profile.hook_ids)))
+
+
 def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
-    """План сета с поправкой: тема/лад/хуки и дуга энергии; темп, сид, тоника и свинг — прежние."""
-    profile = replace(plan.profile, row=ref.row, mode=ref.mode, hook_ids=ref.hook_ids)
+    """План сета с поправкой: тема/лад/хуки (:func:`plan_hooks`) и дуга энергии; темп, сид, тоника и свинг —
+    прежние."""
+    profile = replace(plan.profile, row=ref.row, mode=ref.mode, hook_ids=plan_hooks(plan.profile, ref))
     timbre = kn.THEME_TIMBRE.get(ref.row or "", plan.family)  # строка от LLM — её семья; none — прежняя семья сета
     n = max(len(plan.tracks), len(ref.energy))
     tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= len(ref.energy) else plan.track(no)
@@ -192,4 +206,4 @@ def _with_energy(step: TrackPlan, energy: int) -> TrackPlan:
 
 
 __all__ = ["HYPE_MAX", "MAX_HOOKS", "NO_ROW", "PlanInvalid", "Refinement", "SEEDED", "SUBMIT_TOOL", "apply",
-           "hook_candidates", "prompt", "schema", "tool", "validate"]
+           "hook_candidates", "plan_hooks", "prompt", "schema", "tool", "validate"]

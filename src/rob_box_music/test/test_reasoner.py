@@ -76,7 +76,10 @@ def test_apply_keeps_tempo_seed_tonic_and_swing():
     new = rz.apply(PLAN, ref)
     assert (new.bpm, new.seed, new.swing, new.set_id) == (PLAN.bpm, PLAN.seed, PLAN.swing, PLAN.set_id)
     assert new.profile.bpm == PLAN.profile.bpm and new.profile.root == PLAN.profile.root
-    assert (new.profile.row, new.profile.mode, new.profile.hook_ids) == ("cyber", "phrygian", ("axelf_3", "robot"))
+    assert (new.profile.row, new.profile.mode) == ("cyber", "phrygian")
+    # без находок по теме: выбор LLM первым, пул seeded-плана следом — сет не сжимается до хуков LLM (06.10)
+    assert new.profile.hook_ids[:2] == ("axelf_3", "robot")
+    assert set(new.profile.hook_ids) == {"axelf_3", "robot", *PLAN.profile.hook_ids}
     assert new.profile.source == PLAN.profile.source == "pool"  # строка от LLM — не слова темы (A11, #3399)
     assert [new.track(n).energy for n in range(1, 5)] == [3, 4, 5, 4]
     assert [new.root(n) for n in range(1, 13)] == [PLAN.root(n) for n in range(1, 13)]  # ход по квинтам тот же
@@ -106,9 +109,19 @@ def test_found_theme_hooks_are_the_only_candidates_and_table_rows_do_not_displac
         with pytest.raises(rz.PlanInvalid) as err:
             rz.validate({**VALID, "hooks": hooks}, profile=prof)
         assert err.value.path == "hooks"
-    ref = rz.validate({**VALID, "hooks": ["theme_177", "terminat"]}, profile=prof)  # порядок и подмножество - за LLM
+    ref = rz.validate({**VALID, "hooks": ["theme_177", "terminat"]}, profile=prof)
     assert ref.hook_ids == ("theme_177", "terminat")
-    assert rz.apply(seeded_plan(prof, 42, set_id="s"), ref).profile.hook_ids == ("theme_177", "terminat")
+    # хуки плана — решение кода: все найденные в порядке поиска, выбор LLM их не урезает и не переставляет (06.10)
+    assert rz.apply(seeded_plan(prof, 42, set_id="s"), ref).profile.hook_ids == prof.hook_ids
+
+
+def test_llm_choice_of_three_does_not_shrink_a_list_theme_set():
+    """06.10: тема-перечисление нашла хуки пяти франшиз, LLM выбрала три — сет крутил три хука 50 треков. План
+    сохраняет все найденные в порядке кода (по кругу частей)."""
+    found = ("supermar_4", "unknown_5", "tetris", "contra", "zelda", "supermar", "arabiann", "tetris_3")
+    prof = seeded_profile("марио, аладдин, тетрис, контра, зельда", found=found)
+    ref = rz.validate({**VALID, "hooks": ["tetris_3", "supermar", "contra"]}, profile=prof)
+    assert rz.apply(seeded_plan(prof, 42, set_id="s"), ref).profile.hook_ids[:len(found)] == found
 
 
 def test_without_found_theme_hooks_candidates_are_table_rows_and_pool():
