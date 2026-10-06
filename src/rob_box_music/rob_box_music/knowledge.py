@@ -166,10 +166,13 @@ SYNTH_TRAITS: Mapping[str, SynthTraits] = {
 }
 
 #: Палитра синтов роли: пул сида (``club_arranger.ROLE_SYNTHS``) + явные тембры темы
-#: (``club_timbre.TIMBRE_EXTRAS``). Первый — эталонный.
+#: (``club_timbre.TIMBRE_EXTRAS``). Первый — эталонный. ADR-0152 PR-6: лиды ``rhpiano``, ``kalimba``, ``hoover``,
+#: ``keys``, ``cs80lead`` и басы ``jbass``, ``wobblebass``, ``subbass`` — замер #3430 (громкость и полосы), прелоад
+#: робота (``sclang_robot_2026-09-23.log``: «SynthDef in scsynth»), досылка ``CRITICAL_SYNTHS``.
 SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
-    "lead": ("pluck", "blip", "arpy", "karp", "marimba", "sitar", "epiano", "brass", "orient", "viola"),
-    "bass": ("bass", "retrobass", "dub"),
+    "lead": ("pluck", "blip", "arpy", "karp", "marimba", "sitar", "epiano", "brass", "orient", "viola",
+             "rhpiano", "kalimba", "hoover", "keys", "cs80lead"),
+    "bass": ("bass", "retrobass", "dub", "jbass", "wobblebass", "subbass"),
     "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings"),
 }
 
@@ -495,11 +498,20 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 #: рисунке 16-х — тот же сдвиг, что у ``sinepad`` (+6.3, #3430); долю низа дропа держит A9-модель трека
 #: (``arrange.mix.a9_trim``), а не исключение из палитры. ≥ 2 пэда на семью, у каждого рисунка ≥ 1.
 #: ``mhpad``/``marchstrings`` замерены (#3430), но не в досылке ``CRITICAL_SYNTHS`` — в пул не идут.
+#: ADR-0152 PR-6 (§3.3): 4 лида и 2–3 баса на семью. Лид — синт без собственного хвоста (``held`` у
+#: ``strangerarp``/``supersawlead`` размазал бы мотив), с долей низа < 0.05, достающий цель роли на потолке
+#: ``amp`` (самый тихий — ``keys``: −49.2 при цели −50). Бас — доля низа ≥ 0.9 (#3430): ``retrobass`` (0.59) и ``tb303``
+#: (0.52) держат A9-модель трека на 0.72/0.67 при любом пэде (``a9_trim`` упирается в потолок ``amp``) — в семьи не
+#: идут, ``tb303`` ждёт ``acid16`` (PR-9); ``moogbass`` — разброс замера по тоникам 8 дБ.
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("blip", "pluck"), "bass": ("dub", "bass"), "pad": ("sinepad", "space", "strangerpulsepad")},
-    "hard": {"lead": ("arpy", "blip"), "bass": ("retrobass", "dub"), "pad": ("sinepad", "strings", "strangerpulsepad")},
-    "bright": {"lead": ("pluck", "blip"), "bass": ("bass",), "pad": ("strings", "ambi", "sinepad")},
-    "warm": {"lead": ("pluck", "arpy"), "bass": ("bass", "dub"), "pad": ("sinepad", "ambi", "warmpad")},
+    "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("dub", "subbass", "jbass"),
+             "pad": ("sinepad", "space", "strangerpulsepad")},
+    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "dub"),
+             "pad": ("sinepad", "strings", "strangerpulsepad")},
+    "bright": {"lead": ("pluck", "blip", "kalimba", "epiano"), "bass": ("bass", "jbass"),
+               "pad": ("strings", "ambi", "sinepad")},
+    "warm": {"lead": ("pluck", "arpy", "epiano", "rhpiano"), "bass": ("bass", "dub", "subbass"),
+             "pad": ("sinepad", "ambi", "warmpad")},
 }
 #: Строка ``THEMES`` → семья тембров стиля; тема не из таблицы — ``Style.default_timbre``.
 THEME_TIMBRE: Mapping[str, str] = {"space": "dark", "cyber": "hard", "kids": "bright", "slavic": "warm",
@@ -537,11 +549,32 @@ PAD_FIGURES: Mapping[str, PadFigure] = {
 #: бас громче до ``A9_BASS_BOOST_DB`` (бас под сайдчейном на роботе тише модели на 6.7 дБ, #3430). Не дотянули —
 #: трек играет, ``Mix.a9_model`` честно ниже порога. Ступень, поднимающая долю меньше ``A9_MIN_GAIN``, не
 #: применяется: у ``retrobass`` (низ 0.59, на потолке ``amp`` −35.3 при цели −32) доля 0.73 не растёт ни от пэда −12,
-#: ни от баса — глушить пэд зря нельзя, это задача палитры басов (ADR-0152 PR-6).
+#: ни от баса — глушить пэд зря нельзя; палитра басов (ADR-0152 PR-6) его в семьи не берёт.
 A9_MIN_GAIN = 0.005
 A9_STEP_DB = 2.0
 A9_PAD_FLOOR_DB = -12.0
 A9_BASS_BOOST_DB = 4.0
+
+
+@dataclass(frozen=True)
+class BassFigure:
+    """Рисунок баса (ADR-0152 §3.3): генератор — ``arrange.compose.BASS_GENERATORS[ключ]``.
+
+    ``steps`` — шаги 16-х такта; ни один не на доле (там прямая бочка, ADR-0149 §3.4), нота кончается к следующему
+    шагу рисунка или к доле. ``fifth_last`` — последняя нота такта — квинта аккорда, остальные — тоника.
+    """
+
+    steps: Tuple[int, ...]
+    fifth_last: bool
+
+
+#: Рисунки баса: ``offbeat`` — «и» каждой доли, полдоли, тоника ×3 + квинта (как до PR-6); ``rolling8`` — восемь нот
+#: такта тоникой без октавы, «и» и «а» каждой доли по 16-й: сама восьмая доли занята бочкой, поэтому ролл сдвинут
+#: на «и». Звучащее время у обоих — полдоли на долю: модель громкости роли (бас звучит всю секцию) у них одна.
+BASS_FIGURES: Mapping[str, BassFigure] = {
+    "offbeat": BassFigure(steps=(2, 6, 10, 14), fifth_last=True),
+    "rolling8": BassFigure(steps=(2, 3, 6, 7, 10, 11, 14, 15), fifth_last=False),
+}
 
 
 @dataclass(frozen=True)
@@ -611,7 +644,7 @@ __all__ += [
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "PAD_FIGURES", "PadFigure", "A9_MIN_GAIN", "A9_STEP_DB",
-    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR",
+    "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BassFigure",
 ]
 
 
@@ -677,8 +710,8 @@ class Style:
     registers: Mapping[str, Tuple[int, int]]
     timbres: Mapping[str, Mapping[str, Tuple[str, ...]]]
     default_timbre: str
-    # Фигуры: ключи генераторов ролей. Пэд — пул :data:`PAD_FIGURES` (выбор по сиду трека с историей, ADR-0152
-    # PR-5); бас и лид — первый ключ (PR-6).
+    # Фигуры: ключи генераторов ролей. Пэд и бас — пулы :data:`PAD_FIGURES`/:data:`BASS_FIGURES` (выбор по сиду
+    # трека с историей, ADR-0152 PR-5/PR-6); лид — первый ключ.
     bass_figures: Tuple[str, ...]
     pad_figures: Tuple[str, ...]
     lead_figures: Tuple[str, ...]
@@ -710,7 +743,7 @@ STYLES: Mapping[str, Style] = {
         bpm=(128, 138), swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
         kick_pool=("house", "deep", "techno", "garage"), looks=_CLUB_LOOKS, kits=_CLUB_KITS,
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
-        bass_figures=("offbeat",), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
+        bass_figures=("offbeat", "rolling8"), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
         form=_CLUB_FORM, opening_form=_CLUB_OPENING_FORM, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,

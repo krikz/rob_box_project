@@ -13,7 +13,7 @@ import pytest
 
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
-from rob_box_music.arrange.compose import PAD_GENERATORS, _bar_chords, compose, form_spec
+from rob_box_music.arrange.compose import BASS_GENERATORS, PAD_GENERATORS, _bar_chords, compose, form_spec
 from rob_box_music.diversity import MusicHistory, track_composition, track_history
 from rob_box_music.model import blend_bars
 from rob_box_music.render.events import program_events
@@ -131,8 +131,8 @@ def test_figure_level_is_the_role_target_plus_its_offset(sets):
 def _combinations():
     for family, figure in itertools.product(CLUB.timbres, CLUB.pad_figures):
         pads = [s for s in CLUB.timbres[family]["pad"] if kn.PAD_FIGURES[figure].long_tails or mix.sustains_to_sus(s)]
-        for pad, bass in itertools.product(pads, CLUB.timbres[family]["bass"]):
-            yield family, figure, pad, bass
+        for pad, bass, bass_figure in itertools.product(pads, CLUB.timbres[family]["bass"], CLUB.bass_figures):
+            yield family, figure, pad, bass, bass_figure
 
 
 @pytest.fixture(scope="module")
@@ -145,29 +145,30 @@ def base_tracks():
     return out
 
 
-def _remix(track, no, figure, pad, bass):
+def _remix(track, no, figure, pad, bass, bass_figure=None, lead=None):
+    spec = form_spec(CLUB, no)
     chords = track.harmony.progression[track.form.sections[0].name]
     parts = dict(track.parts)
-    parts["pad"] = PAD_GENERATORS[figure](CLUB, track.key, _bar_chords(form_spec(CLUB, no), "pad", chords), pad,
+    parts["pad"] = PAD_GENERATORS[figure](CLUB, track.key, _bar_chords(spec, "pad", chords), pad,
                                           track.parts["pad"].register)
-    parts["bass"] = replace(track.parts["bass"], synth_or_sample=bass)
+    parts["bass"] = (BASS_GENERATORS[bass_figure](CLUB, track.key, _bar_chords(spec, "bass", chords), bass,
+                                                  CLUB.registers["bass"])
+                     if bass_figure else replace(track.parts["bass"], synth_or_sample=bass))
+    if lead:
+        parts["lead"] = replace(track.parts["lead"], synth_or_sample=lead)
     return mix.mix_parts(CLUB, parts, track.form, figure)
 
 
-@pytest.mark.parametrize("family,figure,pad,bass", list(_combinations()))
-def test_a9_model_holds_for_every_family_figure_and_synth(base_tracks, family, figure, pad, bass):
-    """A9-модель на трек (ADR-0152 §4 п.2, PR-5): низ худшего дропа ≥ порога стиля — или его не дотянуть пэдом вовсе
-    (бас с малой долей низа на потолке ``amp``: даже без пэда доля ниже порога), и тогда пэд не заглушён зря."""
-    for no, track in base_tracks:
-        leveled, track_mix = _remix(track, no, figure, pad, bass)
-        assert track_mix.a9_model is not None
+@pytest.mark.parametrize("family,figure,pad,bass,bass_figure", list(_combinations()))
+def test_a9_model_holds_for_every_family_figure_and_synth(base_tracks, family, figure, pad, bass, bass_figure):
+    """A9-модель на трек (ADR-0152 §4 п.2): низ худшего дропа ≥ порога стиля на каждой комбинации семья × рисунок
+    пэда × пэд × бас × рисунок баса × лид семьи (PR-6: басы семей держат низ — ``retrobass`` 0.72 из ``hard`` убран)."""
+    for (no, track), lead in itertools.product(base_tracks, CLUB.timbres[family]["lead"]):
+        _leveled, track_mix = _remix(track, no, figure, pad, bass, bass_figure, lead)
         assert track_mix.a9_trim.get("pad", 0.0) >= kn.A9_PAD_FLOOR_DB
         assert 0.0 <= track_mix.a9_trim.get("bass", 0.0) <= kn.A9_BASS_BOOST_DB
-        if track_mix.a9_model >= CLUB.a9_model_low:
-            continue
-        no_pad = {r: p for r, p in leveled.items() if r != "pad"}
-        ceiling = mix.a9_model(CLUB, no_pad, track.form, track_mix.duck, track_mix.duck_roles, 0.0)
-        assert ceiling < CLUB.a9_model_low + 0.02, (family, figure, pad, bass, track_mix.a9_model, ceiling)
+        assert track_mix.a9_model >= CLUB.a9_model_low, (family, figure, pad, bass, bass_figure, lead,
+                                                         track_mix.a9_model, dict(track_mix.a9_trim))
 
 
 def test_a9_trim_lowers_the_pad_first_and_records_it(base_tracks):

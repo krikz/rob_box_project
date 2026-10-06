@@ -34,9 +34,9 @@ import v2log as V
 SR = 16000
 WINDOW_S = 60.0
 #: Оси состава трека (``composition``): значение оси - hashable.
-AXES = ("pad", "pad_figure", "lead", "bass", "kick", "kit", "form", "bpm", "mode", "root", "hook", "prog", "sample",
-        "perc", "fx", "energy")
-SYNTH_AXES = ("pad", "pad_figure", "lead", "bass", "kick", "form", "kit")
+AXES = ("pad", "pad_figure", "lead", "bass", "bass_figure", "kick", "kit", "form", "bpm", "mode", "root", "hook",
+        "prog", "sample", "perc", "fx", "energy")
+SYNTH_AXES = ("pad", "pad_figure", "lead", "bass", "bass_figure", "kick", "form", "kit")
 
 
 # ── звук ────────────────────────────────────────────────────────────────────────────────────────────────

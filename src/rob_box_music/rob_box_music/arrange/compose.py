@@ -26,6 +26,8 @@ RTTTL-библиотеки (``arrange.hook``); тональность трека
 Пэд (ADR-0152 PR-5): рисунок трека (``Style.pad_figures``: ``pumped16``/``held``/``stabs``) и синт семьи под рисунок —
 по сиду со штрафом за недавнее (``music_history.pad_figure``/``pad``); A9-модель трека правит уровни пэда и баса
 (``mix.mix_parts``).
+Лид и бас (ADR-0152 PR-6): синт семьи темы (``Style.timbres``) и рисунок баса (``Style.bass_figures``:
+``offbeat``/``rolling8``) — по сиду со штрафом за недавнее (``music_history.lead``/``bass``/``bass_figure``).
 
 Разнообразие (PR-3d, ADR-0149 I17, A12, A13): ``history`` — строки ``music_history`` (свежие первыми). Каркас
 ударных (``Style.kits``) не повторяет прошлый трек; прогрессия — не больше 3 раз за 10 треков; хук-фрагмент
@@ -52,7 +54,7 @@ from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 
 #: Генераторы ролей по ключу фигуры стиля (``Style.*_figures``, ADR-0153 §2.2). Тональные — ``(style, key,
 #: bar_chords, synth, register) -> Part``; мотив лида без хука — ``(style, key, rng) -> ноты``.
-BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {"offbeat": bass.offbeat}
+BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {"offbeat": bass.offbeat, "rolling8": bass.rolling8}
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {"pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
 #: Длина секций с лидом (развитие хука считается от начала каждой).
@@ -212,6 +214,15 @@ def _pad(style: kn.Style, row: Optional[str], bar_chords: List[Tuple[int, Chord]
     return figure, PAD_GENERATORS[figure](style, key, bar_chords, synth, register)
 
 
+def _bass(style: kn.Style, row: Optional[str], bar_chords: List[Tuple[int, Chord]], key: Key,
+          history: Sequence[Mapping], seed: str) -> Tuple[str, Part]:
+    """Рисунок баса и партия: рисунок и синт семьи — со штрафом за недавние, свой ГСЧ сида на ось."""
+    figure = weighted_pick(style.bass_figures, recent_values(history, "bass_figure"),
+                           random.Random(f"{seed}:bass_figure"))
+    synth = mix.role_timbre(style, row, "bass", recent_values(history, "bass"), random.Random(f"{seed}:bass"))
+    return figure, BASS_GENERATORS[figure](style, key, bar_chords, synth, style.registers["bass"])
+
+
 def _kit(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str:
     """Каркас ударных стиля: не прошлого трека, со штрафом за недавние."""
     recent = recent_values(history, "kit")
@@ -233,11 +244,13 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     spec = form_spec(style, track_no)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
     rng = random.Random(f"{plan.seed}:{track_no}")
-    synths = mix.timbres(style, profile.row, random.Random(f"timbre:{plan.seed}:{track_no}"))
+    seed = f"{plan.seed}:{track_no}"
+    lead_synth = mix.role_timbre(style, profile.row, "lead", recent_values(history, "lead"),
+                                 random.Random(f"{seed}:lead"))
     track_hook: Optional[Hook] = None
     for candidate, key in hook_candidates(profile, melodies or {}, rng, history, opening=track_no == 1):
         try:
-            lead_part, degrees, pad_register, chords = _arrange(style, spec, candidate, key, rng, synths["lead"],
+            lead_part, degrees, pad_register, chords = _arrange(style, spec, candidate, key, rng, lead_synth,
                                                                 history)
         except ValueError:
             continue
@@ -246,7 +259,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     if track_hook is None:
         key = Key(profile.root, profile.mode)
         motif = _motif(style, key, rng, history[0].get("hook_fingerprint") if history else None)
-        lead_part, degrees, pad_register, chords = _arrange(style, spec, motif, key, rng, synths["lead"], history)
+        lead_part, degrees, pad_register, chords = _arrange(style, spec, motif, key, rng, lead_synth, history)
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}") for name in ("kit", "sample", "loop", "fx")}
     kit = _kit(style, history, axis["kit"])
@@ -255,10 +268,8 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     fx = samples.pick(samples.FX_ROLES, key, history, "fx", axis["fx"])
     kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
     drums = _drums(style, form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit, kick)
-    bass_part = BASS_GENERATORS[style.bass_figures[0]](
-        style, key, _bar_chords(spec, "bass", chords), synths["bass"], style.registers["bass"])
-    figure, pad_part = _pad(style, profile.row, _bar_chords(spec, "pad", chords), key, pad_register, history,
-                            f"{plan.seed}:{track_no}")
+    bass_figure, bass_part = _bass(style, profile.row, _bar_chords(spec, "bass", chords), key, history, seed)
+    figure, pad_part = _pad(style, profile.row, _bar_chords(spec, "pad", chords), key, pad_register, history, seed)
     parts, track_mix = mix.mix_parts(style, {
         **drums, "bass": bass_part, "pad": pad_part, "lead": lead_part,
         "sample": samples.perc_part(style, perc, kit, axis["sample"]),
@@ -271,7 +282,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         mix=track_mix,
         energy=step.energy, transition_in=transition(style), transition_out=transition(style),
         history_key=HistoryKey(kit, prog, track_hook.source if track_hook else None, loop, key.root,
-                               fingerprint(motif.notes), fx, ",".join(perc), figure),
+                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure),
     )
 
 
