@@ -48,6 +48,7 @@ class MediaIntent(str, Enum):
     DJ = "dj"
     PLAY_NAMED = "play_named"
     REQUEST_MUSIC = "request_music"
+    NOW_PLAYING = "now_playing"
 
 
 #: Порядок вариантов для ``ChoiceQuestion`` (DecisionProvider).
@@ -831,6 +832,37 @@ def _listed_set(text: str) -> Optional[MediaCommand]:
     return replace(command, set_theme=listed, set_persona=command.persona)
 
 
+#: «Что играет?»: вопросительное слово + слово про звучащее (классы слов, без регексов — мораторий #3132).
+_NOW_QUESTION: FrozenSet[str] = frozenset({"что", "какой", "какая", "какое", "чего"})
+_NOW_SUBJECT: FrozenSet[str] = frozenset({
+    "играет", "звучит", "играешь", "играем", "крутишь", "крутится", "трек", "мелодия", "песня", "песенка",
+    "музыка", "поставил", "включил"})
+#: «Когда будет / где X?»: X — слова после вопроса без служебных; сверку X с фактами сета делает роутер.
+_WHEN_QUESTION: FrozenSet[str] = frozenset({"когда", "где"})
+_WHEN_FILLER: FrozenSet[str] = _COMMON_FILLER | frozenset({
+    "робот", "робби", "будет", "будут", "заиграет", "заиграют", "сыграешь", "поставишь", "включишь", "их",
+    "трек", "треки", "треков", "мелодия", "мелодии", "песня", "песни", "наконец", "мой", "моя", "мои", "то",
+    "же", "уже", "опять", "снова"})
+_NOW_MAX_WORDS = 7
+
+
+def _now_playing_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """Вопрос о сете: «что (сейчас) играет?» — ``NOW_PLAYING`` без имени; «когда будет Марио?», «где марио все его
+    треки?» — ``NOW_PLAYING`` с ``name``. Ответ строит код из фактов снимка (``media_router``), не LLM (ADR-0148)."""
+    words = [w for w in words if w not in ("робот", "робби")]
+    while words and words[0] in _COMMON_FILLER and words[0] not in _NOW_QUESTION:  # «а что играет?»
+        words = words[1:]
+    if not words or len(words) > _NOW_MAX_WORDS:
+        return None
+    if words[0] in _NOW_QUESTION and any(w in _NOW_SUBJECT for w in words[1:]):
+        return MediaCommand(intent=MediaIntent.NOW_PLAYING)
+    if words[0] in _WHEN_QUESTION:
+        name = [w for w in words[1:] if w not in _WHEN_FILLER]
+        if 0 < len(name) <= 3:
+            return MediaCommand(intent=MediaIntent.NOW_PLAYING, name=" ".join(name))
+    return None
+
+
 def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     """Разбор реплики без длины сета и перечисления (:func:`parse_media_command`)."""
     if is_dj_request(text):
@@ -842,6 +874,9 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     volume = _volume_command(words, track_name)
     if volume.intent is not MediaIntent.NONE:
         return volume
+    now = _now_playing_command(words)
+    if now is not None:
+        return now
     theme_words = _theme_words(text)  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     return _style_set_command(theme_words) or _named_set_command(theme_words) or _play_named_command(words)
 

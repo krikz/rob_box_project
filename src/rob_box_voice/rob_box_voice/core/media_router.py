@@ -45,6 +45,7 @@ from rob_box_harness.decision import (
     DecisionProvider,
     DeterministicProvider,
 )
+from rob_box_music.dj_line import now_playing_text, plain_fold, when_text
 
 from .media_command_grammar import (
     MEDIA_INTENT_OPTIONS,
@@ -78,6 +79,7 @@ class MediaState:
     dj_enabled: bool = False
     track_name: Optional[str] = None
     dj_persona: str = ""
+    set_facts: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -338,6 +340,35 @@ def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
     )
 
 
+#: Факты играющего трека сета в снимке (``dj``), которыми код отвечает на «что играет / когда будет X».
+SET_FACTS = ("track_no", "tracks", "melody", "next_melodies", "not_found")
+
+
+def _fold() -> Any:
+    """Свёртка названий движка (транслит: «Марио» ~ «Super Mario»); без пакета движка — простая."""
+    try:
+        from rob_box_mcp_tools.engine.dj_lines import latin_fold
+    except ImportError:
+        return plain_fold
+    return latin_fold
+
+
+def _now_playing_plan(command: MediaCommand, media: MediaState) -> Optional[MediaPlan]:
+    """Ответ о сете из фактов снимка (ADR-0148: фразу строит код). Код не знает ответа (нет фактов, X не совпал ни
+    с одной мелодией сета) — ``None``: вопрос уходит LLM как раньше."""
+    facts = media.set_facts
+    if not command.name:
+        if not media.music_playing:
+            return MediaPlan(command=command, say_ok=NOTHING_PLAYING_TEXT)
+        if media.dj_enabled and facts.get("track_no"):
+            return MediaPlan(command=command, say_ok=now_playing_text(facts))
+        return MediaPlan(command=command, say_ok=f"Сейчас играет «{media.track_name}».") if media.track_name else None
+    if not (media.music_playing and media.dj_enabled and facts.get("track_no")):
+        return None
+    text = when_text(facts, command.name, _fold())
+    return MediaPlan(command=command, say_ok=text) if text else None
+
+
 def media_state_from_snapshot(playing: bool, snapshot: Any) -> MediaState:
     """Снимок плеера (``MusicPlayerState`` или ``None``) → :class:`MediaState`."""
     info = snapshot.dj_info if snapshot is not None else {}
@@ -347,6 +378,7 @@ def media_state_from_snapshot(playing: bool, snapshot: Any) -> MediaState:
         dj_enabled=snapshot is not None and bool(snapshot.dj),
         track_name=title if playing and title else None,
         dj_persona=str(info.get("persona") or ""),
+        set_facts={k: info[k] for k in SET_FACTS if k in info},
     )
 
 
@@ -402,6 +434,8 @@ def plan_media_command(
         return _dj_plan(command)
     if command.intent is MediaIntent.REQUEST_MUSIC:
         return _request_plan(command, text)
+    if command.intent is MediaIntent.NOW_PLAYING:
+        return _now_playing_plan(command, media)
     if command.intent is MediaIntent.PLAY_NAMED and command.name:
         plan = _play_named_plan(command)
         if command.themed:  # #3410: «давай тему X» посреди сета — смена темы, без lookup

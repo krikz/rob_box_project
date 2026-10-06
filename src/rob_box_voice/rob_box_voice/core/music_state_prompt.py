@@ -199,13 +199,20 @@ class MusicStateMemory:
 
 
 #: Поля сета v2 из снимка (``dj`` владельца плеера, ADR-0149 §2.3) → атрибуты тега: имя в теге ← ключ снимка.
-SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("bpm", "bpm"), ("persona", "persona"))
+#: Факты играющего трека (``engine.dj_lines``): мелодия, следующие по плану, части темы без мелодий в библиотеке.
+SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks", "tracks"), ("melody", "melody"),
+             ("next_melodies", "next_melodies"), ("not_found", "not_found"), ("bpm", "bpm"), ("persona", "persona"))
 
 
 def _set_attrs(snap: MusicPlayerState) -> list:
     """Сет v2 — из latched-снимка, не из догадки (ADR-0149 §5.2); у v1 этих полей в снимке нет."""
     info = snap.dj_info
-    return [(attr, str(info[key])) for attr, key in SET_ATTRS if info.get(key) not in (None, "")]
+    return [(attr, _attr_value(info[key])) for attr, key in SET_ATTRS if info.get(key) not in (None, "", [])]
+
+
+def _attr_value(value: object) -> str:
+    """Список фактов (мелодии) — через запятую, остальное — строкой."""
+    return ", ".join(str(v) for v in value) if isinstance(value, (list, tuple)) else str(value)
 
 
 def _now(now: Optional[float]) -> float:

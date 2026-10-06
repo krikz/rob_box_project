@@ -1,6 +1,8 @@
 """Реплика диджея на каждом переходе (ADR-0149 §12 В2, решение Шифу 06.10; I23): факты из плана, LLM — раскраска,
 отказ LLM — шаблон, одна фраза на трек, музыка не останавливается."""
 
+import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +45,7 @@ def _ask(*results):
 
 def _lines(ask=None, said=None, log=None):
     said = [] if said is None else said
-    return TransitionLines(said.append, titles=_titles, ask=ask, theme_names=lambda t: ["Марио", "Тетрис"],
+    return TransitionLines(said.append, titles=_titles, ask=ask, missing=["Марио"],
                            fold=latin_fold, logger=log or Log(), spawn=lambda fn: fn(), grace_s=0.01), said
 
 
@@ -165,3 +167,59 @@ def test_dj_set_lines_off_by_parameter():
     tool.execute(action="start", theme="космос")
     rig.clock.run_until(rig.clock.beat + 2)
     assert _started(rig) and said == []
+
+
+# ---------------------------------------------------------------------------
+# Факты играющего трека — в снимок и get_music_state (06.10: «Марио играет», когда звучал Тетрис)
+# ---------------------------------------------------------------------------
+
+TITLES["aladdin"] = "Аладдин"
+THEMED = seeded_plan(replace(seeded_profile("Марио, Тетрис"), hook_ids=("supermar", "tetris_2", "aladdin"),
+                             theme_hooks=("supermar", "tetris_2", "aladdin")), 1, n_tracks=4, set_id="f")
+
+
+def test_started_track_facts_go_to_snapshot_and_now():
+    published = []
+    lines = TransitionLines(None, titles=_titles, missing=["Марио"], publish=lambda t, f: published.append((t, f)),
+                            logger=Log(), spawn=lambda fn: fn(), grace_s=0.01)
+    lines.prepare("f:01:A:x", 1, THEMED, "supermar")
+    assert lines.on_started("f:01:A:x") == ""  # реплика выключена — факты всё равно есть
+    lines.prepare("f:02:B:x", 2, THEMED, "tetris_2")
+    lines.on_started("f:02:B:x")
+    track_id, facts = published[-1]
+    assert track_id == "f:02:B:x" and facts["melody"] == "Тетрис" and facts["track_no"] == 2 and facts["tracks"] == 4
+    assert facts["next_melodies"] == ["Аладдин"]  # сыгранные (Super Mario Bros, Тетрис) — не «дальше»
+    assert facts["not_found"] == ["Марио"] and facts["title"] == "«Тетрис» · трек 2 из 4"
+    assert lines.now() == facts
+
+
+def test_pool_hooks_have_no_promised_next():
+    lines, _ = _lines()
+    lines.prepare("h:01:A:x", 1, PLAN, "tetris_2")  # PLAN — тема без находок: пул по хешу, порядок решает сид
+    lines.on_started("h:01:A:x")
+    assert lines.now()["next_melodies"] == []
+
+
+def test_owner_update_dj_only_for_the_playing_track():
+    rig = _rig()
+    rig.session.start()
+    rig.clock.run_until(rig.clock.beat + 2)
+    playing = _started(rig)[0]["track_id"]
+    published = len(rig.states)
+    assert not rig.owner.update_dj("other:track", {"melody": "Марио"})
+    assert rig.owner.update_dj(playing, {"melody": "Тетрис"})
+    assert len(rig.states) == published + 1 and json.loads(rig.states[-1])["dj"]["melody"] == "Тетрис"
+
+
+def test_dj_set_status_message_is_built_from_facts():
+    rig = _rig()
+    node = SimpleNamespace(get_logger=lambda: rig.log)
+    tool = DjSetTool(node, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(missing=("Марио",)),
+                     seed=lambda: 1, speak=None, titles=_titles)
+    tool.execute(action="start", theme="Марио, космос")
+    rig.clock.run_until(rig.clock.beat + 2)
+    _wait(lambda: tool.status().get("not_found"))
+    status = tool.status()
+    assert status["active"] and status["melody"] == ""  # мелодий нет — мотив, не выдумка
+    assert "свой мотив диджея" in status["message"] and "Не нашлось в библиотеке: «Марио»" in status["message"]
+    assert json.loads(rig.states[-1])["dj"]["not_found"] == ["Марио"]  # те же факты — в снимке для <music_state>

@@ -29,6 +29,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.dj_line import now_playing_text
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
@@ -156,6 +157,7 @@ class DjSetTool(MCPTool):
         self._titles = titles or library_titles(library)
         self._missing: Tuple[str, ...] = ()  # части темы-перечисления без мелодий (последний сет): их не называть
         self._lines = lines  # реплика диджея на каждом переходе (§12 В2, решение Шифу 06.10)
+        self._facts: Optional[TransitionLines] = None  # факты играющего трека последнего сета (для ``status``)
         self._seed = seed
         self._tracks_dir = tracks_dir or None
         self._confirm = confirm
@@ -279,6 +281,9 @@ class DjSetTool(MCPTool):
         if session is None:
             return {"active": False, "message": "Диджей-сета не было."}
         info = {"set_id": session.set_id, "tracks": session.tracks, "track_no": session.track_no}
+        now = self._facts.now() if self._facts is not None else {}
+        if session.active and now:
+            return {**info, **now, "active": True, "message": f"Идёт диджей-сет. {now_playing_text(now)}"}
         if session.active:
             return {**info, "active": True, "message": f"Идёт диджей-сет: трек {session.track_no} из {session.tracks}."}
         if session.ended:
@@ -286,15 +291,15 @@ class DjSetTool(MCPTool):
                     "message": f"Диджей-сет закончился сам: сыграны все {session.tracks} из {session.tracks}."}
         return {**info, "active": False, "ended": False, "message": "Диджей-сет остановлен."}
 
-    def _transition_lines(self, persona: Optional[str], logger: Any) -> Optional[TransitionLines]:
-        """Реплики сета: факты — из плана и библиотеки, раскраска — LLM ризонера (его breaker); нечем говорить или
-        выключено параметром — ``None``."""
-        if not self._lines or self._speak is None:
-            return None
-        missing = self._missing
-        ask = self._reasoner.ask if self._reasoner.enabled else None
-        return TransitionLines(self._speak, titles=self._titles, ask=ask, persona=persona,
-                               theme_names=lambda _theme: missing, fold=latin_fold, logger=logger)
+    def _transition_lines(self, persona: Optional[str], logger: Any) -> TransitionLines:
+        """Факты и реплики сета: факты (мелодия трека, план дальше, не найденное) — всегда, в снимок и ``status``;
+        реплика — если включена параметром и есть чем говорить; раскраска — LLM ризонера (его breaker)."""
+        speak = self._speak if self._lines else None
+        ask = self._reasoner.ask if self._reasoner.enabled and speak is not None else None
+        lines = TransitionLines(speak, titles=self._titles, ask=ask, persona=persona, missing=self._missing,
+                                publish=getattr(self._owner, "update_dj", None), fold=latin_fold, logger=logger)
+        self._facts = lines
+        return lines
 
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""
