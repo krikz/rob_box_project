@@ -17,8 +17,8 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Мастер-шина (PR-7, §3.10).** :func:`set_master` — ``trim`` по энергии трека сета и профиль выравнивателя.
 * **Дуга громкости.** :func:`section_arc` — смещение ``trim`` по секциям (``knowledge.SECTION_TRIM_DB``): build
   поднимается к дропу, брейк проваливается, второй дроп — пик.
-* **Тембры.** Семья тембров стиля по теме (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека (:func:`timbres`);
-  пэд — по рисунку и истории (:func:`pad_timbre`, ADR-0152 §3.2).
+* **Тембры.** Семья тембров стиля по теме (``knowledge.THEME_TIMBRE``) → синт роли по сиду трека со штрафом за
+  недавние: бас и лид — :func:`role_timbre` (ADR-0152 PR-6), пэд — по рисунку (:func:`pad_timbre`, §3.2).
 * **Рисунок пэда (ADR-0152 PR-5).** ``knowledge.PAD_FIGURES``: ``held`` не под сайдчейном, цель уровня рисунка —
   цель роли + ``level_offset_db`` (громкость как у ``pumped16``).
 * **A9-модель трека (ADR-0152 §4 п.2).** Доля низа каждого дропа по полосам слоёв (:func:`a9_model`); ниже
@@ -127,10 +127,11 @@ def _family(style: kn.Style, theme_row: Optional[str]) -> Mapping[str, Tuple[str
     return style.timbres[kn.THEME_TIMBRE.get(theme_row or "", style.default_timbre)]
 
 
-def timbres(style: kn.Style, theme_row: Optional[str], rng: random.Random) -> Dict[str, str]:
-    """Синт баса и лида из семьи тембров стиля по теме; выбор внутри семьи — ``rng`` (сид трека)."""
-    family = _family(style, theme_row)
-    return {role: rng.choice(family[role]) for role in ("bass", "lead")}
+def role_timbre(style: kn.Style, theme_row: Optional[str], role: str, recent: Sequence[Optional[str]],
+                rng: random.Random) -> str:
+    """Синт роли ``role`` (бас, лид) из семьи тембров стиля по теме со штрафом за недавние (``recent`` — свежие
+    первыми, ``music_history.<роль>``); ГСЧ — сид трека на ось."""
+    return weighted_pick(_family(style, theme_row)[role], recent, rng)
 
 
 def sustains_to_sus(synth: str) -> bool:
@@ -306,5 +307,5 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
 
 
 __all__ = ["a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
-           "level_amp", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "section_arc",
-           "set_master", "sustains_to_sus", "target_db", "timbres", "voice_amp"]
+           "level_amp", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_timbre",
+           "section_arc", "set_master", "sustains_to_sus", "target_db", "voice_amp"]

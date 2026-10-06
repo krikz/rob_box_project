@@ -93,11 +93,12 @@ def test_kick_four_on_floor_and_bass_off_the_kick(seed):
     assert kicks == expected, "бочка на каждой доле, кроме последней доли fill-а"
     bass = [e.beat for e in by_role["bass"]]
     assert bass and not kicks & set(bass), "бас не на шагах бочки"
-    assert all(b % 1 == 0.5 for b in bass), "бас на «и» доли"
+    steps = kn.BASS_FIGURES[track.history_key.bass_figure].steps  # рисунок баса трека (ADR-0152 PR-6)
+    assert all(round(b % BEATS_PER_BAR * 4) in steps for b in bass), "бас на шагах своего рисунка (не на доле)"
     per_bar = defaultdict(int)
     for b in bass:
         per_bar[int(b // BEATS_PER_BAR)] += 1
-    assert set(per_bar.values()) <= {3, 4}
+    assert set(per_bar.values()) <= {len(steps) - 1, len(steps)}
 
 
 @pytest.mark.parametrize("seed", SEEDS)

@@ -189,6 +189,8 @@ CRITICAL_SYNTHS: tuple = (
     # не в палитре, но используются напрямую
     "bass", "gong", "pluck", "saw", "square", "faim", "viola",
     "noise", "scatter", "orient", "creep", "play1", "play2",
+    # палитра движка v2 (ADR-0152 PR-6): лиды и бас семей тембров, в прелоаде робота
+    "kalimba", "hoover", "keys", "jbass",
 )
 
 

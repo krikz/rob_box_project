@@ -180,6 +180,7 @@ class HistoryKey:
     fx: Optional[str] = None
     perc: Optional[str] = None  # пул psr-слоя через запятую
     pad_figure: Optional[str] = None  # рисунок пэда (``knowledge.PAD_FIGURES``, ADR-0152 PR-5)
+    bass_figure: Optional[str] = None  # рисунок баса (``knowledge.BASS_FIGURES``, ADR-0152 PR-6)
 
 
 @dataclass(frozen=True)

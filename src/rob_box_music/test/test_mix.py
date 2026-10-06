@@ -196,7 +196,9 @@ def test_timbre_follows_the_theme_and_is_deterministic(theme):
     if any(len(v) > 1 for v in family.values()):
         assert len(seen) > 1, "сид меняет тембр внутри семьи темы"
     club = kn.STYLES["club"]
-    assert mix.timbres(club, prof.row, random.Random(5)) == mix.timbres(club, prof.row, random.Random(5))
+    for role in ("bass", "lead"):
+        assert (mix.role_timbre(club, prof.row, role, (), random.Random(5))
+                == mix.role_timbre(club, prof.row, role, (), random.Random(5)))
 
 
 def test_timbre_table_is_playable():
