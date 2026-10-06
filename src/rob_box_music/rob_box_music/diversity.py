@@ -70,6 +70,7 @@ HISTORY_FIELDS = (
     "kit", "fx", "perc",  # ADR-0149 PR-3d: каркас ударных v2, FX-сэмпл и psr-пул трека
     "pad_figure",  # ADR-0152 PR-5: рисунок пэда
     "bass_figure",  # ADR-0152 PR-6: рисунок баса
+    "genre",  # ADR-0152 PR-8: жанровое окно сета (club/deep/breaks)
 )
 
 #: Колонки, добавленные после первой версии схемы (#3226): старые БД
@@ -77,7 +78,7 @@ HISTORY_FIELDS = (
 #: существующую таблицу не меняет).
 _ADDED_COLUMNS = (("clap", "TEXT"), ("lpf", "TEXT"), ("balance", "TEXT"), ("sample", "TEXT"), ("kit", "TEXT"),
                   ("fx", "TEXT"), ("perc", "TEXT"), ("pad_figure", "TEXT"),
-                  ("bass_figure", "TEXT"))
+                  ("bass_figure", "TEXT"), ("genre", "TEXT"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS music_history (
@@ -106,7 +107,8 @@ CREATE TABLE IF NOT EXISTS music_history (
     fx               TEXT,
     perc             TEXT,
     pad_figure       TEXT,
-    bass_figure      TEXT
+    bass_figure      TEXT,
+    genre            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_music_history_ts ON music_history(ts);
 """
@@ -304,7 +306,7 @@ def track_composition(track: Any) -> Dict[str, Any]:
         "hook": key.hook or "-", "hook_fp": key.hook_fingerprint or "-", "prog": key.progression,
         "sample": key.sample or "-", "perc": key.perc or "-", "fx": key.fx or "-", "energy": track.energy,
         "pad_figure": key.pad_figure or "-", "bass_figure": key.bass_figure or "-", "template": key.template or "-",
-        "a9_model": track.mix.a9_model,
+        "genre": key.genre or "-", "a9_model": track.mix.a9_model,
         "a9_trim": dict(track.mix.a9_trim),
     }
 
@@ -329,5 +331,5 @@ def track_history(track: Any, set_id: Optional[str] = None) -> Dict[str, Any]:
         "kick": kick_name(track.parts["kick"].sample) if "kick" in track.parts else None,
         "melody_name": key.hook, "hook_fingerprint": key.hook_fingerprint, "sample": key.sample, "fx": key.fx,
         "perc": key.perc, "pad_figure": key.pad_figure, "bass_figure": key.bass_figure, "template": key.template,
-        "root": kn.ROOTS[key.root], "bpm": float(track.bpm), "scale": track.key.mode, **synths,
+        "genre": key.genre, "root": kn.ROOTS[key.root], "bpm": float(track.bpm), "scale": track.key.mode, **synths,
     }

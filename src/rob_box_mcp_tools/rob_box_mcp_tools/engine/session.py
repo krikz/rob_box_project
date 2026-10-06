@@ -92,6 +92,12 @@ class SetMemory:
         self._past: Tuple[Dict[str, Any], ...] = tuple(store.recent(depth)) if store is not None else ()
         self._rows: Dict[int, Dict[str, Any]] = {}
 
+    def peek(self) -> Tuple[Dict[str, Any], ...]:
+        """Память, какой её увидит :meth:`begin` на старте нового сета, но без записи в ``store`` и без сдвига: план
+        сета (``seeded_plan``: жанровое окно, тоника, бочки, формы) штрафует за прошлые сеты ДО первого трека."""
+        last = tuple(self._rows[no] for no in sorted(self._rows, reverse=True))
+        return (last + self._past)[:self._depth]
+
     def begin(self) -> Tuple[Dict[str, Any], ...]:
         """Новый сет: треки прошлого уходят в память (и в ``store``); вернуть её (свежие первыми)."""
         last = tuple(self._rows[no] for no in sorted(self._rows, reverse=True))

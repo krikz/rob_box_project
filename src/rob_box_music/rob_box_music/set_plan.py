@@ -7,6 +7,10 @@
 * **Ход тоники** (§8.1: перенос ``dj_set_walk.related_root``): чистая квинта вверх на трек — соседи по кругу
   квинт делят 6 из 7 нот (Camelot +1), за 12 треков все 12 тоник. Старый ``dj_set_walk`` импортирует
   :func:`root_shift` отсюда — одна реализация.
+* **Жанровое окно** (ADR-0152 §3.5, PR-8, В1): ``SetPlan.genre`` — окно клуба (``Style.genre_windows``: club/deep/
+  breaks) выбирается на сет сидом со штрафом за окна прошлых сетов (:func:`pick_genre`); темп сета — в окне
+  (:func:`plan_bpm`), пул бочек и пэдов, рисунок бочки дропа — из окна (``knowledge.genre_style``). Внутри сета окно
+  не меняется. Окно — не стиль (ADR-0153): стиль — набор таблиц, окно — подвыбор внутри него.
 * **Свинг сета** — в окне стиля, от сида; один на весь сет, как грув у диджея.
 * **Тоника сета** (PR-3d, ось «тоника» ``music_history``): тоника темы, если её не было в последних
   ``TONIC_MEMORY`` треках истории; иначе — выбор сидом (``diversity.weighted_pick``) среди тоник, которых там не
@@ -19,7 +23,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, replace
-from typing import Mapping, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
 from .diversity import recent_values, weighted_pick
@@ -49,6 +53,7 @@ class SetPlan:
     bpm: int  # единственный темп сета
     swing: float  # доля восьмой, на которую опаздывают нечётные 16-е хэтов
     tracks: Tuple[TrackPlan, ...]  # первые треки; дальше — :meth:`track`
+    genre: str = kn.DEFAULT_GENRE  # жанровое окно клуба сета (``Style.genre_windows``), не меняется внутри сета
 
     def track(self, no: int) -> TrackPlan:
         """План трека ``no`` (с 1): из ``tracks`` (поправка LLM, PR-10), за их пределами — волна: сет открытый."""
@@ -62,6 +67,11 @@ class SetPlan:
     def style(self) -> str:
         """Ключ ``knowledge.STYLES`` сета (ADR-0153: один стиль на сет) — стиль профиля темы."""
         return self.profile.style
+
+    @property
+    def table(self) -> kn.Style:
+        """Таблицы стиля сета в его жанровом окне: то, что читают ``arrange/*`` (``knowledge.genre_style``)."""
+        return kn.genre_style(kn.STYLES[self.style], self.genre)
 
 
 def track_energy(no: int) -> int:
@@ -85,6 +95,35 @@ def set_root(profile: ThemeProfile, seed: int, history: Sequence[Mapping] = ()) 
         return profile.root
     options = [r for r in kn.ROOTS if r not in recent]
     return kn.ROOTS.index(weighted_pick(options, recent, random.Random(f"root:{seed}:{profile.theme}")))
+
+
+def recent_genres(history: Sequence[Mapping]) -> list:
+    """Окна прошлых СЕТОВ, свежие первыми: строки истории (свежие первыми) свёрнуты по ``set_id`` (у сета одно окно);
+    строки без окна (записаны до PR-8) пропускаются."""
+    out: list = []
+    last = object()
+    for row in history:
+        genre, set_id = row.get("genre"), row.get("set_id")
+        if not genre or (out and set_id == last):
+            continue
+        out.append(genre)
+        last = set_id
+    return out
+
+
+def pick_genre(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str:
+    """Окно сета: сид + штраф за окна прошлых сетов (``weighted_pick``, ось ``genre``); с прошлым сетом подряд одно
+    окно не повторяется."""
+    recent = recent_genres(history)
+    windows = tuple(style.genre_windows)
+    options = [g for g in windows if not recent or g != recent[0]] or list(windows)
+    return weighted_pick(options, recent, rng)
+
+
+def plan_bpm(window: kn.GenreWindow, theme_bpm: int, seed: int, theme: str) -> int:
+    """Темп сета: темп темы, если он в окне; иначе — сидом внутри окна (один темп на сет, ADR-0149 I7)."""
+    lo, hi = window.bpm
+    return theme_bpm if lo <= theme_bpm <= hi else random.Random(f"bpm:{seed}:{theme}").randint(lo, hi)
 
 
 def pick_kick(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str:
@@ -129,13 +168,15 @@ def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[in
 
 
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
-                history: Sequence[Mapping] = ()) -> SetPlan:
+                history: Sequence[Mapping] = (), genre: Optional[str] = None) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
-    ``music_history`` (свежие первыми)."""
+    ``music_history`` (свежие первыми). ``genre`` — окно, заданное явно (тема, оператор);
+    ``None`` — :func:`pick_genre`."""
     profile = replace(profile, root=set_root(profile, seed, history))
-    window = kn.STYLES[profile.style]
-    lo, hi = window.bpm
-    bpm = min(max(profile.bpm, lo), hi)
+    base = kn.STYLES[profile.style]
+    genre = pick_genre(base, history, random.Random(f"genre:{seed}:{profile.theme}")) if genre is None else genre
+    window = kn.genre_style(base, genre)
+    bpm = plan_bpm(base.genre_windows[genre], profile.bpm, seed, profile.theme)
     s_lo, s_hi = window.swing
     swing = round(s_lo + random.Random(f"plan:{seed}:{profile.theme}").random() * (s_hi - s_lo), 3)
     n = max(1, n_tracks)
@@ -143,8 +184,9 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     plans = [track_plan(no) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
     tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1]) for p in plans)
-    return SetPlan(set_id, seed, profile, bpm, swing, tracks)
+    return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre)
 
 
-__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_kick", "pick_template", "plan_kicks", "plan_templates",
-           "root_shift", "seeded_plan", "set_root", "track_energy", "track_plan"]
+__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_genre", "pick_kick",
+           "pick_template", "plan_bpm", "plan_kicks", "plan_templates", "recent_genres", "root_shift", "seeded_plan",
+           "set_root", "track_energy", "track_plan"]

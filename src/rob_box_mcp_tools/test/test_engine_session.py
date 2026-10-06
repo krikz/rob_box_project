@@ -531,6 +531,18 @@ def test_set_memory_keeps_past_sets_newest_first_and_bounded():
     assert [r["n"] for r in memory.begin()] == ["b2", "b1", "a2b"]
 
 
+def test_set_memory_peek_shows_what_begin_returns_without_moving_anything():
+    """ADR-0152 PR-8: план нового сета (жанровое окно) штрафует за прошлые сеты ДО ``begin`` — ``peek`` не мутирует."""
+    from rob_box_mcp_tools.engine.session import SetMemory
+
+    memory = SetMemory(depth=3)
+    memory.remember(1, {"n": "a1"})
+    memory.remember(2, {"n": "a2"})
+    assert [r["n"] for r in memory.peek()] == ["a2", "a1"] == [r["n"] for r in memory.peek()]
+    assert [r["n"] for r in memory.begin()] == ["a2", "a1"]
+    assert [r["n"] for r in memory.peek()] == ["a2", "a1"]
+
+
 def test_set_memory_with_store_survives_restart():
     """I17 (#3399): треки сета уходят в ``music_history`` на старте следующего; новый процесс видит их."""
     from rob_box_mcp_tools.engine.session import SetMemory

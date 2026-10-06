@@ -233,7 +233,7 @@ def test_seed_changes_material_not_tempo():
     prof = profile()
     sets = []
     for seed in (1, 2):
-        plan = seeded_plan(prof, seed)
+        plan = seeded_plan(prof, seed, genre="club")
         sets.append([compose(plan, no, melodies=MELODIES) for no in range(1, 6)])
     lo, hi = kn.STYLES["club"].bpm
     assert {t.bpm for s in sets for t in s} == {prof.bpm} and lo <= prof.bpm <= hi

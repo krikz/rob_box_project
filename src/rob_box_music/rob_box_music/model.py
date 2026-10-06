@@ -182,6 +182,7 @@ class HistoryKey:
     pad_figure: Optional[str] = None  # рисунок пэда (``knowledge.PAD_FIGURES``, ADR-0152 PR-5)
     bass_figure: Optional[str] = None  # рисунок баса (``knowledge.BASS_FIGURES``, ADR-0152 PR-6)
     template: Optional[str] = None  # шаблон формы (``Style.forms``, ADR-0152 PR-7)
+    genre: Optional[str] = None  # жанровое окно сета (``Style.genre_windows``, ADR-0152 PR-8)
 
 
 @dataclass(frozen=True)
@@ -406,6 +407,8 @@ def validate(track: Track) -> None:
     _check_form(track.form)
     _require(track.history_key.template in (None, *kn.FORM_NAMES), "history_key.template",
              f"форма {track.history_key.template!r} не из Style.forms")
+    _require(track.history_key.genre in (None, *kn.GENRE_NAMES), "history_key.genre",
+             f"окно {track.history_key.genre!r} не из Style.genre_windows")
     _check_parts(track)
     _check_levels(track)
     _check_hook_and_harmony(track)

@@ -56,7 +56,8 @@ from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 
 #: Генераторы ролей по ключу фигуры стиля (``Style.*_figures``, ADR-0153 §2.2). Тональные — ``(style, key,
 #: bar_chords, synth, register) -> Part``; мотив лида без хука — ``(style, key, rng) -> ноты``.
-BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {"offbeat": bass.offbeat, "rolling8": bass.rolling8}
+BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
+    "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken}
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {"pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
 #: Длина секций с лидом (развитие хука считается от начала каждой).
@@ -251,7 +252,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     мотив лида (PR-2).
     """
     step = plan.track(track_no)
-    style = kn.STYLES[plan.style]
+    style = plan.table
     template = track_template(style, step, track_no, history, random.Random(f"{plan.seed}:{track_no}:template"))
     spec = form_spec(style, template)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
@@ -294,7 +295,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         mix=track_mix,
         energy=step.energy, transition_in=transition(style), transition_out=transition(style),
         history_key=HistoryKey(kit, prog, track_hook.source if track_hook else None, loop, key.root,
-                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure, template),
+                               fingerprint(motif.notes), fx, ",".join(perc), figure, bass_figure, template, plan.genre),
     )
 
 
