@@ -43,6 +43,8 @@ _PART_RE = re.compile(r"[,;:/+()\[\]\n—–]|\s-\s|\b(?:и|and)\b", re.IGNORECA
 #: Нот в контуре начала для «консенсуса версий» (#3427): при 7 версии «Terminator» theme_177/theme_178 совпадают,
 #: а повторные ноты «Space Quest» и «Exploration Of Space» уже различаются (при 6 — нет; при 8 расходятся 177/178).
 CONTOUR_NOTES = 7
+#: Самая длинная часть темы без разделителей, слов («Darkwing Duck», «Super Mario Bros»).
+_SEGMENT_WORDS = 3
 _WORD_MIN = 4  # русское слово короче («год», «дом», «чип») — не название: совпадений по звуку слишком много
 _STEM_MIN = 5  # основа короче («мисс» от «миссия») сверяется только целым словом, не основой
 _PREFIX_SLACK = 4  # слово архива длиннее основы не больше чем на столько букв
@@ -303,6 +305,26 @@ def _split(library: Any, theme: str) -> List[str]:
     return [p for p in parts if p and terms(library, p)]
 
 
+def _segment(library: Any, theme: str) -> List[str]:
+    """Части темы без разделителей (STT отдаёт «ретро 8-бит Mario Tetris Aladdin Contra» без запятых, 06.10): по
+    каталогу. С каждого значимого слова — самая длинная фраза до :data:`_SEGMENT_WORDS` слов, которую покрывает
+    одна запись архива целиком (``found_min=1.0``): «Darkwing Duck» — одна часть, «Mario Tetris» — две. Слово без
+    записи — своя часть (уйдёт в ``missing``). Меньше двух найденных частей — пусто: тема одна, ищется целиком."""
+    words = [w for w in _WORD_RE.findall(_STYLE_RE.sub(" ", theme.lower().replace("ё", "е"))) if terms(library, w)]
+    if len(words) < 2:
+        return []
+    parts: List[str] = []
+    found = 0
+    i = 0
+    while i < len(words):
+        span = next((n for n in range(min(_SEGMENT_WORDS, len(words) - i), 0, -1)
+                     if _whole_search(library, " ".join(words[i:i + n]), 1, found_min=1.0).names), 0)
+        parts.append(" ".join(words[i:i + (span or 1)]))
+        found += bool(span)
+        i += span or 1
+    return parts if found >= 2 else []
+
+
 def theme_parts(library: Any, theme: str) -> List[str]:
     """Части темы-перечисления (:data:`_PART_RE`) со значимыми словами; части из одних служебных слов
     («мегасет для игроков из RTTTL-мелодий разных игр», «и другие», «ретро 8-бит») выпадают. Перед двоеточием —
@@ -310,7 +332,10 @@ def theme_parts(library: Any, theme: str) -> List[str]:
     только из него, первая названная франшиза — первая часть (06.10)."""
     _head, colon, tail = theme.partition(":")
     listed = _split(library, tail) if colon else []
-    return listed if len(listed) >= 2 else _split(library, theme)
+    if len(listed) >= 2:
+        return listed
+    split = _split(library, theme)
+    return split if len(split) >= 2 else _segment(library, theme) or split
 
 
 def round_robin(lists: Sequence[Sequence[str]], limit: int) -> List[str]:
