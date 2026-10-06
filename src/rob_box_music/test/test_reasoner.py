@@ -82,7 +82,19 @@ def test_apply_keeps_tempo_seed_tonic_and_swing():
     assert [new.root(n) for n in range(1, 13)] == [PLAN.root(n) for n in range(1, 13)]  # ход по квинтам тот же
     assert new.track(5) == PLAN.track(5)  # бочка плана остаётся
     assert replace(new.track(5), kick="", template="") == track_plan(5)  # дальше — волна seeded
-    assert new.track(50) == track_plan(50)  # сет открытый
+    assert len(new.tracks) == len(PLAN.tracks) and new.track(50) == track_plan(50)  # за концом плана — волна
+
+
+@pytest.mark.parametrize("n", [1, 3, 10, 20])
+def test_llm_arc_neither_lengthens_the_set_nor_touches_its_cooldown(n):
+    """06.10: длина сета — решение кода; дуга LLM (до 10 треков) правит треки до последнего, последний — спад
+    seeded-дуги, треки длинного сета за концом дуги LLM — seeded."""
+    plan = seeded_plan(seeded_profile("ночной город"), 42, n_tracks=n, set_id="s")
+    new = rz.apply(plan, rz.validate({**VALID, "energy": [3, 4, 5, 4, 3, 3, 4, 5, 4, 3]}))
+    assert len(new.tracks) == n and new.tracks[-1].energy == plan.tracks[-1].energy == kn.ENERGY_WAVE[0] or n == 1
+    shaped = min(10, n - 1)
+    assert [t.energy for t in new.tracks[:shaped]] == [3, 4, 5, 4, 3, 3, 4, 5, 4, 3][:shaped]
+    assert new.tracks[shaped:] == plan.tracks[shaped:]
 
 
 def test_hooks_found_by_theme_words_are_llm_candidates_and_nothing_else_is_added():

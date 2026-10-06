@@ -19,7 +19,9 @@ PR-5: очередь из одного подготовленного трека
 ``SetSession``. PR-8: блэнд двух дек — входящий встаёт до границы формы, уходящая дека снимается
 на границе и освобождается (лог ``deck … free``); ``finished`` конечного трека — с финалом сета.
 PR-11: конечный трек (``play(..., once=True)``, classic-песня) — один проход формы, на её конце дека
-снимается, событие ``finished`` и снимок ``idle`` с ``finished_track_id`` (как v1 ``repeat=False``).
+снимается, событие ``finished`` и снимок ``idle`` с ``finished_track_id`` (как v1 ``repeat=False``). Последний трек
+сета — тот же конечный трек, только из очереди (``advance(..., once=True)``); о ``finished`` узнаёт ``SetSession``
+(``on_finished``) и закрывает сет.
 """
 
 from __future__ import annotations
@@ -68,6 +70,8 @@ class PlayerOwner:
         self._once: Optional[str] = None  # track_id, который играет один проход формы
         #: Слушатель ``started`` (``SetSession``): зовётся из потока клока после публикации.
         self.on_started: Optional[Callable[[Dict[str, Any]], None]] = None
+        #: Слушатель ``finished`` конечного трека (``SetSession``: последний трек сета): ``track_id``.
+        self.on_finished: Optional[Callable[[str], None]] = None
 
     def play(self, program: Any, dj: Optional[Mapping[str, Any]] = None, *, once: bool = False) -> Dict[str, Any]:
         """Проверить ресурсы и запустить программу на деке. Звук — по событию ``started``.
@@ -127,6 +131,9 @@ class PlayerOwner:
         self._log.info(f"🎵 [music v2] finished track_id={track_id}")
         self._publish_event(build_music_event_payload("finished", track_id, ts=self._clock()))
         self.publish_state(finished_track_id=track_id)
+        listener = self.on_finished
+        if listener is not None:
+            listener(track_id)
 
     def enqueue(self, program: Any, expected_previous: str) -> None:
         """Трек N+1 отрендерен и проверен — в очередь (одно место), событие ``queued``."""
@@ -137,11 +144,12 @@ class PlayerOwner:
             "queued", program.track_id, ts=self._clock(), expected_previous=expected_previous))
 
     def advance(self, at_beat: float, dj: Optional[Mapping[str, Any]] = None, *,
-                leave_at: Optional[float] = None) -> bool:
+                leave_at: Optional[float] = None, once: bool = False) -> bool:
         """Поставить трек из очереди на долю ``at_beat``. ``False`` — ставить нечего.
 
         ``leave_at`` — блэнд: играющий трек звучит до этой доли (граница его формы), потом его
-        дека свободна; без него — стык встык на ``at_beat``.
+        дека свободна; без него — стык встык на ``at_beat``. ``once`` — конечный трек (последний трек
+        сета): один проход формы, потом ``finished`` и ``idle``, как у ``play(..., once=True)``.
 
         Исполняется только артефакт, у которого ``expected_previous`` = играющий трек (I4);
         иначе ``WARNING artifact_stale`` и очередь пуста. Ресурс не прошёл проверку → ``rejected``.
@@ -164,11 +172,13 @@ class PlayerOwner:
         with self._lock:
             self._pending = program.track_id
             self._pending_dj = {**(dj or self._dj), "enabled": bool((dj or self._dj).get("enabled"))}
+            if once:
+                self._once = program.track_id
         self._adapter.cue(program, at_beat, self.track_started,
                           lambda reason, detail: self._reject(program.track_id, reason, detail), leave_at=leave_at,
                           on_left=lambda: self._log.info(f"🎵 [music v2] deck {leaving_deck} free track_id={current}"))
         self._log.info(f"🎵 [music v2] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat} "
-                       f"leave_at={leave_at}")
+                       f"leave_at={leave_at}" + (" once" if once else ""))
         return True
 
     def watch(self, track_id: str, form_end_beat: float, lead_beats: float,

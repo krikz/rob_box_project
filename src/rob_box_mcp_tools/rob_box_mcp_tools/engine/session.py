@@ -14,6 +14,9 @@
   проход формы** («продлить, а не замолчать», I1), проверка повторяется через проход.
 * Энергия трека плана → ``trim`` мастер-шины после динамики и профиль выравнивателя сета (PR-7, §3.10, §4.6):
   ``Program.master``, выставляет адаптер на доле старта трека.
+* Сет конечный: ``tracks`` треков (``set_plan.DEFAULT_TRACKS`` или число из фразы, решение Шифу 06.10 — сет без
+  конца дошёл до 53-го трека). Последний трек играет форму один раз (``PlayerOwner``: ``once`` → ``finished`` →
+  ``idle``), N+1 после него не компонуется и не ждётся, на ``finished`` сет закрывается: «сет окончен».
 * Темп один на сет (I7, §4.4): его ставит первый трек (``Clock.update_tempo_now``), трек с
   другим темпом до деки не доходит — ``rejected{tempo_mismatch}`` и продление.
 
@@ -39,7 +42,7 @@ from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
-from rob_box_music.set_plan import SetPlan
+from rob_box_music.set_plan import DEFAULT_TRACKS, SetPlan
 
 _LOG = logging.getLogger(__name__)
 
@@ -132,6 +135,13 @@ def plan_source(current: PlanNow, memory: Optional[SetMemory] = None) -> TrackSo
     return next_track
 
 
+def _tracks_word(n: int) -> str:
+    """«трек/трека/треков» к числу ``n``."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "трек"
+    return "трека" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "треков"
+
+
 def _other_deck(deck: str) -> str:
     return "B" if deck == "A" else "A"
 
@@ -153,14 +163,16 @@ class SetSession:
         lead_beats: за сколько долей до конца формы ``nearly_finished``.
         on_track_started: ``track_id -> str`` на ``started`` — пометка в лог (``source=…``, PR-10).
         tracks_dir: каталог ``<track_id>.json`` с полной моделью трека (``None`` — не писать, ADR-0152 §2.3).
+        tracks: длина сета; трек с этим номером — последний (один проход формы, потом сет окончен).
     """
 
     def __init__(self, owner: Any, source: TrackSource, *, set_id: str, bpm: int,
                  dj: Optional[Mapping[str, Any]] = None, submit: Callable[[Callable[[], None]], None] = _start_thread,
                  lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None,
                  on_track_started: Callable[[str], str] = lambda _track_id: "",
-                 tracks_dir: Optional[str] = None) -> None:
+                 tracks_dir: Optional[str] = None, tracks: int = DEFAULT_TRACKS) -> None:
         self._owner = owner
+        self.tracks = max(1, int(tracks))
         self._source = source
         self.set_id = set_id
         self.bpm = int(bpm)
@@ -177,11 +189,12 @@ class SetSession:
         self._next_id: Optional[str] = None  # что последним поставлено в очередь
         self._current: Optional[Dict[str, Any]] = None  # {track_id, no, deck, form_beats}
         self._preparing = False
+        self._ended = False  # последний трек доиграл: сет окончен сам, не стопом
 
     def dj_fields(self, track_no: int) -> Dict[str, Any]:
-        title = f"{self._dj.get('theme') or 'диджей-сет'} · трек {track_no}"  # имя для <music_state> (ADR-0149 §2.3)
-        return {**self._dj, "enabled": True, "set_id": self.set_id, "track_no": track_no, "bpm": self.bpm,
-                "title": title}
+        title = f"{self._dj.get('theme') or 'диджей-сет'} · трек {track_no} из {self.tracks}"  # <music_state> (§2.3)
+        return {**self._dj, "enabled": True, "set_id": self.set_id, "track_no": track_no, "tracks": self.tracks,
+                "bpm": self.bpm, "title": title}
 
     def start(self) -> Dict[str, Any]:
         """Трек 1 на деке A; звук — по ``started``. Отказ — ``{ok: False, reason}`` (громко, I25)."""
@@ -191,7 +204,8 @@ class SetSession:
         with self._lock:
             self._active = True
         self._owner.on_started = self._on_started
-        result = self._owner.play(program, dj=self.dj_fields(1))
+        self._owner.on_finished = self._on_finished
+        result = self._owner.play(program, dj=self.dj_fields(1), once=self.tracks == 1)
         if not result.get("ok"):
             self._deactivate()
         return {**result, "set_id": self.set_id, "bpm": self.bpm}
@@ -210,11 +224,34 @@ class SetSession:
     def active(self) -> bool:
         return self._active
 
+    @property
+    def ended(self) -> bool:
+        """Сет доиграл последний трек сам (не стоп человеком)."""
+        return self._ended
+
+    @property
+    def track_no(self) -> int:
+        """Номер трека, который сейчас играет (до ``started`` первого — 1)."""
+        with self._lock:
+            return int((self._current or {}).get("no") or 1)
+
     def _deactivate(self) -> None:
         with self._lock:
             self._active = False
         if self._owner.on_started == self._on_started:
             self._owner.on_started = None
+        if getattr(self._owner, "on_finished", None) == self._on_finished:
+            self._owner.on_finished = None
+
+    def _on_finished(self, track_id: str) -> None:
+        """Поток клока: конечный трек доиграл. Последний трек сета — сет окончен (плеер уже ``idle``)."""
+        with self._lock:
+            last = self._active and self._tracks.get(track_id) == self.tracks
+        if not last:
+            return
+        self._ended = True
+        self._deactivate()
+        self._log.info(f"🎧 [set v2] {self.set_id} сет окончен: {self.tracks} {_tracks_word(self.tracks)}")
 
     def _prepare(self, track_no: int, deck: str) -> Optional[Any]:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
@@ -244,8 +281,11 @@ class SetSession:
             model = self._models.get(track_id)
             self._models = {k: v for k, v in self._models.items() if k == track_id}
         form_end = float(snap["start_beat"]) + float(snap["form_beats"])
-        self._log.info(f"🎧 [set v2] {self.set_id} трек {no} started track_id={track_id} form_end_beat={form_end} "
-                       f"{self._note(track_id)} {self._composition_note(model)}".rstrip())
+        self._log.info(f"🎧 [set v2] {self.set_id} трек {no}/{self.tracks} started track_id={track_id} "
+                       f"form_end_beat={form_end} {self._note(track_id)} {self._composition_note(model)}".rstrip())
+        if no >= self.tracks:  # последний: плеер доиграет форму один раз (once), следующего нет
+            self._log.info(f"🎧 [set v2] {self.set_id} трек {no} последний — играет форму до конца, следующего нет")
+            return
         self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
         self._pregenerate_soon()
 
@@ -262,7 +302,7 @@ class SetSession:
 
     def _pregenerate_soon(self) -> None:
         with self._lock:
-            if self._preparing or not self._active:
+            if self._preparing or not self._active or (self._current or {}).get("no", 0) >= self.tracks:
                 return
             self._preparing = True
         self._submit(self._pregenerate)
@@ -291,7 +331,8 @@ class SetSession:
                 return
         overlap = self._blend_beats(track_id)
         advanced = self._owner.advance(form_end - overlap, dj=self.dj_fields(current["no"] + 1),
-                                       leave_at=form_end if overlap else None)
+                                       leave_at=form_end if overlap else None,
+                                       once=current["no"] + 1 >= self.tracks)
         if not advanced:
             self._log.warning(f"⚠️ [set v2] {self.set_id} трек {current['no'] + 1} не готов — "
                               f"продлеваю трек {current['no']} ещё на проход формы")

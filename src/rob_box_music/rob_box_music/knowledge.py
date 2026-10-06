@@ -49,9 +49,15 @@ ENERGY_LEVELS: Tuple[int, ...] = (1, 2, 3, 4, 5)
 #: Смещение громкости трека по энергии, дБ, ПОСЛЕ динамики мастер-шины (ADR-0147 §3.2; проводка — PR-7).
 #: Источник для старого ``core/club_energy`` (там импорт отсюда, ADR-0149 §4.6 в).
 ENERGY_TRIM_DB: Mapping[int, float] = {1: -9.0, 2: -6.0, 3: -4.0, 4: -2.0, 5: 0.0}
-#: Волна энергии открытого сета по номеру трека (ADR-0147 §3.4, ADR-0149 §4.6): трек 1 — превью/интро (2),
-#: дальше период 5 «разгон → пик → спад»: 2 3 4 5 4 | 2 3 4 5 4 | …
+#: Волна энергии сета по номеру трека (ADR-0147 §3.4, ADR-0149 §4.6): трек 1 — превью/интро (2),
+#: дальше период 5 «разгон → пик → спад»: 2 3 4 5 4 | 2 3 4 5 4 | …; последний трек сета — спад к ``ENERGY_WAVE[0]``.
 ENERGY_WAVE: Tuple[int, ...] = (2, 3, 4, 5, 4)
+#: Длина DJ-сета, треков, если человек не назвал число (решение Шифу 06.10: сет без конца дошёл до 53-го трека).
+SET_TRACKS = 10
+#: Самый длинный сет по просьбе человека («на два часа» зажимается сюда): ≈ 75 мин при ``SET_TRACK_SECONDS``.
+SET_MAX_TRACKS = 60
+#: Средняя длина трека сета, с: «сет на полчаса» → треки (живой прогон 06.10: 5–6 треков ≈ 7 мин).
+SET_TRACK_SECONDS = 75
 #: Настроение одиночного трека (``request_music.mood``, ADR-0149 §5.1) → энергия; перечисление тула — ключи.
 MOOD_ENERGY: Mapping[str, int] = {"calm": 2, "groove": 3, "bright": 3, "playful": 3, "dark": 4, "epic": 5}
 #: Плотность по энергии — составом ролей секций, а не множителями уровней (ADR-0149 §4.6 б): роли, которых
@@ -318,7 +324,8 @@ def role_ceiling(role: str) -> float:
 
 __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
-    "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "THEMES",
+    "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "SET_MAX_TRACKS", "SET_TRACKS",
+    "SET_TRACK_SECONDS", "THEMES",
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",

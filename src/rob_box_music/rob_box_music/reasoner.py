@@ -13,7 +13,8 @@
 * ``hooks`` — до :data:`MAX_HOOKS` хуков только из кандидатов, которые показал код (:func:`hook_candidates`):
   нашёл код хуки по словам темы (#3399) — кандидаты ТОЛЬКО они (ADR-0152 §5), строки таблицы и пул — при
   пустых находках; ``theme_row`` хуки не подменяет (хуки плана берутся из ``hooks``);
-* ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``); кульминация (5) обязана быть не позже
+* ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``) в пределах длины сета, кроме последнего трека
+  (спад, ``set_plan.arc_energy``); длину сета LLM не меняет; кульминация (5) обязана быть не позже
   ``Style.peak_by_track``-го трека (A6, #3459): дугу без пика в этом окне :func:`validate` отвергает
   (``PlanInvalid("energy")``, сет играет seeded-волну с пиком на 4-м треке) — LLM не может выключить кульминацию;
 * ``hype_line`` — выкрик ≤ :data:`HYPE_MAX` символов, только когда он включён (§12 В2, по умолчанию выкл).
@@ -180,8 +181,10 @@ def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
     """План сета с поправкой: тема/лад/хуки и дуга энергии; темп, сид, тоника и свинг — прежние."""
     profile = replace(plan.profile, row=ref.row, mode=ref.mode, hook_ids=ref.hook_ids)
     timbre = kn.THEME_TIMBRE.get(ref.row or "", plan.family)  # строка от LLM — её семья; none — прежняя семья сета
-    n = max(len(plan.tracks), len(ref.energy))
-    tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= len(ref.energy) else plan.track(no)
+    # длина сета — решение кода (``seeded_plan(n_tracks)``): дуга LLM её не удлиняет и не трогает последний трек —
+    # спад закрывает сет (``set_plan.arc_energy``); треки за концом дуги LLM — по seeded-дуге
+    n, shaped = len(plan.tracks), min(len(ref.energy), len(plan.tracks) - 1)
+    tracks = tuple(_with_energy(plan.track(no), ref.energy[no - 1]) if no <= shaped else plan.track(no)
                    for no in range(1, n + 1))
     return replace(plan, profile=profile, tracks=tracks, timbre=timbre)
 
