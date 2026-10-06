@@ -170,7 +170,8 @@ def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[in
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
                 history: Sequence[Mapping] = (), genre: Optional[str] = None) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
-    ``music_history`` (свежие первыми). ``genre`` — окно, заданное явно (тема, оператор); ``None`` — :func:`pick_genre`."""
+    ``music_history`` (свежие первыми). ``genre`` — окно, заданное явно (тема, оператор);
+    ``None`` — :func:`pick_genre`."""
     profile = replace(profile, root=set_root(profile, seed, history))
     base = kn.STYLES[profile.style]
     genre = pick_genre(base, history, random.Random(f"genre:{seed}:{profile.theme}")) if genre is None else genre

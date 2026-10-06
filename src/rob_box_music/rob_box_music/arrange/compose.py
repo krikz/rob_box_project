@@ -56,8 +56,8 @@ from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 
 #: Генераторы ролей по ключу фигуры стиля (``Style.*_figures``, ADR-0153 §2.2). Тональные — ``(style, key,
 #: bar_chords, synth, register) -> Part``; мотив лида без хука — ``(style, key, rng) -> ноты``.
-BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {"offbeat": bass.offbeat, "rolling8": bass.rolling8,
-                                                     "broken": bass.broken}
+BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
+    "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken}
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {"pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
 #: Длина секций с лидом (развитие хука считается от начала каждой).
