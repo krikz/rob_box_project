@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -37,6 +38,7 @@ from .theme import ThemeProfile
 #: Имя структурного выхода; это не тул исполнения — ризонер ничего не исполняет (ADR-0142 §9).
 SUBMIT_TOOL = "submit_set_profile"
 MAX_HOOKS = 3
+_LOG = logging.getLogger(__name__)
 HYPE_MAX = 60
 NO_ROW = "none"
 ENERGY_RANGE = (1, 5)
@@ -129,12 +131,18 @@ def _enum(payload: Mapping[str, Any], key: str, allowed: Any) -> Any:
 
 def _hooks(value: Any, profile: Optional[ThemeProfile]) -> Tuple[str, ...]:
     allowed = set(_all_hooks(profile))
-    if not isinstance(value, list) or not 0 < len(value) <= MAX_HOOKS:
-        raise PlanInvalid("hooks", f"нужен список из 1..{MAX_HOOKS}")
+    """Выбор хуков LLM. Схема просит ``maxItems: MAX_HOOKS``, но MiniMax её не соблюдает, а порядок хуков сета решает
+    код (:func:`plan_hooks`): лишние хуки не губят весь план (лад, энергию) — берутся первые :data:`MAX_HOOKS`
+    (без повторов), остальное отбрасывается с записью в лог. Пустое, не список и неизвестные хуки — ``PlanInvalid``."""
+    if not isinstance(value, list) or not value:
+        raise PlanInvalid("hooks", f"нужен непустой список (до {MAX_HOOKS})")
     bad = [h for h in value if h not in allowed]
     if bad:
         raise PlanInvalid("hooks", f"не из кандидатов: {bad}")
-    return tuple(dict.fromkeys(value))
+    uniq = tuple(dict.fromkeys(value))
+    if len(uniq) > MAX_HOOKS:
+        _LOG.info("hooks обрезаны: %d→%d", len(uniq), MAX_HOOKS)
+    return uniq[:MAX_HOOKS]
 
 
 def _energy(value: Any) -> Tuple[int, ...]:
