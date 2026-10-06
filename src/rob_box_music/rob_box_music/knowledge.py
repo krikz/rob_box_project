@@ -156,6 +156,19 @@ THEME_CONCEPTS: Mapping[str, str] = {
     # композиторы, чей транслит не совпадает со звуком архива («Чайковского» ≠ «Tchaikovsky», «Баха» → Baha Men)
     "чайковск": "tchaikovsky", "бах": "bach", "моцарт": "mozart", "бетховен": "beethoven",
 }
+#: Жанр словами темы → метка каталога RTTTL (``tags`` записи): «классическая музыка» — отдельная часть темы, а не
+#: стоп-слово (живой сет 06.10 «денди и классическая музыка» играл только игры). Ключ — начало слова темы.
+GENRE_TAGS: Mapping[str, str] = {"классик": "classical", "классическ": "classical", "classic": "classical"}
+#: Слова при жанре, не называющие мелодию («classical music»; «Music» — ещё и название записи архива, поэтому не
+#: стоп-слово поиска вообще).
+GENRE_FILLER: Tuple[str, ...] = ("music",)
+#: Записи, которые метка каталога относит к жанру зря (имя исполнителя содержит «Bach»/«Strauss» и т. п.).
+GENRE_NOT: Mapping[str, Tuple[str, ...]] = {
+    "classical": ("raindrop", "bachelor", "mudianto", "mundaint", "mundiant", "mundiant_2", "gravelpi", "gravelpi_2",
+                  "travelti", "starspla"),
+}
+#: Записи жанра, у которых в каталоге нет метки («1812 Overture» — самая узнаваемая классика архива).
+GENRE_EXTRA: Mapping[str, Tuple[str, ...]] = {"classical": ("1812over", "1812over_2")}
 #: Стиль и формат сета словами с цифрой — вырезаются из запроса до разбора на слова (``engine.search.terms``):
 #: «8-бит», «8 бит», «8-битный», «16-bit», «8bit». Цифра из них искала «8» в «1812 Overture» и «Sk8er Boi» (06.10).
 SEARCH_STYLE_PATTERNS: Tuple[str, ...] = (r"\b\d+\s*-?\s*(?:бит|bit)\w*",)
@@ -342,7 +355,7 @@ __all__ = [
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
-    "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
+    "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
 ]

@@ -561,6 +561,14 @@ def _iter_json_lines(fh: TextIO) -> Iterator[Dict[str, Any]]:
             yield json.loads(line)
 
 
+def tagged(library: "RtttlLibrary", tag: str) -> List[Dict[str, Any]]:
+    """Все записи архива с меткой ``tag`` (``tags`` записи, например ``classical``), с RTTTL, по имени."""
+    with library._lock:
+        rows = library._conn.execute(
+            "SELECT * FROM rtttl_melodies WHERE tags LIKE ? ORDER BY name", (f'%"{tag}"%',)).fetchall()
+    return [library._to_dict(r, include_rtttl=True) for r in rows]
+
+
 class RtttlLibrary:
     """Мигратор архива RTTTL-мелодий + поиск через SQLite (без in-memory).
 

@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from rob_box_music import knowledge as kn
 from rob_box_music.rtttl import contour
 
-from ..core.rtttl_library import _alias_normalize
+from ..core.rtttl_library import _alias_normalize, melody_quality, tagged
 from ..core.translit_ru import strip_version_tail, transliterate_ru
 
 #: Доля значимых слов запроса, которую должна покрыть запись, чтобы считаться найденной.
@@ -300,9 +300,48 @@ def _whole_search(library: Any, theme: str, limit: int, found_min: float = FOUND
     return ThemeHits(tuple((consensus_order(exact, limit) + consensus_order(rest, limit))[:limit]), True)
 
 
+def genre_of(text: str) -> Optional[str]:
+    """Метка каталога жанра, названного словами текста (``knowledge.GENRE_TAGS``): «классика» → ``classical``."""
+    for word in _WORD_RE.findall(text.lower().replace("ё", "е")):
+        for key, tag in kn.GENRE_TAGS.items():
+            if word.startswith(key):
+                return tag
+    return None
+
+
+def _genre_only(library: Any, part: str) -> Optional[str]:
+    """Метка жанра, если часть темы называет только жанр («классическая музыка»), иначе ``None``."""
+    words = {t.word for t in terms(library, part)} - set(kn.GENRE_FILLER)
+    return None if words else genre_of(part)
+
+
+def genre_hooks(library: Any, tag: str, limit: int = THEME_LIST_HOOKS) -> Tuple[str, ...]:
+    """Мелодии жанра каталога: записи с меткой ``tag`` (без ``knowledge.GENRE_NOT``, с ``GENRE_EXTRA``). Лучшие по
+    :func:`melody_quality` первыми, разные исполнители по кругу — первые хуки не восемь версий одного композитора."""
+    bad = set(kn.GENRE_NOT.get(tag, ()))
+    records = {r["name"]: r for r in tagged(library, tag) if r["name"] not in bad}
+    for name in kn.GENRE_EXTRA.get(tag, ()):
+        record = library.get(name)
+        if record and record.get("name") == name:
+            records.setdefault(name, record)
+    by_artist: Dict[str, List[Tuple[float, str]]] = {}
+    for name, record in records.items():
+        score = melody_quality(str(record.get("rtttl") or ""))
+        by_artist.setdefault(title_key(record.get("artist")) or name, []).append((-score, name))
+    groups = sorted((sorted(g) for g in by_artist.values()), key=lambda g: g[0])
+    return tuple(round_robin([[n for _s, n in g] for g in groups], limit))
+
+
 def _split(library: Any, theme: str) -> List[str]:
     parts = (" ".join(p.split()) for p in _PART_RE.split(theme) if p)
-    return [p for p in parts if p and terms(library, p)]
+    return [p for p in parts if p and (terms(library, p) or genre_of(p))]
+
+
+def _span(library: Any, words: List[str], i: int) -> int:
+    """Сколько слов с ``i`` покрывает одна запись архива (0 — ни одной), не заходя на слово жанра."""
+    room = next((n for n, w in enumerate(words[i:]) if _genre_only(library, w)), len(words) - i)
+    return next((n for n in range(min(_SEGMENT_WORDS, room), 0, -1)
+                 if _whole_search(library, " ".join(words[i:i + n]), 1, found_min=1.0).names), 0)
 
 
 def _segment(library: Any, theme: str) -> List[str]:
@@ -310,15 +349,21 @@ def _segment(library: Any, theme: str) -> List[str]:
     каталогу. С каждого значимого слова — самая длинная фраза до :data:`_SEGMENT_WORDS` слов, которую покрывает
     одна запись архива целиком (``found_min=1.0``): «Darkwing Duck» — одна часть, «Mario Tetris» — две. Слово без
     записи — своя часть (уйдёт в ``missing``). Меньше двух найденных частей — пусто: тема одна, ищется целиком."""
-    words = [w for w in _WORD_RE.findall(_STYLE_RE.sub(" ", theme.lower().replace("ё", "е"))) if terms(library, w)]
+    filler = set(kn.GENRE_FILLER) if genre_of(theme) else set()  # «classical music» — жанр, а не запись «Music»
+    words = [w for w in _WORD_RE.findall(_STYLE_RE.sub(" ", theme.lower().replace("ё", "е")))
+             if w not in filler and (terms(library, w) or genre_of(w))]
     if len(words) < 2:
         return []
     parts: List[str] = []
     found = 0
     i = 0
     while i < len(words):
-        span = next((n for n in range(min(_SEGMENT_WORDS, len(words) - i), 0, -1)
-                     if _whole_search(library, " ".join(words[i:i + n]), 1, found_min=1.0).names), 0)
+        if _genre_only(library, words[i]):  # жанр — своя часть («классическая») и находка
+            parts.append(words[i])
+            found += 1
+            i += 1
+            continue
+        span = _span(library, words, i)
         parts.append(" ".join(words[i:i + (span or 1)]))
         found += bool(span)
         i += span or 1
@@ -376,17 +421,20 @@ def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHit
     ``missing`` (в лог), не подменяется. Ни одной мелодии — пусто, сет возьмёт пул по хешу темы."""
     whole = _whole_search(library, theme, limit)
     parts = [] if whole.exact else theme_parts(library, theme)
-    if len(parts) < 2:
+    if len(parts) < 2 and not (parts and _genre_only(library, parts[0])):
         return whole
-    spanning = _whole_search(library, theme, limit, found_min=1.0).names
-    found = [spanning] if spanning else []
+    found = []
     missing = []
     for part in parts:
-        names = _whole_search(library, part, limit, found_min=1.0).names
+        tag = _genre_only(library, part)
+        names = genre_hooks(library, tag) if tag else _whole_search(library, part, limit, found_min=1.0).names
         if names:
             found.append(names)
         else:
             missing.append(part)
+    spanning = _whole_search(library, theme, limit, found_min=1.0).names if len(parts) >= 2 else ()
+    if spanning and spanning not in found:  # запись темы целиком — первой; совпавшая с частью не дублируется
+        found.insert(0, spanning)
     names = tuple(round_robin(found, THEME_LIST_HOOKS))
     return ThemeHits(names, False, tuple(missing), by_part(found, names))
 
@@ -397,5 +445,5 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
 
 
 __all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS", "Term",
-           "ThemeHits", "by_part", "consensus_order", "coverage", "find", "ranked", "round_robin", "sound_key", "stem",
-           "terms", "theme_hooks", "theme_parts", "theme_search", "title_key"]
+           "ThemeHits", "by_part", "consensus_order", "coverage", "find", "genre_hooks", "genre_of", "ranked",
+           "round_robin", "sound_key", "stem", "terms", "theme_hooks", "theme_parts", "theme_search", "title_key"]
