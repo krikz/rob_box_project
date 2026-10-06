@@ -155,7 +155,7 @@ class Mix:
     duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
     lpf: Mapping[str, Tuple[Sweep, ...]] = field(default_factory=dict)  # роль → свип по секциям формы
     #: A9-модель трека (ADR-0152 §4 п.2): поправка уровня роли, дБ (уже в ``level_db``), и доля низа худшего дропа
-    #: после неё в шкале калибровки (``arrange.mix.a9_model``); ``None`` — песня, без модели.
+    #: после неё на роботе (``arrange.mix.a9_model``); ``None`` — песня, без модели.
     a9_trim: Mapping[str, float] = field(default_factory=dict)
     a9_model: Optional[float] = None
 

@@ -21,7 +21,8 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
   недавние: бас и лид — :func:`role_timbre` (ADR-0152 PR-6), пэд — по рисунку (:func:`pad_timbre`, §3.2).
 * **Рисунок пэда (ADR-0152 PR-5).** ``knowledge.PAD_FIGURES``: ``held`` не под сайдчейном, цель уровня рисунка —
   цель роли + ``level_offset_db`` (громкость как у ``pumped16``).
-* **A9-модель трека (ADR-0152 §4 п.2).** Доля низа каждого дропа по полосам слоёв (:func:`a9_model`); ниже
+* **A9-модель трека (ADR-0152 §4 п.2).** Доля низа каждого дропа на роботе по полосам слоёв (:func:`a9_model`;
+  пэд — со сдвигом синта на роботе ``knowledge.PAD_ROBOT_DB``, #3441); ниже
   ``Style.a9_model_low`` — пэд тише, потом бас громче (:func:`a9_trim`), поправка — ``Mix.a9_trim``.
 * **Бочка.** Сэмпл из пула стиля ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`), выбор — ``TrackPlan.kick``.
 * **Стерео (PR-9, §3.9).** Ширина ролей — ``Style.stereo`` → ``Mix.stereo``; бочка и бас в центре.
@@ -205,7 +206,7 @@ def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...
 
 
 def _layer_low(role: str, part: Part) -> float:
-    """Доля низа (< 150 Гц) слоя: бочка — целиком (так снята калибровка #3401; полосы NRT бочки — ``X`` без
+    """Доля низа (< 150 Гц) слоя: бочка — целиком (так модель сверена с записью #3441; полосы NRT бочки — ``X`` без
     ``sample=``, на роботе другой звук), тональные — ``knowledge.LAYER_BANDS``, ударные и сэмплы — 0 (замера нет)."""
     if role == "kick":
         return 1.0
@@ -218,10 +219,18 @@ def _sounds(style: kn.Style, role: str, section_name: str, roles: frozenset) -> 
     return role in roles
 
 
+def _model_db(role: str, part: Part, pad_offset_db: float) -> float:
+    """dB роли в шкале робота: пэд — без прибавки рисунка (шкала ``pumped16``) и со сдвигом синта на роботе
+    (``knowledge.PAD_ROBOT_DB``; синт без замера — худший сдвиг)."""
+    if role != "pad":
+        return part.level_db
+    return part.level_db - pad_offset_db + kn.PAD_ROBOT_DB.get(part.synth_or_sample, kn.PAD_ROBOT_DB_UNMEASURED)
+
+
 def low_share(style: kn.Style, parts: Mapping[str, Part], form: Form, i: int, duck: Duck, ducked: frozenset,
               pad_offset_db: float) -> float:
-    """Доля низа секции ``i`` в мощности модели: роль звучит всю секцию на ``level_db``, под сайдчейном — × средняя
-    мощность огибающей, бочка вида build — по числу ударов; пэд — без прибавки рисунка (шкала ``pumped16``)."""
+    """Доля низа секции ``i`` на роботе: роль звучит всю секцию на ``level_db`` (пэд — :func:`_model_db`), под
+    сайдчейном — × средняя мощность огибающей, бочка вида build — по числу ударов."""
     sec = form.sections[i]
     env = duck_envelope(duck.trigger, duck.depth)
     duck_power = sum(g * g for g in env) / len(env)
@@ -229,7 +238,7 @@ def low_share(style: kn.Style, parts: Mapping[str, Part], form: Form, i: int, du
     for role, part in parts.items():
         if not _sounds(style, role, sec.name, sec.roles):
             continue
-        power = 10.0 ** ((part.level_db - (pad_offset_db if role == "pad" else 0.0)) / 10.0)
+        power = 10.0 ** (_model_db(role, part, pad_offset_db) / 10.0)
         power *= duck_power if role in ducked else 1.0
         power *= look(style, sec.energy).kick.count("X") / 4 if role == "kick" else 1.0
         total += power
@@ -239,7 +248,7 @@ def low_share(style: kn.Style, parts: Mapping[str, Part], form: Form, i: int, du
 
 def a9_model(style: kn.Style, parts: Mapping[str, Part], form: Form, duck: Sequence[Duck], ducked: frozenset,
              pad_offset_db: float) -> float:
-    """Доля низа худшего дропа (секции ``drop*``) — A9 по дропам (ADR-0152 §4 п.1) в шкале калибровки."""
+    """Доля низа худшего дропа (секции ``drop*``) — A9 по дропам (ADR-0152 §4 п.1) в шкале робота."""
     shares = [low_share(style, parts, form, i, duck[i], ducked, pad_offset_db)
               for i, sec in enumerate(form.sections) if sec.name.startswith("drop")]
     return round(min(shares), 3) if shares else 1.0
