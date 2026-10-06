@@ -226,6 +226,16 @@ class PlayerOwner:
         self.publish_state()
         return {"ok": True, "track_id": last}
 
+    def update_dj(self, track_id: str, fields: Mapping[str, Any]) -> bool:
+        """Факты играющего трека сета (мелодия, план дальше) — в поле ``dj`` снимка. Трек уже сменился или сета
+        нет — ничего: снимок не получает факты чужого трека."""
+        with self._lock:
+            if (self._current or {}).get("track_id") != track_id or not self._dj.get("enabled"):
+                return False
+            self._dj = {**self._dj, **fields}
+        self.publish_state()
+        return True
+
     def publish_state(self, finished_track_id: Optional[str] = None) -> None:
         """Опубликовать latched-снимок (после старта, стопа и при подключении к ROS)."""
         now = self._clock()

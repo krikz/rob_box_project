@@ -107,3 +107,19 @@ def test_prompt_shows_facts_and_forbids_writing_them():
 def test_mentions_uses_validator_name_key():
     assert dl.mentions("Марио", "когда будет марио?") and dl.mentions("Аладдин", "где аладдина треки")
     assert not dl.mentions("Super Mario Bros", "супер, где тетрис?")
+
+
+SET = {"track_no": 2, "tracks": 4, "melody": "Тетрис", "next_melodies": ["Аладдин", "Контра"], "not_found": ["Марио"]}
+
+
+def test_now_playing_text_is_built_from_facts():
+    assert dl.now_playing_text(SET) == ("Сейчас трек 2 из 4: «Тетрис». Дальше по плану: «Аладдин», «Контра». "
+                                        "Не нашлось в библиотеке: «Марио».")
+    assert "свой мотив" in dl.now_playing_text({"track_no": 1, "tracks": 4, "melody": ""})
+
+
+def test_when_text_answers_only_from_facts():
+    assert dl.when_text(SET, "контру") == "«Контра» по плану через 2 трека."
+    assert dl.when_text(SET, "марио").startswith("«Марио» в библиотеке мелодий не нашлось")
+    assert dl.when_text(SET, "тетрис").startswith("«Тетрис» играет прямо сейчас — трек 2 из 4")
+    assert dl.when_text(SET, "зельда") is None

@@ -231,6 +231,45 @@ def mentions(name: str, text: str, fold: Fold = plain_fold) -> bool:
     return any(w.startswith(key) for key in _name_keys([name], fold) for w in words)
 
 
+def tracks_word(n: int) -> str:
+    """«трек/трека/треков» к числу ``n``."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "трек"
+    return "трека" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "треков"
+
+
+def _quoted(names: Sequence[str]) -> str:
+    return ", ".join(f"«{n}»" for n in names)
+
+
+def now_playing_text(facts: Mapping[str, Any]) -> str:
+    """«Что играет» из фактов снимка сета (``dj``: ``track_no``, ``tracks``, ``melody``, ``next_melodies``,
+    ``not_found``) — фразу строит код (ADR-0148), не LLM."""
+    no, total, melody = facts.get("track_no"), facts.get("tracks"), facts.get("melody")
+    head = f"Сейчас трек {no} из {total}" if total else f"Сейчас трек {no}"
+    parts = [f"{head}: «{melody}»." if melody else f"{head}: свой мотив диджея, без мелодии из библиотеки."]
+    if facts.get("next_melodies"):
+        parts.append(f"Дальше по плану: {_quoted(facts['next_melodies'])}.")
+    if facts.get("not_found"):
+        parts.append(f"Не нашлось в библиотеке: {_quoted(facts['not_found'])}.")
+    return " ".join(parts)
+
+
+def when_text(facts: Mapping[str, Any], asked: str, fold: Fold = plain_fold) -> Optional[str]:
+    """«Когда будет / где X» по фактам сета: играет сейчас, через сколько треков по плану, не нашлось в библиотеке.
+    X не совпал ни с одним фактом — ``None`` (кода сказать нечего, вопрос уходит LLM)."""
+    melody = facts.get("melody")
+    if melody and mentions(melody, asked, fold):
+        return f"«{melody}» играет прямо сейчас — трек {facts.get('track_no')} из {facts.get('tracks')}."
+    for i, name in enumerate(facts.get("next_melodies") or (), start=1):
+        if mentions(name, asked, fold):
+            return f"«{name}» по плану через {i} {tracks_word(i)}."
+    for name in facts.get("not_found") or ():
+        if mentions(name, asked, fold):
+            return f"«{name}» в библиотеке мелодий не нашлось — в этом сете не будет. {now_playing_text(facts)}"
+    return None
+
+
 def payload_line(payload: Any) -> Any:
     """Строка из аргументов ``submit_dj_line`` (лишние поля — нет)."""
     if not isinstance(payload, Mapping) or set(payload) != {"line"}:
@@ -247,4 +286,5 @@ def facts_for(track_no: int, tracks: int, theme: str, hook: Optional[str], energ
 
 
 __all__ = ["FIELDS", "LINE_MAX", "LineFacts", "LineInvalid", "PHASES", "SUBMIT_TOOL", "TEMPLATES", "facts_for",
-           "mentions", "payload_line", "plain_fold", "prompt", "schema", "template_line", "tool", "validate_line"]
+           "mentions", "now_playing_text", "payload_line", "plain_fold", "prompt", "schema", "template_line", "tool",
+           "tracks_word", "validate_line", "when_text"]

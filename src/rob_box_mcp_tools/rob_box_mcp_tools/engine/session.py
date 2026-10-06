@@ -40,6 +40,7 @@ from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.harmony import PROGRESSION_LOOKBACK
 from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
+from rob_box_music.dj_line import tracks_word
 from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, SetPlan
@@ -133,13 +134,6 @@ def plan_source(current: PlanNow, memory: Optional[SetMemory] = None) -> TrackSo
         return track
 
     return next_track
-
-
-def _tracks_word(n: int) -> str:
-    """«трек/трека/треков» к числу ``n``."""
-    if n % 10 == 1 and n % 100 != 11:
-        return "трек"
-    return "трека" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "треков"
 
 
 def _other_deck(deck: str) -> str:
@@ -251,7 +245,7 @@ class SetSession:
             return
         self._ended = True
         self._deactivate()
-        self._log.info(f"🎧 [set v2] {self.set_id} сет окончен: {self.tracks} {_tracks_word(self.tracks)}")
+        self._log.info(f"🎧 [set v2] {self.set_id} сет окончен: {self.tracks} {tracks_word(self.tracks)}")
 
     def _prepare(self, track_no: int, deck: str) -> Optional[Any]:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
