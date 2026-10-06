@@ -517,14 +517,16 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 #: ``amp`` (самый тихий — ``keys``: −49.2 при цели −50). Бас — доля низа ≥ 0.9 (#3430): ``retrobass`` (0.59) и ``tb303``
 #: (0.52) держат A9-модель трека на 0.72/0.67 при любом пэде (``a9_trim`` упирается в потолок ``amp``) — в семьи не
 #: идут; ``tb303`` (PR-9) — только в ``hard`` и только рисунком ``acid16`` (:data:`BASS_FIGURE_SYNTHS`); ``moogbass`` — разброс замера по тоникам 8 дБ.
+#: Доля низа баса — на роботе (:func:`bass_low_on_robot`, порог :data:`BASS_MIN_LOW`): ``dub`` на образе 06.10 звучит
+#: серединой (#3457) — из семей снят, в ``warm`` его место занял ``jbass`` (три баса на семью темы вне ``THEMES``).
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("dub", "subbass", "jbass"),
+    "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("subbass", "jbass"),
              "pad": ("sinepad", "space", "strangerpulsepad")},
-    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "dub", "tb303"),
+    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "tb303"),
              "pad": ("sinepad", "strings", "strangerpulsepad")},
     "bright": {"lead": ("pluck", "blip", "kalimba", "epiano"), "bass": ("bass", "jbass"),
                "pad": ("strings", "ambi", "sinepad")},
-    "warm": {"lead": ("pluck", "arpy", "epiano", "rhpiano"), "bass": ("bass", "dub", "subbass"),
+    "warm": {"lead": ("pluck", "arpy", "epiano", "rhpiano"), "bass": ("bass", "jbass", "subbass"),
              "pad": ("sinepad", "ambi", "warmpad")},
 }
 #: Строка ``THEMES`` → семья тембров стиля; тема не из таблицы — ``Style.default_timbre``.
@@ -579,6 +581,26 @@ PAD_FIGURES: Mapping[str, PadFigure] = {
 #: (:data:`PAD_ROBOT_DB_UNMEASURED`): A9-модель скорее приглушит пэд, чем пропустит дроп без низа.
 PAD_ROBOT_DB: Mapping[str, float] = {"sinepad": 8.3, "warmpad": 11.1, "ambi": 14.2}
 PAD_ROBOT_DB_UNMEASURED = max(PAD_ROBOT_DB.values())
+#: Бас на роботе против NRT (#3457, приёмка 06.10, образ 2e0c03537): сдвиг дБ и доля низа < 150 Гц там, где запись
+#: расходится с :data:`LAYER_MEASURED_DB`/:data:`LAYER_BANDS`; остальные басы — как NRT. ``dub`` (SynthDef: ``freq/4``,
+#: энергия в 12–32 Гц) в 10 из 12 дропов приёмки дал суб 12–32 Гц −45…−53 дБ против −26…−40 у тех же нот в ser6/7/9
+#: (у ``bass`` с тем же ``freq/4`` суб не изменился), текст программы ``dub`` в образах PR-8 и PR-10 одинаков — причина
+#: на стороне робота, не найдена. По 22 дропам приёмки ``dub`` ведёт себя как слой середины: лучшая подгонка — доля
+#: низа 0.0 при +3 дБ (остаток модели по ``dub`` +0.010±0.121; «бас молчит» даёт +0.265 — отвергнуто). ``jbass`` −6.5
+#: (10 дропов приёмки, бутстрап по трекам −15…−1.8; было +0.084 модели над записью). ``subbass`` (ser +2.8, приёмка −3.1),
+#: ``tb303`` (4 дропа), ``wobblebass`` (2) — без поправки: знак не держится или данных мало.
+BASS_ROBOT_DB: Mapping[str, float] = {"dub": 3.0, "jbass": -6.5}
+BASS_ROBOT_LOW: Mapping[str, float] = {"dub": 0.0}
+#: Бас семьи тембров держит низ дропа: доля низа на роботе (:func:`bass_low_on_robot`) не ниже этой (критерий палитры
+#: ADR-0152 PR-6, #3430); ``tb303`` (0.52) — исключение рисунка ``acid16`` (:data:`BASS_FIGURE_SYNTHS`).
+BASS_MIN_LOW = 0.9
+
+
+def bass_low_on_robot(synth: str) -> float:
+    """Доля низа < 150 Гц баса ``synth`` на роботе: замер записи (:data:`BASS_ROBOT_LOW`), иначе NRT (``LAYER_BANDS``)."""
+    return BASS_ROBOT_LOW.get(synth, LAYER_BANDS["bass"][synth][0])
+
+
 #: A9-модель трека (ADR-0152 §4 п.2): доля низа каждого дропа в шкале робота (пэд — с :data:`PAD_ROBOT_DB`) —
 #: ниже порога ``Style.a9_model_low`` пэд тише ступенями ``A9_STEP_DB`` до ``A9_PAD_FLOOR_DB`` от своей цели, затем
 #: бас громче до ``A9_BASS_BOOST_DB`` (бас под сайдчейном на роботе тише модели на 6.7 дБ, #3430). Не дотянули —
@@ -720,14 +742,26 @@ _CLUB_STEREO: Mapping[str, Mapping[str, float]] = {
     # перекосила бы баланс: огибающая громче на нечётных 16-х, а они всегда на одной стороне.
     "sample": {"pan": PAN_PSR, "haas_ms": PAD_HAAS_MS},
 }  # лида нет: на оси (§3.9)
+#: Ширина синта поверх ширины роли стиля (#3458): моно-середина ``hard`` держала корреляцию L/R дропов приёмки 06.10
+#: на 0.74–0.93 (8 дропов ``киберпанк``): корреляция середины 150–2000 Гц 0.62–0.80 против 0.15 у прочих (там середину
+#: держат два голоса пэда и psr), а LR дропа ≈ доля низа × 1 + доля середины × LR середины. Лиды ``blip``/``cs80lead``/
+#: ``hoover`` — два голоса как пэд. ``tb303`` (половина энергии в середине) — два голоса на полных L/R с расстройкой БЕЗ
+#: Хааса: за 16-ю (≈ 0.11 с) расстройка 1/8 тона сдвигает фазу на 80 Гц на ≈ 0.04 оборота (низ в обоих каналах один —
+#: центр, как I11, без гребёнки задержки), а на 1 кГц — на ≈ 0.8 оборота (середина расходится). Остальные басы и бочка
+#: — в центре (``model.validate``).
+SYNTH_STEREO: Mapping[str, Mapping[str, float]] = {
+    **{lead: {"pan": PAD_SPREAD, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS} for lead in ("blip", "cs80lead", "hoover")},
+    "tb303": {"pan": PAD_SPREAD, "detune": PAD_DETUNE},
+}
 
 __all__ += [
     "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS", "kick_of",
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
-    "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH",
+    "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "SYNTH_STEREO",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "family_of", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
-    "PAD_ROBOT_DB_UNMEASURED", "A9_MIN_GAIN", "A9_STEP_DB",
+    "PAD_ROBOT_DB_UNMEASURED", "BASS_ROBOT_DB", "BASS_ROBOT_LOW", "BASS_MIN_LOW", "bass_low_on_robot",
+    "A9_MIN_GAIN", "A9_STEP_DB",
     "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BASS_FIGURE_SYNTHS", "BassFigure", "FormSpec",
 ]
 
@@ -903,13 +937,13 @@ _RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: ADR-0152 §3.1 — не сделан). ``supersawlead`` держит хвост (``SYNTH_TRAITS`` «held») — мотив может смазываться,
 #: проверка на слух.
 _RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("hoover", "rave", "cs80lead"), "bass": ("subbass", "dub", "tb303"),
+    "dark": {"lead": ("hoover", "rave", "cs80lead"), "bass": ("subbass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["dark"]["pad"]},
     "hard": {"lead": ("hoover", "rave", "supersawlead", "arpy"), "bass": ("wobblebass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["hard"]["pad"]},
     "bright": {"lead": ("supersawlead", "rave", "arpy", "blip"), "bass": ("jbass", "subbass", "tb303"),
                "pad": _CLUB_TIMBRES["bright"]["pad"]},
-    "warm": {"lead": ("supersawlead", "hoover", "pluck"), "bass": ("dub", "subbass", "tb303"),
+    "warm": {"lead": ("supersawlead", "hoover", "pluck"), "bass": ("jbass", "subbass", "tb303"),
              "pad": _CLUB_TIMBRES["warm"]["pad"]},
 }
 #: Каркасы рейва — клубные без качающихся (``shuffle``/``ride``): рейв ровный (S2 ADR-0153: свинг-ratio ≤ 1.2).

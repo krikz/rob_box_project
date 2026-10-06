@@ -22,10 +22,11 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Рисунок пэда (ADR-0152 PR-5).** ``knowledge.PAD_FIGURES``: ``held`` не под сайдчейном, цель уровня рисунка —
   цель роли + ``level_offset_db`` (громкость как у ``pumped16``).
 * **A9-модель трека (ADR-0152 §4 п.2).** Доля низа каждого дропа на роботе по полосам слоёв (:func:`a9_model`;
-  пэд — со сдвигом синта на роботе ``knowledge.PAD_ROBOT_DB``, #3441); ниже
+  пэд — со сдвигом синта на роботе ``knowledge.PAD_ROBOT_DB``, #3441; бас — ``BASS_ROBOT_DB``/``bass_low_on_robot``, #3457); ниже
   ``Style.a9_model_low`` — пэд тише, потом бас громче (:func:`a9_trim`), поправка — ``Mix.a9_trim``.
 * **Бочка.** Сэмпл из пула стиля ``knowledge.KICK_SOUNDS`` (:func:`kick_sound`), выбор — ``TrackPlan.kick``.
-* **Стерео (PR-9, §3.9).** Ширина ролей — ``Style.stereo`` → ``Mix.stereo``; бочка и бас в центре.
+* **Стерео (PR-9, §3.9).** Ширина ролей — ``Style.stereo`` → ``Mix.stereo``, синт с шириной — ``knowledge.SYNTH_STEREO``
+  (:func:`role_stereo`, #3458: лиды и ``tb303`` семьи ``hard``); бочка и бас в центре (у ``tb303`` — два голоса без Хааса).
   Ударные — сторона меняется на каждом ударе (:func:`alternate_pan`, перенос ``core/club_stereo.pan_steps``);
   тональная роль с двумя голосами — уровень делится на голоса (:func:`voice_amp`), громкость роли та же.
 """
@@ -231,9 +232,12 @@ def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...
 
 def _layer_low(role: str, part: Part) -> float:
     """Доля низа (< 150 Гц) слоя: бочка — целиком (так модель сверена с записью #3441; полосы NRT бочки — ``X`` без
-    ``sample=``, на роботе другой звук), тональные — ``knowledge.LAYER_BANDS``, ударные и сэмплы — 0 (замера нет)."""
+    ``sample=``, на роботе другой звук), бас — на роботе (``knowledge.bass_low_on_robot``, #3457), прочие тональные —
+    ``knowledge.LAYER_BANDS``, ударные и сэмплы — 0 (замера нет)."""
     if role == "kick":
         return 1.0
+    if role == "bass":
+        return kn.bass_low_on_robot(part.synth_or_sample)
     return kn.LAYER_BANDS[role][part.synth_or_sample][0] if role in kn.TONAL_ROLES else 0.0
 
 
@@ -245,7 +249,9 @@ def _sounds(style: kn.Style, role: str, section_name: str, roles: frozenset) -> 
 
 def _model_db(role: str, part: Part, pad_offset_db: float) -> float:
     """dB роли в шкале робота: пэд — без прибавки рисунка (шкала ``pumped16``) и со сдвигом синта на роботе
-    (``knowledge.PAD_ROBOT_DB``; синт без замера — худший сдвиг)."""
+    (``knowledge.PAD_ROBOT_DB``; синт без замера — худший сдвиг), бас — со сдвигом синта ``knowledge.BASS_ROBOT_DB``."""
+    if role == "bass":
+        return part.level_db + kn.BASS_ROBOT_DB.get(part.synth_or_sample, 0.0)
     if role != "pad":
         return part.level_db
     return part.level_db - pad_offset_db + kn.PAD_ROBOT_DB.get(part.synth_or_sample, kn.PAD_ROBOT_DB_UNMEASURED)
@@ -308,6 +314,19 @@ def a9_trim(style: kn.Style, parts: Mapping[str, Part], form: Form, duck: Sequen
     return out, applied, share
 
 
+def role_stereo(style: kn.Style, role: str, part: Part) -> Optional[Stereo]:
+    """Ширина роли: синта (``knowledge.SYNTH_STEREO``, #3458), иначе роли стиля (``Style.stereo``), иначе центр."""
+    fields = kn.SYNTH_STEREO.get(part.synth_or_sample) if role in kn.TONAL_ROLES else None
+    fields = fields if fields is not None else style.stereo.get(role)
+    return Stereo(**fields) if fields is not None else None
+
+
+def _widths(style: kn.Style, parts: Mapping[str, Part]) -> Dict[str, Stereo]:
+    """``Mix.stereo``: роли не в центре (:func:`role_stereo`)."""
+    widths = {role: role_stereo(style, role, part) for role, part in parts.items()}
+    return {role: st for role, st in widths.items() if st is not None}
+
+
 def _ducked(style: kn.Style, form: Form, roles: Sequence[str], figure: Optional[kn.PadFigure]) -> frozenset:
     """Роли под сайдчейном: стиля, что есть в треке; пэд рисунка без насоса (``held``) — нет; песня — никто."""
     if form.song:
@@ -333,12 +352,12 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
     a9: Optional[float] = None
     if not form.song and {"kick", "bass"} <= set(leveled):
         leveled, trim, a9 = a9_trim(style, leveled, form, duck, ducked, offset)
-    stereo = {r: Stereo(**style.stereo[r]) for r in leveled if r in style.stereo}
+    stereo = _widths(style, leveled)
     mix = Mix({r: p.level_db for r, p in leveled.items()}, stereo, duck if ducked else (), duck_roles=ducked,
               lpf={} if form.song else lpf_sweeps(style, form, [r for r in sorted(leveled) if not _note_lpf(leveled[r])]), a9_trim=trim, a9_model=a9)
     return leveled, mix
 
 
 __all__ = ["a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
-           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_timbre",
+           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_stereo", "role_timbre",
            "section_arc", "set_master", "sustains_to_sus", "target_db", "voice_amp"]

@@ -159,7 +159,7 @@ Sweep = Tuple[float, float]
 @dataclass(frozen=True)
 class Mix:
     level_db: Mapping[str, float]
-    stereo: Mapping[str, Stereo]  # роль → ширина; бочки и баса здесь нет (центр)
+    stereo: Mapping[str, Stereo]  # роль → ширина; бочки нет (центр), бас — только ширина синта без Хааса (#3458)
     duck: Tuple[Duck, ...] = ()  # по секциям формы (вид секции, ``Style.looks``)
     fx: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # имя секции → эффекты
     duck_roles: frozenset = frozenset()  # роли под сайдчейном (тональные)
@@ -400,10 +400,18 @@ def _check_levels(track: Track) -> None:
     _check_lpf(track.mix, track.parts, len(track.form.sections))
     for role, st in track.mix.stereo.items():
         path = f"mix.stereo.{role}"
-        _require(role not in ("kick", "bass"), path, "низ — строго в центре (ADR-0149 §3.9)")
+        _require(role != "kick" and (role != "bass" or _bass_width_ok(track.parts[role], st)), path,
+                 "низ — строго в центре (ADR-0149 §3.9; бас — только ширина синта без Хааса, knowledge.SYNTH_STEREO)")
         _require(0.0 <= st.pan <= 1.0 and st.first in (-1, 1), path, f"вынос {st.pan} вне 0..1 или сторона {st.first}")
         _require(0.0 <= st.haas_ms <= kn.HAAS_MAX_MS and 0.0 <= st.detune <= 0.5, path,
                  f"Хаас {st.haas_ms} мс или расстройка {st.detune} вне пределов")
+
+
+def _bass_width_ok(part: Part, st: Stereo) -> bool:
+    """Бас не в центре — только ширина своего синта из ``knowledge.SYNTH_STEREO`` и без Хааса (низ двух голосов в
+    фазе: гребёнка задержки на басу вырезала бы низ, #3458)."""
+    table = kn.SYNTH_STEREO.get(part.synth_or_sample)
+    return table is not None and not st.haas_ms and st == Stereo(**table)
 
 
 def _check_hook_and_harmony(track: Track) -> None:
