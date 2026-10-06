@@ -11,6 +11,8 @@ build — перед drop2, и хук №1 темы (порядок ``search.the
 RTTTL-библиотеки (``arrange.hook``); тональность трека — тоника профиля и лад хука.
 Нет годной мелодии темы — лид-мотив «вопрос/ответ» (PR-2) с тем же развитием, ``track.hook = None``.
 Прогрессия подбирается под хук (``harmony.fit_progression``), бас в оффбит, пэд с голосоведением.
+План назвал материал партитуры (``TrackPlan.material``, ADR-0154 PR-3) — хук и ступени слотов из него
+(``hook.from_material``, ``harmony.from_material``); не годится — путь выше без изменений.
 
 Стиль (ADR-0153 S0): стилевые таблицы — ``knowledge.STYLES[plan.style]`` (форма, регистры, тембры, каркасы, виды
 секций, прогрессии, микс); стиль идёт параметром в генераторы. Генератор роли выбирается по ключу фигуры стиля из
@@ -41,6 +43,7 @@ RTTTL-библиотеки (``arrange.hook``); тональность трека
 from __future__ import annotations
 
 import hashlib
+import logging
 import random
 from dataclasses import replace
 from typing import Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -50,6 +53,7 @@ from ..model import (
     BEATS_PER_BAR, Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
 )
 from ..diversity import fingerprint, recent_values, weighted_pick
+from ..material import ScoreMaterial
 from ..set_plan import SetPlan, TrackPlan, pick_kick, pick_template, seeded_plan
 from ..theme import ThemeProfile
 from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
@@ -60,6 +64,7 @@ BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
     "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken, "acid16": bass.acid16}
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {"pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
+_LOG = logging.getLogger(__name__)
 #: Длина секций с лидом (развитие хука считается от начала каждой).
 SECTION_BARS = 8
 CHORD_BARS = 2
@@ -243,16 +248,64 @@ def _motif(style: kn.Style, key: Key, rng: random.Random, last_fp: Optional[str]
     return motif
 
 
+Progression = Callable[[Sequence[PitchEvent]], Tuple[int, ...]]
+
+
 def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, rng: random.Random, lead_synth: str,
-             history: Sequence[Mapping] = ()):
-    """Лид, прогрессия под мотив и пэд под лидом; пэд не помещается под лидом — ``ValueError``."""
+             history: Sequence[Mapping] = (), progression: Optional[Progression] = None):
+    """Лид, прогрессия под мотив и пэд под лидом; пэд не помещается под лидом — ``ValueError``. ``progression`` —
+    ступени по нотам дропа (гармония материала); None — шаблон стиля под хук (``harmony.fit_progression``)."""
     lead_part = _lead(style, spec, motif, key, lead_synth)
     drop = [e for e in hooks.develop(motif, "drop", SECTION_BARS, key) if e.beat < LOOP_BEATS]
-    recent = recent_values(history, "progression")
-    degrees = harmony.fit_progression(style, key, drop, CHORD_BARS * BEATS_PER_BAR, rng, recent)
+    if progression is None:
+        recent = recent_values(history, "progression")
+        degrees = harmony.fit_progression(style, key, drop, CHORD_BARS * BEATS_PER_BAR, rng, recent)
+    else:
+        degrees = progression(drop)
     pad_top = min(style.registers["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
     pad_register = (style.registers["pad"][0], pad_top)
     return lead_part, degrees, pad_register, harmony.pad_chords(style, key, degrees, pad_register)
+
+
+def _theme_hook(style: kn.Style, spec: FormSpec, profile: ThemeProfile, melodies: Mapping[str, str],
+                rng: random.Random, history: Sequence[Mapping], track_no: int, lead_synth: str):
+    """Первая мелодия темы (:func:`hook_candidates`), под которой складываются гармония и пэд: (хук, тональность,
+    аранжировка) или None."""
+    for candidate, key in hook_candidates(profile, melodies, rng, history, opening=track_no == 1, track_no=track_no):
+        try:
+            return candidate, key, _arrange(style, spec, candidate, key, rng, lead_synth, history)
+        except ValueError:
+            continue
+    return None
+
+
+def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
+                   materials: Optional[Mapping[str, ScoreMaterial]], profile: ThemeProfile, rng: random.Random,
+                   lead_synth: str):
+    """Хук, лид и гармония трека из материала партитуры плана (ADR-0154 §3.3): хук — ``hook.from_material``,
+    ступени — ``harmony.from_material`` по той же фразе и тому же множителю темпа. Материала нет или он не годится
+    (хук, лад, регистр пэда) — None с причиной в логе (I12), трек идёт по хуку темы."""
+    if not material_id:
+        return None
+    material = (materials or {}).get(material_id)
+    if material is None:
+        _LOG.info("🎵 [music v2] material=%s нет среди переданных — хук темы", material_id)
+        return None
+    try:
+        motif, key = hooks.from_material(material, profile.bpm, profile.root, profile.mode, hook_register(style))
+        scale = hooks.time_scale(material.bpm or profile.bpm, profile.bpm)
+        phrase = hooks.pick_phrase(material)
+
+        def progression(drop: Sequence[PitchEvent]) -> Tuple[int, ...]:
+            return harmony.from_material(material, phrase, key, drop, CHORD_BARS * BEATS_PER_BAR,
+                                         max(1, motif.bars // CHORD_BARS), scale)
+
+        arranged = _arrange(style, spec, motif, key, rng, lead_synth, progression=progression)
+    except ValueError as exc:  # HookError — тоже ValueError
+        _LOG.info("🎵 [music v2] material=%s отказ: %s — хук темы", material_id, exc)
+        return None
+    _LOG.info("🎵 [music v2] material=%s ступени %s", material_id, harmony.progression_name(arranged[1]))
+    return motif, key, arranged
 
 
 def _pad(style: kn.Style, family: str, bar_chords: List[Tuple[int, Chord]], key: Key,
@@ -281,12 +334,15 @@ def _kit(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str
 
 
 def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str]] = None,
-            history: Sequence[Mapping] = (), deck: str = "A") -> Track:
+            history: Sequence[Mapping] = (), deck: str = "A",
+            materials: Optional[Mapping[str, ScoreMaterial]] = None) -> Track:
     """Трек ``track_no`` сета по плану. ``melodies`` — ``{id: rtttl}`` для ``plan.profile.hook_ids``; ``history`` —
-    строки ``music_history`` (свежие первыми, ``MusicHistory.recent``).
+    строки ``music_history`` (свежие первыми, ``MusicHistory.recent``); ``materials`` — ``{material_id:
+    ScoreMaterial}`` для ``TrackPlan.material`` (ADR-0154).
 
     Темп — сета, тоника — ``plan.root(track_no)``, энергия — ``plan.track(track_no).energy``, стиль —
-    ``knowledge.STYLES[plan.style]``. Хук — первая мелодия темы, под которой складываются гармония и пэд; ни одной —
+    ``knowledge.STYLES[plan.style]``. План назвал материал — хук и гармония автора из него (:func:`_from_material`);
+    иначе (или материал не годится) хук — первая мелодия темы, под которой складываются гармония и пэд; ни одной —
     мотив лида (PR-2).
     """
     step = plan.track(track_no)
@@ -298,20 +354,16 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     seed = f"{plan.seed}:{track_no}"
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
-    track_hook: Optional[Hook] = None
-    for candidate, key in hook_candidates(profile, melodies or {}, rng, history, opening=track_no == 1,
-                                          track_no=track_no):
-        try:
-            lead_part, degrees, pad_register, chords = _arrange(style, spec, candidate, key, rng, lead_synth,
-                                                                history)
-        except ValueError:
-            continue
-        track_hook = motif = candidate
-        break
-    if track_hook is None:
+    found = (_from_material(style, spec, step.material, materials, profile, rng, lead_synth)
+             or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth))
+    if found is None:
         key = Key(profile.root, profile.mode)
         motif = _motif(style, key, rng, history[0].get("hook_fingerprint") if history else None)
-        lead_part, degrees, pad_register, chords = _arrange(style, spec, motif, key, rng, lead_synth, history)
+        track_hook, arranged = None, _arrange(style, spec, motif, key, rng, lead_synth, history)
+    else:
+        track_hook = motif = found[0]
+        key, arranged = found[1], found[2]
+    lead_part, degrees, pad_register, chords = arranged
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}") for name in ("kit", "sample", "loop", "fx")}
     kit = _kit(style, history, axis["kit"])

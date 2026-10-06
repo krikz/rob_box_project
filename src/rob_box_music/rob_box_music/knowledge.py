@@ -257,6 +257,20 @@ DAVE_PSR: Tuple[str, ...] = tuple(f"dirt_psr_{n:02d}" for n in (2, 5, 6, 7, 8, 9
 #: в контейнерах это корень сэмплов Renardo ``/root/.config/renardo/samples``.
 _SAMPLE_DATA = json.loads((Path(__file__).resolve().parent / "data" / "sample_dave.json").read_text(encoding="utf-8"))
 SAMPLE_PACK_DIR = str(_SAMPLE_DATA["pack_dir"])
+
+#: Интервалы аккордов материала партитуры от примы (``material.CHORD_QUALITIES``, ADR-0154 §3.1).
+CHORD_INTERVALS: Mapping[str, Tuple[int, ...]] = {
+    "maj": (0, 4, 7), "min": (0, 3, 7), "dim": (0, 3, 6), "aug": (0, 4, 8), "sus": (0, 5, 7),
+    "dom7": (0, 4, 7, 10), "maj7": (0, 4, 7, 11), "min7": (0, 3, 7, 10), "other": (0,)}
+#: Переходы ступеней корпуса партитур (ADR-0154 §3.4, Н5/Н6) — данные, выученные офлайн
+#: (``scripts/music/research/score_markov_harmony.py --write-table``; провенанс — в файле): лад ("major"/"minor") →
+#: ``start`` — P(первая ступень), ``next`` — P(ступень b | ступень a), 7×7, строки в сумме 1.
+_TRANSITIONS_DATA = json.loads(
+    (Path(__file__).resolve().parent / "data" / "progression_transitions.json").read_text(encoding="utf-8"))
+PROGRESSION_TRANSITIONS: Mapping[str, Mapping[str, tuple]] = {
+    mode: {"start": tuple(t["start"]), "next": tuple(tuple(row) for row in t["next"])}
+    for mode, t in _TRANSITIONS_DATA["tables"].items()}
+PROGRESSION_TRANSITIONS_PROVENANCE: Mapping[str, object] = _TRANSITIONS_DATA["provenance"]
 #: Роли сэмпла: ``perc`` — удар по сетке каркаса, ``loop`` — луп, растянутый на ``beats`` долей, ``fx`` —
 #: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
 #: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль).

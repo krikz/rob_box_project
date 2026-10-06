@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
@@ -48,6 +48,9 @@ class TrackPlan:
     root_shift: int  # полутонов от тоники сета, 0..11
     kick: str = ""  # бочка из пула стиля (``knowledge.KICK_SOUNDS``); пусто — ``compose`` выбирает по истории сам
     template: str = ""  # форма трека (ключ ``Style.forms``); пусто — ``compose`` выбирает по энергии и истории сам
+    #: Материал партитуры трека (``ScoreMaterial.material_id``, ADR-0154 §3.5); None — хук темы, как раньше. Вне
+    #: ``repr``: ``repr(step)`` входит в sha трека, трек без материала не меняется ни байтом.
+    material: Optional[str] = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
