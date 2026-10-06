@@ -31,7 +31,6 @@ def test_none_row_means_theme_outside_the_table():
     ({k: v for k, v in VALID.items() if k != "mode"}, "mode"),
     ({**VALID, "mode": "lydian"}, "mode"),
     ({**VALID, "hooks": []}, "hooks"),
-    ({**VALID, "hooks": ["axelf_3", "robot", "tetris", "popcorn"]}, "hooks"),
     ({**VALID, "hooks": ["never_gonna_give"]}, "hooks"),  # только кандидаты, которые показал код
     ({**VALID, "hooks": "axelf_3"}, "hooks"),
     ({**VALID, "energy": [0, 3]}, "energy"),
@@ -150,3 +149,19 @@ def test_seeded_plan_always_peaks_within_window(style):
     for seed in range(40):
         plan = seeded_plan(seeded_profile("ночной город", style=style), seed)
         assert 5 in [plan.track(no).energy for no in range(1, kn.STYLES[style].peak_by_track + 1)]
+
+
+def test_extra_llm_hooks_are_truncated_not_invalid():
+    """MiniMax не соблюдает maxItems: 5 хуков из кандидатов — план валиден, взяты первые MAX_HOOKS."""
+    five = ["axelf_3", "robot", "tetris", "popcorn", "axelf_3"]
+    ref = rz.validate({**VALID, "hooks": five})
+    assert ref.hook_ids == ("axelf_3", "robot", "tetris")
+    assert len(ref.hook_ids) == rz.MAX_HOOKS
+    assert ref.mode == "phrygian" and ref.energy == (3, 4, 5, 4)  # лад и энергия плана уцелели
+
+
+def test_non_list_hooks_still_invalid():
+    for bad in ("axelf_3", None, {"a": 1}, 5):
+        with pytest.raises(rz.PlanInvalid) as err:
+            rz.validate({**VALID, "hooks": bad})
+        assert err.value.path == "hooks"
