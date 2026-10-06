@@ -83,7 +83,9 @@ def test_build_and_drop_differ_in_kick_and_pump(seed, track_no):
         assert kicks_per_bar("build") == 4 and track.energy == 5
     else:
         assert kicks_per_bar("build") == 2
-        assert deepest_pad_dip("drop") < deepest_pad_dip("build") - 0.1
+        # провал пэда на 16-х — у pumped16; stabs (удар на «и») и held (без насоса) — ``test_pad_figures``
+        if track.history_key.pad_figure == "pumped16":
+            assert deepest_pad_dip("drop") < deepest_pad_dip("build") - 0.1
         build_kicks = {round((e.beat - spans["build"][1]) % BEATS_PER_BAR / STEP) for e in
                        _in(by_role["kick"], spans["build"])}
         assert build_kicks <= {0, 8}, "build: бочка на 1 и 3"
@@ -104,8 +106,12 @@ def test_lpf_opens_through_the_build_is_off_in_drops_and_half_closed_in_the_brea
         cut = [e.fx["lpf"] for e in build]
         assert all(a <= b for a, b in zip(cut, cut[1:])), (role, cut)
         assert 400 <= cut[0] and cut[-1] <= kn.LPF_TOP_HZ
-        if role != "lead":  # бас и пэд звучат весь build; лид — только начало хука (развитие build)
+        # бас и пэд звучат весь build; лид — только начало хука (развитие build); held-пэд берёт срез на атаке
+        # аккорда — раз в 2 такта (ADR-0152 §3.2), последний аккорд build-а — за 2 такта до дропа
+        if role == "bass" or (role == "pad" and track.history_key.pad_figure != "held"):
             assert cut[0] == pytest.approx(400, rel=0.02) and cut[-1] == pytest.approx(kn.LPF_TOP_HZ, rel=0.02)
+        elif role == "pad":
+            assert cut[0] == pytest.approx(400, rel=0.02)
         curves[role] = {e.beat // 1: e.fx["lpf"] for e in build}
         for name in ("drop", "drop2"):
             assert all("lpf" not in e.fx for e in _in(by_role[role], spans[name])), (role, name)
@@ -122,7 +128,9 @@ def test_leaving_tail_closes_4000_to_300_on_everything_but_the_kick(seed):
     for role in ("pad", "hats"):
         cut = [e.fx["lpf"] for e in _in(by_role[role], spans["outro_tail"])]
         assert cut and all(a >= b for a, b in zip(cut, cut[1:])), role
-        assert cut[0] == pytest.approx(4000, rel=0.02) and cut[-1] == pytest.approx(300, rel=0.03)
+        assert cut[0] == pytest.approx(4000, rel=0.02)
+        if not (role == "pad" and track.history_key.pad_figure == "held"):  # held: атака раз в 2 такта
+            assert cut[-1] == pytest.approx(300, rel=0.03)
         assert all("lpf" not in e.fx for e in _in(by_role[role], spans["drop"])), role
     assert "kick" not in track.mix.lpf and all(not e.fx for e in by_role["kick"])
     assert all("lpf" not in e.fx for e in by_role["hats"] if e.beat < spans["outro_tail"][1]), "хэты — только хвост"

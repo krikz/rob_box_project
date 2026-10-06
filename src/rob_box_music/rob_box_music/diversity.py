@@ -68,13 +68,14 @@ HISTORY_FIELDS = (
     "clap", "lpf", "balance",  # issue #3226: пулы клэпа/lpf/баланса слоёв
     "sample",  # issue #3254: слой сэмплов DJ_Dave (core/club_samples)
     "kit", "fx", "perc",  # ADR-0149 PR-3d: каркас ударных v2, FX-сэмпл и psr-пул трека
+    "pad_figure",  # ADR-0152 PR-5: рисунок пэда
 )
 
 #: Колонки, добавленные после первой версии схемы (#3226): старые БД
 #: дополняются ``ALTER TABLE ADD COLUMN`` (``CREATE TABLE IF NOT EXISTS``
 #: существующую таблицу не меняет).
 _ADDED_COLUMNS = (("clap", "TEXT"), ("lpf", "TEXT"), ("balance", "TEXT"), ("sample", "TEXT"), ("kit", "TEXT"),
-                  ("fx", "TEXT"), ("perc", "TEXT"))
+                  ("fx", "TEXT"), ("perc", "TEXT"), ("pad_figure", "TEXT"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS music_history (
@@ -101,7 +102,8 @@ CREATE TABLE IF NOT EXISTS music_history (
     sample           TEXT,
     kit              TEXT,
     fx               TEXT,
-    perc             TEXT
+    perc             TEXT,
+    pad_figure       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_music_history_ts ON music_history(ts);
 """
@@ -284,8 +286,8 @@ def _form_signature(form: Any) -> str:
 
 def track_composition(track: Any) -> Dict[str, Any]:
     """Вектор состава трека v2 одной строкой (ADR-0152 §2.3, I24): синты ролей, бочка, каркас хэтов, форма, темп,
-    лад, тоника, хук, прогрессия, сэмплы, энергия. Единственный источник оси «состав»: лог ``started`` и
-    ``scripts/music/live_dj/diversity.py`` читают его же."""
+    лад, тоника, хук, прогрессия, сэмплы, энергия; рисунок пэда и A9-модель трека (ADR-0152 PR-5). Единственный
+    источник оси «состав»: лог ``started`` и ``scripts/music/live_dj/diversity.py`` читают его же."""
     key = track.history_key
     parts = track.parts
 
@@ -298,6 +300,8 @@ def track_composition(track: Any) -> Dict[str, Any]:
         "form": _form_signature(track.form), "bpm": track.bpm, "mode": track.key.mode, "root": kn.ROOTS[key.root],
         "hook": key.hook or "-", "hook_fp": key.hook_fingerprint or "-", "prog": key.progression,
         "sample": key.sample or "-", "perc": key.perc or "-", "fx": key.fx or "-", "energy": track.energy,
+        "pad_figure": key.pad_figure or "-", "a9_model": track.mix.a9_model,
+        "a9_trim": dict(track.mix.a9_trim),
     }
 
 
@@ -320,6 +324,6 @@ def track_history(track: Any, set_id: Optional[str] = None) -> Dict[str, Any]:
         "set_id": set_id, "style": "club_v2", "kit": key.kit, "progression": key.progression,
         "kick": kick_name(track.parts["kick"].sample) if "kick" in track.parts else None,
         "melody_name": key.hook, "hook_fingerprint": key.hook_fingerprint, "sample": key.sample, "fx": key.fx,
-        "perc": key.perc,
+        "perc": key.perc, "pad_figure": key.pad_figure,
         "root": kn.ROOTS[key.root], "bpm": float(track.bpm), "scale": track.key.mode, **synths,
     }

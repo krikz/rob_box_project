@@ -388,7 +388,8 @@ def test_exec_failure_at_handoff_is_rejected_and_the_old_track_keeps_playing():
     rig.session.start()
     rig.clock.run_until(rig.clock.beat + 2)
     s0, form = _started(rig)[0]["start_beat"], _form(rig)
-    rig.ns.pop("sinepad")  # синт исчез из контекста между проверкой и стыком
+    for synth in kn.SYNTH_PALETTE["pad"]:  # синт пэда исчез из контекста между проверкой и стыком (пэд — по сиду)
+        rig.ns.pop(synth, None)
     with patch.object(rig.adapter, "check", return_value=None):
         rig.clock.run_until(s0 + form + 4)
     rejected = [e for e in rig.events if e["event"] == "rejected"]

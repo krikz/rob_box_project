@@ -36,7 +36,9 @@ def _section_power(track, i):
                 continue
         elif role not in sec.roles:
             continue
-        p = 10 ** (db / 10)
+        # пэд — в шкале калибровки (``pumped16``): прибавка рисунка возвращает громкость held/stabs к ней (PR-5)
+        p = 10 ** ((db - (mix.target_db(kn.STYLES["club"], role, track.history_key.pad_figure)
+                          - kn.STYLES["club"].role_level_db[role])) / 10)
         if role in track.mix.duck_roles:
             p *= duck_power
         if role == "kick":

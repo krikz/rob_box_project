@@ -170,7 +170,7 @@ def test_psr_is_two_voices_left_and_right_from_role_stereo(fifty):
         program, by_slot = _events_by_slot(track)
         events = by_slot[program.slots["sample"]]
         pans = Counter(ev.pan for ev in events)
-        assert set(pans) == {-kn.PAN_HATS, kn.PAN_HATS} and pans[-kn.PAN_HATS] == pans[kn.PAN_HATS]
+        assert set(pans) == {-kn.PAN_PSR, kn.PAN_PSR} and pans[-kn.PAN_PSR] == pans[kn.PAN_PSR]
         assert abs(sum(ev.amp ** 2 * ev.pan for ev in events)) < 1e-9
 
 
