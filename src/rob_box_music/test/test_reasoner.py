@@ -116,3 +116,24 @@ def test_without_found_theme_hooks_candidates_are_table_rows_and_pool():
     assert not prof.theme_hooks
     assert set(rz.hook_candidates(prof)) >= {*kn.THEMES, "pool"}
     assert rz.validate(VALID, profile=prof).hook_ids == ("axelf_3", "robot")
+
+
+@pytest.mark.parametrize("arc", [[2, 3, 4, 4, 3, 2, 1], [2, 3, 4, 3, 2], [4, 4, 4, 4], [3, 4, 4, 4, 5, 3]])
+def test_arc_without_peak_in_window_is_rejected(arc):
+    """A6 (#3459): дуги приёмки 06.10 (пик 4) и пик после окна — PlanInvalid('energy'), сет играет seeded-волну."""
+    with pytest.raises(rz.PlanInvalid) as exc:
+        rz.validate({**VALID, "energy": arc})
+    assert exc.value.path == "energy"
+
+
+@pytest.mark.parametrize("arc", [[2, 3, 4, 5, 3], [5], [3, 4, 5, 4], [3, 4], [2, 5, 3, 2, 1]])
+def test_arc_with_peak_in_window_passes(arc):
+    """Короткая дуга без пика дополняется волной: трек 4 — 5, значит [3, 4] валидна."""
+    assert rz.validate({**VALID, "energy": arc}).energy == tuple(arc)
+
+
+@pytest.mark.parametrize("style", sorted(kn.STYLES))
+def test_seeded_plan_always_peaks_within_window(style):
+    for seed in range(40):
+        plan = seeded_plan(seeded_profile("ночной город", style=style), seed)
+        assert 5 in [plan.track(no).energy for no in range(1, kn.STYLES[style].peak_by_track + 1)]
