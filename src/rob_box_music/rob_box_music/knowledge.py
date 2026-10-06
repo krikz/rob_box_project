@@ -543,23 +543,28 @@ class PadFigure:
 
 #: Рисунки пэда: ``pumped16`` — аккорд на каждой 16-й под сайдчейном (как до PR-5); ``held`` — аккорд держится до
 #: смены (2 такта), без насоса — качают бас и psr; ``stabs`` — аккорд на «и» каждой доли до следующего «и» под
-#: сайдчейном. Прибавки — по записи робота 06.10 (серия ser6, #3441: 46 дропов, подгонка низа дропа моделью
-#: :func:`arrange.mix.low_share` с :data:`PAD_ROBOT_DB`): при +6.3 ``held`` был громче ``pumped16`` того же синта на
-#: 2.4 дБ, ``stabs`` при +3.0 (гипотеза PR-5) — на 0.9 дБ. ``held`` опирается на 3 дропа ``ambi`` (у ``warmpad``
-#: другого рисунка нет) — перемерить, когда наберутся.
+#: сайдчейном. Прибавки — по записи робота 06.10 (серии ser6/ser7/ser9, #3449: 133 дропа, совместная подгонка
+#: низа дропа моделью :func:`arrange.mix.low_share` с :data:`PAD_ROBOT_DB` при сыгранных уровнях). ``held`` теперь
+#: отделён от синта на 11 дропах ``ambi``/``sinepad`` (а не на 3): +3.1 (бутстрап по трекам 1.3…5.0), ``stabs`` +1.2
+#: (0.1…1.8; прежние +2.1 вне интервала).
 PAD_FIGURES: Mapping[str, PadFigure] = {
     "pumped16": PadFigure(ducked=True, long_tails=False, level_offset_db=0.0),
-    "held": PadFigure(ducked=False, long_tails=True, level_offset_db=3.9),
-    "stabs": PadFigure(ducked=True, long_tails=False, level_offset_db=2.1),
+    "held": PadFigure(ducked=False, long_tails=True, level_offset_db=3.1),
+    "stabs": PadFigure(ducked=True, long_tails=False, level_offset_db=1.2),
 }
 #: На сколько дБ пэд рисунка ``pumped16`` на роботе громче своего ``level_db`` (модель громкости — NRT аккорда на
-#: 8 долей, :data:`LAYER_MEASURED_DB`): подгонка низа 46 дропов серии ser6 06.10 (#3441), остаток σ 0.08 доли.
-#: Сдвиг у синтов разный (``ambi`` на 7 дБ громче ``sinepad``), причина не найдена — замер, не модель. Калибровка
+#: 8 долей, :data:`LAYER_MEASURED_DB`): подгонка низа 133 дропов серий ser6/ser7/ser9 06.10 (#3449; было — 46
+#: дропов ser6, #3441). Модель − запись: среднее +0.001, σ 0.095 доли (по сериям +0.015/−0.019/+0.007, по окнам
+#: club −0.004, breaks −0.014, deep +0.051). Бутстрап по трекам: ``ambi`` 13.1…14.7 (прежние 15.6 вне интервала),
+#: ``sinepad`` 7.1…9.3, ``warmpad`` 9.0…12.8. Остаток σ ≈ 0.09 — не пэд: бас-синт (``subbass`` на роботе богаче
+#: низом модели, ``dub`` беднее) и окно deep (``sinepad``/``pumped16`` при 121 bpm — модель выше записи на 0.15,
+#: 3 трека); в таблицу не внесены — мало треков, решение не меняют при ``a9_model_low`` 0.6.
+#: Сдвиг у синтов разный (``ambi`` на 6 дБ громче ``sinepad``), причина не найдена — замер, не модель. Калибровка
 #: «робот = 0.62 модели» (#3401) снята на одном ``sinepad`` и на ``ambi``/``warmpad`` не переносится: при ней
 #: A9-модель давала 0.81–0.87 всем трекам ser6, а запись — 0.75 ``sinepad`` и 0.33–0.49 ``ambi``/``warmpad``.
 #: Пэд палитры без замера на роботе (``space``, ``strangerpulsepad``, ``strings``) берёт худший замеренный сдвиг
 #: (:data:`PAD_ROBOT_DB_UNMEASURED`): A9-модель скорее приглушит пэд, чем пропустит дроп без низа.
-PAD_ROBOT_DB: Mapping[str, float] = {"sinepad": 8.5, "warmpad": 11.5, "ambi": 15.6}
+PAD_ROBOT_DB: Mapping[str, float] = {"sinepad": 8.3, "warmpad": 11.1, "ambi": 14.2}
 PAD_ROBOT_DB_UNMEASURED = max(PAD_ROBOT_DB.values())
 #: A9-модель трека (ADR-0152 §4 п.2): доля низа каждого дропа в шкале робота (пэд — с :data:`PAD_ROBOT_DB`) —
 #: ниже порога ``Style.a9_model_low`` пэд тише ступенями ``A9_STEP_DB`` до ``A9_PAD_FLOOR_DB`` от своей цели, затем
@@ -861,8 +866,9 @@ STYLES: Mapping[str, Style] = {
         blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS, genre_windows=_CLUB_GENRE_WINDOWS,
         role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
-        # A9′ (низ дропа на роботе ≥ 0.5) + запас на остаток модели (σ 0.08 доли на дроп, #3441)
-        a9_model_low=0.55,
+        # A9′ (низ дропа на роботе ≥ 0.5) + запас в σ остатка модели (0.095 доли на дроп по 133 дропам, #3449):
+        # при 0.55 ser7 терял ожидаемый LR дропов (0.64 → 0.56), при 0.6 LR ни в одном сете трёх серий не хуже
+        a9_model_low=0.6,
     ),
 }
 DEFAULT_STYLE = "club"
