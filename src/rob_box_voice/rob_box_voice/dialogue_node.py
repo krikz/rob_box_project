@@ -214,7 +214,7 @@ from rob_box_voice.core.media_router import (
     media_tool_succeeded,
 )
 from rob_box_voice.core.media_phrases import honest_launch_reply
-from rob_box_voice.core.music_turn import executor_turn_reply, next_turn_id
+from rob_box_voice.core.music_turn import executor_turn_reply, next_turn_id, turn_heard_text
 from rob_box_voice.core.named_play import (
     NamedPlayStatus,
     play_fail_text,
@@ -1913,6 +1913,8 @@ class DialogueNode(Node):
             "heard_tracks": getattr(self, "_turn_set_tracks", None),
             # 06.10 set98207: request_music не снимает сет этого же хода.
             "turn_id": getattr(self, "_turn_id", None),
+            # 06.10 18:04: тема dj_set сверяется с репликой хода, а не с историей.
+            "heard_text": getattr(self, "_turn_heard_text", None),
         }
 
     def _confident_speaker_name(
@@ -4531,6 +4533,8 @@ tentative_plan(question, kind, name)
             getattr(self, "_turn_id", None),
             is_synthetic, is_babble_retry, is_action_claim_retry,
         )
+        self._turn_heard_text = turn_heard_text(
+            getattr(self, "_turn_heard_text", None), user_input, is_synthetic)
         # Issue #2925 -- самопредставление этой реплики; выставляет
         # _prepare_user_input_context (_note_self_intro).
         self._turn_self_intro = None

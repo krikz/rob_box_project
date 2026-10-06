@@ -342,3 +342,15 @@ def test_turn_id_rides_hidden_to_dj_set_and_request_music() -> None:
     assert apply_turn_context(
         "dj_set", {"action": "start"}, lambda: {"turn_id": "t9"}
     ) == {"action": "start", "turn_id": "t9"}
+
+
+def test_heard_text_rides_hidden_to_dj_set() -> None:
+    """06.10 18:04: тема dj_set сверяется с репликой хода (``theme_grounding``), а не с историей —
+    реплика едет скрытым ``heard_text``; присланное LLM значение вырезается."""
+    from rob_box_mcp_tools.llm_adapter import apply_turn_context
+
+    llm = {"action": "start", "theme": "космос", "heard_text": "подделка"}
+    assert apply_turn_context("dj_set", llm, lambda: {"heard_text": "ты диджей, космос"}) == {
+        "action": "start", "theme": "космос", "heard_text": "ты диджей, космос"}
+    assert apply_turn_context("dj_set", llm, lambda: {"heard_text": None}) == {
+        "action": "start", "theme": "космос"}
