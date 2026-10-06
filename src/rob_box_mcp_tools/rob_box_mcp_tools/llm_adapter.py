@@ -51,6 +51,10 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
         "intro_registered",
         "known_speaker_name",
     ),
+    # 06.10: длина сета, которую назвал человек («сэт на 30 минут» → 24 трека,
+    # ``rob_box_voice.core.set_length_words``) — LLM вызвала dj_set без tracks,
+    # и сет шёл 10 треков «по умолчанию».
+    "dj_set": ("heard_tracks",),
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]

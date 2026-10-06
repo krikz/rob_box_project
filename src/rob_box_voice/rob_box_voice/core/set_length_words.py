@@ -125,4 +125,11 @@ def split_set_length(text: str) -> Tuple[int, str]:
     return tracks, (text[:toks[start][1]].rstrip() + " " + text[toks[end - 1][2]:].lstrip()).strip()
 
 
-__all__ = ["Token", "find_set_length", "split_set_length", "tokens"]
+def heard_set_length(text: str) -> Optional[int]:
+    """Длина сета, названная в реплике, или ``None`` — скрытый аргумент ``dj_set(heard_tracks)`` на пути LLM
+    (06.10: «замути сэт на 30 минут» → 24; LLM вызвала ``dj_set`` без ``tracks``, сет шёл 10 треков)."""
+    tracks, _rest = split_set_length(text)
+    return tracks if tracks else None
+
+
+__all__ = ["Token", "find_set_length", "heard_set_length", "split_set_length", "tokens"]

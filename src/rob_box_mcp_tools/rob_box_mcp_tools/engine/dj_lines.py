@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_music import dj_line as dl
+from rob_box_music.arrange.compose import part_order
 from rob_box_music.set_plan import SetPlan
 
 _LOG = logging.getLogger(__name__)
@@ -219,20 +220,40 @@ class TransitionLines:
 
     def _upcoming(self, entry: _Entry) -> List[str]:
         """План на оставшиеся треки сета: ``[i]`` — мелодия трека N+1+i. Только у хуков, найденных по теме (идут по
-        порядку профиля, ``compose._hook_queue``); пул по хешу выбирает сид — заранее не известен, честно пусто.
-        Длиннее остатка сета список не бывает: за концом сета мелодий нет."""
+        порядку профиля, ``compose._hook_queue``; у темы-перечисления — по кругу частей, ``compose.part_order``); пул
+        по хешу выбирает сид — заранее не известен, честно пусто. Длиннее остатка сета список не бывает: за концом
+        сета мелодий нет."""
         profile = entry.plan.profile
         left = len(entry.plan.tracks) - entry.no
         if not profile.theme_hooks or left <= 0:
             return []
-        played = {h for _no, h, _t in self._played}
-        titles = [self._title_map.get(h, "") for h in profile.hook_ids if h not in played]
+        played = [h for _no, h, _t in self._played if h]
+        if profile.theme_parts:
+            ids = _part_walk(profile, played, entry.no, left)
+        else:
+            ids = [h for h in profile.hook_ids if h not in set(played)]
+        titles = [self._title_map.get(h, "") for h in ids]
         return [t for t in titles if t][:left]
 
     def now(self) -> Dict[str, Any]:
         """Факты трека, который сейчас играет (последний ``started``); пусто — ещё не известны."""
         with self._lock:
             return dict(self._now)
+
+
+def _part_walk(profile: Any, played: List[str], track_no: int, count: int) -> List[str]:
+    """Хуки ``count`` следующих треков темы-перечисления — та же очередь, что у треков (``compose.part_order``),
+    по сыгранным в этом сете (``played``, по порядку)."""
+    recent = list(reversed(played))
+    out: List[str] = []
+    for no in range(track_no + 1, track_no + 1 + count):
+        ids = [h for h in profile.hook_ids if not recent or h != recent[0]]
+        order = part_order(profile, ids, recent, no)
+        if not order:
+            break
+        out.append(order[0])
+        recent.insert(0, order[0])
+    return out
 
 
 def latin_fold(text: str) -> str:

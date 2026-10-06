@@ -186,18 +186,44 @@ def _hook_queue(profile: ThemeProfile, ids: Sequence[str], history: Sequence[Map
     return (fresh if profile.theme_hooks else rng.sample(fresh, len(fresh))) + stale
 
 
+def _least_recent(names: Sequence[str], recent: Sequence[str]) -> List[str]:
+    """Несыгранные — в данном порядке, затем сыгранные: давние раньше свежих (``recent`` — свежие первыми)."""
+    return sorted(names, key=lambda i: (1, -recent.index(i)) if i in recent else (0, 0))
+
+
+def part_order(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str], track_no: int) -> List[str]:
+    """Очередь хуков трека ``track_no`` темы-перечисления (``profile.theme_parts``, живой сет 06.10): часть
+    ``track_no - 1`` по кругу первой (трек 1 — первая названная франшиза), за ней остальные части по кругу; внутри
+    части — наименее недавняя версия (:func:`_least_recent`, ``recent`` — мелодии истории, свежие первыми). Повтор
+    части — только когда круг частей пройден; сыгранная в прошлых сетах версия «Марио» не отдаёт трек ещё одной
+    версии «Тетриса». Хуки ``ids`` вне частей (строка таблицы тем) — в конце."""
+    allowed = set(ids)
+    n = len(profile.theme_parts)
+    out: List[str] = []
+    for k in range(n):
+        part = profile.theme_parts[(track_no - 1 + k) % n]
+        out += _least_recent([i for i in part if i in allowed and i not in out], recent)
+    return out + _least_recent([i for i in ids if i not in out], recent)
+
+
 def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
-                    history: Sequence[Mapping] = (), opening: bool = False) -> Iterator[Tuple[Hook, Key]]:
+                    history: Sequence[Mapping] = (), opening: bool = False,
+                    track_no: int = 1) -> Iterator[Tuple[Hook, Key]]:
     """Годные мелодии темы: несыгранные — в порядке сида, недавние (история сета и прошлых сетов, I17) — в конце,
     давние раньше свежих; хук прошлого трека (мелодия или фрагмент) подряд не повторяется. Первый трек сета
     (``opening``) берёт мелодии в порядке профиля — хук №1 темы первым (#3427: порядок ``search.theme_hooks``).
     Хуки найдены по словам темы (``profile.theme_hooks``) — несыгранные идут в порядке профиля, а не сида: сет
     обходит найденные по очереди (у темы-перечисления — по кругу частей, ``search.round_robin``), повтор — только
-    когда несыгранные кончились (06.10: 50 треков по кругу из трёх хуков)."""
+    когда несыгранные кончились (06.10: 50 треков по кругу из трёх хуков). Тема-перечисление
+    (``profile.theme_parts``) — очередь :func:`part_order` трека ``track_no`` и на первом треке тоже."""
     last = history[0] if history else {}
     register = hook_register(kn.STYLES[profile.style])
     ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
-    for melody_id in ids if opening else _hook_queue(profile, ids, history, rng):
+    if profile.theme_parts:
+        order = part_order(profile, ids, [h for h in recent_values(history, "melody_name") if h], track_no)
+    else:
+        order = ids if opening else _hook_queue(profile, ids, history, rng)
+    for melody_id in order:
         try:
             hook, key = hooks.from_rtttl(melodies[melody_id], melody_id, profile.bpm, profile.root, profile.mode,
                                          register)
@@ -273,7 +299,8 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
     track_hook: Optional[Hook] = None
-    for candidate, key in hook_candidates(profile, melodies or {}, rng, history, opening=track_no == 1):
+    for candidate, key in hook_candidates(profile, melodies or {}, rng, history, opening=track_no == 1,
+                                          track_no=track_no):
         try:
             lead_part, degrees, pad_register, chords = _arrange(style, spec, candidate, key, rng, lead_synth,
                                                                 history)
@@ -321,4 +348,4 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
 
 
 __all__ = ["BASS_GENERATORS", "FormSpec", "LEAD_GENERATORS", "PAD_GENERATORS", "SECTION_BARS", "club_track",
-           "compose", "form_spec", "hook_candidates", "hook_register", "track_template", "transition"]
+           "compose", "form_spec", "hook_candidates", "hook_register", "part_order", "track_template", "transition"]

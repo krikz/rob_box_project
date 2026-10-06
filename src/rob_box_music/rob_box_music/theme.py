@@ -39,6 +39,9 @@ class ThemeProfile:
     hook_ids: Tuple[str, ...]
     row: Optional[str]  # ключ ``knowledge.THEMES`` или None — тема не из таблицы
     theme_hooks: Tuple[str, ...] = ()  # хуки, найденные по словам темы (строка таблицы, поиск) — A11 считает их
+    #: хуки темы-перечисления по частям в порядке названного (``search.ThemeHits.parts``): трек N берёт часть
+    #: (N-1) по кругу, в ней — наименее недавнюю версию (``compose.part_order``); пусто — тема одна
+    theme_parts: Tuple[Tuple[str, ...], ...] = ()
 
     @property
     def source(self) -> str:
@@ -79,11 +82,11 @@ def match_style(words: Sequence[str]) -> Optional[str]:
 
 
 def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = (),
-                   exact: bool = False) -> ThemeProfile:
+                   exact: bool = False, parts: Sequence[Sequence[str]] = ()) -> ThemeProfile:
     """Профиль темы за микросекунды, без сети и LLM; ``found`` — мелодии по словам темы (поиск, лучшие первыми).
     ``exact`` — тема и есть название найденной записи («Twinkle Twinkle Little Star»): строка таблицы тем («star» →
     ``space``) не применяется — ни её хуки, ни темп и лад (#3427). Пустая тема без находок — профиль стиля с пулом
-    по хешу."""
+    по хешу. ``parts`` — находки ``found`` по частям темы-перечисления (франшизы в порядке названного)."""
     text = " ".join(theme_text.lower().split())
     window = kn.STYLES[style]
     name = None if exact and found else match_row(text)
@@ -101,7 +104,8 @@ def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequen
     theme_hooks = tuple(dict.fromkeys((*found, *row_hooks)))
     hooks = theme_hooks or tuple(random.Random(digest).sample(HOOK_POOL, POOL_HOOKS))
     bpm = lo + (digest >> 8) % (hi - lo + 1)
-    return ThemeProfile(text, style, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks)
+    return ThemeProfile(text, style, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks,
+                        tuple(tuple(p) for p in parts if p))
 
 
 __all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "seeded_profile"]

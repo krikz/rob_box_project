@@ -300,3 +300,23 @@ class TestCase3TurnContextForRegisterGate:
         n._current_speaker = _known("Борис", BORIS_ID, 0.9)
         _turn(n, DARYA_TEXT, _known("Борис", BORIS_ID, 0.9), None)
         assert n.turn_context[-1]["known_speaker_name"] is None
+
+
+class TestSetLengthRidesTurnContext:
+    """06.10: «…замути сэт на 30 минут» закрыла LLM, dj_set без tracks — 10
+    треков «по умолчанию». Длину из сырой реплики решает грамматика
+    (set_length_words) и кладёт в контекст хода → скрытый heard_tracks."""
+
+    def test_minutes_in_phrase_become_heard_tracks(self):
+        n = _node()
+        n.llm_reply = "Погнали!"
+        _turn(n, "Ты диджей 8битный и нас сегодня вечеринка любителей денди "
+              "и классической музыки, замути сэт на 30 минут",
+              _unknown(), "utt-dj")
+        assert n.turn_context[-1]["heard_tracks"] == 24
+
+    def test_phrase_without_length_carries_none(self):
+        n = _node()
+        n.llm_reply = "Погнали!"
+        _turn(n, "замути сэт про денди", _unknown(), "utt-dj2")
+        assert n.turn_context[-1]["heard_tracks"] is None

@@ -48,6 +48,11 @@ _STEM_MIN = 5  # основа короче («мисс» от «миссия») 
 _PREFIX_SLACK = 4  # слово архива длиннее основы не больше чем на столько букв
 _MAX_ALTS = 4
 _WORD_RE = re.compile(r"[a-z0-9а-я]+")
+#: Стиль и формат словами с цифрой («8-бит») — вырезаются до разбора на слова (``knowledge.SEARCH_STYLE_PATTERNS``).
+_STYLE_RE = re.compile("|".join(kn.SEARCH_STYLE_PATTERNS), re.IGNORECASE)
+#: Слово латиницы не длиннее — совпадает в записи только целым словом: «8» ≠ «1812», «bach» ≠ «Bachelor»,
+#: «duck» ≠ «Ducktoy» (06.10); длинное — и внутри слова («mario» в «Supermario Brothers»).
+_WHOLE_WORD_MAX = 4
 _CYR_RE = re.compile(r"[а-я]")
 #: Падежные и родовые окончания, длинные первыми; основа короче трёх букв не остаётся.
 _ENDINGS = tuple(sorted((
@@ -152,7 +157,8 @@ def terms(library: Any, text: str) -> List[Term]:
     """Значимые слова запроса после алиасов библиотеки, без хвоста версии («V2.0») и служебных слов."""
     vocab = _vocab(library)
     out: List[Term] = []
-    for word in _WORD_RE.findall(strip_version_tail(_alias_normalize(text)).replace("ё", "е")):
+    text = _STYLE_RE.sub(" ", strip_version_tail(_alias_normalize(text)).replace("ё", "е"))
+    for word in _WORD_RE.findall(text):
         word_stem = stem(word)
         if word in _STOP or word_stem in _STOP:
             continue
@@ -165,12 +171,19 @@ def terms(library: Any, text: str) -> List[Term]:
     return out
 
 
+def _in(alt: str, hay: str) -> bool:
+    """Написание слова в тексте записи: короткое (:data:`_WHOLE_WORD_MAX`) — целым словом, длинное — и подстрокой."""
+    if len(alt) > _WHOLE_WORD_MAX:
+        return alt in hay
+    return re.search(rf"(?<![a-z0-9]){re.escape(alt)}(?![a-z0-9])", hay) is not None
+
+
 def coverage(record: Dict[str, Any], query_terms: List[Term]) -> float:
-    """Доля слов запроса, нашедшихся в опознавательных полях записи."""
+    """Доля слов запроса, нашедшихся в опознавательных полях записи (:func:`_in`)."""
     if not query_terms:
         return 0.0
     hay = " ".join(str(record.get(f) or "") for f in _IDENTITY).lower()
-    return sum(1 for t in query_terms if any(a in hay for a in t.alts)) / len(query_terms)
+    return sum(1 for t in query_terms if any(_in(a, hay) for a in t.alts)) / len(query_terms)
 
 
 def ranked(library: Any, query_terms: List[Term], direct: Optional[Dict[str, Any]] = None,
@@ -232,6 +245,9 @@ class ThemeHits:
     names: Tuple[str, ...] = ()
     exact: bool = False
     missing: Tuple[str, ...] = ()  # части темы-перечисления, по которым не нашлось ни одной мелодии
+    #: хуки ``names`` по частям темы-перечисления в порядке названного (франшизы) — сет чередует части
+    #: (``theme.ThemeProfile.theme_parts``); пусто — тема одна
+    parts: Tuple[Tuple[str, ...], ...] = ()
 
 
 def title_key(text: str) -> str:
@@ -248,10 +264,11 @@ def _identity_words(record: Dict[str, Any]) -> set:
     return {w for f in _IDENTITY for w in title_key(record.get(f)).split()}
 
 
-def _pool(library: Any, theme: str, query_terms: List[Term]) -> List[Tuple[float, Dict[str, Any]]]:
-    """Найденные по словам темы (доля ≥ :data:`FOUND_MIN`) и — точные по названию записи из поиска по строке темы
+def _pool(library: Any, theme: str, query_terms: List[Term],
+          found_min: float = FOUND_MIN) -> List[Tuple[float, Dict[str, Any]]]:
+    """Найденные по словам темы (доля ≥ ``found_min``) и — точные по названию записи из поиска по строке темы
     как есть: точная запись в набор входит, даже если слова темы её не выделили («Give In To Me» без «in», «to»)."""
-    pool = [(c, r) for c, r, _q in ranked(library, query_terms) if c >= FOUND_MIN]
+    pool = [(c, r) for c, r, _q in ranked(library, query_terms) if c >= found_min]
     seen = {r.get("name") for _c, r in pool}
     key = title_key(theme)
     extra = [r for r in library.search(theme, limit=SEARCH_LIMIT, include_rtttl=True)
@@ -259,17 +276,19 @@ def _pool(library: Any, theme: str, query_terms: List[Term]) -> List[Tuple[float
     return [(1.0, r) for r in extra] + pool
 
 
-def _whole_search(library: Any, theme: str, limit: int) -> ThemeHits:
+def _whole_search(library: Any, theme: str, limit: int, found_min: float = FOUND_MIN) -> ThemeHits:
     """Мелодии по словам темы целиком, лучшие первыми (#3427):
 
     1. точное совпадение названия записи (``title`` или ``name``, :func:`title_key`) с темой — всегда первым;
        тогда в набор идут ещё только записи, в опознавательных полях которых есть все слова темы, — совпадения по
        одному общему слову («remix», «give») отсекаются;
-    2. затем — :func:`consensus_order` (версии одной мелодии выше одиночной записи)."""
+    2. затем — :func:`consensus_order` (версии одной мелодии выше одиночной записи).
+
+    ``found_min`` — доля слов темы, которую покрывает запись (часть темы-перечисления — все слова, 1.0)."""
     query_terms = terms(library, theme)
     if not query_terms:
         return ThemeHits()
-    pool = _pool(library, theme, query_terms)
+    pool = _pool(library, theme, query_terms, found_min)
     key = title_key(theme)
     exact = [hit for hit in pool if _is_exact(hit[1], key)]
     if not exact:
@@ -279,11 +298,19 @@ def _whole_search(library: Any, theme: str, limit: int) -> ThemeHits:
     return ThemeHits(tuple((consensus_order(exact, limit) + consensus_order(rest, limit))[:limit]), True)
 
 
-def theme_parts(library: Any, theme: str) -> List[str]:
-    """Части темы-перечисления (:data:`_PART_RE`) со значимыми словами; части из одних служебных слов
-    («мегасет для игроков из RTTTL-мелодий разных игр», «и другие») выпадают."""
+def _split(library: Any, theme: str) -> List[str]:
     parts = (" ".join(p.split()) for p in _PART_RE.split(theme) if p)
     return [p for p in parts if p and terms(library, p)]
+
+
+def theme_parts(library: Any, theme: str) -> List[str]:
+    """Части темы-перечисления (:data:`_PART_RE`) со значимыми словами; части из одних служебных слов
+    («мегасет для игроков из RTTTL-мелодий разных игр», «и другие», «ретро 8-бит») выпадают. Перед двоеточием —
+    описание сета («денди-стиль: Тетрис, Контра»): после двоеточия перечисление (две части и больше) — части
+    только из него, первая названная франшиза — первая часть (06.10)."""
+    _head, colon, tail = theme.partition(":")
+    listed = _split(library, tail) if colon else []
+    return listed if len(listed) >= 2 else _split(library, theme)
 
 
 def round_robin(lists: Sequence[Sequence[str]], limit: int) -> List[str]:
@@ -300,27 +327,43 @@ def round_robin(lists: Sequence[Sequence[str]], limit: int) -> List[str]:
     return out
 
 
+def by_part(lists: Sequence[Sequence[str]], names: Sequence[str]) -> Tuple[Tuple[str, ...], ...]:
+    """Хуки ``names`` по частям ``lists`` в их порядке; мелодия двух частей — в первой; пустые части выпадают."""
+    left = set(names)
+    out = []
+    for part in lists:
+        group = tuple(n for n in part if n in left)
+        left -= set(group)
+        if group:
+            out.append(group)
+    return tuple(out)
+
+
 def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHits:
     """Мелодии по словам темы сета для хука, лучшие первыми.
 
     Точное совпадение темы с названием записи — приоритет (#3427, :func:`_whole_search`). Тема-перечисление
     (две и больше частей со значимыми словами, :func:`theme_parts`) ищется по частям — каждая до ``limit`` мелодий,
     слияние :func:`round_robin` до :data:`THEME_LIST_HOOKS`: одна мелодия не покрывает половину слов темы «Марио,
-    Тетрис, Контра», и целиком тема не находила ничего (06.10). Часть без находок — в ``missing`` (в лог), не
-    подменяется. Ни одной мелодии — пусто, сет возьмёт пул по хешу темы."""
+    Тетрис, Контра», и целиком тема не находила ничего (06.10). Запись части покрывает все её слова: «Darkwing
+    Duck» — не «Ducktoy» по слову «duck»; запись темы целиком («Tom and Jerry») — тоже все слова, иначе это
+    находка одной части не в её очереди («Марио, Тетрис» ставил «Tetris» первым). Часть без находок — в
+    ``missing`` (в лог), не подменяется. Ни одной мелодии — пусто, сет возьмёт пул по хешу темы."""
     whole = _whole_search(library, theme, limit)
     parts = [] if whole.exact else theme_parts(library, theme)
     if len(parts) < 2:
         return whole
-    found = [whole.names] if whole.names else []
+    spanning = _whole_search(library, theme, limit, found_min=1.0).names
+    found = [spanning] if spanning else []
     missing = []
     for part in parts:
-        names = _whole_search(library, part, limit).names
+        names = _whole_search(library, part, limit, found_min=1.0).names
         if names:
             found.append(names)
         else:
             missing.append(part)
-    return ThemeHits(tuple(round_robin(found, THEME_LIST_HOOKS)), False, tuple(missing))
+    names = tuple(round_robin(found, THEME_LIST_HOOKS))
+    return ThemeHits(names, False, tuple(missing), by_part(found, names))
 
 
 def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
@@ -329,5 +372,5 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
 
 
 __all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS", "Term",
-           "ThemeHits", "consensus_order", "coverage", "find", "ranked", "round_robin", "sound_key", "stem", "terms",
-           "theme_hooks", "theme_parts", "theme_search", "title_key"]
+           "ThemeHits", "by_part", "consensus_order", "coverage", "find", "ranked", "round_robin", "sound_key", "stem",
+           "terms", "theme_hooks", "theme_parts", "theme_search", "title_key"]

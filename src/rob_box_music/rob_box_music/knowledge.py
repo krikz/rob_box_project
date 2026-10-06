@@ -140,6 +140,10 @@ SEARCH_STOPWORDS: Tuple[str, ...] = (
     # чтобы не повторяться»): части из этих слов не ищутся и не попадают в «не найдено»
     "мегасет", "мега", "игра", "игры", "игр", "игрок", "игроки", "игроков", "разных", "разные", "другие", "другое",
     "прочие", "повторяться", "rtttl", "пати", "чиптюн",
+    # стиль и формат сета, а не мелодия (живой сет 06.10 «ретро 8-бит: Mario, Tetris, …» искал «8» и играл
+    # «1812 Overture»): жанр без композитора, «ретро», публика. Цифра+«бит» — :data:`SEARCH_STYLE_PATTERNS`
+    "ретро", "retro", "chiptune", "классика", "классический", "классическая", "classic", "classical", "геймер",
+    "геймеры", "gamer", "gamers",
     "the", "of", "a", "an", "and", "in", "on", "for", "to", "with", "from", "at", "by", "de", "la", "le", "du", "des",
 )
 #: Понятия темы без мелодии с таким словом в названии → английский запрос к архиву (несколько слов — любое).
@@ -149,7 +153,12 @@ THEME_CONCEPTS: Mapping[str, str] = {
     "косм": "space", "интерстел": "space", "interstel": "space", "межзвезд": "space",
     "денди": "mario contra zelda", "dendy": "mario contra zelda", "приставк": "mario contra zelda",
     "нинтенд": "mario zelda", "nintendo": "mario zelda",
+    # композиторы, чей транслит не совпадает со звуком архива («Чайковского» ≠ «Tchaikovsky», «Баха» → Baha Men)
+    "чайковск": "tchaikovsky", "бах": "bach", "моцарт": "mozart", "бетховен": "beethoven",
 }
+#: Стиль и формат сета словами с цифрой — вырезаются из запроса до разбора на слова (``engine.search.terms``):
+#: «8-бит», «8 бит», «8-битный», «16-bit», «8bit». Цифра из них искала «8» в «1812 Overture» и «Sk8er Boi» (06.10).
+SEARCH_STYLE_PATTERNS: Tuple[str, ...] = (r"\b\d+\s*-?\s*(?:бит|bit)\w*",)
 
 
 @dataclass(frozen=True)
@@ -333,7 +342,7 @@ __all__ = [
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
-    "SEARCH_STOPWORDS",
+    "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of",
 ]
