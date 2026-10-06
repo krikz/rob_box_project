@@ -188,11 +188,14 @@ class SetPlanBox:
 
     def apply(self, ref: rz.Refinement) -> None:
         """Поправка LLM: план со следующего не сыгранного трека; темп сета прежний (``reasoner.apply``)."""
-        melodies = self._lookup(ref.hook_ids)
         with self._lock:
-            self._plan, self._melodies, self._refined = rz.apply(self._plan, ref), melodies, ref
+            plan = rz.apply(self._plan, ref)
+        melodies = self._lookup(plan.profile.hook_ids)  # хуки плана (``reasoner.plan_hooks``), не только выбор LLM
+        with self._lock:
+            self._plan, self._melodies, self._refined = plan, melodies, ref
         self._log.info(f"🧠 [reasoner] {self._plan.set_id} план применён: row={ref.row} mode={ref.mode} "
-                       f"hooks={list(ref.hook_ids)} найдено={sorted(melodies)} energy={list(ref.energy)} "
+                       f"hooks={list(plan.profile.hook_ids)} llm_hooks={list(ref.hook_ids)} найдено={len(melodies)} "
+                       f"energy={list(ref.energy)} "
                        f"bpm={self._plan.bpm} (темп сета прежний)")
 
     def on_started(self, track_id: str) -> str:
