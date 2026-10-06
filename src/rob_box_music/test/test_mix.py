@@ -218,11 +218,12 @@ def test_timbre_table_is_playable():
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_kick_is_the_genre_sample_from_the_table(seed):
-    """Бочка — ``KICK_SOUNDS[STYLES['club'].kick_sound]`` (замер: низ ≥ 0.9 записи), а не ``X`` без ``sample``."""
-    kick = kn.KICK_SOUNDS[kn.STYLES["club"].kick_sound]
+def test_kick_is_a_sample_from_the_style_pool(seed):
+    """Бочка — запись пула стиля ``KICK_SOUNDS`` (замер: низ ≥ 0.9 записи), а не ``X`` без ``sample``."""
     track = _track(seed)
-    assert track.parts["kick"].sample == kick.sample and kick.low >= 0.9
+    pool = (kn.KICK_SOUNDS[n] for n in kn.STYLES["club"].kick_pool)
+    kick = next(k for k in pool if k.sample == track.parts["kick"].sample)
+    assert kick.low >= 0.9
     assert {e.sample for e in _events(track)["kick"]} == {f"{kick.symbol}{kick.sample}"}
     assert {e.sample for e in _events(track)["hats"]} == {"-0"}, "остальные ударные — без sample="
 

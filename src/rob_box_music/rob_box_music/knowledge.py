@@ -559,8 +559,17 @@ class KickSound:
 #: Бочки, замеренные 02.10.2026 (Vision Pi, ``jack_rec``). ``X`` без ``sample=`` на роботе звучит щелчком:
 #: < 250 Гц 0.3 %, > 2 кГц 98 % записи, хотя файл ``000_Kick_HSS2_NoN.wav`` на 99 % ниже 250 Гц (причина не
 #: найдена, находка #3312). ``X:12`` — 94.5 % записи ниже 250 Гц, 5.5 % середины (атака), без гула 808.
+#: PR-4 (ADR-0152 §3.4, #3435): ещё три из ``x/upper`` — замер 06.10 ``scripts/music/kicks_probe.sh`` (Vision Pi,
+#: ``jack_rec`` 8 с, одна бочка 4/4 @130; ``X:12`` воспроизвёл 02.10: 0.941/0.853 против 0.945/0.862). Отбор по
+#: описи сэмплов (длина 0.15–0.6 с, низ файла ≥ 0.85, центроид < 100 Гц) и по замеру: доли < 250/< 120 Гц ≥ 0.8/0.6,
+#: > 2 кГц ≈ 0 (щелчка нет), пик в лимитере −7.0 дБ у всех (``deep`` −7.8). ``loudness_offset_db`` = 0.98 + RMS записи
+#: кандидата − RMS ``X:12`` (−23.5 дБ): ``deep`` +0.4, ``techno`` −0.5, ``garage`` −1.9. Лицензии пака
+#: ``0_foxdot_default`` Renardo в основном CC0 — файл за файлом не проверялись.
 KICK_SOUNDS: Mapping[str, KickSound] = {
     "house": KickSound("X", 12, "012_Kick_House_GhostFader.wav", 0.98, 0.945, 0.862),
+    "deep": KickSound("X", 3, "003_Kick_AK_GhostFader.wav", 1.38, 0.999, 0.938),
+    "techno": KickSound("X", 30, "030_Kick_KHS_TechnoV1.wav", 0.48, 0.985, 0.803),
+    "garage": KickSound("X", 18, "018_Kick_Garage_GhostFader.wav", -0.92, 0.943, 0.806),
 }
 
 #: Панорама (перенос таблиц ``core/club_stereo``): вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну
@@ -659,8 +668,9 @@ class Style:
     bpm: Tuple[int, int]
     swing: Tuple[float, float]
     modes: Tuple[str, ...]
-    # Ритм-секция: бочка (ключ :data:`KICK_SOUNDS`), вид секции по энергии, каркасы хэтов/перкуссии.
-    kick_sound: str
+    # Ритм-секция: пул бочек стиля (ключи :data:`KICK_SOUNDS`, первая — «лицо» стиля), вид секции по энергии,
+    # каркасы хэтов/перкуссии.
+    kick_pool: Tuple[str, ...]
     looks: Tuple[Tuple[int, Look], ...]
     kits: Mapping[str, Mapping[str, str]]
     # Роли и тембры: коридоры регистров, семьи тембров {семья → {роль → синты}} и семья темы не из таблицы.
@@ -698,7 +708,7 @@ class Style:
 STYLES: Mapping[str, Style] = {
     "club": Style(
         bpm=(128, 138), swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
-        kick_sound="house", looks=_CLUB_LOOKS, kits=_CLUB_KITS,
+        kick_pool=("house", "deep", "techno", "garage"), looks=_CLUB_LOOKS, kits=_CLUB_KITS,
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
         bass_figures=("offbeat",), pad_figures=("pumped16", "held", "stabs"), lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,

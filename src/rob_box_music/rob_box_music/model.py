@@ -318,6 +318,9 @@ def _check_parts(track: Track) -> None:
         else:
             _require(part.pitches is None, f"parts.{role}.pitches", "у ударной роли нет высот")
             _require(isinstance(part.sample, int) and part.sample >= 0, f"parts.{role}.sample", "номер сэмпла < 0")
+            if role == "kick":
+                _require(part.sample in {k.sample for k in kn.KICK_SOUNDS.values()}, "parts.kick.sample",
+                         "бочка не из knowledge.KICK_SOUNDS")
         if role in SAMPLE_ROLES:
             unknown = sorted({part.synth_or_sample, *part.pool} - set(kn.SAMPLE_CATALOG))
             _require(not unknown, f"parts.{role}.synth_or_sample", f"сэмплов {unknown} нет в knowledge.SAMPLE_CATALOG")

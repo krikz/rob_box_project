@@ -37,6 +37,7 @@ class TrackPlan:
     no: int  # с 1
     energy: int  # 1..5
     root_shift: int  # полутонов от тоники сета, 0..11
+    kick: str = ""  # бочка из пула стиля (``knowledge.KICK_SOUNDS``); пусто — ``compose`` выбирает по истории сам
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,25 @@ def set_root(profile: ThemeProfile, seed: int, history: Sequence[Mapping] = ()) 
     return kn.ROOTS.index(weighted_pick(options, recent, random.Random(f"root:{seed}:{profile.theme}")))
 
 
+def pick_kick(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str:
+    """Бочка трека из пула стиля: сид + штраф за недавние в истории (``weighted_pick``, ось ``kick``), с прошлым
+    треком подряд не повторяется."""
+    recent = recent_values(history, "kick")
+    options = [k for k in style.kick_pool if not recent or k != recent[0]] or list(style.kick_pool)
+    return weighted_pick(options, recent, rng)
+
+
+def plan_kicks(style: kn.Style, seed: int, theme: str, n_tracks: int,
+               history: Sequence[Mapping] = ()) -> Tuple[str, ...]:
+    """Бочки первых ``n_tracks`` треков сета: каждая выбрана со штрафом за прошлые сеты и предыдущие треки плана."""
+    recent = [k for k in recent_values(history, "kick") if k]
+    kicks = []
+    for no in range(1, n_tracks + 1):
+        rows = [{"kick": k} for k in kicks[::-1] + recent]
+        kicks.append(pick_kick(style, rows, random.Random(f"kick:{seed}:{theme}:{no}")))
+    return tuple(kicks)
+
+
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
                 history: Sequence[Mapping] = ()) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
@@ -95,9 +115,11 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     bpm = min(max(profile.bpm, lo), hi)
     s_lo, s_hi = window.swing
     swing = round(s_lo + random.Random(f"plan:{seed}:{profile.theme}").random() * (s_hi - s_lo), 3)
-    tracks = tuple(track_plan(no) for no in range(1, max(1, n_tracks) + 1))
+    n = max(1, n_tracks)
+    kicks = plan_kicks(window, seed, profile.theme, n, history)
+    tracks = tuple(replace(track_plan(no), kick=kicks[no - 1]) for no in range(1, n + 1))
     return SetPlan(set_id, seed, profile, bpm, swing, tracks)
 
 
-__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "root_shift", "seeded_plan", "set_root",
-           "track_energy", "track_plan"]
+__all__ = ["DEFAULT_TRACKS", "FIFTH", "SetPlan", "TONIC_MEMORY", "TrackPlan", "pick_kick", "plan_kicks", "root_shift",
+           "seeded_plan", "set_root", "track_energy", "track_plan"]
