@@ -13,7 +13,9 @@
 * ``hooks`` — до :data:`MAX_HOOKS` хуков только из кандидатов, которые показал код (:func:`hook_candidates`):
   нашёл код хуки по словам темы (#3399) — кандидаты ТОЛЬКО они (ADR-0152 §5), строки таблицы и пул — при
   пустых находках; ``theme_row`` хуки не подменяет (хуки плана берутся из ``hooks``);
-* ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``);
+* ``energy`` — дугу энергии первых треков, 1..5 (поправка ``SetPlan``); кульминация (5) обязана быть не позже
+  ``Style.peak_by_track``-го трека (A6, #3459): дугу без пика в этом окне :func:`validate` отвергает
+  (``PlanInvalid("energy")``, сет играет seeded-волну с пиком на 4-м треке) — LLM не может выключить кульминацию;
 * ``hype_line`` — выкрик ≤ :data:`HYPE_MAX` символов, только когда он включён (§12 В2, по умолчанию выкл).
 
 Темп в схеме отсутствует: сет уже звучит в темпе seeded-плана, один темп на сет (§4.4, I7) — :func:`apply`
@@ -26,7 +28,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from . import knowledge as kn
-from .set_plan import DEFAULT_TRACKS, SetPlan, TrackPlan
+from .set_plan import DEFAULT_TRACKS, SetPlan, TrackPlan, track_energy
 from .theme import ThemeProfile
 
 #: Имя структурного выхода; это не тул исполнения — ризонер ничего не исполняет (ADR-0142 §9).
@@ -84,7 +86,7 @@ def schema(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfi
         "hooks": {"type": "array", "items": {"type": "string", "enum": _all_hooks(profile)}, "minItems": 1,
                   "maxItems": MAX_HOOKS, "description": "узнаваемые мелодии-хуки под тему, только из кандидатов"},
         "energy": {"type": "array", "items": {"type": "integer", "minimum": lo, "maximum": hi},
-                   "minItems": 1, "maxItems": DEFAULT_TRACKS, "description": "энергия треков 1, 2, … (1..5)"},
+                   "minItems": 1, "maxItems": DEFAULT_TRACKS, "description": f"энергия треков 1, 2, … (1..5); пик 5 обязан быть не позже трека {kn.STYLES[genre].peak_by_track}"},
     }
     if hype:
         props["hype_line"] = {"type": "string", "maxLength": HYPE_MAX, "description": "выкрик диджея по-русски"}
@@ -103,7 +105,8 @@ def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, s
     """``(system, user)``: правила выбора — в промпте, решение проверяет :func:`validate`."""
     system = ("Ты музыкальный редактор DJ-сета робота. Темп сета уже выбран кодом и не меняется. По теме "
               f"человека выбери строку таблицы тем, лад, до {MAX_HOOKS} хуков только из кандидатов "
-              "ниже (если код нашёл хуки по теме, других нет) и дугу энергии: разгон, пик, спад. Ответ — один вызов "
+              "ниже (если код нашёл хуки по теме, других нет) и дугу энергии: разгон, пик, спад; пик 5 — не позже "
+              f"трека {kn.STYLES[kn.DEFAULT_STYLE].peak_by_track}, иначе дуга отвергается. Ответ — один вызов "
               f"{SUBMIT_TOOL}, без текста.")
     if hype:
         system += f" hype_line — короткий выкрик диджея по-русски, не длиннее {HYPE_MAX} символов."
@@ -139,6 +142,14 @@ def _energy(value: Any) -> Tuple[int, ...]:
     return tuple(value)
 
 
+def _peak(energy: Tuple[int, ...], by_track: int) -> None:
+    """Кульминация в окне: энергия 5 среди первых ``by_track`` треков. Треки за концом дуги LLM играют по волне
+    seeded (:func:`apply`), поэтому проверяется то, что реально прозвучит."""
+    heard = [energy[no - 1] if no <= len(energy) else track_energy(no) for no in range(1, by_track + 1)]
+    if ENERGY_RANGE[1] not in heard:
+        raise PlanInvalid("energy", f"нет пика {ENERGY_RANGE[1]} в первых {by_track} треках: {list(energy)}")
+
+
 def _hype(payload: Mapping[str, Any], hype: bool) -> Optional[str]:
     if "hype_line" not in payload:
         return None
@@ -159,8 +170,10 @@ def validate(payload: Any, genre: str = "club", hype: bool = False,
         raise PlanInvalid(extra[0], "поля нет в схеме")
     row = _enum(payload, "theme_row", [*kn.THEMES, NO_ROW])
     mode = _enum(payload, "mode", kn.STYLES[genre].modes)
-    return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks"), profile),
-                      _energy(payload.get("energy")), _hype(payload, hype))
+    energy = _energy(payload.get("energy"))
+    _peak(energy, kn.STYLES[genre].peak_by_track)
+    return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks"), profile), energy,
+                      _hype(payload, hype))
 
 
 def apply(plan: SetPlan, ref: Refinement) -> SetPlan:
