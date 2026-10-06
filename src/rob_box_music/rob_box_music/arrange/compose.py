@@ -74,9 +74,16 @@ PAD_GAP = 3  # верх пэда ниже лида на ≥ 3 полутона (
 LOOP_BEATS = CHORD_BARS * BEATS_PER_BAR * 4  # петля прогрессии — 4 аккорда
 
 
+def _pad_floor(style: kn.Style) -> int:
+    """Обычный низ пэда: коридор стиля выше на ``knowledge.PAD_WIDEN`` (ниже — только когда трезвучие иначе не помещается)."""
+    return style.registers["pad"][0] + kn.PAD_WIDEN
+
+
 def hook_register(style: kn.Style) -> Tuple[int, int]:
-    """Коридор хука: низ лида ≥ низ пэда + 9 (любое обращение трезвучия) + ``PAD_GAP`` — пэду есть где звучать."""
-    return style.registers["pad"][0] + 9 + PAD_GAP, style.registers["lead"][1]
+    """Коридор хука: низ лида ≥ обычный низ пэда + 9 + ``PAD_GAP``. Окно пэда в 10 нот (низ..низ+9) вмещает
+    только трезвучия без части звуков лада (50..59 — без C и C#), поэтому «+9» не гарантировало обращения: пэд
+    в :func:`_pad_chords` опускается до коридора, где окно в 12 нот (верх − 11) содержит каждый звук лада."""
+    return _pad_floor(style) + 9 + PAD_GAP, style.registers["lead"][1]
 
 
 def transition(style: kn.Style) -> Transition:
@@ -263,8 +270,20 @@ def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, rng: random
     else:
         degrees = progression(drop)
     pad_top = min(style.registers["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
-    pad_register = (style.registers["pad"][0], pad_top)
-    return lead_part, degrees, pad_register, harmony.pad_chords(style, key, degrees, pad_register)
+    return (lead_part, degrees) + _pad_chords(style, key, degrees, pad_top)
+
+
+def _pad_chords(style: kn.Style, key: Key, degrees: Sequence[int], top: int) -> Tuple[Tuple[int, int], Tuple]:
+    """(регистр пэда, аккорды): обычный низ, а трезвучие в окне не помещается — низ на полутон ниже до коридора стиля
+    (``knowledge.PAD_WIDEN``); окно в 12 нот содержит любой звук лада, так что дальше ``ValueError`` только у лида,
+    поднятого выше ``hook_register``. Треки, которым хватало обычного окна, звучат как прежде."""
+    lows = range(_pad_floor(style), style.registers["pad"][0] - 1, -1)
+    for low in lows[:-1]:
+        try:
+            return (low, top), harmony.pad_chords(style, key, degrees, (low, top))
+        except ValueError:
+            continue
+    return (lows[-1], top), harmony.pad_chords(style, key, degrees, (lows[-1], top))  # не помещается и в коридоре
 
 
 def _theme_hook(style: kn.Style, spec: FormSpec, profile: ThemeProfile, melodies: Mapping[str, str],
