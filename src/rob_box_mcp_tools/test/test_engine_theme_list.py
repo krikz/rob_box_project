@@ -170,3 +170,50 @@ def test_parts_rotate_before_repeating_a_franchise(library):
     part_of = {h: i for i, p in enumerate(hits.parts) for h in p}
     assert [part_of[h] for h in played] == [0, 1, 2, 0, 1, 2]
     assert len(set(played)) == 6
+
+
+# ---------------------------------------------------------------------------
+# Живой лог 06.10 после #3476: STT отдал тему БЕЗ знаков — перечисление не распознано, хуки из пула
+# ---------------------------------------------------------------------------
+
+NO_PUNCT = "ретро 8-бит Mario Tetris Aladdin Contra"
+
+
+def test_theme_without_separators_is_split_by_catalog(library):
+    """Части по каталогу: «ретро 8-бит» — стиль, четыре названия — четыре части, хуки по частям, source=theme."""
+    assert theme_parts(library, NO_PUNCT) == ["mario", "tetris", "aladdin", "contra"]
+    hits = theme_search(library, NO_PUNCT)
+    owner = _franchise(library, NO_PUNCT)
+    assert hits.names and hits.missing == ()
+    assert [owner[h] for h in hits.names[:4]] == ["mario", "tetris", "aladdin", "contra"]
+    assert len(hits.parts) == 4
+    assert seeded_profile(NO_PUNCT, found=hits.names, parts=hits.parts).source == "theme"
+
+
+def test_mixed_latin_and_cyrillic_without_separators(library):
+    assert theme_parts(library, "Марио Tetris Аладдин Contra") == ["марио", "tetris", "аладдин", "contra"]
+    assert theme_search(library, "Марио Tetris Аладдин Contra").missing == ()
+
+
+def test_two_cyrillic_words_still_two_franchises(library):
+    hits = theme_search(library, "Марио Тетрис")
+    assert len(hits.parts) == 2 and hits.names[0].startswith("supermar")
+
+
+def test_punctuated_theme_is_unchanged(library):
+    assert theme_parts(library, "ретро 8-бит: Mario, Tetris, Aladdin, Contra") == ["Mario", "Tetris", "Aladdin",
+                                                                                  "Contra"]
+
+
+def test_single_franchise_stays_one_theme(library):
+    assert theme_parts(library, "ретро 8-бит Mario") == ["ретро 8-бит Mario"]
+    assert len(theme_search(library, "ретро 8-бит Mario").parts) == 0
+
+
+def test_garbage_theme_stays_pool_honestly(library):
+    """Слова без записи в архиве: частей нет, хуков нет — сет честно берёт пул."""
+    garbage = "ретро qzxwv plorbf"
+    assert len(theme_parts(library, garbage)) < 2
+    hits = theme_search(library, garbage)
+    assert hits.names == () and hits.parts == ()
+    assert seeded_profile(garbage, found=hits.names).source != "theme"
