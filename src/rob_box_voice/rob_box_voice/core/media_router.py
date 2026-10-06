@@ -55,7 +55,7 @@ from .media_command_grammar import (
     extract_user_utterance,
     parse_media_command,
 )
-from .media_phrases import dj_started_text, request_ok_text
+from .media_phrases import DJ_FAIL_TEXT, REQUEST_FAIL_TEXT, dj_started_text, request_ok_text
 
 _LOG = logging.getLogger(__name__)
 
@@ -125,9 +125,6 @@ VOLUME_FAIL_TEXT = "Не получилось поменять громкост�
 STOP_OK_TEXT = "Выключил музыку."
 STOP_IDLE_TEXT = "Сейчас ничего не играет — на всякий случай всё остановил."
 STOP_FAIL_TEXT = "Не получилось выключить музыку."
-#: ADR-0149 PR-6: плеер отказал (``rejected``) или тул не прошёл.
-DJ_FAIL_TEXT = "Не получилось включить диджей-сет — музыка не заиграла."
-REQUEST_FAIL_TEXT = "Не получилось включить музыку."
 #: Тул ответил, а ``started`` так и не пришло: об успехе не говорим (A14).
 NOT_STARTED_TEXT = "Музыка пока не заиграла."
 

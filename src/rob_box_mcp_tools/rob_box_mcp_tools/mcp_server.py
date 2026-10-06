@@ -59,7 +59,7 @@ from .base import shared_publisher
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
-from .engine.tools_v2 import DjSetTool, RequestMusicTool
+from .engine.tools_v2 import DjSetTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -788,11 +788,14 @@ class MCPServer(Node):
         проходят). Играет ли дека — знает её владелец, ``PlayerOwner``.
         Живой прогон 29.09 05:00: ход «поставь к Элизе» без тулов взвёл
         cleanup, и сет, запущенный роутером, замолчал на 38 с.
+        06.10 15:30 UTC: ход с ``tools=[]`` взвёл cleanup, и
+        ``tts_batch_complete`` погасил идущий сет — идущий сет (его владелец
+        ``DjSetTool``) мягкий cleanup тоже не трогает, даже если дека в этот
+        миг не отметилась ``started``.
         """
         if reason not in SOFT_MUSIC_CLEANUP_REASONS:
             return False
-        owner = getattr(self, "_player_owner", None)
-        if owner is None or owner.is_playing() is not True:
+        if not music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None)):
             return False
         self.get_logger().info(
             f"🎧 [{reason}] дека играет — мягкий cleanup музыку не трогает "

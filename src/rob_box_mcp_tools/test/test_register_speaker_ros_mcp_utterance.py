@@ -326,3 +326,19 @@ def test_dj_set_length_rides_as_hidden_turn_arg() -> None:
     assert apply_turn_context(
         "dj_set", llm, lambda: {"heard_tracks": None}
     ) == {"action": "start", "theme": "денди"}
+
+
+def test_turn_id_rides_hidden_to_dj_set_and_request_music() -> None:
+    """06.10 set98207: ``request_music`` не снимает сет своего хода — ход едет
+    скрытым ``turn_id``; присланное LLM значение вырезается."""
+    from rob_box_mcp_tools.llm_adapter import apply_turn_context
+
+    llm = {"intent": "track", "text": "поставь", "turn_id": "forged"}
+    assert apply_turn_context("request_music", llm, lambda: {"turn_id": "t9"}) == {
+        "intent": "track", "text": "поставь", "turn_id": "t9"}
+    assert "turn_id" not in apply_turn_context(
+        "request_music", llm, lambda: {"turn_id": None}
+    )
+    assert apply_turn_context(
+        "dj_set", {"action": "start"}, lambda: {"turn_id": "t9"}
+    ) == {"action": "start", "turn_id": "t9"}

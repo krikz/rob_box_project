@@ -214,6 +214,7 @@ from rob_box_voice.core.media_router import (
     media_tool_succeeded,
 )
 from rob_box_voice.core.media_phrases import honest_launch_reply
+from rob_box_voice.core.music_turn import executor_turn_reply, next_turn_id
 from rob_box_voice.core.named_play import (
     NamedPlayStatus,
     play_fail_text,
@@ -223,7 +224,7 @@ from rob_box_voice.core.named_play import (
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_speech import (
-    TurnSpeechHold, decide_turn_speech, wants_lyrics,
+    TurnSpeechHold, decide_turn_speech, final_text_skipped_log, wants_lyrics,
 )
 from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
 from rob_box_voice.core.self_intro import (
@@ -1909,6 +1910,8 @@ class DialogueNode(Node):
             # 06.10: длина сета из слов человека («замути сэт на 30 минут») —
             # решает грамматика, а не LLM: dj_set без tracks брал 10.
             "heard_tracks": getattr(self, "_turn_set_tracks", None),
+            # 06.10 set98207: request_music не снимает сет этого же хода.
+            "turn_id": getattr(self, "_turn_id", None),
         }
 
     def _confident_speaker_name(
@@ -4521,6 +4524,12 @@ tentative_plan(question, kind, name)
         # #2842: RegisterSpeakerTool runs in the mcp_server process, so
         # it gets this via _mcp_turn_context → hidden /mcp/execute arg.
         self._current_turn_utterance_id = utterance_id
+        # 06.10 set98207: ход для скрытого turn_id (request_music не снимает
+        # сет своего хода); синтетический ретрай продолжает ход.
+        self._turn_id = next_turn_id(
+            getattr(self, "_turn_id", None),
+            is_synthetic, is_babble_retry, is_action_claim_retry,
+        )
         # Issue #2925 -- самопредставление этой реплики; выставляет
         # _prepare_user_input_context (_note_self_intro).
         self._turn_self_intro = None
@@ -5632,36 +5641,17 @@ tentative_plan(question, kind, name)
                 "cleanup НЕ вооружаем (живёт до stop_music/watchdog/конца "
                 f"формы); плеер: playing={self._music_playing_now()}"
             )
-        elif self._music_not_started_by_this_turn():
-            # Issue #3174 / ADR-0141: музыкальных тулов в ходе нет, а плеер
-            # играет — значит, музыку запустил не этот ход (роутер, прошлый
-            # ход, DJ-сет). Стоп после речи — только для BACKING этого
-            # хода; чужой трек и DJ-сет живут до явного стопа.
-            self.get_logger().info(
-                "🎵 [issue 3174] ход без музыкальных тулов, плеер играет "
-                "(DJ-сет или трек не из этого хода) — cleanup НЕ вооружаем"
-            )
-        elif not self._pending_music_cleanup:
-            self._pending_music_cleanup = True
-            self.get_logger().info(
-                "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
-            )
         else:
-            self.get_logger().debug(
-                "🎵 [issue 992] music_cleanup already pending — "
-                "ignoring redundant re-arm"
+            # Issue #3174 / ADR-0141 + 06.10 15:30 UTC: ход музыку не запускал
+            # (тулов старого пути нет; сет и заказ движка v2 живут до явного
+            # стопа) — стоп после речи не вооружаем. Раньше здесь cleanup
+            # взводился, когда снимок плеера говорил «не играет»: снимок
+            # отставал, и tts_batch_complete гасил идущий сет после ответа
+            # «Сет идёт — 30 минут…» с tools=[].
+            self.get_logger().info(
+                "🎵 ход музыку не запускал — cleanup НЕ вооружаем; "
+                f"плеер: playing={self._music_playing_now()}"
             )
-
-    def _music_not_started_by_this_turn(self) -> bool:
-        """Issue #3174 — по снимку плеера играет музыка не из этого хода.
-
-        Вызывается только для хода БЕЗ музыкальных тулов: всё, что сейчас
-        звучит, запустил кто-то другой — роутер медиакоманд (#3134), прошлый
-        ход или сет движка v2. Источник — снимок ``/voice/music/state``
-        (ADR-0141): снимка нет — ``False``, прежнее поведение.
-        """
-        snapshot = getattr(self, "_music_player_state", None)
-        return bool(snapshot is not None and (snapshot.dj or snapshot.is_playing()))
 
     def _flush_music_cleanup_if_idle(self) -> None:
         """Issue #992 — финальный flush, если cleanup вооружён и батчей нет.
@@ -6494,17 +6484,25 @@ tentative_plan(question, kind, name)
                     "(backing mode, lyrics allowed) — both ran. "
                     f"tools={list(tools_called)!r}"
                 )
+        # ADR-0148 (06.10 set98207/set97492, 15:30 UTC): о музыке хода
+        # говорит код по результату dj_set/request_music (MusicTurn
+        # исполнителя тулов) и по словам человека, а не текст модели;
+        # ответ модели отзывается из истории.
+        music_phrase = executor_turn_reply(
+            getattr(self, "_scheduler_executor", None),
+            (raw_user_command, user_input),
+            getattr(self, "_turn_set_tracks", None),
+            speak_text_real,
+        )
+        if music_phrase is not None:
+            self.get_logger().warning(
+                f"🎛️ [music turn] фраза кода вместо ответа модели: {music_phrase!r}"
+            )
+            self._retract_rejected_reply()
+            self._speak_direct(music_phrase)
+            return
         if speak_text_real > 0:
-            if self._verbose_llm:
-                self.get_logger().info(
-                    f"🔇 [issue 988] speak_text called in cycle — "
-                    f"skipping auto-TTS of final text: {spoken[:200]!r}"
-                )
-            else:
-                self.get_logger().info(
-                    f"🔇 [issue 988] speak_text called — final text skipped "
-                    f"(anti-duplicate): {spoken[:80]!r}"
-                )
+            self.get_logger().info(final_text_skipped_log(spoken, self._verbose_llm))
             return
         # Issue #1882 — planning-narration guard (hard-mute).
         #
