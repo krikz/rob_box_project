@@ -201,8 +201,8 @@ def test_two_cyrillic_words_still_two_franchises(library):
 
 
 def test_punctuated_theme_is_unchanged(library):
-    assert theme_parts(library, "ретро 8-бит: Mario, Tetris, Aladdin, Contra") == ["Mario", "Tetris", "Aladdin",
-                                                                                  "Contra"]
+    parts = theme_parts(library, "ретро 8-бит: Mario, Tetris, Aladdin, Contra")
+    assert parts == ["Mario", "Tetris", "Aladdin", "Contra"]
 
 
 def test_single_franchise_stays_one_theme(library):
