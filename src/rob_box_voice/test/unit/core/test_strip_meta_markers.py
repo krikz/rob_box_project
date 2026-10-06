@@ -105,11 +105,9 @@ class TestStripMetaMarkersBracketed:
         )
 
     def test_marker_inside_text_kept(self) -> None:
-        # The strip is anchored at start-of-string — a marker in the
-        # middle of the text is legitimate content (e.g. a list item
-        # being read aloud).
-        text = "Список: [Item] один, [Item] два"
-        assert strip_meta_markers(text) == text
+        # Новое поведение (PR #3474 разбор): скобочная вставка в
+        # любом месте реплики не озвучивается.
+        assert strip_meta_markers("Список: [Item] один, [Item] два") == "Список: один, два"
 
     def test_only_marker_becomes_empty(self) -> None:
         assert strip_meta_markers("[Мнение ассистента]") == ""
@@ -162,9 +160,10 @@ class TestStripMetaMarkersBracketed:
         # the speaker-tag prefix, the service-text guard below
         # (``[Spkr:X] [CRITICAL] ...`` → ``[CRITICAL] ...``) would
         # collapse the prefix into TTS-readable body content.
+        # (теперь ``[Spkr:X]`` остаётся, а следующая мета-вставка снимается.)
         assert strip_meta_markers(
             "[Spkr:Эйджик] [Мнение ассистента] Привет"
-        ) == "[Spkr:Эйджик] [Мнение ассистента] Привет"
+        ) == "[Spkr:Эйджик] Привет"
 
 
 class TestStripMetaMarkersBold:
@@ -215,12 +214,10 @@ class TestStripMetaMarkersStacks:
         ) == "текст"
 
     def test_five_bracketed_markers_partial(self) -> None:
-        # Beyond 4, the loop gives up — the remaining markers stay in
-        # place. This is by design (pathological hallucination, the
-        # downstream chunking / equality checks still cope).
+        # Prefix loop stops after 4, but the bracket-aside pass removes the rest.
         assert strip_meta_markers(
             "[A] [B] [C] [D] [E] текст"
-        ) == "[E] текст"
+        ) == "текст"
 
 
 class TestStripMetaMarkersPassthrough:

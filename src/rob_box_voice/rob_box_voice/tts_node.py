@@ -88,7 +88,9 @@ from .audio_playback_manager import AudioPlaybackManager
 from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
-from .core.speak_helpers import strip_markdown, unsupported_language_notice
+from .core.speak_helpers import (
+    strip_bracket_asides, strip_markdown, unsupported_language_notice,
+)
 from rob_box_core.utterance import missing_tts_request_fields
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
@@ -2569,6 +2571,7 @@ class TTSNode(Node):
         text = re.sub(r"<[^>]+>", "", ssml)
         # Раскрываем entity, оставшиеся в текстовом содержимом.
         text = html.unescape(text)
+        text = strip_bracket_asides(text, keep_service=False)
         return strip_markdown(text).strip()
 
     def _on_avatar_tts_request(self, msg: String) -> None:
