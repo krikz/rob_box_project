@@ -32,7 +32,7 @@ def _events(seed, deck="A"):
 
 
 def _assert_two_voices(events, width, haas_ms, bpm, role):
-    """Роль из ``SYNTH_STEREO``: нота — два голоса ``-w``/``+w``; ``+w`` с расстройкой и позже на Хаас (если он задан)."""
+    """Роль из ``SYNTH_STEREO``: нота — два голоса ``-w``/``+w``; ``+w`` с расстройкой и позже на Хаас (если задан)."""
     fields = {"pan": width["pan"], "detune": width["detune"]}
     left = [e for e in events if e.pan < 0]
     right = [e for e in events if e.pan > 0]
