@@ -21,6 +21,16 @@ def test_digits_stay_in_the_theme(text, theme):
     assert command.intent is MediaIntent.DJ and command.set_theme == theme
 
 
+@pytest.mark.parametrize("text,name", [
+    ("сыграй 1812 Overture", "1812 overture"),  # 06.10: роутер извлёк name='overture'
+    ("включи Mozart40", "mozart 40"),
+    ("поставь горный король", "горный король"),
+])
+def test_digits_stay_in_the_named_title(text, name):
+    command = parse_media_command(text)
+    assert command.intent is MediaIntent.PLAY_NAMED and command.name == name
+
+
 def test_theme_reaches_dj_set_and_tts_phrase_with_digits():
     plan = MediaRouter().route("включи диджей сет на тему Mambo Nr 5", MediaState())
     assert plan is not None and plan.tool_calls[0].name == "dj_set"

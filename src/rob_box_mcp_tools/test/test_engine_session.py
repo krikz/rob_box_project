@@ -548,7 +548,8 @@ def test_dj_set_length_from_the_persons_words_on_the_llm_path(caplog):
         result = tool.execute(action="start", theme="денди", heard_tracks=heard)
     assert result.data["tracks"] == 24
     assert "длина сета: 24 (названо)" in caplog.text
-    assert tool.execute(action="start", theme="денди", tracks=5, heard_tracks=12).data["tracks"] == 12
+    # 06.10 на 8539a8367: LLM передала tracks=30 (минуты как треки) — названное время не перекрывается
+    assert tool.execute(action="start", theme="денди", tracks=30, heard_tracks=heard).data["tracks"] == 24
 
 
 def test_dj_set_status_tells_the_set_ended_and_stop_after_the_end_is_idle():

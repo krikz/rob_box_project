@@ -878,7 +878,8 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     if now is not None:
         return now
     theme_words = _theme_words(text)  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
-    return _style_set_command(theme_words) or _named_set_command(theme_words) or _play_named_command(words)
+    # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
+    return _style_set_command(theme_words) or _named_set_command(theme_words) or _play_named_command(theme_words)
 
 
 __all__ = [
