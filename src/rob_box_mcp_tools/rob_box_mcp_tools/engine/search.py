@@ -18,12 +18,12 @@
 from __future__ import annotations
 
 import re
-from collections import Counter, deque
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
-from rob_box_music.rtttl import contour
+from rob_box_music.rtttl import CONTOUR_NOTES, THEME_HOOKS, consensus_order, contour  # noqa: F401
 
 from ..core.rtttl_library import _alias_normalize, melody_quality, tagged
 from ..core.translit_ru import strip_version_tail, transliterate_ru
@@ -31,8 +31,6 @@ from ..core.translit_ru import strip_version_tail, transliterate_ru
 #: Доля значимых слов запроса, которую должна покрыть запись, чтобы считаться найденной.
 FOUND_MIN = 0.5
 SEARCH_LIMIT = 50
-#: Сколько найденных по теме мелодий получает профиль сета (кандидаты хука и LLM); у темы-перечисления — на часть.
-THEME_HOOKS = 8
 #: Хуков темы-перечисления («Марио, Аладдин, Тетрис, Контра»): «мегасет» — десятки три трека. Трек сета ≈ 75 с
 #: (живой прогон 06.10: 5–6 треков ≈ 7 мин), 30 треков ≈ 37 мин без повтора хука; дольше — по кругу (давние
 #: первыми, ``compose.hook_candidates``). Больше не нужно: каждый хук — RTTTL из библиотеки на старте сета.
@@ -40,9 +38,6 @@ THEME_LIST_HOOKS = 30
 #: Разделители частей темы-перечисления: знаки списка, скобки, тире (дефис — только с пробелами: «8-бит» — одно
 #: слово), союзы «и»/«and». Тема 06.10 «… разных игр — Марио, Аладдин, Тетрис, Чёрный Плащ, Контра, Dendy и другие».
 _PART_RE = re.compile(r"[,;:/+()\[\]\n—–]|\s-\s|\b(?:и|and)\b", re.IGNORECASE)
-#: Нот в контуре начала для «консенсуса версий» (#3427): при 7 версии «Terminator» theme_177/theme_178 совпадают,
-#: а повторные ноты «Space Quest» и «Exploration Of Space» уже различаются (при 6 — нет; при 8 расходятся 177/178).
-CONTOUR_NOTES = 7
 #: Самая длинная часть темы без разделителей, слов («Darkwing Duck», «Super Mario Bros»).
 _SEGMENT_WORDS = 3
 _WORD_MIN = 4  # русское слово короче («год», «дом», «чип») — не название: совпадений по звуку слишком много
@@ -217,26 +212,6 @@ def find(library: Any, text: str, limit: int = 5) -> Found:
     confidence, record, query = hits[0]
     alternatives = tuple(r for c, r, _q in hits[1:limit] if c >= FOUND_MIN)
     return Found(True, round(confidence, 3), record, alternatives, query)
-
-
-def consensus_order(hits: Sequence[Tuple[float, Dict[str, Any]]], limit: int = THEME_HOOKS) -> List[str]:
-    """Первые ``limit`` найденных записей ``(confidence, запись с rtttl)`` — в порядке хуков темы (#3427, «консенсус
-    версий»); набор тот же, меняется только порядок.
-
-    Внутри одной доли слов: сначала мелодии, чей контур начала (:func:`rob_box_music.rtttl.contour`,
-    :data:`CONTOUR_NOTES` нот) есть ещё хотя бы у одной найденной записи (считаются все ``hits``), — по одной версии
-    на контур, затем их повторные версии, затем одиночные; при равенстве — порядок поиска (ближе к названию).
-    Узнаваемая тема лежит в архиве в нескольких версиях («Terminator» theme_177/theme_178: d e f e c f), случайный
-    рингтон с тем же словом в названии — в одной (terminat)."""
-    contours = [contour(str(r.get("rtttl") or ""), CONTOUR_NOTES) for _c, r in hits]
-    copies = Counter(c for c in contours if c is not None)
-    versions: Counter = Counter()
-    keys = []
-    for i, ((confidence, _r), shape) in enumerate(zip(hits[:limit], contours)):
-        single = shape is None or copies[shape] < 2
-        keys.append((-confidence, single, 0 if single else versions[shape], i))
-        versions[shape] += 1
-    return [hits[i][1]["name"] for *_rank, i in sorted(keys)]
 
 
 @dataclass(frozen=True)

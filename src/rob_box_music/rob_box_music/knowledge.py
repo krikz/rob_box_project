@@ -1090,3 +1090,59 @@ __all__ += [
     "FORM_CLUB", "FORM_SONG", "SONG_DRUM_SYMBOLS", "SONG_KEY_FIT_MIN", "SONG_MAX_BARS", "SONG_REGISTERS",
     "SONG_TARGET_BARS", "SONG_TIMBRES", "SONG_VERSES",
 ]
+
+
+# ── Реестр произведений (ADR-0155 K-2): ручные таблицы знания; логика — ``rob_box_music.works`` ───────────────
+#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный). Одна таблица: поиск
+#: (``rtttl_library._alias_normalize``), озвучка названия (``ru_alias_for``) и ``Work.aliases`` читают её же.
+RU_ALIASES: Mapping[str, str] = {
+    "гимн ссср": "soviet anthem",
+    "гимн россии": "soviet anthem",
+    "советский гимн": "soviet anthem",
+    "гимн": "soviet anthem",
+    "ссср": "soviet anthem",
+    "ussr": "soviet anthem",
+    "имперский марш": "imperial march",
+    "дарт вейдер": "imperial march",
+    "в пещере горного короля": "mountain king",
+    "григ": "mountain king",
+    "тетрис": "tetris",
+    "коробейники": "tetris",
+    "марио": "mario",
+    "супер марио": "mario",
+    "нокиа": "nokia",
+    "к элизе": "fur elise",
+    "ода к радости": "ode to joy",
+    "с днём рождения": "happy birthday",
+    "с днем рождения": "happy birthday",
+    "джингл белс": "jingle bells",
+    "звёздные войны": "star wars",
+    "звездные войны": "star wars",
+    # Архив хранит русский гимн под существительным «Russia» («National Anthem Of Russia»), не под прилагательным
+    # «Russian» — без этой замены токен «russian» не матчит запись вовсе, и «russian anthem» решает голое
+    # совпадение «anthem» по полусотне чужих гимнов (#2840).
+    "russian": "russia",
+}
+#: «Исполнитель» архива, который на деле категория (``artist`` = «Films And Tv», «Computer Games»): значение —
+#: тип произведения (``Work.work_type``) или ``""`` — категория без типа («Unknown», «Various»); артиста у такой
+#: записи нет. Для «Films And Tv»/«Theme» тип берётся из тегов записи (:data:`TAG_WORK_TYPE`).
+CATEGORY_ARTISTS: Mapping[str, str] = {
+    "": "", "unknown": "", "various": "", "various artists": "", "in development": "", "wavi": "",
+    "films and tv": "", "film theme": "film_theme", "theme": "", "tv": "tv_theme", "movie": "film_theme",
+    "movies": "film_theme", "soundtrack": "film_theme", "bollywood": "film_theme", "computer games": "game_theme",
+    "game": "game_theme", "games": "game_theme", "anthem": "anthem", "national anthem": "anthem",
+    "christmas": "christmas", "classical": "classical", "traditional": "folk",
+}
+#: Тег каталога RTTTL → тип произведения (когда категория-«исполнитель» типа не даёт).
+TAG_WORK_TYPE: Mapping[str, str] = {
+    "tv": "tv_theme", "movie": "film_theme", "game": "game_theme", "anthem": "anthem", "christmas": "christmas",
+    "classical": "classical", "folk": "folk",
+}
+#: Название записи без названия: слово «Theme»/«Unknown» — настоящее название стоит в ``artist``.
+EMPTY_TITLES: Tuple[str, ...] = ("", "theme", "unknown", "untitled")
+#: Стоп-список (ADR-0155 В1, «лёгкий (б)»): композиторы и студии с живыми правами. Всё, что едет из PDMX в git и
+#: на публичный показ, с таким именем в ``composer``/``artist`` не берётся; PDMX остаётся только на роботе/katana.
+#: Строки — подстроки нормализованного имени (``works.norm``: буквы и цифры без пробелов). Растёт по факту.
+LICENSE_STOP_LIST: Tuple[str, ...] = ("zimmer", "kondo", "uematsu", "nintendo", "disney", "johnwilliams")
+
+__all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "RU_ALIASES", "TAG_WORK_TYPE"]

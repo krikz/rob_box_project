@@ -25,6 +25,8 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Union
 
+from rob_box_music.works import alias_pairs, ru_phrase_by_query
+
 from .translit_ru import strip_version_tail, transliterate_ru
 
 __all__ = [
@@ -55,52 +57,13 @@ CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_title ON rtttl_melodies(title);
 CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_artist ON rtttl_melodies(artist);
 """
 
-#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный).
-_ALIASES = {
-    "гимн ссср": "soviet anthem",
-    "гимн россии": "soviet anthem",
-    "советский гимн": "soviet anthem",
-    "гимн": "soviet anthem",
-    "ссср": "soviet anthem",
-    "ussr": "soviet anthem",
-    "имперский марш": "imperial march",
-    "дарт вейдер": "imperial march",
-    "в пещере горного короля": "mountain king",
-    "григ": "mountain king",
-    "тетрис": "tetris",
-    "коробейники": "tetris",
-    "марио": "mario",
-    "супер марио": "mario",
-    "нокиа": "nokia",
-    "к элизе": "fur elise",
-    "ода к радости": "ode to joy",
-    "с днём рождения": "happy birthday",
-    "с днем рождения": "happy birthday",
-    "джингл белс": "jingle bells",
-    "звёздные войны": "star wars",
-    "звездные войны": "star wars",
-    # Архив хранит русский гимн под существительным «Russia» («National
-    # Anthem Of Russia»), не под прилагательным «Russian» — без этой
-    # замены токен «russian» не матчит запись вовсе, и «russian anthem»
-    # решает голое совпадение «anthem» по полусотне чужих гимнов (#2840).
-    "russian": "russia",
-}
-
-_ALIAS_SORTED = sorted(_ALIASES.items(), key=lambda kv: -len(kv[0]))
-
-#: issue #3178 — обратная связка канонический англ. запрос → первая (по
-#: порядку :data:`_ALIASES`) русская фраза на него. Используется, чтобы
-#: назвать играющий трек по-русски (:func:`human_track_title`), а не
-#: архивным ``title`` («Hall Of The Mountain King (Alton Towers Theme) 2»).
-#: ``dict.setdefault`` берёт САМУЮ первую фразу для каждого канонического
-#: запроса — у «soviet anthem» их пять, для голоса нужна одна.
-#: Нерусские ключи (``"russian"`` — обходной алиас для архивного
-#: написания, не разговорная фраза) сюда не попадают.
-_ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = {}
-for _ru_phrase, _canonical_query in _ALIASES.items():
-    if any("а" <= ch <= "я" or ch == "ё" for ch in _ru_phrase):
-        _ALIAS_CANONICAL_TO_RU_PHRASE.setdefault(_canonical_query, _ru_phrase)
-del _ru_phrase, _canonical_query
+#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный) и обратная связка «канонический
+#: запрос → первая русская фраза на него» (issue #3178: назвать играющий трек по-русски, а не архивным ``title``
+#: «Hall Of The Mountain King (Alton Towers Theme) 2») — из реестра произведений ``rob_box_music.works`` (ADR-0155
+#: K-2): одна таблица ``knowledge.RU_ALIASES``, она же — ``Work.aliases``. Нерусские ключи («russian» — обходной
+#: алиас архивного написания) в обратную связку не попадают.
+_ALIAS_SORTED = alias_pairs()
+_ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = ru_phrase_by_query()
 
 #: issue #3178 — технические хвосты архивного ``title``, которые робот не
 #: должен произносить: номер повтора записи того же трека («… 2») и
