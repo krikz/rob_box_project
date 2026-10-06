@@ -93,6 +93,9 @@ class ThemeRow:
     bpm: Tuple[int, int]
     mode: str
     hooks: Tuple[str, ...]
+    #: Хуки строки идут в общий пул тем без находок (``theme.HOOK_POOL``). ``False`` — праздничные и детские
+    #: мелодии: только по своей теме, «интерстеллар» не получает «Happy Birthday» (#3455).
+    pooled: bool = True
 
 
 #: Темы сета → материал. Порядок строк решает ничью по числу совпавших основ.
@@ -107,13 +110,13 @@ THEMES: Mapping[str, ThemeRow] = {
     "kids": ThemeRow(
         ("детск", "дети", "детей", "праздн", "рожден", "мульт", "игрушк", "kids"), (128, 132), "major",
         ("happybir", "chickend", "macarena", "yellowsu", "teletubb", "bobthebu", "spongebo", "flintsto_2",
-         "barbiegi")),
+         "barbiegi"), pooled=False),
     "slavic": ThemeRow(
         ("славян", "русск", "народн", "калинк", "балалайк", "деревен", "казач"), (130, 136), "minor",
         ("kalinkav", "kalinkav_2", "tetris", "tetris_2")),
     "winter": ThemeRow(
         ("новогод", "новый", "зим", "рождеств", "ёлк", "елк", "снег", "мороз"), (128, 132), "major",
-        ("jinglebe_6", "jinglebe_3", "lastchri_5", "haveyour")),
+        ("jinglebe_6", "jinglebe_3", "lastchri_5", "haveyour"), pooled=False),
 }
 #: Хуки без темы (тема не из таблицы): узнаваемые мелодии, тоже из локальной библиотеки.
 DEFAULT_HOOKS: Tuple[str, ...] = ("tetris", "axelf_3", "popcorn", "macarena", "nokiatun_2", "aroundth_3", "robot")
@@ -130,9 +133,11 @@ SEARCH_STOPWORDS: Tuple[str, ...] = (
     "the", "of", "a", "an", "and", "in", "on", "for", "to", "with", "from", "at", "by", "de", "la", "le", "du", "des",
 )
 #: Понятия темы без мелодии с таким словом в названии → английский запрос к архиву (несколько слов — любое).
-#: Ключ — начало основы слова темы.
+#: Ключ — начало основы слова темы. Слово запроса, совпавшее с ключом :data:`THEMES`, относит тему к этой строке
+#: (``theme.match_row``): «интерстеллар» → ``space`` — темп, лад и хуки космоса (#3455).
 THEME_CONCEPTS: Mapping[str, str] = {
-    "косм": "space", "денди": "mario contra zelda", "dendy": "mario contra zelda", "приставк": "mario contra zelda",
+    "косм": "space", "интерстел": "space", "interstel": "space", "межзвезд": "space",
+    "денди": "mario contra zelda", "dendy": "mario contra zelda", "приставк": "mario contra zelda",
     "нинтенд": "mario zelda", "nintendo": "mario zelda",
 }
 

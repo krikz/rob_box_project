@@ -187,7 +187,7 @@ _WORD_CLASS_RE = re.compile(
     r"|(?P<max>максимум\w*|максимальн\w*|полную)"
     r"|(?P<topic>громк\w*)"
     rf"|(?P<stop>{_MUSIC_STOP_VERBS})"
-    r"|(?P<noun>музык\w*|музон\w*|дидж\w*|трек\w*|трей|сет|бит|бита|звук\w*|dj))$"
+    r"|(?P<noun>музык\w*|музон\w*|дидж\w*|трек\w*|трей|с[еэ]т|бит|бита|звук\w*|dj))$"
 )
 
 _DIRECTIONS: FrozenSet[str] = frozenset({"up", "down", "max"})
@@ -326,7 +326,7 @@ _PERSONA_RE = re.compile(
 _SET_START_RE = re.compile(
     r"(?<![\w-])(?:запусти|запускай|включи|включай|вруби|врубай|начни|"
     r"начинай|давай|устрой|замути)(?![\w-])[^.!?]{0,24}?"
-    r"(?:ди-?дж[еэ]й[\s-]*сет|dj[\s-]*сет|dj[\s-]*set|диджейск\w*\s+сет|"
+    r"(?:ди-?дж[еэ]й[\s-]*с[еэ]т|dj[\s-]*с[еэ]т|dj[\s-]*set|диджейск\w*\s+с[еэ]т|"
     r"режим\w*\s+(?:ди-?дж[еэ]я|dj)|ди-?дж[еэ]й[\s-]*режим|dj[\s-]*режим|"
     r"dj[\s-]*mode)",
     re.IGNORECASE,
@@ -350,7 +350,7 @@ _DJ_FILLER: FrozenSet[str] = _COMMON_FILLER | frozenset({
     "запусти", "включай", "включи", "начинай", "начни", "врубай", "вруби",
     "играй", "зажигай", "качай", "устрой", "замути", "у", "нас", "сегодня",
     "теперь", "снова", "опять", "будь", "стань", "побудь", "диджеем",
-    "диджейский", "диджея",
+    "диджейский", "диджея", "сэт", "сета", "сэта", "сетик", "сэтик",
 })
 
 
@@ -727,6 +727,55 @@ def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
     return MediaCommand(intent=MediaIntent.DJ, closed=True, style=style, set_theme=" ".join(theme))
 
 
+#: Слово «сет» без «диджей»: «сыграй интерстеллар сэт», «сэтик про космос» (#3455). STT пишет и «сэт».
+_SET_WORDS: FrozenSet[str] = frozenset({
+    "сет", "сэт", "сета", "сэта", "сетик", "сэтик", "сетика", "сэтика", "set",
+})
+
+#: Глаголы в начале заказа сета: глаголы заказа по имени и запуска сета.
+_SET_VERBS: FrozenSet[str] = _PLAY_NAMED_VERBS | frozenset({
+    "запусти", "запускай", "включай", "начни", "начинай", "устрой", "замути",
+})
+
+
+def _set_theme_words(head: Sequence[str], tail: Sequence[str]) -> Optional[List[str]]:
+    """Тема заказа сета: слова до «сет» или после ввода темы («на тему X», «про X»); ``None`` — не заказ."""
+    head = [w for w in head if w not in _GENERIC_WORDS and w not in _PLAY_NAMED_FILLER]
+    lead = next((i for i, w in enumerate(tail) if w in _THEME_LEADS), None)
+    if lead is None:
+        theme, rest = head, list(tail)
+    else:
+        theme, rest = _title_words(tail[lead + 1:]), list(tail[:lead])
+        if head:  # «сыграй X сет на тему Y» — две темы, решает LLM
+            return None
+    if any(w not in _PLAY_NAMED_FILLER and w != "на" for w in rest):
+        return None
+    if any(w in _NOT_A_TITLE or _word_class(w) is not None for w in head):
+        return None
+    return theme if len(head) <= _MAX_TITLE_WORDS else None
+
+
+def _named_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«сыграй интерстеллар сэт», «включи сэт на тему космос», «сэтик про котов» → DJ-сет с темой (#3455).
+
+    Реплика начинается с глагола заказа (или прямо со слова «сет»), дальше — тема и слово
+    :data:`_SET_WORDS`, после него — только ввод темы или служебные слова. Тема — без слова «сет»
+    и без слов стиля (стиль — в ``style``, как у «рейв на тему X»). Иначе ``None``.
+    """
+    body = _strip_lead_in(words)
+    verb = bool(body) and body[0] in _SET_VERBS
+    if verb:
+        body = body[1:]
+    at = next((i for i, w in enumerate(body) if w in _SET_WORDS), None)
+    if at is None or (at > 0 and not verb):
+        return None
+    theme = _set_theme_words(body[:at], body[at + 1:])
+    if theme is None:
+        return None
+    style, theme = _style_words(theme)
+    return MediaCommand(intent=MediaIntent.DJ, closed=True, style=style, set_theme=" ".join(theme))
+
+
 # ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
@@ -753,7 +802,7 @@ def parse_media_command(
     volume = _volume_command(words, track_name)
     if volume.intent is not MediaIntent.NONE:
         return volume
-    return _style_set_command(words) or _play_named_command(words)
+    return _style_set_command(words) or _named_set_command(words) or _play_named_command(words)
 
 
 __all__ = [

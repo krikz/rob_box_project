@@ -54,6 +54,7 @@ from .media_command_grammar import (
     extract_user_utterance,
     parse_media_command,
 )
+from .media_phrases import dj_started_text, request_ok_text
 
 _LOG = logging.getLogger(__name__)
 
@@ -308,12 +309,6 @@ def _play_named_plan(command: MediaCommand) -> MediaPlan:
     return MediaPlan(command=command, play_name=command.name)
 
 
-def dj_started_text(persona: str, theme: str) -> str:
-    """Фраза после ``started`` трека 1 сета (шаблон кода, I5)."""
-    about = f" Тема — {theme}." if theme else ""  # «тема — X»: падеж слов человека не ломается
-    return f"Я {persona}, включаю сет.{about}" if persona else f"Включаю диджей-сет.{about}"
-
-
 def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
     """«включи диджей сет на тему X» / «ты диджей X» → ``dj_set(start)`` без LLM.
 
@@ -386,7 +381,7 @@ def _request_plan(command: MediaCommand, text: str) -> MediaPlan:
     return MediaPlan(
         command=command,
         tool_calls=(MediaToolCall(REQUEST_MUSIC_TOOL, args),),
-        say_ok=f"Включаю {command.name}." if command.name else "Включаю музыку.",
+        say_ok=request_ok_text(command.name),
         say_fail=REQUEST_FAIL_TEXT,
         cancel_inflight=True,
         confirm_started=True,

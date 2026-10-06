@@ -19,9 +19,13 @@ from typing import Optional, Sequence, Tuple
 
 from . import knowledge as kn
 
-#: Широкий пул хуков темы без находок: все мелодии таблицы тем и общего пула; сету достаётся :data:`POOL_HOOKS`.
-HOOK_POOL: Tuple[str, ...] = tuple(dict.fromkeys((*(h for row in kn.THEMES.values() for h in row.hooks),
-                                                  *kn.DEFAULT_HOOKS)))
+#: Мелодии строк ``pooled=False`` (праздник, дети): в пул чужих тем не идут, даже из общего пула.
+_OCCASION_HOOKS = frozenset(h for row in kn.THEMES.values() if not row.pooled for h in row.hooks)
+#: Широкий пул хуков темы без находок: мелодии строк ``pooled`` и общего пула без праздничных; сету достаётся
+#: :data:`POOL_HOOKS`.
+HOOK_POOL: Tuple[str, ...] = tuple(h for h in dict.fromkeys((
+    *(h for row in kn.THEMES.values() if row.pooled for h in row.hooks), *kn.DEFAULT_HOOKS))
+    if h not in _OCCASION_HOOKS)
 POOL_HOOKS = 7
 
 
@@ -46,12 +50,18 @@ def _digest(text: str) -> int:
     return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:12], 16)
 
 
+def _concept_rows(word: str) -> Tuple[str, ...]:
+    """Слова запросов ``knowledge.THEME_CONCEPTS``, чей ключ начинает слово: «интерстеллар» → ``("space",)``."""
+    return tuple(q for key, query in kn.THEME_CONCEPTS.items() if word.startswith(key) for q in query.split())
+
+
 def match_row(theme_text: str) -> Optional[str]:
-    """Строка таблицы с наибольшим числом слов темы, начинающихся с её основ; ничья — порядок таблицы."""
-    words = re.findall(r"\w+", theme_text.lower())
+    """Строка таблицы с наибольшим числом слов темы, начинающихся с её основ или относящихся к ней через понятие
+    (``knowledge.THEME_CONCEPTS``); ничья — порядок таблицы."""
+    words = re.findall(r"\w+", theme_text.lower().replace("ё", "е"))
     best: Tuple[int, Optional[str]] = (0, None)
     for name, row in kn.THEMES.items():
-        hits = sum(1 for w in words if any(w.startswith(stem) for stem in row.stems))
+        hits = sum(1 for w in words if any(w.startswith(stem) for stem in row.stems) or name in _concept_rows(w))
         if hits > best[0]:
             best = (hits, name)
     return best[1]

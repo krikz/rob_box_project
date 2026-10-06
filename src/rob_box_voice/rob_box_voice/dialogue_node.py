@@ -213,6 +213,7 @@ from rob_box_voice.core.media_router import (
     media_state_from_snapshot,
     media_tool_succeeded,
 )
+from rob_box_voice.core.media_phrases import honest_launch_reply
 from rob_box_voice.core.named_play import (
     NamedPlayStatus,
     play_fail_text,
@@ -6417,6 +6418,13 @@ tentative_plan(question, kind, name)
             )
             spoken = ""
         tools_called = tuple(result.tools_called or ())
+        # Issue #3455 — фраза запуска музыки (шаблон кода) без тула запуска
+        # в этом ходе: наружу честная фраза, неправда снимается из истории.
+        # TEMP(ADR-0148) — #3461.
+        spoken = honest_launch_reply(
+            spoken, tools_called, log=self.get_logger().warning,
+            on_replace=self._retract_rejected_reply,
+        )
         # Issue #2949 — was any tool THIS TURN called-but-errored (refused /
         # threw)? A called tool alone does not "back" a spoken claim of
         # success (``CLAIM_JUSTIFYING_TOOLS`` guards below need this to
