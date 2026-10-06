@@ -271,6 +271,17 @@ PROGRESSION_TRANSITIONS: Mapping[str, Mapping[str, tuple]] = {
     mode: {"start": tuple(t["start"]), "next": tuple(tuple(row) for row in t["next"])}
     for mode, t in _TRANSITIONS_DATA["tables"].items()}
 PROGRESSION_TRANSITIONS_PROVENANCE: Mapping[str, object] = _TRANSITIONS_DATA["provenance"]
+#: Тоны баса корпуса партитур (ADR-0154 §3.4, Н7) — данные, выученные офлайн
+#: (``scripts/music/research/score_bass_tones.py --write-table``; провенанс — в файле): лад ("major"/"minor") →
+#: доли ноты баса против аккорда ``root``/``third``/``fifth``/``other`` (в сумме 1) и ``approach_per_bar`` — подходов
+#: полутоном к первой доле на такт. Политика баса из материала — ``arrange.bass.material_tones``.
+_BASS_TONES_DATA = json.loads(
+    (Path(__file__).resolve().parent / "data" / "bass_tones.json").read_text(encoding="utf-8"))
+BASS_TONE_RELATIONS: Tuple[str, ...] = ("root", "third", "fifth", "other")
+BASS_TONES: Mapping[str, Mapping[str, float]] = {
+    mode: {k: float(t[k]) for k in (*BASS_TONE_RELATIONS, "approach_per_bar")}
+    for mode, t in _BASS_TONES_DATA["tables"].items()}
+BASS_TONES_PROVENANCE: Mapping[str, object] = _BASS_TONES_DATA["provenance"]
 #: Роли сэмпла: ``perc`` — удар по сетке каркаса, ``loop`` — луп, растянутый на ``beats`` долей, ``fx`` —
 #: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
 #: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль).

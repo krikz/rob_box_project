@@ -9,7 +9,7 @@ import bisect
 import itertools
 import math
 import random
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..diversity import weighted_pick
@@ -111,13 +111,18 @@ _SAMPLE_BEATS = BEATS_PER_BAR / STEPS_PER_BAR  # аккорд слота — п�
 Table = Mapping[str, tuple]
 
 
-def transition_table(mode: str) -> Table:
-    """Таблица переходов лада трека: семиступенные с большой терцией — мажорная, остальные — минорная; лад не из
-    семи ступеней (пентатоника, хроматика) — ``ValueError`` (ступени 0..6 там не определены)."""
+def table_mode(mode: str) -> str:
+    """Лад таблиц корпуса (переходы, тоны баса): семиступенные с большой терцией — ``major``, остальные — ``minor``;
+    лад не из семи ступеней (пентатоника, хроматика) — ``ValueError`` (ступени 0..6 там не определены)."""
     scale = kn.SCALES.get(mode, ())
     if len(scale) != 7:
         raise ValueError(f"лад {mode!r} не семиступенный — таблицы переходов нет")
-    return kn.PROGRESSION_TRANSITIONS["major" if scale[2] == 4 else "minor"]
+    return "major" if scale[2] == 4 else "minor"
+
+
+def transition_table(mode: str) -> Table:
+    """Таблица переходов лада трека (:func:`table_mode`)."""
+    return kn.PROGRESSION_TRANSITIONS[table_mode(mode)]
 
 
 def _triad(key: Key, degree: int) -> set:
@@ -183,27 +188,35 @@ def _chord_at(material: ScoreMaterial, starts: Sequence[float], beat: float) -> 
     return chord if beat < chord.beat + chord.dur_beats else None
 
 
-def material_slots(material: ScoreMaterial, phrase: Phrase, chord_beats: float, slots: int,
-                   scale: float = 1.0) -> List[Optional[ChordSpan]]:
-    """Аккорд материала каждого слота трека — самый долгий на сетке 16-х трека (ничья — раньше в слоте).
-
-    Доля трека ``t`` — доля материала через перевод в 4/4 (``material.club_beat``: 3/4 — пауза на 4-й доле) от
-    первой ноты фразы (хук срезает начальную паузу, ``hook._onsets``) и множитель темпа ``scale``
-    (``hook.time_scale``). Слот без аккорда (пауза 3/4, нет разметки) — ``None``.
-    """
+def material_beat(material: ScoreMaterial, phrase: Phrase, scale: float = 1.0) -> Callable[[float], Optional[float]]:
+    """Доля трека ``t`` → доля материала: перевод в 4/4 (``material.club_beat``: 3/4 — пауза на 4-й доле) от первой
+    ноты фразы (хук срезает начальную паузу, ``hook._onsets``) и множитель темпа ``scale`` (``hook.time_scale``).
+    Доля в паузе 4-й доли 3/4 — ``None``. Одно отображение на гармонию и бас материала."""
     bar = bar_beats(material.meter)
     if bar > BEATS_PER_BAR:
         raise ValueError(f"такт {material.meter[0]}/{material.meter[1]} длиннее 4/4 — в такт клуба не ложится")
     first = phrase.bar * bar
     lead_in = next((e.beat for e in material.melody if e.beat >= first), first) - first
     origin = club_beat(material.meter, lead_in)
+
+    def at(t: float) -> Optional[float]:
+        bar_idx, offset = divmod(origin + t / scale, BEATS_PER_BAR)
+        return first + bar_idx * bar + offset if offset < bar else None
+    return at
+
+
+def material_slots(material: ScoreMaterial, phrase: Phrase, chord_beats: float, slots: int,
+                   scale: float = 1.0) -> List[Optional[ChordSpan]]:
+    """Аккорд материала каждого слота трека — самый долгий на сетке 16-х трека (ничья — раньше в слоте); доля
+    трека → доля материала — :func:`material_beat`. Слот без аккорда (пауза 3/4, нет разметки) — ``None``."""
+    at = material_beat(material, phrase, scale)
     starts = [c.beat for c in material.chords]
     out: List[Optional[ChordSpan]] = []
     for slot in range(slots):
         weight: Dict[ChordSpan, int] = {}
         for k in range(int(round(chord_beats / _SAMPLE_BEATS))):
-            bar_idx, offset = divmod(origin + (slot * chord_beats + k * _SAMPLE_BEATS) / scale, BEATS_PER_BAR)
-            chord = _chord_at(material, starts, first + bar_idx * bar + offset) if offset < bar else None
+            beat = at(slot * chord_beats + k * _SAMPLE_BEATS)
+            chord = _chord_at(material, starts, beat) if beat is not None else None
             if chord is not None:
                 weight[chord] = weight.get(chord, 0) + 1
         out.append(max(weight, key=weight.__getitem__) if weight else None)
@@ -245,4 +258,4 @@ def from_material(material: ScoreMaterial, phrase: Phrase, key: Key, notes: Sequ
 
 __all__ = ["CADENCE_MIN_P", "COMMON_TONES_MIN", "PROGRESSION_CAP", "PROGRESSION_LOOKBACK", "PROGRESSION_SKIPPED",
            "PROGRESSION_WINDOW", "VITERBI_MELODY_WEIGHT", "chord_pcs", "fit_progression", "from_material",
-           "material_slots", "pad_chords", "progression_name", "transition_table", "viterbi", "voicings"]
+           "material_beat", "material_slots", "pad_chords", "progression_name", "table_mode", "transition_table", "viterbi", "voicings"]
