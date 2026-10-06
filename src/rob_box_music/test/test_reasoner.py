@@ -16,7 +16,7 @@ VALID = {"theme_row": "cyber", "mode": "phrygian", "hooks": ["axelf_3", "robot"]
 
 def test_valid_answer_becomes_a_refinement():
     ref = rz.validate(json.loads(json.dumps(VALID)))
-    assert ref == rz.Refinement("cyber", "phrygian", ("axelf_3", "robot"), (3, 4, 5, 4), None)
+    assert ref == rz.Refinement("cyber", "phrygian", ("axelf_3", "robot"), (3, 4, 5, 4))
 
 
 def test_none_row_means_theme_outside_the_table():
@@ -38,20 +38,12 @@ def test_none_row_means_theme_outside_the_table():
     ({**VALID, "energy": [3.5]}, "energy"),
     ({**VALID, "energy": [True]}, "energy"),
     ({**VALID, "energy": [3] * 11}, "energy"),
-    ({**VALID, "hype_line": "Погнали!"}, "hype_line"),  # выкрик выключен (В2)
+    ({**VALID, "hype_line": "Погнали!"}, "hype_line"),  # выкрика в плане нет: реплики — dj_line (В2, 06.10)
 ])
 def test_invalid_answers_name_the_field(payload, path):
     with pytest.raises(rz.PlanInvalid) as exc:
         rz.validate(payload)
     assert exc.value.path == path
-
-
-def test_hype_line_only_when_enabled_and_short():
-    assert rz.validate({**VALID, "hype_line": " Погнали! "}, hype=True).hype_line == "Погнали!"
-    with pytest.raises(rz.PlanInvalid):
-        rz.validate({**VALID, "hype_line": "а" * (rz.HYPE_MAX + 1)}, hype=True)
-    assert "hype_line" not in rz.schema()["properties"]
-    assert rz.schema(hype=True)["properties"]["hype_line"]["maxLength"] == rz.HYPE_MAX
 
 
 def test_schema_is_built_from_knowledge_and_has_no_tempo():

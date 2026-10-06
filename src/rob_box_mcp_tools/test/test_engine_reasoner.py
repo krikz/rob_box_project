@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from rob_box_llm.provider import LLMResponse, ToolCall
-from rob_box_mcp_tools.engine.reasoner import SetPlanBox, SetReasoner, payload_of
+from rob_box_mcp_tools.engine.reasoner import SetReasoner, payload_of
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
 from rob_box_music import reasoner as rz
@@ -81,7 +81,7 @@ def test_valid_tool_call_is_applied_and_logged_with_latency():
     assert got == [rz.validate(GOOD)]
     assert _outcomes(log) == ["ok"] and "provider=minimax" in log.lines[-1][1] and "p95_ms=" in log.lines[-1][1]
     (messages, tools, settings), = provider.calls
-    assert tools == [rz.tool("club", False, PLAN.profile)] and settings.tool_choice == "auto"
+    assert tools == [rz.tool("club", PLAN.profile)] and settings.tool_choice == "auto"
     assert "«ночной город»" in messages[1].content
     assert r.metrics.latency("minimax").count == 1
 
@@ -210,27 +210,6 @@ def test_late_llm_leaves_the_whole_set_seeded():
     rig.clock.run_until(first["start_beat"] + first["form_beats"] + 1)
     assert all("plan=seeded" in n for n in _notes(rig)) and len(_notes(rig)) == 2
     assert any("plan_outcome=late" in m for _l, m in rig.log.lines)
-
-
-def test_hype_line_is_spoken_once_only_when_enabled():
-    said = []
-    plan = seeded_plan(seeded_profile("т"), 1, set_id="h")
-    box = SetPlanBox(plan, lambda ids: {}, speak=said.append, logger=Log())
-    box.apply(rz.validate({**GOOD, "hype_line": "Погнали!"}, hype=True))
-    t2, t3 = SimpleNamespace(track_id="h:02"), SimpleNamespace(track_id="h:03")
-    box.compose_mark(t2), box.compose_mark(t3)
-    assert "hype=on" in box.on_started("h:02") and "hype" not in box.on_started("h:03")
-    import time
-    for _ in range(50):
-        if said:
-            break
-        time.sleep(0.01)
-    assert said == ["Погнали!"]
-    quiet = []
-    box2 = SetPlanBox(plan, lambda ids: {}, speak=quiet.append, logger=Log())
-    box2.apply(rz.validate(GOOD))  # выкрик выключен — в ответе его нет
-    box2.compose_mark(t2)
-    assert "hype" not in box2.on_started("h:02") and quiet == []
 
 
 def test_dj_set_without_reasoner_is_disabled_by_default():

@@ -13,7 +13,8 @@ mcp_server:
     # false — ноль вызовов LLM, сет целиком seeded. Дедлайн — до nearly_finished трека 1.
     music_v2_reasoner: true
     music_v2_reasoner_deadline_s: 45.0
-    # Выкрик hype_line на первом треке по профилю LLM — решение Шифу В2: по умолчанию тишина.
-    music_v2_hype_line: false
+    # Реплика диджея на каждом переходе сета (ADR-0149 §12 В2, решение Шифу 06.10): факты из плана,
+    # LLM ризонера раскрашивает, не успела — шаблон; музыку не глушит. false — переходы молчат.
+    music_v2_dj_lines: true
     # ADR-0152 §2.3: полная модель трека <track_id>.json (ротация 200 файлов); "" - не писать.
     music_v2_tracks_dir: "/data/music_v2/tracks"

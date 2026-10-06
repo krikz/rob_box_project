@@ -69,12 +69,11 @@ class SetReasoner:
     """Один вызов LLM на сет, в фоне. Живёт дольше сетов: breaker и метрики общие для всех сетов."""
 
     def __init__(self, provider: Optional[ProviderFactory] = None, *, enabled: bool = True,
-                 deadline_s: float = DEADLINE_S, hype: bool = False, logger: Any = None,
+                 deadline_s: float = DEADLINE_S, logger: Any = None,
                  breaker: Optional[CircuitBreaker] = None, clock: Callable[[], float] = time.monotonic,
                  spawn: Callable[[Callable[[], None]], None] = lambda fn: threading.Thread(
                      target=fn, name="rbx-set-reasoner", daemon=True).start()) -> None:
         self.enabled = enabled
-        self.hype = hype
         self._provider = provider or minimax_provider(deadline_s)
         self._deadline = float(deadline_s)
         self._log = logger or _LOG
@@ -121,22 +120,46 @@ class SetReasoner:
             return self._loop
 
     async def _ask(self, theme: str, plan: SetPlan) -> Tuple[str, Optional[rz.Refinement], str]:
+        system, user = rz.prompt(theme, plan.profile)
+        outcome, response, detail = await self._complete(system, user, rz.tool(plan.style, plan.profile),
+                                                         self._deadline, 1024)
+        if outcome != "ok":
+            return outcome, None, detail
+        try:
+            return "ok", rz.validate(payload_of(response), plan.style, plan.profile), ""
+        except rz.PlanInvalid as exc:
+            return "invalid", None, f"plan_invalid{{{exc.path}}} {exc}"
+
+    async def _complete(self, system: str, user: str, tool: Dict[str, Any], deadline_s: float,
+                        max_tokens: int) -> Tuple[str, Any, str]:
+        """Один вызов провайдера с жёстким дедлайном: ``("ok", ответ, "")`` или ``("late", None, причина)``."""
         from rob_box_llm.provider import LLMMessage, LLMSettings
 
-        system, user = rz.prompt(theme, plan.profile, self.hype)
         if self._client is None:
             self._client = self._provider()  # нет ключа — исключение, исход error; следующий сет попробует снова
         try:
             response = await asyncio.wait_for(self._client.complete(
-                [LLMMessage("system", system), LLMMessage("user", user)],
-                tools=[rz.tool(plan.style, self.hype, plan.profile)],
-                settings=LLMSettings(tool_choice="auto", max_tokens=1024)), timeout=self._deadline)
+                [LLMMessage("system", system), LLMMessage("user", user)], tools=[tool],
+                settings=LLMSettings(tool_choice="auto", max_tokens=max_tokens)), timeout=deadline_s)
         except asyncio.TimeoutError:
-            return "late", None, f"нет ответа за {self._deadline:g} с"
+            return "late", None, f"нет ответа за {deadline_s:g} с"
+        return "ok", response, ""
+
+    def ask(self, system: str, user: str, tool: Dict[str, Any], deadline_s: float) -> Tuple[str, Any, str]:
+        """Синхронный вызов из фонового потока (реплика перехода, ``engine.dj_lines``): тот же провайдер, клиент,
+        дедлайн-механика и circuit breaker, что у плана сета. Исключения наружу не выходят."""
+        if not self.enabled:
+            return "disabled", None, "reasoner выключен параметром"
+        if not self._breaker.allow():
+            return "circuit_open", None, f"{PROVIDER} пропускается после ошибок подряд"
+        start = self._clock()
         try:
-            return "ok", rz.validate(payload_of(response), plan.style, self.hype, plan.profile), ""
-        except rz.PlanInvalid as exc:
-            return "invalid", None, f"plan_invalid{{{exc.path}}} {exc}"
+            outcome, response, detail = asyncio.run_coroutine_threadsafe(
+                self._complete(system, user, tool, deadline_s, 256), self._event_loop()).result()
+        except Exception as exc:  # noqa: BLE001 — реплика не роняет процесс плеера
+            outcome, response, detail = "error", None, f"{type(exc).__name__}: {exc}"
+        self._judge_provider(outcome, self._clock() - start)
+        return outcome, response, detail
 
     def _judge_provider(self, outcome: str, latency_s: float) -> None:
         """Ошибка и опоздание — провайдер болен (кончились деньги, сеть); невалидный ответ — нет."""
@@ -160,10 +183,11 @@ def _ms(value: Optional[float]) -> str:
 
 
 class SetPlanBox:
-    """Текущий план сета: seeded до ответа LLM, затем — поправленный (один раз). Источник для ``plan_source``."""
+    """Текущий план сета: seeded до ответа LLM, затем — поправленный (один раз). Источник для ``plan_source``.
+    ``lines`` — реплики диджея на переходах (``engine.dj_lines``, §12 В2); ``None`` — переходы молчат."""
 
     def __init__(self, plan: SetPlan, lookup: Callable[[Iterable[str]], Dict[str, str]], *,
-                 speak: Optional[Callable[[str], None]] = None, logger: Any = None) -> None:
+                 lines: Any = None, logger: Any = None) -> None:
         self._lock = threading.Lock()
         self._plan = plan
         self._lookup = lookup
@@ -171,19 +195,23 @@ class SetPlanBox:
         self._refined: Optional[rz.Refinement] = None
         self._sources: Dict[str, Tuple[str, str]] = {}  # track_id → (хук: theme|pool|motif, план: llm|seeded)
         self._played: Dict[str, Tuple[str, str]] = {}
-        self._speak = speak
+        self._lines = lines
         self._log = logger or _LOG
 
     def current(self) -> Tuple[SetPlan, Optional[Mapping[str, str]]]:
         with self._lock:
             return self._plan, self._melodies
 
-    def compose_mark(self, track: Any) -> Any:
-        """``source=theme`` (A11) — только хук, найденный по словам темы (``profile.theme_hooks``), а не любой."""
+    def compose_mark(self, track: Any, no: Optional[int] = None) -> Any:
+        """``source=theme`` (A11) — только хук, найденный по словам темы (``profile.theme_hooks``), а не любой.
+        Трек ``no`` скомпонован — реплика на его ``started`` готовится в фоне."""
         hook = getattr(getattr(track, "hook", None), "source", None)
         with self._lock:
             source = "theme" if hook in self._plan.profile.theme_hooks else "pool" if hook else "motif"
             self._sources[track.track_id] = (source, "llm" if self._refined else "seeded")
+            plan = self._plan
+        if self._lines is not None and no is not None:
+            self._lines.prepare(track.track_id, no, plan, hook)
         return track
 
     def apply(self, ref: rz.Refinement) -> None:
@@ -199,24 +227,15 @@ class SetPlanBox:
                        f"bpm={self._plan.bpm} (темп сета прежний)")
 
     def on_started(self, track_id: str) -> str:
-        """Пометка ``source=…`` для лога ``started``; первый трек по профилю LLM — выкрик, если включён."""
+        """Пометка ``source=…`` для лога ``started``; реплика диджея на этот трек — одна (I23), в фоне."""
         with self._lock:
             source, plan = self._sources.get(track_id, ("motif", "seeded"))
-            first_llm = plan == "llm" and not any(p == "llm" for _s, p in self._played.values())
             self._played[track_id] = (source, plan)
-            line = self._refined.hype_line if self._refined else None
             theme = sum(1 for s, _p in self._played.values() if s == "theme")
             note = f"source={source} plan={plan} A11={theme}/{len(self._played)}"
-        if first_llm and line and self._speak is not None:
-            threading.Thread(target=self._say, args=(line,), name="rbx-hype", daemon=True).start()
-            note += " hype=on"
+        if self._lines is not None:
+            note = f"{note} {self._lines.on_started(track_id)}".rstrip()
         return note
-
-    def _say(self, line: str) -> None:
-        try:
-            self._speak(line)  # type: ignore[misc]
-        except Exception as exc:  # noqa: BLE001 — выкрик не роняет поток и не трогает музыку
-            self._log.warning(f"⚠️ [reasoner] выкрик не озвучен: {type(exc).__name__}: {exc}")
 
 
 __all__ = ["BREAKER_FAILURES", "BREAKER_RESET_S", "DEADLINE_S", "PROVIDER", "ProviderFactory", "SetPlanBox",

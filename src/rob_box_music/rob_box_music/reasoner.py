@@ -19,7 +19,8 @@
   (спад, ``set_plan.arc_energy``); длину сета LLM не меняет; кульминация (5) обязана быть не позже
   ``Style.peak_by_track``-го трека (A6, #3459): дугу без пика в этом окне :func:`validate` отвергает
   (``PlanInvalid("energy")``, сет играет seeded-волну с пиком на 4-м треке) — LLM не может выключить кульминацию;
-* ``hype_line`` — выкрик ≤ :data:`HYPE_MAX` символов, только когда он включён (§12 В2, по умолчанию выкл).
+
+Реплики диджея на переходах — не здесь: факты каждого трека и фраза — ``dj_line`` (§12 В2, решение Шифу 06.10).
 
 Темп в схеме отсутствует: сет уже звучит в темпе seeded-плана, один темп на сет (§4.4, I7) — :func:`apply`
 его не трогает.
@@ -39,7 +40,6 @@ from .theme import ThemeProfile
 SUBMIT_TOOL = "submit_set_profile"
 MAX_HOOKS = 3
 _LOG = logging.getLogger(__name__)
-HYPE_MAX = 60
 NO_ROW = "none"
 ENERGY_RANGE = (1, 5)
 
@@ -60,7 +60,6 @@ class Refinement:
     mode: str
     hook_ids: Tuple[str, ...]
     energy: Tuple[int, ...]
-    hype_line: Optional[str] = None
 
 
 #: Ключ кандидатов профиля сета: хуки, которые код выбрал по словам темы (или пул по хешу).
@@ -81,7 +80,7 @@ def _all_hooks(profile: Optional[ThemeProfile] = None) -> List[str]:
     return list(dict.fromkeys(h for hooks in hook_candidates(profile).values() for h in hooks))
 
 
-def schema(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfile] = None) -> Dict[str, Any]:
+def schema(genre: str = "club", profile: Optional[ThemeProfile] = None) -> Dict[str, Any]:
     """JSON-схема ответа: перечисления из ``knowledge`` — одна таблица знания."""
     lo, hi = ENERGY_RANGE
     props: Dict[str, Any] = {
@@ -93,20 +92,18 @@ def schema(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfi
         "energy": {"type": "array", "items": {"type": "integer", "minimum": lo, "maximum": hi},
                    "minItems": 1, "maxItems": DEFAULT_TRACKS, "description": f"энергия треков 1, 2, … (1..5); пик 5 обязан быть не позже трека {kn.STYLES[genre].peak_by_track}"},
     }
-    if hype:
-        props["hype_line"] = {"type": "string", "maxLength": HYPE_MAX, "description": "выкрик диджея по-русски"}
     return {"type": "object", "properties": props, "required": ["theme_row", "mode", "hooks", "energy"],
             "additionalProperties": False}
 
 
-def tool(genre: str = "club", hype: bool = False, profile: Optional[ThemeProfile] = None) -> Dict[str, Any]:
+def tool(genre: str = "club", profile: Optional[ThemeProfile] = None) -> Dict[str, Any]:
     """Схема как функция в формате OpenAI-совместимых провайдеров."""
     return {"type": "function", "function": {
         "name": SUBMIT_TOOL, "description": "Отдать профиль DJ-сета по теме. Вызвать ровно один раз.",
-        "parameters": schema(genre, hype, profile)}}
+        "parameters": schema(genre, profile)}}
 
 
-def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, str]:
+def prompt(theme: str, seeded: ThemeProfile) -> Tuple[str, str]:
     """``(system, user)``: правила выбора — в промпте, решение проверяет :func:`validate`."""
     system = ("Ты музыкальный редактор DJ-сета робота. Темп сета уже выбран кодом и не меняется. По теме "
               f"человека выбери строку таблицы тем, лад, до {MAX_HOOKS} хуков только из кандидатов "
@@ -114,8 +111,6 @@ def prompt(theme: str, seeded: ThemeProfile, hype: bool = False) -> Tuple[str, s
               "разгон, пик, спад; пик 5 — не позже "
               f"трека {kn.STYLES[kn.DEFAULT_STYLE].peak_by_track}, иначе дуга отвергается. Ответ — один вызов "
               f"{SUBMIT_TOOL}, без текста.")
-    if hype:
-        system += f" hype_line — короткий выкрик диджея по-русски, не длиннее {HYPE_MAX} символов."
     rows = "\n".join(f"- {name}: {', '.join(hooks)}" for name, hooks in hook_candidates(seeded).items())
     user = (f"Тема: «{theme}».\nБез тебя код выбрал: строка={seeded.row or NO_ROW}, лад={seeded.mode}, "
             f"хуки={', '.join(seeded.hook_ids)}.\nКандидаты хуков по строкам:\n{rows}")
@@ -162,30 +157,19 @@ def _peak(energy: Tuple[int, ...], by_track: int) -> None:
         raise PlanInvalid("energy", f"нет пика {ENERGY_RANGE[1]} в первых {by_track} треках: {list(energy)}")
 
 
-def _hype(payload: Mapping[str, Any], hype: bool) -> Optional[str]:
-    if "hype_line" not in payload:
-        return None
-    line = payload["hype_line"]
-    if not hype or not isinstance(line, str) or not 0 < len(line.strip()) <= HYPE_MAX:
-        raise PlanInvalid("hype_line", f"выкрик выключен или не строка 1..{HYPE_MAX}")
-    return line.strip()
-
-
-def validate(payload: Any, genre: str = "club", hype: bool = False,
-             profile: Optional[ThemeProfile] = None) -> Refinement:
+def validate(payload: Any, genre: str = "club", profile: Optional[ThemeProfile] = None) -> Refinement:
     """Ответ LLM → :class:`Refinement` или ``PlanInvalid(path)``; лишних полей схема не допускает. ``profile`` —
     seeded-профиль сета: его хуки (найденные по теме) тоже кандидаты."""
     if not isinstance(payload, Mapping):
         raise PlanInvalid("$", f"ожидался объект, пришёл {type(payload).__name__}")
-    extra = sorted(set(payload) - set(schema(genre, hype)["properties"]))
+    extra = sorted(set(payload) - set(schema(genre)["properties"]))
     if extra:
         raise PlanInvalid(extra[0], "поля нет в схеме")
     row = _enum(payload, "theme_row", [*kn.THEMES, NO_ROW])
     mode = _enum(payload, "mode", kn.STYLES[genre].modes)
     energy = _energy(payload.get("energy"))
     _peak(energy, kn.STYLES[genre].peak_by_track)
-    return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks"), profile), energy,
-                      _hype(payload, hype))
+    return Refinement(None if row == NO_ROW else row, mode, _hooks(payload.get("hooks"), profile), energy)
 
 
 def plan_hooks(profile: ThemeProfile, ref: Refinement) -> Tuple[str, ...]:
@@ -216,5 +200,5 @@ def _with_energy(step: TrackPlan, energy: int) -> TrackPlan:
     return step if energy == step.energy else replace(step, energy=energy, template="")
 
 
-__all__ = ["HYPE_MAX", "MAX_HOOKS", "NO_ROW", "PlanInvalid", "Refinement", "SEEDED", "SUBMIT_TOOL", "apply",
+__all__ = ["MAX_HOOKS", "NO_ROW", "PlanInvalid", "Refinement", "SEEDED", "SUBMIT_TOOL", "apply",
            "hook_candidates", "plan_hooks", "prompt", "schema", "tool", "validate"]
