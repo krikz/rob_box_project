@@ -244,29 +244,80 @@ def _quoted(names: Sequence[str]) -> str:
 
 def now_playing_text(facts: Mapping[str, Any]) -> str:
     """«Что играет» из фактов снимка сета (``dj``: ``track_no``, ``tracks``, ``melody``, ``next_melodies``,
-    ``not_found``) — фразу строит код (ADR-0148), не LLM."""
+    ``not_found``) — фразу строит код (ADR-0148), не LLM. ``melody`` нет вовсе — мелодия не известна, о ней ни слова."""
     no, total, melody = facts.get("track_no"), facts.get("tracks"), facts.get("melody")
     head = f"Сейчас трек {no} из {total}" if total else f"Сейчас трек {no}"
-    parts = [f"{head}: «{melody}»." if melody else f"{head}: свой мотив диджея, без мелодии из библиотеки."]
-    if facts.get("next_melodies"):
-        parts.append(f"Дальше по плану: {_quoted(facts['next_melodies'])}.")
+    if melody:
+        parts = [f"{head}: «{melody}»."]
+    elif melody == "":
+        parts = [f"{head}: свой мотив диджея, без мелодии из библиотеки."]
+    else:
+        parts = [f"{head}."]
+    ahead = [m for m in facts.get("next_melodies") or () if m]
+    if ahead:
+        parts.append(f"Дальше по плану: {_quoted(ahead)}.")
+    elif total and no and no >= total:
+        parts.append("Это последний трек сета.")
     if facts.get("not_found"):
         parts.append(f"Не нашлось в библиотеке: {_quoted(facts['not_found'])}.")
     return " ".join(parts)
 
 
+def _ahead_text(facts: Mapping[str, Any], asked: str, fold: Fold) -> Optional[str]:
+    """X в оставшихся треках: ``next_melodies[i]`` — трек N+1+i; «следующим» — только когда трек N+1 уже
+    скомпонован (``next_known``) и его мелодия — X."""
+    no = int(facts.get("track_no") or 0)
+    for i, name in enumerate(facts.get("next_melodies") or (), start=1):
+        if name and mentions(name, asked, fold):
+            if i == 1 and facts.get("next_known"):
+                return f"«{name}» будет следующим — трек {no + 1}."
+            return f"«{name}» по плану через {i} {tracks_word(i)} — трек {no + i}."
+    return None
+
+
+_THEME_SPLIT = re.compile(r"[,;:/+()\n—–]|\s-\s|\b(?:и|and)\b", re.IGNORECASE)
+
+
+def _theme_names(theme: str) -> Tuple[str, ...]:
+    return tuple(p.strip() for p in _THEME_SPLIT.split(theme or "") if p and p.strip())
+
+
+def _not_ahead_text(facts: Mapping[str, Any], name: str) -> str:
+    no, total = int(facts.get("track_no") or 0), int(facts.get("tracks") or 0)
+    left = total - no
+    tail = "это последний трек сета" if left <= 0 else f"до конца сета {left} {tracks_word(left)}"
+    return f"«{name}» в этом сете больше не будет по плану — {tail}."
+
+
 def when_text(facts: Mapping[str, Any], asked: str, fold: Fold = plain_fold) -> Optional[str]:
-    """«Когда будет / где X» по фактам сета: играет сейчас, через сколько треков по плану, не нашлось в библиотеке.
-    X не совпал ни с одним фактом — ``None`` (кода сказать нечего, вопрос уходит LLM)."""
+    """«Когда будет / где X» по фактам сета (06.10: «Тетрис будет следующим» на последнем треке, а Тетрис уже был):
+
+    * X играет — «играет прямо сейчас»;
+    * X уже звучал в этом сете — «уже был, трек K» (и когда будет ещё, если будет);
+    * X в оставшихся треках — «следующим» (трек N+1 скомпонован с X) или «по плану через i»;
+    * X — часть темы без мелодий — «не нашлось в библиотеке»;
+    * X — часть темы, а в оставшихся треках его нет (или сет кончается) — «больше не будет».
+
+    X не совпал ни с одним фактом и ни с одной частью темы — ``None`` (вопрос уходит LLM)."""
     melody = facts.get("melody")
     if melody and mentions(melody, asked, fold):
         return f"«{melody}» играет прямо сейчас — трек {facts.get('track_no')} из {facts.get('tracks')}."
-    for i, name in enumerate(facts.get("next_melodies") or (), start=1):
-        if mentions(name, asked, fold):
-            return f"«{name}» по плану через {i} {tracks_word(i)}."
+    played = [(n, t) for n, t in facts.get("played") or () if t and mentions(t, asked, fold)]
+    ahead = _ahead_text(facts, asked, fold)
+    if played:
+        no, title = played[-1]
+        return " ".join([f"«{title}» уже был — трек {no}.", ahead or _not_ahead_text(facts, title)])
+    return ahead or _absent_text(facts, asked, fold)
+
+
+def _absent_text(facts: Mapping[str, Any], asked: str, fold: Fold) -> Optional[str]:
+    """X не играет, не звучал и не впереди: не нашлось в библиотеке, или часть темы, которой больше не будет."""
     for name in facts.get("not_found") or ():
         if mentions(name, asked, fold):
             return f"«{name}» в библиотеке мелодий не нашлось — в этом сете не будет. {now_playing_text(facts)}"
+    for name in _theme_names(str(facts.get("theme") or "")):
+        if mentions(name, asked, fold):
+            return _not_ahead_text(facts, name)
     return None
 
 

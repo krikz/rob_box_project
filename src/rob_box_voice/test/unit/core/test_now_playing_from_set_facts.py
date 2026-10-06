@@ -62,7 +62,7 @@ def test_when_is_missing_melody_says_it_was_not_found():
 
 
 def test_when_is_next_and_current_melody():
-    assert MediaRouter().route("когда будет аладдин", _media()).say_ok == "«Аладдин» по плану через 1 трек."
+    assert MediaRouter().route("когда будет аладдин", _media()).say_ok == "«Аладдин» по плану через 1 трек — трек 3."
     assert MediaRouter().route("где тетрис", _media()).say_ok.startswith("«Тетрис» играет прямо сейчас")
 
 
@@ -82,3 +82,22 @@ def test_music_state_shows_melody_facts_to_llm():
     tag = memory.render(now=100.0)
     assert 'melody="Тетрис"' in tag and 'next_melodies="Аладдин"' in tag and 'not_found="Марио"' in tag
     assert 'track="«Тетрис» · трек 2 из 4"' in tag and 'set_tracks="4"' in tag
+
+
+LAST = {"enabled": True, "theme": "Марио, Тетрис", "track_no": 2, "tracks": 2, "melody": "Super Mario World",
+        "played": [[1, "Тетрис"]], "next_melodies": [], "next_known": False, "not_found": [],
+        "title": "«Super Mario World» · трек 2 из 2"}
+
+
+def test_live_0610_last_track_answers():
+    """Живой прогон 06.10: «когда будет Тетрис?» на треке 2 из 2 — было «Тетрис будет следующим» (LLM)."""
+    say = MediaRouter().route("когда будет тетрис", _media(LAST)).say_ok
+    assert say.startswith("«Тетрис» уже был — трек 1.") and "больше не будет" in say and "следующ" not in say
+    assert MediaRouter().route("что сейчас играет", _media(LAST)).say_ok == (
+        "Сейчас трек 2 из 2: «Super Mario World». Это последний трек сета.")
+
+
+def test_played_melodies_reach_music_state():
+    memory = MusicStateMemory()
+    memory.observe_state(_snap(LAST))
+    assert 'played="1: Тетрис"' in memory.render(now=100.0)
