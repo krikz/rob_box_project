@@ -23,8 +23,6 @@ from rob_box_voice.core.set_length_words import heard_set_length
 LIVE_1908 = ("Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки "
              "замути сэт на 30 минут")
 RETRO_1530 = "ретро 8-бит Mario Tetris Aladdin Contra замути сэт на 30 минут"
-#: Тема, которую LLM 06.10 18:04 взяла из СТАРОЙ реплики истории.
-OLD_LLM_THEME = "Увертюра 1812, мегасет для геймеров: Марио, Аладдин, Тетрис"
 
 
 def _route(text: str, media: MediaState = MediaState()):
@@ -48,16 +46,8 @@ def test_live_phrase_gets_its_own_turn_context_with_length_24():
     assert ctx["_turn_id"] and ctx["_turn_id"] != command_turn_context(plan, LIVE_1908)["_turn_id"]
 
 
-def test_command_theme_is_the_same_as_on_the_llm_path():
-    """Тема команды и тема пути LLM — одна функция над одной репликой: денди и классика, без слов просьбы."""
-    grounding = pytest.importorskip("rob_box_mcp_tools.engine.theme_grounding")
-    ctx = command_turn_context(_route(LIVE_1908), LIVE_1908)
-    command_theme, _ = grounding.grounded_theme(None, ctx["_turn_heard_text"])
-    llm_theme, replaced = grounding.grounded_theme(OLD_LLM_THEME, LIVE_1908)
-    assert replaced and command_theme == llm_theme
-    assert "денди" in command_theme and "классической" in command_theme
-    for service in ("робот", "диджей", "замути", "сэт", "минут"):
-        assert service not in command_theme.lower().split()
+# Та же тема, что на пути LLM (денди + классика), — на настоящем dj_set с этими аргументами и heard_text:
+# rob_box_mcp_tools/test/test_dj_set_theme_from_phrase.py (здесь node/conftest подменяет rob_box_mcp_tools моком).
 
 
 def test_set_order_without_persona_is_routed_too():
