@@ -356,6 +356,20 @@ def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, 
     return tuple(sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi)))  # type: ignore[operator]
 
 
+#: Секции, где к хуку добавлен голос (``drop2`` — терции): основной голос — развитие без него (``drop``).
+VOICED_SECTIONS: Dict[str, str] = {"drop2": "drop"}
+
+
+def melody(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]
+           ) -> Tuple[PitchEvent, ...]:
+    """Основной голос секции — то, что гармонизуется (аудит 07.10 Ф1): :func:`develop` без добавочного голоса
+    (:data:`VOICED_SECTIONS`); у хука с ответом ``drop2`` — ответ, он и звучит."""
+    if section in VOICED_SECTIONS and not (hook.answer and section in RHYTHM_SECTIONS):
+        op = DEVELOPMENT[VOICED_SECTIONS[section]]
+        return tuple(sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi)))  # type: ignore[operator]
+    return develop(hook, section, bars, key, register)
+
+
 # ── Хук из материала партитуры (ADR-0154 §3.3) ────────────────────────────────────────────────────────────────
 
 #: Имена текстовых секций, где «живёт» тема: фраза оттуда предпочтительнее при любых повторах (Н12).
@@ -581,6 +595,7 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
     return None
 
 
-__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "develop", "diatonic",
-           "for_theme", "from_material", "from_notes", "from_rtttl", "reference_contours", "theme_match", "voices", "material_scale", "material_unfit", "pick_phrase", "rhythm_answer",
+__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "VOICED_SECTIONS", "develop",
+           "diatonic", "for_theme", "from_material", "from_notes", "from_rtttl", "melody", "reference_contours",
+           "theme_match", "voices", "material_scale", "material_unfit", "pick_phrase", "rhythm_answer",
            "theme_cuts", "theme_span", "time_scale", "track_key", "with_theme"]
