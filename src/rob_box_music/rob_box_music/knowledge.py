@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 from dataclasses import dataclass, replace
@@ -404,8 +405,9 @@ SAMPLE_CATALOG: Mapping[str, SampleInfo] = {n: _sample_info(n, m) for n, m in _S
 SAMPLE_GROUPS: Mapping[str, str] = dict(_SAMPLE_DATA["groups"])
 
 
+@functools.lru_cache(maxsize=None)
 def scale_pitch_classes(root: int, mode: str) -> frozenset:
-    """Множество pitch class лада от тоники ``root`` (0..11)."""
+    """Множество pitch class лада от тоники ``root`` (0..11). Кешируется: валидатор зовёт его на каждую ноту трека."""
     return frozenset((root + step) % 12 for step in SCALES[mode])
 
 

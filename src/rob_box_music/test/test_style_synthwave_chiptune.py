@@ -23,7 +23,9 @@ from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import match_style, match_style_text, seeded_profile, style_for, style_marks
 
 NEW = ("synthwave", "chiptune")
-THEMES = ("космос", "киберпанк", "детский праздник", "марио", "бухгалтерский отчёт")
+#: Строки таблицы тем с разными семьями (cyber → hard, kids → bright) и тема не из таблицы (семья по сиду). Короткий
+#: список: пакет музыки в CI идёт под таймаутом 240 с (PR #3501), клубные темы уже покрыты гардами клуба.
+THEMES = ("киберпанк", "детский праздник", "бухгалтерский отчёт")
 STEP = BEATS_PER_BAR / STEPS_PER_BAR
 
 
@@ -175,11 +177,11 @@ def test_set_tempo_kicks_and_synths_come_from_the_style_tables(name, theme):
         window = style.genre_windows[plan.genre]
         assert plan.style == name and window.bpm[0] <= plan.bpm <= window.bpm[1], (seed, plan.genre, plan.bpm)
         assert all(t.kick in window.kick_pool for t in plan.tracks)
-    for seed in range(3):
+    for seed in range(2):
         plan = _plan(theme, seed, name)
         family = style.timbres[plan.family]
         history: list = []
-        for no in (1, 2, 3):
+        for no in (1, 2):
             track = compose(plan, no, history=history)
             validate(track)
             kick = track.parts["kick"]
@@ -197,9 +199,9 @@ def test_set_tempo_kicks_and_synths_come_from_the_style_tables(name, theme):
 
 @pytest.mark.parametrize("name", NEW)
 def test_one_style_one_tempo_per_set_neighbours_blend_and_render(name):
-    for seed in range(3):
+    for seed in range(1):
         plan = _plan("киберпанк", seed, name)
-        tracks = [compose(plan, no, deck="AB"[no % 2]) for no in range(1, 5)]
+        tracks = [compose(plan, no, deck="AB"[no % 2]) for no in range(1, 4)]
         assert {t.style for t in tracks} == {name} and {t.bpm for t in tracks} == {plan.bpm}
         assert all(blend_bars(a, b) == kn.STYLES[name].blend[0] for a, b in zip(tracks[1:], tracks[2:]))
         for t in tracks:
@@ -250,8 +252,8 @@ def _combinations(name):
 
 @pytest.fixture(scope="module")
 def base_tracks():
-    return {name: [compose(_plan("киберпанк", seed, name), no) for seed, no in itertools.product(range(2), (1, 2))]
-            for name in NEW}
+    """Форма открытия (трек 1) и обычная форма (трек 2) одного сида на стиль."""
+    return {name: [compose(_plan("киберпанк", 0, name), no) for no in (1, 2)] for name in NEW}
 
 
 @pytest.mark.parametrize("name,family,figure,pad_synth,bass,bass_figure",
