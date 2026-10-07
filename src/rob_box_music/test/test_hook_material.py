@@ -83,7 +83,15 @@ def test_hook_uses_material_key_not_detected_one():
     assert key == Key(5, "major")  # тоника плана, лад материала
 
 
-def test_three_four_gets_a_rest_on_the_fourth_beat():
+def test_three_four_is_unfit_until_accepted_by_ear():
+    """#3517: пока перевод 3/4 → 4/4 не принят на слух, материал в 3/4 негоден — с причиной, не хромает под бочку."""
+    melody = tuple(PitchEvent(n, i * 1.0, 1.0, 2) for i, n in enumerate([60, 62, 64, 65, 67, 65, 64, 62] * 3))
+    m = make_material(meter=(3, 4), melody=melody, phrases=(mt.Phrase(0, 8, "new", 1),))
+    assert hooks.material_unfit(m, 120, 0, "major") == "размер 3/4: перевод в 4/4 на приёмке (#3517)"
+
+
+def test_three_four_gets_a_rest_on_the_fourth_beat(monkeypatch):
+    monkeypatch.setattr(hooks.kn, "TRIPLE_METER_MODE", "pause")
     # 3/4: восьмерки в 4 такта = 12 четвертей. Акцент: после переноса каждая нота 1-й доли встаёт на начало такта 4/4.
     notes = [60, 62, 64, 65, 67, 65, 64, 62, 60, 62, 64, 62]
     melody = tuple(PitchEvent(n, i * 1.0, 1.0, 2) for i, n in enumerate(notes * 2))  # 8 тактов 3/4

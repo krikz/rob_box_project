@@ -307,6 +307,8 @@ def _phrase_notes(material: ScoreMaterial, phrase: Phrase) -> List[Tuple[Optiona
     не переходит за свой такт. Размер вне :data:`SUPPORTED_METERS` честно отвергается (ADR-0154 §3.6)."""
     if material.meter not in SUPPORTED_METERS:
         raise HookError(f"размер {material.meter[0]}/{material.meter[1]} не переводится в 4/4 клуба (ADR-0154 §3.6)")
+    if material.meter != (4, 4) and material.meter != (2, 2) and kn.TRIPLE_METER_MODE == "unfit":
+        raise HookError(f"размер {material.meter[0]}/{material.meter[1]}: перевод в 4/4 на приёмке (#3517)")
     bar = bar_beats(material.meter)
     first, last = phrase.bar * bar, (phrase.bar + phrase.bars) * bar
     placed: List[Tuple[float, float, int]] = []  # (доля в 4/4, длительность до конца такта, MIDI)
