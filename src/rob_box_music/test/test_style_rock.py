@@ -96,11 +96,11 @@ def _by_bar(events):
 
 
 def test_power_chords_have_no_third_and_sit_on_the_bass_root(tracks):
-    """Пэд-«гитара» (``fuzz``) — прима, чистая квинта, октава: интервалы голосов такта только 0/5/7 (терции нет
+    """Пэд-«гитара» (``saw``, В4: ``fuzz`` проиграл) — прима, чистая квинта, октава: интервалы голосов такта только 0/5/7 (терции нет
     никогда), прима — тон баса такта (без материала бас стоит на приме аккорда); квинта — почти во всех тактах."""
     with_fifth = bars = 0
     for _plan_, track, _program, _by in tracks:
-        assert track.history_key.pad_figure == "power_chords" and track.parts["pad"].synth_or_sample == "fuzz"
+        assert track.history_key.pad_figure == "power_chords" and track.parts["pad"].synth_or_sample == "saw"
         bass = _by_bar(track.parts["bass"].pitches)
         for bar, line in _by_bar(track.parts["pad"].pitches).items():
             pcs = {e.midi % 12 for e in line}

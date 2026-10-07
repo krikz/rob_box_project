@@ -377,9 +377,7 @@ SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
              "pulse"),
     "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings",
             # ADR-0153 S2: арпеджио и стэбы synthwave/chiptune (замер 07.10 в рамке пэда)
-            "pulse", "square", "blip", "saw",
-            # ADR-0153 S5: «гитара» рока — пауэр-аккорды (громкость — оценка из рамки лида, ``PAD_FROM_LEAD``)
-            "fuzz"),
+            "pulse", "square", "blip", "saw"),
 }
 
 #: Рисунок хэтов/клэпа — это сэмпл-плееры ``play``; синт ударных один.
@@ -688,31 +686,16 @@ LAYER_BANDS: Mapping[str, Mapping[str, Tuple[float, float, float]]] = {
         "ambi": (0.052, 0.948, 0.0), "strings": (0.009, 0.986, 0.005), "pads": (0.0, 0.394, 0.606),
         "pulse": (0.032, 0.94, 0.028), "square": (0.033, 0.945, 0.022), "blip": (0.029, 0.97, 0.001),
         "saw": (0.024, 0.937, 0.039),
-        # ADR-0153 S5: полосы рамки лида (оценка :data:`PAD_FROM_LEAD`); пауэр-аккорд ниже лида — низа больше.
-        "fuzz": (0.121, 0.853, 0.026),
     },
 }
 #: Наклон громкости по ``amp``: ``dB = 20·p·log10(amp)``; у ``dub``/``karp``/``sinepad`` ``amp`` входит дважды.
 #: 05.10 (#3422): наклон по уровню и его половине, ``p`` ≥ 1.5 → 2.0 (замер 2.00–2.04).
 AMP_EXPONENT: Mapping[str, float] = {"dub": 2.0, "karp": 2.0, "sinepad": 2.0, "sitar": 2.0, "viola": 2.0,
                                      "soprano": 2.0, "square": 2.0, "varsaw": 2.0, "rave": 2.0, "subbass": 2.0}
-_MEASURED_UNIT_DB: Mapping[str, Mapping[str, float]] = {
+#: dB RMS слоя при ``amp`` 1.0 — пересчёт замера: ``dB − 20·p·log10(уровень)``.
+LANE_DB_AT_UNIT: Mapping[str, Mapping[str, float]] = {
     lane: {opt: round(db - 20.0 * AMP_EXPONENT.get(opt, 1.0) * math.log10(level), 2) for opt, db in table.items()}
     for lane, (level, table) in LAYER_MEASURED_DB.items()
-}
-#: Синты в роли пэда без замера в рамке пэда, но с замером в рамке лида (ADR-0153 S5: ``fuzz`` — «гитара» рока).
-#: ОЦЕНКА, не замер: dB при ``amp`` 1 в рамке пэда = рамка лида + :data:`PAD_FROM_LEAD_DB` — средний сдвиг рамок у
-#: синтов, замеренных в обеих (``pulse`` +10.6, ``saw`` +10.8, ``blip`` +9.3 при ``AMP_EXPONENT`` 1); полосы — рамки
-#: лида. Замер в рамке пэда (``loudness_nrt_v2.sh --sweep pad`` с ``fuzz``/``dirt``) снимет оценку.
-PAD_FROM_LEAD: Tuple[str, ...] = ("fuzz",)
-_FRAME_PAIRS = [s for s in LAYER_MEASURED_DB["pad"][1] if s in LAYER_MEASURED_DB["lead"][1] and s not in AMP_EXPONENT]
-PAD_FROM_LEAD_DB = round(sum(_MEASURED_UNIT_DB["pad"][s] - _MEASURED_UNIT_DB["lead"][s] for s in _FRAME_PAIRS)
-                         / len(_FRAME_PAIRS), 2)
-#: dB RMS слоя при ``amp`` 1.0 — пересчёт замера: ``dB − 20·p·log10(уровень)``; оценки :data:`PAD_FROM_LEAD` — в пэде.
-LANE_DB_AT_UNIT: Mapping[str, Mapping[str, float]] = {
-    **_MEASURED_UNIT_DB,
-    "pad": {**_MEASURED_UNIT_DB["pad"],
-            **{s: round(_MEASURED_UNIT_DB["lead"][s] + PAD_FROM_LEAD_DB, 2) for s in PAD_FROM_LEAD}},
 }
 #: Потолок ``amp`` одного слоя (``max_amp`` санитайзера v1; ``club_arranger.MAX_LAYER_AMP`` импортирует отсюда).
 MAX_LAYER_AMP = 0.85
@@ -1606,24 +1589,23 @@ _ROCK_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (7, Look(KICK_PATTERNS["rock"], 0.0)), (5, Look(KICK_PATTERNS["rock_straight"], 0.0)), (0, _ROCK_HALF))
 _GRUNGE_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (7, Look(KICK_PATTERNS["grunge"], 0.0)), (5, Look(KICK_PATTERNS["rock"], 0.0)), (0, _ROCK_HALF))
-#: Уровни ролей (шкала модели, роль звучит всю секцию). Гитара (пэд ``fuzz``) — середина 150–2000 Гц, малый громче
-#: клубного клэпа. classic — середина впереди (цель низа 0.3–0.45), grunge — бочка и бас вперёд (0.55–0.75).
-#: Робот 08.10 (сет 1, classic, 100 BPM, jack_rec 150 с): при бочке/басе −36/−36 и пэде −37 (A9-модель 0.21, поправка
-#: пэда −2 дБ) низ записи 0.79 [0.75..0.87], середина 0.18, LR 1.00 — гитара ``fuzz`` (``amp/6`` в патче #3008) почти
-#: не слышна: оценка рамки пэда (``PAD_FROM_LEAD``) завышает её громкость, а A9-модель занижает низ на ≈ 0.55. До
-#: замера ``fuzz`` в рамке пэда: бочка и бас тише на 6 дБ (classic) / 3–4 дБ от прежних гранжа, пэд — на потолке
-#: ``amp``, порог A9-модели 0.1 (только страховка: модель для рока не откалибрована).
+#: Уровни ролей (шкала модели, роль звучит всю секцию): гитара (пэд, пауэр-аккорды) — середина 150–2000 Гц, малый
+#: громче клубного клэпа; у гранжа бочка и бас громче. Подобраны по записям робота 08.10 (``jack_rec`` 150 с, моно-сумма,
+#: окна 20 с, медиана): classic — низ 0.39 [0.33..0.42], середина 0.59, crest 13.3, LR 0.97 (эталон 0.37/0.54/15.1/0.76);
+#: grunge — низ 0.74 [0.52..0.80], середина 0.25, crest 13.4, LR 0.98 (эталон 0.66/0.31/13.2/0.87); при бочке/басе
+#: гранжа −35/−34 низ был 0.47. A9-модель для рока не откалибрована (classic 0.09 при записи 0.39: удары файлами паков
+#: и хвосты в модели — оценки), порог 0.05 — только страховка от трека без низа.
 _ROCK_CLASSIC_LEVEL_DB: Mapping[str, float] = {
-    "kick": -42.0, "bass": -42.0, "pad": -33.0, "lead": -47.0, "clap": -42.0, "hats": -55.0, "toms": -46.0,
+    "kick": -39.0, "bass": -39.0, "pad": -33.0, "lead": -47.0, "clap": -42.0, "hats": -55.0, "toms": -46.0,
     "fx": -44.0}
 _ROCK_GRUNGE_LEVEL_DB: Mapping[str, float] = {
-    "kick": -38.0, "bass": -38.0, "pad": -33.0, "lead": -49.0, "clap": -41.0, "hats": -56.0, "toms": -45.0,
+    "kick": -32.0, "bass": -31.0, "pad": -33.0, "lead": -49.0, "clap": -41.0, "hats": -56.0, "toms": -45.0,
     "fx": -44.0}
 _ROCK_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "classic": GenreWindow((100, 125), ("rock_r", "acoustic", "rock_r2"), _ROCK_LOOKS, ("riff",), ("power_chords",),
-                           _ROCK_CLASSIC_LEVEL_DB, 0.1),
+                           _ROCK_CLASSIC_LEVEL_DB, 0.05),
     "grunge": GenreWindow((110, 130), ("rock_r2", "rock_l", "rock_r"), _GRUNGE_LOOKS, ("riff",), ("power_chords",),
-                          _ROCK_GRUNGE_LEVEL_DB, 0.1),
+                          _ROCK_GRUNGE_LEVEL_DB, 0.05),
 }
 #: Хэты восьмыми (акцент на доле), «толкающие» (акцент на «и»), четверти (райд): удары только на восьмых.
 _ROCK_KITS: Mapping[str, Mapping[str, str]] = {
@@ -1632,13 +1614,16 @@ _ROCK_KITS: Mapping[str, Mapping[str, str]] = {
     "quarters": {"hats": "X...x...X...x...", "perc": "................"},
 }
 #: Лид — читаемый темой (:data:`THEME_LEAD_OK`, #3522): ``saw``/``pulse`` — «гитарное» соло, ``brass``/``pluck``/``arpy``/
-#: ``keys``; бас — с низом на роботе ≥ 0.9; гитара — ``fuzz`` (проба В4: прелоад робота, патч #3008 — ``Saw`` с
-#: полосой и ``LPF`` ≤ 0.45·Найквиста; ``dirt`` — без замера громкости и полос, в пул не идёт).
+#: ``keys``; бас — с низом на роботе ≥ 0.9. Гитара (В4, проба прелоада 08.10): ``fuzz`` проиграл — его патч (#3008)
+#: делит ``freq`` на 2 и модулирует ``Saw`` между 0.5 и 1.5 частоты ноты: пауэр-аккорд в регистре гитары звучит
+#: суб-октавой, низ записи 0.79 и 0.75 при бочке/басе −36 и −42 дБ (середина 0.18–0.25, LR 1.00 — гитары не слышно);
+#: ``dirt`` — без замера громкости и полос (в таблицах модели его нет). ``saw`` (замер в рамке пэда, середина 0.94) дал
+#: низ 0.39 — «чистая» гитара без перегруза; перегруз — свой ``rbx_guitar`` (фильтр до ``tanh``, пересборка образа).
 _ROCK_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("saw", "pluck"), "bass": ("jbass", "bass"), "pad": ("fuzz",)},
-    "hard": {"lead": ("saw", "pulse", "arpy"), "bass": ("jbass", "bass"), "pad": ("fuzz",)},
-    "bright": {"lead": ("arpy", "pluck", "saw"), "bass": ("bass", "jbass"), "pad": ("fuzz",)},
-    "warm": {"lead": ("brass", "saw", "keys"), "bass": ("bass", "jbass", "subbass"), "pad": ("fuzz",)},
+    "dark": {"lead": ("saw", "pluck"), "bass": ("jbass", "bass"), "pad": ("saw",)},
+    "hard": {"lead": ("saw", "pulse", "arpy"), "bass": ("jbass", "bass"), "pad": ("saw",)},
+    "bright": {"lead": ("arpy", "pluck", "saw"), "bass": ("bass", "jbass"), "pad": ("saw",)},
+    "warm": {"lead": ("brass", "saw", "keys"), "bass": ("bass", "jbass", "subbass"), "pad": ("saw",)},
 }
 #: Прогрессии по ступеням (аккорд на 2 такта): i–bVII–bVI–bVII, i–bVI–bVII–i, I–IV–bVII–IV, I–bVII–IV–I (каденция
 #: bVII→I), i–iv–v–iv, i–bVI–iv–v, I–V–vi–IV. Ступени 0, 3, 4, 5, 6 — ни одного уменьшённого аккорда в миноре и
@@ -1704,7 +1689,7 @@ _ROCK_STYLE = Style(
     # Ширина: эталоны LR 0.76 (classic) / 0.87 (grunge) — гитара двумя голосами с расстройкой (дабл-трек) не шире
     # ±0.3, остальное в центре (удары файлами паков ширины не выражают).
     stereo={"pad": {"pan": 0.3, "detune": PAD_DETUNE}},
-    a9_model_low=0.1,
+    a9_model_low=0.05,
     thin_roles={},
     drum_files={"clap": ("muldjord_snare_40", "muldjord_snare_43"),
                 "hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18", "muldjord_rider_07"),
@@ -1829,7 +1814,7 @@ GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
             "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "FORM_BARS_STEP", "TRACK_MAX_BARS",
-            "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "PAD_FROM_LEAD", "PAD_FROM_LEAD_DB"]
+            "SECTION_KINDS", "section_kind", "WINDOW_WORDS"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──
