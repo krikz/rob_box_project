@@ -256,6 +256,9 @@ class DjSetTool(MCPTool):
         if not replaced:
             return theme
         logger = self.node.get_logger() if self.node is not None else None
+        if not theme:  # команда роутера или LLM без темы: тему выделил код из слов реплики, подмены не было
+            (logger or _LOG).info(f"🎛️ [dj_set] тема из слов реплики: {grounded!r}")
+            return grounded
         (logger or _LOG).warning(f"🎛️ [dj_set] тема LLM не из текущей реплики → из реплики: LLM={theme!r} → {grounded!r}")
         return grounded
 
