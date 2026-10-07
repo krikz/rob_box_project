@@ -63,11 +63,14 @@ def time_scale(melody_bpm: float, track_bpm: float) -> float:
     return 2.0 ** max(-2, min(2, power))
 
 
-def _onsets(notes: Sequence[Tuple[Optional[int], float]], scale: float) -> List[Tuple[float, float, int]]:
-    """Звучащие ноты ``(доля, длительность, MIDI)`` на сетке 16-х; начальные паузы срезаны."""
+def _onsets(notes: Sequence[Tuple[Optional[int], float]], scale: float,
+            bars: bool = False) -> List[Tuple[float, float, int]]:
+    """Звучащие ноты ``(доля, длительность, MIDI)`` на сетке 16-х. Начальная пауза срезана у источника без тактов
+    (RTTTL); у материала (``bars``) она остаётся — доли отсчитываются от начала такта автора, и затакт честно
+    стоит перед сильной долей (#3531). Гармония и бас идут от того же начала такта (``harmony.material_beat``)."""
     out: List[Tuple[float, float, int]] = []
     t = 0.0
-    start: Optional[float] = None
+    start: Optional[float] = 0.0 if bars else None
     for midi, beats in notes:
         if midi is not None:
             start = t if start is None else start
@@ -178,7 +181,8 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
 
 def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, mode: str,
                register: Tuple[int, int] = kn.REGISTERS["lead"], known_key: Optional[Key] = None,
-               theme_max: int = 0, theme: Optional[Tuple[Notes, Sequence[float]]] = None) -> Tuple[Hook, Key]:
+               theme_max: int = 0, theme: Optional[Tuple[Notes, Sequence[float]]] = None,
+               bars: bool = False) -> Tuple[Hook, Key]:
     """Хук и тональность трека из нот ``(MIDI | None для паузы, длительность в четвертях)`` мелодии в темпе
     ``melody_bpm`` — единственный путь получения хука из нот для любого источника (RTTTL, партитура).
 
@@ -190,7 +194,7 @@ def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: 
     длине хука. Тема не годится — хук без темы, причина в логе.
     """
     try:
-        hook, key, shift, answered = _hook(notes, melody_bpm, melody_id, bpm, root, mode, register, known_key)
+        hook, key, shift, answered = _hook(notes, melody_bpm, melody_id, bpm, root, mode, register, known_key, bars)
     except HookError as exc:
         _LOG.info("🎵 [music v2] hook melody=%s отказ: %s", melody_id, exc)
         raise
@@ -198,7 +202,7 @@ def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: 
               hook.key_fit, hook.bars)
     if theme_max <= 0 or (answered and theme is None):
         return hook, key  # короткая мелодия RTTTL с ответом — тема и есть хук
-    onsets = _onsets(theme[0] if theme else notes, time_scale(melody_bpm, bpm))
+    onsets = _onsets(theme[0] if theme else notes, time_scale(melody_bpm, bpm), bars)
     cuts = theme[1] if theme else _even_cuts(onsets, hook.bars)
     return with_theme(hook, key, onsets, cuts, theme_max, shift, register), key
 
@@ -262,8 +266,9 @@ def _theme_events(notes: List[Tuple[float, float, int]], ends: Sequence[float], 
 
 
 def _hook(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, mode: str,
-          register: Tuple[int, int], known_key: Optional[Key] = None) -> Tuple[Hook, Key, int, bool]:
-    bars, cut, answered = _window(_onsets(notes, time_scale(melody_bpm, bpm)))
+          register: Tuple[int, int], known_key: Optional[Key] = None,
+          material: bool = False) -> Tuple[Hook, Key, int, bool]:
+    bars, cut, answered = _window(_onsets(notes, time_scale(melody_bpm, bpm), material))
     _check_musical(cut)
     pitches = [m for _b, _d, m in cut]
     tonic, hook_mode = ((kn.ROOTS[known_key.root], known_key.mode) if known_key
@@ -496,7 +501,7 @@ def rhythm_answer(material: ScoreMaterial, phrase: Phrase, hook: Hook, key: Key,
 def _contour(material: ScoreMaterial, phrase: Phrase, hook: Hook, bpm: int) -> List[int]:
     """Высоты следующей фразы материала на долях нот хука (нота, начавшаяся последней к доле)."""
     contour = _onsets(_phrase_notes(material, Phrase(phrase.bar + phrase.bars, phrase.bars, "new")),
-                      material_scale(material, bpm))
+                      material_scale(material, bpm), bars=True)
     if len(contour) < MIN_NOTES:
         raise HookError(f"в следующей фразе {len(contour)} нот — не мотив")
     starts = [b for b, _d, _m in contour]
@@ -566,7 +571,7 @@ def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
         span = theme_span(material, phrase)
         theme = (_phrase_notes(material, span), theme_cuts(material, span, bpm))
     hook, key = from_notes(_phrase_notes(material, phrase), club_bpm, material.material_id, bpm, root, mode, register,
-                           material.key, theme_max, theme)
+                           material.key, theme_max, theme, bars=True)
     return replace(hook, answer=rhythm_answer(material, phrase, hook, key, bpm, register)), key
 
 
