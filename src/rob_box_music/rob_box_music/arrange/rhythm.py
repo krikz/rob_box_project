@@ -2,15 +2,18 @@
 
 Fill — последний такт секции с ``Section.fill_last_bar`` (8-тактовая фраза перед дропом): ролл клэпа
 16-ми на третьей и четвёртой долях с нарастающим акцентом, бочка снимается на последней доле. Свинг —
-``offset_ms`` нечётных 16-х хэтов (гоуст-ноты), сильные доли и бочка не сдвигаются (сайдчейн, research 1.4).
+``offset_ms`` ударов и нот на шагах ``Style.swing_steps`` (:func:`swing`, :func:`swing_part`): у клуба — нечётные 16-е
+хэтов (гоуст-ноты), сильные доли и бочка не сдвигаются (сайдчейн, research 1.4); у lo-fi (ADR-0153 S4) — оффбит-восьмые
+хэтов и ролей ``Style.swing_roles`` (бочка, малый, бас, пэд, лид — грув один на всех).
 """
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Mapping, Optional, Sequence
+from dataclasses import replace
+from typing import Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..model import STEPS_PER_BAR, Grid, Section, Step
+from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Grid, Part, PitchEvent, Section, Step
 
 #: Шаги «и» каждой доли: оффбит для хэтов и баса при прямой бочке (research 4.1).
 OFFBEAT_STEPS = (2, 6, 10, 14)
@@ -53,19 +56,42 @@ def swing_offset_ms(swing: float, bpm: int) -> int:
 _KIT_ACCENT = {"X": 3, "x": 2, "g": 0}
 
 
-def pattern_grid(pattern: str, swing_ms: int = 0) -> Grid:
-    """Такт по рисунку каркаса: ``X``/``x``/``g`` — акцент 3/2/0; гоуст на нечётной 16-й опаздывает на ``swing_ms``."""
+def pattern_grid(pattern: str) -> Grid:
+    """Такт по рисунку каркаса: ``X``/``x``/``g`` — акцент 3/2/0; без свинга (его кладёт :func:`swing`)."""
     if len(pattern) != STEPS_PER_BAR or set(pattern) - set(_KIT_ACCENT) - {"."}:
         raise ValueError(f"рисунок каркаса {pattern!r} не 16 шагов из X x g .")
-    return Grid(tuple(
-        Step(False) if ch == "." else Step(True, _KIT_ACCENT[ch], swing_ms if ch == "g" and i % 2 else 0)
-        for i, ch in enumerate(pattern)))
+    return Grid(tuple(Step(False) if ch == "." else Step(True, _KIT_ACCENT[ch]) for ch in pattern))
+
+
+def swing(grid: Grid, swing_ms: int, steps: Sequence[int]) -> Grid:
+    """Удары сетки на шагах такта ``steps`` (``Style.swing_steps``) опаздывают на ``swing_ms``; остальные — как были."""
+    on = frozenset(steps)
+    return Grid(tuple(replace(st, offset_ms=swing_ms) if st.on and i % STEPS_PER_BAR in on else st
+                      for i, st in enumerate(grid.steps)))
+
+
+def _step_in_bar(ev: PitchEvent) -> Optional[int]:
+    """Шаг 16-х такта ноты; нота вне сетки 16-х — ``None`` (её свинг не трогает)."""
+    step = ev.beat * STEPS_PER_BAR / BEATS_PER_BAR
+    return int(round(step)) % STEPS_PER_BAR if abs(step - round(step)) < 1e-9 else None
+
+
+def swing_pitches(events: Sequence[PitchEvent], swing_ms: int, steps: Sequence[int]) -> Tuple[PitchEvent, ...]:
+    """Ноты на шагах такта ``steps`` опаздывают на ``swing_ms`` (``PitchEvent.offset_ms``); доли модели не меняются."""
+    on = frozenset(steps)
+    return tuple(replace(e, offset_ms=swing_ms) if _step_in_bar(e) in on else e for e in events)
+
+
+def swing_part(part: Part, swing_ms: int, steps: Sequence[int]) -> Part:
+    """Партия со свингом (``Style.swing_roles``): сетка ударов и ноты — на шагах ``steps``."""
+    pitches = None if part.pitches is None else swing_pitches(part.pitches, swing_ms, steps)
+    return replace(part, grid=swing(part.grid, swing_ms, steps), pitches=pitches)
 
 
 def hats_grid(style: kn.Style, swing_ms: int = 0, kit: str = "offbeat") -> Grid:
-    """Хэты каркаса ``style.kits``: по умолчанию оффбит с акцентами 3/2 и гоуст-нотами на 7 и 15, опоздавшими
-    на ``swing_ms``."""
-    return pattern_grid(style.kits[kit]["hats"], swing_ms)
+    """Хэты каркаса ``style.kits``: удары на шагах ``style.swing_steps`` опаздывают на ``swing_ms`` (у клуба —
+    гоуст-ноты на нечётных 16-х: других ударов там в каркасах нет)."""
+    return swing(pattern_grid(style.kits[kit]["hats"]), swing_ms, style.swing_steps)
 
 
 def clap_grid() -> Grid:
@@ -109,4 +135,4 @@ def form_bars(sections: Sequence[Section], bar_of: Callable[[Section, int], Grid
 
 __all__ = ["BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_BARS",
            "ROLL_STEPS", "clap_fill", "clap_grid", "clap_roll", "form_bars", "form_grid", "grid", "hats_grid",
-           "kick_fill", "kick_grid", "pattern_grid", "swing_offset_ms"]
+           "kick_fill", "kick_grid", "pattern_grid", "swing", "swing_offset_ms", "swing_part", "swing_pitches"]

@@ -342,15 +342,18 @@ def opening_order(ids: Sequence[str], recent: Sequence[str], opener: Optional[st
     return sorted(ids, key=lambda name: 2 if name == opener else int(name in recent))
 
 
-def kick_name(sample: int, symbol: str = "X") -> str:
-    """Имя бочки из ``knowledge.KICK_SOUNDS`` по символу и номеру файла (``Part.play_symbol``/``Part.sample``);
-    неизвестная — ``<символ>#<n>``."""
-    return kn.kick_of(symbol, sample) or f"{symbol}#{sample}"
+def kick_name(sample: int, symbol: str = "X", pack: str = "") -> str:
+    """Имя бочки из ``knowledge.KICK_SOUNDS`` по символу и номеру файла (``Part.play_symbol``/``Part.sample``) или по
+    файлу пака (``pack`` — ``Part.synth_or_sample``, ADR-0153 S4); неизвестная — ``<символ>#<n>`` (или имя файла)."""
+    return kn.kick_of(symbol, sample, pack) or pack or f"{symbol}#{sample}"
 
 
 def _kick(parts: Mapping[str, Any]) -> Optional[str]:
     kick = parts.get("kick")
-    return kick_name(kick.sample, kick.play_symbol) if kick is not None else None
+    if kick is None:
+        return None
+    pack = "" if kick.synth_or_sample == kn.PLAY_SYNTH else kick.synth_or_sample
+    return kick_name(kick.sample, kick.play_symbol, pack)
 
 
 def _form_signature(form: Any) -> str:
@@ -376,6 +379,8 @@ def track_composition(track: Any) -> Dict[str, Any]:
         "pad_figure": key.pad_figure or "-", "bass_figure": key.bass_figure or "-", "template": key.template or "-",
         "genre": key.genre or "-", "timbre": key.timbre or "-", "a9_model": track.mix.a9_model,
         "a9_trim": dict(track.mix.a9_trim),
+        # свинг сета (ADR-0153 S4): опоздание качаемых ударов хэтов, мс (``Style.swing_steps``)
+        "swing_ms": max((st.offset_ms for st in parts["hats"].grid.steps), default=0) if "hats" in parts else 0,
     }
 
 
