@@ -221,9 +221,15 @@ def test_freshness_is_counted_among_the_fit_only():
     assert plan_materials(("local:ost", "pdmx:ok1", "pdmx:ok2"), 3, history, "new", fit) == ("pdmx:ok2", "pdmx:ok1", None)
 
 
-def test_material_unfit_for_one_track_goes_to_a_later_track():
-    fit = lambda mid, no: "вне лада" if (mid, no) == ("pdmx:ok1", 1) else None  # noqa: E731
-    assert plan_materials(("pdmx:ok1", "pdmx:ok2"), 3, fit=fit) == ("pdmx:ok2", "pdmx:ok1", None)
+def test_rejected_material_is_dropped_for_the_set_and_checked_once():
+    calls = []
+
+    def fit(mid, no):
+        calls.append((mid, no))
+        return "вне лада" if mid == "pdmx:ok1" else None
+
+    assert plan_materials(("pdmx:ok1", "pdmx:ok2"), 4, fit=fit) == ("pdmx:ok2", None, None, None)
+    assert calls == [("pdmx:ok1", 1), ("pdmx:ok2", 1)]  # негодный не перепроверяется на следующих треках
 
 
 def test_seeded_plan_puts_fit_materials_on_the_first_tracks_with_reasons():

@@ -232,9 +232,11 @@ def plan_materials(materials: Sequence[str], n_tracks: int, history: Sequence[Ma
     свежих, открывший прошлый сет — последним; в истории материал записан как ``melody_name`` (``Hook.source``).
 
     ``fit(material_id, track_no)`` — причина негодности материала для трека или ``None`` (#3500; критерий —
-    ``hook.material_unfit``, тот же ``from_material``, что у ``compose``): негодный треку не достаётся и идёт к
-    следующему треку (годность зависит от тоники трека), порядок очереди сохраняется — свежесть считается по
-    годным. Первая причина по материалу — в ``rejected`` (вызывающий пишет её в лог); ``fit=None`` — без отбора."""
+    ``hook.material_unfit``, тот же ``from_material``, что у ``compose``): негодный выбывает из очереди сета, порядок
+    очереди сохраняется — свежесть считается по годным. Выбывает навсегда: отказ почти не зависит от тоники трека
+    (мотив, размер, ``key_fit`` — нет; только перенос октавой), а перепроверка отвергнутых на каждом треке стоила
+    ×треки (замер на роботе 159 мс вместо ≤ 50, M7); назначенный треку материал проверен на тонике именно этого
+    трека. Причина — в ``rejected`` (вызывающий пишет её в лог); ``fit=None`` — без отбора."""
     if not materials:
         return (None,) * n_tracks
     recent = recent_hooks(history, set_id, {m: m for m in materials})
@@ -242,15 +244,13 @@ def plan_materials(materials: Sequence[str], n_tracks: int, history: Sequence[Ma
     out = []
     for no in range(1, n_tracks + 1):
         pick = None
-        for mid in queue:
-            reason = fit(mid, no) if fit is not None else None
+        while queue and pick is None:
+            reason = fit(queue[0], no) if fit is not None else None
             if reason is None:
-                pick = mid
-                break
-            if rejected is not None:
-                rejected.setdefault(mid, reason)
-        if pick is not None:
-            queue.remove(pick)
+                pick = queue[0]
+            elif rejected is not None:
+                rejected.setdefault(queue[0], reason)
+            queue.pop(0)
         out.append(pick)
     return tuple(out)
 
