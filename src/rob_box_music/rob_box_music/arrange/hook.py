@@ -26,7 +26,7 @@ from dataclasses import replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..material import Phrase, ScoreMaterial, bar_beats, club_beat, validate_material
+from ..material import MaterialError, Phrase, ScoreMaterial, bar_beats, club_beat, validate_material
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
 from ..rtttl import parse_rtttl
 from ..tonality import detect_key, key_fit
@@ -386,5 +386,18 @@ def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
     return replace(hook, answer=rhythm_answer(material, phrase, hook, key, bpm, register)), key
 
 
+def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
+                   register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Optional[str]:
+    """Причина, по которой материал не годится в хук трека (``None`` — годится): тот же вызов
+    :func:`from_material` с теми же ``bpm/root/mode/register``, что у ``compose`` — мотив (нот/высот), ``key_fit``,
+    размер (§3.6), коридор; второго критерия нет (#3500). Годность зависит от темпа и тоники трека, поэтому план
+    спрашивает её для каждого трека (``set_plan.plan_materials``)."""
+    try:
+        from_material(material, bpm, root, mode, register)
+    except (HookError, MaterialError) as exc:
+        return str(exc)
+    return None
+
+
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "develop", "diatonic",
-           "from_material", "from_notes", "from_rtttl", "pick_phrase", "rhythm_answer", "time_scale", "track_key"]
+           "from_material", "from_notes", "from_rtttl", "material_unfit", "pick_phrase", "rhythm_answer", "time_scale", "track_key"]

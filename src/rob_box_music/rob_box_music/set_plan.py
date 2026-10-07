@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field, replace
-from typing import Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
 from .diversity import last_opener, opening_order, recent_hooks, recent_values, weighted_pick
@@ -224,23 +224,64 @@ def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[in
 
 
 def plan_materials(materials: Sequence[str], n_tracks: int, history: Sequence[Mapping] = (),
-                   set_id: Optional[str] = None) -> Tuple[Optional[str], ...]:
+                   set_id: Optional[str] = None, fit: Optional[Callable[[str, int], Optional[str]]] = None,
+                   rejected: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], ...]:
     """Материалы партитур первых треков сета (ADR-0154 §3.5): трек 1 — материал №1 темы, следующие — по одному
     следующему, пока материалы не кончились (дальше — хуки темы, ``None``). Очередь — та же, что у хуков первого
     трека (:func:`diversity.opening_order`, #3399/#3495): звучавший в последних ``HOOK_FRESH_SETS`` сетах — после
-    свежих, открывший прошлый сет — последним; в истории материал записан как ``melody_name`` (``Hook.source``)."""
+    свежих, открывший прошлый сет — последним; в истории материал записан как ``melody_name`` (``Hook.source``).
+
+    ``fit(material_id, track_no)`` — причина негодности материала для трека или ``None`` (#3500; критерий —
+    ``hook.material_unfit``, тот же ``from_material``, что у ``compose``): негодный треку не достаётся и идёт к
+    следующему треку (годность зависит от тоники трека), порядок очереди сохраняется — свежесть считается по
+    годным. Первая причина по материалу — в ``rejected`` (вызывающий пишет её в лог); ``fit=None`` — без отбора."""
     if not materials:
         return (None,) * n_tracks
     recent = recent_hooks(history, set_id, {m: m for m in materials})
-    order = opening_order(list(dict.fromkeys(materials)), recent, last_opener(history, set_id))
-    return tuple(order[i] if i < len(order) else None for i in range(n_tracks))
+    queue = opening_order(list(dict.fromkeys(materials)), recent, last_opener(history, set_id))
+    out = []
+    for no in range(1, n_tracks + 1):
+        pick = None
+        for mid in queue:
+            reason = fit(mid, no) if fit is not None else None
+            if reason is None:
+                pick = mid
+                break
+            if rejected is not None:
+                rejected.setdefault(mid, reason)
+        if pick is not None:
+            queue.remove(pick)
+        out.append(pick)
+    return tuple(out)
+
+
+def _material_fit(materials: Mapping[str, object], window: kn.Style, bpm: int,
+                  profile: ThemeProfile) -> Callable[[str, int], Optional[str]]:
+    """``fit`` для :func:`plan_materials`: ``hook.material_unfit`` с темпом сета, тоникой трека и коридором хука
+    окна — как в ``compose._from_material``. Материал не читается (``materials`` не отдал) — это тоже причина."""
+    from .arrange.compose import hook_register  # compose импортирует set_plan — импорт здесь, не наверху
+    from .arrange.hook import material_unfit
+    register = hook_register(window)
+
+    def fit(material_id: str, no: int) -> Optional[str]:
+        try:
+            material = materials[material_id]
+        except (KeyError, OSError, ValueError) as exc:
+            return f"не читается: {type(exc).__name__}: {exc}"
+        return material_unfit(material, bpm, (profile.root + root_shift(no)) % 12, profile.mode, register)  # type: ignore[arg-type]
+
+    return fit
 
 
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
-                history: Sequence[Mapping] = (), genre: Optional[str] = None) -> SetPlan:
+                history: Sequence[Mapping] = (), genre: Optional[str] = None,
+                materials: Optional[Mapping[str, object]] = None,
+                rejected: Optional[Dict[str, str]] = None) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
     ``music_history`` (свежие первыми). ``n_tracks`` — длина сета: треков в плане столько, сколько сыграет сет.
-    ``genre`` — окно, заданное явно (тема, оператор); ``None`` — :func:`pick_genre`."""
+    ``genre`` — окно, заданное явно (тема, оператор); ``None`` — :func:`pick_genre`. ``materials`` —
+    ``{material_id: ScoreMaterial}`` для отбора годных (#3500, :func:`plan_materials`); нет — без отбора;
+    ``rejected`` получает ``{material_id: причина}`` негодных."""
     profile = replace(profile, root=set_root(profile, seed, history))
     base = kn.STYLES[profile.style]
     genre = pick_genre(base, history, random.Random(f"genre:{seed}:{profile.theme}")) if genre is None else genre
@@ -252,8 +293,9 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     kicks = plan_kicks(window, seed, profile.theme, n, history)
     plans = [track_plan(no, n) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
-    materials = plan_materials(profile.materials, n, history, set_id)
-    tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1], material=materials[p.no - 1])
+    picked = plan_materials(profile.materials, n, history, set_id,
+                            _material_fit(materials, window, bpm, profile) if materials is not None else None, rejected)
+    tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1], material=picked[p.no - 1])
                    for p in plans)
     timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{profile.theme}"))
     return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre)
