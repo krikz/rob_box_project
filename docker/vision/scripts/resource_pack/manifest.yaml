@@ -373,7 +373,7 @@ resources:
     # sha256 пуст: у записи с fetch_hook он запрещён; сумма архива — в
     # score_library.lock.json, сверяет её хук до распаковки.
     sha256: ""
-    size_bytes: 52843
+    size_bytes: 154377169
     verify_file: .complete
     target: /opt/rob_box/scores
     required: soft
