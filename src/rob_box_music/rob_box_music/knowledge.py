@@ -268,6 +268,66 @@ class SynthTraits:
 #: (``Style.registers``) выше предела; никакого ``if style``.
 NYQUIST_MAX_MIDI: Mapping[str, int] = {"cs80lead": 76, "brass": 91, "supersawlead": 95, "strangerarp": 100}
 
+
+@dataclass(frozen=True)
+class LeadClarity:
+    """Читаемость синта темой — замер ``scripts/music/loudness_nrt_v2.py --clarity`` (NRT 16 кГц, моно-сумма L+R,
+    132 BPM, ``amp`` цели роли лида): ``attack_ms`` — от начала ноты до пик − 3 дБ; ``tail_ms`` — от конца ``sus``
+    восьмой до пик − 30 дБ (1588 — не затух за окно 1.8 с); ``purity`` — доля энергии долгой ноты в ±15 ц от сетки
+    ``k·f0/2`` (хорус и шумовой синт её размазывают); ``bright_share`` — доля энергии 1–4 кГц на теме «В пещере горного
+    короля» (присутствие над пэдом и басом)."""
+
+    attack_ms: float
+    tail_ms: float
+    purity: float
+    bright_share: float
+
+
+#: Замер 07.10 (katana, образ ``voice-assistant`` с SynthDef-ами робота; сырые числа — тело PR). Почему тема у первых
+#: трёх стилей «какофония, сильное эхо, размазана» (отзыв Шифу 07.10 о «Горном короле»):
+#: ``supersawlead``/``strangerarp``/``strangerbrass``/``imperialbrass`` — ``Env.adsr`` без ``gate``: огибающая не
+#: отпускается, нота держится до ``sus·8`` ``startSound`` — восьмые ложатся друг на друга облаком (хвост ≥ 1.6 с);
+#: у ``supersawlead`` ещё 5 голосов ±1.5 % (±26 ц, чистота 0.51). ``hoover`` — 18 пил ±3.5 % (±60 ц) с задержками
+#: 0–10 мс (чистота 0.09: флэнжер-хорус). ``epiano`` — ``CombL`` с затуханием ``50·amp`` с, атака 0.1 с: атака
+#: 50 мс, хвост 148 мс, доля 1–4 кГц 0.09 — как у пэдов (тонет). ``rave`` — ``Gendy1`` между ``freq`` и ``2·freq``
+#: (высоты нет, 0.14). ``kalimba`` — релиз 2.5–3.5 с; ``rhpiano`` — тусклый (0.026). Пэды на том же уровне —
+#: доля 1–4 кГц ≤ 0.123 (``saw`` арпеджио), ``sinepad`` 0.0, ``warmpad`` 0.023, ``strings`` 0.043.
+LEAD_CLARITY: Mapping[str, LeadClarity] = {
+    "pluck": LeadClarity(0.0, 62.7, 0.997, 0.272), "blip": LeadClarity(0.0, 0.0, 0.988, 0.486),
+    "arpy": LeadClarity(5.0, 0.0, 0.827, 0.636), "brass": LeadClarity(10.0, 0.0, 1.0, 0.704),
+    "orient": LeadClarity(5.0, 2.7, 0.976, 0.674), "keys": LeadClarity(5.0, 107.7, 0.977, 0.224),
+    "saw": LeadClarity(5.0, 12.7, 1.0, 0.298), "pulse": LeadClarity(5.0, 12.7, 1.0, 0.136),
+    "square": LeadClarity(10.0, 7.7, 1.0, 0.123), "varsaw": LeadClarity(65.0, 0.0, 0.972, 0.354),
+    "viola": LeadClarity(40.0, 0.0, 0.844, 0.557), "karp": LeadClarity(0.0, 202.7, 0.664, 0.058),
+    "marimba": LeadClarity(35.0, 412.7, 0.631, 0.142), "sitar": LeadClarity(5.0, 182.7, 0.174, 0.513),
+    "epiano": LeadClarity(50.0, 147.7, 0.995, 0.091), "rhpiano": LeadClarity(5.0, 27.7, 0.994, 0.026),
+    "kalimba": LeadClarity(10.0, 1422.7, 0.998, 0.018), "hoover": LeadClarity(5.0, 87.7, 0.090, 0.213),
+    "cs80lead": LeadClarity(205.0, 1182.7, 0.398, 0.247), "rave": LeadClarity(10.0, 2.7, 0.136, 0.638),
+    "supersawlead": LeadClarity(0.0, 1587.7, 0.514, 0.263), "strangerarp": LeadClarity(0.0, 1587.7, 0.723, 0.252),
+    "strangerbrass": LeadClarity(5.0, 1587.7, 0.987, 0.353),
+    "imperialbrass": LeadClarity(5.0, 1587.7, 0.985, 0.335),
+}
+#: Пороги читаемости темы (ADR-0153 §2.4). Атака — щелчок ноты, а не нарастание; хвост — не длиннее 16-й при 132 BPM
+#: (114 мс): восьмые темы не перекрываются; чистота — без хоруса-размазни; яркость — доля 1–4 кГц выше самого
+#: яркого пэда (0.123) на том же уровне: тема слышна над подкладкой («инструмент яркий», Шифу 07.10).
+THEME_ATTACK_MAX_MS = 30.0
+THEME_TAIL_MAX_MS = 120.0
+THEME_PURITY_MIN = 0.8
+THEME_BRIGHT_MIN = 0.13
+#: Роли, которые играют тему/хук (``arrange.compose._lead``: лид — всегда хук или мотив).
+THEME_ROLES: Tuple[str, ...] = ("lead",)
+
+
+def theme_lead_ok(synth: str) -> bool:
+    """Синт читаемо играет тему: замерен (:data:`LEAD_CLARITY`) и проходит все пороги. Без замера — нет."""
+    c = LEAD_CLARITY.get(synth)
+    return c is not None and (c.attack_ms <= THEME_ATTACK_MAX_MS and c.tail_ms <= THEME_TAIL_MAX_MS
+                              and c.purity >= THEME_PURITY_MIN and c.bright_share >= THEME_BRIGHT_MIN)
+
+
+#: Читаемые лиды темы — одно место правила (применяет ``arrange.mix.role_palette``).
+THEME_LEAD_OK: frozenset = frozenset(s for s in LEAD_CLARITY if theme_lead_ok(s))
+
 #: Свойства синтов (``core/synth_traits.SYNTH_TRAITS``; без поля ``source`` — оно в старом файле).
 SYNTH_TRAITS: Mapping[str, SynthTraits] = {
     "imperialbrass": SynthTraits("held", "lead", "≈1.5 с"),
@@ -496,6 +556,8 @@ __all__ = [
     "STYLE_PATTERNS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of", "NYQUIST_MAX_MIDI",
+    "LEAD_CLARITY", "LeadClarity", "THEME_ATTACK_MAX_MS", "THEME_BRIGHT_MIN", "THEME_LEAD_OK", "THEME_PURITY_MIN",
+    "THEME_ROLES", "THEME_TAIL_MAX_MS", "theme_lead_ok",
 ]
 
 
@@ -692,21 +754,21 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 #: рисунке 16-х — тот же сдвиг, что у ``sinepad`` (+6.3, #3430); долю низа дропа держит A9-модель трека
 #: (``arrange.mix.a9_trim``), а не исключение из палитры. ≥ 2 пэда на семью, у каждого рисунка ≥ 1.
 #: ``mhpad``/``marchstrings`` замерены (#3430), но не в досылке ``CRITICAL_SYNTHS`` — в пул не идут.
-#: ADR-0152 PR-6 (§3.3): 4 лида и 2–3 баса на семью. Лид — синт без собственного хвоста (``held`` у
-#: ``strangerarp``/``supersawlead`` размазал бы мотив), с долей низа < 0.05, достающий цель роли на потолке
+#: ADR-0152 PR-6 (§3.3): 4 лида и 2–3 баса на семью. Лид — читаемый темой (:data:`THEME_LEAD_OK`, 07.10: ``hoover``,
+#: ``epiano``, ``kalimba``, ``rhpiano`` сняты — хорус/эхо/тусклый), с долей низа < 0.05, достающий цель роли на потолке
 #: ``amp`` (самый тихий — ``keys``: −49.2 при цели −50). Бас — доля низа ≥ 0.9 (#3430): ``retrobass`` (0.59) и ``tb303``
 #: (0.52) держат A9-модель трека на 0.72/0.67 при любом пэде (``a9_trim`` упирается в потолок ``amp``) — в семьи не
 #: идут; ``tb303`` (PR-9) — только в ``hard`` и только рисунком ``acid16`` (:data:`BASS_FIGURE_SYNTHS`); ``moogbass`` — разброс замера по тоникам 8 дБ.
 #: Доля низа баса — на роботе (:func:`bass_low_on_robot`, порог :data:`BASS_MIN_LOW`): ``dub`` на образе 06.10 звучит
 #: серединой (#3457) — из семей снят, в ``warm`` его место занял ``jbass`` (три баса на семью темы вне ``THEMES``).
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("subbass", "jbass"),
+    "dark": {"lead": ("blip", "pluck", "keys", "saw"), "bass": ("subbass", "jbass"),
              "pad": ("sinepad", "space", "strangerpulsepad")},
-    "hard": {"lead": ("arpy", "blip", "hoover", "pluck"), "bass": ("jbass", "wobblebass", "tb303"),
+    "hard": {"lead": ("arpy", "blip", "brass", "pluck"), "bass": ("jbass", "wobblebass", "tb303"),
              "pad": ("sinepad", "strings", "strangerpulsepad")},
-    "bright": {"lead": ("pluck", "blip", "kalimba", "epiano"), "bass": ("bass", "jbass"),
+    "bright": {"lead": ("pluck", "blip", "orient", "keys"), "bass": ("bass", "jbass"),
                "pad": ("strings", "ambi", "sinepad")},
-    "warm": {"lead": ("pluck", "arpy", "epiano", "rhpiano"), "bass": ("bass", "jbass", "subbass"),
+    "warm": {"lead": ("pluck", "arpy", "keys", "brass"), "bass": ("bass", "jbass", "subbass"),
              "pad": ("sinepad", "ambi", "warmpad")},
 }
 #: Строка ``THEMES`` → семья тембров стиля; тема не из таблицы — ``Style.default_timbre``.
@@ -1003,6 +1065,23 @@ _CLUB_FORMS: Mapping[str, FormSpec] = {
     "dropfirst48": (*_CLUB_INTRO, *_CLUB_DROP, *_CLUB_BREAK, *_CLUB_BUILD, *_CLUB_DROP2, *_CLUB_TAIL),
 }
 _CLUB_OPENING_FORM = "dropfirst48"
+#: Тема целиком (ADR-0154 PR-7; запрос Шифу 07.10 «хотел бы услышать всю тему горного короля»): в этой секции формы
+#: хук уступает теме — мелодии фраза за фразой (тематическая секция материала партитуры или вся RTTTL-мелодия), а не
+#: 4–8 тактам хука; секция растягивается на длину темы, остаток секции — хук. Гармония и бас — на всю длину темы.
+THEME_SECTION = "drop"
+#: Потолок темы в тактах клуба: тема длиннее режется по концу фразы.
+THEME_MAX_BARS = 32
+#: Главный мотив материала по RTTTL-эталону того же произведения (отзыв Шифу 07.10 «это не совсем горный король»):
+#: контур первых ``THEME_REF_NOTES`` нот эталона ищется в голосах материала (``hook.for_theme``); совпало не меньше
+#: ``THEME_REF_MATCH_MIN`` интервалов — хук и тема оттуда, меньше — материал не узнаётся, трек на RTTTL-хуке. Григ
+#: (pdmx QmT5K8df…, QmRTWPHs…, Qme7zppV…) — 1.00, QmYe6duX… — 0.91; QmXXdTmX… — 0.64 (тема во внутреннем голосе,
+#: его в материале нет).
+THEME_REF_NOTES = 12
+THEME_REF_MATCH_MIN = 0.8
+#: Длина формы клуба — кратна периоду рисунков ударных (16 тактов) и не длиннее потолка: тема растит трек
+#: 48 → 64 → 80 тактов, а не бесконечно (``model.BARS_TOTAL``).
+FORM_BARS_STEP = 16
+TRACK_MAX_BARS = 80
 #: Энергия трека 1..5 (``ENERGY_WAVE``) → формы, из которых выбирает план (со штрафом за недавние): проходные —
 #: на спаде и в начале, ``long64`` — только у пика; ``dropfirst48`` — со середины волны.
 _CLUB_ENERGY_FORMS: Mapping[int, Tuple[str, ...]] = {
@@ -1125,20 +1204,21 @@ _RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "hardcore": GenreWindow((150, 160), ("hardcore", "hardstyle"), _CLUB_LOOKS,
                             ("offbeat", "rolling8"), ("stabs", "stabs", "pumped16")),
 }
-#: Тембры рейва: те же семьи тем (``THEME_TIMBRE``), что у клуба. Лиды — ``hoover``/``rave``/``supersawlead``
-#: (замер #3430: доля низа < 0.05, на потолке ``amp`` достают цель −50), ``tb303`` с ``acid16`` — в каждой семье
+#: Тембры рейва: те же семьи тем (``THEME_TIMBRE``), что у клуба. Лиды — читаемые темой (:data:`THEME_LEAD_OK`, замер
+#: 07.10): ``saw``/``brass``/``arpy``/``blip``/``orient``/``pluck``; ``hoover``/``rave``/``supersawlead`` (хорус,
+#: шумовой ``Gendy1``, неотпускаемая огибающая — «какофония, сильное эхо», Шифу 07.10) теме не годятся, а других
+#: партий лида в треке нет (лид — всегда хук или мотив). ``tb303`` с ``acid16`` — в каждой семье
 #: (лицо стиля), низ держат басы с долей низа ≥ 0.9 (``subbass``/``dub``/``jbass``/``wobblebass``) рисунками
 #: ``offbeat``/``rolling8``. Пэды — клубные (стэб-пэд на синтах лида ``rave``/``saw`` требует замера роли ``pad``,
-#: ADR-0152 §3.1 — не сделан). ``supersawlead`` держит хвост (``SYNTH_TRAITS`` «held») — мотив может смазываться,
-#: проверка на слух.
+#: ADR-0152 §3.1 — не сделан).
 _RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("hoover", "rave", "supersawlead"), "bass": ("subbass", "jbass", "tb303"),
+    "dark": {"lead": ("saw", "brass", "arpy"), "bass": ("subbass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["dark"]["pad"]},
-    "hard": {"lead": ("hoover", "rave", "supersawlead", "arpy"), "bass": ("wobblebass", "jbass", "tb303"),
+    "hard": {"lead": ("saw", "brass", "arpy", "blip"), "bass": ("wobblebass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["hard"]["pad"]},
-    "bright": {"lead": ("supersawlead", "rave", "arpy", "blip"), "bass": ("jbass", "subbass", "tb303"),
+    "bright": {"lead": ("saw", "arpy", "blip", "orient"), "bass": ("jbass", "subbass", "tb303"),
                "pad": _CLUB_TIMBRES["bright"]["pad"]},
-    "warm": {"lead": ("supersawlead", "hoover", "pluck"), "bass": ("jbass", "subbass", "tb303"),
+    "warm": {"lead": ("saw", "brass", "pluck"), "bass": ("jbass", "subbass", "tb303"),
              "pad": _CLUB_TIMBRES["warm"]["pad"]},
 }
 #: Каркасы рейва — клубные без качающихся (``shuffle``/``ride``): рейв ровный (S2 ADR-0153: свинг-ratio ≤ 1.2).
@@ -1160,19 +1240,20 @@ _SYNTHWAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "retrowave": GenreWindow((108, 120), ("house", "deep"), _RETROWAVE_LOOKS, ("offbeat", "rolling8"),
                              ("held", "arp", "arp")),
 }
-#: Тембры synthwave — семьи тем как у клуба. Лиды: ``strangerarp`` и ``supersawlead`` (собственный хвост ``held`` —
-#: мотив может смазываться, проверка на слух, как у рейва), ``saw``, ``keys``, ``arpy``. ``cs80lead`` (звук жанра) НЕ
+#: Тембры synthwave — семьи тем как у клуба. Лиды — читаемые темой (:data:`THEME_LEAD_OK`): ``saw``, ``brass``,
+#: ``keys``, ``arpy``; ``strangerarp``/``supersawlead`` сняты 07.10 — огибающая без ``gate`` держит ноту до ``sus·8``
+#: (хвост ≥ 1.6 с, тема «размазана», :data:`LEAD_CLARITY`). ``cs80lead`` (звук жанра) НЕ
 #: взят: на роботе 07.10 оба трека с ним дали секунды цифрового нуля и шум выше среза мастера (:data:`NYQUIST_MAX_MIDI`).
 #: Басы — с долей низа ≥ 0.9 (``BASS_MIN_LOW``): ``retrobass`` (0.59) и ``moogbass`` (разброс замера 8 дБ) в семьи не
 #: идут. Пэды: держащие (``warmpad``/``strangerpulsepad`` — с хвостом, только ``held``) и короткие для ``arp``.
 _SYNTHWAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("strangerarp", "saw", "keys"), "bass": ("subbass", "jbass"),
+    "dark": {"lead": ("saw", "keys", "brass"), "bass": ("subbass", "jbass"),
              "pad": ("strangerpulsepad", "space", "saw")},
-    "hard": {"lead": ("strangerarp", "supersawlead", "saw", "arpy"), "bass": ("jbass", "subbass"),
+    "hard": {"lead": ("saw", "brass", "arpy"), "bass": ("jbass", "subbass"),
              "pad": ("strangerpulsepad", "sinepad", "pulse")},
-    "bright": {"lead": ("supersawlead", "arpy", "keys"), "bass": ("bass", "jbass"),
+    "bright": {"lead": ("brass", "arpy", "keys"), "bass": ("bass", "jbass"),
                "pad": ("warmpad", "strings", "pulse")},
-    "warm": {"lead": ("strangerarp", "keys", "saw"), "bass": ("bass", "jbass", "subbass"),
+    "warm": {"lead": ("keys", "saw", "brass"), "bass": ("bass", "jbass", "subbass"),
              "pad": ("warmpad", "sinepad", "saw")},
 }
 _SYNTHWAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "open")}
@@ -1188,7 +1269,8 @@ _SYNTHWAVE_FIELDS = dict(
     a9_model_low=0.5, arp_order=(0, 1, 2, 1),
 )
 #: Chiptune/8-bit 120–160 (§3): без насоса (сайдчейна нет), хэты 16-ми, арпеджио вместо пэда (``arp`` — вдвое чаще
-#: стэбов), лиды ``pulse``/``blip``/``saw``/``varsaw`` (``square`` как лид на потолке ``amp`` не достаёт цели роли −50
+#: стэбов), лиды ``pulse``/``blip``/``saw``/``orient`` (``varsaw`` — атака 65 мс, теме не годится, :data:`LEAD_CLARITY`;
+#: ``square`` как лид на потолке ``amp`` не достаёт цели роли −50
 #: на 3 дБ — он в арпеджио). Бас: оффбит/ролл на басах с низом и ``octave8`` — ``pulse`` октавами (8-битный бас,
 #: :data:`BASS_FIGURE_SYNTHS`). Бочки — клубные замеренные (свои «шумовые» ударные — отдельный SynthDef/пак, не здесь).
 _CHIP_LOOKS: Tuple[Tuple[int, Look], ...] = (
@@ -1201,11 +1283,11 @@ _CHIPTUNE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
                             ("arp", "arp", "stabs")),
 }
 _CHIPTUNE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("pulse", "varsaw", "blip"), "bass": ("subbass", "jbass", "pulse"),
+    "dark": {"lead": ("pulse", "blip", "saw"), "bass": ("subbass", "jbass", "pulse"),
              "pad": ("square", "pulse")},
     "hard": {"lead": ("pulse", "saw", "blip"), "bass": ("jbass", "subbass", "pulse"),
              "pad": ("square", "blip")},
-    "bright": {"lead": ("blip", "pulse", "varsaw"), "bass": ("bass", "jbass", "pulse"),
+    "bright": {"lead": ("blip", "pulse", "orient"), "bass": ("bass", "jbass", "pulse"),
                "pad": ("pulse", "square")},
     "warm": {"lead": ("pulse", "blip", "saw"), "bass": ("bass", "jbass", "pulse"),
              "pad": ("blip", "square", "pulse")},
@@ -1254,13 +1336,13 @@ _DNB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: (ближайший к reese синт палитры; синта ``reese`` в Renardo нет — только файлы ``j``, замер #3430: низ 0.9),
 #: ``subbass``, ``jbass``. Лид редкий и простой (``motif``), пэды — клубные семьи.
 _BREAKBEAT_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("hoover", "pluck", "blip"), "bass": ("wobblebass", "subbass", "jbass"),
+    "dark": {"lead": ("saw", "pluck", "blip"), "bass": ("wobblebass", "subbass", "jbass"),
              "pad": _CLUB_TIMBRES["dark"]["pad"]},
-    "hard": {"lead": ("hoover", "arpy", "blip"), "bass": ("wobblebass", "jbass"),
+    "hard": {"lead": ("brass", "arpy", "blip"), "bass": ("wobblebass", "jbass"),
              "pad": _CLUB_TIMBRES["hard"]["pad"]},
-    "bright": {"lead": ("pluck", "blip", "kalimba"), "bass": ("jbass", "subbass", "wobblebass"),
+    "bright": {"lead": ("pluck", "blip", "orient"), "bass": ("jbass", "subbass", "wobblebass"),
                "pad": _CLUB_TIMBRES["bright"]["pad"]},
-    "warm": {"lead": ("pluck", "rhpiano", "epiano"), "bass": ("subbass", "jbass", "wobblebass"),
+    "warm": {"lead": ("pluck", "keys", "arpy"), "bass": ("subbass", "jbass", "wobblebass"),
              "pad": _CLUB_TIMBRES["warm"]["pad"]},
 }
 #: Минор, два аккорда на 8 тактов (§3: аккорд на 2 такта × 4 — ступень держится 4 такта).
@@ -1383,7 +1465,8 @@ FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.
 GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.genre_windows)
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
-            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style"]
+            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
+            "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "FORM_BARS_STEP", "TRACK_MAX_BARS"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

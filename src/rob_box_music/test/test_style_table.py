@@ -82,5 +82,5 @@ def test_no_style_family_role_picks_a_synth_above_its_nyquist_limit():
     # сам гард жив: синт с пределом ниже коридора роли отсекается, даже если его вернут в таблицу
     import dataclasses
     club = kn.STYLES["club"]
-    bad = dataclasses.replace(club, timbres={"hard": {**club.timbres["hard"], "lead": ("hoover", "cs80lead")}})
-    assert mix.role_palette(bad, "hard", "lead") == ("hoover",)
+    bad = dataclasses.replace(club, timbres={"hard": {**club.timbres["hard"], "lead": ("pluck", "cs80lead")}})
+    assert mix.role_palette(bad, "hard", "lead") == ("pluck",)

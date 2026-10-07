@@ -71,3 +71,28 @@ def test_material_without_chords_or_meter_is_refused():
     if kn.TRIPLE_METER_MODE == "unfit":
         with pytest.raises(ValueError, match="3/4"):
             song.score_song(waltz, seed=1)
+
+
+_NAMES = ("c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b")
+
+
+def _rtttl(pitches) -> str:
+    return "ref:d=4,o=5,b=120:" + ",".join(f"{_NAMES[m % 12]}{m // 12 - 1}" for m in pitches)
+
+
+def test_reference_rtttl_starts_the_song_at_the_main_motif_or_refuses_the_material():
+    """Узнаваемость — тот же ``hook.for_theme``, что у DJ-трека: контур RTTTL-эталона нашёлся с такта 12 — песня с него
+    (мелодия = мелодия автора с такта 12); не нашёлся — материал не годится (``HookError``, заказ уходит в RTTTL)."""
+    from rob_box_music.arrange import hook as hooks
+
+    m = scored()
+    ref = _rtttl([e.midi for e in m.melody[48:60]])  # такты 12–14: ступени 0 0 4 — только там
+    track = song.score_song(m, seed=1, references=[ref])
+    lead = track.parts["lead"].pitches
+    tail = [e for e in m.melody if e.beat >= 48]
+    assert [(e.midi, e.beat) for e in lead] == [(e.midi, e.beat - 48) for e in tail]
+    assert track.form.bars_total == 4
+    scales = "ref:d=8,o=5,b=132:" + ",".join(["c,d,e,f,g,a,b,c6,b,a,g,f,e,d,c,d"] * 2)
+    with pytest.raises(hooks.HookError, match="главного мотива"):
+        song.score_song(m, seed=1, references=[scales])
+    assert song.score_song(m, seed=1).form.bars_total == 16  # без эталона — вся пьеса, как раньше

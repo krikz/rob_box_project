@@ -153,6 +153,9 @@ def test_pick_score_takes_the_first_material_that_makes_a_song():
     assert pick.program.track_id.startswith("classic:local:good:A:")
     miss = pick_score({"local:bare": bare}, ids[:2], "q", seed=1)
     assert not miss.found and "local:missing" in miss.reason and "аккорд" in miss.reason
+    other = "ref:d=8,o=5,b=132:" + ",".join(["c,c#,c,c#,c,c#,c,c#"] * 2)  # мотива эталона в материале нет
+    refused = pick_score({"local:good": good}, ["local:good"], "q", seed=1, references=[other])
+    assert not refused.found and "главного мотива" in refused.reason
 
 
 def _tools(rig, classic):

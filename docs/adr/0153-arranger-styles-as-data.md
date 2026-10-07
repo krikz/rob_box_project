@@ -83,6 +83,10 @@ part = BASS_GENERATORS[plan.track(no).timbre.bass_figure](style, key, chords, hi
 
 Стиль **задаёт пулы**, разнообразие **выбирает внутри** них (`weighted_pick` + история): `Style.timbres/forms/kick_patterns/progressions/*_figures` — это те же `TIMBRES`/`FORMS`/`GENRE_KICKS`/`PROGRESSIONS`/`PAD_FIGURES` ADR-0152, только по ключу стиля. `TrackPlan.timbre/template/kick` (ADR-0152 §2.2) не меняются; `SetPlan.genre` → `SetPlan.style`. `music_history` получает колонку `style` — она уже есть (`diversity.py:60`, пишется `"club_v2"` `:276`) — пишется ключ стиля; штраф между сетами по стилю — ось A16b.
 
+### 2.4 Тема играется читаемым лидом (07.10)
+
+Отзыв Шифу 07.10 о «В пещере горного короля» в шести стилях: у клуба, рейва и synthwave «какофония, сильное эхо, тема размазана», chiptune на `blip` — «ничотак». Лид в треке v2 — всегда хук темы или мотив, поэтому лид любого стиля берётся только из читаемых темой синтов: `knowledge.LEAD_CLARITY` (замер `scripts/music/loudness_nrt_v2.py --clarity`: атака, хвост после `sus`, чистота высоты, доля 1–4 кГц) и пороги `THEME_*` → `THEME_LEAD_OK`; применяет одно место — `arrange.mix.role_palette` (как `NYQUIST_MAX_MIDI`). Причины по SynthDef-ам: `supersawlead`/`strangerarp`/`strangerbrass`/`imperialbrass` — `Env.adsr` без `gate` (нота держится до `sus·8`), `hoover` — 18 пил ±60 ц, `epiano` — `CombL` 50·amp с и атака 0.1 с, `rave` — `Gendy1` без высоты. Эффектов (`echo`/`room`) рендер на лиде не ставит. Не сделано: такие синты в роли пэда/подкладки (нужен замер роли `pad`), дублирование темы двумя инструментами (вторая роль-слот рендера).
+
 ---
 
 ## 3. Стили: что задаёт каждый и чего не хватает в платформе

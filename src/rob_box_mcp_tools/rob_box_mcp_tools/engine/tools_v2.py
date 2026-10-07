@@ -544,8 +544,10 @@ class RequestMusicTool(MCPTool):
         """Песня из партитуры по названию (ADR-0154 PR-7B): материалы — поиском темы сета (те же строки), песня — из
         первого, что складывается (``classic.pick_score``); исход — строкой лога."""
         log = self.node.get_logger() if self.node is not None else _LOG
-        ids = self._dj.theme_profile(query).materials
-        pick = pick_score(PlanMaterials(self._dj._scores, ids, log), ids, query, seed=seed)
+        profile = self._dj.theme_profile(query)
+        ids = profile.materials
+        refs = list(self._melodies(profile.theme_hooks).values())  # эталоны узнаваемости (hook.for_theme)
+        pick = pick_score(PlanMaterials(self._dj._scores, ids, log), ids, query, seed=seed, references=refs)
         found = f"{pick.melody_id} «{pick.title}»" if pick.found else f"нет: {pick.reason}"
         log.info(f"🎼 [classic] «{query}»: партитуры {list(ids)} → {found}")
         return pick

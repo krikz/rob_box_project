@@ -82,14 +82,15 @@ def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A") -> Cla
 
 
 def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query: str, *, seed: int,
-               deck: str = "A") -> ClassicPick:
+               deck: str = "A", references: Sequence[str] = ()) -> ClassicPick:
     """Песня из первого материала ``ids`` (порядок поиска), из которого она складывается (``song.score_song``);
-    ни одного — ``found=False`` с причинами по каждому (размер, нет аккордов, нет JSON) — заказ идёт в RTTTL."""
+    ни одного — ``found=False`` с причинами по каждому (размер, нет аккордов, нет JSON, нет мотива RTTTL-эталона
+    ``references``) — заказ идёт в RTTTL."""
     reasons = []
     for mid in ids:
         try:
             material = materials[mid]
-            track = score_song(material, seed=seed, deck=deck)
+            track = score_song(material, seed=seed, deck=deck, references=references)
         except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
             reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
             continue

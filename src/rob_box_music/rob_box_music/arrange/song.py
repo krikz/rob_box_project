@@ -20,12 +20,12 @@ from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..material import MeterMap, ScoreMaterial, meter_map, validate_material
+from ..material import MeterMap, Phrase, ScoreMaterial, ScoreSection, bar_beats, meter_map, validate_material
 from ..model import (
     BEATS_PER_BAR, STEPS_PER_BAR, Form, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
     validate,
 )
-from . import harmony, mix, pad, rhythm
+from . import harmony, hook as hooks, mix, pad, rhythm
 
 #: Песня не стыкуется в DJ-сете; переход — только чтобы трек прошёл валидатор модели.
 SONG_TRANSITION = Transition(8, 4, False)
@@ -249,12 +249,35 @@ def _score_form(verses: List[Tuple[str, int, int]], mm: MeterMap) -> Form:
     return Form(tuple(out), kind=kn.FORM_SONG)
 
 
-def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A") -> Track:
+def from_bar(material: ScoreMaterial, bar: int) -> ScoreMaterial:
+    """Материал с такта ``bar`` (такты исходного размера): ноты, аккорды, фразы и секции раньше него отброшены,
+    остальное сдвинуто к началу — песня начинается с главного мотива."""
+    if bar <= 0:
+        return material
+    shift = bar * bar_beats(material.meter)
+
+    def notes(events):
+        return tuple(replace(e, beat=e.beat - shift) for e in events if e.beat >= shift)
+    return replace(material, melody=notes(material.melody), bass=notes(material.bass),
+                   chords=tuple(replace(c, beat=c.beat - shift) for c in material.chords if c.beat >= shift),
+                   phrases=tuple(Phrase(p.bar - bar, p.bars, p.relation, p.repeats)
+                                 for p in material.phrases if p.bar >= bar),
+                   sections=tuple(ScoreSection(s.name, s.bar - bar, s.bars, s.origin)
+                                  for s in material.sections if s.bar >= bar))
+
+
+def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", references: Sequence[str] = ()) -> Track:
     """Песня по материалу партитуры (ADR-0154 PR-7B): мелодия автора один раз (``knowledge.SONG_MAX_BARS``),
     куплеты — :func:`score_verses`, пэд — аккорды автора арпеджио (``pad.arp_events``, порядок ``Style.arp_order``
     стиля песни), бас — голос автора; темп и тональность — материала. Размер не переводится в 4/4, нет аккордов или
-    трек не прошёл валидатор — ``ValueError``/``TrackError`` (вызывающий берёт RTTTL-песню)."""
+    трек не прошёл валидатор — ``ValueError``/``TrackError`` (вызывающий берёт RTTTL-песню).
+
+    ``references`` — RTTTL того же произведения: узнаваемость — тот же ``hook.for_theme``, что у DJ-трека (голос
+    главного мотива становится мелодией, песня — с его такта); мотива эталона в голосах нет — ``HookError``
+    (тоже ``ValueError``): материал не годится."""
     validate_material(material)
+    material, anchor = hooks.for_theme(material, references)
+    material = from_bar(material, anchor or 0)
     mm = _meter(material)
     spans = _chord_spans(material, mm, kn.SONG_SCORE_PAD)
     if not spans:
@@ -288,4 +311,4 @@ def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A") -> Track:
     return track
 
 
-__all__ = ["SONG_TRANSITION", "SongMaterial", "score_song", "score_verses", "song_track", "verse_count"]
+__all__ = ["SONG_TRANSITION", "SongMaterial", "from_bar", "score_song", "score_verses", "song_track", "verse_count"]

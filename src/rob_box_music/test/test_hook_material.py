@@ -1,4 +1,5 @@
-"""ADR-0154 PR-1: хук из нот (общий путь) и из материала партитуры; выбор фразы по ``repeats``."""
+"""ADR-0154 PR-1: хук из нот (общий путь) и из материала партитуры; выбор фразы — первое проведение (PR-7, отзыв
+Шифу 07.10: самая повторяемая фраза ≠ главный мотив) или место контура RTTTL-эталона (``hook.for_theme``)."""
 
 from __future__ import annotations
 
@@ -39,12 +40,10 @@ def _first_midi(material):
     return hook, hook.notes[0].midi
 
 
-def test_phrase_with_most_repeats_wins():
+def test_first_statement_beats_most_repeats():
+    """Без эталона — первое проведение, а не самая повторяемая фраза (Григ QmT5K8df…: repeats вёл на такт 12)."""
     m = _phrase_material([mt.Phrase(0, 4, "new", 1), mt.Phrase(4, 4, "new", 3), mt.Phrase(8, 4, "new", 2)])
-    assert hooks.pick_phrase(m).bar == 4
-
-
-def test_tie_on_repeats_takes_the_earlier_phrase():
+    assert hooks.pick_phrase(m).bar == 0
     m = _phrase_material([mt.Phrase(8, 4, "new", 2), mt.Phrase(4, 4, "new", 2), mt.Phrase(12, 4, "new", 2)])
     assert hooks.pick_phrase(m).bar == 4
 
@@ -59,8 +58,8 @@ def test_theme_section_beats_repeats():
                          sections=[mt.ScoreSection("Theme", 0, 4, "text")])
     assert hooks.pick_phrase(m).bar == 0
     guess = _phrase_material([mt.Phrase(0, 4, "new", 1), mt.Phrase(8, 4, "new", 5)],
-                             sections=[mt.ScoreSection("theme", 0, 4, "repeat")])
-    assert hooks.pick_phrase(guess).bar == 8  # секция «по повторам» — не метка автора
+                             sections=[mt.ScoreSection("theme", 8, 4, "repeat")])
+    assert hooks.pick_phrase(guess).bar == 0  # секция «по повторам» — не метка автора
 
 
 def test_no_phrases_falls_back_to_melody_start():
@@ -69,7 +68,7 @@ def test_no_phrases_falls_back_to_melody_start():
 
 
 def test_hook_is_cut_from_the_picked_phrase_and_carries_material_id():
-    m = _phrase_material([mt.Phrase(0, 4, "new", 1), mt.Phrase(4, 4, "new", 3)])
+    m = _phrase_material([mt.Phrase(4, 4, "new", 1), mt.Phrase(8, 4, "new", 3)])  # первое проведение — такт 4
     hook, first = _first_midi(m)
     start = hooks.from_material(replace(m, phrases=(mt.Phrase(0, 4, "new", 1),)), 120, 0, "major")[0]
     assert hook.source == "local:ab12cd34" == start.source
@@ -117,3 +116,31 @@ def test_triple_meters_wait_for_acceptance_in_unfit_mode(meter):
 def test_invalid_material_is_not_turned_into_a_hook():
     with pytest.raises(mt.MaterialError):
         hooks.from_material(make_material(license="unknown"), 120, 0, "major")
+
+
+# ── главный мотив по RTTTL-эталону (PR-7) ─────────────────────────────────────────────────────────────────────
+
+#: Эталон — третья «фраза» (такты 8–11) _phrase_material и начало четвёртой: 4 5 7 9 11 9 7 5 2 4 5 7.
+REF = "ref:d=4,o=4,b=120:e,f,g,a,b,a,g,f,d,e,f,g"
+
+
+def test_reference_contour_picks_the_phrase_and_the_voice():
+    m = _phrase_material([mt.Phrase(b, 4, "new", 5 if b == 4 else 1) for b in range(0, 16, 4)])
+    themed, anchor = hooks.for_theme(m, [REF])
+    assert anchor == 8 and themed is m and hooks.pick_phrase(themed, anchor).bar == 8
+    hook, _key = hooks.from_material(themed, 120, 0, "major", anchor=anchor)
+    steps = [b - a for a, b in zip([e.midi for e in hook.notes], [e.midi for e in hook.notes][1:])]
+    assert steps[:6] == [1, 2, 2, 2, -2, -2]
+    # тема в басу: мелодия — гаммы, бас — мотив эталона с такта 4 → бас становится мелодией
+    low = tuple(replace(e, midi=e.midi - 24, beat=e.beat - 16.0) for e in m.melody if 32.0 <= e.beat < 56.0)
+    scales = tuple(PitchEvent(72 + (i % 2), i * 2.0, 2.0, 2) for i in range(32))
+    bassy = replace(m, melody=scales, bass=low)
+    themed, anchor = hooks.for_theme(bassy, [REF])
+    assert anchor == 4 and themed.melody == hooks.voices(bassy)["bass"]
+
+
+def test_reference_without_match_refuses_the_material_and_no_reference_keeps_it():
+    m = _phrase_material([mt.Phrase(b, 4, "new") for b in range(0, 16, 4)])
+    with pytest.raises(hooks.HookError, match="главного мотива"):
+        hooks.for_theme(m, ["other:d=4,o=4,b=120:c,c,c,c,c,c,c,c,c,c,c,c"])
+    assert hooks.for_theme(m, []) == (m, None)
