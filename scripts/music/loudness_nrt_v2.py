@@ -180,6 +180,11 @@ def band_shares(x, sr: int = SAMPLE_RATE, edges: Tuple[float, float] = kn.LAYER_
 
 def read_wav(path: Path):
     """Левый канал WAV (float32 или int16) — моно-слой в центре, как ``LOUDNESS_SOURCE``."""
+    return _wav_frames(path)[:, 0]
+
+
+def _wav_frames(path: Path):
+    """Кадры WAV (float32 или int16) — массив (кадры × каналы)."""
     import numpy as np
 
     raw = path.read_bytes()
@@ -193,7 +198,85 @@ def read_wav(path: Path):
     bits = struct.unpack("<H", chunks[b"fmt "][14:16])[0]
     dtype = "<f4" if fmt_tag == 3 or bits == 32 else "<i2"
     data = np.frombuffer(chunks[b"data"], dtype=dtype).astype("f8") / (1.0 if dtype == "<f4" else 32768.0)
-    return data.reshape(-1, channels)[:, 0]
+    return data.reshape(-1, channels)
+
+
+def read_wav_mono(path: Path):
+    """Моно-сумма каналов WAV ((L + R) / 2): так тему слышит слушатель у двух близких колонок и запись в Telegram."""
+    return _wav_frames(path).mean(axis=1)
+
+
+# ── Читаемость темы (#тема-лид, 07.10): атака, хвост, чистота высоты, яркость ────────────────────────────────
+#: Огибающая — RMS окнами 5 мс; хвост — до ``peak − CLARITY_TAIL_DB``; атака — до ``peak − 3 дБ``.
+CLARITY_FRAME_S = 0.005
+CLARITY_TAIL_DB = 30.0
+#: Окно чистоты высоты вокруг гармоник k·f0, центы: голос, расстроенный дальше (хорус supersaw ±26 ц, hoover ±60 ц,
+#: стохастический ``rave``), уносит энергию из окна.
+PURITY_CENTS = 15.0
+#: Полоса «яркости» темы на выходе 16 кГц: 1–4 кГц (присутствие; ниже — середина пэда и баса).
+BRIGHT_BAND_HZ = (1000.0, 4000.0)
+
+
+def envelope_db(x, sr: int = SAMPLE_RATE, frame_s: float = CLARITY_FRAME_S):
+    """dB RMS по окнам ``frame_s`` (тишина — −200)."""
+    import numpy as np
+
+    n = max(1, int(round(frame_s * sr)))
+    frames = np.asarray(x, dtype="f8")[: len(x) // n * n].reshape(-1, n)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    return np.where(rms > 0, 20.0 * np.log10(np.maximum(rms, 1e-20)), -200.0)
+
+
+def note_shape(x, onset_s: float, sus_s: float, span_s: float, sr: int = SAMPLE_RATE) -> Dict[str, float]:
+    """Атака (мс от начала ноты до ``пик − 3 дБ``) и хвост (мс от конца ``sus`` до ``пик − 30 дБ``) одной ноты,
+    звучащей одна в окне ``[onset, onset + span)``."""
+    import numpy as np
+
+    env = envelope_db(x[int(onset_s * sr):int((onset_s + span_s) * sr)], sr)
+    peak_i = int(np.argmax(env))
+    peak = float(env[peak_i])
+    attack_i = int(np.argmax(env >= peak - 3.0))
+    below = np.nonzero(env[peak_i:] < peak - CLARITY_TAIL_DB)[0]
+    end_i = peak_i + int(below[0]) if len(below) else len(env)
+    frame_ms = CLARITY_FRAME_S * 1000.0
+    return {"attack_ms": round(attack_i * frame_ms, 1),
+            "tail_ms": round(max(0.0, end_i * frame_ms - sus_s * 1000.0), 1)}
+
+
+def pitch_purity(x, f0: float, sr: int = SAMPLE_RATE, cents: float = PURITY_CENTS) -> float:
+    """Доля энергии в окнах ±``cents`` вокруг сетки ``k·f0/2`` (до Найквиста) — 1.0 у чистого тона; хорус и
+    шумовой синт размазывают её между линиями сетки. Сетка от ``f0/2``: синты, звучащие октавой ниже или с ЧМ на
+    ``f0/2`` (``arpy`` — ``Impulse(freq/2)``, ``keys`` — ``LFPar(freq/2)``, суб-голос ``hoover``), остаются чистыми.
+    Спектр — Ханн с дополнением нулями до 1 Гц."""
+    import numpy as np
+
+    sig = np.asarray(x, dtype="f8") * np.hanning(len(x))
+    n = max(len(sig), sr)
+    power = np.abs(np.fft.rfft(sig, n)) ** 2
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    total = float(power[freqs >= 40.0].sum())
+    if total <= 0:
+        raise ValueError("тишина: чистоты нет")
+    ratio, base = 2.0 ** (cents / 1200.0), f0 / 2.0
+    mask = np.zeros(len(freqs), dtype=bool)
+    k = 1
+    while k * base / ratio < sr / 2:
+        mask |= (freqs >= k * base / ratio) & (freqs <= k * base * ratio)
+        k += 1
+    return round(float(power[mask & (freqs >= 40.0)].sum()) / total, 3)
+
+
+def brightness(x, sr: int = SAMPLE_RATE, band: Tuple[float, float] = BRIGHT_BAND_HZ) -> Dict[str, float]:
+    """Спектральный центроид (Гц) и доля энергии ``band`` (1–4 кГц)."""
+    import numpy as np
+
+    power = np.abs(np.fft.rfft(np.asarray(x, dtype="f8"))) ** 2
+    freqs = np.fft.rfftfreq(len(x), 1.0 / sr)
+    total = float(power.sum())
+    if total <= 0:
+        raise ValueError("тишина: яркости нет")
+    share = float(power[(freqs >= band[0]) & (freqs < band[1])].sum()) / total
+    return {"centroid_hz": round(float((power * freqs).sum()) / total), "bright_share": round(share, 3)}
 
 
 # ── scsynth / sclang ───────────────────────────────────────────────────────────────────────────────────────
@@ -405,6 +488,103 @@ def track_layers(rig: Rig, seed: int) -> Dict[str, Any]:
     return {"seed": seed, "track_id": track.track_id, "bpm": track.bpm, "rows": rows}
 
 
+#: Рамка читаемости: темп клуба, тема «В пещере горного короля» (Григ, начало, ля минор, восьмые; длинные — четверти)
+#: в коридоре лида; одиночные ноты — восьмая (``sus`` = шаг темы), раз в :data:`CLARITY_GAP_BEATS` долей.
+CLARITY_BPM = 132.0
+CLARITY_THEME: Tuple[Tuple[int, float], ...] = (
+    (69, 0.5), (71, 0.5), (72, 0.5), (74, 0.5), (76, 0.5), (72, 0.5), (76, 1.0),
+    (75, 0.5), (71, 0.5), (75, 1.0), (74, 0.5), (70, 0.5), (74, 1.0),
+    (69, 0.5), (71, 0.5), (72, 0.5), (74, 0.5), (76, 0.5), (72, 0.5), (76, 0.5), (81, 0.5),
+    (79, 0.5), (76, 0.5), (72, 0.5), (76, 0.5), (79, 2.0))
+CLARITY_NOTES: Tuple[int, ...] = (64, 69, 72, 76, 81)
+CLARITY_NOTE_BEATS = 0.5
+CLARITY_GAP_BEATS = 4.0
+CLARITY_HELD_BEATS = 2.0
+#: Пэды для маскировки: тот же замер полосы 1–4 кГц аккордом в коридоре пэда на уровне роли.
+CLARITY_PAD_CHORD: Tuple[int, ...] = (57, 60, 64)
+
+
+def _model_amp(role: str, synth: str) -> Tuple[float, bool]:
+    """``amp`` синта на цели роли клуба по модели громкости (как ``arrange.mix.level_amp``); без замера — 0.5."""
+    unit = kn.LANE_DB_AT_UNIT.get(role, {}).get(synth)
+    if unit is None:
+        return 0.5, False
+    target = kn.STYLES["club"].role_level_db[role]
+    return min(kn.MAX_LAYER_AMP, 10.0 ** ((target - unit) / (20.0 * kn.AMP_EXPONENT.get(synth, 1.0)))), True
+
+
+def _voices(synth: str, beat: float, midi: float, amp: float, sus: float, stereo: bool) -> List[NoteEvent]:
+    """Нота как её играет рендер: синт с шириной (``knowledge.SYNTH_STEREO``) — два голоса ±pan, второй со сдвигом
+    ``detune`` и Хаасом (``Mix.stereo`` → ``pan/pshift/delay``), мощность делится на голоса."""
+    st = kn.SYNTH_STEREO.get(synth) if stereo else None
+    if not st:
+        return [NoteEvent(beat, "p1", synth, amp, 1.0, sus, midi=float(midi))]
+    voice = amp / math.sqrt(2.0)
+    haas = st.get("haas_ms", 0.0) * CLARITY_BPM / 60000.0
+    return [NoteEvent(beat, "p1", synth, voice, 1.0, sus, midi=float(midi), pan=-st["pan"]),
+            NoteEvent(beat + haas, "p1", synth, voice, 1.0, sus, midi=float(midi), pan=st["pan"],
+                      detune=st.get("detune", 0.0))]
+
+
+def clarity_layer(rig: Rig, synth: str, role: str = "lead", stereo: bool = False) -> Dict[str, Any]:
+    """Читаемость синта темой: одиночные ноты (атака, хвост после ``sus``), долгая нота (чистота высоты), тема
+    (разделение нот — dB последней четверти шага против первой, яркость, dB RMS); у пэда — аккорд (яркость, dB)."""
+    import numpy as np
+
+    beat_s = 60.0 / CLARITY_BPM
+    amp, measured = _model_amp(role, synth)
+    events: List[NoteEvent] = []
+    beat = 0.0
+    if role == "pad":
+        events += [NoteEvent(0.0, "p1", synth, amp, 1.0, 4.0, midi=float(m)) for m in CLARITY_PAD_CHORD]
+        signal = read_wav_mono(render_wav(rig, events, CLARITY_BPM, f"clarity_pad_{synth}", 4 * beat_s + TAIL_S))
+        body = signal[int(0.05 * SAMPLE_RATE):int(4 * beat_s * SAMPLE_RATE)]
+        return {"synth": synth, "role": role, "amp": round(amp, 3), "amp_measured": measured,
+                "db": rms_db(body), **brightness(body)}
+    for midi in CLARITY_NOTES:
+        events += _voices(synth, beat, midi, amp, CLARITY_NOTE_BEATS, stereo)
+        beat += CLARITY_GAP_BEATS
+    held_at = beat
+    events += _voices(synth, held_at, 69, amp, CLARITY_HELD_BEATS, stereo)
+    beat += CLARITY_GAP_BEATS
+    theme_at = beat
+    for midi, dur in CLARITY_THEME:
+        events += _voices(synth, beat, midi, amp, dur, stereo)
+        beat += dur
+    tag = f"clarity_{synth}{'_st' if stereo else ''}"
+    signal = read_wav_mono(render_wav(rig, events, CLARITY_BPM, tag, beat * beat_s + TAIL_S))
+    offset = NOTE_OFFSET_S
+    shapes = [note_shape(signal, i * CLARITY_GAP_BEATS * beat_s + offset, CLARITY_NOTE_BEATS * beat_s,
+                         CLARITY_GAP_BEATS * beat_s) for i in range(len(CLARITY_NOTES))]
+    held = signal[int((held_at * beat_s + offset + 0.05) * SAMPLE_RATE):
+                  int((held_at + CLARITY_HELD_BEATS) * beat_s * SAMPLE_RATE)]
+    sep, t = [], theme_at
+    for _, dur in CLARITY_THEME[:-1]:
+        a, b = (t * beat_s + offset), ((t + dur) * beat_s + offset)
+        q = (b - a) / 4.0
+        head = signal[int(a * SAMPLE_RATE):int((a + q) * SAMPLE_RATE)]
+        tail = signal[int((b - q) * SAMPLE_RATE):int(b * SAMPLE_RATE)]
+        sep.append(rms_db(tail) - rms_db(head))
+        t += dur
+    theme = signal[int((theme_at * beat_s + offset) * SAMPLE_RATE):int(beat * beat_s * SAMPLE_RATE)]
+    return {"synth": synth, "role": role, "stereo": stereo, "amp": round(amp, 3), "amp_measured": measured,
+            "attack_ms": round(float(np.median([x["attack_ms"] for x in shapes])), 1),
+            "tail_ms": round(float(np.median([x["tail_ms"] for x in shapes])), 1),
+            "tail_ms_max": max(x["tail_ms"] for x in shapes),
+            "purity": pitch_purity(held, midi_hz(69)),
+            "separation_db": round(float(np.median(sep)), 1),
+            "db": rms_db(theme), **brightness(theme)}
+
+
+def clarity(rig: Rig, leads: Sequence[str], pads: Sequence[str]) -> Dict[str, Any]:
+    """Строки читаемости лидов (моно и, у синтов с шириной, как играет рендер) и яркости пэдов на уровне роли."""
+    compile_defs(rig, set(leads) | set(pads))
+    rows = [clarity_layer(rig, s) for s in leads]
+    rows += [clarity_layer(rig, s, stereo=True) for s in leads if s in kn.SYNTH_STEREO]
+    rows += [clarity_layer(rig, s, role="pad") for s in pads]
+    return {"bpm": CLARITY_BPM, "rows": rows}
+
+
 def _rig(args: argparse.Namespace) -> Rig:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -417,6 +597,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     mode.add_argument("--regress", action="store_true", help="рамка 29.09 против LAYER_MEASURED_DB (±1.5 дБ)")
     mode.add_argument("--sweep", nargs="+", metavar=("ROLE", "SYNTH"), help="роль и синты: dB, наклон, полосы")
     mode.add_argument("--track", type=int, metavar="SEED", help="трек v2: слои против модели")
+    mode.add_argument("--clarity", nargs="+", metavar="SYNTH", help="читаемость темы лидами (pad:СИНТ — яркость пэда)")
     parser.add_argument("--renardo", required=True, help="каталог пакета renardo_lib (установленный или из колеса)")
     parser.add_argument("--samples", required=True, help="каталог 0_foxdot_default (недостающее скачивается)")
     parser.add_argument("--out", default="nrt_out")
@@ -432,6 +613,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif args.sweep:
         role, synths = args.sweep[0], args.sweep[1:]
         result = {"sweep": [frame_layer(rig, role, s, args.roots, half=True) for s in synths]}
+    elif args.clarity:
+        result = clarity(rig, [s for s in args.clarity if not s.startswith("pad:")],
+                         [s[4:] for s in args.clarity if s.startswith("pad:")])
     else:
         result = track_layers(rig, args.track)
     print(json.dumps(result, ensure_ascii=False))

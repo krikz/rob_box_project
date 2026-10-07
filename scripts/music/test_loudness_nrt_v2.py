@@ -10,6 +10,7 @@ import random
 import struct
 import sys
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import pytest
@@ -115,3 +116,34 @@ def test_band_shares_reject_silence_and_rms_of_full_scale_sine():
         nrt.band_shares(np.zeros(SR))
     assert nrt.rms_db(_tone(440.0)) == pytest.approx(-3.01, abs=0.01)
     assert nrt.rms_db(np.zeros(10)) == -200.0
+
+
+# ── Читаемость темы (#тема-лид) ──────────────────────────────────────────────────────────────────────────────
+
+
+def _chorus_tone(f0: float, seconds: float, detune_cents: Tuple[float, ...] = (0.0,)) -> np.ndarray:
+    t = np.arange(int(seconds * SR)) / SR
+    return sum(np.sin(2 * np.pi * f0 * 2 ** (c / 1200) * t) for c in detune_cents) / len(detune_cents)
+
+
+def test_pitch_purity_drops_with_chorus_detune():
+    clean = nrt.pitch_purity(_chorus_tone(440.0, 0.8), 440.0)
+    chorus = nrt.pitch_purity(_chorus_tone(440.0, 0.8, (-60.0, -26.0, 0.0, 26.0, 60.0)), 440.0)
+    assert clean > 0.95
+    assert chorus < 0.5
+
+
+def test_note_shape_measures_tail_after_sus():
+    t = np.arange(int(1.5 * SR)) / SR
+    sus = 0.2
+    env = np.where(t < sus, 1.0, np.exp(-(t - sus) / 0.1))  # −30 дБ через 0.1·ln(10^1.5) ≈ 345 мс
+    shape = nrt.note_shape(np.sin(2 * np.pi * 440 * t) * env, 0.0, sus, 1.5)
+    assert shape["attack_ms"] <= 10.0
+    assert 300.0 <= shape["tail_ms"] <= 400.0
+
+
+def test_brightness_band_share():
+    lo, hi = _chorus_tone(300.0, 0.5), _chorus_tone(2000.0, 0.5)
+    assert nrt.brightness(lo)["bright_share"] < 0.01
+    assert nrt.brightness(hi)["bright_share"] > 0.99
+    assert nrt.brightness(lo + hi)["centroid_hz"] == pytest.approx(1150, abs=30)

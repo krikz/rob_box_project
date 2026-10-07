@@ -17,6 +17,7 @@ ADR-0149 §3.8, §3.10 п.1, §4.7. Все числа — таблицы ``knowl
 * **Мастер-шина (PR-7, §3.10).** :func:`set_master` — ``trim`` по энергии трека сета и профиль выравнивателя.
 * **Дуга громкости.** :func:`section_arc` — смещение ``trim`` по секциям (``knowledge.SECTION_TRIM_DB``): build
   поднимается к дропу, брейк проваливается, второй дроп — пик.
+* **Читаемость темы.** Лид (роль темы ``kn.THEME_ROLES``) — только из ``kn.THEME_LEAD_OK`` (:func:`role_palette`).
 * **Тембры.** Семья тембров сета (``SetPlan.family``: строка темы — ``knowledge.THEME_TIMBRE``, вне таблицы — сид со штрафом, #3460) → синт роли по сиду трека со штрафом за
   недавние: бас и лид — :func:`role_timbre` (ADR-0152 PR-6), пэд — по рисунку (:func:`pad_timbre`, §3.2).
 * **Рисунок пэда (ADR-0152 PR-5).** ``knowledge.PAD_FIGURES``: ``held`` не под сайдчейном, цель уровня рисунка —
@@ -128,12 +129,16 @@ def duck_envelope(trigger: Sequence[int], depth: float) -> Tuple[float, ...]:
 
 def role_palette(style: kn.Style, family: str, role: str) -> Tuple[str, ...]:
     """Синты роли в семье стиля без тех, чей фильтр уходит за Найквист в коридоре роли (``kn.NYQUIST_MAX_MIDI`` против
-    ``Style.registers[role]``, #3502): цифровой шорох и провалы выхода 16 кГц. Единственное место применения предела;
-    пустая палитра — ошибка таблицы (молча брать синт с дефектом нельзя)."""
+    ``Style.registers[role]``, #3502): цифровой шорох и провалы выхода 16 кГц; у роли темы (``kn.THEME_ROLES``) — только
+    читаемые лиды (``kn.THEME_LEAD_OK``: атака, хвост, чистота высоты, яркость 1–4 кГц — замер ``--clarity``).
+    Единственное место применения обоих правил; пустая палитра — ошибка таблицы (молча брать синт с дефектом нельзя)."""
     top = style.registers[role][1]
-    out = tuple(s for s in style.timbres[family][role] if kn.NYQUIST_MAX_MIDI.get(s, 128) >= top)
+    theme = role in kn.THEME_ROLES
+    out = tuple(s for s in style.timbres[family][role]
+                if kn.NYQUIST_MAX_MIDI.get(s, 128) >= top and (not theme or s in kn.THEME_LEAD_OK))
     if not out:
-        raise ValueError(f"роль {role} семьи {family}: все синты выше предела Найквиста при коридоре до {top}")
+        raise ValueError(f"роль {role} семьи {family}: нет синта ниже предела Найквиста (коридор до {top})"
+                         + (" и читаемого темой (THEME_LEAD_OK)" if theme else ""))
     return out
 
 
