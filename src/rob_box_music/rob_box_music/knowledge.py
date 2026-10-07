@@ -1444,8 +1444,7 @@ _BREAKBEAT_FIELDS = dict(
 #: Свинг (доля восьмой) 0.14–0.22: ratio восьмых (1 + s)/(1 − s) = 1.33–1.56 — между trip-hop 1.26 и джазом 1.54,
 #: не триоль 2.0. Бочка boom-bap мягкая из паков, малый 2/4 и хэты восьмыми — файлы паков (``drum_files``), без
 #: сайдчейна. Низ трека — цель 0.50–0.75 (выше p90 джаза 0.48, не выше медианы trip-hop 0.75): lo-fi — бит-музыка
-#: на бочке и басе, как trip-hop, но с comping-клавишами впереди; ``a9_model_low`` — нижняя граница + запас σ модели
-#: 0.1, как у клуба.
+#: на бочке и басе, как trip-hop, но с comping-клавишами впереди; ``a9_model_low`` — нижняя граница (см. уровни ниже).
 _LOFI_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (7, Look(KICK_PATTERNS["boombap"], 0.0)),
     (5, Look(KICK_PATTERNS["lazy"], 0.0)),
@@ -1496,10 +1495,14 @@ _LOFI_STYLE = Style(
     pad_figures=_LOFI_WINDOW.pad_figures, lead_figures=("motif",), chord_size=4, progressions=_LOFI_PROGRESSIONS,
     forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND,
     layer_sections={}, genre_windows=_LOFI_GENRE_WINDOWS,
-    role_level_db={"kick": -33.0, "bass": -32.0, "pad": -44.0, "lead": -50.0, "clap": -43.0, "hats": -57.0},
+    # Уровни: робот 08.10 (2 сета, клубные уровни −33/−32/−44/−50) — низ 0.77/0.76 по медиане окон 20 с, в дропах
+    # 0.79–0.91 при A9-модели 0.61–0.68: бочка и бас тише на 2 дБ, пэд и лид громче на 3/2 дБ.
+    role_level_db={"kick": -35.0, "bass": -34.0, "pad": -41.0, "lead": -48.0, "clap": -43.0, "hats": -57.0},
     duck_roles=(), section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad",), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
-    a9_model_low=0.6,
+    # A9-модель занижает низ lo-fi на 0.09–0.16 против записи (удары файлами и walking в модели — оценки): порог
+    # 0.5 = нижняя граница цели, без запаса σ (иначе модель глушит пэд, а запись и так выше цели).
+    a9_model_low=0.5,
     thin_roles={}, swing_steps=(2, 6, 10, 14), swing_roles=("kick", "clap", "bass", "pad", "lead"),
     approach_max_beats=1.0,
     drum_files={"clap": ("sonicpi_drum_snare_soft", "muldjord_snare_40", "muldjord_snare_43"),
