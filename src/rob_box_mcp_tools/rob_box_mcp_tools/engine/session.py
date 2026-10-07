@@ -34,10 +34,10 @@ import logging
 import os
 import threading
 from dataclasses import replace
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.compose import compose
+from rob_box_music.arrange.compose import compose, upcoming_hooks
 from rob_box_music.arrange.harmony import PROGRESSION_LOOKBACK
 from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
@@ -138,6 +138,15 @@ def plan_source(current: PlanNow, memory: Optional[SetMemory] = None,
             memory.remember(track_no, rows[track_no])
         return track
 
+    def upcoming(first_no: int, count: int) -> List[Optional[str]]:
+        """Мелодии треков ``first_no`` … (#3497): скомпонованные — как сыграют, остальные — по той же очереди, что у
+        :func:`compose` (``compose.hook_order``), с историей до ``first_no``; нет найденных по теме — пусто."""
+        plan, melodies = current()
+        history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < first_no) + past
+        done = {no: row.get("melody_name") for no, row in list(rows.items()) if no >= first_no}
+        return upcoming_hooks(plan.profile, melodies or {}, history, plan.set_id, first_no, count, done)
+
+    next_track.upcoming = upcoming  # type: ignore[attr-defined]
     return next_track
 
 

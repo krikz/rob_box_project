@@ -13,6 +13,7 @@ from rob_box_mcp_tools.engine.reasoner import SetPlanBox, SetReasoner
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
 from rob_box_music import dj_line as dl
+from rob_box_music.arrange.compose import upcoming_hooks
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
@@ -27,6 +28,19 @@ TITLES = {"tetris_2": "Тетрис", "supermar": "Super Mario Bros"}
 
 def _titles(ids):
     return {i: TITLES[i] for i in ids if i in TITLES}
+
+
+def _forecast(plan, played, past=()):
+    """``TransitionLines.forecast`` как у ``plan_source.upcoming``: та же очередь, что у компоновки (#3497);
+    ``played`` — ``{номер: хук}`` скомпонованных треков (тест пополняет его так же, как компоновка пополняет историю)."""
+    melodies = {h: "x" for h in plan.profile.hook_ids}
+
+    def forecast(first, count):
+        history = tuple({"melody_name": played[no], "set_id": plan.set_id} for no in sorted(played, reverse=True)
+                        if no < first) + tuple(past)
+        return upcoming_hooks(plan.profile, melodies, history, plan.set_id, first, count,
+                              {no: h for no, h in played.items() if no >= first})
+    return forecast
 
 
 def _reply(line):
@@ -183,13 +197,16 @@ def test_started_track_facts_go_to_snapshot_and_now():
     published = []
     lines = TransitionLines(None, titles=_titles, missing=["Марио"], publish=lambda t, f: published.append((t, f)),
                             logger=Log(), spawn=lambda fn: fn(), grace_s=0.01)
+    played = {1: "supermar", 2: "tetris_2"}
+    lines.forecast = _forecast(THEMED, played)
     lines.prepare("f:01:A:x", 1, THEMED, "supermar")
     assert lines.on_started("f:01:A:x") == ""  # реплика выключена — факты всё равно есть
     lines.prepare("f:02:B:x", 2, THEMED, "tetris_2")
     lines.on_started("f:02:B:x")
     track_id, facts = published[-1]
     assert track_id == "f:02:B:x" and facts["melody"] == "Тетрис" and facts["track_no"] == 2 and facts["tracks"] == 4
-    assert facts["next_melodies"] == ["Аладдин"]  # сыгранные (Super Mario Bros, Тетрис) — не «дальше»
+    # «дальше» — очередь компоновки: несыгранный Аладдин, затем давний Марио (круг пройден), а не Тетрис, что играет
+    assert facts["next_melodies"] == ["Аладдин", "Super Mario Bros"]
     assert facts["not_found"] == ["Марио"] and facts["title"] == "«Тетрис» · трек 2 из 4"
     assert lines.now() == facts
 
@@ -243,6 +260,7 @@ def _two_track_set():
 
 def test_first_track_of_set_has_the_same_facts_as_queued_tracks():
     lines, published = _two_track_set()
+    lines.forecast = _forecast(TWO, {1: "tetris_2"})
     lines.prepare("t:01:A:x", 1, TWO, "tetris_2")  # трек 1 — через play(), не через очередь
     assert lines.on_started("t:01:A:x") == "dj_line=start_phrase"  # одна фраза на старт — фраза запуска
     facts = published[-1][1]
@@ -266,9 +284,12 @@ def test_facts_not_ready_claim_no_melody():
 
 def _ask_on_last_track():
     lines, published = _two_track_set()
+    played = {1: "tetris_2"}
+    lines.forecast = _forecast(TWO, played)
     lines.prepare("t:01:A:x", 1, TWO, "tetris_2")
     lines.on_started("t:01:A:x")
     on_first = dict(lines.now())
+    played[2] = "supermar"
     lines.prepare("t:02:B:x", 2, TWO, "supermar")  # N+1 скомпонован, пока играет трек 1
     on_first_queued = dict(lines.now())
     lines.on_started("t:02:B:x")
@@ -289,3 +310,18 @@ def test_when_questions_on_first_and_last_track_of_two_track_set():
     assert dl.when_text(on_last, "тетрис", fold) == expected
     assert "следующ" not in dl.when_text(on_last, "тетрис", fold)
     assert dl.now_playing_text(on_last) == "Сейчас трек 2 из 2: «Super Mario Bros». Это последний трек сета."
+
+
+def test_said_next_melody_is_the_one_the_composer_plays_with_past_sets_penalty():
+    """#3497: «дальше будет» — из той же очереди, что компоновка, а не из копии: Тетрис недавно играл в прошлом сете —
+    в ``next_melodies`` он в конце, как и в ``compose``; последняя ``next_known`` — трек, скомпонованный на деле."""
+    plan = seeded_plan(replace(seeded_profile("Марио, Тетрис"), hook_ids=("tetris_2", "supermar", "aladdin"),
+                               theme_hooks=("tetris_2", "supermar", "aladdin")), 1, n_tracks=4, set_id="n")
+    past = ({"melody_name": "tetris_2", "set_id": "old"},)
+    published = []
+    lines = TransitionLines(None, titles=_titles, publish=lambda t, f: published.append((t, dict(f))),
+                            logger=Log(), spawn=lambda fn: fn(), grace_s=0.01)
+    lines.forecast = _forecast(plan, {1: "supermar"}, past)
+    lines.prepare("n:01:A:x", 1, plan, "supermar")
+    lines.on_started("n:01:A:x")
+    assert published[-1][1]["next_melodies"] == ["Аладдин", "Тетрис", "Super Mario Bros"]  # Тетрис (прошлый сет) — после свежих, раньше Марио
