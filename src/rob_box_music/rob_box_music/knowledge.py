@@ -1503,10 +1503,21 @@ SONG_TIMBRES: Mapping[str, Tuple[str, ...]] = {"lead": ("pluck", "marimba", "kar
 #: Символ рисунка ударных ``harmonize`` (16 шагов на такт) → роль v2: ``X`` — бочка, ``o`` (малый) — клэп
 #: (у малого нет замера громкости), ``-`` — хэты.
 SONG_DRUM_SYMBOLS: Mapping[str, str] = {"X": "kick", "o": "clap", "-": "hats"}
+#: Песня из материала партитуры (ADR-0154 PR-7B, «сыграй <произведение>»): куплеты — секции материала, без меток —
+#: фразы подряд, пока куплет не наберёт столько тактов; аккомпанемент — аккорды автора арпеджио (фактура ``arp``,
+#: порядок голосов ``Style.arp_order``) и басовый голос автора; рисунок ударных (символы :data:`SONG_DRUM_SYMBOLS`)
+#: и темп материала без метки — отсюда.
+SONG_SCORE_VERSE_BARS = 8
+SONG_SCORE_DRUMS = "X...o...X...o..."
+SONG_SCORE_HATS = "-.-.-.-.-.-.-.-."
+SONG_SCORE_BPM = 100
+#: Коридор арпеджио пэда песни из материала: внутри ``SONG_REGISTERS["pad"]``, под мелодией (архив: лид p1 56).
+SONG_SCORE_PAD: Tuple[int, int] = (55, 76)
 
 __all__ += [
     "FORM_CLUB", "FORM_SONG", "SONG_DRUM_SYMBOLS", "SONG_KEY_FIT_MIN", "SONG_MAX_BARS", "SONG_REGISTERS",
-    "SONG_TARGET_BARS", "SONG_TIMBRES", "SONG_VERSES",
+    "SONG_SCORE_BPM", "SONG_SCORE_DRUMS", "SONG_SCORE_PAD", "SONG_SCORE_HATS", "SONG_SCORE_VERSE_BARS", "SONG_TARGET_BARS",
+    "SONG_TIMBRES", "SONG_VERSES",
 ]
 
 

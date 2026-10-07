@@ -47,7 +47,7 @@ from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_
 from rob_box_music.theme import ThemeProfile, match_style_text, seeded_profile, style_for
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-from .classic import ClassicPick, classic_picker
+from .classic import ClassicPick, classic_picker, pick_score
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import PlanMaterials, ScoreLibrary, seed_plan
@@ -540,8 +540,22 @@ class RequestMusicTool(MCPTool):
         return {"program": program, "once": False, "title": title, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
+    def _score_song(self, query: str, seed: int) -> ClassicPick:
+        """Песня из партитуры по названию (ADR-0154 PR-7B): материалы — поиском темы сета (те же строки), песня — из
+        первого, что складывается (``classic.pick_score``); исход — строкой лога."""
+        log = self.node.get_logger() if self.node is not None else _LOG
+        profile = self._dj.theme_profile(query)
+        ids = profile.materials
+        refs = list(self._melodies(profile.theme_hooks).values())  # эталоны узнаваемости (hook.for_theme)
+        pick = pick_score(PlanMaterials(self._dj._scores, ids, log), ids, query, seed=seed, references=refs)
+        found = f"{pick.melody_id} «{pick.title}»" if pick.found else f"нет: {pick.reason}"
+        log.info(f"🎼 [classic] «{query}»: партитуры {list(ids)} → {found}")
+        return pick
+
     def _stage_classic(self, text: str) -> Dict[str, Any]:
         """Мелодия по названию: песня v2 (темп и тональность — из RTTTL), один проход формы — собрана, не запущена.
+        Произведение есть в индексе партитур — песня из материала (:meth:`_score_song`, ADR-0154 PR-7B), иначе
+        RTTTL.
 
         Название берёт грамматика заказа по имени («поставь калинку» → «калинку»); не разобрала — ищутся
         слова целиком. Поиск — тот же, что у ``lookup_melody`` (``engine.classic.find_record``).
@@ -552,7 +566,9 @@ class RequestMusicTool(MCPTool):
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         seed = self._seed()
         try:
-            pick = self._classic(query, seed=seed)
+            pick = self._score_song(query, seed)
+            if not pick.found:
+                pick = self._classic(query, seed=seed)
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"classic:{query}", "compose_error", f"{type(exc).__name__}: {exc}")
         if not pick.found:

@@ -7,15 +7,20 @@
 регистр, контур, тональность) → ``harmonize`` (бас, пэд, рисунки ударных). Отсюда — только перекладка
 ``Harmonization`` в :class:`rob_box_music.arrange.song.SongMaterial`; трек собирает ``song_track``, звук —
 ``render`` той же деки, что у club.
+
+Произведение есть в индексе партитур (ADR-0154 PR-7B, §3.5: точное название в индексе партитур > RTTTL) — песня из
+материала (:func:`pick_score`, ``song.score_song``): куплеты = секции материала, аккомпанемент — аккорды автора, а не
+``harmonize``; ни один материал не сложился — RTTTL-песня, как раньше.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange.song import SongMaterial, song_track
+from rob_box_music.arrange.song import SongMaterial, score_song, song_track
+from rob_box_music.material import ScoreMaterial
 from rob_box_music.render.program import Program
 from rob_box_music.render.renardo import render
 
@@ -76,6 +81,24 @@ def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A") -> Cla
                        bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}")
 
 
+def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query: str, *, seed: int,
+               deck: str = "A", references: Sequence[str] = ()) -> ClassicPick:
+    """Песня из первого материала ``ids`` (порядок поиска), из которого она складывается (``song.score_song``);
+    ни одного — ``found=False`` с причинами по каждому (размер, нет аккордов, нет JSON, нет мотива RTTTL-эталона
+    ``references``) — заказ идёт в RTTTL."""
+    reasons = []
+    for mid in ids:
+        try:
+            material = materials[mid]
+            track = score_song(material, seed=seed, deck=deck, references=references)
+        except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
+            reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
+            continue
+        return ClassicPick(query, True, melody_id=mid, title=material.title, program=render(track, deck),
+                           bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}")
+    return ClassicPick(query, False, "; ".join(reasons) or "партитур по названию нет")
+
+
 def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicPick]:
     """``pick(query, seed=…)`` над библиотекой, которая открывается при первом заказе."""
     box: Dict[str, Any] = {}
@@ -88,4 +111,4 @@ def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicP
     return pick
 
 
-__all__ = ["ClassicPick", "classic_picker", "find_record", "pick_classic", "song_material"]
+__all__ = ["ClassicPick", "classic_picker", "find_record", "pick_classic", "pick_score", "song_material"]

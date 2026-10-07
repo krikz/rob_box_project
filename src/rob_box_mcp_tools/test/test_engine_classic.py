@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from rob_box_mcp_tools.core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
-from rob_box_mcp_tools.engine.classic import ClassicPick, find_record, pick_classic, song_material
+from rob_box_mcp_tools.engine.classic import ClassicPick, find_record, pick_classic, pick_score, song_material
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
@@ -133,6 +133,29 @@ def test_pick_classic_renders_the_found_song():
     pick = pick_classic(_library({**_record("kalinka"), "name": "kalinkav_2"}), "калинка", seed=3)
     assert pick.found and pick.melody_id == "kalinkav_2" and pick.bpm == 100
     assert pick.program.track_id.startswith("classic:kalinkav_2:A:")
+
+
+def test_pick_score_takes_the_first_material_that_makes_a_song():
+    """ADR-0154 PR-7B: песня из партитуры — первый материал поиска, из которого она складывается; ни одного —
+    ``found=False`` с причиной по каждому (заказ уходит в RTTTL)."""
+    from dataclasses import replace
+
+    from rob_box_music import material as mt
+    from rob_box_music.model import Key, PitchEvent
+
+    melody = tuple(PitchEvent(60 + (i % 4) * 2, float(i), 1.0, 2) for i in range(32))
+    chords = tuple(mt.ChordSpan(float(b * 4), 4.0, 0, "maj", 0) for b in range(8))
+    good = mt.ScoreMaterial("local:good", "Good", "t", "s", "PD", (4, 4), 120, Key(0, "major"), melody, chords)
+    bare = replace(good, material_id="local:bare", chords=())
+    ids = ["local:missing", "local:bare", "local:good"]
+    pick = pick_score({"local:bare": bare, "local:good": good}, ids, "q", seed=1)
+    assert pick.found and pick.melody_id == "local:good" and pick.title == "Good" and pick.bpm == 120
+    assert pick.program.track_id.startswith("classic:local:good:A:")
+    miss = pick_score({"local:bare": bare}, ids[:2], "q", seed=1)
+    assert not miss.found and "local:missing" in miss.reason and "аккорд" in miss.reason
+    other = "ref:d=8,o=5,b=132:" + ",".join(["c,c#,c,c#,c,c#,c,c#"] * 2)  # мотива эталона в материале нет
+    refused = pick_score({"local:good": good}, ["local:good"], "q", seed=1, references=[other])
+    assert not refused.found and "главного мотива" in refused.reason
 
 
 def _tools(rig, classic):
