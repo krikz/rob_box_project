@@ -35,6 +35,7 @@ import pathlib
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -45,6 +46,7 @@ RAW_URL = "https://raw.githubusercontent.com/{repo}/{commit}/{path}"
 USER_AGENT = "rob-box-sample-downloader/1.0"
 TIMEOUT_SECONDS = 60
 RETRIES = 4
+WORKERS = 8
 
 Entry = Dict[str, object]
 Opener = Callable[[str], "object"]
@@ -120,10 +122,13 @@ def fetch_all(
 ) -> List[str]:
     """Довести каталог до lock-файла. Возвращает список проблем (пусто = ок)."""
     problems: List[str] = []
-    for entry in files:
-        if is_entry_valid(entry, target):
-            continue
-        reason = fetch_entry(entry, target, opener, sleep)
+    todo = [entry for entry in files if not is_entry_valid(entry, target)]
+    # Один запрос к raw.githubusercontent.com стоит секунд (на Pi ~10 с на файл), а файлов
+    # сотни: последовательно первый деплой качал бы паки десятки минут. Параллелим по
+    # файлам, итоги печатаем в порядке lock-файла.
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        reasons = list(pool.map(lambda entry: fetch_entry(entry, target, opener, sleep), todo))
+    for entry, reason in zip(todo, reasons):
         if reason is not None:
             problems.append(f"{entry['dest']}: {reason}")
             print(f"ERROR: {entry['dest']}: {reason}", file=sys.stderr, flush=True)
