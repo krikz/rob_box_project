@@ -143,17 +143,20 @@ def _b9(pc: int, triad: set) -> bool:
     return pc not in triad and (pc - 1) % 12 in triad
 
 
-def _emissions(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int) -> List[List[float]]:
+def _emissions(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
+               clash: Optional[Sequence[PitchEvent]] = None) -> List[List[float]]:
     """[слот][ступень] — доля мелодии слота в трезвучии ступени минус штраф за b9 на сильных долях; вес ноты —
-    длительность, на сильной доле ×``HOOK_HARMONY.strong_weight`` (0, если слот пуст)."""
+    длительность, на сильной доле ×``HOOK_HARMONY.strong_weight`` (0, если слот пуст). ``clash`` — все звучащие
+    голоса для штрафа b9 (хук с терциями), по умолчанию — ``notes``."""
     hh = kn.HOOK_HARMONY
     triads = [_triad(key, d) for d in range(7)]
     out = []
     for slot in range(slots):
         inside = _slot_notes(notes, slot, chord_beats)
+        voices = inside if clash is None else _slot_notes(clash, slot, chord_beats)
         total = sum(_weight(e, hh) for e in inside) or 1.0
         out.append([(sum(_weight(e, hh) for e in inside if e.midi % 12 in t)
-                     - hh.b9_weight * sum(_weight(e, hh) for e in inside if _strong(e) and _b9(e.midi % 12, t)))
+                     - hh.b9_weight * sum(_weight(e, hh) for e in voices if _strong(e) and _b9(e.midi % 12, t)))
                     / total for t in triads])
     return out
 
@@ -193,17 +196,18 @@ def _log_step(table: Table, a: int, b: int, moves: frozenset) -> float:
 
 def viterbi(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
             fixed: Sequence[Optional[int]] = (), table: Optional[Table] = None, *, ring: bool = False,
-            degrees: Sequence[int] = range(7), progressions: Iterable[Sequence[int]] = ()) -> Tuple[int, ...]:
+            degrees: Sequence[int] = range(7), progressions: Iterable[Sequence[int]] = (),
+            clash: Optional[Sequence[PitchEvent]] = None) -> Tuple[int, ...]:
     """Ступени ``slots`` слотов по ``melody_weight × эмиссия + log P(переход)`` (HMM, ADR-0154 альтернатива F;
     числа — ``knowledge.HOOK_HARMONY``). Лучший путь из :func:`paths`."""
     return paths(key, notes, chord_beats, slots, fixed, table, ring=ring, degrees=degrees,
-                 progressions=progressions)[0][1]
+                 progressions=progressions, clash=clash)[0][1]
 
 
 def paths(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
           fixed: Sequence[Optional[int]] = (), table: Optional[Table] = None, *, ring: bool = False,
-          degrees: Sequence[int] = range(7), progressions: Iterable[Sequence[int]] = ()
-          ) -> List[Tuple[float, Tuple[int, ...]]]:
+          degrees: Sequence[int] = range(7), progressions: Iterable[Sequence[int]] = (),
+          clash: Optional[Sequence[PitchEvent]] = None) -> List[Tuple[float, Tuple[int, ...]]]:
     """Лучшие пути Витерби, от лучшего: (оценка, ступени); у петли (``ring``) — по одному на каждую первую ступень,
     у цепочки — один.
 
@@ -212,48 +216,60 @@ def paths(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
     выбирает (педаль — тоника/доминанта). ``ring`` — петля: переход «последний → первый» входит в оценку.
     Уменьшённое трезвучие (и из ``fixed``) — только перед ``knowledge.DIM_RESOLUTION``, последним в незамкнутой
     цепочке — нет; сам Витерби берёт только вводное (``knowledge.DIM_ROOT``). ``table`` — для опытов leave-one-out;
-    по умолчанию таблица лада ``key``. ``progressions`` — петли стиля (бонус их переходам). Ничья — меньшие ступени.
+    по умолчанию таблица лада ``key``. ``progressions`` — петли стиля (бонус их переходам). ``clash`` — все
+    звучащие голоса для штрафа b9 (по умолчанию ``notes``). Ничья — меньшие ступени.
     """
     table = table or transition_table(key.mode)
-    hh = kn.HOOK_HARMONY
-    em = _emissions(key, notes, chord_beats, slots)
-    pinned = list(fixed)[:slots] + [None] * (slots - len(fixed))
-    dim = diminished(key)
-    banned = unresolved_dims(key)
-    moves = _style_moves(progressions)
-
-    def allowed(slot: int) -> Sequence[int]:
-        return tuple(d for d in degrees if d not in banned) if pinned[slot] is None else (pinned[slot],)
-
-    logs = [[-math.inf if a in dim and b != kn.DIM_RESOLUTION else _log_step(table, a, b, moves) for b in range(7)]
-            for a in range(7)]
-
-    def step(slot: int, a: int, b: int) -> float:
-        return logs[a][b]
-
-    def top(cands: Iterable[Tuple[float, Tuple[int, ...]]]) -> Tuple[float, Tuple[int, ...]]:
-        best = None
-        for sp in cands:  # больше оценка; ничья — меньшие ступени
-            if best is None or sp[0] > best[0] or (sp[0] == best[0] and sp[1] < best[1]):
-                best = sp
-        return best
-
-    out = []
-    for firsts in ([(f,) for f in allowed(0)] if ring else [tuple(allowed(0))]):  # петля — путь на каждую первую
-        best = {f: (math.log(table["start"][f]) + hh.melody_weight * em[0][f], (f,)) for f in firsts}
-        for slot in range(1, slots):
-            best = {d: top((score + step(slot, p, d) + hh.melody_weight * em[slot][d], path + (d,))
-                           for p, (score, path) in best.items())
-                    for d in allowed(slot)}
-        ends = [(score + (step(slots, path[-1], path[0]) if ring and slots > 1 else 0.0), path)
-                for score, path in best.values()
-                if ring or path[-1] not in dim]
-        if ends:
-            out.append(top(ends))
-    out = [sp for sp in out if sp[0] > -math.inf] or out
+    w = kn.HOOK_HARMONY.melody_weight
+    gains = [[w * e for e in row] for row in _emissions(key, notes, chord_beats, slots, clash)]
+    allowed = _allowed(key, list(fixed)[:slots] + [None] * (slots - len(fixed)), degrees)
+    logs = _log_matrix(key, table, progressions)
+    starts = [(f,) for f in allowed[0]] if ring else [allowed[0]]  # петля — путь на каждую первую ступень
+    found = (_forward(table, gains, allowed, logs, firsts, ring, diminished(key)) for firsts in starts)
+    out = [sp for sp in found if sp is not None and sp[0] > -math.inf]
     if not out:
         raise ValueError(f"нет пути гармонии из ступеней {tuple(degrees)}")
     return sorted(out, key=lambda sp: (-sp[0], sp[1]))
+
+
+def _allowed(key: Key, pinned: Sequence[Optional[int]], degrees: Sequence[int]) -> List[Tuple[int, ...]]:
+    """Ступени, из которых выбирает каждый слот: известная — она одна; иначе ``degrees`` без уменьшённых, которых
+    Витерби не берёт (:func:`unresolved_dims`)."""
+    banned = unresolved_dims(key)
+    free = tuple(d for d in degrees if d not in banned)
+    return [free if p is None else (p,) for p in pinned]
+
+
+Path = Tuple[float, Tuple[int, ...]]
+
+
+def _top(cands: Iterable[Path]) -> Optional[Path]:
+    """Лучший путь: больше оценка; ничья — меньшие ступени."""
+    best = None
+    for sp in cands:
+        if best is None or sp[0] > best[0] or (sp[0] == best[0] and sp[1] < best[1]):
+            best = sp
+    return best
+
+
+def _log_matrix(key: Key, table: Table, progressions: Iterable[Sequence[int]]) -> List[List[float]]:
+    """log P(a → b) слота (:func:`_log_step`); из уменьшённого — только в ``knowledge.DIM_RESOLUTION``."""
+    dim, moves = diminished(key), _style_moves(progressions)
+    return [[-math.inf if a in dim and b != kn.DIM_RESOLUTION else _log_step(table, a, b, moves) for b in range(7)]
+            for a in range(7)]
+
+
+def _forward(table: Table, gains: Sequence[Sequence[float]], allowed: Sequence[Sequence[int]],
+             logs: Sequence[Sequence[float]], firsts: Sequence[int], ring: bool, dim: frozenset) -> Optional[Path]:
+    """Проход Витерби от первых ступеней ``firsts``: лучший путь; петля — со стыком «последний → первый», цепочка —
+    не кончается уменьшённым."""
+    best = {f: (math.log(table["start"][f]) + gains[0][f], (f,)) for f in firsts}
+    for slot in range(1, len(gains)):
+        best = {d: _top((score + logs[p][d] + gains[slot][d], path + (d,)) for p, (score, path) in best.items())
+                for d in allowed[slot]}
+    closing = ring and len(gains) > 1
+    return _top((score + (logs[path[-1]][path[0]] if closing else 0.0), path) for score, path in best.values()
+                if ring or path[-1] not in dim)
 
 
 def _adapt(chord: ChordSpan, key: Key) -> Optional[int]:
@@ -340,23 +356,31 @@ def from_material(material: ScoreMaterial, phrase: Phrase, key: Key, notes: Sequ
     if transition_table(material.key.mode) is not table:
         raise ValueError(f"лад трека {key.mode} и лад материала {material.key.mode} разные — ступени не переносятся")
     spans = material_slots(material, phrase, chord_beats, slots, scale)
-    fixed = [None if c is None else _adapt(c, material.key) for c in spans]
-    dim = diminished(key)
-    shift = key.root - material.key.root
-
-    def keep(i: int, d: Optional[int]) -> bool:
-        if d is None:
-            return False
-        if d in dim and (d in unresolved_dims(key) or i + 1 >= slots or fixed[i + 1] != kn.DIM_RESOLUTION):
-            return False
-        author = {(spans[i].root_pc + shift + k) % 12 for k in kn.CHORD_INTERVALS[spans[i].quality]}
-        return not transfer_b9(key, _slot_notes(notes, i, chord_beats), d, author)
-    fixed = [d if keep(i, d) else None for i, d in enumerate(fixed)]
+    fixed = _author_degrees(material, key, spans, notes, chord_beats)
     known = [d for d in fixed if d is not None]
     if slots > 1 and len(set(known)) == 1:
         fixed = [known[0]] + [None] * (slots - 1)
     degrees = list(viterbi(key, notes, chord_beats, slots, fixed, table))
     return tuple(_cadence(degrees, table)) if slots > 1 else tuple(degrees)
+
+
+def _author_degrees(material: ScoreMaterial, key: Key, spans: Sequence[Optional[ChordSpan]],
+                    notes: Sequence[PitchEvent], chord_beats: float) -> List[Optional[int]]:
+    """Ступени аккордов автора по слотам (:func:`_adapt`), проверенные под звучащую мелодию: слот, где перенос дал
+    малую нону на сильной доле (:func:`transfer_b9`) или уменьшённое без разрешения следующим аккордом в
+    ``knowledge.DIM_RESOLUTION``, — ``None`` (выбирает Витерби)."""
+    fixed = [None if c is None else _adapt(c, material.key) for c in spans]
+    dim, banned = diminished(key), unresolved_dims(key)
+    shift = key.root - material.key.root
+    out: List[Optional[int]] = []
+    for i, d in enumerate(fixed):
+        nxt = fixed[i + 1] if i + 1 < len(fixed) else None
+        if d is None or (d in dim and (d in banned or nxt != kn.DIM_RESOLUTION)):
+            out.append(None)
+            continue
+        author = {(spans[i].root_pc + shift + k) % 12 for k in kn.CHORD_INTERVALS[spans[i].quality]}
+        out.append(None if transfer_b9(key, _slot_notes(notes, i, chord_beats), d, author) else d)
+    return out
 
 
 def melody_progression(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int, *,

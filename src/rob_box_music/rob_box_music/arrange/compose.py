@@ -193,6 +193,11 @@ def _sections(spec: FormSpec) -> Iterator[Tuple[int, int, str, frozenset]]:
         start += bars
 
 
+def _progression(spec: FormSpec, chords: Mapping[int, Chord]) -> Dict[str, Tuple[Chord, ...]]:
+    """Аккорды секций по тактам (``Harmony.progression``) из аккорда такта формы."""
+    return {name: tuple(chords[bar] for bar in range(start, start + bars)) for start, bars, name, _r in _sections(spec)}
+
+
 def _bar_chords(spec: FormSpec, role: str, progression: Mapping[str, Sequence[Chord]]) -> List[Tuple[int, Chord]]:
     """(такт формы, аккорд) там, где звучит ``role``; ``progression`` — аккорды секций по тактам (``Harmony``)."""
     return [(start + i, chord) for start, _bars, name, roles in _sections(spec) if role in roles
@@ -373,8 +378,10 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
     """(петля хука по слотам, ступень такта формы, тон баса автора такта) — одна гармонизация под звучащую мелодию
     каждой секции (аудит 07.10 Ф1): петля — под хук (``harm.loop``; петля длиной в хук, и хук в 4 такта не уходит во
     второй половине на чужие аккорды), тема целиком — под тему (``harm.theme``); секция, где звучит хук по кругу
-    (drop, drop2 с терциями, остаток секции темы), — петля от начала секции; секция развития (build, break, ответ
-    drop2) — под свою мелодию (:func:`_section_degrees`); секция без лида — петля по такту формы."""
+    (drop, остаток секции темы, drop2 — хук и терции над ним: гармонизуется хук, такт с b9 терции — ступень без неё,
+    :meth:`_BarPlan.voiced`), — петля от начала секции; секция
+    развития (build, break, ответ drop2 из материала) — под свою мелодию (:func:`_section_degrees`); секция без лида —
+    петля по такту формы."""
     slot = kn.HOOK_HARMONY.slot_bars
     loop = harm.loop(motif.notes, max(1, motif.bars // slot))
     loop_bars = _per_bar(loop, slot)
@@ -383,32 +390,54 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
     theme = _per_bar(theme_slots, slot)
     theme_tones = harm.theme_tones(theme_slots) if theme_slots and harm.theme_tones else ()
     plain = replace(motif, theme=(), theme_bars=0)
-    degrees: Dict[int, int] = {}
-    tones: Dict[int, bass.BassTone] = {}
-
-    def from_loop(bar: int, at: int) -> None:
-        degrees[bar] = loop_bars[at % len(loop_bars)]
-        if loop_tones:
-            tones[bar] = loop_tones[at % len(loop_tones)]
-
+    plan = _BarPlan({}, {})
     for start, bars, name, roles in _sections(spec):
         if "lead" not in roles:
-            for bar in range(start, start + bars):
-                from_loop(bar, bar)
+            plan.put(range(start, start + bars), loop_bars, loop_tones, by_form_bar=True)
             continue
         span = len(theme) if name == kn.THEME_SECTION else 0
-        for at in range(span):
-            degrees[start + at] = theme[at]
-            if theme_tones:
-                tones[start + at] = theme_tones[at]
-        line = hooks.melody(plain, name, bars, key)
-        if span or line == hooks.develop(plain, "drop", bars, key):
-            for at in range(bars - span):
-                from_loop(start + span + at, at)
+        plan.put(range(start, start + span), theme, theme_tones)
+        line = hooks.develop(plain, name, bars, key)
+        hook_line = hooks.develop(plain, "drop", bars, key)
+        if span or set(hook_line) <= set(line):  # хук по кругу, в т. ч. с добавочным голосом (терции drop2)
+            plan.put(range(start + span, start + bars), loop_bars, loop_tones)
+            if not span and len(line) > len(hook_line):
+                plan.voiced(key, start, bars, hook_line, line)
         else:
-            for at, d in enumerate(_section_degrees(key, line, name, bars)):
-                degrees[start + at] = d
-    return tuple(loop), degrees, tones
+            plan.put(range(start, start + bars), _section_degrees(key, line, name, bars), ())
+    return tuple(loop), plan.degrees, plan.tones
+
+
+class _BarPlan(NamedTuple):
+    """Ступень и тон баса автора по такту формы (собирается :func:`_harmonize`)."""
+
+    degrees: Dict[int, int]
+    tones: Dict[int, bass.BassTone]
+
+    def put(self, bars: range, chords: Sequence[int], tones: Sequence[bass.BassTone], by_form_bar: bool = False
+            ) -> None:
+        """Такты ``bars`` — ``chords``/``tones`` по кругу: от начала отрезка или по номеру такта формы."""
+        for i, bar in enumerate(bars):
+            k = bar if by_form_bar else i
+            self.degrees[bar] = chords[k % len(chords)]
+            if tones:
+                self.tones[bar] = tones[k % len(tones)]
+
+    def voiced(self, key: Key, start: int, bars: int, hook_line: Sequence[PitchEvent], line: Sequence[PitchEvent]
+               ) -> None:
+        """Хук с добавочным голосом (терции drop2) над петлёй: такт, где какой-то голос дал малую нону на сильной доле,
+        а есть ступень без неё ни в одном голосе, — эта ступень (лучшая под хук); иначе — петля, как есть."""
+        for at in range(bars):
+            def in_bar(notes: Sequence[PitchEvent]) -> List[PitchEvent]:
+                return [replace(e, beat=e.beat - at * BEATS_PER_BAR) for e in notes
+                        if int(e.beat // BEATS_PER_BAR) == at]
+            voices, hook_bar = in_bar(line), in_bar(hook_line)
+            if not harmony.strong_b9(key, voices, self.degrees[start + at]):
+                continue
+            clean = [d for d in range(7) if d not in harmony.diminished(key) and not harmony.strong_b9(key, voices, d)]
+            if clean:
+                self.degrees[start + at] = harmony.viterbi(key, hook_bar, BEATS_PER_BAR, 1, degrees=clean)[0]
+                self.tones.pop(start + at, None)  # тон баса автора — к его аккорду, у нового — прима
 
 
 def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_synth: str, harm: Harmonizer) -> Arranged:
@@ -577,8 +606,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     else:
         track_hook = motif = found[0]
         key, arranged, spec = found[1:]
-    progression = {name: tuple(arranged.chords[bar] for bar in range(start, start + bars))
-                   for start, bars, name, _roles in _sections(spec)}
+    progression = _progression(spec, arranged.chords)
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}") for name in ("kit", "sample", "loop", "fx")}
     kit = _kit(style, history, axis["kit"])

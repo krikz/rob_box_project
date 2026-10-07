@@ -146,6 +146,25 @@ def test_loop_is_as_long_as_the_hook_so_both_halves_of_the_drop_match(tracks):
         assert drop == [loop[i % len(loop)] for i in range(len(drop))]
 
 
+def test_drop2_thirds_get_a_chord_without_b9_where_one_exists(tracks):
+    """drop2 — хук и терции над ним: такт, где терция дала малую нону на сильной доле, получает ступень без b9 ни в
+    одном голосе, если такая есть (аудит Ф1: b9 на сильной доле в 82 % треков)."""
+    checked = 0
+    for track in tracks:
+        start = next((b for b, sec in _sections(track) if sec.name == "drop2"), None)
+        if start is None:  # форма без drop2 (short32)
+            continue
+        for at, chord in enumerate(track.harmony.progression["drop2"]):
+            lo = (start + at) * BEATS_PER_BAR
+            voices = [replace(e, beat=e.beat - lo) for e in track.parts["lead"].pitches if lo <= e.beat < lo + 4]
+            clean = [d for d in range(7) if d not in harmony.diminished(track.key)
+                     and not harmony.strong_b9(track.key, voices, d)]
+            if clean:
+                checked += 1
+                assert not harmony.strong_b9(track.key, voices, chord.degree), (start + at, chord.degree, clean)
+    assert checked
+
+
 def test_pad_voice_leading_stays_close_across_the_whole_track(tracks):
     for track in tracks:
         chords = [c for name in [s.name for _b, s in _sections(track)] for c in track.harmony.progression[name]]
