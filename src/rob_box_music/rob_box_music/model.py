@@ -288,12 +288,29 @@ def _check_grid(role: str, grid: Grid, bars_total: int) -> None:
     path = f"parts.{role}.grid.steps"
     _require(n > 0 and n % STEPS_PER_BAR == 0, path, f"длина {n} не кратна такту ({STEPS_PER_BAR})")
     _require((STEPS_PER_BAR * bars_total) % n == 0, path, f"длина {n} не делит форму ({bars_total} тактов)")
+    if all(0 <= st.accent <= 3 and isinstance(st.offset_ms, int) for st in grid.steps):
+        return  # без строк причин на каждом шаге (PR #3501: время валидатора)
     for i, st in enumerate(grid.steps):
         _require(0 <= st.accent <= 3, f"{path}[{i}].accent", f"акцент {st.accent} вне 0..3")
         _require(isinstance(st.offset_ms, int), f"{path}[{i}].offset_ms", "сдвиг не в целых мс")
 
 
+def _pitch_ok(role: str, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool) -> bool:
+    """Все условия :func:`_check_pitch` разом, без сборки сообщений: валидатор проходит ~10⁴ нот на трек, и строки
+    причин на каждой ноте занимали заметную долю времени ``render`` (CI-таймаут пакета, PR #3501)."""
+    lo, hi = part.register
+    lpf_lo, lpf_hi = kn.LPF_RANGE_HZ
+    if not (_finite(ev.beat) and _finite(ev.dur_beats) and ev.dur_beats > 0 and 0 <= ev.beat
+            and ev.beat + ev.dur_beats <= limit_beats + 1e-9 and (ev.lpf == kn.LPF_OPEN or lpf_lo <= ev.lpf <= lpf_hi)
+            and lo <= ev.midi <= hi):
+        return False
+    return (song or role == "lead" or ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
+            or (role == "bass" and ev.dur_beats <= APPROACH_MAX_BEATS))
+
+
 def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool) -> None:
+    if _pitch_ok(role, ev, key, limit_beats, part, song):
+        return
     path = f"parts.{role}.pitches[{i}]"
     _require(_finite(ev.beat) and _finite(ev.dur_beats), path, "доли не конечные числа")
     _require(ev.dur_beats > 0 and 0 <= ev.beat and ev.beat + ev.dur_beats <= limit_beats + 1e-9,

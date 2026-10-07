@@ -175,7 +175,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'клубный',
                                                          'enum': [   'auto',
                                                                      'club',
-                                                                     'rave']},
+                                                                     'rave',
+                                                                     'synthwave',
+                                                                     'chiptune']},
                                             'tracks': {   'type': 'integer',
                                                           'description': 'Сколько '
                                                                          'треков в '
