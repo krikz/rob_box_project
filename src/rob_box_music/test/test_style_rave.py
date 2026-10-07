@@ -48,7 +48,8 @@ def test_rave_windows_span_140_to_160_and_kicks_are_hard_and_flagged_unmeasured(
     for name in RAVE_KICKS:
         kick = kn.KICK_SOUNDS[name]
         assert kick.symbol in ("A", "W") and not kick.measured and math.isnan(kick.sub) and kick.low >= 0.8, name
-    assert not set(kn.GENRE_NAMES) - {*RAVE.genre_windows, *kn.STYLES["club"].genre_windows}
+    assert set(kn.GENRE_NAMES) == {w for st in kn.STYLES.values() for w in st.genre_windows}  # S2: и окна новых стилей
+    assert RAVE.genre_windows.keys() <= kn.GENRE_NAMES
 
 
 def test_rave_timbres_lead_with_hoover_rave_supersaw_and_every_family_has_acid_tb303():

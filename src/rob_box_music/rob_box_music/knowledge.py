@@ -218,6 +218,13 @@ class SynthTraits:
         return self.tail != "short"
 
 
+#: Синт с фильтром, чей срез растёт с высотой ноты и уходит за Найквист 8 кГц (выход 16 кГц): выше этой ноты фильтр
+#: неустойчив. ``cs80lead`` (renardo_lib): ``LPF.ar(osc, fenv·freq·12 + 100)`` — сам SynthDef пишет «keep ffreq below
+#: nyquist»; 7900/12 = 658 Гц ≈ MIDI 76, коридор лида — до 84. Робот 07.10 (ADR-0153 S2, synthwave): оба трека с
+#: ``cs80lead`` — серии цифрового нуля до 6.6 с и доля энергии выше 4.5 кГц до 0.9 (у клуба 0.007); 4 трека без него —
+#: чисто. Клуб (``hard``) и рейв (``dark``) его ещё держат — отдельная карточка.
+NYQUIST_MAX_MIDI: Mapping[str, int] = {"cs80lead": 76}
+
 #: Свойства синтов (``core/synth_traits.SYNTH_TRAITS``; без поля ``source`` — оно в старом файле).
 SYNTH_TRAITS: Mapping[str, SynthTraits] = {
     "imperialbrass": SynthTraits("held", "lead", "≈1.5 с"),
@@ -420,7 +427,7 @@ __all__ = [
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
-    "scale_pitch_classes", "traits_of",
+    "scale_pitch_classes", "traits_of", "NYQUIST_MAX_MIDI",
 ]
 
 
@@ -1080,18 +1087,19 @@ _SYNTHWAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "retrowave": GenreWindow((108, 120), ("house", "deep"), _RETROWAVE_LOOKS, ("offbeat", "rolling8"),
                              ("held", "arp", "arp")),
 }
-#: Тембры synthwave — семьи тем как у клуба. Лиды: ``cs80lead`` (Yamaha CS-80 — звук жанра), ``strangerarp`` и
-#: ``supersawlead`` (собственный хвост ``held`` — мотив может смазываться, проверка на слух, как у рейва), ``saw``.
+#: Тембры synthwave — семьи тем как у клуба. Лиды: ``strangerarp`` и ``supersawlead`` (собственный хвост ``held`` —
+#: мотив может смазываться, проверка на слух, как у рейва), ``saw``, ``keys``, ``arpy``. ``cs80lead`` (звук жанра) НЕ
+#: взят: на роботе 07.10 оба трека с ним дали секунды цифрового нуля и шум выше среза мастера (:data:`NYQUIST_MAX_MIDI`).
 #: Басы — с долей низа ≥ 0.9 (``BASS_MIN_LOW``): ``retrobass`` (0.59) и ``moogbass`` (разброс замера 8 дБ) в семьи не
 #: идут. Пэды: держащие (``warmpad``/``strangerpulsepad`` — с хвостом, только ``held``) и короткие для ``arp``.
 _SYNTHWAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("cs80lead", "strangerarp", "saw"), "bass": ("subbass", "jbass"),
+    "dark": {"lead": ("strangerarp", "saw", "keys"), "bass": ("subbass", "jbass"),
              "pad": ("strangerpulsepad", "space", "saw")},
-    "hard": {"lead": ("strangerarp", "cs80lead", "supersawlead", "saw"), "bass": ("jbass", "subbass"),
+    "hard": {"lead": ("strangerarp", "supersawlead", "saw", "arpy"), "bass": ("jbass", "subbass"),
              "pad": ("strangerpulsepad", "sinepad", "pulse")},
-    "bright": {"lead": ("cs80lead", "supersawlead", "arpy"), "bass": ("bass", "jbass"),
+    "bright": {"lead": ("supersawlead", "arpy", "keys"), "bass": ("bass", "jbass"),
                "pad": ("warmpad", "strings", "pulse")},
-    "warm": {"lead": ("cs80lead", "strangerarp", "keys"), "bass": ("bass", "jbass", "subbass"),
+    "warm": {"lead": ("strangerarp", "keys", "saw"), "bass": ("bass", "jbass", "subbass"),
              "pad": ("warmpad", "sinepad", "saw")},
 }
 _SYNTHWAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "open")}

@@ -109,6 +109,15 @@ def test_every_synth_of_the_style_is_measured_and_leads_reach_their_target(name)
         assert all(mix.pad_synths(style, family, f) for f in figures), family
 
 
+@pytest.mark.parametrize("name", NEW)
+def test_no_lead_whose_filter_crosses_nyquist_in_the_lead_register(name):
+    """Робот 07.10: ``cs80lead`` (срез ``freq·12``) выше MIDI 76 рвёт выход — в новых стилях его нет."""
+    style = kn.STYLES[name]
+    top = style.registers["lead"][1]
+    leads = {s for fam in style.timbres.values() for s in fam["lead"]}
+    assert not {s for s in leads if kn.NYQUIST_MAX_MIDI.get(s, 128) < top}, leads
+
+
 def test_pulse_bass_plays_only_octaves():
     """8-битный бас: ``pulse`` (низ 0.58) — только рисунком ``octave8``, а ``octave8`` — только им."""
     chip = kn.STYLES["chiptune"]
