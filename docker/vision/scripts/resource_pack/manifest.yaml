@@ -308,6 +308,55 @@ resources:
       - "supercollider (буферы, /root/.config/renardo/samples/dj_dave:ro)"
       - "mcp_server: core/sample_dave.py + renardo_sanitizer (loop('<имя>'))"
 
+  # ---------- открытые: Sonic Pi samples (CC0, тот же хук-фетчер) ----------
+  # Бочки bd_*, снейры/томы/райд/краш drum_*, хэты hat_*, лупы loop_amen /
+  # loop_amen_full / loop_breakbeat и остальное из etc/samples репозитория
+  # sonic-pi-net/sonic-pi (206 flac + README с источниками). Лицензия: LICENSE.md
+  # репо, раздел Samples — каждый сэмпл CC0 1.0 (arovane_*, tbd_* — тоже CC0).
+  # Сами файлы в репозиторий не кладём (сэмплы живут на хосте, как у DJ_Dave);
+  # один фетчер fetch_sample_pack.py, эталоны — sonicpi_samples.lock.json.
+  # В генератор пак пока НЕ подключён (ADR-0153 S3/S5): только доставка на
+  # хост + каталог.
+  - name: sonicpi-samples
+    type: open
+    kind: sample-pack
+    fetch_hook: fetch_sonicpi_samples
+    # sha256 пуст: у записи с fetch_hook он запрещён, пофайловые суммы —
+    # в sonicpi_samples.lock.json (207 файлов, пиннутый коммит).
+    sha256: ""
+    size_bytes: 35042725
+    verify_file: .complete
+    target: /opt/rob_box/samples/sonicpi
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      Сэмплы Sonic Pi недоступны: ничего из музыки пока их не использует
+      (пак не подключён к генератору, ADR-0153 S3/S5), деплой не блокируется.
+    consumers:
+      - "rob_box_music/data/sample_sonicpi.json (каталог; в генератор пока не подключён)"
+
+  # ---------- открытые: DrumGizmo MuldjordKit (CC BY 4.0, тот же хук) ----------
+  # Рок-кит Lars Muldjord (Tama Superstar), drumgizmo.org. Официальный архив
+  # >1.1 ГБ, поэтому берём flac той же записи из конверсии
+  # sfzinstruments/DrumGizmo.MuldjordKit (cc-by-4.0) по пиннутому коммиту,
+  # выборкой: один ближний микрофон на инструмент, два удара ~75-го
+  # перцентиля силы (32 файла, ~7 МБ). Авторство — docs/music/ATTRIBUTION.md.
+  - name: muldjord-kit
+    type: open
+    kind: sample-pack
+    fetch_hook: fetch_muldjord_kit
+    sha256: ""
+    size_bytes: 6957949
+    verify_file: .complete
+    target: /opt/rob_box/samples/muldjord
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      Сэмплы MuldjordKit недоступны: ничего из музыки пока их не использует
+      (пак не подключён к генератору, ADR-0153 S3/S5), деплой не блокируется.
+    consumers:
+      - "rob_box_music/data/sample_muldjord.json (каталог; в генератор пока не подключён)"
+
   # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
   # ЭТАП 4 ВЫПОЛНЕН ЧАСТИЧНО (21.09.2026): sha256 снят у двух записей
   # katana, у двух записей vision-pi снять НЕ С ЧЕГО — см. комментарии

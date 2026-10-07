@@ -1,4 +1,5 @@
 {
+ "title": "DJ_Dave samples",
  "_comment": [
   "Issue #3219 — lock сэмплов DJ_Dave для fetch_dj_dave_samples.py.",
   "Файлы в git НЕ коммитятся (у источников нет лицензии, репозиторий публичный).",

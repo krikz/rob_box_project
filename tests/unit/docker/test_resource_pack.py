@@ -29,6 +29,7 @@ import functools
 import hashlib
 import http.server
 import os
+import re
 import shutil
 import socketserver
 import subprocess
@@ -43,6 +44,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACK_DIR = REPO_ROOT / "docker" / "vision" / "scripts" / "resource_pack"
 SCRIPT = PACK_DIR / "apply_resource_pack.sh"
+#: Хуки, которые apply_resource_pack.sh отдаёт общему фетчеру fetch_sample_pack.py (свой lock-файл на пак).
+SAMPLE_PACK_HOOKS = ("fetch_dj_dave_samples", "fetch_sonicpi_samples", "fetch_muldjord_kit")
 MANIFEST = PACK_DIR / "manifest.yaml"
 
 BASH = shutil.which("bash")
@@ -868,11 +871,14 @@ def test_fetch_hook_script_exists_for_every_declared_hook() -> None:
         hook = res.get("fetch_hook")
         if not hook:
             continue
-        assert f"{hook})" in script, (
+        # Метка case: ``hook)`` или в списке ``a|hook|b)`` (сэмпл-паки делят один фетчер).
+        assert re.search(rf"(^|[\s|]){re.escape(hook)}[|)]", script, re.M), (
             f"{res['name']}: apply_resource_pack.sh не знает хук {hook!r} — "
             f"деплой упал бы с 'неизвестный fetch_hook'"
         )
-        assert (PACK_DIR / f"{hook}.py").exists(), (
+        # Свой скрипт ``<хук>.py`` либо общий фетчер сэмпл-паков.
+        shared = (PACK_DIR / "fetch_sample_pack.py").exists() and hook in SAMPLE_PACK_HOOKS
+        assert (PACK_DIR / f"{hook}.py").exists() or shared, (
             f"{res['name']}: нет {PACK_DIR / (hook + '.py')}"
         )
 

@@ -51,3 +51,35 @@
 
 Каждый материал несёт `material_id` (`pdmx:<id>` | `local:<sha8>`), `composer`, `source`, `license`; их пишет импортёр,
 индекс хранит `license`, `rating`, `n_ratings`, `keysig` и `file`. Запись `material_id` в лог трека (ADR-0154 M6) появится вместе с потребителем материала (PR-3+); в PR-2 её нет.
+
+
+# Атрибуция: сэмпл-паки Ресурсного пака (решение товарища Шифу 07.10.2026)
+
+Сами аудиофайлы в репозиторий **не кладутся**: их ставит на хост Ресурсный пак (ADR-0125/0126; записи манифеста
+`sonicpi-samples`, `muldjord-kit`, фетчер `docker/vision/scripts/resource_pack/fetch_sample_pack.py`, эталоны sha256 —
+`sonicpi_samples.lock.json`, `muldjord_kit.lock.json`). В git — только код, lock-файлы и каталоги
+`rob_box_music/data/sample_sonicpi.json`, `sample_muldjord.json`. В генератор паки пока не подключены (ADR-0153 S3/S5).
+
+## DrumGizmo MuldjordKit
+
+- **Автор:** Lars Muldjord (Tama Superstar, запись для проекта DrumGizmo).
+- **Источник:** <https://drumgizmo.org/wiki/doku.php?id=kits:muldjordkit>; официальный архив
+  <https://drumgizmo.org/kits/MuldjordKit/MuldjordKit3.zip> (версия 3.0, md5 по странице кита
+  `8a66a3e90bbf15687b2d34fd355024f2`). Архив больше 1.1 ГБ (скачивание прервано на 1.15 ГБ), поэтому хук берёт отдельные flac из конверсии
+  <https://github.com/sfzinstruments/DrumGizmo.MuldjordKit> на пиннутом коммите (лицензия репозитория `cc-by-4.0`),
+  см. `_comment` в `muldjord_kit.lock.json`.
+- **Лицензия:** Creative Commons Attribution 4.0 International (CC BY 4.0),
+  <https://creativecommons.org/licenses/by/4.0/>. **Требуется указание авторства.**
+- **Что берётся:** 32 flac (16 инструментов × 2 удара), один ближний микрофон на инструмент, ~7 МБ.
+- **Как указывать:** с января 2021 автор просит при использовании кита в композиции писать в выходных данных альбома
+  «Drum samples provided by DrumGizmo.org» (на странице кита; требование сформулировано для композиций). Если
+  генератор начнёт отдавать сыгранное на этом ките наружу (запись, публикация), строка авторства обязательна. Пока
+  кит не подключён к генератору, это условие не наступило.
+
+## Sonic Pi samples
+
+- **Источник:** <https://github.com/sonic-pi-net/sonic-pi/tree/dev/etc/samples> (пиннутый коммит — в lock-файле).
+- **Лицензия:** CC0 1.0 Universal, <http://creativecommons.org/publicdomain/zero/1.0/>. `LICENSE.md` репозитория,
+  раздел Samples: каждый сэмпл CC0; `arovane_*` пожертвованы Uwe Zahn (Arovane), `tbd_*` — The Black Dog, остальные
+  с freesound.org (ссылки на оригиналы — `etc/samples/README.md`, он ставится на хост рядом с файлами).
+- Указание авторства не требуется; запись здесь «для порядка».

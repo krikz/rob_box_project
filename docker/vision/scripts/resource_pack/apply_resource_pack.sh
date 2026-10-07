@@ -544,13 +544,20 @@ run_fetch_hook() {  # $1 = имя хука, $2 = целевой каталог; 
             python3 "${SCRIPT_DIR}/fetch_renardo_samples.py" --target "$tdir"
             return $?
             ;;
-        fetch_dj_dave_samples)
+        fetch_dj_dave_samples|fetch_sonicpi_samples|fetch_muldjord_kit)
+            local lock
+            case "$hook" in
+                fetch_dj_dave_samples) lock="dj_dave_samples.lock.json" ;;
+                fetch_sonicpi_samples) lock="sonicpi_samples.lock.json" ;;
+                fetch_muldjord_kit) lock="muldjord_kit.lock.json" ;;
+            esac
             if ! command -v python3 >/dev/null 2>&1; then
                 err "хук ${hook}: python3 не найден — скачать сэмплы нечем"
                 return 127
             fi
-            # stdlib-only; эталоны sha256 — dj_dave_samples.lock.json рядом.
-            python3 "${SCRIPT_DIR}/fetch_dj_dave_samples.py" --target "$tdir"
+            # Один фетчер на все сэмпл-паки; stdlib-only; эталоны sha256 —
+            # lock-файл пака рядом (имя зашито здесь, манифест его не задаёт).
+            python3 "${SCRIPT_DIR}/fetch_sample_pack.py" --target "$tdir" --lock "${SCRIPT_DIR}/${lock}"
             return $?
             ;;
         *)
