@@ -485,7 +485,7 @@ jobs:
           # без единого сетевого запроса.
           RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
           rp_rc=0
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit" || rp_rc=$?
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit,score-library" || rp_rc=$?
 
           # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
           # маркер тот же, на котором стоит идемпотентность фетчера.
@@ -495,6 +495,17 @@ jobs:
           else
             echo "::warning title=Renardo samples missing::сэмплы не разложены — музыка уйдёт в synth-only (MusicSkill не найдёт WAV, scsynth не прочитает буферы). Диалог/STT/TTS не затронуты."
             echo "⚠️  Проверить: [Vision Pi] Check Container Logs на 'samples not found' / 'Buffer UGen: no buffer data'"
+          fi
+
+          # Библиотека партитур (ADR-0154 §8 В7) — тот же шаг: soft, как сэмплы.
+          # Архив — блоб registry katana по sha256 из score_library.lock.json;
+          # маркер .complete несёт эту сумму (первая строка), поэтому новая
+          # версия lock-файла доезжает этим же деплоем, без --force.
+          SCORES_MARKER="/opt/rob_box/scores/.complete"
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $SCORES_MARKER && head -n 3 $SCORES_MARKER"; then
+            echo "✅ Библиотека партитур на месте ($SCORES_MARKER)"
+          else
+            echo "::warning title=Score library missing::библиотеки партитур нет — сет по теме играет хуки RTTTL (как до ADR-0154 PR-5). Диалог/STT/TTS не затронуты."
           fi
 
           # exit 1 только на 1/2 от самого скрипта (сломанный манифест,
