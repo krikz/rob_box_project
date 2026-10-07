@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from rob_box_voice.core.stt_admission import parse_tg_prefix
+
 # Обращение — первое слово: «Клод», «клод,», «Claude», «Клод:» и т.п.
 # Границы слова не даём ни «Клодия», ни «клод» в середине фразы.
 COORDINATOR_NAMES = ("клод", "claude")
@@ -39,8 +41,6 @@ def skip_coordinator_tg(handler: Callable[[Any], None], get_logger: Callable[[],
     ``handler`` без изменений. Обёртка, а не ветка в ``_on_stt``: класс
     DialogueNode под бюджетом размера (ADR-0145).
     """
-    from rob_box_voice.core.stt_admission import parse_tg_prefix
-
     def _wrapped(msg):
         text, tg_chat_id = parse_tg_prefix((getattr(msg, "data", "") or "").strip())
         if tg_chat_id is not None and is_coordinator_address(text):

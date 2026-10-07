@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from std_msgs.msg import String
+from types import SimpleNamespace
 
 from rob_box_voice.core.coordinator_address import is_coordinator_address, skip_coordinator_tg
 from rob_box_voice.dialogue_node import DialogueNode
@@ -33,7 +33,7 @@ def _wrapped():
 
 def test_tg_klod_never_reaches_dialogue():
     w, handler = _wrapped()
-    w(String(data="[TG:495039871] Клод на Моцарте не попадает в ритм"))
+    w(SimpleNamespace(data="[TG:495039871] Клод на Моцарте не попадает в ритм"))
     handler.assert_not_called()
 
 
@@ -44,7 +44,7 @@ def test_tg_klod_never_reaches_dialogue():
 ])
 def test_other_messages_pass(data):
     w, handler = _wrapped()
-    msg = String(data=data)
+    msg = SimpleNamespace(data=data)
     w(msg)
     handler.assert_called_once_with(msg)
 
