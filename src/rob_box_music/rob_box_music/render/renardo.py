@@ -23,6 +23,10 @@
 ``knowledge.SAMPLE_EDGE_S`` внутри ``sus`` (патч синта ``loop``, #3432); луп и psr — под сайдчейном
 (``Mix.duck_roles``), файл пула громче эталона уровня — тише на разницу по каталогу (``arrange.mix.file_gain``).
 
+Удар файлом пака (ADR-0153 S4: бочка/малый/хэт lo-fi) — ``loop('<путь>')`` с ``dur``/``sus``/``delay`` списками по
+ударам свёрнутого рисунка (:func:`_pack_drum_line`); свинг нот (``PitchEvent.offset_ms``) — ``delay=[...]`` тональной
+строки.
+
 Песня (``Form.kind == song``, classic PR-11): тональные роли — последовательность нот всей формы с ``dur``/``sus``
 списками (мелодия как записана, ноты не на сетке 16-х тоже), ударные — как у club; сэмплов у песни нет.
 
@@ -48,7 +52,8 @@ ROLE_SLOT: Dict[str, int] = {"kick": 0, "hats": 1, "clap": 2, "perc": 2, "bass":
                              "sample": 6, "fx": 7, "loop": 8}
 _UNSET = object()
 
-Cell = Tuple[Optional[Tuple[int, ...]], float, int, float]  # (ноты шага, sus в долях, акцент, срез ноты Гц или 0)
+#: (ноты шага, sus в долях, акцент, срез ноты Гц или 0, свинг мс)
+Cell = Tuple[Optional[Tuple[int, ...]], float, int, float, int]
 
 
 class RenderError(ValueError):
@@ -147,6 +152,16 @@ def _note_lpf(role: str, cutoffs: Sequence[float], opts: Sequence[str]) -> List[
     return [f"lpf={_list(_num(round(hz)) for hz in cutoffs)}"]
 
 
+def _note_delay(role: str, offsets: Sequence[int], opts: Sequence[str], bpm: int) -> List[str]:
+    """``delay=[...]`` — свинг на каждое событие свёрнутого рисунка (``PitchEvent.offset_ms``, доли); нет свинга —
+    ничего. Хаас двух голосов занял бы тот же ключ: оба сразу — ``RenderError``."""
+    if not any(offsets):
+        return []
+    if any(o.startswith("delay=") for o in opts):
+        raise RenderError(f"parts.{role}: свинг нот и Хаас голосов одновременно")
+    return [f"delay={_list(_num(_delay_beats(ms, bpm)) for ms in offsets)}"]
+
+
 def _stereo(st: Optional[Stereo], hits: Optional[Sequence[bool]], bpm: int) -> List[str]:
     """Аргументы ширины: ``hits`` — удары свёрнутого рисунка ударной роли, ``None`` — тональная роль."""
     if st is None:
@@ -210,6 +225,54 @@ def _drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     text = "".join(symbol if c else "." for c in pattern)
     sample = [f"sample={part.sample}"] if part.sample else []
     return f'{slot} >> play("{text}", dur=1/4, ' + ", ".join(sample + opts) + ")"
+
+
+def _pack_drum_line(slot: str, role: str, part: Part, track: Track) -> str:
+    """Удар файлом пака (ADR-0153 S4) по рисунку роли: ``loop(файл)`` — событие на каждом ударе свёрнутого рисунка
+    (``_drum_fold``) и на первой 16-й периода (пустое: ``amplify`` 0 — у ``loop`` нет символа паузы); ``dur`` — до
+    следующего события, ``sus`` — файл, но не дольше шага, ``delay`` — свинг удара; акцент и снятые в секции удары —
+    ``amplify``. Ширина удара файла не выражается — ``RenderError``."""
+    if track.mix.stereo.get(role) is not None:
+        raise RenderError(f"parts.{role}: ширина удара файла пака не выражается")
+    info = kn.SAMPLE_CATALOG[part.synth_or_sample]
+    total = track.form.bars_total * STEPS_PER_BAR
+    cells = [(st.accent, st.offset_ms) if st.on else None for st in part.grid.steps * (total // len(part.grid.steps))]
+    pattern, gains = _drum_fold(cells, _active_steps(track, role), track.form.bars_total)
+    starts = sorted({0} | {i for i, c in enumerate(pattern) if c})
+    durs, delays = _pack_timing(pattern, starts, track.bpm)
+    folded = _period(_pack_amplify(pattern, gains, starts, total))
+    opts = [f"dur={_list(_num(d) for d in durs)}",
+            f"sus={_list(_num(_one_shot_sus(info, d, track.bpm)) for d in durs)}", _edges(),
+            f"amp={_gate(track, role, voice_amp(role, part, 1))}"]
+    opts += [f"amplify={_list(_num(a) for a in folded)}"] if len(set(folded)) > 1 else []
+    opts += [f"delay={_list(_num(d) for d in delays)}"] if any(delays) else []
+    return f"{slot} >> loop({info.loop_arg!r}, " + ", ".join(opts + _lpf(track, role)) + ")"
+
+
+def _pack_timing(pattern: Sequence[Optional[tuple]], starts: Sequence[int],
+                 bpm: int) -> Tuple[List[float], List[float]]:
+    """(``dur`` до следующего события, ``delay`` свинга удара) событий удара файлом, доли."""
+    period = len(pattern)
+    durs = [((starts[(k + 1) % len(starts)] - s) % period or period) * STEP_BEATS for k, s in enumerate(starts)]
+    return durs, [_delay_beats(pattern[s][1], bpm) if pattern[s] else 0.0 for s in starts]
+
+
+def _pack_amplify(pattern: Sequence[Optional[tuple]], gains: Optional[Sequence[float]], starts: Sequence[int],
+                  total: int) -> List[float]:
+    """``amplify`` событий удара файлом на всю форму: пустое событие — 0, удар — усиление ``_drum_fold`` (рисунки
+    секций разные) или акцент (если акценты ударов разные)."""
+    period = len(pattern)
+    varied = len({c[0] for c in pattern if c}) > 1
+
+    def gain(cycle: int, step: int) -> float:
+        cell = pattern[step]
+        if cell is None:
+            return 0.0
+        if gains is not None:
+            return gains[cycle * period + step]
+        return kn.ACCENT_AMPLIFY[cell[0]] if varied else 1.0
+
+    return [gain(c, s) for c in range(total // period) for s in starts]
 
 
 def _one_shot_sus(info: kn.SampleInfo, gap_beats: float, bpm: int) -> float:
@@ -331,9 +394,10 @@ def _cells(role: str, part: Part, track: Track) -> List[Optional[Cell]]:
         grouped.setdefault(step, []).append(ev)
     cells: List[Optional[Cell]] = [None] * len(active)
     for step, evs in grouped.items():
-        if len({(e.dur_beats, e.accent, e.lpf) for e in evs}) != 1:
-            raise RenderError(f"parts.{role}: аккорд на доле {step * STEP_BEATS} с разными sus/акцентом/срезом")
-        cells[step] = (tuple(sorted(e.midi for e in evs)), evs[0].dur_beats, evs[0].accent, evs[0].lpf)
+        if len({(e.dur_beats, e.accent, e.lpf, e.offset_ms) for e in evs}) != 1:
+            raise RenderError(f"parts.{role}: аккорд на доле {step * STEP_BEATS} с разными sus/акцентом/срезом/свингом")
+        cells[step] = (tuple(sorted(e.midi for e in evs)), evs[0].dur_beats, evs[0].accent, evs[0].lpf,
+                       evs[0].offset_ms)
     return cells
 
 
@@ -408,6 +472,7 @@ def _tonal_line(slot: str, role: str, part: Part, track: Track) -> str:
     onsets = {c[2] for c in pattern if c}
     opts += _tail(track, role, part, accents, len(onsets) > 1)
     opts += _note_lpf(role, [c[3] if c else 0.0 for c in pattern], opts)
+    opts += _note_delay(role, [c[4] if c else 0 for c in pattern], opts, track.bpm)
     return f"{slot} >> {part.synth_or_sample}({_list(_note(c) for c in pattern)}, " + ", ".join(opts) + ")"
 
 
@@ -431,12 +496,14 @@ def render(track: Track, deck: str) -> Program:
     lines = [f"# {track.track_id} {kn.ROOTS[key.root]} {key.mode} {track.bpm} BPM deck {deck}"]
     for role in sorted(track.parts, key=ROLE_SLOT.__getitem__):
         part = track.parts[role]
-        line = _tonal_line if role in kn.TONAL_ROLES else _sample_line if role in SAMPLE_ROLES else _drum_line
+        line = (_tonal_line if role in kn.TONAL_ROLES else _sample_line if role in SAMPLE_ROLES
+                else _drum_line if part.synth_or_sample == kn.PLAY_SYNTH else _pack_drum_line)
         lines.append(line(slots[role], role, part, track))
     tonal = {p.synth_or_sample for r, p in track.parts.items() if r in kn.TONAL_ROLES}
     drums = {p.play_symbol + (f":{p.sample}" if p.sample else "")
-             for r, p in track.parts.items() if r in kn.DRUM_SYMBOLS}
-    files = {kn.SAMPLE_CATALOG[n].path for r, p in track.parts.items() if r in SAMPLE_ROLES
+             for r, p in track.parts.items() if r in kn.DRUM_SYMBOLS and p.synth_or_sample == kn.PLAY_SYNTH}
+    files = {kn.SAMPLE_CATALOG[n].path for r, p in track.parts.items()
+             if r in SAMPLE_ROLES or (r in kn.DRUM_SYMBOLS and p.synth_or_sample != kn.PLAY_SYNTH)
              for n in (p.synth_or_sample, *p.pool)}
     return Program(
         code="\n".join(lines) + "\n", track_id=track.track_id, deck=deck, bpm=track.bpm,

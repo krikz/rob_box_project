@@ -12,7 +12,7 @@ from __future__ import annotations
 import functools
 import json
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
@@ -49,6 +49,9 @@ _CLUB_REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (48, 
 LEAD_MAX_MIDI = 88
 #: Хук темы в тональности трека (I12): доля длительности нот лида в ладу не ниже порога; хроматика — проходящие.
 HOOK_KEY_FIT_MIN = 0.6
+#: Хроматический подход баса — нота вне лада не длиннее этого, доли (ADR-0149 §3.5); стиль с walking-басом держит
+#: свой потолок (``Style.approach_max_beats``: подход — целая доля, ADR-0153 §2.2).
+APPROACH_MAX_BEATS = 0.5
 #: Перевод размера материала в 4/4 клуба (ADR-0154 §3.6, #3517) — данные, не ветки кода: размер →
 #: ``(долей клуба на такт материала, узлы)``. Узлы ``(доля в такте материала, доля в тактах клуба)`` от ``(0, 0)``
 #: до ``(длина такта, конец музыки)`` задают кусочно-линейное отображение (``material.MeterMap``); хвост такта клуба
@@ -136,6 +139,9 @@ KICK_PATTERNS: Mapping[str, str] = {
     "half_time": "X.........X.....",
     "breakbeat": "X.X.......X..X..",
     "outrun": "X...X...X...X..X",
+    # ADR-0153 S4 (lo-fi): бочка на 1, «и» 2, «и» 3 — сетка восьмых (оффбит-восьмые качает свинг стиля); в build — 1 и «и» 3
+    "boombap": "X.....X...X.....",
+    "lazy": "X.........X.....",
 }
 
 BPM_RANGE = (60, 180)  # ``arranger.BPM_RANGE``: за пределами Renardo-тракт не принимает темп.
@@ -239,6 +245,8 @@ STYLE_PATTERNS: Mapping[str, str] = {
     # ADR-0153 S3: «драм-н-бейс», «драм энд бейс», «drum and bass» (STT пишет и словами врозь), «брейк бит».
     r"(?<!\w)(?:драм|drum)\s*-?\s*(?:(?:н|эн|энд|and|n|и)\s*-?\s*)?(?:бейс|бэйс|bass)\w*": "dnb",
     r"(?<!\w)(?:брейк|break)\s*-?\s*(?:бит|beat)\w*": "breaks",
+    # ADR-0153 S4: «лоу-фай», «лоу фай», «lo-fi», «lo fi» (STT пишет и через дефис, и врозь).
+    r"(?<!\w)(?:лоу|ло|lo)\s*-?\s*(?:фай|fi)(?!\w)": "lofi",
 }
 SEARCH_STYLE_PATTERNS: Tuple[str, ...] = tuple(STYLE_PATTERNS)
 
@@ -432,8 +440,10 @@ BASS_TONES_PROVENANCE: Mapping[str, object] = _BASS_TONES_DATA["provenance"]
 #: Роли сэмпла: ``perc`` — удар по сетке каркаса, ``loop`` — луп, растянутый на ``beats`` долей, ``fx`` —
 #: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
 #: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль),
-#: ``break`` — ударный брейк пака (амен), нарезаемый по сетке 16-х (``arrange.samples.breakbeat_chop``, ADR-0153 S3).
-SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick", "break")
+#: ``break`` — ударный брейк пака (амен), нарезаемый по сетке 16-х (``arrange.samples.breakbeat_chop``, ADR-0153 S3),
+#: ``snare``/``hat`` — удары кита пака (ADR-0153 S4: малый и хэт lo-fi, :data:`PACK_DRUMS`).
+SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick", "break", "snare",
+                                 "hat")
 #: Края огибающей запуска файла синтом ``loop``, с: (атака, спад) — ВНУТРИ ``sus`` (патч ``loop.scd``, #3432).
 #: Как у сэмплов Strudel DJ_Dave: удар с первого отсчёта (атака 2 мс не съедает щелчок psr), кусок ``chop``
 #: кончается к следующему (``legato(1)``: спад 5 мс до начала следующего куска, без наложения). Штатный синт
@@ -519,12 +529,35 @@ def _pack_break(name: str, meta: Mapping[str, object], pack_dir: str) -> SampleI
                       float(meta["peak_db"]), float(meta["rms_db"]), round(PACK_BREAK_BEATS[name] * 60.0 / seconds))
 
 
-#: Каталог сэмплов v2: имя → :class:`SampleInfo` — DJ_Dave и брейки паков (роль ``break``). v1 (``core/sample_dave``)
-#: видит из него только пак DJ_Dave (``SAMPLE_PACK_DIR``).
+_MULDJORD_DATA = json.loads(
+    (Path(__file__).resolve().parent / "data" / "sample_muldjord.json").read_text(encoding="utf-8"))
+#: Удары китов паков, которые играет v2 (ADR-0153 S4, lo-fi: мягкие бочка/малый/хэт; щёток в свободных паках нет).
+#: Отбор — по файлам на роботе 08.10 (``soundfile``, полный диапазон 44.1 кГц): бочки — доля < 200 Гц ≥ 0.97
+#: (``bd_jazz`` 0.997, ``drum_bass_soft`` 0.986, ``KdrumL_19`` 0.978); малые — тихие, середина ≥ 0.8
+#: (``drum_snare_soft`` 0.81, ``Snare_40/43`` 0.97); хэты — с долей ниже 8 кГц: у ``drum_cymbal_closed``/``hat_tap``
+#: выше 8 кГц 0.75–0.78 (на 16 кГц робота почти не слышны), у ``HihatClosed_16/18`` 0.42–0.44, у ``cymbal_pedal`` 0.49.
+#: Уровень — ``rms_db`` каталога (по всему файлу с хвостом); на 16 кГц робота не слушано.
+PACK_DRUMS: Tuple[str, ...] = (
+    "sonicpi_bd_jazz", "sonicpi_drum_bass_soft", "muldjord_kdruml_19",
+    "sonicpi_drum_snare_soft", "muldjord_snare_40", "muldjord_snare_43",
+    "muldjord_hihatclosed_16", "muldjord_hihatclosed_18", "sonicpi_drum_cymbal_pedal",
+)
+
+
+def _pack_drum(name: str) -> SampleInfo:
+    data = _SONICPI_DATA if name.startswith("sonicpi_") else _MULDJORD_DATA
+    meta = data["samples"][name]
+    return SampleInfo(name, str(meta["group"]), str(meta["role"]), float(meta["seconds"]), int(meta["channels"]),
+                      f"{data['pack_dir']}/{meta['path']}", float(meta["peak_db"]), float(meta["rms_db"]))
+
+
+#: Каталог сэмплов v2: имя → :class:`SampleInfo` — DJ_Dave, брейки паков (роль ``break``) и удары китов паков
+#: (:data:`PACK_DRUMS`). v1 (``core/sample_dave``) видит из него только пак DJ_Dave (``SAMPLE_PACK_DIR``).
 SAMPLE_CATALOG: Mapping[str, SampleInfo] = {
     **{n: _sample_info(n, m) for n, m in _SAMPLE_DATA["samples"].items()},
     **{n: _pack_break(n, m, str(_SONICPI_DATA["pack_dir"])) for n, m in _SONICPI_DATA["samples"].items()
        if m["role"] == "break" and n in PACK_BREAK_BEATS},
+    **{n: _pack_drum(n) for n in PACK_DRUMS},
 }
 #: Группа каталога → описание (подсказки модели в v1).
 SAMPLE_GROUPS: Mapping[str, str] = dict(_SAMPLE_DATA["groups"])
@@ -550,7 +583,7 @@ __all__ = [
     "SET_TRACK_SECONDS", "THEMES",
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
-    "PACK_BREAK_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
+    "PACK_BREAK_BEATS", "PACK_DRUMS", "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
     "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
@@ -650,6 +683,11 @@ MAX_LAYER_AMP = 0.85
 
 #: Вариант модели громкости ударной роли v2: рисунок, ближайший к сетке ``arrange.rhythm`` (хэты — оффбит).
 DRUM_LOUDNESS_KEY: Mapping[str, str] = {"kick": "four_on_floor", "hats": "offbeat", "clap": "clap"}
+#: Удар файла пака в ударной роли (ADR-0153 S4) — в шкале той же модели: рисунок рамки роли (:data:`DRUM_LOUDNESS_KEY`:
+#: ударов на такт, шаг между ними в долях) при темпе рамки :data:`LOUDNESS_FRAME_BPM`; dB при ``amp`` 1 =
+#: ``rms_db`` файла + 10·lg(доля такта, которую звучат удары; удар — файл, но не дольше шага). МОДЕЛЬ, не замер.
+PACK_DRUM_FRAME: Mapping[str, Tuple[int, float]] = {"kick": (4, 1.0), "hats": (4, 1.0), "clap": (2, 2.0)}
+LOUDNESS_FRAME_BPM = 124.0
 #: Уровень роли v2, dB RMS в шкале модели (роль звучит всю секцию). Бочка и бас держат низ, пэд и лид ниже.
 #: Подобрано по записям робота 02.10 (``compare.py``, цель A9 — низ 0.5–0.8, эталон 0.65/0.32/0.01): при пэде
 #: −40 и лиде −44 середина перевешивала низ (0.43–0.68 против 0.32–0.56), при хэтах на потолке L−R уходил за
@@ -812,6 +850,10 @@ PAD_FIGURES: Mapping[str, PadFigure] = {
     # Прибавка — ОЦЕНКА, не замер: звучит один голос из трёх аккорда модели громкости (10·lg 3 = +4.8 дБ). На роботе
     # не мерено; A9-модель трека считает пэд с худшим сдвигом (:data:`PAD_ROBOT_DB_UNMEASURED`), пока нет записи.
     "arp": PadFigure(ducked=False, long_tails=False, level_offset_db=4.8),
+    # ADR-0153 S4: comping (``arrange.pad.comping``) — 2–3 коротких аккорда на такт мимо сильных долей, без насоса.
+    # Прибавка — ОЦЕНКА, не замер: аккорд звучит ≈ 0.3 такта (ритмы ``Style.comp_rhythms``: 4–7 шестнадцатых из 16),
+    # 10·lg(16/5) ≈ +5 дБ до громкости ``pumped16``, звучащего весь такт. На роботе не мерено.
+    "comping": PadFigure(ducked=False, long_tails=False, level_offset_db=5.0),
 }
 #: На сколько дБ пэд рисунка ``pumped16`` на роботе громче своего ``level_db`` (модель громкости — NRT аккорда на
 #: 8 долей, :data:`LAYER_MEASURED_DB`): подгонка низа 133 дропов серий ser6/ser7/ser9 06.10 (#3449; было — 46
@@ -913,6 +955,9 @@ BASS_FIGURES: Mapping[str, BassFigure] = {
 #: ``pulse`` (ADR-0153 S2, chiptune) — только октавами ``octave8``: низ 0.58, на потолке ``amp`` на 5.5 дБ тише цели
 #: роли — звук жанра поверх бочки, а не опора дропа (``square`` ещё на 8.7 дБ тише — не взят).
 BASS_FIGURE_SYNTHS: Mapping[str, Tuple[str, ...]] = {"acid16": ("tb303",), "octave8": ("pulse",)}
+#: Басовые линии (ADR-0153 S4) — генераторы без рисунка шагов :data:`BASS_FIGURES`: ``walking`` — четверти на долях
+#: (тон аккорда, тоны аккорда, подход к следующему такту на 4-й доле), бочка стиля их не исключает.
+BASS_LINES: Tuple[str, ...] = ("walking",)
 
 
 @dataclass(frozen=True)
@@ -928,6 +973,9 @@ class KickSound:
     #: ``False`` — на роботе не мерено: ``loudness_offset_db`` — оценка, ``low`` — доля < 200 Гц ФАЙЛА (опись
     #: сэмплов 05.10, ``scan.json``), ``sub`` неизвестна (``nan``). Замер — ``scripts/music/kicks_probe.sh``.
     measured: bool = True
+    #: Бочка — файл пака (ключ :data:`SAMPLE_CATALOG`, ADR-0153 S4): играет ``loop(файл)``, а не ``play(символ)``;
+    #: ``symbol``/``sample`` не используются, громкость — по каталогу (``arrange.mix``), ``loudness_offset_db`` 0.
+    pack: str = ""
 
 
 #: Бочки, замеренные 02.10.2026 (Vision Pi, ``jack_rec``). ``X`` без ``sample=`` на роботе звучит щелчком:
@@ -953,12 +1001,21 @@ KICK_SOUNDS: Mapping[str, KickSound] = {
     "hardstyle": KickSound("A", 14, "014_Kick_DistHardstyle_Harddancewarrior.wav", 0.98, 0.962, math.nan, False),
     "hardcore": KickSound("A", 15, "015_Kick_DistHardcore_NoN.wav", 0.98, 0.819, math.nan, False),
     "acid": KickSound("W", 1, "001_Kick_KickAcid_Blackie666.wav", 0.98, 0.996, math.nan, False),
+    # ADR-0153 S4, стиль ``lofi``: мягкие бочки паков (:data:`PACK_DRUMS`) — ``low`` = доля < 200 Гц файла (08.10).
+    # НА РОБОТЕ НЕ МЕРЕНЫ: уровень — каталог (``rms_db``) в рамке модели громкости (``arrange.mix``).
+    "jazz": KickSound("", 0, "bd_jazz.flac", 0.0, 0.997, math.nan, False, pack="sonicpi_bd_jazz"),
+    "soft": KickSound("", 0, "drum_bass_soft.flac", 0.0, 0.986, math.nan, False, pack="sonicpi_drum_bass_soft"),
+    "acoustic": KickSound("", 0, "19-KdrumL-KdrumL.flac", 0.0, 0.978, math.nan, False, pack="muldjord_kdruml_19"),
 }
 
 
-def kick_of(symbol: str, sample: int) -> Optional[str]:
-    """Имя бочки :data:`KICK_SOUNDS` по символу ``play()`` и номеру файла; нет такой — ``None``."""
-    return next((name for name, k in KICK_SOUNDS.items() if (k.symbol, k.sample) == (symbol, sample)), None)
+def kick_of(symbol: str, sample: int, pack: str = "") -> Optional[str]:
+    """Имя бочки :data:`KICK_SOUNDS` по символу ``play()`` и номеру файла, а бочки-файла пака — по ``pack`` (ключ
+    каталога); нет такой — ``None``."""
+    if pack:
+        return next((name for name, k in KICK_SOUNDS.items() if k.pack == pack), None)
+    return next((name for name, k in KICK_SOUNDS.items()
+                 if not k.pack and (k.symbol, k.sample) == (symbol, sample)), None)
 
 #: Панорама (перенос таблиц ``core/club_stereo``): вынос хэтов/клэпа от центра (0.4: заметно, но не «в одну
 #: колонку»), полуширина и период (доли) треугольного качания пэда v1 (``club_stereo.pad_pan``; в v2 пэд — два голоса).
@@ -1013,6 +1070,7 @@ __all__ += [
     "PAD_ROBOT_DB_UNMEASURED", "BASS_ROBOT_DB", "BASS_ROBOT_LOW", "BASS_MIN_LOW", "bass_low_on_robot",
     "A9_MIN_GAIN", "A9_STEP_DB",
     "A9_PAD_FLOOR_DB", "A9_BASS_BOOST_DB", "PAN_PSR", "BASS_FIGURES", "BASS_FIGURE_SYNTHS", "BassFigure", "FormSpec",
+    "BASS_LINES", "PACK_DRUM_FRAME", "LOUDNESS_FRAME_BPM",
 ]
 
 
@@ -1190,6 +1248,20 @@ class Style:
     # переставленный по сиду кусками по сетке 16-х.
     loop_roles: Tuple[str, ...] = ("loop",)
     loop_figure: str = "chop"
+    # Свинг (ADR-0153 S4): шаги такта, которые опаздывают на ``SetPlan.swing`` доли восьмой (``arrange.rhythm.swing``):
+    # у клуба — нечётные 16-е (гоуст-хэты каркасов), у lo-fi — оффбит-восьмые 2/6/10/14 (ratio долгой и короткой
+    # восьмой = (1 + swing)/(1 − swing)). Хэты качаются всегда, роли ``swing_roles`` — тоже (ноты — ``offset_ms``).
+    swing_steps: Tuple[int, ...] = tuple(range(1, 16, 2))
+    # Роли, которых нет в треке энергии (``ENERGY_THIN_ROLES`` клуба: клэп снят на 1–2); у lo-fi малый 2/4 — сам бит.
+    thin_roles: Mapping[int, Tuple[str, ...]] = field(default_factory=lambda: dict(ENERGY_THIN_ROLES))
+    swing_roles: Tuple[str, ...] = ()
+    # Бас: потолок хроматического подхода, доли (валидатор ``model``): walking подходит целой четвертью.
+    approach_max_beats: float = APPROACH_MAX_BEATS
+    # Удары файлами паков (ADR-0153 S4): роль → пул ключей :data:`SAMPLE_CATALOG` (бочка — :data:`KICK_SOUNDS`
+    # с ``pack`` через ``kick_pool``); роли нет — ``play()`` дефолтного пака Renardo.
+    drum_files: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
+    # Ритмы comping (``arrange.pad.comping``): на такт по кругу — удары ``(шаг 16-х, длина в 16-х)``.
+    comp_rhythms: Tuple[Tuple[Tuple[int, int], ...], ...] = ()
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
@@ -1365,6 +1437,80 @@ _BREAKBEAT_FIELDS = dict(
     a9_model_low=0.6,
 )
 
+# ── Стиль ``lofi`` (ADR-0153 S4, ступень к джазу): свинг оффбит-восьмых, comping, walking-бас, кит паков ───────────
+#: Эталон (``style_reference_profiles.md`` 07.10; lo-fi hip-hop записи нет, ближайший — dark jazz/trip-hop): темп
+#: 87–89 во всех 40 окнах, свинг 1.26 [1.10..1.43], низ < 150 Гц 0.75 [0.63..0.84], LR 0.90, σ по минутам 1.1 дБ;
+#: джаз-кафе: низ 0.27 [0.08..0.48], свинг 1.54. Темп lo-fi 72–92 (окно ``lofi`` 82–92 — как эталон 88).
+#: Свинг (доля восьмой) 0.14–0.22: ratio восьмых (1 + s)/(1 − s) = 1.33–1.56 — между trip-hop 1.26 и джазом 1.54,
+#: не триоль 2.0. Бочка boom-bap мягкая из паков, малый 2/4 и хэты восьмыми — файлы паков (``drum_files``), без
+#: сайдчейна. Низ трека — цель 0.50–0.75 (выше p90 джаза 0.48, не выше медианы trip-hop 0.75): lo-fi — бит-музыка
+#: на бочке и басе, как trip-hop, но с comping-клавишами впереди; ``a9_model_low`` — нижняя граница (см. уровни ниже).
+_LOFI_LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["boombap"], 0.0)),
+    (5, Look(KICK_PATTERNS["lazy"], 0.0)),
+    (0, Look(KICK_PATTERNS["lazy"], 0.0)),
+)
+#: Пэд — только comping, бас — только walking (ADR-0153 §5 S3: фигуры стиля в ≥ 90 % треков); разнообразие — ритмы
+#: comping, синты, каркасы, бочки, окна.
+_LOFI_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "lofi": GenreWindow((82, 92), ("jazz", "soft", "acoustic"), _LOFI_LOOKS, ("walking",), ("comping",)),
+    "chillhop": GenreWindow((72, 82), ("soft", "acoustic", "jazz"), _LOFI_LOOKS, ("walking",), ("comping",)),
+}
+#: Хэты восьмыми (оффбит-восьмые качает свинг): акцент на доле, на «и» или реже.
+_LOFI_KITS: Mapping[str, Mapping[str, str]] = {
+    "lazy": {"hats": "X.x.X.x.X.x.X.x.", "perc": "................"},
+    "pushed": {"hats": "x.X.x.X.x.X.x.X.", "perc": "................"},
+    "sparse": {"hats": "X.x.X...X.x.X.x.", "perc": "................"},
+}
+#: Тембры: лид — читаемый темой (:data:`THEME_LEAD_OK`) и без Хааса (``SYNTH_STEREO``: задержка голоса заняла бы
+#: ``delay`` свинга нот) — ``keys`` (клавиши), ``pluck``, ``arpy``, ``orient``, ``brass``; пэд comping — замеренные в
+#: роли пэда без хвоста (``rhpiano``/``epiano`` в роли пэда не замерены — не взяты); бас — с низом ≥ 0.9.
+_LOFI_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("keys", "pluck"), "bass": ("subbass", "jbass"), "pad": ("sinepad", "space")},
+    "hard": {"lead": ("keys", "arpy", "pluck"), "bass": ("jbass", "bass"), "pad": ("sinepad", "strings")},
+    "bright": {"lead": ("pluck", "orient", "keys"), "bass": ("bass", "jbass"), "pad": ("ambi", "sinepad")},
+    "warm": {"lead": ("keys", "pluck", "brass"), "bass": ("bass", "jbass", "subbass"),
+             "pad": ("sinepad", "ambi", "strings")},
+}
+#: Септаккорды ii–V–I и соседи по ступеням (аккорд на 2 такта).
+_LOFI_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
+    (1, 4, 0, 5), (0, 5, 1, 4), (1, 4, 0, 0), (3, 6, 2, 5), (0, 3, 1, 4), (5, 1, 4, 0),
+)
+#: Comping: ни одного удара на сильных долях 1 и 3 (шаги 0, 8) — там хук; короткие (8-я — пунктирная 8-я).
+_LOFI_COMP_RHYTHMS: Tuple[Tuple[Tuple[int, int], ...], ...] = (
+    ((6, 2), (14, 2)), ((4, 3), (10, 2)), ((2, 2), (12, 3)), ((6, 2), (10, 2), (14, 2)),
+)
+#: «Винил» дёшево: пэд под постоянным LPF 2.4 кГц (тусклые клавиши); хвост блэнда закрывается, как у клуба.
+#: Треск пластинки (шумовой слой) не сделан — нужна своя роль/слот деки.
+_LOFI_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    **{name: (2400.0, 2400.0) for name in ("intro", "intro_low", "build", "build2", "drop", "break", "break2",
+                                           "drop2", "outro")},
+    "outro_tail": (2400.0, 300.0),
+}
+_LOFI_WINDOW = _LOFI_GENRE_WINDOWS["lofi"]
+_LOFI_STYLE = Style(
+    bpm=_LOFI_WINDOW.bpm, swing=(0.14, 0.22), modes=("dorian", "minor", "major"),
+    kick_pool=_LOFI_WINDOW.kick_pool, looks=_LOFI_LOOKS, kits=_LOFI_KITS, registers=_CLUB_REGISTERS,
+    timbres=_LOFI_TIMBRES, default_timbre="warm", bass_figures=_LOFI_WINDOW.bass_figures,
+    pad_figures=_LOFI_WINDOW.pad_figures, lead_figures=("motif",), chord_size=4, progressions=_LOFI_PROGRESSIONS,
+    forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND,
+    layer_sections={}, genre_windows=_LOFI_GENRE_WINDOWS,
+    # Уровни: робот 08.10 (2 сета, клубные уровни −33/−32/−44/−50) — низ 0.77/0.76 по медиане окон 20 с, в дропах
+    # 0.79–0.91 при A9-модели 0.61–0.68: бочка и бас тише на 2 дБ, пэд и лид громче на 3/2 дБ.
+    role_level_db={"kick": -35.0, "bass": -34.0, "pad": -41.0, "lead": -48.0, "clap": -43.0, "hats": -57.0},
+    duck_roles=(), section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad",), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
+    # A9-модель занижает низ lo-fi против записи робота 08.10 на 0.09–0.32 (0.61/0.68/0.55 модели при 0.77/0.76/0.87
+    # записи; удары файлами и walking в модели — оценки): при пороге 0.5 она глушила пэд на 6 дБ, а запись и так
+    # выше цели. Порог 0.4 — только страховка от трека совсем без низа; калибровка модели lo-fi не сделана.
+    a9_model_low=0.4,
+    thin_roles={}, swing_steps=(2, 6, 10, 14), swing_roles=("kick", "clap", "bass", "pad", "lead"),
+    approach_max_beats=1.0,
+    drum_files={"clap": ("sonicpi_drum_snare_soft", "muldjord_snare_40", "muldjord_snare_43"),
+                "hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18", "sonicpi_drum_cymbal_pedal")},
+    comp_rhythms=_LOFI_COMP_RHYTHMS,
+)
+
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
 #: (``test_style_same_tracks``): 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138); свинг
 #: 5–10 % (ADR-0149 §3.4).
@@ -1421,6 +1567,7 @@ STYLES: Mapping[str, Style] = {
         looks=_DNB_LOOKS, bass_figures=_DNB_GENRE_WINDOWS["dnb"].bass_figures,
         pad_figures=_DNB_GENRE_WINDOWS["dnb"].pad_figures, progressions=_DNB_PROGRESSIONS,
         genre_windows=_DNB_GENRE_WINDOWS, **_BREAKBEAT_FIELDS),
+    "lofi": _LOFI_STYLE,
 }
 DEFAULT_STYLE = "club"
 #: Слова фразы человека → стиль (ADR-0153 §4.1): основа слова (начало) → ключ :data:`STYLES`. Одна таблица:
@@ -1441,6 +1588,9 @@ STYLE_WORDS: Mapping[str, str] = {
     # Основы «клубны/клубна/клубно/клубну», не «клуб»: «клубника» не стиль. «хаус»/«house»/«техно» не берём: «техно» — основа
     # темы cyber, «хаус» — «Доктор Хаус»; окна club/deep/breaks (ADR-0152) стиль не выбирают — окно внутри club.
     "клубны": "club", "клубна": "club", "клубно": "club", "клубну": "club", "клубняк": "club", "club": "club",
+    # ADR-0153 S4. «лоу-фай»/«lo fi» словами врозь — :data:`STYLE_PATTERNS`. «чилл» — начало «чиллаут»/«чилловый»;
+    # «чили» (страна, перец) — одно «л», не стиль.
+    "лоуфай": "lofi", "лофай": "lofi", "лофи": "lofi", "lofi": "lofi", "чилл": "lofi", "chill": "lofi",
 }
 #: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
 DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))

@@ -49,12 +49,24 @@ def layer_db(unit_db: float, exponent: float, amp: float) -> float:
     return unit_db + 20.0 * exponent * math.log10(amp)
 
 
+def pack_drum_db(role: str, name: str) -> float:
+    """dB при ``amp`` 1.0 удара файла пака в ударной роли (ADR-0153 S4) в шкале модели громкости: ``rms_db`` файла +
+    10·lg доли такта, которую звучат удары рисунка рамки роли (``knowledge.PACK_DRUM_FRAME`` при
+    ``LOUDNESS_FRAME_BPM``; удар — файл, но не дольше шага). Модель, не замер."""
+    hits, gap_beats = kn.PACK_DRUM_FRAME[role]
+    beat_s = 60.0 / kn.LOUDNESS_FRAME_BPM
+    info = kn.SAMPLE_CATALOG[name]
+    return info.mean_db + 10.0 * math.log10(hits * min(info.seconds, gap_beats * beat_s) / (4 * beat_s))
+
+
 def _unit(role: str, part: Part) -> Tuple[float, float]:
     """(dB при ``amp`` 1.0, показатель) партии: синт тональной роли, рисунок и сэмпл ударной. Сэмпл DJ_Dave (PR-3d) —
     средний уровень файла (``SampleInfo.mean_db``): синт ``loop`` даёт файл ≈ без усиления (``Mix`` стерео × 0.5);
-    это допущение, не замер — живой проход идёт через выравниватель мастера."""
+    это допущение, не замер — живой проход идёт через выравниватель мастера. Удар файлом пака — :func:`pack_drum_db`."""
     if role in SAMPLE_ROLES:
         return kn.SAMPLE_CATALOG[part.synth_or_sample].mean_db, 1.0
+    if role in kn.DRUM_SYMBOLS and part.synth_or_sample != kn.PLAY_SYNTH:
+        return pack_drum_db(role, part.synth_or_sample), 1.0
     option = part.synth_or_sample if role in kn.TONAL_ROLES else kn.DRUM_LOUDNESS_KEY[role]
     db = kn.LANE_DB_AT_UNIT[role][option]
     kick = kn.kick_of(part.play_symbol, part.sample) if role == "kick" else None
@@ -374,6 +386,6 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
     return leveled, mix
 
 
-__all__ = ["a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
+__all__ = ["pack_drum_db", "a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
            "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_stereo", "role_palette", "role_timbre",
            "section_arc", "set_master", "sustains_to_sus", "target_db", "voice_amp"]

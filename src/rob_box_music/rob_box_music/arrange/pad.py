@@ -12,6 +12,8 @@
   пэда начинается подхватом на первой доле.
 * ``arp`` — арпеджио (ADR-0153 S2): один тон аккорда такта на каждой 16-й, порядок голосов — ``Style.arp_order``;
   без сайдчейна. Тоны — голоса того же обращения, что держал бы пэд: в регистре и в ладу по построению.
+* ``comping`` — comping (ADR-0153 S4): 2–3 коротких аккорда на такт по ритмам ``Style.comp_rhythms`` (такт за тактом по
+  кругу), септаккорды при ``Style.chord_size`` 4; на сильных долях 1 и 3 — никогда (там хук), без сайдчейна.
 
 Обращения аккордов — ``harmony.pad_chords``; уровень ставит ``arrange.mix``.
 """
@@ -97,4 +99,21 @@ def arp_events(order: Sequence[int], spans: Sequence[Tuple[float, float, Tuple[i
     return tuple(events)
 
 
-__all__ = ["STAB_STEPS", "arp", "arp_events", "held", "pumped16", "stabs"]
+#: Сильные доли такта (шаги 16-х), где comping не бьёт: там звучит хук (комплементарность, ADR-0149 §3.4).
+STRONG_STEPS = (0, 8)
+
+
+def comping(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+            register: Tuple[int, int]) -> Part:
+    """Comping по тактам ``bar_chords``: в такте ``bar`` — удары ритма ``style.comp_rhythms[bar % n]``, аккорд такта
+    звучит свою длину (короткий); удар на сильной доле в таблице — ``ValueError`` (таблица врёт)."""
+    rhythms = style.comp_rhythms
+    if not rhythms or any(step in STRONG_STEPS for r in rhythms for step, _n in r):
+        raise ValueError(f"ритмы comping {rhythms!r}: пусто или удар на сильной доле {STRONG_STEPS}")
+    events = [PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, length * STEP_BEATS, 3 if step % 4 == 0 else 2)
+              for bar, chord in bar_chords for step, length in rhythms[bar % len(rhythms)] for m in chord.voicing]
+    steps = sorted({step for r in rhythms for step, _n in r})
+    return Part("pad", synth, rhythm.grid(steps), tuple(events), 0.0, register)
+
+
+__all__ = ["STAB_STEPS", "STRONG_STEPS", "arp", "arp_events", "comping", "held", "pumped16", "stabs"]
