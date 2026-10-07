@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import pytest
 
+from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
 from rob_box_music.arrange.compose import compose
@@ -85,9 +86,13 @@ def test_validator_rejects_a_kick_outside_the_table():
         mix.kick_sound(STYLE, "nope")
 
 
-@pytest.mark.parametrize("seed", range(6))
-def test_one_kick_per_blend_bar_when_the_neighbours_have_different_kicks(seed):
-    """Бочка уходящего гаснет там, где входит бочка входящего — и это разные файлы: в такте блэнда одна бочка."""
+def test_one_kick_per_blend_bar_when_the_neighbours_have_different_kicks():
+    """Бочка уходящего гаснет там, где входит бочка входящего — и это разные файлы: в такте блэнда одна бочка.
+    Шесть сидов независимы и считаются параллельно (#3504); ошибка сида пробрасывается как есть."""
+    pmap(_one_kick_per_blend_bar, range(6))
+
+
+def _one_kick_per_blend_bar(seed):
     plan = _plan("космос", seed)
     checked = 0
     for no in range(1, len(plan.tracks)):

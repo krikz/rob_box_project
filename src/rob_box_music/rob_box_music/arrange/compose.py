@@ -63,8 +63,10 @@ from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 #: Генераторы ролей по ключу фигуры стиля (``Style.*_figures``, ADR-0153 §2.2). Тональные — ``(style, key,
 #: bar_chords, synth, register) -> Part``; мотив лида без хука — ``(style, key, rng) -> ноты``.
 BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
-    "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken, "acid16": bass.acid16}
-PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {"pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs}
+    "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken, "acid16": bass.acid16,
+    "octave8": bass.octave8}
+PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {
+    "pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs, "arp": pad.arp}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
 _LOG = logging.getLogger(__name__)
 #: Длина секций с лидом (развитие хука считается от начала каждой).
@@ -218,6 +220,45 @@ def part_order(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str],
     return out + _least_recent([i for i in ids if i not in out], recent)
 
 
+def hook_order(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
+               history: Sequence[Mapping] = (), opening: bool = False,
+               track_no: int = 1, set_id: Optional[str] = None) -> List[str]:
+    """Очередь мелодий трека ``track_no`` (первая — та, что сыграет, если она годится под гармонию): единственное
+    место решения, его читают :func:`hook_candidates` (компоновка) и :func:`upcoming_hooks` (реплика «дальше будет»,
+    #3497). Подробности порядка — в :func:`hook_candidates`."""
+    last = history[0] if history else {}
+    ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
+    recent = recent_hooks(history, set_id, {i: contour(melodies[i], CONTOUR_NOTES) or i for i in melodies})
+    if profile.theme_parts:
+        return part_order(profile, ids, recent, track_no)
+    if opening:
+        return opening_order(ids, recent, last_opener(history, set_id))
+    return _hook_queue(profile, ids, recent, rng)
+
+
+def upcoming_hooks(profile: ThemeProfile, melodies: Mapping[str, str], history: Sequence[Mapping],
+                   set_id: Optional[str], first_no: int, count: int,
+                   composed: Optional[Mapping[int, Optional[str]]] = None) -> List[Optional[str]]:
+    """Мелодии треков ``first_no`` … ``first_no + count - 1`` темы (#3497, ADR-0148): трек, уже скомпонованный
+    (``composed``: номер → мелодия), — как сыграет, остальные — первая в :func:`hook_order` при истории с
+    предыдущими; очередь та же, что у компоновки. ``history`` — строки до ``first_no`` (свежие первыми). Тема без
+    найденных по ней мелодий (пул выбирает сид) — пусто: заранее не известно."""
+    if not profile.theme_hooks:
+        return []
+    rows = list(history)
+    out: List[Optional[str]] = []
+    for no in range(first_no, first_no + count):
+        if composed is not None and no in composed:
+            pick = composed[no]
+        else:
+            order = hook_order(profile, melodies, random.Random(f"upcoming:{set_id}:{no}"), rows,
+                               opening=no == 1, track_no=no, set_id=set_id)
+            pick = order[0] if order else None
+        out.append(pick)
+        rows.insert(0, {"melody_name": pick, "set_id": set_id})
+    return out
+
+
 def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
                     history: Sequence[Mapping] = (), opening: bool = False,
                     track_no: int = 1, set_id: Optional[str] = None) -> Iterator[Tuple[Hook, Key]]:
@@ -232,14 +273,7 @@ def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: ran
     (``profile.theme_parts``) — очередь :func:`part_order` трека ``track_no`` и на первом треке тоже."""
     last = history[0] if history else {}
     register = hook_register(kn.STYLES[profile.style])
-    ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
-    recent = recent_hooks(history, set_id, {i: contour(melodies[i], CONTOUR_NOTES) or i for i in melodies})
-    if profile.theme_parts:
-        order = part_order(profile, ids, recent, track_no)
-    elif opening:
-        order = opening_order(ids, recent, last_opener(history, set_id))
-    else:
-        order = _hook_queue(profile, ids, recent, rng)
+    order = hook_order(profile, melodies, rng, history, opening, track_no, set_id)
     for melody_id in order:
         try:
             hook, key = hooks.from_rtttl(melodies[melody_id], melody_id, profile.bpm, profile.root, profile.mode,
@@ -320,7 +354,7 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         return None
     try:
         motif, key = hooks.from_material(material, profile.bpm, profile.root, profile.mode, hook_register(style))
-        scale = hooks.time_scale(material.bpm or profile.bpm, profile.bpm)
+        scale = hooks.material_scale(material, profile.bpm)
         phrase = hooks.pick_phrase(material)
 
         def progression(drop: Sequence[PitchEvent]) -> Tuple[int, ...]:
@@ -431,5 +465,5 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
 
 
 __all__ = ["BASS_GENERATORS", "FormSpec", "LEAD_GENERATORS", "PAD_GENERATORS", "SECTION_BARS", "club_track",
-           "compose", "form_spec", "hook_candidates", "hook_register", "opening_order", "part_order", "track_template",
-           "transition"]
+           "compose", "form_spec", "hook_candidates", "hook_order", "hook_register", "opening_order", "part_order",
+           "track_template", "transition", "upcoming_hooks"]

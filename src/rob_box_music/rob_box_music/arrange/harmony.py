@@ -13,7 +13,7 @@ from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, 
 
 from .. import knowledge as kn
 from ..diversity import weighted_pick
-from ..material import ChordSpan, Phrase, ScoreMaterial, bar_beats, club_beat
+from ..material import ChordSpan, Phrase, ScoreMaterial, meter_map
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Chord, Key, PitchEvent
 
 #: Одна прогрессия — не больше ``PROGRESSION_CAP`` раз за ``PROGRESSION_WINDOW`` треков подряд (ADR-0149 A13).
@@ -189,19 +189,20 @@ def _chord_at(material: ScoreMaterial, starts: Sequence[float], beat: float) -> 
 
 
 def material_beat(material: ScoreMaterial, phrase: Phrase, scale: float = 1.0) -> Callable[[float], Optional[float]]:
-    """Доля трека ``t`` → доля материала: перевод в 4/4 (``material.club_beat``: 3/4 — пауза на 4-й доле) от первой
-    ноты фразы (хук срезает начальную паузу, ``hook._onsets``) и множитель темпа ``scale`` (``hook.time_scale``).
-    Доля в паузе 4-й доли 3/4 — ``None``. Одно отображение на гармонию и бас материала."""
-    bar = bar_beats(material.meter)
-    if bar > BEATS_PER_BAR:
-        raise ValueError(f"такт {material.meter[0]}/{material.meter[1]} длиннее 4/4 — в такт клуба не ложится")
-    first = phrase.bar * bar
+    """Доля трека ``t`` → доля материала: перевод размера в 4/4 (``material.meter_map``, режим
+    ``knowledge.TRIPLE_METER_MODE``) от первой ноты фразы (хук срезает начальную паузу, ``hook._onsets``) и множитель
+    темпа ``scale`` (``hook.material_scale``). Доля в паузе перевода (4-я доля 3/4 в режиме ``pause``) — ``None``.
+    Одно отображение на гармонию и бас материала."""
+    mm = meter_map(material.meter)
+    if mm is None:
+        raise ValueError(f"размер {material.meter[0]}/{material.meter[1]} в 4/4 клуба не переводится")
+    first = phrase.bar * mm.bar
     lead_in = next((e.beat for e in material.melody if e.beat >= first), first) - first
-    origin = club_beat(material.meter, lead_in)
+    origin = mm.to_club(lead_in)
 
     def at(t: float) -> Optional[float]:
-        bar_idx, offset = divmod(origin + t / scale, BEATS_PER_BAR)
-        return first + bar_idx * bar + offset if offset < bar else None
+        beat = mm.from_club(origin + t / scale)
+        return None if beat is None else first + beat
     return at
 
 

@@ -126,8 +126,19 @@ def duck_envelope(trigger: Sequence[int], depth: float) -> Tuple[float, ...]:
     return tuple(out)
 
 
+def role_palette(style: kn.Style, family: str, role: str) -> Tuple[str, ...]:
+    """Синты роли в семье стиля без тех, чей фильтр уходит за Найквист в коридоре роли (``kn.NYQUIST_MAX_MIDI`` против
+    ``Style.registers[role]``, #3502): цифровой шорох и провалы выхода 16 кГц. Единственное место применения предела;
+    пустая палитра — ошибка таблицы (молча брать синт с дефектом нельзя)."""
+    top = style.registers[role][1]
+    out = tuple(s for s in style.timbres[family][role] if kn.NYQUIST_MAX_MIDI.get(s, 128) >= top)
+    if not out:
+        raise ValueError(f"роль {role} семьи {family}: все синты выше предела Найквиста при коридоре до {top}")
+    return out
+
+
 def _family(style: kn.Style, family: str) -> Mapping[str, Tuple[str, ...]]:
-    return style.timbres[family]
+    return {role: role_palette(style, family, role) for role in style.timbres[family]}
 
 
 def role_timbre(style: kn.Style, family: str, role: str, recent: Sequence[Optional[str]],
@@ -359,5 +370,5 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
 
 
 __all__ = ["a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
-           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_stereo", "role_timbre",
+           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_stereo", "role_palette", "role_timbre",
            "section_arc", "set_master", "sustains_to_sus", "target_db", "voice_amp"]

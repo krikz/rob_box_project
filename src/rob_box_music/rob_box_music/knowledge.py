@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 from dataclasses import dataclass, replace
@@ -48,6 +49,44 @@ _CLUB_REGISTERS: Mapping[str, Tuple[int, int]] = {"bass": (36, 52), "pad": (48, 
 LEAD_MAX_MIDI = 88
 #: Хук темы в тональности трека (I12): доля длительности нот лида в ладу не ниже порога; хроматика — проходящие.
 HOOK_KEY_FIT_MIN = 0.6
+#: Перевод размера материала в 4/4 клуба (ADR-0154 §3.6, #3517) — данные, не ветки кода: размер →
+#: ``(долей клуба на такт материала, узлы)``. Узлы ``(доля в такте материала, доля в тактах клуба)`` от ``(0, 0)``
+#: до ``(длина такта, конец музыки)`` задают кусочно-линейное отображение (``material.MeterMap``); хвост такта клуба
+#: после конца музыки — пауза. Размеры одного пульса (4/4, 2/2; 2/4 — два такта в один 4/4) — во всех режимах.
+_SAME_PULSE: Mapping[Tuple[int, int], tuple] = {(4, 4): (4.0, ((0, 0), (4, 4))), (2, 2): (4.0, ((0, 0), (4, 4))),
+                                                (2, 4): (2.0, ((0, 0), (2, 2)))}
+#: Группа из трёх восьмих (пунктирная четверть) → доля клуба, 16-е «2+1+1»: первая восьмая целиком, вторая и
+#: третья — шестнадцатые (шаффл на прямой сетке).
+_GROUP_211 = ((0, 0), (0.5, 0.5), (1.0, 0.75), (1.5, 1.0))
+#: Две группы (такт 6/8) → полтакта клуба «3+3+2» шестнадцатых (тресильо): восьмые — шестнадцатыми, последняя
+#: восьмая тянется на две шестнадцатых; вторая пунктирная доля встаёт на «и» первой доли (синкопа хабанеры).
+_TRESILLO = ((0, 0), (2.5, 1.25), (3.0, 2.0))
+
+
+def _tile(knots: tuple, times: int, src: float, dst: float) -> tuple:
+    """Узлы группы, повторённые ``times`` раз подряд (группа ``src`` долей материала → ``dst`` долей клуба)."""
+    return ((0, 0),) + tuple((k * src + a, k * dst + b) for k in range(times) for a, b in knots[1:])
+
+
+METER_MODES: Mapping[str, Mapping[Tuple[int, int], tuple]] = {
+    # Не переводить: материал в 3/4, 6/8, 3/8, 12/8 негоден в хук (``hook.material_unfit``).
+    "unfit": dict(_SAME_PULSE),
+    # В5 (б): такт 3/4 с начала такта 4/4, 4-я доля — пауза (6 долей музыки + 2 тишины под ×2 — хромает, #3517).
+    "pause": {**_SAME_PULSE, (3, 4): (4.0, ((0, 0), (3, 3)))},
+    # Растяжение ×4/3: такт в такт, доли 2 и 3 на 2⅓ и 3⅔ — квантование к 16-м даёт триольное ощущение.
+    "stretch": {**_SAME_PULSE, (3, 4): (4.0, ((0, 0), (3, 4))), (6, 8): (4.0, ((0, 0), (3, 4))),
+                (3, 8): (2.0, ((0, 0), (1.5, 2))), (12, 8): (8.0, ((0, 0), (6, 8)))},
+    # Долгая первая доля «2+1+1» (вальс «в четыре»): 1-я доля 3/4 — половинная, 2-я и 3-я — на 3 и 4; сложные
+    # размеры — пунктирная четверть = доля клуба, внутри «2+1+1» шестнадцатых. Всё остаётся на сетке 16-х.
+    "long": {**_SAME_PULSE, (3, 4): (4.0, ((0, 0), (1, 2), (3, 4))), (6, 8): (2.0, _tile(_GROUP_211, 2, 1.5, 1)),
+             (3, 8): (1.0, _GROUP_211), (12, 8): (4.0, _tile(_GROUP_211, 4, 1.5, 1))},
+    # Долгая третья доля «1+1+2» (затакт тянется к следующей сильной): 3/4 — 3-я доля половинная; 6/8 и 12/8 —
+    # тресильо «3+3+2»; 3/8 — третья восьмая на две шестнадцатых.
+    "lift": {**_SAME_PULSE, (3, 4): (4.0, ((0, 0), (2, 2), (3, 4))), (6, 8): (2.0, _TRESILLO),
+             (3, 8): (1.0, ((0, 0), (1.0, 0.5), (1.5, 1.0))), (12, 8): (4.0, _tile(_TRESILLO, 2, 3, 2))},
+}
+#: Режим перевода из :data:`METER_MODES`. ``"unfit"`` — пока Шифу не принял перевод на слух (#3517).
+TRIPLE_METER_MODE = "unfit"
 
 #: Ступени энергии трека в сете (ADR-0147): 1 — интро/спад, 5 — пик.
 ENERGY_LEVELS: Tuple[int, ...] = (1, 2, 3, 4, 5)
@@ -69,6 +108,10 @@ SET_TRACK_SECONDS = 75
 #: Три сета: тема из 8 находок (``rtttl.THEME_HOOKS``) расходуется за два сета по 3–4 трека, третий — уже по давности,
 #: а пул (21) и жанр (30) держат три сета без повтора мелодии; сыгранное раньше — забыто, снова «свежее».
 HOOK_FRESH_SETS = 3
+#: Версии одной мелодии внутри сета (#3497, живой сет 07.10: tetris, tetris_2 подряд): после трека с мелодией её версии
+#: (общий ``rtttl.contour`` — ключ ``consensus_order`` и межсетовой свежести) не ставятся ещё ``HOOK_TUNE_GAP``
+#: треков, пока есть другие мелодии; одна мелодия на всю тему — версии идут по очереди, иначе нечего ставить.
+HOOK_TUNE_GAP = 2
 #: Сколько треков прошлых сетов помнит память сетов (``SetMemory``): три полных сета с заранее собранным N+1.
 HOOK_MEMORY_TRACKS = HOOK_FRESH_SETS * (SET_TRACKS + 1)
 #: Настроение одиночного трека (``request_music.mood``, ADR-0149 §5.1) → энергия; перечисление тула — ключи.
@@ -115,6 +158,9 @@ class ThemeRow:
     #: Хуки строки идут в общий пул тем без находок (``theme.HOOK_POOL``). ``False`` — праздничные и детские
     #: мелодии: только по своей теме, «интерстеллар» не получает «Happy Birthday» (#3455).
     pooled: bool = True
+    #: Стиль сета темы, когда человек стиль не назвал (``dj_set(style=auto)``, ADR-0153 §4.2): ключ :data:`STYLES`;
+    #: ``None`` — :data:`DEFAULT_STYLE`. Слова стиля в реплике важнее строки (``theme.style_for``).
+    style: Optional[str] = None
 
 
 #: Темы сета → материал. Порядок строк решает ничью по числу совпавших основ.
@@ -125,11 +171,11 @@ THEMES: Mapping[str, ThemeRow] = {
          "deepspac", "spacecha", "doctorwh")),
     "cyber": ThemeRow(
         ("кибер", "робот", "матриц", "неон", "техно", "будущ", "cyber", "robot"), (134, 138), "phrygian",
-        ("axelf_3", "axel_f", "robotroc", "robot", "popcorn", "popcorn_6", "aroundth_3")),
+        ("axelf_3", "axel_f", "robotroc", "robot", "popcorn", "popcorn_6", "aroundth_3"), style="synthwave"),
     "kids": ThemeRow(
         ("детск", "дети", "детей", "праздн", "рожден", "мульт", "игрушк", "kids"), (128, 132), "major",
         ("happybir", "chickend", "macarena", "yellowsu", "teletubb", "bobthebu", "spongebo", "flintsto_2",
-         "barbiegi"), pooled=False),
+         "barbiegi"), pooled=False, style="chiptune"),
     "slavic": ThemeRow(
         ("славян", "русск", "народн", "калинк", "балалайк", "деревен", "казач"), (130, 136), "minor",
         ("kalinkav", "kalinkav_2", "tetris", "tetris_2")),
@@ -162,19 +208,6 @@ SEARCH_STOPWORDS: Tuple[str, ...] = (
     "мелодии", "мелодий",
     "the", "of", "a", "an", "and", "in", "on", "for", "to", "with", "from", "at", "by", "de", "la", "le", "du", "des",
 )
-#: Понятия темы без мелодии с таким словом в названии → английский запрос к архиву (несколько слов — любое).
-#: Ключ — начало основы слова темы. Слово запроса, совпавшее с ключом :data:`THEMES`, относит тему к этой строке
-#: (``theme.match_row``): «интерстеллар» → ``space`` — темп, лад и хуки космоса (#3455).
-THEME_CONCEPTS: Mapping[str, str] = {
-    "косм": "space", "интерстел": "space", "interstel": "space", "межзвезд": "space",
-    "денди": "mario contra zelda", "dendy": "mario contra zelda", "приставк": "mario contra zelda",
-    "нинтенд": "mario zelda", "nintendo": "mario zelda",
-    # композиторы, чей транслит не совпадает со звуком архива («Чайковского» ≠ «Tchaikovsky», «Баха» → Baha Men)
-    "чайковск": "tchaikovsky", "бах": "bach", "моцарт": "mozart", "бетховен": "beethoven",
-    # мир франшизы без её названия в слове (07.10 «путешествие по Хогвардсу»: STT пишет «Хогвардс», ключ по началу
-    # основы ловит и падеж, и д/т) → записи франшизы: «potter» есть в названии или «исполнителе» всех 12 записей
-    "хогвар": "potter", "hogwar": "potter",
-}
 #: Жанр словами темы → метка каталога RTTTL (``tags`` записи): «классическая музыка» — отдельная часть темы, а не
 #: стоп-слово (живой сет 06.10 «денди и классическая музыка» играл только игры). Ключ — начало слова темы.
 #: «кино», «фильмов», «movie» → метка ``movie`` (190 записей архива: Batman, Titanic, Rocky, Terminator; 07.10
@@ -183,6 +216,9 @@ GENRE_TAGS: Mapping[str, str] = {
     "классик": "classical", "классическ": "classical", "classic": "classical",
     "кино": "movie", "фильм": "movie", "кинофильм": "movie", "movie": "movie", "film": "movie",
 }
+#: Метка жанра каталога → жанры PDMX в колонке ``score_index.genres`` (через «-»: ``classical-soundtrack``): по ним
+#: часть темы из одного жанра ищет партитуры (#3512; «музыка из фильмов» → ``soundtrack``, 1132+263 партитуры 07.10).
+SCORE_GENRES: Mapping[str, Tuple[str, ...]] = {"classical": ("classical",), "movie": ("soundtrack",)}
 #: Слова при жанре, не называющие мелодию («classical music», «классической музыки»; «Music» — ещё и название записи
 #: архива, поэтому не стоп-слово поиска вообще). В теме из слов реплики остаются при слове жанра
 #: (``engine.theme_grounding``: «денди и классической музыки»).
@@ -196,7 +232,10 @@ GENRE_NOT: Mapping[str, Tuple[str, ...]] = {
 GENRE_EXTRA: Mapping[str, Tuple[str, ...]] = {"classical": ("1812over", "1812over_2")}
 #: Стиль и формат сета словами с цифрой — вырезаются из запроса до разбора на слова (``engine.search.terms``):
 #: «8-бит», «8 бит», «8-битный», «16-bit», «8bit». Цифра из них искала «8» в «1812 Overture» и «Sk8er Boi» (06.10).
-SEARCH_STYLE_PATTERNS: Tuple[str, ...] = (r"\b\d+\s*-?\s*(?:бит|bit)\w*",)
+#: Те же слова ВЫБИРАЮТ стиль (ADR-0153 S2): регекс → ключ :data:`STYLES` (``theme.match_style_text``); темой они
+#: не становятся по-прежнему. Слова стиля без цифры — :data:`STYLE_WORDS`.
+STYLE_PATTERNS: Mapping[str, str] = {r"\b\d+\s*-?\s*(?:бит|bit)\w*": "chiptune"}
+SEARCH_STYLE_PATTERNS: Tuple[str, ...] = tuple(STYLE_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -211,6 +250,18 @@ class SynthTraits:
     def long_release(self) -> bool:
         return self.tail != "short"
 
+
+#: Синт с фильтром, чей срез растёт с высотой ноты и уходит за Найквист 8 кГц (выход 16 кГц): выше этой ноты фильтр
+#: неустойчив. Значение — старшая нота (MIDI), при которой срез ещё ≤ 7.9 кГц. ``cs80lead`` (renardo_lib):
+#: ``LPF.ar(osc, fenv·freq·12 + 100)`` — сам SynthDef пишет «keep ffreq below nyquist»; 7900/12 = 658 Гц ≈ MIDI 76, коридор
+#: лида — до 84. Робот 07.10 (ADR-0153 S2, synthwave): оба трека с ``cs80lead`` — серии цифрового нуля до 6.6 с и доля
+#: энергии выше 4.5 кГц до 0.9 (у клуба 0.007); 4 трека без него — чисто. Остальные синты палитры с фильтром от ``freq``
+#: (замер по .scd на роботе, #3502): ``brass`` ``Resonz(freq·5)`` → 1580 Гц = MIDI 91; ``supersawlead`` ``baseFreq·4`` → 95;
+#: ``strangerarp`` ``·3.5`` → 100; у остальных (``imperialbrass``/``strangerbrass``/``marchstrings``/``warmpad``/
+#: ``strangerpulsepad``/``retrobass``, ``·2…3.2``) предел ≥ MIDI 106, у ``tb303`` срез ограничен ``clip(…, 7200)`` — вне
+#: коридоров ролей. Одно место применения — ``arrange.mix.role_palette``: синт не берётся в роль, чей коридор
+#: (``Style.registers``) выше предела; никакого ``if style``.
+NYQUIST_MAX_MIDI: Mapping[str, int] = {"cs80lead": 76, "brass": 91, "supersawlead": 95, "strangerarp": 100}
 
 #: Свойства синтов (``core/synth_traits.SYNTH_TRAITS``; без поля ``source`` — оно в старом файле).
 SYNTH_TRAITS: Mapping[str, SynthTraits] = {
@@ -235,9 +286,15 @@ SYNTH_PALETTE: Mapping[str, Tuple[str, ...]] = {
     "lead": ("pluck", "blip", "arpy", "karp", "marimba", "sitar", "epiano", "brass", "orient", "viola",
              "rhpiano", "kalimba", "hoover", "keys", "cs80lead",
              # ADR-0153 S1: лиды стиля ``rave`` (замер #3430, досылка ``CRITICAL_SYNTHS``).
-             "rave", "supersawlead"),
-    "bass": ("bass", "retrobass", "dub", "jbass", "wobblebass", "subbass", "tb303"),
-    "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings"),
+             "rave", "supersawlead",
+             # ADR-0153 S2: лиды synthwave/chiptune (замер #3430/#3422, досылка ``CRITICAL_SYNTHS``).
+             "strangerarp", "saw", "pulse", "varsaw"),
+    "bass": ("bass", "retrobass", "dub", "jbass", "wobblebass", "subbass", "tb303",
+             # ADR-0153 S2: 8-битный бас chiptune (``octave8``)
+             "pulse"),
+    "pad": ("sinepad", "warmpad", "space", "ambi", "strangerpulsepad", "strings",
+            # ADR-0153 S2: арпеджио и стэбы synthwave/chiptune (замер 07.10 в рамке пэда)
+            "pulse", "square", "blip", "saw"),
 }
 
 #: Рисунок хэтов/клэпа — это сэмпл-плееры ``play``; синт ударных один.
@@ -385,8 +442,9 @@ SAMPLE_CATALOG: Mapping[str, SampleInfo] = {n: _sample_info(n, m) for n, m in _S
 SAMPLE_GROUPS: Mapping[str, str] = dict(_SAMPLE_DATA["groups"])
 
 
+@functools.lru_cache(maxsize=None)
 def scale_pitch_classes(root: int, mode: str) -> frozenset:
-    """Множество pitch class лада от тоники ``root`` (0..11)."""
+    """Множество pitch class лада от тоники ``root`` (0..11). Кешируется: валидатор зовёт его на каждую ноту трека."""
     return frozenset((root + step) % 12 for step in SCALES[mode])
 
 
@@ -405,9 +463,11 @@ __all__ = [
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
-    "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
-    "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
-    "scale_pitch_classes", "traits_of",
+    "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
+    "SEARCH_STYLE_PATTERNS",
+    "STYLE_PATTERNS",
+    "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling",
+    "scale_pitch_classes", "traits_of", "NYQUIST_MAX_MIDI",
 ]
 
 
@@ -438,10 +498,16 @@ LAYER_MEASURED_DB: Mapping[str, Tuple[float, Mapping[str, float]]] = {
                     "soprano": -57.8, "keys": -58.8, "saw": -58.8, "creep": -62.9, "rave": -64.9, "varsaw": -66.1,
                     "bell": -67.3, "sitar": -69.2, "viola": -71.5, "flute": -72.5, "square": -72.5}),
     "bass": (0.4, {"bass": -24.4, "retrobass": -41.9, "dub": -24.8,
-                   "jbass": -32.9, "wobblebass": -35.7, "tb303": -36.2, "subbass": -42.7, "moogbass": -56.3}),
+                   "jbass": -32.9, "wobblebass": -35.7, "tb303": -36.2, "subbass": -42.7, "moogbass": -56.3,
+                   # 07.10 (ADR-0153 S2, ``--sweep bass``, katana, образ 41596e9): 8-битный бас chiptune;
+                   # ``square`` на потолке ``amp`` −46.2 дБ (цель роли −32) — в семьи не идёт, ``pulse`` −37.5
+                   "square": -59.33, "pulse": -44.05}),
     "pad": (0.11, {"sinepad": -74.4, "warmpad": -43.1, "space": -54.5,
                    "marchstrings": -38.1, "mhpad": -38.9, "strangerpulsepad": -43.0, "ambi": -56.5, "strings": -59.5,
-                   "pads": -64.0}),
+                   "pads": -64.0,
+                   # 07.10 (ADR-0153 S2, ``loudness_nrt_v2.sh --sweep pad``, katana, образ voice-assistant 41596e9):
+                   # синты арпеджио synthwave/chiptune в рамке пэда 29.09; наклон ``amp`` 1.0, у ``square`` 1.99
+                   "pulse": -51.39, "square": -75.2, "blip": -53.8, "saw": -56.17}),
 }
 #: Границы полос замера слоя, Гц: низ < 150, середина 150–2000, верх ≥ 2000 (как ``live_dj/compare.profile``).
 LAYER_BANDS_HZ: Tuple[float, float] = (150.0, 2000.0)
@@ -470,11 +536,14 @@ LAYER_BANDS: Mapping[str, Mapping[str, Tuple[float, float, float]]] = {
         "bass": (0.957, 0.043, 0.0), "retrobass": (0.589, 0.411, 0.0), "dub": (0.999, 0.001, 0.0),
         "jbass": (0.994, 0.006, 0.0), "wobblebass": (0.9, 0.099, 0.001), "tb303": (0.521, 0.472, 0.007),
         "subbass": (0.996, 0.004, 0.0), "moogbass": (0.99, 0.01, 0.0),
+        "square": (0.573, 0.425, 0.002), "pulse": (0.58, 0.418, 0.002),
     },
     "pad": {
         "sinepad": (0.001, 0.999, 0.0), "warmpad": (0.085, 0.915, 0.0), "space": (0.0, 1.0, 0.0),
         "marchstrings": (0.107, 0.893, 0.0), "mhpad": (0.009, 0.991, 0.0), "strangerpulsepad": (0.058, 0.942, 0.0),
         "ambi": (0.052, 0.948, 0.0), "strings": (0.009, 0.986, 0.005), "pads": (0.0, 0.394, 0.606),
+        "pulse": (0.032, 0.94, 0.028), "square": (0.033, 0.945, 0.022), "blip": (0.029, 0.97, 0.001),
+        "saw": (0.024, 0.937, 0.039),
     },
 }
 #: Наклон громкости по ``amp``: ``dB = 20·p·log10(amp)``; у ``dub``/``karp``/``sinepad`` ``amp`` входит дважды.
@@ -605,7 +674,7 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("subbass", "jbass"),
              "pad": ("sinepad", "space", "strangerpulsepad")},
-    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "tb303"),
+    "hard": {"lead": ("arpy", "blip", "hoover", "pluck"), "bass": ("jbass", "wobblebass", "tb303"),
              "pad": ("sinepad", "strings", "strangerpulsepad")},
     "bright": {"lead": ("pluck", "blip", "kalimba", "epiano"), "bass": ("bass", "jbass"),
                "pad": ("strings", "ambi", "sinepad")},
@@ -649,6 +718,10 @@ PAD_FIGURES: Mapping[str, PadFigure] = {
     "pumped16": PadFigure(ducked=True, long_tails=False, level_offset_db=0.0),
     "held": PadFigure(ducked=False, long_tails=True, level_offset_db=3.1),
     "stabs": PadFigure(ducked=True, long_tails=False, level_offset_db=1.2),
+    # ADR-0153 S2: арпеджио (``arrange.pad.arp``) — один тон аккорда на каждой 16-й, без насоса (synthwave/chiptune).
+    # Прибавка — ОЦЕНКА, не замер: звучит один голос из трёх аккорда модели громкости (10·lg 3 = +4.8 дБ). На роботе
+    # не мерено; A9-модель трека считает пэд с худшим сдвигом (:data:`PAD_ROBOT_DB_UNMEASURED`), пока нет записи.
+    "arp": PadFigure(ducked=False, long_tails=False, level_offset_db=4.8),
 }
 #: На сколько дБ пэд рисунка ``pumped16`` на роботе громче своего ``level_db`` (модель громкости — NRT аккорда на
 #: 8 долей, :data:`LAYER_MEASURED_DB`): подгонка низа 133 дропов серий ser6/ser7/ser9 06.10 (#3449; было — 46
@@ -741,11 +814,15 @@ BASS_FIGURES: Mapping[str, BassFigure] = {
     # последняя 16-я доли — октавой выше, срез на каждую ноту волной в два такта (``lpf=[...]``).
     "acid16": BassFigure(steps=_ACID_STEPS, fifth_last=False, accents=_ACID_ACCENTS, lift=(2, 5, 8, 11),
                          lpf=_acid_lpf(_ACID_ACCENTS, 500.0, 2400.0, 1.5)),
+    # ADR-0153 S2: 8-битный бас ``pulse`` — шаги ``rolling8``, каждая вторая нота октавой выше (тоника–октава).
+    "octave8": BassFigure(steps=(2, 3, 6, 7, 10, 11, 14, 15), fifth_last=False, lift=(1, 3, 5, 7)),
 }
 #: Рисунок баса ↔ синт (ADR-0152 PR-9, одна таблица): рисунок из таблицы звучит только перечисленными синтами, а
 #: синт из таблицы — только рисунками, которые его называют (``arrange.mix.bass_pair_ok``). ``tb303`` держит низ на
 #: 0.52 (:data:`LAYER_BANDS`) — соло-линия ``acid16`` с огибающей на ноту, а не ровный бас ``offbeat``/``rolling8``.
-BASS_FIGURE_SYNTHS: Mapping[str, Tuple[str, ...]] = {"acid16": ("tb303",)}
+#: ``pulse`` (ADR-0153 S2, chiptune) — только октавами ``octave8``: низ 0.58, на потолке ``amp`` на 5.5 дБ тише цели
+#: роли — звук жанра поверх бочки, а не опора дропа (``square`` ещё на 8.7 дБ тише — не взят).
+BASS_FIGURE_SYNTHS: Mapping[str, Tuple[str, ...]] = {"acid16": ("tb303",), "octave8": ("pulse",)}
 
 
 @dataclass(frozen=True)
@@ -999,6 +1076,8 @@ class Style:
     # Дуга энергии (ADR-0147 §3.4, #3459): кульминация (энергия 5) обязана прозвучать не позже этого трека сета
     # (с 1); при ~70 с на трек это 4-й трек ≈ 5–6 мин. Валидатор ризонера отвергает дугу LLM без пика в этом окне.
     peak_by_track: int = 4
+    # Порядок тонов арпеджио (``arrange.pad.arp``, ADR-0153 S2): индексы голосов аккорда снизу вверх по 16-м, по кругу.
+    arp_order: Tuple[int, ...] = (0, 1, 2, 1)
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
@@ -1020,7 +1099,7 @@ _RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: ADR-0152 §3.1 — не сделан). ``supersawlead`` держит хвост (``SYNTH_TRAITS`` «held») — мотив может смазываться,
 #: проверка на слух.
 _RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("hoover", "rave", "cs80lead"), "bass": ("subbass", "jbass", "tb303"),
+    "dark": {"lead": ("hoover", "rave", "supersawlead"), "bass": ("subbass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["dark"]["pad"]},
     "hard": {"lead": ("hoover", "rave", "supersawlead", "arpy"), "bass": ("wobblebass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["hard"]["pad"]},
@@ -1031,6 +1110,85 @@ _RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
 }
 #: Каркасы рейва — клубные без качающихся (``shuffle``/``ride``): рейв ровный (S2 ADR-0153: свинг-ratio ≤ 1.2).
 _RAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "sixteenths", "open")}
+
+# ── Стили ``synthwave`` и ``chiptune`` (ADR-0153 S2): клубная форма и микс, свои окна, бочки, пэды и тембры ───────
+#: Synthwave/outrun 100–120 (§3): мягкий насос (0.3 в дропе вместо 1.0 у клуба — «без насоса или мягкий»), окно
+#: ``synthwave`` — бочка ``outrun`` (``X...X...X...X..X``) в дропе, бас только оффбит (шаг 15 бочки занят — ``rolling8``
+#: на нём звучал бы с бочкой); окно ``retrowave`` — прямая бочка, бас оффбит/ролл. Пэд держит аккорд (``held``,
+#: ``warmpad``/``strangerpulsepad`` созданы под этот звук) или арпеджио (``arp``). Бочки — мягкие клубные, замеренные.
+_SYNTHWAVE_LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["outrun"], 0.3)),
+    (5, Look("X.......X.......", 0.2)),
+    (0, Look(KICK_PATTERNS["four_on_floor"], 0.2)),
+)
+_RETROWAVE_LOOKS: Tuple[Tuple[int, Look], ...] = ((7, Look(KICK_PATTERNS["four_on_floor"], 0.3)), *_SYNTHWAVE_LOOKS[1:])
+_SYNTHWAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "synthwave": GenreWindow((100, 120), ("deep", "house"), _SYNTHWAVE_LOOKS, ("offbeat",), ("held", "held", "arp")),
+    "retrowave": GenreWindow((108, 120), ("house", "deep"), _RETROWAVE_LOOKS, ("offbeat", "rolling8"),
+                             ("held", "arp", "arp")),
+}
+#: Тембры synthwave — семьи тем как у клуба. Лиды: ``strangerarp`` и ``supersawlead`` (собственный хвост ``held`` —
+#: мотив может смазываться, проверка на слух, как у рейва), ``saw``, ``keys``, ``arpy``. ``cs80lead`` (звук жанра) НЕ
+#: взят: на роботе 07.10 оба трека с ним дали секунды цифрового нуля и шум выше среза мастера (:data:`NYQUIST_MAX_MIDI`).
+#: Басы — с долей низа ≥ 0.9 (``BASS_MIN_LOW``): ``retrobass`` (0.59) и ``moogbass`` (разброс замера 8 дБ) в семьи не
+#: идут. Пэды: держащие (``warmpad``/``strangerpulsepad`` — с хвостом, только ``held``) и короткие для ``arp``.
+_SYNTHWAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("strangerarp", "saw", "keys"), "bass": ("subbass", "jbass"),
+             "pad": ("strangerpulsepad", "space", "saw")},
+    "hard": {"lead": ("strangerarp", "supersawlead", "saw", "arpy"), "bass": ("jbass", "subbass"),
+             "pad": ("strangerpulsepad", "sinepad", "pulse")},
+    "bright": {"lead": ("supersawlead", "arpy", "keys"), "bass": ("bass", "jbass"),
+               "pad": ("warmpad", "strings", "pulse")},
+    "warm": {"lead": ("strangerarp", "keys", "saw"), "bass": ("bass", "jbass", "subbass"),
+             "pad": ("warmpad", "sinepad", "saw")},
+}
+_SYNTHWAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "open")}
+_SYNTHWAVE_FIELDS = dict(
+    swing=(0.0, 0.03), modes=("minor", "dorian"), looks=_SYNTHWAVE_LOOKS, kits=_SYNTHWAVE_KITS,
+    registers=_CLUB_REGISTERS, timbres=_SYNTHWAVE_TIMBRES, default_timbre="warm", lead_figures=("motif",),
+    chord_size=3, progressions=_CLUB_PROGRESSIONS, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
+    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
+    genre_windows=_SYNTHWAVE_GENRE_WINDOWS, role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES,
+    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    stereo=_CLUB_STEREO,
+    # A9: норма низа synthwave 0.4–0.7 (§3, гипотеза до эталона В1) + запас σ модели 0.1, как клуб (0.5 + 0.1)
+    a9_model_low=0.5, arp_order=(0, 1, 2, 1),
+)
+#: Chiptune/8-bit 120–160 (§3): без насоса (сайдчейна нет), хэты 16-ми, арпеджио вместо пэда (``arp`` — вдвое чаще
+#: стэбов), лиды ``pulse``/``blip``/``saw``/``varsaw`` (``square`` как лид на потолке ``amp`` не достаёт цели роли −50
+#: на 3 дБ — он в арпеджио). Бас: оффбит/ролл на басах с низом и ``octave8`` — ``pulse`` октавами (8-битный бас,
+#: :data:`BASS_FIGURE_SYNTHS`). Бочки — клубные замеренные (свои «шумовые» ударные — отдельный SynthDef/пак, не здесь).
+_CHIP_LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
+    (5, Look("X.......X.......", 0.0)),
+    (0, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
+)
+_CHIPTUNE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "chiptune": GenreWindow((120, 160), ("techno", "garage"), _CHIP_LOOKS, ("offbeat", "rolling8", "octave8"),
+                            ("arp", "arp", "stabs")),
+}
+_CHIPTUNE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("pulse", "varsaw", "blip"), "bass": ("subbass", "jbass", "pulse"),
+             "pad": ("square", "pulse")},
+    "hard": {"lead": ("pulse", "saw", "blip"), "bass": ("jbass", "subbass", "pulse"),
+             "pad": ("square", "blip")},
+    "bright": {"lead": ("blip", "pulse", "varsaw"), "bass": ("bass", "jbass", "pulse"),
+               "pad": ("pulse", "square")},
+    "warm": {"lead": ("pulse", "blip", "saw"), "bass": ("bass", "jbass", "pulse"),
+             "pad": ("blip", "square", "pulse")},
+}
+_CHIPTUNE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("sixteenths", "offbeat")}
+_CHIPTUNE_FIELDS = dict(
+    swing=(0.0, 0.0), modes=("major", "minor"), looks=_CHIP_LOOKS, kits=_CHIPTUNE_KITS,
+    registers=_CLUB_REGISTERS, timbres=_CHIPTUNE_TIMBRES, default_timbre="bright", lead_figures=("motif",),
+    chord_size=3, progressions=_CLUB_PROGRESSIONS, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
+    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
+    genre_windows=_CHIPTUNE_GENRE_WINDOWS, role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=(),
+    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    stereo=_CLUB_STEREO,
+    # A9: норма низа chiptune 0.3–0.5 (§3: суб-баса нет по природе) + запас σ модели 0.1
+    a9_model_low=0.4, arp_order=(0, 1, 2),
+)
 
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
 #: (``test_style_same_tracks``): 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138); свинг
@@ -1067,6 +1225,15 @@ STYLES: Mapping[str, Style] = {
         lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
         a9_model_low=0.6,
     ),
+    # ADR-0153 S2: поля стиля — первое окно, как у клуба и рейва.
+    "synthwave": Style(
+        bpm=_SYNTHWAVE_GENRE_WINDOWS["synthwave"].bpm, kick_pool=_SYNTHWAVE_GENRE_WINDOWS["synthwave"].kick_pool,
+        bass_figures=_SYNTHWAVE_GENRE_WINDOWS["synthwave"].bass_figures,
+        pad_figures=_SYNTHWAVE_GENRE_WINDOWS["synthwave"].pad_figures, **_SYNTHWAVE_FIELDS),
+    "chiptune": Style(
+        bpm=_CHIPTUNE_GENRE_WINDOWS["chiptune"].bpm, kick_pool=_CHIPTUNE_GENRE_WINDOWS["chiptune"].kick_pool,
+        bass_figures=_CHIPTUNE_GENRE_WINDOWS["chiptune"].bass_figures,
+        pad_figures=_CHIPTUNE_GENRE_WINDOWS["chiptune"].pad_figures, **_CHIPTUNE_FIELDS),
 }
 DEFAULT_STYLE = "club"
 #: Слова фразы человека → стиль (ADR-0153 §4.1): основа слова (начало) → ключ :data:`STYLES`. Одна таблица:
@@ -1074,6 +1241,14 @@ DEFAULT_STYLE = "club"
 STYLE_WORDS: Mapping[str, str] = {
     "рейв": "rave", "рэйв": "rave", "rave": "rave", "эйсид": "rave", "эсид": "rave", "acid": "rave",
     "хардкор": "rave", "hardcore": "rave",
+    # ADR-0153 S2. «8-бит», «8битный» (цифра) — :data:`STYLE_PATTERNS`; «ретро» без «вейв» — не стиль (стоп-слово темы)
+    "синтвейв": "synthwave", "синтвэйв": "synthwave", "synthwave": "synthwave", "ретровейв": "synthwave",
+    "ретровэйв": "synthwave", "retrowave": "synthwave", "аутран": "synthwave", "outrun": "synthwave",
+    "чиптюн": "chiptune", "chiptune": "chiptune", "восьмибит": "chiptune",
+    # #3508: клуб — стиль по умолчанию, но тема со своей строкой (киберпанк → synthwave) без слова его не выберет.
+    # Основы «клубны/клубна/клубно/клубну», не «клуб»: «клубника» не стиль. «хаус»/«house»/«техно» не берём: «техно» — основа
+    # темы cyber, «хаус» — «Доктор Хаус»; окна club/deep/breaks (ADR-0152) стиль не выбирают — окно внутри club.
+    "клубны": "club", "клубна": "club", "клубно": "club", "клубну": "club", "клубняк": "club", "club": "club",
 }
 #: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
 DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))
@@ -1143,36 +1318,6 @@ __all__ += [
 
 
 # ── Реестр произведений (ADR-0155 K-2): ручные таблицы знания; логика — ``rob_box_music.works`` ───────────────
-#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный). Одна таблица: поиск
-#: (``rtttl_library._alias_normalize``), озвучка названия (``ru_alias_for``) и ``Work.aliases`` читают её же.
-RU_ALIASES: Mapping[str, str] = {
-    "гимн ссср": "soviet anthem",
-    "гимн россии": "soviet anthem",
-    "советский гимн": "soviet anthem",
-    "гимн": "soviet anthem",
-    "ссср": "soviet anthem",
-    "ussr": "soviet anthem",
-    "имперский марш": "imperial march",
-    "дарт вейдер": "imperial march",
-    "в пещере горного короля": "mountain king",
-    "григ": "mountain king",
-    "тетрис": "tetris",
-    "коробейники": "tetris",
-    "марио": "mario",
-    "супер марио": "mario",
-    "нокиа": "nokia",
-    "к элизе": "fur elise",
-    "ода к радости": "ode to joy",
-    "с днём рождения": "happy birthday",
-    "с днем рождения": "happy birthday",
-    "джингл белс": "jingle bells",
-    "звёздные войны": "star wars",
-    "звездные войны": "star wars",
-    # Архив хранит русский гимн под существительным «Russia» («National Anthem Of Russia»), не под прилагательным
-    # «Russian» — без этой замены токен «russian» не матчит запись вовсе, и «russian anthem» решает голое
-    # совпадение «anthem» по полусотне чужих гимнов (#2840).
-    "russian": "russia",
-}
 #: «Исполнитель» архива, который на деле категория (``artist`` = «Films And Tv», «Computer Games»): значение —
 #: тип произведения (``Work.work_type``) или ``""`` — категория без типа («Unknown», «Various»); артиста у такой
 #: записи нет. Для «Films And Tv»/«Theme» тип берётся из тегов записи (:data:`TAG_WORK_TYPE`).
@@ -1195,4 +1340,4 @@ EMPTY_TITLES: Tuple[str, ...] = ("", "theme", "unknown", "untitled")
 #: Строки — подстроки нормализованного имени (``works.norm``: буквы и цифры без пробелов). Растёт по факту.
 LICENSE_STOP_LIST: Tuple[str, ...] = ("zimmer", "kondo", "uematsu", "nintendo", "disney", "johnwilliams")
 
-__all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "RU_ALIASES", "TAG_WORK_TYPE"]
+__all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "TAG_WORK_TYPE"]

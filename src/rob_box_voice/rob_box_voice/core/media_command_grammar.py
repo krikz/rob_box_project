@@ -32,8 +32,9 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
-from rob_box_music.theme import match_style
+from rob_box_music.theme import style_marks
 
 from .set_length_words import LENGTH_WORDS, split_set_length
 
@@ -461,16 +462,14 @@ def _theme_split(text: str) -> Tuple[str, str]:
 _STYLE_LEAD: FrozenSet[str] = frozenset({"в", "стиле", "стиль", "стилем"})
 
 
-def _is_style_word(word: str) -> bool:
-    return match_style([word]) is not None
-
-
 def _style_words(words: Sequence[str]) -> Tuple[str, List[str]]:
-    """``(стиль, слова без «в стиле рейв»)``; стиля нет — ``("", слова)``."""
-    style = match_style(words) or ""
+    """``(стиль, слова без «в стиле рейв»)``; стиля нет — ``("", слова)``. Слова стиля — ``theme.style_marks``:
+    «синтвейв», «чиптюн» и «8 битный» (цифра отдельным словом, ADR-0153 S2) — стиль, а не тема."""
+    marks = style_marks(words)
+    style = next((st for st in marks if st), "")
     out: List[str] = []
-    for word in words:
-        if style and _is_style_word(word):
+    for word, mark in zip(words, marks):
+        if mark:
             while out and out[-1] in _STYLE_LEAD:
                 out.pop()
             continue
@@ -480,7 +479,7 @@ def _style_words(words: Sequence[str]) -> Tuple[str, List[str]]:
 
 def _with_style(command: MediaCommand, text: str) -> MediaCommand:
     """DJ-команда со стилем из слов реплики; слова стиля убраны из темы."""
-    style, _rest = _style_words(_words(text))
+    style, _rest = _style_words(_theme_words(text))  # с цифрами: «8-битный» — стиль chiptune (ADR-0153 S2)
     if not style:
         return command
     theme = command.set_theme
@@ -520,7 +519,8 @@ def _dj_head_command(text: str) -> MediaCommand:
         theme_m.span() if theme_m else None,
         start_m.span() if start_m else None,
     ])
-    closed = all(w in _DJ_FILLER or w in _STYLE_LEAD or _is_style_word(w) for w in _words(rest))
+    words = [w for w in _style_words(_theme_words(rest))[1] if not w.isdigit()]  # «8-битный» — стиль, не имя
+    closed = all(w in _DJ_FILLER or w in _STYLE_LEAD for w in words)
     return MediaCommand(intent=MediaIntent.DJ, closed=closed, persona=persona_title(name))
 
 
@@ -731,9 +731,14 @@ def _request_music_command(tail: Sequence[str]) -> MediaCommand:
 #: Слова при названии стиля вместо «диджей-сета»: «включи рейв-сет», «поставь
 #: эйсид музыку» (ADR-0153 S1).
 _STYLE_SET_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | frozenset({
-    "сет", "сета", "диджей", "dj", "set", "диджейский", "музыку", "музыка",
+    "сет", "сета", "сэт", "сэта", "диджей", "dj", "set", "диджейский", "музыку", "музыка",
     "музычку", "трек", "треки", "микс", "вечеринку", "вечеринка",
 })
+
+
+#: Слова «сет» и «диджей» (без «трек/музыку/микс»): клуб — стиль по умолчанию одиночного трека, поэтому «поставь клубный
+#: трек» остаётся ``request_music``, а клубом сет становится со словом сета или темой (#3508).
+_SET_NOUNS: FrozenSet[str] = frozenset({"сет", "сета", "сэт", "сэта", "set", "диджей", "dj", "диджейский"})
 
 
 def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
@@ -753,6 +758,8 @@ def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
     style, rest = _style_words(head)
     if not style or any(w not in _STYLE_SET_FILLER and w not in _STYLE_LEAD for w in rest):
         return None
+    if style == kn.DEFAULT_STYLE and lead == len(body) and not _SET_NOUNS.intersection(rest):
+        return None  # «поставь клубный трек» — одиночный трек (request_music), не сет
     theme = _style_words(body[lead + 1:])[1]
     return MediaCommand(intent=MediaIntent.DJ, closed=True, style=style, set_theme=" ".join(theme))
 

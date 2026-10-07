@@ -124,7 +124,8 @@ def test_live_phrase_starts_dj_set_without_llm(run_plans):
     n._dispatch_turn.assert_not_called()  # ни load_skill, ни второго раунда LLM
     assert n._llm_skipped_counter["media_command"] == 1
     [(name, args, hidden)] = n._scheduler_executor.calls
-    assert (name, args) == ("dj_set", {"action": "start", "persona": "диджей 8битный", "tracks": 24})
+    assert (name, args) == ("dj_set", {"action": "start", "persona": "диджей 8битный", "style": "chiptune",
+                                       "tracks": 24})  # ADR-0153 S2: «8битный» выбирает стиль
     # Скрытый контекст — этой реплики: тему (денди + классика) dj_set выделит из неё, длина 24.
     assert "денди" in hidden["heard_text"] and "классической" in hidden["heard_text"]
     assert hidden["heard_tracks"] == 24

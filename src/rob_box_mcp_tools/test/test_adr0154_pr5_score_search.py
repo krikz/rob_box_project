@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from dataclasses import replace
 from typing import Sequence
 
 import pytest
@@ -16,12 +17,13 @@ import pytest
 from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
 from rob_box_music import works
+from rob_box_music.arrange import hook as hooks
 from rob_box_music.model import Key, PitchEvent
 from rob_box_music.set_plan import plan_materials, seeded_plan
 from rob_box_music.theme import seeded_profile
 
-from rob_box_mcp_tools.engine.score_library import DEFAULT_DIR, ENV, INDEX_FILE, ScoreLibrary, library_dir
-from rob_box_mcp_tools.engine.search import ThemeHits, score_search
+from rob_box_mcp_tools.engine.score_library import DEFAULT_DIR, ENV, INDEX_FILE, ScoreIndex, ScoreLibrary, library_dir
+from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
 
 from .test_engine_session import _rig, _started
@@ -70,18 +72,24 @@ ROWS = (
 )
 
 
-# ── поиск по названию (search.score_search) ─────────────────────────────────────────────────────────────────
+def score_search(rows, theme):
+    """Партитуры темы одной частью (строки — ``search.part_query`` без каталога RTTTL)."""
+    return ScoreIndex(rows).search(ThemeQuery(theme, (part_query(None, theme),)))
+
+
+# ── поиск по названию (score_library.ScoreIndex) ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("theme", ["интерстеллар", "Interstellar", "на тему интерстеллара", "INTERSTELLAR сет"])
 def test_interstellar_finds_scores_exact_title_first_then_by_rating(theme):
-    assert score_search(ROWS, theme) == ("local:c", "pdmx:a", "pdmx:b")
+    # «Space Oddity» — по семени «интерстел*» → space (#3512: семена реестра ищут и партитуры), ниже по рейтингу
+    assert score_search(ROWS, theme) == ("local:c", "pdmx:a", "pdmx:b", "pdmx:f")
 
 
 @pytest.mark.parametrize("theme, expected", [
     ("марио", ("pdmx:d",)),  # «марио» → mario целиком, а не основа «мари»
     ("тетрис", ("pdmx:e",)),
     ("кино", ()),  # жанр каталога — не название: хуки из RTTTL, как раньше
-    ("космос", ()),  # понятие THEME_CONCEPTS («космос» → space) к партитурам не применяется: только название
+    ("космос", ("pdmx:f",)),  # семя-начало «косм*» → space: те же строки, что у поиска мелодий (#3512)
     ("интерстеллар марио", ()),  # все значимые слова темы — в одном названии
     ("сет", ()),  # одни служебные слова
     ("", ()),
@@ -174,3 +182,85 @@ def test_no_library_on_device_plays_rtttl_hooks_with_an_honest_line(tmp_path, ca
     started = next(r.getMessage() for r in caplog.records if " started track_id=" in r.getMessage())
     assert "material_id=" not in started  # трек без партитуры — строка started как до PR-5
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+# ── годность материала: отбор при плане (#3500) ─────────────────────────────────────────────────────────────
+
+def _ostinato(material_id: str) -> mt.ScoreMaterial:
+    """Остинато на одной ноте — «1 высот — не мотив»: ``from_material`` его отвергает."""
+    good = synthetic(material_id, "Interstellar")
+    return replace(good, melody=tuple(replace(e, midi=72) for e in good.melody))
+
+
+def _six_eight(material_id: str) -> mt.ScoreMaterial:
+    return replace(synthetic(material_id, "Interstellar"), meter=(6, 8))
+
+
+def _pool():
+    return {"local:ost": _ostinato("local:ost"), "local:b68": _six_eight("local:b68"),
+            "pdmx:ok1": synthetic("pdmx:ok1", "Interstellar"), "pdmx:ok2": synthetic("pdmx:ok2", "Interstellar", (0, 0, 3, 3, 4, 4, 0, 0))}
+
+
+def test_unfit_material_reason_is_the_from_material_refusal_itself():
+    for mid, material in _pool().items():
+        reason = hooks.material_unfit(material, 120, 0, "major")
+        if mid.startswith("pdmx"):
+            assert reason is None and hooks.from_material(material, 120, 0, "major")
+        else:
+            with pytest.raises(hooks.HookError) as raised:
+                hooks.from_material(material, 120, 0, "major")
+            assert reason == str(raised.value)
+    assert "не мотив" in hooks.material_unfit(_ostinato("local:x"), 120, 0, "major")
+    assert "6/8" in hooks.material_unfit(_six_eight("local:x"), 120, 0, "major")
+
+
+def test_plan_materials_skips_unfit_and_keeps_rank_order_of_the_fit():
+    reasons = {"local:ost": "не мотив", "local:b68": "6/8"}
+    rejected = {}
+    got = plan_materials(("local:ost", "local:b68", "pdmx:ok1", "pdmx:ok2"), 4, fit=lambda mid, no: reasons.get(mid), rejected=rejected)
+    assert got == ("pdmx:ok1", "pdmx:ok2", None, None) and rejected == reasons
+
+
+def test_freshness_is_counted_among_the_fit_only():
+    history = [{"set_id": "old", "melody_name": "pdmx:ok1"}]  # прошлый сет открыл годный №1
+    fit = lambda mid, no: "не мотив" if mid.startswith("local:") else None  # noqa: E731
+    assert plan_materials(("local:ost", "pdmx:ok1", "pdmx:ok2"), 3, history, "new", fit) == ("pdmx:ok2", "pdmx:ok1", None)
+
+
+def test_rejected_material_is_dropped_for_the_set_and_checked_once():
+    calls = []
+
+    def fit(mid, no):
+        calls.append((mid, no))
+        return "вне лада" if mid == "pdmx:ok1" else None
+
+    assert plan_materials(("pdmx:ok1", "pdmx:ok2"), 4, fit=fit) == ("pdmx:ok2", None, None, None)
+    assert calls == [("pdmx:ok1", 1), ("pdmx:ok2", 1)]  # негодный не перепроверяется на следующих треках
+
+
+def test_seeded_plan_puts_fit_materials_on_the_first_tracks_with_reasons():
+    pool = _pool()
+    rejected = {}
+    plan = seeded_plan(seeded_profile("интерстеллар", materials=tuple(pool)), 7, n_tracks=4, materials=pool,
+                       rejected=rejected)
+    assert [t.material for t in plan.tracks] == ["pdmx:ok1", "pdmx:ok2", None, None]
+    assert set(rejected) == {"local:ost", "local:b68"} and "не мотив" in rejected["local:ost"] and "6/8" in rejected["local:b68"]
+    for t in plan.tracks:  # годные годны ровно в том темпе и тонике, с которыми их возьмёт compose
+        if t.material:
+            assert hooks.material_unfit(pool[t.material], plan.bpm, plan.root(t.no), plan.profile.mode,
+                                        hooks.kn.REGISTERS["lead"]) is None
+
+
+def test_set_with_unfit_first_material_starts_with_the_fit_one(tmp_path, caplog):
+    lib = make_library(tmp_path / "lib", [_ostinato("local:i0"), synthetic("local:i1", "Interstellar")],
+                       ratings={"local:i0": 5.0})
+    rig = _rig()
+    dj = _dj(rig, lib)
+    with caplog.at_level(logging.INFO):
+        data = dj.execute(action="start", theme="интерстеллар", tracks=2).data
+        rig.clock.run_until(rig.clock.beat + 2)
+    assert data["ok"]
+    lines = [r.getMessage() for r in caplog.records]
+    assert any("материал local:i0 не годится" in m and "не мотив" in m for m in lines)
+    assert any("материалы треков: ['local:i1', None]" in m for m in lines)
+    assert "material_id=local:i1" in next(m for m in lines if " started track_id=" in m)

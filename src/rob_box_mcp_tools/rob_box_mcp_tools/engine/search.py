@@ -6,7 +6,7 @@
 запись покрывает не все значимые слова, слова разбирает код:
 
 * служебные слова просьбы и темы (``knowledge.SEARCH_STOPWORDS``) отбрасываются по основе слова;
-* понятие без мелодии в названии («космос», «денди») → английский запрос (``knowledge.THEME_CONCEPTS``);
+* понятие без мелодии в названии («космос», «денди») → строки поиска семени-начала реестра (``works.word_links``);
 * русское слово → транслит слова, затем его основы (падежное окончание снято) → слова архива с тем же
   звуковым ключом (``gadzhet`` ~ ``gadget``, ``inspektor`` ~ ``inspector``); основа сверяется и по началу.
   Слово, которого в архиве нет, ничего не находит (подстрока транслита давала «дела» → «Abdelazer»).
@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, replace
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.works import word_links
 from rob_box_music.rtttl import CONTOUR_NOTES, THEME_HOOKS, consensus_order, contour  # noqa: F401
 
 from ..core.rtttl_library import _alias_normalize, melody_quality, tagged
@@ -86,10 +87,15 @@ _STOP = frozenset(stem(w.replace("ё", "е")) for w in kn.SEARCH_STOPWORDS) | fr
 
 @dataclass(frozen=True)
 class Term:
-    """Значимое слово запроса и его написания в архиве (любое совпало — слово найдено)."""
+    """Значимое слово запроса и его написания в архиве (любое совпало — слово найдено).
+
+    ``latin`` — само слово по звуку, для названий вне словаря архива RTTTL (партитуры, ``score_library``):
+    ``(транслит слова, транслит основы, основа сверяется по началу)``; у латиницы — слово как есть (семя
+    «interstel*» → ``space`` не отнимает у слова «Interstellar» его собственное написание)."""
 
     word: str
     alts: Tuple[str, ...]
+    latin: Tuple[str, str, bool] = ("", "", False)
 
 
 @dataclass(frozen=True)
@@ -122,19 +128,14 @@ _VOCAB_CACHE: Dict[int, Tuple[frozenset, _Vocab]] = {}
 
 
 def _vocab(library: Any) -> _Vocab:
+    if library is None:  # без каталога RTTTL (подставной поиск мелодий в тестах сета): только семена и звучание
+        return _Vocab(())
     words = library.vocabulary()
     cached = _VOCAB_CACHE.get(id(words))
     if cached is None or cached[0] is not words:
         _VOCAB_CACHE.clear()
         cached = _VOCAB_CACHE[id(words)] = (words, _Vocab(words))
     return cached[1]
-
-
-def _concept(word_stem: str) -> Tuple[str, ...]:
-    for key, query in kn.THEME_CONCEPTS.items():
-        if word_stem.startswith(key):
-            return tuple(query.split())
-    return ()
 
 
 def _resolve(vocab: _Vocab, word: str, word_stem: str) -> Tuple[str, ...]:
@@ -159,12 +160,19 @@ def terms(library: Any, text: str) -> List[Term]:
         word_stem = stem(word)
         if word in _STOP or word_stem in _STOP:
             continue
-        alts = _concept(word) or _concept(word_stem)
-        if not alts and _CYR_RE.search(word):
+        alts = word_links(word) or word_links(word_stem)
+        cyrillic = bool(_CYR_RE.search(word))
+        if not alts and cyrillic:
             if len(word) < _WORD_MIN:
                 continue
             alts = _resolve(vocab, word, word_stem)
-        out.append(Term(word, alts if _CYR_RE.search(word) else alts or (word,)))
+        if not cyrillic:
+            latin = (word, word, False)
+        elif len(word) >= _WORD_MIN:
+            latin = (transliterate_ru(word), transliterate_ru(word_stem), len(word_stem) >= _STEM_MIN)
+        else:
+            latin = ("", "", False)
+        out.append(Term(word, alts if cyrillic else alts or (word,), latin))
     return out
 
 
@@ -225,6 +233,59 @@ class ThemeHits:
     #: хуки ``names`` по частям темы-перечисления в порядке названного (франшизы) — сет чередует части
     #: (``theme.ThemeProfile.theme_parts``); пусто — тема одна
     parts: Tuple[Tuple[str, ...], ...] = ()
+    #: тема называет конкретные вещи (перечисление или произведение, ``engine.theme_links``): ничего не нашлось —
+    #: сет не играет случайный пул (#3493, 07.10 «нахуя тетрис»)
+    named: bool = False
+    #: строки поиска, по которым искались эти мелодии (:func:`part_query`); ими же ищутся партитуры
+    #: (``score_library.ScoreIndex``) — одно разрешение темы на оба каталога (#3512)
+    query: Optional["ThemeQuery"] = None
+
+
+@dataclass(frozen=True)
+class PartQuery:
+    """Часть темы и её строки поиска (:func:`part_query`): слова с написаниями в архиве (семена реестра
+    ``works.word_links``, алиасы библиотеки, слова архива по звуку), жанр каталога и связи реестра
+    (``engine.theme_links``: семена-фразы, Шифу, проверенные каталогом ответы LLM)."""
+
+    text: str
+    terms: Tuple[Term, ...] = ()
+    genre: Optional[str] = None  # метка жанра каталога, названная словами части (:func:`genre_of`)
+    genre_only: bool = False  # часть называет только жанр («классическая музыка», «музыка из фильмов»)
+    links: Tuple[str, ...] = ()  # проверенные строки связей реестра для части, которую прямой поиск не нашёл
+
+    def strings(self) -> Tuple[str, ...]:
+        """Все строки, которыми ищется часть, — для честной строки лога «что искали»."""
+        out = [a for t in self.terms for a in (*t.alts, t.latin[0]) if a]
+        out += list(self.links) + ([f"жанр:{self.genre}"] if self.genre else [])
+        return tuple(dict.fromkeys(out))
+
+
+@dataclass(frozen=True)
+class ThemeQuery:
+    """Тема сета, разрешённая в строки поиска по частям (:func:`theme_search`); потребители — поиск мелодий RTTTL
+    и поиск партитур, оба по одним и тем же :class:`PartQuery`."""
+
+    theme: str
+    parts: Tuple[PartQuery, ...] = ()
+
+    def with_links(self, links: Mapping[str, Sequence[str]]) -> "ThemeQuery":
+        """Тема со строками связей реестра частей (``{часть: строки}``); части, которой нет, — добавляется."""
+        texts = {p.text for p in self.parts}
+        parts = [replace(p, links=tuple(dict.fromkeys((*p.links, *links.get(p.text, ()))))) for p in self.parts]
+        parts += [PartQuery(t, links=tuple(q)) for t, q in links.items() if t not in texts and q]
+        return replace(self, parts=tuple(parts))
+
+    def describe(self) -> str:
+        """«бах» ['bach']; «моцарт» ['mozart', 'motsart'] — строка лога, чем искали."""
+        return "; ".join(f"«{p.text}» {list(p.strings())}" for p in self.parts) or "нет значимых слов"
+
+
+def part_query(library: Any, text: str) -> PartQuery:
+    """Часть темы → строки поиска. Одна функция для обоих каталогов (#3512): мелодии RTTTL (:func:`theme_search`)
+    и партитуры (``score_library.ScoreIndex``) ищут по тому, что она вернула. ``library=None`` — без словаря
+    архива RTTTL (только семена и звучание слова)."""
+    tag = _genre_only(library, text)
+    return PartQuery(text, tuple(terms(library, text)), tag or genre_of(text), tag is not None)
 
 
 def title_key(text: str) -> str:
@@ -253,7 +314,8 @@ def _pool(library: Any, theme: str, query_terms: List[Term],
     return [(1.0, r) for r in extra] + pool
 
 
-def _whole_search(library: Any, theme: str, limit: int, found_min: float = FOUND_MIN) -> ThemeHits:
+def _whole_search(library: Any, theme: str, limit: int, found_min: float = FOUND_MIN,
+                  query_terms: Optional[Sequence[Term]] = None) -> ThemeHits:
     """Мелодии по словам темы целиком, лучшие первыми (#3427):
 
     1. точное совпадение названия записи (``title`` или ``name``, :func:`title_key`) с темой — всегда первым;
@@ -261,11 +323,16 @@ def _whole_search(library: Any, theme: str, limit: int, found_min: float = FOUND
        одному общему слову («remix», «give») отсекаются;
     2. затем — :func:`consensus_order` (версии одной мелодии выше одиночной записи).
 
-    ``found_min`` — доля слов темы, которую покрывает запись (часть темы-перечисления — все слова, 1.0)."""
-    query_terms = terms(library, theme)
+    ``found_min`` — доля слов темы, которую покрывает запись (часть темы-перечисления — все слова, 1.0);
+    ``query_terms`` — уже разрешённые слова темы (:func:`part_query`), иначе — :func:`terms`."""
+    query_terms = list(terms(library, theme) if query_terms is None else query_terms)
     if not query_terms:
         return ThemeHits()
-    pool = _pool(library, theme, query_terms, found_min)
+    return ordered(_pool(library, theme, query_terms, found_min), theme, limit)
+
+
+def ordered(pool: List[Tuple[float, Dict[str, Any]]], theme: str, limit: int) -> ThemeHits:
+    """Находки :func:`_pool` по порядку :func:`_whole_search`: точное название — первым, затем версии выше одиночек."""
     key = title_key(theme)
     exact = [hit for hit in pool if _is_exact(hit[1], key)]
     if not exact:
@@ -413,70 +480,32 @@ def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHit
     Тетрис, Контра», и целиком тема не находила ничего (06.10). Запись части покрывает все её слова: «Darkwing
     Duck» — не «Ducktoy» по слову «duck»; запись темы целиком («Tom and Jerry») — тоже все слова, иначе это
     находка одной части не в её очереди («Марио, Тетрис» ставил «Tetris» первым). Часть без находок — в
-    ``missing`` (в лог), не подменяется. Ни одной мелодии — пусто, сет возьмёт пул по хешу темы."""
-    whole = _whole_search(library, theme, limit)
+    ``missing`` (в лог), не подменяется. Ни одной мелодии — пусто, сет возьмёт пул по хешу темы.
+
+    Строки поиска каждой части — :func:`part_query`; они же уходят в ``ThemeHits.query`` — по ним ищутся партитуры
+    (#3512), второго разбора темы нет."""
+    whole_query = part_query(library, theme)
+    whole = _whole_search(library, theme, limit, query_terms=whole_query.terms)
     parts = [] if whole.exact else theme_parts(library, theme)
     if len(parts) < 2 and not (parts and _genre_only(library, parts[0])):
-        return whole
+        return replace(whole, query=ThemeQuery(theme, (whole_query,)))
+    queries = tuple(part_query(library, p) for p in parts)
     found = []
     missing = []
-    for part in parts:
-        tag = _genre_only(library, part)
-        names = genre_hooks(library, tag) if tag else _whole_search(library, part, limit, found_min=1.0).names
+    for q in queries:
+        names = genre_hooks(library, q.genre) if q.genre_only else _whole_search(
+            library, q.text, limit, found_min=1.0, query_terms=q.terms).names
         if names:
             found.append(names)
         else:
-            missing.append(part)
-    spanning = _whole_search(library, theme, limit, found_min=1.0).names if len(parts) >= 2 else ()
+            missing.append(q.text)
+    spanning = _whole_search(library, theme, limit, found_min=1.0, query_terms=whole_query.terms).names \
+        if len(parts) >= 2 else ()
     if spanning and spanning not in found:  # запись темы целиком — первой; совпавшая с частью не дублируется
         found.insert(0, spanning)
     names = tuple(round_robin(found, THEME_LIST_HOOKS))
-    return ThemeHits(names, False, tuple(missing), by_part(found, names))
-
-
-def _score_keys(theme: str) -> List[Tuple[str, str, bool]]:
-    """Звуковые ключи значимых слов темы для названий партитур: ``(слово, основа, по началу)``. Без служебных слов,
-    стиля («8-бит») и жанра («кино» — окно каталога, не название); русское слово — транслитом слова целиком («марио»
-    — «mario») и основы, по началу слова названия (падеж: «интерстеллара»), если основа не короче :data:`_STEM_MIN`."""
-    out = []
-    for word in _WORD_RE.findall(blank_style(theme).lower().replace("ё", "е")):
-        word_stem = stem(word)
-        if word in _STOP or word_stem in _STOP or word in kn.GENRE_FILLER or genre_of(word):
-            continue
-        if not _CYR_RE.search(word):
-            out.append((sound_key(word), sound_key(word), False))
-        elif len(word) >= _WORD_MIN:
-            latin = sound_key(transliterate_ru(word))
-            out.append((latin, sound_key(transliterate_ru(word_stem)), len(word_stem) >= _STEM_MIN))
-    return out
-
-
-def _title_words(title: str) -> List[str]:
-    return [sound_key(w) for w in title_key(transliterate_ru(title)).split()]
-
-
-def _title_has(keys: List[Tuple[str, str, bool]], title: str) -> bool:
-    words = _title_words(title)
-    return all(any(w in (k, s) or (prefix and w.startswith(s) and len(w) - len(s) <= _PREFIX_SLACK) for w in words)
-               for k, s, prefix in keys)
-
-
-def score_search(rows: Sequence[Dict[str, Any]], theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
-    """Материалы партитур по названию (ADR-0154 §3.5; строки ``score_index``): в названии есть **все** значимые
-    слова темы (:func:`_score_keys`, звуковой ключ — «интерстеллар» ~ «Interstellar Main Theme»). Название, равное
-    теме целиком, — первым; дальше по рейтингу PDMX и числу оценок (у локальных рейтинга нет — после равных по
-    названию). Тема без значимых слов или только жанр («кино») — пусто: хуки темы из RTTTL, как раньше."""
-    keys = _score_keys(theme)
-    if not keys:
-        return ()
-    hits = []
-    for row in rows:
-        title = str(row.get("title") or "")
-        if _title_has(keys, title):
-            same = len(_title_words(title)) == len(keys)  # название — ровно слова темы
-            hits.append((not same, -float(row.get("rating") or 0.0), -int(row.get("n_ratings") or 0),
-                         str(row["material_id"])))
-    return tuple(h[-1] for h in sorted(hits)[:limit])
+    return ThemeHits(names, False, tuple(missing), by_part(found, names), named=True,
+                     query=ThemeQuery(theme, queries))
 
 
 def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
@@ -484,7 +513,8 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
     return theme_search(library, theme, limit).names
 
 
-__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS", "Term",
-           "ThemeHits", "blank_style", "by_part", "consensus_order", "coverage", "find", "genre_hooks", "genre_of",
-           "ranked", "round_robin", "score_search", "sound_key", "stem", "terms", "theme_hooks", "theme_parts", "theme_search",
-           "title_key"]
+__all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "PartQuery", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS",
+           "Term", "ThemeHits", "ThemeQuery", "blank_style", "by_part", "consensus_order", "coverage", "find",
+           "genre_hooks", "genre_of", "part_query", "ranked", "round_robin", "sound_key", "stem", "terms",
+           "theme_hooks",
+           "theme_parts", "theme_search", "title_key"]

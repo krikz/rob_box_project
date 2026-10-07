@@ -6,6 +6,7 @@
 * ``offbeat`` — 4 ноты на такт в оффбит, тоника/квинта аккорда (ADR-0149 §3.5, research 4.1).
 * ``rolling8`` — 8 нот на такт тоникой, «и» и «а» каждой доли.
 * ``broken`` — 4 ноты мимо шагов ломаной бочки ``breakbeat`` (окно ``breaks``, ADR-0152 PR-8).
+* ``octave8`` — шаги ``rolling8``, каждая вторая нота октавой выше: 8-битный бас ``pulse`` (ADR-0153 S2).
 * ``acid16`` — 12 16-х на такт мимо долей с акцентами, октавными прыжками и срезом фильтра на каждую ноту; только
   ``tb303`` семьи ``hard`` (``knowledge.BASS_FIGURE_SYNTHS``, ADR-0152 PR-9).
 
@@ -194,5 +195,12 @@ def broken(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], s
     return _part("broken", style, key, bar_chords, synth, register, tones)
 
 
+def octave8(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+            register: Tuple[int, int], tones: Tones = None) -> Part:
+    """8-битный бас: восемь нот на «и» и «а» каждой доли, «а» — октавой выше (если влезает в регистр); только синтом
+    ``knowledge.BASS_FIGURE_SYNTHS["octave8"]``; уровень ставит ``arrange.mix``."""
+    return _part("octave8", style, key, bar_chords, synth, register, tones)
+
+
 __all__ = ["ANCHORS", "BassTone", "ROOT_TONE", "acid16", "bar_notes", "broken", "figure_bass", "material_tones",
-           "note_beats", "offbeat", "rolling8"]
+           "note_beats", "octave8", "offbeat", "rolling8"]

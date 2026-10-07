@@ -107,6 +107,7 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
     parse_music_state,
 )
+from rob_box_voice.core.coordinator_address import skip_coordinator_tg
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
@@ -854,7 +855,10 @@ class DialogueNode(Node):
                 f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
             )
         self.create_subscription(
-            String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
+            String, "/voice/stt/result",
+            # Issue #3518 -- «Клод …» из Telegram адресовано координатору.
+            skip_coordinator_tg(self._on_stt, self.get_logger),
+            qos_r, callback_group=cbg)
         # ADR-0066 §6.1 — единственная связь с агентом оператора:
         # sub /dialogue/control (String JSON {action: pause|resume}),
         # pub /dialogue/control_ack (String JSON {state, since_ms, ts_s, reason}).

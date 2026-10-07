@@ -16,9 +16,10 @@ import hashlib
 import random
 import re
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from . import knowledge as kn
+from .works import concept_queries
 
 #: Мелодии строк ``pooled=False`` (праздник, дети): в пул чужих тем не идут, даже из общего пула.
 _OCCASION_HOOKS = frozenset(h for row in kn.THEMES.values() if not row.pooled for h in row.hooks)
@@ -61,18 +62,13 @@ def _digest(text: str) -> int:
     return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:12], 16)
 
 
-def _concept_rows(word: str) -> Tuple[str, ...]:
-    """Слова запросов ``knowledge.THEME_CONCEPTS``, чей ключ начинает слово: «интерстеллар» → ``("space",)``."""
-    return tuple(q for key, query in kn.THEME_CONCEPTS.items() if word.startswith(key) for q in query.split())
-
-
 def match_row(theme_text: str) -> Optional[str]:
     """Строка таблицы с наибольшим числом слов темы, начинающихся с её основ или относящихся к ней через понятие
-    (``knowledge.THEME_CONCEPTS``); ничья — порядок таблицы."""
+    (семена-начала реестра, ``works.concept_queries``: «интерстеллар» → ``space``); ничья — порядок таблицы."""
     words = re.findall(r"\w+", theme_text.lower().replace("ё", "е"))
     best: Tuple[int, Optional[str]] = (0, None)
     for name, row in kn.THEMES.items():
-        hits = sum(1 for w in words if any(w.startswith(stem) for stem in row.stems) or name in _concept_rows(w))
+        hits = sum(1 for w in words if any(w.startswith(stem) for stem in row.stems) or name in concept_queries(w))
         if hits > best[0]:
             best = (hits, name)
     return best[1]
@@ -80,13 +76,60 @@ def match_row(theme_text: str) -> Optional[str]:
 
 def match_style(words: Sequence[str]) -> Optional[str]:
     """Стиль по словам фразы (ADR-0153 §4.1, ADR-0148: решает код): первое слово, начинающееся с основы
-    ``knowledge.STYLE_WORDS``; ни одного — ``None`` (вызывающий берёт ``knowledge.DEFAULT_STYLE``)."""
-    for word in words:
-        low = word.lower()
-        style = next((st for stem, st in kn.STYLE_WORDS.items() if low.startswith(stem)), None)
-        if style is not None:
-            return style
-    return None
+    ``knowledge.STYLE_WORDS``, или слово стиля с цифрой (``knowledge.STYLE_PATTERNS``: «8-битный» — и одним словом, и
+    цифрой отдельно от «битный»); ни одного — ``None`` (вызывающий берёт ``knowledge.DEFAULT_STYLE``)."""
+    marks = style_marks(words)
+    return next((st for st in marks if st), None)
+
+
+#: Слова стиля с цифрой (``knowledge.STYLE_PATTERNS``): «8-бит», «8битный», «16 bit» → ключ стиля.
+_STYLE_PATTERNS: Tuple[Tuple["re.Pattern[str]", str], ...] = tuple(
+    (re.compile(p, re.IGNORECASE), st) for p, st in kn.STYLE_PATTERNS.items())
+
+
+def _pattern_style(text: str) -> Optional[str]:
+    """Стиль, если ``text`` целиком — слово стиля с цифрой («8битный», «8 битный»), иначе ``None``."""
+    return next((st for rx, st in _STYLE_PATTERNS if rx.fullmatch(text)), None)
+
+
+def style_marks(words: Sequence[str]) -> List[Optional[str]]:
+    """Стиль каждого слова фразы или ``None``: слово с основой ``knowledge.STYLE_WORDS``, слово стиля с цифрой
+    («8битный») и пара «цифра + слово» («8», «битный» — так режут фразу грамматики роутера). Помеченные слова —
+    стиль, а не тема сета (#3476): их вырезает тот, кто выделяет тему."""
+    low = [w.lower() for w in words]
+    out: List[Optional[str]] = [None] * len(low)
+    for i, word in enumerate(low):
+        if out[i]:
+            continue
+        pair = _pattern_style(f"{word} {low[i + 1]}") if word.isdigit() and i + 1 < len(low) else None
+        if pair:
+            out[i] = out[i + 1] = pair
+            continue
+        out[i] = _pattern_style(word) or next((st for stem, st in kn.STYLE_WORDS.items() if word.startswith(stem)),
+                                              None)
+    return out
+
+
+def match_style_text(text: str) -> Optional[str]:
+    """Стиль по тексту реплики: слова стиля с цифрой («8-битный») и слова ``knowledge.STYLE_WORDS``; нет — ``None``."""
+    text = text or ""
+    found = next((st for rx, st in _STYLE_PATTERNS if rx.search(text)), None)
+    return found or match_style(re.findall(r"[^\W\d_]+", text))
+
+
+def style_for(*texts: Optional[str]) -> str:
+    """Стиль сета, когда человек не назвал ключ (``dj_set(style=auto)``, ADR-0153 §4.2, ADR-0148): слова стиля в
+    текстах по порядку (реплика человека, тема), затем стиль строки таблицы тем (``ThemeRow.style``: киберпанк →
+    synthwave, детский праздник → chiptune), иначе ``knowledge.DEFAULT_STYLE``."""
+    for text in texts:
+        found = match_style_text(text or "")
+        if found:
+            return found
+    for text in texts:
+        row = match_row(" ".join((text or "").lower().split())) if text else None
+        if row is not None and kn.THEMES[row].style:
+            return kn.THEMES[row].style
+    return kn.DEFAULT_STYLE
 
 
 def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = (),
@@ -118,4 +161,5 @@ def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequen
                         tuple(tuple(p) for p in parts if p), tuple(dict.fromkeys(materials)))
 
 
-__all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "seeded_profile"]
+__all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "match_style_text", "seeded_profile",
+           "style_for", "style_marks"]

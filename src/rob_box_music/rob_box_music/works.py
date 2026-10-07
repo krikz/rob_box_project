@@ -2,9 +2,11 @@
 
 Что здесь живёт: модель (``Work``/``Fact``/``WorkSource``), нормализация названий, чистка идентичности записей
 RTTTL-библиотеки (категория вместо исполнителя → тип произведения; «Theme» + название в ``artist`` → ``title``),
-русские алиасы (одна таблица :data:`knowledge.RU_ALIASES`; из неё поиск ``rtttl_library`` берёт :func:`alias_pairs` и
-:func:`ru_phrase_by_query`), группы версий (канон — порядок ``canon``), гейт «обогащать поле или нет»
-(:func:`gate`, §3.3 ADR) и отчёт. Сеть здесь не вызывается: ни один сетевой источник гейт сегодня не проходит.
+связи «фраза темы → строки поиска архива» (``ThemeLink``: семена из ``data/theme_link_seeds.json``, проверенные
+ответы LLM и ручные связи — таблица ``theme_links``; из семян поиск ``rtttl_library`` берёт :func:`alias_pairs` и
+:func:`ru_phrase_by_query`, разбор слов темы — :func:`word_links`), группы версий (канон — порядок ``canon``),
+гейт «обогащать поле или нет» (:func:`gate`, §3.3 ADR) и отчёт. Сеть здесь не вызывается: ни один сетевой источник
+гейт сегодня не проходит.
 
 Реестр — таблицы ``works``/``work_sources``/``work_facts`` в той же SQLite, что RTTTL-библиотека (ADR-0155 В3):
 ``python -m rob_box_music.works --db voice_memory.db`` перестраивает их (идемпотентно), ``--holes genre`` печатает
@@ -14,6 +16,7 @@ RTTTL-библиотеки (категория вместо исполнител
 from __future__ import annotations
 
 import argparse
+import functools
 import gzip
 import hashlib
 import json
@@ -21,9 +24,11 @@ import re
 import sqlite3
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, ROOTS, RU_ALIASES,
+from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, ROOTS,
                         TAG_WORK_TYPE, THEMES)
 from .material import ScoreMaterial, license_usable
 from .rtttl import consensus_order
@@ -140,26 +145,61 @@ class Identity:
     named: bool = True  # False — у записи нет названия, ``title`` взят из её имени (slug)
 
 
-# ── Алиасы: одна таблица, два читателя (поиск библиотеки) ────────────────────────────────────────────────────
+# ── Семена связей: «фраза → строки поиска», данные, а не код (#3493) ────────────────────────────────────────────
+#: Файл семян (``ThemeLink`` с ``source="seed"``): перенос прежних ручных таблиц RU_ALIASES и THEME_CONCEPTS.
+SEEDS_FILE = Path(__file__).resolve().parent / "data" / "theme_link_seeds.json"
+#: Ключ семени с этим знаком на конце — начало слова («хогвар*» — «Хогвардсу», «Хогвартсе»), без — целые слова.
+PREFIX = "*"
+
+
+@functools.lru_cache(maxsize=None)
+def theme_seeds() -> Tuple["ThemeLink", ...]:
+    """Семена в порядке файла. Ключ-начало — одно слово (любая из строк подходит), ключ из целых слов — одна строка
+    (фраза запроса заменяется ею); иначе ``ValueError`` — файл чинят, а не обходят в коде."""
+    out = []
+    for item in json.loads(SEEDS_FILE.read_text(encoding="utf-8"))["seeds"]:
+        phrase = str(item["phrase"]).lower()  # ё как в файле: замена в запросе идёт по точному написанию
+        queries = tuple(str(q) for q in item["queries"])
+        prefix = phrase.endswith(PREFIX)
+        if prefix and " " in phrase or not prefix and len(queries) != 1:
+            raise ValueError(f"семя {phrase!r}: начало — одно слово, целые слова — одна строка поиска")
+        out.append(ThemeLink(phrase, "found", "seed", "concept" if prefix else "work", queries))
+    return tuple(out)
+
+
+def word_links(word: str) -> Tuple[str, ...]:
+    """Строки поиска первого семени-начала, с которого начинается слово темы: «интерстеллара» → ``("space",)``."""
+    return next((s.queries for s in theme_seeds() if s.phrase.endswith(PREFIX) and word.startswith(s.phrase[:-1])), ())
+
+
+def concept_queries(word: str) -> Tuple[str, ...]:
+    """Строки поиска всех семян-начал слова (строка таблицы тем по понятию, ``theme.match_row``)."""
+    return tuple(q for s in theme_seeds() if s.phrase.endswith(PREFIX) and word.startswith(s.phrase[:-1])
+                 for q in s.queries)
+
+
+def _phrase_seeds() -> List[Tuple[str, str]]:
+    return [(s.phrase, s.queries[0]) for s in theme_seeds() if not s.phrase.endswith(PREFIX)]
+
 
 def alias_pairs() -> List[Tuple[str, str]]:
-    """``(фраза, канонический запрос)``, длинные фразы первыми: «гимн ссср» раньше «гимн»."""
-    return sorted(RU_ALIASES.items(), key=lambda kv: -len(kv[0]))
+    """``(фраза, строка поиска)`` семян из целых слов, длинные фразы первыми: «гимн ссср» раньше «гимн»."""
+    return sorted(_phrase_seeds(), key=lambda kv: -len(kv[0]))
 
 
 def ru_phrase_by_query() -> Dict[str, str]:
-    """Канонический запрос → ПЕРВАЯ (по порядку таблицы) русская фраза на него (озвучка названия, #3178)."""
+    """Строка поиска → ПЕРВАЯ (по порядку семян) русская фраза на неё (озвучка названия, #3178)."""
     out: Dict[str, str] = {}
-    for phrase, query in RU_ALIASES.items():
+    for phrase, query in _phrase_seeds():
         if _CYRILLIC_RE.search(phrase):
             out.setdefault(query, phrase)
     return out
 
 
 def aliases_of(title: str, artist: str) -> Tuple[str, ...]:
-    """Русские фразы, чей канонический запрос целиком состоит из слов названия/исполнителя (как слова поиска)."""
+    """Русские фразы, чья строка поиска целиком состоит из слов названия/исполнителя (как слова поиска)."""
     have = _words(title) | _words(artist)
-    return tuple(p for p, q in RU_ALIASES.items() if _CYRILLIC_RE.search(p) and _words(q) <= have)
+    return tuple(p for p, q in _phrase_seeds() if _CYRILLIC_RE.search(p) and _words(q) <= have)
 
 
 # ── Чистка идентичности записи RTTTL ─────────────────────────────────────────────────────────────────────────
@@ -418,6 +458,111 @@ def link_score_sources(conn: sqlite3.Connection) -> int:
     return len(out)
 
 
+# ── Связи «фраза темы → строки поиска архива» (#3493): одно хранилище исключений и журнал непонятого ─────────────
+#: Откуда связь: ``seed`` — перенос старой ручной таблицы, ``llm`` — предложение LLM, проверенное каталогом
+#: («llm_suggested+catalog_verified»), ``manual`` — Шифу (``--add-theme-link``), ``miss`` — непонятое без вердикта.
+THEME_LINK_SOURCES = ("seed", "llm", "manual", "miss")
+#: ``found`` — есть проверенные строки поиска; ``not_found`` — LLM предложила, каталог не подтвердил ничего;
+#: ``not_theme`` — часть не про музыку (стиль, повод, оценка); ``missed`` — прямой поиск промахнулся, вердикта нет
+#: (LLM недоступна/опоздала) — копится для отчёта и не мешает спросить LLM в следующий раз.
+THEME_LINK_STATUSES = ("found", "not_found", "not_theme", "missed")
+
+_THEME_LINKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS theme_links (phrase TEXT PRIMARY KEY, status TEXT NOT NULL, kind TEXT NOT NULL,
+    queries TEXT NOT NULL, names TEXT NOT NULL, rejected TEXT NOT NULL, source TEXT NOT NULL,
+    rules_version TEXT NOT NULL, created_at TEXT NOT NULL, last_hit TEXT NOT NULL, hits INTEGER NOT NULL);
+"""
+
+
+@dataclass(frozen=True)
+class ThemeLink:
+    """Запись хранилища: фраза темы (:func:`theme_phrase`) → проверенные строки поиска и вердикт."""
+
+    phrase: str
+    status: str
+    source: str
+    kind: str = ""
+    queries: Tuple[str, ...] = ()
+    names: Tuple[str, ...] = ()
+    rejected: Tuple[str, ...] = ()
+    rules_version: str = RULES_VERSION
+    created_at: str = ""
+    hits: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.phrase:
+            raise ValueError("ThemeLink.phrase пуст")
+        if self.status not in THEME_LINK_STATUSES or self.source not in THEME_LINK_SOURCES:
+            raise ValueError(f"ThemeLink: status {self.status!r} / source {self.source!r} вне перечня")
+        if self.status == "found" and not self.queries:
+            raise ValueError("found без проверенных строк поиска")
+
+
+def theme_phrase(text: Any) -> str:
+    """Ключ фразы темы: слова в нижнем регистре, ё → е, через пробел: «Танец утят!» → «танец утят»."""
+    return " ".join(_WORD_RE.findall(str(text or "").lower().replace("ё", "е")))
+
+
+def _link_fresh(link: ThemeLink, now: datetime) -> bool:
+    """Вердикт действует: ручные и семена — всегда; LLM — пока не сменились правила и не прошёл TTL §3.4."""
+    if link.status == "missed":
+        return False
+    if link.source in ("seed", "manual"):
+        return True
+    if link.rules_version != RULES_VERSION:
+        return False
+    return now - datetime.fromisoformat(link.created_at) <= timedelta(days=LOOKUP_TTL_DAYS)
+
+
+def get_theme_link(conn: sqlite3.Connection, text: str, now: datetime) -> Optional[ThemeLink]:
+    """Действующая связь фразы (счётчик срабатываний +1) или ``None``."""
+    conn.executescript(_THEME_LINKS_SCHEMA)
+    row = conn.execute("SELECT phrase, status, source, kind, queries, names, rejected, rules_version, created_at, hits "
+                       "FROM theme_links WHERE phrase=?", (theme_phrase(text),)).fetchone()
+    if row is None:
+        return None
+    link = ThemeLink(row[0], row[1], row[2], row[3], *(tuple(json.loads(v)) for v in row[4:7]), row[7], row[8],
+                     row[9])
+    if not _link_fresh(link, now):
+        return None
+    with conn:
+        conn.execute("UPDATE theme_links SET hits=hits+1, last_hit=? WHERE phrase=?", (now.isoformat(), link.phrase))
+    return link
+
+
+def put_theme_link(conn: sqlite3.Connection, link: ThemeLink, now: datetime) -> None:
+    """Записать вердикт (заменяет прежний). Непонятое (``missed``) не затирает действующий вердикт и копит счётчик."""
+    conn.executescript(_THEME_LINKS_SCHEMA)
+    stamp = now.isoformat()
+    with conn:
+        if link.status == "missed":
+            conn.execute("INSERT INTO theme_links VALUES (?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(phrase) DO UPDATE SET "
+                         "hits=hits+1, last_hit=excluded.last_hit", (link.phrase, "missed", "", "[]", "[]", "[]",
+                                                                     "miss", RULES_VERSION, stamp, stamp))
+            return
+        conn.execute("INSERT OR REPLACE INTO theme_links VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (link.phrase, link.status, link.kind, json.dumps(list(link.queries), ensure_ascii=False),
+                      json.dumps(list(link.names), ensure_ascii=False),
+                      json.dumps(list(link.rejected), ensure_ascii=False), link.source, link.rules_version, stamp,
+                      stamp, link.hits))
+
+
+def theme_links_report(conn: sqlite3.Connection, days: int, now: datetime) -> str:
+    """Что копится: непонятые фразы (``missed``/``not_found``) по числу повторов и новые связи за ``days`` дней."""
+    conn.executescript(_THEME_LINKS_SCHEMA)
+    since = (now - timedelta(days=days)).isoformat()
+    lines = [f"непонятые фразы тем (за {days} дн., по повторам):"]
+    lines += [f"  {hits:>4}  {status:<9} «{phrase}»" for phrase, status, hits in conn.execute(
+        "SELECT phrase, status, hits FROM theme_links WHERE status IN ('missed','not_found') AND last_hit>=? "
+        "ORDER BY hits DESC, phrase LIMIT 50", (since,))] or ["  —"]
+    lines.append(f"новые связи (за {days} дн.):")
+    lines += [f"  {source:<6} {status:<9} «{phrase}» → {', '.join(json.loads(q)) or '—'}"
+              for phrase, status, source, q in conn.execute(
+                  "SELECT phrase, status, source, queries FROM theme_links WHERE status NOT IN ('missed') AND "
+                  "created_at>=? ORDER BY created_at DESC LIMIT 100", (since,))] or ["  —"]
+    return "\n".join(lines)
+
+
 def read_db_records(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT name, title, artist, tags, rtttl FROM rtttl_melodies ORDER BY id").fetchall()
@@ -440,8 +585,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--archive", help="jsonl.gz архив RTTTL (по умолчанию — из пакета rob_box_mcp_tools)")
     ap.add_argument("--holes", choices=FIELDS, help="напечатать work_id рабочего множества без поля")
     ap.add_argument("--report", action="store_true", help="покрытие полей и вердикты гейта")
+    ap.add_argument("--theme-report", type=int, metavar="DAYS", help="непонятые фразы тем и новые связи (нужен --db)")
+    ap.add_argument("--add-theme-link", nargs="+", metavar=("PHRASE", "QUERY"),
+                    help="ручная связь Шифу: фраза темы и строки поиска архива; без строк — «не тема» (нужен --db)")
     args = ap.parse_args(argv)
     conn = sqlite3.connect(args.db) if args.db else None
+    if conn and (args.theme_report is not None or args.add_theme_link):
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if args.add_theme_link:
+            phrase, *queries = args.add_theme_link
+            put_theme_link(conn, ThemeLink(theme_phrase(phrase), "found" if queries else "not_theme", "manual",
+                                           "work" if queries else "not_theme", tuple(queries)), now)
+        print(theme_links_report(conn, args.theme_report or 30, now))
+        return 0
     records = read_db_records(conn) if conn else read_archive_records(args.archive or _default_archive())
     works = build_works(records)
     if conn:
@@ -453,10 +609,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-__all__ = ["Fact", "FIELDS", "GATE_SHARE", "Gate", "Identity", "LINK_LEVELS", "LOOKUP_TTL_DAYS", "RULES_VERSION",
-           "ScoreIndexRow", "Work", "WorkSource", "alias_pairs", "aliases_of", "build_works", "clean_identity", "gate",
-           "holes", "link_score_sources", "norm", "report", "ru_phrase_by_query", "score_index_row", "work_id_of",
-           "work_key", "working_ids", "write_registry", "write_score_index"]
+__all__ = ["alias_pairs", "aliases_of", "build_works", "clean_identity", "concept_queries", "Fact", "FIELDS", "Gate",
+           "gate", "GATE_SHARE", "get_theme_link", "holes", "Identity", "LINK_LEVELS", "link_score_sources",
+           "LOOKUP_TTL_DAYS", "norm", "put_theme_link", "report", "ru_phrase_by_query", "RULES_VERSION",
+           "score_index_row", "ScoreIndexRow", "SEEDS_FILE", "THEME_LINK_SOURCES", "THEME_LINK_STATUSES",
+           "theme_links_report", "theme_phrase", "theme_seeds", "ThemeLink", "word_links", "Work", "work_id_of",
+           "work_key", "working_ids", "WorkSource", "write_registry", "write_score_index"]
 
 if __name__ == "__main__":
     sys.exit(main())

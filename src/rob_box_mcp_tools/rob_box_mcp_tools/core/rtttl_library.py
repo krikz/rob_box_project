@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import functools
 import gzip
 import json
 import math
@@ -60,7 +61,8 @@ CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_artist ON rtttl_melodies(artist);
 #: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный) и обратная связка «канонический
 #: запрос → первая русская фраза на него» (issue #3178: назвать играющий трек по-русски, а не архивным ``title``
 #: «Hall Of The Mountain King (Alton Towers Theme) 2») — из реестра произведений ``rob_box_music.works`` (ADR-0155
-#: K-2): одна таблица ``knowledge.RU_ALIASES``, она же — ``Work.aliases``. Нерусские ключи («russian» — обходной
+#: K-2): семена связей ``data/theme_link_seeds.json`` (#3493), они же — ``Work.aliases``.
+#: Нерусские ключи («russian» — обходной
 #: алиас архивного написания) в обратную связку не попадают.
 _ALIAS_SORTED = alias_pairs()
 _ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = ru_phrase_by_query()
@@ -144,6 +146,7 @@ def _row_rtttl(row: sqlite3.Row) -> str:
     return row["rtttl"] if "rtttl" in row.keys() else ""
 
 
+@functools.lru_cache(maxsize=16384)  # чистая функция строки; поиск темы считает её для тысяч кандидатов (#3493)
 def _melody_quality(rtttl: str) -> float:
     """Эвристическое качество мелодии: длина, разнообразие, повтор, октава.
 
@@ -178,6 +181,11 @@ def _melody_quality(rtttl: str) -> float:
     if default_octave >= 7 or default_octave <= 2:
         score -= abs(default_octave - 5) * 2.0
     return score
+
+
+def db_path_of(library: Any) -> Optional[str]:
+    """Файл SQLite библиотеки: в нём же реестр произведений и связи тем (``rob_box_music.works``, #3493)."""
+    return getattr(library, "_db_path", None)
 
 
 def melody_quality(rtttl: str) -> float:

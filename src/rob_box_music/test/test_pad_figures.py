@@ -11,6 +11,7 @@ from dataclasses import replace
 
 import pytest
 
+from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
 from rob_box_music.arrange.compose import BASS_GENERATORS, PAD_GENERATORS, _bar_chords, compose, form_spec
@@ -28,22 +29,23 @@ SEEDS = range(30)
 TRACKS = 3
 
 
+def _theme_tracks(theme):
+    profile = seeded_profile(theme)
+    tracks = []
+    for seed in SEEDS:
+        plan = seeded_plan(profile, seed, set_id=f"p{seed}")
+        history: list = []
+        for no in range(1, TRACKS + 1):
+            track = compose(plan, no, history=history)
+            history.insert(0, track_history(track, plan.set_id))
+            tracks.append(track)
+    return tracks
+
+
 @pytest.fixture(scope="module")
 def sets():
-    """{тема: [треки 30 сетов по 3 трека, с историей сета]}."""
-    out = {}
-    for theme in THEMES:
-        profile = seeded_profile(theme)
-        tracks = []
-        for seed in SEEDS:
-            plan = seeded_plan(profile, seed, set_id=f"p{seed}")
-            history: list = []
-            for no in range(1, TRACKS + 1):
-                track = compose(plan, no, history=history)
-                history.insert(0, track_history(track, plan.set_id))
-                tracks.append(track)
-        out[theme] = tracks
-    return out
+    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; темы считаются параллельно (#3504)."""
+    return dict(zip(THEMES, pmap(_theme_tracks, THEMES)))
 
 
 def _figure(track) -> str:
@@ -160,10 +162,15 @@ def _remix(track, no, figure, pad, bass, bass_figure=None, lead=None):
     return mix.mix_parts(CLUB, parts, track.form, figure)
 
 
-@pytest.mark.parametrize("family,figure,pad,bass,bass_figure", list(_combinations()))
-def test_a9_model_holds_for_every_family_figure_and_synth(base_tracks, family, figure, pad, bass, bass_figure):
+def test_a9_model_holds_for_every_family_figure_and_synth(base_tracks):
     """A9-модель на трек (ADR-0152 §4 п.2): низ худшего дропа ≥ порога стиля на каждой комбинации семья × рисунок
-    пэда × пэд × бас × рисунок баса × лид семьи (PR-6: басы семей держат низ — ``retrobass`` 0.72 из ``hard`` убран)."""
+    пэда × пэд × бас × рисунок баса × лид семьи (PR-6: басы семей держат низ — ``retrobass`` 0.72 из ``hard`` убран).
+    Комбинации независимы и считаются параллельно (#3504); сбойная комбинация названа в сообщении."""
+    pmap(_a9_combination, [(base_tracks, combo) for combo in _combinations()], chunksize=4)
+
+
+def _a9_combination(args):
+    base_tracks, (family, figure, pad, bass, bass_figure) = args
     for (no, track), lead in itertools.product(base_tracks, CLUB.timbres[family]["lead"]):
         _leveled, track_mix = _remix(track, no, figure, pad, bass, bass_figure, lead)
         assert track_mix.a9_trim.get("pad", 0.0) >= kn.A9_PAD_FLOOR_DB

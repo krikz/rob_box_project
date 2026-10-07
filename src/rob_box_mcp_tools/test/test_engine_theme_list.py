@@ -70,7 +70,7 @@ def test_megaset_theme_finds_mario_first_and_five_franchises_in_first_five(libra
 def test_chiptune_theme_keeps_found_parts_and_reports_the_rest(library):
     hits = theme_search(library, CHIPTUNE)
     assert {"contra", "supermar_4", "zelda"} <= set(hits.names[:5])
-    assert "tchaikov" in hits.names and hits.missing == ()  # «Чайковского» — через THEME_CONCEPTS (06.10)
+    assert "tchaikov" in hits.names and hits.missing == ()  # «Чайковского» — семя-начало «чайковск*» (06.10)
     profile = seeded_profile(CHIPTUNE, found=hits.names, exact=hits.exact)
     assert profile.source == "theme" and profile.hook_ids[:len(hits.names)] == hits.names
 
