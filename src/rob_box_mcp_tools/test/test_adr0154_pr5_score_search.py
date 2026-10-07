@@ -22,8 +22,8 @@ from rob_box_music.model import Key, PitchEvent
 from rob_box_music.set_plan import plan_materials, seeded_plan
 from rob_box_music.theme import seeded_profile
 
-from rob_box_mcp_tools.engine.score_library import DEFAULT_DIR, ENV, INDEX_FILE, ScoreLibrary, library_dir
-from rob_box_mcp_tools.engine.search import ThemeHits, score_search
+from rob_box_mcp_tools.engine.score_library import DEFAULT_DIR, ENV, INDEX_FILE, ScoreIndex, ScoreLibrary, library_dir
+from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool
 
 from .test_engine_session import _rig, _started
@@ -72,18 +72,24 @@ ROWS = (
 )
 
 
-# ── поиск по названию (search.score_search) ─────────────────────────────────────────────────────────────────
+def score_search(rows, theme):
+    """Партитуры темы одной частью (строки — ``search.part_query`` без каталога RTTTL)."""
+    return ScoreIndex(rows).search(ThemeQuery(theme, (part_query(None, theme),)))
+
+
+# ── поиск по названию (score_library.ScoreIndex) ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("theme", ["интерстеллар", "Interstellar", "на тему интерстеллара", "INTERSTELLAR сет"])
 def test_interstellar_finds_scores_exact_title_first_then_by_rating(theme):
-    assert score_search(ROWS, theme) == ("local:c", "pdmx:a", "pdmx:b")
+    # «Space Oddity» — по семени «интерстел*» → space (#3512: семена реестра ищут и партитуры), ниже по рейтингу
+    assert score_search(ROWS, theme) == ("local:c", "pdmx:a", "pdmx:b", "pdmx:f")
 
 
 @pytest.mark.parametrize("theme, expected", [
     ("марио", ("pdmx:d",)),  # «марио» → mario целиком, а не основа «мари»
     ("тетрис", ("pdmx:e",)),
     ("кино", ()),  # жанр каталога — не название: хуки из RTTTL, как раньше
-    ("космос", ()),  # семя-начало («космос» → space) к партитурам не применяется: только название
+    ("космос", ("pdmx:f",)),  # семя-начало «косм*» → space: те же строки, что у поиска мелодий (#3512)
     ("интерстеллар марио", ()),  # все значимые слова темы — в одном названии
     ("сет", ()),  # одни служебные слова
     ("", ()),

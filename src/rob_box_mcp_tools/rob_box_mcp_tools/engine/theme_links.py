@@ -93,6 +93,7 @@ class ThemeLinks:
             return hits
         found: Dict[str, Tuple[str, ...]] = {}
         kinds: Dict[str, str] = {}
+        queries: Dict[str, Tuple[str, ...]] = {}  # проверенные строки связи — ими же ищутся партитуры (#3512)
         ask_parts = []
         for part in unresolved:
             with self._lock, closing(sqlite3.connect(path)) as conn:
@@ -101,6 +102,7 @@ class ThemeLinks:
                 ask_parts.append(part)
                 continue
             kinds[part] = link.kind
+            queries[part] = link.queries
             found[part] = self._names(library, link.queries)
             self._log.info(f"🔎 [theme-links] «{part}»: связь {link.source}/{link.status} {list(link.queries)} → "
                            f"{list(found[part])}")
@@ -108,14 +110,17 @@ class ThemeLinks:
             answered = self._ask_llm(library, path, theme, ask_parts)
             for part in ask_parts:
                 if part in answered:
-                    kinds[part], found[part] = answered[part]
-        return self._merge(hits, unresolved, found, kinds)
+                    kinds[part], found[part], queries[part] = answered[part]
+        merged = self._merge(hits, unresolved, found, kinds)
+        if hits.query is not None and any(queries.values()):
+            merged = replace(merged, query=hits.query.with_links(queries))
+        return merged
 
     def _names(self, library: Any, queries: Sequence[str]) -> Tuple[str, ...]:
         return tuple(round_robin([verify(library, q) for q in queries], THEME_HOOKS))
 
     def _ask_llm(self, library: Any, path: str, theme: str,
-                 parts: List[str]) -> Mapping[str, Tuple[str, Tuple[str, ...]]]:
+                 parts: List[str]) -> Mapping[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
         """Спросить LLM и проверить ответ каталогом; ждём не дольше ``wait_s``, опоздавший ответ — в хранилище."""
         if self._ask is None:
             self._note_missed(path, parts, "LLM выключена")
@@ -140,7 +145,7 @@ class ThemeLinks:
         return box["answer"]
 
     def _query(self, library: Any, path: str, theme: str,
-               parts: List[str]) -> Mapping[str, Tuple[str, Tuple[str, ...]]]:
+               parts: List[str]) -> Mapping[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
         system, user = tq.prompt(theme, parts)
         outcome, response, detail = self._ask(system, user, tq.tool(parts), ASK_DEADLINE_S, ASK_MAX_TOKENS)
         if outcome != "ok":
@@ -163,7 +168,7 @@ class ThemeLinks:
                 put_theme_link(conn, link, self._now())
             self._log.info(f"🔎 [theme-links] «{s.part}»: LLM {s.kind} {list(s.queries)} → каталог подтвердил "
                            f"{list(ok)} → {list(names)}; отброшено {list(link.rejected)}")
-            out[s.part] = (s.kind, names)
+            out[s.part] = (s.kind, names, ok)
         return out
 
     def _note_missed(self, path: str, parts: Sequence[str], why: str) -> None:
