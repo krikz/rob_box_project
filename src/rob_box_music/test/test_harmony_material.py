@@ -143,7 +143,7 @@ def test_slot_chord_is_the_longest_one():
 
 
 def test_lead_in_rest_shifts_slots_with_the_hook():
-    """Хук срезает начальную паузу (``hook._onsets``): слоты гармонии считаются от первой ноты фразы."""
+    """Слоты гармонии считаются от начала такта фразы, как и хук материала (#3531)."""
     m = synthetic((0, 0, 3, 3, 4, 4, 0, 0), lead_in=1.0)
     slots = harmony.material_slots(m, mt.Phrase(0, 8, "new", 1), CHORD_BEATS, 4)
     assert [c.degree for c in slots] == [0, 3, 4, 0]
