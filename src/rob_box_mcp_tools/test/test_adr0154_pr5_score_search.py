@@ -172,5 +172,5 @@ def test_no_library_on_device_plays_rtttl_hooks_with_an_honest_line(tmp_path, ca
     line = next(r.getMessage() for r in caplog.records if "тема «интерстеллар»" in r.getMessage())
     assert "материалы=[]" in line and "хуки RTTTL" in line and "'popcorn'" in line
     started = next(r.getMessage() for r in caplog.records if " started track_id=" in r.getMessage())
-    assert "material_id=-" in started
+    assert "material_id=" not in started  # трек без партитуры — строка started как до PR-5
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

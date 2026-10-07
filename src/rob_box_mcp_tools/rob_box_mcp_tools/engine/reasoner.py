@@ -239,8 +239,9 @@ class SetPlanBox:
             source, plan = self._sources.get(track_id, ("motif", "seeded"))
             self._played[track_id] = (source, plan)
             theme = sum(1 for s, _p in self._played.values() if s == "theme")
-            note = (f"source={source} plan={plan} A11={theme}/{len(self._played)} "
-                    f"material_id={self._material.get(track_id, '-')}")
+            material = self._material.get(track_id)  # M6: трек из партитуры — с её material_id
+            note = (f"source={source} plan={plan} " + (f"material_id={material} " if material else "")
+                    + f"A11={theme}/{len(self._played)}")
         if self._lines is not None:
             note = f"{note} {self._lines.on_started(track_id)}".rstrip()
         return note
