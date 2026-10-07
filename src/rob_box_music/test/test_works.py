@@ -6,7 +6,6 @@ import sqlite3
 
 import pytest
 
-from rob_box_music import knowledge as kn
 from rob_box_music import works as w
 
 UP = "t:d=4,o=5,b=120:c,d,e,f,g,a,b,c6,d6"
@@ -109,7 +108,7 @@ def test_ru_aliases_attach_to_works_whose_words_contain_the_query():
 
 def test_alias_pairs_longest_first_and_one_ru_phrase_per_query():
     pairs = w.alias_pairs()
-    assert sorted(pairs) == sorted(kn.RU_ALIASES.items())
+    assert len(pairs) == 23 and ("гимн ссср", "soviet anthem") in pairs  # семена из целых слов (#3493)
     assert [len(p) for p, _q in pairs] == sorted((len(p) for p, _q in pairs), reverse=True)
     ru = w.ru_phrase_by_query()
     assert ru["soviet anthem"] == "гимн ссср" and "russia" not in ru and ru["tetris"] == "тетрис"

@@ -1,7 +1,8 @@
 """Issue #3455 — тема без мелодий в названии относится к строке таблицы через понятие; пул без праздничных хуков.
 
 Живой прогон 06.10: «включи диджей сет на тему интерстеллар» → ``source=pool`` с ``jinglebe_6``, ``macarena``,
-``happybir``. Знание — в ``knowledge.THEME_CONCEPTS`` и теге ``ThemeRow.pooled`` (данные, не ветки).
+``happybir``. Знание — в семенах-началах реестра (``data/theme_link_seeds.json``) и теге ``ThemeRow.pooled``
+(данные, не ветки).
 """
 
 from __future__ import annotations

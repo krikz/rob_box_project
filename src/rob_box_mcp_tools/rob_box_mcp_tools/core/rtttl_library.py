@@ -61,7 +61,8 @@ CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_artist ON rtttl_melodies(artist);
 #: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный) и обратная связка «канонический
 #: запрос → первая русская фраза на него» (issue #3178: назвать играющий трек по-русски, а не архивным ``title``
 #: «Hall Of The Mountain King (Alton Towers Theme) 2») — из реестра произведений ``rob_box_music.works`` (ADR-0155
-#: K-2): одна таблица ``knowledge.RU_ALIASES``, она же — ``Work.aliases``. Нерусские ключи («russian» — обходной
+#: K-2): семена связей ``data/theme_link_seeds.json`` (#3493), они же — ``Work.aliases``.
+#: Нерусские ключи («russian» — обходной
 #: алиас архивного написания) в обратную связку не попадают.
 _ALIAS_SORTED = alias_pairs()
 _ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = ru_phrase_by_query()

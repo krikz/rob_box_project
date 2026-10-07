@@ -166,19 +166,6 @@ SEARCH_STOPWORDS: Tuple[str, ...] = (
     "мелодии", "мелодий",
     "the", "of", "a", "an", "and", "in", "on", "for", "to", "with", "from", "at", "by", "de", "la", "le", "du", "des",
 )
-#: Понятия темы без мелодии с таким словом в названии → английский запрос к архиву (несколько слов — любое).
-#: Ключ — начало основы слова темы. Слово запроса, совпавшее с ключом :data:`THEMES`, относит тему к этой строке
-#: (``theme.match_row``): «интерстеллар» → ``space`` — темп, лад и хуки космоса (#3455).
-THEME_CONCEPTS: Mapping[str, str] = {
-    "косм": "space", "интерстел": "space", "interstel": "space", "межзвезд": "space",
-    "денди": "mario contra zelda", "dendy": "mario contra zelda", "приставк": "mario contra zelda",
-    "нинтенд": "mario zelda", "nintendo": "mario zelda",
-    # композиторы, чей транслит не совпадает со звуком архива («Чайковского» ≠ «Tchaikovsky», «Баха» → Baha Men)
-    "чайковск": "tchaikovsky", "бах": "bach", "моцарт": "mozart", "бетховен": "beethoven",
-    # мир франшизы без её названия в слове (07.10 «путешествие по Хогвардсу»: STT пишет «Хогвардс», ключ по началу
-    # основы ловит и падеж, и д/т) → записи франшизы: «potter» есть в названии или «исполнителе» всех 12 записей
-    "хогвар": "potter", "hogwar": "potter",
-}
 #: Жанр словами темы → метка каталога RTTTL (``tags`` записи): «классическая музыка» — отдельная часть темы, а не
 #: стоп-слово (живой сет 06.10 «денди и классическая музыка» играл только игры). Ключ — начало слова темы.
 #: «кино», «фильмов», «movie» → метка ``movie`` (190 записей архива: Batman, Titanic, Rocky, Terminator; 07.10
@@ -433,7 +420,7 @@ __all__ = [
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
-    "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "THEME_CONCEPTS", "TONAL_ROLES", "role_ceiling",
+    "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of", "NYQUIST_MAX_MIDI",
 ]
 
@@ -1281,36 +1268,6 @@ __all__ += [
 
 
 # ── Реестр произведений (ADR-0155 K-2): ручные таблицы знания; логика — ``rob_box_music.works`` ───────────────
-#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный). Одна таблица: поиск
-#: (``rtttl_library._alias_normalize``), озвучка названия (``ru_alias_for``) и ``Work.aliases`` читают её же.
-RU_ALIASES: Mapping[str, str] = {
-    "гимн ссср": "soviet anthem",
-    "гимн россии": "soviet anthem",
-    "советский гимн": "soviet anthem",
-    "гимн": "soviet anthem",
-    "ссср": "soviet anthem",
-    "ussr": "soviet anthem",
-    "имперский марш": "imperial march",
-    "дарт вейдер": "imperial march",
-    "в пещере горного короля": "mountain king",
-    "григ": "mountain king",
-    "тетрис": "tetris",
-    "коробейники": "tetris",
-    "марио": "mario",
-    "супер марио": "mario",
-    "нокиа": "nokia",
-    "к элизе": "fur elise",
-    "ода к радости": "ode to joy",
-    "с днём рождения": "happy birthday",
-    "с днем рождения": "happy birthday",
-    "джингл белс": "jingle bells",
-    "звёздные войны": "star wars",
-    "звездные войны": "star wars",
-    # Архив хранит русский гимн под существительным «Russia» («National Anthem Of Russia»), не под прилагательным
-    # «Russian» — без этой замены токен «russian» не матчит запись вовсе, и «russian anthem» решает голое
-    # совпадение «anthem» по полусотне чужих гимнов (#2840).
-    "russian": "russia",
-}
 #: «Исполнитель» архива, который на деле категория (``artist`` = «Films And Tv», «Computer Games»): значение —
 #: тип произведения (``Work.work_type``) или ``""`` — категория без типа («Unknown», «Various»); артиста у такой
 #: записи нет. Для «Films And Tv»/«Theme» тип берётся из тегов записи (:data:`TAG_WORK_TYPE`).
@@ -1333,4 +1290,4 @@ EMPTY_TITLES: Tuple[str, ...] = ("", "theme", "unknown", "untitled")
 #: Строки — подстроки нормализованного имени (``works.norm``: буквы и цифры без пробелов). Растёт по факту.
 LICENSE_STOP_LIST: Tuple[str, ...] = ("zimmer", "kondo", "uematsu", "nintendo", "disney", "johnwilliams")
 
-__all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "RU_ALIASES", "TAG_WORK_TYPE"]
+__all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "TAG_WORK_TYPE"]

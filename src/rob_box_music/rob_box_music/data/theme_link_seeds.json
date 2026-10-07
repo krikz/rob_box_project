@@ -1,0 +1,241 @@
+{
+ "about": "Семена связей «фраза темы → строки поиска архива» (#3493, ADR-0155 §3.4): записи works.ThemeLink с source=seed. Ключ с «*» на конце — начало слова (падежи), без — целые слова. Одна строка поиска — фраза заменяется ею в запросе; несколько — подходит любая. Перенесены 07.10 из knowledge.RU_ALIASES и knowledge.THEME_CONCEPTS. Новые связи сюда не дописывать: их даёт LLM с проверкой каталогом (таблица theme_links) или Шифу (works --add-theme-link).",
+ "seeds": [
+  {
+   "phrase": "гимн ссср",
+   "queries": [
+    "soviet anthem"
+   ]
+  },
+  {
+   "phrase": "гимн россии",
+   "queries": [
+    "soviet anthem"
+   ]
+  },
+  {
+   "phrase": "советский гимн",
+   "queries": [
+    "soviet anthem"
+   ]
+  },
+  {
+   "phrase": "гимн",
+   "queries": [
+    "soviet anthem"
+   ]
+  },
+  {
+   "phrase": "ссср",
+   "queries": [
+    "soviet anthem"
+   ]
+  },
+  {
+   "phrase": "ussr",
+   "queries": [
+    "soviet anthem"
+   ]
+  },
+  {
+   "phrase": "имперский марш",
+   "queries": [
+    "imperial march"
+   ]
+  },
+  {
+   "phrase": "дарт вейдер",
+   "queries": [
+    "imperial march"
+   ]
+  },
+  {
+   "phrase": "в пещере горного короля",
+   "queries": [
+    "mountain king"
+   ]
+  },
+  {
+   "phrase": "григ",
+   "queries": [
+    "mountain king"
+   ]
+  },
+  {
+   "phrase": "тетрис",
+   "queries": [
+    "tetris"
+   ]
+  },
+  {
+   "phrase": "коробейники",
+   "queries": [
+    "tetris"
+   ]
+  },
+  {
+   "phrase": "марио",
+   "queries": [
+    "mario"
+   ]
+  },
+  {
+   "phrase": "супер марио",
+   "queries": [
+    "mario"
+   ]
+  },
+  {
+   "phrase": "нокиа",
+   "queries": [
+    "nokia"
+   ]
+  },
+  {
+   "phrase": "к элизе",
+   "queries": [
+    "fur elise"
+   ]
+  },
+  {
+   "phrase": "ода к радости",
+   "queries": [
+    "ode to joy"
+   ]
+  },
+  {
+   "phrase": "с днём рождения",
+   "queries": [
+    "happy birthday"
+   ]
+  },
+  {
+   "phrase": "с днем рождения",
+   "queries": [
+    "happy birthday"
+   ]
+  },
+  {
+   "phrase": "джингл белс",
+   "queries": [
+    "jingle bells"
+   ]
+  },
+  {
+   "phrase": "звёздные войны",
+   "queries": [
+    "star wars"
+   ]
+  },
+  {
+   "phrase": "звездные войны",
+   "queries": [
+    "star wars"
+   ]
+  },
+  {
+   "phrase": "russian",
+   "queries": [
+    "russia"
+   ]
+  },
+  {
+   "phrase": "косм*",
+   "queries": [
+    "space"
+   ]
+  },
+  {
+   "phrase": "интерстел*",
+   "queries": [
+    "space"
+   ]
+  },
+  {
+   "phrase": "interstel*",
+   "queries": [
+    "space"
+   ]
+  },
+  {
+   "phrase": "межзвезд*",
+   "queries": [
+    "space"
+   ]
+  },
+  {
+   "phrase": "денди*",
+   "queries": [
+    "mario",
+    "contra",
+    "zelda"
+   ]
+  },
+  {
+   "phrase": "dendy*",
+   "queries": [
+    "mario",
+    "contra",
+    "zelda"
+   ]
+  },
+  {
+   "phrase": "приставк*",
+   "queries": [
+    "mario",
+    "contra",
+    "zelda"
+   ]
+  },
+  {
+   "phrase": "нинтенд*",
+   "queries": [
+    "mario",
+    "zelda"
+   ]
+  },
+  {
+   "phrase": "nintendo*",
+   "queries": [
+    "mario",
+    "zelda"
+   ]
+  },
+  {
+   "phrase": "чайковск*",
+   "queries": [
+    "tchaikovsky"
+   ]
+  },
+  {
+   "phrase": "бах*",
+   "queries": [
+    "bach"
+   ]
+  },
+  {
+   "phrase": "моцарт*",
+   "queries": [
+    "mozart"
+   ]
+  },
+  {
+   "phrase": "бетховен*",
+   "queries": [
+    "beethoven"
+   ]
+  },
+  {
+   "phrase": "хогвар*",
+   "queries": [
+    "potter"
+   ]
+  },
+  {
+   "phrase": "hogwar*",
+   "queries": [
+    "potter"
+   ]
+  }
+ ]
+}
