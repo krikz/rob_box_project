@@ -257,6 +257,21 @@ def from_material(material: ScoreMaterial, phrase: Phrase, key: Key, notes: Sequ
     return tuple(_cadence(degrees, table)) if slots > 1 else tuple(degrees)
 
 
+def melody_progression(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int) -> Tuple[int, ...]:
+    """Ступени слотов под мелодию без аккордов автора (тема RTTTL целиком, ADR-0154 PR-7): :func:`viterbi` по
+    выученной таблице лада и каденция к первому слоту (:func:`_cadence`). Лад не семиступенный — ``ValueError``."""
+    table = transition_table(key.mode)
+    degrees = list(viterbi(key, notes, chord_beats, slots, (), table))
+    return tuple(_cadence(degrees, table)) if slots > 1 else tuple(degrees)
+
+
+def chain_chords(style: kn.Style, key: Key, degrees: Sequence[int], register: Tuple[int, int],
+                 loop: int = 4) -> Tuple[Chord, ...]:
+    """Обращения длинной последовательности (тема целиком): по :func:`pad_chords` на каждые ``loop`` аккордов —
+    перебор всех обращений длинной темы комбинаторно не считается."""
+    return tuple(c for i in range(0, len(degrees), loop) for c in pad_chords(style, key, degrees[i:i + loop], register))
+
+
 __all__ = ["CADENCE_MIN_P", "COMMON_TONES_MIN", "PROGRESSION_CAP", "PROGRESSION_LOOKBACK", "PROGRESSION_SKIPPED",
-           "PROGRESSION_WINDOW", "VITERBI_MELODY_WEIGHT", "chord_pcs", "fit_progression", "from_material",
+           "PROGRESSION_WINDOW", "VITERBI_MELODY_WEIGHT", "chain_chords", "chord_pcs", "melody_progression", "fit_progression", "from_material",
            "material_beat", "material_slots", "pad_chords", "progression_name", "table_mode", "transition_table", "viterbi", "voicings"]
