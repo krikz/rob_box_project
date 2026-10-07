@@ -256,6 +256,16 @@ def _quoted(names: Sequence[str]) -> str:
     return ", ".join(f"«{n}»" for n in names)
 
 
+#: Начало фразы отказа сета: тема называет конкретные вещи, и ни одна не нашлась (#3493) — голос узнаёт её по началу.
+SET_NOT_FOUND = "Не нашлось в библиотеке"
+
+
+def set_not_found_text(missing: Sequence[str]) -> str:
+    """Отказ запуска сета: названное не нашлось ни прямым поиском, ни проверенными строками поиска — случайный
+    пул вместо названного не играем (фразу строит код, ADR-0148)."""
+    return f"{SET_NOT_FOUND}: {_quoted(missing)}. Сет не включаю, чтобы не играть чужое — назови иначе или другое."
+
+
 def now_playing_text(facts: Mapping[str, Any]) -> str:
     """«Что играет» из фактов снимка сета (``dj``: ``track_no``, ``tracks``, ``melody``, ``next_melodies``,
     ``not_found``) — фразу строит код (ADR-0148), не LLM. ``melody`` нет вовсе — мелодия не известна, о ней ни слова."""
@@ -350,6 +360,7 @@ def facts_for(track_no: int, tracks: int, theme: str, hook: Optional[str], energ
     return LineFacts(track_no, tracks, theme, hook, energy, prev, tuple(n for n in names if n))
 
 
-__all__ = ["FIELDS", "LINE_MAX", "LineFacts", "LineInvalid", "PHASES", "SUBMIT_TOOL", "TEMPLATES", "facts_for",
-           "mentions", "now_playing_text", "payload_line", "persona_title", "plain_fold", "prompt", "schema", "template_line", "tool",
-           "tracks_word", "validate_line", "when_text"]
+__all__ = ["facts_for", "FIELDS", "LINE_MAX", "LineFacts", "LineInvalid", "mentions", "now_playing_text",
+           "payload_line", "persona_title", "PHASES", "plain_fold", "prompt", "schema", "SET_NOT_FOUND",
+           "set_not_found_text", "SUBMIT_TOOL", "template_line", "TEMPLATES", "tool", "tracks_word", "validate_line",
+           "when_text"]
