@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
 from rob_box_music.theme import style_marks
 
@@ -735,6 +736,11 @@ _STYLE_SET_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | frozenset({
 })
 
 
+#: Слова «сет» и «диджей» (без «трек/музыку/микс»): клуб — стиль по умолчанию одиночного трека, поэтому «поставь клубный
+#: трек» остаётся ``request_music``, а клубом сет становится со словом сета или темой (#3508).
+_SET_NOUNS: FrozenSet[str] = frozenset({"сет", "сета", "сэт", "сэта", "set", "диджей", "dj", "диджейский"})
+
+
 def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
     """«включи рейв», «давай эйсид на тему космос», «рейв-сет про котов» → DJ-сет стиля (ADR-0153 S1).
 
@@ -752,6 +758,8 @@ def _style_set_command(words: Sequence[str]) -> Optional[MediaCommand]:
     style, rest = _style_words(head)
     if not style or any(w not in _STYLE_SET_FILLER and w not in _STYLE_LEAD for w in rest):
         return None
+    if style == kn.DEFAULT_STYLE and lead == len(body) and not _SET_NOUNS.intersection(rest):
+        return None  # «поставь клубный трек» — одиночный трек (request_music), не сет
     theme = _style_words(body[lead + 1:])[1]
     return MediaCommand(intent=MediaIntent.DJ, closed=True, style=style, set_theme=" ".join(theme))
 
