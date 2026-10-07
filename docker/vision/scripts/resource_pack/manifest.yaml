@@ -19,8 +19,8 @@
 #                            наличие + sha256 и честно говорит, чего нет.
 #                   build-time / git : в доставку НЕ входит, запись только
 #                            для полноты реестра (см. §6.3, §6.4 плана).
-#   kind          — hef | model-file | model-zip | sample-pack | deb |
-#                   wheel | shared-lib.
+#   kind          — hef | model-file | model-zip | sample-pack | score-library |
+#                   deb | wheel | shared-lib.
 #   url           — для type: open, если ресурс — ОДИН файл по прямому URL.
 #   fetch_hook    — для type: open, если ресурс одним URL не описывается
 #                   (дерево из тысяч файлов, свой индекс, свои ретраи).
@@ -356,6 +356,34 @@ resources:
       (пак не подключён к генератору, ADR-0153 S3/S5), деплой не блокируется.
     consumers:
       - "rob_box_music/data/sample_muldjord.json (каталог; в генератор пока не подключён)"
+
+  # ---------- библиотека партитур (ADR-0154 §8 В7, решение Шифу 07.10) ----------
+  # score_index.db + JSON ScoreMaterial (engine/score_library.py). Собирает
+  # katana: scripts/music/build_score_library.py build → scores-<версия>.tar.gz,
+  # publish → registry katana (10.1.1.249:5000) как OCI-артефакт с тегом
+  # score-library-<версия>. Хук берёт блоб по sha256 из
+  # score_library.lock.json (в git — только lock; архив и партитуры —
+  # нет, ADR-0154 В1 / ADR-0155 В1). Новая версия = новый lock-файл:
+  # маркер .complete несёт sha256 архива, и apply_resource_pack.sh видит
+  # прошлую версию как «не на месте» без --force.
+  - name: score-library
+    type: open
+    kind: score-library
+    fetch_hook: fetch_score_library
+    # sha256 пуст: у записи с fetch_hook он запрещён; сумма архива — в
+    # score_library.lock.json, сверяет её хук до распаковки.
+    sha256: ""
+    size_bytes: 52843
+    verify_file: .complete
+    target: /opt/rob_box/scores
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      Библиотеки партитур нет: сет по теме играет хуки RTTTL, как до
+      ADR-0154 PR-5 (в логе «партитуры: нет …/score_index.db — хуки RTTTL»).
+      Диалог, STT/TTS и остальная музыка не затронуты — деплой не блокируется.
+    consumers:
+      - "voice-assistant: rob_box_mcp_tools/engine/score_library.py (/opt/rob_box/scores:ro)"
 
   # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
   # ЭТАП 4 ВЫПОЛНЕН ЧАСТИЧНО (21.09.2026): sha256 снят у двух записей

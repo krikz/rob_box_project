@@ -1,0 +1,26 @@
+{
+ "_comment": [
+  "Ресурсный пак score-library (ADR-0154 §8 В7): библиотека партитур на хост робота /opt/rob_box/scores.",
+  "Архив собран на katana scripts/music/build_score_library.py build и положен publish в registry katana",
+  "как OCI-артефакт (тег держит блоб от GC). Хук fetch_score_library.py берёт блоб по sha256 и сверяет его.",
+  "Сам архив и партитуры в git НЕ лежат (ADR-0154 В1, ADR-0155 В1). Новая версия = новый lock-файл."
+ ],
+ "title": "Библиотека партитур (ADR-0154)",
+ "version": "2026.10.07.1",
+ "registry": "http://10.1.1.249:5000",
+ "repository": "krikz/rob_box_resources",
+ "tag": "score-library-2026.10.07.1",
+ "archive": "scores-2026.10.07.1.tar.gz",
+ "sha256": "706862adc1eec0d4ee1ba29b79fd78d8e94a6b5d5983e94a90e55ceda3511b0d",
+ "size": 52843,
+ "scores": 16,
+ "licenses": {
+  "cc-zero": 12,
+  "private-local (Shifu only, not PD)": 2,
+  "publicdomain": 2
+ },
+ "sources": {
+  "local": 2,
+  "pdmx": 14
+ }
+}

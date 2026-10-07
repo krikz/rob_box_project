@@ -59,9 +59,11 @@ echo ""
 # init-контейнер и volume удалены: сэмплы лежат на хосте в
 # /opt/rob_box/samples и приходят в контейнеры bind-mount'ом. Пополнить их
 # вручную:
-#   sudo bash scripts/resource_pack/apply_resource_pack.sh --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit
+#   sudo bash scripts/resource_pack/apply_resource_pack.sh --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit,score-library
 # (из ~/rob_box_project/docker/vision). Если каталог пуст — музыка честно
-# уходит в synth-only, стек при этом поднимается.
+# уходит в synth-only, стек при этом поднимается. score-library — библиотека
+# партитур в /opt/rob_box/scores (ADR-0154 §8 В7): архив с registry katana по
+# sha256 из score_library.lock.json; нет её — сет по теме играет хуки RTTTL.
 
 # Показываем статус
 echo "📊 Статус контейнеров:"
