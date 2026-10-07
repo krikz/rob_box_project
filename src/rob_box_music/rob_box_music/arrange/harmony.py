@@ -294,18 +294,16 @@ def _chord_at(material: ScoreMaterial, starts: Sequence[float], beat: float) -> 
 
 def material_beat(material: ScoreMaterial, phrase: Phrase, scale: float = 1.0) -> Callable[[float], Optional[float]]:
     """Доля трека ``t`` → доля материала: перевод размера в 4/4 (``material.meter_map``, режим
-    ``knowledge.TRIPLE_METER_MODE``) от первой ноты фразы (хук срезает начальную паузу, ``hook._onsets``) и множитель
-    темпа ``scale`` (``hook.material_scale``). Доля в паузе перевода (4-я доля 3/4 в режиме ``pause``) — ``None``.
+    ``knowledge.TRIPLE_METER_MODE``) от начала такта фразы (хук материала начальную паузу не срезает, ``hook._onsets(bars=True)``: затакт
+    стоит перед сильной долей, #3531) и множитель темпа ``scale`` (``hook.material_scale``). Доля в паузе перевода (4-я доля 3/4 в режиме ``pause``) — ``None``.
     Одно отображение на гармонию и бас материала."""
     mm = meter_map(material.meter)
     if mm is None:
         raise ValueError(f"размер {material.meter[0]}/{material.meter[1]} в 4/4 клуба не переводится")
     first = phrase.bar * mm.bar
-    lead_in = next((e.beat for e in material.melody if e.beat >= first), first) - first
-    origin = mm.to_club(lead_in)
 
     def at(t: float) -> Optional[float]:
-        beat = mm.from_club(origin + t / scale)
+        beat = mm.from_club(t / scale)
         return None if beat is None else first + beat
     return at
 

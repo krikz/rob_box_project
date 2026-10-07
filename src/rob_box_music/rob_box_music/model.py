@@ -21,7 +21,7 @@ STEPS_PER_BAR = 16
 BARS_TOTAL = tuple(range(32, kn.TRACK_MAX_BARS + 1, kn.FORM_BARS_STEP))
 OUTRO_MIN_BARS = 8
 PHRASE_BARS = (8, 16, 32)
-APPROACH_MAX_BEATS = 0.5  # хроматический подход баса (ADR-0149 §3.5)
+APPROACH_MAX_BEATS = kn.APPROACH_MAX_BEATS  # хроматический подход баса (ADR-0149 §3.5); у стиля — свой
 SAMPLE_ROLES = ("sample", "loop", "fx")  # роли, чья партия — файл из ``knowledge.SAMPLE_CATALOG`` (§3.11)
 
 
@@ -85,6 +85,9 @@ class PitchEvent:
     #: Срез фильтра ноты, Гц (``lpf=[...]`` по нотам, ADR-0152 PR-9); 0 — не задан. Вне ``repr``: событие без среза
     #: выглядит как до PR-9 (отпечаток трека и эталон ``test_style_same_tracks`` у басов без ``acid16`` те же).
     lpf: float = field(default=0.0, repr=False)
+    #: Свинг ноты, мс (ADR-0153 S4, ``arrange.rhythm.swing``): нота на сетке 16-х опаздывает, рендер пишет ``delay``.
+    #: Вне ``repr``, как ``lpf``: модель трека без свинга нот та же, что до S4.
+    offset_ms: int = field(default=0, repr=False)
 
 
 @dataclass(frozen=True)
@@ -303,21 +306,24 @@ def _check_grid(role: str, grid: Grid, bars_total: int) -> None:
         _require(isinstance(st.offset_ms, int), f"{path}[{i}].offset_ms", "сдвиг не в целых мс")
 
 
-def _pitch_ok(role: str, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool) -> bool:
+def _pitch_ok(role: str, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool,
+              approach: float = APPROACH_MAX_BEATS) -> bool:
     """Все условия :func:`_check_pitch` разом, без сборки сообщений: валидатор проходит ~10⁴ нот на трек, и строки
-    причин на каждой ноте занимали заметную долю времени ``render`` (CI-таймаут пакета, PR #3501)."""
+    причин на каждой ноте занимали заметную долю времени ``render`` (CI-таймаут пакета, PR #3501). ``approach`` —
+    потолок хроматического подхода баса стиля (``Style.approach_max_beats``)."""
     lo, hi = part.register
     lpf_lo, lpf_hi = kn.LPF_RANGE_HZ
     if not (_finite(ev.beat) and _finite(ev.dur_beats) and ev.dur_beats > 0 and 0 <= ev.beat
             and ev.beat + ev.dur_beats <= limit_beats + 1e-9 and (ev.lpf == kn.LPF_OPEN or lpf_lo <= ev.lpf <= lpf_hi)
-            and lo <= ev.midi <= hi):
+            and lo <= ev.midi <= hi and isinstance(ev.offset_ms, int) and ev.offset_ms >= 0):
         return False
     return (song or role == "lead" or ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
-            or (role == "bass" and ev.dur_beats <= APPROACH_MAX_BEATS))
+            or (role == "bass" and ev.dur_beats <= approach))
 
 
-def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool) -> None:
-    if _pitch_ok(role, ev, key, limit_beats, part, song):
+def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool,
+                 approach: float = APPROACH_MAX_BEATS) -> None:
+    if _pitch_ok(role, ev, key, limit_beats, part, song, approach):
         return
     path = f"parts.{role}.pitches[{i}]"
     _require(_finite(ev.beat) and _finite(ev.dur_beats), path, "доли не конечные числа")
@@ -327,11 +333,12 @@ def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float
              f"срез ноты {ev.lpf} не 0 и не в {kn.LPF_RANGE_HZ[0]:g}..{kn.LPF_RANGE_HZ[1]:g} Гц")
     lo, hi = part.register
     _require(lo <= ev.midi <= hi, f"{path}.midi", f"MIDI {ev.midi} вне регистра партии {lo}..{hi}")
+    _require(isinstance(ev.offset_ms, int) and ev.offset_ms >= 0, f"{path}.offset_ms", "свинг ноты не целые мс ≥ 0")
     if song or role == "lead":  # мелодия/хук темы — с хроматикой; лад — долей длительности (``_check_key_fit``)
         return
     in_scale = ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
-    approach = role == "bass" and ev.dur_beats <= APPROACH_MAX_BEATS
-    _require(in_scale or approach, f"{path}.midi", f"MIDI {ev.midi} не в ладе {kn.ROOTS[key.root]} {key.mode}")
+    chromatic = role == "bass" and ev.dur_beats <= approach
+    _require(in_scale or chromatic, f"{path}.midi", f"MIDI {ev.midi} не в ладе {kn.ROOTS[key.root]} {key.mode}")
 
 
 def _check_key_fit(role: str, part: Part, key: Key, minimum: float) -> None:
@@ -351,8 +358,9 @@ def _check_tonal(role: str, part: Part, track: Track) -> None:
     _require(song or hi <= kn.LEAD_MAX_MIDI, f"parts.{role}.register", f"верх {hi} выше {kn.LEAD_MAX_MIDI}")
     _require(bool(part.pitches), f"parts.{role}.pitches", "тональная партия без нот")
     limit = float(track.form.bars_total * BEATS_PER_BAR)
+    approach = kn.STYLES[track.style].approach_max_beats
     for i, ev in enumerate(part.pitches or ()):
-        _check_pitch(role, i, ev, track.key, limit, part, song)
+        _check_pitch(role, i, ev, track.key, limit, part, song, approach)
     if role == "lead" and not song:
         _check_key_fit(role, part, track.key, kn.HOOK_KEY_FIT_MIN)
     elif song and role != "lead":
@@ -371,6 +379,8 @@ def _check_parts(track: Track) -> None:
         else:
             _require(part.pitches is None, f"parts.{role}.pitches", "у ударной роли нет высот")
             _require(isinstance(part.sample, int) and part.sample >= 0, f"parts.{role}.sample", "номер сэмпла < 0")
+            if role in kn.DRUM_SYMBOLS and part.synth_or_sample != kn.PLAY_SYNTH:
+                _check_drum_file(track, role, part)
             if role == "kick":
                 _check_kick(track, part)
         if role in SAMPLE_ROLES:
@@ -398,9 +408,18 @@ def _check_chop(role: str, part: Part) -> None:
              f"начало куска не на 16-й внутри файла ({beats} долей)")
 
 
+def _check_drum_file(track: Track, role: str, part: Part) -> None:
+    """Удар файлом пака (ADR-0153 S4): файл из ``knowledge.SAMPLE_CATALOG``; не бочка — из ``Style.drum_files`` роли."""
+    path = f"parts.{role}.synth_or_sample"
+    _require(part.synth_or_sample in kn.SAMPLE_CATALOG, path, f"файла {part.synth_or_sample!r} нет в каталоге")
+    _require(role == "kick" or part.synth_or_sample in kn.STYLES[track.style].drum_files.get(role, ()), path,
+             f"файл {part.synth_or_sample!r} не из Style.drum_files стиля {track.style!r}")
+
+
 def _check_kick(track: Track, part: Part) -> None:
-    """Бочка — из ``knowledge.KICK_SOUNDS`` (символ и файл) и из пулов окон стиля трека."""
-    name = kn.kick_of(part.play_symbol, part.sample)
+    """Бочка — из ``knowledge.KICK_SOUNDS`` (символ и файл или файл пака) и из пулов окон стиля трека."""
+    pack = "" if part.synth_or_sample == kn.PLAY_SYNTH else part.synth_or_sample
+    name = kn.kick_of(part.play_symbol, part.sample, pack)
     _require(name is not None, "parts.kick.sample", "бочка не из knowledge.KICK_SOUNDS")
     pools = {k for w in kn.STYLES[track.style].genre_windows.values() for k in w.kick_pool}
     _require(name in pools, "parts.kick.sample", f"бочка {name!r} не из пула стиля {track.style!r}")

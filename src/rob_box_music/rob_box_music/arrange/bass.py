@@ -12,6 +12,10 @@
 
 Все комплементарны бочке (прямой или ломаной): ни одной ноты на доле, нота кончается к доле (ADR-0149 §3.4).
 
+Линия ``walking`` (ADR-0153 S4, ``knowledge.BASS_LINES``) — четверти на долях: доля 1 — тон аккорда такта, 2–3 — тоны
+аккорда (терция, квинта, септима — по чётности такта) ближе к предыдущей ноте, 4 — подход полутоном к первой ноте
+следующего такта (хроматика — целая доля, ``Style.approach_max_beats``); следующего такта баса нет — тон аккорда.
+
 Тон такта (ADR-0154 §3.3, PR-4): без материала — тоника ×(n−1) + квинта, как всегда. С материалом партитуры —
 :func:`material_tones`: такт стоит на том тоне аккорда, на котором стоит басовый голос автора (обращение — терция,
 квинта), последняя нота такта — подход полутоном к следующему, если он есть у автора; политика — выученная таблица
@@ -192,6 +196,44 @@ def acid16(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], s
     return _part("acid16", style, key, bar_chords, synth, register, tones)
 
 
+#: Тоны аккорда на долях 2 и 3 такта walking по чётности такта: индексы ``harmony.chord_pcs`` (1 — терция, 2 — квинта,
+#: 3 — септима; у трезвучия септима — терция).
+WALK_TONES: Tuple[Tuple[int, int], ...] = ((1, 2), (2, 3))
+
+
+def _near(pc: int, ref: int, register: Tuple[int, int]) -> int:
+    """Нота pitch class ``pc`` внутри регистра, ближайшая к ``ref`` (ничья — ниже)."""
+    options = [m for m in range(register[0], register[1] + 1) if m % 12 == pc]
+    return min(options, key=lambda m: (abs(m - ref), m))
+
+
+def _approach(target: int, prev: int, register: Tuple[int, int]) -> int:
+    """Полутон к ``target`` со стороны предыдущей ноты (снизу, если она ниже), не помещается — с другой стороны."""
+    side = -1 if prev <= target else 1
+    return next(target + s for s in (side, -side) if register[0] <= target + s <= register[1])
+
+
+def walking(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+            register: Tuple[int, int], tones: Tones = None) -> Part:
+    """Walking-бас по тактам ``bar_chords``: четверти, подход к следующему такту — на 4-й доле (одна доля ≤
+    ``style.approach_max_beats``); ``tones`` — тон 1-й доли такта из материала (иначе прима)."""
+    bars = [(bar, harmony.chord_pcs(style, key, chord.degree)) for bar, chord in bar_chords]
+    sounding = {bar for bar, _pcs in bars}
+    firsts: Dict[int, int] = {}
+    prev = register[0] + 6
+    for bar, pcs in bars:
+        prev = firsts[bar] = _near(pcs[(tones or {}).get(bar, ROOT_TONE).anchor], prev, register)
+    out: List[PitchEvent] = []
+    for bar, pcs in bars:
+        line = [firsts[bar]]
+        for idx in WALK_TONES[bar % 2]:
+            line.append(_near(pcs[idx % len(pcs)], line[-1], register))
+        nxt = firsts.get(bar + 1) if bar + 1 in sounding else None
+        line.append(_approach(nxt, line[-1], register) if nxt is not None else _near(pcs[2], line[-1], register))
+        out += [PitchEvent(m, bar * BEATS_PER_BAR + beat, 1.0, 3 if beat == 0 else 2) for beat, m in enumerate(line)]
+    return Part("bass", synth, rhythm.grid(range(0, STEPS_PER_BAR, STEPS_PER_BEAT)), tuple(out), 0.0, register)
+
+
 def broken(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
            register: Tuple[int, int], tones: Tones = None) -> Part:
     """Бас в обход ломаной бочки (``breaks``): тоника ×3 + квинта на шагах 1, 6, 9, 14, мимо шагов
@@ -206,5 +248,5 @@ def octave8(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], 
     return _part("octave8", style, key, bar_chords, synth, register, tones)
 
 
-__all__ = ["ANCHORS", "BassTone", "ROOT_TONE", "acid16", "bar_notes", "broken", "figure_bass", "material_tones",
-           "note_beats", "octave8", "offbeat", "rolling8"]
+__all__ = ["ANCHORS", "BassTone", "ROOT_TONE", "WALK_TONES", "acid16", "bar_notes", "broken", "figure_bass",
+           "material_tones", "note_beats", "octave8", "offbeat", "rolling8", "walking"]
