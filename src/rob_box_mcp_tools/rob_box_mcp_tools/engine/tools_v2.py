@@ -50,7 +50,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
-from .score_library import PlanMaterials, ScoreLibrary
+from .score_library import PlanMaterials, ScoreLibrary, seed_plan
 from .search import ThemeHits, score_search, theme_search
 from .session import SetMemory, SetSession, plan_source
 from .theme_grounding import grounded_theme
@@ -383,9 +383,8 @@ class DjSetTool(MCPTool):
             self._session.stop("new_set")
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
-        plan = seeded_plan(profile, set_seed, n_tracks=length, set_id=set_id,  # темп и окно — на сет
-                           history=self._memory.peek())
         logger = self.node.get_logger() if self.node is not None else None
+        plan = seed_plan(self._scores, profile, set_seed, length, set_id, self._memory.peek(), logger or _LOG)
         (logger or _LOG).info(f"🎛️ [dj_set] {set_id} длина сета: {length} ({why}), "
                               f"энергия={[t.energy for t in plan.tracks]}")
         materials = self.plan_materials(plan, logger)

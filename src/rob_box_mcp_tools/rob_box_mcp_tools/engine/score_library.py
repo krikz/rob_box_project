@@ -17,9 +17,11 @@ import os
 import pathlib
 import sqlite3
 import threading
+import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music.material import MaterialError, ScoreMaterial, from_json
+from rob_box_music.set_plan import seeded_plan
 
 #: Переменная окружения с каталогом библиотеки (перекрывает :data:`DEFAULT_DIR`).
 ENV = "ROB_BOX_SCORE_LIBRARY"
@@ -118,4 +120,22 @@ class PlanMaterials(Mapping[str, ScoreMaterial]):
         return len(self._ids)
 
 
-__all__ = ["DEFAULT_DIR", "ENV", "INDEX_FILE", "ScoreLibrary", "PlanMaterials", "library_dir"]
+def seed_plan(library: ScoreLibrary, profile: Any, seed: int, length: int, set_id: str, history: Sequence[Mapping],
+              logger: Any) -> Any:
+    """``seeded_plan`` с отбором годных материалов (#3500): негодные в очередь не попадают, каждый — строкой лога
+    с причиной (та же, что отказ ``hook.from_material``), отбор — с замером (M7: ≤ 50 мс на запрос)."""
+    rejected: Dict[str, str] = {}
+    started = time.perf_counter()
+    materials = PlanMaterials(library, profile.materials, logger) if profile.materials else None
+    plan = seeded_plan(profile, seed, n_tracks=length, set_id=set_id, history=history, materials=materials,
+                       rejected=rejected)  # темп и окно — на сет
+    for mid, why in rejected.items():
+        logger.info(f"🎼 [dj_set] материал {mid} не годится: {why}")
+    if profile.materials:
+        logger.info(f"🎼 [dj_set] {set_id} отбор материалов {len(profile.materials)} шт. за "
+                    f"{(time.perf_counter() - started) * 1000:.1f} мс: в плане "
+                    f"{sum(bool(t.material) for t in plan.tracks)}, негодных {len(rejected)}")
+    return plan
+
+
+__all__ = ["DEFAULT_DIR", "ENV", "INDEX_FILE", "ScoreLibrary", "PlanMaterials", "library_dir", "seed_plan"]
