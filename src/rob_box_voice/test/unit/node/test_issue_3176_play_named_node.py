@@ -208,3 +208,41 @@ def test_route_without_resume_path_leaves_order_to_llm():
     n = _make_node()
     assert n._route_media_command("поставь к элизе") is False
     assert n._scheduler_executor.calls == []
+
+
+# ── #3525: каждая реплика — свой turn_id ─────────────────────────────────
+
+
+class _TurnRecordingExecutor(_MelodyExecutor):
+    """Запоминает ``turn_id`` ноды в момент вызова каждого тула (как ``LLMToolCallAdapter``)."""
+
+    def __init__(self, node_ref, **kw) -> None:
+        super().__init__(**kw)
+        self._node_ref = node_ref
+        self.turns = []
+
+    async def execute(self, call):
+        self.turns.append((call.name, self._node_ref[0]._mcp_turn_context()["turn_id"]))
+        if call.name == "dj_set":
+            return self._ok(call, "{'ok': True}")
+        return await super().execute(call)
+
+
+def test_named_play_after_router_set_gets_a_new_turn_id(run_plans):
+    """Живой баг 07.10: «сыграй X» несла turn_id сета 3 мин назад -> request_music не снимал «свой» сет."""
+    ref = []
+    n = _make_node()
+    ref.append(n)
+    n._scheduler_executor = _TurnRecordingExecutor(ref)
+    n._turn_id = "llm-turn-0"
+    n._confident_speaker_name = lambda uid: None
+    _stt(n, "Робот, включи сэт на тему тетрис")  # команда роутера: cancel_inflight
+    run_plans()
+    _stt(n, "Робот, поставь к Элизе")  # заказ по имени: cancel_inflight=False до находки
+    run_plans()
+    turns = n._scheduler_executor.turns
+    set_turns = [t for name, t in turns if name == "dj_set"]
+    play_turns = [t for name, t in turns if name == "request_music"]
+    assert set_turns and play_turns, turns
+    assert set_turns[0] != "llm-turn-0"
+    assert play_turns[0] != set_turns[0]
