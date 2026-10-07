@@ -1500,9 +1500,10 @@ _LOFI_STYLE = Style(
     role_level_db={"kick": -35.0, "bass": -34.0, "pad": -41.0, "lead": -48.0, "clap": -43.0, "hats": -57.0},
     duck_roles=(), section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad",), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
-    # A9-модель занижает низ lo-fi на 0.09–0.16 против записи (удары файлами и walking в модели — оценки): порог
-    # 0.5 = нижняя граница цели, без запаса σ (иначе модель глушит пэд, а запись и так выше цели).
-    a9_model_low=0.5,
+    # A9-модель занижает низ lo-fi против записи робота 08.10 на 0.09–0.32 (0.61/0.68/0.55 модели при 0.77/0.76/0.87
+    # записи; удары файлами и walking в модели — оценки): при пороге 0.5 она глушила пэд на 6 дБ, а запись и так
+    # выше цели. Порог 0.4 — только страховка от трека совсем без низа; калибровка модели lo-fi не сделана.
+    a9_model_low=0.4,
     thin_roles={}, swing_steps=(2, 6, 10, 14), swing_roles=("kick", "clap", "bass", "pad", "lead"),
     approach_max_beats=1.0,
     drum_files={"clap": ("sonicpi_drum_snare_soft", "muldjord_snare_40", "muldjord_snare_43"),
