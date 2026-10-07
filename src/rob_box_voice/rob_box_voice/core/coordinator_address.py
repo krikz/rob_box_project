@@ -12,6 +12,7 @@ voice-assistant (строка ``🎤 STT: [TG:<id>] Клод …`` в command_no
 from __future__ import annotations
 
 import re
+from typing import Any, Callable
 
 # Обращение — первое слово: «Клод», «клод,», «Claude», «Клод:» и т.п.
 # Границы слова не даём ни «Клодия», ни «клод» в середине фразы.
@@ -28,3 +29,23 @@ def is_coordinator_address(text: str) -> bool:
     if not isinstance(text, str):
         return False
     return _ADDRESS_RE.match(text) is not None
+
+
+def skip_coordinator_tg(handler: Callable[[Any], None], get_logger: Callable[[], Any]):
+    """Обернуть обработчик ``/voice/stt/result``: TG-реплику «Клод …» не пускать дальше.
+
+    Строка ``🎤 STT: [TG:<id>] Клод …`` в логе command_node остаётся (это
+    отдельный подписчик). Голосовые реплики и обычные TG-сообщения идут в
+    ``handler`` без изменений. Обёртка, а не ветка в ``_on_stt``: класс
+    DialogueNode под бюджетом размера (ADR-0145).
+    """
+    from rob_box_voice.core.stt_admission import parse_tg_prefix
+
+    def _wrapped(msg):
+        text, tg_chat_id = parse_tg_prefix((getattr(msg, "data", "") or "").strip())
+        if tg_chat_id is not None and is_coordinator_address(text):
+            get_logger().info("📨 TG-реплика координатору «Клод» — диалог пропускает")
+            return
+        handler(msg)
+
+    return _wrapped
