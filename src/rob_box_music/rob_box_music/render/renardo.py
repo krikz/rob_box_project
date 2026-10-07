@@ -248,6 +248,8 @@ def _chop_line(head: str, info: kn.SampleInfo, part: Part, gate: str, track: Tra
     доле с ``pos`` = начало куска в долях оригинала; ``tempo=`` — темп оригинала (Renardo: ``rate`` = bpm/tempo,
     ``pos`` × tempo — ``Players.py`` LoopPlayer), ``sus`` = кусок (legato 1), края — :func:`_edges`; под
     сайдчейном — ``amplify`` по кускам."""
+    if part.chop:
+        return _sliced_line(head, info, part, gate, track, role)
     gap = _gap(part.grid.steps)
     step = gap * STEP_BEATS
     beats = info.beats or 4
@@ -255,6 +257,30 @@ def _chop_line(head: str, info: kn.SampleInfo, part: Part, gate: str, track: Tra
     amplify = _event_amplify(track, role, gap, [1.0] * (track.form.bars_total * STEPS_PER_BAR // gap))
     duck = [f", amplify={_list(_num(a) for a in amplify)}"] if len(set(amplify)) > 1 else []
     return head + f"{pieces}, dur={_num(step)}, sus={_num(step)}, {_edges()}, tempo={info.bpm}, {gate}{''.join(duck)})"
+
+
+def _sliced_line(head: str, info: kn.SampleInfo, part: Part, gate: str, track: Track, role: str) -> str:
+    """Брейк нарезкой модели (``Part.chop``, ADR-0153 S3): запуск на каждом шаге сетки, ``pos`` — кусок модели,
+    ``dur``/``sus`` — до следующего запуска (``legato 1``), ``tempo=`` — темп оригинала (``rate`` = bpm/tempo). Списки
+    одной длины — период цикла сетки (Renardo индексирует их номером события). Под сайдчейном — ``amplify`` по
+    запускам (огибающая секции на шаге запуска)."""
+    steps = part.grid.steps
+    starts = [i for i, st in enumerate(steps) if st.on]
+    durs = [((starts[(k + 1) % len(starts)] - s) % len(steps) or len(steps)) * STEP_BEATS
+            for k, s in enumerate(starts)]
+    opts = [f"dur={_list(_num(d) for d in durs)}", f"sus={_list(_num(d) for d in durs)}", _edges(),
+            f"tempo={info.bpm}", gate]
+    if role in track.mix.duck_roles:
+        envs = [duck_envelope(d.trigger, d.depth) for d in track.mix.duck]
+        sections = _section_steps(track)
+        cycles = len(sections) // len(steps)
+        amplify = [round(envs[sections[c * len(steps) + s]][s % STEPS_PER_BAR], 3)
+                   for c in range(cycles) for s in starts]
+        folded = _period(amplify)
+        if len(folded) % len(starts):
+            raise RenderError(f"parts.{role}: сайдчейн не сворачивается в цикл нарезки")
+        opts.append(f"amplify={_list(_num(a) for a in folded)}")
+    return head + f"{_list(_num(p) for p in part.chop)}, " + ", ".join(opts) + ")"
 
 
 def _pool_line(slot: str, head: str, role: str, part: Part, track: Track, gate: str, stereo: List[str]) -> str:

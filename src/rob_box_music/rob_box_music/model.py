@@ -100,6 +100,9 @@ class Part:
     #: Символ ``play()`` ударной роли (бочка рейва — ``A``/``W``, ``knowledge.KICK_SOUNDS``, ADR-0153 S1); пусто —
     #: ``knowledge.DRUM_SYMBOLS`` роли. Вне ``repr``, как ``PitchEvent.lpf``: отпечаток трека клуба тот же, что до S1.
     symbol: str = field(default="", repr=False)
+    #: Нарезка лупа (``arrange.samples.breakbeat_chop``, ADR-0153 S3): начало куска файла в долях оригинала на каждый
+    #: запуск сетки по порядку; пусто — куски файла подряд (``loop_part``). Вне ``repr``: отпечаток клуба тот же.
+    chop: Tuple[float, ...] = field(default=(), repr=False)
 
     @property
     def play_symbol(self) -> str:
@@ -368,6 +371,8 @@ def _check_parts(track: Track) -> None:
         if role in SAMPLE_ROLES:
             unknown = sorted({part.synth_or_sample, *part.pool} - set(kn.SAMPLE_CATALOG))
             _require(not unknown, f"parts.{role}.synth_or_sample", f"сэмплов {unknown} нет в knowledge.SAMPLE_CATALOG")
+        if part.chop:
+            _check_chop(role, part)
         _require(_finite(part.level_db) and part.level_db <= kn.role_ceiling(role), f"parts.{role}.level_db",
                  f"{part.level_db} дБ выше потолка роли {kn.role_ceiling(role)}")
         _require(track.mix.level_db.get(role) == part.level_db, f"mix.level_db.{role}",
@@ -375,6 +380,17 @@ def _check_parts(track: Track) -> None:
     for i, sec in enumerate(track.form.sections):
         missing = sorted(set(sec.roles) - set(track.parts))
         _require(not missing, f"form.sections[{i}].roles", f"роли без партии: {missing}")
+
+
+def _check_chop(role: str, part: Part) -> None:
+    """Нарезка лупа: кусок на каждый запуск сетки, начало куска — на сетке 16-х внутри файла."""
+    path = f"parts.{role}.chop"
+    _require(role == "loop", path, "нарезка только у лупа")
+    hits = sum(st.on for st in part.grid.steps)
+    _require(len(part.chop) == hits, path, f"{len(part.chop)} кусков на {hits} запусков сетки")
+    beats = kn.SAMPLE_CATALOG[part.synth_or_sample].beats or 0
+    _require(all(0 <= p < beats and float(p * 4).is_integer() for p in part.chop), path,
+             f"начало куска не на 16-й внутри файла ({beats} долей)")
 
 
 def _check_kick(track: Track, part: Part) -> None:

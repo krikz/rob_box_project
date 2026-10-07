@@ -68,6 +68,9 @@ BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {
     "pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs, "arp": pad.arp}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
+#: Нарезка лупа по ключу ``Style.loop_figure`` (ADR-0153 S3): ``(файл, ГСЧ) -> Part``.
+LOOP_GENERATORS: Mapping[str, Callable[..., Part]] = {"chop": samples.loop_part,
+                                                      "breakbeat_chop": samples.breakbeat_chop}
 _LOG = logging.getLogger(__name__)
 #: Длина секций с лидом (развитие хука считается от начала каждой).
 SECTION_BARS = 8
@@ -432,17 +435,19 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}") for name in ("kit", "sample", "loop", "fx")}
     kit = _kit(style, history, axis["kit"])
-    perc = samples.perc_pool(key, history, axis["sample"])
-    loop = samples.pick(samples.LOOP_ROLES, key, history, "sample", axis["loop"])
+    perc = samples.perc_pool(key, history, axis["sample"]) if "sample" in style.layer_sections else ()
+    loop = samples.pick(style.loop_roles, key, history, "sample", axis["loop"])
     fx = samples.pick(samples.FX_ROLES, key, history, "fx", axis["fx"])
     kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
     drums = _drums(style, form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit, kick)
     bass_figure, bass_part = _bass(style, plan.family, _bar_chords(spec, "bass", chords), key, history, seed, tones)
     figure, pad_part = _pad(style, plan.family, _bar_chords(spec, "pad", chords), key, pad_register, history, seed)
+    layers = {"sample": lambda: samples.perc_part(style, perc, kit, axis["sample"]),
+              "loop": lambda: LOOP_GENERATORS[style.loop_figure](loop, axis["loop"]),
+              "fx": lambda: samples.fx_part(fx, SECTION_BARS)}  # слой без секций стиля в трек не идёт
     parts, track_mix = mix.mix_parts(style, {
         **drums, "bass": bass_part, "pad": pad_part, "lead": lead_part,
-        "sample": samples.perc_part(style, perc, kit, axis["sample"]),
-        "loop": samples.loop_part(loop), "fx": samples.fx_part(fx, SECTION_BARS)}, form, figure)
+        **{role: make() for role, make in layers.items() if role in style.layer_sections}}, form, figure)
     prog = harmony.progression_name(degrees)
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]
     return Track(
@@ -464,6 +469,6 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
     return compose(seeded_plan(profile, seed, set_id=set_id), track_no, deck=deck)
 
 
-__all__ = ["BASS_GENERATORS", "FormSpec", "LEAD_GENERATORS", "PAD_GENERATORS", "SECTION_BARS", "club_track",
+__all__ = ["BASS_GENERATORS", "FormSpec", "LEAD_GENERATORS", "LOOP_GENERATORS", "PAD_GENERATORS", "SECTION_BARS", "club_track",
            "compose", "form_spec", "hook_candidates", "hook_order", "hook_register", "opening_order", "part_order",
            "track_template", "transition", "upcoming_hooks"]

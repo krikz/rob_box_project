@@ -53,11 +53,12 @@ class DaveSample:
 
 @lru_cache(maxsize=1)
 def sample_catalog() -> Dict[str, DaveSample]:
-    """Каталог пака — вид ``knowledge.SAMPLE_CATALOG`` (кешируется)."""
+    """Каталог пака — вид ``knowledge.SAMPLE_CATALOG`` (кешируется): только пак DJ_Dave (``SAMPLE_PACK_DIR``); брейки
+    Sonic Pi (ADR-0153 S3) — данные v2, v1 их не играет."""
     return {
         name: DaveSample(name=name, group=info.group, seconds=info.seconds, channels=info.channels,
                          path=info.loop_arg)
-        for name, info in kn.SAMPLE_CATALOG.items()
+        for name, info in kn.SAMPLE_CATALOG.items() if info.path.startswith(f"{kn.SAMPLE_PACK_DIR}/")
     }
 
 
