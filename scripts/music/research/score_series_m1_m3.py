@@ -51,9 +51,11 @@ def window_notes(material: mt.ScoreMaterial, start_bar: int) -> List[PitchEvent]
     inside = [e for e in material.melody if start_bar * bar <= e.beat < (start_bar + 8) * bar]
     if not inside:
         return []
-    zero = mt.club_beat(material.meter, inside[0].beat - start_bar * bar)
-    return [PitchEvent(e.midi, mt.club_beat(material.meter, e.beat - start_bar * bar) - zero, e.dur_beats, 2)
-            for e in inside]
+    mm = mt.meter_map(material.meter)  # режим по умолчанию — тот же, что берёт compose (#3517/#3520)
+    if mm is None:
+        return []
+    zero = mm.to_club(inside[0].beat - start_bar * bar)
+    return [PitchEvent(e.midi, mm.to_club(e.beat - start_bar * bar) - zero, e.dur_beats, 2) for e in inside]
 
 
 def loo_table(rows: Sequence[Dict[str, Any]], skip: str, mode: str) -> Dict[str, Any]:
@@ -137,7 +139,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--stats", required=True)
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("-n", type=int, default=100)
+    ap.add_argument("--triple-mode", default="", help="режим перевода размеров (knowledge.METER_MODES); по умолчанию — "
+                                                      "как в коде (TRIPLE_METER_MODE), чтобы M2 было про робота")
     args = ap.parse_args(argv)
+    if args.triple_mode:
+        kn.TRIPLE_METER_MODE = args.triple_mode
+        print(f"режим перевода размеров: {args.triple_mode} (по умолчанию в коде — не он)")
     lib = pathlib.Path(args.lib).expanduser()
     manifest = read_manifest(pathlib.Path(args.manifest))
     rng = random.Random(args.seed)

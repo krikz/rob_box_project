@@ -1,12 +1,12 @@
 {
  "provenance": {
-  "corpus": "PDMX no_license_conflict (ADR-0154 PR-6): снимок батча 2026.10.07.3, ранг — байесовский рейтинг; без стоп-листа ADR-0155",
-  "scores": 11913,
+  "corpus": "PDMX no_license_conflict (ADR-0154 PR-6): снимок батча 2026.10.08.1, ранг — байесовский рейтинг; без стоп-листа ADR-0155",
+  "scores": 138625,
   "modes": {
-   "minor": 5292,
-   "major": 6621
+   "minor": 41241,
+   "major": 97384
   },
-  "corpus_sha256": "e40f07c55d28202081f1d5ff107f41f63ad39311245c6e8d648fef8920822ebd",
+  "corpus_sha256": "39c404075399b0a1f25921233f795255c08d91d53b19a3b8f2cad76f24121539",
   "stats": "stats.json",
   "date": "2026-10-07",
   "script": "scripts/music/research/score_bass_tones.py --write-table",
@@ -14,24 +14,24 @@
  },
  "tables": {
   "major": {
-   "root": 0.4824,
-   "third": 0.1459,
-   "fifth": 0.1441,
-   "other": 0.2276,
-   "approach_per_bar": 0.1081,
-   "notes": 1793608,
-   "bars": 416040,
-   "approaches": 44961
+   "root": 0.5037,
+   "third": 0.1606,
+   "fifth": 0.116,
+   "other": 0.2197,
+   "approach_per_bar": 0.1307,
+   "notes": 9828317,
+   "bars": 2214931,
+   "approaches": 289535
   },
   "minor": {
-   "root": 0.4807,
-   "third": 0.1448,
-   "fifth": 0.141,
-   "other": 0.2336,
-   "approach_per_bar": 0.1109,
-   "notes": 1646291,
-   "bars": 353362,
-   "approaches": 39187
+   "root": 0.4893,
+   "third": 0.1495,
+   "fifth": 0.1185,
+   "other": 0.2427,
+   "approach_per_bar": 0.1299,
+   "notes": 6141317,
+   "bars": 1384698,
+   "approaches": 179810
   }
  }
 }
