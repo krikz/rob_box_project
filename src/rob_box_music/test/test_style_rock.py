@@ -68,12 +68,12 @@ def _bar_steps(grid, bar: int):
 
 def test_two_windows_with_their_own_tempo_and_low_targets():
     """Окна подстилей: classic 100–125 (эталон ≈ 110), grunge 110–130 (≈ 121); у каждого — свои уровни ролей и порог
-    A9-модели (эталон низа classic 0.37, grunge 0.66); поля стиля — первое окно."""
+    A9-модели (эталон низа classic 0.37, grunge 0.66: у гранжа бочка и бас громче); поля стиля — первое окно."""
     assert {n: w.bpm for n, w in ROCK.genre_windows.items()} == {"classic": (100, 125), "grunge": (110, 130)}
     assert kn.genre_style(ROCK, "classic") == ROCK
     grunge = kn.genre_style(ROCK, "grunge")
-    assert grunge.a9_model_low > ROCK.a9_model_low
-    assert grunge.role_level_db["kick"] > ROCK.role_level_db["kick"] and grunge.role_level_db["pad"] < ROCK.role_level_db["pad"]
+    assert grunge.role_level_db["kick"] > ROCK.role_level_db["kick"] and grunge.role_level_db["bass"] > ROCK.role_level_db["bass"]
+    assert grunge.role_level_db["pad"] <= ROCK.role_level_db["pad"]
     for seed in range(10):
         for genre, window in ROCK.genre_windows.items():
             plan = _plan("космос", seed, genre)

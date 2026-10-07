@@ -1607,19 +1607,23 @@ _ROCK_LOOKS: Tuple[Tuple[int, Look], ...] = (
 _GRUNGE_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (7, Look(KICK_PATTERNS["grunge"], 0.0)), (5, Look(KICK_PATTERNS["rock"], 0.0)), (0, _ROCK_HALF))
 #: Уровни ролей (шкала модели, роль звучит всю секцию). Гитара (пэд ``fuzz``) — середина 150–2000 Гц, малый громче
-#: клубного клэпа. classic — середина впереди (цель низа 0.3–0.45), grunge — бочка и бас вперёд (0.55–0.75). Начальные
-#: числа подобраны по A9-модели трека (офлайн, ``test_style_rock``); на роботе — запись сета (PR S5).
+#: клубного клэпа. classic — середина впереди (цель низа 0.3–0.45), grunge — бочка и бас вперёд (0.55–0.75).
+#: Робот 08.10 (сет 1, classic, 100 BPM, jack_rec 150 с): при бочке/басе −36/−36 и пэде −37 (A9-модель 0.21, поправка
+#: пэда −2 дБ) низ записи 0.79 [0.75..0.87], середина 0.18, LR 1.00 — гитара ``fuzz`` (``amp/6`` в патче #3008) почти
+#: не слышна: оценка рамки пэда (``PAD_FROM_LEAD``) завышает её громкость, а A9-модель занижает низ на ≈ 0.55. До
+#: замера ``fuzz`` в рамке пэда: бочка и бас тише на 6 дБ (classic) / 3–4 дБ от прежних гранжа, пэд — на потолке
+#: ``amp``, порог A9-модели 0.1 (только страховка: модель для рока не откалибрована).
 _ROCK_CLASSIC_LEVEL_DB: Mapping[str, float] = {
-    "kick": -36.0, "bass": -36.0, "pad": -37.0, "lead": -47.0, "clap": -40.0, "hats": -55.0, "toms": -45.0,
+    "kick": -42.0, "bass": -42.0, "pad": -33.0, "lead": -47.0, "clap": -42.0, "hats": -55.0, "toms": -46.0,
     "fx": -44.0}
 _ROCK_GRUNGE_LEVEL_DB: Mapping[str, float] = {
-    "kick": -32.0, "bass": -31.0, "pad": -40.0, "lead": -49.0, "clap": -40.0, "hats": -56.0, "toms": -44.0,
+    "kick": -38.0, "bass": -38.0, "pad": -33.0, "lead": -49.0, "clap": -41.0, "hats": -56.0, "toms": -45.0,
     "fx": -44.0}
 _ROCK_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "classic": GenreWindow((100, 125), ("rock_r", "acoustic", "rock_r2"), _ROCK_LOOKS, ("riff",), ("power_chords",),
-                           _ROCK_CLASSIC_LEVEL_DB, 0.2),
+                           _ROCK_CLASSIC_LEVEL_DB, 0.1),
     "grunge": GenreWindow((110, 130), ("rock_r2", "rock_l", "rock_r"), _GRUNGE_LOOKS, ("riff",), ("power_chords",),
-                          _ROCK_GRUNGE_LEVEL_DB, 0.45),
+                          _ROCK_GRUNGE_LEVEL_DB, 0.1),
 }
 #: Хэты восьмыми (акцент на доле), «толкающие» (акцент на «и»), четверти (райд): удары только на восьмых.
 _ROCK_KITS: Mapping[str, Mapping[str, str]] = {
@@ -1700,7 +1704,7 @@ _ROCK_STYLE = Style(
     # Ширина: эталоны LR 0.76 (classic) / 0.87 (grunge) — гитара двумя голосами с расстройкой (дабл-трек) не шире
     # ±0.3, остальное в центре (удары файлами паков ширины не выражают).
     stereo={"pad": {"pan": 0.3, "detune": PAD_DETUNE}},
-    a9_model_low=0.2,
+    a9_model_low=0.1,
     thin_roles={},
     drum_files={"clap": ("muldjord_snare_40", "muldjord_snare_43"),
                 "hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18", "muldjord_rider_07"),
