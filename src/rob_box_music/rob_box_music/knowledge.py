@@ -220,11 +220,16 @@ class SynthTraits:
 
 
 #: Синт с фильтром, чей срез растёт с высотой ноты и уходит за Найквист 8 кГц (выход 16 кГц): выше этой ноты фильтр
-#: неустойчив. ``cs80lead`` (renardo_lib): ``LPF.ar(osc, fenv·freq·12 + 100)`` — сам SynthDef пишет «keep ffreq below
-#: nyquist»; 7900/12 = 658 Гц ≈ MIDI 76, коридор лида — до 84. Робот 07.10 (ADR-0153 S2, synthwave): оба трека с
-#: ``cs80lead`` — серии цифрового нуля до 6.6 с и доля энергии выше 4.5 кГц до 0.9 (у клуба 0.007); 4 трека без него —
-#: чисто. Клуб (``hard``) и рейв (``dark``) его ещё держат — отдельная карточка.
-NYQUIST_MAX_MIDI: Mapping[str, int] = {"cs80lead": 76}
+#: неустойчив. Значение — старшая нота (MIDI), при которой срез ещё ≤ 7.9 кГц. ``cs80lead`` (renardo_lib):
+#: ``LPF.ar(osc, fenv·freq·12 + 100)`` — сам SynthDef пишет «keep ffreq below nyquist»; 7900/12 = 658 Гц ≈ MIDI 76, коридор
+#: лида — до 84. Робот 07.10 (ADR-0153 S2, synthwave): оба трека с ``cs80lead`` — серии цифрового нуля до 6.6 с и доля
+#: энергии выше 4.5 кГц до 0.9 (у клуба 0.007); 4 трека без него — чисто. Остальные синты палитры с фильтром от ``freq``
+#: (замер по .scd на роботе, #3502): ``brass`` ``Resonz(freq·5)`` → 1580 Гц = MIDI 91; ``supersawlead`` ``baseFreq·4`` → 95;
+#: ``strangerarp`` ``·3.5`` → 100; у остальных (``imperialbrass``/``strangerbrass``/``marchstrings``/``warmpad``/
+#: ``strangerpulsepad``/``retrobass``, ``·2…3.2``) предел ≥ MIDI 106, у ``tb303`` срез ограничен ``clip(…, 7200)`` — вне
+#: коридоров ролей. Одно место применения — ``arrange.mix.role_palette``: синт не берётся в роль, чей коридор
+#: (``Style.registers``) выше предела; никакого ``if style``.
+NYQUIST_MAX_MIDI: Mapping[str, int] = {"cs80lead": 76, "brass": 91, "supersawlead": 95, "strangerarp": 100}
 
 #: Свойства синтов (``core/synth_traits.SYNTH_TRAITS``; без поля ``source`` — оно в старом файле).
 SYNTH_TRAITS: Mapping[str, SynthTraits] = {
@@ -636,7 +641,7 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 _CLUB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     "dark": {"lead": ("blip", "pluck", "keys", "rhpiano"), "bass": ("subbass", "jbass"),
              "pad": ("sinepad", "space", "strangerpulsepad")},
-    "hard": {"lead": ("arpy", "blip", "hoover", "cs80lead"), "bass": ("jbass", "wobblebass", "tb303"),
+    "hard": {"lead": ("arpy", "blip", "hoover", "pluck"), "bass": ("jbass", "wobblebass", "tb303"),
              "pad": ("sinepad", "strings", "strangerpulsepad")},
     "bright": {"lead": ("pluck", "blip", "kalimba", "epiano"), "bass": ("bass", "jbass"),
                "pad": ("strings", "ambi", "sinepad")},
@@ -1061,7 +1066,7 @@ _RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: ADR-0152 §3.1 — не сделан). ``supersawlead`` держит хвост (``SYNTH_TRAITS`` «held») — мотив может смазываться,
 #: проверка на слух.
 _RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("hoover", "rave", "cs80lead"), "bass": ("subbass", "jbass", "tb303"),
+    "dark": {"lead": ("hoover", "rave", "supersawlead"), "bass": ("subbass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["dark"]["pad"]},
     "hard": {"lead": ("hoover", "rave", "supersawlead", "arpy"), "bass": ("wobblebass", "jbass", "tb303"),
              "pad": _CLUB_TIMBRES["hard"]["pad"]},

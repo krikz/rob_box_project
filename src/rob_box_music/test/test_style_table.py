@@ -61,3 +61,26 @@ def test_club_is_the_default_style():
     from rob_box_music.theme import seeded_profile
     plan = seeded_plan(seeded_profile("космос"), 1)
     assert plan.style == plan.profile.style == "club"
+
+
+def test_no_style_family_role_picks_a_synth_above_its_nyquist_limit():
+    """#3502: ``NYQUIST_MAX_MIDI`` применён одним местом (``mix.role_palette``) во всех стилях и семьях: ни лид, ни бас,
+    ни пэд не берут синт, чей фильтр уходит за 8 кГц в коридоре роли; ``cs80lead`` из клуба/рейва выпал по этой таблице."""
+    import random
+    from rob_box_music.arrange import mix
+    for name, style in kn.STYLES.items():
+        for family, roles in style.timbres.items():
+            for role in roles:
+                top = style.registers[role][1]
+                palette = mix.role_palette(style, family, role)
+                assert palette, (name, family, role)
+                assert all(kn.NYQUIST_MAX_MIDI.get(s, 128) >= top for s in palette), (name, family, role, palette)
+                if role in ("lead", "bass"):
+                    for seed in range(20):
+                        picked = mix.role_timbre(style, family, role, (), random.Random(seed))
+                        assert picked in palette, (name, family, role, picked)
+    # сам гард жив: синт с пределом ниже коридора роли отсекается, даже если его вернут в таблицу
+    import dataclasses
+    club = kn.STYLES["club"]
+    bad = dataclasses.replace(club, timbres={"hard": {**club.timbres["hard"], "lead": ("hoover", "cs80lead")}})
+    assert mix.role_palette(bad, "hard", "lead") == ("hoover",)
