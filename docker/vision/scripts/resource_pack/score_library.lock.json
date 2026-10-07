@@ -6,21 +6,21 @@
   "Сам архив и партитуры в git НЕ лежат (ADR-0154 В1, ADR-0155 В1). Новая версия = новый lock-файл."
  ],
  "title": "Библиотека партитур (ADR-0154)",
- "version": "2026.10.07.1",
+ "version": "2026.10.08.1",
  "registry": "http://10.1.1.249:5000",
  "repository": "krikz/rob_box_resources",
- "tag": "score-library-2026.10.07.1",
- "archive": "scores-2026.10.07.1.tar.gz",
- "sha256": "706862adc1eec0d4ee1ba29b79fd78d8e94a6b5d5983e94a90e55ceda3511b0d",
- "size": 52843,
- "scores": 16,
+ "tag": "score-library-2026.10.08.1",
+ "archive": "scores-2026.10.08.1.tar.gz",
+ "sha256": "145f3a4b3f8a22316e5f019cd55fb30eff279ae5036b27d5ee2294498b25aa10",
+ "size": 154377169,
+ "scores": 138627,
  "licenses": {
-  "cc-zero": 12,
+  "cc-zero": 31014,
   "private-local (Shifu only, not PD)": 2,
-  "publicdomain": 2
+  "publicdomain": 107611
  },
  "sources": {
   "local": 2,
-  "pdmx": 14
+  "pdmx": 138625
  }
 }

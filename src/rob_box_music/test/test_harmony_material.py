@@ -70,10 +70,20 @@ def test_transition_table_rows_are_distributions(mode):
 
 @pytest.mark.parametrize("mode", ["major", "minor"])
 def test_dominant_resolves_to_tonic_in_corpus_table(mode):
-    """Свойства корпуса (Н5), а не числа побайтно: из V чаще всего в I; из I — в V и IV (топ-2)."""
+    """Свойства корпуса (Н5), а не числа побайтно: из V чаще всего в I; из I — чаще всего в V, а IV в топ-3
+    (на полном PDMX ii обогнал IV на волосок — 0.194 против 0.186 в major, поэтому «топ-2» было свойством малого корпуса)."""
     nxt = kn.PROGRESSION_TRANSITIONS[mode]["next"]
     assert max(range(7), key=lambda d: nxt[4][d]) == 0
-    assert set(sorted(range(1, 7), key=lambda d: -nxt[0][d])[:2]) == {3, 4}
+    top3 = sorted(range(1, 7), key=lambda d: -nxt[0][d])[:3]
+    assert top3[0] == 4 and 3 in top3
+
+
+@pytest.mark.parametrize("mode", ["major", "minor"])
+def test_piece_starts_on_tonic_far_more_often_than_on_any_other_degree(mode):
+    """Свойство корпуса: пьеса открывается тоникой (PDMX, ADR-0154 PR-6) — с заметным отрывом от второй ступени."""
+    start = kn.PROGRESSION_TRANSITIONS[mode]["start"]
+    ranked = sorted(range(7), key=lambda d: -start[d])
+    assert ranked[0] == 0 and start[0] > 2 * start[ranked[1]]
 
 
 def test_table_has_provenance():

@@ -92,15 +92,15 @@ def corpus_table(rows: List[Dict], mode: str, skip: str = "") -> Dict[str, List]
             "next": [[round(c / sum(row), 4) for c in row] for row in counts]}
 
 
-def write_table(rows: List[Dict], stats_path: str, out: str) -> None:
+def write_table(rows: List[Dict], stats_path: str, out: str, label: str = "") -> None:
     """Выученная таблица — данные пакета (ADR-0154 §3.4). Обучение детерминировано (подсчёт, без ГСЧ); провенанс —
     число партитур, sha256 входа (файлы + лады + последовательности ступеней), дата и команда."""
     corpus = sorted((r["file"], r["mode"], r["degree_seq"]) for r in rows)
     digest = hashlib.sha256(json.dumps(corpus, ensure_ascii=False).encode()).hexdigest()
     table = {
         "provenance": {
-            "corpus": "musetrainer/library (PD) + 2 Interstellar (локально, не в git); "
-                      "docs/music/research_score_material.md",
+            "corpus": label or "musetrainer/library (PD) + 2 Interstellar (локально, не в git); "
+                                "docs/music/research_score_material.md",
             "scores": len(rows), "modes": dict(collections.Counter(r["mode"] for r in rows)),
             "corpus_sha256": digest, "stats": pathlib.Path(stats_path).name, "date": datetime.date.today().isoformat(),
             "script": "scripts/music/research/score_markov_harmony.py --write-table", "smoothing": "+1",
@@ -115,11 +115,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("stats")
     ap.add_argument("--write-table", default="", help="записать таблицу переходов (JSON knowledge) по всему корпусу")
+    ap.add_argument("--corpus-label", default="", help="описание корпуса для провенанса таблицы")
     args = ap.parse_args()
     data = json.load(open(args.stats, encoding="utf-8"))
-    rows = [r for r in data["rows"] if "error" not in r and r.get("our_progression")]
-    if args.write_table:
-        write_table(rows, args.stats, args.write_table)
+    all_rows = [r for r in data["rows"] if "error" not in r and r.get("degree_seq")]
+    if args.write_table:  # таблица — по всему корпусу; ``score_corpus_stats.py`` не считает ``our_progression``
+        write_table(all_rows, args.stats, args.write_table, args.corpus_label)
+    rows = [r for r in all_rows if r.get("our_progression")]
     score = collections.Counter()
     slots = 0
     for r in rows:
@@ -145,7 +147,7 @@ def main() -> int:
     # сводная таблица переходов по корпусу (мажор/минор) — кандидат в knowledge
     for mode in ("major", "minor"):
         counts = collections.Counter()
-        for r in rows:
+        for r in all_rows:
             if r["mode"] != mode:
                 continue
             seq = r["degree_seq"]

@@ -155,6 +155,20 @@ def test_too_short_score_is_refused_with_a_reason(tmp_path):
     assert exc.value.code == "too_short" and "< 4" in exc.value.reason
 
 
+def test_unpitched_percussion_part_is_skipped_not_a_parse_error(tmp_path):
+    """Барабанная партия PDMX (``Unpitched``) раньше роняла файл в ``parse_error`` — теперь это просто не мелодия."""
+    drums = stream.Part()
+    for i in range(8):
+        m = stream.Measure(number=i + 1)
+        for _ in range(4):
+            m.append(note.Unpitched(quarterLength=1.0))
+        drums.append(m)
+    tune = (C_MAJOR_TUNE * 4)[:32]
+    path = _write(tmp_path, "with_drums.musicxml", [_bars(tune, 4, 1.0, "4/4"), drums])
+    material, _info = _build(path)
+    assert len(material.melody) == 32
+
+
 def test_material_survives_json_round_trip(tmp_path):
     material, _info = _build(c_major_44(tmp_path))
     assert mt.from_json(mt.to_json(material)) == material
