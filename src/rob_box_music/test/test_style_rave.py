@@ -15,7 +15,9 @@ import pytest
 from rob_box_music import knowledge as kn
 from rob_box_music import reasoner as rz
 from rob_box_music.arrange import mix
-from rob_box_music.arrange.compose import BASS_GENERATORS, PAD_GENERATORS, _bar_chords, compose, form_spec
+from rob_box_music.arrange.compose import (
+    BASS_GENERATORS, PAD_GENERATORS, _bar_chords, compose, form_spec, theme_form,
+)
 from rob_box_music.diversity import kick_name, track_composition, track_history
 from rob_box_music.model import TrackError, blend_bars, validate
 from rob_box_music.render.renardo import render
@@ -168,8 +170,8 @@ def base_tracks():
 def test_rave_a9_model_holds_on_every_combination(base_tracks, family, figure, pad, bass, bass_figure):
     """A9-модель рейва (порог ``a9_model_low``): семья × рисунок пэда × пэд × бас × рисунок баса × лид семьи."""
     for track, lead in itertools.product(base_tracks, RAVE.timbres[family]["lead"]):
-        spec = form_spec(RAVE, track.history_key.template)
-        chords = track.harmony.progression[track.form.sections[0].name]
+        spec = theme_form(form_spec(RAVE, track.history_key.template), track.hook.theme_bars if track.hook else 0)
+        chords = track.harmony.progression
         parts = {**track.parts, "lead": replace(track.parts["lead"], synth_or_sample=lead),
                  "pad": PAD_GENERATORS[figure](RAVE, track.key, _bar_chords(spec, "pad", chords), pad,
                                                track.parts["pad"].register),

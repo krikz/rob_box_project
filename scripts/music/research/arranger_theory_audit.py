@@ -52,6 +52,9 @@ from rob_box_music.theme import seeded_profile  # noqa: E402
 
 #: Секция темы целиком (ADR-0154 PR-7, #3523); до #3523 константы нет — первый дроп (скрипт сравнивает и старый код).
 THEME_SECTION = getattr(kn, "THEME_SECTION", "drop")
+#: #3529 (Ф1): ``Harmony.progression`` — аккорды секции ПО ТАКТАМ (гармония под мелодию каждой секции), а не петля по
+#: 2 такта. Старый формат читается как раньше.
+PER_BAR = hasattr(kn, "HOOK_HARMONY")
 ARCHIVE = REPO / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "data" / "rtttl_melodies.jsonl.gz"
 STYLES = ("club", "rave", "synthwave", "chiptune", "breaks", "dnb")
 NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -159,8 +162,9 @@ def analyze(track: Track, plan, tno: int, materials: Mapping[str, Any],
             refs: Optional[Mapping[str, Sequence[str]]] = None) -> Dict[str, Any]:
     style = plan.table
     key = track.key
-    scale = set(kn.scale_pitch_classes(key.root, key.mode))
     starts = section_starts(track)
+    if PER_BAR:
+        return analyze_per_bar(track, plan, tno, materials, refs)
     chords, theme_chords = loop_and_theme(track)
     loop_bars = len(chords) * 2
     span = len(theme_chords) * 2  # тактов темы целиком в секции ``knowledge.THEME_SECTION`` (ADR-0154 PR-7)
@@ -176,18 +180,49 @@ def analyze(track: Track, plan, tno: int, materials: Mapping[str, Any],
             c = chords[(bar % loop_bars) // 2]
         return c, harmony.chord_pcs(style, key, c.degree)
 
+    every = list(theme_chords) + list(chords)
+    pairs = [(chords[i - 1], chords[i]) for i in range(len(chords))] + list(zip(theme_chords, theme_chords[1:]))
+    return analyze_body(track, plan, tno, materials, refs, chord_at, span, loop_bars, every, pairs,
+                        [c.degree for c in chords])
+
+
+def analyze_per_bar(track: Track, plan, tno: int, materials, refs) -> Dict[str, Any]:
+    """Новый формат: аккорд такта — ``progression[секция][такт - начало]``; «аккорды» трека для качества и
+    голосоведения — цепочка тактов формы без повторов подряд; петля — прогрессия истории трека."""
+    style, key = plan.table, track.key
+    starts = section_starts(track)
+    prog = track.harmony.progression
+
+    def chord_at(bar: int):
+        name, _roles, first = section_of(starts, bar)
+        c = prog[name][bar - first]
+        return c, harmony.chord_pcs(style, key, c.degree)
+
+    seq = [chord_at(b)[0] for b in range(track.form.bars_total)]
+    every = [c for i, c in enumerate(seq) if i == 0 or c != seq[i - 1]]
+    pairs = list(zip(every, every[1:])) or [(every[0], every[0])]  # весь трек на одном аккорде
+    loop = [int(d) for d in track.history_key.progression.split("-")]
+    span = track.hook.theme_bars if track.hook else 0
+    return analyze_body(track, plan, tno, materials, refs, chord_at, span,
+                        len(loop) * kn.HOOK_HARMONY.slot_bars, every, pairs, loop)
+
+
+def analyze_body(track: Track, plan, tno: int, materials, refs, chord_at, span: int, loop_bars: int, every, pairs,
+                 progression) -> Dict[str, Any]:
+    style = plan.table
+    key = track.key
+    scale = set(kn.scale_pitch_classes(key.root, key.mode))
+    starts = section_starts(track)
     ex: Dict[str, List[str]] = collections.defaultdict(list)
     m: Dict[str, Any] = {"theme_bars": span}
 
     # ── лад, аккорды, голосоведение пэда (петля и аккорды темы)
-    every = list(theme_chords) + list(chords)
     quals = [triad_quality(harmony.chord_pcs(style, key, c.degree)) for c in every]
     m["chord_qualities"] = quals
     m["dim_aug_chords"] = sum(q in ("dim", "aug") for q in quals)
     if m["dim_aug_chords"]:
         bad = [(c.degree, q, [nm(v) for v in c.voicing]) for c, q in zip(every, quals) if q in ("dim", "aug")]
         ex["dim_aug"].append(f"{key.mode} {NAMES[key.root]} ступени {[c.degree for c in every]}: {bad[:2]}")
-    pairs = [(chords[i - 1], chords[i]) for i in range(len(chords))] + list(zip(theme_chords, theme_chords[1:]))
     leaps = [max(abs(x - y) for x, y in zip(sorted(a.voicing), sorted(b.voicing))) for a, b in pairs]
     m["pad_max_leap"] = max(leaps)
     pad_moves = [sum(abs(x - y) for x, y in zip(sorted(a.voicing), sorted(b.voicing))) for a, b in pairs]
@@ -367,7 +402,7 @@ def analyze(track: Track, plan, tno: int, materials: Mapping[str, Any],
     m["mode_outside_style"] = key.mode not in kn.STYLES[plan.style].modes
     m["bpm"], m["genre"], m["swing"] = track.bpm, plan.genre, plan.swing
     m["pad_figure"], m["bass_figure"] = track.history_key.pad_figure, track.history_key.bass_figure
-    m["progression"] = [c.degree for c in chords]
+    m["progression"] = list(progression)
 
     # ── сильные доли материала после перевода (#3520)
     if src == "material":
@@ -821,13 +856,16 @@ def run_live(args) -> int:
 
 def run_weights(args) -> int:
     """Оценка фикса Ф1 без правки кода: ``harmony.viterbi`` на нотах первого дропа RTTTL-треков при разном весе
-    мелодии (``VITERBI_MELODY_WEIGHT``). С ADR-0154 PR-7 (#3523) от веса зависит и сама компоновка темы целиком
+    мелодии (``VITERBI_MELODY_WEIGHT``; с #3529 — ``knowledge.HOOK_HARMONY.melody_weight``). С ADR-0154 PR-7 (#3523) от веса зависит и сама компоновка темы целиком
     (``harmony.melody_progression``) — «как скомпонован» тоже печатается."""
     melodies = load_melodies()
-    saved = harmony.VITERBI_MELODY_WEIGHT
+    saved = harmony.VITERBI_MELODY_WEIGHT if not PER_BAR else kn.HOOK_HARMONY
     try:
         for w in args.weights:
-            harmony.VITERBI_MELODY_WEIGHT = w
+            if PER_BAR:
+                kn.HOOK_HARMONY = dataclasses.replace(saved, melody_weight=w)
+            else:
+                harmony.VITERBI_MELODY_WEIGHT = w
             v1, v2, got = [], [], []
             for style in args.styles:
                 for _theme, (text, found, parts, use_mat) in THEMES.items():
@@ -848,7 +886,10 @@ def run_weights(args) -> int:
             print(f"w={w}: дроп как скомпонован {statistics.mean(got):.2f}; витерби 1 такт {statistics.mean(v1):.2f}, "
                   f"2 такта {statistics.mean(v2):.2f}, n={len(v1)}")
     finally:
-        harmony.VITERBI_MELODY_WEIGHT = saved
+        if PER_BAR:
+            kn.HOOK_HARMONY = saved
+        else:
+            harmony.VITERBI_MELODY_WEIGHT = saved
     return 0
 
 

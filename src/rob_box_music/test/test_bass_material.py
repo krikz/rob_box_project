@@ -24,7 +24,8 @@ from test_harmony_material import _plan, synthetic
 STYLE = kn.STYLES[kn.DEFAULT_STYLE]
 REGISTER = STYLE.registers["bass"]
 PHRASE = mt.Phrase(0, 8, "new", 1)
-CHORD_BEATS = cp.CHORD_BARS * BEATS_PER_BAR
+CHORD_BARS = 2  # слот синтетики — 2 такта (по такту на ступень, два такта на аккорд)
+CHORD_BEATS = CHORD_BARS * BEATS_PER_BAR
 LOOP = (0, 5, 3, 4)  # I vi IV V — синтетика «по такту на ступень, два такта на аккорд»
 ROOTS = {0: 36, 5: 45, 3: 41, 4: 43}  # прима ступени до мажора в басу автора
 
@@ -43,7 +44,7 @@ def tones(m: mt.ScoreMaterial, degrees=LOOP, scale=1.0):
     return bass.material_tones(STYLE, m, PHRASE, degrees, CHORD_BEATS, scale)
 
 
-BARS = tuple(d for d in LOOP for _ in range(cp.CHORD_BARS))
+BARS = tuple(d for d in LOOP for _ in range(CHORD_BARS))
 
 
 # ── таблица (данные knowledge, выучены на корпусе) ──────────────────────────────────────────────────────────────
@@ -220,23 +221,26 @@ def test_no_answer_without_a_new_next_phrase(degrees):
 
 # ── compose: бас материала в треке ──────────────────────────────────────────────────────────────────────────────
 
-def _theme_bars(track) -> range:
-    """Такты формы секции темы целиком (``knowledge.THEME_SECTION``, ADR-0154 PR-7)."""
-    start = 0
+def _loop_bars(track) -> set:
+    """Такты формы, где звучит петля хука (#3529): секции без лида и секция темы после темы целиком (хук по кругу);
+    у секций развития (build — педаль, break, ответ drop2) гармония своя, под их мелодию."""
+    out, start = set(), 0
+    span = track.hook.theme_bars if track.hook else 0
     for sec in track.form.sections:
-        if sec.name == kn.THEME_SECTION:
-            return range(start, start + sec.bars)
+        if "lead" not in sec.roles:
+            out |= set(range(start, start + sec.bars))
+        elif sec.name == kn.THEME_SECTION:
+            out |= set(range(start + span, start + sec.bars))
         start += sec.bars
-    return range(0)
+    return out
 
 
 def _bass_by_loop_bar(track):
     out = {}
-    theme = _theme_bars(track)
+    loop = _loop_bars(track)
     for e in track.parts["bass"].pitches:
-        if int(e.beat // BEATS_PER_BAR) in theme:
-            continue
-        out.setdefault(int(e.beat // BEATS_PER_BAR) % 8, []).append(e)
+        if int(e.beat // BEATS_PER_BAR) in loop:
+            out.setdefault(int(e.beat // BEATS_PER_BAR) % 8, []).append(e)
     return out
 
 
@@ -247,7 +251,7 @@ def test_compose_puts_the_author_inversion_and_approach_into_the_bass():
     m = with_bass(synthetic(ANSWERED), notes)
     track = cp.compose(_plan(m.material_id), 1, materials={m.material_id: m})
     validate(track)
-    assert track.history_key.progression == "0-5-3-4"
+    assert track.history_key.progression == "-".join(map(str, BARS))  # аккорд на такт (#3529)
     by_bar = _bass_by_loop_bar(track)
     third = harmony.chord_pcs(STYLE, track.key, 5)[1]
     assert by_bar[2][0].midi % 12 == third
@@ -257,8 +261,8 @@ def test_compose_puts_the_author_inversion_and_approach_into_the_bass():
     bars = {}
     for e in track.parts["bass"].pitches:
         bars.setdefault(int(e.beat // BEATS_PER_BAR), []).append(e)
-    theme = _theme_bars(track)  # в теме целиком (PR-7) — бас темы, петля по такту формы — вне её
-    joints = [b for b in bars if b % 8 == 3 and b + 1 in bars and b not in theme]
+    loop = _loop_bars(track)  # петля хука по такту формы; тема целиком и секции развития — своя гармония
+    joints = [b for b in bars if b % 8 == 3 and b + 1 in bars and {b, b + 1} <= loop]
     assert joints and all(bars[b][-1].midi == bars[b + 1][0].midi + 1 for b in joints)  # подход сверху, как у автора
     assert track.hook.answer  # drop2 — ритм хука с контуром следующей фразы
 

@@ -36,6 +36,7 @@ from . import harmony, rhythm
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 STEPS_PER_BEAT = STEPS_PER_BAR // BEATS_PER_BAR
+TRITONE = 6  # полутонов: уменьшённая квинта — басу не годится
 
 
 class BassTone(NamedTuple):
@@ -56,11 +57,12 @@ Tones = Optional[Mapping[int, BassTone]]
 
 def bar_notes(root_pc: int, fifth_pc: int, register: Tuple[int, int], count: int = 4,
               fifth_last: bool = True) -> Tuple[int, ...]:
-    """``count`` нот такта: тоника, последняя — квинта аккорда (``fifth_last``), ближайшая к тонике внутри регистра."""
+    """``count`` нот такта: тоника, последняя — квинта аккорда (``fifth_last``), ближайшая к тонике внутри регистра.
+    Квинта только чистая: у уменьшённого трезвучия третий тон — тритон от примы, такт стоит на приме (аудит П6)."""
     root = next(m for m in range(register[0], register[1] + 1) if m % 12 == root_pc)
     up = root + (fifth_pc - root) % 12
     fifth = up if up <= register[1] else up - 12
-    if fifth < register[0] or not fifth_last:
+    if fifth < register[0] or not fifth_last or (fifth_pc - root_pc) % 12 == TRITONE:
         fifth = root
     return (root,) * (count - 1) + (fifth,)
 
@@ -82,6 +84,8 @@ def figure_bass(figure: kn.BassFigure, bars: Sequence[Tuple[int, Tuple[int, ...]
     firsts: Dict[int, int] = {}
     for bar, pcs in bars:
         anchor = (tones or {}).get(bar, ROOT_TONE).anchor
+        if anchor == ANCHORS["fifth"] and (pcs[2] - pcs[0]) % 12 == TRITONE:
+            anchor = ANCHORS["root"]  # квинта ум. трезвучия — тритон от примы: бас стоит на приме (аудит П6)
         notes = bar_notes(pcs[anchor], pcs[0] if anchor == ANCHORS["fifth"] else pcs[2], register, len(steps),
                           figure.fifth_last)
         firsts[bar] = len(out)
