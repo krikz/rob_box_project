@@ -11,6 +11,7 @@ from dataclasses import replace
 
 import pytest
 
+from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
 from rob_box_music.arrange.compose import BASS_GENERATORS, compose
@@ -30,23 +31,24 @@ TRACKS = 3
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 
 
+def _theme_tracks(theme):
+    profile = seeded_profile(theme)
+    tracks = []
+    for seed in SEEDS:
+        # семья темы одна на все сиды (темы вне таблицы выбирают её по сиду, #3460 — отдельный тест)
+        plan = replace(seeded_plan(profile, seed, set_id=f"lb{seed}"), timbre=kn.family_of(CLUB, profile.row))
+        history: list = []
+        for no in range(1, TRACKS + 1):
+            track = compose(plan, no, history=history)
+            history.insert(0, track_history(track, plan.set_id))
+            tracks.append(track)
+    return tracks
+
+
 @pytest.fixture(scope="module")
 def sets():
-    """{тема: [треки 30 сетов по 3 трека, с историей сета]}."""
-    out = {}
-    for theme in THEMES:
-        profile = seeded_profile(theme)
-        tracks = []
-        for seed in SEEDS:
-            # семья темы одна на все сиды (темы вне таблицы выбирают её по сиду, #3460 — отдельный тест)
-            plan = replace(seeded_plan(profile, seed, set_id=f"lb{seed}"), timbre=kn.family_of(CLUB, profile.row))
-            history: list = []
-            for no in range(1, TRACKS + 1):
-                track = compose(plan, no, history=history)
-                history.insert(0, track_history(track, plan.set_id))
-                tracks.append(track)
-        out[theme] = tracks
-    return out
+    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; темы считаются параллельно (#3504)."""
+    return dict(zip(THEMES, pmap(_theme_tracks, THEMES)))
 
 
 def _family(theme):
