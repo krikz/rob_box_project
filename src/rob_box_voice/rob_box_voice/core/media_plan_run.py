@@ -17,6 +17,8 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from rob_box_music.dj_line import SET_NOT_FOUND
+
 from .media_phrases import dj_started_text
 from .media_router import DJ_SET_TOOL, NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
@@ -71,6 +73,8 @@ async def run_media_plan(
             contents[call.name] = content
         else:
             ok = False
+            at = (content or "").find(SET_NOT_FOUND)  # отказ сета «названное не нашлось» — фраза кода (#3493)
+            phrase = phrase or (content[at:].strip() if at >= 0 else "")
     if ok and plan.confirm_started:
         ok, phrase = await _confirm_started(plan, contents, events, log)
     return ok, phrase or (plan.say_ok if ok else plan.say_fail), done

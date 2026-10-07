@@ -40,7 +40,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
-from rob_box_music.dj_line import now_playing_text, persona_title
+from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
@@ -54,6 +54,7 @@ from .score_library import PlanMaterials, ScoreLibrary
 from .search import ThemeHits, score_search, theme_search
 from .session import SetMemory, SetSession, plan_source
 from .theme_grounding import grounded_theme
+from .theme_links import ThemeLinks
 
 _LOG = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
 #: Код отказа ``request_music``: сет запущен в этом же ходе и играет — заказ его не снимает. Сторона голоса
 #: строит по нему фразу (``rob_box_voice.core.media_phrases.SET_PLAYING_REASON``, равенство держит тест).
 SET_PLAYING = "set_playing"
+#: Код отказа ``dj_set``: тема называет конкретные вещи, и ни одна не нашлась (#3493).
+NOT_FOUND = "not_found"
 
 
 def set_style(style: Optional[str], theme: str) -> str:
@@ -105,8 +108,9 @@ def library_melodies(library_factory: Callable[[], Any]) -> MelodyLookup:
     return lookup
 
 
-def theme_finder(library_factory: Callable[[], Any]) -> ThemeFinder:
-    """``тема -> ThemeHits`` по её словам (``engine.search.theme_search``); библиотека — при первой теме."""
+def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None) -> ThemeFinder:
+    """``тема -> ThemeHits`` по её словам (``engine.search.theme_search``); библиотека — при первой теме. Часть без
+    находок — через связи реестра и проверенные каталогом строки поиска LLM (``engine.theme_links``, #3493)."""
     box: Dict[str, Any] = {}
 
     def find(theme: str) -> ThemeHits:
@@ -114,7 +118,14 @@ def theme_finder(library_factory: Callable[[], Any]) -> ThemeFinder:
             return ThemeHits()
         if "lib" not in box:
             box["lib"] = library_factory()
-        return theme_search(box["lib"], theme)
+        hits = theme_search(box["lib"], theme)
+        if links is None:
+            return hits
+        try:
+            return links.expand(box["lib"], theme, hits)
+        except Exception as exc:  # noqa: BLE001 — прямые находки не теряются из-за хранилища связей
+            _LOG.warning(f"⚠️ [dj_set] связи темы «{theme}» упали: {type(exc).__name__}: {exc}")
+            return hits
 
     return find
 
@@ -159,6 +170,20 @@ def confirmed(result: Dict[str, Any], confirm: Optional[Confirm]) -> Dict[str, A
     return {**result, "started": True}
 
 
+def theme_links(node: Any, reasoner: SetReasoner) -> ThemeLinks:
+    """Связи темы (#3493): LLM — та же, что у ризонера сета (её breaker); ризонер выключен — только хранилище."""
+    return ThemeLinks(ask=reasoner.ask if reasoner.enabled else None,
+                      logger=node.get_logger() if node is not None else None)
+
+
+def not_found(hits: ThemeHits, materials: Iterable[str], theme: str = "", log: Any = _LOG) -> Tuple[str, ...]:
+    """Названное в теме, из чего не нашлось ничего (ни мелодии, ни партитуры): сет не стартует пулом (#3493).
+    Часть темы-перечисления без мелодий — честно в лог, не подмена (I16)."""
+    if hits.missing:
+        log.info(f"🎛️ [dj_set] тема «{theme}»: не найдено: {', '.join(f'«{p}»' for p in hits.missing)}")
+    return hits.missing if hits.named and not hits.names and not tuple(materials) else ()
+
+
 def music_busy(owner: Any, dj: Any) -> bool:
     """Музыка движка идёт: дека играет (``PlayerOwner.is_playing``) или идёт сет (``DjSetTool.running``) — между
     ``started`` треков сета дека может выглядеть пустой (06.10 15:30 UTC: мягкий cleanup погасил идущий сет)."""
@@ -169,6 +194,8 @@ def music_busy(owner: Any, dj: Any) -> bool:
 def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
     if data.get("ok"):
         return MCPToolResult(success=True, data=data)
+    if data.get("reason") == NOT_FOUND and data.get("message"):  # отказ сета: фраза кода, её скажет голос
+        return MCPToolResult(success=False, data=data, error=data["message"])
     return MCPToolResult(success=False, data=data, error=f"{what}: {data.get('reason')}")
 
 
@@ -187,7 +214,8 @@ class DjSetTool(MCPTool):
         self._speak = speak
         library = _shared(_rtttl_library)
         self._melodies = melodies or library_melodies(library)
-        self._find = finder or theme_finder(library)
+        self._find = finder or theme_finder(library, theme_links(node, self._reasoner))
+        self._not_found: Tuple[str, ...] = ()  # названное в теме, из чего не нашлось ничего: сет не стартует (#3493)
         self._scores = scores if scores is not None else ScoreLibrary()
         self._titles = _with_scores(titles or library_titles(library), self._scores)
         self._missing: Tuple[str, ...] = ()  # части темы-перечисления без мелодий (последний сет): их не называть
@@ -309,9 +337,8 @@ class DjSetTool(MCPTool):
         log.info(f"🎛️ [dj_set] тема «{theme}»: style={profile.style} source={profile.source} row={profile.row} "
                  f"хуки={list(profile.hook_ids)} материалы={list(materials)} "
                  f"(партитуры: {self._scores.state}; поиск {search_ms:.1f} мс)")
-        if hits.missing:  # часть темы-перечисления без мелодий: честно в лог, не подмена (I16)
-            log.info(f"🎛️ [dj_set] тема «{theme}»: не найдено: {', '.join(f'«{p}»' for p in hits.missing)}")
         self._missing = hits.missing
+        self._not_found = not_found(hits, materials, theme, log)
         return profile
 
     def plan_materials(self, plan: Any, logger: Any = None) -> Mapping[str, Any]:
@@ -342,10 +369,13 @@ class DjSetTool(MCPTool):
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
                tracks: Optional[int] = None) -> Dict[str, Any]:
         length, why = self.set_length(tracks)
+        profile = self.theme_profile(theme, style)
+        if self._not_found:  # названное не нашлось — не пул по хешу темы вместо него; идущий сет не трогаем
+            return {"ok": False, "reason": NOT_FOUND, "theme": theme, "missing": list(self._not_found),
+                    "message": set_not_found_text(self._not_found)}
         self._session_turn = None
         if self._session is not None:
             self._session.stop("new_set")
-        profile = self.theme_profile(theme, style)
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
         plan = seeded_plan(profile, set_seed, n_tracks=length, set_id=set_id,  # темп и окно — на сет
@@ -515,5 +545,6 @@ class RequestMusicTool(MCPTool):
                 "melody_id": pick.melody_id, "bpm": pick.bpm, "key": pick.key}
 
 
-__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "SET_PLAYING", "STYLE_CHOICES", "Confirm", "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed",
-           "library_melodies", "music_busy", "set_style", "theme_finder", "tool_result"]
+__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm", "DjSetTool",
+           "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed", "library_melodies", "music_busy", "not_found",
+           "set_style", "theme_finder", "theme_links", "tool_result"]

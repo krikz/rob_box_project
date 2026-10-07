@@ -145,7 +145,8 @@ class SetReasoner:
             return "late", None, f"нет ответа за {deadline_s:g} с"
         return "ok", response, ""
 
-    def ask(self, system: str, user: str, tool: Dict[str, Any], deadline_s: float) -> Tuple[str, Any, str]:
+    def ask(self, system: str, user: str, tool: Dict[str, Any], deadline_s: float,
+            max_tokens: int = 256) -> Tuple[str, Any, str]:
         """Синхронный вызов из фонового потока (реплика перехода, ``engine.dj_lines``): тот же провайдер, клиент,
         дедлайн-механика и circuit breaker, что у плана сета. Исключения наружу не выходят."""
         if not self.enabled:
@@ -155,7 +156,7 @@ class SetReasoner:
         start = self._clock()
         try:
             outcome, response, detail = asyncio.run_coroutine_threadsafe(
-                self._complete(system, user, tool, deadline_s, 256), self._event_loop()).result()
+                self._complete(system, user, tool, deadline_s, max_tokens), self._event_loop()).result()
         except Exception as exc:  # noqa: BLE001 — реплика не роняет процесс плеера
             outcome, response, detail = "error", None, f"{type(exc).__name__}: {exc}"
         self._judge_provider(outcome, self._clock() - start)

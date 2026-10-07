@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import functools
 import gzip
 import json
 import math
@@ -144,6 +145,7 @@ def _row_rtttl(row: sqlite3.Row) -> str:
     return row["rtttl"] if "rtttl" in row.keys() else ""
 
 
+@functools.lru_cache(maxsize=16384)  # чистая функция строки; поиск темы считает её для тысяч кандидатов (#3493)
 def _melody_quality(rtttl: str) -> float:
     """Эвристическое качество мелодии: длина, разнообразие, повтор, октава.
 
@@ -178,6 +180,11 @@ def _melody_quality(rtttl: str) -> float:
     if default_octave >= 7 or default_octave <= 2:
         score -= abs(default_octave - 5) * 2.0
     return score
+
+
+def db_path_of(library: Any) -> Optional[str]:
+    """Файл SQLite библиотеки: в нём же реестр произведений и связи тем (``rob_box_music.works``, #3493)."""
+    return getattr(library, "_db_path", None)
 
 
 def melody_quality(rtttl: str) -> float:
