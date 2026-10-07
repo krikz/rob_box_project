@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
 from rob_box_music.arrange import harmony
 from rob_box_music.arrange import hook as hooks
