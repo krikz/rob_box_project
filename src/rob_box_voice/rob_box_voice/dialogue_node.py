@@ -107,6 +107,7 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
     parse_music_state,
 )
+from rob_box_voice.core.coordinator_address import is_coordinator_address
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
@@ -2861,6 +2862,11 @@ class DialogueNode(Node):
         if not raw_text:
             return
         text, tg_chat_id = parse_tg_prefix(raw_text)
+        if tg_chat_id is not None and is_coordinator_address(text):
+            # Issue #3518 -- «Клод …» из Telegram адресовано координатору,
+            # не роботу: строку читает монитор из лога command_node.
+            self.get_logger().info("📨 TG-реплика координатору «Клод» — диалог пропускает")
+            return
         # Issue #2829/#2862 (ADR-0131) -- id забирается по тексту ДО
         # SttAdmission: если фраза не дойдёт до _dispatch_cleaned (backlog,
         # silenced, rejected), её id НЕ должен утечь в следующую фразу.
