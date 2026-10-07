@@ -1199,6 +1199,10 @@ STYLE_WORDS: Mapping[str, str] = {
     "синтвейв": "synthwave", "синтвэйв": "synthwave", "synthwave": "synthwave", "ретровейв": "synthwave",
     "ретровэйв": "synthwave", "retrowave": "synthwave", "аутран": "synthwave", "outrun": "synthwave",
     "чиптюн": "chiptune", "chiptune": "chiptune", "восьмибит": "chiptune",
+    # #3508: клуб — стиль по умолчанию, но тема со своей строкой (киберпанк → synthwave) без слова его не выберет.
+    # Основы «клубны/клубна/клубно/клубну», не «клуб»: «клубника» не стиль. «хаус»/«house»/«техно» не берём: «техно» — основа
+    # темы cyber, «хаус» — «Доктор Хаус»; окна club/deep/breaks (ADR-0152) стиль не выбирают — окно внутри club.
+    "клубны": "club", "клубна": "club", "клубно": "club", "клубну": "club", "клубняк": "club", "club": "club",
 }
 #: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
 DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))
