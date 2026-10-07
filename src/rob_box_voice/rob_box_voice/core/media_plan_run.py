@@ -19,7 +19,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .media_router import NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
+from .music_turn import next_turn_id
 from .named_play import tool_data
+from .set_length_words import heard_set_length
 
 #: Ждать ``started`` после ответа тула: A2 p100 ≤ 6 с (ADR-0149 §7.2).
 STARTED_WAIT_S = 6.0
@@ -28,13 +30,38 @@ STARTED_WAIT_S = 6.0
 CallTool = Callable[[Any], Awaitable[Tuple[bool, str]]]
 
 
+def command_turn_context(plan: MediaPlan, text: str) -> Dict[str, Any]:
+    """Контекст хода команды для скрытых аргументов MCP-тулов (``DialogueNode._mcp_turn_context``): атрибут ноды →
+    значение.
+
+    Команда, заменившая ход LLM (``cancel_inflight``), — свой ход: новый ``turn_id``, реплика ``heard_text`` (тему
+    сета из неё выделяет ``dj_set``) и длина сета из её слов (``heard_tracks``). Без этого тулы роутера получали
+    контекст ПРОШЛОГО хода LLM: тема чужой реплики подменяла тему команды, её длина — длину. Команда поверх хода
+    (громкость) — ``{}``: идущий ход LLM не трогаем.
+    """
+    if not plan.cancel_inflight:
+        return {}
+    return {
+        "_turn_id": next_turn_id(None),
+        "_turn_heard_text": text,
+        "_turn_set_tracks": heard_set_length(text),
+    }
+
+
 async def run_media_plan(
     plan: MediaPlan,
     call_tool: CallTool,
     events: Optional[MusicEventLog] = None,
     log: Callable[[str], None] = lambda _msg: None,
+    begin_turn: Optional[Callable[[], None]] = None,
 ) -> Tuple[bool, str, List[str]]:
-    """Тулы плана по порядку → ``(успех, фраза, исполненные тулы)``."""
+    """Тулы плана по порядку → ``(успех, фраза, исполненные тулы)``.
+
+    ``begin_turn`` — граница хода исполнителя тулов (``SchedulerToolExecutor.begin_turn``: ``MusicTurn`` и лимит
+    трека): зовётся, только если команда заменила ход LLM (:func:`command_turn_context`).
+    """
+    if plan.cancel_inflight and callable(begin_turn):
+        begin_turn()
     ok, phrase, done, contents = True, "", [], {}
     for call in plan.tool_calls:
         call_ok, content = await call_tool(call)
@@ -66,4 +93,4 @@ async def _confirm_started(
     return False, NOT_STARTED_TEXT
 
 
-__all__ = ["STARTED_WAIT_S", "run_media_plan"]
+__all__ = ["STARTED_WAIT_S", "command_turn_context", "run_media_plan"]

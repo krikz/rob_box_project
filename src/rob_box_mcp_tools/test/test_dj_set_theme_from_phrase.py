@@ -67,6 +67,26 @@ def test_dj_set_starts_with_the_current_phrase_theme_and_logs_the_swap(caplog):
     assert any("[dj_set] тема LLM не из текущей реплики → из реплики" in r.getMessage() for r in caplog.records)
 
 
+#: Замер 06.10 19:08 UTC — та же фраза без запятой (STT); её запускает роутер медиакоманд без LLM.
+LIVE_1908 = ("Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки "
+             "замути сэт на 30 минут")
+
+
+def test_router_command_gets_the_same_theme_and_length_as_the_llm_path():
+    """Роутер (``rob_box_voice.core.media_router``) шлёт ``dj_set(start, persona, tracks=24)`` без темы, реплика —
+    в ``heard_text``; путь LLM — с темой из истории. Тема и длина у обоих — из слов реплики, одной функцией."""
+    command = {"action": "start", "persona": "диджей 8битный", "tracks": 24}
+    dj, _req = _tools(_rig())
+    by_code = dj.execute(**command, heard_tracks=24, heard_text=LIVE_1908).data
+    dj, _req = _tools(_rig())
+    by_llm = dj.execute(action="start", theme=OLD_THEME, persona="диджей 8битный", heard_tracks=24,
+                        heard_text=LIVE_1908).data
+    assert by_code["theme"] == by_llm["theme"] == heard_theme(LIVE_1908)
+    assert "денди" in by_code["theme"] and "классической" in by_code["theme"]
+    assert genre_of(by_code["theme"]) == "classical"
+    assert by_code["tracks"] == by_llm["tracks"] == 24
+
+
 def test_dj_set_keeps_paraphrase_and_old_calls_without_context():
     dj, _req = _tools(_rig())
     assert dj.execute(action="start", theme=PARAPHRASE, heard_text=PHRASE).data["theme"] == PARAPHRASE
