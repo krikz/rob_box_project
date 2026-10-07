@@ -130,3 +130,12 @@ def test_started_phrase_names_the_theme_dj_set_actually_took():
     assert _started_phrase(_route(ATLAS), {}) == "Я диджей Атлас, включаю сет."
     themed = _route("включи диджей сет на тему космос")
     assert _started_phrase(themed, {"theme": "что-то другое"}) == "Включаю диджей-сет. Тема — космос."
+
+
+def test_named_play_plan_gets_its_own_turn_context_3525():
+    """Заказ по имени (cancel_inflight=False до находки) — своя реплика: новый turn_id, как у команды роутера."""
+    plan = _route("Робот, поставь к Элизе")
+    assert plan is not None and plan.play_name and not plan.cancel_inflight
+    a, b = command_turn_context(plan, "x"), command_turn_context(plan, "x")
+    assert a["_turn_id"] and a["_turn_id"] != b["_turn_id"]
+    assert a["_turn_heard_text"] == "x"

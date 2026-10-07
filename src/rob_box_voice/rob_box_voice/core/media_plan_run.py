@@ -41,8 +41,12 @@ def command_turn_context(plan: MediaPlan, text: str) -> Dict[str, Any]:
     сета из неё выделяет ``dj_set``) и длина сета из её слов (``heard_tracks``). Без этого тулы роутера получали
     контекст ПРОШЛОГО хода LLM: тема чужой реплики подменяла тему команды, её длина — длину. Команда поверх хода
     (громкость) — ``{}``: идущий ход LLM не трогаем.
+
+    Заказ по имени (``play_name``, #3176) — тоже своя реплика, хотя ``cancel_inflight`` у него ``False`` до находки
+    мелодии: без нового ``turn_id`` он нёс id прошлой команды, и ``request_music`` счёл сет прошлой реплики «своим
+    ходом» (#3525).
     """
-    if not plan.cancel_inflight:
+    if not (plan.cancel_inflight or plan.play_name):
         return {}
     return {
         "_turn_id": next_turn_id(None),
