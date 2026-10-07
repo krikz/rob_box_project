@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import random
-from typing import List, Mapping, Sequence, Tuple
+from typing import List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..diversity import recent_values, weighted_pick
@@ -82,11 +82,53 @@ def perc_part(style: kn.Style, names: Sequence[str], kit: str, rng: random.Rando
     return Part("sample", level, grid, None, _UNLEVELED, (0, 0), pool=tuple(sequence))
 
 
-def loop_part(name: str) -> Part:
-    """Брейк-луп нарезкой: кусок — восьмая, все куски файла подряд (длина — ``SampleInfo.beats``)."""
+def loop_part(name: str, rng: Optional[random.Random] = None) -> Part:
+    """Брейк-луп нарезкой: кусок — восьмая, все куски файла подряд (длина — ``SampleInfo.beats``). ``rng`` не нужен
+    (порядок кусков — файла): подпись генераторов лупа ``arrange.compose.LOOP_GENERATORS``."""
     span = int(kn.SAMPLE_CATALOG[name].beats or 4) * 4
     length = max(span, STEPS_PER_BAR)
     return Part("loop", name, rhythm.grid(range(0, length, CHOP_STEPS), length, accents={}), None, _UNLEVELED, (0, 0))
+
+
+#: Нарезка брейка (ADR-0153 S3): цикл в тактах (делит все формы 32/48/64), кусок по умолчанию — восьмая (2 шага 16-х),
+#: доля восьмых, заменённых чужим куском брейка, доля восьмых, разбитых на две 16-е «заиканием» (один кусок дважды),
+#: и те же доли в последнем такте цикла (сбивка перед новым циклом). Первая восьмая цикла — всегда начало брейка
+#: (бочка амена на доле). События — восьмые и 16-е: при 172 BPM ≈ 6–7 запусков файла в секунду (у клуба брейк-луп
+#: восьмыми при 133 — 4.4 в секунду, и только во втором дропе).
+BREAK_CYCLE_BARS = 4
+BREAK_SWAP = 0.25
+BREAK_STUTTER = 0.08
+BREAK_FILL_SWAP = 0.5
+BREAK_FILL_STUTTER = 0.35
+
+
+def breakbeat_chop(name: str, rng: random.Random) -> Part:
+    """Брейк ``name`` нарезкой по сиду (ADR-0153 S3): цикл :data:`BREAK_CYCLE_BARS` тактов, каждая восьмая играет
+    кусок брейка с начала той же восьмой файла (по кругу файла), часть восьмых — кусок с другой восьмой файла
+    (перестановка), часть — две 16-е одного куска (заикание). Куски встают на сетку 16-х и покрывают такт без дыр:
+    кусок звучит до следующего (``legato 1``). Модель — сетка запусков + ``Part.chop`` (начало куска в долях оригинала
+    на каждый запуск по порядку); рендер играет ровно их."""
+    info = kn.SAMPLE_CATALOG[name]
+    slices = int(info.beats or 4) * 4  # 16-х в файле
+    eighths = slices // CHOP_STEPS
+    length = BREAK_CYCLE_BARS * STEPS_PER_BAR
+    starts: List[int] = []
+    chop: List[float] = []
+    for step in range(0, length, CHOP_STEPS):
+        fill = step >= length - STEPS_PER_BAR
+        source = (step // CHOP_STEPS) % eighths
+        if step and rng.random() < (BREAK_FILL_SWAP if fill else BREAK_SWAP):
+            source = rng.randrange(eighths)
+        pos = source * CHOP_STEPS / 4
+        if step and rng.random() < (BREAK_FILL_STUTTER if fill else BREAK_STUTTER):
+            starts += [step, step + 1]
+            chop += [pos, pos]
+        else:
+            starts.append(step)
+            chop.append(pos)
+    accents = {s: 3 if s % 4 == 0 else 2 for s in starts}
+    return Part("loop", name, rhythm.grid(starts, length, accents=accents), None, _UNLEVELED, (0, 0),
+                chop=tuple(chop))
 
 
 def fx_part(name: str, section_bars: int) -> Part:
@@ -94,5 +136,6 @@ def fx_part(name: str, section_bars: int) -> Part:
     return Part("fx", name, rhythm.grid([0], section_bars * STEPS_PER_BAR), None, _UNLEVELED, (0, 0))
 
 
-__all__ = ["CHOP_STEPS", "DECAY", "FX_ROLES", "HISTORY", "LOOP_ROLES", "POOL_SIZE", "SEQUENCE_STEPS",
-           "TICK_SECONDS", "fx_part", "loop_part", "perc_part", "perc_pool", "pick", "pool", "usable"]
+__all__ = ["BREAK_CYCLE_BARS", "BREAK_FILL_STUTTER", "BREAK_FILL_SWAP", "BREAK_STUTTER", "BREAK_SWAP", "CHOP_STEPS",
+           "DECAY", "FX_ROLES", "HISTORY", "LOOP_ROLES", "POOL_SIZE", "SEQUENCE_STEPS", "TICK_SECONDS",
+           "breakbeat_chop", "fx_part", "loop_part", "perc_part", "perc_pool", "pick", "pool", "usable"]

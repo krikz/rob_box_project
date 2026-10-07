@@ -177,7 +177,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                      'club',
                                                                      'rave',
                                                                      'synthwave',
-                                                                     'chiptune']},
+                                                                     'chiptune',
+                                                                     'breaks',
+                                                                     'dnb']},
                                             'tracks': {   'type': 'integer',
                                                           'description': 'Сколько '
                                                                          'треков в '
