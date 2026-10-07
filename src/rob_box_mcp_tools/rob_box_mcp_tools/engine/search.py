@@ -225,6 +225,9 @@ class ThemeHits:
     #: хуки ``names`` по частям темы-перечисления в порядке названного (франшизы) — сет чередует части
     #: (``theme.ThemeProfile.theme_parts``); пусто — тема одна
     parts: Tuple[Tuple[str, ...], ...] = ()
+    #: тема называет конкретные вещи (перечисление или произведение, ``engine.theme_links``): ничего не нашлось —
+    #: сет не играет случайный пул (#3493, 07.10 «нахуя тетрис»)
+    named: bool = False
 
 
 def title_key(text: str) -> str:
@@ -265,7 +268,11 @@ def _whole_search(library: Any, theme: str, limit: int, found_min: float = FOUND
     query_terms = terms(library, theme)
     if not query_terms:
         return ThemeHits()
-    pool = _pool(library, theme, query_terms, found_min)
+    return ordered(_pool(library, theme, query_terms, found_min), theme, limit)
+
+
+def ordered(pool: List[Tuple[float, Dict[str, Any]]], theme: str, limit: int) -> ThemeHits:
+    """Находки :func:`_pool` по порядку :func:`_whole_search`: точное название — первым, затем версии выше одиночек."""
     key = title_key(theme)
     exact = [hit for hit in pool if _is_exact(hit[1], key)]
     if not exact:
@@ -431,7 +438,7 @@ def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHit
     if spanning and spanning not in found:  # запись темы целиком — первой; совпавшая с частью не дублируется
         found.insert(0, spanning)
     names = tuple(round_robin(found, THEME_LIST_HOOKS))
-    return ThemeHits(names, False, tuple(missing), by_part(found, names))
+    return ThemeHits(names, False, tuple(missing), by_part(found, names), named=True)
 
 
 def _score_keys(theme: str) -> List[Tuple[str, str, bool]]:
