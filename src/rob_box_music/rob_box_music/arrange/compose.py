@@ -68,9 +68,9 @@ from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
 #: bar_chords, synth, register) -> Part``; мотив лида без хука — ``(style, key, rng) -> ноты``.
 BASS_GENERATORS: Mapping[str, Callable[..., Part]] = {
     "offbeat": bass.offbeat, "rolling8": bass.rolling8, "broken": bass.broken, "acid16": bass.acid16,
-    "octave8": bass.octave8}
+    "octave8": bass.octave8, "walking": bass.walking}
 PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {
-    "pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs, "arp": pad.arp}
+    "pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs, "arp": pad.arp, "comping": pad.comping}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
 #: Нарезка лупа по ключу ``Style.loop_figure`` (ADR-0153 S3): ``(файл, ГСЧ) -> Part``.
 LOOP_GENERATORS: Mapping[str, Callable[..., Part]] = {"chop": samples.loop_part,
@@ -153,9 +153,10 @@ def _before_drop(spec: FormSpec, i: int) -> bool:
 
 
 def _form(style: kn.Style, spec: FormSpec, energy: int) -> Form:
-    """Секции трека энергии ``energy``: энергия секций сдвинута от средней (3), тонкие роли сняты. Fill — перед
+    """Секции трека энергии ``energy``: энергия секций сдвинута от средней (3), тонкие роли (``Style.thin_roles``)
+    сняты. Fill — перед
     дропом (клэп-ролл, если энергия не сняла клэп) и в конце трека."""
-    thin = frozenset(kn.ENERGY_THIN_ROLES.get(energy, ()))
+    thin = frozenset(style.thin_roles.get(energy, ()))
     out = []
     for i, (name, bars, base, roles) in enumerate(spec):
         layers = {role for role, names in style.layer_sections.items() if name in names}
@@ -219,11 +220,33 @@ def _lead(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, synth: str) ->
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, style.registers["lead"])
 
 
-def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Optional[str] = None) -> Dict[str, Part]:
+def _drum_sources(style: kn.Style, kick: kn.KickSound, roles: Sequence[str],
+                  rng: Optional[random.Random]) -> Dict[str, Tuple[str, int, str]]:
+    """``(synth_or_sample, sample, symbol)`` ударной роли: бочка — ``play(символ, sample=N)`` или файл пака
+    (``KickSound.pack``); клэп и хэты — файл пула ``Style.drum_files`` роли по сиду (ADR-0153 S4), иначе ``play()``."""
+    out = {"kick": (kick.pack, 0, "") if kick.pack else (kn.PLAY_SYNTH, kick.sample, kick.symbol)}
+    for role in (r for r in roles if r != "kick"):
+        files = style.drum_files.get(role)
+        out[role] = (kn.PLAY_SYNTH, 0, "")
+        if files:
+            out[role] = (weighted_pick(list(files), (), rng or random.Random(0)), 0, "")
+    return out
+
+
+def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Optional[str] = None,
+           rng: Optional[random.Random] = None) -> Dict[str, Part]:
+    """Ударные партии: сетки :func:`_drum_grids`, звук — :func:`_drum_sources` (бочка стиля с настоящим низом,
+    ``mix.kick_sound``; удары файлами паков — ADR-0153 S4)."""
+    grids = _drum_grids(style, form, swing_ms, kit)
+    sources = _drum_sources(style, mix.kick_sound(style, kick_name), list(grids), rng)
+    return {r: Part(r, sources[r][0], g, None, _UNLEVELED, (0, 0), sources[r][1], symbol=sources[r][2])
+            for r, g in grids.items()}
+
+
+def _drum_grids(style: kn.Style, form: Form, swing_ms: int, kit: str) -> Dict[str, Grid]:
     """Бочка и клэп — на всю форму, хэты каркаса ``kit`` — такт со свингом. Бочка секции — рисунок её вида
     (``mix.look``: build ↔ drop). Клэп-бэкбит — в дропах; в остальных секциях клэп — только ролл: перед дропом —
-    два такта (восьмые, затем 16-е, акцент растёт), в конце трека — полтакта. Бочка — сэмпл стиля с настоящим
-    низом (``mix.kick_sound``)."""
+    два такта (восьмые, затем 16-е, акцент растёт), в конце трека — полтакта."""
     clap_bar = rhythm.clap_grid()
     silent = rhythm.grid(())
     index = {sec.name: i for i, sec in enumerate(form.sections)}
@@ -247,10 +270,13 @@ def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Opti
     grids = {"kick": rhythm.form_bars(form.sections, kick), "hats": rhythm.hats_grid(style, swing_ms, kit)}
     if any("clap" in sec.roles for sec in form.sections):
         grids["clap"] = rhythm.form_bars(form.sections, clap)
-    kick = mix.kick_sound(style, kick_name)
-    return {r: Part(r, kn.PLAY_SYNTH, g, None, _UNLEVELED, (0, 0), kick.sample if r == "kick" else 0,
-                    symbol=kick.symbol if r == "kick" else "")
-            for r, g in grids.items()}
+    return grids
+
+
+def _swung(style: kn.Style, parts: Mapping[str, Part], swing_ms: int) -> Dict[str, Part]:
+    """Грув один на роли стиля (ADR-0153 S4): свинг ``Style.swing_steps`` и нотам, и ударам ``Style.swing_roles``."""
+    return {role: rhythm.swing_part(part, swing_ms, style.swing_steps) if role in style.swing_roles else part
+            for role, part in parts.items()}
 
 
 def _hook_queue(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str], rng: random.Random) -> List[str]:
@@ -542,13 +568,14 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         key, arranged, tones, spec, theme = found[1:]
     lead_part, degrees, pad_register, chords = arranged
     form = _form(style, spec, step.energy)
-    axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}") for name in ("kit", "sample", "loop", "fx")}
+    axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}") for name in ("kit", "sample", "loop", "fx", "drums")}
     kit = _kit(style, history, axis["kit"])
     perc = samples.perc_pool(key, history, axis["sample"]) if "sample" in style.layer_sections else ()
     loop = samples.pick(style.loop_roles, key, history, "sample", axis["loop"])
     fx = samples.pick(samples.FX_ROLES, key, history, "fx", axis["fx"])
     kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
-    drums = _drums(style, form, rhythm.swing_offset_ms(plan.swing, plan.bpm), kit, kick)
+    swing_ms = rhythm.swing_offset_ms(plan.swing, plan.bpm)
+    drums = _drums(style, form, swing_ms, kit, kick, axis["drums"])
     bass_figure, bass_part = _bass(style, plan.family, _bar_chords(spec, "bass", chords, theme), key, history, seed,
                                    _bar_tones(spec, tones, theme))
     figure, pad_part = _pad(style, plan.family, _bar_chords(spec, "pad", chords, theme), key, pad_register, history,
@@ -556,9 +583,9 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     layers = {"sample": lambda: samples.perc_part(style, perc, kit, axis["sample"]),
               "loop": lambda: LOOP_GENERATORS[style.loop_figure](loop, axis["loop"]),
               "fx": lambda: samples.fx_part(fx, SECTION_BARS)}  # слой без секций стиля в трек не идёт
-    parts, track_mix = mix.mix_parts(style, {
-        **drums, "bass": bass_part, "pad": pad_part, "lead": lead_part,
-        **{role: make() for role, make in layers.items() if role in style.layer_sections}}, form, figure)
+    composed = {**drums, "bass": bass_part, "pad": pad_part, "lead": lead_part,
+                **{role: make() for role, make in layers.items() if role in style.layer_sections}}
+    parts, track_mix = mix.mix_parts(style, _swung(style, composed, swing_ms), form, figure)
     prog = harmony.progression_name(degrees)
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]
     return Track(

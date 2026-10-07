@@ -31,9 +31,12 @@ def _plan(theme, seed):
 def test_pool_has_measured_kicks_with_a_real_low_end():
     """Пул стиля — 3–4+ бочки из таблицы, у каждой низ замера (доля < 250 Гц ≥ 0.8, < 120 Гц ≥ 0.6) и свой файл."""
     assert 3 <= len(STYLE.kick_pool) <= 4 and set(STYLE.kick_pool) <= set(kn.KICK_SOUNDS)
-    assert len({k.sample for k in kn.KICK_SOUNDS.values()}) == len(kn.KICK_SOUNDS), "номера сэмплов разные"
+    play = [k for k in kn.KICK_SOUNDS.values() if not k.pack]
+    assert len({k.sample for k in play}) == len(play), "номера сэмплов разные"
     for name, kick in kn.KICK_SOUNDS.items():
-        assert kick.low >= 0.8 and kick.sample > 0, name  # sample=0 рендер отбрасывает
+        # sample=0 рендер отбрасывает; бочка-файл пака (ADR-0153 S4) — ключ каталога с ролью kick
+        assert kick.low >= 0.8 and (kick.sample > 0 if not kick.pack
+                                    else kn.SAMPLE_CATALOG[kick.pack].role == "kick"), name
         # ADR-0153 S1: бочки рейва на роботе не мерены — ``low`` по файлу, ``sub`` неизвестна (не выдумана)
         assert kick.sub >= 0.6 if kick.measured else math.isnan(kick.sub), name
 

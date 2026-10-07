@@ -177,9 +177,10 @@ def test_offbeat_is_unchanged_root_root_root_fifth(sets):
 
 
 def test_bass_figures_are_registered_and_style_driven():
-    """Рисунок — ключ реестра стиля (``Style.bass_figures`` ⊆ ``BASS_GENERATORS`` = ``knowledge.BASS_FIGURES``), шаги
-    рисунков — не на долях."""
-    assert set(CLUB.bass_figures) <= set(BASS_GENERATORS) == set(kn.BASS_FIGURES)
+    """Рисунок — ключ реестра стиля (``Style.bass_figures`` ⊆ ``BASS_GENERATORS`` = ``knowledge.BASS_FIGURES`` + линии
+    ``knowledge.BASS_LINES``, ADR-0153 S4), шаги рисунков — не на долях (линия walking — на долях, она не рисунок)."""
+    assert set(CLUB.bass_figures) <= set(BASS_GENERATORS) == set(kn.BASS_FIGURES) | set(kn.BASS_LINES)
+    assert not set(kn.BASS_FIGURES) & set(kn.BASS_LINES)
     assert all(step % 4 for figure in kn.BASS_FIGURES.values() for step in figure.steps)
 
 
