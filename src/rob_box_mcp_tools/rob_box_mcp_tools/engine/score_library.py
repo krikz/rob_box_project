@@ -275,14 +275,14 @@ class PlanMaterials(Mapping[str, ScoreMaterial]):
 
 
 def seed_plan(library: ScoreLibrary, profile: Any, seed: int, length: int, set_id: str, history: Sequence[Mapping],
-              logger: Any) -> Any:
+              logger: Any, genre: Optional[str] = None) -> Any:
     """``seeded_plan`` с отбором годных материалов (#3500): негодные в очередь не попадают, каждый — строкой лога
     с причиной (та же, что отказ ``hook.from_material``), отбор — с замером (M7: ≤ 50 мс на запрос)."""
     rejected: Dict[str, str] = {}
     started = time.perf_counter()
     materials = PlanMaterials(library, profile.materials, logger) if profile.materials else None
     plan = seeded_plan(profile, seed, n_tracks=length, set_id=set_id, history=history, materials=materials,
-                       rejected=rejected)  # темп и окно — на сет
+                       rejected=rejected, genre=genre)  # темп и окно — на сет; ``genre`` — окно словами человека
     for mid, why in rejected.items():
         logger.info(f"🎼 [dj_set] материал {mid} не годится: {why}")
     if profile.materials:

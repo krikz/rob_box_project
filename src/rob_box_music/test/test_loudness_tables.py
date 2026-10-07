@@ -22,8 +22,13 @@ def test_every_palette_synth_has_loudness_and_bands():
 
 
 def test_bands_only_for_measured_layers():
+    """Полосы — только у замеренных слоёв; оценка пэда из рамки лида (``PAD_FROM_LEAD``, ADR-0153 S5) — полосы лида."""
     for role, table in kn.LAYER_BANDS.items():
-        assert set(table) <= set(kn.LAYER_MEASURED_DB[role][1]), role
+        estimated = set(kn.PAD_FROM_LEAD) if role == "pad" else set()
+        assert set(table) <= set(kn.LAYER_MEASURED_DB[role][1]) | estimated, role
+    for synth in kn.PAD_FROM_LEAD:
+        assert synth not in kn.LAYER_MEASURED_DB["pad"][1], "замерен в рамке пэда — оценка не нужна"
+        assert kn.LAYER_BANDS["pad"][synth] == kn.LAYER_BANDS["lead"][synth]
 
 
 def test_band_edges_are_compare_profile_edges():
