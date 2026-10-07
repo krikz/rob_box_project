@@ -36,6 +36,7 @@ import threading
 from dataclasses import replace
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
+from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.harmony import PROGRESSION_LOOKBACK
 from rob_box_music.arrange.mix import set_master
@@ -85,12 +86,14 @@ class SetMemory:
     """Строки треков прошлых сетов (свежие первыми) — разнообразие МЕЖДУ сетами (A13, I17).
 
     Приёмка 02.10 (A13): история жила только внутри сета, и окно «прогрессия ≤ 3 из 10 треков подряд» на стыке
-    сетов не держалось (5 из 10). Глубина — окно этого критерия плюс запас на не сыгранные треки (``PROGRESSION_LOOKBACK``, #3460). ``store`` — ``diversity.MusicHistory``
+    сетов не держалось (5 из 10). Глубина — окно этого критерия плюс запас на не сыгранные треки
+    (``PROGRESSION_LOOKBACK``, #3460) или три полных сета для свежести хуков (``knowledge.HOOK_MEMORY_TRACKS``, #3399) —
+    что больше. ``store`` — ``diversity.MusicHistory``
     (таблица ``music_history``): память переживает перезапуск процесса, треки сета пишутся в неё на старте
     следующего (#3399: хуки недавних сетов уходят в конец очереди ``compose.hook_candidates``).
     """
 
-    def __init__(self, depth: int = PROGRESSION_LOOKBACK, store: Any = None) -> None:
+    def __init__(self, depth: int = max(PROGRESSION_LOOKBACK, kn.HOOK_MEMORY_TRACKS), store: Any = None) -> None:
         self._depth = depth
         self._store = store
         self._past: Tuple[Dict[str, Any], ...] = tuple(store.recent(depth)) if store is not None else ()

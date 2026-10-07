@@ -53,8 +53,9 @@ from .. import knowledge as kn
 from ..model import (
     BEATS_PER_BAR, Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
 )
-from ..diversity import fingerprint, recent_values, weighted_pick
+from ..diversity import fingerprint, last_opener, recent_hooks, recent_values, weighted_pick
 from ..material import ScoreMaterial
+from ..rtttl import CONTOUR_NOTES, contour
 from ..set_plan import SetPlan, TrackPlan, pick_kick, pick_template, seeded_plan
 from ..theme import ThemeProfile
 from . import bass, harmony, hook as hooks, lead, mix, pad, rhythm, samples
@@ -189,14 +190,20 @@ def _drums(style: kn.Style, form: Form, swing_ms: int, kit: str, kick_name: Opti
             for r, g in grids.items()}
 
 
-def _hook_queue(profile: ThemeProfile, ids: Sequence[str], history: Sequence[Mapping],
-                rng: random.Random) -> List[str]:
+def _hook_queue(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str], rng: random.Random) -> List[str]:
     """Очередь мелодий не первого трека: несыгранные (найденные по теме — в порядке профиля, пул — сидом), затем
-    недавние, давние раньше свежих."""
-    recent = [h for h in recent_values(history, "melody_name") if h]
+    недавние (``recent`` — :func:`diversity.recent_hooks`), давние раньше свежих."""
     fresh = [i for i in ids if i not in recent]
     stale = sorted((i for i in ids if i in recent), key=recent.index, reverse=True)
     return (fresh if profile.theme_hooks else rng.sample(fresh, len(fresh))) + stale
+
+
+def opening_order(ids: Sequence[str], recent: Sequence[str], opener: Optional[str]) -> List[str]:
+    """Очередь первого трека сета (#3399): мелодии, не звучавшие в последних ``kn.HOOK_FRESH_SETS`` сетах, — в порядке
+    профиля (хук №1 темы — самая узнаваемая из свежих, #3427); затем звучавшие — тоже в порядке профиля (у темы
+    из одной мелодии — другая её версия, а не случайная запись); хук, открывший прошлый сет (``opener``), —
+    последним."""
+    return sorted(ids, key=lambda name: 2 if name == opener else int(name in recent))
 
 
 def _least_recent(names: Sequence[str], recent: Sequence[str]) -> List[str]:
@@ -221,10 +228,12 @@ def part_order(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str],
 
 def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.Random,
                     history: Sequence[Mapping] = (), opening: bool = False,
-                    track_no: int = 1) -> Iterator[Tuple[Hook, Key]]:
+                    track_no: int = 1, set_id: Optional[str] = None) -> Iterator[Tuple[Hook, Key]]:
     """Годные мелодии темы: несыгранные — в порядке сида, недавние (история сета и прошлых сетов, I17) — в конце,
     давние раньше свежих; хук прошлого трека (мелодия или фрагмент) подряд не повторяется. Первый трек сета
-    (``opening``) берёт мелодии в порядке профиля — хук №1 темы первым (#3427: порядок ``search.theme_hooks``).
+    (``opening``) — :func:`opening_order`: хук №1 темы первым (#3427: порядок ``search.theme_hooks``), если он не
+    звучал в последних сетах (#3399). Недавнее — :func:`diversity.recent_hooks` (``set_id`` — сет трека: его строки
+    по записи, прошлых сетов — по мелодии, версии с общим контуром начала — одна мелодия).
     Хуки найдены по словам темы (``profile.theme_hooks``) — несыгранные идут в порядке профиля, а не сида: сет
     обходит найденные по очереди (у темы-перечисления — по кругу частей, ``search.round_robin``), повтор — только
     когда несыгранные кончились (06.10: 50 треков по кругу из трёх хуков). Тема-перечисление
@@ -232,10 +241,13 @@ def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: ran
     last = history[0] if history else {}
     register = hook_register(kn.STYLES[profile.style])
     ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
+    recent = recent_hooks(history, set_id, {i: contour(melodies[i], CONTOUR_NOTES) or i for i in melodies})
     if profile.theme_parts:
-        order = part_order(profile, ids, [h for h in recent_values(history, "melody_name") if h], track_no)
+        order = part_order(profile, ids, recent, track_no)
+    elif opening:
+        order = opening_order(ids, recent, last_opener(history, set_id))
     else:
-        order = ids if opening else _hook_queue(profile, ids, history, rng)
+        order = _hook_queue(profile, ids, recent, rng)
     for melody_id in order:
         try:
             hook, key = hooks.from_rtttl(melodies[melody_id], melody_id, profile.bpm, profile.root, profile.mode,
@@ -288,10 +300,12 @@ def _pad_chords(style: kn.Style, key: Key, degrees: Sequence[int], top: int) -> 
 
 
 def _theme_hook(style: kn.Style, spec: FormSpec, profile: ThemeProfile, melodies: Mapping[str, str],
-                rng: random.Random, history: Sequence[Mapping], track_no: int, lead_synth: str):
+                rng: random.Random, history: Sequence[Mapping], track_no: int, lead_synth: str,
+                set_id: Optional[str] = None):
     """Первая мелодия темы (:func:`hook_candidates`), под которой складываются гармония и пэд: (хук, тональность,
     аранжировка) или None."""
-    for candidate, key in hook_candidates(profile, melodies, rng, history, opening=track_no == 1, track_no=track_no):
+    for candidate, key in hook_candidates(profile, melodies, rng, history, opening=track_no == 1, track_no=track_no,
+                                          set_id=set_id):
         try:
             return candidate, key, _arrange(style, spec, candidate, key, rng, lead_synth, history), None
         except ValueError:
@@ -380,7 +394,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
     found = (_from_material(style, spec, step.material, materials, profile, rng, lead_synth)
-             or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth))
+             or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth, plan.set_id))
     if found is None:
         key = Key(profile.root, profile.mode)
         motif = _motif(style, key, rng, history[0].get("hook_fingerprint") if history else None)
@@ -425,4 +439,5 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
 
 
 __all__ = ["BASS_GENERATORS", "FormSpec", "LEAD_GENERATORS", "PAD_GENERATORS", "SECTION_BARS", "club_track",
-           "compose", "form_spec", "hook_candidates", "hook_register", "part_order", "track_template", "transition"]
+           "compose", "form_spec", "hook_candidates", "hook_register", "opening_order", "part_order", "track_template",
+           "transition"]

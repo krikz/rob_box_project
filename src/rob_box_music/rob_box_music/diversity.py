@@ -42,6 +42,8 @@ __all__ = [
     "MusicHistory",
     "fingerprint",
     "kick_name",
+    "last_opener",
+    "recent_hooks",
     "recent_values",
     "track_composition",
     "track_history",
@@ -280,6 +282,50 @@ def fingerprint(notes: Sequence[Any]) -> Optional[str]:
 def recent_values(rows: Sequence[Mapping[str, Any]], field: str) -> List[Any]:
     """Значения оси ``field`` по истории (свежие первыми) — вход ``weighted_pick``."""
     return [row.get(field) for row in rows]
+
+
+def _window(history: Sequence[Mapping[str, Any]], set_id: Optional[str]) -> List[Mapping[str, Any]]:
+    """Строки истории (свежие первыми) текущего сета ``set_id`` и последних ``kn.HOOK_FRESH_SETS`` прошлых сетов;
+    строка без ``set_id`` (тесты, записи до оси) сета не открывает и в окне остаётся."""
+    out: List[Mapping[str, Any]] = []
+    past: List[Any] = []
+    for row in history:
+        sid = row.get("set_id")
+        if sid is not None and sid != set_id and sid not in past:
+            past.append(sid)
+            if len(past) > kn.HOOK_FRESH_SETS:
+                break
+        out.append(row)
+    return out
+
+
+def recent_hooks(history: Sequence[Mapping[str, Any]], set_id: Optional[str],
+                 tune: Mapping[str, Any]) -> List[str]:
+    """Недавние мелодии для очереди хуков (свежие первыми, #3399): строки окна :func:`_window`. Текущий сет — по
+    имени записи; прошлые сеты — по мелодии: сыгранная запись делает недавними все записи ``tune`` (имя → ключ
+    мелодии, у версий один — ``rtttl.contour``) с тем же ключом (popcorn → и popcorn_6)."""
+    out: List[str] = []
+    for row in _window(history, set_id):
+        name = row.get("melody_name")
+        if not name:
+            continue
+        out.append(name)
+        if row.get("set_id") != set_id and name in tune:
+            out += [other for other, key in tune.items() if key == tune[name] and other != name]
+    return out
+
+
+def last_opener(history: Sequence[Mapping[str, Any]], set_id: Optional[str]) -> Optional[str]:
+    """Хук, открывший прошлый сет (самая старая строка самого свежего чужого ``set_id``); нет такого — ``None``."""
+    prev, opener = None, None
+    for row in history:
+        sid = row.get("set_id")
+        if sid is None or sid == set_id:
+            continue
+        if prev is not None and sid != prev:
+            break
+        prev, opener = sid, row.get("melody_name") or opener
+    return opener
 
 
 def kick_name(sample: int, symbol: str = "X") -> str:
