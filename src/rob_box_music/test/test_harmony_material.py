@@ -76,6 +76,14 @@ def test_dominant_resolves_to_tonic_in_corpus_table(mode):
     assert set(sorted(range(1, 7), key=lambda d: -nxt[0][d])[:2]) == {3, 4}
 
 
+@pytest.mark.parametrize("mode", ["major", "minor"])
+def test_piece_starts_on_tonic_far_more_often_than_on_any_other_degree(mode):
+    """Свойство корпуса: пьеса открывается тоникой (PDMX, ADR-0154 PR-6) — с заметным отрывом от второй ступени."""
+    start = kn.PROGRESSION_TRANSITIONS[mode]["start"]
+    ranked = sorted(range(7), key=lambda d: -start[d])
+    assert ranked[0] == 0 and start[0] > 2 * start[ranked[1]]
+
+
 def test_table_has_provenance():
     prov = kn.PROGRESSION_TRANSITIONS_PROVENANCE
     assert prov["scores"] >= 70 and len(prov["corpus_sha256"]) == 64 and "score_markov_harmony" in prov["script"]

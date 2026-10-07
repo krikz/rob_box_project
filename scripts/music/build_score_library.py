@@ -177,13 +177,22 @@ def build(args: argparse.Namespace) -> int:
     version = check_version(args.version)
     out = pathlib.Path(args.out).expanduser()
     lib = out / f"scores-{version}"
-    if lib.exists():
-        raise BuildError(f"{lib} уже есть: версия собирается один раз, следующая — новым номером")
-    if not (args.pdmx_list or args.local):
-        raise BuildError("нет источников: --pdmx-list и/или --local")
+    if args.lib_dir:  # каталог уже собран батчем (pdmx_batch.py run + index): берём как есть, поверх — локальные
+        lib = pathlib.Path(args.lib_dir).expanduser()
+        if not (lib / INDEX_FILE).is_file():
+            raise BuildError(f"{lib}: нет {INDEX_FILE} — сначала pdmx_batch.py index")
+        if args.pdmx_list:
+            raise BuildError("--lib-dir и --pdmx-list вместе не нужны: PDMX уже в каталоге")
+        out.mkdir(parents=True, exist_ok=True)
+    else:
+        if lib.exists():
+            raise BuildError(f"{lib} уже есть: версия собирается один раз, следующая — новым номером")
+        if not (args.pdmx_list or args.local):
+            raise BuildError("нет источников: --pdmx-list и/или --local")
     if args.local and not args.local_license.strip():
         raise BuildError("--local без --local-license: локальные партитуры без лицензии в индекс не попадут")
-    lib.mkdir(parents=True)
+    if not args.lib_dir:
+        lib.mkdir(parents=True)
     pdmx = pdmx_files(pathlib.Path(args.pdmx_root).expanduser(), pathlib.Path(args.pdmx_list).expanduser()) \
         if args.pdmx_list else []
     for line in import_scores(lib, pdmx=pdmx, pdmx_csv=args.pdmx_csv, local=args.local,
@@ -290,6 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--out", required=True, help="каталог сборки (вне git)")
     b.add_argument("--pdmx-root", default=".", help="корень, от которого считаются пути --pdmx-list")
     b.add_argument("--pdmx-list", help="список .mxl PDMX (путь на строку)")
+    b.add_argument("--lib-dir", help="готовый каталог библиотеки из pdmx_batch.py (JSON + score_index.db): "
+                                     "импорт PDMX пропускается, --local добавляется поверх")
     b.add_argument("--pdmx-csv", help="PDMX.csv или его подмножество: лицензии/рейтинги, отбор license_conflict")
     b.add_argument("--local", help="каталог локальных партитур (не PDMX)")
     b.add_argument("--local-license", default="", help="лицензия локальных партитур (без неё — отказ)")

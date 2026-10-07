@@ -42,7 +42,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 warnings.filterwarnings("ignore")
 
 from music21 import chord as m21chord, converter, expressions, key as m21key  # noqa: E402
-from music21 import meter as m21meter, tempo as m21tempo  # noqa: E402
+from music21 import meter as m21meter, note as m21note, percussion as m21percussion, tempo as m21tempo  # noqa: E402
 
 from rob_box_music import knowledge as kn  # noqa: E402
 from rob_box_music import material as mt  # noqa: E402
@@ -85,6 +85,8 @@ def load_notes(score) -> List[Tuple[float, float, int, int]]:
             off, dur = float(el.offset), float(el.duration.quarterLength)
             if dur <= 0:
                 continue
+            if isinstance(el, (m21note.Unpitched, m21percussion.PercussionChord)):
+                continue  # ударные без высоты (барабанная партия PDMX) — не мелодия и не бас, а не причина отказа файла
             pitches = el.pitches if isinstance(el, m21chord.Chord) else (el.pitch,)
             out += [(off, dur, int(p.midi), pi) for p in pitches]
     out.sort()

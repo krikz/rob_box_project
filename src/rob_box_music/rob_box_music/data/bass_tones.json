@@ -1,37 +1,37 @@
 {
  "provenance": {
-  "corpus": "musetrainer/library (PD) + 2 Interstellar (локально, не в git); docs/music/research_score_material.md",
-  "scores": 70,
+  "corpus": "PDMX no_license_conflict (ADR-0154 PR-6): снимок батча 2026.10.07.3, ранг — байесовский рейтинг; без стоп-листа ADR-0155",
+  "scores": 11913,
   "modes": {
-   "major": 32,
-   "minor": 38
+   "minor": 5292,
+   "major": 6621
   },
-  "corpus_sha256": "25385b8fcf6045df6c60110b38076b8cf495b1bfdf9ff721dd0ba600f75cff85",
+  "corpus_sha256": "e40f07c55d28202081f1d5ff107f41f63ad39311245c6e8d648fef8920822ebd",
   "stats": "stats.json",
-  "date": "2026-10-06",
+  "date": "2026-10-07",
   "script": "scripts/music/research/score_bass_tones.py --write-table",
   "relations": "низшая звучащая нота онсета против трезвучия полутакта (score_material_probe.analyze); approach — полутон к первой доле такта"
  },
  "tables": {
   "major": {
-   "root": 0.441,
-   "third": 0.1952,
-   "fifth": 0.1831,
-   "other": 0.1807,
-   "approach_per_bar": 0.1177,
-   "notes": 11801,
-   "bars": 2439,
-   "approaches": 287
+   "root": 0.4824,
+   "third": 0.1459,
+   "fifth": 0.1441,
+   "other": 0.2276,
+   "approach_per_bar": 0.1081,
+   "notes": 1793608,
+   "bars": 416040,
+   "approaches": 44961
   },
   "minor": {
-   "root": 0.4035,
-   "third": 0.1956,
-   "fifth": 0.2093,
-   "other": 0.1916,
-   "approach_per_bar": 0.0947,
-   "notes": 23915,
-   "bars": 3792,
-   "approaches": 359
+   "root": 0.4807,
+   "third": 0.1448,
+   "fifth": 0.141,
+   "other": 0.2336,
+   "approach_per_bar": 0.1109,
+   "notes": 1646291,
+   "bars": 353362,
+   "approaches": 39187
   }
  }
 }

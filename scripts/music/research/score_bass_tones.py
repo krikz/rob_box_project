@@ -53,6 +53,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("stats")
     ap.add_argument("--write-table", default="", help="записать таблицу (JSON knowledge.BASS_TONES)")
+    ap.add_argument("--corpus-label", default="", help="описание корпуса для провенанса таблицы")
     args = ap.parse_args()
     data = json.load(open(args.stats, encoding="utf-8"))
     rows = [r for r in data["rows"] if "error" not in r and r.get("bass_rel")]
@@ -66,8 +67,8 @@ def main() -> int:
     if args.write_table:
         table = {
             "provenance": {
-                "corpus": "musetrainer/library (PD) + 2 Interstellar (локально, не в git); "
-                          "docs/music/research_score_material.md",
+                "corpus": args.corpus_label or "musetrainer/library (PD) + 2 Interstellar (локально, не в git); "
+                                               "docs/music/research_score_material.md",
                 "scores": len(rows), "modes": dict(collections.Counter(r["mode"] for r in rows)),
                 "corpus_sha256": digest, "stats": pathlib.Path(args.stats).name,
                 "date": datetime.date.today().isoformat(),
