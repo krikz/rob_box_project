@@ -10,6 +10,8 @@
 * ``stabs`` — аккорд на «и» каждой доли под сайдчейном, звучит до следующего «и» (четверть): короче — окно тишины
   ≥ 50 мс там, где пэд единственный тональный слой (интро и хвост блэнда, A4/I8 ``test_no_silent_window``); отрезок
   пэда начинается подхватом на первой доле.
+* ``arp`` — арпеджио (ADR-0153 S2): один тон аккорда такта на каждой 16-й, порядок голосов — ``Style.arp_order``;
+  без сайдчейна. Тоны — голоса того же обращения, что держал бы пэд: в регистре и в ладу по построению.
 
 Обращения аккордов — ``harmony.pad_chords``; уровень ставит ``arrange.mix``.
 """
@@ -72,4 +74,18 @@ def held(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], syn
     return Part("pad", synth, rhythm.grid((0,)), events, 0.0, register)
 
 
-__all__ = ["STAB_STEPS", "held", "pumped16", "stabs"]
+def arp(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+        register: Tuple[int, int]) -> Part:
+    """Арпеджио по тактам ``bar_chords``: на 16-й ``k`` такта звучит голос ``style.arp_order[k % len]`` аккорда
+    (голоса снизу вверх; индекс за числом голосов — по кругу), до следующей 16-й; первая 16-я доли — акцент 3."""
+    order = style.arp_order
+    events = []
+    for bar, chord in bar_chords:
+        tones = sorted(chord.voicing)
+        events += [PitchEvent(tones[order[step % len(order)] % len(tones)], bar * BEATS_PER_BAR + step * STEP_BEATS,
+                              STEP_BEATS, 3 if step % 4 == 0 else 2)
+                   for step in range(STEPS_PER_BAR)]
+    return Part("pad", synth, rhythm.grid(range(STEPS_PER_BAR)), tuple(events), 0.0, register)
+
+
+__all__ = ["STAB_STEPS", "arp", "held", "pumped16", "stabs"]

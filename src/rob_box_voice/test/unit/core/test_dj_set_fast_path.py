@@ -36,7 +36,9 @@ def test_live_phrase_is_routed_to_dj_set_by_code():
     plan = _route(LIVE_1908)
     assert plan is not None, "реплика ушла бы в LLM (load_skill + dj_set, ~14 с)"
     assert [c.name for c in plan.tool_calls] == ["dj_set"]
-    assert plan.tool_calls[0].arguments == {"action": "start", "persona": "диджей 8битный", "tracks": 24}
+    # ADR-0153 S2: «8битный» — стиль chiptune (код), темой по-прежнему не становится
+    assert plan.tool_calls[0].arguments == {"action": "start", "persona": "диджей 8битный", "style": "chiptune",
+                                            "tracks": 24}
     assert plan.cancel_inflight and plan.confirm_started
     assert plan.say_ok == "Я диджей 8битный, включаю сет."  # фраза кода, по событию started
 
@@ -56,7 +58,7 @@ def test_live_phrase_gets_its_own_turn_context_with_length_24():
 def test_set_order_without_persona_is_routed_too():
     plan = _route(RETRO_1530)
     assert plan is not None
-    assert plan.tool_calls[0].arguments == {"action": "start", "tracks": 24}
+    assert plan.tool_calls[0].arguments == {"action": "start", "style": "chiptune", "tracks": 24}  # «8-бит» — стиль
 
 
 @pytest.mark.parametrize("text", [
@@ -100,7 +102,7 @@ ATLAS = "Ты диджей Атлас и у нас сегодня вечерин
 
 
 @pytest.mark.parametrize("text,args", [
-    (LIVE_U_NAS, {"action": "start", "persona": "диджей 8битный", "tracks": 24}),
+    (LIVE_U_NAS, {"action": "start", "persona": "диджей 8битный", "style": "chiptune", "tracks": 24}),
     (ATLAS, {"action": "start", "persona": "диджей Атлас"}),
 ])
 def test_spoken_theme_is_not_cut_by_the_grammar(text, args):

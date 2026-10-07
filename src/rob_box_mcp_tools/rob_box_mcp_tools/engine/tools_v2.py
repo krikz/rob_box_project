@@ -44,7 +44,7 @@ from rob_box_music.dj_line import now_playing_text, persona_title
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
-from rob_box_music.theme import ThemeProfile, match_style, seeded_profile
+from rob_box_music.theme import ThemeProfile, match_style_text, seeded_profile, style_for
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker
@@ -74,14 +74,19 @@ STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
 SET_PLAYING = "set_playing"
 
 
-def set_style(style: Optional[str], theme: str) -> str:
-    """Стиль сета решает код (ADR-0148): названный ключ ``STYLES``; ``auto``/пусто — по словам темы
-    (``theme.match_style``), слов стиля нет — ``DEFAULT_STYLE``. Ключ не из перечня — ``ValueError``."""
+def set_style(style: Optional[str], theme: str, heard_text: Optional[str] = None) -> str:
+    """Стиль сета решает код (ADR-0148): слова стиля в реплике человека этого хода (``heard_text``: «синтвейв»,
+    «8-битный» — ADR-0153 S2) важнее ключа от LLM; иначе названный ключ ``STYLES``; ``auto``/пусто — слова стиля темы,
+    затем стиль строки таблицы тем (``theme.style_for``: киберпанк → synthwave), иначе ``DEFAULT_STYLE``. Ключ не из
+    перечня — ``ValueError``."""
+    heard = match_style_text(heard_text or "")
+    if heard:
+        return heard
     if style and style != AUTO_STYLE:
         if style not in kn.STYLES:
             raise ValueError(f"style={style!r}: есть только {list(STYLE_CHOICES)}")
         return style
-    return match_style(theme.split()) or kn.DEFAULT_STYLE
+    return style_for(theme)
 
 
 def library_melodies(library_factory: Callable[[], Any]) -> MelodyLookup:
@@ -257,7 +262,7 @@ class DjSetTool(MCPTool):
                 return self._stop()
             if action == "start":
                 try:
-                    key = set_style(style, theme or "")
+                    key = set_style(style, theme or "", heard_text)
                     named = None if tracks is None else set_tracks(tracks)
                 except ValueError as exc:
                     return MCPToolResult(success=False, error=str(exc))
