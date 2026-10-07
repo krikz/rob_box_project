@@ -197,7 +197,7 @@ lookups(source TEXT, query_norm TEXT, rules_version TEXT, fetched_at TEXT, http 
 
 Ответ дан поручением «принять рекомендации автора», а не поштучным разбором; по В6 и точности §2.2 Шифу ничего не просматривал.
 
-- **В1. Лицензия PDMX → (в) + (б)-лёгкий.** `no_license_conflict` — метка загрузившего (§2.4). PDMX — только на роботе/katana, в git — ничего, кроме статистических таблиц; стоп-список живых композиторов/студий — данные `knowledge.LICENSE_STOP_LIST` (растёт по факту), `Work.stop_listed` считает `works.py`.
+- **В1. Лицензия PDMX → (в) + (б)-лёгкий.** *Шифу лично подтвердил (в) 2026-10-07: партитуры только на роботе и katana, в git — одни статистические таблицы.* `no_license_conflict` — метка загрузившего (§2.4). PDMX — только на роботе/katana, в git — ничего, кроме статистических таблиц; стоп-список живых композиторов/студий — данные `knowledge.LICENSE_STOP_LIST` (растёт по факту), `Work.stop_listed` считает `works.py`.
 - **В2. `enrich_melodies.py` → А: удалён** в K-2 (скрипт и `test_enrich_melodies.py`). Правила приёма (`accept_field`, `VARIANT_RE`, `GENRE_STYLE_MAP`) остались в истории репозитория: `scripts/music/enrich_melodies.py` @ `1f136b141`. В `knowledge` перенесено только то, что читается (`CATEGORY_ARTISTS` — прежние `BAD_ARTISTS`). `GENRE_STYLE_MAP` не перенесён: потребителя нет (В4).
 - **В3. Реестр → одна SQLite** (та же, что RTTTL-библиотека): таблицы `works`/`work_sources`/`work_facts` — `works.write_registry`.
 - **В4. «Стиль от мелодии» → не делаем сейчас** (после ADR-0154 PR-1…PR-5); поле `genre` потребителя не имеет, гейт закрыт.

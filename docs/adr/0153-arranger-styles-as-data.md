@@ -173,6 +173,8 @@ part = BASS_GENERATORS[plan.track(no).timbre.bass_figure](style, key, chords, hi
 
 ## 8. Открытые вопросы для товарища Шифу
 
+> **Ответы Шифу 2026-10-07:** В2 — порядок **как предложено**: rave (S1, влит) → synthwave/chiptune (S2) → breaks/dnb (S3) → lo-fi (S4) → rock (S5) → jazz (S6). В3 — свободные паки **Sonic Pi samples (CC0)** и **DrumGizmo MuldjordKit (CC-BY 4.0)** через ресурсный пак (ADR-0125/0126, как `dj-dave-samples`), сэмплы в git не кладём; `pumodi/open-samples` **не берём** (своя лицензия запрещает «music track generating»). Исследование: `artifacts_live_check_2026-10-07/sample_packs_research.md` (вне git). Остальные (В1, В4–В8) открыты.
+
 - **В1. Эталоны стилей.** Нужна одна запись 10–20 мин на стиль (как `ref_dj.wav`): rave/hardcore, synthwave, dnb/breaks, lo-fi, rock, jazz. Без них S5 не считается, приёмка — по S1–S4 и слуху.
 - **В2. Порядок стилей.** Предлагаю rave → synthwave/chiptune → breaks/dnb → lo-fi (свинг/comping как ступень к джазу) → rock → jazz. Или рок/джаз важнее и идут раньше с большей ценой?
 - **В3. Ресурсный пак ударных** (рок-кит, щётки/райд/томы, амен-брейки, хардкор-бочки): свободные паки (CC0/CC-BY — какие лицензии допустимы), запись своими руками или покупка? Доставка — ADR-0125/0126 как `dj-dave-samples`.
