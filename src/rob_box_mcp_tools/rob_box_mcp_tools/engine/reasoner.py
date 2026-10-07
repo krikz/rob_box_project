@@ -198,6 +198,7 @@ class SetPlanBox:
         self._refined: Optional[rz.Refinement] = None
         self._sources: Dict[str, Tuple[str, str]] = {}  # track_id → (хук: theme|pool|motif, план: llm|seeded)
         self._played: Dict[str, Tuple[str, str]] = {}
+        self._material: Dict[str, str] = {}  # track_id → material_id трека из партитуры (ADR-0154 M6)
         self._lines = lines
         self._log = logger or _LOG
 
@@ -206,12 +207,15 @@ class SetPlanBox:
             return self._plan, self._melodies
 
     def compose_mark(self, track: Any, no: Optional[int] = None) -> Any:
-        """``source=theme`` (A11) — только хук, найденный по словам темы (``profile.theme_hooks``), а не любой.
+        """``source=theme`` (A11) — только хук, найденный по словам темы (``profile.from_theme``: RTTTL темы или
+        материал партитуры), а не любой; ``material_id`` трека из партитуры — в строку ``started`` (M6).
         Трек ``no`` скомпонован — реплика на его ``started`` готовится в фоне."""
         hook = getattr(getattr(track, "hook", None), "source", None)
         with self._lock:
-            source = "theme" if hook in self._plan.profile.theme_hooks else "pool" if hook else "motif"
+            source = "theme" if self._plan.profile.from_theme(hook) else "pool" if hook else "motif"
             self._sources[track.track_id] = (source, "llm" if self._refined else "seeded")
+            if hook in self._plan.profile.materials:  # M6: материал партитуры трека — в строку ``started``
+                self._material[track.track_id] = hook
             plan = self._plan
         if self._lines is not None and no is not None:
             self._lines.prepare(track.track_id, no, plan, hook)
@@ -235,7 +239,8 @@ class SetPlanBox:
             source, plan = self._sources.get(track_id, ("motif", "seeded"))
             self._played[track_id] = (source, plan)
             theme = sum(1 for s, _p in self._played.values() if s == "theme")
-            note = f"source={source} plan={plan} A11={theme}/{len(self._played)}"
+            note = (f"source={source} plan={plan} A11={theme}/{len(self._played)} "
+                    f"material_id={self._material.get(track_id, '-')}")
         if self._lines is not None:
             note = f"{note} {self._lines.on_started(track_id)}".rstrip()
         return note

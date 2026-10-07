@@ -5,7 +5,7 @@
 плана и хуки строки. Хуки темы — ещё и мелодии, которые по словам темы нашёл поиск по всей RTTTL-библиотеке
 (``found``: ``engine.search.theme_hooks`` в процессе плеера, #3399): «терминатор» → ``terminat``. Ни строки, ни
 находок — окно стиля и весь :data:`HOOK_POOL` (``source="pool"``, а не «тема») в порядке по хешу темы: у разных
-тем разный первый хук. Какой хук откроет сет, решает история (``compose.opening_order``, #3399): пул из семи по хешу
+тем разный первый хук. Какой хук откроет сет, решает история (``diversity.opening_order``, #3399): пул из семи по хешу
 одной фразы давал один и тот же набор и первый хук в каждом сете (popcorn/axelf, 07.10). Темп, тоника и порядок
 пула — от sha256 текста темы: одна тема даёт один профиль на любом процессе (``hash()`` Python солёный).
 """
@@ -43,11 +43,18 @@ class ThemeProfile:
     #: хуки темы-перечисления по частям в порядке названного (``search.ThemeHits.parts``): трек N берёт часть
     #: (N-1) по кругу, в ней — наименее недавнюю версию (``compose.part_order``); пусто — тема одна
     theme_parts: Tuple[Tuple[str, ...], ...] = ()
+    #: материалы партитур, найденные по названию в индексе партитур (``search.ThemeHits.materials``, ADR-0154 §3.5),
+    #: лучшие первыми; план раздаёт их первым трекам (``set_plan.plan_materials``) — приоритет над RTTTL-хуками
+    materials: Tuple[str, ...] = ()
 
     @property
     def source(self) -> str:
-        """``theme`` — хуки по словам темы (A11), ``pool`` — пул без находок."""
-        return "theme" if self.theme_hooks else "pool"
+        """``theme`` — хуки или материал по словам темы (A11), ``pool`` — пул без находок."""
+        return "theme" if self.theme_hooks or self.materials else "pool"
+
+    def from_theme(self, hook: Optional[str]) -> bool:
+        """Хук трека найден по словам темы (A11): RTTTL темы или материал партитуры."""
+        return bool(hook) and (hook in self.theme_hooks or hook in self.materials)
 
 
 def _digest(text: str) -> int:
@@ -83,11 +90,13 @@ def match_style(words: Sequence[str]) -> Optional[str]:
 
 
 def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequence[str] = (),
-                   exact: bool = False, parts: Sequence[Sequence[str]] = ()) -> ThemeProfile:
+                   exact: bool = False, parts: Sequence[Sequence[str]] = (),
+                   materials: Sequence[str] = ()) -> ThemeProfile:
     """Профиль темы за микросекунды, без сети и LLM; ``found`` — мелодии по словам темы (поиск, лучшие первыми).
     ``exact`` — тема и есть название найденной записи («Twinkle Twinkle Little Star»): строка таблицы тем («star» →
     ``space``) не применяется — ни её хуки, ни темп и лад (#3427). Пустая тема без находок — профиль стиля с пулом
-    по хешу. ``parts`` — находки ``found`` по частям темы-перечисления (франшизы в порядке названного)."""
+    по хешу. ``parts`` — находки ``found`` по частям темы-перечисления (франшизы в порядке названного). ``materials`` — партитуры по названию
+    (ADR-0154 §3.5): строку таблицы тем не отменяют — темп, лад и строка («интерстеллар» → ``space``, #3463) остаются."""
     text = " ".join(theme_text.lower().split())
     window = kn.STYLES[style]
     name = None if exact and found else match_row(text)
@@ -106,7 +115,7 @@ def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequen
     hooks = theme_hooks or tuple(random.Random(digest).sample(HOOK_POOL, POOL_HOOKS))
     bpm = lo + (digest >> 8) % (hi - lo + 1)
     return ThemeProfile(text, style, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks,
-                        tuple(tuple(p) for p in parts if p))
+                        tuple(tuple(p) for p in parts if p), tuple(dict.fromkeys(materials)))
 
 
 __all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "seeded_profile"]

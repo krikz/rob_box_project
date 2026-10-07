@@ -14,6 +14,8 @@
   (:func:`plan_bpm`), пул бочек и пэдов, рисунок бочки дропа — из окна (``knowledge.genre_style``). Внутри сета окно
   не меняется. Окно — не стиль (ADR-0153): стиль — набор таблиц, окно — подвыбор внутри него.
 * **Свинг сета** — в окне стиля, от сида; один на весь сет, как грув у диджея.
+* **Материал партитуры** (ADR-0154 §3.5, PR-5): ``TrackPlan.material`` — как ``kick``/``template``, решает план
+  (:func:`plan_materials`): тема нашла партитуры по названию — первые треки берут их по одной, трек 1 — материал №1.
 * **Тоника сета** (PR-3d, ось «тоника» ``music_history``): тоника темы, если её не было в последних
   ``TONIC_MEMORY`` треках истории; иначе — выбор сидом (``diversity.weighted_pick``) среди тоник, которых там не
   было. Темп сета от истории не зависит.
@@ -28,7 +30,7 @@ from dataclasses import dataclass, field, replace
 from typing import Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
-from .diversity import recent_values, weighted_pick
+from .diversity import last_opener, opening_order, recent_hooks, recent_values, weighted_pick
 from .theme import ThemeProfile
 
 #: Шаг тоники между соседними треками: чистая квинта вверх, полутонов.
@@ -221,6 +223,19 @@ def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[in
     return tuple(out)
 
 
+def plan_materials(materials: Sequence[str], n_tracks: int, history: Sequence[Mapping] = (),
+                   set_id: Optional[str] = None) -> Tuple[Optional[str], ...]:
+    """Материалы партитур первых треков сета (ADR-0154 §3.5): трек 1 — материал №1 темы, следующие — по одному
+    следующему, пока материалы не кончились (дальше — хуки темы, ``None``). Очередь — та же, что у хуков первого
+    трека (:func:`diversity.opening_order`, #3399/#3495): звучавший в последних ``HOOK_FRESH_SETS`` сетах — после
+    свежих, открывший прошлый сет — последним; в истории материал записан как ``melody_name`` (``Hook.source``)."""
+    if not materials:
+        return (None,) * n_tracks
+    recent = recent_hooks(history, set_id, {m: m for m in materials})
+    order = opening_order(list(dict.fromkeys(materials)), recent, last_opener(history, set_id))
+    return tuple(order[i] if i < len(order) else None for i in range(n_tracks))
+
+
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
                 history: Sequence[Mapping] = (), genre: Optional[str] = None) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
@@ -237,12 +252,14 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     kicks = plan_kicks(window, seed, profile.theme, n, history)
     plans = [track_plan(no, n) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
-    tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1]) for p in plans)
+    materials = plan_materials(profile.materials, n, history, set_id)
+    tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1], material=materials[p.no - 1])
+                   for p in plans)
     timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{profile.theme}"))
     return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre)
 
 
 __all__ = ["DEFAULT_TRACKS", "FIFTH", "MAX_TRACKS", "SetPlan", "TONIC_MEMORY", "TRACK_SECONDS", "TrackPlan", "arc_energy",
            "pick_genre", "pick_kick",
-           "pick_template", "pick_timbre", "plan_bpm", "plan_kicks", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
+           "pick_template", "pick_timbre", "plan_bpm", "plan_materials", "plan_kicks", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
            "set_root", "set_tracks", "track_energy", "track_plan"]

@@ -355,6 +355,10 @@ services:
       # supercollider: renardo_gatherer/FoxDot при инициализации пишет в этот
       # каталог свои служебные файлы.
       - /opt/rob_box/samples:/root/.config/renardo/samples
+      # Библиотека партитур (ADR-0154 PR-5, В7 «б» — решение Шифу 07.10): ресурсный пак на хосте, как сэмплы;
+      # путь внутри тот же, что по умолчанию в engine/score_library.py (ROB_BOX_SCORE_LIBRARY перекрывает).
+      # Каталога нет — Docker создаст пустой, сет играет хуки RTTTL (честная строка в логе dj_set).
+      - /opt/rob_box/scores:/opt/rob_box/scores:ro
       # Shared synthdefs — sclang/Renardo компилирует SynthDefs сюда, scsynth в контейнере
       # supercollider читает их по тому же пути (issue 986)
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs

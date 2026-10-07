@@ -434,6 +434,51 @@ def theme_search(library: Any, theme: str, limit: int = THEME_HOOKS) -> ThemeHit
     return ThemeHits(names, False, tuple(missing), by_part(found, names))
 
 
+def _score_keys(theme: str) -> List[Tuple[str, str, bool]]:
+    """Звуковые ключи значимых слов темы для названий партитур: ``(слово, основа, по началу)``. Без служебных слов,
+    стиля («8-бит») и жанра («кино» — окно каталога, не название); русское слово — транслитом слова целиком («марио»
+    — «mario») и основы, по началу слова названия (падеж: «интерстеллара»), если основа не короче :data:`_STEM_MIN`."""
+    out = []
+    for word in _WORD_RE.findall(blank_style(theme).lower().replace("ё", "е")):
+        word_stem = stem(word)
+        if word in _STOP or word_stem in _STOP or word in kn.GENRE_FILLER or genre_of(word):
+            continue
+        if not _CYR_RE.search(word):
+            out.append((sound_key(word), sound_key(word), False))
+        elif len(word) >= _WORD_MIN:
+            latin = sound_key(transliterate_ru(word))
+            out.append((latin, sound_key(transliterate_ru(word_stem)), len(word_stem) >= _STEM_MIN))
+    return out
+
+
+def _title_words(title: str) -> List[str]:
+    return [sound_key(w) for w in title_key(transliterate_ru(title)).split()]
+
+
+def _title_has(keys: List[Tuple[str, str, bool]], title: str) -> bool:
+    words = _title_words(title)
+    return all(any(w in (k, s) or (prefix and w.startswith(s) and len(w) - len(s) <= _PREFIX_SLACK) for w in words)
+               for k, s, prefix in keys)
+
+
+def score_search(rows: Sequence[Dict[str, Any]], theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
+    """Материалы партитур по названию (ADR-0154 §3.5; строки ``score_index``): в названии есть **все** значимые
+    слова темы (:func:`_score_keys`, звуковой ключ — «интерстеллар» ~ «Interstellar Main Theme»). Название, равное
+    теме целиком, — первым; дальше по рейтингу PDMX и числу оценок (у локальных рейтинга нет — после равных по
+    названию). Тема без значимых слов или только жанр («кино») — пусто: хуки темы из RTTTL, как раньше."""
+    keys = _score_keys(theme)
+    if not keys:
+        return ()
+    hits = []
+    for row in rows:
+        title = str(row.get("title") or "")
+        if _title_has(keys, title):
+            same = len(_title_words(title)) == len(keys)  # название — ровно слова темы
+            hits.append((not same, -float(row.get("rating") or 0.0), -int(row.get("n_ratings") or 0),
+                         str(row["material_id"])))
+    return tuple(h[-1] for h in sorted(hits)[:limit])
+
+
 def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str, ...]:
     """Имена мелодий темы (:func:`theme_search`)."""
     return theme_search(library, theme, limit).names
@@ -441,5 +486,5 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
 
 __all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS", "Term",
            "ThemeHits", "blank_style", "by_part", "consensus_order", "coverage", "find", "genre_hooks", "genre_of",
-           "ranked", "round_robin", "sound_key", "stem", "terms", "theme_hooks", "theme_parts", "theme_search",
+           "ranked", "round_robin", "score_search", "sound_key", "stem", "terms", "theme_hooks", "theme_parts", "theme_search",
            "title_key"]

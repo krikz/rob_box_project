@@ -118,19 +118,21 @@ class SetMemory:
         self._rows[track_no] = row
 
 
-def plan_source(current: PlanNow, memory: Optional[SetMemory] = None) -> TrackSource:
+def plan_source(current: PlanNow, memory: Optional[SetMemory] = None,
+                materials: Optional[Mapping[str, Any]] = None) -> TrackSource:
     """Треки по плану, который сейчас у сета, с историей сета по всем осям (``diversity.track_history``, PR-3d):
     каркас, прогрессия, хук, сэмплы не повторяются подряд. История — строки треков с МЕНЬШИМ номером (свежие
     первыми): повторная компоновка того же N+1 (``replan``, повтор после отказа) заменяет его строку и не видит
     саму себя; за ними — треки прошлых сетов из ``memory``. Запись в ``music_history`` (между перезапусками) —
-    отдельный шаг владельца (по ``started``)."""
+    отдельный шаг владельца (по ``started``). ``materials`` — ``{material_id: ScoreMaterial}`` для
+    ``TrackPlan.material`` (ADR-0154 PR-5): загружены при старте сета, компоновка их не читает с диска."""
     rows: Dict[int, Dict[str, Any]] = {}
     past = memory.begin() if memory is not None else ()
 
     def next_track(track_no: int, deck: str) -> Track:
         plan, melodies = current()
         history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < track_no) + past
-        track = compose(plan, track_no, melodies=melodies, history=history, deck=deck)
+        track = compose(plan, track_no, melodies=melodies, history=history, deck=deck, materials=materials)
         rows[track_no] = track_history(track, plan.set_id)
         if memory is not None:
             memory.remember(track_no, rows[track_no])
