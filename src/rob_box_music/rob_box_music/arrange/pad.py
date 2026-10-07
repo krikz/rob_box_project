@@ -78,14 +78,23 @@ def arp(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synt
         register: Tuple[int, int]) -> Part:
     """Арпеджио по тактам ``bar_chords``: на 16-й ``k`` такта звучит голос ``style.arp_order[k % len]`` аккорда
     (голоса снизу вверх; индекс за числом голосов — по кругу), до следующей 16-й; первая 16-я доли — акцент 3."""
-    order = style.arp_order
+    spans = [(bar * BEATS_PER_BAR, float(BEATS_PER_BAR), chord.voicing) for bar, chord in bar_chords]
+    return Part("pad", synth, rhythm.grid(range(STEPS_PER_BAR)), arp_events(style.arp_order, spans), 0.0, register)
+
+
+def arp_events(order: Sequence[int], spans: Sequence[Tuple[float, float, Tuple[int, ...]]]) -> Tuple[PitchEvent, ...]:
+    """Арпеджио по отрезкам ``(доля начала, долей, обращение)``: на 16-й ``k`` такта — голос ``order[k % len]``
+    обращения (снизу вверх, по кругу), до следующей 16-й; первая 16-я доли — акцент 3. Отрезок — такт (``arp``) или
+    аккорд автора любой длины на сетке 16-х (песня из материала, ADR-0154 PR-7B)."""
     events = []
-    for bar, chord in bar_chords:
-        tones = sorted(chord.voicing)
-        events += [PitchEvent(tones[order[step % len(order)] % len(tones)], bar * BEATS_PER_BAR + step * STEP_BEATS,
-                              STEP_BEATS, 3 if step % 4 == 0 else 2)
-                   for step in range(STEPS_PER_BAR)]
-    return Part("pad", synth, rhythm.grid(range(STEPS_PER_BAR)), tuple(events), 0.0, register)
+    for start, beats, voicing in spans:
+        tones = sorted(voicing)
+        for k in range(int(round(beats / STEP_BEATS))):
+            beat = start + k * STEP_BEATS
+            step = int(round(beat / STEP_BEATS)) % STEPS_PER_BAR
+            events.append(PitchEvent(tones[order[step % len(order)] % len(tones)], beat, STEP_BEATS,
+                                     3 if step % 4 == 0 else 2))
+    return tuple(events)
 
 
-__all__ = ["STAB_STEPS", "arp", "held", "pumped16", "stabs"]
+__all__ = ["STAB_STEPS", "arp", "arp_events", "held", "pumped16", "stabs"]
