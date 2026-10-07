@@ -59,7 +59,7 @@ echo ""
 # init-контейнер и volume удалены: сэмплы лежат на хосте в
 # /opt/rob_box/samples и приходят в контейнеры bind-mount'ом. Пополнить их
 # вручную:
-#   sudo bash scripts/resource_pack/apply_resource_pack.sh --only renardo-samples,dj-dave-samples
+#   sudo bash scripts/resource_pack/apply_resource_pack.sh --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit
 # (из ~/rob_box_project/docker/vision). Если каталог пуст — музыка честно
 # уходит в synth-only, стек при этом поднимается.
 

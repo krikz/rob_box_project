@@ -485,7 +485,7 @@ jobs:
           # без единого сетевого запроса.
           RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
           rp_rc=0
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples" || rp_rc=$?
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit" || rp_rc=$?
 
           # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
           # маркер тот же, на котором стоит идемпотентность фетчера.
