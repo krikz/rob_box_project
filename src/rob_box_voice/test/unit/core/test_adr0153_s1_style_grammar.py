@@ -56,4 +56,24 @@ def test_style_word_in_another_request_is_not_a_set(text):
 def test_every_style_word_maps_to_a_style_key():
     assert set(kn.STYLE_WORDS.values()) <= set(kn.STYLES)
     for stem in kn.STYLE_WORDS:
-        assert parse_media_command(f"включи {stem}").style == kn.STYLE_WORDS[stem], stem
+        assert parse_media_command(f"включи {stem} сет").style == kn.STYLE_WORDS[stem], stem
+
+
+@pytest.mark.parametrize("text,theme", [
+    ("включи клубный сет на тему киберпанк", "киберпанк"),
+    ("включи клубную музыку на тему космос", "космос"),
+    ("давай клубняк про роботов", "роботов"),
+    ("включи club сет", None),
+    ("включи клубный диджей сет", None),
+])
+def test_club_words_start_a_club_set_even_when_the_theme_row_has_another_style(text, theme):
+    """#3508: клуб — стиль по умолчанию, но «киберпанк» без слова даёт synthwave; слово клуба выбирает его явно."""
+    args = _dj_args(text)
+    assert args["action"] == "start" and args["style"] == "club" and args.get("theme") == theme
+
+
+@pytest.mark.parametrize("text", ["поставь клубный трек", "включи клубную музыку", "включи клубняк"])
+def test_club_word_without_set_word_or_theme_is_still_a_single_track(text):
+    """Клуб — стиль одиночного трека по умолчанию: без слова сета и темы это не заказ сета."""
+    plan = V2.route(text, MediaState())
+    assert plan is not None and [c.name for c in plan.tool_calls] == ["request_music"], text
