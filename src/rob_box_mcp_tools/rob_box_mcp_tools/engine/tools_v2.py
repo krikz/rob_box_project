@@ -401,6 +401,7 @@ class DjSetTool(MCPTool):
         materials = self.plan_materials(plan, logger)
         box = SetPlanBox(plan, self._melodies, lines=self._transition_lines(persona, logger), logger=logger)
         base = plan_source(box.current, self._memory, materials)
+        self._facts.forecast = getattr(base, "upcoming", None)  # «дальше будет» — из той же очереди, что компоновка
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck), no), set_id=set_id,
                              bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
                              on_track_started=box.on_started, tracks_dir=self._tracks_dir, tracks=length)

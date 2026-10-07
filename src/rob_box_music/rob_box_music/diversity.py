@@ -302,16 +302,21 @@ def _window(history: Sequence[Mapping[str, Any]], set_id: Optional[str]) -> List
 
 def recent_hooks(history: Sequence[Mapping[str, Any]], set_id: Optional[str],
                  tune: Mapping[str, Any]) -> List[str]:
-    """Недавние мелодии для очереди хуков (свежие первыми, #3399): строки окна :func:`_window`. Текущий сет — по
-    имени записи; прошлые сеты — по мелодии: сыгранная запись делает недавними все записи ``tune`` (имя → ключ
-    мелодии, у версий один — ``rtttl.contour``) с тем же ключом (popcorn → и popcorn_6)."""
+    """Недавние мелодии для очереди хуков (свежие первыми, #3399): строки окна :func:`_window`. Запись ``tune`` (имя
+    → ключ мелодии, у версий один — ``rtttl.contour``) с тем же ключом, что у сыгранной, — та же мелодия (popcorn →
+    и popcorn_6): у строк прошлых сетов — всегда, у текущего сета — только у последних ``kn.HOOK_TUNE_GAP`` треков
+    (#3497: версия той же мелодии не подряд; дальше назад — по имени записи)."""
     out: List[str] = []
+    back = 0  # сколько треков текущего сета уже прошло (0 — прошлый трек)
     for row in _window(history, set_id):
         name = row.get("melody_name")
+        current = row.get("set_id") == set_id
+        near = not current or back < kn.HOOK_TUNE_GAP
+        back += current
         if not name:
             continue
         out.append(name)
-        if row.get("set_id") != set_id and name in tune:
+        if near and name in tune:
             out += [other for other, key in tune.items() if key == tune[name] and other != name]
     return out
 
