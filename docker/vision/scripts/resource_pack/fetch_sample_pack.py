@@ -1,15 +1,16 @@
-"""Хук-фетчер Ресурсного пака: сэмплы DJ_Dave (issue #3219) на ХОСТ.
+"""Хук-фетчер Ресурсного пака: сэмпл-паки на ХОСТ по lock-файлу (один скрипт на все паки).
 
-Что качаем (список и эталоны — ``dj_dave_samples.lock.json`` рядом):
-  * ``algorave-dave/samples`` — вокальные/бит-стемы (cocaina, whatuneed, …)
-    и ``spilltab`` (из HEAD удалён, берём по пиннутому коммиту);
-  * ``lil-data/dj_dave-array_remix`` — стемы «Array (Lil Data Edit)» (mp3);
-  * ``tidalcycles/Dirt-Samples`` — только ``tech``/``psr``/``hh``/``cp``;
-  * ``ritchse/tidal-drum-machines`` — только hh/cp двух банков (TR808, DDM110).
+Паки (lock-файл ``--lock`` на пак, рядом с этим скриптом):
+  * ``dj_dave_samples.lock.json`` — сэмплы DJ_Dave (issue #3219): ``algorave-dave/samples``
+    (вокальные/бит-стемы, ``spilltab`` по пиннутому коммиту), ``lil-data/dj_dave-array_remix``
+    (mp3), ``tidalcycles/Dirt-Samples`` (``tech``/``psr``/``hh``/``cp``),
+    ``ritchse/tidal-drum-machines`` (hh/cp двух банков). У источников лицензии нет;
+  * ``sonicpi_samples.lock.json`` — Sonic Pi samples (CC0, 206 flac + README);
+  * ``muldjord_kit.lock.json`` — DrumGizmo MuldjordKit (CC BY 4.0, 32 flac выборкой).
 
-ФАЙЛЫ В GIT НЕ КОММИТИМ: у репозиториев сэмплов лицензии нет, в них стемы
-чужих песен, а наш репозиторий публичный. В git лежит только этот код и
-lock-файл (путь → пиннутый коммит + sha256 + размер).
+ФАЙЛЫ В GIT НЕ КОММИТИМ: у DJ_Dave нет лицензии (стемы чужих песен, репозиторий
+публичный), у остальных паков сэмплы тоже живут только на хосте. В git лежит
+этот код и lock-файлы (путь → пиннутый коммит + sha256 + размер).
 
 Почему lock-файл, а не поле ``sha256`` в manifest.yaml: у записи с
 ``fetch_hook`` ``apply_resource_pack.sh`` поле sha256 запрещает (одна сумма
@@ -19,9 +20,8 @@ lock-файл (путь → пиннутый коммит + sha256 + разме�
 Идемпотентность: файл на месте и sha256 совпал — сети нет. Маркер
 ``.complete`` пишется ТОЛЬКО после того, как все файлы сошлись.
 
-Куда: ``--target <dir>`` (запись ``dj-dave-samples`` манифеста; по умолчанию
-``/opt/rob_box/samples/dj_dave``). Раскладка внутри: ``algorave/``,
-``array/``, ``dirt/``, ``machines/``.
+Куда: ``--target <dir>`` (запись манифеста; для DJ_Dave
+``/opt/rob_box/samples/dj_dave``). Раскладка внутри — поле ``dest`` lock-файла.
 
 Зависимости: только stdlib.  Exit codes: 0 — всё на месте; 1 — нет.
 """
@@ -35,14 +35,12 @@ import pathlib
 import shutil
 import sys
 import time
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-LOCK_FILE = pathlib.Path(__file__).resolve().with_name("dj_dave_samples.lock.json")
 MARKER_FILENAME = ".complete"
-DEFAULT_TARGET = pathlib.Path("/opt/rob_box/samples/dj_dave")
 RAW_URL = "https://raw.githubusercontent.com/{repo}/{commit}/{path}"
 USER_AGENT = "rob-box-sample-downloader/1.0"
 TIMEOUT_SECONDS = 60
@@ -52,11 +50,13 @@ Entry = Dict[str, object]
 Opener = Callable[[str], "object"]
 
 
-def load_lock(path: pathlib.Path = LOCK_FILE) -> List[Entry]:
-    files = json.loads(path.read_text(encoding="utf-8"))["files"]
+def load_lock(path: pathlib.Path) -> Tuple[str, List[Entry]]:
+    """Прочитать lock-файл: (заголовок для лога, список файлов)."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    files = data["files"]
     if not files:
         raise ValueError(f"{path}: пустой список файлов")
-    return files
+    return str(data.get("title", "sample pack")), files
 
 
 def raw_url(entry: Entry) -> str:
@@ -134,11 +134,11 @@ def fetch_all(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="fetch_dj_dave_samples.py",
-        description="Скачать сэмплы DJ_Dave по lock-файлу (запись dj-dave-samples манифеста).",
+        prog="fetch_sample_pack.py",
+        description="Скачать сэмпл-пак по lock-файлу (записи dj-dave-samples, sonicpi-samples, muldjord-kit).",
     )
-    parser.add_argument("--target", default=None, metavar="DIR", help=f"по умолчанию {DEFAULT_TARGET}")
-    parser.add_argument("--lock", default=None, metavar="FILE", help="lock-файл (для тестов)")
+    parser.add_argument("--target", required=True, metavar="DIR", help="каталог пака на хосте")
+    parser.add_argument("--lock", required=True, metavar="FILE", help="lock-файл пака")
     return parser
 
 
@@ -149,9 +149,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
     args = build_arg_parser().parse_args(argv)
-    target = pathlib.Path(args.target).expanduser() if args.target else DEFAULT_TARGET
-    files = load_lock(pathlib.Path(args.lock) if args.lock else LOCK_FILE)
-    print(f"DJ_Dave samples target: {target} ({len(files)} файлов)", flush=True)
+    target = pathlib.Path(args.target).expanduser()
+    title, files = load_lock(pathlib.Path(args.lock))
+    print(f"{title} target: {target} ({len(files)} файлов)", flush=True)
     target.mkdir(parents=True, exist_ok=True)
     marker = target / MARKER_FILENAME
     marker.unlink(missing_ok=True)  # неполный каталог не должен выглядеть готовым
@@ -160,7 +160,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"ERROR: {len(problems)} из {len(files)} файлов не встали", file=sys.stderr, flush=True)
         return 1
     marker.write_text(f"{len(files)} files\n", encoding="utf-8")
-    print(f"DJ_Dave samples: done ({len(files)} файлов, sha256 всех сошёлся)", flush=True)
+    print(f"{title}: done ({len(files)} файлов, sha256 всех сошёлся)", flush=True)
     return 0
 
 
