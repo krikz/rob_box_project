@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
-from .model import BEATS_PER_BAR, Key, PitchEvent
+from .model import Key, PitchEvent
 
 SCHEMA_VERSION = 1
 #: Качества аккордов материала (ADR-0154 §3.1); ``degree`` — ступень диатонического аккорда в ``key`` или None.
@@ -106,12 +106,62 @@ def bar_beats(meter: Tuple[int, int]) -> float:
     return meter[0] * 4 / meter[1]
 
 
-def club_beat(meter: Tuple[int, int], beat: float) -> float:
-    """Доля материала → доля в тактах 4/4 клуба (ADR-0154 §3.6, В5 (б)): такт материала встаёт в такт 4/4 с начала,
-    короткий (3/4) дополняется паузой. Одна формула для хука и гармонии."""
-    bar = bar_beats(meter)
-    bar_idx, offset = divmod(beat, bar)
-    return bar_idx * BEATS_PER_BAR + offset
+def _interp(knots: Sequence[Tuple[float, float]], x: float) -> float:
+    """Кусочно-линейная функция по узлам ``(x, y)``, возрастающим по обеим осям."""
+    for (x0, y0), (x1, y1) in zip(knots, knots[1:]):
+        if x <= x1:
+            return y0 + (x - x0) * (y1 - y0) / (x1 - x0)
+    return float(knots[-1][1])
+
+
+@dataclass(frozen=True)
+class MeterMap:
+    """Перевод такта размера ``meter`` в такты 4/4 клуба (ADR-0154 §3.6, #3517): такт материала (``bar`` долей)
+    занимает ``club`` долей клуба; внутри такта доли идут по узлам ``knots`` (``knowledge.METER_MODES``), после
+    конца музыки (``knots[-1][1] < club``) — пауза. Одно отображение на хук, гармонию и бас."""
+
+    meter: Tuple[int, int]
+    club: float
+    knots: Tuple[Tuple[float, float], ...]
+
+    @property
+    def bar(self) -> float:
+        return bar_beats(self.meter)
+
+    @property
+    def tempo_ratio(self) -> float:
+        """Во сколько раз музыка такта длиннее в долях клуба, чем в долях материала (×4/3 у растяжения 3/4)."""
+        return self.knots[-1][1] / self.knots[-1][0]
+
+    def to_club(self, beat: float) -> float:
+        """Доля материала (от начала такта 1) → доля клуба."""
+        bar_idx, offset = divmod(beat, self.bar)
+        return bar_idx * self.club + _interp(self.knots, offset)
+
+    def note(self, beat: float, dur: float) -> Tuple[float, float]:
+        """Нота материала → ``(доля клуба, длительность)``; длительность не переходит за свой такт."""
+        bar_idx, offset = divmod(beat, self.bar)
+        start = _interp(self.knots, offset)
+        return bar_idx * self.club + start, _interp(self.knots, min(offset + dur, self.bar)) - start
+
+    def from_club(self, t: float) -> Optional[float]:
+        """Доля клуба → доля материала; в паузе такта (после конца музыки) — ``None``."""
+        bar_idx, offset = divmod(t, self.club)
+        if offset >= self.knots[-1][1]:
+            return None
+        return bar_idx * self.bar + _interp([(y, x) for x, y in self.knots], offset)
+
+
+def meter_map(meter: Tuple[int, int], mode: Optional[str] = None) -> Optional[MeterMap]:
+    """Перевод размера в 4/4 в режиме ``mode`` (по умолчанию ``knowledge.TRIPLE_METER_MODE``); ``None`` — размер в
+    этом режиме не переводится."""
+    row = kn.METER_MODES[mode or kn.TRIPLE_METER_MODE].get(tuple(meter))  # type: ignore[call-overload]
+    return None if row is None else MeterMap(tuple(meter), row[0], row[1])  # type: ignore[arg-type]
+
+
+def meter_pending(meter: Tuple[int, int]) -> bool:
+    """Размер переводится хоть в одном режиме :data:`knowledge.METER_MODES` — ждёт приёмки на слух (#3517)."""
+    return any(tuple(meter) in table for table in kn.METER_MODES.values())
 
 
 # ── валидатор ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -294,5 +344,6 @@ def from_json(text: str) -> ScoreMaterial:
 
 
 __all__ = ["BPM_RANGE", "CHORD_QUALITIES", "ChordSpan", "MaterialError", "MaterialStats", "PHRASE_RELATIONS",
-           "Phrase", "SCHEMA_VERSION", "SECTION_ORIGINS", "ScoreMaterial", "ScoreSection", "bar_beats", "club_beat",
-           "from_dict", "from_json", "license_usable", "to_dict", "to_json", "validate_material"]
+           "Phrase", "SCHEMA_VERSION", "SECTION_ORIGINS", "ScoreMaterial", "ScoreSection", "bar_beats",
+           "MeterMap", "from_dict", "from_json", "license_usable", "meter_map", "meter_pending", "to_dict", "to_json",
+           "validate_material"]

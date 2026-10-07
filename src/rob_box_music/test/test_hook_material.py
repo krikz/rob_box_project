@@ -102,9 +102,15 @@ def test_three_four_gets_a_rest_on_the_fourth_beat(monkeypatch):
     assert hook.bars == 8
 
 
-@pytest.mark.parametrize("meter", [(6, 8), (2, 4), (12, 8), (5, 4)])
+@pytest.mark.parametrize("meter", [(5, 4), (6, 4), (9, 8)])
 def test_unsupported_meter_is_refused_with_reason(meter):
     with pytest.raises(hooks.HookError, match="не переводится в 4/4"):
+        hooks.from_material(make_material(meter=meter), 120, 0, "major")
+
+
+@pytest.mark.parametrize("meter", [(3, 4), (6, 8), (3, 8), (12, 8)])
+def test_triple_meters_wait_for_acceptance_in_unfit_mode(meter):
+    with pytest.raises(hooks.HookError, match=r"перевод в 4/4 на приёмке \(#3517\)"):
         hooks.from_material(make_material(meter=meter), 120, 0, "major")
 
 

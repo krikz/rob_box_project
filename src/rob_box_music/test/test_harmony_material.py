@@ -113,8 +113,10 @@ def test_degrees_do_not_depend_on_track_tonic():
     assert from_material(m, key=Key(7, "major")) == from_material(m) == (0, 5, 3, 4)
 
 
-def test_three_four_is_padded_bar_by_bar():
-    """3/4: такт материала → такт 4/4 с паузой на 4-й доле (В5 (б)) — слот = 2 такта материала, как у 4/4."""
+@pytest.mark.parametrize("mode", ["pause", "stretch", "long", "lift"])
+def test_three_four_reads_bar_by_bar_in_every_mode(monkeypatch, mode):
+    """3/4: такт материала → такт 4/4 (пауза, растяжение, долгая доля — #3517) — слот = 2 такта материала, как у 4/4."""
+    monkeypatch.setattr(kn, "TRIPLE_METER_MODE", mode)
     assert from_material(synthetic((0, 0, 3, 3, 4, 4, 0, 0), meter=(3, 4))) == (0, 3, 4, 0)
 
 

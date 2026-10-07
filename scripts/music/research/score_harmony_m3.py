@@ -131,9 +131,11 @@ def window_notes(material, start: int):
     inside = [e for e in material.melody if start * bar <= e.beat < (start + 8) * bar]
     if not inside:
         return []
-    zero = mt.club_beat(material.meter, inside[0].beat - start * bar)
-    return [PitchEvent(e.midi, mt.club_beat(material.meter, e.beat - start * bar) - zero, e.dur_beats, 2)
-            for e in inside]
+    mm = mt.meter_map(material.meter, "pause")  # M3 мерили с переводом В5 (б)
+    if mm is None:
+        return []
+    zero = mm.to_club(inside[0].beat - start * bar)
+    return [PitchEvent(e.midi, mm.to_club(e.beat - start * bar) - zero, e.dur_beats, 2) for e in inside]
 
 
 def loo_table(rows, skip: str, mode: str):

@@ -117,8 +117,9 @@ def test_approaches_are_capped_by_the_corpus_rate():
     assert [i for i, t in enumerate(got) if t.approach] == list(range(cap))
 
 
-def test_three_four_bass_is_read_with_a_rest_on_the_fourth_beat():
+def test_three_four_bass_is_read_with_a_rest_on_the_fourth_beat(monkeypatch):
     """3/4 → 4/4 (В5 (б)): такт материала встаёт в такт клуба, 4-я доля — пауза; тон и подход читаются по тактам."""
+    monkeypatch.setattr(kn, "TRIPLE_METER_MODE", "pause")
     m = synthetic(BARS, meter=(3, 4))
     notes = [(ROOTS[d], i * 3.0, 3.0) for i, d in enumerate(BARS)]
     notes[2] = (48, 6.0, 3.0)

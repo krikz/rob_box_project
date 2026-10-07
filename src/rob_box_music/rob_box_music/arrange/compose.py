@@ -322,7 +322,7 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         return None
     try:
         motif, key = hooks.from_material(material, profile.bpm, profile.root, profile.mode, hook_register(style))
-        scale = hooks.time_scale(material.bpm or profile.bpm, profile.bpm)
+        scale = hooks.material_scale(material, profile.bpm)
         phrase = hooks.pick_phrase(material)
 
         def progression(drop: Sequence[PitchEvent]) -> Tuple[int, ...]:
