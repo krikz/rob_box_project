@@ -43,6 +43,7 @@ __all__ = [
     "fingerprint",
     "kick_name",
     "last_opener",
+    "opening_order",
     "recent_hooks",
     "recent_values",
     "track_composition",
@@ -326,6 +327,14 @@ def last_opener(history: Sequence[Mapping[str, Any]], set_id: Optional[str]) -> 
             break
         prev, opener = sid, row.get("melody_name") or opener
     return opener
+
+
+def opening_order(ids: Sequence[str], recent: Sequence[str], opener: Optional[str]) -> List[str]:
+    """Очередь первого трека сета (#3399): мелодии, не звучавшие в последних ``kn.HOOK_FRESH_SETS`` сетах, — в порядке
+    профиля (хук №1 темы — самая узнаваемая из свежих, #3427); затем звучавшие — тоже в порядке профиля (у темы
+    из одной мелодии — другая её версия, а не случайная запись); хук, открывший прошлый сет (``opener``), —
+    последним. Одна очередь для хуков RTTTL (``compose``) и материалов партитур (``set_plan.plan_materials``)."""
+    return sorted(ids, key=lambda name: 2 if name == opener else int(name in recent))
 
 
 def kick_name(sample: int, symbol: str = "X") -> str:

@@ -53,7 +53,7 @@ from .. import knowledge as kn
 from ..model import (
     BEATS_PER_BAR, Chord, Form, Grid, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
 )
-from ..diversity import fingerprint, last_opener, recent_hooks, recent_values, weighted_pick
+from ..diversity import fingerprint, last_opener, opening_order, recent_hooks, recent_values, weighted_pick
 from ..material import ScoreMaterial
 from ..rtttl import CONTOUR_NOTES, contour
 from ..set_plan import SetPlan, TrackPlan, pick_kick, pick_template, seeded_plan
@@ -196,14 +196,6 @@ def _hook_queue(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str]
     fresh = [i for i in ids if i not in recent]
     stale = sorted((i for i in ids if i in recent), key=recent.index, reverse=True)
     return (fresh if profile.theme_hooks else rng.sample(fresh, len(fresh))) + stale
-
-
-def opening_order(ids: Sequence[str], recent: Sequence[str], opener: Optional[str]) -> List[str]:
-    """Очередь первого трека сета (#3399): мелодии, не звучавшие в последних ``kn.HOOK_FRESH_SETS`` сетах, — в порядке
-    профиля (хук №1 темы — самая узнаваемая из свежих, #3427); затем звучавшие — тоже в порядке профиля (у темы
-    из одной мелодии — другая её версия, а не случайная запись); хук, открывший прошлый сет (``opener``), —
-    последним."""
-    return sorted(ids, key=lambda name: 2 if name == opener else int(name in recent))
 
 
 def _least_recent(names: Sequence[str], recent: Sequence[str]) -> List[str]:

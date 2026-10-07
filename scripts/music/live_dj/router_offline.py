@@ -5,6 +5,7 @@
 → тул движка v2 (``dj_set``/``request_music``) с настоящими ``compose``/``render`` и фейковым
 владельцем плеера (``play`` принимает программу сразу). Это НЕ замер A2 на роботе: CPU хоста,
 нет Renardo, нет старта на границе такта (Clock.latency 0.5 с + до такта ≈ 1.9 с при 130 BPM).
+Библиотека партитур (ADR-0154 PR-5) — ``ROB_BOX_SCORE_LIBRARY=<каталог>``; без неё сет берёт хуки RTTTL.
 
 Запуск из корня репо (пакеты своего чекаута):
     PYTHONUTF8=1 PYTHONPATH="src/rob_box_music;src/rob_box_core;src/rob_box_voice;src/rob_box_harness;\
@@ -33,6 +34,7 @@ PHRASES = (
     "Робот включи музыку",
     "Робот поставь техно",
     "Робот поставь калинку",
+    "Робот включи сет на тему интерстеллар",  # ADR-0154 PR-5: материал партитуры, если есть библиотека
 )
 
 
@@ -44,7 +46,7 @@ class _Owner:
     def __init__(self) -> None:
         self.played = []
 
-    def play(self, program, dj=None):
+    def play(self, program, dj=None, once=False):
         self.played.append(program)
         return {"ok": True, "track_id": program.track_id}
 
