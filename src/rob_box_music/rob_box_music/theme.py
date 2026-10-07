@@ -4,9 +4,10 @@
 ``knowledge.THEMES`` по основам (``космический`` ~ ``косм``); совпала строка — темп из её окна, лад
 плана и хуки строки. Хуки темы — ещё и мелодии, которые по словам темы нашёл поиск по всей RTTTL-библиотеке
 (``found``: ``engine.search.theme_hooks`` в процессе плеера, #3399): «терминатор» → ``terminat``. Ни строки, ни
-находок — окно стиля и пул из :data:`HOOK_POOL` по хешу темы (``source="pool"``, а не «тема»): у разных тем
-разные хуки, а не одни и те же семь. Темп, тоника и пул — от sha256 текста темы: одна тема даёт один профиль
-на любом процессе (``hash()`` Python солёный).
+находок — окно стиля и весь :data:`HOOK_POOL` (``source="pool"``, а не «тема») в порядке по хешу темы: у разных
+тем разный первый хук. Какой хук откроет сет, решает история (``compose.opening_order``, #3399): пул из семи по хешу
+одной фразы давал один и тот же набор и первый хук в каждом сете (popcorn/axelf, 07.10). Темп, тоника и порядок
+пула — от sha256 текста темы: одна тема даёт один профиль на любом процессе (``hash()`` Python солёный).
 """
 
 from __future__ import annotations
@@ -22,11 +23,11 @@ from . import knowledge as kn
 #: Мелодии строк ``pooled=False`` (праздник, дети): в пул чужих тем не идут, даже из общего пула.
 _OCCASION_HOOKS = frozenset(h for row in kn.THEMES.values() if not row.pooled for h in row.hooks)
 #: Широкий пул хуков темы без находок: мелодии строк ``pooled`` и общего пула без праздничных; сету достаётся
-#: :data:`POOL_HOOKS`.
+#: весь (:data:`POOL_HOOKS`) — свежие из него по истории идут первыми (#3399).
 HOOK_POOL: Tuple[str, ...] = tuple(h for h in dict.fromkeys((
     *(h for row in kn.THEMES.values() if row.pooled for h in row.hooks), *kn.DEFAULT_HOOKS))
     if h not in _OCCASION_HOOKS)
-POOL_HOOKS = 7
+POOL_HOOKS = len(HOOK_POOL)
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class ThemeProfile:
 
     @property
     def source(self) -> str:
-        """``theme`` — хуки по словам темы (A11), ``pool`` — пул по хешу темы."""
+        """``theme`` — хуки по словам темы (A11), ``pool`` — пул без находок."""
         return "theme" if self.theme_hooks else "pool"
 
 
