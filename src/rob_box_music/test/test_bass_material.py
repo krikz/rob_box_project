@@ -220,9 +220,22 @@ def test_no_answer_without_a_new_next_phrase(degrees):
 
 # ── compose: бас материала в треке ──────────────────────────────────────────────────────────────────────────────
 
+def _theme_bars(track) -> range:
+    """Такты формы секции темы целиком (``knowledge.THEME_SECTION``, ADR-0154 PR-7)."""
+    start = 0
+    for sec in track.form.sections:
+        if sec.name == kn.THEME_SECTION:
+            return range(start, start + sec.bars)
+        start += sec.bars
+    return range(0)
+
+
 def _bass_by_loop_bar(track):
     out = {}
+    theme = _theme_bars(track)
     for e in track.parts["bass"].pitches:
+        if int(e.beat // BEATS_PER_BAR) in theme:
+            continue
         out.setdefault(int(e.beat // BEATS_PER_BAR) % 8, []).append(e)
     return out
 
@@ -244,7 +257,8 @@ def test_compose_puts_the_author_inversion_and_approach_into_the_bass():
     bars = {}
     for e in track.parts["bass"].pitches:
         bars.setdefault(int(e.beat // BEATS_PER_BAR), []).append(e)
-    joints = [b for b in bars if b % 8 == 3 and b + 1 in bars]
+    theme = _theme_bars(track)  # в теме целиком (PR-7) — бас темы, петля по такту формы — вне её
+    joints = [b for b in bars if b % 8 == 3 and b + 1 in bars and b not in theme]
     assert joints and all(bars[b][-1].midi == bars[b + 1][0].midi + 1 for b in joints)  # подход сверху, как у автора
     assert track.hook.answer  # drop2 — ритм хука с контуром следующей фразы
 

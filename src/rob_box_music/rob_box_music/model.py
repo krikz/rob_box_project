@@ -17,7 +17,8 @@ from .tonality import key_fit
 
 BEATS_PER_BAR = 4
 STEPS_PER_BAR = 16
-BARS_TOTAL = (32, 48, 64)
+#: Длины клубной формы: от 32 тактов шагом периода ударных до потолка трека с темой целиком (ADR-0154 PR-7).
+BARS_TOTAL = tuple(range(32, kn.TRACK_MAX_BARS + 1, kn.FORM_BARS_STEP))
 OUTRO_MIN_BARS = 8
 PHRASE_BARS = (8, 16, 32)
 APPROACH_MAX_BEATS = 0.5  # хроматический подход баса (ADR-0149 §3.5)
@@ -129,6 +130,10 @@ class Hook:
     #: Ответ хуку из материала партитуры (ADR-0154 Н10, развитие ``rhythm``): ритм хука, высоты следующей фразы; пусто
     #: — ответа нет. Вне ``repr``: хук без ответа выглядит как до PR-4 (эталон ``test_style_same_tracks`` тот же).
     answer: Tuple[PitchEvent, ...] = field(default=(), repr=False)
+    #: Тема целиком (ADR-0154 PR-7): мелодия фраза за фразой, доли от начала темы, ``theme_bars`` тактов; звучит в
+    #: ``knowledge.THEME_SECTION``. Пусто — темы длиннее хука нет. Вне ``repr``, как ``answer``.
+    theme: Tuple[PitchEvent, ...] = field(default=(), repr=False)
+    theme_bars: int = field(default=0, repr=False)
 
 
 @dataclass(frozen=True)
@@ -465,6 +470,11 @@ def _check_hook_and_harmony(track: Track) -> None:
     for i, ev in enumerate(hook.notes):
         _require(ev.dur_beats > 0 and 0 <= ev.beat and ev.beat + ev.dur_beats <= hook.bars * BEATS_PER_BAR + 1e-9,
                  f"hook.notes[{i}].beat", "нота вне длины мотива")
+    _require(not hook.theme or (hook.bars < hook.theme_bars <= kn.THEME_MAX_BARS and hook.theme_bars % 4 == 0),
+             "hook.theme_bars", f"тема {hook.theme_bars} тактов: кратное 4 в {hook.bars + 1}..{kn.THEME_MAX_BARS}")
+    span = hook.theme_bars * BEATS_PER_BAR + 1e-9
+    _require(all(0 <= ev.beat and ev.beat + ev.dur_beats <= span for ev in hook.theme), "hook.theme",
+             "нота вне длины темы")
 
 
 def _check_transitions(track: Track) -> None:
