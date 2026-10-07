@@ -52,9 +52,12 @@ def test_rave_windows_span_140_to_160_and_kicks_are_hard_and_flagged_unmeasured(
     assert RAVE.genre_windows.keys() <= kn.GENRE_NAMES
 
 
-def test_rave_timbres_lead_with_hoover_rave_supersaw_and_every_family_has_acid_tb303():
+def test_rave_timbres_lead_with_readable_saw_and_every_family_has_acid_tb303():
+    """07.10: «какофония, сильное эхо» — ``hoover``/``rave``/``supersawlead`` теме не годятся (``LEAD_CLARITY``);
+    лицо рейва в лиде — сырая ``saw`` в каждой семье."""
     leads = {s for fam in RAVE.timbres.values() for s in fam["lead"]}
-    assert {"hoover", "rave", "supersawlead"} <= leads and leads <= set(kn.SYNTH_PALETTE["lead"])
+    assert leads <= kn.THEME_LEAD_OK and leads <= set(kn.SYNTH_PALETTE["lead"])
+    assert all("saw" in fam["lead"] for fam in RAVE.timbres.values())
     paired = {s for synths in kn.BASS_FIGURE_SYNTHS.values() for s in synths}
     for name, fam in RAVE.timbres.items():
         assert "tb303" in fam["bass"] and "acid16" in mix.bass_figures(RAVE, kn.family_of(RAVE, None)), name
