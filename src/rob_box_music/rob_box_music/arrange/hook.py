@@ -26,7 +26,7 @@ from dataclasses import replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
-from ..material import MaterialError, Phrase, ScoreMaterial, bar_beats, club_beat, validate_material
+from ..material import MaterialError, MeterMap, Phrase, ScoreMaterial, meter_map, meter_pending, validate_material
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
 from ..rtttl import parse_rtttl
 from ..tonality import detect_key, key_fit
@@ -298,22 +298,31 @@ def pick_phrase(material: ScoreMaterial) -> Phrase:
     return min(fit, key=lambda p: (not _in_theme_section(material, p), -p.repeats, p.bar))
 
 
-#: Размеры, которые хук переводит в 4/4 клуба: 4/4 и 2/2 как есть, 3/4 — паузой на 4-й доле (В5 (б)).
-SUPPORTED_METERS: Tuple[Tuple[int, int], ...] = ((4, 4), (2, 2), (3, 4))
+def _meter(material: ScoreMaterial) -> MeterMap:
+    """Перевод размера материала в 4/4 клуба в режиме ``knowledge.TRIPLE_METER_MODE`` (``material.meter_map``).
+    Размер, который переводится только в других режимах, ждёт приёмки на слух (#3517); остальные (5/4, 6/4, 9/8 …)
+    честно отвергаются (ADR-0154 §3.6)."""
+    mm = meter_map(material.meter)
+    if mm is not None:
+        return mm
+    name = f"{material.meter[0]}/{material.meter[1]}"
+    if meter_pending(material.meter):
+        raise HookError(f"размер {name}: перевод в 4/4 на приёмке (#3517)")
+    raise HookError(f"размер {name} не переводится в 4/4 клуба (ADR-0154 §3.6)")
+
+
+def material_scale(material: ScoreMaterial, bpm: int) -> float:
+    """Множитель темпа материала в треке (:func:`time_scale`): темп материала — в долях клуба после перевода
+    размера (растяжение 3/4 ×4/3 — музыка медленнее в долях клуба). Один на хук, гармонию и бас."""
+    return time_scale((material.bpm or bpm) * _meter(material).tempo_ratio, bpm)
 
 
 def _phrase_notes(material: ScoreMaterial, phrase: Phrase) -> List[Tuple[Optional[int], float]]:
-    """Ноты фразы как ``(MIDI | None, длительность)`` в тактах 4/4; 3/4 дополняется паузой на 4-й доле, длительность
-    не переходит за свой такт. Размер вне :data:`SUPPORTED_METERS` честно отвергается (ADR-0154 §3.6)."""
-    if material.meter not in SUPPORTED_METERS:
-        raise HookError(f"размер {material.meter[0]}/{material.meter[1]} не переводится в 4/4 клуба (ADR-0154 §3.6)")
-    bar = bar_beats(material.meter)
-    first, last = phrase.bar * bar, (phrase.bar + phrase.bars) * bar
-    placed: List[Tuple[float, float, int]] = []  # (доля в 4/4, длительность до конца такта, MIDI)
-    for e in material.melody:
-        if first <= e.beat < last:
-            offset = (e.beat - first) % bar
-            placed.append((club_beat(material.meter, e.beat - first), min(e.dur_beats, bar - offset), e.midi))
+    """Ноты фразы как ``(MIDI | None, длительность)`` в тактах 4/4 (перевод размера — :func:`_meter`); длительность
+    не переходит за свой такт, тишина перевода (пауза 3/4) — паузой."""
+    mm = _meter(material)
+    first, last = phrase.bar * mm.bar, (phrase.bar + phrase.bars) * mm.bar
+    placed = [mm.note(e.beat - first, e.dur_beats) + (e.midi,) for e in material.melody if first <= e.beat < last]
     out: List[Tuple[Optional[int], float]] = []
     cursor = 0.0
     for i, (start, dur, midi) in enumerate(placed):
@@ -346,7 +355,7 @@ def rhythm_answer(material: ScoreMaterial, phrase: Phrase, hook: Hook, key: Key,
 def _contour(material: ScoreMaterial, phrase: Phrase, hook: Hook, bpm: int) -> List[int]:
     """Высоты следующей фразы материала на долях нот хука (нота, начавшаяся последней к доле)."""
     contour = _onsets(_phrase_notes(material, Phrase(phrase.bar + phrase.bars, phrase.bars, "new")),
-                      time_scale(material.bpm or bpm, bpm))
+                      material_scale(material, bpm))
     if len(contour) < MIN_NOTES:
         raise HookError(f"в следующей фразе {len(contour)} нот — не мотив")
     starts = [b for b, _d, _m in contour]
@@ -381,8 +390,9 @@ def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
     :func:`rhythm_answer` (развитие ``rhythm`` в :data:`RHYTHM_SECTIONS`)."""
     validate_material(material)
     phrase = pick_phrase(material)
-    hook, key = from_notes(_phrase_notes(material, phrase), material.bpm or bpm, material.material_id, bpm, root,
-                           mode, register, material.key)
+    club_bpm = (material.bpm or bpm) * _meter(material).tempo_ratio
+    hook, key = from_notes(_phrase_notes(material, phrase), club_bpm, material.material_id, bpm, root, mode, register,
+                           material.key)
     return replace(hook, answer=rhythm_answer(material, phrase, hook, key, bpm, register)), key
 
 
@@ -400,4 +410,5 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 
 
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "develop", "diatonic",
-           "from_material", "from_notes", "from_rtttl", "material_unfit", "pick_phrase", "rhythm_answer", "time_scale", "track_key"]
+           "from_material", "from_notes", "from_rtttl", "material_scale", "material_unfit", "pick_phrase", "rhythm_answer",
+           "time_scale", "track_key"]
