@@ -32,9 +32,10 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music.dj_line import persona_title
 from rob_box_music.theme import match_style
 
-from .set_length_words import split_set_length
+from .set_length_words import LENGTH_WORDS, split_set_length
 
 
 class MediaIntent(str, Enum):
@@ -64,8 +65,10 @@ class MediaCommand:
         closed: реплика ЦЕЛИКОМ покрыта грамматикой — LLM не нужна. Для
             ``DJ`` бывает ``False``: персона назначена, но в реплике есть
             ещё что-то (план, конкретные треки) — это решает LLM.
-        persona: для ``DJ`` — «диджей X» или ``""``.
-        theme: для ``DJ`` — тема из «у нас сегодня …» или ``""``.
+        persona: для ``DJ`` — «диджей X» или ``""``. Тему из свободных слов реплики («у нас сегодня …»,
+            «вечеринка любителей X, замути сэт») грамматика НЕ выделяет: её выделяет ``dj_set`` из скрытого
+            ``heard_text`` одной функцией для пути команды и пути LLM
+            (``rob_box_mcp_tools.engine.theme_grounding.heard_theme``, 07.10).
         name: для ``PLAY_NAMED`` — название мелодии словами юзера
             («к элизе»), без глагола и служебных слов; для ``REQUEST_MUSIC`` —
             родовые слова заказа («клубный трек»).
@@ -88,7 +91,6 @@ class MediaCommand:
     intent: MediaIntent
     closed: bool = True
     persona: str = ""
-    theme: str = ""
     name: str = ""
     set_theme: str = ""
     set_persona: str = ""
@@ -357,7 +359,7 @@ _PERSONA_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: Тема после «у нас (сегодня|тут)».
+#: «у нас (сегодня|тут) …» — слова темы: их отрезок не делает реплику «не закрытой», саму тему выделяет ``dj_set``.
 _THEME_RE = re.compile(
     r"у\s+нас\s+(?:сегодня\s+|тут\s+|здесь\s+)?([^.!?\n]{3,80})",
     re.IGNORECASE,
@@ -401,17 +403,27 @@ def _persona_span(text: str) -> Tuple[str, Optional[Tuple[int, int]]]:
     return " ".join(name_words), (assign.start(), m.end())
 
 
-def extract_dj_request_hint(user_input: Optional[str]) -> Tuple[str, str]:
-    """``(persona, theme)`` из DJ-запроса; пустые строки — не нашлось.
+def extract_dj_persona(user_input: Optional[str]) -> str:
+    """Персона из DJ-запроса с префиксом «диджей» («диджей Снупдог»); ``""`` — не нашлась."""
+    name, _span = _persona_span((user_input or "").strip())
+    return persona_title(name)
 
-    Персона — с префиксом «диджей».
-    """
-    text = (user_input or "").strip()
-    name, _span = _persona_span(text)
-    persona = f"диджей {name}" if name else ""
-    t = _THEME_RE.search(text)
-    theme = t.group(1).strip() if t else ""
-    return persona, theme
+
+def dj_persona_span(text: str) -> Optional[Tuple[int, int]]:
+    """Отрезок «ты диджей X» в реплике (назначение персоны с именем) или ``None``. Имя не заходит на ввод темы
+    («ты диджей Робокс на тему космос» — имя «Робокс»). Его вырезает из темы ``theme_grounding.heard_theme``."""
+    head, _theme = _theme_split(text)
+    spoken = _THEME_RE.search(head)
+    head = head[:spoken.start()] if spoken else head  # «ты диджей Снупдог у нас сегодня …» — имя до «у нас»
+    name, span = _persona_span(head)
+    assign = _PERSONA_RE.search(head)
+    if name or not assign:
+        return span
+    rest = head[assign.end():]  # имя без границы («ты диджей вася вечеринка у меня») — одно слово после «диджей»
+    word = next(iter(rest.split()), "")
+    if not word or word.lower() in ("и", "у"):
+        return span
+    return assign.start(), assign.end() + rest.find(word) + len(word)
 
 
 def _cut(text: str, spans: Sequence[Optional[Tuple[int, int]]]) -> str:
@@ -471,18 +483,15 @@ def _with_style(command: MediaCommand, text: str) -> MediaCommand:
     style, _rest = _style_words(_words(text))
     if not style:
         return command
-
-    def unstyled(theme: str) -> str:
-        return " ".join(_style_words(_theme_words(theme))[1]) if theme else theme
-
-    return replace(command, style=style, theme=unstyled(command.theme), set_theme=unstyled(command.set_theme))
+    theme = command.set_theme
+    return replace(command, style=style, set_theme=" ".join(_style_words(_theme_words(theme))[1]) if theme else theme)
 
 
 def _dj_command(text: str) -> MediaCommand:
     """DJ-команда со стилем (:func:`_with_style`); заказ сета с темой словами человека — закрыт
     (:func:`is_spoken_theme_set`)."""
     command = _dj_theme_command(text)
-    if not (command.closed or command.theme or command.set_theme) and is_spoken_theme_set(text):
+    if not (command.closed or command.set_theme) and is_spoken_theme_set(text):
         command = replace(command, closed=True)
     return _with_style(command, text)
 
@@ -490,7 +499,7 @@ def _dj_command(text: str) -> MediaCommand:
 def _dj_theme_command(text: str) -> MediaCommand:
     """DJ-команда: персона/тема/закрытость + ``set_theme``/``set_persona`` из «… на тему X»."""
     command = _dj_head_command(text)
-    if command.theme:
+    if _THEME_RE.search(text):  # «у нас сегодня …» — тема словами реплики, её выделяет dj_set
         return command
     head, theme = _theme_split(text)
     if not theme or not is_dj_request(head):
@@ -502,8 +511,8 @@ def _dj_theme_command(text: str) -> MediaCommand:
 
 
 def _dj_head_command(text: str) -> MediaCommand:
-    persona, theme = extract_dj_request_hint(text)
-    _name, persona_span = _persona_span(text)
+    """Персона и закрытость: реплика без «ты диджей X», «у нас …» и запуска сета — одни служебные слова и стиль."""
+    name, persona_span = _persona_span(text)
     theme_m = _THEME_RE.search(text)
     start_m = _SET_START_RE.search(text)
     rest = _cut(text, [
@@ -512,9 +521,7 @@ def _dj_head_command(text: str) -> MediaCommand:
         start_m.span() if start_m else None,
     ])
     closed = all(w in _DJ_FILLER or w in _STYLE_LEAD or _is_style_word(w) for w in _words(rest))
-    return MediaCommand(
-        intent=MediaIntent.DJ, closed=closed, persona=persona, theme=theme
-    )
+    return MediaCommand(intent=MediaIntent.DJ, closed=closed, persona=persona_title(name))
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +824,15 @@ _NOT_THEME: FrozenSet[str] = (_NOT_A_TITLE - _THEME_LEADS) | _VOICE_WORDS
 _NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"up", "down", "max", "topic", "stop"})
 
 
+#: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
+#: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
+SET_REQUEST_WORDS: FrozenSet[str] = _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | frozenset({
+    "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
+    "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "дальше", "пусть",
+    "можешь", "мы", "я", "наш", "наша", "наше", "нашу", "нашего",
+})
+
+
 def is_spoken_theme_set(text: str) -> bool:
     """Реплика — заказ сета и ничего больше: ровно одна просьба, и это «<глагол> сет» («замути сэт», «включи мне
     сет»); остальные слова — тема (и персона «ты диджей X»). Вопрос, отрицание, ссылка на контекст, громкость/стоп,
@@ -870,7 +886,7 @@ def _listed_set(text: str) -> Optional[MediaCommand]:
     if not sep or not listed or all(w in _DJ_FILLER or w in _PLAY_NAMED_FILLER for w in _words(listed)):
         return None
     command = _parse_text(head, None)
-    if command.intent is not MediaIntent.DJ or not command.closed or command.theme or command.set_theme:
+    if command.intent is not MediaIntent.DJ or not command.closed or command.set_theme or _THEME_RE.search(head):
         return None
     return replace(command, set_theme=listed, set_persona=command.persona)
 
@@ -933,7 +949,9 @@ __all__ = [
     "MediaCommand",
     "MediaIntent",
     "NO_COMMAND",
-    "extract_dj_request_hint",
+    "SET_REQUEST_WORDS",
+    "dj_persona_span",
+    "extract_dj_persona",
     "extract_user_utterance",
     "is_dj_request",
     "is_music_stop_command",

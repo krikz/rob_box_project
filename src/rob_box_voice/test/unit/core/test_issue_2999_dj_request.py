@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 from rob_box_voice.core.media_command_grammar import (
-    extract_dj_request_hint,
+    extract_dj_persona,
     is_dj_request,
 )
 from rob_box_voice.core.turn_speech import decide_turn_speech, is_retry_prompt_leak
@@ -86,17 +86,18 @@ def test_is_dj_request_negative(text) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "persona", "theme"),
+    ("text", "persona"),
     [
-        (LIVE_A, "диджей Снупдог", "вечеринка ганкста в чорном квартале"),
-        (LIVE_B, "диджей Анакен скайвокер", "имперский слет в клубе"),
-        (LIVE_DIVE, "диджей Дайв", "вечеринка в клубе"),
-        ("давай dj сет", "", ""),
-        ("стань диджеем", "", ""),
+        (LIVE_A, "диджей Снупдог"),
+        (LIVE_B, "диджей Анакен скайвокер"),
+        (LIVE_DIVE, "диджей Дайв"),
+        ("давай dj сет", ""),
+        ("стань диджеем", ""),
     ],
 )
-def test_extract_dj_request_hint(text: str, persona: str, theme: str) -> None:
-    assert extract_dj_request_hint(text) == (persona, theme)
+def test_extract_dj_persona(text: str, persona: str) -> None:
+    """Тему «у нас сегодня …» грамматика больше не выделяет — её выделяет ``dj_set`` из ``heard_text`` (07.10)."""
+    assert extract_dj_persona(text) == persona
 
 
 # ── 4. CRITICAL не доходит до TTS ──────────────────────────────────────

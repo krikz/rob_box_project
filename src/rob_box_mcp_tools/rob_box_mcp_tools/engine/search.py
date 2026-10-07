@@ -284,6 +284,12 @@ def genre_of(text: str) -> Optional[str]:
     return None
 
 
+def blank_style(text: str) -> str:
+    """Текст без слов стиля с цифрой («8битный», «8-бит», «16 bit», :data:`knowledge.SEARCH_STYLE_PATTERNS`):
+    они заменены пробелами той же длины — позиции остальных слов не сдвигаются. Стиль — не тема сета (#3476)."""
+    return _STYLE_RE.sub(lambda m: " " * len(m.group()), text)
+
+
 def content_stems(text: str) -> frozenset:
     """Значимые основы слов текста: без служебных слов темы (``knowledge.SEARCH_STOPWORDS``) и стиля («8-бит»),
     жанр — меткой ``genre:<тег>`` (:func:`genre_of`: «классическая» и «классика» — одна основа). Сверка темы сета
@@ -300,7 +306,7 @@ def content_stems(text: str) -> frozenset:
 
 def _genre_only(library: Any, part: str) -> Optional[str]:
     """Метка жанра, если часть темы называет только жанр («классическая музыка»), иначе ``None``."""
-    words = {t.word for t in terms(library, part)} - set(kn.GENRE_FILLER)
+    words = {t.word for t in terms(library, part) if not genre_of(t.word)} - set(kn.GENRE_FILLER)  # «кино»
     return None if words else genre_of(part)
 
 
@@ -434,5 +440,6 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
 
 
 __all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS", "Term",
-           "ThemeHits", "by_part", "consensus_order", "coverage", "find", "genre_hooks", "genre_of", "ranked",
-           "round_robin", "sound_key", "stem", "terms", "theme_hooks", "theme_parts", "theme_search", "title_key"]
+           "ThemeHits", "blank_style", "by_part", "consensus_order", "coverage", "find", "genre_hooks", "genre_of",
+           "ranked", "round_robin", "sound_key", "stem", "terms", "theme_hooks", "theme_parts", "theme_search",
+           "title_key"]
