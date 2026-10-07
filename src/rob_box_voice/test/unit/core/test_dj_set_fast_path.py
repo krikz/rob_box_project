@@ -13,11 +13,14 @@ STT 19:08:29.7 → ``process_input`` 30.2 → LLM ``load_skill`` 35.5 → LLM ``
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from rob_box_voice.core.media_command_grammar import is_spoken_theme_set, parse_media_command
 from rob_box_voice.core.media_router import MediaRouter, MediaState
-from rob_box_voice.core.media_plan_run import command_turn_context
+from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
+from rob_box_voice.core.music_player_state import MusicEventLog, build_music_event_payload
 from rob_box_voice.core.set_length_words import heard_set_length
 
 LIVE_1908 = ("Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки "
@@ -88,3 +91,40 @@ def test_volume_command_keeps_the_llm_turn_context():
     plan = _route("громче", MediaState(music_playing=True))
     assert plan is not None and not plan.cancel_inflight
     assert command_turn_context(plan, "громче") == {}
+
+
+# ── 07.10: тема «у нас сегодня …» — не грамматикой, фраза запуска — из темы результата dj_set ────────────────
+LIVE_U_NAS = ("Робот, ты диджей 8битный и у нас сегодня вечеринка любителей денди и классической музыки "
+              "замути сэт на 30 минут")
+ATLAS = "Ты диджей Атлас и у нас сегодня вечеринка любителей кино, играй мелодии из топовых фильмов"
+
+
+@pytest.mark.parametrize("text,args", [
+    (LIVE_U_NAS, {"action": "start", "persona": "диджей 8битный", "tracks": 24}),
+    (ATLAS, {"action": "start", "persona": "диджей Атлас"}),
+])
+def test_spoken_theme_is_not_cut_by_the_grammar(text, args):
+    """Раньше: theme='вечеринка любителей денди и классической музыки замути сэт' / '… играй мелодии из топовых
+    фильмов' — сырой хвост в поиск и в TTS. Тему выделяет dj_set из heard_text (``theme_grounding.heard_theme``)."""
+    plan = _route(text)
+    assert plan is not None and plan.tool_calls[0].arguments == args
+    assert "Тема" not in plan.say_ok and "диджей диджей" not in plan.say_ok
+
+
+def _started_phrase(plan, result):
+    events = MusicEventLog()
+    events.observe_json(build_music_event_payload("started", "s:01:A:x", ts=1.0, phase_in_form=0.0))
+
+    async def call_tool(_call):
+        return True, "Сет начат\n" + repr({"ok": True, "track_id": "s:01:A:x", **result})
+
+    return asyncio.run(run_media_plan(plan, call_tool, events))[1]
+
+
+def test_started_phrase_names_the_theme_dj_set_actually_took():
+    """Фразу строит код из результата тула (ADR-0148): тема — та, что выделил dj_set, а не сырой хвост реплики."""
+    assert _started_phrase(_route(ATLAS), {"theme": "кино, фильмов"}) == (
+        "Я диджей Атлас, включаю сет. Тема — кино, фильмов.")
+    assert _started_phrase(_route(ATLAS), {}) == "Я диджей Атлас, включаю сет."
+    themed = _route("включи диджей сет на тему космос")
+    assert _started_phrase(themed, {"theme": "что-то другое"}) == "Включаю диджей-сет. Тема — космос."

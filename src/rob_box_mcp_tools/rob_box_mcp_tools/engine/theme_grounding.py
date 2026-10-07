@@ -7,47 +7,52 @@
 хоть одну значимую основу (:func:`search.content_stems`: перефраз, сокращение, жанр); иначе тема — слова реплики без
 служебных («ты диджей X», «замути сэт», длина сета). Нет реплики или в ней нет значимых слов («да», «давай») —
 тема LLM как есть.
+
+:func:`heard_theme` — ЕДИНСТВЕННОЕ место, где тема выделяется из свободных слов реплики: путь LLM и путь команды
+роутера (``rob_box_voice.core.media_router`` шлёт ``dj_set`` без темы, «у нас сегодня …» грамматика не режет) дают
+одну тему (07.10: команда «… и у нас сегодня …» везла тему «… классической музыки замути сэт»). Слова просьбы —
+таблица грамматики ``media_command_grammar.SET_REQUEST_WORDS``, имя диджея — её ``dj_persona_span``, стиль с цифрой
+(«8битный», #3476) — ``search.blank_style``.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from .search import content_stems, genre_of
+from rob_box_music import knowledge as kn
+from rob_box_music.theme import match_style
 
-#: Слова просьбы, которых нет в ``knowledge.SEARCH_STOPWORDS`` (там слова темы): глаголы запуска, обращение, длина.
-_REQUEST_WORDS = frozenset({
-    "ты", "робот", "замути", "замутим", "замутить", "замутишь", "сэт", "сэта", "сэту", "сеты", "сета", "сету",
-    "сделай", "сделаешь", "организуй", "устрой", "забабахай", "врубай", "минут", "минуты", "минуту", "час", "часа",
-    "часов", "трека", "треков", "будь", "стань", "дай", "дальше", "пусть", "можешь", "сейчас", "ещё", "еще", "мы",
-    "вы", "я", "наш", "наша", "наше", "нашу", "нашего", "диджей", "dj", "диджеем", "диджея",
-})
-_PERSONA_LEADS = frozenset({"ты", "будь", "стань"})
-_DJ_WORDS = frozenset({"диджей", "dj", "диджеем"})
+from .search import blank_style, content_stems, genre_of
+
 _AND = frozenset({"и", "and"})
 
 
-def _drop(words: List[str], i: int) -> bool:
-    """Слово ``i`` реплики не называет тему: просьба, обращение, имя диджея («ты диджей X»), число."""
+def _theme_word(words: List[str], i: int, request: frozenset) -> bool:
+    """Слово ``i`` реплики называет тему: не просьба, не стиль, значимое; «музыки» — при слове жанра."""
     word = words[i].replace("ё", "е")
     if genre_of(word):
+        return True
+    if word in kn.GENRE_FILLER:
+        return i > 0 and bool(genre_of(words[i - 1]))  # «классической музыки» — жанр словами человека
+    if word in request or match_style([word]) is not None:
         return False
-    if word in _REQUEST_WORDS or word.isdigit() or word in _AND:
-        return word not in _AND
-    if i >= 2 and words[i - 1] in _DJ_WORDS and words[i - 2] in _PERSONA_LEADS:
-        return True  # «ты диджей Снупдог» — имя диджея, не тема
-    return not content_stems(word)
+    return word.isdigit() or bool(content_stems(word))  # цифра темы — слово («mambo nr 5»), длину уже вырезали
 
 
 def heard_theme(text: str) -> str:
-    """Тема из реплики человека: слова без просьбы, «ты диджей X» и длины сета; «и» между словами темы и запятые
-    остаются (границы частей темы-перечисления, ``search.theme_parts``). Значимых слов нет — ``""``."""
+    """Тема из реплики человека: слова без просьбы, «ты диджей X», стиля и длины сета; «и» между словами темы и
+    запятые остаются (границы частей темы-перечисления, ``search.theme_parts``). Значимых слов нет — ``""``."""
+    from rob_box_voice.core.media_command_grammar import SET_REQUEST_WORDS, dj_persona_span
     from rob_box_voice.core.set_length_words import split_set_length, tokens  # длину сета разбирает одна грамматика
 
     _tracks, rest = split_set_length(text or "")
+    persona = dj_persona_span(rest)
+    if persona:
+        rest = rest[:persona[0]] + " " * (persona[1] - persona[0]) + rest[persona[1]:]
+    rest = blank_style(rest)
     toks = tokens(rest)
     words = [t[0] for t in toks]
-    keep = [not _drop(words, i) for i in range(len(words))]
+    keep = [w not in _AND and _theme_word(words, i, SET_REQUEST_WORDS) for i, w in enumerate(words)]
     for i, word in enumerate(words):  # «и» — только между словами темы
         if word in _AND:
             keep[i] = any(keep[:i]) and any(keep[i + 1:])

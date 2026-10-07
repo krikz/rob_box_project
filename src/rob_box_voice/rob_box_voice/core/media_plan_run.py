@@ -17,7 +17,8 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from .media_router import NOT_STARTED_TEXT, MediaPlan
+from .media_phrases import dj_started_text
+from .media_router import DJ_SET_TOOL, NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
 from .music_turn import next_turn_id
 from .named_play import tool_data
@@ -80,17 +81,27 @@ async def _confirm_started(
     log: Callable[[str], None],
 ) -> Tuple[bool, str]:
     first = plan.tool_calls[0].name
-    track_id = (tool_data(contents.get(first, "")) or {}).get("track_id")
+    data = tool_data(contents.get(first, "")) or {}
+    track_id = data.get("track_id")
     begin = time.monotonic()
     event = await asyncio.to_thread(events.wait, track_id, STARTED_WAIT_S) if events and track_id else None
     waited = time.monotonic() - begin
     kind = event.event if event is not None else "none"
     log(f"🎛️ [media-router v2] {first} track_id={track_id} событие={kind} ждали={waited:.2f}с")
     if kind == "started":
-        return True, plan.say_ok
+        return True, _started_text(plan, data)
     if kind == "rejected":
         return False, plan.say_fail
     return False, NOT_STARTED_TEXT
+
+
+def _started_text(plan: MediaPlan, data: Dict[str, Any]) -> str:
+    """Фраза после ``started``: у ``dj_set`` без темы в команде тему назовёт результат тула — её выделил ``dj_set``
+    из слов реплики (``theme_grounding.heard_theme``, 07.10), фразу строит код из результата (ADR-0148)."""
+    call = plan.tool_calls[0]
+    if call.name != DJ_SET_TOOL or call.arguments.get("theme") or not data.get("theme"):
+        return plan.say_ok
+    return dj_started_text(str(call.arguments.get("persona") or ""), str(data["theme"]))
 
 
 __all__ = ["STARTED_WAIT_S", "command_turn_context", "run_media_plan"]

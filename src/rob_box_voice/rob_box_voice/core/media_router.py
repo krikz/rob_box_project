@@ -314,7 +314,7 @@ def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
     Реплика с чем-то сверх персоны/темы («…и поставь Still Dre») — не
     закрыта: её разбирает LLM, у которой есть ``dj_set``.
     """
-    theme = command.theme or command.set_theme
+    theme = command.set_theme  # тему из свободных слов реплики выделяет dj_set из heard_text (theme_grounding)
     if not (command.closed or command.set_theme):
         return None
     persona = command.set_persona if command.set_theme else command.persona
@@ -389,7 +389,7 @@ def dj_theme_switch_plan(plan: MediaPlan, media: MediaState) -> Optional[MediaPl
     """
     if not (media.dj_enabled and plan.play_name):
         return None
-    command = MediaCommand(intent=MediaIntent.DJ, closed=True, theme=plan.play_name)
+    command = MediaCommand(intent=MediaIntent.DJ, closed=True, set_theme=plan.play_name)
     persona = media.dj_persona
     args: Dict[str, Any] = {"action": "start", "theme": plan.play_name}
     if persona:

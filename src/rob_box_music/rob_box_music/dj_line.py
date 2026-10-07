@@ -149,9 +149,23 @@ def tool() -> Dict[str, Any]:
         "parameters": schema()}}
 
 
+#: Слово «диджей» в начале персоны: «диджей Атлас», «DJ Атлас», «ди-джей Атлас» — одно имя «Атлас».
+_DJ_TITLE = frozenset({"диджей", "ди-джей", "диджэй", "диджея", "диджеем", "dj", "deejay"})
+
+
+def persona_title(persona: Optional[str]) -> str:
+    """Персона диджея одним видом — «диджей <имя>» (``""`` — имени нет). Единственное место нормализации: грамматика
+    роутера шлёт «диджей Атлас», LLM — «Атлас» или «DJ Атлас»; без неё промпт реплики был «Ты диджей диджей Атлас»
+    (07.10)."""
+    words = (persona or "").split()
+    while words and words[0].lower().strip(",.:") in _DJ_TITLE:
+        words = words[1:]
+    return f"диджей {' '.join(words)}" if words else ""
+
+
 def prompt(facts: LineFacts, persona: Optional[str] = None) -> Tuple[str, str]:
     """``(system, user)``: факты показаны словами для настроения, писать их — только подстановками."""
-    who = f"диджей {persona}" if persona else "диджей робота"
+    who = persona_title(persona) or "диджей робота"
     system = (f"Ты {who}. Скажи одну короткую весёлую фразу на смену трека, по-русски, не длиннее {LINE_MAX} "
               "символов. Названия мелодий, тему и числа НЕ пиши словами и цифрами — только подстановками: {hook} — "
               "мелодия трека, {no} — номер трека, {total} — сколько треков в сете, {theme} — тема сета; код вставит "
@@ -337,5 +351,5 @@ def facts_for(track_no: int, tracks: int, theme: str, hook: Optional[str], energ
 
 
 __all__ = ["FIELDS", "LINE_MAX", "LineFacts", "LineInvalid", "PHASES", "SUBMIT_TOOL", "TEMPLATES", "facts_for",
-           "mentions", "now_playing_text", "payload_line", "plain_fold", "prompt", "schema", "template_line", "tool",
+           "mentions", "now_playing_text", "payload_line", "persona_title", "plain_fold", "prompt", "schema", "template_line", "tool",
            "tracks_word", "validate_line", "when_text"]

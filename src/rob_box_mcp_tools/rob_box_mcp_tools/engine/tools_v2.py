@@ -35,7 +35,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
-from rob_box_music.dj_line import now_playing_text
+from rob_box_music.dj_line import now_playing_text, persona_title
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
@@ -233,6 +233,7 @@ class DjSetTool(MCPTool):
         tracks = heard_tracks or tracks
         if action == "start":
             theme = self._heard_theme(theme, heard_text)
+            persona = persona_title(persona) or None  # «диджей X» одним видом: и от роутера, и от LLM
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -255,6 +256,9 @@ class DjSetTool(MCPTool):
         if not replaced:
             return theme
         logger = self.node.get_logger() if self.node is not None else None
+        if not theme:  # команда роутера или LLM без темы: тему выделил код из слов реплики, подмены не было
+            (logger or _LOG).info(f"🎛️ [dj_set] тема из слов реплики: {grounded!r}")
+            return grounded
         (logger or _LOG).warning(f"🎛️ [dj_set] тема LLM не из текущей реплики → из реплики: LLM={theme!r} → {grounded!r}")
         return grounded
 

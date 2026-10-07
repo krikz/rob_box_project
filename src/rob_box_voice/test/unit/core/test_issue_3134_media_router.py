@@ -123,30 +123,21 @@ def test_live_3125_voice_negation_is_music_volume() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "persona", "theme", "closed"),
+    ("text", "persona", "closed"),
     [
-        ("ты диджей Снупдог, давай сет", "диджей Снупдог", "", True),
+        ("ты диджей Снупдог, давай сет", "диджей Снупдог", True),
         # STT без запятых: «давай сет» — не часть имени.
-        ("ты диджей Снупдог давай сет", "диджей Снупдог", "", True),
-        (
-            "[TG] Ты диджей Снупдог и у нас сегодня вечеринка ганкста в чорном квартале",
-            "диджей Снупдог",
-            "вечеринка ганкста в чорном квартале",
-            True,
-        ),
-        ("стань диджеем", "", "", True),
-        (
-            "Ты диджей PAUL OAKENFOLD, сыграй Still Dre и Next Episode на 10 минут",
-            "диджей PAUL OAKENFOLD",
-            "",
-            False,
-        ),
+        ("ты диджей Снупдог давай сет", "диджей Снупдог", True),
+        # «у нас сегодня …» — тема словами реплики: её выделяет dj_set из heard_text (07.10), не грамматика.
+        ("[TG] Ты диджей Снупдог и у нас сегодня вечеринка ганкста в чорном квартале", "диджей Снупдог", True),
+        ("стань диджеем", "", True),
+        ("Ты диджей PAUL OAKENFOLD, сыграй Still Dre и Next Episode на 10 минут", "диджей PAUL OAKENFOLD", False),
     ],
 )
-def test_dj_grammar(text: str, persona: str, theme: str, closed: bool) -> None:
+def test_dj_grammar(text: str, persona: str, closed: bool) -> None:
     cmd = parse_media_command(text)
     assert cmd.intent is MediaIntent.DJ
-    assert (cmd.persona, cmd.theme, cmd.closed) == (persona, theme, closed)
+    assert (cmd.persona, cmd.set_theme, cmd.closed) == (persona, "", closed)
 
 
 def test_wide_stop_detector_still_catches_mixed_phrases() -> None:

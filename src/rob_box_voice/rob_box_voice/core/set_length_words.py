@@ -38,6 +38,8 @@ _TRACK_WORDS = frozenset({
 })
 _MINUTE_WORDS = frozenset({"минут", "минуты", "минуту", "минутка", "минутку", "минуток"})
 _HOUR_WORDS = frozenset({"час", "часа", "часов", "часик"})
+#: Слова единиц длины сета («треков», «минут», «час») — не тема сета (``media_command_grammar.SET_REQUEST_WORDS``).
+LENGTH_WORDS = _TRACK_WORDS | _MINUTE_WORDS | _HOUR_WORDS
 #: Слова перед длиной: «на 3 трека», «из десяти треков» — вырезаются вместе с ней.
 _LEADS = frozenset({"на", "из", "в"})
 
@@ -132,4 +134,4 @@ def heard_set_length(text: str) -> Optional[int]:
     return tracks if tracks else None
 
 
-__all__ = ["Token", "find_set_length", "heard_set_length", "split_set_length", "tokens"]
+__all__ = ["LENGTH_WORDS", "Token", "find_set_length", "heard_set_length", "split_set_length", "tokens"]
