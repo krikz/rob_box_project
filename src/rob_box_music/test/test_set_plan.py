@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from melodies import MELODIES, profile
+from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix, rhythm
 from rob_box_music.arrange.compose import compose
@@ -40,16 +41,20 @@ def _section_spans(track):
         start += sec.bars * BEATS_PER_BAR
 
 
-@pytest.mark.parametrize("theme", THEMES)
-def test_one_tempo_for_the_whole_set_in_the_club_window(theme):
-    """Один темп на сет (В6: club 128–138) для всех сидов; у каждого трека и программы — темп плана."""
+def _tempo_case(case):
+    """(bpm плана, [(bpm трека, bpm программы)]) для (тема, сид)."""
+    theme, seed = case
+    plan = seeded_plan(seeded_profile(theme), seed, genre="club")
+    return plan.bpm, [(t.bpm, render(t, "A").bpm) for t in (compose(plan, no) for no in (1, 2, 5, 11))]
+
+
+def test_one_tempo_for_the_whole_set_in_the_club_window():
+    """Один темп на сет (В6: club 128–138) для всех тем и сидов; у каждого трека и программы — темп плана."""
     lo, hi = kn.STYLES["club"].bpm
-    for seed in SEEDS:
-        plan = seeded_plan(seeded_profile(theme), seed, genre="club")
-        assert lo <= plan.bpm <= hi
-        for no in (1, 2, 5, 11):
-            track = compose(plan, no)
-            assert track.bpm == plan.bpm and render(track, "A").bpm == plan.bpm
+    cases = [(theme, seed) for theme in THEMES for seed in SEEDS]
+    for case, (plan_bpm, tracks) in zip(cases, pmap(_tempo_case, cases, chunksize=8)):
+        assert lo <= plan_bpm <= hi, case
+        assert all(track_bpm == plan_bpm and prog_bpm == plan_bpm for track_bpm, prog_bpm in tracks), case
 
 
 def test_tempo_outside_the_window_is_seeded_inside_it_not_kept():

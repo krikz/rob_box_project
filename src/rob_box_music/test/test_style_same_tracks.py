@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from melodies import MELODIES  # noqa: E402
+from parallel import pmap  # noqa: E402
 from rob_box_music.arrange.compose import club_track, compose  # noqa: E402
 from rob_box_music.arrange.song import SongMaterial, song_track  # noqa: E402
 from rob_box_music.diversity import track_history  # noqa: E402
@@ -58,24 +59,31 @@ def _digest(track, deck: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def digests() -> dict:
-    """``{случай: sha256}``: сеты по темам с историей прошлых треков, трек без темы, песня."""
+def _seed_digests(seed: int) -> dict:
+    """``{случай: sha256}`` одного сида: сеты по темам с историей прошлых треков, трек без темы, песня."""
     out = {}
-    for seed in SEEDS:
-        for theme in THEMES:
-            profile = dataclasses.replace(seeded_profile(theme), hook_ids=HOOKS)
-            plan = seeded_plan(profile, seed, set_id=f"g{seed}")
-            history: list = []
-            for no in range(1, TRACKS + 1):
-                deck = "AB"[no % 2]
-                track = compose(plan, no, melodies=MELODIES, history=history, deck=deck)
-                out[f"{seed}:{theme}:{no}"] = _digest(track, deck)
-                history.insert(0, track_history(track, plan.set_id))
-        out[f"{seed}:club_track"] = _digest(club_track(seed), "A")
-        material = SongMaterial(melody_id="am", title="Ля", bpm=96, root=9, mode="minor", lead=SONG_LEAD,
-                                bass=((45, 2.0),) * 4, pad=(((57, 60, 64), 2.0),) * 4, pad_sus=0.4,
-                                drums="X...o...X...o...", hats="-.-.-.-.-.-.-.-.")
-        out[f"{seed}:song"] = _digest(song_track(material, seed=seed), "A")
+    for theme in THEMES:
+        profile = dataclasses.replace(seeded_profile(theme), hook_ids=HOOKS)
+        plan = seeded_plan(profile, seed, set_id=f"g{seed}")
+        history: list = []
+        for no in range(1, TRACKS + 1):
+            deck = "AB"[no % 2]
+            track = compose(plan, no, melodies=MELODIES, history=history, deck=deck)
+            out[f"{seed}:{theme}:{no}"] = _digest(track, deck)
+            history.insert(0, track_history(track, plan.set_id))
+    out[f"{seed}:club_track"] = _digest(club_track(seed), "A")
+    material = SongMaterial(melody_id="am", title="Ля", bpm=96, root=9, mode="minor", lead=SONG_LEAD,
+                            bass=((45, 2.0),) * 4, pad=(((57, 60, 64), 2.0),) * 4, pad_sus=0.4,
+                            drums="X...o...X...o...", hats="-.-.-.-.-.-.-.-.")
+    out[f"{seed}:song"] = _digest(song_track(material, seed=seed), "A")
+    return out
+
+
+def digests() -> dict:
+    """``{случай: sha256}`` по всем сидам; сиды независимы, считаются параллельно (#3504), ключи те же."""
+    out = {}
+    for part in pmap(_seed_digests, SEEDS):
+        out.update(part)
     return out
 
 

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from gen_hook_golden import ARCHIVE, COMBOS, GOLDEN, archive_rows, fingerprint
+from parallel import pmap
 from rob_box_music.arrange import hook as hooks
 
 
@@ -24,11 +25,20 @@ def test_golden_covers_the_whole_archive():
         f"осознанно, python src/rob_box_music/test/gen_hook_golden.py, и показать diff счётчиков в PR")
 
 
+CHUNK = 200
+
+
+def _fingerprints(rows):
+    """Отпечатки хуков пачки записей архива; пачки независимы, считаются параллельно (#3504)."""
+    return [[fingerprint(hooks.from_rtttl, rtttl, rid, *combo) for combo in COMBOS] for rid, rtttl in rows]
+
+
 def test_from_rtttl_gives_byte_identical_hooks_on_whole_archive():
     golden = json.loads(gzip.open(GOLDEN, "rt", encoding="utf-8").read())["records"]
+    rows = list(archive_rows())
+    chunks = [rows[i:i + CHUNK] for i in range(0, len(rows), CHUNK)]
     checked, diffs = 0, []
-    for rid, rtttl in archive_rows():
-        got = [fingerprint(hooks.from_rtttl, rtttl, rid, *combo) for combo in COMBOS]
+    for (rid, _rtttl), got in zip(rows, (g for part in pmap(_fingerprints, chunks) for g in part)):
         checked += len(got)
         diffs += [(rid, c, w, g) for c, w, g in zip(COMBOS, golden[rid], got) if w != g]
     print(f"сверено хуков: {checked} ({len(golden)} записей × {len(COMBOS)} комбинаций), расхождений: {len(diffs)}")
