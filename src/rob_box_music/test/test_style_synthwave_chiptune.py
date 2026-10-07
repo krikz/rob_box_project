@@ -165,6 +165,18 @@ def test_theme_rows_give_the_style_when_none_is_named():
     assert set(kn.STYLE_WORDS.values()) | set(kn.STYLE_PATTERNS.values()) <= set(kn.STYLES)
 
 
+def test_every_style_has_a_word_and_club_word_beats_the_theme_row():
+    """#3508: у каждого стиля есть слово фразы; «клубный сет на тему киберпанк» — club, хотя строка темы даёт synthwave."""
+    assert set(kn.STYLE_WORDS.values()) == set(kn.STYLES)
+    assert style_for("киберпанк") == "synthwave"
+    for phrase in ("клубный сет на тему киберпанк", "клубняк про роботов", "club set", "включи клубную музыку"):
+        assert style_for(phrase, "киберпанк") == "club", phrase
+    assert style_for("восьмибитный сет", "киберпанк") == "chiptune" and style_for("8-бит клубный") == "chiptune"
+    assert match_style_text("8-битный сет") == "chiptune"
+    assert match_style_text("свежая клубника") is None  # «клубника» — не «клуб»
+    assert match_style_text("сет в жанре deep house") is None  # окна клуба стиль не выбирают
+
+
 # ── Сеты стиля ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 

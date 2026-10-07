@@ -178,6 +178,9 @@ GENRE_TAGS: Mapping[str, str] = {
     "классик": "classical", "классическ": "classical", "classic": "classical",
     "кино": "movie", "фильм": "movie", "кинофильм": "movie", "movie": "movie", "film": "movie",
 }
+#: Метка жанра каталога → жанры PDMX в колонке ``score_index.genres`` (через «-»: ``classical-soundtrack``): по ним
+#: часть темы из одного жанра ищет партитуры (#3512; «музыка из фильмов» → ``soundtrack``, 1132+263 партитуры 07.10).
+SCORE_GENRES: Mapping[str, Tuple[str, ...]] = {"classical": ("classical",), "movie": ("soundtrack",)}
 #: Слова при жанре, не называющие мелодию («classical music», «классической музыки»; «Music» — ещё и название записи
 #: архива, поэтому не стоп-слово поиска вообще). В теме из слов реплики остаются при слове жанра
 #: (``engine.theme_grounding``: «денди и классической музыки»).
@@ -422,7 +425,8 @@ __all__ = [
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
-    "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SEARCH_STOPWORDS", "SEARCH_STYLE_PATTERNS",
+    "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
+    "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling",
     "scale_pitch_classes", "traits_of", "NYQUIST_MAX_MIDI",
@@ -1203,6 +1207,10 @@ STYLE_WORDS: Mapping[str, str] = {
     "синтвейв": "synthwave", "синтвэйв": "synthwave", "synthwave": "synthwave", "ретровейв": "synthwave",
     "ретровэйв": "synthwave", "retrowave": "synthwave", "аутран": "synthwave", "outrun": "synthwave",
     "чиптюн": "chiptune", "chiptune": "chiptune", "восьмибит": "chiptune",
+    # #3508: клуб — стиль по умолчанию, но тема со своей строкой (киберпанк → synthwave) без слова его не выберет.
+    # Основы «клубны/клубна/клубно/клубну», не «клуб»: «клубника» не стиль. «хаус»/«house»/«техно» не берём: «техно» — основа
+    # темы cyber, «хаус» — «Доктор Хаус»; окна club/deep/breaks (ADR-0152) стиль не выбирают — окно внутри club.
+    "клубны": "club", "клубна": "club", "клубно": "club", "клубну": "club", "клубняк": "club", "club": "club",
 }
 #: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
 DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))

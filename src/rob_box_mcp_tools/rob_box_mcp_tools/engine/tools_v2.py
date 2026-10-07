@@ -17,8 +17,8 @@ Classic («поставь Калинку», PR-11): ``request_music`` с ``inten
 человека (роутер разбирает число кодом, LLM передаёт его узким параметром); без числа — ``DEFAULT_TRACKS``, а посреди
 идущего сета (смена темы) — сколько треков ему оставалось: длина считается от начала сета (:meth:`DjSetTool.set_length`).
 
-Партитуры (ADR-0154 PR-5): тема ищется ещё и по названиям индекса партитур (``engine.score_library``,
-``search.score_search``) — найденные материалы идут в план первыми треками (``set_plan.plan_materials``), приоритет:
+Партитуры (ADR-0154 PR-5): тема ищется ещё и в индексе партитур (``engine.score_library.ScoreIndex``) теми же
+строками поиска, что мелодии RTTTL (``ThemeHits.query``, ``search.part_query``, #3512) — найденные материалы идут в план первыми треками (``set_plan.plan_materials``), приоритет:
 название в индексе партитур > RTTTL-библиотека > строка ``THEMES``. Библиотеки на устройстве нет — сет как до PR-5
 (хуки RTTTL), причина — строкой лога.
 
@@ -51,7 +51,7 @@ from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import PlanMaterials, ScoreLibrary, seed_plan
-from .search import ThemeHits, score_search, theme_search
+from .search import ThemeHits, part_query, ThemeQuery, theme_search
 from .session import SetMemory, SetSession, plan_source
 from .theme_grounding import grounded_theme
 from .theme_links import ThemeLinks
@@ -189,6 +189,17 @@ def not_found(hits: ThemeHits, materials: Iterable[str], theme: str = "", log: A
     return hits.missing if hits.named and not hits.names and not tuple(materials) else ()
 
 
+def score_materials(scores: Any, hits: ThemeHits, theme: str) -> Tuple[Tuple[str, ...], str]:
+    """``(материалы партитур темы, хвост строки лога)``: поиск строками, по которым искались мелодии темы
+    (``hits.query``, #3512), с замером M7; материалов нет — в лог, какие строки искались. Подставной поиск мелодий
+    (тесты) строк не отдаёт — та же ``part_query`` без каталога RTTTL."""
+    query = hits.query or ThemeQuery(theme, (part_query(None, theme),))
+    started = time.perf_counter()
+    materials = scores.search(query)
+    how = f"партитуры: {scores.state}; поиск {(time.perf_counter() - started) * 1000:.1f} мс"
+    return materials, how if materials else f"{how}; искали: {query.describe()}"
+
+
 def music_busy(owner: Any, dj: Any) -> bool:
     """Музыка движка идёт: дека играет (``PlayerOwner.is_playing``) или идёт сет (``DjSetTool.running``) — между
     ``started`` треков сета дека может выглядеть пустой (06.10 15:30 UTC: мягкий cleanup погасил идущий сет)."""
@@ -221,7 +232,10 @@ class DjSetTool(MCPTool):
         self._melodies = melodies or library_melodies(library)
         self._find = finder or theme_finder(library, theme_links(node, self._reasoner))
         self._not_found: Tuple[str, ...] = ()  # названное в теме, из чего не нашлось ничего: сет не стартует (#3493)
-        self._scores = scores if scores is not None else ScoreLibrary()
+        if scores is None:
+            scores = ScoreLibrary()
+            scores.warm()  # индекс поиска партитур строится в фоне: первая тема его не ждёт (M7)
+        self._scores = scores
         self._titles = _with_scores(titles or library_titles(library), self._scores)
         self._missing: Tuple[str, ...] = ()  # части темы-перечисления без мелодий (последний сет): их не называть
         self._lines = lines  # реплика диджея на каждом переходе (§12 В2, решение Шифу 06.10)
@@ -334,14 +348,11 @@ class DjSetTool(MCPTool):
         except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
             log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
             hits = ThemeHits()
-        started = time.perf_counter()
-        materials = score_search(self._scores.rows(), theme)
-        search_ms = (time.perf_counter() - started) * 1000
+        materials, how = score_materials(self._scores, hits, theme)
         profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact, parts=hits.parts,
                                  materials=materials)
         log.info(f"🎛️ [dj_set] тема «{theme}»: style={profile.style} source={profile.source} row={profile.row} "
-                 f"хуки={list(profile.hook_ids)} материалы={list(materials)} "
-                 f"(партитуры: {self._scores.state}; поиск {search_ms:.1f} мс)")
+                 f"хуки={list(profile.hook_ids)} материалы={list(materials)} ({how})")
         self._missing = hits.missing
         self._not_found = not_found(hits, materials, theme, log)
         return profile
