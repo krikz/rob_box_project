@@ -6058,6 +6058,8 @@ tentative_plan(question, kind, name)
                 executor, MediaToolCall(name, args)
             )
 
+        # #3525: заказ по имени — своя реплика: новый turn_id (иначе id прошлой команды роутера).
+        vars(self).update(command_turn_context(plan, text))
         begin_turn = getattr(executor, "begin_turn", None)
         if callable(begin_turn):
             # Лимит «один трек за ход» (#2859) снимается только на границе
