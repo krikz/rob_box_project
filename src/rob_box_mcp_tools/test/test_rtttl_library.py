@@ -455,7 +455,7 @@ def test_real_archive_query_table_stays_on_topic(tmp_path):
     lib = RtttlLibrary(db_path=str(tmp_path / "real2.db"))
     expected_title_substrings = {
         "russian anthem": "russia",
-        "гимн россии": "soviet",  # алиас архива — см. knowledge.RU_ALIASES
+        "гимн россии": "soviet",  # алиас архива — семя rob_box_music/data/theme_link_seeds.json
         "soviet anthem": "soviet",
         "in the hall of the mountain king": "mountain king",
         "still dre": "dre",

@@ -6,7 +6,7 @@
 запись покрывает не все значимые слова, слова разбирает код:
 
 * служебные слова просьбы и темы (``knowledge.SEARCH_STOPWORDS``) отбрасываются по основе слова;
-* понятие без мелодии в названии («космос», «денди») → английский запрос (``knowledge.THEME_CONCEPTS``);
+* понятие без мелодии в названии («космос», «денди») → строки поиска семени-начала реестра (``works.word_links``);
 * русское слово → транслит слова, затем его основы (падежное окончание снято) → слова архива с тем же
   звуковым ключом (``gadzhet`` ~ ``gadget``, ``inspektor`` ~ ``inspector``); основа сверяется и по началу.
   Слово, которого в архиве нет, ничего не находит (подстрока транслита давала «дела» → «Abdelazer»).
@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.works import word_links
 from rob_box_music.rtttl import CONTOUR_NOTES, THEME_HOOKS, consensus_order, contour  # noqa: F401
 
 from ..core.rtttl_library import _alias_normalize, melody_quality, tagged
@@ -130,13 +131,6 @@ def _vocab(library: Any) -> _Vocab:
     return cached[1]
 
 
-def _concept(word_stem: str) -> Tuple[str, ...]:
-    for key, query in kn.THEME_CONCEPTS.items():
-        if word_stem.startswith(key):
-            return tuple(query.split())
-    return ()
-
-
 def _resolve(vocab: _Vocab, word: str, word_stem: str) -> Tuple[str, ...]:
     """Русское слово → слова архива: ключ слова (не прилагательного: «новый» ≠ «Novy»), основы, затем начало
     основы. Не нашлось — пусто: слово остаётся в знаменателе ``confidence`` и ни с чем не совпадает."""
@@ -159,7 +153,7 @@ def terms(library: Any, text: str) -> List[Term]:
         word_stem = stem(word)
         if word in _STOP or word_stem in _STOP:
             continue
-        alts = _concept(word) or _concept(word_stem)
+        alts = word_links(word) or word_links(word_stem)
         if not alts and _CYR_RE.search(word):
             if len(word) < _WORD_MIN:
                 continue

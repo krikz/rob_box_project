@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 from . import knowledge as kn
+from .works import concept_queries
 
 #: Мелодии строк ``pooled=False`` (праздник, дети): в пул чужих тем не идут, даже из общего пула.
 _OCCASION_HOOKS = frozenset(h for row in kn.THEMES.values() if not row.pooled for h in row.hooks)
@@ -61,18 +62,13 @@ def _digest(text: str) -> int:
     return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:12], 16)
 
 
-def _concept_rows(word: str) -> Tuple[str, ...]:
-    """Слова запросов ``knowledge.THEME_CONCEPTS``, чей ключ начинает слово: «интерстеллар» → ``("space",)``."""
-    return tuple(q for key, query in kn.THEME_CONCEPTS.items() if word.startswith(key) for q in query.split())
-
-
 def match_row(theme_text: str) -> Optional[str]:
     """Строка таблицы с наибольшим числом слов темы, начинающихся с её основ или относящихся к ней через понятие
-    (``knowledge.THEME_CONCEPTS``); ничья — порядок таблицы."""
+    (семена-начала реестра, ``works.concept_queries``: «интерстеллар» → ``space``); ничья — порядок таблицы."""
     words = re.findall(r"\w+", theme_text.lower().replace("ё", "е"))
     best: Tuple[int, Optional[str]] = (0, None)
     for name, row in kn.THEMES.items():
-        hits = sum(1 for w in words if any(w.startswith(stem) for stem in row.stems) or name in _concept_rows(w))
+        hits = sum(1 for w in words if any(w.startswith(stem) for stem in row.stems) or name in concept_queries(w))
         if hits > best[0]:
             best = (hits, name)
     return best[1]

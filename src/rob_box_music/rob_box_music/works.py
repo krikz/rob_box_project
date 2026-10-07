@@ -2,9 +2,11 @@
 
 Что здесь живёт: модель (``Work``/``Fact``/``WorkSource``), нормализация названий, чистка идентичности записей
 RTTTL-библиотеки (категория вместо исполнителя → тип произведения; «Theme» + название в ``artist`` → ``title``),
-русские алиасы (одна таблица :data:`knowledge.RU_ALIASES`; из неё поиск ``rtttl_library`` берёт :func:`alias_pairs` и
-:func:`ru_phrase_by_query`), группы версий (канон — порядок ``canon``), гейт «обогащать поле или нет»
-(:func:`gate`, §3.3 ADR) и отчёт. Сеть здесь не вызывается: ни один сетевой источник гейт сегодня не проходит.
+связи «фраза темы → строки поиска архива» (``ThemeLink``: семена из ``data/theme_link_seeds.json``, проверенные
+ответы LLM и ручные связи — таблица ``theme_links``; из семян поиск ``rtttl_library`` берёт :func:`alias_pairs` и
+:func:`ru_phrase_by_query`, разбор слов темы — :func:`word_links`), группы версий (канон — порядок ``canon``),
+гейт «обогащать поле или нет» (:func:`gate`, §3.3 ADR) и отчёт. Сеть здесь не вызывается: ни один сетевой источник
+гейт сегодня не проходит.
 
 Реестр — таблицы ``works``/``work_sources``/``work_facts`` в той же SQLite, что RTTTL-библиотека (ADR-0155 В3):
 ``python -m rob_box_music.works --db voice_memory.db`` перестраивает их (идемпотентно), ``--holes genre`` печатает
@@ -14,6 +16,7 @@ RTTTL-библиотеки (категория вместо исполнител
 from __future__ import annotations
 
 import argparse
+import functools
 import gzip
 import hashlib
 import json
@@ -22,9 +25,10 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, ROOTS, RU_ALIASES,
+from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, ROOTS,
                         TAG_WORK_TYPE, THEMES)
 from .material import ScoreMaterial, license_usable
 from .rtttl import consensus_order
@@ -141,26 +145,61 @@ class Identity:
     named: bool = True  # False — у записи нет названия, ``title`` взят из её имени (slug)
 
 
-# ── Алиасы: одна таблица, два читателя (поиск библиотеки) ────────────────────────────────────────────────────
+# ── Семена связей: «фраза → строки поиска», данные, а не код (#3493) ────────────────────────────────────────────
+#: Файл семян (``ThemeLink`` с ``source="seed"``): перенос прежних ручных таблиц RU_ALIASES и THEME_CONCEPTS.
+SEEDS_FILE = Path(__file__).resolve().parent / "data" / "theme_link_seeds.json"
+#: Ключ семени с этим знаком на конце — начало слова («хогвар*» — «Хогвардсу», «Хогвартсе»), без — целые слова.
+PREFIX = "*"
+
+
+@functools.lru_cache(maxsize=None)
+def theme_seeds() -> Tuple["ThemeLink", ...]:
+    """Семена в порядке файла. Ключ-начало — одно слово (любая из строк подходит), ключ из целых слов — одна строка
+    (фраза запроса заменяется ею); иначе ``ValueError`` — файл чинят, а не обходят в коде."""
+    out = []
+    for item in json.loads(SEEDS_FILE.read_text(encoding="utf-8"))["seeds"]:
+        phrase = str(item["phrase"]).lower()  # ё как в файле: замена в запросе идёт по точному написанию
+        queries = tuple(str(q) for q in item["queries"])
+        prefix = phrase.endswith(PREFIX)
+        if prefix and " " in phrase or not prefix and len(queries) != 1:
+            raise ValueError(f"семя {phrase!r}: начало — одно слово, целые слова — одна строка поиска")
+        out.append(ThemeLink(phrase, "found", "seed", "concept" if prefix else "work", queries))
+    return tuple(out)
+
+
+def word_links(word: str) -> Tuple[str, ...]:
+    """Строки поиска первого семени-начала, с которого начинается слово темы: «интерстеллара» → ``("space",)``."""
+    return next((s.queries for s in theme_seeds() if s.phrase.endswith(PREFIX) and word.startswith(s.phrase[:-1])), ())
+
+
+def concept_queries(word: str) -> Tuple[str, ...]:
+    """Строки поиска всех семян-начал слова (строка таблицы тем по понятию, ``theme.match_row``)."""
+    return tuple(q for s in theme_seeds() if s.phrase.endswith(PREFIX) and word.startswith(s.phrase[:-1])
+                 for q in s.queries)
+
+
+def _phrase_seeds() -> List[Tuple[str, str]]:
+    return [(s.phrase, s.queries[0]) for s in theme_seeds() if not s.phrase.endswith(PREFIX)]
+
 
 def alias_pairs() -> List[Tuple[str, str]]:
-    """``(фраза, канонический запрос)``, длинные фразы первыми: «гимн ссср» раньше «гимн»."""
-    return sorted(RU_ALIASES.items(), key=lambda kv: -len(kv[0]))
+    """``(фраза, строка поиска)`` семян из целых слов, длинные фразы первыми: «гимн ссср» раньше «гимн»."""
+    return sorted(_phrase_seeds(), key=lambda kv: -len(kv[0]))
 
 
 def ru_phrase_by_query() -> Dict[str, str]:
-    """Канонический запрос → ПЕРВАЯ (по порядку таблицы) русская фраза на него (озвучка названия, #3178)."""
+    """Строка поиска → ПЕРВАЯ (по порядку семян) русская фраза на неё (озвучка названия, #3178)."""
     out: Dict[str, str] = {}
-    for phrase, query in RU_ALIASES.items():
+    for phrase, query in _phrase_seeds():
         if _CYRILLIC_RE.search(phrase):
             out.setdefault(query, phrase)
     return out
 
 
 def aliases_of(title: str, artist: str) -> Tuple[str, ...]:
-    """Русские фразы, чей канонический запрос целиком состоит из слов названия/исполнителя (как слова поиска)."""
+    """Русские фразы, чья строка поиска целиком состоит из слов названия/исполнителя (как слова поиска)."""
     have = _words(title) | _words(artist)
-    return tuple(p for p, q in RU_ALIASES.items() if _CYRILLIC_RE.search(p) and _words(q) <= have)
+    return tuple(p for p, q in _phrase_seeds() if _CYRILLIC_RE.search(p) and _words(q) <= have)
 
 
 # ── Чистка идентичности записи RTTTL ─────────────────────────────────────────────────────────────────────────
@@ -570,12 +609,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-__all__ = ["alias_pairs", "aliases_of", "build_works", "clean_identity", "Fact", "FIELDS", "Gate", "gate",
-           "GATE_SHARE", "get_theme_link", "holes", "Identity", "LINK_LEVELS", "link_score_sources", "LOOKUP_TTL_DAYS",
-           "norm", "put_theme_link", "report", "ru_phrase_by_query", "RULES_VERSION", "score_index_row",
-           "ScoreIndexRow", "THEME_LINK_SOURCES", "THEME_LINK_STATUSES", "theme_links_report", "theme_phrase",
-           "ThemeLink", "Work", "work_id_of", "work_key", "working_ids", "WorkSource", "write_registry",
-           "write_score_index"]
+__all__ = ["alias_pairs", "aliases_of", "build_works", "clean_identity", "concept_queries", "Fact", "FIELDS", "Gate",
+           "gate", "GATE_SHARE", "get_theme_link", "holes", "Identity", "LINK_LEVELS", "link_score_sources",
+           "LOOKUP_TTL_DAYS", "norm", "put_theme_link", "report", "ru_phrase_by_query", "RULES_VERSION",
+           "score_index_row", "ScoreIndexRow", "SEEDS_FILE", "THEME_LINK_SOURCES", "THEME_LINK_STATUSES",
+           "theme_links_report", "theme_phrase", "theme_seeds", "ThemeLink", "word_links", "Work", "work_id_of",
+           "work_key", "working_ids", "WorkSource", "write_registry", "write_score_index"]
 
 if __name__ == "__main__":
     sys.exit(main())
