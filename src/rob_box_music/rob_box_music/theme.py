@@ -95,15 +95,17 @@ def _pattern_style(text: str) -> Optional[str]:
 def style_marks(words: Sequence[str]) -> List[Optional[str]]:
     """Стиль каждого слова фразы или ``None``: слово с основой ``knowledge.STYLE_WORDS``, слово стиля с цифрой
     («8битный») и пара «цифра + слово» («8», «битный» — так режут фразу грамматики роутера). Помеченные слова —
-    стиль, а не тема сета (#3476): их вырезает тот, кто выделяет тему."""
+    стиль, а не тема сета (#3476): их вырезает тот, кто выделяет тему. Слово стиля из 2–3 слов
+    («драм н бейс», «брейк бит» — ADR-0153 S3) помечается целиком."""
     low = [w.lower() for w in words]
     out: List[Optional[str]] = [None] * len(low)
     for i, word in enumerate(low):
         if out[i]:
             continue
-        pair = _pattern_style(f"{word} {low[i + 1]}") if word.isdigit() and i + 1 < len(low) else None
-        if pair:
-            out[i] = out[i + 1] = pair
+        span = next(((n, st) for n in (3, 2) if i + n <= len(low)
+                     for st in (_pattern_style(" ".join(low[i:i + n])),) if st), None)
+        if span:
+            out[i:i + span[0]] = [span[1]] * span[0]
             continue
         out[i] = _pattern_style(word) or next((st for stem, st in kn.STYLE_WORDS.items() if word.startswith(stem)),
                                               None)

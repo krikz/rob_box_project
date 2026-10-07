@@ -8,7 +8,7 @@ from rob_box_mcp_tools.engine.tools_v2 import STYLE_CHOICES, set_style
 
 
 def test_style_choices_name_the_new_styles():
-    assert {"auto", "club", "rave", "synthwave", "chiptune"} <= set(STYLE_CHOICES)
+    assert {"auto", "club", "rave", "synthwave", "chiptune", "breaks", "dnb"} <= set(STYLE_CHOICES)
 
 
 @pytest.mark.parametrize("style,theme,heard,expected", [
@@ -20,6 +20,9 @@ def test_style_choices_name_the_new_styles():
     ("auto", "киберпанк", None, "synthwave"),
     (None, "детский праздник", "", "chiptune"),
     ("auto", "космос", None, "club"),
+    # ADR-0153 S3
+    (None, "космос", "Робот, включи брейкбит сет на тему космос", "breaks"),
+    ("club", "киберпанк", "Робот, включи драм-н-бейс сет на тему киберпанк", "dnb"),
 ])
 def test_heard_words_then_key_then_theme_row(style, theme, heard, expected):
     assert set_style(style, theme, heard) == expected

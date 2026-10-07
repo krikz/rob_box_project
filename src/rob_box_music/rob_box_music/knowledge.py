@@ -234,7 +234,12 @@ GENRE_EXTRA: Mapping[str, Tuple[str, ...]] = {"classical": ("1812over", "1812ove
 #: «8-бит», «8 бит», «8-битный», «16-bit», «8bit». Цифра из них искала «8» в «1812 Overture» и «Sk8er Boi» (06.10).
 #: Те же слова ВЫБИРАЮТ стиль (ADR-0153 S2): регекс → ключ :data:`STYLES` (``theme.match_style_text``); темой они
 #: не становятся по-прежнему. Слова стиля без цифры — :data:`STYLE_WORDS`.
-STYLE_PATTERNS: Mapping[str, str] = {r"\b\d+\s*-?\s*(?:бит|bit)\w*": "chiptune"}
+STYLE_PATTERNS: Mapping[str, str] = {
+    r"\b\d+\s*-?\s*(?:бит|bit)\w*": "chiptune",
+    # ADR-0153 S3: «драм-н-бейс», «драм энд бейс», «drum and bass» (STT пишет и словами врозь), «брейк бит».
+    r"(?<!\w)(?:драм|drum)\s*-?\s*(?:(?:н|эн|энд|and|n|и)\s*-?\s*)?(?:бейс|бэйс|bass)\w*": "dnb",
+    r"(?<!\w)(?:брейк|break)\s*-?\s*(?:бит|beat)\w*": "breaks",
+}
 SEARCH_STYLE_PATTERNS: Tuple[str, ...] = tuple(STYLE_PATTERNS)
 
 
@@ -366,8 +371,9 @@ BASS_TONES: Mapping[str, Mapping[str, float]] = {
 BASS_TONES_PROVENANCE: Mapping[str, object] = _BASS_TONES_DATA["provenance"]
 #: Роли сэмпла: ``perc`` — удар по сетке каркаса, ``loop`` — луп, растянутый на ``beats`` долей, ``fx`` —
 #: одиночный акцент на границе секции (пик в начале файла), ``riser`` — нарастание (пик в конце: tn1hit2, пик на
-#: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль).
-SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick")
+#: 81 % длины, замер 02.10), ``vox``/``bass``/``synth`` — тональные стемы, ``kick`` — бочки (бочку решает стиль),
+#: ``break`` — ударный брейк пака (амен), нарезаемый по сетке 16-х (``arrange.samples.breakbeat_chop``, ADR-0153 S3).
+SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick", "break")
 #: Края огибающей запуска файла синтом ``loop``, с: (атака, спад) — ВНУТРИ ``sus`` (патч ``loop.scd``, #3432).
 #: Как у сэмплов Strudel DJ_Dave: удар с первого отсчёта (атака 2 мс не съедает щелчок psr), кусок ``chop``
 #: кончается к следующему (``legato(1)``: спад 5 мс до начала следующего куска, без наложения). Штатный синт
@@ -436,8 +442,30 @@ def _sample_info(name: str, meta: Mapping[str, object]) -> SampleInfo:
         role in ("vox", "bass", "synth") or name in _SAMPLE_TONAL)
 
 
-#: Каталог сэмплов DJ_Dave: имя → :class:`SampleInfo`. Один на v1 (``core/sample_dave``) и v2.
-SAMPLE_CATALOG: Mapping[str, SampleInfo] = {n: _sample_info(n, m) for n, m in _SAMPLE_DATA["samples"].items()}
+#: Брейки ресурсного пака Sonic Pi (CC0; ADR-0153 §8 В3, решение Шифу 07.10; каталог ``data/sample_sonicpi.json``,
+#: #3496): длина брейка в долях ОРИГИНАЛА — темп файла = доли·60/секунды (амен — такт 4/4 при 136.9 BPM, полный амен —
+#: 4 такта при 140.0, ``loop_breakbeat`` — такт при 126.0; длины — каталог, доли — описание пака Sonic Pi). Уровень —
+#: ``rms_db``/``peak_db`` каталога (soundfile по скачанным файлам 07.10), на 16 кГц робота не слушано. Брейк без строки
+#: здесь в каталог v2 не идёт (темп неизвестен — ``rate`` под сет не посчитать).
+PACK_BREAK_BEATS: Mapping[str, int] = {
+    "sonicpi_loop_amen": 4, "sonicpi_loop_amen_full": 16, "sonicpi_loop_breakbeat": 4}
+_SONICPI_DATA = json.loads(
+    (Path(__file__).resolve().parent / "data" / "sample_sonicpi.json").read_text(encoding="utf-8"))
+
+
+def _pack_break(name: str, meta: Mapping[str, object], pack_dir: str) -> SampleInfo:
+    seconds = float(meta["seconds"])
+    return SampleInfo(name, str(meta["group"]), "break", seconds, int(meta["channels"]), f"{pack_dir}/{meta['path']}",
+                      float(meta["peak_db"]), float(meta["rms_db"]), round(PACK_BREAK_BEATS[name] * 60.0 / seconds))
+
+
+#: Каталог сэмплов v2: имя → :class:`SampleInfo` — DJ_Dave и брейки паков (роль ``break``). v1 (``core/sample_dave``)
+#: видит из него только пак DJ_Dave (``SAMPLE_PACK_DIR``).
+SAMPLE_CATALOG: Mapping[str, SampleInfo] = {
+    **{n: _sample_info(n, m) for n, m in _SAMPLE_DATA["samples"].items()},
+    **{n: _pack_break(n, m, str(_SONICPI_DATA["pack_dir"])) for n, m in _SONICPI_DATA["samples"].items()
+       if m["role"] == "break" and n in PACK_BREAK_BEATS},
+}
 #: Группа каталога → описание (подсказки модели в v1).
 SAMPLE_GROUPS: Mapping[str, str] = dict(_SAMPLE_DATA["groups"])
 
@@ -462,7 +490,7 @@ __all__ = [
     "SET_TRACK_SECONDS", "THEMES",
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
-    "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
+    "PACK_BREAK_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
     "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
@@ -1078,6 +1106,11 @@ class Style:
     peak_by_track: int = 4
     # Порядок тонов арпеджио (``arrange.pad.arp``, ADR-0153 S2): индексы голосов аккорда снизу вверх по 16-м, по кругу.
     arp_order: Tuple[int, ...] = (0, 1, 2, 1)
+    # Луп-слой (ADR-0153 S3): роли :data:`SAMPLE_CATALOG`, из которых берётся файл лупа, и ключ генератора нарезки
+    # (``arrange.compose.LOOP_GENERATORS``): ``chop`` — файл по порядку восьмыми (DJ_Dave), ``breakbeat_chop`` — брейк,
+    # переставленный по сиду кусками по сетке 16-х.
+    loop_roles: Tuple[str, ...] = ("loop",)
+    loop_figure: str = "chop"
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
@@ -1190,6 +1223,66 @@ _CHIPTUNE_FIELDS = dict(
     a9_model_low=0.4, arp_order=(0, 1, 2),
 )
 
+# ── Стили ``breaks`` и ``dnb`` (ADR-0153 S3): брейк пака нарезкой по сиду, ломаная бочка, бас мимо неё ───────────
+#: Breaks 128–140, dnb 160–176 (§3). Ударные держит брейк пака (роль ``break``, :data:`PACK_BREAK_BEATS`), нарезанный
+#: по сетке 16-х (``breakbeat_chop``), бочка подпирает его рисунком окна: breaks — ``breakbeat``, dnb — «two-step»
+#: ``half_time`` (бочка 1 и «и» третьей доли, клэп 2/4 — при 170 BPM это малый в half-time). Насос мягкий (0.5 в
+#: дропе): брейк под сайдчейн не идёт (он сам ударные), качаются бас и пэд. Интро/аутро — рисунок дропа тише насосом,
+#: build — бочка на 1 и 3.
+_BREAKS_LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["breakbeat"], 0.5)),
+    (5, Look("X.......X.......", 0.3)),
+    (0, Look(KICK_PATTERNS["breakbeat"], 0.3)),
+)
+_DNB_LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["half_time"], 0.5)),
+    (5, Look("X.......X.......", 0.3)),
+    (0, Look(KICK_PATTERNS["half_time"], 0.3)),
+)
+#: Окна. Бас — ``broken`` (шаги 1, 6, 9, 14: мимо ``breakbeat`` 0/2/10/13, ``half_time`` 0/10 и долей); пэд держит
+#: аккорд (``held``) или стэбы — без ``pumped16`` (16-е аккорда × 2 голоса — самый дорогой по событиям рисунок, а dnb
+#: и так на 30 % быстрее клуба, ADR-0153 §3.5 / В8). Бочки — клубные замеренные (``KICK_SOUNDS``), низ брейка — свой.
+_BREAKS_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "breakbeat": GenreWindow((128, 136), ("techno", "garage"), _BREAKS_LOOKS, ("broken",), ("held", "stabs", "stabs")),
+    "bigbeat": GenreWindow((132, 140), ("garage", "house"), _BREAKS_LOOKS, ("broken",), ("stabs", "held")),
+}
+_DNB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "dnb": GenreWindow((170, 176), ("techno", "garage"), _DNB_LOOKS, ("broken",), ("held", "held", "stabs")),
+    "jungle": GenreWindow((160, 170), ("garage", "deep"), _DNB_LOOKS, ("broken",), ("held", "stabs")),
+}
+#: Тембры breaks/dnb — семьи тем как у клуба. Бас — замеренные с низом ≥ 0.9 (``BASS_MIN_LOW``): ``wobblebass``
+#: (ближайший к reese синт палитры; синта ``reese`` в Renardo нет — только файлы ``j``, замер #3430: низ 0.9),
+#: ``subbass``, ``jbass``. Лид редкий и простой (``motif``), пэды — клубные семьи.
+_BREAKBEAT_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("hoover", "pluck", "blip"), "bass": ("wobblebass", "subbass", "jbass"),
+             "pad": _CLUB_TIMBRES["dark"]["pad"]},
+    "hard": {"lead": ("hoover", "arpy", "blip"), "bass": ("wobblebass", "jbass"),
+             "pad": _CLUB_TIMBRES["hard"]["pad"]},
+    "bright": {"lead": ("pluck", "blip", "kalimba"), "bass": ("jbass", "subbass", "wobblebass"),
+               "pad": _CLUB_TIMBRES["bright"]["pad"]},
+    "warm": {"lead": ("pluck", "rhpiano", "epiano"), "bass": ("subbass", "jbass", "wobblebass"),
+             "pad": _CLUB_TIMBRES["warm"]["pad"]},
+}
+#: Минор, два аккорда на 8 тактов (§3: аккорд на 2 такта × 4 — ступень держится 4 такта).
+_DNB_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = ((0, 0, 5, 5), (0, 0, 3, 3), (0, 0, 6, 6), (0, 0, 4, 4), (0, 0, 2, 2))
+#: Брейк звучит в build и дропах (без него — интро/аутро блэнда и брейкдаун: две деки брейков в блэнде дали бы
+#: удвоенные удары); psr-слоя DJ_Dave нет — его место занимает брейк.
+_BREAKBEAT_LAYER_SECTIONS: Mapping[str, Tuple[str, ...]] = {"loop": ("build", "build2", "drop", "drop2"),
+                                                            "fx": ("drop", "drop2")}
+#: Уровни — клубные, брейк — ударная опора: −36 (у клуба брейк-луп второго дропа −40 «текстурой»).
+_BREAKBEAT_ROLE_LEVEL_DB: Mapping[str, float] = {**_CLUB_ROLE_LEVEL_DB, "loop": -36.0}
+_BREAKBEAT_FIELDS = dict(
+    modes=("minor", "dorian"), kits={k: _CLUB_KITS[k] for k in ("offbeat", "open")},
+    registers=_CLUB_REGISTERS, timbres=_BREAKBEAT_TIMBRES, default_timbre="dark", lead_figures=("motif",),
+    chord_size=3, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
+    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_BREAKBEAT_LAYER_SECTIONS,
+    role_level_db=_BREAKBEAT_ROLE_LEVEL_DB, duck_roles=("bass", "pad"),
+    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    stereo=_CLUB_STEREO, loop_roles=("break",), loop_figure="breakbeat_chop",
+    # A9: норма низа dnb/breaks 0.6–0.85 (§3, гипотеза до эталона В1) — нижняя граница, как у клуба и рейва
+    a9_model_low=0.6,
+)
+
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
 #: (``test_style_same_tracks``): 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138); свинг
 #: 5–10 % (ADR-0149 §3.4).
@@ -1234,6 +1327,18 @@ STYLES: Mapping[str, Style] = {
         bpm=_CHIPTUNE_GENRE_WINDOWS["chiptune"].bpm, kick_pool=_CHIPTUNE_GENRE_WINDOWS["chiptune"].kick_pool,
         bass_figures=_CHIPTUNE_GENRE_WINDOWS["chiptune"].bass_figures,
         pad_figures=_CHIPTUNE_GENRE_WINDOWS["chiptune"].pad_figures, **_CHIPTUNE_FIELDS),
+    # ADR-0153 S3: поля стиля — первое окно.
+    "breaks": Style(
+        bpm=_BREAKS_GENRE_WINDOWS["breakbeat"].bpm, swing=(0.0, 0.05),
+        kick_pool=_BREAKS_GENRE_WINDOWS["breakbeat"].kick_pool,
+        looks=_BREAKS_LOOKS, bass_figures=_BREAKS_GENRE_WINDOWS["breakbeat"].bass_figures,
+        pad_figures=_BREAKS_GENRE_WINDOWS["breakbeat"].pad_figures, progressions=_CLUB_PROGRESSIONS,
+        genre_windows=_BREAKS_GENRE_WINDOWS, **_BREAKBEAT_FIELDS),
+    "dnb": Style(
+        bpm=_DNB_GENRE_WINDOWS["dnb"].bpm, swing=(0.0, 0.03), kick_pool=_DNB_GENRE_WINDOWS["dnb"].kick_pool,
+        looks=_DNB_LOOKS, bass_figures=_DNB_GENRE_WINDOWS["dnb"].bass_figures,
+        pad_figures=_DNB_GENRE_WINDOWS["dnb"].pad_figures, progressions=_DNB_PROGRESSIONS,
+        genre_windows=_DNB_GENRE_WINDOWS, **_BREAKBEAT_FIELDS),
 }
 DEFAULT_STYLE = "club"
 #: Слова фразы человека → стиль (ADR-0153 §4.1): основа слова (начало) → ключ :data:`STYLES`. Одна таблица:
@@ -1245,6 +1350,11 @@ STYLE_WORDS: Mapping[str, str] = {
     "синтвейв": "synthwave", "синтвэйв": "synthwave", "synthwave": "synthwave", "ретровейв": "synthwave",
     "ретровэйв": "synthwave", "retrowave": "synthwave", "аутран": "synthwave", "outrun": "synthwave",
     "чиптюн": "chiptune", "chiptune": "chiptune", "восьмибит": "chiptune",
+    # ADR-0153 S3. «брейк» без «бит/с» — не стиль («брейкданс», «брейк» трека); «драм» один — не стиль («драма»):
+    # «драм-н-бейс», «брейк бит» словами врозь — :data:`STYLE_PATTERNS`. «джунгли» (тема) — не «джангл».
+    "брейкбит": "breaks", "брейкс": "breaks", "breakbeat": "breaks", "breaks": "breaks",
+    "днб": "dnb", "dnb": "dnb", "драмнбейс": "dnb", "драмэнбейс": "dnb", "драмнбэйс": "dnb", "джангл": "dnb",
+    "jungle": "dnb", "drumnbass": "dnb",
     # #3508: клуб — стиль по умолчанию, но тема со своей строкой (киберпанк → synthwave) без слова его не выберет.
     # Основы «клубны/клубна/клубно/клубну», не «клуб»: «клубника» не стиль. «хаус»/«house»/«техно» не берём: «техно» — основа
     # темы cyber, «хаус» — «Доктор Хаус»; окна club/deep/breaks (ADR-0152) стиль не выбирают — окно внутри club.
