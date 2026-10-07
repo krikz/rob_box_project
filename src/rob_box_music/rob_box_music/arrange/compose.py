@@ -436,10 +436,12 @@ def _theme_hook(style: kn.Style, spec: FormSpec, profile: ThemeProfile, melodies
 
 def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
                    materials: Optional[Mapping[str, ScoreMaterial]], profile: ThemeProfile, rng: random.Random,
-                   lead_synth: str):
+                   lead_synth: str, melodies: Mapping[str, str]):
     """Хук, лид, гармония и тоны баса трека из материала партитуры плана (ADR-0154 §3.3): хук —
     ``hook.from_material``, ступени — ``harmony.from_material``, тоны баса тактов петли — ``bass.material_tones`` по
     той же фразе и тому же множителю темпа; тема целиком — то же по тематической секции (``hook.theme_span``).
+    Главный мотив — по RTTTL-эталонам темы (``profile.theme_hooks``, ``hook.for_theme``): голос и такт, где совпал
+    их контур.
     Материала нет или он не годится (хук, лад, регистр пэда) — None с причиной в логе (I12), трек идёт по хуку
     темы."""
     if not material_id:
@@ -449,10 +451,11 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         _LOG.info("🎵 [music v2] material=%s нет среди переданных — хук темы", material_id)
         return None
     try:
+        material, anchor = hooks.for_theme(material, [melodies[i] for i in profile.theme_hooks if i in melodies])
         motif, key = hooks.from_material(material, profile.bpm, profile.root, profile.mode, hook_register(style),
-                                         theme_limit(spec))
+                                         theme_limit(spec), anchor)
         scale = hooks.material_scale(material, profile.bpm)
-        phrase = hooks.pick_phrase(material)
+        phrase = hooks.pick_phrase(material, anchor)
         span = hooks.theme_span(material, phrase)
         chord_beats = CHORD_BARS * BEATS_PER_BAR
 
@@ -527,7 +530,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     seed = f"{plan.seed}:{track_no}"
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
-    found = (_from_material(style, spec, step.material, materials, profile, rng, lead_synth)
+    found = (_from_material(style, spec, step.material, materials, profile, rng, lead_synth, melodies or {})
              or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth, plan.set_id))
     if found is None:
         key = Key(profile.root, profile.mode)

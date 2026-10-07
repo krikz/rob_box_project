@@ -1009,6 +1009,13 @@ _CLUB_OPENING_FORM = "dropfirst48"
 THEME_SECTION = "drop"
 #: Потолок темы в тактах клуба: тема длиннее режется по концу фразы.
 THEME_MAX_BARS = 32
+#: Главный мотив материала по RTTTL-эталону того же произведения (отзыв Шифу 07.10 «это не совсем горный король»):
+#: контур первых ``THEME_REF_NOTES`` нот эталона ищется в голосах материала (``hook.for_theme``); совпало не меньше
+#: ``THEME_REF_MATCH_MIN`` интервалов — хук и тема оттуда, меньше — материал не узнаётся, трек на RTTTL-хуке. Григ
+#: (pdmx QmT5K8df…, QmRTWPHs…, Qme7zppV…) — 1.00, QmYe6duX… — 0.91; QmXXdTmX… — 0.64 (тема во внутреннем голосе,
+#: его в материале нет).
+THEME_REF_NOTES = 12
+THEME_REF_MATCH_MIN = 0.8
 #: Длина формы клуба — кратна периоду рисунков ударных (16 тактов) и не длиннее потолка: тема растит трек
 #: 48 → 64 → 80 тактов, а не бесконечно (``model.BARS_TOTAL``).
 FORM_BARS_STEP = 16
@@ -1394,7 +1401,7 @@ GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
             "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
-            "THEME_MAX_BARS", "FORM_BARS_STEP", "TRACK_MAX_BARS"]
+            "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "FORM_BARS_STEP", "TRACK_MAX_BARS"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

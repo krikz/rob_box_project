@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .. import knowledge as kn
 from ..material import MaterialError, MeterMap, Phrase, ScoreMaterial, meter_map, meter_pending, validate_material
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
-from ..rtttl import parse_rtttl
+from ..rtttl import contour, parse_rtttl
 from ..tonality import detect_key, key_fit
 
 _LOG = logging.getLogger(__name__)
@@ -367,13 +367,74 @@ def _in_theme_section(material: ScoreMaterial, phrase: Phrase) -> bool:
                and s.bar <= phrase.bar < s.bar + s.bars for s in material.sections)
 
 
-def pick_phrase(material: ScoreMaterial) -> Phrase:
-    """Фраза-хук: длиной из :data:`HOOK_BARS` в секции темы, затем с наибольшим ``repeats`` (Н9), ничья — раньше
-    в пьесе. Нет подходящих фраз — начало мелодии, как у RTTTL (``HOOK_BARS[0]`` тактов)."""
+def pick_phrase(material: ScoreMaterial, anchor: Optional[int] = None) -> Phrase:
+    """Фраза-хук. ``anchor`` — такт, где начинается главный мотив по RTTTL-эталону (:func:`for_theme`): фраза
+    материала оттуда длиной из :data:`HOOK_BARS`, иначе ``HOOK_BARS[0]`` тактов от него. Без эталона — первое
+    проведение (отзыв Шифу 07.10: самая повторяемая фраза ≠ главный мотив, «это не совсем горный король»): фраза
+    длиной из :data:`HOOK_BARS` в секции темы, затем самая ранняя. Нет подходящих фраз — начало мелодии, как у RTTTL."""
     fit = [p for p in material.phrases if p.bars in HOOK_BARS]
+    if anchor is not None:
+        return next((p for p in fit if p.bar == anchor), Phrase(anchor, HOOK_BARS[0], "new", 1))
     if not fit:
         return Phrase(0, HOOK_BARS[0], "new", 1)
-    return min(fit, key=lambda p: (not _in_theme_section(material, p), -p.repeats, p.bar))
+    return min(fit, key=lambda p: (not _in_theme_section(material, p), p.bar))
+
+
+def voices(material: ScoreMaterial) -> Dict[str, Tuple[PitchEvent, ...]]:
+    """Голоса материала, где может быть тема: мелодия (skyline) и бас (низший голос, по ноте на онсет) — тема бывает
+    в низах (Григ: фаготы и виолончели). Внутренних голосов в ``ScoreMaterial`` нет (импортёр их не пишет)."""
+    bass: Dict[float, PitchEvent] = {}
+    for e in material.bass:
+        if e.beat not in bass or e.midi < bass[e.beat].midi:
+            bass[e.beat] = e
+    return {"melody": material.melody, "bass": tuple(bass[b] for b in sorted(bass))}
+
+
+def reference_contours(rtttls: Sequence[str]) -> List[Tuple[int, ...]]:
+    """Контуры начала RTTTL-эталонов произведения (:func:`rtttl.contour`, ``knowledge.THEME_REF_NOTES`` нот)."""
+    out = [contour(r, kn.THEME_REF_NOTES) for r in rtttls]
+    return [c for c in out if c is not None]
+
+
+def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Optional[Tuple[float, str, float]]:
+    """Лучшее совпадение контура эталона в голосах материала: ``(доля совпавших интервалов, голос, доля начала)``;
+    транспозиционно-инвариантно (интервалы), ничья — мелодия, раньше в пьесе. Нет эталонов — ``None``."""
+    best: Optional[Tuple[float, str, float]] = None
+    for name, events in voices(material).items():
+        pitches = [e.midi for e in events]
+        steps = [b - a for a, b in zip(pitches, pitches[1:])]
+        for ref in refs:
+            n = len(ref)
+            for i in range(len(steps) - n + 1):
+                score = sum(x == y for x, y in zip(steps[i:i + n], ref)) / n
+                if best is None or score > best[0] or (score == best[0] and name == "melody" != best[1]):
+                    best = (score, name, events[i].beat)
+    return best
+
+
+def for_theme(material: ScoreMaterial, rtttls: Sequence[str]) -> Tuple[ScoreMaterial, Optional[int]]:
+    """Материал и такт главного мотива по RTTTL-эталонам того же произведения (общий механизм, не под одну пьесу):
+    голос и место, где контур эталона совпал не меньше ``knowledge.THEME_REF_MATCH_MIN``; тема в басу — бас
+    становится мелодией материала (хук, тема, гармония и бас трека берут одно отображение). Эталонов нет — материал
+    как есть, ``None`` (первое проведение, :func:`pick_phrase`). Эталон есть, а совпадения мало — главного мотива в
+    голосах материала нет (тема во внутреннем голосе): :class:`HookError`, трек берёт RTTTL-хук темы, а не
+    неузнаваемую фразу. Исход — в лог."""
+    match = theme_match(material, reference_contours(rtttls))
+    if match is None:
+        return material, None
+    score, voice, beat = match
+    bar = int(beat // _meter_bar(material))
+    ok = score >= kn.THEME_REF_MATCH_MIN
+    _LOG.info("🎵 [music v2] material=%s эталон RTTTL: голос %s такт %d совпадение %.2f — %s", material.material_id,
+              voice, bar, score, "главный мотив оттуда" if ok else "мало — материал не узнаётся")
+    if not ok:
+        raise HookError(f"главного мотива эталона нет в голосах материала: совпадение {score:.2f} < "
+                        f"{kn.THEME_REF_MATCH_MIN}")
+    return (replace(material, melody=voices(material)[voice]) if voice != "melody" else material), bar
+
+
+def _meter_bar(material: ScoreMaterial) -> float:
+    return material.meter[0] * 4 / material.meter[1]
 
 
 def _meter(material: ScoreMaterial) -> MeterMap:
@@ -489,13 +550,14 @@ def theme_cuts(material: ScoreMaterial, span: Phrase, bpm: int) -> List[float]:
 
 
 def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
-                  register: Tuple[int, int] = kn.REGISTERS["lead"], theme_max: int = 0) -> Tuple[Hook, Key]:
+                  register: Tuple[int, int] = kn.REGISTERS["lead"], theme_max: int = 0,
+                  anchor: Optional[int] = None) -> Tuple[Hook, Key]:
     """Хук и тональность трека из материала партитуры: фраза по :func:`pick_phrase`, тональность — материала
     (Н2), остальное — общий путь :func:`from_notes`. ``Hook.source`` — ``material_id``; ``Hook.answer`` —
     :func:`rhythm_answer` (развитие ``rhythm`` в :data:`RHYTHM_SECTIONS`). ``theme_max`` > 0 — ещё и тема целиком:
     тематическая секция (:func:`theme_span`) фраза за фразой (:func:`theme_cuts`) до ``theme_max`` тактов клуба."""
     validate_material(material)
-    phrase = pick_phrase(material)
+    phrase = pick_phrase(material, anchor)
     club_bpm = (material.bpm or bpm) * _meter(material).tempo_ratio
     theme = None
     if theme_max > 0:
@@ -520,5 +582,5 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 
 
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "develop", "diatonic",
-           "from_material", "from_notes", "from_rtttl", "material_scale", "material_unfit", "pick_phrase", "rhythm_answer",
+           "for_theme", "from_material", "from_notes", "from_rtttl", "reference_contours", "theme_match", "voices", "material_scale", "material_unfit", "pick_phrase", "rhythm_answer",
            "theme_cuts", "theme_span", "time_scale", "track_key", "with_theme"]

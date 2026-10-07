@@ -161,3 +161,27 @@ def test_rtttl_theme_is_the_whole_melody_with_viterbi_harmony():
     validate(track)
     assert track.hook.source == "long16" and track.hook.theme_bars == 16
     assert len(track.harmony.progression[kn.THEME_SECTION]) >= 16 // cp.CHORD_BARS
+
+
+_NAMES = ("c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b")
+
+
+def _rtttl(pitches) -> str:
+    return "ref:d=4,o=5,b=120:" + ",".join(f"{_NAMES[m % 12]}{m // 12 - 1}" for m in pitches)
+
+
+def test_compose_takes_the_main_motif_from_the_theme_rtttl():
+    """RTTTL темы (``profile.theme_hooks``) — эталон главного мотива: хук с такта, где совпал его контур, а не с
+    первого проведения; материал без мотива эталона — трек на RTTTL-хуке, а не на неузнаваемой фразе."""
+    m = material()
+    ref = _rtttl([e.midi for e in m.melody[32:44]])  # такт 8: ступени 5 5 3 3 …
+    plan = _plan(m.material_id)
+    profile = replace(plan.profile, hook_ids=("ref",), theme_hooks=("ref",))
+    track = cp.compose(replace(plan, profile=profile), 1, melodies={"ref": ref}, materials={m.material_id: m})
+    validate(track)
+    assert track.hook.source == m.material_id
+    shift = (track.key.root - m.key.root) % 12
+    assert [e.midi % 12 for e in track.hook.notes[:12]] == [(e.midi + shift) % 12 for e in m.melody[32:44]]
+    scales = "ref:d=8,o=5,b=132:" + ",".join(["c,d,e,f,g,a,b,c6,b,a,g,f,e,d,c,d"] * 8)  # гаммы — не арпеджио
+    track = cp.compose(replace(plan, profile=profile), 1, melodies={"ref": scales}, materials={m.material_id: m})
+    assert track.hook.source == "ref"  # контура эталона в материале нет — играет сама мелодия темы
