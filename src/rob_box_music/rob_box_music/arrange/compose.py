@@ -659,7 +659,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     seed = f"{plan.seed}:{track_no}"
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
-    found = (_from_material(style, spec, step.material, materials, profile, lead_synth, melodies or {})
+    found = (_from_material(style, spec, plan.material(track_no), materials, profile, lead_synth, melodies or {})
              or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth, plan.set_id))
     if found is None:
         key = Key(profile.root, profile.mode)

@@ -262,5 +262,6 @@ def test_set_with_unfit_first_material_starts_with_the_fit_one(tmp_path, caplog)
     assert data["ok"]
     lines = [r.getMessage() for r in caplog.records]
     assert any("материал local:i0 не годится" in m and "не мотив" in m for m in lines)
-    assert any("материалы треков: ['local:i1', None]" in m for m in lines)
+    assert any("материал трека 1: local:i1" in m for m in lines)
+    assert any("отбор материалов 2 шт." in m and "трек 1 — local:i1" in m for m in lines)
     assert "material_id=local:i1" in next(m for m in lines if " started track_id=" in m)

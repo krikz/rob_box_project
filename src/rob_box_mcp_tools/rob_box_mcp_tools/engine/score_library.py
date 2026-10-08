@@ -282,15 +282,17 @@ def seed_plan(library: ScoreLibrary, profile: Any, seed: int, length: int, set_i
     rejected: Dict[str, str] = {}
     started = time.perf_counter()
     materials = PlanMaterials(library, profile.materials, logger) if profile.materials else None
+
+    def on_reject(material_id: str, why: str) -> None:
+        logger.info(f"🎼 [dj_set] материал {material_id} не годится: {why}")
+
     plan = seeded_plan(profile, seed, n_tracks=length, set_id=set_id, history=history, materials=materials,
                        rejected=rejected, genre=genre,  # темп и окно — на сет; ``genre`` — окно словами человека
-                       references=references)
-    for mid, why in rejected.items():
-        logger.info(f"🎼 [dj_set] материал {mid} не годится: {why}")
-    if profile.materials:
+                       references=references, lazy_materials=True, on_reject=on_reject)
+    if profile.materials:  # синхронно — только трек 1; материалы треков 2+ решаются при их компоновке (M7, #3542)
         logger.info(f"🎼 [dj_set] {set_id} отбор материалов {len(profile.materials)} шт. за "
-                    f"{(time.perf_counter() - started) * 1000:.1f} мс: в плане "
-                    f"{sum(bool(t.material) for t in plan.tracks)}, негодных {len(rejected)}")
+                    f"{(time.perf_counter() - started) * 1000:.1f} мс: трек 1 — {plan.track(1).material}, "
+                    f"негодных до него {len(rejected)}; треки 2+ — по очереди при компоновке")
     return plan
 
 

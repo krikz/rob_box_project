@@ -149,3 +149,26 @@ def test_plan_gives_track_one_to_the_next_material_with_the_main_motif():
     assert plan.track(1).material == second.material_id and "главного мотива" in rejected[first.material_id]
     track = cp.compose(plan, 1, melodies={"ref": ref}, materials=materials)
     assert track.hook.source == second.material_id
+
+
+def test_lazy_plan_decides_the_same_materials_and_checks_only_track_one_up_front():
+    """M7 (#3542): ленивый план синхронно проверяет кандидатов только до годного трека 1; материалы треков 2+ —
+    при их компоновке (``SetPlan.material``), решения — те же, что у отбора всех треков сразу."""
+    mats = {m.material_id: m for m in (_scales_material(), replace(_scales_material(), material_id="local:s2"),
+                                       replace(synthetic((0, 0, 5, 5, 3, 3, 4, 4)), material_id="local:arps"),
+                                       replace(_wide(), material_id="local:wide"))}
+    ref = _tune("ref", [e.midi for e in mats["local:arps"].melody[:13]], dur=4, bpm=120)
+    profile = _profile(("ref",), tuple(mats))
+    eager = seeded_plan(profile, 7, 4, materials=mats, references=[ref])
+    calls = []
+
+    class Counting(dict):
+        def __getitem__(self, key):
+            calls.append(key)
+            return super().__getitem__(key)
+
+    lazy = seeded_plan(profile, 7, 4, materials=Counting(mats), references=[ref], lazy_materials=True)
+    up_front = list(calls)
+    assert up_front == list(mats)[:up_front.index("local:arps") + 1]  # до годного трека 1, не все
+    assert [lazy.material(no) for no in range(1, 5)] == [t.material for t in eager.tracks]
+    assert lazy.track(2).material is None and lazy.material(2) == eager.track(2).material

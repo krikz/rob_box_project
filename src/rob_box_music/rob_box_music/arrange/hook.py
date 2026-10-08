@@ -511,6 +511,23 @@ def _best_window(steps: Sequence[int], at: Mapping[int, Sequence[int]],
     return top, hits.index(top)
 
 
+#: Совпадения эталонов на процесс (M7, #3542): план и компоновка трека спрашивают одно и то же — материал и эталоны
+#: в сете неизменны. Ключ — id материала, его голоса и контуры эталонов (материал с тем же id и другими нотами —
+#: другой ключ).
+_MATCH_CACHE: Dict[Tuple, Optional[Tuple[float, str, float]]] = {}
+_MATCH_CACHE_MAX = 128
+
+
+def _theme_match_cached(material: ScoreMaterial, refs: Tuple[Tuple[int, ...], ...]
+                        ) -> Optional[Tuple[float, str, float]]:
+    key = (material.material_id, hash((material.melody, material.bass)), refs)
+    if key not in _MATCH_CACHE:
+        if len(_MATCH_CACHE) >= _MATCH_CACHE_MAX:
+            _MATCH_CACHE.pop(next(iter(_MATCH_CACHE)))
+        _MATCH_CACHE[key] = theme_match(material, refs)
+    return _MATCH_CACHE[key]
+
+
 def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Optional[Tuple[float, str, float]]:
     """Лучшее совпадение контура эталона в голосах материала: ``(доля совпавших интервалов, голос, доля начала)``;
     транспозиционно-инвариантно (:func:`contour_match`), ничья — мелодия, раньше в пьесе. Нет эталонов — ``None``."""
@@ -538,7 +555,7 @@ def for_theme(material: ScoreMaterial, rtttls: Sequence[str]) -> Tuple[ScoreMate
     как есть, ``None`` (первое проведение, :func:`pick_phrase`). Эталон есть, а совпадения мало — главного мотива в
     голосах материала нет (тема во внутреннем голосе): :class:`HookError`, трек берёт RTTTL-хук темы, а не
     неузнаваемую фразу. Исход — в лог."""
-    match = theme_match(material, reference_contours(rtttls))
+    match = _theme_match_cached(material, tuple(reference_contours(rtttls)))
     if match is None:
         return material, None
     score, voice, beat = match

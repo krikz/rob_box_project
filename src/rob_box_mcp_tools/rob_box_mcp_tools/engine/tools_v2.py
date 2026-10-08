@@ -363,13 +363,16 @@ class DjSetTool(MCPTool):
         """Материалы треков плана (``TrackPlan.material``) для ``compose``: материал трека 1 читается здесь, при старте
         (замер M7 — в строку лога), остальные — при компоновке своего трека в фоне (:class:`PlanMaterials`)."""
         ids = [t.material for t in plan.tracks if t.material]
-        if not ids:
+        if not ids and plan.materials is None:
             return {}
-        materials = PlanMaterials(self._scores, ids, logger or _LOG)
+        # ленивый план (M7, #3542): материал трека 2+ решается при его компоновке — доступны все материалы темы
+        materials = PlanMaterials(self._scores, [*ids, *plan.profile.materials], logger or _LOG)
+        if not ids:
+            return materials
         started = time.perf_counter()
         first = materials.get(ids[0])
-        (logger or _LOG).info(f"🎼 [dj_set] {plan.set_id} материалы треков: {[t.material for t in plan.tracks]}; "
-                              f"№1 {ids[0]} {'загружен' if first is not None else 'НЕ загружен'} за "
+        (logger or _LOG).info(f"🎼 [dj_set] {plan.set_id} материал трека 1: {ids[0]} "
+                              f"{'загружен' if first is not None else 'НЕ загружен'} за "
                               f"{(time.perf_counter() - started) * 1000:.1f} мс")
         return materials
 
