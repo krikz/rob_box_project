@@ -66,7 +66,9 @@ def _unit(role: str, part: Part) -> Tuple[float, float]:
     if role in SAMPLE_ROLES:
         return kn.SAMPLE_CATALOG[part.synth_or_sample].mean_db, 1.0
     if role in kn.DRUM_SYMBOLS and part.synth_or_sample != kn.PLAY_SYNTH:
-        return pack_drum_db(role, part.synth_or_sample), 1.0
+        kick = kn.kick_of("", 0, part.synth_or_sample) if role == "kick" else None
+        offset = kn.KICK_SOUNDS[kick].loudness_offset_db if kick is not None else 0.0  # замер робота (#3550)
+        return pack_drum_db(role, part.synth_or_sample) + offset, 1.0
     option = part.synth_or_sample if role in kn.TONAL_ROLES else kn.DRUM_LOUDNESS_KEY[role]
     db = kn.LANE_DB_AT_UNIT[role][option]
     kick = kn.kick_of(part.play_symbol, part.sample) if role == "kick" else None

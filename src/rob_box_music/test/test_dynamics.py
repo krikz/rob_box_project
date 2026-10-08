@@ -127,8 +127,11 @@ def test_leaving_tail_closes_4000_to_300_on_everything_but_the_kick(seed):
     for role in ("pad", "hats"):
         cut = [e.fx["lpf"] for e in _in(by_role[role], spans["outro_tail"])]
         assert cut and all(a >= b for a, b in zip(cut, cut[1:])), role
-        assert cut[0] == pytest.approx(4000, rel=0.02)
-        if not (role == "pad" and track.history_key.pad_figure == "held"):  # held: атака раз в 2 такта
+        if role == "pad" and track.history_key.pad_figure == "held":
+            # held: атака только на смене аккорда — тот же аккорд из outro тянется в хвост, первая атака позже
+            assert cut[0] <= 4000 * 1.02
+        else:
+            assert cut[0] == pytest.approx(4000, rel=0.02)
             assert cut[-1] == pytest.approx(300, rel=0.03)
         assert all("lpf" not in e.fx for e in _in(by_role[role], spans["drop"])), role
     assert "kick" not in track.mix.lpf and all(not e.fx for e in by_role["kick"])

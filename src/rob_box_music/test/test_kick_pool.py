@@ -17,7 +17,7 @@ from rob_box_music.diversity import kick_name, track_composition
 from rob_box_music.model import BEATS_PER_BAR, TrackError, blend_bars, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
-from rob_box_music.set_plan import pick_kick, plan_kicks, seeded_plan
+from rob_box_music.set_plan import pick_kick, plan_kicks, plan_salt, seeded_plan
 from rob_box_music.theme import seeded_profile
 
 STYLE = kn.STYLES[kn.DEFAULT_STYLE]
@@ -54,7 +54,7 @@ def test_kick_of_every_track_is_from_the_style_pool(theme):
 
 def test_plan_carries_the_kick_and_compose_plays_it():
     plan = _plan("космос", 4)
-    assert [t.kick for t in plan.tracks] == list(plan_kicks(plan.table, 4, "космос", len(plan.tracks)))
+    assert [t.kick for t in plan.tracks] == list(plan_kicks(plan.table, 4, plan_salt(plan.profile), len(plan.tracks)))
     for step in plan.tracks:
         track = compose(plan, step.no)
         assert track.parts["kick"].sample == kn.KICK_SOUNDS[step.kick].sample

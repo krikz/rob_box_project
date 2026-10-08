@@ -701,11 +701,11 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     """
     step = plan.track(track_no)
     style = plan.table
-    template = track_template(style, step, track_no, history, random.Random(f"{plan.seed}:{track_no}:template"))
+    seed = plan.track_seed(track_no)  # стиль и окно — в сиде трека (#3550)
+    template = track_template(style, step, track_no, history, random.Random(f"{seed}:template"))
     spec = form_spec(style, template)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
-    rng = random.Random(f"{plan.seed}:{track_no}")
-    seed = f"{plan.seed}:{track_no}"
+    rng = random.Random(seed)
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
     found = (_from_material(style, spec, plan.material(track_no), materials, profile, lead_synth, melodies or {})
@@ -720,13 +720,13 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
         key, arranged, spec = found[1:]
     progression = _progression(spec, arranged.chords)
     form = _form(style, spec, step.energy)
-    axis = {name: random.Random(f"{plan.seed}:{track_no}:{name}")
+    axis = {name: random.Random(f"{seed}:{name}")
             for name in ("kit", "sample", "loop", "fx", "drums", "fills")}
     kit = _kit(style, history, axis["kit"])
     perc = samples.perc_pool(key, history, axis["sample"]) if "sample" in style.layer_sections else ()
     loop = samples.pick(style.loop_roles, key, history, "sample", axis["loop"])
     fx = samples.pick(style.fx_roles, key, history, "fx", axis["fx"])
-    kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
+    kick = step.kick or pick_kick(style, history, random.Random(f"{seed}:kick"))
     swing_ms = rhythm.swing_offset_ms(plan.swing, plan.bpm)
     drums = _drums(style, form, swing_ms, kit, kick, axis["drums"], axis["fills"])
     bass_chords = _bar_chords(spec, "bass", progression)

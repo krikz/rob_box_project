@@ -232,9 +232,11 @@ def _pack_drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     """Удар файлом пака (ADR-0153 S4) по рисунку роли: ``loop(файл)`` — событие на каждом ударе свёрнутого рисунка
     (``_drum_fold``) и на первой 16-й периода (пустое: ``amplify`` 0 — у ``loop`` нет символа паузы); ``dur`` — до
     следующего события, ``sus`` — файл, но не дольше шага, ``delay`` — свинг удара; акцент и снятые в секции удары —
-    ``amplify``. Ширина удара файла не выражается — ``RenderError``."""
-    if track.mix.stereo.get(role) is not None:
-        raise RenderError(f"parts.{role}: ширина удара файла пака не выражается")
+    ``amplify``. Ширина (#3550) — как у ударов ``play()``: ``pan`` со сменой стороны на каждом ударе (событие без удара
+    сторону не занимает, ``alternate_pan``); два голоса (расстройка/Хаас) у удара файлом не выражаются — ``RenderError``."""
+    st = track.mix.stereo.get(role)
+    if st is not None and st.voices != 1:
+        raise RenderError(f"parts.{role}: два голоса удара файла пака не выражаются (только pan)")
     info = kn.SAMPLE_CATALOG[part.synth_or_sample]
     total = track.form.bars_total * STEPS_PER_BAR
     cells = [(st.accent, st.offset_ms) if st.on else None for st in part.grid.steps * (total // len(part.grid.steps))]
@@ -247,6 +249,7 @@ def _pack_drum_line(slot: str, role: str, part: Part, track: Track) -> str:
             f"amp={_gate(track, role, voice_amp(role, part, 1))}"]
     opts += [f"amplify={_list(_num(a) for a in folded)}"] if len(set(folded)) > 1 else []
     opts += [f"delay={_list(_num(d) for d in delays)}"] if any(delays) else []
+    opts += _stereo(st, [pattern[s] is not None for s in starts], track.bpm)
     return f"{slot} >> loop({info.loop_arg!r}, " + ", ".join(opts + _lpf(track, role)) + ")"
 
 

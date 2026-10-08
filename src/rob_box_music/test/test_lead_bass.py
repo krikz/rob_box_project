@@ -23,7 +23,8 @@ from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
 
 CLUB = kn.STYLES["club"]
-#: Рисунки баса всех жанровых окон клуба (PR-8): ``broken`` — только окно ``breaks`` (бас мимо ломаной бочки).
+#: Рисунки баса всех жанровых окон клуба (PR-8). ``broken`` (бас мимо ломаной бочки) у клуба больше нет — окно
+#: ``breaks`` снято (#3550), рисунок играет стиль ``breaks``.
 WINDOW_BASS = {f for w in CLUB.genre_windows.values() for f in w.bass_figures}
 THEMES = ("космос", "киберпанк", "детский праздник", "калинка", "бухгалтерский отчёт")
 SEEDS = range(30)
@@ -74,7 +75,7 @@ def test_every_theme_gets_four_leads_and_both_bass_figures(sets):
         figures = {t.history_key.bass_figure for t in tracks}
         assert len(leads) >= 4 and leads <= set(family["lead"]), (theme, leads)
         assert basses == set(family["bass"]) and len(basses) >= 2, (theme, basses)
-        assert figures == set(mix.bass_figures(CLUB, kn.family_of(CLUB, seeded_profile(theme).row))) | {"broken"}, (theme, figures)
+        assert figures == set(mix.bass_figures(CLUB, kn.family_of(CLUB, seeded_profile(theme).row))), (theme, figures)
         basses_all |= basses
     assert len(basses_all) >= 3, basses_all
 
