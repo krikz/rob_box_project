@@ -10,10 +10,10 @@ from collections import defaultdict
 
 import pytest
 
-from melodies import MELODIES, compose_p, profile
+from melodies import MELODIES, compose_p, profile, program_of
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.mix import alternate_pan
-from rob_box_music.render.events import expand_voices, program_events
+from rob_box_music.render.events import expand_voices
 from rob_box_music.render.renardo import render
 
 SEEDS = range(16)
@@ -22,8 +22,7 @@ SEEDS = range(16)
 def _events(seed, deck="A"):
     track = compose_p(profile(root=seed % 12, mode=("minor", "major")[seed % 2]), 1 + seed % 4, set_seed=seed,
                       melodies=MELODIES if seed % 2 == 0 else None, deck=deck)
-    program = render(track, deck)
-    _p, events = program_events(program.code, program.form_beats)
+    program, events = program_of(track, deck)
     slot_role = {slot: role for role, slot in program.slots.items()}
     by_role = defaultdict(list)
     for ev in events:

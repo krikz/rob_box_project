@@ -31,24 +31,28 @@ TRACKS = 3
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 
 
-def _theme_tracks(theme):
+def _set_tracks(case):
+    """Треки одного сета (тема, сид) с историей сета; сеты независимы."""
+    theme, seed = case
     profile = seeded_profile(theme)
+    # семья темы одна на все сиды (темы вне таблицы выбирают её по сиду, #3460 — отдельный тест)
+    plan = replace(seeded_plan(profile, seed, set_id=f"lb{seed}"), timbre=kn.family_of(CLUB, profile.row))
+    history: list = []
     tracks = []
-    for seed in SEEDS:
-        # семья темы одна на все сиды (темы вне таблицы выбирают её по сиду, #3460 — отдельный тест)
-        plan = replace(seeded_plan(profile, seed, set_id=f"lb{seed}"), timbre=kn.family_of(CLUB, profile.row))
-        history: list = []
-        for no in range(1, TRACKS + 1):
-            track = compose(plan, no, history=history)
-            history.insert(0, track_history(track, plan.set_id))
-            tracks.append(track)
+    for no in range(1, TRACKS + 1):
+        track = compose(plan, no, history=history)
+        history.insert(0, track_history(track, plan.set_id))
+        tracks.append(track)
     return tracks
 
 
 @pytest.fixture(scope="module")
 def sets():
-    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; темы считаются параллельно (#3504)."""
-    return dict(zip(THEMES, pmap(_theme_tracks, THEMES)))
+    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; сеты считаются параллельно (#3504, #3539: по сету, а не
+    по теме — 5 тем на 4 ядра давали два неполных круга)."""
+    cases = [(theme, seed) for theme in THEMES for seed in SEEDS]
+    built = pmap(_set_tracks, cases, chunksize=5)
+    return {theme: [t for (th, _s), tracks in zip(cases, built) if th == theme for t in tracks] for theme in THEMES}
 
 
 def _family(theme):

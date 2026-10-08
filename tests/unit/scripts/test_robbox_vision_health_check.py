@@ -170,7 +170,7 @@ class Sandbox:
                 "  # ActiveEnterTimestamp = 30 минут назад (ISO-формат чтобы\n"
                 "  # избежать локалезависимости `date -d \"Tue ...\"`).\n"
                 "  ts=$(date -u -d '-30 minutes' '+%Y-%m-%d %H:%M:%S UTC')\n"
-                "  printf 'ActiveEnterTimestamp=%s\\n' \"$ts\"\n"
+                "  printf '%s\\n' \"$ts\"  # как `show --value`: без ключа (#3538)\n"
                 "  exit 0\n"
                 "fi\n"
             )
@@ -180,7 +180,7 @@ class Sandbox:
                 "if [ \"$1\" = show ]; then\n"
                 "  # ActiveEnterTimestamp = 30 секунд назад (внутри grace 300s)\n"
                 "  ts=$(date -u -d '-30 seconds' '+%Y-%m-%d %H:%M:%S UTC')\n"
-                "  printf 'ActiveEnterTimestamp=%s\\n' \"$ts\"\n"
+                "  printf '%s\\n' \"$ts\"\n"
                 "  exit 0\n"
                 "fi\n"
             )
@@ -283,6 +283,28 @@ def test_ok_when_containers_running(sandbox: Sandbox) -> None:
     assert payload["verdict"] == "ok"
     assert payload["running_containers"] == 3
     assert payload["grace_elapsed_seconds"] >= 300
+
+
+@pytest.mark.parametrize(
+    "ts",
+    ["2026-10-07 23:40:00 UTC", "Wed 2026-10-07 23:40:00 UTC", "Wo 2026-10-07 23:40:00 UTC"],
+)
+def test_elapsed_is_full_timestamp_around_midnight(sandbox: Sandbox, ts: str) -> None:
+    """#3538: «сейчас» 00:10 UTC, старт вчера 23:40 UTC → ровно 1800 с (не -84600: время суток без даты)."""
+    import calendar
+    import time
+
+    now = calendar.timegm(time.strptime("2026-10-08 00:10:00", "%Y-%m-%d %H:%M:%S"))
+    sandbox.install_fake_docker(["zenoh-router-vision"])
+    fake = sandbox.fake_bin / "systemctl"
+    fake.write_text(
+        "#!/bin/bash\n"
+        'if [ "$1" = show ]; then printf \'%s\\n\' \'' + ts + "'; exit 0; fi\n"
+    )
+    fake.chmod(0o755)
+    run = sandbox.run("--dry-run", "--json", extra_env={"ROBBOX_VISION_NOW_EPOCH": str(now)})
+    payload = json.loads(run.stdout.strip().splitlines()[-1])
+    assert payload["grace_elapsed_seconds"] == 1800, payload
 
 
 def test_grace_when_zero_running_but_fresh_start(sandbox: Sandbox) -> None:

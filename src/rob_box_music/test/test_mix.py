@@ -12,12 +12,11 @@ from dataclasses import replace
 
 import pytest
 
-from melodies import MELODIES, compose_p, profile
+from melodies import MELODIES, compose_p, profile, program_of
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
 from rob_box_music.arrange.compose import compose
 from rob_box_music.model import STEPS_PER_BAR, TrackError, validate
-from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
@@ -33,8 +32,7 @@ def _track(seed, track_no=1):
 
 
 def _events(track):
-    program = render(track, "A")
-    _p, events = program_events(program.code, program.form_beats)
+    program, events = program_of(track, "A")
     slot_role = {slot: role for role, slot in program.slots.items()}
     by_role = defaultdict(list)
     for ev in events:

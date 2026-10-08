@@ -10,11 +10,11 @@ from dataclasses import replace
 
 import pytest
 
-from melodies import MELODIES, compose_p, profile
+from melodies import MELODIES, compose_p, profile, program_of
+from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import club_track
 from rob_box_music.model import BEATS_PER_BAR
-from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import FORM_START, ROLE_SLOT, RenderError, render
 
 SEEDS = range(40)
@@ -27,8 +27,7 @@ def track_for(seed, deck="A", hooked=None, genre=None):
 
 
 def _events(track, deck="A"):
-    program = render(track, deck)
-    _parsed, events = program_events(program.code, program.form_beats)
+    program, events = program_of(track, deck)
     slot_role = {slot: role for role, slot in program.slots.items()}
     by_role = defaultdict(list)
     for ev in events:
@@ -129,11 +128,13 @@ def test_pad_voice_leading_moves_little(seed):
         assert max(moves) <= 4, (prev, nxt)
 
 
+def _voice_leading_ring(seed):
+    chords = track_for(seed).harmony.progression["drop"]
+    return [sum(abs(a - b) for a, b in zip(p.voicing, n.voicing)) for p, n in zip(chords, chords[1:] + chords[:1])]
+
+
 def test_pad_voice_leading_on_average_is_a_step():
-    ring = []
-    for seed in range(200):
-        chords = track_for(seed).harmony.progression["drop"]
-        ring += [sum(abs(a - b) for a, b in zip(p.voicing, n.voicing)) for p, n in zip(chords, chords[1:] + chords[:1])]
+    ring = [move for part in pmap(_voice_leading_ring, range(200), chunksize=10) for move in part]  # #3539
     assert sum(ring) / len(ring) <= 4.5
 
 

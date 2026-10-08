@@ -11,11 +11,10 @@ from collections import defaultdict
 
 import pytest
 
-from melodies import MELODIES, compose_p, profile
+from melodies import MELODIES, compose_p, profile, program_of
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
 from rob_box_music.model import BEATS_PER_BAR
-from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
 
 SEEDS = range(8)
@@ -23,8 +22,7 @@ STEP = 0.25
 
 
 def _events(track):
-    program = render(track, "A")
-    _p, events = program_events(program.code, program.form_beats)
+    program, events = program_of(track, "A")
     slot_role = {slot: role for role, slot in program.slots.items()}
     by_role = defaultdict(list)
     for ev in events:

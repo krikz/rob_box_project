@@ -31,23 +31,26 @@ SEEDS = range(30)
 TRACKS = 3
 
 
-def _theme_tracks(theme):
-    profile = seeded_profile(theme)
+def _set_tracks(case):
+    """Треки одного сета (тема, сид) с историей сета; сеты независимы."""
+    theme, seed = case
+    plan = seeded_plan(seeded_profile(theme), seed, set_id=f"p{seed}")
+    history: list = []
     tracks = []
-    for seed in SEEDS:
-        plan = seeded_plan(profile, seed, set_id=f"p{seed}")
-        history: list = []
-        for no in range(1, TRACKS + 1):
-            track = compose(plan, no, history=history)
-            history.insert(0, track_history(track, plan.set_id))
-            tracks.append(track)
+    for no in range(1, TRACKS + 1):
+        track = compose(plan, no, history=history)
+        history.insert(0, track_history(track, plan.set_id))
+        tracks.append(track)
     return tracks
 
 
 @pytest.fixture(scope="module")
 def sets():
-    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; темы считаются параллельно (#3504)."""
-    return dict(zip(THEMES, pmap(_theme_tracks, THEMES)))
+    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; сеты считаются параллельно (#3504, #3539: по сету, а не
+    по теме — 5 тем на 4 ядра давали два неполных круга)."""
+    cases = [(theme, seed) for theme in THEMES for seed in SEEDS]
+    built = pmap(_set_tracks, cases, chunksize=5)
+    return {theme: [t for (th, _s), tracks in zip(cases, built) if th == theme for t in tracks] for theme in THEMES}
 
 
 def _figure(track) -> str:
@@ -151,35 +154,38 @@ def base_tracks():
     return out
 
 
-def _remix(track, no, figure, pad, bass, bass_figure=None, lead=None):
-    spec = theme_form(form_spec(CLUB, track.history_key.template), track.hook.theme_bars if track.hook else 0)
-    chords = track.harmony.progression
-    parts = dict(track.parts)
-    parts["pad"] = PAD_GENERATORS[figure](CLUB, track.key, _bar_chords(spec, "pad", chords), pad,
-                                          track.parts["pad"].register)
-    parts["bass"] = (BASS_GENERATORS[bass_figure](CLUB, track.key, _bar_chords(spec, "bass", chords), bass,
-                                                  CLUB.registers["bass"])
-                     if bass_figure else replace(track.parts["bass"], synth_or_sample=bass))
-    if lead:
-        parts["lead"] = replace(track.parts["lead"], synth_or_sample=lead)
-    return mix.mix_parts(CLUB, parts, track.form, figure)
-
-
 def test_a9_model_holds_for_every_family_figure_and_synth(base_tracks):
     """A9-модель на трек (ADR-0152 §4 п.2): низ худшего дропа ≥ порога стиля на каждой комбинации семья × рисунок
     пэда × пэд × бас × рисунок баса × лид семьи (PR-6: басы семей держат низ — ``retrobass`` 0.72 из ``hard`` убран).
-    Комбинации независимы и считаются параллельно (#3504); сбойная комбинация названа в сообщении."""
-    pmap(_a9_combination, [(base_tracks, combo) for combo in _combinations()], chunksize=4)
+    Комбинации независимы и считаются параллельно (#3504); сбойная комбинация названа в сообщении.
+    Единица работы — (семья, рисунок, пэд): пэд и бас не зависят от лида, их строим один раз на трек (#3539)."""
+    groups = defaultdict(list)
+    for family, figure, pad, bass, bass_figure in _combinations():
+        groups[(family, figure, pad)].append((bass, bass_figure))
+    pmap(_a9_group, [(base_tracks, key, basses) for key, basses in groups.items()], chunksize=2)
 
 
-def _a9_combination(args):
-    base_tracks, (family, figure, pad, bass, bass_figure) = args
-    for (no, track), lead in itertools.product(base_tracks, CLUB.timbres[family]["lead"]):
-        _leveled, track_mix = _remix(track, no, figure, pad, bass, bass_figure, lead)
-        assert track_mix.a9_trim.get("pad", 0.0) >= kn.A9_PAD_FLOOR_DB
-        assert 0.0 <= track_mix.a9_trim.get("bass", 0.0) <= kn.A9_BASS_BOOST_DB
-        assert track_mix.a9_model >= CLUB.a9_model_low, (family, figure, pad, bass, bass_figure, lead,
-                                                         track_mix.a9_model, dict(track_mix.a9_trim))
+def _a9_group(args):
+    base_tracks, (family, figure, pad), basses = args
+    pads = {}  # трек → пэд рисунка (не зависит ни от баса, ни от лида)
+    for bass, bass_figure in basses:
+        for i, (no, track) in enumerate(base_tracks):
+            spec = theme_form(form_spec(CLUB, track.history_key.template), track.hook.theme_bars if track.hook else 0)
+            chords = track.harmony.progression
+            if i not in pads:
+                pads[i] = PAD_GENERATORS[figure](CLUB, track.key, _bar_chords(spec, "pad", chords), pad,
+                                                 track.parts["pad"].register)
+            bass_part = BASS_GENERATORS[bass_figure](CLUB, track.key, _bar_chords(spec, "bass", chords), bass,
+                                                     CLUB.registers["bass"])
+            for lead in CLUB.timbres[family]["lead"]:
+                parts = dict(track.parts)
+                parts["pad"], parts["bass"] = pads[i], bass_part
+                parts["lead"] = replace(track.parts["lead"], synth_or_sample=lead)
+                _leveled, track_mix = mix.mix_parts(CLUB, parts, track.form, figure)
+                assert track_mix.a9_trim.get("pad", 0.0) >= kn.A9_PAD_FLOOR_DB
+                assert 0.0 <= track_mix.a9_trim.get("bass", 0.0) <= kn.A9_BASS_BOOST_DB
+                assert track_mix.a9_model >= CLUB.a9_model_low, (family, figure, pad, bass, bass_figure, lead,
+                                                                 track_mix.a9_model, dict(track_mix.a9_trim))
 
 
 def test_a9_trim_lowers_the_pad_first_and_records_it(base_tracks):

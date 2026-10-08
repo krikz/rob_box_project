@@ -42,10 +42,16 @@ def _section_spans(track):
 
 
 def _tempo_case(case):
-    """(bpm плана, [(bpm трека, bpm программы)]) для (тема, сид)."""
+    """(bpm плана, [(bpm трека, bpm программы)]) для (тема, сид). Темп программы — копия ``track.bpm`` (renardo.render),
+    поэтому программу рендерим у одного трека из четырёх (#3539: рендер — 2/3 времени теста); у остальных
+    ``prog_bpm`` = ``track.bpm``, а темп самого трека проверяется у всех четырёх."""
     theme, seed = case
     plan = seeded_plan(seeded_profile(theme), seed, genre="club")
-    return plan.bpm, [(t.bpm, render(t, "A").bpm) for t in (compose(plan, no) for no in (1, 2, 5, 11))]
+    out = []
+    for no in (1, 2, 5, 11):
+        t = compose(plan, no)
+        out.append((t.bpm, render(t, "A").bpm if no == 1 else t.bpm))
+    return plan.bpm, out
 
 
 def test_one_tempo_for_the_whole_set_in_the_club_window():
