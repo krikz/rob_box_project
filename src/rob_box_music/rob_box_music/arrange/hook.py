@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import bisect
+import functools
 import logging
 import math
 from dataclasses import replace
@@ -249,7 +250,7 @@ def theme_version(melody_id: str, melodies: Mapping[str, str], bpm: int) -> str:
     (``knowledge.THEME_REF_NOTES`` нот) не меньше ``knowledge.THEME_REF_MATCH_MIN``, как эталон у материала
     (:func:`for_theme`). Ринг-тон бывает одной фразой (``hallofth_2`` — 4 такта = хук, тема не длиннее хука), а
     другая запись той же темы (``hallofth``) — вся мелодия. Длиннее хука нет — сам ``melody_id``."""
-    ref = contour(melodies[melody_id], kn.THEME_REF_NOTES)
+    ref = _ref_contour(melodies[melody_id])
 
     def length(name: str) -> float:
         try:
@@ -259,7 +260,7 @@ def theme_version(melody_id: str, melodies: Mapping[str, str], bpm: int) -> str:
         return sum(d for _m, d in notes) * time_scale(melody_bpm, bpm)
 
     same = [n for n, r in melodies.items() if n == melody_id or (
-        ref is not None and (c := contour(r, kn.THEME_REF_NOTES)) is not None
+        ref is not None and (c := _ref_contour(r)) is not None
         and contour_match(c, ref) >= kn.THEME_REF_MATCH_MIN)]
     best = max(same, key=lambda n: (length(n), n == melody_id))
     return best if length(best) > length(melody_id) else melody_id
@@ -481,10 +482,33 @@ def voices(material: ScoreMaterial) -> Dict[str, Tuple[PitchEvent, ...]]:
     return {"melody": material.melody, "bass": tuple(bass[b] for b in sorted(bass))}
 
 
+@functools.lru_cache(maxsize=256)
+def _ref_contour(rtttl: str) -> Optional[Tuple[int, ...]]:
+    """Контур начала RTTTL (``knowledge.THEME_REF_NOTES`` нот); строки эталонов одни на весь сет — разбор один раз."""
+    return contour(rtttl, kn.THEME_REF_NOTES)
+
+
 def reference_contours(rtttls: Sequence[str]) -> List[Tuple[int, ...]]:
     """Контуры начала RTTTL-эталонов произведения (:func:`rtttl.contour`, ``knowledge.THEME_REF_NOTES`` нот)."""
-    out = [contour(r, kn.THEME_REF_NOTES) for r in rtttls]
+    out = [_ref_contour(r) for r in rtttls]
     return [c for c in out if c is not None]
+
+
+def _best_window(steps: Sequence[int], at: Mapping[int, Sequence[int]],
+                 ref: Sequence[int]) -> Optional[Tuple[int, int]]:
+    """``(совпавших интервалов, начало)`` лучшего окна ``ref`` в ``steps`` (ничья — раньше): то же, что
+    :func:`contour_match` по каждому окну, но счёт идёт от мест каждого интервала ``at`` — план отбирает материалы
+    на пути запроса (M7). Окон нет (голос короче эталона) — ``None``."""
+    last = len(steps) - len(ref)
+    if last < 0:
+        return None
+    hits = [0] * (last + 1)
+    for k, step in enumerate(ref):
+        for j in at.get(step, ()):
+            if 0 <= j - k <= last:
+                hits[j - k] += 1
+    top = max(hits)
+    return top, hits.index(top)
 
 
 def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Optional[Tuple[float, str, float]]:
@@ -494,12 +518,16 @@ def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Opt
     for name, events in voices(material).items():
         pitches = [e.midi for e in events]
         steps = [b - a for a, b in zip(pitches, pitches[1:])]
+        at: Dict[int, List[int]] = {}
+        for j, step in enumerate(steps):
+            at.setdefault(step, []).append(j)
         for ref in refs:
-            n = len(ref)
-            for i in range(len(steps) - n + 1):
-                score = contour_match(steps[i:i + n], ref)
-                if best is None or score > best[0] or (score == best[0] and name == "melody" != best[1]):
-                    best = (score, name, events[i].beat)
+            window = _best_window(steps, at, ref)
+            if window is None:
+                continue
+            score = window[0] / len(ref)
+            if best is None or score > best[0] or (score == best[0] and name == "melody" != best[1]):
+                best = (score, name, events[window[1]].beat)
     return best
 
 
