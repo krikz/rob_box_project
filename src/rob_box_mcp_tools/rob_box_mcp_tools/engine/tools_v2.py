@@ -398,7 +398,7 @@ class DjSetTool(MCPTool):
         set_id = f"set{set_seed % 100000:05d}"
         logger = self.node.get_logger() if self.node is not None else None
         plan = seed_plan(self._scores, profile, set_seed, length, set_id, self._memory.peek(), logger or _LOG,
-                         genre=window)
+                         genre=window, references=list(self._melodies(profile.theme_hooks).values()))
         (logger or _LOG).info(f"🎛️ [dj_set] {set_id} длина сета: {length} ({why}), "
                               f"энергия={[t.energy for t in plan.tracks]}")
         materials = self.plan_materials(plan, logger)

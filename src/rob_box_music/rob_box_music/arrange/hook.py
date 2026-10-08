@@ -5,10 +5,11 @@
 медленнее), ноты встают на сетку 16-х. Тональность темы — :func:`rob_box_music.tonality.detect_key`; тема
 переносится на тонику трека целиком (интервалы сохраняются), лад трека — лад темы (#3293: явная тональность
 транспонирует тему, а не только аккомпанемент). Хроматика темы — проходящие: ``key_fit`` (доля длительности в
-ладу трека) ≥ ``knowledge.HOOK_KEY_FIT_MIN`` (I12). Регистр клампится в коридор лида: тема встаёт целиком на
-октаву с наименьшим числом нот вне коридора, оставшиеся переносятся октавой — ближе к соседней ноте (контур). Тема
-чужого лада (``key_fit`` ниже порога) или мотив, который перенос ломает (больше :data:`MAX_FOLDED_SHARE` нот),
-честно отвергается :class:`HookError` — вызывающий берёт следующую мелодию.
+ладу трека) ≥ ``knowledge.HOOK_KEY_FIT_MIN`` (I12). Регистр клампится в коридор лида (:func:`fit_register`): тема
+встаёт целиком на октаву с наименьшим числом нот вне коридора, оставшиеся переносятся октавой — ближе к соседней ноте
+(контур); переносом ломается больше :data:`MAX_FOLDED_SHARE` нот — октава своя у каждых двух тактов, затем у
+каждого такта (#3542). Тема чужого лада (``key_fit`` ниже порога) или мотив, который и так перенос ломает, честно
+отвергается :class:`HookError` — вызывающий берёт следующую мелодию.
 
 Развитие (:func:`develop`) — детерминированные операции над мотивом по имени секции: ``build`` — первые
 2 такта мотива и пауза перед дропом; ``drop`` — мотив целиком; ``break`` — начало мотива вдвое медленнее
@@ -23,7 +24,7 @@ import bisect
 import logging
 import math
 from dataclasses import replace
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..material import MaterialError, MeterMap, Phrase, ScoreMaterial, meter_map, meter_pending, validate_material
@@ -112,12 +113,19 @@ def diatonic(midi: int, key: Key, steps: int) -> int:
 
 
 def _answer(cut: List[Tuple[float, float, int]], key: Key, register: Tuple[int, int]) -> List[Tuple[float, float, int]]:
-    """Ответ фразе: та же фраза на IV/V ступени (диатонический сдвиг — ноты остаются в ладу), через ``PHRASE_BARS``."""
+    """Ответ фразе: та же фраза на IV/V ступени (диатонический сдвиг — ноты остаются в ладу), через ``PHRASE_BARS``.
+    Целиком в коридор не встаёт ни одна ступень — та, где вне коридора меньше нот, с переносом октавой
+    (:func:`_placement`, октава — ближе к концу фразы), если перенесено не больше :data:`MAX_FOLDED_SHARE` (#3542)."""
+    tries = []
     for steps in ANSWER_STEPS:
         moved = [(b + PHRASE_BARS * BEATS_PER_BAR, d, diatonic(m, key, steps)) for b, d, m in cut]
         if all(register[0] <= m <= register[1] for _b, _d, m in moved):
             return moved
-    raise HookError("ответ фразе не помещается в коридор лида")
+        tries.append(_placement([m for _b, _d, m in moved], 0, register, cut[-1][2]) + (moved,))
+    placed, folded, moved = min(tries, key=lambda t: t[1])
+    if folded > MAX_FOLDED_SHARE * len(placed):
+        raise HookError(f"ответ фразе не помещается в коридор лида: {folded} из {len(placed)} нот вне коридора")
+    return [(b, d, m) for (b, d, _m), m in zip(moved, placed)]
 
 
 def _check_musical(cut: List[Tuple[float, float, int]]) -> None:
@@ -136,12 +144,14 @@ def track_key(hook_root: int, hook_mode: str, root: int, mode: str) -> Key:
     return Key(root, hook_mode)
 
 
-def _placement(pitches: Sequence[int], shift: int, register: Tuple[int, int]) -> Tuple[List[int], int]:
+def _placement(pitches: Sequence[int], shift: int, register: Tuple[int, int],
+               prev: Optional[int] = None) -> Tuple[List[int], int]:
     """Тема в коридоре лида и число нот, перенесённых октавой.
 
     Тема целиком сдвигается на ``shift`` плюс октавы — там, где меньше всего нот вне коридора (при равенстве низ
-    ≥ :data:`PREFERRED_LOW`, середина ближе к :data:`TARGET_CENTER`); оставшиеся вне коридора ноты переносятся
-    октавой в коридор — на ту, что ближе к предыдущей ноте (контур мотива сохраняется где можно).
+    ≥ :data:`PREFERRED_LOW`, затем начало ближе к ``prev`` — последней ноте предыдущего отрезка, если он есть, иначе
+    середина ближе к :data:`TARGET_CENTER`); оставшиеся вне коридора ноты переносятся октавой в коридор — на ту, что
+    ближе к предыдущей ноте (контур мотива сохраняется где можно).
     """
     lo, hi = register
     center = (min(pitches) + max(pitches)) / 2
@@ -149,25 +159,66 @@ def _placement(pitches: Sequence[int], shift: int, register: Tuple[int, int]) ->
     def outside(s: int) -> int:
         return sum(1 for m in pitches if not lo <= m + s <= hi)
 
+    def near(s: int) -> float:
+        return abs(center + s - TARGET_CENTER) if prev is None else abs(pitches[0] + s - prev)
+
     best = min((shift + 12 * k for k in range(-6, 7)),
-               key=lambda s: (outside(s), min(pitches) + s < PREFERRED_LOW, abs(center + s - TARGET_CENTER)))
+               key=lambda s: (outside(s), min(pitches) + s < PREFERRED_LOW, near(s)))
     placed: List[int] = []
     for midi in pitches:
         m = midi + best
         if not lo <= m <= hi:
-            near = placed[-1] if placed else TARGET_CENTER
-            m = min((m + 12 * k for k in range(-9, 10) if lo <= m + 12 * k <= hi), key=lambda c: abs(c - near))
+            last = placed[-1] if placed else (TARGET_CENTER if prev is None else prev)
+            m = min((m + 12 * k for k in range(-9, 10) if lo <= m + 12 * k <= hi), key=lambda c: abs(c - last))
         placed.append(m)
     return placed, outside(best)
+
+
+#: Отрезки своей октавы (тактов клуба), если мотив (тема) на своих отрезках ломается переносом
+#: (:data:`MAX_FOLDED_SHARE`): по ``PHRASE_BARS`` такта, затем по такту (#3542: у партитуры с широким диапазоном
+#: «Моцарт» — 7 из 20 нот вне коридора целиком; по такту октава своя, перенесённых нот — единицы).
+OCTAVE_SPANS: Tuple[int, ...] = (PHRASE_BARS, 1)
+
+
+def fit_register(notes: Sequence[Tuple[float, int]], ends: Sequence[float], shift: int,
+                 register: Tuple[int, int]) -> Tuple[List[int], int, int]:
+    """Высоты ``notes`` (``(доля, MIDI)``) в коридоре ``register`` после сдвига ``shift``: октава — своя у каждого
+    отрезка до концов ``ends`` (доли: конец мотива или фраз темы, :func:`_placement`). Перенесено октавой больше
+    :data:`MAX_FOLDED_SHARE` нот — отрезки мельче (:data:`OCTAVE_SPANS`), октава следующего — ближе к концу
+    предыдущего (контур через стык). ``(высоты, перенесено, тактов в отрезке — 0: отрезки ``ends``)``: первая
+    раскладка, где перенесено не больше доли, иначе — исходная (вызывающий отвергает с её числом).
+
+    Единственный критерий «мотив помещается в коридор» хука, темы и годности материала (``material_unfit``)."""
+    first: Optional[Tuple[List[int], int, int]] = None
+    end = max(ends)
+    for span in (0, *OCTAVE_SPANS):
+        step = span * BEATS_PER_BAR
+        cuts = sorted(set(ends) | ({k * step for k in range(1, int(end // step) + 1)} if span else set()))
+        placed: List[int] = []
+        folded = 0
+        for start, stop in zip([0.0, *cuts], cuts):
+            part = [m for b, m in notes if start - 1e-9 <= b < stop - 1e-9]
+            if part:
+                moved, out = _placement(part, shift, register, placed[-1] if span and placed else None)
+                placed, folded = placed + moved, folded + out
+        if first is None:
+            first = (placed, folded, span)
+        if folded <= MAX_FOLDED_SHARE * len(placed):
+            return placed, folded, span
+    assert first is not None
+    return first
 
 
 Notes = Sequence[Tuple[Optional[int], float]]
 
 
 def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
-               register: Tuple[int, int] = kn.REGISTERS["lead"], theme_max: int = 0) -> Tuple[Hook, Key]:
+               register: Tuple[int, int] = kn.REGISTERS["lead"], theme_max: int = 0,
+               theme_rtttl: Optional[str] = None) -> Tuple[Hook, Key]:
     """Хук и тональность трека из RTTTL. ``root``/``mode`` — тональность плана; лад трека берётся у темы.
-    ``theme_max`` > 0 — ещё и тема целиком (:func:`with_theme`): вся мелодия до ``theme_max`` тактов.
+    ``theme_max`` > 0 — ещё и тема целиком (:func:`with_theme`): вся мелодия до ``theme_max`` тактов; ``theme_rtttl``
+    — запись того же произведения, откуда брать тему (:func:`theme_version`: ринг-тон хука бывает одной фразой), её
+    ноты — в темпе трека (свой :func:`time_scale`) и с первой нотой на высоте первой ноты хука.
 
     Разбор строки — здесь, всё остальное — :func:`from_notes` (общий путь с материалом партитуры, ADR-0154 §3.3).
     """
@@ -176,7 +227,42 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
     except ValueError as exc:
         _LOG.info("🎵 [music v2] hook melody=%s отказ: RTTTL не разбирается: %s", melody_id, exc)
         raise HookError(f"RTTTL не разбирается: {exc}") from exc
-    return from_notes(notes, melody_bpm, melody_id, bpm, root, mode, register, theme_max=theme_max)
+    theme = None
+    if theme_max > 0 and theme_rtttl and theme_rtttl != rtttl:
+        _n, theme_bpm, theme_notes = parse_rtttl(theme_rtttl)  # разбирается: выбрана theme_version
+        ratio = time_scale(theme_bpm, bpm) / time_scale(melody_bpm, bpm)
+        first = next(m for m, _d in notes if m is not None)
+        offset = (first - next(m for m, _d in theme_notes if m is not None) + 6) % 12 - 6
+        theme = ([(None if m is None else m + offset, d * ratio) for m, d in theme_notes], ())
+    return from_notes(notes, melody_bpm, melody_id, bpm, root, mode, register, theme_max=theme_max, theme=theme)
+
+
+def contour_match(steps: Sequence[int], ref: Sequence[int]) -> float:
+    """Доля совпавших интервалов контура ``steps`` с эталоном ``ref`` (по длине эталона; интервалы —
+    транспозиционно-инвариантно)."""
+    return sum(x == y for x, y in zip(steps, ref)) / len(ref) if ref else 0.0
+
+
+def theme_version(melody_id: str, melodies: Mapping[str, str], bpm: int) -> str:
+    """Запись темы целиком для хука ``melody_id`` (#3542): самая длинная в тактах трека (темп ``bpm``, свой
+    :func:`time_scale`) из ``melodies`` того же произведения — начало совпадает с началом хука контуром
+    (``knowledge.THEME_REF_NOTES`` нот) не меньше ``knowledge.THEME_REF_MATCH_MIN``, как эталон у материала
+    (:func:`for_theme`). Ринг-тон бывает одной фразой (``hallofth_2`` — 4 такта = хук, тема не длиннее хука), а
+    другая запись той же темы (``hallofth``) — вся мелодия. Длиннее хука нет — сам ``melody_id``."""
+    ref = contour(melodies[melody_id], kn.THEME_REF_NOTES)
+
+    def length(name: str) -> float:
+        try:
+            _n, melody_bpm, notes = parse_rtttl(melodies[name])
+        except ValueError:
+            return -1.0
+        return sum(d for _m, d in notes) * time_scale(melody_bpm, bpm)
+
+    same = [n for n, r in melodies.items() if n == melody_id or (
+        ref is not None and (c := contour(r, kn.THEME_REF_NOTES)) is not None
+        and contour_match(c, ref) >= kn.THEME_REF_MATCH_MIN)]
+    best = max(same, key=lambda n: (length(n), n == melody_id))
+    return best if length(best) > length(melody_id) else melody_id
 
 
 def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, mode: str,
@@ -190,8 +276,9 @@ def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: 
     нотам окна. Исход в логе (I12): принятый хук — с ``key_fit``, отказ — с причиной.
 
     ``theme_max`` > 0 — тема целиком (ADR-0154 PR-7, :func:`with_theme`): ``theme`` — ноты темы и концы её фраз в
-    тактах клуба от начала темы (материал: тематическая секция); без ``theme`` — вся мелодия ``notes``, фразы по
-    длине хука. Тема не годится — хук без темы, причина в логе.
+    тактах клуба от начала темы (материал: тематическая секция; пусто — фразы по длине хука, другая запись RTTTL,
+    :func:`from_rtttl`); без ``theme`` — вся мелодия ``notes``, фразы по длине хука. Тема не годится — хук без темы,
+    причина в логе.
     """
     try:
         hook, key, shift, answered = _hook(notes, melody_bpm, melody_id, bpm, root, mode, register, known_key, bars)
@@ -203,7 +290,7 @@ def from_notes(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: 
     if theme_max <= 0 or (answered and theme is None):
         return hook, key  # короткая мелодия RTTTL с ответом — тема и есть хук
     onsets = _onsets(theme[0] if theme else notes, time_scale(melody_bpm, bpm), bars)
-    cuts = theme[1] if theme else _even_cuts(onsets, hook.bars)
+    cuts = (theme[1] if theme else ()) or _even_cuts(onsets, hook.bars)
     return with_theme(hook, key, onsets, cuts, theme_max, shift, register), key
 
 
@@ -251,13 +338,7 @@ def _theme_events(notes: List[Tuple[float, float, int]], ends: Sequence[float], 
     fit = key_fit([(m + shift, d) for _b, d, m in notes], kn.ROOTS[key.root], key.mode)
     if fit < kn.HOOK_KEY_FIT_MIN:
         raise HookError(f"тема вне лада: key_fit {fit:.2f} < {kn.HOOK_KEY_FIT_MIN}")
-    placed: List[int] = []
-    folded = 0
-    for start, end in zip([0.0, *ends], ends):
-        phrase = [m for b, _d, m in notes if start - 1e-9 <= b < end - 1e-9]
-        if phrase:
-            moved, out = _placement(phrase, shift, register)
-            placed, folded = placed + moved, folded + out
+    placed, folded, _span = fit_register([(b, m) for b, _d, m in notes], ends, shift, register)
     if folded > MAX_FOLDED_SHARE * len(placed):
         raise HookError(f"тема ломается: {folded} из {len(placed)} нот перенесены октавой")
     moved = [(b, d, m) for (b, d, _m), m in zip(notes, placed)]
@@ -278,10 +359,13 @@ def _hook(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, 
     fit = key_fit([(m + shift, d) for _b, d, m in cut], kn.ROOTS[key.root], key.mode)
     if fit < kn.HOOK_KEY_FIT_MIN:
         raise HookError(f"тема вне лада {kn.ROOTS[key.root]} {key.mode}: key_fit {fit:.2f} < {kn.HOOK_KEY_FIT_MIN}")
-    placed, folded = _placement(pitches, shift, register)
+    placed, folded, span = fit_register([(b, m) for b, _d, m in cut], [bars * BEATS_PER_BAR], shift, register)
     if folded > MAX_FOLDED_SHARE * len(placed):
         raise HookError(f"мотив ломается: {folded} из {len(placed)} нот не помещаются в коридор {register} "
-                        f"без переноса октавой")
+                        f"без переноса октавой ни целиком, ни по {', '.join(map(str, OCTAVE_SPANS))} такта")
+    if span:
+        _LOG.info("🎵 [music v2] hook melody=%s октава по %d такта: перенесено %d из %d нот", melody_id, span, folded,
+                  len(placed))
     moved = [(b, d, m) for (b, d, _m), m in zip(cut, placed)]
     _check_musical(moved)
     if answered:
@@ -405,7 +489,7 @@ def reference_contours(rtttls: Sequence[str]) -> List[Tuple[int, ...]]:
 
 def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Optional[Tuple[float, str, float]]:
     """Лучшее совпадение контура эталона в голосах материала: ``(доля совпавших интервалов, голос, доля начала)``;
-    транспозиционно-инвариантно (интервалы), ничья — мелодия, раньше в пьесе. Нет эталонов — ``None``."""
+    транспозиционно-инвариантно (:func:`contour_match`), ничья — мелодия, раньше в пьесе. Нет эталонов — ``None``."""
     best: Optional[Tuple[float, str, float]] = None
     for name, events in voices(material).items():
         pitches = [e.midi for e in events]
@@ -413,7 +497,7 @@ def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Opt
         for ref in refs:
             n = len(ref)
             for i in range(len(steps) - n + 1):
-                score = sum(x == y for x, y in zip(steps[i:i + n], ref)) / n
+                score = contour_match(steps[i:i + n], ref)
                 if best is None or score > best[0] or (score == best[0] and name == "melody" != best[1]):
                     best = (score, name, events[i].beat)
     return best
@@ -575,19 +659,33 @@ def from_material(material: ScoreMaterial, bpm: int, root: int, mode: str,
     return replace(hook, answer=rhythm_answer(material, phrase, hook, key, bpm, register)), key
 
 
+def material_hook(material: ScoreMaterial, rtttls: Sequence[str], bpm: int, root: int, mode: str,
+                  register: Tuple[int, int] = kn.REGISTERS["lead"], theme_max: int = 0
+                  ) -> Tuple[ScoreMaterial, Optional[int], Hook, Key]:
+    """``(материал, такт главного мотива, хук, тональность)`` трека из материала с RTTTL-эталонами темы ``rtttls``:
+    главный мотив по эталону (:func:`for_theme`), затем хук (:func:`from_material`). Один путь у ``compose`` и у
+    годности материала в плане (:func:`material_unfit`); не годится — :class:`HookError`/``MaterialError``."""
+    material, anchor = for_theme(material, rtttls)
+    hook, key = from_material(material, bpm, root, mode, register, theme_max, anchor)
+    return material, anchor, hook, key
+
+
 def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
-                   register: Tuple[int, int] = kn.REGISTERS["lead"]) -> Optional[str]:
-    """Причина, по которой материал не годится в хук трека (``None`` — годится): тот же вызов
-    :func:`from_material` с теми же ``bpm/root/mode/register``, что у ``compose`` — мотив (нот/высот), ``key_fit``,
-    размер (§3.6), коридор; второго критерия нет (#3500). Годность зависит от темпа и тоники трека, поэтому план
-    спрашивает её для каждого трека (``set_plan.plan_materials``)."""
+                   register: Tuple[int, int] = kn.REGISTERS["lead"], rtttls: Sequence[str] = ()) -> Optional[str]:
+    """Причина, по которой материал не годится в хук трека (``None`` — годится): тот же :func:`material_hook` с теми
+    же ``bpm/root/mode/register`` и эталонами темы ``rtttls``, что у ``compose`` — главный мотив по эталону, мотив
+    (нот/высот), ``key_fit``, размер (§3.6), коридор (:func:`fit_register`); второго критерия нет (#3500, #3542).
+    Годность зависит от темпа и тоники трека, поэтому план спрашивает её для каждого трека
+    (``set_plan.plan_materials``): негодный материал уступает трек следующему годному, а не RTTTL-хуку."""
     try:
-        from_material(material, bpm, root, mode, register)
+        material_hook(material, rtttls, bpm, root, mode, register)
     except (HookError, MaterialError) as exc:
         return str(exc)
     return None
 
 
-__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "RHYTHM_SECTIONS", "develop", "diatonic",
-           "for_theme", "from_material", "from_notes", "from_rtttl", "reference_contours", "theme_match", "voices", "material_scale", "material_unfit", "pick_phrase", "rhythm_answer",
-           "theme_cuts", "theme_span", "time_scale", "track_key", "with_theme"]
+__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
+           "contour_match", "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
+           "from_rtttl", "material_hook", "material_scale", "material_unfit", "pick_phrase", "reference_contours",
+           "rhythm_answer", "theme_cuts", "theme_match", "theme_span", "theme_version", "time_scale", "track_key",
+           "voices", "with_theme"]

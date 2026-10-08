@@ -375,6 +375,8 @@ def track_composition(track: Any) -> Dict[str, Any]:
         "kick": _kick(parts) or "-", "kit": key.kit, "style": track.style,
         "form": _form_signature(track.form), "bpm": track.bpm, "mode": track.key.mode, "root": kn.ROOTS[key.root],
         "hook": key.hook or "-", "hook_fp": key.hook_fingerprint or "-", "prog": key.progression,
+        # тема целиком в первом дропе (ADR-0154 PR-7, #3542): тактов темы, 0 — дроп играет хук
+        "theme_bars": track.hook.theme_bars if track.hook else 0,
         "sample": key.sample or "-", "perc": key.perc or "-", "fx": key.fx or "-", "energy": track.energy,
         "pad_figure": key.pad_figure or "-", "bass_figure": key.bass_figure or "-", "template": key.template or "-",
         "genre": key.genre or "-", "timbre": key.timbre or "-", "a9_model": track.mix.a9_model,
