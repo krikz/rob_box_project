@@ -122,4 +122,3 @@ def test_same_seed_and_theme_give_different_first_tracks_in_every_style():
     for a, b in PAIRS:
         assert seen[a][:3] != seen[b][:3] and seen[a][2] != seen[b][2], (a, b, seen[a], seen[b])
     assert len({v[3:] for v in seen.values()}) >= 5, seen
-
