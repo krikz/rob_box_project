@@ -36,8 +36,9 @@ def test_request_music_plays_one_club_track_on_the_v2_deck():
     _dj, req = _tools(rig)
     result = req.execute(intent="track", text="поставь клубный трек")
     assert result.success and result.data["track_id"].startswith("req00777:01:A:")
-    lo, hi = kn.STYLES["club"].bpm
-    assert lo <= result.data["bpm"] <= hi and result.data["energy"] == kn.ENERGY_WAVE[0]
+    windows = kn.STYLES["club"].genre_windows.values()  # темп — окна сета (club 128–138 или deep 120–126)
+    assert any(w.bpm[0] <= result.data["bpm"] <= w.bpm[1] for w in windows)
+    assert result.data["energy"] == kn.ENERGY_WAVE[0]
     rig.clock.run_until(rig.clock.beat + 2)
     started = _started(rig)
     assert [e["track_id"] for e in started] == [result.data["track_id"]] and started[0]["phase_in_form"] == 0.0
