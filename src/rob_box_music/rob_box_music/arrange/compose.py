@@ -729,8 +729,9 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     kick = step.kick or pick_kick(style, history, random.Random(f"{plan.seed}:{track_no}:kick"))
     swing_ms = rhythm.swing_offset_ms(plan.swing, plan.bpm)
     drums = _drums(style, form, swing_ms, kit, kick, axis["drums"], axis["fills"])
-    bass_figure, bass_part = _bass(style, plan.family, _bar_chords(spec, "bass", progression), key, history, seed,
-                                   arranged.tones or None)
+    bass_chords = _bar_chords(spec, "bass", progression)
+    bass_figure, bass_part = _bass(style, plan.family, bass_chords, key, history, seed, arranged.tones or None)
+    bass_part = bass.against_lead(style, key, bass_chords, bass_part, arranged.lead.pitches)
     figure, pad_part = _pad(style, plan.family, _bar_chords(spec, "pad", progression), key, arranged.register,
                             history, seed)
     layers = {"sample": lambda: samples.perc_part(style, perc, kit, axis["sample"]),

@@ -878,7 +878,10 @@ _CLUB_LPF_TAIL_SECTIONS: Tuple[str, ...] = ("outro_tail",)
 #: Ручки мастер-шины, которые выставляет движок v2, и их значения по умолчанию — ровно дефолты SynthDef
 #: (сверяет ``test_master.py``): каждый старт трека и стоп выставляют их заново, поэтому трек вне сета не наследует
 #: ``trim`` и профиль выравнивателя от DJ-трека (правило сброса ADR-0147 §3.2).
-MASTER_DEFAULTS: Mapping[str, float] = {"trim": 0.0, "lvlRatio": 3.0, "lvlUp": 3.0}
+#: ``lvlTarget``/``cmpRatio``/``makeup`` — профиль динамики стиля (``Style.master``, #3549: джазу компрессор 4:1 и
+#: makeup 9 дБ срезали crest до 13 дБ против 17.8 у эталона).
+MASTER_DEFAULTS: Mapping[str, float] = {"trim": 0.0, "lvlRatio": 3.0, "lvlUp": 3.0, "lvlTarget": -12.0,
+                                        "cmpRatio": 4.0, "makeup": 9.0}
 #: DJ-профиль выравнивателя (ADR-0147 §3.5): из 10 дБ брейк/дроп остаётся ~6.7 вместо ~3.5, тихое не тянется
 #: за секунду. Включается только по замеру ``dyn 0/1`` (решение Шифу В3) — :data:`SET_LEVELER`.
 DJ_LEVELER: Mapping[str, float] = {"lvlRatio": 1.5, "lvlUp": 8.0}
@@ -1434,6 +1437,15 @@ class Style:
     # ступенью лада.
     solo_phrases: Tuple[Tuple[Tuple[int, int], ...], ...] = ()
     solo_chromatic: float = 0.0
+    # Голосоведение баса против лида (``arrange.bass.against_lead``, #3549): интервалы «лид − бас» по модулю октавы,
+    # которых бас избегает на нотах, звучащих вместе с нотой лида (1 — малая нона/секунда, 11 — та же пара полутоном
+    # сверху), и интервалы, на которые бас и лид не идут параллельно в одну сторону (0 — октавы, 7 — квинты). Пусто —
+    # бас как его сыграл генератор (клуб побайтно тот же).
+    bass_lead_clash: Tuple[int, ...] = ()
+    bass_lead_parallels: Tuple[int, ...] = ()
+    # Ручки мастер-шины стиля поверх :data:`SET_LEVELER` (``arrange.mix.set_master``; ключи — :data:`MASTER_DEFAULTS`,
+    # каждый старт трека выставляет все ручки заново, поэтому следующий трек другого стиля их не наследует).
+    master: Mapping[str, float] = field(default_factory=dict)
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
@@ -1830,12 +1842,17 @@ _JAZZ_KITS: Mapping[str, Mapping[str, str]] = {
 #: замерены ``--clarity``), ``keys`` (фортепиано), ``pluck`` (гитара), ``arpy``. Бас — с низом на роботе ≥ 0.9
 #: (``bass``/``jbass``, четвертями — контрабаса в прелоаде нет). Пэд comping — замеренные в роли пэда
 #: (``rhpiano``/``epiano`` в рамке пэда не замерены — не взяты, хотя хвост 28/148 мс comping допускает:
-#: :data:`LEAD_CLARITY`; ``epiano`` нечитаем как лид — тусклый, атака 50 мс).
+#: :data:`LEAD_CLARITY`; ``epiano`` нечитаем как лид — тусклый, атака 50 мс). #3549: ``strings`` снят — на потолке
+#: ``amp`` он −41.7 дБ, на 4.7 дБ ниже цели пэда: comping тонул; замер ``rhpiano``/``epiano``/``keys`` в рамке пэда
+#: (``loudness_nrt_v2.sh --sweep pad …``, katana) — до него их в пэд не взять (нет строки модели громкости). Бас —
+#: ``bass`` и ``subbass`` (низ NRT 0.996, сдвиг на роботе не устоялся: серии +2.8, приёмка −3.1 дБ — поправки нет;
+#: на потолке ``amp`` −28 дБ — цель −39 достаёт). ``jbass`` снят: на роботе тише модели на 6.5 дБ (``BASS_ROBOT_DB``),
+#: а A9-модель джаза бас не поднимает — раунд 2 #3549 (``sinepad``/``brass``/``jbass``) дал низ 0.04 при 0.25 у ``bass``.
 _JAZZ_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("brass", "keys"), "bass": ("jbass", "bass"), "pad": ("sinepad", "space")},
-    "hard": {"lead": ("brass", "arpy", "keys"), "bass": ("jbass", "bass"), "pad": ("sinepad", "strings")},
-    "bright": {"lead": ("keys", "pluck", "brass"), "bass": ("bass", "jbass"), "pad": ("ambi", "sinepad")},
-    "warm": {"lead": ("brass", "keys", "pluck"), "bass": ("bass", "jbass"), "pad": ("sinepad", "ambi", "strings")},
+    "dark": {"lead": ("brass", "keys"), "bass": ("bass", "subbass"), "pad": ("sinepad", "space")},
+    "hard": {"lead": ("brass", "arpy", "keys"), "bass": ("bass", "subbass"), "pad": ("sinepad", "ambi")},
+    "bright": {"lead": ("keys", "pluck", "brass"), "bass": ("bass", "subbass"), "pad": ("ambi", "sinepad")},
+    "warm": {"lead": ("brass", "keys", "pluck"), "bass": ("bass", "subbass"), "pad": ("sinepad", "ambi")},
 }
 #: Петли ii–V–I и оборотов (I–vi–ii–V, iii–vi–ii–V): их переходы — априорный бонус Витерби под мелодию
 #: (``HookHarmony.style_bonus``), а не шаблон поверх темы.
@@ -1877,9 +1894,16 @@ _JAZZ_FORMS: Mapping[str, FormSpec] = {
 _JAZZ_ENERGY_FORMS: Mapping[int, Tuple[str, ...]] = {
     1: ("jazz48",), 2: ("jazz48",), 3: ("jazz48", "jazz64"), 4: ("jazz48", "jazz64"), 5: ("jazz64", "jazz48"),
 }
-#: Уровни ролей (шкала модели): бочка «пёрышком», райд и педаль хэта тихо, низ — walking. Гипотеза до записи робота.
+#: Уровни ролей (шкала модели): лёгкий контрабас, бочка «пёрышком», comping и лид — середина, райд слышен. Приёмка S7
+#: (робот 08.10, образ 3e4df37e5, трек 1 ``sinepad``/``keys``/``bass``, уровни −46/−37/−40/−46/−50/−50): низ 0.58,
+#: середина 0.41, crest 13.1 против эталона 0.27/0.73/17.8. #3549, раунд 1 (робот 08.10 05:19Z, hotpatch 1d95c5cf6,
+#: −48/−43/−37/−44/−50/−47, 2 сета, первые 140 с): низ 0.16 / 0.09, середина 0.82 / 0.90 — перелёт на ≈ 4 дБ (лид
+#: ``brass`` и пэд ``ambi`` громче, чем ``keys``/``sinepad`` трека S7); раунд 2 — бас −39, бочка −47, лид −45: трек
+#: ``ambi``/``brass``/``bass`` — низ 0.25, середина 0.74, crest 18.4 (с ``jbass`` — 0.04, он снят из палитры).
+#: Пэд ``sinepad``/``ambi`` упирается в потолок ``amp`` ≈ −38.8 (цель −37 — запас под замер ``rhpiano``/``epiano``).
+#: Проверка — запись робота, не модель (A9-модель джаза не откалибрована).
 _JAZZ_ROLE_LEVEL_DB: Mapping[str, float] = {
-    "kick": -46.0, "bass": -37.0, "pad": -40.0, "lead": -46.0, "clap": -50.0, "hats": -50.0}
+    "kick": -47.0, "bass": -39.0, "pad": -37.0, "lead": -45.0, "clap": -50.0, "hats": -47.0}
 _JAZZ_WINDOW = _JAZZ_GENRE_WINDOWS["swing"]
 _JAZZ_STYLE = Style(
     bpm=_JAZZ_WINDOW.bpm, swing=(0.20, 0.25), modes=("major", "dorian", "minor"),
@@ -1891,11 +1915,16 @@ _JAZZ_STYLE = Style(
     layer_sections={}, genre_windows=_JAZZ_GENRE_WINDOWS,
     role_level_db=_JAZZ_ROLE_LEVEL_DB, duck_roles=(), section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)},
     lpf_roles=("bass", "pad", "lead"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
-    # Ширина: эталон LR 0.85 — comping двумя голосами с расстройкой не шире ±0.4, остальное в центре.
-    stereo={"pad": {"pan": 0.4, "detune": PAD_DETUNE}},
+    # Ширина: эталон LR 0.85 (робот S7 0.99). Comping — два голоса с расстройкой на ±pan. Замер #3549 (первые 140 с
+    # сета): ±0.4 (S7) — 0.99; ±0.6 — 0.98 / 0.93; ±0.9 — 0.35 / 0.55. Короткие удары comping почти не расходятся
+    # расстройкой, поэтому LR от pan сильно нелинеен; ±0.7 — интерполяция к 0.8–0.9. Бас, бочка и лид — в центре;
+    # удары файлами паков (райд, педаль) ширины не выражают (``render.renardo``), а панорама моно корреляцию не снижает.
+    stereo={"pad": {"pan": 0.7, "detune": PAD_DETUNE}},
     # A9-модель для джаза не откалибрована (удары файлами и walking в модели — оценки): порог — страховка от трека
-    # без низа, норма — эталон 0.27 [0.08..0.48] по записи.
-    a9_model_low=0.05,
+    # без низа, норма — эталон 0.27 [0.08..0.48] по записи. Модель занижает низ джаза: трек 1 приёмки S7 — модель 0.391,
+    # запись 0.58 (отношение низ/середина в 2.2 раза ниже записи). С уровнями #3549 модель даёт 0.015–0.17, и порог
+    # 0.05 глушил пэд на 2–8 дБ в 14 из 90 треков аудита — ровно против цели; 0.01 — только трек совсем без баса.
+    a9_model_low=0.01,
     thin_roles={}, swing_steps=(2, 6, 10, 14), swing_roles=("kick", "clap", "bass", "pad", "lead"),
     approach_max_beats=1.0,
     # Райд — хэты (``muldjord_rider_*``, 2–8 кГц 0.51: на 16 кГц робота слышен), педаль хэта на 2 и 4 — роль клэпа.
@@ -1904,6 +1933,13 @@ _JAZZ_STYLE = Style(
     backbeat_kinds=("intro_low", "drop", "drop2", "solo", "outro"), roll_bars=0, clap_fill="cut",
     cadence=((1, ""), (4, "maj"), (0, "")), section_leads={"solo": "solo"},
     solo_phrases=_JAZZ_SOLO_PHRASES, solo_chromatic=0.4,
+    # #3549: аудит S7 — м2/м9 лид–бас у 100 % треков, параллельные квинты/октавы у 62 %; walking обходит их сам.
+    bass_lead_clash=(1, 11), bass_lead_parallels=(0, 7),
+    # Динамика (#3549): crest робота 13.1 против 17.8 эталона — компрессор 4:1 с makeup 9 дБ давил атаки. Джазу
+    # компрессор выключен (ratio 1, makeup 0), выравниватель тянет к −16 дБ: при crest ≈ 17 пик ≈ −1 dBFS — у потолка
+    # лимитера, а не под ним. Громкость джаза ниже прочих стилей на ≈ 4–5 дБ — плата за динамику (эталон джаза тоже
+    # тише рока на 5 LU).
+    master={"lvlTarget": -16.0, "cmpRatio": 1.0, "makeup": 0.0},
 )
 
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
