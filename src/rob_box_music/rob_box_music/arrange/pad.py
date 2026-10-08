@@ -14,6 +14,9 @@
   без сайдчейна. Тоны — голоса того же обращения, что держал бы пэд: в регистре и в ладу по построению.
 * ``comping`` — comping (ADR-0153 S4): 2–3 коротких аккорда на такт по ритмам ``Style.comp_rhythms`` (такт за тактом по
   кругу), септаккорды при ``Style.chord_size`` 4; на сильных долях 1 и 3 — никогда (там хук), без сайдчейна.
+* ``power_chords`` — пауэр-аккорды рока (ADR-0153 S5): прима, чистая квинта и октава примы ступени такта — без терции;
+  ступень с уменьшённой квинтой (ii° минора, vii° мажора — Витерби темы может их взять) — прима и октава. Ритм —
+  ``Style.power_rhythms`` по тактам по кругу (палм-мьют — короткая ``sus``), без сайдчейна.
 
 Обращения аккордов — ``harmony.pad_chords``; уровень ставит ``arrange.mix``.
 """
@@ -24,7 +27,7 @@ from typing import List, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Chord, Key, Part, PitchEvent
-from . import rhythm
+from . import harmony, rhythm
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 #: «И» каждой доли (оффбит-восьмые); стэб звучит до следующего «и».
@@ -116,4 +119,41 @@ def comping(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], 
     return Part("pad", synth, rhythm.grid(steps), tuple(events), 0.0, register)
 
 
-__all__ = ["STAB_STEPS", "STRONG_STEPS", "arp", "arp_events", "comping", "held", "pumped16", "stabs"]
+#: Чистая квинта, полутонов: пауэр-аккорд — прима + чистая квинта (+ октава).
+FIFTH = 7
+
+
+def power_voicing(root_pc: int, fifth_pc: int, register: Tuple[int, int]) -> Tuple[int, ...]:
+    """Пауэр-аккорд в регистре (не ниже низа, не выше верха): прима — нижняя нота класса ``root_pc``, над которой
+    помещается чистая квинта, и октава примы, если помещается. Квинта над примой не помещается (верх пэда прижат
+    низким лидом) — квинта под примой (обращение: кварта, терции всё равно нет). Квинта ступени не чистая — без неё."""
+    lo, hi = register
+    roots = [m for m in range(lo, hi + 1) if m % 12 == root_pc]
+    if (fifth_pc - root_pc) % 12 != FIFTH:
+        return tuple(m for m in (roots[0], roots[0] + 12) if m <= hi)
+    up = [m for m in roots if m + FIFTH <= hi]
+    if up:
+        return tuple(m for m in (up[0], up[0] + FIFTH, up[0] + 12) if m <= hi)
+    below = [m for m in roots if m - (12 - FIFTH) >= lo]
+    return (below[0] - (12 - FIFTH), below[0]) if below else (roots[0],)
+
+
+def power_chords(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+                 register: Tuple[int, int]) -> Part:
+    """Пауэр-аккорды по тактам ``bar_chords``: в такте ``bar`` — удары ритма ``style.power_rhythms[bar % n]``
+    (``(шаг 16-х, длина в 16-х)``), голоса — :func:`power_voicing` ступени аккорда такта (терции нет никогда)."""
+    rhythms = style.power_rhythms
+    if not rhythms:
+        raise ValueError("ритмов пауэр-аккордов у стиля нет (Style.power_rhythms)")
+    events = []
+    for bar, chord in bar_chords:
+        pcs = harmony.chord_pcs(style, key, chord.degree)
+        voicing = power_voicing(pcs[0], pcs[2], register)
+        events += [PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, length * STEP_BEATS, 3 if step % 4 == 0 else 2)
+                   for step, length in rhythms[bar % len(rhythms)] for m in voicing]
+    steps = sorted({step for r in rhythms for step, _n in r})
+    return Part("pad", synth, rhythm.grid(steps), tuple(events), 0.0, register)
+
+
+__all__ = ["FIFTH", "STAB_STEPS", "STRONG_STEPS", "arp", "arp_events", "comping", "held", "power_chords",
+           "power_voicing", "pumped16", "stabs"]

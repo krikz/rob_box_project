@@ -48,8 +48,9 @@ STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 #: секции идут от первой доли трека, где бы он ни встал (стык и блэнд PR-8 ставят трек не на ``k·форма``).
 FORM_START = "Clock.next_bar()"
 #: Роль → индекс слота в ``knowledge.DECK_SLOTS[deck]``: d-слоты ударным, p-слоты тональным.
+#: ``toms`` (ADR-0153 S5) делит слот с ``loop``: у рока лупа нет (две роли в одном слоте — ``RenderError``).
 ROLE_SLOT: Dict[str, int] = {"kick": 0, "hats": 1, "clap": 2, "perc": 2, "bass": 3, "pad": 4, "lead": 5,
-                             "sample": 6, "fx": 7, "loop": 8}
+                             "sample": 6, "fx": 7, "loop": 8, "toms": 8}
 _UNSET = object()
 
 #: (ноты шага, sus в долях, акцент, срез ноты Гц или 0, свинг мс)

@@ -44,7 +44,7 @@ from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
-from rob_box_music.theme import ThemeProfile, match_style_text, seeded_profile, style_for
+from rob_box_music.theme import ThemeProfile, match_style_text, match_window_text, seeded_profile, style_for
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker, pick_score
@@ -308,7 +308,9 @@ class DjSetTool(MCPTool):
                     named = None if tracks is None else set_tracks(tracks)
                 except ValueError as exc:
                     return MCPToolResult(success=False, error=str(exc))
-                result = self._start(theme or "", persona, key, named)
+                # окно стиля словами человека («гранж» → rock/grunge, ADR-0153 S5); нет слов — окно выбирает план
+                window = match_window_text(key, heard_text, theme)
+                result = self._start(theme or "", persona, key, named, window)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(result, self._confirm)  # ждём started вне замка
@@ -383,7 +385,7 @@ class DjSetTool(MCPTool):
         return DEFAULT_TRACKS, "по умолчанию"
 
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
-               tracks: Optional[int] = None) -> Dict[str, Any]:
+               tracks: Optional[int] = None, window: Optional[str] = None) -> Dict[str, Any]:
         length, why = self.set_length(tracks)
         profile = self.theme_profile(theme, style)
         if self._not_found:  # названное не нашлось — не пул по хешу темы вместо него; идущий сет не трогаем
@@ -395,7 +397,8 @@ class DjSetTool(MCPTool):
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
         logger = self.node.get_logger() if self.node is not None else None
-        plan = seed_plan(self._scores, profile, set_seed, length, set_id, self._memory.peek(), logger or _LOG)
+        plan = seed_plan(self._scores, profile, set_seed, length, set_id, self._memory.peek(), logger or _LOG,
+                         genre=window)
         (logger or _LOG).info(f"🎛️ [dj_set] {set_id} длина сета: {length} ({why}), "
                               f"энергия={[t.energy for t in plan.tracks]}")
         materials = self.plan_materials(plan, logger)

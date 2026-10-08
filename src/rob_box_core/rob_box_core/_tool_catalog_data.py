@@ -180,7 +180,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                      'chiptune',
                                                                      'breaks',
                                                                      'dnb',
-                                                                     'lofi']},
+                                                                     'lofi',
+                                                                     'rock']},
                                             'tracks': {   'type': 'integer',
                                                           'description': 'Сколько '
                                                                          'треков в '
