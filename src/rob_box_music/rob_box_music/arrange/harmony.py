@@ -10,7 +10,7 @@ from __future__ import annotations
 import bisect
 import math
 import random
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 
 from .. import knowledge as kn
 from ..diversity import weighted_pick
@@ -27,16 +27,42 @@ PROGRESSION_SKIPPED = 3
 PROGRESSION_LOOKBACK = PROGRESSION_WINDOW - 1 + PROGRESSION_SKIPPED
 
 
+class ChordSym(NamedTuple):
+    """Аккорд гармонии до обращения (аудит 07.10 Ф2, #3530): ступень лада и качество — ключ
+    ``knowledge.CHORD_INTERVALS``; обращение пэда — :func:`voice_chain` (``model.Chord``)."""
+
+    degree: int
+    quality: str
+
+
+#: Аккорд в функциях гармонии: ступень (диатоническое качество) или :class:`ChordSym`.
+AnyChord = Union[int, ChordSym]
+
+
+def sym(key: Key, chord: AnyChord) -> ChordSym:
+    """Аккорд как :class:`ChordSym`: ступень без качества — диатоническое трезвучие лада ``key`` (лад не из семи
+    ступеней — качество пусто: терции лада)."""
+    if isinstance(chord, ChordSym):
+        return chord
+    return ChordSym(chord, kn.diatonic_quality(key.mode, chord) if len(kn.SCALES[key.mode]) == 7 else "")
+
+
+def qualities(key: Key, degree: int) -> Tuple[str, ...]:
+    """Качества ступени ``degree`` без аккорда автора: диатоническое первым, затем ``knowledge.DEGREE_QUALITIES``
+    лада (в миноре V — и мажорная)."""
+    return (kn.diatonic_quality(key.mode, degree), *kn.DEGREE_QUALITIES.get(key.mode, {}).get(degree, ()))
+
+
 def progression_name(degrees: Sequence[int]) -> str:
     """Имя прогрессии в ``music_history.progression``: ступени через дефис."""
     return "-".join(str(d) for d in degrees)
 
 
-def chord_pcs(style: kn.Style, key: Key, degree: int) -> Tuple[int, ...]:
-    """Аккорд ступени ``degree`` из ``style.chord_size`` звуков лада терциями (не хроматика): (тоника, терция,
-    квинта, …)."""
-    scale = kn.SCALES[key.mode]
-    return tuple((key.root + scale[(degree + 2 * k) % len(scale)]) % 12 for k in range(style.chord_size))
+def chord_pcs(style: kn.Style, key: Key, degree: int, quality: Optional[str] = None) -> Tuple[int, ...]:
+    """Тоны аккорда ступени ``degree`` из ``style.chord_size`` звуков: (прима, терция, квинта, …). ``quality`` —
+    ключ ``knowledge.CHORD_INTERVALS`` (аккорд автора, гармонический V), ``None`` — терции лада
+    (``knowledge.chord_pitch_classes``)."""
+    return kn.chord_pitch_classes(key.root, key.mode, degree, quality or None, style.chord_size)
 
 
 def voicings(pcs: Sequence[int], register: Tuple[int, int]) -> List[Tuple[int, ...]]:
@@ -58,7 +84,8 @@ def _movement(a: Sequence[int], b: Sequence[int]) -> int:
     return sum(abs(x - y) for x, y in zip(a, b))
 
 
-def pad_chords(style: kn.Style, key: Key, degrees: Sequence[int], register: Tuple[int, int]) -> Tuple[Chord, ...]:
+def pad_chords(style: kn.Style, key: Key, degrees: Sequence[AnyChord], register: Tuple[int, int]
+               ) -> Tuple[Chord, ...]:
     """Петля прогрессии → обращения с минимальным движением голосов, включая стык «последний → первый»
     (:func:`voice_chain` по кругу): цепочка «каждый от предыдущего» уплывает, и на повторе петли пэд прыгает (до 17
     полутонов у тестов PR-2)."""
@@ -112,9 +139,10 @@ def transition_table(mode: str) -> Table:
     return kn.PROGRESSION_TRANSITIONS[table_mode(mode)]
 
 
-def _triad(key: Key, degree: int) -> set:
-    scale = kn.SCALES[key.mode]
-    return {(key.root + scale[(degree + 2 * k) % 7]) % 12 for k in range(3)}
+def _triad(key: Key, chord: AnyChord) -> set:
+    """Трезвучие аккорда (ступень — диатоническое, :class:`ChordSym` — своего качества)."""
+    c = sym(key, chord)
+    return set(kn.chord_pitch_classes(key.root, key.mode, c.degree, c.quality))
 
 
 def diminished(key: Key) -> frozenset:
@@ -143,39 +171,55 @@ def _b9(pc: int, triad: set) -> bool:
     return pc not in triad and (pc - 1) % 12 in triad
 
 
+Pins = Sequence[Optional[ChordSym]]
+
+
 def _emissions(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
-               clash: Optional[Sequence[PitchEvent]] = None) -> List[List[float]]:
-    """[слот][ступень] — доля мелодии слота в трезвучии ступени минус штраф за b9 на сильных долях; вес ноты —
-    длительность, на сильной доле ×``HOOK_HARMONY.strong_weight`` (0, если слот пуст). ``clash`` — все звучащие
-    голоса для штрафа b9 (хук с терциями), по умолчанию — ``notes``."""
-    hh = kn.HOOK_HARMONY
-    triads = [_triad(key, d) for d in range(7)]
+               clash: Optional[Sequence[PitchEvent]] = None, pins: Pins = ()) -> List[List[Tuple[float, str]]]:
+    """[слот][ступень] — (оценка, качество): доля мелодии слота в трезвучии аккорда минус штраф за b9 на сильных
+    долях, лучшее из качеств ступени (:func:`qualities`, ничья — диатоническое; закреплённый аккорд ``pins`` — его
+    качество). Вес ноты — длительность, на сильной доле ×``HOOK_HARMONY.strong_weight`` (0, если слот пуст).
+    ``clash`` — все звучащие голоса для штрафа b9 (хук с терциями), по умолчанию — ``notes``."""
+    options = [[(q, _triad(key, ChordSym(d, q))) for q in qualities(key, d)] for d in range(7)]
     out = []
     for slot in range(slots):
         inside = _slot_notes(notes, slot, chord_beats)
         voices = inside if clash is None else _slot_notes(clash, slot, chord_beats)
-        total = sum(_weight(e, hh) for e in inside) or 1.0
-        out.append([(sum(_weight(e, hh) for e in inside if e.midi % 12 in t)
-                     - hh.b9_weight * sum(_weight(e, hh) for e in voices if _strong(e) and _b9(e.midi % 12, t)))
-                    / total for t in triads])
+        pin = pins[slot] if slot < len(pins) else None
+        out.append([_best(inside, voices, [(pin.quality, _triad(key, pin))] if pin is not None and pin.degree == d
+                          else options[d]) for d in range(7)])
     return out
+
+
+def _best(inside: Sequence[PitchEvent], voices: Sequence[PitchEvent],
+          cands: Sequence[Tuple[str, set]]) -> Tuple[float, str]:
+    """(оценка, качество) лучшего из аккордов ``cands`` (качество, трезвучие) под нотами слота; ничья — раньше."""
+    hh = kn.HOOK_HARMONY
+    total = sum(_weight(e, hh) for e in inside) or 1.0
+
+    def fit(t: set) -> float:
+        return (sum(_weight(e, hh) for e in inside if e.midi % 12 in t)
+                - hh.b9_weight * sum(_weight(e, hh) for e in voices if _strong(e) and _b9(e.midi % 12, t))) / total
+    score, _i, quality = max((fit(t), -i, q) for i, (q, t) in enumerate(cands))
+    return score, quality
 
 
 def _slot_notes(notes: Sequence[PitchEvent], slot: int, chord_beats: float) -> List[PitchEvent]:
     return [e for e in notes if slot * chord_beats <= e.beat < (slot + 1) * chord_beats]
 
 
-def transfer_b9(key: Key, notes: Sequence[PitchEvent], degree: int, author: Iterable[int]) -> bool:
+def transfer_b9(key: Key, notes: Sequence[PitchEvent], chord: AnyChord, author: Iterable[int]) -> bool:
     """Малая нона на сильной доле, которую дал перенос аккорда автора в лад трека: нота ``notes`` на полутон выше тона
-    трезвучия ступени ``degree``, а у аккорда автора (``author`` — его звуки в тональности трека) её нет — V → v в
-    миноре под вводным тоном. Неаккордовый тон самого автора (хроматика Грига) — его замысел, не перенос."""
-    triad, own = _triad(key, degree), set(author)
+    трезвучия, которое сыграет трек (``chord``), а у аккорда автора (``author`` — его звуки в тональности трека) её
+    нет. Аккорд автора со своим качеством её не даёт (Ф2); остаётся у недиатонического, приведённого к ступени лада.
+    Неаккордовый тон самого автора (хроматика Грига) — его замысел, не перенос."""
+    triad, own = _triad(key, chord), set(author)
     return any(_strong(e) and _b9(e.midi % 12, triad) and not _b9(e.midi % 12, own) for e in notes)
 
 
-def strong_b9(key: Key, notes: Sequence[PitchEvent], degree: int) -> bool:
-    """Есть ли нота сильной доли ``notes`` на полутон выше тона трезвучия ступени ``degree``."""
-    triad = _triad(key, degree)
+def strong_b9(key: Key, notes: Sequence[PitchEvent], chord: AnyChord) -> bool:
+    """Есть ли нота сильной доли ``notes`` на полутон выше тона трезвучия аккорда ``chord``."""
+    triad = _triad(key, chord)
     return any(_strong(e) and _b9(e.midi % 12, triad) for e in notes)
 
 
@@ -195,7 +239,7 @@ def _log_step(table: Table, a: int, b: int, moves: frozenset) -> float:
 
 
 def viterbi(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
-            fixed: Sequence[Optional[int]] = (), table: Optional[Table] = None, *, ring: bool = False,
+            fixed: Sequence[Optional[AnyChord]] = (), table: Optional[Table] = None, *, ring: bool = False,
             degrees: Sequence[int] = range(7), progressions: Iterable[Sequence[int]] = (),
             clash: Optional[Sequence[PitchEvent]] = None) -> Tuple[int, ...]:
     """Ступени ``slots`` слотов по ``melody_weight × эмиссия + log P(переход)`` (HMM, ADR-0154 альтернатива F;
@@ -205,31 +249,48 @@ def viterbi(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: in
 
 
 def paths(key: Key, notes: Sequence[PitchEvent], chord_beats: float, slots: int,
-          fixed: Sequence[Optional[int]] = (), table: Optional[Table] = None, *, ring: bool = False,
+          fixed: Sequence[Optional[AnyChord]] = (), table: Optional[Table] = None, *, ring: bool = False,
           degrees: Sequence[int] = range(7), progressions: Iterable[Sequence[int]] = (),
           clash: Optional[Sequence[PitchEvent]] = None) -> List[Tuple[float, Tuple[int, ...]]]:
     """Лучшие пути Витерби, от лучшего: (оценка, ступени); у петли (``ring``) — по одному на каждую первую ступень,
     у цепочки — один.
 
     ``notes`` — мелодия в долях от начала первого слота, аккорд держится ``chord_beats`` долей. ``fixed`` —
-    ступени, известные заранее (аккорды материала), ``None`` — слот выбирает Витерби; ``degrees`` — из каких ступеней
-    выбирает (педаль — тоника/доминанта). ``ring`` — петля: переход «последний → первый» входит в оценку.
-    Уменьшённое трезвучие (и из ``fixed``) — только перед ``knowledge.DIM_RESOLUTION``, последним в незамкнутой
-    цепочке — нет; сам Витерби берёт только вводное (``knowledge.DIM_ROOT``). ``table`` — для опытов leave-one-out;
+    аккорды, известные заранее (аккорды материала: ступень или :class:`ChordSym` с качеством автора), ``None`` —
+    слот выбирает Витерби; ``degrees`` — из каких ступеней выбирает (педаль — тоника/доминанта). Эмиссия ступени —
+    лучшее из её качеств (:func:`qualities`). ``ring`` — петля: переход «последний → первый» входит в оценку.
+    Уменьшённое трезвучие (и из ``fixed`` — по его качеству) — только перед ``knowledge.DIM_RESOLUTION``, последним в
+    незамкнутой цепочке — нет; сам Витерби берёт только вводное (``knowledge.DIM_ROOT``). ``table`` — для опытов leave-one-out;
     по умолчанию таблица лада ``key``. ``progressions`` — петли стиля (бонус их переходам). ``clash`` — все
     звучащие голоса для штрафа b9 (по умолчанию ``notes``). Ничья — меньшие ступени.
     """
     table = table or transition_table(key.mode)
     w = kn.HOOK_HARMONY.melody_weight
-    gains = [[w * e for e in row] for row in _emissions(key, notes, chord_beats, slots, clash)]
-    allowed = _allowed(key, list(fixed)[:slots] + [None] * (slots - len(fixed)), degrees)
-    logs = _log_matrix(key, table, progressions)
+    pins = _pins(key, fixed, slots)
+    gains = [[w * score for score, _q in row] for row in _emissions(key, notes, chord_beats, slots, clash, pins)]
+    allowed = _allowed(key, [None if p is None else p.degree for p in pins], degrees)
+    dims = _dims(key, pins, allowed)
+    logs = _log_matrix(table, progressions)
     starts = [(f,) for f in allowed[0]] if ring else [allowed[0]]  # петля — путь на каждую первую ступень
-    found = (_forward(table, gains, allowed, logs, firsts, ring, diminished(key)) for firsts in starts)
+    found = (_forward(table, gains, allowed, logs, firsts, ring, dims) for firsts in starts)
     out = [sp for sp in found if sp is not None and sp[0] > -math.inf]
     if not out:
         raise ValueError(f"нет пути гармонии из ступеней {tuple(degrees)}")
     return sorted(out, key=lambda sp: (-sp[0], sp[1]))
+
+
+def _pins(key: Key, fixed: Sequence[Optional[AnyChord]], slots: int) -> List[Optional[ChordSym]]:
+    """Закреплённые аккорды ``slots`` слотов (:func:`sym`), ``None`` — слот свободен."""
+    pins = [None if f is None else sym(key, f) for f in list(fixed)[:slots]]
+    return pins + [None] * (slots - len(pins))
+
+
+def _dims(key: Key, pins: Pins, allowed: Sequence[Sequence[int]]) -> List[frozenset]:
+    """Ступени слота, которые звучат уменьшённым трезвучием: закреплённая — по качеству аккорда (ii автора в миноре
+    без «°» — не уменьшённое), свободная — диатоническое уменьшённое лада."""
+    dim = diminished(key)
+    return [frozenset(d for d in opts if d in dim) if pin is None
+            else frozenset({pin.degree} if pin.quality == "dim" else ()) for pin, opts in zip(pins, allowed)]
 
 
 def _allowed(key: Key, pinned: Sequence[Optional[int]], degrees: Sequence[int]) -> List[Tuple[int, ...]]:
@@ -252,36 +313,61 @@ def _top(cands: Iterable[Path]) -> Optional[Path]:
     return best
 
 
-def _log_matrix(key: Key, table: Table, progressions: Iterable[Sequence[int]]) -> List[List[float]]:
-    """log P(a → b) слота (:func:`_log_step`); из уменьшённого — только в ``knowledge.DIM_RESOLUTION``."""
-    dim, moves = diminished(key), _style_moves(progressions)
-    return [[-math.inf if a in dim and b != kn.DIM_RESOLUTION else _log_step(table, a, b, moves) for b in range(7)]
-            for a in range(7)]
+def _log_matrix(table: Table, progressions: Iterable[Sequence[int]]) -> List[List[float]]:
+    """log P(a → b) слота (:func:`_log_step`)."""
+    moves = _style_moves(progressions)
+    return [[_log_step(table, a, b, moves) for b in range(7)] for a in range(7)]
 
 
 def _forward(table: Table, gains: Sequence[Sequence[float]], allowed: Sequence[Sequence[int]],
-             logs: Sequence[Sequence[float]], firsts: Sequence[int], ring: bool, dim: frozenset) -> Optional[Path]:
-    """Проход Витерби от первых ступеней ``firsts``: лучший путь; петля — со стыком «последний → первый», цепочка —
-    не кончается уменьшённым."""
+             logs: Sequence[Sequence[float]], firsts: Sequence[int], ring: bool,
+             dims: Sequence[frozenset]) -> Optional[Path]:
+    """Проход Витерби от первых ступеней ``firsts``: лучший путь; из уменьшённого слота (``dims``) — только в
+    ``knowledge.DIM_RESOLUTION``; петля — со стыком «последний → первый», цепочка — не кончается уменьшённым."""
+    def step(slot: int, a: int, b: int) -> float:
+        return -math.inf if a in dims[slot] and b != kn.DIM_RESOLUTION else logs[a][b]
+
     best = {f: (math.log(table["start"][f]) + gains[0][f], (f,)) for f in firsts}
     for slot in range(1, len(gains)):
-        best = {d: _top((score + logs[p][d] + gains[slot][d], path + (d,)) for p, (score, path) in best.items())
-                for d in allowed[slot]}
+        best = {d: _top((score + step(slot - 1, p, d) + gains[slot][d], path + (d,))
+                        for p, (score, path) in best.items()) for d in allowed[slot]}
+    last = len(gains) - 1
     closing = ring and len(gains) > 1
-    return _top((score + (logs[path[-1]][path[0]] if closing else 0.0), path) for score, path in best.values()
-                if ring or path[-1] not in dim)
+    return _top((score + (step(last, path[-1], path[0]) if closing else 0.0), path) for score, path in best.values()
+                if ring or path[-1] not in dims[last])
+
+
+def qualify(key: Key, notes: Sequence[PitchEvent], chord_beats: float, degrees: Sequence[int],
+            fixed: Sequence[Optional[AnyChord]] = (), clash: Optional[Sequence[PitchEvent]] = None
+            ) -> Tuple[ChordSym, ...]:
+    """Аккорды слотов ступеней ``degrees`` (аудит 07.10 Ф2): аккорд ``fixed`` слота (аккорд автора) на той же ступени —
+    его качество; иначе качество ступени (:func:`qualities`), лучше всех покрывшее звучащую мелодию слота — та же
+    эмиссия, по которой Витерби выбрал ступень."""
+    rows = _emissions(key, notes, chord_beats, len(degrees), clash, _pins(key, fixed, len(degrees)))
+    return tuple(ChordSym(d, rows[i][d][1]) for i, d in enumerate(degrees))
+
+
+def author_chord(chord: ChordSpan, key: Key) -> Optional[ChordSym]:
+    """Аккорд материала в ступенях лада ``key`` (лад материала; аудит 07.10 Ф2): прима на ступени — та же ступень и
+    качество автора (``knowledge.AUTHOR_QUALITIES``: V в миноре остаётся мажорной; ``other`` — диатоническое);
+    прима вне лада — аккорд ступени из :func:`qualities` (диатонический или гармонический V) с наибольшим числом общих
+    звуков (≥ :data:`COMMON_TONES_MIN`; ничья — та же прима, затем аккорд с примой автора среди тонов — vii° минора
+    становится мажорной V, — меньшая ступень, диатонический), иначе ``None``."""
+    if chord.degree is not None:
+        quality = chord.quality if chord.quality in kn.AUTHOR_QUALITIES else kn.diatonic_quality(key.mode, chord.degree)
+        return ChordSym(chord.degree, quality)
+    pcs = {(chord.root_pc + i) % 12 for i in kn.CHORD_INTERVALS[chord.quality]}
+    scale = kn.SCALES[key.mode]
+    common, _same_root, _has_root, _d, _i, best = max(
+        (len(pcs & t), (key.root + scale[d]) % 12 == chord.root_pc, chord.root_pc in t, -d, -i, ChordSym(d, q))
+        for d in range(7) for i, q in enumerate(qualities(key, d)) for t in [_triad(key, ChordSym(d, q))])
+    return best if common >= COMMON_TONES_MIN else None
 
 
 def _adapt(chord: ChordSpan, key: Key) -> Optional[int]:
-    """Ступень аккорда материала: диатоническая — как есть; недиатоническая — ступень с наибольшим числом общих
-    звуков (≥ :data:`COMMON_TONES_MIN`; ничья — та же прима, затем меньшая ступень), иначе ``None``."""
-    if chord.degree is not None:
-        return chord.degree
-    pcs = {(chord.root_pc + i) % 12 for i in kn.CHORD_INTERVALS[chord.quality]}
-    scale = kn.SCALES[key.mode]
-    common, _same_root, degree = max((len(pcs & _triad(key, d)), (key.root + scale[d]) % 12 == chord.root_pc, -d)
-                                     for d in range(7))
-    return -degree if common >= COMMON_TONES_MIN else None
+    """Ступень аккорда материала (:func:`author_chord`) или ``None``."""
+    c = author_chord(chord, key)
+    return None if c is None else c.degree
 
 
 def _chord_at(material: ScoreMaterial, starts: Sequence[float], beat: float) -> Optional[ChordSpan]:
@@ -339,12 +425,20 @@ def _cadence(degrees: List[int], table: Table) -> List[int]:
 
 def from_material(material: ScoreMaterial, phrase: Phrase, key: Key, notes: Sequence[PitchEvent],
                   chord_beats: float, slots: int, scale: float = 1.0) -> Tuple[int, ...]:
-    """Ступени слотов трека из аккордов фразы материала (ADR-0154 §3.3) — гармония автора, а не шаблон стиля.
+    """Ступени слотов трека из аккордов фразы материала (ADR-0154 §3.3) — гармония автора, а не шаблон стиля
+    (ступени :func:`material_chords`)."""
+    return tuple(c.degree for c in material_chords(material, phrase, key, notes, chord_beats, slots, scale))
 
-    Аккорд слота — :func:`material_slots`; недиатонический — :func:`_adapt`. Аккорд автора проверяется под звучащую
-    мелодию слота: перенос в лад трека дал малую нону на сильной доле (:func:`transfer_b9`: V → v в миноре) или
-    уменьшённое трезвучие без разрешения в тонику следующим аккордом автора (II# → ii°, vii° → iii) — слот выбирает
-    Витерби, как слоты без аккорда (аудит 07.10 Ф1). Слоты без аккорда (и материал без разметки
+
+def material_chords(material: ScoreMaterial, phrase: Phrase, key: Key, notes: Sequence[PitchEvent],
+                    chord_beats: float, slots: int, scale: float = 1.0) -> Tuple[ChordSym, ...]:
+    """Аккорды слотов трека из аккордов фразы материала (ADR-0154 §3.3): ступень и качество автора (аудит 07.10 Ф2).
+
+    Аккорд слота — :func:`material_slots`, в ступенях лада — :func:`author_chord` (качество автора сохраняется:
+    перенос в тональность трека — та же ступень и то же качество). Аккорд проверяется под звучащую мелодию слота:
+    малая нона на сильной доле от приведения недиатонического аккорда к ступени лада (:func:`transfer_b9`) или
+    уменьшённое трезвучие без разрешения в тонику следующим аккордом автора — слот выбирает Витерби, как слоты без
+    аккорда (аудит 07.10 Ф1). Слоты без аккорда (и материал без разметки
     целиком) выбирает :func:`viterbi` по ``notes`` (хук в долях трека, тональность ``key``) с известными слотами как
     опорой; фраза на одном аккорде — тоже Витерби от первого слота (Н8: петля без движения). Петля закрывается
     каденцией (:func:`_cadence`). Лад ``key`` — лад материала (``hook.from_material``), ступени не зависят от тоники.
@@ -354,30 +448,32 @@ def from_material(material: ScoreMaterial, phrase: Phrase, key: Key, notes: Sequ
     if transition_table(material.key.mode) is not table:
         raise ValueError(f"лад трека {key.mode} и лад материала {material.key.mode} разные — ступени не переносятся")
     spans = material_slots(material, phrase, chord_beats, slots, scale)
-    fixed = _author_degrees(material, key, spans, notes, chord_beats)
-    known = [d for d in fixed if d is not None]
-    if slots > 1 and len(set(known)) == 1:
-        fixed = [known[0]] + [None] * (slots - 1)
+    author = _author_chords(material, key, spans, notes, chord_beats)
+    known = [c for c in author if c is not None]
+    fixed = [known[0]] + [None] * (slots - 1) if slots > 1 and len(set(known)) == 1 else author
     degrees = list(viterbi(key, notes, chord_beats, slots, fixed, table))
-    return tuple(_cadence(degrees, table)) if slots > 1 else tuple(degrees)
+    degrees = _cadence(degrees, table) if slots > 1 else degrees
+    return qualify(key, notes, chord_beats, degrees, author)
 
 
-def _author_degrees(material: ScoreMaterial, key: Key, spans: Sequence[Optional[ChordSpan]],
-                    notes: Sequence[PitchEvent], chord_beats: float) -> List[Optional[int]]:
-    """Ступени аккордов автора по слотам (:func:`_adapt`), проверенные под звучащую мелодию: слот, где перенос дал
-    малую нону на сильной доле (:func:`transfer_b9`) или уменьшённое без разрешения следующим аккордом в
-    ``knowledge.DIM_RESOLUTION``, — ``None`` (выбирает Витерби)."""
-    fixed = [None if c is None else _adapt(c, material.key) for c in spans]
-    dim, banned = diminished(key), unresolved_dims(key)
+def _author_chords(material: ScoreMaterial, key: Key, spans: Sequence[Optional[ChordSpan]],
+                   notes: Sequence[PitchEvent], chord_beats: float) -> List[Optional[ChordSym]]:
+    """Аккорды автора по слотам (:func:`author_chord`), проверенные под звучащую мелодию: слот, где приведение к
+    ступени дало малую нону на сильной доле (:func:`transfer_b9`) или уменьшённое трезвучие не на вводном тоне
+    (``knowledge.DIM_ROOT``) либо без разрешения следующим аккордом в ``knowledge.DIM_RESOLUTION``, — ``None``
+    (выбирает Витерби)."""
+    chords = [None if c is None else author_chord(c, material.key) for c in spans]
+    scale = kn.SCALES[key.mode]
     shift = key.root - material.key.root
-    out: List[Optional[int]] = []
-    for i, d in enumerate(fixed):
-        nxt = fixed[i + 1] if i + 1 < len(fixed) else None
-        if d is None or (d in dim and (d in banned or nxt != kn.DIM_RESOLUTION)):
+    out: List[Optional[ChordSym]] = []
+    for i, c in enumerate(chords):
+        nxt = chords[i + 1] if i + 1 < len(chords) else None
+        if c is None or (c.quality == "dim" and (scale[c.degree] != kn.DIM_ROOT or nxt is None
+                                                 or nxt.degree != kn.DIM_RESOLUTION)):
             out.append(None)
             continue
-        author = {(spans[i].root_pc + shift + k) % 12 for k in kn.CHORD_INTERVALS[spans[i].quality]}
-        out.append(None if transfer_b9(key, _slot_notes(notes, i, chord_beats), d, author) else d)
+        own = {(spans[i].root_pc + shift + k) % 12 for k in kn.CHORD_INTERVALS[spans[i].quality]}
+        out.append(None if transfer_b9(key, _slot_notes(notes, i, chord_beats), c, own) else c)
     return out
 
 
@@ -396,14 +492,22 @@ def melody_progression(key: Key, notes: Sequence[PitchEvent], chord_beats: float
     return top[weighted_pick(list(top), window, rng or random.Random(0))] if len(top) > 1 else allowed[0][1]
 
 
-def voice_chain(style: kn.Style, key: Key, degrees: Sequence[int], register: Tuple[int, int], *,
-                ring: bool = False) -> Tuple[Chord, ...]:
-    """Обращения последовательности аккордов с минимальным суммарным движением голосов (динамика по обращениям,
-    при равенстве — ближе к середине регистра); ``ring`` — со стыком «последний → первый» (петля). Аккорд, у которого
-    нет обращения в регистре, — ``ValueError``."""
-    options = [voicings(chord_pcs(style, key, d), register) for d in degrees]
+def _chain_options(style: kn.Style, key: Key, chords: Sequence[ChordSym], register: Tuple[int, int]
+                   ) -> List[List[Tuple[int, ...]]]:
+    """Обращения каждого аккорда в регистре; аккорд без обращения — ``ValueError``."""
+    options = [voicings(chord_pcs(style, key, c.degree, c.quality), register) for c in chords]
     if not all(options):
-        raise ValueError(f"прогрессия {tuple(degrees)} не помещается в регистр {register}")
+        raise ValueError(f"прогрессия {tuple(c.degree for c in chords)} не помещается в регистр {register}")
+    return options
+
+
+def voice_chain(style: kn.Style, key: Key, degrees: Sequence[AnyChord], register: Tuple[int, int], *,
+                ring: bool = False) -> Tuple[Chord, ...]:
+    """Обращения последовательности аккордов (ступень — диатонический, :class:`ChordSym` — своего качества) с
+    минимальным суммарным движением голосов (динамика по обращениям, при равенстве — ближе к середине регистра);
+    ``ring`` — со стыком «последний → первый» (петля). Аккорд, у которого нет обращения в регистре, — ``ValueError``."""
+    chords = [sym(key, c) for c in degrees]
+    options = _chain_options(style, key, chords, register)
     mid = sum(register) / 2
 
     def off(v: Tuple[int, ...]) -> float:
@@ -418,10 +522,11 @@ def voice_chain(style: kn.Style, key: Key, degrees: Sequence[int], register: Tup
         for cost, path in layer.values():
             cand = ((cost[0] + (_movement(path[-1], path[0]) if ring else 0), cost[1]), path)
             best = cand if best is None or cand < best else best
-    return tuple(Chord(d, v) for d, v in zip(degrees, best[1]))
+    return tuple(Chord(c.degree, v, c.quality) for c, v in zip(chords, best[1]))
 
 
-__all__ = ["CADENCE_MIN_P", "COMMON_TONES_MIN", "PROGRESSION_CAP", "PROGRESSION_LOOKBACK", "PROGRESSION_SKIPPED",
-           "PROGRESSION_WINDOW", "chord_pcs", "diminished", "fit_progression", "from_material", "material_beat",
-           "material_slots", "melody_progression", "pad_chords", "paths", "progression_name", "strong_b9", "table_mode",
-           "transfer_b9", "transition_table", "unresolved_dims", "viterbi", "voice_chain", "voicings"]
+__all__ = ["AnyChord", "CADENCE_MIN_P", "COMMON_TONES_MIN", "ChordSym", "PROGRESSION_CAP", "PROGRESSION_LOOKBACK",
+           "PROGRESSION_SKIPPED", "PROGRESSION_WINDOW", "author_chord", "chord_pcs", "diminished", "fit_progression",
+           "from_material", "material_beat", "material_chords", "material_slots", "melody_progression", "pad_chords",
+           "paths", "progression_name", "qualify", "qualities", "strong_b9", "sym", "table_mode", "transfer_b9",
+           "transition_table", "unresolved_dims", "viterbi", "voice_chain", "voicings"]

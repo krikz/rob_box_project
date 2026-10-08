@@ -11,7 +11,8 @@
 * ``wav`` — записи с робота: хрома против заявленной тональности, доля энергии вне лада, онсеты против сетки 16-х при
   известном темпе, полосы низ/середина/верх, корреляция L/R.
 * ``live`` — трек 1 живого сета офлайн по материалу из лога против его записи (хрома нот против хромы записи).
-* ``chords`` — корпус партитур: доля аккордов, чьё качество у автора не совпадает с диатонической триадой пэда.
+* ``chords`` — корпус партитур: доля аккордов, чьё качество у автора не совпадает с тем, что сыграет пэд (правило
+  переноса и путь кода на хук-фразе, #3530), вводный тон над натуральной VII.
 * ``weights`` — оценка фикса «гармония Витерби под хук» при разном весе мелодии, без правки кода.
 
 Только чтение: ничего не пишет в репо и не меняет таблицы. Без ГСЧ вне сидов плана — одинаковый вход даёт одинаковый
@@ -111,6 +112,15 @@ def section_of(starts, bar: int) -> Tuple[str, frozenset, int]:
     return "?", frozenset(), 0
 
 
+def declared(style, key, chord) -> Tuple[int, ...]:
+    """Тоны объявленного аккорда такта: с #3530 (Ф2) — ступень и качество ``Chord.quality`` (аккорд автора,
+    гармонический V); до — диатоническое трезвучие ступени (у ``Chord`` нет качества)."""
+    quality = getattr(chord, "quality", "") or None
+    if quality is None:
+        return harmony.chord_pcs(style, key, chord.degree)
+    return harmony.chord_pcs(style, key, chord.degree, quality)
+
+
 def triad_quality(pcs: Sequence[int]) -> str:
     a, b = (pcs[1] - pcs[0]) % 12, (pcs[2] - pcs[1]) % 12
     return {(4, 3): "maj", (3, 4): "min", (3, 3): "dim", (4, 4): "aug"}.get((a, b), f"{a}{b}")
@@ -178,7 +188,7 @@ def analyze(track: Track, plan, tno: int, materials: Mapping[str, Any],
             c = theme_chords[at // 2] if at < span else chords[((at - span) % loop_bars) // 2]
         else:
             c = chords[(bar % loop_bars) // 2]
-        return c, harmony.chord_pcs(style, key, c.degree)
+        return c, declared(style, key, c)
 
     every = list(theme_chords) + list(chords)
     pairs = [(chords[i - 1], chords[i]) for i in range(len(chords))] + list(zip(theme_chords, theme_chords[1:]))
@@ -196,7 +206,7 @@ def analyze_per_bar(track: Track, plan, tno: int, materials, refs) -> Dict[str, 
     def chord_at(bar: int):
         name, _roles, first = section_of(starts, bar)
         c = prog[name][bar - first]
-        return c, harmony.chord_pcs(style, key, c.degree)
+        return c, declared(style, key, c)
 
     seq = [chord_at(b)[0] for b in range(track.form.bars_total)]
     every = [c for i, c in enumerate(seq) if i == 0 or c != seq[i - 1]]
@@ -217,7 +227,7 @@ def analyze_body(track: Track, plan, tno: int, materials, refs, chord_at, span: 
     m: Dict[str, Any] = {"theme_bars": span}
 
     # ── лад, аккорды, голосоведение пэда (петля и аккорды темы)
-    quals = [triad_quality(harmony.chord_pcs(style, key, c.degree)) for c in every]
+    quals = [triad_quality(declared(style, key, c)) for c in every]
     m["chord_qualities"] = quals
     m["dim_aug_chords"] = sum(q in ("dim", "aug") for q in quals)
     if m["dim_aug_chords"]:
@@ -327,8 +337,7 @@ def analyze_body(track: Track, plan, tno: int, materials, refs, chord_at, span: 
             seen_bars.add(bar)
             first_rel[r] += 1
     m["bass_rel"] = dict(rel)
-    m["bass_tritone"] = sum(1 for b in bass_ev if (b.midi - harmony.chord_pcs(style, key, chord_at(
-        int(b.beat // 4))[0].degree)[0]) % 12 == 6)
+    m["bass_tritone"] = sum(1 for b in bass_ev if (b.midi - chord_at(int(b.beat // 4))[1][0]) % 12 == 6)
     m["bass_first_rel"] = dict(first_rel)
     m["bass_off_key"] = sum(b.midi % 12 not in scale for b in bass_ev)
     kick = track.parts.get("kick")
@@ -893,43 +902,123 @@ def run_weights(args) -> int:
     return 0
 
 
+TRIAD_OF = {"maj": "maj", "dom7": "maj", "maj7": "maj", "min": "min", "min7": "min", "dim": "dim", "aug": "aug"}
+
+
+def played_rule(span, key) -> str:
+    """Качество, которое трек сыграет на аккорд автора со ступенью (правило переноса кода): с #3530 (Ф2) —
+    ``harmony.author_chord``; до — диатоническое трезвучие ступени (``_adapt`` брал только ступень)."""
+    if hasattr(harmony, "author_chord"):
+        return harmony.author_chord(span, key).quality
+    sc = kn.SCALES[key.mode]
+    shape = ((sc[(span.degree + 2) % 7] - sc[span.degree]) % 12, (sc[(span.degree + 4) % 7] - sc[span.degree]) % 12)
+    return {(4, 7): "maj", (3, 7): "min", (3, 6): "dim", (4, 8): "aug"}[shape]
+
+
+def played_path(m, phrase, notes, beats: float, slots: int) -> List[Tuple[int, str]]:
+    """(ступень, качество) слотов, которые сыграет трек по фразе ``phrase`` (путь кода целиком: аккорд слота, проверка
+    под мелодию, Витерби, каденция): с #3530 — ``harmony.material_chords``; до — ``from_material`` и диатоническое."""
+    if hasattr(harmony, "material_chords"):
+        return [(c.degree, c.quality) for c in harmony.material_chords(m, phrase, m.key, notes, beats, slots)]
+    out = []
+    for d in harmony.from_material(m, phrase, m.key, notes, beats, slots):
+        sc = kn.SCALES[m.key.mode]
+        shape = ((sc[(d + 2) % 7] - sc[d]) % 12, (sc[(d + 4) % 7] - sc[d]) % 12)
+        out.append((d, {(4, 7): "maj", (3, 7): "min", (3, 6): "dim", (4, 8): "aug"}[shape]))
+    return out
+
+
+def hook_window(m, phrase, bars: int) -> List[Any]:
+    """Мелодия ``bars`` тактов от такта фразы в долях клуба от начала такта (как хук материала, #3531)."""
+    from rob_box_music.model import PitchEvent
+    mm = meter_map(m.meter)
+    bar = m.meter[0] * 4 / m.meter[1]
+    first = phrase.bar * bar
+    out = []
+    for e in m.melody:
+        if first <= e.beat < first + bars * bar:
+            club = mm.to_club(e.beat - first)
+            if club is not None:
+                out.append(PitchEvent(e.midi, club, e.dur_beats, 2))
+    return out
+
+
 def run_chords(args) -> int:
-    """Корпус партитур: доля длительности аккордов со ступенью, у которых качество автора отличается от диатонической
-    триады лада материала — то, что сыграет пэд (``harmony._adapt`` берёт ступень, ``chord_pcs`` — триаду лада)."""
+    """Корпус партитур: (1) правило переноса — доля длительности аккордов автора со ступенью, у которых качество,
+    которое сыграет трек (:func:`played_rule`), ≠ качеству автора; (2) путь кода целиком на хук-фразе (8 тактов,
+    слот 1 такт, :func:`played_path`) — доля слотов с диатоническим аккордом автора, где трек сыграл ту же ступень
+    другого качества, и доля слотов с той же ступенью (M3 на слотах в 1 такт); (3) вводный тон мелодии над аккордом
+    трека с натуральной VII (минор)."""
     import glob
     import random
 
-    triad = {"maj": "maj", "dom7": "maj", "maj7": "maj", "min": "min", "min7": "min", "dim": "dim", "aug": "aug"}
+    from rob_box_music.material import Phrase, from_json
+
     files = sorted(glob.glob(str(pathlib.Path(args.folder) / "*.json")))
     random.Random(args.seed).shuffle(files)
     stat = {m: collections.Counter() for m in ("minor", "major")}
     top = {m: collections.Counter() for m in stat}
+    path = {m: collections.Counter() for m in stat}
     count = collections.Counter()
-    for path in files[:args.limit]:
+    for fname in files[:args.limit]:
         try:
-            data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+            m = from_json(pathlib.Path(fname).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        mode = data["key"]["mode"]
+        mode = m.key.mode
         if mode not in stat:
             continue
         count[mode] += 1
-        sc = kn.SCALES[mode]
-        for _beat, dur, _root, quality, degree in data["chords"]:
-            if degree is None or quality not in triad:
+        for span in m.chords:
+            if span.degree is None or span.quality not in TRIAD_OF:
                 continue
-            shape = ((sc[(degree + 2) % 7] - sc[degree]) % 12, (sc[(degree + 4) % 7] - sc[degree]) % 12)
-            diat = {(4, 7): "maj", (3, 7): "min", (3, 6): "dim", (4, 8): "aug"}[shape]
-            same = triad[quality] == diat
-            stat[mode]["same" if same else "changed"] += dur
+            got = TRIAD_OF.get(played_rule(span, m.key), played_rule(span, m.key))
+            same = TRIAD_OF[span.quality] == got
+            stat[mode]["same" if same else "changed"] += span.dur_beats
             if not same:
-                top[mode][(degree, f"{diat}->{triad[quality]}")] += dur
+                top[mode][(span.degree, f"{TRIAD_OF[span.quality]}->{got}")] += span.dur_beats
+        if meter_map(m.meter) is None or not m.chords:
+            continue
+        try:
+            phrase = hooks.pick_phrase(m)
+            window = Phrase(phrase.bar, 8, "new", 1)
+            notes = hook_window(m, window, 8)
+            if len(notes) < 6:
+                continue
+            slots = harmony.material_slots(m, window, 4.0, 8)
+            got = played_path(m, window, notes, 4.0, 8)
+        except ValueError:
+            path[mode]["refused"] += 1
+            continue
+        c = path[mode]
+        lt, b7 = (m.key.root + 11) % 12, (m.key.root + 10) % 12
+        for i, span in enumerate(slots):
+            d, q = got[i]
+            if span is not None and span.degree is not None and span.quality in TRIAD_OF:
+                c["slots"] += 1
+                if d == span.degree:
+                    c["same_degree"] += 1
+                    c["quality_changed"] += TRIAD_OF[span.quality] != TRIAD_OF.get(q, q)
+            if kn.SCALES[mode][2] == 3:
+                base = m.key.root + kn.SCALES[mode][d]
+                tones = {(base + i) % 12 for i in kn.CHORD_INTERVALS[q][:3]}
+                for e in notes:
+                    if i * 4 <= e.beat < (i + 1) * 4 and e.midi % 12 == lt:
+                        c["lt_notes"] += 1
+                        c["lt_over_b7"] += b7 in tones
     print("материалов", dict(count))
     for mode, c in stat.items():
         total = sum(c.values()) or 1.0
-        print(f"{mode} длительность аккордов со ступенью: {round(total)} качество автора != диатоническому: "
+        print(f"{mode} длительность аккордов со ступенью: {round(total)} качество, которое сыграет трек, != автору: "
               f"{c['changed'] / total:.3f}")
         print("   топ:", [(k, round(v / total, 3)) for k, v in top[mode].most_common(6)])
+        p = path[mode]
+        n = p["slots"] or 1
+        print(f"   путь кода (хук-фраза, слот 1 такт): слотов с диатоническим аккордом автора {p['slots']}, "
+              f"та же ступень {p['same_degree'] / n:.3f}, из них качество != автору "
+              f"{p['quality_changed'] / (p['same_degree'] or 1):.3f}; отказов {p['refused']}")
+        if mode == "minor":
+            print(f"   вводный тон мелодии над аккордом с натуральной VII: {p['lt_over_b7']}/{p['lt_notes']} нот")
     return 0
 
 

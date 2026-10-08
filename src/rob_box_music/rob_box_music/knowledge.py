@@ -417,6 +417,43 @@ SAMPLE_PACK_DIR = str(_SAMPLE_DATA["pack_dir"])
 CHORD_INTERVALS: Mapping[str, Tuple[int, ...]] = {
     "maj": (0, 4, 7), "min": (0, 3, 7), "dim": (0, 3, 6), "aug": (0, 4, 8), "sus": (0, 5, 7),
     "dom7": (0, 4, 7, 10), "maj7": (0, 4, 7, 11), "min7": (0, 3, 7, 10), "other": (0,)}
+#: Качество аккорда — данные (аудит 07.10 Ф2, #3530): аккорд трека — ступень лада + ключ :data:`CHORD_INTERVALS`
+#: (``model.Chord.quality``), пэд и бас играют его тоны (:func:`chord_pitch_classes`). Диатоническое качество ступени —
+#: трезвучие этой таблицы, совпавшее с терцовой стопкой лада (:func:`diatonic_quality`), а не своя копия по ладам.
+TRIAD_QUALITIES: Tuple[str, ...] = ("maj", "min", "dim", "aug")
+#: Качество аккорда автора, которое трек сохраняет (перенос в тональность трека — та же ступень и то же качество: V в
+#: миноре остаётся мажорной, II# — мажорной, аудит П4); ``other`` (один звук) — диатоническое трезвучие ступени.
+AUTHOR_QUALITIES: frozenset = frozenset(CHORD_INTERVALS) - {"other"}
+#: Качества ступени на путях без аккорда автора (Витерби, педаль, каденция) СВЕРХ диатонического: лад → ступень →
+#: качества; слот берёт то, что лучше покрывает звучащую мелодию (``arrange.harmony.qualify``), ничья —
+#: диатоническое. Минор и дорийский — гармонический V (мажорная доминанта с вводным тоном): вводный тон мелодии не
+#: звучит над натуральной VII (аудит П4).
+DEGREE_QUALITIES: Mapping[str, Mapping[int, Tuple[str, ...]]] = {"minor": {4: ("maj",)}, "dorian": {4: ("maj",)}}
+
+
+def diatonic_quality(mode: str, degree: int) -> str:
+    """Качество трезвучия ступени ``degree`` семиступенного лада ``mode`` (ключ :data:`TRIAD_QUALITIES`)."""
+    scale = SCALES[mode]
+    shape = tuple((scale[(degree + k) % 7] - scale[degree]) % 12 for k in (2, 4))
+    return next(q for q in TRIAD_QUALITIES if CHORD_INTERVALS[q][1:] == shape)
+
+
+def chord_pitch_classes(root: int, mode: str, degree: int, quality: Optional[str] = None,
+                        size: int = 3) -> Tuple[int, ...]:
+    """Тоны аккорда ступени ``degree`` лада ``mode`` от тоники ``root``: (прима, терция, квинта[, септима]).
+
+    ``quality`` — ключ :data:`CHORD_INTERVALS` (``None`` или пусто — терции лада, как диатонический аккорд). Тонов ``size``
+    (``Style.chord_size``): септаккорд качества — свои 4 тона, трезвучие при ``size`` 4 — с септимой лада."""
+    scale = SCALES[mode]
+    if not quality:
+        return tuple((root + scale[(degree + 2 * k) % len(scale)]) % 12 for k in range(size))
+    base = root + scale[degree]
+    tones = [(base + i) % 12 for i in CHORD_INTERVALS[quality][:size]]
+    if len(tones) < size:
+        tones.append((root + scale[(degree + 6) % len(scale)]) % 12)
+    return tuple(tones)
+
+
 #: Переходы ступеней корпуса партитур (ADR-0154 §3.4, Н5/Н6) — данные, выученные офлайн
 #: (``scripts/music/research/score_markov_harmony.py --write-table``; провенанс — в файле): лад ("major"/"minor") →
 #: ``start`` — P(первая ступень), ``next`` — P(ступень b | ступень a), 7×7, строки в сумме 1.

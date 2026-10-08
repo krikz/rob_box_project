@@ -36,7 +36,9 @@ from . import harmony, rhythm
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
 STEPS_PER_BEAT = STEPS_PER_BAR // BEATS_PER_BAR
-TRITONE = 6  # полутонов: уменьшённая квинта — басу не годится
+FIFTH = 7  # полутонов: бас берёт только чистую квинту аккорда (у ум. и ув. трезвучия — приму, аудит П6)
+TRITONE = 6  # уменьшённая квинта
+AUG_FIFTH = 8  # увеличенная квинта
 
 
 class BassTone(NamedTuple):
@@ -58,13 +60,19 @@ Tones = Optional[Mapping[int, BassTone]]
 def bar_notes(root_pc: int, fifth_pc: int, register: Tuple[int, int], count: int = 4,
               fifth_last: bool = True) -> Tuple[int, ...]:
     """``count`` нот такта: тоника, последняя — квинта аккорда (``fifth_last``), ближайшая к тонике внутри регистра.
-    Квинта только чистая: у уменьшённого трезвучия третий тон — тритон от примы, такт стоит на приме (аудит П6)."""
+    Квинта только чистая: у уменьшённого и увеличенного трезвучия третий тон — не квинта, такт стоит на приме (аудит
+    П6)."""
     root = next(m for m in range(register[0], register[1] + 1) if m % 12 == root_pc)
     up = root + (fifth_pc - root) % 12
     fifth = up if up <= register[1] else up - 12
-    if fifth < register[0] or not fifth_last or (fifth_pc - root_pc) % 12 == TRITONE:
+    if fifth < register[0] or not fifth_last or (fifth_pc - root_pc) % 12 in (TRITONE, AUG_FIFTH):
         fifth = root
     return (root,) * (count - 1) + (fifth,)
+
+
+def perfect_fifth(pcs: Sequence[int]) -> int:
+    """Квинта аккорда для баса: третий тон, если он чистая квинта от примы, иначе прима (ум. и ув. трезвучие)."""
+    return pcs[2] if (pcs[2] - pcs[0]) % 12 == FIFTH else pcs[0]
 
 
 def note_beats(steps: Sequence[int], i: int) -> float:
@@ -84,9 +92,10 @@ def figure_bass(figure: kn.BassFigure, bars: Sequence[Tuple[int, Tuple[int, ...]
     firsts: Dict[int, int] = {}
     for bar, pcs in bars:
         anchor = (tones or {}).get(bar, ROOT_TONE).anchor
-        if anchor == ANCHORS["fifth"] and (pcs[2] - pcs[0]) % 12 == TRITONE:
-            anchor = ANCHORS["root"]  # квинта ум. трезвучия — тритон от примы: бас стоит на приме (аудит П6)
-        notes = bar_notes(pcs[anchor], pcs[0] if anchor == ANCHORS["fifth"] else pcs[2], register, len(steps),
+        fifth = perfect_fifth(pcs)
+        if anchor == ANCHORS["fifth"] and fifth == pcs[0]:
+            anchor = ANCHORS["root"]  # квинта ум./ув. трезвучия не чистая: бас стоит на приме (аудит П6)
+        notes = bar_notes(pcs[anchor], pcs[0] if anchor == ANCHORS["fifth"] else fifth, register, len(steps),
                           figure.fifth_last)
         firsts[bar] = len(out)
         for i, (step, midi) in enumerate(zip(steps, notes)):
@@ -137,9 +146,10 @@ def _author_approach(bass: Sequence[PitchEvent], starts: Sequence[float], target
     return prev - goal if abs(prev - goal) == 1 else 0
 
 
-def material_tones(style: kn.Style, material: ScoreMaterial, phrase: Phrase, degrees: Sequence[int],
+def material_tones(style: kn.Style, material: ScoreMaterial, phrase: Phrase, degrees: Sequence[harmony.AnyChord],
                    chord_beats: float, scale: float = 1.0) -> Tuple[BassTone, ...]:
-    """Тон каждого такта петли ``degrees`` (аккорд держится ``chord_beats`` долей) по басовому голосу материала
+    """Тон каждого такта петли ``degrees`` (аккорды: ступень или ступень с качеством, Ф2; аккорд держится
+    ``chord_beats`` долей) по басовому голосу материала
     (ADR-0154 §3.3, Н7). Доля трека → доля материала — ``harmony.material_beat`` (та же фраза и множитель темпа,
     3/4 — пауза на 4-й доле).
 
@@ -156,7 +166,8 @@ def material_tones(style: kn.Style, material: ScoreMaterial, phrase: Phrase, deg
     cap = round(policy["approach_per_bar"] * bars)
     out: List[BassTone] = []
     for b in range(bars):
-        pcs = harmony.chord_pcs(style, material.key, degrees[int(b * BEATS_PER_BAR // chord_beats)])[:3]
+        chord = harmony.sym(material.key, degrees[int(b * BEATS_PER_BAR // chord_beats)])
+        pcs = harmony.chord_pcs(style, material.key, chord.degree, chord.quality)[:3]
         votes: Dict[int, int] = collections.Counter()
         for k in range(STEPS_PER_BAR):
             beat = at(b * BEATS_PER_BAR + k * STEP_BEATS)
@@ -173,8 +184,13 @@ def material_tones(style: kn.Style, material: ScoreMaterial, phrase: Phrase, deg
 def _part(name: str, style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
           register: Tuple[int, int], tones: Tones = None) -> Part:
     figure = kn.BASS_FIGURES[name]
-    bars = [(bar, harmony.chord_pcs(style, key, chord.degree)) for bar, chord in bar_chords]
+    bars = [(bar, _tones(style, key, chord)) for bar, chord in bar_chords]
     return Part("bass", synth, rhythm.grid(figure.steps), figure_bass(figure, bars, register, tones), 0.0, register)
+
+
+def _tones(style: kn.Style, key: Key, chord: Chord) -> Tuple[int, ...]:
+    """Тоны объявленного аккорда такта (``model.chord_tones``: качество автора, гармонический V; Ф2)."""
+    return harmony.chord_pcs(style, key, chord.degree, chord.quality or None)
 
 
 def offbeat(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
@@ -217,19 +233,23 @@ def walking(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], 
             register: Tuple[int, int], tones: Tones = None) -> Part:
     """Walking-бас по тактам ``bar_chords``: четверти, подход к следующему такту — на 4-й доле (одна доля ≤
     ``style.approach_max_beats``); ``tones`` — тон 1-й доли такта из материала (иначе прима)."""
-    bars = [(bar, harmony.chord_pcs(style, key, chord.degree)) for bar, chord in bar_chords]
+    bars = [(bar, _tones(style, key, chord)) for bar, chord in bar_chords]
     sounding = {bar for bar, _pcs in bars}
     firsts: Dict[int, int] = {}
     prev = register[0] + 6
     for bar, pcs in bars:
-        prev = firsts[bar] = _near(pcs[(tones or {}).get(bar, ROOT_TONE).anchor], prev, register)
+        anchor = (tones or {}).get(bar, ROOT_TONE).anchor
+        if anchor == ANCHORS["fifth"] and perfect_fifth(pcs) == pcs[0]:
+            anchor = ANCHORS["root"]
+        prev = firsts[bar] = _near(pcs[anchor], prev, register)
     out: List[PitchEvent] = []
     for bar, pcs in bars:
         line = [firsts[bar]]
+        fifth = perfect_fifth(pcs)
         for idx in WALK_TONES[bar % 2]:
-            line.append(_near(pcs[idx % len(pcs)], line[-1], register))
+            line.append(_near(fifth if idx == 2 else pcs[idx % len(pcs)], line[-1], register))
         nxt = firsts.get(bar + 1) if bar + 1 in sounding else None
-        line.append(_approach(nxt, line[-1], register) if nxt is not None else _near(pcs[2], line[-1], register))
+        line.append(_approach(nxt, line[-1], register) if nxt is not None else _near(fifth, line[-1], register))
         out += [PitchEvent(m, bar * BEATS_PER_BAR + beat, 1.0, 3 if beat == 0 else 2) for beat, m in enumerate(line)]
     return Part("bass", synth, rhythm.grid(range(0, STEPS_PER_BAR, STEPS_PER_BEAT)), tuple(out), 0.0, register)
 
@@ -249,4 +269,4 @@ def octave8(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], 
 
 
 __all__ = ["ANCHORS", "BassTone", "ROOT_TONE", "WALK_TONES", "acid16", "bar_notes", "broken", "figure_bass",
-           "material_tones", "note_beats", "octave8", "offbeat", "rolling8", "walking"]
+           "material_tones", "note_beats", "octave8", "offbeat", "perfect_fifth", "rolling8", "walking"]

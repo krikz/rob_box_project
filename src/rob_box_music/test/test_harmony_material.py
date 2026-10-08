@@ -17,7 +17,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
 from rob_box_music.arrange import compose as cp
 from rob_box_music.arrange import harmony
-from rob_box_music.model import Key, PitchEvent
+from rob_box_music.model import Key, PitchEvent, chord_tones, validate
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 
@@ -131,16 +131,43 @@ def _with_major_dominant(m: mt.ScoreMaterial) -> mt.ScoreMaterial:
     return replace(m, chords=tuple(replace(c, quality="maj") if c.degree == 4 else c for c in m.chords))
 
 
-def test_author_dominant_with_leading_tone_is_reharmonized_without_b9():
-    """Аудит Ф1/П4: V автора (E G# B) с вводным тоном в мелодии (G# на сильной доле) после переноса в лад —
-    натуральная v (E G B): малая нона G#/G на сильной доле, её дал перенос. Слот выбирает Витерби под звучащую
-    мелодию — аккорд без b9."""
+def test_author_dominant_keeps_its_quality_and_the_leading_tone():
+    """Аудит Ф2/П4 (#3530): V автора (E G# B) с вводным тоном в мелодии (G# на сильной доле) переносится как есть —
+    ступень 4 и мажорное качество (гармонический минор), а не натуральная v (E G B) с малой ноной G#/G. Ступени слотов
+    — автора целиком."""
     m = _with_major_dominant(synthetic((0, 0, 3, 3, 4, 4, 0, 0), key=Key(9, "minor")))
     assert any(e.midi % 12 == 8 and e.beat % 2 == 0 for e in hook_notes(m)), "G# на сильной доле — условие теста"
-    got = from_material(m)
-    assert got[:2] == (0, 3) and got[2] != 4
+    got = harmony.material_chords(m, mt.Phrase(0, 8, "new", 1), m.key, hook_notes(m), CHORD_BEATS, 4)
+    assert got == (harmony.ChordSym(0, "min"), harmony.ChordSym(3, "min"), harmony.ChordSym(4, "maj"),
+                   harmony.ChordSym(0, "min"))
+    assert from_material(m) == (0, 3, 4, 0)
     slot = [e for e in hook_notes(m) if 16 <= e.beat < 24]
     assert not harmony.strong_b9(m.key, [replace(e, beat=e.beat - 16) for e in slot], got[2])
+
+
+@pytest.mark.parametrize("root, quality, degree, track_root", [
+    (4, "maj", 4, 2),     # V в ля миноре → V в ре миноре: A C# E
+    (11, "maj", 1, 5),    # II# (V/V) в ля миноре — мажорная, не ii°
+    (2, "maj", 3, 9),     # IV (мелодический минор) — мажорная, не iv
+    (9, "maj", 0, 0),     # пикардийская I
+    (4, "dom7", 4, 9),    # V7
+])
+def test_author_quality_survives_the_transfer_to_the_track_key(root, quality, degree, track_root):
+    """Перенос аккорда автора в тональность трека: та же ступень и то же качество (аудит Ф2, #3530)."""
+    author = mt.ChordSpan(0.0, 4.0, root, quality, degree)
+    got = harmony.author_chord(author, Key(9, "minor"))
+    assert got == harmony.ChordSym(degree, quality)
+    track = Key(track_root, "minor")
+    shift = track_root - 9
+    pcs = harmony.chord_pcs(kn.STYLES["club"], track, got.degree, got.quality)
+    assert set(pcs) == {(root + shift + i) % 12 for i in kn.CHORD_INTERVALS[quality][:3]}
+
+
+def test_leading_tone_chord_of_the_author_becomes_the_major_dominant():
+    """vii° автора в миноре (G# B D в ля миноре) — прима вне натурального лада: приводится к аккорду лада с наибольшим
+    числом общих звуков среди диатонических и гармонического V — мажорная V (E G# B), а не VII (G B D) с натуральной
+    VII под вводным тоном."""
+    assert harmony.author_chord(mt.ChordSpan(0.0, 4.0, 8, "dim", None), Key(9, "minor")) == harmony.ChordSym(4, "maj")
 
 
 def test_author_own_non_chord_tone_keeps_the_author_chord():
@@ -269,6 +296,34 @@ def test_compose_takes_hook_and_harmony_from_material():
     for name in ("drop", "intro", "outro"):
         assert tuple(c.degree for c in track.harmony.progression[name]) == (loop * 2)[:len(
             track.harmony.progression[name])], name
+
+
+def test_minor_track_plays_the_author_major_dominant():
+    """Аудит Ф2 (#3530) на треке целиком: V автора в миноре — мажорный аккорд такта (``Chord.quality``), пэд играет
+    вводный тон (вне натурального лада), трек проходит валидатор; вводный тон мелодии не звучит над натуральной VII."""
+    m = _with_major_dominant(synthetic((0, 0, 3, 3, 4, 4, 0, 0), key=Key(9, "minor")))
+    plan = _plan(m.material_id)
+    plan = replace(plan, profile=replace(plan.profile, mode="minor"))
+    track = cp.compose(plan, 1, materials={m.material_id: m})
+    assert track.hook is not None and track.hook.source == m.material_id
+    validate(track)
+    leading, b7 = (track.key.root + 11) % 12, (track.key.root + 10) % 12
+    by_bar = dict(_form_bars(track))
+    dominants = [c for c in by_bar.values() if c.degree == 4]
+    assert dominants and all(c.quality == "maj" and leading in {v % 12 for v in c.voicing} for c in dominants)
+    assert any(e.midi % 12 == leading for e in track.parts["pad"].pitches)
+    size = kn.STYLES[track.style].chord_size
+    clashes = [e for e in track.parts["lead"].pitches if e.midi % 12 == leading
+               and b7 in chord_tones(track.key, by_bar[int(e.beat // 4)], size)]
+    assert not clashes
+
+
+def _form_bars(track):
+    bar = 0
+    for sec in track.form.sections:
+        for i, chord in enumerate(track.harmony.progression.get(sec.name, ())):
+            yield bar + i, chord
+        bar += sec.bars
 
 
 def test_compose_without_material_is_unchanged():
