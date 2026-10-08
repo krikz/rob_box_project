@@ -8,7 +8,6 @@ ii–V–I, walking контрабасового регистра, comping но�
 from __future__ import annotations
 
 import dataclasses
-import math
 import random
 import statistics
 
@@ -306,10 +305,10 @@ def test_jazz_levels_put_the_middle_over_the_double_bass():
 
 
 def test_jazz_comping_is_wider_than_the_centre_but_not_club_wide():
-    """Ширина (эталон LR 0.85, робот S7 0.99, раунд 1 #3549 при ±0.6 — 0.93–0.98): comping — два расстроенных голоса,
-    их корреляция sin((1 − pan)·π/2) ≤ 0.3 — середину делит лид в центре; бас, бочка и лид — в центре."""
+    """Ширина (эталон LR 0.85; робот: ±0.4 — 0.99, ±0.6 — 0.93–0.98, ±0.9 — 0.35–0.55): comping — два расстроенных
+    голоса между 0.6 и 0.9; бас, бочка и лид — в центре."""
     pad = JAZZ.stereo["pad"]
-    assert pad["detune"] > 0 and math.sin((1 - pad["pan"]) * math.pi / 2) <= 0.3 and pad["pan"] <= 1.0
+    assert pad["detune"] > 0 and 0.6 < pad["pan"] < 0.9
     assert set(JAZZ.stereo) == {"pad"}
 
 
