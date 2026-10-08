@@ -15,6 +15,13 @@
 # config), оставляем N самых свежих, остальные удаляем. Теги без
 # sha-суффикса (rolling: voice-assistant-humble-dev, supercollider-local,
 # dev, latest, ...) никогда не удаляются в режиме --keep.
+#
+# Защита по digest (#3540): удаление манифеста идёт по digest, а у
+# неизменённого образа плавающий тег (<svc>-humble-dev, *-humble-latest,
+# *-local, supercollider-dev, score-library-*, ...) указывает на ТОТ ЖЕ
+# digest, что и старый sha-тег. Поэтому манифест, чей digest держит любой
+# тег, не попавший в кандидаты на удаление, НЕ удаляется
+# (лог "skip: digest держит тег X").
 
 set -euo pipefail
 
@@ -148,6 +155,29 @@ if not tags:
 
 sha_re = re.compile(r"^(.*)-([0-9a-f]{7,40})$")
 
+HEAD_ACCEPTS = (
+    # тот же Accept, что у curl -I ниже в bash (по нему считается digest при DELETE)
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json",
+)
+
+def digests_for(tag):
+    """Все варианты digest тега (разные Accept могут дать разный digest)."""
+    found = set()
+    for accept in HEAD_ACCEPTS:
+        req = urllib.request.Request(
+            base + f"/v2/{repo}/manifests/{tag}", method="HEAD", headers={"Accept": accept}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                d = r.headers.get("Docker-Content-Digest")
+                if d:
+                    found.add(d.strip())
+        except Exception:
+            pass
+    return found
+
 def created_for(tag):
     """created timestamp from image config.
     Returns:
@@ -210,7 +240,33 @@ for prefix, group in sorted(groups.items()):
     for c, t in with_created[keep_n:]:
         out.append(t)
 
+# Защита по digest (#3540): не удаляем кандидата, чей digest держит любой
+# тег вне списка удаления (плавающий или свежий sha).
+out_set = set(out)
+protected = {}
+for t in tags:
+    if t in out_set:
+        continue
+    ds = digests_for(t)
+    if not ds:
+        # битый/недоступный тег: digest не держит ничего
+        continue
+    for d in ds:
+        protected.setdefault(d, t)
+
+final = []
 for t in sorted(out):
+    holder = None
+    for d in digests_for(t):
+        if d in protected:
+            holder = protected[d]
+            break
+    if holder:
+        print(f"   skip: digest {t} держит тег {holder} (не удаляю)", file=sys.stderr)
+        continue
+    final.append(t)
+
+for t in final:
     print(t)
 ' "$repo" <<< "$TAGS") || true
 
