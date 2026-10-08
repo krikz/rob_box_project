@@ -384,14 +384,16 @@ def hook_candidates(profile: ThemeProfile, melodies: Mapping[str, str], rng: ran
     обходит найденные по очереди (у темы-перечисления — по кругу частей, ``search.round_robin``), повтор — только
     когда несыгранные кончились (06.10: 50 треков по кругу из трёх хуков). Тема-перечисление
     (``profile.theme_parts``) — очередь :func:`part_order` трека ``track_no`` и на первом треке тоже.
-    ``theme_max`` > 0 — хук с темой целиком до ``theme_max`` тактов (``hook.with_theme``)."""
+    ``theme_max`` > 0 — хук с темой целиком до ``theme_max`` тактов (``hook.with_theme``) из самой длинной записи
+    того же произведения среди ``melodies`` (``hook.theme_version``, #3542: ринг-тон бывает одной фразой)."""
     last = history[0] if history else {}
     register = hook_register(kn.STYLES[profile.style])
     order = hook_order(profile, melodies, rng, history, opening, track_no, set_id)
     for melody_id in order:
+        version = hooks.theme_version(melody_id, melodies, profile.bpm) if theme_max > 0 else melody_id
         try:
             hook, key = hooks.from_rtttl(melodies[melody_id], melody_id, profile.bpm, profile.root, profile.mode,
-                                         register, theme_max)
+                                         register, theme_max, melodies[version])
         except hooks.HookError:
             continue
         if fingerprint(hook.notes) != last.get("hook_fingerprint"):
@@ -622,7 +624,8 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
                    materials: Optional[Mapping[str, ScoreMaterial]], profile: ThemeProfile,
                    lead_synth: str, melodies: Mapping[str, str]):
     """Хук, лид, гармония и тоны баса трека из материала партитуры плана (ADR-0154 §3.3): хук —
-    ``hook.from_material``, аккорды петли — ``harmony.material_chords`` по фразе хука (ступень и качество автора),
+    ``hook.material_hook`` (тот же путь, что у годности материала в плане, ``hook.material_unfit``), аккорды
+    петли — ``harmony.material_chords`` по фразе хука (ступень и качество автора),
     тоны баса — ``bass.material_tones``
     по той же фразе и тому же множителю темпа; тема целиком — то же по тематической секции (``hook.theme_span``).
     Главный мотив — по RTTTL-эталонам темы (``profile.theme_hooks``, ``hook.for_theme``): голос и такт, где совпал
@@ -636,9 +639,9 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         _LOG.info("🎵 [music v2] material=%s нет среди переданных — хук темы", material_id)
         return None
     try:
-        material, anchor = hooks.for_theme(material, [melodies[i] for i in profile.theme_hooks if i in melodies])
-        motif, key = hooks.from_material(material, profile.bpm, profile.root, profile.mode, hook_register(style),
-                                         theme_limit(spec), anchor)
+        material, anchor, motif, key = hooks.material_hook(
+            material, [melodies[i] for i in profile.theme_hooks if i in melodies], profile.bpm, profile.root,
+            profile.mode, hook_register(style), theme_limit(spec))
         scale = hooks.material_scale(material, profile.bpm)
         phrase = hooks.pick_phrase(material, anchor)
         span = hooks.theme_span(material, phrase)
@@ -705,7 +708,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     seed = f"{plan.seed}:{track_no}"
     lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
                                  random.Random(f"{seed}:lead"))
-    found = (_from_material(style, spec, step.material, materials, profile, lead_synth, melodies or {})
+    found = (_from_material(style, spec, plan.material(track_no), materials, profile, lead_synth, melodies or {})
              or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth, plan.set_id))
     if found is None:
         key = Key(profile.root, profile.mode)

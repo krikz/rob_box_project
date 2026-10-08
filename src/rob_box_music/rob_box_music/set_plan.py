@@ -26,8 +26,9 @@
 from __future__ import annotations
 
 import random
+import threading
 from dataclasses import dataclass, field, replace
-from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
 from .diversity import last_opener, opening_order, recent_hooks, recent_values, weighted_pick
@@ -65,11 +66,22 @@ class SetPlan:
     tracks: Tuple[TrackPlan, ...]  # первые треки; дальше — :meth:`track`
     genre: str = kn.DEFAULT_GENRE  # жанровое окно клуба сета (``Style.genre_windows``), не меняется внутри сета
     timbre: str = ""  # семья тембров сета (ключ ``Style.timbres``); пусто — по строке темы (:attr:`family`)
+    #: Очередь материалов, решаемая по треку при компоновке (``seeded_plan(lazy_materials=True)``, M7 #3542): в
+    #: ``tracks`` — только материал трека 1, остальные — :meth:`material`. None — всё решено в ``tracks``.
+    materials: Optional["MaterialQueue"] = field(default=None, repr=False, compare=False)
 
     def track(self, no: int) -> TrackPlan:
         """План трека ``no`` (с 1): из ``tracks`` (поправка LLM, PR-10); за концом сета — волна (одиночный трек
         ``request_music`` и тесты)."""
         return self.tracks[no - 1] if 1 <= no <= len(self.tracks) else track_plan(no)
+
+    def material(self, no: int) -> Optional[str]:
+        """Материал партитуры трека ``no``: из ``tracks`` или — у ленивого плана — из очереди :attr:`materials` (то
+        же решение, что у :func:`plan_materials` целиком; считается по требованию, в фоне компоновки трека)."""
+        step = self.track(no)
+        if step.material or self.materials is None or not 1 <= no <= len(self.tracks):
+            return step.material
+        return self.materials.pick(no)
 
     def root(self, no: int) -> int:
         """Тоника трека ``no``, pitch class 0..11."""
@@ -223,6 +235,41 @@ def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[in
     return tuple(out)
 
 
+class MaterialQueue:
+    """Очередь материалов сета (:func:`plan_materials`), решаемая по требованию: :meth:`pick` трека ``no`` проверяет
+    кандидатов по порядку треков 1..``no`` и запоминает решения — результат тот же, что у отбора всех треков сразу,
+    но годность материалов треков 2+ считается при компоновке своего трека (в фоне), а не на пути запроса (M7,
+    #3542: 8 партитур на Pi — 315 мс). ``on_reject(material_id, причина)`` — строка лога отказа в момент решения."""
+
+    def __init__(self, materials: Sequence[str], history: Sequence[Mapping] = (), set_id: Optional[str] = None,
+                 fit: Optional[Callable[[str, int], Optional[str]]] = None,
+                 rejected: Optional[Dict[str, str]] = None,
+                 on_reject: Optional[Callable[[str, str], None]] = None) -> None:
+        recent = recent_hooks(history, set_id, {m: m for m in materials})
+        self._queue = opening_order(list(dict.fromkeys(materials)), recent, last_opener(history, set_id))
+        self._fit, self._rejected, self._on_reject = fit, rejected, on_reject
+        self._picked: List[Optional[str]] = []
+        self._lock = threading.Lock()
+
+    def pick(self, no: int) -> Optional[str]:
+        """Материал трека ``no`` (с 1); решения треков до него — тоже, по порядку."""
+        with self._lock:
+            while len(self._picked) < no:
+                track_no, pick = len(self._picked) + 1, None
+                while self._queue and pick is None:
+                    reason = self._fit(self._queue[0], track_no) if self._fit is not None else None
+                    if reason is None:
+                        pick = self._queue[0]
+                    else:
+                        if self._rejected is not None:
+                            self._rejected.setdefault(self._queue[0], reason)
+                        if self._on_reject is not None:
+                            self._on_reject(self._queue[0], reason)
+                    self._queue.pop(0)
+                self._picked.append(pick)
+            return self._picked[no - 1]
+
+
 def plan_materials(materials: Sequence[str], n_tracks: int, history: Sequence[Mapping] = (),
                    set_id: Optional[str] = None, fit: Optional[Callable[[str, int], Optional[str]]] = None,
                    rejected: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], ...]:
@@ -239,26 +286,16 @@ def plan_materials(materials: Sequence[str], n_tracks: int, history: Sequence[Ma
     трека. Причина — в ``rejected`` (вызывающий пишет её в лог); ``fit=None`` — без отбора."""
     if not materials:
         return (None,) * n_tracks
-    recent = recent_hooks(history, set_id, {m: m for m in materials})
-    queue = opening_order(list(dict.fromkeys(materials)), recent, last_opener(history, set_id))
-    out = []
-    for no in range(1, n_tracks + 1):
-        pick = None
-        while queue and pick is None:
-            reason = fit(queue[0], no) if fit is not None else None
-            if reason is None:
-                pick = queue[0]
-            elif rejected is not None:
-                rejected.setdefault(queue[0], reason)
-            queue.pop(0)
-        out.append(pick)
-    return tuple(out)
+    queue = MaterialQueue(materials, history, set_id, fit, rejected)
+    return tuple(queue.pick(no) for no in range(1, n_tracks + 1))
 
 
 def _material_fit(materials: Mapping[str, object], window: kn.Style, bpm: int,
-                  profile: ThemeProfile) -> Callable[[str, int], Optional[str]]:
-    """``fit`` для :func:`plan_materials`: ``hook.material_unfit`` с темпом сета, тоникой трека и коридором хука
-    окна — как в ``compose._from_material``. Материал не читается (``materials`` не отдал) — это тоже причина."""
+                  profile: ThemeProfile, references: Sequence[str] = ()) -> Callable[[str, int], Optional[str]]:
+    """``fit`` для :func:`plan_materials`: ``hook.material_unfit`` с темпом сета, тоникой трека, коридором хука
+    окна и RTTTL-эталонами темы ``references`` — как в ``compose._from_material`` (#3542: материал без главного мотива
+    эталона уступает трек следующему годному, а не RTTTL-хуку). Материал не читается (``materials`` не отдал) — это
+    тоже причина."""
     from .arrange.compose import hook_register  # compose импортирует set_plan — импорт здесь, не наверху
     from .arrange.hook import material_unfit
     register = hook_register(window)
@@ -268,7 +305,8 @@ def _material_fit(materials: Mapping[str, object], window: kn.Style, bpm: int,
             material = materials[material_id]
         except (KeyError, OSError, ValueError) as exc:
             return f"не читается: {type(exc).__name__}: {exc}"
-        return material_unfit(material, bpm, (profile.root + root_shift(no)) % 12, profile.mode, register)  # type: ignore[arg-type]
+        root = (profile.root + root_shift(no)) % 12
+        return material_unfit(material, bpm, root, profile.mode, register, references)  # type: ignore[arg-type]
 
     return fit
 
@@ -276,12 +314,15 @@ def _material_fit(materials: Mapping[str, object], window: kn.Style, bpm: int,
 def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS, set_id: str = "v2",
                 history: Sequence[Mapping] = (), genre: Optional[str] = None,
                 materials: Optional[Mapping[str, object]] = None,
-                rejected: Optional[Dict[str, str]] = None) -> SetPlan:
+                rejected: Optional[Dict[str, str]] = None, references: Sequence[str] = (),
+                lazy_materials: bool = False, on_reject: Optional[Callable[[str, str], None]] = None) -> SetPlan:
     """План сета мгновенно, без сети и LLM: детерминирован по ``(profile, seed, history)``; ``history`` — строки
     ``music_history`` (свежие первыми). ``n_tracks`` — длина сета: треков в плане столько, сколько сыграет сет.
     ``genre`` — окно, заданное явно (тема, оператор); ``None`` — :func:`pick_genre`. ``materials`` —
     ``{material_id: ScoreMaterial}`` для отбора годных (#3500, :func:`plan_materials`); нет — без отбора;
-    ``rejected`` получает ``{material_id: причина}`` негодных."""
+    ``rejected`` получает ``{material_id: причина}`` негодных; ``references`` — RTTTL ``profile.theme_hooks``
+    (эталоны главного мотива, как у ``compose``). ``lazy_materials`` — синхронно решается только материал трека 1,
+    остальные — :meth:`SetPlan.material` при компоновке (M7, #3542); ``on_reject`` — лог отказа в момент решения."""
     profile = replace(profile, root=set_root(profile, seed, history))
     base = kn.STYLES[profile.style]
     genre = pick_genre(base, history, random.Random(f"genre:{seed}:{profile.theme}")) if genre is None else genre
@@ -293,15 +334,17 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     kicks = plan_kicks(window, seed, profile.theme, n, history)
     plans = [track_plan(no, n) for no in range(1, n + 1)]
     forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
-    picked = plan_materials(profile.materials, n, history, set_id,
-                            _material_fit(materials, window, bpm, profile) if materials is not None else None, rejected)
+    fit = None if materials is None else _material_fit(materials, window, bpm, profile, references)
+    queue = MaterialQueue(profile.materials, history, set_id, fit, rejected, on_reject) if profile.materials else None
+    picked = [None] * n if queue is None else [queue.pick(no) if no == 1 or not lazy_materials else None
+                                               for no in range(1, n + 1)]
     tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1], material=picked[p.no - 1])
                    for p in plans)
     timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{profile.theme}"))
-    return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre)
+    return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre, queue if lazy_materials else None)
 
 
-__all__ = ["DEFAULT_TRACKS", "FIFTH", "MAX_TRACKS", "SetPlan", "TONIC_MEMORY", "TRACK_SECONDS", "TrackPlan", "arc_energy",
+__all__ = ["DEFAULT_TRACKS", "FIFTH", "MAX_TRACKS", "MaterialQueue", "SetPlan", "TONIC_MEMORY", "TRACK_SECONDS", "TrackPlan", "arc_energy",
            "pick_genre", "pick_kick",
            "pick_template", "pick_timbre", "plan_bpm", "plan_materials", "plan_kicks", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
            "set_root", "set_tracks", "track_energy", "track_plan"]
