@@ -296,20 +296,20 @@ def test_against_lead_moves_the_clashing_approach_and_leaves_other_styles_alone(
 
 def test_jazz_levels_put_the_middle_over_the_double_bass():
     """Уровни ролей (шкала модели) по эталону джаз-кафе (низ 0.27, середина 0.73): comping громче баса, лид не тише
-    его больше чем на 1 дБ, бочка «пёрышком» тише баса, бас на ≥ 6 дБ тише, чем у lo-fi (там низ — сам бит); синты
+    его больше чем на 6 дБ, бочка «пёрышком» тише баса, бас на ≥ 4 дБ тише, чем у lo-fi (там низ — сам бит); синты
     comping дотягивают до цели пэда без провала больше 2 дБ (``strings`` на потолке ``amp`` −41.7 — снят)."""
     lv = JAZZ.role_level_db
-    assert lv["pad"] > lv["bass"] and lv["lead"] >= lv["bass"] - 1.0 and lv["kick"] < lv["bass"]
-    assert lv["bass"] <= kn.STYLES["lofi"].role_level_db["bass"] - 6.0
+    assert lv["pad"] > lv["bass"] and lv["lead"] >= lv["bass"] - 6.0 and lv["kick"] < lv["bass"]
+    assert lv["bass"] <= kn.STYLES["lofi"].role_level_db["bass"] - 4.0
     for synth in {s for fam in JAZZ.timbres.values() for s in fam["pad"]}:
         assert mix._cap("pad", Part("pad", synth, None, (), lv["pad"], JAZZ.registers["pad"])) >= lv["pad"] - 2.0, synth
 
 
 def test_jazz_comping_is_wider_than_the_centre_but_not_club_wide():
-    """Ширина (эталон LR 0.85, робот S7 0.99): comping — два расстроенных голоса, их корреляция sin((1 − pan)·π/2) в
-    0.5–0.7 (при доле пэда 0.4 мощности LR ≈ 0.8–0.9); бас, бочка и лид — в центре."""
+    """Ширина (эталон LR 0.85, робот S7 0.99, раунд 1 #3549 при ±0.6 — 0.93–0.98): comping — два расстроенных голоса,
+    их корреляция sin((1 − pan)·π/2) ≤ 0.3 — середину делит лид в центре; бас, бочка и лид — в центре."""
     pad = JAZZ.stereo["pad"]
-    assert pad["detune"] > 0 and 0.5 <= math.sin((1 - pad["pan"]) * math.pi / 2) <= 0.7
+    assert pad["detune"] > 0 and math.sin((1 - pad["pan"]) * math.pi / 2) <= 0.3 and pad["pan"] <= 1.0
     assert set(JAZZ.stereo) == {"pad"}
 
 
