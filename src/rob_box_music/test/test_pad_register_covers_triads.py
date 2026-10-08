@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import random
 
 import pytest
 
@@ -46,12 +45,12 @@ def test_every_diatonic_triad_gets_a_voicing_under_the_lowest_lead(root, mode):
 
 
 def test_usual_window_is_kept_when_the_chords_fit_it():
-    """Лид выше — окно 50..верх, как раньше: регистр и аккорды те же, что даёт ``harmony.pad_chords``."""
+    """Лид выше — окно 50..верх, как раньше: регистр и аккорды те же, что даёт ``harmony.voice_chain``."""
     key = Key(0, "major")
     for top in (60, 62, 66, CLUB.registers["pad"][1]):
         usual = (50, top)
         try:
-            expected = harmony.pad_chords(CLUB, key, (0, 5, 3, 4), usual)
+            expected = harmony.voice_chain(CLUB, key, (0, 5, 3, 4), usual)
         except ValueError:
             continue
         assert cp._pad_chords(CLUB, key, (0, 5, 3, 4), top) == (usual, expected)
@@ -77,9 +76,9 @@ def test_hook_at_the_lowest_lead_register_is_arranged_with_c_chords():
     motif = _hook()
     assert min(e.midi for e in motif.notes) == LEAD_LOW
     spec = cp.form_spec(style, style.opening_form)
-    lead, degrees, register, chords = cp._arrange(
-        style, spec, motif, key, random.Random(1), "blip", progression=lambda _drop: (0, 5, 3, 4))
-    assert degrees == (0, 5, 3, 4)
-    lowest_lead = min(e.midi for e in lead.pitches)
-    assert register[1] <= lowest_lead - cp.PAD_GAP
-    assert all(register[0] <= m <= register[1] for c in chords for m in c.voicing)
+    fixed = cp.Harmonizer(lambda _notes, _slots: (0, 5, 3, 4), lambda _notes, _slots: ())
+    arranged = cp._arrange(style, spec, motif, key, "blip", fixed)
+    assert arranged.loop == (0, 5, 3, 4)
+    lowest_lead = min(e.midi for e in arranged.lead.pitches)
+    assert arranged.register[1] <= lowest_lead - cp.PAD_GAP
+    assert all(arranged.register[0] <= m <= arranged.register[1] for c in arranged.chords.values() for m in c.voicing)

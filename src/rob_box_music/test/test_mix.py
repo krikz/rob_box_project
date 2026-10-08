@@ -96,8 +96,10 @@ def test_sidechain_is_on_the_bass_and_pad_events_only(seed):
     for ev in by_role["pad"]:  # пэд под огибающей вида своей секции (или ровно 1.0 у held)
         want = _env(track, ev.beat)[_step(ev.beat)] if figure.ducked else 1.0
         assert ev.amp / ev.gate == pytest.approx(want, abs=1e-3)
-        assert ev.sus_beats == {"pumped16": 0.25, "stabs": 1.0, "held": 8.0}[track.history_key.pad_figure] or (
-            track.history_key.pad_figure == "stabs" and ev.sus_beats == 0.5), ev
+        figure_name = track.history_key.pad_figure
+        assert (ev.sus_beats % 4 == 0 if figure_name == "held"  # аккорд держится до смены — целые такты (#3529)
+                else ev.sus_beats == {"pumped16": 0.25, "stabs": 1.0}[figure_name] or (
+                    figure_name == "stabs" and ev.sus_beats == 0.5)), ev
     accents = {(p.beat, p.midi): p.accent for p in track.parts["bass"].pitches}
     for ev in by_role["bass"]:
         want = kn.ACCENT_AMPLIFY[accents[(ev.beat, ev.midi)]] * _env(track, ev.beat)[_step(ev.beat)]

@@ -14,7 +14,9 @@ import pytest
 from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
-from rob_box_music.arrange.compose import BASS_GENERATORS, PAD_GENERATORS, _bar_chords, compose, form_spec
+from rob_box_music.arrange.compose import (
+    BASS_GENERATORS, PAD_GENERATORS, _bar_chords, compose, form_spec, theme_form,
+)
 from rob_box_music.diversity import MusicHistory, track_composition, track_history
 from rob_box_music.model import blend_bars
 from rob_box_music.render.events import program_events
@@ -95,11 +97,12 @@ def _pad_events(track):
 
 
 def test_held_pad_holds_the_chord_without_the_pump(sets):
-    """``held``: пэд не под сайдчейном (нет ``amplify``), аккорд звучит до смены — ``sus`` 2 такта, атака на такте."""
+    """``held``: пэд не под сайдчейном (нет ``amplify``), аккорд звучит до смены — ``sus`` целые такты (аккорд на
+    такт, #3529), атака на такте."""
     track = _first(sets, "held")
     assert "pad" not in track.mix.duck_roles and {"bass", "sample"} <= set(track.mix.duck_roles)
     events = _pad_events(track)
-    assert events and all(e.beat % 8 == 0 and e.sus_beats == 8 for e in events if e.pan < 0)
+    assert events and all(e.beat % 4 == 0 and e.sus_beats % 4 == 0 for e in events if e.pan < 0)
     assert len({round(e.amp / e.gate, 6) for e in events}) == 1, "громкость нот held не качается"
 
 
@@ -149,8 +152,8 @@ def base_tracks():
 
 
 def _remix(track, no, figure, pad, bass, bass_figure=None, lead=None):
-    spec = form_spec(CLUB, track.history_key.template)
-    chords = track.harmony.progression[track.form.sections[0].name]
+    spec = theme_form(form_spec(CLUB, track.history_key.template), track.hook.theme_bars if track.hook else 0)
+    chords = track.harmony.progression
     parts = dict(track.parts)
     parts["pad"] = PAD_GENERATORS[figure](CLUB, track.key, _bar_chords(spec, "pad", chords), pad,
                                           track.parts["pad"].register)

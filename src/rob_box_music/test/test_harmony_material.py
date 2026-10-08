@@ -24,7 +24,7 @@ from rob_box_music.theme import ThemeProfile
 #: Ноты такта (четверти) на трезвучии ступени до мажора / ля минора, в коридоре лида 62..84.
 MAJOR_BAR = {0: (72, 76, 79, 76), 1: (74, 77, 81, 77), 3: (77, 81, 84, 81), 4: (71, 74, 79, 74), 5: (69, 72, 76, 72)}
 MINOR_BAR = {0: (69, 72, 76, 72), 3: (74, 77, 81, 77), 4: (71, 76, 80, 76), 5: (65, 69, 72, 69)}
-CHORD_BEATS = cp.CHORD_BARS * 4
+CHORD_BEATS = 8  # слот функций гармонии в этих тестах — 2 такта (синтетика: аккорд на 2 такта, как M3)
 
 
 def synthetic(degrees_per_bar: Sequence[int], *, meter: Tuple[int, int] = (4, 4), key: Key = Key(0, "major"),
@@ -50,10 +50,15 @@ def hook_notes(material: mt.ScoreMaterial) -> Tuple[PitchEvent, ...]:
     return tuple(e for e in material.melody if e.beat < 32)
 
 
-def from_material(material, slots=4, scale=1.0, key=None):
+def from_material(material, slots=4, scale=1.0, key=None, notes=None):
+    """``harmony.from_material`` по фразе 0..8 тактов; мелодия — хук материала в тональности ``key`` (как в треке:
+    хук перенесён в тонику трека); ``notes=()`` — без мелодии (проверка чтения слотов, а не мелодии)."""
     phrase = mt.Phrase(0, 8, "new", 1)
     key = key or material.key
-    return harmony.from_material(material, phrase, key, hook_notes(material), CHORD_BEATS, slots, scale)
+    if notes is None:
+        shift = key.root - material.key.root
+        notes = tuple(replace(e, midi=e.midi + shift) for e in hook_notes(material))
+    return harmony.from_material(material, phrase, key, notes, CHORD_BEATS, slots, scale)
 
 
 # ── таблица переходов (данные knowledge) ─────────────────────────────────────────────────────────────────────
@@ -115,7 +120,34 @@ def test_material_chords_become_slot_degrees(bars, expected):
 
 
 def test_minor_material_keeps_author_degrees():
-    assert from_material(synthetic((0, 0, 3, 3, 4, 4, 0, 0), key=Key(9, "minor"))) == (0, 3, 4, 0)
+    """Мелодия натурального минора — ступени автора как есть."""
+    m = synthetic((0, 0, 3, 3, 4, 4, 0, 0), key=Key(9, "minor"))
+    natural = tuple(replace(e, midi=e.midi - 1) if e.midi % 12 == 8 else e for e in hook_notes(m))  # G# → G
+    assert from_material(m, notes=natural) == (0, 3, 4, 0)
+
+
+def _with_major_dominant(m: mt.ScoreMaterial) -> mt.ScoreMaterial:
+    """Аккорды автора — как у ``synthetic``, но ступень 4 минора — мажорная V (E G# B), как у классиков."""
+    return replace(m, chords=tuple(replace(c, quality="maj") if c.degree == 4 else c for c in m.chords))
+
+
+def test_author_dominant_with_leading_tone_is_reharmonized_without_b9():
+    """Аудит Ф1/П4: V автора (E G# B) с вводным тоном в мелодии (G# на сильной доле) после переноса в лад —
+    натуральная v (E G B): малая нона G#/G на сильной доле, её дал перенос. Слот выбирает Витерби под звучащую
+    мелодию — аккорд без b9."""
+    m = _with_major_dominant(synthetic((0, 0, 3, 3, 4, 4, 0, 0), key=Key(9, "minor")))
+    assert any(e.midi % 12 == 8 and e.beat % 2 == 0 for e in hook_notes(m)), "G# на сильной доле — условие теста"
+    got = from_material(m)
+    assert got[:2] == (0, 3) and got[2] != 4
+    slot = [e for e in hook_notes(m) if 16 <= e.beat < 24]
+    assert not harmony.strong_b9(m.key, [replace(e, beat=e.beat - 16) for e in slot], got[2])
+
+
+def test_author_own_non_chord_tone_keeps_the_author_chord():
+    """Тот же G# над минорной v, которую написал сам автор (E G B): неаккордовый тон автора — его замысел (хроматика
+    Грига — не баг, аудит П7), а не перенос; ступень автора остаётся."""
+    m = synthetic((0, 0, 3, 3, 4, 4, 0, 0), key=Key(9, "minor"))
+    assert from_material(m) == (0, 3, 4, 0)
 
 
 def test_degrees_do_not_depend_on_track_tonic():
@@ -127,12 +159,12 @@ def test_degrees_do_not_depend_on_track_tonic():
 def test_three_four_reads_bar_by_bar_in_every_mode(monkeypatch, mode):
     """3/4: такт материала → такт 4/4 (пауза, растяжение, долгая доля — #3517) — слот = 2 такта материала, как у 4/4."""
     monkeypatch.setattr(kn, "TRIPLE_METER_MODE", mode)
-    assert from_material(synthetic((0, 0, 3, 3, 4, 4, 0, 0), meter=(3, 4))) == (0, 3, 4, 0)
+    assert from_material(synthetic((0, 0, 3, 3, 4, 4, 0, 0), meter=(3, 4)), notes=()) == (0, 3, 4, 0)
 
 
 def test_time_scale_stretches_material_slots():
     """Множитель темпа 2 (тема вдвое медленнее клуба): 8 тактов трека = 4 такта материала, слот = такт."""
-    assert from_material(synthetic((0, 3, 4, 0, 5, 5, 5, 5)), scale=2.0) == (0, 3, 4, 0)
+    assert from_material(synthetic((0, 3, 4, 0, 5, 5, 5, 5)), scale=2.0, notes=()) == (0, 3, 4, 0)
 
 
 def test_slot_chord_is_the_longest_one():
@@ -232,8 +264,11 @@ def test_compose_takes_hook_and_harmony_from_material():
     m = synthetic((0, 0, 5, 5, 3, 3, 4, 4))
     track = cp.compose(_plan(m.material_id), 1, materials={m.material_id: m})
     assert track.hook is not None and track.hook.source == m.material_id
-    assert track.history_key.progression == "0-5-3-4"
-    assert {tuple(c.degree for c in chords) for chords in track.harmony.progression.values()} == {(0, 5, 3, 4)}
+    loop = (0, 0, 5, 5, 3, 3, 4, 4)  # аккорд на такт (#3529): петля — 8 тактов хука
+    assert track.history_key.progression == "-".join(map(str, loop))
+    for name in ("drop", "intro", "outro"):
+        assert tuple(c.degree for c in track.harmony.progression[name]) == (loop * 2)[:len(
+            track.harmony.progression[name])], name
 
 
 def test_compose_without_material_is_unchanged():

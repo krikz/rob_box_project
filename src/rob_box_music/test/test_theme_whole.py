@@ -20,7 +20,7 @@ from rob_box_music.model import BARS_TOTAL, BEATS_PER_BAR, blend_bars, validate
 from test_harmony_material import _plan, synthetic
 
 STYLE = kn.STYLES[kn.DEFAULT_STYLE]
-#: Четыре фразы по 4 такта, каждая — своя ступень на 2 такта (аккорд слота ``CHORD_BARS`` известен).
+#: Четыре фразы по 4 такта, каждая — своя ступень на 2 такта (аккорд такта известен).
 THEME = (0, 0, 5, 5, 3, 3, 4, 4, 5, 5, 3, 3, 0, 0, 4, 4)
 
 
@@ -78,11 +78,12 @@ def test_theme_harmony_and_bass_cover_the_whole_theme():
     """Ступени слотов темы — аккорды автора на всю тему (не петля хука); бас на тактах темы — прима аккорда темы."""
     m = material()
     track = _compose(m)
-    slots = track.hook.theme_bars // cp.CHORD_BARS
-    theme_degrees = [c.degree for c in track.harmony.progression[kn.THEME_SECTION][:slots]]
-    assert theme_degrees == list(THEME[::cp.CHORD_BARS])
-    loop = track.harmony.progression["drop2"]
-    assert track.harmony.progression[kn.THEME_SECTION][slots:] == loop  # остаток секции — петля хука
+    span = track.hook.theme_bars
+    theme_degrees = [c.degree for c in track.harmony.progression[kn.THEME_SECTION][:span]]
+    assert theme_degrees == list(THEME)
+    loop = [int(d) for d in track.history_key.progression.split("-")]
+    rest = [c.degree for c in track.harmony.progression[kn.THEME_SECTION][span:]]
+    assert rest == [loop[i % len(loop)] for i in range(len(rest))]  # остаток секции — петля хука
     start, _bars = _section(track, kn.THEME_SECTION)
     scale = kn.SCALES[track.key.mode]
     for bar in range(16):
@@ -160,7 +161,7 @@ def test_rtttl_theme_is_the_whole_melody_with_viterbi_harmony():
     track = cp.compose(replace(plan, profile=profile), 1, melodies={"long16": RTTTL_LONG})
     validate(track)
     assert track.hook.source == "long16" and track.hook.theme_bars == 16
-    assert len(track.harmony.progression[kn.THEME_SECTION]) >= 16 // cp.CHORD_BARS
+    assert len(track.harmony.progression[kn.THEME_SECTION]) >= 16  # аккорды по тактам секции, тема — 16
 
 
 _NAMES = ("c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b")
