@@ -50,7 +50,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from .classic import ClassicPick, classic_picker, pick_score
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
-from .score_library import PlanMaterials, ScoreLibrary, seed_plan
+from .score_library import PlanMaterials, ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, theme_search
 from .session import SetMemory, SetSession, plan_source
 from .theme_grounding import grounded_theme
@@ -362,19 +362,7 @@ class DjSetTool(MCPTool):
     def plan_materials(self, plan: Any, logger: Any = None) -> Mapping[str, Any]:
         """Материалы треков плана (``TrackPlan.material``) для ``compose``: материал трека 1 читается здесь, при старте
         (замер M7 — в строку лога), остальные — при компоновке своего трека в фоне (:class:`PlanMaterials`)."""
-        ids = [t.material for t in plan.tracks if t.material]
-        if not ids and plan.materials is None:
-            return {}
-        # ленивый план (M7, #3542): материал трека 2+ решается при его компоновке — доступны все материалы темы
-        materials = PlanMaterials(self._scores, [*ids, *plan.profile.materials], logger or _LOG)
-        if not ids:
-            return materials
-        started = time.perf_counter()
-        first = materials.get(ids[0])
-        (logger or _LOG).info(f"🎼 [dj_set] {plan.set_id} материал трека 1: {ids[0]} "
-                              f"{'загружен' if first is not None else 'НЕ загружен'} за "
-                              f"{(time.perf_counter() - started) * 1000:.1f} мс")
-        return materials
+        return track_materials(self._scores, plan, logger or _LOG)
 
     def set_length(self, named: Optional[int]) -> Tuple[int, str]:
         """``(длина, откуда)`` нового сета — решает код: число человека; без числа посреди идущего сета (смена

@@ -296,5 +296,22 @@ def seed_plan(library: ScoreLibrary, profile: Any, seed: int, length: int, set_i
     return plan
 
 
+def track_materials(library: ScoreLibrary, plan: Any, logger: Any) -> Mapping[str, ScoreMaterial]:
+    """Материалы треков плана для ``compose``: материал трека 1 читается здесь, при старте (замер M7 — в строку лога),
+    остальные — при компоновке своего трека в фоне (:class:`PlanMaterials`). У ленивого плана (M7, #3542) материал
+    трека 2+ решается при его компоновке — доступны все материалы темы."""
+    first = plan.track(1).material if plan.tracks else None
+    if first is None and plan.materials is None:
+        return {}
+    materials = PlanMaterials(library, [*([first] if first else []), *plan.profile.materials], logger)
+    if first:
+        started = time.perf_counter()
+        loaded = materials.get(first)
+        logger.info(f"🎼 [dj_set] {plan.set_id} материал трека 1: {first} "
+                    f"{'загружен' if loaded is not None else 'НЕ загружен'} за "
+                    f"{(time.perf_counter() - started) * 1000:.1f} мс")
+    return materials
+
+
 __all__ = ["DEFAULT_DIR", "ENV", "INDEX_FILE", "ScoreIndex", "ScoreLibrary", "PlanMaterials", "library_dir",
-           "seed_plan"]
+           "seed_plan", "track_materials"]

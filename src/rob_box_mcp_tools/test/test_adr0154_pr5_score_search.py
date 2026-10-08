@@ -164,7 +164,7 @@ def test_interstellar_set_plays_score_material_and_logs_material_id(tmp_path, ca
     assert data["ok"] and data["theme_source"] == "theme"
     plan_line = next(r.getMessage() for r in caplog.records if "тема «интерстеллар»" in r.getMessage())
     assert "материалы=['local:i1', 'pdmx:i2']" in plan_line and "row=space" in plan_line
-    assert any("№1 local:i1 загружен" in r.getMessage() for r in caplog.records)
+    assert any("материал трека 1: local:i1 загружен" in r.getMessage() for r in caplog.records)
     assert _started(rig)[0]["track_id"] == data["track_id"]
     started = next(r.getMessage() for r in caplog.records if " started track_id=" in r.getMessage())
     assert "material_id=local:i1" in started and "source=theme" in started
