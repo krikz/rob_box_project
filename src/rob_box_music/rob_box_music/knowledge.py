@@ -1165,17 +1165,22 @@ KICK_SOUNDS: Mapping[str, KickSound] = {
     "rock_r2": KickSound("", 0, "21-KdrumR-KdrumR.flac", 0.0, 0.987, math.nan, False, pack="muldjord_kdrumr_21"),
     # #3550 (S7 08.10: шесть электронных стилей неотличимы — synthwave брал клубные ``deep``/``house``, breaks и dnb —
     # клубные ``techno``/``garage``): у каждого электронного стиля свои бочки пака Sonic Pi, пулы не пересекаются.
-    # ``low`` — доля < 200 Гц ФАЙЛА (Vision Pi 08.10, ``soundfile``). НА РОБОТЕ НЕ МЕРЕНЫ: уровень — каталог.
+    # ``low`` — доля < 200 Гц ФАЙЛА (Vision Pi 08.10, ``soundfile``). Уровень ЗАМЕРЕН на роботе 08.10
+    # (``kicks_probe.sh`` PACK=1, ``jack_rec`` 8 с, 4/4 @130, amp 1, файл буфером ``loop``): ``loudness_offset_db`` —
+    # поправка к модели :func:`arrange.mix.pack_drum_db` = RMS записи + 5.42 − модель (5.42 = модель ``X:12``
+    # −19.18 − его запись −24.6 того же прогона). Записи RMS: 808 −26.6, pure −21.3, chip −19.5, zum −19.9, heavy −23.2,
+    # fat −21.3, tek −19.5, sone −19.6; пик у всех −7.0 (лимитер мастера), < 250 Гц 0.94–1.00. ``sub`` не считан.
     # synthwave — драм-машина 80-х (808, чистый саб); chiptune — короткие «щелчки» 0.10–0.13 с без хвоста; breaks —
     # плотные «акустические» удары брейка; dnb — короткий тугой удар под амен.
-    "tr808": KickSound("", 0, "bd_808.flac", 0.0, 0.999, math.nan, False, pack="sonicpi_bd_808"),
-    "pure": KickSound("", 0, "bd_pure.flac", 0.0, 1.000, math.nan, False, pack="sonicpi_bd_pure"),
-    "chip": KickSound("", 0, "bd_chip.flac", 0.0, 0.990, math.nan, False, pack="sonicpi_bd_chip"),
-    "zum": KickSound("", 0, "bd_zum.flac", 0.0, 0.942, math.nan, False, pack="sonicpi_bd_zum"),
-    "heavy": KickSound("", 0, "drum_heavy_kick.flac", 0.0, 0.990, math.nan, False, pack="sonicpi_drum_heavy_kick"),
-    "fat": KickSound("", 0, "bd_fat.flac", 0.0, 0.949, math.nan, False, pack="sonicpi_bd_fat"),
-    "tek": KickSound("", 0, "bd_tek.flac", 0.0, 0.976, math.nan, False, pack="sonicpi_bd_tek"),
-    "sone": KickSound("", 0, "bd_sone.flac", 0.0, 0.997, math.nan, False, pack="sonicpi_bd_sone"),
+    "tr808": KickSound("", 0, "bd_808.flac", -2.78, 0.999, math.nan, False, pack="sonicpi_bd_808"),
+    "pure": KickSound("", 0, "bd_pure.flac", -7.08, 1.000, math.nan, False, pack="sonicpi_bd_pure"),
+    "chip": KickSound("", 0, "bd_chip.flac", -1.38, 0.990, math.nan, False, pack="sonicpi_bd_chip"),
+    "zum": KickSound("", 0, "bd_zum.flac", 0.02, 0.942, math.nan, False, pack="sonicpi_bd_zum"),
+    "heavy": KickSound("", 0, "drum_heavy_kick.flac", -3.98, 0.990, math.nan, False,
+                       pack="sonicpi_drum_heavy_kick"),
+    "fat": KickSound("", 0, "bd_fat.flac", 0.82, 0.949, math.nan, False, pack="sonicpi_bd_fat"),
+    "tek": KickSound("", 0, "bd_tek.flac", -4.18, 0.976, math.nan, False, pack="sonicpi_bd_tek"),
+    "sone": KickSound("", 0, "bd_sone.flac", -6.88, 0.997, math.nan, False, pack="sonicpi_bd_sone"),
 }
 
 
@@ -1498,11 +1503,12 @@ _RAVE_KITS: Mapping[str, Mapping[str, str]] = {
     "stomp": {"hats": "..Xx..Xx..Xx..Xx", "perc": _NO_PERC},
 }
 #: Звук рейва (#3550): хэты и малый — свои файлы пака (яркие ``hat_zan``/``hat_bdu`` громче клубных, малый ``sn_dub``/
-#: ``elec_snare``; удары файлами — в центре), узкая сцена (пэд без Хааса — жёсткий моно-удар), свип секций открыт выше
+#: ``elec_snare``), узкая сцена (хэты почти в центре, пэд без Хааса — жёсткий моно-удар), свип секций открыт выше
 #: клубного (build от 1.6 кГц, брейк 2.4 кГц — у клуба 400 Гц и 1.2 кГц), стэб-пэд громче.
 _RAVE_DRUM_FILES: Mapping[str, Tuple[str, ...]] = {"clap": ("sonicpi_sn_dub", "sonicpi_elec_snare"),
                                                    "hats": ("sonicpi_hat_zan", "sonicpi_hat_bdu")}
-_RAVE_STEREO: Mapping[str, Mapping[str, float]] = {"pad": {"pan": 0.25, "detune": PAD_DETUNE}}
+_RAVE_STEREO: Mapping[str, Mapping[str, float]] = {"hats": {"pan": 0.15, "first": 1},
+                                                   "pad": {"pan": 0.25, "detune": PAD_DETUNE}}
 _RAVE_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
     "build": (1600.0, LPF_TOP_HZ), "build2": (1600.0, LPF_TOP_HZ), "break": (2400.0, 2400.0),
     "break2": (2400.0, 2400.0), "outro_tail": (LPF_TOP_HZ, 300.0),
@@ -1555,11 +1561,14 @@ _SYNTHWAVE_KITS: Mapping[str, Mapping[str, str]] = {
     "lift": {"hats": "..X...X...X..xX.", "perc": _NO_PERC},
 }
 #: Звук synthwave (#3550): большой малый 80-х на 2 и 4 в build и дропах (``sn_generic``/``elec_lo_snare``, громче
-#: клубного клэпа), тихие хэты, самая широкая сцена электроники (пэд на полные L/R с Хаасом 25 мс и расстройкой;
-#: удары файлами пака — в центре, ширины у них рендер не выражает), тёплый пэд под постоянным срезом 1.8 кГц (в build открывается от 600 Гц), пэд громче клуба.
+#: клубного клэпа), тихие хэты, самая широкая сцена электроники (пэд на полные L/R с Хаасом 25 мс и расстройкой,
+#: хэты — на полные L/R со сменой стороны на каждом ударе, малый — вынос 0.3: робот 08.10 без разведения ударов дал
+#: LR 0.80 против 0.51 со psr-слоем), тёплый пэд под постоянным срезом 1.8 кГц (в build открывается от 600 Гц), пэд громче клуба.
 _SYNTHWAVE_DRUM_FILES: Mapping[str, Tuple[str, ...]] = {"clap": ("sonicpi_sn_generic", "sonicpi_elec_lo_snare"),
                                                         "hats": ("sonicpi_hat_zild", "sonicpi_hat_sci")}
-_SYNTHWAVE_STEREO: Mapping[str, Mapping[str, float]] = {"pad": {"pan": 1.0, "detune": 0.2, "haas_ms": 25.0}}
+_SYNTHWAVE_STEREO: Mapping[str, Mapping[str, float]] = {
+    "hats": {"pan": 1.0, "first": 1}, "clap": {"pan": 0.3, "first": -1},
+    "pad": {"pan": 1.0, "detune": 0.2, "haas_ms": 25.0}}
 _SYNTHWAVE_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
     **{name: (1800.0, 1800.0) for name in ("intro", "intro_low", "drop", "break", "break2", "drop2", "outro")},
     "build": (600.0, 1800.0), "build2": (600.0, 1800.0), "outro_tail": (1800.0, 300.0),
@@ -1570,11 +1579,12 @@ _SYNTHWAVE_FIELDS = dict(
     chord_size=3, progressions=_CLUB_PROGRESSIONS, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
     energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_FX_ONLY,
     genre_windows=_SYNTHWAVE_GENRE_WINDOWS,
-    role_level_db={**_CLUB_ROLE_LEVEL_DB, "kick": -35.0, "bass": -34.0, "pad": -40.0, "clap": -38.0, "hats": -60.0},
+    role_level_db={**_CLUB_ROLE_LEVEL_DB, "kick": -36.0, "bass": -35.0, "pad": -38.0, "clap": -38.0, "hats": -54.0},
     duck_roles=_CLUB_DUCK_ROLES, section_lpf=_SYNTHWAVE_SECTION_LPF, lpf_roles=("pad",),
     lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_SYNTHWAVE_STEREO,
-    # A9: норма низа synthwave 0.4–0.7 (§3, гипотеза до эталона В1) + запас σ модели 0.05: пэд громче клуба по замыслу
-    a9_model_low=0.45, arp_order=(0, 1, 2, 1), backbeat_kinds=("build", "build2", "drop", "drop2"),
+    # A9: норма низа synthwave 0.4–0.7 (§3); робот 08.10 выше модели на ≈ 0.08 (0.56 при 0.48) — порог 0.35: широкий пэд громче клуба по
+    # замыслу (робот 08.10 без разведения ударов и с пэдом −40: LR 0.80 — уже S7 0.51)
+    a9_model_low=0.35, arp_order=(0, 1, 2, 1), backbeat_kinds=("build", "build2", "drop", "drop2"),
     drum_files=_SYNTHWAVE_DRUM_FILES,
 )
 #: Chiptune/8-bit 120–160 (§3): без насоса (сайдчейна нет), хэты 16-ми, арпеджио вместо пэда (``arp`` — вдвое чаще
@@ -1657,13 +1667,14 @@ _DNB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: (ближайший к reese синт палитры; синта ``reese`` в Renardo нет — только файлы ``j``, замер #3430: низ 0.9),
 #: ``subbass``, ``jbass``. Лид редкий и простой (``motif``), пэды — клубные семьи.
 #: #3550: тембры breaks и dnb больше не клубные семьи. breaks — фанковые щипковые лиды (``pluck``/``keys``/``orient``),
-#: пэд-стэбы ``ambi``/``space``, бас ``wobblebass``/``jbass`` серединой; dnb — сабовый бас (``subbass``/
+#: пэд-стэбы ``space``/``sinepad`` (``ambi`` на роботе громче модели на 14.2 дБ — раздувал середину: робот 08.10
+#: дал низ breaks 0.29 при модели 0.57), бас ``wobblebass``/``jbass`` серединой; dnb — сабовый бас (``subbass``/
 #: ``wobblebass``-reese), «жидкий» тёмный пэд (``space``/``strings``/``warmpad``), редкий лид ``pluck``/``keys``.
 _BREAKBEAT_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("pluck", "keys"), "bass": ("wobblebass", "jbass"), "pad": ("space", "ambi")},
-    "hard": {"lead": ("pluck", "orient"), "bass": ("wobblebass", "jbass"), "pad": ("ambi", "space")},
-    "bright": {"lead": ("pluck", "orient", "keys"), "bass": ("jbass", "wobblebass"), "pad": ("ambi", "space")},
-    "warm": {"lead": ("pluck", "keys"), "bass": ("jbass", "wobblebass"), "pad": ("ambi", "space")},
+    "dark": {"lead": ("pluck", "keys"), "bass": ("wobblebass", "jbass"), "pad": ("space", "sinepad")},
+    "hard": {"lead": ("pluck", "orient"), "bass": ("wobblebass", "jbass"), "pad": ("sinepad", "space")},
+    "bright": {"lead": ("pluck", "orient", "keys"), "bass": ("jbass", "wobblebass"), "pad": ("sinepad", "space")},
+    "warm": {"lead": ("pluck", "keys"), "bass": ("jbass", "wobblebass"), "pad": ("space", "sinepad")},
 }
 _DNB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     "dark": {"lead": ("pluck", "keys"), "bass": ("subbass", "wobblebass"), "pad": ("space", "warmpad")},
@@ -1689,20 +1700,22 @@ _BREAKBEAT_FIELDS = dict(
 #: Звук breaks (#3550): брейк впереди (луп −36 в build и дропах, у клуба брейк-луп −40 «текстурой» и только во втором
 #: дропе), свой кит (``heavy``/``fat``,
 #: малый ``drum_snare_hard``/``sn_dolf`` и на build, хэты ``hat_noiz``/``hat_zap``), фанковые каркасы с 16-ми на «а»,
-#: пэд вширь с Хаасом (удары файлами — в центре), середина (бас ``wobblebass``/``jbass``, лид громче клубного).
+#: сцена шире клуба хэтами, середина (бас ``wobblebass``/``jbass``, лид громче клубного).
 _BREAKS_KITS: Mapping[str, Mapping[str, str]] = {
     "funk": {"hats": "x.Xxx.X.x.Xxx.Xx", "perc": _NO_PERC},
     "skip": {"hats": "x.X..xX.x.X..xXx", "perc": _NO_PERC},
 }
 _BREAKS_FIELDS = dict(
     _BREAKBEAT_FIELDS, kits=_BREAKS_KITS, timbres=_BREAKBEAT_TIMBRES,
-    role_level_db={**_BREAKBEAT_ROLE_LEVEL_DB, "lead": -48.0, "clap": -41.0, "hats": -56.0},
+    # уровни — как у breaks до #3550 (робот 08.10: громче малый/лид/хэты → низ 0.29, середина 0.70)
+    role_level_db=_BREAKBEAT_ROLE_LEVEL_DB,
     section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES,
-    stereo={"pad": {"pan": 0.6, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS}},
+    stereo={"hats": {"pan": 0.6, "first": 1}, "clap": {"pan": 0.2, "first": -1},
+            "pad": {"pan": 0.6, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS}},
     drum_files={"clap": ("sonicpi_drum_snare_hard", "sonicpi_sn_dolf"), "hats": ("sonicpi_hat_noiz", "sonicpi_hat_zap")},
     backbeat_kinds=("build", "build2", "drop", "drop2"),
-    # A9: норма низа breaks 0.6–0.85 (§3); брейк впереди держит середину (S7 08.10: 0.50) — порог модели 0.55
-    a9_model_low=0.55,
+    # A9: норма низа breaks 0.6–0.85 (§3, гипотеза до эталона В1) — нижняя граница, как до #3550
+    a9_model_low=0.6,
 )
 #: Звук dnb (#3550): глубокий суб (бас −30, громче всех электронных), тёмный «жидкий» пэд под постоянным срезом 1.5 кГц
 #: на полные L/R с Хаасом над моно-низом, свой кит (``tek``/``sone``, малый ``sn_zome``/``elec_mid_snare`` на 2 и 4
@@ -1721,7 +1734,7 @@ _DNB_FIELDS = dict(
     role_level_db={**_BREAKBEAT_ROLE_LEVEL_DB, "bass": -30.0, "kick": -34.0, "pad": -46.0, "lead": -52.0,
                    "clap": -40.0, "hats": -58.0, "loop": -37.0},
     section_lpf=_DNB_SECTION_LPF, lpf_roles=("pad",),
-    stereo={"pad": {"pan": 1.0, "detune": 0.15, "haas_ms": 20.0}},
+    stereo={"hats": {"pan": 0.6, "first": 1}, "pad": {"pan": 1.0, "detune": 0.15, "haas_ms": 20.0}},
     drum_files={"clap": ("sonicpi_sn_zome", "sonicpi_elec_mid_snare"),
                 "hats": ("sonicpi_hat_psych", "sonicpi_perc_snap")},
     # A9: норма низа dnb 0.6–0.85 (§3) — суб громче, порог модели 0.65

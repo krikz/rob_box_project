@@ -190,18 +190,24 @@ def _strong_ct(notes, degrees, slot_bars, style, key):
 
 
 def test_melody_on_strong_beats_is_in_the_chord_more_often_than_under_style_templates(tracks):
-    """Аудит П1: шаблон стиля на 2 такта (как было, ``fit_progression``) против гармонии под хук — на каждом хуке не
-    хуже, в среднем лучше на 0.1 (матрица аудита: 0.51 → цель ≥ 0.70 — скриптом аудита). #3550: сид трека с ключом
-    стиля выбрал в выборку хук ``short`` (три ноты на сильных долях): шаблон уже даёт ему 2/3, гармония под хук —
-    тоже 2/3, «+0.08 на каждом» — свойство прежней выборки, а не гармонии (код гармонии не менялся)."""
-    pairs = []
+    """Аудит П1: шаблон стиля на 2 такта (как было, ``fit_progression``) против гармонии под хук — на каждом хуке
+    лучше на 0.08, в среднем на 0.1 (матрица аудита: 0.51 → цель ≥ 0.70 — скриптом аудита).
+
+    Известный равный случай — хук ``short`` (#3550: сид трека с ключом стиля взял его в выборку): бег 16-ми, на долях
+    1 и 3 всего три ноты (E, E, A); в E minor шаблон i–iv–VII–III уже ставит под две из них тон аккорда, Витерби — тоже
+    две (2/3 = 2/3), третья — проходящая, третьей ноте аккорд не выбрать без потери двух других. Выигрыша быть не
+    может; проверяется, что гармония под хук не хуже. Порог +0.08 — на всех остальных хуках."""
+    pairs, equal = [], []
     for track in tracks:
         style = kn.STYLES[track.style]
         loop = [int(d) for d in track.history_key.progression.split("-")]
         old = harmony.fit_progression(style, track.key, track.hook.notes, 2 * BEATS_PER_BAR, random.Random(0))
-        pairs.append((_strong_ct(track.hook.notes, loop, kn.HOOK_HARMONY.slot_bars, style, track.key),
-                      _strong_ct(track.hook.notes, old, 2, style, track.key)))
-    assert all(new >= old for new, old in pairs), pairs
+        pair = (_strong_ct(track.hook.notes, loop, kn.HOOK_HARMONY.slot_bars, style, track.key),
+                _strong_ct(track.hook.notes, old, 2, style, track.key))
+        (equal if track.hook.source == "short" else pairs).append(pair)
+    assert len(pairs) >= 8, "выборка хуков с выигрышем мала"
+    assert all(new >= old + 0.08 for new, old in pairs), pairs
+    assert all(new >= old for new, old in equal), equal
     assert statistics.mean(new - old for new, old in pairs) >= 0.1, pairs
 
 
