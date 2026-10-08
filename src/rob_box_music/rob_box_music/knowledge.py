@@ -653,14 +653,30 @@ PACK_DRUMS: Tuple[str, ...] = (
     "muldjord_rider_07", "muldjord_crashl_08", "muldjord_crashr_07",
     # ADR-0153 S6 (джаз): второй райд того же кита — райд звучит весь трек, один файл приедается.
     "muldjord_rider_09",
+    # #3550: киты электронных стилей (бочки — :data:`KICK_SOUNDS`, малый и хэты — ``Style.drum_files``), у стиля свои
+    # файлы. Опись Vision Pi 08.10 (``soundfile``, моно-сумма, доли энергии ниже 8 кГц — полоса 16 кГц робота): хэты
+    # с потерей выше 8 кГц ≤ 0.55 (``hat_zan`` 0.21, ``hat_noiz`` 0.27, ``hat_bdu`` 0.34, ``hat_zild`` 0.44,
+    # ``hat_sci`` 0.51, ``hat_zap`` 0.53, ``hat_psych`` 0.55, ``perc_snap`` 0.09; ``elec_tick``/``elec_twip`` — 8-битные
+    # щелчки 1–2 кГц, потери нет); малые — середина 150–2000 Гц 0.28–0.97. На 16 кГц робота не слушано.
+    "sonicpi_bd_808", "sonicpi_bd_pure", "sonicpi_bd_chip", "sonicpi_bd_zum", "sonicpi_drum_heavy_kick",
+    "sonicpi_bd_fat", "sonicpi_bd_tek", "sonicpi_bd_sone",
+    "sonicpi_sn_dub", "sonicpi_elec_snare", "sonicpi_sn_generic", "sonicpi_elec_lo_snare", "sonicpi_elec_hi_snare",
+    "sonicpi_elec_pop", "sonicpi_drum_snare_hard", "sonicpi_sn_dolf", "sonicpi_sn_zome", "sonicpi_elec_mid_snare",
+    "sonicpi_hat_zan", "sonicpi_hat_bdu", "sonicpi_hat_zild", "sonicpi_hat_sci", "sonicpi_elec_tick",
+    "sonicpi_elec_twip", "sonicpi_hat_noiz", "sonicpi_hat_zap", "sonicpi_hat_psych", "sonicpi_perc_snap",
 )
+#: Роль удара кита, когда каталог пака зовёт файл иначе (``perc``): удар кита не идёт в psr-слой клуба
+#: (``arrange.samples.perc_pool`` берёт роль ``perc``).
+_PACK_DRUM_ROLE: Mapping[str, str] = {"sonicpi_elec_tick": "hat", "sonicpi_elec_twip": "hat",
+                                      "sonicpi_perc_snap": "hat", "sonicpi_elec_pop": "snare"}
 
 
 def _pack_drum(name: str) -> SampleInfo:
     data = _SONICPI_DATA if name.startswith("sonicpi_") else _MULDJORD_DATA
     meta = data["samples"][name]
-    return SampleInfo(name, str(meta["group"]), str(meta["role"]), float(meta["seconds"]), int(meta["channels"]),
-                      f"{data['pack_dir']}/{meta['path']}", float(meta["peak_db"]), float(meta["rms_db"]))
+    return SampleInfo(name, str(meta["group"]), _PACK_DRUM_ROLE.get(name, str(meta["role"])), float(meta["seconds"]),
+                      int(meta["channels"]), f"{data['pack_dir']}/{meta['path']}", float(meta["peak_db"]),
+                      float(meta["rms_db"]))
 
 
 #: Каталог сэмплов v2: имя → :class:`SampleInfo` — DJ_Dave, брейки паков (роль ``break``) и удары китов паков
@@ -1147,6 +1163,19 @@ KICK_SOUNDS: Mapping[str, KickSound] = {
     "rock_l": KickSound("", 0, "20-KdrumL-KdrumL.flac", 0.0, 0.976, math.nan, False, pack="muldjord_kdruml_20"),
     "rock_r": KickSound("", 0, "20-KdrumR-KdrumR.flac", 0.0, 0.989, math.nan, False, pack="muldjord_kdrumr_20"),
     "rock_r2": KickSound("", 0, "21-KdrumR-KdrumR.flac", 0.0, 0.987, math.nan, False, pack="muldjord_kdrumr_21"),
+    # #3550 (S7 08.10: шесть электронных стилей неотличимы — synthwave брал клубные ``deep``/``house``, breaks и dnb —
+    # клубные ``techno``/``garage``): у каждого электронного стиля свои бочки пака Sonic Pi, пулы не пересекаются.
+    # ``low`` — доля < 200 Гц ФАЙЛА (Vision Pi 08.10, ``soundfile``). НА РОБОТЕ НЕ МЕРЕНЫ: уровень — каталог.
+    # synthwave — драм-машина 80-х (808, чистый саб); chiptune — короткие «щелчки» 0.10–0.13 с без хвоста; breaks —
+    # плотные «акустические» удары брейка; dnb — короткий тугой удар под амен.
+    "tr808": KickSound("", 0, "bd_808.flac", 0.0, 0.999, math.nan, False, pack="sonicpi_bd_808"),
+    "pure": KickSound("", 0, "bd_pure.flac", 0.0, 1.000, math.nan, False, pack="sonicpi_bd_pure"),
+    "chip": KickSound("", 0, "bd_chip.flac", 0.0, 0.990, math.nan, False, pack="sonicpi_bd_chip"),
+    "zum": KickSound("", 0, "bd_zum.flac", 0.0, 0.942, math.nan, False, pack="sonicpi_bd_zum"),
+    "heavy": KickSound("", 0, "drum_heavy_kick.flac", 0.0, 0.990, math.nan, False, pack="sonicpi_drum_heavy_kick"),
+    "fat": KickSound("", 0, "bd_fat.flac", 0.0, 0.949, math.nan, False, pack="sonicpi_bd_fat"),
+    "tek": KickSound("", 0, "bd_tek.flac", 0.0, 0.976, math.nan, False, pack="sonicpi_bd_tek"),
+    "sone": KickSound("", 0, "bd_sone.flac", 0.0, 0.997, math.nan, False, pack="sonicpi_bd_sone"),
 }
 
 
@@ -1320,19 +1349,17 @@ class GenreWindow:
     a9_model_low: Optional[float] = None
 
 
-#: Окна клуба. ``club`` — сегодняшние таблицы (``_CLUB_*``, побайтно); ``deep`` — мягкие бочки, пэд
-#: ``held``/``pumped16``
-#: чаще; ``breaks`` — ломаная бочка (``KICK_PATTERNS["breakbeat"]``) в дропе, пэд ``stabs`` чаще. Пулы бочек —
-#: подмножества :data:`KICK_SOUNDS`; темпы окон — решение координатора (deep 120–126: 128 уже окно ``club``;
-#: breaks 130–138).
+#: Окна клуба. ``club`` — сегодняшние таблицы (``_CLUB_*``); ``deep`` — мягкие бочки, пэд ``held``/``pumped16``
+#: чаще. Пулы бочек — подмножества :data:`KICK_SOUNDS`; темпы окон — решение координатора (deep 120–126: 128 уже окно
+#: ``club``). Окна ``breaks`` (ADR-0152 PR-8: ломаная бочка в дропе) у клуба больше нет (#3550): с ADR-0153 S3 ломаный
+#: бит — отдельный стиль ``breaks``, а окно клуба повторяло его тем же пулом бочек и рисунком баса — на приёмке S7
+#: 08.10 «клубный» сет взял это окно, и его трек 1 совпал с треком 1 стиля ``breaks`` (две реализации одного жанра).
 _CLUB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "club": GenreWindow((128, 138), ("house", "deep", "techno", "garage"), _CLUB_LOOKS,
                         ("offbeat", "rolling8", "acid16"),
                         ("pumped16", "held", "stabs")),
     "deep": GenreWindow((120, 126), ("deep", "house"), _CLUB_LOOKS, ("offbeat", "rolling8"),
                        ("held", "held", "pumped16")),
-    "breaks": GenreWindow((130, 138), ("techno", "garage"), _looks("breakbeat"), ("broken",),
-                          ("stabs", "stabs", "pumped16", "held")),
 }
 
 
@@ -1437,15 +1464,16 @@ class Style:
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
-#: Окна рейва 140–160 (ADR-0153 §3): ``rave`` — жёсткая прямая бочка и стэбы, ``acid`` — линия ``tb303`` чаще,
-#: ``hardcore`` — 150–160, перегруженная бочка. Виды секций (рисунок бочки, насос) — клубные: механика та же.
-#: Бас в окне ``acid`` — ``acid16`` весом 2 (повтор в пуле = вес выбора, как у ``pad_figures``).
+#: Окна рейва 140–159 (ADR-0153 §3: 140–160): ``rave`` — жёсткая прямая бочка и стэбы, ``acid`` — линия ``tb303``
+#: чаще, ``hardcore`` — 150–159, перегруженная бочка (#3550: 160 — уже окно ``jungle`` стиля ``dnb``; окна темпа —
+#: одна таблица: ``Style.bpm`` любого стиля = его первое окно, проверяет ``test_style_distinct``). Виды секций (рисунок
+#: бочки, насос) — клубные: механика та же. Бас в окне ``acid`` — ``acid16`` весом 2 (повтор в пуле = вес выбора).
 _RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "rave": GenreWindow((140, 150), ("hardtechno", "hardstyle", "acid"), _CLUB_LOOKS,
                         ("offbeat", "rolling8", "acid16"), ("stabs", "stabs", "pumped16", "held")),
     "acid": GenreWindow((140, 148), ("acid", "hardtechno"), _CLUB_LOOKS,
                         ("acid16", "acid16", "offbeat"), ("stabs", "pumped16", "held")),
-    "hardcore": GenreWindow((150, 160), ("hardcore", "hardstyle"), _CLUB_LOOKS,
+    "hardcore": GenreWindow((150, 159), ("hardcore", "hardstyle"), _CLUB_LOOKS,
                             ("offbeat", "rolling8"), ("stabs", "stabs", "pumped16")),
 }
 #: Тембры рейва: те же семьи тем (``THEME_TIMBRE``), что у клуба. Лиды — читаемые темой (:data:`THEME_LEAD_OK`, замер
@@ -1453,20 +1481,37 @@ _RAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: шумовой ``Gendy1``, неотпускаемая огибающая — «какофония, сильное эхо», Шифу 07.10) теме не годятся, а других
 #: партий лида в треке нет (лид — всегда хук или мотив). ``tb303`` с ``acid16`` — в каждой семье
 #: (лицо стиля), низ держат басы с долей низа ≥ 0.9 (``subbass``/``dub``/``jbass``/``wobblebass``) рисунками
-#: ``offbeat``/``rolling8``. Пэды — клубные (стэб-пэд на синтах лида ``rave``/``saw`` требует замера роли ``pad``,
-#: ADR-0152 §3.1 — не сделан).
+#: ``offbeat``/``rolling8``. Пэды (#3550) — не клубные мягкие (``sinepad``/``ambi``/``space`` звучали «клубом с другим
+#: синтом», S7 08.10), а пилы и квадраты стэбами (``saw``/``pulse``/``strings`` — замеренные в роли пэда, без хвоста):
+#: рейв ярче и жёстче клуба серединой. ``blip`` (два голоса вширь, :data:`SYNTH_STEREO`) снят — рейв узкий.
 _RAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("saw", "brass", "arpy"), "bass": ("subbass", "jbass", "tb303"),
-             "pad": _CLUB_TIMBRES["dark"]["pad"]},
-    "hard": {"lead": ("saw", "brass", "arpy", "blip"), "bass": ("wobblebass", "jbass", "tb303"),
-             "pad": _CLUB_TIMBRES["hard"]["pad"]},
-    "bright": {"lead": ("saw", "arpy", "blip", "orient"), "bass": ("jbass", "subbass", "tb303"),
-               "pad": _CLUB_TIMBRES["bright"]["pad"]},
-    "warm": {"lead": ("saw", "brass", "pluck"), "bass": ("jbass", "subbass", "tb303"),
-             "pad": _CLUB_TIMBRES["warm"]["pad"]},
+    "dark": {"lead": ("saw", "brass", "arpy"), "bass": ("subbass", "jbass", "tb303"), "pad": ("saw", "strings")},
+    "hard": {"lead": ("saw", "brass", "arpy"), "bass": ("wobblebass", "jbass", "tb303"), "pad": ("saw", "pulse")},
+    "bright": {"lead": ("saw", "arpy", "orient"), "bass": ("jbass", "subbass", "tb303"), "pad": ("pulse", "strings")},
+    "warm": {"lead": ("saw", "brass", "pluck"), "bass": ("jbass", "subbass", "tb303"), "pad": ("strings", "saw")},
 }
-#: Каркасы рейва — клубные без качающихся (``shuffle``/``ride``): рейв ровный (S2 ADR-0153: свинг-ratio ≤ 1.2).
-_RAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "sixteenths", "open")}
+#: Каркасы рейва (#3550) — свои, плотнее клубных: хэт на каждой 16-й с акцентом на «и» (``drive``) или парами 16-х
+#: на «и» (``stomp``). Ровные: рейв не качается (S2 ADR-0153: свинг-ratio ≤ 1.2). psr-слоя DJ_Dave нет — это лицо клуба.
+_NO_PERC = "................"
+_RAVE_KITS: Mapping[str, Mapping[str, str]] = {
+    "drive": {"hats": "xxXxxxXxxxXxxxXx", "perc": _NO_PERC},
+    "stomp": {"hats": "..Xx..Xx..Xx..Xx", "perc": _NO_PERC},
+}
+#: Звук рейва (#3550): хэты и малый — свои файлы пака (яркие ``hat_zan``/``hat_bdu`` громче клубных, малый ``sn_dub``/
+#: ``elec_snare``; удары файлами — в центре), узкая сцена (пэд без Хааса — жёсткий моно-удар), свип секций открыт выше
+#: клубного (build от 1.6 кГц, брейк 2.4 кГц — у клуба 400 Гц и 1.2 кГц), стэб-пэд громче.
+_RAVE_DRUM_FILES: Mapping[str, Tuple[str, ...]] = {"clap": ("sonicpi_sn_dub", "sonicpi_elec_snare"),
+                                                   "hats": ("sonicpi_hat_zan", "sonicpi_hat_bdu")}
+_RAVE_STEREO: Mapping[str, Mapping[str, float]] = {"pad": {"pan": 0.25, "detune": PAD_DETUNE}}
+_RAVE_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    "build": (1600.0, LPF_TOP_HZ), "build2": (1600.0, LPF_TOP_HZ), "break": (2400.0, 2400.0),
+    "break2": (2400.0, 2400.0), "outro_tail": (LPF_TOP_HZ, 300.0),
+}
+_RAVE_ROLE_LEVEL_DB: Mapping[str, float] = {**_CLUB_ROLE_LEVEL_DB, "kick": -32.0, "bass": -33.0, "pad": -42.0,
+                                            "clap": -40.0, "hats": -52.0}
+#: Слои сэмплов электроники кроме клуба (#3550): только FX-удар на дропах — psr-слой DJ_Dave и его брейк-луп звучат
+#: лишь в клубе (его лицо).
+_FX_ONLY: Mapping[str, Tuple[str, ...]] = {"fx": ("drop", "drop2")}
 
 # ── Стили ``synthwave`` и ``chiptune`` (ADR-0153 S2): клубная форма и микс, свои окна, бочки, пэды и тембры ───────
 #: Synthwave/outrun 100–120 (§3): мягкий насос (0.3 в дропе вместо 1.0 у клуба — «без насоса или мягкий»), окно
@@ -1479,9 +1524,10 @@ _SYNTHWAVE_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (0, Look(KICK_PATTERNS["four_on_floor"], 0.2)),
 )
 _RETROWAVE_LOOKS: Tuple[Tuple[int, Look], ...] = ((7, Look(KICK_PATTERNS["four_on_floor"], 0.3)), *_SYNTHWAVE_LOOKS[1:])
+#: Бочки (#3550) — драм-машина 80-х пака (``tr808``/``pure``), не клубные ``deep``/``house``.
 _SYNTHWAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
-    "synthwave": GenreWindow((100, 120), ("deep", "house"), _SYNTHWAVE_LOOKS, ("offbeat",), ("held", "held", "arp")),
-    "retrowave": GenreWindow((108, 120), ("house", "deep"), _RETROWAVE_LOOKS, ("offbeat", "rolling8"),
+    "synthwave": GenreWindow((100, 120), ("tr808", "pure"), _SYNTHWAVE_LOOKS, ("offbeat",), ("held", "held", "arp")),
+    "retrowave": GenreWindow((108, 120), ("pure", "tr808"), _RETROWAVE_LOOKS, ("offbeat", "rolling8"),
                              ("held", "arp", "arp")),
 }
 #: Тембры synthwave — семьи тем как у клуба. Лиды — читаемые темой (:data:`THEME_LEAD_OK`): ``saw``, ``brass``,
@@ -1490,27 +1536,46 @@ _SYNTHWAVE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
 #: взят: на роботе 07.10 оба трека с ним дали секунды цифрового нуля и шум выше среза мастера (:data:`NYQUIST_MAX_MIDI`).
 #: Басы — с долей низа ≥ 0.9 (``BASS_MIN_LOW``): ``retrobass`` (0.59) и ``moogbass`` (разброс замера 8 дБ) в семьи не
 #: идут. Пэды: держащие (``warmpad``/``strangerpulsepad`` — с хвостом, только ``held``) и короткие для ``arp``.
+#: #3550: пэды — держащие «аналоговые» (``warmpad``/``strangerpulsepad``) и короткие для ``arp`` (``strings``/``pulse``),
+#: без клубных ``sinepad``/``space``; лиды — медь и клавиши (``arpy`` — у рейва и клуба).
 _SYNTHWAVE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     "dark": {"lead": ("saw", "keys", "brass"), "bass": ("subbass", "jbass"),
-             "pad": ("strangerpulsepad", "space", "saw")},
-    "hard": {"lead": ("saw", "brass", "arpy"), "bass": ("jbass", "subbass"),
-             "pad": ("strangerpulsepad", "sinepad", "pulse")},
-    "bright": {"lead": ("brass", "arpy", "keys"), "bass": ("bass", "jbass"),
+             "pad": ("strangerpulsepad", "warmpad", "strings")},
+    "hard": {"lead": ("saw", "brass"), "bass": ("jbass", "subbass"),
+             "pad": ("strangerpulsepad", "pulse")},
+    "bright": {"lead": ("brass", "keys"), "bass": ("bass", "jbass"),
                "pad": ("warmpad", "strings", "pulse")},
     "warm": {"lead": ("keys", "saw", "brass"), "bass": ("bass", "jbass", "subbass"),
-             "pad": ("warmpad", "sinepad", "saw")},
+             "pad": ("warmpad", "strangerpulsepad", "strings")},
 }
-_SYNTHWAVE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("offbeat", "open")}
+#: Каркасы synthwave (#3550) — редкие: хэт только на «и» доли (``glide``) и подхват последней 16-й (``lift``); psr-слоя
+#: нет. Онсетов вдвое меньше клуба — медленный «проезд», а не клубный драйв.
+_SYNTHWAVE_KITS: Mapping[str, Mapping[str, str]] = {
+    "glide": {"hats": "..X...X...X...X.", "perc": _NO_PERC},
+    "lift": {"hats": "..X...X...X..xX.", "perc": _NO_PERC},
+}
+#: Звук synthwave (#3550): большой малый 80-х на 2 и 4 в build и дропах (``sn_generic``/``elec_lo_snare``, громче
+#: клубного клэпа), тихие хэты, самая широкая сцена электроники (пэд на полные L/R с Хаасом 25 мс и расстройкой;
+#: удары файлами пака — в центре, ширины у них рендер не выражает), тёплый пэд под постоянным срезом 1.8 кГц (в build открывается от 600 Гц), пэд громче клуба.
+_SYNTHWAVE_DRUM_FILES: Mapping[str, Tuple[str, ...]] = {"clap": ("sonicpi_sn_generic", "sonicpi_elec_lo_snare"),
+                                                        "hats": ("sonicpi_hat_zild", "sonicpi_hat_sci")}
+_SYNTHWAVE_STEREO: Mapping[str, Mapping[str, float]] = {"pad": {"pan": 1.0, "detune": 0.2, "haas_ms": 25.0}}
+_SYNTHWAVE_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    **{name: (1800.0, 1800.0) for name in ("intro", "intro_low", "drop", "break", "break2", "drop2", "outro")},
+    "build": (600.0, 1800.0), "build2": (600.0, 1800.0), "outro_tail": (1800.0, 300.0),
+}
 _SYNTHWAVE_FIELDS = dict(
     swing=(0.0, 0.03), modes=("minor", "dorian"), looks=_SYNTHWAVE_LOOKS, kits=_SYNTHWAVE_KITS,
     registers=_CLUB_REGISTERS, timbres=_SYNTHWAVE_TIMBRES, default_timbre="warm", lead_figures=("motif",),
     chord_size=3, progressions=_CLUB_PROGRESSIONS, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
-    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
-    genre_windows=_SYNTHWAVE_GENRE_WINDOWS, role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES,
-    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
-    stereo=_CLUB_STEREO,
-    # A9: норма низа synthwave 0.4–0.7 (§3, гипотеза до эталона В1) + запас σ модели 0.1, как клуб (0.5 + 0.1)
-    a9_model_low=0.5, arp_order=(0, 1, 2, 1),
+    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_FX_ONLY,
+    genre_windows=_SYNTHWAVE_GENRE_WINDOWS,
+    role_level_db={**_CLUB_ROLE_LEVEL_DB, "kick": -35.0, "bass": -34.0, "pad": -40.0, "clap": -38.0, "hats": -60.0},
+    duck_roles=_CLUB_DUCK_ROLES, section_lpf=_SYNTHWAVE_SECTION_LPF, lpf_roles=("pad",),
+    lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_SYNTHWAVE_STEREO,
+    # A9: норма низа synthwave 0.4–0.7 (§3, гипотеза до эталона В1) + запас σ модели 0.05: пэд громче клуба по замыслу
+    a9_model_low=0.45, arp_order=(0, 1, 2, 1), backbeat_kinds=("build", "build2", "drop", "drop2"),
+    drum_files=_SYNTHWAVE_DRUM_FILES,
 )
 #: Chiptune/8-bit 120–160 (§3): без насоса (сайдчейна нет), хэты 16-ми, арпеджио вместо пэда (``arp`` — вдвое чаще
 #: стэбов), лиды ``pulse``/``blip``/``saw``/``orient`` (``varsaw`` — атака 65 мс, теме не годится, :data:`LEAD_CLARITY`;
@@ -1522,31 +1587,41 @@ _CHIP_LOOKS: Tuple[Tuple[int, Look], ...] = (
     (5, Look("X.......X.......", 0.0)),
     (0, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
 )
+#: #3550: бочки — короткие «щелчки» пака (``chip``/``zum``, 0.10–0.13 с), не клубные ``techno``/``garage``; бас —
+#: 8-битный ``octave8`` вдвое чаще оффбита (суб-баса у жанра нет по природе).
 _CHIPTUNE_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
-    "chiptune": GenreWindow((120, 160), ("techno", "garage"), _CHIP_LOOKS, ("offbeat", "rolling8", "octave8"),
+    "chiptune": GenreWindow((120, 160), ("chip", "zum"), _CHIP_LOOKS, ("octave8", "octave8", "offbeat"),
                             ("arp", "arp", "stabs")),
 }
+#: Тембры chiptune (#3550): только «приставочные» волны — лид ``pulse``/``orient`` (``blip`` — два голоса вширь,
+#: :data:`SYNTH_STEREO`, а 8-бит моно; ``saw`` — у рейва), пэд-арпеджио ``square``/``pulse``, бас ``pulse`` октавами
+#: (рисунок ``octave8`` вдвое чаще) или ``bass``/``jbass`` оффбитом (``subbass`` — суб клуба).
 _CHIPTUNE_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("pulse", "blip", "saw"), "bass": ("subbass", "jbass", "pulse"),
-             "pad": ("square", "pulse")},
-    "hard": {"lead": ("pulse", "saw", "blip"), "bass": ("jbass", "subbass", "pulse"),
-             "pad": ("square", "blip")},
-    "bright": {"lead": ("blip", "pulse", "orient"), "bass": ("bass", "jbass", "pulse"),
-               "pad": ("pulse", "square")},
-    "warm": {"lead": ("pulse", "blip", "saw"), "bass": ("bass", "jbass", "pulse"),
-             "pad": ("blip", "square", "pulse")},
+    family: {"lead": ("pulse", "orient"), "bass": ("pulse", "bass", "jbass"), "pad": ("square", "pulse")}
+    for family in ("dark", "hard", "bright", "warm")
 }
-_CHIPTUNE_KITS: Mapping[str, Mapping[str, str]] = {k: _CLUB_KITS[k] for k in ("sixteenths", "offbeat")}
+#: Каркасы chiptune (#3550): хэт-щелчок на каждой 16-й — с акцентом на доле (``chip16``) или через 16-ю (``chiptick``):
+#: самый плотный рисунок электроники, psr-слоя DJ_Dave нет.
+_CHIPTUNE_KITS: Mapping[str, Mapping[str, str]] = {
+    "chip16": {"hats": "XxxxXxxxXxxxXxxx", "perc": _NO_PERC},
+    "chiptick": {"hats": "XxXxXxXxXxXxXxXx", "perc": _NO_PERC},
+}
+#: Звук chiptune (#3550): ударные — 8-битные щелчки пака (``elec_tick``/``elec_twip`` хэты, ``elec_hi_snare``/``elec_pop``
+#: малый), моно (стерео ролей нет: приставка — один канал), без свипа секций (волны открыты), лид громче клуба.
+_CHIPTUNE_DRUM_FILES: Mapping[str, Tuple[str, ...]] = {"clap": ("sonicpi_elec_hi_snare", "sonicpi_elec_pop"),
+                                                       "hats": ("sonicpi_elec_tick", "sonicpi_elec_twip")}
 _CHIPTUNE_FIELDS = dict(
     swing=(0.0, 0.0), modes=("major", "minor"), looks=_CHIP_LOOKS, kits=_CHIPTUNE_KITS,
     registers=_CLUB_REGISTERS, timbres=_CHIPTUNE_TIMBRES, default_timbre="bright", lead_figures=("motif",),
     chord_size=3, progressions=_CLUB_PROGRESSIONS, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
-    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS,
-    genre_windows=_CHIPTUNE_GENRE_WINDOWS, role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=(),
-    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
-    stereo=_CLUB_STEREO,
-    # A9: норма низа chiptune 0.3–0.5 (§3: суб-баса нет по природе) + запас σ модели 0.1
-    a9_model_low=0.4, arp_order=(0, 1, 2),
+    energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_FX_ONLY,
+    genre_windows=_CHIPTUNE_GENRE_WINDOWS,
+    role_level_db={**_CLUB_ROLE_LEVEL_DB, "kick": -36.0, "bass": -36.0, "pad": -42.0, "lead": -46.0, "clap": -44.0,
+                   "hats": -50.0},
+    duck_roles=(), section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)}, lpf_roles=_CLUB_LPF_ROLES,
+    lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo={},
+    # A9: норма низа chiptune 0.3–0.5 (§3: суб-баса нет по природе) — нижняя граница без запаса: низ держит бочка
+    a9_model_low=0.3, arp_order=(0, 1, 2), drum_files=_CHIPTUNE_DRUM_FILES,
 )
 
 # ── Стили ``breaks`` и ``dnb`` (ADR-0153 S3): брейк пака нарезкой по сиду, ломаная бочка, бас мимо неё ───────────
@@ -1568,26 +1643,33 @@ _DNB_LOOKS: Tuple[Tuple[int, Look], ...] = (
 #: Окна. Бас — ``broken`` (шаги 1, 6, 9, 14: мимо ``breakbeat`` 0/2/10/13, ``half_time`` 0/10 и долей); пэд держит
 #: аккорд (``held``) или стэбы — без ``pumped16`` (16-е аккорда × 2 голоса — самый дорогой по событиям рисунок, а dnb
 #: и так на 30 % быстрее клуба, ADR-0153 §3.5 / В8). Бочки — клубные замеренные (``KICK_SOUNDS``), низ брейка — свой.
+#: Бочки (#3550) — свои пака: breaks — плотные ``heavy``/``fat``, dnb — тугие ``tek``/``sone`` (клубные ``techno``/
+#: ``garage``/``house``/``deep`` делали трек 1 breaks и клуба одинаковым по бочке).
 _BREAKS_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
-    "breakbeat": GenreWindow((128, 136), ("techno", "garage"), _BREAKS_LOOKS, ("broken",), ("held", "stabs", "stabs")),
-    "bigbeat": GenreWindow((132, 140), ("garage", "house"), _BREAKS_LOOKS, ("broken",), ("stabs", "held")),
+    "breakbeat": GenreWindow((128, 136), ("heavy", "fat"), _BREAKS_LOOKS, ("broken",), ("held", "stabs", "stabs")),
+    "bigbeat": GenreWindow((132, 140), ("fat", "heavy"), _BREAKS_LOOKS, ("broken",), ("stabs", "held")),
 }
 _DNB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
-    "dnb": GenreWindow((170, 176), ("techno", "garage"), _DNB_LOOKS, ("broken",), ("held", "held", "stabs")),
-    "jungle": GenreWindow((160, 170), ("garage", "deep"), _DNB_LOOKS, ("broken",), ("held", "stabs")),
+    "dnb": GenreWindow((170, 176), ("tek", "sone"), _DNB_LOOKS, ("broken",), ("held", "held", "stabs")),
+    "jungle": GenreWindow((160, 170), ("sone", "tek"), _DNB_LOOKS, ("broken",), ("held", "stabs")),
 }
 #: Тембры breaks/dnb — семьи тем как у клуба. Бас — замеренные с низом ≥ 0.9 (``BASS_MIN_LOW``): ``wobblebass``
 #: (ближайший к reese синт палитры; синта ``reese`` в Renardo нет — только файлы ``j``, замер #3430: низ 0.9),
 #: ``subbass``, ``jbass``. Лид редкий и простой (``motif``), пэды — клубные семьи.
+#: #3550: тембры breaks и dnb больше не клубные семьи. breaks — фанковые щипковые лиды (``pluck``/``keys``/``orient``),
+#: пэд-стэбы ``ambi``/``space``, бас ``wobblebass``/``jbass`` серединой; dnb — сабовый бас (``subbass``/
+#: ``wobblebass``-reese), «жидкий» тёмный пэд (``space``/``strings``/``warmpad``), редкий лид ``pluck``/``keys``.
 _BREAKBEAT_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("saw", "pluck", "blip"), "bass": ("wobblebass", "subbass", "jbass"),
-             "pad": _CLUB_TIMBRES["dark"]["pad"]},
-    "hard": {"lead": ("brass", "arpy", "blip"), "bass": ("wobblebass", "jbass"),
-             "pad": _CLUB_TIMBRES["hard"]["pad"]},
-    "bright": {"lead": ("pluck", "blip", "orient"), "bass": ("jbass", "subbass", "wobblebass"),
-               "pad": _CLUB_TIMBRES["bright"]["pad"]},
-    "warm": {"lead": ("pluck", "keys", "arpy"), "bass": ("subbass", "jbass", "wobblebass"),
-             "pad": _CLUB_TIMBRES["warm"]["pad"]},
+    "dark": {"lead": ("pluck", "keys"), "bass": ("wobblebass", "jbass"), "pad": ("space", "ambi")},
+    "hard": {"lead": ("pluck", "orient"), "bass": ("wobblebass", "jbass"), "pad": ("ambi", "space")},
+    "bright": {"lead": ("pluck", "orient", "keys"), "bass": ("jbass", "wobblebass"), "pad": ("ambi", "space")},
+    "warm": {"lead": ("pluck", "keys"), "bass": ("jbass", "wobblebass"), "pad": ("ambi", "space")},
+}
+_DNB_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("pluck", "keys"), "bass": ("subbass", "wobblebass"), "pad": ("space", "warmpad")},
+    "hard": {"lead": ("pluck", "keys"), "bass": ("wobblebass", "subbass"), "pad": ("strings", "space")},
+    "bright": {"lead": ("keys", "pluck"), "bass": ("subbass", "wobblebass"), "pad": ("strings", "warmpad")},
+    "warm": {"lead": ("keys", "pluck"), "bass": ("subbass", "wobblebass"), "pad": ("warmpad", "space")},
 }
 #: Минор, два аккорда на 8 тактов (§3: аккорд на 2 такта × 4 — ступень держится 4 такта).
 _DNB_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = ((0, 0, 5, 5), (0, 0, 3, 3), (0, 0, 6, 6), (0, 0, 4, 4), (0, 0, 2, 2))
@@ -1598,15 +1680,52 @@ _BREAKBEAT_LAYER_SECTIONS: Mapping[str, Tuple[str, ...]] = {"loop": ("build", "b
 #: Уровни — клубные, брейк — ударная опора: −36 (у клуба брейк-луп второго дропа −40 «текстурой»).
 _BREAKBEAT_ROLE_LEVEL_DB: Mapping[str, float] = {**_CLUB_ROLE_LEVEL_DB, "loop": -36.0}
 _BREAKBEAT_FIELDS = dict(
-    modes=("minor", "dorian"), kits={k: _CLUB_KITS[k] for k in ("offbeat", "open")},
-    registers=_CLUB_REGISTERS, timbres=_BREAKBEAT_TIMBRES, default_timbre="dark", lead_figures=("motif",),
+    modes=("minor", "dorian"), registers=_CLUB_REGISTERS, default_timbre="dark", lead_figures=("motif",),
     chord_size=3, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
     energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_BREAKBEAT_LAYER_SECTIONS,
-    role_level_db=_BREAKBEAT_ROLE_LEVEL_DB, duck_roles=("bass", "pad"),
-    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
-    stereo=_CLUB_STEREO, loop_roles=("break",), loop_figure="breakbeat_chop",
-    # A9: норма низа dnb/breaks 0.6–0.85 (§3, гипотеза до эталона В1) — нижняя граница, как у клуба и рейва
-    a9_model_low=0.6,
+    duck_roles=("bass", "pad"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    loop_roles=("break",), loop_figure="breakbeat_chop",
+)
+#: Звук breaks (#3550): брейк впереди (луп −36 в build и дропах, у клуба брейк-луп −40 «текстурой» и только во втором
+#: дропе), свой кит (``heavy``/``fat``,
+#: малый ``drum_snare_hard``/``sn_dolf`` и на build, хэты ``hat_noiz``/``hat_zap``), фанковые каркасы с 16-ми на «а»,
+#: пэд вширь с Хаасом (удары файлами — в центре), середина (бас ``wobblebass``/``jbass``, лид громче клубного).
+_BREAKS_KITS: Mapping[str, Mapping[str, str]] = {
+    "funk": {"hats": "x.Xxx.X.x.Xxx.Xx", "perc": _NO_PERC},
+    "skip": {"hats": "x.X..xX.x.X..xXx", "perc": _NO_PERC},
+}
+_BREAKS_FIELDS = dict(
+    _BREAKBEAT_FIELDS, kits=_BREAKS_KITS, timbres=_BREAKBEAT_TIMBRES,
+    role_level_db={**_BREAKBEAT_ROLE_LEVEL_DB, "lead": -48.0, "clap": -41.0, "hats": -56.0},
+    section_lpf=_CLUB_SECTION_LPF, lpf_roles=_CLUB_LPF_ROLES,
+    stereo={"pad": {"pan": 0.6, "detune": PAD_DETUNE, "haas_ms": PAD_HAAS_MS}},
+    drum_files={"clap": ("sonicpi_drum_snare_hard", "sonicpi_sn_dolf"), "hats": ("sonicpi_hat_noiz", "sonicpi_hat_zap")},
+    backbeat_kinds=("build", "build2", "drop", "drop2"),
+    # A9: норма низа breaks 0.6–0.85 (§3); брейк впереди держит середину (S7 08.10: 0.50) — порог модели 0.55
+    a9_model_low=0.55,
+)
+#: Звук dnb (#3550): глубокий суб (бас −30, громче всех электронных), тёмный «жидкий» пэд под постоянным срезом 1.5 кГц
+#: на полные L/R с Хаасом над моно-низом, свой кит (``tek``/``sone``, малый ``sn_zome``/``elec_mid_snare`` на 2 и 4
+#: half-time, хэты ``hat_psych``/``perc_snap``), редкий тихий лид, брейк тише, чем у breaks.
+_DNB_KITS: Mapping[str, Mapping[str, str]] = {
+    "roller": {"hats": "x.x.x.x.x.x.x.x.", "perc": _NO_PERC},
+    "tick": {"hats": "..x...x...x.x.x.", "perc": _NO_PERC},
+}
+_DNB_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    **{name: (1500.0, 1500.0) for name in ("intro", "intro_low", "drop", "drop2", "outro")},
+    "build": (400.0, 1500.0), "build2": (400.0, 1500.0), "break": (800.0, 800.0), "break2": (800.0, 800.0),
+    "outro_tail": (1500.0, 300.0),
+}
+_DNB_FIELDS = dict(
+    _BREAKBEAT_FIELDS, kits=_DNB_KITS, timbres=_DNB_TIMBRES,
+    role_level_db={**_BREAKBEAT_ROLE_LEVEL_DB, "bass": -30.0, "kick": -34.0, "pad": -46.0, "lead": -52.0,
+                   "clap": -40.0, "hats": -58.0, "loop": -37.0},
+    section_lpf=_DNB_SECTION_LPF, lpf_roles=("pad",),
+    stereo={"pad": {"pan": 1.0, "detune": 0.15, "haas_ms": 20.0}},
+    drum_files={"clap": ("sonicpi_sn_zome", "sonicpi_elec_mid_snare"),
+                "hats": ("sonicpi_hat_psych", "sonicpi_perc_snap")},
+    # A9: норма низа dnb 0.6–0.85 (§3) — суб громче, порог модели 0.65
+    a9_model_low=0.65,
 )
 
 # ── Стиль ``lofi`` (ADR-0153 S4, ступень к джазу): свинг оффбит-восьмых, comping, walking-бас, кит паков ───────────
@@ -1911,7 +2030,7 @@ _JAZZ_STYLE = Style(
 #: 5–10 % (ADR-0149 §3.4).
 STYLES: Mapping[str, Style] = {
     "club": Style(
-        bpm=(128, 138), swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
+        bpm=_CLUB_GENRE_WINDOWS["club"].bpm, swing=(0.05, 0.10), modes=("minor", "dorian", "phrygian", "major"),
         kick_pool=("house", "deep", "techno", "garage"), looks=_CLUB_LOOKS, kits=_CLUB_KITS,
         registers=_CLUB_REGISTERS, timbres=_CLUB_TIMBRES, default_timbre="warm",
         bass_figures=("offbeat", "rolling8", "acid16"), pad_figures=("pumped16", "held", "stabs"),
@@ -1929,17 +2048,17 @@ STYLES: Mapping[str, Style] = {
     # Свинг почти нулевой, лады — минор/фригийский (§3). Микс клубный: уровни ролей, сайдчейн, свип, стерео;
     # A9-модель — нижняя граница нормы рейва 0.6–0.85 (§2.1, гипотеза до эталона В1) = клубный порог.
     "rave": Style(
-        bpm=(140, 150), swing=(0.0, 0.03), modes=("minor", "phrygian"),
+        bpm=_RAVE_GENRE_WINDOWS["rave"].bpm, swing=(0.0, 0.03), modes=("minor", "phrygian"),
         kick_pool=_RAVE_GENRE_WINDOWS["rave"].kick_pool, looks=_CLUB_LOOKS, kits=_RAVE_KITS,
         registers=_CLUB_REGISTERS, timbres=_RAVE_TIMBRES, default_timbre="hard",
         bass_figures=_RAVE_GENRE_WINDOWS["rave"].bass_figures, pad_figures=_RAVE_GENRE_WINDOWS["rave"].pad_figures,
         lead_figures=("motif",),
         chord_size=3, progressions=_CLUB_PROGRESSIONS,
         forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM, energy_forms=_CLUB_ENERGY_FORMS,
-        blend=_CLUB_BLEND, layer_sections=_CLUB_LAYER_SECTIONS, genre_windows=_RAVE_GENRE_WINDOWS,
-        role_level_db=_CLUB_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_CLUB_SECTION_LPF,
-        lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_CLUB_STEREO,
-        a9_model_low=0.6,
+        blend=_CLUB_BLEND, layer_sections=_FX_ONLY, genre_windows=_RAVE_GENRE_WINDOWS,
+        role_level_db=_RAVE_ROLE_LEVEL_DB, duck_roles=_CLUB_DUCK_ROLES, section_lpf=_RAVE_SECTION_LPF,
+        lpf_roles=_CLUB_LPF_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo=_RAVE_STEREO,
+        a9_model_low=0.6, drum_files=_RAVE_DRUM_FILES,
     ),
     # ADR-0153 S2: поля стиля — первое окно, как у клуба и рейва.
     "synthwave": Style(
@@ -1956,12 +2075,12 @@ STYLES: Mapping[str, Style] = {
         kick_pool=_BREAKS_GENRE_WINDOWS["breakbeat"].kick_pool,
         looks=_BREAKS_LOOKS, bass_figures=_BREAKS_GENRE_WINDOWS["breakbeat"].bass_figures,
         pad_figures=_BREAKS_GENRE_WINDOWS["breakbeat"].pad_figures, progressions=_CLUB_PROGRESSIONS,
-        genre_windows=_BREAKS_GENRE_WINDOWS, **_BREAKBEAT_FIELDS),
+        genre_windows=_BREAKS_GENRE_WINDOWS, **_BREAKS_FIELDS),
     "dnb": Style(
         bpm=_DNB_GENRE_WINDOWS["dnb"].bpm, swing=(0.0, 0.03), kick_pool=_DNB_GENRE_WINDOWS["dnb"].kick_pool,
         looks=_DNB_LOOKS, bass_figures=_DNB_GENRE_WINDOWS["dnb"].bass_figures,
         pad_figures=_DNB_GENRE_WINDOWS["dnb"].pad_figures, progressions=_DNB_PROGRESSIONS,
-        genre_windows=_DNB_GENRE_WINDOWS, **_BREAKBEAT_FIELDS),
+        genre_windows=_DNB_GENRE_WINDOWS, **_DNB_FIELDS),
     "lofi": _LOFI_STYLE,
     "rock": _ROCK_STYLE,
     "jazz": _JAZZ_STYLE,

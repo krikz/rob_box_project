@@ -9,8 +9,8 @@
 * **Ход тоники** (§8.1: перенос ``dj_set_walk.related_root``): чистая квинта вверх на трек — соседи по кругу
   квинт делят 6 из 7 нот (Camelot +1), за 12 треков все 12 тоник. Старый ``dj_set_walk`` импортирует
   :func:`root_shift` отсюда — одна реализация.
-* **Жанровое окно** (ADR-0152 §3.5, PR-8, В1): ``SetPlan.genre`` — окно клуба (``Style.genre_windows``: club/deep/
-  breaks) выбирается на сет сидом со штрафом за окна прошлых сетов (:func:`pick_genre`); темп сета — в окне
+* **Жанровое окно** (ADR-0152 §3.5, PR-8, В1): ``SetPlan.genre`` — окно стиля (``Style.genre_windows``, у клуба
+  club/deep) выбирается на сет сидом со штрафом за окна прошлых сетов (:func:`pick_genre`); темп сета — в окне
   (:func:`plan_bpm`), пул бочек и пэдов, рисунок бочки дропа — из окна (``knowledge.genre_style``). Внутри сета окно
   не меняется. Окно — не стиль (ADR-0153): стиль — набор таблиц, окно — подвыбор внутри него.
 * **Свинг сета** — в окне стиля, от сида; один на весь сет, как грув у диджея.
@@ -97,6 +97,12 @@ class SetPlan:
         """Ключ ``knowledge.STYLES`` сета (ADR-0153: один стиль на сет) — стиль профиля темы."""
         return self.profile.style
 
+    def track_seed(self, no: int) -> str:
+        """Сид трека ``no`` — ключ ГСЧ осей ``compose`` (#3550): сид сета, стиль и окно. Один сид в двух стилях или двух
+        окнах не собирает один трек (S7 08.10: «клубный» сет в окне ``breaks`` и стиль ``breaks`` на одной теме дали
+        трек 1 с той же бочкой, каркасом, формой и рисунком баса)."""
+        return f"{self.seed}:{self.style}:{self.genre}:{no}"
+
     @property
     def table(self) -> kn.Style:
         """Таблицы стиля сета в его жанровом окне: то, что читают ``arrange/*`` (``knowledge.genre_style``)."""
@@ -138,13 +144,19 @@ def track_plan(no: int, n_tracks: int = 0) -> TrackPlan:
     return TrackPlan(no, arc_energy(no, n_tracks) if n_tracks else track_energy(no), root_shift(no))
 
 
+def plan_salt(profile: ThemeProfile) -> str:
+    """Соль ГСЧ осей сета (#3550): стиль и тема. Оси плана (тоника, окно, темп, свинг, бочки, формы, семья тембров) с
+    одним сидом и одной темой в разных стилях выбираются разными ГСЧ — свежесть по истории (#3495) поверх них та же."""
+    return f"{profile.style}:{profile.theme}"
+
+
 def set_root(profile: ThemeProfile, seed: int, history: Sequence[Mapping] = ()) -> int:
     """Тоника сета: тоника темы, если её не было в последних ``TONIC_MEMORY`` треках, иначе — сидом из остальных."""
     recent = recent_values(history[:TONIC_MEMORY], "root")
     if kn.ROOTS[profile.root] not in recent:
         return profile.root
     options = [r for r in kn.ROOTS if r not in recent]
-    return kn.ROOTS.index(weighted_pick(options, recent, random.Random(f"root:{seed}:{profile.theme}")))
+    return kn.ROOTS.index(weighted_pick(options, recent, random.Random(f"root:{seed}:{plan_salt(profile)}")))
 
 
 def recent_set_values(history: Sequence[Mapping], field: str) -> list:
@@ -188,10 +200,11 @@ def pick_genre(style: kn.Style, history: Sequence[Mapping], rng: random.Random) 
     return weighted_pick(options, recent, rng)
 
 
-def plan_bpm(window: kn.GenreWindow, theme_bpm: int, seed: int, theme: str) -> int:
-    """Темп сета: темп темы, если он в окне; иначе — сидом внутри окна (один темп на сет, ADR-0149 I7)."""
+def plan_bpm(window: kn.GenreWindow, theme_bpm: int, seed: int, salt: str) -> int:
+    """Темп сета: темп темы, если он в окне; иначе — сидом внутри окна (один темп на сет, ADR-0149 I7); ``salt`` —
+    :func:`plan_salt`."""
     lo, hi = window.bpm
-    return theme_bpm if lo <= theme_bpm <= hi else random.Random(f"bpm:{seed}:{theme}").randint(lo, hi)
+    return theme_bpm if lo <= theme_bpm <= hi else random.Random(f"bpm:{seed}:{salt}").randint(lo, hi)
 
 
 def pick_kick(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str:
@@ -202,14 +215,15 @@ def pick_kick(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -
     return weighted_pick(options, recent, rng)
 
 
-def plan_kicks(style: kn.Style, seed: int, theme: str, n_tracks: int,
+def plan_kicks(style: kn.Style, seed: int, salt: str, n_tracks: int,
                history: Sequence[Mapping] = ()) -> Tuple[str, ...]:
-    """Бочки первых ``n_tracks`` треков сета: каждая выбрана со штрафом за прошлые сеты и предыдущие треки плана."""
+    """Бочки первых ``n_tracks`` треков сета: каждая выбрана со штрафом за прошлые сеты и предыдущие треки плана;
+    ``salt`` — :func:`plan_salt`."""
     recent = [k for k in recent_values(history, "kick") if k]
     kicks = []
     for no in range(1, n_tracks + 1):
         rows = [{"kick": k} for k in kicks[::-1] + recent]
-        kicks.append(pick_kick(style, rows, random.Random(f"kick:{seed}:{theme}:{no}")))
+        kicks.append(pick_kick(style, rows, random.Random(f"kick:{seed}:{salt}:{no}")))
     return tuple(kicks)
 
 
@@ -222,16 +236,17 @@ def pick_template(style: kn.Style, energy: int, history: Sequence[Mapping], rng:
     return weighted_pick(options, recent, rng)
 
 
-def plan_templates(style: kn.Style, seed: int, theme: str, energies: Sequence[int],
+def plan_templates(style: kn.Style, seed: int, salt: str, energies: Sequence[int],
                    history: Sequence[Mapping] = ()) -> Tuple[str, ...]:
     """Формы первых треков сета (энергия — по номеру): трек 1 — ``Style.opening_form`` (блэнда на входе нет, тему
-    человек ждёт сразу, #3427), остальные — :func:`pick_template` со штрафом за прошлые сеты и предыдущие треки."""
+    человек ждёт сразу, #3427), остальные — :func:`pick_template` со штрафом за прошлые сеты и предыдущие треки;
+    ``salt`` — :func:`plan_salt`."""
     recent = [t for t in recent_values(history, "template") if t]
     out = []
     for no, energy in enumerate(energies, 1):
         rows = [{"template": t} for t in out[::-1] + recent]
         out.append(style.opening_form if no == 1
-                   else pick_template(style, energy, rows, random.Random(f"template:{seed}:{theme}:{no}")))
+                   else pick_template(style, energy, rows, random.Random(f"template:{seed}:{salt}:{no}")))
     return tuple(out)
 
 
@@ -324,27 +339,28 @@ def seeded_plan(profile: ThemeProfile, seed: int, n_tracks: int = DEFAULT_TRACKS
     (эталоны главного мотива, как у ``compose``). ``lazy_materials`` — синхронно решается только материал трека 1,
     остальные — :meth:`SetPlan.material` при компоновке (M7, #3542); ``on_reject`` — лог отказа в момент решения."""
     profile = replace(profile, root=set_root(profile, seed, history))
+    salt = plan_salt(profile)
     base = kn.STYLES[profile.style]
-    genre = pick_genre(base, history, random.Random(f"genre:{seed}:{profile.theme}")) if genre is None else genre
+    genre = pick_genre(base, history, random.Random(f"genre:{seed}:{salt}")) if genre is None else genre
     window = kn.genre_style(base, genre)
-    bpm = plan_bpm(base.genre_windows[genre], profile.bpm, seed, profile.theme)
+    bpm = plan_bpm(base.genre_windows[genre], profile.bpm, seed, salt)
     s_lo, s_hi = window.swing
-    swing = round(s_lo + random.Random(f"plan:{seed}:{profile.theme}").random() * (s_hi - s_lo), 3)
+    swing = round(s_lo + random.Random(f"plan:{seed}:{salt}").random() * (s_hi - s_lo), 3)
     n = max(1, n_tracks)
-    kicks = plan_kicks(window, seed, profile.theme, n, history)
+    kicks = plan_kicks(window, seed, salt, n, history)
     plans = [track_plan(no, n) for no in range(1, n + 1)]
-    forms = plan_templates(window, seed, profile.theme, [p.energy for p in plans], history)
+    forms = plan_templates(window, seed, salt, [p.energy for p in plans], history)
     fit = None if materials is None else _material_fit(materials, window, bpm, profile, references)
     queue = MaterialQueue(profile.materials, history, set_id, fit, rejected, on_reject) if profile.materials else None
     picked = [None] * n if queue is None else [queue.pick(no) if no == 1 or not lazy_materials else None
                                                for no in range(1, n + 1)]
     tracks = tuple(replace(p, kick=kicks[p.no - 1], template=forms[p.no - 1], material=picked[p.no - 1])
                    for p in plans)
-    timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{profile.theme}"))
+    timbre = pick_timbre(base, profile.row, history, random.Random(f"timbre:{seed}:{salt}"))
     return SetPlan(set_id, seed, profile, bpm, swing, tracks, genre, timbre, queue if lazy_materials else None)
 
 
 __all__ = ["DEFAULT_TRACKS", "FIFTH", "MAX_TRACKS", "MaterialQueue", "SetPlan", "TONIC_MEMORY", "TRACK_SECONDS", "TrackPlan", "arc_energy",
            "pick_genre", "pick_kick",
-           "pick_template", "pick_timbre", "plan_bpm", "plan_materials", "plan_kicks", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
+           "pick_template", "pick_timbre", "plan_bpm", "plan_materials", "plan_kicks", "plan_salt", "plan_templates", "recent_genres", "recent_set_values", "root_shift", "seeded_plan",
            "set_root", "set_tracks", "track_energy", "track_plan"]

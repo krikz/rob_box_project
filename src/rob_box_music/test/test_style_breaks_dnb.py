@@ -76,7 +76,7 @@ def test_set_tempo_window_kick_and_break_pools(style):
         plan = _plan("космос", seed, style)
         window = table.genre_windows[plan.genre]
         assert window.bpm[0] <= plan.bpm <= window.bpm[1] and lo <= plan.bpm <= hi, (seed, plan.genre, plan.bpm)
-        assert all(t.kick in window.kick_pool and kn.KICK_SOUNDS[t.kick].measured for t in plan.tracks)
+        assert all(t.kick in window.kick_pool and kn.KICK_SOUNDS[t.kick].pack for t in plan.tracks)
     for window in table.genre_windows.values():  # бас мимо бочки дропа и долей (ADR-0149 §3.4)
         drop = next(v for t, v in window.looks if t >= 7)
         kicks = {i for i, ch in enumerate(drop.kick) if ch == "X"}
@@ -95,7 +95,8 @@ def test_track_plays_a_chopped_pack_break_and_its_events_are_the_model(style):
             loop = track.parts["loop"]
             assert loop.synth_or_sample in BREAKS and loop.chop, "брейк пака нарезкой"
             assert "sample" not in track.parts, "psr-слоя DJ_Dave у брейк-стилей нет"
-            assert kick_name(track.parts["kick"].sample, track.parts["kick"].play_symbol) in table_kicks(style)
+            kick = track.parts["kick"]
+            assert kick_name(kick.sample, kick.play_symbol, "" if kick.synth_or_sample == kn.PLAY_SYNTH else kick.synth_or_sample) in table_kicks(style)
             row = track_composition(track)
             assert row["style"] == style and row["sample"] == loop.synth_or_sample
             assert track.mix.a9_model >= kn.STYLES[style].a9_model_low, (seed, no, track.mix.a9_model)

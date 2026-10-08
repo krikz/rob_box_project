@@ -67,8 +67,9 @@ def test_arp_order_wraps_on_chords_with_fewer_voices():
 # ── Таблицы стилей ─────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def test_windows_cover_the_style_tempos_and_kicks_are_measured():
-    """§3: synthwave 100–120, chiptune 120–160; бочки — замеренные на роботе (``measured``), не жёсткие рейва."""
+def test_windows_cover_the_style_tempos_and_kicks_are_the_style_own():
+    """§3: synthwave 100–120, chiptune 120–160; бочки — свои файлы пака стиля (#3550: клубные ``deep``/``house`` и
+    ``techno``/``garage`` делали стили «клубом с другим синтом»), с настоящим низом, не жёсткие рейва."""
     spans = {name: [w.bpm for w in kn.STYLES[name].genre_windows.values()] for name in NEW}
     assert min(lo for lo, _ in spans["synthwave"]) == 100 and max(hi for _, hi in spans["synthwave"]) == 120
     assert min(lo for lo, _ in spans["chiptune"]) == 120 and max(hi for _, hi in spans["chiptune"]) == 160
@@ -76,7 +77,8 @@ def test_windows_cover_the_style_tempos_and_kicks_are_measured():
         style = kn.STYLES[name]
         assert kn.genre_style(style, next(iter(style.genre_windows))) == style, "поля стиля — первое окно"
         for window in style.genre_windows.values():
-            assert all(kn.KICK_SOUNDS[k].measured for k in window.kick_pool), (name, window.kick_pool)
+            assert all(kn.KICK_SOUNDS[k].pack and kn.KICK_SOUNDS[k].low >= 0.9 for k in window.kick_pool), (
+                name, window.kick_pool)
     assert {"synthwave", "retrowave", "chiptune"} <= kn.GENRE_NAMES
 
 
@@ -199,7 +201,7 @@ def test_set_tempo_kicks_and_synths_come_from_the_style_tables(name, theme):
             track = compose(plan, no, history=history)
             validate(track)
             kick = track.parts["kick"]
-            assert kick_name(kick.sample, kick.play_symbol) in style.genre_windows[plan.genre].kick_pool
+            assert kick_name(kick.sample, kick.play_symbol, "" if kick.synth_or_sample == kn.PLAY_SYNTH else kick.synth_or_sample) in style.genre_windows[plan.genre].kick_pool
             for role in kn.TONAL_ROLES:
                 assert track.parts[role].synth_or_sample in family[role], (role, track.parts[role].synth_or_sample)
             assert track.history_key.pad_figure in style.genre_windows[plan.genre].pad_figures

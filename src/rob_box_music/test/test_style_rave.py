@@ -38,13 +38,13 @@ def _family(style: kn.Style, theme: str):
     return style.timbres[kn.THEME_TIMBRE.get(seeded_profile(theme).row or "", style.default_timbre)]
 
 
-def test_rave_windows_span_140_to_160_and_kicks_are_hard_and_flagged_unmeasured():
-    """Окна rave/acid/hardcore покрывают 140–160; бочки — из таблицы, своих файлов, не из клуба; без замера на
-    роботе — помечены (``measured=False``), низ по файлу ≥ 0.8."""
+def test_rave_windows_span_140_to_159_and_kicks_are_hard_and_flagged_unmeasured():
+    """Окна rave/acid/hardcore покрывают 140–159 (#3550: 160 — окно ``jungle`` стиля dnb); бочки — из таблицы, своих
+    файлов, не из клуба; без замера на роботе — помечены (``measured=False``), низ по файлу ≥ 0.8."""
     assert list(RAVE.genre_windows) == ["rave", "acid", "hardcore"]
     assert kn.genre_style(RAVE, "rave") == RAVE, "поля стиля — первое окно"
     bpms = [w.bpm for w in RAVE.genre_windows.values()]
-    assert min(lo for lo, _ in bpms) == 140 and max(hi for _, hi in bpms) == 160
+    assert min(lo for lo, _ in bpms) == 140 and max(hi for _, hi in bpms) == 159
     club_kicks = {k for w in kn.STYLES["club"].genre_windows.values() for k in w.kick_pool}
     assert RAVE_KICKS <= set(kn.KICK_SOUNDS) and not RAVE_KICKS & club_kicks
     for name in RAVE_KICKS:
@@ -75,7 +75,7 @@ def test_rave_set_tempo_kicks_and_synths_come_from_the_rave_tables(theme):
         plan = _plan(theme, seed)
         window = RAVE.genre_windows[plan.genre]
         assert plan.style == "rave" and plan.genre in RAVE.genre_windows
-        assert window.bpm[0] <= plan.bpm <= window.bpm[1] and 140 <= plan.bpm <= 160, (seed, plan.genre, plan.bpm)
+        assert window.bpm[0] <= plan.bpm <= window.bpm[1] and 140 <= plan.bpm <= 159, (seed, plan.genre, plan.bpm)
         assert all(t.kick in window.kick_pool for t in plan.tracks)
     for seed in range(3):
         plan = _plan(theme, seed)

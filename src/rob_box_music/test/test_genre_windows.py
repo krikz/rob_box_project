@@ -1,4 +1,5 @@
-"""ADR-0152 PR-8 (§3.5, В1): жанровые окна клуба — ``club``/``deep``/``breaks`` на СЕТ, штраф между сетами.
+"""ADR-0152 PR-8 (§3.5, В1): жанровые окна клуба — ``club``/``deep`` на СЕТ, штраф между сетами. Окна ``breaks``
+у клуба нет с #3550: ломаный бит — стиль ``breaks`` (ADR-0153 S3), окно клуба его дублировало.
 
 Окно — данные ``Style.genre_windows``; ``arrange/*`` о жанре не знают (``knowledge.genre_style`` подменяет поля
 ``Style``). Поведение — на ``SetPlan`` и модели ``Track``.
@@ -31,8 +32,8 @@ def _plan(theme: str, seed: int, history=()):
     return seeded_plan(seeded_profile(theme), seed, set_id=f"g{seed}", history=history)
 
 
-def test_table_has_three_windows_and_the_default_is_the_style_itself():
-    assert list(WINDOWS) == ["club", "deep", "breaks"] and kn.DEFAULT_GENRE == "club"
+def test_table_has_two_windows_and_the_default_is_the_style_itself():
+    assert list(WINDOWS) == ["club", "deep"] and kn.DEFAULT_GENRE == "club"
     assert kn.genre_style(CLUB, "club") == CLUB, "окно club — сегодняшние таблицы стиля"
     for name, w in WINDOWS.items():
         assert w.bpm[0] < w.bpm[1] and len(w.kick_pool) >= 2 and set(w.kick_pool) <= set(kn.KICK_SOUNDS), name
@@ -40,20 +41,15 @@ def test_table_has_three_windows_and_the_default_is_the_style_itself():
         assert kn.genre_style(CLUB, name).kick_pool == w.kick_pool
 
 
-def test_breaks_drop_plays_the_breakbeat_and_blend_sections_stay_straight():
+def test_club_drops_are_straight_and_the_broken_kick_belongs_to_the_breaks_style():
+    """#3550: окна клуба — прямая бочка дропа; ломаная (``breakbeat``) — только у стиля ``breaks``."""
     for name in WINDOWS:
         style = kn.genre_style(CLUB, name)
-        expected = kn.KICK_PATTERNS["breakbeat" if name == "breaks" else "four_on_floor"]
-        assert mix.look(style, 9).kick == expected, name
+        assert mix.look(style, 9).kick == kn.KICK_PATTERNS["four_on_floor"], name
         assert mix.look(style, 2).kick == kn.KICK_PATTERNS["four_on_floor"], "интро/аутро: одна бочка на такт блэнда"
-
-
-def test_breaks_set_has_the_breakbeat_in_the_kick_grid_of_the_drop():
-    plan = next(p for p in (_plan("", s) for s in range(80)) if p.genre == "breaks")
-    track = compose(plan, 2)
-    bar = sum(s.bars for s in track.form.sections if s.name in ("intro", "intro_low", "build"))
-    steps = track.parts["kick"].grid.steps[bar * 16:(bar + 1) * 16]
-    assert tuple(i for i, st in enumerate(steps) if st.on) == mix.kick_steps(kn.KICK_PATTERNS["breakbeat"])
+    breaks = kn.STYLES["breaks"]
+    assert all(mix.look(kn.genre_style(breaks, name), 9).kick == kn.KICK_PATTERNS["breakbeat"]
+               for name in breaks.genre_windows)
 
 
 @pytest.mark.parametrize("theme", THEMES)
@@ -92,9 +88,9 @@ def test_thirty_seeds_give_every_window():
     assert set(used) == set(WINDOWS), used
 
 
-def test_five_random_sets_give_at_least_two_windows():
-    for base in range(0, 60, 5):
-        assert len({_plan("космос", s).genre for s in range(base, base + 5)}) >= 2, base
+def test_ten_random_sets_give_both_windows():
+    for base in range(0, 60, 10):
+        assert len({_plan("космос", s).genre for s in range(base, base + 10)}) == 2, base
 
 
 def test_history_never_repeats_the_window_of_the_last_set():
@@ -106,9 +102,13 @@ def test_history_never_repeats_the_window_of_the_last_set():
 
 
 def test_penalty_prefers_the_window_not_played_for_longest():
-    rows = [{"set_id": "s2", "genre": "deep"}, {"set_id": "s1", "genre": "club"}]
-    picks = Counter(pick_genre(CLUB, rows, random.Random(s)) for s in range(300))
-    assert picks["deep"] == 0 and picks["breaks"] > picks["club"], picks
+    """Штраф окон — на стиле с тремя окнами (у клуба их два: прошлое окно исключено, выбора нет)."""
+    rave = kn.STYLES["rave"]
+    rows = [{"set_id": "s2", "genre": "hardcore"}, {"set_id": "s1", "genre": "rave"}]
+    picks = Counter(pick_genre(rave, rows, random.Random(s)) for s in range(300))
+    assert picks["hardcore"] == 0 and picks["acid"] > picks["rave"], picks
+    club_rows = [{"set_id": "s2", "genre": "deep"}, {"set_id": "s1", "genre": "club"}]
+    assert {pick_genre(CLUB, club_rows, random.Random(s)) for s in range(50)} == {"club"}
 
 
 def test_recent_genres_collapse_tracks_into_sets_and_skip_old_rows():
