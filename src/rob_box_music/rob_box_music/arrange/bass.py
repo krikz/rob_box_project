@@ -16,6 +16,10 @@
 аккорда (терция, квинта, септима — по чётности такта) ближе к предыдущей ноте, 4 — подход полутоном к первой ноте
 следующего такта (хроматика — целая доля, ``Style.approach_max_beats``); следующего такта баса нет — тон аккорда.
 
+Линия ``riff`` (ADR-0153 S5, рок) — восьмые по риффу стиля (``Style.bass_riffs``, такты по кругу): ``R`` — тон такта
+(прима аккорда или тон материала), ``F`` — чистая квинта аккорда над ним (квинта ступени не чистая — тон такта), ``O`` —
+октава тона такта, ``.`` — нота тянется. Тон такта — ближайший к тону прошлого такта (бас не прыгает по регистру).
+
 Тон такта (ADR-0154 §3.3, PR-4): без материала — тоника ×(n−1) + квинта, как всегда. С материалом партитуры —
 :func:`material_tones`: такт стоит на том тоне аккорда, на котором стоит басовый голос автора (обращение — терция,
 квинта), последняя нота такта — подход полутоном к следующему, если он есть у автора; политика — выученная таблица
@@ -268,5 +272,46 @@ def octave8(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], 
     return _part("octave8", style, key, bar_chords, synth, register, tones)
 
 
-__all__ = ["ANCHORS", "BassTone", "ROOT_TONE", "WALK_TONES", "acid16", "bar_notes", "broken", "figure_bass",
-           "material_tones", "note_beats", "octave8", "offbeat", "perfect_fifth", "rolling8", "walking"]
+#: Восьмых в такте риффа (``Style.bass_riffs``: строка на такт).
+RIFF_EIGHTHS = 8
+
+
+def _riff_notes(riff: str, tone: int, fifth: Optional[int], register: Tuple[int, int]) -> List[Tuple[int, int, int]]:
+    """(восьмая, длина в восьмых, MIDI) нот такта риффа ``riff`` от тона такта ``tone``."""
+    up = {"R": tone, "F": tone + ((fifth - tone) % 12 if fifth is not None else 0), "O": tone + 12}
+    notes: List[Tuple[int, int, int]] = []
+    for i, ch in enumerate(riff):
+        if ch == ".":
+            if notes:
+                notes[-1] = (notes[-1][0], notes[-1][1] + 1, notes[-1][2])
+            continue
+        midi = up[ch] if up[ch] <= register[1] else up[ch] - 12
+        notes.append((i, 1, midi if midi >= register[0] else tone))
+    return notes
+
+
+def riff(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
+         register: Tuple[int, int], tones: Tones = None) -> Part:
+    """Бас-рифф рока по тактам ``bar_chords``: восьмые по риффу ``style.bass_riffs[bar % n]`` на тоне такта (прима или
+    тон материала ``tones``), квинте и октаве; уровень ставит ``arrange.mix``."""
+    riffs = style.bass_riffs
+    if not riffs or any(len(r) != RIFF_EIGHTHS or set(r) - set("RFO.") or r[0] == "." for r in riffs):
+        raise ValueError(f"риффы баса {riffs!r}: не {RIFF_EIGHTHS} восьмых из R F O . (первая — нота)")
+    out: List[PitchEvent] = []
+    prev = register[0] + 6
+    eighth = BEATS_PER_BAR / RIFF_EIGHTHS
+    for bar, chord in bar_chords:
+        pcs = _tones(style, key, chord)  # тоны объявленного аккорда (качество автора, гармонический V; Ф2)
+        anchor = (tones or {}).get(bar, ROOT_TONE).anchor
+        if anchor == ANCHORS["fifth"] and perfect_fifth(pcs) == pcs[0]:
+            anchor = ANCHORS["root"]
+        prev = tone = _near(pcs[anchor], prev, register)
+        fifth = perfect_fifth(pcs) if perfect_fifth(pcs) != pcs[0] else None  # квинта только чистая (аудит П6)
+        out += [PitchEvent(m, bar * BEATS_PER_BAR + i * eighth, n * eighth, 3 if i % 2 == 0 else 2)
+                for i, n, m in _riff_notes(riffs[bar % len(riffs)], tone, fifth, register)]
+    return Part("bass", synth, rhythm.grid(range(0, STEPS_PER_BAR, 2)), tuple(out), 0.0, register)
+
+
+__all__ = ["ANCHORS", "BassTone", "RIFF_EIGHTHS", "ROOT_TONE", "WALK_TONES", "acid16", "bar_notes", "broken",
+           "figure_bass", "material_tones", "note_beats", "octave8", "offbeat", "perfect_fifth", "riff", "rolling8",
+           "walking"]

@@ -352,7 +352,9 @@ RHYTHM_SECTIONS: Tuple[str, ...] = ("drop2",)
 def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]
             ) -> Tuple[PitchEvent, ...]:
     """Ноты мотива в секции ``section`` длиной ``bars`` тактов, доли от начала секции. Хук с темой
-    (``Hook.theme``) в ``knowledge.THEME_SECTION`` не короче темы — развитие ``theme``."""
+    (``Hook.theme``) в ``knowledge.THEME_SECTION`` не короче темы — развитие ``theme``. Секция песенной формы стиля
+    (куплет, припев, бридж — ADR-0153 S5) развивается как секция клуба своего вида (``knowledge.section_kind``)."""
+    section = kn.section_kind(section)
     if hook.theme and section == kn.THEME_SECTION and bars >= hook.theme_bars:
         section = "theme"
     op = DEVELOPMENT.get("rhythm" if hook.answer and section in RHYTHM_SECTIONS else section)

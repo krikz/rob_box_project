@@ -119,6 +119,19 @@ def match_style_text(text: str) -> Optional[str]:
     return found or match_style(re.findall(r"[^\W\d_]+", text))
 
 
+def match_window_text(style: str, *texts: Optional[str]) -> Optional[str]:
+    """Окно стиля ``style`` по словам текстов (ADR-0153 S5, ADR-0148: решает код): первое слово, начинающееся с основы
+    ``knowledge.WINDOW_WORDS``, чьё окно есть у стиля («гранж» → ``grunge`` у ``rock``); нет — ``None`` (окно выбирает
+    план по сиду, ``set_plan.pick_genre``)."""
+    windows = kn.STYLES[style].genre_windows
+    for text in texts:
+        for word in re.findall(r"[^\W\d_]+", (text or "").lower()):
+            found = next((w for stem, w in kn.WINDOW_WORDS.items() if word.startswith(stem) and w in windows), None)
+            if found:
+                return found
+    return None
+
+
 def style_for(*texts: Optional[str]) -> str:
     """Стиль сета, когда человек не назвал ключ (``dj_set(style=auto)``, ADR-0153 §4.2, ADR-0148): слова стиля в
     текстах по порядку (реплика человека, тема), затем стиль строки таблицы тем (``ThemeRow.style``: киберпанк →
@@ -163,5 +176,6 @@ def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequen
                         tuple(tuple(p) for p in parts if p), tuple(dict.fromkeys(materials)))
 
 
-__all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "match_style_text", "seeded_profile",
+__all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "match_style_text", "match_window_text",
+           "seeded_profile",
            "style_for", "style_marks"]

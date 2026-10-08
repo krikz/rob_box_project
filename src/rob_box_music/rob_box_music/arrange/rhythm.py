@@ -115,6 +115,19 @@ def kick_fill(bar: Grid) -> Grid:
     return Grid(tuple(Step(False) if i >= KICK_CUT_STEP else st for i, st in enumerate(bar.steps)))
 
 
+#: Такт fill-а малого по ключу ``Style.clap_fill``: ``roll`` — ролл 16-ми второй половины (клуб), ``cut`` — малый
+#: молчит с последней доли, как бочка (рок: там филл томами, ADR-0153 S5).
+CLAP_FILLS: Mapping[str, Callable[[Grid], Grid]] = {"roll": clap_fill, "cut": kick_fill}
+
+
+def tom_fill(pattern: str) -> Grid:
+    """Такт филла томами по рисунку 16 шагов (``Style.tom_fills``): ``X``/``x`` — акцент 3/2, ``.`` — пауза."""
+    if len(pattern) != STEPS_PER_BAR or set(pattern) - {"X", "x", "."}:
+        raise ValueError(f"филл томами {pattern!r} не 16 шагов из X x .")
+    return grid((i for i, ch in enumerate(pattern) if ch != "."),
+                accents={i: _KIT_ACCENT[ch] for i, ch in enumerate(pattern) if ch != "."})
+
+
 def form_grid(sections: Sequence[Section], bar_of: Callable[[Section, bool], Grid]) -> Grid:
     """Сетка на всю форму: ``bar_of(секция, это такт fill-а)`` даёт такт (16 шагов)."""
     steps = []
@@ -133,6 +146,6 @@ def form_bars(sections: Sequence[Section], bar_of: Callable[[Section, int], Grid
     return Grid(tuple(steps))
 
 
-__all__ = ["BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_BARS",
+__all__ = ["CLAP_FILLS", "tom_fill", "BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_BARS",
            "ROLL_STEPS", "clap_fill", "clap_grid", "clap_roll", "form_bars", "form_grid", "grid", "hats_grid",
            "kick_fill", "kick_grid", "pattern_grid", "swing", "swing_offset_ms", "swing_part", "swing_pitches"]

@@ -252,7 +252,7 @@ def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...
     out, beat = [], 0.0
     for sec in form.sections:
         beats = float(sec.bars * BEATS_PER_BAR)
-        offset, rise = kn.SECTION_TRIM_DB.get(sec.name, (0.0, False))
+        offset, rise = kn.SECTION_TRIM_DB.get(kn.section_kind(sec.name), (0.0, False))
         out.append((beat, offset, round(beats * 60.0 / bpm, 3) if rise else kn.TRIM_LAG_S))
         beat += beats
     return tuple(out)
@@ -306,9 +306,10 @@ def low_share(style: kn.Style, parts: Mapping[str, Part], form: Form, i: int, du
 
 def a9_model(style: kn.Style, parts: Mapping[str, Part], form: Form, duck: Sequence[Duck], ducked: frozenset,
              pad_offset_db: float) -> float:
-    """Доля низа худшего дропа (секции ``drop*``) — A9 по дропам (ADR-0152 §4 п.1) в шкале робота."""
+    """Доля низа худшего дропа (секции вида ``drop*``, у рока — припевы) — A9 по дропам (ADR-0152 §4 п.1) в шкале
+    робота."""
     shares = [low_share(style, parts, form, i, duck[i], ducked, pad_offset_db)
-              for i, sec in enumerate(form.sections) if sec.name.startswith("drop")]
+              for i, sec in enumerate(form.sections) if kn.section_kind(sec.name).startswith("drop")]
     return round(min(shares), 3) if shares else 1.0
 
 
