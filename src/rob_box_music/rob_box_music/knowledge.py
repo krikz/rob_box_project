@@ -1844,14 +1844,15 @@ _JAZZ_KITS: Mapping[str, Mapping[str, str]] = {
 #: (``rhpiano``/``epiano`` в рамке пэда не замерены — не взяты, хотя хвост 28/148 мс comping допускает:
 #: :data:`LEAD_CLARITY`; ``epiano`` нечитаем как лид — тусклый, атака 50 мс). #3549: ``strings`` снят — на потолке
 #: ``amp`` он −41.7 дБ, на 4.7 дБ ниже цели пэда: comping тонул; замер ``rhpiano``/``epiano``/``keys`` в рамке пэда
-#: (``loudness_nrt_v2.sh --sweep pad …``, katana) — до него их в пэд не взять (нет строки модели громкости). Бас — только
-#: ``bass``: ``jbass`` на роботе тише модели на 6.5 дБ (``BASS_ROBOT_DB``), а A9-модель джаза бас не поднимает — раунд 2
-#: #3549 (трек ``sinepad``/``brass``/``jbass``) дал низ 0.04 при 0.25 у ``bass`` на тех же уровнях.
+#: (``loudness_nrt_v2.sh --sweep pad …``, katana) — до него их в пэд не взять (нет строки модели громкости). Бас —
+#: ``bass`` и ``subbass`` (низ NRT 0.996, сдвиг на роботе не устоялся: серии +2.8, приёмка −3.1 дБ — поправки нет;
+#: на потолке ``amp`` −28 дБ — цель −39 достаёт). ``jbass`` снят: на роботе тише модели на 6.5 дБ (``BASS_ROBOT_DB``),
+#: а A9-модель джаза бас не поднимает — раунд 2 #3549 (``sinepad``/``brass``/``jbass``) дал низ 0.04 при 0.25 у ``bass``.
 _JAZZ_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("brass", "keys"), "bass": ("bass",), "pad": ("sinepad", "space")},
-    "hard": {"lead": ("brass", "arpy", "keys"), "bass": ("bass",), "pad": ("sinepad", "ambi")},
-    "bright": {"lead": ("keys", "pluck", "brass"), "bass": ("bass",), "pad": ("ambi", "sinepad")},
-    "warm": {"lead": ("brass", "keys", "pluck"), "bass": ("bass",), "pad": ("sinepad", "ambi")},
+    "dark": {"lead": ("brass", "keys"), "bass": ("bass", "subbass"), "pad": ("sinepad", "space")},
+    "hard": {"lead": ("brass", "arpy", "keys"), "bass": ("bass", "subbass"), "pad": ("sinepad", "ambi")},
+    "bright": {"lead": ("keys", "pluck", "brass"), "bass": ("bass", "subbass"), "pad": ("ambi", "sinepad")},
+    "warm": {"lead": ("brass", "keys", "pluck"), "bass": ("bass", "subbass"), "pad": ("sinepad", "ambi")},
 }
 #: Петли ii–V–I и оборотов (I–vi–ii–V, iii–vi–ii–V): их переходы — априорный бонус Витерби под мелодию
 #: (``HookHarmony.style_bonus``), а не шаблон поверх темы.
