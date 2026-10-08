@@ -274,14 +274,15 @@ def test_sample_level_comes_from_the_loudness_model_and_the_file_mean(fifty):
     (у psr — по медиане пула), у двух голосов — мощность делится пополам."""
     import re
     for track in fifty[0][:10]:
-        code = render(track, "A").code
+        program = render(track, "A")  # один рендер на трек (#3539), а не по одному на роль
+        code = program.code
         names = {s.name for s in track.form.sections}
         for role in ("sample", "loop", "fx"):
             if not names & set(kn.STYLES["club"].layer_sections[role]):
                 continue  # форма без секций слоя (``short32``: нет drop2 под луп)
             part = track.parts[role]
             info = kn.SAMPLE_CATALOG[part.synth_or_sample]
-            line = next(ln for ln in code.splitlines() if ln.startswith(render(track, "A").slots[role] + " >>"))
+            line = next(ln for ln in code.splitlines() if ln.startswith(program.slots[role] + " >>"))
             amp = max(float(v) for v in re.search(r"amp=var\(\[([^\]]*)\]", line).group(1).split(", "))
             voices = 2 if role == "sample" else 1
             want = min(kn.MAX_LAYER_AMP, 10 ** ((part.level_db - 10 * math.log10(voices) - info.mean_db) / 20))

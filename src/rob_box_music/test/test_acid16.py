@@ -12,6 +12,7 @@ import dataclasses
 
 import pytest
 
+from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange import mix
 from rob_box_music.arrange.compose import BASS_GENERATORS, compose
@@ -57,27 +58,35 @@ def test_acid16_is_in_the_registry_and_in_the_club_window_only():
     assert [w for w, spec in CLUB.genre_windows.items() if "acid16" in spec.bass_figures] == ["club"]
 
 
+def _other_family_set(case):
+    theme, seed = case
+    plan = seeded_plan(seeded_profile(theme), seed, set_id=f"o{seed}")
+    for no in (1, 2, 3):
+        track = compose(plan, no)
+        tb303 = track.parts["bass"].synth_or_sample == "tb303"
+        assert tb303 == (track.history_key.bass_figure == "acid16")
+        assert plan.family == "hard" or not tb303, (theme, seed, plan.family)
+
+
 def test_tracks_of_other_families_never_play_tb303_or_acid():
-    """Темы вне таблицы получают семью по сиду (#3460): ``hard`` среди них законна — проверяется семья ПЛАНА."""
-    for theme in ("космос", "детский праздник", "калинка", "бухгалтерский отчёт", ""):
-        for seed in range(15):
-            plan = seeded_plan(seeded_profile(theme), seed, set_id=f"o{seed}")
-            for no in (1, 2, 3):
-                track = compose(plan, no)
-                tb303 = track.parts["bass"].synth_or_sample == "tb303"
-                assert tb303 == (track.history_key.bass_figure == "acid16")
-                assert plan.family == "hard" or not tb303, (theme, seed, plan.family)
+    """Темы вне таблицы получают семью по сиду (#3460): ``hard`` среди них законна — проверяется семья ПЛАНА.
+    Сеты независимы и считаются параллельно (#3539)."""
+    themes = ("космос", "детский праздник", "калинка", "бухгалтерский отчёт", "")
+    pmap(_other_family_set, [(theme, seed) for theme in themes for seed in range(15)], chunksize=5)
 
 
 def test_hard_tracks_pair_tb303_with_acid16_and_nothing_else(acid_tracks):
     assert len(acid_tracks) >= 5
     for track in acid_tracks:
         assert track.parts["bass"].synth_or_sample == "tb303"
-    for seed in range(40):
-        plan = seeded_plan(seeded_profile("киберпанк"), seed, set_id=f"a{seed}")
-        for no in (1, 2, 3):
-            track = compose(plan, no)
-            assert (track.parts["bass"].synth_or_sample == "tb303") == (track.history_key.bass_figure == "acid16")
+    pmap(_hard_set_pairs_tb303_with_acid16, range(40), chunksize=5)
+
+
+def _hard_set_pairs_tb303_with_acid16(seed):
+    plan = seeded_plan(seeded_profile("киберпанк"), seed, set_id=f"a{seed}")
+    for no in (1, 2, 3):
+        track = compose(plan, no)
+        assert (track.parts["bass"].synth_or_sample == "tb303") == (track.history_key.bass_figure == "acid16")
 
 
 def test_acid_notes_are_sixteenths_off_the_beat_with_a_cutoff_each(acid_tracks):
