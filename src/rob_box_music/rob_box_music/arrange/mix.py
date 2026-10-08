@@ -237,9 +237,10 @@ def lpf_sweeps(style: kn.Style, form: Form, roles: Sequence[str]) -> Dict[str, T
     return out
 
 
-def set_master(energy: int) -> Dict[str, float]:
-    """Ручки мастер-шины трека сета энергии ``energy``: ``trim`` после динамики и профиль выравнивателя сета."""
-    return {"trim": kn.ENERGY_TRIM_DB[energy], **kn.SET_LEVELER}
+def set_master(energy: int, table: Optional[kn.Style] = None) -> Dict[str, float]:
+    """Ручки мастер-шины трека сета энергии ``energy``: ``trim`` после динамики, профиль выравнивателя сета и профиль
+    динамики стиля трека ``table`` (``Style.master``, #3549)."""
+    return {"trim": kn.ENERGY_TRIM_DB[energy], **kn.SET_LEVELER, **(table.master if table is not None else {})}
 
 
 def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...]:

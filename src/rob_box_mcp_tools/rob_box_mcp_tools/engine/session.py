@@ -265,7 +265,8 @@ class SetSession:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
         try:
             track = self._source(track_no, deck)
-            program = replace(render(track, deck), master=set_master(track.energy))  # энергия трека → trim (PR-7)
+            # энергия трека → trim (PR-7), стиль → профиль динамики мастер-шины (#3549)
+            program = replace(render(track, deck), master=set_master(track.energy, kn.STYLES[track.style]))
         except Exception as exc:  # noqa: BLE001 — отказ громкий; музыка (если есть) играет дальше
             self._owner.reject(f"{self.set_id}:{track_no:02d}:{deck}", "compose_error", f"{type(exc).__name__}: {exc}")
             return None

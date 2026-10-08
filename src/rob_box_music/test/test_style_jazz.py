@@ -8,6 +8,7 @@ ii–V–I, walking контрабасового регистра, comping но�
 from __future__ import annotations
 
 import dataclasses
+import math
 import random
 import statistics
 
@@ -15,10 +16,11 @@ import pytest
 
 from melodies import MELODIES
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange import harmony, lead
+from rob_box_music.arrange import bass as bass_mod
+from rob_box_music.arrange import harmony, lead, mix
 from rob_box_music.arrange import compose as cp
 from rob_box_music.diversity import track_composition
-from rob_box_music.model import BEATS_PER_BAR, Key, validate
+from rob_box_music.model import BEATS_PER_BAR, Key, Part, PitchEvent, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
@@ -181,11 +183,14 @@ def test_walking_bass_in_the_double_bass_register_approaches_within_one_beat(tra
         by_bar: dict = {}
         for e in sorted(part.pitches, key=lambda e: e.beat):
             by_bar.setdefault(int(e.beat // BEATS_PER_BAR), []).append(e)
+        scale = kn.scale_pitch_classes(track.key.root, track.key.mode)
         for bar, line in by_bar.items():
             assert [e.beat % BEATS_PER_BAR for e in line] == [0, 1, 2, 3], "четверти"
             assert line[-1].dur_beats <= JAZZ.approach_max_beats == 1.0
             if bar + 1 in by_bar:
-                assert abs(line[-1].midi - by_bar[bar + 1][0].midi) == 1, "подход полутоном на 4-й доле"
+                step = abs(line[-1].midi - by_bar[bar + 1][0].midi)
+                # #3549: полутон трётся о лид — подход ступенью лада (bass.against_lead)
+                assert step == 1 or (step == 2 and line[-1].midi % 12 in scale), "подход на 4-й доле"
 
 
 def test_comping_misses_strong_beats_and_plays_ninth_chords(tracks):
@@ -242,3 +247,78 @@ def test_window_words_pick_the_jazz_window_and_only_in_jazz():
     assert match_window_text("jazz", "джазовая баллада про луну") == "ballad"
     assert match_window_text("jazz", "джаз сет") is None
     assert match_window_text("rock", "рок-баллада") is None, "у рока окна ballad нет"
+
+
+# ── #3549: микс и голосоведение джаза по приёмке S7 (низ 0.58, середина 0.41, crest 13.1, LR 0.99; м2 лид–бас 100 %) ──
+
+def _sounding(events, beat):
+    return [e for e in events if e.beat <= beat + 1e-6 and beat < e.beat + e.dur_beats - 1e-6]
+
+
+def test_bass_never_a_semitone_from_the_lead_and_no_parallels(tracks):
+    """Метрики аудита теории (``arranger_theory_audit``: «лид–бас м2», «пар.5/8»), но по всем голосам лида: ни одна нота
+    лида не звучит на м2/м9 (или б7) от звучащей ноты баса; соседние онсеты лида не дальше доли не идут с басом в одну
+    сторону параллельными квинтами или октавами. До #3549 — 20 нот на трек, параллели у 62 % треков."""
+    for _plan_, track, _by in tracks:
+        bass = track.parts["bass"].pitches
+        lead_ev = sorted(track.parts["lead"].pitches, key=lambda e: (e.beat, e.midi))
+        clashes = [(e.beat, e.midi, b.midi) for e in lead_ev for b in _sounding(bass, e.beat)
+                   if (e.midi - b.midi) % 12 in (1, 11)]
+        assert not clashes, clashes[:3]
+        onsets = sorted({e.beat for e in lead_ev})
+        for t0, t1 in zip(onsets, onsets[1:]):
+            b0, b1 = _sounding(bass, t0), _sounding(bass, t1)
+            if not (b0 and b1) or t1 - t0 > 1.0 + 1e-6:
+                continue
+            p, m = b0[0].midi, b1[0].midi
+            for a in (e.midi for e in lead_ev if e.beat == t0):
+                for b in (e.midi for e in lead_ev if e.beat == t1):
+                    assert not ((b - a) * (m - p) > 0 and (a - p) % 12 == (b - m) % 12 in (0, 7)), (t0, t1, a, b, p, m)
+
+
+def test_against_lead_moves_the_clashing_approach_and_leaves_other_styles_alone():
+    """Подход полутоном под долгой нотой лида на м9 уходит (другая сторона, ступень или другой тон такта); ритм тот же.
+    У клуба правил нет — партия та же объектом (клуб побайтно прежний, ``test_style_same_tracks``)."""
+    key = Key(0, "major")
+    chords = [(0, harmony.sym(key, 4)), (1, harmony.sym(key, 0))]  # G → C
+    walk = bass_mod.walking(JAZZ, key, chords, "bass", JAZZ.registers["bass"])
+    line = sorted(walk.pitches, key=lambda e: e.beat)
+    assert abs(line[3].midi - line[4].midi) == 1, "подход полутоном на 4-й доле"
+    held = PitchEvent(line[3].midi + 1 + 36, 3.0, 2.0)  # м9 над подходом, тянется через долю 1 следующего такта
+    out = bass_mod.against_lead(JAZZ, key, chords, walk, (held,))
+    near = [e for e in out.pitches if e.beat < held.beat + held.dur_beats and held.beat < e.beat + e.dur_beats]
+    assert near and all((held.midi - e.midi) % 12 not in JAZZ.bass_lead_clash for e in near), near
+    assert [(e.beat, e.dur_beats, e.accent) for e in out.pitches] == [(e.beat, e.dur_beats, e.accent) for e in line]
+    club = kn.STYLES["club"]
+    assert not club.bass_lead_clash and not club.bass_lead_parallels
+    assert bass_mod.against_lead(club, key, chords, walk, (held,)) is walk
+
+
+def test_jazz_levels_put_the_middle_over_the_double_bass():
+    """Уровни ролей (шкала модели) по эталону джаз-кафе (низ 0.27, середина 0.73): comping громче баса, лид не тише
+    его больше чем на 1 дБ, бочка «пёрышком» тише баса, бас на ≥ 6 дБ тише, чем у lo-fi (там низ — сам бит); синты
+    comping дотягивают до цели пэда без провала больше 2 дБ (``strings`` на потолке ``amp`` −41.7 — снят)."""
+    lv = JAZZ.role_level_db
+    assert lv["pad"] > lv["bass"] and lv["lead"] >= lv["bass"] - 1.0 and lv["kick"] < lv["bass"]
+    assert lv["bass"] <= kn.STYLES["lofi"].role_level_db["bass"] - 6.0
+    for synth in {s for fam in JAZZ.timbres.values() for s in fam["pad"]}:
+        assert mix._cap("pad", Part("pad", synth, None, (), lv["pad"], JAZZ.registers["pad"])) >= lv["pad"] - 2.0, synth
+
+
+def test_jazz_comping_is_wider_than_the_centre_but_not_club_wide():
+    """Ширина (эталон LR 0.85, робот S7 0.99): comping — два расстроенных голоса, их корреляция sin((1 − pan)·π/2) в
+    0.5–0.7 (при доле пэда 0.4 мощности LR ≈ 0.8–0.9); бас, бочка и лид — в центре."""
+    pad = JAZZ.stereo["pad"]
+    assert pad["detune"] > 0 and 0.5 <= math.sin((1 - pad["pan"]) * math.pi / 2) <= 0.7
+    assert set(JAZZ.stereo) == {"pad"}
+
+
+def test_jazz_master_drops_the_compressor_for_crest():
+    """Динамика (эталон crest 17.8, робот S7 13.1): профиль мастер-шины джаза — ручки SynthDef, компрессор выключен
+    (ratio 1, makeup 0), выравниватель тянет к уровню, при котором crest 17 дБ встаёт пиком под потолок лимитера
+    (−1 dBFS). Прочие стили — без профиля; следующий трек возвращает дефолты (все ручки выставляются каждый старт)."""
+    jazz = mix.set_master(3, JAZZ)
+    assert set(jazz) <= set(kn.MASTER_DEFAULTS) and jazz["trim"] == kn.ENERGY_TRIM_DB[3]
+    assert jazz["cmpRatio"] == 1.0 and jazz["makeup"] == 0.0 and jazz["lvlTarget"] + 17.0 <= 1.0
+    assert mix.set_master(3, kn.STYLES["club"]) == mix.set_master(3) == {"trim": kn.ENERGY_TRIM_DB[3], **kn.SET_LEVELER}
+    assert all(not st.master for name, st in kn.STYLES.items() if name != "jazz")
