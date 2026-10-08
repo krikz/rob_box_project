@@ -109,12 +109,18 @@ elapsed_seconds_since_start_unit() {
     return 0
   fi
   local epoch_now epoch_then
-  epoch_now="$(date +%s)"
+  # ROBBOX_VISION_NOW_EPOCH — только для тестов (подставное «сейчас», #3538).
+  epoch_now="${ROBBOX_VISION_NOW_EPOCH:-$(date +%s)}"
   # Сначала пробуем as-is (systemd-формат с day-name зависит от locale);
   # если не вышло — отбрасываем первый token и пробуем ISO.
   epoch_then="$(date -d "$ts" +%s 2>/dev/null || true)"
   if [ -z "$epoch_then" ]; then
-    epoch_then="$(date -d "${ts#* }" +%s 2>/dev/null || echo "$epoch_now")"
+    # Отбрасываем ТОЛЬКО day-name (токен без цифр). Раньше `${ts#* }` резал и ISO-дату:
+    # "2026-10-07 23:40:00 UTC" → "23:40:00 UTC" = время суток СЕГОДНЯ, около полуночи
+    # метка уезжала на сутки вперёд, grace_elapsed = -84600 (#3538).
+    local first="${ts%% *}" rest="${ts#* }"
+    if [[ "$first" =~ [0-9] ]]; then rest="$ts"; fi
+    epoch_then="$(date -d "$rest" +%s 2>/dev/null || echo "$epoch_now")"
   fi
   echo $(( epoch_now - epoch_then ))
 }

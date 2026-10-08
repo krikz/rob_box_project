@@ -5,8 +5,9 @@ RTTTL-библиотеки (категория вместо исполнител
 связи «фраза темы → строки поиска архива» (``ThemeLink``: семена из ``data/theme_link_seeds.json``, проверенные
 ответы LLM и ручные связи — таблица ``theme_links``; из семян поиск ``rtttl_library`` берёт :func:`alias_pairs` и
 :func:`ru_phrase_by_query`, разбор слов темы — :func:`word_links`), группы версий (канон — порядок ``canon``),
-гейт «обогащать поле или нет» (:func:`gate`, §3.3 ADR) и отчёт. Сеть здесь не вызывается: ни один сетевой источник
-гейт сегодня не проходит.
+гейт «обогащать поле или нет» (:func:`gate`, §3.3 ADR) и отчёт; связи произведений с партитурами пака
+(:func:`match_scores`, K-3: источники ``pdmx:<id>`` — только предложения, В6; построение и отчёт —
+``scripts/music/works_pdmx.py``). Сеть здесь не вызывается: ни один сетевой источник гейт сегодня не проходит.
 
 Реестр — таблицы ``works``/``work_sources``/``work_facts`` в той же SQLite, что RTTTL-библиотека (ADR-0155 В3):
 ``python -m rob_box_music.works --db voice_memory.db`` перестраивает их (идемпотентно), ``--holes genre`` печатает
@@ -16,6 +17,7 @@ RTTTL-библиотеки (категория вместо исполнител
 from __future__ import annotations
 
 import argparse
+import difflib
 import functools
 import gzip
 import hashlib
@@ -340,7 +342,7 @@ CREATE TABLE IF NOT EXISTS works (work_id TEXT PRIMARY KEY, title TEXT NOT NULL,
     composer TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]', stop_listed INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS work_sources (work_id TEXT NOT NULL, material_id TEXT NOT NULL, kind TEXT NOT NULL,
     link_level TEXT NOT NULL, link_score REAL NOT NULL, confirmed INTEGER NOT NULL, rank INTEGER NOT NULL,
-    PRIMARY KEY (work_id, material_id));
+    license TEXT, rating REAL, keysig TEXT, key TEXT, composer TEXT, PRIMARY KEY (work_id, material_id));
 CREATE TABLE IF NOT EXISTS work_facts (work_id TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL,
     source TEXT NOT NULL, source_id TEXT NOT NULL, fetched_at TEXT NOT NULL, rules_version TEXT NOT NULL,
     verified INTEGER NOT NULL, PRIMARY KEY (work_id, field));
@@ -353,12 +355,14 @@ def write_registry(conn: sqlite3.Connection, works: Iterable[Work]) -> int:
     works = list(works)
     with conn:
         conn.executescript(_REGISTRY_SCHEMA)
+        _ensure_source_columns(conn)
         for table in ("works", "work_sources", "work_facts"):
             conn.execute(f"DELETE FROM {table}")
         for w in works:
             conn.execute("INSERT INTO works VALUES (?,?,?,?,?,?)", (w.work_id, w.title, w.artist, w.composer,
                          json.dumps(list(w.aliases), ensure_ascii=False), int(w.stop_listed)))
-            conn.executemany("INSERT INTO work_sources VALUES (?,?,?,?,?,?,?)",
+            conn.executemany("INSERT INTO work_sources (work_id, material_id, kind, link_level, link_score, confirmed, "
+                             "rank) VALUES (?,?,?,?,?,?,?)",
                              [(w.work_id, s.material_id, s.kind, s.link_level, s.link_score, int(s.confirmed), i)
                               for i, s in enumerate(w.sources)])
             conn.executemany("INSERT INTO work_facts VALUES (?,?,?,?,?,?,?,?)",
@@ -433,29 +437,232 @@ def write_score_index(conn: sqlite3.Connection, rows: Iterable[ScoreIndexRow]) -
     return len(good), rejected
 
 
-def link_score_sources(conn: sqlite3.Connection) -> int:
-    """Подвязать партитуры ``score_index`` к произведениям реестра как источники ``pdmx:<id>`` — **предложением**
-    (ADR-0155 В6): ``exact_artist`` — название совпало и композитор пересёкся с автором/исполнителем, ``exact`` —
-    только название; ``confirmed`` не ставится (подтверждает человек, ``manual``). Возвращает число связей;
-    без ``score_index`` или ``works`` — 0."""
-    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if not {"score_index", "works", "work_sources"} <= have:
+def link_score_sources(conn: sqlite3.Connection, scores: str = "main") -> int:
+    """Подвязать партитуры ``score_index`` (схема ``scores``: ``main`` или присоединённый ATTACH-ем индекс пака
+    ``/opt/rob_box/scores/score_index.db``) к произведениям реестра как источники ``pdmx:<id>`` — **предложением**
+    (ADR-0155 В6, правила — :func:`match_scores`); вместе со связью пишутся лицензия, рейтинг, знаки, лад и
+    композитор партитуры. Возвращает число связей; без ``score_index`` или ``works`` — 0."""
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    score_tables = {r[0] for r in conn.execute(f"SELECT name FROM {scores}.sqlite_master WHERE type='table'")}
+    if not {"works", "work_sources"} <= tables or "score_index" not in score_tables:
         return 0
-    by_title: Dict[str, List[Tuple[str, str]]] = {}
-    for wid, title, artist, composer in conn.execute("SELECT work_id, title, artist, composer FROM works"):
-        by_title.setdefault(norm(title), []).append((wid, artist + " " + composer))
-    out = []
+    works_rows = conn.execute("SELECT work_id, title, artist, composer FROM works").fetchall()
+    cols = ("material_id", "title", "composer", "license", "rating", "keysig", "key")
+    rows = [dict(zip(cols, r)) for r in conn.execute(f"SELECT {','.join(cols)} FROM {scores}.score_index")]
+    links, _rejected = match_scores(works_rows, rows)
     with conn:
+        _ensure_source_columns(conn)
         conn.execute("DELETE FROM work_sources WHERE kind='pdmx'")
         ranks = dict(conn.execute("SELECT work_id, MAX(rank) FROM work_sources GROUP BY work_id"))
-        for mid, title, composer in conn.execute("SELECT material_id, title, composer FROM score_index ORDER BY "
-                                                 "COALESCE(rating, 0) DESC, material_id").fetchall():
-            for wid, authors in by_title.get(norm(title), []):
-                same = bool(_words(composer) & _words(authors))
-                ranks[wid] = ranks.get(wid, -1) + 1
-                out.append((wid, mid, "pdmx", "exact_artist" if same else "exact", 0.9 if same else 0.6, 0, ranks[wid]))
-        conn.executemany("INSERT OR REPLACE INTO work_sources VALUES (?,?,?,?,?,?,?)", out)
+        out = []
+        for link in links:
+            ranks[link.work_id] = ranks.get(link.work_id, -1) + 1
+            s = link.source
+            out.append((link.work_id, s.material_id, s.kind, s.link_level, s.link_score, int(s.confirmed),
+                        ranks[link.work_id], link.license, link.rating, link.keysig, link.key, link.composer))
+        conn.executemany(f"INSERT OR REPLACE INTO work_sources ({','.join(_SOURCE_COLUMNS)}) "
+                         f"VALUES ({','.join('?' * len(_SOURCE_COLUMNS))})", out)
     return len(out)
+
+
+# ── Сопоставление «произведение ↔ партитура» (ADR-0155 K-3): правила замера §2.2, только предложения (В6) ────────
+#: Названия, которые произведение не опознают (замер K-1: 28 «Unknown» RTTTL ↔ 28 «Unknown» PDMX).
+GENERIC_TITLES = frozenset(norm(t) for t in (*EMPTY_TITLES, "untitled song", "test", "song", "melody", "intro",
+                                             "main theme", "theme song", "title"))
+#: Короче этого (нормализованных букв) название точным совпадением не связывается («Up», «Go»).
+MIN_TITLE = 3
+#: Слова названия, не опознающие пьесу: без них сравниваются наборы слов на нечётком уровне.
+TITLE_STOP = frozenset({"the", "a", "an", "of", "in", "from", "and", "theme", "themes", "song", "music", "for", "to",
+                        "by", "op", "no", "version", "ver", "remix", "main", "title", "tune", "intro", "ost",
+                        "soundtrack", "piano", "solo", "easy", "arr", "arrangement"})
+#: Слова «исполнителя», не называющие человека: совпадение по ним — не ``exact_artist``.
+PEOPLE_STOP = frozenset({"the", "and", "misc", "traditional", "trad", "anon", "anonymous", "composer", "unknown",
+                         "arr", "arranged", "by", "music", "band", "theme", "tunes", "games", "computer"})
+#: Нечётко: сходство difflib слов названия не ниже, вложение наборов слов — меньший ≥ 2 слов и длиннее не более
+#: чем на ``CONTAIN_SLACK`` (замер K-1: «Not yet» ⊂ «I'm Not A Girl Not Yet A Woman»).
+FUZZY_MIN = 0.88
+CONTAIN_SLACK = 2
+#: Слово, встречающееся в названиях чаще, — не кандидат-ключ нечёткого поиска (иначе «love» тянет тысячи строк).
+RARE_DF = 3000
+#: Нечётких предложений на произведение (лучшие по сходству и рейтингу); точные не режутся.
+FUZZY_PER_WORK = 5
+#: Вес связи по уровню; нечёткая — половина сходства (точность по замеру K-1: 0.75 / 0.35 / 0.17).
+LINK_SCORES: Mapping[str, float] = {"exact_artist": 0.9, "exact": 0.6}
+_SOURCE_COLUMNS = ("work_id", "material_id", "kind", "link_level", "link_score", "confirmed", "rank", "license",
+                   "rating", "keysig", "key", "composer")
+
+
+@dataclass(frozen=True)
+class ScoreLink:
+    """Предложенная связь произведения с партитурой и то, что о партитуре нужно отчёту и выбору (лицензия, рейтинг,
+    знаки, лад, композитор); ``source`` проходит валидатор :class:`WorkSource` (В6: ``confirmed`` только ``manual``)."""
+
+    work_id: str
+    source: WorkSource
+    license: str
+    rating: Optional[float] = None
+    keysig: Optional[str] = None
+    key: Optional[str] = None
+    composer: str = ""
+
+
+def _ensure_source_columns(conn: sqlite3.Connection) -> None:
+    """Колонки партитуры в ``work_sources`` реестра, созданного до K-3 (ALTER TABLE, данные не трогаются)."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(work_sources)")}
+    for col, kind in (("license", "TEXT"), ("rating", "REAL"), ("keysig", "TEXT"), ("key", "TEXT"),
+                      ("composer", "TEXT")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE work_sources ADD COLUMN {col} {kind}")
+
+
+def _title_tokens(text: Any) -> Tuple[str, ...]:
+    return tuple(t for t in _WORD_RE.findall(str(text or "").lower().replace("ё", "е")) if t not in TITLE_STOP)
+
+
+def _people(text: Any) -> frozenset:
+    return frozenset(t for t in _words(text) if len(t) >= 3 and t not in PEOPLE_STOP)
+
+
+def _score_titles(title: str, people: frozenset) -> Dict[str, bool]:
+    """Написания названия партитуры для точного совпадения → «взято до « - »»: целиком и до скобок — ``False``;
+    до « - автор» — ``True`` (годится только с совпавшим автором, :func:`_exact_links`). Начало до « - » из одних
+    имён автора партитуры («Mozart - Concerto K. 191», «J.S. Bach - Air») — это автор, не название."""
+    head = re.split(r"[(\[]", title)[0]
+    out = {norm(title): False, norm(head): False}
+    for part in {title.split(" - ")[0], head.split(" - ")[0]}:
+        names = _people(part)
+        if " - " in title and norm(part) not in out and not (names and names <= people):
+            out[norm(part)] = True
+    return {v: dash for v, dash in out.items() if len(v) >= MIN_TITLE and v not in GENERIC_TITLES}
+
+
+def _named_after_person(title: str, artist: str, composer: str) -> bool:
+    """Запись RTTTL названа именем автора («Mozart» — Mozart): это не название пьесы, точной пары у неё нет."""
+    words = _people(title)
+    return bool(words) and words <= (_people(artist) | _people(composer))
+
+
+class _Scores:
+    """Партитуры с пригодной лицензией: индексы по написаниям названия и по редким словам (кандидаты нечёткого)."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        self.rows = sorted(rows, key=lambda r: (-float(r.get("rating") or 0.0), str(r["material_id"])))
+        self.by_title: Dict[str, List[Tuple[int, bool]]] = {}
+        self.by_token: Dict[str, List[int]] = {}
+        self.tokens: List[Tuple[str, ...]] = []
+        self.people: List[frozenset] = []
+        for i, r in enumerate(self.rows):
+            title = str(r.get("title") or "")
+            self.people.append(_people(r.get("composer")) | _people(" ".join(title.split(" - ")[1:])))
+            for v, dash in _score_titles(title, self.people[i]).items():
+                self.by_title.setdefault(v, []).append((i, dash))
+            toks = _title_tokens(title.split(" - ")[0])
+            self.tokens.append(toks)
+            for t in set(toks):
+                self.by_token.setdefault(t, []).append(i)
+
+    def candidates(self, toks: Sequence[str]) -> List[int]:
+        rare = sorted((t for t in set(toks) if 0 < len(self.by_token.get(t, ())) <= RARE_DF),
+                      key=lambda t: len(self.by_token[t]))[:2]
+        return sorted({i for t in rare for i in self.by_token[t]})
+
+    def fuzzy(self, toks: Tuple[str, ...], i: int) -> float:
+        other = self.tokens[i]
+        if len(set(other)) < 2:  # одно слово («Death», «Force») — не опознаёт пьесу без точного совпадения
+            return 0.0
+        small, big = sorted((set(toks), set(other)), key=len)
+        if small <= big and len(small) >= 2 and len(big) - len(small) <= CONTAIN_SLACK:
+            return 0.95
+        sm = difflib.SequenceMatcher(None, " ".join(toks), " ".join(other))
+        if sm.real_quick_ratio() < FUZZY_MIN or sm.quick_ratio() < FUZZY_MIN:
+            return 0.0
+        return sm.ratio()
+
+
+def _link(work_id: str, row: Mapping[str, Any], level: str, score: float) -> ScoreLink:
+    return ScoreLink(work_id, WorkSource("pdmx", str(row["material_id"]), level, round(score, 3)),
+                     str(row.get("license") or ""), row.get("rating"), row.get("keysig"), row.get("key"),
+                     str(row.get("composer") or ""))
+
+
+def _exact_links(works: Sequence[Sequence[str]], idx: _Scores) -> Dict[str, List[Tuple[str, int]]]:
+    """``{work_id: [(уровень, строка)]}`` по точному названию; партитура с ``exact_artist`` к одному произведению
+    не предлагается одноимённым чужим («Dreams» Corrs ↔ Cranberries — главный источник ложных по замеру)."""
+    found: Dict[str, List[Tuple[str, int]]] = {}
+    owner: Dict[int, str] = {}
+    for wid, title, artist, composer in works:
+        key = norm(title)
+        if len(key) < MIN_TITLE or key in GENERIC_TITLES or _named_after_person(title, artist, composer):
+            continue
+        authors = _people(artist) | _people(composer)
+        for i, dash in idx.by_title.get(key, ()):
+            level = "exact_artist" if authors & idx.people[i] else "exact"
+            if dash and level == "exact":  # «Название - Кто-то»: без совпавшего автора хвост мог быть названием
+                continue
+            found.setdefault(wid, []).append((level, i))
+            if level == "exact_artist":
+                owner[i] = wid
+    return {wid: [(lv, i) for lv, i in hits if lv == "exact_artist" or owner.get(i, wid) == wid]
+            for wid, hits in found.items()}
+
+
+def _fuzzy_links(work: Sequence[str], idx: _Scores) -> List[ScoreLink]:
+    work_id, title, artist, composer = work
+    toks = _title_tokens(title)
+    if len(set(toks)) < 2 or norm(title) in GENERIC_TITLES or _named_after_person(title, artist, composer):
+        return []
+    scored = sorted(((s, i) for i in idx.candidates(toks) for s in [idx.fuzzy(toks, i)] if s >= FUZZY_MIN),
+                    key=lambda si: (-si[0], si[1]))[:FUZZY_PER_WORK]
+    return [_link(work_id, idx.rows[i], "fuzzy", s / 2) for s, i in scored]
+
+
+def match_scores(works: Iterable[Sequence[str]], rows: Iterable[Mapping[str, Any]]
+                 ) -> Tuple[List[ScoreLink], List[Tuple[str, str]]]:
+    """Произведения ``(work_id, title, artist, composer)`` ↔ строки ``score_index`` → ``(связи, отказы)``.
+
+    Уровни (ADR-0155 §3.1, замер §2.2): ``exact_artist`` — нормализованное название совпало (целиком, до скобок или
+    до « - автор») и композитор/автор партитуры пересёкся с исполнителем/композитором произведения; ``exact`` —
+    только название (целиком или до скобок); ``fuzzy`` — вложение наборов слов (≥ 2 слов) или сходство
+    ≥ :data:`FUZZY_MIN` (только у произведений без точной пары, ≤ :data:`FUZZY_PER_WORK`). Запись, названная именем
+    своего автора («Mozart» — Mozart), не связывается. Ни одна связь не подтверждена (В6). Партитура без
+    пригодной лицензии (:func:`material.license_usable`: пусто, ``unknown``, ``…conflict``) не связывается — отказ
+    с причиной (M6)."""
+    works = list(works)
+    good, rejected = [], []
+    for r in rows:
+        if license_usable(r.get("license")):
+            good.append(r)
+        else:
+            rejected.append((str(r["material_id"]), f"лицензия {r.get('license')!r} не годится (ADR-0154 M6)"))
+    idx = _Scores(good)
+    exact = _exact_links(works, idx)
+    links: List[ScoreLink] = []
+    for work in works:
+        wid = work[0]
+        hits = sorted(set(exact.get(wid, ())), key=lambda h: (h[0] != "exact_artist", h[1]))
+        links += [_link(wid, idx.rows[i], lv, LINK_SCORES[lv]) for lv, i in hits] or _fuzzy_links(work, idx)
+    return links, rejected
+
+
+def score_links_report(conn: sqlite3.Connection) -> str:
+    """Сводка связей партитур реестра: произведения и связи по уровням, подтверждённые, лицензии, стоп-список."""
+    total = conn.execute("SELECT COUNT(*) FROM works").fetchone()[0]
+    linked = conn.execute("SELECT COUNT(DISTINCT work_id) FROM work_sources WHERE kind='pdmx'").fetchone()[0]
+    lines = [f"произведений {total}; с партитурой (любой уровень) {linked}",
+             "уровень       произведений  связей  партитур  подтверждено"]
+    for level, works_n, links_n, scores_n, conf in conn.execute(
+            "SELECT link_level, COUNT(DISTINCT work_id), COUNT(*), COUNT(DISTINCT material_id), SUM(confirmed) "
+            "FROM work_sources WHERE kind='pdmx' GROUP BY link_level ORDER BY link_level"):
+        lines.append(f"{level:<13} {works_n:>12} {links_n:>7} {scores_n:>9} {conf:>13}")
+    lic = conn.execute("SELECT license, COUNT(DISTINCT material_id) FROM work_sources WHERE kind='pdmx' "
+                       "GROUP BY license ORDER BY 2 DESC").fetchall()
+    lines.append("лицензии связанных партитур: " + (", ".join(f"{k} {n}" for k, n in lic) or "—"))
+    bad = sum(n for k, n in lic if not license_usable(k))
+    lines.append(f"непригодных лицензий (license_conflict, unknown, пусто) среди связанных: {bad} (M6 ADR-0154: 0)")
+    stop = sum(1 for c, t in conn.execute("SELECT DISTINCT s.composer, w.title FROM work_sources s JOIN works w "
+                                          "USING (work_id) WHERE s.kind='pdmx'") if is_stop_listed(c or "", t))
+    lines.append(f"связей со стоп-списком живых правообладателей (knowledge.LICENSE_STOP_LIST): {stop}")
+    return "\n".join(lines)
 
 
 # ── Связи «фраза темы → строки поиска архива» (#3493): одно хранилище исключений и журнал непонятого ─────────────
@@ -611,10 +818,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 __all__ = ["alias_pairs", "aliases_of", "build_works", "clean_identity", "concept_queries", "Fact", "FIELDS", "Gate",
            "gate", "GATE_SHARE", "get_theme_link", "holes", "Identity", "LINK_LEVELS", "link_score_sources",
-           "LOOKUP_TTL_DAYS", "norm", "put_theme_link", "report", "ru_phrase_by_query", "RULES_VERSION",
-           "score_index_row", "ScoreIndexRow", "SEEDS_FILE", "THEME_LINK_SOURCES", "THEME_LINK_STATUSES",
-           "theme_links_report", "theme_phrase", "theme_seeds", "ThemeLink", "word_links", "Work", "work_id_of",
-           "work_key", "working_ids", "WorkSource", "write_registry", "write_score_index"]
+           "LOOKUP_TTL_DAYS", "match_scores", "norm", "put_theme_link", "report", "ru_phrase_by_query",
+           "RULES_VERSION", "score_index_row", "score_links_report", "ScoreIndexRow", "ScoreLink", "SEEDS_FILE",
+           "THEME_LINK_SOURCES", "THEME_LINK_STATUSES", "theme_links_report", "theme_phrase", "theme_seeds",
+           "ThemeLink", "word_links", "Work", "work_id_of", "work_key", "working_ids", "WorkSource", "write_registry",
+           "write_score_index"]
 
 if __name__ == "__main__":
     sys.exit(main())
