@@ -1,10 +1,10 @@
 # Main Pi image versions — staging (develop branch)
 # Managed automatically by CI (L-Build Single Service workflow)
 
-TWIST_MUX_TAG=dev-c55068c
-ROBOT_STATE_PUBLISHER_TAG=dev-c55068c
-RTABMAP_TAG=dev-c55068c
-ROS2_CONTROL_TAG=dev-c55068c
-LSLIDAR_TAG=dev-c55068c
-PERCEPTION_TAG=dev-c55068c
-NAV2_TAG=dev-c55068c
+TWIST_MUX_TAG=dev-c83acfd
+ROBOT_STATE_PUBLISHER_TAG=dev-c83acfd
+RTABMAP_TAG=dev-c83acfd
+ROS2_CONTROL_TAG=dev-c83acfd
+LSLIDAR_TAG=dev-c83acfd
+PERCEPTION_TAG=dev-c83acfd
+NAV2_TAG=dev-c83acfd
