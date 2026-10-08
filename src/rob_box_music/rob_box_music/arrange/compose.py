@@ -77,6 +77,10 @@ PAD_GENERATORS: Mapping[str, Callable[..., Part]] = {
     "pumped16": pad.pumped16, "held": pad.held, "stabs": pad.stabs, "arp": pad.arp, "comping": pad.comping,
     "power_chords": pad.power_chords}
 LEAD_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"motif": lead.motif}
+#: Лид секции по сменам (``Style.section_leads``, ADR-0153 S6): ``(style, key, bar_chords, register, rng) -> ноты``.
+SOLO_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"solo": lead.solo}
+#: Коридор соло: от нижней ноты хука (пэд под ним уже уложен) на октаву с квинтой вверх, не выше коридора лида.
+SOLO_SPAN = 19
 #: Нарезка лупа по ключу ``Style.loop_figure`` (ADR-0153 S3): ``(файл, ГСЧ) -> Part``.
 LOOP_GENERATORS: Mapping[str, Callable[..., Part]] = {"chop": samples.loop_part,
                                                       "breakbeat_chop": samples.breakbeat_chop}
@@ -428,7 +432,7 @@ def _section_degrees(key: Key, line: Sequence[PitchEvent], name: str, bars: int)
     return _per_bar(harmony.qualify(key, line, beats, harmony.viterbi(key, line, beats, -(-bars // slot))), slot)[:bars]
 
 
-def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
+def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence: Sequence[Tuple[int, str]] = ()
                ) -> Tuple[Tuple[int, ...], Dict[int, harmony.ChordSym], Dict[int, bass.BassTone]]:
     """(ступени петли хука по слотам, аккорд такта формы, тон баса автора такта) — одна гармонизация под звучащую
     мелодию
@@ -437,7 +441,8 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
     (drop, остаток секции темы, drop2 — хук и терции над ним: гармонизуется хук, такт с b9 терции — ступень без неё,
     :meth:`_BarPlan.voiced`), — петля от начала секции; секция
     развития (build, break, ответ drop2 из материала) — под свою мелодию (:func:`_section_degrees`); секция без лида —
-    петля по такту формы."""
+    петля по такту формы; секция со сменами (``knowledge.CHANGES``, соло джаза) — аккорды темы (нет темы — петля) от
+    начала секции, последние такты — каденция ``cadence`` (``Style.cadence``)."""
     slot = kn.HOOK_HARMONY.slot_bars
     loop = tuple(harmony.sym(key, c) for c in harm.loop(motif.notes, max(1, motif.bars // slot)))
     loop_bars = _per_bar(loop, slot)
@@ -452,17 +457,32 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
         if "lead" not in roles:
             plan.put(range(start, start + bars), loop_bars, loop_tones, by_form_bar=True)
             continue
-        span = len(theme) if kn.section_kind(name) == kn.THEME_SECTION else 0
-        plan.put(range(start, start + span), theme, theme_tones)
-        line = hooks.develop(plain, name, bars, key)
-        hook_line = hooks.develop(plain, "drop", bars, key)
-        if span or set(hook_line) <= set(line):  # хук по кругу, в т. ч. с добавочным голосом (терции drop2)
-            plan.put(range(start + span, start + bars), loop_bars, loop_tones)
-            if not span and len(line) > len(hook_line):
-                plan.voiced(key, start, bars, hook_line, line)
-        else:
-            plan.put(range(start, start + bars), _section_degrees(key, line, name, bars), ())
+        _lead_section(plan, key, plain, (start, bars, name), (theme, theme_tones), (loop_bars, loop_tones), cadence)
     return tuple(c.degree for c in loop), plan.degrees, plan.tones
+
+
+Bars = Tuple[Sequence[harmony.ChordSym], Sequence[bass.BassTone]]
+
+
+def _lead_section(plan: "_BarPlan", key: Key, plain: Hook, section: Tuple[int, int, str], theme: Bars, loop: Bars,
+                  cadence: Sequence[Tuple[int, str]]) -> None:
+    """Аккорды секции с лидом (:func:`_harmonize`): ``theme``/``loop`` — (аккорды, тоны баса автора) по тактам темы и
+    петли хука, ``plain`` — хук без темы. Смены (``knowledge.CHANGES``) — тема, иначе петля, и каденция в конце."""
+    start, bars, name = section
+    if kn.SECTION_HARMONY.get(kn.section_kind(name)) == kn.CHANGES:
+        plan.put(range(start, start + bars), *(theme if theme[0] else loop))
+        plan.cadence(key, start + bars, cadence)
+        return
+    span = len(theme[0]) if kn.section_kind(name) == kn.THEME_SECTION else 0
+    plan.put(range(start, start + span), *theme)
+    line = hooks.develop(plain, name, bars, key)
+    hook_line = hooks.develop(plain, "drop", bars, key)
+    if span or set(hook_line) <= set(line):  # хук по кругу, в т. ч. с добавочным голосом (терции drop2)
+        plan.put(range(start + span, start + bars), *loop)
+        if not span and len(line) > len(hook_line):
+            plan.voiced(key, start, bars, hook_line, line)
+    else:
+        plan.put(range(start, start + bars), _section_degrees(key, line, name, bars), ())
 
 
 class _BarPlan(NamedTuple):
@@ -479,6 +499,13 @@ class _BarPlan(NamedTuple):
             self.degrees[bar] = chords[k % len(chords)]
             if tones:
                 self.tones[bar] = tones[k % len(tones)]
+
+    def cadence(self, key: Key, end: int, chords: Sequence[Tuple[int, str]]) -> None:
+        """Последние ``len(chords)`` тактов до такта ``end`` — каденция: (ступень, качество; пусто — диатоническое)."""
+        for i, (degree, quality) in enumerate(chords):
+            bar = end - len(chords) + i
+            self.degrees[bar] = harmony.ChordSym(degree, quality) if quality else harmony.sym(key, degree)
+            self.tones.pop(bar, None)  # тон баса автора — к его аккорду, у каденции — прима
 
     def voiced(self, key: Key, start: int, bars: int, hook_line: Sequence[PitchEvent], line: Sequence[PitchEvent]
                ) -> None:
@@ -503,11 +530,33 @@ def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_synth:
     """Лид, гармония под звучащую мелодию секций (:func:`_harmonize`) и пэд под лидом; пэд не помещается —
     ``ValueError``."""
     lead_part = _lead(style, spec, motif, key, lead_synth)
-    loop, degrees, tones = _harmonize(spec, motif, key, harm)
+    loop, degrees, tones = _harmonize(spec, motif, key, harm, style.cadence)
     pad_top = min(style.registers["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
     bars = sorted(degrees)
     register, chords = _pad_chords(style, key, [degrees[b] for b in bars], pad_top)
-    return Arranged(lead_part, loop, register, dict(zip(bars, chords)), tones)
+    by_bar = dict(zip(bars, chords))
+    return Arranged(_with_solos(style, spec, key, by_bar, lead_part, motif), loop, register, by_bar, tones)
+
+
+def _with_solos(style: kn.Style, spec: FormSpec, key: Key, chords: Mapping[int, Chord], lead_part: Part,
+                motif: Hook) -> Part:
+    """Лид с соло (ADR-0153 S6): в секциях видов ``Style.section_leads`` — генератор ``SOLO_GENERATORS`` по аккордам
+    тактов секции, в коридоре от нижней ноты хука (пэд под лидом не сдвигается) на :data:`SOLO_SPAN` вверх; ГСЧ — от
+    мелодии хука (сид трека её выбрал). Секций соло нет — лид как есть."""
+    lo = min(e.midi for e in lead_part.pitches)
+    register = (lo, min(style.registers["lead"][1], max(lo + SOLO_SPAN, max(e.midi for e in lead_part.pitches))))
+    rng = random.Random(f"solo:{motif.source}:{fingerprint(motif.notes)}")
+    extra: List[PitchEvent] = []
+    for start, bars, name, roles in _sections(spec):
+        figure = style.section_leads.get(kn.section_kind(name))
+        if figure and "lead" in roles:
+            extra += SOLO_GENERATORS[figure](style, key, [(b, chords[b]) for b in range(start, start + bars)],
+                                             register, rng)
+    if not extra:
+        return lead_part
+    events = tuple(sorted((*lead_part.pitches, *extra), key=lambda e: (e.beat, e.midi)))
+    total = sum(bars for _n, bars, _e, _r in spec) * 16
+    return replace(lead_part, grid=rhythm.grid({int(e.beat * 4) for e in events}, total), pitches=events)
 
 
 def _pad_chords(style: kn.Style, key: Key, degrees: Sequence[harmony.ChordSym], top: int
@@ -713,5 +762,5 @@ def club_track(seed: int, *, set_id: str = "v2", deck: str = "A", track_no: int 
 
 
 __all__ = ["Arranged", "BASS_GENERATORS", "FormSpec", "Harmonizer", "LEAD_GENERATORS", "LOOP_GENERATORS",
-           "PAD_GENERATORS", "SECTION_BARS", "club_track", "compose", "form_spec", "hook_candidates", "hook_order", "hook_register", "opening_order", "part_order",
+           "PAD_GENERATORS", "SECTION_BARS", "SOLO_GENERATORS", "SOLO_SPAN", "club_track", "compose", "form_spec", "hook_candidates", "hook_order", "hook_register", "opening_order", "part_order",
            "melody_harmonizer", "theme_form", "theme_limit", "track_template", "transition", "upcoming_hooks"]

@@ -449,19 +449,31 @@ def diatonic_quality(mode: str, degree: int) -> str:
     return next(q for q in TRIAD_QUALITIES if CHORD_INTERVALS[q][1:] == shape)
 
 
+#: Расширения аккорда над септимой (``Style.chord_size`` 5 — нона, ADR-0153 S6) — терции лада, кроме этих интервалов
+#: от примы: малая нона (b9) в тесном расположении пэда — полутон с примой; у минорных и мажорных септаккордов её не
+#: берут (V7b9 минора — тоже: доминанта звучит септаккордом).
+TENSION_AVOID: Tuple[int, ...] = (1,)
+
+
 def chord_pitch_classes(root: int, mode: str, degree: int, quality: Optional[str] = None,
                         size: int = 3) -> Tuple[int, ...]:
     """Тоны аккорда ступени ``degree`` лада ``mode`` от тоники ``root``: (прима, терция, квинта[, септима]).
 
     ``quality`` — ключ :data:`CHORD_INTERVALS` (``None`` или пусто — терции лада, как диатонический аккорд). Тонов ``size``
-    (``Style.chord_size``): септаккорд качества — свои 4 тона, трезвучие при ``size`` 4 — с септимой лада."""
+    (``Style.chord_size``): септаккорд качества — свои 4 тона, трезвучие при ``size`` 4 — с септимой лада; ``size`` 5 —
+    плюс нона лада, если она не из :data:`TENSION_AVOID` (тогда тонов 4)."""
     scale = SCALES[mode]
+    base = root + scale[degree % len(scale)]
     if not quality:
-        return tuple((root + scale[(degree + 2 * k) % len(scale)]) % 12 for k in range(size))
-    base = root + scale[degree]
-    tones = [(base + i) % 12 for i in CHORD_INTERVALS[quality][:size]]
-    if len(tones) < size:
-        tones.append((root + scale[(degree + 6) % len(scale)]) % 12)
+        tones = [(root + scale[(degree + 2 * k) % len(scale)]) % 12 for k in range(min(size, 4))]
+    else:
+        tones = [(base + i) % 12 for i in CHORD_INTERVALS[quality][:size]]
+        if len(tones) < size:
+            tones.append((root + scale[(degree + 6) % len(scale)]) % 12)
+    for k in range(4, size):  # расширения над септимой (нона, ``size`` 5 — джаз): терции лада без :data:`TENSION_AVOID`
+        tone = (root + scale[(degree + 2 * k) % len(scale)]) % 12
+        if (tone - base) % 12 not in TENSION_AVOID:
+            tones.append(tone)
     return tuple(tones)
 
 
@@ -506,7 +518,10 @@ HOOK_HARMONY = HookHarmony()
 #: :data:`PEDAL_DEGREES` (``build`` крутит начало хука — педаль на тонике или доминанте идиоматична для подъёма).
 #: Секции, которых нет в таблице, — гармония под их мелодию слотами ``slot_bars``.
 PEDAL = 0
-SECTION_HARMONY: Mapping[str, int] = {"build": PEDAL, "build2": PEDAL, "break": 2, "break2": 2}
+#: Смены темы (ADR-0153 S6, соло джаза): секция идёт по аккордам темы целиком (нет темы — петли хука) с начала, её
+#: последние такты — каденция стиля (``Style.cadence``); мелодию секции строит солист по этим аккордам, а не хук.
+CHANGES = -1
+SECTION_HARMONY: Mapping[str, int] = {"build": PEDAL, "build2": PEDAL, "break": 2, "break2": 2, "solo": CHANGES}
 PEDAL_DEGREES: Tuple[int, ...] = (0, 4)
 #: Уменьшённое трезвучие Витерби берёт только вводное (прима на ``DIM_ROOT`` полутонов от тоники — vii° мажора) и
 #: только перед разрешением в ``DIM_RESOLUTION`` (vii° → I); ii° минора, vi° дорийского, v° фригийского — нет;
@@ -636,6 +651,8 @@ PACK_DRUMS: Tuple[str, ...] = (
     "muldjord_kdruml_20", "muldjord_kdrumr_20", "muldjord_kdrumr_21",
     "muldjord_tom1_08", "muldjord_tom2_08", "muldjord_tom3_08", "muldjord_tom4_09",
     "muldjord_rider_07", "muldjord_crashl_08", "muldjord_crashr_07",
+    # ADR-0153 S6 (джаз): второй райд того же кита — райд звучит весь трек, один файл приедается.
+    "muldjord_rider_09",
 )
 
 
@@ -887,7 +904,10 @@ SECTION_TRIM_DB: Mapping[str, Tuple[float, bool]] = {
 #: только то, что задаёт сам стиль (``layer_sections``, ``section_lpf``, ``Style.backbeat_kinds`` — по виду).
 #: Куплет — подъём к припеву (``build``: начало хука), припев — дроп (хук, тема целиком в первом), бридж — брейк.
 SECTION_KINDS: Mapping[str, str] = {"verse": "build", "verse2": "build2", "chorus": "drop", "chorus2": "drop2",
-                                    "chorus3": "drop2", "bridge": "break"}
+                                    "chorus3": "drop2", "bridge": "break",
+                                    # ADR-0153 S6, джаз: голова — дроп (тема целиком), вторая голова — хук в терциях
+                                    # (две «дудки» на out-head), соло — свой вид (:data:`SECTION_HARMONY` ``CHANGES``)
+                                    "head": "drop", "head2": "drop2", "solo2": "solo"}
 
 
 def section_kind(name: str) -> str:
@@ -1404,6 +1424,16 @@ class Style:
     # Рифф баса (``arrange.bass.riff``): такты по кругу, восьмые такта — ``R`` тон такта, ``F`` квинта аккорда, ``O``
     # октава тона такта, ``.`` — нота тянется (длина до следующей).
     bass_riffs: Tuple[str, ...] = ()
+    # Джаз (ADR-0153 S6). Каденция — аккорды последних тактов секции со сменами темы (:data:`SECTION_HARMONY`
+    # ``CHANGES``): ``(ступень, качество)`` — ключ :data:`CHORD_INTERVALS`, пусто — диатоническое трезвучие ступени.
+    cadence: Tuple[Tuple[int, str], ...] = ()
+    # Лид секции по её виду (:func:`section_kind`) → ключ ``arrange.compose.SOLO_GENERATORS``; вида нет — развитие хука.
+    section_leads: Mapping[str, str] = field(default_factory=dict)
+    # Фразы соло (``arrange.lead.solo``) по 2 такта: ноты ``(шаг 16-х от начала фразы 0..31, длина в 16-х)``, хвост —
+    # пауза (солист дышит). Доля слабых нот перед нотой на доле, которые подходят к ней полутоном (хроматика), а не
+    # ступенью лада.
+    solo_phrases: Tuple[Tuple[Tuple[int, int], ...], ...] = ()
+    solo_chromatic: float = 0.0
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
@@ -1775,6 +1805,107 @@ _ROCK_STYLE = Style(
     power_rhythms=_ROCK_POWER_RHYTHMS, bass_riffs=_ROCK_BASS_RIFFS,
 )
 
+# ── Стиль ``jazz`` (ADR-0153 S6): head–solo–head, свинг ≈ 1.5–1.7, walking, comping, соло по сменам темы ──────────
+#: Эталон джаз-кафе 07.10 (``style_reference_profiles.md``, 16 кГц, медиана [p10..p90] окон 20 с): низ < 150 Гц 0.27
+#: [0.08..0.48], середина 0.73, crest 17.8, LR 0.85, LUFS −18, σ по минутам 1.6 дБ, свинг 1.54 [1.13..2.39], темп ≈ 96
+#: [90..121], пики в 12-TET 0.90. Окна: ``swing`` 104–125 (свинг-квартет: comping, бочка «пёрышком» четвертями),
+#: ``ballad`` 90–104 (медиана эталона 96: comping реже, пэд иногда держит аккорд). Свинг 0.20–0.25 доли восьмой: ratio
+#: (1 + s)/(1 − s) = 1.50–1.67 — эталон 1.54, не триоль 2.0. Без сайдчейна; низ держит walking-бас контрабасового
+#: регистра (28–50), бочка тихая.
+_JAZZ_LOOKS: Tuple[Tuple[int, Look], ...] = (
+    (7, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
+    (0, Look("X.......X.......", 0.0)),
+)
+_JAZZ_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
+    "swing": GenreWindow((104, 125), ("jazz", "soft", "acoustic"), _JAZZ_LOOKS, ("walking",), ("comping",)),
+    "ballad": GenreWindow((90, 104), ("soft", "jazz"), _JAZZ_LOOKS, ("walking",), ("comping", "comping", "held")),
+}
+#: Райд «динь, динь-да-динь»: четверти + «и» второй и четвёртой доли (оффбит-восьмую качает свинг), акцент 2 и 4.
+_JAZZ_KITS: Mapping[str, Mapping[str, str]] = {
+    "ride": {"hats": "x...X.x.x...X.x.", "perc": "................"},
+    "ride_skip": {"hats": "x...X.x.x...X...", "perc": "................"},
+    "ride_push": {"hats": "x...X.x.x.x.X.x.", "perc": "................"},
+}
+#: Лид — читаемый темой (:data:`THEME_LEAD_OK`): ``brass`` (духовой вместо сакса: ``soprano``/``eoboe``/``flute`` не
+#: замерены ``--clarity``), ``keys`` (фортепиано), ``pluck`` (гитара), ``arpy``. Бас — с низом на роботе ≥ 0.9
+#: (``bass``/``jbass``, четвертями — контрабаса в прелоаде нет). Пэд comping — замеренные в роли пэда
+#: (``rhpiano``/``epiano`` в рамке пэда не замерены — не взяты, хотя хвост 28/148 мс comping допускает:
+#: :data:`LEAD_CLARITY`; ``epiano`` нечитаем как лид — тусклый, атака 50 мс).
+_JAZZ_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
+    "dark": {"lead": ("brass", "keys"), "bass": ("jbass", "bass"), "pad": ("sinepad", "space")},
+    "hard": {"lead": ("brass", "arpy", "keys"), "bass": ("jbass", "bass"), "pad": ("sinepad", "strings")},
+    "bright": {"lead": ("keys", "pluck", "brass"), "bass": ("bass", "jbass"), "pad": ("ambi", "sinepad")},
+    "warm": {"lead": ("brass", "keys", "pluck"), "bass": ("bass", "jbass"), "pad": ("sinepad", "ambi", "strings")},
+}
+#: Петли ii–V–I и оборотов (I–vi–ii–V, iii–vi–ii–V): их переходы — априорный бонус Витерби под мелодию
+#: (``HookHarmony.style_bonus``), а не шаблон поверх темы.
+_JAZZ_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
+    (1, 4, 0, 0), (0, 5, 1, 4), (2, 5, 1, 4), (1, 4, 0, 5), (0, 3, 1, 4),
+)
+#: Comping мимо сильных долей 1 и 3 (там тема): «Чарльстон со второй доли» (2 и «и» 3), упреждения «и» 2 / «и» 4,
+#: обращённый Чарльстон («и» 1 и 4), три удара.
+_JAZZ_COMP_RHYTHMS: Tuple[Tuple[Tuple[int, int], ...], ...] = (
+    ((4, 2), (10, 3)), ((6, 2), (14, 2)), ((2, 2), (12, 3)), ((6, 3), (12, 2), (14, 2)),
+)
+#: Фразы соло по 2 такта (шаги 16-х, длины): восьмые — бибоп-линия, синкопа с «и» первой, подхват со второй доли,
+#: редкая «вопросом»; хвост каждой — пауза ≥ четверти.
+_JAZZ_SOLO_PHRASES: Tuple[Tuple[Tuple[int, int], ...], ...] = (
+    ((0, 2), (2, 2), (4, 2), (6, 2), (8, 2), (10, 2), (12, 2), (14, 2), (16, 4), (20, 6)),
+    ((2, 2), (4, 2), (6, 4), (10, 2), (12, 2), (14, 2), (16, 2), (18, 2), (20, 8)),
+    ((4, 2), (6, 2), (8, 2), (10, 2), (12, 2), (14, 2), (16, 2), (18, 2), (20, 2), (22, 2), (24, 4)),
+    ((0, 4), (6, 2), (8, 4), (14, 6), (24, 2), (26, 4)),
+)
+_JAZZ_DRUMS = frozenset({"kick", "hats", "clap"})
+_JAZZ_FULL = _JAZZ_DRUMS | {"bass", "pad", "lead"}
+#: Форма head–solo–head (§3): интро 4+4 и хвост 4+4 — блэнд двух дек, как у клуба; голова — тема целиком
+#: (:data:`THEME_SECTION`: секция растёт на длину темы), соло — 16 тактов по сменам темы с каденцией ii–V–I в конце,
+#: вторая голова — хук в терциях. ``jazz64`` — два квадрата соло.
+_JAZZ_INTRO: FormSpec = (
+    ("intro", _CLUB_BLEND[1], 2, frozenset({"hats", "pad"})),
+    ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 3, _JAZZ_DRUMS | {"bass", "pad"}),
+)
+_JAZZ_TAIL: FormSpec = (
+    ("outro", 8 - (_CLUB_BLEND[0] - _CLUB_BLEND[1]), 3, _JAZZ_DRUMS | {"bass", "pad"}),
+    ("outro_tail", _CLUB_BLEND[0] - _CLUB_BLEND[1], 1, frozenset({"hats", "pad"})),
+)
+_JAZZ_FORMS: Mapping[str, FormSpec] = {
+    "jazz48": (*_JAZZ_INTRO, ("head", 8, 7, _JAZZ_FULL), ("solo", 16, 8, _JAZZ_FULL), ("head2", 8, 8, _JAZZ_FULL),
+               *_JAZZ_TAIL),
+    "jazz64": (*_JAZZ_INTRO, ("head", 8, 7, _JAZZ_FULL), ("solo", 16, 8, _JAZZ_FULL), ("solo2", 16, 9, _JAZZ_FULL),
+               ("head2", 8, 8, _JAZZ_FULL), *_JAZZ_TAIL),
+}
+_JAZZ_ENERGY_FORMS: Mapping[int, Tuple[str, ...]] = {
+    1: ("jazz48",), 2: ("jazz48",), 3: ("jazz48", "jazz64"), 4: ("jazz48", "jazz64"), 5: ("jazz64", "jazz48"),
+}
+#: Уровни ролей (шкала модели): бочка «пёрышком», райд и педаль хэта тихо, низ — walking. Гипотеза до записи робота.
+_JAZZ_ROLE_LEVEL_DB: Mapping[str, float] = {
+    "kick": -46.0, "bass": -37.0, "pad": -40.0, "lead": -46.0, "clap": -50.0, "hats": -50.0}
+_JAZZ_WINDOW = _JAZZ_GENRE_WINDOWS["swing"]
+_JAZZ_STYLE = Style(
+    bpm=_JAZZ_WINDOW.bpm, swing=(0.20, 0.25), modes=("major", "dorian", "minor"),
+    kick_pool=_JAZZ_WINDOW.kick_pool, looks=_JAZZ_LOOKS, kits=_JAZZ_KITS,
+    registers={"bass": (28, 50), "pad": (46, 72), "lead": (60, 86)},
+    timbres=_JAZZ_TIMBRES, default_timbre="warm", bass_figures=_JAZZ_WINDOW.bass_figures,
+    pad_figures=_JAZZ_WINDOW.pad_figures, lead_figures=("motif",), chord_size=5, progressions=_JAZZ_PROGRESSIONS,
+    forms=_JAZZ_FORMS, opening_form="jazz48", energy_forms=_JAZZ_ENERGY_FORMS, blend=_CLUB_BLEND,
+    layer_sections={}, genre_windows=_JAZZ_GENRE_WINDOWS,
+    role_level_db=_JAZZ_ROLE_LEVEL_DB, duck_roles=(), section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)},
+    lpf_roles=("bass", "pad", "lead"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    # Ширина: эталон LR 0.85 — comping двумя голосами с расстройкой не шире ±0.4, остальное в центре.
+    stereo={"pad": {"pan": 0.4, "detune": PAD_DETUNE}},
+    # A9-модель для джаза не откалибрована (удары файлами и walking в модели — оценки): порог — страховка от трека
+    # без низа, норма — эталон 0.27 [0.08..0.48] по записи.
+    a9_model_low=0.05,
+    thin_roles={}, swing_steps=(2, 6, 10, 14), swing_roles=("kick", "clap", "bass", "pad", "lead"),
+    approach_max_beats=1.0,
+    # Райд — хэты (``muldjord_rider_*``, 2–8 кГц 0.51: на 16 кГц робота слышен), педаль хэта на 2 и 4 — роль клэпа.
+    drum_files={"hats": ("muldjord_rider_07", "muldjord_rider_09"), "clap": ("sonicpi_drum_cymbal_pedal",)},
+    comp_rhythms=_JAZZ_COMP_RHYTHMS,
+    backbeat_kinds=("intro_low", "drop", "drop2", "solo", "outro"), roll_bars=0, clap_fill="cut",
+    cadence=((1, ""), (4, "maj"), (0, "")), section_leads={"solo": "solo"},
+    solo_phrases=_JAZZ_SOLO_PHRASES, solo_chromatic=0.4,
+)
+
 #: Стили по ключу (ключ — ``ThemeProfile.style``/``SetPlan.style``). ``club`` — сегодняшние клубные таблицы побайтно
 #: (``test_style_same_tracks``): 128–138 — решение Шифу 01.10 (ADR-0149 §12 В6, эталон живого диджея ~138); свинг
 #: 5–10 % (ADR-0149 §3.4).
@@ -1833,6 +1964,7 @@ STYLES: Mapping[str, Style] = {
         genre_windows=_DNB_GENRE_WINDOWS, **_BREAKBEAT_FIELDS),
     "lofi": _LOFI_STYLE,
     "rock": _ROCK_STYLE,
+    "jazz": _JAZZ_STYLE,
 }
 DEFAULT_STYLE = "club"
 #: Слова фразы человека → стиль (ADR-0153 §4.1): основа слова (начало) → ключ :data:`STYLES`. Одна таблица:
@@ -1859,10 +1991,15 @@ STYLE_WORDS: Mapping[str, str] = {
     # ADR-0153 S5. «рок»/«rock» — НЕ основы: «роковой», «рокки», «рокот», «rocket» — не стиль; «рок», «рок-н-ролл»,
     # «хард-рок» — :data:`STYLE_PATTERNS` (слово целиком). «барокко» начинается не с «рок».
     "гранж": "rock", "grunge": "rock", "хардрок": "rock", "рокнролл": "rock", "рокенролл": "rock",
+    # ADR-0153 S6. «джаз», «джазовый», «джазмен», «jazz»; «свинг» — стиль и окно ``swing`` (приёма «свинг» словом
+    # человека в грамматике нет: свинг-ratio выбирает план); «бибоп».
+    "джаз": "jazz", "jazz": "jazz", "свинг": "jazz", "swing": "jazz", "бибоп": "jazz", "bebop": "jazz",
 }
 #: Слова фразы человека → окно стиля (``Style.genre_windows``, ADR-0153 S5): основа → окно. Окно применяется, только
 #: если оно есть у стиля сета (``theme.match_window_text``); слов нет — окно выбирает план (``set_plan.pick_genre``).
-WINDOW_WORDS: Mapping[str, str] = {"гранж": "grunge", "grunge": "grunge"}
+WINDOW_WORDS: Mapping[str, str] = {"гранж": "grunge", "grunge": "grunge",
+                                   # ADR-0153 S6: окна джаза; у стиля без этих окон слово окна не выбирает
+                                   "свинг": "swing", "swing": "swing", "баллад": "ballad", "ballad": "ballad"}
 #: Окно по умолчанию (первое окно стиля) — то, чем собраны поля ``Style``.
 DEFAULT_GENRE = next(iter(STYLES[DEFAULT_STYLE].genre_windows))
 
@@ -1890,7 +2027,7 @@ GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
             "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "FORM_BARS_STEP", "TRACK_MAX_BARS",
-            "SECTION_KINDS", "section_kind", "WINDOW_WORDS"]
+            "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

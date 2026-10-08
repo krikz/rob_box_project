@@ -9,7 +9,7 @@ from rob_box_mcp_tools.engine.tools_v2 import STYLE_CHOICES, set_style
 
 def test_style_choices_name_the_new_styles():
     assert {"auto", "club", "rave", "synthwave", "chiptune", "breaks", "dnb", "lofi",
-            "rock"} <= set(STYLE_CHOICES)
+            "rock", "jazz"} <= set(STYLE_CHOICES)
 
 
 @pytest.mark.parametrize("style,theme,heard,expected", [
@@ -31,11 +31,15 @@ def test_style_choices_name_the_new_styles():
     (None, "в пещере горного короля", "Робот, включи рок сет на тему в пещере горного короля", "rock"),
     ("club", "космос", "Робот, включи гранж сет на тему космос", "rock"),
     (None, "космос", "Робот, включи хард-рок про космос", "rock"),
+    # ADR-0153 S6
+    (None, "Моцарт", "Робот, включи джаз сет на тему Моцарт", "jazz"),
+    ("auto", "в пещере горного короля", "Робот, включи джаз сет на тему в пещере горного короля", "jazz"),
+    (None, "котов", "сыграй свинг про котов", "jazz"),
 ])
 def test_heard_words_then_key_then_theme_row(style, theme, heard, expected):
     assert set_style(style, theme, heard) == expected
 
 
 def test_unknown_key_without_style_words_is_refused():
-    with pytest.raises(ValueError, match="style='jazz'"):
-        set_style("jazz", "космос", "Робот, давай сет про космос")
+    with pytest.raises(ValueError, match="style='polka'"):
+        set_style("polka", "космос", "Робот, давай сет про космос")

@@ -136,7 +136,7 @@ def test_validator_takes_the_style_from_the_track():
     with pytest.raises(TrackError, match="parts.kick.sample"):  # и наоборот
         validate(replace(club, parts={**club.parts, "kick": rave.parts["kick"]}))
     with pytest.raises(TrackError, match="history_key.style"):
-        validate(replace(rave, history_key=replace(rave.history_key, style="jazz")))
+        validate(replace(rave, history_key=replace(rave.history_key, style="polka")))
 
 
 def test_reasoner_cannot_switch_the_style_inside_a_set():
