@@ -547,14 +547,15 @@ def run_notes(args) -> int:
             for theme, (text, found, parts, use_mat) in THEMES.items() if not use_mat]
     runs += [("material", text, found, (), mid, args.material_tracks)
              for text, found, mid in material_themes(materials, melodies)]
-    for style in STYLES:
+    for style in args.styles:
         for theme, text, found, parts, mid, n_tracks in runs:
             for seed in range(args.seeds):
                 mats = (mid,) if mid else ()
                 profile = seeded_profile(text, style, found=found, parts=parts, materials=mats)
                 rejected: Dict[str, str] = {}
+                refs = [melodies[i] for i in profile.theme_hooks if i in melodies]  # эталоны мотива, как на роботе
                 plan = seeded_plan(profile, seed, n_tracks, set_id=f"aud{seed}",
-                                   materials=materials if mid else None, rejected=rejected)
+                                   materials=materials if mid else None, rejected=rejected, references=refs)
                 mel = {i: melodies[i] for i in profile.hook_ids if i in melodies}
                 history: List[Dict[str, Any]] = []
                 for no in range(1, n_tracks + 1):
@@ -563,7 +564,9 @@ def run_notes(args) -> int:
                     history.insert(0, track_history(track, plan.set_id))
                     refs = {mid: [melodies[i] for i in profile.theme_hooks if i in melodies]} if mid else {}
                     row = analyze(track, plan, no, materials, refs)
-                    row.update(style=style, theme=theme, seed=seed, no=no, rejected=len(rejected))
+                    row.update(style=style, theme=theme, seed=seed, no=no, rejected=len(rejected),
+                               corridor=sum("коридор" in w or "ломается" in w
+                                            for w in [*rejected.values(), *(why for _m, why in catcher.seen)]))
                     rows.append(row)
                     for m_id, why in catcher.seen:
                         mat = materials[m_id]
@@ -596,17 +599,30 @@ def mean(xs) -> str:
 
 def report(rows: List[Dict[str, Any]]) -> None:
     n = len(rows)
-    print(f"Треков: {n}; стили {STYLES}; темы {list(THEMES)}")
+    styles = tuple(dict.fromkeys(r["style"] for r in rows))
+    print(f"Треков: {n}; стили {styles}; темы {list(THEMES)}")
     print("\n## Источник хука по темам")
     for theme in THEMES:
         sub = [r for r in rows if r["theme"] == theme]
         print(f"  {theme:<12} " + " ".join(f"{k}={v}" for k, v in collections.Counter(r['source'] for r in sub).items()))
 
+    print("\n## Тема целиком и отказы материала по коридору (#3542)")
+    first = [r for r in rows if r["no"] == 1]
+    print(f"  трек 1: тема целиком {share(first, lambda r: r['theme_bars'] > 0)}; все треки "
+          f"{share(rows, lambda r: r['theme_bars'] > 0)}")
+    for theme in THEMES:
+        sub = [r for r in first if r["theme"] == theme]
+        print(f"  {theme:<12} трек 1: тема целиком {share(sub, lambda r: r['theme_bars'] > 0)}")
+    mat_first = [r for r in first if r["theme"] == "material"]
+    print(f"  тема-партитура, трек 1: отказ материала по коридору (план или компоновка) "
+          f"{share(mat_first, lambda r: r['corridor'] > 0)}; трек на материале "
+          f"{share(mat_first, lambda r: r['source'] == 'material')}")
+
     print("\n## Таблица по стилям (средние на трек / доля треков)")
     hdr = ("стиль", "треков", "CT сильн.", "CT длит.", "b9 сильн.≥1", "дл.NCT сильн.≥1", "лид–бас м2≥1",
            "ум/ув аккорд", "мажор при минор-стиле", "лад вне стиля", "бас на бочке", "пар.5/8≥1", "скачок пэда>7")
     print(" | ".join(hdr))
-    for style in STYLES + ("ВСЕ",):
+    for style in styles + ("ВСЕ",):
         sub = rows if style == "ВСЕ" else [r for r in rows if r["style"] == style]
         print(" | ".join(str(x) for x in (
             style, len(sub), mean(r["strong_ct_share"] for r in sub), mean(r["ct_dur_share"] for r in sub),
@@ -679,7 +695,7 @@ def report(rows: List[Dict[str, Any]]) -> None:
 
     print("\n## Лад трека против плана")
     print("  лады треков: " + ", ".join(f"{k}={v}" for k, v in collections.Counter(r['mode'] for r in rows).most_common()))
-    for style in STYLES:
+    for style in styles:
         sub = [r for r in rows if r["style"] == style]
         print(f"  {style:<10} лады {dict(collections.Counter(r['mode'] for r in sub))}; стиль {sub[0]['style_modes']}")
     mat = [r for r in rows if r["source"] == "material"]
@@ -1031,6 +1047,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     a.add_argument("--tracks", type=int, default=6)
     a.add_argument("--material-tracks", type=int, default=2, help="треков в сете темы-партитуры (трек 1 — материал)")
     a.add_argument("--json")
+    a.add_argument("--styles", nargs="+", default=list(STYLES), help="стили матрицы (lofi — #3542)")
     b = sub.add_parser("wav")
     b.add_argument("files", nargs="+", help="file.wav[:bpm[:тоника:лад]]")
     c = sub.add_parser("live")

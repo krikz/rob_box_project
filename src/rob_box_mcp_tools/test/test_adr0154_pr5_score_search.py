@@ -164,7 +164,7 @@ def test_interstellar_set_plays_score_material_and_logs_material_id(tmp_path, ca
     assert data["ok"] and data["theme_source"] == "theme"
     plan_line = next(r.getMessage() for r in caplog.records if "тема «интерстеллар»" in r.getMessage())
     assert "материалы=['local:i1', 'pdmx:i2']" in plan_line and "row=space" in plan_line
-    assert any("№1 local:i1 загружен" in r.getMessage() for r in caplog.records)
+    assert any("материал трека 1: local:i1 загружен" in r.getMessage() for r in caplog.records)
     assert _started(rig)[0]["track_id"] == data["track_id"]
     started = next(r.getMessage() for r in caplog.records if " started track_id=" in r.getMessage())
     assert "material_id=local:i1" in started and "source=theme" in started
@@ -262,5 +262,6 @@ def test_set_with_unfit_first_material_starts_with_the_fit_one(tmp_path, caplog)
     assert data["ok"]
     lines = [r.getMessage() for r in caplog.records]
     assert any("материал local:i0 не годится" in m and "не мотив" in m for m in lines)
-    assert any("материалы треков: ['local:i1', None]" in m for m in lines)
+    assert any("материал трека 1: local:i1" in m for m in lines)
+    assert any("отбор материалов 2 шт." in m and "трек 1 — local:i1" in m for m in lines)
     assert "material_id=local:i1" in next(m for m in lines if " started track_id=" in m)
