@@ -14,7 +14,8 @@ RTTTL-библиотеки (``arrange.hook``); тональность трека
 выученной таблице (``harmony.melody_progression``), петля длиной в хук, build — педаль, break — аккорды вдвое длиннее
 (``knowledge.HOOK_HARMONY``, ``SECTION_HARMONY``); бас в оффбит, пэд с голосоведением по всему треку.
 План назвал материал партитуры (``TrackPlan.material``, ADR-0154 PR-3) — хук и ступени слотов из него
-(``hook.from_material``, ``harmony.from_material``: аккорды автора, проверенные под звучащую мелодию), тоны баса —
+(``hook.from_material``, ``harmony.material_chords``: аккорды автора с их качеством, проверенные под звучащую
+мелодию, аудит Ф2), тоны баса —
 из басового голоса автора (``bass.material_tones``, PR-4), ``drop2`` — ритм хука с контуром следующей фразы; не
 годится — путь выше без изменений.
 Тема целиком (ADR-0154 PR-7): в секции ``knowledge.THEME_SECTION`` (первый дроп) звучит вся тема — тематическая
@@ -143,14 +144,14 @@ def theme_form(spec: FormSpec, theme_bars: int) -> FormSpec:
     return tuple(out)
 
 
-Degrees = Callable[[Sequence[PitchEvent], int], Tuple[int, ...]]
-Tones = Callable[[Sequence[int]], Tuple[bass.BassTone, ...]]
+Degrees = Callable[[Sequence[PitchEvent], int], Tuple[harmony.AnyChord, ...]]
+Tones = Callable[[Sequence[harmony.ChordSym]], Tuple[bass.BassTone, ...]]
 
 
 class Harmonizer(NamedTuple):
-    """Путь гармонии трека (аудит 07.10 Ф1): ступени петли хука и темы целиком под их мелодию — ``(ноты, слотов)
-    -> ступени`` по слотам ``knowledge.HOOK_HARMONY.slot_bars``; тоны баса автора по ступеням (материал) — по такту,
-    у RTTTL и мотива их нет (тоника и квинта)."""
+    """Путь гармонии трека (аудит 07.10 Ф1): аккорды петли хука и темы целиком под их мелодию — ``(ноты, слотов)
+    -> аккорды`` (ступень и качество, Ф2) по слотам ``knowledge.HOOK_HARMONY.slot_bars``; тоны баса автора по
+    аккордам (материал) — по такту, у RTTTL и мотива их нет (тоника и квинта)."""
 
     loop: Degrees
     theme: Degrees
@@ -407,24 +408,28 @@ def _slot_beats() -> float:
     return kn.HOOK_HARMONY.slot_bars * BEATS_PER_BAR
 
 
-def _per_bar(degrees: Sequence[int], factor: int) -> List[int]:
-    return [d for d in degrees for _ in range(factor)]
+def _per_bar(chords: Sequence[harmony.ChordSym], factor: int) -> List[harmony.ChordSym]:
+    return [c for c in chords for _ in range(factor)]
 
 
-def _section_degrees(key: Key, line: Sequence[PitchEvent], name: str, bars: int) -> List[int]:
-    """Ступени тактов секции развития под её звучащую мелодию ``line`` (аудит Ф1, П2): педаль
+def _section_degrees(key: Key, line: Sequence[PitchEvent], name: str, bars: int) -> List[harmony.ChordSym]:
+    """Аккорды тактов секции развития под её звучащую мелодию ``line`` (аудит Ф1, П2): педаль
     (``knowledge.PEDAL``) — одна ступень из ``knowledge.PEDAL_DEGREES`` на всю секцию; иначе Витерби слотами
-    ``slot_bars × knowledge.SECTION_HARMONY[name]`` (``break`` — хук вдвое медленнее, аккорды вдвое длиннее)."""
+    ``slot_bars × knowledge.SECTION_HARMONY[name]`` (``break`` — хук вдвое медленнее, аккорды вдвое длиннее);
+    качество — под ту же мелодию (``harmony.qualify``, Ф2)."""
     rule = kn.SECTION_HARMONY.get(kn.section_kind(name), 1)  # куплет рока — как build (ADR-0153 S5)
     if rule == kn.PEDAL:
-        return [harmony.viterbi(key, line, bars * BEATS_PER_BAR, 1, degrees=kn.PEDAL_DEGREES)[0]] * bars
+        beats = bars * BEATS_PER_BAR
+        return list(harmony.qualify(key, line, beats, harmony.viterbi(key, line, beats, 1, degrees=kn.PEDAL_DEGREES)))
     slot = kn.HOOK_HARMONY.slot_bars * rule
-    return _per_bar(harmony.viterbi(key, line, slot * BEATS_PER_BAR, -(-bars // slot)), slot)[:bars]
+    beats = slot * BEATS_PER_BAR
+    return _per_bar(harmony.qualify(key, line, beats, harmony.viterbi(key, line, beats, -(-bars // slot))), slot)[:bars]
 
 
 def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
-               ) -> Tuple[Tuple[int, ...], Dict[int, int], Dict[int, bass.BassTone]]:
-    """(петля хука по слотам, ступень такта формы, тон баса автора такта) — одна гармонизация под звучащую мелодию
+               ) -> Tuple[Tuple[int, ...], Dict[int, harmony.ChordSym], Dict[int, bass.BassTone]]:
+    """(ступени петли хука по слотам, аккорд такта формы, тон баса автора такта) — одна гармонизация под звучащую
+    мелодию
     каждой секции (аудит 07.10 Ф1): петля — под хук (``harm.loop``; петля длиной в хук, и хук в 4 такта не уходит во
     второй половине на чужие аккорды), тема целиком — под тему (``harm.theme``); секция, где звучит хук по кругу
     (drop, остаток секции темы, drop2 — хук и терции над ним: гармонизуется хук, такт с b9 терции — ступень без неё,
@@ -432,10 +437,11 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
     развития (build, break, ответ drop2 из материала) — под свою мелодию (:func:`_section_degrees`); секция без лида —
     петля по такту формы."""
     slot = kn.HOOK_HARMONY.slot_bars
-    loop = harm.loop(motif.notes, max(1, motif.bars // slot))
+    loop = tuple(harmony.sym(key, c) for c in harm.loop(motif.notes, max(1, motif.bars // slot)))
     loop_bars = _per_bar(loop, slot)
     loop_tones = harm.loop_tones(loop) if harm.loop_tones else ()
-    theme_slots = harm.theme(motif.theme, motif.theme_bars // slot) if motif.theme else ()
+    theme_slots = tuple(harmony.sym(key, c) for c in harm.theme(motif.theme, motif.theme_bars // slot)
+                        ) if motif.theme else ()
     theme = _per_bar(theme_slots, slot)
     theme_tones = harm.theme_tones(theme_slots) if theme_slots and harm.theme_tones else ()
     plain = replace(motif, theme=(), theme_bars=0)
@@ -454,16 +460,16 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer
                 plan.voiced(key, start, bars, hook_line, line)
         else:
             plan.put(range(start, start + bars), _section_degrees(key, line, name, bars), ())
-    return tuple(loop), plan.degrees, plan.tones
+    return tuple(c.degree for c in loop), plan.degrees, plan.tones
 
 
 class _BarPlan(NamedTuple):
-    """Ступень и тон баса автора по такту формы (собирается :func:`_harmonize`)."""
+    """Аккорд и тон баса автора по такту формы (собирается :func:`_harmonize`)."""
 
-    degrees: Dict[int, int]
+    degrees: Dict[int, harmony.ChordSym]
     tones: Dict[int, bass.BassTone]
 
-    def put(self, bars: range, chords: Sequence[int], tones: Sequence[bass.BassTone], by_form_bar: bool = False
+    def put(self, bars: range, chords: Sequence[harmony.ChordSym], tones: Sequence[bass.BassTone], by_form_bar: bool = False
             ) -> None:
         """Такты ``bars`` — ``chords``/``tones`` по кругу: от начала отрезка или по номеру такта формы."""
         for i, bar in enumerate(bars):
@@ -485,7 +491,9 @@ class _BarPlan(NamedTuple):
                 continue
             clean = [d for d in range(7) if d not in harmony.diminished(key) and not harmony.strong_b9(key, voices, d)]
             if clean:
-                self.degrees[start + at] = harmony.viterbi(key, hook_bar, BEATS_PER_BAR, 1, degrees=clean)[0]
+                d = harmony.viterbi(key, hook_bar, BEATS_PER_BAR, 1, degrees=clean)[0]
+                chord = harmony.qualify(key, hook_bar, BEATS_PER_BAR, (d,), clash=voices)[0]
+                self.degrees[start + at] = harmony.sym(key, d) if harmony.strong_b9(key, voices, chord) else chord
                 self.tones.pop(start + at, None)  # тон баса автора — к его аккорду, у нового — прима
 
 
@@ -500,7 +508,8 @@ def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_synth:
     return Arranged(lead_part, loop, register, dict(zip(bars, chords)), tones)
 
 
-def _pad_chords(style: kn.Style, key: Key, degrees: Sequence[int], top: int) -> Tuple[Tuple[int, int], Tuple]:
+def _pad_chords(style: kn.Style, key: Key, degrees: Sequence[harmony.ChordSym], top: int
+                ) -> Tuple[Tuple[int, int], Tuple]:
     """(регистр пэда, аккорды последовательности ``degrees`` с голосоведением ``harmony.voice_chain``): обычный низ, а
     трезвучие в окне не помещается — низ на полутон ниже до коридора стиля (``knowledge.PAD_WIDEN``); окно в 12 нот
     содержит любой звук лада, так что дальше ``ValueError`` только у лида, поднятого выше ``hook_register``. Треки,
@@ -534,12 +543,13 @@ def melody_harmonizer(style: kn.Style, key: Key, history: Sequence[Mapping], rng
     recent = recent_values(history, "progression")
     beats = _slot_beats()
 
-    def loop(notes: Sequence[PitchEvent], slots: int) -> Tuple[int, ...]:
-        return harmony.melody_progression(key, notes, beats, slots, ring=True, progressions=style.progressions,
-                                          recent=recent, rng=rng)
+    def loop(notes: Sequence[PitchEvent], slots: int) -> Tuple[harmony.ChordSym, ...]:
+        return harmony.qualify(key, notes, beats, harmony.melody_progression(
+            key, notes, beats, slots, ring=True, progressions=style.progressions, recent=recent, rng=rng))
 
-    def theme(notes: Sequence[PitchEvent], slots: int) -> Tuple[int, ...]:
-        return harmony.melody_progression(key, notes, beats, slots, progressions=style.progressions)
+    def theme(notes: Sequence[PitchEvent], slots: int) -> Tuple[harmony.ChordSym, ...]:
+        return harmony.qualify(key, notes, beats,
+                               harmony.melody_progression(key, notes, beats, slots, progressions=style.progressions))
     return Harmonizer(loop, theme)
 
 
@@ -563,7 +573,8 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
                    materials: Optional[Mapping[str, ScoreMaterial]], profile: ThemeProfile,
                    lead_synth: str, melodies: Mapping[str, str]):
     """Хук, лид, гармония и тоны баса трека из материала партитуры плана (ADR-0154 §3.3): хук —
-    ``hook.from_material``, ступени петли — ``harmony.from_material`` по фразе хука, тоны баса — ``bass.material_tones``
+    ``hook.from_material``, аккорды петли — ``harmony.material_chords`` по фразе хука (ступень и качество автора),
+    тоны баса — ``bass.material_tones``
     по той же фразе и тому же множителю темпа; тема целиком — то же по тематической секции (``hook.theme_span``).
     Главный мотив — по RTTTL-эталонам темы (``profile.theme_hooks``, ``hook.for_theme``): голос и такт, где совпал
     их контур.
@@ -584,8 +595,8 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         span = hooks.theme_span(material, phrase)
         beats = _slot_beats()
         harm = Harmonizer(
-            lambda notes, slots: harmony.from_material(material, phrase, key, notes, beats, slots, scale),
-            lambda notes, slots: harmony.from_material(material, span, key, notes, beats, slots, scale),
+            lambda notes, slots: harmony.material_chords(material, phrase, key, notes, beats, slots, scale),
+            lambda notes, slots: harmony.material_chords(material, span, key, notes, beats, slots, scale),
             lambda degrees: bass.material_tones(style, material, phrase, degrees, beats, scale),
             lambda degrees: bass.material_tones(style, material, span, degrees, beats, scale))
         motif, form, arranged = _arrange_theme(style, spec, motif, key, lead_synth, harm)

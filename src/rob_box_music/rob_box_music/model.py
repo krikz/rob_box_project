@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import FrozenSet, List, Mapping, Optional, Tuple
+from types import MappingProxyType
+from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 from . import knowledge as kn
 from .tonality import key_fit
@@ -117,6 +118,16 @@ class Part:
 class Chord:
     degree: int  # ступень лада 0..6
     voicing: Tuple[int, ...]  # MIDI, уже «проведённое» обращение
+    #: Качество (ключ ``knowledge.CHORD_INTERVALS``, аудит 07.10 Ф2): аккорд автора — как у автора (V в миноре
+    #: мажорная), без автора — ``knowledge.DEGREE_QUALITIES``; пусто — диатоническое трезвучие ступени. Пэд и бас
+    #: играют его тоны, валидатор их разрешает (:func:`chord_tones`). Вне ``repr``, как ``Hook.answer``: качество
+    #: слышно в ``voicing`` и нотах партий.
+    quality: str = field(default="", repr=False)
+
+
+def chord_tones(key: Key, chord: Chord, size: int = 3) -> Tuple[int, ...]:
+    """Тоны объявленного аккорда в тональности ``key`` (``knowledge.chord_pitch_classes``)."""
+    return kn.chord_pitch_classes(key.root, key.mode, chord.degree, chord.quality or None, size)
 
 
 @dataclass(frozen=True)
@@ -306,24 +317,35 @@ def _check_grid(role: str, grid: Grid, bars_total: int) -> None:
         _require(isinstance(st.offset_ms, int), f"{path}[{i}].offset_ms", "сдвиг не в целых мс")
 
 
+#: Тонов аккорда по тактам нет (лид, песня).
+_NO_CHORDS: Mapping[int, FrozenSet[int]] = MappingProxyType({})
+
+
 def _pitch_ok(role: str, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool,
-              approach: float = APPROACH_MAX_BEATS) -> bool:
+              approach: float = APPROACH_MAX_BEATS, chords: Mapping[int, FrozenSet[int]] = _NO_CHORDS) -> bool:
     """Все условия :func:`_check_pitch` разом, без сборки сообщений: валидатор проходит ~10⁴ нот на трек, и строки
     причин на каждой ноте занимали заметную долю времени ``render`` (CI-таймаут пакета, PR #3501). ``approach`` —
-    потолок хроматического подхода баса стиля (``Style.approach_max_beats``)."""
+    потолок хроматического подхода баса стиля (``Style.approach_max_beats``); ``chords`` — тоны объявленного аккорда
+    по такту формы (:func:`_declared_tones`): пэд и бас играют их, даже если тона нет в ладу (вводный тон V минора)."""
     lo, hi = part.register
     lpf_lo, lpf_hi = kn.LPF_RANGE_HZ
     if not (_finite(ev.beat) and _finite(ev.dur_beats) and ev.dur_beats > 0 and 0 <= ev.beat
             and ev.beat + ev.dur_beats <= limit_beats + 1e-9 and (ev.lpf == kn.LPF_OPEN or lpf_lo <= ev.lpf <= lpf_hi)
             and lo <= ev.midi <= hi and isinstance(ev.offset_ms, int) and ev.offset_ms >= 0):
         return False
-    return (song or role == "lead" or ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
+    return song or role == "lead" or _tone_ok(role, ev, key, approach, chords)
+
+
+def _tone_ok(role: str, ev: PitchEvent, key: Key, approach: float, chords: Mapping[int, FrozenSet[int]]) -> bool:
+    """Высота пэда/баса: звук лада, тон объявленного аккорда такта или короткий хроматический подход баса."""
+    pc = ev.midi % 12
+    return (pc in kn.scale_pitch_classes(key.root, key.mode) or pc in chords.get(int(ev.beat // BEATS_PER_BAR), ())
             or (role == "bass" and ev.dur_beats <= approach))
 
 
 def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float, part: Part, song: bool,
-                 approach: float = APPROACH_MAX_BEATS) -> None:
-    if _pitch_ok(role, ev, key, limit_beats, part, song, approach):
+                 approach: float = APPROACH_MAX_BEATS, chords: Mapping[int, FrozenSet[int]] = _NO_CHORDS) -> None:
+    if _pitch_ok(role, ev, key, limit_beats, part, song, approach, chords):
         return
     path = f"parts.{role}.pitches[{i}]"
     _require(_finite(ev.beat) and _finite(ev.dur_beats), path, "доли не конечные числа")
@@ -337,8 +359,24 @@ def _check_pitch(role: str, i: int, ev: PitchEvent, key: Key, limit_beats: float
     if song or role == "lead":  # мелодия/хук темы — с хроматикой; лад — долей длительности (``_check_key_fit``)
         return
     in_scale = ev.midi % 12 in kn.scale_pitch_classes(key.root, key.mode)
+    in_chord = ev.midi % 12 in chords.get(int(ev.beat // BEATS_PER_BAR), ())
     chromatic = role == "bass" and ev.dur_beats <= approach
-    _require(in_scale or chromatic, f"{path}.midi", f"MIDI {ev.midi} не в ладе {kn.ROOTS[key.root]} {key.mode}")
+    _require(in_scale or in_chord or chromatic, f"{path}.midi",
+             f"MIDI {ev.midi} не в ладе {kn.ROOTS[key.root]} {key.mode} и не тон аккорда такта")
+
+
+def _declared_tones(track: Track) -> Dict[int, FrozenSet[int]]:
+    """Такт формы → тоны объявленного аккорда (``Harmony.progression`` — аккорды секции по тактам, :func:`chord_tones`
+    с размером аккорда стиля); такта без аккорда в словаре нет."""
+    size = kn.STYLES[track.style].chord_size
+    out: Dict[int, FrozenSet[int]] = {}
+    bar = 0
+    for sec in track.form.sections:
+        for i, chord in enumerate(track.harmony.progression.get(sec.name, ())[:sec.bars]):
+            if not chord.quality or chord.quality in kn.AUTHOR_QUALITIES:  # чужое качество — ошибка гармонии ниже
+                out[bar + i] = frozenset(chord_tones(track.key, chord, size))
+        bar += sec.bars
+    return out
 
 
 def _check_key_fit(role: str, part: Part, key: Key, minimum: float) -> None:
@@ -359,8 +397,9 @@ def _check_tonal(role: str, part: Part, track: Track) -> None:
     _require(bool(part.pitches), f"parts.{role}.pitches", "тональная партия без нот")
     limit = float(track.form.bars_total * BEATS_PER_BAR)
     approach = kn.STYLES[track.style].approach_max_beats
+    chords = _declared_tones(track) if role in ("pad", "bass") and not song else {}
     for i, ev in enumerate(part.pitches or ()):
-        _check_pitch(role, i, ev, track.key, limit, part, song, approach)
+        _check_pitch(role, i, ev, track.key, limit, part, song, approach, chords)
     if role == "lead" and not song:
         _check_key_fit(role, part, track.key, kn.HOOK_KEY_FIT_MIN)
     elif song and role != "lead":
@@ -481,6 +520,8 @@ def _check_hook_and_harmony(track: Track) -> None:
         for i, chord in enumerate(chords):
             _require(0 <= chord.degree <= 6 and bool(chord.voicing), f"harmony.progression.{name}[{i}]",
                      "ступень вне 0..6 или пустое обращение")
+            _require(not chord.quality or chord.quality in kn.AUTHOR_QUALITIES,
+                     f"harmony.progression.{name}[{i}].quality", f"качество {chord.quality!r} не из CHORD_INTERVALS")
     hook = track.hook
     if hook is None:
         return
@@ -563,5 +604,5 @@ def blend_bars(leaving: Track, incoming: Track) -> int:
 __all__ = [
     "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Duck", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
     "Part", "PitchEvent", "Section", "Step", "Stereo", "Sweep", "Track", "TrackError", "Transition", "blend_bars",
-    "roles_at_bar", "validate",
+    "chord_tones", "roles_at_bar", "validate",
 ]

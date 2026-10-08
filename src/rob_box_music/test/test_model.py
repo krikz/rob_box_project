@@ -5,9 +5,9 @@ from dataclasses import replace
 import pytest
 from track_factory import make_track
 
-from rob_box_music.knowledge import LEVEL_CEILINGS, scale_pitch_classes
+from rob_box_music.knowledge import AUTHOR_QUALITIES, LEVEL_CEILINGS, scale_pitch_classes
 from rob_box_music.model import (
-    Duck, Form, Grid, Part, PitchEvent, Section, Step, Stereo, Transition, TrackError, validate,
+    Chord, Duck, Form, Grid, Part, PitchEvent, Section, Step, Stereo, Transition, TrackError, chord_tones, validate,
 )
 
 SEEDS = range(1000)
@@ -87,6 +87,29 @@ def test_invalid_track_reports_path(path):
         validate(CASES[path](make_track(seed)))
     assert exc.value.path == path
     assert exc.value.reason
+
+
+def test_off_scale_bass_tone_is_valid_as_a_tone_of_the_declared_chord():
+    """Аудит Ф2 (#3530): пэд и бас играют тоны ОБЪЯВЛЕННОГО аккорда такта (вводный тон мажорной V в миноре вне лада);
+    нота вне лада проходит, только если аккорд её такта её объявил (``Chord.quality``)."""
+    seed = next(s for s in SEEDS if "bass" in make_track(s).parts)
+    track = make_track(seed)
+    midi = _off_scale_midi(track)
+    bad = _bass_with(track, midi=midi, dur_beats=1.0)
+    with pytest.raises(TrackError, match="parts.bass.pitches"):
+        validate(bad)
+    chord = next(Chord(d, (60,), q) for d in range(7) for q in sorted(AUTHOR_QUALITIES)
+                 if midi % 12 in chord_tones(track.key, Chord(d, (60,), q)))
+    prog = {s.name: (chord,) * s.bars for s in track.form.sections}
+    validate(replace(bad, harmony=replace(bad.harmony, progression=prog)))
+
+
+def test_unknown_chord_quality_is_refused():
+    track = make_track(0)
+    name = track.form.sections[0].name
+    prog = {**track.harmony.progression, name: (Chord(0, (60, 64, 67), "zz"),)}
+    with pytest.raises(TrackError, match="quality"):
+        validate(replace(track, harmony=replace(track.harmony, progression=prog)))
 
 
 def test_missing_part_for_section_role():

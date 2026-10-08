@@ -147,7 +147,7 @@ def power_chords(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chor
         raise ValueError("ритмов пауэр-аккордов у стиля нет (Style.power_rhythms)")
     events = []
     for bar, chord in bar_chords:
-        pcs = harmony.chord_pcs(style, key, chord.degree)
+        pcs = harmony.chord_pcs(style, key, chord.degree, chord.quality or None)  # объявленный аккорд (Ф2, #3530)
         voicing = power_voicing(pcs[0], pcs[2], register)
         events += [PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, length * STEP_BEATS, 3 if step % 4 == 0 else 2)
                    for step, length in rhythms[bar % len(rhythms)] for m in voicing]

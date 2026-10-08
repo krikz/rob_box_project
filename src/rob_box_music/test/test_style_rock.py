@@ -12,10 +12,10 @@ import pytest
 
 from melodies import MELODIES
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange import pad
+from rob_box_music.arrange import bass, pad
 from rob_box_music.arrange.compose import compose
 from rob_box_music.diversity import track_composition
-from rob_box_music.model import BEATS_PER_BAR, STEPS_PER_BAR, validate
+from rob_box_music.model import BEATS_PER_BAR, STEPS_PER_BAR, Chord, Key, chord_tones, validate
 from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
@@ -219,3 +219,29 @@ def test_rock_words_pick_the_style(text):
 @pytest.mark.parametrize("text", ["роковая любовь", "рокки", "барокко", "рокот", "rocket", "rocky", "рокировка"])
 def test_words_close_to_rock_words_are_not_a_style(text):
     assert match_style_text(text) is None
+
+
+# ── Ф2 (#3530): рок играет объявленный аккорд такта ──────────────────────────────────────────────────────────────
+
+A_MINOR = Key(9, "minor")
+
+
+def test_riff_stands_on_the_declared_chord_and_takes_only_a_perfect_fifth():
+    """Рифф — тоны объявленного аккорда: такт на терции мажорной V ля минора — G# (вводный тон, не G натуральной v);
+    на уменьшённом аккорде тритона нет — R/F/O риффа стоят на приме (аудит П6)."""
+    reg = ROCK.registers["bass"]
+    major_v = bass.riff(ROCK, A_MINOR, [(0, Chord(4, (64, 68, 71), "maj"))], "bass", reg,
+                        {0: bass.BassTone(bass.ANCHORS["third"])})
+    assert major_v.pitches[0].midi % 12 == 8
+    assert {e.midi % 12 for e in major_v.pitches} <= set(chord_tones(A_MINOR, Chord(4, (), "maj")))
+    dim = bass.riff(ROCK, A_MINOR, [(0, Chord(1, (59, 62, 65), "dim"))], "bass", reg)
+    assert {e.midi % 12 for e in dim.pitches} == {11}
+
+
+def test_power_chord_takes_the_fifth_of_the_declared_quality():
+    """Пауэр-аккорд без терции: качество меняет только квинту — у ув. трезвучия она не чистая, пауэр-аккорд без неё."""
+    reg = ROCK.registers["pad"]
+    aug = pad.power_chords(ROCK, Key(0, "major"), [(0, Chord(0, (60, 64, 68), "aug"))], "pad", reg)
+    assert {e.midi % 12 for e in aug.pitches} == {0}
+    plain = pad.power_chords(ROCK, Key(0, "major"), [(0, Chord(0, (60, 64, 67), "maj"))], "pad", reg)
+    assert {e.midi % 12 for e in plain.pitches} == {0, 7}

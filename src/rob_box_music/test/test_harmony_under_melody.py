@@ -41,10 +41,20 @@ def test_strong_beats_weigh_more_than_weak_ones():
 
 
 def test_b9_on_a_strong_beat_is_avoided():
-    """Минор, вводный тон G# на сильных долях: натуральная v (E G B) даёт малую нону G#/G — Витерби её не берёт."""
-    got = harmony.viterbi(A_MINOR, bar(71, 76, 80, 76), 4.0, 1)
-    assert got != (4,)
-    assert not harmony.strong_b9(A_MINOR, bar(71, 76, 80, 76), got[0])
+    """Минор, вводный тон G# на сильных долях: натуральная v (E G B) даёт малую нону G#/G — слот берёт мажорную V
+    (E G# B, ``knowledge.DEGREE_QUALITIES``, аудит Ф2), в ней вводный тон — тон аккорда."""
+    notes = bar(71, 76, 80, 76)
+    got = harmony.qualify(A_MINOR, notes, 4.0, harmony.viterbi(A_MINOR, notes, 4.0, 1))
+    assert got == (harmony.ChordSym(4, "maj"),)
+    assert harmony.strong_b9(A_MINOR, notes, 4) and not harmony.strong_b9(A_MINOR, notes, got[0])
+
+
+def test_natural_minor_melody_keeps_the_minor_dominant():
+    """Мелодия натурального минора (G, не G#) над ступенью 4 — диатоническая v: гармонический V только там, где его
+    просит мелодия (ничья — диатоническое качество)."""
+    notes = bar(71, 76, 79, 76)
+    assert harmony.qualify(A_MINOR, notes, 4.0, (4,)) == (harmony.ChordSym(4, "min"),)
+    assert harmony.qualify(A_MINOR, bar(71, 76, 71, 76), 4.0, (4,)) == (harmony.ChordSym(4, "min"),)
 
 
 def test_chord_per_bar_follows_a_melody_that_changes_every_bar():
