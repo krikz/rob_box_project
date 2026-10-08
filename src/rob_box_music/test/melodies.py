@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from rob_box_music.arrange.compose import compose
+from rob_box_music.render.events import program_events
+from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import ThemeProfile
 
@@ -52,8 +54,37 @@ def with_template(plan, track_no: int, template: str):
     return replace(plan, tracks=tracks)
 
 
+_COMPOSED: dict = {}
+_EVENTS: dict = {}
+
+
 def compose_p(prof: ThemeProfile, track_no: int, set_seed: int = 0, template: str = "", genre=None, **kw):
     """``compose`` по seeded-плану профиля: так трек получают тесты PR-3a (тема → хук). ``template`` — форма трека
-    (по умолчанию её выбирает план)."""
+    (по умолчанию её выбирает план).
+
+    Чистая функция от аргументов, ``Track`` неизменяем (тесты строят новые через ``replace``) — один и тот же трек
+    параметризованные тесты разных файлов считают один раз на процесс (#3539: бюджет пакета). Аргументы, которые
+    нельзя хешировать (``history`` — список), кеш обходят."""
+    try:
+        key = (prof, track_no, set_seed, template, genre,
+               tuple(sorted((k, "MELODIES" if v is MELODIES else v) for k, v in kw.items())))
+        hash(key)
+    except TypeError:
+        key = None
+    if key is not None and key in _COMPOSED:
+        return _COMPOSED[key]
     plan = seeded_plan(prof, set_seed, genre=genre)
-    return compose(with_template(plan, track_no, template) if template else plan, track_no, **kw)
+    track = compose(with_template(plan, track_no, template) if template else plan, track_no, **kw)
+    if key is not None:
+        _COMPOSED[key] = track
+    return track
+
+
+def program_of(track, deck: str = "A"):
+    """``(Program, [события нот])`` рендера трека; на (трек, дека) считается один раз (#3539). Трек держим в кеше,
+    чтобы ``id`` не переиспользовался."""
+    key = (id(track), deck)
+    if key not in _EVENTS:
+        program = render(track, deck)
+        _EVENTS[key] = (track, program, program_events(program.code, program.form_beats)[1])
+    return _EVENTS[key][1:]

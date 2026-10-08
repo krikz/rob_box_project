@@ -10,12 +10,11 @@ from dataclasses import replace
 
 import pytest
 
-from melodies import MELODIES, compose_p, profile
+from melodies import MELODIES, compose_p, profile, program_of
 from parallel import pmap
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import club_track
 from rob_box_music.model import BEATS_PER_BAR
-from rob_box_music.render.events import program_events
 from rob_box_music.render.renardo import FORM_START, ROLE_SLOT, RenderError, render
 
 SEEDS = range(40)
@@ -28,8 +27,7 @@ def track_for(seed, deck="A", hooked=None, genre=None):
 
 
 def _events(track, deck="A"):
-    program = render(track, deck)
-    _parsed, events = program_events(program.code, program.form_beats)
+    program, events = program_of(track, deck)
     slot_role = {slot: role for role, slot in program.slots.items()}
     by_role = defaultdict(list)
     for ev in events:
