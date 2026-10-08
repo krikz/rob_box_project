@@ -66,11 +66,13 @@ def chord_pcs(style: kn.Style, key: Key, degree: int, quality: Optional[str] = N
 
 
 def voicings(pcs: Sequence[int], register: Tuple[int, int]) -> List[Tuple[int, ...]]:
-    """Все тесные расположения (обращения) аккорда внутри регистра."""
+    """Все тесные расположения (обращения) аккорда внутри регистра: звуки по кругу октавы от примы — у трезвучия и
+    септаккорда это порядок терций, у нонаккорда (ADR-0153 S6) нона встаёт между примой и терцией (тесно, в октаве)."""
     lo, hi = register
     out = []
-    for inv in range(len(pcs)):
-        order = list(pcs[inv:]) + list(pcs[:inv])
+    cyc = sorted(dict.fromkeys(pcs), key=lambda pc: (pc - pcs[0]) % 12)
+    for inv in range(len(cyc)):
+        order = cyc[inv:] + cyc[:inv]
         for base in (m for m in range(lo, hi + 1) if m % 12 == order[0]):
             notes = [base]
             for pc in order[1:]:

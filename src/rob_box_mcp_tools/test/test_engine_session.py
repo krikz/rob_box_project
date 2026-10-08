@@ -607,7 +607,7 @@ def test_dj_set_style_is_decided_by_code_and_the_set_plays_in_its_window(theme, 
 
 def test_dj_set_rejects_a_style_outside_the_table():
     tool = DjSetTool(None, _rig().owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 7)
-    result = tool.execute(action="start", theme="космос", style="jazz")
+    result = tool.execute(action="start", theme="космос", style="polka")
     assert result.success is False and "style" in result.error
 
 
