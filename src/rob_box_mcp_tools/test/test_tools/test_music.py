@@ -43,6 +43,12 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
 
     mgr = MusicManager.__new__(MusicManager)
     mgr._max_amp = 0.7
+    # ADR-0134 / Issue #3014 phase 1 — code-safety / music-quality passes
+    # now live on ``mgr._code_filter`` (см. core/music_code_filter.py).
+    # Tests using ``_make_manager`` must mirror the real ``__init__``.
+    from rob_box_mcp_tools.core.music_code_filter import MusicCodeFilter
+
+    mgr._code_filter = MusicCodeFilter(max_amp=mgr._max_amp)
     mgr._pattern_history = {}
     mgr._active_patterns = set()
     mgr._synthdefs_added = set()
