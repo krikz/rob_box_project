@@ -468,6 +468,94 @@ TIMEREOF
     log_info "Алерты: tail -f ~/.local/state/robbox_vision_alerts.log"
 }
 
+# Issue #3090: watchdog для /dev/hailo0 + DKMS-состояния.
+#
+# Симметрично setup_health_monitor(): timer + service + SSoT-скрипт.
+# Разница: setup_health_monitor смотрит на docker-стек (running-контейнеры),
+# этот watchdog — на kernel-level (hailo_pci.ko ↔ /dev/hailo0).
+#
+# Контракт (issue #3090 acceptance #4):
+#   - Timer `robbox-hailo-driver.timer` запускает раз в 5 минут
+#     `robbox_hailo_driver_check.sh`.
+#   - Если скрипт возвращает exit≠0 (verdict=alert), service → Failed,
+#     OnFailure= может слать алерт в monitoring.
+#   - Метрика `robbox_hailo_driver_alert` пишется в textfile для
+#     Prometheus node_exporter.
+#
+# Идемпотентен — повторный запуск безопасен (overwrite файлов).
+setup_hailo_driver_monitor() {
+    log_step "Настройка DKMS /dev/hailo0 watchdog (issue #3090)"
+
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    HAILO_SCRIPT_SRC="$SCRIPT_DIR/../monitoring/robbox_hailo_driver_check.sh"
+    HAILO_SCRIPT_DST="/usr/local/bin/robbox_hailo_driver_check.sh"
+    TIMER_DST="/etc/systemd/system/robbox-hailo-driver.timer"
+    SERVICE_DST="/etc/systemd/system/robbox-hailo-driver.service"
+
+    # 1. SSoT-скрипт → /usr/local/bin (стабильный путь для timer'а)
+    if [[ ! -f "$HAILO_SCRIPT_SRC" ]]; then
+        log_error "Не найден $HAILO_SCRIPT_SRC — обновите репозиторий"
+        return 1
+    fi
+    sudo install -m 0755 "$HAILO_SCRIPT_SRC" "$HAILO_SCRIPT_DST"
+    log_info "SSoT-скрипт установлен: $HAILO_SCRIPT_DST"
+
+    # 2. Boot-log с правильными правами (для ExecStartPost в service).
+    sudo touch /var/log/robbox-hailo-driver-boot.log
+    sudo chown "$USER:$USER" /var/log/robbox-hailo-driver-boot.log
+    sudo chmod 0644 /var/log/robbox-hailo-driver-boot.log
+
+    # 3. systemd service-файл (Type=oneshot, не рестартим автоматически —
+    # если алерт сработал, это сигнал оператору, а не повод рефрешить timer).
+    sudo tee "$SERVICE_DST" > /dev/null << SERVICEEOF
+[Unit]
+Description=ROBBOX Hailo PCIe Driver Watchdog (issue #3090)
+# После docker.service — hailortcli и /dev/hailo0 могут быть нужны.
+After=docker.service
+# Не требуем docker.service строго (Requires=) — watchdog должен
+# корректно отвечать даже когда docker daemon лежит (verdict=infra_error,
+# не alert). Это симметрично setup_health_monitor для vision health.
+
+[Service]
+Type=oneshot
+User=$USER
+Environment="ROBBOX_HAILO_BOOT_LOG=/var/log/robbox-hailo-driver-boot.log"
+Environment="HOME=/home/$USER"
+ExecStart=$HAILO_SCRIPT_DST --json
+SERVICEEOF
+
+    # 4. systemd timer-файл (каждые 5 минут, persistent — переживёт downtime).
+    sudo tee "$TIMER_DST" > /dev/null << TIMEREOF
+[Unit]
+Description=ROBBOX Hailo PCIe Driver Watchdog Timer
+
+[Timer]
+# Каждые 5 минут (симметрично robbox-vision-health.timer).
+# Persistent=true: после reboot догоним пропущенные запуски
+# (если машина лежала < 1 час, systemd запустит watchdog сразу).
+# Issue #3090: grace-период внутри скрипта (120 сек после boot) даёт
+# время на kernel init + driver load — в первые 2 минуты после reboot
+# alert не сработает, даже если DKMS rebuild ещё идёт.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+    # 5. Активация.
+    sudo systemctl daemon-reload
+    sudo systemctl enable robbox-hailo-driver.timer
+    sudo systemctl restart robbox-hailo-driver.timer
+
+    log_success "Hailo-driver watchdog настроен (timer + SSoT + boot-log)"
+    log_info "Проверить: systemctl list-timers robbox-hailo-driver"
+    log_info "Логи: journalctl -u robbox-hailo-driver.service -n 50"
+    log_info "Алерты: tail -f ~/.local/state/robbox_hailo_alerts.log"
+    log_info "Метрика: cat ~/.local/state/robbox_hailo_driver.prom"
+}
+
 # Настройка zram-swap (ADR-0111, issue #2621)
 setup_zram_swap() {
     log_step "Настройка zram-swap (issue #2621, ADR-0111)"
@@ -572,6 +660,16 @@ main() {
     # t_5ab5e44a: health-monitor ставим ПОСЛЕ setup_autostart, чтобы
     # ExecStartPost из robbox-vision.service уже мог писать в /var/log.
     setup_health_monitor
+    # Issue #3090: DKMS /dev/hailo0 watchdog (root cause — kernel upgrade без
+    # dkms rebuild). Идёт ПОСЛЕ setup_health_monitor потому что это
+    # hardware-уровень (kernel ↔ DKMS ↔ device node), а setup_health_monitor
+    # смотрит на docker-стек (контейнеры). Разные классы сбоев — разные
+    # watchdog'и. Ставим только если Hailo AI HAT физически виден через lspci.
+    if command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | grep -qi "Hailo"; then
+        setup_hailo_driver_monitor
+    else
+        log_info "Hailo AI HAT не обнаружен — пропускаем setup_hailo_driver_monitor"
+    fi
     # ADR-0111 / issue #2621: zram-swap + MemoryLow для sshd
     # (поднимаем ДО docker, чтобы лимиты были корректны с первого запуска)
     setup_zram_swap
