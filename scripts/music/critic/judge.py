@@ -5,9 +5,9 @@
 утверждений фиксированной схемы ``[{t0, t1, kind, claim, confidence}]``. Он только **предлагает**: ни одно
 утверждение не становится карточкой, пока ``verify.py`` его не подтвердил.
 
-Провайдер выбирается env ``CRITIC_JUDGE`` = ``fake`` | ``qwen_text`` | ``qwen`` | ``gemini``. Не задан или неизвестен — ошибка
-``JudgeUnavailable`` (тихой деградации «на фейк» нет). ``qwen``/``gemini`` без ключа тоже падают понятной ошибкой;
-с ключом они пока каркас: реальный вызов API не написан и **не проверен** (ключа нет) — честный ``JudgeNotImplemented``.
+Провайдер выбирается env ``CRITIC_JUDGE`` = ``fake`` | ``qwen_text`` | ``qwen_omni`` | ``gemini``. Не задан или неизвестен — ошибка
+``JudgeUnavailable`` (тихой деградации «на фейк» нет). ``qwen_omni``/``qwen_text``/``gemini`` без ключа тоже падают понятной ошибкой;
+``gemini`` с ключом — каркас (``JudgeNotImplemented``). CLI: ``python judge.py --help``.
 
 Кеш: ответ лежит рядом с записью, имя ``<запись>.<sha256[:16] записи>.<sha256[:8] промпта>.<провайдер>.judge.json``.
 Бюджет J3: env ``CRITIC_JUDGE_BUDGET_USD`` (по умолчанию 0.05 на прогон), счётчик стоимости — ``Budget``.
@@ -15,13 +15,18 @@
 
 from __future__ import annotations
 
+import argparse
+import base64
 import hashlib
 import json
 import os
+import re
+import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 #: Перечень классов утверждений (ADR-0157 §2.5); ``param_reading`` — чтение числового параметра кода (``lpf``,
 #: ``delay``, ``sus``, ``amp``, ``tempo``, ``pshift``, ``scale``): отдельный класс, потому что именно тут судья ошибался (§1.4).
@@ -30,7 +35,7 @@ KINDS = ("hole", "overlap", "level", "sustain", "phrasing", "out_of_key", "chord
 #: Необязательные подсказки судье-«указателю» (роль, интервал, число…): без них верификатор честно ответит «не проверяемо».
 ARG_KEYS = ("role", "other", "direction", "midi", "pcs", "interval", "param", "value", "seconds")
 DEFAULT_BUDGET_USD = 0.05  # ADR-0157 J3: ≤ $0.05 на запись
-COST_PER_CALL_USD = {"fake": 0.0, "qwen": 0.01, "qwen_text": 0.01, "gemini": 0.01}  # оценка ADR §3.6 по чужим ценам, не измерено
+COST_PER_CALL_USD = {"fake": 0.0, "qwen_omni": 0.01, "qwen_text": 0.01, "gemini": 0.01}  # оценка ADR §3.6 по чужим ценам, не измерено
 
 
 class JudgeError(RuntimeError):
@@ -132,17 +137,6 @@ class _KeyedJudge:
         raise JudgeNotImplemented(f"{self.name}: вызов API не написан и не проверен (ключа на момент PR-4 не было)")
 
 
-class QwenOmniJudge(_KeyedJudge):
-    """Слушающий Qwen Omni: в подписке (проверено 12.10) нет модели со звуком — честная ошибка, а не имитация."""
-
-    name = "qwen"
-    env_keys = ("QWEN_API_KEY", "DASHSCOPE_API_KEY")
-
-    def judge(self, recording: Path | None, prompt: str) -> list[Claim]:
-        raise JudgeNotImplemented("qwen: нет audio-модели в подписке (input_audio -> 400 «incorrect modal audio»); "
-                                  "используй CRITIC_JUDGE=qwen_text — он НЕ слушает запись")
-
-
 QWEN_BASE_URL = "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"
 QWEN_TEXT_MODEL = "qwen3.8-max"
 TEXT_ONLY_RULES = ("Ответь ТОЛЬКО JSON-списком [{t0,t1,kind,claim,confidence,args?}], kind из: " + ", ".join(KINDS)
@@ -198,6 +192,92 @@ def _dotenv_value(path: Path | None, var: str) -> str:
     return ""
 
 
+OMNI_BASE_URL = "https://maas.qwencloudapi.com/compatible-mode/v1"
+OMNI_MODEL = "qwen3.8-omni-flash"  # env CRITIC_OMNI_MODEL; запасная — qwen3.5-omni-plus (без reasoning)
+#: USD за 1M токенов (текст-вход, аудио-вход, выход). НЕ СВЕРЕНО С ПРАЙСОМ — числа-заглушки, обновить по прайсу провайдера.
+OMNI_PRICE_USD_PER_M = {"qwen3.8-omni-flash": (0.4, 3.0, 1.6), "qwen3.5-omni-plus": (0.8, 6.0, 3.2)}
+OMNI_RULES = (TEXT_ONLY_RULES.split(". Тебе дан")[0] + ". Ты слушаешь приложенную запись И видишь код/модель трека: "
+              "t0/t1 — секунды файла; для каждого утверждения заполни args (role из kick/hats/clap/bass/pad/lead/loop/fx, "
+              "midi, param, seconds), когда это следует из кода.")
+SseTransport = Callable[[str, dict, dict], Iterable[str]]
+
+
+def _post_sse(url: str, headers: dict, body: dict) -> Iterable[str]:
+    req = urllib.request.Request(url, json.dumps(body).encode("utf-8"), {**headers, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 — адрес задан константой/env
+            for raw in resp:
+                yield raw.decode("utf-8", errors="replace").rstrip("\r\n")
+    except urllib.error.HTTPError as exc:
+        raise JudgeError(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:300]}") from exc
+
+
+def parse_sse(lines: Iterable[str]) -> tuple[str, dict]:
+    """SSE ``data:`` строки chat/completions -> (склеенный текст delta.content, usage последнего чанка)."""
+    text, usage = [], {}
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        chunk = json.loads(payload)
+        if chunk.get("error"):
+            raise JudgeError(f"ошибка в SSE-чанке: {str(chunk['error'])[:300]}")
+        for choice in chunk.get("choices") or ():
+            text.append((choice.get("delta") or {}).get("content") or "")
+        usage = chunk.get("usage") or usage
+    return "".join(text), usage
+
+
+def omni_cost_usd(model: str, usage: Mapping[str, Any]) -> float:
+    """Стоимость по usage и таблице ``OMNI_PRICE_USD_PER_M`` (не сверена с прайсом)."""
+    text_in, audio_in, out = OMNI_PRICE_USD_PER_M.get(model, (0.0, 0.0, 0.0))
+    audio = (usage.get("prompt_tokens_details") or {}).get("audio_tokens", 0)
+    plain = max(usage.get("prompt_tokens", 0) - audio, 0)
+    return (plain * text_in + audio * audio_in + usage.get("completion_tokens", 0) * out) / 1e6
+
+
+class QwenOmniJudge:
+    """Слушающий Qwen Omni (pay-as-you-go, ключ ``QWEN_PSG``): запись (input_audio mp3) + модель трека текстом, SSE-поток.
+
+    После ``judge`` в ``last_usage`` — usage, в ``last_cost_usd`` — стоимость по таблице цен. Проверено только против
+    заглушки transport; реальные вызовы делает координатор.
+    """
+
+    name = "qwen_omni"
+    listens = True
+
+    def __init__(self, env: Mapping[str, str] | None = None, key_var: str = "QWEN_PSG", env_file: Path | None = None,
+                 transport: SseTransport = _post_sse) -> None:
+        env = os.environ if env is None else env
+        self.key = env.get(key_var, "") or _dotenv_value(env_file, key_var)
+        if not self.key:
+            raise JudgeUnavailable(f"qwen_omni: нет ключа (env {key_var}, .env {env_file}); судья не вызван")
+        self.base = env.get("CRITIC_OMNI_BASE_URL", OMNI_BASE_URL).rstrip("/")
+        self.model = env.get("CRITIC_OMNI_MODEL", OMNI_MODEL)
+        self.transport = transport
+        self.last_usage: dict = {}
+        self.last_cost_usd = 0.0
+
+    def judge(self, recording: Path | None, prompt: str) -> list[Claim]:
+        if recording is None or not Path(recording).is_file():
+            raise JudgeUnavailable("qwen_omni: нужна запись (mp3) — судья без звука это qwen_text")
+        audio = base64.b64encode(Path(recording).read_bytes()).decode("ascii")
+        body = {"model": self.model, "stream": True, "stream_options": {"include_usage": True}, "modalities": ["text"],
+                "messages": [{"role": "system", "content": OMNI_RULES},
+                             {"role": "user", "content": [
+                                 {"type": "input_audio", "input_audio": {"data": f"data:;base64,{audio}", "format": "mp3"}},
+                                 {"type": "text", "text": prompt}]}]}
+        text, usage = parse_sse(self.transport(f"{self.base}/chat/completions", {"Authorization": f"Bearer {self.key}"}, body))
+        self.last_usage, self.last_cost_usd = usage, omni_cost_usd(self.model, usage)
+        try:
+            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            return parse_claims(json.loads(text))
+        except (TypeError, ValueError) as exc:
+            raise JudgeSchemaError(f"qwen_omni: ответ не разобран ({type(exc).__name__}: {exc}): {text[:200]!r}") from exc
+
+
 class GeminiJudge(_KeyedJudge):
     name = "gemini"
     env_keys = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
@@ -214,9 +294,12 @@ def make_judge(env: Mapping[str, str] | None = None) -> Judge:
     if name == "qwen_text":
         env_file = Path(env["CRITIC_JUDGE_ENV_FILE"]) if env.get("CRITIC_JUDGE_ENV_FILE") else None
         return QwenTextJudge(env, env.get("CRITIC_JUDGE_KEY_VAR", "QWEN"), env_file)
-    providers = {"qwen": QwenOmniJudge, "gemini": GeminiJudge}
+    if name == "qwen_omni":
+        env_file = Path(env["CRITIC_JUDGE_ENV_FILE"]) if env.get("CRITIC_JUDGE_ENV_FILE") else None
+        return QwenOmniJudge(env, env.get("CRITIC_JUDGE_KEY_VAR", "QWEN_PSG"), env_file)
+    providers = {"gemini": GeminiJudge}
     if name not in providers:
-        raise JudgeUnavailable(f"CRITIC_JUDGE={name!r}: ожидалось fake|qwen_text|qwen|gemini (по умолчанию судьи нет)")
+        raise JudgeUnavailable(f"CRITIC_JUDGE={name!r}: ожидалось fake|qwen_text|qwen_omni|gemini (по умолчанию судьи нет)")
     return providers[name](env)
 
 
@@ -256,7 +339,61 @@ def run_judge(judge: Judge, recording: Path, prompt: str, budget: Budget) -> lis
     if path.is_file():
         budget.cache_hits += 1
         return parse_claims(json.loads(path.read_text(encoding="utf-8")))
-    budget.charge(COST_PER_CALL_USD.get(judge.name, 0.0), judge.name)
+    estimate = COST_PER_CALL_USD.get(judge.name, 0.0)
+    budget.charge(estimate, judge.name)
     claims = judge.judge(recording, prompt)
+    if getattr(judge, "last_cost_usd", None) is not None:  # фактическая стоимость по usage вместо оценки
+        budget.spent += judge.last_cost_usd - estimate
     path.write_text(json.dumps([c.as_json() for c in claims], ensure_ascii=False, indent=1), encoding="utf-8")
     return claims
+
+
+# --- CLI: один стиль бандла -> судья -> фикстура для verify.py -------------------------------------------------
+
+TRACK_HEAD = re.compile(r"^`(set\d+):(\d+):([A-Z]):([0-9a-f]+)` .*?≈([\d.]+) с в файле", re.M)
+
+
+def style_inputs(bundle_dir: Path, style: str) -> tuple[Path, str, list[dict]]:
+    """(mp3, промпт = md бандла до ответов судьи, tracks[{model,start_s}]) для стиля ``<bundle>/<style>/<style>.md``."""
+    md = (bundle_dir / style / f"{style}.md").read_text(encoding="utf-8")
+    head = md.split("\n## Ответ", 1)[0]
+    tracks = [{"model": f"{s}_{n}_{d}_{h}.json", "start_s": float(off)} for s, n, d, h, off in TRACK_HEAD.findall(head)]
+    if not tracks:
+        raise JudgeError(f"{style}: в md нет блоков «Код аранжировщика» с позицией трека")
+    return bundle_dir / style / f"{style}.mp3", head, tracks
+
+
+def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    ap = argparse.ArgumentParser(description="Судья на одном стиле бандла; результат — фикстура для verify.py")
+    ap.add_argument("--provider", required=True, choices=["qwen_omni", "qwen_text", "fake"])
+    ap.add_argument("--env-file", type=Path, default=None, help=".env с ключом (значение не печатается)")
+    ap.add_argument("--bundle-dir", type=Path, required=True, help="style_critic бандл (<style>/<style>.md и .mp3)")
+    ap.add_argument("--style", required=True)
+    ap.add_argument("--out", type=Path, required=True, help="каталог результата: <style>.json")
+    ap.add_argument("--fixture", type=Path, default=None, help="для provider=fake: заготовка")
+    args = ap.parse_args(argv)
+    env = {**os.environ, "CRITIC_JUDGE": args.provider}
+    if args.env_file:
+        env["CRITIC_JUDGE_ENV_FILE"] = str(args.env_file)
+    if args.fixture:
+        env["CRITIC_JUDGE_FIXTURE"] = str(args.fixture)
+    judge = make_judge(env)
+    mp3, prompt, tracks = style_inputs(args.bundle_dir, args.style)
+    budget = Budget(env=env)
+    claims = run_judge(judge, mp3, prompt, budget)
+    args.out.mkdir(parents=True, exist_ok=True)
+    out = args.out / f"{args.style}.json"
+    doc = {"style": args.style, "provider": judge.name, "listens": getattr(judge, "listens", None),
+           "model": getattr(judge, "model", None), "usage": getattr(judge, "last_usage", None),
+           "cost_usd": round(budget.spent, 5), "tracks": tracks, "claims": [c.as_json() for c in claims]}
+    out.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    print(f"{args.style}: {len(claims)} утверждений, provider={judge.name}, cost=${budget.spent:.4f}, "
+          f"cache_hits={budget.cache_hits} -> {out}")
+    print(f"дальше: python scripts/music/critic/verify.py {out} --tracks <каталог моделей треков> --out {args.out / 'report.md'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

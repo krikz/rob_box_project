@@ -357,11 +357,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--tracks", type=Path, required=True, help="каталог моделей треков (music_v2_tracks_dir)")
     ap.add_argument("--out", type=Path, default=None, help="куда писать report.md")
     args = ap.parse_args(argv)
-    per_style = {}
+    per_style, provider = {}, "fake"
     for fx in args.fixtures:
         data, plan, claims = load_fixture(fx, args.tracks)
         per_style[data["style"]] = verify(plan, claims, data["style"])
-    text = render_report(per_style)
+        provider = data.get("provider", provider)
+    text = render_report(per_style, provider)
     if args.out:
         args.out.write_text(text, encoding="utf-8")
     print(text)
