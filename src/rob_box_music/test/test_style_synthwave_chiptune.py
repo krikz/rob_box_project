@@ -1,7 +1,7 @@
 """ADR-0153 S2: стили ``synthwave`` и ``chiptune`` — записи ``knowledge.STYLES``, ``pad.arp``, выбор стиля кодом.
 
 Поведение — на ``SetPlan``/``Track``/событиях рендера: темп в окне стиля, бочки и синты из таблиц стиля (только
-замеренные), арпеджио из тонов аккорда в регистре по сетке 16-х, сайдчейн мягкий (synthwave) или его нет (chiptune),
+замеренные), арпеджио из тонов аккорда в регистре по сетке 16-х, сайдчейн мягкий (synthwave, chiptune — ADR-0157 H7),
 A9-модель стиля на всех комбинациях тембров. Клуб побайтно тот же — ``test_style_same_tracks``.
 """
 
@@ -90,11 +90,13 @@ def test_bass_figures_never_hit_a_drop_kick_step(name):
             assert not set(kn.BASS_FIGURES[figure].steps) & set(drop), (name, figure, drop)
 
 
-def test_synthwave_drop_is_outrun_with_a_soft_pump_and_chiptune_has_no_sidechain():
+def test_synthwave_drop_is_outrun_with_a_soft_pump_and_chiptune_pumps_the_bass_softly():
     synth, chip = kn.STYLES["synthwave"], kn.STYLES["chiptune"]
     assert synth.looks[0][1].kick == kn.KICK_PATTERNS["outrun"]
     assert all(look.duck_depth <= 0.3 for w in synth.genre_windows.values() for _t, look in w.looks)
-    assert chip.duck_roles == () and all(look.duck_depth == 0 for _t, look in chip.looks)
+    # ADR-0157 H7: дакинг у всех стилей с бочкой — chiptune качает бас мягко (арпеджио пэда под сайдчейн не идёт)
+    assert set(chip.duck_roles) == {"bass", "pad"}
+    assert [look.duck_depth for _t, look in chip.looks] == [kn.SOFT_DUCK_DROP, kn.SOFT_DUCK, kn.SOFT_DUCK]
     assert "held" in synth.pad_figures and "arp" in synth.pad_figures and "arp" in chip.pad_figures
 
 
@@ -248,8 +250,8 @@ def test_validator_takes_the_style_from_the_track():
     chip = compose(_plan("космос", 2, "chiptune"), 2)
     with pytest.raises(TrackError, match="parts.kick.sample"):  # бочка chiptune не из пула synthwave
         validate(replace(synth, parts={**synth.parts, "kick": chip.parts["kick"]}))
-    with pytest.raises(TrackError, match="mix.duck_roles"):  # у chiptune сайдчейна нет
-        validate(replace(chip, mix=replace(chip.mix, duck_roles=frozenset({"bass"}), duck=synth.mix.duck)))
+    with pytest.raises(TrackError, match="mix.duck_roles"):  # лид под сайдчейн chiptune не идёт
+        validate(replace(chip, mix=replace(chip.mix, duck_roles=frozenset({"lead"}), duck=synth.mix.duck)))
 
 
 # ── A9-модель стиля на всех комбинациях ────────────────────────────────────────────────────────────────────────

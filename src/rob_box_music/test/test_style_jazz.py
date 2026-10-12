@@ -205,13 +205,15 @@ def test_comping_misses_strong_beats_and_plays_ninth_chords(tracks):
     assert seen >= 2
 
 
-def test_kit_is_ride_and_pedal_hat_files_without_sidechain(tracks):
+def test_kit_is_ride_and_pedal_hat_files_with_a_soft_bass_pump(tracks):
     for _plan_, track, by_role in tracks:
         assert track.parts["hats"].synth_or_sample in JAZZ.drum_files["hats"]
         assert track.parts["clap"].synth_or_sample == "sonicpi_drum_cymbal_pedal"
         clap = {round(e.beat % BEATS_PER_BAR, 3) for e in by_role["clap"]}
         assert clap <= {1.0, 3.0}, "педаль хэта на 2 и 4"
-        assert not track.mix.duck_roles and track.mix.a9_model >= JAZZ.a9_model_low
+        # ADR-0157 H7: мягкий насос баса под бочку (comping под сайдчейн не идёт, ``PadFigure.ducked``)
+        assert track.mix.duck_roles == {"bass"} and track.mix.a9_model >= JAZZ.a9_model_low
+        assert max(d.depth for d in track.mix.duck) == kn.SOFT_DUCK_DROP
 
 
 def test_solo_generator_on_a_two_five_one_by_seed():

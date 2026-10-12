@@ -150,7 +150,7 @@ def test_drums_are_pack_files_and_their_events_are_the_model(tracks):
         assert files <= program.sample_files and not program.samples, "удары — файлы паков, не play()"
         assert track_composition(track)["kick"] in LOFI.kick_pool
         assert track.mix.a9_model >= LOFI.a9_model_low, track.mix.a9_model
-        assert not track.mix.duck_roles, "без сайдчейна"
+        assert track.mix.duck_roles == {"bass"}, "мягкий насос баса (ADR-0157 H7), comping без сайдчейна"
         model = sorted(round(i / 4 + st.offset_ms * track.bpm / 60000.0, 3)
                        for i, st in enumerate(kick.grid.steps) if st.on and _sounds(track, "kick", i / 4))
         assert sorted(round(e.beat, 3) for e in by_role["kick"]) == model, "события бочки = модель со свингом"

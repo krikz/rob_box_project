@@ -6,7 +6,8 @@
 ``Section.roles`` от начала формы (``start=Clock.next_bar()`` — доля, где встают плееры), уровень ``amp`` — из
 уровня роли по модели громкости (``arrange.mix.level_amp``); акценты ×
 сайдчейн-огибающая ролей ``Mix.duck_roles`` — ``amplify=[...]`` (период списка свёрнут); бочка — ``sample=`` из
-``knowledge.KICK_SOUNDS``; LPF-свип ``Mix.lpf`` — ``lpf=var([...], [доли])`` по долям (PR-7);
+``knowledge.KICK_SOUNDS``; LPF-свип ``Mix.lpf`` — ``lpf=var([...], [доли])`` по долям (PR-7); HPF входа деки
+(``Transition.filter_in``, ADR-0149 §3.12) — ``hpf=var([...], [доли])`` за такты до свопа баса (:func:`_hpf`);
 свинг ``offset_ms`` — ``delay=[...]`` в долях
 (глобальный ``Clock.swing`` не используется: сайдчейн не должен уехать от бочки, ADR-0149 §3.4).
 Стерео ``Mix.stereo`` (§3.9): ударные — ``pan=[...]`` со сменой стороны на каждом ударе; два голоса тональной роли —
@@ -40,7 +41,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..arrange.mix import alternate_pan, duck_envelope, file_gain, section_arc, voice_amp
-from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Part, Stereo, Track, validate
+from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Part, Stereo, Track, roles_at_bar, validate
 from .program import Program
 
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
@@ -143,6 +144,23 @@ def _lpf(track: Track, role: str) -> List[str]:
     return [f"lpf=var({_list(v for v, _ in values)}, {_list(_num(n) for _, n in values)}, start={FORM_START})"]
 
 
+def _hpf(track: Track, role: str) -> List[str]:
+    """``hpf=var([...], [доли])`` входа деки в блэнде (``Transition.filter_in``, ADR-0149 §3.12, ADR-0157 H7): срез от
+    ``HPF_IN_HZ[0]`` к ``HPF_IN_HZ[1]`` по экспоненте по долям первых ``bass_swap_bar`` тактов, дальше снят
+    (``HPF_OPEN``) до конца формы. Только роли, звучащие до свопа; бочка и песня — без фильтра."""
+    tr = track.transition_in
+    swap = tr.bass_swap_bar
+    if not tr.filter_in or track.form.song or role == "kick" or not swap:
+        return []
+    if not any(role in roles_at_bar(track, bar) for bar in range(swap)):
+        return []
+    beats = swap * BEATS_PER_BAR
+    lo_hz, hi_hz = kn.HPF_IN_HZ
+    values = [_num(round(lo_hz * (hi_hz / lo_hz) ** (k / (beats - 1)))) for k in range(beats)] + [_num(kn.HPF_OPEN)]
+    durs = ["1"] * beats + [_num(track.form.bars_total * BEATS_PER_BAR - beats)]
+    return [f"hpf=var({_list(values)}, {_list(durs)}, start={FORM_START})"]
+
+
 def _note_lpf(role: str, cutoffs: Sequence[float], opts: Sequence[str]) -> List[str]:
     """``lpf=[...]`` — срез на каждое событие свёрнутого рисунка (``PitchEvent.lpf``, пауза — 0); нет срезов у нот —
     ничего. Свип секции на той же роли (``Mix.lpf``) занял бы тот же ключ: оба сразу — ``RenderError``."""
@@ -184,7 +202,7 @@ def _tail(track: Track, role: str, part: Part, accents: Sequence[int], varied: b
     amplify = _amplify(track, role, accents, varied, gains)
     if len(set(amplify)) > 1:
         opts.append(f"amplify={_list(_num(a) for a in amplify)}")
-    return opts + _stereo(st, hits, track.bpm) + _lpf(track, role)
+    return opts + _stereo(st, hits, track.bpm) + _lpf(track, role) + _hpf(track, role)
 
 
 def _delay_beats(offset_ms: int, bpm: int) -> float:
@@ -250,7 +268,8 @@ def _pack_drum_line(slot: str, role: str, part: Part, track: Track) -> str:
     opts += [f"amplify={_list(_num(a) for a in folded)}"] if len(set(folded)) > 1 else []
     opts += [f"delay={_list(_num(d) for d in delays)}"] if any(delays) else []
     opts += _stereo(st, [pattern[s] is not None for s in starts], track.bpm)
-    return f"{slot} >> loop({info.loop_arg!r}, " + ", ".join(opts + _lpf(track, role)) + ")"
+    opts += _lpf(track, role) + _hpf(track, role)
+    return f"{slot} >> loop({info.loop_arg!r}, " + ", ".join(opts) + ")"
 
 
 def _pack_timing(pattern: Sequence[Optional[tuple]], starts: Sequence[int],
