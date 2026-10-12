@@ -12,17 +12,24 @@
 (``knowledge.CHOOSER_WEIGHTS``: 3·название + 2·композитор + 1·годность − 2·недавнее + 0.5·рейтинг); разрыв первого и
 второго не меньше ``CHOOSER_CLEAR_GAP`` — модель не зовётся. Модель отвечает только ``id`` из перечня: ответ вне
 перечня, исключение или пустота — детерминированный ответ (модель не может расширить список кандидатов).
+
+:func:`dice` — последняя ступень цепочки Jev → LLM → код (решение Шифу 13.10, #3564): не argmax, а взвешенный бросок
+по очкам кода, вероятность ∝ ``exp(score / CHOOSER_DICE_TEMPERATURE)`` (бросок — ``diversity.roulette``, ADR-0146).
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from .knowledge import (CHOOSER_CLEAR_GAP, CHOOSER_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS,
-                        PLAY_COUNT_WINDOW_SEC)
+from .diversity import roulette
+from .knowledge import (CHOOSER_CLEAR_GAP, CHOOSER_DEADLINE_MS, CHOOSER_DICE_TEMPERATURE, CHOOSER_WEIGHTS,
+                        HOOK_FRESH_SETS, PLAY_COUNT_WINDOW_SEC)
 
 DETERMINISTIC = "deterministic"
+#: Провайдер ответа «кубика» кода (последняя ступень цепочки выбора, #3564).
+DICE = "code"
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,24 @@ def score(features: Mapping[str, float]) -> float:
     return sum(points(features).values())
 
 
+def dice_weights(question: "ChoiceQuestion", temperature: float = CHOOSER_DICE_TEMPERATURE) -> List[float]:
+    """Веса «кубика» по очкам кода: ``exp((score - max) / T)`` (лучший — 1.0; сдвиг на максимум — без переполнения)."""
+    scores = [score(o.features) for o in question.options]
+    top = max(scores)
+    return [math.exp((s - top) / temperature) for s in scores]
+
+
+def dice(question: "ChoiceQuestion", rng: Any, temperature: float = CHOOSER_DICE_TEMPERATURE) -> "Choice":
+    """Выбор кодом «с коэффициентом и кубиком» (решение Шифу 13.10, #3564): вероятность ∝ ``exp(score / T)``,
+    бросок — общий ``diversity.roulette`` (ADR-0146); уверенность — вероятность выпавшего. Детерминирован при
+    заданном ``rng`` (один ``rng.random()``)."""
+    if not question.options:
+        raise ValueError("ChoiceQuestion без вариантов")
+    weights = dice_weights(question, temperature)
+    picked = roulette(range(len(weights)), weights, rng)
+    return Choice(question.options[picked].id, weights[picked] / sum(weights), DICE)
+
+
 class DeterministicChooser:
     """Взвешенная сумма признаков; неоднозначный ответ (разрыв < ``CHOOSER_CLEAR_GAP``) отдаётся ``model``, если он
     подключён (PR-7), иначе — детерминированно."""
@@ -141,5 +166,5 @@ class DeterministicChooser:
         return choice, [choice.id] + [o.id for _s, o in self.rank(question) if o.id != choice.id]
 
 
-__all__ = ["Choice", "ChoiceQuestion", "Chooser", "DETERMINISTIC", "DeterministicChooser", "Option", "Plays", "penalty",
-           "play_stats", "points", "recency", "score"]
+__all__ = ["Choice", "ChoiceQuestion", "Chooser", "DETERMINISTIC", "DICE", "DeterministicChooser", "Option", "Plays",
+           "dice", "dice_weights", "penalty", "play_stats", "points", "recency", "score"]

@@ -85,6 +85,7 @@ class PieceChain:
         self._classic = classic
         self.memory = PieceMemory(history)  # что одиночный заказ играл недавно (music_history, ADR-0146)
         self._chooser = chooser or DeterministicChooser()
+        self._plain = DeterministicChooser()  # запасные уровни перебора — без модели
         self._log = log
         self._clock = clock
 
@@ -164,11 +165,13 @@ class PieceChain:
 
     def _order(self, work: str, ref: WorkRef, candidates: Sequence[WorkCandidate],
                records: Mapping[str, Tuple[Dict[str, Any], str]]) -> List[WorkCandidate]:
-        """Очередь перебора: по уровням, внутри уровня — ``Chooser``; выбор и признаки — в лог."""
+        """Очередь перебора: по уровням, внутри уровня — ``Chooser``; выбор и признаки — в лог. Модель (цепочка/тень,
+        #3564) спрашивается только на первом уровне — он и решает, что играть; запасные уровни упорядочивает код, иначе
+        каждый уровень добавлял бы свои дедлайны к бюджету старта."""
         by_id = {c.id: c for c in candidates}
         order: List[WorkCandidate] = []
         for question in self.questions(work, ref, candidates, records):
-            choice, ids = self._chooser.order(question)
+            choice, ids = (self._chooser if not order else self._plain).order(question)
             if not order:
                 self._log_choice(work, ref, question, choice)
             order += [by_id[i] for i in ids]

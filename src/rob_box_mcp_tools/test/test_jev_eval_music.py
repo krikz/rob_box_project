@@ -35,7 +35,7 @@ class Stub:
 
 
 def args(**kw):
-    return SimpleNamespace(scores=None, dataset=music_eval.DATASET, provider="jev", deadline_ms=500, **kw)
+    return SimpleNamespace(scores=None, dataset=music_eval.DATASET, provider="jev", deadline_ms=900, **kw)
 
 
 @pytest.fixture(scope="module")

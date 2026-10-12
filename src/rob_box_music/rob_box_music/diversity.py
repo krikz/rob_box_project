@@ -46,6 +46,7 @@ __all__ = [
     "opening_order",
     "recent_hooks",
     "recent_values",
+    "roulette",
     "track_composition",
     "track_history",
     "track_json",
@@ -143,7 +144,12 @@ def weighted_pick(
         raise ValueError(f"weighted_pick: floor={floor!r} вне (0, 1]")
     if not 0.0 <= decay <= 1.0:
         raise ValueError(f"weighted_pick: decay={decay!r} вне [0, 1]")
-    weights = [_option_weight(option, recent_values, decay, floor) for option in options]
+    return roulette(options, [_option_weight(option, recent_values, decay, floor) for option in options], rng)
+
+
+def roulette(options: Sequence[T], weights: Sequence[float], rng: Any) -> T:
+    """«Кубик»: опция с вероятностью ∝ весу (веса > 0), ровно один ``rng.random()``; общий для
+    :func:`weighted_pick` и выбора пьесы кодом (``choice.dice``, #3564)."""
     point = rng.random() * sum(weights)
     acc = 0.0
     for option, weight in zip(options, weights):
