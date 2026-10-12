@@ -31,10 +31,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, List, Mapping, Optional, Sequence
 
+from rob_box_harness.core.agent_core import _MUSIC_LAUNCH_TOOLS as _LEGACY_MUSIC_TOOLS
+
 from .media_command_grammar import MediaIntent, parse_media_command
 from .media_phrases import (
     DJ_FAIL_TEXT,
     NOT_LAUNCHED_TEXT,
+    NOT_PLAYED_TEXT,
     REQUEST_FAIL_TEXT,
     SET_KEPT_TEXT,
     SET_PLAYING_REASON,
@@ -149,36 +152,69 @@ class MusicTurn:
 LAUNCH_INTENTS: frozenset = frozenset({MediaIntent.DJ, MediaIntent.REQUEST_MUSIC})
 
 
+#: Интенты, где роутер сам запускает музыку и говорит фразу запуска (сет, заказ, мелодия по имени): ход в историю
+#: модели фразой не кладётся (#3565). ``dj_set`` у ``STOP`` («выключи») запуском не является.
+ROUTER_LAUNCH_INTENTS: frozenset = LAUNCH_INTENTS | {MediaIntent.PLAY_NAMED}
+
+
+def history_recorder(core: Any, intent: MediaIntent) -> Optional[Any]:
+    """``AgentCore.record_external_turn`` для хода роутера или ``None``: ход с запуском (:data:`ROUTER_LAUNCH_INTENTS`)
+    в окно модели не пишется — фраза запуска стала бы образцом, который модель повторяет с ``tools=[]`` (#3461)."""
+    record = getattr(core, "record_external_turn", None)
+    return record if callable(record) and intent not in ROUTER_LAUNCH_INTENTS else None
+
+
 def launch_requested(user_text: str, heard_tracks: Optional[int] = None) -> bool:
     """Человек просил запустить музыку: длина сета в словах (``heard_set_length``) или интент запуска."""
     return heard_tracks is not None or parse_media_command(user_text or "").intent in LAUNCH_INTENTS
 
 
-def turn_reply(turn: MusicTurn, *, requested: bool, voiced: int) -> Optional[str]:
+def piece_requested(user_text: str) -> bool:
+    """Человек назвал мелодию/пьесу («сыграй Токкату ре минор», «сыграй Баха на трамбоне») — интент ``PLAY_NAMED``.
+    Её запускает роутер (:mod:`.named_play`); дошла до модели — значит, роутер промахнулся, и запуск — тул модели."""
+    return parse_media_command(user_text or "").intent is MediaIntent.PLAY_NAMED
+
+
+def turn_reply(
+    turn: MusicTurn, *, requested: bool, voiced: int, piece: bool = False, other_launch: bool = False
+) -> Optional[str]:
     """Фраза о музыке, которую код говорит вместо текста модели; ``None`` — речь хода не трогать.
 
-    * запусков не было: просили запуск — :data:`NOT_LAUNCHED_TEXT`, иначе ``None``;
+    * запусков не было: просили сет — :data:`NOT_LAUNCHED_TEXT`; просили пьесу (``piece``) и никакой другой
+      музыкальный тул не сработал (``other_launch``) — :data:`NOT_PLAYED_TEXT` (прогон 12.10 16:48: «Токкату ре
+      минор Баха ставлю мелодией.» с ``tools=[]``); иначе ``None``;
     * последний запуск удался и модель уже сказала своё через ``speak_text`` (``voiced`` > 0, «рэп под бит») —
       ``None``; не сказала — фраза об успехе (:meth:`MusicTurn.phrase`);
     * последний запуск не удался — честная фраза :meth:`MusicTurn.phrase` всегда.
     """
     if not turn.launches:
-        return NOT_LAUNCHED_TEXT if requested else None
+        if requested:
+            return NOT_LAUNCHED_TEXT
+        return NOT_PLAYED_TEXT if piece and not other_launch else None
     if turn.launches[-1].ok and voiced > 0:
         return None
     return turn.phrase()
 
 
 def executor_turn_reply(
-    executor: Any, user_texts: Sequence[Optional[str]], heard_tracks: Optional[int], voiced: int
+    executor: Any,
+    user_texts: Sequence[Optional[str]],
+    heard_tracks: Optional[int],
+    voiced: int,
+    tools_called: Sequence[str] = (),
 ) -> Optional[str]:
     """:func:`turn_reply` по ``MusicTurn`` исполнителя тулов (``SchedulerToolExecutor.music_turn``); исполнителя
-    нет — ``None``. ``user_texts`` — слова человека по приоритету (сырая команда ретрая, затем реплика хода)."""
+    нет — ``None``. ``user_texts`` — слова человека по приоритету (сырая команда ретрая, затем реплика хода);
+    ``tools_called`` — тулы хода: музыку мог запустить не v2-тул (``execute_music_code`` и др.)."""
     turn = getattr(executor, "music_turn", None)
     if turn is None:
         return None
     text = next((t for t in user_texts if t), "")
-    return turn_reply(turn, requested=launch_requested(text, heard_tracks), voiced=voiced)
+    other = bool(set(tools_called or ()) & _LEGACY_MUSIC_TOOLS)
+    return turn_reply(
+        turn, requested=launch_requested(text, heard_tracks), voiced=voiced,
+        piece=piece_requested(text), other_launch=other,
+    )
 
 
 def next_turn_id(current: Optional[str], *retry_flags: bool) -> str:
@@ -202,15 +238,18 @@ def speech_refusal_content(piece: bool = False) -> str:
 
 __all__ = [
     "LAUNCH_INTENTS",
+    "ROUTER_LAUNCH_INTENTS",
     "Launch",
     "MusicTurn",
     "SPEECH_REFUSAL_CODE",
     "SPEECH_PIECE_MESSAGE",
     "SPEECH_REFUSAL_MESSAGE",
     "executor_turn_reply",
+    "history_recorder",
     "fail_text",
     "is_launch",
     "launch_requested",
+    "piece_requested",
     "next_turn_id",
     "turn_heard_text",
     "ok_text",

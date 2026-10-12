@@ -215,7 +215,7 @@ from rob_box_voice.core.media_router import (
     media_tool_succeeded,
 )
 from rob_box_voice.core.media_phrases import honest_launch_reply
-from rob_box_voice.core.music_turn import executor_turn_reply, next_turn_id, turn_heard_text
+from rob_box_voice.core.music_turn import executor_turn_reply, history_recorder, next_turn_id, turn_heard_text
 from rob_box_voice.core.named_play import (
     NamedPlayStatus,
     outcome_text,
@@ -6149,8 +6149,9 @@ tentative_plan(question, kind, name)
         if ledger is None:
             ledger = self._media_actions = deque(maxlen=16)
         ledger.extend((now, name) for name in done)
-        record = getattr(getattr(self, "_core", None), "record_external_turn", None)
-        if callable(record):
+        # ADR-0148 / #3461: фраза запуска в окне модели — образец, который она копирует в ходе без тула.
+        record = history_recorder(getattr(self, "_core", None), plan.command.intent)
+        if record is not None:
             record(text, phrase, done)
 
     def _claim_backing_tools(self, tools_called: Any) -> tuple:
@@ -6504,6 +6505,7 @@ tentative_plan(question, kind, name)
             (raw_user_command, user_input),
             getattr(self, "_turn_set_tracks", None),
             speak_text_real,
+            tools_called,
         )
         if music_phrase is not None:
             self.get_logger().warning(
