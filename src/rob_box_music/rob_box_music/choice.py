@@ -17,20 +17,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from .knowledge import CHOOSER_CLEAR_GAP, CHOOSER_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS
+from .knowledge import (CHOOSER_CLEAR_GAP, CHOOSER_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS,
+                        PLAY_COUNT_WINDOW_SEC)
 
 DETERMINISTIC = "deterministic"
 
 
 @dataclass(frozen=True)
+class Plays:
+    """Сколько раз кандидата уже играли (за ``PLAY_COUNT_WINDOW_SEC``, версии одной мелодии — одна) и сколько минут
+    назад в последний раз; ``None`` — не играли."""
+
+    count: int = 0
+    last_ago_min: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class Option:
-    """Вариант выбора: ``id`` кандидата, признаки (ключи ``CHOOSER_WEIGHTS``) и подпись для модели/лога."""
+    """Вариант выбора: ``id`` кандидата, признаки (ключи ``CHOOSER_WEIGHTS``), подпись для модели/лога и сыгранное
+    (``None`` — история не подключена: модели про повторы ничего не говорим)."""
 
     id: str
     features: Mapping[str, float]
     label: str = ""
+    plays: Optional[Plays] = None
 
 
 @dataclass(frozen=True)
@@ -71,9 +83,29 @@ def recency(candidate: str, recent: Sequence[str], same: Optional[Mapping[str, A
     return 0.0
 
 
+def play_stats(candidate: str, played: Sequence[Tuple[str, float]], now: float,
+               same: Optional[Mapping[str, Any]] = None, window: float = PLAY_COUNT_WINDOW_SEC) -> Plays:
+    """Счётчик сыгранного по истории ``(запись, ts)`` (из того же источника, что ``recent``) за ``window`` секунд."""
+    keys = same or {}
+    key = keys.get(candidate)
+    stamps = [ts for name, ts in played
+              if now - ts <= window and (name == candidate or (key is not None and keys.get(name) == key))]
+    return Plays(len(stamps), max(0, int((now - max(stamps)) // 60)) if stamps else None)
+
+
+def penalty(features: Mapping[str, float]) -> float:
+    """Штрафные очки за повтор, которые ``score`` вычитает: ``-вес(recent)·recent`` (одна формула с оценкой)."""
+    return -CHOOSER_WEIGHTS["recent"] * float(features.get("recent", 0.0))
+
+
+def points(features: Mapping[str, float]) -> Dict[str, float]:
+    """Вклад каждого признака в очках (``вес·признак``, ключи ``CHOOSER_WEIGHTS``); штраф за повтор - отрицательный."""
+    return {name: w * float(features.get(name, 0.0)) for name, w in CHOOSER_WEIGHTS.items()}
+
+
 def score(features: Mapping[str, float]) -> float:
-    """Взвешенная сумма признаков (§3.3)."""
-    return sum(w * float(features.get(name, 0.0)) for name, w in CHOOSER_WEIGHTS.items())
+    """Взвешенная сумма признаков (§3.3) - сумма :func:`points`."""
+    return sum(points(features).values())
 
 
 class DeterministicChooser:
@@ -109,5 +141,5 @@ class DeterministicChooser:
         return choice, [choice.id] + [o.id for _s, o in self.rank(question) if o.id != choice.id]
 
 
-__all__ = ["Choice", "ChoiceQuestion", "Chooser", "DETERMINISTIC", "DeterministicChooser", "Option", "recency",
-           "score"]
+__all__ = ["Choice", "ChoiceQuestion", "Chooser", "DETERMINISTIC", "DeterministicChooser", "Option", "Plays", "penalty",
+           "play_stats", "points", "recency", "score"]

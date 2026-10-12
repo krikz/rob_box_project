@@ -1340,6 +1340,12 @@ KEY_TITLE_MODES: Mapping[str, str] = {"minor": "minor", "moll": "minor", "major"
 #: за недавнее исполнение (1.0 — последнее, убывает к :data:`HOOK_FRESH_SETS`-му).
 CHOOSER_WEIGHTS: Mapping[str, float] = {"title_match": 3.0, "composer_match": 2.0, "fit": 1.0, "recent": -2.0,
                                         "rating": 0.5}
+#: Окно счётчика «сколько раз уже играли» (#3564, решение Шифу 12.10: на второй «сыграй Баха» Jev должен знать, сколько
+#: раз его уже запускали): сутки — «сессия» человека у робота; дольше — давнее, не повтор. Счётчик — подпись для модели
+#: (``choice.Plays``); штраф в очках остаётся функцией признака ``recent`` (последние :data:`HOOK_FRESH_SETS`).
+PLAY_COUNT_WINDOW_SEC = 24 * 3600
+#: Сколько последних записей истории читать под счётчик (за окно одиночных пьес столько не бывает).
+PLAY_HISTORY_LIMIT = 50
 #: Разрыв первого и второго кандидата, с которого ответ однозначен: модельный провайдер не зовётся (§3.3).
 CHOOSER_CLEAR_GAP = 1.0
 #: Дедлайн модельного выбора внутри бюджета быстрого старта 2.5 с (#3491); истёк — детерминированный ответ.
@@ -2232,7 +2238,8 @@ __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE
             "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "CLASSIC_REF_MATCH_MIN",
             "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "KEY_TITLE_MODES",
-            "CHOOSER_WEIGHTS", "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
+            "CHOOSER_WEIGHTS", "PLAY_COUNT_WINDOW_SEC", "PLAY_HISTORY_LIMIT",
+            "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
             "WORK_SCORE_CANDIDATES", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
 

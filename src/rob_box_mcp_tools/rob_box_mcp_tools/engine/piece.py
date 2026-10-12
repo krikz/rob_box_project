@@ -13,9 +13,10 @@ RTTTL, найденных поиском), тональность — слот. 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from rob_box_music.choice import ChoiceQuestion, DeterministicChooser, Option, recency
+from rob_box_music.choice import ChoiceQuestion, DeterministicChooser, Option, play_stats, recency
 from rob_box_music.instruments import LeadChoice
 from rob_box_music.rtttl import CONTOUR_NOTES, contour
 from rob_box_music.works import RTTTL, SCORE, WorkCandidate, WorkRef, WorkWord
@@ -29,6 +30,10 @@ _LOG = logging.getLogger(__name__)
 RecordLookup = Callable[[Iterable[str]], Dict[str, Tuple[Dict[str, Any], str]]]
 #: Кандидатов в строке лога выбора.
 _LOG_CANDIDATES = 8
+
+
+def _played_mark(option: Option) -> str:
+    return f" [играли {option.plays.count}]" if option.plays and option.plays.count else ""
 
 
 def query_terms(hits: ThemeHits, work: str) -> Tuple[Term, ...]:
@@ -72,7 +77,8 @@ class PieceChain:
 
     def __init__(self, dj: Any, records: RecordLookup, words: Callable[[str], ThemeHits],
                  classic: Callable[..., ClassicPick], history: Any = None,
-                 chooser: Optional[DeterministicChooser] = None, log: Callable[[], Any] = lambda: _LOG) -> None:
+                 chooser: Optional[DeterministicChooser] = None, log: Callable[[], Any] = lambda: _LOG,
+                 clock: Callable[[], float] = time.time) -> None:
         self._dj = dj
         self._records = records
         self._words = words
@@ -80,6 +86,7 @@ class PieceChain:
         self.memory = PieceMemory(history)  # что одиночный заказ играл недавно (music_history, ADR-0146)
         self._chooser = chooser or DeterministicChooser()
         self._log = log
+        self._clock = clock
 
     def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]
              ) -> Tuple[Optional[ClassicPick], Dict[str, Any], List[str], int]:
@@ -145,12 +152,14 @@ class PieceChain:
 
     def questions(self, work: str, ref: WorkRef, candidates: Sequence[WorkCandidate],
                   records: Mapping[str, Tuple[Dict[str, Any], str]]) -> List[ChoiceQuestion]:
-        """Вопросы выбора по уровням (:func:`levels`): признаки кандидатов + ``recent`` из истории."""
-        recent, same = self.memory.recent(), tunes(records)
+        """Вопросы выбора по уровням (:func:`levels`): признаки кандидатов + ``recent`` и счётчик сыгранного (``Plays``)
+        из истории (один источник — :class:`PieceMemory`)."""
+        recent, same, played, now = self.memory.recent(), tunes(records), self.memory.played(), self._clock()
         state = {"composer": [w.spellings for w in ref.composer], "title": [w.spellings for w in ref.title],
                  "key": ref.key, "recent": list(recent)}
         return [ChoiceQuestion(work, tuple(Option(c.id, {**c.features(), "recent": recency(c.id, recent, same)},
-                                                  f"{c.kind} «{c.title}» {c.composer}".strip()) for c in level), state)
+                                                  f"{c.kind} «{c.title}» {c.composer}".strip(),
+                                                  play_stats(c.id, played, now, same)) for c in level), state)
                 for level in levels(ref, candidates) if level]
 
     def _order(self, work: str, ref: WorkRef, candidates: Sequence[WorkCandidate],
@@ -171,7 +180,7 @@ class PieceChain:
             f"🎼 [classic] выбор «{work}»: композитор={[w.spellings[:2] for w in ref.composer]} "
             f"название={[w.spellings[:2] for w in ref.title]} тональность={ref.key or '—'} → {choice.id} "
             f"({choice.provider}, уверенность {choice.confidence:.2f}); кандидаты: "
-            + "; ".join(f"{s:.2f} {o.id} {o.label}" for s, o in ranked))
+            + "; ".join(f"{s:.2f} {o.id} {o.label}{_played_mark(o)}" for s, o in ranked))
 
 
 __all__ = ["PieceChain", "RecordLookup", "levels", "query_terms", "tunes", "work_ref"]

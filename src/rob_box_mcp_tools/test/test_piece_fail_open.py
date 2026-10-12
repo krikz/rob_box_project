@@ -11,13 +11,15 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from rob_box_mcp_tools.engine.classic import ClassicPick
 from rob_box_mcp_tools.engine.search import PartQuery, Term, ThemeHits, ThemeQuery
 from rob_box_mcp_tools.engine.tools_v2 import NOT_FOUND, DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
 from rob_box_music.diversity import MusicHistory
-from rob_box_music.choice import recency
+from rob_box_music.choice import DeterministicChooser, penalty, recency
 from rob_box_music.model import Key, PitchEvent
 from rob_box_music.works import SCORE, WorkCandidate, key_slot
 from rob_box_voice.core.media_phrases import launch_text, piece_text
@@ -276,3 +278,59 @@ def test_named_work_keeps_its_only_good_score_on_repeat():
                      history=history)
         played.append(req.execute(intent="melody", text="сыграй токкату").data["melody_id"])
     assert played == ["pdmx:good", "pdmx:good"]
+
+
+class Recorder(DeterministicChooser):
+    """Детерминированный выбор, который запоминает вопросы (то, что увидела бы модель)."""
+
+    def __init__(self):
+        super().__init__()
+        self.asked = []
+
+    def order(self, question):
+        self.asked.append(question)
+        return super().order(question)
+
+
+def test_three_bach_requests_show_play_counters_and_penalties_to_the_model_and_code_picks_three_different():
+    """#3564: Jev должен понимать, сколько раз его уже запускали: счётчик/давность/штраф в описании кандидата, сводка в
+    ``state``, а детерминированный выбор — три разных; штраф в тексте — тот, что вычитает код."""
+    from rob_box_mcp_tools.engine import chooser_model as cm
+
+    history = MusicHistory(":memory:")
+    recorder, texts, states, picks = Recorder(), [], [], []
+    for _ in range(3):
+        req = _tools(_rig(), hooks=tuple(BACH), table=BACH, history=history)
+        req._pieces._chooser = recorder
+        picks.append(req.execute(intent="melody", text="сыграй баха").data["melody_id"])
+        question = recorder.asked[-1]
+        texts.append({o.id: cm.describe(o) for o in question.options})
+        states.append(cm.to_model_state(question))
+    assert len(set(picks)) == 3
+    assert all("ещё не играли" in t for t in texts[0].values()) and states[0].endswith("За сессию сыграно: ничего")
+    second = texts[1]
+    assert "уже играли 1 раз, последний раз 0 мин назад" in second[picks[0]] and "повтор −2;" in second[picks[0]]
+    assert "ещё не играли" in second[picks[1]] and "recent=" not in second[picks[0]]
+    assert "За сессию сыграно:" in states[1] and "×1" in states[1]
+    fine = {o.id: penalty(o.features) for o in recorder.asked[2].options}
+    assert fine[picks[2]] == 0.0 and fine[picks[1]] == pytest.approx(2.0) and fine[picks[0]] == pytest.approx(4 / 3)
+    third = texts[2]
+    assert "повтор −2;" in third[picks[1]] and "повтор −1.333;" in third[picks[0]]
+    assert "ещё не играли" in third[picks[2]]
+
+
+def test_second_identical_request_with_two_candidates_picks_the_other_one():
+    history = MusicHistory(":memory:")
+    table = {k: v for k, v in BACH.items() if k != "minuet"}
+    picks = [_tools(_rig(), hooks=tuple(table), table=table, history=history).execute(
+        intent="melody", text="сыграй баха").data["melody_id"] for _ in range(2)]
+    assert picks[0] != picks[1]
+
+
+def test_named_work_stays_the_named_work_even_when_it_was_just_played():
+    """Правило PR-2: «сыграй токкату» - штраф за повтор не уводит на другое произведение (уровни: сначала названное)."""
+    history = MusicHistory(":memory:")
+    for _ in range(2):
+        history.record(kit=kn.CLASSIC_HISTORY_KIT, melody_name="toccata")
+    req = _tools(_rig(), hits=_hits(["toccata", "fugueind"], "токкату", "toccata"), table=TOCCATA, history=history)
+    assert req.execute(intent="melody", text="сыграй токкату").data["melody_id"] == "toccata"
