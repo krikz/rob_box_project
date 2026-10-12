@@ -105,8 +105,8 @@ def test_single_piece_threshold_is_lower_than_the_set_one():
 
     m = scored()
     pitches = [e.midi for e in m.melody[48:60]]
-    pitches[5] += 1  # два интервала мимо
-    pitches[-1] += 1  # и последний: 8 из 11 — между порогами
+    for k in (2, 5, 8):  # три ноты мимо (#3573: годность — доля нот эталона в выравнивании): 9 из 12 — между порогами
+        pitches[k] += 1
     ref = _rtttl(pitches)
     score = hooks.theme_match(m, hooks.reference_contours([ref]))[0]
     assert kn.CLASSIC_REF_MATCH_MIN <= score < kn.THEME_REF_MATCH_MIN

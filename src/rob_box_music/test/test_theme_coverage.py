@@ -120,9 +120,12 @@ def test_short_phrase_answer_is_folded_into_the_corridor_instead_of_refusal():
 
 def test_compose_plays_the_wide_material_not_the_ringtone():
     m = _wide()
-    plan = seeded_plan(_profile(("long",), (m.material_id,)), 7, materials={m.material_id: m}, references=[LONG])
+    # эталон — та же мелодия в обычном регистре (ринг-тон): ноты материала без октав через такт (#3573: годность —
+    # выравнивание нот при общей транспозиции, а не совпадение формы арпеджио у другой гармонии)
+    ref = _tune("ref", [e.midi for e in synthetic((0, 0, 5, 5, 3, 3, 4, 4)).melody[:13]], dur=4, bpm=120)
+    plan = seeded_plan(_profile(("long",), (m.material_id,)), 7, materials={m.material_id: m}, references=[ref])
     assert plan.track(1).material == m.material_id
-    track = cp.compose(plan, 1, melodies={"long": LONG}, materials={m.material_id: m})
+    track = cp.compose(plan, 1, melodies={"long": ref}, materials={m.material_id: m})
     validate(track)
     assert track.hook.source == m.material_id
 
