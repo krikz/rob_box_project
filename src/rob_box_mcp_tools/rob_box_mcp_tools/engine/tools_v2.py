@@ -50,6 +50,7 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.works import key_slot
 
+from .chooser_model import chooser_from_env
 from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import PieceChain, RecordLookup
@@ -541,7 +542,8 @@ class RequestMusicTool(MCPTool):
         self._confirm = confirm
         # одиночная пьеса: кандидаты произведения, выбор, перебор (ADR-0157 §2.3, PR-2/PR-3)
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
-                                  classic or classic_picker(library), history, log=self._log)
+                                  classic or classic_picker(library), history,
+                                  chooser=chooser_from_env(log=self._log), log=self._log)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
 
     @property
