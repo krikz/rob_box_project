@@ -154,7 +154,7 @@ def song_track(material: SongMaterial, *, seed: int, deck: str = "A", lead_synth
         track_id=f"classic:{material.melody_id}:{deck}:{sha}", seed=seed, bpm=material.bpm, key=key, form=form,
         parts=parts, harmony=Harmony({}), hook=hook, mix=track_mix, energy=SONG_ENERGY,
         transition_in=SONG_TRANSITION, transition_out=SONG_TRANSITION,
-        history_key=HistoryKey("classic_v2", "harmonize", material.melody_id, None, key.root),
+        history_key=HistoryKey(kn.CLASSIC_HISTORY_KIT, "harmonize", material.melody_id, None, key.root),
     )
     validate(track)
     return track
@@ -282,7 +282,8 @@ def from_bar(material: ScoreMaterial, bar: int) -> ScoreMaterial:
 
 
 def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", references: Sequence[str] = (),
-               lead_synth: Optional[str] = None, lead_shift: int = 0) -> Track:
+               lead_synth: Optional[str] = None, lead_shift: int = 0,
+               match_min: float = kn.CLASSIC_REF_MATCH_MIN) -> Track:
     """Песня по материалу партитуры (ADR-0154 PR-7B): мелодия автора один раз (``knowledge.SONG_MAX_BARS``),
     куплеты — :func:`score_verses`, пэд — аккорды автора арпеджио (``pad.arp_events``, порядок ``Style.arp_order``
     стиля песни), бас — голос автора; темп и тональность — материала. Размер не переводится в 4/4, нет аккордов или
@@ -290,9 +291,9 @@ def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", reference
 
     ``references`` — RTTTL того же произведения: узнаваемость — тот же ``hook.for_theme``, что у DJ-трека (голос
     главного мотива становится мелодией, песня — с его такта); мотива эталона в голосах нет — ``HookError``
-    (тоже ``ValueError``): материал не годится."""
+    (тоже ``ValueError``): материал не годится. Порог узнаваемости — ``match_min`` (одиночная пьеса, ADR-0157 §8 В1)."""
     validate_material(material)
-    material, anchor = hooks.for_theme(material, references)
+    material, anchor = hooks.for_theme(material, references, match_min)
     material = from_bar(material, anchor or 0)
     mm = _meter(material)
     spans = _chord_spans(material, mm, kn.SONG_SCORE_PAD)
@@ -323,7 +324,7 @@ def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", reference
         track_id=f"classic:{material.material_id}:{deck}:{sha}", seed=seed, bpm=bpm, key=key, form=form,
         parts=parts, harmony=Harmony({}), hook=hook, mix=track_mix, energy=SONG_ENERGY,
         transition_in=SONG_TRANSITION, transition_out=SONG_TRANSITION,
-        history_key=HistoryKey("classic_v2", "score", material.material_id, None, key.root),
+        history_key=HistoryKey(kn.CLASSIC_HISTORY_KIT, "score", material.material_id, None, key.root),
     )
     validate(track)
     return track

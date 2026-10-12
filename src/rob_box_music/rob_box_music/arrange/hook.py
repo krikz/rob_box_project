@@ -548,9 +548,11 @@ def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Opt
     return best
 
 
-def for_theme(material: ScoreMaterial, rtttls: Sequence[str]) -> Tuple[ScoreMaterial, Optional[int]]:
+def for_theme(material: ScoreMaterial, rtttls: Sequence[str],
+              match_min: float = kn.THEME_REF_MATCH_MIN) -> Tuple[ScoreMaterial, Optional[int]]:
     """Материал и такт главного мотива по RTTTL-эталонам того же произведения (общий механизм, не под одну пьесу):
-    голос и место, где контур эталона совпал не меньше ``knowledge.THEME_REF_MATCH_MIN``; тема в басу — бас
+    голос и место, где контур эталона совпал не меньше ``match_min`` (сет — ``knowledge.THEME_REF_MATCH_MIN``, одиночная
+    пьеса — ``knowledge.CLASSIC_REF_MATCH_MIN``); тема в басу — бас
     становится мелодией материала (хук, тема, гармония и бас трека берут одно отображение). Эталонов нет — материал
     как есть, ``None`` (первое проведение, :func:`pick_phrase`). Эталон есть, а совпадения мало — главного мотива в
     голосах материала нет (тема во внутреннем голосе): :class:`HookError`, трек берёт RTTTL-хук темы, а не
@@ -560,12 +562,11 @@ def for_theme(material: ScoreMaterial, rtttls: Sequence[str]) -> Tuple[ScoreMate
         return material, None
     score, voice, beat = match
     bar = int(beat // _meter_bar(material))
-    ok = score >= kn.THEME_REF_MATCH_MIN
+    ok = score >= match_min
     _LOG.info("🎵 [music v2] material=%s эталон RTTTL: голос %s такт %d совпадение %.2f — %s", material.material_id,
               voice, bar, score, "главный мотив оттуда" if ok else "мало — материал не узнаётся")
     if not ok:
-        raise HookError(f"главного мотива эталона нет в голосах материала: совпадение {score:.2f} < "
-                        f"{kn.THEME_REF_MATCH_MIN}")
+        raise HookError(f"главного мотива эталона нет в голосах материала: совпадение {score:.2f} < {match_min}")
     return (replace(material, melody=voices(material)[voice]) if voice != "melody" else material), bar
 
 

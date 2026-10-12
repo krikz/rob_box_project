@@ -48,7 +48,8 @@ from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_
 from rob_box_music.theme import ThemeProfile, match_style_text, match_window_text, seeded_profile, style_for
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-from .classic import ClassicPick, classic_picker, pick_score
+from .classic import (RTTTL, SCORE, Candidate, ClassicPick, PieceMemory, classic_picker, fresh_first, key_slot,
+                      pick_piece, pick_record, pick_score)
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import PlanMaterials, ScoreLibrary, seed_plan, track_materials
@@ -61,6 +62,10 @@ _LOG = logging.getLogger(__name__)
 
 #: Мелодии по ``id`` для хука темы: ``ids -> {id: rtttl}``.
 MelodyLookup = Callable[[Iterable[str]], Dict[str, str]]
+#: Записи RTTTL по ``id`` с названием для голоса: ``ids -> {id: (запись, название)}`` (одиночная пьеса, ADR-0157 §2.3).
+RecordLookup = Callable[[Iterable[str]], Dict[str, Tuple[Dict[str, Any], str]]]
+#: Мелодии по одному слову заказа прямым поиском (без LLM): ``слово -> id`` — ближайшее по словам (композитор).
+WordHooks = Callable[[str], Tuple[str, ...]]
 #: Мелодии по словам темы: ``тема -> ThemeHits`` (id лучшие первыми, точное совпадение названия).
 ThemeFinder = Callable[[str], ThemeHits]
 #: ``track_id -> MusicEvent(started|rejected) | None`` — ждёт событие плеера (``MusicEventLog.wait``).
@@ -129,25 +134,40 @@ def set_style(style: Optional[str], theme: str, heard_text: Optional[str] = None
     return style_for(theme)
 
 
+def _exact_records(library: Any, ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """Записи RTTTL по ``id``: только точное совпадение имени — ``RtttlLibrary.get`` иначе вернёт лучшую по словам
+    запись, для хука темы это была бы чужая мелодия (честный пропуск лучше подмены)."""
+    found = {}
+    for melody_id in ids:
+        record = library.get(melody_id) or {}
+        if str(record.get("name", "")).lower() == melody_id.lower() and record.get("rtttl"):
+            found[melody_id] = record
+    return found
+
+
 def library_melodies(library_factory: Callable[[], Any]) -> MelodyLookup:
-    """``{id: rtttl}`` из RTTTL-библиотеки; библиотека открывается при первом сете.
+    """``{id: rtttl}`` из RTTTL-библиотеки (:func:`_exact_records`); библиотека открывается при первом сете."""
+    library = _shared(library_factory)
+    return lambda ids: {melody_id: r["rtttl"] for melody_id, r in _exact_records(library(), ids).items()}
 
-    Берётся только точное совпадение имени: ``RtttlLibrary.get`` иначе вернёт лучшую по словам
-    запись — для хука темы это была бы чужая мелодия (честный пропуск лучше подмены).
-    """
-    box: Dict[str, Any] = {}
 
-    def lookup(ids: Iterable[str]) -> Dict[str, str]:
-        if "lib" not in box:
-            box["lib"] = library_factory()
-        found = {}
-        for melody_id in ids:
-            record = box["lib"].get(melody_id) or {}
-            if str(record.get("name", "")).lower() == melody_id.lower() and record.get("rtttl"):
-                found[melody_id] = record["rtttl"]
-        return found
+def library_records(library_factory: Callable[[], Any]) -> RecordLookup:
+    """``{id: (запись, название для голоса)}`` из RTTTL-библиотеки — кандидаты одиночной пьесы."""
+    from ..core.rtttl_library import human_track_title
+
+    shared = _shared(library_factory)
+
+    def lookup(ids: Iterable[str]) -> Dict[str, Tuple[Dict[str, Any], str]]:
+        library = shared()
+        return {melody_id: (r, human_track_title(library, r)) for melody_id, r in _exact_records(library, ids).items()}
 
     return lookup
+
+
+def word_hooks(library_factory: Callable[[], Any]) -> WordHooks:
+    """``слово -> id`` прямым поиском темы (``theme_search``, без связей и LLM)."""
+    library = _shared(library_factory)
+    return lambda word: theme_search(library(), word).names
 
 
 def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None) -> ThemeFinder:
@@ -382,14 +402,28 @@ class DjSetTool(MCPTool):
             return None
         return session.set_id
 
+    def _hits(self, theme: str, log: Any) -> ThemeHits:
+        """Находки по словам темы (поиск, связи ``theme_links``); поиск упал — пусто, причина в лог."""
+        try:
+            return self._find(theme)
+        except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
+            log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
+            return ThemeHits()
+
+    def work_hits(self, work: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+        """``(RTTTL-хуки, материалы партитур)`` по словам произведения (ADR-0157 §2.3) — тот же поиск и те же связи
+        ``theme_links``, что у темы сета, но без строки таблицы тем (она про тему, а не про пьесу) и без состояния
+        сета."""
+        log = self.node.get_logger() if self.node is not None else _LOG
+        hits = self._hits(work, log)
+        materials, how = score_materials(self._scores, hits, work)
+        log.info(f"🎼 [classic] «{work}»: хуки={list(hits.names)} материалы={list(materials)} ({how})")
+        return hits.names, materials
+
     def theme_profile(self, theme: str, style: str = kn.DEFAULT_STYLE) -> ThemeProfile:
         """Seeded-профиль темы с мелодиями по её словам; поиск упал — профиль без находок, причина в лог."""
         log = self.node.get_logger() if self.node is not None else _LOG
-        try:
-            hits = self._find(theme)
-        except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
-            log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
-            hits = ThemeHits()
+        hits = self._hits(theme, log)
         materials, how = score_materials(self._scores, hits, theme)
         profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact, parts=hits.parts,
                                  materials=materials)
@@ -495,14 +529,19 @@ class RequestMusicTool(MCPTool):
 
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
-                 classic: Optional[Callable[..., ClassicPick]] = None) -> None:
+                 classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
+                 records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
-        self._melodies = melodies or library_melodies(_rtttl_library)
+        library = _shared(_rtttl_library)
+        self._melodies = melodies or library_melodies(library)
         self._seed = seed
         self._confirm = confirm
-        self._classic = classic or classic_picker(_rtttl_library)
+        self._classic = classic or classic_picker(library)
+        self._records = records or library_records(library)  # RTTTL-кандидаты одиночной пьесы (ADR-0157 §2.3)
+        self._words = words or word_hooks(library)
+        self._pieces = PieceMemory(history)  # что одиночный заказ играл недавно (music_history, ADR-0146)
 
     @property
     def name(self) -> str:
@@ -556,10 +595,16 @@ class RequestMusicTool(MCPTool):
         staged.update(lead_data(lead))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
-        program, once = staged.pop("program"), staged.pop("once")
+        program, once, row = staged.pop("program"), staged.pop("once"), staged.pop("history", {})
+        if "played" in staged:  # фраза о пьесе — от кода, из результата (ADR-0157 R6); её же скажет голос
+            from rob_box_voice.core.media_phrases import launch_text
+            staged["message"] = launch_text("", staged)
         self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
         result = self._owner.play(program, dj={"enabled": False, "title": staged["title"]}, once=once)
-        return tool_result(confirmed({**result, **staged}, self._confirm), what)
+        result = confirmed({**result, **staged}, self._confirm)
+        if result.get("ok") and row:
+            self._pieces.remember(row)
+        return tool_result(result, what)
 
     def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
@@ -579,45 +624,100 @@ class RequestMusicTool(MCPTool):
         return {"program": program, "once": False, "title": title, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
-    def _score_song(self, query: str, seed: int, lead: Optional[LeadChoice] = None) -> ClassicPick:
-        """Песня из партитуры по названию (ADR-0154 PR-7B): материалы — поиском темы сета (те же строки), песня — из
-        первого, что складывается (``classic.pick_score``); исход — строкой лога."""
-        log = self.node.get_logger() if self.node is not None else _LOG
-        profile = self._dj.theme_profile(query)
-        ids = profile.materials
-        refs = list(self._melodies(profile.theme_hooks).values())  # эталоны узнаваемости (hook.for_theme)
-        pick = pick_score(PlanMaterials(self._dj._scores, ids, log), ids, query, seed=seed, references=refs,
-                          lead=lead)
-        found = f"{pick.melody_id} «{pick.title}»" if pick.found else f"нет: {pick.reason}"
-        log.info(f"🎼 [classic] «{query}»: партитуры {list(ids)} → {found}")
-        return pick
+    def _log(self) -> Any:
+        return self.node.get_logger() if self.node is not None else _LOG
+
+    def _rtttl(self, records: Mapping[str, Tuple[Dict[str, Any], str]], query: str, seed: int,
+               lead: Optional[LeadChoice]) -> Callable[[Candidate], ClassicPick]:
+        def build(c: Candidate) -> ClassicPick:
+            return pick_record(records[c.ref][0], records[c.ref][1], query, seed=seed, lead=lead)
+        return build
+
+    def _work_pick(self, work: str, seed: int, lead: Optional[LeadChoice]) -> Tuple[Optional[ClassicPick], list, int]:
+        """Кандидаты произведения (ADR-0157 §2.3): партитуры по рангу поиска (порог годности одиночной пьесы
+        ``CLASSIC_REF_MATCH_MIN``), затем RTTTL-хуки, подтверждённые поиском темы и ``theme_links``; недавно
+        сыгранное — в конце очереди. ``(песня | None, отказы, сколько было кандидатов)``."""
+        hooks, ids = self._dj.work_hits(work)
+        records = self._records(hooks)
+        refs = [record["rtttl"] for record, _title in records.values()]  # эталоны узнаваемости (hook.for_theme)
+        materials = PlanMaterials(self._dj._scores, ids, self._log())
+        rtttl = self._rtttl(records, work, seed, lead)
+
+        def build(c: Candidate) -> ClassicPick:
+            if c.kind == RTTTL:
+                return rtttl(c)
+            return pick_score(materials, [c.ref], work, seed=seed, references=refs, lead=lead)
+
+        candidates = [Candidate(SCORE, m) for m in ids] + [Candidate(RTTTL, h) for h in records]
+        pick, failed = pick_piece(fresh_first(candidates, self._pieces.recent()), build)
+        return pick, failed, len(candidates)
+
+    def _near_pick(self, work: str, seed: int, lead: Optional[LeadChoice],
+                   tried: Iterable[str]) -> Tuple[Optional[ClassicPick], list, int]:
+        """Ближайшее по словам заказа (композитор: «Токката Баха» → мелодии «Баха»): каждое слово — прямым поиском,
+        без LLM; уже перебранное не повторяется."""
+        seen = set(tried)
+        hooks = [h for w in dict.fromkeys(work.split()) if len(w) >= 4 for h in self._words(w) if h not in seen]
+        records = self._records(dict.fromkeys(hooks))
+        candidates = [Candidate(RTTTL, h) for h in records]
+        build = self._rtttl(records, work, seed, lead)
+        pick, failed = pick_piece(fresh_first(candidates, self._pieces.recent()), build)
+        return pick, failed, len(candidates)
+
+    def _play_piece(self, work: str, seed: int,
+                    lead: Optional[LeadChoice]) -> Tuple[Optional[ClassicPick], Dict[str, Any], List[str], int]:
+        """Цепочка одиночной пьесы fail-open: произведение → поиск по названию целиком (``find_record``) →
+        ближайшее по словам заказа. ``(песня | None, played, отказы, сколько было кандидатов)``."""
+        pick, failed, count = self._work_pick(work, seed, lead)
+        replacement = None
+        if pick is None:
+            old = self._classic(work, seed=seed, **({"lead": lead} if lead else {}))
+            pick, count = (old, count + 1) if old.found else (None, count)
+        if pick is None:
+            near, more, extra = self._near_pick(work, seed, lead, [c.ref for c, _why in failed])
+            pick, failed, count, replacement = near, failed + more, count + extra, work if near else None
+        reasons = [why for _c, why in failed]
+        if pick is None:
+            return None, {}, reasons, count
+        played = {"work": work, "title": pick.title, "source": pick.source, "replacement_for": replacement,
+                  "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
+        return pick, played, reasons, count
 
     def _stage_classic(self, text: str, lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
-        """Мелодия по названию: песня v2 (темп и тональность — из RTTTL), один проход формы — собрана, не запущена.
-        Произведение есть в индексе партитур — песня из материала (:meth:`_score_song`, ADR-0154 PR-7B), иначе
-        RTTTL.
+        """Мелодия по названию: песня v2 (одна пьеса, один проход формы) — собрана, не запущена.
 
-        Название берёт грамматика заказа по имени («поставь калинку» → «калинку»); не разобрала — ищутся
-        слова целиком. Поиск — тот же, что у ``lookup_melody`` (``engine.classic.find_record``).
+        Название берёт грамматика заказа по имени («поставь калинку» → «калинку»); не разобрала — слова целиком.
+        Тональность («ре минор») — слот, не слова поиска (:func:`classic.key_slot`). Кандидаты — :meth:`_play_piece`;
+        ``not_found`` — только когда кандидатов нет вовсе (ADR-0157 R5).
         """
         from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 
         command = parse_media_command(text)
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
+        work, key = key_slot(query)
         seed = self._seed()
         try:
-            pick = self._score_song(query, seed, lead)
-            if not pick.found:
-                pick = self._classic(query, seed=seed, **({"lead": lead} if lead else {}))
+            pick, played, reasons, count = self._play_piece(work, seed, lead)
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
-            return self._owner.reject(f"classic:{query}", "compose_error", f"{type(exc).__name__}: {exc}")
-        if not pick.found:
-            return {"ok": False, "found": False, "reason": "not_found", "detail": pick.reason, "query": query}
-        return {"program": pick.program, "once": True, "found": True, "title": pick.title,
-                "melody_id": pick.melody_id, "bpm": pick.bpm, "key": pick.key}
+            return self._owner.reject(f"classic:{work}", "compose_error", f"{type(exc).__name__}: {exc}")
+        self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
+                         f"{self._pieces.recent()} → {_piece_line(pick, played)}; отказы: {'; '.join(reasons) or '—'}")
+        if pick is None and not count:
+            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
+        if pick is None:
+            return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
+        return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
+                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history)}
+
+
+def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:
+    """Хвост строки лога ``[classic]``: что играет (источник, запись, название, замена) или «нет»."""
+    if pick is None:
+        return "нет"
+    return f"{played['source']} {pick.melody_id} «{pick.title}» замена={played['replacement_for']}"
 
 
 __all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
            "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
-           "lead_for", "library_melodies", "music_busy", "not_found", "set_refusal", "set_style", "theme_finder",
-           "theme_links", "tool_result"]
+           "lead_for", "library_melodies", "library_records", "music_busy", "not_found", "set_refusal", "set_style",
+           "theme_finder", "theme_links", "tool_result", "word_hooks"]

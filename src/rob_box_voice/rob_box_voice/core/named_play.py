@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-from .media_phrases import play_ok_text, with_instrument
+from .media_phrases import launch_text, play_ok_text
 
 LOOKUP_TOOL = "lookup_melody"
 REQUEST_TOOL = "request_music"
@@ -71,7 +71,7 @@ class NamedPlayOutcome:
 def outcome_text(outcome: NamedPlayOutcome, title: str) -> str:
     """Фраза итога найденного заказа: «Ставлю «X».» (+ об инструменте по результату тула) или честный отказ."""
     if outcome.status is NamedPlayStatus.PLAYED:
-        return with_instrument(play_ok_text(title), outcome.data)
+        return launch_text(play_ok_text(title), outcome.data)
     return play_fail_text(title)
 
 

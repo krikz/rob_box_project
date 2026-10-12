@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from rob_box_music.dj_line import SET_NOT_FOUND
 
-from .media_phrases import dj_started_text, with_instrument
+from .media_phrases import dj_started_text, launch_text
 from .media_router import DJ_SET_TOOL, NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
 from .music_turn import next_turn_id
@@ -109,7 +109,7 @@ def _started_text(plan: MediaPlan, data: Dict[str, Any]) -> str:
     инструменте заказа («на арфе») — тоже из результата (``media_phrases.instrument_text``, ADR-0157 §2.4)."""
     call = plan.tool_calls[0]
     if call.name != DJ_SET_TOOL or call.arguments.get("theme") or not data.get("theme"):
-        return with_instrument(plan.say_ok, data)
+        return launch_text(plan.say_ok, data)
     return dj_started_text(str(call.arguments.get("persona") or ""), str(data["theme"]))
 
 
