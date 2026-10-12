@@ -1584,15 +1584,15 @@ class Style:
 
 @dataclass(frozen=True)
 class Humanize:
-    """«Живые руки» ударов (#3557, лофи: «хэт — механическая петля»): удары ролей ``roles`` опаздывают на 0..
-    ``late_ms`` мс сверх свинга и с долей ``soften`` теряют ступень акцента (кроме акцента 3 — опоры доли).
-    Случайность — по сиду трека на цикл ``cycle_bars`` тактов (период рисунка в программе — цикл, а не вся форма). Только опоздание:
-    ``delay`` Renardo вперёд не сдвигает."""
+    """«Живые руки» ударов (#3557, лофи: «хэт — механическая петля»): удары роли из ``roles`` опаздывают на её
+    лэйд-бэк (``roles[роль]``, мс: малый «ленится» за долю) плюс 0..``late_ms`` мс сверх свинга и с долей ``soften``
+    теряют ступень акцента (кроме акцента 3 — опоры доли). Случайность — по сиду трека на цикл ``cycle_bars`` тактов
+    (период рисунка в программе — цикл, а не вся форма). Только опоздание: ``delay`` Renardo вперёд не сдвигает."""
 
     late_ms: int
     soften: float
     cycle_bars: int
-    roles: Tuple[str, ...]
+    roles: Mapping[str, int]
 
 
 # ── Стиль ``rave`` (ADR-0153 S1: rave/acid/hardcore): клубная механика, свои окна темпа, бочки и тембры ─────────
@@ -1891,28 +1891,31 @@ _LOFI_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "lofi": GenreWindow((82, 92), ("jazz", "soft", "acoustic"), _LOFI_LOOKS, ("riff",), ("held",)),
     "chillhop": GenreWindow((72, 82), ("soft", "acoustic", "jazz"), _LOFI_LOOKS, ("riff",), ("held",)),
 }
-#: Хэты 16-ми (нечётные 16-е качает свинг стиля): восьмые с гоустами перед малым, сплошные 16-е с гоустами, редкий с
-#: дырой в конце такта; акцент ``X`` — на 2 и 4 вместе с малым.
+#: Хэты по сетке 16-х (нечётные 16-е качает свинг стиля), но редко и с паузами: судья итерации 1 (13.10) — «хэт тянет
+#: ровную 16-ю сетку», сплошные 16-е сняты. Восьмые с дырой и гоустом, «шаффл» с гоустами перед долей, редкий — доли
+#: и подхваты.
 _LOFI_KITS: Mapping[str, Mapping[str, str]] = {
-    "dusty": {"hats": "x.xgX.xgx.xgX.x.", "perc": "................"},
-    "sixteens": {"hats": "xgxgXgxgxgxgXgx.", "perc": "................"},
-    "sparse": {"hats": "x.x.X.xgx.x.X..g", "perc": "................"},
+    "dusty": {"hats": "x.x.x.xgx.x.x...", "perc": "................"},
+    "shuffle": {"hats": "x.xgx.x.x.xgx..g", "perc": "................"},
+    "sparse": {"hats": "x...x.g.x...x.xg", "perc": "................"},
 }
 #: Тембры: лид — читаемый темой (:data:`THEME_LEAD_OK`, без Хааса — ``delay`` занят свингом нот): ``keys`` (клавиши),
 #: ``pluck``; пэд — Rhodes ``rhpiano`` (замер 13.10 в рамке пэда; ``epiano`` на потолке ``amp`` тише цели на 6 дБ);
-#: бас — мягкий ``subbass`` (синус) и ``bass``, низ ≥ 0.9. Семьи тем одинаковы: лицо стиля — клавиши и мягкий низ.
+#: бас — ``bass``/``jbass`` с гармониками (``subbass``-синус в итерации 1 на колонках робота не читался: судья «бас
+#: пропадает», ноты 35–49). Семьи тем одинаковы: лицо стиля — клавиши и мягкий низ.
 _LOFI_FAMILY: Mapping[str, Tuple[str, ...]] = {
-    "lead": ("keys", "pluck"), "bass": ("subbass", "bass"), "pad": ("rhpiano",)}
+    "lead": ("keys", "pluck"), "bass": ("bass", "jbass"), "pad": ("rhpiano",)}
 _LOFI_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
     family: _LOFI_FAMILY for family in ("dark", "hard", "bright", "warm")}
 #: Септаккорды ii–V–I и соседи по ступеням — априорный бонус Витерби под мелодию (аккорд на такт, ``HOOK_HARMONY``).
 _LOFI_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
     (1, 4, 0, 5), (0, 5, 1, 4), (1, 4, 0, 0), (3, 6, 2, 5), (0, 3, 1, 4), (5, 1, 4, 0),
 )
-#: Рифф баса по тактам по кругу: целая прима, прима–квинта половинными, целая, пунктирная половинная + квинта.
-_LOFI_BASS_RIFFS: Tuple[str, ...] = ("R.......", "R...F...", "R.......", "R.....F.")
-#: Малый на 2 и 4, гоуст на последней 16-й такта (её качает свинг) — подхват к следующей доле.
-_LOFI_BACKBEAT = "....X.......X..g"
+#: Рифф баса по тактам по кругу — прима/квинта нотами в 1–2 доли: 1.5 + 1.5 + 1 (прима, прима, квинта), две половинные
+#: примы, снова 1.5 + 1.5 + 1, прима–квинта половинными.
+_LOFI_BASS_RIFFS: Tuple[str, ...] = ("R..R..F.", "R...R...", "R..R..F.", "R...F...")
+#: Малый ровно на 2 и 4 (гоуст итерации 1 судья читал как «удары не на 2 и 4»); лэйд-бэк — :class:`Humanize`.
+_LOFI_BACKBEAT = "....X.......X..."
 _LOFI_DRUMS = frozenset({"kick", "hats", "clap"})
 _LOFI_FULL = _LOFI_DRUMS | {"bass", "pad", "lead"}
 #: Форма — петли по 8 тактов без подъёма и дропа: интро 4+4 и хвост 4+4 — блэнд двух дек, как у клуба; тема (вид
@@ -1941,40 +1944,50 @@ _LOFI_ENERGY_FORMS: Mapping[int, Tuple[str, ...]] = {
     1: ("lofi32", "lofi48"), 2: ("lofi32", "lofi48"), 3: ("lofi48", "lofi32"), 4: ("lofi48", "lofi64"),
     5: ("lofi64", "lofi48"),
 }
-#: Тёплый верх: клавиши и лид под LPF 3.2 кГц всю форму (у ``rhpiano`` верх и так < 0.01 энергии — срез гасит
-#: щелчки атаки), в петлях без бочки — 1.4 кГц («клавиши фильтруются»); хвост блэнда закрывается, как у клуба.
+#: Тёплый верх — статичный: клавиши и лид под LPF 3.2 кГц всю форму (у ``rhpiano`` верх и так < 0.01 энергии — срез
+#: гасит щелчки атаки), в петлях без бочки — 2 кГц («клавиши чуть прикрыты»). Свипа хвоста блэнда до 300 Гц нет
+#: (``lpf_tail_sections`` пусто): судья итерации 1 — «уход LPF до 300 Гц — каша».
 _LOFI_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
-    **{name: (3200.0, 3200.0) for name in ("intro", "intro_low", "drop", "groove2", "groove3", "groove4", "outro")},
-    "break": (1400.0, 1400.0), "break2": (1400.0, 1400.0), "outro_tail": (3200.0, 300.0),
+    **{name: (3200.0, 3200.0) for name in ("intro", "intro_low", "drop", "groove2", "groove3", "groove4", "outro",
+                                           "outro_tail")},
+    "break": (2000.0, 2000.0), "break2": (2000.0, 2000.0),
 }
 _LOFI_SECTIONS: Tuple[str, ...] = tuple(dict.fromkeys(name for form in _LOFI_FORMS.values() for name, *_r in form))
 _LOFI_WINDOW = _LOFI_GENRE_WINDOWS["lofi"]
 _LOFI_STYLE = Style(
     bpm=_LOFI_WINDOW.bpm, swing=(0.09, 0.14), modes=("dorian", "minor", "major"),
     kick_pool=_LOFI_WINDOW.kick_pool, looks=_LOFI_LOOKS, kits=_LOFI_KITS,
-    registers={"bass": (33, 50), "pad": (46, 70), "lead": (60, 84)},
+    # Регистры (итерация 2): бас 40–52 — читаем на колонках робота (итерация 1: 35–49 «пропадает»), мелодия ниже —
+    # 59–79 (пэд 45–64: обычный низ 47 + 12, ``compose.hook_register``; терции ``drop2`` — в том же коридоре,
+    # ``compose.develop_register``), а не 71–83.
+    registers={"bass": (40, 52), "pad": (45, 64), "lead": (59, 79)},
     timbres=_LOFI_TIMBRES, default_timbre="warm", bass_figures=_LOFI_WINDOW.bass_figures,
     pad_figures=_LOFI_WINDOW.pad_figures, lead_figures=("motif",), chord_size=4, progressions=_LOFI_PROGRESSIONS,
     forms=_LOFI_FORMS, opening_form="lofi48", energy_forms=_LOFI_ENERGY_FORMS, blend=_CLUB_BLEND,
     # Шипение пластинки — всю форму (роль ``loop`` со своим генератором ``texture``, ``loop_roles``/``loop_figure``).
     layer_sections={"loop": _LOFI_SECTIONS}, genre_windows=_LOFI_GENRE_WINDOWS,
     # Уровни: робот 08.10 (comping/walking) — низ 0.77/0.76 по медиане окон 20 с. #3557: бочка громче на 1 дБ (судья:
-    # «бочка тихая»), бас тише на 1 дБ (целые ноты звучат дольше четвертей walking), шипение на 20 дБ ниже бочки.
-    role_level_db={"kick": -34.0, "bass": -35.0, "pad": -41.0, "lead": -49.0, "clap": -42.0, "hats": -56.0,
-                   "loop": -54.0},
+    # «бочка тихая»), бас тише на 1 дБ (целые ноты звучат дольше четвертей walking). Итерация 2 (судья 13.10): малый
+    # +3 дБ («не даёт ответа на 2 и 4»), хэт −3 дБ («доминирует»), шипение −54 → −42 (на −54 не слышно).
+    role_level_db={"kick": -34.0, "bass": -35.0, "pad": -41.0, "lead": -49.0, "clap": -39.0, "hats": -59.0,
+                   "loop": -42.0},
     duck_roles=_SOFT_DUCK_ROLES, section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad", "lead"),
-    lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    lpf_tail_sections=(),
     stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
     # A9-модель занижает низ lo-fi против записи робота 08.10 на 0.09–0.32 (удары файлами в модели — оценки): порог
-    # 0.4 — только страховка от трека совсем без низа; калибровка модели lo-fi не сделана.
-    a9_model_low=0.4,
+    # 0.4 — только страховка от трека совсем без низа; калибровка модели lo-fi не сделана. #3557, итерация 1 (робот
+    # 13.10, set41024): модель 0.41 после пэда −4 дБ, запись — низ 0.62–0.88 (медиана окон 20 с 0.78): модель ниже записи
+    # на ≈ 0.37. С шипением на −42 модель (шум — середина) при пороге 0.4 глушила Rhodes на 6–10 дБ; порог 0.3.
+    a9_model_low=0.3,
     thin_roles={}, swing_roles=("kick", "clap", "bass", "pad", "lead"),
     drum_files={"clap": ("sonicpi_drum_snare_soft", "sonicpi_perc_snap", "muldjord_snare_40"),
-                "hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18", "sonicpi_drum_cymbal_pedal")},
+                # Педаль ``drum_cymbal_pedal`` снята (итерация 2: судья — «педальный цимбал доминирует»)
+                "hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18")},
     backbeat_kinds=("intro_low", "drop", "drop2", "break", "outro"), roll_bars=0, clap_fill="cut",
     bass_riffs=_LOFI_BASS_RIFFS, loop_roles=("texture",), loop_figure="texture",
-    backbeat=_LOFI_BACKBEAT, humanize=Humanize(late_ms=14, soften=0.3, cycle_bars=4, roles=("hats", "clap")),
-    lead_mask="xxx.xx..",
+    # Руки: хэт — 0..12 мс, малый лениво позади доли на 25 мс + 0..12 (лэйд-бэк 25–37 мс); лид — 2 такта из 4, реже.
+    backbeat=_LOFI_BACKBEAT, humanize=Humanize(late_ms=12, soften=0.3, cycle_bars=4, roles={"hats": 0, "clap": 25}),
+    lead_mask="xx..x...",
 )
 
 # ── Стиль ``rock`` (ADR-0153 S5): бэкбит 2/4, филлы томами на стыках, пауэр-аккорды, бас-рифф, куплет/припев/бридж ──

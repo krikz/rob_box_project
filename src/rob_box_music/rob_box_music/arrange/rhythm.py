@@ -102,13 +102,15 @@ def clap_grid(pattern: str = "") -> Grid:
 
 def humanize(part: Part, hands: "kn.Humanize", rng: random.Random) -> Part:
     """«Живые руки» ударной партии (``Style.humanize``, #3557): на цикл ``hands.cycle_bars`` тактов каждому шагу —
-    опоздание 0..``late_ms`` сверх его свинга и с долей ``soften`` акцент на ступень ниже (акцент 3 не трогается); сетка
-    партии растягивается до цикла, если она короче (хэты — такт), и сдвиги повторяются по циклу."""
+    лэйд-бэк роли ``hands.roles[part.role]`` + опоздание 0..``late_ms`` сверх его свинга и с долей ``soften`` акцент на
+    ступень ниже (акцент 3 не трогается); сетка партии растягивается до цикла, если она короче (хэты — такт), и сдвиги
+    повторяются по циклу."""
+    lay_back = hands.roles.get(part.role, 0)
     cycle = hands.cycle_bars * STEPS_PER_BAR
     steps = part.grid.steps
     if len(steps) < cycle:
         steps = steps * (cycle // len(steps))
-    late = [rng.randint(0, hands.late_ms) for _ in range(cycle)]
+    late = [lay_back + rng.randint(0, hands.late_ms) for _ in range(cycle)]
     soft = [rng.random() < hands.soften for _ in range(cycle)]
     out = tuple(replace(st, offset_ms=st.offset_ms + late[i % cycle],
                         accent=st.accent - 1 if soft[i % cycle] and 0 < st.accent < 3 else st.accent)

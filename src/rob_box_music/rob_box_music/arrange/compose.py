@@ -221,10 +221,19 @@ def _lead(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, synth: str) ->
         if "lead" in roles:
             offset = start * BEATS_PER_BAR
             events += [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent)
-                       for e in _breathe(style, motif, name, bars, hooks.develop(motif, name, bars, key))]
+                       for e in _breathe(style, motif, name, bars,
+                                         hooks.develop(motif, name, bars, key, develop_register(style)))]
     total = sum(bars for _n, bars, _e, _r in spec) * 16
     grid = rhythm.grid({int(e.beat * 4) for e in events}, total)
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, style.registers["lead"])
+
+
+def develop_register(style: kn.Style) -> Tuple[int, int]:
+    """Коридор развития хука (``hook.develop``: терции ``drop2`` над хуком или под ним): коридор лида стиля, но не выше
+    общего потолка ``knowledge.REGISTERS["lead"]`` — у стиля с низким лидом (lofi, #3557) терция не выходит за его
+    коридор, у джаза (86) терции как прежде (84)."""
+    lo, hi = style.registers["lead"]
+    return lo, min(hi, kn.REGISTERS["lead"][1])
 
 
 def _breathe(style: kn.Style, motif: Hook, name: str, bars: int, line: Sequence[PitchEvent]) -> List[PitchEvent]:
@@ -454,7 +463,8 @@ def _section_degrees(key: Key, line: Sequence[PitchEvent], name: str, bars: int)
     return _per_bar(harmony.qualify(key, line, beats, harmony.viterbi(key, line, beats, -(-bars // slot))), slot)[:bars]
 
 
-def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence: Sequence[Tuple[int, str]] = ()
+def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence: Sequence[Tuple[int, str]] = (),
+               register: Tuple[int, int] = kn.REGISTERS["lead"]
                ) -> Tuple[Tuple[int, ...], Dict[int, harmony.ChordSym], Dict[int, bass.BassTone]]:
     """(ступени петли хука по слотам, аккорд такта формы, тон баса автора такта) — одна гармонизация под звучащую
     мелодию
@@ -479,7 +489,8 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence:
         if "lead" not in roles:
             plan.put(range(start, start + bars), loop_bars, loop_tones, by_form_bar=True)
             continue
-        _lead_section(plan, key, plain, (start, bars, name), (theme, theme_tones), (loop_bars, loop_tones), cadence)
+        _lead_section(plan, key, plain, (start, bars, name), (theme, theme_tones), (loop_bars, loop_tones), cadence,
+                      register)
     return tuple(c.degree for c in loop), plan.degrees, plan.tones
 
 
@@ -487,7 +498,7 @@ Bars = Tuple[Sequence[harmony.ChordSym], Sequence[bass.BassTone]]
 
 
 def _lead_section(plan: "_BarPlan", key: Key, plain: Hook, section: Tuple[int, int, str], theme: Bars, loop: Bars,
-                  cadence: Sequence[Tuple[int, str]]) -> None:
+                  cadence: Sequence[Tuple[int, str]], register: Tuple[int, int] = kn.REGISTERS["lead"]) -> None:
     """Аккорды секции с лидом (:func:`_harmonize`): ``theme``/``loop`` — (аккорды, тоны баса автора) по тактам темы и
     петли хука, ``plain`` — хук без темы. Смены (``knowledge.CHANGES``) — тема, иначе петля, и каденция в конце."""
     start, bars, name = section
@@ -497,8 +508,8 @@ def _lead_section(plan: "_BarPlan", key: Key, plain: Hook, section: Tuple[int, i
         return
     span = len(theme[0]) if kn.section_kind(name) == kn.THEME_SECTION else 0
     plan.put(range(start, start + span), *theme)
-    line = hooks.develop(plain, name, bars, key)
-    hook_line = hooks.develop(plain, "drop", bars, key)
+    line = hooks.develop(plain, name, bars, key, register)
+    hook_line = hooks.develop(plain, "drop", bars, key, register)
     if span or set(hook_line) <= set(line):  # хук по кругу, в т. ч. с добавочным голосом (терции drop2)
         plan.put(range(start + span, start + bars), *loop)
         if not span and len(line) > len(hook_line):
@@ -552,7 +563,7 @@ def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_synth:
     """Лид, гармония под звучащую мелодию секций (:func:`_harmonize`) и пэд под лидом; пэд не помещается —
     ``ValueError``."""
     lead_part = _lead(style, spec, motif, key, lead_synth)
-    loop, degrees, tones = _harmonize(spec, motif, key, harm, style.cadence)
+    loop, degrees, tones = _harmonize(spec, motif, key, harm, style.cadence, develop_register(style))
     pad_top = min(style.registers["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
     bars = sorted(degrees)
     register, chords = _pad_chords(style, key, [degrees[b] for b in bars], pad_top)

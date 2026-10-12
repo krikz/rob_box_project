@@ -103,8 +103,8 @@ def test_tonal_roles_share_the_sixteenth_groove(tracks):
 
 
 def test_snare_on_two_and_four_in_every_backbeat_bar(tracks):
-    """Малый на 2 и 4 в каждом такте секций бэкбита (кроме такта fill-а: малый молчит с последней доли), гоуст — на
-    последней 16-й такта (``Style.backbeat``)."""
+    """Малый на 2 и 4 в каждом такте секций бэкбита (кроме такта fill-а: малый молчит с последней доли) и больше нигде
+    (``Style.backbeat``); лэйд-бэк малого — его сдвиг ``Style.humanize`` (25 мс + руки) у каждого удара."""
     for _plan_, track, _program, _by in tracks:
         steps = track.parts["clap"].grid.steps
         bar = 0
@@ -114,8 +114,10 @@ def test_snare_on_two_and_four_in_every_backbeat_bar(tracks):
                     on = {i for i in range(STEPS_PER_BAR) if steps[(bar + k) * STEPS_PER_BAR + i].on}
                     assert 4 in on, (track.track_id, sec.name, k)
                     if not (sec.fill_last_bar and k == sec.bars - 1):
-                        assert {4, 12, 15} <= on, (track.track_id, sec.name, k, on)
+                        assert on == {4, 12}, (track.track_id, sec.name, k, on)
             bar += sec.bars
+        lay_back = LOFI.humanize.roles["clap"]
+        assert all(lay_back <= st.offset_ms <= lay_back + LOFI.humanize.late_ms for st in steps if st.on)
 
 
 def test_keys_hold_seventh_chords_one_per_bar(tracks):
@@ -133,7 +135,8 @@ def test_keys_hold_seventh_chords_one_per_bar(tracks):
 
 
 def test_bass_plays_roots_and_fifths_in_long_notes(tracks):
-    """Бас — рифф стиля: целые и половинные (и пунктирная половинная), тон — прима или квинта аккорда такта."""
+    """Бас — рифф стиля: ноты в 1–2 доли на восьмых, тон — прима или квинта аккорда такта, регистр читаемый на
+    колонках робота (``registers["bass"]`` от 40)."""
     for _plan_, track, _program, _by in tracks:
         assert track.history_key.bass_figure == "riff"
         chords = {}
@@ -144,12 +147,11 @@ def test_bass_plays_roots_and_fifths_in_long_notes(tracks):
             bar += sec.bars
         for e in track.parts["bass"].pitches:
             assert e.dur_beats >= 1.0, e
-            assert e.beat % 1 == 0 and e.beat % BEATS_PER_BAR in (0, 2, 3), e
+            assert (e.beat * 2) % 1 == 0 and LOFI.registers["bass"][0] <= e.midi <= LOFI.registers["bass"][1], e
             chord = chords[int(e.beat // BEATS_PER_BAR)]
             pcs = harmony.chord_pcs(LOFI, track.key, chord.degree, chord.quality or None)
             assert e.midi % 12 in (pcs[0], pcs[2]), (e, pcs)
-        long_notes = [e for e in track.parts["bass"].pitches if e.dur_beats >= 2.0]
-        assert len(long_notes) >= 0.75 * len(track.parts["bass"].pitches), "в основном целые и половинные"
+        assert all(e.dur_beats <= 2.0 for e in track.parts["bass"].pitches), "не дольше половинной"
 
 
 def test_vinyl_hiss_plays_the_whole_form(tracks):
