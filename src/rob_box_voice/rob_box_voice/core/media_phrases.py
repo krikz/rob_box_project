@@ -43,6 +43,32 @@ def play_ok_text(title: str) -> str:
     return f"Ставлю «{title}»."
 
 
+def piece_text(played: Mapping[str, Any]) -> str:
+    """Что сыграно по заказу одной пьесы — из поля ``played`` результата ``request_music`` (ADR-0157 §2.3, R6):
+    название из каталога/индекса партитур, источник и замена. LLM текст про пьесу не сочиняет.
+
+    Название — из каталога с автором («Toccata», Bach); ``source=rtttl`` — играем одну мелодию: нот для полной
+    аранжировки нет (отзыв Шифу 12.10: «мелодию-рингтон» непонятно); ``replacement_for`` — названного не нашлось,
+    играем ближайшее. Все фразы — с основой «ставлю «» (:data:`LAUNCH_PHRASE_STEMS`, гард #3455)."""
+    title = f"«{played.get('title') or ''}»"
+    composer = str(played.get("composer") or "")
+    if composer and composer.lower() not in title.lower():
+        title = f"{title}, {composer}"
+    asked = str(played.get("replacement_for") or "")
+    if asked:
+        return f"«{asked[:1].upper() + asked[1:]}» не нашёл. Ставлю ближайшее: {title}."
+    if played.get("source") == "rtttl":
+        return f"Ставлю {title} — мелодией, нот для полной аранжировки нет."
+    return f"Ставлю {title}."
+
+
+def launch_text(phrase: str, data: Mapping[str, Any]) -> str:
+    """Фраза после ``started``: заказ пьесы (поле ``played``) — :func:`piece_text`, иначе ``phrase``; плюс фраза об
+    инструменте (:func:`with_instrument`)."""
+    played = data.get("played")
+    return with_instrument(piece_text(played) if isinstance(played, Mapping) else phrase, data)
+
+
 def instrument_text(data: Mapping[str, Any]) -> str:
     """Что сказать об инструменте заказа по результату ``request_music`` (поля ``instrument``/``instrument_played``,
     ADR-0157 §2.4, решение Шифу В2): синт есть — «Играю на тромбоне.»; нет — «Для балалайки у меня нет пака, могу
@@ -87,6 +113,9 @@ LAUNCH_PHRASE_STEMS: Tuple[str, ...] = (
     ", включаю сет",  # dj_started_text с персоной
     "включаю музыку",  # request_ok_text без названия
     "ставлю «",  # play_ok_text
+    # piece_text (ADR-0157 PR-2): прогон 12.10 16:48 — модель без тула сказала «Токкату ре минор Баха ставлю
+    # мелодией.», скопировав фразу кода из истории без кавычек. TEMP(ADR-0148) — снимается вместе с гардом (#3461).
+    "мелодией",
 )
 
 #: Что сказать вместо фразы запуска без тула. Без глаголов действия (их ловят гарды #2549/#2559) и с
@@ -139,6 +168,8 @@ __all__ = [
     "honest_launch_reply",
     "instrument_text",
     "launch_claim",
+    "launch_text",
+    "piece_text",
     "play_ok_text",
     "request_ok_text",
     "with_instrument",

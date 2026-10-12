@@ -9,7 +9,9 @@
 
 * :meth:`MusicTurn.speech_allowed` — пока ПОСЛЕДНИЙ запуск хода не удался, ``speak_text`` модели не
   исполняется (заявить «запустил» нечем). Успешный запуск речь не запрещает: «рэп под бит» —
-  ``request_music`` и потом ``speak_text`` × N (скилл composer).
+  ``request_music`` и потом ``speak_text`` × N (скилл composer). Исключение — заиграла пьеса (поле ``played``
+  результата, ADR-0157 R6): что играет и чем заменили, говорит код (прогон 12.10: модель пересказала
+  «Toccata And Fugue» своими словами через ``speak_text``).
 * :meth:`MusicTurn.phrase` — что сказать по итогу хода, шаблоны :mod:`.media_phrases`; ``None`` — запусков
   в ходе не было.
 * :func:`turn_reply` — фраза хода о музыке, которую нода говорит ВМЕСТО текста модели. 06.10 15:30 UTC:
@@ -37,9 +39,9 @@ from .media_phrases import (
     SET_KEPT_TEXT,
     SET_PLAYING_REASON,
     dj_started_text,
+    launch_text,
     play_ok_text,
     request_ok_text,
-    with_instrument,
 )
 from .media_router import DJ_SET_TOOL, REQUEST_MUSIC_TOOL, media_tool_succeeded
 
@@ -50,6 +52,11 @@ SPEECH_REFUSAL_MESSAGE = (
     "speak_text не исполнен: музыка в этом ходе не запустилась (смотри результат dj_set / "
     "request_music). Что сказать человеку о музыке, робот решит сам по результату тулов. "
     "Заверши ход словом done."
+)
+#: То же, когда пьеса заиграла: фразу о ней робот уже строит из ``played`` результата ``request_music``.
+SPEECH_PIECE_MESSAGE = (
+    "speak_text не исполнен: пьеса играет, что именно играет — робот скажет сам фразой из результата "
+    "request_music. Заверши ход словом done."
 )
 
 
@@ -90,8 +97,8 @@ def ok_text(launch: Launch) -> str:
     data = _data(launch.content)
     title = str(data.get("title") or "")
     if args.get("intent") == "melody" and title:
-        return with_instrument(play_ok_text(title), data)
-    return with_instrument(request_ok_text(""), data)
+        return launch_text(play_ok_text(title), data)
+    return launch_text(request_ok_text(""), data)
 
 
 def fail_text(launch: Launch) -> str:
@@ -116,8 +123,13 @@ class MusicTurn:
             self.launches.append(Launch(tool, args, media_tool_succeeded(is_error, content), content))
 
     def speech_allowed(self) -> bool:
-        """``speak_text`` модели можно исполнить: запусков не было или последний удался."""
-        return not self.launches or self.launches[-1].ok
+        """``speak_text`` модели можно исполнить: запусков не было или последний удался и это не пьеса
+        (:meth:`piece_playing`)."""
+        return not self.launches or (self.launches[-1].ok and not self.piece_playing())
+
+    def piece_playing(self) -> bool:
+        """Последний запуск хода удался и это пьеса (``played`` в результате): о ней говорит код."""
+        return bool(self.launches) and self.launches[-1].ok and "played" in _data(self.launches[-1].content)
 
     def phrase(self) -> Optional[str]:
         """Что сказать о музыке по итогу хода; ``None`` — запусков музыки в ходе не было."""
@@ -181,12 +193,11 @@ def turn_heard_text(current: Optional[str], user_input: str, is_synthetic: bool)
     return current if is_synthetic else user_input
 
 
-def speech_refusal_content() -> str:
-    """JSON-тело отказа ``speak_text`` для ``ToolResult.content``."""
-    return json.dumps(
-        {"success": False, "error": SPEECH_REFUSAL_CODE, "message": SPEECH_REFUSAL_MESSAGE},
-        ensure_ascii=False,
-    )
+def speech_refusal_content(piece: bool = False) -> str:
+    """JSON-тело отказа ``speak_text`` для ``ToolResult.content``; ``piece`` — пьеса играет
+    (:data:`SPEECH_PIECE_MESSAGE`)."""
+    message = SPEECH_PIECE_MESSAGE if piece else SPEECH_REFUSAL_MESSAGE
+    return json.dumps({"success": False, "error": SPEECH_REFUSAL_CODE, "message": message}, ensure_ascii=False)
 
 
 __all__ = [
@@ -194,6 +205,7 @@ __all__ = [
     "Launch",
     "MusicTurn",
     "SPEECH_REFUSAL_CODE",
+    "SPEECH_PIECE_MESSAGE",
     "SPEECH_REFUSAL_MESSAGE",
     "executor_turn_reply",
     "fail_text",

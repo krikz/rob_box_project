@@ -96,3 +96,22 @@ def test_reference_rtttl_starts_the_song_at_the_main_motif_or_refuses_the_materi
     with pytest.raises(hooks.HookError, match="главного мотива"):
         song.score_song(m, seed=1, references=[scales])
     assert song.score_song(m, seed=1).form.bars_total == 16  # без эталона — вся пьеса, как раньше
+
+
+def test_single_piece_threshold_is_lower_than_the_set_one():
+    """ADR-0157 §8 В1 (прогон 09.10: лучшая партитура «Токкаты» — 0.73 при пороге сета 0.8): одиночная пьеса берёт
+    партитуру с годностью не меньше ``CLASSIC_REF_MATCH_MIN``, сет — по-прежнему ``THEME_REF_MATCH_MIN``."""
+    from rob_box_music.arrange import hook as hooks
+
+    m = scored()
+    pitches = [e.midi for e in m.melody[48:60]]
+    pitches[5] += 1  # два интервала мимо
+    pitches[-1] += 1  # и последний: 8 из 11 — между порогами
+    ref = _rtttl(pitches)
+    score = hooks.theme_match(m, hooks.reference_contours([ref]))[0]
+    assert kn.CLASSIC_REF_MATCH_MIN <= score < kn.THEME_REF_MATCH_MIN
+    assert song.score_song(m, seed=1, references=[ref]).form.bars_total > 0
+    with pytest.raises(hooks.HookError, match="главного мотива"):
+        song.score_song(m, seed=1, references=[ref], match_min=kn.THEME_REF_MATCH_MIN)
+    with pytest.raises(hooks.HookError):
+        hooks.for_theme(m, [ref])  # сет: порог не изменился

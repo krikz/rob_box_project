@@ -89,6 +89,37 @@ def test_successful_launch_allows_speech_rap_under_beat():
     assert turn_reply(turn, requested=True, voiced=0) == request_ok_text("")  # модель промолчала — говорит код
 
 
+PIECE_OK = repr({"ok": True, "title": "Toccata And Fugue", "found": True,
+                 "played": {"work": "токкату", "title": "Toccata And Fugue", "source": "rtttl",
+                            "replacement_for": None, "scores_failed": 8}})
+
+
+def test_piece_launch_is_voiced_by_code_not_by_the_model():
+    """ADR-0157 R6, прогон 12.10 16:20 UTC: заиграла «toccataa», модель сказала своё «играю «Токкату и фугу»»
+    через ``speak_text``. Пьеса заиграла — речь модели не исполняется, фразу строит код из ``played``."""
+    turn = _turn(("request_music", {"intent": "melody", "text": "Токкату ре минор"}, False, PIECE_OK))
+
+    assert turn.speech_allowed() is False and turn.piece_playing() is True
+    assert turn_reply(turn, requested=False, voiced=0) == (
+        "Ставлю «Toccata And Fugue» — мелодией, нот для полной аранжировки нет.")
+
+
+def test_executor_refuses_speak_text_after_a_piece_with_the_piece_message():
+    underlying = _Underlying({"request_music": (False, PIECE_OK)})
+    executor = SchedulerToolExecutor(underlying, scheduler=None)
+
+    async def _turn_calls():
+        executor.begin_turn()
+        await executor.execute(ToolCall(id="1", name="request_music",
+                                        arguments={"intent": "melody", "text": "Токкату ре минор"}))
+        return await executor.execute(ToolCall(id="2", name="speak_text", arguments={"text": "играю Токкату"}))
+
+    result = _run(_turn_calls())
+    assert underlying.executed == ["request_music"]
+    body = json.loads(result.content)
+    assert result.is_error is True and body["error"] == SPEECH_REFUSAL_CODE and "пьеса играет" in body["message"]
+
+
 def test_success_phrases_come_from_the_one_table():
     melody = _turn(("request_music", {"intent": "melody", "text": "сыграй к элизе"}, False,
                     "{'ok': True, 'title': 'Fur Elise', 'found': True}"))

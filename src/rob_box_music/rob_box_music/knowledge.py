@@ -1314,6 +1314,18 @@ THEME_MAX_BARS = 32
 #: его в материале нет).
 THEME_REF_NOTES = 12
 THEME_REF_MATCH_MIN = 0.8
+#: Тот же порог для ОДИНОЧНОЙ пьесы (``request_music``, ADR-0157 §8 В1, предложение до прогона на фронте): партитура,
+#: если годность не меньше, иначе RTTTL того же произведения. Прогон 09.10: лучшая из 8 партитур «Токкаты» — 0.73 при
+#: 0.8, все 8 отвергнуты. В сете остаётся :data:`THEME_REF_MATCH_MIN`.
+CLASSIC_REF_MATCH_MIN = 0.7
+#: Ось ``HistoryKey.kit`` (= ``music_history.kit``) песен одиночного заказа: по ней classic-путь читает, что он уже
+#: играл (ADR-0157 §2.3, ADR-0146 для одиночных пьес).
+CLASSIC_HISTORY_KIT = "classic_v2"
+#: Тональность в названии пьесы («Токката ре минор») — слот, не слова поиска: «минор» → «minor» находил «Minority»
+#: (прогон 09.10 #17). Ноты, знаки и лады по-русски → тоника (полутоны от C) / сдвиг / лад.
+KEY_NOTE_WORDS: Mapping[str, int] = {"до": 0, "ре": 2, "ми": 4, "фа": 5, "соль": 7, "ля": 9, "си": 11}
+KEY_SIGN_WORDS: Mapping[str, int] = {"диез": 1, "бемоль": -1}
+KEY_MODE_STEMS: Mapping[str, str] = {"мажор": "major", "минор": "minor"}
 #: Длина формы клуба — кратна периоду рисунков ударных (16 тактов) и не длиннее потолка: тема растит трек
 #: 48 → 64 → 80 тактов, а не бесконечно (``model.BARS_TOTAL``).
 FORM_BARS_STEP = 16
@@ -2194,7 +2206,8 @@ GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
             "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
-            "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "FORM_BARS_STEP", "TRACK_MAX_BARS",
+            "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "CLASSIC_REF_MATCH_MIN",
+            "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
 
 

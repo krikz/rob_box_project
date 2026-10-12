@@ -241,18 +241,24 @@ class MusicHistory:
             _LOG.warning("music_history: запись не удалась (%s) — этот трек в историю не попал", exc)
             return False
 
-    def recent(self, limit: int = 20, within_sec: Optional[float] = None) -> List[Dict[str, Any]]:
+    def recent(self, limit: int = 20, within_sec: Optional[float] = None,
+               kit: Optional[str] = None) -> List[Dict[str, Any]]:
         """Последние записи, СВЕЖИЕ ПЕРВЫМИ (порядок, нужный :func:`weighted_pick`).
 
-        ``within_sec`` — только записи не старше указанного числа секунд.
+        ``within_sec`` — только записи не старше указанного числа секунд; ``kit`` — только записи с этой осью
+        каркаса (одиночные пьесы — ``knowledge.CLASSIC_HISTORY_KIT``, ADR-0157 §2.3).
         Ошибка чтения — WARNING и ``[]``.
         """
         if self._conn is None or limit <= 0:
             return []
-        sql, args = "SELECT * FROM music_history", []
+        where, args = [], []
         if within_sec is not None:
-            sql += " WHERE ts >= ?"
+            where.append("ts >= ?")
             args.append(time.time() - float(within_sec))
+        if kit is not None:
+            where.append("kit = ?")
+            args.append(kit)
+        sql = "SELECT * FROM music_history" + (f" WHERE {' AND '.join(where)}" if where else "")
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         args.append(int(limit))
         try:
