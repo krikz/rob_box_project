@@ -129,7 +129,7 @@
 | Renardo/FoxDot + SuperCollider | ✅ | `tools/music.py` (`execute_music_code`), `renardo_synthdef_patches.py`, `sc_only_custom_synthdefs.py` |
 | `generate_music` отключён | ✅ | `mcp_server.py:704,754` — не регистрируется с 20.08.2026 |
 | Библиотека `gen_*` | ✅ | `tools/minimax_music.py` (`gen_list_library`, `gen_search_library`, `gen_play_from_library`, …) |
-| **Wake-word под музыкой (ADR-RT-0068)** | 🟡 | **ADR в статусе `proposed`, не accepted** (`docs/adr/0024-music-aware-intent-priority-gate.md:5`). Частично закрыто: `_MUSIC_STOP_OVERRIDES` в intent-gate (`dialogue_node.py:1778-1784`) + strict-VAD под музыку (`audio_node.py:564-573`). |
+| **Wake-word под музыкой (ADR-RT-0068)** | 🟡 | **ADR в статусе `proposed`, не accepted** (`docs/adr/0068-music-aware-intent-priority-gate.md:5`). Частично закрыто: `_MUSIC_STOP_OVERRIDES` в intent-gate (`dialogue_node.py:1778-1784`) + strict-VAD под музыку (`audio_node.py:564-573`). |
 | `set_voice` / `speak_text(voice)` | ✅ | см. §2.3 |
 | **Смена TTS-провайдера тулом** | ❌ | Такого тула нет (полный список — `tools/*.py`, 51 тул). Провайдер меняется только ROS-параметром `provider` (`tts_node.py:393`). |
 | **Голос/TTS персонально по пользователю** | ⚠️ | `VoiceStateStore` — **чистый in-memory dict** (`rob_box_mcp_tools/voice_state.py:39-50`). Ключ — `speaker_id`, но в БД ничего не пишется → при рестарте всё теряется. «Восстанавливает при следующем контакте» не выполняется. |
