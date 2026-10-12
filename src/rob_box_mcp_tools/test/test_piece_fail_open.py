@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from rob_box_mcp_tools.engine.classic import ClassicPick, Candidate, fresh_first, key_slot
-from rob_box_mcp_tools.engine.search import ThemeHits
+from rob_box_mcp_tools.engine.search import PartQuery, Term, ThemeHits, ThemeQuery
 from rob_box_mcp_tools.engine.tools_v2 import NOT_FOUND, DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
@@ -53,16 +53,23 @@ def _material(mid: str) -> mt.ScoreMaterial:
 
 
 def _records(table):
-    return lambda ids: {i: ({"name": i, "title": table[i][0], "rtttl": table[i][1]}, table[i][0])
+    return lambda ids: {i: ({"name": i, "title": table[i][0], "rtttl": table[i][1],
+                             "artist": table[i][2] if len(table[i]) > 2 else ""}, table[i][0])
                         for i in ids if i in table}
 
 
-def _tools(rig, hooks=(), scores=None, table=None, words=lambda word: (), history=None, classic=None, asked=None,
-           confirm=None):
+def _hits(names, word="", *alts):
+    """Находки поиска с написаниями слова заказа в архиве (как у ``theme_search``)."""
+    query = ThemeQuery(word, (PartQuery(word, (Term(word, alts),)),)) if word else None
+    return ThemeHits(tuple(names), query=query)
+
+
+def _tools(rig, hooks=(), scores=None, table=None, words=lambda word: ThemeHits(), history=None, classic=None,
+           asked=None, confirm=None, hits=None):
     def finder(theme):
         if asked is not None:
             asked.append(theme)
-        return ThemeHits(tuple(hooks))
+        return hits if hits is not None else ThemeHits(tuple(hooks))
 
     dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=finder, seed=lambda: 4242,
                    scores=scores or Scores())
@@ -71,7 +78,7 @@ def _tools(rig, hooks=(), scores=None, table=None, words=lambda word: (), histor
                             history=history, records=_records(table or {}), words=words, confirm=confirm)
 
 
-TOCCATA = {"toccata": ("Toccata", CHROMATIC), "fugueind": ("Fugue in D minor", LONG)}
+TOCCATA = {"toccata": ("Toccata", CHROMATIC, "Bach"), "fugueind": ("Fugue in D minor", LONG, "Bach")}
 
 
 def test_toccata_with_eight_refused_scores_plays_the_rtttl_of_the_work():
@@ -87,7 +94,7 @@ def test_toccata_with_eight_refused_scores_plays_the_rtttl_of_the_work():
     assert data["melody_id"] == "toccata" and data["played"]["source"] == "rtttl"
     assert data["played"]["scores_failed"] == 8 and data["played"]["replacement_for"] is None
     assert asked == ["токкату"]
-    assert data["message"] == "В нотах не сложилось — ставлю «Toccata», мелодию-рингтон."
+    assert data["message"] == "Ставлю «Toccata», Bach — мелодией, нот для полной аранжировки нет."
     rig.clock.run_until(rig.clock.beat + 2)
     assert [e["track_id"] for e in _started(rig)] == [data["track_id"]]
 
@@ -101,10 +108,11 @@ def test_a_score_that_makes_a_song_plays_first():
     req = _tools(rig, hooks=("toccata",), scores=Scores({"pdmx:good": good}), table=table)
     data = req.execute(intent="melody", text="сыграй токкату").data
     assert data["ok"] and data["melody_id"] == "pdmx:good" and data["played"]["source"] == "score"
-    assert data["message"] == "Ставлю «Toccata and Fugue» по нотам."
+    assert data["message"] == "Ставлю «Toccata and Fugue»."
 
 
-BACH = {"brandenb": ("Brandenburg Concerto", LONG), "jesujoyo": ("Jesu Joy", SHORT), "minuet": ("Minuet", SLOW)}
+BACH = {"brandenb": ("Brandenburg Concerto", LONG, "Bach"), "jesujoyo": ("Jesu Joy", SHORT, "Bach"),
+        "minuet": ("Minuet", CHROMATIC, "J.S.Bach")}  # у SLOW тот же контур начала, что у LONG
 
 
 def test_three_bach_requests_play_three_different_pieces_and_history_survives_a_restart():
@@ -147,12 +155,12 @@ def test_candidates_that_all_fail_are_a_loud_compose_error_not_not_found():
 def test_nothing_of_the_work_plays_the_nearest_by_words_and_says_so():
     """Произведения нет ни в нотах, ни в RTTTL → ближайшее по словам заказа («Баха»), фраза называет обе вещи."""
     rig = _rig()
-    words = {"баха": ("brandenb",)}
-    req = _tools(rig, table=BACH, words=lambda word: words.get(word, ()))
+    words = {"баха": _hits(["brandenb"])}
+    req = _tools(rig, table=BACH, words=lambda word: words.get(word, ThemeHits()))
     data = req.execute(intent="melody", text="сыграй токкату баха").data
     assert data["ok"] and data["melody_id"] == "brandenb"
     assert data["played"]["replacement_for"] == "токкату баха"
-    assert data["message"] == "«Токкату баха» не нашёл, ставлю «Brandenburg Concerto» — ближайшее по словам заказа."
+    assert data["message"] == "«Токкату баха» не нашёл. Ставлю ближайшее: «Brandenburg Concerto», Bach."
 
 
 def test_old_whole_name_search_still_plays_before_the_nearest():
@@ -172,17 +180,19 @@ def test_the_voice_says_the_phrase_built_from_the_tool_result():
     rig = _rig()
     data = _tools(rig, hooks=("toccata",), table=TOCCATA).execute(intent="melody", text="сыграй токкату").data
     launch = Launch("request_music", {"intent": "melody", "text": "сыграй токкату"}, True, repr(data))
-    assert ok_text(launch) == data["message"] == "Ставлю «Toccata» — мелодия-рингтон."
+    assert ok_text(launch) == data["message"] == "Ставлю «Toccata», Bach — мелодией, нот для полной аранжировки нет."
 
 
 def test_piece_phrase_names_what_plays_and_what_it_replaced():
-    assert piece_text({"title": "Fugue", "source": "rtttl", "replacement_for": "токкату"}) == (
-        "«Токкату» не нашёл, ставлю «Fugue» — ближайшее по словам заказа.")
-    assert piece_text({"title": "Toccata", "source": "score"}) == "Ставлю «Toccata» по нотам."
+    assert piece_text({"title": "Fugue", "composer": "Bach", "source": "rtttl", "replacement_for": "токкату"}) == (
+        "«Токкату» не нашёл. Ставлю ближайшее: «Fugue», Bach.")
+    assert piece_text({"title": "Toccata", "composer": "J. S. Bach", "source": "score"}) == (
+        "Ставлю «Toccata», J. S. Bach.")
+    assert piece_text({"title": "J.S.Bach", "composer": "J.S.Bach", "source": "score"}) == "Ставлю «J.S.Bach»."
     played = {"title": "Toccata", "source": "rtttl", "replacement_for": None}
     assert launch_text("Включаю музыку.", {"played": played, "instrument": "xylophone",
                                            "instrument_played": "xylophone"}) == (
-        "Ставлю «Toccata» — мелодия-рингтон. Играю на ксилофоне.")
+        "Ставлю «Toccata» — мелодией, нот для полной аранжировки нет. Играю на ксилофоне.")
     assert launch_text("Включаю музыку.", {}) == "Включаю музыку."
 
 
@@ -197,3 +207,34 @@ def test_fresh_first_puts_the_least_recent_of_the_played_first():
     c = [Candidate("rtttl", n) for n in "abcd"]
     assert [x.ref for x in fresh_first(c, ["b", "a"])] == ["c", "d", "a", "b"]
     assert [x.ref for x in fresh_first(c, ["c", "a", "b", "d"])] == ["d", "b", "a", "c"]
+
+
+#: Находки «баха» на роботе 12.10 (theme_search): паразиты «Mundian To Bach Ke» (Panjabi MC) — первыми.
+BACH_HITS = {"mundiant_2": ("Mundian To Bach Ke", LONG, "Panjabi MC"), "brandenb": ("Brandenburg Concert No. 3", SHORT,
+                                                                                    "Bach"),
+             "mundiant": ("Mundian To Bach Ke V2", LONG, "Panjabi MC"), "unknown_75": ("J.S.Bach", SLOW, "J.S.Bach"),
+             "jesujoyo": ("Jesu Joy Of Man's Desiring", CHROMATIC, "Bach")}
+
+
+def test_bach_three_times_never_plays_the_name_parasite():
+    """R3 (прогон 12.10 16:21: «сыграй Баха» → «Mundian To Bach Ke»): слово «Bach» — имя автора (оно в ``artist`` у
+    «Brandenburg Concert»), а у трека Panjabi MC — только в названии: такие записи не кандидаты. Три заказа — три
+    разных произведения Баха."""
+    history = MusicHistory(":memory:")
+    played = []
+    for _ in range(3):
+        req = _tools(_rig(), hits=_hits(list(BACH_HITS), "баха", "bach"), table=BACH_HITS, history=history)
+        played.append(req.execute(intent="melody", text="сыграй баха").data["melody_id"])
+    assert played == ["brandenb", "unknown_75", "jesujoyo"]
+
+
+def test_versions_of_a_played_tune_count_as_played():
+    """Версии одной мелодии (общий контур начала) — одна мелодия для свежести: после «brandenb» его версия
+    «brandenb_2» уходит в конец очереди."""
+    table = {**BACH, "brandenb_2": ("Brandenburg Concerto 2", LONG, "Bach")}
+    history = MusicHistory(":memory:")
+    played = []
+    for _ in range(3):
+        req = _tools(_rig(), hooks=("brandenb", "brandenb_2", "jesujoyo", "minuet"), table=table, history=history)
+        played.append(req.execute(intent="melody", text="сыграй баха").data["melody_id"])
+    assert played == ["brandenb", "jesujoyo", "minuet"]

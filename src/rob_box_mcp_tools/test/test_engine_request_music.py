@@ -27,7 +27,7 @@ def _tools(rig, confirm=None, classic=None):
     dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242,
                    confirm=confirm)
     req = RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777, confirm=confirm,
-                           classic=classic, records=lambda ids: {}, words=lambda word: ())  # каталог — подставной
+                           classic=classic, records=lambda ids: {}, words=lambda word: ThemeHits())
     return dj, req
 
 

@@ -233,9 +233,11 @@ class SchedulerToolExecutor:
             return await self._execute_task_delta(call)
         if call.name == SPEAK_TOOL and not self.music_turn.speech_allowed():
             # ADR-0148: запуск музыки хода не удался — «запустил» модели нечем
-            # подкрепить; фразу о музыке скажет нода по MusicTurn.phrase().
-            _LOG.warning("music turn: speak_text refused — last music launch failed")
-            return ToolResult(tool_call_id=call.id, content=speech_refusal_content(), is_error=True)
+            # подкрепить; или заиграла пьеса — о ней говорит код (ADR-0157 R6).
+            # Фразу о музыке скажет нода по MusicTurn.phrase().
+            piece = self.music_turn.piece_playing()
+            _LOG.warning(f"music turn: speak_text refused — {'piece phrase by code' if piece else 'launch failed'}")
+            return ToolResult(tool_call_id=call.id, content=speech_refusal_content(piece), is_error=True)
 
         channel = channel_for_tool(call.name)
         if channel is None:

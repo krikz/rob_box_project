@@ -161,7 +161,7 @@ def test_pick_score_takes_the_first_material_that_makes_a_song():
 def _tools(rig, classic):
     dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242)
     return dj, RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 5, classic=classic,
-                                records=lambda ids: {}, words=lambda word: ())
+                                records=lambda ids: {}, words=lambda word: ThemeHits())
 
 
 def _picker(asked):

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.song import SongMaterial, score_song, song_track
@@ -34,7 +34,7 @@ from rob_box_music.render.renardo import render
 
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import human_track_title, match_info
-from .search import find
+from .search import _in, find
 
 #: Откуда материал пьесы (поле ``played.source`` результата ``request_music``).
 SCORE = "score"
@@ -56,6 +56,7 @@ class ClassicPick:
     key: Optional[str] = None
     source: str = RTTTL
     history: Mapping[str, Any] = field(default_factory=dict)
+    composer: str = ""  # автор из каталога (``artist`` записи RTTTL, ``composer`` партитуры) — для фразы
 
 
 @dataclass(frozen=True)
@@ -83,12 +84,37 @@ def key_slot(text: str) -> Tuple[str, str]:
     return text, ""
 
 
-def fresh_first(candidates: Sequence[Candidate], recent: Sequence[str]) -> List[Candidate]:
+def person_parasites(records: Mapping[str, Mapping[str, Any]], spellings: Iterable[str]) -> Set[str]:
+    """Записи-паразиты имени человека (ADR-0157 §1.2 п.4, R3): слово заказа — имя автора (оно стоит в поле
+    ``artist`` хотя бы одной записи-кандидата: «Bach» у «Brandenburg Concert»), а у записи оно совпало только в
+    названии при другом исполнителе — «Mundian To Bach Ke» (Panjabi MC). Слово названия («toccata») именем не
+    считается: в ``artist`` его нет ни у кого. Полное поле «композитор» реестра — PR-3."""
+    def field_of(record: Mapping[str, Any], name: str) -> str:
+        return str(record.get(name) or "").lower()
+
+    persons = {s for s in spellings if s and any(_in(s, field_of(r, "artist")) for r in records.values())}
+    return {i for i, r in records.items()
+            if any(_in(s, field_of(r, "title")) or _in(s, i.lower()) for s in persons)
+            and not any(_in(s, field_of(r, "artist")) for s in persons)}
+
+
+def fresh_first(candidates: Sequence[Candidate], recent: Sequence[str],
+                tune: Optional[Mapping[str, Any]] = None) -> List[Candidate]:
     """Очередь кандидатов: не звучавшие в ``recent`` (свежие первыми) — в своём порядке, затем звучавшие — сначала
-    самые давние (ADR-0157 R4: три «сыграй Баха» подряд — три разные записи, четвёртый — снова первая)."""
+    самые давние (ADR-0157 R4: три «сыграй Баха» подряд — три разные записи, четвёртый — снова первая). ``tune`` —
+    ключ мелодии записи (``rtttl.contour``, как у межсетовой свежести): версия сыгранной мелодии («mundiant» после
+    «mundiant_2», прогон 12.10) — тоже сыграна."""
+    keys = tune or {}
     order = list(recent)
-    fresh = [c for c in candidates if c.ref not in order]
-    stale = sorted((c for c in candidates if c.ref in order), key=lambda c: -order.index(c.ref))
+
+    def age(c: Candidate) -> Optional[int]:
+        key = keys.get(c.ref)
+        hits = [i for i, r in enumerate(order) if r == c.ref or (key is not None and keys.get(r) == key)]
+        return min(hits) if hits else None
+
+    ages = {c: age(c) for c in candidates}
+    fresh = [c for c in candidates if ages[c] is None]
+    stale = sorted((c for c in candidates if ages[c] is not None), key=lambda c: -ages[c])
     return fresh + stale
 
 
@@ -169,13 +195,13 @@ def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A",
         return ClassicPick(query, False, reason)
     title = human_track_title(library, record)
     track = song_track(song_material(record, title), seed=seed, deck=deck, **_lead_kw(lead))
-    return _picked(query, track, title, deck, RTTTL)
+    return _picked(query, track, title, deck, RTTTL, str(record.get("artist") or ""))
 
 
-def _picked(query: str, track: Any, title: str, deck: str, source: str) -> ClassicPick:
+def _picked(query: str, track: Any, title: str, deck: str, source: str, composer: str = "") -> ClassicPick:
     return ClassicPick(query, True, melody_id=track.hook.source, title=title, program=render(track, deck),
                        bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}", source=source,
-                       history=track_history(track))
+                       history=track_history(track), composer=composer)
 
 
 def pick_record(record: Mapping[str, Any], title: str, query: str, *, seed: int, deck: str = "A",
@@ -185,7 +211,7 @@ def pick_record(record: Mapping[str, Any], title: str, query: str, *, seed: int,
         track = song_track(song_material(dict(record), title), seed=seed, deck=deck, **_lead_kw(lead))
     except (KeyError, ValueError) as exc:
         return ClassicPick(query, False, f"{record.get('name')}: {type(exc).__name__}: {exc}")
-    return _picked(query, track, title, deck, RTTTL)
+    return _picked(query, track, title, deck, RTTTL, str(record.get("artist") or ""))
 
 
 def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query: str, *, seed: int,
@@ -203,7 +229,7 @@ def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query
         except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
             reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
             continue
-        return _picked(query, track, material.title, deck, SCORE)
+        return _picked(query, track, material.title, deck, SCORE, material.composer)
     return ClassicPick(query, False, "; ".join(reasons) or "партитур по названию нет")
 
 
@@ -220,4 +246,4 @@ def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicP
 
 
 __all__ = ["RTTTL", "SCORE", "Candidate", "ClassicPick", "PieceMemory", "classic_picker", "find_record", "fresh_first",
-           "key_slot", "pick_classic", "pick_piece", "pick_record", "pick_score", "song_material"]
+           "key_slot", "person_parasites", "pick_classic", "pick_piece", "pick_record", "pick_score", "song_material"]

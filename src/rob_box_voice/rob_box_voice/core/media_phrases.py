@@ -47,16 +47,19 @@ def piece_text(played: Mapping[str, Any]) -> str:
     """Что сыграно по заказу одной пьесы — из поля ``played`` результата ``request_music`` (ADR-0157 §2.3, R6):
     название из каталога/индекса партитур, источник и замена. LLM текст про пьесу не сочиняет.
 
-    ``replacement_for`` — названного не нашлось, играем ближайшее по словам заказа; ``scores_failed`` — партитуры
-    произведения были, но не сложились (играем мелодию-рингтон)."""
-    title = str(played.get("title") or "")
-    rtttl = played.get("source") == "rtttl"
+    Название — из каталога с автором («Toccata», Bach); ``source=rtttl`` — играем одну мелодию: нот для полной
+    аранжировки нет (отзыв Шифу 12.10: «мелодию-рингтон» непонятно); ``replacement_for`` — названного не нашлось,
+    играем ближайшее. Все фразы — с основой «ставлю «» (:data:`LAUNCH_PHRASE_STEMS`, гард #3455)."""
+    title = f"«{played.get('title') or ''}»"
+    composer = str(played.get("composer") or "")
+    if composer and composer.lower() not in title.lower():
+        title = f"{title}, {composer}"
     asked = str(played.get("replacement_for") or "")
-    if asked:  # все фразы — с основой «ставлю «» (:data:`LAUNCH_PHRASE_STEMS`): её копию без тула ловит гард #3455
-        return f"«{asked[:1].upper() + asked[1:]}» не нашёл, ставлю «{title}» — ближайшее по словам заказа."
-    if rtttl and played.get("scores_failed"):
-        return f"В нотах не сложилось — ставлю «{title}», мелодию-рингтон."
-    return f"Ставлю «{title}»" + (" — мелодия-рингтон." if rtttl else " по нотам.")
+    if asked:
+        return f"«{asked[:1].upper() + asked[1:]}» не нашёл. Ставлю ближайшее: {title}."
+    if played.get("source") == "rtttl":
+        return f"Ставлю {title} — мелодией, нот для полной аранжировки нет."
+    return f"Ставлю {title}."
 
 
 def launch_text(phrase: str, data: Mapping[str, Any]) -> str:
