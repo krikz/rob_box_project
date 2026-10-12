@@ -89,13 +89,30 @@ def person_parasites(records: Mapping[str, Mapping[str, Any]], spellings: Iterab
     ``artist`` хотя бы одной записи-кандидата: «Bach» у «Brandenburg Concert»), а у записи оно совпало только в
     названии при другом исполнителе — «Mundian To Bach Ke» (Panjabi MC). Слово названия («toccata») именем не
     считается: в ``artist`` его нет ни у кого. Полное поле «композитор» реестра — PR-3."""
-    def field_of(record: Mapping[str, Any], name: str) -> str:
-        return str(record.get(name) or "").lower()
-
-    persons = {s for s in spellings if s and any(_in(s, field_of(r, "artist")) for r in records.values())}
+    persons = person_words(records, spellings)
     return {i for i, r in records.items()
-            if any(_in(s, field_of(r, "title")) or _in(s, i.lower()) for s in persons)
-            and not any(_in(s, field_of(r, "artist")) for s in persons)}
+            if any(_in(s, _field(r, "title")) or _in(s, i.lower()) for s in persons)
+            and not any(_in(s, _field(r, "artist")) for s in persons)}
+
+
+def _field(record: Mapping[str, Any], name: str) -> str:
+    return str(record.get(name) or "").lower()
+
+
+def person_words(records: Mapping[str, Mapping[str, Any]], spellings: Iterable[str]) -> Set[str]:
+    """Написания слов заказа, которые — имя автора: стоят в ``artist`` хотя бы одной записи-кандидата."""
+    return {s for s in spellings if s and any(_in(s, _field(r, "artist")) for r in records.values())}
+
+
+def piece_order(candidates: Sequence[Candidate], recent: Sequence[str], tune: Optional[Mapping[str, Any]] = None,
+                *, work_named: bool = True) -> List[Candidate]:
+    """Очередь кандидатов пьесы. Произведение названо («Токката») — история не понижает материал уровнем: партитуры
+    всегда раньше RTTTL, свежесть — только внутри уровня (решение координатора 12.10: единственную годную партитуру
+    «Токкаты» история вытолкнула в рингтон). Назван только автор («сыграй Баха») — свежесть между произведениями
+    по всей очереди (R4)."""
+    if not work_named:
+        return fresh_first(candidates, recent, tune)
+    return [c for kind in (SCORE, RTTTL) for c in fresh_first([x for x in candidates if x.kind == kind], recent, tune)]
 
 
 def fresh_first(candidates: Sequence[Candidate], recent: Sequence[str],
@@ -246,4 +263,5 @@ def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicP
 
 
 __all__ = ["RTTTL", "SCORE", "Candidate", "ClassicPick", "PieceMemory", "classic_picker", "find_record", "fresh_first",
-           "key_slot", "person_parasites", "pick_classic", "pick_piece", "pick_record", "pick_score", "song_material"]
+           "key_slot", "person_parasites", "person_words", "piece_order", "pick_classic", "pick_piece", "pick_record",
+           "pick_score", "song_material"]

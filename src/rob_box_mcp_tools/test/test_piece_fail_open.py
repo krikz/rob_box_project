@@ -238,3 +238,21 @@ def test_versions_of_a_played_tune_count_as_played():
         req = _tools(_rig(), hooks=("brandenb", "brandenb_2", "jesujoyo", "minuet"), table=table, history=history)
         played.append(req.execute(intent="melody", text="сыграй баха").data["melody_id"])
     assert played == ["brandenb", "jesujoyo", "minuet"]
+
+
+def test_named_work_keeps_its_only_good_score_on_repeat():
+    """Решение координатора 12.10 (16:33 «Токката Баха» → партитура QmU8gH…, 16:34 → история вытолкнула её в
+    рингтон ``toccataa_2``): произведение названо — партитура раньше RTTTL всегда, свежесть только внутри уровня."""
+    good = replace(_material("pdmx:good"), title="Toccata and Fugue in D Minor", composer="J. S. Bach")
+    names = ("c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b")
+    motif = "ref:d=4,o=5,b=120:" + ",".join(f"{names[e.midi % 12]}{e.midi // 12 - 1}" for e in good.melody[:12])
+    table = {"toccata": ("Toccata", motif, "Bach"), "toccataa": ("Toccata And Fugue", motif, "Bach")}
+    other = tuple(PitchEvent(60 + (i % 3), float(i), 1.0, 2) for i in range(32))  # мотива эталона нет
+    scores = Scores({"pdmx:bad": replace(_material("pdmx:bad"), melody=other), "pdmx:good": good})
+    history = MusicHistory(":memory:")
+    played = []
+    for _ in range(2):
+        req = _tools(_rig(), hits=_hits(list(table), "токкату", "toccata"), scores=scores, table=table,
+                     history=history)
+        played.append(req.execute(intent="melody", text="сыграй токкату").data["melody_id"])
+    assert played == ["pdmx:good", "pdmx:good"]

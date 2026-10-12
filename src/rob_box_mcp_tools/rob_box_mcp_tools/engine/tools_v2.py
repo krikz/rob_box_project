@@ -51,7 +51,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.rtttl import CONTOUR_NOTES, contour
 
 from .classic import (RTTTL, SCORE, Candidate, ClassicPick, PieceMemory, classic_picker, fresh_first, key_slot,
-                      person_parasites, pick_piece, pick_record, pick_score)
+                      person_parasites, person_words, piece_order, pick_piece, pick_record, pick_score)
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import PlanMaterials, ScoreLibrary, seed_plan, track_materials
@@ -172,10 +172,19 @@ def word_hooks(library_factory: Callable[[], Any]) -> WordHooks:
     return lambda word: theme_search(library(), word)
 
 
-def spellings(hits: ThemeHits) -> Tuple[str, ...]:
-    """Написания слов заказа в архиве (``Term.alts`` строк поиска находок) — для :func:`classic.person_parasites`."""
+def spellings(hits: ThemeHits) -> Tuple[Tuple[str, ...], ...]:
+    """Написания каждого слова заказа в архиве (``Term.alts`` строк поиска находок) — для
+    :func:`classic.person_parasites` и решения «названо ли произведение»."""
     parts = hits.query.parts if hits.query is not None else ()
-    return tuple(dict.fromkeys(a.lower() for p in parts for t in p.terms for a in t.alts))
+    return tuple(tuple(a.lower() for a in t.alts) for p in parts for t in p.terms if t.alts)
+
+
+def work_named(records: Mapping[str, Tuple[Dict[str, Any], str]], hits: ThemeHits) -> bool:
+    """Заказ называет произведение, а не только автора: есть слово, ни одно написание которого не имя автора
+    (:func:`classic.person_words`); слов не знаем (связи, подставной поиск) — считаем, что названо."""
+    words = spellings(hits)
+    persons = person_words({i: r for i, (r, _t) in records.items()}, [a for w in words for a in w])
+    return not words or any(not set(w) & persons for w in words)
 
 
 def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None) -> ThemeFinder:
@@ -640,7 +649,7 @@ class RequestMusicTool(MCPTool):
         строкой лога."""
         seen = set(exclude)
         records = self._records([h for h in hits.names if h not in seen])
-        parasites = person_parasites({i: r for i, (r, _t) in records.items()}, spellings(hits))
+        parasites = person_parasites({i: r for i, (r, _t) in records.items()}, [a for w in spellings(hits) for a in w])
         if parasites:
             self._log().info(f"🎼 [classic] паразиты имени (слово заказа только в названии чужого трека): "
                              f"{sorted(parasites)}")
@@ -658,6 +667,7 @@ class RequestMusicTool(MCPTool):
         сыгранное — в конце очереди. ``(песня | None, отказы, сколько было кандидатов)``."""
         hits, ids = self._dj.work_hits(work)
         records = self._rtttl_records(hits)
+        named = work_named(records, hits)
         refs = [record["rtttl"] for record, _title in records.values()]  # эталоны узнаваемости (hook.for_theme)
         materials = PlanMaterials(self._dj._scores, ids, self._log())
         rtttl = self._rtttl(records, work, seed, lead)
@@ -668,7 +678,8 @@ class RequestMusicTool(MCPTool):
             return pick_score(materials, [c.ref], work, seed=seed, references=refs, lead=lead)
 
         candidates = [Candidate(SCORE, m) for m in ids] + [Candidate(RTTTL, h) for h in records]
-        pick, failed = pick_piece(fresh_first(candidates, self._pieces.recent(), tunes(records)), build)
+        order = piece_order(candidates, self._pieces.recent(), tunes(records), work_named=named)
+        pick, failed = pick_piece(order, build)
         return pick, failed, len(candidates)
 
     def _near_pick(self, work: str, seed: int, lead: Optional[LeadChoice],
@@ -746,4 +757,4 @@ def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:
 __all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
            "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
            "lead_for", "library_melodies", "library_records", "music_busy", "not_found", "set_refusal", "set_style",
-           "spellings", "theme_finder", "theme_links", "tool_result", "tunes", "word_hooks"]
+           "spellings", "theme_finder", "work_named", "theme_links", "tool_result", "tunes", "word_hooks"]
