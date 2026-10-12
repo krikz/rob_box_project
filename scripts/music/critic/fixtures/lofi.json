@@ -1,0 +1,125 @@
+{
+ "style": "lofi",
+ "source": "style_critic/lofi/lofi.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set53360_01_A_727e7fb6.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set53360_02_B_049035e8.json",
+   "start_s": 172.31
+  }
+ ],
+ "claims": [
+  {
+   "t0": 49,
+   "t1": 55,
+   "kind": "out_of_key",
+   "claim": "p1 jbass: 38,42,45,39 — Eb (39) это b9 против D major",
+   "confidence": 0.5,
+   "args": {
+    "role": "bass",
+    "midi": [
+     39
+    ]
+   }
+  },
+  {
+   "t0": 86,
+   "t1": 92,
+   "kind": "param_reading",
+   "claim": "p2 space: pshift=((0,0.125),) — микро-сдвиг питча, расстройка",
+   "confidence": 0.5,
+   "args": {
+    "param": "pshift",
+    "value": 0.125
+   }
+  },
+  {
+   "t0": 147,
+   "t1": 153,
+   "kind": "out_of_key",
+   "claim": "p3 keys: хаотичная генерация 74, 78, 73, 76 против D major",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     74,
+     78,
+     73,
+     76
+    ]
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 12,
+   "kind": "hole",
+   "claim": "d1 kick и d3 snare: amp=0 на первые 16 долей — тишина ритм-секции",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 155,
+   "t1": 180,
+   "kind": "hole",
+   "claim": "d1: dur=33.5 — бочка не триггерится более 8 тактов",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 172,
+   "t1": 196,
+   "kind": "overlap",
+   "claim": "трек 2 на 172.31 с встаёт без кроссфейда поверх трека 1",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 24
+   }
+  },
+  {
+   "t0": 172,
+   "t1": 196,
+   "kind": "masking",
+   "claim": "jbass трека 1 и subbass трека 2 в одной полосе, HPF/сайдчейна нет",
+   "confidence": 0.5,
+   "args": {
+    "param": "sidechain",
+    "role": "bass"
+   }
+  },
+  {
+   "t0": 73,
+   "t1": 79,
+   "kind": "level",
+   "claim": "p3 amp до 0.85 при p2 amp=0.239 — пэд заглушён лидом",
+   "confidence": 0.5,
+   "args": {
+    "role": "pad",
+    "direction": "low"
+   }
+  },
+  {
+   "t0": 185,
+   "t1": 186,
+   "kind": "mix",
+   "claim": "b3 pluck amplify=[1,1,1] + a3 snare и тарелки lpf до 2400 — резкость и клиппинг",
+   "confidence": 0.5
+  },
+  {
+   "t0": 0,
+   "t1": 196,
+   "kind": "param_reading",
+   "claim": "Scale.chromatic у всех мелодических и басовых партий игнорирует заявленный лад",
+   "confidence": 0.5,
+   "args": {
+    "param": "scale"
+   }
+  }
+ ]
+}

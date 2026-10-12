@@ -1,0 +1,108 @@
+{
+ "style": "rave",
+ "source": "style_critic/rave/rave.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set52287_01_A_b42798d7.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set52287_02_B_323d90b2.json",
+   "start_s": 113.69
+  }
+ ],
+ "claims": [
+  {
+   "t0": 25,
+   "t1": 50,
+   "kind": "out_of_key",
+   "claim": "p2 strings: VI и VII ступени сыграны как C мажор (55,60,64) и G# минор (56,60,63) в A# minor — мимо аккорда",
+   "confidence": 0.5,
+   "args": {
+    "role": "pad",
+    "midi": [
+     55,
+     60,
+     64,
+     56,
+     63
+    ]
+   }
+  },
+  {
+   "t0": 165,
+   "t1": 175,
+   "kind": "out_of_key",
+   "claim": "b1 jbass: нота 40 (E натуральная) выпадает из F minor",
+   "confidence": 0.5,
+   "args": {
+    "role": "bass",
+    "midi": [
+     40
+    ]
+   }
+  },
+  {
+   "t0": 100,
+   "t1": 110,
+   "kind": "out_of_key",
+   "claim": "p3/b3: ноты 76 (E) и 71 (B) — хроматические задержания, фальшивые нажатия",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead",
+    "midi": [
+     76,
+     71
+    ]
+   }
+  },
+  {
+   "t0": 82,
+   "t1": 88,
+   "kind": "hole",
+   "claim": "бочка d1: случайные нули в amplify — удар пропадает на сильной доле",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 145,
+   "t1": 152,
+   "kind": "hole",
+   "claim": "бочка a1 трека 2: то же, грув спотыкается",
+   "confidence": 0.5,
+   "args": {
+    "role": "kick"
+   }
+  },
+  {
+   "t0": 113,
+   "t1": 127,
+   "kind": "overlap",
+   "claim": "трек 2 стартует на 113.69 с, трек 1 кончается на 126.31 — 12 с наложения без фильтрации",
+   "confidence": 0.5,
+   "args": {
+    "seconds": 12
+   }
+  },
+  {
+   "t0": 15,
+   "t1": 70,
+   "kind": "masking",
+   "claim": "саб-бас p1 без сайдчейна от бочки d1: низ превращается в кашу",
+   "confidence": 0.5,
+   "args": {
+    "param": "sidechain",
+    "role": "bass"
+   }
+  },
+  {
+   "t0": 120,
+   "t1": 160,
+   "kind": "mix",
+   "claim": "b2 saw и b3 pluck с lpf 4000+ конкурируют в 0.8–2.5 кГц",
+   "confidence": 0.5
+  }
+ ]
+}
