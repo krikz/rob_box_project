@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
+from collections import Counter
 
 import pytest
 
@@ -307,3 +309,139 @@ def test_full_request_to_jev_for_bach_when_toccata_was_played_twice(capsys):
     assert crit["brandenb"] == ("score «Brandenburg Concerto» Bach; очки кода: композитор +2, подходит +0.8, "
                                 "рейтинг +0.35; итого 3.15; ещё не играли")
     assert body["state"] == "Заказ: «баха». За сессию сыграно: score «Toccata and Fugue» Bach ×2"
+
+
+# ── Цепочка исполнения Jev → LLM → кубик кода (решение Шифу 13.10, #3564) ──
+
+def llm(handler):
+    return ChatChoiceProvider(base_url="https://llm.test", model="m", client_factory=client_for(handler),
+                              response_format="json_object")
+
+
+def llm_answer(choice, confidence=0.7):
+    return {"choices": [{"message": {"content": json.dumps({"choice": choice, "confidence": confidence})}}]}
+
+
+def chain(jev_handler, llm_handler, log, rng=None, deadline_ms=200):
+    stages = [("jev", cm.ModelChooser(jev(jev_handler, timeout_s=5.0), deadline_ms=deadline_ms)),
+              ("llm", cm.ModelChooser(llm(llm_handler), deadline_ms=deadline_ms))]
+    return DeterministicChooser(cm.ChainModel(stages, lambda: log, rng=rng or random.Random(1)))
+
+
+def never(request):
+    raise AssertionError("ступень не должна была зваться")
+
+
+async def hang(request):
+    await asyncio.sleep(2.0)
+    return httpx.Response(200, json=jev_answer("fugue"))
+
+
+def chooser_line(log):
+    (level, line), = [entry for entry in log.lines if "[chooser]" in entry[1]]
+    assert level == "info" and SECRET not in line
+    return line
+
+
+def test_chain_takes_jevs_answer_and_does_not_ask_the_llm():
+    log = Log()
+    answer = chain(lambda r: httpx.Response(200, json=jev_answer("fugue", 0.8)), never, log).choose(AMBIGUOUS)
+    assert answer == Choice("fugue", 0.8, "jev")  # исполняется выбор модели, а не детерминированный «toccata»
+    line = chooser_line(log)
+    assert line.startswith("🎲 [chooser] q='токката баха' stage=jev choice=fugue ")
+    assert " ms_jev=" in line and "ms_llm" not in line and "reason_fallback=-" in line
+
+
+def test_chain_jev_timeout_falls_to_llm_within_the_stage_deadline():
+    log = Log()
+    started = time.perf_counter()
+    answer = chain(hang, lambda r: httpx.Response(200, json=llm_answer("fugue")), log, deadline_ms=150).choose(
+        AMBIGUOUS)
+    assert answer == Choice("fugue", 0.7, "llm_harness")
+    assert time.perf_counter() - started < 1.5  # Jev оборван своим дедлайном, не HTTP-таймаутом 5 с
+    line = chooser_line(log)
+    assert "stage=llm choice=fugue" in line and " ms_jev=" in line and " ms_llm=" in line
+    assert "reason_fallback=jev:jev_timeout" in line
+
+
+def test_chain_answer_outside_candidates_moves_to_the_next_stage():
+    log = Log()
+    answer = chain(lambda r: httpx.Response(200, json=jev_answer("mozart", 0.9)),
+                   lambda r: httpx.Response(200, json=llm_answer("toccata")), log).choose(AMBIGUOUS)
+    assert answer.id == "toccata" and answer.provider == "llm_harness"
+    assert "reason_fallback=jev:jev_invalid" in chooser_line(log)
+
+
+def test_chain_both_models_down_rolls_the_codes_dice_and_never_raises():
+    log = Log()
+    answer = chain(lambda r: httpx.Response(500), lambda r: httpx.Response(200, json=llm_answer("mozart")),
+                   log).choose(AMBIGUOUS)
+    assert answer.provider == "code" and answer.id in AMBIGUOUS.ids()
+    line = chooser_line(log)
+    assert f"stage=code choice={answer.id}" in line
+    assert "reason_fallback=jev:jev_error,llm:llm_harness_invalid" in line
+
+
+def test_chain_dice_with_fixed_seed_picks_the_penalised_candidate_rarer():
+    """Оба провайдера лежат: кубик по очкам кода; недавно сыгранный (штраф −2) выпадает заметно реже свежего."""
+    question = ChoiceQuestion("баха", (
+        Option("fresh", {"composer_match": 1.0}, "score «Fresh» Bach"),
+        Option("played", {"composer_match": 1.0, "recent": 1.0}, "score «Played» Bach", Plays(1, 0))))
+    down = cm.ChainModel([], lambda: Log(), rng=random.Random(3564))
+    picks = Counter(down.choose(question).id for _ in range(2000))
+    assert picks["played"] < picks["fresh"] / 4 and picks["played"] > 0
+
+
+def test_chain_does_not_run_when_the_deterministic_gap_is_clear():
+    log = Log()
+    assert chain(never, never, log).choose(CLEAR) == Choice("a", 1.0, "deterministic")
+    assert log.lines == []
+
+
+def test_chain_stage_circuit_breaker_is_per_stage():
+    """Jev, упавший порогом подряд, открывает свой breaker — дальше его не зовут; LLM-ступень при этом жива."""
+    log, calls = Log(), []
+
+    def down(request):
+        calls.append(1)
+        return httpx.Response(500)
+
+    chooser = chain(down, lambda r: httpx.Response(200, json=llm_answer("fugue")), log)
+    for _ in range(12):
+        assert chooser.choose(AMBIGUOUS).provider == "llm_harness"
+    assert 0 < len(calls) < 12
+    assert "reason_fallback=jev:jev_circuit_open" in log.lines[-1][1]
+
+
+def test_chain_mode_from_env_builds_jev_then_llm_with_the_existing_deepseek_key():
+    log = Log()
+    env = {cm.CHOOSER_ENV: "chain", "JEV_API_KEY": SECRET, "DEEPSEEK_API_KEY": SECRET}
+    chooser = cm.chooser_from_env(env, log=lambda: log)
+    model = chooser._model
+    assert isinstance(model, cm.ChainModel) and [label for label, _s in model._stages] == ["jev", "llm"]
+    assert log.lines == [("info", "🎲 [chooser] цепочка включена: jev → llm → code")]
+
+
+def test_chain_mode_without_keys_is_the_dice_alone_with_one_warning(monkeypatch):
+    monkeypatch.delenv("JEV_API_KEY")
+    log = Log()
+    chooser = cm.chooser_from_env({cm.CHOOSER_ENV: "chain"}, log=lambda: log)
+    assert isinstance(chooser._model, cm.ChainModel) and chooser._model._stages == []
+    (level, line), = log.lines
+    assert level == "warning" and "code" in line and "jev" in line and "llm_harness" in line
+    assert chooser.choose(AMBIGUOUS).provider == "code"
+
+
+def test_unknown_chooser_mode_is_deterministic_with_a_warning():
+    log = Log()
+    assert cm.chooser_from_env({cm.CHOOSER_ENV: "gpt"}, log=lambda: log)._model is None
+    assert log.lines[0][0] == "warning"
+
+
+def test_request_music_tool_runs_the_chain_from_env(monkeypatch):
+    from rob_box_mcp_tools.engine import tools_v2
+
+    monkeypatch.setenv(cm.CHOOSER_ENV, "chain")
+    tool = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
+                                     words=lambda w: None, classic=lambda *a, **k: None)
+    assert isinstance(tool._pieces._chooser._model, cm.ChainModel)

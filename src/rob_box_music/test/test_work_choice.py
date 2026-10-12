@@ -110,3 +110,41 @@ def test_play_stats_counts_versions_as_one_within_the_window_and_penalty_is_the_
     assert play_stats("fresh", played, now, same) == Plays(0, None)
     features = {"title_match": 1.0, "recent": 0.5}
     assert penalty(features) == 1.0 and score(features) == score({"title_match": 1.0}) - penalty(features)
+
+
+def test_dice_prefers_higher_score_and_penalised_repeat_falls_rarer_with_fixed_seed():
+    """#3564 (решение Шифу 13.10): код — «коэффициент и кубик», не argmax: вероятность ∝ exp(score/T); недавний повтор
+    (штраф −2) выпадает в ≈e² раз реже свежего; детерминирован при заданном ``rng``."""
+    import math
+    import random
+    from collections import Counter
+
+    from rob_box_music.choice import DICE, dice, dice_weights
+
+    q = ChoiceQuestion("баха", (Option("fresh_a", {"composer_match": 1.0}),
+                                Option("fresh_b", {"composer_match": 1.0}),
+                                Option("played", {"composer_match": 1.0, "recent": 1.0})))
+    weights = dice_weights(q)
+    assert weights[0] == weights[1] == 1.0
+    assert weights[2] == math.exp(kn.CHOOSER_WEIGHTS["recent"] / kn.CHOOSER_DICE_TEMPERATURE)
+    rng = random.Random(3564)
+    counts = Counter(dice(q, rng).id for _ in range(4000))
+    assert counts["played"] < counts["fresh_a"] / 4 and counts["played"] < counts["fresh_b"] / 4
+    assert counts["played"] > 0  # не запрет, а редкость
+    first = dice(q, random.Random(7))
+    assert first == dice(q, random.Random(7)) and first.provider == DICE
+    assert first.confidence == weights[q.ids().index(first.id)] / sum(weights)
+
+
+def test_weighted_pick_and_dice_share_one_roulette():
+    from rob_box_music import diversity
+
+    class Fixed:
+        def __init__(self, value):
+            self.value = value
+
+        def random(self):
+            return self.value
+
+    assert diversity.roulette(["a", "b", "c"], [1.0, 2.0, 1.0], Fixed(0.3)) == "b"
+    assert diversity.weighted_pick(["a", "b"], [], Fixed(0.6)) == diversity.roulette(["a", "b"], [1.0, 1.0], Fixed(0.6))

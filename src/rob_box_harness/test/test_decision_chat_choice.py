@@ -14,8 +14,10 @@ httpx = pytest.importorskip("httpx")
 
 from rob_box_harness.decision.chat_choice import (  # noqa: E402
     API_KEY_ENV,
+    API_KEY_ENV_ENV,
     BASE_URL_ENV,
     MODEL_ENV,
+    PROVIDER_ENV,
     ChatChoiceProvider,
     chat_choice_from_env,
 )
@@ -90,7 +92,45 @@ def test_only_choice_questions_and_missing_key_and_auth_error(monkeypatch):
 
 
 def test_from_env_needs_base_url_model_and_key():
-    full = {BASE_URL_ENV: "https://llm.test/v1", MODEL_ENV: "m", API_KEY_ENV: SECRET}
-    assert chat_choice_from_env(full).name == "llm_harness"
-    for missing in full:
+    """Явный конфиг неизвестного каталогу провайдера: без base_url, модели или ключа — ``None``."""
+    full = {PROVIDER_ENV: "custom", BASE_URL_ENV: "https://llm.test/v1", MODEL_ENV: "m", API_KEY_ENV: SECRET}
+    built = chat_choice_from_env(full)
+    assert built.name == "llm_harness" and built.response_format == "json_schema"
+    for missing in (BASE_URL_ENV, MODEL_ENV, API_KEY_ENV):
         assert chat_choice_from_env({k: v for k, v in full.items() if k != missing}) is None
+
+
+def test_default_provider_is_deepseek_from_the_catalog_with_the_existing_key_and_json_object():
+    """#3564: новый секрет не нужен — ключ диалога ``DEEPSEEK_API_KEY``; base_url/модель — из каталога диалога;
+    DeepSeek без ``json_schema`` (замер 13.10: 400) — ``json_object``."""
+    from rob_box_harness.providers.catalog import LLM_PROVIDER_REGISTRY
+
+    assert chat_choice_from_env({}) is None
+    built = chat_choice_from_env({"DEEPSEEK_API_KEY": SECRET})
+    preset = LLM_PROVIDER_REGISTRY["deepseek"]
+    assert (built.base_url, built.model) == (preset["default_base_url"], preset["default_model"])
+    assert built._api_key_env == "DEEPSEEK_API_KEY" and built.response_format == "json_object"
+    via = chat_choice_from_env({API_KEY_ENV_ENV: "MY_KEY", "MY_KEY": SECRET, MODEL_ENV: "deepseek-v4-flash"})
+    assert via._api_key_env == "MY_KEY" and via.model == "deepseek-v4-flash"
+    assert chat_choice_from_env({API_KEY_ENV_ENV: "MY_KEY"}) is None  # переменная названа, но пуста
+
+
+def test_json_object_request_carries_the_enum_schema_in_the_system_message(monkeypatch):
+    monkeypatch.setenv(API_KEY_ENV, SECRET)
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=completion('{"choice": "a", "confidence": 0.9}'))
+
+    def factory(timeout_s):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout_s)
+
+    chat = ChatChoiceProvider(base_url="https://llm.test", model="m", response_format="json_object",
+                              client_factory=factory)
+    assert asyncio.run(chat.decide("s", QUESTIONS)).answers["pick"].answer == "a"
+    body = seen["body"]
+    assert body["response_format"] == {"type": "json_object"}
+    assert '"enum": ["a", "b"]' in body["messages"][0]["content"] and "JSON" in body["messages"][0]["content"]
+    with pytest.raises(ProviderConfigError):
+        ChatChoiceProvider(base_url="https://llm.test", model="m", response_format="xml")
