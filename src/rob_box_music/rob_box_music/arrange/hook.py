@@ -32,6 +32,7 @@ from ..material import MaterialError, MeterMap, Phrase, ScoreMaterial, meter_map
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
 from ..rtttl import contour, parse_rtttl
 from ..tonality import detect_key, key_fit
+from .theme_align import best_match, contour_fit, pitches
 
 _LOG = logging.getLogger(__name__)
 STEP_BEATS = BEATS_PER_BAR / STEPS_PER_BAR
@@ -238,12 +239,6 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
     return from_notes(notes, melody_bpm, melody_id, bpm, root, mode, register, theme_max=theme_max, theme=theme)
 
 
-def contour_match(steps: Sequence[int], ref: Sequence[int]) -> float:
-    """Доля совпавших интервалов контура ``steps`` с эталоном ``ref`` (по длине эталона; интервалы —
-    транспозиционно-инвариантно)."""
-    return sum(x == y for x, y in zip(steps, ref)) / len(ref) if ref else 0.0
-
-
 def theme_version(melody_id: str, melodies: Mapping[str, str], bpm: int) -> str:
     """Запись темы целиком для хука ``melody_id`` (#3542): самая длинная в тактах трека (темп ``bpm``, свой
     :func:`time_scale`) из ``melodies`` того же произведения — начало совпадает с началом хука контуром
@@ -261,7 +256,7 @@ def theme_version(melody_id: str, melodies: Mapping[str, str], bpm: int) -> str:
 
     same = [n for n, r in melodies.items() if n == melody_id or (
         ref is not None and (c := _ref_contour(r)) is not None
-        and contour_match(c, ref) >= kn.THEME_REF_MATCH_MIN)]
+        and contour_fit(c, ref) >= kn.THEME_REF_MATCH_MIN)]
     best = max(same, key=lambda n: (length(n), n == melody_id))
     return best if length(best) > length(melody_id) else melody_id
 
@@ -494,23 +489,6 @@ def reference_contours(rtttls: Sequence[str]) -> List[Tuple[int, ...]]:
     return [c for c in out if c is not None]
 
 
-def _best_window(steps: Sequence[int], at: Mapping[int, Sequence[int]],
-                 ref: Sequence[int]) -> Optional[Tuple[int, int]]:
-    """``(совпавших интервалов, начало)`` лучшего окна ``ref`` в ``steps`` (ничья — раньше): то же, что
-    :func:`contour_match` по каждому окну, но счёт идёт от мест каждого интервала ``at`` — план отбирает материалы
-    на пути запроса (M7). Окон нет (голос короче эталона) — ``None``."""
-    last = len(steps) - len(ref)
-    if last < 0:
-        return None
-    hits = [0] * (last + 1)
-    for k, step in enumerate(ref):
-        for j in at.get(step, ()):
-            if 0 <= j - k <= last:
-                hits[j - k] += 1
-    top = max(hits)
-    return top, hits.index(top)
-
-
 #: Совпадения эталонов на процесс (M7, #3542): план и компоновка трека спрашивают одно и то же — материал и эталоны
 #: в сете неизменны. Ключ — id материала, его голоса и контуры эталонов (материал с тем же id и другими нотами —
 #: другой ключ).
@@ -529,23 +507,15 @@ def _theme_match_cached(material: ScoreMaterial, refs: Tuple[Tuple[int, ...], ..
 
 
 def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Optional[Tuple[float, str, float]]:
-    """Лучшее совпадение контура эталона в голосах материала: ``(доля совпавших интервалов, голос, доля начала)``;
-    транспозиционно-инвариантно (:func:`contour_match`), ничья — мелодия, раньше в пьесе. Нет эталонов — ``None``."""
-    best: Optional[Tuple[float, str, float]] = None
-    for name, events in voices(material).items():
-        pitches = [e.midi for e in events]
-        steps = [b - a for a, b in zip(pitches, pitches[1:])]
-        at: Dict[int, List[int]] = {}
-        for j, step in enumerate(steps):
-            at.setdefault(step, []).append(j)
-        for ref in refs:
-            window = _best_window(steps, at, ref)
-            if window is None:
-                continue
-            score = window[0] / len(ref)
-            if best is None or score > best[0] or (score == best[0] and name == "melody" != best[1]):
-                best = (score, name, events[window[1]].beat)
-    return best
+    """Лучшее совпадение контура эталона в голосах материала: ``(годность, голос, доля начала)``; годность — доля
+    эталона в выравнивании нот с пропусками (:mod:`.theme_align`, #3573), транспозиционно-инвариантно; ничья —
+    мелодия, раньше в пьесе. Нет эталонов или голосов не короче эталона — ``None``."""
+    notes = {name: [e.midi for e in events] for name, events in voices(material).items()}
+    got = best_match(notes, [pitches(ref) for ref in refs])
+    if got is None:
+        return None
+    score, name, index = got
+    return score, name, voices(material)[name][index].beat
 
 
 def for_theme(material: ScoreMaterial, rtttls: Sequence[str],
@@ -731,7 +701,7 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 
 
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
-           "contour_match", "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
+           "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
            "from_rtttl", "material_hook", "material_scale", "material_unfit", "pick_phrase", "reference_contours",
            "rhythm_answer", "theme_cuts", "theme_match", "theme_span", "theme_version", "time_scale", "track_key",
            "voices", "with_theme"]
