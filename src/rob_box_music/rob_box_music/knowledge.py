@@ -1919,8 +1919,8 @@ _LOFI_GROOVE = frozenset({"kick", "bass", "pad", "lead"})
 #: Форма — петли без подъёма и дропа, в каждой 4-тактовой петле меняется один элемент: интро 4+4 и хвост 4+4 — блэнд
 #: двух дек (хэты, клавиши, шипение); тема (вид ``drop``, :data:`THEME_SECTION`) сразу после интро; дальше по 4 такта
 #: (виды ``drop2``/``break``): брейк уходит (``groove2``), всё вместе (``groove3``), бочка уходит и клавиши под фильтром
-#: (``break``), ещё и мелодия молчит (``break2``), всё вместе (``groove4``), брейк уходит, мелодия отвечает (``groove5``).
-#: Без брейка: ``groove2``, ``groove5`` (нет в ``layer_sections["loop"]``).
+#: (``break``), ещё и мелодия молчит (``break2``), всё вместе (``groove4``), брейк уходит, мелодия отвечает
+#: (``groove5``). Без брейка: ``groove2``, ``groove5`` (нет в ``layer_sections["loop"]``).
 _LOFI_INTRO: FormSpec = (
     ("intro", _CLUB_BLEND[1], 2, frozenset({"hats", "pad"})),
     ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 3, frozenset({"kick", "bass", "pad"})),
