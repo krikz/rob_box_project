@@ -36,6 +36,7 @@ import judge as jd  # noqa: E402
 from rob_box_music import knowledge as kn  # noqa: E402
 
 CONFIRMED, REFUTED, UNVERIFIABLE = "confirmed", "refuted", "unverifiable"
+BAD_ARGS = "args не разобраны"
 CLASSES = {"structural": ("hole", "overlap", "level", "sustain", "phrasing"), "notes": ("out_of_key", "chord_clash"),
            "mix": ("mix", "masking"), "param": ("param_reading",)}
 HOLE_MIN_BEATS = 8.0      # паузы короче 2 тактов — дыхание, не дыра
@@ -334,8 +335,8 @@ def verify(plan: Sequence[Placed], claims: Sequence[jd.Claim], style: str = "") 
     for c in claims:
         try:
             verdict, why = CHECKS[c.kind](plan, c)
-        except (KeyError, StopIteration) as exc:  # нет роли/секции в модели — честно «не проверяемо», а не молчаливый провал
-            verdict, why = UNVERIFIABLE, f"модель не содержит нужного: {type(exc).__name__} {exc}"
+        except Exception as exc:  # noqa: BLE001 — одно кривое утверждение не валит прогон: честно «не проверяемо» + счётчик
+            verdict, why = UNVERIFIABLE, f"{BAD_ARGS}: {type(exc).__name__} {exc}"
         out.append(Verdict(c, verdict, why, style))
     return out
 
@@ -359,6 +360,8 @@ def render_report(per_style: Mapping[str, Sequence[Verdict]], provider: str = "f
     allv = [v for vs in per_style.values() for v in vs]
     lines = ["# Отчёт верификатора судьи (J1)", "", f"Утверждений: {len(allv)}, стилей: {len(per_style)}. provider={provider}"
              + (" (text_only: модель звук не слушала)" if provider.endswith("text") else "") + ".", "",
+             f"{BAD_ARGS} (исключение в проверке): {sum(v.reason.startswith(BAD_ARGS) for v in allv)}; "
+             f"поля args в форме не по схеме (`_invalid`): {sum(bool(v.claim.args.get(jd.INVALID_KEY)) for v in allv)}.", "",
              "## J1 по классам", "", "| класс / вид | всего | подтв. | опроверг. | не проверяемо | J1 (подтв./всего) | подтв./решённых |",
              "|---|---|---|---|---|---|---|"]
     for key, cnt in sorted(j1_table(allv).items(), key=lambda kv: (kv[0] != "ВСЕГО", kv[0].strip() != kv[0], kv[0])):
