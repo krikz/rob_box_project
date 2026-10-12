@@ -65,10 +65,30 @@ def test_provider_from_env_no_silent_fallback(tmp_path):
     assert jd.make_judge({"CRITIC_JUDGE": "fake", "CRITIC_JUDGE_FIXTURE": str(fx)}).name == "fake"
 
 
+def test_qwen_text_judge_against_stub_transport(tmp_path):
+    seen = {}
+
+    def transport(url, headers, body):
+        seen.update(url=url, body=body, auth=headers["Authorization"])
+        return {"choices": [{"message": {"content": "```json\n" + json.dumps([ROW]) + "\n```"}}]}
+
+    envf = tmp_path / ".env"
+    envf.write_text("QWEN=stub-key\n", encoding="utf-8")
+    judge = jd.QwenTextJudge({}, env_file=envf, transport=transport)
+    assert judge.listens is False and judge.judge(None, "код трека")[0].kind == "hole"
+    assert seen["url"].endswith("/compatible-mode/v1/chat/completions") and seen["body"]["model"] == "qwen3.8-max"
+    assert "звука ты не слышал" in seen["body"]["messages"][0]["content"]
+    bad = jd.QwenTextJudge({"QWEN": "k"}, transport=lambda *a: {"choices": [{"message": {"content": "не json"}}]})
+    with pytest.raises(jd.JudgeSchemaError):
+        bad.judge(None, "p")
+    with pytest.raises(jd.JudgeUnavailable, match="нет ключа"):
+        jd.make_judge({"CRITIC_JUDGE": "qwen_text"})
+
+
 def test_keyed_providers_are_honest_scaffolds():
     judge = jd.make_judge({"CRITIC_JUDGE": "qwen", "QWEN_API_KEY": "test-key"})
     assert isinstance(judge, jd.QwenOmniJudge)
-    with pytest.raises(jd.JudgeNotImplemented):
+    with pytest.raises(jd.JudgeNotImplemented, match="нет audio-модели"):
         judge.judge(None, "p")
     with pytest.raises(jd.JudgeNotImplemented):
         jd.make_judge({"CRITIC_JUDGE": "gemini", "GEMINI_API_KEY": "test-key"}).judge(None, "p")

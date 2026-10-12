@@ -332,9 +332,10 @@ def j1_table(verdicts: Sequence[Verdict]) -> Dict[str, Dict[str, int]]:
     return tab
 
 
-def render_report(per_style: Mapping[str, Sequence[Verdict]]) -> str:
+def render_report(per_style: Mapping[str, Sequence[Verdict]], provider: str = "fake") -> str:
     allv = [v for vs in per_style.values() for v in vs]
-    lines = ["# Отчёт верификатора судьи (J1)", "", f"Утверждений: {len(allv)}, стилей: {len(per_style)}.", "",
+    lines = ["# Отчёт верификатора судьи (J1)", "", f"Утверждений: {len(allv)}, стилей: {len(per_style)}. provider={provider}"
+             + (" (text_only: модель звук не слушала)" if provider.endswith("text") else "") + ".", "",
              "## J1 по классам", "", "| класс / вид | всего | подтв. | опроверг. | не проверяемо | J1 (подтв./всего) | подтв./решённых |",
              "|---|---|---|---|---|---|---|"]
     for key, cnt in sorted(j1_table(allv).items(), key=lambda kv: (kv[0] != "ВСЕГО", kv[0].strip() != kv[0], kv[0])):

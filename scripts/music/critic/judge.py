@@ -5,7 +5,7 @@
 утверждений фиксированной схемы ``[{t0, t1, kind, claim, confidence}]``. Он только **предлагает**: ни одно
 утверждение не становится карточкой, пока ``verify.py`` его не подтвердил.
 
-Провайдер выбирается env ``CRITIC_JUDGE`` = ``fake`` | ``qwen`` | ``gemini``. Не задан или неизвестен — ошибка
+Провайдер выбирается env ``CRITIC_JUDGE`` = ``fake`` | ``qwen_text`` | ``qwen`` | ``gemini``. Не задан или неизвестен — ошибка
 ``JudgeUnavailable`` (тихой деградации «на фейк» нет). ``qwen``/``gemini`` без ключа тоже падают понятной ошибкой;
 с ключом они пока каркас: реальный вызов API не написан и **не проверен** (ключа нет) — честный ``JudgeNotImplemented``.
 
@@ -18,9 +18,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 #: Перечень классов утверждений (ADR-0157 §2.5); ``param_reading`` — чтение числового параметра кода (``lpf``,
 #: ``delay``, ``sus``, ``amp``, ``tempo``, ``pshift``, ``scale``): отдельный класс, потому что именно тут судья ошибался (§1.4).
@@ -29,7 +30,7 @@ KINDS = ("hole", "overlap", "level", "sustain", "phrasing", "out_of_key", "chord
 #: Необязательные подсказки судье-«указателю» (роль, интервал, число…): без них верификатор честно ответит «не проверяемо».
 ARG_KEYS = ("role", "other", "direction", "midi", "pcs", "interval", "param", "value", "seconds")
 DEFAULT_BUDGET_USD = 0.05  # ADR-0157 J3: ≤ $0.05 на запись
-COST_PER_CALL_USD = {"fake": 0.0, "qwen": 0.01, "gemini": 0.01}  # оценка ADR §3.6 по чужим ценам, не измерено
+COST_PER_CALL_USD = {"fake": 0.0, "qwen": 0.01, "qwen_text": 0.01, "gemini": 0.01}  # оценка ADR §3.6 по чужим ценам, не измерено
 
 
 class JudgeError(RuntimeError):
@@ -132,8 +133,69 @@ class _KeyedJudge:
 
 
 class QwenOmniJudge(_KeyedJudge):
+    """Слушающий Qwen Omni: в подписке (проверено 12.10) нет модели со звуком — честная ошибка, а не имитация."""
+
     name = "qwen"
     env_keys = ("QWEN_API_KEY", "DASHSCOPE_API_KEY")
+
+    def judge(self, recording: Path | None, prompt: str) -> list[Claim]:
+        raise JudgeNotImplemented("qwen: нет audio-модели в подписке (input_audio -> 400 «incorrect modal audio»); "
+                                  "используй CRITIC_JUDGE=qwen_text — он НЕ слушает запись")
+
+
+QWEN_BASE_URL = "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"
+QWEN_TEXT_MODEL = "qwen3.8-max"
+TEXT_ONLY_RULES = ("Ответь ТОЛЬКО JSON-списком [{t0,t1,kind,claim,confidence,args?}], kind из: " + ", ".join(KINDS)
+                   + ". Тебе дан код/модель трека и метрики записи текстом; звука ты не слышал — не утверждай слышимое.")
+Transport = Callable[[str, dict, dict], dict]
+
+
+def _post_json(url: str, headers: dict, body: dict) -> dict:
+    req = urllib.request.Request(url, json.dumps(body).encode("utf-8"), {**headers, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310 — адрес задан константой/env
+        return json.loads(resp.read().decode("utf-8"))
+
+
+class QwenTextJudge:
+    """OpenAI-совместимый chat/completions (qwen3.8-max): код + метрики записи текстом, звук не слушает.
+
+    ``listens = False`` — отчёт помечает ``provider=text_only``. Имя env с ключом (по умолчанию ``QWEN``) и путь к ``.env``
+    настраиваются; значение ключа нигде не печатается. Реальный вызов не проверен (только против заглушки transport).
+    """
+
+    name = "qwen_text"
+    listens = False
+
+    def __init__(self, env: Mapping[str, str] | None = None, key_var: str = "QWEN", env_file: Path | None = None,
+                 transport: Transport = _post_json) -> None:
+        env = os.environ if env is None else env
+        self.key = env.get(key_var, "") or _dotenv_value(env_file, key_var)
+        if not self.key:
+            raise JudgeUnavailable(f"qwen_text: нет ключа (env {key_var}, .env {env_file}); судья не вызван")
+        self.base = env.get("QWEN_BASE_URL", QWEN_BASE_URL).rstrip("/")
+        self.model = env.get("QWEN_TEXT_MODEL", QWEN_TEXT_MODEL)
+        self.transport = transport
+
+    def judge(self, recording: Path | None, prompt: str) -> list[Claim]:
+        body = {"model": self.model, "messages": [{"role": "system", "content": TEXT_ONLY_RULES},
+                                                  {"role": "user", "content": prompt}]}
+        reply = self.transport(f"{self.base}/chat/completions", {"Authorization": f"Bearer {self.key}"}, body)
+        try:
+            text = reply["choices"][0]["message"]["content"].strip()
+            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            return parse_claims(json.loads(text))
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise JudgeSchemaError(f"qwen_text: ответ не разобран ({type(exc).__name__}: {exc})") from exc
+
+
+def _dotenv_value(path: Path | None, var: str) -> str:
+    if path is None or not Path(path).is_file():
+        return ""
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == var:
+            return value.strip().strip("\"'")
+    return ""
 
 
 class GeminiJudge(_KeyedJudge):
@@ -149,9 +211,12 @@ def make_judge(env: Mapping[str, str] | None = None) -> Judge:
         if not env.get("CRITIC_JUDGE_FIXTURE"):
             raise JudgeUnavailable("CRITIC_JUDGE=fake требует CRITIC_JUDGE_FIXTURE=<json>")
         return FakeJudge(Path(env["CRITIC_JUDGE_FIXTURE"]))
+    if name == "qwen_text":
+        env_file = Path(env["CRITIC_JUDGE_ENV_FILE"]) if env.get("CRITIC_JUDGE_ENV_FILE") else None
+        return QwenTextJudge(env, env.get("CRITIC_JUDGE_KEY_VAR", "QWEN"), env_file)
     providers = {"qwen": QwenOmniJudge, "gemini": GeminiJudge}
     if name not in providers:
-        raise JudgeUnavailable(f"CRITIC_JUDGE={name!r}: ожидалось fake|qwen|gemini (по умолчанию судьи нет)")
+        raise JudgeUnavailable(f"CRITIC_JUDGE={name!r}: ожидалось fake|qwen_text|qwen|gemini (по умолчанию судьи нет)")
     return providers[name](env)
 
 
