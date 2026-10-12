@@ -85,7 +85,7 @@ def test_grunge_tracks_model_more_low_than_classic(tracks):
     assert max(low["classic"]) < min(low["grunge"]), low
     for plan, track, _pr, _b in tracks:
         assert track.mix.a9_model >= kn.genre_style(ROCK, plan.genre).a9_model_low - kn.A9_MIN_GAIN, track.mix.a9_model
-        assert not track.mix.duck_roles, "без сайдчейна"
+        assert track.mix.duck_roles == {"bass"}, "мягкий насос баса (ADR-0157 H7), power_chords без сайдчейна"
 
 
 def _by_bar(events):

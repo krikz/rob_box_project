@@ -38,6 +38,15 @@ SCALES: Mapping[str, Tuple[int, ...]] = {
 #: ``toms`` (ADR-0153 S5, рок) — филл томами на стыке секций, файлом пака (``Style.drum_files``), слот лупа деки.
 ROLES: Tuple[str, ...] = ("kick", "hats", "clap", "perc", "bass", "pad", "lead", "sample", "loop", "fx", "toms")
 TONAL_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
+#: Пульс трека (ADR-0157 §3.5, H1): в каждом такте дропа (вид ``drop*``, :func:`section_kind`) звучит хотя бы одна из
+#: этих ролей (``clap`` — малый/клэп); вне брейка и окон блэнда (``break*``, ``intro*``, ``outro*``) пауза пульса — не
+#: длиннее ``PULSE_GAP_MAX_BEATS`` долей. Проверяет ``model.validate``.
+PULSE_ROLES: Tuple[str, ...] = ("kick", "clap", "bass")
+PULSE_GAP_MAX_BEATS = 8
+PULSE_GAP_FREE_KINDS: Tuple[str, ...] = ("break", "intro", "outro")
+#: Сустейн длиннее 2 тактов (ADR-0157 H6) — только у пэда (``held``, педаль build); у лида — ``HOLD_LAST_BEATS``.
+LONG_SUS_BEATS = 8.0
+LONG_SUS_ROLES: Tuple[str, ...] = ("pad",)
 
 #: Коридоры регистров MIDI (I13): бас < пэд < лид ≤ 88 (``harmonize.BASS_MIDI_FLOOR``,
 #: ``rtttl_compose._LEAD_MAX_CEILING``, ADR-0149 §3.5–§3.7).
@@ -716,6 +725,7 @@ __all__ = [
     "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
     "SYNTH_PALETTE", "SYNTH_TRAITS", "SampleInfo", "SynthTraits", "TONAL_ROLES", "role_ceiling",
+    "LONG_SUS_BEATS", "LONG_SUS_ROLES", "PULSE_GAP_FREE_KINDS", "PULSE_GAP_MAX_BEATS", "PULSE_ROLES",
     "scale_pitch_classes", "traits_of", "NYQUIST_MAX_MIDI",
     "LEAD_CLARITY", "LeadClarity", "THEME_ATTACK_MAX_MS", "THEME_BRIGHT_MIN", "THEME_LEAD_OK", "THEME_PURITY_MIN",
     "THEME_ROLES", "THEME_TAIL_MAX_MS", "theme_lead_ok",
@@ -849,6 +859,13 @@ SIDECHAIN_SHAPE: Tuple[float, ...] = (0.3, 0.55, 0.8, 1.0)
 #: (#3432): у Дэйва брейк-луп короткой вставкой, у нас он звучит весь второй дроп (и шумовой ``wun_noise``) —
 #: без провала на ударе он заливает место бочки ровной текстурой.
 _CLUB_DUCK_ROLES: Tuple[str, ...] = ("bass", "pad", "sample", "loop")
+#: Мягкий насос (breaks/dnb, с ADR-0157 H7 — все стили с бочкой, у которых сайдчейна не было: chiptune, lofi, rock,
+#: jazz): глубина дропа и остальных секций. Клубный 1.0 под «пёрышко» бочки джаза превратил бы его в EDM — глубина
+#: мягкая, роли — басу и пэду (пэд comping/power_chords под сайдчейн не идёт: ``PadFigure.ducked``). На слух — В5/В6.
+SOFT_DUCK_DROP = 0.5
+SOFT_DUCK = 0.3
+#: Роли под сайдчейном стилей без сэмпл-слоёв (ADR-0157 H7, по умолчанию — как у клуба без psr/лупа).
+_SOFT_DUCK_ROLES: Tuple[str, ...] = ("bass", "pad")
 
 
 @dataclass(frozen=True)
@@ -889,6 +906,12 @@ _CLUB_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
 #: Роли под свипом секции; в хвосте блэнда (``outro_tail``) — всё, что звучит, кроме бочки (§3.12).
 _CLUB_LPF_ROLES: Tuple[str, ...] = ("bass", "pad", "lead")
 _CLUB_LPF_TAIL_SECTIONS: Tuple[str, ...] = ("outro_tail",)
+#: HPF входа деки в блэнде (ADR-0149 §3.12, ADR-0157 H7): трек с ``Transition.filter_in`` начинает с прикрытым низом,
+#: срез опускается по экспоненте от ``HPF_IN_HZ[0]`` до ``HPF_IN_HZ[1]`` за ``Transition.bass_swap_bar`` тактов и
+#: снимается (``HPF_OPEN``) к свопу баса — бочка и бас входящего входят без фильтра. Шаг — доля (``var``, как свип LPF).
+#: Бочка без фильтра.
+HPF_IN_HZ: Tuple[float, float] = (600.0, 60.0)
+HPF_OPEN = 0.0
 
 # ── Мастер-шина (``custom_synthdefs/masterfilter.scd``, node 999): ADR-0149 §3.10, ADR-0147 §3.2, §3.5; PR-7 ───────
 #: Ручки мастер-шины, которые выставляет движок v2, и их значения по умолчанию — ровно дефолты SynthDef
@@ -1242,6 +1265,7 @@ SYNTH_STEREO: Mapping[str, Mapping[str, float]] = {
 __all__ += [
     "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS", "kick_of",
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
+    "HPF_IN_HZ", "HPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "SYNTH_STEREO",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "family_of", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
@@ -1635,15 +1659,15 @@ _SYNTHWAVE_FIELDS = dict(
     a9_model_low=0.35, arp_order=(0, 1, 2, 1), backbeat_kinds=("build", "build2", "drop", "drop2"),
     drum_files=_SYNTHWAVE_DRUM_FILES,
 )
-#: Chiptune/8-bit 120–160 (§3): без насоса (сайдчейна нет), хэты 16-ми, арпеджио вместо пэда (``arp`` — вдвое чаще
+#: Chiptune/8-bit 120–160 (§3): мягкий насос (ADR-0157 H7), хэты 16-ми, арпеджио вместо пэда (``arp`` — вдвое чаще
 #: стэбов), лиды ``pulse``/``blip``/``saw``/``orient`` (``varsaw`` — атака 65 мс, теме не годится, :data:`LEAD_CLARITY`;
 #: ``square`` как лид на потолке ``amp`` не достаёт цели роли −50
 #: на 3 дБ — он в арпеджио). Бас: оффбит/ролл на басах с низом и ``octave8`` — ``pulse`` октавами (8-битный бас,
 #: :data:`BASS_FIGURE_SYNTHS`). Бочки — клубные замеренные (свои «шумовые» ударные — отдельный SynthDef/пак, не здесь).
 _CHIP_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
-    (5, Look("X.......X.......", 0.0)),
-    (0, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
+    (7, Look(KICK_PATTERNS["four_on_floor"], SOFT_DUCK_DROP)),
+    (5, Look("X.......X.......", SOFT_DUCK)),
+    (0, Look(KICK_PATTERNS["four_on_floor"], SOFT_DUCK)),
 )
 #: #3550: бочки — короткие «щелчки» пака (``chip``/``zum``, 0.10–0.13 с), не клубные ``techno``/``garage``; бас —
 #: 8-битный ``octave8`` вдвое чаще оффбита (суб-баса у жанра нет по природе).
@@ -1676,7 +1700,7 @@ _CHIPTUNE_FIELDS = dict(
     genre_windows=_CHIPTUNE_GENRE_WINDOWS,
     role_level_db={**_CLUB_ROLE_LEVEL_DB, "kick": -36.0, "bass": -36.0, "pad": -42.0, "lead": -46.0, "clap": -44.0,
                    "hats": -50.0},
-    duck_roles=(), section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)}, lpf_roles=_CLUB_LPF_ROLES,
+    duck_roles=_SOFT_DUCK_ROLES, section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)}, lpf_roles=_CLUB_LPF_ROLES,
     lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS, stereo={},
     # A9: норма низа chiptune 0.3–0.5 (§3: суб-баса нет по природе) — нижняя граница без запаса: низ держит бочка
     a9_model_low=0.3, arp_order=(0, 1, 2), drum_files=_CHIPTUNE_DRUM_FILES,
@@ -1689,14 +1713,14 @@ _CHIPTUNE_FIELDS = dict(
 #: дропе): брейк под сайдчейн не идёт (он сам ударные), качаются бас и пэд. Интро/аутро — рисунок дропа тише насосом,
 #: build — бочка на 1 и 3.
 _BREAKS_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["breakbeat"], 0.5)),
-    (5, Look("X.......X.......", 0.3)),
-    (0, Look(KICK_PATTERNS["breakbeat"], 0.3)),
+    (7, Look(KICK_PATTERNS["breakbeat"], SOFT_DUCK_DROP)),
+    (5, Look("X.......X.......", SOFT_DUCK)),
+    (0, Look(KICK_PATTERNS["breakbeat"], SOFT_DUCK)),
 )
 _DNB_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["half_time"], 0.5)),
-    (5, Look("X.......X.......", 0.3)),
-    (0, Look(KICK_PATTERNS["half_time"], 0.3)),
+    (7, Look(KICK_PATTERNS["half_time"], SOFT_DUCK_DROP)),
+    (5, Look("X.......X.......", SOFT_DUCK)),
+    (0, Look(KICK_PATTERNS["half_time"], SOFT_DUCK)),
 )
 #: Окна. Бас — ``broken`` (шаги 1, 6, 9, 14: мимо ``breakbeat`` 0/2/10/13, ``half_time`` 0/10 и долей); пэд держит
 #: аккорд (``held``) или стэбы — без ``pumped16`` (16-е аккорда × 2 голоса — самый дорогой по событиям рисунок, а dnb
@@ -1742,7 +1766,7 @@ _BREAKBEAT_FIELDS = dict(
     modes=("minor", "dorian"), registers=_CLUB_REGISTERS, default_timbre="dark", lead_figures=("motif",),
     chord_size=3, forms=_CLUB_FORMS, opening_form=_CLUB_OPENING_FORM,
     energy_forms=_CLUB_ENERGY_FORMS, blend=_CLUB_BLEND, layer_sections=_BREAKBEAT_LAYER_SECTIONS,
-    duck_roles=("bass", "pad"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    duck_roles=_SOFT_DUCK_ROLES, lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     loop_roles=("break",), loop_figure="breakbeat_chop",
 )
 #: Звук breaks (#3550): брейк впереди (луп −36 в build и дропах, у клуба брейк-луп −40 «текстурой» и только во втором
@@ -1794,13 +1818,13 @@ _DNB_FIELDS = dict(
 #: 87–89 во всех 40 окнах, свинг 1.26 [1.10..1.43], низ < 150 Гц 0.75 [0.63..0.84], LR 0.90, σ по минутам 1.1 дБ;
 #: джаз-кафе: низ 0.27 [0.08..0.48], свинг 1.54. Темп lo-fi 72–92 (окно ``lofi`` 82–92 — как эталон 88).
 #: Свинг (доля восьмой) 0.14–0.22: ratio восьмых (1 + s)/(1 − s) = 1.33–1.56 — между trip-hop 1.26 и джазом 1.54,
-#: не триоль 2.0. Бочка boom-bap мягкая из паков, малый 2/4 и хэты восьмыми — файлы паков (``drum_files``), без
-#: сайдчейна. Низ трека — цель 0.50–0.75 (выше p90 джаза 0.48, не выше медианы trip-hop 0.75): lo-fi — бит-музыка
+#: не триоль 2.0. Бочка boom-bap мягкая из паков, малый 2/4 и хэты восьмыми — файлы паков (``drum_files``), мягкий
+#: насос (H7). Низ трека — цель 0.50–0.75 (выше p90 джаза 0.48, не выше медианы trip-hop 0.75): lo-fi — бит-музыка
 #: на бочке и басе, как trip-hop, но с comping-клавишами впереди; ``a9_model_low`` — нижняя граница (см. уровни ниже).
 _LOFI_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["boombap"], 0.0)),
-    (5, Look(KICK_PATTERNS["lazy"], 0.0)),
-    (0, Look(KICK_PATTERNS["lazy"], 0.0)),
+    (7, Look(KICK_PATTERNS["boombap"], SOFT_DUCK_DROP)),
+    (5, Look(KICK_PATTERNS["lazy"], SOFT_DUCK)),
+    (0, Look(KICK_PATTERNS["lazy"], SOFT_DUCK)),
 )
 #: Пэд — только comping, бас — только walking (ADR-0153 §5 S3: фигуры стиля в ≥ 90 % треков); разнообразие — ритмы
 #: comping, синты, каркасы, бочки, окна.
@@ -1850,7 +1874,8 @@ _LOFI_STYLE = Style(
     # Уровни: робот 08.10 (2 сета, клубные уровни −33/−32/−44/−50) — низ 0.77/0.76 по медиане окон 20 с, в дропах
     # 0.79–0.91 при A9-модели 0.61–0.68: бочка и бас тише на 2 дБ, пэд и лид громче на 3/2 дБ.
     role_level_db={"kick": -35.0, "bass": -34.0, "pad": -41.0, "lead": -48.0, "clap": -43.0, "hats": -57.0},
-    duck_roles=(), section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad",), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    duck_roles=_SOFT_DUCK_ROLES, section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad",),
+    lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
     # A9-модель занижает низ lo-fi против записи робота 08.10 на 0.09–0.32 (0.61/0.68/0.55 модели при 0.77/0.76/0.87
     # записи; удары файлами и walking в модели — оценки): при пороге 0.5 она глушила пэд на 6 дБ, а запись и так
@@ -1870,11 +1895,12 @@ _LOFI_STYLE = Style(
 #: «рок» неверен (вывод 1 эталонов) — два окна-подстиля со своими уровнями ролей и порогом A9-модели
 #: (``GenreWindow.role_level_db``/``a9_model_low``). Окно выбирает слово фразы («гранж» — :data:`WINDOW_WORDS`), иначе
 #: план по сиду со штрафом за окна прошлых сетов.
-_ROCK_HALF = Look("X.......X.......", 0.0)
+_ROCK_HALF = Look("X.......X.......", SOFT_DUCK)
 _ROCK_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["rock"], 0.0)), (5, Look(KICK_PATTERNS["rock_straight"], 0.0)), (0, _ROCK_HALF))
+    (7, Look(KICK_PATTERNS["rock"], SOFT_DUCK_DROP)), (5, Look(KICK_PATTERNS["rock_straight"], SOFT_DUCK)),
+    (0, _ROCK_HALF))
 _GRUNGE_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["grunge"], 0.0)), (5, Look(KICK_PATTERNS["rock"], 0.0)), (0, _ROCK_HALF))
+    (7, Look(KICK_PATTERNS["grunge"], SOFT_DUCK_DROP)), (5, Look(KICK_PATTERNS["rock"], SOFT_DUCK)), (0, _ROCK_HALF))
 #: Уровни ролей (шкала модели, роль звучит всю секцию): гитара (пэд, пауэр-аккорды) — середина 150–2000 Гц, малый
 #: громче клубного клэпа; у гранжа бочка и бас громче. Подобраны по записям робота 08.10 (``jack_rec`` 150 с, моно-сумма,
 #: окна 20 с, медиана): classic — низ 0.39 [0.33..0.42], середина 0.59, crest 13.3, LR 0.97 (эталон 0.37/0.54/15.1/0.76);
@@ -1970,7 +1996,7 @@ _ROCK_STYLE = Style(
     forms=_ROCK_FORMS, opening_form="chorusfirst48", energy_forms=_ROCK_ENERGY_FORMS, blend=_CLUB_BLEND,
     layer_sections={"fx": ("verse", "chorus", "verse2", "chorus2", "bridge", "chorus3")},
     genre_windows=_ROCK_GENRE_WINDOWS,
-    role_level_db=_ROCK_CLASSIC_LEVEL_DB, duck_roles=(), section_lpf=_ROCK_SECTION_LPF,
+    role_level_db=_ROCK_CLASSIC_LEVEL_DB, duck_roles=_SOFT_DUCK_ROLES, section_lpf=_ROCK_SECTION_LPF,
     lpf_roles=("bass", "pad", "lead"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     # Ширина: эталоны LR 0.76 (classic) / 0.87 (grunge) — гитара двумя голосами с расстройкой (дабл-трек) не шире
     # ±0.3, остальное в центре (удары файлами паков ширины не выражают).
@@ -1990,11 +2016,11 @@ _ROCK_STYLE = Style(
 #: [0.08..0.48], середина 0.73, crest 17.8, LR 0.85, LUFS −18, σ по минутам 1.6 дБ, свинг 1.54 [1.13..2.39], темп ≈ 96
 #: [90..121], пики в 12-TET 0.90. Окна: ``swing`` 104–125 (свинг-квартет: comping, бочка «пёрышком» четвертями),
 #: ``ballad`` 90–104 (медиана эталона 96: comping реже, пэд иногда держит аккорд). Свинг 0.20–0.25 доли восьмой: ratio
-#: (1 + s)/(1 − s) = 1.50–1.67 — эталон 1.54, не триоль 2.0. Без сайдчейна; низ держит walking-бас контрабасового
+#: (1 + s)/(1 − s) = 1.50–1.67 — эталон 1.54, не триоль 2.0. Насос мягкий (H7); низ держит walking-бас контрабасового
 #: регистра (28–50), бочка тихая.
 _JAZZ_LOOKS: Tuple[Tuple[int, Look], ...] = (
-    (7, Look(KICK_PATTERNS["four_on_floor"], 0.0)),
-    (0, Look("X.......X.......", 0.0)),
+    (7, Look(KICK_PATTERNS["four_on_floor"], SOFT_DUCK_DROP)),
+    (0, Look("X.......X.......", SOFT_DUCK)),
 )
 _JAZZ_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "swing": GenreWindow((104, 125), ("jazz", "soft", "acoustic"), _JAZZ_LOOKS, ("walking",), ("comping",)),
@@ -2081,7 +2107,7 @@ _JAZZ_STYLE = Style(
     pad_figures=_JAZZ_WINDOW.pad_figures, lead_figures=("motif",), chord_size=5, progressions=_JAZZ_PROGRESSIONS,
     forms=_JAZZ_FORMS, opening_form="jazz48", energy_forms=_JAZZ_ENERGY_FORMS, blend=_CLUB_BLEND,
     layer_sections={}, genre_windows=_JAZZ_GENRE_WINDOWS,
-    role_level_db=_JAZZ_ROLE_LEVEL_DB, duck_roles=(), section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)},
+    role_level_db=_JAZZ_ROLE_LEVEL_DB, duck_roles=_SOFT_DUCK_ROLES, section_lpf={"outro_tail": (LPF_TOP_HZ, 300.0)},
     lpf_roles=("bass", "pad", "lead"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     # Ширина: эталон LR 0.85 (робот S7 0.99). Comping — два голоса с расстройкой на ±pan. Замер #3549 (первые 140 с
     # сета): ±0.4 (S7) — 0.99; ±0.6 — 0.98 / 0.93; ±0.9 — 0.35 / 0.55. Короткие удары comping почти не расходятся

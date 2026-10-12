@@ -544,6 +544,68 @@ def _check_transitions(track: Track) -> None:
         _require(0 <= tr.bass_swap_bar < tr.phrase_bars, f"{name}.bass_swap_bar", "своп баса вне фразы")
 
 
+# ── Пульс трека (ADR-0157 §3.5, H1) ───────────────────────────────────────────────────────────────────────────
+
+def _grid_beats(steps: Tuple[Step, ...]) -> FrozenSet[int]:
+    """Доли цикла сетки, на которых есть удар."""
+    per_beat = STEPS_PER_BAR // BEATS_PER_BAR
+    return frozenset(i // per_beat for i, st in enumerate(steps) if st.on)
+
+
+def pulse_beats(track: Track) -> FrozenSet[int]:
+    """Доли формы, где звучит пульс (``knowledge.PULSE_ROLES``) в секции, где роль заказана: удар сетки ударной роли
+    или нота тональной роли вместе с удержанием."""
+    out = set()
+    start = 0
+    for sec in track.form.sections:
+        end = start + sec.bars * BEATS_PER_BAR
+        for role in set(sec.roles) & set(kn.PULSE_ROLES):
+            part = track.parts.get(role)
+            if part is None:
+                continue
+            if part.pitches is None:
+                cycle, on = len(part.grid.steps) // (STEPS_PER_BAR // BEATS_PER_BAR), _grid_beats(part.grid.steps)
+                out.update(b for b in range(start, end) if b % cycle in on)
+                continue
+            for ev in part.pitches:
+                first = max(start, int(ev.beat))
+                out.update(range(first, min(end, int(math.ceil(ev.beat + ev.dur_beats - 1e-9)))))
+        start = end
+    return frozenset(out)
+
+
+def _silent_bars(pulse: FrozenSet[int], start: int, bars: int) -> List[int]:
+    """Такты секции (от 0) без единой доли пульса; ``start`` — первая доля секции."""
+    return [k for k in range(bars) if not any(start + k * BEATS_PER_BAR + d in pulse for d in range(BEATS_PER_BAR))]
+
+
+def pulse_faults(track: Track) -> List[Tuple[int, str]]:
+    """Нарушения пульса H1: (номер секции, причина) — такт дропа без пульса; пауза пульса длиннее
+    ``knowledge.PULSE_GAP_MAX_BEATS`` долей вне брейка и окон блэнда (``PULSE_GAP_FREE_KINDS``). Песня — без
+    проверки: дропов и блэнда у неё нет."""
+    if track.form.song:
+        return []
+    pulse, faults, start, run = pulse_beats(track), [], 0, 0
+    for i, sec in enumerate(track.form.sections):
+        kind = kn.section_kind(sec.name)
+        silent = _silent_bars(pulse, start, sec.bars) if kind.startswith("drop") else []
+        if silent:
+            faults.append((i, f"такты {silent} дропа без {'/'.join(kn.PULSE_ROLES)}"))
+        free, longest = kind.startswith(kn.PULSE_GAP_FREE_KINDS), 0
+        for beat in range(start, start + sec.bars * BEATS_PER_BAR):
+            run = 0 if free or beat in pulse else run + 1
+            longest = max(longest, run)
+        if longest > kn.PULSE_GAP_MAX_BEATS:
+            faults.append((i, f"пауза пульса {longest} долей > {kn.PULSE_GAP_MAX_BEATS} вне брейка"))
+        start += sec.bars * BEATS_PER_BAR
+    return faults
+
+
+def _check_pulse(track: Track) -> None:
+    for i, reason in pulse_faults(track)[:1]:
+        raise TrackError(f"form.sections[{i}].roles", f"{reason} (ADR-0157 H1)")
+
+
 def validate(track: Track) -> None:
     """Проверить инварианты трека; нарушение — :class:`TrackError` (путь + причина)."""
     _require(track.style in kn.STYLES, "history_key.style", f"стиль {track.style!r} не из knowledge.STYLES")
@@ -557,6 +619,7 @@ def validate(track: Track) -> None:
     _check_levels(track)
     _check_hook_and_harmony(track)
     _check_transitions(track)
+    _check_pulse(track)
 
 
 # ── Блэнд двух треков (ADR-0149 §3.12, §7.2 A4; PR-8) ─────────────────────────────────────────────────────────
@@ -604,5 +667,5 @@ def blend_bars(leaving: Track, incoming: Track) -> int:
 __all__ = [
     "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Duck", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
     "Part", "PitchEvent", "Section", "Step", "Stereo", "Sweep", "Track", "TrackError", "Transition", "blend_bars",
-    "chord_tones", "roles_at_bar", "validate",
+    "chord_tones", "pulse_beats", "pulse_faults", "roles_at_bar", "validate",
 ]
