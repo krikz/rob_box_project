@@ -83,8 +83,7 @@ SOLO_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"solo": 
 SOLO_SPAN = 19
 #: Нарезка лупа по ключу ``Style.loop_figure`` (ADR-0153 S3): ``(файл, ГСЧ) -> Part``.
 LOOP_GENERATORS: Mapping[str, Callable[..., Part]] = {"chop": samples.loop_part,
-                                                      "breakbeat_chop": samples.breakbeat_chop,
-                                                      "texture": samples.texture_part}
+                                                      "breakbeat_chop": samples.breakbeat_chop}
 _LOG = logging.getLogger(__name__)
 #: Длина секций с лидом (развитие хука считается от начала каждой).
 SECTION_BARS = 8
@@ -293,7 +292,7 @@ def _kick_bar(style: kn.Style, sec: Section, bars_left: int) -> Grid:
 def _clap_bar(style: kn.Style, form: Form, sec: Section, bars_left: int) -> Grid:
     """Такт клэпа/малого: бэкбит в секциях видов ``Style.backbeat_kinds``; в секции с fill-ом перед дропом — ролл
     ``Style.roll_bars`` тактов, в такте fill-а — ``Style.clap_fill``."""
-    bar = rhythm.clap_grid(style.backbeat) if kn.section_kind(sec.name) in style.backbeat_kinds else _SILENT
+    bar = rhythm.clap_grid() if kn.section_kind(sec.name) in style.backbeat_kinds else _SILENT
     if not sec.fill_last_bar:
         return bar
     if bars_left <= style.roll_bars and _before_drop_section(form, sec):
@@ -775,7 +774,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
                             history, seed)
     layers = {"sample": lambda: samples.perc_part(style, perc, kit, axis["sample"]),
               "loop": lambda: LOOP_GENERATORS[style.loop_figure](loop, axis["loop"]),
-              "fx": lambda: samples.fx_part(fx, SECTION_BARS)}  # слой без секций стиля в трек не идёт
+              "fx": lambda: samples.fx_part(fx, style.fx_bars)}  # слой без секций стиля в трек не идёт
     composed = {**drums, "bass": bass_part, "pad": pad_part, "lead": arranged.lead,
                 **{role: make() for role, make in layers.items() if role in style.layer_sections}}
     parts, track_mix = mix.mix_parts(style, _swung(style, composed, swing_ms, axis["hands"]), form, figure)

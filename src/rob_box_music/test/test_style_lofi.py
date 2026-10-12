@@ -1,6 +1,6 @@
-"""Стиль ``lofi`` — запись ``knowledge.STYLES`` (ADR-0153 S4, переделка #3557 после «шляпы» 13.10): хэт 16-ми со
-свингом 16-х 0.58–0.65 и «живыми руками», малый на 2 и 4 с гоустом, Rhodes держит септаккорд такта, бас — прима/квинта
-длинными нотами, лид дышит, шипение пластинки всю форму, петли по 8 тактов без подъёма и дропа. Поведение — на
+"""Стиль ``lofi`` — запись ``knowledge.STYLES`` (ADR-0153 S4, переделка #3557 после «шляпы» 13.10): грув — замедленный
+брейк-луп пака и бочка, свинг 16-х нот 0.58–0.65, Rhodes держит септаккорд такта, бас — прима/квинта нотами 1–2 доли,
+лид дышит, шипение пластинки каждый такт, петли по 4 такта без подъёма и дропа. Поведение — на
 ``SetPlan``/``Track``/событиях программы Renardo (симулятор ``render.events``). Клуб побайтно тот же —
 ``test_style_same_tracks``.
 """
@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import dataclasses
-import statistics
 
 import pytest
 
@@ -73,21 +72,23 @@ def test_tempo_window_and_sixteenth_swing_of_the_set():
         assert SWING16[0] <= 0.5 + plan.swing <= SWING16[1], (seed, plan.swing)
 
 
-def test_hats_play_swung_sixteenths_with_live_hands(tracks):
-    """Хэты — 16-е: удар нечётной 16-й (по событиям программы) стоит в окне свинга 16-х внутри своей восьмой, с запасом
-    на «руки» (опоздание 0..``late_ms``); сдвиги и громкости ударов не одинаковые, а ни один удар не раньше сетки."""
-    hands = LOFI.humanize
-    assert hands is not None and "hats" in hands.roles
-    for plan, track, _program, by_role in tracks:
-        odd = [e.beat * 2 % 1 for e in by_role["hats"] if int(e.beat * 4) % 2 == 1]  # сдвиг < 16-й: шаг не уезжает
-        assert len(odd) > 30, track.track_id
-        hand = hands.late_ms * plan.bpm / 30000  # опоздание руки в долях восьмой
-        assert SWING16[0] <= statistics.median(odd) <= SWING16[1] + hand, (statistics.median(odd), plan.swing)
-        assert min(odd) >= 0.5 + _late_beats(plan) * 2 - 5e-3, "свинг — опоздание (delay — 3 знака), руки добавляют"
+def test_groove_is_a_slowed_pack_break_with_a_kick_and_no_hat_loop(tracks):
+    """Грув петель — брейк-луп пака (роль ``loop``, каталог ``break``): событие на каждой восьмой его секций, ``tempo=``
+    — темп брейка (замедлен под сет); бочка в петлях с бочкой; клэпа нет (малый — в брейке); хэты — только в окнах
+    блэнда, восьмыми, с «руками» (сдвиги разные, ни один не раньше сетки)."""
+    for plan, track, program, by_role in tracks:
+        loop = track.parts["loop"]
+        info = kn.SAMPLE_CATALOG[loop.synth_or_sample]
+        assert info.role == "break" and info.bpm > plan.bpm, (info.name, plan.bpm)
+        assert f"tempo={info.bpm}" in program.code
+        bars = [sec.bars for sec in track.form.sections if "loop" in sec.roles]
+        assert bars and len(by_role["loop"]) == sum(bars) * 8, "кусок брейка — каждая восьмая"
+        assert "clap" not in track.parts and all("clap" not in sec.roles for sec in track.form.sections)
+        hat_sections = {sec.name for sec in track.form.sections if "hats" in sec.roles}
+        assert hat_sections <= {"intro", "outro_tail"}, hat_sections
         grid = track.parts["hats"].grid.steps
-        assert len({st.offset_ms for st in grid if st.on}) > 3, "сдвиги ударов разные"
-        assert len({st.accent for st in grid if st.on}) >= 3, "громкость ударов разная"
-        assert all(st.offset_ms >= 0 for st in grid), "delay Renardo вперёд не сдвигает"
+        assert all(i % 2 == 0 for i, st in enumerate(grid) if st.on), "хэт — восьмыми"
+        assert len({st.offset_ms for st in grid if st.on}) > 3 and all(st.offset_ms >= 0 for st in grid)
 
 
 def test_tonal_roles_share_the_sixteenth_groove(tracks):
@@ -100,24 +101,6 @@ def test_tonal_roles_share_the_sixteenth_groove(tracks):
             assert by_role.get(role), (role, track.track_id)
             for e in by_role[role]:
                 assert min(abs(e.beat % 1 - f) for f in allowed) < 1e-3, (role, e.beat % 1, late)
-
-
-def test_snare_on_two_and_four_in_every_backbeat_bar(tracks):
-    """Малый на 2 и 4 в каждом такте секций бэкбита (кроме такта fill-а: малый молчит с последней доли) и больше нигде
-    (``Style.backbeat``); лэйд-бэк малого — его сдвиг ``Style.humanize`` (25 мс + руки) у каждого удара."""
-    for _plan_, track, _program, _by in tracks:
-        steps = track.parts["clap"].grid.steps
-        bar = 0
-        for sec in track.form.sections:
-            if kn.section_kind(sec.name) in LOFI.backbeat_kinds and "clap" in sec.roles:
-                for k in range(sec.bars):
-                    on = {i for i in range(STEPS_PER_BAR) if steps[(bar + k) * STEPS_PER_BAR + i].on}
-                    assert 4 in on, (track.track_id, sec.name, k)
-                    if not (sec.fill_last_bar and k == sec.bars - 1):
-                        assert on == {4, 12}, (track.track_id, sec.name, k, on)
-            bar += sec.bars
-        lay_back = LOFI.humanize.roles["clap"]
-        assert all(lay_back <= st.offset_ms <= lay_back + LOFI.humanize.late_ms for st in steps if st.on)
 
 
 def test_keys_hold_seventh_chords_one_per_bar(tracks):
@@ -154,14 +137,17 @@ def test_bass_plays_roots_and_fifths_in_long_notes(tracks):
         assert all(e.dur_beats <= 2.0 for e in track.parts["bass"].pitches), "не дольше половинной"
 
 
-def test_vinyl_hiss_plays_the_whole_form(tracks):
-    """Шипение пластинки — роль ``loop`` из подложек пака (``texture``) во всех секциях, событие каждого такта."""
+def test_vinyl_hiss_plays_every_bar_of_the_form(tracks):
+    """Шипение пластинки — роль ``fx`` из подложек пака (``texture``) во всех секциях, удар каждого такта
+    (``Style.fx_bars``), звучит до следующего (файл длиннее такта)."""
     for _plan_, track, program, by_role in tracks:
-        assert track.parts["loop"].synth_or_sample in kn.PACK_TEXTURE_BEATS
-        assert all("loop" in sec.roles for sec in track.form.sections)
+        name = track.parts["fx"].synth_or_sample
+        assert name in kn.PACK_TEXTURES and kn.SAMPLE_CATALOG[name].role == "texture"
+        assert all("fx" in sec.roles for sec in track.form.sections)
         bars = track.form.bars_total
-        assert sorted(round(e.beat) for e in by_role["loop"]) == [b * BEATS_PER_BAR for b in range(bars)]
-        assert kn.SAMPLE_CATALOG[track.parts["loop"].synth_or_sample].path in program.sample_files
+        assert sorted(round(e.beat) for e in by_role["fx"]) == [b * BEATS_PER_BAR for b in range(bars)]
+        assert all(e.sus_beats == BEATS_PER_BAR for e in by_role["fx"])
+        assert kn.SAMPLE_CATALOG[name].path in program.sample_files
 
 
 def test_lead_breathes_outside_the_theme(tracks):
@@ -181,11 +167,11 @@ def test_lead_breathes_outside_the_theme(tracks):
 
 
 def test_form_is_eight_bar_loops_changing_one_element(tracks):
-    """Форма — интро/хвост блэнда по 4 и петли по 8 тактов; соседние петли различаются составом (меняется элемент), ни
-    подъёма (``build``), ни ролла малого."""
+    """Форма — интро/хвост блэнда по 4 и петли по 4 такта (тема — 8); соседние петли различаются составом (меняется
+    элемент: брейк, бочка, мелодия), ни подъёма (``build``), ни ролла малого."""
     for _plan_, track, _program, _by in tracks:
         middle = [s for s in track.form.sections if not s.name.startswith(("intro", "outro"))]
-        assert middle and all(s.bars % 8 == 0 for s in middle)
+        assert middle and all(s.bars % 4 == 0 for s in middle)
         assert not any(kn.section_kind(s.name).startswith("build") for s in track.form.sections)
         for a, b in zip(middle, middle[1:]):
             assert a.roles != b.roles, (a.name, b.name)
@@ -196,9 +182,8 @@ def test_drums_are_pack_files_and_their_events_are_the_model(tracks):
     for _plan_, track, program, by_role in tracks:
         kick = track.parts["kick"]
         assert kick.synth_or_sample in {kn.KICK_SOUNDS[k].pack for k in LOFI.kick_pool}
-        for role in ("clap", "hats"):
-            assert track.parts[role].synth_or_sample in LOFI.drum_files[role]
-        files = {kn.SAMPLE_CATALOG[track.parts[r].synth_or_sample].path for r in ("kick", "clap", "hats")}
+        assert track.parts["hats"].synth_or_sample in LOFI.drum_files["hats"]
+        files = {kn.SAMPLE_CATALOG[track.parts[r].synth_or_sample].path for r in ("kick", "hats")}
         assert files <= program.sample_files and not program.samples, "удары — файлы паков, не play()"
         assert track_composition(track)["kick"] in LOFI.kick_pool
         assert track.mix.a9_model >= LOFI.a9_model_low, track.mix.a9_model

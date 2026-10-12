@@ -95,9 +95,8 @@ def hats_grid(style: kn.Style, swing_ms: int = 0, kit: str = "offbeat") -> Grid:
     return swing(pattern_grid(style.kits[kit]["hats"]), swing_ms, style.swing_steps)
 
 
-def clap_grid(pattern: str = "") -> Grid:
-    """Такт малого: рисунок стиля (``Style.backbeat``, ``X``/``x``/``g``) или бэкбит 2/4."""
-    return pattern_grid(pattern) if pattern else grid(BACKBEAT_STEPS, accents={4: 3, 12: 3})
+def clap_grid() -> Grid:
+    return grid(BACKBEAT_STEPS, accents={4: 3, 12: 3})
 
 
 def humanize(part: Part, hands: "kn.Humanize", rng: random.Random) -> Part:

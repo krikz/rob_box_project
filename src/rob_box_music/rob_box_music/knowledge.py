@@ -556,7 +556,7 @@ BASS_TONES_PROVENANCE: Mapping[str, object] = _BASS_TONES_DATA["provenance"]
 #: ``break`` — ударный брейк пака (амен), нарезаемый по сетке 16-х (``arrange.samples.breakbeat_chop``, ADR-0153 S3),
 #: ``snare``/``hat`` — удары кита пака (ADR-0153 S4: малый и хэт lo-fi, :data:`PACK_DRUMS`), ``tom``/``ride``/``crash``
 #: — томы, райд и крэш рок-кита Muldjord (ADR-0153 S5), ``texture`` — шумовая подложка всю длину трека (треск/шипение
-#: пластинки lo-fi, #3557: :data:`PACK_TEXTURE_BEATS`).
+#: пластинки lo-fi, #3557: :data:`PACK_TEXTURES`).
 SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "synth", "kick", "break", "snare",
                                  "hat", "tom", "ride", "crash", "texture")
 #: Края огибающей запуска файла синтом ``loop``, с: (атака, спад) — ВНУТРИ ``sus`` (патч ``loop.scd``, #3432).
@@ -691,30 +691,29 @@ def _pack_drum(name: str) -> SampleInfo:
                       float(meta["rms_db"]))
 
 
-#: Шумовая подложка (роль ``texture``, #3557: «у лофи нет винила/дождя», судья 2/10 по текстуре): файл пака и его
-#: длина в долях «оригинала» — темп файла = доли·60/секунды (у шума темпа нет: ``rate`` = темп сета/темп файла лишь
-#: чуть меняет окраску шипения). ``vinyl_hiss`` Sonic Pi (CC0, ADR-0153 В3): 8.0 с, ``rms_db`` −31.1 — 12 долей → 90
-#: BPM, в окне lo-fi 72–92 ``rate`` 0.8–1.02. Дождя в паках нет (опись ``data/sample_*.json`` 13.10).
-PACK_TEXTURE_BEATS: Mapping[str, int] = {"sonicpi_vinyl_hiss": 12}
+#: Шумовые подложки (роль ``texture``, #3557: «у лофи нет винила/дождя», судья 2/10 по текстуре) — файлы пака, звучат
+#: как есть (темпа у шума нет). ``vinyl_hiss`` Sonic Pi (CC0, ADR-0153 В3): 8.0 с, ``rms_db`` −31.1; спектр файла
+#: (13.10): < 150 Гц 0.58, 150–2000 Гц 0.37, 2–4.4 кГц 0.04 — «треск» почти весь — гул и середина. Дождя и треска
+#: в паках нет (опись ``data/sample_*.json`` 13.10).
+PACK_TEXTURES: Tuple[str, ...] = ("sonicpi_vinyl_hiss",)
 
 
 def _pack_texture(name: str) -> SampleInfo:
     meta = _SONICPI_DATA["samples"][name]
     seconds = float(meta["seconds"])
     return SampleInfo(name, str(meta["group"]), "texture", seconds, int(meta["channels"]),
-                      f"{_SONICPI_DATA['pack_dir']}/{meta['path']}", float(meta["peak_db"]), float(meta["rms_db"]),
-                      round(PACK_TEXTURE_BEATS[name] * 60.0 / seconds))
+                      f"{_SONICPI_DATA['pack_dir']}/{meta['path']}", float(meta["peak_db"]), float(meta["rms_db"]))
 
 
 #: Каталог сэмплов v2: имя → :class:`SampleInfo` — DJ_Dave, брейки паков (роль ``break``), удары китов паков
-#: (:data:`PACK_DRUMS`) и шумовые подложки (:data:`PACK_TEXTURE_BEATS`). v1 (``core/sample_dave``) видит из него только
+#: (:data:`PACK_DRUMS`) и шумовые подложки (:data:`PACK_TEXTURES`). v1 (``core/sample_dave``) видит из него только
 #: пак DJ_Dave (``SAMPLE_PACK_DIR``).
 SAMPLE_CATALOG: Mapping[str, SampleInfo] = {
     **{n: _sample_info(n, m) for n, m in _SAMPLE_DATA["samples"].items()},
     **{n: _pack_break(n, m, str(_SONICPI_DATA["pack_dir"])) for n, m in _SONICPI_DATA["samples"].items()
        if m["role"] == "break" and n in PACK_BREAK_BEATS},
     **{n: _pack_drum(n) for n in PACK_DRUMS},
-    **{n: _pack_texture(n) for n in PACK_TEXTURE_BEATS},
+    **{n: _pack_texture(n) for n in PACK_TEXTURES},
 }
 #: Группа каталога → описание (подсказки модели в v1).
 SAMPLE_GROUPS: Mapping[str, str] = dict(_SAMPLE_DATA["groups"])
@@ -740,7 +739,7 @@ __all__ = [
     "SET_TRACK_SECONDS", "THEMES",
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
-    "PACK_BREAK_BEATS", "PACK_DRUMS", "PACK_TEXTURE_BEATS",
+    "PACK_BREAK_BEATS", "PACK_DRUMS", "PACK_TEXTURES",
     "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR",
     "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
@@ -1574,11 +1573,11 @@ class Style:
     # Ручки мастер-шины стиля поверх :data:`SET_LEVELER` (``arrange.mix.set_master``; ключи — :data:`MASTER_DEFAULTS`,
     # каждый старт трека выставляет все ручки заново, поэтому следующий трек другого стиля их не наследует).
     master: Mapping[str, float] = field(default_factory=dict)
-    # Лофи (#3557). Малый: рисунок такта ``X``/``x``/``g`` (как каркасы хэтов: гоуст-удары малого) вместо бэкбита 2/4
-    # ``arrange.rhythm.BACKBEAT_STEPS``; пусто — бэкбит. «Живые руки» ударов (:class:`Humanize`); None — ровно по сетке.
-    # Дыхание лида: такты секции по кругу (``x`` — лид звучит, ``.`` — молчит), тема целиком в своей секции — без пауз;
-    # пусто — лид без пауз (хук по кругу).
-    backbeat: str = ""
+    # Лофи (#3557). FX-слой — удар каждые ``fx_bars`` тактов секций ``layer_sections["fx"]`` (клуб — первая доля
+    # 8-тактовой секции; lofi — шипение пластинки каждый такт). «Живые руки» ударов (:class:`Humanize`); None — ровно
+    # по сетке. Дыхание лида: такты секции по кругу (``x`` — лид звучит, ``.`` — молчит), тема целиком в своей секции —
+    # без пауз; пусто — лид без пауз (хук по кругу).
+    fx_bars: int = 8
     humanize: Optional["Humanize"] = None
     lead_mask: str = ""
 
@@ -1869,16 +1868,16 @@ _DNB_FIELDS = dict(
     a9_model_low=0.65,
 )
 
-# ── Стиль ``lofi`` (ADR-0153 S4, #3557): бум-бэп с живыми руками, Rhodes держит септаккорды, винил, петли по 8 ──
+# ── Стиль ``lofi`` (ADR-0153 S4, #3557): брейк-луп пака, Rhodes держит септаккорды, винил, петли по 4 такта ──────
 #: Эталон (``style_reference_profiles.md`` 07.10; lo-fi hip-hop записи нет, ближайший — dark jazz/trip-hop): темп
 #: 87–89 во всех 40 окнах, низ < 150 Гц 0.75 [0.63..0.84], LR 0.90, σ по минутам 1.1 дБ. Темп lo-fi 72–92.
 #: #3557 (13.10, Шифу: «то, что генерит наш аранжировщик, — шляпа для лофи», слушающий судья 2/10): ровная петля
 #: хэта восьмыми, короткие comping-стэбы ``ambi`` под LPF 2.4 кГц, подвижный walking-бас, мелодия без пауз, ни
-#: винила, ни плёнки, клубная форма intro/build/drop. Теперь: хэт 16-ми со свингом 16-х 0.59–0.64 (MPC-свинг),
-#: гоусты и паузы в каркасах, малый на 2 и 4 с гоустом, «живые руки» (:class:`Humanize`); Rhodes (``rhpiano``) держит
-#: аккорд такта (``held``) септаккордом (``chord_size`` 4: нона в тесном окне под лидом даёт кластер с полутоном);
-#: бас — прима/квинта целыми и половинными (``riff``); лид дышит (``lead_mask``); шипение пластинки всю длину трека
-#: (роль ``loop``, :data:`PACK_TEXTURE_BEATS`); петли по 8 тактов, в каждой меняется один элемент состава. Нет: дождя
+#: винила, ни плёнки, клубная форма intro/build/drop. Теперь (итерация 3): грув — замедленный брейк-луп пака (роль
+#: ``loop``) и бочка на 1, свинг 16-х нот 0.59–0.64 (MPC-свинг); Rhodes (``rhpiano``) держит аккорд такта (``held``)
+#: септаккордом (``chord_size`` 4: нона в тесном окне под лидом даёт кластер с полутоном); бас — прима/квинта нотами
+#: 1–2 доли (``riff``) в читаемом регистре; лид дышит (``lead_mask``); шипение пластинки каждый такт (роль ``fx``,
+#: :data:`PACK_TEXTURES`); петли по 4 такта, в каждой меняется один элемент состава. Нет: дождя
 #: (в паках нет), LPF/сатурации мастера (ручек у ``masterfilter`` нет — :data:`MASTER_DEFAULTS`), wow/flutter плёнки
 #: (расстройка двух голосов пэда — ближайшее).
 _LOFI_LOOKS: Tuple[Tuple[int, Look], ...] = (
@@ -1892,13 +1891,11 @@ _LOFI_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "lofi": GenreWindow((82, 92), ("jazz", "soft", "acoustic"), _LOFI_LOOKS, ("riff",), ("held",)),
     "chillhop": GenreWindow((72, 82), ("soft", "acoustic", "jazz"), _LOFI_LOOKS, ("riff",), ("held",)),
 }
-#: Хэты по сетке 16-х (нечётные 16-е качает свинг стиля), но редко и с паузами: судья итерации 1 (13.10) — «хэт тянет
-#: ровную 16-ю сетку», сплошные 16-е сняты. Восьмые с дырой и гоустом, «шаффл» с гоустами перед долей, редкий — доли
-#: и подхваты.
+#: Хэты — только в окнах блэнда (интро и хвост), тихие восьмые: грув петель держит брейк-луп пака (роль ``loop``).
+#: Итерации 1–2 (судья 13.10): хэт-петля пака по сетке 16-х — «механическая ровная хэт-петля» при любом каркасе.
 _LOFI_KITS: Mapping[str, Mapping[str, str]] = {
-    "dusty": {"hats": "x.x.x.xgx.x.x...", "perc": "................"},
-    "shuffle": {"hats": "x.xgx.x.x.xgx..g", "perc": "................"},
-    "sparse": {"hats": "x...x.g.x...x.xg", "perc": "................"},
+    "eighths": {"hats": "x.x.x.x.x.x.x.x.", "perc": "................"},
+    "eighths_skip": {"hats": "x.x.x.x.x.x.x...", "perc": "................"},
 }
 #: Тембры: лид — читаемый темой (:data:`THEME_LEAD_OK`, без Хааса — ``delay`` занят свингом нот): ``keys`` (клавиши),
 #: ``pluck``; пэд — Rhodes ``rhpiano`` (замер 13.10 в рамке пэда; ``epiano`` на потолке ``amp`` тише цели на 6 дБ);
@@ -1915,45 +1912,46 @@ _LOFI_PROGRESSIONS: Tuple[Tuple[int, ...], ...] = (
 #: Рифф баса по тактам по кругу — прима/квинта нотами в 1–2 доли: 1.5 + 1.5 + 1 (прима, прима, квинта), две половинные
 #: примы, снова 1.5 + 1.5 + 1, прима–квинта половинными.
 _LOFI_BASS_RIFFS: Tuple[str, ...] = ("R..R..F.", "R...R...", "R..R..F.", "R...F...")
-#: Малый ровно на 2 и 4 (гоуст итерации 1 судья читал как «удары не на 2 и 4»); лэйд-бэк — :class:`Humanize`.
-_LOFI_BACKBEAT = "....X.......X..."
-_LOFI_DRUMS = frozenset({"kick", "hats", "clap"})
-_LOFI_FULL = _LOFI_DRUMS | {"bass", "pad", "lead"}
-#: Форма — петли по 8 тактов без подъёма и дропа: интро 4+4 и хвост 4+4 — блэнд двух дек, как у клуба; тема (вид
-#: ``drop``, :data:`THEME_SECTION`) сразу после интро; дальше в каждой петле меняется один элемент — хэт уходит
-#: (``groove2``: хук-ответ, вид ``drop2``), бочка уходит и клавиши под фильтром, хук вдвое медленнее (``break``), всё
-#: возвращается (``groove3``); ``lofi64`` — ещё петля без лида (``break2``) и последняя полная (``groove4``).
+#: Ударные петель — бочка (опора на 1) и брейк-луп пака (роль ``loop``, ``layer_sections``): «настоящий lo-fi — семпл
+#: брейка» (итерация 3, #3557). Малого нет: он в брейке (``thin_roles`` снимает клэп, который форма клуба ставит перед
+#: дропом).
+_LOFI_GROOVE = frozenset({"kick", "bass", "pad", "lead"})
+#: Форма — петли без подъёма и дропа, в каждой 4-тактовой петле меняется один элемент: интро 4+4 и хвост 4+4 — блэнд
+#: двух дек (хэты, клавиши, шипение); тема (вид ``drop``, :data:`THEME_SECTION`) сразу после интро; дальше по 4 такта
+#: (виды ``drop2``/``break``): брейк уходит (``groove2``), всё вместе (``groove3``), бочка уходит и клавиши под фильтром
+#: (``break``), ещё и мелодия молчит (``break2``), всё вместе (``groove4``), брейк уходит, мелодия отвечает (``groove5``).
+#: Без брейка: ``groove2``, ``groove5`` (нет в ``layer_sections["loop"]``).
 _LOFI_INTRO: FormSpec = (
     ("intro", _CLUB_BLEND[1], 2, frozenset({"hats", "pad"})),
-    ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 3, _LOFI_DRUMS | {"bass", "pad"}),
+    ("intro_low", _CLUB_BLEND[0] - _CLUB_BLEND[1], 3, frozenset({"kick", "bass", "pad"})),
 )
 _LOFI_TAIL: FormSpec = (
-    ("outro", 8 - (_CLUB_BLEND[0] - _CLUB_BLEND[1]), 3, _LOFI_DRUMS | {"bass", "pad"}),
+    ("outro", 8 - (_CLUB_BLEND[0] - _CLUB_BLEND[1]), 3, frozenset({"kick", "bass", "pad"})),
     ("outro_tail", _CLUB_BLEND[0] - _CLUB_BLEND[1], 1, frozenset({"hats", "pad"})),
 )
-_LOFI_THEME: FormSpec = (("drop", 8, 7, _LOFI_FULL),)
-_LOFI_NO_HATS: FormSpec = (("groove2", 8, 6, _LOFI_FULL - {"hats"}),)
-_LOFI_NO_KICK: FormSpec = (("break", 8, 4, _LOFI_FULL - {"kick"}),)
-_LOFI_BACK: FormSpec = (("groove3", 8, 7, _LOFI_FULL),)
 _LOFI_FORMS: Mapping[str, FormSpec] = {
-    "lofi48": (*_LOFI_INTRO, *_LOFI_THEME, *_LOFI_NO_HATS, *_LOFI_NO_KICK, *_LOFI_BACK, *_LOFI_TAIL),
-    "lofi32": (*_LOFI_INTRO, *_LOFI_THEME, *_LOFI_NO_KICK, *_LOFI_TAIL),
-    "lofi64": (*_LOFI_INTRO, *_LOFI_THEME, *_LOFI_NO_HATS, *_LOFI_NO_KICK, *_LOFI_BACK,
-               ("break2", 8, 4, _LOFI_FULL - {"kick", "lead"}), ("groove4", 8, 7, _LOFI_FULL), *_LOFI_TAIL),
+    "lofi48": (*_LOFI_INTRO, ("drop", 8, 7, _LOFI_GROOVE), ("groove2", 4, 6, _LOFI_GROOVE),
+               ("groove3", 4, 7, _LOFI_GROOVE), ("break", 4, 4, _LOFI_GROOVE - {"kick"}),
+               ("break2", 4, 4, _LOFI_GROOVE - {"kick", "lead"}), ("groove4", 4, 7, _LOFI_GROOVE),
+               ("groove5", 4, 6, _LOFI_GROOVE), *_LOFI_TAIL),
+    "lofi32": (*_LOFI_INTRO, ("drop", 8, 7, _LOFI_GROOVE), ("groove2", 4, 6, _LOFI_GROOVE),
+               ("break", 4, 4, _LOFI_GROOVE - {"kick"}), *_LOFI_TAIL),
 }
 _LOFI_ENERGY_FORMS: Mapping[int, Tuple[str, ...]] = {
-    1: ("lofi32", "lofi48"), 2: ("lofi32", "lofi48"), 3: ("lofi48", "lofi32"), 4: ("lofi48", "lofi64"),
-    5: ("lofi64", "lofi48"),
+    1: ("lofi32", "lofi48"), 2: ("lofi32", "lofi48"), 3: ("lofi48", "lofi32"), 4: ("lofi48",), 5: ("lofi48",),
 }
-#: Тёплый верх — статичный: клавиши и лид под LPF 3.2 кГц всю форму (у ``rhpiano`` верх и так < 0.01 энергии — срез
-#: гасит щелчки атаки), в петлях без бочки — 2 кГц («клавиши чуть прикрыты»). Свипа хвоста блэнда до 300 Гц нет
-#: (``lpf_tail_sections`` пусто): судья итерации 1 — «уход LPF до 300 Гц — каша».
+#: Тёплый верх — статичный: клавиши и лид под LPF 2.8 кГц всю форму (у ``rhpiano`` верх и так < 0.01 энергии), в
+#: петлях без бочки — 2 кГц. Брейк-луп фильтра не получает (рендер нарезки ``loop`` LPF не выражает), его темнит
+#: замедление: ``rate`` = темп сета/темп брейка ≈ 0.6–0.7. Свипа хвоста блэнда до 300 Гц нет (``lpf_tail_sections``
+#: пусто): судья итерации 1 — «уход LPF до 300 Гц — каша».
 _LOFI_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
-    **{name: (3200.0, 3200.0) for name in ("intro", "intro_low", "drop", "groove2", "groove3", "groove4", "outro",
-                                           "outro_tail")},
+    **{name: (2800.0, 2800.0) for name in ("intro", "intro_low", "drop", "groove2", "groove3", "groove4", "groove5",
+                                           "outro", "outro_tail")},
     "break": (2000.0, 2000.0), "break2": (2000.0, 2000.0),
 }
 _LOFI_SECTIONS: Tuple[str, ...] = tuple(dict.fromkeys(name for form in _LOFI_FORMS.values() for name, *_r in form))
+#: Секции брейк-лупа: петли формы, кроме ``groove2``/``groove5`` (брейк уходит) и окон блэнда.
+_LOFI_BREAK_SECTIONS: Tuple[str, ...] = ("drop", "groove3", "break", "break2", "groove4")
 _LOFI_WINDOW = _LOFI_GENRE_WINDOWS["lofi"]
 _LOFI_STYLE = Style(
     bpm=_LOFI_WINDOW.bpm, swing=(0.09, 0.14), modes=("dorian", "minor", "major"),
@@ -1965,13 +1963,17 @@ _LOFI_STYLE = Style(
     timbres=_LOFI_TIMBRES, default_timbre="warm", bass_figures=_LOFI_WINDOW.bass_figures,
     pad_figures=_LOFI_WINDOW.pad_figures, lead_figures=("motif",), chord_size=4, progressions=_LOFI_PROGRESSIONS,
     forms=_LOFI_FORMS, opening_form="lofi48", energy_forms=_LOFI_ENERGY_FORMS, blend=_CLUB_BLEND,
-    # Шипение пластинки — всю форму (роль ``loop`` со своим генератором ``texture``, ``loop_roles``/``loop_figure``).
-    layer_sections={"loop": _LOFI_SECTIONS}, genre_windows=_LOFI_GENRE_WINDOWS,
+    # Брейк-луп пака (роль ``loop``, нарезка восьмыми по порядку — ``chop``, ``tempo=`` растягивает под темп сета) в
+    # петлях :data:`_LOFI_BREAK_SECTIONS`; шипение пластинки (роль ``fx`` из подложек ``texture``) — каждый такт всей
+    # формы (``fx_bars`` 1: файл 8 с, удар — такт).
+    layer_sections={"loop": _LOFI_BREAK_SECTIONS, "fx": _LOFI_SECTIONS}, genre_windows=_LOFI_GENRE_WINDOWS,
     # Уровни: робот 08.10 (comping/walking) — низ 0.77/0.76 по медиане окон 20 с. #3557: бочка громче на 1 дБ (судья:
     # «бочка тихая»), бас тише на 1 дБ (целые ноты звучат дольше четвертей walking). Итерация 2 (судья 13.10): малый
-    # +3 дБ («не даёт ответа на 2 и 4»), хэт −3 дБ («доминирует»), шипение −54 → −42 (на −54 не слышно).
-    role_level_db={"kick": -34.0, "bass": -35.0, "pad": -41.0, "lead": -49.0, "clap": -39.0, "hats": -59.0,
-                   "loop": -42.0},
+    # +3 дБ («не даёт ответа на 2 и 4»), хэт −3 дБ («доминирует»), шипение −54 → −42 (на −54 не слышно). Итерация 3:
+    # брейк −38 (у клуба −40 — второй слой, здесь грув), бочка −37 (опора под бочкой брейка), шипение −35 (на −42 судья
+    # не слышал: у ``vinyl_hiss`` 58 % энергии < 150 Гц, треск 2–4 кГц — 4 %).
+    role_level_db={"kick": -37.0, "bass": -35.0, "pad": -41.0, "lead": -49.0, "clap": -39.0, "hats": -60.0,
+                   "loop": -38.0, "fx": -35.0},
     duck_roles=_SOFT_DUCK_ROLES, section_lpf=_LOFI_SECTION_LPF, lpf_roles=("pad", "lead"),
     lpf_tail_sections=(),
     stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
@@ -1980,14 +1982,13 @@ _LOFI_STYLE = Style(
     # 13.10, set41024): модель 0.41 после пэда −4 дБ, запись — низ 0.62–0.88 (медиана окон 20 с 0.78): модель ниже
     # записи на ≈ 0.37. С шипением на −42 модель (шум — середина) при пороге 0.4 глушила Rhodes на 6–10 дБ; порог 0.3.
     a9_model_low=0.3,
-    thin_roles={}, swing_roles=("kick", "clap", "bass", "pad", "lead"),
-    drum_files={"clap": ("sonicpi_drum_snare_soft", "sonicpi_perc_snap", "muldjord_snare_40"),
-                # Педаль ``drum_cymbal_pedal`` снята (итерация 2: судья — «педальный цимбал доминирует»)
-                "hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18")},
-    backbeat_kinds=("intro_low", "drop", "drop2", "break", "outro"), roll_bars=0, clap_fill="cut",
-    bass_riffs=_LOFI_BASS_RIFFS, loop_roles=("texture",), loop_figure="texture",
-    # Руки: хэт — 0..12 мс, малый лениво позади доли на 25 мс + 0..12 (лэйд-бэк 25–37 мс); лид — 2 такта из 4, реже.
-    backbeat=_LOFI_BACKBEAT, humanize=Humanize(late_ms=12, soften=0.3, cycle_bars=4, roles={"hats": 0, "clap": 25}),
+    # Клэпа нет ни в одном треке: малый — в брейк-лупе (форма клуба ставит клэп перед дропом — снимается здесь).
+    thin_roles={energy: ("clap",) for energy in ENERGY_LEVELS}, swing_roles=("kick", "bass", "pad", "lead"),
+    # Педаль ``drum_cymbal_pedal`` снята (итерация 2: судья — «педальный цимбал доминирует»)
+    drum_files={"hats": ("muldjord_hihatclosed_16", "muldjord_hihatclosed_18")},
+    roll_bars=0, bass_riffs=_LOFI_BASS_RIFFS, loop_roles=("break",), fx_roles=("texture",), fx_bars=1,
+    # Руки хэта окон блэнда — 0..12 мс; лид — 2 такта из 4, реже.
+    humanize=Humanize(late_ms=12, soften=0.3, cycle_bars=4, roles={"hats": 0}),
     lead_mask="xx..x...",
 )
 
