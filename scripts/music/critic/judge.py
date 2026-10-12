@@ -34,6 +34,9 @@ KINDS = ("hole", "overlap", "level", "sustain", "phrasing", "out_of_key", "chord
          "param_reading")
 #: Необязательные подсказки судье-«указателю» (роль, интервал, число…): без них верификатор честно ответит «не проверяемо».
 ARG_KEYS = ("role", "other", "direction", "midi", "pcs", "interval", "param", "value", "seconds")
+INVALID_KEY = "_invalid"  # {ключ: причина}: то, что судья прислал не в форме схемы; значение не выкидывается молча
+STR_ARGS = ("role", "other", "direction", "interval", "param")
+LIST_ARGS = ("midi", "pcs")
 DEFAULT_BUDGET_USD = 0.25  # ADR-0157 J3 целил ≤ $0.05; omni на клубе вышел $0.08 по ценам-заглушкам — лимит поднят
 COST_PER_CALL_USD = {"fake": 0.0, "qwen_omni": 0.01, "qwen_text": 0.01, "gemini": 0.01}  # оценка ADR §3.6 по чужим ценам, не измерено
 
@@ -72,8 +75,56 @@ class Claim:
         return {**out, "args": dict(self.args)} if self.args else out
 
 
+def _num(v: Any) -> float | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip().replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _norm_arg(key: str, v: Any) -> Any:
+    """Нормализация одного значения args; ``ValueError`` — форма не распознана."""
+    if key in STR_ARGS:
+        if isinstance(v, str):
+            return v
+        raise ValueError(f"ожидалась строка, пришло {type(v).__name__}")
+    if key in LIST_ARGS:  # midi=35 -> [35]; "35" -> [35]; [35, "36"] -> [35, 36]
+        items = v if isinstance(v, (list, tuple)) else [v]
+        nums = [_num(x) for x in items]
+        if not nums or any(n is None for n in nums):
+            raise ValueError(f"не список чисел: {v!r}")
+        return [int(n) for n in nums]
+    items = v if isinstance(v, (list, tuple)) else [v]  # value / seconds: число, строка-число или список
+    nums = [_num(x) for x in items]
+    if not nums or len(nums) > 2 or any(n is None for n in nums):
+        raise ValueError(f"не число и не пара чисел: {v!r}")
+    if len(nums) == 2 and key == "seconds":  # [127.06, 141.18] — границы интервала -> его длительность
+        return nums[1] - nums[0] if nums[1] > nums[0] else nums[0]
+    return nums[0]
+
+
+def normalize_args(args: Any) -> dict:
+    """Приводит args реального ответа судьи к схеме; нераспознанное не выкидывается, а помечается ``_invalid``."""
+    if not isinstance(args, dict):
+        return {INVALID_KEY: {"args": f"ожидался объект, пришло {type(args).__name__}"}}
+    out, bad = {}, {}
+    for key, v in args.items():
+        if key not in ARG_KEYS:
+            bad[str(key)] = "неизвестный ключ"
+            continue
+        try:
+            out[key] = _norm_arg(key, v)
+        except ValueError as exc:
+            bad[key] = str(exc)
+    return {**out, INVALID_KEY: bad} if bad else out
+
+
 def parse_claims(raw: Any) -> list[Claim]:
-    """Строгий разбор ответа: список объектов схемы, иначе ``JudgeSchemaError`` с путём до поля."""
+    """Строгий разбор ответа: список объектов схемы, иначе ``JudgeSchemaError`` с путём до поля; args нормализуются."""
     if not isinstance(raw, list):
         raise JudgeSchemaError(f"ответ должен быть списком, а не {type(raw).__name__}")
     out = []
@@ -95,9 +146,7 @@ def parse_claims(raw: Any) -> list[Claim]:
             raise JudgeSchemaError(f"[{i}].confidence={row['confidence']}: вне 0..1")
         if not isinstance(row["claim"], str) or not row["claim"].strip():
             raise JudgeSchemaError(f"[{i}].claim: пустой текст")
-        args = row.get("args", {})
-        if not isinstance(args, dict) or set(args) - set(ARG_KEYS):
-            raise JudgeSchemaError(f"[{i}].args: ожидался объект с ключами из {ARG_KEYS}")
+        args = normalize_args(row.get("args", {}))
         out.append(Claim(float(row["t0"]), float(row["t1"]), row["kind"], row["claim"], float(row["confidence"]), args))
     return out
 

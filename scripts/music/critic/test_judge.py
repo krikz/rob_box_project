@@ -30,7 +30,6 @@ def test_schema_accepts_valid_row_and_args():
     {**ROW, "confidence": 1.5},                   # вне 0..1
     {**ROW, "claim": "  "},                       # пустой текст
     {**ROW, "extra": 1},                          # лишнее поле
-    {**ROW, "args": {"colour": "red"}},           # неизвестный ключ args
     {**ROW, "t0": True},                          # bool — не число
 ])
 def test_schema_rejects_bad_rows(bad):
@@ -227,3 +226,19 @@ def test_budget_limit_stops_before_the_call(tmp_path):
 def test_budget_limit_from_env():
     assert jd.Budget(env={"CRITIC_JUDGE_BUDGET_USD": "0.2"}).limit == 0.2
     assert jd.Budget(env={}).limit == jd.DEFAULT_BUDGET_USD
+
+
+def test_args_normalized_int_midi_list_seconds_string_numbers():
+    row = {**ROW, "kind": "out_of_key", "args": {"midi": 35, "seconds": [127.06, 141.18], "value": "0,5", "pcs": ["1", 2.0]}}
+    args = jd.parse_claims([row])[0].args
+    assert args == {"midi": [35], "seconds": pytest.approx(14.12), "value": 0.5, "pcs": [1, 2]}
+    assert jd.parse_claims([{**ROW, "args": {"seconds": [7]}}])[0].args["seconds"] == 7.0
+    assert jd.parse_claims([{**ROW, "args": {"midi": [35, 36]}}])[0].args["midi"] == [35, 36]
+
+
+def test_unrecognized_args_are_marked_invalid_not_dropped():
+    args = jd.parse_claims([{**ROW, "args": {"role": "pad", "midi": "high", "colour": "red", "seconds": [1, 2, 3]}}])[0].args
+    assert args["role"] == "pad" and "midi" not in args
+    assert set(args[jd.INVALID_KEY]) == {"midi", "colour", "seconds"}
+    assert jd.parse_claims([{**ROW, "args": "pad"}])[0].args[jd.INVALID_KEY]["args"].startswith("ожидался объект")
+    assert jd.Claim(1, 2, "hole", "x", 0.5, args).as_json()["args"][jd.INVALID_KEY]  # попадает в сохранённый JSON

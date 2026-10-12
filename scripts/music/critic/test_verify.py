@@ -150,3 +150,33 @@ def test_committed_fixtures_follow_the_schema():
     for path in files:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["tracks"] and jd.parse_claims(data["claims"])
+
+
+def test_real_omni_answers_do_not_crash_verify_and_args_are_normalized():
+    """Реальные ответы qwen_omni (breaks: seconds списком, jazz/chiptune: midi числом) — раньше TypeError в verify."""
+    for path in sorted((HERE / "fixtures" / "omni").glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        claims = jd.parse_claims(data["claims"])
+        assert data["provider"] == "qwen_omni" and claims
+        for c in claims:
+            assert all(isinstance(m, int) for m in c.args.get("midi", []))
+            assert isinstance(c.args.get("seconds", 0.0), float)
+        assert len(vf.verify(A, claims)) == len(claims)
+
+
+def test_int_midi_and_list_seconds_are_checked_not_crashed():
+    plan = [vf.Placed(make_track(bass=[(30, 16.0, 1.0)]), 0.0)]
+    assert one(plan, claim("out_of_key", 8, 12, role="bass", midi=30)) == vf.CONFIRMED
+    two = [vf.Placed(make_track(), 0.0), vf.Placed(make_track(), 20.0)]
+    assert one(two, claim("overlap", 18, 26, seconds=[20.0, 24.0])) == vf.CONFIRMED
+
+
+def test_exception_in_check_gives_unverifiable_with_counter(monkeypatch):
+    def boom(plan, c):
+        raise TypeError("кривые args")
+
+    monkeypatch.setitem(vf.CHECKS, "hole", boom)
+    vs = vf.verify(A, [claim("hole", 0, 8, role="bass"), claim("mix", 0, 5)])
+    assert [v.verdict for v in vs] == [vf.UNVERIFIABLE, vf.UNVERIFIABLE]
+    assert vs[0].reason.startswith(vf.BAD_ARGS) and "TypeError" in vs[0].reason
+    assert f"{vf.BAD_ARGS} (исключение в проверке): 1" in vf.render_report({"s": vs})
