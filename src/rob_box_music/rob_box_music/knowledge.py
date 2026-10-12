@@ -741,7 +741,8 @@ __all__ = [
     "ThemeRow", "HOOK_KEY_FIT_MIN",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "PACK_BREAK_BEATS", "PACK_DRUMS", "PACK_TEXTURE_BEATS",
-    "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
+    "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR",
+    "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
     "SEARCH_STYLE_PATTERNS",
     "STYLE_PATTERNS",
@@ -1976,8 +1977,8 @@ _LOFI_STYLE = Style(
     stereo={"pad": {"pan": 0.5, "detune": PAD_DETUNE}},
     # A9-модель занижает низ lo-fi против записи робота 08.10 на 0.09–0.32 (удары файлами в модели — оценки): порог
     # 0.4 — только страховка от трека совсем без низа; калибровка модели lo-fi не сделана. #3557, итерация 1 (робот
-    # 13.10, set41024): модель 0.41 после пэда −4 дБ, запись — низ 0.62–0.88 (медиана окон 20 с 0.78): модель ниже записи
-    # на ≈ 0.37. С шипением на −42 модель (шум — середина) при пороге 0.4 глушила Rhodes на 6–10 дБ; порог 0.3.
+    # 13.10, set41024): модель 0.41 после пэда −4 дБ, запись — низ 0.62–0.88 (медиана окон 20 с 0.78): модель ниже
+    # записи на ≈ 0.37. С шипением на −42 модель (шум — середина) при пороге 0.4 глушила Rhodes на 6–10 дБ; порог 0.3.
     a9_model_low=0.3,
     thin_roles={}, swing_roles=("kick", "clap", "bass", "pad", "lead"),
     drum_files={"clap": ("sonicpi_drum_snare_soft", "sonicpi_perc_snap", "muldjord_snare_40"),
