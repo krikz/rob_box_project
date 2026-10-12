@@ -40,6 +40,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.instruments import LeadChoice, lead_choice
 from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
@@ -75,6 +76,42 @@ STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
 SET_PLAYING = "set_playing"
 #: Код отказа ``dj_set``: тема называет конкретные вещи, и ни одна не нашлась (#3493).
 NOT_FOUND = "not_found"
+#: Код отказа ``dj_set(start)``: в реплике хода нет слова сета/диджея/вечеринки и стиля — человек просил одну пьесу
+#: (ADR-0157 §2.1, прогон 09.10: «сыграй баха на трамбоне» → LLM ``dj_set``). Решает код по ``heard_text``.
+NOT_A_SET_REQUEST = "not_a_set_request"
+
+
+def set_refusal(heard_text: Optional[str], running: bool) -> Optional[Dict[str, Any]]:
+    """Отказ ``dj_set(start)`` по реплике хода (ADR-0157 §2.1) или ``None``. Реплики нет (вызов не из хода) или сет
+    уже идёт (смена темы посреди сета, #3400) — не отказываем."""
+    from rob_box_voice.core.media_command_grammar import asks_for_set
+
+    if heard_text is None or running or asks_for_set(heard_text):
+        return None
+    return {"ok": False, "reason": NOT_A_SET_REQUEST,
+            "detail": "в реплике нет слова сет/диджей/вечеринка и стиля — это заказ одной пьесы: request_music"}
+
+
+def lead_for(*texts: Optional[str]) -> Optional[LeadChoice]:
+    """Лид инструмента из реплики хода, иначе из ``text`` тула (ADR-0157 §2.4): слот «на <инструменте>» выделяет
+    грамматика, чем играть — таблица ``INSTRUMENTS``; не просили — ``None``."""
+    from rob_box_voice.core.media_command_grammar import instrument_in
+
+    return next((lead_choice(key) for key in map(instrument_in, filter(None, texts)) if key), None)
+
+
+def club_theme(text: str) -> str:
+    """Тема одиночного трека: «сыграй (что-нибудь) на арфе» — заказ без названия, слова заказа и инструмента не тема
+    (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1); иначе — слова как есть."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    command = parse_media_command(text)
+    return command.name if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument else text
+
+
+def lead_data(lead: Optional[LeadChoice]) -> Dict[str, Any]:
+    """Поля результата об инструменте: по ним голосовая сторона строит фразу (``media_phrases.instrument_text``)."""
+    return {"instrument": lead.asked, "instrument_played": lead.played} if lead else {}
 
 
 def set_style(style: Optional[str], theme: str, heard_text: Optional[str] = None) -> str:
@@ -296,6 +333,9 @@ class DjSetTool(MCPTool):
         ADR-0148), ход, запустивший сет (:meth:`started_in_turn`), и реплика хода: тема LLM не из неё (взята из
         истории диалога, 06.10 18:04) — тема реплики (``theme_grounding``)."""
         tracks = heard_tracks or tracks
+        refusal = set_refusal(heard_text, self.running) if action == "start" else None
+        if refusal is not None:
+            return tool_result(refusal, "сет не начался")
         if action == "start":
             theme = self._heard_theme(theme, heard_text)
             persona = persona_title(persona) or None  # «диджей X» одним видом: и от роутера, и от LLM
@@ -500,8 +540,10 @@ class RequestMusicTool(MCPTool):
         return False
 
     def execute(self, intent: str = "track", text: str = "", mood: Optional[str] = None,
-                genre: Optional[str] = None, turn_id: Optional[str] = None) -> MCPToolResult:
-        """``turn_id`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не снимается."""
+                genre: Optional[str] = None, turn_id: Optional[str] = None,
+                heard_text: Optional[str] = None) -> MCPToolResult:
+        """``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не
+        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает."""
         set_id = self._dj.started_in_turn(turn_id)
         if set_id is not None:
             return tool_result({"ok": False, "reason": SET_PLAYING, "set_id": set_id,
@@ -509,7 +551,9 @@ class RequestMusicTool(MCPTool):
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
-        staged = self._stage_classic(text) if classic else self._stage_club(text, mood)
+        lead = lead_for(heard_text, text)
+        staged = self._stage_classic(text, lead) if classic else self._stage_club(text, mood, lead)
+        staged.update(lead_data(lead))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
         program, once = staged.pop("program"), staged.pop("once")
@@ -517,16 +561,17 @@ class RequestMusicTool(MCPTool):
         result = self._owner.play(program, dj={"enabled": False, "title": staged["title"]}, once=once)
         return tool_result(confirmed({**result, **staged}, self._confirm), what)
 
-    def _stage_club(self, text: str, mood: Optional[str]) -> Dict[str, Any]:
-        """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен."""
-        profile = self._dj.theme_profile(text)
+    def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
+        """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
+        синт инструмента заказа."""
+        profile = self._dj.theme_profile(club_theme(text))
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
         track_no = kn.ENERGY_WAVE.index(energy) + 1
         try:
             program = render(compose(plan, track_no, melodies=self._melodies(profile.hook_ids), deck="A",
-                                     materials=self._dj.plan_materials(plan)), "A")
+                                     materials=self._dj.plan_materials(plan), lead_synth=lead and lead.synth), "A")
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
@@ -534,19 +579,20 @@ class RequestMusicTool(MCPTool):
         return {"program": program, "once": False, "title": title, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
-    def _score_song(self, query: str, seed: int) -> ClassicPick:
+    def _score_song(self, query: str, seed: int, lead: Optional[LeadChoice] = None) -> ClassicPick:
         """Песня из партитуры по названию (ADR-0154 PR-7B): материалы — поиском темы сета (те же строки), песня — из
         первого, что складывается (``classic.pick_score``); исход — строкой лога."""
         log = self.node.get_logger() if self.node is not None else _LOG
         profile = self._dj.theme_profile(query)
         ids = profile.materials
         refs = list(self._melodies(profile.theme_hooks).values())  # эталоны узнаваемости (hook.for_theme)
-        pick = pick_score(PlanMaterials(self._dj._scores, ids, log), ids, query, seed=seed, references=refs)
+        pick = pick_score(PlanMaterials(self._dj._scores, ids, log), ids, query, seed=seed, references=refs,
+                          lead=lead)
         found = f"{pick.melody_id} «{pick.title}»" if pick.found else f"нет: {pick.reason}"
         log.info(f"🎼 [classic] «{query}»: партитуры {list(ids)} → {found}")
         return pick
 
-    def _stage_classic(self, text: str) -> Dict[str, Any]:
+    def _stage_classic(self, text: str, lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
         """Мелодия по названию: песня v2 (темп и тональность — из RTTTL), один проход формы — собрана, не запущена.
         Произведение есть в индексе партитур — песня из материала (:meth:`_score_song`, ADR-0154 PR-7B), иначе
         RTTTL.
@@ -560,9 +606,9 @@ class RequestMusicTool(MCPTool):
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         seed = self._seed()
         try:
-            pick = self._score_song(query, seed)
+            pick = self._score_song(query, seed, lead)
             if not pick.found:
-                pick = self._classic(query, seed=seed)
+                pick = self._classic(query, seed=seed, **({"lead": lead} if lead else {}))
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"classic:{query}", "compose_error", f"{type(exc).__name__}: {exc}")
         if not pick.found:
@@ -571,6 +617,7 @@ class RequestMusicTool(MCPTool):
                 "melody_id": pick.melody_id, "bpm": pick.bpm, "key": pick.key}
 
 
-__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm", "DjSetTool",
-           "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed", "library_melodies", "music_busy", "not_found",
-           "set_style", "theme_finder", "theme_links", "tool_result"]
+__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
+           "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
+           "lead_for", "library_melodies", "music_busy", "not_found", "set_refusal", "set_style", "theme_finder",
+           "theme_links", "tool_result"]

@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from rob_box_music import knowledge as kn
 from rob_box_music.arrange.song import SongMaterial, score_song, song_track
+from rob_box_music.instruments import LeadChoice
 from rob_box_music.material import ScoreMaterial
 from rob_box_music.render.program import Program
 from rob_box_music.render.renardo import render
@@ -70,19 +71,25 @@ def song_material(record: Dict[str, Any], title: str) -> SongMaterial:
     )
 
 
-def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A") -> ClassicPick:
+def _lead_kw(lead: Optional[LeadChoice]) -> Dict[str, Any]:
+    """Лид инструмента заказа (ADR-0157 §2.4) для ``song_track``/``score_song``; без инструмента — пусто."""
+    return {"lead_synth": lead.synth, "lead_shift": lead.octave_shift} if lead else {}
+
+
+def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A",
+                 lead: Optional[LeadChoice] = None) -> ClassicPick:
     """Найти мелодию по словам человека и отрендерить песню; ``ValueError`` — материал не лёг в модель."""
     record, reason = find_record(library, query)
     if record is None:
         return ClassicPick(query, False, reason)
     title = human_track_title(library, record)
-    track = song_track(song_material(record, title), seed=seed, deck=deck)
+    track = song_track(song_material(record, title), seed=seed, deck=deck, **_lead_kw(lead))
     return ClassicPick(query, True, melody_id=track.hook.source, title=title, program=render(track, deck),
                        bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}")
 
 
 def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query: str, *, seed: int,
-               deck: str = "A", references: Sequence[str] = ()) -> ClassicPick:
+               deck: str = "A", references: Sequence[str] = (), lead: Optional[LeadChoice] = None) -> ClassicPick:
     """Песня из первого материала ``ids`` (порядок поиска), из которого она складывается (``song.score_song``);
     ни одного — ``found=False`` с причинами по каждому (размер, нет аккордов, нет JSON, нет мотива RTTTL-эталона
     ``references``) — заказ идёт в RTTTL."""
@@ -90,7 +97,7 @@ def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query
     for mid in ids:
         try:
             material = materials[mid]
-            track = score_song(material, seed=seed, deck=deck, references=references)
+            track = score_song(material, seed=seed, deck=deck, references=references, **_lead_kw(lead))
         except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
             reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
             continue
@@ -103,10 +110,10 @@ def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicP
     """``pick(query, seed=…)`` над библиотекой, которая открывается при первом заказе."""
     box: Dict[str, Any] = {}
 
-    def pick(query: str, *, seed: int, deck: str = "A") -> ClassicPick:
+    def pick(query: str, *, seed: int, deck: str = "A", lead: Optional[LeadChoice] = None) -> ClassicPick:
         if "lib" not in box:
             box["lib"] = library_factory()
-        return pick_classic(box["lib"], query, seed=seed, deck=deck)
+        return pick_classic(box["lib"], query, seed=seed, deck=deck, lead=lead)
 
     return pick
 

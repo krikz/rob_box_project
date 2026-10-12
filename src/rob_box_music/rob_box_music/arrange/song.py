@@ -25,6 +25,7 @@ from ..model import (
     BEATS_PER_BAR, STEPS_PER_BAR, Form, Harmony, HistoryKey, Hook, Key, Part, PitchEvent, Section, Track, Transition,
     validate,
 )
+from ..instruments import shifted
 from . import harmony, hook as hooks, mix, pad, rhythm
 
 #: Песня не стыкуется в DJ-сете; переход — только чтобы трек прошёл валидатор модели.
@@ -114,8 +115,22 @@ def _form(theme_bars: int, roles: frozenset) -> Form:
                       for name, energy, sec in plan), kind=kn.FORM_SONG)
 
 
-def song_track(material: SongMaterial, *, seed: int, deck: str = "A") -> Track:
-    """Трек-песня по материалу ``harmonize``; ``ValueError``/``TrackError`` — материал не ложится в модель."""
+def _voiced_lead(part: Optional[Part], synth: Optional[str], shift: int) -> Optional[Part]:
+    """Лид инструмента заказа (ADR-0157 §2.4): синт таблицы ``INSTRUMENTS`` и сдвиг октавы, если лид остаётся в
+    коридоре песни (``instruments.shifted``); без инструмента — как был."""
+    if part is None or not (synth or shift):
+        return part
+    pitches = [e.midi for e in part.pitches or ()]
+    step = shifted(pitches, shift, kn.SONG_REGISTERS["lead"])
+    return replace(part, synth_or_sample=synth or part.synth_or_sample,
+                   pitches=tuple(replace(e, midi=e.midi + step) for e in part.pitches or ()),
+                   register=(part.register[0] + step, part.register[1] + step))
+
+
+def song_track(material: SongMaterial, *, seed: int, deck: str = "A", lead_synth: Optional[str] = None,
+               lead_shift: int = 0) -> Track:
+    """Трек-песня по материалу ``harmonize``; ``ValueError``/``TrackError`` — материал не ложится в модель.
+    ``lead_synth``/``lead_shift`` — лид инструмента заказа (:func:`_voiced_lead`)."""
     beats = material.beats
     theme_bars = int(round(beats / BEATS_PER_BAR))
     for name, line in (("bass", material.bass), ("pad", material.pad)):
@@ -126,7 +141,7 @@ def song_track(material: SongMaterial, *, seed: int, deck: str = "A") -> Track:
     synths = {role: random.Random(f"song:{seed}:{role}").choice(kn.SONG_TIMBRES[role]) for role in kn.TONAL_ROLES}
     drums = _drums(material.drums, material.hats)
     form = _form(theme_bars, frozenset(drums) | set(kn.TONAL_ROLES))
-    tonal = {"lead": _tonal("lead", synths["lead"], material.lead, form, beats),
+    tonal = {"lead": _voiced_lead(_tonal("lead", synths["lead"], material.lead, form, beats), lead_synth, lead_shift),
              "bass": _tonal("bass", synths["bass"], material.bass, form, beats),
              "pad": _tonal("pad", synths["pad"], material.pad, form, beats, material.pad_sus)}
     # песня без «качания» и без клубного LPF-свипа: mix_parts по форме песни (PR-7)
@@ -266,7 +281,8 @@ def from_bar(material: ScoreMaterial, bar: int) -> ScoreMaterial:
                                   for s in material.sections if s.bar >= bar))
 
 
-def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", references: Sequence[str] = ()) -> Track:
+def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", references: Sequence[str] = (),
+               lead_synth: Optional[str] = None, lead_shift: int = 0) -> Track:
     """Песня по материалу партитуры (ADR-0154 PR-7B): мелодия автора один раз (``knowledge.SONG_MAX_BARS``),
     куплеты — :func:`score_verses`, пэд — аккорды автора арпеджио (``pad.arp_events``, порядок ``Style.arp_order``
     стиля песни), бас — голос автора; темп и тональность — материала. Размер не переводится в 4/4, нет аккордов или
@@ -294,6 +310,8 @@ def score_song(material: ScoreMaterial, *, seed: int, deck: str = "A", reference
             pitches = [e.midi for e in notes]
             grid = rhythm.grid(range(STEPS_PER_BAR)) if role == "pad" else rhythm.grid(())
             tonal[role] = Part(role, synths[role], grid, tuple(notes), 0.0, (min(pitches), max(pitches)))
+    if "lead" in tonal:
+        tonal["lead"] = _voiced_lead(tonal["lead"], lead_synth, lead_shift)
     drums = _drums(kn.SONG_SCORE_DRUMS, kn.SONG_SCORE_HATS)
     parts, track_mix = mix.mix_parts(SONG_STYLE, {**drums, **tonal}, form)
     form = replace(form, sections=tuple(replace(s, roles=frozenset(s.roles & set(parts))) for s in form.sections))

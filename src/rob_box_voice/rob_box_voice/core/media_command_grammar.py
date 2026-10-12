@@ -34,6 +34,7 @@ from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
+from rob_box_music.instruments import near, split_instrument
 from rob_box_music.theme import style_marks
 
 from .set_length_words import LENGTH_WORDS, split_set_length
@@ -87,6 +88,8 @@ class MediaCommand:
             Слова стиля в тему не попадают.
         tracks: для ``DJ`` — длина сета, названная человеком («на 3 трека», «три
             десятка», «на полчаса»), ``0`` — не названа (длину решает тул).
+        instrument: для ``PLAY_NAMED``/``REQUEST_MUSIC`` — ключ ``knowledge.INSTRUMENTS`` из «на <инструменте>»
+            (ADR-0157 §3.1) или ``""``. Слово инструмента в ``name`` не попадает.
     """
 
     intent: MediaIntent
@@ -99,6 +102,7 @@ class MediaCommand:
     themed: bool = False
     style: str = ""
     tracks: int = 0
+    instrument: str = ""
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -728,6 +732,40 @@ def _request_music_command(tail: Sequence[str]) -> MediaCommand:
     )
 
 
+def _fixed_verb(words: Sequence[str]) -> List[str]:
+    """Опечатка глагола заказа («сфграй», «свграй» → «сыграй», ADR-0157 §3.1): первое слово после вступления —
+    одна ЗАМЕНА буквы в глаголе закрытого словаря с тем же окончанием: «сыграл» — не «сыграй», «выключи» (лишняя
+    буква) — не «включи»."""
+    out = list(words)
+    i = next((k for k, w in enumerate(out) if w not in _PLAY_NAMED_LEAD_IN), len(out))
+    if i < len(out) and out[i] not in _PLAY_NAMED_VERBS:
+        word = out[i]
+        verb = near(word, [v for v in _PLAY_NAMED_VERBS if len(v) == len(word) and v[-2:] == word[-2:]])
+        out[i] = verb or word
+    return out
+
+
+def instrument_in(text: str) -> str:
+    """Ключ ``knowledge.INSTRUMENTS`` из «на <инструменте>» в реплике (с опечатками STT) или ``""``."""
+    return split_instrument(_words(extract_user_utterance(text)))[0]
+
+
+def _instrument_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«сыграй Баха на балалайке» → ``PLAY_NAMED(name="баха", instrument="balalaika")``; «сыграй (что-нибудь) на
+    арфе» → ``REQUEST_MUSIC`` с инструментом (ADR-0157 §3.1): слово инструмента — слот, не название, поэтому поиск
+    по названию не промахивается на нём. Нет «на <инструменте>» или это не заказ — ``None``."""
+    instrument, rest = split_instrument(words)
+    body = _strip_lead_in(rest)
+    if not instrument or not body or body[0] not in _PLAY_NAMED_VERBS:
+        return None
+    if all(w in _GENERIC_WORDS or w in _PLAY_NAMED_FILLER for w in body[1:]):
+        return MediaCommand(intent=MediaIntent.REQUEST_MUSIC, closed=True, instrument=instrument)
+    command = _play_named_command(rest)
+    if command.intent is not MediaIntent.PLAY_NAMED:
+        return None
+    return replace(command, instrument=instrument)
+
+
 #: Слова при названии стиля вместо «диджей-сета»: «включи рейв-сет», «поставь
 #: эйсид музыку» (ADR-0153 S1).
 _STYLE_SET_FILLER: FrozenSet[str] = _PLAY_NAMED_FILLER | frozenset({
@@ -840,6 +878,26 @@ SET_REQUEST_WORDS: FrozenSet[str] = _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LEN
 })
 
 
+#: Режим «сет» (ADR-0157 §2.1): слово сета, диджея или вечеринки. Основы — без регексов (мораторий #3132).
+_SET_MODE_STEMS: Tuple[str, ...] = ("дидж", "вечеринк")
+#: Отказ от сета в той же реплике: «какой нахуй сэт», «без сета», «не сет».
+_SET_NEGATION: FrozenSet[str] = frozenset({
+    "не", "без", "никакой", "никакого", "никаких", "нахуй", "нафиг", "нахрен", "нах",
+})
+
+
+def asks_for_set(text: str) -> bool:
+    """Человек просит сет: слово сета/диджея/вечеринки без отрицания перед ним или явный стиль («включи рейв»).
+    Иначе заказ — одна пьеса (``mode=piece``, ADR-0157 §2.1): ``dj_set(start)`` по такой реплике отказывает
+    (``tools_v2.NOT_A_SET_REQUEST``)."""
+    words = _theme_words(extract_user_utterance(text))
+    for i, word in enumerate(words):
+        named = word in _SET_WORDS or word in _SET_NOUNS or word.startswith(_SET_MODE_STEMS)
+        if named and not _SET_NEGATION.intersection(words[max(0, i - 2):i]):
+            return True
+    return bool(_style_words(words)[0])
+
+
 def is_spoken_theme_set(text: str) -> bool:
     """Реплика — заказ сета и ничего больше: ровно одна просьба, и это «<глагол> сет» («замути сэт», «включи мне
     сет»); остальные слова — тема (и персона «ты диджей X»). Вопрос, отрицание, ссылка на контекст, громкость/стоп,
@@ -943,10 +1001,10 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     now = _now_playing_command(words)
     if now is not None:
         return now
-    theme_words = _theme_words(text)  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
+    theme_words = _fixed_verb(_theme_words(text))  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
     return (_style_set_command(theme_words) or _named_set_command(theme_words) or _spoken_set_command(text)
-            or _play_named_command(theme_words))
+            or _instrument_command(theme_words) or _play_named_command(theme_words))
 
 
 __all__ = [
@@ -957,9 +1015,11 @@ __all__ = [
     "MediaIntent",
     "NO_COMMAND",
     "SET_REQUEST_WORDS",
+    "asks_for_set",
     "dj_persona_span",
     "extract_dj_persona",
     "extract_user_utterance",
+    "instrument_in",
     "is_dj_request",
     "is_music_stop_command",
     "is_spoken_theme_set",
