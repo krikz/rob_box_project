@@ -81,7 +81,8 @@ def session_text(question: ChoiceQuestion) -> str:
 
 def plays_note(question: ChoiceQuestion) -> str:
     """Хвост строки shadow: ``id=сыграно/штраф`` для сыгранных кандидатов вопроса (что видела модель)."""
-    seen = [f"{o.id}={o.plays.count}/−{penalty(o.features):g}" for o in question.options if o.plays and o.plays.count]
+    seen = [f"{o.id}={o.plays.count}/" + (f"-{penalty(o.features):g}" if penalty(o.features) else "0")
+            for o in question.options if o.plays and o.plays.count]
     return f" plays=[{' '.join(seen)}]" if seen else " plays=[]"
 
 

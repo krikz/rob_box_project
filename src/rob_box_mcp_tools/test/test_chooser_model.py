@@ -254,7 +254,8 @@ def test_jev_adapter_puts_play_counters_penalty_and_session_summary_into_criteri
 def test_shadow_line_carries_the_counters_the_model_saw():
     log = Log()
     shadow_model(lambda request: httpx.Response(200, json=jev_answer("fugue", 0.9, "toccata")), log).choose(PLAYED)
-    assert log.lines[0][1].endswith("plays=[toccata=2/−2]")
+    assert log.lines[0][1].endswith("plays=[toccata=2/-2]")
+    assert cm.plays_note(ChoiceQuestion("x", (Option("a", {}, "", Plays(1, 5)),))) == " plays=[a=1/0]"
 
 
 def test_plural_forms():
