@@ -76,11 +76,11 @@ def test_jev_adapter_sends_candidates_with_descriptions_and_returns_choice():
     assert choice == Choice("fugue", 0.77, "jev")
     assert seen["url"] == "https://api.test/v1/systemone" and seen["auth"] == f"Bearer {SECRET}"
     question = seen["body"]["questions"][cm.QUESTION_ID]
-    assert question["type"] == "choice" and "токката баха" in question["instructions"]
+    assert question["type"] == "choice" and "Выбери один id" in question["instructions"]
     assert set(question["criteria"]) == {"toccata", "fugue"}
-    assert "Toccata" in question["criteria"]["toccata"] and "composer_match=1" in question["criteria"]["toccata"]
-    assert "recent=0.1" in question["criteria"]["fugue"]
-    assert seen["body"]["state"] == {"composer": [["bach"]], "recent": ["fugue"]}
+    assert "Toccata" in question["criteria"]["toccata"] and "композитор +2" in question["criteria"]["toccata"]
+    assert "повтор −0.2" in question["criteria"]["fugue"]
+    assert seen["body"]["state"] == "Заказ: «токката баха». За сессию сыграно: ничего"
 
 
 def test_choice_outside_candidates_is_refused_and_chooser_answers_itself():
@@ -244,11 +244,13 @@ def test_jev_adapter_puts_play_counters_penalty_and_session_summary_into_criteri
     cm.ModelChooser(jev(handler)).choose(PLAYED)
     body = seen["body"]
     criteria = body["questions"][cm.QUESTION_ID]["criteria"]
-    assert "уже играли 2 раза, последний раз 3 мин назад; штраф −2" in criteria["toccata"]
-    assert "recent=" not in criteria["toccata"] and criteria["fugue"].endswith("ещё не играли")
+    assert "уже играли 2 раза, последний раз 3 мин назад" in criteria["toccata"]
+    assert "очки кода: название +3, повтор −2; итого 1;" in criteria["toccata"]
+    assert "recent=" not in criteria["toccata"]
+    assert "очки кода: название +3; итого 3; ещё не играли" in criteria["fugue"]
     assert "играли" not in criteria["minuet"]  # история не подключена — про повторы не говорим
-    assert body["state"] == {"recent": ["toccata"], "played": "за сессию сыграно: партитура «Toccata» Bach — 2 раза"}
-    assert "не повторяй сыгранное" in body["questions"][cm.QUESTION_ID]["instructions"]
+    assert body["state"] == "Заказ: «баха». За сессию сыграно: партитура «Toccata» Bach ×2"
+    assert body["questions"][cm.QUESTION_ID]["instructions"] == cm.INSTRUCTIONS
 
 
 def test_shadow_line_carries_the_counters_the_model_saw():
@@ -261,3 +263,47 @@ def test_shadow_line_carries_the_counters_the_model_saw():
 def test_plural_forms():
     assert [cm._times(n) for n in (1, 2, 5, 11, 12, 21, 22)] == ["1 раз", "2 раза", "5 раз", "11 раз", "12 раз",
                                                                  "21 раз", "22 раза"]
+
+
+def test_instructions_are_the_measured_v1_prompt_with_weights_from_the_code():
+    assert cm.INSTRUCTIONS == (
+        "Выбери, что сыграть роботу. У кандидатов - очки кода в одной шкале: совпадение названия +3, композитора +2, "
+        "штраф за недавний повтор (до −2). Обычно лучший - с наибольшим итогом; отклоняйся, только если явно видишь, "
+        "что другой кандидат лучше подходит к заказу. Выбери один id.")
+
+
+def test_played_but_outside_the_penalty_window_says_so_instead_of_contradicting():
+    option = Option("a", {"title_match": 1.0, "composer_match": 1.0, "fit": 1.0, "rating": 0.83}, "«A» Bach",
+                    Plays(4, 90))
+    text = cm.describe(option)
+    assert "играли 4 раза за сутки, но не среди последних 3 исполнений - штрафа нет" in text
+    assert "очки кода: название +3, композитор +2, подходит +1, рейтинг +0.415; итого 6.415" in text
+
+
+def test_full_request_to_jev_for_bach_when_toccata_was_played_twice(capsys):
+    """Полный запрос к Jev (state + instructions + criteria) - то, что уходит по проводу."""
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=jev_answer("brandenb", 0.5, other="toccata"))
+
+    question = ChoiceQuestion(
+        "баха",
+        (Option("toccata", {"composer_match": 1.0, "fit": 0.9, "recent": 1.0, "rating": 0.83},
+                "score «Toccata and Fugue» Bach",
+                Plays(2, 3)),
+         Option("brandenb", {"composer_match": 1.0, "fit": 0.8, "rating": 0.7}, "score «Brandenburg Concerto» Bach",
+                Plays(0, None)),
+         Option("jesujoyo", {"composer_match": 1.0, "fit": 0.7, "rating": 0.6}, "rtttl «Jesu Joy» Bach",
+                Plays(0, None))),
+        {"composer": [["bach"]], "recent": ["toccata"]})
+    cm.ModelChooser(jev(handler)).choose(question)
+    body = seen["body"]
+    print(json.dumps(body, ensure_ascii=False, indent=1))
+    crit = body["questions"][cm.QUESTION_ID]["criteria"]
+    assert crit["toccata"] == ("score «Toccata and Fugue» Bach; очки кода: композитор +2, подходит +0.9, "
+                               "рейтинг +0.415, повтор −2; итого 1.315; уже играли 2 раза, последний раз 3 мин назад")
+    assert crit["brandenb"] == ("score «Brandenburg Concerto» Bach; очки кода: композитор +2, подходит +0.8, "
+                                "рейтинг +0.35; итого 3.15; ещё не играли")
+    assert body["state"] == "Заказ: «баха». За сессию сыграно: score «Toccata and Fugue» Bach ×2"

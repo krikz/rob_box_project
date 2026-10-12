@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from .knowledge import (CHOOSER_CLEAR_GAP, CHOOSER_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS,
                         PLAY_COUNT_WINDOW_SEC)
@@ -98,9 +98,14 @@ def penalty(features: Mapping[str, float]) -> float:
     return -CHOOSER_WEIGHTS["recent"] * float(features.get("recent", 0.0))
 
 
+def points(features: Mapping[str, float]) -> Dict[str, float]:
+    """Вклад каждого признака в очках (``вес·признак``, ключи ``CHOOSER_WEIGHTS``); штраф за повтор - отрицательный."""
+    return {name: w * float(features.get(name, 0.0)) for name, w in CHOOSER_WEIGHTS.items()}
+
+
 def score(features: Mapping[str, float]) -> float:
-    """Взвешенная сумма признаков (§3.3)."""
-    return sum(w * float(features.get(name, 0.0)) for name, w in CHOOSER_WEIGHTS.items())
+    """Взвешенная сумма признаков (§3.3) - сумма :func:`points`."""
+    return sum(points(features).values())
 
 
 class DeterministicChooser:
@@ -137,4 +142,4 @@ class DeterministicChooser:
 
 
 __all__ = ["Choice", "ChoiceQuestion", "Chooser", "DETERMINISTIC", "DeterministicChooser", "Option", "Plays", "penalty",
-           "play_stats", "recency", "score"]
+           "play_stats", "points", "recency", "score"]
