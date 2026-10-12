@@ -71,7 +71,10 @@ _ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = ru_phrase_by_query()
 #: должен произносить: номер повтора записи того же трека («… 2») и
 #: авторская ремарка в скобках («(Alton Towers Theme)»). Срезаются с конца
 #: title, по одному хвосту за проход (могут комбинироваться).
-_TRAILING_DUPLICATE_NUM_RE = re.compile(r"\s+\d+$")
+#: Номер повтора записи в конце названия («… King 2»); номер после слова нумерации — часть названия
+#: («Brandenburg Concert No. 3», «Op. 27», «BWV 565», «#5»; прогон 12.10: голос говорил «… No.»).
+_TRAILING_DUPLICATE_NUM_RE = re.compile(r"(?<!\bno\.)(?<!\bno)(?<!\bop\.)(?<!\bop)(?<!\bnr\.)(?<!\bbwv)(?<!\bkv)"
+                                        r"(?<!\bopus)(?<!#)\s+\d+$", re.IGNORECASE)
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)$")
 
 #: Известные мусорные записи архива: под правдоподобным именем/тегами лежит

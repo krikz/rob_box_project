@@ -1,0 +1,89 @@
+# Размеченный набор музыкальных реплик (ADR-0157 §4.1, PR-3 #3560).
+#
+# Каждая строка — реплика человека дословно (как пришла из STT/Telegram, с опечатками) и что код должен из неё
+# выделить: mode (piece | set | stop | theme_switch | none), work (composer / title / key — латиницей, как в каталоге),
+# instrument (ключ knowledge.INSTRUMENTS), style (ключ knowledge.STYLES). top — чем должен быть первый кандидат выбора
+# по каталогу RTTTL: подстроки названия/автора (title_has / artist_has) и чего в нём быть не должно (not_title).
+# needs_shifu: true — разметку по ADR/логам однозначно поставить нельзя, решает товарищ Шифу.
+# context: set_running — реплика имеет смысл только посреди сета (офлайн-грамматикой без состояния не проверяется).
+# known_gap — разметка верна, а код сегодня с ней расходится (известная дыра, тест требует, чтобы расхождение было
+# именно здесь: закрыли дыру — снять метку).
+#
+# Источники: run_0910 — лог voice-assistant 09.10 07:31–07:58 UTC (ADR-0157 §1.1, artifacts_live_check_2026-10-09);
+# s7 — приёмка стилей 08.10 (docs/music/acceptance_styles_2026-10-08.md §1); issue#N — фразы закрытых issue;
+# pr3 — фразы живой проверки этой карточки.
+
+requests:
+  # ── прогон 09.10 (20 реплик подряд) ──
+  - {id: run0910-01, source: run_0910, text: "Сыграй на балалайке", mode: piece, instrument: balalaika}
+  - {id: run0910-02, source: run_0910, text: "сфграй баха на балалайке", mode: piece, instrument: balalaika,
+     work: {composer: bach}, top: {artist_has: bach, not_title: mundian}}
+  - {id: run0910-03, source: run_0910, text: "не еби голову сыграй Баха на балалайке какой нахуй сэт", mode: piece,
+     instrument: balalaika, work: {composer: bach}}
+  - {id: run0910-04, source: run_0910, text: "ну что баля будет Бах на балалйке?", mode: piece, instrument: balalaika,
+     work: {composer: bach}}
+  - {id: run0910-05, source: run_0910, text: "забудь все", mode: none}
+  - {id: run0910-06, source: run_0910, text: "сыграй Баха на Балалайке", mode: piece, instrument: balalaika,
+     work: {composer: bach}, top: {artist_has: bach, not_title: mundian}}
+  - {id: run0910-07, source: run_0910, text: "свграй Баха на арфе", mode: piece, instrument: harp,
+     work: {composer: bach}, top: {artist_has: bach, not_title: mundian}}
+  - {id: run0910-08, source: run_0910, text: "сыграй баха на трамбоне", mode: piece, instrument: trombone,
+     work: {composer: bach}, top: {artist_has: bach, not_title: mundian}}
+  - {id: run0910-09, source: run_0910, text: "я попросил простосыграть баха на инструменте трамбон!!!", mode: piece,
+     instrument: trombone, work: {composer: bach}}
+  - {id: run0910-10, source: run_0910, text: "блядь стопи диджей", mode: stop,
+     known_gap: "грамматика не закрывает «стопи» после мата — стоп решила LLM (09.10 — сработал)"}
+  - {id: run0910-11, source: run_0910, text: "Сыграй баха На трамбоне", mode: piece, instrument: trombone,
+     work: {composer: bach}, top: {artist_has: bach, not_title: mundian}}
+  - {id: run0910-12, source: run_0910, mode: piece, work: {composer: bach}, needs_shifu: true,
+     text: "утебя что дугого нет произведения баха? почему ты всегда одно и тоже ставишь?"}
+  - {id: run0910-13, source: run_0910, text: "Сыграй Токкато на кселофоне", mode: piece, instrument: xylophone,
+     work: {title: toccata}, top: {title_has: toccata}}
+  - {id: run0910-14, source: run_0910, text: "Сыграй Токкато на кселофоне", mode: piece, instrument: xylophone,
+     work: {title: toccata}, top: {title_has: toccata}}
+  - {id: run0910-15, source: run_0910, text: "забудь все", mode: none}
+  - {id: run0910-16, source: run_0910, text: "Сыграй Токката ре минор на кселофоне", mode: piece, instrument: xylophone,
+     work: {title: toccata, key: D minor}, top: {title_has: toccata, not_title: minority}}
+  - {id: run0910-17, source: run_0910, text: "Сыграй Токката ре минор", mode: piece,
+     work: {title: toccata, key: D minor}, top: {title_has: toccata, not_title: minority}}
+  - {id: run0910-18, source: run_0910, text: "ебать ты залупа", mode: none}
+  - {id: run0910-19, source: run_0910, text: "Ставь диджей сэт  Токката ре минор", mode: set}
+  - {id: run0910-20, source: run_0910, text: "Ставь синтвейв сэт Токката ре минор", mode: set, style: synthwave,
+     known_gap: "«ставь <стиль> сэт <тема>» без «на тему» грамматика не закрывает — стиль выбрала LLM (09.10 — верно)"}
+
+  # ── приёмка стилей S7, 08.10 (10 сетов, роутер закрыл все кодом) ──
+  - {id: s7-club, source: s7, text: "Робот, включи клубный сет на тему космос", mode: set, style: club}
+  - {id: s7-rave, source: s7, text: "Робот, включи рейв сет на тему в пещере горного короля", mode: set, style: rave}
+  - {id: s7-synthwave, source: s7, text: "Робот, включи синтвейв сет на тему Моцарт", mode: set, style: synthwave}
+  - {id: s7-chiptune, source: s7, text: "Робот, включи восьмибитный сет на тему в пещере горного короля", mode: set,
+     style: chiptune}
+  - {id: s7-breaks, source: s7, text: "Робот, включи брейкбит сет на тему космос", mode: set, style: breaks}
+  - {id: s7-dnb, source: s7, text: "Робот, включи драм-н-бейс сет на тему Моцарт", mode: set, style: dnb}
+  - {id: s7-lofi, source: s7, text: "Робот, включи лоуфай сет на тему космос", mode: set, style: lofi}
+  - {id: s7-rock, source: s7, text: "Робот, включи рок сет на тему в пещере горного короля", mode: set, style: rock}
+  - {id: s7-grunge, source: s7, text: "Робот, включи гранж сет на тему космос", mode: set, style: rock}
+  - {id: s7-jazz, source: s7, text: "Робот, включи джаз сет на тему Моцарт", mode: set, style: jazz}
+
+  # ── закрытые issue ──
+  - {id: issue3348, source: "issue#3348", text: "поставь калинку", mode: piece, work: {title: kalinka},
+     top: {title_has: kalinka}}
+  - {id: issue3264-polka, source: "issue#3264", text: "поставь польку", mode: piece, work: {title: polka},
+     needs_shifu: true}
+  - {id: issue3264-jingle, source: "issue#3264", text: "поставь джингл белс", mode: piece,
+     work: {title: jingle bells}, top: {title_has: jingle}}
+  - {id: issue3455-set, source: "issue#3455", text: "сыграй интерстеллар сэт", mode: set}
+  - {id: issue3455-theme, source: "issue#3455", text: "включи диджей сет на тему интерстеллар", mode: set}
+  - {id: issue3410, source: "issue#3410", text: "давай тему терминатора", mode: theme_switch, context: set_running}
+  - {id: issue3176-elise, source: "issue#3176", text: "Робот поставь к Элизе", mode: piece,
+     work: {title: fur elise}, top: {title_has: elise}}
+  - {id: issue3176-dj, source: "issue#3176", text: "Робот ты диджей Снупдог", mode: set}
+
+  # ── живая проверка PR-3 ──
+  - {id: pr3-toccata, source: pr3, text: "Робот, сыграй Токкату ре минор", mode: piece,
+     work: {title: toccata, key: D minor}, top: {title_has: toccata, not_title: minority}}
+  - {id: pr3-bach, source: pr3, text: "Робот, сыграй Баха", mode: piece, work: {composer: bach},
+     top: {artist_has: bach, not_title: mundian}}
+  - {id: pr3-mozart, source: pr3, text: "Робот, сыграй что-нибудь Моцарта", mode: piece, work: {composer: mozart},
+     top: {artist_has: mozart}}
+  - {id: pr3-beethoven, source: pr3, text: "Робот, сыграй Бетховена на пианино", mode: piece, instrument: piano,
+     work: {composer: beethoven}, top: {has: beethoven}}

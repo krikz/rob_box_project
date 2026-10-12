@@ -2902,6 +2902,21 @@ class TestLookupMelodyTool:
         assert result.success is False
         assert "не знаешь точных нот" in result.error
 
+    def test_key_words_are_a_slot_so_the_router_plays_toccata_in_d_minor_by_code(self, mock_node, tmp_path):
+        """ADR-0157 PR-3, #3491: «Токкату ре минор» искалась целиком → «Minority» (Green Day), «токкату» — вне
+        поиска (``ignored``) → роутер отдавал заказ LLM (6–13 с). Тональность — слот: запись — Токката Баха,
+        сверка полная, роутер (``named_play.melody_hit``) играет кодом."""
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+        from rob_box_voice.core.named_play import melody_hit
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "key_slot.db"))
+        result = LookupMelodyTool(mock_node, Mock(), Mock(), rtttl_library).execute("токкату ре минор")
+        assert result.success and result.data["key"] == "D minor"
+        record = rtttl_library.get(result.data["name"])
+        assert "toccata" in result.data["title"].lower() and "bach" in str(record.get("artist")).lower()
+        hit, reason = melody_hit(result.data)
+        assert hit is not None, reason
+
     def test_variants_are_tried_in_order(self, mock_node):
         """LLM может дать несколько вариантов названия — пробуем по порядку."""
         library = Mock()

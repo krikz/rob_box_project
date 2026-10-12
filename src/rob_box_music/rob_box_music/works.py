@@ -30,8 +30,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, LICENSE_STOP_LIST, ROOTS,
-                        TAG_WORK_TYPE, THEMES)
+from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, KEY_MODE_STEMS, KEY_NOTE_WORDS,
+                        KEY_SIGN_WORDS, KEY_TITLE_MODES, LICENSE_STOP_LIST, ROOTS, TAG_WORK_TYPE, THEMES,
+                        TITLE_EXACT, TITLE_PARTIAL)
 from .material import ScoreMaterial, license_usable
 from .rtttl import consensus_order
 
@@ -50,6 +51,8 @@ WORKING_TAGS = ("tv", "movie", "game", "classical", "anthem", "christmas", "folk
 FIELD_CONSUMERS: Mapping[str, Tuple[str, ...]] = {
     "work_type": (), "genre": (), "year": (),
     "aliases": ("core/rtttl_library.py:_alias_normalize", "core/rtttl_library.py:ru_alias_for"),
+    # ADR-0157 §3.2 (PR-3): кандидаты произведения совпадают по композитору, а не по слову в названии
+    "composer": ("works.py:WorkRef.rtttl", "engine/score_library.py:ScoreIndex.work_candidates"),
 }
 
 _NORM_RE = re.compile(r"[0-9a-zа-я]")
@@ -770,6 +773,127 @@ def theme_links_report(conn: sqlite3.Connection, days: int, now: datetime) -> st
     return "\n".join(lines)
 
 
+# ── Кандидаты произведения (ADR-0157 §3.2, PR-3): композитор — поле, тональность — слот, слово — целиком ─────────
+#: Откуда материал кандидата: партитура индекса (полная аранжировка) или запись RTTTL (мелодия).
+SCORE, RTTTL = "score", "rtttl"
+
+
+def key_slot(text: str) -> Tuple[str, str]:
+    """``(слова без тональности, "D minor")`` — «токкату ре минор» → ``("токкату", "D minor")``; тональности нет —
+    ``(text, "")``. Слова — из таблиц ``knowledge.KEY_*`` (нота, знак, основа лада): тональность — слот, а не слова
+    поиска («минор» → «minor» находил «Minority», прогон 09.10)."""
+    words = re.findall(r"\w+", text.lower().replace("ё", "е"))
+    for i, word in enumerate(words):
+        if word not in KEY_NOTE_WORDS:
+            continue
+        j = i + 1
+        sign = KEY_SIGN_WORDS.get(words[j], 0) if j < len(words) else 0
+        j += bool(sign)
+        mode = next((m for stem, m in KEY_MODE_STEMS.items() if j < len(words) and words[j].startswith(stem)), "")
+        if mode:
+            return " ".join(words[:i] + words[j + 1:]), f"{ROOTS[(KEY_NOTE_WORDS[word] + sign) % 12]} {mode}"
+    return text, ""
+
+
+def _note_spellings(root: str) -> Tuple[str, ...]:
+    """Написания тоники в названии: «D» → (d,); «A#» → (a#, a sharp, bb, b flat)."""
+    if len(root) == 1:
+        return (root.lower(),)
+    up = ROOTS[(ROOTS.index(root) + 1) % 12].lower()
+    return (root.lower(), f"{root[0].lower()} sharp", f"{up}b", f"{up} flat")
+
+
+def key_in_title(key: str, title: str) -> bool:
+    """В названии названа тональность слота: «D minor» ↔ «Toccata and Fugue in D Minor», «d-moll»."""
+    if not key:
+        return False
+    root, mode = key.split()
+    modes = [w for w, m in KEY_TITLE_MODES.items() if m == mode]
+    pattern = (rf"(?<![a-z0-9])(?:{'|'.join(re.escape(n) for n in _note_spellings(root))})[\s-]*"
+               rf"(?:{'|'.join(modes)})(?![a-z])")
+    return re.search(pattern, str(title or "").lower()) is not None
+
+
+def _has(spellings: Iterable[str], words: frozenset) -> bool:
+    """Слово заказа в поле записи — целым словом (любое написание; написание из нескольких слов — все)."""
+    return any(_words(s) and _words(s) <= words for s in spellings)
+
+
+@dataclass(frozen=True)
+class WorkCandidate:
+    """Кандидат произведения и признаки выбора (§3.3): ``title_match``/``composer_match`` — 1.0 | 0.5 | 0,
+    ``fit`` — материал даёт полную аранжировку (партитура), ``rating`` — рейтинг PDMX 0..1."""
+
+    id: str
+    kind: str
+    title: str
+    composer: str = ""
+    title_match: float = 0.0
+    composer_match: float = 0.0
+    fit: float = 0.0
+    rating: float = 0.0
+
+    def features(self) -> Dict[str, float]:
+        return {"title_match": self.title_match, "composer_match": self.composer_match, "fit": self.fit,
+                "rating": self.rating}
+
+
+@dataclass(frozen=True)
+class WorkWord:
+    """Слово заказа: написания в архиве RTTTL (``alts``) и само слово латиницей (``latin``: транслит, основа) —
+    для названий вне словаря архива (партитуры)."""
+
+    alts: Tuple[str, ...] = ()
+    latin: Tuple[str, ...] = ()
+
+    @property
+    def spellings(self) -> Tuple[str, ...]:
+        return tuple(dict.fromkeys(s for s in (*self.alts, *self.latin) if s))
+
+    def named_in(self, text: Any) -> bool:
+        """Слово (написание архива) стоит в тексте поля целым словом: «bach» в «J.S.Bach», не в «Bachelor»."""
+        return _has(self.alts, _words(text))
+
+
+@dataclass(frozen=True)
+class WorkRef:
+    """Произведение из заказа: слова композитора и слова названия, тональность-слот. Кандидаты по композитору обязаны
+    совпасть с полем «композитор» (``artist`` у RTTTL, ``composer`` у партитуры): «Bach» в названии «Mundian To Bach
+    Ke» (Panjabi MC) — не Бах."""
+
+    composer: Tuple[WorkWord, ...] = ()
+    title: Tuple[WorkWord, ...] = ()
+    key: str = ""
+
+    @property
+    def named(self) -> bool:
+        """Заказ называет произведение, а не только автора."""
+        return bool(self.title)
+
+    def title_match(self, title: str, found: int) -> float:
+        """``found`` — сколько слов названия нашлось: все и тональность (если названа) — точное; иначе — частичное."""
+        if not self.title or not found:
+            return 0.0
+        whole = found >= len(self.title) and (not self.key or key_in_title(self.key, title))
+        return TITLE_EXACT if whole else TITLE_PARTIAL
+
+    def rtttl(self, records: Mapping[str, Mapping[str, Any]]) -> List[WorkCandidate]:
+        """Записи RTTTL, которые поиск уже нашёл по словам заказа, — кандидаты с признаками. Слово названия без
+        написания в архиве (поиск нашёл запись иначе) считается найденным. Композитор назван, а в ``artist`` его
+        нет — запись не кандидат."""
+        out = []
+        for rid, rec in records.items():
+            artist = _words(rec.get("artist"))
+            if self.composer and not all(_has(c.spellings, artist) for c in self.composer):
+                continue
+            hay = _words(rec.get("title")) | _words(rid)
+            found = sum(1 for t in self.title if not t.alts or _has(t.alts, hay))
+            out.append(WorkCandidate(rid, RTTTL, str(rec.get("title") or rid), str(rec.get("artist") or ""),
+                                     self.title_match(str(rec.get("title") or ""), found),
+                                     1.0 if self.composer else 0.0))
+        return out
+
+
 def read_db_records(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT name, title, artist, tags, rtttl FROM rtttl_melodies ORDER BY id").fetchall()
@@ -817,7 +941,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 __all__ = ["alias_pairs", "aliases_of", "build_works", "clean_identity", "concept_queries", "Fact", "FIELDS", "Gate",
-           "gate", "GATE_SHARE", "get_theme_link", "holes", "Identity", "LINK_LEVELS", "link_score_sources",
+           "gate", "GATE_SHARE", "get_theme_link", "holes", "Identity", "key_in_title", "key_slot", "LINK_LEVELS",
+           "link_score_sources", "RTTTL", "SCORE", "WorkCandidate", "WorkRef", "WorkWord",
            "LOOKUP_TTL_DAYS", "match_scores", "norm", "put_theme_link", "report", "ru_phrase_by_query",
            "RULES_VERSION", "score_index_row", "score_links_report", "ScoreIndexRow", "ScoreLink", "SEEDS_FILE",
            "THEME_LINK_SOURCES", "THEME_LINK_STATUSES", "theme_links_report", "theme_phrase", "theme_seeds",

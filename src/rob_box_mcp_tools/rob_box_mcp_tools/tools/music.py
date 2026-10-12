@@ -34,6 +34,8 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
 from ..core import renardo_sanitizer, sample_loops
 from ..engine import renardo_adapter
+from rob_box_music.works import key_slot
+
 from ..engine.search import find
 from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
@@ -2887,6 +2889,9 @@ class LookupMelodyTool(MCPTool):
             # (``match`` — :func:`match_info`, IDF по корпусу, без
             # хардкод-списка стоп-слов). Решение «это та же песня» —
             # у модели, по общему правилу в промпте скилла composer.
+            # ADR-0157 PR-3: тональность («Токкату ре минор») — слот, не слова поиска: «ре минор» находил
+            # «Minority», а «токкату» оставалось вне поиска → роутер отдавал заказ LLM (6–13 с, #3491).
+            name, key = key_slot(name)
             candidate, rec = _resolve_melody_with_candidate(
                 self._rtttl_library, name, variants
             )
@@ -2904,6 +2909,7 @@ class LookupMelodyTool(MCPTool):
                         "rtttl": rec.get("rtttl"),
                         "alternatives": alternatives,
                         "match": match,
+                        "key": key,
                     },
                     message=(
                         f"Нашёл «{shown_title}». Точные ноты в data['rtttl']. "

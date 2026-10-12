@@ -30,9 +30,11 @@ import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.choice import score
 from rob_box_music.material import MaterialError, ScoreMaterial, from_json
 from rob_box_music.rtttl import THEME_HOOKS
 from rob_box_music.set_plan import seeded_plan
+from rob_box_music.works import SCORE, WorkCandidate, WorkRef, WorkWord
 
 from ..core.translit_ru import transliterate_ru
 from .search import (_PREFIX_SLACK, _WHOLE_WORD_MAX, PartQuery, Term, ThemeQuery, round_robin, sound_key,
@@ -44,6 +46,8 @@ ENV = "ROB_BOX_SCORE_LIBRARY"
 DEFAULT_DIR = "/opt/rob_box/scores"
 INDEX_FILE = "score_index.db"
 _COLUMNS = ("material_id", "title", "composer", "genres", "rating", "n_ratings", "file")
+#: Поля словарного индекса: слова названия и слова композитора — раздельно.
+TITLE, COMPOSER = "title", "composer"
 _CYR_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 
 
@@ -70,34 +74,39 @@ class ScoreIndex:
         ranked = sorted(rows, key=lambda r: (-float(r.get("rating") or 0.0), -int(r.get("n_ratings") or 0),
                                              str(r["material_id"])))
         self.ids: Tuple[str, ...] = tuple(str(r["material_id"]) for r in ranked)
+        self._rows = ranked  # название, композитор и рейтинг кандидата произведения (ADR-0157 §3.2)
         self._title_len: List[int] = []
-        self._words: Dict[str, List[int]] = {}
+        # поля раздельно (ADR-0157 §1.2 п.4): у кандидата произведения композитор — поле, а не слово названия
+        self._fields: Dict[str, Dict[str, List[int]]] = {TITLE: {}, COMPOSER: {}}
         self._genres: Dict[str, List[int]] = {}
         memo: Dict[str, str] = {}
         for i, row in enumerate(ranked):
             title = _keys(row.get("title"), memo)
             self._title_len.append(len(title))
-            for key in title | _keys(row.get("composer"), memo):
-                self._words.setdefault(key, []).append(i)
+            for name, keys in ((TITLE, title), (COMPOSER, _keys(row.get("composer"), memo))):
+                for key in keys:
+                    self._fields[name].setdefault(key, []).append(i)
             for genre in str(row.get("genres") or "").lower().split("-"):
                 if genre:
                     self._genres.setdefault(genre, []).append(i)
-        self._sorted_keys = sorted(self._words)
+        self._sorted_keys = {name: sorted(words) for name, words in self._fields.items()}
 
-    def _word(self, key: str, start: str = "", by_start: bool = False) -> Set[int]:
-        """Строки со словом ``key`` (или ``start``); ``by_start`` — и словом, начинающимся с ``start`` (падеж,
-        «интерстеллара»), не длиннее на :data:`search._PREFIX_SLACK` букв."""
-        out = set(self._words.get(key, ())) | set(self._words.get(start, ()) if start else ())
-        if by_start and start:
-            i = bisect.bisect_left(self._sorted_keys, start)
-            while i < len(self._sorted_keys) and self._sorted_keys[i].startswith(start):
-                word = self._sorted_keys[i]
-                if len(word) - len(start) <= _PREFIX_SLACK:
-                    out.update(self._words[word])
+    def _word(self, key: str, start: str = "", by_start: bool = False, fields: Sequence[str] = (TITLE, COMPOSER)
+              ) -> Set[int]:
+        """Строки со словом ``key`` (или ``start``) в полях ``fields``; ``by_start`` — и словом, начинающимся с
+        ``start`` (падеж, «интерстеллара»), не длиннее на :data:`search._PREFIX_SLACK` букв."""
+        out: Set[int] = set()
+        for name in fields:
+            words, keys = self._fields[name], self._sorted_keys[name]
+            out.update(words.get(key, ()), words.get(start, ()) if start else ())
+            i = bisect.bisect_left(keys, start) if by_start and start else len(keys)
+            while i < len(keys) and keys[i].startswith(start):
+                if len(keys[i]) - len(start) <= _PREFIX_SLACK:
+                    out.update(words[keys[i]])
                 i += 1
         return out
 
-    def _phrase(self, text: str) -> Set[int]:
+    def _phrase(self, text: str, fields: Sequence[str] = (TITLE, COMPOSER)) -> Set[int]:
         """Строки, где есть все слова строки поиска; длинное слово (> :data:`search._WHOLE_WORD_MAX`) — и по
         началу, короткое — только целым («bach» ≠ «Bachelor»)."""
         keys = [sound_key(w) for w in title_key(text).split()]
@@ -105,11 +114,39 @@ class ScoreIndex:
             return set()
         rows: Optional[Set[int]] = None
         for key, word in zip(keys, title_key(text).split()):
-            hits = self._word(key, key, len(word) > _WHOLE_WORD_MAX)
+            hits = self._word(key, key, len(word) > _WHOLE_WORD_MAX, fields)
             rows = hits if rows is None else rows & hits
             if not rows:
                 return set()
         return rows or set()
+
+    def _spelled(self, word: WorkWord, field: str) -> Set[int]:
+        """Строки, где в поле ``field`` есть слово заказа (любое написание, целым словом или началом)."""
+        return set().union(*(self._phrase(s, (field,)) for s in word.spellings))
+
+    def composer_role(self, word: WorkWord) -> Optional[bool]:
+        """Слово заказа — имя композитора: в поле «композитор» оно встречается чаще, чем в названиях («bach» —
+        у тысяч партитур Баха, «toccata» — в названиях). Ни там ни там — ``None`` (решает каталог RTTTL)."""
+        composer, title = len(self._spelled(word, COMPOSER)), len(self._spelled(word, TITLE))
+        return composer > title if composer or title else None
+
+    def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES) -> List[WorkCandidate]:
+        """Партитуры произведения (ADR-0157 §3.2): композитор назван — только с ним в поле ``composer``; слова
+        названия — в поле ``title``, целым словом. Названы оба — сначала произведение, затем другие пьесы того же
+        композитора (ближайшее). Лучшие ``limit`` — по признакам выбора (``choice.score``), без сортировки всего."""
+        composer = _all_of([self._spelled(w, COMPOSER) for w in ref.composer])
+        title = _all_of([self._spelled(w, TITLE) for w in ref.title]) or set()
+        rows = composer if composer is not None else title  # композитор назван — только его партитуры
+        match = {i: ref.title_match(str(self._rows[i].get("title") or ""), len(ref.title)) for i in title & rows}
+        best = heapq.nlargest(limit, rows, key=lambda i: (score({"title_match": match.get(i, 0.0),
+                                                                 "rating": self._rating(i)}), -i))
+        return [WorkCandidate(self.ids[i], SCORE, str(self._rows[i].get("title") or ""),
+                              str(self._rows[i].get("composer") or ""), match.get(i, 0.0),
+                              1.0 if ref.composer else 0.0, 1.0, self._rating(i)) for i in best]
+
+    def _rating(self, i: int) -> float:
+        """Рейтинг PDMX строки 0..1 (признак ``rating`` выбора)."""
+        return min(1.0, float(self._rows[i].get("rating") or 0.0) / 5.0)
 
     def _term(self, term: Term) -> Set[int]:
         """Строки с любым написанием слова: строки поиска (семена, алиасы, слова архива) или само слово по звуку."""
@@ -155,6 +192,11 @@ class ScoreIndex:
             best = heapq.nsmallest(limit, rows, key=lambda i: (bool(n_words) and self._title_len[i] != n_words, i))
             lists.append([self.ids[i] for i in best])
         return tuple(round_robin(lists, limit))
+
+
+def _all_of(sets: Sequence[Set[int]]) -> Optional[Set[int]]:
+    """Пересечение (все слова); слов нет — ``None`` (слот пуст, а не «ничего не нашлось»)."""
+    return set.intersection(*sets) if sets else None
 
 
 def _genre_word(word: str) -> bool:
@@ -205,6 +247,14 @@ class ScoreLibrary:
     def search(self, query: Optional[ThemeQuery], limit: int = THEME_HOOKS) -> Tuple[str, ...]:
         """Материалы темы по её строкам поиска (``ThemeHits.query``, одни с поиском мелодий RTTTL)."""
         return self.index().search(query, limit)
+
+    def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES) -> List[WorkCandidate]:
+        """Партитуры-кандидаты произведения (:meth:`ScoreIndex.work_candidates`)."""
+        return self.index().work_candidates(ref, limit)
+
+    def composer_role(self, word: WorkWord) -> Optional[bool]:
+        """Слово заказа — композитор (:meth:`ScoreIndex.composer_role`); индекса нет — ``None``."""
+        return self.index().composer_role(word)
 
     def _read_index(self) -> Tuple[Dict[str, Any], ...]:
         index = self.path / INDEX_FILE
