@@ -11,13 +11,15 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from rob_box_mcp_tools.engine.classic import ClassicPick, Candidate, fresh_first, key_slot
+from rob_box_mcp_tools.engine.classic import ClassicPick
 from rob_box_mcp_tools.engine.search import PartQuery, Term, ThemeHits, ThemeQuery
 from rob_box_mcp_tools.engine.tools_v2 import NOT_FOUND, DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
 from rob_box_music import material as mt
 from rob_box_music.diversity import MusicHistory
+from rob_box_music.choice import recency
 from rob_box_music.model import Key, PitchEvent
+from rob_box_music.works import SCORE, WorkCandidate, key_slot
 from rob_box_voice.core.media_phrases import launch_text, piece_text
 from rob_box_voice.core.music_turn import Launch, ok_text
 
@@ -37,6 +39,14 @@ class Scores:
 
     def search(self, query, limit=8):
         return tuple(self.materials)
+
+    def work_candidates(self, ref, limit=8):
+        """Все материалы — партитуры произведения (как их нашёл бы индекс по словам названия)."""
+        return [WorkCandidate(mid, SCORE, m.title, m.composer, ref.title_match(m.title, len(ref.title)),
+                              1.0 if ref.composer else 0.0, 1.0) for mid, m in self.materials.items()][:limit]
+
+    def composer_role(self, word):
+        return None  # индекс не знает слова — решает artist записей RTTTL
 
     def load(self, ids):
         return {i: self.materials[i] for i in ids if i in self.materials}, []
@@ -87,7 +97,8 @@ def test_toccata_with_eight_refused_scores_plays_the_rtttl_of_the_work():
     rig = _rig()
     asked = []
     scores = Scores({f"pdmx:{n}": _material(f"pdmx:{n}") for n in range(8)})
-    req = _tools(rig, hooks=("toccata", "fugueind"), scores=scores, table=TOCCATA, asked=asked)
+    req = _tools(rig, hits=_hits(["toccata", "fugueind"], "токкату", "toccata"), scores=scores, table=TOCCATA,
+                 asked=asked)
     result = req.execute(intent="melody", text="сыграй токкату ре минор")
     assert result.success, result.error
     data = result.data
@@ -212,10 +223,10 @@ def test_key_words_are_a_slot_not_search_words():
     assert key_slot("до свидания") == ("до свидания", "")
 
 
-def test_fresh_first_puts_the_least_recent_of_the_played_first():
-    c = [Candidate("rtttl", n) for n in "abcd"]
-    assert [x.ref for x in fresh_first(c, ["b", "a"])] == ["c", "d", "a", "b"]
-    assert [x.ref for x in fresh_first(c, ["c", "a", "b", "d"])] == ["d", "b", "a", "c"]
+def test_recency_penalises_the_last_played_most_and_versions_of_it_too():
+    assert [recency(x, ["b", "a"]) for x in "abcd"] == [2 / 3, 1.0, 0.0, 0.0]
+    assert recency("d", ["c", "a", "b", "d"]) == 0.0  # окно — HOOK_FRESH_SETS последних
+    assert recency("a2", ["a"], {"a": "k", "a2": "k"}) == 1.0  # версия сыгранной мелодии — сыграна
 
 
 #: Находки «баха» на роботе 12.10 (theme_search): паразиты «Mundian To Bach Ke» (Panjabi MC) — первыми.

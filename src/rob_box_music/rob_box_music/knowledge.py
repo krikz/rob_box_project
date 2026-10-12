@@ -1326,6 +1326,24 @@ CLASSIC_HISTORY_KIT = "classic_v2"
 KEY_NOTE_WORDS: Mapping[str, int] = {"до": 0, "ре": 2, "ми": 4, "фа": 5, "соль": 7, "ля": 9, "си": 11}
 KEY_SIGN_WORDS: Mapping[str, int] = {"диез": 1, "бемоль": -1}
 KEY_MODE_STEMS: Mapping[str, str] = {"мажор": "major", "минор": "minor"}
+#: Лад в названии партитуры/записи («Toccata and Fugue in D Minor», «d-moll»): слово названия → лад слота.
+KEY_TITLE_MODES: Mapping[str, str] = {"minor": "minor", "moll": "minor", "major": "major", "dur": "major"}
+
+# ── Выбор произведения среди кандидатов (ADR-0157 §2.2, §3.3, PR-3) ──
+#: Веса признаков детерминированного ``choice.DeterministicChooser``: ``score = Σ вес·признак``; ``recent`` — штраф
+#: за недавнее исполнение (1.0 — последнее, убывает к :data:`HOOK_FRESH_SETS`-му).
+CHOOSER_WEIGHTS: Mapping[str, float] = {"title_match": 3.0, "composer_match": 2.0, "fit": 1.0, "recent": -2.0,
+                                        "rating": 0.5}
+#: Разрыв первого и второго кандидата, с которого ответ однозначен: модельный провайдер не зовётся (§3.3).
+CHOOSER_CLEAR_GAP = 1.0
+#: Дедлайн модельного выбора внутри бюджета быстрого старта 2.5 с (#3491); истёк — детерминированный ответ.
+CHOOSER_DEADLINE_MS = 500
+#: Совпадение названия кандидата со словами заказа: все слова (и тональность, если названа) / слова без тональности
+#: или не все / нет.
+TITLE_EXACT, TITLE_PARTIAL = 1.0, 0.5
+#: Партитур-кандидатов произведения на заказ: перебор с проверкой годности ≈ 80 мс на партитуру (прогон 09.10:
+#: 8 шт. за 0.66 с), бюджет старта 2.5 с.
+WORK_SCORE_CANDIDATES = 8
 #: Длина формы клуба — кратна периоду рисунков ударных (16 тактов) и не длиннее потолка: тема растит трек
 #: 48 → 64 → 80 тактов, а не бесконечно (``model.BARS_TOTAL``).
 FORM_BARS_STEP = 16
@@ -2207,7 +2225,9 @@ GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
             "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "CLASSIC_REF_MATCH_MIN",
-            "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "FORM_BARS_STEP", "TRACK_MAX_BARS",
+            "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "KEY_TITLE_MODES",
+            "CHOOSER_WEIGHTS", "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
+            "WORK_SCORE_CANDIDATES", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
 
 
