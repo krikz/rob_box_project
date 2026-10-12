@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,11 +139,26 @@ def _window_notes(plan: Sequence[Placed], c: jd.Claim, role: str):
                 yield p, e
 
 
+def _no_notes(plan, c, role):
+    """Причина «не проверяемо» для нотных проверок: у роли нет нот (ударная/сэмпл/луп — длительность не в нотах модели)."""
+    act = _active(plan, c)
+    if not act:
+        return "в окне нет трека модели"
+    parts = [p.track.parts.get(role) for p in act]
+    if not any(parts):
+        return f"роли {role} нет в модели треков окна"
+    if all(part.pitches is None for part in parts if part):
+        return f"у роли {role} нет нот в модели (ударная/сэмпл/луп): sus сэмпла — длина файла, по модели не проверить"
+    return ""
+
+
 def check_hole(plan, c):
     role = c.args.get("role", "lead")
     act = _active(plan, c)
     if not act:
         return UNVERIFIABLE, "в окне нет ни одного трека модели"
+    if not any(p.track.parts.get(role) for p in act):
+        return UNVERIFIABLE, f"роли {role} нет в модели треков окна"
     spans = [s for p in act for s in role_spans(p, role)]
     mute = silence_s(spans, c.t0, c.t1, HOLE_MIN_BEATS * act[0].spb)
     share = mute / max(c.t1 - c.t0, 1e-9)
@@ -182,7 +198,11 @@ def check_sustain(plan, c):
     role = c.args.get("role")
     if not role:
         return UNVERIFIABLE, "нужна args.role"
-    longest = max((e.dur_beats for _p, e in _window_notes(plan, c, role)), default=0.0)
+    if why := _no_notes(plan, c, role):
+        return UNVERIFIABLE, why
+    longest = max((e.dur_beats for _p, e in _window_notes(plan, c, role)), default=None)
+    if longest is None:
+        return UNVERIFIABLE, f"{role}: в окне нет нот — длительность не из чего считать"
     if role == "pad":
         return REFUTED, f"pad держит аккорд до {longest:g} долей по замыслу (H6 разрешает sus > 2 тактов только pad); sus — доли, не секунды"
     return (CONFIRMED if longest > SUSTAIN_MAX_BEATS else REFUTED), f"{role}: самая длинная нота окна {longest:g} долей (порог H6 {SUSTAIN_MAX_BEATS:g})"
@@ -222,6 +242,8 @@ def check_out_of_key(plan, c):
     role, want = c.args.get("role"), set(c.args.get("midi", ()))
     if not role:
         return UNVERIFIABLE, "нужна args.role"
+    if why := _no_notes(plan, c, role):
+        return UNVERIFIABLE, why
     found, authored, chordal = [], [], []
     for p, e in _window_notes(plan, c, role):
         if want and e.midi not in want:
@@ -281,7 +303,8 @@ PARAM_NOTES = {
 
 
 def check_param(plan, c):
-    param = c.args.get("param")
+    param = re.match(r"[a-z_]+", str(c.args.get("param", "")).strip().lower())  # «tempo=128 vs 121» -> tempo
+    param = param.group(0) if param else None
     if param not in PARAM_NOTES:
         return UNVERIFIABLE, f"параметр {param!r} не в таблице знания"
     test, note = PARAM_NOTES[param]

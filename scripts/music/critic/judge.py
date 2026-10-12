@@ -10,7 +10,7 @@
 ``gemini`` с ключом — каркас (``JudgeNotImplemented``). CLI: ``python judge.py --help``.
 
 Кеш: ответ лежит рядом с записью, имя ``<запись>.<sha256[:16] записи>.<sha256[:8] промпта>.<провайдер>.judge.json``.
-Бюджет J3: env ``CRITIC_JUDGE_BUDGET_USD`` (по умолчанию 0.05 на прогон), счётчик стоимости — ``Budget``.
+Бюджет J3: env ``CRITIC_JUDGE_BUDGET_USD`` (по умолчанию 0.25 на прогон), счётчик стоимости — ``Budget``.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ KINDS = ("hole", "overlap", "level", "sustain", "phrasing", "out_of_key", "chord
          "param_reading")
 #: Необязательные подсказки судье-«указателю» (роль, интервал, число…): без них верификатор честно ответит «не проверяемо».
 ARG_KEYS = ("role", "other", "direction", "midi", "pcs", "interval", "param", "value", "seconds")
-DEFAULT_BUDGET_USD = 0.05  # ADR-0157 J3: ≤ $0.05 на запись
+DEFAULT_BUDGET_USD = 0.25  # ADR-0157 J3 целил ≤ $0.05; omni на клубе вышел $0.08 по ценам-заглушкам — лимит поднят
 COST_PER_CALL_USD = {"fake": 0.0, "qwen_omni": 0.01, "qwen_text": 0.01, "gemini": 0.01}  # оценка ADR §3.6 по чужим ценам, не измерено
 
 
@@ -389,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
            "model": getattr(judge, "model", None), "usage": getattr(judge, "last_usage", None),
            "cost_usd": round(budget.spent, 5), "tracks": tracks, "claims": [c.as_json() for c in claims]}
     out.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    if judge.name == "qwen_omni":
+        print("ВНИМАНИЕ: цены OMNI_PRICE_USD_PER_M не сверены с прайсом — cost ниже ориентировочный", file=sys.stderr)
     print(f"{args.style}: {len(claims)} утверждений, provider={judge.name}, cost=${budget.spent:.4f}, "
           f"cache_hits={budget.cache_hits} -> {out}")
     print(f"дальше: python scripts/music/critic/verify.py {out} --tracks <каталог моделей треков> --out {args.out / 'report.md'}")

@@ -78,7 +78,15 @@ def test_sustain_long_note_only_defect_outside_pad():
     plan = [vf.Placed(make_track(lead=[(72, 16.0, 12.0)]), 0.0)]
     assert one(plan, claim("sustain", 8, 24, role="lead")) == vf.CONFIRMED
     assert one(plan, claim("sustain", 0, 24, role="pad")) == vf.REFUTED  # H6: у pad можно
-    assert one(A, claim("sustain", 8, 24, role="lead")) == vf.REFUTED  # нот нет — висеть нечему
+    assert one(A, claim("sustain", 8, 24, role="lead")) == vf.UNVERIFIABLE  # нот в окне нет — не «0 долей -> опровергнуто»
+
+
+def test_note_checks_on_roles_without_notes_are_unverifiable_not_refuted():
+    # kick — ударная (pitches=None): sus сэмпла/луп не в нотах модели; роли loop в этой модели нет вовсе
+    assert one(A, claim("sustain", 0, 24, role="kick")) == vf.UNVERIFIABLE
+    assert one(A, claim("out_of_key", 0, 24, role="kick", midi=[60])) == vf.UNVERIFIABLE
+    assert one(A, claim("sustain", 0, 24, role="loop")) == vf.UNVERIFIABLE
+    assert one(A, claim("hole", 0, 24, role="loop")) == vf.UNVERIFIABLE
 
 
 def test_phrasing_continuous_sixteenths_vs_rests():
@@ -120,6 +128,9 @@ def test_param_reading_refuted_by_knowledge_table():
     assert one(A, claim("param_reading", 0, 10, param="delay", value=0.1)) == vf.REFUTED  # доли
     assert one(A, claim("param_reading", 0, 10, param="lpf", value=4000)) == vf.UNVERIFIABLE
     assert one(A, claim("param_reading", 0, 10, param="cutoff")) == vf.UNVERIFIABLE
+    # судья пишет параметр вместе со значением: tempo у лупа — родной темп сэмпла (renardo.py/knowledge.py), не BPM трека
+    refuted = vf.verify(A, [claim("param_reading", 0, 10, param="tempo=128 vs 121")])[0]
+    assert refuted.verdict == vf.REFUTED and "родной темп сэмпла" in refuted.reason
 
 
 def test_missing_role_is_unverifiable_not_crash():
