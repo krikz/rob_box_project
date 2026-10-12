@@ -20,6 +20,7 @@ from rob_box_voice.core.media_phrases import (
     dj_started_text,
     honest_launch_reply,
     launch_claim,
+    piece_text,
     play_ok_text,
     request_ok_text,
 )
@@ -33,12 +34,14 @@ LIVE_INPUT = "[TG] Так что там с темой интерстеллар? 
 def test_every_template_carries_a_stem_of_the_table():
     """Шаблон и его основа не расходятся: правка фразы ломает тест, а не проверку."""
     rendered = [dj_started_text("", "космос"), dj_started_text("диджей Вася", ""), request_ok_text(""),
-                play_ok_text("К Элизе")]
+                play_ok_text("К Элизе"), "Токкату ре минор Баха ставлю мелодией."]  # последнее — копия piece_text
     assert [launch_claim(t) for t in rendered] == list(LAUNCH_PHRASE_STEMS)
+    assert launch_claim(piece_text({"title": "Toccata", "source": "rtttl"})) in LAUNCH_PHRASE_STEMS
 
 
 @pytest.mark.parametrize("spoken", [
     LIVE_SPOKEN, "Включаю диджей сет. Тема — космос.", "Ок! Я диджей Вася, включаю сет.", "Ставлю «К Элизе», погнали",
+    "Токкату ре минор Баха ставлю мелодией.",  # прогон 12.10 16:48, tools=[] — копия фразы piece_text (ADR-0157 PR-2)
 ])
 def test_launch_phrase_without_launch_tool_is_replaced(spoken):
     assert honest_launch_reply(spoken, ()) == NOT_LAUNCHED_TEXT
