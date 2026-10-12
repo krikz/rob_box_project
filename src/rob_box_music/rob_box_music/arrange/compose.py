@@ -83,7 +83,8 @@ SOLO_GENERATORS: Mapping[str, Callable[..., Tuple[PitchEvent, ...]]] = {"solo": 
 SOLO_SPAN = 19
 #: Нарезка лупа по ключу ``Style.loop_figure`` (ADR-0153 S3): ``(файл, ГСЧ) -> Part``.
 LOOP_GENERATORS: Mapping[str, Callable[..., Part]] = {"chop": samples.loop_part,
-                                                      "breakbeat_chop": samples.breakbeat_chop}
+                                                      "breakbeat_chop": samples.breakbeat_chop,
+                                                      "texture": samples.texture_part}
 _LOG = logging.getLogger(__name__)
 #: Длина секций с лидом (развитие хука считается от начала каждой).
 SECTION_BARS = 8
@@ -220,10 +221,26 @@ def _lead(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, synth: str) ->
         if "lead" in roles:
             offset = start * BEATS_PER_BAR
             events += [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent)
-                       for e in hooks.develop(motif, name, bars, key)]
+                       for e in _breathe(style, motif, name, bars, hooks.develop(motif, name, bars, key))]
     total = sum(bars for _n, bars, _e, _r in spec) * 16
     grid = rhythm.grid({int(e.beat * 4) for e in events}, total)
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, style.registers["lead"])
+
+
+def _breathe(style: kn.Style, motif: Hook, name: str, bars: int, line: Sequence[PitchEvent]) -> List[PitchEvent]:
+    """Лид с паузами дыхания (``Style.lead_mask``, #3557): ноты, начавшиеся в такте секции с ``.`` маски (по кругу от
+    начала секции), молчат; тема целиком (``knowledge.THEME_SECTION``) звучит без пауз, маска — после неё."""
+    mask = style.lead_mask
+    if not mask:
+        return list(line)
+    theme = motif.theme_bars if motif.theme and kn.section_kind(name) == kn.THEME_SECTION and bars >= motif.theme_bars \
+        else 0
+    out = []
+    for e in line:
+        bar = int(e.beat // BEATS_PER_BAR)
+        if bar < theme or mask[(bar - theme) % len(mask)] != ".":
+            out.append(e)
+    return out
 
 
 def _drum_sources(style: kn.Style, kick: kn.KickSound, roles: Sequence[str],
@@ -267,7 +284,7 @@ def _kick_bar(style: kn.Style, sec: Section, bars_left: int) -> Grid:
 def _clap_bar(style: kn.Style, form: Form, sec: Section, bars_left: int) -> Grid:
     """Такт клэпа/малого: бэкбит в секциях видов ``Style.backbeat_kinds``; в секции с fill-ом перед дропом — ролл
     ``Style.roll_bars`` тактов, в такте fill-а — ``Style.clap_fill``."""
-    bar = rhythm.clap_grid() if kn.section_kind(sec.name) in style.backbeat_kinds else _SILENT
+    bar = rhythm.clap_grid(style.backbeat) if kn.section_kind(sec.name) in style.backbeat_kinds else _SILENT
     if not sec.fill_last_bar:
         return bar
     if bars_left <= style.roll_bars and _before_drop_section(form, sec):
@@ -299,10 +316,15 @@ def _drum_grids(style: kn.Style, form: Form, swing_ms: int, kit: str,
     return grids
 
 
-def _swung(style: kn.Style, parts: Mapping[str, Part], swing_ms: int) -> Dict[str, Part]:
-    """Грув один на роли стиля (ADR-0153 S4): свинг ``Style.swing_steps`` и нотам, и ударам ``Style.swing_roles``."""
-    return {role: rhythm.swing_part(part, swing_ms, style.swing_steps) if role in style.swing_roles else part
-            for role, part in parts.items()}
+def _swung(style: kn.Style, parts: Mapping[str, Part], swing_ms: int, rng: random.Random) -> Dict[str, Part]:
+    """Грув один на роли стиля (ADR-0153 S4): свинг ``Style.swing_steps`` и нотам, и ударам ``Style.swing_roles``;
+    поверх свинга — «живые руки» ролей ``Style.humanize`` (#3557)."""
+    out = {role: rhythm.swing_part(part, swing_ms, style.swing_steps) if role in style.swing_roles else part
+           for role, part in parts.items()}
+    hands = style.humanize
+    if hands is not None:
+        out.update({role: rhythm.humanize(out[role], hands, rng) for role in hands.roles if role in out})
+    return out
 
 
 def _hook_queue(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str], rng: random.Random) -> List[str]:
@@ -727,7 +749,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     progression = _progression(spec, arranged.chords)
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{seed}:{name}")
-            for name in ("kit", "sample", "loop", "fx", "drums", "fills")}
+            for name in ("kit", "sample", "loop", "fx", "drums", "fills", "hands")}
     kit = _kit(style, history, axis["kit"])
     perc = samples.perc_pool(key, history, axis["sample"]) if "sample" in style.layer_sections else ()
     loop = samples.pick(style.loop_roles, key, history, "sample", axis["loop"])
@@ -745,7 +767,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
               "fx": lambda: samples.fx_part(fx, SECTION_BARS)}  # слой без секций стиля в трек не идёт
     composed = {**drums, "bass": bass_part, "pad": pad_part, "lead": arranged.lead,
                 **{role: make() for role, make in layers.items() if role in style.layer_sections}}
-    parts, track_mix = mix.mix_parts(style, _swung(style, composed, swing_ms), form, figure)
+    parts, track_mix = mix.mix_parts(style, _swung(style, composed, swing_ms, axis["hands"]), form, figure)
     prog = harmony.progression_name(arranged.loop)
     chords = sorted((name, tuple((c.degree, c.voicing) for c in cs)) for name, cs in progression.items())
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]

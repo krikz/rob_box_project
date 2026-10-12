@@ -90,6 +90,14 @@ def loop_part(name: str, rng: Optional[random.Random] = None) -> Part:
     return Part("loop", name, rhythm.grid(range(0, length, CHOP_STEPS), length, accents={}), None, _UNLEVELED, (0, 0))
 
 
+def texture_part(name: str, rng: Optional[random.Random] = None) -> Part:
+    """Шумовая подложка (роль ``texture`` каталога, #3557: шипение пластинки lo-fi) всю длину трека: запуск на каждой
+    первой доле, кусок — такт (рендер ``loop`` нарезкой, как :func:`loop_part`: куски файла по порядку по кругу; шум не
+    щёлкает перезапуском на каждой восьмой). Сетка — такт: файл в 3 такта форму 32/48/64 не делит, а куски по кругу
+    идут в рендере списком ``pos`` своей длины. ``name`` — для подписи ``LOOP_GENERATORS``, как и ``rng``."""
+    return Part("loop", name, rhythm.grid((0,), STEPS_PER_BAR, accents={}), None, _UNLEVELED, (0, 0))
+
+
 #: Нарезка брейка (ADR-0153 S3): цикл в тактах (делит все формы 32/48/64), кусок по умолчанию — восьмая (2 шага 16-х),
 #: доля восьмых, заменённых чужим куском брейка, доля восьмых, разбитых на две 16-е «заиканием» (один кусок дважды),
 #: и те же доли в последнем такте цикла (сбивка перед новым циклом). Первая восьмая цикла — всегда начало брейка
@@ -138,4 +146,5 @@ def fx_part(name: str, section_bars: int) -> Part:
 
 __all__ = ["BREAK_CYCLE_BARS", "BREAK_FILL_STUTTER", "BREAK_FILL_SWAP", "BREAK_STUTTER", "BREAK_SWAP", "CHOP_STEPS",
            "DECAY", "FX_ROLES", "HISTORY", "LOOP_ROLES", "POOL_SIZE", "SEQUENCE_STEPS", "TICK_SECONDS",
-           "breakbeat_chop", "fx_part", "loop_part", "perc_part", "perc_pool", "pick", "pool", "usable"]
+           "breakbeat_chop", "fx_part", "loop_part", "perc_part", "perc_pool", "pick", "pool", "texture_part",
+           "usable"]

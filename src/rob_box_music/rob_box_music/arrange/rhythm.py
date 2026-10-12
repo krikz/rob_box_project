@@ -9,6 +9,7 @@ Fill — последний такт секции с ``Section.fill_last_bar`` (
 
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 from typing import Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
@@ -94,8 +95,25 @@ def hats_grid(style: kn.Style, swing_ms: int = 0, kit: str = "offbeat") -> Grid:
     return swing(pattern_grid(style.kits[kit]["hats"]), swing_ms, style.swing_steps)
 
 
-def clap_grid() -> Grid:
-    return grid(BACKBEAT_STEPS, accents={4: 3, 12: 3})
+def clap_grid(pattern: str = "") -> Grid:
+    """Такт малого: рисунок стиля (``Style.backbeat``, ``X``/``x``/``g``) или бэкбит 2/4."""
+    return pattern_grid(pattern) if pattern else grid(BACKBEAT_STEPS, accents={4: 3, 12: 3})
+
+
+def humanize(part: Part, hands: "kn.Humanize", rng: random.Random) -> Part:
+    """«Живые руки» ударной партии (``Style.humanize``, #3557): на цикл ``hands.cycle_bars`` тактов каждому шагу —
+    опоздание 0..``late_ms`` сверх его свинга и с долей ``soften`` акцент на ступень ниже (акцент 3 не трогается); сетка
+    партии растягивается до цикла, если она короче (хэты — такт), и сдвиги повторяются по циклу."""
+    cycle = hands.cycle_bars * STEPS_PER_BAR
+    steps = part.grid.steps
+    if len(steps) < cycle:
+        steps = steps * (cycle // len(steps))
+    late = [rng.randint(0, hands.late_ms) for _ in range(cycle)]
+    soft = [rng.random() < hands.soften for _ in range(cycle)]
+    out = tuple(replace(st, offset_ms=st.offset_ms + late[i % cycle],
+                        accent=st.accent - 1 if soft[i % cycle] and 0 < st.accent < 3 else st.accent)
+                if st.on else st for i, st in enumerate(steps))
+    return replace(part, grid=Grid(out))
 
 
 def clap_fill(bar: Grid) -> Grid:
@@ -148,4 +166,5 @@ def form_bars(sections: Sequence[Section], bar_of: Callable[[Section, int], Grid
 
 __all__ = ["CLAP_FILLS", "tom_fill", "BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_BARS",
            "ROLL_STEPS", "clap_fill", "clap_grid", "clap_roll", "form_bars", "form_grid", "grid", "hats_grid",
-           "kick_fill", "kick_grid", "pattern_grid", "swing", "swing_offset_ms", "swing_part", "swing_pitches"]
+           "humanize", "kick_fill", "kick_grid", "pattern_grid", "swing", "swing_offset_ms", "swing_part",
+           "swing_pitches"]
