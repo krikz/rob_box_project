@@ -100,6 +100,15 @@ def lead_for(*texts: Optional[str]) -> Optional[LeadChoice]:
     return next((lead_choice(key) for key in map(instrument_in, filter(None, texts)) if key), None)
 
 
+def club_theme(text: str) -> str:
+    """Тема одиночного трека: «сыграй (что-нибудь) на арфе» — заказ без названия, слова заказа и инструмента не тема
+    (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1); иначе — слова как есть."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    command = parse_media_command(text)
+    return command.name if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument else text
+
+
 def lead_data(lead: Optional[LeadChoice]) -> Dict[str, Any]:
     """Поля результата об инструменте: по ним голосовая сторона строит фразу (``media_phrases.instrument_text``)."""
     return {"instrument": lead.asked, "instrument_played": lead.played} if lead else {}
@@ -555,7 +564,7 @@ class RequestMusicTool(MCPTool):
     def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
         синт инструмента заказа."""
-        profile = self._dj.theme_profile(text)
+        profile = self._dj.theme_profile(club_theme(text))
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
@@ -609,6 +618,6 @@ class RequestMusicTool(MCPTool):
 
 
 __all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
-           "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "confirmed", "lead_data", "lead_for",
-           "library_melodies", "music_busy", "not_found", "set_refusal", "set_style", "theme_finder", "theme_links",
-           "tool_result"]
+           "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
+           "lead_for", "library_melodies", "music_busy", "not_found", "set_refusal", "set_style", "theme_finder",
+           "theme_links", "tool_result"]

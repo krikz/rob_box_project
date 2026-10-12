@@ -11,14 +11,13 @@ import pytest
 
 from rob_box_mcp_tools.engine import tools_v2
 from rob_box_mcp_tools.engine.classic import ClassicPick
-from rob_box_mcp_tools.engine.tools_v2 import NOT_A_SET_REQUEST, lead_for, set_refusal
+from rob_box_mcp_tools.engine.tools_v2 import NOT_A_SET_REQUEST, club_theme, lead_for, set_refusal
 
 from ._ros_stubs import RosStubs
 from .test_engine_classic import _picker
 from .test_engine_request_music import _tools
 from .test_engine_session import _rig
 
-pytestmark = pytest.mark.unit
 
 _ros = RosStubs()
 with _ros:
@@ -98,3 +97,10 @@ def test_club_order_on_an_instrument_plays_its_synth():
         result = req.execute(intent="track", text="сыграй на арфе", heard_text="Робот, сыграй что-нибудь на арфе")
     assert result.success and result.data["instrument_played"] == "harp"
     assert built[0].parts["lead"].synth_or_sample == "karp"
+    assert result.data["title"].startswith("клубный трек")  # слова заказа и инструмента — не тема трека
+
+
+@pytest.mark.parametrize("text,theme", [("сыграй что-нибудь на арфе", ""), ("Робот, сыграй на пианино", ""),
+                                        ("поставь клубный трек", "поставь клубный трек"), ("космос", "космос")])
+def test_club_theme_drops_the_order_and_instrument_words(text, theme):
+    assert club_theme(text) == theme

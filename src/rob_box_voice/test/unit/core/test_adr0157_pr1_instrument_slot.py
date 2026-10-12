@@ -25,7 +25,6 @@ from rob_box_voice.core.media_phrases import instrument_text, with_instrument
 from rob_box_voice.core.music_turn import MusicTurn
 from rob_box_voice.core.named_play import NamedPlayStatus, outcome_text, run_named_play
 
-pytestmark = pytest.mark.unit
 
 #: §1.1: реплика товарища Шифу → (режим, инструмент). #3 — «какой нахуй сэт» — отказ от сета, не просьба.
 RUN_0910 = [
