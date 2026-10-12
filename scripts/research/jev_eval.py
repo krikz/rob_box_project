@@ -96,7 +96,7 @@ class _MusicFake:
     def __init__(self, kind):
         self.kind, self.calls = kind, 0
 
-    def choose(self, question, *, deadline_ms=500):
+    def choose(self, question, *, deadline_ms=None):
         from rob_box_music.choice import Choice
 
         self.calls += 1
@@ -275,10 +275,14 @@ def main(argv=None):
                         help="файл KEY=VALUE с ключами (JEV_API_KEY, LLM_HARNESS_*); значения не печатаются")
     parser.add_argument("--out", type=Path, help="music + реальный провайдер: записать markdown-отчёт ещё и в файл")
     parser.add_argument("--deadline-ms", type=int, default=None,
-                        help="дедлайн ответа модели, мс (по умолчанию: music 500 = CHOOSER_DEADLINE_MS, иначе 2000)")
+                        help="дедлайн ответа модели, мс (по умолчанию: music = CHOOSER_DEADLINE_MS, иначе 2000)")
     parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args(argv)
-    args.deadline_ms = args.deadline_ms or (500 if args.domain == "music" else 2000)
+    if args.domain == "music":
+        from rob_box_music.knowledge import CHOOSER_DEADLINE_MS
+        args.deadline_ms = args.deadline_ms or CHOOSER_DEADLINE_MS
+    else:
+        args.deadline_ms = args.deadline_ms or 2000
     if args.domain == "music":
         return music_main(args)
     if args.env_file:
