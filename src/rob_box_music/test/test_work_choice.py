@@ -98,3 +98,15 @@ def test_three_bach_records_with_history_a_b_choose_c():
     q = ChoiceQuestion("баха", tuple(_option(x, composer=1, recent=recency(x, recent)) for x in "abc"))
     choice, order = DeterministicChooser().order(q)
     assert choice.id == "c" and order == ["c", "a", "b"]
+
+
+def test_play_stats_counts_versions_as_one_within_the_window_and_penalty_is_the_codes_formula():
+    from rob_box_music.choice import Plays, penalty, play_stats, score
+
+    now = 100000.0
+    played = [("tetris_2", now - 120), ("other", now - 500), ("tetris", now - 3000), ("tetris", now - 90000)]
+    same = {"tetris": "k", "tetris_2": "k", "other": "o"}
+    assert play_stats("tetris", played, now, same) == Plays(2, 2)  # версии — одна мелодия; старше окна не считается
+    assert play_stats("fresh", played, now, same) == Plays(0, None)
+    features = {"title_match": 1.0, "recent": 0.5}
+    assert penalty(features) == 1.0 and score(features) == score({"title_match": 1.0}) - penalty(features)

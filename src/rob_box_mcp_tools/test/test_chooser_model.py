@@ -16,7 +16,7 @@ httpx = pytest.importorskip("httpx")
 from rob_box_harness.decision import SystemOneHttpProvider  # noqa: E402
 from rob_box_harness.decision.chat_choice import ChatChoiceProvider  # noqa: E402
 from rob_box_mcp_tools.engine import chooser_model as cm  # noqa: E402
-from rob_box_music.choice import Choice, ChoiceQuestion, DeterministicChooser, Option  # noqa: E402
+from rob_box_music.choice import Choice, ChoiceQuestion, DeterministicChooser, Option, Plays  # noqa: E402
 
 SECRET = "sk-test-DO-NOT-LOG-0123456789"
 
@@ -224,3 +224,39 @@ def test_request_music_tool_builds_its_chooser_from_env(monkeypatch):
     plain = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
                                       words=lambda w: None, classic=lambda *a, **k: None)
     assert plain._pieces._chooser._model is None
+
+
+PLAYED = ChoiceQuestion(
+    "баха",
+    (Option("toccata", {"title_match": 1.0, "recent": 1.0}, "партитура «Toccata» Bach", Plays(2, 3)),
+     Option("fugue", {"title_match": 1.0}, "партитура «Fugue» Bach", Plays(0, None)),
+     Option("minuet", {"title_match": 1.0}, "RTTTL «Minuet» Bach")),
+    {"recent": ["toccata"]})
+
+
+def test_jev_adapter_puts_play_counters_penalty_and_session_summary_into_criteria_and_state():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=jev_answer("fugue", 0.8, other="toccata"))
+
+    cm.ModelChooser(jev(handler)).choose(PLAYED)
+    body = seen["body"]
+    criteria = body["questions"][cm.QUESTION_ID]["criteria"]
+    assert "уже играли 2 раза, последний раз 3 мин назад; штраф −2" in criteria["toccata"]
+    assert "recent=" not in criteria["toccata"] and criteria["fugue"].endswith("ещё не играли")
+    assert "играли" not in criteria["minuet"]  # история не подключена — про повторы не говорим
+    assert body["state"] == {"recent": ["toccata"], "played": "за сессию сыграно: партитура «Toccata» Bach — 2 раза"}
+    assert "не повторяй сыгранное" in body["questions"][cm.QUESTION_ID]["instructions"]
+
+
+def test_shadow_line_carries_the_counters_the_model_saw():
+    log = Log()
+    shadow_model(lambda request: httpx.Response(200, json=jev_answer("fugue", 0.9, "toccata")), log).choose(PLAYED)
+    assert log.lines[0][1].endswith("plays=[toccata=2/−2]")
+
+
+def test_plural_forms():
+    assert [cm._times(n) for n in (1, 2, 5, 11, 12, 21, 22)] == ["1 раз", "2 раза", "5 раз", "11 раз", "12 раз",
+                                                                 "21 раз", "22 раза"]

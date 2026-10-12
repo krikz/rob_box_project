@@ -31,25 +31,63 @@ from rob_box_harness.decision import (
 )
 from rob_box_harness.decision import ChoiceQuestion as ModelQuestion
 from rob_box_harness.decision.chat_choice import chat_choice_from_env
-from rob_box_music.choice import Choice, ChoiceQuestion, Chooser, DeterministicChooser, Option
+from rob_box_music.choice import Choice, ChoiceQuestion, Chooser, DeterministicChooser, Option, penalty
 from rob_box_music.knowledge import CHOOSER_DEADLINE_MS
 
 _LOG = logging.getLogger(__name__)
 SHADOW_ENV = "MUSIC_CHOOSER_SHADOW"
 PROVIDERS = ("jev", "llm_harness")
 QUESTION_ID = "pick"
-INSTRUCTIONS = ("Какое произведение просит человек? Учитывай название, композитора, тональность и признак «recent» "
-                "(недавно сыгранное повторять не надо). Выбери один id из перечня.")
+INSTRUCTIONS = ("Какое произведение просит человек? Учитывай название, композитора и тональность. У каждого кандидата "
+                "сказано, сколько раз его уже играли и какой за это штраф: не повторяй сыгранное, если есть не "
+                "сыгранные подходящие; чем больше штраф, тем хуже кандидат. Выбери один id из перечня.")
 
 
 class ModelUnavailable(Exception):
     """Модель не дала годный выбор за дедлайн (причина — в тексте); вызывающий отвечает детерминированно."""
 
 
+def _times(count: int) -> str:
+    return f"{count} раз" if count % 100 in range(11, 15) or count % 10 not in (2, 3, 4) else f"{count} раза"
+
+
+def played_text(option: Option) -> str:
+    """Что модели известно о повторах кандидата — человеческим текстом (штраф — тот же, что вычитает код); пусто, если
+    история не подключена."""
+    plays = option.plays
+    if plays is None:
+        return ""
+    if not plays.count:
+        return "ещё не играли"
+    fine = penalty(option.features)
+    return (f"уже играли {_times(plays.count)}, последний раз {plays.last_ago_min} мин назад; "
+            + (f"штраф −{fine:g}" if fine else "штрафа нет"))
+
+
 def describe(option: Option) -> str:
-    """Подпись кандидата для модели: название/композитор и признаки (те же, что считает код)."""
-    features = ", ".join(f"{name}={float(value):g}" for name, value in sorted(option.features.items()))
-    return f"{option.label}; признаки: {features}" if option.label else f"признаки: {features}"
+    """Подпись кандидата для модели: название/композитор, признаки сопоставления с заказом и сыгранное (``recent`` —
+    абстрактное число — заменено текстом со штрафом)."""
+    features = ", ".join(f"{name}={float(value):g}" for name, value in sorted(option.features.items())
+                         if name != "recent" or option.plays is None)
+    parts = [p for p in (option.label, f"признаки: {features}" if features else "", played_text(option)) if p]
+    return "; ".join(parts)
+
+
+def session_text(question: ChoiceQuestion) -> str:
+    """Сводка для ``state``: «за сессию сыграно: …» по кандидатам вопроса; пусто, если ничего."""
+    seen = [f"{o.label or o.id} — {_times(o.plays.count)}" for o in question.options if o.plays and o.plays.count]
+    return "за сессию сыграно: " + "; ".join(seen) if seen else ""
+
+
+def plays_note(question: ChoiceQuestion) -> str:
+    """Хвост строки shadow: ``id=сыграно/штраф`` для сыгранных кандидатов вопроса (что видела модель)."""
+    seen = [f"{o.id}={o.plays.count}/−{penalty(o.features):g}" for o in question.options if o.plays and o.plays.count]
+    return f" plays=[{' '.join(seen)}]" if seen else " plays=[]"
+
+
+def to_model_state(question: ChoiceQuestion) -> dict:
+    summary = session_text(question)
+    return {**question.state, **({"played": summary} if summary else {})}
 
 
 def to_model_question(question: ChoiceQuestion) -> ModelQuestion:
@@ -99,7 +137,7 @@ class ModelChooser:
             self.orchestrator.set_routing(self._routing(deadline_ms))
         ids = question.ids()
         decision = run_sync(self.orchestrator.decide(
-            DecisionClass.QUALITY_CRITICAL, dict(question.state), {QUESTION_ID: asked},
+            DecisionClass.QUALITY_CRITICAL, to_model_state(question), {QUESTION_ID: asked},
             fallback=lambda: {QUESTION_ID: ChoiceAnswer(ids[0], {ids[0]: 1.0}, 0.0)}))
         if decision.fallback_used:
             raise ModelUnavailable(decision.fallback_reason or "fallback")
@@ -127,7 +165,7 @@ class ShadowModel:
             seen = f"ERR({type(exc).__name__}: {exc})"
         ms = (self._clock() - started) * 1000.0
         self._log().info(f"🪞 [chooser-shadow] q={question.text!r} det={det.id} model={seen} "
-                         f"agree={'yes' if seen == det.id else 'no'} ms={ms:.0f}")
+                         f"agree={'yes' if seen == det.id else 'no'} ms={ms:.0f}{plays_note(question)}")
         return det
 
 
@@ -154,4 +192,5 @@ def chooser_from_env(env: Optional[Mapping[str, str]] = None, log: Callable[[], 
 
 
 __all__ = ["ModelChooser", "ModelUnavailable", "PROVIDERS", "SHADOW_ENV", "ShadowModel", "build_provider",
-           "chooser_from_env", "describe", "run_sync", "to_model_question"]
+           "chooser_from_env", "describe", "played_text", "plays_note", "run_sync", "session_text", "to_model_question",
+           "to_model_state"]

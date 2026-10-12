@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -76,19 +77,28 @@ class PieceMemory:
     def __init__(self, store: Any = None, depth: int = kn.HOOK_FRESH_SETS) -> None:
         self._store = store
         self._depth = depth
-        self._local: List[str] = []
+        self._local: List[Tuple[str, float]] = []  # (запись, ts), свежие первыми
 
     def recent(self) -> List[str]:
         """Записи последних исполнений, свежие первыми."""
         if self._store is not None and getattr(self._store, "available", False):
             rows = self._store.recent(self._depth, kit=kn.CLASSIC_HISTORY_KIT)
             return [str(r["melody_name"]) for r in rows if r.get("melody_name")]
-        return self._local[:self._depth]
+        return [name for name, _ts in self._local[:self._depth]]
+
+    def played(self) -> List[Tuple[str, float]]:
+        """``(запись, ts)`` сыгранного за ``PLAY_COUNT_WINDOW_SEC``, свежие первыми — счётчик повторов для модели
+        (тот же источник, что :meth:`recent`)."""
+        if self._store is not None and getattr(self._store, "available", False):
+            rows = self._store.recent(kn.PLAY_HISTORY_LIMIT, within_sec=kn.PLAY_COUNT_WINDOW_SEC,
+                                      kit=kn.CLASSIC_HISTORY_KIT)
+            return [(str(r["melody_name"]), float(r["ts"])) for r in rows if r.get("melody_name") and r.get("ts")]
+        return list(self._local)
 
     def remember(self, row: Mapping[str, Any]) -> None:
         """Песня заиграла (``started``): строку — в историю."""
         if row.get("melody_name"):
-            self._local.insert(0, str(row["melody_name"]))
+            self._local.insert(0, (str(row["melody_name"]), float(row.get("ts") or time.time())))
         if self._store is not None and row:
             self._store.record(**row)
 
