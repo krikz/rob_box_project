@@ -1,0 +1,113 @@
+"""Выбор среди кандидатов, построенных кодом (ADR-0157 §2.2, §3.3; PR-3).
+
+Контракт — как у вопросов спайка #3084 (``rob_box_harness.decision``: ``ChoiceQuestion`` = состояние + закрытый
+перечень вариантов → ответ, ``confidence``, провайдер): :class:`ChoiceQuestion` несёт ``state`` (слоты заказа, что
+играли недавно) и варианты с признаками, :class:`Choice` — ``id`` варианта, уверенность и имя провайдера. Пакет
+чистый (``test_purity``: без сети и без ``httpx``, который тянет ``rob_box_harness.decision``), поэтому здесь —
+тонкий локальный протокол с теми же полями; модельные провайдеры (``llm_harness``/``jev``, PR-7) — адаптер над
+оркестратором спайка, который реализует :class:`Chooser` и подставляется в :class:`DeterministicChooser` без правки
+вызывающего кода.
+
+:class:`DeterministicChooser` — провайдер по умолчанию и всегда запасной: ``score = Σ CHOOSER_WEIGHTS·признак``
+(``knowledge.CHOOSER_WEIGHTS``: 3·название + 2·композитор + 1·годность − 2·недавнее + 0.5·рейтинг); разрыв первого и
+второго не меньше ``CHOOSER_CLEAR_GAP`` — модель не зовётся. Модель отвечает только ``id`` из перечня: ответ вне
+перечня, исключение или пустота — детерминированный ответ (модель не может расширить список кандидатов).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, List, Mapping, Optional, Protocol, Sequence, Tuple
+
+from .knowledge import CHOOSER_CLEAR_GAP, CHOOSER_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS
+
+DETERMINISTIC = "deterministic"
+
+
+@dataclass(frozen=True)
+class Option:
+    """Вариант выбора: ``id`` кандидата, признаки (ключи ``CHOOSER_WEIGHTS``) и подпись для модели/лога."""
+
+    id: str
+    features: Mapping[str, float]
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class ChoiceQuestion:
+    """Вопрос: ``text`` (что выбираем), ``state`` (слоты заказа, недавнее), закрытый перечень ``options``."""
+
+    text: str
+    options: Tuple[Option, ...]
+    state: Mapping[str, Any] = field(default_factory=dict)
+
+    def ids(self) -> Tuple[str, ...]:
+        return tuple(o.id for o in self.options)
+
+
+@dataclass(frozen=True)
+class Choice:
+    """Ответ: ``id`` варианта из перечня, уверенность 0..1, кто ответил."""
+
+    id: str
+    confidence: float
+    provider: str
+
+
+class Chooser(Protocol):
+    def choose(self, question: ChoiceQuestion, *, deadline_ms: int = CHOOSER_DEADLINE_MS) -> Choice:
+        ...
+
+
+def recency(candidate: str, recent: Sequence[str], same: Optional[Mapping[str, Any]] = None,
+            depth: int = HOOK_FRESH_SETS) -> float:
+    """Признак ``recent``: 1.0 — сыграно последним, дальше по убыванию до ``depth``-го, не сыграно — 0. ``same`` —
+    ключ мелодии (версии одной мелодии — одна мелодия: «mundiant_2» после «mundiant»)."""
+    keys = same or {}
+    key = keys.get(candidate)
+    for age, played in enumerate(list(recent)[:depth]):
+        if played == candidate or (key is not None and keys.get(played) == key):
+            return (depth - age) / depth
+    return 0.0
+
+
+def score(features: Mapping[str, float]) -> float:
+    """Взвешенная сумма признаков (§3.3)."""
+    return sum(w * float(features.get(name, 0.0)) for name, w in CHOOSER_WEIGHTS.items())
+
+
+class DeterministicChooser:
+    """Взвешенная сумма признаков; неоднозначный ответ (разрыв < ``CHOOSER_CLEAR_GAP``) отдаётся ``model``, если он
+    подключён (PR-7), иначе — детерминированно."""
+
+    name = DETERMINISTIC
+
+    def __init__(self, model: Optional[Chooser] = None) -> None:
+        self._model = model
+
+    def rank(self, question: ChoiceQuestion) -> List[Tuple[float, Option]]:
+        """Варианты по убыванию оценки; равные — в порядке перечня (кодом построенный ранг каталога)."""
+        return sorted(((round(score(o.features), 6), o) for o in question.options), key=lambda so: -so[0])
+
+    def choose(self, question: ChoiceQuestion, *, deadline_ms: int = CHOOSER_DEADLINE_MS) -> Choice:
+        ranked = self.rank(question)
+        if not ranked:
+            raise ValueError("ChoiceQuestion без вариантов")
+        gap = ranked[0][0] - ranked[1][0] if len(ranked) > 1 else CHOOSER_CLEAR_GAP
+        own = Choice(ranked[0][1].id, min(1.0, 0.5 + gap / (2 * CHOOSER_CLEAR_GAP)), DETERMINISTIC)
+        if gap >= CHOOSER_CLEAR_GAP or self._model is None:
+            return own
+        try:
+            answer = self._model.choose(question, deadline_ms=deadline_ms)
+        except Exception:  # noqa: BLE001 — модель не держит выбор: детерминированный ответ всегда есть
+            return own
+        return answer if answer is not None and answer.id in question.ids() else own
+
+    def order(self, question: ChoiceQuestion) -> Tuple[Choice, List[str]]:
+        """Выбор и очередь перебора: выбранный первым, остальные — по оценке (fail-open: не сложился — следующий)."""
+        choice = self.choose(question)
+        return choice, [choice.id] + [o.id for _s, o in self.rank(question) if o.id != choice.id]
+
+
+__all__ = ["Choice", "ChoiceQuestion", "Chooser", "DETERMINISTIC", "DeterministicChooser", "Option", "recency",
+           "score"]

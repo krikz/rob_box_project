@@ -680,6 +680,16 @@ def test_human_track_title_strips_technical_suffixes(tmp_path):
     assert human_track_title(lib, rec) == "Hall Of The Mountain King"
 
 
+def test_human_track_title_keeps_the_number_of_a_numbered_work(tmp_path):
+    """Прогон 12.10 (PR-2): «Ставлю «Brandenburg Concert No.»» — номер после «No.»/«Op.»/«BWV» — часть названия,
+    не номер повтора записи."""
+    lib = _make_lib(tmp_path)
+    for title in ("Brandenburg Concert No. 3", "Symphony No 5", "Toccata BWV 565", "Sonata Op. 27"):
+        assert human_track_title(lib, {"name": "x_key", "title": title}) == title
+    assert human_track_title(lib, {"name": "x_key", "title": "Brandenburg Concert No. 3 2"}) == (
+        "Brandenburg Concert No. 3")
+
+
 def test_ru_alias_for_is_cached(tmp_path):
     lib = _make_lib(tmp_path)
     first = lib.ru_alias_for("mario")
