@@ -2274,3 +2274,47 @@ EMPTY_TITLES: Tuple[str, ...] = ("", "theme", "unknown", "untitled")
 LICENSE_STOP_LIST: Tuple[str, ...] = ("zimmer", "kondo", "uematsu", "nintendo", "disney", "johnwilliams")
 
 __all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "TAG_WORK_TYPE"]
+
+
+# ── Инструменты заказа (ADR-0157 §2.4, §3.4): «сыграй Баха на балалайке» ─────────────────────────────────────────
+@dataclass(frozen=True)
+class Instrument:
+    """Инструмент из реплики человека → тембр лида.
+
+    ``stems`` — основы слова (падеж — окончание :data:`INSTRUMENT_ENDINGS`), в том числе ошибки STT («трамбон»,
+    «кселофон»); остальные опечатки — расстояние ≤ 1 к форме (``rob_box_music.instruments``). ``synth`` — синт лида из
+    ``SYNTH_PALETTE["lead"]`` или ``None``: пака/синта нет, играет первый сосед той же ``family`` с синтом, фразу об
+    этом строит код. ``octave_shift`` — сдвиг лида песни в полутонах (только если остаётся в коридоре регистра).
+    ``articulation`` — характер звукоизвлечения, данные для фразировки ADR-0157 PR-6 (рендер пока не читает).
+    ``genitive``/``prepositional`` — «для балалайки», «на балалайке» во фразе кода.
+    """
+
+    stems: Tuple[str, ...]
+    family: str
+    synth: Optional[str]
+    octave_shift: int
+    articulation: str
+    genitive: str
+    prepositional: str
+
+
+#: Первый состав — ADR-0157 §3.4; синты — только из ``SYNTH_PALETTE["lead"]`` (тест держит). Порядок внутри семьи —
+#: порядок соседей во фразе «могу сыграть на …». Замера NRT «инструмент ↔ синт» на katana ещё нет (ADR-0157 §3.4).
+INSTRUMENTS: Mapping[str, Instrument] = {
+    "guitar": Instrument(("гитар",), "pluck", "pluck", 0, "pluck", "гитары", "гитаре"),
+    "harp": Instrument(("арф",), "pluck", "karp", 0, "pluck", "арфы", "арфе"),
+    "balalaika": Instrument(("балалайк",), "pluck", None, 0, "pluck", "балалайки", "балалайке"),
+    "trombone": Instrument(("тромбон", "трамбон"), "brass", "brass", -12, "legato", "тромбона", "тромбоне"),
+    "xylophone": Instrument(("ксилофон", "кселофон"), "mallet", "marimba", 12, "staccato", "ксилофона", "ксилофоне"),
+    "piano": Instrument(("пианино", "роял", "фортепиано", "фортепьяно"), "keys", "rhpiano", 0, "legato",
+                        "пианино", "пианино"),
+    "organ": Instrument(("орган",), "keys", None, 0, "legato", "органа", "органе"),
+    "flute": Instrument(("флейт",), "wind", None, 0, "legato", "флейты", "флейте"),
+}
+#: Падежные окончания основ :data:`INSTRUMENTS` (закрытый список: «организуй» — не «орган»).
+INSTRUMENT_ENDINGS: Tuple[str, ...] = ("", "а", "я", "у", "ю", "е", "ы", "и", "ь", "ой", "ей", "ом", "ем", "ою", "ью",
+                                       "ов", "ам", "ами", "ах", "ям", "ями", "ях")
+#: Слова-вставки «на инструменте трамбон».
+INSTRUMENT_NOUNS: Tuple[str, ...] = ("инструмент", "инструменте", "инструментах")
+
+__all__ += ["INSTRUMENTS", "INSTRUMENT_ENDINGS", "INSTRUMENT_NOUNS", "Instrument"]

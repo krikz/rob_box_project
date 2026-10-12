@@ -39,6 +39,7 @@ from .media_phrases import (
     dj_started_text,
     play_ok_text,
     request_ok_text,
+    with_instrument,
 )
 from .media_router import DJ_SET_TOOL, REQUEST_MUSIC_TOOL, media_tool_succeeded
 
@@ -86,10 +87,11 @@ def ok_text(launch: Launch) -> str:
     args = launch.args
     if launch.tool == DJ_SET_TOOL:
         return dj_started_text(str(args.get("persona") or ""), str(args.get("theme") or ""))
-    title = str(_data(launch.content).get("title") or "")
+    data = _data(launch.content)
+    title = str(data.get("title") or "")
     if args.get("intent") == "melody" and title:
-        return play_ok_text(title)
-    return request_ok_text("")
+        return with_instrument(play_ok_text(title), data)
+    return with_instrument(request_ok_text(""), data)
 
 
 def fail_text(launch: Launch) -> str:

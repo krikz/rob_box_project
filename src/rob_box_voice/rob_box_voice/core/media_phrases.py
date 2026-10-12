@@ -21,7 +21,10 @@ TEMP(ADR-0148): проверка ответа LLM после хода — вре
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Optional, Tuple
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
+
+from rob_box_music import knowledge as kn
+from rob_box_music.instruments import neighbors
 
 
 def dj_started_text(persona: str, theme: str) -> str:
@@ -38,6 +41,28 @@ def request_ok_text(name: str) -> str:
 def play_ok_text(title: str) -> str:
     """Короткая фраза после успешного заказа мелодии по имени."""
     return f"Ставлю «{title}»."
+
+
+def instrument_text(data: Mapping[str, Any]) -> str:
+    """Что сказать об инструменте заказа по результату ``request_music`` (поля ``instrument``/``instrument_played``,
+    ADR-0157 §2.4, решение Шифу В2): синт есть — «Играю на тромбоне.»; нет — «Для балалайки у меня нет пака, могу
+    сыграть на гитаре или на арфе — играю на гитаре.» Соседи — из таблицы ``knowledge.INSTRUMENTS``, не от LLM.
+    Инструмент не просили — ``""``."""
+    asked = kn.INSTRUMENTS.get(str(data.get("instrument") or ""))
+    played = kn.INSTRUMENTS.get(str(data.get("instrument_played") or ""))
+    if asked is None:
+        return ""
+    if played is asked:
+        return f"Играю на {asked.prepositional}."
+    if played is None:
+        return f"Для {asked.genitive} у меня нет пака — играю своим звуком."
+    others = " или ".join(f"на {kn.INSTRUMENTS[k].prepositional}" for k in neighbors(str(data["instrument"])))
+    return f"Для {asked.genitive} у меня нет пака, могу сыграть {others} — играю на {played.prepositional}."
+
+
+def with_instrument(phrase: str, data: Mapping[str, Any]) -> str:
+    """Фраза запуска и фраза об инструменте (:func:`instrument_text`) одной репликой."""
+    return " ".join(p for p in (phrase, instrument_text(data)) if p)
 
 
 #: ADR-0149 PR-6: плеер отказал (``rejected``), ``started`` не пришло или тул не прошёл.
@@ -112,7 +137,9 @@ __all__ = [
     "SET_PLAYING_REASON",
     "dj_started_text",
     "honest_launch_reply",
+    "instrument_text",
     "launch_claim",
     "play_ok_text",
     "request_ok_text",
+    "with_instrument",
 ]

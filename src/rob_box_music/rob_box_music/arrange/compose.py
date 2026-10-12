@@ -687,12 +687,19 @@ def _kit(style: kn.Style, history: Sequence[Mapping], rng: random.Random) -> str
     return weighted_pick(options, recent, rng)
 
 
+def _lead_timbre(style: kn.Style, family: str, history: Sequence[Mapping], seed: int, asked: Optional[str]) -> str:
+    """Синт лида: инструмента заказа (ADR-0157 §2.4), иначе тембр семьи со штрафом за недавние."""
+    return asked or mix.role_timbre(style, family, "lead", recent_values(history, "lead"),
+                                    random.Random(f"{seed}:lead"))
+
+
 def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str]] = None,
             history: Sequence[Mapping] = (), deck: str = "A",
-            materials: Optional[Mapping[str, ScoreMaterial]] = None) -> Track:
+            materials: Optional[Mapping[str, ScoreMaterial]] = None, lead_synth: Optional[str] = None) -> Track:
     """Трек ``track_no`` сета по плану. ``melodies`` — ``{id: rtttl}`` для ``plan.profile.hook_ids``; ``history`` —
     строки ``music_history`` (свежие первыми, ``MusicHistory.recent``); ``materials`` — ``{material_id:
-    ScoreMaterial}`` для ``TrackPlan.material`` (ADR-0154).
+    ScoreMaterial}`` для ``TrackPlan.material`` (ADR-0154); ``lead_synth`` — синт инструмента заказа
+    (``instruments.lead_choice``, ADR-0157 §2.4) вместо тембра семьи.
 
     Темп — сета, тоника — ``plan.root(track_no)``, энергия — ``plan.track(track_no).energy``, стиль —
     ``knowledge.STYLES[plan.style]``. План назвал материал — хук и гармония автора из него (:func:`_from_material`);
@@ -706,8 +713,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     spec = form_spec(style, template)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
     rng = random.Random(seed)
-    lead_synth = mix.role_timbre(style, plan.family, "lead", recent_values(history, "lead"),
-                                 random.Random(f"{seed}:lead"))
+    lead_synth = _lead_timbre(style, plan.family, history, seed, lead_synth)
     found = (_from_material(style, spec, plan.material(track_no), materials, profile, lead_synth, melodies or {})
              or _theme_hook(style, spec, profile, melodies or {}, rng, history, track_no, lead_synth, plan.set_id))
     if found is None:

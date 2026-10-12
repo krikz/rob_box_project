@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-from .media_phrases import play_ok_text
+from .media_phrases import play_ok_text, with_instrument
 
 LOOKUP_TOOL = "lookup_melody"
 REQUEST_TOOL = "request_music"
@@ -64,6 +64,15 @@ class NamedPlayOutcome:
     hit: Optional[MelodyHit] = None
     tools_done: Tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
+    #: ``data`` ответа ``request_music`` (инструмент заказа, ADR-0157 §2.4) — для фразы :func:`outcome_text`.
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+
+def outcome_text(outcome: NamedPlayOutcome, title: str) -> str:
+    """Фраза итога найденного заказа: «Ставлю «X».» (+ об инструменте по результату тула) или честный отказ."""
+    if outcome.status is NamedPlayStatus.PLAYED:
+        return with_instrument(play_ok_text(title), outcome.data)
+    return play_fail_text(title)
 
 
 def user_phrase_title(play_name: str) -> str:
@@ -134,10 +143,11 @@ async def run_named_play(execute: ToolExec, name: str) -> NamedPlayOutcome:
         return NamedPlayOutcome(
             NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason
         )
-    played, _content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
+    played, content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
     if played:
         return NamedPlayOutcome(
-            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, REQUEST_TOOL)
+            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, REQUEST_TOOL),
+            data=tool_data(content) or {},
         )
     return NamedPlayOutcome(
         NamedPlayStatus.FAILED, hit=hit, tools_done=(LOOKUP_TOOL,),
@@ -152,6 +162,7 @@ __all__ = [
     "NamedPlayStatus",
     "REQUEST_TOOL",
     "melody_hit",
+    "outcome_text",
     "play_fail_text",
     "play_ok_text",
     "run_named_play",

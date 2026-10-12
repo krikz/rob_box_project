@@ -218,8 +218,7 @@ from rob_box_voice.core.media_phrases import honest_launch_reply
 from rob_box_voice.core.music_turn import executor_turn_reply, next_turn_id, turn_heard_text
 from rob_box_voice.core.named_play import (
     NamedPlayStatus,
-    play_fail_text,
-    play_ok_text,
+    outcome_text,
     run_named_play,
     user_phrase_title,
 )
@@ -6086,9 +6085,7 @@ tentative_plan(question, kind, name)
         title = user_phrase_title(plan.play_name)
         if outcome.status is NamedPlayStatus.PLAYED:
             self._note_router_track_started()
-            phrase = play_ok_text(title)
-        else:
-            phrase = play_fail_text(title)
+        phrase = outcome_text(outcome, title)
         self._record_media_turn(plan, text, phrase, list(outcome.tools_done))
         self._speak_direct(phrase)
 
