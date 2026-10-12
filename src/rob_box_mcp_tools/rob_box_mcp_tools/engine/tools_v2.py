@@ -56,7 +56,7 @@ from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import PlanMaterials, ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, theme_search
-from .session import SetMemory, SetSession, plan_source
+from .session import SetMemory, SetSession, plan_source, write_track_file
 from .theme_grounding import grounded_theme
 from .theme_links import ThemeLinks
 
@@ -547,7 +547,8 @@ class RequestMusicTool(MCPTool):
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
-                 records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None) -> None:
+                 records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None,
+                 tracks_dir: Optional[str] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -559,6 +560,7 @@ class RequestMusicTool(MCPTool):
         self._records = records or library_records(library)  # RTTTL-кандидаты одиночной пьесы (ADR-0157 §2.3)
         self._words = words or word_hooks(library)
         self._pieces = PieceMemory(history)  # что одиночный заказ играл недавно (music_history, ADR-0146)
+        self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
 
     @property
     def name(self) -> str:
@@ -613,6 +615,7 @@ class RequestMusicTool(MCPTool):
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
         program, once, row = staged.pop("program"), staged.pop("once"), staged.pop("history", {})
+        model = staged.pop("track", None)
         if "played" in staged:  # фраза о пьесе — от кода, из результата (ADR-0157 R6); её же скажет голос
             from rob_box_voice.core.media_phrases import launch_text
             staged["message"] = launch_text("", staged)
@@ -621,7 +624,15 @@ class RequestMusicTool(MCPTool):
         result = confirmed({**result, **staged}, self._confirm)
         if result.get("ok") and row:
             self._pieces.remember(row)
+        if result.get("ok") and model is not None and self._tracks_dir:
+            self._write_model(model)
         return tool_result(result, what)
+
+    def _write_model(self, model: Any) -> None:
+        try:
+            self._log().info(f"🎼 [classic] модель трека: {write_track_file(self._tracks_dir, model)}")
+        except OSError as exc:
+            self._log().warning(f"⚠️ [classic] модель трека не записана: {type(exc).__name__}: {exc}")
 
     def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
@@ -737,7 +748,7 @@ class RequestMusicTool(MCPTool):
         if pick is None:
             return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
         return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
-                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history)}
+                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track}
 
 
 def tunes(records: Mapping[str, Tuple[Dict[str, Any], str]]) -> Dict[str, Any]:

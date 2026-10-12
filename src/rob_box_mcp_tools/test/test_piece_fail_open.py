@@ -130,6 +130,15 @@ def test_three_bach_requests_play_three_different_pieces_and_history_survives_a_
     assert restarted.execute(intent="melody", text="сыграй баха").data["melody_id"] == "jesujoyo"
 
 
+def test_played_piece_model_goes_to_the_tracks_dir(tmp_path):
+    """I24: модель сыгранной пьесы — в каталог моделей, как у трека сета (``<track_id>.json``)."""
+    req = _tools(_rig(), hooks=("toccata",), table=TOCCATA)
+    req._tracks_dir = str(tmp_path)
+    data = req.execute(intent="melody", text="сыграй токкату").data
+    files = [p.name for p in tmp_path.iterdir()]
+    assert files == [data["track_id"].replace(":", "_") + ".json"]
+
+
 def test_history_is_written_only_after_the_piece_started():
     history = MusicHistory(":memory:")
     rig = _rig()

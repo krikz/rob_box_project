@@ -57,6 +57,7 @@ class ClassicPick:
     source: str = RTTTL
     history: Mapping[str, Any] = field(default_factory=dict)
     composer: str = ""  # автор из каталога (``artist`` записи RTTTL, ``composer`` партитуры) — для фразы
+    track: Any = None  # модель трека (``model.Track``) — в файл каталога моделей после ``started`` (I24)
 
 
 @dataclass(frozen=True)
@@ -218,7 +219,7 @@ def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A",
 def _picked(query: str, track: Any, title: str, deck: str, source: str, composer: str = "") -> ClassicPick:
     return ClassicPick(query, True, melody_id=track.hook.source, title=title, program=render(track, deck),
                        bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}", source=source,
-                       history=track_history(track), composer=composer)
+                       history=track_history(track), composer=composer, track=track)
 
 
 def pick_record(record: Mapping[str, Any], title: str, query: str, *, seed: int, deck: str = "A",
