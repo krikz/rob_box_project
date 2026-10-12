@@ -121,20 +121,8 @@ class SystemOneHttpProvider:
         return [str(m.get("name")) for m in models if isinstance(m, Mapping)]
 
     async def _request(self, method: str, path: str, body: Mapping[str, Any] | None) -> Mapping[str, Any]:
-        headers = self._headers()
-        async with self._client_factory(self._timeout_s) as client:
-            try:
-                response = await client.request(method, self.base_url + path, json=body, headers=headers)
-            except Exception as exc:  # noqa: BLE001 — маппинг транспортных ошибок ниже
-                raise _transport_error(self.name, exc) from None
-        _raise_for_status(self.name, response.status_code)
-        try:
-            payload = response.json()
-        except (ValueError, json.JSONDecodeError):
-            raise ProviderInvalidResponse(f"{self.name}: response is not JSON") from None
-        if not isinstance(payload, Mapping):
-            raise ProviderInvalidResponse(f"{self.name}: response is not an object")
-        return payload
+        return await http_json(self.name, self._client_factory, self._timeout_s, method, self.base_url + path, body,
+                               self._headers())
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}
@@ -145,6 +133,24 @@ class SystemOneHttpProvider:
             raise ProviderConfigError(f"{self.name}: env {self._api_key_env} is not set")
         headers["Authorization"] = f"Bearer {key}"
         return headers
+
+
+async def http_json(name: str, client_factory: ClientFactory, timeout_s: float, method: str, url: str,
+                    body: Mapping[str, Any] | None, headers: Mapping[str, str]) -> Mapping[str, Any]:
+    """Один запрос без ретраев → JSON-объект; ошибки — подклассы ``DecisionProviderError`` (общий для провайдеров)."""
+    async with client_factory(timeout_s) as client:
+        try:
+            response = await client.request(method, url, json=body, headers=dict(headers))
+        except Exception as exc:  # noqa: BLE001 — маппинг транспортных ошибок ниже
+            raise _transport_error(name, exc) from None
+    _raise_for_status(name, response.status_code)
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        raise ProviderInvalidResponse(f"{name}: response is not JSON") from None
+    if not isinstance(payload, Mapping):
+        raise ProviderInvalidResponse(f"{name}: response is not an object")
+    return payload
 
 
 def jev_from_env(env: Mapping[str, str] | None = None, **kwargs: Any) -> SystemOneHttpProvider | None:
@@ -192,7 +198,7 @@ def _question_to_wire(question: Question) -> dict[str, Any]:
     if isinstance(question, NoulQuestion):
         return {"type": "noul", "instructions": question.text}
     if isinstance(question, ChoiceQuestion):
-        return {"type": "choice", "instructions": question.text, "criteria": {o: None for o in question.options}}
+        return {"type": "choice", "instructions": question.text, "criteria": {o: question.descriptions.get(o) for o in question.options}}
     if isinstance(question, ScoreQuestion):
         return {"type": "score", "instructions": question.text, "criteria": list(question.levels)}
     raise TypeError(f"unsupported question type: {type(question).__name__}")

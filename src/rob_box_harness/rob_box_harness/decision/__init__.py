@@ -7,6 +7,7 @@ spike + PoC. Jev/Laya — опциональные ускорители; без 
 """
 
 from .acceptance_escalation import escalate_acceptance
+from .chat_choice import ChatChoiceProvider, chat_choice_from_env
 from .health import CircuitBreaker, CircuitState, DecisionMetrics
 from .orchestrator import DecisionOrchestrator, answer_confidence
 from .providers import DecisionProvider, DeterministicProvider, FakeDecisionProvider
@@ -24,6 +25,7 @@ from .types import (
 )
 
 __all__ = [
+    "ChatChoiceProvider",
     "ChoiceAnswer",
     "ChoiceQuestion",
     "CircuitBreaker",
@@ -43,6 +45,7 @@ __all__ = [
     "ScoreQuestion",
     "SystemOneHttpProvider",
     "answer_confidence",
+    "chat_choice_from_env",
     "escalate_acceptance",
     "jev_from_env",
     "laya_from_env",

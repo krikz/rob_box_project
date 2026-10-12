@@ -40,6 +40,8 @@ class ChoiceQuestion:
 
     text: str
     options: tuple[str, ...]
+    #: Человеческое описание варианта (``criteria`` Jev; для chat-модели — строки перечня). Нет — без описания.
+    descriptions: Mapping[str, str] = field(default_factory=dict, compare=False, hash=False)
 
     def __post_init__(self) -> None:
         _require_options(self.options, "ChoiceQuestion.options", minimum=2)
