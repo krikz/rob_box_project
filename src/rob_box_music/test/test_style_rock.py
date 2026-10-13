@@ -193,17 +193,19 @@ def test_body_sections_are_not_one_row(tracks):
 
 
 def test_verse_is_palm_muted_and_chorus_rings_open(tracks):
-    """Куплет — гитара глушёная (каждый удар — 16-я, срез гитары закрыт), хэты без акцентов; припев — открытые
-    аккорды (удары ≥ восьмой), срез снят; второй куплет открывает срез к припеву."""
+    """Куплет — гитара глушёная и тише (каждый удар — 16-я, акцент ≤ 1, срез гитары закрыт); припев — открытые
+    аккорды (удары ≥ восьмой, акцент ≥ 2), срез снят; второй куплет громче первого и открывает срез к припеву."""
     for _plan_, track, _program, _by in tracks:
         lpf = dict(zip([s.name for s in track.form.sections], track.mix.lpf["pad"]))
         for start, sec in _bars(track):
             pad_notes = _pitched(track.parts["pad"], start, sec.bars)
             if sec.name.startswith("verse"):
                 assert {e.dur_beats for e in pad_notes} == {0.25}, sec.name
+                assert max(e.accent for e in pad_notes) <= (1 if sec.name == "verse" else 2), "палм-мьют тише припева"
                 assert lpf[sec.name][0] <= 1000.0 and (lpf[sec.name][1] > lpf[sec.name][0]) == (sec.name == "verse2")
             if sec.name.startswith("chorus"):
                 assert min(e.dur_beats for e in pad_notes) >= 0.5 and lpf[sec.name] == (kn.LPF_OPEN, kn.LPF_OPEN)
+                assert min(e.accent for e in pad_notes) >= 2, "припев — открытые аккорды в полный акцент"
         lead_lpf = track.mix.lpf.get("lead", ((kn.LPF_OPEN, kn.LPF_OPEN),) * len(track.form.sections))
         assert set(lead_lpf[:-1]) == {(kn.LPF_OPEN, kn.LPF_OPEN)}, "лид — тема: срез только в хвосте блэнда"
 

@@ -1510,8 +1510,9 @@ _CLUB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
                        ("held", "held", "pumped16")),
 }
 
-#: Ритм пауэр-аккордов на такт: удары ``(шаг 16-х, длина в 16-х)`` (``Style.power_rhythms``, ``SectionPart.power``).
-PowerRhythm = Tuple[Tuple[int, int], ...]
+#: Ритм пауэр-аккордов на такт: удары ``(шаг 16-х, длина в 16-х[, акцент 0..3])`` (``Style.power_rhythms``,
+#: ``SectionPart.power``); без акцента — 3 на доле, 2 между (``arrange.pad.power_accent``).
+PowerRhythm = Tuple[Tuple[int, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -1620,7 +1621,7 @@ class Style:
     # Роли каталога сэмплов, из которых берётся FX-удар секций (``layer_sections["fx"]``): у рока — крэш пака.
     fx_roles: Tuple[str, ...] = ("fx",)
     # Пауэр-аккорды (``arrange.pad.power_chords``): ритмы на такт по кругу — ``(шаг 16-х, длина в 16-х)``.
-    power_rhythms: Tuple[Tuple[Tuple[int, int], ...], ...] = ()
+    power_rhythms: Tuple[PowerRhythm, ...] = ()
     # Рифф баса (``arrange.bass.riff``): такты по кругу, восьмые такта — ``R`` тон такта, ``F`` квинта аккорда, ``O``
     # октава тона такта, ``.`` — нота тянется (длина до следующей).
     bass_riffs: Tuple[str, ...] = ()
@@ -2169,22 +2170,27 @@ _ROCK_POWER_RHYTHMS: Tuple[PowerRhythm, ...] = (_ROCK_POWER_CHUG, _ROCK_POWER_DR
 _ROCK_BASS_RIFFS: Tuple[str, ...] = ("RRRRRRRR", "RRRRRRFO")
 #: Развитие песни (#3594, Шифу 13.10: «однотипность надоедает… нет никакого развития» — до этого все секции тела были
 #: одним составом и одной фигурой, отличалось только число энергии). Динамика «тихий куплет — громкий припев» гранжа:
-#: * куплет — гитара глушёная (палм-мьют восьмыми с вдохом на четвёртой доле, срез :data:`_ROCK_SECTION_LPF`), хэты —
-#:   каркас трека, бас педалью восьмыми на тоне; второй куплет — палм-мьют без вдоха, срез открывается к припеву;
+#: * куплет — гитара глушёная и тише (палм-мьют восьмыми с вдохом на четвёртой доле, акценты ниже, срез
+#:   :data:`_ROCK_SECTION_LPF`), хэты — каркас трека, бас педалью восьмыми на тоне; второй куплет — палм-мьют без вдоха
+#:   громче, срез открывается к припеву;
 #: * припев — открытые пауэр-аккорды (звенящие восьмые и «толчок» 3+3+2 в конце четырёхтактовой фразы), хэты восьмыми
 #:   с акцентом на долях (как райд), бас-рифф с квинтой и октавой; последние припевы (chorus2/3) — открытые восьмые
 #:   каждый такт, хэты все с акцентом;
 #: * бридж — брейкдаун половинным грувом: бочка на 1 и «и» 3, малый на 3, хэты четвертями, гитара — аккорд звенит
 #:   весь такт, бас половинными/целыми (аккорды бриджа и так вдвое длиннее — ``SECTION_HARMONY`` ``break``).
 #: Интро/аутро (блэнд двух дек) — таблицы трека: под них сводятся деки.
-_ROCK_PALM_BREATH: PowerRhythm = ((0, 1), (2, 1), (4, 1), (6, 1), (8, 1), (10, 1))
+#: Палм-мьют куплета тише открытых аккордов: акцент 1 на доле, 0 между (``ACCENT_AMPLIFY`` 0.6/0.4 против 1.0/0.8 —
+#: ≈ −4 дБ гитары), во втором куплете — 2/1 (подъём к припеву).
+_ROCK_PALM_QUIET: PowerRhythm = tuple((step, 1, 1 if step % 4 == 0 else 0) for step in range(0, 16, 2))
+_ROCK_PALM_BREATH: PowerRhythm = _ROCK_PALM_QUIET[:6]
+_ROCK_PALM_LIFT: PowerRhythm = tuple((step, 1, 2 if step % 4 == 0 else 1) for step in range(0, 16, 2))
 _ROCK_RIFFS = ("RRRRRRRR", "RRRRRRFO")
 _ROCK_CHORUS = SectionPart(hats="X.x.X.x.X.x.X.x.", power=(_ROCK_POWER_DRIVE, _ROCK_POWER_DRIVE, _ROCK_POWER_DRIVE,
                                                            _ROCK_PUSH), riffs=_ROCK_RIFFS)
 _ROCK_LAST_CHORUS = SectionPart(hats="X.X.X.X.X.X.X.X.", power=(_ROCK_POWER_DRIVE,), riffs=_ROCK_RIFFS)
 _ROCK_SECTION_PARTS: Mapping[str, SectionPart] = {
-    "verse": SectionPart(power=(_ROCK_POWER_CHUG, _ROCK_PALM_BREATH), riffs=("RRRRRRRR",)),
-    "verse2": SectionPart(power=(_ROCK_POWER_CHUG,), riffs=("RRRRRRRR",)),
+    "verse": SectionPart(power=(_ROCK_PALM_QUIET, _ROCK_PALM_BREATH), riffs=("RRRRRRRR",)),
+    "verse2": SectionPart(power=(_ROCK_PALM_LIFT,), riffs=("RRRRRRRR",)),
     "chorus": _ROCK_CHORUS, "chorus2": _ROCK_LAST_CHORUS,
     "chorus3": _ROCK_LAST_CHORUS,
     "bridge": SectionPart(kick="X.........X.....", snare="........X.......", hats="X...x...X...x...",
