@@ -34,7 +34,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, KEY_MODE_STEMS, KEY_NOTE_WORDS,
                         KEY_SIGN_WORDS, KEY_TITLE_MODES, KNOWN_VIEWS_FLOOR, KNOWN_VIEWS_FULL, LICENSE_STOP_LIST,
                         PIECE_LONG_BEATS, ROOTS, TAG_WORK_TYPE, THEMES, TITLE_EXACT, TITLE_PARTIAL)
-from .material import ScoreMaterial, license_usable
+from .material import ScoreMaterial, license_usable, meter_map
 from .rtttl import consensus_order
 
 FACT_SOURCES = ("rtttl", "pdmx", "derived", "manual", "wikidata", "mb")
@@ -859,13 +859,25 @@ def hook_words(records: Iterable[Mapping[str, Any]]) -> Tuple[frozenset, ...]:
     return tuple(dict.fromkeys(out))
 
 
-def form_beats(bars: Optional[int], meter: Any) -> float:
-    """Длина партитуры в долях-четвертях: такты × числитель × 4 / знаменатель («3/8» — полторы четверти в такте)."""
+def _meter(meter: Any) -> Tuple[int, int]:
     try:
         num, den = (int(x) for x in str(meter or "4/4").split("/"))
     except ValueError:
-        num, den = 4, 4
-    return float(bars or 0) * num * 4 / max(1, den)
+        return 4, 4
+    return num, max(1, den)
+
+
+def form_beats(bars: Optional[int], meter: Any) -> float:
+    """Длина партитуры в долях-четвертях: такты × числитель × 4 / знаменатель («3/8» — полторы четверти в такте)."""
+    num, den = _meter(meter)
+    return float(bars or 0) * num * 4 / den
+
+
+def meter_fit(meter: Any) -> float:
+    """Признак ``fit`` партитуры: 1.0 — размер переводится в 4/4 (``material.meter_map``, тот же, что у
+    ``song.score_song``), иначе 0 — песня из неё не сложится (#3577: на «сыграй Баха» первыми стояли «Jesu Joy» и
+    «Goldberg» в 3/4 и тратили перебор)."""
+    return 1.0 if meter_map(_meter(meter)) is not None else 0.0
 
 
 def long_form(beats: float, limit: int = PIECE_LONG_BEATS) -> float:

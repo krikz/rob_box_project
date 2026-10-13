@@ -34,7 +34,8 @@ from rob_box_music.choice import score
 from rob_box_music.material import MaterialError, ScoreMaterial, from_json
 from rob_box_music.rtttl import THEME_HOOKS
 from rob_box_music.set_plan import seeded_plan
-from rob_box_music.works import SCORE, WorkCandidate, WorkRef, WorkWord, form_beats, known_work, long_form
+from rob_box_music.works import (SCORE, WorkCandidate, WorkRef, WorkWord, form_beats, known_work, long_form,
+                                 meter_fit)
 
 from ..core.translit_ru import transliterate_ru
 from .search import (_PREFIX_SLACK, _WHOLE_WORD_MAX, PartQuery, Term, ThemeQuery, round_robin, sound_key,
@@ -147,11 +148,12 @@ class ScoreIndex:
 
     def _candidate(self, i: int, title_match: float, composer_match: float,
                    hooks: Sequence[frozenset]) -> WorkCandidate:
-        """Кандидат строки ``i`` с признаками выбора (рейтинг PDMX 0..1, узнаваемость, длинная форма)."""
+        """Кандидат строки ``i`` с признаками выбора (размер переводится в 4/4, рейтинг PDMX 0..1, узнаваемость,
+        длинная форма)."""
         row = self._rows[i]
         title = str(row.get("title") or "")
         return WorkCandidate(self.ids[i], SCORE, title, str(row.get("composer") or ""), title_match, composer_match,
-                             1.0, min(1.0, float(row.get("rating") or 0.0) / 5.0),
+                             meter_fit(row.get("meter")), min(1.0, float(row.get("rating") or 0.0) / 5.0),
                              known_work(row.get("n_views"), title, hooks),
                              long_form(form_beats(row.get("bars"), row.get("meter"))))
 

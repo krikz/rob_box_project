@@ -120,6 +120,16 @@ def test_known_work_by_views_and_by_hook_title():
     assert works.known_work(600, "Little Prelude in C Major", hooks) == 0.0
 
 
+def test_meter_fit_follows_the_song_meter_rule():
+    """Размер, который ``song.score_song`` не переводит в 4/4, — ``fit`` 0 (прогон 13.10: «Jesu Joy» и «Goldberg» в
+    3/4 стояли первыми на «сыграй Баха» и отваливались на сборке)."""
+    from rob_box_music.material import meter_map
+
+    assert works.meter_fit("4/4") == 1.0
+    assert works.meter_fit("3/4") == (1.0 if meter_map((3, 4)) is not None else 0.0)
+    assert works.meter_fit(None) == 1.0
+
+
 def test_form_beats_and_long_form():
     assert works.form_beats(190, "4/4") == 760.0 and works.form_beats(136, "3/8") == 204.0
     assert works.long_form(works.form_beats(34, "4/4")) == 0.0
@@ -159,7 +169,14 @@ def test_composer_only_order_prefers_the_recognizable_work(composer, expected):
      ("chorale harmonisations 241-371", "Бах")),
     ("Toccata in G minor (Seixas)", "Carlos Seixas", ("Toccata in G minor", "Carlos Seixas")),
     ("Mozart: Minuet in F Major (K2) (easy)", "W. A. Mozart", ("Minuet in F Major", "Моцарт")),
-    ("Stand By Me", "Ben E. King", ("Stand By Me", "Ben E. King")),  # «By» не автора — не хвост
+    # живой прогон 13.10 (после первой заливки): квадратные скобки, «beginner … arrangement», Op. в поле автора
+    ("Prelude I in C major BWV 846 - Well Tempered Clavier [First Book]", "Johann Sebastian Bach",
+     ("Prelude I in C major: Well Tempered Clavier", "Бах")),
+    ("Ode to Joy beginner strings arrangement", "Beethoven", ("Ode to Joy", "Бетховен")),
+    ("Vierne Pieces de Fantaisie for Organ Suite No. 2 Op. 53 Part VI-Toccata", "Louis Vierne Op. 53",
+     ("Pieces de Fantaisie for Organ Suite No. 2 Part VI-Toccata", "Louis Vierne")),
+    ("Stand By Me", "Ben E. King", ("Stand By Me", "Ben E. King")),  # «By» не автора — не хвост, «King» — не K.
+    ("Kiss the Rain", "Yiruma", ("Kiss the Rain", "Yiruma")),
     ("Калинка", "", ("Калинка", "")),  # русский алиас RTTTL — как есть
 ])
 def test_spoken_title_strips_pdmx_junk(title, composer, spoken):

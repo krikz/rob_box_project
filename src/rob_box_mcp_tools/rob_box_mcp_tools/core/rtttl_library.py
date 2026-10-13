@@ -424,10 +424,10 @@ _MOJIBAKE_RE = re.compile("[Â-ô][\u0080-¿ŒœŠšŸŽžƒ"
 #: ``'Su\xcc\xdfmayr'`` — от «ü» остался только ``0xCC``, от «é» в «Bourrée» — ``0xC3``). Восстановить букву
 #: нельзя, честно — убрать обломок: «Sußmayr», «Bourre».
 _MOJIBAKE_LOST_RE = re.compile("(?<=[A-Za-z])[ÃÌ](?=[A-Za-zß]|\\b)")
-_SPOKEN_CATALOG_RE = re.compile(r"\(?\b(?:BWV|HWV|KV|K|Op|Opus|Hob|RV|WoO)\.?\s*[IVX\d]+[a-z]?"
+_SPOKEN_CATALOG_RE = re.compile(r"\(?\b(?:BWV|HWV|KV|K|Op|Opus|Hob|RV|WoO)\.?\s*(?:\d+[a-z]?|(?-i:[IVX]+)\b)"
                                 r"(?:\s*,?\s*(?:No|Nr)\.?\s*\d+)?\)?", re.I)
-_SPOKEN_TAIL_RE = re.compile(r"[\s,(-]+\b(?:arr|arranged|transcribed|(?:piano|violin|guitar|flute|cello|organ)"
-                             r"\s+(?:solo|duet))\b.*$", re.I)
+_SPOKEN_TAIL_RE = re.compile(r"[\s,(-]+\b(?:arr|arranged|arrangement|transcribed|beginner|easy|simplified|"
+                             r"(?:piano|violin|guitar|flute|cello|organ)\s+(?:solo|duet))\b.*$", re.I)
 _SPOKEN_SEP_RE = re.compile(r"\s+[-–—]\s+|:\s+")
 _SPOKEN_PAREN_RE = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]|\{[^{}]*\}")
 #: Слова имени, не называющие композитора: инициалы и частицы («J. S.», «van», «von»).
@@ -480,9 +480,10 @@ def _drop_names(title: str, names: frozenset) -> str:
 
 
 def _drop_remarks(title: str, names: frozenset) -> str:
-    """Скобки-ремарки («(real audio)», «(Piano solo)», «{…}», «(Bach/Gounod)») прочь; «(1st Movement)» остаётся."""
+    """Скобки-ремарки («(real audio)», «(Piano solo)», «{…}», «[First Book]», «(Bach/Gounod)») прочь; «(1st
+    Movement)» остаётся. Квадратные и фигурные — всегда: TTS читает их как разметку (прогон 13.10: «Clavier »)."""
     def keep(match: "re.Match[str]") -> str:
-        inner = match.group(1) if match.group(1) is not None else match.group(2)
+        inner = match.group(1)
         if inner is None:
             return " "
         words = set(_name_words(inner))
@@ -518,7 +519,8 @@ def spoken_title(title: Any, composer: Any = "", limit: int = kn.SPOKEN_TITLE_MA
     text = _drop_remarks(raw, names)
     text = _SPOKEN_TAIL_RE.sub("", _SPOKEN_CATALOG_RE.sub(" ", text))
     text = _shorten(_tidy(_drop_names(_tidy(text), names)), limit)
-    return text or _shorten(_tidy(raw), limit), _composer_ru(author, raw) or author
+    plain = _tidy(_SPOKEN_PAREN_RE.sub(" ", _SPOKEN_CATALOG_RE.sub(" ", author)))  # «Louis Vierne Op. 53»
+    return text or _shorten(_tidy(raw), limit), _composer_ru(author, raw) or plain
 
 
 def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> Dict[str, Any]:
