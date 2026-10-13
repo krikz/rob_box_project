@@ -53,7 +53,7 @@ from rob_box_music.works import key_slot
 from .chooser_model import chooser_from_env
 from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
-from .piece import PieceChain, RecordLookup
+from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, theme_search
@@ -685,6 +685,10 @@ class RequestMusicTool(MCPTool):
             from rob_box_voice.core.media_phrases import no_more_text
             return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
                     "message": no_more_text(work, played["repeats"][0])}
+        if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
+            from rob_box_voice.core.media_phrases import composer_missing_text
+            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
+                    "message": composer_missing_text(work)}
         if pick is None and not count:
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
         if pick is None:

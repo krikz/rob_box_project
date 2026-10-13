@@ -116,6 +116,13 @@ def no_more_text(asked: str, repeat: str) -> str:
             + (f"Могу повторить «{repeat}» или сыграть что-то другое." if repeat else "Могу сыграть что-то другое."))
 
 
+def composer_missing_text(asked: str) -> str:
+    """Фраза кода, когда в заказе назван композитор, а его пьес по запросу нет (#3604): чужое вместо него не играет.
+    Слова человека в кавычках, не склоняются."""
+    return (f"По запросу «{asked}» у названного автора ничего не нашлось, чужое вместо него не ставлю. "
+            "Могу сыграть что-то другое.")
+
+
 def no_more_error(phrase: str) -> str:
     """Текст отказа ``request_music`` с кодом :data:`NO_MORE_REASON` (его читает :func:`no_more_phrase`)."""
     return f"{NO_MORE_REASON}: {phrase}"
@@ -195,6 +202,7 @@ __all__ = [
     "REQUEST_FAIL_TEXT",
     "SET_KEPT_TEXT",
     "SET_PLAYING_REASON",
+    "composer_missing_text",
     "dj_started_text",
     "honest_launch_reply",
     "instrument_text",
