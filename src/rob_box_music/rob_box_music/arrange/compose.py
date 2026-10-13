@@ -214,15 +214,28 @@ def _bar_chords(spec: FormSpec, role: str, progression: Mapping[str, Sequence[Ch
 
 
 def _lead(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, synth: str) -> Part:
-    """Хук (или мотив) по секциям с лидом: развитие ``arrange.hook.develop`` от начала каждой секции."""
+    """Хук (или мотив) по секциям с лидом: развитие ``arrange.hook.develop`` от начала каждой секции. Фраза, не
+    уместившаяся в секцию, доигрывается за её границей (``hooks.spill``, #3580), и новая фраза следующей секции не
+    наслаивается: её ноты, начатые до конца хвоста, не звучат. Хвосту некуда лечь (следующая секция без лида или
+    короче хвоста) — фраза не начинается: оборванная фраза хуже тишины."""
     events: List[PitchEvent] = []
-    for start, bars, name, roles in _sections(spec):
-        if "lead" in roles:
-            offset = start * BEATS_PER_BAR
-            events += [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent)
-                       for e in hooks.develop(motif, name, bars, key)]
-    total = sum(bars for _n, bars, _e, _r in spec) * 16
-    grid = rhythm.grid({int(e.beat * 4) for e in events}, total)
+    sections = list(_sections(spec))
+    total = sum(bars for _n, bars, _e, _r in spec) * BEATS_PER_BAR
+    busy_until = 0.0  # доля формы, до которой звучит хвост фразы предыдущей секции
+    for i, (start, bars, name, roles) in enumerate(sections):
+        if "lead" not in roles:
+            continue
+        offset = start * BEATS_PER_BAR
+        tail = [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent) for e in hooks.spill(motif, name, bars, key)]
+        if tail:
+            landing = sections[i + 1] if i + 1 < len(sections) else None
+            if landing is None or "lead" not in landing[3] or max(e.beat for e in tail) >= (landing[0] + landing[1]) * BEATS_PER_BAR:
+                continue
+        events += [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent)
+                   for e in hooks.develop(motif, name, bars, key) if offset + e.beat >= busy_until]
+        events += tail
+        busy_until = max([busy_until] + [e.beat + e.dur_beats for e in tail])
+    grid = rhythm.grid({int(e.beat * 4) for e in events}, total * 4)
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, style.registers["lead"])
 
 
@@ -487,7 +500,9 @@ def _lead_section(plan: "_BarPlan", key: Key, plain: Hook, section: Tuple[int, i
     plan.put(range(start, start + span), *theme)
     line = hooks.develop(plain, name, bars, key)
     hook_line = hooks.develop(plain, "drop", bars, key)
-    if span or set(hook_line) <= set(line):  # хук по кругу, в т. ч. с добавочным голосом (терции drop2)
+    # Хук по кругу, в т. ч. с добавочным голосом (терции drop2). Секция со своим правилом гармонии (build — педаль,
+    # break — вдвое длиннее аккорды) остаётся под правилом, даже когда фраза хука в ней теперь звучит целиком (#3580).
+    if span or (set(hook_line) <= set(line) and kn.section_kind(name) not in kn.SECTION_HARMONY):
         plan.put(range(start + span, start + bars), *loop)
         if not span and len(line) > len(hook_line):
             plan.voiced(key, start, bars, hook_line, line)
