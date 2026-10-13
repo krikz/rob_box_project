@@ -105,7 +105,8 @@ def test_synthesize_yandex_uses_retry_helper() -> None:
     single = _find_class_member(src, "TTSNode", "_synthesize_yandex_single")
     single_src = ast.unparse(single)
     assert "synthesize_with_retry" not in single_src
-    assert "UtteranceSynthesis(" in single_src
+    # ADR-0158 PR-6: сам RPC вынесен в tts_engines.yandex_collect_audio (общий с sing_synth)
+    assert "yandex_collect_audio(" in single_src
 
 
 def test_synthesize_yandex_logs_per_chunk_latency() -> None:
@@ -143,7 +144,9 @@ def test_fallback_to_silero_preserved() -> None:
     # ``silero_model.apply_tts(...)`` call (was inline in this method).
     # Search across the whole module so the contract survives extraction.
     module_src = _TTS_NODE.read_text(encoding="utf-8")
-    assert "silero_model.apply_tts" in module_src, (
+    # ADR-0158 PR-6: сам вызов apply_tts вынесен в ``tts_engines.silero_apply_tts``
+    # (общий с sing_synth), tts_node зовёт его со своей моделью.
+    assert "silero_apply_tts(" in module_src and "self.silero_model" in module_src, (
         "Silero fallback path must be intact (search across module after "
         "issue #2078 decomposition)"
     )
