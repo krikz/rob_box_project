@@ -75,11 +75,28 @@ def heard_theme(text: str) -> str:
     return out if content_stems(out) else ""
 
 
+def _names_new_theme(heard_text: Optional[str]) -> bool:
+    """В реплике есть слова новой темы. «Тема та же» (``asks_same_theme``) — явная ссылка на прежнюю: остальные слова
+    («только техно») — стиль. Глагол смены стиля («переходим на рок», ``asks_to_keep_theme``) новой темы не называет,
+    пока в реплике нет значимых слов кроме жанра (#3593)."""
+    from rob_box_voice.core.media_command_grammar import SET_SAME_WORDS, asks_same_theme, asks_to_keep_theme
+
+    heard = heard_theme(heard_text or "")
+    if asks_same_theme(heard_text):
+        return False
+    if not asks_to_keep_theme(heard_text):
+        return bool(heard)
+    return any(content_stems(w) and not genre_of(w) and w not in SET_SAME_WORDS for w, _s, _e in words_of(heard))
+
+
 def grounded_theme(theme: Optional[str], heard_text: Optional[str]) -> Tuple[str, bool]:
-    """``(тема, заменена ли)``: тема LLM, если она делит значимую основу с репликой хода, иначе тема реплики."""
+    """``(тема, заменена ли)``: тема LLM, если она делит значимую основу с репликой хода, иначе тема реплики.
+    Смена стиля без новой темы («переходим на рок, тема та же») тему LLM не заменяет (#3593)."""
     theme = theme or ""
     heard = heard_theme(heard_text or "")
     if not heard or content_stems(theme) & content_stems(heard):
+        return theme, False
+    if theme and not _names_new_theme(heard_text):
         return theme, False
     return heard, True
 
@@ -143,11 +160,12 @@ def set_theme(theme: Optional[str], persona: Optional[str] = None) -> SetTheme:
 
 def continued(heard_text: Optional[str],
               last: Optional[Tuple[str, Optional[str]]]) -> Optional[Tuple[str, Optional[str]]]:
-    """``(тема, персона)`` последнего сета, если реплика просит продолжить сет («продолжай сэт», «ещё сет») и не
-    называет новой темы; иначе ``None``. Слово просьбы — ``media_command_grammar.SET_CONTINUE_WORDS`` (#3581)."""
+    """``(тема, персона)`` последнего сета, если реплика просит продолжить сет («продолжай сэт», «ещё сет») или сменить
+    стиль при той же теме («переходим на рок, тема та же», #3593) и не называет новой темы; иначе ``None``. Слова —
+    ``media_command_grammar``: ``SET_CONTINUE_WORDS`` (#3581), ``SET_SWITCH_WORDS``, ``SET_SAME_WORDS``."""
     from rob_box_voice.core.media_command_grammar import asks_to_continue_set
 
-    if last is None or not asks_to_continue_set(heard_text) or heard_theme(heard_text or ""):
+    if last is None or not asks_to_continue_set(heard_text) or _names_new_theme(heard_text):
         return None
     return last
 

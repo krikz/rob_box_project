@@ -876,12 +876,38 @@ SET_CONTINUE_WORDS: FrozenSet[str] = frozenset({
     "ещё", "еще", "снова", "опять", "повтори",
 })
 
+#: Смена стиля сета (#3593, живой сет 13.10: «переходим на Рок сэт тема таже» → тема «переходим таже» → Chicken Dance):
+#: глагол смены — просьба, не тема; без новой темы тема — тема последнего сета.
+SET_SWITCH_WORDS: FrozenSet[str] = frozenset({
+    "переходим", "переходи", "переходите", "перейдем", "перейдём", "перейди", "перейти", "переходить",
+    "переключи", "переключись", "переключимся", "переключай", "переключаемся", "переключить", "переключайся",
+    "смени", "смените", "сменим", "сменить", "поменяй", "поменяем", "поменять", "измени", "изменим",
+    "стиль", "стили", "стиля", "стилю", "тема", "тему", "темы", "темой", "только", "но",
+})
+#: «Тема та же» (#3593): слитное «таже» (так пишет STT), пара «та/тот/то/ту/те + же», «то же самое», «прежняя тема».
+SET_SAME_WORDS: FrozenSet[str] = frozenset({
+    "таже", "тотже", "же", "та", "тот", "то", "ту", "те", "самое", "такая", "такой", "такую", "прежняя",
+    "прежний", "прежнюю", "прежней", "прежнее", "прежние", "старая", "старую", "старый", "старое", "старой",
+})
+_SAME_GLUED: FrozenSet[str] = frozenset({"таже", "тотже", "прежняя", "прежний", "прежнюю", "прежней", "прежнее",
+                                        "прежние"})
+_SAME_DEMONSTRATIVE: FrozenSet[str] = frozenset({"та", "тот", "то", "ту", "те", "такая", "такой", "такую"})
+_OLD_WORDS: FrozenSet[str] = frozenset({"старая", "старую", "старый", "старое", "старой"})
+_THEME_NOUNS: FrozenSet[str] = frozenset({"тема", "тему", "темы", "темой", "тематика", "тематику"})
+#: Слова таблицы смены стиля, не глаголы: сами по себе «стиль»/«тема»/«но»/«только» смену не просят.
+_THEME_AND_STYLE_NOUNS: FrozenSet[str] = frozenset({
+    "стиль", "стили", "стиля", "стилю", "тема", "тему", "темы", "темой", "только", "но",
+})
+
 #: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
 #: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
-SET_REQUEST_WORDS: FrozenSet[str] = _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | {
+SET_REQUEST_WORDS: FrozenSet[str] = (
+    _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | SET_SWITCH_WORDS
+) | {
     "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
     "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "пусть",
     "можешь", "мы", "я", "наш", "наша", "наше", "нашу", "нашего",
+    "таже", "тотже", "же", "самое", "прежняя", "прежний", "прежнюю", "прежней", "прежнее", "прежние",
 }
 
 
@@ -905,10 +931,32 @@ def asks_for_set(text: str) -> bool:
     return bool(_style_words(words)[0])
 
 
+def asks_same_theme(text: Optional[str]) -> bool:
+    """«Тема та же» (#3593): «тема таже», «та же тема», «тот же», «то же самое», «прежняя», «старая тема»."""
+    words = _theme_words(extract_user_utterance(text or ""))
+    for i, word in enumerate(words):
+        if word in _SAME_GLUED:
+            return True
+        if word == "же" and i > 0 and words[i - 1] in _SAME_DEMONSTRATIVE:
+            return True
+        if word in _OLD_WORDS and i + 1 < len(words) and words[i + 1] in _THEME_NOUNS:
+            return True
+    return False
+
+
+def asks_to_keep_theme(text: Optional[str]) -> bool:
+    """Человек меняет стиль, а не тему (#3593): «тема та же» или глагол смены стиля (:data:`SET_SWITCH_WORDS`
+    «переходим», «переключись», «смени»). Названный в реплике жанр («на рок», «только техно») — новый стиль."""
+    words = _theme_words(extract_user_utterance(text or ""))
+    return asks_same_theme(text) or any(w in SET_SWITCH_WORDS and w not in _THEME_AND_STYLE_NOUNS for w in words)
+
+
 def asks_to_continue_set(text: Optional[str]) -> bool:
-    """В реплике просьба продолжить сет (слово :data:`SET_CONTINUE_WORDS`). Новая тема в той же реплике важнее —
-    это решает ``dj_set`` по теме из слов реплики (``theme_grounding.heard_theme``)."""
-    return any(w in SET_CONTINUE_WORDS for w in _theme_words(extract_user_utterance(text or "")))
+    """В реплике просьба продолжить сет (слово :data:`SET_CONTINUE_WORDS`) или оставить тему прежней при смене
+    стиля (:func:`asks_to_keep_theme`). Новая тема в той же реплике важнее — это решает ``dj_set`` по теме из слов
+    реплики (``theme_grounding.heard_theme``)."""
+    words = _theme_words(extract_user_utterance(text or ""))
+    return any(w in SET_CONTINUE_WORDS for w in words) or asks_to_keep_theme(text)
 
 
 def is_spoken_theme_set(text: str) -> bool:
@@ -1029,6 +1077,10 @@ __all__ = [
     "NO_COMMAND",
     "SET_CONTINUE_WORDS",
     "SET_REQUEST_WORDS",
+    "SET_SAME_WORDS",
+    "SET_SWITCH_WORDS",
+    "asks_same_theme",
+    "asks_to_keep_theme",
     "asks_to_continue_set",
     "asks_for_set",
     "dj_persona_span",
