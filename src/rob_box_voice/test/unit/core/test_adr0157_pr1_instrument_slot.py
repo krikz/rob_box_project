@@ -68,6 +68,20 @@ def test_mode_and_instrument_slot(text, mode, instrument):
     assert instrument_in(text) == instrument
 
 
+@pytest.mark.parametrize("text,instrument", [
+    ("Робот, сыграй джаз на ситаре", "sitar"), ("сыграй на ситаре", "sitar"), ("сыграй что-нибудь на гитаре", "guitar"),
+    ("Робот, сыграй джаз на ситаре!!!", "sitar"), ("сыграй на ситоре", "sitar"), ("сыграй на банджо", ""),
+])
+def test_sitar_is_its_own_instrument_not_a_typo_of_guitar(text, instrument):
+    """#3592: «ситаре» играл гитару (одна правка от «гитаре»); теперь ситар — строка таблицы, гитара остаётся гитарой."""
+    assert instrument_in(text) == instrument
+
+
+def test_sitar_phrase_is_built_by_code_from_the_result():
+    """Фраза об инструменте — от кода по ``instrument`` результата: «Играю на ситаре.»"""
+    assert instrument_text({"instrument": "sitar", "instrument_played": "sitar"}) == "Играю на ситаре."
+
+
 @pytest.mark.parametrize("text,name,instrument", [
     ("сыграй Баха на Балалайке", "баха", "balalaika"),
     ("сфграй баха на балалайке", "баха", "balalaika"),
@@ -106,7 +120,7 @@ def test_set_orders_are_not_changed():
 def test_honest_degradation_phrase_is_built_from_the_table():
     """Решение Шифу В2: пака нет — «могу сыграть на <соседи из таблицы>» и играет первым соседом."""
     assert instrument_text({"instrument": "balalaika", "instrument_played": "guitar"}) == (
-        "Для балалайки у меня нет пака, могу сыграть на гитаре или на арфе — играю на гитаре.")
+        "Для балалайки у меня нет пака, могу сыграть на гитаре или на арфе или на ситаре — играю на гитаре.")
     assert instrument_text({"instrument": "trombone", "instrument_played": "trombone"}) == "Играю на тромбоне."
     assert instrument_text({"instrument": "flute", "instrument_played": ""}) == (
         "Для флейты у меня нет пака — играю своим звуком.")
@@ -126,7 +140,7 @@ def test_named_play_phrase_comes_from_the_request_music_result():
     outcome = asyncio.run(run_named_play(execute, parse_media_command("сыграй Баха на балалайке").name))
     assert outcome.status is NamedPlayStatus.PLAYED and calls[0] == ("lookup_melody", {"name": "баха"})
     assert outcome_text(outcome, "Баха") == (
-        "Ставлю «Баха». Для балалайки у меня нет пака, могу сыграть на гитаре или на арфе — играю на гитаре.")
+        "Ставлю «Баха». Для балалайки у меня нет пака, могу сыграть на гитаре или на арфе или на ситаре — играю на гитаре.")
 
 
 def test_llm_turn_phrase_about_the_instrument_is_code():
