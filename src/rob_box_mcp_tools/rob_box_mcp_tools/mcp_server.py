@@ -56,6 +56,8 @@ from rob_box_voice.core.music_player_state import (
 )
 
 from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
+from .engine.gen.kie_suno import KieSunoProvider
+from .engine.gen.song import SongStudio, current_voice, harness_lyrics_ask
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.renardo_runtime import RenardoRuntime
@@ -232,6 +234,20 @@ def _speaker(node: Any) -> Callable[[str], None]:
     return lambda line: node.registry.execute("speak_text", text=line)
 
 
+def _song_studio(node: Any) -> Optional[SongStudio]:
+    """Песня голосом робота (ADR-0158 PR-7): нужны ключ KIE и LLM для текстов; нет — ``None`` (``not_wired`` во фразе).
+    Голос — провайдер из ``/voice/tts/provider_state`` и ``VoiceStateStore`` (ставится позже, читаем лениво)."""
+    provider, lyrics = KieSunoProvider(), harness_lyrics_ask(log=node.get_logger)
+    if lyrics is None or not provider.configured():
+        node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
+        return None
+    return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
+                      lambda: current_voice(getattr(node, "actual_tts_provider", None),
+                                            getattr(node, "_voice_store", None)),
+                      play=lambda track_id: node.registry.execute("gen_play_from_library", track_id=track_id),
+                      speak=_speaker(node), log=node.get_logger)
+
+
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
@@ -276,7 +292,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                # читаем лениво; трек кэша играет gen_play_from_library на деке (PR-2)
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
-                                                                                  track_id=track_id))
+                                                                                  track_id=track_id),
+                               songs=_song_studio(node))
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
@@ -877,6 +894,7 @@ class MCPServer(Node):
         # set_voice персистентно меняет голос на диалог, speak_text без
         # voice= говорит установленным голосом (Q7).
         voice_store = VoiceStateStore()
+        self._voice_store = voice_store  # песня голосом робота читает установленный голос (ADR-0158 PR-7)
         self.registry.register(SpeakTextTool(self, voice_store=voice_store))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))

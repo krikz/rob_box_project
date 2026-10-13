@@ -3,9 +3,10 @@
 Чистая часть — ``rob_box_music.source`` (кандидаты, фильтры, фразы); здесь — то, что читает диск: треки
 ``/data/music_library`` (``engine.gen.library``) и остаток дневного лимита (``engine.gen.budget`` по ``gen_ledger``).
 
-Генерация в этом PR не подключена: исполнителя (песня — PR-7, сет — PR-8, звук mp3 через деки — PR-2) нет, поэтому
-``SourceContext.gen_ready=False`` и кандидатов ``generate:*`` нет никогда — с причиной ``not_wired`` во фразе кода.
-Баланс KIE на пути заказа не спрашивается (сеть): пока генерации нет, он не нужен.
+Исполнитель генерации — ``SongStudio`` (PR-7, ``engine.gen.song``): он поёт текущим голосом, поэтому
+``gen_ready`` истинно только для просьбы спеть (``ask.vocal``) и только когда студия подключена; инструментал и кавер
+(PR-4/PR-8) исполнителя не имеют — кандидатов ``generate:*`` для них нет, с причиной ``not_wired`` во фразе кода.
+Баланс KIE на пути заказа не спрашивается (сеть): неизвестный баланс — ``None``, 402 провайдера приведёт к выбору заново.
 
 Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>``.
 """
@@ -18,8 +19,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
-from rob_box_music.source import (CacheTrack, Route, SourceAsk, SourceContext, choose_with_fallback,
-                                  source_candidates)
+from rob_box_music.source import CacheTrack, Route, SourceAsk, SourceContext, choose_route, source_candidates
 
 _LOG = logging.getLogger(__name__)
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
@@ -45,7 +45,8 @@ def cache_track(row: Any, now: datetime) -> CacheTrack:
     style = next((s for s in (row.get("style_key"), row.get("genre")) if s in kn.GEN_STYLES), "")
     title = str(row.get("title") or "")
     return CacheTrack(str(row["id"]), title, kind, style, instrumental, int(row.get("rating") or 0),
-                      _hours_ago(row.get("last_played_at"), now), str(row.get("task_id") or f"{kind}|{title}"))
+                      _hours_ago(row.get("last_played_at"), now), str(row.get("task_id") or f"{kind}|{title}"),
+                      str(row.get("voice") or ""))
 
 
 def cache_tracks(library: Any, now: Optional[datetime] = None) -> Tuple[CacheTrack, ...]:
@@ -69,29 +70,38 @@ def day_left(library: Any) -> float:
 
 
 class SourceRouter:
-    """Путь заказа: контекст (кэш, лимит) → ``choose_with_fallback`` → строка лога. ``library`` — ленивый доступ к
+    """Путь заказа: контекст (кэш, лимит) → ``choose_route`` → строка лога. ``library`` — ленивый доступ к
     ``GeneratedMusicLibrary`` (её поднимает ``mcp_server`` позже движка v2; нет — кэш пуст)."""
 
     def __init__(self, chooser: Chooser, library: Callable[[], Any] = lambda: None,
-                 log: Callable[[], Any] = lambda: _LOG, mode: str = "auto") -> None:
+                 log: Callable[[], Any] = lambda: _LOG, mode: str = "auto", studio: Any = None) -> None:
         self._chooser = chooser
         self._library = library
         self._log = log
         self._mode = mode
+        self._studio = studio  # ``SongStudio`` (PR-7): исполнитель генерации песни голосом робота; нет — ``not_wired``
 
-    def context(self) -> SourceContext:
+    def context(self, ask: Optional[SourceAsk] = None) -> SourceContext:
         library = self._library()
         try:
             cache, left = cache_tracks(library), day_left(library)
         except Exception as exc:  # noqa: BLE001 — кэш не держит заказ: без него остаются синтез и отказ
             self._log().warning(f"⚠️ [source] кэш генераций не прочитан: {type(exc).__name__}: {exc}")
             cache, left = (), 0.0
-        return SourceContext(cache=cache, gen_ready=False, day_left=left, mode=self._mode)
+        studio = self._studio
+        if studio is None:
+            return SourceContext(cache=cache, gen_ready=False, day_left=left, mode=self._mode)
+        return SourceContext(cache=cache, gen_ready=bool(ask is not None and ask.vocal), has_key=studio.has_key(),
+                             provider_ok=studio.provider_ok(), day_left=left, mode=self._mode,
+                             voice=studio.voice_id())
 
-    def route(self, ask: SourceAsk, piece: bool = False) -> Route:
-        ctx = self.context()
+    def route(self, ask: SourceAsk, piece: bool = False, gen_failed: str = "") -> Route:
+        """``gen_failed`` — выбор заново без ``generate:*`` (В3): генерация упала или ещё идёт (``pending``)."""
+        ctx = self.context(ask)
+        if gen_failed:
+            ctx = ctx.without_generate(gen_failed)
         options, reason = source_candidates(ask, ctx, piece)
-        route = choose_with_fallback(ask, ctx, self._chooser, piece=piece)
+        route = choose_route(ask, ctx, self._chooser, piece=piece)
         listed: List[str] = [o.id for o in options]
         self._log().info(f"🎚️ [source] {ask.describe()} кандидаты={listed} → {route.id} ({route.provider or 'code'}) "
                          f"gen={reason or 'ok'}")

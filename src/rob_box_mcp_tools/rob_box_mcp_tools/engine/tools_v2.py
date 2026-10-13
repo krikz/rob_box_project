@@ -50,12 +50,14 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
-                                  source_ask)
+from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text,
+                                  route_note, source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
+from .gen.song import SongStudio
+from .song_order import SongOrder
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .reasoner import SetPlanBox, SetReasoner
@@ -605,7 +607,8 @@ class RequestMusicTool(MCPTool):
                  tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE,
                  slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None,
                  gen_library: Callable[[], Any] = lambda: None,
-                 play_cached: Optional[Callable[[str], MCPToolResult]] = None) -> None:
+                 play_cached: Optional[Callable[[str], MCPToolResult]] = None,
+                 songs: Optional[SongStudio] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -618,7 +621,9 @@ class RequestMusicTool(MCPTool):
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
                                   classic or classic_picker(library), history, chooser=chooser, log=self._log)
         # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
-        self._source = SourceRouter(chooser, gen_library, log=self._log)
+        self._source = SourceRouter(chooser, gen_library, log=self._log, studio=songs)
+        self._songs = songs  # песня голосом робота (ADR-0158 PR-7): фоновая генерация, пока играет мост
+        self._song_order = SongOrder(songs, self._source.route)
         self._play_cached = play_cached  # трек кэша — gen_play_from_library: дека владельца (ADR-0158 PR-2)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
         # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
@@ -678,7 +683,7 @@ class RequestMusicTool(MCPTool):
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
               turn_id: Optional[str] = None, heard_text: Optional[str] = None,
-              ask: Optional[SourceAsk] = None) -> MCPToolResult:
+              ask: Optional[SourceAsk] = None, gen_failed: str = "") -> MCPToolResult:
         """Заказ: путь музыки решает код (ADR-0158 PR-3) по просьбе ``ask`` (нет — слова реплики хода), затем
         синтез/пьеса как раньше, трек кэша (:meth:`_play_cache`) или честный отказ с фразой кода."""
         set_id = self._dj.started_in_turn(turn_id)
@@ -688,9 +693,10 @@ class RequestMusicTool(MCPTool):
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
-        route = self._source.route(ask or source_ask(heard_text or text), piece=classic)
+        ask = ask or source_ask(heard_text or text)
+        route = self._source.route(ask, piece=classic, gen_failed=gen_failed)
         if route.kind != SYNTH:
-            return self._off_synth(route, what)
+            return self._off_synth(route, what, ask, (intent, text, mood, genre, turn_id, heard_text))
         staged = self._stage(route, classic, text, mood, heard_text)
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
@@ -720,8 +726,12 @@ class RequestMusicTool(MCPTool):
             staged["source_note"] = note
         return staged
 
-    def _off_synth(self, route: Route, what: str) -> MCPToolResult:
-        """Путь не синтез: трек кэша (есть шов проигрывания) или честный отказ с фразой кода — без тихой подмены."""
+    def _off_synth(self, route: Route, what: str, ask: SourceAsk, args: Tuple[Any, ...]) -> MCPToolResult:
+        """Путь не синтез: песня голосом робота (PR-7), трек кэша (есть шов проигрывания) или честный отказ с фразой
+        кода — без тихой подмены."""
+        if route.kind == GENERATE and self._songs is not None:
+            kind, data = self._song_order.start(ask, args, self.order)
+            return data if kind == "raw" else tool_result(data, "песня не заиграла")
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
             return self._play_cache(route, what)
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
