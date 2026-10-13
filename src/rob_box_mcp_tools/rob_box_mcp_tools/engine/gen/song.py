@@ -45,6 +45,8 @@ MIN_LINES = 6
 MIN_CHARS = 120
 #: Доля букв нужного письма в тексте песни (куплет с парой чужих слов — ещё свой язык, смесь языков — нет).
 SCRIPT_SHARE = 0.85
+#: ``add-instrumental`` отвечает 422 «Please enter negativeTags» без этого поля (прогон 13.10): что Suno не должен петь/добавлять.
+NEGATIVE_TAGS = "spoken word, rap, off-key vocals, laughter, crowd noise"
 #: Жанр, если человек не назвал (``GEN_STYLES``).
 DEFAULT_GENRE = "rock"
 #: Ждать ответ LLM с текстом, секунд (HTTP-таймаут того же размера).
@@ -298,7 +300,7 @@ class SongStudio:
         try:
             vocal = self._sing(provider, voice, song.lyrics, f"{workdir}/vocal")
             genre, tags = song_tags(request, preset.tags_hint)
-            job = GenJob(kind="robot_song", style_key=genre, title=song.title, style_tags=tags, lyrics=song.lyrics,
+            job = GenJob(kind="robot_song", style_key=genre, title=song.title, style_tags=tags, negative_tags=NEGATIVE_TAGS, lyrics=song.lyrics,
                          audio_path=vocal.path, audio_weight=preset.audio_weight, vocal_gender=preset.vocal_gender)
             made = generate_into_cache(self._provider, library, Budget(library), job, theme=request.theme,
                                        tts_provider=provider, voice=voice)
