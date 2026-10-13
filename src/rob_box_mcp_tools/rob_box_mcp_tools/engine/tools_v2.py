@@ -183,9 +183,11 @@ def word_hooks(library_factory: Callable[[], Any]) -> WordHooks:
     return lambda word: theme_search(library(), word)
 
 
-def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None) -> ThemeFinder:
+def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None,
+                 ask: bool = True) -> ThemeFinder:
     """``тема -> ThemeHits`` по её словам (``engine.search.theme_search``); библиотека — при первой теме. Часть без
-    находок — через связи реестра и проверенные каталогом строки поиска LLM (``engine.theme_links``, #3493)."""
+    находок — через связи реестра и проверенные каталогом строки поиска LLM (``engine.theme_links``, #3493); ``ask=False`` — без вопроса LLM (одиночная пьеса: ответ
+    не ждётся на пути звука, #3608), только хранилище связей."""
     box: Dict[str, Any] = {}
 
     def find(theme: str) -> ThemeHits:
@@ -198,7 +200,7 @@ def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks]
         if links is None:
             return hits
         try:
-            return links.expand(box["lib"], theme, hits)
+            return links.expand(box["lib"], theme, hits, ask=ask)
         except Exception as exc:  # noqa: BLE001 — прямые находки не теряются из-за хранилища связей
             _LOG.warning(f"⚠️ [dj_set] связи темы «{theme}» упали: {type(exc).__name__}: {exc}")
             return hits
@@ -310,7 +312,9 @@ class DjSetTool(MCPTool):
         self._speak = speak
         library = self.library = _shared(_rtttl_library)  # одна библиотека RTTTL на сет и одиночную пьесу
         self._melodies = melodies or library_melodies(library)
-        self._find = finder or theme_finder(library, theme_links(node, self._reasoner))
+        links = theme_links(node, self._reasoner)
+        self._find = finder or theme_finder(library, links)
+        self._find_work = finder or theme_finder(library, links, ask=False)  # одиночная пьеса: LLM не на пути звука
         self._not_found: Tuple[str, ...] = ()  # названное в теме, из чего не нашлось ничего: сет не стартует (#3493)
         if scores is None:
             scores = ScoreLibrary()
@@ -419,10 +423,10 @@ class DjSetTool(MCPTool):
             return None
         return session.set_id
 
-    def _hits(self, theme: str, log: Any) -> ThemeHits:
+    def _hits(self, theme: str, log: Any, find: Optional[ThemeFinder] = None) -> ThemeHits:
         """Находки по словам темы (поиск, связи ``theme_links``); поиск упал — пусто, причина в лог."""
         try:
-            return self._find(theme)
+            return (find or self._find)(theme)
         except Exception as exc:  # noqa: BLE001 — поиск не держит звук: сет играет пул по хешу темы
             log.warning(f"⚠️ [dj_set] поиск мелодий темы «{theme}» упал: {type(exc).__name__}: {exc}")
             return ThemeHits()
@@ -432,7 +436,7 @@ class DjSetTool(MCPTool):
         темы сета, но без строки таблицы тем (она про тему, а не про пьесу) и без состояния сета; партитуры
         произведения — ``ScoreLibrary.work_candidates`` (``engine.piece``)."""
         log = self.node.get_logger() if self.node is not None else _LOG
-        hits = self._hits(work, log)
+        hits = self._hits(work, log, self._find_work)
         log.info(f"🎼 [classic] «{work}»: хуки={list(hits.names)}; партитуры: {self._scores.state}")
         return hits
 
@@ -691,7 +695,8 @@ class RequestMusicTool(MCPTool):
         if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
             from rob_box_voice.core.media_phrases import composer_missing_text
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
-                    "composer_missing": True, "message": composer_missing_text(work)}
+                    "composer_missing": True,
+                    "message": composer_missing_text(str(played.get("composer") or ""))}
         if pick is None and not count:
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
         if pick is None:

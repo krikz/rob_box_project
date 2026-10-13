@@ -914,6 +914,7 @@ class WorkWord:
 
     alts: Tuple[str, ...] = ()
     latin: Tuple[str, ...] = ()
+    said: str = ""  # слово словами человека («вагнера») — для фразы кода (#3608), в сравнении слов не участвует
 
     @property
     def spellings(self) -> Tuple[str, ...]:
