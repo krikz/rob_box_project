@@ -45,7 +45,6 @@ def node():
 
     # Для _build_dynamic_system_context
     n.get_parameter = MagicMock(return_value=MagicMock(value="minimax"))
-    n._generated_music_state = {}
     return n
 
 
