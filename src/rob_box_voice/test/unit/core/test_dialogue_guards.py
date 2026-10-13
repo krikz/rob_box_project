@@ -736,7 +736,7 @@ class TestWatchdogStopClearsTheFlagLive3108:
 
         1788186658  [watchdog] Авто-стоп 1 паттернов: reason=idle_ttl
         1788186797  [track-mode] TRACK играет с прошлого хода
-        1788186797  [Bug C] LLM skipped execute_music_code; publishing nudge
+        1788186797  [Bug C] LLM skipped music-launch tool; publishing nudge
                     TTS: «Я тут растерялся — бит не запустился»
 
     Через 139 секунд после реальной остановки диалог всё ещё считал, что
@@ -840,7 +840,7 @@ class TestPlanningNarration:
     def test_tool_name_alone_is_enough(self) -> None:
         """Идентификатор в snake_case, прочитанный вслух, — всегда баг,
         независимо от того, о чём просил юзер."""
-        assert is_planning_narration("Готово, execute_music_code отработал.")
+        assert is_planning_narration("Готово, gen_play_from_library отработал.")
 
     def test_planning_narration_counts_as_babble(self) -> None:
         """Ретрай-механика Bug D переиспользуется как есть."""
@@ -1362,7 +1362,7 @@ class TestPhantomActionClaimLive2559:
             ("Проверю состояние музыки.", "get_music_state"),
             ("Установлю голос Алексей.", "set_voice"),
             ("Перезагружу сервис микрофона.", "restart_mic"),
-            ("Запущу мелодию.", "execute_music_code"),
+            ("Запущу мелодию.", "request_music"),
             ("Остановлю воспроизведение.", "stop_music"),
             ("Поменяю плейлист.", "gen_play_from_library"),
             ("Загружу новый трек.", "gen_play_from_library"),

@@ -2637,7 +2637,7 @@ if [ -n "$SCENARIO_FILE" ]; then
     # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
     #           "patterns":["save_speaker_profile"],
     #           "acceptance":{"expected_tool_calls":["generate_music"],
-    #                         "must_not_call":["execute_music_code"],
+    #                         "must_not_call":["request_music"],
     #                         "expected_keywords":["песня"],
     #                         # issue #2406: тул ДО голосового ответа
     #                         "discovery_tools":["register_speaker"],
@@ -2727,7 +2727,7 @@ if [ -n "$SCENARIO_FILE" ]; then
         expect="$(classify_step_expect "$expect_raw" "$text")"
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
-        # (execute_music_code не вызван), повторяем команду (e2e run 32595628905).
+        # (request_music не вызван), повторяем команду (e2e run 32595628905).
         # issue #2902: повтора НЕТ, если проваленная попытка изменила
         # состояние робота (регистрация принята/склеена, задан вопрос о
         # личности, речь совпала с when_robot_asked следующего шага) — итог

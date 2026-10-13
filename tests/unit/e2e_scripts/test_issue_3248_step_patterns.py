@@ -39,7 +39,7 @@ COMPOSE_CALL = (
 )
 CATALOG_DUMP = (
     "[dialogue_node-4]   tools(61): add_music_material, clear_waypoints, compose_music, "
-    "continue_mapping, execute_music_code, gen_get_track_info, set_voice, speak_text"
+    "continue_mapping, request_music, gen_get_track_info, set_voice, speak_text"
 )
 
 
@@ -76,7 +76,7 @@ def test_ml01_matches_real_music_call_not_catalog_or_dead_tool() -> None:
     pats = _steps("music_library_suite_v1.json")["ml01_generate_romantic"]["patterns"]
     assert "generate_music" not in pats
     assert _hits(pats, COMPOSE_CALL)
-    assert _hits(pats, COMPOSE_CALL.replace("compose_music", "execute_music_code"))
+    assert _hits(pats, COMPOSE_CALL.replace("compose_music", "request_music"))
     assert not _hits(pats, CATALOG_DUMP), "имя тула в дампе каталога — не вызов"
 
 

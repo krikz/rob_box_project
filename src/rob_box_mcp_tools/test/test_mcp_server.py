@@ -76,6 +76,9 @@ class _FakeServer:
     def stop_generated_track_playback(self):
         self.stop_generated_track_playback_calls += 1
 
+    def _register_gen_library_tools(self):
+        self.gen_library_registered = True
+
     def _arm_form_end_timer(self, remaining_s):
         # Issue #3133 — записываем, на что взводился бы таймер конца формы.
         self.__dict__.setdefault("armed_form_end", []).append(remaining_s)
@@ -186,6 +189,7 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "MemorySearchTool": "memory_search",
         "MemoryContextTool": "memory_context",
         "StopMusicTool": "stop_music",
+        "LookupMelodyTool": "lookup_melody",
         "GetMusicStateTool": "get_music_state",
         "SetMusicVolumeTool": "set_music_volume",
         "FaqSearchTool": "faq_search",
@@ -216,12 +220,6 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         return _make_tool_class(name)
 
     tools_module.__getattr__ = _tools_module_fallback
-
-    class TrackLibrary:
-        def __init__(self, *args, **kwargs):
-            raise FileNotFoundError("missing 004_music_library.sql")
-
-    tools_module.TrackLibrary = TrackLibrary
 
     rclpy_node.Node = Node
     rclpy_callback_groups.ReentrantCallbackGroup = ReentrantCallbackGroup
@@ -273,12 +271,18 @@ class _FakeRuntime:
 
 
 @pytest.mark.unit
-def test_register_tools_skips_track_library_failures_without_crashing(monkeypatch):
+def test_register_tools_registers_music_tools_without_track_library(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
     server = _FakeServer()
     server._register_music_tools = lambda: module.MCPServer._register_music_tools(server)
 
     module.RenardoRuntime = _FakeRuntime  # без Renardo/scsynth: подъём звукового сервера — свой тест
+
+    class _FakeRtttl:
+        def total(self):
+            return 3
+
+    module.RtttlLibrary = _FakeRtttl
 
     module.MCPServer._register_tools(server)
 
@@ -286,8 +290,9 @@ def test_register_tools_skips_track_library_failures_without_crashing(monkeypatc
     assert {"stop_music", "get_music_state", "set_music_volume"} <= set(server.registry.tools)
     assert "execute_music_code" not in server.registry.tools  # #3614: старый путь удалён
     assert server._renardo_runtime.gain == 0.7 and server._renardo_runtime.logger is server.get_logger()
-    assert "lookup_melody" not in server.registry.tools  # нужна библиотека треков
-    assert any("Music library disabled" in msg for msg in server.get_logger().error_messages)
+    assert not hasattr(module, "TrackLibrary")  # #3614: SQLite-медиатека треков с готовым Renardo-кодом удалена
+    assert "lookup_melody" in server.registry.tools  # ноты — только из RTTTL-архива
+    assert server.gen_library_registered  # раньше падение TrackLibrary обрывало регистрацию до gen_*
 
 
 @pytest.mark.unit

@@ -58,7 +58,7 @@ dialogue_node:
     # 🔴 3000, а не 500 (02.09.2026). До #1883 (fe35b448) значение из YAML
     # до провайдера НЕ доезжало, и лимит был провайдерский. После фикса оно
     # реально уходит в API — и 500 токенов перестало вмещать tool-call:
-    # аргументы execute_music_code / compose_music (код трека, progression,
+    # аргументы тулов музыки (код трека, progression,
     # план сета на 4-8 треков) режутся на finish_reason='length', JSON
     # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
     # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
@@ -67,7 +67,7 @@ dialogue_node:
     enable_mcp_tools: true
     # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
     # MAP) обрабатывает command_node, dialogue_node НЕ дублирует их через
-    # LLM (иначе LLM интерпретирует «вперёд» как музыку → execute_music_code
+    # LLM (иначе LLM интерпретирует «вперёд» как музыку → запуск музыки
     # вместо движения). True = команды не идут в LLM.
     command_intent_gate_enabled: true
     # Порог уверенности CommandParser (совпадает с command_node.yaml

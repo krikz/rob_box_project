@@ -6,7 +6,7 @@
     "⚠️ НАМЕРЕННО МЯГКИЙ. Это диагностическая сьюта: её задача — не пройти, а показать.",
     "В expected_tool_calls вынесены только те вызовы, отсутствие которых означало бы",
     "поломку УЖЕ РАБОТАЮЩЕЙ функциональности (регрессия), а не известную дыру:",
-    "  set_dj_mode / execute_music_code / stop_music — DJ и Renardo работают сегодня",
+    "  set_dj_mode / request_music / stop_music — DJ и Renardo работают сегодня",
     "  get_current_time                              — wake-word под музыкой (ADR-RT-0068)",
     "  register_speaker                              — регистрация голоса работает",
     "  speak_text                                    — базовая озвучка",
@@ -22,7 +22,7 @@
   ],
   "expected_tool_calls": [
     "set_dj_mode",
-    "execute_music_code",
+    "request_music",
     "stop_music",
     "get_current_time",
     "register_speaker",

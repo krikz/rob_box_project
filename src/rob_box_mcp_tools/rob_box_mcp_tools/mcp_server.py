@@ -102,7 +102,6 @@ from .tools import (
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
-    TrackLibrary,
     RtttlLibrary,
     StopMusicTool,
     GetMusicStateTool,
@@ -163,7 +162,7 @@ except ImportError:
 # facade over SQLiteVoiceMemory) — gated by this env var so production can
 # roll back to the legacy VoiceMemory without code edits.
 #
-# WaypointStore, FAQStore and TrackLibrary (tools/music.py) are NOT part of
+# WaypointStore and FAQStore are NOT part of
 # this switch and stay on ``VOICE_MEMORY_DB_PATH`` (default
 # /data/voice_memory.db) regardless of this flag. Investigated for Phase 2
 # (issue #2000) and rejected as a plain path swap: SQLiteVoiceMemory already
@@ -576,8 +575,6 @@ class MCPServer(Node):
         # --------------------------------------------------------------
         # dialogue_node публикует в /mcp/music_cleanup конец речи/диалога и
         # явные стопы; мягкие причины деку не трогают (_cleanup_spares_deck).
-        # Сторож простоя (auto_stop_idle_music) старого пути удалён в #3614:
-        # его часы ставил только execute_music_code, у движка v2 он молчал.
         # Subscribe to /mcp/music_cleanup — payload is JSON like
         # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
         # payload defaults to dialogue_end.
@@ -986,17 +983,8 @@ class MCPServer(Node):
             # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
             self.registry.register(SetMusicVolumeTool(self, runtime))
 
-        try:
-            track_library = TrackLibrary()
-        except Exception as exc:
-            self.get_logger().error(
-                f"❌ Music library disabled: TrackLibrary init failed: {exc}"
-            )
-            return
-
-        self._track_library = track_library
-        self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
-        self.registry.register(LookupMelodyTool(self, track_library, rtttl_library))
+        if rtttl_library is not None:
+            self.registry.register(LookupMelodyTool(self, rtttl_library))
 
         # Issue #1392 / ADR-0158 — библиотека сгенерированных треков (кэш).
         # Graceful degradation: любой сбой (нет /data, ImportError) выключает

@@ -17,7 +17,7 @@
 #
 # Требует реального LLM, способного:
 #   1) увидеть [SEGMENT PLAN] с REWRITEABLE_SEGMENTS в system-контексте,
-#   2) вызвать task_delta вместо повторного execute_music_code/speak_text
+#   2) вызвать task_delta вместо повторного запуска музыки/speak_text
 #      с чистого листа.
 # На маленьких локальных моделях (qwen2.5:0.5b) это не гарантировано —
 # assert_task_event специально проверяет ФАКТ вызова task_delta через

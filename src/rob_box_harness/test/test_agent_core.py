@@ -372,7 +372,7 @@ def test_system_prompt_is_prepended_when_configured(
 
     Regression: dialogue_node loaded _system_prompt but never passed it
     to AgentCore — deepseek was running WITHOUT a system prompt, so
-    every rule (ALWAYS execute_music_code, NO METALANGUAGE, ...) was
+    every rule (ALWAYS gen_play_from_library, NO METALANGUAGE, ...) was
     silently dropped. Found via verbose LLM trace: messages had no
     [0] system entry. (#992)
     """
@@ -381,13 +381,13 @@ def test_system_prompt_is_prepended_when_configured(
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
-        system_prompt="ТЫ ДИДЖЕЙ. ВСЕГДА вызывай execute_music_code.",
+        system_prompt="ТЫ ДИДЖЕЙ. ВСЕГДА вызывай gen_play_from_library.",
     )
     _wake(obj)
     asyncio.run(obj.process_input("сыграй баха"))
     sent = llm.calls[0][0]
     assert sent[0].role == "system"
-    assert "execute_music_code" in sent[0].content
+    assert "gen_play_from_library" in sent[0].content
     # user message follows the system prompt
     assert sent[1].role == "user"
     assert sent[1].content == "сыграй баха"
@@ -2288,20 +2288,20 @@ def test_order_tool_calls_puts_stop_music_after_speak_text() -> None:
     assert deferred == {"c2"}
 
 
-def test_order_tool_calls_music_prelude_before_speak_text() -> None:
-    """Music tools run before voice; destructive tools run last."""
+def test_order_tool_calls_destructive_last_ordinary_keep_order() -> None:
+    """Ordinary tools keep their relative order; destructive tools run last (no music prelude since #3614)."""
     from rob_box_harness.core.agent_core import _order_tool_calls
 
     ordered, deferred = _order_tool_calls(
         [
             _call("c1", "stop_music"),
             _call("c2", "speak_text"),
-            _call("c3", "execute_music_code"),
+            _call("c3", "gen_play_from_library"),
         ]
     )
     assert [c.name for c in ordered] == [
-        "execute_music_code",
         "speak_text",
+        "gen_play_from_library",
         "stop_music",
     ]
     assert deferred == {"c1"}

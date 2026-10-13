@@ -11,7 +11,7 @@
   ],
   "expected_tool_calls": [
     "speak_text",
-    "execute_music_code",
+    "request_music",
     "stop_music"
   ],
   "must_not_call": [],

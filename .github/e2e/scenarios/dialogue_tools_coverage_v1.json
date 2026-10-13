@@ -66,8 +66,8 @@
       "patterns": ["get_music_state"],
       "acceptance": {
         "expected_tool_calls": ["get_music_state"],
-        "must_not_call": ["execute_music_code"],
-        "_comment": "Не покрыт. must_not_call execute_music_code принципиален: в мастер-промпте есть правило «get_music_state только для ПРОВЕРКИ, он НЕ запускает музыку». Если LLM на вопрос о состоянии начинает играть — это регрессия правила."
+        "must_not_call": ["request_music"],
+        "_comment": "Не покрыт. must_not_call request_music принципиален: в мастер-промпте есть правило «get_music_state только для ПРОВЕРКИ, он НЕ запускает музыку». Если LLM на вопрос о состоянии начинает играть — это регрессия правила."
       }
     },
     {

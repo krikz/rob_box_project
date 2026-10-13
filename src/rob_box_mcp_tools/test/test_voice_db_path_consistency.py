@@ -1,8 +1,7 @@
 """test_voice_db_path_consistency.py — ADR-0055 Phase 2 blocker regression guard.
 
 Issue #2000 Phase 2 asked to point every SQLite-backed store MCP tools own
-(``WaypointStore``, the legacy ``VoiceMemory`` fallback, ``FAQStore``,
-``TrackLibrary``) at the same file the dialogue node uses
+(``WaypointStore``, the legacy ``VoiceMemory`` fallback, ``FAQStore``) at the same file the dialogue node uses
 (``/data/harness_voice.db``). That merge was investigated for this card and
 rejected: ``SQLiteVoiceMemory`` (harness, ``rob_box_harness/memory/sqlite_voice.py``)
 already defines its own ``waypoints`` (``name`` TEXT PRIMARY KEY) and
@@ -18,14 +17,14 @@ INSERT/SELECT issued by the other store would then fail with "no such
 column".
 
 Until that reconciliation happens (a real schema-mapping adapter, not a
-path swap), ``WaypointStore`` / ``FAQStore`` / ``TrackLibrary`` / the legacy
+path swap), ``WaypointStore`` / ``FAQStore`` / the legacy
 ``VoiceMemory`` fallback in ``mcp_server.py`` must all keep pointing at the
 SAME default file — today that is still ``/data/voice_memory.db`` — so a
 future well-intentioned edit does not quietly fork the "one file" invariant
 into three.
 
-This test does not instantiate the stores: ``WaypointStore``/``TrackLibrary``
-need real filesystem access under ``/data``, and ``mcp_server.py``'s inits
+This test does not instantiate the stores: ``WaypointStore``
+needs real filesystem access under ``/data``, and ``mcp_server.py``'s inits
 need the optional ``rob_box_voice`` package which may not be installed in
 CI. Instead it reads the literal fallback argument passed to
 ``os.getenv("VOICE_MEMORY_DB_PATH", <default>)`` at each call site and
@@ -40,7 +39,6 @@ from pathlib import Path
 _PKG_ROOT = Path(__file__).resolve().parents[1] / "rob_box_mcp_tools"
 _MCP_SERVER = _PKG_ROOT / "mcp_server.py"
 _WAYPOINT_STORE = _PKG_ROOT / "waypoint_store.py"
-_MUSIC = _PKG_ROOT / "tools" / "music.py"
 
 _PATTERN = re.compile(r'os\.getenv\(\s*"VOICE_MEMORY_DB_PATH"\s*,\s*"([^"]+)"\s*\)')
 
@@ -51,16 +49,15 @@ def _defaults(path: Path) -> list[str]:
 
 
 def test_all_voice_memory_db_path_call_sites_agree_on_one_default():
-    """WaypointStore, TrackLibrary and mcp_server.py's legacy call sites
+    """WaypointStore and mcp_server.py's legacy call sites
     must all fall back to the exact same literal path.
 
     mcp_server.py has three ``VOICE_MEMORY_DB_PATH`` reads (the legacy
-    VoiceMemory fact-store fallback, and FAQStore); waypoint_store.py and
-    tools/music.py each have one. All five must resolve to the same string.
+    VoiceMemory fact-store fallback, and FAQStore); waypoint_store.py
+    has one. All of them must resolve to the same string.
     """
     mcp_server_defaults = _defaults(_MCP_SERVER)
     waypoint_defaults = _defaults(_WAYPOINT_STORE)
-    music_defaults = _defaults(_MUSIC)
 
     assert len(mcp_server_defaults) >= 2, (
         "expected at least 2 VOICE_MEMORY_DB_PATH call sites in mcp_server.py "
@@ -68,12 +65,11 @@ def test_all_voice_memory_db_path_call_sites_agree_on_one_default():
         "— did a call site get renamed or removed?"
     )
     assert waypoint_defaults, "waypoint_store.py: no VOICE_MEMORY_DB_PATH default found"
-    assert music_defaults, "tools/music.py: no VOICE_MEMORY_DB_PATH default found"
 
-    all_defaults = set(mcp_server_defaults) | set(waypoint_defaults) | set(music_defaults)
+    all_defaults = set(mcp_server_defaults) | set(waypoint_defaults)
     assert len(all_defaults) == 1, (
         "VOICE_MEMORY_DB_PATH default literal has forked across call sites: "
-        f"{sorted(all_defaults)!r}. WaypointStore / FAQStore / TrackLibrary / "
+        f"{sorted(all_defaults)!r}. WaypointStore / FAQStore / "
         "the legacy VoiceMemory fallback in mcp_server.py must keep sharing "
         "one default file until the waypoints/faq_items schema collision "
         "with harness_voice.db (ADR-0055) is resolved by an actual adapter, "
@@ -89,7 +85,7 @@ def test_default_is_not_silently_repointed_at_harness_voice_db():
     or FAQStore's inserts fail at runtime against SQLiteVoiceMemory's
     pre-existing ``waypoints``/``faq_items`` tables there.
     """
-    for path in (_MCP_SERVER, _WAYPOINT_STORE, _MUSIC):
+    for path in (_MCP_SERVER, _WAYPOINT_STORE):
         for default in _defaults(path):
             assert "harness_voice.db" not in default, (
                 f"{path.name} now defaults VOICE_MEMORY_DB_PATH to "

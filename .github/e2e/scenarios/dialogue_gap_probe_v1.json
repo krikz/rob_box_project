@@ -38,9 +38,9 @@
       "label": "gp03_wake_under_music",
       "voice": "anton",
       "text": "Робот, сыграй renardo бит",
-      "patterns": ["execute_music_code"],
+      "patterns": ["request_music"],
       "acceptance": {
-        "expected_tool_calls": ["execute_music_code"],
+        "expected_tool_calls": ["request_music"],
         "must_not_call": [],
         "_comment": "Подготовка к gp04: нужен играющий звук."
       }

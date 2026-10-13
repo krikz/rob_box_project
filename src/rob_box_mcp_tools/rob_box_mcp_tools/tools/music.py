@@ -6,20 +6,11 @@ music.py - музыкальные тулы вокруг движка v2 (ADR-014
 - StopMusicTool: выключить всю музыку (сет, деку движка v2, mp3 из библиотеки)
 - GetMusicStateTool: что сейчас играет — по владельцу плеера v2 (#3613)
 - SetMusicVolumeTool: громкость музыки (мастер-фейдер scsynth)
-- TrackLibrary: персистентная медиатека треков (SQLite)
 - LookupMelodyTool / SearchMelodyTool: поиск мелодий в RTTTL-архиве
 
-Звук играет только движок v2 (``engine/``): старый путь «LLM пишет Renardo-код»
-(``MusicManager``, ``execute_music_code``) удалён в #3614; Renardo и scsynth
-поднимает ``engine.renardo_runtime.RenardoRuntime``.
+Звук играет только движок v2 (``engine/``); Renardo и scsynth поднимает ``engine.renardo_runtime.RenardoRuntime``.
 """
 
-import json
-import os
-import re
-import sqlite3
-import threading
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -370,309 +361,6 @@ class SetMusicVolumeTool(MCPTool):
         )
 
 
-# ---------------------------------------------------------------------------
-# TrackLibrary — персистентная медиатека треков (SQLite)
-# ---------------------------------------------------------------------------
-
-from pathlib import Path as _Path
-
-# Migration file lookup: Docker mounts repo migrations/ at /migrations,
-# dev/build environments find it relative to the package root.
-_MIGRATION_FILE = _Path("/migrations/004_music_library.sql")
-if not _MIGRATION_FILE.exists():
-    _MIGRATION_FILE = _Path(__file__).resolve().parents[4] / "migrations" / "004_music_library.sql"
-
-
-class TrackLibrary:
-    """Персистентная SQLite медиатека треков.
-
-    Использует ту же БД что и VoiceMemory/WaypointStore (VOICE_MEMORY_DB_PATH).
-    Миграция ``004_music_library.sql`` применяется идемпотентно при инициализации
-    (CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE для bootstrap-трека).
-
-    НЕ на ``/data/harness_voice.db`` (issue #2000 / ADR-0055): её таблицы
-    (``music_tracks``, ``generated_tracks``) сами по себе не конфликтуют со
-    схемой ``SQLiteVoiceMemory``, но ``WaypointStore``/``FAQStore`` — да
-    (см. их докстринги), а все три стора делят один и тот же
-    ``VOICE_MEMORY_DB_PATH``. Переносить музыку в одиночку значило бы
-    расщепить единый файл ещё сильнее, а не объединить. См.
-    ``docs/adr/0055-voice-memory-db-unify-with-harness.md`` (anti-goal §5.6).
-
-    Thread-safe: все публичные методы используют ``self._lock``.
-
-    Args:
-        db_path: Путь к SQLite-файлу. По умолчанию — из VOICE_MEMORY_DB_PATH
-                 или ``/data/voice_memory.db``.
-    """
-
-    def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
-        self._lock = threading.Lock()
-
-        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.row_factory = sqlite3.Row
-        self._apply_migration()
-
-    # ------------------------------------------------------------------
-    # Migration
-    # ------------------------------------------------------------------
-
-    def _apply_migration(self) -> None:
-        """Применить 004_music_library.sql идемпотентно (IF NOT EXISTS + INSERT OR IGNORE)."""
-        if not _MIGRATION_FILE.exists():
-            raise FileNotFoundError(
-                f"Миграция не найдена: {_MIGRATION_FILE}. "
-                "Проверьте volume монтирование migrations/ в docker-compose."
-            )
-        ddl = _MIGRATION_FILE.read_text(encoding="utf-8")
-        with self._lock:
-            self._conn.executescript(ddl)
-            self._conn.commit()
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    #: Кириллица → латиница для ``_slug``.
-    #:
-    #: 🔴 FIX (live 30.08, vision-pi): старый ``_slug`` заменял КАЖДЫЙ
-    #: не-ASCII символ на «_», поэтому любое русское имя превращалось в
-    #: строку подчёркиваний той же длины. В живой медиатеке лежит
-    #: ``('________________', 'комната_мудрости')``, а «тисбит» и «мурка»
-    #: столкнулись бы в один slug, будь они одной длины. Юзер просил
-    #: «сохрани как трек тисбит» — LLM, зная про это, каждый раз сама
-    #: придумывала латинский slug и придумывала РАЗНЫЙ: в базе лежат
-    #: ``tisbeat``, ``tisbit``, ``thisbit``, ``tinbit`` — четыре записи
-    #: одного трека, и ни одну из них не находит «удали трек тисбит».
-    _TRANSLIT: dict = {
-        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
-        "ё": "e", "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k",
-        "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
-        "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts",
-        "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
-        "э": "e", "ю": "yu", "я": "ya",
-    }
-
-    @classmethod
-    def _slug(cls, name: str) -> str:
-        """Имя трека → стабильный ASCII-slug.
-
-        Кириллица транслитерируется, всё остальное не-ASCII схлопывается
-        в «_», повторные «_» склеиваются. «тисбит» → ``tisbit`` при любом
-        регистре, поэтому «сохрани как тисбит» и «удали трек тисбит»
-        попадают в одну запись.
-        """
-        lowered = (name or "").lower().strip()
-        translit = "".join(cls._TRANSLIT.get(ch, ch) for ch in lowered)
-        slug = re.sub(r"[^a-z0-9_]", "_", translit)
-        # Схлопываем подряд идущие «_», чтобы «комната мудрости» не
-        # превращалась в частокол и чтобы slug оставался читаемым.
-        slug = re.sub(r"_+", "_", slug).strip("_")
-        return slug
-
-    @staticmethod
-    def _row_to_dict(row: sqlite3.Row, include_code: bool = True) -> Dict[str, Any]:
-        d = dict(row)
-        d["tags"] = json.loads(d.get("tags") or "[]")
-        if not include_code:
-            d.pop("code", None)
-        return d
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def save_track(
-        self,
-        name: str,
-        code: str,
-        title: str = "",
-        description: str = "",
-        tags: Optional[List[str]] = None,
-        rating: int = 0,
-        notes: str = "",
-    ) -> Dict[str, Any]:
-        """Сохранить или обновить трек в медиатеке (INSERT OR REPLACE).
-
-        Args:
-            name: Уникальный идентификатор (slug, без пробелов).
-            code: Renardo-код трека.
-            title: Читаемое название.
-            description: Описание трека.
-            tags: Список тегов.
-            rating: Оценка 0-5.
-            notes: Личные заметки о треке.
-
-        Returns:
-            dict ``success``, ``message``, ``name``.
-        """
-        slug = self._slug(name)
-        if not slug:
-            return {"success": False, "error": "Некорректное имя трека"}
-
-        ts = datetime.now(timezone.utc).isoformat()
-        tags_json = json.dumps(tags or [], ensure_ascii=False)
-        rating = max(0, min(5, rating))
-
-        with self._lock:
-            # Сохраняем created_at существующей записи если она есть
-            row = self._conn.execute(
-                "SELECT created_at FROM music_tracks WHERE name = ?", (slug,)
-            ).fetchone()
-            created_at = row["created_at"] if row else ts
-            action = "обновлён" if row else "сохранён"
-
-            self._conn.execute(
-                """
-                INSERT INTO music_tracks
-                    (name, title, code, description, tags, rating, notes,
-                     play_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(
-                    (SELECT play_count FROM music_tracks WHERE name = ?), 0
-                ), ?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    title       = excluded.title,
-                    code        = excluded.code,
-                    description = excluded.description,
-                    tags        = excluded.tags,
-                    rating      = excluded.rating,
-                    notes       = excluded.notes,
-                    updated_at  = excluded.updated_at
-                """,
-                (slug, title or name, code, description, tags_json,
-                 rating, notes, slug, created_at, ts),
-            )
-            self._conn.commit()
-
-        return {"success": True, "message": f"Трек '{slug}' {action}", "name": slug}
-
-    def list_tracks(self, tag: Optional[str] = None, min_rating: int = 0) -> Dict[str, Any]:
-        """Вернуть список треков с фильтрацией (без поля code).
-
-        Args:
-            tag: Фильтр по тегу (опционально).
-            min_rating: Минимальный рейтинг (0-5).
-
-        Returns:
-            dict ``success``, ``tracks`` (list of dicts), ``total``.
-        """
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT name, title, description, tags, rating, notes,
-                       play_count, created_at, updated_at
-                FROM music_tracks
-                WHERE rating >= ?
-                ORDER BY rating DESC, name ASC
-                """,
-                (min_rating,),
-            ).fetchall()
-
-        tracks = [self._row_to_dict(r, include_code=False) for r in rows]
-        if tag:
-            tracks = [t for t in tracks if tag in t.get("tags", [])]
-        return {"success": True, "tracks": tracks, "total": len(tracks)}
-
-    def load_track(self, name: str) -> Dict[str, Any]:
-        """Получить код трека и инкрементировать play_count.
-
-        Args:
-            name: Имя трека.
-
-        Returns:
-            dict ``success``, ``code``, ``track`` (метаданные без code) или ``error``.
-        """
-        slug = self._slug(name)
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM music_tracks WHERE name = ?", (slug,)
-            ).fetchone()
-
-            if not row:
-                names = [r[0] for r in self._conn.execute(
-                    "SELECT name FROM music_tracks ORDER BY name"
-                ).fetchall()]
-                available = ", ".join(names) or "библиотека пуста"
-                return {"success": False, "error": f"Трек '{slug}' не найден. Доступны: {available}"}
-
-            self._conn.execute(
-                "UPDATE music_tracks SET play_count = play_count + 1 WHERE name = ?",
-                (slug,),
-            )
-            self._conn.commit()
-
-        full = self._row_to_dict(row, include_code=True)
-        code = full.pop("code")
-        full["play_count"] += 1  # reflect incremented value
-        return {"success": True, "code": code, "track": full}
-
-    def find_melody(self, query: str) -> Optional[Dict[str, Any]]:
-        """Найти известную мелодию (``type='melody'``) по имени/заголовку/тегу.
-
-        Ищет регистро-независимо по ``name`` (slug), ``title`` и ``tags``
-        (алиасы). Точное совпадение slug (через транслитерацию :meth:`_slug`)
-        имеет приоритет над подстрочным совпадением.
-
-        Args:
-            query: Что юзер назвал («кузнечик», «имперский марш»).
-
-        Returns:
-            Запись мелодии с ``code``, либо ``None`` если не нашлось или
-            колонка ``type`` ещё не добавлена (миграция 006 не применена).
-        """
-        q = (query or "").strip().lower()
-        if not q:
-            return None
-        slug = self._slug(query)
-        with self._lock:
-            try:
-                rows = self._conn.execute(
-                    "SELECT * FROM music_tracks WHERE type = 'melody'"
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return None
-        entries = [self._row_to_dict(r, include_code=True) for r in rows]
-        # Точное совпадение slug — приоритет.
-        for entry in entries:
-            if slug and slug == entry.get("name"):
-                return entry
-        # Подстрочное совпадение по name/title/tags.
-        for entry in entries:
-            names = [
-                entry.get("name") or "",
-                entry.get("title") or "",
-                *(entry.get("tags") or []),
-            ]
-            hay = " ".join(str(n).lower() for n in names)
-            if q in hay:
-                return entry
-        return None
-
-    def delete_track(self, name: str) -> Dict[str, Any]:
-        """Удалить трек из медиатеки.
-
-        Args:
-            name: Имя трека.
-
-        Returns:
-            dict ``success``, ``message`` или ``error``.
-        """
-        slug = self._slug(name)
-        with self._lock:
-            cur = self._conn.execute(
-                "DELETE FROM music_tracks WHERE name = ? RETURNING name", (slug,)
-            )
-            deleted = cur.fetchone()
-            self._conn.commit()
-
-        if not deleted:
-            return {"success": False, "error": f"Трек '{slug}' не найден"}
-        return {"success": True, "message": f"Трек '{slug}' удалён из медиатеки"}
-
-
 class LookupMelodyTool(MCPTool):
     """Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты.
 
@@ -680,18 +368,15 @@ class LookupMelodyTool(MCPTool):
     10461 готовых мелодий) и возвращает СЫРУЮ RTTTL-строку в
     ``data['rtttl']`` — БЕЗ воспроизведения и БЕЗ конвертации. Ноты
     играет ``request_music`` (движок v2, ADR-0149 §5.1), а не модель.
-    Фолбэк — курируемые мелодии ``music_tracks`` (012). Не допускает
-    ошибку #1810 — сыграть гамму и назвать её «кузнечиком».
+    Не допускает ошибку #1810 — сыграть гамму и назвать её «кузнечиком».
     """
 
     def __init__(
         self,
         node,
-        library: TrackLibrary,
         rtttl_library: Optional[RtttlLibrary] = None,
     ) -> None:
         super().__init__(node)
-        self._library = library
         self._rtttl_library = rtttl_library
 
     @property
@@ -796,25 +481,14 @@ class LookupMelodyTool(MCPTool):
                         + _mismatch_note(match, candidate or name)
                     ),
                 )
-        # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
-        entry = self._library.find_melody(name)
-        if entry is None:
-            return MCPToolResult(
-                success=False,
-                error=(
-                    f"Мелодия {name!r} не найдена в библиотеке. Скажи юзеру "
-                    "честно, что не знаешь точных нот, и предложи сыграть "
-                    "что-то в похожем духе — НЕ выдавай импровизацию за оригинал."
-                ),
-            )
+        # Нет архива или нет совпадения — честный отказ (готового кода мелодий нет: ноты решает только архив).
         return MCPToolResult(
-            success=True,
-            data={
-                "name": entry.get("name"),
-                "title": entry.get("title"),
-                "code": entry.get("code"),
-            },
-            message=f"Нашёл «{entry.get('title')}» (готовый Renardo-код в data['code']).",
+            success=False,
+            error=(
+                f"Мелодия {name!r} не найдена в библиотеке. Скажи юзеру "
+                "честно, что не знаешь точных нот, и предложи сыграть "
+                "что-то в похожем духе — НЕ выдавай импровизацию за оригинал."
+            ),
         )
 
 

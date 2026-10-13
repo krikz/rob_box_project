@@ -306,7 +306,7 @@ resources:
       и диалог не затронуты — деплой не блокируется.
     consumers:
       - "supercollider (буферы, /root/.config/renardo/samples/dj_dave:ro)"
-      - "mcp_server: core/sample_dave.py + renardo_sanitizer (loop('<имя>'))"
+      - "движок v2: rob_box_music (sample_dave.json, loop('<имя>'))"
 
   # ---------- открытые: Sonic Pi samples (CC0, тот же хук-фетчер) ----------
   # Бочки bd_*, снейры/томы/райд/краш drum_*, хэты hat_*, лупы loop_amen /

@@ -101,7 +101,7 @@
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
-          "execute_music_code"
+          "request_music"
         ],
         "must_not_call": [
           "generate_music"
@@ -154,7 +154,7 @@
           "get_music_state"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ]
       }
     }

@@ -17,13 +17,8 @@ setup(
     # mcp_server стартует с пустой политикой и блокирует ВСЕ инструменты.
     # Регрессия закрыта тестом test_slice_policy_packaging.py.
     package_data={
-        # sample_loops.json — каталог лупов и белый список pack 1 (#2841).
-        # sample_fx.json — каталог FX-одиночек pack 1 (#2968).
-        # sample_dave.json (DJ_Dave, #3219) переехал в rob_box_music (ADR-0149 PR-3d).
-        'rob_box_mcp_tools.data': [
-            '*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json',
-            'sample_fx.json',
-        ],
+        # Каталоги сэмплов (DJ_Dave, FX, лупы) живут в rob_box_music; старый санитайзер Renardo-кода удалён (#3614).
+        'rob_box_mcp_tools.data': ['*.yaml', 'rtttl_melodies.jsonl.gz'],
     },
     data_files=[
         ('share/ament_index/resource_index/packages',

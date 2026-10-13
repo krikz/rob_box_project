@@ -84,7 +84,7 @@ class TestGate1TopLevelSchema:
             "agent-flow-e2e-process.sh will refuse to set e2e-done."
         )
         assert isinstance(a["must_not_call"], list)
-        # Top-level must_not_call may be EMPTY: execute_music_code is legal for
+        # Top-level must_not_call may be EMPTY: request_music is legal for
         # the renardo negative-control step and is forbidden per-step only.
 
     def test_expected_tool_calls_covers_exercised_gen_tools(self) -> None:
@@ -114,24 +114,24 @@ class TestGate1TopLevelSchema:
             "(issue #3248, run 36777967495)."
         )
 
-    def test_gen_steps_forbid_execute_music_code_per_step(self) -> None:
+    def test_gen_steps_forbid_request_music_per_step(self) -> None:
         """Voice vocal requests («спой песенку»/gen_*) MUST NOT route to Renardo.
 
-        execute_music_code is forbidden PER-STEP for every gen_* step (the #1403
+        request_music is forbidden PER-STEP for every gen_* step (the #1403
         regression: LLM replied «у меня нет такой функции»). Top-level
         must_not_call stays EMPTY because the renardo negative-control step
-        legitimately calls execute_music_code.
+        legitimately calls request_music.
         """
         a = _load_acceptance()
         gen_steps = [
             s for s in a.get("steps", [])
             if s.get("acceptance", {}).get("expected_tool_calls")
-            and "execute_music_code" not in s["acceptance"]["expected_tool_calls"]
+            and "request_music" not in s["acceptance"]["expected_tool_calls"]
         ]
         assert gen_steps, "expected gen_* steps with per-step acceptance blocks"
         for s in gen_steps:
-            assert "execute_music_code" in s["acceptance"].get("must_not_call", []), (
-                f"gen_* step '{s.get('label')}' must forbid execute_music_code "
+            assert "request_music" in s["acceptance"].get("must_not_call", []), (
+                f"gen_* step '{s.get('label')}' must forbid request_music "
                 "per-step (top-level must_not_call is empty by design)"
             )
 
@@ -162,7 +162,7 @@ class TestPerStepAcceptanceBlocks:
                 f"Step '{step.get('label')}' acceptance block missing 'must_not_call'"
             )
 
-    def test_renardo_step_must_still_call_execute_music_code(self) -> None:
+    def test_renardo_step_must_still_call_request_music(self) -> None:
         """Negative control: «сыграй renardo бит» MUST go to Renardo (NOT gen_*).
 
         Without this, the LLM could over-route to MiniMax and break the existing
@@ -179,8 +179,8 @@ class TestPerStepAcceptanceBlocks:
             "to catch over-routing regressions"
         )
         rs = renardo_steps[0]
-        assert "execute_music_code" in rs["acceptance"]["expected_tool_calls"], (
-            f"Renardo step '{rs['label']}' must expect execute_music_code"
+        assert "request_music" in rs["acceptance"]["expected_tool_calls"], (
+            f"Renardo step '{rs['label']}' must expect request_music"
         )
         assert "generate_music" in rs["acceptance"].get("must_not_call", []), (
             f"Renardo step '{rs['label']}' must forbid generate_music"
@@ -201,8 +201,8 @@ class TestPerStepAcceptanceBlocks:
         assert "generate_music" in ss["acceptance"]["expected_tool_calls"], (
             f"Sing step '{ss['label']}' must expect generate_music (not Renardo)"
         )
-        assert "execute_music_code" in ss["acceptance"]["must_not_call"], (
-            f"Sing step '{ss['label']}' must forbid execute_music_code"
+        assert "request_music" in ss["acceptance"]["must_not_call"], (
+            f"Sing step '{ss['label']}' must forbid request_music"
         )
 
 
@@ -263,7 +263,7 @@ class TestConsistencyWithSuite:
     """
 
     def test_renardo_negative_control_in_both_files(self) -> None:
-        """Both files must include a Renardo «execute_music_code» step.
+        """Both files must include a Renardo «request_music» step.
 
         If the suite lacks it, the runner never exercises Renardo live-engine
         (so any over-routing regression to MiniMax goes unnoticed). If the

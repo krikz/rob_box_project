@@ -152,7 +152,7 @@ class TestGate1AcceptanceSchema:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         parsed = parse_acceptance(acc)
         assert "expected_tool_calls" in parsed
@@ -190,7 +190,7 @@ class TestGate1Validator:
     def test_passes_when_expected_tool_called(self):
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
         logs = "2025-08-18 dialogue_node: Calling MCP tool: generate_music"
         result = gate1_validate(acc, logs)
@@ -203,7 +203,7 @@ class TestGate1Validator:
         """Главный кейс из acceptance: generate_music ожидался, но не вызван."""
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
         logs = "2025-08-18 dialogue_node: LLM ответил текстом без tools"
         result = gate1_validate(acc, logs)
@@ -212,31 +212,31 @@ class TestGate1Validator:
         assert "not invoked" in result["reason"]
 
     def test_fails_when_forbidden_tool_called(self):
-        """Главный кейс из acceptance: execute_music_code НЕ должен быть вызван."""
+        """Главный кейс из acceptance: request_music НЕ должен быть вызван."""
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
         logs = (
-            "2025-08-18 dialogue_node: Calling MCP tool: execute_music_code\n"
+            "2025-08-18 dialogue_node: Calling MCP tool: request_music\n"
             "2025-08-18 dialogue_node: Renardo запустил PTree.__init__()"
         )
         result = gate1_validate(acc, logs)
         assert result["pass"] is False
-        assert "execute_music_code" in result["forbidden_calls"]
+        assert "request_music" in result["forbidden_calls"]
         assert "forbidden" in result["reason"]
 
     def test_fails_with_both_missing_and_forbidden(self):
         """Оба условия одновременно → reasons joined."""
         acc = {
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }
-        logs = "Calling MCP tool: execute_music_code"
+        logs = "Calling MCP tool: request_music"
         result = gate1_validate(acc, logs)
         assert result["pass"] is False
         assert "generate_music" in result["missing_expected_calls"]
-        assert "execute_music_code" in result["forbidden_calls"]
+        assert "request_music" in result["forbidden_calls"]
         assert "not invoked" in result["reason"]
         assert "forbidden" in result["reason"]
 
@@ -335,7 +335,7 @@ class TestE2EVoiceTestScriptGating:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         result = subprocess.run(
             [str(E2E_SCRIPT),
@@ -412,7 +412,7 @@ class TestE2EVoiceTestScriptGating:
         acc = tmp_path / "music_library_acceptance_v1.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         result = subprocess.run(
             [str(E2E_SCRIPT),
@@ -534,7 +534,7 @@ class TestGate1AggregateIntegration:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         # Строки лога — в формате mcp_server, который матчит
         # e2e_tool_match.tool_invoked (187c9a35: GATE-1 считает вызов, а не
@@ -572,7 +572,7 @@ class TestGate1AggregateIntegration:
 
     def test_aggregate_fail_when_renardo_called(self, tmp_path, monkeypatch):
         """Ровно кейс из acceptance: expected=generate_music,
-        must_not_call=execute_music_code. Renardo вызван → GATE-1 FAIL."""
+        must_not_call=request_music. Renardo вызван → GATE-1 FAIL."""
         scenario = tmp_path / "scenario.json"
         scenario.write_text(json.dumps({"steps": [
             {"label": "s1", "text": "test", "voice": "anton"}
@@ -580,13 +580,13 @@ class TestGate1AggregateIntegration:
         acc = tmp_path / "acceptance.json"
         acc.write_text(json.dumps({
             "expected_tool_calls": ["generate_music"],
-            "must_not_call": ["execute_music_code"],
+            "must_not_call": ["request_music"],
         }))
         # Формат mcp_server (см. test_aggregate_pass_when_expected_called).
         robot = use_fake_robot(
             monkeypatch, tmp_path,
-            "[mcp_server-10] 📥 Запрос выполнения: execute_music_code с параметрами {}\n"
-            "[mcp_server-10] ✅ Инструмент execute_music_code выполнен успешно\n"
+            "[mcp_server-10] 📥 Запрос выполнения: request_music с параметрами {}\n"
+            "[mcp_server-10] ✅ Инструмент request_music выполнен успешно\n"
             "[mcp_server-10] Renardo PTree.__init__()\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
@@ -609,7 +609,7 @@ class TestGate1AggregateIntegration:
         if verdict_path.exists():
             verdict = json.loads(verdict_path.read_text())
             assert verdict["pass"] is False
-            assert "execute_music_code" in verdict["forbidden_calls"]
+            assert "request_music" in verdict["forbidden_calls"]
             assert "forbidden" in verdict["reason"]
 
 

@@ -29,11 +29,11 @@
       "voice": "anton",
       "text": "Робот, сыграй на рендардо спокойный ночной бит, что-нибудь под пайку.",
       "patterns": [
-        "execute_music_code|compose_music"
+        "request_music"
       ],
       "acceptance": {
         "expected_tool_calls": [
-          "execute_music_code"
+          "request_music"
         ],
         "must_not_call": [
           "generate_music"
@@ -52,7 +52,7 @@
           "get_music_state"
         ],
         "must_not_call": [
-          "execute_music_code",
+          "request_music",
           "stop_music"
         ],
         "_comment": "Подтверждаем, что n502 реально завёл плеер, а не просто ответил «включаю» голосом."
@@ -63,7 +63,7 @@
       "voice": "anton",
       "text": "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
       "patterns": [
-        "execute_music_code|compose_music"
+        "request_music"
       ],
       "acceptance": {
         "must_not_call": [
@@ -79,7 +79,7 @@
       "voice": "anton",
       "text": "Робот, сделай атмосферу помрачнее, как в киберпанке.",
       "patterns": [
-        "set_vibe_preset|execute_music_code|compose_music"
+        "request_music"
       ],
       "acceptance": {
         "must_not_call": [
@@ -93,7 +93,7 @@
       "voice": "anton",
       "text": "Робот, и ускорь темп, а то мы тут засыпаем оба.",
       "patterns": [
-        "set_vibe_preset|execute_music_code|compose_music"
+        "request_music"
       ],
       "acceptance": {
         "must_not_call": [
@@ -142,7 +142,7 @@
         ],
         "must_not_call": [
           "stop_music",
-          "execute_music_code"
+          "request_music"
         ]
       }
     }

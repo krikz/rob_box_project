@@ -76,7 +76,7 @@
           "get_music_state"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ],
         "_comment": "Финальный якорь тишины: марафон не оставляет играющий плеер следующему прогону."
       }

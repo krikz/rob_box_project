@@ -35,7 +35,7 @@
           "generate_music"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ],
         "_comment": "Разводка коллизии имён (PR #1372): «спой песню» — это нейрогенерация, а не renardo-код."
       },
@@ -65,7 +65,7 @@
           "gen_list_library"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ]
       }
     },
@@ -79,7 +79,7 @@
           "gen_search_library"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ]
       }
     },
@@ -93,7 +93,7 @@
           "gen_save_to_library"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ]
       }
     },
@@ -107,7 +107,7 @@
           "gen_get_track_info"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ]
       }
     },
@@ -121,7 +121,7 @@
           "gen_play_from_library"
         ],
         "must_not_call": [
-          "execute_music_code"
+          "request_music"
         ]
       },
       "retry_acceptance": 1
@@ -159,7 +159,7 @@
       "voice": "anton",
       "text": "Робот, а живьём на рендардо сыграть ты всё ещё умеешь? Сыграй короткий бит.",
       "patterns": [
-        "execute_music_code|compose_music"
+        "request_music"
       ],
       "acceptance": {
         "must_not_call": [

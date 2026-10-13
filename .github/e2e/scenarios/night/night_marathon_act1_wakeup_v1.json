@@ -103,7 +103,7 @@
       "acceptance": {
         "must_not_call": [
           "stop_music",
-          "execute_music_code"
+          "request_music"
         ],
         "must_not_say": [
           "не получилось выполнить"

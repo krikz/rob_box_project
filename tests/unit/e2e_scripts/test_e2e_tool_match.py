@@ -34,7 +34,7 @@ from e2e_tool_match import tool_invoked  # noqa: E402
 TOOLS_CATALOG = (
     "[dialogue_node-4]   tools(56): clear_waypoints, compose_music, "
     "continue_mapping, delete_track, delete_waypoint, estimate_tts_duration, "
-    "execute_music_code, faq_search, finish_mapping, gen_delete_from_library, "
+    "request_music, faq_search, finish_mapping, gen_delete_from_library, "
     "get_battery_level, get_current_time, get_music_state, move_direction, "
     "play_animation, play_sound, register_speaker, save_track, set_dj_mode, "
     "set_voice, set_volume, speak_text, start_mapping, stop_music, "
@@ -67,16 +67,16 @@ class TestNotInvoked:
 
     @pytest.mark.parametrize(
         "tool",
-        ["stop_music", "execute_music_code", "move_direction", "clear_waypoints",
+        ["stop_music", "request_music", "move_direction", "clear_waypoints",
          "get_music_state", "set_dj_mode", "register_speaker"],
     )
     def test_catalog_alone_is_not_a_call(self, tool):
         assert tool_invoked(TOOLS_CATALOG, tool) is False
 
-    @pytest.mark.parametrize("tool", ["stop_music", "execute_music_code", "get_music_state"])
+    @pytest.mark.parametrize("tool", ["stop_music", "request_music", "get_music_state"])
     def test_turn_without_tools_is_not_a_call(self, tool):
         # Это в точности регресс n110 акта 1: acceptance сообщал
-        # «forbidden tool calls invoked: ['stop_music', 'execute_music_code']»
+        # «forbidden tool calls invoked: ['stop_music', 'request_music']»
         # на ходе, где tools=[].
         assert tool_invoked(TURN_NO_TOOLS, tool) is False
 

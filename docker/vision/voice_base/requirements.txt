@@ -97,7 +97,7 @@ openai-agents>=0.19.4,<1.0.0
 
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
-# Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)
+# Used in: rob_box_mcp_tools/engine/renardo_runtime.py (stop_music...)
 # SuperCollider runs in separate container; renardo connects via OSC localhost:57110
 # =============================================================================
 renardo-lib

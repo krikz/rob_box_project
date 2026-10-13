@@ -103,7 +103,7 @@ def test_node_set_request_without_tool_keeps_set_phrase():
 
 def test_node_piece_request_with_legacy_music_tool_is_not_overridden():
     n = _make_node()
-    n._handle_result(_result("Поиграем.", tools=("execute_music_code",)), user_input="сыграй Токкату ре минор")
+    n._handle_result(_result("Поиграем.", tools=("gen_play_from_library",)), user_input="сыграй Токкату ре минор")
     assert NOT_PLAYED_TEXT not in _said(n)
 
 

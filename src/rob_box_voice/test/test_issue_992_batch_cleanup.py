@@ -99,7 +99,7 @@ def _stop_music_tools() -> FakeToolProvider:
 
 
 def _music_tools() -> FakeToolProvider:
-    """FakeToolProvider with ``execute_music_code`` (no-op) + ``speak_text``.
+    """FakeToolProvider with ``gen_play_from_library`` (no-op) + ``speak_text``.
 
     Used by the BACKING/TRACK tests below: the LLM starts a beat and
     sings (or speaks a short accept phrase) in the same cycle, exactly
@@ -108,7 +108,7 @@ def _music_tools() -> FakeToolProvider:
 
     tools = _speak_text_tools()
     music_spec = ToolSpec(
-        name="execute_music_code",
+        name="gen_play_from_library",
         description="Execute Renardo music code.",
         parameters={
             "type": "object",
@@ -125,7 +125,7 @@ def _music_tools() -> FakeToolProvider:
     tools.register(music_spec, _music_handler)
 
     # compose_music — the form arranger. Registered alongside
-    # execute_music_code so the TRACK/BACKING tests can assert that BOTH
+    # gen_play_from_library so the TRACK/BACKING tests can assert that BOTH
     # music entry points keep playback alive.
     compose_spec = ToolSpec(
         name="compose_music",
@@ -145,7 +145,7 @@ def _music_tools() -> FakeToolProvider:
     tools.register(compose_spec, _music_handler)
 
     # gen_play_from_library — AI-библиотека mp3 (issue #1392). Registered
-    # alongside execute_music_code/compose_music so the TRACK test below
+    # alongside gen_play_from_library/compose_music so the TRACK test below
     # can assert it keeps playback alive exactly like the Renardo tools do.
     gen_play_spec = ToolSpec(
         name="gen_play_from_library",
@@ -252,7 +252,7 @@ class TestIssue992BatchCleanup:
                 tool_calls=(
                     ToolCall(
                         id="call-music",
-                        name="execute_music_code",
+                        name="gen_play_from_library",
                         arguments={"code": "p1 >> pads([0,3,7], dur=8)", "segments": 32},
                     ),
                 ),
@@ -549,15 +549,15 @@ class TestIssue992BatchCleanup:
         finally:
             node.close()
 
-    def test_backing_execute_music_code_with_lyrics_schedules_cleanup(self):
-        """BACKING (спой/рэп): execute_music_code + 2 speak_text → cleanup.
+    def test_backing_gen_play_from_library_with_lyrics_schedules_cleanup(self):
+        """BACKING (спой/рэп): gen_play_from_library + 2 speak_text → cleanup.
 
         Issue #992 TWO MUSIC MODES (e2e run #31662735824 regression):
         when the LLM starts a backing beat and sings lyrics via 2+
         ``speak_text`` calls, the system must stop the music after ALL
         TTS batches finish (master_prompt: "Music stops automatically
         after tts_batch_complete"; the LLM does NOT call stop_music).
-        The turn-end logic used to treat every ``execute_music_code``
+        The turn-end logic used to treat every ``gen_play_from_library``
         as TRACK and cancelled the pending cleanup — the e2e patterns
         ``tts_batch_complete fired music_cleanup`` /
         ``music_cleanup sent: reason=tts_batch_complete`` never fired.
@@ -568,7 +568,7 @@ class TestIssue992BatchCleanup:
                 tool_calls=(
                     ToolCall(
                         id="music-1",
-                        name="execute_music_code",
+                        name="gen_play_from_library",
                         arguments={
                             "code": "p1 >> blip([0,2,4], dur=0.5)",
                             "segments": 24,
@@ -625,11 +625,11 @@ class TestIssue992BatchCleanup:
         finally:
             node.close()
 
-    def test_track_execute_music_code_single_accept_no_cleanup(self):
-        """TRACK (сыграй баха): execute_music_code + 1 accept → NO cleanup.
+    def test_track_gen_play_from_library_single_accept_no_cleanup(self):
+        """TRACK (сыграй баха): gen_play_from_library + 1 accept → NO cleanup.
 
         The live 09:35 fix must be preserved: a composition started via
-        ``execute_music_code`` lives until the user stops it. A single
+        ``gen_play_from_library`` lives until the user stops it. A single
         short accept phrase («Ок, играю Бах») must NOT trigger
         music_cleanup on tts_batch_complete.
         """
@@ -639,7 +639,7 @@ class TestIssue992BatchCleanup:
                 tool_calls=(
                     ToolCall(
                         id="music-1",
-                        name="execute_music_code",
+                        name="gen_play_from_library",
                         arguments={
                             "code": "p1 >> pads([0,2,4], dur=1)",
                             "segments": 96,
@@ -676,7 +676,7 @@ class TestIssue992BatchCleanup:
             node.close()
 
     def test_track_compose_music_single_accept_no_cleanup(self):
-        """compose_music must live as long as execute_music_code does.
+        """compose_music must live as long as gen_play_from_library does.
 
         Live 30.08, "придумай что-нибудь приятное для души": the robot
         started an ambient composition and killed it 1.5 s later, before
@@ -735,7 +735,7 @@ class TestIssue992BatchCleanup:
             node.close()
 
     def test_track_gen_play_from_library_single_accept_no_cleanup(self):
-        """gen_play_from_library must live as long as execute_music_code does.
+        """gen_play_from_library must live as long as gen_play_from_library does.
 
         Live 02.09.2026, "включи трек про весну": the robot correctly called
         gen_search_library + gen_play_from_library and the mp3 genuinely

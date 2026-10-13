@@ -433,7 +433,7 @@ _CLUB_KITS: Mapping[str, Mapping[str, str]] = {
 #: psr DJ_Dave: список из её кода «Array» — ``s("psr:[2|5|6|7|8|9|10|11|12|16|24|25|28|29]")``.
 DAVE_PSR: Tuple[str, ...] = tuple(f"dirt_psr_{n:02d}" for n in (2, 5, 6, 7, 8, 9, 10, 11, 12, 16, 24, 25, 28, 29))
 
-#: Каталог DJ_Dave — данные (перенесены из ``rob_box_mcp_tools/data``, старый ``core/sample_dave`` — вид отсюда).
+#: Каталог DJ_Dave — данные (перенесены из ``rob_box_mcp_tools/data``).
 #: Файлы кладёт на хост Ресурсный пак (ADR-0125/0126, запись ``dj-dave-samples``) в ``/opt/rob_box/samples/<пак>``,
 #: в контейнерах это корень сэмплов Renardo ``/root/.config/renardo/samples``.
 _SAMPLE_DATA = json.loads((Path(__file__).resolve().parent / "data" / "sample_dave.json").read_text(encoding="utf-8"))
@@ -614,7 +614,7 @@ _SAMPLE_ROLE_BY_NAME = {
     "dirt_tech_tn1hit2": "riser",
 }
 _SAMPLE_TONAL = frozenset({"array_perc_guit1", "array_perc_guit2"})
-#: Темп оригинала: Array (Lil Data) — 140, whatuneed — 128, spilltab — 100 (эталоны ``reference_tracks``).
+#: Темп оригинала: Array (Lil Data) — 140, whatuneed — 128, spilltab — 100 (эталонные треки v1 удалены в #3614).
 _SAMPLE_BPM = {"algorave_wun_beat": 128, "algorave_wun_noise": 128, "algorave_wun_vox": 128,
                "algorave_spilltab": 100}
 #: spilltab в оригинале звучит в A# minor (эталон «By Design», ``root=10``).
@@ -710,8 +710,7 @@ def _pack_texture(name: str) -> SampleInfo:
 
 
 #: Каталог сэмплов v2: имя → :class:`SampleInfo` — DJ_Dave, брейки паков (роль ``break``), удары китов паков
-#: (:data:`PACK_DRUMS`) и шумовые подложки (:data:`PACK_TEXTURES`). v1 (``core/sample_dave``) видит из него только
-#: пак DJ_Dave (``SAMPLE_PACK_DIR``).
+#: (:data:`PACK_DRUMS`) и шумовые подложки (:data:`PACK_TEXTURES`).
 SAMPLE_CATALOG: Mapping[str, SampleInfo] = {
     **{n: _sample_info(n, m) for n, m in _SAMPLE_DATA["samples"].items()},
     **{n: _pack_break(n, m, str(_SONICPI_DATA["pack_dir"])) for n, m in _SONICPI_DATA["samples"].items()
@@ -846,7 +845,7 @@ LANE_DB_AT_UNIT: Mapping[str, Mapping[str, float]] = {
     lane: {opt: round(db - 20.0 * AMP_EXPONENT.get(opt, 1.0) * math.log10(level), 2) for opt, db in table.items()}
     for lane, (level, table) in LAYER_MEASURED_DB.items()
 }
-#: Потолок ``amp`` одного слоя (``max_amp`` санитайзера v1; ``club_arranger.MAX_LAYER_AMP`` импортирует отсюда).
+#: Потолок ``amp`` одного слоя (``club_arranger.MAX_LAYER_AMP`` импортирует отсюда).
 MAX_LAYER_AMP = 0.85
 
 #: Вариант модели громкости ударной роли v2: рисунок, ближайший к сетке ``arrange.rhythm`` (хэты — оффбит).
@@ -1183,7 +1182,7 @@ class KickSound:
     low: float  # доля энергии записи < 250 Гц
     sub: float  # доля энергии записи < 120 Гц
     #: ``False`` — на роботе не мерено: ``loudness_offset_db`` — оценка, ``low`` — доля < 200 Гц ФАЙЛА (опись
-    #: сэмплов 05.10, ``scan.json``), ``sub`` неизвестна (``nan``). Замер — ``scripts/music/kicks_probe.sh``.
+    #: сэмплов 05.10, ``scan.json``), ``sub`` неизвестна (``nan``). Замер — харнесс kicks_probe (удалён в #3614, звал execute_music_code).
     measured: bool = True
     #: Бочка — файл пака (ключ :data:`SAMPLE_CATALOG`, ADR-0153 S4): играет ``loop(файл)``, а не ``play(символ)``;
     #: ``symbol``/``sample`` не используются, громкость — по каталогу (``arrange.mix``), ``loudness_offset_db`` 0.
