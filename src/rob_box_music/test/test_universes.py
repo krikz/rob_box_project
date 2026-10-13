@@ -9,8 +9,6 @@ from rob_box_music import knowledge as kn
 from rob_box_music.universes import is_mood, universe_of, universe_spans
 from rob_box_music.works import alias_pairs
 
-pytestmark = pytest.mark.unit
-
 
 @pytest.mark.parametrize("text", [
     "диджей анакен скайвокер",  # STT 12.10
