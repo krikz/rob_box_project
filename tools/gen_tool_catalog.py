@@ -332,6 +332,11 @@ def _style_values() -> list[str]:
     return ["auto", *_knowledge().STYLES]
 
 
+def _gen_style_values() -> list[str]:
+    """``generate_music.style`` enum — «» и ключи ``knowledge.GEN_STYLES`` (``tools_v2.GEN_STYLE_CHOICES``)."""
+    return ["", *_knowledge().GEN_STYLES]
+
+
 def _set_max_tracks() -> int:
     """``dj_set.tracks`` maximum — ``knowledge.SET_MAX_TRACKS`` (``set_plan.MAX_TRACKS``)."""
     return _knowledge().SET_MAX_TRACKS
@@ -349,6 +354,7 @@ DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("request_music", "mood"): _mood_values,
     ("dj_set", "style"): _style_values,
+    ("generate_music", "style"): _gen_style_values,
 }
 
 
@@ -417,6 +423,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     ),
     "composer": (
         "request_music",
+        "generate_music",
         "lookup_melody",
         "search_melody",
         "add_music_material",
@@ -435,6 +442,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "set_music_volume",
     ),
     "player": (
+        "generate_music",
         "gen_list_library",
         "gen_play_from_library",
         "gen_search_library",

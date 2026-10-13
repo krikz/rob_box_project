@@ -1096,6 +1096,17 @@ def _now_playing_command(words: Sequence[str]) -> Optional[MediaCommand]:
     return None
 
 
+def _generate_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«сгенерируй (пиздатый) музон (своим голосом)» → ``REQUEST_MUSIC`` без названия (ADR-0158 PR-3, живой прогон
+    13.10: такая реплика уходила в LLM, та ставила синтез и говорила «Включаю музыку»). Путь — синтез, кэш, генерация
+    или честный отказ — решает чойсер ``request_music`` по словам реплики (``rob_box_music.source``), не LLM. Глагол
+    генерации — основы ``knowledge.SOURCE_ASK_STEMS["generated"]`` первым словом после вступления; иначе ``None``."""
+    body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))  # «давай сгенерируй»
+    if not body or not body[0].startswith(kn.SOURCE_ASK_STEMS["generated"]):
+        return None
+    return MediaCommand(intent=MediaIntent.REQUEST_MUSIC, closed=True)
+
+
 def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     """Разбор реплики без длины сета и перечисления (:func:`parse_media_command`)."""
     if is_dj_request(text):
@@ -1112,7 +1123,8 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
         return now
     theme_words = _fixed_verb(_theme_words(text))  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
-    return (_style_set_command(theme_words) or _named_set_command(theme_words) or _spoken_set_command(text)
+    return (_generate_command(theme_words) or _style_set_command(theme_words) or _named_set_command(theme_words)
+            or _spoken_set_command(text)
             or _instrument_command(theme_words) or _more_command(theme_words)
             or _play_named_command(theme_words))
 

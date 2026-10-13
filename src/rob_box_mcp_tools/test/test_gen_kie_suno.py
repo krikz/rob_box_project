@@ -12,8 +12,8 @@ import json
 import pytest
 
 from rob_box_mcp_tools.engine.gen import kie_suno
+from rob_box_music.knowledge import GEN_MODELS
 from rob_box_mcp_tools.engine.gen.provider import (
-    GEN_MODELS,
     REASONS,
     GenJob,
     GenUnavailable,

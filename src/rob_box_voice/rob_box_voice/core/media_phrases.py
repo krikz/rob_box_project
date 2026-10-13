@@ -67,9 +67,14 @@ def piece_text(played: Mapping[str, Any]) -> str:
 
 def launch_text(phrase: str, data: Mapping[str, Any]) -> str:
     """Фраза после ``started``: заказ пьесы (поле ``played``) — :func:`piece_text`, иначе ``phrase``; плюс фраза об
-    инструменте (:func:`with_instrument`)."""
+    инструменте (:func:`with_instrument`). Путь музыки (ADR-0158 PR-3, ``rob_box_music.source``): трек кэша — вся
+    реплика кода ``source_message``; синтез/пьеса не того, что просили, — перед фразой ``source_note`` («сгенерировать
+    сейчас не могу: …»)."""
+    if data.get("source_message"):
+        return str(data["source_message"])
     played = data.get("played")
-    return with_instrument(piece_text(played) if isinstance(played, Mapping) else phrase, data)
+    head = piece_text(played) if isinstance(played, Mapping) else phrase
+    return with_instrument(" ".join(p for p in (str(data.get("source_note") or ""), head) if p), data)
 
 
 def instrument_text(data: Mapping[str, Any]) -> str:
@@ -209,6 +214,23 @@ def composer_missing_phrase(content: str) -> str:
     return (content or "")[len(head):].strip() if (content or "").startswith(head) else ""
 
 
+#: Код отказа ``request_music``/``generate_music``: чойсер пути не нашёл, чем играть просьбу (ADR-0158 PR-3: «спой»,
+#: жанр без синтеза, а генерации нет). Текст отказа — ``"<код>: <фраза>"``; фразу строит ``rob_box_music.source``.
+SOURCE_DECLINED_REASON = "music_source"
+
+
+def source_error(phrase: str) -> str:
+    """Текст отказа с кодом :data:`SOURCE_DECLINED_REASON` (его читает :func:`source_phrase`)."""
+    return f"{SOURCE_DECLINED_REASON}: {phrase}"
+
+
+def source_phrase(content: str) -> str:
+    """Фраза отказа пути из результата тула (код может стоять не в начале: обёртки транспорта) или ``""``."""
+    head = f"{SOURCE_DECLINED_REASON}: "
+    at = (content or "").find(head)
+    return content[at + len(head):].strip() if at >= 0 else ""
+
+
 def no_more_error(phrase: str) -> str:
     """Текст отказа ``request_music`` с кодом :data:`NO_MORE_REASON` (его читает :func:`no_more_phrase`)."""
     return f"{NO_MORE_REASON}: {phrase}"
@@ -222,7 +244,7 @@ def no_more_phrase(content: str) -> str:
 
 #: Тулы, которые запускают музыку (движок v2, ``rob_box_mcp_tools.engine.tools_v2``): только они в ЭТОМ ходе
 #: подкрепляют фразу запуска. Фраза в настоящем времени — действие этого хода, а не пересказ прошлого.
-LAUNCH_TOOLS: frozenset = frozenset({"dj_set", "request_music"})
+LAUNCH_TOOLS: frozenset = frozenset({"dj_set", "request_music", "generate_music"})
 
 #: Неизменяемые части шаблонов выше — по ним узнаётся фраза кода в ответе модели
 #: (``test_issue_3455_launch_phrase_honesty`` сверяет, что каждый шаблон содержит свою основу).
@@ -294,6 +316,9 @@ __all__ = [
     "REQUEST_FAIL_TEXT",
     "SET_KEPT_TEXT",
     "SET_PLAYING_REASON",
+    "SOURCE_DECLINED_REASON",
+    "source_error",
+    "source_phrase",
     "composer_missing_error",
     "composer_missing_phrase",
     "composer_missing_text",

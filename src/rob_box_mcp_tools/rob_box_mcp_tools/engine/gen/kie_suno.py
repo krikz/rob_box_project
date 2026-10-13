@@ -25,9 +25,10 @@ import urllib.request
 import uuid
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
+from rob_box_music.knowledge import GEN_MODELS
+
 from .provider import (
     DEFAULT_MODEL,
-    GEN_MODELS,
     GenJob,
     GenStatus,
     GenTicket,

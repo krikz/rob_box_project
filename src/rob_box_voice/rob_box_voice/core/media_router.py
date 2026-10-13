@@ -140,6 +140,8 @@ NOT_STARTED_TEXT = "Музыка пока не заиграла."
 #: Имена тулов движка v2 (``rob_box_mcp_tools.engine.tools_v2``).
 DJ_SET_TOOL = "dj_set"
 REQUEST_MUSIC_TOOL = "request_music"
+#: Просьба сгенерировать (ADR-0158 PR-3): тот же чойсер пути, что у ``request_music``.
+GENERATE_MUSIC_TOOL = "generate_music"
 
 _VOLUME_ACTIONS: Mapping[MediaIntent, Tuple[str, str]] = {
     MediaIntent.VOLUME_UP: ("louder", "Сделал музыку громче."),
@@ -476,6 +478,7 @@ __all__ = [
     "NOT_STARTED_TEXT",
     "REQUEST_FAIL_TEXT",
     "REQUEST_MUSIC_TOOL",
+    "GENERATE_MUSIC_TOOL",
     "default_media_provider",
     "dj_theme_switch_plan",
     "media_state_from_snapshot",
