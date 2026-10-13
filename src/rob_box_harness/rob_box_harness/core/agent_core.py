@@ -525,9 +525,8 @@ _VOCAL_REQUEST_KEYWORDS: tuple = (
 # this on a non-vocal request is a hallucination. The number matches the
 # existing TRACK-mode accept test in test_issue_992_batch_cleanup.
 _ACCEPT_PHRASE_MAX_CHARS: int = 40
-#: Broader set than ``_MUSIC_PRELUDE_TOOLS`` — adds ``generate_music``
-#: (MiniMax Music API) and ``gen_play_from_library``. The prelude set
-#: only governs execution ORDER (music tools must run first), but the
+#: Music tools after which a hallucinated-lyrics guard applies: ``generate_music``
+#: (MiniMax Music API) and ``gen_play_from_library``. The
 #: hallucinated-lyrics guard must fire for ANY music tool that leaves
 #: the user hearing lyrics on top of audio (issue #1708 / #1561).
 _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({

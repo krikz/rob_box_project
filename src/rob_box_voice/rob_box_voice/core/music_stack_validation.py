@@ -182,8 +182,8 @@ def load_sclang_health(
     """Read the sclang startup log from disk and classify it.
 
     Used by ``scripts/validate_music_stack.py`` to detect upstream-renardo
-    syntax errors in the sclang startup log (the v1 ``MusicManager`` boot
-    guard that also read it was removed in #3614).
+    syntax errors in the sclang startup log (the v1 boot guard that also
+    read it was removed in #3614).
 
     Resolution order for the log path:
 

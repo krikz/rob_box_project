@@ -1,8 +1,8 @@
 """RTTTL (Nokia ringtone): разбор строки в ноты.
 
 Разбор живёт в ``rob_box_music.rtttl`` (ADR-0149 PR-3); модуль оставлен как точка импорта
-``core.rtttl.parse_rtttl`` для ``rtttl_compose`` и ``harmonize``. Сборка Renardo-кода для
-старого ``execute_music_code`` (``rtttl_to_renardo``) удалена в #3614: ноты играет движок v2.
+``core.rtttl.parse_rtttl`` для ``rtttl_compose`` и ``harmonize``. Сборка Renardo-кода из RTTTL
+(``rtttl_to_renardo``) удалена в #3614: ноты играет движок v2.
 
 Формат: ``Name:d=4,o=5,b=140:8c5,8c5,8g5,...``
   * ``d`` — длительность по умолчанию (4 = четверть, 8 = восьмая…);
