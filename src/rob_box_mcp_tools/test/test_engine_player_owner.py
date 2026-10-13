@@ -12,15 +12,9 @@ import pytest
 
 from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 from rob_box_mcp_tools.engine.renardo_adapter import MASTER_NODE, RenardoAdapter, osc_fail_detail
+from rob_box_mcp_tools.engine.renardo_runtime import RenardoRuntime
 from rob_box_music import knowledge as kn
 from rob_box_voice.core.music_player_state import parse_music_state
-
-from ._ros_stubs import RosStubs
-
-_ros = RosStubs()
-with _ros:
-    from rob_box_mcp_tools.tools.music import MusicManager
-_ros_stubs = _ros.fixture()
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +44,9 @@ class FakeAdapter:
     def stop(self):
         self.stopped += 1
 
+    def at(self, beat, fn):
+        pass
+
     def fire(self, i=-1, phase=0.0, aligned=True):
         program, on_started = self.started[i]
         on_started({"track_id": program.track_id, "deck": "A", "form_beats": program.form_beats,
@@ -76,7 +73,8 @@ def test_started_event_and_playing_state_come_only_from_the_clock_callback():
     assert events[0]["bpm"] == 132.0 and events[0]["deck"] == "A"
     snap = parse_music_state(states[-1])
     assert snap.state == "playing" and snap.track_id == "v2:1:A:aaaa" and snap.dj is True
-    assert json.loads(states[-1])["dj"] == {"enabled": True, "set_id": "s1"}
+    # факты сета и время звучания трека (#3613: «что играет» отвечает код по снимку)
+    assert json.loads(states[-1])["dj"] == {"enabled": True, "set_id": "s1", "started_at": 1000.0, "bpm": 132.0}
 
 
 def test_form_ends_at_counts_passes_of_the_looping_form():
@@ -354,12 +352,31 @@ def _osc(address, *strings):
         pad(s.encode()) for s in strings)
 
 
-def test_osc_fail_reaches_the_listener_through_music_manager():
+def test_osc_fail_reaches_the_listener_through_the_runtime():
     assert osc_fail_detail(_osc("/done", "/b_allocRead")) is None
     assert osc_fail_detail(_osc("/fail", "/s_new", "SynthDef not found")) == "/s_new SynthDef not found"
-    mgr = MusicManager.__new__(MusicManager)
-    mgr._logger = SimpleNamespace(warning=lambda m: None)
+    runtime = RenardoRuntime(boot=False)
+    runtime.attach_logger(SimpleNamespace(warning=lambda m: None))
     got = []
-    mgr.osc_fail_listener = got.append
-    mgr._log_osc_reply(_osc("/fail", "/s_new", "SynthDef not found"))
+    runtime.osc_fail_listener = got.append
+    runtime._on_reply(_osc("/fail", "/s_new", "SynthDef not found"))
     assert got == ["/s_new SynthDef not found"]
+
+
+def test_now_playing_is_the_owners_fact_not_a_guess():
+    """#3613: что звучит, сколько играет и сколько осталось — у владельца плеера, по ``started`` и форме."""
+    now = [1000.0]
+    owner = PlayerOwner(FakeAdapter(), lambda s: None, lambda e: None, clock=lambda: now[0])
+    assert owner.now_playing() == {"enabled": False, "playing": False, "pending": None, "track_id": None}
+    owner.play(_program("classic:x"), dj={"enabled": False, "name": "Toccata", "source": "piece"}, once=True)
+    assert owner.now_playing()["pending"] == "classic:x" and owner.now_playing()["playing"] is False
+    owner.track_started({"track_id": "classic:x", "start_beat": 0.0, "form_beats": 128.0, "bpm": 132.0,
+                         "phase_in_form": 0, "players_aligned": True})
+    now[0] += 20.0
+    facts = owner.now_playing()
+    assert facts["playing"] is True and facts["track_id"] == "classic:x" and facts["source"] == "piece"
+    assert facts["elapsed_s"] == pytest.approx(20.0)
+    assert facts["length_s"] == pytest.approx(128 * 60 / 132, abs=0.1)
+    assert facts["remaining_s"] == pytest.approx(128 * 60 / 132 - 20, abs=0.1)
+    owner.stop()
+    assert owner.now_playing()["playing"] is False

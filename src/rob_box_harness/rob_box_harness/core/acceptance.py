@@ -116,7 +116,6 @@ _TOOL_KIND: Mapping[str, SegmentKind] = {
     "play_sound": SegmentKind.VOICE,
     "play_animation": SegmentKind.ANIM,
     "listen_for_response": SegmentKind.VOICE,
-    "execute_music_code": SegmentKind.MUSIC,
     "stop_music": SegmentKind.MUSIC,
     "get_music_state": SegmentKind.UNKNOWN,
     "navigate_to_waypoint": SegmentKind.NAV,

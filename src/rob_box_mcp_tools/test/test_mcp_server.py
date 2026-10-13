@@ -6,7 +6,6 @@ import os
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -63,10 +62,9 @@ class _FakeServer:
         self.stop_generated_track_playback_calls = 0
 
     def get_parameter(self, name):
-        # ``_register_music_tools`` reads both — the second (music_master_gain)
-        # was added after this fixture was first written (same drift as the
-        # tool-import fallback above).
-        assert name in ("music_max_amp", "music_master_gain")
+        # ``_register_music_tools`` reads music_master_gain (music_max_amp went away
+        # with the old LLM-code path, #3614).
+        assert name == "music_master_gain"  # music_max_amp удалён в #3614 (потолок слоя кода LLM)
         return _FakeParameter(0.7)
 
     def get_logger(self):
@@ -187,9 +185,9 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "MemorySaveTool": "memory_save",
         "MemorySearchTool": "memory_search",
         "MemoryContextTool": "memory_context",
-        "ExecuteMusicCodeTool": "execute_music_code",
         "StopMusicTool": "stop_music",
         "GetMusicStateTool": "get_music_state",
+        "SetMusicVolumeTool": "set_music_volume",
         "FaqSearchTool": "faq_search",
         "SearchWebTool": "search_web",
     }
@@ -219,15 +217,10 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
 
     tools_module.__getattr__ = _tools_module_fallback
 
-    class MusicManager:
-        def __init__(self, *args, **kwargs):
-            pass
-
     class TrackLibrary:
         def __init__(self, *args, **kwargs):
             raise FileNotFoundError("missing 004_music_library.sql")
 
-    tools_module.MusicManager = MusicManager
     tools_module.TrackLibrary = TrackLibrary
 
     rclpy_node.Node = Node
@@ -267,16 +260,32 @@ def _load_mcp_server_module(monkeypatch):
     return module
 
 
+class _FakeRuntime:
+    """``RenardoRuntime`` без Renardo: запоминает стартовый уровень и логгер."""
+
+    def __init__(self, master_gain=None, **_kw):
+        self.gain = master_gain
+        self.master_gain = master_gain
+        self.logger = None
+
+    def attach_logger(self, logger):
+        self.logger = logger
+
+
 @pytest.mark.unit
 def test_register_tools_skips_track_library_failures_without_crashing(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
     server = _FakeServer()
     server._register_music_tools = lambda: module.MCPServer._register_music_tools(server)
 
+    module.RenardoRuntime = _FakeRuntime  # без Renardo/scsynth: подъём звукового сервера — свой тест
+
     module.MCPServer._register_tools(server)
 
     assert "start_mapping" in server.registry.tools
-    assert "execute_music_code" in server.registry.tools
+    assert {"stop_music", "get_music_state", "set_music_volume"} <= set(server.registry.tools)
+    assert "execute_music_code" not in server.registry.tools  # #3614: старый путь удалён
+    assert server._renardo_runtime.gain == 0.7 and server._renardo_runtime.logger is server.get_logger()
     assert "lookup_melody" not in server.registry.tools  # нужна библиотека треков
     assert any("Music library disabled" in msg for msg in server.get_logger().error_messages)
 
@@ -336,103 +345,16 @@ def test_tts_provider_state_ignores_empty_payload(monkeypatch):
     assert server.actual_tts_provider is None
 
 
-# ---------------------------------------------------------------------------
-# Issue #1812 — music watchdog idle-TTL parameter + form-end protection
-# ---------------------------------------------------------------------------
+# #3614: сторож простоя старого пути (``_run_music_watchdog`` → ``auto_stop_idle_music``) удалён вместе с
+# ``MusicManager``: его часы ставил только ``execute_music_code``, у движка v2 он молчал.
 
 
 @pytest.mark.unit
-def test_music_watchdog_idle_ttl_defaults_to_1800(monkeypatch):
-    """300s ("слушаю музыку" читалось как простой) → 1800s (30 min).
-
-    Same env-var-backed pattern as ``_music_watchdog_period_s`` /
-    ``_music_watchdog_enabled``: read once at __init__ time, default when
-    unset.
-    """
-    monkeypatch.delenv("MUSIC_WATCHDOG_IDLE_TTL_S", raising=False)
+def test_old_music_watchdog_is_gone(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
-    server = _FakeServer()
-    # Exercise only the parsing snippet that __init__ runs — constructing
-    # the full Node is out of scope for this fake-module harness (see
-    # test_register_tools_* above for the same pattern with music_max_amp).
-    try:
-        server._music_watchdog_idle_ttl_s = float(
-            module.os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
-        )
-    except (TypeError, ValueError):
-        server._music_watchdog_idle_ttl_s = 1800.0
-    assert server._music_watchdog_idle_ttl_s == 1800.0
-
-
-@pytest.mark.unit
-def test_music_watchdog_idle_ttl_honors_env_override(monkeypatch):
-    monkeypatch.setenv("MUSIC_WATCHDOG_IDLE_TTL_S", "42")
-    module = _load_mcp_server_module(monkeypatch)
-    server = _FakeServer()
-    try:
-        server._music_watchdog_idle_ttl_s = float(
-            module.os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
-        )
-    except (TypeError, ValueError):
-        server._music_watchdog_idle_ttl_s = 1800.0
-    assert server._music_watchdog_idle_ttl_s == 42.0
-
-
-@pytest.mark.unit
-def test_run_music_watchdog_passes_the_configured_ttl_to_the_manager(monkeypatch):
-    """The watchdog timer callback must forward its own TTL explicitly —
-    it must not rely on whatever default MusicManager picked up."""
-    module = _load_mcp_server_module(monkeypatch)
-    server = _FakeServer()
-    server._music_watchdog_idle_ttl_s = 1800.0
-    manager = MagicMock()
-    manager.auto_stop_idle_music.return_value = {"stopped": False}
-    server._music_manager = manager
-
-    module.MCPServer._run_music_watchdog(server)
-
-    manager.auto_stop_idle_music.assert_called_once_with(ttl_seconds=1800.0)
-
-
-@pytest.mark.unit
-def test_run_music_watchdog_logs_stop_with_reason_as_before(monkeypatch):
-    """Regression guard: the stop_reason logging (#935/#990) must keep working."""
-    module = _load_mcp_server_module(monkeypatch)
-    server = _FakeServer()
-    server._music_watchdog_idle_ttl_s = 1800.0
-    manager = MagicMock()
-    manager.auto_stop_idle_music.return_value = {
-        "stopped": True,
-        "active_patterns": ["p1"],
-        "idle_seconds": 1801.0,
-        "ttl_seconds": 1800.0,
-        "stop_reason": "idle_ttl",
-    }
-    server._music_manager = manager
-
-    module.MCPServer._run_music_watchdog(server)
-
-    assert server.stop_generated_track_playback_calls == 1
-    assert any(
-        "reason=idle_ttl" in m for m in server.get_logger().warning_messages
-    )
-
-
-@pytest.mark.unit
-def test_run_music_watchdog_survives_a_manager_exception(monkeypatch):
-    module = _load_mcp_server_module(monkeypatch)
-    server = _FakeServer()
-    server._music_watchdog_idle_ttl_s = 1800.0
-    manager = MagicMock()
-    manager.auto_stop_idle_music.side_effect = RuntimeError("boom")
-    server._music_manager = manager
-
-    module.MCPServer._run_music_watchdog(server)
-
-    assert any(
-        "Music watchdog failed" in m for m in server.get_logger().warning_messages
-    )
-    assert server.stop_generated_track_playback_calls == 0
+    assert not hasattr(module.MCPServer, "_run_music_watchdog")
+    source = (Path(__file__).resolve().parents[1] / "rob_box_mcp_tools" / "mcp_server.py").read_text(encoding="utf-8")
+    assert "MUSIC_WATCHDOG" not in source and "MusicManager" not in source
 
 
 # ── Issue #3174 / ADR-0149 — music_cleanup и дека движка ──────────────────
@@ -464,17 +386,12 @@ class _DjSet:
 
 
 def _cleanup_server(module, *, deck_playing):
-    manager = MagicMock()
-    manager.stop_music_on_session_end.return_value = {
-        "was_active": True, "stopped_patterns": [], "message": "ok",
-    }
     server = _FakeServer()
-    server._music_manager = manager
     server._player_owner = _Deck(deck_playing)
     server._dj_set_tool = _DjSet()
     server._cleanup_spares_deck = lambda reason: module.MCPServer._cleanup_spares_deck(server, reason)
     server._stop_deck = lambda reason: module.MCPServer._stop_deck(server, reason)
-    return server, manager
+    return server
 
 
 def _send_cleanup(module, server, reason):
@@ -488,11 +405,10 @@ def _send_cleanup(module, server, reason):
 def test_soft_cleanup_spares_playing_deck(monkeypatch, reason):
     """Живой прогон 29.09 05:00: сет роутера, ход без тулов → тишина 38 с."""
     module = _load_mcp_server_module(monkeypatch)
-    server, manager = _cleanup_server(module, deck_playing=True)
+    server = _cleanup_server(module, deck_playing=True)
 
     _send_cleanup(module, server, reason)
 
-    manager.stop_music_on_session_end.assert_not_called()
     assert server._player_owner.stopped == [] and server._dj_set_tool.closed == []
     assert server.stop_generated_track_playback_calls == 0
 
@@ -505,13 +421,12 @@ def test_soft_cleanup_spares_playing_deck(monkeypatch, reason):
 def test_explicit_cleanup_stops_deck_through_its_owner(monkeypatch, reason):
     """Жёсткий стоп закрывает сет и снимает деку у владельца, а не за его спиной."""
     module = _load_mcp_server_module(monkeypatch)
-    server, manager = _cleanup_server(module, deck_playing=True)
+    server = _cleanup_server(module, deck_playing=True)
 
     _send_cleanup(module, server, reason)
 
     assert server._dj_set_tool.closed == [reason]
     assert server._player_owner.stopped == [reason]
-    manager.stop_music_on_session_end.assert_called_once()
     assert server.stop_generated_track_playback_calls == 1
 
 
@@ -520,23 +435,21 @@ def test_soft_cleanup_spares_a_running_set_even_if_the_deck_looks_idle(monkeypat
     """06.10 15:30 UTC: ход ``tools=[]`` → ``tts_batch_complete`` погасил идущий сет. Идёт ли сет — знает его
     владелец ``DjSetTool.running``, а не только отметка ``started`` деки."""
     module = _load_mcp_server_module(monkeypatch)
-    server, manager = _cleanup_server(module, deck_playing=False)
+    server = _cleanup_server(module, deck_playing=False)
     server._dj_set_tool.running = True
 
     _send_cleanup(module, server, "tts_batch_complete")
 
-    manager.stop_music_on_session_end.assert_not_called()
     assert server._dj_set_tool.closed == [] and server._player_owner.stopped == []
 
 
 @pytest.mark.unit
 def test_soft_cleanup_with_idle_deck_still_stops_leftovers(monkeypatch):
-    """Дека молчит — мягкий cleanup гасит то, что могло остаться (mp3, код харнесса)."""
+    """Дека молчит — мягкий cleanup гасит то, что могло остаться (mp3 из библиотеки)."""
     module = _load_mcp_server_module(monkeypatch)
-    server, manager = _cleanup_server(module, deck_playing=False)
+    server = _cleanup_server(module, deck_playing=False)
 
     _send_cleanup(module, server, "tts_batch_complete")
 
     assert server._player_owner.stopped == []
-    manager.stop_music_on_session_end.assert_called_once()
     assert server.stop_generated_track_playback_calls == 1

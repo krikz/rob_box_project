@@ -457,8 +457,8 @@ def test_route_kind_for_navigation_tools() -> None:
 
 
 def test_route_kind_for_music_tools() -> None:
-    assert route_kind("execute_music_code") is SegmentKind.MUSIC
     assert route_kind("stop_music") is SegmentKind.MUSIC
+    assert route_kind("execute_music_code") is SegmentKind.UNKNOWN  # #3614: тула больше нет
 
 
 def test_route_kind_for_voice_tools() -> None:

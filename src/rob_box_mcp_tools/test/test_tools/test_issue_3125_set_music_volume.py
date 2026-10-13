@@ -7,8 +7,8 @@
     [mcp_server]: [set_volume] Громкость: -3.0 → 0.0 dB
 
 Уровень музыки — только мастер-фейдер ``masterlimiter`` (``/n_set 999 gain``),
-его и должен двигать новый тул. Менеджер — реальный ``MusicManager`` без
-SuperCollider: OSC-отправка перехвачена ``patch.object(_send_osc_raw)``.
+его и должен двигать новый тул. Звуковой сервер — реальный ``RenardoRuntime`` без
+SuperCollider (#3614): OSC-отправка перехвачена ``patch.object(send_osc)``.
 """
 
 from __future__ import annotations
@@ -21,15 +21,14 @@ from .._ros_stubs import RosStubs
 
 _ros = RosStubs()
 with _ros:
-    from rob_box_mcp_tools.tools.music import MusicManager, SetMusicVolumeTool
+    from rob_box_mcp_tools.engine.renardo_runtime import RenardoRuntime
+    from rob_box_mcp_tools.tools.music import SetMusicVolumeTool
     from rob_box_mcp_tools.tools.system import SetVolumeTool
 _ros_stubs = _ros.fixture()
 
 
-def _manager(gain: float = 0.5) -> MusicManager:
-    mgr = MusicManager.__new__(MusicManager)
-    mgr._master_gain = gain
-    return mgr
+def _manager(gain: float = 0.5) -> RenardoRuntime:
+    return RenardoRuntime(master_gain=gain, boot=False)
 
 
 def _tool(gain: float = 0.5):
@@ -44,26 +43,26 @@ def _sent_gains(send: MagicMock) -> list:
 class TestRelativeSteps:
     def test_louder_is_plus_3db_on_master_fader(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw") as send:
+        with patch.object(RenardoRuntime, "send_osc") as send:
             res = tool.execute(action="louder")
         assert res.success, res.error
         assert mgr.master_gain == pytest.approx(0.5 * 10 ** (3 / 20), rel=1e-6)
         send.assert_called_once()
         address, node, control, value = send.call_args.args
-        assert (address, node, control) == ("/n_set", MusicManager.MASTER_LIMITER_NODE, "gain")
+        assert (address, node, control) == ("/n_set", RenardoRuntime.MASTER_NODE, "gain")
         assert value == pytest.approx(0.7063, abs=1e-3)
         assert res.data["old_gain"] == 0.5
         assert res.data["new_gain"] == pytest.approx(0.706, abs=1e-3)
 
     def test_quieter_is_minus_3db(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw"):
+        with patch.object(RenardoRuntime, "send_osc"):
             assert tool.execute(action="quieter").success
         assert mgr.master_gain == pytest.approx(0.5 / 10 ** (3 / 20), rel=1e-6)
 
     def test_louder_clamps_at_one(self) -> None:
         tool, mgr = _tool(0.9)
-        with patch.object(MusicManager, "_send_osc_raw") as send:
+        with patch.object(RenardoRuntime, "send_osc") as send:
             first = tool.execute(action="louder")
             second = tool.execute(action="louder")
         assert mgr.master_gain == 1.0
@@ -73,7 +72,7 @@ class TestRelativeSteps:
 
     def test_quieter_steps_never_mute(self) -> None:
         tool, mgr = _tool(0.06)
-        with patch.object(MusicManager, "_send_osc_raw"):
+        with patch.object(RenardoRuntime, "send_osc"):
             for _ in range(5):
                 tool.execute(action="quieter")
         assert mgr.master_gain == pytest.approx(SetMusicVolumeTool.MIN_STEP_GAIN)
@@ -82,14 +81,14 @@ class TestRelativeSteps:
 class TestAbsoluteLevels:
     def test_max(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw"):
+        with patch.object(RenardoRuntime, "send_osc"):
             assert tool.execute(action="max").success
         assert mgr.master_gain == 1.0
 
     def test_normal_returns_to_startup_gain(self) -> None:
         # normal = значение ROS-параметра music_master_gain при старте (0.5).
         tool, mgr = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw"):
+        with patch.object(RenardoRuntime, "send_osc"):
             tool.execute(action="max")
             assert tool.execute(action="normal").success
         assert mgr.master_gain == 0.5
@@ -100,7 +99,7 @@ class TestAbsoluteLevels:
     )
     def test_set_percent_clamped(self, level, expected) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw"):
+        with patch.object(RenardoRuntime, "send_osc"):
             res = tool.execute(action="set", level=level)
         assert res.success
         assert mgr.master_gain == pytest.approx(expected)
@@ -108,7 +107,7 @@ class TestAbsoluteLevels:
 
     def test_set_without_level_fails_honestly(self) -> None:
         tool, mgr = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw") as send:
+        with patch.object(RenardoRuntime, "send_osc") as send:
             res = tool.execute(action="set")
         assert not res.success
         assert "level" in res.error
@@ -117,7 +116,7 @@ class TestAbsoluteLevels:
 
     def test_unknown_action_fails(self) -> None:
         tool, _ = _tool(0.5)
-        with patch.object(MusicManager, "_send_osc_raw") as send:
+        with patch.object(RenardoRuntime, "send_osc") as send:
             res = tool.execute(action="boost")
         assert not res.success
         send.assert_not_called()
@@ -141,11 +140,12 @@ class TestContract:
         assert "НЕ музыки" in voice
         assert "set_music_volume" in voice
 
-    def test_music_manager_master_gain_property(self) -> None:
-        mgr = _manager(0.42)
-        assert mgr.master_gain == 0.42
-        # class-level fallback (MusicManager.__new__ без __init__)
-        assert MusicManager.__new__(MusicManager).master_gain == MusicManager.DEFAULT_MASTER_GAIN
+    def test_runtime_master_gain_property(self) -> None:
+        from rob_box_mcp_tools.engine.renardo_runtime import DEFAULT_MASTER_GAIN
+
+        assert _manager(0.42).master_gain == 0.42
+        # без параметра — дефолт ``gain`` в masterfilter.scd и ``music_master_gain``
+        assert RenardoRuntime(boot=False).master_gain == DEFAULT_MASTER_GAIN == 0.5
 
 
 class TestCatalogAndSlices:

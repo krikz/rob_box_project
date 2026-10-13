@@ -138,14 +138,14 @@ def _load_mcp_server_module():
     # as new tools get added (TaskDeltaTool, ...).
     import re as _re
     _src = src_path.read_text(encoding="utf-8")
-    # Match both top-level and indented ``<Name>Tool,`` / ``MusicManager,``
-    # lines inside the ``from .tools import ( ... )`` block. ``MusicManager``
-    # and ``TrackLibrary`` aren't ``*Tool`` so we list them explicitly.
+    # Match both top-level and indented ``<Name>Tool,`` / ``TrackLibrary,``
+    # lines inside the ``from .tools import ( ... )`` block.
+    # ``TrackLibrary``/``RtttlLibrary`` aren't ``*Tool`` so we list them explicitly.
     _tool_names = sorted(set(
         m.group(1)
         for m in _re.finditer(r"^\s+([A-Z]\w+Tool),\s*$", _src, flags=_re.M)
     ))
-    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary"]
+    _extra_tools = ["TrackLibrary", "RtttlLibrary"]
     # Plus the Gen* tools from the inner try-import (different pattern):
     _gen_names = sorted(set(
         m.group(1)

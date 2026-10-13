@@ -245,109 +245,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['text'],
                          'accepts_kwargs': False},
         'skill': ('voice-tts',)},
-    {   'llm_visible': False,
-        'operator_visible': False,
-        'read_only': False,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': True,
-        'execution_type': 'fast',
-        'name': 'execute_music_code',
-        'description': 'Выполнить готовый Renardo-код (харнесс живой проверки, LLM не '
-                       'виден). Код выполняется в контексте Renardo '
-                       "(FoxDot-совместимый синтаксис). Пример: 'p1 >> pluck([0, 2, "
-                       "4], dur=0.5, amp=0.8)'. Опасные системные команды "
-                       'автоматически блокируются. Укажи pattern_name чтобы паттерн '
-                       'можно было остановить или изменить позже.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'code': {   'type': 'string',
-                                                        'description': 'Строка '
-                                                                       'Python/Renardo-кода '
-                                                                       'для '
-                                                                       'выполнения. '
-                                                                       "Например: 'p1 "
-                                                                       '>> pluck([0, '
-                                                                       "2, 4])'"},
-                                            'pattern_name': {   'type': 'string',
-                                                                'description': 'Имя '
-                                                                               'паттерна '
-                                                                               'для '
-                                                                               'хранения '
-                                                                               'в '
-                                                                               'истории '
-                                                                               '(например: '
-                                                                               "'p1', "
-                                                                               "'bass', "
-                                                                               "'drums'). "
-                                                                               'Используется '
-                                                                               'для '
-                                                                               'последующей '
-                                                                               'мутации '
-                                                                               'или '
-                                                                               'остановки '
-                                                                               'паттерна.'},
-                                            'segments': {   'type': 'integer',
-                                                            'description': 'Сколько '
-                                                                           'тактов '
-                                                                           '(баров) '
-                                                                           'должна '
-                                                                           'играть '
-                                                                           'фоновая '
-                                                                           'музыка (1 '
-                                                                           'бар = 4 '
-                                                                           'бита). Это '
-                                                                           'ТОЛЬКО '
-                                                                           'предохранитель: '
-                                                                           'система '
-                                                                           'сама '
-                                                                           'останавливает '
-                                                                           'музыку '
-                                                                           'после '
-                                                                           'tts_batch_complete, '
-                                                                           'segments '
-                                                                           'лишь '
-                                                                           'ограничивает '
-                                                                           'время '
-                                                                           'игры, если '
-                                                                           'TTS завис. '
-                                                                           'Для песни '
-                                                                           'обычно '
-                                                                           '8-16 '
-                                                                           'тактов. '
-                                                                           'Если не '
-                                                                           'знаешь — '
-                                                                           'НЕ '
-                                                                           'указывай '
-                                                                           '(дефолт: '
-                                                                           'музыка '
-                                                                           'играет до '
-                                                                           'конца '
-                                                                           'озвучки). '
-                                                                           '#990'},
-                                            'duration_sec': {   'type': 'number',
-                                                                'description': 'DEPRECATED '
-                                                                               '(#990) '
-                                                                               '— '
-                                                                               'игнорируется '
-                                                                               'для '
-                                                                               'остановки '
-                                                                               'музыки, '
-                                                                               'оставлен '
-                                                                               'для '
-                                                                               'обратной '
-                                                                               'совместимости. '
-                                                                               'НЕ '
-                                                                               'используй. '
-                                                                               'Вместо '
-                                                                               'него '
-                                                                               'передавай '
-                                                                               'segments.'}},
-                          'required': ['code'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['code', 'pattern_name', 'segments', 'duration_sec'],
-                         'required': ['code'],
-                         'accepts_kwargs': False},
-        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': True,
@@ -692,9 +589,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'execution_type': 'fast',
         'name': 'get_music_state',
-        'description': 'Получить текущее состояние музыкального менеджера: доступность '
-                       'Renardo и SuperCollider, список активных паттернов, историю '
-                       'кода паттернов.',
+        'description': 'Что сейчас играет: диджей-сет (трек N из M, мелодия), трек или '
+                       'пьеса (название, источник, темп, инструмент, сколько играет и '
+                       'сколько осталось) или «ничего». Отвечай фразой из message.',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],
@@ -2211,33 +2108,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'execution_type': 'fast',
         'name': 'stop_music',
-        'description': 'Остановить музыкальный паттерн по имени или всю музыку. Если '
-                       'указан pattern_name — остановится только этот паттерн. Если '
-                       "pattern_name не указан или равен 'all' — остановится вся "
-                       'музыка (Clock.clear()).',
+        'description': 'Выключить всю музыку: диджей-сет, трек или пьесу движка и mp3 '
+                       'из библиотеки. Повторный вызов в тишине безопасен. Что '
+                       'сказать, вернёт тул.',
         'parameters': {   'type': 'object',
-                          'properties': {   'pattern_name': {   'type': 'string',
-                                                                'description': 'Имя '
-                                                                               'паттерна '
-                                                                               'для '
-                                                                               'остановки '
-                                                                               '(например: '
-                                                                               "'p1', "
-                                                                               "'bass'). "
-                                                                               'Передай '
-                                                                               "'all' "
-                                                                               'или '
-                                                                               'оставь '
-                                                                               'пустым '
-                                                                               'для '
-                                                                               'остановки '
-                                                                               'всей '
-                                                                               'музыки.'}},
+                          'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {   'params': ['pattern_name'],
-                         'required': [],
-                         'accepts_kwargs': False},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
         'skill': ('composer', 'dj', 'player')},
     {   'llm_visible': True,
         'operator_visible': False,

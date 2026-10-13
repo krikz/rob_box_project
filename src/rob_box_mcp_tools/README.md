@@ -106,11 +106,11 @@ rob_box_mcp_tools/
 - `memory_context` - Получить полный контекст памяти
 
 ### Music (Музыка / SuperCollider)
-- `execute_music_code` - Выполнить SuperCollider код
-- `stop_music` - Остановить воспроизведение
-- `set_vibe_preset` - Установить пресет настроения
-- `get_music_state` - Получить текущее состояние плеера
-- `set_dj_mode` - Включить/выключить DJ режим
+- `request_music` - Поставить трек или пьесу (движок v2, код решает ноты)
+- `dj_set` - Диджей-сет на тему
+- `stop_music` - Выключить всю музыку
+- `get_music_state` - Что сейчас играет (фраза от кода)
+- `set_music_volume` - Громкость музыки (мастер-фейдер)
 
 ## 🚀 Использование
 

@@ -50,7 +50,7 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.works import key_slot
+from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
@@ -284,6 +284,27 @@ def music_busy(owner: Any, dj: Any) -> bool:
     ``started`` треков сета дека может выглядеть пустой (06.10 15:30 UTC: мягкий cleanup погасил идущий сет)."""
     deck = owner is not None and owner.is_playing() is True
     return deck or getattr(dj, "running", False) is True
+
+
+#: Источник звучащего трека (#3613) — что сказать на «что играет»: трек синтов, собранный кодом (``request_music``
+#: intent=track, треки сета), пьеса по нотам партитуры, мелодия из архива RTTTL. Слова — ``media_phrases.SOURCE_WORDS``.
+SOURCE_SYNTH, SOURCE_PIECE, SOURCE_MELODY = "synth", "piece", "melody"
+_PIECE_SOURCES = {SCORE: SOURCE_PIECE, RTTTL: SOURCE_MELODY}
+#: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет».
+TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played")
+
+
+def track_facts(staged: Mapping[str, Any]) -> Dict[str, Any]:
+    """Факты собранного заказа для снимка плеера (#3613): название как во фразе запуска (пьеса — название и автор из
+    каталога, как ``media_phrases.piece_text``), источник, стиль, bpm, тональность, инструмент, на котором играем."""
+    facts: Dict[str, Any] = {"enabled": False}
+    facts.update({k: staged[k] for k in TRACK_FACTS if staged.get(k) not in (None, "")})
+    played = staged.get("played")
+    if isinstance(played, Mapping):
+        title, composer = str(played.get("title") or staged.get("title") or ""), str(played.get("composer") or "")
+        facts["name"] = f"{title}, {composer}" if composer and composer.lower() not in title.lower() else title
+        facts["source"] = _PIECE_SOURCES.get(str(played.get("source") or ""), SOURCE_MELODY)
+    return facts
 
 
 def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
@@ -641,7 +662,7 @@ class RequestMusicTool(MCPTool):
             from rob_box_voice.core.media_phrases import launch_text
             staged["message"] = launch_text("", staged)
         self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
-        result = self._owner.play(program, dj={"enabled": False, "title": staged["title"]}, once=once)
+        result = self._owner.play(program, dj=track_facts(staged), once=once)
         result = confirmed({**result, **staged}, self._confirm)
         if result.get("ok") and row:
             self._pieces.memory.remember(row)
@@ -670,7 +691,8 @@ class RequestMusicTool(MCPTool):
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
         title = f"{profile.theme or 'клубный трек'} · {plan.bpm} BPM"
-        return {"program": program, "once": False, "title": title, "bpm": plan.bpm, "energy": energy,
+        return {"program": program, "once": False, "title": title, "name": profile.theme or "клубный трек",
+                "source": SOURCE_SYNTH, "style": plan.style, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
     def _log(self) -> Any:

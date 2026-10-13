@@ -63,10 +63,6 @@ tools:
     class: require
     reason: "перезапись существующего waypoint (политика §8.2)"
     plan_template: "Сохраняю waypoint. Подтверждаешь?"
-  execute_music_code:
-    class: require
-    reason: "выполняет Python-код от LLM в процессе MCP-сервера"
-    plan_template: "Запускаю музыкальный код. Подтверждаешь?"
 
   # ── 🟡 NOTIFY: обратимо, но стоит озвучить ──────────────────────────
   set_speed:

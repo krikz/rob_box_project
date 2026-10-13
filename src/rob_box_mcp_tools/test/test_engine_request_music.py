@@ -109,14 +109,12 @@ def test_request_closes_a_running_set_and_dj_stop_stops_a_single_track():
 
 def test_old_music_tools_are_gone_and_v2_tools_are_the_music_path():
     """PR-13b ADR-0149 §8.2: ``compose_music``/``preview_arrangement``/``set_dj_mode`` удалены из каталога;
-    ``execute_music_code`` остался только для харнессов (``llm_visible=False``)."""
+    #3614: харнесс ``execute_music_code`` удалён вместе с ``MusicManager`` — кода от LLM/харнесса движок не исполняет."""
     from rob_box_core.tool_catalog import TOOL_CATALOG
 
     names = {e.name for e in TOOL_CATALOG}
     assert not ({"compose_music", "preview_arrangement", "set_dj_mode", "set_vibe_preset",
-                 "save_arrangement_preset"} & names)
-    harness_only = next(e for e in TOOL_CATALOG if e.name == "execute_music_code")
-    assert harness_only.llm_visible is False and not harness_only.operator_visible
+                 "save_arrangement_preset", "execute_music_code"} & names)
     visible = {e.name for e in llm_visible_tools()}
     assert V2_TOOLS <= visible and not (OLD_LLM_MUSIC_TOOLS & visible)
     # PR-15: фильтра по движку нет — реестр оператора (ТАРС) тоже предъявляет тулы v2

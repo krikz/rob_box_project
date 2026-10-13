@@ -33,12 +33,12 @@ def _repo_root(start: Path) -> Path:
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
 MUSIC_PY = (
-    REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools" / "music.py"
+    REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "engine" / "renardo_runtime.py"
 )
 
 
 def _critical_synths() -> tuple:
-    """Read CRITICAL_SYNTHS out of music.py without importing the package.
+    """Read CRITICAL_SYNTHS out of engine/renardo_runtime.py without importing the package.
 
     ``rob_box_mcp_tools.tools`` pulls in rclpy through its ``__init__``, which
     is not available off-robot; the constant itself is a plain literal, so the
@@ -53,7 +53,7 @@ def _critical_synths() -> tuple:
         for target in targets:
             if isinstance(target, ast.Name) and target.id == "CRITICAL_SYNTHS":
                 return tuple(ast.literal_eval(node.value))
-    raise AssertionError("CRITICAL_SYNTHS not found at module level in music.py")
+    raise AssertionError("CRITICAL_SYNTHS not found at module level in renardo_runtime.py")
 
 
 CRITICAL_SYNTHS = _critical_synths()
