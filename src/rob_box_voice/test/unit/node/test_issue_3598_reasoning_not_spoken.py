@@ -54,6 +54,19 @@ def test_reasoning_is_not_spoken_and_honest_phrase_instead():
     assert any("[issue 3598]" in w and "<music_state>" in w for w in warnings), warnings
 
 
+def test_tag_wrapped_reply_is_spoken_without_tags():
+    """Живой лог 13.10 09:17: ``spoken='<Текст>…</Текст>'`` ушёл в TTS с тегами."""
+    n = _make_node()
+    n._handle_result(
+        _result("<Текст>У РОББОКСа нет Вагнера в библиотеке.</Текст>", None),
+        user_input="[TG] продолжай играть вагнера",
+        raw_user_command="продолжай играть вагнера",
+    )
+    published = " ".join(_published_texts(n))
+    assert "У РОББОКСа нет Вагнера" in published
+    assert "Текст" not in published
+
+
 def test_unmarked_reply_is_spoken_as_before():
     n = _make_node()
     n._handle_result(

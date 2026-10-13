@@ -51,8 +51,11 @@ class TestXmlEscape:
         assert u.ssml == "<speak>x&gt;y</speak>"
 
     def test_all_three_combined(self):
-        u = Utterance(text="<a href='x'>&</a>", sink=Sink.SPEAKERS)
-        assert u.ssml == "<speak>&lt;a href='x'&gt;&amp;&lt;/a&gt;</speak>"
+        # Issue #3598: теги разметки (``<a href='x'>``) теперь снимаются до
+        # экранирования — их не произносят; экранирование проверяем на
+        # тексте без тегов.
+        u = Utterance(text="1 < 2 & 3 > 2", sink=Sink.SPEAKERS)
+        assert u.ssml == "<speak>1 &lt; 2 &amp; 3 &gt; 2</speak>"
 
     def test_dangerous_text_produces_valid_xml(self):
         """Главный инвариант DoD: текст с ``&`` и ``<`` даёт валидный XML
