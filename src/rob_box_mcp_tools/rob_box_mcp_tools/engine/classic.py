@@ -31,7 +31,7 @@ from rob_box_music.instruments import LeadChoice
 from rob_box_music.material import ScoreMaterial
 from rob_box_music.render.program import Program
 from rob_box_music.render.renardo import render
-from rob_box_music.works import RTTTL, SCORE
+from rob_box_music.works import RTTTL, SCORE, clean_identity, composer_public_domain, record_public_domain
 
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import human_track_title, match_info, spoken_title
@@ -55,6 +55,8 @@ class ClassicPick:
     history: Mapping[str, Any] = field(default_factory=dict)
     composer: str = ""  # автор для фразы, по-русски (``spoken_title``): ``artist`` RTTTL, ``composer`` партитуры
     track: Any = None  # модель трека (``model.Track``) — в файл каталога моделей после ``started`` (I24)
+    work: str = ""  # каталожное название (до ``spoken_title``) — ``work_id`` кавера в кэше (ADR-0158 §2.5)
+    public_domain: bool = False  # мелодия — общественное достояние (``works.public_domain``): кавер можно (§2.9)
 
 
 def pick_piece(candidates: Iterable[Any],
@@ -143,15 +145,24 @@ def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A",
         return ClassicPick(query, False, reason)
     title = human_track_title(library, record)
     track = song_track(song_material(record, title), seed=seed, deck=deck, **_lead_kw(lead))
-    return _picked(query, track, title, deck, RTTTL, str(record.get("artist") or ""))
+    return _picked_record(query, track, title, deck, record)
 
 
-def _picked(query: str, track: Any, title: str, deck: str, source: str, composer: str = "") -> ClassicPick:
+def _picked_record(query: str, track: Any, title: str, deck: str, record: Mapping[str, Any]) -> ClassicPick:
+    """Песня из записи RTTTL: произведение и общественное достояние — по записи каталога (реестр ``works``)."""
+    return _picked(query, track, title, deck, RTTTL, str(record.get("artist") or ""),
+                   clean_identity(record).title or title, record_public_domain(record))
+
+
+def _picked(query: str, track: Any, title: str, deck: str, source: str, composer: str = "", work: str = "",
+            public_domain: bool = False) -> ClassicPick:
     """Собранная песня; название и автор — как их говорит робот (``spoken_title``, #3577: без мусора PDMX)."""
+    work = work or title
     title, composer = spoken_title(title, composer)
     return ClassicPick(query, True, melody_id=track.hook.source, title=title, program=render(track, deck),
                        bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}", source=source,
-                       history=track_history(track), composer=composer, track=track)
+                       history=track_history(track), composer=composer, track=track, work=work,
+                       public_domain=public_domain)
 
 
 def pick_record(record: Mapping[str, Any], title: str, query: str, *, seed: int, deck: str = "A",
@@ -161,7 +172,7 @@ def pick_record(record: Mapping[str, Any], title: str, query: str, *, seed: int,
         track = song_track(song_material(dict(record), title), seed=seed, deck=deck, **_lead_kw(lead))
     except (KeyError, ValueError) as exc:
         return ClassicPick(query, False, f"{record.get('name')}: {type(exc).__name__}: {exc}")
-    return _picked(query, track, title, deck, RTTTL, str(record.get("artist") or ""))
+    return _picked_record(query, track, title, deck, record)
 
 
 def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query: str, *, seed: int,
@@ -179,7 +190,8 @@ def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query
         except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
             reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
             continue
-        return _picked(query, track, material.title, deck, SCORE, material.composer)
+        return _picked(query, track, material.title, deck, SCORE, material.composer, material.title,
+                       composer_public_domain(material.composer, material.title))
     return ClassicPick(query, False, "; ".join(reasons) or "партитур по названию нет")
 
 

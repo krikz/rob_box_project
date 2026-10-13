@@ -31,9 +31,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, KEY_MODE_STEMS, KEY_NOTE_WORDS,
-                        KEY_SIGN_WORDS, KEY_TITLE_MODES, KNOWN_VIEWS_FLOOR, KNOWN_VIEWS_FULL, LICENSE_STOP_LIST,
-                        PIECE_LONG_BEATS, ROOTS, TAG_WORK_TYPE, THEMES, TITLE_EXACT, TITLE_PARTIAL)
+from .knowledge import (CATEGORY_ARTISTS, COMPOSER_RU, COMPOSERS_IN_COPYRIGHT, DEFAULT_HOOKS, EMPTY_TITLES,
+                        KEY_MODE_STEMS, KEY_NOTE_WORDS, KEY_SIGN_WORDS, KEY_TITLE_MODES, KNOWN_VIEWS_FLOOR,
+                        KNOWN_VIEWS_FULL, LICENSE_STOP_LIST,
+                        PIECE_LONG_BEATS, PUBLIC_DOMAIN_WORK_TYPES, ROOTS, TAG_WORK_TYPE, THEMES, TITLE_EXACT,
+                        TITLE_PARTIAL)
 from .material import ScoreMaterial, license_usable, meter_map
 from .rtttl import consensus_order
 
@@ -134,6 +136,12 @@ class Work:
             raise ValueError("Work.title пуст")
         if not self.sources:
             raise ValueError("у Work должен быть хотя бы один источник")
+
+    @property
+    def public_domain(self) -> bool:
+        """Мелодия — общественное достояние (:func:`public_domain`): только такой пьесе строится кавер (ADR-0158)."""
+        wtype = self.work_type.value if self.work_type else ""
+        return not self.stop_listed and public_domain(wtype, self.title, self.artist, self.composer)
 
     def fact(self, field: str) -> Optional[Fact]:
         if field not in FIELDS:
@@ -247,6 +255,27 @@ def work_id_of(key: str) -> str:
 def is_stop_listed(*names: str) -> bool:
     flat = norm(" ".join(names))
     return any(s in flat for s in LICENSE_STOP_LIST)
+
+
+def public_domain(work_type: str, *names: str) -> bool:
+    """Мелодия — общественное достояние (кавер ADR-0158 §2.9 строится только для неё): тип произведения из
+    ``PUBLIC_DOMAIN_WORK_TYPES`` (классика, народное) и ни автор, ни название не из стоп-списков живых прав."""
+    flat = norm(" ".join(names))
+    return (work_type in PUBLIC_DOMAIN_WORK_TYPES and not is_stop_listed(*names)
+            and not any(c in flat for c in COMPOSERS_IN_COPYRIGHT))
+
+
+def record_public_domain(rec: Mapping[str, Any]) -> bool:
+    """Запись RTTTL каталога → :func:`public_domain` по типу из чистки идентичности (теги/категория)."""
+    ident = clean_identity(rec)
+    return public_domain(ident.work_type, ident.title, ident.artist)
+
+
+def composer_public_domain(composer: str, title: str = "") -> bool:
+    """Партитура: композитор из таблицы классиков (``COMPOSER_RU``) — классика; дальше — :func:`public_domain`."""
+    flat = norm(composer)
+    classic = bool(flat) and any(norm(k) in flat for k in COMPOSER_RU)
+    return public_domain("classical" if classic else "", composer, title)
 
 
 # ── Сборка реестра ───────────────────────────────────────────────────────────────────────────────────────────
@@ -1018,7 +1047,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 __all__ = ["alias_pairs", "aliases_of", "build_works", "clean_identity", "concept_queries", "Fact", "FIELDS", "Gate",
            "gate", "GATE_SHARE", "get_theme_link", "holes", "Identity", "key_in_title", "key_slot", "LINK_LEVELS",
-           "link_score_sources", "RTTTL", "SCORE", "WorkCandidate", "WorkRef", "WorkWord",
+           "link_score_sources", "public_domain", "composer_public_domain", "record_public_domain",
+           "RTTTL", "SCORE", "WorkCandidate", "WorkRef", "WorkWord",
            "LOOKUP_TTL_DAYS", "match_scores", "norm", "put_theme_link", "report", "ru_phrase_by_query",
            "RULES_VERSION", "score_index_row", "score_links_report", "ScoreIndexRow", "ScoreLink", "SEEDS_FILE",
            "THEME_LINK_SOURCES", "THEME_LINK_STATUSES", "theme_links_report", "theme_phrase", "theme_seeds",

@@ -42,6 +42,7 @@ REASON_WORDS = {
     "provider_down": "сервис генерации не отвечает",
     "rejected": "сервис генерации отклонил заказ",
     "timeout": "генерация не уложилась по времени",
+    "not_public_domain": "живую версию делаю только для музыки общественного достояния",
 }
 INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), сгенерированное раньше (кэш) "
                 "или новая генерация (кредиты и ожидание). У кандидатов - очки кода в одной шкале; обычно лучший - с "
@@ -117,6 +118,8 @@ class CacheTrack:
     rating: int = 0
     played_ago_h: Optional[float] = None
     group: str = ""
+    work_id: str = ""      # кавер: каталожное название пьесы (ADR-0158 §2.5)
+    instrument: str = ""   # кавер: ключ ``INSTRUMENTS`` или «»
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ class SourceContext:
     set_left: Optional[float] = None
     mode: str = "auto"
     gen_failed: str = ""
+    cover_ready: bool = False  # исполнитель кавера пьесы подключён (ADR-0158 PR-4, ``engine.gen.cover``)
 
     def without_generate(self, reason: str) -> "SourceContext":
         return replace(self, gen_failed=reason)
@@ -208,11 +212,60 @@ def _cache_options(ask: SourceAsk, ctx: SourceContext) -> List[Option]:
     return out
 
 
-def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False) -> Tuple[Tuple[Option, ...], str]:
-    """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``."""
+@dataclass(frozen=True)
+class CoverWork:
+    """Пьеса заказа для кавера (ADR-0158 §2.9): каталожное название (``work_id`` кэша), общественное достояние ли
+    (реестр ``works.public_domain``), инструмент заказа (ключ ``INSTRUMENTS``), название для фразы."""
+
+    title: str
+    public_domain: bool
+    instrument: str = ""
+    spoken: str = ""
+
+
+def cover_style_key(work: CoverWork, ask: SourceAsk) -> str:
+    """Стиль кавера: жанр заказа; без жанра и инструмента — ``COVER_DEFAULT_STYLE``; с инструментом — «»."""
+    return ask.genre or ("" if work.instrument else kn.COVER_DEFAULT_STYLE)
+
+
+def _same_cover(track: CacheTrack, work: CoverWork, style: str) -> bool:
+    from .works import norm
+
+    return (track.kind == "cover" and norm(track.work_id) == norm(work.title) and track.instrument == work.instrument
+            and track.style_key == style and track.rating >= 0)
+
+
+def _cover_options(ask: SourceAsk, ctx: SourceContext, work: CoverWork) -> Tuple[List[Option], str]:
+    """Кавер пьесы: трек кэша того же ``work_id``/``instrument``/``style`` (из вариантов — давнее игранный) и
+    ``generate:cover`` — только общественное достояние и при деньгах (жёсткие фильтры :func:`gen_block`)."""
+    style = cover_style_key(work, ask)
+    same = sorted((t for t in ctx.cache if _same_cover(t, work, style)),
+                  key=lambda t: -1e9 if t.played_ago_h is None else -t.played_ago_h)
+    out = [Option(f"{CACHE}:{t.id}", {"live": 1.0, "theme_match": 1.0, "asked": -1.0 if ask.fresh else 0.0,
+                                      "fresh": float(t.played_ago_h is None or t.played_ago_h >= kn.GEN_FRESH_HOURS),
+                                      "rating": float(t.rating), "wait_s": kn.INSTANT_WAIT_S},
+                  f"кавер из сочинённого раньше «{t.title}»") for t in same[:1]]
+    model = kn.GEN_MODELS[kn.COVER_MODEL]
+    reason = ("" if work.public_domain else "not_public_domain") or gen_block(
+        replace(ctx, gen_ready=ctx.cover_ready), model.credits_per_task)
+    if not reason:
+        out.append(Option(f"{GENERATE}:cover:{kn.COVER_MODEL}", {
+            "live": 1.0, "asked": 1.0 if (ask.generated or ask.fresh) else 0.0, "cost": model.credits_per_task,
+            "wait_s": kn.COVER_WAIT_S}, f"живая версия: кавер нашей мелодии ({style or work.instrument})"))
+    return out, reason
+
+
+def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
+                      work: Optional[CoverWork] = None) -> Tuple[Tuple[Option, ...], str]:
+    """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``.
+    Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4)."""
     synth = _synth_option(ask, ctx, piece)
-    gen, reason = _gen_option(ask, ctx)
-    options = [o for o in (synth, gen) if o is not None] + ([] if piece else _cache_options(ask, ctx))
+    if piece and work is not None and not ask.vocal:
+        covers, reason = _cover_options(ask, ctx, work)
+        options = [o for o in [synth, *covers] if o is not None]
+    else:
+        gen, reason = _gen_option(ask, ctx)
+        options = [o for o in (synth, gen) if o is not None] + ([] if piece else _cache_options(ask, ctx))
     return tuple(options) or (Option(f"{DECLINE}:{reason or 'no_source'}", {}, "честный отказ"),), reason
 
 
@@ -229,34 +282,39 @@ class Route:
     track: Optional[CacheTrack] = None
     failed: bool = False
     provider: str = ""
+    work: Optional[CoverWork] = None
 
 
-def _route(choice: Choice, ask: SourceAsk, ctx: SourceContext, reason: str) -> Route:
+def _route(choice: Choice, ask: SourceAsk, ctx: SourceContext, reason: str,
+           work: Optional[CoverWork] = None) -> Route:
     kind, _sep, rest = choice.id.partition(":")
     track = next((t for t in ctx.cache if t.id == rest), None) if kind == CACHE else None
-    return Route(kind, choice.id, ask, reason, rest if kind == SYNTH else "", track, provider=choice.provider)
+    return Route(kind, choice.id, ask, reason, rest if kind == SYNTH else "", track, provider=choice.provider,
+                 work=work)
 
 
-def choose_route(ask: SourceAsk, ctx: SourceContext, chooser: Chooser, piece: bool = False) -> Route:
+def choose_route(ask: SourceAsk, ctx: SourceContext, chooser: Chooser, piece: bool = False,
+                 work: Optional[CoverWork] = None) -> Route:
     """Кандидаты кода → ``chooser`` (один кандидат — без вопроса) → :class:`Route`."""
-    options, reason = source_candidates(ask, ctx, piece)
+    options, reason = source_candidates(ask, ctx, piece, work)
     if len(options) == 1:
-        return _route(Choice(options[0].id, 1.0, "code"), ask, ctx, reason)
+        return _route(Choice(options[0].id, 1.0, "code"), ask, ctx, reason, work)
     question = ChoiceQuestion(f"путь {ask.describe()}", options, weights=kn.SOURCE_WEIGHTS, instructions=INSTRUCTIONS)
-    return _route(chooser.choose(question), ask, ctx, reason)
+    return _route(chooser.choose(question), ask, ctx, reason, work)
 
 
 def choose_with_fallback(ask: SourceAsk, ctx: SourceContext, chooser: Chooser,
-                         attempt: Optional[Callable[[Route], str]] = None, piece: bool = False) -> Route:
+                         attempt: Optional[Callable[[Route], str]] = None, piece: bool = False,
+                         work: Optional[CoverWork] = None) -> Route:
     """Выбор пути; выбрана генерация и ``attempt`` вернул причину провала (``""`` — вышло; исполнителя нет —
     ``not_wired``) — выбор заново с тем же контекстом без ``generate:*``, второго круга генерации нет (В3)."""
-    route = choose_route(ask, ctx, chooser, piece)
+    route = choose_route(ask, ctx, chooser, piece, work)
     if route.kind != GENERATE:
         return route
     failed = attempt(route) if attempt is not None else "not_wired"
     if not failed:
         return route
-    return replace(choose_route(ask, ctx.without_generate(failed), chooser, piece), failed=True)
+    return replace(choose_route(ask, ctx.without_generate(failed), chooser, piece, work), failed=True)
 
 
 def _asked_text(ask: SourceAsk) -> str:
@@ -282,8 +340,43 @@ def _excuse(route: Route, tail: str = ".") -> str:
     return f"{genre[:1].upper()}{genre[1:]} синтезом у меня не выходит, а {words}{tail}" if genre else ""
 
 
+def _cover_what(work: CoverWork, ask: SourceAsk) -> str:
+    """«на ситаре» / «в стиле «оркестр»» — чем будет живая версия (из таблиц, не от LLM)."""
+    ins = kn.INSTRUMENTS.get(work.instrument)
+    style = kn.GEN_STYLES.get(cover_style_key(work, ask))
+    return f"на {ins.prepositional}" if ins else f"в стиле «{style.name}»" if style else ""
+
+
+def cover_note(route: Route) -> str:
+    """Фраза пути пьесы с кавером (В4, ADR-0148: от кода): мост — «живую готовлю, через ~N с, а пока своя»; кавера
+    нет из-за денег/сервиса — «живую сейчас не сделаю: <причина>»; не общественное достояние — «»."""
+    work = route.work
+    if work is None or route.ask.vocal:
+        return ""
+    what = " ".join(p for p in ("Живую версию", _cover_what(work, route.ask)) if p)
+    if route.kind == GENERATE:
+        return f"{what} готовлю — секунд через {int(kn.COVER_WAIT_S)}, а пока своя."
+    if route.kind == SYNTH and work.public_domain and route.gen_reason:
+        words = REASON_WORDS.get(route.gen_reason, route.gen_reason)
+        return f"{what} {'сделать не вышло' if route.failed else 'сейчас не сделаю'}: {words}."
+    return ""
+
+
+def cover_failed_text(work: CoverWork, reason: str) -> str:
+    """Генерация кавера упала, мост доигрывает (В3): фраза кода с причиной, без тихой подмены."""
+    return f"Живой версии «{work.spoken or work.title}» не будет: {REASON_WORDS.get(reason, reason)}."
+
+
+def cover_ready_text(work: CoverWork, ask: SourceAsk) -> str:
+    """Кавер сгенерирован и встал на деку вместо моста."""
+    tail = _cover_what(work, ask)
+    return f"А вот живая версия «{work.spoken or work.title}»{' ' + tail if tail else ''}."
+
+
 def route_note(route: Route) -> str:
     """Фраза перед фразой запуска синтеза/пьесы: почему своё, а не то, что просили; просьба исполнена — «»."""
+    if route.work is not None:
+        return cover_note(route)
     excuse = _excuse(route)
     return f"{excuse[:-1]}, играю своё." if excuse and route.kind == SYNTH and route.style != PIECE else excuse
 
@@ -306,6 +399,7 @@ def decline_text(route: Route) -> str:
     return f"{head} Могу сыграть своё: {offer}."
 
 
-__all__ = ["CACHE", "CacheTrack", "DECLINE", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
+__all__ = ["CACHE", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note", "cover_ready_text",
+           "cover_style_key", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
            "decline_text", "gen_block", "route_note", "source_ask", "source_candidates", "synth_fit", "synth_style"]

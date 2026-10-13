@@ -68,6 +68,8 @@ class PlayerOwner:
         self._queued: Optional[Tuple[Any, str]] = None  # (программа N+1, expected_previous)
         self._pending_dj: Optional[Dict[str, Any]] = None
         self._once: Optional[str] = None  # track_id, который играет один проход формы
+        #: Конечный трек, который доиграл сам (не стоп): кавер встаёт после моста только так (ADR-0158 PR-4).
+        self.last_finished: Optional[str] = None
         #: Слушатель ``started`` (``SetSession``): зовётся из потока клока после публикации.
         self.on_started: Optional[Callable[[Dict[str, Any]], None]] = None
         #: Слушатель ``finished`` конечного трека (``SetSession``: последний трек сета): ``track_id``.
@@ -135,6 +137,7 @@ class PlayerOwner:
             if (self._current or {}).get("track_id") != track_id:
                 return
             self._current, self._once, self._dj = None, None, {"enabled": False}
+            self.last_finished = track_id
         self._adapter.stop()
         self._log.info(f"🎵 [music v2] finished track_id={track_id}")
         self._publish_event(build_music_event_payload("finished", track_id, ts=self._clock()))

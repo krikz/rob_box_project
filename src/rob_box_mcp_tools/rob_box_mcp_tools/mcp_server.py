@@ -232,6 +232,16 @@ def _speaker(node: Any) -> Callable[[str], None]:
     return lambda line: node.registry.execute("speak_text", text=line)
 
 
+def _cover_maker(node: Any) -> Any:
+    """Кавер пьесы (ADR-0158 PR-4): Suno через KIE (ключ ``KIE_API`` окружения), кэш — ``/data/music_library``
+    (поднимается позже движка — лениво). Ключа нет — исполнитель есть, но не готов: кавер-кандидатов нет."""
+    from .engine.gen.cover import CoverMaker
+    from .engine.gen.kie_suno import KieSunoProvider
+
+    return CoverMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None),
+                      log=node.get_logger)
+
+
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
@@ -276,7 +286,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                # читаем лениво; трек кэша играет gen_play_from_library на деке (PR-2)
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
-                                                                                  track_id=track_id))
+                                                                                  track_id=track_id),
+                               cover=_cover_maker(node), speak=_speaker(node))  # PR-4: кавер пьесы
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)

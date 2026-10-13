@@ -133,6 +133,11 @@ class KieSunoProvider:
         self._base = api_base.rstrip("/")
         self._timeout = request_timeout_s
 
+    @property
+    def configured(self) -> bool:
+        """Ключ задан (сам ключ наружу не отдаётся)."""
+        return bool(self._key.strip())
+
     def __repr__(self) -> str:  # ключ никогда не попадает в лог
         return f"KieSunoProvider(configured={bool(self._key.strip())})"
 
