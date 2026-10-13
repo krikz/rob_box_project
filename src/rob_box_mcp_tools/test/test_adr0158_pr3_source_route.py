@@ -111,3 +111,16 @@ def test_cache_rows_become_candidates(library):
                           "is_instrumental": 0, "last_played_at": "2026-10-13T10:00:00+00:00"},
                          datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc))
     assert (legacy.kind, legacy.style_key, legacy.played_ago_h) == ("song", "", 2.0)
+
+
+def test_day_left_is_counted_from_the_ledger_not_a_stub(tmp_path):
+    """Остаток дня — дневной лимит минус траты ``gen_ledger`` за сегодня; вчерашние не считаются."""
+    from rob_box_mcp_tools.engine.gen.budget import DAILY_CREDITS_DEFAULT
+    from rob_box_mcp_tools.engine.source_route import day_left
+
+    lib = GeneratedMusicLibrary(str(tmp_path / "music_library"))
+    assert day_left(lib) == DAILY_CREDITS_DEFAULT and day_left(None) == 0.0
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    lib.ledger.record_spend("today", 12.0, ts=now.isoformat())
+    lib.ledger.record_spend("old", 12.0, ts=now.replace(year=now.year - 1).isoformat())
+    assert day_left(lib) == DAILY_CREDITS_DEFAULT - 12.0
