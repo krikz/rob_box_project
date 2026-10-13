@@ -31,7 +31,7 @@ CONFIG_DIRS = [REPO / "src/rob_box_voice/config", REPO / "docker/vision/config/v
 class _Node:
     def __init__(self):
         self.params = {"music_v2_clock_latency": 0.5, "music_v2_reasoner": True,
-                       "music_v2_reasoner_deadline_s": 45.0, "music_v2_dj_lines": True, "music_v2_tracks_dir": ""}
+                       "music_v2_reasoner_deadline_s": 45.0, "music_v2_dj_lines": True, "music_v2_tracks_dir": "", "music_chooser": "deterministic"}
         self.music_state_pub = _FakePublisher()
         self.created = []
         self._logger = _FakeLogger()
@@ -96,12 +96,14 @@ def test_yaml_copies_match_and_are_declared_with_the_same_types():
     # ADR-0004: один файл — одна секция; у mcp_server.yaml — только своя.
     assert _load("mcp_server.yaml") == {"mcp_server": {"ros__parameters": {
         "music_v2_clock_latency": 0.5, "music_v2_reasoner": True, "music_v2_reasoner_deadline_s": 45.0,
-        "music_v2_dj_lines": True, "music_v2_tracks_dir": "/data/music_v2/tracks"}}}
+        "music_v2_dj_lines": True, "music_v2_tracks_dir": "/data/music_v2/tracks",
+        "music_chooser": "chain"}}}
     src = (REPO / "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py").read_text(encoding="utf-8")
     assert re.search(r'declare_parameter\("music_v2_clock_latency", V2_CLOCK_LATENCY_S\)', src)
     assert re.search(r'declare_parameter\("music_v2_reasoner", True\)', src)
     assert re.search(r'declare_parameter\("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S\)', src)
     assert re.search(r'declare_parameter\("music_v2_dj_lines", True\)', src)  # В2 (06.10): реплика на переходе
+    assert re.search(r'declare_parameter\("music_chooser", CHOOSER_DEFAULT_MODE\)', src)  # PR-7: режим выбора пьесы
 
 
 def test_music_engine_flag_is_gone():

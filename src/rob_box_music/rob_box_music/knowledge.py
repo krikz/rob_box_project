@@ -1393,6 +1393,9 @@ CHOOSER_CLEAR_GAP = 1.0
 #: 900 мс (#3564, решение Шифу 13.10): живые замеры Jev 430–560 мс, а на заказах с длинным списком кандидатов
 #: («сыграй Баха») ответ 506–512 мс стабильно отваливался по прежнему 500 мс. Нет ответа за 900 — фолбэк.
 CHOOSER_DEADLINE_MS = 900
+#: Дедлайн LLM-ступени цепочки (#3564, решение Шифу 13.10): DeepSeek отвечает 0.93–1.29 с, 900 мс его резали бы всегда;
+#: 2 с - потолок ступени. Цепочка Jev (900) → LLM (2000) в худшем случае ждёт 2.9 с, затем кубик кода.
+CHOOSER_LLM_DEADLINE_MS = 2000
 #: Совпадение названия кандидата со словами заказа: все слова (и тональность, если названа) / слова без тональности
 #: или не все / нет.
 TITLE_EXACT, TITLE_PARTIAL = 1.0, 0.5
@@ -2290,7 +2293,7 @@ __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "CLASSIC_REF_MATCH_MIN",
             "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "KEY_TITLE_MODES",
             "CHOOSER_WEIGHTS", "PLAY_COUNT_WINDOW_SEC", "PLAY_HISTORY_LIMIT",
-            "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
+            "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "CHOOSER_LLM_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
             "WORK_SCORE_CANDIDATES", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
 __all__ += ["CHOOSER_DICE_TEMPERATURE", "KNOWN_VIEWS_FLOOR", "KNOWN_VIEWS_FULL", "PIECE_LONG_BEATS"]

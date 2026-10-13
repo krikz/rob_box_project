@@ -185,13 +185,13 @@ def test_shadow_does_not_ask_the_model_when_the_deterministic_gap_is_clear():
 
 
 def test_shadow_is_off_by_default():
-    assert cm.chooser_from_env({}, log=lambda: Log())._model is None
+    assert cm.chooser_from_env("deterministic", {}, log=lambda: Log())._model is None
 
 
 def test_shadow_without_key_is_off_with_one_log_line_and_no_crash(monkeypatch):
     monkeypatch.delenv("JEV_API_KEY")
     log = Log()
-    chooser = cm.chooser_from_env({cm.SHADOW_ENV: "jev"}, log=lambda: log)
+    chooser = cm.chooser_from_env("deterministic", {cm.SHADOW_ENV: "jev"}, log=lambda: log)
     assert chooser._model is None and chooser.choose(AMBIGUOUS).id == "toccata"
     assert len(log.lines) == 1 and log.lines[0][0] == "warning" and "jev" in log.lines[0][1]
     assert SECRET not in log.lines[0][1]
@@ -199,17 +199,17 @@ def test_shadow_without_key_is_off_with_one_log_line_and_no_crash(monkeypatch):
 
 def test_shadow_with_unknown_provider_name_is_off():
     log = Log()
-    assert cm.chooser_from_env({cm.SHADOW_ENV: "gpt"}, log=lambda: log)._model is None
+    assert cm.chooser_from_env("deterministic", {cm.SHADOW_ENV: "gpt"}, log=lambda: log)._model is None
     assert len(log.lines) == 1 and log.lines[0][0] == "warning"
 
 
 def test_shadow_enabled_by_env_with_key_builds_the_provider():
     log = Log()
     env = {cm.SHADOW_ENV: "jev", "JEV_API_KEY": SECRET}
-    chooser = cm.chooser_from_env(env, log=lambda: log)
+    chooser = cm.chooser_from_env("deterministic", env, log=lambda: log)
     assert isinstance(chooser._model, cm.ShadowModel)
     assert log.lines == [("info", "🪞 [chooser-shadow] включён: jev (исполняется детерминированный выбор)")]
-    llm = cm.chooser_from_env({cm.SHADOW_ENV: "llm_harness", "LLM_HARNESS_API_KEY": SECRET,
+    llm = cm.chooser_from_env("deterministic", {cm.SHADOW_ENV: "llm_harness", "LLM_HARNESS_API_KEY": SECRET,
                                "LLM_HARNESS_BASE_URL": "https://llm.test", "LLM_HARNESS_MODEL": "m"}, log=lambda: log)
     assert isinstance(llm._model, cm.ShadowModel)
 
@@ -415,17 +415,18 @@ def test_chain_stage_circuit_breaker_is_per_stage():
 
 def test_chain_mode_from_env_builds_jev_then_llm_with_the_existing_deepseek_key():
     log = Log()
-    env = {cm.CHOOSER_ENV: "chain", "JEV_API_KEY": SECRET, "DEEPSEEK_API_KEY": SECRET}
-    chooser = cm.chooser_from_env(env, log=lambda: log)
+    env = {"JEV_API_KEY": SECRET, "DEEPSEEK_API_KEY": SECRET}
+    chooser = cm.chooser_from_env("chain", env, log=lambda: log)
     model = chooser._model
     assert isinstance(model, cm.ChainModel) and [label for label, _s in model._stages] == ["jev", "llm"]
-    assert log.lines == [("info", "🎲 [chooser] цепочка включена: jev → llm → code")]
+    assert log.lines == [("info", "🎲 [chooser] режим chain: jev → llm → code")]
+    assert model._deadlines == {"jev": 900, "llm": 2000}
 
 
 def test_chain_mode_without_keys_is_the_dice_alone_with_one_warning(monkeypatch):
     monkeypatch.delenv("JEV_API_KEY")
     log = Log()
-    chooser = cm.chooser_from_env({cm.CHOOSER_ENV: "chain"}, log=lambda: log)
+    chooser = cm.chooser_from_env("chain", {}, log=lambda: log)
     assert isinstance(chooser._model, cm.ChainModel) and chooser._model._stages == []
     (level, line), = log.lines
     assert level == "warning" and "code" in line and "jev" in line and "llm_harness" in line
@@ -434,14 +435,52 @@ def test_chain_mode_without_keys_is_the_dice_alone_with_one_warning(monkeypatch)
 
 def test_unknown_chooser_mode_is_deterministic_with_a_warning():
     log = Log()
-    assert cm.chooser_from_env({cm.CHOOSER_ENV: "gpt"}, log=lambda: log)._model is None
+    assert cm.chooser_from_env("gpt", {}, log=lambda: log)._model is None
     assert log.lines[0][0] == "warning"
 
 
-def test_request_music_tool_runs_the_chain_from_env(monkeypatch):
+def test_request_music_tool_runs_the_chain_by_mode(monkeypatch):
     from rob_box_mcp_tools.engine import tools_v2
 
-    monkeypatch.setenv(cm.CHOOSER_ENV, "chain")
     tool = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
-                                     words=lambda w: None, classic=lambda *a, **k: None)
+                                     words=lambda w: None, classic=lambda *a, **k: None, chooser_mode="chain")
     assert isinstance(tool._pieces._chooser._model, cm.ChainModel)
+    default = tools_v2.RequestMusicTool(None, None, object(), lambda ids: {}, records=lambda ids: {},
+                                        words=lambda w: None, classic=lambda *a, **k: None)
+    assert default._pieces._chooser._model is None  # библиотечный умолчательный - код; chain включает yaml
+
+
+def test_modes_table_is_the_single_source_and_default_is_the_chain():
+    assert cm.DEFAULT_MODE == cm.CHAIN_MODE
+    assert cm.CHOOSER_MODES == {"deterministic": (), "jev": ("jev",), "chain": ("jev", "llm_harness")}
+    assert cm.STAGE_DEADLINE_MS == {"jev": 900, "llm_harness": 2000}
+
+
+def test_jev_mode_has_only_the_jev_stage_then_the_dice():
+    log = Log()
+    chooser = cm.chooser_from_env("jev", {"JEV_API_KEY": SECRET}, log=lambda: log)
+    assert [label for label, _s in chooser._model._stages] == ["jev"]
+    assert log.lines == [("info", "🎲 [chooser] режим jev: jev → code")]
+
+
+def test_deterministic_mode_ignores_keys_and_calls_no_model():
+    log = Log()
+    chooser = cm.chooser_from_env("deterministic", {"JEV_API_KEY": SECRET}, log=lambda: log)
+    assert chooser._model is None and log.lines == []
+
+
+def test_each_stage_gets_its_own_deadline():
+    seen = {}
+
+    class Spy:
+        def __init__(self, name):
+            self.name = name
+
+        def choose(self, question, *, deadline_ms):
+            seen[self.name] = deadline_ms
+            raise cm.ModelUnavailable("down")
+
+    model = cm.ChainModel([("jev", Spy("jev")), ("llm", Spy("llm"))], lambda: Log(),
+                          deadlines={"jev": 900, "llm": 2000})
+    assert model.choose(AMBIGUOUS).provider == "code"
+    assert seen == {"jev": 900, "llm": 2000}

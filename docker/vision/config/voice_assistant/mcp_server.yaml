@@ -18,3 +18,7 @@ mcp_server:
     music_v2_dj_lines: true
     # ADR-0152 §2.3: полная модель трека <track_id>.json (ротация 200 файлов); "" - не писать.
     music_v2_tracks_dir: "/data/music_v2/tracks"
+    # ADR-0157 PR-7 (#3564): кто выбирает пьесу при неоднозначном заказе - режим, как цепочки провайдеров LLM/STT/TTS.
+    # deterministic - только код | jev - Jev (900 мс), иначе кубик | chain - Jev (900 мс) → LLM (2 с) → кубик кода.
+    # Ключи JEV_API_KEY / DEEPSEEK_API_KEY - из env контейнера; нет ключа - ступень пропущена (строка в лог).
+    music_chooser: "chain"
