@@ -399,7 +399,8 @@ class TestPlayFromLibraryTool:
         program, dj, once = setup.plays[0]
         assert once is True and setup.closed == ["gen_play_from_library"]
         assert program.track_id == f"gen_{setup.track_id[:8]}_1000" and program.bpm == 60
-        assert program.form_beats == 2.5  # длина — из декодированного wav, не из строки библиотеки
+        # длина — из декодированного wav (sus=2.5), не из строки библиотеки; форма — до целого такта
+        assert program.form_beats == 4.0 and "sus=2.5," in program.code
         wav = str(setup.library.root_dir / setup.track_id / "track.16k.wav")
         assert program.sample_files == frozenset({wav}) and f"loop({wav!r}" in program.code
         assert dj == {"enabled": False, "title": "Космос", "source": "generated", "library_id": setup.track_id,
