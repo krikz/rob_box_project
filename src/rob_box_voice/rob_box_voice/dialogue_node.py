@@ -224,9 +224,11 @@ from rob_box_voice.core.named_play import (
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_speech import (
-    TurnSpeechHold, decide_turn_speech, final_text_skipped_log, wants_lyrics,
+    TurnSpeechHold, decide_turn_speech, final_text_for_speech,
+    final_text_skipped_log, wants_lyrics,
 )
 from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
+from rob_box_voice.core.turn_identity import user_profile_lines
 from rob_box_voice.core.self_intro import (
     extract_self_intro_name,
     same_person_name,
@@ -4166,8 +4168,14 @@ tentative_plan(question, kind, name)
             ]
         return []
 
-    def _build_dynamic_system_context(self) -> str:
+    def _build_dynamic_system_context(
+        self, tg_chat_id: Optional[int] = None
+    ) -> str:
         """Two-system-prompt pattern: собрать <system_context> snapshot.
+
+        ``tg_chat_id`` (issue #3598) — ход пришёл из Telegram: личность в
+        ``<user_profile>`` — по chat_id (:mod:`core.turn_identity`), голос
+        комнаты к нему не применяется. ``None`` — голосовой ход.
 
         Возвращает XML-строку для второго system-message в messages[].
         Содержит runtime info: текущий спикер (resemblyzer), TTS provider
@@ -4183,8 +4191,6 @@ tentative_plan(question, kind, name)
         with self._speaker_lock:
             sp = dict(self._current_speaker)
         sp_name = sp.get("name") or ""
-        sp_conf = float(sp.get("confidence") or 0.0)
-        sp_id = sp.get("speaker_id") or ""
         # 🔴 FIX (live 12.08): защита от мусорных имён ("Null", "null", etc.)
         sp_name = sanitize_speaker_name(sp_name)
 
@@ -4230,64 +4236,17 @@ tentative_plan(question, kind, name)
         # строим XML
         lines = ["<system_context>"]
         lines.append("  <user_profile>")
-        if sp_name:
-            lines.append(f"    <name>{sp_name}</name>")
-        else:
-            lines.append("    <name>unknown</name>")
-            # Issue #2779 — незнакомец получил факты и имя Бориса: биометрия
-            # верно сказала unknown, но LLM всё равно нашла в истории
-            # диалога/памяти данные ПРЕДЫДУЩЕГО известного собеседника и
-            # адресовала их новому человеку. Явный запрет прямо рядом с
-            # <name>unknown</name> — LLM не должна домысливать личность по
-            # истории/памяти, когда биометрия честно говорит «не знаю».
-            lines.append(
-                "    <privacy_note>Текущий собеседник НЕ опознан голосом. "
-                "НЕ обращайся к нему по имени другого (даже недавнего) "
-                "диктора и не пересказывай факты/предпочтения, "
-                "относящиеся к другому диктору — ни из истории этого "
-                "диалога, ни из долговременной памяти. Отвечай по сути "
-                "вопроса, не приписывая его чужой личности.</privacy_note>"
-            )
-        if sp_conf:
-            lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
-        # Issue #2440 — полный id, без усечения до 8 символов: 8 символов не
-        # несут анонимизирующей функции (тот же id уходит в лог целиком), зато
-        # создают несовпадение с полным UUID в voice_memory (точное сравнение
-        # в БД). LLM и MCP-тулы должны видеть один и тот же полный id.
-        if sp_id:
-            lines.append(f"    <speaker_id>{sp_id}</speaker_id>")
-        # Issue #1787 — внутренняя кличка. Даёт LLM якорь, когда имён
-        # два одинаковых или имени нет вовсе. Research §5.3: озвучивать
-        # её НЕЛЬЗЯ — юзер этого слова никогда не слышал, «привет,
-        # Гроссмейстер» звучало бы как обращение к постороннему.
-        # Issue #2864 — живой прогон: на «кого запомнил?» LLM насчитала
-        # троих при двух профилях, приняв кличку Саши «Незнакомец» за
-        # отдельного человека. Правило явно говорит, что кличка — второе
-        # обозначение ЭТОГО собеседника и при подсчёте людей не считается.
-        sp_epithet = str(sp.get("epithet") or "").strip()
-        if sp_epithet:
-            lines.append(
-                f"    <epithet internal=\"true\">{sp_epithet}</epithet>"
-            )
-            lines.append(
-                "    <epithet_rule>Внутренняя метка робота для различения "
-                "тёзок. НИКОГДА не произноси её вслух и не упоминай в "
-                "ответе — используй только как признак «это тот же "
-                "человек». Кличка — НЕ отдельный человек, а второе "
-                "обозначение ЭТОГО собеседника: когда считаешь или "
-                "перечисляешь знакомых, не считай и не называй её как "
-                "ещё одного человека.</epithet_rule>"
-            )
-        # Issue #2809 (продолжение) -- разовая подсказка-гипотеза про
-        # tentative-личность, если _apply_speaker_identity этой же реплики
-        # решила, что сейчас уместно спросить (см. _handle_tentative_speaker
-        # и _pending_identity_hint_lines). Вызов безусловный (список пуст,
-        # если подсказки нет) -- не добавляет ветвление в этот метод, чей CC
-        # уже на грани баджета (cc_budget baseline=24).
-        lines.extend(self._pending_identity_hint_lines())
-        # Issue #2828 -- вопрос и исход переспроса по ack регистрации:
-        # вопрос шёл мимо LLM, без подсказки она не поймёт ответ.
-        lines.extend(self._identity_ack_state().pop_hint_lines())
+        # Issue #3598 — TG-ход: личность по chat_id; голос, privacy_note и
+        # кличка голоса комнаты — только голосовому ходу (turn_identity).
+        lines.extend(user_profile_lines(sp_name, sp, tg_chat_id))
+        if tg_chat_id is None:
+            # Issue #2809 (продолжение) -- разовая подсказка-гипотеза про
+            # tentative-личность (см. _handle_tentative_speaker и
+            # _pending_identity_hint_lines). Issue #2828 -- вопрос и исход
+            # переспроса по ack регистрации. Обе -- про ГОЛОС в комнате:
+            # TG-ход их не тратит, они дождутся следующей голосовой реплики.
+            lines.extend(self._pending_identity_hint_lines())
+            lines.extend(self._identity_ack_state().pop_hint_lines())
         lines.append("  </user_profile>")
         lines.append("  <hardware>")
         lines.append(f"    <battery>{battery}</battery>")
@@ -5897,8 +5856,12 @@ tentative_plan(question, kind, name)
         # 06.10: число треков/минут сета из СЫРОЙ реплики -- скрытый
         # аргумент dj_set (llm_adapter.TURN_CONTEXT_ARGS).
         self._turn_set_tracks = heard_set_length(user_input)
+        tg_chat_id = None
         if from_tg:
             user_input = f"[TG] {user_input}"
+            # Issue #3598 — личность TG-хода решает chat_id, не голос
+            # комнаты. Тот же chat_id, что маршрутизирует ответ в Telegram.
+            tg_chat_id = self._active_tg_chat_id
         elif self._speaker_id_enabled:
             # Issue #2829 (ADR-0131) -- резолвим _current_speaker ПО ЭТОЙ
             # фразе ДО проверки ответа на переспрос #2828: та сверяет
@@ -5918,7 +5881,7 @@ tentative_plan(question, kind, name)
             self._register_self_intro(utterance_id)
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
-        return user_input, self._build_dynamic_system_context()
+        return user_input, self._build_dynamic_system_context(tg_chat_id)
 
 
     def _inject_backlog_hint(self, user_input: str) -> str:
@@ -6376,7 +6339,11 @@ tentative_plan(question, kind, name)
                     except Exception:
                         pass
                 return
-        spoken = strip_history_marker(result.spoken_text or "")
+        # Issue #3598 — рассуждение модели (цитирует <music_state>, имена
+        # тулов; пометило ядро) не озвучиваем и в Telegram не дублируем.
+        spoken = strip_history_marker(
+            final_text_for_speech(result, self.get_logger().warning)
+        )
         # 🔴 FIX (live 20.08 DJ): LLM скопировала входной маркер
         # ``[Spkr:<имя>]`` в свой ответ → служебный текст ``[CRITICAL]
         # ...`` озвучивался целиком (маркер спикера сбивал

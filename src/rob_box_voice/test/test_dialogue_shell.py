@@ -677,7 +677,7 @@ class TestDialogueShell(unittest.TestCase):
         """
         original = self.node._build_dynamic_system_context
 
-        def _boom() -> str:
+        def _boom(tg_chat_id=None) -> str:
             raise RuntimeError("test failure before LLM")
 
         self.node._build_dynamic_system_context = _boom  # type: ignore[assignment]

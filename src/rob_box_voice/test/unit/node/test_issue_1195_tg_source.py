@@ -132,6 +132,7 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._babble_retry_used = False
     n._pending_music_cleanup = False
     n._speaker_id_enabled = True  # даже при включённой биометрии — TG без неё
+    n._active_tg_chat_id = 42  # issue #3598 — chat_id этого TG-сообщения
 
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
@@ -171,6 +172,8 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     # process_input получил user_input с префиксом [TG]
     called_user_input = n._core.process_input.call_args.args[0]
     assert called_user_input == "[TG] продолжай"
+    # Issue #3598 — профиль хода строится по chat_id, не по голосу комнаты.
+    n._build_dynamic_system_context.assert_called_once_with(42)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
