@@ -86,7 +86,6 @@ def _make_node(*, playing: bool) -> DialogueNode:
     n._consume_synthetic_retry = MagicMock(return_value=True)
     n._dispatch_turn = MagicMock()
     n._check_babble_and_retry = MagicMock(return_value=False)
-    n._generated_music_state = None
     n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
     # роутер медиакоманд (#3134)
     n._llm_skipped_counter = new_llm_skip_counter()

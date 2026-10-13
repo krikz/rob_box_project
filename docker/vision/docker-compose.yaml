@@ -219,6 +219,9 @@ services:
       # Путь ВНУТРИ контейнера не изменился.
       # :ro — сэмплы меняет только хост; scsynth туда писать незачем.
       - /opt/rob_box/samples:/root/.config/renardo/samples:ro
+      # Кэш генераций (ADR-0158 PR-2): трек библиотеки играет на деке — scsynth читает его wav
+      # (track.16k.wav рядом с track.mp3) по тому же пути, что у voice-assistant (./data/voice → /data).
+      - ./data/voice/music_library:/data/music_library:ro
       # Shared synthdefs — sclang/Renardo в voice-assistant компилирует .scsyndef сюда,
       # scsynth должен читать их по тому же пути (иначе "bassguitar.scsyndef could not be opened")
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs

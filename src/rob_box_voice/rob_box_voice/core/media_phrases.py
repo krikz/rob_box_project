@@ -109,6 +109,7 @@ SOURCE_WORDS: Mapping[str, str] = {
     "synth": "трек из синтов, его собрал код",
     "piece": "пьеса по нотам партитуры",
     "melody": "мелодия из архива, без полной аранжировки",
+    "generated": "сгенерированный трек из библиотеки",
 }
 
 
@@ -146,6 +147,13 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
     if facts.get("elapsed_s") is not None and facts.get("source"):  # трек сета: время — у сета, не у трека
         parts.append(_track_time(facts))
     return " ".join(parts)
+
+
+def library_play_text(title: str, seconds: float) -> str:
+    """Фраза после ``started`` трека из библиотеки генераций (``gen_play_from_library``, ADR-0158 PR-2): название и
+    длина — из кэша и файла, не от LLM."""
+    name = f"«{title}»" if title else "трек"
+    return f"Включаю {name} из библиотеки — {duration_text(seconds)}."
 
 
 def _track_about(facts: Mapping[str, Any]) -> list:
@@ -306,6 +314,7 @@ __all__ = [
     "PENDING_TEXT",
     "SOURCE_WORDS",
     "duration_text",
+    "library_play_text",
     "now_playing_track_text",
     "LAUNCH_PHRASE_STEMS",
     "LAUNCH_TOOLS",

@@ -7,8 +7,7 @@ gen_library.py — MCP-тулы библиотеки сгенерированн�
   gen_list_library        — список (recent/popular/rating)
   gen_search_library      — подстрочный поиск по title/prompt/lyrics
   gen_save_to_library     — дописать метаданные уже сохранённому треку
-  gen_play_from_library   — путь к mp3 + длительность (воспроизведение — sound_node;
-                            переезд на деку PlayerOwner — ADR-0158 PR-2)
+  gen_play_from_library   — трек кэша на деке движка (PlayerOwner, ADR-0158 PR-2)
   gen_delete_from_library — удалить трек из SQLite и с диска
   gen_get_track_info      — метаданные одного трека
 
@@ -20,9 +19,11 @@ gen_library.py — MCP-тулы библиотеки сгенерированн�
 from __future__ import annotations
 
 import json
-from typing import Any, List
+import subprocess
+import time
+from typing import Any, Callable, List
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from ..engine.gen.library import GeneratedMusicLibrary
 
 
@@ -375,33 +376,20 @@ class GenSaveToLibraryTool(MCPTool):
 # ── Tool 4: gen_play_from_library ───────────────────────────────────────────
 
 class GenPlayFromLibraryTool(MCPTool):
-    """Воспроизвести mp3 из библиотеки (публикует путь в sound_node).
+    """Сыграть трек кэша на деке движка (ADR-0158 §2.4, PR-2).
 
-    Публикует абсолютный путь к ``track.mp3`` на ``/voice/sound/play_file`` —
-    ``sound_node`` декодирует mp3 (pydub → 16 kHz stereo) и играет через
-    ``AudioPlaybackManager`` (issue #1392 follow-up). Дополнительно
-    инкрементирует ``play_count`` и возвращает метаданные трека.
+    Звук — через владельца плеера (``PlayerOwner``), как синтез: ``AudioTrack`` (wav частоты сервера,
+    ``engine.gen.audio``) → ``render_audio`` → ``play(once=True)``; ``ok`` — только по ``started`` этого запуска.
+    Стоп, «что играет», громкость мастер-шины, ``finished`` в конце файла — от владельца. Идущий сет закрывается
+    до запуска (одна дека — одна музыка). Фразу запуска и отказа строит код (ADR-0148).
     """
 
-    def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
+    def __init__(self, node: Any, library: GeneratedMusicLibrary, clock: Callable[[], float] = time.time,
+                 run: Callable[..., Any] = subprocess.run) -> None:
         super().__init__(node)
         self._library = library
-        self._play_file_pub = None
-        self._music_state_pub = None
-        try:
-            from std_msgs.msg import String
-
-            if hasattr(node, "create_publisher"):
-                self._play_file_pub = node.create_publisher(
-                    String, "/voice/sound/play_file", 10
-                )
-                # Issue #3108: общий с mcp_server/StopMusicTool publisher.
-                self._music_state_pub = shared_publisher(
-                    node, String, "/voice/generated_music/state", 10
-                )
-        except Exception:  # noqa: BLE001 — unit tests / minimal install
-            self._play_file_pub = None
-            self._music_state_pub = None
+        self._clock = clock
+        self._run = run  # запуск ffmpeg (декод mp3 → wav сервера); тесты подставляют свой
 
     @property
     def name(self) -> str:
@@ -410,11 +398,9 @@ class GenPlayFromLibraryTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Воспроизвести mp3-трек из библиотеки сгенерированной музыки "
-            "(публикует путь в sound_node, который играет файл через "
-            "динамик). Возвращает track_id, path, duration_ms, title. "
-            "play_count увеличивается на 1. Используй когда юзер говорит "
-            "«сыграй тот грустный трек», «давай послушаем ещё раз»."
+            "Воспроизвести трек из библиотеки сгенерированной музыки на музыкальной деке робота "
+            "(стоп — stop_music, что играет — get_music_state). Ответ — фраза, которую надо сказать. "
+            "Используй когда юзер говорит «сыграй тот грустный трек», «давай послушаем ещё раз»."
         )
 
     @property
@@ -436,73 +422,40 @@ class GenPlayFromLibraryTool(MCPTool):
         return True
 
     def execute(self, track_id: str, **_: Any) -> MCPToolResult:
+        from rob_box_music.render.audio import render_audio
+        from rob_box_voice.core.media_phrases import library_play_text
+
+        from ..engine.gen.audio import AudioUnavailable, audio_track
+        from ..engine.tools_v2 import confirmed
+
         valid, err = self.validate_parameters(track_id=track_id)
         if not valid:
             return MCPToolResult(success=False, error=err)
-
         info = self._library.get_track_info(track_id)
         if not info.get("success"):
             return MCPToolResult(success=False, error=info.get("error"))
-
-        if not info.get("exists_on_disk", False):
-            return MCPToolResult(
-                success=False,
-                error=f"mp3 файл для '{track_id}' отсутствует на диске",
-            )
-
-        # Best-effort play_count++
+        owner = getattr(self.node, "_player_owner", None)
+        if owner is None:
+            return MCPToolResult(success=False, error="музыкальный движок недоступен — трек не заиграл")
+        deck_id = f"gen_{track_id[:8]}_{int(self._clock())}"
+        try:
+            program = render_audio(audio_track(info, deck_id, run=self._run), "A")
+        except AudioUnavailable as exc:
+            self.log_error(f"gen_play_from_library {track_id}: {exc}")
+            return MCPToolResult(success=False, data={"reason": exc.reason}, error=f"трек не заиграл: {exc.reason}")
+        title = str(info.get("title") or "")
+        seconds = program.form_beats * 60.0 / program.bpm
+        facts = {"enabled": False, "title": title, "source": "generated", "library_id": track_id,
+                 "bpm": info.get("bpm_nominal") or None}
+        dj_set = getattr(self.node, "_dj_set_tool", None)
+        if dj_set is not None:
+            dj_set.close_set("gen_play_from_library")
+        result = confirmed(owner.play(program, dj=facts, once=True), getattr(self.node, "_music_confirm", None))
+        data = {**result, "library_id": track_id, "title": title, "duration_s": round(seconds, 1)}
+        if not result.get("ok"):
+            return MCPToolResult(success=False, data=data, error=f"трек не заиграл: {result.get('reason')}")
         self._library.increment_play_count(track_id)
-
-        # Реальное воспроизведение: публикуем путь в sound_node
-        # (issue #1392 follow-up). Деградируем в path-only если publisher
-        # недоступен (юнит-тесты / minimal install).
-        playback = "publish_failed"
-        if self._play_file_pub is not None:
-            try:
-                from std_msgs.msg import String
-
-                self._play_file_pub.publish(String(data=info["path"]))
-                playback = "published"
-            except Exception as exc:  # noqa: BLE001
-                self.log_error(f"gen_play_from_library publish failed: {exc}")
-
-        # Сообщаем dialogue_node «сейчас играет трек» — LLM видит состояние
-        # в system_context и сама решает, когда вызывать stop_music.
-        if self._music_state_pub is not None:
-            try:
-                from std_msgs.msg import String
-
-                self._music_state_pub.publish(
-                    String(
-                        data=json.dumps(
-                            {
-                                "status": "playing",
-                                "track_id": track_id,
-                                "title": info.get("title", ""),
-                                "duration_ms": info.get("duration_ms", 0),
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.log_error(f"gen_play_from_library state publish failed: {exc}")
-
-        return MCPToolResult(
-            success=True,
-            data={
-                "track_id": track_id,
-                "path": info["path"],
-                "title": info.get("title", ""),
-                "duration_ms": info.get("duration_ms", 0),
-                "exists_on_disk": True,
-                "playback": playback,
-            },
-            message=(
-                f"Трек '{track_id}' воспроизводится: {info['path']} "
-                f"({info.get('duration_ms', 0) / 1000:.1f}с)"
-            ),
-        )
+        return MCPToolResult(success=True, data=data, message=library_play_text(title, seconds))
 
 
 # ── Tool 5: gen_delete_from_library ─────────────────────────────────────────

@@ -229,7 +229,7 @@ class FakeClock:
 
 class FakePlayer:
     def __init__(self, clock):
-        self.clock, self.event_index, self.stops = clock, None, 0
+        self.clock, self.event_index, self.stops, self.current_dur = clock, None, 0, None
 
     def __rshift__(self, _other):
         self.event_index = self.clock.next_bar()
@@ -237,6 +237,16 @@ class FakePlayer:
 
     def stop(self):
         self.stops += 1
+
+
+def test_stopped_slot_forgets_the_rhythm_of_its_last_program():
+    """Renardo ``Player.count`` выравнивает первое событие по сумме ``dur``, кэшированной в ``current_dur``, —
+    снятый плеер её не обновляет: следующая программа слота встала бы на долю, кратную ``dur`` прошлой (13.10)."""
+    adapter, ns, clock, _ = _adapter()
+    adapter.start(_program(), lambda s: None)
+    ns["d1"].current_dur = [177.648]
+    adapter.start(_program("t2"), lambda s: None)
+    assert ns["d1"].current_dur is None
 
 
 class FakeSamples:

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-13",
-  "base_sha": "3e45910ff56d2795a412a60e1cdc120b72bfa5ba",
+  "base_sha": "25e0546da4b9de0d6e30d3e4135e347cf7cbbfa5",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,8 +24,8 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 123,
-      "methods": 24
+      "wmc": 121,
+      "methods": 23
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
       "wmc": 81,
@@ -80,16 +80,12 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 901,
-      "methods": 177
+      "wmc": 894,
+      "methods": 176
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,
       "methods": 26
-    },
-    "src/rob_box_voice/rob_box_voice/sound_node.py:SoundNode": {
-      "wmc": 88,
-      "methods": 20
     },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
       "wmc": 209,

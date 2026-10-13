@@ -151,7 +151,7 @@ class StopMusicTool(MCPTool):
         return False
 
     def execute(self) -> MCPToolResult:
-        """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``), mp3 — ``sound_node``."""
+        """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``); трек кэша тоже на деке (ADR-0158 PR-2)."""
         owner = getattr(self.node, "_player_owner", None)
         dj_set = getattr(self.node, "_dj_set_tool", None)
         was_playing = bool(owner is not None and owner.is_playing()) or bool(getattr(dj_set, "running", False))
@@ -160,9 +160,6 @@ class StopMusicTool(MCPTool):
             stop_deck("user_stop")
         if owner is not None and not was_playing:
             owner.stop("user_stop")  # явный стоп в «тишине»: снять деку и погасить группу всё равно
-        stop_mp3 = getattr(self.node, "stop_generated_track_playback", None)
-        if callable(stop_mp3):
-            stop_mp3()
         self.log_info(f"[stop_music] was_playing={was_playing}")
         return MCPToolResult(success=True, data={"was_playing": was_playing}, message=stop_text(was_playing))
 
@@ -277,8 +274,8 @@ class SetMusicVolumeTool(MCPTool):
             "перезапускает: играющий трек продолжает играть, меняется только "
             "уровень. action: louder/quieter — шаг ±3 dB, max — максимум, "
             "normal — стартовый уровень, set — абсолютный уровень level "
-            "0..100 (% от максимума). mp3 из MiniMax-библиотеки "
-            "(gen_play_from_library) этим тулом не регулируется."
+            "0..100 (% от максимума). Трек из библиотеки генераций "
+            "(gen_play_from_library) играет на той же деке — регулируется тоже."
         )
 
     @property

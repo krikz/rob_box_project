@@ -97,8 +97,6 @@ NOT_A_SET_REQUEST = "not_a_set_request"
 #: Код отказа ``request_music``/``generate_music``: путь музыки не нашёл, чем играть просьбу (ADR-0158 PR-3); фразу
 #: строит ``rob_box_music.source.decline_text`` (``media_phrases.SOURCE_DECLINED_REASON``, равенство держит тест).
 SOURCE_DECLINED = "music_source"
-#: ``via`` трека кэша: играет ``sound_node`` мимо владельца плеера (``media_plan_run.SOUND_NODE``, тест держит).
-VIA_SOUND_NODE = "sound_node"
 #: ``generate_music``: что просили (``kind``) и в каком жанре (``style``, ключи ``knowledge.GEN_STYLES``).
 GEN_KINDS = ("instrumental", "song", "robot_song")
 GEN_STYLE_CHOICES = ("", *kn.GEN_STYLES)
@@ -621,7 +619,7 @@ class RequestMusicTool(MCPTool):
                                   classic or classic_picker(library), history, chooser=chooser, log=self._log)
         # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
         self._source = SourceRouter(chooser, gen_library, log=self._log)
-        self._play_cached = play_cached  # шов: трек кэша играет gen_play_from_library (sound_node) до PR-2
+        self._play_cached = play_cached  # трек кэша — gen_play_from_library: дека владельца (ADR-0158 PR-2)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
         # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
         # судить слова нечем, разбора нет (название как от грамматики), если разборщик не передан явно
@@ -730,18 +728,16 @@ class RequestMusicTool(MCPTool):
                             "message": decline_text(route)}, what)
 
     def _play_cache(self, route: Route, what: str) -> MCPToolResult:
-        """Трек кэша — через ``gen_play_from_library`` (``sound_node``), мимо дек: шов до ADR-0158 PR-2. Музыку движка
-        снимаем, чтобы не играли две; ``ok`` — только когда путь к файлу опубликован (события ``started`` нет)."""
+        """Трек кэша — ``gen_play_from_library`` на деке владельца (ADR-0158 PR-2): сет закрывает и деку заменяет он
+        сам, ``ok`` — только по ``started`` запуска; ``track_id`` результата — id запуска на деке (его ``started`` ждёт
+        роутер медиакоманд)."""
         track = route.track
-        if music_busy(self._owner, self._dj):
-            self._dj.close_set("source_cache")
-            self._owner.stop("source_cache")
         result = self._play_cached(track.id)
-        data = dict(result.data or {}) if result.success else {}
-        if data.get("playback") != "published":
+        data = dict(result.data or {})
+        if not result.success:
             return tool_result({"ok": False, "reason": "cache_play_failed", "route": route.id,
-                                "detail": result.error or data.get("playback")}, what)
-        return tool_result({**data, "ok": True, "via": VIA_SOUND_NODE, "source": CACHE, "route": route.id,
+                                "detail": result.error or data.get("reason")}, what)
+        return tool_result({**data, "ok": True, "source": CACHE, "route": route.id,
                             "title": track.title, "source_message": cache_text(route)}, what)
 
     def _write_model(self, model: Any) -> None:
@@ -896,4 +892,4 @@ __all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "NO
            "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
            "lead_for", "library_melodies", "library_records", "music_busy", "not_found", "set_refusal", "set_style",
            "theme_finder", "theme_links", "tool_result", "word_hooks", "GEN_KINDS", "GEN_STYLE_CHOICES",
-           "GenerateMusicTool", "SOURCE_DECLINED", "VIA_SOUND_NODE"]
+           "GenerateMusicTool", "SOURCE_DECLINED"]

@@ -570,6 +570,17 @@ SAMPLE_ROLES: Tuple[str, ...] = ("perc", "loop", "fx", "riser", "vox", "bass", "
 #: середины шага и наползал на следующий, а файл короче ``sus`` + 50 мс начинался заново (``PlayBuf(loop: 1)``).
 SAMPLE_EDGE_S: Tuple[float, float] = (0.002, 0.005)
 
+#: Частота scsynth (``start_supercollider.sh``: ``-S 16000`` — ReSpeaker UAC1.0). Сгенерированный трек (ADR-0158 §2.4)
+#: играет из wav этой частоты, декодированного из mp3 кэша один раз: спайк PR-2 на Vision Pi — буфер mp3 44.1 кГц
+#: стерео 240 с = 85 МБ и 0.41 с загрузки, wav 16 кГц стерео — 31 МБ и 0.10 с (контейнер scsynth — 512 МБ).
+SC_SERVER_RATE_HZ = 16000
+#: Каналы wav сгенерированного трека: синт ``loop`` читает буфер ``PlayBuf.ar(2, …)`` — моно-буфер он не сыграет.
+AUDIO_CHANNELS = 2
+#: Края огибающей сгенерированного трека внутри ``sus``, с: (атака, спад) — без щелчка на старте и на конце файла.
+AUDIO_EDGE_S: Tuple[float, float] = (0.02, 1.0)
+#: Темп деки сгенерированного трека без ``bpm_nominal``: 60 — доля равна секунде.
+AUDIO_DEFAULT_BPM = 60
+
 
 @dataclass(frozen=True)
 class SampleInfo:
@@ -743,7 +754,8 @@ __all__ = [
     "ThemeRow", "HOOK_KEY_FIT_MIN", "HOOK_DEFECT_PLACES",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "PACK_BREAK_BEATS", "PACK_DRUMS", "PACK_TEXTURES",
-    "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR",
+    "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SC_SERVER_RATE_HZ", "AUDIO_CHANNELS", "AUDIO_EDGE_S",
+    "AUDIO_DEFAULT_BPM", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR",
     "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
     "SEARCH_STYLE_PATTERNS",

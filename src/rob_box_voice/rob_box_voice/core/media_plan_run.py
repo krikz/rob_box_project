@@ -29,10 +29,6 @@ from .set_length_words import heard_set_length
 #: Ждать ``started`` после ответа тула: A2 p100 ≤ 6 с (ADR-0149 §7.2).
 STARTED_WAIT_S = 6.0
 
-#: ``via`` результата ``request_music``: трек кэша генераций отдан ``sound_node`` (``gen_play_from_library``) — мимо
-#: владельца плеера, события ``started`` не будет; шов до ADR-0158 PR-2 (деки).
-SOUND_NODE = "sound_node"
-
 #: ``call -> (успех, текст результата)`` — исполнитель тула роутера.
 CallTool = Callable[[Any], Awaitable[Tuple[bool, str]]]
 
@@ -94,9 +90,6 @@ async def _confirm_started(
 ) -> Tuple[bool, str]:
     first = plan.tool_calls[0].name
     data = tool_data(contents.get(first, "")) or {}
-    if data.get("via") == SOUND_NODE:  # трек кэша играет sound_node: событий started у него нет (ADR-0158 PR-2 — деки)
-        log(f"🎛️ [media-router v2] {first}: трек кэша {data.get('track_id')} отдан sound_node, без события started")
-        return True, _started_text(plan, data)
     track_id = data.get("track_id")
     begin = time.monotonic()
     event = await asyncio.to_thread(events.wait, track_id, STARTED_WAIT_S) if events and track_id else None

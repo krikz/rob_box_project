@@ -12,10 +12,9 @@ from rob_box_mcp_tools.base import MCPToolResult
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.source_route import cache_track, cache_tracks
-from rob_box_mcp_tools.engine.tools_v2 import (SOURCE_DECLINED, VIA_SOUND_NODE, DjSetTool, GenerateMusicTool,
+from rob_box_mcp_tools.engine.tools_v2 import (SOURCE_DECLINED, DjSetTool, GenerateMusicTool,
                                                RequestMusicTool)
 from rob_box_voice.core.media_phrases import SOURCE_DECLINED_REASON, launch_text, source_phrase
-from rob_box_voice.core.media_plan_run import SOUND_NODE
 
 from .test_engine_session import _rig
 
@@ -41,7 +40,7 @@ def _tools(rig, library=None, played=None):
 
     def play(track_id):
         played.append(track_id)
-        return MCPToolResult(success=True, data={"track_id": track_id, "playback": "published"})
+        return MCPToolResult(success=True, data={"ok": True, "track_id": f"gen_{track_id[:8]}_1", "started": True})
 
     req = RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777, records=lambda ids: {},
                            words=lambda word: ThemeHits(), gen_library=lambda: library,
@@ -50,14 +49,14 @@ def _tools(rig, library=None, played=None):
 
 
 def test_codes_agree_with_the_voice_side():
-    assert SOURCE_DECLINED == SOURCE_DECLINED_REASON and VIA_SOUND_NODE == SOUND_NODE
+    assert SOURCE_DECLINED == SOURCE_DECLINED_REASON
 
 
 def test_live_phrase_plays_the_robot_song_from_cache_and_says_why(library):
     rig, played = _rig(), []
     req, _gen = _tools(rig, library, played)
     result = req.execute(intent="track", text="сгенерируй музон", heard_text=LIVE)
-    assert result.success and result.data["via"] == VIA_SOUND_NODE and result.data["source"] == "cache"
+    assert result.success and result.data["source"] == "cache" and result.data["started"] is True
     assert len(played) == 1 and result.data["title"] == "Я робот (РОББОКС)"
     assert launch_text("Включаю музыку.", result.data) == (
         "Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена. "

@@ -123,24 +123,11 @@ class MusicStateMemory:
             return ENDED_FINISHED
         return ENDED_STOPPED
 
-    def render(
-        self,
-        *,
-        generated_title: Optional[str] = None,
-        now: Optional[float] = None,
-    ) -> str:
-        """Строка ``<music_state …/>`` для ``<system_context>``.
-
-        ``generated_title`` — mp3 из AI-библиотеки (``gen_play_from_library``)
-        играет в ``sound_node`` мимо владельца плеера v2 и в снимок плеера не
-        попадает; его состояние публикует сам плеер mp3
-        (``/voice/generated_music/state``), нода передаёт название, если
-        там ``playing``.
-        """
+    def render(self, *, now: Optional[float] = None) -> str:
+        """Строка ``<music_state …/>`` для ``<system_context>``: снимок владельца плеера — единственный источник
+        (трек библиотеки генераций тоже на деке, ADR-0158 PR-2)."""
         current = _now(now)
         attrs = self._playback_attrs(current)
-        ai = f"playing: {generated_title}" if generated_title else "idle"
-        attrs.append(("ai", ai))
         attrs.extend(self._last_ended_attrs(current))
         body = " ".join(f'{key}="{_xml_attr(value)}"' for key, value in attrs)
         return f"  <music_state {body} />"
