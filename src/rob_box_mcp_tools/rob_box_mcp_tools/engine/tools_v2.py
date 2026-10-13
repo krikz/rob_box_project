@@ -58,7 +58,7 @@ from .reasoner import SetPlanBox, SetReasoner
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
-from .theme_grounding import grounded_theme
+from .theme_grounding import set_slots
 from .theme_links import ThemeLinks
 
 _LOG = logging.getLogger(__name__)
@@ -309,6 +309,7 @@ class DjSetTool(MCPTool):
         self._session: Optional[SetSession] = None
         self._session_turn: Optional[str] = None  # ход LLM, в котором сет ``self._session`` заиграл (``started``)
         self._last: Optional[SetSession] = None  # последний начатый сет (и доигравший сам): для ``status``
+        self._last_dj: Optional[Tuple[str, Optional[str]]] = None  # (тема, персона) последнего сета: «продолжай сэт»
         # треки прошлых сетов (``history`` — music_history в БД): разнообразие между сетами (A13, I17)
         self._memory = SetMemory(store=history)
 
@@ -361,9 +362,8 @@ class DjSetTool(MCPTool):
         refusal = set_refusal(heard_text, self.running) if action == "start" else None
         if refusal is not None:
             return tool_result(refusal, "сет не начался")
-        if action == "start":
-            theme = self._heard_theme(theme, heard_text)
-            persona = persona_title(persona) or None  # «диджей X» одним видом: и от роутера, и от LLM
+        if action == "start":  # «диджей X» одним видом: и от роутера, и от LLM
+            theme, persona = self._set_slots(theme, persona_title(persona) or None, heard_text)
         with self._lock:
             if action == "stop":
                 return self._stop()
@@ -382,17 +382,11 @@ class DjSetTool(MCPTool):
         self._session_turn = turn_id if result.get("ok") else None
         return tool_result(result, "сет не начался")
 
-    def _heard_theme(self, theme: Optional[str], heard_text: Optional[str]) -> Optional[str]:
-        """Тема сета, опирающаяся на реплику хода; подмену код пишет в лог честной строкой."""
-        grounded, replaced = grounded_theme(theme, heard_text)
-        if not replaced:
-            return theme
-        logger = self.node.get_logger() if self.node is not None else None
-        if not theme:  # команда роутера или LLM без темы: тему выделил код из слов реплики, подмены не было
-            (logger or _LOG).info(f"🎛️ [dj_set] тема из слов реплики: {grounded!r}")
-            return grounded
-        (logger or _LOG).warning(f"🎛️ [dj_set] тема LLM не из текущей реплики → из реплики: LLM={theme!r} → {grounded!r}")
-        return grounded
+    def _set_slots(self, theme: Optional[str], persona: Optional[str],
+                   heard_text: Optional[str]) -> Tuple[str, Optional[str]]:
+        """``(тема, персона)`` сета по реплике хода и последнему сету (``theme_grounding.set_slots``, #3581)."""
+        return set_slots(theme, persona, heard_text, self._last_dj,
+                         self.node.get_logger() if self.node is not None else _LOG)
 
     @property
     def running(self) -> bool:
@@ -482,6 +476,7 @@ class DjSetTool(MCPTool):
         self._last = self._session or self._last
         reasoner = None
         if self._session is not None:  # звук уже поставлен seeded-планом; LLM — в фоне (§4.8)
+            self._last_dj = (theme, persona)
             reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
         return {**result, "theme": theme, "style": plan.style, "genre": plan.genre, "theme_source": profile.source,
                 "seed": set_seed, "tracks": length, "reasoner": reasoner}
