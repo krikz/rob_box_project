@@ -2738,6 +2738,26 @@ GEN_MODELS: Mapping[str, GenModel] = {
 }
 DEFAULT_GEN_MODEL = "V6"
 
+# ── Сет из генерации (ADR-0158 §2.7, решения Шифу В2/В4/В5; PR-8): ``engine.gen.gen_session`` ────────────────────
+#: Не больше задач генерации на сет (В5): 10 задач × 2 варианта — с запасом на 10 треков.
+GEN_SET_MAX_TASKS = 10
+#: Первая задача сета, когда кэш не закрыл первый трек (играет мост), — быстрая модель; остальные — качество (В2).
+GEN_SET_FIRST_MODEL, GEN_SET_MODEL = "V6_MINI", "V6"
+#: Длина трека генерации в сете, секунд (ADR §2.7: 150 с, генерация ≤ 52 с — запас ≥ 100 с на заказ N+1).
+GEN_SET_DURATION_S = 150
+#: Кроссфейд файл ↔ файл и синтез → файл, тактов: огибающая синта ``loop`` (атака входящего, спад уходящего), без
+#: бит-матчинга (ADR §2.4). ADR предлагал 8 тактов с LPF/HPF — фильтров у файла нет; 4 такта ≤ упреждения
+#: ``nearly_finished`` (9 тактов) и не съедают короткий трек.
+GEN_XFADE_BARS = 4
+#: Мост сета (В4), когда кэш пуст и первый трек ещё пишется: сильный стиль синтеза, ближайший жанру; нет в
+#: таблице — :data:`DEFAULT_STYLE`. Правит Шифу.
+GEN_BRIDGE_STYLES: Mapping[str, str] = {"rock": "breaks", "grunge": "breaks", "metal": "breaks", "blues": "breaks",
+                                        "jazz": "synthwave", "lofi": "synthwave", "orchestral": "synthwave",
+                                        "acoustic": "synthwave", "chanson": "synthwave"}
+
+__all__ += ["GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_SET_FIRST_MODEL", "GEN_SET_MAX_TASKS", "GEN_SET_MODEL",
+            "GEN_XFADE_BARS"]
+
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
             "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
             "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]

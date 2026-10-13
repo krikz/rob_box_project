@@ -3,11 +3,13 @@
 Путь выбрал чойсер (``rob_box_music.source``: ``generate:cover``), мост — наш синтез той же пьесы — запустил
 ``request_music``. Здесь — что делать, когда кавер готов или не вышел:
 
-* готов, а на деке всё ещё мост (или мост доиграл сам) — трек кэша встаёт на деку через ``gen_play_from_library``
-  (дека владельца, ADR-0158 PR-2) и фраза кода «А вот живая версия …»;
+* мост держит звук до результата или провала (``engine.gen.gen_session.BridgeHold``, ADR-0158 PR-8: живой прогон
+  13.10 — мост доиграл 22 с, кавер встал через 64 с, 44 с тишины): готов — кавер входит кроссфейдом на конце
+  прохода моста, на его ``started`` — фраза кода «А вот живая версия …»;
 * человек тем временем остановил музыку или заказал другое — кавер остаётся в кэше (следующий заказ сыграет его
   оттуда), деку не трогаем, фразы нет;
-* не вышел (деньги, сервис, отказ) — мост доигрывает, фраза кода с причиной (В3), если мост ещё звучит.
+* не вышел (деньги, сервис, отказ) — мост доигрывает финальным проходом, фраза кода с причиной (В3), если мост
+  ещё звучит.
 """
 
 from __future__ import annotations
@@ -50,14 +52,11 @@ def public_domain_pick(pieces: Any, query: str, seed: int, lead: Any = None) -> 
 
 
 class PieceCover:
-    """Кавер после моста. ``maker`` — ``gen.cover.CoverMaker``; ``owner`` — ``PlayerOwner`` (что на деке);
-    ``play_cached(track_id)`` — ``gen_play_from_library``; ``speak(text)`` — реплика робота."""
+    """Кавер после моста. ``maker`` — ``gen.cover.CoverMaker``; ``speak(text)`` — реплика робота."""
 
-    def __init__(self, maker: Any, owner: Any, play_cached: Optional[Callable[[str], Any]],
-                 speak: Optional[Callable[[str], Any]] = None, log: Callable[[], Any] = lambda: _LOG) -> None:
+    def __init__(self, maker: Any, speak: Optional[Callable[[str], Any]] = None,
+                 log: Callable[[], Any] = lambda: _LOG) -> None:
         self.maker = maker
-        self._owner = owner
-        self._play_cached = play_cached
         self._speak = speak
         self._log = log
 
@@ -74,34 +73,24 @@ class PieceCover:
         self._log().info(f"🎼 [cover] мост «{work.title}» не public domain → кавер по «{pick.work}» ({pick.melody_id})")
         return CoverWork(pick.work, True, work.instrument, pick.title), pick.track
 
-    def start(self, route: Route, track: Any, bridge_id: str) -> Any:
-        """Заказать кавер в фоне; ``bridge_id`` — id запуска моста на деке."""
-        return self.maker.start(track, route.work, route.ask, lambda result: self.done(route, bridge_id, result))
-
-    def deck_is_bridge(self, bridge_id: str) -> bool:
-        """На деке мост (звучит или ждёт ``started``) или мост доиграл сам и дека пуста — кавер можно ставить."""
-        now = self._owner.now_playing()
-        if bridge_id in (now.get("track_id"), now.get("pending")):
-            return True
-        idle = not now.get("playing") and not now.get("pending")
-        return idle and getattr(self._owner, "last_finished", None) == bridge_id
-
-    def done(self, route: Route, bridge_id: str, result: CoverResult) -> None:
+    def start(self, route: Route, track: Any, hold: Any) -> Any:
+        """Заказать кавер в фоне; ``hold`` — мост на деке (``BridgeHold``), держит звук до результата."""
         work: CoverWork = route.work  # type: ignore[assignment] — кавер без произведения не заказывается
-        ours = self.deck_is_bridge(bridge_id)
+        hold.on_live = lambda: self._say(cover_ready_text(work, route.ask))
+        return self.maker.start(track, work, route.ask, lambda result: self.done(route, hold, result))
+
+    def done(self, route: Route, hold: Any, result: CoverResult) -> None:
+        work: CoverWork = route.work  # type: ignore[assignment]
         if result.reason:
-            self._say(cover_failed_text(work, result.reason) if ours else "")
+            if hold.fail():
+                self._say(cover_failed_text(work, result.reason))
             return
-        if not ours or self._play_cached is None:
+        if hold.deliver(result.track_id, work.spoken or work.title):
+            self._log().info(f"🎼 [cover] «{work.title}» готов ({result.track_id}) — войдёт вместо моста "
+                             f"{hold.bridge_id} кроссфейдом")
+        else:
             self._log().info(f"🎼 [cover] «{work.title}» в кэше ({result.track_id}), деку не трогаю: "
-                             f"на ней уже не мост {bridge_id}")
-            return
-        played = self._play_cached(result.track_id)
-        if not getattr(played, "success", False):
-            self._log().warning(f"⚠️ [cover] «{work.title}» не встал на деку: {getattr(played, 'error', '')}")
-            return
-        self._log().info(f"🎼 [cover] «{work.title}» на деке вместо моста {bridge_id}: {result.track_id}")
-        self._say(cover_ready_text(work, route.ask))
+                             f"на ней уже не мост {hold.bridge_id}")
 
     def _say(self, text: str) -> None:
         if text and self._speak is not None:

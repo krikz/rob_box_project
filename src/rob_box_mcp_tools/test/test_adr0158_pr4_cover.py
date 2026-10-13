@@ -130,10 +130,35 @@ def _request(rig, maker, played, said, lib=None):
                             cover=maker, speak=said.append)
 
 
-def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(tmp_path):
-    """Гитара, а не ситар: у подставного сервера стенда (``_rig``) синта sitar нет; путь тот же."""
+def _cached(lib, seconds=60.0):
+    """Трек кэша «кавер» (для ``BridgeHold``: результат входит с деки моста)."""
+    return lib.save_track(f"MP3:{seconds}".encode(), prompt="cover", title="Ride (cover)", is_instrumental=True,
+                          kind="cover", task_id="T1", variant=0, duration_ms=int(seconds * 1000))["id"]
+
+
+def _fake_audio(info, track_id, run=None):
+    from rob_box_music.model import AudioTrack
+
+    return AudioTrack(track_id=track_id, path=str(info["path"]).replace("track.mp3", "t.wav"), duration_s=60.0)
+
+
+def _queued(rig, timeout=5.0):
+    """Фон ``BridgeHold`` поставил результат (или финал) в очередь владельца."""
+    import time
+
+    end = time.monotonic() + timeout
+    while rig.owner._queued is None and time.monotonic() < end:  # noqa: SLF001
+        time.sleep(0.01)
+    return rig.owner._queued  # noqa: SLF001
+
+
+def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(tmp_path, monkeypatch):
+    """Гитара, а не ситар: у подставного сервера стенда (``_rig``) синта sitar нет; путь тот же. Мост держит звук,
+    пока кавер не готов (ADR-0158 PR-8, живой прогон 13.10: 44 с тишины), кавер входит кроссфейдом на деке B."""
+    monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio)
     rig, maker, played, said = _rig(), FakeMaker(), [], []
-    req = _request(rig, maker, played, said, GeneratedMusicLibrary(str(tmp_path / "lib")))
+    lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+    req = _request(rig, maker, played, said, lib)
     result = req.execute(intent="melody", text="сыграй валькирии на гитаре", heard_text="сыграй валькирии на гитаре")
     assert result.success, result.error
     data = result.data
@@ -141,19 +166,33 @@ def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(t
     assert launch_text("", data).startswith("Живую версию на гитаре готовлю — секунд через 50, а пока своя. Ставлю")
     order = maker.orders[0]
     assert order.work == CoverWork("Ride Of The Valkyries", True, "guitar", data["title"]) and order.track is not None
-    order.done(CoverResult("cov1", task_id="T1", credits=12.0))  # кавер готов, на деке всё ещё мост
-    assert played == ["cov1"] and said == [f"А вот живая версия «{data['title']}» на гитаре."]
+    rig.clock.run_until(rig.clock.beat + 2)  # мост встал
+    bridge = [e for e in rig.events if e["event"] == "started"][0]
+    rig.clock.run_until(bridge["start_beat"] + 3 * bridge["form_beats"])  # кавер пишется — мост повторяет форму
+    assert rig.owner.now_playing()["track_id"] == bridge["track_id"]
+    order.done(CoverResult(_cached(lib), task_id="T1", credits=12.0))  # кавер готов, на деке всё ещё мост
+    program, _prev = _queued(rig)
+    assert program.deck == "B" and "loop(" in program.code and played == []
+    rig.clock.run_until(rig.clock.beat + 2 * bridge["form_beats"])
+    live = [e for e in rig.events if e["event"] == "started"][-1]
+    assert live["track_id"] == program.track_id and live["deck"] == "B"
+    assert said == [f"А вот живая версия «{data['title']}» на гитаре."]
 
 
 def test_cover_does_not_barge_in_after_stop_and_failure_is_spoken_only_over_the_bridge(tmp_path):
     rig, maker, played, said = _rig(), FakeMaker(), [], []
     req = _request(rig, maker, played, said, GeneratedMusicLibrary(str(tmp_path / "lib")))
     req.execute(intent="melody", text="сыграй валькирии на гитаре", heard_text="сыграй валькирии на гитаре")
+    rig.clock.run_until(rig.clock.beat + 2)
     first = maker.orders[0]
-    first.done(CoverResult(reason="timeout"))  # мост звучит — фраза о провале
+    first.done(CoverResult(reason="timeout"))  # мост звучит — фраза о провале, мост доиграет финальным проходом
     assert said == [f"Живой версии «{first.work.spoken}» не будет: генерация не уложилась по времени."]
+    finale, _prev = _queued(rig)
+    assert finale.deck == "B" and "loop(" not in finale.code  # мост ещё раз, не файл
     rig.owner.stop("user_stop")
-    first.done(CoverResult("cov2"))  # человек остановил музыку — кавер остаётся в кэше, дека пустая
+    req.execute(intent="melody", text="сыграй валькирии на гитаре", heard_text="сыграй валькирии на гитаре")
+    rig.owner.stop("user_stop")
+    maker.orders[1].done(CoverResult("cov2"))  # человек остановил музыку — кавер остаётся в кэше, дека пустая
     assert played == [] and len(said) == 1 and not rig.owner.is_playing()
 
 
@@ -164,13 +203,6 @@ def test_without_money_the_piece_plays_our_synth_and_says_why(tmp_path):
     assert result.success and maker.orders == []
     assert launch_text("", result.data).startswith(
         "Живую версию на гитаре сейчас не сделаю: на счёте генерации нет кредитов. Ставлю")
-
-
-def test_deck_check_after_the_bridge_finished_by_itself():
-    owner = SimpleNamespace(now_playing=lambda: {"playing": False, "pending": None, "track_id": None},
-                            last_finished="bridge1")
-    cover = PieceCover(FakeMaker(), owner, lambda t: None)
-    assert cover.deck_is_bridge("bridge1") and not cover.deck_is_bridge("other")
 
 
 def test_bridge_not_public_domain_takes_the_cover_from_the_public_domain_record_of_the_same_order():
@@ -185,7 +217,7 @@ def test_bridge_not_public_domain_takes_the_cover_from_the_public_domain_record_
 
     bridge = {"program": object(), "work": "Valkyrie", "public_domain": False, "title": "Valkyrie",
               "instrument": "", "played": {"work": "валькирий"}}
-    work, track = PieceCover(FakeMaker(), None, None).source(bridge, Pieces(), seed=5)
+    work, track = PieceCover(FakeMaker()).source(bridge, Pieces(), seed=5)
     assert work == CoverWork("Ride Of The Valkyries", True, "", work.spoken) and track is not None
     pd = dict(bridge, work="Ride Of The Valkyries", public_domain=True)
-    assert PieceCover(FakeMaker(), None, None).source(pd, Pieces(), seed=5)[1] is None  # мост сам — источник
+    assert PieceCover(FakeMaker()).source(pd, Pieces(), seed=5)[1] is None  # мост сам — источник

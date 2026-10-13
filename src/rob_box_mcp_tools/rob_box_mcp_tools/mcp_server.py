@@ -264,6 +264,17 @@ def _cover_maker(node: Any) -> Any:
                       log=node.get_logger)
 
 
+def _gen_set_maker(node: Any, cover: Any) -> Any:
+    """Сет из генерации (ADR-0158 PR-8): тот же KIE, тот же кэш, баланс — последний известный у кавера; путь сета
+    выбирает тот же чойсер (``music_chooser``). Ключа нет — исполнитель есть, но не готов: генерации в сете нет."""
+    from .engine.chooser_model import chooser_from_env
+    from .engine.gen.gen_session import GenSetMaker
+
+    chooser = chooser_from_env(str(node.get_parameter("music_chooser").value), log=node.get_logger)
+    return GenSetMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None), chooser,
+                       balance=cover.balance, log=node.get_logger)
+
+
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
@@ -298,6 +309,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                        lines=bool(node.get_parameter("music_v2_dj_lines").value))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
     node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
+    cover = _cover_maker(node)  # PR-4: кавер пьесы; его баланс KIE — и сету из генерации
+    dj_set.gen_sets = _gen_set_maker(node, cover)  # ADR-0158 PR-8: рок/гранж-сет — кэш и генерация
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
     # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
     request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
@@ -309,7 +322,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
                                                                                   track_id=track_id),
-                               cover=_cover_maker(node), speak=_speaker(node),  # PR-4: кавер пьесы
+                               cover=cover, speak=_speaker(node),  # PR-4: кавер пьесы
                                songs=_song_studio(node, events))  # PR-7: песня голосом робота
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь

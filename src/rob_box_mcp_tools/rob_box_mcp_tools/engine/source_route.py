@@ -5,8 +5,10 @@
 
 Исполнители генерации: кавер пьесы (PR-4, ``engine.gen.cover``: ``SourceContext.cover_ready`` и последний известный
 баланс KIE, обновляется в фоне, заказ сеть не ждёт) и песня голосом робота (PR-7, ``engine.gen.song.SongStudio``:
-``gen_ready`` истинно только для просьбы спеть при подключённой студии; Silero — ``song_block``). Остальной генерации
-(инструментал, сет — PR-8) нет: кандидатов ``generate:<kind>`` нет, с причиной ``not_wired`` во фразе кода.
+``gen_ready`` истинно только для просьбы спеть при подключённой студии; Silero — ``song_block``) и сет из генерации
+(PR-8, ``engine.gen.gen_session.GenSetMaker``: ``route(..., for_set=True)`` — генерация готова, если готов исполнитель
+сета; лимит сета ``set_left`` — из ``engine.gen.budget``, одно место). Одиночного инструментала нет: кандидатов
+``generate:instrumental`` вне сета нет, с причиной ``not_wired`` во фразе кода.
 
 Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>``.
 """
@@ -71,6 +73,11 @@ def day_left(library: Any) -> float:
     return Budget(library).remaining_today()
 
 
+def _set_attempt(_route: Route) -> str:
+    """Генерация сета исполняется самим сетом (заказ недостающего по ходу): выбор остаётся."""
+    return ""
+
+
 class SourceRouter:
     """Путь заказа: контекст (кэш, лимит) → ``choose_with_fallback`` → строка лога. ``library`` — ленивый доступ к
     ``GeneratedMusicLibrary`` (её поднимает ``mcp_server`` позже движка v2; нет — кэш пуст); ``cover`` — исполнитель
@@ -79,15 +86,16 @@ class SourceRouter:
 
     def __init__(self, chooser: Chooser, library: Callable[[], Any] = lambda: None,
                  log: Callable[[], Any] = lambda: _LOG, mode: str = "auto", cover: Any = None,
-                 studio: Any = None) -> None:
+                 studio: Any = None, sets: Any = None) -> None:
         self._chooser = chooser
         self._library = library
         self._log = log
         self._mode = mode
         self._cover = cover
         self._studio = studio  # ``SongStudio`` (PR-7); нет — песня ``not_wired``
+        self._sets = sets  # ``GenSetMaker`` (PR-8): исполнитель сета из генерации
 
-    def context(self, ask: Optional[SourceAsk] = None) -> SourceContext:
+    def context(self, ask: Optional[SourceAsk] = None, for_set: bool = False) -> SourceContext:
         library = self._library()
         try:
             cache, left = cache_tracks(library), day_left(library)
@@ -97,20 +105,33 @@ class SourceRouter:
         cover = self._cover is not None and self._cover.ready()
         ctx = SourceContext(cache=cache, gen_ready=False, day_left=left, mode=self._mode, cover_ready=cover,
                             balance=self._cover.balance() if cover else None)
+        if for_set:  # сет (PR-8): генерацию исполняет сет, лимит сета — engine.gen.budget
+            return self._set_context(ctx)
         studio = self._studio
         if studio is None:
             return ctx
         return replace(ctx, gen_ready=bool(ask is not None and ask.vocal), song_block=studio.blocked(),
                        has_key=studio.has_key(), provider_ok=studio.provider_ok(), voice=studio.voice_id())
 
+    def _set_context(self, ctx: SourceContext) -> SourceContext:
+        """Контекст сета (PR-8): генерация готова, если готов исполнитель сета; лимит сета — ``BudgetPolicy``."""
+        from .gen.budget import BudgetPolicy
+
+        sets = self._sets
+        ready = sets is not None and sets.ready()
+        return replace(ctx, gen_ready=ready, set_left=BudgetPolicy().set_credits,
+                       balance=sets.balance() if ready else None)
+
     def route(self, ask: SourceAsk, piece: bool = False, work: Optional[CoverWork] = None,
-              gen_failed: str = "") -> Route:
-        """``gen_failed`` — выбор заново без ``generate:*`` (В3): песня упала или ещё пишется (``pending``)."""
-        ctx = self.context(ask)
+              gen_failed: str = "", for_set: bool = False) -> Route:
+        """``gen_failed`` — выбор заново без ``generate:*`` (В3): песня упала или ещё пишется (``pending``);
+        ``for_set`` — путь сета (PR-8): недостающее заказывает сам сет."""
+        ctx = self.context(ask, for_set)
         if gen_failed:
             ctx = ctx.without_generate(gen_failed)
         options, reason = source_candidates(ask, ctx, piece, work)
-        route = choose_with_fallback(ask, ctx, self._chooser, attempt=self._executable, piece=piece, work=work)
+        attempt = _set_attempt if for_set else self._executable
+        route = choose_with_fallback(ask, ctx, self._chooser, attempt=attempt, piece=piece, work=work)
         listed: List[str] = [o.id for o in options]
         self._log().info(f"🎚️ [source] {ask.describe()} кандидаты={listed} → {route.id} ({route.provider or 'code'}) "
                          f"gen={reason or 'ok'}")

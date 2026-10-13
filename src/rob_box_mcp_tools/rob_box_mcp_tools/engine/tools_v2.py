@@ -368,6 +368,9 @@ class DjSetTool(MCPTool):
         links = theme_links(node, self._reasoner)
         self._find = finder or theme_finder(library, links)
         self._find_work = finder or theme_finder(library, links, ask=False)  # одиночная пьеса: LLM не на пути звука
+        #: Поиск темы без вопроса LLM (связи — только хранилище): мост ожидания генерации (песня, кавер, сет) берётся
+        #: кодом мгновенно — 13.10 мост песни 8 с ждал theme-links, ``request_music`` 10.6 с > таймаута хода 10 с.
+        self.quick_find = self._find_work
         self._not_found: Tuple[str, ...] = ()  # названное в теме, из чего не нашлось ничего: сет не стартует (#3493)
         if scores is None:
             scores = ScoreLibrary()
@@ -387,6 +390,9 @@ class DjSetTool(MCPTool):
         self._last_dj: Optional[Tuple[str, Optional[str]]] = None  # (тема, персона) последнего сета: «продолжай сэт»
         # треки прошлых сетов (``history`` — music_history в БД): разнообразие между сетами (A13, I17)
         self._memory = SetMemory(store=history)
+        #: Сет из генерации (ADR-0158 PR-8, ``engine.gen.gen_session.GenSetMaker``): жанр, который синтез не играет
+        #: (рок, гранж), — путём чойсера из кэша и генерации; ``None`` — только синтез (подключает ``mcp_server``).
+        self.gen_sets: Any = None
 
     @property
     def name(self) -> str:
@@ -450,7 +456,7 @@ class DjSetTool(MCPTool):
                     return MCPToolResult(success=False, error=str(exc))
                 # окно стиля словами человека («гранж» → rock/grunge, ADR-0153 S5); нет слов — окно выбирает план
                 window = match_window_text(key, heard_text, theme)
-                result = self._start(theme or "", persona, key, named, window)
+                result = self._start(theme or "", persona, key, named, window, heard_text)
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(result, self._confirm)  # ждём started вне замка
@@ -493,10 +499,11 @@ class DjSetTool(MCPTool):
         log.info(f"🎼 [classic] «{work}»: хуки={list(hits.names)}; партитуры: {self._scores.state}")
         return hits
 
-    def theme_profile(self, theme: str, style: str = kn.DEFAULT_STYLE) -> ThemeProfile:
+    def theme_profile(self, theme: str, style: str = kn.DEFAULT_STYLE,
+                      find: Optional[ThemeFinder] = None) -> ThemeProfile:
         """Seeded-профиль темы с мелодиями по её словам; поиск упал — профиль без находок, причина в лог."""
         log = self.node.get_logger() if self.node is not None else _LOG
-        hits = self._hits(theme, log)
+        hits = self._hits(theme, log, find)
         materials, how = score_materials(self._scores, hits, theme)
         profile = seeded_profile(theme, style, found=hits.names, exact=hits.exact, parts=hits.parts,
                                  materials=materials)
@@ -523,15 +530,17 @@ class DjSetTool(MCPTool):
         return DEFAULT_TRACKS, "по умолчанию"
 
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
-               tracks: Optional[int] = None, window: Optional[str] = None) -> Dict[str, Any]:
+               tracks: Optional[int] = None, window: Optional[str] = None,
+               heard_text: Optional[str] = None) -> Dict[str, Any]:
         length, why = self.set_length(tracks)
+        generated = generated_set(self, theme, style, persona, length, heard_text)
+        if generated is not None:  # ADR-0158 PR-8: жанр не по силам синтезу — кэш и генерация путём чойсера
+            return generated
         profile = self.theme_profile(theme, style)
         if self._not_found:  # названное не нашлось — не пул по хешу темы вместо него; идущий сет не трогаем
             return {"ok": False, "reason": NOT_FOUND, "theme": theme, "missing": list(self._not_found),
                     "message": set_not_found_text(self._not_found)}
-        self._session_turn = None
-        if self._session is not None:
-            self._session.stop("new_set")
+        self._drop_session()
         set_seed = self._seed()
         set_id = f"set{set_seed % 100000:05d}"
         logger = self.node.get_logger() if self.node is not None else None
@@ -555,6 +564,16 @@ class DjSetTool(MCPTool):
             reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
         return {**result, "theme": theme, "style": plan.style, "genre": plan.genre, "theme_source": profile.source,
                 "seed": set_seed, "tracks": length, "reasoner": reasoner}
+
+    def _drop_session(self) -> None:
+        """Новый сет снимает идущий (под замком ``execute``)."""
+        self._session_turn = None
+        if self._session is not None:
+            self._session.stop("new_set")
+
+    def adopt(self, session: SetSession, theme: str, persona: Optional[str]) -> None:
+        """Сет из генерации заиграл (ADR-0158 PR-8): он — идущий сет (стоп, «что играет», «продолжай»)."""
+        self._session, self._last, self._facts, self._last_dj = session, session, None, (theme, persona)
 
     def status(self) -> Dict[str, Any]:
         """Сет для ``get_music_state``: идёт (трек N из M), окончен сам или его нет; фразу строит код (ADR-0148)."""
@@ -624,10 +643,12 @@ class RequestMusicTool(MCPTool):
         # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
         self._source = SourceRouter(chooser, gen_library, log=self._log, cover=cover, studio=songs)
         self._songs = songs  # песня голосом робота (ADR-0158 PR-7): фоновая генерация, пока играет мост
-        self._song_order = SongOrder(songs, self._source.route)
+        self.gen_library = gen_library  # кэш генераций: результат ожидания встаёт с деки моста (BridgeHold, PR-8)
+        self.hold: Any = None  # последний мост ожидания генерации (``BridgeHold``): песня входит вместо него
+        self._song_order = SongOrder(songs, self._source.route, hold=lambda: self.hold)
         self._play_cached = play_cached  # трек кэша — gen_play_from_library: дека владельца (ADR-0158 PR-2)
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
-        self._cover = PieceCover(cover, owner, play_cached, speak, self._log) if cover is not None else None
+        self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
         # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
         # судить слова нечем, разбора нет (название как от грамматики), если разборщик не передан явно
@@ -704,17 +725,17 @@ class RequestMusicTool(MCPTool):
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:
             return self._off_synth(route, what, ask, (intent, text, mood, genre, turn_id, heard_text))
-        staged = self._stage(route, piece, text, mood, heard_text)
+        staged = self._stage(route, piece, text, mood, heard_text, bridge_find(self._dj, gen_failed))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
         program, once, row, model = unstage(staged)
         self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
-        result = self._owner.play(program, dj=track_facts(staged), once=once)
-        result = confirmed({**result, **staged}, self._confirm)
+        # мост ожидания генерации (кавер — PR-4, песня — PR-7) держит звук до результата (BridgeHold, PR-8)
+        result, hold = play_bridged(self, program, staged, (model, once), bridge or gen_failed == "pending")
         if result.get("ok"):
             self._started(row, model)
-            if bridge:  # мост звучит — кавер в фоне встанет вместо него
-                self._cover.start(route, cover_track or model, program.track_id)
+            if bridge:  # мост звучит — кавер в фоне встанет вместо него кроссфейдом
+                self._cover.start(route, cover_track or model, hold)
         return tool_result(result, what)
 
     def _started(self, row: Mapping[str, Any], model: Any) -> None:
@@ -732,11 +753,12 @@ class RequestMusicTool(MCPTool):
         return staged
 
     def _stage(self, route: Route, piece: Optional[Dict[str, Any]], text: str, mood: Optional[str],
-               heard_text: Optional[str]) -> Dict[str, Any]:
-        """Собрать синтез пути (пьеса ``piece`` или трек стиля ``route.style``) с фразой пути кода."""
+               heard_text: Optional[str], find: Optional[ThemeFinder] = None) -> Dict[str, Any]:
+        """Собрать синтез пути (пьеса ``piece`` или трек стиля ``route.style``) с фразой пути кода; ``find`` — поиск
+        темы моста ожидания генерации (без LLM, :func:`bridge_find`)."""
         if piece is None:
             lead = lead_for(heard_text, text)
-            staged = self._stage_club(text, mood, lead, route.style)
+            staged = self._stage_club(text, mood, lead, route.style, find)
             staged.update(lead_data(lead))
         else:
             staged = piece
@@ -775,24 +797,26 @@ class RequestMusicTool(MCPTool):
             self._log().warning(f"⚠️ [classic] модель трека не записана: {type(exc).__name__}: {exc}")
 
     def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None,
-                    style: str = kn.DEFAULT_STYLE) -> Dict[str, Any]:
+                    style: str = kn.DEFAULT_STYLE, find: Optional[ThemeFinder] = None) -> Dict[str, Any]:
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
         синт инструмента заказа; ``style`` — стиль синтеза, который выбрал путь (ADR-0158)."""
         theme = club_theme(text)
-        profile = (self._dj.theme_profile(theme, style) if style in kn.STYLES and style != kn.DEFAULT_STYLE
-                   else self._dj.theme_profile(theme))
+        profile = (self._dj.theme_profile(theme, style, find) if style in kn.STYLES and style != kn.DEFAULT_STYLE
+                   else self._dj.theme_profile(theme, find=find))
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
         track_no = kn.ENERGY_WAVE.index(energy) + 1
         try:
-            program = render(compose(plan, track_no, melodies=self._melodies(profile.hook_ids), deck="A",
-                                     materials=self._dj.plan_materials(plan), lead_synth=lead and lead.synth), "A")
+            model = compose(plan, track_no, melodies=self._melodies(profile.hook_ids), deck="A",
+                            materials=self._dj.plan_materials(plan), lead_synth=lead and lead.synth)
+            program = render(model, "A")
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
         title = f"{profile.theme or 'клубный трек'} · {plan.bpm} BPM"
-        return {"program": program, "once": False, "title": title, "name": club_name(text, profile.theme),
+        return {"program": program, "once": False, "bridge_model": model, "title": title,
+                "name": club_name(text, profile.theme),
                 "source": SOURCE_SYNTH, "style": plan.style, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
@@ -907,6 +931,59 @@ class GenerateMusicTool(MCPTool):
                       robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "")
         return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
                                    ask=ask)
+
+
+def bridge_source(dj: DjSetTool, theme: str, set_id: str,
+                  seed: int) -> Callable[[str], Tuple[Callable[[str], Any], int]]:
+    """Мост сета из генерации (В4): ``style -> (deck -> Track, bpm)`` — трек 1 синтезом в сильном стиле."""
+    def bridge(style: str) -> Tuple[Callable[[str], Any], int]:
+        profile = dj.theme_profile(theme, style, dj.quick_find)  # мост — кодом, без вопроса LLM
+        plan = seeded_plan(profile, seed, set_id=set_id)
+        melodies, materials = dj._melodies(profile.hook_ids), dj.plan_materials(plan)  # noqa: SLF001
+        return (lambda deck: compose(plan, 1, melodies=melodies, deck=deck, materials=materials)), plan.bpm
+
+    return bridge
+
+
+def generated_set(dj: DjSetTool, theme: str, style: str, persona: Optional[str], length: int,
+                  heard_text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Сет из генерации (ADR-0158 PR-8) или ``None`` — сет синтезом, как раньше (исполнителя нет, жанр синтез играет,
+    чойсер выбрал синтез). Треки кэша и генерации — на тех же деках; отказ пути — фраза кода, идущий сет не снят."""
+    makers = dj.gen_sets
+    route = makers.route(theme, style, heard_text) if makers is not None else None
+    if route is None:
+        return None
+    seed = dj._seed()  # noqa: SLF001 — тот же сид, что у сета синтезом
+    set_id = f"gen{seed % 100000:05d}"
+    reasoner = dj._reasoner  # noqa: SLF001
+    result = makers.start(route, dj._owner, theme=theme, persona=persona, length=length, set_id=set_id,  # noqa: SLF001
+                          bridge=bridge_source(dj, theme, set_id, seed), speak=dj._speak,  # noqa: SLF001
+                          line_ask=reasoner.ask if reasoner.enabled else None, replace_set=dj._drop_session)  # noqa: SLF001
+    session = result.pop("session", None)
+    if session is not None:
+        dj.adopt(session, theme, persona)
+    return {**result, "seed": seed}
+
+
+def bridge_find(dj: Any, gen_failed: str) -> Optional[ThemeFinder]:
+    """Мост ожидания генерации (``gen_failed == "pending"``: песня пишется) — поиск темы без LLM (``quick_find``):
+    мост не задерживает ответ тула; иначе — обычный поиск со связями."""
+    return getattr(dj, "quick_find", None) if gen_failed == "pending" else None
+
+
+def play_bridged(req: RequestMusicTool, program: Any, staged: Dict[str, Any], played: Tuple[Any, bool],
+                 held: bool) -> Tuple[Dict[str, Any], Any]:
+    """Запуск собранного заказа: ``(результат, мост ожидания | None)``. Мост ожидания генерации (``held``) — сет из
+    двух треков ``BridgeHold``: мост держит звук до результата/провала, результат входит кроссфейдом (ADR-0158 PR-8)."""
+    from .gen.gen_session import BridgeHold
+
+    facts, bridge_model = track_facts(staged), staged.pop("bridge_model", None) or played[0]
+    if not held or bridge_model is None:
+        return confirmed({**req._owner.play(program, dj=facts, once=played[1]), **staged}, req._confirm), None  # noqa: SLF001
+    hold = BridgeHold(req._owner, bridge_model, program, req.gen_library, facts=facts, logger=req._log())  # noqa: SLF001
+    result = confirmed({**hold.start(), **staged}, req._confirm)  # noqa: SLF001
+    req.hold = hold if result.get("ok") else None
+    return result, hold
 
 
 def is_bridge(route: Route, cover: Any) -> bool:
