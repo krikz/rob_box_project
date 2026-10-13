@@ -9,6 +9,7 @@ Fill — последний такт секции с ``Section.fill_last_bar`` (
 
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 from typing import Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
@@ -98,6 +99,24 @@ def clap_grid() -> Grid:
     return grid(BACKBEAT_STEPS, accents={4: 3, 12: 3})
 
 
+def humanize(part: Part, hands: "kn.Humanize", rng: random.Random) -> Part:
+    """«Живые руки» ударной партии (``Style.humanize``, #3557): на цикл ``hands.cycle_bars`` тактов каждому шагу —
+    лэйд-бэк роли ``hands.roles[part.role]`` + опоздание 0..``late_ms`` сверх его свинга и с долей ``soften`` акцент на
+    ступень ниже (акцент 3 не трогается); сетка партии растягивается до цикла, если она короче (хэты — такт), и сдвиги
+    повторяются по циклу."""
+    lay_back = hands.roles.get(part.role, 0)
+    cycle = hands.cycle_bars * STEPS_PER_BAR
+    steps = part.grid.steps
+    if len(steps) < cycle:
+        steps = steps * (cycle // len(steps))
+    late = [lay_back + rng.randint(0, hands.late_ms) for _ in range(cycle)]
+    soft = [rng.random() < hands.soften for _ in range(cycle)]
+    out = tuple(replace(st, offset_ms=st.offset_ms + late[i % cycle],
+                        accent=st.accent - 1 if soft[i % cycle] and 0 < st.accent < 3 else st.accent)
+                if st.on else st for i, st in enumerate(steps))
+    return replace(part, grid=Grid(out))
+
+
 def clap_fill(bar: Grid) -> Grid:
     """Такт fill-а: первая половина такта ``bar`` как есть, вторая — ролл 16-ми с нарастающим акцентом."""
     head = bar.steps[:ROLL_STEPS[0]]
@@ -148,4 +167,5 @@ def form_bars(sections: Sequence[Section], bar_of: Callable[[Section, int], Grid
 
 __all__ = ["CLAP_FILLS", "tom_fill", "BACKBEAT_STEPS", "GHOST_HAT_STEPS", "KICK_CUT_STEP", "OFFBEAT_STEPS", "ROLL_ACCENTS", "ROLL_BARS",
            "ROLL_STEPS", "clap_fill", "clap_grid", "clap_roll", "form_bars", "form_grid", "grid", "hats_grid",
-           "kick_fill", "kick_grid", "pattern_grid", "swing", "swing_offset_ms", "swing_part", "swing_pitches"]
+           "humanize", "kick_fill", "kick_grid", "pattern_grid", "swing", "swing_offset_ms", "swing_part",
+           "swing_pitches"]
