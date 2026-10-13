@@ -150,7 +150,7 @@ def _load_mcp_server_module():
     _gen_names = sorted(set(
         m.group(1)
         for m in _re.finditer(
-            r"\s+(Gen\w+Tool|GenerateMusicTool|MinimaxMusicClient|GeneratedMusicLibrary),\s*$",
+            r"\s+(Gen\w+Tool|GeneratedMusicLibrary),\s*$",
             _src, flags=_re.M,
         )
     ))

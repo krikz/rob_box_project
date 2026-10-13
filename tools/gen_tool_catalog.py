@@ -645,7 +645,7 @@ def extract_tools() -> list[dict[str, Any]]:
 
 
 #: Module-level ``def _foo_param(...) -> MCPToolParameter`` factories in the
-#: file being parsed. ``minimax_music.py`` shares parameters between tools
+#: file being parsed. ``gen_library.py`` shares parameters between tools
 #: this way, so the generator has to follow the call to see them.
 _PARAM_FACTORIES: dict[str, ast.FunctionDef] = {}
 
