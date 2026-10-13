@@ -113,7 +113,11 @@ def test_render_audio_crossfade_shape():
     assert one.form_beats == 152.0 and "var([1, 0]" in one.code
     mid = render_audio(track, "B", xfade_bars=4, once=False)
     assert mid.form_beats == 148.0 and "sus=148" in mid.code and "atk=16" in mid.code and "rel=16" in mid.code
-    assert "amp=1)" in mid.code  # не готов следующий — продление проходом файла, не тишина
+    # плеер встаёт на долю, кратную сумме dur (Renardo ``Player.count``): dur — такт, иначе стык на форму позже
+    # (живой рок-сет 13.10: 296-я доля вместо 224-й, 56 с тишины); звучит первый такт формы, повтор — проход файла
+    assert "dur=4," in mid.code and "amp=var([1, 0], [4, 144]" in mid.code
+    last = render_audio(track, "B", xfade_bars=4, once=True)
+    assert "dur=4," in last.code and "amp=var([1, 0], [4, 292]" in last.code  # последний: один проход
     assert "var([1, 0]" in deck_program(track, "A", last=True).code
 
 
@@ -199,6 +203,18 @@ def test_set_session_crossfades_files_on_two_decks(tmp_path):
     form = started[0]["form_beats"]
     assert started[1]["start_beat"] == started[0]["start_beat"] + form - kn.GEN_XFADE_BARS * 4
     assert any(e["event"] == "finished" for e in rig.events)
+    # Renardo ставит плеер на долю, кратную сумме dur: каждая доля стыка кратна dur своей программы
+    assert all(e["start_beat"] % 4 == 0 for e in started[1:])
+    assert "dur=4," in deck_program(AudioTrack("x", "/abs/x.wav", 60.0, bpm_nominal=BPM), "B", last=False).code
+
+
+def test_song_bridge_takes_theme_without_llm(tmp_path):
+    """Мост ожидания генерации берётся кодом: поиск темы без theme-links LLM (13.10: мост песни ждал LLM 8 с,
+    ``request_music`` 10.6 с при таймауте хода 10 с)."""
+    from rob_box_mcp_tools.engine.tools_v2 import bridge_find
+
+    dj = _dj(_lib(tmp_path), Kie())
+    assert bridge_find(dj, "pending") is dj.quick_find and bridge_find(dj, "") is None
 
 
 def test_bridge_line_llm_colours_with_placeholders_or_code_line():

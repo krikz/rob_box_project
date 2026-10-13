@@ -17,8 +17,11 @@ next_bar за границей формы, и трек вставал на фо�
 Трек сета из генерации (ADR-0158 §2.7, PR-8) — ``xfade_bars``: кроссфейд с соседями огибающей того же синта. Форма —
 длина файла, округлённая ВНИЗ до такта (хвост меньше такта срезан), ``sus`` равен форме: спад уходящего кончается ровно
 на границе формы, входящий встаёт за ``xfade_bars`` до неё и нарастает столько же (``SetSession._blend_beats``). Не
-последний трек сета (``once=False``) играет без ``var``-глушителя: не готов следующий — сет продлевает трек ещё
-проходом файла («продлить, а не замолчать», I1), а не тишиной.
+последний трек сета (``once=False``) — глушитель с циклом в одну форму: не готов следующий — сет продлевает трек ещё
+проходом файла («продлить, а не замолчать», I1), а не тишиной. ``dur`` трека сета — такт, а не форма: стык ставит
+плеер на долю ``at_beat`` без ``set_time``, а Renardo ставит плеер на долю, кратную сумме ``dur`` (``Player.count``) —
+с ``dur`` = 148 долей трек 3 живого рок-сета 13.10 встал на 296-й доле вместо 224-й (56 с тишины). Ноты остальных
+тактов глушит ``amp`` (Renardo не шлёт ноту с amp 0, ``Players.py:1633``).
 """
 
 from __future__ import annotations
@@ -57,9 +60,10 @@ def render_audio(track: AudioTrack, deck: str, *, xfade_bars: int = 0, once: boo
     slot = kn.DECK_SLOTS[deck][ROLE_SLOT["loop"]]
     bpm = audio_bpm(track)
     form, sus, atk, rel = _shape(track, bpm, xfade_bars)
-    amp = f"var([1, 0], [{_num(form)}, {_num(form)}], start={FORM_START})" if once else "1"
+    dur, cycle = (form, 2 * form) if not xfade_bars else (float(BEATS_PER_BAR), 2 * form if once else form)
+    amp = f"var([1, 0], [{_num(dur)}, {_num(cycle - dur)}], start={FORM_START})" if once or xfade_bars else "1"
     code = (f"# {track.track_id} {track.source} {track.duration_s:.1f} s deck {deck}\n"
-            f"{slot} >> loop({track.path!r}, dur={_num(form)}, sus={_num(sus)}, atk={_num(atk)}, "
+            f"{slot} >> loop({track.path!r}, dur={_num(dur)}, sus={_num(sus)}, atk={_num(atk)}, "
             f"rel={_num(rel)}, amp={amp})\n")
     return Program(code=code, track_id=track.track_id, deck=deck, bpm=bpm, form_beats=float(form),
                    slots={"audio": slot}, synths=frozenset(), samples=frozenset(),
