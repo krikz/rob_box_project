@@ -1,9 +1,9 @@
 # Vision Pi image versions — staging (develop branch)
 # Managed automatically by CI (L-Build Single Service workflow)
 
-OAK_D_TAG=dev-ac27816
-LED_MATRIX_TAG=dev-ac27816
-CEILING_CAMERA_TAG=dev-ac27816
-VOICE_ASSISTANT_TAG=dev-ac27816
-TELEGRAM_BOT_TAG=dev-ac27816
-VISION_HAILO_TAG=dev-ac27816
+OAK_D_TAG=dev-5772016
+LED_MATRIX_TAG=dev-5772016
+CEILING_CAMERA_TAG=dev-5772016
+VOICE_ASSISTANT_TAG=dev-5772016
+TELEGRAM_BOT_TAG=dev-5772016
+VISION_HAILO_TAG=dev-5772016
