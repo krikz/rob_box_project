@@ -315,9 +315,9 @@ class FakeStudio:
     def ordered_in(self, turn):
         return bool(self._busy and turn and turn == "t1")
 
-    def launch(self, request, on_failed, turn=None):
+    def launch(self, request, on_failed, turn=None, play=None):
         self.requests.append(request)
-        self.failed = on_failed
+        self.failed, self.play = on_failed, play
         return True
 
 

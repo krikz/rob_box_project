@@ -229,6 +229,20 @@ def _cache_options(ask: SourceAsk, ctx: SourceContext) -> List[Option]:
     return out
 
 
+def set_cache(ask: SourceAsk, ctx: SourceContext) -> List[CacheTrack]:
+    """Треки кэша для сета (ADR-0158 §2.7): инструментал жанра просьбы (тот же жанр или семья синтеза), не
+    «не нравится»; давно не игранные первыми, затем свой жанр раньше семьи. Варианты одной задачи — все (соседями их
+    не ставит ``engine.gen.gen_session``)."""
+    def order(track: CacheTrack) -> Tuple[int, float, float]:
+        fresh = track.played_ago_h is None or track.played_ago_h >= kn.GEN_FRESH_HOURS
+        return (0 if fresh else 1, -(_theme(ask, track) or 0.0),
+                -(track.played_ago_h if track.played_ago_h is not None else 1e9))
+
+    usable = [t for t in ctx.cache if t.instrumental and t.kind == "instrumental" and t.rating >= 0
+              and _theme(ask, t) is not None]
+    return sorted(usable, key=order)
+
+
 @dataclass(frozen=True)
 class CoverWork:
     """Пьеса заказа для кавера (ADR-0158 §2.9): каталожное название (``work_id`` кэша), общественное достояние ли
@@ -419,4 +433,5 @@ def decline_text(route: Route) -> str:
 __all__ = ["CACHE", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note", "cover_ready_text",
            "cover_style_key", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
-           "decline_text", "gen_block", "route_note", "source_ask", "source_candidates", "synth_fit", "synth_style"]
+           "decline_text", "gen_block", "route_note", "set_cache", "source_ask", "source_candidates", "synth_fit",
+           "synth_style"]

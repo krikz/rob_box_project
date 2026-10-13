@@ -25,6 +25,11 @@
 дуга энергии, тоника — там, своей копии плана здесь нет). План от LLM (PR-10) — тот же шов:
 :func:`plan_source` читает текущий план на каждый трек, а :meth:`SetSession.replan` перегенерирует ещё не
 сыгранный N+1 (§4.2).
+
+Сет из генерации (ADR-0158 §2.7, PR-8): шов тот же, источник отдаёт ``AudioTrack`` (файл кэша) вместо ``Track`` —
+:func:`deck_program` рендерит его ``render_audio`` с кроссфейдом ``knowledge.GEN_XFADE_BARS``, а стык с файлом
+(файл ↔ файл, синтез-мост → файл) — блэнд на эти такты (:meth:`SetSession._blend_beats`). Мост ожидания генерации
+(кавер, песня — ``BridgeHold``) — тот же сет из двух треков с фактами заказа вместо фактов сета (``fields``).
 """
 
 from __future__ import annotations
@@ -42,7 +47,9 @@ from rob_box_music.arrange.harmony import PROGRESSION_LOOKBACK
 from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
 from rob_box_music.dj_line import tracks_word
-from rob_box_music.model import BEATS_PER_BAR, Track, blend_bars
+from rob_box_music.model import BEATS_PER_BAR, AudioTrack, Track, blend_bars
+from rob_box_music.render.audio import render_audio
+from rob_box_music.render.program import Program
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, SetPlan
 
@@ -150,6 +157,17 @@ def plan_source(current: PlanNow, memory: Optional[SetMemory] = None,
     return next_track
 
 
+def deck_program(track: Any, deck: str, last: bool) -> Any:
+    """Программа деки трека сета: синтез — ``render`` + мастер-шина энергии/стиля (PR-7, #3549); файл генерации —
+    ``render_audio`` с кроссфейдом, последний трек — один проход файла (ADR-0158 PR-8); готовая программа (мост,
+    уже собранный заказом, ``engine.gen.gen_session.BridgeHold``) — как есть."""
+    if isinstance(track, Program):
+        return track
+    if isinstance(track, AudioTrack):
+        return render_audio(track, deck, xfade_bars=kn.GEN_XFADE_BARS, once=last)
+    return replace(render(track, deck), master=set_master(track.energy, kn.STYLES[track.style]))
+
+
 def _other_deck(deck: str) -> str:
     return "B" if deck == "A" else "A"
 
@@ -178,7 +196,8 @@ class SetSession:
                  dj: Optional[Mapping[str, Any]] = None, submit: Callable[[Callable[[], None]], None] = _start_thread,
                  lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None,
                  on_track_started: Callable[[str], str] = lambda _track_id: "",
-                 tracks_dir: Optional[str] = None, tracks: int = DEFAULT_TRACKS) -> None:
+                 tracks_dir: Optional[str] = None, tracks: int = DEFAULT_TRACKS,
+                 fields: Optional[Callable[[int], Dict[str, Any]]] = None) -> None:
         self._owner = owner
         self.tracks = max(1, int(tracks))
         self._source = source
@@ -198,8 +217,11 @@ class SetSession:
         self._current: Optional[Dict[str, Any]] = None  # {track_id, no, deck, form_beats}
         self._preparing = False
         self._ended = False  # последний трек доиграл: сет окончен сам, не стопом
+        self._fields = fields  # факты снимка по номеру трека вместо фактов сета (мост ожидания генерации)
 
     def dj_fields(self, track_no: int) -> Dict[str, Any]:
+        if self._fields is not None:
+            return self._fields(track_no)
         title = f"{self._dj.get('theme') or 'диджей-сет'} · трек {track_no} из {self.tracks}"  # <music_state> (§2.3)
         return {**self._dj, "enabled": True, "set_id": self.set_id, "track_no": track_no, "tracks": self.tracks,
                 "bpm": self.bpm, "title": title}
@@ -223,6 +245,10 @@ class SetSession:
         self._deactivate()
         self._log.info(f"🎧 [set v2] {self.set_id} stop reason={reason}")
         return {**self._owner.stop(reason), "set_id": self.set_id}
+
+    def detach(self) -> None:
+        """Деку занял другой заказ: сет больше не слушает владельца, деку не трогает."""
+        self._deactivate()
 
     def replan(self) -> None:
         """План сменился (LLM, PR-10): N+1, ещё не сыгранный, компонуется заново (ADR-0149 §4.2)."""
@@ -265,8 +291,7 @@ class SetSession:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
         try:
             track = self._source(track_no, deck)
-            # энергия трека → trim (PR-7), стиль → профиль динамики мастер-шины (#3549)
-            program = replace(render(track, deck), master=set_master(track.energy, kn.STYLES[track.style]))
+            program = deck_program(track, deck, track_no >= self.tracks)
         except Exception as exc:  # noqa: BLE001 — отказ громкий; музыка (если есть) играет дальше
             self._owner.reject(f"{self.set_id}:{track_no:02d}:{deck}", "compose_error", f"{type(exc).__name__}: {exc}")
             return None
@@ -300,7 +325,7 @@ class SetSession:
 
     def _composition_note(self, model: Optional[Track]) -> str:
         """``composition={…}`` одной строкой JSON (+ файл модели, если задан каталог); сбой записи — в лог."""
-        if model is None:
+        if not isinstance(model, Track):  # файл генерации: модели трека нет (ADR-0158 PR-8)
             return ""
         if self._tracks_dir:
             try:
@@ -358,7 +383,12 @@ class SetSession:
             leaving, incoming = self._models.get(track_id), self._models.get(self._next_id or "")
         if leaving is None or incoming is None:
             return 0.0
-        beats = float(blend_bars(leaving, incoming) * BEATS_PER_BAR)
+        if isinstance(leaving, AudioTrack) or isinstance(incoming, AudioTrack):  # кроссфейд огибающей файла
+            beats = float(kn.GEN_XFADE_BARS * BEATS_PER_BAR)
+        elif isinstance(leaving, Track) and isinstance(incoming, Track):
+            beats = float(blend_bars(leaving, incoming) * BEATS_PER_BAR)
+        else:  # готовая программа моста: форм нет — стык на границе формы
+            return 0.0
         if not beats or beats > self._lead - BEATS_PER_BAR:  # вход должен успеть встать на такт после события
             self._log.warning(f"⚠️ [set v2] {self.set_id} блэнда нет ({leaving.track_id}→{incoming.track_id}: "
                               f"{beats:g} долей при lead {self._lead:g}) — стык на границе формы")
@@ -367,4 +397,4 @@ class SetSession:
 
 
 __all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "PlanNow", "SetMemory", "SetSession", "TrackSource", "compose_source",
-           "plan_source"]
+           "deck_program", "plan_source"]

@@ -13,11 +13,18 @@ next_bar за границей формы, и трек вставал на фо�
 Повтор файла на доле ``finished`` (там владелец снимает деку, а бандл ноты уходит с ``latency`` вперёд) глушит
 ``amp=var([1, 0], [форма, форма])`` от старта трека.
 Края огибающей — ``knowledge.AUDIO_EDGE_S`` внутри ``sus`` (патч ``loop.scd``, #3432).
+
+Трек сета из генерации (ADR-0158 §2.7, PR-8) — ``xfade_bars``: кроссфейд с соседями огибающей того же синта. Форма —
+длина файла, округлённая ВНИЗ до такта (хвост меньше такта срезан), ``sus`` равен форме: спад уходящего кончается ровно
+на границе формы, входящий встаёт за ``xfade_bars`` до неё и нарастает столько же (``SetSession._blend_beats``). Не
+последний трек сета (``once=False``) играет без ``var``-глушителя: не готов следующий — сет продлевает трек ещё
+проходом файла («продлить, а не замолчать», I1), а не тишиной.
 """
 
 from __future__ import annotations
 
 import math
+from typing import Tuple
 
 from .. import knowledge as kn
 from ..model import BEATS_PER_BAR, AudioTrack
@@ -30,18 +37,30 @@ def audio_bpm(track: AudioTrack) -> int:
     return int(track.bpm_nominal or kn.AUDIO_DEFAULT_BPM)
 
 
-def render_audio(track: AudioTrack, deck: str) -> Program:
-    """Файл → программа деки ``deck``. Детерминирована: один трек — одна строка."""
+def _shape(track: AudioTrack, bpm: int, xfade_bars: int) -> Tuple[float, float, float, float]:
+    """``(форма, sus, атака, спад)`` — доли и секунды: одиночный трек — форма вверх до такта, края ``AUDIO_EDGE_S``;
+    трек сета — форма вниз до такта (не меньше такта), края — кроссфейд, не длиннее трети файла."""
+    sus = round(track.duration_s * bpm / 60.0, 3)
+    if not xfade_bars:
+        atk, rel = kn.AUDIO_EDGE_S
+        return float(math.ceil(sus / BEATS_PER_BAR) * BEATS_PER_BAR), sus, atk, rel
+    form = float(max(1, math.floor(sus / BEATS_PER_BAR)) * BEATS_PER_BAR)
+    edge = round(min(xfade_bars * BEATS_PER_BAR, form / 3.0) * 60.0 / bpm, 3)
+    return form, form, edge, edge
+
+
+def render_audio(track: AudioTrack, deck: str, *, xfade_bars: int = 0, once: bool = True) -> Program:
+    """Файл → программа деки ``deck``. Детерминирована: один трек — одна строка. ``xfade_bars`` — трек сета
+    (кроссфейд, форма вниз до такта); ``once=False`` — повтор файла не глушится (продление трека сета)."""
     if deck not in kn.DECK_SLOTS:
         raise RenderError(f"деки {deck!r} нет (есть {sorted(kn.DECK_SLOTS)})")
     slot = kn.DECK_SLOTS[deck][ROLE_SLOT["loop"]]
     bpm = audio_bpm(track)
-    sus = round(track.duration_s * bpm / 60.0, 3)
-    form = float(math.ceil(sus / BEATS_PER_BAR) * BEATS_PER_BAR)
-    atk, rel = kn.AUDIO_EDGE_S
+    form, sus, atk, rel = _shape(track, bpm, xfade_bars)
+    amp = f"var([1, 0], [{_num(form)}, {_num(form)}], start={FORM_START})" if once else "1"
     code = (f"# {track.track_id} {track.source} {track.duration_s:.1f} s deck {deck}\n"
             f"{slot} >> loop({track.path!r}, dur={_num(form)}, sus={_num(sus)}, atk={_num(atk)}, "
-            f"rel={_num(rel)}, amp=var([1, 0], [{_num(form)}, {_num(form)}], start={FORM_START}))\n")
+            f"rel={_num(rel)}, amp={amp})\n")
     return Program(code=code, track_id=track.track_id, deck=deck, bpm=bpm, form_beats=float(form),
                    slots={"audio": slot}, synths=frozenset(), samples=frozenset(),
                    sample_files=frozenset({track.path}))

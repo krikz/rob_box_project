@@ -355,20 +355,23 @@ class SongStudio:
                           made.task_id, made.credits)
 
     # ── фон ──
-    def launch(self, request: SongRequest, on_failed: Callable[[str], str], turn: Optional[str] = None) -> bool:
+    def launch(self, request: SongRequest, on_failed: Callable[[str], str], turn: Optional[str] = None,
+               play: Optional[Callable[[str], Any]] = None) -> bool:
         """Запустить ``make`` в фоне; ``False`` — уже пишется другая песня. Итог говорит голос: ``done_text`` или
-        ``on_failed(причина)``; песня играет с деки сразу после готовности."""
+        ``on_failed(причина)``; песня играет с деки сразу после готовности — ``play`` (мост ожидания
+        ``BridgeHold``: входит кроссфейдом, ADR-0158 PR-8), иначе ``gen_play_from_library``."""
         with self._lock:
             if self._busy:
                 return False
             self._busy, self._turn = True, turn
-        threading.Thread(target=self._run, args=(request, on_failed), name="rbx-song", daemon=True).start()
+        threading.Thread(target=self._run, args=(request, on_failed, play or self._play), name="rbx-song",
+                         daemon=True).start()
         return True
 
-    def _run(self, request: SongRequest, on_failed: Callable[[str], str]) -> None:
+    def _run(self, request: SongRequest, on_failed: Callable[[str], str], play: Callable[[str], Any]) -> None:
         try:
             result = self.make(request)
-            played = self._play(result.track_id)
+            played = play(result.track_id)
             if self._late_start(played):
                 self._log().info(f"🎤 [song] «{result.title}» ждёт границы формы на деке — мост играет до неё")
                 played = MCPToolResult(success=True)
