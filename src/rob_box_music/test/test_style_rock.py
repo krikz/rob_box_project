@@ -120,37 +120,129 @@ def test_power_voicing_drops_a_diminished_fifth_and_inverts_under_a_low_top():
     assert pad.power_voicing(5, 0, (43, 54)) == (48, 53), "квинта над примой не помещается — под примой"
 
 
+def _section_at(track, bar: int):
+    """Секция формы трека, в которой такт ``bar``."""
+    return next(sec for start, sec in _bars(track) if start <= bar < start + sec.bars)
+
+
 def test_bass_riff_plays_eighths_on_the_chord_tones(tracks):
-    """Бас — восьмые риффа ``Style.bass_riffs``: первая восьмая такта — тон такта, дальше тон, его чистая квинта или
-    октава (без хроматики, в ладу); такт заполнен целиком."""
+    """Бас — восьмые риффа секции (``Style.section_parts``, иначе ``Style.bass_riffs``): первая восьмая такта — тон
+    такта, дальше тон, его чистая квинта или октава (без хроматики, в ладу); такт заполнен целиком."""
     for _plan_, track, _program, _by in tracks:
         assert track.history_key.bass_figure == "riff"
         scale = kn.scale_pitch_classes(track.key.root, track.key.mode)
         for bar, line in _by_bar(track.parts["bass"].pitches).items():
+            riffs = kn.section_part(ROCK, _section_at(track, bar).name).riffs or ROCK.bass_riffs
             root = line[0].midi % 12
             assert line[0].beat % BEATS_PER_BAR == 0
             assert all((e.beat * 2) % 1 == 0 and e.dur_beats % 0.5 == 0 for e in line), "восьмые"
             assert all((e.midi - root) % 12 in (0, 7) and e.midi % 12 in scale for e in line), (bar, line)
             assert sum(e.dur_beats for e in line) == BEATS_PER_BAR
-            riff = ROCK.bass_riffs[bar % len(ROCK.bass_riffs)]
+            riff = riffs[bar % len(riffs)]
             assert len(line) == len(riff.replace(".", ""))
 
 
+def _steps(pattern: str):
+    return [i for i, ch in enumerate(pattern) if ch != "."]
+
+
 def test_backbeat_on_two_and_four_and_kick_on_the_rock_pattern(tracks):
-    """Малый — на 2 и 4 в каждом такте куплета/припева/бриджа, кроме такта филла (там молчит с последней доли);
-    бочка припева — рисунок окна (рок: 1, «и» 2, 3; гранж — плюс «и» 4)."""
+    """Малый — на 2 и 4 в каждом такте куплета/припева (бридж — свой малый партии секции, половинный грув), кроме такта
+    филла (там молчит с последней доли); бочка припева — рисунок окна (рок: 1, «и» 2, 3; гранж — плюс «и» 4)."""
     for plan, track, _program, _by in tracks:
         clap, kick = track.parts["clap"].grid, track.parts["kick"].grid
         drop_kick = kn.genre_style(ROCK, plan.genre).looks[0][1].kick
         for start, sec in _bars(track):
             if kn.section_kind(sec.name) not in ROCK.backbeat_kinds:
                 continue
+            snare = kn.section_part(ROCK, sec.name).snare
             for bar in range(start, start + sec.bars - 1):
-                assert _bar_steps(clap, bar) == list(BACKBEAT), (sec.name, bar)
+                assert _bar_steps(clap, bar) == (_steps(snare) if snare else list(BACKBEAT)), (sec.name, bar)
             last = start + sec.bars - 1
             assert all(s < 12 for s in _bar_steps(clap, last)) and all(s < 12 for s in _bar_steps(kick, last))
             if sec.name == "chorus2":
                 assert _bar_steps(kick, start) == [i for i, ch in enumerate(drop_kick) if ch == "X"]
+
+
+# ── #3594: секции тела развиваются как песня — куплет, припев, бридж различаются партиями, не только энергией ──────
+
+def _pitched(part, start: int, bars: int):
+    return [e for e in part.pitches if start * BEATS_PER_BAR <= e.beat < (start + bars) * BEATS_PER_BAR]
+
+
+def _signature(track, start: int, sec):
+    """Что играет секция (без последнего такта — там филл): бочка, малый, хэты, ритм гитары, бас, срез гитары."""
+    body = range(start, start + sec.bars - 1)
+    drums = tuple(tuple(tuple(_bar_steps(track.parts[r].grid, bar % (len(track.parts[r].grid.steps) // STEPS_PER_BAR)))
+                        for bar in body) for r in ("kick", "clap", "hats"))
+    tonal = tuple(tuple(tuple(sorted({(round(e.beat % BEATS_PER_BAR * 4), round(e.dur_beats * 4))
+                                      for e in _pitched(track.parts[r], bar, 1)})) for bar in body)
+                  for r in ("pad", "bass"))
+    i = [s.name for s in track.form.sections].index(sec.name)
+    return drums, tonal, track.mix.lpf.get("pad", ((0.0, 0.0),) * len(track.form.sections))[i]
+
+
+def test_body_sections_are_not_one_row(tracks):
+    """Тело трека — не одна строка (#3594, Шифу 13.10: «нет никакого развития»): у куплета, припева и бриджа разные
+    партии (бочка/малый/хэты/ритм гитары/бас/срез), а не одно число энергии."""
+    for _plan_, track, _program, _by in tracks:
+        body = [(start, sec) for start, sec in _bars(track) if sec.name in ROCK.section_parts]
+        kinds = {kn.section_kind(sec.name).rstrip("2") for _s, sec in body}
+        rows = {kn.section_kind(sec.name).rstrip("2"): _signature(track, start, sec) for start, sec in body}
+        assert len(set(rows.values())) == len(kinds) >= 2, (track.history_key.template, sorted(rows))
+
+
+def test_verse_is_palm_muted_and_chorus_rings_open(tracks):
+    """Куплет — гитара глушёная (каждый удар — 16-я, срез гитары закрыт), хэты без акцентов; припев — открытые
+    аккорды (удары ≥ восьмой), срез снят; второй куплет открывает срез к припеву."""
+    for _plan_, track, _program, _by in tracks:
+        lpf = dict(zip([s.name for s in track.form.sections], track.mix.lpf["pad"]))
+        for start, sec in _bars(track):
+            pad_notes = _pitched(track.parts["pad"], start, sec.bars)
+            if sec.name.startswith("verse"):
+                assert {e.dur_beats for e in pad_notes} == {0.25}, sec.name
+                assert lpf[sec.name][0] <= 1000.0 and (lpf[sec.name][1] > lpf[sec.name][0]) == (sec.name == "verse2")
+            if sec.name.startswith("chorus"):
+                assert min(e.dur_beats for e in pad_notes) >= 0.5 and lpf[sec.name] == (kn.LPF_OPEN, kn.LPF_OPEN)
+        lead_lpf = track.mix.lpf.get("lead", ((kn.LPF_OPEN, kn.LPF_OPEN),) * len(track.form.sections))
+        assert set(lead_lpf[:-1]) == {(kn.LPF_OPEN, kn.LPF_OPEN)}, "лид — тема: срез только в хвосте блэнда"
+
+
+def test_bridge_is_a_half_time_breakdown(tracks):
+    """Бридж — половинный грув: бочка партии секции (она же триггер сайдчейна), малый на 3, гитара — аккорд на такт
+    звенит весь такт, бас — не больше двух нот в такте."""
+    bridges = 0
+    for _plan_, track, _program, _by in tracks:
+        names = [s.name for s in track.form.sections]
+        for start, sec in _bars(track):
+            if sec.name != "bridge":
+                continue
+            bridges += 1
+            part = kn.section_part(ROCK, "bridge")
+            for bar in range(start, start + sec.bars - 1):
+                assert _bar_steps(track.parts["kick"].grid, bar) == _steps(part.kick)
+                assert _bar_steps(track.parts["clap"].grid, bar) == [8]
+                assert len(_pitched(track.parts["bass"], bar, 1)) <= 2
+                assert {e.dur_beats for e in _pitched(track.parts["pad"], bar, 1)} == {float(BEATS_PER_BAR)}
+            if track.mix.duck:
+                assert track.mix.duck[names.index("bridge")].trigger == tuple(_steps(part.kick))
+    assert bridges, "в фикстуре нет бриджа — тест ничего не проверил"
+
+
+def test_intro_and_outro_keep_the_track_tables(tracks):
+    """Интро/аутро (блэнд двух дек) не трогает партия секций: гитара — ритмы ``Style.power_rhythms`` по кругу от такта
+    формы, хэты — каркас трека."""
+    for _plan_, track, _program, _by in tracks:
+        hats = track.parts["hats"].grid
+        kit = [i for i, ch in enumerate(ROCK.kits[track.history_key.kit]["hats"]) if ch != "."]
+        for start, sec in _bars(track):
+            if not sec.name.startswith(("intro", "outro")):
+                continue
+            for bar in range(start, start + sec.bars):
+                assert _bar_steps(hats, bar % (len(hats.steps) // STEPS_PER_BAR)) == kit
+                rhythm_ = ROCK.power_rhythms[bar % len(ROCK.power_rhythms)]
+                onsets = sorted({round(e.beat % BEATS_PER_BAR * 4) for e in _pitched(track.parts["pad"], bar, 1)})
+                assert onsets == [step for step, _n in rhythm_], (sec.name, bar)
 
 
 def test_tom_fills_on_every_section_joint_and_crash_after_them(tracks):

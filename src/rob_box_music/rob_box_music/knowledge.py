@@ -1510,6 +1510,31 @@ _CLUB_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
                        ("held", "held", "pumped16")),
 }
 
+#: Ритм пауэр-аккордов на такт: удары ``(шаг 16-х, длина в 16-х)`` (``Style.power_rhythms``, ``SectionPart.power``).
+PowerRhythm = Tuple[Tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class SectionPart:
+    """Партии секции песенной формы (#3594, рок: куплет/припев/бридж различаются не только числом энергии): что
+    секция ``Style.section_parts[имя]`` играет вместо таблиц трека. Пустое поле — таблица трека (вид по энергии,
+    бэкбит, каркас трека, ``Style.power_rhythms``/``Style.bass_riffs``); рисунки — 16 шагов такта, такты секции —
+    по кругу от такта формы (как у генераторов)."""
+
+    kick: str = ""  # рисунок бочки (``X``/``.``) вместо вида секции по энергии; он же триггер сайдчейна
+    snare: str = ""  # малый (``X``/``x``/``.``) вместо бэкбита 2/4 в секциях ``Style.backbeat_kinds``
+    hats: str = ""  # хэты (``X``/``x``/``g``/``.``) вместо каркаса трека (``Style.kits``)
+    power: Tuple[PowerRhythm, ...] = ()  # ритмы пауэр-аккордов на такт (``arrange.pad.power_chords``)
+    riffs: Tuple[str, ...] = ()  # риффы баса на такт (``arrange.bass.riff``)
+
+
+_NO_SECTION_PART = SectionPart()
+
+
+def section_part(style: "Style", name: str) -> SectionPart:
+    """Партии секции ``name`` стиля (``Style.section_parts``); секции в таблице нет — все поля пустые (таблицы трека)."""
+    return style.section_parts.get(name, _NO_SECTION_PART)
+
 
 @dataclass(frozen=True)
 class Style:
@@ -1618,13 +1643,16 @@ class Style:
     # Ручки мастер-шины стиля поверх :data:`SET_LEVELER` (``arrange.mix.set_master``; ключи — :data:`MASTER_DEFAULTS`,
     # каждый старт трека выставляет все ручки заново, поэтому следующий трек другого стиля их не наследует).
     master: Mapping[str, float] = field(default_factory=dict)
-    # Лофи (#3557). FX-слой — удар каждые ``fx_bars`` тактов секций ``layer_sections["fx"]`` (клуб — первая доля
+# Лофи (#3557). FX-слой — удар каждые ``fx_bars`` тактов секций ``layer_sections["fx"]`` (клуб — первая доля
     # 8-тактовой секции; lofi — шипение пластинки каждый такт). «Живые руки» ударов (:class:`Humanize`); None — ровно
     # по сетке. Дыхание лида: такты секции по кругу (``x`` — лид звучит, ``.`` — молчит), тема целиком в своей секции —
     # без пауз; пусто — лид без пауз (хук по кругу).
     fx_bars: int = 8
     humanize: Optional["Humanize"] = None
     lead_mask: str = ""
+    # Партии секций по имени секции формы (#3594): бочка, малый, хэты, ритм гитары, рифф баса секции; секции нет —
+    # таблицы трека (клуб и электроника — без записей, их треки побайтно те же).
+    section_parts: Mapping[str, SectionPart] = field(default_factory=dict)
     # Годность синтеза (ADR-0158 §3.2): «у нас норм играет» — 1.0; ниже :data:`SYNTH_FIT_MIN` синтез-кандидата пути
     # нет (``source.source_candidates``). Правит Шифу.
     synth_fit: float = 1.0
@@ -2134,11 +2162,38 @@ _ROCK_TOM_FILLS: Tuple[str, ...] = (
 #: снова палм-мьют, «толчок» 3+3+2.
 _ROCK_POWER_CHUG = tuple((step, 1) for step in range(0, 16, 2))
 _ROCK_POWER_DRIVE = tuple((step, 2) for step in range(0, 16, 2))
-_ROCK_POWER_RHYTHMS: Tuple[Tuple[Tuple[int, int], ...], ...] = (
-    _ROCK_POWER_CHUG, _ROCK_POWER_DRIVE, _ROCK_POWER_CHUG, ((0, 3), (3, 3), (6, 2), (8, 3), (11, 3), (14, 2)))
+_ROCK_PUSH: PowerRhythm = ((0, 3), (3, 3), (6, 2), (8, 3), (11, 3), (14, 2))
+_ROCK_POWER_RHYTHMS: Tuple[PowerRhythm, ...] = (_ROCK_POWER_CHUG, _ROCK_POWER_DRIVE, _ROCK_POWER_CHUG, _ROCK_PUSH)
+#: Ритмы выше — у интро/аутро; секции тела — :data:`_ROCK_SECTION_PARTS`.
 #: Рифф баса: такт восьмыми на тоне такта, такт с квинтой и октавой в конце (двутактовый рифф по кругу).
 _ROCK_BASS_RIFFS: Tuple[str, ...] = ("RRRRRRRR", "RRRRRRFO")
-_ROCK_SECTION_LPF: Mapping[str, Tuple[float, float]] = {"outro_tail": (LPF_TOP_HZ, 300.0)}
+#: Развитие песни (#3594, Шифу 13.10: «однотипность надоедает… нет никакого развития» — до этого все секции тела были
+#: одним составом и одной фигурой, отличалось только число энергии). Динамика «тихий куплет — громкий припев» гранжа:
+#: * куплет — гитара глушёная (палм-мьют восьмыми с вдохом на четвёртой доле, срез :data:`_ROCK_SECTION_LPF`), хэты —
+#:   каркас трека, бас педалью восьмыми на тоне; второй куплет — палм-мьют без вдоха, срез открывается к припеву;
+#: * припев — открытые пауэр-аккорды (звенящие восьмые и «толчок» 3+3+2 в конце четырёхтактовой фразы), хэты восьмыми
+#:   с акцентом на долях (как райд), бас-рифф с квинтой и октавой; последние припевы (chorus2/3) — открытые восьмые
+#:   каждый такт, хэты все с акцентом;
+#: * бридж — брейкдаун половинным грувом: бочка на 1 и «и» 3, малый на 3, хэты четвертями, гитара — аккорд звенит
+#:   весь такт, бас половинными/целыми (аккорды бриджа и так вдвое длиннее — ``SECTION_HARMONY`` ``break``).
+#: Интро/аутро (блэнд двух дек) — таблицы трека: под них сводятся деки.
+_ROCK_PALM_BREATH: PowerRhythm = ((0, 1), (2, 1), (4, 1), (6, 1), (8, 1), (10, 1))
+_ROCK_RIFFS = ("RRRRRRRR", "RRRRRRFO")
+_ROCK_CHORUS = SectionPart(hats="X.x.X.x.X.x.X.x.", power=(_ROCK_POWER_DRIVE, _ROCK_POWER_DRIVE, _ROCK_POWER_DRIVE,
+                                                           _ROCK_PUSH), riffs=_ROCK_RIFFS)
+_ROCK_LAST_CHORUS = SectionPart(hats="X.X.X.X.X.X.X.X.", power=(_ROCK_POWER_DRIVE,), riffs=_ROCK_RIFFS)
+_ROCK_SECTION_PARTS: Mapping[str, SectionPart] = {
+    "verse": SectionPart(power=(_ROCK_POWER_CHUG, _ROCK_PALM_BREATH), riffs=("RRRRRRRR",)),
+    "verse2": SectionPart(power=(_ROCK_POWER_CHUG,), riffs=("RRRRRRRR",)),
+    "chorus": _ROCK_CHORUS, "chorus2": _ROCK_LAST_CHORUS,
+    "chorus3": _ROCK_LAST_CHORUS,
+    "bridge": SectionPart(kick="X.........X.....", snare="........X.......", hats="X...x...X...x...",
+                          power=(((0, 16),),), riffs=("R...F...", "R.......")),
+}
+#: Срез гитары (``lpf_roles`` — только пэд: лид — тема, ему читаемость): куплет глушёный 1 кГц, второй куплет
+#: открывается к припеву за секцию; хвост блэнда закрывается, как у клуба.
+_ROCK_SECTION_LPF: Mapping[str, Tuple[float, float]] = {
+    "verse": (1000.0, 1000.0), "verse2": (1000.0, LPF_TOP_HZ), "outro_tail": (LPF_TOP_HZ, 300.0)}
 _ROCK_WINDOW = _ROCK_GENRE_WINDOWS["classic"]
 _ROCK_STYLE = Style(
     synth_fit=0.0,  # ADR-0158 §3.2: вердикт Шифу 13.10 «не рок, а какой-то калл», #3597
@@ -2151,7 +2206,7 @@ _ROCK_STYLE = Style(
     layer_sections={"fx": ("verse", "chorus", "verse2", "chorus2", "bridge", "chorus3")},
     genre_windows=_ROCK_GENRE_WINDOWS,
     role_level_db=_ROCK_CLASSIC_LEVEL_DB, duck_roles=_SOFT_DUCK_ROLES, section_lpf=_ROCK_SECTION_LPF,
-    lpf_roles=("bass", "pad", "lead"), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
+    lpf_roles=("pad",), lpf_tail_sections=_CLUB_LPF_TAIL_SECTIONS,
     # Ширина: эталоны LR 0.76 (classic) / 0.87 (grunge) — гитара двумя голосами с расстройкой (дабл-трек) не шире
     # ±0.3, остальное в центре (удары файлами паков ширины не выражают).
     stereo={"pad": {"pan": 0.3, "detune": PAD_DETUNE}},
@@ -2162,7 +2217,7 @@ _ROCK_STYLE = Style(
                 "toms": ("muldjord_tom1_08", "muldjord_tom2_08", "muldjord_tom3_08", "muldjord_tom4_09")},
     backbeat_kinds=("intro_low", "build", "build2", "drop", "drop2", "break", "outro"),
     roll_bars=0, fill_joints=True, clap_fill="cut", tom_fills=_ROCK_TOM_FILLS, fx_roles=("crash",),
-    power_rhythms=_ROCK_POWER_RHYTHMS, bass_riffs=_ROCK_BASS_RIFFS,
+    power_rhythms=_ROCK_POWER_RHYTHMS, bass_riffs=_ROCK_BASS_RIFFS, section_parts=_ROCK_SECTION_PARTS,
 )
 
 # ── Стиль ``jazz`` (ADR-0153 S6): head–solo–head, свинг ≈ 1.5–1.7, walking, comping, соло по сменам темы ──────────
@@ -2410,7 +2465,7 @@ FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.
 GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.genre_windows)
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
-            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "genre_style", "THEME_SECTION",
+            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "SectionPart", "PowerRhythm", "section_part", "genre_style", "THEME_SECTION",
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "CLASSIC_REF_MATCH_MIN",
             "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "KEY_TITLE_MODES",
             "CHOOSER_WEIGHTS", "PLAY_COUNT_WINDOW_SEC", "PLAY_HISTORY_LIMIT",

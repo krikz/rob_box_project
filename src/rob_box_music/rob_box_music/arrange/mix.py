@@ -41,7 +41,7 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .. import knowledge as kn
 from ..diversity import weighted_pick
-from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Duck, Form, Mix, Part, Stereo, Sweep
+from ..model import BEATS_PER_BAR, SAMPLE_ROLES, STEPS_PER_BAR, Duck, Form, Mix, Part, Section, Stereo, Sweep
 
 
 def layer_db(unit_db: float, exponent: float, amp: float) -> float:
@@ -216,6 +216,14 @@ def look(style: kn.Style, energy: int) -> kn.Look:
     return next(v for threshold, v in style.looks if energy >= threshold)
 
 
+def section_look(style: kn.Style, sec: Section) -> kn.Look:
+    """Вид секции ``sec``: по её энергии (:func:`look`), рисунок бочки — партии секции, если стиль его задал
+    (``Style.section_parts``, #3594: бридж рока половинным грувом); бочка — триггер сайдчейна, поэтому одна функция
+    на сетку бочки, огибающую и модель низа."""
+    kick = kn.section_part(style, sec.name).kick
+    return replace(look(style, sec.energy), kick=kick) if kick else look(style, sec.energy)
+
+
 def kick_steps(pattern: str) -> Tuple[int, ...]:
     return tuple(i for i, ch in enumerate(pattern) if ch == "X")
 
@@ -301,7 +309,7 @@ def low_share(style: kn.Style, parts: Mapping[str, Part], form: Form, i: int, du
             continue
         power = 10.0 ** (_model_db(role, part, pad_offset_db) / 10.0)
         power *= duck_power if role in ducked else 1.0
-        power *= look(style, sec.energy).kick.count("X") / 4 if role == "kick" else 1.0
+        power *= section_look(style, sec).kick.count("X") / 4 if role == "kick" else 1.0
         total += power
         low += power * _layer_low(role, part)
     return low / total if total else 0.0
@@ -378,7 +386,7 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
     offset = figure.level_offset_db if figure else 0.0
     leveled = {role: replace(part, level_db=_level(style, role, part, pad_figure)) for role, part in parts.items()}
     ducked = _ducked(style, form, list(leveled), figure)
-    looks = [look(style, sec.energy) for sec in form.sections]
+    looks = [section_look(style, sec) for sec in form.sections]
     duck = tuple(Duck(v.duck_depth, kick_steps(v.kick)) for v in looks)
     trim: Dict[str, float] = {}
     a9: Optional[float] = None
@@ -391,5 +399,5 @@ def mix_parts(style: kn.Style, parts: Mapping[str, Part], form: Form,
 
 
 __all__ = ["pack_drum_db", "a9_model", "a9_trim", "alternate_pan", "duck_envelope", "file_gain", "kick_sound", "kick_steps", "layer_db",
-           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "pad_synths", "pad_timbre", "role_stereo", "role_palette", "role_timbre",
+           "level_amp", "bass_figures", "bass_pair_ok", "bass_synths", "look", "low_share", "lpf_sweeps", "mix_parts", "section_look", "pad_synths", "pad_timbre", "role_stereo", "role_palette", "role_timbre",
            "section_arc", "set_master", "sustains_to_sus", "target_db", "voice_amp"]
