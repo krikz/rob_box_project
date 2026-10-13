@@ -121,6 +121,10 @@ SET_TRACK_SECONDS = 75
 #: Три сета: тема из 8 находок (``rtttl.THEME_HOOKS``) расходуется за два сета по 3–4 трека, третий — уже по давности,
 #: а пул (21) и жанр (30) держат три сета без повтора мелодии; сыгранное раньше — забыто, снова «свежее».
 HOOK_FRESH_SETS = 3
+#: Штраф хука с дефектами записи (#3580, ADR-0152): очередь хуков (``compose.hook_order``) сдвигает мелодию назад на
+#: ``HOOK_DEFECT_PLACES · дефект`` мест; дефект 0..1 — доля нот-выбросов (скачок > октавы с возвратом за 1–2 ноты) и
+#: нот короче 1/16 доли при темпе трека (``hook.hook_defect``). Чистая мелодия не сдвигается; «Celebrat» (0.3) — на ≈ 2.
+HOOK_DEFECT_PLACES = 6.0
 #: Версии одной мелодии внутри сета (#3497, живой сет 07.10: tetris, tetris_2 подряд): после трека с мелодией её версии
 #: (общий ``rtttl.contour`` — ключ ``consensus_order`` и межсетовой свежести) не ставятся ещё ``HOOK_TUNE_GAP``
 #: треков, пока есть другие мелодии; одна мелодия на всю тему — версии идут по очереди, иначе нечего ставить.
@@ -718,7 +722,7 @@ __all__ = [
     "ACCENT_AMPLIFY", "BPM_RANGE", "CHROMATIC", "DAVE_PSR", "DECK_SLOTS", "DRUM_SYMBOLS", "ENERGY_LEVELS",
     "ENERGY_TRIM_DB", "DEFAULT_HOOKS", "ENERGY_THIN_ROLES", "ENERGY_WAVE", "SET_MAX_TRACKS", "SET_TRACKS",
     "SET_TRACK_SECONDS", "THEMES",
-    "ThemeRow", "HOOK_KEY_FIT_MIN",
+    "ThemeRow", "HOOK_KEY_FIT_MIN", "HOOK_DEFECT_PLACES",
     "KICK_PATTERNS", "LEAD_MAX_MIDI", "LEVEL_CEILINGS", "MOOD_ENERGY", "PLAY_SYNTH", "ROLES",
     "PACK_BREAK_BEATS", "PACK_DRUMS", "APPROACH_MAX_BEATS", "ROOTS", "SAMPLE_CATALOG", "SAMPLE_EDGE_S", "SAMPLE_GROUPS", "SAMPLE_PACK_DIR", "SAMPLE_ROLES", "SCALES",
     "GENRE_EXTRA", "GENRE_FILLER", "GENRE_NOT", "GENRE_TAGS", "SCORE_GENRES", "SEARCH_STOPWORDS",
