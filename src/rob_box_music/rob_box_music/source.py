@@ -31,10 +31,20 @@ SYNTH, CACHE, GENERATE, DECLINE = "synth", "cache", "generate", "decline"
 #: Синтез-кандидат одиночной пьесы по названию (наш материал: партитура/RTTTL, годность — ADR-0157).
 PIECE = "piece"
 #: Почему кандидатов ``generate:*`` нет / генерация не вышла → слова для фразы. Причины провайдера —
-#: ``engine.gen.provider.REASONS``; ``not_wired`` и ``mode_synth`` — наши.
+#: ``engine.gen.provider.REASONS``; ``not_wired``, ``mode_synth``, ``pending`` и причины песни — наши.
 REASON_WORDS = {
     "not_wired": "генерация у меня ещё не подключена",
     "mode_synth": "генерация выключена",
+    "pending": "песня ещё пишется",
+    "silero_voice": "запасным голосом петь пока не умею",
+    # песня голосом робота (``engine.gen.song``, ADR-0158 PR-7): наши причины провала
+    "lyrics": "текст не сложился",
+    "no_voice": "не знаю, каким голосом петь",
+    "no_preset": "для этого голоса нет пресета пения",
+    "vocal": "голос не спел текст",
+    "no_track": "сервис не вернул песню",
+    "play_failed": "песня не заиграла",
+    "internal": "что-то пошло не так",
     "no_key": "нет ключа сервиса генерации",
     "no_credits": "на счёте генерации нет кредитов",
     "budget_exhausted": "лимит генерации на сегодня вышел",
@@ -120,6 +130,7 @@ class CacheTrack:
     group: str = ""
     work_id: str = ""      # кавер: каталожное название пьесы (ADR-0158 §2.5)
     instrument: str = ""   # кавер: ключ ``INSTRUMENTS`` или «»
+    voice: str = ""  # голос, которым спета песня (``tts``-голос из кэша); «» — неизвестен
 
 
 @dataclass(frozen=True)
@@ -138,6 +149,8 @@ class SourceContext:
     mode: str = "auto"
     gen_failed: str = ""
     cover_ready: bool = False  # исполнитель кавера пьесы подключён (ADR-0158 PR-4, ``engine.gen.cover``)
+    voice: str = ""  # текущий голос робота: «спой своим голосом» берёт из кэша только песню, спетую им
+    song_block: str = ""  # песню заказывать нельзя (``SongStudio.blocked``: Silero) — кавер это не касается
 
     def without_generate(self, reason: str) -> "SourceContext":
         return replace(self, gen_failed=reason)
@@ -165,7 +178,7 @@ def _synth_option(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[O
 def _gen_option(ask: SourceAsk, ctx: SourceContext) -> Tuple[Optional[Option], str]:
     kind = "robot_song" if ask.robot_voice else "song" if ask.vocal else "instrumental"
     model = kn.GEN_MODELS[kn.DEFAULT_GEN_MODEL]
-    reason = gen_block(ctx, model.credits_per_task)
+    reason = ctx.song_block or gen_block(ctx, model.credits_per_task)
     if reason:
         return None, reason
     asked = ask.generated or ask.vocal or ask.fresh or ask.own
@@ -184,12 +197,16 @@ def _theme(ask: SourceAsk, track: CacheTrack) -> Optional[float]:
     return 0.5 if mine is not None and mine.synth is not None and mine.synth == asked.synth else None
 
 
-def _cache_option(ask: SourceAsk, track: CacheTrack) -> Optional[Option]:
+def _not_my_voice(ask: SourceAsk, track: CacheTrack, voice: str) -> bool:
+    """«Своим голосом» — не песня голосом робота, или спета другим голосом, чем сейчас (ADR-0158 В8)."""
+    return ask.robot_voice and (track.kind != "robot_song" or bool(voice and track.voice and track.voice != voice))
+
+
+def _cache_option(ask: SourceAsk, track: CacheTrack, voice: str = "") -> Optional[Option]:
     """Кандидат трека кэша или ``None``: чужой жанр, «не нравится», петь просили — инструментал, «своим голосом» —
-    не песня голосом робота."""
+    не песня голосом робота (или не текущим)."""
     theme = _theme(ask, track)
-    if (theme is None or track.rating < 0 or (ask.vocal and track.instrumental)
-            or (ask.robot_voice and track.kind != "robot_song")):
+    if theme is None or track.rating < 0 or (ask.vocal and track.instrumental) or _not_my_voice(ask, track, voice):
         return None
     asked = -1.0 if ask.fresh else 0.5 if (ask.generated or ask.vocal or ask.own) else 0.0
     if not ask.vocal and not track.instrumental:  # петь не просили — песня хуже инструментала
@@ -205,7 +222,7 @@ def _cache_options(ask: SourceAsk, ctx: SourceContext) -> List[Option]:
     seen, out = set(), []
     for track in ctx.cache:
         group = track.group or f"{track.kind}|{track.title}"
-        option = None if group in seen else _cache_option(ask, track)
+        option = None if group in seen else _cache_option(ask, track, ctx.voice)
         if option is not None:
             seen.add(group)
             out.append(option)

@@ -56,6 +56,8 @@ from rob_box_voice.core.music_player_state import (
 )
 
 from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
+from .engine.gen.kie_suno import KieSunoProvider
+from .engine.gen.song import STARTED_WAIT_S, SongStudio, current_voice, harness_lyrics_ask
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.renardo_runtime import RenardoRuntime
@@ -232,6 +234,26 @@ def _speaker(node: Any) -> Callable[[str], None]:
     return lambda line: node.registry.execute("speak_text", text=line)
 
 
+def _tts_provider(node: Any) -> str:
+    """Провайдер TTS, как у ``speak_text``: фактический от tts_node, пока его нет — параметр ``tts_provider``."""
+    from .tools.dialogue import _active_tts_provider
+
+    return _active_tts_provider(node)
+
+
+def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
+    """Песня голосом робота (ADR-0158 PR-7): нужны ключ KIE и LLM для текстов; нет — ``None`` (``not_wired`` во фразе).
+    Голос — провайдер из ``/voice/tts/provider_state`` и ``VoiceStateStore`` (ставится позже, читаем лениво)."""
+    provider, lyrics = KieSunoProvider(), harness_lyrics_ask(log=node.get_logger)
+    if lyrics is None or not provider.configured:
+        node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
+        return None
+    return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
+                      lambda: current_voice(_tts_provider(node), getattr(node, "_voice_store", None)),
+                      play=lambda track_id: node.registry.execute("gen_play_from_library", track_id=track_id),
+                      speak=_speaker(node), started=lambda track_id: events.wait(track_id, STARTED_WAIT_S), log=node.get_logger)
+
+
 def _cover_maker(node: Any) -> Any:
     """Кавер пьесы (ADR-0158 PR-4): Suno через KIE (ключ ``KIE_API`` окружения), кэш — ``/data/music_library``
     (поднимается позже движка — лениво). Ключа нет — исполнитель есть, но не готов: кавер-кандидатов нет."""
@@ -287,7 +309,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
                                                                                   track_id=track_id),
-                               cover=_cover_maker(node), speak=_speaker(node))  # PR-4: кавер пьесы
+                               cover=_cover_maker(node), speak=_speaker(node),  # PR-4: кавер пьесы
+                               songs=_song_studio(node, events))  # PR-7: песня голосом робота
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
@@ -888,6 +911,7 @@ class MCPServer(Node):
         # set_voice персистентно меняет голос на диалог, speak_text без
         # voice= говорит установленным голосом (Q7).
         voice_store = VoiceStateStore()
+        self._voice_store = voice_store  # песня голосом робота читает установленный голос (ADR-0158 PR-7)
         self.registry.register(SpeakTextTool(self, voice_store=voice_store))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))

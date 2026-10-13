@@ -18,7 +18,7 @@ setup(
     # Регрессия закрыта тестом test_slice_policy_packaging.py.
     package_data={
         # Каталоги сэмплов (DJ_Dave, FX, лупы) живут в rob_box_music; старый санитайзер Renardo-кода удалён (#3614).
-        'rob_box_mcp_tools.data': ['*.yaml', 'rtttl_melodies.jsonl.gz'],
+        'rob_box_mcp_tools.data': ['*.yaml', '*.txt', 'rtttl_melodies.jsonl.gz'],
     },
     data_files=[
         ('share/ament_index/resource_index/packages',

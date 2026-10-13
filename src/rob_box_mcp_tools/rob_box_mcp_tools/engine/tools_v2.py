@@ -56,6 +56,8 @@ from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
+from .gen.song import SongStudio
+from .song_order import SongOrder
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .piece_cover import PieceCover, cover_work
@@ -607,7 +609,7 @@ class RequestMusicTool(MCPTool):
                  slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None,
                  gen_library: Callable[[], Any] = lambda: None,
                  play_cached: Optional[Callable[[str], MCPToolResult]] = None, cover: Any = None,
-                 speak: Optional[Callable[[str], Any]] = None) -> None:
+                 speak: Optional[Callable[[str], Any]] = None, songs: Optional[SongStudio] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -620,7 +622,9 @@ class RequestMusicTool(MCPTool):
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
                                   classic or classic_picker(library), history, chooser=chooser, log=self._log)
         # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
-        self._source = SourceRouter(chooser, gen_library, log=self._log, cover=cover)
+        self._source = SourceRouter(chooser, gen_library, log=self._log, cover=cover, studio=songs)
+        self._songs = songs  # песня голосом робота (ADR-0158 PR-7): фоновая генерация, пока играет мост
+        self._song_order = SongOrder(songs, self._source.route)
         self._play_cached = play_cached  # трек кэша — gen_play_from_library: дека владельца (ADR-0158 PR-2)
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, owner, play_cached, speak, self._log) if cover is not None else None
@@ -682,7 +686,7 @@ class RequestMusicTool(MCPTool):
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
               turn_id: Optional[str] = None, heard_text: Optional[str] = None,
-              ask: Optional[SourceAsk] = None) -> MCPToolResult:
+              ask: Optional[SourceAsk] = None, gen_failed: str = "") -> MCPToolResult:
         """Заказ: путь музыки решает код (ADR-0158 PR-3) по просьбе ``ask`` (нет — слова реплики хода), затем
         синтез/пьеса как раньше, трек кэша (:meth:`_play_cache`) или честный отказ с фразой кода."""
         set_id = self._dj.started_in_turn(turn_id)
@@ -693,12 +697,13 @@ class RequestMusicTool(MCPTool):
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
+        ask = ask or source_ask(heard_text or text)
         piece = self._stage_piece(text, heard_text) if classic else None
         work, cover_track = cover_source(self._cover, piece, self._pieces, self._seed)
-        route = self._source.route(ask or source_ask(heard_text or text), piece=classic, work=work)
+        route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:
-            return self._off_synth(route, what)
+            return self._off_synth(route, what, ask, (intent, text, mood, genre, turn_id, heard_text))
         staged = self._stage(route, piece, text, mood, heard_text)
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
@@ -740,8 +745,11 @@ class RequestMusicTool(MCPTool):
             staged["source_note"] = note
         return staged
 
-    def _off_synth(self, route: Route, what: str) -> MCPToolResult:
-        """Путь не синтез: трек кэша (есть шов проигрывания) или честный отказ с фразой кода — без тихой подмены."""
+    def _off_synth(self, route: Route, what: str, ask: SourceAsk, args: Tuple[Any, ...]) -> MCPToolResult:
+        """Путь не синтез: песня голосом робота (PR-7), трек кэша (есть шов проигрывания) или честный отказ с фразой
+        кода — без тихой подмены."""
+        if self._song_order.handles(route):
+            return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
             return self._play_cache(route, what)
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
