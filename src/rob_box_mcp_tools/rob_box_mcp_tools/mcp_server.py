@@ -61,7 +61,7 @@ from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.renardo_runtime import RenardoRuntime
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
-from .engine.tools_v2 import DjSetTool, RequestMusicTool, music_busy
+from .engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -271,8 +271,14 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
                                tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
                                chooser_mode=str(node.get_parameter("music_chooser").value),
-                               slots_ask=harness_ask(log=node.get_logger))  # #3609: LLM-разбор фразы в слоты
+                               slots_ask=harness_ask(log=node.get_logger),  # #3609: LLM-разбор фразы в слоты
+                               # ADR-0158 PR-3: кэш генераций поднимается позже (_register_gen_library_tools) —
+                               # читаем лениво; трек кэша играет gen_play_from_library (sound_node) до PR-2 (деки)
+                               gen_library=lambda: getattr(node, "_generated_music_library", None),
+                               play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
+                                                                                  track_id=track_id))
     node.registry.register(request)
+    node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
     owner.publish_state()
     node.get_logger().info(
@@ -964,8 +970,8 @@ class MCPServer(Node):
             gen_list_library, gen_search_library, gen_save_to_library,
             gen_play_from_library, gen_delete_from_library, gen_get_track_info
 
-        ``generate_music`` НЕ регистрируется с 20.08.2026 (MiniMax Music API
-        отключён, 410 Gone); новый тул придёт с чойсером пути (ADR-0158 PR-3).
+        Новый узкий ``generate_music`` (ADR-0158 PR-3) регистрируется рядом с
+        ``request_music`` в ``_attach_player_owner_v2``: он просьба к чойсеру пути.
 
         Failure modes (each disables only the gen_* tools, Renardo keeps working):
             * Module import failed                              → log + return

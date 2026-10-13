@@ -45,8 +45,9 @@ from .media_phrases import (
     launch_text,
     play_ok_text,
     request_ok_text,
+    source_phrase,
 )
-from .media_router import DJ_SET_TOOL, REQUEST_MUSIC_TOOL, media_tool_succeeded
+from .media_router import DJ_SET_TOOL, GENERATE_MUSIC_TOOL, REQUEST_MUSIC_TOOL, media_tool_succeeded
 
 #: Код отказа ``speak_text`` в ходе, где запуск музыки не удался.
 SPEECH_REFUSAL_CODE = "music_phrase_by_code"
@@ -87,7 +88,7 @@ def _data(content: str) -> Mapping[str, Any]:
 
 def is_launch(tool: str, args: Mapping[str, Any]) -> bool:
     """Запуск музыки: ``request_music`` или ``dj_set`` с ``action=start`` (стоп сета — не запуск)."""
-    if tool == REQUEST_MUSIC_TOOL:
+    if tool in (REQUEST_MUSIC_TOOL, GENERATE_MUSIC_TOOL):
         return True
     return tool == DJ_SET_TOOL and str(args.get("action") or "start") == "start"
 
@@ -105,8 +106,8 @@ def ok_text(launch: Launch) -> str:
 
 
 def fail_text(launch: Launch) -> str:
-    """Фраза о запуске, который не удался."""
-    return DJ_FAIL_TEXT if launch.tool == DJ_SET_TOOL else REQUEST_FAIL_TEXT
+    """Фраза о запуске, который не удался; отказ чойсера пути (ADR-0158) — его фраза кода."""
+    return DJ_FAIL_TEXT if launch.tool == DJ_SET_TOOL else source_phrase(launch.content) or REQUEST_FAIL_TEXT
 
 
 @dataclass

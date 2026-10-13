@@ -60,7 +60,7 @@ def test_owner_is_attached_unconditionally(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
     node, manager = _Node(), _manager()
     assert module._attach_player_owner_v2(node, manager) is not None
-    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music"]
+    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music"]  # ADR-0158 PR-3
 
 
 def test_no_manager_attaches_nothing_loudly(monkeypatch):
@@ -79,7 +79,7 @@ def test_v2_owner_is_the_only_state_writer(monkeypatch):
     assert owner is not None and node.created == ["/voice/music/event"]
     assert manager.osc_fail_listener == owner.on_server_fail
     # PR-5: сет v2 поверх владельца; PR-6: одиночный club-трек v2
-    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music"]
+    assert [t.name for t in node.registry.tools] == ["dj_set", "request_music", "generate_music"]  # ADR-0158 PR-3
     first = json.loads(state_pub.published[0])
     assert first["state"] == "idle" and first["dj"] == {"enabled": False}
     assert node.music_state_pub is None  # публикатор снимка — только у владельца

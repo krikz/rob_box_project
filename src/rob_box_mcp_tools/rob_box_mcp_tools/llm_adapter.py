@@ -60,6 +60,8 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
     "dj_set": ("heard_tracks", "turn_id", "heard_text"),
     # ADR-0157 §2.4: инструмент («на балалайке») — из реплики хода, а не из пересказа LLM в ``text``.
     "request_music": ("turn_id", "heard_text"),
+    # ADR-0158 PR-3: путь (синтез / кэш / генерация / отказ) решает код по словам реплики, не по пересказу LLM.
+    "generate_music": ("turn_id", "heard_text"),
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]

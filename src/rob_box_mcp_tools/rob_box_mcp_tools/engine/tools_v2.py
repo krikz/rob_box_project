@@ -50,6 +50,8 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
+from rob_box_music.source import (CACHE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
+                                  source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
@@ -61,6 +63,7 @@ from .request_slots import Catalog, RequestSlotParser
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
+from .source_route import SourceRouter
 from .theme_grounding import set_slots
 from .theme_links import Ask, ThemeLinks
 
@@ -91,6 +94,14 @@ NO_MORE = "no_more"
 #: Код отказа ``dj_set(start)``: в реплике хода нет слова сета/диджея/вечеринки и стиля — человек просил одну пьесу
 #: (ADR-0157 §2.1, прогон 09.10: «сыграй баха на трамбоне» → LLM ``dj_set``). Решает код по ``heard_text``.
 NOT_A_SET_REQUEST = "not_a_set_request"
+#: Код отказа ``request_music``/``generate_music``: путь музыки не нашёл, чем играть просьбу (ADR-0158 PR-3); фразу
+#: строит ``rob_box_music.source.decline_text`` (``media_phrases.SOURCE_DECLINED_REASON``, равенство держит тест).
+SOURCE_DECLINED = "music_source"
+#: ``via`` трека кэша: играет ``sound_node`` мимо владельца плеера (``media_plan_run.SOUND_NODE``, тест держит).
+VIA_SOUND_NODE = "sound_node"
+#: ``generate_music``: что просили (``kind``) и в каком жанре (``style``, ключи ``knowledge.GEN_STYLES``).
+GEN_KINDS = ("instrumental", "song", "robot_song")
+GEN_STYLE_CHOICES = ("", *kn.GEN_STYLES)
 
 
 def set_refusal(heard_text: Optional[str], running: bool) -> Optional[Dict[str, Any]]:
@@ -329,6 +340,9 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
         return MCPToolResult(success=False, data=data, error=composer_missing_error(data["message"]))
     if data.get("reason") == NOT_FOUND and data.get("message"):  # отказ сета: фраза кода, её скажет голос
         return MCPToolResult(success=False, data=data, error=data["message"])
+    if data.get("reason") == SOURCE_DECLINED and data.get("message"):  # отказ пути (ADR-0158): фраза кода
+        from rob_box_voice.core.media_phrases import source_error
+        return MCPToolResult(success=False, data=data, error=source_error(data["message"]))
     if data.get("reason") == NO_MORE and data.get("message"):  # «больше нет» (#3599): фраза кода, её скажет голос
         from rob_box_voice.core.media_phrases import no_more_error
         return MCPToolResult(success=False, data=data, error=no_more_error(data["message"]))
@@ -591,7 +605,9 @@ class RequestMusicTool(MCPTool):
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
                  records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None,
                  tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE,
-                 slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None) -> None:
+                 slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None,
+                 gen_library: Callable[[], Any] = lambda: None,
+                 play_cached: Optional[Callable[[str], MCPToolResult]] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -599,10 +615,13 @@ class RequestMusicTool(MCPTool):
         self._melodies = melodies or library_melodies(library)
         self._seed = seed
         self._confirm = confirm
+        chooser = chooser_from_env(chooser_mode, log=self._log)
         # одиночная пьеса: кандидаты произведения, выбор, перебор (ADR-0157 §2.3, PR-2/PR-3)
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
-                                  classic or classic_picker(library), history,
-                                  chooser=chooser_from_env(chooser_mode, log=self._log), log=self._log)
+                                  classic or classic_picker(library), history, chooser=chooser, log=self._log)
+        # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
+        self._source = SourceRouter(chooser, gen_library, log=self._log)
+        self._play_cached = play_cached  # шов: трек кэша играет gen_play_from_library (sound_node) до PR-2
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
         # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
         # судить слова нечем, разбора нет (название как от грамматики), если разборщик не передан явно
@@ -657,6 +676,13 @@ class RequestMusicTool(MCPTool):
                 heard_text: Optional[str] = None) -> MCPToolResult:
         """``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не
         снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает."""
+        return self.order(intent, text, mood, genre, turn_id, heard_text)
+
+    def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
+              turn_id: Optional[str] = None, heard_text: Optional[str] = None,
+              ask: Optional[SourceAsk] = None) -> MCPToolResult:
+        """Заказ: путь музыки решает код (ADR-0158 PR-3) по просьбе ``ask`` (нет — слова реплики хода), затем
+        синтез/пьеса как раньше, трек кэша (:meth:`_play_cache`) или честный отказ с фразой кода."""
         set_id = self._dj.started_in_turn(turn_id)
         if set_id is not None:
             return tool_result({"ok": False, "reason": SET_PLAYING, "set_id": set_id,
@@ -664,10 +690,10 @@ class RequestMusicTool(MCPTool):
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
-        lead = lead_for(heard_text, text)
-        staged = (self._stage_classic(text, lead, asks_more(heard_text)) if classic
-                  else self._stage_club(text, mood, lead))
-        staged.update(lead_data(lead))
+        route = self._source.route(ask or source_ask(heard_text or text), piece=classic)
+        if route.kind != SYNTH:
+            return self._off_synth(route, what)
+        staged = self._stage(route, classic, text, mood, heard_text)
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
         program, once, row = staged.pop("program"), staged.pop("once"), staged.pop("history", {})
@@ -684,16 +710,53 @@ class RequestMusicTool(MCPTool):
             self._write_model(model)
         return tool_result(result, what)
 
+    def _stage(self, route: Route, classic: bool, text: str, mood: Optional[str],
+               heard_text: Optional[str]) -> Dict[str, Any]:
+        """Собрать синтез пути (пьеса или трек стиля ``route.style``) с инструментом реплики и фразой пути кода."""
+        lead = lead_for(heard_text, text)
+        staged = (self._stage_classic(text, lead, asks_more(heard_text)) if classic
+                  else self._stage_club(text, mood, lead, route.style))
+        staged.update(lead_data(lead))
+        note = route_note(route)
+        if note:  # играет своё, а просили генерацию: фраза кода говорит об этом (ADR-0158 G3)
+            staged["source_note"] = note
+        return staged
+
+    def _off_synth(self, route: Route, what: str) -> MCPToolResult:
+        """Путь не синтез: трек кэша (есть шов проигрывания) или честный отказ с фразой кода — без тихой подмены."""
+        if route.kind == CACHE and route.track is not None and self._play_cached is not None:
+            return self._play_cache(route, what)
+        return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
+                            "message": decline_text(route)}, what)
+
+    def _play_cache(self, route: Route, what: str) -> MCPToolResult:
+        """Трек кэша — через ``gen_play_from_library`` (``sound_node``), мимо дек: шов до ADR-0158 PR-2. Музыку движка
+        снимаем, чтобы не играли две; ``ok`` — только когда путь к файлу опубликован (события ``started`` нет)."""
+        track = route.track
+        if music_busy(self._owner, self._dj):
+            self._dj.close_set("source_cache")
+            self._owner.stop("source_cache")
+        result = self._play_cached(track.id)
+        data = dict(result.data or {}) if result.success else {}
+        if data.get("playback") != "published":
+            return tool_result({"ok": False, "reason": "cache_play_failed", "route": route.id,
+                                "detail": result.error or data.get("playback")}, what)
+        return tool_result({**data, "ok": True, "via": VIA_SOUND_NODE, "source": CACHE, "route": route.id,
+                            "title": track.title, "source_message": cache_text(route)}, what)
+
     def _write_model(self, model: Any) -> None:
         try:
             self._log().info(f"🎼 [classic] модель трека: {write_track_file(self._tracks_dir, model)}")
         except OSError as exc:
             self._log().warning(f"⚠️ [classic] модель трека не записана: {type(exc).__name__}: {exc}")
 
-    def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
+    def _stage_club(self, text: str, mood: Optional[str], lead: Optional[LeadChoice] = None,
+                    style: str = kn.DEFAULT_STYLE) -> Dict[str, Any]:
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
-        синт инструмента заказа."""
-        profile = self._dj.theme_profile(club_theme(text))
+        синт инструмента заказа; ``style`` — стиль синтеза, который выбрал путь (ADR-0158)."""
+        theme = club_theme(text)
+        profile = (self._dj.theme_profile(theme, style) if style in kn.STYLES and style != kn.DEFAULT_STYLE
+                   else self._dj.theme_profile(theme))
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
@@ -763,6 +826,65 @@ class RequestMusicTool(MCPTool):
                 **lead_data(slot_lead)}
 
 
+class GenerateMusicTool(MCPTool):
+    """«Сгенерируй …» (ADR-0158 §3.3, PR-3): узкий тул-просьба. Становится слотами ``asked_generated`` (+ петь /
+    своим голосом по ``kind``, жанр по ``style``) и идёт тем же путём, что ``request_music``: денег, лимита или
+    исполнителя генерации нет — кандидатов генерации нет, играет своё или сочинённое раньше, либо честный отказ."""
+
+    def __init__(self, node: Any, request: RequestMusicTool) -> None:
+        super().__init__(node)
+        self._request = request
+
+    @property
+    def name(self) -> str:
+        return "generate_music"
+
+    @property
+    def description(self) -> str:
+        return ("Просьба сгенерировать музыку (Suno): kind=instrumental — без слов, song — песня, robot_song — песня "
+                "голосом робота; style — жанр, если назван. Это просьба, а не приказ: что играть (новую генерацию, "
+                "сочинённое раньше или своё) и что сказать — решает робот сам по словам человека; ok=false — "
+                "честный отказ, его фразу робот скажет сам.")
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(name="kind", type="string", description="instrumental, song или robot_song",
+                             enum=list(GEN_KINDS)),
+            MCPToolParameter(name="style", type="string", description="Жанр, если человек его назвал",
+                             required=False, enum=list(GEN_STYLE_CHOICES)),
+            MCPToolParameter(name="theme", type="string", description="Тема словами человека", required=False),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    @property
+    def starts_music(self) -> bool:
+        return True
+
+    def execute(self, kind: str = "instrumental", style: str = "", theme: str = "", turn_id: Optional[str] = None,
+                heard_text: Optional[str] = None) -> MCPToolResult:
+        """Слоты просьбы: слова реплики хода + то, что эта просьба — генерация (``kind``, ``style`` — из перечней)."""
+        if kind not in GEN_KINDS or (style or "") not in GEN_STYLE_CHOICES:
+            allowed = f"есть {list(GEN_KINDS)} и {list(GEN_STYLE_CHOICES)}"
+            return MCPToolResult(success=False, error=f"kind={kind!r}/style={style!r}: {allowed}")
+        heard = source_ask(heard_text or theme or "")
+        ask = replace(heard, generated=True, vocal=heard.vocal or kind != "instrumental",
+                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "")
+        return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
+                                   ask=ask)
+
+
 def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:
     """Хвост строки лога ``[classic]``: что играет (источник, запись, название, замена) или «нет»."""
     if pick is None:
@@ -773,4 +895,5 @@ def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:
 __all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "NO_MORE", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
            "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
            "lead_for", "library_melodies", "library_records", "music_busy", "not_found", "set_refusal", "set_style",
-           "theme_finder", "theme_links", "tool_result", "word_hooks"]
+           "theme_finder", "theme_links", "tool_result", "word_hooks", "GEN_KINDS", "GEN_STYLE_CHOICES",
+           "GenerateMusicTool", "SOURCE_DECLINED", "VIA_SOUND_NODE"]

@@ -1625,6 +1625,9 @@ class Style:
     fx_bars: int = 8
     humanize: Optional["Humanize"] = None
     lead_mask: str = ""
+    # Годность синтеза (ADR-0158 §3.2): «у нас норм играет» — 1.0; ниже :data:`SYNTH_FIT_MIN` синтез-кандидата пути
+    # нет (``source.source_candidates``). Правит Шифу.
+    synth_fit: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -1999,6 +2002,7 @@ _LOFI_SECTIONS: Tuple[str, ...] = tuple(dict.fromkeys(name for form in _LOFI_FOR
 _LOFI_BREAK_SECTIONS: Tuple[str, ...] = ("drop", "groove3", "break", "break2", "groove4")
 _LOFI_WINDOW = _LOFI_GENRE_WINDOWS["lofi"]
 _LOFI_STYLE = Style(
+    synth_fit=0.3,  # ADR-0158 §3.2: В10: вердикта Шифу на слух нет — предложение ADR-0158 §3.2
     bpm=_LOFI_WINDOW.bpm, swing=(0.09, 0.14), modes=("dorian", "minor", "major"),
     kick_pool=_LOFI_WINDOW.kick_pool, looks=_LOFI_LOOKS, kits=_LOFI_KITS,
     # Регистры (итерация 2): бас 40–52 — читаем на колонках робота (итерация 1: 35–49 «пропадает»), мелодия ниже —
@@ -2137,6 +2141,7 @@ _ROCK_BASS_RIFFS: Tuple[str, ...] = ("RRRRRRRR", "RRRRRRFO")
 _ROCK_SECTION_LPF: Mapping[str, Tuple[float, float]] = {"outro_tail": (LPF_TOP_HZ, 300.0)}
 _ROCK_WINDOW = _ROCK_GENRE_WINDOWS["classic"]
 _ROCK_STYLE = Style(
+    synth_fit=0.0,  # ADR-0158 §3.2: вердикт Шифу 13.10 «не рок, а какой-то калл», #3597
     bpm=_ROCK_WINDOW.bpm, swing=(0.0, 0.02), modes=("minor", "mixolydian"),
     kick_pool=_ROCK_WINDOW.kick_pool, looks=_ROCK_WINDOW.looks, kits=_ROCK_KITS,
     registers={"bass": (36, 52), "pad": (43, 67), "lead": (55, 84)},
@@ -2249,6 +2254,7 @@ _JAZZ_ROLE_LEVEL_DB: Mapping[str, float] = {
     "kick": -47.0, "bass": -39.0, "pad": -37.0, "lead": -45.0, "clap": -50.0, "hats": -47.0}
 _JAZZ_WINDOW = _JAZZ_GENRE_WINDOWS["swing"]
 _JAZZ_STYLE = Style(
+    synth_fit=0.3,  # ADR-0158 §3.2: не принимался Шифу на слух — ADR-0158 §3.2
     bpm=_JAZZ_WINDOW.bpm, swing=(0.20, 0.25), modes=("major", "dorian", "minor"),
     kick_pool=_JAZZ_WINDOW.kick_pool, looks=_JAZZ_LOOKS, kits=_JAZZ_KITS,
     registers={"bass": (28, 50), "pad": (46, 72), "lead": (60, 86)},
@@ -2610,3 +2616,82 @@ UNIVERSE_ENDINGS: Tuple[str, ...] = INSTRUMENT_ENDINGS + ("ые", "ых", "ым"
 THEME_MOOD_STEMS: Tuple[str, ...] = ("весел", "праздн", "угар", "кайф", "драйв", "позитив", "отрыв")
 
 __all__ += ["THEME_MOOD_STEMS", "UNIVERSES", "UNIVERSE_ENDINGS", "Universe"]
+
+
+# ── Путь музыки: синтез / кэш / генерация (ADR-0158 §2.2, §3.2): знание чойсера пути — ``rob_box_music.source`` ──────
+#: Годность синтеза ниже — синтез-кандидата пути нет (``Style.synth_fit``).
+SYNTH_FIT_MIN = 0.5
+
+
+@dataclass(frozen=True)
+class GenStyle:
+    """Стиль генерации: EN-теги Suno (из таблицы, не от LLM), имя для фразы кода, стиль синтеза, который его играет
+    (окно стиля — тоже: гранж — окно ``rock``), ``None`` — синтеза нет."""
+
+    tags: str
+    name: str
+    synth: Optional[str] = None
+
+
+#: Стили генерации (ADR-0158 §3.2). Правит Шифу; на слух проверены только теги «synthwave» и «grunge» (§1.3).
+GEN_STYLES: Mapping[str, GenStyle] = {
+    "club": GenStyle("club house, four on the floor, punchy kick, warm bass", "клуб", "club"),
+    "rave": GenStyle("rave, acid techno, 303 bassline, hard kick", "рейв", "rave"),
+    "synthwave": GenStyle("synthwave, retro 80s, analog synths, gated drums", "синтвейв", "synthwave"),
+    "chiptune": GenStyle("chiptune, 8-bit, square wave lead", "чиптюн", "chiptune"),
+    "breaks": GenStyle("breakbeat, chopped breaks, big beat", "брейкбит", "breaks"),
+    "dnb": GenStyle("drum and bass, fast breakbeats, deep sub bass", "драм-н-бейс", "dnb"),
+    "lofi": GenStyle("lo-fi hip hop, vinyl crackle, mellow rhodes, lazy drums", "лоуфай", "lofi"),
+    "jazz": GenStyle("jazz, swing, walking bass, piano trio", "джаз", "jazz"),
+    "rock": GenStyle("rock, distorted guitars, live drums", "рок", "rock"),
+    "grunge": GenStyle("90s grunge rock, loud-quiet-loud, distorted guitars", "гранж", "rock"),
+    "metal": GenStyle("heavy metal, palm-muted riffs, double kick drums", "метал"),
+    "blues": GenStyle("blues, electric guitar, shuffle rhythm", "блюз"),
+    "chanson": GenStyle("russian chanson, acoustic guitar, accordion", "шансон"),
+    "orchestral": GenStyle("epic symphonic orchestra, strings, brass, timpani", "оркестр"),
+    "acoustic": GenStyle("acoustic, fingerpicked guitar, warm", "акустика"),
+}
+#: Основы слов жанров, которых нет в :data:`STYLE_WORDS`/:data:`WINDOW_WORDS` (синтеза нет) → ключ :data:`GEN_STYLES`.
+GEN_GENRE_WORDS: Mapping[str, str] = {"метал": "metal", "блюз": "blues", "шансон": "chanson", "оркестр": "orchestral",
+                                      "симфони": "orchestral", "акустик": "acoustic"}
+#: Основы слов просьбы о пути (ADR-0158 §2.2, слоты ``asked_*``): «сгенерируй», «спой», «новую», «сочини».
+SOURCE_ASK_STEMS: Mapping[str, Tuple[str, ...]] = {
+    "generated": ("сгенер", "сгенир", "генерир", "нагенер", "генерац"),
+    "vocal": ("спой", "спеть", "споешь", "споёшь", "пропой", "вокал"),
+    "fresh": ("нов", "свеж"),
+    "own": ("сочин", "придума"),
+}
+#: «Песня» — просьба петь только рядом с «сгенерируй»/«сочини»: «поставь песню Калинка» — мелодия.
+SONG_STEMS: Tuple[str, ...] = ("песн", "песен")
+#: «своим голосом»: слово-владелец перед «голос…» — песня голосом робота (``robot_song``).
+ROBOT_VOICE_OWNERS: Tuple[str, ...] = ("сво", "тво")
+#: Веса признаков кандидатов пути (ADR-0158 §2.2; ``choice.score`` с весами вопроса). ``asked`` на «сгенерируй»:
+#: генерация 1, кэш 0.5 (сгенерировано раньше), синтез −1; на «новую» кэш −1. Правит Шифу.
+SOURCE_WEIGHTS: Mapping[str, float] = {"synth_fit": 2.0, "theme_match": 1.5, "asked": 3.0, "fresh": 0.5,
+                                       "rating": 0.5, "cost": -0.02, "wait_s": -0.005}
+#: Трек кэша, игранный ближе этого, не «свежий» (признак ``fresh``).
+GEN_FRESH_HOURS = 12
+#: Ожидание до звука у синтеза и кэша, секунд (признак ``wait_s``).
+INSTANT_WAIT_S = 3.0
+#: Режимы пути (ADR-0158 §2.8): ``synth`` — без генерации, ``generate`` — без синтеза.
+SOURCE_MODES: Tuple[str, ...] = ("auto", "synth", "generate")
+
+
+@dataclass(frozen=True)
+class GenModel:
+    """Цена и скорость модели генерации (замеры 13.10, ADR-0158 §1.3)."""
+
+    credits_per_task: float      # кредитов за задачу (= 2 варианта трека)
+    typical_s: float             # типичное время до success, секунд
+
+
+#: Модели Suno через KIE — единственное место цены/скорости (перенесено из ``engine.gen.provider``, ADR-0158 PR-3).
+GEN_MODELS: Mapping[str, GenModel] = {
+    "V6": GenModel(credits_per_task=12.0, typical_s=51.0),
+    "V6_MINI": GenModel(credits_per_task=12.0, typical_s=30.0),
+}
+DEFAULT_GEN_MODEL = "V6"
+
+__all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
+            "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
+            "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]

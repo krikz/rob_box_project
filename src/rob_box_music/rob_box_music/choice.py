@@ -54,11 +54,15 @@ class Option:
 
 @dataclass(frozen=True)
 class ChoiceQuestion:
-    """Вопрос: ``text`` (что выбираем), ``state`` (слоты заказа, недавнее), закрытый перечень ``options``."""
+    """Вопрос: ``text`` (что выбираем), ``state`` (слоты заказа, недавнее), закрытый перечень ``options``; ``weights`` —
+    веса признаков вопроса (по умолчанию ``CHOOSER_WEIGHTS`` выбора пьесы; путь музыки — ``SOURCE_WEIGHTS``, ADR-0158),
+    ``instructions`` — что сказать модели (пусто — промпт выбора пьесы)."""
 
     text: str
     options: Tuple[Option, ...]
     state: Mapping[str, Any] = field(default_factory=dict)
+    weights: Mapping[str, float] = field(default_factory=lambda: CHOOSER_WEIGHTS)
+    instructions: str = ""
 
     def ids(self) -> Tuple[str, ...]:
         return tuple(o.id for o in self.options)
@@ -105,19 +109,19 @@ def penalty(features: Mapping[str, float]) -> float:
     return -CHOOSER_WEIGHTS["recent"] * float(features.get("recent", 0.0))
 
 
-def points(features: Mapping[str, float]) -> Dict[str, float]:
-    """Вклад каждого признака в очках (``вес·признак``, ключи ``CHOOSER_WEIGHTS``); штраф за повтор - отрицательный."""
-    return {name: w * float(features.get(name, 0.0)) for name, w in CHOOSER_WEIGHTS.items()}
+def points(features: Mapping[str, float], weights: Mapping[str, float] = CHOOSER_WEIGHTS) -> Dict[str, float]:
+    """Вклад каждого признака в очках (``вес·признак``, ключи ``weights``); штраф за повтор - отрицательный."""
+    return {name: w * float(features.get(name, 0.0)) for name, w in weights.items()}
 
 
-def score(features: Mapping[str, float]) -> float:
+def score(features: Mapping[str, float], weights: Mapping[str, float] = CHOOSER_WEIGHTS) -> float:
     """Взвешенная сумма признаков (§3.3) - сумма :func:`points`."""
-    return sum(points(features).values())
+    return sum(points(features, weights).values())
 
 
 def dice_weights(question: "ChoiceQuestion", temperature: float = CHOOSER_DICE_TEMPERATURE) -> List[float]:
     """Веса «кубика» по очкам кода: ``exp((score - max) / T)`` (лучший — 1.0; сдвиг на максимум — без переполнения)."""
-    scores = [score(o.features) for o in question.options]
+    scores = [score(o.features, question.weights) for o in question.options]
     top = max(scores)
     return [math.exp((s - top) / temperature) for s in scores]
 
@@ -144,7 +148,8 @@ class DeterministicChooser:
 
     def rank(self, question: ChoiceQuestion) -> List[Tuple[float, Option]]:
         """Варианты по убыванию оценки; равные — в порядке перечня (кодом построенный ранг каталога)."""
-        return sorted(((round(score(o.features), 6), o) for o in question.options), key=lambda so: -so[0])
+        return sorted(((round(score(o.features, question.weights), 6), o) for o in question.options),
+                      key=lambda so: -so[0])
 
     def choose(self, question: ChoiceQuestion, *, deadline_ms: int = CHOOSER_DEADLINE_MS) -> Choice:
         ranked = self.rank(question)
