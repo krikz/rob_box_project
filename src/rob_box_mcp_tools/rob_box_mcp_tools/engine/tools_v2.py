@@ -676,6 +676,15 @@ class RequestMusicTool(MCPTool):
     def _log(self) -> Any:
         return self.node.get_logger() if self.node is not None else _LOG
 
+    def _request_slots(self, text: str, work: str, command: Any,
+                       lead: Optional[LeadChoice]) -> Tuple[RequestSlots, Optional[LeadChoice]]:
+        """Слоты заказа (#3609): непонятые слова — LLM по схеме, проверка каталогом; ``(слоты, лид инструмента от LLM —
+        если реплика хода инструмент не назвала)``. Инструмент реплики хода («на органе») — слот грамматики."""
+        if lead is not None:
+            command = replace(command, instrument=command.instrument or lead.asked)
+        slots = self._slots.parse(text, work, command) if self._slots else RequestSlots(work, work=work)
+        return slots, (None if lead or not slots.instrument else lead_choice(slots.instrument))
+
     def _stage_classic(self, text: str, lead: Optional[LeadChoice] = None, more: bool = False) -> Dict[str, Any]:
         """Мелодия по названию: песня v2 (одна пьеса, один проход формы) — собрана, не запущена.
 
@@ -689,11 +698,7 @@ class RequestMusicTool(MCPTool):
         command = parse_media_command(text)
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         work, key = key_slot(query)
-        if lead is not None:  # инструмент из реплики хода («на органе») — слот грамматики, не LLM
-            command = replace(command, instrument=command.instrument or lead.asked)
-        # непонятые слова — LLM по схеме, проверка каталогом (#3609)
-        slots = self._slots.parse(text, work, command) if self._slots else RequestSlots(work, work=work)
-        slot_lead = None if lead or not slots.instrument else lead_choice(slots.instrument)  # инструмент от LLM
+        slots, slot_lead = self._request_slots(text, work, command, lead)
         work, lead = slots.query, lead or slot_lead
         seed = self._seed()
         try:
