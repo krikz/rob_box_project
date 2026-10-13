@@ -1674,6 +1674,9 @@ class Style:
     # Годность синтеза (ADR-0158 §3.2): «у нас норм играет» — 1.0; ниже :data:`SYNTH_FIT_MIN` синтез-кандидата пути
     # нет (``source.source_candidates``). Правит Шифу.
     synth_fit: float = 1.0
+    # Нижняя граница доли нот хука и темы в ладу трека (``arrange.hook.in_key_share``) сверх общего
+    # :data:`HOOK_KEY_FIT_MIN` окна хука; 0 — только общий порог.
+    hook_in_key_min: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -2326,6 +2329,11 @@ _ROCK_STYLE = Style(
     backbeat_kinds=("intro_low", "build", "build2", "drop", "drop2", "break", "outro"),
     roll_bars=0, fill_joints=True, clap_fill="cut", tom_fills=_ROCK_TOM_FILLS, fx_roles=("crash",),
     power_rhythms=_ROCK_POWER_RHYTHMS, bass_riffs=_ROCK_BASS_RIFFS, kit_parts=_ROCK_KIT_PARTS, master=_ROCK_MASTER,
+    # Тема громче гитары (#3594), и её хроматика под диатоническим пауэр-аккордом слышна как «не те ноты» (Шифу 13.10,
+    # трек 1 сета set82119: «Litium» — арпеджио хроматических аккордов Lithium, 24 % нот темы вне фа-диез мажора,
+    # окно хука прошло общий порог с key_fit 0.75). Хроматических пауэр-аккордов модель не выражает (аккорд — ступень
+    # лада) — такая мелодия рока уступает следующей.
+    hook_in_key_min=0.9,
 )
 
 # ── Стиль ``jazz`` (ADR-0153 S6): head–solo–head, свинг ≈ 1.5–1.7, walking, comping, соло по сменам темы ──────────

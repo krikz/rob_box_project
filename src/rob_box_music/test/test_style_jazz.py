@@ -317,9 +317,11 @@ def test_jazz_comping_is_wider_than_the_centre_but_not_club_wide():
 def test_jazz_master_drops_the_compressor_for_crest():
     """Динамика (эталон crest 17.8, робот S7 13.1): профиль мастер-шины джаза — ручки SynthDef, компрессор выключен
     (ratio 1, makeup 0), выравниватель тянет к уровню, при котором crest 17 дБ встаёт пиком под потолок лимитера
-    (−1 dBFS). Прочие стили — без профиля; следующий трек возвращает дефолты (все ручки выставляются каждый старт)."""
+    (−1 dBFS). Прочие стили, кроме рока (makeup, #3594), — без профиля; следующий трек возвращает дефолты (все ручки выставляются каждый старт)."""
     jazz = mix.set_master(3, JAZZ)
     assert set(jazz) <= set(kn.MASTER_DEFAULTS) and jazz["trim"] == kn.ENERGY_TRIM_DB[3]
     assert jazz["cmpRatio"] == 1.0 and jazz["makeup"] == 0.0 and jazz["lvlTarget"] + 17.0 <= 1.0
     assert mix.set_master(3, kn.STYLES["club"]) == mix.set_master(3) == {"trim": kn.ENERGY_TRIM_DB[3], **kn.SET_LEVELER}
-    assert all(not st.master for name, st in kn.STYLES.items() if name != "jazz")
+    # Рок (#3594): только makeup — треть сдвига ролей под тему, который выравниватель не вернул.
+    assert dict(kn.STYLES["rock"].master) == {"makeup": kn.MASTER_DEFAULTS["makeup"] + 3.0}
+    assert all(not st.master for name, st in kn.STYLES.items() if name not in ("jazz", "rock"))

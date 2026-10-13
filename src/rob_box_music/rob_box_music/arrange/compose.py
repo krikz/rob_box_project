@@ -725,6 +725,11 @@ def _theme_hook(style: kn.Style, spec: FormSpec, profile: ThemeProfile, melodies
     аранжировка, форма) или None. Гармония — Витерби под мелодию (:func:`melody_harmonizer`)."""
     for candidate, key in hook_candidates(profile, melodies, rng, history, opening=track_no == 1, track_no=track_no,
                                           set_id=set_id, theme_max=theme_limit(spec)):
+        share = hooks.in_key_share(candidate, key)
+        if share < style.hook_in_key_min:  # #3594: хроматика под диатоническими аккордами — «ноты не те»
+            _LOG.info("🎵 [music v2] hook melody=%s в ладу %.2f < %.2f стиля — следующая", candidate.source, share,
+                      style.hook_in_key_min)
+            continue
         try:
             motif, form, arranged = _arrange_theme(style, spec, candidate, key, lead_synth,
                                                    melody_harmonizer(style, key, history, rng))

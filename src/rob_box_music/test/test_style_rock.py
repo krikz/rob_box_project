@@ -12,11 +12,13 @@ import pytest
 
 from melodies import MELODIES
 from rob_box_music import knowledge as kn
-from rob_box_music.arrange import bass, pad
+from rob_box_music.arrange import bass, harmony, pad
+from rob_box_music.arrange import hook as hooks
 from rob_box_music.arrange.compose import compose
 from rob_box_music.diversity import track_composition
 from rob_box_music.model import BEATS_PER_BAR, STEPS_PER_BAR, Chord, Key, chord_tones, validate
 from rob_box_music.render.events import program_events
+from rob_box_music.rtttl import fix_octaves, parse_rtttl
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import match_style_text, seeded_profile
@@ -410,3 +412,60 @@ def test_power_chord_takes_the_fifth_of_the_declared_quality():
     assert {e.midi % 12 for e in aug.pitches} == {0}
     plain = pad.power_chords(ROCK, Key(0, "major"), [(0, Chord(0, (60, 64, 67), "maj"))], "pad", reg)
     assert {e.midi % 12 for e in plain.pitches} == {0, 7}
+
+
+# ── #3594: ноты темы и гитары — «ноты не те» (Шифу 13.10, трек 1 сета set82119) ──────────────────────────────────
+
+#: Записи библиотеки робота (``rtttl_melodies``, 13.10): «Litium» — арпеджио хроматических аккордов Lithium (E, G#, C#,
+#: A, C, D, B), «Teen Spirit» — диатоническая.
+LITIUM = ("Litium:d=4,o=6,b=125:8e,b,8e,8g_5,d_,8g_5,8c_,g_,8c_,8a5,e,8a5,8c,g,8c,8d,a,8d,8b5,f_,8b5,8d,a,8d,8e,b,8e,"
+          "8g_5,d_,8g_5,8c_,g_,8c_,8a5,e,8a5,8c,g,8c,8d,a,8d,8b5,f_,8b5,8d,a,8d,2e")
+TEENSPIR = ("TeenSpir:d=4,o=6,b=70:32p,32c#.,16e.,16f#.,8a.5,16f#.,16e.,16c#.,32d.,16c#.,8b5,16a.5,32b.5,16c#.,32b.5,"
+            "32a.5,8g#5,32a.5,8g#5,32a.5,8g#5,32a.5,16g#.5,32a.5,32g#.5,32g#.5,16f#.5,32a.5,8g#5,32a.5,8g#5,32a.5,8g#5,"
+            "32a.5,32g#.5,32g#.5,16f#.5")
+
+
+def _rock_track(melodies, no: int = 1, seed: int = 0):
+    profile = dataclasses.replace(seeded_profile("нирвана", "rock"), hook_ids=tuple(melodies))
+    return compose(seeded_plan(profile, seed, set_id=f"nt{seed}", genre="classic"), no, melodies=melodies)
+
+
+def test_rock_passes_over_a_chromatic_hook_it_cannot_harmonize():
+    """Хук, у которого больше 10 % нот хука и темы вне лада трека, рок не берёт (``Style.hook_in_key_min``): аккорд модели
+    — ступень лада, и хроматика темы над диатоническим пауэр-аккордом звучала «не теми нотами»; берётся следующая
+    мелодия, лид трека в ладу."""
+    track = _rock_track({"litium": LITIUM, "teenspir": TEENSPIR})
+    assert track.hook is not None and track.hook.source == "teenspir"
+    assert hooks.in_key_share(track.hook, track.key) >= ROCK.hook_in_key_min
+    scale = set(kn.scale_pitch_classes(track.key.root, track.key.mode))
+    assert all(e.midi % 12 in scale for e in track.parts["lead"].pitches)
+
+
+def test_lead_plays_the_hook_transposed_whole():
+    """Лид = хук после транспонирования: в припеве (вид ``drop``) — ноты хука подряд, те же доли и длины, интервалы
+    между нотами — как у источника RTTTL (ни одна нота не сдвинута ладом или октавой внутри мотива)."""
+    track = _rock_track({"teenspir": TEENSPIR})
+    hook = track.hook
+    _name, mbpm, notes = parse_rtttl(fix_octaves(TEENSPIR, "teenspir"))
+    src = hooks._onsets(notes, hooks.time_scale(mbpm, track.bpm))[:len(hook.notes)]
+    assert [b - a for (_x, _y, a), (_u, _v, b) in zip(src, src[1:])] == \
+        [b.midi - a.midi for a, b in zip(hook.notes, hook.notes[1:])]
+    start = next(s for s, sec in _bars(track) if sec.name == "chorus") * BEATS_PER_BAR
+    lead = [e for e in track.parts["lead"].pitches if start <= e.beat < start + hook.bars * BEATS_PER_BAR]
+    assert [(e.beat - start, e.midi) for e in lead] == [(e.beat, e.midi) for e in hook.notes]
+
+
+def test_guitar_plays_only_the_bar_chord(feels):
+    """Ноты гитары ∈ аккорд такта: пауэр-аккорд — прима и квинта объявленного аккорда (у ритма, идущего за темой,
+    тоже — тема задаёт только ритм), бас — тон аккорда."""
+    for (kit, _need), (track, _program) in feels.items():
+        chords, start = {}, 0
+        for sec in track.form.sections:
+            for i, chord in enumerate(track.harmony.progression.get(sec.name, ())):
+                chords[start + i] = chord
+            start += sec.bars
+        for role in ("pad", "bass"):
+            for e in track.parts[role].pitches:
+                chord = chords[int(e.beat // BEATS_PER_BAR)]
+                pcs = set(harmony.chord_pcs(ROCK, track.key, chord.degree, chord.quality or None))
+                assert e.midi % 12 in pcs, (kit, role, e)

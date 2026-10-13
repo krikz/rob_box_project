@@ -396,6 +396,12 @@ def _hook(notes: Notes, melody_bpm: float, melody_id: str, bpm: int, root: int, 
     return Hook(events, bars, melody_id, fit), key, shift, answered
 
 
+def in_key_share(hook: Hook, key: Key) -> float:
+    """Доля звучащей длительности хука и темы целиком (``Hook.theme``) в ладу трека ``key`` (#3594): ``Hook.key_fit``
+    меряет только окно хука, а лид играет и тему."""
+    return key_fit([(e.midi, e.dur_beats) for e in (*hook.notes, *hook.theme)], kn.ROOTS[key.root], key.mode)
+
+
 def _loop(notes: Sequence[PitchEvent], period_beats: float, length_beats: float) -> List[PitchEvent]:
     out: List[PitchEvent] = []
     start = 0.0
@@ -756,7 +762,7 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
     return None
 
 
-__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
+__all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "in_key_share", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
            "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
            "from_rtttl", "hook_defect", "material_hook", "material_scale", "material_unfit", "pick_phrase",
            "reference_contours", "rhythm_answer", "spill", "theme_cuts", "theme_match", "theme_span", "theme_version",
