@@ -869,13 +869,20 @@ _NOT_THEME: FrozenSet[str] = (_NOT_A_TITLE - _THEME_LEADS) | _VOICE_WORDS
 _NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"up", "down", "max", "topic", "stop"})
 
 
+#: Просьба продолжить сет (#3581, живой сет 12.10: «продолжай сэт» стал темой «продолжай» → хуки «Carry On»,
+#: «Keep It Up»). Слово — не тема; без новой темы в реплике тема — тема последнего сета (``tools_v2.DjSetTool``).
+SET_CONTINUE_WORDS: FrozenSet[str] = frozenset({
+    "продолжай", "продолжайте", "продолжи", "продолжим", "продолжаем", "продолжить", "продолжение", "дальше",
+    "ещё", "еще", "снова", "опять", "повтори",
+})
+
 #: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
 #: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
-SET_REQUEST_WORDS: FrozenSet[str] = _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | frozenset({
+SET_REQUEST_WORDS: FrozenSet[str] = _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | {
     "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
-    "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "дальше", "пусть",
+    "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "пусть",
     "можешь", "мы", "я", "наш", "наша", "наше", "нашу", "нашего",
-})
+}
 
 
 #: Режим «сет» (ADR-0157 §2.1): слово сета, диджея или вечеринки. Основы — без регексов (мораторий #3132).
@@ -896,6 +903,12 @@ def asks_for_set(text: str) -> bool:
         if named and not _SET_NEGATION.intersection(words[max(0, i - 2):i]):
             return True
     return bool(_style_words(words)[0])
+
+
+def asks_to_continue_set(text: Optional[str]) -> bool:
+    """В реплике просьба продолжить сет (слово :data:`SET_CONTINUE_WORDS`). Новая тема в той же реплике важнее —
+    это решает ``dj_set`` по теме из слов реплики (``theme_grounding.heard_theme``)."""
+    return any(w in SET_CONTINUE_WORDS for w in _theme_words(extract_user_utterance(text or "")))
 
 
 def is_spoken_theme_set(text: str) -> bool:
@@ -1014,7 +1027,9 @@ __all__ = [
     "MediaCommand",
     "MediaIntent",
     "NO_COMMAND",
+    "SET_CONTINUE_WORDS",
     "SET_REQUEST_WORDS",
+    "asks_to_continue_set",
     "asks_for_set",
     "dj_persona_span",
     "extract_dj_persona",
