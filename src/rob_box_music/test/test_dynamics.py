@@ -111,12 +111,14 @@ def test_lpf_opens_through_the_build_is_off_in_drops_and_half_closed_in_the_brea
             assert cut[0] == pytest.approx(400, rel=0.02) and cut[-1] == pytest.approx(kn.LPF_TOP_HZ, rel=0.02)
         elif role == "pad":
             assert cut[0] == pytest.approx(400, rel=0.02)
-        curves[role] = {e.beat // 1: e.fx["lpf"] for e in build}
+        curves[role] = build
         for name in ("drop", "drop2"):
             assert all("lpf" not in e.fx for e in _in(by_role[role], spans[name])), (role, name)
         assert {e.fx.get("lpf") for e in _in(by_role[role], spans["break"])} <= {1200.0}
-    beats = set.intersection(*(set(c) for c in curves.values()))
-    assert beats and all(len({c[b] for c in curves.values()}) == 1 for b in beats), "одна кривая на все роли"
+    # Лид build доигрывает фразу хука целиком и вступает позже начала секции (#3580): доли ролей могут не совпасть
+    # ни разу, поэтому «одна кривая» — все срезы всех ролей, упорядоченные по доле, не убывают.
+    points = sorted((e.beat, e.fx["lpf"]) for role in curves for e in _in(by_role[role], spans["build"]))
+    assert curves and all(a[1] <= b[1] + 1e-6 for a, b in zip(points, points[1:])), "одна кривая на все роли"
 
 
 @pytest.mark.parametrize("seed", SEEDS)

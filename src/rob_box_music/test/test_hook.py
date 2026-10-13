@@ -187,11 +187,22 @@ def test_track_hook_heard_in_drop_and_developed_by_sections(root, track_no):
     hook_bars = [sorted((round(e.beat % 4, 3), e.midi) for e in track.hook.notes if int(e.beat // 4) == b)
                  for b in range(track.hook.bars)]
     assert _bars(lead, start["drop"], track.hook.bars) == hook_bars
+    hb = track.hook.bars
     build = _bars(lead, start["build"], SECTION_BARS)
-    assert build[-1] == [], "последний такт build — пауза перед дропом"
-    assert build[:hooks.BUILD_BARS] == hook_bars[:hooks.BUILD_BARS] and build[2:4] == hook_bars[:2]
+    count = (SECTION_BARS - 1) // hb
+    if count:  # #3580: только целые фразы, последняя кончается за такт до дропа
+        assert build[-1] == [], "последний такт build — пауза перед дропом"
+        first = SECTION_BARS - 1 - count * hb
+        assert all(not bar for bar in build[:first])
+        assert build[first:first + count * hb] == hook_bars * count
+    else:
+        assert build[:hb] == hook_bars
     brk = _bars(lead, start["break"], SECTION_BARS)
-    assert sum(map(len, brk)) < sum(map(len, hook_bars)), "break реже drop"
+    if 2 * hb <= SECTION_BARS:  # фраза вдвое медленнее — ни одной потерянной ноты
+        assert brk != _bars(lead, start["drop"], SECTION_BARS)
+        assert sum(map(len, brk)) == len(track.hook.notes) * (SECTION_BARS // (2 * hb))
+    else:  # медленная фраза в секцию не помещается — фраза целиком в своём темпе, не половина ×2
+        assert brk == hook_bars * (SECTION_BARS // hb)
     drop2 = _bars(lead, start["drop2"], SECTION_BARS)
     assert drop2 != _bars(lead, start["drop"], SECTION_BARS)
     assert {m for bar in drop2 for _b, m in bar} >= {m for bar in hook_bars for _b, m in bar}
