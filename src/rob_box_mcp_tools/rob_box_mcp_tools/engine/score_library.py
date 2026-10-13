@@ -27,6 +27,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import Counter
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_music import knowledge as kn
@@ -131,6 +132,20 @@ class ScoreIndex:
         composer, title = len(self._spelled(word, COMPOSER)), len(self._spelled(word, TITLE))
         return composer > title if composer or title else None
 
+    def composer_core(self, words: Sequence[WorkWord]) -> Tuple[WorkWord, ...]:
+        """Слова, которые вместе называют одного композитора (#3608): идут от самого частого в поле «композитор»,
+        слово, после которого общих партитур нет, — не композитор (звучит как чья-то фамилия, «ебанем»), оно уходит
+        в название. Иначе одно такое слово пустило бы композитора в «у автора ничего не нашлось»."""
+        rows: Optional[Set[int]] = None
+        kept: List[WorkWord] = []
+        by_support = sorted(words, key=lambda w: -len(self._spelled(w, COMPOSER)))
+        for word in by_support:
+            found = self._spelled(word, COMPOSER)
+            joint = found if rows is None else rows & found
+            if joint:
+                rows, kept = joint, [*kept, word]
+        return tuple(w for w in words if w in kept)
+
     def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES,
                         hooks: Sequence[frozenset] = ()) -> List[WorkCandidate]:
         """Партитуры произведения (ADR-0157 §3.2): композитор назван — только с ним в поле ``composer``; слова
@@ -139,9 +154,13 @@ class ScoreIndex:
         узнаваемость по ``hooks`` — словам RTTTL-хуков заказа (``works.hook_words``) и просмотрам, длинная форма),
         без сортировки всего."""
         composer = _all_of([self._spelled(w, COMPOSER) for w in ref.composer])
-        title = _all_of([self._spelled(w, TITLE) for w in ref.title]) or set()
+        words = [self._spelled(w, TITLE) for w in ref.title]
+        title = _all_of(words) or set()
         rows = composer if composer is not None else title  # композитор назван — только его партитуры
         match = {i: ref.title_match(str(self._rows[i].get("title") or ""), len(ref.title)) for i in title & rows}
+        if composer is not None and not match:  # название не совпало целиком (слова просьбы, опечатка): по словам
+            found = Counter(i for hit in words for i in hit & rows)
+            match = {i: ref.title_match(str(self._rows[i].get("title") or ""), n) for i, n in found.items()}
         cands = {i: self._candidate(i, match.get(i, 0.0), 1.0 if ref.composer else 0.0, hooks) for i in rows}
         best = heapq.nlargest(limit, rows, key=lambda i: (score(cands[i].features()), -i))
         return [cands[i] for i in best]
@@ -265,6 +284,10 @@ class ScoreLibrary:
     def composer_role(self, word: WorkWord) -> Optional[bool]:
         """Слово заказа — композитор (:meth:`ScoreIndex.composer_role`); индекса нет — ``None``."""
         return self.index().composer_role(word)
+
+    def composer_core(self, words: Sequence[WorkWord]) -> Tuple[WorkWord, ...]:
+        """Слова, называющие одного композитора (:meth:`ScoreIndex.composer_core`)."""
+        return self.index().composer_core(words)
 
     def _read_index(self) -> Tuple[Dict[str, Any], ...]:
         index = self.path / INDEX_FILE

@@ -49,20 +49,34 @@ def query_terms(hits: ThemeHits, work: str) -> Tuple[Term, ...]:
 
 
 def work_word(term: Term) -> WorkWord:
-    """Слово заказа для поиска по полям каталога: написания архива и само слово латиницей."""
-    return WorkWord(tuple(a.lower() for a in term.alts), tuple(x for x in term.latin[:2] if x))
+    """Слово заказа для поиска по полям каталога: написания архива, само слово латиницей и как сказано."""
+    return WorkWord(tuple(a.lower() for a in term.alts), tuple(x for x in term.latin[:2] if x), term.word)
+
+
+def same_composer(composer: List[WorkWord], title: List[WorkWord], by_scores: List[WorkWord],
+                  scores: Any) -> Tuple[List[WorkWord], List[WorkWord]]:
+    """Слово, не совпавшее с остальными по композитору в индексе партитур, — не автор (#3608: «ебанем» звучит как
+    фамилия, а общих партитур с «Вагнера» нет): оно уходит в название, иначе у автора «нет пьес»."""
+    if len(by_scores) < 2:
+        return composer, title
+    core = scores.composer_core(by_scores)
+    dropped = [w for w in by_scores if w not in core]
+    return [w for w in composer if w not in dropped], title + dropped
 
 
 def work_ref(terms: Sequence[Term], key: str, scores: Any, records: Mapping[str, Mapping[str, Any]]) -> WorkRef:
     """Слова заказа → ``WorkRef``: композитор — по индексу партитур (``composer_role``), индекс не знает слова —
     по ``artist`` записей RTTTL (слово — имя автора хотя бы одной находки)."""
-    composer, title = [], []
+    composer, title, by_scores = [], [], []
     for term in terms:
         word = work_word(term)
         role = scores.composer_role(word)
         if role is None:
             role = any(word.named_in(r.get("artist")) for r in records.values())
+        elif role:
+            by_scores.append(word)
         (composer if role else title).append(word)
+    composer, title = same_composer(composer, title, by_scores, scores)
     return WorkRef(tuple(composer), tuple(title), key)
 
 
@@ -100,8 +114,11 @@ def whole_name(classic: Callable[..., ClassicPick], ref: WorkRef, work: str, see
 
 
 def composer_gap(ref: WorkRef, count: int) -> Dict[str, Any]:
-    """``played`` отказа: композитор назван, а его кандидатов нет вовсе (:data:`COMPOSER_MISSING`)."""
-    return {COMPOSER_MISSING: True} if ref.composer and not count else {}
+    """``played`` отказа: композитор назван, а его кандидатов нет вовсе (:data:`COMPOSER_MISSING`); ``composer`` —
+    имя автора словами человека (фразу о нём строит код, реплику целиком она не цитирует, #3608)."""
+    if not (ref.composer and not count):
+        return {}
+    return {COMPOSER_MISSING: True, "composer": " ".join(w.said or w.spellings[0] for w in ref.composer)}
 
 
 class PieceChain:
@@ -183,13 +200,21 @@ class PieceChain:
     def candidates(self, work: str, key: str = "") -> Tuple[WorkRef, List[WorkCandidate], Dict[str, Any]]:
         """``(WorkRef, кандидаты: партитуры и RTTTL, записи RTTTL)`` по словам произведения — без звука (их же
         читает офлайн-оценка ``scripts/research/jev_eval.py --domain music``)."""
+        marks = [time.perf_counter()]
         hits = self._dj.work_hits(work)
+        marks.append(time.perf_counter())
         records = self._records(hits.names)
         plain = {i: r for i, (r, _t) in records.items()}
         ref = work_ref(query_terms(hits, work), key, self._dj._scores, plain)
+        marks.append(time.perf_counter())
         rtttl = ref.rtttl(plain)
         hooks = hook_words(plain[c.id] for c in rtttl)  # узнаваемость партитуры — хук того же произведения (#3577)
-        return ref, composer_only(ref, [*self._dj._scores.work_candidates(ref, hooks=hooks), *rtttl]), records
+        scores = self._dj._scores.work_candidates(ref, hooks=hooks)
+        marks.append(time.perf_counter())
+        steps = zip(("поиск мелодий", "слова заказа", "партитуры"), marks, marks[1:])  # где уходит бюджет (#3608)
+        self._log().info(f"🎼 [classic] кандидаты «{work}» по шагам: "
+                         + ", ".join(f"{name} {(b - a) * 1000:.0f} мс" for name, a, b in steps))
+        return ref, composer_only(ref, [*scores, *rtttl]), records
 
     def _work_pick(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], confirmed: bool = False):
         marks = [time.perf_counter()]

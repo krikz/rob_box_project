@@ -102,8 +102,9 @@ class ThemeLinks:
         self._spawn = spawn
         self._lock = threading.Lock()  # одна запись в хранилище за раз (фоновый опоздавший ответ и старт сета)
 
-    def expand(self, library: Any, theme: str, hits: ThemeHits) -> ThemeHits:
-        """Находки темы с частями, найденными через хранилище связей или проверенные предложения LLM."""
+    def expand(self, library: Any, theme: str, hits: ThemeHits, ask: bool = True) -> ThemeHits:
+        """Находки темы с частями, найденными через хранилище связей или проверенные предложения LLM; ``ask=False`` —
+        LLM не спрашивается и не ждётся (одиночная пьеса, #3608: до 8 с на пути звука), в журнал «не понято» не пишется."""
         unresolved = list(hits.missing) or ([] if hits.names else [theme])
         path = self._db_path(library)
         if not theme.strip() or not unresolved or not path:
@@ -123,7 +124,7 @@ class ThemeLinks:
             found[part] = self._names(library, link.queries)
             self._log.info(f"🔎 [theme-links] «{part}»: связь {link.source}/{link.status} {list(link.queries)} → "
                            f"{list(found[part])}")
-        if ask_parts:
+        if ask_parts and ask:
             answered = self._ask_llm(library, path, theme, ask_parts)
             for part in ask_parts:
                 if part in answered:
