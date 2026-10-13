@@ -1527,6 +1527,13 @@ class SectionPart:
     hats: str = ""  # хэты (``X``/``x``/``g``/``.``) вместо каркаса трека (``Style.kits``)
     power: Tuple[PowerRhythm, ...] = ()  # ритмы пауэр-аккордов на такт (``arrange.pad.power_chords``)
     riffs: Tuple[str, ...] = ()  # риффы баса на такт (``arrange.bass.riff``)
+    toms: str = ""  # том-грув (``X``/``x``/``.``) в тактах секции без филла (Бо Диддли); пусто — томы только филлом
+    # Как гитара идёт за темой (:data:`FOLLOW_MODES`): ``unison`` — аккорд на каждую ноту темы такта (тутти с мелодией),
+    # ``answer`` — глушёные восьмые там, где тема молчит (ответ), ``accent`` — ритм ``power`` с акцентом на нотах темы.
+    # Пусто — ритм ``power`` как есть. Такт без темы — ``power``.
+    follow: str = ""
+    bass_follow: bool = False  # бас — тоникой в ритме темы на сетке восьмых (унисон с гитарой ``unison``)
+    lead: str = ""  # развитие хука секции как у секции с этим именем (``chorus2`` → ``chorus``: тема одним голосом)
     # Дуга громкости секции ``(смещение trim, дБ; подъём на всю секцию?)`` вместо :data:`SECTION_TRIM_DB` её вида:
     # ``trim`` стоит после выравнивателя мастер-шины, тише партии он не «вытягивает» (запись робота 13.10: палм-мьют
     # −4 дБ гитары дал куплет громче припева по середине — выравниватель).
@@ -1534,6 +1541,8 @@ class SectionPart:
 
 
 _NO_SECTION_PART = SectionPart()
+#: Режимы ``SectionPart.follow`` (``arrange.pad.follow_rhythm``).
+FOLLOW_MODES: Tuple[str, ...] = ("unison", "answer", "accent")
 
 
 def section_part(style: Optional["Style"], name: str) -> SectionPart:
@@ -1659,6 +1668,9 @@ class Style:
     # Партии секций по имени секции формы (#3594): бочка, малый, хэты, ритм гитары, рифф баса секции; секции нет —
     # таблицы трека (клуб и электроника — без записей, их треки побайтно те же).
     section_parts: Mapping[str, SectionPart] = field(default_factory=dict)
+    # Партии секций по каркасу трека (#3594, «рок разнообразный»): каркас ``Style.kits`` — подстиль трека (панк, гранж,
+    # галоп…), выбор по сиду со штрафом за недавние (``compose._kit``); его партии подставляет :func:`feel_style`.
+    kit_parts: Mapping[str, Mapping[str, SectionPart]] = field(default_factory=dict)
     # Годность синтеза (ADR-0158 §3.2): «у нас норм играет» — 1.0; ниже :data:`SYNTH_FIT_MIN` синтез-кандидата пути
     # нет (``source.source_candidates``). Правит Шифу.
     synth_fit: float = 1.0
@@ -2094,35 +2106,55 @@ _GRUNGE_LOOKS: Tuple[Tuple[int, Look], ...] = (
 #: grunge — низ 0.74 [0.52..0.80], середина 0.25, crest 13.4, LR 0.98 (эталон 0.66/0.31/13.2/0.87); при бочке/басе
 #: гранжа −35/−34 низ был 0.47. A9-модель для рока не откалибрована (classic 0.09 при записи 0.39: удары файлами паков
 #: и хвосты в модели — оценки), порог 0.05 — только страховка от трека без низа.
-_ROCK_CLASSIC_LEVEL_DB: Mapping[str, float] = {
-    "kick": -39.0, "bass": -39.0, "pad": -33.0, "lead": -47.0, "clap": -42.0, "hats": -55.0, "toms": -46.0,
-    "fx": -44.0}
-_ROCK_GRUNGE_LEVEL_DB: Mapping[str, float] = {
-    "kick": -32.0, "bass": -31.0, "pad": -33.0, "lead": -49.0, "clap": -41.0, "hats": -56.0, "toms": -45.0,
-    "fx": -44.0}
+#: Тема — главный голос (#3594, Шифу 13.10: «основная тема практически не слышна»): у лида потолок синта на
+#: ``MAX_LAYER_AMP`` (``saw``/``keys`` −49.2, ``pulse`` −44.3, ``brass`` −41.2 дБ модели), а гитара стояла на своём
+#: потолке −38.4 — лид на 11 дБ под гитарой (club: лид на 6 дБ под пэдом). Цель лида −45 (рок-лиды её достают),
+#: остальные роли сдвинуты на :data:`_ROCK_UNDER_LEAD_DB` все вместе — их соотношение (низ/середина по эталонам 07.10)
+#: прежнее, гитара (пэд −49.2 + 1.2 рисунка = −48.0) на 3 дБ под темой, как гитара под вокалом. Общий уровень
+#: выравниватель мастер-шины поднимает на 2/3 сдвига, остаток — ``Style.master`` ``makeup``.
+_ROCK_LEAD_DB = -45.0
+_ROCK_UNDER_LEAD_DB = -9.6
+
+
+def _under_lead(levels: Mapping[str, float]) -> Mapping[str, float]:
+    return {role: _ROCK_LEAD_DB if role == "lead" else db + _ROCK_UNDER_LEAD_DB for role, db in levels.items()}
+
+
+_ROCK_CLASSIC_LEVEL_DB: Mapping[str, float] = _under_lead({
+    "kick": -39.0, "bass": -39.0, "pad": -39.6, "lead": -47.0, "clap": -42.0, "hats": -55.0, "toms": -46.0,
+    "fx": -44.0})
+_ROCK_GRUNGE_LEVEL_DB: Mapping[str, float] = _under_lead({
+    "kick": -32.0, "bass": -31.0, "pad": -39.6, "lead": -49.0, "clap": -41.0, "hats": -56.0, "toms": -45.0,
+    "fx": -44.0})
+#: ``makeup`` мастер-шины рока: сдвиг :data:`_ROCK_UNDER_LEAD_DB` выравниватель (``lvlRatio`` 3) возвращает на 2/3,
+#: треть (≈ 3.2 дБ) — сюда (дефолт 9, :data:`MASTER_DEFAULTS`).
+_ROCK_MASTER: Mapping[str, float] = {"makeup": 12.0}
 _ROCK_GENRE_WINDOWS: Mapping[str, GenreWindow] = {
     "classic": GenreWindow((100, 125), ("rock_r", "acoustic", "rock_r2"), _ROCK_LOOKS, ("riff",), ("power_chords",),
                            _ROCK_CLASSIC_LEVEL_DB, 0.05),
     "grunge": GenreWindow((110, 130), ("rock_r2", "rock_l", "rock_r"), _GRUNGE_LOOKS, ("riff",), ("power_chords",),
                           _ROCK_GRUNGE_LEVEL_DB, 0.05),
 }
-#: Хэты восьмыми (акцент на доле), «толкающие» (акцент на «и»), четверти (райд): удары только на восьмых.
+#: Каркасы рока — подстили трека (#3594, ``docs/research/2026-10-13-rock-arrangement.md`` §5): хэты интро/аутро (блэнд
+#: двух дек), а партии секций — :data:`_ROCK_KIT_PARTS`. Выбор каркаса — по сиду трека со штрафом за недавние
+#: (``compose._kit``: не каркас прошлого трека), поэтому соседние треки сета — разные подстили.
 _ROCK_KITS: Mapping[str, Mapping[str, str]] = {
-    "eighths": {"hats": "X.x.X.x.X.x.X.x.", "perc": "................"},
-    "pushed": {"hats": "x.X.x.X.x.X.x.X.", "perc": "................"},
-    "quarters": {"hats": "X...x...X...x...", "perc": "................"},
+    "straight": {"hats": "X.x.X.x.X.x.X.x.", "perc": "................"},
+    "punk": {"hats": "x.x.x.x.x.x.x.x.", "perc": "................"},
+    "grunge": {"hats": "X...x...X...x...", "perc": "................"},
+    "gallop": {"hats": "X...x...X...x...", "perc": "................"},
+    "dance": {"hats": "x.X.x.X.x.X.x.X.", "perc": "................"},
 }
-#: Лид — читаемый темой (:data:`THEME_LEAD_OK`, #3522): ``saw``/``pulse`` — «гитарное» соло, ``brass``/``pluck``/``arpy``/
-#: ``keys``; бас — с низом на роботе ≥ 0.9. Гитара (В4, проба прелоада 08.10): ``fuzz`` проиграл — его патч (#3008)
-#: делит ``freq`` на 2 и модулирует ``Saw`` между 0.5 и 1.5 частоты ноты: пауэр-аккорд в регистре гитары звучит
-#: суб-октавой, низ записи 0.79 и 0.75 при бочке/басе −36 и −42 дБ (середина 0.18–0.25, LR 1.00 — гитары не слышно);
-#: ``dirt`` — без замера громкости и полос (в таблицах модели его нет). ``saw`` (замер в рамке пэда, середина 0.94) дал
-#: низ 0.39 — «чистая» гитара без перегруза; перегруз — свой ``rbx_guitar`` (фильтр до ``tanh``, пересборка образа).
+#: Лид — тема, главный голос (:data:`THEME_LEAD_OK`, #3522): только синты, которые на потолке ``amp`` достают цель
+#: лида рока −45 (``pulse`` −44.3, ``pluck`` −43.8, ``orient`` −43.2, ``brass`` −41.2); ``saw``/``keys`` (−49.2) и ``arpy``
+#: (−46.7) тише гитары по построению — сняты (#3594). Бас — с низом на роботе ≥ 0.9. Гитара (В4, проба прелоада 08.10):
+#: ``fuzz`` проиграл — его патч (#3008) делит ``freq`` на 2: пауэр-аккорд звучит суб-октавой (середина 0.18–0.25);
+#: ``saw`` (замер в рамке пэда, середина 0.94) — «чистая» гитара без перегруза; перегруз — свой ``rbx_guitar``.
 _ROCK_TIMBRES: Mapping[str, Mapping[str, Tuple[str, ...]]] = {
-    "dark": {"lead": ("saw", "pluck"), "bass": ("jbass", "bass"), "pad": ("saw",)},
-    "hard": {"lead": ("saw", "pulse", "arpy"), "bass": ("jbass", "bass"), "pad": ("saw",)},
-    "bright": {"lead": ("arpy", "pluck", "saw"), "bass": ("bass", "jbass"), "pad": ("saw",)},
-    "warm": {"lead": ("brass", "saw", "keys"), "bass": ("bass", "jbass", "subbass"), "pad": ("saw",)},
+    "dark": {"lead": ("pluck", "pulse"), "bass": ("jbass", "bass"), "pad": ("saw",)},
+    "hard": {"lead": ("pulse", "brass", "orient"), "bass": ("jbass", "bass"), "pad": ("saw",)},
+    "bright": {"lead": ("pluck", "orient", "pulse"), "bass": ("bass", "jbass"), "pad": ("saw",)},
+    "warm": {"lead": ("brass", "pluck", "orient"), "bass": ("bass", "jbass", "subbass"), "pad": ("saw",)},
 }
 #: Прогрессии по ступеням (аккорд на 2 такта): i–bVII–bVI–bVII, i–bVI–bVII–i, I–IV–bVII–IV, I–bVII–IV–I (каденция
 #: bVII→I), i–iv–v–iv, i–bVI–iv–v, I–V–vi–IV. Ступени 0, 3, 4, 5, 6 — ни одного уменьшённого аккорда в миноре и
@@ -2170,36 +2202,101 @@ _ROCK_POWER_CHUG = tuple((step, 1) for step in range(0, 16, 2))
 _ROCK_POWER_DRIVE = tuple((step, 2) for step in range(0, 16, 2))
 _ROCK_PUSH: PowerRhythm = ((0, 3), (3, 3), (6, 2), (8, 3), (11, 3), (14, 2))
 _ROCK_POWER_RHYTHMS: Tuple[PowerRhythm, ...] = (_ROCK_POWER_CHUG, _ROCK_POWER_DRIVE, _ROCK_POWER_CHUG, _ROCK_PUSH)
-#: Ритмы выше — у интро/аутро; секции тела — :data:`_ROCK_SECTION_PARTS`.
+#: Ритмы выше — у интро/аутро; секции тела — :data:`_ROCK_KIT_PARTS`.
 #: Рифф баса: такт восьмыми на тоне такта, такт с квинтой и октавой в конце (двутактовый рифф по кругу).
 _ROCK_BASS_RIFFS: Tuple[str, ...] = ("RRRRRRRR", "RRRRRRFO")
-#: Развитие песни (#3594, Шифу 13.10: «однотипность надоедает… нет никакого развития» — до этого все секции тела были
-#: одним составом и одной фигурой, отличалось только число энергии). Динамика «тихий куплет — громкий припев» гранжа:
-#: * куплет — гитара глушёная и тише (палм-мьют восьмыми с вдохом на четвёртой доле, акценты ниже, срез
-#:   :data:`_ROCK_SECTION_LPF`), хэты — каркас трека, бас педалью восьмыми на тоне; второй куплет — палм-мьют без вдоха
-#:   громче, срез открывается к припеву;
-#: * припев — открытые пауэр-аккорды (звенящие восьмые и «толчок» 3+3+2 в конце четырёхтактовой фразы), хэты восьмыми
-#:   с акцентом на долях (как райд), бас-рифф с квинтой и октавой; последние припевы (chorus2/3) — открытые восьмые
-#:   каждый такт, хэты все с акцентом;
-#: * бридж — брейкдаун половинным грувом: бочка на 1 и «и» 3, малый на 3, хэты четвертями, гитара — аккорд звенит
-#:   весь такт, бас половинными/целыми (аккорды бриджа и так вдвое длиннее — ``SECTION_HARMONY`` ``break``).
+#: Подстили трека и развитие песни (#3594). Отзывы Шифу 13.10: «нет никакого развития» (все секции тела одним
+#: составом и фигурой), затем «вечно повторяющаяся залупа… тема не слышна… рок разнообразный очень». Приёмы — каталог
+#: ``docs/research/2026-10-13-rock-arrangement.md`` (номера § ниже). Общее для всех подстилей:
+#: * гитара служит теме (§3, §6.3): в припеве — аккорд на каждую ноту темы (``unison``, тутти с мелодией, бас тоникой
+#:   в том же ритме) или ритм подстиля с акцентом на нотах темы (``accent``); в куплете — глушёные восьмые в паузах
+#:   темы (``answer``) — гитара отвечает мелодии, а не играет поверх неё. Ритм берётся из хука трека — у каждого
+#:   трека свой;
+#: * тихий куплет — громкий припев (§4, Pixies/Nirvana): дуга ``trim`` секции после выравнивателя;
+#: * последний припев — тема одним голосом (``lead`` ``chorus``: без параллельных терций drop2 — «тема сломалась»);
+#: * бридж — у каждого подстиля свой: брейкдаун половинным грувом, стоп-тайм, тутти-чаг, Бо Диддли (§2, §1.14).
 #: Интро/аутро (блэнд двух дек) — таблицы трека: под них сводятся деки.
-#: Палм-мьют куплета тише открытых аккордов: акцент 1 на доле, 0 между (``ACCENT_AMPLIFY`` 0.6/0.4 против 1.0/0.8 —
-#: ≈ −4 дБ гитары), во втором куплете — 2/1 (подъём к припеву).
 _ROCK_PALM_QUIET: PowerRhythm = tuple((step, 1, 1 if step % 4 == 0 else 0) for step in range(0, 16, 2))
-_ROCK_PALM_BREATH: PowerRhythm = _ROCK_PALM_QUIET[:6]
 _ROCK_PALM_LIFT: PowerRhythm = tuple((step, 1, 2 if step % 4 == 0 else 1) for step in range(0, 16, 2))
-_ROCK_RIFFS = ("RRRRRRRR", "RRRRRRFO")
-_ROCK_CHORUS = SectionPart(hats="X.x.X.x.X.x.X.x.", power=(_ROCK_POWER_DRIVE, _ROCK_POWER_DRIVE, _ROCK_POWER_DRIVE,
-                                                           _ROCK_PUSH), riffs=_ROCK_RIFFS)
-_ROCK_LAST_CHORUS = SectionPart(hats="X.X.X.X.X.X.X.X.", power=(_ROCK_POWER_DRIVE,), riffs=_ROCK_RIFFS)
-_ROCK_SECTION_PARTS: Mapping[str, SectionPart] = {
-    "verse": SectionPart(power=(_ROCK_PALM_QUIET, _ROCK_PALM_BREATH), riffs=("RRRRRRRR",), trim=(-3.5, False)),
-    "verse2": SectionPart(power=(_ROCK_PALM_LIFT,), riffs=("RRRRRRRR",), trim=(-2.5, False)),
-    "chorus": _ROCK_CHORUS, "chorus2": _ROCK_LAST_CHORUS,
-    "chorus3": _ROCK_LAST_CHORUS,
-    "bridge": SectionPart(kick="X.........X.....", snare="........X.......", hats="X...x...X...x...",
-                          power=(((0, 16),),), riffs=("R...F...", "R.......")),
+_ROCK_DOWNSTROKES: PowerRhythm = tuple((step, 2, 2) for step in range(0, 16, 2))  # панк: даунстроки восьмыми (§3)
+#: Галоп (§1.13, §3): восьмая + две 16-х на каждую долю, глушёный (куплет) и открытый (последний припев).
+_ROCK_GALLOP_MUTED: PowerRhythm = tuple(hit for beat in range(0, 16, 4)
+                                        for hit in ((beat, 2, 1), (beat + 2, 1, 0), (beat + 3, 1, 0)))
+_ROCK_GALLOP_OPEN: PowerRhythm = tuple(hit for beat in range(0, 16, 4)
+                                       for hit in ((beat, 2, 3), (beat + 2, 1, 2), (beat + 3, 1, 2)))
+_ROCK_RING: PowerRhythm = ((0, 16),)  # аккорд звенит такт
+_ROCK_STOP: PowerRhythm = ((0, 4, 3),)  # стоп-тайм: удар на 1 и тишина
+_H8_SOFT, _H_RIDE, _H_ALL, _H_QUARTER = "x.x.x.x.x.x.x.x.", "X.x.X.x.X.x.X.x.", "X.X.X.X.X.X.X.X.", "X...x...X...x..."
+_HALF_KICK, _HALF_SNARE = "X.........X.....", "........X......."
+_ROCK_HALF_BRIDGE = SectionPart(kick=_HALF_KICK, snare=_HALF_SNARE, hats=_H_QUARTER, power=(_ROCK_RING,),
+                                riffs=("R...F...", "R......."))
+_ROCK_STOP_BRIDGE = SectionPart(kick="X...............", snare="X...............", hats="X...............",
+                                power=(_ROCK_STOP,), riffs=("R.......",))
+_ROCK_LAST = dict(lead="chorus", trim=(0.0, False))
+
+
+def _song(verse: SectionPart, verse2: SectionPart, chorus: SectionPart, last: SectionPart,
+          bridge: SectionPart) -> Mapping[str, SectionPart]:
+    return {"verse": verse, "verse2": verse2, "chorus": chorus, "chorus2": last, "chorus3": last, "bridge": bridge}
+
+
+_ROCK_KIT_PARTS: Mapping[str, Mapping[str, SectionPart]] = {
+    # Classic/hard (§1.1–1.3, §1.10): куплет — восьмые хэта без акцентов и ответ гитары, второй куплет — призраки
+    # малого; припев — райд, тутти с темой; последний — все хэты с акцентом, открытые восьмые с акцентом на теме.
+    "straight": _song(
+        SectionPart(hats=_H8_SOFT, power=(_ROCK_PALM_QUIET,), follow="answer", riffs=("RRRRRRRR",), trim=(-3.5, False)),
+        SectionPart(hats=_H8_SOFT, snare="....X..x....X.x.", power=(_ROCK_PALM_LIFT,), follow="answer",
+                    riffs=("RRRRRRRR",), trim=(-2.5, False)),
+        SectionPart(hats=_H_RIDE, power=(_ROCK_POWER_DRIVE,), follow="unison", bass_follow=True),
+        SectionPart(hats=_H_ALL, power=(_ROCK_POWER_DRIVE,), follow="accent", riffs=_ROCK_BASS_RIFFS, **_ROCK_LAST),
+        _ROCK_HALF_BRIDGE),
+    # Punk (§1.6, §1.7, §3 даунстроки): куплет — панк-бит, малый на каждую «&»; припев — дабл-тайм, хэты 16-ми;
+    # бридж — стоп-тайм.
+    "punk": _song(
+        SectionPart(kick="X....X..X....X..", snare="..X...X...X...X.", hats=_H8_SOFT, power=(_ROCK_PALM_LIFT,),
+                    follow="answer", riffs=("RRRRRRRR",), trim=(-3.0, False)),
+        SectionPart(kick="X....X..X....X..", snare="..X...X...X...X.", hats=_H8_SOFT, power=(_ROCK_DOWNSTROKES,),
+                    follow="accent", riffs=("RRRRRRRR",), trim=(-2.0, False)),
+        SectionPart(kick="X...X...X...X...", snare="..X...X...X...X.", hats="xxxxxxxxxxxxxxxx",
+                    power=(_ROCK_DOWNSTROKES,), follow="accent", riffs=("RRRRRRRR",)),
+        SectionPart(kick="X...X...X...X...", snare="..X...X...X...X.", hats="XxxxXxxxXxxxXxxx",
+                    power=(_ROCK_DOWNSTROKES,), follow="accent", riffs=("RRRRRRRR", "RRRRRRFO"), **_ROCK_LAST),
+        _ROCK_STOP_BRIDGE),
+    # Grunge (§4 громко-тихо-громко, §1.5): куплет полутемпом и тихо (−5 дБ), гитара редкими ответами; второй куплет
+    # — прямой бит; припев — стена: открытые восьмые с акцентом на теме, все хэты, громче обычного припева.
+    "grunge": _song(
+        SectionPart(kick=_HALF_KICK, snare=_HALF_SNARE, hats=_H_QUARTER, power=(((0, 2, 1), (8, 2, 1)),),
+                    follow="answer", riffs=("R...R...",), trim=(-5.0, False)),
+        SectionPart(hats=_H_QUARTER, power=(_ROCK_PALM_QUIET,), follow="answer", riffs=("RRRRRRRR",),
+                    trim=(-3.5, False)),
+        SectionPart(kick="X.....X.X.....X.", hats=_H_ALL, power=(_ROCK_POWER_DRIVE,), follow="accent",
+                    riffs=("RRRRRRRR",), trim=(0.0, False)),
+        SectionPart(kick="X.....X.X.....X.", hats=_H_ALL, power=(_ROCK_POWER_DRIVE,), follow="accent",
+                    riffs=("RRRRRRRR",), **_ROCK_LAST),
+        _ROCK_STOP_BRIDGE),
+    # Metal-lite (§1.13, §3 галоп): куплет — глушёный галоп; припев — тутти с темой, бас в унисон; последний припев —
+    # открытый галоп и галоп бочки; бридж — брейкдаун: чаг восьмыми, бочка дублирует гитару (§2).
+    "gallop": _song(
+        SectionPart(hats=_H_QUARTER, power=(_ROCK_GALLOP_MUTED,), riffs=("RRRRRRRR",), trim=(-3.0, False)),
+        SectionPart(hats=_H_QUARTER, power=(_ROCK_GALLOP_MUTED,), follow="accent", riffs=("RRRRRRRR",),
+                    trim=(-2.0, False)),
+        SectionPart(hats=_H_RIDE, power=(_ROCK_POWER_DRIVE,), follow="unison", bass_follow=True),
+        SectionPart(kick="X.XXX.XXX.XXX.XX", hats=_H_QUARTER, power=(_ROCK_GALLOP_OPEN,), riffs=("RRRRRRRR",),
+                    **_ROCK_LAST),
+        SectionPart(kick="X.X.X.X.X.X.X.X.", snare=_HALF_SNARE, hats="X...............",
+                    power=(tuple((step, 1, 2) for step in range(0, 16, 2)),), riffs=("RRRRRRRR",))),
+    # Indie/dance-punk (§1.11): бочка на каждую долю, хэты на «и»; бас октавами; бридж — Бо Диддли томами (§1.14).
+    "dance": _song(
+        SectionPart(kick="X...X...X...X...", hats="..x...x...x...x.", power=(_ROCK_PALM_QUIET,), follow="answer",
+                    riffs=("RORORORO",), trim=(-3.0, False)),
+        SectionPart(kick="X...X...X...X...", hats="..x...x...x...x.", power=(_ROCK_PALM_LIFT,), follow="answer",
+                    riffs=("RORORORO",), trim=(-2.0, False)),
+        SectionPart(kick="X...X...X...X...", hats="x.X.x.X.x.X.x.X.", power=(_ROCK_POWER_DRIVE,), follow="unison",
+                    bass_follow=True),
+        SectionPart(kick="X...X...X...X...", hats=_H_ALL, power=(_ROCK_POWER_DRIVE,), follow="accent",
+                    riffs=("RORORORO",), **_ROCK_LAST),
+        SectionPart(kick=_HALF_KICK, snare="................", hats=_H8_SOFT, toms="X..x..x...x.x...",
+                    power=(_ROCK_RING,), riffs=("R..R..R.",))),
 }
 #: Срез гитары (``lpf_roles`` — только пэд: лид — тема, ему читаемость): куплет глушёный 1 кГц, второй куплет
 #: открывается к припеву за секцию; хвост блэнда закрывается, как у клуба.
@@ -2228,7 +2325,7 @@ _ROCK_STYLE = Style(
                 "toms": ("muldjord_tom1_08", "muldjord_tom2_08", "muldjord_tom3_08", "muldjord_tom4_09")},
     backbeat_kinds=("intro_low", "build", "build2", "drop", "drop2", "break", "outro"),
     roll_bars=0, fill_joints=True, clap_fill="cut", tom_fills=_ROCK_TOM_FILLS, fx_roles=("crash",),
-    power_rhythms=_ROCK_POWER_RHYTHMS, bass_riffs=_ROCK_BASS_RIFFS, section_parts=_ROCK_SECTION_PARTS,
+    power_rhythms=_ROCK_POWER_RHYTHMS, bass_riffs=_ROCK_BASS_RIFFS, kit_parts=_ROCK_KIT_PARTS, master=_ROCK_MASTER,
 )
 
 # ── Стиль ``jazz`` (ADR-0153 S6): head–solo–head, свинг ≈ 1.5–1.7, walking, comping, соло по сменам темы ──────────
@@ -2465,6 +2562,13 @@ def genre_style(style: Style, genre: str = DEFAULT_GENRE) -> Style:
                    a9_model_low=style.a9_model_low if window.a9_model_low is None else window.a9_model_low)
 
 
+def feel_style(style: Style, kit: str) -> Style:
+    """Стиль трека с каркасом ``kit``: партии секций его подстиля (``Style.kit_parts``, #3594); каркаса в таблице нет —
+    стиль как есть. Единственная точка подстановки, как :func:`genre_style`."""
+    parts = style.kit_parts.get(kit)
+    return style if parts is None else replace(style, section_parts=parts)
+
+
 #: Коридоры регистров стиля по умолчанию (умолчание хука ``arrange.hook``) и объединение ролей сайдчейна всех
 #: стилей. Валидатор модели берёт регистры и сайдчейн из стиля трека (``Track.style``, ADR-0153 S1).
 REGISTERS: Mapping[str, Tuple[int, int]] = STYLES[DEFAULT_STYLE].registers
@@ -2476,7 +2580,7 @@ FORM_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.
 GENRE_NAMES: frozenset = frozenset(name for st in STYLES.values() for name in st.genre_windows)
 
 __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE_NAMES", "GenreWindow",
-            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "SectionPart", "PowerRhythm", "section_part", "genre_style", "THEME_SECTION",
+            "PAD_WIDEN", "REGISTERS", "STYLES", "STYLE_WORDS", "Style", "SectionPart", "PowerRhythm", "section_part", "feel_style", "FOLLOW_MODES", "genre_style", "THEME_SECTION",
             "THEME_MAX_BARS", "THEME_REF_NOTES", "THEME_REF_MATCH_MIN", "CLASSIC_REF_MATCH_MIN",
             "CLASSIC_HISTORY_KIT", "KEY_NOTE_WORDS", "KEY_SIGN_WORDS", "KEY_MODE_STEMS", "KEY_TITLE_MODES",
             "CHOOSER_WEIGHTS", "PLAY_COUNT_WINDOW_SEC", "PLAY_HISTORY_LIMIT",

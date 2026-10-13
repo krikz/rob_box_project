@@ -125,21 +125,24 @@ def _section_at(track, bar: int):
     return next(sec for start, sec in _bars(track) if start <= bar < start + sec.bars)
 
 
+def _feel(track):
+    """Стиль трека с подстилем его каркаса (``knowledge.feel_style``, #3594)."""
+    return kn.feel_style(ROCK, track.history_key.kit)
+
+
 def test_bass_riff_plays_eighths_on_the_chord_tones(tracks):
-    """Бас — восьмые риффа секции (``Style.section_parts``, иначе ``Style.bass_riffs``): первая восьмая такта — тон
-    такта, дальше тон, его чистая квинта или октава (без хроматики, в ладу); такт заполнен целиком."""
+    """Бас — восьмые риффа (партии секции подстиля, иначе ``Style.bass_riffs``; в ритме темы — ``bass_follow``):
+    первая восьмая такта — тон такта, дальше тон, его чистая квинта или октава (без хроматики, в ладу); такт заполнен
+    целиком."""
     for _plan_, track, _program, _by in tracks:
         assert track.history_key.bass_figure == "riff"
         scale = kn.scale_pitch_classes(track.key.root, track.key.mode)
         for bar, line in _by_bar(track.parts["bass"].pitches).items():
-            riffs = kn.section_part(ROCK, _section_at(track, bar).name).riffs or ROCK.bass_riffs
             root = line[0].midi % 12
             assert line[0].beat % BEATS_PER_BAR == 0
             assert all((e.beat * 2) % 1 == 0 and e.dur_beats % 0.5 == 0 for e in line), "восьмые"
             assert all((e.midi - root) % 12 in (0, 7) and e.midi % 12 in scale for e in line), (bar, line)
             assert sum(e.dur_beats for e in line) == BEATS_PER_BAR
-            riff = riffs[bar % len(riffs)]
-            assert len(line) == len(riff.replace(".", ""))
 
 
 def _steps(pattern: str):
@@ -147,100 +150,156 @@ def _steps(pattern: str):
 
 
 def test_backbeat_on_two_and_four_and_kick_on_the_rock_pattern(tracks):
-    """Малый — на 2 и 4 в каждом такте куплета/припева (бридж — свой малый партии секции, половинный грув), кроме такта
-    филла (там молчит с последней доли); бочка припева — рисунок окна (рок: 1, «и» 2, 3; гранж — плюс «и» 4)."""
+    """Малый — бэкбит 2/4 или малый партии секции подстиля в каждом такте тела, кроме такта филла (там молчит с
+    последней доли); бочка секции без своей — рисунок окна по энергии."""
     for plan, track, _program, _by in tracks:
         clap, kick = track.parts["clap"].grid, track.parts["kick"].grid
-        drop_kick = kn.genre_style(ROCK, plan.genre).looks[0][1].kick
+        feel = _feel(track)
         for start, sec in _bars(track):
             if kn.section_kind(sec.name) not in ROCK.backbeat_kinds:
                 continue
-            snare = kn.section_part(ROCK, sec.name).snare
+            part = kn.section_part(feel, sec.name)
             for bar in range(start, start + sec.bars - 1):
-                assert _bar_steps(clap, bar) == (_steps(snare) if snare else list(BACKBEAT)), (sec.name, bar)
+                assert _bar_steps(clap, bar) == (_steps(part.snare) if part.snare else list(BACKBEAT)), (sec.name, bar)
+                if part.kick:
+                    assert _bar_steps(kick, bar) == _steps(part.kick), (sec.name, bar)
             last = start + sec.bars - 1
             assert all(s < 12 for s in _bar_steps(clap, last)) and all(s < 12 for s in _bar_steps(kick, last))
-            if sec.name == "chorus2":
-                assert _bar_steps(kick, start) == [i for i, ch in enumerate(drop_kick) if ch == "X"]
 
 
-# ── #3594: секции тела развиваются как песня — куплет, припев, бридж различаются партиями, не только энергией ──────
+# ── #3594: подстили трека и песня — секции различаются партиями, гитара и бас служат теме ────────────────────────────
 
 def _pitched(part, start: int, bars: int):
     return [e for e in part.pitches if start * BEATS_PER_BAR <= e.beat < (start + bars) * BEATS_PER_BAR]
 
 
+@pytest.fixture(scope="module")
+def feels():
+    """Треки всех подстилей рока (каркасы ``ROCK.kits``): сиды подряд, по 3 трека сета с хуками RTTTL, пока каждый
+    каркас не встретится в треке с бриджем и в треке со вторым куплетом."""
+    found: dict = {}
+    for seed in range(40):
+        plan = _plan("нирвана", seed, "grunge" if seed % 2 else "classic", hooks=True)
+        history: list = []
+        for no in (1, 2, 3):
+            track = compose(plan, no, history=history, melodies=MELODIES)
+            validate(track)
+            history.insert(0, track_composition(track))
+            names = {sec.name for sec in track.form.sections}
+            for need in ("bridge", "verse2"):
+                if need in names:
+                    found.setdefault((track.history_key.kit, need), (track, render(track, "A")))
+        if len(found) == 2 * len(ROCK.kits):
+            break
+    assert {kit for kit, _n in found} == set(ROCK.kits), sorted(found)
+    return found
+
+
+def test_set_tracks_take_different_rock_feels(tracks):
+    """Соседние треки сета — разные подстили (каркас не повторяет прошлый трек, ``compose._kit``), и каждый каркас рока
+    — подстиль с партиями секций (``Style.kit_parts``)."""
+    assert set(ROCK.kit_parts) == set(ROCK.kits)
+    for (plan, a, _p, _b), (plan2, b, _p2, _b2) in zip(tracks, tracks[1:]):
+        if plan is plan2:
+            assert a.history_key.kit != b.history_key.kit
+
+
 def _signature(track, start: int, sec):
-    """Что играет секция (без последнего такта — там филл): бочка, малый, хэты, ритм гитары, бас, срез гитары."""
+    """Что играет секция (без последнего такта — там филл): бочка, малый, хэты, ритм гитары, бас."""
     body = range(start, start + sec.bars - 1)
     drums = tuple(tuple(tuple(_bar_steps(track.parts[r].grid, bar % (len(track.parts[r].grid.steps) // STEPS_PER_BAR)))
                         for bar in body) for r in ("kick", "clap", "hats"))
-    tonal = tuple(tuple(tuple(sorted({(round(e.beat % BEATS_PER_BAR * 4), round(e.dur_beats * 4))
+    tonal = tuple(tuple(tuple(sorted({(round(e.beat % BEATS_PER_BAR * 4), round(e.dur_beats * 4), e.accent)
                                       for e in _pitched(track.parts[r], bar, 1)})) for bar in body)
                   for r in ("pad", "bass"))
-    i = [s.name for s in track.form.sections].index(sec.name)
-    return drums, tonal, track.mix.lpf.get("pad", ((0.0, 0.0),) * len(track.form.sections))[i]
+    return drums, tonal
 
 
-def test_body_sections_are_not_one_row(tracks):
-    """Тело трека — не одна строка (#3594, Шифу 13.10: «нет никакого развития»): у куплета, припева и бриджа разные
-    партии (бочка/малый/хэты/ритм гитары/бас/срез), а не одно число энергии."""
-    for _plan_, track, _program, _by in tracks:
-        body = [(start, sec) for start, sec in _bars(track) if sec.name in ROCK.section_parts]
-        kinds = {kn.section_kind(sec.name).rstrip("2") for _s, sec in body}
-        rows = {kn.section_kind(sec.name).rstrip("2"): _signature(track, start, sec) for start, sec in body}
-        assert len(set(rows.values())) == len(kinds) >= 2, (track.history_key.template, sorted(rows))
+def test_body_sections_are_not_one_row_and_feels_differ(feels):
+    """Тело трека — не одна строка (Шифу 13.10: «нет никакого развития»): куплет, припев и бридж играют разное; и
+    подстили между собой — разное (бочка/малый/хэты куплета и припева)."""
+    for (kit, _need), (track, _program) in feels.items():
+        rows = {kn.section_kind(sec.name).rstrip("2"): _signature(track, start, sec)
+                for start, sec in _bars(track) if sec.name in ("verse", "chorus", "bridge")}
+        assert len(set(rows.values())) == len(rows) >= 2, (kit, sorted(rows))
+    drums = {kit: tuple(_signature(track, start, sec)[0] for start, sec in _bars(track) if sec.name in ("verse", "chorus"))
+             for (kit, need), (track, _p) in feels.items() if need == "verse2"}
+    assert len(set(drums.values())) == len(drums), "подстили отличаются ударными куплета и припева"
 
 
-def test_verse_is_palm_muted_and_chorus_rings_open(tracks):
-    """Куплет — гитара глушёная и тише (каждый удар — 16-я, акцент ≤ 1, срез гитары закрыт); припев — открытые
-    аккорды (удары ≥ восьмой, акцент ≥ 2), срез снят; второй куплет громче первого и открывает срез к припеву."""
-    for _plan_, track, _program, _by in tracks:
-        lpf = dict(zip([s.name for s in track.form.sections], track.mix.lpf["pad"]))
+def test_guitar_and_bass_follow_the_theme(feels):
+    """Гитара служит теме: ``unison`` — аккорд на каждой ноте темы такта, ``answer`` — глушёные удары только в паузах
+    темы, ``accent`` — акцент 3 там, где нота темы, 1 — где её нет; бас ``bass_follow`` — тоника на восьмых нот темы."""
+    checked = set()
+    for (kit, _need), (track, _program) in feels.items():
+        feel = _feel(track)
+        lead = track.parts["lead"].pitches
         for start, sec in _bars(track):
-            pad_notes = _pitched(track.parts["pad"], start, sec.bars)
-            if sec.name.startswith("verse"):
-                assert {e.dur_beats for e in pad_notes} == {0.25}, sec.name
-                assert max(e.accent for e in pad_notes) <= (1 if sec.name == "verse" else 2), "палм-мьют тише припева"
-                assert lpf[sec.name][0] <= 1000.0 and (lpf[sec.name][1] > lpf[sec.name][0]) == (sec.name == "verse2")
-            if sec.name.startswith("chorus"):
-                assert min(e.dur_beats for e in pad_notes) >= 0.5 and lpf[sec.name] == (kn.LPF_OPEN, kn.LPF_OPEN)
-                assert min(e.accent for e in pad_notes) >= 2, "припев — открытые аккорды в полный акцент"
-        lead_lpf = track.mix.lpf.get("lead", ((kn.LPF_OPEN, kn.LPF_OPEN),) * len(track.form.sections))
-        assert set(lead_lpf[:-1]) == {(kn.LPF_OPEN, kn.LPF_OPEN)}, "лид — тема: срез только в хвосте блэнда"
+            part = kn.section_part(feel, sec.name)
+            for bar in range(start, start + sec.bars):
+                notes = _pitched(track.parts["lead"], bar, 1)
+                onsets = {round(e.beat * 4) % 16 for e in notes}
+                sounding = {s % 16 for e in lead for s in range(round(e.beat * 4), max(round(e.beat * 4) + 1,
+                                                                                       round((e.beat + e.dur_beats) * 4)))
+                            if s // 16 == bar}
+                hits = {round(e.beat * 4) % 16: e.accent for e in _pitched(track.parts["pad"], bar, 1)}
+                if not part.follow or len(onsets) < 2 or not hits:
+                    continue
+                if part.follow == "unison":
+                    assert set(hits) == onsets, (kit, sec.name, bar)
+                elif part.follow == "answer" and len(set(hits) - sounding) >= 2:
+                    assert not set(hits) & sounding, (kit, sec.name, bar)
+                elif part.follow == "accent":
+                    assert all((a == 3) == bool({s, s + 1} & onsets) for s, a in hits.items()), (kit, sec.name, bar)
+                checked.add(part.follow)
+                if part.bass_follow:
+                    bass_on = {round(e.beat * 2) % 8 for e in _pitched(track.parts["bass"], bar, 1)}
+                    assert bass_on == {0} | {s // 2 for s in onsets}, (kit, sec.name, bar)
+    assert checked == set(kn.FOLLOW_MODES), checked
 
 
-def test_quiet_verse_loud_chorus_in_the_volume_arc(tracks):
-    """Дуга громкости программы (``trim`` после выравнивателя мастер-шины): куплет тише припева (выравниватель
-    вытягивал тихий палм-мьют — запись робота 13.10), второй куплет громче первого, последний припев — пик; интро и
-    хвост блэнда — как у клуба (деки сводятся без скачка)."""
-    for _plan_, track, program, _by in tracks:
+def test_theme_is_the_loudest_tonal_voice_and_sings_one_line_in_the_last_chorus(feels):
+    """Тема — главный голос (Шифу 13.10: «тема практически не слышна»): уровень лида в модели выше гитары и всех ролей
+    середины и верха (малый, хэты, томы, крэш); бочка и бас гранжа громче — они в полосе ниже 150 Гц, тему не глушат;
+    последний припев — тема одним голосом (без параллельных терций ``drop2``)."""
+    for (kit, _need), (track, _program) in feels.items():
+        lv = track.mix.level_db
+        assert all(lv["lead"] > lv[r] for r in ("pad", "clap", "hats", "toms", "fx")), (kit, lv)
+        assert lv["lead"] - lv["pad"] >= 2.5, (kit, lv)
+        start = 0
+        for sec in track.form.sections:
+            if sec.name in ("chorus2", "chorus3"):
+                notes = _pitched(track.parts["lead"], start, sec.bars)
+                assert len({e.beat for e in notes}) == len(notes), (kit, sec.name, "две ноты темы разом")
+            start += sec.bars
+
+
+def test_quiet_verse_loud_chorus_in_the_volume_arc(feels):
+    """Дуга громкости программы (``trim`` после выравнивателя мастер-шины): куплет тише припева, последний припев —
+    пик; интро и хвост блэнда — как у клуба (деки сводятся без скачка)."""
+    for (kit, _need), (track, program) in feels.items():
         trim = {sec.name: offset for sec, (_b, offset, _l) in zip(track.form.sections, program.arc)}
         assert trim["intro"] == kn.SECTION_TRIM_DB["intro"][0] and trim["outro_tail"] == kn.SECTION_TRIM_DB["outro_tail"][0]
-        assert trim["verse"] <= trim["chorus"] - 2.0, trim
-        if "verse2" in trim:
-            assert trim["verse"] < trim["verse2"] < trim["chorus2"] == max(trim.values()), trim
+        assert trim["verse"] <= trim["chorus"] - 2.0, (kit, trim)
+        last = trim.get("chorus2")
+        assert last is None or last == max(trim.values()), (kit, trim)
 
 
-def test_bridge_is_a_half_time_breakdown(tracks):
-    """Бридж — половинный грув: бочка партии секции (она же триггер сайдчейна), малый на 3, гитара — аккорд на такт
-    звенит весь такт, бас — не больше двух нот в такте."""
-    bridges = 0
-    for _plan_, track, _program, _by in tracks:
+def test_bridge_is_its_own_section(feels):
+    """Бридж каждого подстиля — свой приём (брейкдаун полутемпом, стоп-тайм, тутти-чаг, Бо Диддли): бочка партии
+    секции — она же триггер сайдчейна; бас — не больше двух нот в такте, кроме тутти-чага."""
+    for (kit, need), (track, _program) in feels.items():
+        if need != "bridge":
+            continue
+        part = kn.section_part(_feel(track), "bridge")
         names = [s.name for s in track.form.sections]
-        for start, sec in _bars(track):
-            if sec.name != "bridge":
-                continue
-            bridges += 1
-            part = kn.section_part(ROCK, "bridge")
-            for bar in range(start, start + sec.bars - 1):
-                assert _bar_steps(track.parts["kick"].grid, bar) == _steps(part.kick)
-                assert _bar_steps(track.parts["clap"].grid, bar) == [8]
-                assert len(_pitched(track.parts["bass"], bar, 1)) <= 2
-                assert {e.dur_beats for e in _pitched(track.parts["pad"], bar, 1)} == {float(BEATS_PER_BAR)}
-            if track.mix.duck:
-                assert track.mix.duck[names.index("bridge")].trigger == tuple(_steps(part.kick))
-    assert bridges, "в фикстуре нет бриджа — тест ничего не проверил"
+        start = dict((sec.name, s) for s, sec in _bars(track))["bridge"]
+        for bar in range(start, start + 7):
+            assert _bar_steps(track.parts["kick"].grid, bar) == _steps(part.kick), (kit, bar)
+            if part.toms:
+                assert _bar_steps(track.parts["toms"].grid, bar) == _steps(part.toms), (kit, bar)
+        if track.mix.duck:
+            assert track.mix.duck[names.index("bridge")].trigger == tuple(i for i, c in enumerate(part.kick) if c == "X")
 
 
 def test_intro_and_outro_keep_the_track_tables(tracks):
@@ -256,26 +315,26 @@ def test_intro_and_outro_keep_the_track_tables(tracks):
                 assert _bar_steps(hats, bar % (len(hats.steps) // STEPS_PER_BAR)) == kit
                 rhythm_ = ROCK.power_rhythms[bar % len(ROCK.power_rhythms)]
                 onsets = sorted({round(e.beat % BEATS_PER_BAR * 4) for e in _pitched(track.parts["pad"], bar, 1)})
-                assert onsets == [step for step, _n in rhythm_], (sec.name, bar)
+                assert onsets == [step for step, *_rest in rhythm_], (sec.name, bar)
 
 
 def test_tom_fills_on_every_section_joint_and_crash_after_them(tracks):
-    """Томы бьют только в последнем такте секций (филл на стыке, рисунок ``Style.tom_fills`` по сиду), крэш (``fx``,
-    файл пака) — на первой доле секций куплет/припев/бридж; события программы = модель."""
+    """Томы бьют в последнем такте секций (филл на стыке, рисунок ``Style.tom_fills`` по сиду) и том-грувом партии
+    секции; крэш (``fx``, файл пака) — на первой доле секций куплет/припев/бридж; события программы = модель."""
     for _plan_, track, program, by_role in tracks:
         toms = track.parts["toms"]
+        feel = _feel(track)
         assert toms.synth_or_sample in ROCK.drum_files["toms"]
         assert kn.SAMPLE_CATALOG[track.parts["fx"].synth_or_sample].role == "crash"
-        fills = set()
         for start, sec in _bars(track):
+            groove = _steps(kn.section_part(feel, sec.name).toms)
             for bar in range(start, start + sec.bars):
                 steps = _bar_steps(toms.grid, bar)
                 if bar < start + sec.bars - 1 or "toms" not in sec.roles:
-                    assert not steps or "toms" not in sec.roles, (sec.name, bar)
+                    assert steps in ([], groove) or "toms" not in sec.roles, (sec.name, bar)
                     continue
                 pattern = "".join("x" if i in steps else "." for i in range(STEPS_PER_BAR))
                 assert pattern in {p.replace("X", "x") for p in ROCK.tom_fills}, (sec.name, pattern)
-                fills.add(pattern)
         model = sorted(round(i / 4, 3) for i, st in enumerate(toms.grid.steps) if st.on and _sounds(track, "toms", i / 4))
         assert sorted(round(e.beat, 3) for e in by_role["toms"] if e.amp > 0) == model, "события томов = модель"
         crash = sorted(round(e.beat, 3) for e in by_role["fx"])
