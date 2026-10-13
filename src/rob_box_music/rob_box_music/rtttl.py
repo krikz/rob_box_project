@@ -17,11 +17,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-__all__ = ["CONTOUR_NOTES", "THEME_HOOKS", "consensus_order", "contour", "parse_rtttl"]
+__all__ = ["CONTOUR_NOTES", "THEME_HOOKS", "consensus_order", "contour", "fix_octaves", "parse_rtttl"]
+
+_LOG = logging.getLogger(__name__)
 
 #: Смещение буквы ноты в полутонах от C.
 _NOTE_SEMITONE = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11}
@@ -97,6 +100,132 @@ def parse_rtttl(rtttl: str) -> Tuple[str, int, List[Tuple[Optional[int], float]]
         midi = None if note == "p" else _to_midi(note, acc, octave)
         notes.append((midi, beats))
     return name, bpm, notes
+
+
+#: Доля нот с явной октавой, с которой мелодия «с явными октавами» (#3580): остальные 30 % — вероятно, пропуск автора.
+OCTAVE_EXPLICIT_SHARE = 0.7
+#: Скачок в полутонах, с которого нота без октавы считается ошибкой: целая октава и больше, с возвратом.
+OCTAVE_LEAP = 12
+#: Сколько подряд идущих нот без октавы правится как одна ошибка (пара ``32d_,e`` на октаву выше соседей).
+OCTAVE_RUN_MAX = 2
+#: Больше этой доли звучащих нот править нельзя: столько «выбросов» — уже приём автора (перекличка октав), не опечатки.
+OCTAVE_FIX_MAX_SHARE = 0.2
+
+
+def _sounding_tokens(rtttl: str):
+    """``(имя, настройки, [токены], default_oct)``: токены — ``None`` (пустой) или ``(raw, match)``; ``None``, если
+    строка не RTTTL (вызывающий оставляет её как есть — ошибку даст ``parse_rtttl``)."""
+    try:
+        name, settings, data = rtttl.strip().split(":", 2)
+    except ValueError:
+        return None
+    default_oct = 5
+    for kv in settings.split(","):
+        key, _, value = kv.partition("=")
+        if key.strip().lower() == "o" and value.strip().isdigit():
+            default_oct = int(value)
+    tokens = []
+    for raw in data.split(","):
+        token = raw.strip()
+        if re.match(r"^\d+\.", token):
+            token = token.replace(".", "", 1) + "."
+        match = _TOKEN_RE.match(token) if token else None
+        if token and not match:
+            return None
+        tokens.append(match)
+    return name, settings, tokens, default_oct
+
+
+def _octave_of(match) -> Optional[int]:
+    raw = match.group("oct") or match.group("oct2")
+    return int(raw) if raw else None
+
+
+def _spiked(pitches: Sequence[int], first: int, last: int) -> bool:
+    """Нота (или пара) ``pitches[first..last]`` — выброс: скачок ≥ октавы от предыдущей ноты, и следующая нота
+    вернулась в пределы октавы от предыдущей (вверх и назад — или вниз и назад)."""
+    if first < 1 or last + 1 >= len(pitches):
+        return False
+    into, back = pitches[first] - pitches[first - 1], pitches[last + 1] - pitches[first - 1]
+    return abs(into) >= OCTAVE_LEAP and abs(back) < OCTAVE_LEAP
+
+
+def _implicit_runs(sounding) -> List[Tuple[int, int]]:
+    """Серии подряд идущих звучащих нот без октавы: ``[(первая, последняя)]``."""
+    runs: List[Tuple[int, int]] = []
+    for n, match in enumerate(sounding):
+        if _octave_of(match) is not None:
+            continue
+        if runs and runs[-1][1] == n - 1:
+            runs[-1] = (runs[-1][0], n)
+        else:
+            runs.append((n, n))
+    return runs
+
+
+def _octave_fixes(sounding, default_oct: int) -> dict:
+    """``{id(токен): октава}`` для нот, где пропуск октавы — выброс (пусто — править нечего или нельзя)."""
+    implicit = sum(_octave_of(m) is None for m in sounding)
+    if not implicit or len(sounding) - implicit < OCTAVE_EXPLICIT_SHARE * len(sounding):
+        return {}
+    pitches = [_to_midi(m.group("note").lower(), m.group("acc"), _octave_of(m) or default_oct) for m in sounding]
+    found = []
+    for first, last in _implicit_runs(sounding):
+        signature = frozenset(pitches[first:last + 1])
+        found.append((signature, _fix_run(sounding, pitches, first, last)))
+    fixes: dict = {}
+    for signature, fix in found:
+        # «выброс» той же высоты (класс ноты и октава) в двух и более местах — приём автора, опечатка одиночна
+        if fix and not any(sum(p in sig and bool(f) for sig, f in found) > 1 for p in signature):
+            fixes.update(fix)
+    return fixes if len(fixes) <= OCTAVE_FIX_MAX_SHARE * len(sounding) else {}
+
+
+def fix_octaves(rtttl: str, label: str = "") -> str:
+    """Исправить в RTTTL ноты без октавы, которые автор пропустил (#3580): у них октава по умолчанию ``o=``, а
+    соседи записаны явно и в другой («Celebrat»: ``o=6``, вся мелодия ``…e5,32c_5,32d5``, но ``32d_`` и ``c`` без
+    октавы — на октаву выше, в хуке скачок 66→81→70).
+
+    Правка — только если у ≥ :data:`OCTAVE_EXPLICIT_SHARE` звучащих нот октава явная, нот без октавы подряд не больше
+    :data:`OCTAVE_RUN_MAX`, они стоят после явной ноты и дают выброс (скачок ≥ :data:`OCTAVE_LEAP` полутонов от
+    предыдущей ноты, а следующая нота возвращается в пределы октавы от неё), который исчезает от октавы предыдущей
+    ноты. Не меняются: мелодии, где октава по умолчанию — норма (почти все ноты без октавы); ноты без выброса;
+    «выброс» той же высоты, повторённый в мелодии ≥ 2 раз (педаль, перекличка — приём автора, опечатка одиночна);
+    мелодия, где правок больше :data:`OCTAVE_FIX_MAX_SHARE` нот. Возвращает строку RTTTL (та же, если править нечего);
+    в лог — сколько нот исправлено.
+    """
+    parsed = _sounding_tokens(rtttl)
+    if parsed is None:
+        return rtttl
+    name, settings, tokens, default_oct = parsed
+    fixes = _octave_fixes([m for m in tokens if m is not None and m.group("note").lower() != "p"], default_oct)
+    if not fixes:
+        return rtttl
+    _LOG.info("🎵 [music v2] hook melody=%s исправил октаву %d нот", label or name, len(fixes))
+    return f"{name}:{settings}:" + ",".join(_with_octave(m, fixes) for m in tokens if m is not None)
+
+
+def _fix_run(sounding, pitches: list, first: int, last: int) -> dict:
+    """Октавы для серии нот без октавы ``first..last`` (``{id(токен): октава}``; пусто — править нельзя). ``pitches``
+    обновляется на месте, когда правка принята."""
+    if first < 1 or last - first + 1 > OCTAVE_RUN_MAX or not _spiked(pitches, first, last):
+        return {}
+    target = _octave_of(sounding[first - 1])
+    trial = list(pitches)
+    for n in range(first, last + 1):
+        trial[n] = _to_midi(sounding[n].group("note").lower(), sounding[n].group("acc"), target)
+    if trial[first] == pitches[first] or _spiked(trial, first, last):
+        return {}
+    pitches[first:last + 1] = trial[first:last + 1]
+    return {id(sounding[n]): target for n in range(first, last + 1)}
+
+
+def _with_octave(match, octaves: dict) -> str:
+    """Токен как был; у исправленного — с проставленной октавой."""
+    if id(match) not in octaves:
+        return match.group(0)
+    dot = "." if (match.group("dot") or match.group("dot2")) else ""
+    return f"{match.group('dur')}{match.group('note')}{match.group('acc')}{octaves[id(match)]}{dot}"
 
 
 def contour(rtttl: str, notes: int) -> Optional[Tuple[int, ...]]:
