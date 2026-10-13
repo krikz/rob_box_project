@@ -27,6 +27,8 @@ yandex → anton, minimax → male-qn-qingse, silero → aidar.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 # ── Реестр голосов по провайдерам ────────────────────────────────────────────
 #
 # Источники:
@@ -293,3 +295,151 @@ def format_tts_context(
         f"current_voice: {current} | "
         f"voices: {voices_str}"
     )
+
+
+# ── Пресеты пения (ADR-0158 §2.3, решение В8) ───────────────────────────────
+#
+# Песня поётся ТЕКУЩИМ голосом робота: TTS читает текст песни с пресетом,
+# файл уходит в Suno ``add-instrumental`` как вокал. Таблица ниже — единая,
+# строится КОДОМ из ``PROVIDER_VOICES`` + ``VOICE_METADATA`` (пол/характер) и
+# возможностей провайдера. Голоса, добавленные в каталог, получают пресет без
+# правок в двух местах; голос без пола в метаданных и без явной правки —
+# громкий отказ при импорте (а не молчаливое «m»).
+#
+# Что умеет каждый провайдер (остальное в пресете остаётся нейтральным):
+# * minimax — speed/volume/pitch/emotion (T2A v2 voice_setting);
+# * yandex  — speed, role (только у части голосов, ``_YANDEX_ROLES``), pitch в Гц;
+# * silero  — только выбор голоса (speed/pitch/volume/emotion не поддерживаются).
+
+#: MiniMax T2A v2 допускает именно эти значения emotion.
+MINIMAX_EMOTIONS: frozenset[str] = frozenset(
+    {"happy", "neutral", "sad", "angry", "fearful", "disgusted", "surprised"}
+)
+
+#: Роли Yandex SpeechKit v3 по голосам (каталог SpeechKit). Голоса вне
+#: таблицы роли не принимают — им emotion=None.
+_YANDEX_ROLES: dict[str, frozenset[str]] = {
+    "anton": frozenset({"neutral", "good"}),
+    "alena": frozenset({"neutral", "good"}),
+    "jane": frozenset({"neutral", "good", "evil"}),
+    "omazh": frozenset({"neutral", "evil"}),
+    "zahar": frozenset({"neutral", "good"}),
+    "ermil": frozenset({"neutral", "good"}),
+}
+
+#: Голоса с gender="neutral" в метаданных, но с известным полом тембра —
+#: Suno ``vocal_gender`` принимает только m/f.
+_VOCAL_GENDER_OVERRIDE: dict[str, str] = {
+    "yandex:omazh": "f",
+    "yandex:rush": "m",
+}
+
+#: Проверенное на слух (Шифу, 13.10): Russian_ReliableMan + angry + weight 0.8.
+_DEFAULT_AUDIO_WEIGHT = 0.8
+
+
+@dataclass(frozen=True)
+class SingPreset:
+    """Подача голоса при чтении текста песни + подсказки для Suno."""
+
+    provider: str
+    voice: str
+    speed: float                 # множитель скорости TTS (1.0 = норма)
+    volume: float                # MiniMax vol; у остальных не применяется
+    pitch: int                   # MiniMax полутона / Yandex Гц; 0 = не менять
+    emotion: str | None          # MiniMax emotion; Yandex role; Silero — None
+    vocal_gender: str            # "m" | "f" — для Suno add-instrumental
+    audio_weight: float          # насколько Suno держится за вокал
+    tags_hint: str               # добавка к тегам стиля
+    language: str                # "ru"/"en"/"de"/"zh" — язык голоса (текст песни должен совпасть)
+
+
+class SingPresetUnknown(KeyError):
+    """Для (provider, voice) нет пресета пения — честный отказ, не фолбек."""
+
+
+def _vocal_gender(provider: str, voice: str, gender: str) -> str:
+    if gender == "male":
+        return "m"
+    if gender == "female":
+        return "f"
+    override = _VOCAL_GENDER_OVERRIDE.get(f"{provider}:{voice}")
+    if override is None:
+        raise ValueError(f"нет пола для пресета пения {provider}:{voice} (gender={gender!r})")
+    return override
+
+
+def _minimax_emotion(presets: list[str]) -> str:
+    # Эталон: авторитетный Russian_ReliableMan поёт с angry (одобрено 13.10).
+    # Остальные — по тегам характера из метаданных.
+    if "authoritative" in presets:
+        return "angry"
+    if "friendly" in presets:
+        return "happy"
+    if "whisper" in presets:
+        return "sad"
+    return "neutral"
+
+
+def _yandex_role(voice: str, presets: list[str]) -> str | None:
+    roles = _YANDEX_ROLES.get(voice)
+    if not roles:
+        return None
+    return "good" if "good" in roles and "friendly" in presets else None
+
+
+def _tags_hint(gender: str, presets: list[str]) -> str:
+    if "authoritative" in presets:
+        mood = "deep powerful" if gender == "m" else "strong"
+    elif "friendly" in presets:
+        mood = "warm bright"
+    elif "whisper" in presets:
+        mood = "soft intimate"
+    else:
+        mood = "clear"
+    return f"{mood} {'male' if gender == 'm' else 'female'} vocal"
+
+
+def _build_sing_preset(provider: str, voice: str) -> SingPreset:
+    meta = VOICE_METADATA.get(f"{provider}:{voice}")
+    if meta is None:
+        raise ValueError(f"голос {provider}:{voice} есть в каталоге, но нет в VOICE_METADATA")
+    presets = list(meta.get("presets") or [])
+    gender = _vocal_gender(provider, voice, str(meta.get("gender") or ""))
+    if provider == "minimax":
+        emotion: str | None = _minimax_emotion(presets)
+    elif provider == "yandex":
+        emotion = _yandex_role(voice, presets)
+    else:
+        emotion = None
+    return SingPreset(
+        provider=provider,
+        voice=voice,
+        speed=1.0,
+        volume=1.0,
+        pitch=0,
+        emotion=emotion,
+        vocal_gender=gender,
+        audio_weight=_DEFAULT_AUDIO_WEIGHT,
+        tags_hint=_tags_hint(gender, presets),
+        language=language_of(provider, voice),
+    )
+
+
+SING_PRESETS: dict[tuple[str, str], SingPreset] = {
+    (provider, voice): _build_sing_preset(provider, voice)
+    for provider, voices in PROVIDER_VOICES.items()
+    for voice in voices
+}
+
+
+def sing_preset_for(provider: str, voice: str) -> SingPreset:
+    """Пресет пения голоса; неизвестный голос — ``SingPresetUnknown``.
+
+    Тихого отката на дефолтный голос нет: песня чужим голосом без фразы
+    «пою другим голосом» была бы враньём (ADR-0158 §2.3).
+    """
+    preset = SING_PRESETS.get((provider, voice))
+    if preset is None:
+        raise SingPresetUnknown(f"нет пресета пения для голоса {provider}:{voice}")
+    return preset
