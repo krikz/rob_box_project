@@ -48,7 +48,6 @@ PREFERRED_LOW = 62
 TARGET_CENTER = 72
 #: Перенос октавой — не больше трети нот мотива; дальше это уже не та мелодия (#3409: «Терминатор» — до 0.29).
 MAX_FOLDED_SHARE = 1 / 3
-BUILD_BARS = 2
 #: Короткая мелодия: фраза на столько тактов и ответ на IV (вверх) или V (вниз) ступени.
 PHRASE_BARS = 2
 ANSWER_STEPS: Tuple[int, ...] = (3, -3, 4, -4)
@@ -407,16 +406,34 @@ def _loop(notes: Sequence[PitchEvent], period_beats: float, length_beats: float)
     return out
 
 
+def _phrase(hook: Hook, start: float, scale: float = 1.0, accent_cut: int = 0) -> List[PitchEvent]:
+    """Фраза хука целиком с доли ``start``: длительности и доли — ×``scale``, акцент — минус ``accent_cut``."""
+    return [PitchEvent(e.midi, start + e.beat * scale, e.dur_beats * scale, max(1, e.accent - accent_cut))
+            for e in hook.notes]
+
+
 def _build(hook: Hook, bars: int, key: Key, register: Tuple[int, int]) -> List[PitchEvent]:
-    span = BUILD_BARS * BEATS_PER_BAR
-    head = [PitchEvent(e.midi, e.beat, min(e.dur_beats, span - e.beat), e.accent) for e in hook.notes if e.beat < span]
-    return _loop(head, span, (bars - 1) * BEATS_PER_BAR)  # последний такт — пауза перед дропом
+    """Подъём доигрывает фразу хука до конца (#3580, решение Шифу 13.10 «давай доиграем»): только целые фразы, как
+    можно позже — последняя кончается за такт до дропа (пауза перед ним), раньше них лид молчит. Фраза длиннее
+    ``bars - 1`` тактов (8-тактовый хук в коротком куплете) звучит от начала секции и целиком — её хвост
+    переходит границу (:func:`spill`), а не режется."""
+    beats = hook.bars * BEATS_PER_BAR
+    count = (bars - 1) // hook.bars
+    if count < 1:
+        return _phrase(hook, 0.0)
+    first = (bars - 1 - count * hook.bars) * BEATS_PER_BAR
+    return [e for i in range(count) for e in _phrase(hook, first + i * beats)]
 
 
 def _break(hook: Hook, bars: int, key: Key, register: Tuple[int, int]) -> List[PitchEvent]:
-    half = bars * BEATS_PER_BAR / 2
-    slow = [PitchEvent(e.midi, e.beat * 2, e.dur_beats * 2, max(1, e.accent - 1)) for e in hook.notes if e.beat < half]
-    return _loop(slow, bars * BEATS_PER_BAR, bars * BEATS_PER_BAR)
+    """Брейк: фраза хука вдвое медленнее, если звучит в секции целиком, иначе — в своём темпе, но тише; половина
+    фразы ×2 (прежнее) обрывала её (#3580). Фраза длиннее секции доигрывается за границей (:func:`spill`)."""
+    slow_beats = 2 * hook.bars * BEATS_PER_BAR
+    if slow_beats <= bars * BEATS_PER_BAR:
+        return [e for i in range(bars * BEATS_PER_BAR // int(slow_beats))
+                for e in _phrase(hook, i * slow_beats, 2.0, 1)]
+    beats = hook.bars * BEATS_PER_BAR
+    return [e for i in range(max(1, bars // hook.bars)) for e in _phrase(hook, i * beats, 1.0, 1)]
 
 
 def _drop(hook: Hook, bars: int, key: Key, register: Tuple[int, int]) -> List[PitchEvent]:
@@ -456,18 +473,30 @@ DEVELOPMENT: Dict[str, object] = {"build": _build, "build2": _build, "drop": _dr
 RHYTHM_SECTIONS: Tuple[str, ...] = ("drop2",)
 
 
-def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]
-            ) -> Tuple[PitchEvent, ...]:
-    """Ноты мотива в секции ``section`` длиной ``bars`` тактов, доли от начала секции. Хук с темой
-    (``Hook.theme``) в ``knowledge.THEME_SECTION`` не короче темы — развитие ``theme``. Секция песенной формы стиля
-    (куплет, припев, бридж — ADR-0153 S5) развивается как секция клуба своего вида (``knowledge.section_kind``)."""
+def _developed(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int]) -> List[PitchEvent]:
     section = kn.section_kind(section)
     if hook.theme and section == kn.THEME_SECTION and bars >= hook.theme_bars:
         section = "theme"
     op = DEVELOPMENT.get("rhythm" if hook.answer and section in RHYTHM_SECTIONS else section)
     if op is None:
-        return ()
-    return tuple(sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi)))  # type: ignore[operator]
+        return []
+    return sorted(op(hook, bars, key, register), key=lambda e: (e.beat, e.midi))  # type: ignore[operator]
+
+
+def develop(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]
+            ) -> Tuple[PitchEvent, ...]:
+    """Ноты мотива в секции ``section`` длиной ``bars`` тактов, доли от начала секции (ноты, начатые в секции;
+    хвост фразы за её границей — :func:`spill`). Хук с темой (``Hook.theme``) в ``knowledge.THEME_SECTION`` не
+    короче темы — развитие ``theme``. Секция песенной формы стиля (куплет, припев, бридж — ADR-0153 S5)
+    развивается как секция клуба своего вида (``knowledge.section_kind``)."""
+    return tuple(e for e in _developed(hook, section, bars, key, register) if e.beat < bars * BEATS_PER_BAR)
+
+
+def spill(hook: Hook, section: str, bars: int, key: Key, register: Tuple[int, int] = kn.REGISTERS["lead"]
+          ) -> Tuple[PitchEvent, ...]:
+    """Ноты фразы, начатые за границей секции (фраза хука длиннее секции доигрывается — #3580); доли — от начала
+    секции, ``>= bars * 4``. Пусто, если фраза уместилась. Лид следующей секции звучит не раньше конца хвоста."""
+    return tuple(e for e in _developed(hook, section, bars, key, register) if e.beat >= bars * BEATS_PER_BAR)
 
 
 # ── Хук из материала партитуры (ADR-0154 §3.3) ────────────────────────────────────────────────────────────────
@@ -730,5 +759,5 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
            "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
            "from_rtttl", "hook_defect", "material_hook", "material_scale", "material_unfit", "pick_phrase",
-           "reference_contours", "rhythm_answer", "theme_cuts", "theme_match", "theme_span", "theme_version",
+           "reference_contours", "rhythm_answer", "spill", "theme_cuts", "theme_match", "theme_span", "theme_version",
            "time_scale", "track_key", "voices", "with_theme"]
