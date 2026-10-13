@@ -30,38 +30,8 @@ def material(**kw):
 
 def test_song_form_is_verses_of_the_whole_melody():
     track = song_track(material(), seed=1)
-    assert track.form.song and track.bpm == 96 and len(track.form.sections) == verse_count(2, 96) == kn.SONG_MAX_VERSES
-    assert {s.bars for s in track.form.sections} == {2} and track.hook.bars == 2
-
-
-def _seconds(track):
-    return sum(s.bars for s in track.form.sections) * 4 * 60.0 / track.bpm
-
-
-def test_short_hook_at_a_fast_tempo_is_not_a_ringtone():
-    """#3599: «Полёт валькирий» — хук в 5 тактов (20 долей) при 160 ударах: три куплета звучали 22 с."""
-    lead = tuple((69 + (i % 3) * 2, 1.0) for i in range(20))
-    pad = tuple(((57, 60, 64), 4.0) for _ in range(5))
-    bass = tuple((45, 4.0) for _ in range(5))
-    track = song_track(material(bpm=160, lead=lead, bass=bass, pad=pad), seed=1)
-    assert verse_count(5, 160) == 12 and 80.0 <= _seconds(track) <= 120.0
-    assert 3 * 20 * 60.0 / 160 < 30.0  # было: три куплета — 22 с
-
-
-def test_song_length_follows_seconds_not_bars():
-    assert verse_count(16, 120) == 3  # 32 с на куплет → около 90 с
-    assert verse_count(32, 120) == 1  # длинная тема — один куплет
-    assert verse_count(8, 60) == 3  # 32 с на куплет
-    assert all(verse_count(b, bpm) >= 1 for b in (1, 5, 300) for bpm in (40, 200))
-
-
-@pytest.mark.parametrize("count", [1, 2, 3, 4, 5, 8, 12])
-def test_verse_plan_enters_thin_and_ends_full(count):
-    plan = kn.song_verse_plan(count)
-    assert len(plan) == count
-    assert plan[-1][2] == kn.SONG_VERSES[3][2][2] or count == 1
-    if count > 1:
-        assert "kick" not in plan[0][2] and {"lead", "bass", "pad"} <= plan[0][2]
+    assert track.form.song and track.bpm == 96 and len(track.form.sections) == verse_count(2) == 3
+    assert [s.bars for s in track.form.sections] == [2, 2, 2] and track.hook.bars == 2
 
 
 def test_song_has_no_club_look_no_sidechain_and_no_sweep():
@@ -84,7 +54,7 @@ def test_off_grid_melody_is_heard_note_for_note():
     _p, events = program_events(program.code, program.form_beats)
     lead = sorted((e.beat, int(e.midi), e.sus_beats) for e in events if e.slot == program.slots["lead"])
     assert lead == sorted((p.beat, p.midi, p.dur_beats) for p in track.parts["lead"].pitches)
-    assert program.form_beats == 8.0 * kn.SONG_MAX_VERSES
+    assert program.form_beats == 24.0
 
 
 def test_long_melody_is_one_full_verse():

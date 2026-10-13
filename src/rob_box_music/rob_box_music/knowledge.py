@@ -2301,12 +2301,10 @@ __all__ += ["CHOOSER_DICE_TEMPERATURE", "KNOWN_VIEWS_FLOOR", "KNOWN_VIEWS_FULL",
 #: ``Form.kind``: клубная форма (32/48/64 такта, outro ≥ 8) и песня по куплетам (длина — от мелодии).
 FORM_CLUB = "club"
 FORM_SONG = "song"
-#: Длина одиночной песни, с (#3599: «Полёт валькирий» — хук в 5 тактов при 160 ударах звучал 22 с, рингтон): куплетов
-#: столько, чтобы песня шла около этого времени, а не около числа тактов (``arrange.song.verse_count``). Длинная тема
-#: (≥ целевой) — один куплет; короткий хук повторяется (ср. бюджет повторов v1 ``arranger._snap_plan_to_theme``).
-SONG_TARGET_SEC = 90.0
-#: Больше куплетов не делаем: хук из трёх тактов не растянется на минуты (``SONG_MAX_BARS`` — предел модели).
-SONG_MAX_VERSES = 12
+#: Куплетов в песне: столько проходов мелодии, чтобы форма была около :data:`SONG_TARGET_BARS` тактов, но не
+#: больше, чем строк в :data:`SONG_VERSES` (длинная тема — один куплет; ср. бюджет повторов v1
+#: ``arranger._snap_plan_to_theme``).
+SONG_TARGET_BARS = 32
 #: Самая длинная песня, которую принимает модель (архив 02.10: 10448 тем, p99 — 22 такта, максимум — 158).
 SONG_MAX_BARS = 256
 _SONG_FULL = frozenset({"kick", "hats", "clap", "bass", "pad", "lead"})
@@ -2318,18 +2316,6 @@ SONG_VERSES: Mapping[int, Tuple[Tuple[str, int, frozenset], ...]] = {
     3: (("verse", 4, frozenset({"bass", "pad", "lead"})),
         ("verse2", 6, frozenset({"kick", "hats", "bass", "pad", "lead"})), ("chorus", 8, _SONG_FULL)),
 }
-
-
-def song_verse_plan(count: int) -> Tuple[Tuple[str, int, frozenset], ...]:
-    """Куплеты песни из ``count`` проходов: до трёх — строка :data:`SONG_VERSES`; больше — тема над пэдом и басом,
-    затем ударные, середина чередует полный состав («chorus») и средний («verse2»), последний куплет — полный."""
-    if count in SONG_VERSES:
-        return SONG_VERSES[count]
-    thin, mid, full = SONG_VERSES[3]
-    middle = tuple(full if i % 2 == 0 else ("verse2", mid[1], mid[2]) for i in range(2, count - 1))
-    return (thin, mid) + middle + (full,)
-
-
 #: Коридоры регистров песни. Мелодия звучит, как записана (регистр уже нормализовал ``rtttl_compose``, но архив
 #: 02.10 даёт лид 36..106, p1–p99 56..92) — коридор лида = клавиатура фортепиано A0..C8. Бас — от
 #: ``harmonize.BASS_MIDI_FLOOR`` (архив: 36..54), пэд — ``harmonize.PAD_REGISTER_LIMITS`` (архив: 48..82).
@@ -2357,7 +2343,7 @@ SONG_SCORE_PAD: Tuple[int, int] = (55, 76)
 
 __all__ += [
     "FORM_CLUB", "FORM_SONG", "SONG_DRUM_SYMBOLS", "SONG_KEY_FIT_MIN", "SONG_MAX_BARS", "SONG_REGISTERS",
-    "SONG_SCORE_BPM", "SONG_SCORE_DRUMS", "SONG_SCORE_PAD", "SONG_SCORE_HATS", "SONG_SCORE_VERSE_BARS", "SONG_TARGET_SEC", "SONG_MAX_VERSES", "song_verse_plan",
+    "SONG_SCORE_BPM", "SONG_SCORE_DRUMS", "SONG_SCORE_PAD", "SONG_SCORE_HATS", "SONG_SCORE_VERSE_BARS", "SONG_TARGET_BARS",
     "SONG_TIMBRES", "SONG_VERSES",
 ]
 
