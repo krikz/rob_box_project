@@ -79,7 +79,6 @@ def node():
     n._dj = None  # type: ignore[assignment]
     n._pending_music_cleanup = False
     n._active_batches = {}
-    n._generated_music_state = None
     # SpeechAccumulator/SchedulerExecutor — реальные инстансы, но
     # ``_build_dynamic_system_context`` лезет через getattr с дефолтом None
     # в каждой ветке, поэтому просто притворимся, что их нет.
@@ -528,8 +527,8 @@ class TestBuildMusicStateSnapshot:
     """Единый <music_state> snapshot для LLM (issue #1544, #3161).
 
     С #3161 тег строится ТОЛЬКО из того, что публикует плеер: снимок
-    ``/voice/music/state`` (+ имя темы из ``/voice/music/form``) и, для
-    mp3 из AI-библиотеки, ``/voice/generated_music/state``. Эвристики
+    ``/voice/music/state`` (+ имя темы из ``/voice/music/form``); трек
+    библиотеки генераций — тоже на деке (ADR-0158 PR-2). Эвристики
     ``beat``/``cleanup`` (cleanup-флаг, живые TTS-батчи) больше нет —
     она врала «играет» после стопа (живой прогон 28.09 22:32).
     Подробные сценарии — ``test_issue_3161_music_state_prompt.py`` (core).
@@ -550,7 +549,7 @@ class TestBuildMusicStateSnapshot:
     def test_unknown_until_player_reports(self, node) -> None:
         snap = node._build_music_state_snapshot()
         assert 'playing="unknown"' in snap
-        assert 'ai="idle"' in snap
+        assert "ai=" not in snap
         assert snap.count("<music_state") == 1
         assert snap.count("/>") == 1
 
@@ -572,32 +571,17 @@ class TestBuildMusicStateSnapshot:
         assert "beat=" not in snap
         assert "cleanup=" not in snap
 
-    def test_ai_generated_music_playing(self, node) -> None:
-        """Топик /voice/generated_music/state сообщил playing → ``ai=playing: ...``."""
-        node._generated_music_state = {
-            "status": "playing",
-            "title": "Synthwave Sunset",
-            "track_id": "abc12345xyz",
-        }
+    def test_library_track_is_reported_from_the_deck(self, node) -> None:
+        """ADR-0158 PR-2: трек библиотеки генераций играет на деке — название из снимка владельца, без ``ai=``;
+        кавычки и амперсанды названия НЕ ломают XML атрибут."""
+        self._feed_state(node, playing=True, track_id="gen_abc12345_1",
+                         dj={"enabled": False, "title": 'Techno "rave" & more', "source": "generated"})
         snap = node._build_music_state_snapshot()
-        assert 'ai="playing: Synthwave Sunset"' in snap
-
-    def test_ai_generated_music_idle(self, node) -> None:
-        """AI-music payload без status=playing → ``ai=idle``."""
-        node._generated_music_state = {"status": "idle"}
-        snap = node._build_music_state_snapshot()
-        assert 'ai="idle"' in snap
-
-    def test_title_with_quotes_is_xml_escaped(self, node) -> None:
-        """Название с кавычками/амперсандами НЕ ломает XML атрибут."""
-        node._generated_music_state = {
-            "status": "playing",
-            "title": 'Techno "rave" & more',
-        }
-        snap = node._build_music_state_snapshot()
+        assert 'playing="yes"' in snap
         assert "&quot;rave&quot;" in snap
         assert "&amp; more" in snap
         assert 'Techno "rave"' not in snap
+        assert "ai=" not in snap
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -632,14 +616,15 @@ class TestBuildDynamicSystemContextMusicState:
         assert 'dj="on"' in ctx
 
     def test_legacy_generated_music_tag_replaced(self, node) -> None:
-        """Issue #1392 follow-up: <generated_music> тег УДАЛЁН (заменён на <music_state>)."""
-        # AI-gen музыка играет, но snapshot идёт через <music_state>, не через
-        # старый <generated_music>.
-        node._generated_music_state = {
-            "status": "playing",
-            "title": "AI track",
-            "track_id": "abc12345",
-        }
+        """Issue #1392 follow-up: <generated_music> тег УДАЛЁН; ADR-0158 PR-2: и ``ai=`` тоже — трек библиотеки
+        генераций на деке, его название приходит снимком плеера."""
+        from types import SimpleNamespace
+
+        from rob_box_voice.core.music_player_state import build_music_state_payload
+
+        node._track_mode_music_active = False
+        node._on_music_state(SimpleNamespace(data=build_music_state_payload(
+            playing=True, track_id="gen_abc12345_1", dj={"enabled": False, "title": "AI track"})))
         ctx = node._build_dynamic_system_context()
-        assert "<generated_music>" not in ctx
-        assert 'ai="playing: AI track"' in ctx
+        assert "<generated_music>" not in ctx and "ai=" not in ctx
+        assert 'track="AI track"' in ctx

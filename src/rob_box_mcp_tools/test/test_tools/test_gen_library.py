@@ -14,6 +14,7 @@ Issue #1392 / ADR-0158 PR-1: покрыто
 import importlib.util
 import json
 import sys
+import wave
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -362,44 +363,78 @@ class TestDeleteFromLibraryTool:
 
 
 class TestPlayFromLibraryTool:
+    """ADR-0158 PR-2: трек кэша играет на деке ``PlayerOwner`` (wav сервера, ``render_audio``), ``ok`` — по started."""
+
     @pytest.fixture
     def setup(self, tmp_path):
         lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
-        saved = lib.save_track(audio_bytes=b"x" * 200, prompt="x", title="Play Me")
-        return SimpleNamespace(
-            library=lib,
-            track_id=saved["id"],
-            tool=GenPlayFromLibraryTool(_fake_node(), lib),
-        )
+        saved = lib.save_track(audio_bytes=b"ID3fake", prompt="space", title="Космос", duration_ms=3000)
+        plays, closed, decodes = [], [], []
 
-    def test_returns_path_and_increments_play_count(self, setup):
+        def play(program, dj=None, once=False):
+            plays.append((program, dj, once))
+            return {"ok": True, "track_id": program.track_id}
+
+        def run(cmd, **_):  # ffmpeg: пишет wav 16 кГц стерео на 2.5 с в последний аргумент
+            decodes.append(cmd)
+            with wave.open(cmd[-1], "wb") as out:
+                out.setnchannels(2)
+                out.setsampwidth(2)
+                out.setframerate(16000)
+                out.writeframes(b"\x00\x00" * 2 * 40000)
+
+        events = {}
+        node = _fake_node()
+        node._player_owner = SimpleNamespace(play=play)
+        node._dj_set_tool = SimpleNamespace(close_set=closed.append)
+        node._music_confirm = lambda track_id: events.get("event", SimpleNamespace(event="started", fields={}))
+        tool = GenPlayFromLibraryTool(node, lib, clock=lambda: 1000.0, run=run)
+        return SimpleNamespace(library=lib, track_id=saved["id"], tool=tool, plays=plays, closed=closed,
+                               decodes=decodes, events=events, node=node)
+
+    def test_plays_on_the_deck_once_after_closing_the_set(self, setup):
         before = setup.library.get_track_info(setup.track_id)["play_count"]
         result = setup.tool.execute(track_id=setup.track_id)
-        assert result.success
-        assert result.data["track_id"] == setup.track_id
-        assert result.data["path"].endswith("track.mp3")
-        assert result.data["exists_on_disk"] is True
-        after = setup.library.get_track_info(setup.track_id)["play_count"]
-        assert after == before + 1
+        assert result.success, result.error
+        program, dj, once = setup.plays[0]
+        assert once is True and setup.closed == ["gen_play_from_library"]
+        assert program.track_id == f"gen_{setup.track_id[:8]}_1000" and program.bpm == 60
+        assert program.form_beats == 2.5  # длина — из декодированного wav, не из строки библиотеки
+        wav = str(setup.library.root_dir / setup.track_id / "track.16k.wav")
+        assert program.sample_files == frozenset({wav}) and f"loop({wav!r}" in program.code
+        assert dj == {"enabled": False, "title": "Космос", "source": "generated", "library_id": setup.track_id,
+                      "bpm": None}
+        assert result.message == "Включаю «Космос» из библиотеки — 2 секунды."
+        assert setup.library.get_track_info(setup.track_id)["play_count"] == before + 1
+
+    def test_decodes_once(self, setup):
+        setup.tool.execute(track_id=setup.track_id)
+        setup.tool.execute(track_id=setup.track_id)
+        assert len(setup.decodes) == 1
+        cmd = setup.decodes[0]
+        assert cmd[cmd.index("-ar") + 1] == "16000" and cmd[cmd.index("-ac") + 1] == "2"
+
+    def test_not_started_is_not_ok(self, setup):
+        """Владелец отказал (``rejected``) — ни фразы успеха, ни play_count."""
+        setup.events["event"] = SimpleNamespace(event="rejected", fields={"reason": "missing_sample", "detail": "x"})
+        result = setup.tool.execute(track_id=setup.track_id)
+        assert not result.success and "missing_sample" in result.error
+        assert setup.library.get_track_info(setup.track_id)["play_count"] == 0
 
     def test_missing_track_fails(self, setup):
         result = setup.tool.execute(track_id="0000000000000000" * 2)
-        assert not result.success
+        assert not result.success and setup.plays == []
 
-    def test_missing_file_on_disk_fails(self, setup, tmp_path):
-        # Delete the mp3 file
-        track_dir = setup.library.root_dir / setup.track_id
-        (track_dir / "track.mp3").unlink()
+    def test_missing_file_on_disk_fails(self, setup):
+        (setup.library.root_dir / setup.track_id / "track.mp3").unlink()
         result = setup.tool.execute(track_id=setup.track_id)
-        assert not result.success
-        assert "mp3" in result.error.lower()
+        assert not result.success and "no_file" in result.error
+        assert setup.plays == []
 
-    def test_publishes_path_to_sound_node(self, setup):
-        """gen_play_from_library must publish the mp3 path to /voice/sound/play_file."""
+    def test_no_engine_no_sound_claimed(self, setup):
+        setup.node._player_owner = None
         result = setup.tool.execute(track_id=setup.track_id)
-        assert result.success
-        assert result.data["playback"] == "published"
-        assert setup.tool._play_file_pub.publish.called
+        assert not result.success and "движок" in result.error
 
 
 class TestSaveToLibraryTool:

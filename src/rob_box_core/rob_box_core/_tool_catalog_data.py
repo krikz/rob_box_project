@@ -413,11 +413,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': True,
         'execution_type': 'fast',
         'name': 'gen_play_from_library',
-        'description': 'Воспроизвести mp3-трек из библиотеки сгенерированной музыки '
-                       '(публикует путь в sound_node, который играет файл через '
-                       'динамик). Возвращает track_id, path, duration_ms, title. '
-                       'play_count увеличивается на 1. Используй когда юзер говорит '
-                       '«сыграй тот грустный трек», «давай послушаем ещё раз».',
+        'description': 'Воспроизвести трек из библиотеки сгенерированной музыки на '
+                       'музыкальной деке робота (стоп — stop_music, что играет — '
+                       'get_music_state). Ответ — фраза, которую надо сказать. '
+                       'Используй когда юзер говорит «сыграй тот грустный трек», '
+                       '«давай послушаем ещё раз».',
         'parameters': {   'type': 'object',
                           'properties': {   'track_id': {   'type': 'string',
                                                             'description': 'UUID трека '

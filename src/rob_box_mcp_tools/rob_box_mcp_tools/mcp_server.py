@@ -55,7 +55,6 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
 )
 
-from .base import shared_publisher
 from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
@@ -258,6 +257,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     def confirm(track_id: Optional[str]) -> Any:
         return events.wait(track_id, V2_STARTED_WAIT_S)
 
+    node._music_confirm = confirm  # gen_play_from_library: трек кэша на деке, ok — по started (ADR-0158 PR-2)
+
     history = MusicHistory()  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
     history.announce(node.get_logger())
     dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
@@ -440,23 +441,6 @@ class MCPServer(Node):
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
         self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
-
-        # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
-        # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
-        # Стоп деки про него ничего не знает, поэтому и
-        # ``music_cleanup``, и watchdog его не гасили: юзер сказал «останови
-        # музыку», робот ответил «Музыка выключена.», а трек доиграл до
-        # конца. Единственным местом, которое реально его останавливало,
-        # был ``StopMusicTool``. Публикуем те же два топика здесь, а тул
-        # теперь делегирует сюда (одна точка правды).
-        #
-        # Issue #3108: через shared_publisher — StopMusicTool и
-        # PlayGeneratedMusicTool публикуют в эти же топики на этой же ноде
-        # и получают тот же объект, а не второй/третий writer.
-        self.sound_stop_pub = shared_publisher(self, String, "/voice/sound/stop", qos_profile)
-        self.generated_music_state_pub = shared_publisher(
-            self, String, "/voice/generated_music/state", qos_profile
-        )
 
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
@@ -714,8 +698,6 @@ class MCPServer(Node):
         playing = music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None))
         self._stop_deck(reason)
         self.get_logger().info(f"🎵 [{reason}] cleanup: дека {'снята' if playing else 'и так пуста'}")
-        # Дека снята — гасим и mp3-трек в sound_node (см. комментарий у ``sound_stop_pub``).
-        self.stop_generated_track_playback()
 
     def _cleanup_spares_deck(self, reason: str) -> bool:
         """Issue #3174 / ADR-0141 — мягкий cleanup не гасит играющую деку.
@@ -755,26 +737,6 @@ class MCPServer(Node):
         owner = getattr(self, "_player_owner", None)
         if owner is not None and owner.is_playing():
             owner.stop(reason)
-
-    def stop_generated_track_playback(self) -> None:
-        """Остановить mp3 из библиотеки сгенерированной музыки.
-
-        ``gen_play_from_library`` публикует путь в ``sound_node``; ни
-        владелец плеера v2, ни ``/g_freeAll`` до него не достают.
-        Одна точка правды для ``StopMusicTool``, ``music_cleanup`` и
-        watchdog — issue #1392 follow-up.
-        """
-        try:
-            msg = String()
-            msg.data = "STOP"
-            self.sound_stop_pub.publish(msg)
-            state = String()
-            state.data = json.dumps({"status": "idle"})
-            self.generated_music_state_pub.publish(state)
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось остановить mp3 в sound_node: {exc}"
-            )
 
     def _init_waypoint_store(self) -> WaypointAdapter:
         """Инициализация адаптера для вейпоинтов.

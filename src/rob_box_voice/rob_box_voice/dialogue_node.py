@@ -945,11 +945,6 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/provider_state", self._on_tts_provider_state, 10,
             callback_group=cbg)
-        # Issue #1392 follow-up — состояние сгенерированной музыки
-        # (gen_play_from_library / stop_music / sound_node публикуют JSON).
-        self.create_subscription(
-            String, "/voice/generated_music/state", self._on_generated_music_state, 10,
-            callback_group=cbg)
         # 🔴 FIX (live 31.08): «после нескольких генераций робот начинает
         # тупить и говорит, что растерялся». Музыку останавливает watchdog в
         # mcp_server (reason=idle_ttl, 300 с без диалога), а диалог об этом
@@ -1421,11 +1416,6 @@ class DialogueNode(Node):
         # видела голоса фактического провайдера, а не номинального.
         self._actual_tts_provider: str | None = None
         self._actual_tts_voice: str | None = None
-        # Issue #1392 follow-up — состояние сгенерированной музыки
-        # (JSON {"status": "playing"|"idle", "track_id", "title",
-        # "duration_ms"}) из /voice/generated_music/state. Показывается LLM
-        # в <system_context>, чтобы она сама решала когда вызвать stop_music.
-        self._generated_music_state: Optional[dict] = None
         # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
@@ -3141,22 +3131,6 @@ class DialogueNode(Node):
             f"(voice: {actual_voice}, reason: {payload.get('reason')})"
         )
 
-    def _on_generated_music_state(self, msg: String) -> None:
-        """Issue #1392 follow-up — состояние сгенерированной музыки.
-
-        mcp_server (gen_play_from_library / stop_music) и sound_node (конец
-        воспроизведения) публикуют JSON {"status": "playing"|"idle", ...}.
-        Храним для <generated_music> в system_context, чтобы LLM сама
-        решала, когда останавливать трек через stop_music.
-        """
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        if not isinstance(payload, dict):
-            return
-        self._generated_music_state = payload
-
     def _on_music_state(self, msg: String) -> None:
         """Снимок плеера ``/voice/music/state`` (issue #3133, ADR-0141).
 
@@ -4103,8 +4077,8 @@ tentative_plan(question, kind, name)
     # после «выключи музыку» модель прочла «играет» и так и сказала.
     #
     #   <music_state playing="yes" track="клубный трек" repeat="once"
-    #                ends_in_s="42" dj="off" ai="idle" />
-    #   <music_state playing="no" dj="off" ai="idle" last_track="клубный трек"
+    #                ends_in_s="42" dj="off" />
+    #   <music_state playing="no" dj="off" last_track="клубный трек"
     #                last_ended="stopped" last_ended_ago_s="13" />
 
     def _music_state_mem(self) -> MusicStateMemory:
@@ -4115,17 +4089,9 @@ tentative_plan(question, kind, name)
         return memory
 
     def _build_music_state_snapshot(self) -> str:
-        """Единый ``<music_state>`` для LLM (issue #1544, #3161).
-
-        ``ai=`` — mp3 из AI-библиотеки играет в ``sound_node`` мимо
-        владельца плеера v2 и в снимок плеера не попадает; его состояние
-        публикует сам плеер mp3 (``/voice/generated_music/state``).
-        """
-        gm = getattr(self, "_generated_music_state", None) or {}
-        title = None
-        if gm.get("status") == "playing":
-            title = gm.get("title") or "без названия"
-        return self._music_state_mem().render(generated_title=title)
+        """Единый ``<music_state>`` для LLM (issue #1544, #3161): всё, что играет, — на деке владельца плеера v2,
+        трек библиотеки генераций тоже (ADR-0158 PR-2, бывший ``ai=`` из ``/voice/generated_music/state``)."""
+        return self._music_state_mem().render()
 
     def _pending_identity_hint_lines(self) -> list:
         """Issue #2809 (продолжение) -- строки подсказки-гипотезы для

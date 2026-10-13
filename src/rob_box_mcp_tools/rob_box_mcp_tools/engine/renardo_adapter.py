@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -155,7 +156,8 @@ def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
     буфер, что прозвучит, а не нулевой. Renardo отдаёт буфер-заглушку ``nil`` с ``bufnum == 0``,
     когда файла нет (``BufferManagement.py:116,209``). Повторный вызов — попадание в кэш Renardo.
     Путь с ``/`` — файл ``loop()`` от корня сэмплов (``Program.sample_files`` v2, каталог DJ_Dave, PR-3d):
-    ``loadBuffer('../../<путь>')`` — тот же путь, что в программе; ``0`` — файла нет.
+    ``loadBuffer('../../<путь>')`` — тот же путь, что в программе; ``0`` — файла нет. Абсолютный путь — wav
+    сгенерированного трека (``render.audio``, ADR-0158 PR-2): ``loadBuffer(<путь>)`` как есть.
     """
     missing: List[str] = []
     for entry in symbols:
@@ -163,7 +165,9 @@ def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
         if symbol.isspace() or symbol == ".":
             continue
         try:
-            if "/" in entry:
+            if os.path.isabs(entry):
+                bufnum = samples.loadBuffer(entry)
+            elif "/" in entry:
                 bufnum = samples.loadBuffer(f"../../{entry}")
             else:
                 args = (symbol, 0, int(index)) if index else (symbol, 0)  # (символ, spack, номер файла)
@@ -174,6 +178,21 @@ def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
         if bufnum == 0:
             missing.append(entry)
     return missing
+
+
+def audio_files(program: Any) -> Tuple[str, ...]:
+    """Файлы целых треков программы (абсолютные пути ``sample_files``, ``render.audio``): их буферы — десятки МБ."""
+    return tuple(sorted(f for f in getattr(program, "sample_files", ()) if os.path.isabs(f)))
+
+
+def free_buffers(samples: Any, files: Iterable[str]) -> None:
+    """Освободить буферы целых треков (``Samples.free``): кэш Renardo сам буферы не отпускает, а трек 240 с — 31 МБ
+    в контейнере scsynth на 512 МБ (спайк ADR-0158 PR-2). Звать после снятия нод (``ramp_down_group``)."""
+    for path in files:
+        try:
+            samples.free(path)
+        except Exception:  # noqa: BLE001 — буфер не загружался или уже свободен
+            pass
 
 
 class RenardoAdapter:
@@ -198,6 +217,9 @@ class RenardoAdapter:
         self._lead_beats = float(lead_beats)
         self._live_slots: Tuple[str, ...] = ()
         self._leaving: Tuple[str, ...] = ()  # дека уходящего трека, пока идёт блэнд
+        # Буферы целых треков на деках (ADR-0158 PR-2): нота файла звучит всю ``sus`` и после снятия плеера —
+        # её гасит только группа, а буфер освобождается после неё.
+        self._audio: Tuple[str, ...] = ()
         # Поколение: start/stop делают устаревшим всё, что раньше запланировано на клоке
         # (стык, nearly_finished) — после стопа запланированный стык музыку не воскрешает.
         self._generation = 0
@@ -236,6 +258,7 @@ class RenardoAdapter:
         # атрибуты и продолжает с текущей доли — фаза не 0 (живой прогон 01.10: 126.25 из 128).
         self._stop_slots(ns, (*self._live_slots, *self._leaving, *program.slots.values()))
         self._live_slots, self._leaving = (), ()
+        self._release_audio(ns)
         if getattr(clock, "now_flag", False):
             clock.now_flag = False  # иначе плееры встанут не на такт (#3166)
         clock.latency = self.latency_s
@@ -244,7 +267,7 @@ class RenardoAdapter:
         now = float(clock.now())
         clock.set_time(((now + self._lead_beats) // form + 1) * form - self._lead_beats)
         exec(program.code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
-        self._live_slots = tuple(program.slots.values())
+        self._live_slots, self._audio = tuple(program.slots.values()), audio_files(program)
         return self._arm_started(ns, program, on_started, origin=None, lag_s=kn.TRIM_LAG_S)
 
     def cue(self, program: Any, at_beat: float, on_started: Callable[[Dict[str, Any]], None],
@@ -276,6 +299,7 @@ class RenardoAdapter:
                 on_failed("exec_error", f"{type(exc).__name__}: {exc}")
                 return
             self._live_slots, self._leaving = tuple(program.slots.values()), leaving
+            self._audio = (*self._audio, *audio_files(program))  # стык с файлом (блэнд) — PR-8 ADR-0158
             leave = float(at_beat) if leave_at is None else float(leave_at)
             # Громкость энергии переезжает за блэнд: уходящий трек звучит под той же мастер-шиной.
             lag = max(kn.TRIM_LAG_S, (leave - float(at_beat)) * 60.0 / float(program.bpm))
@@ -309,10 +333,20 @@ class RenardoAdapter:
     def stop(self) -> None:
         """Снять плееры деки и погасить группу 1 (``gate=0`` → ``/g_freeAll``)."""
         self._generation += 1
-        self._stop_slots(self._namespace() or {}, (*self._live_slots, *self._leaving))
+        ns = self._namespace() or {}
+        self._stop_slots(ns, (*self._live_slots, *self._leaving))
         self._live_slots, self._leaving = (), ()
         ramp_down_group(self._send_osc, 1)
+        free_buffers(ns.get("Samples"), self._audio)
+        self._audio = ()
         set_master_controls(self._send_osc, {}, kn.TRIM_LAG_S)  # тишина: trim 0 и обычный выравниватель
+
+    def _release_audio(self, ns: Mapping[str, Any]) -> None:
+        """Перед новым треком: нота файла прошлого трека звучала бы поверх — снять группу и отдать буферы."""
+        if self._audio:
+            ramp_down_group(self._send_osc, 1)
+            free_buffers(ns.get("Samples"), self._audio)
+            self._audio = ()
 
     def _arm_started(self, ns: Mapping[str, Any], program: Any, on_started: Callable[[Dict[str, Any]], None],
                      origin: Optional[float], lag_s: float) -> Dict[str, Any]:
@@ -380,6 +414,6 @@ class RenardoAdapter:
 
 __all__ = [
     "HANDOFF_STOP_BEATS", "MASTER_NODE", "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S",
-    "decode_osc_args", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "set_master_controls",
+    "audio_files", "decode_osc_args", "free_buffers", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "set_master_controls",
     "split_osc_address",
 ]

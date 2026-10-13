@@ -59,7 +59,6 @@ class _FakeServer:
         self.waypoint_store = object()
         self.mapping_state = object()
         self._logger = _FakeLogger()
-        self.stop_generated_track_playback_calls = 0
 
     def get_parameter(self, name):
         # ``_register_music_tools`` reads music_master_gain (music_max_amp went away
@@ -72,9 +71,6 @@ class _FakeServer:
 
     def get_current_pose_snapshot(self):
         return None
-
-    def stop_generated_track_playback(self):
-        self.stop_generated_track_playback_calls += 1
 
     def _register_gen_library_tools(self):
         self.gen_library_registered = True
@@ -415,7 +411,6 @@ def test_soft_cleanup_spares_playing_deck(monkeypatch, reason):
     _send_cleanup(module, server, reason)
 
     assert server._player_owner.stopped == [] and server._dj_set_tool.closed == []
-    assert server.stop_generated_track_playback_calls == 0
 
 
 @pytest.mark.unit
@@ -432,7 +427,6 @@ def test_explicit_cleanup_stops_deck_through_its_owner(monkeypatch, reason):
 
     assert server._dj_set_tool.closed == [reason]
     assert server._player_owner.stopped == [reason]
-    assert server.stop_generated_track_playback_calls == 1
 
 
 @pytest.mark.unit
@@ -446,15 +440,3 @@ def test_soft_cleanup_spares_a_running_set_even_if_the_deck_looks_idle(monkeypat
     _send_cleanup(module, server, "tts_batch_complete")
 
     assert server._dj_set_tool.closed == [] and server._player_owner.stopped == []
-
-
-@pytest.mark.unit
-def test_soft_cleanup_with_idle_deck_still_stops_leftovers(monkeypatch):
-    """Дека молчит — мягкий cleanup гасит то, что могло остаться (mp3 из библиотеки)."""
-    module = _load_mcp_server_module(monkeypatch)
-    server = _cleanup_server(module, deck_playing=False)
-
-    _send_cleanup(module, server, "tts_batch_complete")
-
-    assert server._player_owner.stopped == []
-    assert server.stop_generated_track_playback_calls == 1

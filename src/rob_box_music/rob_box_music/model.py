@@ -9,9 +9,10 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Dict, FrozenSet, List, Literal, Mapping, Optional, Tuple
 
 from . import knowledge as kn
 from .tonality import key_fit
@@ -664,8 +665,32 @@ def blend_bars(leaving: Track, incoming: Track) -> int:
     return bars
 
 
+@dataclass(frozen=True)
+class AudioTrack:
+    """Готовый звук деки (ADR-0158 §2.4) — второй вид артефакта рядом с :class:`Track`: файл из кэша генераций.
+
+    ``path`` — wav на частоте сервера (``knowledge.SC_SERVER_RATE_HZ``, декодирован из mp3 кэша один раз), путь,
+    который видят и Renardo, и scsynth. Длительность — в секундах: нот и тактов у файла нет, бит-сетка Suno не
+    гарантирована (``bpm_nominal`` — только номинал стиля/запроса, ``None`` — неизвестен). ``loudness_lufs`` —
+    замер кэша, ``None`` — не мерян (уровень выравнивает мастер-шина).
+    """
+
+    track_id: str
+    path: str
+    duration_s: float
+    bpm_nominal: Optional[int] = None
+    loudness_lufs: Optional[float] = None
+    source: Literal["generated"] = "generated"
+
+    def __post_init__(self) -> None:
+        if not os.path.isabs(self.path):
+            raise TrackError("path", f"нужен абсолютный путь, а не {self.path!r}")
+        if not self.duration_s > 0:
+            raise TrackError("duration_s", f"длительность {self.duration_s} — не положительная")
+
+
 __all__ = [
-    "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Duck", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
+    "AudioTrack", "BLEND_BARS", "BLEND_SINGLE_ROLES", "Chord", "Duck", "Form", "Grid", "Harmony", "HistoryKey", "Hook", "Key", "Mix",
     "Part", "PitchEvent", "Section", "Step", "Stereo", "Sweep", "Track", "TrackError", "Transition", "blend_bars",
     "chord_tones", "pulse_beats", "pulse_faults", "roles_at_bar", "validate",
 ]

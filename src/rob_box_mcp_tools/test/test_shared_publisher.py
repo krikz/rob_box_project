@@ -213,18 +213,17 @@ def test_no_direct_create_publisher_for_issue_3108_topics(topic):
     assert offenders == [], f"{topic}: прямой create_publisher в {offenders} — используйте shared_publisher"
 
 
+#: ADR-0158 PR-2: ``/voice/generated_music/state`` и mp3-стоп ``/voice/sound/stop`` из ``mcp_server`` удалены — трек
+#: кэша играет на деке ``PlayerOwner``; общим publisher'ом остаются два топика.
+_SHARED_TOPICS = ("/voice/animation/request", "/voice/tts/set_provider")
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize("topic", _ISSUE_3108_TOPICS)
+@pytest.mark.parametrize("topic", _SHARED_TOPICS)
 def test_issue_3108_topics_go_through_shared_publisher(topic):
     users = []
     for path in _package_sources():
         for m in _SHARED_PUBLISHER_CALL.finditer(path.read_text(encoding="utf-8")):
             if m.group(1) == topic:
                 users.append(path.name)
-    expected = _MIN_SHARED_USERS.get(topic, 2)
-    assert len(users) >= expected, f"{topic}: ожидалось >= {expected} пользователей shared_publisher, нашли {users}"
-
-
-#: #3614: ``StopMusicTool`` больше не держит своих publisher'ов — делегирует
-#: ``MCPServer.stop_generated_track_playback``; ``/voice/sound/stop`` пишет одна нода.
-_MIN_SHARED_USERS = {"/voice/sound/stop": 1}
+    assert len(users) >= 2, f"{topic}: ожидалось >= 2 пользователей shared_publisher, нашли {users}"

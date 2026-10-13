@@ -91,7 +91,6 @@ def _make_node(snapshot) -> DialogueNode:
     n._consume_synthetic_retry = MagicMock(return_value=True)
     n._dispatch_turn = MagicMock()
     n._check_babble_and_retry = MagicMock(return_value=False)
-    n._generated_music_state = None
     n._music_player_state = snapshot
     n._llm_skipped_counter = new_llm_skip_counter()
     n._cancel_run = MagicMock()

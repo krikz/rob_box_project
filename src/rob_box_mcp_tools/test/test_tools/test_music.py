@@ -76,7 +76,6 @@ def music_node():
         _dj_set_tool=SimpleNamespace(running=False,
                                      status=lambda: {"active": False, "message": "Диджей-сета не было."}),
         _stop_deck=lambda reason: (calls.append(("deck", reason)), owner.is_playing() and owner.stop(reason)),
-        stop_generated_track_playback=lambda: calls.append(("mp3",)),
         get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None,
                                            error=lambda *a, **k: None, debug=lambda *a, **k: None),
     )
@@ -86,7 +85,7 @@ def music_node():
 
 @pytest.mark.unit
 class TestStopMusicTool:
-    """``stop_music``: сет и дека — через их владельцев, mp3 — ``sound_node``; фраза — от кода."""
+    """``stop_music``: сет и дека — через их владельцев (трек кэша тоже на деке, ADR-0158 PR-2); фраза — от кода."""
 
     def test_tool_name_and_narrow_schema(self, music_node):
         tool = StopMusicTool(music_node)
@@ -102,22 +101,19 @@ class TestStopMusicTool:
         assert result.data == {"was_playing": True}
         assert result.message == "Музыка остановлена."
         assert not owner.is_playing()
-        assert ("deck", "user_stop") in music_node.calls and ("mp3",) in music_node.calls
+        assert ("deck", "user_stop") in music_node.calls
 
     def test_silence_still_takes_the_deck_down_and_says_so(self, music_node):
         result = StopMusicTool(music_node).execute()
         assert result.success is True and result.data == {"was_playing": False}
         assert "и так не играла" in result.message
         assert music_node.adapter.stops == 1  # явный стоп в тишине: группа гасится всё равно
-        assert ("mp3",) in music_node.calls
 
     def test_node_without_engine_does_not_crash(self):
-        """Renardo не поднялся — владельца нет; mp3 всё равно гасим, если хелпер есть."""
-        calls = []
-        node = SimpleNamespace(stop_generated_track_playback=lambda: calls.append(1),
-                               get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
+        """Renardo не поднялся — владельца нет; стоп не падает."""
+        node = SimpleNamespace(get_logger=lambda: SimpleNamespace(info=lambda *a, **k: None))
         result = StopMusicTool(node).execute()
-        assert result.success is True and calls == [1]
+        assert result.success is True and result.data == {"was_playing": False}
 
 
 @pytest.mark.unit

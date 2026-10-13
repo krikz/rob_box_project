@@ -76,11 +76,12 @@ class TestPlaying:
         memory.observe_state(_snap(playing=True, track_id="x", ts=T0))
         assert 'track="без названия"' in memory.render(now=T0 + 1)
 
-    def test_generated_mp3_is_reported_separately(self):
+    def test_no_separate_generated_attribute(self):
+        """ADR-0158 PR-2: трек библиотеки генераций играет на деке — отдельного ``ai=`` (mp3 мимо деки) нет."""
         memory = MusicStateMemory()
         memory.observe_state(_snap(playing=False, ts=T0))
-        tag = memory.render(generated_title="Synthwave", now=T0 + 1)
-        assert 'ai="playing: Synthwave"' in tag
+        tag = memory.render(now=T0 + 1)
+        assert "ai=" not in tag
         assert 'playing="no"' in tag
 
     def test_name_is_xml_escaped(self):
