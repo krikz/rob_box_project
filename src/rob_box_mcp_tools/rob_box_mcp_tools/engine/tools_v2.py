@@ -284,6 +284,9 @@ def music_busy(owner: Any, dj: Any) -> bool:
 def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
     if data.get("ok"):
         return MCPToolResult(success=True, data=data)
+    if data.get("composer_missing") and data.get("message"):  # назван композитор, пьес нет (#3604): фраза кода
+        from rob_box_voice.core.media_phrases import composer_missing_error
+        return MCPToolResult(success=False, data=data, error=composer_missing_error(data["message"]))
     if data.get("reason") == NOT_FOUND and data.get("message"):  # отказ сета: фраза кода, её скажет голос
         return MCPToolResult(success=False, data=data, error=data["message"])
     if data.get("reason") == NO_MORE and data.get("message"):  # «больше нет» (#3599): фраза кода, её скажет голос
@@ -688,7 +691,7 @@ class RequestMusicTool(MCPTool):
         if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
             from rob_box_voice.core.media_phrases import composer_missing_text
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
-                    "message": composer_missing_text(work)}
+                    "composer_missing": True, "message": composer_missing_text(work)}
         if pick is None and not count:
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
         if pick is None:

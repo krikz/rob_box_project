@@ -123,6 +123,22 @@ def composer_missing_text(asked: str) -> str:
             "Могу сыграть что-то другое.")
 
 
+#: Код отказа ``request_music``: назван композитор, а его пьес нет (#3604). Текст отказа - ``"<код>: <фраза>"``
+#: (:func:`composer_missing_error`, :func:`composer_missing_phrase`): роутер говорит фразу как есть.
+NO_COMPOSER_REASON = "no_composer"
+
+
+def composer_missing_error(phrase: str) -> str:
+    """Текст отказа ``request_music`` с кодом :data:`NO_COMPOSER_REASON`."""
+    return f"{NO_COMPOSER_REASON}: {phrase}"
+
+
+def composer_missing_phrase(content: str) -> str:
+    """Фраза кода из текста отказа тула или ``""``, если это отказ по другой причине."""
+    head = f"{NO_COMPOSER_REASON}: "
+    return (content or "")[len(head):].strip() if (content or "").startswith(head) else ""
+
+
 def no_more_error(phrase: str) -> str:
     """Текст отказа ``request_music`` с кодом :data:`NO_MORE_REASON` (его читает :func:`no_more_phrase`)."""
     return f"{NO_MORE_REASON}: {phrase}"
@@ -197,11 +213,14 @@ __all__ = [
     "LAUNCH_PHRASE_STEMS",
     "LAUNCH_TOOLS",
     "NOT_LAUNCHED_TEXT",
+    "NO_COMPOSER_REASON",
     "NO_MORE_REASON",
     "NOT_PLAYED_TEXT",
     "REQUEST_FAIL_TEXT",
     "SET_KEPT_TEXT",
     "SET_PLAYING_REASON",
+    "composer_missing_error",
+    "composer_missing_phrase",
     "composer_missing_text",
     "dj_started_text",
     "honest_launch_reply",

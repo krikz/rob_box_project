@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-from .media_phrases import launch_text, no_more_phrase, play_ok_text
+from .media_phrases import composer_missing_phrase, launch_text, no_more_phrase, play_ok_text
 
 LOOKUP_TOOL = "lookup_melody"
 REQUEST_TOOL = "request_music"
@@ -48,6 +48,8 @@ class NamedPlayStatus(str, Enum):
     FAILED = "failed"
     #: «Ещё <автор>», а всё подходящее уже играло (#3599) — фраза кода в ``data["message"]``.
     NO_MORE = "no_more"
+    #: Назван композитор, а его пьес по запросу нет (#3604) — фраза кода в ``data["message"]``, чужое не играет.
+    NO_COMPOSER = "no_composer"
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,7 @@ def outcome_text(outcome: NamedPlayOutcome, title: str) -> str:
     """Фраза итога найденного заказа: «Ставлю «X».» (+ об инструменте по результату тула) или честный отказ."""
     if outcome.status is NamedPlayStatus.PLAYED:
         return launch_text(play_ok_text(title), outcome.data)
-    if outcome.status is NamedPlayStatus.NO_MORE:
+    if outcome.status in (NamedPlayStatus.NO_MORE, NamedPlayStatus.NO_COMPOSER):
         return str(outcome.data.get("message") or "")
     return play_fail_text(title)
 
@@ -150,6 +152,10 @@ async def _request(execute: ToolExec, name: str, hit: Optional[MelodyHit],
     phrase = no_more_phrase(content)
     if phrase:
         return NamedPlayOutcome(NamedPlayStatus.NO_MORE, tools_done=tools_done, reason="больше нет",
+                                data={"message": phrase})
+    phrase = composer_missing_phrase(content)
+    if phrase:
+        return NamedPlayOutcome(NamedPlayStatus.NO_COMPOSER, tools_done=tools_done, reason="нет пьес композитора",
                                 data={"message": phrase})
     if hit is None:
         return NamedPlayOutcome(NamedPlayStatus.MISS, tools_done=tools_done, reason=f"{REQUEST_TOOL}: не заиграло")

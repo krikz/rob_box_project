@@ -14,7 +14,7 @@ from rob_box_mcp_tools.engine.tools_v2 import NOT_FOUND
 from rob_box_music import knowledge as kn
 from rob_box_music.diversity import MusicHistory
 from rob_box_music.works import SCORE, WorkCandidate
-from rob_box_voice.core.media_phrases import composer_missing_text
+from rob_box_voice.core.media_phrases import composer_missing_error, composer_missing_text
 
 from .test_engine_session import _rig
 from .test_piece_fail_open import Scores, _material, _tools
@@ -131,6 +131,7 @@ def test_composer_without_any_candidate_is_a_code_phrase_not_a_foreign_piece():
     result = req.execute(intent="melody", text="сыграй валькирии вагнера")
     assert result.success is False and result.data["reason"] == NOT_FOUND
     assert result.data["message"] == composer_missing_text("валькирии вагнера")
+    assert result.error == composer_missing_error(composer_missing_text("валькирии вагнера"))  # роутер скажет сам
     assert rig.events == []
 
 
