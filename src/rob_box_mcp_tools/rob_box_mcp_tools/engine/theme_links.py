@@ -60,13 +60,30 @@ def verify(library: Any, query: str) -> Tuple[str, ...]:
     return ordered(pool, query, PER_QUERY).names if 0 < len(pool) < GENERIC_MATCHES else ()
 
 
-def _payload(response: Any) -> Any:
+def tool_payload(response: Any, name: str = tq.SUBMIT_TOOL) -> Any:
+    """Аргументы вызова тула ``name`` из ответа ``Ask``; обрезаны или вызова нет — ``QueriesInvalid``."""
     if getattr(response, "truncated_tool_args", False):
         raise tq.QueriesInvalid("аргументы вызова обрезаны")
     for call in getattr(response, "tool_calls", ()) or ():
-        if call.name == tq.SUBMIT_TOOL:
+        if call.name == name:
             return dict(call.arguments)
-    raise tq.QueriesInvalid(f"нет вызова {tq.SUBMIT_TOOL}")
+    raise tq.QueriesInvalid(f"нет вызова {name}")
+
+
+def in_time(spawn: Callable[[Callable[[], None]], None], wait_s: float, run: Callable[[], Any]) -> Tuple[bool, Any]:
+    """``(успел, результат)``: ``run`` — в своём потоке (``spawn``), ждём не дольше ``wait_s``; опоздал — ``(False,
+    None)``, а ``run`` доработает в фоне (опоздавший ответ LLM дописывается в хранилище/кэш сам)."""
+    box: Dict[str, Any] = {}
+    done = threading.Event()
+
+    def task() -> None:
+        try:
+            box["value"] = run()
+        finally:
+            done.set()
+
+    spawn(task)
+    return (True, box.get("value")) if done.wait(wait_s) else (False, None)
 
 
 class ThemeLinks:
@@ -126,24 +143,21 @@ class ThemeLinks:
         if self._ask is None:
             self._note_missed(path, parts, "LLM выключена")
             return {}
-        box: Dict[str, Any] = {}
-        done = threading.Event()
 
-        def run() -> None:
+        def run() -> Mapping[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
             try:
-                box["answer"] = self._query(library, path, theme, parts)
+                return self._query(library, path, theme, parts)
             except Exception as exc:  # noqa: BLE001 — поиск темы не роняет сет
-                box["answer"] = {}
                 self._log.warning(f"⚠️ [theme-links] {parts}: {type(exc).__name__}: {exc}")
-            done.set()
+                return {}
 
-        self._spawn(run)
-        if not done.wait(self._wait_s):
+        done, answer = in_time(self._spawn, self._wait_s, run)
+        if not done:
             self._log.warning(f"⚠️ [theme-links] {parts}: LLM не ответила за {self._wait_s:g} с — сет без неё, "
                               "ответ допишется в хранилище")
             self._note_missed(path, parts, "LLM опоздала")
             return {}
-        return box["answer"]
+        return answer
 
     def _query(self, library: Any, path: str, theme: str,
                parts: List[str]) -> Mapping[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
@@ -153,7 +167,7 @@ class ThemeLinks:
             self._note_missed(path, parts, f"LLM {outcome} {detail}".strip())
             return {}
         try:
-            suggestions = tq.validate(_payload(response), parts)
+            suggestions = tq.validate(tool_payload(response), parts)
         except tq.QueriesInvalid as exc:
             self._note_missed(path, parts, f"ответ LLM не по схеме: {exc}")
             return {}
@@ -193,4 +207,5 @@ class ThemeLinks:
                        named=named)
 
 
-__all__ = ["ASK_DEADLINE_S", "ASK_WAIT_S", "GENERIC_MATCHES", "PER_QUERY", "ThemeLinks", "verify"]
+__all__ = ["ASK_DEADLINE_S", "ASK_WAIT_S", "GENERIC_MATCHES", "PER_QUERY", "Ask", "ThemeLinks", "in_time",
+           "tool_payload", "verify"]

@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 
 from rob_box_music.choice import ChoiceQuestion, DeterministicChooser, Option, play_stats, recency
 from rob_box_music.instruments import LeadChoice
+from rob_box_music.knowledge import TITLE_EXACT, TITLE_PARTIAL
 from rob_box_music.rtttl import CONTOUR_NOTES, contour
 from rob_box_music.works import RTTTL, SCORE, WorkCandidate, WorkRef, WorkWord, hook_words
 
@@ -47,6 +48,11 @@ def query_terms(hits: ThemeHits, work: str) -> Tuple[Term, ...]:
     return tuple(t for p in parts for t in p.terms)
 
 
+def work_word(term: Term) -> WorkWord:
+    """Слово заказа для поиска по полям каталога: написания архива, само слово латиницей и как сказано."""
+    return WorkWord(tuple(a.lower() for a in term.alts), tuple(x for x in term.latin[:2] if x), term.word)
+
+
 def same_composer(composer: List[WorkWord], title: List[WorkWord], by_scores: List[WorkWord],
                   scores: Any) -> Tuple[List[WorkWord], List[WorkWord]]:
     """Слово, не совпавшее с остальными по композитору в индексе партитур, — не автор (#3608: «ебанем» звучит как
@@ -63,7 +69,7 @@ def work_ref(terms: Sequence[Term], key: str, scores: Any, records: Mapping[str,
     по ``artist`` записей RTTTL (слово — имя автора хотя бы одной находки)."""
     composer, title, by_scores = [], [], []
     for term in terms:
-        word = WorkWord(tuple(a.lower() for a in term.alts), tuple(x for x in term.latin[:2] if x), term.word)
+        word = work_word(term)
         role = scores.composer_role(word)
         if role is None:
             role = any(word.named_in(r.get("artist")) for r in records.values())
@@ -81,13 +87,17 @@ def tunes(records: Mapping[str, Tuple[Dict[str, Any], str]]) -> Dict[str, Any]:
     return {i: k for i, k in keys.items() if k is not None}
 
 
-def levels(ref: WorkRef, candidates: Sequence[WorkCandidate]) -> List[List[WorkCandidate]]:
-    """Уровни перебора: названо произведение — его партитуры, его RTTTL, остальное; назван только автор — один."""
+def levels(ref: WorkRef, candidates: Sequence[WorkCandidate], confirmed: bool = False) -> List[List[WorkCandidate]]:
+    """Уровни перебора: названо произведение — его партитуры, его RTTTL, остальное; назван только автор — один.
+    ``confirmed`` — произведение подтверждено каталогом (слот ``work``, #3609): «своё» — только полное совпадение
+    названия, частичное («Wedding March» Вагнера на «полёт валькирий Вагнера») уходит в «остальное» — свежесть
+    названное произведение не вытесняет (решение Шифу 13.10)."""
     if not ref.named:
         return [list(candidates)]
-    own = [c for c in candidates if c.title_match]
+    floor = TITLE_EXACT if confirmed and any(c.title_match >= TITLE_EXACT for c in candidates) else TITLE_PARTIAL
+    own = [c for c in candidates if c.title_match >= floor]
     return [[c for c in own if c.kind == SCORE], [c for c in own if c.kind == RTTTL],
-            [c for c in candidates if not c.title_match]]
+            [c for c in candidates if c not in own]]
 
 
 def composer_only(ref: WorkRef, candidates: Sequence[WorkCandidate]) -> List[WorkCandidate]:
@@ -144,16 +154,17 @@ class PieceChain:
         self._log().info("🎼 [classic] прогрев: " + ", ".join(f"{k} {v:.0f} мс" for k, v in steps.items()))
         return steps
 
-    def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], fresh: bool = False
-             ) -> Tuple[Optional[ClassicPick], Dict[str, Any], List[str], int]:
+    def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], fresh: bool = False,
+             confirmed: bool = False) -> Tuple[Optional[ClassicPick], Dict[str, Any], List[str], int]:
         """Произведение → поиск по названию целиком (``find_record``) → ближайшее по словам заказа.
         ``(песня | None, played, отказы, сколько было кандидатов)``. ``fresh`` («продолжай играть Вагнера», #3599) —
         только то, что недавно не играло (``music_history``): кандидаты из истории отбрасываются, поиск по названию
         целиком и «ближайшее» не подставляются; ничего нового не сложилось, а сыгранное есть — ``played["repeats"]``
-        (названия сыгранного, свежие первыми) вместо песни."""
+        (названия сыгранного, свежие первыми) вместо песни. ``confirmed`` — произведение подтверждено каталогом
+        (слот ``work``, #3609): первым перебирается оно само (:func:`levels`)."""
         if fresh:
-            return self._play_fresh(work, key, seed, lead)
-        pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead)
+            return self._play_fresh(work, key, seed, lead, confirmed)
+        pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead, confirmed)
         replacement = work if pick is not None and ref.named and chosen and not chosen.title_match else None
         if pick is None:
             old = whole_name(self._classic, ref, work, seed, lead)
@@ -168,7 +179,7 @@ class PieceChain:
                   "replacement_for": replacement, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
         return pick, played, reasons, count
 
-    def _play_fresh(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]):
+    def _play_fresh(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], confirmed: bool = False):
         """Следующая пьеса, которой нет в недавно сыгранном (:meth:`play` с ``fresh``)."""
         ref, candidates, records = self.candidates(work, key)
         recent, same = self.memory.recent(), tunes(records)
@@ -177,7 +188,7 @@ class PieceChain:
                                            key=lambda c: -recency(c.id, recent, same))]
         refs = [records[c.id][0]["rtttl"] for c in candidates if c.kind == RTTTL and c.title_match]
         materials = PlanMaterials(self._dj._scores, [c.id for c in fresh if c.kind == SCORE], self._log())
-        pick, failed = pick_piece(self._order(work, ref, fresh, records),
+        pick, failed = pick_piece(self._order(work, ref, fresh, records, confirmed),
                                   self._builder(records, materials, refs, work, seed, lead))
         reasons = [why for _c, why in failed]
         if pick is None:
@@ -205,14 +216,14 @@ class PieceChain:
                          + ", ".join(f"{name} {(b - a) * 1000:.0f} мс" for name, a, b in steps))
         return ref, composer_only(ref, [*scores, *rtttl]), records
 
-    def _work_pick(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]):
+    def _work_pick(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], confirmed: bool = False):
         marks = [time.perf_counter()]
         ref, candidates, records = self.candidates(work, key)
         marks.append(time.perf_counter())
         refs = [records[c.id][0]["rtttl"] for c in candidates if c.kind == RTTTL and c.title_match]  # эталоны
         materials = PlanMaterials(self._dj._scores, [c.id for c in candidates if c.kind == SCORE], self._log())
         build = self._builder(records, materials, refs, work, seed, lead)
-        order = self._order(work, ref, candidates, records)
+        order = self._order(work, ref, candidates, records, confirmed)
         marks.append(time.perf_counter())
         pick, failed = pick_piece(order, build)
         marks.append(time.perf_counter())
@@ -247,7 +258,7 @@ class PieceChain:
         return build
 
     def questions(self, work: str, ref: WorkRef, candidates: Sequence[WorkCandidate],
-                  records: Mapping[str, Tuple[Dict[str, Any], str]]) -> List[ChoiceQuestion]:
+                  records: Mapping[str, Tuple[Dict[str, Any], str]], confirmed: bool = False) -> List[ChoiceQuestion]:
         """Вопросы выбора по уровням (:func:`levels`): признаки кандидатов + ``recent`` и счётчик сыгранного (``Plays``)
         из истории (один источник — :class:`PieceMemory`)."""
         recent, same, played, now = self.memory.recent(), tunes(records), self.memory.played(), self._clock()
@@ -256,16 +267,16 @@ class PieceChain:
         return [ChoiceQuestion(work, tuple(Option(c.id, {**c.features(), "recent": recency(c.id, recent, same)},
                                                   f"{c.kind} «{c.title}» {c.composer}".strip(),
                                                   play_stats(c.id, played, now, same)) for c in level), state)
-                for level in levels(ref, candidates) if level]
+                for level in levels(ref, candidates, confirmed) if level]
 
     def _order(self, work: str, ref: WorkRef, candidates: Sequence[WorkCandidate],
-               records: Mapping[str, Tuple[Dict[str, Any], str]]) -> List[WorkCandidate]:
+               records: Mapping[str, Tuple[Dict[str, Any], str]], confirmed: bool = False) -> List[WorkCandidate]:
         """Очередь перебора: по уровням, внутри уровня — ``Chooser``; выбор и признаки — в лог. Модель (цепочка/тень,
         #3564) спрашивается только на первом уровне — он и решает, что играть; запасные уровни упорядочивает код, иначе
         каждый уровень добавлял бы свои дедлайны к бюджету старта."""
         by_id = {c.id: c for c in candidates}
         order: List[WorkCandidate] = []
-        for question in self.questions(work, ref, candidates, records):
+        for question in self.questions(work, ref, candidates, records, confirmed):
             choice, ids = (self._chooser if not order else self._plain).order(question)
             if not order:
                 self._log_choice(work, ref, question, choice)
@@ -281,4 +292,4 @@ class PieceChain:
             + "; ".join(f"{s:.2f} {o.id} {o.label}{_played_mark(o)}" for s, o in ranked))
 
 
-__all__ = ["COMPOSER_MISSING", "PieceChain", "RecordLookup", "levels", "query_terms", "tunes", "work_ref"]
+__all__ = ["COMPOSER_MISSING", "PieceChain", "RecordLookup", "levels", "query_terms", "tunes", "work_ref", "work_word"]

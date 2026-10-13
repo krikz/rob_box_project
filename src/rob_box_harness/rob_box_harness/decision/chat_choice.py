@@ -88,6 +88,21 @@ class ChatChoiceProvider:
         return Decision(answers=answers, provider=NAME, model=self.model,
                         latency_ms=(self._clock() - started) * 1000.0, usage=usage)
 
+    async def complete_json(self, system: str, user: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Ответ-объект по JSON-схеме, не выбор из перечня: разбор фразы заказа в слоты (#3609). Та же модель, ключ,
+        транспорт и формат ответа, что у :meth:`decide`; поля проверяет вызывающий (схему сервер может
+        игнорировать). Не JSON-объект — ``ProviderInvalidResponse``."""
+        payload = await http_json(NAME, self._client_factory, self._timeout_s, "POST", self.base_url + CHAT_PATH,
+                                  json_request(self.model, system, user, schema, self.response_format),
+                                  self._headers())
+        try:
+            raw = json.loads(payload["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+            raise ProviderInvalidResponse(f"{NAME}: malformed completion") from None
+        if not isinstance(raw, Mapping):
+            raise ProviderInvalidResponse(f"{NAME}: completion is not an object")
+        return raw
+
     def _headers(self) -> dict[str, str]:
         key = os.environ.get(self._api_key_env, "").strip()
         if not key:
@@ -128,15 +143,20 @@ def build_request(model: str, state: State, question: ChoiceQuestion,
     schema = {"type": "object", "additionalProperties": False, "required": ["choice", "confidence"],
               "properties": {"choice": {"type": "string", "enum": list(question.options)},
                              "confidence": {"type": "number", "minimum": 0, "maximum": 1}}}
-    system, fmt = SYSTEM_PROMPT, {"type": JSON_SCHEMA,
-                                  "json_schema": {"name": "choice", "strict": True, "schema": schema}}
+    return json_request(model, SYSTEM_PROMPT, f"{question.text}\n\nСостояние: {wire_state}\n\nВарианты:\n{options}",
+                        schema, response_format, name="choice")
+
+
+def json_request(model: str, system: str, user: str, schema: Mapping[str, Any],
+                 response_format: str = JSON_SCHEMA, name: str = "answer") -> dict[str, Any]:
+    """Тело ``chat/completions`` с ответом по JSON-схеме, ``temperature`` 0: строгая ``json_schema``; у сервера без неё
+    (:data:`JSON_OBJECT_ONLY`) — ``json_object`` и та же схема текстом в системном сообщении."""
+    fmt: dict[str, Any] = {"type": JSON_SCHEMA, "json_schema": {"name": name, "strict": True, "schema": schema}}
     if response_format == JSON_OBJECT:
-        system = f"{SYSTEM_PROMPT} JSON-схема ответа: {json.dumps(schema, ensure_ascii=False)}"
+        system = f"{system} JSON-схема ответа: {json.dumps(schema, ensure_ascii=False)}"
         fmt = {"type": JSON_OBJECT}
     return {"model": model, "temperature": 0,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user",
-                          "content": f"{question.text}\n\nСостояние: {wire_state}\n\nВарианты:\n{options}"}],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "response_format": fmt}
 
 

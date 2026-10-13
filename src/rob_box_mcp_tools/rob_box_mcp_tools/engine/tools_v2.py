@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
@@ -48,6 +49,7 @@ from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_
 from rob_box_music.theme import ThemeProfile, match_style_text, match_window_text, seeded_profile, style_for
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from rob_box_music.request_slots import RequestSlots
 from rob_box_music.works import key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
@@ -55,11 +57,12 @@ from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .reasoner import SetPlanBox, SetReasoner
+from .request_slots import Catalog, RequestSlotParser
 from .score_library import ScoreLibrary, seed_plan, track_materials
-from .search import ThemeHits, part_query, ThemeQuery, theme_search
+from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
 from .theme_grounding import set_slots
-from .theme_links import ThemeLinks
+from .theme_links import Ask, ThemeLinks
 
 _LOG = logging.getLogger(__name__)
 
@@ -552,7 +555,8 @@ class RequestMusicTool(MCPTool):
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
                  records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None,
-                 tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE) -> None:
+                 tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE,
+                 slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -565,6 +569,11 @@ class RequestMusicTool(MCPTool):
                                   classic or classic_picker(library), history,
                                   chooser=chooser_from_env(chooser_mode, log=self._log), log=self._log)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
+        # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
+        # судить слова нечем, разбора нет (название как от грамматики), если разборщик не передан явно
+        self._slots = slots or (None if words is not None else RequestSlotParser(
+            lambda text: terms(library(), text), Catalog(library, getattr(dj, "_scores", None)), ask=slots_ask,
+            log=self._log))
 
     def warm(self) -> threading.Thread:
         """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
@@ -667,6 +676,15 @@ class RequestMusicTool(MCPTool):
     def _log(self) -> Any:
         return self.node.get_logger() if self.node is not None else _LOG
 
+    def _request_slots(self, text: str, work: str, command: Any,
+                       lead: Optional[LeadChoice]) -> Tuple[RequestSlots, Optional[LeadChoice]]:
+        """Слоты заказа (#3609): непонятые слова — LLM по схеме, проверка каталогом; ``(слоты, лид инструмента от LLM —
+        если реплика хода инструмент не назвала)``. Инструмент реплики хода («на органе») — слот грамматики."""
+        if lead is not None:
+            command = replace(command, instrument=command.instrument or lead.asked)
+        slots = self._slots.parse(text, work, command) if self._slots else RequestSlots(work, work=work)
+        return slots, (None if lead or not slots.instrument else lead_choice(slots.instrument))
+
     def _stage_classic(self, text: str, lead: Optional[LeadChoice] = None, more: bool = False) -> Dict[str, Any]:
         """Мелодия по названию: песня v2 (одна пьеса, один проход формы) — собрана, не запущена.
 
@@ -680,9 +698,12 @@ class RequestMusicTool(MCPTool):
         command = parse_media_command(text)
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         work, key = key_slot(query)
+        slots, slot_lead = self._request_slots(text, work, command, lead)
+        work, lead = slots.query, lead or slot_lead
         seed = self._seed()
         try:
-            pick, played, reasons, count = self._pieces.play(work, key, seed, lead, fresh=more)
+            pick, played, reasons, count = self._pieces.play(work, key, seed, lead, fresh=more,
+                                                             confirmed=slots.work_confirmed)
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"classic:{work}", "compose_error", f"{type(exc).__name__}: {exc}")
         self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
@@ -702,7 +723,8 @@ class RequestMusicTool(MCPTool):
         if pick is None:
             return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
         return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
-                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track}
+                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
+                **lead_data(slot_lead)}
 
 
 def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:

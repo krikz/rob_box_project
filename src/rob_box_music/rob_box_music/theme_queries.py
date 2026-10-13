@@ -74,7 +74,8 @@ def prompt(theme: str, parts: Sequence[str]) -> Tuple[str, str]:
     return system, user
 
 
-def _query(value: Any) -> str:
+def clean_query(value: Any) -> str:
+    """Строка поиска: пробелы схлопнуты; пусто или длиннее :data:`MAX_QUERY_CHARS` — «»."""
     text = " ".join(str(value or "").split())
     return text if 0 < len(text) <= MAX_QUERY_CHARS else ""
 
@@ -95,10 +96,10 @@ def validate(payload: Any, parts: Sequence[str]) -> Tuple[Suggestion, ...]:
             raise QueriesInvalid(f"kind {kind!r} не из {KINDS}")
         if not isinstance(queries, list):
             raise QueriesInvalid("queries не список")
-        clean = tuple(dict.fromkeys(q for q in map(_query, queries) if q))[:MAX_QUERIES]
+        clean = tuple(dict.fromkeys(q for q in map(clean_query, queries) if q))[:MAX_QUERIES]
         out[part] = Suggestion(part, kind, clean)
     return tuple(out.values())
 
 
-__all__ = ["KINDS", "MAX_QUERIES", "MAX_QUERY_CHARS", "QueriesInvalid", "SUBMIT_TOOL", "Suggestion", "prompt",
-           "schema", "tool", "validate"]
+__all__ = ["KINDS", "MAX_QUERIES", "MAX_QUERY_CHARS", "QueriesInvalid", "SUBMIT_TOOL", "Suggestion", "clean_query",
+           "prompt", "schema", "tool", "validate"]

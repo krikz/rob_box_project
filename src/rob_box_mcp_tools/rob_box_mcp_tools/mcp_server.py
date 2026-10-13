@@ -60,6 +60,7 @@ from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
+from .engine.request_slots import harness_ask
 from .engine.tools_v2 import DjSetTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
@@ -271,7 +272,8 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
     request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
                                tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
-                               chooser_mode=str(node.get_parameter("music_chooser").value))
+                               chooser_mode=str(node.get_parameter("music_chooser").value),
+                               slots_ask=harness_ask(log=node.get_logger))  # #3609: LLM-разбор фразы в слоты
     node.registry.register(request)
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
     owner.publish_state()
