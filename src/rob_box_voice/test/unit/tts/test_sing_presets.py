@@ -161,6 +161,36 @@ def test_minimax_backend_passes_preset_and_reports_requested_rate(tmp_path) -> N
     assert (r.sample_rate, r.duration_s, r.fmt) == (44100, 2.5, "mp3")
 
 
+def test_yandex_request_is_built_by_shared_engine(monkeypatch) -> None:
+    """Запрос строит tts_engines (его же зовёт tts_node), роль и raw-частота доезжают."""
+    import types
+
+    class _Msg:
+        def __init__(self, **kw) -> None:
+            self.__dict__.update(kw)
+
+    pb2 = types.SimpleNamespace(
+        Hints=_Msg, AudioFormatOptions=_Msg, ContainerAudio=_Msg, RawAudio=_Msg,
+        UtteranceSynthesisRequest=type("R", (_Msg,), {"LUFS": 1}),
+    )
+    pb2.ContainerAudio.WAV = 0
+    pb2.RawAudio.LINEAR16_PCM = 1
+    pkg = types.ModuleType("yandex.cloud.ai.tts.v3")
+    pkg.tts_pb2 = pb2
+    for name in ("yandex", "yandex.cloud", "yandex.cloud.ai", "yandex.cloud.ai.tts"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "yandex.cloud.ai.tts.v3", pkg)
+    from rob_box_voice.tts_engines import build_yandex_request
+
+    sing = build_yandex_request("т", "anton", 1.0, role="good", raw_sample_rate=48000)
+    assert [vars(h) for h in sing.hints] == [{"voice": "anton"}, {"speed": 1.0}, {"role": "good"}]
+    assert sing.output_audio_spec.raw_audio.sample_rate_hertz == 48000
+    node = build_yandex_request("т", "anton", 1.2, pitch_hz=5.0, volume_lufs=-19.0)
+    assert [vars(h) for h in node.hints] == [
+        {"voice": "anton"}, {"speed": 1.2}, {"pitch_shift": 5.0}, {"volume": -19.0}]
+    assert node.output_audio_spec.container_audio.container_audio_type == 0
+
+
 def test_silero_backend_writes_real_wav(tmp_path) -> None:
     pytest.importorskip("numpy")
     model = _FakeSilero()

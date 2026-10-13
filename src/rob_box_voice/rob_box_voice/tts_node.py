@@ -85,6 +85,15 @@ from std_msgs.msg import String
 from typing import Any, Dict, List, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
+from .tts_engines import (
+    SILERO_MODEL_PATHS,
+    build_yandex_request,
+    find_silero_model_path,
+    load_silero_package,
+    make_yandex_stub,
+    silero_apply_tts,
+    yandex_collect_audio,
+)
 from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
@@ -420,7 +429,7 @@ except ImportError:
 
 # Yandex Cloud TTS API v3 (gRPC)
 try:
-    from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc
+    from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc  # noqa: F401 — проба наличия SDK; запросы строит tts_engines
 
     YANDEX_GRPC_AVAILABLE = True
 except ImportError:
@@ -1225,12 +1234,7 @@ class TTSNode(Node):
         self.yandex_stub = None
         if YANDEX_GRPC_AVAILABLE and self.yandex_api_key:
             try:
-                self.yandex_channel = grpc.secure_channel(
-                    "tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials()
-                )
-                self.yandex_stub = tts_service_pb2_grpc.SynthesizerStub(
-                    self.yandex_channel
-                )
+                self.yandex_channel, self.yandex_stub = make_yandex_stub()
                 self.get_logger().info("✅ Yandex Cloud TTS gRPC v3 подключен")
             except Exception as e:
                 self.get_logger().warn(
@@ -1671,26 +1675,19 @@ class TTSNode(Node):
             #    образ: ступень скачивания удалена из voice_base/Dockerfile,
             #    см. ADR-0125 и resource-pack §6.1/§7 Этап 3.
             # 2. /cache/tts/silero_v5_ru.pt - персистентный volume (fallback/legacy)
-            model_paths = [
-                "/models/silero/v5_ru.pt",  # Ресурсный пак → bind-mount с хоста
-                "/cache/tts/silero_v5_ru.pt",  # Legacy путь (volume)
-            ]
+            model_paths = list(SILERO_MODEL_PATHS)
 
             model_loaded = False
-            for model_path in model_paths:
-                if os.path.exists(model_path):
-                    self.get_logger().info(f"📦 Загрузка Silero v5: {model_path}")
-                    # Silero v5 использует torch.package (не torch.jit!)
-                    # https://github.com/snakers4/silero-models#standalone-use
-                    self.silero_model = torch.package.PackageImporter(
-                        model_path
-                    ).load_pickle("tts_models", "model")
-                    self.silero_model.to(self.device)
-                    self.get_logger().info(
-                        "✅ Silero TTS v5 загружен (ARM64 оптимизация)"
-                    )
-                    model_loaded = True
-                    break
+            model_path = find_silero_model_path(model_paths)
+            if model_path:
+                self.get_logger().info(f"📦 Загрузка Silero v5: {model_path}")
+                # Silero v5 использует torch.package (не torch.jit!)
+                # https://github.com/snakers4/silero-models#standalone-use
+                self.silero_model = load_silero_package(model_path, self.device)
+                self.get_logger().info(
+                    "✅ Silero TTS v5 загружен (ARM64 оптимизация)"
+                )
+                model_loaded = True
 
             if not model_loaded:
                 # ADR-0018 (честный FAIL лучше красивого PASS): раньше здесь
@@ -5602,16 +5599,16 @@ class TTSNode(Node):
             ssml_text = (
                 f'<speak><prosody pitch="{pitch}">' f"{chunk_text}</prosody></speak>"
             )
-            audio = self.silero_model.apply_tts(
+            return silero_apply_tts(
+                self.silero_model,
+                voice or self.silero_speaker,
+                self.silero_sample_rate,
                 ssml_text=ssml_text,
-                speaker=voice or self.silero_speaker,
-                sample_rate=self.silero_sample_rate,
                 put_accent=self.silero_put_accent,
                 put_yo=self.silero_put_yo,
                 put_stress_homo=self.silero_put_stress_homo,
                 put_yo_homo=self.silero_put_yo_homo,
             )
-            return audio.numpy()
 
         audio_segments = synthesize_with_retry(
             text,
@@ -5830,31 +5827,18 @@ class TTSNode(Node):
                 LUFS-цели для Yandex ``Hints.volume`` (range [-145; 0)).
                 None → Yandex применит свой дефолт (-19 LUFS).
         """
-        hints = [tts_pb2.Hints(voice=voice or self.yandex_voice)]
-        hints.append(tts_pb2.Hints(speed=speech_rate))
-        if pitch_hz is not None:
-            hints.append(tts_pb2.Hints(pitch_shift=pitch_hz))
-        if volume_lufs is not None:
-            hints.append(tts_pb2.Hints(volume=volume_lufs))
-        request = tts_pb2.UtteranceSynthesisRequest(
-            text=text,
-            output_audio_spec=tts_pb2.AudioFormatOptions(
-                container_audio=tts_pb2.ContainerAudio(
-                    container_audio_type=tts_pb2.ContainerAudio.WAV
-                )
-            ),
-            hints=hints,
-            loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
+        request = build_yandex_request(
+            text,
+            voice or self.yandex_voice,
+            speech_rate,
+            pitch_hz=pitch_hz,
+            volume_lufs=volume_lufs,
         )
 
         try:
-            responses = self.yandex_stub.UtteranceSynthesis(
-                request, metadata=(("authorization", f"Api-Key {self.yandex_api_key}"),)
+            audio_data = yandex_collect_audio(
+                self.yandex_stub, self.yandex_api_key, request
             )
-
-            audio_data = b""
-            for response in responses:
-                audio_data += response.audio_chunk.data
 
             if not audio_data:
                 raise Exception("Пустой ответ от Yandex TTS")

@@ -32,6 +32,15 @@ from typing import Any, Callable, Mapping, Protocol
 import wave
 
 from .tts_chunking import CHUNK_LIMITS, split_text
+from .tts_engines import (
+    SILERO_MODEL_PATHS,
+    build_yandex_request,
+    find_silero_model_path,
+    load_silero_package,
+    make_yandex_stub,
+    silero_apply_tts,
+    yandex_collect_audio,
+)
 from .tts_voice_registry import SingPreset, sing_preset_for
 
 _log = logging.getLogger(__name__)
@@ -41,7 +50,6 @@ _log = logging.getLogger(__name__)
 VOCAL_SAMPLE_RATE = 48000
 MINIMAX_SAMPLE_RATE = 44100
 MINIMAX_MODEL = "speech-02-hd"
-SILERO_MODEL_PATHS = ("/models/silero/v5_ru.pt", "/cache/tts/silero_v5_ru.pt")
 
 
 class SingSynthError(RuntimeError):
@@ -193,38 +201,21 @@ class YandexSingBackend:
             return self._stub
         if not self._api_key:
             raise SingSynthError("no_api_key", "YANDEX_API_KEY не задан")
-        import grpc
-        from yandex.cloud.ai.tts.v3 import tts_service_pb2_grpc
-
-        channel = grpc.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
-        self._stub = tts_service_pb2_grpc.SynthesizerStub(channel)
+        _channel, self._stub = make_yandex_stub()
         return self._stub
 
     def _one(self, text: str, preset: SingPreset) -> bytes:
-        from yandex.cloud.ai.tts.v3 import tts_pb2
-
-        hints = [tts_pb2.Hints(voice=preset.voice), tts_pb2.Hints(speed=preset.speed)]
-        if preset.emotion:
-            hints.append(tts_pb2.Hints(role=preset.emotion))
-        if preset.pitch:
-            hints.append(tts_pb2.Hints(pitch_shift=float(preset.pitch)))
-        request = tts_pb2.UtteranceSynthesisRequest(
-            text=text,
-            output_audio_spec=tts_pb2.AudioFormatOptions(
-                raw_audio=tts_pb2.RawAudio(
-                    audio_encoding=tts_pb2.RawAudio.LINEAR16_PCM,
-                    sample_rate_hertz=VOCAL_SAMPLE_RATE,
-                )
-            ),
-            hints=hints,
-            loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
+        request = build_yandex_request(
+            text,
+            preset.voice,
+            preset.speed,
+            pitch_hz=float(preset.pitch) if preset.pitch else None,
+            role=preset.emotion,
+            raw_sample_rate=VOCAL_SAMPLE_RATE,
         )
         stub = self._get_stub()
         try:
-            responses = stub.UtteranceSynthesis(
-                request, metadata=(("authorization", f"Api-Key {self._api_key}"),)
-            )
-            return b"".join(r.audio_chunk.data for r in responses)
+            return yandex_collect_audio(stub, self._api_key, request)
         except Exception as exc:  # grpc.RpcError и пр. — наружу как честная причина
             code = getattr(exc, "code", None)
             detail = getattr(exc, "details", None)
@@ -256,13 +247,11 @@ class SileroSingBackend:
     def _load_from_disk() -> Any:
         import torch
 
-        for path in SILERO_MODEL_PATHS:
-            if os.path.exists(path):
-                torch.set_grad_enabled(False)
-                model = torch.package.PackageImporter(path).load_pickle("tts_models", "model")
-                model.to(torch.device("cpu"))
-                return model
-        raise SingSynthError("model_missing", f"Silero v5 не найден: {SILERO_MODEL_PATHS}")
+        path = find_silero_model_path()
+        if path is None:
+            raise SingSynthError("model_missing", f"Silero v5 не найден: {SILERO_MODEL_PATHS}")
+        torch.set_grad_enabled(False)
+        return load_silero_package(path, torch.device("cpu"))
 
     def synth(self, text: str, preset: SingPreset) -> tuple[bytes, int, float | None]:
         if self._model is None:
@@ -272,13 +261,11 @@ class SileroSingBackend:
             if not chunk.strip():
                 continue
             try:
-                audio = self._model.apply_tts(
-                    text=chunk, speaker=preset.voice, sample_rate=VOCAL_SAMPLE_RATE,
-                    put_accent=True, put_yo=True,
+                segments.append(
+                    silero_apply_tts(self._model, preset.voice, VOCAL_SAMPLE_RATE, text=chunk)
                 )
             except Exception as exc:
                 raise SingSynthError("provider_error", f"silero: {exc}") from exc
-            segments.append(audio.numpy())
         if not segments:
             raise SingSynthError("empty_audio", "Silero не вернул аудио")
         import numpy as np
