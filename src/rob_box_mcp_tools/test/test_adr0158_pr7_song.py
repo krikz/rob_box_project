@@ -311,7 +311,10 @@ class FakeStudio:
     def busy(self):
         return self._busy
 
-    def launch(self, request, on_failed):
+    def ordered_in(self, turn):
+        return bool(self._busy and turn and turn == "t1")
+
+    def launch(self, request, on_failed, turn=None):
         self.requests.append(request)
         self.failed = on_failed
         return True
@@ -392,3 +395,13 @@ def test_decline_code_is_the_same_on_both_sides():
     from rob_box_mcp_tools.engine.song_order import DECLINED
 
     assert DECLINED == SOURCE_DECLINED
+
+
+def test_second_tool_call_of_the_same_turn_is_not_a_new_order(cache):
+    """Прогон 13.10: LLM зовёт request_music и generate_music в одном ходе — второй вызов не «занято», а то же ожидание."""
+    studio = FakeStudio(busy=True)
+    req = _request(_rig(), studio, cache, [])
+    same = req.execute(intent="track", text=PHRASE, heard_text=PHRASE, turn_id="t1")
+    assert same.success and same.data["pending"] == "song" and not studio.requests
+    other = req.execute(intent="track", text=PHRASE, heard_text=PHRASE, turn_id="t2")
+    assert not other.success and other.data["message"] == sg.BUSY_TEXT

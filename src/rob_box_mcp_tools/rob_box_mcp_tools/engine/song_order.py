@@ -33,17 +33,19 @@ class SongOrder:
         ``args`` — ``(intent, text, mood, genre, turn_id, heard_text)`` заказа; мост — тот же ``order`` без просьбы
         петь (кэш по жанру, иначе синтез)."""
         studio = self._studio
-        if studio.busy():
-            return _declined(BUSY_TEXT)
         try:
             provider, voice = studio.voice()
         except SongFailed as exc:
             return _declined(f"Спеть сейчас не могу: {failed_words(exc.reason)}.")
+        if studio.ordered_in(args[4]):  # тот же ход: песня уже пишется, ответ тот же, что у первого вызова
+            return "data", {"ok": True, "pending": "song", "source_message": wait_text(provider, voice, False)}
+        if studio.busy():
+            return _declined(BUSY_TEXT)
         bridge = order(*args, ask=replace(ask, vocal=False, robot_voice=False, generated=False), gen_failed="pending")
         if not bridge.success and (bridge.data or {}).get("reason") != DECLINED:
             return "raw", bridge
         request = SongRequest(str(args[5] or args[1] or ""), ask.genre, str(args[2] or ""))
-        if not studio.launch(request, lambda why: self.failed_text(ask, why, bridge.success)):
+        if not studio.launch(request, lambda why: self.failed_text(ask, why, bridge.success), args[4]):
             return _declined(BUSY_TEXT)
         return "data", {**(bridge.data or {}), "ok": True, "pending": "song",
                         "source_message": wait_text(provider, voice, bridge.success)}

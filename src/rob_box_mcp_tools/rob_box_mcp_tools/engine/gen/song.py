@@ -252,6 +252,7 @@ class SongStudio:
         self._clock, self._log = clock, log
         self._lock = threading.Lock()
         self._busy = False
+        self._turn: Optional[str] = None  # ход, заказавший идущую песню (LLM зовёт request_music и generate_music подряд)
         self._dead_until = 0.0
 
     # ── что видит чойсер пути ──
@@ -274,6 +275,10 @@ class SongStudio:
 
     def busy(self) -> bool:
         return self._busy
+
+    def ordered_in(self, turn: Optional[str]) -> bool:
+        """Идущую песню заказал этот же ход: второй вызов тула того же хода — не новый заказ."""
+        return bool(self._busy and turn and turn == self._turn)
 
     # ── конвейер ──
     def make(self, request: SongRequest) -> SongResult:
@@ -308,13 +313,13 @@ class SongStudio:
                           made.task_id, made.credits)
 
     # ── фон ──
-    def launch(self, request: SongRequest, on_failed: Callable[[str], str]) -> bool:
+    def launch(self, request: SongRequest, on_failed: Callable[[str], str], turn: Optional[str] = None) -> bool:
         """Запустить ``make`` в фоне; ``False`` — уже пишется другая песня. Итог говорит голос: ``done_text`` или
         ``on_failed(причина)``; песня играет с деки сразу после готовности."""
         with self._lock:
             if self._busy:
                 return False
-            self._busy = True
+            self._busy, self._turn = True, turn
         threading.Thread(target=self._run, args=(request, on_failed), name="rbx-song", daemon=True).start()
         return True
 

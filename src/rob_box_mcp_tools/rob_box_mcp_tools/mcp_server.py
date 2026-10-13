@@ -65,6 +65,7 @@ from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
 from .engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
+from .tools.dialogue import _active_tts_provider
 from .tools import (
     NavigateToWaypointTool,
     NavigateToCoordinatesTool,
@@ -242,8 +243,7 @@ def _song_studio(node: Any) -> Optional[SongStudio]:
         node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
         return None
     return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
-                      lambda: current_voice(getattr(node, "actual_tts_provider", None),
-                                            getattr(node, "_voice_store", None)),
+                      lambda: current_voice(_active_tts_provider(node), getattr(node, "_voice_store", None)),
                       play=lambda track_id: node.registry.execute("gen_play_from_library", track_id=track_id),
                       speak=_speaker(node), log=node.get_logger)
 
