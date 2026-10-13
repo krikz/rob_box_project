@@ -288,7 +288,7 @@ class SongStudio:
 
     # ── что видит чойсер пути ──
     def has_key(self) -> bool:
-        return bool(self._provider.configured())
+        return bool(self._provider.configured)
 
     def blocked(self) -> str:
         """Причина, по которой песню заказывать нельзя (жёсткий фильтр кода), или «». Silero (запасной голос) не поём:

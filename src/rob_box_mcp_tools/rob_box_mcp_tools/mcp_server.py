@@ -245,13 +245,23 @@ def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
     """Песня голосом робота (ADR-0158 PR-7): нужны ключ KIE и LLM для текстов; нет — ``None`` (``not_wired`` во фразе).
     Голос — провайдер из ``/voice/tts/provider_state`` и ``VoiceStateStore`` (ставится позже, читаем лениво)."""
     provider, lyrics = KieSunoProvider(), harness_lyrics_ask(log=node.get_logger)
-    if lyrics is None or not provider.configured():
+    if lyrics is None or not provider.configured:
         node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
         return None
     return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
                       lambda: current_voice(_tts_provider(node), getattr(node, "_voice_store", None)),
                       play=lambda track_id: node.registry.execute("gen_play_from_library", track_id=track_id),
                       speak=_speaker(node), started=lambda track_id: events.wait(track_id, STARTED_WAIT_S), log=node.get_logger)
+
+
+def _cover_maker(node: Any) -> Any:
+    """Кавер пьесы (ADR-0158 PR-4): Suno через KIE (ключ ``KIE_API`` окружения), кэш — ``/data/music_library``
+    (поднимается позже движка — лениво). Ключа нет — исполнитель есть, но не готов: кавер-кандидатов нет."""
+    from .engine.gen.cover import CoverMaker
+    from .engine.gen.kie_suno import KieSunoProvider
+
+    return CoverMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None),
+                      log=node.get_logger)
 
 
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
@@ -299,7 +309,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
                                                                                   track_id=track_id),
-                               songs=_song_studio(node, events))
+                               cover=_cover_maker(node), speak=_speaker(node),  # PR-4: кавер пьесы
+                               songs=_song_studio(node, events))  # PR-7: песня голосом робота
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)

@@ -50,8 +50,8 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text,
-                                  route_note, source_ask)
+from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
+                                  source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
@@ -60,6 +60,7 @@ from .gen.song import SongStudio
 from .song_order import SongOrder
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
+from .piece_cover import PieceCover, cover_work
 from .reasoner import SetPlanBox, SetReasoner
 from .request_slots import Catalog, RequestSlotParser
 from .score_library import ScoreLibrary, seed_plan, track_materials
@@ -607,8 +608,8 @@ class RequestMusicTool(MCPTool):
                  tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE,
                  slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None,
                  gen_library: Callable[[], Any] = lambda: None,
-                 play_cached: Optional[Callable[[str], MCPToolResult]] = None,
-                 songs: Optional[SongStudio] = None) -> None:
+                 play_cached: Optional[Callable[[str], MCPToolResult]] = None, cover: Any = None,
+                 speak: Optional[Callable[[str], Any]] = None, songs: Optional[SongStudio] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -621,10 +622,12 @@ class RequestMusicTool(MCPTool):
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
                                   classic or classic_picker(library), history, chooser=chooser, log=self._log)
         # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
-        self._source = SourceRouter(chooser, gen_library, log=self._log, studio=songs)
+        self._source = SourceRouter(chooser, gen_library, log=self._log, cover=cover, studio=songs)
         self._songs = songs  # песня голосом робота (ADR-0158 PR-7): фоновая генерация, пока играет мост
         self._song_order = SongOrder(songs, self._source.route)
         self._play_cached = play_cached  # трек кэша — gen_play_from_library: дека владельца (ADR-0158 PR-2)
+        # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
+        self._cover = PieceCover(cover, owner, play_cached, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
         # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
         # судить слова нечем, разбора нет (название как от грамматики), если разборщик не передан явно
@@ -693,34 +696,50 @@ class RequestMusicTool(MCPTool):
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
+        # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
         ask = ask or source_ask(heard_text or text)
-        route = self._source.route(ask, piece=classic, gen_failed=gen_failed)
-        if route.kind != SYNTH:
+        piece = self._stage_piece(text, heard_text) if classic else None
+        work, cover_track = cover_source(self._cover, piece, self._pieces, self._seed)
+        route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
+        bridge = is_bridge(route, self._cover)
+        if route.kind != SYNTH and not bridge:
             return self._off_synth(route, what, ask, (intent, text, mood, genre, turn_id, heard_text))
-        staged = self._stage(route, classic, text, mood, heard_text)
+        staged = self._stage(route, piece, text, mood, heard_text)
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
-        program, once, row = staged.pop("program"), staged.pop("once"), staged.pop("history", {})
-        model = staged.pop("track", None)
-        if "played" in staged:  # фраза о пьесе — от кода, из результата (ADR-0157 R6); её же скажет голос
-            from rob_box_voice.core.media_phrases import launch_text
-            staged["message"] = launch_text("", staged)
+        program, once, row, model = unstage(staged)
         self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
         result = self._owner.play(program, dj=track_facts(staged), once=once)
         result = confirmed({**result, **staged}, self._confirm)
-        if result.get("ok") and row:
-            self._pieces.memory.remember(row)
-        if result.get("ok") and model is not None and self._tracks_dir:
-            self._write_model(model)
+        if result.get("ok"):
+            self._started(row, model)
+            if bridge:  # мост звучит — кавер в фоне встанет вместо него
+                self._cover.start(route, cover_track or model, program.track_id)
         return tool_result(result, what)
 
-    def _stage(self, route: Route, classic: bool, text: str, mood: Optional[str],
-               heard_text: Optional[str]) -> Dict[str, Any]:
-        """Собрать синтез пути (пьеса или трек стиля ``route.style``) с инструментом реплики и фразой пути кода."""
+    def _started(self, row: Mapping[str, Any], model: Any) -> None:
+        """Заказ зазвучал: пьеса — в память свежести, модель трека — в каталог моделей (I24)."""
+        if row:
+            self._pieces.memory.remember(row)
+        if model is not None and self._tracks_dir:
+            self._write_model(model)
+
+    def _stage_piece(self, text: str, heard_text: Optional[str]) -> Dict[str, Any]:
+        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез)."""
         lead = lead_for(heard_text, text)
-        staged = (self._stage_classic(text, lead, asks_more(heard_text)) if classic
-                  else self._stage_club(text, mood, lead, route.style))
+        staged = self._stage_classic(text, lead, asks_more(heard_text))
         staged.update(lead_data(lead))
+        return staged
+
+    def _stage(self, route: Route, piece: Optional[Dict[str, Any]], text: str, mood: Optional[str],
+               heard_text: Optional[str]) -> Dict[str, Any]:
+        """Собрать синтез пути (пьеса ``piece`` или трек стиля ``route.style``) с фразой пути кода."""
+        if piece is None:
+            lead = lead_for(heard_text, text)
+            staged = self._stage_club(text, mood, lead, route.style)
+            staged.update(lead_data(lead))
+        else:
+            staged = piece
         note = route_note(route)
         if note:  # играет своё, а просили генерацию: фраза кода говорит об этом (ADR-0158 G3)
             staged["source_note"] = note
@@ -729,9 +748,8 @@ class RequestMusicTool(MCPTool):
     def _off_synth(self, route: Route, what: str, ask: SourceAsk, args: Tuple[Any, ...]) -> MCPToolResult:
         """Путь не синтез: песня голосом робота (PR-7), трек кэша (есть шов проигрывания) или честный отказ с фразой
         кода — без тихой подмены."""
-        if route.kind == GENERATE and self._songs is not None:
-            kind, data = self._song_order.start(ask, args, self.order)
-            return data if kind == "raw" else tool_result(data, "песня не заиграла")
+        if self._song_order.handles(route):
+            return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
             return self._play_cache(route, what)
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
@@ -829,7 +847,7 @@ class RequestMusicTool(MCPTool):
             return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
         return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
                 "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
-                **lead_data(slot_lead)}
+                "work": pick.work, "public_domain": pick.public_domain, **lead_data(slot_lead)}
 
 
 class GenerateMusicTool(MCPTool):
@@ -889,6 +907,30 @@ class GenerateMusicTool(MCPTool):
                       robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "")
         return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
                                    ask=ask)
+
+
+def is_bridge(route: Route, cover: Any) -> bool:
+    """Путь — кавер пьесы, и исполнитель кавера есть: синтез пьесы играет мостом (ADR-0158 PR-4)."""
+    return route.kind == GENERATE and route.work is not None and cover is not None
+
+
+def cover_source(cover: Optional[PieceCover], piece: Optional[Dict[str, Any]], pieces: Any,
+                 seed: Callable[[], int]) -> Tuple[Any, Any]:
+    """Произведение кавера и трек-источник его мелодии (``PieceCover.source``); кавера нет — только произведение."""
+    if piece is None or cover is None:
+        return cover_work(piece), None
+    return cover.source(piece, pieces, seed())
+
+
+def unstage(staged: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any], Any]:
+    """Снять с собранного заказа ``(программа, once, строка истории, модель трека)``; у пьесы — фраза кода о ней
+    из результата (ADR-0157 R6), её же скажет голос."""
+    program, once, row = staged.pop("program"), staged.pop("once"), staged.pop("history", {})
+    model = staged.pop("track", None)
+    if "played" in staged:
+        from rob_box_voice.core.media_phrases import launch_text
+        staged["message"] = launch_text("", staged)
+    return program, once, row, model
 
 
 def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:

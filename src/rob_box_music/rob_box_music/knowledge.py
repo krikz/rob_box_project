@@ -2581,6 +2581,52 @@ INSTRUMENT_NOUNS: Tuple[str, ...] = ("инструмент", "инструмен
 
 __all__ += ["INSTRUMENTS", "INSTRUMENT_ENDINGS", "INSTRUMENT_NOUNS", "Instrument", "UNSUPPORTED_INSTRUMENT_STEMS"]
 
+#: Кавер пьесы по названию (ADR-0158 §2.9, решение Шифу В7): инструмент заказа → EN-теги Suno. Пак не нужен —
+#: «валькирии на ситаре» играет Suno поверх нашего рендера мелодии; ключи — только из :data:`INSTRUMENTS` (тест
+#: держит). Стиль заказа («роком», «оркестром») — теги ``GEN_STYLES``; ни инструмента, ни стиля —
+#: ``COVER_DEFAULT_STYLE``
+#: (проба 13.10: оркестр, «звучит шикарно»). На слух проверен только оркестр; остальные теги — предложение.
+COVER_STYLES: Mapping[str, str] = {
+    "guitar": "acoustic guitar ensemble, fingerpicked and strummed guitars",
+    "harp": "concert harp, orchestral harp arpeggios",
+    "balalaika": "russian balalaika folk ensemble, domra, bayan",
+    "trombone": "brass band, solo trombone, tuba, horns",
+    "xylophone": "xylophone and mallet percussion ensemble, glockenspiel",
+    "piano": "solo grand piano, expressive concert pianist",
+    "organ": "cathedral pipe organ, church reverb",
+    "flute": "solo concert flute, woodwind ensemble, strings",
+    "sitar": "indian sitar, tabla, tanpura drone, raga flavour",
+    "marimba": "marimba ensemble, mallet percussion",
+    "kalimba": "kalimba, thumb piano, soft hand percussion",
+}
+COVER_DEFAULT_STYLE = "orchestral"
+#: Чего в кавере не надо (проба 13.10): рингтон и голос — всегда; электроника — когда стиль заказа не электронный.
+COVER_NEGATIVE_TAGS = "ringtone, vocals"
+COVER_ACOUSTIC_NEGATIVE_TAGS = "electronic, chiptune, synth"
+#: Стили заказа, при которых кавер — электроника (теги ``COVER_ACOUSTIC_NEGATIVE_TAGS`` не ставятся).
+COVER_ELECTRONIC_STYLES: Tuple[str, ...] = ("club", "rave", "synthwave", "chiptune", "breaks", "dnb", "lofi")
+#: Насколько Suno держится за наш рендер (проба 13.10: 0.65 — мелодия узнаётся, «обыграл»); модель — как у пробы.
+COVER_AUDIO_WEIGHT = 0.65
+COVER_MODEL = "V6"
+#: Длина ответа Suno на кавер, секунд (проба: 20.8 с исходника → 2 × 89 с).
+COVER_DURATION_S = 90
+#: Наш рендер мелодии для кавера: не короче (мотив повторяется) и не длиннее, секунд; частота файла.
+COVER_SOURCE_MIN_S, COVER_SOURCE_MAX_S, COVER_SOURCE_RATE_HZ = 20.0, 40.0, 22050
+#: Ожидание живой версии во фразе моста (проба 13.10 ≈ 43 с + загрузка/скачивание).
+COVER_WAIT_S = 50.0
+#: Признак ``live`` кандидата пути — кавер (генерация или кэш того же произведения): основной путь пьесы по названию
+#: (В7) выигрывает у нашего синтеза при деньгах с разрывом ≥ ``CHOOSER_CLEAR_GAP`` (кодом, без модели).
+COVER_LIVE_WEIGHT = 4.0
+#: Типы произведения реестра, мелодии которых — общественное достояние (кавер строится только для них, §2.9).
+PUBLIC_DOMAIN_WORK_TYPES: Tuple[str, ...] = ("classical", "folk")
+#: Композиторы «классики» с живыми правами (умерли < 70 лет назад): их пьесы — не общественное достояние.
+COMPOSERS_IN_COPYRIGHT: Tuple[str, ...] = ("shostakovich", "khachaturian", "sviridov", "schnittke")
+
+__all__ += ["COMPOSERS_IN_COPYRIGHT", "COVER_ACOUSTIC_NEGATIVE_TAGS", "COVER_AUDIO_WEIGHT", "COVER_DEFAULT_STYLE",
+            "COVER_DURATION_S", "COVER_ELECTRONIC_STYLES", "COVER_LIVE_WEIGHT", "COVER_MODEL", "COVER_NEGATIVE_TAGS",
+            "COVER_SOURCE_MAX_S", "COVER_SOURCE_MIN_S", "COVER_SOURCE_RATE_HZ", "COVER_STYLES", "COVER_WAIT_S",
+            "PUBLIC_DOMAIN_WORK_TYPES"]
+
 
 # ── Вселенные и настроение темы сета (#3581, ADR-0157 §2.1): «ты диджей Анакин… веселье на звезде смерти» ─────────
 @dataclass(frozen=True)
@@ -2668,7 +2714,7 @@ ROBOT_VOICE_OWNERS: Tuple[str, ...] = ("сво", "тво")
 #: Веса признаков кандидатов пути (ADR-0158 §2.2; ``choice.score`` с весами вопроса). ``asked`` на «сгенерируй»:
 #: генерация 1, кэш 0.5 (сгенерировано раньше), синтез −1; на «новую» кэш −1. Правит Шифу.
 SOURCE_WEIGHTS: Mapping[str, float] = {"synth_fit": 2.0, "theme_match": 1.5, "asked": 3.0, "fresh": 0.5,
-                                       "rating": 0.5, "cost": -0.02, "wait_s": -0.005}
+                                       "rating": 0.5, "cost": -0.02, "wait_s": -0.005, "live": COVER_LIVE_WEIGHT}
 #: Трек кэша, игранный ближе этого, не «свежий» (признак ``fresh``).
 GEN_FRESH_HOURS = 12
 #: Ожидание до звука у синтеза и кэша, секунд (признак ``wait_s``).

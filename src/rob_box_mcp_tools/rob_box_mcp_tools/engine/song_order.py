@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable, Dict, Tuple
 
-from rob_box_music.source import DECLINE, Route, SourceAsk, decline_text
+from rob_box_music.source import DECLINE, GENERATE, Route, SourceAsk, decline_text
 
 from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, wait_text
 
@@ -27,11 +27,18 @@ class SongOrder:
         self._studio = studio
         self._route = route
 
-    def start(self, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any]) -> Tuple[str, Any]:
-        """``("data", словарь)`` — результат заказа (ожидание или отказ); ``("raw", MCPToolResult)`` — мост не встал
-        не из-за «нечем играть» (сет играет, не нашлось): песню не начинаем, отдаём его результат как есть.
-        ``args`` — ``(intent, text, mood, genre, turn_id, heard_text)`` заказа; мост — тот же ``order`` без просьбы
+    def handles(self, route: Route) -> bool:
+        """Путь выбрал генерацию песни и студия подключена."""
+        return route.kind == GENERATE and self._studio is not None and route.work is None
+
+    def start(self, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any], wrap: Callable[..., Any]) -> Any:
+        """``MCPToolResult`` заказа (ожидание или отказ; ``wrap`` — ``tools_v2.tool_result``). Мост не встал не из-за
+        «нечем играть» (сет играет, не нашлось): песню не начинаем, отдаём его результат как есть. ``args`` — ``(intent, text, mood, genre, turn_id, heard_text)`` заказа; мост — тот же ``order`` без просьбы
         петь (кэш по жанру, иначе синтез)."""
+        kind, data = self._begin(ask, args, order)
+        return data if kind == "raw" else wrap(data, "песня не заиграла")
+
+    def _begin(self, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any]) -> Tuple[str, Any]:
         studio = self._studio
         try:
             provider, voice = studio.voice()
