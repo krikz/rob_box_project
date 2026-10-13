@@ -439,12 +439,13 @@ class GenPlayFromLibraryTool(MCPTool):
             return MCPToolResult(success=False, error="музыкальный движок недоступен — трек не заиграл")
         deck_id = f"gen_{track_id[:8]}_{int(self._clock())}"
         try:
-            program = render_audio(audio_track(info, deck_id, run=self._run), "A")
+            track = audio_track(info, deck_id, run=self._run)
+            program = render_audio(track, "A")
         except AudioUnavailable as exc:
             self.log_error(f"gen_play_from_library {track_id}: {exc}")
             return MCPToolResult(success=False, data={"reason": exc.reason}, error=f"трек не заиграл: {exc.reason}")
         title = str(info.get("title") or "")
-        seconds = program.form_beats * 60.0 / program.bpm
+        seconds = track.duration_s  # длина файла: форма деки длиннее на хвост до целого такта
         facts = {"enabled": False, "title": title, "source": "generated", "library_id": track_id,
                  "bpm": info.get("bpm_nominal") or None}
         dj_set = getattr(self.node, "_dj_set_tool", None)
