@@ -253,17 +253,18 @@ def set_master(energy: int, table: Optional[kn.Style] = None) -> Dict[str, float
     return {"trim": kn.ENERGY_TRIM_DB[energy], **kn.SET_LEVELER, **(table.master if table is not None else {})}
 
 
-def section_arc(form: Form, bpm: float) -> Tuple[Tuple[float, float, float], ...]:
+def section_arc(form: Form, bpm: float, style: Optional[kn.Style] = None) -> Tuple[Tuple[float, float, float], ...]:
     """Дуга громкости формы: на доле начала секции — смещение ``trim`` и время переезда, с.
 
     ``knowledge.SECTION_TRIM_DB``: секция с подъёмом едет к своему уровню всю длину (build → дроп), остальные
-    встают за ``TRIM_LAG_S``. Песня — без дуги: её динамику делает состав куплетов."""
+    встают за ``TRIM_LAG_S``; секция с дугой своей партии (``SectionPart.trim`` стиля ``style``, #3594: тихий куплет
+    рока) — она. Песня — без дуги: её динамику делает состав куплетов."""
     if form.song:
         return ()
     out, beat = [], 0.0
     for sec in form.sections:
         beats = float(sec.bars * BEATS_PER_BAR)
-        offset, rise = kn.SECTION_TRIM_DB.get(kn.section_kind(sec.name), (0.0, False))
+        offset, rise = kn.section_part(style, sec.name).trim or kn.SECTION_TRIM_DB.get(kn.section_kind(sec.name), (0.0, False))
         out.append((beat, offset, round(beats * 60.0 / bpm, 3) if rise else kn.TRIM_LAG_S))
         beat += beats
     return tuple(out)

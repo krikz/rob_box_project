@@ -1527,14 +1527,19 @@ class SectionPart:
     hats: str = ""  # хэты (``X``/``x``/``g``/``.``) вместо каркаса трека (``Style.kits``)
     power: Tuple[PowerRhythm, ...] = ()  # ритмы пауэр-аккордов на такт (``arrange.pad.power_chords``)
     riffs: Tuple[str, ...] = ()  # риффы баса на такт (``arrange.bass.riff``)
+    # Дуга громкости секции ``(смещение trim, дБ; подъём на всю секцию?)`` вместо :data:`SECTION_TRIM_DB` её вида:
+    # ``trim`` стоит после выравнивателя мастер-шины, тише партии он не «вытягивает» (запись робота 13.10: палм-мьют
+    # −4 дБ гитары дал куплет громче припева по середине — выравниватель).
+    trim: Optional[Tuple[float, bool]] = None
 
 
 _NO_SECTION_PART = SectionPart()
 
 
-def section_part(style: "Style", name: str) -> SectionPart:
-    """Партии секции ``name`` стиля (``Style.section_parts``); секции в таблице нет — все поля пустые (таблицы трека)."""
-    return style.section_parts.get(name, _NO_SECTION_PART)
+def section_part(style: Optional["Style"], name: str) -> SectionPart:
+    """Партии секции ``name`` стиля (``Style.section_parts``); секции в таблице нет (или стиля нет) — все поля пустые
+    (таблицы трека)."""
+    return style.section_parts.get(name, _NO_SECTION_PART) if style is not None else _NO_SECTION_PART
 
 
 @dataclass(frozen=True)
@@ -2189,8 +2194,8 @@ _ROCK_CHORUS = SectionPart(hats="X.x.X.x.X.x.X.x.", power=(_ROCK_POWER_DRIVE, _R
                                                            _ROCK_PUSH), riffs=_ROCK_RIFFS)
 _ROCK_LAST_CHORUS = SectionPart(hats="X.X.X.X.X.X.X.X.", power=(_ROCK_POWER_DRIVE,), riffs=_ROCK_RIFFS)
 _ROCK_SECTION_PARTS: Mapping[str, SectionPart] = {
-    "verse": SectionPart(power=(_ROCK_PALM_QUIET, _ROCK_PALM_BREATH), riffs=("RRRRRRRR",)),
-    "verse2": SectionPart(power=(_ROCK_PALM_LIFT,), riffs=("RRRRRRRR",)),
+    "verse": SectionPart(power=(_ROCK_PALM_QUIET, _ROCK_PALM_BREATH), riffs=("RRRRRRRR",), trim=(-3.5, False)),
+    "verse2": SectionPart(power=(_ROCK_PALM_LIFT,), riffs=("RRRRRRRR",), trim=(-2.5, False)),
     "chorus": _ROCK_CHORUS, "chorus2": _ROCK_LAST_CHORUS,
     "chorus3": _ROCK_LAST_CHORUS,
     "bridge": SectionPart(kick="X.........X.....", snare="........X.......", hats="X...x...X...x...",

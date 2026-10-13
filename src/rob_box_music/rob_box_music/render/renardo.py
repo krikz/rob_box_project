@@ -532,7 +532,7 @@ def render(track: Track, deck: str) -> Program:
         code="\n".join(lines) + "\n", track_id=track.track_id, deck=deck, bpm=track.bpm,
         form_beats=float(track.form.bars_total * BEATS_PER_BAR), slots=slots,
         synths=frozenset(tonal), samples=frozenset(drums), sample_files=frozenset(files),
-        arc=section_arc(track.form, track.bpm),
+        arc=section_arc(track.form, track.bpm, kn.STYLES.get(track.style)),
     )
 
 

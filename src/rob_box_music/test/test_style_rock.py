@@ -210,6 +210,18 @@ def test_verse_is_palm_muted_and_chorus_rings_open(tracks):
         assert set(lead_lpf[:-1]) == {(kn.LPF_OPEN, kn.LPF_OPEN)}, "лид — тема: срез только в хвосте блэнда"
 
 
+def test_quiet_verse_loud_chorus_in_the_volume_arc(tracks):
+    """Дуга громкости программы (``trim`` после выравнивателя мастер-шины): куплет тише припева (выравниватель
+    вытягивал тихий палм-мьют — запись робота 13.10), второй куплет громче первого, последний припев — пик; интро и
+    хвост блэнда — как у клуба (деки сводятся без скачка)."""
+    for _plan_, track, program, _by in tracks:
+        trim = {sec.name: offset for sec, (_b, offset, _l) in zip(track.form.sections, program.arc)}
+        assert trim["intro"] == kn.SECTION_TRIM_DB["intro"][0] and trim["outro_tail"] == kn.SECTION_TRIM_DB["outro_tail"][0]
+        assert trim["verse"] <= trim["chorus"] - 2.0, trim
+        if "verse2" in trim:
+            assert trim["verse"] < trim["verse2"] < trim["chorus2"] == max(trim.values()), trim
+
+
 def test_bridge_is_a_half_time_breakdown(tracks):
     """Бридж — половинный грув: бочка партии секции (она же триггер сайдчейна), малый на 3, гитара — аккорд на такт
     звенит весь такт, бас — не больше двух нот в такте."""
