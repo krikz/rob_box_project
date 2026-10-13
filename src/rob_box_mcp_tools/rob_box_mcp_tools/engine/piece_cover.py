@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Tuple
 
+from rob_box_music.instruments import lead_choice
 from rob_box_music.source import CoverWork, Route, cover_failed_text, cover_ready_text
+from rob_box_music.works import RTTTL, record_public_domain
 
+from .classic import ClassicPick, pick_record
 from .gen.cover import CoverResult
 
 _LOG = logging.getLogger(__name__)
@@ -30,6 +33,22 @@ def cover_work(staged: Optional[Mapping[str, Any]]) -> Optional[CoverWork]:
                      str(staged.get("title") or ""))
 
 
+def public_domain_pick(pieces: Any, query: str, seed: int, lead: Any = None) -> Optional[ClassicPick]:
+    """Запись RTTTL этого же заказа, совпавшая по названию и общественного достояния (реестр ``works``) — источник
+    кавера, когда пьеса моста выбрана другая. Живой прогон 13.10: «включи полёт валькирий» — `rideofth` (Вагнер)
+    недавно играл, свежесть выбрала `valkyrie` («In Development», не public domain), и кавер из кэша не нашёлся."""
+    _ref, candidates, records = pieces.candidates(query)
+    for cand in candidates:
+        if cand.kind != RTTTL or not cand.title_match or cand.id not in records:
+            continue
+        record, title = records[cand.id]
+        if record_public_domain(record):
+            pick = pick_record(record, title, query, seed=seed, lead=lead)
+            if pick.found:
+                return pick
+    return None
+
+
 class PieceCover:
     """Кавер после моста. ``maker`` — ``gen.cover.CoverMaker``; ``owner`` — ``PlayerOwner`` (что на деке);
     ``play_cached(track_id)`` — ``gen_play_from_library``; ``speak(text)`` — реплика робота."""
@@ -41,6 +60,19 @@ class PieceCover:
         self._play_cached = play_cached
         self._speak = speak
         self._log = log
+
+    def source(self, piece: Optional[Mapping[str, Any]], pieces: Any, seed: int) -> Tuple[Optional[CoverWork], Any]:
+        """``(произведение кавера, трек-источник мелодии | None — мелодия моста)``: пьеса моста не общественное
+        достояние — та же просьба среди записей public domain (:func:`public_domain_pick`)."""
+        work = cover_work(piece)
+        query = str(((piece or {}).get("played") or {}).get("work") or "")
+        if work is None or work.public_domain or not query:
+            return work, None
+        pick = public_domain_pick(pieces, query, seed, lead_choice(work.instrument))
+        if pick is None:
+            return work, None
+        self._log().info(f"🎼 [cover] мост «{work.title}» не public domain → кавер по «{pick.work}» ({pick.melody_id})")
+        return CoverWork(pick.work, True, work.instrument, pick.title), pick.track
 
     def start(self, route: Route, track: Any, bridge_id: str) -> Any:
         """Заказать кавер в фоне; ``bridge_id`` — id запуска моста на деке."""
@@ -76,4 +108,4 @@ class PieceCover:
             self._speak(text)
 
 
-__all__ = ["PieceCover", "cover_work"]
+__all__ = ["PieceCover", "cover_work", "public_domain_pick"]

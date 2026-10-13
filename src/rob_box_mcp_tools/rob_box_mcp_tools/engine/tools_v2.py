@@ -694,7 +694,8 @@ class RequestMusicTool(MCPTool):
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
         piece = self._stage_piece(text, heard_text) if classic else None
-        route = self._source.route(ask or source_ask(heard_text or text), piece=classic, work=cover_work(piece))
+        work, cover_track = cover_source(self._cover, piece, self._pieces, self._seed)
+        route = self._source.route(ask or source_ask(heard_text or text), piece=classic, work=work)
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:
             return self._off_synth(route, what)
@@ -708,7 +709,7 @@ class RequestMusicTool(MCPTool):
         if result.get("ok"):
             self._started(row, model)
             if bridge:  # мост звучит — кавер в фоне встанет вместо него
-                self._cover.start(route, model, program.track_id)
+                self._cover.start(route, cover_track or model, program.track_id)
         return tool_result(result, what)
 
     def _started(self, row: Mapping[str, Any], model: Any) -> None:
@@ -903,6 +904,14 @@ class GenerateMusicTool(MCPTool):
 def is_bridge(route: Route, cover: Any) -> bool:
     """Путь — кавер пьесы, и исполнитель кавера есть: синтез пьесы играет мостом (ADR-0158 PR-4)."""
     return route.kind == GENERATE and route.work is not None and cover is not None
+
+
+def cover_source(cover: Optional[PieceCover], piece: Optional[Dict[str, Any]], pieces: Any,
+                 seed: Callable[[], int]) -> Tuple[Any, Any]:
+    """Произведение кавера и трек-источник его мелодии (``PieceCover.source``); кавера нет — только произведение."""
+    if piece is None or cover is None:
+        return cover_work(piece), None
+    return cover.source(piece, pieces, seed())
 
 
 def unstage(staged: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any], Any]:

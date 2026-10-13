@@ -171,3 +171,21 @@ def test_deck_check_after_the_bridge_finished_by_itself():
                             last_finished="bridge1")
     cover = PieceCover(FakeMaker(), owner, lambda t: None)
     assert cover.deck_is_bridge("bridge1") and not cover.deck_is_bridge("other")
+
+
+def test_bridge_not_public_domain_takes_the_cover_from_the_public_domain_record_of_the_same_order():
+    """Живой прогон 13.10: свежесть выбрала мостом `valkyrie` («In Development»), а кавер — по Вагнеру `rideofth`."""
+    from rob_box_music.works import RTTTL, WorkCandidate
+
+    class Pieces:
+        def candidates(self, query):
+            return None, [WorkCandidate("valkyrie", RTTTL, "Valkyrie", "In Development", 0.5, 0.0),
+                          WorkCandidate("rideofth", RTTTL, "Ride Of The Valkyries", "Wagner", 0.5, 0.0)], \
+                _records(TABLE)
+
+    bridge = {"program": object(), "work": "Valkyrie", "public_domain": False, "title": "Valkyrie",
+              "instrument": "", "played": {"work": "валькирий"}}
+    work, track = PieceCover(FakeMaker(), None, None).source(bridge, Pieces(), seed=5)
+    assert work == CoverWork("Ride Of The Valkyries", True, "", work.spoken) and track is not None
+    pd = dict(bridge, work="Ride Of The Valkyries", public_domain=True)
+    assert PieceCover(FakeMaker(), None, None).source(pd, Pieces(), seed=5)[1] is None  # мост сам — источник
