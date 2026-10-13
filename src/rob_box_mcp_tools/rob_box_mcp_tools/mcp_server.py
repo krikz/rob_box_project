@@ -56,6 +56,7 @@ from rob_box_voice.core.music_player_state import (
 )
 
 from .base import shared_publisher
+from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
@@ -272,7 +273,8 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
     # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
     request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
-                               tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value))
+                               tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
+                               chooser_mode=str(node.get_parameter("music_chooser").value))
     node.registry.register(request)
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
     owner.publish_state()
@@ -342,6 +344,9 @@ class MCPServer(Node):
         self.declare_parameter("music_v2_dj_lines", True)
         # ADR-0152 §2.3: полная модель каждого трека сета — <track_id>.json (ротация); "" — не писать.
         self.declare_parameter("music_v2_tracks_dir", "/data/music_v2/tracks")
+        # ADR-0157 PR-7 (#3564): кто выбирает пьесу при неоднозначном заказе - режим как у провайдеров LLM/STT/TTS
+        # (параметр ноды, не env): deterministic | jev | chain (Jev 900 мс → LLM 2 с → кубик кода; решение Шифу 13.10).
+        self.declare_parameter("music_chooser", CHOOSER_DEFAULT_MODE)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).

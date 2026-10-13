@@ -7,10 +7,11 @@ decision layer (спайк #3084: оркестратор — один дедла
 ``enum`` id) и возвращает ``Choice``. Ответ вне перечня, таймаут, ошибка, открытый circuit — :class:`ModelUnavailable`;
 :class:`DeterministicChooser` ловит и отвечает сам: модель список кандидатов не расширяет.
 
-Цепочка (``MUSIC_CHOOSER=chain``, решение Шифу 13.10 «Jev > LLM со спец-промптом > код с коэффициентом и кубиком»):
-выбор ИСПОЛНЯЕТ :class:`ChainModel` — ``jev`` → ``llm_harness`` (тот же промпт V1) → код ``choice.dice``
-(вероятность ∝ ``exp(score/T)``). У каждой модельной ступени свой дедлайн ``CHOOSER_DEADLINE_MS`` и свой circuit
-breaker (свой оркестратор); таймаут, ошибка, ответ вне кандидатов — ступень провалилась, дальше следующая. Одна строка
+Режим выбора - параметр ноды ``mcp_server.music_chooser`` (``deterministic``/``jev``/``chain``, умолчание ``chain``),
+как цепочки провайдеров LLM/STT/TTS в yaml. Цепочка (решение Шифу 13.10 «Jev > LLM со спец-промптом > код с
+коэффициентом и кубиком»): выбор ИСПОЛНЯЕТ :class:`ChainModel` — ``jev`` → ``llm_harness`` (тот же промпт V1) → код ``choice.dice``
+(вероятность ∝ ``exp(score/T)``). У каждой модельной ступени свой дедлайн (Jev ``CHOOSER_DEADLINE_MS`` 900 мс, LLM
+``CHOOSER_LLM_DEADLINE_MS`` 2 с) и свой circuit breaker (свой оркестратор); таймаут, ошибка, ответ вне кандидатов — ступень провалилась, дальше следующая. Одна строка
 на выбор: ``[chooser] q=… stage=jev|llm|code choice=… ms_jev=… ms_llm=… reason_fallback=…``. Однозначный вопрос
 (разрыв ≥ ``CHOOSER_CLEAR_GAP``) цепочка не видит — отвечает ``DeterministicChooser`` сразу (§3.3).
 
@@ -41,15 +42,21 @@ from rob_box_harness.decision import ChoiceQuestion as ModelQuestion
 from rob_box_harness.decision.chat_choice import chat_choice_from_env
 from rob_box_music.choice import (Choice, ChoiceQuestion, Chooser, DeterministicChooser, Option, dice, penalty, points,
                                   score)
-from rob_box_music.knowledge import CHOOSER_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS
+from rob_box_music.knowledge import CHOOSER_DEADLINE_MS, CHOOSER_LLM_DEADLINE_MS, CHOOSER_WEIGHTS, HOOK_FRESH_SETS
 
 _LOG = logging.getLogger(__name__)
 SHADOW_ENV = "MUSIC_CHOOSER_SHADOW"
-CHOOSER_ENV = "MUSIC_CHOOSER"
-#: Режимы ``MUSIC_CHOOSER``: код (по умолчанию) или цепочка Jev → LLM → кубик кода.
-DETERMINISTIC_MODE, CHAIN_MODE = "deterministic", "chain"
-#: Ступени цепочки по порядку: провайдер → имя в строке лога.
-CHAIN_STAGES: Tuple[Tuple[str, str], ...] = (("jev", "jev"), ("llm_harness", "llm"))
+#: Режим выбора - параметр ноды ``mcp_server.music_chooser`` (yaml, как ``llm_providers`` у диалога и
+#: ``stt_provider_chain`` у STT); env для него нет. Единая таблица: режим → провайдеры ступеней по порядку.
+DETERMINISTIC_MODE = "deterministic"
+JEV_MODE = "jev"
+CHAIN_MODE = "chain"
+CHOOSER_MODES: Mapping[str, Tuple[str, ...]] = {DETERMINISTIC_MODE: (), JEV_MODE: ("jev",),
+                                                CHAIN_MODE: ("jev", "llm_harness")}
+DEFAULT_MODE = CHAIN_MODE
+#: Провайдер → имя ступени в строке лога и её дедлайн (Jev 900 мс, LLM 2 с - решения Шифу 13.10).
+STAGE_LABELS = {"jev": "jev", "llm_harness": "llm"}
+STAGE_DEADLINE_MS = {"jev": CHOOSER_DEADLINE_MS, "llm_harness": CHOOSER_LLM_DEADLINE_MS}
 PROVIDERS = ("jev", "llm_harness")
 QUESTION_ID = "pick"
 _W = CHOOSER_WEIGHTS
@@ -121,9 +128,11 @@ def to_model_question(question: ChoiceQuestion) -> ModelQuestion:
 
 
 def build_provider(kind: str, env: Optional[Mapping[str, str]] = None, *,
-                   timeout_s: float = CHOOSER_DEADLINE_MS / 1000.0, **kwargs: Any) -> Optional[DecisionProvider]:
+                   timeout_s: Optional[float] = None, **kwargs: Any) -> Optional[DecisionProvider]:
     """Провайдер по имени из env; нет ключа/конфига — ``None``. HTTP-таймаут — дедлайн ступени (короче — ступень
     обрывалась бы раньше своего дедлайна)."""
+    if kind in STAGE_DEADLINE_MS and timeout_s is None:
+        timeout_s = STAGE_DEADLINE_MS[kind] / 1000.0
     if kind == "jev":
         return jev_from_env(env, timeout_s=timeout_s, **kwargs)
     if kind == "llm_harness":
@@ -198,8 +207,10 @@ class ChainModel:
     """Цепочка исполнения: модельные ступени по порядку, затем кубик кода (всегда отвечает, не бросает)."""
 
     def __init__(self, stages: Sequence[Tuple[str, Chooser]], log: Callable[[], Any] = lambda: _LOG,
-                 clock: Callable[[], float] = time.perf_counter, rng: Any = None) -> None:
+                 clock: Callable[[], float] = time.perf_counter, rng: Any = None,
+                 deadlines: Optional[Mapping[str, int]] = None) -> None:
         self._stages = list(stages)
+        self._deadlines = dict(deadlines or {})
         self._log = log
         self._clock = clock
         self._rng = rng if rng is not None else random.Random()
@@ -209,7 +220,7 @@ class ChainModel:
         reasons: List[str] = []
         for label, stage in self._stages:
             started = self._clock()
-            answer, why = self._ask(stage, question, deadline_ms)
+            answer, why = self._ask(stage, question, self._deadlines.get(label, deadline_ms))
             timings.append(f"ms_{label}={(self._clock() - started) * 1000.0:.0f}")
             if answer is not None:
                 return self._note(question, label, answer, timings, reasons)
@@ -234,35 +245,38 @@ class ChainModel:
         return answer
 
 
-def chain_from_env(env: Mapping[str, str], log: Callable[[], Any],
+def chain_from_env(mode: str, env: Mapping[str, str], log: Callable[[], Any],
                    factory: Callable[..., Optional[DecisionProvider]]) -> DeterministicChooser:
-    """``MUSIC_CHOOSER=chain``: ступени, для которых в env есть ключ/конфиг; нет ни одной — один кубик кода."""
+    """Режим ``jev``/``chain``: ступени, для которых в env есть ключ/конфиг; нет ни одной — один кубик кода."""
     stages, missing = [], []
-    for kind, label in CHAIN_STAGES:
+    for kind in CHOOSER_MODES[mode]:
         provider = factory(kind, env)
         if provider is None:
             missing.append(kind)
         else:
-            stages.append((label, ModelChooser(provider)))
+            stages.append((STAGE_LABELS[kind], ModelChooser(provider, deadline_ms=STAGE_DEADLINE_MS[kind])))
     names = " → ".join([label for label, _s in stages] + ["code"])
+    deadlines = {STAGE_LABELS[k]: STAGE_DEADLINE_MS[k] for k in CHOOSER_MODES[mode]}
     note = f"; без ключа/конфига: {', '.join(missing)}" if missing else ""
-    (log().warning if missing else log().info)(f"🎲 [chooser] цепочка включена: {names}{note}")
-    return DeterministicChooser(ChainModel(stages, log))
+    (log().warning if missing else log().info)(f"🎲 [chooser] режим {mode}: {names}{note}")
+    return DeterministicChooser(ChainModel(stages, log, deadlines=deadlines))
 
 
-def chooser_from_env(env: Optional[Mapping[str, str]] = None, log: Callable[[], Any] = lambda: _LOG,
+def chooser_from_env(mode: str = DEFAULT_MODE, env: Optional[Mapping[str, str]] = None,
+                     log: Callable[[], Any] = lambda: _LOG,
                      factory: Callable[..., Optional[DecisionProvider]] = build_provider) -> DeterministicChooser:
-    """Выбиратель сборки: по умолчанию детерминированный; ``MUSIC_CHOOSER=chain`` — цепочка Jev → LLM → кубик;
-    ``MUSIC_CHOOSER_SHADOW=<провайдер>`` — с тенью модели (отладка). Нет ключа / неизвестное имя — детерминированный
-    (или ступень пропущена) и одна строка в лог."""
+    """Выбиратель сборки по режиму ``mcp_server.music_chooser`` (``deterministic``/``jev``/``chain``; по умолчанию
+    цепочка Jev → LLM → кубик). Ключи провайдеров - из env. ``MUSIC_CHOOSER_SHADOW=<провайдер>`` - тень модели при
+    детерминированном режиме (отладка). Неизвестный режим / нет ключа - детерминированный (или ступень пропущена)
+    и одна строка в лог."""
     import os
 
     env = os.environ if env is None else env
-    mode = env.get(CHOOSER_ENV, "").strip().lower() or DETERMINISTIC_MODE
-    if mode == CHAIN_MODE:
-        return chain_from_env(env, log, factory)
+    mode = (mode or "").strip().lower() or DEFAULT_MODE
+    if mode in (JEV_MODE, CHAIN_MODE):
+        return chain_from_env(mode, env, log, factory)
     if mode != DETERMINISTIC_MODE:
-        log().warning(f"🎲 [chooser] {CHOOSER_ENV}={mode!r} неизвестен (есть {DETERMINISTIC_MODE}, {CHAIN_MODE}) — "
+        log().warning(f"🎲 [chooser] music_chooser={mode!r} неизвестен (есть {', '.join(CHOOSER_MODES)}) — "
                       f"детерминированный")
     kind = env.get(SHADOW_ENV, "").strip().lower()
     if not kind:
@@ -279,7 +293,8 @@ def chooser_from_env(env: Optional[Mapping[str, str]] = None, log: Callable[[], 
     return DeterministicChooser(ShadowModel(ModelChooser(provider), log))
 
 
-__all__ = ["CHAIN_MODE", "CHAIN_STAGES", "CHOOSER_ENV", "ChainModel", "DETERMINISTIC_MODE", "ModelChooser",
+__all__ = ["CHAIN_MODE", "CHOOSER_MODES", "ChainModel", "DEFAULT_MODE", "DETERMINISTIC_MODE", "JEV_MODE",
+           "STAGE_DEADLINE_MS", "STAGE_LABELS", "ModelChooser",
            "ModelUnavailable", "PROVIDERS", "SHADOW_ENV", "ShadowModel", "build_provider", "chain_from_env",
            "chooser_from_env", "describe", "played_text", "plays_note", "points_text", "run_sync", "session_text",
            "to_model_question",
