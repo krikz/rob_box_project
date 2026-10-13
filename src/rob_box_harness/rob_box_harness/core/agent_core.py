@@ -488,7 +488,7 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 
 
 # Issue #1708 — hallucinated-lyrics guard. After a music-launch tool
-# (``generate_music`` / ``gen_play_from_library``), the LLM sometimes also calls ``speak_text`` with
+# (``generate_music`` / ``music_library``), the LLM sometimes also calls ``speak_text`` with
 # invented lyrics («Нига-стайл, Колобок-флоу...»). The user hears a
 # robotic voice reading hallucinated text on top of (or instead of) the
 # beat. Master prompt only authorises ONE short accept phrase after
@@ -526,11 +526,11 @@ _VOCAL_REQUEST_KEYWORDS: tuple = (
 # existing TRACK-mode accept test in test_issue_992_batch_cleanup.
 _ACCEPT_PHRASE_MAX_CHARS: int = 40
 #: Music tools after which a hallucinated-lyrics guard applies: ``generate_music``
-#: (MiniMax Music API) and ``gen_play_from_library``. The
+#: (MiniMax Music API) and ``music_library``. The
 #: hallucinated-lyrics guard must fire for ANY music tool that leaves
 #: the user hearing lyrics on top of audio (issue #1708 / #1561).
 _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
-    "generate_music", "gen_play_from_library",
+    "generate_music", "music_library",
 })
 
 
@@ -2525,7 +2525,7 @@ def _is_hallucinated_speak_text(
     when ALL of the following hold:
 
     * The call is ``speak_text`` (other tools are passed through).
-    * A music-launch tool (``generate_music`` / ``gen_play_from_library``)
+    * A music-launch tool (``generate_music`` / ``music_library``)
       appears in the SAME LLM batch (either before OR after this
       ``speak_text`` call) — ``same_batch_music_calls`` carries those
       names. The order in the batch does NOT matter: the LLM

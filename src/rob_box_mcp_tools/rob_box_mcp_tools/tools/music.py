@@ -275,7 +275,7 @@ class SetMusicVolumeTool(MCPTool):
             "уровень. action: louder/quieter — шаг ±3 dB, max — максимум, "
             "normal — стартовый уровень, set — абсолютный уровень level "
             "0..100 (% от максимума). Трек из библиотеки генераций "
-            "(gen_play_from_library) играет на той же деке — регулируется тоже."
+            "(music_library play) играет на той же деке — регулируется тоже."
         )
 
     @property

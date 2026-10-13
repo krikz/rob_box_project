@@ -1,7 +1,7 @@
 """Issue #2859 — не больше одного успешного запуска трека за ход.
 
 Живой DJ-переход #23 (23.09.2026): LLM в одном ходе 8 раз вызвала
-``execute_music_code`` + ``set_dj_mode`` (старый путь удалён в #3614; стартёр здесь — ``gen_play_from_library``); каждый вызов — ``Clock.clear()`` и
+``execute_music_code`` + ``set_dj_mode`` (старый путь удалён в #3614; стартёр здесь — ``generate_music``); каждый вызов — ``Clock.clear()`` и
 новый трек, музыка переключалась каждые ~3 с до ``_MAX_TOOL_ITERATIONS``.
 
 Покрытие:
@@ -53,12 +53,12 @@ class _FakeUnderlying:
         obj = {"type": "object", "properties": {}}
         return tuple(
             ToolSpec(name=n, description=n, parameters=obj)
-            for n in ("gen_play_from_library", "set_dj_mode", "gen_play_from_library")
+            for n in ("generate_music", "set_dj_mode", "generate_music")
         )
 
     async def execute(self, call: ToolCall) -> ToolResult:
         self.executed.append(call)
-        if call.name == "gen_play_from_library" and self._fail_left > 0:
+        if call.name == "generate_music" and self._fail_left > 0:
             self._fail_left -= 1
             return ToolResult(
                 tool_call_id=call.id, content="scsynth down", is_error=True
@@ -107,11 +107,11 @@ class _NullMemory:
 
 
 def _dj_batch(i: int) -> LLMResponse:
-    """Один шаг живого хода #23: gen_play_from_library + set_dj_mode."""
+    """Один шаг живого хода #23: generate_music + set_dj_mode."""
     return LLMResponse(
         content="",
         tool_calls=(
-            ToolCall(id=f"cm{i}", name="gen_play_from_library",
+            ToolCall(id=f"cm{i}", name="generate_music",
                      arguments={"name": f"still dre {i}"}),
             ToolCall(id=f"dj{i}", name="set_dj_mode",
                      arguments={"enabled": True, "interval": 75}),
@@ -151,40 +151,43 @@ def _refusals(contents: list[str]) -> list[dict]:
 
 def test_track_starting_tools_cover_issue_list() -> None:
     expected = {
-        "gen_play_from_library",
+        "generate_music",
     }
     assert expected <= TRACK_STARTING_TOOLS
     assert "set_dj_mode" not in TRACK_STARTING_TOOLS
     assert "lookup_melody" not in TRACK_STARTING_TOOLS
+    # ADR-0158 PR-9: music_library — один тул на 7 действий, флаг starts_music на уровне тула; с ним guard отказал бы
+    # play после list в одном ходе. Запускает музыку только action=play — guard его намеренно не считает.
+    assert "music_library" not in TRACK_STARTING_TOOLS
 
 
 def test_guard_allows_first_success_then_refuses() -> None:
     guard = TrackStartGuard()
-    assert not guard.should_refuse("gen_play_from_library")
-    guard.record("gen_play_from_library", is_error=False)
-    assert guard.should_refuse("gen_play_from_library")
-    assert guard.should_refuse("gen_play_from_library")
+    assert not guard.should_refuse("generate_music")
+    guard.record("generate_music", is_error=False)
+    assert guard.should_refuse("generate_music")
+    assert guard.should_refuse("generate_music")
     assert not guard.should_refuse("set_dj_mode")
-    assert guard.started_tool == "gen_play_from_library"
+    assert guard.started_tool == "generate_music"
 
 
 def test_guard_failed_start_does_not_consume_limit() -> None:
     guard = TrackStartGuard()
-    guard.record("gen_play_from_library", is_error=True)
-    assert not guard.should_refuse("gen_play_from_library")
+    guard.record("generate_music", is_error=True)
+    assert not guard.should_refuse("generate_music")
 
 
 def test_guard_ignores_non_music_success() -> None:
     guard = TrackStartGuard()
     guard.record("set_dj_mode", is_error=False)
-    assert not guard.should_refuse("gen_play_from_library")
+    assert not guard.should_refuse("generate_music")
 
 
 def test_guard_reset_opens_next_turn() -> None:
     guard = TrackStartGuard()
-    guard.record("gen_play_from_library", is_error=False)
+    guard.record("generate_music", is_error=False)
     guard.reset()
-    assert not guard.should_refuse("gen_play_from_library")
+    assert not guard.should_refuse("generate_music")
     assert guard.started_tool is None
 
 
@@ -200,13 +203,13 @@ def test_executor_refuses_second_start_without_calling_provider() -> None:
     async def _go() -> tuple[ToolResult, ToolResult]:
         executor.begin_turn()
         first = await executor.execute(
-            ToolCall(id="a", name="gen_play_from_library", arguments={}))
+            ToolCall(id="a", name="generate_music", arguments={}))
         second = await executor.execute(
-            ToolCall(id="b", name="gen_play_from_library", arguments={}))
+            ToolCall(id="b", name="generate_music", arguments={}))
         return first, second
 
     first, second = asyncio.run(_go())
-    assert underlying.names() == ["gen_play_from_library"]
+    assert underlying.names() == ["generate_music"]
     assert json.loads(first.content)["success"] is True
     payload = json.loads(second.content)
     assert second.tool_call_id == "b"
@@ -214,7 +217,7 @@ def test_executor_refuses_second_start_without_calling_provider() -> None:
     assert payload["success"] is False
     assert payload["error"] == REFUSAL_ERROR_CODE
     assert payload["message"] == REFUSAL_MESSAGE
-    assert payload["already_started_by"] == "gen_play_from_library"
+    assert payload["already_started_by"] == "generate_music"
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +226,7 @@ def test_executor_refuses_second_start_without_calling_provider() -> None:
 
 
 def test_eight_compose_calls_in_one_turn_execute_exactly_one() -> None:
-    """Живой ход #23: 8 × (gen_play_from_library + set_dj_mode) → 1 трек."""
+    """Живой ход #23: 8 × (generate_music + set_dj_mode) → 1 трек."""
     underlying = _FakeUnderlying()
     executor = SchedulerToolExecutor(underlying)
     llm = _ScriptedLLM([_dj_batch(i) for i in range(8)])
@@ -231,13 +234,13 @@ def test_eight_compose_calls_in_one_turn_execute_exactly_one() -> None:
 
     asyncio.run(core.process_input("[DJ_AUTO переход #23]", history=[]))
 
-    assert underlying.names().count("gen_play_from_library") == 1
+    assert underlying.names().count("generate_music") == 1
     assert underlying.names().count("set_dj_mode") == 8
     refusals = _refusals(_tool_messages(llm))
     assert len(refusals) == 7
     assert all(r["message"] == REFUSAL_MESSAGE for r in refusals)
     # Первый (исполненный) трек — именно первый вызов модели.
-    first = next(c for c in underlying.executed if c.name == "gen_play_from_library")
+    first = next(c for c in underlying.executed if c.name == "generate_music")
     assert first.id == "cm0"
 
 
@@ -250,7 +253,7 @@ def test_failed_start_then_retry_executes_both() -> None:
     asyncio.run(core.process_input("[DJ_AUTO переход #24]", history=[]))
 
     # cm0 упал, cm1 — исправление (выполнен), cm2 — отказ.
-    assert underlying.names().count("gen_play_from_library") == 2
+    assert underlying.names().count("generate_music") == 2
     assert len(_refusals(_tool_messages(llm))) == 1
 
 
@@ -261,13 +264,13 @@ def test_next_turn_allows_new_track() -> None:
     core = _core(llm, executor)
 
     asyncio.run(core.process_input("[DJ_AUTO переход #25]", history=[]))
-    assert underlying.names().count("gen_play_from_library") == 1
+    assert underlying.names().count("generate_music") == 1
 
     llm.responses = [_dj_batch(2)]
     core._dsm.on_event(DialogueEvent.WAKE_WORD)
     asyncio.run(core.process_input("[DJ_AUTO переход #26]", history=[]))
 
-    started = [c.id for c in underlying.executed if c.name == "gen_play_from_library"]
+    started = [c.id for c in underlying.executed if c.name == "generate_music"]
     assert started == ["cm0", "cm2"]
 
 

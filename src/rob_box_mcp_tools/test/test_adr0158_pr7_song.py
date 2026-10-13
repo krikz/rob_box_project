@@ -423,7 +423,7 @@ def test_language_proxy_gives_tts_the_song_language():
 
 
 def test_late_started_is_waited_for_not_called_a_failure(library):
-    """Прогон 13.10: трек деки встаёт на границу формы (до ~47 с), ``gen_play_from_library`` ждёт 6 с и отвечает
+    """Прогон 13.10: трек деки встаёт на границу формы (до ~47 с), ``music_library`` ждёт 6 с и отвечает
     ``not_started``, а песня потом играет. Ждём ``started`` дольше; пришло — песня «играет», нет — честный провал."""
     from types import SimpleNamespace
 

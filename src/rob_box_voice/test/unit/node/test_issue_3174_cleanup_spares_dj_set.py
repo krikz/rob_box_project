@@ -211,7 +211,7 @@ def test_backing_under_rap_is_still_stopped_after_speech():
 
     _finalize(
         n,
-        _result("", tools=("gen_play_from_library", "speak_text"), speak_text_count=2),
+        _result("", tools=("generate_music", "speak_text"), speak_text_count=2),
         "[Speaker:unknown] зачитай рэп про котов под бит",
     )
 

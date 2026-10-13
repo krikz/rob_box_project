@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 #: двух рукописных frozenset'ах (``RENARDO_MUSIC_TOOLS`` /
 #: ``GENERATED_MUSIC_TOOLS``), и каждый новый музыкальный тул про него
 #: забывал: ``compose_music`` вышел и был авто-заглушен через 1.5 с,
-#: ``gen_play_from_library`` — в третий раз, а ``lookup_melody`` играл
+#: ``music_library`` — в третий раз, а ``lookup_melody`` играл
 #: мелодию, но гуард его не видел и гнал LLM в повторный
 #: запуск музыки (старый путь стирал мелодию через Clock.clear()).
 MUSIC_STARTING_TOOLS: frozenset = frozenset(
@@ -137,8 +137,7 @@ PLANNING_NARRATION_TOOL_NAMES: tuple = (
     "speak_text",
     "set_dj_mode",
     "stop_music",
-    "gen_play_from_library",
-    "gen_search_library",
+    "music_library",
     "play_animation",
     "play_sound",
     "memory_save",
@@ -601,8 +600,8 @@ ACTION_CLAIM_RULES: tuple = (
             re.IGNORECASE),
         claim_re=re.compile(
             r"(?:удал|стёр|стер|убра)\w*", re.IGNORECASE),
-        tools=frozenset({"gen_delete_from_library"}),
-        what="удаление трека (gen_delete_from_library)",
+        tools=frozenset({"music_library"}),
+        what="удаление трека (music_library delete)",
     ),
     ActionClaimRule(
         category="library_search",
@@ -619,10 +618,10 @@ ACTION_CLAIM_RULES: tuple = (
         # Любой поисковый тул закрывает заявку — какой именно, решает LLM
         # по тому, где искать (сэмплы, медиатека, память, интернет).
         tools=frozenset({
-            "gen_search_library", "gen_list_library", "gen_get_track_info",
+            "music_library",
             "memory_search", "memory_context", "faq_search", "search_web",
         }),
-        what="поиск (gen_search_library / memory_search / search_web)",
+        what="поиск (music_library / memory_search / search_web)",
     ),
     # ---- Issue #2755: «Записала» без memory_save --------------------------
     # Прогон 35699257202 (акт 2 night-marathon, 22.09.2026), два шага подряд:
@@ -844,8 +843,7 @@ CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     "request_music", "dj_set",
     "lookup_melody",
     "stop_music", "play_sound", "play_animation",
-    "generate_music", "gen_play_from_library", "gen_delete_from_library",
-    "gen_search_library", "gen_list_library", "gen_get_track_info",
+    "generate_music", "music_library",
     # issue #2942 — save_arrangement_preset (ADR-0132 PR-7): claim
     # «сохранил/сохраняю пресет» после реального вызова тула не должно
     # ловиться guard'ом как phantom action.
@@ -1376,8 +1374,8 @@ def build_babble_retry_prompt(user_input: str) -> str:
 
     🔴 FIX (live 02.09, "включи трек про весну"): список обязан называть
     вариант «уже существующий трек» — иначе модель, уже нашедшая трек через
-    gen_search_library, сочиняла новую мелодию вместо
-    gen_play_from_library(track_id=...). ADR-0149 PR-13a: музыку ставит
+    music_library(search), сочиняла новую мелодию вместо
+    music_library(play, track_id=...). ADR-0149 PR-13a: музыку ставит
     ``request_music`` движка v2 (``compose_music`` и прочие
     тулы старого пути удалены).
 
@@ -1404,9 +1402,9 @@ def build_babble_retry_prompt(user_input: str) -> str:
         "  • анекдот → speak_text(...) × N,\n"
         "  • уже существующий/сохранённый трек по имени или теме — "
         "НЕ сочиняй новый: если в этом диалоге уже был вызов "
-        "gen_search_library/gen_list_library с подходящим "
+        "music_library(list/search) с подходящим "
         "результатом, возьми его track_id и вызови "
-        "gen_play_from_library(track_id=...); "
+        "music_library(action=play, track_id=...); "
         "иначе вызови поиск сейчас, а не request_music.\n"
         "После последнего speak_text верни 'done'. Никаких "
         "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "

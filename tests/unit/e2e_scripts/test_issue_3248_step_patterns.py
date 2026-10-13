@@ -5,7 +5,7 @@ Run 36775544782 / 36777967495 (30.09.2026): шаги краснели по па�
 ``voice_used`` — только при синтезе MiniMax, ``generate_music`` снят с
 регистрации 22.08 в db84ff590). Обратная сторона той же беды: голое имя тула
 в ``patterns`` матчит строку ``tools(61): …`` — её dialogue_node печатает на
-каждом ходе (ml06 run 36777967495: PATTERN_OK gen_get_track_info при НЕвызванном
+каждом ходе (ml06 run 36777967495: PATTERN_OK music_library при НЕвызванном
 туле, GATE-1 это поймал).
 
 Строки-образцы ниже — дословно из ``docker logs voice-assistant`` робота за
@@ -39,7 +39,7 @@ COMPOSE_CALL = (
 )
 CATALOG_DUMP = (
     "[dialogue_node-4]   tools(61): add_music_material, clear_waypoints, compose_music, "
-    "continue_mapping, execute_music_code, gen_get_track_info, set_voice, speak_text"
+    "continue_mapping, execute_music_code, music_library, set_voice, speak_text"
 )
 
 

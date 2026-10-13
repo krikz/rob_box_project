@@ -3,7 +3,7 @@ test_gen_library.py — тесты библиотеки сгенерирован
 
 Issue #1392 / ADR-0158 PR-1: покрыто
   * engine/gen/library.py — CRUD, поиск, play_count (прежний контракт)
-  * tools/gen_library.py — 6 тулов (валидация параметров и пути execute)
+  * tools/gen_library.py — один тул music_library (ADR-0158 PR-9)
 
 Клиент MiniMax Music и тул ``generate_music`` удалены (API 410 Gone с
 20.08.2026); новый клиент KIE — ``test_gen_kie_suno.py``, новая схема и
@@ -20,6 +20,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from rob_box_music import knowledge as kn
 
 from .._ros_stubs import RosStubs
 
@@ -82,12 +83,7 @@ with _ros:
 
     _mm = _load_gen_library_module()
 _ros_stubs = _ros.fixture()
-GenListLibraryTool = _mm.GenListLibraryTool
-GenSearchLibraryTool = _mm.GenSearchLibraryTool
-GenSaveToLibraryTool = _mm.GenSaveToLibraryTool
-GenPlayFromLibraryTool = _mm.GenPlayFromLibraryTool
-GenDeleteFromLibraryTool = _mm.GenDeleteFromLibraryTool
-GenGetTrackInfoTool = _mm.GenGetTrackInfoTool
+MusicLibraryTool = _mm.MusicLibraryTool
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -226,143 +222,171 @@ class TestGeneratedMusicLibrary:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# tools/gen_library.py — 6 MCP tools
+# tools/gen_library.py — один тул music_library (ADR-0158 PR-9)
 # ════════════════════════════════════════════════════════════════════════════
 
+NO_ID = "0000000000000000" * 2
 
-class TestToolBasics:
-    """Generic smoke tests for all 6 tools."""
 
+def _tool(lib, node=None, **kwargs):
+    return MusicLibraryTool(node or _fake_node(), lib, **kwargs)
+
+
+class TestToolShape:
     @pytest.fixture
-    def library(self, tmp_path):
-        return GeneratedMusicLibrary(str(tmp_path / "lib"))
+    def tool(self, tmp_path):
+        return _tool(GeneratedMusicLibrary(str(tmp_path / "lib")))
 
-    def _node(self):
-        return _fake_node()
+    def test_one_narrow_tool_with_closed_action_enum(self, tool):
+        action = next(p for p in tool.parameters if p.name == "action")
+        assert tool.name == "music_library" and action.required
+        assert action.enum == ["list", "search", "info", "play", "rate", "update", "delete"]
+        verdict = next(p for p in tool.parameters if p.name == "verdict")
+        assert verdict.enum == ["", "like", "dislike"]
+        assert all(p.description for p in tool.parameters)
 
-    def test_names_and_descriptions(self, library):
-        tools = [
-            (GenListLibraryTool, None, library, "gen_list_library"),
-            (GenSearchLibraryTool, None, library, "gen_search_library"),
-            (GenSaveToLibraryTool, None, library, "gen_save_to_library"),
-            (GenPlayFromLibraryTool, None, library, "gen_play_from_library"),
-            (GenDeleteFromLibraryTool, None, library, "gen_delete_from_library"),
-            (GenGetTrackInfoTool, None, library, "gen_get_track_info"),
-        ]
-        names = []
-        for cls, c, l, expected_name in tools:
-            t = cls(self._node(), l)
-            assert t.name == expected_name
-            assert t.description  # non-empty
-            assert len(t.parameters) > 0
-            # Each param has a JSON-schema shape
-            for p in t.parameters:
-                assert p.name
-                assert p.type
-                assert p.description
-            names.append(t.name)
-        assert len(names) == 6
-        assert len(set(names)) == 6  # all unique
+    def test_unknown_action_is_refused(self, tool):
+        assert not tool.execute(action="rm_rf").success
 
-    def test_list_search_info_are_read_only(self, library):
-        for cls in (GenListLibraryTool, GenSearchLibraryTool, GenGetTrackInfoTool):
-            t = cls(self._node(), library)
-            assert t.read_only is True
+    @pytest.mark.parametrize("action", ["info", "play", "update", "delete"])
+    def test_track_actions_need_an_id(self, tool, action):
+        result = tool.execute(action=action)
+        assert not result.success and "track_id" in result.error
 
 
-class TestListSearchTools:
+class TestListSearchInfo:
     @pytest.fixture
     def library(self, tmp_path):
         lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
-        lib.save_track(audio_bytes=b"x", prompt="happy indie", tags=["happy", "folk"], mood="happy", rating=5)
-        lib.save_track(audio_bytes=b"y", prompt="sad ballad", tags=["sad"], mood="sad", rating=3)
-        lib.save_track(audio_bytes=b"z", prompt="energetic dance", tags=["dance"], mood="energetic", rating=4)
+        lib.save_track(audio_bytes=b"x", prompt="happy indie", title="Утро", mood="happy", rating=5)
+        lib.save_track(audio_bytes=b"y", prompt="sad ballad", title="Дождь", mood="sad", rating=3)
+        lib.save_track(audio_bytes=b"z", prompt="energetic dance", title="Танец", mood="energetic", rating=4)
         return lib
 
-    def test_list_returns_all(self, library):
-        tool = GenListLibraryTool(_fake_node(), library)
-        result = tool.execute()
-        assert result.success
-        assert result.data["total"] == 3
+    def test_list_phrase_is_built_by_code(self, library):
+        result = _tool(library).execute(action="list")
+        assert result.success and result.data["total"] == 3
+        assert result.message.startswith("В библиотеке 3 трека, например: ")
+        assert "«Дождь»" in result.message and "lyrics" not in result.data["tracks"][0]
 
-    def test_list_limit(self, library):
-        tool = GenListLibraryTool(_fake_node(), library)
-        result = tool.execute(limit=2)
-        assert result.data["total"] == 2
+    def test_list_total_is_the_whole_library_not_the_limit(self, library):
+        result = _tool(library).execute(action="list", limit=2)
+        assert result.data["total"] == 3 and result.data["shown"] == 2
+        assert result.message.startswith("В библиотеке 3 трека")
 
-    def test_list_mood_filter(self, library):
-        tool = GenListLibraryTool(_fake_node(), library)
-        result = tool.execute(mood="sad")
-        assert result.data["total"] == 1
-        assert result.data["tracks"][0]["mood"] == "sad"
+    def test_empty_library_says_so(self, tmp_path):
+        result = _tool(GeneratedMusicLibrary(str(tmp_path / "empty"))).execute(action="list")
+        assert result.success and result.message == "В библиотеке сгенерированной музыки пока пусто."
 
-    def test_list_sort_by_rating(self, library):
-        tool = GenListLibraryTool(_fake_node(), library)
-        result = tool.execute(sort_by="rating")
-        ratings = [t["rating"] for t in result.data["tracks"]]
-        assert ratings == sorted(ratings, reverse=True)
+    def test_list_limit_and_sort_by_rating(self, library):
+        result = _tool(library).execute(action="list", limit=2, sort_by="rating")
+        assert [t["rating"] for t in result.data["tracks"]] == [5, 4]
 
-    def test_search_finds_match(self, library):
-        tool = GenSearchLibraryTool(_fake_node(), library)
-        result = tool.execute(query="ballad")
-        assert result.success
-        assert result.data["total"] >= 1
+    def test_search_finds_and_misses(self, library):
+        found = _tool(library).execute(action="search", query="ballad")
+        assert found.success and found.data["total"] == 1 and "найдено 1" in found.message
+        missed = _tool(library).execute(action="search", query="polka")
+        assert missed.success and missed.data["total"] == 0 and "ничего не найдено" in missed.message
+        assert not _tool(library).execute(action="search", query="").success
 
-    def test_search_missing_query_fails(self, library):
-        tool = GenSearchLibraryTool(_fake_node(), library)
-        result = tool.execute(query="")
-        assert not result.success
+    def test_info_returns_full_metadata(self, library):
+        track = library.list_tracks(sort_by="rating")["tracks"][0]
+        info = _tool(library).execute(action="info", track_id=track["id"])
+        assert info.success and info.data["title"] == "Утро" and info.data["exists_on_disk"] is True
+        assert not _tool(library).execute(action="info", track_id=NO_ID).success
 
 
-class TestGetTrackInfoTool:
+class TestUpdateDelete:
     @pytest.fixture
     def setup(self, tmp_path):
         lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
-        saved = lib.save_track(
-            audio_bytes=b"x" * 100, prompt="test", title="My Track",
-            duration_ms=30000, model="music-3.0-free",
-        )
-        return SimpleNamespace(
-            library=lib,
-            track_id=saved["id"],
-            tool=GenGetTrackInfoTool(_fake_node(), lib),
-        )
+        saved = lib.save_track(audio_bytes=b"x", prompt="x", title="Original", rating=2)
+        return SimpleNamespace(library=lib, track_id=saved["id"], tool=_tool(lib))
 
-    def test_returns_full_metadata(self, setup):
-        result = setup.tool.execute(track_id=setup.track_id)
-        assert result.success
-        assert result.data["title"] == "My Track"
-        assert result.data["duration_ms"] == 30000
-        assert result.data["exists_on_disk"] is True
+    def test_update_changes_named_fields_only_and_meta_json(self, setup):
+        result = setup.tool.execute(action="update", track_id=setup.track_id, tags="любимый, свадьба", mood="romantic")
+        assert result.success, result.error
+        info = setup.library.get_track_info(setup.track_id)
+        assert info["tags"] == ["любимый", "свадьба"] and info["mood"] == "romantic"
+        assert info["title"] == "Original" and info["rating"] == 2
+        disk = json.loads((setup.library.root_dir / setup.track_id / "meta.json").read_text(encoding="utf-8"))
+        assert disk["mood"] == "romantic"
 
-    def test_missing_track(self, setup):
-        result = setup.tool.execute(track_id="0000000000000000" * 2)
-        assert not result.success
+    def test_update_without_fields_or_track_fails(self, setup):
+        assert not setup.tool.execute(action="update", track_id=setup.track_id).success
+        assert not setup.tool.execute(action="update", track_id=NO_ID, title="x").success
 
-
-class TestDeleteFromLibraryTool:
-    @pytest.fixture
-    def setup(self, tmp_path):
-        lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
-        saved = lib.save_track(audio_bytes=b"x", prompt="x")
-        return SimpleNamespace(
-            library=lib,
-            track_id=saved["id"],
-            tool=GenDeleteFromLibraryTool(_fake_node(), lib),
-        )
-
-    def test_deletes_track(self, setup):
-        assert setup.library.count == 1
-        result = setup.tool.execute(track_id=setup.track_id)
-        assert result.success
+    def test_delete_removes_track_and_says_so(self, setup):
+        result = setup.tool.execute(action="delete", track_id=setup.track_id)
+        assert result.success and result.message == "Удалил «Original» из библиотеки."
         assert setup.library.count == 0
-
-    def test_delete_missing(self, setup):
-        result = setup.tool.execute(track_id="ffffffffffffffffffffffffffffffff")
-        assert not result.success
+        assert not setup.tool.execute(action="delete", track_id=setup.track_id).success
 
 
-class TestPlayFromLibraryTool:
+class TestRate:
+    """«Робот, этот трек нравится / не нравится»: рейтинг пишет код, фразу строит код (G6)."""
+
+    @pytest.fixture
+    def setup(self, tmp_path):
+        lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+        first = lib.save_track(audio_bytes=b"a", prompt="grunge", title="Пыль")["id"]
+        second = lib.save_track(audio_bytes=b"b", prompt="grunge", title="Гул")["id"]
+        node = _fake_node()
+        node._player_owner = SimpleNamespace(now_playing=lambda: {"playing": False})
+        return SimpleNamespace(library=lib, first=first, second=second, node=node, tool=_tool(lib, node))
+
+    def test_dislike_named_track_writes_minus_one(self, setup):
+        result = setup.tool.execute(action="rate", track_id=setup.first, verdict="dislike")
+        assert result.success and result.data["rating"] == kn.RATING_DISLIKE
+        assert result.message == "Запомнил: «Пыль» не нравится, больше не включу."
+        assert setup.library.get_track_info(setup.first)["rating"] == -1
+        assert setup.library.get_track_info(setup.second)["rating"] == 0
+        assert setup.library.count == 2  # не удаляется
+
+    def test_like_writes_five(self, setup):
+        result = setup.tool.execute(action="rate", track_id=setup.second, verdict="like")
+        assert result.message == "Запомнил: «Гул» нравится."
+        assert setup.library.get_track_info(setup.second)["rating"] == kn.RATING_LIKE
+
+    def test_without_id_rates_the_track_playing_now(self, setup):
+        setup.node._player_owner = SimpleNamespace(now_playing=lambda: {"playing": True, "library_id": setup.second})
+        setup.library.increment_play_count(setup.first)  # игравший раньше — не он
+        result = setup.tool.execute(action="rate", verdict="dislike")
+        assert result.success and result.data["library_id"] == setup.second
+
+    def test_without_id_after_the_track_ended_rates_the_last_played(self, setup):
+        setup.library.increment_play_count(setup.first)
+        result = setup.tool.execute(action="rate", verdict="like")
+        assert result.success and result.data["library_id"] == setup.first
+
+    def test_nothing_played_is_an_honest_refusal(self, setup):
+        result = setup.tool.execute(action="rate", verdict="dislike")
+        assert not result.success and result.error.startswith("Не знаю, о каком треке")
+
+    def test_verdict_is_required(self, setup):
+        assert not setup.tool.execute(action="rate", track_id=setup.first).success
+
+    def test_disliked_track_is_not_a_candidate_of_the_path(self, setup):
+        """G6: после «не нравится» следующий заказ жанра не берёт трек из кэша, соседний — берёт."""
+        from rob_box_mcp_tools.engine.source_route import cache_tracks
+        from rob_box_music.source import SourceAsk, SourceContext, source_candidates
+
+        ask = SourceAsk(genre="grunge")
+
+        def cached(lib):
+            ctx = SourceContext(cache=cache_tracks(lib), day_left=0.0)
+            return {o.id for o in source_candidates(ask, ctx)[0] if o.id.startswith("cache:")}
+
+        for track_id in (setup.first, setup.second):
+            setup.library.meta.update(track_id, genre="grunge")
+        before = cached(setup.library)
+        assert f"cache:{setup.first}" in before and f"cache:{setup.second}" in before
+        setup.tool.execute(action="rate", track_id=setup.first, verdict="dislike")
+        after = cached(setup.library)
+        assert f"cache:{setup.first}" not in after and f"cache:{setup.second}" in after
+
+
+class TestPlay:
     """ADR-0158 PR-2: трек кэша играет на деке ``PlayerOwner`` (wav сервера, ``render_audio``), ``ok`` — по started."""
 
     @pytest.fixture
@@ -388,93 +412,58 @@ class TestPlayFromLibraryTool:
         node._player_owner = SimpleNamespace(play=play)
         node._dj_set_tool = SimpleNamespace(close_set=closed.append)
         node._music_confirm = lambda track_id: events.get("event", SimpleNamespace(event="started", fields={}))
-        tool = GenPlayFromLibraryTool(node, lib, clock=lambda: 1000.0, run=run)
+        tool = _tool(lib, node, clock=lambda: 1000.0, run=run)
         return SimpleNamespace(library=lib, track_id=saved["id"], tool=tool, plays=plays, closed=closed,
                                decodes=decodes, events=events, node=node)
 
+    def play(self, setup, track_id=None):
+        return setup.tool.execute(action="play", track_id=track_id or setup.track_id)
+
     def test_plays_on_the_deck_once_after_closing_the_set(self, setup):
         before = setup.library.get_track_info(setup.track_id)["play_count"]
-        result = setup.tool.execute(track_id=setup.track_id)
+        result = self.play(setup)
         assert result.success, result.error
         program, dj, once = setup.plays[0]
-        assert once is True and setup.closed == ["gen_play_from_library"]
+        assert once is True and setup.closed == ["music_library"]
         assert program.track_id == f"gen_{setup.track_id[:8]}_1000" and program.bpm == 60
-        # длина — из декодированного wav (sus=2.5), не из строки библиотеки; форма — до целого такта
         assert program.form_beats == 4.0 and "sus=2.5," in program.code
         wav = str(setup.library.root_dir / setup.track_id / "track.16k.wav")
         assert program.sample_files == frozenset({wav}) and f"loop({wav!r}" in program.code
         assert dj == {"enabled": False, "title": "Космос", "source": "generated", "library_id": setup.track_id,
                       "bpm": None}
         assert result.message == "Включаю «Космос» из библиотеки — 2 секунды."
-        assert setup.library.get_track_info(setup.track_id)["play_count"] == before + 1
+        info = setup.library.get_track_info(setup.track_id)
+        assert info["play_count"] == before + 1 and info["last_played_at"]
+
+    def test_internal_callers_use_the_function_not_the_tool(self, setup):
+        """Кавер / песня / сет / путь зовут ``play_library_track`` напрямую — без тула в реестре."""
+        from rob_box_mcp_tools.engine.gen.library_play import play_library_track
+
+        result = play_library_track(setup.node, setup.library, setup.track_id, clock=lambda: 7.0, run=setup.tool._run)
+        assert result.success and setup.plays[0][0].track_id.endswith("_7")
 
     def test_decodes_once(self, setup):
-        setup.tool.execute(track_id=setup.track_id)
-        setup.tool.execute(track_id=setup.track_id)
+        self.play(setup)
+        self.play(setup)
         assert len(setup.decodes) == 1
         cmd = setup.decodes[0]
         assert cmd[cmd.index("-ar") + 1] == "16000" and cmd[cmd.index("-ac") + 1] == "2"
 
     def test_not_started_is_not_ok(self, setup):
-        """Владелец отказал (``rejected``) — ни фразы успеха, ни play_count."""
         setup.events["event"] = SimpleNamespace(event="rejected", fields={"reason": "missing_sample", "detail": "x"})
-        result = setup.tool.execute(track_id=setup.track_id)
+        result = self.play(setup)
         assert not result.success and "missing_sample" in result.error
         assert setup.library.get_track_info(setup.track_id)["play_count"] == 0
 
     def test_missing_track_fails(self, setup):
-        result = setup.tool.execute(track_id="0000000000000000" * 2)
-        assert not result.success and setup.plays == []
+        assert not self.play(setup, NO_ID).success and setup.plays == []
 
     def test_missing_file_on_disk_fails(self, setup):
         (setup.library.root_dir / setup.track_id / "track.mp3").unlink()
-        result = setup.tool.execute(track_id=setup.track_id)
-        assert not result.success and "no_file" in result.error
-        assert setup.plays == []
+        result = self.play(setup)
+        assert not result.success and "no_file" in result.error and setup.plays == []
 
     def test_no_engine_no_sound_claimed(self, setup):
         setup.node._player_owner = None
-        result = setup.tool.execute(track_id=setup.track_id)
+        result = self.play(setup)
         assert not result.success and "движок" in result.error
-
-
-class TestSaveToLibraryTool:
-    @pytest.fixture
-    def setup(self, tmp_path):
-        lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
-        saved = lib.save_track(
-            audio_bytes=b"x", prompt="x", title="Original", rating=2,
-        )
-        return SimpleNamespace(
-            library=lib,
-            track_id=saved["id"],
-            tool=GenSaveToLibraryTool(_fake_node(), lib),
-        )
-
-    def test_updates_rating(self, setup):
-        result = setup.tool.execute(track_id=setup.track_id, rating=5)
-        assert result.success
-        info = setup.library.get_track_info(setup.track_id)
-        assert info["rating"] == 5
-
-    def test_updates_tags_and_mood(self, setup):
-        result = setup.tool.execute(
-            track_id=setup.track_id,
-            tags="favorite,wedding",
-            mood="romantic",
-        )
-        assert result.success
-        info = setup.library.get_track_info(setup.track_id)
-        assert info["tags"] == ["favorite", "wedding"]
-        assert info["mood"] == "romantic"
-
-    def test_rating_minus_one_keeps_existing(self, setup):
-        original_rating = setup.library.get_track_info(setup.track_id)["rating"]
-        result = setup.tool.execute(track_id=setup.track_id, title="New Title", rating=-1)
-        assert result.success
-        info = setup.library.get_track_info(setup.track_id)
-        assert info["rating"] == original_rating  # unchanged
-
-    def test_missing_track_fails(self, setup):
-        result = setup.tool.execute(track_id="ffffffffffffffffffffffffffffffff", rating=5)
-        assert not result.success

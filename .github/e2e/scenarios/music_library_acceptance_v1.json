@@ -21,7 +21,7 @@
     "the renardo step and forbidden only per-step for gen_* steps (GATE-1 aggregate",
     "would otherwise flag the legitimate renardo call as a false FAIL).",
     "",
-    "gen_play_from_library is intentionally NOT in top-level expected_tool_calls:",
+    "music_library is intentionally NOT in top-level expected_tool_calls:",
     "the paired scenario music_library_suite_v1.json has no step that exercises it",
     "(play needs a pre-existing track = post-condition of generate_music). GATE-1",
     "aggregate is AND-semantics (every expected tool must appear at least once), so",
@@ -38,11 +38,7 @@
     "контракта PR #1398, харнесс их не читает (GATE-1 берёт только top-level)."
   ],
   "expected_tool_calls": [
-    "gen_list_library",
-    "gen_search_library",
-    "gen_save_to_library",
-    "gen_delete_from_library",
-    "gen_get_track_info"
+    "music_library"
   ],
   "must_not_call": [],
   "must_call_for_renardo_request": [
@@ -88,9 +84,9 @@
       "voice": "anton",
       "text": "Робот, что у тебя в музыкальной библиотеке?",
       "voice_file": ".github/e2e/voice_commands/rabot_chto_v_biblioteke.ogg",
-      "patterns": ["gen_list_library"],
+      "patterns": ["music_library"],
       "acceptance": {
-        "expected_tool_calls": ["gen_list_library"],
+        "expected_tool_calls": ["music_library"],
         "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
@@ -100,9 +96,9 @@
       "voice": "anton",
       "text": "Робот, найди трек про дождь",
       "voice_file": ".github/e2e/voice_commands/rabot_naiti_trek_pro_dozhd.ogg",
-      "patterns": ["gen_search_library"],
+      "patterns": ["music_library"],
       "acceptance": {
-        "expected_tool_calls": ["gen_search_library"],
+        "expected_tool_calls": ["music_library"],
         "must_not_call": ["execute_music_code"],
         "expected_keywords": ["дождь"],
         "response_max_ms": 30000
@@ -113,9 +109,9 @@
       "voice": "anton",
       "text": "Робот, сохрани этот трек для Ивана",
       "voice_file": ".github/e2e/voice_commands/rabot_sohrani_etot_trek.ogg",
-      "patterns": ["gen_save_to_library"],
+      "patterns": ["music_library"],
       "acceptance": {
-        "expected_tool_calls": ["gen_save_to_library"],
+        "expected_tool_calls": ["music_library"],
         "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
@@ -125,9 +121,9 @@
       "voice": "anton",
       "text": "Робот, удали последний трек из библиотеки",
       "voice_file": ".github/e2e/voice_commands/rabot_udali_poslednii_trek.ogg",
-      "patterns": ["gen_list_library", "gen_delete_from_library"],
+      "patterns": ["music_library", "music_library"],
       "acceptance": {
-        "expected_tool_calls": ["gen_list_library", "gen_delete_from_library"],
+        "expected_tool_calls": ["music_library", "music_library"],
         "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
@@ -137,9 +133,9 @@
       "voice": "anton",
       "text": "Робот, расскажи, что это за трек",
       "voice_file": ".github/e2e/voice_commands/rabot_chto_eto_za_trek.ogg",
-      "patterns": ["gen_get_track_info"],
+      "patterns": ["music_library"],
       "acceptance": {
-        "expected_tool_calls": ["gen_get_track_info"],
+        "expected_tool_calls": ["music_library"],
         "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }

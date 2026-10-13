@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from .keys import sha256_bytes, sha256_file
 from .ledger import LEDGER_SQL, GenLedger
+from .meta import TrackMeta, row_to_dict
 
 _DEFAULT_ROOT = os.getenv(
     "MUSIC_LIBRARY_PATH",
@@ -167,6 +168,8 @@ class GeneratedMusicLibrary:
         self._conn.executescript(LEDGER_SQL)
         #: Учёт кредитов в той же ``index.db`` (ADR-0158 §2.6).
         self.ledger = GenLedger(self._conn, self._lock)
+        #: Правка метаданных, оценка «нравится / не нравится», «что играло последним» (ADR-0158 PR-9).
+        self.meta = TrackMeta(self._conn, self._lock, self._root)
         self._migrate()
 
     # ── Migration ─────────────────────────────────────────────────────────
@@ -195,13 +198,7 @@ class GeneratedMusicLibrary:
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
-        d = dict(row)
-        try:
-            d["tags"] = json.loads(d.get("tags") or "[]")
-        except json.JSONDecodeError:
-            d["tags"] = []
-        d["is_instrumental"] = bool(d.get("is_instrumental"))
-        return d
+        return row_to_dict(row)
 
     def _track_dir(self, track_id: str) -> Path:
         return self._root / track_id

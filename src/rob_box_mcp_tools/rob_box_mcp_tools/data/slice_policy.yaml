@@ -80,14 +80,9 @@ slices:
     - memory_save
     - memory_search
     - memory_context
-    # MiniMax Music (LLM-генерация)
+    # генерация музыки (KIE/Suno) и её кэш
     - generate_music
-    - gen_list_library
-    - gen_search_library
-    - gen_save_to_library
-    - gen_play_from_library
-    - gen_delete_from_library
-    - gen_get_track_info
+    - music_library
     # локальная библиотека
     - stop_music
     # Issue #3125 — громкость музыки (мастер-фейдер), не голоса

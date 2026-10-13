@@ -372,7 +372,7 @@ def test_system_prompt_is_prepended_when_configured(
 
     Regression: dialogue_node loaded _system_prompt but never passed it
     to AgentCore — deepseek was running WITHOUT a system prompt, so
-    every rule (ALWAYS gen_play_from_library, NO METALANGUAGE, ...) was
+    every rule (ALWAYS music_library, NO METALANGUAGE, ...) was
     silently dropped. Found via verbose LLM trace: messages had no
     [0] system entry. (#992)
     """
@@ -381,13 +381,13 @@ def test_system_prompt_is_prepended_when_configured(
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
-        system_prompt="ТЫ ДИДЖЕЙ. ВСЕГДА вызывай gen_play_from_library.",
+        system_prompt="ТЫ ДИДЖЕЙ. ВСЕГДА вызывай music_library.",
     )
     _wake(obj)
     asyncio.run(obj.process_input("сыграй баха"))
     sent = llm.calls[0][0]
     assert sent[0].role == "system"
-    assert "gen_play_from_library" in sent[0].content
+    assert "music_library" in sent[0].content
     # user message follows the system prompt
     assert sent[1].role == "user"
     assert sent[1].content == "сыграй баха"
@@ -804,7 +804,7 @@ def test_two_agent_configs_one_engine() -> None:
         memory=_FakeMemoryStore(),
         dsm=DialogueStateMachine(),
         system_prompt="Ты РОББОКС — автономный робот-компаньон.",
-        skill_prompts={"player": "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library."},
+        skill_prompts={"player": "ПЛЕЕР: сначала music_library, потом music_library."},
     )
     # Конфиг «оператор»: operator system_prompt + операторский срез.
     core_operator = AgentCore(
@@ -834,7 +834,7 @@ def test_two_agent_configs_one_engine() -> None:
     # Срез доезжает внутри последнего user-сообщения (issue #2817 —
     # склеен с репликой, а не отдельным system-сообщением перед ней).
     assert persona_msgs[-1][0] == "user"
-    assert "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library." in persona_msgs[-1][1]
+    assert "ПЛЕЕР: сначала music_library, потом music_library." in persona_msgs[-1][1]
     assert persona_msgs[-1][1].endswith("поставь музыку")
     assert operator_msgs[-1][0] == "user"
     assert "ОПЕРАТОР: для озвучки роботом вызывай say." in operator_msgs[-1][1]
@@ -2296,12 +2296,12 @@ def test_order_tool_calls_destructive_last_ordinary_keep_order() -> None:
         [
             _call("c1", "stop_music"),
             _call("c2", "speak_text"),
-            _call("c3", "gen_play_from_library"),
+            _call("c3", "music_library"),
         ]
     )
     assert [c.name for c in ordered] == [
         "speak_text",
-        "gen_play_from_library",
+        "music_library",
         "stop_music",
     ]
     assert deferred == {"c1"}

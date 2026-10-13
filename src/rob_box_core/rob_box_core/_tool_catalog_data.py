@@ -303,238 +303,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
-        'destructive': True,
-        'idempotent': False,
-        'starts_music': False,
-        'execution_type': 'fast',
-        'name': 'gen_delete_from_library',
-        'description': 'Удалить трек из библиотеки сгенерированной музыки: запись в '
-                       'SQLite + mp3/meta.json на диске. Необратимо. Используй когда '
-                       'юзер говорит «удали тот грустный трек», «удали последний '
-                       'трек».',
-        'parameters': {   'type': 'object',
-                          'properties': {   'track_id': {   'type': 'string',
-                                                            'description': 'UUID трека '
-                                                                           'в '
-                                                                           'библиотеке '
-                                                                           '(получи из '
-                                                                           'gen_list_library '
-                                                                           '/ '
-                                                                           'gen_search_library). '
-                                                                           'Пример: '
-                                                                           "'b7216742f61f44078e4a17f7acbed388'."}},
-                          'required': ['track_id'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['track_id'],
-                         'required': ['track_id'],
-                         'accepts_kwargs': True},
-        'skill': ('player',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': True,
-        'destructive': False,
-        'idempotent': True,
-        'starts_music': False,
-        'execution_type': 'fast',
-        'name': 'gen_get_track_info',
-        'description': 'Получить подробные метаданные одного трека: title, prompt, '
-                       'lyrics, tags, mood, genre, duration_ms, sample_rate, bitrate, '
-                       'play_count, rating, created_at, path. Используй когда юзер '
-                       'спрашивает «что за трек такой-то», «расскажи про этот трек».',
-        'parameters': {   'type': 'object',
-                          'properties': {   'track_id': {   'type': 'string',
-                                                            'description': 'UUID трека '
-                                                                           'в '
-                                                                           'библиотеке '
-                                                                           '(получи из '
-                                                                           'gen_list_library '
-                                                                           '/ '
-                                                                           'gen_search_library). '
-                                                                           'Пример: '
-                                                                           "'b7216742f61f44078e4a17f7acbed388'."}},
-                          'required': ['track_id'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['track_id'],
-                         'required': ['track_id'],
-                         'accepts_kwargs': True},
-        'skill': ('player',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': True,
-        'destructive': False,
-        'idempotent': True,
-        'starts_music': False,
-        'execution_type': 'fast',
-        'name': 'gen_list_library',
-        'description': 'Показать список треков из библиотеки сгенерированной музыки '
-                       '(/data/music_library). Возвращает id, title, prompt, tags, '
-                       'rating, play_count, created_at. Используй когда юзер '
-                       'спрашивает «что у нас в библиотеке», «какие треки есть», «что '
-                       'ты раньше генерировал».',
-        'parameters': {   'type': 'object',
-                          'properties': {   'limit': {   'type': 'integer',
-                                                         'description': 'Максимум '
-                                                                        'треков '
-                                                                        '(default 20, '
-                                                                        'max 100).',
-                                                         'default': 20},
-                                            'sort_by': {   'type': 'string',
-                                                           'description': 'Сортировка: '
-                                                                          "'recent' "
-                                                                          '(default), '
-                                                                          "'popular', "
-                                                                          "'rating'.",
-                                                           'enum': [   'recent',
-                                                                       'popular',
-                                                                       'rating'],
-                                                           'default': 'recent'},
-                                            'tag': {   'type': 'string',
-                                                       'description': 'Фильтр по тегу '
-                                                                      '(точное '
-                                                                      'совпадение).',
-                                                       'default': ''},
-                                            'mood': {   'type': 'string',
-                                                        'description': 'Фильтр по '
-                                                                       'настроению '
-                                                                       '(точное '
-                                                                       'совпадение).',
-                                                        'default': ''}},
-                          'required': [],
-                          'additionalProperties': False},
-        'signature': {   'params': ['limit', 'sort_by', 'tag', 'mood'],
-                         'required': [],
-                         'accepts_kwargs': True},
-        'skill': ('player',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': False,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': True,
-        'execution_type': 'fast',
-        'name': 'gen_play_from_library',
-        'description': 'Воспроизвести трек из библиотеки сгенерированной музыки на '
-                       'музыкальной деке робота (стоп — stop_music, что играет — '
-                       'get_music_state). Ответ — фраза, которую надо сказать. '
-                       'Используй когда юзер говорит «сыграй тот грустный трек», '
-                       '«давай послушаем ещё раз».',
-        'parameters': {   'type': 'object',
-                          'properties': {   'track_id': {   'type': 'string',
-                                                            'description': 'UUID трека '
-                                                                           'в '
-                                                                           'библиотеке '
-                                                                           '(получи из '
-                                                                           'gen_list_library '
-                                                                           '/ '
-                                                                           'gen_search_library). '
-                                                                           'Пример: '
-                                                                           "'b7216742f61f44078e4a17f7acbed388'."}},
-                          'required': ['track_id'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['track_id'],
-                         'required': ['track_id'],
-                         'accepts_kwargs': True},
-        'skill': ('player',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': False,
-        'destructive': True,
-        'idempotent': False,
-        'starts_music': False,
-        'execution_type': 'fast',
-        'name': 'gen_save_to_library',
-        'description': 'Обновить метаданные (tags, rating, notes, mood, genre) для уже '
-                       'сгенерированного трека. Используй когда юзер говорит «сохрани '
-                       'этот трек», «пометь его как любимый», «поставь 5 звёзд».',
-        'parameters': {   'type': 'object',
-                          'properties': {   'track_id': {   'type': 'string',
-                                                            'description': 'UUID трека '
-                                                                           'в '
-                                                                           'библиотеке '
-                                                                           '(получи из '
-                                                                           'gen_list_library '
-                                                                           '/ '
-                                                                           'gen_search_library). '
-                                                                           'Пример: '
-                                                                           "'b7216742f61f44078e4a17f7acbed388'."},
-                                            'title': {   'type': 'string',
-                                                         'description': 'Новое '
-                                                                        'название '
-                                                                        '(пустая '
-                                                                        'строка = не '
-                                                                        'менять).',
-                                                         'default': ''},
-                                            'tags': {   'type': 'string',
-                                                        'description': 'Новый список '
-                                                                       'тегов через '
-                                                                       'запятую '
-                                                                       '(заменяет '
-                                                                       'существующие).',
-                                                        'default': ''},
-                                            'mood': {   'type': 'string',
-                                                        'description': 'Настроение '
-                                                                       '(заменяет '
-                                                                       'существующее).',
-                                                        'default': ''},
-                                            'genre': {   'type': 'string',
-                                                         'description': 'Жанр '
-                                                                        '(заменяет '
-                                                                        'существующий).',
-                                                         'default': ''},
-                                            'rating': {   'type': 'integer',
-                                                          'description': 'Рейтинг 0-5 '
-                                                                         '(-1 = не '
-                                                                         'менять).',
-                                                          'default': -1},
-                                            'notes': {   'type': 'string',
-                                                         'description': 'Заметки '
-                                                                        '(заменяют '
-                                                                        'существующие).',
-                                                         'default': ''}},
-                          'required': ['track_id'],
-                          'additionalProperties': False},
-        'signature': {   'params': [   'track_id',
-                                       'title',
-                                       'tags',
-                                       'mood',
-                                       'genre',
-                                       'rating',
-                                       'notes'],
-                         'required': ['track_id'],
-                         'accepts_kwargs': True},
-        'skill': ('player',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': True,
-        'destructive': True,
-        'idempotent': True,
-        'starts_music': False,
-        'execution_type': 'fast',
-        'name': 'gen_search_library',
-        'description': 'Искать треки в библиотеке сгенерированной музыки по ключевому '
-                       'слову. Поиск по title/prompt/lyrics/genre/mood/notes. '
-                       'Используй когда юзер говорит «найди трек про дождь», «сыграй '
-                       'тот грустный трек», «есть что-то романтичное?».',
-        'parameters': {   'type': 'object',
-                          'properties': {   'query': {   'type': 'string',
-                                                         'description': 'Поисковый '
-                                                                        'запрос (1-200 '
-                                                                        'chars).'},
-                                            'limit': {   'type': 'integer',
-                                                         'description': 'Максимум '
-                                                                        'результатов '
-                                                                        '(default 5, '
-                                                                        'max 20).',
-                                                         'default': 5}},
-                          'required': ['query'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['query', 'limit'],
-                         'required': ['query'],
-                         'accepts_kwargs': True},
-        'skill': ('player',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': False,
         'destructive': False,
         'idempotent': False,
         'starts_music': True,
@@ -1126,6 +894,120 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
+        'execution_type': 'fast',
+        'name': 'music_library',
+        'description': 'Библиотека сгенерированной музыки робота '
+                       '(/data/music_library). action: list — «что у тебя есть '
+                       'сгенерированного»; search — найти трек по слову (query); info '
+                       '— подробности одного трека; play — включить трек по track_id '
+                       '(стоп — stop_music); rate — «этот трек нравится / не нравится» '
+                       '(verdict like / dislike; трек, который не нравится, больше не '
+                       'включается, но не удаляется); update — переименовать, теги, '
+                       'настроение, жанр, заметка; delete — удалить трек насовсем. '
+                       'track_id бери из list / search, не выдумывай. Ответ содержит '
+                       'фразу, которую надо сказать.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'action': {   'type': 'string',
+                                                          'description': 'Что сделать '
+                                                                         'с '
+                                                                         'библиотекой.',
+                                                          'enum': [   'list',
+                                                                      'search',
+                                                                      'info',
+                                                                      'play',
+                                                                      'rate',
+                                                                      'update',
+                                                                      'delete']},
+                                            'track_id': {   'type': 'string',
+                                                            'description': 'UUID трека '
+                                                                           'из list / '
+                                                                           'search '
+                                                                           '(info, '
+                                                                           'play, '
+                                                                           'update, '
+                                                                           'delete; у '
+                                                                           'rate — по '
+                                                                           'умолчанию '
+                                                                           'играющий '
+                                                                           'сейчас или '
+                                                                           'последний '
+                                                                           'игравший).',
+                                                            'default': ''},
+                                            'query': {   'type': 'string',
+                                                         'description': 'Слово поиска '
+                                                                        'для search '
+                                                                        '(1-200 '
+                                                                        'символов).',
+                                                         'default': ''},
+                                            'verdict': {   'type': 'string',
+                                                           'description': 'Для rate: '
+                                                                          'like — трек '
+                                                                          'нравится, '
+                                                                          'dislike — '
+                                                                          'не '
+                                                                          'нравится.',
+                                                           'enum': [   '',
+                                                                       'like',
+                                                                       'dislike'],
+                                                           'default': ''},
+                                            'limit': {   'type': 'integer',
+                                                         'description': 'Для list / '
+                                                                        'search: '
+                                                                        'максимум '
+                                                                        'треков (до '
+                                                                        '100).',
+                                                         'default': 20},
+                                            'sort_by': {   'type': 'string',
+                                                           'description': 'Для list: '
+                                                                          'recent — '
+                                                                          'новые, '
+                                                                          'popular — '
+                                                                          'самые '
+                                                                          'играемые, '
+                                                                          'rating — '
+                                                                          'лучшие.',
+                                                           'enum': [   'recent',
+                                                                       'popular',
+                                                                       'rating'],
+                                                           'default': 'recent'},
+                                            'title': {   'type': 'string',
+                                                         'description': 'Для update: '
+                                                                        'новое '
+                                                                        'название '
+                                                                        '(пусто — не '
+                                                                        'менять).',
+                                                         'default': ''},
+                                            'tags': {   'type': 'string',
+                                                        'description': 'Для update: '
+                                                                       'теги через '
+                                                                       'запятую '
+                                                                       '(заменяют '
+                                                                       'прежние).',
+                                                        'default': ''},
+                                            'mood': {   'type': 'string',
+                                                        'description': 'Для update: '
+                                                                       'настроение.',
+                                                        'default': ''},
+                                            'genre': {   'type': 'string',
+                                                         'description': 'Для update: '
+                                                                        'жанр.',
+                                                         'default': ''},
+                                            'notes': {   'type': 'string',
+                                                         'description': 'Для update: '
+                                                                        'заметка.',
+                                                         'default': ''}},
+                          'required': ['action'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['action', 'track_id'],
+                         'required': [],
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
         'execution_type': 'long',
         'name': 'navigate_to_coordinates',
         'description': 'Навигация робота к произвольным координатам (x, y, theta) в '
@@ -1694,9 +1576,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'продолжает играть, меняется только уровень. action: '
                        'louder/quieter — шаг ±3 dB, max — максимум, normal — стартовый '
                        'уровень, set — абсолютный уровень level 0..100 (% от '
-                       'максимума). Трек из библиотеки генераций '
-                       '(gen_play_from_library) играет на той же деке — регулируется '
-                       'тоже.',
+                       'максимума). Трек из библиотеки генераций (music_library play) '
+                       'играет на той же деке — регулируется тоже.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'louder — '

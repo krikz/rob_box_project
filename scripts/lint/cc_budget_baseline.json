@@ -70,9 +70,6 @@
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
       "StartMappingTool.execute": 18
     },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py": {
-      "GenSaveToLibraryTool.execute": 18
-    },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
     },
@@ -296,12 +293,6 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py",
       "method": "StartMappingTool.execute",
-      "cc": 18,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",
-      "method": "GenSaveToLibraryTool.execute",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },

@@ -38,6 +38,8 @@ from .media_phrases import (
     DJ_FAIL_TEXT,
     NOT_LAUNCHED_TEXT,
     NOT_PLAYED_TEXT,
+    LIBRARY_FAIL_TEXT,
+    LIBRARY_NO_TRACK_TEXT,
     REQUEST_FAIL_TEXT,
     SET_KEPT_TEXT,
     SET_PLAYING_REASON,
@@ -49,6 +51,10 @@ from .media_phrases import (
 )
 from .media_router import DJ_SET_TOOL, GENERATE_MUSIC_TOOL, REQUEST_MUSIC_TOOL, media_tool_succeeded
 
+#: Тул библиотеки генераций (ADR-0158 PR-9) и его действия, итог которых говорит код (фраза — первая строка
+#: результата, ``MCPToolResult.message``); ``search`` / ``info`` модель пересказывает по полям результата сама.
+LIBRARY_TOOL = "music_library"
+LIBRARY_SPOKEN_ACTIONS = ("list", "play", "rate", "update", "delete")
 #: Код отказа ``speak_text`` в ходе, где запуск музыки не удался.
 SPEECH_REFUSAL_CODE = "music_phrase_by_code"
 #: Что видит модель вместо исполнения ``speak_text``.
@@ -56,6 +62,10 @@ SPEECH_REFUSAL_MESSAGE = (
     "speak_text не исполнен: музыка в этом ходе не запустилась (смотри результат dj_set / "
     "request_music). Что сказать человеку о музыке, робот решит сам по результату тулов. "
     "Заверши ход словом done."
+)
+#: То же, когда итог библиотеки уже сказал код (``music_library``: список, играет, оценка, удаление).
+SPEECH_LIBRARY_MESSAGE = (
+    "speak_text не исполнен: итог music_library робот скажет сам, фразой из результата. Заверши ход словом done."
 )
 #: То же, когда пьеса заиграла: фразу о ней робот уже строит из ``played`` результата ``request_music``.
 SPEECH_PIECE_MESSAGE = (
@@ -93,6 +103,13 @@ def is_launch(tool: str, args: Mapping[str, Any]) -> bool:
     return tool == DJ_SET_TOOL and str(args.get("action") or "start") == "start"
 
 
+def library_result_phrase(is_error: bool, content: str) -> str:
+    """Фраза итога ``music_library``: успех — ``message`` результата (первая строка), отказ — честная фраза кода."""
+    if not is_error:
+        return content.split("\n", 1)[0].strip() or LIBRARY_FAIL_TEXT
+    return content if content == LIBRARY_NO_TRACK_TEXT else LIBRARY_FAIL_TEXT
+
+
 def ok_text(launch: Launch) -> str:
     """Фраза об удавшемся запуске — те же шаблоны, что у роутера медиакоманд."""
     args = launch.args
@@ -115,20 +132,31 @@ class MusicTurn:
     """Запуски музыки за один ход LLM и речь, которую они разрешают (ADR-0148)."""
 
     launches: List[Launch] = field(default_factory=list)
+    #: Фраза итога ``music_library`` хода (список / играет / оценка / удаление) или ``None``.
+    library_phrase: Optional[str] = None
 
     def reset(self) -> None:
         """Граница хода."""
         self.launches.clear()
+        self.library_phrase = None
+
+    def library_answered(self) -> bool:
+        """Итог библиотеки хода говорит код, запусков v2 в ходе не было."""
+        return self.library_phrase is not None and not self.launches
 
     def record(self, tool: str, args: Optional[Mapping[str, Any]], *, is_error: bool, content: str) -> None:
         """Учесть исполненный вызов тула; не запуск музыки — ничего."""
         args = dict(args or {})
         if is_launch(tool, args):
             self.launches.append(Launch(tool, args, media_tool_succeeded(is_error, content), content))
+        elif tool == LIBRARY_TOOL and str(args.get("action") or "") in LIBRARY_SPOKEN_ACTIONS:
+            self.library_phrase = library_result_phrase(is_error, content)
 
     def speech_allowed(self) -> bool:
         """``speak_text`` модели можно исполнить: запусков не было или последний удался и это не пьеса
         (:meth:`piece_playing`)."""
+        if self.library_answered():
+            return False
         return not self.launches or (self.launches[-1].ok and not self.piece_playing())
 
     def piece_playing(self) -> bool:
@@ -138,7 +166,7 @@ class MusicTurn:
     def phrase(self) -> Optional[str]:
         """Что сказать о музыке по итогу хода; ``None`` — запусков музыки в ходе не было."""
         if not self.launches:
-            return None
+            return self.library_phrase
         last = self.launches[-1]
         if last.ok:
             return ok_text(last)
@@ -188,6 +216,8 @@ def turn_reply(
       ``None``; не сказала — фраза об успехе (:meth:`MusicTurn.phrase`);
     * последний запуск не удался — честная фраза :meth:`MusicTurn.phrase` всегда.
     """
+    if turn.library_answered():
+        return turn.library_phrase
     if not turn.launches:
         if requested:
             return NOT_LAUNCHED_TEXT
@@ -206,7 +236,7 @@ def executor_turn_reply(
 ) -> Optional[str]:
     """:func:`turn_reply` по ``MusicTurn`` исполнителя тулов (``SchedulerToolExecutor.music_turn``); исполнителя
     нет — ``None``. ``user_texts`` — слова человека по приоритету (сырая команда ретрая, затем реплика хода);
-    ``tools_called`` — тулы хода: музыку мог запустить не v2-тул (``gen_play_from_library`` и др.)."""
+    ``tools_called`` — тулы хода: музыку мог запустить не v2-тул (``music_library`` и др.)."""
     turn = getattr(executor, "music_turn", None)
     if turn is None:
         return None
@@ -230,10 +260,10 @@ def turn_heard_text(current: Optional[str], user_input: str, is_synthetic: bool)
     return current if is_synthetic else user_input
 
 
-def speech_refusal_content(piece: bool = False) -> str:
+def speech_refusal_content(piece: bool = False, library: bool = False) -> str:
     """JSON-тело отказа ``speak_text`` для ``ToolResult.content``; ``piece`` — пьеса играет
-    (:data:`SPEECH_PIECE_MESSAGE`)."""
-    message = SPEECH_PIECE_MESSAGE if piece else SPEECH_REFUSAL_MESSAGE
+    (:data:`SPEECH_PIECE_MESSAGE`), ``library`` — итог библиотеки говорит код (:data:`SPEECH_LIBRARY_MESSAGE`)."""
+    message = SPEECH_LIBRARY_MESSAGE if library else SPEECH_PIECE_MESSAGE if piece else SPEECH_REFUSAL_MESSAGE
     return json.dumps({"success": False, "error": SPEECH_REFUSAL_CODE, "message": message}, ensure_ascii=False)
 
 
@@ -243,6 +273,9 @@ __all__ = [
     "Launch",
     "MusicTurn",
     "SPEECH_REFUSAL_CODE",
+    "LIBRARY_SPOKEN_ACTIONS",
+    "LIBRARY_TOOL",
+    "SPEECH_LIBRARY_MESSAGE",
     "SPEECH_PIECE_MESSAGE",
     "SPEECH_REFUSAL_MESSAGE",
     "executor_turn_reply",

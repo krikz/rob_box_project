@@ -15,6 +15,7 @@ from .budget import Budget
 from .keys import pool_key, request_key
 from .library import GeneratedMusicLibrary
 from .provider import GEN_TIMEOUT_S, GenJob, MusicGenProvider, wait_complete
+from .quota import enforce_quota
 
 
 @dataclass(frozen=True)
@@ -97,4 +98,6 @@ def generate_into_cache(
             source_audio_sha=source_audio_sha,
             meta_source="live",
         ))
+    # квота диска (PR-9): новое не трогаем, уходят худшие и давно не игранные заказы
+    enforce_quota(library, protect=[str(s["id"]) for s in saved if s.get("id")])
     return GenResult(ticket.task_id, rkey, spent, estimated, saved)

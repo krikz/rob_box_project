@@ -64,7 +64,7 @@ from e2e_tool_match import (  # noqa: E402
 TOOLS_CATALOG = (
     "[dialogue_node-4]   tools(56): clear_waypoints, compose_music, "
     "continue_mapping, delete_track, delete_waypoint, estimate_tts_duration, "
-    "request_music, faq_search, finish_mapping, gen_delete_from_library, "
+    "request_music, faq_search, finish_mapping, music_library, "
     "get_battery_level, get_current_time, get_music_state, move_direction, "
     "play_animation, play_sound, register_speaker, save_track, set_dj_mode, "
     "set_voice, set_volume, speak_text, start_mapping, stop_music, "

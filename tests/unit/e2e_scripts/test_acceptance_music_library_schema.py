@@ -23,29 +23,16 @@ import pytest
 
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / ".github/e2e/scenarios"
 
-# All 7 new MCP tools introduced by PR #1398 (issue #1358). The top-level
-# ``expected_tool_calls`` covers the 6 tools EXERCISED by the paired scenario
-# music_library_suite_v1.json. ``gen_play_from_library`` is intentionally
-# excluded: the scenario has no step that plays a saved track (play needs a
-# pre-existing track = post-condition of generate_music), and GATE-1 aggregate
-# is AND-semantics — listing an unexercised tool would guarantee a false FAIL.
+# ADR-0158 PR-9: шесть тулов gen_* свёрнуты в один ``music_library(action)``. Верхний ``expected_tool_calls``
+# покрывает его (сценарий music_library_suite_v1.json его гоняет: список, поиск, оценка, инфо, удаление).
+# ``generate_music`` в AND-агрегат не входит: он вне GATE-1 намеренно (#3248; новый узкий тул тратит кредиты KIE).
 ALL_7_GEN_TOOLS = (
     "generate_music",
-    "gen_list_library",
-    "gen_search_library",
-    "gen_save_to_library",
-    "gen_play_from_library",
-    "gen_delete_from_library",
-    "gen_get_track_info",
+    "music_library",
 )
-# Issue #3248: ``generate_music`` снят с регистрации 22.08.2026 (db84ff590,
-# MiniMax Music API 410 Gone) — LLM его не видит, в AND-агрегате GATE-1 он
-# гарантирует вечный FAIL так же, как неиспользуемый gen_play_from_library.
+# Issue #3248: ``generate_music`` в AND-агрегате GATE-1 гарантирует вечный FAIL (тул не гоняется в этом сценарии).
 UNREGISTERED_TOOLS = ("generate_music",)
-EXERCISED_GEN_TOOLS = tuple(
-    t for t in ALL_7_GEN_TOOLS
-    if t != "gen_play_from_library" and t not in UNREGISTERED_TOOLS
-)
+EXERCISED_GEN_TOOLS = tuple(t for t in ALL_7_GEN_TOOLS if t not in UNREGISTERED_TOOLS)
 
 
 def _acceptance_path() -> Path:
@@ -88,24 +75,14 @@ class TestGate1TopLevelSchema:
         # the renardo negative-control step and is forbidden per-step only.
 
     def test_expected_tool_calls_covers_exercised_gen_tools(self) -> None:
-        """The 6 gen_* tools exercised by music_library_suite_v1.json MUST appear
-        in expected_tool_calls (ADR-0022 §5.3, AND-semantics).
-
-        gen_play_from_library is intentionally excluded — the scenario has no
-        step that plays a saved track, and listing an unexercised tool would
-        guarantee a false GATE-1 FAIL.
-        """
+        """The music_library tool exercised by music_library_suite_v1.json MUST appear
+        in expected_tool_calls (ADR-0022 §5.3, AND-semantics)."""
         a = _load_acceptance()
         expected = set(a.get("expected_tool_calls", []))
         missing = set(EXERCISED_GEN_TOOLS) - expected
         assert not missing, (
             f"Top-level expected_tool_calls missing: {sorted(missing)}. "
             "ADR-0022 §5.3 says: 'Если хотя бы один не работает — e2e-done не ставится.'"
-        )
-        assert "gen_play_from_library" not in expected, (
-            "gen_play_from_library must NOT be in top-level expected_tool_calls: "
-            "the scenario music_library_suite_v1.json does not exercise it "
-            "(GATE-1 aggregate is AND-semantics → false FAIL otherwise)."
         )
         dead = expected & set(UNREGISTERED_TOOLS)
         assert not dead, (
@@ -307,9 +284,9 @@ class TestConsistencyWithSuite:
                 patterns = s.get("patterns", [])
                 acc = s.get("acceptance", {}) or {}
                 calls = acc.get("expected_tool_calls", []) or []
-                if any("gen_" in str(p) or p == "generate_music" for p in patterns):
+                if any("music_library" in str(p) or p == "generate_music" for p in patterns):
                     return True
-                if any("gen_" in str(c) or c == "generate_music" for c in calls):
+                if any("music_library" in str(c) or c == "generate_music" for c in calls):
                     return True
             return False
 

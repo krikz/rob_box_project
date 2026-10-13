@@ -6,7 +6,7 @@
       ──► валидатор кода (≤ 950 символов, строки, язык = ``SingPreset.language``; один повтор)
       ──► TTS ТЕКУЩЕГО провайдера/голоса + ``SingPreset`` ──► файл вокала (``rob_box_voice.sing_synth``)
       ──► KIE upload ──► ``add-instrumental`` (теги ``GEN_STYLES[жанр]`` + ``tags_hint``, пол и вес — из пресета)
-      ──► кэш (оба варианта, с provider/voice) ──► дека ``PlayerOwner`` (``gen_play_from_library``) ──► фраза кода
+      ──► кэш (оба варианта, с provider/voice) ──► дека ``PlayerOwner`` (``play_library_track``) ──► фраза кода
 
 Ждать ~75 с вызывающий не может, поэтому :meth:`SongStudio.launch` отдаёт работу фоновому потоку; пока он пишет,
 играет мост (решает ``RequestMusicTool``), а итоговую фразу — «песня готова», «не вышло: причина» — строит код из
@@ -277,7 +277,7 @@ class SongStudio:
     """Песня заказом: ``make`` — блокирующий конвейер, ``launch`` — то же в фоне с озвучкой итога.
 
     ``library`` — ленивый доступ к ``GeneratedMusicLibrary``; ``voice`` — ``() -> (провайдер, голос)``; ``play`` —
-    ``track_id -> MCPToolResult`` (``gen_play_from_library``); ``speak`` — реплика роботом (тот же ``speak_text``);
+    ``track_id -> MCPToolResult`` (``play_library_track``); ``speak`` — реплика роботом (тот же ``speak_text``);
     ``stop`` — снять мост перед песней; ``sing`` — вокал в файл (подменяется в тестах)."""
 
     def __init__(self, provider: Any, library: Callable[[], Any], lyrics: LyricsAsk, voice: Callable[[], Tuple[str, str]],
@@ -367,7 +367,7 @@ class SongStudio:
                play: Optional[Callable[[str], Any]] = None) -> bool:
         """Запустить ``make`` в фоне; ``False`` — уже пишется другая песня. Итог говорит голос: ``done_text`` или
         ``on_failed(причина)``; песня играет с деки сразу после готовности — ``play`` (мост ожидания
-        ``BridgeHold``: входит кроссфейдом, ADR-0158 PR-8), иначе ``gen_play_from_library``."""
+        ``BridgeHold``: входит кроссфейдом, ADR-0158 PR-8), иначе ``play_library_track``."""
         with self._lock:
             if self._busy:
                 return False
@@ -401,7 +401,7 @@ class SongStudio:
             self._busy = False
 
     def _late_start(self, played: Any) -> bool:
-        """``gen_play_from_library`` ждёт ``started`` 6 с, а трек деки встаёт на границу формы (до ~длины песни):
+        """``play_library_track`` ждёт ``started`` 6 с, а трек деки встаёт на границу формы (до ~длины песни):
         ``not_started`` — не отказ; ждём событие этого запуска дольше, пока играет мост."""
         data = getattr(played, "data", None) or {}
         if getattr(played, "success", False) or data.get("reason") != "not_started" or not data.get("track_id"):

@@ -24,7 +24,7 @@ TEMP(ADR-0148): проверка ответа LLM после хода — вре
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
@@ -149,8 +149,36 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
     return " ".join(parts)
 
 
+#: Сколько названий называть во фразе списка библиотеки (остальные — числом).
+LIBRARY_LIST_NAMES = 5
+LIBRARY_EMPTY_TEXT = "В библиотеке сгенерированной музыки пока пусто."
+LIBRARY_NO_TRACK_TEXT = "Не знаю, о каком треке речь: ничего из библиотеки ещё не играло."
+LIBRARY_FAIL_TEXT = "С библиотекой музыки не вышло."
+
+
+def library_list_text(titles: Sequence[str], total: int) -> str:
+    """Фраза списка библиотеки генераций (``music_library(list)``, ADR-0158 PR-9): число и первые названия из кэша,
+    не от LLM."""
+    if total <= 0:
+        return LIBRARY_EMPTY_TEXT
+    names = list(dict.fromkeys(t for t in titles if t))[:LIBRARY_LIST_NAMES]  # варианты одного заказа — одно имя
+    head = f"В библиотеке {total} {_plural(total, 'трек', 'трека', 'треков')}"
+    return f"{head}, например: {', '.join('«' + n + '»' for n in names)}." if names else head + "."
+
+
+def library_rate_text(title: str, liked: bool) -> str:
+    """Фраза после оценки трека кэша: запись в БД уже сделана (``music_library(rate)``)."""
+    name = f"«{title}»" if title else "этот трек"
+    return f"Запомнил: {name} нравится." if liked else f"Запомнил: {name} не нравится, больше не включу."
+
+
+def library_delete_text(title: str) -> str:
+    """Фраза после удаления трека из библиотеки."""
+    return f"Удалил {'«' + title + '»' if title else 'трек'} из библиотеки."
+
+
 def library_play_text(title: str, seconds: float) -> str:
-    """Фраза после ``started`` трека из библиотеки генераций (``gen_play_from_library``, ADR-0158 PR-2): название и
+    """Фраза после ``started`` трека из библиотеки генераций (``play_library_track``, ADR-0158 PR-2): название и
     длина — из кэша и файла, не от LLM."""
     name = f"«{title}»" if title else "трек"
     return f"Включаю {name} из библиотеки — {duration_text(seconds)}."
@@ -314,7 +342,13 @@ __all__ = [
     "PENDING_TEXT",
     "SOURCE_WORDS",
     "duration_text",
+    "LIBRARY_EMPTY_TEXT",
+    "LIBRARY_FAIL_TEXT",
+    "LIBRARY_NO_TRACK_TEXT",
+    "library_delete_text",
+    "library_list_text",
     "library_play_text",
+    "library_rate_text",
     "now_playing_track_text",
     "LAUNCH_PHRASE_STEMS",
     "LAUNCH_TOOLS",

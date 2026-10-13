@@ -1278,11 +1278,7 @@ act(
     "проиграть → остановить → удалить.",
     "flaky-known",
     [
-        "gen_list_library",
-        "gen_search_library",
-        "gen_save_to_library",
-        "gen_get_track_info",
-        "gen_delete_from_library",
+        "music_library",
         "stop_music",
     ],
     [
@@ -1312,29 +1308,29 @@ act(
             "как «этих строк не должно быть в логах шага».",
         ),
         step(
-            "n704_gen_list_library",
+            "n704_music_library",
             "Робот, что у тебя вообще лежит в музыкальной библиотеке?",
-            expect_tools=["gen_list_library"],
+            expect_tools=["music_library"],
         ),
         step(
             "n705_gen_search_rain",
             "Робот, найди у себя в библиотеке что-нибудь про дождь.",
-            expect_tools=["gen_search_library"],
+            expect_tools=["music_library"],
         ),
         step(
             "n706_gen_save_for_boris",
             "Робот, сохрани эту песню про енота для Бориса, он такое любит.",
-            expect_tools=["gen_save_to_library"],
+            expect_tools=["music_library"],
         ),
         step(
             "n707_gen_track_info",
             "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
-            expect_tools=["gen_get_track_info"],
+            expect_tools=["music_library"],
         ),
         step(
             "n708_gen_play",
             "Робот, включи эту песню про енота с начала.",
-            expect_tools=["gen_play_from_library"],
+            expect_tools=["music_library"],
             retry=1,
         ),
         step(
@@ -1346,8 +1342,8 @@ act(
         step(
             "n710_gen_delete",
             "Робот, удали последний трек из библиотеки, он всё-таки так себе.",
-            patterns=["gen_list_library|gen_delete_from_library"],
-            expect_tools=["gen_delete_from_library"],
+            patterns=["music_library"],
+            expect_tools=["music_library"],
             why="Уборка за собой + проверка, что «последний» робот определяет "
             "через список, а не наугад.",
         ),
@@ -1368,7 +1364,7 @@ act(
     ],
     [
         "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
-        "generate_music и gen_play_from_library ВНЕ GATE-1 намеренно —",
+        "generate_music и music_library ВНЕ GATE-1 намеренно —",
         "их отсутствие чаще всего означает недоступность внешнего API.",
         "В gate только каталожные gen_*-тулы (работают локально) и stop_music.",
     ],

@@ -233,8 +233,10 @@ class SchedulerToolExecutor:
             # подкрепить; или заиграла пьеса — о ней говорит код (ADR-0157 R6).
             # Фразу о музыке скажет нода по MusicTurn.phrase().
             piece = self.music_turn.piece_playing()
-            _LOG.warning(f"music turn: speak_text refused — {'piece phrase by code' if piece else 'launch failed'}")
-            return ToolResult(tool_call_id=call.id, content=speech_refusal_content(piece), is_error=True)
+            library = self.music_turn.library_answered()
+            why = "library phrase by code" if library else "piece phrase by code" if piece else "launch failed"
+            _LOG.warning(f"music turn: speak_text refused — {why}")
+            return ToolResult(tool_call_id=call.id, content=speech_refusal_content(piece, library), is_error=True)
 
         channel = channel_for_tool(call.name)
         if channel is None:

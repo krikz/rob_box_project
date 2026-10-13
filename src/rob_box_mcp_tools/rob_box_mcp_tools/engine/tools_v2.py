@@ -646,7 +646,7 @@ class RequestMusicTool(MCPTool):
         self.gen_library = gen_library  # кэш генераций: результат ожидания встаёт с деки моста (BridgeHold, PR-8)
         self.hold: Any = None  # последний мост ожидания генерации (``BridgeHold``): песня входит вместо него
         self._song_order = SongOrder(songs, self._source.route, hold=lambda: self.hold)
-        self._play_cached = play_cached  # трек кэша — gen_play_from_library: дека владельца (ADR-0158 PR-2)
+        self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
@@ -778,7 +778,7 @@ class RequestMusicTool(MCPTool):
                             "message": decline_text(route)}, what)
 
     def _play_cache(self, route: Route, what: str) -> MCPToolResult:
-        """Трек кэша — ``gen_play_from_library`` на деке владельца (ADR-0158 PR-2): сет закрывает и деку заменяет он
+        """Трек кэша — ``play_library_track`` на деке владельца (ADR-0158 PR-2): сет закрывает и деку заменяет он
         сам, ``ok`` — только по ``started`` запуска; ``track_id`` результата — id запуска на деке (его ``started`` ждёт
         роутер медиакоманд)."""
         track = route.track

@@ -22,7 +22,7 @@ def _declined(message: str) -> Tuple[str, Dict[str, Any]]:
 
 def bridge_hold(hold: Any, bridge: Any) -> Any:
     """Мост ожидания этого заказа (``BridgeHold``) или ``None``: мост не встал или это трек кэша (свой запуск на деке
-    через ``gen_play_from_library``), а не мост ожидания."""
+    через ``play_library_track``), а не мост ожидания."""
     if hold is None or not bridge.success or hold.bridge_id != (bridge.data or {}).get("track_id"):
         return None
     return hold
@@ -30,7 +30,7 @@ def bridge_hold(hold: Any, bridge: Any) -> Any:
 
 def held_play(hold: Any) -> Optional[Callable[[str], Any]]:
     """Песня готова: войдёт с деки моста кроссфейдом (``BridgeHold.deliver``); деку занял другой заказ — не заиграла.
-    Моста ожидания нет — ``None`` (студия играет ``gen_play_from_library``)."""
+    Моста ожидания нет — ``None`` (студия играет ``play_library_track``)."""
     from ..base import MCPToolResult
 
     if hold is None:

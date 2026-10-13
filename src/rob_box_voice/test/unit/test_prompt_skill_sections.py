@@ -125,7 +125,7 @@ def test_moved_sections_land_in_declared_skills(enabled) -> None:
     by_skill = enabled.by_skill()
     assert set(by_skill) == {"composer", "dj", "player", "navigation"}
     assert "request_music" in by_skill["composer"]
-    assert "gen_play_from_library" in by_skill["player"]
+    assert "music_library" in by_skill["player"]
     assert "dj_set" in by_skill["dj"]
     assert "navigate_to_waypoint" in by_skill["navigation"]
 

@@ -2717,6 +2717,13 @@ SOURCE_WEIGHTS: Mapping[str, float] = {"synth_fit": 2.0, "theme_match": 1.5, "as
                                        "rating": 0.5, "cost": -0.02, "wait_s": -0.005, "live": COVER_LIVE_WEIGHT}
 #: Трек кэша, игранный ближе этого, не «свежий» (признак ``fresh``).
 GEN_FRESH_HOURS = 12
+#: Оценка трека кэша (``generated_tracks.rating``): «нравится» / «не нравится» (ADR-0158 §2.5, PR-9). Меньше нуля — трек
+#: не берётся в кандидаты пути (``source.py``), но остаётся на диске до квоты.
+RATING_LIKE = 5
+RATING_DISLIKE = -1
+#: Квота диска под кэш генераций, МиБ (ADR-0158 §2.5, PR-9). Замер Vision Pi 14.10: 19 каталогов — 123 МиБ
+#: (mp3 + wav сервера ≈ 6.5 МиБ на трек), на ``/data`` свободно 83 ГиБ; 2 ГиБ — ~300 треков.
+GEN_LIBRARY_QUOTA_MB = 2048
 #: Ожидание до звука у синтеза и кэша, секунд (признак ``wait_s``).
 INSTANT_WAIT_S = 3.0
 #: Режимы пути (ADR-0158 §2.8): ``synth`` — без генерации, ``generate`` — без синтеза.
@@ -2757,6 +2764,8 @@ GEN_BRIDGE_STYLES: Mapping[str, str] = {"rock": "breaks", "grunge": "breaks", "m
 
 __all__ += ["GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_SET_FIRST_MODEL", "GEN_SET_MAX_TASKS", "GEN_SET_MODEL",
             "GEN_XFADE_BARS"]
+
+__all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
             "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
