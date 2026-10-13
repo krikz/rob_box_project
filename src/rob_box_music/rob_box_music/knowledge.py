@@ -1362,8 +1362,21 @@ KEY_TITLE_MODES: Mapping[str, str] = {"minor": "minor", "moll": "minor", "major"
 # ── Выбор произведения среди кандидатов (ADR-0157 §2.2, §3.3, PR-3) ──
 #: Веса признаков детерминированного ``choice.DeterministicChooser``: ``score = Σ вес·признак``; ``recent`` — штраф
 #: за недавнее исполнение (1.0 — последнее, убывает к :data:`HOOK_FRESH_SETS`-му).
+#: #3577 (прогон 12.10: «сыграй Баха» ×3 по рейтингу → Little Prelude BWV 924, хоралы, концерт на 760 долей):
+#: ``known`` — узнаваемое произведение (у партитуры есть RTTTL-хук того же произведения или её много смотрели в PDMX,
+#: :func:`works.known_work`), вес выше ``rating`` — рейтинг PDMX у малоизвестного и у шлягера один (4.7–4.9);
+#: ``long`` — штраф длинной формы одиночной пьесы (:func:`works.long_form`): 760–1024 долей — восемь минут ожидания
+#: конца и ``players_aligned=False`` на старте.
 CHOOSER_WEIGHTS: Mapping[str, float] = {"title_match": 3.0, "composer_match": 2.0, "fit": 1.0, "recent": -2.0,
-                                        "rating": 0.5}
+                                        "rating": 0.5, "known": 2.0, "long": -1.5}
+#: Шкала узнаваемости по просмотрам PDMX (``score_index.n_views``): не больше нижней границы — 0, не меньше верхней —
+#: 1, между — по логарифму. Индекс робота 12.10 (138 627 партитур): медиана 5 просмотров, 90-й перцентиль 292, 99-й —
+#: 5 316; у Баха топ — Prelude BWV 846 (511 тыс.), Toccata BWV 565 (226 тыс.), Goldberg (165 тыс.).
+KNOWN_VIEWS_FLOOR = 1_000
+KNOWN_VIEWS_FULL = 100_000
+#: Длина одиночной пьесы в долях (четвертях), с которой начинается штраф ``long``: признак растёт от 0 до 1 на отрезке
+#: ``[PIECE_LONG_BEATS, 2·PIECE_LONG_BEATS]`` (384 доли ≈ 3–4 мин при 100–120 BPM; прогон 12.10 — 760 и 1024 доли).
+PIECE_LONG_BEATS = 384
 #: Окно счётчика «сколько раз уже играли» (#3564, решение Шифу 12.10: на второй «сыграй Баха» Jev должен знать, сколько
 #: раз его уже запускали): сутки — «сессия» человека у робота; дольше — давнее, не повтор. Счётчик — подпись для модели
 #: (``choice.Plays``); штраф в очках остаётся функцией признака ``recent`` (последние :data:`HOOK_FRESH_SETS`).
@@ -2276,7 +2289,7 @@ __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE
             "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
             "WORK_SCORE_CANDIDATES", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
-__all__ += ["CHOOSER_DICE_TEMPERATURE"]
+__all__ += ["CHOOSER_DICE_TEMPERATURE", "KNOWN_VIEWS_FLOOR", "KNOWN_VIEWS_FULL", "PIECE_LONG_BEATS"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──
@@ -2355,6 +2368,35 @@ EMPTY_TITLES: Tuple[str, ...] = ("", "theme", "unknown", "untitled")
 LICENSE_STOP_LIST: Tuple[str, ...] = ("zimmer", "kondo", "uematsu", "nintendo", "disney", "johnwilliams")
 
 __all__ += ["CATEGORY_ARTISTS", "EMPTY_TITLES", "LICENSE_STOP_LIST", "TAG_WORK_TYPE"]
+
+# ── Произносимое название пьесы (#3577): что робот говорит о партитуре PDMX — ``rtttl_library.spoken_title`` ──
+#: Композитор по-русски: слово имени в поле «композитор» (или в названии партитуры) латиницей → как его говорят.
+#: Прогон 12.10: «…, Wolfgang Amadeus Mozart Franz Xaver SuÌßmayr.» вместо «Моцарт». Растёт по факту.
+COMPOSER_RU: Mapping[str, str] = {
+    "bach": "Бах", "mozart": "Моцарт", "beethoven": "Бетховен", "tchaikovsky": "Чайковский",
+    "tschaikowsky": "Чайковский", "chaikovsky": "Чайковский", "chopin": "Шопен", "vivaldi": "Вивальди",
+    "grieg": "Григ", "schubert": "Шуберт", "handel": "Гендель", "haendel": "Гендель", "händel": "Гендель",
+    "haydn": "Гайдн", "brahms": "Брамс", "debussy": "Дебюсси", "rachmaninoff": "Рахманинов",
+    "rachmaninov": "Рахманинов", "wagner": "Вагнер", "verdi": "Верди", "rossini": "Россини", "bizet": "Бизе",
+    "dvorak": "Дворжак", "dvořák": "Дворжак", "liszt": "Лист", "mendelssohn": "Мендельсон", "paganini": "Паганини",
+    "pachelbel": "Пахельбель", "satie": "Сати", "mussorgsky": "Мусоргский", "prokofiev": "Прокофьев",
+    "shostakovich": "Шостакович", "glinka": "Глинка", "borodin": "Бородин", "ravel": "Равель", "elgar": "Элгар",
+    "offenbach": "Оффенбах", "purcell": "Пёрселл", "schumann": "Шуман", "puccini": "Пуччини", "strauss": "Штраус",
+    "rimsky": "Римский-Корсаков", "khachaturian": "Хачатурян", "albeniz": "Альбенис", "boccherini": "Боккерини",
+    "gounod": "Гуно", "massenet": "Массне", "telemann": "Телеман", "scarlatti": "Скарлатти", "joplin": "Джоплин",
+}
+#: Слова, по которым круглые скобки названия партитуры — служебная ремарка, а не часть имени пьесы: «(real audio)»,
+#: «(Piano solo)», «(from Toccata Adagio and Fugue…)», «(SATB with piano)», «(easy)».
+SPOKEN_TITLE_JUNK: frozenset = frozenset({
+    "audio", "arr", "arranged", "arrangement", "version", "score", "easy", "simplified", "simple", "transcribed",
+    "transcription", "from", "for", "with", "solo", "satb", "piano", "violin", "flute", "guitar", "cello", "organ",
+    "clarinet", "duet", "trio", "quartet", "ensemble", "professional", "production", "fragment", "sheet", "part",
+    "parts", "midi", "real", "full", "beginner", "intermediate", "advanced", "lyrics", "numbering", "text",
+})
+#: Длина произносимого названия (символов): длиннее — TTS читает каталожную карточку, а не имя пьесы.
+SPOKEN_TITLE_MAX = 60
+
+__all__ += ["COMPOSER_RU", "SPOKEN_TITLE_JUNK", "SPOKEN_TITLE_MAX"]
 
 
 # ── Инструменты заказа (ADR-0157 §2.4, §3.4): «сыграй Баха на балалайке» ─────────────────────────────────────────

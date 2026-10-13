@@ -34,7 +34,8 @@ from rob_box_music.choice import score
 from rob_box_music.material import MaterialError, ScoreMaterial, from_json
 from rob_box_music.rtttl import THEME_HOOKS
 from rob_box_music.set_plan import seeded_plan
-from rob_box_music.works import SCORE, WorkCandidate, WorkRef, WorkWord
+from rob_box_music.works import (SCORE, WorkCandidate, WorkRef, WorkWord, form_beats, known_work, long_form,
+                                 meter_fit)
 
 from ..core.translit_ru import transliterate_ru
 from .search import (_PREFIX_SLACK, _WHOLE_WORD_MAX, PartQuery, Term, ThemeQuery, round_robin, sound_key,
@@ -45,7 +46,7 @@ ENV = "ROB_BOX_SCORE_LIBRARY"
 #: Ресурсный пак на хосте (В7 «б»), рядом с ``/opt/rob_box/samples`` и ``/opt/rob_box/models``.
 DEFAULT_DIR = "/opt/rob_box/scores"
 INDEX_FILE = "score_index.db"
-_COLUMNS = ("material_id", "title", "composer", "genres", "rating", "n_ratings", "file")
+_COLUMNS = ("material_id", "title", "composer", "genres", "rating", "n_ratings", "n_views", "bars", "meter", "file")
 #: Поля словарного индекса: слова названия и слова композитора — раздельно.
 TITLE, COMPOSER = "title", "composer"
 _CYR_RE = re.compile(r"[а-яё]", re.IGNORECASE)
@@ -130,23 +131,31 @@ class ScoreIndex:
         composer, title = len(self._spelled(word, COMPOSER)), len(self._spelled(word, TITLE))
         return composer > title if composer or title else None
 
-    def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES) -> List[WorkCandidate]:
+    def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES,
+                        hooks: Sequence[frozenset] = ()) -> List[WorkCandidate]:
         """Партитуры произведения (ADR-0157 §3.2): композитор назван — только с ним в поле ``composer``; слова
         названия — в поле ``title``, целым словом. Названы оба — сначала произведение, затем другие пьесы того же
-        композитора (ближайшее). Лучшие ``limit`` — по признакам выбора (``choice.score``), без сортировки всего."""
+        композитора (ближайшее). Лучшие ``limit`` — по признакам выбора (``choice.score``: название, рейтинг,
+        узнаваемость по ``hooks`` — словам RTTTL-хуков заказа (``works.hook_words``) и просмотрам, длинная форма),
+        без сортировки всего."""
         composer = _all_of([self._spelled(w, COMPOSER) for w in ref.composer])
         title = _all_of([self._spelled(w, TITLE) for w in ref.title]) or set()
         rows = composer if composer is not None else title  # композитор назван — только его партитуры
         match = {i: ref.title_match(str(self._rows[i].get("title") or ""), len(ref.title)) for i in title & rows}
-        best = heapq.nlargest(limit, rows, key=lambda i: (score({"title_match": match.get(i, 0.0),
-                                                                 "rating": self._rating(i)}), -i))
-        return [WorkCandidate(self.ids[i], SCORE, str(self._rows[i].get("title") or ""),
-                              str(self._rows[i].get("composer") or ""), match.get(i, 0.0),
-                              1.0 if ref.composer else 0.0, 1.0, self._rating(i)) for i in best]
+        cands = {i: self._candidate(i, match.get(i, 0.0), 1.0 if ref.composer else 0.0, hooks) for i in rows}
+        best = heapq.nlargest(limit, rows, key=lambda i: (score(cands[i].features()), -i))
+        return [cands[i] for i in best]
 
-    def _rating(self, i: int) -> float:
-        """Рейтинг PDMX строки 0..1 (признак ``rating`` выбора)."""
-        return min(1.0, float(self._rows[i].get("rating") or 0.0) / 5.0)
+    def _candidate(self, i: int, title_match: float, composer_match: float,
+                   hooks: Sequence[frozenset]) -> WorkCandidate:
+        """Кандидат строки ``i`` с признаками выбора (размер переводится в 4/4, рейтинг PDMX 0..1, узнаваемость,
+        длинная форма)."""
+        row = self._rows[i]
+        title = str(row.get("title") or "")
+        return WorkCandidate(self.ids[i], SCORE, title, str(row.get("composer") or ""), title_match, composer_match,
+                             meter_fit(row.get("meter")), min(1.0, float(row.get("rating") or 0.0) / 5.0),
+                             known_work(row.get("n_views"), title, hooks),
+                             long_form(form_beats(row.get("bars"), row.get("meter"))))
 
     def _term(self, term: Term) -> Set[int]:
         """Строки с любым написанием слова: строки поиска (семена, алиасы, слова архива) или само слово по звуку."""
@@ -223,7 +232,7 @@ class ScoreLibrary:
         self._lock = threading.Lock()
 
     def rows(self) -> Tuple[Dict[str, Any], ...]:
-        """Строки ``score_index`` (``material_id, title, composer, genres, rating, n_ratings, file``); нет — пусто."""
+        """Строки ``score_index`` (колонки :data:`_COLUMNS`); нет — пусто."""
         with self._lock:
             if self._rows is None:
                 self._rows = self._read_index()
@@ -248,9 +257,10 @@ class ScoreLibrary:
         """Материалы темы по её строкам поиска (``ThemeHits.query``, одни с поиском мелодий RTTTL)."""
         return self.index().search(query, limit)
 
-    def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES) -> List[WorkCandidate]:
+    def work_candidates(self, ref: WorkRef, limit: int = kn.WORK_SCORE_CANDIDATES,
+                        hooks: Sequence[frozenset] = ()) -> List[WorkCandidate]:
         """Партитуры-кандидаты произведения (:meth:`ScoreIndex.work_candidates`)."""
-        return self.index().work_candidates(ref, limit)
+        return self.index().work_candidates(ref, limit, hooks)
 
     def composer_role(self, word: WorkWord) -> Optional[bool]:
         """Слово заказа — композитор (:meth:`ScoreIndex.composer_role`); индекса нет — ``None``."""
