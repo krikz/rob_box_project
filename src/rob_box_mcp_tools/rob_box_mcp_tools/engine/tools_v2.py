@@ -50,10 +50,10 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.works import key_slot
 
-from .chooser_model import chooser_from_env
+from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
-from .piece import PieceChain, RecordLookup
+from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .reasoner import SetPlanBox, SetReasoner
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, theme_search
@@ -284,6 +284,9 @@ def music_busy(owner: Any, dj: Any) -> bool:
 def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
     if data.get("ok"):
         return MCPToolResult(success=True, data=data)
+    if data.get("composer_missing") and data.get("message"):  # назван композитор, пьес нет (#3604): фраза кода
+        from rob_box_voice.core.media_phrases import composer_missing_error
+        return MCPToolResult(success=False, data=data, error=composer_missing_error(data["message"]))
     if data.get("reason") == NOT_FOUND and data.get("message"):  # отказ сета: фраза кода, её скажет голос
         return MCPToolResult(success=False, data=data, error=data["message"])
     if data.get("reason") == NO_MORE and data.get("message"):  # «больше нет» (#3599): фраза кода, её скажет голос
@@ -545,7 +548,7 @@ class RequestMusicTool(MCPTool):
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
                  records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None,
-                 tracks_dir: Optional[str] = None) -> None:
+                 tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -556,7 +559,7 @@ class RequestMusicTool(MCPTool):
         # одиночная пьеса: кандидаты произведения, выбор, перебор (ADR-0157 §2.3, PR-2/PR-3)
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
                                   classic or classic_picker(library), history,
-                                  chooser=chooser_from_env(log=self._log), log=self._log)
+                                  chooser=chooser_from_env(chooser_mode, log=self._log), log=self._log)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
 
     def warm(self) -> threading.Thread:
@@ -685,6 +688,10 @@ class RequestMusicTool(MCPTool):
             from rob_box_voice.core.media_phrases import no_more_text
             return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
                     "message": no_more_text(work, played["repeats"][0])}
+        if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
+            from rob_box_voice.core.media_phrases import composer_missing_text
+            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
+                    "composer_missing": True, "message": composer_missing_text(work)}
         if pick is None and not count:
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
         if pick is None:
