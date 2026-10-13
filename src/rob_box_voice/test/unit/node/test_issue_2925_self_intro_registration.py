@@ -134,7 +134,7 @@ def _node():
     n._handle_result = MagicMock(
         side_effect=lambda result, **_kw: n.tts.append(result.spoken_text)
     )
-    n._build_dynamic_system_context = lambda: "\n".join(
+    n._build_dynamic_system_context = lambda tg_chat_id=None: "\n".join(
         n._pending_identity_hint_lines()
     )
 

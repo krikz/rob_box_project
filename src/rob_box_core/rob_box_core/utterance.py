@@ -47,6 +47,7 @@ Out of scope (см. voice-vr 13): единый вход ``tts_node``. Этот �
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -114,6 +115,34 @@ def _escape_xml_text(text: str) -> str:
 #: Публичный алиас для :func:`_escape_xml_text`.
 escape_xml_text = _escape_xml_text
 
+#: Issue #3598 — тег разметки в тексте реплики: ``<Текст>``, ``</text>``,
+#: ``<music_state playing="no">``. Имя начинается с буквы, атрибуты — только
+#: в форме ``имя="значение"``: «x<y & z>0» тегом не считается.
+_MARKUP_TAG_RE = re.compile(
+    r"</?[^\W\d_][\w:.-]*(?:\s+[\w:.-]+\s*=\s*(?:\"[^\"<>]*\"|'[^'<>]*'))*\s*/?>"
+)
+
+
+def strip_markup_tags(text: str) -> str:
+    """Убрать теги разметки из текста реплики — человеку их не произносят.
+
+    Живой лог 13.10 09:17 UTC: модель ответила
+    ``'<Текст>У РОББОКСа нет Вагнера…</Текст>'`` и ``speak_text`` с
+    ``'Отлично, на связи. Что делаем?</text>'``; :attr:`Utterance.ssml`
+    экранировал теги, ``tts_node`` раскрыл entity — и синтезатор прочитал
+    их вслух (а Telegram получил их дублем). Санитайзер детерминированный
+    и стоит в единственной точке сборки SSML, поэтому покрывает и
+    авто-TTS ``dialogue_node``, и ``speak_text``, и прочих producer'ов.
+
+    >>> strip_markup_tags("<Текст>Привет</Текст>")
+    'Привет'
+    >>> strip_markup_tags("x<y & z>0")
+    'x<y & z>0'
+    """
+    if not text:
+        return text
+    return _MARKUP_TAG_RE.sub("", text).strip()
+
 
 @dataclass
 class Utterance:
@@ -168,7 +197,8 @@ class Utterance:
     @property
     def ssml(self) -> str:
         """Собранный и экранированный SSML — ``<speak>...</speak>``."""
-        return f"<speak>{_escape_xml_text(self.text or '')}</speak>"
+        clean = strip_markup_tags(self.text or "")
+        return f"<speak>{_escape_xml_text(clean)}</speak>"
 
     def to_request(self) -> dict[str, Any]:
         """Словарь для ``json.dumps`` в payload ``/voice/tts/request`` или
@@ -243,4 +273,5 @@ __all__ = [
     "TTS_REQUEST_REQUIRED_FIELDS",
     "Utterance",
     "missing_tts_request_fields",
+    "strip_markup_tags",
 ]
