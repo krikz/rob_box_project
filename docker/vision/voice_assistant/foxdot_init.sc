@@ -28,7 +28,7 @@ var renardoSynthDirPlaceholder = "__RENARDO_SCLANG_DIR_PLACEHOLDER__";
 // «Сыграй тему на рояле» → модель берёт rhpiano → /s_new отбит → в цепочке
 // ноты остаётся только обвязка (startSound/lowPassFilter/volume/makeSound)
 // без инструмента → ТИШИНА. При этом ноды считаются, CPU тратится, и
-// execute_music_code рапортует «успешно»: exec() Python-кода прошёл, а про
+// тул запуска музыки рапортовал бы «успешно»: Python-код прошёл, а про
 // отказ scsynth он не знает.
 // Инвариант «палитра промпта ⊆ этот список» закреплён тестом
 // test_music_runtime_assets.py::test_foxdot_init_preloads_every_synth_the_prompts_advertise.

@@ -490,7 +490,7 @@ act(
             "n110_silence_baseline",
             "Робот, у тебя сейчас играет какая-нибудь музыка?",
             keywords=[SILENCE_ANSWER],
-            must_not=["stop_music", "execute_music_code"],
+            must_not=["stop_music"],
             must_not_say=[FALSE_FAILURE_PHRASE],
             why="ЯКОРЬ ТИШИНЫ. Робот обязан ответить по состоянию плеера, а "
             "не рефлекторно дёрнуть stop_music на молчащем плеере. Всё, что "
@@ -912,7 +912,7 @@ act(
             "n310_execute_backlog_lru",
             "Робот, ну ты слышал, что просили. Сделай.",
             voice=SASHA,
-            patterns=[BACKLOG_FLUSH, "execute_music_code|compose_music|set_vibe_preset|generate_music"],
+            patterns=[BACKLOG_FLUSH, "request_music|generate_music"],
             must_not=["stop_music"],
             retry=1,
             why="Во фразе нет своей команды — робот обязан выполнить последнюю "
@@ -940,7 +940,7 @@ act(
             "Робот, теперь тихо?",
             voice=SASHA,
             keywords=[SILENCE_ANSWER],
-            must_not=["execute_music_code", "stop_music"],
+            must_not=["stop_music"],
             must_not_say=[FALSE_FAILURE_PHRASE],
             why="Возврат к якорю тишины из акта 1 — акт не оставляет хвостов. "
             "Issue #3165: ответ — из <music_state> (снимок плеера, #3161), "
@@ -1089,7 +1089,7 @@ act(
     "new-unproven",
     [
         "get_music_state",
-        "execute_music_code",
+        "request_music",
         "stop_music",
     ],
     [
@@ -1105,8 +1105,8 @@ act(
         step(
             "n502_start_renardo",
             "Робот, сыграй на рендардо спокойный ночной бит, что-нибудь под пайку.",
-            patterns=["execute_music_code|compose_music"],
-            expect_tools=["execute_music_code"],
+            patterns=["request_music"],
+            expect_tools=["request_music"],
             must_not=["generate_music"],
             retry=2,
             why="Живой синтез, НЕ нейрогенерация: generate_music здесь — "
@@ -1116,14 +1116,14 @@ act(
             "n503_confirm_playing",
             "Робот, что сейчас звучит?",
             expect_tools=["get_music_state"],
-            must_not=["execute_music_code", "stop_music"],
+            must_not=["stop_music"],
             why="Подтверждаем, что n502 реально завёл плеер, а не просто "
             "ответил «включаю» голосом.",
         ),
         step(
             "n504_add_bass",
             "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
-            patterns=["execute_music_code|compose_music"],
+            patterns=["request_music"],
             must_not=["generate_music", "stop_music"],
             why="Эволюция трека без перезапуска: stop_music здесь = робот "
             "глушит и начинает заново вместо развития.",
@@ -1131,13 +1131,13 @@ act(
         step(
             "n505_vibe_dark",
             "Робот, сделай атмосферу помрачнее, как в киберпанке.",
-            patterns=["set_vibe_preset|execute_music_code|compose_music"],
+            patterns=["request_music"],
             must_not=["generate_music"],
         ),
         step(
             "n506_faster",
             "Робот, и ускорь темп, а то мы тут засыпаем оба.",
-            patterns=["set_vibe_preset|execute_music_code|compose_music"],
+            patterns=["request_music"],
             must_not=["stop_music"],
         ),
         step(
@@ -1159,7 +1159,7 @@ act(
             "n512_silence_after_stop",
             "Робот, теперь тишина?",
             expect_tools=["get_music_state"],
-            must_not=["stop_music", "execute_music_code"],
+            must_not=["stop_music"],
         ),
     ],
     [
@@ -1204,13 +1204,13 @@ act(
         step(
             "n604_dj_rock",
             "Робот, уводи в сторону рока, дядя Гриша под рок добреет.",
-            patterns=["set_dj_mode|set_vibe_preset|execute_music_code"],
+            patterns=["set_dj_mode|request_music"],
             must_not=["stop_music"],
         ),
         step(
             "n605_dj_set_plan",
             "Робот, поставь сет из трёх треков подряд и объявляй каждый перед началом.",
-            patterns=["set_dj_mode|execute_music_code|speak_text"],
+            patterns=["set_dj_mode|request_music|speak_text"],
             why="Зонд gp01: спека §4.1 обещает «сет заканчивается финальным "
             "треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет "
             "глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение "
@@ -1228,7 +1228,7 @@ act(
         step(
             "n607_vibe_chill",
             "Робот, а теперь помягче, поставь спокойную атмосферу, Валера уснёт за рулём.",
-            patterns=["set_vibe_preset|set_dj_mode|execute_music_code"],
+            patterns=["set_dj_mode|request_music"],
             must_not=["stop_music"],
         ),
         step(
@@ -1245,7 +1245,7 @@ act(
             "n609_silence_after_dj",
             "Робот, тишина настала?",
             expect_tools=["get_music_state"],
-            must_not=["execute_music_code", "set_dj_mode"],
+            must_not=["set_dj_mode"],
         ),
         step(
             "n610_dj_state_honest",
@@ -1299,7 +1299,6 @@ act(
             "чинит роботов в мастерской.",
             patterns=["generate_music"],
             expect_tools=["generate_music"],
-            must_not=["execute_music_code"],
             retry=1,
             why="Разводка коллизии имён (PR #1372): «спой песню» — это "
             "нейрогенерация, а не renardo-код.",
@@ -1316,31 +1315,26 @@ act(
             "n704_gen_list_library",
             "Робот, что у тебя вообще лежит в музыкальной библиотеке?",
             expect_tools=["gen_list_library"],
-            must_not=["execute_music_code"],
         ),
         step(
             "n705_gen_search_rain",
             "Робот, найди у себя в библиотеке что-нибудь про дождь.",
             expect_tools=["gen_search_library"],
-            must_not=["execute_music_code"],
         ),
         step(
             "n706_gen_save_for_boris",
             "Робот, сохрани эту песню про енота для Бориса, он такое любит.",
             expect_tools=["gen_save_to_library"],
-            must_not=["execute_music_code"],
         ),
         step(
             "n707_gen_track_info",
             "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
             expect_tools=["gen_get_track_info"],
-            must_not=["execute_music_code"],
         ),
         step(
             "n708_gen_play",
             "Робот, включи эту песню про енота с начала.",
             expect_tools=["gen_play_from_library"],
-            must_not=["execute_music_code"],
             retry=1,
         ),
         step(
@@ -1360,7 +1354,7 @@ act(
         step(
             "n711_renardo_not_broken",
             "Робот, а живьём на рендардо сыграть ты всё ещё умеешь? Сыграй короткий бит.",
-            patterns=["execute_music_code|compose_music"],
+            patterns=["request_music"],
             must_not=["generate_music"],
             retry=1,
             why="Контроль отсутствия регрессии коллизии имён: после серии "
@@ -1393,7 +1387,7 @@ act(
     "barge_in_policy classify (в проде стоит replace) — иначе классификация "
     "перебивания не отличит «стоп» от новой темы.",
     "expected-partially-red",
-    ["speak_text", "execute_music_code", "stop_music"],
+    ["speak_text", "request_music", "stop_music"],
     [
         step(
             "n801_wake_open",
@@ -1454,7 +1448,7 @@ act(
         step(
             "n809_music_bed",
             "Робот, поставь фоном ровный ритм на рендардо, только негромко.",
-            expect_tools=["execute_music_code"],
+            expect_tools=["request_music"],
             must_not=["generate_music"],
             retry=1,
             why="Готовим фон для проверки «речь поверх музыки».",
@@ -1483,7 +1477,6 @@ act(
             "n813_silence_final",
             "Робот, тишина?",
             expect_tools=["get_music_state"],
-            must_not=["execute_music_code"],
         ),
     ],
     [
@@ -1635,7 +1628,6 @@ act(
             "n1005_music_state_final",
             "Робот, музыка у тебя сейчас точно выключена?",
             expect_tools=["get_music_state"],
-            must_not=["execute_music_code"],
             why="Финальный якорь тишины: марафон не оставляет играющий плеер "
             "следующему прогону.",
         ),

@@ -132,7 +132,7 @@ class MusicStateMemory:
         """Строка ``<music_state …/>`` для ``<system_context>``.
 
         ``generated_title`` — mp3 из AI-библиотеки (``gen_play_from_library``)
-        играет в ``sound_node`` мимо ``MusicManager`` и в снимок плеера не
+        играет в ``sound_node`` мимо владельца плеера v2 и в снимок плеера не
         попадает; его состояние публикует сам плеер mp3
         (``/voice/generated_music/state``), нода передаёт название, если
         там ``playing``.

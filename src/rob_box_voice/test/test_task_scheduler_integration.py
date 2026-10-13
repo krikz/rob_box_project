@@ -8,7 +8,7 @@ The MVP acceptance criterion (per issue #968 §11.1) is:
 
 These tests sit one level above ``test_task_scheduler.py`` — they
 build realistic multi-channel scenarios that mirror the dialogue
-shell's actual workload (speak_text + execute_music_code +
+shell's actual workload (speak_text + gen_play_from_library +
 play_animation submitted back-to-back) and check the contract the
 LLM loop will rely on in W7.
 
@@ -44,7 +44,7 @@ class _FakeSideEffectBus:
 
     Tests assert against this log so the regression «stop_music
     outruns speak_text» cannot sneak back in: every speak_text
-    effect is timestamped before any execute_music_code effect that
+    effect is timestamped before any gen_play_from_library effect that
     was submitted after it.
     """
 
@@ -126,7 +126,7 @@ class _Executor:  # marker for type checkers, not actually used at runtime
 class TestHappyPath:
     @pytest.mark.asyncio
     async def test_dialogue_turn_with_voice_music_anim(self):
-        """One LLM turn emits speak_text + execute_music_code + play_animation.
+        """One LLM turn emits speak_text + gen_play_from_library + play_animation.
 
         Expected behaviour:
 
@@ -157,7 +157,7 @@ class TestHappyPath:
         ))
         music_task = sched.submit(SchedulerTask(
             task_id="music-1",
-            tool="execute_music_code",
+            tool="gen_play_from_library",
             channel=ChannelKind.MUSIC,
             executor=music,
             args={"code": "p1 >> d(), ", "pattern": "p1"},
@@ -290,7 +290,7 @@ class TestHappyPath:
             return TaskResult(payload={"latency_ms": elapsed_ms})
 
         music = sched.submit(SchedulerTask(
-            task_id="music-slow", tool="execute_music_code",
+            task_id="music-slow", tool="gen_play_from_library",
             channel=ChannelKind.MUSIC, executor=slow_music,
         ))
         v1 = sched.submit(SchedulerTask(

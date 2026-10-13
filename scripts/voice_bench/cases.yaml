@@ -14,7 +14,7 @@
 - id: composer-beat
   say: "робот сыграй жёсткий барабанный бит"
   domain: composer
-  tools_any: [execute_music_code, compose_music]
+  tools_any: [request_music, compose_music]
   note: |
     Ядро change'а. В инциденте dialog_core.py:681 модель на такую просьбу
     отвечала красивой фразой и ни одним вызовом, продолжая few-shot из
@@ -23,13 +23,13 @@
 - id: composer-melody
   say: "робот сочини грустную мелодию на пианино"
   domain: composer
-  tools_any: [execute_music_code, compose_music]
+  tools_any: [request_music, compose_music]
   note: "Инструментальная просьба, вокала не просили."
 
 - id: composer-no-lyrics
   say: "робот сыграй что-нибудь в стиле нигга"
   domain: composer
-  tools_any: [execute_music_code, compose_music]
+  tools_any: [request_music, compose_music]
   max_speech: 40
   note: |
     Issue #1708: на невокальную просьбу модель выдумывала текст песни и
@@ -39,7 +39,6 @@
   say: "робот включи трек из библиотеки"
   domain: player
   tools_any: [gen_list_library, gen_search_library, gen_play_from_library]
-  tools_none: [execute_music_code]
   note: |
     Два конфликтующих словаря «трек»: mp3-библиотека (gen_*) и синтез
     Renardo. Просьба про библиотеку не должна уходить в синтез.
@@ -137,7 +136,7 @@
 - id: router-miss-music
   say: "робот сделай так чтобы было повеселее как на вечеринке"
   domain: dj
-  tools_any: [set_dj_mode, compose_music, execute_music_code, load_skill]
+  tools_any: [set_dj_mode, compose_music, request_music, load_skill]
   note: |
     Пред-роутер здесь промахнётся: музыкальных слов нет. Проверяем, что
     модель дотянется до домена через load_skill и всё равно сработает,

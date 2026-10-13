@@ -3,8 +3,8 @@
 
 Supports two output modes:
   * human-readable (default) — for boot logs
-  * JSON (``--json``)        — for downstream consumers (e.g. start_voice_assistant.sh,
-                               rob_box_mcp_tools MusicManager) that need to know
+  * JSON (``--json``)        — for downstream consumers (e.g. start_voice_assistant.sh)
+                               that need to know
                                whether the sclang runtime started healthy or degraded.
 
 Exit codes:

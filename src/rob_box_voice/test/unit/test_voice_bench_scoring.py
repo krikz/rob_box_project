@@ -51,7 +51,7 @@ from score import (  # noqa: E402
 _CASE = {
     "id": "composer-beat",
     "domain": "composer",
-    "tools_any": ["execute_music_code", "compose_music"],
+    "tools_any": ["request_music", "compose_music"],
     "tools_none": ["gen_play_from_library"],
 }
 
@@ -61,7 +61,7 @@ def _turn(**over):
         "case_id": "composer-beat",
         "repeat": 1,
         "spoken": "Ок, играю бит",
-        "tools": ["execute_music_code"],
+        "tools": ["request_music"],
         "llm_requests": 2,
         "truncated": 0,
         "retry_no_music": 0,
@@ -104,7 +104,7 @@ def test_wrong_tool_scores_between_nothing_and_right() -> None:
 
 
 def test_forbidden_tool_costs_half_of_its_criterion() -> None:
-    result = score_turn(_CASE, _turn(tools=["execute_music_code", "gen_play_from_library"]))
+    result = score_turn(_CASE, _turn(tools=["request_music", "gen_play_from_library"]))
     assert result.score == pytest.approx(1.0 - WEIGHTS["prohibitions"] * 0.5)
 
 

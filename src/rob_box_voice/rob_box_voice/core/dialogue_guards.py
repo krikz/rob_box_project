@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 #: забывал: ``compose_music`` вышел и был авто-заглушен через 1.5 с,
 #: ``gen_play_from_library`` — в третий раз, а ``lookup_melody`` играл
 #: мелодию, но гуард его не видел и гнал LLM в повторный
-#: ``execute_music_code`` (тот стирал мелодию через Clock.clear()).
+#: запуск музыки (старый путь стирал мелодию через Clock.clear()).
 MUSIC_STARTING_TOOLS: frozenset = frozenset(
     entry.name for entry in TOOL_CATALOG if entry.starts_music
 )
@@ -67,7 +67,7 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
 #: call site).
 #:
 #: Issue #3133 (ADR-0141): ``set_dj_mode`` removed. It sat here AND in
-#: ``MUSIC_MODE_TOOLS`` at once; the starters branch runs after the stop
+#: the starters set at once; the starters branch runs after the stop
 #: branch and re-armed the flag anyway, so its presence here never cleared
 #: anything — it only made the set lie about what «stop» means. Whether
 #: music is playing is no longer derived from tool names at all: dialogue
@@ -76,13 +76,6 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
 MUSIC_STOP_TOOLS: frozenset = frozenset({
     "stop_music",
 })
-
-#: Tools that put existing playback into a mode rather than starting it.
-#: They keep music alive for the cleanup logic.
-MUSIC_MODE_TOOLS: frozenset = frozenset({
-    "set_vibe_preset",
-})
-
 
 # ---------------------------------------------------------------------------
 # Issue #992 Bug D — banned metalanguage openers. When the LLM returns
@@ -141,13 +134,11 @@ BABBLE_BANNED_OPENERS: tuple = (
 #     человеку, так не начинается — так начинается план.
 PLANNING_NARRATION_TOOL_NAMES: tuple = (
     "compose_music",
-    "execute_music_code",
     "speak_text",
     "set_dj_mode",
     "stop_music",
     "gen_play_from_library",
     "gen_search_library",
-    "set_vibe_preset",
     "play_animation",
     "play_sound",
     "memory_save",
@@ -839,7 +830,7 @@ _ACTION_VERBS_FUTURE = re.compile(
 # отчитаться о выполненном действии.
 #
 # Категории из существующего кода:
-#   - music (request_music, dj_set — движок v2, ADR-0149; set_vibe_preset,
+#   - music (request_music, dj_set — движок v2, ADR-0149;
 #     lookup_melody, stop_music, play_sound, play_animation)
 #   - nav (navigate_to_waypoint, navigate_to_coordinates, move_direction,
 #     start_mapping, stop_mapping, save_waypoint)
@@ -849,10 +840,9 @@ _ACTION_VERBS_FUTURE = re.compile(
 #   - config (set_volume, set_voice, set_speed, set_pitch, set_tts_provider)
 #   - memory (memory_save, memory_search, memory_context, register_speaker)
 CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
-    # music (ADR-0149 PR-13a: тулы движка v2 вместо compose_music &
-    # execute_music_code & set_dj_mode старого пути)
+    # music (ADR-0149 PR-13a: тулы движка v2 вместо старого пути)
     "request_music", "dj_set",
-    "set_vibe_preset", "lookup_melody",
+    "lookup_melody",
     "stop_music", "play_sound", "play_animation",
     "generate_music", "gen_play_from_library", "gen_delete_from_library",
     "gen_search_library", "gen_list_library", "gen_get_track_info",
@@ -1388,8 +1378,8 @@ def build_babble_retry_prompt(user_input: str) -> str:
     вариант «уже существующий трек» — иначе модель, уже нашедшая трек через
     gen_search_library, сочиняла новую мелодию вместо
     gen_play_from_library(track_id=...). ADR-0149 PR-13a: музыку ставит
-    ``request_music`` движка v2 (``compose_music`` / ``execute_music_code``
-    старого пути удалены).
+    ``request_music`` движка v2 (``compose_music`` и прочие
+    тулы старого пути удалены).
 
     Issue #1881 — если ``user_input`` уже содержит предыдущий
     ``[CRITICAL]``-блок (от прошлого ретрая этого же turn'а), он

@@ -20,11 +20,9 @@ class MCPToolRegistry:
     """Реестр инструментов MCP-сервера.
 
     Помимо регистрации и поиска, нормализует устаревшие/альтернативные
-    имена параметров (``aliases``) перед валидацией. Например, для
-    инструмента ``set_vibe_preset`` принимается и ``preset_name``, и
-    ``preset`` (issue #935 — LLM иногда путал их, и сервер падал с
-    "Отсутствует обязательный параметр: preset_name"). Алиасы объявляются
-    через ``MCPTool.aliases`` (по умолчанию пустой dict).
+    имена параметров (``aliases``) перед валидацией (issue #935 — LLM
+    иногда путала имена, и сервер падал с «Отсутствует обязательный
+    параметр»). Алиасы объявляются через ``MCPTool.aliases`` (по умолчанию пустой dict).
     """
 
     def __init__(self) -> None:
@@ -39,7 +37,6 @@ class MCPToolRegistry:
     #: имя параметра, а менять schema нельзя (рассылаем LLM-агенту).
     GLOBAL_PARAM_ALIASES: Dict[str, Dict[str, str]] = {
         # tool_name: {alias_param: canonical_param}
-        "set_vibe_preset": {"preset": "preset_name"},
     }
 
     def normalize_params(self, tool_name: str, **kwargs) -> Dict[str, Any]:

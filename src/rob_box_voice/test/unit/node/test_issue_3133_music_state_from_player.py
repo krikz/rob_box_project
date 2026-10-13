@@ -13,7 +13,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from rob_box_voice.core.dialogue_guards import MUSIC_MODE_TOOLS, MUSIC_STOP_TOOLS
+from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -70,8 +70,8 @@ class TestMusicPlayingNowFromPlayer:
         assert n._track_mode_music_active is False
 
 
-class TestStopAndModeToolSets:
-    def test_set_dj_mode_is_neither_stop_nor_mode_tool(self):
+class TestStopToolSet:
+    def test_set_dj_mode_is_not_a_stop_tool(self):
         # ADR-0149 PR-13a: set_dj_mode — тул старого пути, DJ-сет ведёт dj_set движка v2.
-        assert "set_dj_mode" not in MUSIC_STOP_TOOLS | MUSIC_MODE_TOOLS
+        assert "set_dj_mode" not in MUSIC_STOP_TOOLS
         assert MUSIC_STOP_TOOLS == frozenset({"stop_music"})

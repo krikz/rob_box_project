@@ -187,7 +187,7 @@ class TestBasicCycle:
                 # rejection is per-scheduler, not per-enum.
                 sched.submit(SchedulerTask(
                     task_id="x",
-                    tool="execute_music_code",
+                    tool="gen_play_from_library",
                     channel=ChannelKind.MUSIC,
                     executor=_echo_executor("ok"),
                 ))
@@ -291,7 +291,7 @@ class TestFifoOrdering:
                 channel=ChannelKind.VOICE, executor=slow_voice,
             ))
             music_task = sched.submit(SchedulerTask(
-                task_id="m1", tool="execute_music_code",
+                task_id="m1", tool="gen_play_from_library",
                 channel=ChannelKind.MUSIC, executor=fast_music,
             ))
 
@@ -565,7 +565,7 @@ class TestWaitHelpers:
                 executor=_sleepy_executor(0.03, "ok"),
             ))
             sched.submit(SchedulerTask(
-                task_id="m", tool="execute_music_code",
+                task_id="m", tool="gen_play_from_library",
                 channel=ChannelKind.MUSIC,
                 executor=_sleepy_executor(0.03, "ok"),
             ))

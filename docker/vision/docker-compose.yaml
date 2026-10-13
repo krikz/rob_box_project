@@ -297,10 +297,6 @@ services:
       # Renardo paths (MusicSkill uses these to load reference docs and search samples)
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
-      # Pack-1 samples: жанровые лупы (#2841) + FX-одиночки (#2968).
-      # "1" открывает весь каталог 1_pitchglitch_samples (лупы И fx одним
-      # флагом — см. core/sample_loops.py, core/sample_fx.py).
-      - ROB_BOX_PACK1_LOOPS=1
       # /mcp/execute sender authentication (see rob_box_mcp_tools/mcp_auth.py).
       # dialogue_node and mcp_server run in THIS container, so they share the
       # secret through a file on the /data volume — created automatically on
@@ -364,7 +360,7 @@ services:
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
       # Renardo/FoxDot reference documentation for MusicSkill LLM context
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
-      # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
+      # DB migrations (applied idempotently at startup by WaypointStore, FAQStore, etc.)
       - ../../migrations:/migrations:ro
     mem_limit: 5g  # Voice Assistant + Animations
     memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)

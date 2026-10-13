@@ -9,7 +9,7 @@ adapter and writes facts to the same SQLite file the dialogue node uses —
 (harness) implementation.
 
 Scope note (issue #2000 Phase 2, investigated and NOT done here):
-``WaypointStore`` and the voice tools (``tools/memory.py`` FAQ/TrackLibrary
+``WaypointStore`` and the voice tools (``tools/memory.py`` FAQ
 paths) still write to ``/data/voice_memory.db`` and are **not** wired to
 this adapter. ``SQLiteVoiceMemory`` already defines its own ``waypoints``
 (``name`` PRIMARY KEY) and ``faq_items`` (``created_at``, no FTS5) tables

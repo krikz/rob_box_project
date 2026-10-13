@@ -168,16 +168,11 @@ PromptObserver = Callable[[PromptStats], None]
 # (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
 # re-ordering fixes the *intra-batch* race:
 #
-# * music tools (``execute_music_code`` / ``set_vibe_preset``)
-#   run FIRST so the prelude starts before speech,
 # * ordinary tools keep their relative order,
 # * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
 #   flagged ``defer_until_voice_drained`` when the same batch also speaks —
 #   the flag tells the scheduler not to fire the side effect until the voice
 #   channel is empty.
-_MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
-    {"execute_music_code", "set_vibe_preset"}
-)
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 # Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
 # ждёт исхода регистрации (dialogue_node ``TurnSpeechGate``), и ожидание
@@ -186,7 +181,7 @@ _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 # уйти в TTS раньше, чем ход узнал, что регистрация вообще будет. Сам тул —
 # публикация в топик (миллисекунды), порядок речи и музыки не меняет.
 _REGISTER_FIRST_TOOLS: frozenset[str] = frozenset({"register_speaker"})
-_RUN_FIRST_TOOLS: frozenset[str] = _MUSIC_PRELUDE_TOOLS | _REGISTER_FIRST_TOOLS
+_RUN_FIRST_TOOLS: frozenset[str] = _REGISTER_FIRST_TOOLS
 _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
     {"stop_music", "stop_navigation"}
 )
@@ -492,12 +487,12 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 )
 
 
-# Issue #1708 — hallucinated-lyrics guard. After ``execute_music_code``
-# (Renardo instrumental), the LLM sometimes also calls ``speak_text`` with
+# Issue #1708 — hallucinated-lyrics guard. After a music-launch tool
+# (``generate_music`` / ``gen_play_from_library``), the LLM sometimes also calls ``speak_text`` with
 # invented lyrics («Нига-стайл, Колобок-флоу...»). The user hears a
 # robotic voice reading hallucinated text on top of (or instead of) the
 # beat. Master prompt only authorises ONE short accept phrase after
-# ``execute_music_code`` («Ок, играю Бах»), not full lyrics. We drop
+# a music launch («Ок, играю Бах»), not full lyrics. We drop
 # ``speak_text`` calls that follow a music tool AND exceed the accept-
 # phrase threshold AND the user request was NOT a vocal one (rap / poem /
 # song — there backing mode legitimately calls speak_text × N).
@@ -511,7 +506,7 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 # * там — «просил ли пользователь голос БЕЗ бита?». Список у́же
 #   намеренно: для речитатива (рэп / зачитай / частушка) бит обязателен,
 #   и music-guard Bug C (issue #992) должен нуднуть модель, если она не
-#   вызвала ``execute_music_code``.
+#   вызвала тул запуска музыки.
 #
 # Слить их — значит молча снять требование бита с рэпа. Инвариант
 # «voice — строгое подмножество harness» закреплён тестом
@@ -530,13 +525,11 @@ _VOCAL_REQUEST_KEYWORDS: tuple = (
 # this on a non-vocal request is a hallucination. The number matches the
 # existing TRACK-mode accept test in test_issue_992_batch_cleanup.
 _ACCEPT_PHRASE_MAX_CHARS: int = 40
-#: Broader set than ``_MUSIC_PRELUDE_TOOLS`` — adds ``generate_music``
-#: (MiniMax Music API) and ``gen_play_from_library``. The prelude set
-#: only governs execution ORDER (music tools must run first), but the
+#: Music tools after which a hallucinated-lyrics guard applies: ``generate_music``
+#: (MiniMax Music API) and ``gen_play_from_library``. The
 #: hallucinated-lyrics guard must fire for ANY music tool that leaves
 #: the user hearing lyrics on top of audio (issue #1708 / #1561).
 _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
-    "execute_music_code", "set_vibe_preset",
     "generate_music", "gen_play_from_library",
 })
 
@@ -1740,7 +1733,7 @@ class AgentCore:
             # before and after the candidate speak_text). The order
             # inside the batch doesn't matter for the guard — the LLM
             # sometimes calls ``speak_text(title)`` BEFORE
-            # ``execute_music_code`` (issue #1708 live shape) and
+            # the music tool (issue #1708 live shape) and
             # sometimes AFTER. Pre-compute the set from the model's
             # ORIGINAL tool_calls (before our re-ordering) so we cover
             # both shapes.
@@ -2444,7 +2437,7 @@ class AgentCore:
         # 🔴 FIX: system prompt обязателен первым сообщением — раньше
         # dialogue_node грузил _system_prompt, но никогда не передавал
         # его в LLM: deepseek работала БЕЗ системного промпта (все
-        # правила «ALWAYS execute_music_code», NO METALANGUAGE и т.д.
+        # правила про запуск музыки, NO METALANGUAGE и т.д.
         # не доходили до модели). Найдено через verbose-трейс 09:08:
         # в messages не было [0] system.
         if self._system_prompt:
@@ -2532,18 +2525,17 @@ def _is_hallucinated_speak_text(
     when ALL of the following hold:
 
     * The call is ``speak_text`` (other tools are passed through).
-    * A music-launch tool (``execute_music_code`` / ``set_vibe_preset``
-      / ``generate_music`` / ``gen_play_from_library``)
+    * A music-launch tool (``generate_music`` / ``gen_play_from_library``)
       appears in the SAME LLM batch (either before OR after this
       ``speak_text`` call) — ``same_batch_music_calls`` carries those
       names. The order in the batch does NOT matter: the LLM
       sometimes calls ``speak_text(title)`` BEFORE
-      ``execute_music_code`` (issue #1708 live shape) and sometimes
+      the music tool (issue #1708 live shape) and sometimes
       AFTER (other variants). Either way the user hears robotic text
       on top of the beat.
     * The user request was NOT a vocal one (no «спой/пой/песня/рэп/
       зачитай/стих» cues) — rap / poem / song backing mode legitimately
-      calls ``speak_text`` × N after ``execute_music_code``.
+      calls ``speak_text`` × N after the music tool.
     * The ``text`` argument is longer than ``_ACCEPT_PHRASE_MAX_CHARS``
       — a short accept («Ок, играю Бах») is allowed even on non-vocal
       requests per the master prompt §5.
@@ -2580,11 +2572,11 @@ def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
     return ToolResult(
         tool_call_id=call.id,
         content=(
-            "[SYSTEM] speak_text подавлен после execute_music_code: "
+            "[SYSTEM] speak_text подавлен после запуска музыки: "
             "нельзя читать сгенерированный текст поверх музыки. "
             "В этом режиме разрешён только КОРОТКИЙ accept "
             "(«Ок, играю <трек>», ≤40 символов). "
-            "Верни 'done' сразу после execute_music_code."
+            "Верни 'done' сразу после запуска музыки."
         ),
         is_error=True,
     )

@@ -8,7 +8,7 @@
   ],
   "expected_tool_calls": [
     "get_music_state",
-    "execute_music_code",
+    "request_music",
     "stop_music"
   ],
   "must_not_call": [],

@@ -658,7 +658,7 @@ class RtttlLibrary:
 
     При первом ``__init__`` читает ``data/rtttl_melodies.jsonl.gz`` и
     разворачивает его в таблицу ``rtttl_melodies`` той же БД, что и
-    TrackLibrary (``VOICE_MEMORY_DB_PATH`` → ``/data/voice_memory.db``).
+    WaypointStore/FAQStore (``VOICE_MEMORY_DB_PATH`` → ``/data/voice_memory.db``).
     Импорт идемпотентен: если таблица уже заполнена — архив не читается.
     """
 

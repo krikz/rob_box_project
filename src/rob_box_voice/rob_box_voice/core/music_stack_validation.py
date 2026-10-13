@@ -171,7 +171,7 @@ def classify_sclang_log(log_text: str, critical_synths: list[str]) -> MusicStack
 
 
 # ---------------------------------------------------------------------------
-# Filesystem-backed helper for downstream consumers (MusicManager, mcp_server)
+# Filesystem-backed helper for downstream consumers (``scripts/validate_music_stack.py``)
 # ---------------------------------------------------------------------------
 
 
@@ -181,11 +181,9 @@ def load_sclang_health(
 ) -> MusicStackStatus:
     """Read the sclang startup log from disk and classify it.
 
-    Used by :class:`MusicManager` (rob_box_mcp_tools) at boot time to detect
-    upstream-renardo syntax errors and downgrade the music subsystem into a
-    hard-fail mode where ``execute_music_code`` / ``set_vibe_preset`` return
-    a clear "music unavailable" error rather than letting the LLM fight a
-    broken SuperCollider.
+    Used by ``scripts/validate_music_stack.py`` to detect upstream-renardo
+    syntax errors in the sclang startup log (the v1 boot guard that also
+    read it was removed in #3614).
 
     Resolution order for the log path:
 

@@ -3,7 +3,7 @@ test_music.py - Unit тесты музыкальных тулов вокруг �
 
 Тестирует:
 - StopMusicTool, GetMusicStateTool — от владельца плеера v2 (#3614, #3613)
-- TrackLibrary, LookupMelodyTool
+- LookupMelodyTool
 
 Старый путь (``MusicManager``, ``execute_music_code``) удалён в #3614; подъём Renardo и
 OSC — ``test_engine_renardo_runtime.py``.
@@ -22,7 +22,6 @@ with _ros:
         StopMusicTool,
         GetMusicStateTool,
         LookupMelodyTool,
-        TrackLibrary,
     )
     from rob_box_mcp_tools.engine.player_owner import PlayerOwner
 _ros_stubs = _ros.fixture()
@@ -186,57 +185,11 @@ class TestGetMusicStateTool:
         assert "Звуковой движок недоступен: ConnectionError: scsynth" in result.message
 
 
-@pytest.mark.unit
-class TestTrackLibrarySlug:
-    """🔴 Регрессия 30.08: русское имя трека превращалось в частокол «_».
-
-    Старый ``_slug`` был ``re.sub(r"[^a-z0-9_]", "_", name.lower())``: КАЖДЫЙ
-    кириллический символ заменялся на «_», поэтому slug кодировал только
-    длину имени. В живой медиатеке робота лежит запись
-    ``('________________', 'комната_мудрости')``, а «сохрани как трек
-    тисбит» породило четыре записи одного трека — ``tisbeat``, ``tisbit``,
-    ``thisbit``, ``tinbit``: LLM каждый раз транслитерировала имя сама и
-    каждый раз по-своему. «Удали трек тисбит» после этого не находил ничего.
-    """
-
-    def test_cyrillic_is_transliterated(self):
-        assert TrackLibrary._slug("Тисбит") == "tisbit"
-
-    def test_slug_is_case_insensitive(self):
-        assert TrackLibrary._slug("ТисБит") == TrackLibrary._slug("тисбит")
-
-    def test_different_names_do_not_collide(self):
-        """Раньше «мурка» и «пляска» (по 5 букв) давали один и тот же slug."""
-        assert TrackLibrary._slug("мурка") != TrackLibrary._slug("пляск")
-
-    def test_spaces_do_not_become_a_picket_fence(self):
-        assert TrackLibrary._slug("комната мудрости") == "komnata_mudrosti"
-
-    def test_latin_slugs_are_unchanged(self):
-        """Существующие записи медиатеки не должны переехать."""
-        assert TrackLibrary._slug("csm_chill_v2") == "csm_chill_v2"
-        assert TrackLibrary._slug("club_energy_128bpm") == "club_energy_128bpm"
-
-    def test_empty_name_stays_empty(self):
-        """``save_track`` отвергает пустой slug — контракт не меняем."""
-        assert TrackLibrary._slug("   ") == ""
-
-    def test_save_and_delete_round_trip_by_russian_name(self, tmp_path):
-        lib = TrackLibrary(db_path=str(tmp_path / "tracks.db"))
-        saved = lib.save_track(name="Тисбит", code="p1 >> blip([0])")
-        assert saved["success"] is True
-        assert saved["name"] == "tisbit"
-        # То, как юзер произнёс имя во второй раз, значения не имеет.
-        deleted = lib.delete_track("тисбит")
-        assert deleted["success"] is True
-
-
 class TestLookupMelodyTool:
     """Тул поиска известной мелодии — возвращает ноты, НЕ играет."""
 
-    def _make_tool(self, mock_node, library=None) -> LookupMelodyTool:
-        library = library if library is not None else Mock()
-        return LookupMelodyTool(mock_node, library)
+    def _make_tool(self, mock_node, rtttl_library=None) -> LookupMelodyTool:
+        return LookupMelodyTool(mock_node, rtttl_library)
 
     def test_tool_name(self, mock_node):
         assert self._make_tool(mock_node).name == "lookup_melody"
@@ -256,7 +209,7 @@ class TestLookupMelodyTool:
         }
         rtttl_library.vocabulary.return_value = frozenset({"imperial", "march"})
         rtttl_library.search.return_value = []
-        tool = LookupMelodyTool(mock_node, Mock(), rtttl_library)
+        tool = LookupMelodyTool(mock_node, rtttl_library)
 
         result = tool.execute("imperial march")
 
@@ -267,9 +220,11 @@ class TestLookupMelodyTool:
         assert "compose_music" not in result.message
 
     def test_miss_returns_honest_error(self, mock_node):
-        library = Mock()
-        library.find_melody.return_value = None
-        tool = self._make_tool(mock_node, library=library)
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = None
+        rtttl_library.search.return_value = []
+        rtttl_library.vocabulary.return_value = frozenset()
+        tool = self._make_tool(mock_node, rtttl_library)
         result = tool.execute("шопен")
         assert result.success is False
         assert "не знаешь точных нот" in result.error
@@ -282,7 +237,7 @@ class TestLookupMelodyTool:
         from rob_box_voice.core.named_play import melody_hit
 
         rtttl_library = RtttlLibrary(db_path=str(tmp_path / "key_slot.db"))
-        result = LookupMelodyTool(mock_node, Mock(), rtttl_library).execute("токкату ре минор")
+        result = LookupMelodyTool(mock_node, rtttl_library).execute("токкату ре минор")
         assert result.success and result.data["key"] == "D minor"
         record = rtttl_library.get(result.data["name"])
         assert "toccata" in result.data["title"].lower() and "bach" in str(record.get("artist")).lower()
@@ -291,8 +246,6 @@ class TestLookupMelodyTool:
 
     def test_variants_are_tried_in_order(self, mock_node):
         """LLM может дать несколько вариантов названия — пробуем по порядку."""
-        library = Mock()
-        library.find_melody.return_value = None
         rtttl_library = Mock()
         vader = {
             "name": "starwars_3",
@@ -307,7 +260,7 @@ class TestLookupMelodyTool:
         rtttl_library.get.side_effect = lambda q: vader if q == "darth vader" else None
         rtttl_library.search.return_value = []
         rtttl_library.vocabulary.return_value = frozenset()
-        tool = LookupMelodyTool(mock_node, library, rtttl_library)
+        tool = LookupMelodyTool(mock_node, rtttl_library)
 
         result = tool.execute("imperial march", variants=["darth vader", "star wars"])
 
@@ -335,7 +288,7 @@ class TestLookupMelodyToolTransparencyRealArchive:
         from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 
         rtttl_library = RtttlLibrary(db_path=str(tmp_path / "lookup_honest.db"))
-        return LookupMelodyTool(mock_node, Mock(), rtttl_library)
+        return LookupMelodyTool(mock_node, rtttl_library)
 
     def test_gin_and_juice_flags_juice_as_unmatched(self, mock_node, tmp_path):
         tool = self._make_tool(mock_node, tmp_path)
@@ -367,24 +320,3 @@ class TestLookupMelodyToolTransparencyRealArchive:
         assert result.data["match"]["unmatched"] == []
         assert result.data["match"]["coverage"] == 1.0
         assert result.data["name"] == "theme_178"
-
-
-def test_find_melody_resolves_slug_title_and_tag(tmp_path):
-    """find_melody ищет по slug (транслит), title и tags."""
-    lib = TrackLibrary(db_path=str(tmp_path / "melodies.db"))
-    lib._conn.execute(
-        "ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'track'"
-    )
-    lib.save_track(
-        name="kuznechik",
-        code="p1 >> pluck([4,4,2])",
-        title="В траве сидел кузнечик",
-        tags=["кузнечик"],
-    )
-    lib._conn.execute("UPDATE music_tracks SET type='melody' WHERE name='kuznechik'")
-    lib._conn.commit()
-
-    assert lib.find_melody("кузнечик")["name"] == "kuznechik"      # tag match
-    assert lib.find_melody("Kuznechik")["name"] == "kuznechik"     # slug match
-    assert lib.find_melody("в траве")["name"] == "kuznechik"       # title substring
-    assert lib.find_melody("шопен") is None

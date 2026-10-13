@@ -148,7 +148,6 @@ from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
-    MUSIC_MODE_TOOLS,
     MUSIC_STOP_TOOLS,
     MUSIC_STARTING_TOOLS,
     build_action_claim_failure_fallback,  # Issue #2949
@@ -843,7 +842,7 @@ class DialogueNode(Node):
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
-        # runs ``MusicManager.stop_music_on_session_end()`` for us.
+        # stops the deck (``MCPServer._stop_deck``: dj_set + player owner) and the mp3 for us.
         try:
             self._music_cleanup_pub = self.create_publisher(
                 String, "/mcp/music_cleanup", 10)
@@ -1282,7 +1281,7 @@ class DialogueNode(Node):
         # обрабатывает NAVIGATE/STOP/STATUS/MAP (публикует
         # /voice/command/intent и выполняет), dialogue_node НЕ должен
         # дублировать обработку через LLM: иначе LLM интерпретирует
-        # «вперёд» как музыку → execute_music_code вместо движения.
+        # «вперёд» как музыку → запуск музыки вместо движения.
         # True = фразы-команды НЕ идут в LLM (обрабатывает command_node).
         self.declare_parameter("command_intent_gate_enabled", True)
         # Порог уверенности CommandParser, при котором фраза считается
@@ -3273,7 +3272,7 @@ class DialogueNode(Node):
             )
             return
         # 🔴 FIX (issue 992 live 09:09): LLM часто делает speak_text(прелюдия)
-        # ПЕРЕД execute_music_code в одном цикле. Прелюдия — короткий batch
+        # ПЕРЕД тулом запуска музыки в одном цикле. Прелюдия — короткий batch
         # (2-5s), его batch_complete приходит ПОКА цикл LLM ещё крутится
         # (дальше Мурка/зайчики). Если чистить здесь — музыка убивается
         # через секунды после старта. Откладываем cleanup, пока _run_turn
@@ -3343,7 +3342,7 @@ class DialogueNode(Node):
             # ТОЛЬКО при новом диалоге из IDLE. Продолжение диалога
             # (barge-in: «ещё спой про зайчиков» во время ответа) — это
             # тот же диалог: музыка живёт до tts_batch_complete (#968),
-            # LLM сам сменит/оставит трек через execute_music_code.
+            # LLM сам сменит/оставит трек тулом запуска музыки.
             # Раньше cleanup слался на ЛЮБОЙ STT → музыка убивалась
             # в момент продолжения (v08:55:11 music_cleanup new_dialogue).
             self._pending_music_cleanup = False
@@ -4119,7 +4118,7 @@ tentative_plan(question, kind, name)
         """Единый ``<music_state>`` для LLM (issue #1544, #3161).
 
         ``ai=`` — mp3 из AI-библиотеки играет в ``sound_node`` мимо
-        ``MusicManager`` и в снимок плеера не попадает; его состояние
+        владельца плеера v2 и в снимок плеера не попадает; его состояние
         публикует сам плеер mp3 (``/voice/generated_music/state``).
         """
         gm = getattr(self, "_generated_music_state", None) or {}
@@ -5569,7 +5568,7 @@ tentative_plan(question, kind, name)
         Семантика 1-в-1 с до-рефакторингом — см. комментарии в ``_run_turn``.
         """
         tools_now = set(result.tools_called or ()) if result else set()
-        music_starters = MUSIC_STARTING_TOOLS | MUSIC_MODE_TOOLS
+        music_starters = MUSIC_STARTING_TOOLS
         if tools_now & MUSIC_STOP_TOOLS:
             self._track_mode_music_active = False
         if tools_now & music_starters:
@@ -5593,7 +5592,7 @@ tentative_plan(question, kind, name)
                 self._pending_music_cleanup = False
                 self.get_logger().info(
                     "🎵 [issue 992] LLM restarted music via "
-                    "execute_music_code — cancelled pending cleanup"
+                    "a music-launch tool — cancelled pending cleanup"
                 )
             else:
                 self.get_logger().debug(
@@ -6438,8 +6437,7 @@ tentative_plan(question, kind, name)
         # Mirrors agent_core._MUSIC_LAUNCH_TOOLS — keep the two lists
         # in sync if a new music tool is added to the manifest.
         _music_tool_names = {
-            "execute_music_code", "generate_music",
-            "gen_play_from_library", "set_vibe_preset",
+            "generate_music", "gen_play_from_library",
         }
         _has_music_tool = any(
             name in _music_tool_names for name in tools_called
@@ -6452,14 +6450,14 @@ tentative_plan(question, kind, name)
             # — only log at debug to avoid noise.
             if speak_text_real == 0:
                 self.get_logger().warning(
-                    "🎤 [issue 1708] execute_music_code + speak_text в "
+                    "🎤 [issue 1708] music tool + speak_text в "
                     "одном turn — speak_text ПОДАВЛЕН (hallucinated "
                     f"lyrics guard). tools={list(tools_called)!r} "
                     f"user_input={user_input!r}"
                 )
             elif self._verbose_llm:
                 self.get_logger().debug(
-                    "🎤 [issue 1708] execute_music_code + speak_text "
+                    "🎤 [issue 1708] music tool + speak_text "
                     "(backing mode, lyrics allowed) — both ran. "
                     f"tools={list(tools_called)!r}"
                 )
@@ -6638,7 +6636,7 @@ tentative_plan(question, kind, name)
         if not spoken:
             # 🔴 FIX (live 10:49): пустой spoken НЕ всегда ошибка — LLM
             # могла выполнить TRACK-запрос («сыграй баха») через
-            # execute_music_code и вернуть 'done' без speak_text (новый
+            # тул запуска музыки и вернуть 'done' без speak_text (новый
             # TRACK-контракт: музыка без болтовни). Мой done-strip
             # обнулил spoken → «задумался» был ЛОЖНЫМ. Fallback — только
             # если LLM вообще ничего не сделала (tools пуст).
@@ -6675,7 +6673,7 @@ tentative_plan(question, kind, name)
                             "response — forcing music_cleanup"
                         )
                         # Публикуем cleanup — mcp_server остановит музыку
-                        # (MusicManager.stop_music_on_session_end).
+                        # (MCPServer._on_music_cleanup → _stop_deck).
                         try:
                             self._publish_music_cleanup(reason="user_stop_command")
                         except Exception as exc:  # noqa: BLE001
@@ -6752,7 +6750,7 @@ tentative_plan(question, kind, name)
                         "with no spoken text — user heard silence "
                         f"(user_input={user_hint!r}). "
                         "LLM must follow up with speak_text or "
-                        "execute_music_code when stop_music is used."
+                        "a music-launch tool when stop_music is used."
                     )
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
@@ -7159,8 +7157,7 @@ tentative_plan(question, kind, name)
 
         Best-effort: if the publisher was never created (e.g. mcp_server
         not running in this container), this is a silent no-op. mcp_server
-        decides what to do — currently it logs and calls
-        ``MusicManager.stop_music_on_session_end()``.
+        decides what to do — currently it logs and stops the deck via ``MCPServer._stop_deck``.
         """
         # Что бы ни было причиной — стоп, новый диалог, конец BACKING-хода —
         # после cleanup живой TRACK-музыки больше нет (live 30.08).

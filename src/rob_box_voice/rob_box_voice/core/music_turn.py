@@ -205,7 +205,7 @@ def executor_turn_reply(
 ) -> Optional[str]:
     """:func:`turn_reply` по ``MusicTurn`` исполнителя тулов (``SchedulerToolExecutor.music_turn``); исполнителя
     нет — ``None``. ``user_texts`` — слова человека по приоритету (сырая команда ретрая, затем реплика хода);
-    ``tools_called`` — тулы хода: музыку мог запустить не v2-тул (``execute_music_code`` и др.)."""
+    ``tools_called`` — тулы хода: музыку мог запустить не v2-тул (``gen_play_from_library`` и др.)."""
     turn = getattr(executor, "music_turn", None)
     if turn is None:
         return None
