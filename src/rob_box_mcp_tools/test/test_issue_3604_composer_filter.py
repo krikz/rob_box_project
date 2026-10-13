@@ -130,8 +130,8 @@ def test_composer_without_any_candidate_is_a_code_phrase_not_a_foreign_piece():
     req = _tools(rig, hits=_both(["valkyrie"]), scores=WagnerIndex(), table={"valkyrie": VALKYRIES["valkyrie"]})
     result = req.execute(intent="melody", text="сыграй валькирии вагнера")
     assert result.success is False and result.data["reason"] == NOT_FOUND
-    assert result.data["message"] == composer_missing_text("валькирии вагнера")
-    assert result.error == composer_missing_error(composer_missing_text("валькирии вагнера"))  # роутер скажет сам
+    assert result.data["message"] == composer_missing_text("вагнера")
+    assert result.error == composer_missing_error(composer_missing_text("вагнера"))  # роутер скажет сам
     assert rig.events == []
 
 
