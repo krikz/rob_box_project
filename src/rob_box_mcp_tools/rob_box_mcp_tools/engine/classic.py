@@ -34,7 +34,7 @@ from rob_box_music.render.renardo import render
 from rob_box_music.works import RTTTL, SCORE
 
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
-from ..core.rtttl_library import human_track_title, match_info
+from ..core.rtttl_library import human_track_title, match_info, spoken_title
 from .search import find
 
 
@@ -53,7 +53,7 @@ class ClassicPick:
     key: Optional[str] = None
     source: str = RTTTL
     history: Mapping[str, Any] = field(default_factory=dict)
-    composer: str = ""  # автор из каталога (``artist`` записи RTTTL, ``composer`` партитуры) — для фразы
+    composer: str = ""  # автор для фразы, по-русски (``spoken_title``): ``artist`` RTTTL, ``composer`` партитуры
     track: Any = None  # модель трека (``model.Track``) — в файл каталога моделей после ``started`` (I24)
 
 
@@ -147,6 +147,8 @@ def pick_classic(library: Any, query: str, *, seed: int, deck: str = "A",
 
 
 def _picked(query: str, track: Any, title: str, deck: str, source: str, composer: str = "") -> ClassicPick:
+    """Собранная песня; название и автор — как их говорит робот (``spoken_title``, #3577: без мусора PDMX)."""
+    title, composer = spoken_title(title, composer)
     return ClassicPick(query, True, melody_id=track.hook.source, title=title, program=render(track, deck),
                        bpm=track.bpm, key=f"{kn.ROOTS[track.key.root]} {track.key.mode}", source=source,
                        history=track_history(track), composer=composer, track=track)

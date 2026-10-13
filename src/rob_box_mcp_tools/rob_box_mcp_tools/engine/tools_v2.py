@@ -195,13 +195,16 @@ def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks]
 
 
 def _shared(factory: Callable[[], Any]) -> Callable[[], Any]:
-    """Одна библиотека на хуки и поиск темы: открывается при первом обращении."""
+    """Одна библиотека на хуки и поиск темы: открывается при первом обращении (из прогрева в фоне или из заказа —
+    одна, под замком)."""
     box: Dict[str, Any] = {}
+    lock = threading.Lock()
 
     def get() -> Any:
-        if "lib" not in box:
-            box["lib"] = factory()
-        return box["lib"]
+        with lock:
+            if "lib" not in box:
+                box["lib"] = factory()
+            return box["lib"]
 
     return get
 
@@ -287,7 +290,7 @@ class DjSetTool(MCPTool):
         self._owner = owner
         self._reasoner = reasoner or SetReasoner(enabled=False)
         self._speak = speak
-        library = _shared(_rtttl_library)
+        library = self.library = _shared(_rtttl_library)  # одна библиотека RTTTL на сет и одиночную пьесу
         self._melodies = melodies or library_melodies(library)
         self._find = finder or theme_finder(library, theme_links(node, self._reasoner))
         self._not_found: Tuple[str, ...] = ()  # названное в теме, из чего не нашлось ничего: сет не стартует (#3493)
@@ -536,7 +539,7 @@ class RequestMusicTool(MCPTool):
         super().__init__(node)
         self._owner = owner
         self._dj = dj
-        library = _shared(_rtttl_library)
+        library = getattr(dj, "library", None) or _shared(_rtttl_library)  # та же, что у сета: открывается один раз
         self._melodies = melodies or library_melodies(library)
         self._seed = seed
         self._confirm = confirm
@@ -545,6 +548,13 @@ class RequestMusicTool(MCPTool):
                                   classic or classic_picker(library), history,
                                   chooser=chooser_from_env(log=self._log), log=self._log)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
+
+    def warm(self) -> threading.Thread:
+        """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
+        индекс партитур, каталог RTTTL, история — до первого заказа, старт ноды не ждёт."""
+        thread = threading.Thread(target=self._pieces.warm, name="rbx-piece-warm", daemon=True)
+        thread.start()
+        return thread
 
     @property
     def name(self) -> str:

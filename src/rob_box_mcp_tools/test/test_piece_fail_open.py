@@ -42,7 +42,7 @@ class Scores:
     def search(self, query, limit=8):
         return tuple(self.materials)
 
-    def work_candidates(self, ref, limit=8):
+    def work_candidates(self, ref, limit=8, hooks=()):
         """Все материалы — партитуры произведения (как их нашёл бы индекс по словам названия)."""
         return [WorkCandidate(mid, SCORE, m.title, m.composer, ref.title_match(m.title, len(ref.title)),
                               1.0 if ref.composer else 0.0, 1.0) for mid, m in self.materials.items()][:limit]
@@ -107,7 +107,7 @@ def test_toccata_with_eight_refused_scores_plays_the_rtttl_of_the_work():
     assert data["melody_id"] == "toccata" and data["played"]["source"] == "rtttl"
     assert data["played"]["scores_failed"] == 8 and data["played"]["replacement_for"] is None
     assert asked == ["токкату"]
-    assert data["message"] == "Ставлю «Toccata», Bach — мелодией, нот для полной аранжировки нет."
+    assert data["message"] == "Ставлю «Toccata», Бах — мелодией, нот для полной аранжировки нет."
     rig.clock.run_until(rig.clock.beat + 2)
     assert [e["track_id"] for e in _started(rig)] == [data["track_id"]]
 
@@ -182,7 +182,7 @@ def test_nothing_of_the_work_plays_the_nearest_by_words_and_says_so():
     data = req.execute(intent="melody", text="сыграй токкату баха").data
     assert data["ok"] and data["melody_id"] == "brandenb"
     assert data["played"]["replacement_for"] == "токкату баха"
-    assert data["message"] == "«Токкату баха» не нашёл. Ставлю ближайшее: «Brandenburg Concerto», Bach."
+    assert data["message"] == "«Токкату баха» не нашёл. Ставлю ближайшее: «Brandenburg Concerto», Бах."
 
 
 def test_old_whole_name_search_still_plays_before_the_nearest():
@@ -202,7 +202,7 @@ def test_the_voice_says_the_phrase_built_from_the_tool_result():
     rig = _rig()
     data = _tools(rig, hooks=("toccata",), table=TOCCATA).execute(intent="melody", text="сыграй токкату").data
     launch = Launch("request_music", {"intent": "melody", "text": "сыграй токкату"}, True, repr(data))
-    assert ok_text(launch) == data["message"] == "Ставлю «Toccata», Bach — мелодией, нот для полной аранжировки нет."
+    assert ok_text(launch) == data["message"] == "Ставлю «Toccata», Бах — мелодией, нот для полной аранжировки нет."
 
 
 def test_piece_phrase_names_what_plays_and_what_it_replaced():

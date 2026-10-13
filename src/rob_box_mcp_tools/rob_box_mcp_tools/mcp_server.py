@@ -271,8 +271,10 @@ def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
     node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
     # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
-    node.registry.register(RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
-                                            tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value)))
+    request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
+                               tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value))
+    node.registry.register(request)
+    request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
     owner.publish_state()
     node.get_logger().info(
         f"🎵 движок v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "

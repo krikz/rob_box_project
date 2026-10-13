@@ -61,7 +61,7 @@ INSTRUCTIONS = (f"Выбери, что сыграть роботу. У канд�
                 f"видишь, что другой кандидат лучше подходит к заказу. Выбери один id.")
 #: Подписи очков кода для модели (ключи ``CHOOSER_WEIGHTS``).
 _POINTS = {"title_match": "название", "composer_match": "композитор", "fit": "подходит",
-           "rating": "рейтинг", "recent": "повтор"}
+           "rating": "рейтинг", "recent": "повтор", "known": "известное", "long": "длинная форма"}
 
 
 class ModelUnavailable(Exception):

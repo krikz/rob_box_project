@@ -3,7 +3,8 @@
 # Каждая строка — реплика человека дословно (как пришла из STT/Telegram, с опечатками) и что код должен из неё
 # выделить: mode (piece | set | stop | theme_switch | none), work (composer / title / key — латиницей, как в каталоге),
 # instrument (ключ knowledge.INSTRUMENTS), style (ключ knowledge.STYLES). top — чем должен быть первый кандидат выбора
-# по каталогу RTTTL: подстроки названия/автора (title_has / artist_has) и чего в нём быть не должно (not_title).
+# по каталогу RTTTL: подстроки названия/автора (title_has / artist_has) и чего в нём быть не должно (not_title);
+# known: true — узнаваемое произведение (#3577: признак ``known`` не ниже ``music_eval.KNOWN_MIN``; запись RTTTL — хук).
 # needs_shifu: true — разметку по ADR/логам однозначно поставить нельзя, решает товарищ Шифу.
 # context: set_running — реплика имеет смысл только посреди сета (офлайн-грамматикой без состояния не проверяется).
 # known_gap — разметка верна, а код сегодня с ней расходится (известная дыра, тест требует, чтобы расхождение было
@@ -82,8 +83,16 @@ requests:
   - {id: pr3-toccata, source: pr3, text: "Робот, сыграй Токкату ре минор", mode: piece,
      work: {title: toccata, key: D minor}, top: {title_has: toccata, not_title: minority}}
   - {id: pr3-bach, source: pr3, text: "Робот, сыграй Баха", mode: piece, work: {composer: bach},
-     top: {artist_has: bach, not_title: mundian}}
+     top: {artist_has: bach, not_title: mundian, known: true}}
   - {id: pr3-mozart, source: pr3, text: "Робот, сыграй что-нибудь Моцарта", mode: piece, work: {composer: mozart},
-     top: {artist_has: mozart}}
+     top: {artist_has: mozart, known: true}}
   - {id: pr3-beethoven, source: pr3, text: "Робот, сыграй Бетховена на пианино", mode: piece, instrument: piano,
-     work: {composer: beethoven}, top: {has: beethoven}}
+     work: {composer: beethoven}, top: {has: beethoven, known: true}}
+
+  # ── #3577: заказ по композитору — узнаваемое; по жанровому названию — любое с этим названием (Шифу 13.10) ──
+  - {id: i3577-mozart, source: "issue#3577", text: "Робот, сыграй Моцарта", mode: piece, work: {composer: mozart},
+     top: {artist_has: mozart, known: true}}
+  - {id: i3577-beethoven, source: "issue#3577", text: "Робот, сыграй Бетховена", mode: piece,
+     work: {composer: beethoven}, top: {has: beethoven, known: true}}
+  - {id: i3577-toccata, source: "issue#3577", text: "Робот, сыграй Токкату", mode: piece, work: {title: toccata},
+     top: {title_has: toccata}}
