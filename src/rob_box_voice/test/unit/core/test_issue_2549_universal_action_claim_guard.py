@@ -732,7 +732,7 @@ class TestExtendedVerbsCoverage(unittest.TestCase):
 
         hit = detect_universal_action_claim(
             spoken="Установил пресет джангла.",
-            tools_called=("gen_play_from_library",),
+            tools_called=("music_library",),
         )
         self.assertIsNone(hit)
 

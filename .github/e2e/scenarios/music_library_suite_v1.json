@@ -16,7 +16,7 @@
       "voice": "anton",
       "text": "Робот, что у тебя в музыкальной библиотеке?",
       "patterns": [
-        "gen_list_library"
+        "music_library"
       ]
     },
     {
@@ -24,7 +24,7 @@
       "voice": "anton",
       "text": "Робот, найди трек про дождь.",
       "patterns": [
-        "gen_search_library"
+        "music_library"
       ]
     },
     {
@@ -32,7 +32,7 @@
       "voice": "anton",
       "text": "Робот, сохрани этот трек для Ивана.",
       "patterns": [
-        "gen_save_to_library"
+        "music_library"
       ]
     },
     {
@@ -40,8 +40,7 @@
       "voice": "anton",
       "text": "Робот, удали последний трек из библиотеки.",
       "patterns": [
-        "gen_list_library",
-        "gen_delete_from_library"
+        "music_library"
       ]
     },
     {
@@ -49,7 +48,7 @@
       "voice": "anton",
       "text": "Робот, расскажи, что это за трек.",
       "patterns": [
-        "gen_get_track_info"
+        "music_library"
       ]
     },
     {

@@ -34,7 +34,7 @@ from e2e_tool_match import tool_invoked  # noqa: E402
 TOOLS_CATALOG = (
     "[dialogue_node-4]   tools(56): clear_waypoints, compose_music, "
     "continue_mapping, delete_track, delete_waypoint, estimate_tts_duration, "
-    "request_music, faq_search, finish_mapping, gen_delete_from_library, "
+    "request_music, faq_search, finish_mapping, music_library, "
     "get_battery_level, get_current_time, get_music_state, move_direction, "
     "play_animation, play_sound, register_speaker, save_track, set_dj_mode, "
     "set_voice, set_volume, speak_text, start_mapping, stop_music, "
@@ -140,7 +140,7 @@ class TestEdges:
         assert tool_invoked(TURN_WITH_CALL, "  get_current_time  ") is True
 
     def test_substring_tool_names_do_not_bleed(self):
-        # 'save_track' не должен срабатывать от 'gen_save_to_library' и наоборот.
-        log = "tools=['gen_save_to_library']"
-        assert tool_invoked(log, "gen_save_to_library") is True
+        # 'save_track' не должен срабатывать от 'music_library' и наоборот.
+        log = "tools=['music_library']"
+        assert tool_invoked(log, "music_library") is True
         assert tool_invoked(log, "save_track") is False

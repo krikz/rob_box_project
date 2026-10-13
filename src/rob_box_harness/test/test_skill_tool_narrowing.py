@@ -221,8 +221,8 @@ def test_model_can_reach_another_domain_via_load_skill() -> None:
     assert result.error is None
     first = set(provider.offered[0])
     second = set(provider.offered[1])
-    assert "gen_play_from_library" not in first, "изначально плеера быть не должно"
-    assert "gen_play_from_library" in second, "после load_skill плеер обязан появиться"
+    assert "music_library" not in first, "изначально плеера быть не должно"
+    assert "music_library" in second, "после load_skill плеер обязан появиться"
 
 
 def test_load_skill_is_always_offered_even_when_narrowed() -> None:

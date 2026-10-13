@@ -6403,7 +6403,7 @@ tentative_plan(question, kind, name)
         # Mirrors agent_core._MUSIC_LAUNCH_TOOLS — keep the two lists
         # in sync if a new music tool is added to the manifest.
         _music_tool_names = {
-            "generate_music", "gen_play_from_library",
+            "generate_music", "music_library",
         }
         _has_music_tool = any(
             name in _music_tool_names for name in tools_called

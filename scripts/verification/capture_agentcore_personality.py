@@ -33,7 +33,7 @@ MASTER_PROMPT = VOICE_PROMPTS / "master_prompt_compact.txt"
 SKILLS_DIR = VOICE_PROMPTS / "skills"
 
 _COMPOSER_TEXT = "СКИЛЛ КОМПОЗИТОРА: вызывай compose_music, не описывай словами."
-_PLAYER_TEXT = "СКИЛЛ ПЛЕЕРА: gen_list_library потом gen_play_from_library."
+_PLAYER_TEXT = "СКИЛЛ ПЛЕЕРА: music_library потом music_library."
 # Real fragments when present, else the two literals above (keeps script runnable
 # even when rob_box_voice sources are not installed).
 _SKILL_FRAGMENTS: dict[str, str] = {

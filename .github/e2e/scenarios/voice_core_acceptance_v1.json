@@ -15,7 +15,7 @@
     "  промыть backlog в LLM (лог 'flushed to LLM'). Backlog-аккумулятор —",
     "  unit/integration покрыт в test_speech_backlog_accumulator.py.",
     "ИСКЛЮЧЕНО: generate_music (MiniMax Music API недоступен),",
-    "  gen_delete_from_library, gen_play_from_library, register_speaker."
+    "  music_library, register_speaker."
   ],
   "expected_tool_calls": [
     "set_voice",

@@ -27,7 +27,7 @@ from rob_box_harness.tools import FakeToolProvider
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse
 
 _COMPOSER_TEXT = "СКИЛЛ КОМПОЗИТОРА: вызывай compose_music, не описывай словами."
-_PLAYER_TEXT = "СКИЛЛ ПЛЕЕРА: gen_list_library потом gen_play_from_library."
+_PLAYER_TEXT = "СКИЛЛ ПЛЕЕРА: music_library потом music_library."
 
 
 class _CapturingProvider:

@@ -119,25 +119,18 @@ from .tools import (
     SayTool,
 )
 
-# Issue #1392 / ADR-0158 — library of generated tracks (cache) + gen_* tools.
+# Issue #1392 / ADR-0158 — library of generated tracks (cache) + music_library tool.
 # Imported explicitly (not via wildcard) so the heavy ``tools.music``
 # dependency tree stays opt-in.
 try:
     from .engine.gen.library import GeneratedMusicLibrary
-    from .tools.gen_library import (
-        GenListLibraryTool,
-        GenSearchLibraryTool,
-        GenSaveToLibraryTool,
-        GenPlayFromLibraryTool,
-        GenDeleteFromLibraryTool,
-        GenGetTrackInfoTool,
-    )
+    from .engine.gen.library_play import play_library_track
+    from .engine.gen.quota import MIB, enforce_quota
+    from .tools.gen_library import MusicLibraryTool
     _GEN_LIBRARY_AVAILABLE = True
 except ImportError as _exc:  # noqa: BLE001
     GeneratedMusicLibrary = None  # type: ignore[assignment,misc]
-    GenListLibraryTool = GenSearchLibraryTool = None  # type: ignore[assignment,misc]
-    GenSaveToLibraryTool = GenPlayFromLibraryTool = None  # type: ignore[assignment,misc]
-    GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
+    MusicLibraryTool = play_library_track = enforce_quota = MIB = None  # type: ignore[assignment,misc]
     _GEN_LIBRARY_AVAILABLE = False
     _GEN_LIBRARY_IMPORT_ERROR = str(_exc)
 from .mcp_auth import RequestAuthenticator
@@ -250,8 +243,22 @@ def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
         return None
     return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
                       lambda: current_voice(_tts_provider(node), getattr(node, "_voice_store", None)),
-                      play=lambda track_id: node.registry.execute("gen_play_from_library", track_id=track_id),
+                      play=_play_cached(node),
                       speak=_speaker(node), started=lambda track_id: events.wait(track_id, STARTED_WAIT_S), log=node.get_logger)
+
+
+def _play_cached(node: Any) -> Any:
+    """Шов «сыграть трек кэша» для внутренних исполнителей (путь, песня, кавер, сет; ADR-0158 PR-9): функция
+    ``play_library_track`` на кэше ноды, а не тул по реестру. Кэш поднимается позже движка — читаем лениво."""
+    def play(track_id: str) -> Any:
+        library = getattr(node, "_generated_music_library", None)
+        if library is None:
+            from .base import MCPToolResult
+
+            return MCPToolResult(success=False, error="библиотека генераций недоступна — трек не заиграл")
+        return play_library_track(node, library, track_id)
+
+    return play
 
 
 def _cover_maker(node: Any) -> Any:
@@ -300,7 +307,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     def confirm(track_id: Optional[str]) -> Any:
         return events.wait(track_id, V2_STARTED_WAIT_S)
 
-    node._music_confirm = confirm  # gen_play_from_library: трек кэша на деке, ok — по started (ADR-0158 PR-2)
+    node._music_confirm = confirm  # play_library_track: трек кэша на деке, ok — по started (ADR-0158 PR-2)
 
     history = MusicHistory()  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
     history.announce(node.get_logger())
@@ -318,10 +325,9 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                chooser_mode=str(node.get_parameter("music_chooser").value),
                                slots_ask=harness_ask(log=node.get_logger),  # #3609: LLM-разбор фразы в слоты
                                # ADR-0158 PR-3: кэш генераций поднимается позже (_register_gen_library_tools) —
-                               # читаем лениво; трек кэша играет gen_play_from_library на деке (PR-2)
+                               # читаем лениво; трек кэша играет play_library_track на деке (PR-2)
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
-                               play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
-                                                                                  track_id=track_id),
+                               play_cached=_play_cached(node),
                                cover=cover, speak=_speaker(node),  # PR-4: кавер пьесы
                                songs=_song_studio(node, events))  # PR-7: песня голосом робота
     node.registry.register(request)
@@ -1004,7 +1010,7 @@ class MCPServer(Node):
 
         # Issue #1392 / ADR-0158 — библиотека сгенерированных треков (кэш).
         # Graceful degradation: любой сбой (нет /data, ImportError) выключает
-        # только gen_* тулы — Renardo-тулы продолжают работать.
+        # только music_library — Renardo-тулы продолжают работать.
         self._register_gen_library_tools()
 
     # ------------------------------------------------------------------
@@ -1012,41 +1018,32 @@ class MCPServer(Node):
     # ------------------------------------------------------------------
 
     def _register_gen_library_tools(self) -> None:
-        """Регистрирует 6 gen_* библиотечных тулзов (graceful degradation).
-
-        Tools registered on success:
-            gen_list_library, gen_search_library, gen_save_to_library,
-            gen_play_from_library, gen_delete_from_library, gen_get_track_info
+        """Регистрирует ``music_library`` — один узкий тул над кэшем генераций (graceful degradation).
 
         Новый узкий ``generate_music`` (ADR-0158 PR-3) регистрируется рядом с
         ``request_music`` в ``_attach_player_owner_v2``: он просьба к чойсеру пути.
 
-        Failure modes (each disables only the gen_* tools, Renardo keeps working):
+        Failure modes (each disables only music_library, Renardo keeps working):
             * Module import failed                              → log + return
             * /data volume not writable (GeneratedMusicLibrary) → log + skip
         """
         if not _GEN_LIBRARY_AVAILABLE:
             self.get_logger().warning(
-                f"⚠️ gen_* library tools disabled: import failed "
+                f"⚠️ music_library tool disabled: import failed "
                 f"({_GEN_LIBRARY_IMPORT_ERROR})"
             )
             return
 
         # Type-narrow for Pyright: _GEN_LIBRARY_AVAILABLE gates the rest.
         assert GeneratedMusicLibrary is not None
-        assert GenListLibraryTool is not None
-        assert GenSearchLibraryTool is not None
-        assert GenSaveToLibraryTool is not None
-        assert GenPlayFromLibraryTool is not None
-        assert GenDeleteFromLibraryTool is not None
-        assert GenGetTrackInfoTool is not None
+        assert MusicLibraryTool is not None
 
         try:
             music_library = GeneratedMusicLibrary()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Generated music library disabled: init failed ({exc}). "
-                "gen_* tools will NOT be registered."
+                "music_library will NOT be registered."
             )
             return
         self._generated_music_library = music_library
@@ -1055,12 +1052,10 @@ class MCPServer(Node):
             f"в {music_library.root_dir}"
         )
 
-        self.registry.register(GenListLibraryTool(self, music_library))
-        self.registry.register(GenSearchLibraryTool(self, music_library))
-        self.registry.register(GenSaveToLibraryTool(self, music_library))
-        self.registry.register(GenDeleteFromLibraryTool(self, music_library))
-        self.registry.register(GenGetTrackInfoTool(self, music_library))
-        self.registry.register(GenPlayFromLibraryTool(self, music_library))
+        self.registry.register(MusicLibraryTool(self, music_library))
+        quota = enforce_quota(music_library)  # ADR-0158 PR-9: квота диска проверяется и на старте
+        self.get_logger().info(f"🎼 Квота кэша: занято {quota['used'] // MIB} МиБ из {quota['quota'] // MIB}, "
+                               f"вычищено {len(quota['removed'])}")
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках.

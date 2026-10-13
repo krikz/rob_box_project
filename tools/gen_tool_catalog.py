@@ -443,12 +443,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     ),
     "player": (
         "generate_music",
-        "gen_list_library",
-        "gen_play_from_library",
-        "gen_search_library",
-        "gen_get_track_info",
-        "gen_save_to_library",
-        "gen_delete_from_library",
+        "music_library",
         "stop_music",
     ),
     "navigation": (

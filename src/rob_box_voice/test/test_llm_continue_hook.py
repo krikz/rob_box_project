@@ -151,12 +151,12 @@ class TestAutoTriggerFires:
             started = asyncio.Event()
             gate0 = asyncio.Event()
             sched.submit(SchedulerTask(
-                task_id="g1-0", tool="gen_play_from_library", channel=ChannelKind.MUSIC,
+                task_id="g1-0", tool="music_library", channel=ChannelKind.MUSIC,
                 executor=_started_then_gated_executor(started, gate0),
                 group_id="g1", seg_idx=0,
             ))
             sched.submit(SchedulerTask(
-                task_id="g1-1", tool="gen_play_from_library", channel=ChannelKind.MUSIC,
+                task_id="g1-1", tool="music_library", channel=ChannelKind.MUSIC,
                 executor=_echo_executor(), group_id="g1", seg_idx=1,
             ))
             await asyncio.wait_for(started.wait(), timeout=1.0)

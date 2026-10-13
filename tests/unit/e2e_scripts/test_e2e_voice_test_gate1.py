@@ -255,23 +255,23 @@ class TestGate1Validator:
         1 раз за прогон. Это контракт ADR-0022 GATE-1 для multi-tool фич
         (например, PR #1398: 7 MCP tools, ВСЕ должны быть вызваны)."""
         acc = {
-            "expected_tool_calls": ["generate_music", "gen_list_library"],
+            "expected_tool_calls": ["generate_music", "music_library"],
             "must_not_call": [],
         }
-        # Только generate_music вызван → FAIL (gen_list_library ожидался)
+        # Только generate_music вызван → FAIL (music_library ожидался)
         logs_partial = "Calling MCP tool: generate_music"
         result = gate1_validate(acc, logs_partial)
         assert result["pass"] is False
-        assert "gen_list_library" in result["missing_expected_calls"]
+        assert "music_library" in result["missing_expected_calls"]
 
         # Оба вызваны → PASS
         logs_full = (
             "Calling MCP tool: generate_music\n"
-            "Calling MCP tool: gen_list_library\n"
+            "Calling MCP tool: music_library\n"
         )
         result = gate1_validate(acc, logs_full)
         assert result["pass"] is True
-        assert result["found_expected_calls"] == ["generate_music", "gen_list_library"]
+        assert result["found_expected_calls"] == ["generate_music", "music_library"]
         assert result["missing_expected_calls"] == []
 
 

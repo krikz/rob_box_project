@@ -38,7 +38,7 @@
 - id: player-library
   say: "робот включи трек из библиотеки"
   domain: player
-  tools_any: [gen_list_library, gen_search_library, gen_play_from_library]
+  tools_any: [music_library]
   note: |
     Два конфликтующих словаря «трек»: mp3-библиотека (gen_*) и синтез
     Renardo. Просьба про библиотеку не должна уходить в синтез.
@@ -46,7 +46,7 @@
 - id: player-random
   say: "робот поставь случайный трек"
   domain: player
-  tools_any: [gen_list_library, gen_play_from_library]
+  tools_any: [music_library]
   note: "«Случайный» = любой track_id из библиотеки, а не отказ."
 
 - id: dj-start

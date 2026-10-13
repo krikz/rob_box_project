@@ -30,7 +30,7 @@ from rob_box_harness.tools import FakeToolProvider
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, ToolCall
 
 _COMPOSER = "СКИЛЛ КОМПОЗИТОРА: зови compose_music."
-_PLAYER = "СКИЛЛ ПЛЕЕРА: зови gen_list_library."
+_PLAYER = "СКИЛЛ ПЛЕЕРА: зови music_library."
 _PROMPTS = {"composer": _COMPOSER, "player": _PLAYER}
 
 

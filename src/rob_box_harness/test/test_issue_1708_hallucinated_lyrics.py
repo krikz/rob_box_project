@@ -1,6 +1,6 @@
 """test_issue_1708_hallucinated_lyrics.py — Issue #1708 hallucinated-lyrics guard.
 
-Issue #1708 — after ``gen_play_from_library`` the LLM sometimes also calls
+Issue #1708 — after ``music_library`` the LLM sometimes also calls
 ``speak_text`` with invented lyrics («Нига-стайл, Колобок-флоу,
 уехал я, братан, в тёмны...»). The user hears a robotic voice reading
 hallucinated text on top of (or instead of) the beat.
@@ -330,7 +330,7 @@ class TestIsHallucinatedSpeakText:
         call = ToolCall(id="t1", name="stop_music", arguments={})
         assert agent_core._is_hallucinated_speak_text(
             call=call,
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй бит",
         ) is False
 
@@ -343,11 +343,11 @@ class TestIsHallucinatedSpeakText:
         ) is False
 
     def test_vocal_request_never_hallucinated(self) -> None:
-        # Backing mode: gen_play_from_library + speak_text × N is legal
+        # Backing mode: music_library + speak_text × N is legal
         # on a vocal request («спой куплет»).
         assert agent_core._is_hallucinated_speak_text(
             call=self._call("куплет про колобка длинный текст" * 5),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="спой куплет про колобка",
         ) is False
 
@@ -355,7 +355,7 @@ class TestIsHallucinatedSpeakText:
         # Master prompt allows ONE short accept phrase. Keep it.
         assert agent_core._is_hallucinated_speak_text(
             call=self._call("Ок, играю Бах"),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй баха",
         ) is False
 
@@ -368,7 +368,7 @@ class TestIsHallucinatedSpeakText:
             call=self._call(
                 "Нига-стайл, Колобок-флоу, уехал я, братан, в тёмны..."
             ),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй бит в нига стайле про колобка",
         ) is True
 
@@ -380,7 +380,7 @@ class TestIsHallucinatedSpeakText:
             call=self._call(
                 "Куплет про колобка длинный текст" * 3
             ),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="спой куплет про колобка",
         ) is False
 
@@ -390,13 +390,13 @@ class TestIsHallucinatedSpeakText:
         # signal from the downstream anti-duplicate path.
         assert agent_core._is_hallucinated_speak_text(
             call=self._call(""),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй бит",
         ) is False
 
     def test_speak_text_before_music_in_batch_is_hallucination(self) -> None:
         # The exact issue #1708 live shape: LLM calls ``speak_text``
-        # FIRST (the "title" pattern) THEN ``gen_play_from_library``.
+        # FIRST (the "title" pattern) THEN ``music_library``.
         # The order inside the batch doesn't matter for the guard —
         # what matters is that BOTH are in the same batch on a
         # non-vocal request.
@@ -404,7 +404,7 @@ class TestIsHallucinatedSpeakText:
             call=self._call(
                 "Нига-стайл, Колобок-флоу, уехал я, братан, в тёмны..."
             ),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй бит про колобка в нига стайле",
         ) is True
 
@@ -413,14 +413,14 @@ class TestIsHallucinatedSpeakText:
         long_text = "a" * 41
         assert agent_core._is_hallucinated_speak_text(
             call=self._call(long_text),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй бит",
         ) is True
         # 40 chars exactly = legitimate accept.
         short_text = "a" * 40
         assert agent_core._is_hallucinated_speak_text(
             call=self._call(short_text),
-            same_batch_music_calls=frozenset({"gen_play_from_library"}),
+            same_batch_music_calls=frozenset({"music_library"}),
             user_input="сыграй бит",
         ) is False
 
@@ -491,7 +491,7 @@ def _build_music_manifest() -> tuple[Any, ...]:
 
     return (
         ToolSpec(
-            name="gen_play_from_library",
+            name="music_library",
             description="Сыграть Renardo / SuperCollider code.",
             parameters={
                 "type": "object",
@@ -523,7 +523,7 @@ class TestIssue1708GuardIntegration:
     """End-to-end coverage of the agent_core guard."""
 
     def test_hallucinated_lyrics_are_suppressed(self) -> None:
-        """The exact live bug: gen_play_from_library + speak_text(lyrics).
+        """The exact live bug: music_library + speak_text(lyrics).
 
         Verifies:
 
@@ -537,7 +537,7 @@ class TestIssue1708GuardIntegration:
           (verified via ``llm.messages_seen[1]``).
         """
         # Three LLM cycles:
-        # 1. gen_play_from_library + speak_text(lyrics) → guard suppresses speak_text
+        # 1. music_library + speak_text(lyrics) → guard suppresses speak_text
         # 2. LLM sees the sentinel, returns plain "done"
         #
         # User request is NON-vocal (instrumental): «сыграй бит в нига
@@ -551,7 +551,7 @@ class TestIssue1708GuardIntegration:
                 tool_calls=(
                     ToolCall(
                         id="m1",
-                        name="gen_play_from_library",
+                        name="music_library",
                         arguments={
                             "code": "p1 >> blip([0,2,4], dur=0.5)",
                             "segments": 96,
@@ -587,7 +587,7 @@ class TestIssue1708GuardIntegration:
             scripted,
             manifest=_build_music_manifest(),
             handler_map={
-                "gen_play_from_library": music_handler,
+                "music_library": music_handler,
                 "speak_text": speak_handler,
             },
             fail_on_execute_names={"speak_text"},
@@ -597,12 +597,12 @@ class TestIssue1708GuardIntegration:
 
         # Music tool ran (it's allowed).
         executed_names = [c.name for c in tools.executed]
-        assert executed_names == ["gen_play_from_library"], (
+        assert executed_names == ["music_library"], (
             f"only music tool should run; got {executed_names!r}"
         )
 
         # tools_called includes speak_text (for diagnostic visibility).
-        assert "gen_play_from_library" in result.tools_called
+        assert "music_library" in result.tools_called
         assert "speak_text" in result.tools_called
 
         # speak_text_real_count is 0 — the suppression decremented it.
@@ -626,7 +626,7 @@ class TestIssue1708GuardIntegration:
         assert "speak_text подавлен" in suppressed_msg.content
 
     def test_vocal_request_allows_backing_lyrics(self) -> None:
-        """Vocal request: gen_play_from_library + speak_text × N must run.
+        """Vocal request: music_library + speak_text × N must run.
 
         Regression net for the live issue #1708 user prompt «спой
         песенку про колобка в нига стайле» (with the wake-word prefix
@@ -643,7 +643,7 @@ class TestIssue1708GuardIntegration:
                 tool_calls=(
                     ToolCall(
                         id="m1",
-                        name="gen_play_from_library",
+                        name="music_library",
                         arguments={
                             "code": "p1 >> pads([0,2,4], dur=1)",
                             "segments": 32,
@@ -688,7 +688,7 @@ class TestIssue1708GuardIntegration:
             scripted,
             manifest=_build_music_manifest(),
             handler_map={
-                "gen_play_from_library": handler,
+                "music_library": handler,
                 "speak_text": handler,
             },
         )
@@ -697,7 +697,7 @@ class TestIssue1708GuardIntegration:
 
         executed_names = [c.name for c in tools.executed]
         # 1 music + 2 speak_text = 3 real executions.
-        assert executed_names.count("gen_play_from_library") == 1
+        assert executed_names.count("music_library") == 1
         assert executed_names.count("speak_text") == 2
         assert result.speak_text_real_count == 2, (
             f"backing mode must count BOTH speak_text calls; got "
@@ -708,7 +708,7 @@ class TestIssue1708GuardIntegration:
         """Master-prompt §5: ONE short accept phrase after music is OK.
 
         Regression net for
-        ``test_issue_992_batch_cleanup.py::test_track_gen_play_from_library_single_accept_no_cleanup``.
+        ``test_issue_992_batch_cleanup.py::test_track_music_library_single_accept_no_cleanup``.
         """
         scripted = [
             LLMResponse(
@@ -716,7 +716,7 @@ class TestIssue1708GuardIntegration:
                 tool_calls=(
                     ToolCall(
                         id="m1",
-                        name="gen_play_from_library",
+                        name="music_library",
                         arguments={
                             "code": "p1 >> pads([0,2,4], dur=1)",
                             "segments": 96,
@@ -746,7 +746,7 @@ class TestIssue1708GuardIntegration:
             scripted,
             manifest=_build_music_manifest(),
             handler_map={
-                "gen_play_from_library": handler,
+                "music_library": handler,
                 "speak_text": handler,
             },
         )
@@ -754,7 +754,7 @@ class TestIssue1708GuardIntegration:
         result = _run(core, "сыграй баха")
 
         executed_names = [c.name for c in tools.executed]
-        assert executed_names.count("gen_play_from_library") == 1
+        assert executed_names.count("music_library") == 1
         assert executed_names.count("speak_text") == 1, (
             f"short accept after music must execute; got {executed_names!r}"
         )
@@ -902,7 +902,7 @@ class TestIssue2955SystemContextDoesNotLeakIntoGuard:
                 tool_calls=(
                     ToolCall(
                         id="m1",
-                        name="gen_play_from_library",
+                        name="music_library",
                         arguments={
                             "code": "p1 >> blip([0,2,4], dur=0.5)",
                             "segments": 96,
@@ -937,7 +937,7 @@ class TestIssue2955SystemContextDoesNotLeakIntoGuard:
             scripted,
             manifest=_build_music_manifest(),
             handler_map={
-                "gen_play_from_library": music_handler,
+                "music_library": music_handler,
                 "speak_text": speak_handler,
             },
             fail_on_execute_names={"speak_text"},
@@ -950,7 +950,7 @@ class TestIssue2955SystemContextDoesNotLeakIntoGuard:
         )
 
         executed_names = [c.name for c in tools.executed]
-        assert executed_names == ["gen_play_from_library"], (
+        assert executed_names == ["music_library"], (
             f"only music tool should run; speak_text must stay suppressed "
             f"despite the system_context vocal word; got {executed_names!r}"
         )

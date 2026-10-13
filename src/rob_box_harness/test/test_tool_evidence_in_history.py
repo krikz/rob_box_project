@@ -274,7 +274,7 @@ class TestPseudoToolCall:
         "text",
         [
             "<compose_music composition here>",
-            "  <gen_play_from_library code here>  ",
+            "  <music_library code here>  ",
             "<tool_call>",
         ],
     )

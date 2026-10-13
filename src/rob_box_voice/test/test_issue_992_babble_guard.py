@@ -212,7 +212,7 @@ class TestBabbleRetryE2E(unittest.TestCase):
 
         The retry's final-answer content is intentionally NOT pinned
         here — the scripted second response is plain text without
-        ``gen_play_from_library``, so the music-guard (Bug C) will then
+        ``music_library``, so the music-guard (Bug C) will then
         speak a recovery nudge. End-to-end coverage of the user's
         audio path is provided by ``test_issue_992_dj_mode.py`` with
         a real tool-call scripted response; this test focuses on the
@@ -223,17 +223,17 @@ class TestBabbleRetryE2E(unittest.TestCase):
 
         # First call: babble (no speak_text). Second call: clean
         # plain-text answer (would pass the babble detector, but the
-        # music-guard catches it because no gen_play_from_library).
+        # music-guard catches it because no music_library).
         llm = _ScriptedLLMProvider([
             LLMResponse(content="Зачитаю рэпчик про космос!", finish_reason="stop"),
             LLMResponse(content="Ракета мчится через тьму и пустоту!", finish_reason="stop"),
         ])
-        # Register a no-op gen_play_from_library so the babble-retry
+        # Register a no-op music_library so the babble-retry
         # prompt's mention of the tool doesn't surprise the harness.
         tools = FakeToolProvider()
         tools.register(
             ToolSpec(
-                name="gen_play_from_library",
+                name="music_library",
                 description="Сыграть Renardo / SuperCollider code.",
                 parameters={"type": "object", "properties": {"code": {"type": "string"}}},
             ),

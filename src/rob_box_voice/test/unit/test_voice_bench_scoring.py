@@ -52,7 +52,7 @@ _CASE = {
     "id": "composer-beat",
     "domain": "composer",
     "tools_any": ["request_music", "compose_music"],
-    "tools_none": ["gen_play_from_library"],
+    "tools_none": ["music_library"],
 }
 
 
@@ -104,7 +104,7 @@ def test_wrong_tool_scores_between_nothing_and_right() -> None:
 
 
 def test_forbidden_tool_costs_half_of_its_criterion() -> None:
-    result = score_turn(_CASE, _turn(tools=["request_music", "gen_play_from_library"]))
+    result = score_turn(_CASE, _turn(tools=["request_music", "music_library"]))
     assert result.score == pytest.approx(1.0 - WEIGHTS["prohibitions"] * 0.5)
 
 
@@ -166,7 +166,7 @@ def test_pass_hat_k_requires_every_repeat_to_pass() -> None:
 
 
 def test_pass_hat_k_counts_cases_not_turns() -> None:
-    other = dict(_CASE, id="player-library", tools_any=["gen_list_library"])
+    other = dict(_CASE, id="player-library", tools_any=["music_library"])
     results = [
         score_turn(_CASE, _turn(repeat=1)),
         score_turn(_CASE, _turn(repeat=2)),

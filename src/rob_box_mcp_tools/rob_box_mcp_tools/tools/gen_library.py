@@ -1,388 +1,43 @@
 #!/usr/bin/env python3
 """
-gen_library.py — MCP-тулы библиотеки сгенерированной музыки (кэш, ADR-0158).
+gen_library.py — один узкий тул ``music_library`` над кэшем сгенерированной музыки (ADR-0158 §2.5, PR-9).
 
-Шесть тулов поверх ``engine.gen.library.GeneratedMusicLibrary``:
+Шесть тулов ``gen_*`` (list / search / save / play / delete / get_track_info) свёрнуты в один:
+``music_library(action: enum, …)``. Действия — закрытый список; фразы об итоге строит код
+(``media_phrases.library_*_text``, ADR-0148), а не модель.
 
-  gen_list_library        — список (recent/popular/rating)
-  gen_search_library      — подстрочный поиск по title/prompt/lyrics
-  gen_save_to_library     — дописать метаданные уже сохранённому треку
-  gen_play_from_library   — трек кэша на деке движка (PlayerOwner, ADR-0158 PR-2)
-  gen_delete_from_library — удалить трек из SQLite и с диска
-  gen_get_track_info      — метаданные одного трека
+  list    — что есть в библиотеке (recent / popular / rating)
+  search  — подстрочный поиск по title / prompt / lyrics / genre / mood / notes
+  info    — метаданные одного трека
+  play    — трек кэша на деке движка (``engine.gen.library_play``, ADR-0158 PR-2)
+  rate    — «нравится» / «не нравится»: рейтинг в БД; без ``track_id`` — играющий сейчас или последний
+  update  — title / tags / mood / genre / notes
+  delete  — удалить трек (SQLite + каталог с mp3 и wav)
 
-Тул ``generate_music`` (MiniMax Music API, 410 Gone с 20.08.2026) удалён вместе
-с клиентом; новый узкий ``generate_music`` придёт с чойсером пути (ADR-0158 PR-3).
-Модуль держит ROS-импорты ленивыми — тулы тестируются без демона.
+Внутренние исполнители (кавер, песня, сет, путь) тул не зовут — они вызывают
+``engine.gen.library_play.play_library_track`` напрямую.
+Модуль держит ROS-импорты ленивыми — тул тестируется без демона.
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
-from typing import Any, Callable, List
+from typing import Any, Callable, Dict, List, Optional
+
+from rob_box_music import knowledge as kn
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from ..engine.gen.library import GeneratedMusicLibrary
+from ..engine.gen.library_play import play_library_track
+
+#: Действия, которым нужен ``track_id`` (rate берёт играющий / последний, если id не назван).
+_NEEDS_TRACK = ("info", "play", "update", "delete")
+_VERDICT_RATING = {"like": kn.RATING_LIKE, "dislike": kn.RATING_DISLIKE}
 
 
-# ── Shared parameter helpers ────────────────────────────────────────────────
-
-def _track_id_param() -> MCPToolParameter:
-    return MCPToolParameter(
-        name="track_id",
-        type="string",
-        description=(
-            "UUID трека в библиотеке (получи из gen_list_library / "
-            "gen_search_library). Пример: "
-            "'b7216742f61f44078e4a17f7acbed388'."
-        ),
-        required=True,
-    )
-
-
-# ── Tool 1: gen_list_library ────────────────────────────────────────────────
-
-class GenListLibraryTool(MCPTool):
-    """Показать список треков в библиотеке сгенерированной музыки."""
-
-    def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
-        super().__init__(node)
-        self._library = library
-
-    @property
-    def name(self) -> str:
-        return "gen_list_library"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Показать список треков из библиотеки сгенерированной музыки "
-            "(/data/music_library). Возвращает id, title, prompt, tags, "
-            "rating, play_count, created_at. Используй когда юзер спрашивает "
-            "«что у нас в библиотеке», «какие треки есть», «что ты раньше "
-            "генерировал»."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            MCPToolParameter(
-                name="limit", type="integer",
-                description="Максимум треков (default 20, max 100).",
-                required=False, default=20,
-            ),
-            MCPToolParameter(
-                name="sort_by", type="string",
-                description="Сортировка: 'recent' (default), 'popular', 'rating'.",
-                required=False, default="recent",
-                enum=["recent", "popular", "rating"],
-            ),
-            MCPToolParameter(
-                name="tag", type="string",
-                description="Фильтр по тегу (точное совпадение).",
-                required=False, default="",
-            ),
-            MCPToolParameter(
-                name="mood", type="string",
-                description="Фильтр по настроению (точное совпадение).",
-                required=False, default="",
-            ),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.FAST
-
-    @property
-    def read_only(self) -> bool:
-        return True
-
-    @property
-    def destructive(self) -> bool:
-        return False
-
-    @property
-    def idempotent(self) -> bool:
-        return True
-
-    def execute(
-        self,
-        limit: int = 20,
-        sort_by: str = "recent",
-        tag: str = "",
-        mood: str = "",
-        **_: Any,
-    ) -> MCPToolResult:
-        try:
-            limit_int = max(1, min(100, int(limit)))
-        except (TypeError, ValueError):
-            limit_int = 20
-
-        result = self._library.list_tracks(
-            limit=limit_int, sort_by=sort_by, tag=tag or None, mood=mood or None,
-        )
-        if not result.get("success"):
-            return MCPToolResult(success=False, error=result.get("error"))
-
-        return MCPToolResult(
-            success=True,
-            data={
-                "tracks": result["tracks"],
-                "total": result["total"],
-                "sort_by": sort_by,
-                "limit": limit_int,
-            },
-            message=f"В библиотеке {result['total']} трек(ов)",
-        )
-
-
-# ── Tool 2: gen_search_library ──────────────────────────────────────────────
-
-class GenSearchLibraryTool(MCPTool):
-    """Поиск по библиотеке сгенерированной музыки."""
-
-    def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
-        super().__init__(node)
-        self._library = library
-
-    @property
-    def name(self) -> str:
-        return "gen_search_library"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Искать треки в библиотеке сгенерированной музыки по ключевому "
-            "слову. Поиск по title/prompt/lyrics/genre/mood/notes. Используй "
-            "когда юзер говорит «найди трек про дождь», «сыграй тот грустный "
-            "трек», «есть что-то романтичное?»."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            MCPToolParameter(
-                name="query", type="string",
-                description="Поисковый запрос (1-200 chars).",
-                required=True,
-            ),
-            MCPToolParameter(
-                name="limit", type="integer",
-                description="Максимум результатов (default 5, max 20).",
-                required=False, default=5,
-            ),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.FAST
-
-    @property
-    def read_only(self) -> bool:
-        return True
-
-    @property
-    def idempotent(self) -> bool:
-        return True
-
-    def execute(self, query: str, limit: int = 5, **_: Any) -> MCPToolResult:
-        valid, err = self.validate_parameters(query=query)
-        if not valid:
-            return MCPToolResult(success=False, error=err)
-
-        try:
-            limit_int = max(1, min(20, int(limit)))
-        except (TypeError, ValueError):
-            limit_int = 5
-
-        result = self._library.search_tracks(query, limit=limit_int)
-        if not result.get("success"):
-            return MCPToolResult(success=False, error=result.get("error"))
-
-        return MCPToolResult(
-            success=True,
-            data={
-                "query": query,
-                "tracks": result["tracks"],
-                "total": result["total"],
-            },
-            message=(
-                f"По запросу «{query}» найдено {result['total']} трек(ов)"
-                if result["total"]
-                else f"По запросу «{query}» ничего не найдено"
-            ),
-        )
-
-
-# ── Tool 3: gen_save_to_library ─────────────────────────────────────────────
-
-class GenSaveToLibraryTool(MCPTool):
-    """Доукомплектовать метаданные для уже сгенерированного трека.
-
-    NOTE: основной сценарий — генерация (``engine.gen.pipeline``) уже пишет
-    трек в кэш. Этот tool нужен чтобы **обновить теги/notes/rating** для трека
-    после генерации (например, юзер сказал «поставь ему рейтинг 5 и тег
-    "любимый"»).
-    """
-
-    def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
-        super().__init__(node)
-        self._library = library
-
-    @property
-    def name(self) -> str:
-        return "gen_save_to_library"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Обновить метаданные (tags, rating, notes, mood, genre) для "
-            "уже сгенерированного трека. Используй когда юзер говорит "
-            "«сохрани этот трек», «пометь его как любимый», «поставь 5 звёзд»."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            _track_id_param(),
-            MCPToolParameter(
-                name="title", type="string",
-                description="Новое название (пустая строка = не менять).",
-                required=False, default="",
-            ),
-            MCPToolParameter(
-                name="tags", type="string",
-                description="Новый список тегов через запятую (заменяет существующие).",
-                required=False, default="",
-            ),
-            MCPToolParameter(
-                name="mood", type="string",
-                description="Настроение (заменяет существующее).",
-                required=False, default="",
-            ),
-            MCPToolParameter(
-                name="genre", type="string",
-                description="Жанр (заменяет существующий).",
-                required=False, default="",
-            ),
-            MCPToolParameter(
-                name="rating", type="integer",
-                description="Рейтинг 0-5 (-1 = не менять).",
-                required=False, default=-1,
-            ),
-            MCPToolParameter(
-                name="notes", type="string",
-                description="Заметки (заменяют существующие).",
-                required=False, default="",
-            ),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.FAST
-
-    def execute(
-        self,
-        track_id: str,
-        title: str = "",
-        tags: str = "",
-        mood: str = "",
-        genre: str = "",
-        rating: int = -1,
-        notes: str = "",
-        **_: Any,
-    ) -> MCPToolResult:
-        valid, err = self.validate_parameters(track_id=track_id)
-        if not valid:
-            return MCPToolResult(success=False, error=err)
-
-        info = self._library.get_track_info(track_id)
-        if not info.get("success"):
-            return MCPToolResult(success=False, error=info.get("error"))
-
-        # Merge metadata
-        merged = dict(info)
-        if title:
-            merged["title"] = title
-        if tags:
-            merged["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
-        if mood:
-            merged["mood"] = mood
-        if genre:
-            merged["genre"] = genre
-        if 0 <= int(rating) <= 5:
-            merged["rating"] = int(rating)
-        if notes:
-            merged["notes"] = notes
-
-        # Persist via delete + re-save? Simpler: we don't have an update API,
-        # so we rewrite meta.json + UPDATE SQLite row directly via internal conn.
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).isoformat()
-        meta_json_path = self._library.root_dir / track_id / "meta.json"
-        if meta_json_path.exists():
-            try:
-                disk_meta = json.loads(meta_json_path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                disk_meta = dict(merged)
-            disk_meta.update(merged)
-            disk_meta["updated_at"] = now_iso
-            try:
-                meta_json_path.write_text(
-                    json.dumps(disk_meta, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except OSError as exc:
-                return MCPToolResult(
-                    success=False, error=f"Не удалось обновить meta.json: {exc}",
-                )
-
-        # Update SQLite row
-        try:
-            with self._library._lock:  # noqa: SLF001 — internal but stable
-                self._library._conn.execute(  # noqa: SLF001
-                    """
-                    UPDATE generated_tracks SET
-                        title = ?, tags = ?, mood = ?, genre = ?,
-                        rating = ?, notes = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        merged.get("title", ""),
-                        json.dumps(merged.get("tags") or [], ensure_ascii=False),
-                        merged.get("mood", ""),
-                        merged.get("genre", ""),
-                        int(merged.get("rating") or 0),
-                        merged.get("notes", ""),
-                        now_iso,
-                        track_id,
-                    ),
-                )
-                self._library._conn.commit()  # noqa: SLF001
-        except Exception as exc:  # noqa: BLE001
-            return MCPToolResult(
-                success=False, error=f"SQLite update failed: {exc}",
-            )
-
-        return MCPToolResult(
-            success=True,
-            data=merged,
-            message=f"Метаданные трека '{track_id}' обновлены",
-        )
-
-
-# ── Tool 4: gen_play_from_library ───────────────────────────────────────────
-
-class GenPlayFromLibraryTool(MCPTool):
-    """Сыграть трек кэша на деке движка (ADR-0158 §2.4, PR-2).
-
-    Звук — через владельца плеера (``PlayerOwner``), как синтез: ``AudioTrack`` (wav частоты сервера,
-    ``engine.gen.audio``) → ``render_audio`` → ``play(once=True)``; ``ok`` — только по ``started`` этого запуска.
-    Стоп, «что играет», громкость мастер-шины, ``finished`` в конце файла — от владельца. Идущий сет закрывается
-    до запуска (одна дека — одна музыка). Фразу запуска и отказа строит код (ADR-0148).
-    """
+class MusicLibraryTool(MCPTool):
+    """Библиотека сгенерированной музыки: список, поиск, воспроизведение, оценка, правка, удаление."""
 
     def __init__(self, node: Any, library: GeneratedMusicLibrary, clock: Callable[[], float] = time.time,
                  run: Callable[..., Any] = subprocess.run) -> None:
@@ -393,167 +48,181 @@ class GenPlayFromLibraryTool(MCPTool):
 
     @property
     def name(self) -> str:
-        return "gen_play_from_library"
+        return "music_library"
 
     @property
     def description(self) -> str:
         return (
-            "Воспроизвести трек из библиотеки сгенерированной музыки на музыкальной деке робота "
-            "(стоп — stop_music, что играет — get_music_state). Ответ — фраза, которую надо сказать. "
-            "Используй когда юзер говорит «сыграй тот грустный трек», «давай послушаем ещё раз»."
+            "Библиотека сгенерированной музыки робота (/data/music_library). action: list — «что у тебя есть "
+            "сгенерированного»; search — найти трек по слову (query); info — подробности одного трека; "
+            "play — включить трек по track_id (стоп — stop_music); rate — «этот трек нравится / не нравится» "
+            "(verdict like / dislike; трек, который не нравится, больше не включается, но не удаляется); "
+            "update — переименовать, теги, настроение, жанр, заметка; delete — удалить трек насовсем. "
+            "track_id бери из list / search, не выдумывай. Ответ содержит фразу, которую надо сказать."
         )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
-            _track_id_param(),
+            MCPToolParameter(
+                name="action", type="string", required=True,
+                description="Что сделать с библиотекой.",
+                enum=["list", "search", "info", "play", "rate", "update", "delete"],
+            ),
+            MCPToolParameter(
+                name="track_id", type="string", required=False, default="",
+                description="UUID трека из list / search (info, play, update, delete; у rate — по умолчанию "
+                            "играющий сейчас или последний игравший).",
+            ),
+            MCPToolParameter(
+                name="query", type="string", required=False, default="",
+                description="Слово поиска для search (1-200 символов).",
+            ),
+            MCPToolParameter(
+                name="verdict", type="string", required=False, default="",
+                description="Для rate: like — трек нравится, dislike — не нравится.",
+                enum=["", "like", "dislike"],
+            ),
+            MCPToolParameter(
+                name="limit", type="integer", required=False, default=20,
+                description="Для list / search: максимум треков (до 100).",
+            ),
+            MCPToolParameter(
+                name="sort_by", type="string", required=False, default="recent",
+                description="Для list: recent — новые, popular — самые играемые, rating — лучшие.",
+                enum=["recent", "popular", "rating"],
+            ),
+            MCPToolParameter(
+                name="title", type="string", required=False, default="",
+                description="Для update: новое название (пусто — не менять).",
+            ),
+            MCPToolParameter(
+                name="tags", type="string", required=False, default="",
+                description="Для update: теги через запятую (заменяют прежние).",
+            ),
+            MCPToolParameter(
+                name="mood", type="string", required=False, default="",
+                description="Для update: настроение.",
+            ),
+            MCPToolParameter(
+                name="genre", type="string", required=False, default="",
+                description="Для update: жанр.",
+            ),
+            MCPToolParameter(
+                name="notes", type="string", required=False, default="",
+                description="Для update: заметка.",
+            ),
         ]
 
     @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.FAST
 
-    @property
-    def destructive(self) -> bool:
-        return False  # mutates DB but logically a "play" action
+    # starts_music=False намеренно: флаг на уровне тула, а музыку запускает только action=play. С True
+    # ``TrackStartGuard`` («один запуск трека за ход») отказал бы ``play`` после ``list`` в том же ходе.
 
-    @property
-    def starts_music(self) -> bool:
-        return True
+    def execute(self, action: str = "", track_id: str = "", **kwargs: Any) -> MCPToolResult:
+        handler = {
+            "list": self._list, "search": self._search, "info": self._info, "play": self._play,
+            "rate": self._rate, "update": self._update, "delete": self._delete,
+        }.get(str(action))
+        if handler is None:
+            return MCPToolResult(success=False, error=f"неизвестное действие '{action}'")
+        if action in _NEEDS_TRACK and not track_id:
+            return MCPToolResult(success=False, error=f"для '{action}' нужен track_id (из list / search)")
+        return handler(track_id=track_id, **kwargs)
 
-    def execute(self, track_id: str, **_: Any) -> MCPToolResult:
-        from rob_box_music.render.audio import render_audio
-        from rob_box_voice.core.media_phrases import library_play_text
+    # ── Действия ──────────────────────────────────────────────────────────
 
-        from ..engine.gen.audio import AudioUnavailable, audio_track
-        from ..engine.tools_v2 import confirmed
+    def _list(self, limit: int = 20, sort_by: str = "recent", **_: Any) -> MCPToolResult:
+        from rob_box_voice.core.media_phrases import library_list_text
 
-        valid, err = self.validate_parameters(track_id=track_id)
-        if not valid:
-            return MCPToolResult(success=False, error=err)
+        result = self._library.list_tracks(limit=_clamp(limit, 20, 100), sort_by=sort_by)
+        if not result.get("success"):
+            return MCPToolResult(success=False, error=result.get("error"))
+        tracks = result["tracks"]
+        total = self._library.count  # в библиотеке всего, а не в выборке по limit
+        data = {"tracks": [_brief(t) for t in tracks], "total": total, "shown": len(tracks), "sort_by": sort_by}
+        titles = [str(t.get("title") or "") for t in tracks]
+        return MCPToolResult(success=True, data=data, message=library_list_text(titles, total))
+
+    def _search(self, query: str = "", limit: int = 5, **_: Any) -> MCPToolResult:
+        result = self._library.search_tracks(query, limit=_clamp(limit, 5, 20))
+        if not result.get("success"):
+            return MCPToolResult(success=False, error=result.get("error"))
+        found = result["total"]
+        message = f"По запросу «{query}» найдено {found}." if found else f"По запросу «{query}» ничего не найдено."
+        data = {"query": query, "tracks": [_brief(t) for t in result["tracks"]], "total": found}
+        return MCPToolResult(success=True, data=data, message=message)
+
+    def _info(self, track_id: str, **_: Any) -> MCPToolResult:
         info = self._library.get_track_info(track_id)
         if not info.get("success"):
             return MCPToolResult(success=False, error=info.get("error"))
+        return MCPToolResult(success=True, data=info)
+
+    def _play(self, track_id: str, **_: Any) -> MCPToolResult:
+        return play_library_track(self.node, self._library, track_id, clock=self._clock, run=self._run)
+
+    def _rate(self, track_id: str = "", verdict: str = "", **_: Any) -> MCPToolResult:
+        """Оценка кодом: рейтинг пишется в БД, фраза — из результата записи. Трек — названный, играющий сейчас
+        на деке (``library_id`` фактов владельца) или последний игравший из кэша."""
+        from rob_box_voice.core.media_phrases import LIBRARY_NO_TRACK_TEXT, library_rate_text
+
+        if verdict not in _VERDICT_RATING:
+            return MCPToolResult(success=False, error="для rate нужен verdict: like или dislike")
+        target = track_id or self._current_track_id()
+        if not target:
+            return MCPToolResult(success=False, error=LIBRARY_NO_TRACK_TEXT)
+        saved = self._library.meta.set_rating(target, _VERDICT_RATING[verdict])
+        if not saved.get("success"):
+            return MCPToolResult(success=False, error=saved.get("error"))
+        return MCPToolResult(
+            success=True, data={"library_id": target, "title": saved.get("title"), "rating": saved["rating"]},
+            message=library_rate_text(str(saved.get("title") or ""), verdict == "like"))
+
+    def _current_track_id(self) -> Optional[str]:
+        """Играющий трек кэша (факты владельца), иначе последний игравший."""
         owner = getattr(self.node, "_player_owner", None)
-        if owner is None:
-            return MCPToolResult(success=False, error="музыкальный движок недоступен — трек не заиграл")
-        deck_id = f"gen_{track_id[:8]}_{int(self._clock())}"
-        try:
-            track = audio_track(info, deck_id, run=self._run)
-            program = render_audio(track, "A")
-        except AudioUnavailable as exc:
-            self.log_error(f"gen_play_from_library {track_id}: {exc}")
-            return MCPToolResult(success=False, data={"reason": exc.reason}, error=f"трек не заиграл: {exc.reason}")
-        title = str(info.get("title") or "")
-        seconds = track.duration_s  # длина файла: форма деки длиннее на хвост до целого такта
-        facts = {"enabled": False, "title": title, "source": "generated", "library_id": track_id,
-                 "bpm": info.get("bpm_nominal") or None}
-        dj_set = getattr(self.node, "_dj_set_tool", None)
-        if dj_set is not None:
-            dj_set.close_set("gen_play_from_library")
-        result = confirmed(owner.play(program, dj=facts, once=True), getattr(self.node, "_music_confirm", None))
-        data = {**result, "library_id": track_id, "title": title, "duration_s": round(seconds, 1)}
-        if not result.get("ok"):
-            return MCPToolResult(success=False, data=data, error=f"трек не заиграл: {result.get('reason')}")
-        self._library.increment_play_count(track_id)
-        return MCPToolResult(success=True, data=data, message=library_play_text(title, seconds))
+        if owner is not None:
+            facts = owner.now_playing()
+            if facts.get("playing") and facts.get("library_id"):
+                return str(facts["library_id"])
+        last = self._library.meta.last_played()
+        return str(last["id"]) if last else None
 
+    def _update(self, track_id: str, title: str = "", tags: str = "", mood: str = "", genre: str = "",
+                notes: str = "", **_: Any) -> MCPToolResult:
+        fields: Dict[str, Any] = {name: value for name, value in
+                                  (("title", title), ("mood", mood), ("genre", genre), ("notes", notes)) if value}
+        if tags:
+            fields["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+        if not fields:
+            return MCPToolResult(success=False, error="update: не названо ни одного поля")
+        saved = self._library.meta.update(track_id, **fields)
+        if not saved.get("success"):
+            return MCPToolResult(success=False, error=saved.get("error"))
+        return MCPToolResult(success=True, data=_brief(saved), message=f"Метаданные трека обновлены: {', '.join(fields)}.")
 
-# ── Tool 5: gen_delete_from_library ─────────────────────────────────────────
+    def _delete(self, track_id: str, **_: Any) -> MCPToolResult:
+        from rob_box_voice.core.media_phrases import library_delete_text
 
-class GenDeleteFromLibraryTool(MCPTool):
-    """Удалить трек из библиотеки сгенерированной музыки (SQLite + mp3)."""
-
-    def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
-        super().__init__(node)
-        self._library = library
-
-    @property
-    def name(self) -> str:
-        return "gen_delete_from_library"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Удалить трек из библиотеки сгенерированной музыки: запись в "
-            "SQLite + mp3/meta.json на диске. Необратимо. Используй когда "
-            "юзер говорит «удали тот грустный трек», «удали последний трек»."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            _track_id_param(),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.FAST
-
-    def execute(self, track_id: str, **_: Any) -> MCPToolResult:
-        valid, err = self.validate_parameters(track_id=track_id)
-        if not valid:
-            return MCPToolResult(success=False, error=err)
-
+        title = str(self._library.get_track_info(track_id).get("title") or "")
         result = self._library.delete_track(track_id)
         if not result.get("success"):
             return MCPToolResult(success=False, error=result.get("error"))
+        return MCPToolResult(success=True, message=library_delete_text(title))
 
-        return MCPToolResult(success=True, message=result.get("message"))
+
+def _clamp(value: Any, default: int, high: int) -> int:
+    try:
+        return max(1, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
 
 
-# ── Tool 6: gen_get_track_info ──────────────────────────────────────────────
-
-class GenGetTrackInfoTool(MCPTool):
-    """Получить метаданные одного трека из библиотеки."""
-
-    def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
-        super().__init__(node)
-        self._library = library
-
-    @property
-    def name(self) -> str:
-        return "gen_get_track_info"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Получить подробные метаданные одного трека: title, prompt, "
-            "lyrics, tags, mood, genre, duration_ms, sample_rate, "
-            "bitrate, play_count, rating, created_at, path. "
-            "Используй когда юзер спрашивает «что за трек такой-то», "
-            "«расскажи про этот трек»."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            _track_id_param(),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.FAST
-
-    @property
-    def read_only(self) -> bool:
-        return True
-
-    @property
-    def destructive(self) -> bool:
-        return False
-
-    @property
-    def idempotent(self) -> bool:
-        return True
-
-    def execute(self, track_id: str, **_: Any) -> MCPToolResult:
-        valid, err = self.validate_parameters(track_id=track_id)
-        if not valid:
-            return MCPToolResult(success=False, error=err)
-
-        info = self._library.get_track_info(track_id)
-        if not info.get("success"):
-            return MCPToolResult(success=False, error=info.get("error"))
-
-        return MCPToolResult(success=True, data=info)
+def _brief(track: Dict[str, Any]) -> Dict[str, Any]:
+    """Строка списка для модели: без текстов песен и служебных полей."""
+    keys = ("id", "title", "kind", "genre", "mood", "tags", "rating", "play_count", "duration_ms",
+            "created_at", "last_played_at")
+    return {k: track.get(k) for k in keys}

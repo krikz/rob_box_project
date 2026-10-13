@@ -352,14 +352,14 @@ class TestApplyBabbleFilter:
             response=response,
             seen_tool_names=set(),
             is_silent_response_fn=_is_silent_response_stub,
-            tools_called=["gen_play_from_library"],
+            tools_called=["music_library"],
             speak_text_count=0,
             speak_text_real_count=0,
             spoken_texts=[],
         )
         assert isinstance(outcome, _ToolLoopOutcome)
         assert outcome.spoken_text == ""
-        assert outcome.tools_called == ["gen_play_from_library"]
+        assert outcome.tools_called == ["music_library"]
         assert outcome.speak_text_count == 0
 
     def test_non_silent_content_is_not_babble(self) -> None:
@@ -369,7 +369,7 @@ class TestApplyBabbleFilter:
             response=self._tool_error_response("Простите, не получилось"),
             seen_tool_names=set(),
             is_silent_response_fn=lambda r: False,  # never silent
-            tools_called=["gen_play_from_library"],
+            tools_called=["music_library"],
             speak_text_count=0,
             speak_text_real_count=0,
             spoken_texts=[],

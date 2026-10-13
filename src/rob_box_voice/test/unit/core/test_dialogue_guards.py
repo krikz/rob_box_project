@@ -301,7 +301,7 @@ class TestUnbackedActionClaimLive3008:
             (
                 "удали трек тисбит из сохраненных",
                 "«Тисбит» удалён.",
-                ("gen_delete_from_library",),
+                ("music_library",),
             ),
         ],
     )
@@ -385,7 +385,7 @@ class TestLive3008E2eSecondRound:
         assert rule.category == "library_search"
 
     @pytest.mark.parametrize(
-        "tool", ["gen_list_library", "gen_search_library"],
+        "tool", ["music_library", "music_library"],
     )
     def test_search_claim_with_any_search_tool_is_fine(self, tool: str) -> None:
         assert (
@@ -840,7 +840,7 @@ class TestPlanningNarration:
     def test_tool_name_alone_is_enough(self) -> None:
         """Идентификатор в snake_case, прочитанный вслух, — всегда баг,
         независимо от того, о чём просил юзер."""
-        assert is_planning_narration("Готово, gen_play_from_library отработал.")
+        assert is_planning_narration("Готово, music_library отработал.")
 
     def test_planning_narration_counts_as_babble(self) -> None:
         """Ретрай-механика Bug D переиспользуется как есть."""
@@ -1364,8 +1364,8 @@ class TestPhantomActionClaimLive2559:
             ("Перезагружу сервис микрофона.", "restart_mic"),
             ("Запущу мелодию.", "request_music"),
             ("Остановлю воспроизведение.", "stop_music"),
-            ("Поменяю плейлист.", "gen_play_from_library"),
-            ("Загружу новый трек.", "gen_play_from_library"),
+            ("Поменяю плейлист.", "music_library"),
+            ("Загружу новый трек.", "music_library"),
             ("Обновлю партию.", "compose_music"),
         ],
     )
