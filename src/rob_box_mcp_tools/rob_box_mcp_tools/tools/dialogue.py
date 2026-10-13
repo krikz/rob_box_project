@@ -512,7 +512,7 @@ class SpeakTextTool(MCPTool):
             # XML-экранирование &, <, > делает сам сборщик; ``pitch``
             # приходит из локальной таблицы (high/low/x-high) и в SSML
             # не нуждается в экранировании.
-            from rob_box_core.utterance import escape_xml_text
+            from rob_box_core.utterance import escape_xml_text, strip_markup_tags
 
             if pitch:
                 # Prosody-обёртка нужна только для эмоциональных анимаций.
@@ -520,7 +520,7 @@ class SpeakTextTool(MCPTool):
                 # что внутри ``Utterance.ssml``.
                 return (
                     f"<speak><prosody pitch='{pitch}'>"
-                    f"{escape_xml_text(chunk)}"
+                    f"{escape_xml_text(strip_markup_tags(chunk))}"
                     f"</prosody></speak>"
                 )
             # Без prosody — пользуемся готовым ``Utterance.ssml`` (один

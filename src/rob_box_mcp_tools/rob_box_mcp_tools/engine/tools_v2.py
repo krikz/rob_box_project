@@ -82,6 +82,9 @@ STYLE_CHOICES = (AUTO_STYLE, *kn.STYLES)
 SET_PLAYING = "set_playing"
 #: Код отказа ``dj_set``: тема называет конкретные вещи, и ни одна не нашлась (#3493).
 NOT_FOUND = "not_found"
+#: Код отказа ``request_music``: просили «ещё <автор>», а всё подходящее уже играло (#3599); фразу строит код
+#: (``rob_box_voice.core.media_phrases.NO_MORE_REASON``, равенство держит тест).
+NO_MORE = "no_more"
 #: Код отказа ``dj_set(start)``: в реплике хода нет слова сета/диджея/вечеринки и стиля — человек просил одну пьесу
 #: (ADR-0157 §2.1, прогон 09.10: «сыграй баха на трамбоне» → LLM ``dj_set``). Решает код по ``heard_text``.
 NOT_A_SET_REQUEST = "not_a_set_request"
@@ -113,6 +116,15 @@ def club_theme(text: str) -> str:
 
     command = parse_media_command(text)
     return command.name if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument else text
+
+
+def asks_more(heard_text: Optional[str]) -> bool:
+    """Реплика хода — «продолжай играть Вагнера» / «ещё Баха» (#3599): следующая пьеса автора, не повтор. Решает
+    грамматика заказа по имени (``MediaCommand.more``); «ещё раз Калинку» — не она."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    command = parse_media_command(heard_text or "")
+    return command.intent is MediaIntent.PLAY_NAMED and command.more
 
 
 def lead_data(lead: Optional[LeadChoice]) -> Dict[str, Any]:
@@ -274,6 +286,9 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
         return MCPToolResult(success=True, data=data)
     if data.get("reason") == NOT_FOUND and data.get("message"):  # отказ сета: фраза кода, её скажет голос
         return MCPToolResult(success=False, data=data, error=data["message"])
+    if data.get("reason") == NO_MORE and data.get("message"):  # «больше нет» (#3599): фраза кода, её скажет голос
+        from rob_box_voice.core.media_phrases import no_more_error
+        return MCPToolResult(success=False, data=data, error=no_more_error(data["message"]))
     return MCPToolResult(success=False, data=data, error=f"{what}: {data.get('reason')}")
 
 
@@ -599,7 +614,8 @@ class RequestMusicTool(MCPTool):
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = "мелодия не заиграла" if classic else "музыка не заиграла"
         lead = lead_for(heard_text, text)
-        staged = self._stage_classic(text, lead) if classic else self._stage_club(text, mood, lead)
+        staged = (self._stage_classic(text, lead, asks_more(heard_text)) if classic
+                  else self._stage_club(text, mood, lead))
         staged.update(lead_data(lead))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
@@ -644,12 +660,13 @@ class RequestMusicTool(MCPTool):
     def _log(self) -> Any:
         return self.node.get_logger() if self.node is not None else _LOG
 
-    def _stage_classic(self, text: str, lead: Optional[LeadChoice] = None) -> Dict[str, Any]:
+    def _stage_classic(self, text: str, lead: Optional[LeadChoice] = None, more: bool = False) -> Dict[str, Any]:
         """Мелодия по названию: песня v2 (одна пьеса, один проход формы) — собрана, не запущена.
 
         Название берёт грамматика заказа по имени («поставь калинку» → «калинку»); не разобрала — слова целиком.
         Тональность («ре минор») — слот, не слова поиска (:func:`works.key_slot`). Кандидаты — ``engine.piece``;
-        ``not_found`` — только когда кандидатов нет вовсе (ADR-0157 R5).
+        ``not_found`` — только когда кандидатов нет вовсе (ADR-0157 R5). ``more`` («продолжай играть Вагнера», #3599) —
+        только то, чего недавно не играло; всё сыграно — ``no_more`` с фразой кода, не повтор и не подмена.
         """
         from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 
@@ -658,12 +675,16 @@ class RequestMusicTool(MCPTool):
         work, key = key_slot(query)
         seed = self._seed()
         try:
-            pick, played, reasons, count = self._pieces.play(work, key, seed, lead)
+            pick, played, reasons, count = self._pieces.play(work, key, seed, lead, fresh=more)
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"classic:{work}", "compose_error", f"{type(exc).__name__}: {exc}")
         self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
                          f"{self._pieces.memory.recent()} → {_piece_line(pick, played)}; "
                          f"отказы: {'; '.join(reasons) or '—'}")
+        if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
+            from rob_box_voice.core.media_phrases import no_more_text
+            return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
+                    "message": no_more_text(work, played["repeats"][0])}
         if pick is None and not count:
             return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
         if pick is None:
@@ -679,7 +700,7 @@ def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:
     return f"{played['source']} {pick.melody_id} «{pick.title}» замена={played['replacement_for']}"
 
 
-__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
+__all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "NO_MORE", "SET_PLAYING", "STYLE_CHOICES", "Confirm",
            "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
            "lead_for", "library_melodies", "library_records", "music_busy", "not_found", "set_refusal", "set_style",
            "theme_finder", "theme_links", "tool_result", "word_hooks"]
