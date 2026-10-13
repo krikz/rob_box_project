@@ -285,3 +285,13 @@ def test_named_and_confirmed_work_plays_even_when_it_just_played(archive):
     assert asked == ["Wagner Ride of the Valkyries"]  # непонятые слова в поиск не ушли
     assert data["ok"] and data["melody_id"] == "rideofth"
     assert "врубай" not in data["message"] and "полет" not in data["message"]
+
+
+def test_instrument_of_the_turn_is_the_code_slot(archive):
+    """Живой прогон 13.10: LLM диалога передала в ``text`` только «валькирии», «на ситаре» — в реплике хода; слот
+    инструмента — из неё (грамматика), LLM разбора не зовётся."""
+    llm = FakeLLM()
+    req, asked, log = _request(archive, llm, None)
+    req.execute(intent="melody", text="валькирии", heard_text="Робот сыграй валькирии на ситаре")
+    line = next(x for x in log.lines if "[request-slots] «валькирии»" in x)
+    assert "instrument=sitar" in line and "source=code" in line and llm.calls == []

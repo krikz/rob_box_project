@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
@@ -48,6 +49,7 @@ from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_
 from rob_box_music.theme import ThemeProfile, match_style_text, match_window_text, seeded_profile, style_for
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from rob_box_music.request_slots import RequestSlots
 from rob_box_music.works import key_slot
 
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
@@ -563,10 +565,11 @@ class RequestMusicTool(MCPTool):
                                   classic or classic_picker(library), history,
                                   chooser=chooser_from_env(chooser_mode, log=self._log), log=self._log)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
-        # фраза заказа → слоты, проверенные каталогом (#3609); подставной поиск (тесты) — слова без каталога RTTTL
-        words_of = (lambda text: terms(library(), text)) if words is None else (
-            lambda text: part_query(None, text).terms)
-        self._slots = slots or RequestSlotParser(words_of, Catalog(library, dj._scores), ask=slots_ask, log=self._log)
+        # фраза заказа → слоты, проверенные каталогом (#3609); при подставном поиске (тесты) словаря архива нет —
+        # судить слова нечем, разбора нет (название как от грамматики), если разборщик не передан явно
+        self._slots = slots or (None if words is not None else RequestSlotParser(
+            lambda text: terms(library(), text), Catalog(library, getattr(dj, "_scores", None)), ask=slots_ask,
+            log=self._log))
 
     def warm(self) -> threading.Thread:
         """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
@@ -682,7 +685,10 @@ class RequestMusicTool(MCPTool):
         command = parse_media_command(text)
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         work, key = key_slot(query)
-        slots = self._slots.parse(text, work, command)  # непонятые слова — LLM по схеме, проверка каталогом (#3609)
+        if lead is not None:  # инструмент из реплики хода («на органе») — слот грамматики, не LLM
+            command = replace(command, instrument=command.instrument or lead.asked)
+        # непонятые слова — LLM по схеме, проверка каталогом (#3609)
+        slots = self._slots.parse(text, work, command) if self._slots else RequestSlots(work, work=work)
         slot_lead = None if lead or not slots.instrument else lead_choice(slots.instrument)  # инструмент от LLM
         work, lead = slots.query, lead or slot_lead
         seed = self._seed()

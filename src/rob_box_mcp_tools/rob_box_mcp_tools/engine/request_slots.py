@@ -69,7 +69,7 @@ class Catalog:
         """Фамилия композитора, если каталог её знает (поле «композитор» партитур или ``artist`` RTTTL), иначе «»."""
         for word in reversed([w for w in name.lower().replace(".", " ").split() if len(w) >= _NAME_MIN]):
             spelled = WorkWord((word,), (word,))
-            if self._scores.composer_role(spelled) or any(
+            if (self._scores is not None and self._scores.composer_role(spelled)) or any(
                     spelled.named_in(r.get("artist")) for r in self._library().search(word, limit=50,
                                                                                       include_rtttl=True)):
                 return word.capitalize()
@@ -81,7 +81,8 @@ class Catalog:
             return True
         title_words = tuple(work_word(t) for t in terms(None, title))
         ref = WorkRef((WorkWord((composer.lower(),), (composer.lower(),)),) if composer else (), title_words)
-        return bool(title_words) and any(c.title_match >= kn.TITLE_EXACT for c in self._scores.work_candidates(ref))
+        scores = self._scores.work_candidates(ref) if self._scores is not None and title_words else ()
+        return any(c.title_match >= kn.TITLE_EXACT for c in scores)
 
 
 class RequestSlotParser:
