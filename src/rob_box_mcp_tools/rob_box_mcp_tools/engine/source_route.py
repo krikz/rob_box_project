@@ -91,7 +91,8 @@ class SourceRouter:
         studio = self._studio
         if studio is None:
             return SourceContext(cache=cache, gen_ready=False, day_left=left, mode=self._mode)
-        return SourceContext(cache=cache, gen_ready=bool(ask is not None and ask.vocal), has_key=studio.has_key(),
+        return SourceContext(cache=cache, gen_ready=bool(ask is not None and ask.vocal), gen_failed=studio.blocked(),
+                             has_key=studio.has_key(),
                              provider_ok=studio.provider_ok(), day_left=left, mode=self._mode,
                              voice=studio.voice_id())
 

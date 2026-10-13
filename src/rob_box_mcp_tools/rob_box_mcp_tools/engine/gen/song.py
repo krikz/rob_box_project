@@ -12,8 +12,8 @@
 играет мост (решает ``RequestMusicTool``), а итоговую фразу — «песня готова», «не вышло: причина» — строит код из
 результата (название и длительность — из кэша, голос — из провайдера; Silero — «запасным голосом»).
 
-Silero не грузится второй раз «навсегда»: бэкенд пения создаётся на заказ и умирает вместе с ним (модель живёт в
-``tts_node``, это другой процесс; пока песня поётся Silero — в этом процессе на минуту ~0.7–1 ГБ RSS).
+Silero не поём вовсе: модель живёт в ``tts_node`` (другой процесс), вторая копия здесь — неизмеренный риск OOM на
+Pi. Текущий голос Silero — кандидата ``generate:*`` нет (``blocked``), чойсер берёт кэш/синтез/отказ.
 
 Клон голоса Suno (validation-phrase/create-voice) не используется и не планируется (§2.3, проверка владельца голоса).
 """
@@ -290,6 +290,14 @@ class SongStudio:
     def has_key(self) -> bool:
         return bool(self._provider.configured())
 
+    def blocked(self) -> str:
+        """Причина, по которой песню заказывать нельзя (жёсткий фильтр кода), или «». Silero (запасной голос) не поём:
+        его модель живёт в ``tts_node``, а вторая копия в этом процессе — неизмеренный риск OOM на Pi."""
+        try:
+            return "silero_voice" if self._voice()[0] == "silero" else ""
+        except SongFailed:
+            return ""
+
     def provider_ok(self) -> bool:
         return self._clock() >= self._dead_until
 
@@ -317,6 +325,8 @@ class SongStudio:
         if library is None:
             raise SongFailed("no_track", "кэш генераций недоступен")
         provider, voice = self._voice()
+        if provider == "silero":  # страховка: чойсер сюда не пускает (blocked)
+            raise SongFailed("silero_voice", "Silero в этом процессе не грузим")
         from rob_box_voice.tts_voice_registry import SingPresetUnknown, sing_preset_for
 
         try:

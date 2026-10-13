@@ -29,7 +29,7 @@ LYRICS = ("Я робот, у меня есть батарейка,\nМоя до�
           "Эй, мир, я рядом, слышишь, это я,\nМоя душа — из стали и огня.")
 GOOD = {"title": "Я робот", "lyrics": LYRICS}
 PHRASE = "Робот, спой песню про батарейку в стиле гранж своим голосом"
-VOICES = [("minimax", "Russian_ReliableMan"), ("yandex", "anton"), ("silero", "baya")]
+VOICES = [("minimax", "Russian_ReliableMan"), ("minimax", "male-qn-qingse"), ("yandex", "anton")]
 
 
 # ── проверка текста ───────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ def library(tmp_path):
 
 def _studio(library, voice=("minimax", "Russian_ReliableMan"), suno=None, lyrics=None, played=None, said=None):
     suno = suno or FakeSuno()
-    backends, sung = {name: FakeVocal(name) for name, _v in VOICES}, []
+    backends, sung = {name: FakeVocal(name) for name in ("minimax", "yandex", "silero")}, []
 
     def sing(provider, voice_id, text, path):
         sung.append((provider, voice_id, text))
@@ -224,11 +224,9 @@ def test_success_plays_the_first_variant_then_code_says_title_duration_voice(lib
     assert said == ["Песня «Я робот» готова, 1 минута 15 секунд. Пою голосом Надёжный мужчина."]
 
 
-def test_silero_voice_is_announced_as_the_spare_one(library):
-    said = []
-    studio, *_ = _studio(library, ("silero", "baya"), said=said)
-    _run(studio)
-    assert said == ["Песня «Я робот» готова, 1 минута 15 секунд. Пою запасным голосом Бая (женский)."]
+def test_wording_of_the_voice_in_the_phrase():
+    assert sg.sung_by("yandex", "anton") == "голосом Антон"
+    assert sg.sung_by("silero", "baya").startswith("запасным голосом")
 
 
 def test_failure_is_spoken_by_code_and_dead_provider_is_remembered(library):
@@ -304,6 +302,9 @@ class FakeStudio:
 
     def voice_id(self):
         return "Russian_ReliableMan"
+
+    def blocked(self):
+        return getattr(self, "block", "")
 
     def voice(self):
         return "minimax", "Russian_ReliableMan"
@@ -437,3 +438,17 @@ def test_late_started_is_waited_for_not_called_a_failure(library):
     studio._started = lambda track_id: None  # started так и не пришло
     _run(studio)
     assert said == ["не вышло:play_failed"]
+
+
+def test_silero_voice_never_reaches_the_executor_and_the_chooser_declines_in_words(library):
+    """Решение координатора: Silero в mcp_server не грузим (риск OOM). Кандидата generate нет, причина — словами кода."""
+    studio, *_ = _studio(library, ("silero", "baya"))
+    assert studio.blocked() == "silero_voice" and _studio(library)[0].blocked() == ""
+    with pytest.raises(sg.SongFailed) as err:
+        studio.make(sg.SongRequest("т"))
+    assert err.value.reason == "silero_voice" and studio._sing.__name__ == "sing"  # вокал даже не начат
+    fake = FakeStudio()
+    fake.block = "silero_voice"
+    result = _request(_rig(), fake, library).execute(intent="track", text=PHRASE, heard_text=PHRASE)
+    assert not result.success and result.data["reason"] == SOURCE_DECLINED and not fake.requests
+    assert "запасным голосом петь пока не умею" in result.data["message"]
