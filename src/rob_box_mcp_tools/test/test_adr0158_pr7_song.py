@@ -421,12 +421,19 @@ def test_language_proxy_gives_tts_the_song_language():
     assert backend.presets[0].language == "ru" and (proxy.provider, proxy.fmt) == ("minimax", "wav")
 
 
-def test_bridge_is_stopped_before_the_song_starts(library):
-    """Прогон 13.10: замена играющего моста ждала стыка формы дольше 6 с — ``not_started`` при том, что песня потом
-    заиграла. Мост снимаем до ``play`` (кроссфейд — PR-8)."""
-    order, said = [], []
+def test_late_started_is_waited_for_not_called_a_failure(library):
+    """Прогон 13.10: трек деки встаёт на границу формы (до ~47 с), ``gen_play_from_library`` ждёт 6 с и отвечает
+    ``not_started``, а песня потом играет. Ждём ``started`` дольше; пришло — песня «играет», нет — честный провал."""
+    from types import SimpleNamespace
+
+    said = []
     studio, *_ = _studio(library, said=said)
-    studio._stop = lambda: order.append("stop")
-    studio._play = lambda track_id: (order.append("play"), MCPToolResult(success=True))[1]
+    late = MCPToolResult(success=False, data={"reason": "not_started", "track_id": "gen_x_1"}, error="не заиграл")
+    studio._play = lambda track_id: late
+    studio._started = lambda track_id: SimpleNamespace(event="started") if track_id == "gen_x_1" else None
     _run(studio)
-    assert order == ["stop", "play"] and said[0].startswith("Песня «Я робот» готова")
+    assert said[0].startswith("Песня «Я робот» готова")
+    said.clear()
+    studio._started = lambda track_id: None  # started так и не пришло
+    _run(studio)
+    assert said == ["не вышло:play_failed"]

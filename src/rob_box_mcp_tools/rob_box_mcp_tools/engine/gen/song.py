@@ -32,6 +32,7 @@ from typing import Any, Callable, Mapping, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 
+from ...base import MCPToolResult
 from .budget import Budget
 from .pipeline import generate_into_cache
 from .provider import GenJob, GenUnavailable
@@ -53,6 +54,8 @@ DEFAULT_GENRE = "rock"
 LYRICS_DEADLINE_S = 40.0
 #: «Минуты полторы» из фразы ожидания — замер 13.10: добавить-инструментал ~75 с + текст и вокал.
 WAIT_TEXT_S = 90
+#: Ждать ``started`` песни на деке, секунд (граница формы ≤ длины песни; мост играет до неё).
+STARTED_WAIT_S = 120.0
 #: Провайдер ``provider_down`` — столько не заказываем снова (ADR-0158 §3.5).
 DEAD_FOR_S = 600.0
 
@@ -271,12 +274,12 @@ class SongStudio:
 
     def __init__(self, provider: Any, library: Callable[[], Any], lyrics: LyricsAsk, voice: Callable[[], Tuple[str, str]],
                  play: Callable[[str], Any], speak: Callable[[str], None], *,
-                 stop: Callable[[], Any] = lambda: None,
+                 started: Callable[[str], Any] = lambda track_id: None,
                  sing: Callable[[str, str, str, str], Any] = _sing, rules: Callable[[], str] = rules_text,
                  clock: Callable[[], float] = time.monotonic, log: Callable[[], Any] = lambda: _LOG) -> None:
         self._provider, self._library, self._lyrics, self._voice = provider, library, lyrics, voice
         self._play, self._speak, self._sing, self._rules = play, speak, sing, rules
-        self._stop = stop  # мост снимаем перед песней: замена играющего трека ждёт стыка формы дольше ожидания started
+        self._started = started  # ждать ``started`` дольше: трек деки встаёт на ближайшую границу формы (до её длины)
         self._clock, self._log = clock, log
         self._lock = threading.Lock()
         self._busy = False
@@ -355,8 +358,10 @@ class SongStudio:
     def _run(self, request: SongRequest, on_failed: Callable[[str], str]) -> None:
         try:
             result = self.make(request)
-            self._stop()  # без кроссфейда (он в PR-8): мост обрывается, песня стартует сразу
             played = self._play(result.track_id)
+            if self._late_start(played):
+                self._log().info(f"🎤 [song] «{result.title}» ждёт границы формы на деке — мост играет до неё")
+                played = MCPToolResult(success=True)
             if getattr(played, "success", False):
                 self._say(done_text(result))
             else:
@@ -374,6 +379,15 @@ class SongStudio:
         finally:
             self._busy = False
 
+    def _late_start(self, played: Any) -> bool:
+        """``gen_play_from_library`` ждёт ``started`` 6 с, а трек деки встаёт на границу формы (до ~длины песни):
+        ``not_started`` — не отказ; ждём событие этого запуска дольше, пока играет мост."""
+        data = getattr(played, "data", None) or {}
+        if getattr(played, "success", False) or data.get("reason") != "not_started" or not data.get("track_id"):
+            return False
+        event = self._started(str(data["track_id"]))
+        return bool(event is not None and getattr(event, "event", "") == "started")
+
     def _say(self, text: str) -> None:
         try:
             self._speak(text)
@@ -381,6 +395,6 @@ class SongStudio:
             self._log().warning(f"🎤 [song] реплика не сказана: {type(exc).__name__}: {exc}")
 
 
-__all__ = ["BUSY_TEXT", "DEFAULT_GENRE", "LYRICS_SCHEMA", "LyricsAsk", "Song", "SongFailed", "SongRequest",
+__all__ = ["BUSY_TEXT", "DEFAULT_GENRE", "STARTED_WAIT_S", "LYRICS_SCHEMA", "LyricsAsk", "Song", "SongFailed", "SongRequest",
            "SongResult", "SongStudio", "check_song", "song_language", "current_voice", "done_text", "failed_words",
            "harness_lyrics_ask", "lyrics_prompt", "rules_text", "song_tags", "sung_by", "wait_text", "write_lyrics"]
