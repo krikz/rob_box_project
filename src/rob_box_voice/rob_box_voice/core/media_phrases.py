@@ -134,6 +134,17 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
         return PENDING_TEXT if facts.get("pending") else NOTHING_PLAYING_TEXT
     name = str(facts.get("name") or facts.get("title") or "")
     head = f"Сейчас играет «{name}»" if name else "Сейчас играет музыка"
+    if name and facts.get("composer"):  # автор — за кавычками, как во фразе запуска (piece_text)
+        head += f", {facts['composer']}"
+    about = _track_about(facts)
+    parts = [head + (" — " + ", ".join(about) if about else "") + "."]
+    if facts.get("elapsed_s") is not None and facts.get("source"):  # трек сета: время — у сета, не у трека
+        parts.append(_track_time(facts))
+    return " ".join(parts)
+
+
+def _track_about(facts: Mapping[str, Any]) -> list:
+    """Источник, темп и инструмент трека — словами (части фразы «что играет»)."""
     about = [SOURCE_WORDS[str(facts["source"])]] if str(facts.get("source") or "") in SOURCE_WORDS else []
     if facts.get("bpm"):
         bpm = int(round(float(facts["bpm"])))
@@ -141,15 +152,15 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
     lead = kn.INSTRUMENTS.get(str(facts.get("instrument_played") or ""))
     if lead is not None:
         about.append(f"на {lead.prepositional}")
-    parts = [head + (" — " + ", ".join(about) if about else "") + "."]
-    if facts.get("elapsed_s") is not None and facts.get("source"):  # трек сета: время — у сета, не у трека
-        when = f"Играет уже {duration_text(float(facts['elapsed_s']), accusative=True)}"
-        if facts.get("remaining_s") is not None:
-            when += f", осталось {duration_text(float(facts['remaining_s']))}."
-        else:
-            when += " и повторяется, пока не скажешь «стоп»."
-        parts.append(when)
-    return " ".join(parts)
+    return about
+
+
+def _track_time(facts: Mapping[str, Any]) -> str:
+    """Сколько трек играет и сколько осталось (пьеса — один проход формы; клубный трек — по кругу до стопа)."""
+    when = f"Играет уже {duration_text(float(facts['elapsed_s']), accusative=True)}"
+    if facts.get("remaining_s") is not None:
+        return when + f", осталось {duration_text(float(facts['remaining_s']))}."
+    return when + " и повторяется, пока не скажешь «стоп»."
 
 
 #: ADR-0149 PR-6: плеер отказал (``rejected``), ``started`` не пришло или тул не прошёл.

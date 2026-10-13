@@ -1069,16 +1069,22 @@ _WHEN_FILLER: FrozenSet[str] = _COMMON_FILLER | frozenset({
     "же", "уже", "опять", "снова"})
 _NOW_MAX_WORDS = 7
 #: Глагол-зачин перед вопросом «что играет»: «расскажи / скажи, что ты включил».
-_NOW_LEAD: FrozenSet[str] = frozenset({"расскажи", "раскажи", "скажи", "подскажи", "напомни"})
+_NOW_LEAD: FrozenSet[str] = frozenset({"расскажи", "раскажи", "скажи", "подскажи", "напомни"}) | _COMMON_FILLER
+
+
+def _now_question_words(words: Sequence[str]) -> List[str]:
+    """Слова вопроса без обращения и зачина: «а что играет?», «а раскажи что ты сейчас включил» (#3613, живой TG
+    13.10 — опечатка STT тоже)."""
+    words = [w for w in words if w not in ("робот", "робби")]
+    while words and words[0] in _NOW_LEAD and words[0] not in _NOW_QUESTION:
+        words = words[1:]
+    return words
 
 
 def _now_playing_command(words: Sequence[str]) -> Optional[MediaCommand]:
     """Вопрос о сете: «что (сейчас) играет?» — ``NOW_PLAYING`` без имени; «когда будет Марио?», «где марио все его
     треки?» — ``NOW_PLAYING`` с ``name``. Ответ строит код из фактов снимка (``media_router``), не LLM (ADR-0148)."""
-    words = [w for w in words if w not in ("робот", "робби")]
-    # «а что играет?», «а раскажи что ты сейчас включил» (#3613, живой TG 13.10 — опечатка STT тоже)
-    while words and (words[0] in _COMMON_FILLER or words[0] in _NOW_LEAD) and words[0] not in _NOW_QUESTION:
-        words = words[1:]
+    words = _now_question_words(words)
     if not words or len(words) > _NOW_MAX_WORDS:
         return None
     if words[0] in _NOW_QUESTION and any(w in _NOW_SUBJECT for w in words[1:]):

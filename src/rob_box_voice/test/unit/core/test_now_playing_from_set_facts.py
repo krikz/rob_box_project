@@ -131,6 +131,12 @@ def test_piece_says_source_instrument_and_time_left():
                    "Играет уже 30 секунд, осталось 1 минута 30 секунд.")
 
 
+def test_piece_author_stays_outside_the_quotes_like_the_launch_phrase():
+    """Живой прогон 13.10: запуск «Ставлю «…Toccata», Louis Vierne.» — ответ «что играет» называет так же."""
+    say = MediaRouter().route("что играет", _track({**PIECE, "name": "Toccata", "composer": "Louis Vierne"})).say_ok
+    assert say.startswith("Сейчас играет «Toccata», Louis Vierne — пьеса по нотам партитуры")
+
+
 def test_music_state_tag_tells_llm_the_piece_ends_and_its_source():
     """``<music_state>`` для хода LLM: пьеса — один проход (``repeat=once``, сколько осталось), источник — из снимка."""
     memory = MusicStateMemory()
