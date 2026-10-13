@@ -405,3 +405,17 @@ def test_second_tool_call_of_the_same_turn_is_not_a_new_order(cache):
     assert same.success and same.data["pending"] == "song" and not studio.requests
     other = req.execute(intent="track", text=PHRASE, heard_text=PHRASE, turn_id="t2")
     assert not other.success and other.data["message"] == sg.BUSY_TEXT
+
+
+def test_song_language_minimax_follows_the_robot_not_the_catalog_voice():
+    """Прогон 13.10: дефолтный MiniMax-голос числится китайским → песня вышла на китайском. Язык MiniMax — язык робота."""
+    assert sing_preset_for("minimax", "male-qn-qingse").language == "zh"
+    assert sg.song_language("minimax", "zh") == "ru"
+    assert sg.song_language("yandex", "de") == "de" and sg.song_language("silero", "ru") == "ru"
+
+
+def test_language_proxy_gives_tts_the_song_language():
+    backend = FakeVocal("minimax")
+    proxy = sg._Language(backend, "ru")
+    proxy.synth("текст", sing_preset_for("minimax", "male-qn-qingse"))
+    assert backend.presets[0].language == "ru" and (proxy.provider, proxy.fmt) == ("minimax", "wav")

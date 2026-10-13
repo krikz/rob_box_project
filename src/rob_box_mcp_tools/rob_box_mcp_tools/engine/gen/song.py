@@ -26,7 +26,7 @@ import shutil
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 from typing import Any, Callable, Mapping, Optional, Tuple
 
@@ -228,12 +228,36 @@ def current_voice(provider: Optional[str], store: Any = None) -> Tuple[str, str]
     return provider, default_voice_for(provider)
 
 
+#: Язык песен робота, когда голос не привязан к языку (MiniMax: язык задаёт ``language_boost`` при любом голосе —
+#: прогон 13.10: дефолтный ``male-qn-qingse`` числится китайским, и песня вышла на китайском).
+ROBOT_LANGUAGE = "ru"
+UNBOUND_LANGUAGE_PROVIDERS = ("minimax",)
+
+
+def song_language(provider: str, preset_language: str) -> str:
+    """Язык текста песни: у голосов, привязанных к языку (Yandex, Silero), — язык пресета; у MiniMax — язык робота."""
+    return ROBOT_LANGUAGE if provider in UNBOUND_LANGUAGE_PROVIDERS else preset_language
+
+
+class _Language:
+    """Прокси бэкенда пения: подаёт TTS язык песни вместо языка из каталога голоса (``song_language``)."""
+
+    def __init__(self, inner: Any, language: str) -> None:
+        self._inner, self._language = inner, language
+        self.provider, self.fmt = inner.provider, inner.fmt
+
+    def synth(self, text: str, preset: Any) -> Any:
+        return self._inner.synth(text, replace(preset, language=self._language))
+
+
 def _sing(provider: str, voice: str, lyrics: str, path: str) -> Any:
     """Вокал текущим голосом в файл; бэкенды пения создаются на заказ (Silero не остаётся в памяти)."""
-    from rob_box_voice.sing_synth import SingSynthError, synth_vocal_to_file
+    from rob_box_voice.sing_synth import SingSynthError, default_backends, synth_vocal_to_file
 
+    backends = {name: _Language(b, song_language(name, "")) if name in UNBOUND_LANGUAGE_PROVIDERS else b
+                for name, b in default_backends().items()}
     try:
-        return synth_vocal_to_file(provider, voice, lyrics, path)
+        return synth_vocal_to_file(provider, voice, lyrics, path, backends=backends)
     except SingSynthError as exc:
         raise SongFailed("vocal", f"{provider}:{voice}: {exc}") from exc
 
@@ -295,13 +319,14 @@ class SongStudio:
         except SingPresetUnknown as exc:
             raise SongFailed("no_preset", str(exc)) from exc
         started = self._clock()
-        song = write_lyrics(self._lyrics, request, preset.language, self._rules())
+        song = write_lyrics(self._lyrics, request, song_language(provider, preset.language), self._rules())
         workdir = tempfile.mkdtemp(prefix="rbx-song-")
         try:
             vocal = self._sing(provider, voice, song.lyrics, f"{workdir}/vocal")
             genre, tags = song_tags(request, preset.tags_hint)
-            job = GenJob(kind="robot_song", style_key=genre, title=song.title, style_tags=tags, negative_tags=NEGATIVE_TAGS, lyrics=song.lyrics,
-                         audio_path=vocal.path, audio_weight=preset.audio_weight, vocal_gender=preset.vocal_gender)
+            job = GenJob(kind="robot_song", style_key=genre, title=song.title, style_tags=tags,
+                         negative_tags=NEGATIVE_TAGS, lyrics=song.lyrics, audio_path=vocal.path,
+                         audio_weight=preset.audio_weight, vocal_gender=preset.vocal_gender)
             made = generate_into_cache(self._provider, library, Budget(library), job, theme=request.theme,
                                        tts_provider=provider, voice=voice)
         finally:
@@ -354,5 +379,5 @@ class SongStudio:
 
 
 __all__ = ["BUSY_TEXT", "DEFAULT_GENRE", "LYRICS_SCHEMA", "LyricsAsk", "Song", "SongFailed", "SongRequest",
-           "SongResult", "SongStudio", "check_song", "current_voice", "done_text", "failed_words",
+           "SongResult", "SongStudio", "check_song", "song_language", "current_voice", "done_text", "failed_words",
            "harness_lyrics_ask", "lyrics_prompt", "rules_text", "song_tags", "sung_by", "wait_text", "write_lyrics"]
