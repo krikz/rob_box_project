@@ -53,10 +53,23 @@ _FORMS = _forms()
 _FORM_KEY = dict(_FORMS)
 
 
+_UNSUPPORTED = frozenset(stem + end for stem in kn.UNSUPPORTED_INSTRUMENT_STEMS for end in kn.INSTRUMENT_ENDINGS)
+
+
 def instrument_of(word: str) -> Optional[str]:
-    """Ключ инструмента по слову («балалайке», «трамбоне», «кселофоне») или ``None``."""
-    form = near(word.lower(), _FORM_KEY)
-    return _FORM_KEY[form] if form else None
+    """Ключ инструмента по слову («балалайке», «трамбоне», «кселофоне») или ``None``.
+
+    Опечатка прощается, только если она однозначна (#3592): точная форма таблицы побеждает; слово известного
+    инструмента без тембра («банджо») не правится в соседа; слово на одной правке от форм ДВУХ разных инструментов —
+    ``None`` (честнее «не знаю», чем наугад: «ситар» не должен стать «гитарой»).
+    """
+    w = word.lower()
+    if w in _FORM_KEY:
+        return _FORM_KEY[w]
+    if w in _UNSUPPORTED or len(w) < _TYPO_MIN_LEN:
+        return None
+    keys = {key for form, key in _FORMS if len(form) >= _TYPO_MIN_LEN and within_one(w, form)}
+    return next(iter(keys)) if len(keys) == 1 else None
 
 
 def split_instrument(words: Sequence[str]) -> Tuple[str, List[str]]:
