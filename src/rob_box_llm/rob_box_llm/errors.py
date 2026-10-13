@@ -81,6 +81,14 @@ class TTSTimeoutError(TTSError):
     """Network or read timeout. Safe to retry with the same prompt."""
 
 
+class TTSConnectionError(TTSTimeoutError):
+    """Transport failure that is NOT a timeout (connect refused, reset, broken stream).
+
+    Subclasses :class:`TTSTimeoutError` only so the existing "transient → retry"
+    policies keep retrying it; the type itself tells the caller it was not a timeout.
+    """
+
+
 class TTSAuthError(TTSError):
     """401 / 403. Indicates bad API key or revoked token."""
 
@@ -101,6 +109,7 @@ __all__ = [
     "TTSError",
     "TTSRateLimitError",
     "TTSTimeoutError",
+    "TTSConnectionError",
     "TTSAuthError",
     "TTSBadRequestError",
 ]

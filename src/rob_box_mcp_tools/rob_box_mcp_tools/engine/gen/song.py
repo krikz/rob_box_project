@@ -262,7 +262,15 @@ def _sing(provider: str, voice: str, lyrics: str, path: str) -> Any:
     try:
         return synth_vocal_to_file(provider, voice, lyrics, path, backends=backends)
     except SingSynthError as exc:
-        raise SongFailed("vocal", f"{provider}:{voice}: {exc}") from exc
+        raise SongFailed(vocal_reason(exc.reason), f"{provider}:{voice}: {exc}") from exc
+
+
+def vocal_reason(synth_reason: str) -> str:
+    """Причина провала по коду ``SingSynthError``: ``vocal_<код>``, если у кода есть слова, иначе общее ``vocal``."""
+    from rob_box_music.source import REASON_WORDS
+
+    reason = f"vocal_{synth_reason}"
+    return reason if reason in REASON_WORDS else "vocal"
 
 
 class SongStudio:

@@ -42,6 +42,13 @@ REASON_WORDS = {
     "no_voice": "не знаю, каким голосом петь",
     "no_preset": "для этого голоса нет пресета пения",
     "vocal": "голос не спел текст",
+    # вокал: ``vocal_`` + ``SingSynthError.reason`` (``rob_box_voice.sing_synth``); нет слов — общее «vocal»
+    "vocal_no_api_key": "нет ключа голоса",
+    "vocal_auth": "голос не принял ключ",
+    "vocal_rate_limit": "голос просит подождать: лимит",
+    "vocal_timeout": "голос не ответил вовремя",
+    "vocal_network": "связь с голосом оборвалась",
+    "vocal_rejected": "голос не принял текст",
     "no_track": "сервис не вернул песню",
     "play_failed": "песня не заиграла",
     "internal": "что-то пошло не так",

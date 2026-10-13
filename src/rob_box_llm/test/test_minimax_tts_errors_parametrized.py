@@ -53,6 +53,7 @@ from rob_box_llm.errors import (
     TTSError,
     TTSRateLimitError,
     TTSTimeoutError,
+    TTSConnectionError,
 )
 from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider
 from rob_box_llm.tts import TTSSettings
@@ -327,23 +328,23 @@ class TestTransportErrors:
             (httpx.ConnectTimeout("connect timeout"), TTSTimeoutError, "connect-timeout"),
             (httpx.ReadTimeout("read timeout"), TTSTimeoutError, "read-timeout"),
             (httpx.PoolTimeout("pool timeout"), TTSTimeoutError, "pool-timeout"),
-            (httpx.ConnectError("conn refused"), TTSTimeoutError, "connect-error"),
-            (httpx.NetworkError("network unreachable"), TTSTimeoutError, "network-error"),
+            (httpx.ConnectError("conn refused"), TTSConnectionError, "connect-error"),
+            (httpx.NetworkError("network unreachable"), TTSConnectionError, "network-error"),
+            (httpx.ReadError(""), TTSConnectionError, "read-error-empty"),
         ],
     )
     async def test_transport_error_mapped_with_no_leak(
         self, side_effect, expected_exc, label
     ) -> None:
-        """Any httpx transport exception → ``TTSTimeoutError`` (current contract).
+        """httpx timeouts → ``TTSTimeoutError``; other transport errors → ``TTSConnectionError``.
 
-        The current ``_map_exception`` lumps every non-``HTTPStatusError``
-        ``httpx.HTTPError`` (which includes ``ConnectError``,
-        ``NetworkError``, ``ReadTimeout``, etc.) into ``TTSTimeoutError``
-        because for the caller the only meaningful question is "can I
-        retry?".  We assert the EXACT type here so a future
-        refactor that splits ``TTSTimeoutError`` and ``TTSConnectionError``
-        forces a deliberate update of these tests rather than a silent
-        semantic change.
+        ``TTSConnectionError`` subclasses ``TTSTimeoutError`` so existing
+        retry policies still retry it, but the type no longer claims a
+        timeout that did not happen (live 13.10: ``TTSTimeoutError: `` with
+        an empty message hid the real cause). The message always starts
+        with the httpx class name — ``ReadError``/``ReadTimeout`` often have
+        an empty ``str()``. We assert the EXACT type so a further split
+        forces a deliberate update of these tests.
         """
         with respx.mock(assert_all_called=False) as router:
             route = router.post("/v1/t2a_v2").mock(side_effect=side_effect)
@@ -355,6 +356,8 @@ class TestTransportErrors:
                 await provider.aclose()
 
         assert type(exc_info.value) is expected_exc
+        assert isinstance(exc_info.value, TTSTimeoutError)  # retry policies keep retrying
+        assert str(exc_info.value).startswith(type(side_effect).__name__)
         assert exc_info.value.provider == "minimax"
         # Transport errors are "could be transient" — a future retry
         # policy might let the provider call the wire a couple of
