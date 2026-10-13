@@ -59,9 +59,6 @@
     "src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py": {
       "AsyncToolExecutor.execute_tools_parallel": 22
     },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py": {
-      "MinimaxMusicClient.generate": 25
-    },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py": {
       "ToolSliceAuthority.extended_with": 16,
       "ToolSliceAuthority.from_mapping": 21
@@ -73,7 +70,7 @@
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
       "StartMappingTool.execute": 18
     },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/minimax_music.py": {
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py": {
       "GenSaveToLibraryTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
@@ -276,12 +273,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py",
-      "method": "MinimaxMusicClient.generate",
-      "cc": 25,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py",
       "method": "ToolSliceAuthority.extended_with",
       "cc": 16,
@@ -312,7 +303,7 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/minimax_music.py",
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",
       "method": "GenSaveToLibraryTool.execute",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"

@@ -151,7 +151,7 @@ def _refusals(contents: list[str]) -> list[dict]:
 
 def test_track_starting_tools_cover_issue_list() -> None:
     expected = {
-        "execute_music_code", "generate_music",
+        "execute_music_code",  # generate_music удалён (ADR-0158 PR-1); вернётся с PR-3
         "gen_play_from_library",
     }
     assert expected <= TRACK_STARTING_TOOLS

@@ -1,23 +1,22 @@
 """
-test_minimax_music.py — Unit tests for minimax_music tools + core modules.
+test_gen_library.py — тесты библиотеки сгенерированных треков и gen_* тулов.
 
-Issue #1392: tests cover:
-  * core/minimax_music_client.py — HTTP error handling, payload validation
-  * core/generated_music_library.py — CRUD + search + play_count
-  * tools/minimax_music.py — all 7 tool classes (param validation + execute paths)
+Issue #1392 / ADR-0158 PR-1: покрыто
+  * engine/gen/library.py — CRUD, поиск, play_count (прежний контракт)
+  * tools/gen_library.py — 6 тулов (валидация параметров и пути execute)
 
-No ROS 2 / real MiniMax API needed — fully mocked.
+Клиент MiniMax Music и тул ``generate_music`` удалены (API 410 Gone с
+20.08.2026); новый клиент KIE — ``test_gen_kie_suno.py``, новая схема и
+миграция — ``test_gen_library_cache.py``. ROS 2 не нужен.
 """
+
 
 import importlib.util
 import json
 import sys
-import tempfile
-from io import BytesIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, patch
-from urllib import error as urllib_error
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -43,11 +42,11 @@ def _fake_node():
     return node
 
 
-# ── Imports under test (load minimax_music directly, bypassing
+# ── Imports under test (load gen_library directly, bypassing
 #    tools/__init__.py which would pull in ros-bound .music + .navigation) ──
 
-def _load_minimax_music_module():
-    """Load rob_box_mcp_tools.tools.minimax_music as a sub-package so its
+def _load_gen_library_module():
+    """Load rob_box_mcp_tools.tools.gen_library as a sub-package so its
     ``from ..base import …`` relative import resolves correctly.
 
     Avoids importing the full ``tools/__init__.py`` which transitively
@@ -64,31 +63,24 @@ def _load_minimax_music_module():
     parent_pkg.__path__ = [str(Path(__file__).resolve().parents[2] / "rob_box_mcp_tools")]
     sys.modules[pkg_name] = parent_pkg
 
-    # Load minimax_music as if it were rob_box_mcp_tools.tools.minimax_music
+    # Load gen_library as if it were rob_box_mcp_tools.tools.gen_library
     file_path = (Path(__file__).resolve().parents[2]
-                 / "rob_box_mcp_tools" / "tools" / "minimax_music.py")
+                 / "rob_box_mcp_tools" / "tools" / "gen_library.py")
     spec = importlib.util.spec_from_file_location(
-        pkg_name + ".tools.minimax_music", str(file_path),
+        pkg_name + ".tools.gen_library", str(file_path),
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[pkg_name + ".tools.minimax_music"] = module
+    sys.modules[pkg_name + ".tools.gen_library"] = module
     spec.loader.exec_module(module)
     return module
 
 
 with _ros:
-    from rob_box_mcp_tools.core.minimax_music_client import (
-        MinimaxMusicAPIError,
-        MinimaxMusicClient,
-        MinimaxMusicConfigError,
-        MinimaxMusicTrack,
-    )
-    from rob_box_mcp_tools.core.generated_music_library import GeneratedMusicLibrary
+    from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 
-    _mm = _load_minimax_music_module()
+    _mm = _load_gen_library_module()
 _ros_stubs = _ros.fixture()
-GenerateMusicTool = _mm.GenerateMusicTool
 GenListLibraryTool = _mm.GenListLibraryTool
 GenSearchLibraryTool = _mm.GenSearchLibraryTool
 GenSaveToLibraryTool = _mm.GenSaveToLibraryTool
@@ -98,143 +90,7 @@ GenGetTrackInfoTool = _mm.GenGetTrackInfoTool
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# core/minimax_music_client.py
-# ════════════════════════════════════════════════════════════════════════════
-
-
-class TestMinimaxMusicClientConfig:
-    def test_missing_api_key_raises(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        with pytest.raises(MinimaxMusicConfigError, match="MINIMAX_API_KEY"):
-            MinimaxMusicClient(api_key="")
-
-    def test_empty_api_key_raises(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        with pytest.raises(MinimaxMusicConfigError):
-            MinimaxMusicClient(api_key="   ")
-
-    def test_explicit_key_works(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        c = MinimaxMusicClient(api_key="test-key-123")
-        assert c.is_configured
-        assert c.default_model == "music-3.0-free"
-
-    def test_env_key_works(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "env-key")
-        c = MinimaxMusicClient()
-        assert c.is_configured
-
-
-class TestMinimaxMusicClientGenerate:
-    """Tests for the sync HTTP call — urlopen is mocked."""
-
-    def _ok_response(self, audio_hex: str = "abcd1234", duration_ms: int = 50000):
-        body = json.dumps({
-            "data": {"audio": audio_hex, "status": 2},
-            "extra_info": {"music_duration": duration_ms, "music_sample_rate": 44100, "bitrate": 256000},
-            "base_resp": {"status_code": 0, "status_msg": "success"},
-        }).encode("utf-8")
-
-        resp = MagicMock()
-        resp.read.return_value = body
-        resp.status = 200
-        resp.__enter__ = lambda self_: self_
-        resp.__exit__ = lambda self_, *a: None
-        return resp
-
-    def test_success_decodes_hex(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-
-        fake_resp = self._ok_response(audio_hex="deadbeef", duration_ms=30000)
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            track = client.generate(prompt="test prompt", lyrics="la la")
-
-        assert isinstance(track, MinimaxMusicTrack)
-        assert track.audio_bytes == b"\xde\xad\xbe\xef"
-        assert track.duration_ms == 30000
-        assert track.model == "music-3.0-free"
-
-    def test_http_error_raises_api_error(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-
-        err = urllib_error.HTTPError(
-            url="http://x", code=401, msg="Unauthorized", hdrs={}, fp=BytesIO(b"invalid key"),
-        )
-        with patch("urllib.request.urlopen", side_effect=err):
-            with pytest.raises(MinimaxMusicAPIError) as exc_info:
-                client.generate(prompt="x", lyrics="y")
-        assert exc_info.value.status_code == 401
-
-    def test_transport_error_raises_api_error(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-
-        with patch("urllib.request.urlopen", side_effect=urllib_error.URLError("boom")):
-            with pytest.raises(MinimaxMusicAPIError, match="transport"):
-                client.generate(prompt="x", lyrics="y")
-
-    def test_base_resp_error_raises(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-
-        body = json.dumps({"base_resp": {"status_code": 1001, "status_msg": "rate limited"}}).encode()
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = body
-        fake_resp.status = 200
-        fake_resp.__enter__ = lambda s: s
-        fake_resp.__exit__ = lambda s, *a: None
-
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            with pytest.raises(MinimaxMusicAPIError, match="rate limited"):
-                client.generate(prompt="x", lyrics="y")
-
-    def test_invalid_hex_raises(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-
-        fake_resp = self._ok_response(audio_hex="not-hex!!")
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            with pytest.raises(MinimaxMusicAPIError, match="non-hex"):
-                client.generate(prompt="x", lyrics="y")
-
-    def test_empty_prompt_raises_value_error(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-        with pytest.raises(ValueError, match="prompt"):
-            client.generate(prompt="", lyrics="x")
-        with pytest.raises(ValueError, match="prompt"):
-            client.generate(prompt="   ", lyrics="x")
-
-    def test_vocal_requires_lyrics(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-        with pytest.raises(ValueError, match="lyrics"):
-            client.generate(prompt="x", lyrics="")
-
-    def test_instrumental_skips_lyrics(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-
-        fake_resp = self._ok_response(audio_hex="aa")
-        with patch("urllib.request.urlopen", return_value=fake_resp) as urlopen_mock:
-            client.generate(prompt="x", is_instrumental=True)  # no lyrics
-        # Verify body sent to API didn't include lyrics
-        request_obj = urlopen_mock.call_args[0][0]
-        body = json.loads(request_obj.data.decode())
-        assert body["is_instrumental"] is True
-        assert "lyrics" not in body
-
-    def test_prompt_too_long_raises(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-        with pytest.raises(ValueError, match="2000"):
-            client.generate(prompt="x" * 2001, lyrics="y")
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# core/generated_music_library.py
+# engine/gen/library.py
 # ════════════════════════════════════════════════════════════════════════════
 
 
@@ -369,17 +225,12 @@ class TestGeneratedMusicLibrary:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# tools/minimax_music.py — 7 MCP tools
+# tools/gen_library.py — 6 MCP tools
 # ════════════════════════════════════════════════════════════════════════════
 
 
 class TestToolBasics:
-    """Generic smoke tests for all 7 tools."""
-
-    @pytest.fixture
-    def client(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        return MinimaxMusicClient()
+    """Generic smoke tests for all 6 tools."""
 
     @pytest.fixture
     def library(self, tmp_path):
@@ -388,9 +239,8 @@ class TestToolBasics:
     def _node(self):
         return _fake_node()
 
-    def test_names_and_descriptions(self, client, library):
+    def test_names_and_descriptions(self, library):
         tools = [
-            (GenerateMusicTool, client, library, "generate_music"),
             (GenListLibraryTool, None, library, "gen_list_library"),
             (GenSearchLibraryTool, None, library, "gen_search_library"),
             (GenSaveToLibraryTool, None, library, "gen_save_to_library"),
@@ -400,10 +250,7 @@ class TestToolBasics:
         ]
         names = []
         for cls, c, l, expected_name in tools:
-            if cls is GenerateMusicTool:
-                t = cls(self._node(), c, l)
-            else:
-                t = cls(self._node(), l)
+            t = cls(self._node(), l)
             assert t.name == expected_name
             assert t.description  # non-empty
             assert len(t.parameters) > 0
@@ -413,160 +260,13 @@ class TestToolBasics:
                 assert p.type
                 assert p.description
             names.append(t.name)
-        assert len(names) == 7
-        assert len(set(names)) == 7  # all unique
-
-    def test_generate_music_blocks_for_llm(self, client, library):
-        tool = GenerateMusicTool(self._node(), client, library)
-        assert tool.blocking is True
-        assert tool.execution_type.value == "long"
-        assert tool.interruptible is True
+        assert len(names) == 6
+        assert len(set(names)) == 6  # all unique
 
     def test_list_search_info_are_read_only(self, library):
         for cls in (GenListLibraryTool, GenSearchLibraryTool, GenGetTrackInfoTool):
             t = cls(self._node(), library)
             assert t.read_only is True
-
-
-class TestGenerateMusicTool:
-    @pytest.fixture
-    def setup(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test")
-        client = MinimaxMusicClient()
-        library = GeneratedMusicLibrary(str(tmp_path / "lib"))
-        tool = GenerateMusicTool(_fake_node(), client, library)
-        return SimpleNamespace(tool=tool, client=client, library=library)
-
-    @pytest.mark.asyncio
-    async def test_generate_saves_to_library(self, setup, monkeypatch):
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = json.dumps({
-            "data": {"audio": "abcd", "status": 2},
-            "extra_info": {"music_duration": 40000, "music_sample_rate": 44100, "bitrate": 256000},
-            "base_resp": {"status_code": 0, "status_msg": "success"},
-        }).encode()
-        fake_resp.__enter__ = lambda s: s
-        fake_resp.__exit__ = lambda s, *a: None
-
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            result = await setup.tool.execute(
-                prompt="dreamy synth", lyrics="la la la", tags="dreamy,synth",
-                mood="dreamy", genre="synthwave", title="Dream Song",
-            )
-
-        assert result.success is True
-        assert "track_id" in result.data
-        assert setup.library.count == 1
-
-    @pytest.mark.asyncio
-    async def test_generate_missing_prompt_fails(self, setup):
-        result = await setup.tool.execute(prompt="", lyrics="x")
-        assert not result.success
-        assert "prompt" in result.error
-
-    @pytest.mark.asyncio
-    async def test_generate_missing_lyrics_fails_for_vocal(self, setup):
-        result = await setup.tool.execute(prompt="x", lyrics="")
-        assert not result.success
-        assert "lyrics" in result.error
-
-    @pytest.mark.asyncio
-    async def test_generate_instrumental_no_lyrics_ok(self, setup, monkeypatch):
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = json.dumps({
-            "data": {"audio": "ff", "status": 2},
-            "extra_info": {"music_duration": 10000},
-            "base_resp": {"status_code": 0, "status_msg": "success"},
-        }).encode()
-        fake_resp.__enter__ = lambda s: s
-        fake_resp.__exit__ = lambda s, *a: None
-
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            result = await setup.tool.execute(prompt="x", is_instrumental=True)
-
-        assert result.success
-
-    @pytest.mark.asyncio
-    async def test_generate_handles_api_error(self, setup):
-        err = urllib_error.HTTPError(
-            url="http://x", code=500, msg="Internal", hdrs={}, fp=BytesIO(b"server dead"),
-        )
-        with patch("urllib.request.urlopen", side_effect=err):
-            # NOTE: call client.generate directly (no asyncio.to_thread) to
-            # bypass event-loop mock-leak issues with pytest-asyncio strict mode.
-            try:
-                track = setup.client.generate(prompt="x", lyrics="y")
-            except MinimaxMusicAPIError as exc:
-                assert exc.status_code == 500
-                assert "Internal" in str(exc) or "500" in str(exc)
-                return
-        pytest.fail("expected MinimaxMusicAPIError, got success")
-
-    @pytest.mark.asyncio
-    async def test_generate_handles_config_error(self):
-        # No API key → ConfigError raised at MinimaxMusicClient ctor (before generate()).
-        # Verify the constructor raises it (independent of asyncio.to_thread).
-        from rob_box_mcp_tools.core.minimax_music_client import (
-            MinimaxMusicClient as Cls, MinimaxMusicConfigError,
-        )
-        with pytest.raises(MinimaxMusicConfigError, match="MINIMAX_API_KEY"):
-            Cls(api_key="")
-
-    def test_generate_tool_surfaces_config_error(self):
-        # If somehow the tool gets a client with no API key, execute() must
-        # surface a friendly MCPToolResult instead of crashing.
-        #
-        # NOTE: We test this with a sync wrapper to avoid asyncio.to_thread
-        # mocking issues (the function is bound to a static method on the
-        # asyncio module which is hard to mock from inside a running loop).
-        from rob_box_mcp_tools.core.minimax_music_client import (
-            MinimaxMusicClient as Cls, MinimaxMusicConfigError,
-        )
-        broken_lib = GeneratedMusicLibrary("/tmp/test_cfg_lib")
-        try:
-            node = SimpleNamespace(get_logger=lambda: _FakeLogger())
-            client = Cls(api_key="placeholder")
-            tool = GenerateMusicTool(node, client, broken_lib)
-
-            # Force generate() to raise ConfigError
-            def _raise(*a, **kw):
-                raise MinimaxMusicConfigError("simulated runtime config failure")
-            client.generate = _raise
-
-            # Call client.generate directly — proves that the underlying
-            # client surfaces ConfigError as expected (the tool's except-block
-            # for ConfigError is a 1-liner and exercised manually).
-            try:
-                client.generate(prompt="x", lyrics="y")
-                pytest.fail("expected ConfigError")
-            except MinimaxMusicConfigError as exc:
-                assert "simulated runtime config failure" in str(exc)
-        finally:
-            import shutil
-            try:
-                shutil.rmtree("/tmp/test_cfg_lib")
-            except OSError:
-                pass
-
-    @pytest.mark.asyncio
-    async def test_generate_auto_save_false_skips_library(self, setup, monkeypatch):
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = json.dumps({
-            "data": {"audio": "ff", "status": 2},
-            "extra_info": {"music_duration": 10000},
-            "base_resp": {"status_code": 0, "status_msg": "success"},
-        }).encode()
-        fake_resp.__enter__ = lambda s: s
-        fake_resp.__exit__ = lambda s, *a: None
-
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            result = await setup.tool.execute(
-                prompt="x", lyrics="y", auto_save=False,
-            )
-
-        assert result.success
-        assert result.data.get("saved") is False
-        assert setup.library.count == 0
 
 
 class TestListSearchTools:
@@ -742,17 +442,3 @@ class TestSaveToLibraryTool:
     def test_missing_track_fails(self, setup):
         result = setup.tool.execute(track_id="ffffffffffffffffffffffffffffffff", rating=5)
         assert not result.success
-
-
-class TestMcpServerRegistration:
-    """Verify graceful degradation paths don't crash mcp_server."""
-
-    def test_minimax_imports_when_module_present(self, monkeypatch):
-        # Just verify the symbols are importable (already done in module
-        # fixtures). Here we test that MCPServer._register_minimax_music_tools
-        # gracefully handles a missing API key.
-        # We don't bootstrap the full MCPServer (needs rclpy Node) — too heavy.
-        # Instead, verify MinimaxMusicClient raises config error if no key.
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        with pytest.raises(MinimaxMusicConfigError):
-            MinimaxMusicClient()
