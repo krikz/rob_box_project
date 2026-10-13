@@ -1,5 +1,7 @@
 """tg_send_voice: токен не утекает в вывод, есть повторы, неуспех = False."""
 import importlib.util
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -64,6 +66,9 @@ def test_http_error_retried_and_fails(ogg):
 
 
 def test_main_exit_code_nonzero_on_failure(monkeypatch):
+    fake = types.ModuleType("requests")
+    fake.post = lambda url, **kw: (_ for _ in ()).throw(OSError("net " + url))
+    monkeypatch.setitem(sys.modules, "requests", fake)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
     monkeypatch.setenv("CHAT", "1")
     monkeypatch.setenv("C", "c")

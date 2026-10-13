@@ -10,8 +10,6 @@ import os
 import sys
 import time
 
-import requests
-
 
 def mask(text, token):
     """Вырезать токен из любого текста."""
@@ -23,10 +21,12 @@ def mask(text, token):
 
 def send_voice(token, chat, caption, path, retries=4, pause=3.0, post=None, sleep=time.sleep):
     """Вернуть (ok, сообщение). Сообщение гарантированно без токена."""
-    post = post or requests.post
     last = "no attempts"
     for attempt in range(1, retries + 1):
         try:
+            if post is None:
+                import requests  # ленивый импорт: нужен только при реальной отправке
+                post = requests.post
             with open(path, "rb") as f:
                 r = post(f"https://api.telegram.org/bot{token}/sendVoice",
                          data={"chat_id": chat, "caption": caption},
