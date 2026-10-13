@@ -244,12 +244,39 @@ class PlayerOwner:
         self.publish_state()
         return True
 
+    def _facts(self) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """``(играющий трек, факты для снимка)``: поля ``dj`` (сет или факты заказа — название, источник, стиль, bpm,
+        инструмент) и время звучания трека: ``started_at``, у конечного — ``length_s`` (один проход формы)."""
+        with self._lock:
+            current = dict(self._current) if self._current else None
+            facts = dict(self._dj)
+            once = self._once
+        if current:
+            facts["started_at"] = current["started_at"]
+            facts.setdefault("bpm", current.get("bpm"))
+            if current.get("track_id") == once:
+                facts["length_s"] = round(current["form_beats"] * 60.0 / current["bpm"], 1)
+        return current, facts
+
+    def now_playing(self) -> Dict[str, Any]:
+        """Что звучит на деке — для ``get_music_state`` (#3613): ``playing``, ``pending`` (поставлен, ждёт
+        ``started``), ``track_id`` и факты :meth:`_facts`; ``elapsed_s``/``remaining_s`` считает код, не LLM."""
+        current, facts = self._facts()
+        with self._lock:
+            pending = self._pending
+        data: Dict[str, Any] = {**facts, "playing": current is not None, "pending": pending,
+                                "track_id": (current or {}).get("track_id")}
+        if current:
+            elapsed = max(0.0, self._clock() - current["started_at"])
+            data["elapsed_s"] = round(elapsed, 1)
+            if "length_s" in facts:
+                data["remaining_s"] = round(max(0.0, facts["length_s"] - elapsed), 1)
+        return data
+
     def publish_state(self, finished_track_id: Optional[str] = None) -> None:
         """Опубликовать latched-снимок (после старта, стопа и при подключении к ROS)."""
         now = self._clock()
-        with self._lock:
-            current = dict(self._current) if self._current else None
-            dj = dict(self._dj)
+        current, dj = self._facts()
         form_ends_at = None
         if current:
             pass_s = current["form_beats"] * 60.0 / current["bpm"]

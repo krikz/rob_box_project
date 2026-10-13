@@ -24,12 +24,8 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 132,
-      "methods": 25
-    },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {
-      "wmc": 189,
-      "methods": 43
+      "wmc": 123,
+      "methods": 24
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
       "wmc": 81,

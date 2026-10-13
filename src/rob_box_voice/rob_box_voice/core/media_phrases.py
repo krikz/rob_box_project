@@ -94,6 +94,75 @@ def with_instrument(phrase: str, data: Mapping[str, Any]) -> str:
     return " ".join(p for p in (phrase, instrument_text(data)) if p)
 
 
+#: Ответ на «что играет?», когда дека пуста (роутер и ``get_music_state`` — одна фраза, #3613).
+NOTHING_PLAYING_TEXT = "Сейчас ничего не играет."
+#: Трек поставлен на деку, а ``started`` ещё не пришло: о звуке не говорим (A14).
+PENDING_TEXT = "Музыку поставил, она ещё не заиграла."
+
+#: Источник звучащего трека (``rob_box_mcp_tools.engine.tools_v2.SOURCE_*``) — словами для фразы «что играет».
+SOURCE_WORDS: Mapping[str, str] = {
+    "synth": "трек из синтов, его собрал код",
+    "piece": "пьеса по нотам партитуры",
+    "melody": "мелодия из архива, без полной аранжировки",
+}
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+
+
+def duration_text(seconds: float, accusative: bool = False) -> str:
+    """«1 минута 5 секунд» (``accusative`` — «играет 1 минуту 5 секунд») — длительность для голоса: числа и
+    склонение — код, не LLM."""
+    total = max(0, int(round(seconds)))
+    minutes, secs = divmod(total, 60)
+    parts = []
+    if minutes:
+        parts.append(f"{minutes} {_plural(minutes, 'минуту' if accusative else 'минута', 'минуты', 'минут')}")
+    if secs or not minutes:
+        parts.append(f"{secs} {_plural(secs, 'секунду' if accusative else 'секунда', 'секунды', 'секунд')}")
+    return " ".join(parts)
+
+
+def now_playing_track_text(facts: Mapping[str, Any]) -> str:
+    """«Что играет» про одиночный трек деки из фактов владельца плеера (``PlayerOwner.now_playing`` или поле ``dj``
+    снимка + ``elapsed_s``): название как во фразе запуска, источник, темп, инструмент, сколько играет и сколько
+    осталось (у пьесы — один проход формы; клубный трек повторяется до стопа). Фразу строит код (ADR-0148, #3613)."""
+    if not facts.get("playing"):
+        return PENDING_TEXT if facts.get("pending") else NOTHING_PLAYING_TEXT
+    name = str(facts.get("name") or facts.get("title") or "")
+    head = f"Сейчас играет «{name}»" if name else "Сейчас играет музыка"
+    if name and facts.get("composer"):  # автор — за кавычками, как во фразе запуска (piece_text)
+        head += f", {facts['composer']}"
+    about = _track_about(facts)
+    parts = [head + (" — " + ", ".join(about) if about else "") + "."]
+    if facts.get("elapsed_s") is not None and facts.get("source"):  # трек сета: время — у сета, не у трека
+        parts.append(_track_time(facts))
+    return " ".join(parts)
+
+
+def _track_about(facts: Mapping[str, Any]) -> list:
+    """Источник, темп и инструмент трека — словами (части фразы «что играет»)."""
+    about = [SOURCE_WORDS[str(facts["source"])]] if str(facts.get("source") or "") in SOURCE_WORDS else []
+    if facts.get("bpm"):
+        bpm = int(round(float(facts["bpm"])))
+        about.append(f"{bpm} {_plural(bpm, 'удар', 'удара', 'ударов')} в минуту")
+    lead = kn.INSTRUMENTS.get(str(facts.get("instrument_played") or ""))
+    if lead is not None:
+        about.append(f"на {lead.prepositional}")
+    return about
+
+
+def _track_time(facts: Mapping[str, Any]) -> str:
+    """Сколько трек играет и сколько осталось (пьеса — один проход формы; клубный трек — по кругу до стопа)."""
+    when = f"Играет уже {duration_text(float(facts['elapsed_s']), accusative=True)}"
+    if facts.get("remaining_s") is not None:
+        return when + f", осталось {duration_text(float(facts['remaining_s']))}."
+    return when + " и повторяется, пока не скажешь «стоп»."
+
+
 #: ADR-0149 PR-6: плеер отказал (``rejected``), ``started`` не пришло или тул не прошёл.
 DJ_FAIL_TEXT = "Не получилось включить диджей-сет — музыка не заиграла."
 REQUEST_FAIL_TEXT = "Не получилось включить музыку."
@@ -211,6 +280,11 @@ def honest_launch_reply(
 
 __all__ = [
     "DJ_FAIL_TEXT",
+    "NOTHING_PLAYING_TEXT",
+    "PENDING_TEXT",
+    "SOURCE_WORDS",
+    "duration_text",
+    "now_playing_track_text",
     "LAUNCH_PHRASE_STEMS",
     "LAUNCH_TOOLS",
     "NOT_LAUNCHED_TEXT",

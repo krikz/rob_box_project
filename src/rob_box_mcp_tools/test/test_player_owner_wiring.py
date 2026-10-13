@@ -50,8 +50,9 @@ class _Node:
 
 
 def _manager():
-    return SimpleNamespace(_renardo_context={}, known_synth_names=lambda: frozenset(),
-                           _send_osc_raw=lambda *a: None)
+    """Звуковой сервер (``RenardoRuntime``, #3614): контекст, палитра, ``send_osc``, слушатель ``/fail``."""
+    return SimpleNamespace(context=lambda: {}, known_synth_names=lambda: frozenset(), send_osc=lambda *a: None,
+                           osc_fail_listener=None)
 
 
 def test_owner_is_attached_unconditionally(monkeypatch):
@@ -67,7 +68,7 @@ def test_no_manager_attaches_nothing_loudly(monkeypatch):
     node = _Node()
     assert module._attach_player_owner_v2(node, None) is None
     assert node.created == [] and node.registry.tools == []
-    assert any("MusicManager" in m for m in node._logger.error_messages)
+    assert any("RenardoRuntime" in m for m in node._logger.error_messages)
 
 
 def test_v2_owner_is_the_only_state_writer(monkeypatch):

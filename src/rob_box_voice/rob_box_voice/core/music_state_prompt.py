@@ -155,11 +155,15 @@ class MusicStateMemory:
             return [("playing", "no"), ("dj", dj)]
         title = self._name or str(snap.dj_info.get("title") or "") or UNNAMED_TRACK
         attrs = [("playing", "yes"), ("track", title)]
-        if snap.stops_at is None:
+        stops_at = snap.stops_at
+        started, length = snap.dj_info.get("started_at"), snap.dj_info.get("length_s")
+        if stops_at is None and isinstance(started, (int, float)) and isinstance(length, (int, float)):
+            stops_at = float(started) + float(length)  # пьеса v2: один проход формы (#3613)
+        if stops_at is None:
             attrs.append(("repeat", "loop"))
         else:
             attrs.append(("repeat", "once"))
-            left = max(0, round(snap.stops_at - now))
+            left = max(0, round(stops_at - now))
             attrs.append(("ends_in_s", str(left)))
         attrs.append(("dj", dj))
         return attrs + _set_attrs(snap)
@@ -202,7 +206,7 @@ class MusicStateMemory:
 #: Факты играющего трека (``engine.dj_lines``): мелодия, следующие по плану, части темы без мелодий в библиотеке.
 SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks", "tracks"), ("melody", "melody"),
              ("played", "played"), ("next_melodies", "next_melodies"), ("not_found", "not_found"), ("bpm", "bpm"),
-             ("persona", "persona"))
+             ("persona", "persona"), ("source", "source"))
 
 
 def _set_attrs(snap: MusicPlayerState) -> list:

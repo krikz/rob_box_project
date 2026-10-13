@@ -221,4 +221,10 @@ def test_issue_3108_topics_go_through_shared_publisher(topic):
         for m in _SHARED_PUBLISHER_CALL.finditer(path.read_text(encoding="utf-8")):
             if m.group(1) == topic:
                 users.append(path.name)
-    assert len(users) >= 2, f"{topic}: ожидалось >= 2 пользователей shared_publisher, нашли {users}"
+    expected = _MIN_SHARED_USERS.get(topic, 2)
+    assert len(users) >= expected, f"{topic}: ожидалось >= {expected} пользователей shared_publisher, нашли {users}"
+
+
+#: #3614: ``StopMusicTool`` больше не держит своих publisher'ов — делегирует
+#: ``MCPServer.stop_generated_track_playback``; ``/voice/sound/stop`` пишет одна нода.
+_MIN_SHARED_USERS = {"/voice/sound/stop": 1}

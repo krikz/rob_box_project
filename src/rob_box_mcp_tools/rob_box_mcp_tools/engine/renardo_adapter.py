@@ -4,12 +4,11 @@
 формы уходящего (PR-5) или блэндом — входящий встаёт за ``overlap`` долей до неё, уходящая дека
 снимается на границе и освобождается (PR-8); проверка ресурсов до exec, спуск
 ``gate=0 → /g_freeAll``. Сам Renardo (контекст, сокет к scsynth, палитра синтов,
-подтверждённая сервером) по-прежнему поднимает ``MusicManager``: адаптер получает его
-пространство имён, ``known_synth_names`` и ``_send_osc_raw`` как функции, второй
-инициализации Renardo нет.
+подтверждённая сервером) поднимает ``renardo_runtime.RenardoRuntime`` (#3614): адаптер получает его
+пространство имён, ``known_synth_names`` и ``send_osc`` как функции, второй инициализации Renardo нет.
 
-Здесь же живут общие со старым путём куски (старое место — импорт отсюда, ADR-0149 §8.1):
-разбор ответа scsynth ``/fail`` (#1808), спуск группы (#3137), загрузка буферов сэмплов (#1815).
+Здесь же живут разбор ответа scsynth ``/fail`` (#1808), спуск группы (#3137), загрузка буферов
+сэмплов (#1815).
 
 Темп: ``Clock.update_tempo_now(bpm)``. Пара ``Clock.bpm = N`` + ``Clock.set_time`` теряет
 смену темпа: ``update_tempo`` откладывает её на следующий такт, а ``set_time`` сбрасывает
@@ -115,7 +114,7 @@ def ramp_down_group(send_osc: Callable[..., None], group: int = 1,
     """``/n_set <group> gate 0`` → пауза → ``/g_freeAll <group>`` (anti-click, #1000/#3137).
 
     ``gate`` есть у меньшинства синтов (~60 из ~370), у остальных ``/n_set`` — no-op; главное —
-    когда звать ``freeAll`` (подробно — ``MusicManager._ramp_down_group``). Best-effort: SC
+    когда звать ``freeAll`` относительно последней ноты (#3137). Best-effort: SC
     недоступен — старые ноды умрут сами.
     """
     try:
@@ -183,7 +182,7 @@ class RenardoAdapter:
     Args:
         namespace: функция → текущее пространство имён Renardo (``Clock``, ``Samples``, плееры).
         known_synths: функция → синты, подтверждённые сервером (``None`` — палитра неизвестна).
-        send_osc: отправка raw OSC в scsynth (``MusicManager._send_osc_raw``).
+        send_osc: отправка raw OSC в scsynth (``RenardoRuntime.send_osc``).
         latency_s: ``Clock.latency`` на время v2.
         lead_beats: за сколько долей до границы формы ставится клок (плееры встают на такт).
     """

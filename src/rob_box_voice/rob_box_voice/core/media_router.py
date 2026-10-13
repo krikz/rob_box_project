@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -55,7 +56,14 @@ from .media_command_grammar import (
     extract_user_utterance,
     parse_media_command,
 )
-from .media_phrases import DJ_FAIL_TEXT, REQUEST_FAIL_TEXT, dj_started_text, request_ok_text
+from .media_phrases import (
+    DJ_FAIL_TEXT,
+    NOTHING_PLAYING_TEXT,
+    REQUEST_FAIL_TEXT,
+    dj_started_text,
+    now_playing_track_text,
+    request_ok_text,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -80,6 +88,8 @@ class MediaState:
     track_name: Optional[str] = None
     dj_persona: str = ""
     set_facts: Mapping[str, Any] = field(default_factory=dict)
+    #: Факты одиночного трека деки (поле ``dj`` снимка + ``elapsed_s``/``remaining_s``) — «что играет» (#3613).
+    track_facts: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -120,7 +130,6 @@ class MediaPlan:
     confirm_started: bool = False
 
 
-NOTHING_PLAYING_TEXT = "Сейчас ничего не играет."
 VOLUME_FAIL_TEXT = "Не получилось поменять громкость музыки."
 STOP_OK_TEXT = "Выключил музыку."
 STOP_IDLE_TEXT = "Сейчас ничего не играет — на всякий случай всё остановил."
@@ -359,18 +368,32 @@ def _now_playing_plan(command: MediaCommand, media: MediaState) -> Optional[Medi
             return MediaPlan(command=command, say_ok=NOTHING_PLAYING_TEXT)
         if media.dj_enabled and facts.get("track_no"):
             return MediaPlan(command=command, say_ok=now_playing_text(facts))
-        return MediaPlan(command=command, say_ok=f"Сейчас играет «{media.track_name}».") if media.track_name else None
+        if media.track_facts.get("source") or media.track_name:  # одиночный трек деки: факты владельца плеера
+            return MediaPlan(command=command, say_ok=now_playing_track_text(media.track_facts))
+        return None
     if not (media.music_playing and media.dj_enabled and facts.get("track_no")):
         return None
     text = when_text(facts, command.name, _fold())
     return MediaPlan(command=command, say_ok=text) if text else None
 
 
-def media_state_from_snapshot(playing: bool, snapshot: Any) -> MediaState:
+def _track_facts(playing: bool, info: Mapping[str, Any], now: float) -> Dict[str, Any]:
+    """Факты трека из снимка: сколько играет и сколько осталось считает код по ``started_at``/``length_s``."""
+    facts: Dict[str, Any] = {**info, "playing": playing}
+    started = info.get("started_at")
+    if playing and isinstance(started, (int, float)):
+        facts["elapsed_s"] = max(0.0, now - float(started))
+        if isinstance(info.get("length_s"), (int, float)):
+            facts["remaining_s"] = max(0.0, float(info["length_s"]) - facts["elapsed_s"])
+    return facts
+
+
+def media_state_from_snapshot(playing: bool, snapshot: Any, now: Optional[float] = None) -> MediaState:
     """Снимок плеера (``MusicPlayerState`` или ``None``) → :class:`MediaState`."""
     info = snapshot.dj_info if snapshot is not None else {}
     title = str(info.get("title") or "")
     return MediaState(
+        track_facts=_track_facts(playing, info, time.time() if now is None else now),
         music_playing=playing,
         dj_enabled=snapshot is not None and bool(snapshot.dj),
         track_name=title if playing and title else None,

@@ -4,6 +4,7 @@
 ``test_engine_session``; события плеера — тот же ``MusicEventLog``, что слушает ``dialogue_node``.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -43,6 +44,20 @@ def test_request_music_plays_one_club_track_on_the_v2_deck():
     started = _started(rig)
     assert [e["track_id"] for e in started] == [result.data["track_id"]] and started[0]["phase_in_form"] == 0.0
     assert rig.states[-1] and '"title"' in rig.states[-1]  # имя трека — в снимке для <music_state>
+    # #3613: факты трека в снимке — название как во фразе запуска («Включаю клубный трек.»), источник, стиль, время
+    dj = json.loads(rig.states[-1])["dj"]
+    assert dj["name"] == "клубный трек" and dj["source"] == "synth" and dj["style"] == "club"
+    assert dj["bpm"] == result.data["bpm"] and "started_at" in dj and "length_s" not in dj  # клубный — по кругу
+
+
+def test_track_facts_of_a_piece_name_the_catalog_title_and_source():
+    from rob_box_mcp_tools.engine.tools_v2 import track_facts
+
+    staged = {"title": "Toccata", "bpm": 112, "key": "D minor", "instrument_played": "organ",
+              "played": {"title": "Toccata", "composer": "Louis Vierne", "source": "score"}}
+    assert track_facts(staged) == {"enabled": False, "title": "Toccata", "name": "Toccata", "composer": "Louis Vierne",
+                                   "source": "piece", "bpm": 112, "key": "D minor", "instrument_played": "organ"}
+    assert track_facts({"title": "x", "played": {"title": "Kalinka", "source": "rtttl"}})["source"] == "melody"
 
 
 def test_mood_picks_the_energy_of_the_track():
@@ -109,14 +124,12 @@ def test_request_closes_a_running_set_and_dj_stop_stops_a_single_track():
 
 def test_old_music_tools_are_gone_and_v2_tools_are_the_music_path():
     """PR-13b ADR-0149 §8.2: ``compose_music``/``preview_arrangement``/``set_dj_mode`` удалены из каталога;
-    ``execute_music_code`` остался только для харнессов (``llm_visible=False``)."""
+    #3614: харнесс ``execute_music_code`` удалён вместе с ``MusicManager`` — кода от LLM/харнесса движок не исполняет."""
     from rob_box_core.tool_catalog import TOOL_CATALOG
 
     names = {e.name for e in TOOL_CATALOG}
     assert not ({"compose_music", "preview_arrangement", "set_dj_mode", "set_vibe_preset",
-                 "save_arrangement_preset"} & names)
-    harness_only = next(e for e in TOOL_CATALOG if e.name == "execute_music_code")
-    assert harness_only.llm_visible is False and not harness_only.operator_visible
+                 "save_arrangement_preset", "execute_music_code"} & names)
     visible = {e.name for e in llm_visible_tools()}
     assert V2_TOOLS <= visible and not (OLD_LLM_MUSIC_TOOLS & visible)
     # PR-15: фильтра по движку нет — реестр оператора (ТАРС) тоже предъявляет тулы v2

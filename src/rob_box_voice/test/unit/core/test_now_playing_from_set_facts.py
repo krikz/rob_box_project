@@ -101,3 +101,53 @@ def test_played_melodies_reach_music_state():
     memory = MusicStateMemory()
     memory.observe_state(_snap(LAST))
     assert 'played="1: Тетрис"' in memory.render(now=100.0)
+
+
+# ── #3613: одиночный трек и пьеса деки v2 — «что играет» отвечает код по фактам владельца плеера ──────────────────
+
+CLUB = {"enabled": False, "title": "космос · 124 BPM", "name": "космос", "source": "synth", "style": "club",
+        "bpm": 124, "started_at": 40.0}
+PIECE = {"enabled": False, "title": "Toccata", "name": "Toccata, Бах", "source": "piece", "bpm": 96,
+         "instrument_played": "organ", "started_at": 70.0, "length_s": 120.0}
+
+
+def _track(dj, now=100.0):
+    return media_state_from_snapshot(True, _snap(dj), now=now)
+
+
+@pytest.mark.parametrize("text", ["что сейчас играет", "что ты включил", "а что это за трек",
+                                  "а раскажи что ты сейчас включил", "скажи какой трек играет"])
+def test_live_3613_single_club_track_is_named_by_code(text):
+    """Живой лог #3613: при ``[music v2] started req99682…`` LLM сказала «в плеере тишина». Теперь — код, без LLM."""
+    plan = MediaRouter().route(text, _track(CLUB))
+    assert plan.tool_calls == ()
+    assert plan.say_ok == ("Сейчас играет «космос» — трек из синтов, его собрал код, 124 удара в минуту. "
+                           "Играет уже 1 минуту и повторяется, пока не скажешь «стоп».")
+
+
+def test_piece_says_source_instrument_and_time_left():
+    say = MediaRouter().route("что играет", _track(PIECE)).say_ok
+    assert say == ("Сейчас играет «Toccata, Бах» — пьеса по нотам партитуры, 96 ударов в минуту, на органе. "
+                   "Играет уже 30 секунд, осталось 1 минута 30 секунд.")
+
+
+def test_piece_author_stays_outside_the_quotes_like_the_launch_phrase():
+    """Живой прогон 13.10: запуск «Ставлю «…Toccata», Louis Vierne.» — ответ «что играет» называет так же."""
+    say = MediaRouter().route("что играет", _track({**PIECE, "name": "Toccata", "composer": "Louis Vierne"})).say_ok
+    assert say.startswith("Сейчас играет «Toccata», Louis Vierne — пьеса по нотам партитуры")
+
+
+def test_music_state_tag_tells_llm_the_piece_ends_and_its_source():
+    """``<music_state>`` для хода LLM: пьеса — один проход (``repeat=once``, сколько осталось), источник — из снимка."""
+    memory = MusicStateMemory()
+    memory.observe_state(_snap(PIECE))
+    tag = memory.render(now=100.0)
+    assert 'repeat="once"' in tag and 'ends_in_s="90"' in tag and 'source="piece"' in tag
+    memory.observe_state(_snap(CLUB))
+    assert 'repeat="loop"' in memory.render(now=100.0)
+
+
+def test_old_snapshot_without_facts_still_names_the_title():
+    """Снимок без фактов заказа (сервер старее подписчика) — название из ``title``, без выдумок об источнике."""
+    say = MediaRouter().route("что играет", _track({"enabled": False, "title": "космос · 124 BPM"})).say_ok
+    assert say == "Сейчас играет «космос · 124 BPM»."

@@ -88,8 +88,6 @@ slices:
     - gen_play_from_library
     - gen_delete_from_library
     - gen_get_track_info
-    # харнесс живой проверки (LLM не виден, ADR-0149 PR-13b)
-    - execute_music_code
     # локальная библиотека
     - stop_music
     # Issue #3125 — громкость музыки (мастер-фейдер), не голоса

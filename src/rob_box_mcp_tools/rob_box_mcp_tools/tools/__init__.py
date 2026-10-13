@@ -23,10 +23,9 @@ from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
 from .dialogue import *
 from .memory import *
 try:
-    # music.py тянет rob_box_voice.core.music_stack_validation, который
-    # доступен только в CI-сборке (colcon). В локальной dev-среде модуль
-    # может быть частично-проинициализирован и падать на импорте — тогда
-    # отдаём урезанный каталог без music-тулов.
+    # music.py тянет rob_box_music и движок v2 (engine/), которые доступны
+    # только в CI-сборке (colcon). В локальной dev-среде модуль может
+    # падать на импорте — тогда отдаём урезанный каталог без music-тулов.
     from .music import *
 except (ImportError, ModuleNotFoundError):
     pass
@@ -79,8 +78,6 @@ __all__ = [
     "MemorySearchTool",
     "MemoryContextTool",
     # Music tools
-    "MusicManager",
-    "ExecuteMusicCodeTool",
     "StopMusicTool",
     "GetMusicStateTool",
     "SearchMelodyTool",

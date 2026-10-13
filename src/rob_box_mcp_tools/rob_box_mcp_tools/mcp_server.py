@@ -59,6 +59,7 @@ from .base import shared_publisher
 from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
+from .engine.renardo_runtime import RenardoRuntime
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
 from .engine.tools_v2 import DjSetTool, RequestMusicTool, music_busy
@@ -101,10 +102,8 @@ from .tools import (
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
-    MusicManager,
     TrackLibrary,
     RtttlLibrary,
-    ExecuteMusicCodeTool,
     StopMusicTool,
     GetMusicStateTool,
     SetMusicVolumeTool,
@@ -235,27 +234,26 @@ def _speaker(node: Any) -> Callable[[str], None]:
     return lambda line: node.registry.execute("speak_text", text=line)
 
 
-def _attach_player_owner_v2(node: Any, manager: Any) -> Optional[PlayerOwner]:
+def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
     ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
     ``/voice/music/event``: latched-публикатор снимка уходит владельцу, у ноды
-    ``music_state_pub`` становится ``None``. Renardo по-прежнему поднимает ``MusicManager``:
-    адаптер берёт его контекст, палитру, подтверждённую сервером, ``_send_osc_raw`` и
-    слушатель ``/fail``. Старый путь удалён (PR-13), движок один.
+    ``music_state_pub`` становится ``None``. Renardo поднимает ``RenardoRuntime`` (#3614):
+    адаптер берёт его контекст, палитру, подтверждённую сервером, ``send_osc``, а
+    ``/fail`` scsynth уходит владельцу. Старый путь удалён (PR-13, #3614), движок один.
     """
-    if manager is None:
-        node.get_logger().error("❌ MusicManager не поднялся — музыкальный движок v2 выключен")
+    if runtime is None:
+        node.get_logger().error("❌ RenardoRuntime не создан — музыкальный движок v2 выключен")
         return None
     latency = float(node.get_parameter("music_v2_clock_latency").value)
     event_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
     node.music_event_pub = node.create_publisher(String, MUSIC_EVENT_TOPIC, event_qos)
-    adapter = RenardoAdapter(lambda: manager._renardo_context, manager.known_synth_names,
-                             manager._send_osc_raw, latency_s=latency)
+    adapter = RenardoAdapter(runtime.context, runtime.known_synth_names, runtime.send_osc, latency_s=latency)
     events = MusicEventLog()
     owner = PlayerOwner(adapter, _string_publisher(node.music_state_pub),
                         _teed_events(_string_publisher(node.music_event_pub), events), logger=node.get_logger())
-    manager.osc_fail_listener = owner.on_server_fail
+    runtime.osc_fail_listener = owner.on_server_fail
     node.music_state_pub = None  # писатель снимка — только владелец
 
     def confirm(track_id: Optional[str]) -> Any:
@@ -317,16 +315,6 @@ class MCPServer(Node):
         super().__init__("mcp_server")
 
         # Параметры ноды
-        # Громкость музыки — ДВА разных параметра, см.
-        # docs/analysis/2026-08-30-music-quality-audit.md (RC1).
-        #
-        # music_max_amp — санитарный потолок ОДНОГО слоя, не регулятор
-        # громкости. Issue 986 («музыка орала, голос не был слышен») чинили
-        # понижением до 0.42, но это выравнивало все слои по одному потолку:
-        # микс становился плоским, а клиппинг оставался (капается каждый amp,
-        # а не их сумма — 4 слоя * 0.42 = 1.68 на шине). Теперь сумму держит
-        # синт masterlimiter в scsynth, поэтому потолок поднят.
-        self.declare_parameter("music_max_amp", 0.85)
         # music_master_gain — ЕДИНСТВЕННАЯ ручка уровня музыки относительно
         # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
         # Внутренняя динамика микса при этом сохраняется.
@@ -452,11 +440,11 @@ class MCPServer(Node):
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
-        self._player_owner = _attach_player_owner_v2(self, getattr(self, "_music_manager", None))
+        self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
 
         # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
         # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
-        # ``MusicManager.stop_all()`` про него ничего не знает, поэтому и
+        # Стоп деки про него ничего не знает, поэтому и
         # ``music_cleanup``, и watchdog его не гасили: юзер сказал «останови
         # музыку», робот ответил «Музыка выключена.», а трек доиграл до
         # конца. Единственным местом, которое реально его останавливало,
@@ -584,39 +572,12 @@ class MCPServer(Node):
         self.publish_tools()
 
         # --------------------------------------------------------------
-        # Music session safety-net — issue #935
+        # Music cleanup — issue #935, ADR-0141
         # --------------------------------------------------------------
-        # Two redundant mechanisms so the robot stops playing music when
-        # the LLM forgets (e.g. the tool-loop is exhausted at
-        # ``_MAX_TOOL_ITERATIONS=5``).  Either of them is sufficient on
-        # its own; both together = belt-and-braces.
-        #
-        # (1) Periodic watchdog timer runs ``auto_stop_idle_music`` every
-        #     ``_MUSIC_WATCHDOG_PERIOD_S`` seconds (default 5s).
-        # (2) ``/mcp/music_cleanup`` topic subscription lets the
-        #     dialogue_node push a single-shot "dialogue ended" message
-        #     that triggers ``stop_music_on_session_end`` immediately.
-        try:
-            self._music_watchdog_period_s: float = float(
-                os.environ.get("MUSIC_WATCHDOG_PERIOD_S", "5.0")
-            )
-        except (TypeError, ValueError):
-            self._music_watchdog_period_s = 5.0
-        self._music_watchdog_enabled: bool = (
-            os.environ.get("MUSIC_WATCHDOG_ENABLED", "true").lower()
-            in ("1", "true", "yes", "on")
-        )
-        # Issue #1812 — idle-TTL threshold, explicitly passed to
-        # ``auto_stop_idle_music`` on every tick so it overrides whatever
-        # default ``MusicManager`` picked up on construction. 300s was too
-        # short for "listening to a track in silence" (the normal case);
-        # 1800s (30 min) matches an actually abandoned session instead.
-        try:
-            self._music_watchdog_idle_ttl_s: float = float(
-                os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
-            )
-        except (TypeError, ValueError):
-            self._music_watchdog_idle_ttl_s = 1800.0
+        # dialogue_node публикует в /mcp/music_cleanup конец речи/диалога и
+        # явные стопы; мягкие причины деку не трогают (_cleanup_spares_deck).
+        # Сторож простоя (auto_stop_idle_music) старого пути удалён в #3614:
+        # его часы ставил только execute_music_code, у движка v2 он молчал.
         # Subscribe to /mcp/music_cleanup — payload is JSON like
         # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
         # payload defaults to dialogue_end.
@@ -632,21 +593,6 @@ class MCPServer(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось подписаться на /mcp/music_cleanup: {exc}"
             )
-
-        if self._music_watchdog_enabled:
-            period = max(0.1, self._music_watchdog_period_s)
-            try:
-                self._music_watchdog_timer = self.create_timer(
-                    period, self._run_music_watchdog
-                )
-                self.get_logger().info(
-                    f"🎵 Music watchdog timer запущен (period={period}s, "
-                    f"ttl={self._music_watchdog_idle_ttl_s}s)"
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"⚠️ Не удалось запустить watchdog timer: {exc}"
-                )
 
         self.get_logger().info(f"🛠️ MCP Server запущен с {len(self.registry)} инструментами")
         self.get_logger().info(f"   Инструменты: {', '.join(self.registry.list_tools())}")
@@ -761,8 +707,6 @@ class MCPServer(Node):
         :class:`dialogue_node` when the dialogue ends. Payload is JSON;
         an empty/non-JSON string defaults to ``reason="dialogue_end"``.
         """
-        if not getattr(self, "_music_manager", None):
-            return
         try:
             payload = json.loads(msg.data) if msg.data else {}
         except (TypeError, ValueError):
@@ -770,20 +714,10 @@ class MCPServer(Node):
         reason = str(payload.get("reason", "dialogue_end")) if isinstance(payload, dict) else "dialogue_end"
         if self._cleanup_spares_deck(reason):
             return
+        playing = music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None))
         self._stop_deck(reason)
-        result = self._music_manager.stop_music_on_session_end()
-        if result.get("was_active"):
-            self.get_logger().warning(
-                f"🎵 [{reason}] Авто-стоп {len(result.get('stopped_patterns', []))} "
-                f"активных паттернов (issue #935). msg={result.get('message')}"
-            )
-        else:
-            self.get_logger().info(
-                f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
-                f"(stop_all вызван профилактически). msg={result.get('message')}"
-            )
-        # Renardo погашен — гасим и mp3-трек в sound_node (см. комментарий
-        # у ``sound_stop_pub``).
+        self.get_logger().info(f"🎵 [{reason}] cleanup: дека {'снята' if playing else 'и так пуста'}")
+        # Дека снята — гасим и mp3-трек в sound_node (см. комментарий у ``sound_stop_pub``).
         self.stop_generated_track_playback()
 
     def _cleanup_spares_deck(self, reason: str) -> bool:
@@ -814,9 +748,9 @@ class MCPServer(Node):
     def _stop_deck(self, reason: str) -> None:
         """Жёсткий cleanup: закрыть сет и снять деку через их владельцев.
 
-        Без этого ``stop_all`` менеджера глушил Renardo за спиной
-        ``PlayerOwner``: снимок оставался ``playing``, а ``SetSession``
-        ставила следующий трек.
+        Одна точка стопа для ``stop_music`` и ``/mcp/music_cleanup``: глушить
+        Renardo за спиной ``PlayerOwner`` нельзя — снимок остался бы
+        ``playing``, а ``SetSession`` поставила бы следующий трек.
         """
         set_tool = getattr(self, "_dj_set_tool", None)
         if set_tool is not None:
@@ -829,7 +763,7 @@ class MCPServer(Node):
         """Остановить mp3 из библиотеки сгенерированной музыки.
 
         ``gen_play_from_library`` публикует путь в ``sound_node``; ни
-        ``MusicManager.stop_all()``, ни ``/g_freeAll`` до него не достают.
+        владелец плеера v2, ни ``/g_freeAll`` до него не достают.
         Одна точка правды для ``StopMusicTool``, ``music_cleanup`` и
         watchdog — issue #1392 follow-up.
         """
@@ -844,41 +778,6 @@ class MCPServer(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось остановить mp3 в sound_node: {exc}"
             )
-
-    def _run_music_watchdog(self) -> None:
-        """Timer callback: auto-stop idle music when TTL is exceeded."""
-        manager = getattr(self, "_music_manager", None)
-        if manager is None:
-            return
-        try:
-            # Issue #1812 — explicit TTL from the (now 30-min-default)
-            # ROS-side parameter, so it always wins over whatever default
-            # MusicManager picked up on construction.
-            result = manager.auto_stop_idle_music(
-                ttl_seconds=self._music_watchdog_idle_ttl_s
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Music watchdog failed: {exc}"
-            )
-            return
-        if result.get("stopped"):
-            patterns = result.get("active_patterns", [])
-            idle = result.get("idle_seconds", "?")
-            ttl = result.get("ttl_seconds", "?")
-            # 🔴 FIX (live 30.08): без ``stop_reason`` строка врала — писала
-            # «после 20.1s (ttl=300s)», хотя музыку убил segments-дедлайн,
-            # а не idle-TTL. Из лога было не понять, почему бит прожил 20
-            # секунд при ttl=300.
-            reason = result.get("stop_reason", "idle_ttl")
-            deadline_segments = result.get("deadline_segments")
-            self.get_logger().warning(
-                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов: "
-                f"reason={reason} idle={idle:.1f}s ttl={ttl:.0f}s"
-                + (f" segments={deadline_segments}" if deadline_segments else "")
-                + ". Issue #935."
-            )
-            self.stop_generated_track_playback()
 
     def _init_waypoint_store(self) -> WaypointAdapter:
         """Инициализация адаптера для вейпоинтов.
@@ -1056,35 +955,19 @@ class MCPServer(Node):
 
     def _register_music_tools(self) -> None:
         """Регистрирует music tools, не роняя весь MCP server при частичной деградации."""
-        music_max_amp = self.get_parameter("music_max_amp").value
         music_master_gain = self.get_parameter("music_master_gain").value
-        self.get_logger().info(
-            f"🎵 Music max_amp: {music_max_amp:.2f}, "
-            f"master_gain: {music_master_gain:.2f}"
-        )
-
+        self.get_logger().info(f"🎵 Music master_gain: {music_master_gain:.2f}")
+        # Renardo и scsynth для движка v2 (#3614): контекст, палитра, raw OSC, /fail, мастер-фейдер.
+        # Не поднялся — нода живёт, get_music_state честно скажет «движок недоступен».
+        runtime: Optional[RenardoRuntime]
         try:
-            music_manager = MusicManager(
-                max_amp=music_max_amp, master_gain=music_master_gain
-            )
-        except Exception as exc:
-            self.get_logger().error(
-                f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
-            )
-            return
-        # Issue #3166: лог «[#3112] трек started» идёт из потока клока Renardo.
-        # getattr: тестовые двойники MusicManager этого метода не имеют.
-        attach_logger = getattr(music_manager, "attach_logger", None)
-        if callable(attach_logger):
-            attach_logger(self.get_logger())
-
-        # Expose the manager so the watchdog / DialogueNode can hook into
-        # session cleanup. Issue #935: when the dialog finishes without
-        # ``stop_music``, an external safety-net (the dialog-end hook below)
-        # calls ``music_manager.stop_music_on_session_end()`` to stop
-        # playback automatically.
-        self._music_manager: Optional[MusicManager] = music_manager
-        self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+            runtime = RenardoRuntime(master_gain=music_master_gain)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"❌ Music subsystem disabled: RenardoRuntime init failed: {exc}")
+            runtime = None
+        if runtime is not None:
+            runtime.attach_logger(self.get_logger())
+        self._renardo_runtime = runtime
 
         # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
         # SQLite. Поиск по имени/жанру; играет мелодию v2 (``request_music``).
@@ -1097,10 +980,11 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
 
-        self.registry.register(StopMusicTool(self, music_manager))
-        self.registry.register(GetMusicStateTool(self, music_manager))
-        # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
-        self.registry.register(SetMusicVolumeTool(self, music_manager))
+        self.registry.register(StopMusicTool(self))
+        self.registry.register(GetMusicStateTool(self, runtime))
+        if runtime is not None:
+            # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
+            self.registry.register(SetMusicVolumeTool(self, runtime))
 
         try:
             track_library = TrackLibrary()
@@ -1112,7 +996,7 @@ class MCPServer(Node):
 
         self._track_library = track_library
         self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
-        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
+        self.registry.register(LookupMelodyTool(self, track_library, rtttl_library))
 
         # Issue #1392 / ADR-0158 — библиотека сгенерированных треков (кэш).
         # Graceful degradation: любой сбой (нет /data, ImportError) выключает
