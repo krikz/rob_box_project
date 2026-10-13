@@ -41,7 +41,8 @@ class Samples:
 def _deck():
     clock = FakeClock(beat=10.0)
     samples = Samples()
-    ns = {"Clock": clock, "Samples": samples, "loop": lambda *a, **k: None, "c3": FakePlayer(clock),
+    ns = {"Clock": clock, "Samples": samples, "loop": lambda *a, **k: None, "var": lambda *a, **k: None,
+          "c3": FakePlayer(clock),
           "d1": FakePlayer(clock), "p1": FakePlayer(clock)}
     sent, states, events = [], [], []
     adapter = RenardoAdapter(lambda: ns, lambda: frozenset(), lambda *a: sent.append(a))

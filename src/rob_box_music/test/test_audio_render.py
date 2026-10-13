@@ -25,7 +25,8 @@ def test_render_plays_the_whole_file_once_in_the_loop_slot():
     slot = kn.DECK_SLOTS["B"][8]
     assert program.slots == {"audio": slot} and program.deck == "B"
     assert program.bpm == kn.AUDIO_DEFAULT_BPM and program.form_beats == 89.5  # 60 BPM: доля — секунда
-    assert f"{slot} >> loop({WAV!r}, dur=179, sus=89.5, atk=0.02, rel=1, amp=1)" in program.code
+    assert (f"{slot} >> loop({WAV!r}, dur=89.5, sus=89.5, atk=0.02, rel=1, "
+            "amp=var([1, 0], [89.5, 89.5], start=Clock.next_bar()))") in program.code
     assert program.sample_files == frozenset({WAV}) and not program.synths and not program.samples
     assert render_audio(AudioTrack("gen_1", WAV, 89.5), "B") == program  # детерминирована
 

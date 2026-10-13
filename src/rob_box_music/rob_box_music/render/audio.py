@@ -4,8 +4,11 @@
 владелец плеера ставит её ``play(..., once=True)`` — ``started`` по клоку, ``finished`` на конце файла, стоп и «что
 играет» — его же. Громкость — мастер-шина (``masterfilter``): синт ``loop`` пишет в общую шину, как ноты синтеза.
 
-Форма — длина файла в долях (``duration_s × bpm / 60``), ``sus`` — та же длина: файл звучит один раз целиком. ``dur``
-плеера — две формы: следующий запуск файла не успевает до ``finished`` (на той же доле владелец снимает деку).
+Форма — длина файла в долях (``duration_s × bpm / 60``), ``sus`` и ``dur`` — та же длина: файл звучит один раз целиком.
+``dur`` обязан равняться форме: Renardo ставит первое событие плеера на ближайшую долю, кратную сумме ``dur``
+(``Player.count``), а владелец ставит клок на границу формы — ``dur`` в две формы через раз давал старт на форму позже.
+Повтор файла на доле ``finished`` (там владелец снимает деку, а бандл ноты уходит с ``latency`` вперёд) глушит
+``amp=var([1, 0], [форма, форма])`` от старта трека.
 Края огибающей — ``knowledge.AUDIO_EDGE_S`` внутри ``sus`` (патч ``loop.scd``, #3432).
 """
 
@@ -14,7 +17,7 @@ from __future__ import annotations
 from .. import knowledge as kn
 from ..model import AudioTrack
 from .program import Program
-from .renardo import ROLE_SLOT, RenderError, _num
+from .renardo import FORM_START, ROLE_SLOT, RenderError, _num
 
 
 def audio_bpm(track: AudioTrack) -> int:
@@ -31,8 +34,8 @@ def render_audio(track: AudioTrack, deck: str) -> Program:
     form = round(track.duration_s * bpm / 60.0, 3)
     atk, rel = kn.AUDIO_EDGE_S
     code = (f"# {track.track_id} {track.source} {track.duration_s:.1f} s deck {deck}\n"
-            f"{slot} >> loop({track.path!r}, dur={_num(2 * form)}, sus={_num(form)}, atk={_num(atk)}, "
-            f"rel={_num(rel)}, amp=1)\n")
+            f"{slot} >> loop({track.path!r}, dur={_num(form)}, sus={_num(form)}, atk={_num(atk)}, "
+            f"rel={_num(rel)}, amp=var([1, 0], [{_num(form)}, {_num(form)}], start={FORM_START}))\n")
     return Program(code=code, track_id=track.track_id, deck=deck, bpm=bpm, form_beats=float(form),
                    slots={"audio": slot}, synths=frozenset(), samples=frozenset(),
                    sample_files=frozenset({track.path}))

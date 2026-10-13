@@ -406,10 +406,16 @@ class RenardoAdapter:
 
     @staticmethod
     def _stop_slots(ns: Mapping[str, Any], slots: Iterable[str]) -> None:
+        """Снять плееры слотов. ``current_dur`` — в ``None``: Renardo (``Player.count``) ставит первое событие
+        следующего ``>>`` на долю, кратную сумме ``dur`` ПРОШЛОЙ программы слота, — снятый плеер её не обновляет
+        (ADR-0158 PR-2, живой прогон 13.10: трек кэша 60 с после трека 88.8 с не встал и за 4 мин)."""
         for slot in dict.fromkeys(slots):
-            stop = getattr(ns.get(slot), "stop", None)
+            player = ns.get(slot)
+            stop = getattr(player, "stop", None)
             if callable(stop):
                 stop()
+                if hasattr(player, "current_dur"):
+                    player.current_dur = None
 
 
 __all__ = [
