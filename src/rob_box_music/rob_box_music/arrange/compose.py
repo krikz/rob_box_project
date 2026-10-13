@@ -226,17 +226,42 @@ def _lead(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, synth: str) ->
         if "lead" not in roles:
             continue
         offset = start * BEATS_PER_BAR
-        tail = [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent) for e in hooks.spill(motif, name, bars, key)]
+        tail = [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent) for e in _breathe(style, motif, name, bars, hooks.spill(motif, name, bars, key, develop_register(style)))]
         if tail:
             landing = sections[i + 1] if i + 1 < len(sections) else None
             if landing is None or "lead" not in landing[3] or max(e.beat for e in tail) >= (landing[0] + landing[1]) * BEATS_PER_BAR:
                 continue
         events += [PitchEvent(e.midi, offset + e.beat, e.dur_beats, e.accent)
-                   for e in hooks.develop(motif, name, bars, key) if offset + e.beat >= busy_until]
+                   for e in _breathe(style, motif, name, bars, hooks.develop(motif, name, bars, key, develop_register(style)))
+                   if offset + e.beat >= busy_until]
         events += tail
         busy_until = max([busy_until] + [e.beat + e.dur_beats for e in tail])
     grid = rhythm.grid({int(e.beat * 4) for e in events}, total * 4)
     return Part("lead", synth, grid, tuple(events), _UNLEVELED, style.registers["lead"])
+
+
+def develop_register(style: kn.Style) -> Tuple[int, int]:
+    """Коридор развития хука (``hook.develop``: терции ``drop2`` над хуком или под ним): коридор лида стиля, но не выше
+    общего потолка ``knowledge.REGISTERS["lead"]`` — у стиля с низким лидом (lofi, #3557) терция не выходит за его
+    коридор, у джаза (86) терции как прежде (84)."""
+    lo, hi = style.registers["lead"]
+    return lo, min(hi, kn.REGISTERS["lead"][1])
+
+
+def _breathe(style: kn.Style, motif: Hook, name: str, bars: int, line: Sequence[PitchEvent]) -> List[PitchEvent]:
+    """Лид с паузами дыхания (``Style.lead_mask``, #3557): ноты, начавшиеся в такте секции с ``.`` маски (по кругу от
+    начала секции), молчат; тема целиком (``knowledge.THEME_SECTION``) звучит без пауз, маска — после неё."""
+    mask = style.lead_mask
+    if not mask:
+        return list(line)
+    theme = motif.theme_bars if motif.theme and kn.section_kind(name) == kn.THEME_SECTION and bars >= motif.theme_bars \
+        else 0
+    out = []
+    for e in line:
+        bar = int(e.beat // BEATS_PER_BAR)
+        if bar < theme or mask[(bar - theme) % len(mask)] != ".":
+            out.append(e)
+    return out
 
 
 def _drum_sources(style: kn.Style, kick: kn.KickSound, roles: Sequence[str],
@@ -312,10 +337,15 @@ def _drum_grids(style: kn.Style, form: Form, swing_ms: int, kit: str,
     return grids
 
 
-def _swung(style: kn.Style, parts: Mapping[str, Part], swing_ms: int) -> Dict[str, Part]:
-    """Грув один на роли стиля (ADR-0153 S4): свинг ``Style.swing_steps`` и нотам, и ударам ``Style.swing_roles``."""
-    return {role: rhythm.swing_part(part, swing_ms, style.swing_steps) if role in style.swing_roles else part
-            for role, part in parts.items()}
+def _swung(style: kn.Style, parts: Mapping[str, Part], swing_ms: int, rng: random.Random) -> Dict[str, Part]:
+    """Грув один на роли стиля (ADR-0153 S4): свинг ``Style.swing_steps`` и нотам, и ударам ``Style.swing_roles``;
+    поверх свинга — «живые руки» ролей ``Style.humanize`` (#3557)."""
+    out = {role: rhythm.swing_part(part, swing_ms, style.swing_steps) if role in style.swing_roles else part
+           for role, part in parts.items()}
+    hands = style.humanize
+    if hands is not None:
+        out.update({role: rhythm.humanize(out[role], hands, rng) for role in hands.roles if role in out})
+    return out
 
 
 def _hook_queue(profile: ThemeProfile, ids: Sequence[str], recent: Sequence[str], rng: random.Random) -> List[str]:
@@ -455,7 +485,8 @@ def _section_degrees(key: Key, line: Sequence[PitchEvent], name: str, bars: int)
     return _per_bar(harmony.qualify(key, line, beats, harmony.viterbi(key, line, beats, -(-bars // slot))), slot)[:bars]
 
 
-def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence: Sequence[Tuple[int, str]] = ()
+def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence: Sequence[Tuple[int, str]] = (),
+               register: Tuple[int, int] = kn.REGISTERS["lead"]
                ) -> Tuple[Tuple[int, ...], Dict[int, harmony.ChordSym], Dict[int, bass.BassTone]]:
     """(ступени петли хука по слотам, аккорд такта формы, тон баса автора такта) — одна гармонизация под звучащую
     мелодию
@@ -480,7 +511,8 @@ def _harmonize(spec: FormSpec, motif: Hook, key: Key, harm: Harmonizer, cadence:
         if "lead" not in roles:
             plan.put(range(start, start + bars), loop_bars, loop_tones, by_form_bar=True)
             continue
-        _lead_section(plan, key, plain, (start, bars, name), (theme, theme_tones), (loop_bars, loop_tones), cadence)
+        _lead_section(plan, key, plain, (start, bars, name), (theme, theme_tones), (loop_bars, loop_tones), cadence,
+                      register)
     return tuple(c.degree for c in loop), plan.degrees, plan.tones
 
 
@@ -488,7 +520,7 @@ Bars = Tuple[Sequence[harmony.ChordSym], Sequence[bass.BassTone]]
 
 
 def _lead_section(plan: "_BarPlan", key: Key, plain: Hook, section: Tuple[int, int, str], theme: Bars, loop: Bars,
-                  cadence: Sequence[Tuple[int, str]]) -> None:
+                  cadence: Sequence[Tuple[int, str]], register: Tuple[int, int] = kn.REGISTERS["lead"]) -> None:
     """Аккорды секции с лидом (:func:`_harmonize`): ``theme``/``loop`` — (аккорды, тоны баса автора) по тактам темы и
     петли хука, ``plain`` — хук без темы. Смены (``knowledge.CHANGES``) — тема, иначе петля, и каденция в конце."""
     start, bars, name = section
@@ -498,8 +530,8 @@ def _lead_section(plan: "_BarPlan", key: Key, plain: Hook, section: Tuple[int, i
         return
     span = len(theme[0]) if kn.section_kind(name) == kn.THEME_SECTION else 0
     plan.put(range(start, start + span), *theme)
-    line = hooks.develop(plain, name, bars, key)
-    hook_line = hooks.develop(plain, "drop", bars, key)
+    line = hooks.develop(plain, name, bars, key, register)
+    hook_line = hooks.develop(plain, "drop", bars, key, register)
     # Хук по кругу, в т. ч. с добавочным голосом (терции drop2). Секция со своим правилом гармонии (build — педаль,
     # break — вдвое длиннее аккорды) остаётся под правилом, даже когда фраза хука в ней теперь звучит целиком (#3580).
     if span or (set(hook_line) <= set(line) and kn.section_kind(name) not in kn.SECTION_HARMONY):
@@ -555,7 +587,7 @@ def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_synth:
     """Лид, гармония под звучащую мелодию секций (:func:`_harmonize`) и пэд под лидом; пэд не помещается —
     ``ValueError``."""
     lead_part = _lead(style, spec, motif, key, lead_synth)
-    loop, degrees, tones = _harmonize(spec, motif, key, harm, style.cadence)
+    loop, degrees, tones = _harmonize(spec, motif, key, harm, style.cadence, develop_register(style))
     pad_top = min(style.registers["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
     bars = sorted(degrees)
     register, chords = _pad_chords(style, key, [degrees[b] for b in bars], pad_top)
@@ -752,7 +784,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     progression = _progression(spec, arranged.chords)
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{seed}:{name}")
-            for name in ("kit", "sample", "loop", "fx", "drums", "fills")}
+            for name in ("kit", "sample", "loop", "fx", "drums", "fills", "hands")}
     kit = _kit(style, history, axis["kit"])
     perc = samples.perc_pool(key, history, axis["sample"]) if "sample" in style.layer_sections else ()
     loop = samples.pick(style.loop_roles, key, history, "sample", axis["loop"])
@@ -767,10 +799,10 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
                             history, seed)
     layers = {"sample": lambda: samples.perc_part(style, perc, kit, axis["sample"]),
               "loop": lambda: LOOP_GENERATORS[style.loop_figure](loop, axis["loop"]),
-              "fx": lambda: samples.fx_part(fx, SECTION_BARS)}  # слой без секций стиля в трек не идёт
+              "fx": lambda: samples.fx_part(fx, style.fx_bars)}  # слой без секций стиля в трек не идёт
     composed = {**drums, "bass": bass_part, "pad": pad_part, "lead": arranged.lead,
                 **{role: make() for role, make in layers.items() if role in style.layer_sections}}
-    parts, track_mix = mix.mix_parts(style, _swung(style, composed, swing_ms), form, figure)
+    parts, track_mix = mix.mix_parts(style, _swung(style, composed, swing_ms, axis["hands"]), form, figure)
     prog = harmony.progression_name(arranged.loop)
     chords = sorted((name, tuple((c.degree, c.voicing) for c in cs)) for name, cs in progression.items())
     sha = hashlib.sha256(repr((plan.bpm, key, step, sorted(parts.items()), chords)).encode()).hexdigest()[:8]
