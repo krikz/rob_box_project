@@ -36,7 +36,7 @@ from ..core import renardo_sanitizer, sample_loops
 from ..engine import renardo_adapter
 from rob_box_music.works import key_slot
 
-from ..engine.search import find
+from ..engine.search import find, find_rare
 from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
@@ -109,6 +109,9 @@ def _resolve_melody_with_candidate(
     hit = find(library, name)
     if hit.found and hit.confidence >= 1.0:
         return hit.query, hit.record
+    rare = find_rare(library, name)  # #3599: «полёт валькирий» - редкое слово названия, остальное архиву неизвестно
+    if rare.found:
+        return rare.query, rare.record
     for candidate in [name] + [v for v in (variants or []) if v]:
         rec = library.get(candidate)
         if rec is not None:

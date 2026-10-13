@@ -247,6 +247,32 @@ def find(library: Any, text: str, limit: int = 5) -> Found:
     return Found(True, round(confidence, 3), record, alternatives, query)
 
 
+#: Редкое слово названия: записей архива с ним не больше (иначе слово общее — «гимн», «марш», «тема» — и одно оно не
+#: называет мелодию).
+RARE_MAX = 3
+
+
+def find_rare(library: Any, text: str) -> Found:
+    """Мелодия по редкому слову названия, когда остальные слова архиву неизвестны (#3599: «полёт валькирий» — слова
+    «полёт» в названии «Ride Of The Valkyries» нет, а «валькирий» есть у двух записей). Условия: известные слова
+    разобраны по словарю архива из русского слова (алиасы и семена реестра дают латиницу: «гимн» → «soviet anthem» —
+    понятие, а не слово названия), неизвестных не больше,
+    чем известных, и запись, покрывающая все известные слова, не больше :data:`RARE_MAX`. Слово, которое архив знает,
+    а запись нет («гимн германии», «марио и тетрис»), сюда не попадает — оно в ``find`` уже ``unmatched``."""
+    query_terms = terms(library, text)
+    known = [t for t in query_terms if t.alts]
+    unknown = [t for t in query_terms if not t.alts]
+    if not known or not unknown or len(unknown) > len(known):
+        return Found(False, 0.0, None)
+    if any(not _CYR_RE.search(t.word) or word_links(t.word) or word_links(stem(t.word)) for t in known):
+        return Found(False, 0.0, None)
+    full = [item for item in ranked(library, known, None, "") if item[0] >= 1.0]
+    if not full or len(full) > RARE_MAX:
+        return Found(False, 0.0, None)
+    _confidence, record, query = full[0]
+    return Found(True, round(len(known) / len(query_terms), 3), record, tuple(r for _c, r, _q in full[1:]), query)
+
+
 @dataclass(frozen=True)
 class ThemeHits:
     """Мелодии темы сета (``theme.seeded_profile(found=names, exact=exact)``); ``exact`` — тема и есть название записи
