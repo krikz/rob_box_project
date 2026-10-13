@@ -1425,6 +1425,12 @@ CHOOSER_DEADLINE_MS = 900
 #: Дедлайн LLM-ступени цепочки (#3564, решение Шифу 13.10): DeepSeek отвечает 0.93–1.29 с, 900 мс его резали бы всегда;
 #: 2 с - потолок ступени. Цепочка Jev (900) → LLM (2000) в худшем случае ждёт 2.9 с, затем кубик кода.
 CHOOSER_LLM_DEADLINE_MS = 2000
+#: Сколько заказ одиночной пьесы ждёт LLM-разбора фразы в слоты (#3609, ADR-0157 §2.1): только когда в названии
+#: остались слова, которых каталог не знает; не уложилась — код-разбор, опоздавший ответ ложится в кэш разборов.
+#: Тот же провайдер, что у LLM-ступени выбора (DeepSeek, 0.93–1.29 с на выбор, #3564).
+REQUEST_SLOTS_WAIT_MS = 1500
+#: Дедлайн самого вызова LLM-разбора в фоне: после :data:`REQUEST_SLOTS_WAIT_MS` ответ идёт только в кэш.
+REQUEST_SLOTS_CALL_MS = 8000
 #: Совпадение названия кандидата со словами заказа: все слова (и тональность, если названа) / слова без тональности
 #: или не все / нет.
 TITLE_EXACT, TITLE_PARTIAL = 1.0, 0.5
@@ -2394,7 +2400,8 @@ __all__ += ["DEFAULT_GENRE", "DEFAULT_STYLE", "DUCK_ROLES", "FORM_NAMES", "GENRE
             "CHOOSER_CLEAR_GAP", "CHOOSER_DEADLINE_MS", "CHOOSER_LLM_DEADLINE_MS", "TITLE_EXACT", "TITLE_PARTIAL",
             "WORK_SCORE_CANDIDATES", "FORM_BARS_STEP", "TRACK_MAX_BARS",
             "SECTION_KINDS", "section_kind", "WINDOW_WORDS", "CHANGES", "TENSION_AVOID"]
-__all__ += ["CHOOSER_DICE_TEMPERATURE", "KNOWN_VIEWS_FLOOR", "KNOWN_VIEWS_FULL", "PIECE_LONG_BEATS"]
+__all__ += ["CHOOSER_DICE_TEMPERATURE", "KNOWN_VIEWS_FLOOR", "KNOWN_VIEWS_FULL", "PIECE_LONG_BEATS",
+            "REQUEST_SLOTS_WAIT_MS", "REQUEST_SLOTS_CALL_MS"]
 
 
 # ── Classic-форма «песня» (PR-11, ADR-0149 §3.3, §9): мелодия целиком по куплетам, аккомпанемент — harmonize ──

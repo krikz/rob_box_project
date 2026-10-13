@@ -55,11 +55,12 @@ from .classic import ClassicPick, classic_picker
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .reasoner import SetPlanBox, SetReasoner
+from .request_slots import Catalog, RequestSlotParser
 from .score_library import ScoreLibrary, seed_plan, track_materials
-from .search import ThemeHits, part_query, ThemeQuery, theme_search
+from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
 from .theme_grounding import set_slots
-from .theme_links import ThemeLinks
+from .theme_links import Ask, ThemeLinks
 
 _LOG = logging.getLogger(__name__)
 
@@ -548,7 +549,8 @@ class RequestMusicTool(MCPTool):
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
                  records: Optional[RecordLookup] = None, words: Optional[WordHooks] = None,
-                 tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE) -> None:
+                 tracks_dir: Optional[str] = None, chooser_mode: str = DETERMINISTIC_MODE,
+                 slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -561,6 +563,10 @@ class RequestMusicTool(MCPTool):
                                   classic or classic_picker(library), history,
                                   chooser=chooser_from_env(chooser_mode, log=self._log), log=self._log)
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
+        # фраза заказа → слоты, проверенные каталогом (#3609); подставной поиск (тесты) — слова без каталога RTTTL
+        words_of = (lambda text: terms(library(), text)) if words is None else (
+            lambda text: part_query(None, text).terms)
+        self._slots = slots or RequestSlotParser(words_of, Catalog(library, dj._scores), ask=slots_ask, log=self._log)
 
     def warm(self) -> threading.Thread:
         """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
@@ -676,9 +682,13 @@ class RequestMusicTool(MCPTool):
         command = parse_media_command(text)
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         work, key = key_slot(query)
+        slots = self._slots.parse(text, work, command)  # непонятые слова — LLM по схеме, проверка каталогом (#3609)
+        slot_lead = None if lead or not slots.instrument else lead_choice(slots.instrument)  # инструмент от LLM
+        work, lead = slots.query, lead or slot_lead
         seed = self._seed()
         try:
-            pick, played, reasons, count = self._pieces.play(work, key, seed, lead, fresh=more)
+            pick, played, reasons, count = self._pieces.play(work, key, seed, lead, fresh=more,
+                                                             confirmed=slots.work_confirmed)
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"classic:{work}", "compose_error", f"{type(exc).__name__}: {exc}")
         self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
@@ -697,7 +707,8 @@ class RequestMusicTool(MCPTool):
         if pick is None:
             return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
         return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
-                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track}
+                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
+                **lead_data(slot_lead)}
 
 
 def _piece_line(pick: Optional[ClassicPick], played: Mapping[str, Any]) -> str:
