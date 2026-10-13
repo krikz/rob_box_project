@@ -38,6 +38,7 @@ import httpx
 from rob_box_llm.errors import (
     TTSAuthError,
     TTSBadRequestError,
+    TTSConnectionError,
     TTSError,
     TTSRateLimitError,
     TTSTimeoutError,
@@ -206,6 +207,12 @@ def _enforce_content_size(
         )
 
 
+def _transport_text(exc: Exception, secrets: tuple[str, ...]) -> str:
+    """``"<класс httpx>: <текст>"`` — у ``ReadError``/``ReadTimeout`` str() часто пустой, класс и есть причина."""
+    text = _redact_sensitive_text(str(exc), secrets=secrets)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def _map_exception(
     exc: Exception,
     *,
@@ -226,9 +233,7 @@ def _map_exception(
     if isinstance(exc, TTSError):
         return exc
     if isinstance(exc, httpx.TimeoutException):
-        return TTSTimeoutError(
-            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
-        )
+        return TTSTimeoutError(_transport_text(exc, secrets), provider=provider)
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         body = _redact_sensitive_text(exc.response.text, secrets=secrets)
@@ -240,9 +245,9 @@ def _map_exception(
             return TTSBadRequestError(f"{status}: {body}", provider=provider)
         return TTSError(f"{status}: {body}", provider=provider)
     if isinstance(exc, httpx.HTTPError):
-        return TTSTimeoutError(
-            _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
-        )
+        # Не таймаут (ConnectError, ReadError, RemoteProtocolError…): свой тип, чтобы
+        # причина не пряталась под «таймаут» (13.10: ``TTSTimeoutError: `` без текста).
+        return TTSConnectionError(_transport_text(exc, secrets), provider=provider)
     return TTSError(
         _redact_sensitive_text(str(exc), secrets=secrets), provider=provider
     )

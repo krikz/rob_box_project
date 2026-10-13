@@ -137,6 +137,26 @@ def probe_duration_s(data: bytes, suffix: str) -> float | None:
             pass
 
 
+#: Попыток MiniMax на один вокал: обрыв/таймаут сети повторяем один раз (как ретрай ``tts_node``, ADR-0003 §2.6);
+#: ключ, лимит и отказ в тексте не повторяем — повтор их не лечит.
+MINIMAX_SING_ATTEMPTS = 2
+
+
+def tts_error_reason(exc: BaseException) -> str:
+    """Код причины ``SingSynthError`` по типу ошибки TTS-провайдера (слова — ``rob_box_music.source.REASON_WORDS``)."""
+    from rob_box_llm.errors import (
+        TTSAuthError,
+        TTSBadRequestError,
+        TTSConnectionError,
+        TTSRateLimitError,
+        TTSTimeoutError,
+    )
+
+    table = ((TTSAuthError, "auth"), (TTSRateLimitError, "rate_limit"), (TTSConnectionError, "network"),
+             (TTSTimeoutError, "timeout"), (TTSBadRequestError, "rejected"))
+    return next((reason for cls, reason in table if isinstance(exc, cls)), "provider_error")
+
+
 class MiniMaxSingBackend:
     """MiniMax T2A v2: speed/volume/pitch/emotion из пресета, mp3 44.1 кГц."""
 
@@ -144,20 +164,38 @@ class MiniMaxSingBackend:
     fmt = "mp3"
 
     def __init__(self, provider: Any = None, *, api_key: str | None = None,
-                 group_id: str | None = None) -> None:
+                 group_id: str | None = None, attempts: int = MINIMAX_SING_ATTEMPTS) -> None:
         self._provider = provider
         self._api_key = api_key if api_key is not None else os.getenv("MINIMAX_API_KEY", "")
         self._group_id = group_id if group_id is not None else os.getenv("MINIMAX_GROUP_ID", "")
+        self._attempts = max(1, attempts)
 
-    def _client(self) -> Any:
-        if self._provider is not None:
-            return self._provider
+    def _new_client(self) -> Any:
         if not self._api_key:
             raise SingSynthError("no_api_key", "MINIMAX_API_KEY не задан")
         from rob_box_llm.providers.minimax_tts import MiniMaxTTSProvider
 
-        self._provider = MiniMaxTTSProvider(api_key=self._api_key, group_id=self._group_id)
-        return self._provider
+        return MiniMaxTTSProvider(api_key=self._api_key, group_id=self._group_id)
+
+    async def _synthesize(self, text: str, settings: Any) -> Any:
+        """Синтез в ОДНОЙ петле: свой httpx-клиент живёт и закрывается в ней (пул не переезжает между петлями)."""
+        from rob_box_llm.errors import TTSConnectionError, TTSError, TTSTimeoutError
+
+        client = self._provider if self._provider is not None else self._new_client()
+        try:
+            for attempt in range(1, self._attempts + 1):
+                try:
+                    return await client.synthesize(text, settings=settings)
+                except TTSError as exc:
+                    retry = isinstance(exc, (TTSTimeoutError, TTSConnectionError)) and attempt < self._attempts
+                    _log.warning("sing_synth: minimax попытка %d/%d: %s: %s%s", attempt, self._attempts,
+                                 type(exc).__name__, exc, " — повторяю" if retry else "")
+                    if not retry:
+                        raise SingSynthError(tts_error_reason(exc), f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            if client is not self._provider:
+                await client.aclose()
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def synth(self, text: str, preset: SingPreset) -> tuple[bytes, int, float | None]:
         from rob_box_llm.tts import TTSFormat, TTSSettings
@@ -173,8 +211,7 @@ class MiniMaxSingBackend:
             sample_rate=MINIMAX_SAMPLE_RATE,
             format=TTSFormat.MP3,
         )
-        client = self._client()
-        audio = _run_coro(client.synthesize(text, settings=settings))
+        audio = _run_coro(self._synthesize(text, settings))
         if not audio.samples:
             raise SingSynthError("empty_audio", "MiniMax вернул пустое аудио")
         raw = audio.raw if isinstance(audio.raw, dict) else {}
