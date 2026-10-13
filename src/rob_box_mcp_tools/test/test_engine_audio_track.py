@@ -149,3 +149,68 @@ def test_decode_failure_is_a_reason_not_silence(tmp_path):
 def test_launch_phrase_is_built_from_the_file():
     assert library_play_text("Космос", 89.4) == "Включаю «Космос» из библиотеки — 1 минута 29 секунд."
     assert library_play_text("", 3) == "Включаю трек из библиотеки — 3 секунды."
+
+
+class RenardoPlayer(FakePlayer):
+    """Старт плеера как в Renardo 0.9.13: ``Clock.next_bar()`` (``Players.py:892``), оттуда — ``Player.count(...,
+    event_after=True)``: ближайшая доля, кратная сумме ``dur`` (``Players.py:702``). ``FakePlayer`` знает только такт."""
+
+    def __rshift__(self, synth):
+        start = self.clock.next_bar()
+        total = float(sum(synth.dur)) if isinstance(synth.dur, (list, tuple)) else float(synth.dur)
+        acc = start - start % total
+        self.event_index = acc if acc == start else acc + total
+        return self
+
+
+def _renardo_deck(beat):
+    deck = _deck()
+    deck.clock.beat = beat
+    deck.ns.update({"loop": lambda *a, dur=1, **k: SimpleNamespace(dur=dur),
+                    "c3": RenardoPlayer(deck.clock), "d1": RenardoPlayer(deck.clock)})
+    return deck
+
+
+def _wait_beats(deck, program):
+    """Доли от заказа до первой доли трека: клок после ``set_time`` — момент заказа (доля — секунда при 60 BPM)."""
+    deck.owner.play(program, once=True)
+    asked = [c for c in deck.clock.calls if c[0] == "set_time"][-1][1]
+    _fire(deck.clock, asked + program.form_beats + 8)
+    started = [json.loads(e) for e in deck.raw if json.loads(e)["event"] == "started"][-1]
+    assert started["track_id"] == program.track_id
+    return started["start_beat"] - asked
+
+
+def _synth(form_beats=256.0):
+    return SimpleNamespace(code="d1 >> loop('dj_dave/x.wav', dur=4)\n", track_id="v2:1:A:synth", deck="A", bpm=120,
+                           form_beats=form_beats, slots={"drums": "d1"}, synths=frozenset(), samples=frozenset(),
+                           sample_files=frozenset())
+
+
+# Фазы клока: на половине из них форма 47.3 доли (без округления до такта) вставала на форму позже — ≈49 с тишины.
+PHASES = (10.0, 11.3, 37.25, 1000.7, 4242.0)
+
+
+@pytest.mark.parametrize("beat", PHASES)
+def test_library_track_on_an_empty_deck_starts_within_the_lead(beat):
+    deck = _renardo_deck(beat)
+    assert _wait_beats(deck, render_audio(AudioTrack("gen_e_1", WAV, 47.3), "A")) <= 2.0
+
+
+@pytest.mark.parametrize("beat", PHASES)
+def test_library_track_after_a_long_synth_form_starts_within_the_lead(beat):
+    """Трек кэша поверх синтеза (форма 256 долей при 120 BPM): конца формы синтеза он не ждёт."""
+    deck = _renardo_deck(beat)
+    deck.owner.play(_synth())
+    _fire(deck.clock, deck.clock.beat + 100.0)  # синтез играет, клок посреди его формы
+    assert _wait_beats(deck, render_audio(AudioTrack("gen_s_1", WAV, 47.3), "A")) <= 2.0
+
+
+@pytest.mark.parametrize("beat", PHASES)
+def test_library_track_after_another_library_track_starts_within_the_lead(beat):
+    deck = _renardo_deck(beat)
+    deck.owner.play(render_audio(AudioTrack("gen_a_1", WAV, 88.8), "A"), once=True)
+    _fire(deck.clock, deck.clock.beat + 30.0)
+    with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
+        wait = _wait_beats(deck, render_audio(AudioTrack("gen_b_1", WAV.replace("abc", "def"), 47.3), "A"))
+    assert wait <= 2.0
