@@ -68,7 +68,10 @@ INSTRUCTIONS = (f"Выбери, что сыграть роботу. У канд�
                 f"видишь, что другой кандидат лучше подходит к заказу. Выбери один id.")
 #: Подписи очков кода для модели (ключи ``CHOOSER_WEIGHTS``).
 _POINTS = {"title_match": "название", "composer_match": "композитор", "fit": "подходит",
-           "rating": "рейтинг", "recent": "повтор", "known": "известное", "long": "длинная форма"}
+           "rating": "рейтинг", "recent": "повтор", "known": "известное", "long": "длинная форма",
+           # путь музыки (ADR-0158 §2.2, ``SOURCE_WEIGHTS``)
+           "synth_fit": "синтез годен", "theme_match": "тема", "asked": "что просили", "fresh": "свежее",
+           "cost": "кредиты", "wait_s": "ожидание"}
 
 
 class ModelUnavailable(Exception):
@@ -93,16 +96,17 @@ def played_text(option: Option) -> str:
             f"штрафа нет")
 
 
-def points_text(option: Option) -> str:
+def points_text(option: Option, weights: Mapping[str, float] = CHOOSER_WEIGHTS) -> str:
     """Очки кода кандидата в одной шкале: «очки кода: название +3, композитор +2, повтор −2; итого 3»."""
     parts = [f"{_POINTS.get(name, name)} {'+' if value > 0 else '−'}{round(abs(value), 3):g}"
-             for name, value in sorted(points(option.features).items(), key=lambda nv: nv[0] == "recent") if value]
-    return f"очки кода: {', '.join(parts) or '0'}; итого {round(score(option.features), 3):g}"
+             for name, value in sorted(points(option.features, weights).items(), key=lambda nv: nv[0] == "recent")
+             if value]
+    return f"очки кода: {', '.join(parts) or '0'}; итого {round(score(option.features, weights), 3):g}"
 
 
-def describe(option: Option) -> str:
+def describe(option: Option, weights: Mapping[str, float] = CHOOSER_WEIGHTS) -> str:
     """Подпись кандидата для модели: «название - композитор; очки кода: …; итого N; сыгранное»."""
-    return "; ".join(p for p in (option.label, points_text(option), played_text(option)) if p)
+    return "; ".join(p for p in (option.label, points_text(option, weights), played_text(option)) if p)
 
 
 def session_text(question: ChoiceQuestion) -> str:
@@ -124,7 +128,8 @@ def to_model_state(question: ChoiceQuestion) -> str:
 
 def to_model_question(question: ChoiceQuestion) -> ModelQuestion:
     ids = question.ids()
-    return ModelQuestion(INSTRUCTIONS, ids, {o.id: describe(o) for o in question.options})
+    return ModelQuestion(question.instructions or INSTRUCTIONS, ids,
+                         {o.id: describe(o, question.weights) for o in question.options})
 
 
 def build_provider(kind: str, env: Optional[Mapping[str, str]] = None, *,

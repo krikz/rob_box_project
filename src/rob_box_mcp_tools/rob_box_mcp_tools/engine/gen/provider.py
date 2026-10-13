@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional, Protocol, Tuple
 
+from rob_box_music.knowledge import DEFAULT_GEN_MODEL
+
 #: Причины недоступности генерации (ADR-0158 §2.1, §3.5). Перечень закрытый.
 REASONS: Tuple[str, ...] = (
     "no_key",             # нет ключа / 401
@@ -45,21 +47,8 @@ class GenUnavailable(Exception):
         self.ticket = ticket
 
 
-@dataclass(frozen=True)
-class ModelInfo:
-    """Цена и скорость модели генерации (замеры 13.10, ADR-0158 §1.3)."""
-
-    credits_per_task: float      # кредитов за задачу (= 2 варианта трека)
-    typical_s: float             # типичное время до success, секунд
-
-
-#: Таблица моделей Suno через KIE. Единственное место цены/скорости (PR-3
-#: перенесёт в ``rob_box_music.knowledge`` вместе с ``GEN_STYLES``).
-GEN_MODELS = {
-    "V6": ModelInfo(credits_per_task=12.0, typical_s=51.0),
-    "V6_MINI": ModelInfo(credits_per_task=12.0, typical_s=30.0),
-}
-DEFAULT_MODEL = "V6"
+#: Таблица моделей (цена, скорость) — ``rob_box_music.knowledge.GEN_MODELS`` рядом с ``GEN_STYLES`` (ADR-0158 PR-3).
+DEFAULT_MODEL = DEFAULT_GEN_MODEL
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,137 @@
+"""ADR-0158 PR-3 — путь музыки: слоты просьбы, кандидаты кода с жёсткими фильтрами, выбор, фразы (G1–G3).
+
+Живой прогон 13.10: «Робот, сгенерируй пиздатый музон своим голосом» → синтез и «Включаю музыку.» — тихая подмена.
+"""
+
+import pytest
+
+from rob_box_music import knowledge as kn
+from rob_box_music.choice import Choice, DeterministicChooser
+from rob_box_music.source import (CacheTrack, SourceAsk, SourceContext, cache_text, choose_route,
+                                  choose_with_fallback, decline_text, gen_block, route_note, source_ask,
+                                  source_candidates)
+
+#: Кэш как на роботе 13.10 (``/data/music_library``): варианты одной задачи — одна группа.
+CACHE = (CacheTrack("a", "Я робот (РОББОКС)", "robot_song", "grunge", False, group="t1"),
+         CacheTrack("b", "Я робот (РОББОКС)", "robot_song", "grunge", False, group="t1"),
+         CacheTrack("c", "Robbox Grunge Test", "instrumental", "grunge", True, group="t2"),
+         CacheTrack("d", "Ride of the Valkyries", "cover", "orchestral", True, group="t3"),
+         CacheTrack("e", "Весна пришла", "song", "", False, group="t4"))
+#: Генерация подключена, деньги есть.
+RICH = SourceContext(gen_ready=True, balance=900.0, day_left=120.0)
+DET = DeterministicChooser()
+
+
+class Boom:
+    """Модель, которая отвечает вне перечня: выбор остаётся за кодом."""
+
+    def choose(self, question, *, deadline_ms=0):
+        return Choice("generate:song:V6", 1.0, "llm")
+
+
+def ids(text, ctx, piece=False):
+    return {o.id for o in source_candidates(source_ask(text), ctx, piece)[0]}
+
+
+@pytest.mark.parametrize("text,ask", [
+    ("Робот, сгенерируй пиздатый музон своим голосом", SourceAsk(True, True, True)),
+    ("спой песню", SourceAsk(vocal=True)),
+    ("поставь песню калинка", SourceAsk()),  # «песня» без «сгенерируй»/«сочини» — не просьба петь
+    ("сочини песню про кота", SourceAsk(vocal=True, own=True)),
+    ("сгенерируй новую музыку", SourceAsk(generated=True, fresh=True)),
+    ("включи гранж", SourceAsk(genre="grunge")),
+    ("сыграй рок", SourceAsk(genre="rock")),
+    ("включи метал", SourceAsk(genre="metal")),
+    ("поставь синтвейв", SourceAsk(genre="synthwave")),
+])
+def test_ask_slots_are_parsed_by_code(text, ask):
+    assert source_ask(text) == ask
+
+
+def test_style_synth_fit_is_data():
+    assert {k for k, st in kn.STYLES.items() if st.synth_fit >= kn.SYNTH_FIT_MIN} == {
+        "club", "rave", "synthwave", "chiptune", "breaks", "dnb"}
+    assert kn.STYLES["rock"].synth_fit == 0.0
+    assert all(st.synth is None or st.synth in kn.STYLES for st in kn.GEN_STYLES.values())
+
+
+@pytest.mark.parametrize("ctx", [
+    SourceContext(cache=CACHE),                                          # исполнителя генерации нет (PR-3)
+    SourceContext(gen_ready=True, balance=0.0, day_left=120.0),           # денег нет
+    SourceContext(gen_ready=True, balance=900.0, day_left=6.0),           # дневной лимит
+    SourceContext(gen_ready=True, balance=900.0, day_left=120.0, set_left=0.0),  # лимит сета
+    SourceContext(gen_ready=True, balance=900.0, day_left=120.0, mode="synth"),  # режим
+    SourceContext(gen_ready=True, balance=900.0, day_left=120.0, has_key=False),
+    SourceContext(gen_ready=True, balance=900.0, day_left=120.0, provider_ok=False),
+])
+def test_no_generate_candidates_without_money_limit_mode_or_executor(ctx):
+    """G2: кандидатов ``generate:*`` нет — кодом, а не верой в модель; модель вне списка — ответ кода."""
+    for text in ("сгенерируй музыку", "спой песню своим голосом", "включи метал"):
+        assert not any(i.startswith("generate:") for i in ids(text, ctx))
+        route = choose_route(source_ask(text), ctx, DeterministicChooser(Boom()))
+        assert route.kind != "generate"
+
+
+def test_reasons_of_blocked_generation():
+    cost = kn.GEN_MODELS[kn.DEFAULT_GEN_MODEL].credits_per_task
+    assert gen_block(SourceContext(), cost) == "not_wired"
+    assert gen_block(SourceContext(gen_ready=True, balance=0.0, day_left=120.0), cost) == "no_credits"
+    assert gen_block(SourceContext(gen_ready=True, day_left=0.0), cost) == "budget_exhausted"
+    assert gen_block(RICH, cost) == ""  # баланс и лимиты ≥ цены — можно
+    assert gen_block(SourceContext(gen_ready=True, day_left=120.0), cost) == ""  # баланс неизвестен: 402 → заново
+
+
+def test_candidate_sets_g1():
+    """G1: набор кандидатов по фразе. Синтез не поёт и не играет рок; кэш — по жанру и голосу; варианты — один."""
+    ctx = SourceContext(cache=CACHE)
+    assert ids("сгенерируй музон своим голосом", ctx) == {"cache:a"}
+    assert ids("спой песню", ctx) == {"cache:a", "cache:e"}
+    assert ids("включи гранж", ctx) == {"cache:a", "cache:c"}
+    assert ids("сыграй рок", ctx) == {"cache:a", "cache:c"}  # гранж — окно рока: тема 0.5
+    assert ids("поставь клубный трек", ctx) == {"synth:club"}
+    assert ids("включи метал", ctx) == {"decline:not_wired"}
+    assert ids("сгенерируй музыку", SourceContext()) == {"synth:club"}
+    assert ids("спой калинку", ctx, piece=True) == {"decline:not_wired"}
+    assert ids("сыграй калинку", ctx, piece=True) == {"synth:piece"}
+    assert "generate:robot_song:V6" in ids("сгенерируй музон своим голосом", RICH)
+
+
+@pytest.mark.parametrize("text,ctx,winner", [
+    ("поставь клубный трек", SourceContext(cache=CACHE), "synth:club"),
+    ("включи музон", SourceContext(cache=CACHE), "synth:club"),
+    ("сгенерируй музыку", SourceContext(cache=CACHE), "cache:c"),  # сгенерированное раньше, инструментал
+    ("сгенерируй музыку", RICH, "generate:instrumental:V6"),
+    ("сгенерируй музыку", SourceContext(), "synth:club"),
+    ("сгенерируй музон своим голосом", SourceContext(cache=CACHE), "cache:a"),
+    ("включи метал", RICH, "generate:instrumental:V6"),
+])
+def test_deterministic_winner(text, ctx, winner):
+    assert choose_route(source_ask(text), ctx, DET).id == winner
+
+
+def test_generation_failure_chooses_again_without_generate():
+    """В3: генерация упала после выбора — выбор заново без ``generate:*``, второго круга нет, фраза — от кода."""
+    ctx = SourceContext(cache=CACHE, gen_ready=True, balance=900.0, day_left=120.0)
+    tried = []
+    route = choose_with_fallback(source_ask("сгенерируй музон своим голосом"), ctx, DET,
+                                 attempt=lambda r: tried.append(r.id) or "provider_down")
+    assert tried == ["generate:robot_song:V6"] and route.id == "cache:a" and route.failed
+    assert cache_text(route) == ("Сгенерировать не вышло: сервис генерации не отвечает. "
+                                 "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)».")
+    ok = choose_with_fallback(source_ask("сгенерируй музыку"), RICH, DET, attempt=lambda r: "")
+    assert ok.kind == "generate" and not ok.failed
+
+
+def test_phrases_name_the_ask_and_the_reason_g3():
+    """G3: играет не то, что просили — фраза кода называет просьбу и причину; отказ — что могу вместо."""
+    live = choose_route(source_ask("Робот, сгенерируй пиздатый музон своим голосом"), SourceContext(cache=CACHE), DET)
+    assert cache_text(live) == ("Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена. "
+                                "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)».")
+    empty = choose_route(source_ask("сгенерируй музон своим голосом"), SourceContext(), DET)
+    assert decline_text(empty) == ("Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена, а синтез "
+                                   "не поёт. Могу сыграть своё: клуб, рейв, синтвейв, чиптюн, брейкбит, драм-н-бейс.")
+    metal = choose_route(source_ask("включи метал"), SourceContext(), DET)
+    assert decline_text(metal).startswith("Метал синтезом у меня не выходит, а генерация у меня ещё не подключена.")
+    synth = choose_route(source_ask("сгенерируй музыку"), SourceContext(), DET)
+    assert route_note(synth) == "Сгенерировать сейчас не могу: генерация у меня ещё не подключена, играю своё."
+    assert route_note(choose_route(source_ask("поставь клубный трек"), SourceContext(), DET)) == ""

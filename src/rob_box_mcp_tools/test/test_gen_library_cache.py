@@ -15,8 +15,8 @@ from rob_box_mcp_tools.engine.gen import keys
 from rob_box_mcp_tools.engine.gen.budget import Budget, BudgetPolicy
 from rob_box_mcp_tools.engine.gen.library import SCHEMA_VERSION, GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.pipeline import generate_into_cache
+from rob_box_music.knowledge import GEN_MODELS
 from rob_box_mcp_tools.engine.gen.provider import (
-    GEN_MODELS,
     GenJob,
     GenStatus,
     GenTicket,

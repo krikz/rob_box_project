@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from rob_box_music.dj_line import SET_NOT_FOUND
 
-from .media_phrases import dj_started_text, launch_text
+from .media_phrases import dj_started_text, launch_text, source_phrase
 from .media_router import DJ_SET_TOOL, NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
 from .music_turn import next_turn_id
@@ -28,6 +28,10 @@ from .set_length_words import heard_set_length
 
 #: Ждать ``started`` после ответа тула: A2 p100 ≤ 6 с (ADR-0149 §7.2).
 STARTED_WAIT_S = 6.0
+
+#: ``via`` результата ``request_music``: трек кэша генераций отдан ``sound_node`` (``gen_play_from_library``) — мимо
+#: владельца плеера, события ``started`` не будет; шов до ADR-0158 PR-2 (деки).
+SOUND_NODE = "sound_node"
 
 #: ``call -> (успех, текст результата)`` — исполнитель тула роутера.
 CallTool = Callable[[Any], Awaitable[Tuple[bool, str]]]
@@ -78,7 +82,7 @@ async def run_media_plan(
         else:
             ok = False
             at = (content or "").find(SET_NOT_FOUND)  # отказ сета «названное не нашлось» — фраза кода (#3493)
-            phrase = phrase or (content[at:].strip() if at >= 0 else "")
+            phrase = phrase or (content[at:].strip() if at >= 0 else "") or source_phrase(content)
     if ok and plan.confirm_started:
         ok, phrase = await _confirm_started(plan, contents, events, log)
     return ok, phrase or (plan.say_ok if ok else plan.say_fail), done
@@ -90,6 +94,9 @@ async def _confirm_started(
 ) -> Tuple[bool, str]:
     first = plan.tool_calls[0].name
     data = tool_data(contents.get(first, "")) or {}
+    if data.get("via") == SOUND_NODE:  # трек кэша играет sound_node: событий started у него нет (ADR-0158 PR-2 — деки)
+        log(f"🎛️ [media-router v2] {first}: трек кэша {data.get('track_id')} отдан sound_node, без события started")
+        return True, _started_text(plan, data)
     track_id = data.get("track_id")
     begin = time.monotonic()
     event = await asyncio.to_thread(events.wait, track_id, STARTED_WAIT_S) if events and track_id else None
