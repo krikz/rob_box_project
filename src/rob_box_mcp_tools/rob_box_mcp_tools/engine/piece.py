@@ -8,6 +8,8 @@ RTTTL, найденных поиском), тональность — слот. 
 ``music_history``); названо произведение — уровни: его партитуры, его RTTTL, затем остальное (ближайшее по
 композитору), свежесть — внутри уровня (решение координатора 12.10: единственную годную партитуру «Токкаты» история
 не выталкивает в рингтон). Не сложился ни один — поиск по названию целиком, затем ближайшее по словам заказа.
+Названный композитор (#3604) — жёсткий фильтр: кандидаты не его не попадают в выбор (``candidates``), поиск по
+названию целиком (он композитора не знает) при нём не запускается; его кандидатов нет вовсе — ``COMPOSER_MISSING``.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from .search import Term, ThemeHits, part_query
 _LOG = logging.getLogger(__name__)
 #: Записи RTTTL по ``id`` с названием для голоса: ``ids -> {id: (запись, название)}``.
 RecordLookup = Callable[[Iterable[str]], Dict[str, Tuple[Dict[str, Any], str]]]
+#: Ключ ``played``: заказ назвал композитора, а его кандидатов нет вовсе (#3604) — чужое вместо него код не ставит.
+COMPOSER_MISSING = "composer_missing"
 #: Кандидатов в строке лога выбора.
 _LOG_CANDIDATES = 8
 
@@ -70,6 +74,24 @@ def levels(ref: WorkRef, candidates: Sequence[WorkCandidate]) -> List[List[WorkC
     own = [c for c in candidates if c.title_match]
     return [[c for c in own if c.kind == SCORE], [c for c in own if c.kind == RTTTL],
             [c for c in candidates if not c.title_match]]
+
+
+def composer_only(ref: WorkRef, candidates: Sequence[WorkCandidate]) -> List[WorkCandidate]:
+    """Композитор, названный в заказе, — условие отбора, а не очки (#3604): чужие не доходят до Chooser."""
+    return [c for c in candidates if c.composer_match] if ref.composer else list(candidates)
+
+
+def whole_name(classic: Callable[..., ClassicPick], ref: WorkRef, work: str, seed: int,
+               lead: Optional[LeadChoice]) -> ClassicPick:
+    """Поиск по названию целиком; композитора он не знает — при названном композиторе не запускается (#3604)."""
+    if ref.composer:
+        return ClassicPick(work, False, "композитор назван: поиск по названию целиком его не знает")
+    return classic(work, seed=seed, **({"lead": lead} if lead else {}))
+
+
+def composer_gap(ref: WorkRef, count: int) -> Dict[str, Any]:
+    """``played`` отказа: композитор назван, а его кандидатов нет вовсе (:data:`COMPOSER_MISSING`)."""
+    return {COMPOSER_MISSING: True} if ref.composer and not count else {}
 
 
 class PieceChain:
@@ -117,14 +139,14 @@ class PieceChain:
         pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead)
         replacement = work if pick is not None and ref.named and chosen and not chosen.title_match else None
         if pick is None:
-            old = self._classic(work, seed=seed, **({"lead": lead} if lead else {}))
+            old = whole_name(self._classic, ref, work, seed, lead)
             pick, count = (old, count + 1) if old.found else (None, count)
         if pick is None:
             near, more, extra = self._near_pick(work, key, seed, lead, [c.id for c, _why in failed])
             pick, failed, count, replacement = near, failed + more, count + extra, work if near else None
         reasons = [why for _c, why in failed]
         if pick is None:
-            return None, {}, reasons, count
+            return None, composer_gap(ref, count), reasons, count
         played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
                   "replacement_for": replacement, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
         return pick, played, reasons, count
@@ -156,7 +178,7 @@ class PieceChain:
         ref = work_ref(query_terms(hits, work), key, self._dj._scores, plain)
         rtttl = ref.rtttl(plain)
         hooks = hook_words(plain[c.id] for c in rtttl)  # узнаваемость партитуры — хук того же произведения (#3577)
-        return ref, [*self._dj._scores.work_candidates(ref, hooks=hooks), *rtttl], records
+        return ref, composer_only(ref, [*self._dj._scores.work_candidates(ref, hooks=hooks), *rtttl]), records
 
     def _work_pick(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]):
         marks = [time.perf_counter()]
@@ -234,4 +256,4 @@ class PieceChain:
             + "; ".join(f"{s:.2f} {o.id} {o.label}{_played_mark(o)}" for s, o in ranked))
 
 
-__all__ = ["PieceChain", "RecordLookup", "levels", "query_terms", "tunes", "work_ref"]
+__all__ = ["COMPOSER_MISSING", "PieceChain", "RecordLookup", "levels", "query_terms", "tunes", "work_ref"]
