@@ -10,13 +10,14 @@ import asyncio
 
 from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 from rob_box_voice.core.media_phrases import launch_text, source_error, source_phrase
-from rob_box_voice.core.media_plan_run import SOUND_NODE, run_media_plan
+from rob_box_voice.core.media_plan_run import run_media_plan
+from rob_box_voice.core.music_player_state import MusicEventLog, build_music_event_payload
 from rob_box_voice.core.media_router import MediaRouter, MediaState
 from rob_box_voice.core.music_turn import MusicTurn
 
 LIVE = "Робот, сгенерируй пиздатый музон своим голосом"
 DECLINE = "Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена, а синтез не поёт."
-CACHE = {"ok": True, "via": SOUND_NODE, "track_id": "c0fe", "playback": "published",
+CACHE = {"ok": True, "track_id": "gen_c0fe_1", "source": "cache",
          "source_message": "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)»."}
 
 
@@ -49,8 +50,11 @@ def test_llm_turn_says_the_decline_phrase_not_a_generic_failure():
     assert ok.phrase() == CACHE["source_message"]
 
 
-def test_router_cache_track_has_no_started_event_and_is_not_a_false_failure():
+def test_router_cache_track_is_confirmed_by_started_of_its_deck_launch():
+    """ADR-0158 PR-2: трек кэша играет на деке — роутер ждёт его ``started`` (как у синтеза), без него — не успех."""
     plan = MediaRouter().route(LIVE, MediaState())
+    events = MusicEventLog()
+    events.observe_json(build_music_event_payload("started", "gen_c0fe_1", ts=1.0))
 
     async def cached(call):
         return True, repr(CACHE)
@@ -58,5 +62,5 @@ def test_router_cache_track_has_no_started_event_and_is_not_a_false_failure():
     async def declined(call):
         return False, source_error(DECLINE)
 
-    assert asyncio.run(run_media_plan(plan, cached))[:2] == (True, CACHE["source_message"])
-    assert asyncio.run(run_media_plan(plan, declined))[:2] == (False, DECLINE)
+    assert asyncio.run(run_media_plan(plan, cached, events))[:2] == (True, CACHE["source_message"])
+    assert asyncio.run(run_media_plan(plan, declined, events))[:2] == (False, DECLINE)

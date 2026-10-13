@@ -273,7 +273,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                chooser_mode=str(node.get_parameter("music_chooser").value),
                                slots_ask=harness_ask(log=node.get_logger),  # #3609: LLM-разбор фразы в слоты
                                # ADR-0158 PR-3: кэш генераций поднимается позже (_register_gen_library_tools) —
-                               # читаем лениво; трек кэша играет gen_play_from_library (sound_node) до PR-2 (деки)
+                               # читаем лениво; трек кэша играет gen_play_from_library на деке (PR-2)
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=lambda track_id: node.registry.execute("gen_play_from_library",
                                                                                   track_id=track_id))
