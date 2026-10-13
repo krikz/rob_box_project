@@ -1643,8 +1643,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'продолжает играть, меняется только уровень. action: '
                        'louder/quieter — шаг ±3 dB, max — максимум, normal — стартовый '
                        'уровень, set — абсолютный уровень level 0..100 (% от '
-                       'максимума). mp3 из MiniMax-библиотеки (gen_play_from_library) '
-                       'этим тулом не регулируется.',
+                       'максимума). Трек из библиотеки генераций '
+                       '(gen_play_from_library) играет на той же деке — регулируется '
+                       'тоже.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'louder — '
