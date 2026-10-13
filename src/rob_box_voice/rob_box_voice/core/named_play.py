@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-from .media_phrases import launch_text, play_ok_text
+from .media_phrases import launch_text, no_more_phrase, play_ok_text
 
 LOOKUP_TOOL = "lookup_melody"
 REQUEST_TOOL = "request_music"
@@ -46,6 +46,8 @@ class NamedPlayStatus(str, Enum):
     MISS = "miss"
     #: Нашлась, но ``request_music`` не прошёл — честная фраза.
     FAILED = "failed"
+    #: «Ещё <автор>», а всё подходящее уже играло (#3599) — фраза кода в ``data["message"]``.
+    NO_MORE = "no_more"
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ def outcome_text(outcome: NamedPlayOutcome, title: str) -> str:
     """Фраза итога найденного заказа: «Ставлю «X».» (+ об инструменте по результату тула) или честный отказ."""
     if outcome.status is NamedPlayStatus.PLAYED:
         return launch_text(play_ok_text(title), outcome.data)
+    if outcome.status is NamedPlayStatus.NO_MORE:
+        return str(outcome.data.get("message") or "")
     return play_fail_text(title)
 
 
@@ -133,26 +137,39 @@ def melody_hit(data: Optional[Mapping[str, Any]]) -> Tuple[Optional[MelodyHit], 
     return MelodyHit(key=key, title=title), ""
 
 
-async def run_named_play(execute: ToolExec, name: str) -> NamedPlayOutcome:
-    """``lookup_melody`` → (полное совпадение) → ``request_music(intent="melody")``."""
+async def _request(execute: ToolExec, name: str, hit: Optional[MelodyHit],
+                   tools_done: Tuple[str, ...]) -> NamedPlayOutcome:
+    """``request_music(intent="melody")``: заиграло — :data:`PLAYED`; «больше нет» — фраза кода; иначе ``FAILED`` с
+    записью ``hit`` (она есть, когда поиск нашёл мелодию целиком) или ``MISS`` без неё («ещё» без находки — реплика LLM)."""
+    played, content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
+    data = tool_data(content) or {}
+    if played:
+        shown = data.get("played") if isinstance(data.get("played"), Mapping) else {}
+        found = hit or MelodyHit(key=str(data.get("melody_id") or ""), title=str(shown.get("title") or name))
+        return NamedPlayOutcome(NamedPlayStatus.PLAYED, hit=found, tools_done=(*tools_done, REQUEST_TOOL), data=data)
+    phrase = no_more_phrase(content)
+    if phrase:
+        return NamedPlayOutcome(NamedPlayStatus.NO_MORE, tools_done=tools_done, reason="больше нет",
+                                data={"message": phrase})
+    if hit is None:
+        return NamedPlayOutcome(NamedPlayStatus.MISS, tools_done=tools_done, reason=f"{REQUEST_TOOL}: не заиграло")
+    return NamedPlayOutcome(NamedPlayStatus.FAILED, hit=hit, tools_done=tools_done, reason=f"{REQUEST_TOOL} не прошёл")
+
+
+async def run_named_play(execute: ToolExec, name: str, more: bool = False) -> NamedPlayOutcome:
+    """``lookup_melody`` → (полное совпадение) → ``request_music(intent="melody")``.
+
+    ``more`` («продолжай играть Вагнера», #3599) — поиск названия не нужен: автор — слово заказа, а «ещё» читает
+    ``request_music`` из реплики хода и берёт то, чего недавно не играло."""
+    if more:
+        return await _request(execute, name, None, ())
     ok, content = await execute(LOOKUP_TOOL, {"name": name})
     if not ok:
         return NamedPlayOutcome(NamedPlayStatus.MISS, reason="lookup: не найдена")
     hit, reason = melody_hit(tool_data(content))
     if hit is None:
-        return NamedPlayOutcome(
-            NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason
-        )
-    played, content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
-    if played:
-        return NamedPlayOutcome(
-            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, REQUEST_TOOL),
-            data=tool_data(content) or {},
-        )
-    return NamedPlayOutcome(
-        NamedPlayStatus.FAILED, hit=hit, tools_done=(LOOKUP_TOOL,),
-        reason=f"{REQUEST_TOOL} не прошёл",
-    )
+        return NamedPlayOutcome(NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason)
+    return await _request(execute, name, hit, (LOOKUP_TOOL,))
 
 
 __all__ = [

@@ -30,8 +30,9 @@ def test_every_synth_of_the_table_is_a_lead_of_the_palette():
 
 
 def test_first_lineup_of_adr_0157():
-    """Состав §3.4: балалайка, арфа, тромбон, ксилофон, пианино, гитара, флейта, орган."""
-    assert set(kn.INSTRUMENTS) == {"balalaika", "harp", "trombone", "xylophone", "piano", "guitar", "flute", "organ"}
+    """Состав §3.4 + #3592: ситар, маримба, калимба."""
+    assert set(kn.INSTRUMENTS) == {"balalaika", "harp", "trombone", "xylophone", "piano", "guitar", "flute", "organ",
+                                   "sitar", "marimba", "kalimba"}
     assert kn.INSTRUMENTS["balalaika"].synth is None and kn.INSTRUMENTS["trombone"].synth == "brass"
     assert kn.INSTRUMENTS["xylophone"].synth == "marimba"
 
@@ -42,6 +43,7 @@ def test_first_lineup_of_adr_0157():
     ("кселофоне", "xylophone"), ("ксилофоне", "xylophone"), ("ксилафоне", "xylophone"),
     ("арфе", "harp"), ("арфой", "harp"), ("пианино", "piano"), ("рояле", "piano"), ("фортепиано", "piano"),
     ("гитаре", "guitar"), ("флейте", "flute"), ("органе", "organ"),
+    ("ситаре", "sitar"), ("ситару", "sitar"), ("маримбе", "marimba"), ("калимбе", "kalimba"),
 ])
 def test_word_forms_and_stt_typos(word, key):
     assert instrument_of(word) == key
@@ -51,6 +53,33 @@ def test_word_forms_and_stt_typos(word, key):
 def test_not_an_instrument(word):
     """Падежи — закрытый список окончаний, опечатки — одна правка и не для коротких слов."""
     assert instrument_of(word) is None
+
+
+@pytest.mark.parametrize("word,key", [
+    ("ситар", "sitar"), ("ситаре", "sitar"), ("ситару", "sitar"), ("гитар", "guitar"), ("гитаре", "guitar"),
+    ("гитару", "guitar"), ("ситера", "sitar"),
+])
+def test_exact_word_is_never_pulled_into_a_neighbour(word, key):
+    """#3592: «ситар» на расстоянии 1 от «гитар» — точная форма таблицы побеждает опечаточный поиск."""
+    assert instrument_of(word) == key
+
+
+@pytest.mark.parametrize("word", ["китар", "китару", "китаре"])
+def test_typo_one_edit_from_two_instruments_is_refused_not_guessed(word):
+    """Слово на одной правке от форм ДВУХ разных инструментов («гитар»/«ситар») — ``None``, а не первый по таблице."""
+    assert instrument_of(word) is None
+
+
+@pytest.mark.parametrize("word", ["банджо", "мандолине", "скрипке", "баяне", "трубе"])
+def test_known_instrument_without_a_timbre_is_not_rewritten_into_a_table_one(word):
+    """Инструмент, которого у робота нет, не подменяется ближайшим по правке: слот не выделяется."""
+    assert instrument_of(word) is None
+    assert split_instrument(["сыграй", "на", word]) == ("", ["сыграй", "на", word])
+
+
+def test_unsupported_stems_do_not_overlap_the_table():
+    stems = {s for ins in kn.INSTRUMENTS.values() for s in ins.stems}
+    assert not stems & set(kn.UNSUPPORTED_INSTRUMENT_STEMS)
 
 
 def test_within_one_is_one_edit():
@@ -77,7 +106,7 @@ def test_lead_choice_honest_degradation_by_family():
     assert lead_choice("trombone").synth == "brass" and not lead_choice("trombone").substituted
     bal = lead_choice("balalaika")
     assert bal.substituted and bal.played == neighbors("balalaika")[0] == "guitar" and bal.synth == "pluck"
-    assert neighbors("balalaika") == ("guitar", "harp")
+    assert neighbors("balalaika") == ("guitar", "harp", "sitar")
     assert lead_choice("organ").played == "piano" and lead_choice("organ").synth == "rhpiano"
     flute = lead_choice("flute")
     assert flute.played == "" and flute.synth is None

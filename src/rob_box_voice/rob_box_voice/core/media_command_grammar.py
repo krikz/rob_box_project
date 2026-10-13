@@ -90,6 +90,8 @@ class MediaCommand:
             десятка», «на полчаса»), ``0`` — не названа (длину решает тул).
         instrument: для ``PLAY_NAMED``/``REQUEST_MUSIC`` — ключ ``knowledge.INSTRUMENTS`` из «на <инструменте>»
             (ADR-0157 §3.1) или ``""``. Слово инструмента в ``name`` не попадает.
+        more: для ``PLAY_NAMED`` — «продолжай играть Вагнера», «ещё Баха» (#3599): не эта же пьеса, а следующая того же
+            автора; сыгранное недавно не повторяется (``request_music`` читает флаг из реплики хода).
     """
 
     intent: MediaIntent
@@ -103,6 +105,7 @@ class MediaCommand:
     style: str = ""
     tracks: int = 0
     instrument: str = ""
+    more: bool = False
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -869,13 +872,46 @@ _NOT_THEME: FrozenSet[str] = (_NOT_A_TITLE - _THEME_LEADS) | _VOICE_WORDS
 _NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"up", "down", "max", "topic", "stop"})
 
 
+#: Просьба продолжить сет (#3581, живой сет 12.10: «продолжай сэт» стал темой «продолжай» → хуки «Carry On»,
+#: «Keep It Up»). Слово — не тема; без новой темы в реплике тема — тема последнего сета (``tools_v2.DjSetTool``).
+SET_CONTINUE_WORDS: FrozenSet[str] = frozenset({
+    "продолжай", "продолжайте", "продолжи", "продолжим", "продолжаем", "продолжить", "продолжение", "дальше",
+    "ещё", "еще", "снова", "опять", "повтори",
+})
+
+#: Смена стиля сета (#3593, живой сет 13.10: «переходим на Рок сэт тема таже» → тема «переходим таже» → Chicken Dance):
+#: глагол смены — просьба, не тема; без новой темы тема — тема последнего сета.
+SET_SWITCH_WORDS: FrozenSet[str] = frozenset({
+    "переходим", "переходи", "переходите", "перейдем", "перейдём", "перейди", "перейти", "переходить",
+    "переключи", "переключись", "переключимся", "переключай", "переключаемся", "переключить", "переключайся",
+    "смени", "смените", "сменим", "сменить", "поменяй", "поменяем", "поменять", "измени", "изменим",
+    "стиль", "стили", "стиля", "стилю", "тема", "тему", "темы", "темой", "только", "но",
+})
+#: «Тема та же» (#3593): слитное «таже» (так пишет STT), пара «та/тот/то/ту/те + же», «то же самое», «прежняя тема».
+SET_SAME_WORDS: FrozenSet[str] = frozenset({
+    "таже", "тотже", "же", "та", "тот", "то", "ту", "те", "самое", "такая", "такой", "такую", "прежняя",
+    "прежний", "прежнюю", "прежней", "прежнее", "прежние", "старая", "старую", "старый", "старое", "старой",
+})
+_SAME_GLUED: FrozenSet[str] = frozenset({"таже", "тотже", "прежняя", "прежний", "прежнюю", "прежней", "прежнее",
+                                        "прежние"})
+_SAME_DEMONSTRATIVE: FrozenSet[str] = frozenset({"та", "тот", "то", "ту", "те", "такая", "такой", "такую"})
+_OLD_WORDS: FrozenSet[str] = frozenset({"старая", "старую", "старый", "старое", "старой"})
+_THEME_NOUNS: FrozenSet[str] = frozenset({"тема", "тему", "темы", "темой", "тематика", "тематику"})
+#: Слова таблицы смены стиля, не глаголы: сами по себе «стиль»/«тема»/«но»/«только» смену не просят.
+_THEME_AND_STYLE_NOUNS: FrozenSet[str] = frozenset({
+    "стиль", "стили", "стиля", "стилю", "тема", "тему", "темы", "темой", "только", "но",
+})
+
 #: Слова просьбы о сете — не тема: глаголы заказа и запуска, «сет», обращение и назначение персоны, длина сета,
 #: служебные. Одна таблица для грамматики и для темы из слов реплики (``theme_grounding.heard_theme``, 07.10).
-SET_REQUEST_WORDS: FrozenSet[str] = _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | frozenset({
+SET_REQUEST_WORDS: FrozenSet[str] = (
+    _ORDER_VERBS | _SET_WORDS | _DJ_FILLER | LENGTH_WORDS | SET_CONTINUE_WORDS | SET_SWITCH_WORDS
+) | {
     "давай", "давайте", "робот", "робби", "будешь", "станешь", "побудь", "диджеем", "диджея", "сэту", "сету",
-    "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "дальше", "пусть",
+    "сеты", "замутим", "замутить", "замутишь", "сделаешь", "организуй", "забабахай", "дай", "пусть",
     "можешь", "мы", "я", "наш", "наша", "наше", "нашу", "нашего",
-})
+    "таже", "тотже", "же", "самое", "прежняя", "прежний", "прежнюю", "прежней", "прежнее", "прежние",
+}
 
 
 #: Режим «сет» (ADR-0157 §2.1): слово сета, диджея или вечеринки. Основы — без регексов (мораторий #3132).
@@ -896,6 +932,34 @@ def asks_for_set(text: str) -> bool:
         if named and not _SET_NEGATION.intersection(words[max(0, i - 2):i]):
             return True
     return bool(_style_words(words)[0])
+
+
+def asks_same_theme(text: Optional[str]) -> bool:
+    """«Тема та же» (#3593): «тема таже», «та же тема», «тот же», «то же самое», «прежняя», «старая тема»."""
+    words = _theme_words(extract_user_utterance(text or ""))
+    for i, word in enumerate(words):
+        if word in _SAME_GLUED:
+            return True
+        if word == "же" and i > 0 and words[i - 1] in _SAME_DEMONSTRATIVE:
+            return True
+        if word in _OLD_WORDS and i + 1 < len(words) and words[i + 1] in _THEME_NOUNS:
+            return True
+    return False
+
+
+def asks_to_keep_theme(text: Optional[str]) -> bool:
+    """Человек меняет стиль, а не тему (#3593): «тема та же» или глагол смены стиля (:data:`SET_SWITCH_WORDS`
+    «переходим», «переключись», «смени»). Названный в реплике жанр («на рок», «только техно») — новый стиль."""
+    words = _theme_words(extract_user_utterance(text or ""))
+    return asks_same_theme(text) or any(w in SET_SWITCH_WORDS and w not in _THEME_AND_STYLE_NOUNS for w in words)
+
+
+def asks_to_continue_set(text: Optional[str]) -> bool:
+    """В реплике просьба продолжить сет (слово :data:`SET_CONTINUE_WORDS`) или оставить тему прежней при смене
+    стиля (:func:`asks_to_keep_theme`). Новая тема в той же реплике важнее — это решает ``dj_set`` по теме из слов
+    реплики (``theme_grounding.heard_theme``)."""
+    words = _theme_words(extract_user_utterance(text or ""))
+    return any(w in SET_CONTINUE_WORDS for w in words) or asks_to_keep_theme(text)
 
 
 def is_spoken_theme_set(text: str) -> bool:
@@ -956,6 +1020,42 @@ def _listed_set(text: str) -> Optional[MediaCommand]:
     return replace(command, set_theme=listed, set_persona=command.persona)
 
 
+#: «Ещё <автор>» — слова :data:`SET_CONTINUE_WORDS` (одна таблица) без «повтори» (то же самое, а не другое).
+MORE_WORDS: FrozenSet[str] = SET_CONTINUE_WORDS - {"повтори"}
+#: Просят то же или сначала: «ещё раз Калинку» — повтор, а не следующая пьеса.
+_MORE_REPEAT: FrozenSet[str] = frozenset({"раз", "раза", "разок", "заново", "сначала", "обратно", "назад", "повтори"})
+#: Слова вокруг «ещё»: глаголы заказа и «играть/слушать», служебные.
+_MORE_HEAD: FrozenSet[str] = _PLAY_NAMED_VERBS | _PLAY_NAMED_LEAD_IN | _PLAY_NAMED_FILLER | frozenset({
+    "играть", "играем", "играйте", "слушать", "слушаем", "послушаем", "послушать", "поиграем", "ещё", "еще",
+})
+_MORE_MAX_TITLE = 3
+
+
+def _more_title(words: Sequence[str]) -> Optional[List[str]]:
+    """Название после слова продолжения: 1–3 слова, не родовые, без условия/ссылки на контекст и громкости/стопа."""
+    title = [w for w in words if w not in _MORE_HEAD and w not in MORE_WORDS]
+    if not title or len(title) > _MORE_MAX_TITLE or all(w in _GENERIC_WORDS for w in title):
+        return None
+    if any(w in (_NOT_A_TITLE - MORE_WORDS) or _word_class(w) is not None for w in title):
+        return None
+    return title
+
+
+def _more_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«продолжай играть вагнера» / «ещё Баха» / «давай ещё Моцарта» → ``PLAY_NAMED(name="вагнера", more=True)``
+    (#3599). Слово продолжения (:data:`MORE_WORDS`) в начале реплики, перед ним и после него — только глаголы заказа
+    и служебные; остальное — автор/название (:func:`_more_title`). Без названия («продолжай», «ещё») и с «ещё раз»
+    (повтор) — ``None``."""
+    body = _strip_lead_in(words)
+    at = next((i for i, w in enumerate(body) if w in MORE_WORDS), None)
+    if at is None or any(w not in _MORE_HEAD for w in body[:at]) or any(w in _MORE_REPEAT for w in body):
+        return None
+    title = _more_title(body[at + 1:])
+    if title is None:
+        return None
+    return MediaCommand(intent=MediaIntent.PLAY_NAMED, closed=True, name=" ".join(title), more=True)
+
+
 #: «Что играет?»: вопросительное слово + слово про звучащее (классы слов, без регексов — мораторий #3132).
 _NOW_QUESTION: FrozenSet[str] = frozenset({"что", "какой", "какая", "какое", "чего"})
 _NOW_SUBJECT: FrozenSet[str] = frozenset({
@@ -1004,17 +1104,25 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     theme_words = _fixed_verb(_theme_words(text))  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
     return (_style_set_command(theme_words) or _named_set_command(theme_words) or _spoken_set_command(text)
-            or _instrument_command(theme_words) or _play_named_command(theme_words))
+            or _instrument_command(theme_words) or _more_command(theme_words)
+            or _play_named_command(theme_words))
 
 
 __all__ = [
     "MEDIA_INTENT_OPTIONS",
+    "MORE_WORDS",
     "MUSIC_STOP_COMMAND_RE",
     "MUSIC_STOP_OVERRIDES",
     "MediaCommand",
     "MediaIntent",
     "NO_COMMAND",
+    "SET_CONTINUE_WORDS",
     "SET_REQUEST_WORDS",
+    "SET_SAME_WORDS",
+    "SET_SWITCH_WORDS",
+    "asks_same_theme",
+    "asks_to_keep_theme",
+    "asks_to_continue_set",
     "asks_for_set",
     "dj_persona_span",
     "extract_dj_persona",

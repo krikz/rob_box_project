@@ -14,8 +14,8 @@
       "classify_sclang_log": 19
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
-      "DialogueNode._build_dynamic_system_context": 24,
-      "DialogueNode._handle_result": 59
+      "DialogueNode._build_dynamic_system_context": 18,
+      "DialogueNode._handle_result": 58
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
@@ -152,7 +152,7 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._build_dynamic_system_context",
-      "cc": 24,
+      "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

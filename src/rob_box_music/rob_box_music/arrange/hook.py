@@ -30,7 +30,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from .. import knowledge as kn
 from ..material import MaterialError, MeterMap, Phrase, ScoreMaterial, meter_map, meter_pending, validate_material
 from ..model import BEATS_PER_BAR, STEPS_PER_BAR, Hook, Key, PitchEvent
-from ..rtttl import contour, parse_rtttl
+from ..rtttl import OCTAVE_LEAP, contour, fix_octaves, parse_rtttl
 from ..tonality import detect_key, key_fit
 from .theme_align import best_match, contour_fit, pitches
 
@@ -224,6 +224,7 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
 
     Разбор строки — здесь, всё остальное — :func:`from_notes` (общий путь с материалом партитуры, ADR-0154 §3.3).
     """
+    rtttl = fix_octaves(rtttl, melody_id)
     try:
         _name, melody_bpm, notes = parse_rtttl(rtttl)
     except ValueError as exc:
@@ -231,12 +232,38 @@ def from_rtttl(rtttl: str, melody_id: str, bpm: int, root: int, mode: str,
         raise HookError(f"RTTTL не разбирается: {exc}") from exc
     theme = None
     if theme_max > 0 and theme_rtttl and theme_rtttl != rtttl:
-        _n, theme_bpm, theme_notes = parse_rtttl(theme_rtttl)  # разбирается: выбрана theme_version
+        _n, theme_bpm, theme_notes = parse_rtttl(fix_octaves(theme_rtttl, melody_id))  # разбирается: theme_version
         ratio = time_scale(theme_bpm, bpm) / time_scale(melody_bpm, bpm)
         first = next(m for m, _d in notes if m is not None)
         offset = (first - next(m for m, _d in theme_notes if m is not None) + 6) % 12 - 6
         theme = ([(None if m is None else m + offset, d * ratio) for m, d in theme_notes], ())
     return from_notes(notes, melody_bpm, melody_id, bpm, root, mode, register, theme_max=theme_max, theme=theme)
+
+
+def _returning_leaps(pitches: Sequence[int]) -> int:
+    """Нот-выбросов: скачок больше октавы от предыдущей, и за 1–2 ноты мелодия вернулась в пределы октавы от неё."""
+    return sum(
+        abs(p - pitches[i - 1]) > OCTAVE_LEAP
+        and any(abs(q - pitches[i - 1]) <= OCTAVE_LEAP for q in pitches[i + 1:i + 3])
+        for i, p in enumerate(pitches) if i)
+
+
+@functools.lru_cache(maxsize=2048)
+def hook_defect(rtttl: str, bpm: int) -> float:
+    """Дефект записи хука 0..1 (#3580, ADR-0152: хук выбирает код): доля звучащих нот — выбросов (скачок больше
+    октавы с возвратом за 1–2 ноты, :func:`_returning_leaps`) плюс доля нот короче шага сетки (1/16 доли) в темпе трека
+    (доли × :func:`time_scale`). Октавы без пропусков автора уже поправлены (:func:`fix_octaves`). Не RTTTL — 0.0:
+    отказ даст сам разбор хука."""
+    try:
+        _name, melody_bpm, notes = parse_rtttl(fix_octaves(rtttl))
+    except ValueError:
+        return 0.0
+    sounding = [(m, d) for m, d in notes if m is not None]
+    if not sounding:
+        return 0.0
+    scale = time_scale(melody_bpm, bpm)
+    fast = sum(d * scale < STEP_BEATS - 1e-9 for _m, d in sounding)
+    return min(1.0, (_returning_leaps([m for m, _d in sounding]) + fast) / len(sounding))
 
 
 def theme_version(melody_id: str, melodies: Mapping[str, str], bpm: int) -> str:
@@ -702,6 +729,6 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
            "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
-           "from_rtttl", "material_hook", "material_scale", "material_unfit", "pick_phrase", "reference_contours",
-           "rhythm_answer", "theme_cuts", "theme_match", "theme_span", "theme_version", "time_scale", "track_key",
-           "voices", "with_theme"]
+           "from_rtttl", "hook_defect", "material_hook", "material_scale", "material_unfit", "pick_phrase",
+           "reference_contours", "rhythm_answer", "theme_cuts", "theme_match", "theme_span", "theme_version",
+           "time_scale", "track_key", "voices", "with_theme"]

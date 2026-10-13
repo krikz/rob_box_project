@@ -22,6 +22,7 @@ import functools
 import gzip
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import sys
@@ -31,9 +32,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .knowledge import (CATEGORY_ARTISTS, DEFAULT_HOOKS, EMPTY_TITLES, KEY_MODE_STEMS, KEY_NOTE_WORDS,
-                        KEY_SIGN_WORDS, KEY_TITLE_MODES, LICENSE_STOP_LIST, ROOTS, TAG_WORK_TYPE, THEMES,
-                        TITLE_EXACT, TITLE_PARTIAL)
-from .material import ScoreMaterial, license_usable
+                        KEY_SIGN_WORDS, KEY_TITLE_MODES, KNOWN_VIEWS_FLOOR, KNOWN_VIEWS_FULL, LICENSE_STOP_LIST,
+                        PIECE_LONG_BEATS, ROOTS, TAG_WORK_TYPE, THEMES, TITLE_EXACT, TITLE_PARTIAL)
+from .material import ScoreMaterial, license_usable, meter_map
 from .rtttl import consensus_order
 
 FACT_SOURCES = ("rtttl", "pdmx", "derived", "manual", "wikidata", "mb")
@@ -819,10 +820,76 @@ def _has(spellings: Iterable[str], words: frozenset) -> bool:
     return any(_words(s) and _words(s) <= words for s in spellings)
 
 
+_BRACKETS_RE = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}")
+_SOURCE_TAIL_RE = re.compile(r"(?:\s+-)?\s+\bfrom\b.*$", re.I)
+
+
+def title_head(title: Any) -> str:
+    """Главная часть названия — то, что пьеса и есть (#3577): без скобок и без хвоста «from …» (источник пьесы).
+    «Bach Fugue in C-Major (from Toccata Adagio and Fugue…)» — фуга, а не токката; пусто после среза — всё название."""
+    text = str(title or "")
+    head = _SOURCE_TAIL_RE.sub("", _BRACKETS_RE.sub(" ", text)).strip()
+    return head or text
+
+
+def known_work(n_views: Optional[int], title: str = "", hooks: Sequence[frozenset] = ()) -> float:
+    """Признак ``known`` (#3577): 1.0 — главная часть названия содержит все значимые слова названия RTTTL-хука того же
+    композитора (хуки — только известные мелодии); иначе просмотры PDMX по логарифмической шкале
+    ``[KNOWN_VIEWS_FLOOR, KNOWN_VIEWS_FULL]`` → 0..1."""
+    if hooks:
+        words = frozenset(_title_tokens(title_head(title)))
+        if any(hook <= words for hook in hooks):
+            return 1.0
+    views = float(n_views or 0)
+    if views <= KNOWN_VIEWS_FLOOR:
+        return 0.0
+    span = math.log10(KNOWN_VIEWS_FULL) - math.log10(KNOWN_VIEWS_FLOOR)
+    return round(min(1.0, (math.log10(views) - math.log10(KNOWN_VIEWS_FLOOR)) / span), 4)
+
+
+def hook_words(records: Iterable[Mapping[str, Any]]) -> Tuple[frozenset, ...]:
+    """Значимые слова названий RTTTL-хуков для :func:`known_work`. Запись, названная именем своего автора («J.S.Bach»
+    — J.S.Bach), произведения не называет и в хуки не идёт (иначе «известна» любая партитура со словом «Bach»)."""
+    out = []
+    for rec in records:
+        title, artist = str(rec.get("title") or ""), str(rec.get("artist") or "")
+        words = frozenset(_title_tokens(title_head(title)))
+        if words and not _named_after_person(title, artist, ""):
+            out.append(words)
+    return tuple(dict.fromkeys(out))
+
+
+def _meter(meter: Any) -> Tuple[int, int]:
+    try:
+        num, den = (int(x) for x in str(meter or "4/4").split("/"))
+    except ValueError:
+        return 4, 4
+    return num, max(1, den)
+
+
+def form_beats(bars: Optional[int], meter: Any) -> float:
+    """Длина партитуры в долях-четвертях: такты × числитель × 4 / знаменатель («3/8» — полторы четверти в такте)."""
+    num, den = _meter(meter)
+    return float(bars or 0) * num * 4 / den
+
+
+def meter_fit(meter: Any) -> float:
+    """Признак ``fit`` партитуры: 1.0 — размер переводится в 4/4 (``material.meter_map``, тот же, что у
+    ``song.score_song``), иначе 0 — песня из неё не сложится (#3577: на «сыграй Баха» первыми стояли «Jesu Joy» и
+    «Goldberg» в 3/4 и тратили перебор)."""
+    return 1.0 if meter_map(_meter(meter)) is not None else 0.0
+
+
+def long_form(beats: float, limit: int = PIECE_LONG_BEATS) -> float:
+    """Признак ``long`` (#3577): 0 до ``limit`` долей, дальше линейно до 1 на ``2·limit``."""
+    return round(min(1.0, max(0.0, (beats - limit) / limit)), 4)
+
+
 @dataclass(frozen=True)
 class WorkCandidate:
     """Кандидат произведения и признаки выбора (§3.3): ``title_match``/``composer_match`` — 1.0 | 0.5 | 0,
-    ``fit`` — материал даёт полную аранжировку (партитура), ``rating`` — рейтинг PDMX 0..1."""
+    ``fit`` — материал даёт полную аранжировку (партитура), ``rating`` — рейтинг PDMX 0..1, ``known`` — узнаваемость
+    (:func:`known_work`), ``long`` — длинная форма (:func:`long_form`)."""
 
     id: str
     kind: str
@@ -832,10 +899,12 @@ class WorkCandidate:
     composer_match: float = 0.0
     fit: float = 0.0
     rating: float = 0.0
+    known: float = 0.0
+    long: float = 0.0
 
     def features(self) -> Dict[str, float]:
         return {"title_match": self.title_match, "composer_match": self.composer_match, "fit": self.fit,
-                "rating": self.rating}
+                "rating": self.rating, "known": self.known, "long": self.long}
 
 
 @dataclass(frozen=True)
@@ -871,8 +940,14 @@ class WorkRef:
         return bool(self.title)
 
     def title_match(self, title: str, found: int) -> float:
-        """``found`` — сколько слов названия нашлось: все и тональность (если названа) — точное; иначе — частичное."""
+        """``found`` — сколько слов названия нашлось: все и тональность (если названа) — точное; иначе — частичное.
+        Слово, которое стоит только вне главной части названия (:func:`title_head`: в скобках, после «from»), не
+        считается (#3577: «Bach Fugue in C-Major (from Toccata Adagio and Fugue…)» на «сыграй Токкату» — фуга)."""
         if not self.title or not found:
+            return 0.0
+        head, whole = _words(title_head(title)), _words(title)
+        found -= sum(1 for t in self.title if _has(t.spellings, whole) and not _has(t.spellings, head))
+        if found <= 0:
             return 0.0
         whole = found >= len(self.title) and (not self.key or key_in_title(self.key, title))
         return TITLE_EXACT if whole else TITLE_PARTIAL

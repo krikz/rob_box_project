@@ -316,6 +316,13 @@ def _reply_if_kept(reply: Turn | None, kept: Iterable[Turn]) -> Turn | None:
     return reply if any(turn is reply for turn in kept) else None
 
 
+def _reply_text(spoken: str, internal_marker: str | None) -> str:
+    """Issue #3598 — финальный текст, годный в историю: рассуждение → ``""``."""
+    if internal_marker:
+        return ""
+    return spoken
+
+
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
     """Объединить имена тулов без повторов, сохранив порядок."""
     return list(dict.fromkeys(name for group in groups for name in group))
@@ -468,6 +475,7 @@ from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — bac
     _PSEUDO_TOOL_CALL_RE,
     is_pseudo_tool_call as _is_pseudo_tool_call,
     is_tool_call_markup,  # Issue #2760
+    quoted_turn_context,  # Issue #3598
 )
 
 
@@ -692,6 +700,12 @@ class DialogResult:
     # validation, the retry in the same turn succeeded» looked exactly
     # like a failure to dialogue_node's music guard (#2966 rule).
     succeeded_tools: list[str] = field(default_factory=list)
+    # Issue #3598 — финальный текст хода цитирует служебное из контекста
+    # хода (``"<music_state>"``) или имя тула (``"speak_text"``): это
+    # рассуждение модели, а не реплика человеку. ``None`` — текст чистый.
+    # Ядро такой текст в историю не пишет; оболочка его не озвучивает
+    # (см. :func:`~rob_box_harness.core.tool_loop.text_classify.quoted_turn_context`).
+    internal_text_marker: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1170,12 @@ class AgentCore:
                 result.music_call_args = outcome.music_call_args
                 result.tool_error_occurred = outcome.tool_error_occurred
                 result.succeeded_tools = list(outcome.succeeded_tools)
+                # Issue #3598 — рассуждение с тегами контекста/именами тулов
+                # не реплика: в историю не ложится (иначе задаёт тон
+                # следующим ходам — живой лог 13.10, ``[3] assistant``).
+                result.internal_text_marker = quoted_turn_context(
+                    outcome.spoken_text, dynamic_system
+                )
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1163,7 +1183,9 @@ class AgentCore:
                     # "done" misleads the model into (a) echoing old topics
                     # and (b) replying "done" itself (silent failures). Silent
                     # turns are dropped entirely — they add no useful context.
-                    assistant_content = outcome.spoken_via_tool or outcome.spoken_text
+                    assistant_content = outcome.spoken_via_tool or _reply_text(
+                        outcome.spoken_text, result.internal_text_marker
+                    )
                     if not self._is_silent_spoken(assistant_content, ()):
                         assistant_metadata = dict(user_metadata)
                         # 🔴 FIX (live 01.09, vision-pi): история хранила

@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 from rob_box_music.choice import ChoiceQuestion, DeterministicChooser, Option, play_stats, recency
 from rob_box_music.instruments import LeadChoice
 from rob_box_music.rtttl import CONTOUR_NOTES, contour
-from rob_box_music.works import RTTTL, SCORE, WorkCandidate, WorkRef, WorkWord
+from rob_box_music.works import RTTTL, SCORE, WorkCandidate, WorkRef, WorkWord, hook_words
 
 from .classic import ClassicPick, PieceMemory, pick_piece, pick_record, pick_score
 from .score_library import PlanMaterials
@@ -89,10 +89,31 @@ class PieceChain:
         self._log = log
         self._clock = clock
 
-    def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]
+    def warm(self, word: str = "бах") -> Dict[str, float]:
+        """Прогрев (#3577) — то, что первый заказ иначе строит сам: индекс партитур (~3 с на Pi, 138 тыс. строк),
+        каталог RTTTL и его словарь поиска (``word`` — слово поиска), история. Мс по шагам — в лог."""
+        steps: Dict[str, float] = {}
+        for name, step in (("индекс партитур", lambda: self._dj._scores.index()),
+                           ("каталог RTTTL", lambda: self._records(self._words(word).names)),
+                           ("история", self.memory.recent)):
+            started = time.perf_counter()
+            try:
+                step()
+            except Exception as exc:  # noqa: BLE001 — прогрев не держит ноду: заказ построит сам
+                self._log().warning(f"⚠️ [classic] прогрев «{name}» упал: {type(exc).__name__}: {exc}")
+            steps[name] = round((time.perf_counter() - started) * 1000)
+        self._log().info("🎼 [classic] прогрев: " + ", ".join(f"{k} {v:.0f} мс" for k, v in steps.items()))
+        return steps
+
+    def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], fresh: bool = False
              ) -> Tuple[Optional[ClassicPick], Dict[str, Any], List[str], int]:
         """Произведение → поиск по названию целиком (``find_record``) → ближайшее по словам заказа.
-        ``(песня | None, played, отказы, сколько было кандидатов)``."""
+        ``(песня | None, played, отказы, сколько было кандидатов)``. ``fresh`` («продолжай играть Вагнера», #3599) —
+        только то, что недавно не играло (``music_history``): кандидаты из истории отбрасываются, поиск по названию
+        целиком и «ближайшее» не подставляются; ничего нового не сложилось, а сыгранное есть — ``played["repeats"]``
+        (названия сыгранного, свежие первыми) вместо песни."""
+        if fresh:
+            return self._play_fresh(work, key, seed, lead)
         pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead)
         replacement = work if pick is not None and ref.named and chosen and not chosen.title_match else None
         if pick is None:
@@ -108,6 +129,24 @@ class PieceChain:
                   "replacement_for": replacement, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
         return pick, played, reasons, count
 
+    def _play_fresh(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]):
+        """Следующая пьеса, которой нет в недавно сыгранном (:meth:`play` с ``fresh``)."""
+        ref, candidates, records = self.candidates(work, key)
+        recent, same = self.memory.recent(), tunes(records)
+        fresh = [c for c in candidates if not recency(c.id, recent, same)]
+        repeats = [c.title for c in sorted((c for c in candidates if recency(c.id, recent, same)),
+                                           key=lambda c: -recency(c.id, recent, same))]
+        refs = [records[c.id][0]["rtttl"] for c in candidates if c.kind == RTTTL and c.title_match]
+        materials = PlanMaterials(self._dj._scores, [c.id for c in fresh if c.kind == SCORE], self._log())
+        pick, failed = pick_piece(self._order(work, ref, fresh, records),
+                                  self._builder(records, materials, refs, work, seed, lead))
+        reasons = [why for _c, why in failed]
+        if pick is None:
+            return None, ({"repeats": repeats} if repeats else {}), reasons, len(candidates)
+        played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
+                  "replacement_for": None, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
+        return pick, played, reasons, len(candidates)
+
     def candidates(self, work: str, key: str = "") -> Tuple[WorkRef, List[WorkCandidate], Dict[str, Any]]:
         """``(WorkRef, кандидаты: партитуры и RTTTL, записи RTTTL)`` по словам произведения — без звука (их же
         читает офлайн-оценка ``scripts/research/jev_eval.py --domain music``)."""
@@ -115,15 +154,24 @@ class PieceChain:
         records = self._records(hits.names)
         plain = {i: r for i, (r, _t) in records.items()}
         ref = work_ref(query_terms(hits, work), key, self._dj._scores, plain)
-        return ref, [*self._dj._scores.work_candidates(ref), *ref.rtttl(plain)], records
+        rtttl = ref.rtttl(plain)
+        hooks = hook_words(plain[c.id] for c in rtttl)  # узнаваемость партитуры — хук того же произведения (#3577)
+        return ref, [*self._dj._scores.work_candidates(ref, hooks=hooks), *rtttl], records
 
     def _work_pick(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]):
+        marks = [time.perf_counter()]
         ref, candidates, records = self.candidates(work, key)
+        marks.append(time.perf_counter())
         refs = [records[c.id][0]["rtttl"] for c in candidates if c.kind == RTTTL and c.title_match]  # эталоны
         materials = PlanMaterials(self._dj._scores, [c.id for c in candidates if c.kind == SCORE], self._log())
         build = self._builder(records, materials, refs, work, seed, lead)
         order = self._order(work, ref, candidates, records)
+        marks.append(time.perf_counter())
         pick, failed = pick_piece(order, build)
+        marks.append(time.perf_counter())
+        stages = zip(("кандидаты", "выбор", "сборка"), marks, marks[1:])  # бюджет старта 2.5 с (#3577)
+        self._log().info(f"🎼 [classic] время «{work}»: "
+                         + ", ".join(f"{name} {(b - a) * 1000:.0f} мс" for name, a, b in stages))
         chosen = next((c for c in order if pick is not None and c.id == pick.melody_id), None)
         return pick, failed, len(candidates), ref, chosen
 

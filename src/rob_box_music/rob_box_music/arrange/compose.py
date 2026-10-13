@@ -373,10 +373,20 @@ def hook_order(profile: ThemeProfile, melodies: Mapping[str, str], rng: random.R
     ids = [i for i in profile.hook_ids if i in melodies and i != last.get("melody_name")]
     recent = recent_hooks(history, set_id, {i: contour(melodies[i], CONTOUR_NOTES) or i for i in melodies})
     if profile.theme_parts:
-        return part_order(profile, ids, recent, track_no)
-    if opening:
-        return opening_order(ids, recent, last_opener(history, set_id))
-    return _hook_queue(profile, ids, recent, rng)
+        queue = part_order(profile, ids, recent, track_no)
+    elif opening:
+        queue = opening_order(ids, recent, last_opener(history, set_id))
+    else:
+        queue = _hook_queue(profile, ids, recent, rng)
+    return _demote_defective(queue, melodies, profile.bpm)
+
+
+def _demote_defective(queue: Sequence[str], melodies: Mapping[str, str], bpm: int) -> List[str]:
+    """Хуки с дефектами записи (#3580, ADR-0152) — позже в очереди: место = позиция + ``HOOK_DEFECT_PLACES · дефект``
+    (``hook.hook_defect``); чистые мелодии держат порядок очереди, при равенстве мест — порядок очереди."""
+    placed = [(i + kn.HOOK_DEFECT_PLACES * hooks.hook_defect(melodies[name], bpm), i, name)
+              for i, name in enumerate(queue)]
+    return [name for _place, _i, name in sorted(placed)]
 
 
 def upcoming_hooks(profile: ThemeProfile, melodies: Mapping[str, str], history: Sequence[Mapping],

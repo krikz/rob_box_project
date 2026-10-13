@@ -26,6 +26,8 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 DATASET = REPO / "src" / "rob_box_music" / "test" / "data" / "music_requests.yaml"
+#: ``top.known`` в наборе (#3577): выбранное узнаваемо — признак ``known`` не ниже (10 тыс. просмотров PDMX или хук).
+KNOWN_MIN = 0.5
 #: Режим реплики по интенту грамматики; ``none`` — грамматика не закрыла реплику (хвост LLM).
 _MODES = {"stop": "stop", "dj": "set", "play_named": "piece", "request_music": "piece"}
 
@@ -78,9 +80,17 @@ def analyze(text: str, chain: Any, chooser: Any) -> Dict[str, Any]:
                title=[list(w.spellings) for w in ref.title], candidates=len(candidates),
                ambiguous=bool(questions) and _gap(chooser, questions[0]) < _clear_gap(),
                choice=None if top is None else {"id": top.id, "kind": top.kind, "title": top.title,
-                                                "composer": top.composer, "provider": choice.provider},
+                                                "composer": top.composer, "provider": choice.provider,
+                                                "known": _known(top), "long": top.long},
                ms=round((time.perf_counter() - started) * 1000, 1))
     return out
+
+
+def _known(candidate: Any) -> float:
+    """Узнаваемость выбранного (#3577): партитура — признак ``known`` (хук того же произведения, просмотры PDMX);
+    запись RTTTL — сама хук: каталог RTTTL и есть известные мелодии."""
+    from rob_box_music.works import RTTTL
+    return 1.0 if candidate.kind == RTTTL else candidate.known
 
 
 def _gap(chooser: Any, question: Any) -> float:
@@ -133,6 +143,8 @@ def _check_work(work: Mapping[str, Any], top: Mapping[str, Any], got: Mapping[st
         bad.append(f"выбрано {choice or '—'}: нет {top['has']!r}")
     if top.get("not_title") and top["not_title"] in hay["title"]:
         bad.append(f"выбрано {choice}: паразит {top['not_title']!r}")
+    if top.get("known") and float(choice.get("known") or 0.0) < KNOWN_MIN:
+        bad.append(f"выбрано {choice or '—'}: малоизвестное (known < {KNOWN_MIN})")
     return bad
 
 
