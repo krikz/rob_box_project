@@ -386,8 +386,8 @@ def test_busy_studio_declines_with_a_phrase_and_starts_nothing(cache):
 
 def test_instrumental_ask_never_reaches_the_song_studio(cache):
     studio, played = FakeStudio(), []
-    result = _request(_rig(), studio, cache, played).execute(intent="track", text="сгенерируй гранж",
-                                                              heard_text="Робот, сгенерируй гранж")
+    req = _request(_rig(), studio, cache, played)
+    result = req.execute(intent="track", text="сгенерируй гранж", heard_text="Робот, сгенерируй гранж")
     assert studio.requests == [] and result.data.get("pending") is None  # инструментал — PR-8, здесь not_wired
 
 
