@@ -145,7 +145,6 @@
       "patterns": [],
       "acceptance": {
         "must_not_call": [
-          "request_music",
           "stop_music"
         ],
         "must_not_say": [

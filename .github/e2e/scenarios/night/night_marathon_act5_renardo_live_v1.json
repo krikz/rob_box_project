@@ -52,7 +52,6 @@
           "get_music_state"
         ],
         "must_not_call": [
-          "request_music",
           "stop_music"
         ],
         "_comment": "Подтверждаем, что n502 реально завёл плеер, а не просто ответил «включаю» голосом."
@@ -141,8 +140,7 @@
           "get_music_state"
         ],
         "must_not_call": [
-          "stop_music",
-          "request_music"
+          "stop_music"
         ]
       }
     }

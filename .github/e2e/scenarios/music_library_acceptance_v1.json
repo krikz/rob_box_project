@@ -11,13 +11,13 @@
     "Coverage rationale: one acceptance.json covers ALL 7 new gen_* tools so a single",
     "PASS truly proves the full feature (ADR-0022 §5.3). ml02_sing_song_about_cat is",
     "the EXACT failure phrase from run #32158261168 (issue #1403) — before the fix",
-    "LLM called the removed v1 Renardo-code tool and replied «у меня нет такой функции». With",
+    "LLM called execute_music_code and replied «у меня нет такой функции». With",
     "the fix LLM routes через MusicSkill → generate_music (40-160с MiniMax gen).",
     "",
-    "ml07_renardo_path is the NEGATIVE control — must still call request_music",
+    "ml07_renardo_path is the NEGATIVE control — must still call execute_music_code",
     "(Renardo live-engine); if LLM wrongly routes «сыграй renardo бит» к gen_*, the",
     "renardo path breaks. Pattern: 'must_not_call' on per-step basis (Renardo steps).",
-    "Top-level 'must_not_call' is therefore EMPTY: request_music is legal for",
+    "Top-level 'must_not_call' is therefore EMPTY: execute_music_code is legal for",
     "the renardo step and forbidden only per-step for gen_* steps (GATE-1 aggregate",
     "would otherwise flag the legitimate renardo call as a false FAIL).",
     "",
@@ -46,7 +46,7 @@
   ],
   "must_not_call": [],
   "must_call_for_renardo_request": [
-    "request_music"
+    "execute_music_code"
   ],
   "voice_provenance": {
     "voice": "anton",
@@ -64,7 +64,7 @@
       "patterns": ["generate_music"],
       "acceptance": {
         "expected_tool_calls": ["generate_music"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "expected_keywords": ["бычок"],
         "response_max_ms": 60000
       }
@@ -77,10 +77,10 @@
       "patterns": ["generate_music"],
       "acceptance": {
         "expected_tool_calls": ["generate_music"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "expected_keywords": ["котик"],
         "response_max_ms": 180000,
-        "_comment_issue": "#1403 — exact failure phrase from e2e run #32158261168. Before the fix the LLM called the removed v1 Renardo-code tool and told the user «у меня нет такой функции». With the fix the LLM calls generate_music, the song is generated via MiniMax Music API in 40-160s, and the user hears the actual song (not «бит на 110 bpm»)."
+        "_comment_issue": "#1403 — exact failure phrase from e2e run #32158261168. Before the fix the LLM called execute_music_code and told the user «у меня нет такой функции». With the fix the LLM calls generate_music, the song is generated via MiniMax Music API in 40-160s, and the user hears the actual song (not «бит на 110 bpm»)."
       }
     },
     {
@@ -91,7 +91,7 @@
       "patterns": ["gen_list_library"],
       "acceptance": {
         "expected_tool_calls": ["gen_list_library"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
     },
@@ -103,7 +103,7 @@
       "patterns": ["gen_search_library"],
       "acceptance": {
         "expected_tool_calls": ["gen_search_library"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "expected_keywords": ["дождь"],
         "response_max_ms": 30000
       }
@@ -116,7 +116,7 @@
       "patterns": ["gen_save_to_library"],
       "acceptance": {
         "expected_tool_calls": ["gen_save_to_library"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
     },
@@ -128,7 +128,7 @@
       "patterns": ["gen_list_library", "gen_delete_from_library"],
       "acceptance": {
         "expected_tool_calls": ["gen_list_library", "gen_delete_from_library"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
     },
@@ -140,7 +140,7 @@
       "patterns": ["gen_get_track_info"],
       "acceptance": {
         "expected_tool_calls": ["gen_get_track_info"],
-        "must_not_call": ["request_music"],
+        "must_not_call": ["execute_music_code"],
         "response_max_ms": 30000
       }
     },
@@ -149,9 +149,9 @@
       "voice": "anton",
       "text": "Робот, сыграй renardo бит",
       "voice_file": ".github/e2e/voice_commands/rabot_igrai_renardo_bemol.ogg",
-      "patterns": ["request_music"],
+      "patterns": ["execute_music_code"],
       "acceptance": {
-        "expected_tool_calls": ["request_music"],
+        "expected_tool_calls": ["execute_music_code"],
         "must_not_call": ["generate_music"],
         "_comment_negative_control": "Renardo live-engine route must STILL work. If LLM routes «renardo бит» to gen_* the existing Renardo path breaks (regression). Patterns list this step uses must_not_call=[\"generate_music\"] to catch over-routing."
       }

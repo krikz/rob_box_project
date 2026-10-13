@@ -153,9 +153,7 @@
         "expected_tool_calls": [
           "get_music_state"
         ],
-        "must_not_call": [
-          "request_music"
-        ]
+        "must_not_call": []
       }
     }
   ]

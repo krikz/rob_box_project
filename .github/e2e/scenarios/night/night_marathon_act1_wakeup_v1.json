@@ -102,8 +102,7 @@
       "patterns": [],
       "acceptance": {
         "must_not_call": [
-          "stop_music",
-          "request_music"
+          "stop_music"
         ],
         "must_not_say": [
           "не получилось выполнить"

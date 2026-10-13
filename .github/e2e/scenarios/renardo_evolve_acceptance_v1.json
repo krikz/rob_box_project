@@ -13,14 +13,14 @@
     "тему и несколько раз её развить — и на каждом шаге требует РЕАЛЬНОГО",
     "вызова тула, а не рассказа о нём.",
     "",
-    "ПОЧЕМУ АГРЕГАТ ТОЛЬКО request_music. Верхнеуровневый",
+    "ПОЧЕМУ АГРЕГАТ ТОЛЬКО execute_music_code. Верхнеуровневый",
     "expected_tool_calls — это AND по всему прогону (GATE-1 §5.3): каждый",
     "перечисленный тул обязан встретиться хотя бы раз, иначе e2e-done не",
-    "ставится. Выбор между request_music и compose_music на КАЖДОМ",
+    "ставится. Выбор между execute_music_code и compose_music на КАЖДОМ",
     "шаге отдан модели: оба реально заводят Renardo, и требовать конкретный",
     "означало бы красить тест в красный за законное решение. Шаги проверяются",
     "per-step паттерном-альтернативой. Агрегат при этом держится на том, что",
-    "хотя бы один из шести музыкальных шагов уйдёт в request_music —",
+    "хотя бы один из шести музыкальных шагов уйдёт в execute_music_code —",
     "в живом прогоне 30.08 он встретился трижды (rn01, rn02, rn05).",
     "",
     "ПОЧЕМУ rn06 БОЛЬШЕ НЕ ПРО «renardo». Сначала там стояло «сыграй renardo",
@@ -46,7 +46,7 @@
     "а не в expected_tool_calls."
   ],
   "expected_tool_calls": [
-    "request_music"
+    "execute_music_code"
   ],
   "must_not_call": [
     "generate_music"
@@ -63,7 +63,7 @@
       "label": "rn01_theme",
       "voice": "anton",
       "text": "Робот, сыграй спокойную тему для рассвета на рояле.",
-      "patterns": ["request_music"],
+      "patterns": ["execute_music_code|compose_music"],
       "acceptance": {
         "must_not_call": ["generate_music"],
         "response_max_ms": 45000
@@ -73,7 +73,7 @@
       "label": "rn02_add_bass",
       "voice": "anton",
       "text": "Робот, продолжай развивать эту мелодию и добавь баса.",
-      "patterns": ["request_music"],
+      "patterns": ["execute_music_code|compose_music"],
       "acceptance": {
         "must_not_call": ["generate_music"],
         "response_max_ms": 45000,
@@ -84,7 +84,7 @@
       "label": "rn03_to_jungle",
       "voice": "anton",
       "text": "Робот, переходи в лёгкий джангл.",
-      "patterns": ["request_music"],
+      "patterns": ["execute_music_code|compose_music"],
       "acceptance": {
         "must_not_call": ["generate_music"],
         "response_max_ms": 45000,
@@ -107,7 +107,7 @@
       "label": "rn05_keep_labat",
       "voice": "anton",
       "text": "Робот, продолжай лабать, мы летим над облаками.",
-      "patterns": ["request_music"],
+      "patterns": ["execute_music_code|compose_music"],
       "acceptance": {
         "must_not_call": ["generate_music"],
         "response_max_ms": 45000,
@@ -118,7 +118,7 @@
       "label": "rn06_hard_beat",
       "voice": "anton",
       "text": "Робот, сыграй жёсткий барабанный бит.",
-      "patterns": ["request_music"],
+      "patterns": ["execute_music_code|compose_music"],
       "acceptance": {
         "must_not_call": ["generate_music"],
         "response_max_ms": 45000,

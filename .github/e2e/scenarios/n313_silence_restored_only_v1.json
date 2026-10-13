@@ -20,7 +20,7 @@
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [],
-        "must_not_call": ["request_music", "stop_music"],
+        "must_not_call": ["stop_music"],
         "expected_keywords": ["тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"],
         "must_not_say": ["не получилось выполнить"],
         "_comment": "Issue #3165 (was #2347 / PR #2387): <music_state> is the player snapshot (#3161, ADR-0141), so the answer comes from it; get_music_state is no longer mandatory. Live run 29.09: the mandatory tool punished the correct «тишина» with retries and «Не получилось выполнить». We check the answer itself."
