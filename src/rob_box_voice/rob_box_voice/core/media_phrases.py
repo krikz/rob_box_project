@@ -104,6 +104,28 @@ SET_PLAYING_REASON = "set_playing"
 #: Что сказать после фразы о сете, когда заказ поверх него отклонён (:data:`SET_PLAYING_REASON`).
 SET_KEPT_TEXT = "Другую музыку поверх сета не ставлю."
 
+#: Код отказа ``request_music`` на «продолжай играть Вагнера» (#3599): всё, что есть у этого автора, уже играло.
+#: Текст отказа — ``"<код>: <фраза>"`` (:func:`no_more_text`, :func:`no_more_phrase`): роутер говорит фразу кода как есть.
+NO_MORE_REASON = "no_more"
+
+
+def no_more_text(asked: str, repeat: str) -> str:
+    """Фраза кода, когда следующей пьесы автора нет: что просили (слова человека) и что можно повторить. Падеж слов
+    человека не склоняется — название заказа в кавычках."""
+    return (f"По запросу «{asked}» новых пьес больше нет, всё уже играло. "
+            + (f"Могу повторить «{repeat}» или сыграть что-то другое." if repeat else "Могу сыграть что-то другое."))
+
+
+def no_more_error(phrase: str) -> str:
+    """Текст отказа ``request_music`` с кодом :data:`NO_MORE_REASON` (его читает :func:`no_more_phrase`)."""
+    return f"{NO_MORE_REASON}: {phrase}"
+
+
+def no_more_phrase(content: str) -> str:
+    """Фраза кода из текста отказа тула или ``""``, если это отказ по другой причине."""
+    head = f"{NO_MORE_REASON}: "
+    return (content or "")[len(head):].strip() if (content or "").startswith(head) else ""
+
 
 #: Тулы, которые запускают музыку (движок v2, ``rob_box_mcp_tools.engine.tools_v2``): только они в ЭТОМ ходе
 #: подкрепляют фразу запуска. Фраза в настоящем времени — действие этого хода, а не пересказ прошлого.
@@ -168,6 +190,7 @@ __all__ = [
     "LAUNCH_PHRASE_STEMS",
     "LAUNCH_TOOLS",
     "NOT_LAUNCHED_TEXT",
+    "NO_MORE_REASON",
     "NOT_PLAYED_TEXT",
     "REQUEST_FAIL_TEXT",
     "SET_KEPT_TEXT",
@@ -177,6 +200,9 @@ __all__ = [
     "instrument_text",
     "launch_claim",
     "launch_text",
+    "no_more_error",
+    "no_more_phrase",
+    "no_more_text",
     "piece_text",
     "play_ok_text",
     "request_ok_text",

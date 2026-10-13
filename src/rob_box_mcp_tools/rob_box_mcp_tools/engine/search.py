@@ -151,12 +151,37 @@ def _resolve(vocab: _Vocab, word: str, word_stem: str) -> Tuple[str, ...]:
     return ()
 
 
+#: Гласные, которые STT путает без ударения (аканье/иканье): «волкирий» ↔ «валькирий» (13.10, #3599).
+#: Слово с основой короче не правим: у коротких одна замена гласной чаще даёт другое настоящее слово («полет» →
+#: «палет», «король» → «карол»).
+_HEARD_MIN = 6
+_HEARD_SWAP = {"о": "а", "а": "о", "е": "и", "и": "е"}
+
+
+def _heard(vocab: _Vocab, word: str) -> str:
+    """Слово, которого нет ни в семенах, ни в архиве, — исправленное одной заменой безударной гласной (``_HEARD_SWAP``),
+    если исправленное слово архив знает; иначе слово как есть. Вторая правка (мягкий знак и т. п.) не нужна: звуковой
+    ключ транслита её уже снимает. Слово из архива не трогаем: «молоко» ≠ «малако»."""
+    if word_links(word) or word_links(stem(word)) or _resolve(vocab, word, stem(word)):
+        return word
+    for i, ch in enumerate(word):
+        swap = _HEARD_SWAP.get(ch)
+        if swap is None:
+            continue
+        fixed = word[:i] + swap + word[i + 1:]
+        if _resolve(vocab, fixed, stem(fixed)):
+            return fixed
+    return word
+
+
 def terms(library: Any, text: str) -> List[Term]:
     """Значимые слова запроса после алиасов библиотеки, без хвоста версии («V2.0») и служебных слов."""
     vocab = _vocab(library)
     out: List[Term] = []
     text = _STYLE_RE.sub(" ", strip_version_tail(_alias_normalize(text)).replace("ё", "е"))
     for word in _WORD_RE.findall(text):
+        if _CYR_RE.search(word) and len(stem(word)) >= _HEARD_MIN and word not in _STOP:
+            word = _heard(vocab, word)
         word_stem = stem(word)
         if word in _STOP or word_stem in _STOP:
             continue

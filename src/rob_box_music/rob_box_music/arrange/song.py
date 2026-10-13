@@ -1,7 +1,7 @@
 """Classic-песня в модели v2: мелодия целиком по куплетам, аккомпанемент — выход ``harmonize`` (ADR-0149 §9 PR-11).
 
 «Поставь Калинку»: хук — ВСЯ мелодия, куплет = один её проход, куплеты отличаются составом
-(``knowledge.SONG_VERSES``: тема поверх пэда и баса → входят ударные → полный состав). Темп и тональность — из
+(``knowledge.song_verse_plan``: тема поверх пэда и баса → входят ударные → полный состав). Темп и тональность — из
 мелодии (RTTTL), а не из club-окна. Ноты аккомпанемента здесь не сочиняются: бас, пэд и рисунки ударных — это
 :class:`SongMaterial`, который собирает ``rob_box_mcp_tools.engine.classic`` из ``core.harmonize`` (библиотека с
 10+ вшитыми фиксами, не переписывается; пакет без ROS её не импортирует). Здесь — только раскладка по форме,
@@ -62,10 +62,11 @@ class SongMaterial:
         return float(sum(d for _n, d in self.lead))
 
 
-def verse_count(theme_bars: int) -> int:
-    """Проходов мелодии в песне: около ``SONG_TARGET_BARS`` тактов, не больше строк ``SONG_VERSES``."""
-    most = max(kn.SONG_VERSES)
-    return max(1, min(most, round(kn.SONG_TARGET_BARS / max(theme_bars, 1))))
+def verse_count(theme_bars: int, bpm: float) -> int:
+    """Проходов мелодии в песне: около ``SONG_TARGET_SEC`` секунд (не тактов: хук в 5 тактов при 160 ударах — 7.5 с,
+    три куплета давали 22 с, #3599), не больше ``SONG_MAX_VERSES``."""
+    verse_sec = max(theme_bars, 1) * BEATS_PER_BAR * 60.0 / max(float(bpm), 1.0)
+    return max(1, min(kn.SONG_MAX_VERSES, round(kn.SONG_TARGET_SEC / verse_sec)))
 
 
 def _events(line: Line, offset: float, sus: Optional[float] = None) -> List[PitchEvent]:
@@ -109,8 +110,8 @@ def _drums(drums: str, hats: str) -> Dict[str, Part]:
             for role, on in steps.items()}
 
 
-def _form(theme_bars: int, roles: frozenset) -> Form:
-    plan = kn.SONG_VERSES[verse_count(theme_bars)]
+def _form(theme_bars: int, bpm: float, roles: frozenset) -> Form:
+    plan = kn.song_verse_plan(verse_count(theme_bars, bpm))
     return Form(tuple(Section(name, theme_bars, energy, frozenset(sec & roles), False)
                       for name, energy, sec in plan), kind=kn.FORM_SONG)
 
@@ -140,7 +141,7 @@ def song_track(material: SongMaterial, *, seed: int, deck: str = "A", lead_synth
         raise ValueError(f"мелодия {beats} долей — не целое число тактов")
     synths = {role: random.Random(f"song:{seed}:{role}").choice(kn.SONG_TIMBRES[role]) for role in kn.TONAL_ROLES}
     drums = _drums(material.drums, material.hats)
-    form = _form(theme_bars, frozenset(drums) | set(kn.TONAL_ROLES))
+    form = _form(theme_bars, material.bpm, frozenset(drums) | set(kn.TONAL_ROLES))
     tonal = {"lead": _voiced_lead(_tonal("lead", synths["lead"], material.lead, form, beats), lead_synth, lead_shift),
              "bass": _tonal("bass", synths["bass"], material.bass, form, beats),
              "pad": _tonal("pad", synths["pad"], material.pad, form, beats, material.pad_sus)}

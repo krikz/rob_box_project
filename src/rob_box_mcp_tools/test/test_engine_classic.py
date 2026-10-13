@@ -73,7 +73,7 @@ def test_melody_plays_whole_in_every_verse(name):
     heard = sorted((round(e.beat, 6), int(e.midi)) for e in by_role["lead"])
     expected = sorted((round(v * theme_beats + b, 6), m) for v in range(len(track.form.sections)) for b, m in verse)
     assert heard == expected
-    assert len(track.form.sections) == verse_count(int(theme_beats // BEATS_PER_BAR))
+    assert len(track.form.sections) == verse_count(int(theme_beats // BEATS_PER_BAR), _params(name)["bpm"])
     assert all(sec.bars * BEATS_PER_BAR == theme_beats for sec in track.form.sections)
     assert track.hook.source == name and track.hook.bars * BEATS_PER_BAR == theme_beats
 
