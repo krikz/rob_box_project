@@ -169,9 +169,15 @@ def _octave_fixes(sounding, default_oct: int) -> dict:
     if not implicit or len(sounding) - implicit < OCTAVE_EXPLICIT_SHARE * len(sounding):
         return {}
     pitches = [_to_midi(m.group("note").lower(), m.group("acc"), _octave_of(m) or default_oct) for m in sounding]
-    fixes: dict = {}
+    found = []
     for first, last in _implicit_runs(sounding):
-        fixes.update(_fix_run(sounding, pitches, first, last))
+        signature = frozenset(pitches[first:last + 1])
+        found.append((signature, _fix_run(sounding, pitches, first, last)))
+    fixes: dict = {}
+    for signature, fix in found:
+        # «выброс» той же высоты (класс ноты и октава) в двух и более местах — приём автора, опечатка одиночна
+        if fix and not any(sum(p in sig and bool(f) for sig, f in found) > 1 for p in signature):
+            fixes.update(fix)
     return fixes if len(fixes) <= OCTAVE_FIX_MAX_SHARE * len(sounding) else {}
 
 
@@ -183,9 +189,10 @@ def fix_octaves(rtttl: str, label: str = "") -> str:
     Правка — только если у ≥ :data:`OCTAVE_EXPLICIT_SHARE` звучащих нот октава явная, нот без октавы подряд не больше
     :data:`OCTAVE_RUN_MAX`, они стоят после явной ноты и дают выброс (скачок ≥ :data:`OCTAVE_LEAP` полутонов от
     предыдущей ноты, а следующая нота возвращается в пределы октавы от неё), который исчезает от октавы предыдущей
-    ноты. Мелодии, где октава по умолчанию — норма (почти все ноты без октавы), любая нота без выброса и мелодия, где
-    правок больше :data:`OCTAVE_FIX_MAX_SHARE` нот (приём автора), не меняются. Возвращает строку RTTTL (та же, если
-    править нечего); в лог — сколько нот исправлено.
+    ноты. Не меняются: мелодии, где октава по умолчанию — норма (почти все ноты без октавы); ноты без выброса;
+    «выброс» той же высоты, повторённый в мелодии ≥ 2 раз (педаль, перекличка — приём автора, опечатка одиночна);
+    мелодия, где правок больше :data:`OCTAVE_FIX_MAX_SHARE` нот. Возвращает строку RTTTL (та же, если править нечего);
+    в лог — сколько нот исправлено.
     """
     parsed = _sounding_tokens(rtttl)
     if parsed is None:

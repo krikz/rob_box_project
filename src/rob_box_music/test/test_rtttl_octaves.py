@@ -21,6 +21,12 @@ TETRIS = ("Tetris:d=4,o=5,b=160:e6,8b,8c6,8d6,16e6,16d6,8c6,8b,a,8a,8c6,e6,8d6,8
           "a6,8g6,8f6,e.6,8c6,e6,8d6,8c6,b,8b,8c6,d6,e6,c6,a,2a")
 
 
+#: Живая запись архива: ``c`` без октавы (``o=5``) каждые четыре ноты среди ``a#6`` — педаль, приём автора.
+PEDAL = ("Can'tSto:d=4,o=5,b=180:c7,a#6,a#6,8a#6,c,a#6,a#6,8a#6,c,a#6,a#6,8a#6,c,a#6,a#6,p,a#6,g6,g6,8g6,f.6,g6,2f6,"
+         "d6,8p,f6,8p,2d#.6,2p,c7,a#6,a#6,8a#6,c,a#6,a#6,8a#6,c,a#6,a#6,8a#6,c,a#6,a#6,p,a#6,g6,g6,8g6,f.6,g6,2f6,d6,"
+         "8p,f6,8p,2d#.6")
+
+
 def _sounding(rtttl):
     return [m for m, _d in parse_rtttl(rtttl)[2] if m is not None]
 
@@ -54,6 +60,15 @@ def test_melody_where_default_octave_is_the_norm_is_unchanged():
 def test_archive_hooks_without_octave_slips_are_unchanged():
     for rtttl in (FUR_ELISE, TETRIS, LONG, SHORT):
         assert fix_octaves(rtttl) == rtttl
+
+
+def test_repeated_leap_of_the_same_pitch_is_the_authors_device_not_a_typo():
+    assert fix_octaves(PEDAL) == PEDAL
+    tail = ",e5" * 20
+    twice = "t:d=4,o=6,b=120:e5,e5,g_,e5,e5,e5,e5,g_,e5,e5" + tail
+    assert fix_octaves(twice) == twice
+    once = "t:d=4,o=6,b=120:e5,e5,g_,e5,e5,e5,e5,e5,e5,e5" + tail
+    assert "g_5" in fix_octaves(once)  # одиночный выброс правится
 
 
 def test_real_big_leap_between_explicit_octaves_is_not_touched():
