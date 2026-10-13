@@ -452,3 +452,41 @@ def test_silero_voice_never_reaches_the_executor_and_the_chooser_declines_in_wor
     result = _request(_rig(), fake, library).execute(intent="track", text=PHRASE, heard_text=PHRASE)
     assert not result.success and result.data["reason"] == SOURCE_DECLINED and not fake.requests
     assert "запасным голосом петь пока не умею" in result.data["message"]
+
+
+# ── сбой вокала: причина кодом (живой сбой 13.10 20:55 UTC: «что-то пошло не так» при TTSTimeoutError без текста) ──
+
+def test_every_vocal_reason_of_the_sing_backend_has_words_or_falls_back_to_vocal():
+    from rob_box_music.source import REASON_WORDS
+
+    for synth_reason in ("no_api_key", "auth", "rate_limit", "timeout", "network", "rejected"):
+        reason = sg.vocal_reason(synth_reason)
+        assert reason == f"vocal_{synth_reason}" and REASON_WORDS[reason]
+    assert sg.vocal_reason("empty_audio") == "vocal" and sg.vocal_reason("provider_error") == "vocal"
+    assert sg.failed_words("vocal_timeout") == "голос не ответил вовремя"
+    assert sg.failed_words("vocal_no_api_key") == "нет ключа голоса"
+
+
+@pytest.mark.parametrize("error,reason", [("TTSConnectionError", "vocal_network"), ("TTSTimeoutError", "vocal_timeout"),
+                                          ("TTSAuthError", "vocal_auth")])
+def test_minimax_failure_while_singing_is_spoken_with_its_cause_not_internal(library, monkeypatch, error, reason):
+    """Настоящий ``_sing`` + ``MiniMaxSingBackend``: ошибка провайдера доезжает до фразы причиной, а не ``internal``;
+    до Suno дело не доходит — кредиты целы."""
+    from rob_box_llm import errors
+    from rob_box_voice import sing_synth
+
+    class Down:
+        calls = 0
+
+        async def synthesize(self, text, *, settings):
+            Down.calls += 1
+            raise getattr(errors, error)("ReadError", provider="minimax")
+
+    monkeypatch.setattr(sing_synth, "default_backends",
+                        lambda: {"minimax": sing_synth.MiniMaxSingBackend(provider=Down())})
+    said, suno = [], FakeSuno()
+    studio = sg.SongStudio(suno, lambda: library, lambda *a: GOOD, lambda: ("minimax", "male-qn-qingse"),
+                           lambda t: MCPToolResult(success=True), said.append, clock=lambda: 0.0)
+    _run(studio)
+    assert said == [f"не вышло:{reason}"] and not suno.jobs and library.count == 0
+    assert Down.calls == (1 if error == "TTSAuthError" else 2)  # обрыв/таймаут — один повтор, ключ — нет
