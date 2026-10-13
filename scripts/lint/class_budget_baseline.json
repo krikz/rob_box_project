@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-06",
-  "base_sha": "4ec203bacf6d9235b26bb12e960b2a42c4be2a92",
+  "created": "2026-10-13",
+  "base_sha": "5d06947101f820f1bdfb096b865b711353bb06cc",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,7 +24,7 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 134,
+      "wmc": 132,
       "methods": 25
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:MusicManager": {

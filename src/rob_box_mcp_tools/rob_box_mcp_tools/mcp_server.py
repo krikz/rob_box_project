@@ -119,14 +119,12 @@ from .tools import (
     SayTool,
 )
 
-# Issue #1392 — MiniMax music generation + generated-music library tools.
+# Issue #1392 / ADR-0158 — library of generated tracks (cache) + gen_* tools.
 # Imported explicitly (not via wildcard) so the heavy ``tools.music``
 # dependency tree stays opt-in.
 try:
-    from .core.minimax_music_client import MinimaxMusicClient
-    from .core.generated_music_library import GeneratedMusicLibrary
-    from .tools.minimax_music import (
-        GenerateMusicTool,
+    from .engine.gen.library import GeneratedMusicLibrary
+    from .tools.gen_library import (
         GenListLibraryTool,
         GenSearchLibraryTool,
         GenSaveToLibraryTool,
@@ -134,15 +132,14 @@ try:
         GenDeleteFromLibraryTool,
         GenGetTrackInfoTool,
     )
-    _MINIMAX_MUSIC_AVAILABLE = True
+    _GEN_LIBRARY_AVAILABLE = True
 except ImportError as _exc:  # noqa: BLE001
-    MinimaxMusicClient = None  # type: ignore[assignment,misc]
     GeneratedMusicLibrary = None  # type: ignore[assignment,misc]
-    GenerateMusicTool = GenListLibraryTool = GenSearchLibraryTool = None  # type: ignore[assignment,misc]
+    GenListLibraryTool = GenSearchLibraryTool = None  # type: ignore[assignment,misc]
     GenSaveToLibraryTool = GenPlayFromLibraryTool = None  # type: ignore[assignment,misc]
     GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
-    _MINIMAX_MUSIC_AVAILABLE = False
-    _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
+    _GEN_LIBRARY_AVAILABLE = False
+    _GEN_LIBRARY_IMPORT_ERROR = str(_exc)
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
@@ -1115,41 +1112,38 @@ class MCPServer(Node):
         self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
         self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
-        # Issue #1392 — MiniMax music generation + persistent library.
-        # Graceful degradation: any failure (no API key, no /data volume,
-        # import error) only disables the new tools — Renardo tools keep
-        # working. This mirrors the same try/except pattern used above.
-        self._register_minimax_music_tools()
+        # Issue #1392 / ADR-0158 — библиотека сгенерированных треков (кэш).
+        # Graceful degradation: любой сбой (нет /data, ImportError) выключает
+        # только gen_* тулы — Renardo-тулы продолжают работать.
+        self._register_gen_library_tools()
 
     # ------------------------------------------------------------------
-    # Issue #1392 — MiniMax music generation + persistent library tools.
+    # Issue #1392 / ADR-0158 — библиотека сгенерированных треков.
     # ------------------------------------------------------------------
 
-    def _register_minimax_music_tools(self) -> None:
+    def _register_gen_library_tools(self) -> None:
         """Регистрирует 6 gen_* библиотечных тулзов (graceful degradation).
 
         Tools registered on success:
             gen_list_library, gen_search_library, gen_save_to_library,
             gen_play_from_library, gen_delete_from_library, gen_get_track_info
 
-        ``generate_music`` НЕ регистрируется с 20.08.2026: MiniMax Music API
-        отключён для новых юзеров (410 Gone, status_code 2153).
+        ``generate_music`` НЕ регистрируется с 20.08.2026 (MiniMax Music API
+        отключён, 410 Gone); новый тул придёт с чойсером пути (ADR-0158 PR-3).
 
-        Failure modes (each disables only the new tools, Renardo keeps working):
-            * Module import failed (e.g. missing package)         → log + return
-            * /data volume not writable (GeneratedMusicLibrary)   → log + skip lib tools
+        Failure modes (each disables only the gen_* tools, Renardo keeps working):
+            * Module import failed                              → log + return
+            * /data volume not writable (GeneratedMusicLibrary) → log + skip
         """
-        if not _MINIMAX_MUSIC_AVAILABLE:
+        if not _GEN_LIBRARY_AVAILABLE:
             self.get_logger().warning(
-                f"⚠️ MiniMax music tools disabled: import failed "
-                f"({_MINIMAX_MUSIC_IMPORT_ERROR})"
+                f"⚠️ gen_* library tools disabled: import failed "
+                f"({_GEN_LIBRARY_IMPORT_ERROR})"
             )
             return
 
-        # Type-narrow for Pyright: _MINIMAX_MUSIC_AVAILABLE gates the rest.
-        assert MinimaxMusicClient is not None
+        # Type-narrow for Pyright: _GEN_LIBRARY_AVAILABLE gates the rest.
         assert GeneratedMusicLibrary is not None
-        assert GenerateMusicTool is not None
         assert GenListLibraryTool is not None
         assert GenSearchLibraryTool is not None
         assert GenSaveToLibraryTool is not None
@@ -1157,12 +1151,11 @@ class MCPServer(Node):
         assert GenDeleteFromLibraryTool is not None
         assert GenGetTrackInfoTool is not None
 
-        # Library — initialised first; required by ALL gen_* tools.
         try:
             music_library = GeneratedMusicLibrary()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"⚠️ MiniMax music library disabled: init failed ({exc}). "
+                f"⚠️ Generated music library disabled: init failed ({exc}). "
                 "gen_* tools will NOT be registered."
             )
             return
@@ -1172,25 +1165,12 @@ class MCPServer(Node):
             f"в {music_library.root_dir}"
         )
 
-        # Register library-only tools (they don't need the API client).
         self.registry.register(GenListLibraryTool(self, music_library))
         self.registry.register(GenSearchLibraryTool(self, music_library))
         self.registry.register(GenSaveToLibraryTool(self, music_library))
         self.registry.register(GenDeleteFromLibraryTool(self, music_library))
         self.registry.register(GenGetTrackInfoTool(self, music_library))
-        # play tool is registered even without client — uses library only
         self.registry.register(GenPlayFromLibraryTool(self, music_library))
-
-        # 20.08.2026 — MiniMax Music API отключён для новых юзеров (410 Gone,
-        # status_code 2153, проверено вживую). ``generate_music`` больше НЕ
-        # регистрируется: LLM не должен видеть/вызывать мёртвый инструмент
-        # (e2e regression: dj01 «сыграй renardo бит» → forbidden tool call).
-        # gen_* библиотечные тулзы (list/search/save/play/delete/get_info)
-        # остаются — они работают с локальной /data/music_library без API.
-        self.get_logger().info(
-            "🎼 MiniMax music generation disabled (API discontinued 410 Gone). "
-            "gen_* library tools only."
-        )
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках.

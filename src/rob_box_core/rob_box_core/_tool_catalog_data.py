@@ -423,9 +423,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            '(получи из '
                                                                            'gen_list_library '
                                                                            '/ '
-                                                                           'gen_search_library '
-                                                                           '/ '
-                                                                           'generate_music). '
+                                                                           'gen_search_library). '
                                                                            'Пример: '
                                                                            "'b7216742f61f44078e4a17f7acbed388'."}},
                           'required': ['track_id'],
@@ -454,9 +452,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            '(получи из '
                                                                            'gen_list_library '
                                                                            '/ '
-                                                                           'gen_search_library '
-                                                                           '/ '
-                                                                           'generate_music). '
+                                                                           'gen_search_library). '
                                                                            'Пример: '
                                                                            "'b7216742f61f44078e4a17f7acbed388'."}},
                           'required': ['track_id'],
@@ -533,9 +529,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            '(получи из '
                                                                            'gen_list_library '
                                                                            '/ '
-                                                                           'gen_search_library '
-                                                                           '/ '
-                                                                           'generate_music). '
+                                                                           'gen_search_library). '
                                                                            'Пример: '
                                                                            "'b7216742f61f44078e4a17f7acbed388'."}},
                           'required': ['track_id'],
@@ -563,9 +557,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            '(получи из '
                                                                            'gen_list_library '
                                                                            '/ '
-                                                                           'gen_search_library '
-                                                                           '/ '
-                                                                           'generate_music). '
+                                                                           'gen_search_library). '
                                                                            'Пример: '
                                                                            "'b7216742f61f44078e4a17f7acbed388'."},
                                             'title': {   'type': 'string',
@@ -643,156 +635,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['query'],
                          'accepts_kwargs': True},
         'skill': ('player',)},
-    {   'llm_visible': False,
-        'operator_visible': False,
-        'read_only': False,
-        'destructive': True,
-        'idempotent': False,
-        'starts_music': True,
-        'execution_type': 'long',
-        'name': 'generate_music',
-        'description': 'Сгенерировать новый музыкальный трек через MiniMax Music API и '
-                       'сохранить в библиотеку (/data/music_library). Возвращает '
-                       'track_id и путь к mp3. Генерация занимает 40-160 секунд — '
-                       'обязательно предупреди юзера о паузе! Используй когда юзер '
-                       'просит «спой/сыграй что-нибудь новое» или называет конкретную '
-                       'тему/стиль, которой нет в сохранённой библиотеке (проверь '
-                       'через gen_search_library).',
-        'parameters': {   'type': 'object',
-                          'properties': {   'prompt': {   'type': 'string',
-                                                          'description': 'Описание '
-                                                                         'стиля/настроения '
-                                                                         'трека '
-                                                                         '(1-2000 '
-                                                                         'chars): '
-                                                                         'жанр, темп, '
-                                                                         'инструменты, '
-                                                                         'вокал, '
-                                                                         'референсы '
-                                                                         "('Indie "
-                                                                         'folk, '
-                                                                         'melancholic, '
-                                                                         "92 bpm'). "
-                                                                         'Для '
-                                                                         'инструментальных '
-                                                                         'треков '
-                                                                         'передавай '
-                                                                         'is_instrumental=true.'},
-                                            'lyrics': {   'type': 'string',
-                                                          'description': 'Текст песни '
-                                                                         'с тегами '
-                                                                         '[Verse]/[Chorus]/[Bridge] '
-                                                                         'и т.п. '
-                                                                         'Обязателен, '
-                                                                         'если '
-                                                                         'is_instrumental=false. '
-                                                                         'До ~3000 '
-                                                                         'символов.',
-                                                          'default': ''},
-                                            'is_instrumental': {   'type': 'boolean',
-                                                                   'description': 'true '
-                                                                                  '— '
-                                                                                  'без '
-                                                                                  'вокала '
-                                                                                  '(только '
-                                                                                  'музыка). '
-                                                                                  'false '
-                                                                                  '(по '
-                                                                                  'умолчанию) '
-                                                                                  '— '
-                                                                                  'трек '
-                                                                                  'с '
-                                                                                  'пением '
-                                                                                  'по '
-                                                                                  'lyrics.',
-                                                                   'default': False},
-                                            'mood': {   'type': 'string',
-                                                        'description': 'Настроение '
-                                                                       '(например '
-                                                                       "'romantic', "
-                                                                       "'dark', "
-                                                                       "'energetic', "
-                                                                       "'melancholic'). "
-                                                                       'Сохраняется '
-                                                                       'как тег в '
-                                                                       'библиотеке.',
-                                                        'default': ''},
-                                            'genre': {   'type': 'string',
-                                                         'description': 'Жанр '
-                                                                        '(например '
-                                                                        "'indie folk', "
-                                                                        "'synthwave', "
-                                                                        "'hip-hop'). "
-                                                                        'Сохраняется '
-                                                                        'как тег в '
-                                                                        'библиотеке.',
-                                                         'default': ''},
-                                            'lang': {   'type': 'string',
-                                                        'description': 'Язык вокальной '
-                                                                       "части ('ru', "
-                                                                       "'en', …). По "
-                                                                       'умолчанию '
-                                                                       'auto.',
-                                                        'default': ''},
-                                            'tags': {   'type': 'string',
-                                                        'description': 'Доп. теги '
-                                                                       'через запятую '
-                                                                       'для поиска '
-                                                                       "('rainy,love,sad'). "
-                                                                       'Будут '
-                                                                       'сохранены в '
-                                                                       'библиотеке.',
-                                                        'default': ''},
-                                            'model': {   'type': 'string',
-                                                         'description': 'Override '
-                                                                        'модели: '
-                                                                        "'music-3.0-free' "
-                                                                        '(RPM 3, '
-                                                                        'бесплатно) '
-                                                                        'или '
-                                                                        "'music-3.0' "
-                                                                        '(RPM 120, '
-                                                                        'paid). По '
-                                                                        'умолчанию — '
-                                                                        'free.',
-                                                         'default': ''},
-                                            'title': {   'type': 'string',
-                                                         'description': 'Читаемое '
-                                                                        'название '
-                                                                        'трека для '
-                                                                        'meta.json.',
-                                                         'default': ''},
-                                            'auto_save': {   'type': 'boolean',
-                                                             'description': 'true (по '
-                                                                            'умолчанию) '
-                                                                            '— '
-                                                                            'автоматически '
-                                                                            'сохранить '
-                                                                            'в '
-                                                                            'библиотеку. '
-                                                                            'false — '
-                                                                            'только '
-                                                                            'сгенерировать '
-                                                                            'и вернуть '
-                                                                            'audio_bytes, '
-                                                                            'без '
-                                                                            'записи.',
-                                                             'default': True}},
-                          'required': ['prompt'],
-                          'additionalProperties': False},
-        'signature': {   'params': [   'prompt',
-                                       'lyrics',
-                                       'is_instrumental',
-                                       'mood',
-                                       'genre',
-                                       'lang',
-                                       'tags',
-                                       'model',
-                                       'title',
-                                       'auto_save'],
-                         'required': ['prompt'],
-                         'accepts_kwargs': True},
-        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,

@@ -1,83 +1,32 @@
 #!/usr/bin/env python3
 """
-minimax_music.py — MCP tools for MiniMax music generation + library access.
+gen_library.py — MCP-тулы библиотеки сгенерированной музыки (кэш, ADR-0158).
 
-Issue #1392 (closes #1358 / #1375 partial). Provides 7 MCP tools:
+Шесть тулов поверх ``engine.gen.library.GeneratedMusicLibrary``:
 
-  generate_music        — call MiniMax Music Generation API, persist to library
-  gen_list_library      — list tracks (sort by recent/popular/rating)
-  gen_search_library    — substring search over title/prompt/lyrics
-  gen_save_to_library   — save a previously-generated track with extra metadata
-  gen_play_from_library — return mp3 path + duration for a saved track
-                          (full playback wiring is a separate audio_node task)
-  gen_delete_from_library — remove track from SQLite + filesystem
-  gen_get_track_info    — fetch metadata for a single track
+  gen_list_library        — список (recent/popular/rating)
+  gen_search_library      — подстрочный поиск по title/prompt/lyrics
+  gen_save_to_library     — дописать метаданные уже сохранённому треку
+  gen_play_from_library   — путь к mp3 + длительность (воспроизведение — sound_node;
+                            переезд на деку PlayerOwner — ADR-0158 PR-2)
+  gen_delete_from_library — удалить трек из SQLite и с диска
+  gen_get_track_info      — метаданные одного трека
 
-All tools degrade gracefully when ``MinimaxMusicClient`` or
-``GeneratedMusicLibrary`` cannot be initialised — see
-:mcp_server:_register_music_tools``.
-
-This module deliberately keeps all ROS 2 imports lazy so the tools can be
-unit-tested without a running daemon (mirrors design of
-``tools/music.py:MusicManager`` etc.).
+Тул ``generate_music`` (MiniMax Music API, 410 Gone с 20.08.2026) удалён вместе
+с клиентом; новый узкий ``generate_music`` придёт с чойсером пути (ADR-0158 PR-3).
+Модуль держит ROS-импорты ленивыми — тулы тестируются без демона.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, List
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
-from ..core.generated_music_library import GeneratedMusicLibrary
-from ..core.minimax_music_client import (
-    MinimaxMusicAPIError,
-    MinimaxMusicClient,
-    MinimaxMusicConfigError,
-    MinimaxMusicError,
-)
+from ..engine.gen.library import GeneratedMusicLibrary
 
 
 # ── Shared parameter helpers ────────────────────────────────────────────────
-
-def _prompt_param(required: bool = True) -> MCPToolParameter:
-    return MCPToolParameter(
-        name="prompt",
-        type="string",
-        description=(
-            "Описание стиля/настроения трека (1-2000 chars): жанр, темп, "
-            "инструменты, вокал, референсы ('Indie folk, melancholic, 92 bpm'). "
-            "Для инструментальных треков передавай is_instrumental=true."
-        ),
-        required=required,
-    )
-
-
-def _lyrics_param() -> MCPToolParameter:
-    return MCPToolParameter(
-        name="lyrics",
-        type="string",
-        description=(
-            "Текст песни с тегами [Verse]/[Chorus]/[Bridge] и т.п. "
-            "Обязателен, если is_instrumental=false. До ~3000 символов."
-        ),
-        required=False,
-        default="",
-    )
-
-
-def _instrumental_param() -> MCPToolParameter:
-    return MCPToolParameter(
-        name="is_instrumental",
-        type="boolean",
-        description=(
-            "true — без вокала (только музыка). false (по умолчанию) — "
-            "трек с пением по lyrics."
-        ),
-        required=False,
-        default=False,
-    )
-
 
 def _track_id_param() -> MCPToolParameter:
     return MCPToolParameter(
@@ -85,270 +34,14 @@ def _track_id_param() -> MCPToolParameter:
         type="string",
         description=(
             "UUID трека в библиотеке (получи из gen_list_library / "
-            "gen_search_library / generate_music). Пример: "
+            "gen_search_library). Пример: "
             "'b7216742f61f44078e4a17f7acbed388'."
         ),
         required=True,
     )
 
 
-# ── Tool 1: generate_music ──────────────────────────────────────────────────
-
-class GenerateMusicTool(MCPTool):
-    """Сгенерировать музыкальный трек через MiniMax API и сохранить в библиотеку.
-
-    Трек пишется в ``/data/music_library/<uuid>/track.mp3`` с метаданными в
-    ``meta.json`` и индексируется в SQLite.
-
-    ВАЖНО: генерация занимает **~40-160 секунд** (avg 88с in-container).
-    DialogueNode должен сообщить юзеру «сейчас сгенерирую, подождите минуту…».
-    """
-
-    def __init__(
-        self,
-        node: Any,
-        client: MinimaxMusicClient,
-        library: GeneratedMusicLibrary,
-    ) -> None:
-        super().__init__(node)
-        self._client = client
-        self._library = library
-
-    @property
-    def name(self) -> str:
-        return "generate_music"
-
-    @property
-    def llm_visible(self) -> bool:
-        """MiniMax Music API отключён для новых юзеров (410 Gone, 20.08.2026).
-
-        Инструмент оставлен исполняемым (ручная отладка, возврат API), но
-        из каталога для LLM исключён: модель не должна видеть мёртвый тул
-        (e2e regression dj01 «сыграй renardo бит» → forbidden tool call).
-        ``mcp_server`` его и не регистрирует — см. ``_register_minimax_music_tools``.
-        """
-        return False
-
-    @property
-    def starts_music(self) -> bool:
-        return True
-
-    @property
-    def description(self) -> str:
-        return (
-            "Сгенерировать новый музыкальный трек через MiniMax Music API и "
-            "сохранить в библиотеку (/data/music_library). Возвращает track_id "
-            "и путь к mp3. Генерация занимает 40-160 секунд — обязательно "
-            "предупреди юзера о паузе! Используй когда юзер просит «спой/сыграй "
-            "что-нибудь новое» или называет конкретную тему/стиль, которой нет "
-            "в сохранённой библиотеке (проверь через gen_search_library)."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            _prompt_param(required=True),
-            _lyrics_param(),
-            _instrumental_param(),
-            MCPToolParameter(
-                name="mood",
-                type="string",
-                description=(
-                    "Настроение (например 'romantic', 'dark', 'energetic', "
-                    "'melancholic'). Сохраняется как тег в библиотеке."
-                ),
-                required=False,
-                default="",
-            ),
-            MCPToolParameter(
-                name="genre",
-                type="string",
-                description=(
-                    "Жанр (например 'indie folk', 'synthwave', 'hip-hop'). "
-                    "Сохраняется как тег в библиотеке."
-                ),
-                required=False,
-                default="",
-            ),
-            MCPToolParameter(
-                name="lang",
-                type="string",
-                description="Язык вокальной части ('ru', 'en', …). По умолчанию auto.",
-                required=False,
-                default="",
-            ),
-            MCPToolParameter(
-                name="tags",
-                type="string",
-                description=(
-                    "Доп. теги через запятую для поиска ('rainy,love,sad'). "
-                    "Будут сохранены в библиотеке."
-                ),
-                required=False,
-                default="",
-            ),
-            MCPToolParameter(
-                name="model",
-                type="string",
-                description=(
-                    "Override модели: 'music-3.0-free' (RPM 3, бесплатно) или "
-                    "'music-3.0' (RPM 120, paid). По умолчанию — free."
-                ),
-                required=False,
-                default="",
-            ),
-            MCPToolParameter(
-                name="title",
-                type="string",
-                description="Читаемое название трека для meta.json.",
-                required=False,
-                default="",
-            ),
-            MCPToolParameter(
-                name="auto_save",
-                type="boolean",
-                description=(
-                    "true (по умолчанию) — автоматически сохранить в библиотеку. "
-                    "false — только сгенерировать и вернуть audio_bytes, без записи."
-                ),
-                required=False,
-                default=True,
-            ),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.LONG
-
-    @property
-    def blocking(self) -> bool:
-        # LLM должен дождаться результата чтобы рассказать юзеру track_id.
-        return True
-
-    @property
-    def idempotent(self) -> bool:
-        return False
-
-    @property
-    def interruptible(self) -> bool:
-        return True
-
-    async def execute(
-        self,
-        prompt: str,
-        lyrics: str = "",
-        is_instrumental: bool = False,
-        mood: str = "",
-        genre: str = "",
-        lang: str = "",
-        tags: str = "",
-        model: str = "",
-        title: str = "",
-        auto_save: bool = True,
-        **_: Any,
-    ) -> MCPToolResult:
-        """Асинхронно дёргает MiniMax API через ``asyncio.to_thread``."""
-        valid, err = self.validate_parameters(prompt=prompt)
-        if not valid:
-            return MCPToolResult(success=False, error=err)
-
-        if not is_instrumental and not lyrics.strip():
-            return MCPToolResult(
-                success=False,
-                error="lyrics is required when is_instrumental=false",
-            )
-
-        tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
-        kwargs: Dict[str, Any] = dict(
-            prompt=prompt,
-            lyrics=lyrics,
-            is_instrumental=bool(is_instrumental),
-        )
-        if model:
-            kwargs["model"] = model
-
-        self.log_info(
-            f"🎼 generate_music: prompt={prompt[:60]!r}… "
-            f"instrumental={is_instrumental} auto_save={auto_save}"
-        )
-
-        try:
-            track = await asyncio.to_thread(self._client.generate, **kwargs)
-        except ValueError as exc:
-            # Argument validation inside the client (empty prompt, prompt>2000,
-            # missing lyrics). Surface as a friendly tool error instead of
-            # letting asyncio turn it into an unhandled exception.
-            return MCPToolResult(success=False, error=f"invalid argument: {exc}")
-        except MinimaxMusicConfigError as exc:
-            return MCPToolResult(success=False, error=f"config: {exc}")
-        except MinimaxMusicAPIError as exc:
-            return MCPToolResult(
-                success=False,
-                error=f"MiniMax API: {exc}",
-                data={"status_code": exc.status_code, "body": exc.body},
-            )
-        except MinimaxMusicError as exc:
-            return MCPToolResult(success=False, error=f"MiniMax: {exc}")
-
-        result: Dict[str, Any] = {
-            "duration_ms": track.duration_ms,
-            "sample_rate": track.sample_rate,
-            "bitrate": track.bitrate,
-            "model": track.model,
-            "audio_size_bytes": len(track.audio_bytes),
-        }
-
-        if auto_save:
-            saved = self._library.save_track(
-                track.audio_bytes,
-                prompt=prompt,
-                lyrics=lyrics,
-                title=title or "",
-                model=track.model,
-                duration_ms=track.duration_ms,
-                sample_rate=track.sample_rate,
-                bitrate=track.bitrate,
-                tags=tag_list,
-                mood=mood,
-                genre=genre,
-                lang=lang,
-                is_instrumental=is_instrumental,
-            )
-            if not saved.get("success"):
-                return MCPToolResult(
-                    success=False,
-                    error=f"Generated, but library save failed: {saved.get('error')}",
-                    data=result,
-                )
-            result.update(
-                {
-                    "track_id": saved["id"],
-                    "path": saved["path"],
-                    "saved": True,
-                }
-            )
-            return MCPToolResult(
-                success=True,
-                data=result,
-                message=(
-                    f"Мини-трек '{saved['id']}' сгенерирован ({len(track.audio_bytes)} байт, "
-                    f"{track.duration_ms / 1000:.1f}с) и сохранён в {saved['path']}"
-                ),
-            )
-
-        result["saved"] = False
-        result["audio_bytes_b64_preview"] = track.audio_bytes[:32].hex()
-        return MCPToolResult(
-            success=True,
-            data=result,
-            message=(
-                f"Мини-трек сгенерирован: {len(track.audio_bytes)} байт, "
-                f"{track.duration_ms / 1000:.1f}с (auto_save=false, в библиотеку не записан)"
-            ),
-        )
-
-
-# ── Tool 2: gen_list_library ────────────────────────────────────────────────
+# ── Tool 1: gen_list_library ────────────────────────────────────────────────
 
 class GenListLibraryTool(MCPTool):
     """Показать список треков в библиотеке сгенерированной музыки."""
@@ -444,7 +137,7 @@ class GenListLibraryTool(MCPTool):
         )
 
 
-# ── Tool 3: gen_search_library ──────────────────────────────────────────────
+# ── Tool 2: gen_search_library ──────────────────────────────────────────────
 
 class GenSearchLibraryTool(MCPTool):
     """Поиск по библиотеке сгенерированной музыки."""
@@ -522,13 +215,13 @@ class GenSearchLibraryTool(MCPTool):
         )
 
 
-# ── Tool 4: gen_save_to_library ─────────────────────────────────────────────
+# ── Tool 3: gen_save_to_library ─────────────────────────────────────────────
 
 class GenSaveToLibraryTool(MCPTool):
     """Доукомплектовать метаданные для уже сгенерированного трека.
 
-    NOTE: основной сценарий — ``generate_music(auto_save=true)`` уже пишет
-    трек. Этот tool нужен чтобы **обновить теги/notes/rating** для трека
+    NOTE: основной сценарий — генерация (``engine.gen.pipeline``) уже пишет
+    трек в кэш. Этот tool нужен чтобы **обновить теги/notes/rating** для трека
     после генерации (например, юзер сказал «поставь ему рейтинг 5 и тег
     "любимый"»).
     """
@@ -679,7 +372,7 @@ class GenSaveToLibraryTool(MCPTool):
         )
 
 
-# ── Tool 5: gen_play_from_library ───────────────────────────────────────────
+# ── Tool 4: gen_play_from_library ───────────────────────────────────────────
 
 class GenPlayFromLibraryTool(MCPTool):
     """Воспроизвести mp3 из библиотеки (публикует путь в sound_node).
@@ -812,7 +505,7 @@ class GenPlayFromLibraryTool(MCPTool):
         )
 
 
-# ── Tool 6: gen_delete_from_library ─────────────────────────────────────────
+# ── Tool 5: gen_delete_from_library ─────────────────────────────────────────
 
 class GenDeleteFromLibraryTool(MCPTool):
     """Удалить трек из библиотеки сгенерированной музыки (SQLite + mp3)."""
@@ -855,7 +548,7 @@ class GenDeleteFromLibraryTool(MCPTool):
         return MCPToolResult(success=True, message=result.get("message"))
 
 
-# ── Tool 7: gen_get_track_info ──────────────────────────────────────────────
+# ── Tool 6: gen_get_track_info ──────────────────────────────────────────────
 
 class GenGetTrackInfoTool(MCPTool):
     """Получить метаданные одного трека из библиотеки."""

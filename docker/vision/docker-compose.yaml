@@ -323,7 +323,7 @@ services:
       - LOKI_URL=${LOKI_URL:-http://${MONITORING_HOST:-10.1.1.249}:3100}
       - GRAFANA_URL=${GRAFANA_URL:-http://${MONITORING_HOST:-10.1.1.249}:3000}
     env_file:
-      - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
+      - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID, KIE_API (ADR-0158, генерация музыки)
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
