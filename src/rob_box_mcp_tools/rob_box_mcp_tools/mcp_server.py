@@ -245,7 +245,7 @@ def _song_studio(node: Any) -> Optional[SongStudio]:
     return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
                       lambda: current_voice(_active_tts_provider(node), getattr(node, "_voice_store", None)),
                       play=lambda track_id: node.registry.execute("gen_play_from_library", track_id=track_id),
-                      speak=_speaker(node), log=node.get_logger)
+                      speak=_speaker(node), stop=lambda: node.registry.execute("stop_music"), log=node.get_logger)
 
 
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:

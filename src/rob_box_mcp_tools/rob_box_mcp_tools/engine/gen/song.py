@@ -267,14 +267,16 @@ class SongStudio:
 
     ``library`` — ленивый доступ к ``GeneratedMusicLibrary``; ``voice`` — ``() -> (провайдер, голос)``; ``play`` —
     ``track_id -> MCPToolResult`` (``gen_play_from_library``); ``speak`` — реплика роботом (тот же ``speak_text``);
-    ``sing`` — вокал в файл (подменяется в тестах)."""
+    ``stop`` — снять мост перед песней; ``sing`` — вокал в файл (подменяется в тестах)."""
 
     def __init__(self, provider: Any, library: Callable[[], Any], lyrics: LyricsAsk, voice: Callable[[], Tuple[str, str]],
                  play: Callable[[str], Any], speak: Callable[[str], None], *,
+                 stop: Callable[[], Any] = lambda: None,
                  sing: Callable[[str, str, str, str], Any] = _sing, rules: Callable[[], str] = rules_text,
                  clock: Callable[[], float] = time.monotonic, log: Callable[[], Any] = lambda: _LOG) -> None:
         self._provider, self._library, self._lyrics, self._voice = provider, library, lyrics, voice
         self._play, self._speak, self._sing, self._rules = play, speak, sing, rules
+        self._stop = stop  # мост снимаем перед песней: замена играющего трека ждёт стыка формы дольше ожидания started
         self._clock, self._log = clock, log
         self._lock = threading.Lock()
         self._busy = False
@@ -353,6 +355,7 @@ class SongStudio:
     def _run(self, request: SongRequest, on_failed: Callable[[str], str]) -> None:
         try:
             result = self.make(request)
+            self._stop()  # без кроссфейда (он в PR-8): мост обрывается, песня стартует сразу
             played = self._play(result.track_id)
             if getattr(played, "success", False):
                 self._say(done_text(result))

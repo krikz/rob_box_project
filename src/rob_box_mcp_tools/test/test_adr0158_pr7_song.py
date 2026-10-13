@@ -419,3 +419,14 @@ def test_language_proxy_gives_tts_the_song_language():
     proxy = sg._Language(backend, "ru")
     proxy.synth("текст", sing_preset_for("minimax", "male-qn-qingse"))
     assert backend.presets[0].language == "ru" and (proxy.provider, proxy.fmt) == ("minimax", "wav")
+
+
+def test_bridge_is_stopped_before_the_song_starts(library):
+    """Прогон 13.10: замена играющего моста ждала стыка формы дольше 6 с — ``not_started`` при том, что песня потом
+    заиграла. Мост снимаем до ``play`` (кроссфейд — PR-8)."""
+    order, said = [], []
+    studio, *_ = _studio(library, said=said)
+    studio._stop = lambda: order.append("stop")
+    studio._play = lambda track_id: (order.append("play"), MCPToolResult(success=True))[1]
+    _run(studio)
+    assert order == ["stop", "play"] and said[0].startswith("Песня «Я робот» готова")
