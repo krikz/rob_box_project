@@ -105,10 +105,15 @@ class PieceChain:
         self._log().info("🎼 [classic] прогрев: " + ", ".join(f"{k} {v:.0f} мс" for k, v in steps.items()))
         return steps
 
-    def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]
+    def play(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], fresh: bool = False
              ) -> Tuple[Optional[ClassicPick], Dict[str, Any], List[str], int]:
         """Произведение → поиск по названию целиком (``find_record``) → ближайшее по словам заказа.
-        ``(песня | None, played, отказы, сколько было кандидатов)``."""
+        ``(песня | None, played, отказы, сколько было кандидатов)``. ``fresh`` («продолжай играть Вагнера», #3599) —
+        только то, что недавно не играло (``music_history``): кандидаты из истории отбрасываются, поиск по названию
+        целиком и «ближайшее» не подставляются; ничего нового не сложилось, а сыгранное есть — ``played["repeats"]``
+        (названия сыгранного, свежие первыми) вместо песни."""
+        if fresh:
+            return self._play_fresh(work, key, seed, lead)
         pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead)
         replacement = work if pick is not None and ref.named and chosen and not chosen.title_match else None
         if pick is None:
@@ -123,6 +128,24 @@ class PieceChain:
         played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
                   "replacement_for": replacement, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
         return pick, played, reasons, count
+
+    def _play_fresh(self, work: str, key: str, seed: int, lead: Optional[LeadChoice]):
+        """Следующая пьеса, которой нет в недавно сыгранном (:meth:`play` с ``fresh``)."""
+        ref, candidates, records = self.candidates(work, key)
+        recent, same = self.memory.recent(), tunes(records)
+        fresh = [c for c in candidates if not recency(c.id, recent, same)]
+        repeats = [c.title for c in sorted((c for c in candidates if recency(c.id, recent, same)),
+                                           key=lambda c: -recency(c.id, recent, same))]
+        refs = [records[c.id][0]["rtttl"] for c in candidates if c.kind == RTTTL and c.title_match]
+        materials = PlanMaterials(self._dj._scores, [c.id for c in fresh if c.kind == SCORE], self._log())
+        pick, failed = pick_piece(self._order(work, ref, fresh, records),
+                                  self._builder(records, materials, refs, work, seed, lead))
+        reasons = [why for _c, why in failed]
+        if pick is None:
+            return None, ({"repeats": repeats} if repeats else {}), reasons, len(candidates)
+        played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
+                  "replacement_for": None, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
+        return pick, played, reasons, len(candidates)
 
     def candidates(self, work: str, key: str = "") -> Tuple[WorkRef, List[WorkCandidate], Dict[str, Any]]:
         """``(WorkRef, кандидаты: партитуры и RTTTL, записи RTTTL)`` по словам произведения — без звука (их же

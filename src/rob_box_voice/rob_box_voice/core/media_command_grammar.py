@@ -90,6 +90,8 @@ class MediaCommand:
             десятка», «на полчаса»), ``0`` — не названа (длину решает тул).
         instrument: для ``PLAY_NAMED``/``REQUEST_MUSIC`` — ключ ``knowledge.INSTRUMENTS`` из «на <инструменте>»
             (ADR-0157 §3.1) или ``""``. Слово инструмента в ``name`` не попадает.
+        more: для ``PLAY_NAMED`` — «продолжай играть Вагнера», «ещё Баха» (#3599): не эта же пьеса, а следующая того же
+            автора; сыгранное недавно не повторяется (``request_music`` читает флаг из реплики хода).
     """
 
     intent: MediaIntent
@@ -103,6 +105,7 @@ class MediaCommand:
     style: str = ""
     tracks: int = 0
     instrument: str = ""
+    more: bool = False
 
 
 NO_COMMAND = MediaCommand(intent=MediaIntent.NONE, closed=False)
@@ -1017,6 +1020,42 @@ def _listed_set(text: str) -> Optional[MediaCommand]:
     return replace(command, set_theme=listed, set_persona=command.persona)
 
 
+#: «Ещё <автор>» — слова :data:`SET_CONTINUE_WORDS` (одна таблица) без «повтори» (то же самое, а не другое).
+MORE_WORDS: FrozenSet[str] = SET_CONTINUE_WORDS - {"повтори"}
+#: Просят то же или сначала: «ещё раз Калинку» — повтор, а не следующая пьеса.
+_MORE_REPEAT: FrozenSet[str] = frozenset({"раз", "раза", "разок", "заново", "сначала", "обратно", "назад", "повтори"})
+#: Слова вокруг «ещё»: глаголы заказа и «играть/слушать», служебные.
+_MORE_HEAD: FrozenSet[str] = _PLAY_NAMED_VERBS | _PLAY_NAMED_LEAD_IN | _PLAY_NAMED_FILLER | frozenset({
+    "играть", "играем", "играйте", "слушать", "слушаем", "послушаем", "послушать", "поиграем", "ещё", "еще",
+})
+_MORE_MAX_TITLE = 3
+
+
+def _more_title(words: Sequence[str]) -> Optional[List[str]]:
+    """Название после слова продолжения: 1–3 слова, не родовые, без условия/ссылки на контекст и громкости/стопа."""
+    title = [w for w in words if w not in _MORE_HEAD and w not in MORE_WORDS]
+    if not title or len(title) > _MORE_MAX_TITLE or all(w in _GENERIC_WORDS for w in title):
+        return None
+    if any(w in (_NOT_A_TITLE - MORE_WORDS) or _word_class(w) is not None for w in title):
+        return None
+    return title
+
+
+def _more_command(words: Sequence[str]) -> Optional[MediaCommand]:
+    """«продолжай играть вагнера» / «ещё Баха» / «давай ещё Моцарта» → ``PLAY_NAMED(name="вагнера", more=True)``
+    (#3599). Слово продолжения (:data:`MORE_WORDS`) в начале реплики, перед ним и после него — только глаголы заказа
+    и служебные; остальное — автор/название (:func:`_more_title`). Без названия («продолжай», «ещё») и с «ещё раз»
+    (повтор) — ``None``."""
+    body = _strip_lead_in(words)
+    at = next((i for i, w in enumerate(body) if w in MORE_WORDS), None)
+    if at is None or any(w not in _MORE_HEAD for w in body[:at]) or any(w in _MORE_REPEAT for w in body):
+        return None
+    title = _more_title(body[at + 1:])
+    if title is None:
+        return None
+    return MediaCommand(intent=MediaIntent.PLAY_NAMED, closed=True, name=" ".join(title), more=True)
+
+
 #: «Что играет?»: вопросительное слово + слово про звучащее (классы слов, без регексов — мораторий #3132).
 _NOW_QUESTION: FrozenSet[str] = frozenset({"что", "какой", "какая", "какое", "чего"})
 _NOW_SUBJECT: FrozenSet[str] = frozenset({
@@ -1065,11 +1104,13 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     theme_words = _fixed_verb(_theme_words(text))  # заказ сета: цифры темы остаются словами (mambo nr 5, #3460)
     # заказ по имени — тоже с цифрами: «сыграй 1812 Overture» искал «overture» (06.10)
     return (_style_set_command(theme_words) or _named_set_command(theme_words) or _spoken_set_command(text)
-            or _instrument_command(theme_words) or _play_named_command(theme_words))
+            or _instrument_command(theme_words) or _more_command(theme_words)
+            or _play_named_command(theme_words))
 
 
 __all__ = [
     "MEDIA_INTENT_OPTIONS",
+    "MORE_WORDS",
     "MUSIC_STOP_COMMAND_RE",
     "MUSIC_STOP_OVERRIDES",
     "MediaCommand",

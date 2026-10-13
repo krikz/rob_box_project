@@ -151,12 +151,37 @@ def _resolve(vocab: _Vocab, word: str, word_stem: str) -> Tuple[str, ...]:
     return ()
 
 
+#: Гласные, которые STT путает без ударения (аканье/иканье): «волкирий» ↔ «валькирий» (13.10, #3599).
+#: Слово с основой короче не правим: у коротких одна замена гласной чаще даёт другое настоящее слово («полет» →
+#: «палет», «король» → «карол»).
+_HEARD_MIN = 6
+_HEARD_SWAP = {"о": "а", "а": "о", "е": "и", "и": "е"}
+
+
+def _heard(vocab: _Vocab, word: str) -> str:
+    """Слово, которого нет ни в семенах, ни в архиве, — исправленное одной заменой безударной гласной (``_HEARD_SWAP``),
+    если исправленное слово архив знает; иначе слово как есть. Вторая правка (мягкий знак и т. п.) не нужна: звуковой
+    ключ транслита её уже снимает. Слово из архива не трогаем: «молоко» ≠ «малако»."""
+    if word_links(word) or word_links(stem(word)) or _resolve(vocab, word, stem(word)):
+        return word
+    for i, ch in enumerate(word):
+        swap = _HEARD_SWAP.get(ch)
+        if swap is None:
+            continue
+        fixed = word[:i] + swap + word[i + 1:]
+        if _resolve(vocab, fixed, stem(fixed)):
+            return fixed
+    return word
+
+
 def terms(library: Any, text: str) -> List[Term]:
     """Значимые слова запроса после алиасов библиотеки, без хвоста версии («V2.0») и служебных слов."""
     vocab = _vocab(library)
     out: List[Term] = []
     text = _STYLE_RE.sub(" ", strip_version_tail(_alias_normalize(text)).replace("ё", "е"))
     for word in _WORD_RE.findall(text):
+        if _CYR_RE.search(word) and len(stem(word)) >= _HEARD_MIN and word not in _STOP:
+            word = _heard(vocab, word)
         word_stem = stem(word)
         if word in _STOP or word_stem in _STOP:
             continue
@@ -220,6 +245,39 @@ def find(library: Any, text: str, limit: int = 5) -> Found:
     confidence, record, query = hits[0]
     alternatives = tuple(r for c, r, _q in hits[1:limit] if c >= FOUND_MIN)
     return Found(True, round(confidence, 3), record, alternatives, query)
+
+
+#: Редкое слово названия: записей архива с ним не больше (иначе слово общее — «гимн», «марш», «тема» — и одно оно не
+#: называет мелодию).
+RARE_MAX = 3
+
+
+def find_rare(library: Any, text: str) -> Found:
+    """Мелодия по редкому слову названия, когда остальные слова архиву неизвестны (#3599: «полёт валькирий» — слова
+    «полёт» в названии «Ride Of The Valkyries» нет, а «валькирий» есть у двух записей). Условия: известные слова
+    разобраны по словарю архива из русского слова (алиасы и семена реестра дают латиницу: «гимн» → «soviet anthem» —
+    понятие, а не слово названия), неизвестных не больше,
+    чем известных, и запись, покрывающая все известные слова, не больше :data:`RARE_MAX`. Слово, которое архив знает,
+    а запись нет («гимн германии», «марио и тетрис»), сюда не попадает — оно в ``find`` уже ``unmatched``."""
+    query_terms = terms(library, text)
+    known = _archive_words(query_terms)
+    unknown = [t for t in query_terms if not t.alts]
+    if not known or not unknown or len(unknown) > len(known):
+        return Found(False, 0.0, None)
+    full = [item for item in ranked(library, known, None, "") if item[0] >= 1.0]
+    if not full or len(full) > RARE_MAX:
+        return Found(False, 0.0, None)
+    _confidence, record, query = full[0]
+    return Found(True, round(len(known) / len(query_terms), 3), record, tuple(r for _c, r, _q in full[1:]), query)
+
+
+def _archive_words(query_terms: List[Term]) -> List[Term]:
+    """Слова, разобранные по словарю архива из русского слова; ``[]``, если среди известных есть латиница (алиасы) или
+    семя реестра — это понятие, а не слово названия."""
+    known = [t for t in query_terms if t.alts]
+    if any(not _CYR_RE.search(t.word) or word_links(t.word) or word_links(stem(t.word)) for t in known):
+        return []
+    return known
 
 
 @dataclass(frozen=True)
