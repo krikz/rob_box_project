@@ -283,10 +283,12 @@ def test_dj_set_rock_goes_through_source_path_and_plays_cache(tmp_path, monkeypa
     assert _started_text(plan, {**out.data, "theme": "рок"}) == out.data["source_message"]  # фраза кода, не шаблон
 
 
-def test_dj_set_club_stays_synth_and_rock_without_key_or_cache_declines(tmp_path):
+def test_dj_set_club_goes_suno_first_and_rock_without_key_or_cache_declines(tmp_path):
+    """В13 (14.10): клубный сет — тоже путь кэш → генерация; ``synth_fit`` 1.0 — не причина синтеза."""
     lib = _lib(tmp_path)
     dj = _dj(lib, Kie())
-    assert dj.gen_sets.route("", "club", "включи клубный сет") is None  # «у нас норм играет» — синтез, как раньше
+    plan = dj.gen_sets.plan("", "club", "включи клубный сет", 3)
+    assert [r.id for r in plan.routes] == ["generate:instrumental:V6"] * 3
     kie = Kie()
     kie.configured = False
     dj = _dj(lib, kie)

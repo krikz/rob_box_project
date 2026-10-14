@@ -337,6 +337,11 @@ def _gen_style_values() -> list[str]:
     return ["", *_knowledge().GEN_STYLES]
 
 
+def _set_styles_values() -> list[str]:
+    """``dj_set.styles[]`` enum — ключи ``knowledge.GEN_STYLES`` (стили по трекам сета, ADR-0158 В13)."""
+    return list(_knowledge().GEN_STYLES)
+
+
 def _set_max_tracks() -> int:
     """``dj_set.tracks`` maximum — ``knowledge.SET_MAX_TRACKS`` (``set_plan.MAX_TRACKS``)."""
     return _knowledge().SET_MAX_TRACKS
@@ -355,6 +360,7 @@ DYNAMIC_ENUMS = {
     ("request_music", "mood"): _mood_values,
     ("dj_set", "style"): _style_values,
     ("generate_music", "style"): _gen_style_values,
+    ("dj_set", "styles[]"): _set_styles_values,  # ``items`` массива: ключ — имя параметра + «[]»
 }
 
 
@@ -627,6 +633,13 @@ def extract_tools() -> list[dict[str, Any]]:
                             "the same values the tool validates against"
                         )
                     param["enum"] = resolver()
+                items = param.get("items")
+                if isinstance(items, dict) and items.get("enum") is not None and not isinstance(items["enum"], list):
+                    item_resolver = DYNAMIC_ENUMS.get((name, f"{param.get('name')}[]"))
+                    if item_resolver is None:
+                        raise ToolSourceError(f"{name}.{param.get('name')}[] has a computed enum and no resolver "
+                                              "in DYNAMIC_ENUMS")
+                    items["enum"] = item_resolver()
                 for bound in ("minimum", "maximum"):
                     if param.get(bound) is DYNAMIC:
                         bound_resolver = DYNAMIC_BOUNDS.get((name, param.get("name"), bound))
