@@ -12,6 +12,7 @@ import logging
 
 import pytest
 
+from rob_box_mcp_tools.engine.gen.budget import DAILY_CREDITS_DEFAULT, SET_CREDITS_DEFAULT
 from rob_box_mcp_tools.engine.gen import gen_session as gs
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
@@ -101,7 +102,7 @@ def test_no_money_synth_set_is_fallback_with_reason(tmp_path):
 def test_day_limit_is_a_hard_filter(tmp_path):
     """Дневной лимит выбран — генерации нет ни у одного трека (жёсткий фильтр ``budget``), синтез-запас."""
     lib = _lib(tmp_path)
-    lib.ledger.record_spend("T0", 120.0, kind="instrumental", request_key="k", model="V6", gen_provider="kie_suno")
+    lib.ledger.record_spend("T0", DAILY_CREDITS_DEFAULT, kind="instrumental", request_key="k", model="V6", gen_provider="kie_suno")
     plan = _plan(_dj(lib, Kie()))
     assert not plan.played() and plan.gen_reason() == "budget_exhausted"
 
@@ -112,9 +113,9 @@ def test_set_limit_caps_tasks_and_spare_variant_is_free(tmp_path):
     plan = dj.gen_sets.plan("", "club", "включи клубный сет на 4 трека", 4, named=True)
     assert len(plan.routes) == 4 and all(r.id == GEN for r in plan.routes)  # 2 задачи по 2 варианта
     many = dj.gen_sets.plan("", "club", "сет в стилях клуб рейв синтвейв джаз джангл чиптюн брейкбит рок метал блюз "
-                            "шансон", 11, named=True)
+                            "шансон", 40, named=True)
     gens = [r for r in many.routes if r.kind == "generate"]
-    assert len(gens) == int(120.0 // 12.0) and many.routes[-1].gen_reason == "budget_exhausted"
+    assert len(gens) == 2 * int(SET_CREDITS_DEFAULT // 12.0) and many.routes[-1].gen_reason == "budget_exhausted"
 
 
 def test_poor_with_partial_cache_plays_cache_and_names_dropped(tmp_path, monkeypatch):
