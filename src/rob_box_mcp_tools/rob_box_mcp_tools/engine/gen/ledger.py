@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS gen_ledger (
     gen_provider  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_gen_ledger_ts ON gen_ledger (ts);
+CREATE TABLE IF NOT EXISTS gen_rejected (
+    source_sha    TEXT PRIMARY KEY,
+    ts            TEXT NOT NULL,
+    task_id       TEXT NOT NULL DEFAULT '',
+    work_id       TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -58,6 +65,19 @@ class GenLedger:
         with self._lock:
             self._conn.execute("UPDATE gen_ledger SET credits = ? WHERE task_id = ?", (float(credits), task_id))
             self._conn.commit()
+
+    def record_rejected(self, source_sha: str, *, task_id: str = "", work_id: str = "", detail: str = "") -> None:
+        """Исходник кавера (sha нашего рендера), который Suno отклонил (ADR-0158 В17): повторно не заказывается."""
+        stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO gen_rejected (source_sha, ts, task_id, work_id, detail) "
+                               "VALUES (?, ?, ?, ?, ?)", (source_sha, stamp, task_id, work_id, detail))
+            self._conn.commit()
+
+    def rejected(self, source_sha: str) -> bool:
+        with self._lock:
+            row = self._conn.execute("SELECT 1 FROM gen_rejected WHERE source_sha = ?", (source_sha,)).fetchone()
+        return row is not None
 
     def spent_since(self, ts_iso: str) -> float:
         """Сумма кредитов с момента ``ts_iso`` (UTC ISO)."""

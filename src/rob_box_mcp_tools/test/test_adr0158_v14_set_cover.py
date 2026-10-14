@@ -55,7 +55,7 @@ class Maker:
     def ready(self):
         return True
 
-    def make(self, track, work, ask, set_spent=None, early=True):
+    def make(self, track, work, ask, set_spent=None, early=True, attempt=None):
         self.made.append((track, work, ask.genre, set_spent, early))
         n = len(self.made)
         return CoverResult(f"c{n}a", "", f"T{n}", 12.0, track_ids=(f"c{n}a", f"c{n}b"))
@@ -106,7 +106,7 @@ def test_gen_set_orders_cover_tasks_through_the_same_cover_maker(tmp_path):
     в сет одним ключом слота (соседями варианты не ставит ``pick_item``)."""
     maker, track = Maker(), object()
     plan = gs.SetRoutes(("club", "club"), tuple(_router(tmp_path, Sets()).route_slots(CLUB[:2], works=[A])),
-                        theme_covers=((A, track),))
+                        theme_covers=((A, ((A.material, track),)),))
     key = "cover|club|starwars"
     assert plan.keys() == [key, key] and plan.covers() == {key: A}
     run = gs.GenSetMaker(Kie(), lambda: _lib(tmp_path), DeterministicChooser(), cover=maker)._set_cover(plan)
@@ -167,8 +167,10 @@ def test_theme_covers_one_cover_per_piece_main_theme_first(monkeypatch, caplog):
     monkeypatch.setattr(piece_cover, "PlanMaterials", lambda lib, ids, log: {A.material: object()})
     with caplog.at_level(logging.INFO):
         got = piece_cover.theme_covers(dj, "звёздные войны", 7, records=records)
-    assert [(w.title, w.material, t) for w, t in got] == [("Star Wars", A.material, "T-score"),
-                                                          ("Имперский марш", "starwars_4", "T-starwars_4")]
+    assert [(w.title, w.material, t) for w, t in got] == [
+        ("Star Wars", A.material, ((A.material, "T-score"), ("rtttl:starwars_8", "T-starwars_8"),
+                                   ("rtttl:starwars_6", "T-starwars_6"))),
+        ("Имперский марш", "starwars_4", (("rtttl:starwars_4", "T-starwars_4"),))]  # В17: запасные мелодии пьесы
     line = next(r.message for r in caplog.records if "[cover] тема" in r.message)
     assert f"«Star Wars» ← {A.material} 0.88" in line and "«Имперский марш» ← rtttl:starwars_4" in line
     assert "the_x_files" not in line  # хук строки таблицы, а не вселенной: найденные по словам темы есть
@@ -200,7 +202,7 @@ def test_two_pieces_from_one_score_keep_their_own_melody(tmp_path):
     maker = Maker()
     medley = CoverWork("Star Wars - Cantina", A.material, spoken="Кантина")
     plan = gs.SetRoutes(("club", "club"), tuple(_router(tmp_path, Sets()).route_slots(CLUB[:2], works=[A, medley])),
-                        theme_covers=((A, "T-main"), (medley, "T-cantina")))
+                        theme_covers=((A, ((A.material, "T-main"),)), (medley, ((A.material, "T-cantina"),))))
     run = gs.GenSetMaker(Kie(), lambda: _lib(tmp_path), DeterministicChooser(), cover=maker)._set_cover(plan)
     covers = gs.SetCovers(plan.covers(), run)
     for key in plan.keys():

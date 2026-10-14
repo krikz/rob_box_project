@@ -511,6 +511,12 @@ def cover_failed_text(work: CoverWork, reason: str) -> str:
     return f"Живой версии «{work.spoken or work.title}» не будет: {REASON_WORDS.get(reason, reason)}."
 
 
+def cover_rejected_text(work: CoverWork, others: bool) -> str:
+    """Suno не взял ни одну мелодию произведения трека сета (В17): пьесу называет код; дальше — другие произведения
+    темы (``others``) или сет без неё."""
+    return f"«{work.spoken or work.title}» сервис не взял — {'играю другие' if others else 'доиграю без него'}."
+
+
 def cover_ready_text(work: CoverWork, ask: SourceAsk) -> str:
     """Кавер сгенерирован и встал на деку вместо моста."""
     tail = _cover_what(work, ask)
@@ -559,6 +565,7 @@ def decline_text(route: Route) -> str:
 
 
 __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note",
+           "cover_rejected_text",
            "cover_ready_text", "cover_slot", "cover_style_key", "slot_style", "GENERATE", "INSTRUCTIONS", "PIECE",
            "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
