@@ -527,7 +527,7 @@ def test_dj_set_length_is_decided_by_code_named_default_or_what_was_left():
     with patch("rob_box_mcp_tools.engine.renardo_adapter.time.sleep"):
         tool.execute(action="stop")
     assert tool.set_length(None) == (DEFAULT_TRACKS, "по умолчанию")
-    assert tool.parameters[-1].to_json_schema() == {
+    assert next(p for p in tool.parameters if p.name == "tracks").to_json_schema() == {
         "type": "integer", "minimum": 1, "maximum": MAX_TRACKS,
         "description": "Сколько треков в сете — только если человек назвал число"}
 
