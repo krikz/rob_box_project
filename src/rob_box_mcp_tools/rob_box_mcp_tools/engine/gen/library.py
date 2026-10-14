@@ -466,6 +466,20 @@ class GeneratedMusicLibrary:
         meta["exists_on_disk"] = (track_dir / "track.mp3").exists()
         return {"success": True, **meta}
 
+    def replace_audio(self, track_id: str, audio_bytes: bytes, *, duration_ms: int, title: str = "") -> None:
+        """Финальный файл и длина трека, сохранённого с раннего звука (``pipeline``); wav сервера пересоберётся
+        при следующем запуске — ``audio.server_wav`` сверяет mtime."""
+        track_dir = self._track_dir(track_id)
+        tmp = track_dir / "track.mp3.part"
+        tmp.write_bytes(audio_bytes)
+        tmp.replace(track_dir / "track.mp3")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE generated_tracks SET duration_ms = ?, title = COALESCE(NULLIF(?, ''), title), "
+                "file_size = ?, file_sha256 = ?, updated_at = ? WHERE id = ?",
+                (int(duration_ms), title, len(audio_bytes), sha256_bytes(audio_bytes), self._now_iso(), track_id))
+            self._conn.commit()
+
     def delete_track(self, track_id: str) -> Dict[str, Any]:
         """Удалить трек из индекса и с диска."""
         try:

@@ -113,7 +113,7 @@ class InstrumentalMaker:
         started, library = self._clock(), self._library()
         try:
             made = generate_into_cache(self._provider, library, Budget(library), instrumental_job(genre, model),
-                                       theme=theme)
+                                       theme=theme, early=True, log=self._log)
         except GenUnavailable as exc:
             if exc.reason == "provider_down":
                 self._dead_until = self._clock() + DEAD_FOR_S

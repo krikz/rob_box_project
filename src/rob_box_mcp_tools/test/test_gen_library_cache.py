@@ -238,7 +238,7 @@ class FakeProvider:
         tracks = tuple(GenTrack(i, f"id{i}", f"https://cdn/{i}.mp3", "", 60.0 + i, "Title") for i in range(2))
         return GenStatus("complete", tracks, credits=self.credits)
 
-    def download(self, url):
+    def download(self, url, timeout_s=None):
         self.downloads.append(url)
         return b"MP3:" + url.encode()
 
