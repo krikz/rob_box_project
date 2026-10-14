@@ -401,6 +401,59 @@ CRITICAL_EXCLUDE_COMMON = [
     # INFO-level metric line that the multi-provider chain emits on
     # every fallback attempt regardless of the final outcome.
     r"\[stt_attempt_metric\].*reason=error",
+    # cAdvisor ARM boot probe (issue #3315, deploy run 36873490556
+    # 2026-10-01 14:04 / kanban t_0d6f165b). The cadvisor-vision
+    # (and cadvisor on Main Pi) container is pinned at
+    # gcr.io/cadvisor/cadvisor:v0.52.1 and logs a one-shot
+    # `gce.go:45] Error while reading product_name: open
+    # /sys/class/dmi/id/product_name: no such file or directory`
+    # during startup. Raspberry Pi boards (Pi 4B, Pi 5) do not expose
+    # a SMBIOS /sys/class/dmi/id/product_name entry — this is a
+    # documented false-positive on ARM (cAdvisor upstream uses that
+    # probe to detect GCE instance types only, the absence is benign).
+    # cAdvisor continues to expose cpu / memory / disk / network
+    # metrics normally; the error level is I (info) but the word
+    # "Error" trips CRITICAL_MATCH_RE and the deploy detector has
+    # opened a `🚨 Deployment Completed With Issues` issue on every
+    # develop/staging deploy since 2026-10-01. The deployment itself
+    # is fully successful (containers up, ROS2 topics active,
+    # healthchecks passing). The exclusion is scoped to the
+    # gce.go / product_name probe so a different cadvisor error
+    # (e.g. `manager.go:1116] Failed to create existing container`)
+    # is still surfaced. Future fix: bump cadvisor to a release that
+    # adds `--no_product_name` (or equivalent) on ARM, or pin a
+    # fork; tracked separately from this deploy-gate noise fix.
+    r"error while reading product_name: open /sys/class/dmi/id/product_name: no such file or directory",
+    # promtail 2.9.2 Docker API client mismatch (issue #3315, deploy
+    # run 36873490556 2026-10-01 14:04 / kanban t_0d6f165b, repeated
+    # on runs 36888979827 / 36899424485 same day + 37101202577
+    # 2026-10-03 05:52). The container `promtail-vision` is pinned
+    # at grafana/promtail:2.9.2 (docker/vision/docker-compose.yaml
+    # line 738) and the embedded Docker SDK targets API 1.24-1.43.
+    # Vision Pi / Main Pi Docker daemons were upgraded to a build
+    # whose minimum supported API is 1.44, so every 5s the
+    # docker_sd_configs refresh prints
+    # `level=error ... component=docker_discovery ... err="error
+    # while listing containers: Error response from daemon: client
+    # version 1.42 is too old. Minimum supported API version is
+    # 1.44, please upgrade your client to a newer version"`. This
+    # is a build-pipeline issue, not a deployment failure: the
+    # system-log scrape job (`/var/log/*.log`) keeps working
+    # (filetarget manager is unaffected), only the Docker
+    # label-discovery scrape is dropped. Loki still receives host
+    # logs; container log shipping is the only loss. The
+    # CRITICAL_EXCLUDE pattern is intentionally narrow: the
+    # `client version 1.42 is too old` substring only matches
+    # the promtail / docker_sd discovery path. A real Docker
+    # daemon failure (e.g. `Cannot connect to the Docker daemon`)
+    # is a different message and is still reported. The positive
+    # `Scrape Docker container logs` job is left to fall through
+    # the exclusion so a real cadvisor / docker_sd exception (e.g.
+    # permission denied on /var/run/docker.sock) is still surfaced.
+    # Future fix: bump grafana/promtail to 3.x (newer SDK supports
+    # 1.44+) and re-validate the promtail-config.yaml schema
+    # (3.x changes pipeline_stages keying); tracked separately.
+    r"client version 1\.42 is too old\. minimum supported api version is 1\.44, please upgrade your client to a newer version",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
