@@ -42,7 +42,7 @@ def _args(code: str) -> list:
 
 
 def test_patched_envelope_ends_at_sus_with_atk_rel_edges():
-    env = re.search(r"Env\(\[0, 1, 1, 0\], \[(.*?)\]\)", LOOP_SYNTHDEF)
+    env = re.search(r"Env\(\[0, 1, 1, 0\], \[(.*?)\], \wel\)", LOOP_SYNTHDEF)  # края — четверть синуса
     assert env, "envelope must stay a 4-point gate"
     assert [t.strip() for t in env.group(1).split(",")] == ["edgeA", "sus - edgeA - edgeR", "edgeR"]
     assert "edgeA = atk.clip(0.001, sus * 0.5);" in LOOP_SYNTHDEF
@@ -51,7 +51,8 @@ def test_patched_envelope_ends_at_sus_with_atk_rel_edges():
 
 
 def test_patch_keeps_upstream_arguments_and_playback():
-    assert _args(LOOP_SYNTHDEF) == _args(UPSTREAM_LOOP)
+    # аргументы upstream + огибающая деки файла (ADR-0158 PR-8 хвосты: ``render.audio.deck_fade_args``)
+    assert _args(LOOP_SYNTHDEF) == _args(UPSTREAM_LOOP) + ["fdeck", "fadeA", "fadeB", "fadeT"]
     for line in ("rate = In.kr(bus, 1);", "loop: 1.0);", "osc = Mix(osc) * 0.5;", "ReplaceOut.ar(bus, osc)"):
         assert line in LOOP_SYNTHDEF
 

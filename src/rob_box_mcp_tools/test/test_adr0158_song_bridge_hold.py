@@ -52,8 +52,8 @@ def test_cut_in_beat_is_the_next_bar_the_cue_still_makes():
     assert gs.cut_in_beat(None) is None  # мост не играет
     at = gs.cut_in_beat((137.3, 100.0, form))
     assert at % BAR == 0 and 137.3 + gs.CUT_IN_CUE_BEATS < at <= 137.3 + gs.CUT_IN_CUE_BEATS + BAR
-    # последние ``lead`` долей прохода: штатный nearly_finished сведёт на границе (иначе он продлил бы мост)
-    assert gs.cut_in_beat((100.0 + form - NEARLY_LEAD_BEATS - 2.0, 100.0, form)) is None
+    # последние ``lead`` долей прохода — тоже ближайший такт: nearly_finished моста видит поставленный результат
+    assert gs.cut_in_beat((100.0 + form - NEARLY_LEAD_BEATS - 2.0, 100.0, form)) == 100.0 + form - NEARLY_LEAD_BEATS + 4.0
     # nearly_finished этого прохода уже был (результата не было — мост продлён): вход на такте, не через проход
     late = 100.0 + form - 10.0
     assert gs.cut_in_beat((late, 100.0, form)) == 100.0 + form - 4.0
@@ -97,19 +97,19 @@ def test_song_over_a_long_synth_bridge_enters_on_the_next_bar_with_a_crossfade(t
     assert any("входит на доле" in m for _, m in rig.log.lines)
 
 
-def test_ready_inside_the_last_lead_of_a_pass_blends_on_the_bridge_boundary(tmp_path, monkeypatch):
-    """Готово за ≤ ``lead`` долей до границы прохода: сводит штатный ``nearly_finished`` (вход за кроссфейд до
-    границы) — и тогда результат не ждёт ещё проход формы."""
+def test_ready_inside_the_last_lead_of_a_pass_cuts_in_on_the_next_bar(tmp_path, monkeypatch):
+    """Готово перед ``nearly_finished`` прохода: вход всё равно на ближайшем такте, ``nearly_finished`` между
+    постановкой и входом мост не продлевает и результат второй раз не готовит."""
     rig, hold, lib, bridge = _synth_hold(tmp_path, monkeypatch)
     end = bridge["start_beat"] + bridge["form_beats"]
     ready = end - NEARLY_LEAD_BEATS - 2.0
     rig.clock.run_until(ready)
     assert hold.deliver(cache_tracks(lib)[0].id)
-    _wait(lambda: rig.owner._queued is not None)  # noqa: SLF001
+    _wait(lambda: rig.owner._pending is not None)  # noqa: SLF001
     rig.clock.run_until(end + 2 * BAR)
     live = _events(rig, "started")[-1]
-    assert live["track_id"] == hold.live_id and live["start_beat"] == end - XFADE
-    assert live["start_beat"] - ready <= NEARLY_LEAD_BEATS
+    assert live["track_id"] == hold.live_id and live["start_beat"] - ready <= BAR + gs.CUT_IN_CUE_BEATS
+    assert len(_events(rig, "queued")) == 1 and not [m for m in rig.log.warnings() if "не готов" in m]
 
 
 def test_bridge_failure_over_a_synth_bridge_is_a_finale_at_the_boundary_not_a_cut(tmp_path, monkeypatch):
@@ -152,7 +152,8 @@ def test_cache_bridge_of_a_song_loops_until_the_song_then_crossfades(tmp_path, m
     assert hold is not None and result.data["track_id"] == hold.bridge_id and studio.play is not None
     rig.clock.run_until(rig.clock.beat + 2)
     bridge = _events(rig, "started")[0]
-    assert bridge["track_id"] == hold.bridge_id and bridge["form_beats"] == 28.0  # 30 с при 60 BPM, вниз до такта
+    # 30 с при 60 BPM: файл вниз до такта (28), проход короче на кроссфейд (2 такта — не больше трети файла)
+    assert bridge["track_id"] == hold.bridge_id and bridge["form_beats"] == 20.0
     ready = bridge["start_beat"] + song_after_passes * bridge["form_beats"]
     rig.clock.run_until(ready)
     assert not _events(rig, "finished")  # мост не кончился: петля, а не один проход
@@ -160,12 +161,11 @@ def test_cache_bridge_of_a_song_loops_until_the_song_then_crossfades(tmp_path, m
                           kind="robot_song", style_key="grunge", genre="grunge", task_id="S1", variant=0,
                           duration_ms=60000)["id"]
     assert studio.play(song).success  # SongStudio играет песню через held_play → BridgeHold.deliver
-    _wait(lambda: rig.owner._queued is not None)  # noqa: SLF001
+    _wait(lambda: rig.owner._pending is not None)  # noqa: SLF001
     rig.clock.run_until(ready + 3 * bridge["form_beats"])
     live = _events(rig, "started")[-1]
     assert live["track_id"] == hold.live_id and live["deck"] == "B"
-    # мост — файл: вход на конце его прохода кроссфейдом, тишины между ними нет
-    assert (live["start_beat"] - bridge["start_beat"]) % bridge["form_beats"] == bridge["form_beats"] - XFADE
-    assert live["start_beat"] - ready <= bridge["form_beats"]
+    # мост — файл: вход на ближайшем такте, мост гаснет огибающей деки (14.10: ждал конца прохода файла, 52 с)
+    assert live["start_beat"] - ready <= BAR + gs.CUT_IN_CUE_BEATS
     finished = _events(rig, "finished")
     assert not finished or finished[0]["track_id"] == hold.live_id

@@ -22,6 +22,18 @@ next_bar за границей формы, и трек вставал на фо�
 плеер на долю ``at_beat`` без ``set_time``, а Renardo ставит плеер на долю, кратную сумме ``dur`` (``Player.count``) —
 с ``dur`` = 148 долей трек 3 живого рок-сета 13.10 встал на 296-й доле вместо 224-й (56 с тишины). Ноты остальных
 тактов глушит ``amp`` (Renardo не шлёт ноту с amp 0, ``Players.py:1633``).
+
+Стык петли с собой (хвост PR-8, живой замер 14.10: провал до −35.6 dB на ~2 с): раньше нота прохода k гасла к границе
+формы, а нота прохода k+1 только с неё нарастала — спад, потом подъём, тишина посередине. Теперь проход не последнего
+трека (``once=False``) короче файла на кроссфейд: ``form_beats`` = файл − кроссфейд, нота звучит весь файл, и её спад
+идёт ВМЕСТЕ с подъёмом ноты следующего прохода (``Program.tail_beats``). Края — четверть синуса (кривая ``wel`` в патче
+``loop.scd``): спад cos и подъём sin дают сумму мощностей 1 — стык без провала. Кроссфейд — целые такты: начало
+прохода обязано быть долей ноты (``dur`` = такт). Следующий трек сета встаёт ровно на границу прохода — хвост уходящего
+и есть кроссфейд (``SetSession._blend_beats``).
+
+Дека файла (``fdeck``): нота файла звучит всю ``sus`` и после снятия плеера, а результат ожидания (``BridgeHold``)
+входит посреди прохода моста-файла. Нота знает свою деку, и ``/n_set 1 fadeT <с> fade<дека> 0`` (по группе 1 — всем
+нотам) гасит только её огибающей ``wel`` (:func:`deck_fade_args`), а не всю группу вместе с результатом.
 """
 
 from __future__ import annotations
@@ -40,34 +52,50 @@ def audio_bpm(track: AudioTrack) -> int:
     return int(track.bpm_nominal or kn.AUDIO_DEFAULT_BPM)
 
 
+#: Дека → номер ``fdeck`` ноты файла (патч ``loop.scd``: ``Select.kr(fdeck, [1, fadeA, fadeB])``; 0 — не файл деки).
+DECK_FADE = {"A": 1, "B": 2}
+
+
+def deck_fade_args(deck: str, seconds: float) -> Tuple[object, ...]:
+    """Аргументы ``/n_set 1 …``: ноты файла деки ``deck`` гаснут за ``seconds`` (четверть синуса), ноты другой деки и
+    синтеза — нет (у них ``fdeck`` другой или 0). Новые ноты деки после команды звучат полностью."""
+    if deck not in DECK_FADE:
+        raise RenderError(f"деки {deck!r} нет (есть {sorted(DECK_FADE)})")
+    return ("fadeT", round(max(0.01, float(seconds)), 3), f"fade{deck}", 0.0)
+
+
 def _shape(track: AudioTrack, bpm: int, xfade_bars: int) -> Tuple[float, float, float, float]:
-    """``(форма, sus, атака, спад)`` — доли и секунды: одиночный трек — форма вверх до такта, края ``AUDIO_EDGE_S``;
-    трек сета — форма вниз до такта (не меньше такта), края — кроссфейд, не длиннее трети файла."""
+    """``(форма, sus, край, перекрытие)`` — доли, секунды, доли: одиночный трек — форма вверх до такта, края
+    ``AUDIO_EDGE_S``; трек сета — форма вниз до такта (не меньше такта), край — кроссфейд целыми тактами, не длиннее
+    трети файла; перекрытие проходов — край (файл короче трёх тактов — без перекрытия, край — треть)."""
     sus = round(track.duration_s * bpm / 60.0, 3)
     if not xfade_bars:
-        atk, rel = kn.AUDIO_EDGE_S
-        return float(math.ceil(sus / BEATS_PER_BAR) * BEATS_PER_BAR), sus, atk, rel
+        return float(math.ceil(sus / BEATS_PER_BAR) * BEATS_PER_BAR), sus, 0.0, 0.0
     form = float(max(1, math.floor(sus / BEATS_PER_BAR)) * BEATS_PER_BAR)
-    edge = round(min(xfade_bars * BEATS_PER_BAR, form / 3.0) * 60.0 / bpm, 3)
-    return form, form, edge, edge
+    overlap = float(min(xfade_bars, int(form // (3 * BEATS_PER_BAR))) * BEATS_PER_BAR)
+    return form, form, (overlap or form / 3.0), overlap
 
 
 def render_audio(track: AudioTrack, deck: str, *, xfade_bars: int = 0, once: bool = True) -> Program:
     """Файл → программа деки ``deck``. Детерминирована: один трек — одна строка. ``xfade_bars`` — трек сета
-    (кроссфейд, форма вниз до такта); ``once=False`` — повтор файла не глушится (продление трека сета)."""
+    (кроссфейд, форма вниз до такта); ``once=False`` — повтор файла не глушится (продление трека сета), проход короче
+    файла на кроссфейд: следующий проход нарастает, пока этот гаснет."""
     if deck not in kn.DECK_SLOTS:
         raise RenderError(f"деки {deck!r} нет (есть {sorted(kn.DECK_SLOTS)})")
     slot = kn.DECK_SLOTS[deck][ROLE_SLOT["loop"]]
     bpm = audio_bpm(track)
-    form, sus, atk, rel = _shape(track, bpm, xfade_bars)
-    dur, cycle = (form, 2 * form) if not xfade_bars else (float(BEATS_PER_BAR), 2 * form if once else form)
+    form, sus, edge, overlap = _shape(track, bpm, xfade_bars)
+    atk, rel = (round(edge * 60.0 / bpm, 3),) * 2 if xfade_bars else kn.AUDIO_EDGE_S
+    tail = 0.0 if once else overlap
+    period = form - tail  # проход: следующая нота файла — за перекрытие до конца этой
+    dur, cycle = (form, 2 * form) if not xfade_bars else (float(BEATS_PER_BAR), 2 * form if once else period)
     amp = f"var([1, 0], [{_num(dur)}, {_num(cycle - dur)}], start={FORM_START})" if once or xfade_bars else "1"
     code = (f"# {track.track_id} {track.source} {track.duration_s:.1f} s deck {deck}\n"
             f"{slot} >> loop({track.path!r}, dur={_num(dur)}, sus={_num(sus)}, atk={_num(atk)}, "
-            f"rel={_num(rel)}, amp={amp})\n")
-    return Program(code=code, track_id=track.track_id, deck=deck, bpm=bpm, form_beats=float(form),
+            f"rel={_num(rel)}, amp={amp}, fdeck={DECK_FADE[deck]})\n")
+    return Program(code=code, track_id=track.track_id, deck=deck, bpm=bpm, form_beats=float(period),
                    slots={"audio": slot}, synths=frozenset(), samples=frozenset(),
-                   sample_files=frozenset({track.path}))
+                   sample_files=frozenset({track.path}), tail_beats=tail)
 
 
-__all__ = ["audio_bpm", "render_audio"]
+__all__ = ["DECK_FADE", "audio_bpm", "deck_fade_args", "render_audio"]

@@ -272,7 +272,7 @@ class RenardoAdapter:
 
     def cue(self, program: Any, at_beat: float, on_started: Callable[[Dict[str, Any]], None],
             on_failed: Callable[[str, str], None], *, leave_at: Optional[float] = None,
-            on_left: Optional[Callable[[], None]] = None) -> None:
+            on_left: Optional[Callable[[], None]] = None, fade: Tuple[Optional[str], float] = (None, 0.0)) -> None:
         """Следующий трек сета: плееры программы встают ровно на долю ``at_beat`` (фаза 0).
 
         Встык (``leave_at`` нет) ``at_beat`` — граница формы играющего трека (ADR-0149 §4.3);
@@ -282,7 +282,8 @@ class RenardoAdapter:
         ``at_beat``) на другой деке; плееры уходящего снимаются за ``HANDOFF_STOP_BEATS`` до
         ``leave_at`` (его повтор формы не звучит), дека свободна — ``on_left``. Без ``set_time``
         и без смены темпа: темп один на сет (§4.4). Ошибка exec → ``on_failed``, уходящий трек
-        при этом играет дальше (не тишина).
+        при этом играет дальше (не тишина). ``fade`` — ``(дека, доли)``: ноты файла уходящей деки гаснут с доли
+        ``at_beat`` (вход результата посреди прохода моста-файла, ``BridgeHold``), а не звучат до конца ``sus``.
         """
         ns = self._namespace()
         clock = ns["Clock"]
@@ -317,8 +318,28 @@ class RenardoAdapter:
                     on_left()
 
             clock.schedule(_rbx_deck_free, leave - HANDOFF_STOP_BEATS)
+            if fade[0] and fade[1]:
+                self._fade_deck(clock, float(at_beat), program.bpm, fade, generation)
 
         clock.schedule(_rbx_cue, float(at_beat) - self._lead_beats)
+
+    def _fade_deck(self, clock: Any, at_beat: float, bpm: float, fade: Tuple[Optional[str], float],
+                   generation: int) -> None:
+        """Ноты файла деки ``fade[0]`` гаснут за ``fade[1]`` долей с доли ``at_beat`` — как она слышна: ноты Renardo
+        звучат на ``Clock.latency`` позже своей доли клока, ``/n_set`` без метки времени — сразу."""
+        from rob_box_music.render.audio import deck_fade_args
+
+        deck, beats = fade
+        args = deck_fade_args(str(deck), beats * 60.0 / float(bpm))
+
+        def _rbx_fade() -> None:
+            if generation == self._generation:
+                try:
+                    self._send_osc("/n_set", 1, *args)
+                except Exception:  # noqa: BLE001 — SC недоступен: мост доиграет проход, музыку не роняем
+                    pass
+
+        clock.schedule(_rbx_fade, at_beat + float(clock.latency) * float(bpm) / 60.0)
 
     def beat_now(self) -> float:
         """Доля клока Renardo сейчас (вход результата по такту поверх моста ожидания)."""

@@ -27,7 +27,8 @@ def test_render_plays_the_whole_file_once_in_the_loop_slot():
     # 60 BPM: доля — секунда; форма — файл, округлённый вверх до такта (89.5 → 92)
     assert program.bpm == kn.AUDIO_DEFAULT_BPM and program.form_beats == 92.0
     assert (f"{slot} >> loop({WAV!r}, dur=92, sus=89.5, atk=0.02, rel=1, "
-            "amp=var([1, 0], [92, 92], start=Clock.next_bar()))") in program.code
+            "amp=var([1, 0], [92, 92], start=Clock.next_bar()), fdeck=2)") in program.code
+    assert program.tail_beats == 0.0  # один проход: нота не звучит за границей формы
     assert program.sample_files == frozenset({WAV}) and not program.synths and not program.samples
     assert render_audio(AudioTrack("gen_1", WAV, 89.5), "B") == program  # детерминирована
 

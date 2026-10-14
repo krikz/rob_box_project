@@ -171,12 +171,13 @@ class PlayerOwner:
             "queued", program.track_id, ts=self._clock(), expected_previous=expected_previous))
 
     def advance(self, at_beat: float, dj: Optional[Mapping[str, Any]] = None, *,
-                leave_at: Optional[float] = None, once: bool = False) -> bool:
+                leave_at: Optional[float] = None, once: bool = False, fade_beats: float = 0.0) -> bool:
         """Поставить трек из очереди на долю ``at_beat``. ``False`` — ставить нечего.
 
         ``leave_at`` — блэнд: играющий трек звучит до этой доли (граница его формы), потом его
         дека свободна; без него — стык встык на ``at_beat``. ``once`` — конечный трек (последний трек
-        сета): один проход формы, потом ``finished`` и ``idle``, как у ``play(..., once=True)``.
+        сета): один проход формы, потом ``finished`` и ``idle``, как у ``play(..., once=True)``. ``fade_beats`` — ноты
+        файла уходящей деки гаснут за столько долей с ``at_beat`` (вход посреди прохода моста-файла).
 
         Исполняется только артефакт, у которого ``expected_previous`` = играющий трек (I4);
         иначе ``WARNING artifact_stale`` и очередь пуста. Ресурс не прошёл проверку → ``rejected``.
@@ -203,9 +204,10 @@ class PlayerOwner:
                 self._once = program.track_id
         self._adapter.cue(program, at_beat, self.track_started,
                           lambda reason, detail: self._reject(program.track_id, reason, detail), leave_at=leave_at,
-                          on_left=lambda: self._log.info(f"🎵 [music v2] deck {leaving_deck} free track_id={current}"))
+                          on_left=lambda: self._log.info(f"🎵 [music v2] deck {leaving_deck} free track_id={current}"),
+                          fade=(leaving_deck, fade_beats))
         self._log.info(f"🎵 [music v2] cue track_id={program.track_id} deck={program.deck} at_beat={at_beat} "
-                       f"leave_at={leave_at}" + (" once" if once else ""))
+                       f"leave_at={leave_at} fade={fade_beats:g}" + (" once" if once else ""))
         return True
 
     def watch(self, track_id: str, form_end_beat: float, lead_beats: float,
