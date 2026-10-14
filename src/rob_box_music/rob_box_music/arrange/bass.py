@@ -291,6 +291,14 @@ def _riff_notes(riff: str, tone: int, fifth: Optional[int], register: Tuple[int,
     return notes
 
 
+def follow_riff(onsets: frozenset, base: str) -> str:
+    """Рифф такта в ритме темы (``SectionPart.bass_follow``, #3594): тон такта на восьмых, где начинается нота темы
+    (``onsets`` — шаги 16-х; нота на нечётной 16-й — на её восьмой), между ними тянется; первая восьмая — всегда нота.
+    Тема в такте дала меньше двух нот — ``base``."""
+    out = "".join("R" if i == 0 or {2 * i, 2 * i + 1} & onsets else "." for i in range(RIFF_EIGHTHS))
+    return out if out.count("R") >= 2 else base
+
+
 def riff(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
          register: Tuple[int, int], tones: Tones = None) -> Part:
     """Бас-рифф рока по тактам ``bar_chords``: восьмые по риффу ``style.bass_riffs[bar % n]`` на тоне такта (прима или
@@ -458,6 +466,6 @@ def against_lead(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chor
     return replace(part, pitches=tuple(replace(e, midi=m) for e, m in zip(notes, line)))
 
 
-__all__ = ["ANCHORS", "BassTone", "RIFF_EIGHTHS", "ROOT_TONE", "WALK_TONES", "acid16", "against_lead", "bar_notes", "broken",
+__all__ = ["ANCHORS", "BassTone", "RIFF_EIGHTHS", "follow_riff", "ROOT_TONE", "WALK_TONES", "acid16", "against_lead", "bar_notes", "broken",
            "figure_bass", "material_tones", "note_beats", "octave8", "offbeat", "perfect_fifth", "riff", "rolling8",
            "walking"]

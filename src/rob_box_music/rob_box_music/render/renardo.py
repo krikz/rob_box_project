@@ -511,6 +511,12 @@ def _slots(track: Track, deck: str) -> Dict[str, str]:
     return slots
 
 
+def _track_style(track: Track) -> Optional[kn.Style]:
+    """Стиль трека с подстилем его каркаса (``knowledge.feel_style``, #3594): дуга громкости секций — его."""
+    style = kn.STYLES.get(track.style)
+    return None if style is None else kn.feel_style(style, track.history_key.kit)
+
+
 def render(track: Track, deck: str) -> Program:
     """Модель трека → программа деки ``deck``. Детерминирована: одна модель — одна строка."""
     validate(track)
@@ -532,7 +538,7 @@ def render(track: Track, deck: str) -> Program:
         code="\n".join(lines) + "\n", track_id=track.track_id, deck=deck, bpm=track.bpm,
         form_beats=float(track.form.bars_total * BEATS_PER_BAR), slots=slots,
         synths=frozenset(tonal), samples=frozenset(drums), sample_files=frozenset(files),
-        arc=section_arc(track.form, track.bpm),
+        arc=section_arc(track.form, track.bpm, _track_style(track)),
     )
 
 

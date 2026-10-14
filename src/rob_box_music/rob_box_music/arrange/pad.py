@@ -16,7 +16,8 @@
   кругу), септаккорды при ``Style.chord_size`` 4; на сильных долях 1 и 3 — никогда (там хук), без сайдчейна.
 * ``power_chords`` — пауэр-аккорды рока (ADR-0153 S5): прима, чистая квинта и октава примы ступени такта — без терции;
   ступень с уменьшённой квинтой (ii° минора, vii° мажора — Витерби темы может их взять) — прима и октава. Ритм —
-  ``Style.power_rhythms`` по тактам по кругу (палм-мьют — короткая ``sus``), без сайдчейна.
+  ``Style.power_rhythms`` по тактам по кругу (палм-мьют — короткая ``sus``; третье число удара — акцент 0..3, тише
+  громче), без сайдчейна.
 
 Обращения аккордов — ``harmony.pad_chords``; уровень ставит ``arrange.mix``.
 """
@@ -138,6 +139,31 @@ def power_voicing(root_pc: int, fifth_pc: int, register: Tuple[int, int]) -> Tup
     return (below[0] - (12 - FIFTH), below[0]) if below else (roots[0],)
 
 
+def power_accent(hit: Tuple[int, ...]) -> int:
+    """Акцент удара пауэр-аккорда ``(шаг, длина[, акцент])``: свой (палм-мьют куплета тише, #3594) или 3 на доле, 2
+    между долями."""
+    return hit[2] if len(hit) > 2 else (3 if hit[0] % 4 == 0 else 2)
+
+
+def follow_rhythm(mode: str, onsets: frozenset, sounding: frozenset, base: kn.PowerRhythm) -> kn.PowerRhythm:
+    """Ритм пауэр-аккордов такта, идущий за темой (``SectionPart.follow``, #3594); ``onsets`` — шаги 16-х, где
+    начинаются ноты темы такта, ``sounding`` — где она звучит. ``unison`` — аккорд на каждую ноту темы до следующей
+    (тутти с мелодией); ``answer`` — глушёные удары ``base`` только там, где тема молчит (ответ); ``accent`` — ``base``
+    с акцентом 3 на ударах с нотой темы, 1 на остальных. Меньше двух ударов вышло (тема молчит или тянет ноту) —
+    ``base``. Режим не из ``knowledge.FOLLOW_MODES`` — ``ValueError``."""
+    if mode not in kn.FOLLOW_MODES:
+        raise ValueError(f"follow {mode!r} не из {kn.FOLLOW_MODES}")
+    if mode == "unison":
+        hits = sorted(onsets)
+        out = tuple((s, (hits[i + 1] if i + 1 < len(hits) else STEPS_PER_BAR) - s, 3 if s % 4 == 0 else 2)
+                    for i, s in enumerate(hits))
+    elif mode == "answer":
+        out = tuple(hit for hit in base if not ({hit[0], hit[0] + 1} & sounding))
+    else:
+        out = tuple((hit[0], hit[1], 3 if {hit[0], hit[0] + 1} & onsets else 1) for hit in base)
+    return out if len(out) >= 2 else base
+
+
 def power_chords(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chord]], synth: str,
                  register: Tuple[int, int]) -> Part:
     """Пауэр-аккорды по тактам ``bar_chords``: в такте ``bar`` — удары ритма ``style.power_rhythms[bar % n]``
@@ -149,11 +175,11 @@ def power_chords(style: kn.Style, key: Key, bar_chords: Sequence[Tuple[int, Chor
     for bar, chord in bar_chords:
         pcs = harmony.chord_pcs(style, key, chord.degree, chord.quality or None)  # объявленный аккорд (Ф2, #3530)
         voicing = power_voicing(pcs[0], pcs[2], register)
-        events += [PitchEvent(m, bar * BEATS_PER_BAR + step * STEP_BEATS, length * STEP_BEATS, 3 if step % 4 == 0 else 2)
-                   for step, length in rhythms[bar % len(rhythms)] for m in voicing]
-    steps = sorted({step for r in rhythms for step, _n in r})
+        events += [PitchEvent(m, bar * BEATS_PER_BAR + hit[0] * STEP_BEATS, hit[1] * STEP_BEATS, power_accent(hit))
+                   for hit in rhythms[bar % len(rhythms)] for m in voicing]
+    steps = sorted({hit[0] for r in rhythms for hit in r})
     return Part("pad", synth, rhythm.grid(steps), tuple(events), 0.0, register)
 
 
 __all__ = ["FIFTH", "STAB_STEPS", "STRONG_STEPS", "arp", "arp_events", "comping", "held", "power_chords",
-           "power_voicing", "pumped16", "stabs"]
+           "follow_rhythm", "power_accent", "power_voicing", "pumped16", "stabs"]

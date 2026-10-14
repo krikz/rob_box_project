@@ -297,14 +297,17 @@ def _before_drop_section(form: Form, sec: Section) -> bool:
 
 
 def _kick_bar(style: kn.Style, sec: Section, bars_left: int) -> Grid:
-    bar = rhythm.kick_grid(mix.look(style, sec.energy).kick)
+    bar = rhythm.kick_grid(mix.section_look(style, sec).kick)
     return rhythm.kick_fill(bar) if sec.fill_last_bar and bars_left == 1 else bar
 
 
 def _clap_bar(style: kn.Style, form: Form, sec: Section, bars_left: int) -> Grid:
     """Такт клэпа/малого: бэкбит в секциях видов ``Style.backbeat_kinds``; в секции с fill-ом перед дропом — ролл
-    ``Style.roll_bars`` тактов, в такте fill-а — ``Style.clap_fill``."""
+    ``Style.roll_bars`` тактов, в такте fill-а — ``Style.clap_fill``. Малый партии секции (``Style.section_parts``) —
+    вместо бэкбита."""
     bar = rhythm.clap_grid() if kn.section_kind(sec.name) in style.backbeat_kinds else _SILENT
+    snare = kn.section_part(style, sec.name).snare
+    bar = rhythm.pattern_grid(snare) if snare else bar
     if not sec.fill_last_bar:
         return bar
     if bars_left <= style.roll_bars and _before_drop_section(form, sec):
@@ -313,9 +316,11 @@ def _clap_bar(style: kn.Style, form: Form, sec: Section, bars_left: int) -> Grid
 
 
 def _tom_bar(style: kn.Style, rng: random.Random, sec: Section, bars_left: int) -> Grid:
-    """Такт томов: в такте fill-а — рисунок ``Style.tom_fills`` по ГСЧ, иначе тишина."""
+    """Такт томов: в такте fill-а — рисунок ``Style.tom_fills`` по ГСЧ, иначе том-грув партии секции
+    (``SectionPart.toms``) или тишина."""
     if not (sec.fill_last_bar and bars_left == 1):
-        return _SILENT
+        groove = kn.section_part(style, sec.name).toms
+        return rhythm.tom_fill(groove) if groove else _SILENT
     return rhythm.tom_fill(weighted_pick(list(style.tom_fills), (), rng))
 
 
@@ -327,13 +332,66 @@ def _drum_grids(style: kn.Style, form: Form, swing_ms: int, kit: str,
     секции с fill-ом — такт ``Style.clap_fill``. Томы (``Style.tom_fills``, ADR-0153 S5) — рисунок по ГСЧ ``fills`` в
     такте fill-а каждой секции с ролью ``toms`` (роль задаёт форма стиля), остальное время молчат."""
     grids = {"kick": rhythm.form_bars(form.sections, lambda sec, left: _kick_bar(style, sec, left)),
-             "hats": rhythm.hats_grid(style, swing_ms, kit)}
+             "hats": _hats(style, form, swing_ms, kit)}
     if any("clap" in sec.roles for sec in form.sections):
         grids["clap"] = rhythm.form_bars(form.sections, lambda sec, left: _clap_bar(style, form, sec, left))
     if any("toms" in sec.roles for sec in form.sections):  # роль томов — в секциях формы стиля
         rng = fills or random.Random(0)
         grids["toms"] = rhythm.form_bars(form.sections, lambda sec, left: _tom_bar(style, rng, sec, left))
     return grids
+
+
+def _hats(style: kn.Style, form: Form, swing_ms: int, kit: str) -> Grid:
+    """Хэты: такт каркаса ``kit`` по кругу; у стиля с хэтами партий секций (``Style.section_parts``, #3594) — на всю
+    форму, секция с рисунком — он, остальные — каркас трека."""
+    if not any(kn.section_part(style, sec.name).hats for sec in form.sections):
+        return rhythm.hats_grid(style, swing_ms, kit)
+    bars = rhythm.form_bars(form.sections, lambda sec, _left: rhythm.pattern_grid(
+        kn.section_part(style, sec.name).hats or style.kits[kit]["hats"]))
+    return rhythm.swing(bars, swing_ms, style.swing_steps)
+
+
+def _lead_steps(lead: Sequence[PitchEvent]) -> Dict[int, Tuple[frozenset, frozenset]]:
+    """Такт формы → (шаги 16-х начала нот темы, шаги, где тема звучит)."""
+    out: Dict[int, Tuple[set, set]] = {}
+    for e in lead:
+        first = int(round(e.beat * 4))
+        for step in range(first, max(first + 1, int(round((e.beat + e.dur_beats) * 4)))):
+            bar = out.setdefault(step // 16, (set(), set()))
+            bar[1].add(step % 16)
+            if step == first:
+                bar[0].add(step % 16)
+    return {bar: (frozenset(on), frozenset(sounding)) for bar, (on, sounding) in out.items()}
+
+
+def _bar_tables(style: kn.Style, spec: FormSpec, lead: Sequence[PitchEvent] = ()) -> kn.Style:
+    """Стиль с ритмом гитары и риффом баса на каждый такт формы (``Style.section_parts``, #3594): таблица длиной в
+    форму (генераторы берут ``таблица[такт % длина]``), такт — таблица своей секции по кругу, секция без своей —
+    таблица стиля; партия, что идёт за темой (``SectionPart.follow``/``bass_follow``), выводит ритм такта из нот темы
+    ``lead`` (``pad.follow_rhythm``, ``bass.follow_riff``). У какой-то секции таблицы нет — поле пустое, как было."""
+    steps = _lead_steps(lead)
+    power: List[kn.PowerRhythm] = []
+    riffs: List[str] = []
+    for name, bars, _energy, _roles in spec:
+        part = kn.section_part(style, name)
+        own_power, own_riffs = part.power or style.power_rhythms, part.riffs or style.bass_riffs
+        for bar in range(len(riffs), len(riffs) + bars):
+            on, sounding = steps.get(bar, (frozenset(), frozenset()))
+            if own_power:
+                base = own_power[bar % len(own_power)]
+                power.append(pad.follow_rhythm(part.follow, on, sounding, base) if part.follow else base)
+            if own_riffs:
+                base_riff = own_riffs[bar % len(own_riffs)]
+                riffs.append(bass.follow_riff(on, base_riff) if part.bass_follow else base_riff)
+    total = sum(bars for _n, bars, _e, _r in spec)
+    return replace(style, power_rhythms=tuple(power) if len(power) == total else (),
+                   bass_riffs=tuple(riffs) if len(riffs) == total else ())
+
+
+def _lead_spec(style: kn.Style, spec: FormSpec) -> FormSpec:
+    """Форма для развития хука: секция с ``SectionPart.lead`` развивается как секция с тем именем (#3594: последний
+    припев рока — тема одним голосом, а не терциями ``drop2``)."""
+    return tuple((kn.section_part(style, name).lead or name, bars, energy, roles) for name, bars, energy, roles in spec)
 
 
 def _swung(style: kn.Style, parts: Mapping[str, Part], swing_ms: int, rng: random.Random) -> Dict[str, Part]:
@@ -585,8 +643,8 @@ class _BarPlan(NamedTuple):
 def _arrange(style: kn.Style, spec: FormSpec, motif: Hook, key: Key, lead_synth: str, harm: Harmonizer) -> Arranged:
     """Лид, гармония под звучащую мелодию секций (:func:`_harmonize`) и пэд под лидом; пэд не помещается —
     ``ValueError``."""
-    lead_part = _lead(style, spec, motif, key, lead_synth)
-    loop, degrees, tones = _harmonize(spec, motif, key, harm, style.cadence, develop_register(style))
+    lead_part = _lead(style, _lead_spec(style, spec), motif, key, lead_synth)
+    loop, degrees, tones = _harmonize(_lead_spec(style, spec), motif, key, harm, style.cadence)
     pad_top = min(style.registers["pad"][1], min(e.midi for e in lead_part.pitches) - PAD_GAP)
     bars = sorted(degrees)
     register, chords = _pad_chords(style, key, [degrees[b] for b in bars], pad_top)
@@ -667,6 +725,11 @@ def _theme_hook(style: kn.Style, spec: FormSpec, profile: ThemeProfile, melodies
     аранжировка, форма) или None. Гармония — Витерби под мелодию (:func:`melody_harmonizer`)."""
     for candidate, key in hook_candidates(profile, melodies, rng, history, opening=track_no == 1, track_no=track_no,
                                           set_id=set_id, theme_max=theme_limit(spec)):
+        share = hooks.in_key_share(candidate, key)
+        if share < style.hook_in_key_min:  # #3594: хроматика под диатоническими аккордами — «ноты не те»
+            _LOG.info("🎵 [music v2] hook melody=%s в ладу %.2f < %.2f стиля — следующая", candidate.source, share,
+                      style.hook_in_key_min)
+            continue
         try:
             motif, form, arranged = _arrange_theme(style, spec, candidate, key, lead_synth,
                                                    melody_harmonizer(style, key, history, rng))
@@ -763,8 +826,9 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     мотив лида (PR-2).
     """
     step = plan.track(track_no)
-    style = plan.table
     seed = plan.track_seed(track_no)  # стиль и окно — в сиде трека (#3550)
+    kit = _kit(plan.table, history, random.Random(f"{seed}:kit"))
+    style = kn.feel_style(plan.table, kit)  # подстиль трека — партии секций его каркаса (#3594)
     template = track_template(style, step, track_no, history, random.Random(f"{seed}:template"))
     spec = form_spec(style, template)
     profile = replace(plan.profile, bpm=plan.bpm, root=plan.root(track_no))
@@ -783,8 +847,7 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     progression = _progression(spec, arranged.chords)
     form = _form(style, spec, step.energy)
     axis = {name: random.Random(f"{seed}:{name}")
-            for name in ("kit", "sample", "loop", "fx", "drums", "fills", "hands")}
-    kit = _kit(style, history, axis["kit"])
+            for name in ("sample", "loop", "fx", "drums", "fills", "hands")}
     perc = samples.perc_pool(key, history, axis["sample"]) if "sample" in style.layer_sections else ()
     loop = samples.pick(style.loop_roles, key, history, "sample", axis["loop"])
     fx = samples.pick(style.fx_roles, key, history, "fx", axis["fx"])
@@ -792,9 +855,10 @@ def compose(plan: SetPlan, track_no: int, *, melodies: Optional[Mapping[str, str
     swing_ms = rhythm.swing_offset_ms(plan.swing, plan.bpm)
     drums = _drums(style, form, swing_ms, kit, kick, axis["drums"], axis["fills"])
     bass_chords = _bar_chords(spec, "bass", progression)
-    bass_figure, bass_part = _bass(style, plan.family, bass_chords, key, history, seed, arranged.tones or None)
+    by_bar_style = _bar_tables(style, spec, arranged.lead.pitches)
+    bass_figure, bass_part = _bass(by_bar_style, plan.family, bass_chords, key, history, seed, arranged.tones or None)
     bass_part = bass.against_lead(style, key, bass_chords, bass_part, arranged.lead.pitches)
-    figure, pad_part = _pad(style, plan.family, _bar_chords(spec, "pad", progression), key, arranged.register,
+    figure, pad_part = _pad(by_bar_style, plan.family, _bar_chords(spec, "pad", progression), key, arranged.register,
                             history, seed)
     layers = {"sample": lambda: samples.perc_part(style, perc, kit, axis["sample"]),
               "loop": lambda: LOOP_GENERATORS[style.loop_figure](loop, axis["loop"]),
