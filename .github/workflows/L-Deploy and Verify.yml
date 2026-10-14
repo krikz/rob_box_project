@@ -576,6 +576,65 @@ jobs:
              fi" \
             || echo "⚠️  Warning: time sync failed on Vision Pi"
 
+      # Issue #3090: Verify Hailo Driver стоит ДО Stop Containers — если
+      # драйвер мёртв, нет смысла рестартить стек (issue #2930 fix ниже
+      # переехал в Stop). Раньше fail-fast стоял ПОСЛЕ Stop и валил уже
+      # после `docker compose down`, оставляя остановленный стек.
+      - name: "[Vision Pi] Verify Hailo Driver (pre-deploy, issue #3090)"
+        if: '!inputs.dry_run'
+        id: hailo_check
+        # Issue #3090 acceptance #5: pre-deploy fail-fast если /dev/hailo0
+        # или hailo_pci.ko отсутствуют. По образцу [Vision Pi] Check
+        # Container Status ниже — вынесенная логика в отдельный скрипт,
+        # SSoT в .github/scripts/check_hailo_driver.sh. Покрыт регрессом
+        # в .github/scripts/tests/test_check_hailo_driver.sh.
+        # Fail-fast: если healthy=false — docker compose up НЕ выполняется.
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛰️  Pre-deploy: verifying Hailo driver on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          PI_HOST="${{ env.vision_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          GRACE_SECS=0 \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          SCOPE=vision \
+          FINDINGS_FILE="$VISION_FINDINGS_FILE" \
+            bash .github/scripts/check_hailo_driver.sh > /tmp/hailo_check.json
+
+          HAILO_HEALTHY=$(jq -r '.healthy' /tmp/hailo_check.json)
+          HAILO_FAILED=$(jq -r '.failed_count' /tmp/hailo_check.json)
+          HAILO_REASON=$(jq -r '.reason' /tmp/hailo_check.json)
+          HAILO_KERNEL=$(jq -r '.active_kernel' /tmp/hailo_check.json)
+
+          echo "hailo_healthy=$HAILO_HEALTHY" >> $GITHUB_OUTPUT
+          echo "hailo_failed_count=$HAILO_FAILED" >> $GITHUB_OUTPUT
+          echo "hailo_kernel=$HAILO_KERNEL" >> $GITHUB_OUTPUT
+          echo "hailo_reason=$HAILO_REASON" >> $GITHUB_OUTPUT
+
+          if [ "$HAILO_HEALTHY" != "true" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ PRE-DEPLOY FAIL: Hailo PCIe driver не готов (issue #3090)"
+            echo "   active_kernel:  $HAILO_KERNEL"
+            echo "   failed_count:   $HAILO_FAILED"
+            echo "   reason:         $HAILO_REASON"
+            echo "   full JSON:"
+            cat /tmp/hailo_check.json
+            echo ""
+            echo "Дальнейшие шаги:"
+            echo "  - На Vision Pi: ssh ros2@${{ env.vision_pi_ip }}"
+            echo "    sudo dkms autoinstall --kernel $HAILO_KERNEL"
+            echo "    sudo modprobe hailo_pci"
+            echo "  - Или переустановить hailort-pcie-driver:"
+            echo "    sudo apt-get install --reinstall /opt/rob_box/vendor/hailort-pcie-driver_4.24.0_all.deb"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 1
+          fi
+          echo "✅ Hailo driver ready (active_kernel=$HAILO_KERNEL, reason=$HAILO_REASON)"
+
       # Issue #2930: Stop стоит ПОСЛЕ Pull Docker Images — `down` выполняется,
       # только если preflight подтвердил, что все образы стека лежат локально.
       # Раньше down шёл первым, и при отсутствии образов в реестре стек
