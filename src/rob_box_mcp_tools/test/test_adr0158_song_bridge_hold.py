@@ -169,4 +169,3 @@ def test_cache_bridge_of_a_song_loops_until_the_song_then_crossfades(tmp_path, m
     assert live["start_beat"] - ready <= bridge["form_beats"]
     finished = _events(rig, "finished")
     assert not finished or finished[0]["track_id"] == hold.live_id
-
