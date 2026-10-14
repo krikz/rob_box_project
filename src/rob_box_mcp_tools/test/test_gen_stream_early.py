@@ -249,6 +249,27 @@ def test_download_sends_own_user_agent_and_timeout():
         kie_suno.KieSunoProvider("k", transport=lambda *a: (403, b"")).download(STREAM0)
 
 
+@pytest.mark.parametrize("early", [True, False])
+def test_provider_down_after_submit_keeps_spend_and_task_id(tmp_path, early):
+    """14.10 06:00: KIE списал 12, а gen_ledger был пуст и task_id нигде не было."""
+    lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+    t = Transport(["queued", (200, {"code": 500, "msg": "busy"})], MEDIA)
+    provider = kie_suno.KieSunoProvider("sk-test", transport=t, sleep=lambda s: None)
+    with pytest.raises(GenUnavailable) as e:
+        generate_into_cache(provider, lib, Budget(lib), JOB, early=early, sleep=lambda s: None)
+    assert e.value.reason == "provider_down" and "task_id=T1" in str(e.value) and e.value.ticket.task_id == "T1"
+    assert lib.ledger.spent_since("2000-01-01T00:00:00+00:00") == 12.0 and lib.count == 0
+
+
+def test_rejected_after_submit_is_not_booked(tmp_path):
+    lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+    t = Transport([(200, {"code": 200, "data": {"taskId": "T1", "state": "fail", "failMsg": "bad"}})], MEDIA)
+    provider = kie_suno.KieSunoProvider("sk-test", transport=t, sleep=lambda s: None)
+    with pytest.raises(GenUnavailable) as e:
+        generate_into_cache(provider, lib, Budget(lib), JOB, sleep=lambda s: None)
+    assert e.value.reason == "rejected" and lib.ledger.spent_since("2000-01-01T00:00:00+00:00") == 0.0
+
+
 class _SlowResp:
     """Ответ, у которого каждое чтение «занимает» 8 с часов (``clock``)."""
 

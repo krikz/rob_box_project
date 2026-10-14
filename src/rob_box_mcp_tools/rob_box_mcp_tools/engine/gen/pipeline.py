@@ -29,6 +29,9 @@ from .provider import GEN_TIMEOUT_S, GenJob, GenStatus, GenTicket, GenTrack, Gen
 from .quota import enforce_quota
 
 _LOG = logging.getLogger(__name__)
+#: Провал после submit, при котором задача у провайдера могла дойти и списать кредиты: трата пишется оценкой
+#: (повтор того же task_id в gen_ledger игнорируется). ``rejected`` (state=fail) сюда не входит — факт не измерен.
+SPENT_AFTER_SUBMIT = ("provider_down", "timeout")
 
 
 @dataclass(frozen=True)
@@ -140,8 +143,14 @@ def generate_into_cache(
                  source_audio_sha=source_audio_sha)
     order = _Order(provider, library, job, ticket, rkey, cost, extra, log, clock, started)
     probe = _EarlyProbe(order) if early else None
-    status = wait_complete(provider, ticket, timeout_s=timeout_s, sleep=sleep, clock=clock,
-                           stop=probe.try_status if probe else None)
+    try:
+        status = wait_complete(provider, ticket, timeout_s=timeout_s, sleep=sleep, clock=clock,
+                               stop=probe.try_status if probe else None)
+    except GenUnavailable as exc:
+        # 14.10 06:00: provider_down после submit — KIE списал 12, а в gen_ledger и в логе не было даже task_id
+        if exc.reason in SPENT_AFTER_SUBMIT:
+            order.record_spend()
+        raise GenUnavailable(exc.reason, f"{exc.detail} task_id={ticket.task_id}".strip(), ticket) from exc
     if probe is not None and (probe.got is not None or probe.try_status(status)):
         # ранний звук — или на complete первый вариант мосту сразу, остальные финишёром (14.10: V6 без
         # промежуточных стадий, success на 21 с у сервера, а последовательное скачивание двух mp3 — ещё ≈ 9 с)
