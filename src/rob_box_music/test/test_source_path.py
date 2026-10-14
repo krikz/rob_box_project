@@ -6,7 +6,7 @@
 import pytest
 
 from rob_box_music import knowledge as kn
-from rob_box_music.choice import Choice, DeterministicChooser
+from rob_box_music.choice import Choice, ChoiceQuestion, DeterministicChooser
 from rob_box_music.source import (CacheTrack, SourceAsk, SourceContext, cache_text, choose_route,
                                   choose_with_fallback, decline_text, gen_block, route_note, source_ask,
                                   source_candidates)
@@ -135,3 +135,56 @@ def test_phrases_name_the_ask_and_the_reason_g3():
     synth = choose_route(source_ask("сгенерируй музыку"), SourceContext(), DET)
     assert route_note(synth) == "Сгенерировать сейчас не могу: генерация у меня ещё не подключена, играю своё."
     assert route_note(choose_route(source_ask("поставь клубный трек"), SourceContext(), DET)) == ""
+
+
+# ── Решение Шифу 13.10 (ADR-0158 §8, В13): Suno по умолчанию, синтез — запас; таблица «фраза → путь» ──────────────
+#: Кэш: рок давно игранный (не свежий), рок «нравится», клуб, гранж-инструментал и песня (как на роботе).
+ROCK_OLD = CacheTrack("r", "Rock Old", "instrumental", "rock", True, played_ago_h=1.0, group="t5")
+ROCK_LIKED = CacheTrack("rl", "Rock Liked", "instrumental", "rock", True, rating=kn.RATING_LIKE, group="t6")
+CLUB = CacheTrack("k", "Club Cached", "instrumental", "club", True, group="t7")
+SHELF = (ROCK_OLD, CLUB) + CACHE
+POOR = SourceContext(cache=SHELF, gen_ready=True, balance=0.0, day_left=120.0)  # денег нет
+SPENT = SourceContext(gen_ready=True, balance=900.0, day_left=0.0)  # лимит дня вышел, кэша нет
+
+
+def rich(cache=()):
+    return SourceContext(cache=cache, gen_ready=True, balance=900.0, day_left=120.0)
+
+
+#: фраза, контекст → путь. Явное «сгенерируй» при деньгах — генерация (даже с треком «нравится» по теме);
+#: «включи <жанр>» — кэш по теме (и давно не свежий), иначе генерация для жанра без синтеза, иначе синтез.
+TABLE = [
+    ("Робот, сгенерируй рок", rich(SHELF), "generate:instrumental:V6"),
+    ("сгенерируй рок", rich((ROCK_LIKED,)), "generate:instrumental:V6"),
+    ("сгенерируй клубный трек", rich((CLUB,)), "generate:instrumental:V6"),
+    ("сгенерируй новый рок", rich(SHELF), "generate:instrumental:V6"),
+    ("включи рок", rich(SHELF), "cache:r"),  # трек кэша игран час назад — всё равно кэш, без траты
+    ("Робот, включи гранж", rich(SHELF), "cache:c"),
+    ("включи метал", rich(SHELF), "generate:instrumental:V6"),  # кэша метала нет, синтез метал не играет
+    ("поставь клубный трек", rich(SHELF), "cache:k"),
+    ("поставь клубный трек", rich(), "synth:club"),
+    ("включи музон", rich(SHELF), "synth:club"),  # жанра нет — «по теме» нечему: своё
+    ("сгенерируй рок", POOR, "cache:r"),  # денег нет — сочинённое раньше
+    ("сгенерируй клубный трек", SourceContext(gen_ready=True, balance=0.0, day_left=120.0), "synth:club"),
+    ("сгенерируй рок", SPENT, "decline:budget_exhausted"),
+]
+
+
+@pytest.mark.parametrize("text,ctx,winner", TABLE)
+def test_source_weights_table(text, ctx, winner):
+    """Победитель — с разрывом ≥ ``CHOOSER_CLEAR_GAP``: код решает сам, Jev/LLM/кубик не зовутся."""
+    route = choose_route(source_ask(text), ctx, DeterministicChooser(Boom()))
+    assert route.id == winner
+    options, _reason = source_candidates(source_ask(text), ctx)
+    if len(options) > 1:
+        ranked = DET.rank(ChoiceQuestion("путь", options, weights=kn.SOURCE_WEIGHTS))
+        assert ranked[0][0] - ranked[1][0] >= kn.CHOOSER_CLEAR_GAP, ranked
+
+
+def test_cache_freshness_still_orders_cache_tracks():
+    """Свежесть кэша не сломана: из двух треков темы давно не игранный выше на ``fresh``."""
+    fresh = CacheTrack("f", "Rock Fresh", "instrumental", "rock", True, played_ago_h=48.0, group="t8")
+    ctx = SourceContext(cache=(ROCK_OLD, fresh))
+    options = {o.id: o for o in source_candidates(source_ask("включи рок"), ctx)[0]}
+    assert options["cache:f"].features["fresh"] == 1.0 and options["cache:r"].features["fresh"] == 0.0
+    assert choose_route(source_ask("включи рок"), ctx, DET).id == "cache:f"

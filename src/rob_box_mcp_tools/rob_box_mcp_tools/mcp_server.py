@@ -272,6 +272,15 @@ def _cover_maker(node: Any) -> Any:
                       log=node.get_logger)
 
 
+def _instrumental_maker(node: Any, cover: Any) -> Any:
+    """Одиночный инструментал («сгенерируй рок»): тот же KIE и кэш, баланс — последний известный у кавера. Ключа
+    нет — исполнитель есть, но не готов: кандидата генерации нет."""
+    from .engine.gen.instrumental import InstrumentalMaker
+
+    return InstrumentalMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None),
+                             balance=cover.balance, log=node.get_logger)
+
+
 def _gen_set_maker(node: Any, cover: Any) -> Any:
     """Сет из генерации (ADR-0158 PR-8): тот же KIE, тот же кэш, баланс — последний известный у кавера; путь сета
     выбирает тот же чойсер (``music_chooser``). Ключа нет — исполнитель есть, но не готов: генерации в сете нет."""
@@ -330,7 +339,8 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                gen_library=lambda: getattr(node, "_generated_music_library", None),
                                play_cached=_play_cached(node),
                                cover=cover, speak=_speaker(node),  # PR-4: кавер пьесы
-                               songs=_song_studio(node, events))  # PR-7: песня голосом робота
+                               songs=_song_studio(node, events),  # PR-7: песня голосом робота
+                               instrumental=_instrumental_maker(node, cover))  # «сгенерируй рок»
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)

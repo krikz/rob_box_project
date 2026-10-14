@@ -66,6 +66,7 @@ from .request_slots import Catalog, RequestSlotParser
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
+from .instrumental_order import InstrumentalOrder
 from .source_route import SourceRouter
 from .theme_grounding import set_slots
 from .theme_links import Ask, ThemeLinks
@@ -628,7 +629,8 @@ class RequestMusicTool(MCPTool):
                  slots_ask: Optional[Ask] = None, slots: Optional[RequestSlotParser] = None,
                  gen_library: Callable[[], Any] = lambda: None,
                  play_cached: Optional[Callable[[str], MCPToolResult]] = None, cover: Any = None,
-                 speak: Optional[Callable[[str], Any]] = None, songs: Optional[SongStudio] = None) -> None:
+                 speak: Optional[Callable[[str], Any]] = None, songs: Optional[SongStudio] = None,
+                 instrumental: Any = None) -> None:
         super().__init__(node)
         self._owner = owner
         self._dj = dj
@@ -641,11 +643,15 @@ class RequestMusicTool(MCPTool):
         self._pieces = PieceChain(dj, records or library_records(library), words or word_hooks(library),
                                   classic or classic_picker(library), history, chooser=chooser, log=self._log)
         # путь музыки (ADR-0158 PR-3): синтез / кэш генераций / генерация / отказ — тот же выбиратель
-        self._source = SourceRouter(chooser, gen_library, log=self._log, cover=cover, studio=songs)
+        self._source = SourceRouter(chooser, gen_library, log=self._log, cover=cover, studio=songs,
+                                    instrumental=instrumental)
         self._songs = songs  # песня голосом робота (ADR-0158 PR-7): фоновая генерация, пока играет мост
         self.gen_library = gen_library  # кэш генераций: результат ожидания встаёт с деки моста (BridgeHold, PR-8)
         self.hold: Any = None  # последний мост ожидания генерации (``BridgeHold``): песня входит вместо него
         self._song_order = SongOrder(songs, self._source.route, hold=lambda: self.hold)
+        # одиночный инструментал («сгенерируй рок»): мост, вход по такту, фразы кода — ``InstrumentalOrder``
+        self._instrumental = (InstrumentalOrder(instrumental, play_cached, speak, hold=lambda: self.hold, log=self._log)
+                              if instrumental is not None else None)
         self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
@@ -772,6 +778,8 @@ class RequestMusicTool(MCPTool):
                    held: bool = False) -> MCPToolResult:
         """Путь не синтез: песня голосом робота (PR-7), трек кэша (есть шов проигрывания; ``held`` — мост ожидания
         песни) или честный отказ с фразой кода — без тихой подмены."""
+        if self._instrumental is not None and self._instrumental.handles(route):
+            return self._instrumental.start(route, ask, args, self.order, tool_result)
         if self._song_order.handles(route):
             return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:

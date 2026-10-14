@@ -51,6 +51,7 @@ REASON_WORDS = {
     "vocal_rejected": "голос не принял текст",
     "no_track": "сервис не вернул песню",
     "play_failed": "песня не заиграла",
+    "track_play_failed": "трек не заиграл",
     "internal": "что-то пошло не так",
     "no_key": "нет ключа сервиса генерации",
     "no_credits": "на счёте генерации нет кредитов",
@@ -163,6 +164,12 @@ class SourceContext:
         return replace(self, gen_failed=reason)
 
 
+def gen_kind(option_id: str) -> str:
+    """Вид генерации кандидата ``generate:<вид>:<модель>`` (instrumental, song, robot_song, cover); иначе «»."""
+    parts = option_id.split(":")
+    return parts[1] if len(parts) == 3 and parts[0] == GENERATE else ""
+
+
 def gen_block(ctx: SourceContext, cost: float) -> str:
     """Почему кандидата генерации нет (ключ :data:`REASON_WORDS`) или «» — генерировать можно."""
     checks = ((ctx.gen_failed, ctx.gen_failed), (ctx.mode == "synth", "mode_synth"), (not ctx.gen_ready, "not_wired"),
@@ -215,11 +222,11 @@ def _cache_option(ask: SourceAsk, track: CacheTrack, voice: str = "") -> Optiona
     theme = _theme(ask, track)
     if theme is None or track.rating < 0 or (ask.vocal and track.instrumental) or _not_my_voice(ask, track, voice):
         return None
-    asked = -1.0 if ask.fresh else 0.5 if (ask.generated or ask.vocal or ask.own) else 0.0
+    asked = next((value for slot, value in kn.SOURCE_CACHE_ASKED if getattr(ask, slot)), 0.0)
     if not ask.vocal and not track.instrumental:  # петь не просили — песня хуже инструментала
-        asked -= 0.25
+        asked += kn.SOURCE_CACHE_SONG_PENALTY
     fresh = track.played_ago_h is None or track.played_ago_h >= kn.GEN_FRESH_HOURS
-    return Option(f"{CACHE}:{track.id}", {"theme_match": theme, "asked": asked, "fresh": float(fresh),
+    return Option(f"{CACHE}:{track.id}", {"cache_theme": theme, "asked": asked, "fresh": float(fresh),
                                           "rating": float(track.rating), "wait_s": kn.INSTANT_WAIT_S},
                   f"сгенерированное раньше «{track.title}» ({track.kind}, {track.style_key or '—'})")
 
@@ -440,5 +447,5 @@ def decline_text(route: Route) -> str:
 __all__ = ["CACHE", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note", "cover_ready_text",
            "cover_style_key", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
-           "decline_text", "gen_block", "route_note", "set_cache", "source_ask", "source_candidates", "synth_fit",
-           "synth_style"]
+           "decline_text", "gen_block", "gen_kind", "route_note", "set_cache", "source_ask", "source_candidates",
+           "synth_fit", "synth_style"]

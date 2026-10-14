@@ -7,8 +7,9 @@
 баланс KIE, обновляется в фоне, заказ сеть не ждёт) и песня голосом робота (PR-7, ``engine.gen.song.SongStudio``:
 ``gen_ready`` истинно только для просьбы спеть при подключённой студии; Silero — ``song_block``) и сет из генерации
 (PR-8, ``engine.gen.gen_session.GenSetMaker``: ``route(..., for_set=True)`` — генерация готова, если готов исполнитель
-сета; лимит сета ``set_left`` — из ``engine.gen.budget``, одно место). Одиночного инструментала нет: кандидатов
-``generate:instrumental`` вне сета нет, с причиной ``not_wired`` во фразе кода.
+сета; лимит сета ``set_left`` — из ``engine.gen.budget``, одно место) и одиночный инструментал
+(``engine.gen.instrumental.InstrumentalMaker``: ``gen_ready`` для просьбы без пения при готовом исполнителе;
+живой прогон 14.10 — «сгенерируй рок» уходил в кэш с ``not_wired``).
 
 Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>``.
 """
@@ -22,8 +23,8 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
-from rob_box_music.source import (GENERATE, CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
-                                  choose_with_fallback, source_candidates)
+from rob_box_music.source import (CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
+                                  choose_with_fallback, gen_kind, source_candidates)
 
 _LOG = logging.getLogger(__name__)
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
@@ -82,11 +83,12 @@ class SourceRouter:
     """Путь заказа: контекст (кэш, лимит) → ``choose_with_fallback`` → строка лога. ``library`` — ленивый доступ к
     ``GeneratedMusicLibrary`` (её поднимает ``mcp_server`` позже движка v2; нет — кэш пуст); ``cover`` — исполнитель
     кавера пьесы (``engine.gen.cover.CoverMaker``, ADR-0158 PR-4): его готовность и последний баланс — в контекст;
-    ``studio`` — ``SongStudio`` (PR-7): исполнитель песни голосом робота."""
+    ``studio`` — ``SongStudio`` (PR-7): исполнитель песни голосом робота; ``instrumental`` —
+    ``InstrumentalMaker``: одиночный инструментал."""
 
     def __init__(self, chooser: Chooser, library: Callable[[], Any] = lambda: None,
                  log: Callable[[], Any] = lambda: _LOG, mode: str = "auto", cover: Any = None,
-                 studio: Any = None, sets: Any = None) -> None:
+                 studio: Any = None, sets: Any = None, instrumental: Any = None) -> None:
         self._chooser = chooser
         self._library = library
         self._log = log
@@ -94,6 +96,7 @@ class SourceRouter:
         self._cover = cover
         self._studio = studio  # ``SongStudio`` (PR-7); нет — песня ``not_wired``
         self._sets = sets  # ``GenSetMaker`` (PR-8): исполнитель сета из генерации
+        self._instrumental = instrumental  # ``InstrumentalMaker``: одиночный инструментал; нет — ``not_wired``
 
     def context(self, ask: Optional[SourceAsk] = None, for_set: bool = False) -> SourceContext:
         library = self._library()
@@ -107,11 +110,15 @@ class SourceRouter:
                             balance=self._cover.balance() if cover else None)
         if for_set:  # сет (PR-8): генерацию исполняет сет, лимит сета — engine.gen.budget
             return self._set_context(ctx)
-        studio = self._studio
-        if studio is None:
+        if ask is not None and ask.vocal:
+            studio = self._studio
+            return ctx if studio is None else replace(
+                ctx, gen_ready=True, song_block=studio.blocked(), has_key=studio.has_key(),
+                provider_ok=studio.provider_ok(), voice=studio.voice_id())
+        maker = self._instrumental
+        if maker is None or not maker.ready():
             return ctx
-        return replace(ctx, gen_ready=bool(ask is not None and ask.vocal), song_block=studio.blocked(),
-                       has_key=studio.has_key(), provider_ok=studio.provider_ok(), voice=studio.voice_id())
+        return replace(ctx, gen_ready=True, provider_ok=maker.provider_ok(), balance=maker.balance())
 
     def _set_context(self, ctx: SourceContext) -> SourceContext:
         """Контекст сета (PR-8): генерация готова, если готов исполнитель сета; лимит сета — ``BudgetPolicy``."""
@@ -138,11 +145,13 @@ class SourceRouter:
         return route
 
     def _executable(self, route: Route) -> str:
-        """Кавер исполняется в фоне после выбора (мост играет сразу), песня — в студии: выбор остаётся; остальной
-        генерации нет (``not_wired``)."""
-        if route.kind == GENERATE and route.id.startswith(f"{GENERATE}:cover:"):
+        """Кавер, песня и инструментал исполняются в фоне после выбора (мост играет сразу): выбор остаётся;
+        исполнителя нет — ``not_wired``."""
+        kind = gen_kind(route.id)
+        if kind == "cover":
             return ""
-        return "" if route.kind == GENERATE and self._studio is not None and route.work is None else "not_wired"
+        executor = self._instrumental if kind == "instrumental" else self._studio
+        return "" if executor is not None and route.work is None else "not_wired"
 
 
 __all__ = ["CACHE_LIMIT", "SourceRouter", "cache_track", "cache_tracks", "day_left"]
