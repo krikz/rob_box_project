@@ -60,7 +60,7 @@ class Kie:
                                 self.seconds, f"Rock {ticket.task_id}.{v}") for v in range(2))
         return GenStatus("complete", tracks, credits=12.0)
 
-    def download(self, url):
+    def download(self, url, timeout_s=None):
         return f"MP3:{self.seconds}".encode()
 
 

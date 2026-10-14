@@ -351,7 +351,7 @@ class SongStudio:
                          negative_tags=NEGATIVE_TAGS, lyrics=song.lyrics, audio_path=vocal.path,
                          audio_weight=preset.audio_weight, vocal_gender=preset.vocal_gender)
             made = generate_into_cache(self._provider, library, Budget(library), job, theme=request.theme,
-                                       tts_provider=provider, voice=voice)
+                                       tts_provider=provider, voice=voice, early=True, log=self._log)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
         saved = next((s for s in made.saved if s.get("success")), None)

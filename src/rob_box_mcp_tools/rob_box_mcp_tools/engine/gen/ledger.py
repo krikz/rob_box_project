@@ -53,6 +53,12 @@ class GenLedger:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def settle(self, task_id: str, credits: float) -> None:
+        """Факт трат по ``complete`` вместо оценки, записанной при раннем звуке (``pipeline``)."""
+        with self._lock:
+            self._conn.execute("UPDATE gen_ledger SET credits = ? WHERE task_id = ?", (float(credits), task_id))
+            self._conn.commit()
+
     def spent_since(self, ts_iso: str) -> float:
         """Сумма кредитов с момента ``ts_iso`` (UTC ISO)."""
         with self._lock:

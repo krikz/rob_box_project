@@ -111,8 +111,8 @@ class MusicGenProvider(Protocol):
 
     def cost(self, job: GenJob) -> float: ...
 
-    def download(self, url: str) -> bytes:
-        """Скачать результат (медиа KIE живут 14 дней — качать сразу)."""
+    def download(self, url: str, timeout_s: Optional[float] = None) -> bytes:
+        """Скачать результат (медиа KIE живут 14 дней — качать сразу); ``timeout_s`` — потолок всего скачивания."""
 
 
 def poll_interval_s(elapsed_s: float) -> float:
@@ -127,12 +127,15 @@ def wait_complete(
     timeout_s: float = GEN_TIMEOUT_S,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    stop: Optional[Callable[[GenStatus], bool]] = None,
 ) -> GenStatus:
-    """Ждать ``complete``. ``failed`` → ``rejected``; нет за ``timeout_s`` → ``timeout``."""
+    """Ждать ``complete``. ``failed`` → ``rejected``; нет за ``timeout_s`` → ``timeout``.
+
+    ``stop(status)`` → ``True`` — вернуть промежуточный статус раньше (ранний звук, ``stream.py``)."""
     start = clock()
     while True:
         status = provider.poll(ticket)
-        if status.stage == "complete":
+        if status.stage == "complete" or (stop is not None and status.stage != "failed" and stop(status)):
             return status
         if status.stage == "failed":
             raise GenUnavailable("rejected", status.fail_msg or "state=fail", ticket)
