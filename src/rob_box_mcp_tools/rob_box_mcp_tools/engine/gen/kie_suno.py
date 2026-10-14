@@ -58,22 +58,35 @@ Transport = Callable[[str, str, Mapping[str, str], Optional[bytes], float], Tupl
 def urllib_transport(
     method: str, url: str, headers: Mapping[str, str], body: Optional[bytes], timeout: float,
 ) -> Tuple[int, bytes]:
-    """Боевой транспорт. HTTP-ошибки возвращает как (status, body); сеть — ``GenUnavailable``.
+    """Боевой транспорт API. HTTP-ошибки возвращает как (status, body); сеть — ``GenUnavailable``."""
+    req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — https, фиксированные хосты
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise GenUnavailable("provider_down", f"сеть: {type(exc).__name__}") from exc
 
-    ``timeout`` — потолок всего ответа, а не одного чтения сокета: стрим, идущий вровень с генерацией, не держит
-    заказ дольше потолка (``stream.STREAM_DOWNLOAD_TIMEOUT_S``)."""
+
+def urllib_media_transport(
+    method: str, url: str, headers: Mapping[str, str], body: Optional[bytes], timeout: float,
+) -> Tuple[int, bytes]:
+    """Боевой транспорт медиа: ``timeout`` — потолок всего скачивания, а не одного чтения сокета (стрим, идущий
+    вровень с генерацией, не держит заказ дольше ``stream.STREAM_DOWNLOAD_TIMEOUT_S``). Только для медиа: 14.10
+    такой потолок на API (60 с) уронил заказ при медленном ответе KIE — у API остаётся таймаут сокета."""
     req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
     deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — https, фиксированные хосты
             chunks = []
             while True:
+                if time.monotonic() > deadline:
+                    raise GenUnavailable("provider_down", f"скачивание дольше {timeout:.0f} с")
                 chunk = resp.read(_CHUNK)
                 if not chunk:
                     return resp.status, b"".join(chunks)
                 chunks.append(chunk)
-                if time.monotonic() > deadline:
-                    raise GenUnavailable("provider_down", f"ответ дольше {timeout:.0f} с")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -133,6 +146,7 @@ class KieSunoProvider:
         api_key: Optional[str] = None,
         *,
         transport: Transport = urllib_transport,
+        media_transport: Optional[Transport] = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.time,
         api_base: str = API_BASE,
@@ -140,6 +154,8 @@ class KieSunoProvider:
     ) -> None:
         self._key = api_key if api_key is not None else os.environ.get(KEY_ENV, "")
         self._transport = transport
+        #: скачивание медиа: боевой — с потолком всего ответа; инъектированный транспорт (тесты) — тот же
+        self._media = media_transport or (urllib_media_transport if transport is urllib_transport else transport)
         self._sleep = sleep
         self._clock = clock
         self._base = api_base.rstrip("/")
@@ -296,7 +312,7 @@ class KieSunoProvider:
         return GenStatus("queued", (), **base)
 
     def download(self, url: str, timeout_s: Optional[float] = None) -> bytes:
-        status, raw = self._transport("GET", url, {"User-Agent": USER_AGENT}, None, timeout_s or self._timeout * 2)
+        status, raw = self._media("GET", url, {"User-Agent": USER_AGENT}, None, timeout_s or self._timeout * 2)
         if status != 200 or not raw:
             raise GenUnavailable("provider_down", f"скачивание: HTTP {status}, {len(raw)} байт")
         return raw

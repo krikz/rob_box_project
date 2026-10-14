@@ -93,8 +93,8 @@ class _Order:
                 continue
             saved.append(self.save(track, audio, track.duration_s))
         # квота диска (PR-9): новое не трогаем, уходят худшие и давно не игранные заказы
-        enforce_quota(self.library, protect=[*(i for i, _ in done.values()), *(str(s["id"]) for s in saved
-                                                                              if s.get("id"))])
+        keep = [i for i, _ in done.values()] + [str(s["id"]) for s in saved if s.get("id")]
+        enforce_quota(self.library, protect=keep)
         return saved
 
 
@@ -164,8 +164,15 @@ class _EarlyProbe:
         self.got: Optional[stream.EarlyAudio] = None
         self.tried: set = set()
         self.stages: set = set()
+        self.seen: set = set()
 
     def try_status(self, status: GenStatus) -> bool:
+        if status.stage not in self.seen:  # 14.10: без этой строки нельзя было сказать, была ли стадия text
+            self.seen.add(status.stage)
+            self.order.log().info(
+                f"🎼 [gen] {self.order.ticket.task_id} стадия {status.stage} через {self.order.elapsed():.1f} с: "
+                f"stream={sum(bool(t.stream_url) for t in status.tracks)} "
+                f"audio={sum(bool(t.audio_url) for t in status.tracks)}")
         if status.stage not in stream.EARLY_STAGES or status.stage in self.stages:
             return False
         found = stream.candidate(status.tracks, self.tried)

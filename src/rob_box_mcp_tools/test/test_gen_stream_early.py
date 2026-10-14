@@ -160,6 +160,8 @@ class TestEarlyStream:
         stages = [_record("text", no_stream=True), _record("success", no_stream=True)]
         res, lib, t, log, polls = _run(tmp_path, stages, MEDIA, run_finisher=False)
         assert STREAM0 not in t.calls and "не принят" not in log.text()
+        assert "T1 стадия queued через" in log.text() and "T1 стадия complete через" in log.text()
+        assert "стадия text" not in log.text()  # стадия без стрима — queued (провайдер так её и отдаёт)
         assert res.early and polls == 2 and lib.count == 1  # второй вариант ещё не качался
         assert t.calls.count("https://tempfile.example/1.mp3") == 0
 
@@ -245,3 +247,37 @@ def test_download_sends_own_user_agent_and_timeout():
     assert seen == {"ua": kie_suno.USER_AGENT, "timeout": 7.0}
     with pytest.raises(GenUnavailable):
         kie_suno.KieSunoProvider("k", transport=lambda *a: (403, b"")).download(STREAM0)
+
+
+class _SlowResp:
+    """Ответ, у которого каждое чтение «занимает» 8 с часов (``clock``)."""
+
+    status = 200
+
+    def __init__(self, clock, chunks):
+        self.clock, self.chunks = clock, list(chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, amt=None):
+        self.clock[0] += 8.0
+        if amt is None:
+            return b"".join(self.chunks)
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+def test_media_deadline_is_total_but_api_keeps_socket_timeout(monkeypatch):
+    """14.10: потолок «всего ответа» на API (60 с) уронил живой заказ — он только у медиа."""
+    clock = [0.0]
+    monkeypatch.setattr(kie_suno.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kie_suno.urllib.request, "urlopen", lambda req, timeout: _SlowResp(clock, [b"a"] * 5))
+    with pytest.raises(GenUnavailable) as e:
+        kie_suno.urllib_media_transport("GET", STREAM0, {}, None, 20.0)
+    assert "скачивание дольше 20 с" in str(e.value)
+    assert kie_suno.urllib_transport("GET", "https://api.kie.ai/x", {}, None, 20.0) == (200, b"aaaaa")
+    p = kie_suno.KieSunoProvider("k")
+    assert p._media is kie_suno.urllib_media_transport and p._transport is kie_suno.urllib_transport
