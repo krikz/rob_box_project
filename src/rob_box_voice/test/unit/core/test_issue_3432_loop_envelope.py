@@ -42,7 +42,7 @@ def _args(code: str) -> list:
 
 
 def test_patched_envelope_ends_at_sus_with_atk_rel_edges():
-    env = re.search(r"Env\(\[0, 1, 1, 0\], \[(.*?)\], \wel\)", LOOP_SYNTHDEF)  # края — четверть синуса
+    env = re.search(r"Env\(\[0, 1, 1, 0\], \[(.*?)\], \\wel\)", LOOP_SYNTHDEF)  # края — четверть синуса
     assert env, "envelope must stay a 4-point gate"
     assert [t.strip() for t in env.group(1).split(",")] == ["edgeA", "sus - edgeA - edgeR", "edgeR"]
     assert "edgeA = atk.clip(0.001, sus * 0.5);" in LOOP_SYNTHDEF
