@@ -2783,10 +2783,11 @@ GEN_SET_MAX_TASKS = 10
 GEN_SET_FIRST_MODEL, GEN_SET_MODEL = "V6_MINI", "V6"
 #: Длина трека генерации в сете, секунд (ADR §2.7: 150 с, генерация ≤ 52 с — запас ≥ 100 с на заказ N+1).
 GEN_SET_DURATION_S = 150
-#: Кроссфейд файл ↔ файл и синтез → файл, тактов: огибающая синта ``loop`` (атака входящего, спад уходящего), без
-#: бит-матчинга (ADR §2.4). ADR предлагал 8 тактов с LPF/HPF — фильтров у файла нет; 4 такта ≤ упреждения
-#: ``nearly_finished`` (9 тактов) и не съедают короткий трек.
-GEN_XFADE_BARS = 4
+#: Кроссфейд файл ↔ файл и синтез → файл, секунд (решение Шифу 14.10: «трек заканчивается вровень, другой пусть будет
+#: 1–2 сек этот кроссфейд»): огибающая синта ``loop`` (атака входящего, спад уходящего), без бит-матчинга (ADR §2.4).
+#: Секунды, а не такты: темп кэша часто неизвестен (60 → такт 4 с, 4 такта = 16 с внахлёст — 14.10 из 90-с кавера
+#: сольно звучало 72 с). Доли и такты из секунд считает ``render.audio.xfade_beats``.
+GEN_XFADE_S = 1.5
 #: Мост сета (В4), когда кэш пуст и первый трек ещё пишется: сильный стиль синтеза, ближайший жанру; нет в
 #: таблице — :data:`DEFAULT_STYLE`. Правит Шифу.
 GEN_BRIDGE_STYLES: Mapping[str, str] = {"rock": "breaks", "grunge": "breaks", "metal": "breaks", "blues": "breaks",
@@ -2798,7 +2799,7 @@ GEN_BRIDGE_STYLES: Mapping[str, str] = {"rock": "breaks", "grunge": "breaks", "m
 SET_FILL_SLACK_S = 60
 
 __all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_SET_FIRST_MODEL", "GEN_SET_MAX_TASKS", "GEN_SET_MODEL",
-            "GEN_XFADE_BARS"]
+            "GEN_XFADE_S"]
 
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
 __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]

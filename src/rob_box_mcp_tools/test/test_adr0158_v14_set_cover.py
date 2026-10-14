@@ -154,13 +154,13 @@ def _plan(tmp_path, works, **kw):
 
 
 def test_ten_minute_set_with_covers_is_filled_by_cover_length(tmp_path):
-    """600 с, каверы по 90 с: прежний подсчёт по 150 с давал 4 трека = 6 минут. Дека играет форму 88 долей (бит = 1 с),
-    не последний трек короче на кроссфейд 16 с: 72 с на трек, последний 88 с — плановый конец ≥ 600 − 90."""
+    """600 с, каверы по 90 с: прежний подсчёт по 150 с давал 4 трека = 6 минут. Файл звучит весь, не последний
+    трек короче на кроссфейд 1.5 с (В15): 88.5 с на трек, последний 90 с — плановый конец ≥ 600 − 90."""
     from rob_box_music.source import route_seconds
 
     plan = _plan(tmp_path, [A, B])
-    assert {r.id for r in plan.routes} == {COVER} and len(plan.routes) == len(plan.genres) == 8
-    assert route_seconds(plan.routes[0]) == 72 and route_seconds(plan.routes[0], True) == 88
+    assert {r.id for r in plan.routes} == {COVER} and len(plan.routes) == len(plan.genres) == 7
+    assert route_seconds(plan.routes[0]) == 88.5 and route_seconds(plan.routes[0], True) == 90
     end = sum(route_seconds(r) for r in plan.routes[:-1]) + route_seconds(plan.routes[-1], True)
     assert end >= 600 - 90 and end - route_seconds(plan.routes[-1], True) < 600 - 60  # последний трек нужен
 

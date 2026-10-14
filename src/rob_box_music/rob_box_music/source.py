@@ -175,8 +175,8 @@ def gen_kind(option_id: str) -> str:
 def route_seconds(route: "Route", last: bool = False) -> float:
     """Сколько секунд сета занимает трек по выбранному пути (одно место, ADR-0148): длина файла — кавер
     ``COVER_DURATION_S``, прочая генерация ``GEN_SET_DURATION_S``, трек кэша — своя (неизвестна — как у генерации) —
-    как её играет дека (``render.audio.set_track_seconds``: форма вниз до такта, не последний трек за вычетом кроссфейда
-    ``GEN_XFADE_BARS``); синтез — ``SET_TRACK_SECONDS``; отказ — 0."""
+    как её играет дека (``render.audio.set_track_seconds``: файл целиком, не последний трек за вычетом кроссфейда
+    ``GEN_XFADE_S``); синтез — ``SET_TRACK_SECONDS``; отказ — 0."""
     from .render.audio import set_track_seconds
 
     if route.kind == GENERATE:
