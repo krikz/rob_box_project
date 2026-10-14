@@ -152,6 +152,16 @@ def _queued(rig, timeout=5.0):
     return rig.owner._queued  # noqa: SLF001
 
 
+def _cued(rig, timeout=5.0):
+    """Фон ``BridgeHold`` поставил результат на долю ближайшего такта (``advance``: ждёт ``started``)."""
+    import time
+
+    end = time.monotonic() + timeout
+    while rig.owner._pending is None and time.monotonic() < end:  # noqa: SLF001
+        time.sleep(0.01)
+    assert rig.owner._pending is not None  # noqa: SLF001
+
+
 def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(tmp_path, monkeypatch):
     """Гитара, а не ситар: у подставного сервера стенда (``_rig``) синта sitar нет; путь тот же. Мост держит звук,
     пока кавер не готов (ADR-0158 PR-8, живой прогон 13.10: 44 с тишины), кавер входит кроссфейдом на деке B."""
@@ -170,12 +180,13 @@ def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(t
     bridge = [e for e in rig.events if e["event"] == "started"][0]
     rig.clock.run_until(bridge["start_beat"] + 3 * bridge["form_beats"])  # кавер пишется — мост повторяет форму
     assert rig.owner.now_playing()["track_id"] == bridge["track_id"]
+    ready = rig.clock.beat
     order.done(CoverResult(_cached(lib), task_id="T1", credits=12.0))  # кавер готов, на деке всё ещё мост
-    program, _prev = _queued(rig)
-    assert program.deck == "B" and "loop(" in program.code and played == []
+    _cued(rig)  # синтез-мост: кавер встаёт на ближайшем такте (cue из фона), а не на границе формы моста
+    assert played == []
     rig.clock.run_until(rig.clock.beat + 2 * bridge["form_beats"])
     live = [e for e in rig.events if e["event"] == "started"][-1]
-    assert live["track_id"] == program.track_id and live["deck"] == "B"
+    assert live["track_id"] == req.hold.live_id and live["deck"] == "B" and live["start_beat"] - ready <= 8
     assert said == [f"А вот живая версия «{data['title']}» на гитаре."]
 
 

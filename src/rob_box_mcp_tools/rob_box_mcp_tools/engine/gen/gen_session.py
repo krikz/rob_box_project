@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import subprocess
 import threading
 import time
@@ -33,6 +34,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
 from rob_box_music.source import REASON_WORDS, CacheTrack, SourceAsk
 
+from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
 from .audio import AudioUnavailable, audio_track
 from .budget import Budget
@@ -314,6 +316,24 @@ class GenSet:
 
 #: Сколько мост ждёт результат генерации (кавер, песня: TTS + загрузка + Suno) до финала без него.
 HOLD_WAIT_S = GEN_TIMEOUT_S + 120.0
+#: Запас до доли входа результата: cue исполняет программу за ``ALIGN_LEAD_BEATS`` до неё, плюс доля на поток клока.
+CUT_IN_CUE_BEATS = ALIGN_LEAD_BEATS + 1.0
+_BAR = 4.0  # доли такта (``model.BEATS_PER_BAR``)
+
+
+def cut_in_beat(position: Optional[Tuple[float, float, float]], lead: float = NEARLY_LEAD_BEATS,
+                cue: float = CUT_IN_CUE_BEATS) -> Optional[float]:
+    """Доля входа готового результата поверх синтеза-моста: ближайший такт, до которого успевает cue, — а не граница
+    прохода формы моста (13.10: песня после клуба вставала до ~2 мин после готовности). ``position`` —
+    ``PlayerOwner.position`` моста: ``(доля клока, доля старта, форма)``. ``None`` — мост не играет или штатный
+    ``nearly_finished`` этого прохода сработает раньше входа: тогда сводит ``SetSession`` на границе (≤ ``lead`` долей),
+    иначе его проверка увидела бы пустую очередь и продлила бы мост ещё на проход."""
+    if position is None:
+        return None
+    now, start, form = position
+    at = (math.floor((now + cue) / _BAR) + 1) * _BAR
+    nearly = start + math.ceil((at - start) / form) * form - lead
+    return None if now < nearly <= at else at
 
 
 class BridgeHold:
@@ -336,10 +356,10 @@ class BridgeHold:
         self._event = threading.Event()
         self.bridge_id = program.track_id
         self.live_id = ""
-        extra = {"submit": submit} if submit is not None else {}
+        self._submit = submit or _thread
         self.session = SetSession(owner, self._source, set_id=f"hold:{self.bridge_id}", bpm=program.bpm,
                                   logger=logger, tracks=2, fields=self._fields, on_track_started=self._started,
-                                  **extra)
+                                  submit=self._then_cut_in)
 
     def start(self) -> Dict[str, Any]:
         return self.session.start()
@@ -365,6 +385,28 @@ class BridgeHold:
         self._result = result if ours else None
         self._event.set()
         return ours
+
+    def _then_cut_in(self, prepare: Callable[[], None]) -> None:
+        """Подготовка результата (``SetSession._pregenerate`` ждёт ``deliver``/``fail``) — и сразу вход по такту."""
+        def run() -> None:
+            prepare()
+            self._cut_in()
+
+        self._submit(run)
+
+    def _cut_in(self) -> None:
+        """Результат в очереди владельца: входит на ближайшем такте кроссфейдом ``GEN_XFADE_BARS`` (огибающая файла),
+        синтез-мост уходит в конце кроссфейда. Мост — файл кэша: его нота звучит до конца прохода и после снятия
+        плеера, поэтому вход — на конце прохода (кроссфейд ``SetSession``), а не посреди."""
+        from rob_box_music.model import AudioTrack
+
+        if self._result is None or not self.live_id or isinstance(self._model, AudioTrack):
+            return
+        at = cut_in_beat(self._owner.position(self.bridge_id))
+        if at is not None and self._owner.advance(at, dj=self._fields(2), leave_at=at + kn.GEN_XFADE_BARS * _BAR,
+                                                  once=True):
+            self._log.info(f"🎚️ [bridge] {self.bridge_id}: результат {self._result[0]} входит на доле {at:g} "
+                           f"кроссфейдом {kn.GEN_XFADE_BARS} такта, не ждёт конца формы моста")
 
     def _fields(self, track_no: int) -> Dict[str, Any]:
         if track_no == 1 or self._result is None:

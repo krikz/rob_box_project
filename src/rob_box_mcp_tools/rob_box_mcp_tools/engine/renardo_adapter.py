@@ -320,6 +320,10 @@ class RenardoAdapter:
 
         clock.schedule(_rbx_cue, float(at_beat) - self._lead_beats)
 
+    def beat_now(self) -> float:
+        """Доля клока Renardo сейчас (вход результата по такту поверх моста ожидания)."""
+        return float(self._namespace()["Clock"].now())
+
     def at(self, beat: float, fn: Callable[[], None]) -> None:
         """Позвать ``fn`` из потока клока на доле ``beat``, если до неё не было start/stop."""
         generation = self._generation
