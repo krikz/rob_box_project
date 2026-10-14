@@ -30,6 +30,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
+from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_core.tool_catalog import tools_for_skill
 from rob_box_harness.core.tool_loop import (
@@ -525,13 +526,6 @@ _VOCAL_REQUEST_KEYWORDS: tuple = (
 # this on a non-vocal request is a hallucination. The number matches the
 # existing TRACK-mode accept test in test_issue_992_batch_cleanup.
 _ACCEPT_PHRASE_MAX_CHARS: int = 40
-#: Music tools after which a hallucinated-lyrics guard applies: ``generate_music``
-#: (MiniMax Music API) and ``music_library``. The
-#: hallucinated-lyrics guard must fire for ANY music tool that leaves
-#: the user hearing lyrics on top of audio (issue #1708 / #1561).
-_MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
-    "generate_music", "music_library",
-})
 
 
 def _extract_track_name(
@@ -1740,7 +1734,7 @@ class AgentCore:
             same_batch_music_calls: set[str] = {
                 call.name
                 for call in response.tool_calls
-                if call.name in _MUSIC_LAUNCH_TOOLS
+                if call.name in MUSIC_AUDIBLE_LYRICS_TOOLS
             }
             results_by_call_id: dict[str, ToolResult] = {}
             suppressed_texts = await self._execute_tool_batch(

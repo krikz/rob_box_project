@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from rob_box_core.music_tools import MUSIC_CLAIM_TOOLS
+from rob_box_core.music_tools import MUSIC_STOP_TOOLS as _MUSIC_STOP_TOOLS
 from rob_box_core.tool_catalog import TOOL_CATALOG
 
 from .media_command_grammar import (  # noqa: F401 — реэкспорт, issue #3134
@@ -73,9 +75,7 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
 #: music is playing is no longer derived from tool names at all: dialogue
 #: reads the player snapshot on ``/voice/music/state``.
 #:
-MUSIC_STOP_TOOLS: frozenset = frozenset({
-    "stop_music",
-})
+MUSIC_STOP_TOOLS: frozenset = _MUSIC_STOP_TOOLS
 
 # ---------------------------------------------------------------------------
 # Issue #992 Bug D — banned metalanguage openers. When the LLM returns
@@ -840,10 +840,8 @@ _ACTION_VERBS_FUTURE = re.compile(
 #   - memory (memory_save, memory_search, memory_context, register_speaker)
 CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     # music (ADR-0149 PR-13a: тулы движка v2 вместо старого пути)
-    "request_music", "dj_set",
-    "lookup_melody",
-    "stop_music", "play_sound", "play_animation",
-    "generate_music", "music_library",
+    *MUSIC_CLAIM_TOOLS,
+    "play_sound", "play_animation",
     # issue #2942 — save_arrangement_preset (ADR-0132 PR-7): claim
     # «сохранил/сохраняю пресет» после реального вызова тула не должно
     # ловиться guard'ом как phantom action.

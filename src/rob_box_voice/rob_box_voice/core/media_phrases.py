@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
+from rob_box_core.music_tools import MUSIC_LAUNCH_TOOLS
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
 
@@ -280,7 +281,7 @@ def no_more_phrase(content: str) -> str:
 
 #: Тулы, которые запускают музыку (движок v2, ``rob_box_mcp_tools.engine.tools_v2``): только они в ЭТОМ ходе
 #: подкрепляют фразу запуска. Фраза в настоящем времени — действие этого хода, а не пересказ прошлого.
-LAUNCH_TOOLS: frozenset = frozenset({"dj_set", "request_music", "generate_music"})
+LAUNCH_TOOLS: frozenset = MUSIC_LAUNCH_TOOLS
 
 #: Неизменяемые части шаблонов выше — по ним узнаётся фраза кода в ответе модели
 #: (``test_issue_3455_launch_phrase_honesty`` сверяет, что каждый шаблон содержит свою основу).

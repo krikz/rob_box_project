@@ -31,6 +31,7 @@ import logging
 import uuid
 from typing import Any, Callable, Optional
 
+from rob_box_core.music_tools import MUSIC_STOP_TOOLS
 from rob_box_llm.provider import ToolCall, ToolResult
 
 from rob_box_voice.core.music_turn import MusicTurn, speech_refusal_content
@@ -80,7 +81,7 @@ _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 # confirmation that music actually started. Only ``stop_music`` stays on the
 # scheduler, so it can still be deferred until the VOICE channel drains
 # (e2e v36: stop_music must not outrun the TTS chunk it follows).
-_MUSIC_TOOLS: frozenset[str] = frozenset({"stop_music"})
+_MUSIC_TOOLS: frozenset[str] = MUSIC_STOP_TOOLS
 
 #: Tools that own the ANIM channel.
 _ANIM_TOOLS: frozenset[str] = frozenset({"play_animation"})
@@ -89,7 +90,7 @@ _ANIM_TOOLS: frozenset[str] = frozenset({"play_animation"})
 #: has drained (no queued/current TTS). Fixes issue #968 — stop_music used
 #: to land on the robot milliseconds after speak_text, killing music
 #: mid-phrase.
-_DEFERRED_DESTRUCTIVE_TOOLS: frozenset[str] = frozenset({"stop_music"})
+_DEFERRED_DESTRUCTIVE_TOOLS: frozenset[str] = MUSIC_STOP_TOOLS
 
 
 def _parse_delta_op(raw: Any) -> DeltaOp:

@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, List, Mapping, Optional, Sequence
 
-from rob_box_harness.core.agent_core import _MUSIC_LAUNCH_TOOLS as _LEGACY_MUSIC_TOOLS
+from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS as _LEGACY_MUSIC_TOOLS
 
 from .media_command_grammar import MediaIntent, parse_media_command
 from .media_phrases import (
