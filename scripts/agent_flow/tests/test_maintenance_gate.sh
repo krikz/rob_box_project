@@ -105,6 +105,28 @@ SCRIPTS_INLINE=(
   "agent-flow-orphan-watchdog.sh"
 )
 
+# Issue #3389: ещё 15 watchdog-like скриптов без MAINTENANCE gate (включая
+# scope-варианты, sweep, drift-watchdog, install-daily wrapper и т.п.).
+# Те же критерии, что для T10-T20: наличие git ls-remote (remote) +
+# git -C REPO_DIR show (local) + переменных MAINTENANCE_BRANCH/FILE.
+SCRIPTS_INLINE_3389=(
+  "agent-flow-blocked-watchdog-scope.sh"
+  "agent-flow-completion-check.sh"
+  "agent-flow-drift-detect.sh"
+  "agent-flow-e2e-drift-watchdog.sh"
+  "agent-flow-e2e-wt-sweep.sh"
+  "agent-flow-install-daily.sh"
+  "agent-flow-needs-e2e-orphan-watchdog.sh"
+  "agent-flow-openspec-sync.sh"
+  "agent-flow-orphan-audit.sh"
+  "agent-flow-post-merge-build.sh"
+  "agent-flow-regen-vendor-patch.sh"
+  "agent-flow-rotation-watchdog.sh"
+  "cross-task-archive-sweeper.sh"
+  "nightly-review-record.sh"
+  "watchdog-provider-quick.sh"
+)
+
 # ----------------------------------------------------------------------------
 # T1-T9: source'ат lib → вызывают af_maintenance_gate_or_exit
 # ----------------------------------------------------------------------------
@@ -268,7 +290,7 @@ rm -rf "$TEST_REPO"
 echo
 echo "--- T23: shellcheck on patched scripts ---"
 if command -v shellcheck >/dev/null 2>&1; then
-  for script in "${SCRIPTS_VIA_LIB[@]}" "${SCRIPTS_INLINE[@]}"; do
+  for script in "${SCRIPTS_VIA_LIB[@]}" "${SCRIPTS_INLINE[@]}" "${SCRIPTS_INLINE_3389[@]}"; do
     path="$AGENT_FLOW_DIR/$script"
     [ -f "$path" ] || continue
     # SC2259/1073/1072/1102 — pre-existing в lib (ретро t_e3fc9bfe);
@@ -288,6 +310,81 @@ else
   PASS=$((PASS+20))
   echo "  ⚠ shellcheck not installed, skipping 20 cases (assumed OK)"
 fi
+
+# ----------------------------------------------------------------------------
+# T24: issue #3389 — 15 watchdog-like скриптов имеют inline MAINTENANCE gate
+# ----------------------------------------------------------------------------
+# Проверяем, что каждый из 15 watchdog-скриптов содержит:
+#   (a) git ls-remote (remote check)
+#   (b) git -C REPO_DIR show (local fallback)
+#   (c) переменные MAINTENANCE_BRANCH и MAINTENANCE_FILE
+# Эти же критерии, что в T10-T20 (для первого набора скриптов из issue #3009).
+echo
+echo "--- T24: issue #3389 — 15 watchdog-like scripts have inline MAINTENANCE gate ---"
+for script in "${SCRIPTS_INLINE_3389[@]}"; do
+  path="$AGENT_FLOW_DIR/$script"
+  [ -f "$path" ] || { FAIL=$((FAIL+1)); FAILED_CASES+=("T24 script not found: $script"); echo "  ✗ $script missing"; continue; }
+  has_remote="$(grep -c 'git ls-remote' "$path" || true)"
+  has_local="$(grep -c 'git -C "\$REPO_DIR" show\|git -C "\${REPO_DIR" show\|git -C .*REPO_DIR.* show' "$path" || true)"
+  has_branch="$(grep -c 'MAINTENANCE_BRANCH' "$path" || true)"
+  has_file="$(grep -c 'MAINTENANCE_FILE' "$path" || true)"
+  if [ "$has_remote" -gt 0 ] && [ "$has_local" -gt 0 ] && [ "$has_branch" -gt 0 ] && [ "$has_file" -gt 0 ]; then
+    PASS=$((PASS+1))
+    echo "  ✓ $script has BOTH remote + local MAINTENANCE gate + vars"
+  else
+    FAIL=$((FAIL+1))
+    FAILED_CASES+=("$script incomplete gate (remote=$has_remote local=$has_local branch=$has_branch file=$has_file)")
+    echo "  ✗ $script incomplete gate (remote=$has_remote local=$has_local branch=$has_branch file=$has_file)"
+  fi
+done
+
+# ----------------------------------------------------------------------------
+# T25: behavioral test — патченные скрипты пропускают tick при локальном
+#      MAINTENANCE (с подменой REPO_DIR на tmp-git-repo).
+# ----------------------------------------------------------------------------
+# Запускаем скрипт с REPO_DIR=<tmp-repo-with-MAINTENANCE>, GH_REPO="" → remote
+# skip, local trigger. Скрипт должен вернуть exit 0 и напечатать
+# "[MAINTENANCE] gate active" в stderr.
+# Скрипты с обязательными positional args (regen-vendor-patch, post-merge-build,
+# nightly-review-record, completion-check, rotation-watchdog) могут упасть
+# с usage error до gate — для них достаточно grep-теста T24.
+echo
+echo "--- T25: behavioral test — local MAINTENANCE triggers skip ---"
+TEST_REPO_3389=/tmp/test_maint_3389_local.$$
+mkdir -p "$TEST_REPO_3389"
+git -C "$TEST_REPO_3389" init -q -b develop
+git -C "$TEST_REPO_3389" config user.email "test@test"
+git -C "$TEST_REPO_3389" config user.name "test"
+git -C "$TEST_REPO_3389" commit --allow-empty -q -m "init"
+echo "MAINTENANCE" > "$TEST_REPO_3389/MAINTENANCE"
+git -C "$TEST_REPO_3389" add MAINTENANCE
+git -C "$TEST_REPO_3389" commit -q -m "trigger"
+
+# Скрипты, которые НЕ требуют обязательных args и могут быть протестированы
+# без сложной инфры. Остальные покрываются grep-тестом T24 + smoke-тестами
+# воркера (smoke_test_maint_gate.sh).
+NO_ARGS_TARGETS=(
+  "agent-flow-install-daily.sh"
+  "agent-flow-blocked-watchdog-scope.sh"
+  "agent-flow-e2e-wt-sweep.sh"
+  "agent-flow-drift-detect.sh"
+  "watchdog-provider-quick.sh"
+)
+for script in "${NO_ARGS_TARGETS[@]}"; do
+  path="$AGENT_FLOW_DIR/$script"
+  [ -f "$path" ] || { FAIL=$((FAIL+1)); FAILED_CASES+=("T25 script not found: $script"); continue; }
+  out=$(REPO_DIR="$TEST_REPO_3389" GH_REPO="" bash "$path" 2>&1 || true)
+  if echo "$out" | grep -q "MAINTENANCE.*gate active"; then
+    PASS=$((PASS+1))
+    echo "  ✓ $script — gate сработал (local MAINTENANCE triggered skip)"
+  else
+    FAIL=$((FAIL+1))
+    FAILED_CASES+=("$script gate NOT triggered (out=$out)")
+    echo "  ✗ $script gate NOT triggered"
+  fi
+done
+
+rm -rf "$TEST_REPO_3389"
 
 # ----------------------------------------------------------------------------
 echo

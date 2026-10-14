@@ -46,6 +46,26 @@ LOG_FILE="${LOG_FILE:-}"
 
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 
+# --- MAINTENANCE gate (issue #3389) -----------------------------------------
+# Inline-проверка (без source lib_agent_flow_common): remote через
+# git ls-remote, local fallback через git -C REPO_DIR show. Шифу ставит
+# MAINTENANCE-файл в develop чтобы приостановить работу воркеров на время
+# ручных правок. Срабатывает → exit 0 (тик пропускается, не ошибка).
+_branch="${MAINTENANCE_BRANCH:-develop}"
+_file="${MAINTENANCE_FILE:-MAINTENANCE}"
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" "${_branch}:${_file}" \
+        2>/dev/null | grep -q .; then
+    printf '%s %s [MAINTENANCE] gate active on remote — skip\n' "$LOG_PREFIX" "$(date -Iseconds)" >&2
+    exit 0
+fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+    printf '%s %s [MAINTENANCE] gate active locally in %s — skip\n' "$LOG_PREFIX" "$(date -Iseconds)" "$REPO_DIR" >&2
+    exit 0
+fi
+unset _branch _file
+
 # --- helpers (one-shot, обособленные от e2e-process.sh) -----------------------
 
 # _ws_is_pid_alive <pid> → 0 если процесс жив (kill -0).
