@@ -105,7 +105,8 @@ def cover_job(work: CoverWork, ask: SourceAsk, audio_path: str) -> GenJob:
 
 @dataclass(frozen=True)
 class CoverResult:
-    """Итог кавера: ``track_id`` первого варианта в кэше (второй — «в запас») или ``reason`` провала."""
+    """Итог кавера: ``track_id`` первого варианта в кэше (второй — «в запас»; ``track_ids`` — оба, сету) или
+    ``reason`` провала."""
 
     track_id: str = ""
     reason: str = ""
@@ -113,6 +114,7 @@ class CoverResult:
     credits: float = 0.0
     seconds: float = 0.0
     source_s: float = 0.0
+    track_ids: Tuple[str, ...] = ()
 
 
 class CoverMaker:
@@ -151,8 +153,11 @@ class CoverMaker:
         self._log().info(f"🎼 [cover] баланс KIE: {value if value is not None else 'неизвестен'}")
         return value
 
-    def make(self, track: Any, work: CoverWork, ask: SourceAsk) -> CoverResult:
-        """Рендер → заказ → ожидание → кэш (оба варианта). Ошибка — ``CoverResult(reason=…)``, звука нет."""
+    def make(self, track: Any, work: CoverWork, ask: SourceAsk, set_spent: Optional[float] = None,
+             early: bool = True) -> CoverResult:
+        """Рендер → заказ → ожидание → кэш (оба варианта). Ошибка — ``CoverResult(reason=…)``, звука нет.
+        Кавер трека тематического сета (В14): ``set_spent`` — потрачено сетом (лимит сета до заказа), ``early=False``
+        — ждать оба варианта (второй закрывает следующий трек сета)."""
         started = self._clock()
         notes = source_notes(melody_notes(track))
         if not notes:
@@ -165,7 +170,8 @@ class CoverMaker:
         try:
             result = generate_into_cache(self._provider, library, Budget(library), cover_job(work, ask, wav),
                                          work_id=work.title, instrument=work.instrument,
-                                         source_audio_sha=sha256_file(wav), early=True, log=self._log)
+                                         source_audio_sha=sha256_file(wav), set_spent=set_spent, early=early,
+                                         log=self._log)
         except GenUnavailable as exc:
             self._log().warning(f"⚠️ [cover] «{work.title}» не сгенерирован: {exc}")
             return CoverResult(reason=exc.reason, source_s=source_s, seconds=self._clock() - started)
@@ -179,7 +185,8 @@ class CoverMaker:
         if not saved:
             return CoverResult(reason="provider_down", task_id=result.task_id, credits=result.credits,
                                seconds=seconds, source_s=source_s)
-        return CoverResult(str(saved[0]["id"]), "", result.task_id, result.credits, seconds, source_s)
+        return CoverResult(str(saved[0]["id"]), "", result.task_id, result.credits, seconds, source_s,
+                           tuple(str(s["id"]) for s in saved))
 
     def start(self, track: Any, work: CoverWork, ask: SourceAsk,
               done: Callable[[CoverResult], None]) -> threading.Thread:

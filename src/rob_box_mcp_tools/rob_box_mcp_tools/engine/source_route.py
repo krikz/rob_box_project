@@ -25,7 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
 from rob_box_music.source import (CACHE, GENERATE, CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
-                                  choose_route, choose_with_fallback, gen_kind, set_cache, source_candidates)
+                                  choose_route, choose_with_fallback, gen_kind, set_cache, set_candidates,
+                                  source_candidates)
 
 _LOG = logging.getLogger(__name__)
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
@@ -129,7 +130,8 @@ class SourceRouter:
         sets = self._sets
         ready = sets is not None and sets.ready()
         return replace(ctx, gen_ready=ready, set_left=BudgetPolicy().set_credits,
-                       balance=sets.balance() if ready else None)
+                       balance=sets.balance() if ready else None,
+                       cover_ready=ready and getattr(sets, "cover_ready", lambda: False)())
 
     def route(self, ask: SourceAsk, piece: bool = False, work: Optional[CoverWork] = None,
               gen_failed: str = "", for_set: bool = False) -> Route:
@@ -146,17 +148,20 @@ class SourceRouter:
                          f"gen={reason or 'ok'}")
         return route
 
-    def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "") -> List[Route]:
-        """Путь каждого трека сета (ADR-0158 §2.7, В13): кэш стиля и темы трека (инструментал, ``set_cache``; взятый
-        трек следующему не достаётся) → генерация (деньги, лимит дня и сета — жёсткие фильтры, уже заказанное этим
-        сетом вычитается; второй вариант задачи закрывает следующий трек того же стиля без новой траты) → синтез.
-        Строка лога ``[source] сет i/N`` на каждый трек."""
-        ledger = SetLedger(self.context(asks[0] if asks else None, for_set=True), theme_tags)
+    def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "",
+                    works: Sequence[CoverWork] = ()) -> List[Route]:
+        """Путь каждого трека сета (ADR-0158 §2.7, В13, В14): у темы есть наш материал (``works``) — кавер материала
+        в стиле трека (кэш того же кавера, затем ``generate:cover``); иначе кэш стиля и темы трека (инструментал,
+        ``set_cache``; взятый трек следующему не достаётся) → генерация (деньги, лимит дня и сета — жёсткие фильтры,
+        уже заказанное этим сетом вычитается; второй вариант задачи закрывает следующий трек того же стиля без новой
+        траты) → синтез. Строка лога ``[source] сет i/N`` на каждый трек."""
+        ledger = SetLedger(self.context(asks[0] if asks else None, for_set=True), theme_tags, works)
         out = []
         for no, ask in enumerate(asks, 1):
             ctx, free = ledger.context(ask)
-            options, reason = source_candidates(ask, ctx)
-            route = choose_route(ask, ctx, self._chooser)
+            work = ledger.work_for(ask)
+            options, reason = set_candidates(ask, ctx, work)
+            route = choose_route(ask, ctx, self._chooser, work=work, for_set=True)
             ledger.take(ask, route, free)
             self._log().info(f"🎚️ [source] сет {no}/{len(asks)}: {ask.describe()} кандидаты={[o.id for o in options]} "
                              f"→ {route.id} ({route.provider or 'code'}) gen={reason or 'ok'}"
@@ -176,34 +181,56 @@ class SourceRouter:
 
 class SetLedger:
     """Учёт пути сета по трекам: взятые треки кэша, потраченное заказами (вычитается из лимитов дня и сета) и
-    запасные вторые варианты задач по стилю (задача — 2 варианта: следующий трек того же стиля бесплатен)."""
+    запасные вторые варианты задач по стилю (задача — 2 варианта: следующий трек того же стиля бесплатен); каверы
+    темы (В14) — материалы по кругу задачами: второй вариант задачи кавера — тот же материал."""
 
-    def __init__(self, base: SourceContext, theme_tags: str = "") -> None:
-        self._base, self._tags = base, theme_tags
+    def __init__(self, base: SourceContext, theme_tags: str = "", works: Sequence[CoverWork] = ()) -> None:
+        self._base, self._tags, self._works = base, theme_tags, tuple(works)
         self._cost = kn.GEN_MODELS[kn.GEN_SET_MODEL].credits_per_task
         self._used: Set[str] = set()
         self._spare: Dict[str, int] = {}
+        self._spare_work: Dict[str, CoverWork] = {}  # стиль → материал задачи кавера, чей второй вариант в запасе
+        self._covers = 0  # заказано задач кавера: следующий материал по кругу
         self.spent = 0.0
 
+    def work_for(self, ask: SourceAsk) -> Optional[CoverWork]:
+        """Материал кавера трека: второй вариант задачи того же стиля, иначе следующий по кругу; нет — ``None``."""
+        if not self._works:
+            return None
+        spare = self._spare_work.get(ask.genre)
+        if spare is not None and self._spare.get(_cover_key(ask), 0) > 0:
+            return spare
+        return self._works[self._covers % len(self._works)]
+
     def context(self, ask: SourceAsk) -> Tuple[SourceContext, bool]:
-        """Контекст трека: кэш стиля и темы без взятых, лимиты за вычетом потраченного; ``True`` — есть запасной
-        вариант стиля (генерация трека бесплатна)."""
+        """Контекст трека: кэш стиля и темы без взятых (и каверы, если у темы есть материал), лимиты за вычетом
+        потраченного; ``True`` — есть запасной вариант стиля (генерация трека бесплатна)."""
         base = self._base
-        free = self._spare.get(ask.genre, 0) > 0
+        free = self._spare.get(ask.genre, 0) > 0 or self._spare.get(_cover_key(ask), 0) > 0
         back = self._cost if free else 0.0
         pool = replace(base, cache=tuple(t for t in base.cache if t.id not in self._used))
+        covers = tuple(t for t in pool.cache if t.kind == "cover") if self._works else ()
         left = None if base.set_left is None else base.set_left - self.spent + back
-        return replace(pool, cache=tuple(set_cache(ask, pool, self._tags)), day_left=base.day_left - self.spent + back,
-                       set_left=left), free
+        return replace(pool, cache=tuple(set_cache(ask, pool, self._tags)) + covers,
+                       day_left=base.day_left - self.spent + back, set_left=left), free
 
     def take(self, ask: SourceAsk, route: Route, free: bool) -> None:
+        key = _cover_key(ask) if gen_kind(route.id) == "cover" else ask.genre
         if route.kind == CACHE and route.track is not None:
             self._used.add(route.track.id)
-        elif route.kind == GENERATE and free:
-            self._spare[ask.genre] -= 1
+            self._covers += route.track.kind == "cover"  # кавер из кэша — следующий трек по другому материалу
+        elif route.kind == GENERATE and self._spare.get(key, 0) > 0:
+            self._spare[key] -= 1
         elif route.kind == GENERATE:
             self.spent += self._cost
-            self._spare[ask.genre] = self._spare.get(ask.genre, 0) + 1
+            self._spare[key] = self._spare.get(key, 0) + 1
+            if route.work is not None and key != ask.genre:
+                self._spare_work[ask.genre], self._covers = route.work, self._covers + 1
+
+
+def _cover_key(ask: SourceAsk) -> str:
+    """Ключ запаса задачи кавера стиля трека (свой, не общий с инструменталом того же стиля)."""
+    return f"cover|{ask.genre}"
 
 
 __all__ = ["CACHE_LIMIT", "SetLedger", "SourceRouter", "cache_track", "cache_tracks", "day_left"]

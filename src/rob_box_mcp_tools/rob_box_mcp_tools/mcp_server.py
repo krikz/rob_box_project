@@ -289,7 +289,7 @@ def _gen_set_maker(node: Any, cover: Any) -> Any:
 
     chooser = chooser_from_env(str(node.get_parameter("music_chooser").value), log=node.get_logger)
     return GenSetMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None), chooser,
-                       balance=cover.balance, log=node.get_logger)
+                       balance=cover.balance, log=node.get_logger, cover=cover)
 
 
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:

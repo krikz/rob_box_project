@@ -1,8 +1,8 @@
 """ADR-0158 PR-4 (G10 офлайн) — кавер пьесы по названию: кандидаты кода, деньги кодом, кэш того же ключа, фразы.
 
 Решение Шифу В7 (13.10): кавер нашей мелодии — основной путь пьесы по названию; «валькирии на ситаре» → кавер с
-ситаром; играть потом из кэша. Наш синтез — мост, фолбэк и единственный путь без денег; не общественное достояние —
-кавера нет.
+ситаром; играть потом из кэша. Наш синтез — мост, фолбэк и единственный путь без денег. В14 (14.10): гейт кавера —
+есть наш материал мелодии (RTTTL/партитура), а не «общественное достояние»: «главная тема Звёздных войн» — кавер.
 """
 
 import pytest
@@ -12,11 +12,11 @@ from rob_box_music.choice import DeterministicChooser, score
 from rob_box_music.source import (CacheTrack, CoverWork, SourceAsk, SourceContext, choose_route, cover_failed_text,
                                   cover_note, cover_ready_text, cover_style_key, route_note, source_ask,
                                   source_candidates)
-from rob_box_music.works import composer_public_domain, public_domain, record_public_domain
-
-VALKYRIES = CoverWork("Ride Of The Valkyries", True, spoken="Полёт валькирий")
-SITAR = CoverWork("Ride Of The Valkyries", True, "sitar", "Полёт валькирий")
-POP = CoverWork("Never Gonna Give You Up", False)
+VALKYRIES = CoverWork("Ride Of The Valkyries", "rtttl:rideofth", spoken="Полёт валькирий")
+SITAR = CoverWork("Ride Of The Valkyries", "rtttl:rideofth", "sitar", "Полёт валькирий")
+#: Проба координатора 14.10: партитура PDMX «STAR WARS» arr. S. Hermand (мотив RTTTL starwars_6/7/9 с такта 15).
+STARWARS = CoverWork("STAR WARS", "pdmx:QmRmXQhpQ2qesBm9oFVP58yuByZcZRVfvPYAbHRAYbLvsZ", spoken="Звёздные войны")
+NO_MELODY = CoverWork("Never Gonna Give You Up", "")
 #: Импорт PR-1 на роботе: оба варианта пробы 13.10 (``task_id`` NULL — одна группа по названию).
 IMPORTED = (CacheTrack("v0", "Ride of the Valkyries (RoBBox cover)", "cover", "orchestral", True,
                        group="cover|valk", work_id="Ride Of The Valkyries", played_ago_h=1.0),
@@ -41,17 +41,6 @@ def test_cover_tables_are_data_next_to_instruments():
     assert set(kn.COVER_STYLES) <= set(kn.INSTRUMENTS) and "sitar" in kn.COVER_STYLES
     assert kn.COVER_DEFAULT_STYLE in kn.GEN_STYLES and kn.COVER_MODEL in kn.GEN_MODELS
     assert kn.SOURCE_WEIGHTS["live"] == kn.COVER_LIVE_WEIGHT
-
-
-def test_public_domain_flag_comes_from_the_registry():
-    assert record_public_domain({"name": "rideofth", "title": "Ride Of The Valkyries", "artist": "Wagner",
-                                 "tags": ["classical", "picaxe:mixed3"]})
-    assert not record_public_domain({"name": "rickroll", "title": "Never Gonna Give You Up", "artist": "Astley",
-                                     "tags": ["pop"]})
-    assert not public_domain("classical", "Waltz No. 2", "Shostakovich")  # живые права
-    assert not public_domain("film_theme", "Pirates", "Zimmer")
-    assert composer_public_domain("Wagner", "Ride of the Valkyries")
-    assert not composer_public_domain("Someone", "Song") and not composer_public_domain("", "x")
 
 
 @pytest.mark.parametrize("text,work,style", [
@@ -103,9 +92,27 @@ def kn_words(reason):
     return REASON_WORDS[reason]
 
 
-def test_pop_melody_without_public_domain_gets_no_cover_and_no_excuse():
-    assert ids("сыграй never gonna give you up", RICH, POP) == {"synth:piece"}
-    route = choose_route(source_ask("сыграй never gonna give you up"), RICH, DET, piece=True, work=POP)
+def test_star_wars_theme_is_a_cover_of_our_material_not_gated_by_public_domain():
+    """В14: «если у нас есть материал — идём через ветку кавер»; узнаваемость в приоритете — кавер выше синтеза."""
+    text = "сыграй главную тему звёздных войн"
+    assert ids(text, RICH, STARWARS) == {"synth:piece", "generate:cover:V6"}
+    route = choose_route(source_ask(text), RICH, DET, piece=True, work=STARWARS)
+    assert route.id == "generate:cover:V6" and gaps(text, RICH, STARWARS)[0] >= kn.CHOOSER_CLEAR_GAP
+    assert route_note(route) == "Живую версию в стиле «оркестр» готовлю — секунд через 50, а пока своя."
+
+
+def test_star_wars_without_money_plays_our_synth_and_says_why():
+    poor = SourceContext(cover_ready=True, balance=0.0, day_left=120.0)
+    route = choose_route(source_ask("сыграй главную тему звёздных войн"), poor, DET, piece=True, work=STARWARS)
+    assert route.id == "synth:piece"
+    assert route_note(route) == "Живую версию в стиле «оркестр» сейчас не сделаю: на счёте генерации нет кредитов."
+
+
+def test_no_melody_of_ours_no_cover_and_no_excuse():
+    """Лид не собрался из нашего материала — кавера нет (``no_material``), фраза молчит: играет то, что собралось."""
+    options, why = source_candidates(source_ask("сыграй never gonna give you up"), RICH, True, NO_MELODY)
+    assert {o.id for o in options} == {"synth:piece"} and why == "no_material"
+    route = choose_route(source_ask("сыграй never gonna give you up"), RICH, DET, piece=True, work=NO_MELODY)
     assert route.id == "synth:piece" and route_note(route) == ""
 
 
