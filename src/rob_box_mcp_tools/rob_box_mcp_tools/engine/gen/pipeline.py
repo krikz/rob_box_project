@@ -30,7 +30,8 @@ from .quota import enforce_quota
 
 _LOG = logging.getLogger(__name__)
 #: Провал после submit, при котором задача у провайдера могла дойти и списать кредиты: трата пишется оценкой
-#: (повтор того же task_id в gen_ledger игнорируется). ``rejected`` (state=fail) сюда не входит — факт не измерен.
+#: (повтор того же task_id в gen_ledger игнорируется). ``rejected`` (state=fail) сюда не входит: замер 14.10 —
+#: отказ детектора каталога Suno, ``creditsConsumed`` 0 (задача 14acb8fa…, ADR-0158 В17).
 SPENT_AFTER_SUBMIT = ("provider_down", "timeout")
 
 

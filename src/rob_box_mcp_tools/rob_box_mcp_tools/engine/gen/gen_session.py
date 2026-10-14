@@ -13,7 +13,9 @@
 * Мост (В4): кэш пуст — первым треком сета играет синтез ближайшим сильным стилем (``GEN_BRIDGE_STYLES``), пока
   пишется первая генерация (сет продлевает мост проходами формы). Фразу моста строит код из фактов; LLM только
   окрашивает её подстановками с дедлайном (:func:`bridge_line`), опоздала или соврала — голая фраза кода.
-* Провал генерации (В3): заказов больше нет, сет доигрывает то, что есть; фраза причины — от кода.
+* Провал генерации (В3): заказов больше нет, сет доигрывает то, что есть; фраза причины — от кода. Исключение (В17):
+  Suno отклонил кавер произведения (``rejected``) после всех попыток ``COVER_TRIES`` — выходит только это
+  произведение, его слоты берут другие произведения темы, заказы идут дальше.
 * Стили по трекам (решение Шифу 14.10): «в стилях клуб, джангл и джаз» — стиль каждого трека по кругу
   (``GenSet.genres``); путь каждого трека — чойсер (``SourceRouter.route_slots``: кэш → генерация → синтез), заказ —
   для ближайшего трека, чьему стилю не хватает готового; тема сета — в теги заказа (``source.theme_tags``).
@@ -37,7 +39,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
 from rob_box_music.render.audio import xfade_beats
 from rob_box_music.source import (CACHE, COVER_SLOT, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk,
-                                  cover_slot, gen_kind, slot_style)
+                                  cover_rejected_text, cover_slot, gen_kind, slot_style)
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
@@ -211,14 +213,50 @@ def slot_plan(keys: Sequence[str], genres: Sequence[str], unique: Sequence[str],
     return [unique[i % len(unique)] for i in range(max(1, slots))]
 
 
+def respread(plan: Sequence[str], start: int, dead: Set[str], alive: Callable[[str], List[str]]) -> List[str]:
+    """Слоты ``plan[start:]`` с ключом из ``dead`` (произведение вышло из сета, В17) → ключ другого произведения того же
+    стиля (``alive(стиль)``, порядок темы): реже всех в плане, не сосед; других нет — инструментал стиля слота."""
+    out = list(plan)
+    for i in range(start, len(out)):
+        if out[i] not in dead:
+            continue
+        keys = alive(slot_style(out[i]))
+        near = {out[j] for j in (i - 1, i + 1) if 0 <= j < len(out)}
+        pool = [k for k in keys if k not in near] or keys
+        out[i] = min(pool, key=lambda k: (out.count(k), keys.index(k))) if pool else slot_style(out[i])
+    return out
+
+
 class SetCovers:
     """Каверы произведений темы в треках сета (В14, В16): ``works`` — произведение по ключу слота
     ``cover|<стиль>|<пьеса>`` (план решил, какое произведение у какого трека), ``make(work, ask, set_spent)`` — тот же
-    ``CoverMaker.make``, что у пьесы."""
+    ``CoverMaker.make`` с попытками после отказа Suno (``cover.cover_tries``, В17); ``pieces`` — все произведения темы
+    по порядку: ими закрываются слоты произведения, которое Suno не взял (:meth:`drop`)."""
 
     def __init__(self, works: Optional[Mapping[str, CoverWork]] = None,
-                 make: Optional[Callable[[CoverWork, SourceAsk, float], Any]] = None) -> None:
+                 make: Optional[Callable[[CoverWork, SourceAsk, float], Any]] = None,
+                 pieces: Sequence[CoverWork] = ()) -> None:
         self._works, self._make = dict(works or {}), make
+        self._pieces = tuple(dict.fromkeys(tuple(pieces) + tuple(self._works.values())))
+        self._dead: Set[CoverWork] = set()
+
+    def drop(self, key: str, plan: Sequence[str], start: int) -> Tuple[CoverWork, List[str], bool]:
+        """Произведение слота ``key`` выходит из сета: ``(произведение, план, остались ли каверы впереди)`` — его слоты
+        с ``start`` во всех стилях берут живые произведения (:func:`respread`)."""
+        work = self._works.get(key, CoverWork(key, ""))
+        self._dead.add(work)
+        dead = {k for k in plan if k == key or self._works.get(k) == work}
+        out = respread(plan, start, dead, self.alive)
+        return work, out, any(k.startswith(COVER_SLOT) for k in out[start:])
+
+    def alive(self, style: str) -> List[str]:
+        """Ключи слотов живых произведений темы в стиле ``style`` (порядок темы)."""
+        keys = []
+        for work in (w for w in self._pieces if w not in self._dead):
+            key = cover_slot(style, work.title)
+            self._works.setdefault(key, work)
+            keys.append(key)
+        return keys
 
     def task(self, key: str, ask: SourceAsk, spent: float) -> Tuple[List["SetItem"], str, float]:
         """Задача кавера произведения слота в его стиле → ``(варианты, task_id, кредиты)``."""
@@ -231,6 +269,11 @@ class SetCovers:
         title = f"{work.spoken or work.title} (кавер)"
         return ([SetItem(t, result.task_id, title, "generated", key) for t in result.track_ids], result.task_id,
                 result.credits)
+
+
+def _say(speak: Optional[Callable[[str], Any]], text: str) -> None:
+    if speak is not None:
+        speak(text)
 
 
 def _thread(fn: Callable[[], None]) -> None:
@@ -320,9 +363,10 @@ class GenSet:
     def _take(self, wait_s: float) -> Tuple[Optional[SetItem], str]:
         """Трек стиля этого слота; пишется его задача — ждать до срока; иначе вариант-сосед, трек другого стиля
         сета (``other``), повтор сыгранного — но не тишина."""
-        end, genre = self._clock() + wait_s, self._slot_genre()
+        end = self._clock() + wait_s
         with self._cond:
             while True:
+                genre = self._slot_genre()  # план меняется, когда произведение выходит из сета (В17)
                 item, how = pick_item([i for i in self._ready if i.genre == genre], self._used, self._prev)
                 left = end - self._clock()
                 if how == "ok" or not (self._inflight and self._inflight_genre == genre) or left <= 0:
@@ -411,15 +455,29 @@ class GenSet:
         with self._cond:
             self._ready.extend(items)
             self.spent, self._inflight = self.spent + spent, 0
-            self.gen_reason = reason or ("" if items else "provider_down")
+            failed = self.gen_reason = reason or ("" if items else "provider_down")
+            if failed == "rejected" and genre.startswith(COVER_SLOT):  # В17: без этой пьесы, сет заказывает дальше
+                failed = self._drop_piece(genre)
             self._cond.notify_all()
-        if self.gen_reason:
+        if failed:
             self._failed(model, genre)
+
+    def _drop_piece(self, key: str) -> str:
+        """Под замком: Suno не взял ни одну мелодию произведения слота ``key`` (В17) — его слоты впереди берут другие
+        произведения темы (``SetCovers.drop``), фраза кода называет пьесу, следующий заказ — сразу (до ``notify``:
+        ждущий трек видит новый заказ своего слота). Отказ кредитов не тратит — задача не в счёт ``GEN_SET_MAX_TASKS``."""
+        before = self._plan[self._taken:]
+        work, self._plan, others = self._covers.drop(key, self._plan, self._taken)
+        self.gen_reason, self.ordered = "", self.ordered - 1
+        self._log.warning(f"⚠️ [gen set] {self.set_id} «{work.title}»: Suno не взял ни одну мелодию — слоты {before} "
+                          f"→ {self._plan[self._taken:]}")
+        _say(self._speak, cover_rejected_text(work, others))
+        self.order_more()  # Condition — на RLock: заказ из-под того же замка
+        return ""
 
     def _failed(self, model: str, genre: str) -> None:
         self._log.warning(f"⚠️ [gen set] {self.set_id} генерация {genre} {model} не вышла: {self.gen_reason}")
-        if self._speak is not None:
-            self._speak(failed_text(genre, self.gen_reason))
+        _say(self._speak, failed_text(genre, self.gen_reason))
 
 
 #: Сколько мост ждёт результат генерации (кавер, песня: TTS + загрузка + Suno) до финала без него.
@@ -639,7 +697,8 @@ class GenSetMaker:
                      set_id=set_id, bpm=made[1] if made else kn.AUDIO_DEFAULT_BPM, tracks=len(played), cache=cache,
                      bridge=made[0] if made else None, gen_reason=reason, speak=speak, log=logger,
                      publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags,
-                     keys=[keys[i] for i in played], covers=SetCovers(plan.covers(), self._set_cover(plan)))
+                     keys=[keys[i] for i in played],
+                     covers=SetCovers(plan.covers(), self._set_cover(plan), plan.pieces()))
         line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if made else None
         session = _gen_session(owner, gen, theme, persona, logger)
         result = session.start()
@@ -654,11 +713,15 @@ class GenSetMaker:
                 "session": session if result.get("ok") else None}
 
     def _set_cover(self, plan: "SetRoutes") -> Optional[Callable[[CoverWork, SourceAsk, float], Any]]:
-        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодией материала темы, оба варианта."""
+        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодиями материала темы, оба варианта; отказ
+        Suno — следующая попытка ``COVER_TRIES`` (``cover.cover_tries``, В17)."""
+        from .cover import cover_tries
+
         if self._cover is None:
             return None
-        tracks = {work: track for work, track in plan.theme_covers}  # у двух пьес может быть одна партитура
-        return lambda work, ask, spent: self._cover.make(tracks[work], work, ask, set_spent=spent, early=False)
+        sources = {work: srcs for work, srcs in plan.theme_covers}  # у двух пьес может быть одна партитура
+        return lambda work, ask, spent: cover_tries(self._cover.make, sources[work], work, ask, set_spent=spent,
+                                                    early=False, log=self._log())
 
 
 def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
@@ -707,7 +770,7 @@ class SetRoutes:
     routes: Tuple[Any, ...]
     unknown: Tuple[str, ...] = ()
     theme_tags: str = ""
-    theme_covers: Tuple[Tuple[CoverWork, Any], ...] = ()  # материал темы для каверов (В14): (произведение, трек)
+    theme_covers: Tuple[Tuple[CoverWork, Any], ...] = ()  # материал темы (В14, В17): (произведение, мелодии попыток)
 
     def keys(self) -> List[str]:
         """Ключ слота каждого трека: кавер (новый или из кэша) — ``cover|<стиль>|<пьеса>``, иначе стиль трека."""
@@ -724,6 +787,10 @@ class SetRoutes:
         """Произведение кавера по ключу слота (задачи генерации каверов сета)."""
         return {key: route.work for key, route in zip(self.keys(), self.routes)
                 if gen_kind(route.id) == "cover" and route.work is not None}
+
+    def pieces(self) -> List[CoverWork]:
+        """Произведения темы по порядку (В17: ими закрываются слоты произведения, которое Suno не взял)."""
+        return [work for work, _sources in self.theme_covers]
 
     def cache(self) -> List[CacheTrack]:
         """Треки кэша, выбранные путями треков (в сет — именно они)."""
@@ -780,5 +847,5 @@ class _LineBox:
 
 
 __all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetRoutes", "bridge_facts", "bridge_line",
-           "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "set_head", "set_notes",
+           "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "respread", "set_head", "set_notes",
            "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

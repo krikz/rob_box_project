@@ -2628,7 +2628,26 @@ SET_COVER_PIECES = 4
 #: марша (starwars_3/4/5, _imp, _imp_2) между собой 1.00, разные пьесы (Cantina, Final, марш, тема) — 0.29–0.58.
 PIECE_SAME_TUNE_MIN = 0.8
 
-__all__ += ["COVER_ACOUSTIC_NEGATIVE_TAGS", "COVER_AUDIO_WEIGHT", "COVER_DEFAULT_STYLE",
+
+@dataclass(frozen=True)
+class CoverTry:
+    """Попытка кавера после отказа Suno (В17): ``source`` — номер мелодии произведения (0 — основная: партитура с
+    мотивом эталона, иначе первый хук; дальше — другие хуки той же пьесы; по кругу), ``semitones``/``tempo`` —
+    рендер исходника (полутоны, множитель темпа), ``audio_weight`` — насколько Suno держится за исходник."""
+
+    source: int
+    semitones: int = 0
+    tempo: float = 1.0
+    audio_weight: float = COVER_AUDIO_WEIGHT
+
+
+#: Попытки кавера трека сета по порядку (#3648, Шифу 14.10 «то что откинуло Suno — надо пробовать ещё раз что-то
+#: другое»): отказ детектора каталога («This audio matches an existing recording», задача 14acb8fa… — 0 кредитов,
+#: 15 с) — следующая строка; кончились — произведение выходит из сета. Каждая строка после первой меняет и рендер:
+#: у пьесы с одной мелодией исходник всё равно другой (иной sha). Подбор полутонов/темпа/веса — предложение, не замер.
+COVER_TRIES: Tuple[CoverTry, ...] = (CoverTry(0), CoverTry(1, semitones=-2), CoverTry(2, 3, 0.9, 0.5))
+
+__all__ += ["COVER_ACOUSTIC_NEGATIVE_TAGS", "COVER_AUDIO_WEIGHT", "COVER_DEFAULT_STYLE", "COVER_TRIES", "CoverTry",
             "COVER_DURATION_S", "COVER_ELECTRONIC_STYLES", "COVER_LIVE_WEIGHT", "COVER_MODEL", "COVER_NEGATIVE_TAGS",
             "COVER_SOURCE_MAX_S", "COVER_SOURCE_MIN_S", "COVER_SOURCE_RATE_HZ", "COVER_STYLES", "COVER_WAIT_S",
             "PIECE_SAME_TUNE_MIN", "SET_COVER_MATERIALS", "SET_COVER_PIECES"]

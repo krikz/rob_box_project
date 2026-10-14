@@ -22,7 +22,7 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.source import CoverWork, SourceAsk, cover_style_key
@@ -91,7 +91,13 @@ def render_wav(notes: List[Tuple[float, float, int]], path: str, rate: int = kn.
     return len(buf) / float(rate)
 
 
-def cover_job(work: CoverWork, ask: SourceAsk, audio_path: str) -> GenJob:
+def tried_notes(notes: List[Tuple[float, float, int]], attempt: kn.CoverTry) -> List[Tuple[float, float, int]]:
+    """Рендер попытки (В17): транспонирование на ``semitones``, темп ``tempo`` (> 1 — быстрее)."""
+    return [(s / attempt.tempo, d / attempt.tempo, m + attempt.semitones) for s, d, m in notes]
+
+
+def cover_job(work: CoverWork, ask: SourceAsk, audio_path: str,
+              audio_weight: float = kn.COVER_AUDIO_WEIGHT) -> GenJob:
     """Заказ кавера: теги инструмента (``COVER_STYLES``) и/или жанра (``GEN_STYLES``), без них — оркестр."""
     style = cover_style_key(work, ask)
     tags = ", ".join(t for t in (kn.COVER_STYLES.get(work.instrument, ""),
@@ -100,7 +106,7 @@ def cover_job(work: CoverWork, ask: SourceAsk, audio_path: str) -> GenJob:
     negative = ", ".join(t for t in (kn.COVER_NEGATIVE_TAGS, kn.COVER_ACOUSTIC_NEGATIVE_TAGS if acoustic else "") if t)
     return GenJob(kind="cover", style_key=style, title=f"{work.title} (RoBBox cover)", style_tags=tags,
                   negative_tags=negative, duration_s=kn.COVER_DURATION_S, audio_path=audio_path,
-                  model=kn.COVER_MODEL, audio_weight=kn.COVER_AUDIO_WEIGHT)
+                  model=kn.COVER_MODEL, audio_weight=audio_weight)
 
 
 @dataclass(frozen=True)
@@ -154,26 +160,31 @@ class CoverMaker:
         return value
 
     def make(self, track: Any, work: CoverWork, ask: SourceAsk, set_spent: Optional[float] = None,
-             early: bool = True) -> CoverResult:
+             early: bool = True, attempt: kn.CoverTry = kn.COVER_TRIES[0]) -> CoverResult:
         """Рендер → заказ → ожидание → кэш (оба варианта). Ошибка — ``CoverResult(reason=…)``, звука нет.
         Кавер трека тематического сета (В14): ``set_spent`` — потрачено сетом (лимит сета до заказа), ``early=False``
-        — ждать оба варианта (второй закрывает следующий трек сета)."""
+        — ждать оба варианта (второй закрывает следующий трек сета); ``attempt`` — рендер и вес попытки (В17).
+        Исходник, который Suno уже отклонил (sha рендера в ``gen_rejected``), не заказывается: ``rejected`` сразу."""
         started = self._clock()
-        notes = source_notes(melody_notes(track))
+        notes = source_notes(tried_notes(melody_notes(track), attempt))
         if not notes:
             return CoverResult(reason="rejected")
         workdir = Path(self._workdir or tempfile.gettempdir())
         workdir.mkdir(parents=True, exist_ok=True)
         wav = str(workdir / f"cover_src_{int(time.time())}.wav")
         source_s = render_wav(notes, wav)
-        library = self._library()
+        library, sha = self._library(), sha256_file(wav)
         try:
-            result = generate_into_cache(self._provider, library, Budget(library), cover_job(work, ask, wav),
-                                         work_id=work.title, instrument=work.instrument,
-                                         source_audio_sha=sha256_file(wav), set_spent=set_spent, early=early,
-                                         log=self._log)
+            if library.ledger.rejected(sha):
+                raise GenUnavailable("rejected", f"исходник {sha[:12]} Suno уже отклонял — не заказываю")
+            result = generate_into_cache(self._provider, library, Budget(library),
+                                         cover_job(work, ask, wav, attempt.audio_weight), work_id=work.title,
+                                         instrument=work.instrument, source_audio_sha=sha, set_spent=set_spent,
+                                         early=early, log=self._log)
         except GenUnavailable as exc:
             self._log().warning(f"⚠️ [cover] «{work.title}» не сгенерирован: {exc}")
+            if exc.reason == "rejected" and exc.ticket is not None:  # отказ самого Suno по заказу — не наш фильтр
+                library.ledger.record_rejected(sha, task_id=exc.ticket.task_id, work_id=work.title, detail=exc.detail)
             return CoverResult(reason=exc.reason, source_s=source_s, seconds=self._clock() - started)
         finally:
             Path(wav).unlink(missing_ok=True)
@@ -204,4 +215,28 @@ class CoverMaker:
         return thread
 
 
-__all__ = ["BALANCE_TTL_S", "CoverMaker", "CoverResult", "cover_job", "melody_notes", "render_wav", "source_notes"]
+#: Мелодии произведения для попыток кавера (В17): ``(откуда, трек с мелодией)`` — ``rtttl:<хук>`` или id партитуры.
+Sources = Sequence[Tuple[str, Any]]
+
+
+def cover_tries(make: Callable[..., CoverResult], sources: Sources, work: CoverWork, ask: SourceAsk, *,
+                set_spent: Optional[float] = None, early: bool = True, log: Any = _LOG) -> CoverResult:
+    """Кавер с повтором после отказа Suno (В17): попытки ``COVER_TRIES`` по порядку — мелодия ``source`` (по кругу),
+    рендер и вес попытки; первый не-``rejected`` итог — ответ (успех или ``no_credits``/``provider_down`` — как раньше,
+    без новых попыток); все отклонены — последний ``rejected``. Отказ по каталогу кредитов не тратит (замер 14.10)."""
+    result = CoverResult(reason="rejected")
+    for no, attempt in enumerate(kn.COVER_TRIES, 1):
+        if not sources:
+            break
+        label, track = sources[attempt.source % len(sources)]
+        if no > 1:
+            log.info(f"🎼 [cover] «{work.title}» попытка {no}/{len(kn.COVER_TRIES)}: {label}, "
+                     f"{attempt.semitones:+d} пт, темп ×{attempt.tempo:g}, вес {attempt.audio_weight:g}")
+        result = make(track, work, ask, set_spent=set_spent, early=early, attempt=attempt)
+        if result.reason != "rejected":
+            return result
+    return result
+
+
+__all__ = ["BALANCE_TTL_S", "CoverMaker", "CoverResult", "Sources", "cover_job", "cover_tries", "melody_notes",
+           "render_wav", "source_notes", "tried_notes"]
