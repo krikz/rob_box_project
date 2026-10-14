@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
+from rob_box_music.render.audio import xfade_beats
 from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk, gen_kind
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
@@ -441,12 +442,12 @@ def cut_in_beat(position: Optional[Tuple[float, float, float]], cue: float = CUT
     return (math.floor((now + cue) / _BAR) + 1) * _BAR
 
 
-def cut_in_leave(position: Tuple[float, float, float], at: float, file: bool) -> Tuple[float, float]:
+def cut_in_leave(position: Tuple[float, float, float], at: float, file: bool, bpm: int) -> Tuple[float, float]:
     """``(leave_at, fade)`` входа на доле ``at``: мост уходит через кроссфейд. Мост-файл: его нота звучит всю ``sus`` и
     после снятия плеера — её гасит огибающая деки (``fade`` долей, ``render.audio.deck_fade_args``), а плеер снимается
     до начала следующего прохода (новая нота прохода звучала бы полностью поверх результата); вход ровно на границе
     прохода — нота уже гаснет своим хвостом, огибающая деки не нужна."""
-    xfade = kn.GEN_XFADE_BARS * _BAR
+    xfade = xfade_beats(bpm)
     if not file:
         return at + xfade, 0.0
     _, start, form = position
@@ -458,7 +459,7 @@ class BridgeHold:
     """Мост держит звук, пока генерация не вернёт результат или провал (правило координатора 13.10: живой прогон —
     мост кавера доиграл форму за 22 с, кавер встал через 64 с, между ними 44 с тишины). Одна реализация для кавера
     пьесы (``PieceCover``) и песни голосом робота (``SongOrder``): ``SetSession`` из двух треков — мост (его форма
-    повторяется, пока ждём) и результат, который входит кроссфейдом ``GEN_XFADE_BARS``; провал или таймаут — финал:
+    повторяется, пока ждём) и результат, который входит кроссфейдом ``GEN_XFADE_S``; провал или таймаут — финал:
     мост ещё одним проходом и конец, без тишины посреди. ``model`` — ``Track`` синтеза или ``AudioTrack`` кэша моста
     (финал собирается из него на другой деке); ``program`` — уже собранная программа моста (дека A)."""
 
@@ -477,7 +478,7 @@ class BridgeHold:
         self._submit = submit or _thread
         self.session = SetSession(owner, self._source, set_id=f"hold:{self.bridge_id}", bpm=program.bpm,
                                   logger=logger, tracks=2, fields=self._fields, on_track_started=self._started,
-                                  submit=self._then_cut_in)
+                                  submit=self._then_cut_in, entry_lead=False)
 
     def start(self) -> Dict[str, Any]:
         return self.session.start()
@@ -513,7 +514,7 @@ class BridgeHold:
         self._submit(run)
 
     def _cut_in(self) -> None:
-        """Результат в очереди владельца: входит на ближайшем такте кроссфейдом ``GEN_XFADE_BARS`` (огибающая файла).
+        """Результат в очереди владельца: входит на ближайшем такте кроссфейдом ``GEN_XFADE_S`` (огибающая файла).
         Синтез-мост уходит в конце кроссфейда; мост-файл гаснет огибающей своей деки (:func:`cut_in_leave`)."""
         from rob_box_music.model import AudioTrack
 
@@ -523,10 +524,10 @@ class BridgeHold:
         at = cut_in_beat(position)
         if at is None:
             return
-        leave, fade = cut_in_leave(position, at, isinstance(self._model, AudioTrack))
+        leave, fade = cut_in_leave(position, at, isinstance(self._model, AudioTrack), self._program.bpm)
         if self._owner.advance(at, dj=self._fields(2), leave_at=leave, once=True, fade_beats=fade):
             self._log.info(f"🎚️ [bridge] {self.bridge_id}: результат {self._result[0]} входит на доле {at:g} "
-                           f"кроссфейдом {kn.GEN_XFADE_BARS} такта, не ждёт конца формы моста"
+                           f"кроссфейдом {kn.GEN_XFADE_S:g} с, не ждёт конца формы моста"
                            + (f"; мост-файл гаснет за {fade:g} долей" if fade else ""))
 
     def _fields(self, track_no: int) -> Dict[str, Any]:

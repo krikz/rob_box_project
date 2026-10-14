@@ -30,7 +30,7 @@ from .test_engine_session import PROFILE, _forms, _rig
 pytestmark = pytest.mark.unit
 
 BAR = 4.0
-XFADE = kn.GEN_XFADE_BARS * BAR
+XFADE = kn.GEN_XFADE_S * kn.AUDIO_DEFAULT_BPM / 60.0
 
 
 def _events(rig, kind):
@@ -152,8 +152,8 @@ def test_cache_bridge_of_a_song_loops_until_the_song_then_crossfades(tmp_path, m
     assert hold is not None and result.data["track_id"] == hold.bridge_id and studio.play is not None
     rig.clock.run_until(rig.clock.beat + 2)
     bridge = _events(rig, "started")[0]
-    # 30 с при 60 BPM: файл вниз до такта (28), проход короче на кроссфейд (2 такта — не больше трети файла)
-    assert bridge["track_id"] == hold.bridge_id and bridge["form_beats"] == 20.0
+    # 30 с при 60 BPM: проход — такты вниз от (файл − кроссфейд 1.5 с) = 28 долей
+    assert bridge["track_id"] == hold.bridge_id and bridge["form_beats"] == 28.0
     ready = bridge["start_beat"] + song_after_passes * bridge["form_beats"]
     rig.clock.run_until(ready)
     assert not _events(rig, "finished")  # мост не кончился: петля, а не один проход

@@ -8,7 +8,7 @@
 Идущий сет закрывается до запуска (одна дека — одна музыка). Фразу запуска и отказа строит код (ADR-0148).
 
 Мост ожидания песни (``hold``, хвост ADR-0158 PR-8): трек кэша играет не один проход, а петлёй с кроссфейдом
-(``render_audio(xfade_bars=GEN_XFADE_BARS, once=False)``) через ``BridgeHold`` — песня пишется дольше трека, а тишины
+(``render_audio(xfade_s=GEN_XFADE_S, once=False)``) через ``BridgeHold`` — песня пишется дольше трека, а тишины
 нет; готовая песня входит кроссфейдом на конце прохода (та же реализация, что у кавера и синтеза-моста).
 """
 
@@ -45,7 +45,7 @@ def play_library_track(node: Any, library: Any, track_id: str, clock: Callable[[
     deck_id = f"gen_{track_id[:8]}_{int(clock())}"
     try:
         track = audio_track(info, deck_id, run=run)
-        program = render_audio(track, "A", xfade_bars=kn.GEN_XFADE_BARS if hold else 0, once=hold is None)
+        program = render_audio(track, "A", xfade_s=kn.GEN_XFADE_S if hold else 0.0, once=hold is None)
     except AudioUnavailable as exc:
         return MCPToolResult(success=False, data={"reason": exc.reason}, error=f"трек не заиграл: {exc.reason}")
     title = str(info.get("title") or "")

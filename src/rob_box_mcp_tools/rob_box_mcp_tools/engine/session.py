@@ -27,9 +27,10 @@
 сыгранный N+1 (§4.2).
 
 Сет из генерации (ADR-0158 §2.7, PR-8): шов тот же, источник отдаёт ``AudioTrack`` (файл кэша) вместо ``Track`` —
-:func:`deck_program` рендерит его ``render_audio`` с кроссфейдом ``knowledge.GEN_XFADE_BARS``, а стык с файлом
-(синтез-мост → файл) — блэнд на эти такты (:meth:`SetSession._blend_beats`); уходящий файл петлёй (``tail_beats``) —
-встык на границе прохода, его хвост и есть кроссфейд (хвост PR-8, 14.10). Мост ожидания генерации
+:func:`deck_program` рендерит его ``render_audio`` с кроссфейдом ``knowledge.GEN_XFADE_S`` секунд, а стык с файлом
+(синтез-мост → файл) — блэнд на такты вокруг него (:meth:`SetSession._blend_beats`); уходящий файл петлёй (``tail_beats``) —
+встык на границе прохода, его хвост и есть кроссфейд (хвост PR-8, 14.10); остаток такта входящий отрабатывает сдвигом
+звука (``carry_beats`` → :meth:`SetSession._entry_lead`, В15). Мост ожидания генерации
 (кавер, песня — ``BridgeHold``) — тот же сет из двух треков с фактами заказа вместо фактов сета (``fields``).
 """
 
@@ -49,7 +50,7 @@ from rob_box_music.arrange.mix import set_master
 from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
 from rob_box_music.dj_line import tracks_word
 from rob_box_music.model import BEATS_PER_BAR, AudioTrack, Track, blend_bars
-from rob_box_music.render.audio import render_audio
+from rob_box_music.render.audio import entry_blend, render_audio
 from rob_box_music.render.program import Program
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, SetPlan
@@ -158,14 +159,14 @@ def plan_source(current: PlanNow, memory: Optional[SetMemory] = None,
     return next_track
 
 
-def deck_program(track: Any, deck: str, last: bool) -> Any:
+def deck_program(track: Any, deck: str, last: bool, lead_beats: float = 0.0) -> Any:
     """Программа деки трека сета: синтез — ``render`` + мастер-шина энергии/стиля (PR-7, #3549); файл генерации —
     ``render_audio`` с кроссфейдом, последний трек — один проход файла (ADR-0158 PR-8); готовая программа (мост,
-    уже собранный заказом, ``engine.gen.gen_session.BridgeHold``) — как есть."""
+    уже собранный заказом, ``engine.gen.gen_session.BridgeHold``) — как есть. ``lead_beats`` — сдвиг входа файла."""
     if isinstance(track, Program):
         return track
     if isinstance(track, AudioTrack):
-        return render_audio(track, deck, xfade_bars=kn.GEN_XFADE_BARS, once=last)
+        return render_audio(track, deck, xfade_s=kn.GEN_XFADE_S, once=last, lead_beats=lead_beats)
     return replace(render(track, deck), master=set_master(track.energy, kn.STYLES[track.style]))
 
 
@@ -198,7 +199,7 @@ class SetSession:
                  lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None,
                  on_track_started: Callable[[str], str] = lambda _track_id: "",
                  tracks_dir: Optional[str] = None, tracks: int = DEFAULT_TRACKS,
-                 fields: Optional[Callable[[int], Dict[str, Any]]] = None) -> None:
+                 fields: Optional[Callable[[int], Dict[str, Any]]] = None, entry_lead: bool = True) -> None:
         self._owner = owner
         self.tracks = max(1, int(tracks))
         self._source = source
@@ -214,7 +215,8 @@ class SetSession:
         self._active = False
         self._tracks: Dict[str, int] = {}  # track_id → номер в сете
         self._models: Dict[str, Track] = {}  # track_id → модель (играющий и в очереди: длина блэнда)
-        self._tails: Dict[str, float] = {}  # track_id → хвост ноты за границей прохода (``Program.tail_beats``)
+        self._seams = Seams()  # хвосты и остатки тактов программ (кроссфейд файлов)
+        self._entry_lead_on = bool(entry_lead)  # мост ожидания: результат встаёт на такт без сдвига (``cut_in_beat``)
         self._next_id: Optional[str] = None  # что последним поставлено в очередь
         self._current: Optional[Dict[str, Any]] = None  # {track_id, no, deck, form_beats}
         self._preparing = False
@@ -293,7 +295,7 @@ class SetSession:
         """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
         try:
             track = self._source(track_no, deck)
-            program = deck_program(track, deck, track_no >= self.tracks)
+            program = deck_program(track, deck, track_no >= self.tracks, self._entry_lead(track))
         except Exception as exc:  # noqa: BLE001 — отказ громкий; музыка (если есть) играет дальше
             self._owner.reject(f"{self.set_id}:{track_no:02d}:{deck}", "compose_error", f"{type(exc).__name__}: {exc}")
             return None
@@ -303,8 +305,15 @@ class SetSession:
         with self._lock:
             self._tracks[program.track_id] = track_no
             self._models[program.track_id] = track
-            self._tails[program.track_id] = float(getattr(program, "tail_beats", 0.0))
+            self._seams.put(program)
         return program
+
+    def _entry_lead(self, track: Any) -> float:
+        """Сдвиг звука входящего файла внутри такта (:meth:`Seams.lead`) от того, что играет сейчас."""
+        with self._lock:
+            current = (self._current or {}).get("track_id")
+            leaving = self._models.get(current)
+        return self._seams.lead(track, leaving, current, self.bpm) if self._entry_lead_on else 0.0
 
     def _on_started(self, snap: Mapping[str, Any]) -> None:
         """Поток клока: трек N встал — считать конец формы от его доли и готовить N+1."""
@@ -317,7 +326,7 @@ class SetSession:
                              "form_beats": float(snap["form_beats"])}
             model = self._models.get(track_id)
             self._models = {k: v for k, v in self._models.items() if k == track_id}
-            self._tails = {k: v for k, v in self._tails.items() if k == track_id}
+            self._seams.keep(track_id)
         form_end = float(snap["start_beat"]) + float(snap["form_beats"])
         self._log.info(f"🎧 [set v2] {self.set_id} трек {no}/{self.tracks} started track_id={track_id} "
                        f"form_end_beat={form_end} {self._note(track_id)} {self._composition_note(model)}".rstrip())
@@ -388,8 +397,8 @@ class SetSession:
         """Доли блэнда играющего трека с тем, что в очереди; 0 — стык встык (формы не сводятся)."""
         with self._lock:
             leaving, incoming = self._models.get(track_id), self._models.get(self._next_id or "")
-            tail = self._tails.get(track_id, 0.0)
-        beats = blend_beats(leaving, incoming, tail)
+            tail = self._seams.tail(track_id)
+        beats = blend_beats(leaving, incoming, tail, self.bpm)
         if beats is None:
             return 0.0
         if not beats or beats > self._lead - BEATS_PER_BAR:  # вход должен успеть встать на такт после события
@@ -399,14 +408,40 @@ class SetSession:
         return beats
 
 
-def blend_beats(leaving: Any, incoming: Any, tail: float) -> Optional[float]:
+class Seams:
+    """Стык файлов сета по ``track_id`` программы: ``tail_beats`` — хвост ноты за границей прохода (файл петлёй), и
+    ``carry_beats`` — остаток такта, который входящий файл отрабатывает сдвигом звука (кроссфейд ровно ``GEN_XFADE_S``)."""
+
+    def __init__(self) -> None:
+        self._by_id: Dict[str, Tuple[float, float]] = {}
+
+    def put(self, program: Any) -> None:
+        self._by_id[program.track_id] = (float(getattr(program, "tail_beats", 0.0)),
+                                         float(getattr(program, "carry_beats", 0.0)))
+
+    def keep(self, track_id: str) -> None:
+        self._by_id = {k: v for k, v in self._by_id.items() if k == track_id}
+
+    def tail(self, track_id: str) -> float:
+        return self._by_id.get(track_id, (0.0, 0.0))[0]
+
+    def lead(self, track: Any, leaving: Any, leaving_id: str, bpm: int) -> float:
+        """Сдвиг звука входящего файла внутри такта: после уходящего файла — остаток его прохода, после синтеза —
+        недостача блэнда до целого такта (:func:`entry_blend`); иначе 0."""
+        if not isinstance(track, AudioTrack):
+            return 0.0
+        tail, carry = self._by_id.get(leaving_id, (0.0, 0.0))
+        return carry if tail else (entry_blend(bpm)[1] if isinstance(leaving, Track) else 0.0)
+
+
+def blend_beats(leaving: Any, incoming: Any, tail: float, bpm: int) -> Optional[float]:
     """Доли блэнда уходящего с входящим; ``None`` — стык на границе формы без блэнда и без предупреждения: нечего
     сводить, уходящий файл петлёй (``tail`` — хвост его ноты за границей прохода — и есть кроссфейд) или готовая
     программа моста (форм нет)."""
     if leaving is None or incoming is None or tail:
         return None
     if isinstance(leaving, AudioTrack) or isinstance(incoming, AudioTrack):  # кроссфейд огибающей файла
-        return float(kn.GEN_XFADE_BARS * BEATS_PER_BAR)
+        return entry_blend(bpm)[0]
     if isinstance(leaving, Track) and isinstance(incoming, Track):
         return float(blend_bars(leaving, incoming) * BEATS_PER_BAR)
     return None

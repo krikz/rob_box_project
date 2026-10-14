@@ -30,8 +30,9 @@ from .test_engine_session import Player, _rig
 pytestmark = pytest.mark.unit
 
 BAR = 4.0
-XFADE = kn.GEN_XFADE_BARS * BAR
-BPM = kn.AUDIO_DEFAULT_BPM  # трек кэша без номинала: доля — секунда (живой мост 14.10)
+BPM = kn.AUDIO_DEFAULT_BPM
+XFADE = kn.GEN_XFADE_S * BPM / 60.0  # кроссфейд в долях (1.5 с)
+RUN = 48.0  # долей на вход результата: ≤ такт + cue  # трек кэша без номинала: доля — секунда (живой мост 14.10)
 WINDOW_S = 0.5
 
 
@@ -157,9 +158,9 @@ def test_file_loop_seam_has_no_dip():
     """Мост-файл 150 с петлёй 3 прохода: следующий проход нарастает, пока гаснет этот; окна 0.5 с — без провала
     (было −35.6 dB на ~2 с) и без двойной громкости."""
     rig = _scsynth_rig(tracks=1)
-    program = render_audio(AudioTrack("bridge", "/abs/b.wav", 150.0, bpm_nominal=BPM), "A",
-                           xfade_bars=kn.GEN_XFADE_BARS, once=False)
-    assert program.tail_beats == XFADE and program.form_beats == 148.0 - XFADE  # проход короче файла на кроссфейд
+    program = render_audio(AudioTrack("bridge", "/abs/b.wav", 149.5, bpm_nominal=BPM), "A",
+                           xfade_s=kn.GEN_XFADE_S, once=False)
+    assert program.tail_beats == XFADE and program.form_beats == 148.0  # проход кончается за кроссфейд до конца файла
     assert rig.owner.play(program)["ok"]
     rig.clock.run_until(rig.clock.beat + 3.5 * program.form_beats)
     start = _started(rig)[0]["start_beat"]
@@ -177,8 +178,8 @@ def test_set_track_after_a_looping_file_starts_on_the_pass_boundary():
     """Следующий трек сета после файла петлёй: встык на границе прохода — хвост уходящего и есть кроссфейд
     (вход за кроссфейд до границы дал бы полный уходящий поверх входящего)."""
     rig = _scsynth_rig(tracks=1)
-    bridge = AudioTrack("bridge1", "/abs/b.wav", 150.0, bpm_nominal=BPM)
-    program = render_audio(bridge, "A", xfade_bars=kn.GEN_XFADE_BARS, once=False)
+    bridge = AudioTrack("bridge1", "/abs/b.wav", 149.5, bpm_nominal=BPM)
+    program = render_audio(bridge, "A", xfade_s=kn.GEN_XFADE_S, once=False)
     hold = gs.BridgeHold(rig.owner, bridge, program, lambda: None, wait_s=0.01)  # результата нет — финал моста
     assert hold.start()["ok"]
     rig.clock.run_until(rig.clock.beat + 2)
@@ -193,13 +194,13 @@ def test_set_track_after_a_looping_file_starts_on_the_pass_boundary():
 
 # ── вход результата посреди прохода моста-файла ──
 
-def _file_hold(tmp_path, monkeypatch, bridge_s=150.0, result_s=150.0):
+def _file_hold(tmp_path, monkeypatch, bridge_s=149.5, result_s=150.0):
     monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track",
                         lambda info, track_id, run=None: AudioTrack(track_id, str(tmp_path / "song.wav"), result_s))
     lib = _lib(tmp_path, cached=1, seconds=result_s)
     rig = _scsynth_rig()
     bridge = AudioTrack("bridge1", str(tmp_path / "b.wav"), bridge_s, bpm_nominal=BPM)
-    program = render_audio(bridge, "A", xfade_bars=kn.GEN_XFADE_BARS, once=False)
+    program = render_audio(bridge, "A", xfade_s=kn.GEN_XFADE_S, once=False)
     hold = gs.BridgeHold(rig.owner, bridge, program, lambda: lib, facts={"title": "мост"}, logger=rig.log)
     assert hold.start()["ok"]
     rig.clock.run_until(rig.clock.beat + 2)
@@ -213,7 +214,7 @@ def test_result_over_a_file_bridge_cuts_in_on_the_next_bar_with_a_crossfade(tmp_
     rig.clock.run_until(ready)
     assert hold.deliver(cache_tracks(lib)[0].id)
     _wait(lambda: rig.owner._pending is not None)  # noqa: SLF001 — cue поставлен из фона
-    rig.clock.run_until(ready + 3 * XFADE)
+    rig.clock.run_until(ready + RUN)
     live = _started(rig)[-1]
     assert live["track_id"] == hold.live_id and live["deck"] == "B"
     at = live["start_beat"]
@@ -241,7 +242,7 @@ def test_result_ready_inside_the_last_lead_still_cuts_in_on_the_next_bar(tmp_pat
     rig.clock.run_until(ready)
     assert hold.deliver(cache_tracks(lib)[0].id)
     _wait(lambda: rig.owner._pending is not None)  # noqa: SLF001
-    rig.clock.run_until(end + 3 * XFADE)
+    rig.clock.run_until(end + RUN)
     live = _started(rig)[-1]
     assert live["track_id"] == hold.live_id and live["start_beat"] - ready <= BAR + gs.CUT_IN_CUE_BEATS
     assert live["start_beat"] > end - NEARLY_LEAD_BEATS  # nearly_finished моста пришёлся на ожидание входа
@@ -251,7 +252,7 @@ def test_result_ready_inside_the_last_lead_still_cuts_in_on_the_next_bar(tmp_pat
 
 def test_cut_in_on_a_pass_boundary_needs_no_deck_fade():
     form, start = 132.0, 100.0
-    assert gs.cut_in_leave((150.0, start, form), 160.0, file=True) == (160.0 + XFADE, XFADE)
-    assert gs.cut_in_leave((228.0, start, form), 232.0, file=True) == (232.0, 0.0)  # граница: гаснет хвостом ноты
-    assert gs.cut_in_leave((220.0, start, form), 224.0, file=True) == (232.0, XFADE)  # плеер — до нового прохода
-    assert gs.cut_in_leave((150.0, start, form), 160.0, file=False) == (160.0 + XFADE, 0.0)  # синтез: без огибающей
+    assert gs.cut_in_leave((150.0, start, form), 160.0, True, BPM) == (160.0 + XFADE, XFADE)
+    assert gs.cut_in_leave((228.0, start, form), 232.0, True, BPM) == (232.0, 0.0)  # граница: гаснет хвостом ноты
+    assert gs.cut_in_leave((220.0, start, form), 224.0, True, BPM) == (224.0 + XFADE, XFADE)
+    assert gs.cut_in_leave((150.0, start, form), 160.0, False, BPM) == (160.0 + XFADE, 0.0)  # синтез: без огибающей

@@ -111,16 +111,16 @@ def test_render_audio_crossfade_shape():
     track = AudioTrack("gen1:02:B", "/abs/t.wav", 149.6, bpm_nominal=60)
     one = render_audio(track, "B")  # одиночный трек — как PR-2: форма вверх до такта, глушитель повтора
     assert one.form_beats == 152.0 and "var([1, 0]" in one.code
-    mid = render_audio(track, "B", xfade_bars=4, once=False)
-    assert "sus=148" in mid.code and "atk=16" in mid.code and "rel=16" in mid.code
-    # проход короче файла на кроссфейд: следующий проход нарастает, пока этот гаснет (стык петли без провала, 14.10)
-    assert mid.form_beats == 148.0 - 16 and mid.tail_beats == 16.0
+    mid = render_audio(track, "B", xfade_s=1.5, once=False)
+    assert "sus=149.6" in mid.code and "atk=1.5" in mid.code and "rel=1.5" in mid.code  # файл целиком, край 1.5 с
+    # проход — целые такты вниз от (файл − кроссфейд); хвост ноты за ним и остаток такта (сдвиг входа следующего)
+    assert mid.form_beats == 148.0 and round(mid.tail_beats, 3) == 1.6 and round(mid.carry_beats, 3) == 0.1
     # плеер встаёт на долю, кратную сумме dur (Renardo ``Player.count``): dur — такт, иначе стык на форму позже
     # (живой рок-сет 13.10: 296-я доля вместо 224-й, 56 с тишины); звучит первый такт формы, повтор — проход файла
-    assert "dur=4," in mid.code and "amp=var([1, 0], [4, 128]" in mid.code
-    last = render_audio(track, "B", xfade_bars=4, once=True)
-    assert "dur=4," in last.code and "amp=var([1, 0], [4, 292]" in last.code  # последний: один проход
-    assert last.form_beats == 148.0 and last.tail_beats == 0.0
+    assert "dur=4," in mid.code and "amp=var([1, 0], [4, 144]" in mid.code
+    last = render_audio(track, "B", xfade_s=1.5, once=True)
+    assert "dur=4," in last.code and "amp=var([1, 0], [4, 300]" in last.code  # последний: один проход, файл целиком
+    assert last.form_beats == 152.0 and last.tail_beats == 0.0 and "sus=149.6" in last.code and "rel=1" in last.code
     assert "var([1, 0]" in deck_program(track, "A", last=True).code
 
 
@@ -169,7 +169,7 @@ def test_g5_simulation_no_gap_on_ten_tracks(tmp_path):
                    bpm=BPM)
         now, ordered_at, groups = 0.0, {}, []
         lead_s = NEARLY_LEAD_BEATS * 60.0 / BPM
-        xfade_s = kn.GEN_XFADE_BARS * 4 * 60.0 / BPM
+        xfade_s = kn.GEN_XFADE_S
         first = gen.next_track(1, "A")
         end = now + (bridge_s if not cached else first.duration_s)
         ordered_at.update({j: now for j in range(len(kie.jobs))})
@@ -191,14 +191,19 @@ def test_g5_simulation_no_gap_on_ten_tracks(tmp_path):
         assert len(kie.jobs) <= 10 - min(cached, 10) and len(kie.jobs) == math.ceil((10 - cached) / 2)
 
 
-def test_set_session_crossfades_files_on_two_decks(tmp_path):
-    """Настоящий ``SetSession`` на симуляторе клока: файлы кэша → кроссфейд ``GEN_XFADE_BARS`` тактов, деки A/B."""
+def test_set_session_crossfades_files_on_two_decks(tmp_path, monkeypatch):
+    """Настоящий ``SetSession`` на симуляторе клока: файлы кэша → кроссфейд ``GEN_XFADE_S`` секунд, деки A/B."""
     lib = _lib(tmp_path, cached=2, seconds=60.0)
     for v in range(2):
         lib.save_track(b"MP3:60.0", prompt="rock", title=f"Rock {v}", is_instrumental=True, kind="instrumental",
                        style_key="rock", genre="rock", task_id="NEW", variant=v, duration_ms=60000)
     gen = _set(lib, Kie(), tracks=3, gen_reason="no_credits", bpm=BPM)
     rig = _rig(source=gen.next_track, tracks=3)
+    import rob_box_mcp_tools.engine.session as session_mod
+
+    rendered = []
+    real_program = session_mod.deck_program
+    monkeypatch.setattr(session_mod, "deck_program", lambda *a: rendered.append(real_program(*a)) or rendered[-1])
     assert rig.session.start()["ok"]
     rig.clock.run_until(rig.clock.beat + 4000)
     started = [e for e in rig.events if e["event"] == "started"]
@@ -207,6 +212,11 @@ def test_set_session_crossfades_files_on_two_decks(tmp_path):
     # проход файла короче файла на кроссфейд: следующий трек встаёт на границу прохода, хвост уходящего — кроссфейд
     assert started[1]["start_beat"] == started[0]["start_beat"] + form
     assert any(e["event"] == "finished" for e in rig.events)
+    # остаток такта предыдущего прохода второй трек отрабатывает сдвигом звука: кроссфейд ровно ``GEN_XFADE_S``
+    assert len(rendered) == 3 and "delay=" not in rendered[0].code
+    for prev, nxt in zip(rendered, rendered[1:]):
+        shift = nxt.code.split("delay=")[1].split(",")[0] if prev.carry_beats else ""
+        assert (float(shift) if shift else 0.0) == round(prev.carry_beats, 3)
     # Renardo ставит плеер на долю, кратную сумме dur: каждая доля стыка кратна dur своей программы
     assert all(e["start_beat"] % 4 == 0 for e in started[1:])
     assert "dur=4," in deck_program(AudioTrack("x", "/abs/x.wav", 60.0, bpm_nominal=BPM), "B", last=False).code
@@ -319,7 +329,7 @@ def _hold(tmp_path, monkeypatch, wait_s=600.0):
     lib = _lib(tmp_path, cached=1, seconds=60.0)
     rig = _rig(tracks=1)
     model = AudioTrack("bridge1", str(tmp_path / "b.wav"), 30.0, bpm_nominal=BPM)
-    program = render_audio(model, "A", xfade_bars=kn.GEN_XFADE_BARS, once=False)
+    program = render_audio(model, "A", xfade_s=kn.GEN_XFADE_S, once=False)
     hold = gs.BridgeHold(rig.owner, model, program, lambda: lib, facts={"title": "мост"}, wait_s=wait_s)
     assert hold.start()["ok"]
     rig.clock.run_until(rig.clock.beat + 2)
@@ -337,7 +347,7 @@ def _queued_program(rig, timeout=5.0):
 
 def test_bridge_hold_keeps_sound_until_result_then_crossfades(tmp_path, monkeypatch):
     """Правило координатора 13.10 (кавер встал через 64 с после 22 с моста — 44 с тишины): мост повторяет форму,
-    пока генерация не вернулась; результат входит кроссфейдом ``GEN_XFADE_BARS`` на другой деке."""
+    пока генерация не вернулась; результат входит кроссфейдом ``GEN_XFADE_S`` на другой деке."""
     from rob_box_mcp_tools.engine.song_order import held_play
 
     rig, hold, lib = _hold(tmp_path, monkeypatch)
