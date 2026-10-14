@@ -18,7 +18,7 @@ from rob_box_mcp_tools.engine.gen.cover import (CoverMaker, CoverResult, cover_j
                                                 source_notes)
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenUnavailable
-from rob_box_mcp_tools.engine.piece_cover import PieceCover
+from rob_box_mcp_tools.engine.piece_cover import cover_work
 from rob_box_mcp_tools.engine.source_route import SourceRouter, cache_tracks
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, RequestMusicTool
 from rob_box_music import knowledge as kn
@@ -38,7 +38,7 @@ RIDE = {"name": "rideofth", "title": "Ride Of The Valkyries", "artist": "Wagner"
         "tags": ["classical", "picaxe:mixed3"]}
 TABLE = {"rideofth": RIDE, "valkyrie": {"name": "valkyrie", "title": "Valkyrie", "artist": "In Development",
                                         "rtttl": SHORT, "tags": []}}
-SITAR = CoverWork("Ride Of The Valkyries", True, "sitar", "Ride Of The Valkyries")
+SITAR = CoverWork("Ride Of The Valkyries", "rideofth", "sitar", "Ride Of The Valkyries")
 
 
 class Kie(FakeProvider):
@@ -53,7 +53,7 @@ def _records(ids):
 
 def _track():
     pick = pick_record(RIDE, RIDE["title"], "валькирии", seed=5)
-    assert pick.found and pick.public_domain and pick.work == "Ride Of The Valkyries"
+    assert pick.found and pick.work == "Ride Of The Valkyries"
     return pick.track
 
 
@@ -71,9 +71,9 @@ def test_cover_job_styles_come_from_tables():
     sitar = cover_job(SITAR, SourceAsk(), "/tmp/x.wav")
     assert sitar.kind == "cover" and sitar.style_tags == kn.COVER_STYLES["sitar"] and sitar.style_key == ""
     assert sitar.audio_weight == kn.COVER_AUDIO_WEIGHT and "electronic" in sitar.negative_tags
-    plain = cover_job(CoverWork("Ride Of The Valkyries", True), SourceAsk(), "/tmp/x.wav")
+    plain = cover_job(CoverWork("Ride Of The Valkyries", "rideofth"), SourceAsk(), "/tmp/x.wav")
     assert plain.style_key == "orchestral" and plain.style_tags == kn.GEN_STYLES["orchestral"].tags
-    club = cover_job(CoverWork("X", True), SourceAsk(genre="club"), "/tmp/x.wav")
+    club = cover_job(CoverWork("X", "x"), SourceAsk(genre="club"), "/tmp/x.wav")
     assert "electronic" not in club.negative_tags
 
 
@@ -175,7 +175,7 @@ def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(t
     assert data["melody_id"] == "rideofth" and data["instrument"] == "guitar" and rig.owner.is_playing()
     assert launch_text("", data).startswith("Живую версию на гитаре готовлю — секунд через 50, а пока своя. Ставлю")
     order = maker.orders[0]
-    assert order.work == CoverWork("Ride Of The Valkyries", True, "guitar", data["title"]) and order.track is not None
+    assert order.work == CoverWork("Ride Of The Valkyries", "rideofth", "guitar", data["title"]) and order.track is not None
     rig.clock.run_until(rig.clock.beat + 2)  # мост встал
     bridge = [e for e in rig.events if e["event"] == "started"][0]
     rig.clock.run_until(bridge["start_beat"] + 3 * bridge["form_beats"])  # кавер пишется — мост повторяет форму
@@ -216,19 +216,11 @@ def test_without_money_the_piece_plays_our_synth_and_says_why(tmp_path):
         "Живую версию на гитаре сейчас не сделаю: на счёте генерации нет кредитов. Ставлю")
 
 
-def test_bridge_not_public_domain_takes_the_cover_from_the_public_domain_record_of_the_same_order():
-    """Живой прогон 13.10: свежесть выбрала мостом `valkyrie` («In Development»), а кавер — по Вагнеру `rideofth`."""
-    from rob_box_music.works import RTTTL, WorkCandidate
-
-    class Pieces:
-        def candidates(self, query):
-            return None, [WorkCandidate("valkyrie", RTTTL, "Valkyrie", "In Development", 0.5, 0.0),
-                          WorkCandidate("rideofth", RTTTL, "Ride Of The Valkyries", "Wagner", 0.5, 0.0)], \
-                _records(TABLE)
-
-    bridge = {"program": object(), "work": "Valkyrie", "public_domain": False, "title": "Valkyrie",
-              "instrument": "", "played": {"work": "валькирий"}}
-    work, track = PieceCover(FakeMaker()).source(bridge, Pieces(), seed=5)
-    assert work == CoverWork("Ride Of The Valkyries", True, "", work.spoken) and track is not None
-    pd = dict(bridge, work="Ride Of The Valkyries", public_domain=True)
-    assert PieceCover(FakeMaker()).source(pd, Pieces(), seed=5)[1] is None  # мост сам — источник
+def test_cover_material_is_the_bridge_melody_itself_without_public_domain_swap():
+    """В14 (14.10): кавер — по мелодии моста, какой бы она ни была (`valkyrie` «In Development» — тоже); подмены
+    пьесы записью общественного достояния нет. Лид не собрался — материала нет, кавер-кандидата нет."""
+    staged = {"program": object(), "work": "Valkyrie", "title": "Valkyrie", "melody_id": "valkyrie", "instrument": "",
+              "track": _track()}
+    assert cover_work(staged) == CoverWork("Valkyrie", "valkyrie", "", "Valkyrie")
+    assert cover_work(dict(staged, track=None)).material == ""
+    assert cover_work({"work": "Valkyrie"}) is None

@@ -15,40 +15,49 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Mapping, Optional, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Tuple
 
-from rob_box_music.instruments import lead_choice
+from rob_box_music import knowledge as kn
 from rob_box_music.source import CoverWork, Route, cover_failed_text, cover_ready_text
-from rob_box_music.works import RTTTL, record_public_domain
 
-from .classic import ClassicPick, pick_record
-from .gen.cover import CoverResult
+from .classic import pick_score
+from .gen.cover import CoverResult, melody_notes
+from .score_library import PlanMaterials
 
 _LOG = logging.getLogger(__name__)
 
 
 def cover_work(staged: Optional[Mapping[str, Any]]) -> Optional[CoverWork]:
-    """Собранная пьеса (``request_music._stage_classic``) → :class:`CoverWork`; пьеса не собралась — ``None``."""
+    """Собранная пьеса (``request_music._stage_classic``) → :class:`CoverWork`; пьеса не собралась — ``None``.
+    Материал кавера — мелодия, из которой собран лид моста (В14: та же мелодия у моста и у кавера, без подмены);
+    лида и хука нет — ``material`` пуст, кавер-кандидата нет."""
     if not staged or "program" not in staged or not staged.get("work"):
         return None
-    return CoverWork(str(staged["work"]), bool(staged.get("public_domain")), str(staged.get("instrument") or ""),
+    material = str(staged.get("melody_id") or staged["work"]) if melody_notes(staged.get("track")) else ""
+    return CoverWork(str(staged["work"]), material, str(staged.get("instrument") or ""),
                      str(staged.get("title") or ""))
 
 
-def public_domain_pick(pieces: Any, query: str, seed: int, lead: Any = None) -> Optional[ClassicPick]:
-    """Запись RTTTL этого же заказа, совпавшая по названию и общественного достояния (реестр ``works``) — источник
-    кавера, когда пьеса моста выбрана другая. Живой прогон 13.10: «включи полёт валькирий» — `rideofth` (Вагнер)
-    недавно играл, свежесть выбрала `valkyrie` («In Development», не public domain), и кавер из кэша не нашёлся."""
-    _ref, candidates, records = pieces.candidates(query)
-    for cand in candidates:
-        if cand.kind != RTTTL or not cand.title_match or cand.id not in records:
-            continue
-        record, title = records[cand.id]
-        if record_public_domain(record):
-            pick = pick_record(record, title, query, seed=seed, lead=lead)
-            if pick.found:
-                return pick
-    return None
+def theme_covers(dj: Any, theme: str, seed: int, log: Any = _LOG) -> List[Tuple[CoverWork, Any]]:
+    """Наш узнаваемый материал темы сета для каверов (ADR-0158 В14): партитуры темы (поиск без LLM, как у моста),
+    из первых ``SET_COVER_MATERIALS`` — те, где ``score_song`` нашёл мотив RTTTL-эталона темы (порог
+    ``CLASSIC_REF_MATCH_MIN``; проба 14.10: «STAR WARS» arr. Hermand, 0.88). Эталонов нет — узнаваемость не доказать,
+    каверов нет. ``(произведение, трек с мелодией)``."""
+    profile = dj.theme_profile(theme, find=dj.quick_find)
+    refs = list(dj._melodies(profile.theme_hooks).values())  # noqa: SLF001 — те же эталоны, что у сета синтезом
+    ids = tuple(profile.materials)[:kn.SET_COVER_MATERIALS]
+    if not ids or not refs:
+        log.info(f"🎼 [cover] тема «{theme}»: каверов нет — материалов {len(ids)}, эталонов RTTTL {len(refs)}")
+        return []
+    loaded, out, reasons = PlanMaterials(dj._scores, ids, log), [], []  # noqa: SLF001
+    for mid in ids:
+        pick = pick_score(loaded, [mid], theme, seed=seed, references=refs)
+        if pick.found:
+            out.append((CoverWork(pick.work, mid, "", pick.title or pick.work), pick.track))
+        else:
+            reasons.append(pick.reason)
+    log.info(f"🎼 [cover] тема «{theme}»: каверы по {[w.material for w, _t in out]}; не узнаётся: {reasons or '—'}")
+    return out
 
 
 class PieceCover:
@@ -59,19 +68,6 @@ class PieceCover:
         self.maker = maker
         self._speak = speak
         self._log = log
-
-    def source(self, piece: Optional[Mapping[str, Any]], pieces: Any, seed: int) -> Tuple[Optional[CoverWork], Any]:
-        """``(произведение кавера, трек-источник мелодии | None — мелодия моста)``: пьеса моста не общественное
-        достояние — та же просьба среди записей public domain (:func:`public_domain_pick`)."""
-        work = cover_work(piece)
-        query = str(((piece or {}).get("played") or {}).get("work") or "")
-        if work is None or work.public_domain or not query:
-            return work, None
-        pick = public_domain_pick(pieces, query, seed, lead_choice(work.instrument))
-        if pick is None:
-            return work, None
-        self._log().info(f"🎼 [cover] мост «{work.title}» не public domain → кавер по «{pick.work}» ({pick.melody_id})")
-        return CoverWork(pick.work, True, work.instrument, pick.title), pick.track
 
     def start(self, route: Route, track: Any, hold: Any) -> Any:
         """Заказать кавер в фоне; ``hold`` — мост на деке (``BridgeHold``), держит звук до результата."""
@@ -97,4 +93,4 @@ class PieceCover:
             self._speak(text)
 
 
-__all__ = ["PieceCover", "cover_work", "public_domain_pick"]
+__all__ = ["PieceCover", "cover_work", "theme_covers"]

@@ -60,7 +60,7 @@ from .gen.song import SongStudio
 from .song_order import SongOrder
 from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
-from .piece_cover import PieceCover, cover_work
+from .piece_cover import PieceCover, cover_work, theme_covers
 from .reasoner import SetPlanBox, SetReasoner
 from .request_slots import Catalog, RequestSlotParser
 from .score_library import ScoreLibrary, seed_plan, track_materials
@@ -740,7 +740,7 @@ class RequestMusicTool(MCPTool):
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
         ask = ask or source_ask(heard_text or text)
         piece = self._stage_piece(text, heard_text) if classic else None
-        work, cover_track = cover_source(self._cover, piece, self._pieces, self._seed)
+        work = cover_work(piece)
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:
@@ -756,7 +756,7 @@ class RequestMusicTool(MCPTool):
         if result.get("ok"):
             self._started(row, model)
             if bridge:  # мост звучит — кавер в фоне встанет вместо него кроссфейдом
-                self._cover.start(route, cover_track or model, hold)
+                self._cover.start(route, model, hold)
         return tool_result(result, what)
 
     def _started(self, row: Mapping[str, Any], model: Any) -> None:
@@ -882,7 +882,7 @@ class RequestMusicTool(MCPTool):
             return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
         return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
                 "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
-                "work": pick.work, "public_domain": pick.public_domain, **lead_data(slot_lead)}
+                "work": pick.work, **lead_data(slot_lead)}
 
 
 class GenerateMusicTool(MCPTool):
@@ -985,8 +985,11 @@ def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], p
     if makers is None:
         return None, SynthFallback(key, window)
     genre = window if window in kn.GEN_STYLES else key
+    log = dj.node.get_logger() if dj.node is not None else _LOG
+    covers = (theme_covers(dj, theme, dj._seed(), log)  # noqa: SLF001 — В14: кавер по нашему материалу темы
+              if theme and makers.cover_ready() else [])
     plan = makers.plan(theme, genre, heard_text, length[0], named=length[1] == "названо", styles=hints[0] or (),
-                       minutes=hints[1])
+                       minutes=hints[1], covers=covers)
     fallback = plan.synth_style()
     if not plan.played() and fallback is not None:  # окно — у стиля сета, не у стиля запаса
         return None, SynthFallback(fallback, window if fallback == key else None,
@@ -1055,14 +1058,6 @@ def play_cache(play: Callable[..., MCPToolResult], route: Route, what: str,
 def is_bridge(route: Route, cover: Any) -> bool:
     """Путь — кавер пьесы, и исполнитель кавера есть: синтез пьесы играет мостом (ADR-0158 PR-4)."""
     return route.kind == GENERATE and route.work is not None and cover is not None
-
-
-def cover_source(cover: Optional[PieceCover], piece: Optional[Dict[str, Any]], pieces: Any,
-                 seed: Callable[[], int]) -> Tuple[Any, Any]:
-    """Произведение кавера и трек-источник его мелодии (``PieceCover.source``); кавера нет — только произведение."""
-    if piece is None or cover is None:
-        return cover_work(piece), None
-    return cover.source(piece, pieces, seed())
 
 
 def unstage(staged: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any], Any]:

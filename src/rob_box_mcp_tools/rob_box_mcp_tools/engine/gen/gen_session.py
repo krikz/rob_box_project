@@ -31,11 +31,11 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
-from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, CacheTrack, SourceAsk
+from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk, gen_kind
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
@@ -55,6 +55,8 @@ DECLINED = "music_source"
 SUBMIT_BRIDGE = "submit_bridge_line"
 BRIDGE_FIELDS = ("next", "bridge", "eta")
 BRIDGE_LINE_MAX = 140
+#: Ключ слота сета «кавер материала темы в стиле трека» (В14): ``cover|<стиль>``; инструментал — ключ = стиль.
+COVER_SLOT = "cover|"
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ def task_model(ordered: int, bridge: bool) -> str:
 
 
 def genre_name(genre: str) -> str:
+    genre = genre[len(COVER_SLOT):] if genre.startswith(COVER_SLOT) else genre
     return kn.GEN_STYLES[genre].name if genre in kn.GEN_STYLES else genre
 
 
@@ -199,6 +202,37 @@ def failed_text(genre: str, reason: str) -> str:
     return f"Дописать {genre_name(genre)} не вышло: {REASON_WORDS.get(reason, reason)} — доиграю из того, что есть."
 
 
+def slot_plan(keys: Sequence[str], genres: Sequence[str], unique: Sequence[str], slots: int) -> List[str]:
+    """Ключ слота каждого трека-файла: ключи путей (стиль или кавер стиля, В14), иначе стили, иначе стили по кругу."""
+    if keys and len(keys) == slots:
+        return list(keys)
+    if len(genres) == slots:
+        return list(genres)
+    return [unique[i % len(unique)] for i in range(max(1, slots))]
+
+
+class SetCovers:
+    """Каверы материала темы в треках сета (В14): ``works`` — материалы по ключу слота ``cover|<стиль>`` (задачи
+    берут их по кругу), ``make(work, ask, set_spent)`` — тот же ``CoverMaker.make``, что у пьесы."""
+
+    def __init__(self, works: Optional[Mapping[str, Sequence[CoverWork]]] = None,
+                 make: Optional[Callable[[CoverWork, SourceAsk, float], Any]] = None) -> None:
+        self._works, self._make, self._no = dict(works or {}), make, 0
+
+    def task(self, key: str, ask: SourceAsk, spent: float) -> Tuple[List["SetItem"], str, float]:
+        """Задача кавера: следующий материал по кругу в стиле слота → ``(варианты, task_id, кредиты)``."""
+        works = self._works.get(key) or ()
+        if not works or self._make is None:
+            raise GenUnavailable("no_material", f"кавер {key}: материала нет")
+        work, self._no = works[self._no % len(works)], self._no + 1
+        result = self._make(work, replace(ask, genre=key[len(COVER_SLOT):]), spent)
+        if result.reason:
+            raise GenUnavailable(result.reason, f"кавер «{work.title}»")
+        title = f"{work.spoken or work.title} (кавер)"
+        return ([SetItem(t, result.task_id, title, "generated", key) for t in result.track_ids], result.task_id,
+                result.credits)
+
+
 def _thread(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="rbx-gen-set", daemon=True).start()
 
@@ -213,14 +247,14 @@ class GenSet:
                  spawn: Callable[[Callable[[], None]], None] = _thread, run: Callable[..., Any] = subprocess.run,
                  clock: Callable[[], float] = time.monotonic,
                  publish: Optional[Callable[[str, Dict[str, Any]], Any]] = None, genres: Sequence[str] = (),
-                 theme_tags: str = "") -> None:
+                 theme_tags: str = "", keys: Sequence[str] = (), covers: Optional["SetCovers"] = None) -> None:
         self._provider, self._library, self._ask, self._theme = provider, library, ask, theme
         self._publish = publish  # ``PlayerOwner.update_dj``: название играющего трека — в снимок («что играет»)
         self.set_id, self.bpm, self.slots = set_id, int(bpm), int(tracks)
         self.genres = tuple(dict.fromkeys(genres)) or (genre,)
         self.genre, self._tags = self.genres[0], theme_tags
-        self._plan = (list(genres) if len(genres) == self.slots  # стиль каждого трека-файла
-                      else [self.genres[i % len(self.genres)] for i in range(max(1, self.slots))])
+        self._plan = slot_plan(keys, genres, self.genres, self.slots)
+        self._covers = covers or SetCovers()  # каверы материала темы (В14)
         self._bridge, self.gen_reason, self._speak, self._log = bridge, gen_reason, speak, log
         self._spawn, self._run, self._clock = spawn, run, clock
         self._ready: List[SetItem] = [SetItem(t.id, t.group or t.id, t.title, genre=self._genre_of(t)) for t in cache]
@@ -237,7 +271,10 @@ class GenSet:
         return self._bridge is not None
 
     def _genre_of(self, track: CacheTrack) -> str:
-        """Стиль сета трека кэша: свой, иначе стиль той же семьи синтеза (гранж — рок), иначе первый."""
+        """Ключ слота трека кэша: кавер — кавер своего стиля; стиль свой, иначе стиль той же семьи синтеза (гранж —
+        рок), иначе первый."""
+        if track.kind == "cover" and COVER_SLOT + track.style_key in self._plan:
+            return COVER_SLOT + track.style_key
         if track.style_key in self.genres:
             return track.style_key
         family = kn.GEN_STYLES.get(track.style_key)
@@ -328,7 +365,7 @@ class GenSet:
         upcoming = self._plan[self._taken:]
         for genre in dict.fromkeys(upcoming):
             ready = [i for i in self._ready if i.genre == genre]
-            supply = (supply_of(ready, self._used, 0) if len(self.genres) == 1
+            supply = (supply_of(ready, self._used, 0) if len(set(self._plan)) == 1
                       else sum(i.id not in self._used for i in ready))
             if tasks_needed(upcoming.count(genre), supply, self.ordered):
                 return genre
@@ -340,7 +377,8 @@ class GenSet:
             genre = None if self.gen_reason or self._inflight else self._short_genre()
             if genre is None:
                 return
-            model = task_model(self.ordered, self._bridge is not None)
+            cover = genre.startswith(COVER_SLOT)
+            model = kn.COVER_MODEL if cover else task_model(self.ordered, self._bridge is not None)
             self._inflight, self._inflight_genre, self.ordered = 1, genre, self.ordered + 1
         self._spawn(lambda: self._generate(model, genre))
 
@@ -349,17 +387,22 @@ class GenSet:
         return GenJob(kind="instrumental", style_key=genre, title=f"RoBBox {genre} set",
                       style_tags=tags, duration_s=kn.GEN_SET_DURATION_S, model=model)
 
+    def _task(self, model: str, genre: str) -> Tuple[List[SetItem], str, float]:
+        """Задача инструментала стиля (теги стиля и темы) → ``(варианты, task_id, кредиты)``."""
+        result = generate_into_cache(self._provider, self._library, Budget(self._library), self._job(model, genre),
+                                     theme=self._theme, set_spent=self.spent)
+        items = [SetItem(str(s["id"]), result.task_id, str(s.get("title") or ""), "generated", genre)
+                 for s in result.saved if s.get("success")]
+        return items, result.task_id, result.credits
+
     def _generate(self, model: str, genre: str = "") -> None:
         started, items, reason, genre = self._clock(), [], "", genre or self.genre
         try:
-            result = generate_into_cache(self._provider, self._library, Budget(self._library), self._job(model, genre),
-                                         theme=self._theme, set_spent=self.spent)
-            items = [SetItem(str(s["id"]), result.task_id, str(s.get("title") or ""), "generated", genre)
-                     for s in result.saved if s.get("success")]
-            self.task_ids.append(result.task_id)
-            self._log.info(f"🎛️ [gen set] {self.set_id} задача {result.task_id} {genre} {model}: {len(items)} вар., "
-                           f"{result.credits:g} кр., {self._clock() - started:.0f} с")
-            spent = result.credits
+            items, task_id, spent = (self._covers.task(genre, self._ask, self.spent) if genre.startswith(COVER_SLOT)
+                                     else self._task(model, genre))
+            self.task_ids.append(task_id)
+            self._log.info(f"🎛️ [gen set] {self.set_id} задача {task_id} {genre} {model}: {len(items)} вар., "
+                           f"{spent:g} кр., {self._clock() - started:.0f} с")
         except GenUnavailable as exc:
             reason, spent = exc.reason, 0.0
         except Exception as exc:  # noqa: BLE001 — сбой заказа не роняет сет: он доигрывает то, что есть
@@ -532,25 +575,33 @@ Bridge = Callable[[str], Tuple[Callable[[str], Any], int]]
 class GenSetMaker:
     """Сет из генерации для ``dj_set`` (ADR-0158 PR-8): путь сета решает чойсер (``SourceRouter.route(for_set=True)``),
     сет — ``SetSession`` с источником :class:`GenSet`. ``library`` — ленивый доступ к кэшу (поднимается позже движка),
-    ``balance`` — последний известный баланс KIE (``CoverMaker.balance``, сеть заказ не ждёт)."""
+    ``balance`` — последний известный баланс KIE (``CoverMaker.balance``, сеть заказ не ждёт); ``cover`` —
+    ``CoverMaker`` пьесы: им же исполняются каверы материала темы в треках сета (В14, одна реализация)."""
 
     def __init__(self, provider: Any, library: Callable[[], Any], chooser: Any, *,
-                 balance: Callable[[], Optional[float]] = lambda: None, log: Callable[[], Any] = lambda: _LOG) -> None:
+                 balance: Callable[[], Optional[float]] = lambda: None, log: Callable[[], Any] = lambda: _LOG,
+                 cover: Any = None) -> None:
         from ..source_route import SourceRouter
 
-        self._provider, self._library, self._balance, self._log = provider, library, balance, log
+        self._provider, self._library, self._balance, self._log, self._cover = provider, library, balance, log, cover
         self.router = SourceRouter(chooser, library, log=log, sets=self)
 
     def ready(self) -> bool:
         return bool(getattr(self._provider, "configured", False)) and self._library() is not None
 
+    def cover_ready(self) -> bool:
+        """Каверы в треках сета можно заказывать: исполнитель кавера подключён и готов (ключ, кэш)."""
+        return self._cover is not None and self._cover.ready()
+
     def balance(self) -> Optional[float]:
         return self._balance()
 
     def plan(self, theme: str, style: str, heard_text: Optional[str], length: int, *, named: bool = False,
-             styles: Sequence[str] = (), minutes: Optional[int] = None) -> "SetRoutes":
+             styles: Sequence[str] = (), minutes: Optional[int] = None,
+             covers: Sequence[Tuple[CoverWork, Any]] = ()) -> "SetRoutes":
         """Стили по трекам, длина и путь каждого трека — кодом (ADR-0148, решение Шифу 14.10): :func:`slot_genres`,
-        :func:`slot_count`, путь — ``SourceRouter.route_slots``."""
+        :func:`slot_count`, путь — ``SourceRouter.route_slots``; ``covers`` — наш узнаваемый материал темы
+        ``(произведение, трек с мелодией)`` для каверов (В14, ``DjSetTool.theme_covers``)."""
         from rob_box_music.source import source_ask, theme_tags
         from rob_box_voice.core.set_length_words import heard_set_seconds
 
@@ -562,8 +613,9 @@ class GenSetMaker:
         tags = theme_tags(theme)
         self._log().info(f"🎛️ [gen set] слоты: стили={list(genres)} треков={len(slots)} "
                          f"время={f'{seconds:.0f} с' if seconds else '—'} тема-теги={tags or '—'} "
-                         f"непонято={list(unknown)}")
-        return SetRoutes(slots, tuple(self.router.route_slots(asks, tags)), unknown, tags)
+                         f"непонято={list(unknown)} каверы={[w.material for w, _t in covers]}")
+        return SetRoutes(slots, tuple(self.router.route_slots(asks, tags, [w for w, _t in covers])), unknown, tags,
+                         tuple(covers))
 
     def start(self, plan: "SetRoutes", owner: Any, *, theme: str, persona: Optional[str], set_id: str,
               bridge: Bridge, line_ask: Any = None, speak: Optional[Callable[[str], Any]] = None,
@@ -581,10 +633,12 @@ class GenSetMaker:
         first = plan.routes[played[0]]
         made = bridge(bridge_style(genres[0])) if first.kind != CACHE and not reason else None
         logger = self._log()
+        keys = plan.keys()
         gen = GenSet(provider=self._provider, library=self._library(), ask=first.ask, genre=genres[0], theme=theme,
                      set_id=set_id, bpm=made[1] if made else kn.AUDIO_DEFAULT_BPM, tracks=len(played), cache=cache,
                      bridge=made[0] if made else None, gen_reason=reason, speak=speak, log=logger,
-                     publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags)
+                     publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags,
+                     keys=[keys[i] for i in played], covers=SetCovers(plan.covers(), self._set_cover(plan)))
         line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if made else None
         session = _gen_session(owner, gen, theme, persona, logger)
         result = session.start()
@@ -597,6 +651,14 @@ class GenSetMaker:
                 "tracks": gen.slots, "cached": min(len(cache), gen.slots), "route": first.id,
                 "routes": [r.id for r in plan.routes], "source_message": message,
                 "session": session if result.get("ok") else None}
+
+    def _set_cover(self, plan: "SetRoutes") -> Optional[Callable[[CoverWork, SourceAsk, float], Any]]:
+        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодией материала темы, оба варианта."""
+        if self._cover is None:
+            return None
+        tracks = {work.material: track for work, track in plan.theme_covers}
+        return lambda work, ask, spent: self._cover.make(tracks[work.material], work, ask, set_spent=spent,
+                                                         early=False)
 
 
 def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
@@ -645,6 +707,22 @@ class SetRoutes:
     routes: Tuple[Any, ...]
     unknown: Tuple[str, ...] = ()
     theme_tags: str = ""
+    theme_covers: Tuple[Tuple[CoverWork, Any], ...] = ()  # материал темы для каверов (В14): (произведение, трек)
+
+    def keys(self) -> List[str]:
+        """Ключ слота каждого трека: кавер (новый или из кэша) — ``cover|<стиль>``, иначе стиль трека."""
+        def cover(route: Any) -> bool:
+            return gen_kind(route.id) == "cover" or (route.kind == CACHE and getattr(route.track, "kind", "") == "cover")
+
+        return [COVER_SLOT + g if cover(r) else g for g, r in zip(self.genres, self.routes)]
+
+    def covers(self) -> Dict[str, List[CoverWork]]:
+        """Материалы каверов по ключу слота, по порядку треков (задачи берут их по кругу)."""
+        out: Dict[str, List[CoverWork]] = {}
+        for key, route in zip(self.keys(), self.routes):
+            if gen_kind(route.id) == "cover" and route.work is not None and route.work not in out.get(key, []):
+                out.setdefault(key, []).append(route.work)
+        return out
 
     def cache(self) -> List[CacheTrack]:
         """Треки кэша, выбранные путями треков (в сет — именно они)."""
@@ -700,6 +778,6 @@ class _LineBox:
         return self._line or bridge_template(self._facts)
 
 
-__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetItem", "SetRoutes", "bridge_facts", "bridge_line",
+__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetRoutes", "bridge_facts", "bridge_line",
            "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "set_head", "set_notes",
            "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

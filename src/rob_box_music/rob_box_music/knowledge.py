@@ -2617,15 +2617,14 @@ COVER_WAIT_S = 50.0
 #: Признак ``live`` кандидата пути — кавер (генерация или кэш того же произведения): основной путь пьесы по названию
 #: (В7) выигрывает у нашего синтеза при деньгах с разрывом ≥ ``CHOOSER_CLEAR_GAP`` (кодом, без модели).
 COVER_LIVE_WEIGHT = 4.0
-#: Типы произведения реестра, мелодии которых — общественное достояние (кавер строится только для них, §2.9).
-PUBLIC_DOMAIN_WORK_TYPES: Tuple[str, ...] = ("classical", "folk")
-#: Композиторы «классики» с живыми правами (умерли < 70 лет назад): их пьесы — не общественное достояние.
-COMPOSERS_IN_COPYRIGHT: Tuple[str, ...] = ("shostakovich", "khachaturian", "sviridov", "schnittke")
+#: Сколько материалов темы сета проверять на кавер (В14): партитуры темы по порядку поиска, мелодия — ``score_song`` с
+#: эталонами RTTTL темы (порог ``CLASSIC_REF_MATCH_MIN``); проверка — на пути запуска сета, поэтому немного.
+SET_COVER_MATERIALS = 3
 
-__all__ += ["COMPOSERS_IN_COPYRIGHT", "COVER_ACOUSTIC_NEGATIVE_TAGS", "COVER_AUDIO_WEIGHT", "COVER_DEFAULT_STYLE",
+__all__ += ["COVER_ACOUSTIC_NEGATIVE_TAGS", "COVER_AUDIO_WEIGHT", "COVER_DEFAULT_STYLE",
             "COVER_DURATION_S", "COVER_ELECTRONIC_STYLES", "COVER_LIVE_WEIGHT", "COVER_MODEL", "COVER_NEGATIVE_TAGS",
             "COVER_SOURCE_MAX_S", "COVER_SOURCE_MIN_S", "COVER_SOURCE_RATE_HZ", "COVER_STYLES", "COVER_WAIT_S",
-            "PUBLIC_DOMAIN_WORK_TYPES"]
+            "SET_COVER_MATERIALS"]
 
 
 # ── Вселенные и настроение темы сета (#3581, ADR-0157 §2.1): «ты диджей Анакин… веселье на звезде смерти» ─────────
