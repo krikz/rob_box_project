@@ -47,6 +47,9 @@ class ThemeProfile:
     #: материалы партитур, найденные по названию в индексе партитур (``search.ThemeHits.materials``, ADR-0154 §3.5),
     #: лучшие первыми; план раздаёт их первым трекам (``set_plan.plan_materials``) — приоритет над RTTTL-хуками
     materials: Tuple[str, ...] = ()
+    #: хуки поиска по словам темы — без хуков строки таблицы (В16: пьесы вселенной «звёздные войны» — её мелодии,
+    #: а не X-Files из строки ``space``); пусто — нашлась только строка
+    found: Tuple[str, ...] = ()
 
     @property
     def source(self) -> str:
@@ -173,7 +176,8 @@ def seeded_profile(theme_text: str, style: str = kn.DEFAULT_STYLE, found: Sequen
     hooks = theme_hooks or tuple(random.Random(digest).sample(HOOK_POOL, POOL_HOOKS))
     bpm = lo + (digest >> 8) % (hi - lo + 1)
     return ThemeProfile(text, style, bpm, (digest >> 16) % 12, mode, hooks, name, theme_hooks,
-                        tuple(tuple(p) for p in parts if p), tuple(dict.fromkeys(materials)))
+                        tuple(tuple(p) for p in parts if p), tuple(dict.fromkeys(materials)),
+                        tuple(dict.fromkeys(found)))
 
 
 __all__ = ["HOOK_POOL", "POOL_HOOKS", "ThemeProfile", "match_row", "match_style", "match_style_text", "match_window_text",

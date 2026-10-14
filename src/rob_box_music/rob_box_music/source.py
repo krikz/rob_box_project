@@ -369,18 +369,47 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     return tuple(options) or (Option(f"{DECLINE}:{reason or 'no_source'}", {}, "честный отказ"),), reason
 
 
+def _not_replayed(options: Sequence[Option], ctx: SourceContext) -> Tuple[Option, ...]:
+    """Трек сета (В16): есть новый заказ — трек кэша, игранный ближе ``GEN_FRESH_HOURS``, не кандидат. Признак
+    ``fresh`` (вес 0.5) его не опускал: у кэша кавера ``theme_match`` 1.5 — кэш выигрывал при любом прослушивании,
+    и сет 14.10 повторил 4 трека сета часом раньше. Нового заказа нет — сыгранное лучше синтеза, остаётся."""
+    if not any(o.id.startswith(GENERATE) for o in options):
+        return tuple(options)
+    recent = {f"{CACHE}:{t.id}" for t in ctx.cache
+              if t.played_ago_h is not None and t.played_ago_h < kn.GEN_FRESH_HOURS}
+    return tuple(o for o in options if o.id not in recent)
+
+
 def set_candidates(ask: SourceAsk, ctx: SourceContext,
                    work: Optional[CoverWork] = None) -> Tuple[Tuple[Option, ...], str]:
     """Кандидаты трека сета (ADR-0158 §2.7, В14): у темы есть наш материал ``work`` и кавер возможен (кэш того же
     кавера или ``generate:cover`` при деньгах) — кавер и синтез-запас; инструментал по тегам (новый и из кэша) не
-    кандидат: узнаваемость в приоритете (Шифу 14.10: «кавер в приоритете»). Иначе — как у трека без материала."""
+    кандидат: узнаваемость в приоритете (Шифу 14.10: «кавер в приоритете»). Иначе — как у трека без материала.
+    Недавно игранный кэш при новом заказе — не кандидат (:func:`_not_replayed`)."""
     options, reason = source_candidates(ask, ctx)
     if work is None or ask.vocal:
-        return options, reason
+        return _not_replayed(options, ctx), reason
     covers, why = _cover_options(ask, ctx, work)
     if not covers:
-        return options, why if why != "no_material" else reason
-    return tuple(covers + [o for o in options if o.id.startswith(SYNTH)]), why
+        return _not_replayed(options, ctx), why if why != "no_material" else reason
+    return _not_replayed(covers + [o for o in options if o.id.startswith(SYNTH)], ctx), why
+
+
+#: Ключ слота сета «кавер произведения темы в стиле трека» (В14, В16): ``cover|<стиль>|<произведение>`` — у каждого
+#: произведения свой слот, второй вариант его задачи закрывает только его же трек; инструментал — ключ = стиль.
+COVER_SLOT = "cover|"
+
+
+def cover_slot(genre: str, title: str) -> str:
+    """Ключ слота кавера произведения ``title`` (``CoverWork.title`` / ``work_id`` кэша) в стиле ``genre``."""
+    from .works import norm
+
+    return f"{COVER_SLOT}{genre}|{norm(title)}"
+
+
+def slot_style(key: str) -> str:
+    """Стиль слота сета: ``cover|<стиль>|…`` → стиль; ключ инструментала — сам стиль."""
+    return key[len(COVER_SLOT):].split("|")[0] if key.startswith(COVER_SLOT) else key
 
 
 @dataclass(frozen=True)
@@ -529,8 +558,9 @@ def decline_text(route: Route) -> str:
     return f"{head} Могу сыграть своё: {offer}."
 
 
-__all__ = ["CACHE", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note", "cover_ready_text",
-           "cover_style_key", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
+__all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note",
+           "cover_ready_text", "cover_slot", "cover_style_key", "slot_style", "GENERATE", "INSTRUCTIONS", "PIECE",
+           "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
            "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",

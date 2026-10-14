@@ -545,6 +545,41 @@ def reference_contours(rtttls: Sequence[str]) -> List[Tuple[int, ...]]:
     return [c for c in out if c is not None]
 
 
+def _tune_fit(ref: str, other: str) -> float:
+    """Годность контура начала RTTTL ``ref`` во всей мелодии RTTTL ``other`` (0 — не разобрать)."""
+    shape = _ref_contour(ref)
+    try:
+        notes = [midi for midi, _beats in parse_rtttl(other)[2] if midi is not None]
+    except ValueError:
+        return 0.0
+    got = best_match({"": notes}, [pitches(shape)]) if shape else None
+    return got[0] if got else 0.0
+
+
+def same_tune(a: str, b: str, match_min: float = kn.PIECE_SAME_TUNE_MIN) -> bool:
+    """Две RTTTL — одно произведение по мелодии (В16): начало одной найдено в другой в любую сторону («Imperial
+    March 1/2/3» — куски одного марша, «Start 1» и «Star Wars» (Theme) — версии главной темы)."""
+    return max(_tune_fit(a, b), _tune_fit(b, a)) >= match_min
+
+
+def tune_groups(rtttls: Mapping[str, str]) -> List[Tuple[str, ...]]:
+    """``{id: rtttl}`` → произведения в порядке входа: мелодия идёт в первую группу, где совпала с любой версией."""
+    groups: List[List[str]] = []
+    for mid, code in rtttls.items():
+        home = next((g for g in groups if any(same_tune(code, rtttls[o]) for o in g)), None)
+        if home is None:
+            groups.append([mid])
+        else:
+            home.append(mid)
+    return [tuple(g) for g in groups]
+
+
+def theme_fit(material: ScoreMaterial, rtttls: Sequence[str]) -> Optional[float]:
+    """Годность лучшего эталона ``rtttls`` в голосах материала (то же совпадение, что у :func:`for_theme`)."""
+    match = _theme_match_cached(material, tuple(reference_contours(rtttls)))
+    return None if match is None else match[0]
+
+
 #: Совпадения эталонов на процесс (M7, #3542): план и компоновка трека спрашивают одно и то же — материал и эталоны
 #: в сете неизменны. Ключ — id материала, его голоса и контуры эталонов (материал с тем же id и другими нотами —
 #: другой ключ).
@@ -759,5 +794,5 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
            "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
            "from_rtttl", "hook_defect", "material_hook", "material_scale", "material_unfit", "pick_phrase",
-           "reference_contours", "rhythm_answer", "spill", "theme_cuts", "theme_match", "theme_span", "theme_version",
-           "time_scale", "track_key", "voices", "with_theme"]
+           "reference_contours", "rhythm_answer", "same_tune", "spill", "theme_cuts", "theme_fit", "theme_match",
+           "theme_span", "theme_version", "time_scale", "track_key", "tune_groups", "voices", "with_theme"]

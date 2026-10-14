@@ -66,14 +66,14 @@ def _router(tmp_path, sets):
 
 
 def test_theme_set_with_our_material_covers_every_track_two_tracks_per_task(tmp_path, caplog):
-    """Деньги есть: каждый трек — ``generate:cover``; второй вариант задачи закрывает следующий трек того же стиля,
-    материалы — по кругу задачами (A, A, B, B); строка ``[source] сет i/N`` показывает кавер в кандидатах и выборе."""
+    """Деньги есть: каждый трек — ``generate:cover``; произведения чередуются (В16: A, B, A, B — не A, A, B, B), второй
+    вариант задачи произведения закрывает его следующий трек; строка ``[source] сет i/N`` — кавер в выборе."""
     with caplog.at_level(logging.INFO):
         routes = _router(tmp_path, Sets()).route_slots(CLUB, works=[A, B])
-    assert [r.id for r in routes] == [COVER] * 4 and [r.work for r in routes] == [A, A, B, B]
+    assert [r.id for r in routes] == [COVER] * 4 and [r.work for r in routes] == [A, B, A, B]
     lines = [r.message for r in caplog.records if "[source] сет" in r.message]
     assert len(lines) == 4 and all(f"кандидаты=['{COVER}', 'synth:club'] → {COVER}" in line for line in lines)
-    assert "(второй вариант задачи)" in lines[1] and "(второй вариант задачи)" not in lines[2]
+    assert ["(второй вариант задачи)" in line for line in lines] == [False, False, True, True]
 
 
 def test_theme_without_material_stays_tag_instrumental(tmp_path):
@@ -107,7 +107,8 @@ def test_gen_set_orders_cover_tasks_through_the_same_cover_maker(tmp_path):
     maker, track = Maker(), object()
     plan = gs.SetRoutes(("club", "club"), tuple(_router(tmp_path, Sets()).route_slots(CLUB[:2], works=[A])),
                         theme_covers=((A, track),))
-    assert plan.keys() == ["cover|club", "cover|club"] and plan.covers() == {"cover|club": [A]}
+    key = "cover|club|starwars"
+    assert plan.keys() == [key, key] and plan.covers() == {key: A}
     run = gs.GenSetMaker(Kie(), lambda: _lib(tmp_path), DeterministicChooser(), cover=maker)._set_cover(plan)
     gen = gs.GenSet(provider=Kie(), library=_lib(tmp_path), ask=SourceAsk(genre="club"), genre="club", theme="",
                     set_id="gen1", bpm=120, tracks=2, cache=[], keys=plan.keys(),
@@ -116,26 +117,139 @@ def test_gen_set_orders_cover_tasks_through_the_same_cover_maker(tmp_path):
     assert maker.made == [(track, A, "club", 0.0, False)] and gen.task_ids == ["T1"] and gen.spent == 12.0
     title = "Звёздные войны (кавер)"
     ready = [(i.id, i.genre, i.title) for i in gen._ready]  # noqa: SLF001
-    assert ready == [("c1a", "cover|club", title), ("c1b", "cover|club", title)]
-    assert gs.genre_name("cover|club") == "клуб"
+    assert ready == [("c1a", key, title), ("c1b", key, title)]
+    assert gs.genre_name(key) == "клуб"
 
 
-def test_theme_covers_need_a_reference_motif_to_prove_recognition(monkeypatch):
-    """Материал без эталона RTTTL темы — узнаваемость не доказать, каверов нет; с эталоном — те, где мотив нашёлся."""
-    profile = SimpleNamespace(materials=(A.material, B.material), theme_hooks=("starwars_6",))
-    dj = SimpleNamespace(theme_profile=lambda theme, find=None: profile, quick_find=None, _scores=None,
-                         _melodies=lambda ids: {})
+# ── В16 (14.10, Шифу: «он одни и те же треки ставит»): разные произведения темы в треках ────────────────────────
+#: Контуры двух пьес (13 нот, ``THEME_REF_NOTES`` = 12): версии одной пьесы — транспозиция, другая — иной рисунок.
+THEME_NOTES, MARCH_NOTES = "c d e c e f g e g a g f e", "g g g d# a# g d# a# g d6 d6 d6 d#6"
+
+
+def _rtttl(name, notes, octave=5):
+    return f"{name}:d=8,o={octave},b=120:" + ",".join(notes.split())
+
+
+SW6, SW8 = _rtttl("sw6", THEME_NOTES), _rtttl("sw8", THEME_NOTES, octave=4)
+IMP = _rtttl("imp", MARCH_NOTES)
+
+
+def test_versions_of_one_piece_group_by_melody_not_by_name():
+    from rob_box_music.arrange.hook import same_tune, tune_groups
+
+    assert same_tune(SW6, SW8) and not same_tune(SW6, IMP)
+    groups = tune_groups({"starwars_4": IMP, "starwars_8": SW8, "starwars_6": SW6})
+    assert groups == [("starwars_4",), ("starwars_8", "starwars_6")]
+
+
+def _records(rtttls, titles):
+    return lambda ids: {h: ({"name": h, "rtttl": rtttls[h]}, titles[h]) for h in ids if h in rtttls}
+
+
+def test_theme_covers_one_cover_per_piece_main_theme_first(monkeypatch, caplog):
+    """Пьесы темы — по мелодии хуков; главная (с первым хуком строки ``space``: starwars_6) первой; мелодия — партитура
+    с мотивом ЭТОГО эталона, иначе сам RTTTL; лог перечисляет произведения и источник каждого."""
+    found = ("starwars_4", "starwars_8", "starwars_6")
+    profile = SimpleNamespace(materials=(A.material,), theme_hooks=found + ("the_x_files",), found=found, row="space")
+    dj = SimpleNamespace(theme_profile=lambda theme, find=None: profile, quick_find=None, _scores=None)
+    records = _records({"starwars_4": IMP, "starwars_8": SW8, "starwars_6": SW6, "the_x_files": IMP},
+                       {"starwars_4": "Имперский марш", "starwars_8": "Star Wars", "starwars_6": "Star Wars - Start",
+                        "the_x_files": "The X-files"})
+
+    def score(materials, ids, q, seed, references):  # партитура A — главная тема, марша в ней нет
+        ok = SW6 in references
+        return SimpleNamespace(found=ok, melody_id=A.material, track="T-score", reason="" if ok else "нет мотива")
+
+    monkeypatch.setattr(piece_cover, "pick_score", score)
+    monkeypatch.setattr(piece_cover, "pick_record", lambda rec, title, q, seed: SimpleNamespace(
+        found=True, track=f"T-{rec['name']}"))
+    monkeypatch.setattr(piece_cover, "theme_fit", lambda material, refs: 0.88)
+    monkeypatch.setattr(piece_cover, "PlanMaterials", lambda lib, ids, log: {A.material: object()})
+    with caplog.at_level(logging.INFO):
+        got = piece_cover.theme_covers(dj, "звёздные войны", 7, records=records)
+    assert [(w.title, w.material, t) for w, t in got] == [("Star Wars", A.material, "T-score"),
+                                                          ("Имперский марш", "starwars_4", "T-starwars_4")]
+    line = next(r.message for r in caplog.records if "[cover] тема" in r.message)
+    assert f"«Star Wars» ← {A.material} 0.88" in line and "«Имперский марш» ← rtttl:starwars_4" in line
+    assert "the_x_files" not in line  # хук строки таблицы, а не вселенной: найденные по словам темы есть
+
+
+def test_theme_covers_need_a_reference_motif_to_prove_recognition():
+    """Эталонов RTTTL нет — узнаваемость не доказать, каверов нет."""
+    profile = SimpleNamespace(materials=(A.material,), theme_hooks=("starwars_6",), found=(), row="space")
+    dj = SimpleNamespace(theme_profile=lambda theme, find=None: profile, quick_find=None, _scores=None)
+    assert piece_cover.theme_covers(dj, "звёздные войны", 7, records=lambda ids: {}) == []
     assert piece_cover.theme_covers(dj, "звёздные войны", 7) == []
-    dj._melodies = lambda ids: {"starwars_6": "sw6:d=4,o=5,b=120:c"}
-    picks = {A.material: SimpleNamespace(found=True, work="STAR WARS", title="Звёздные войны", track="T", reason=""),
-             B.material: SimpleNamespace(found=False, reason="нет мотива эталона")}
-    monkeypatch.setattr(piece_cover, "pick_score", lambda materials, ids, q, seed, references: picks[ids[0]])
-    assert piece_cover.theme_covers(dj, "звёздные войны", 7) == [(A, "T")]
+
+
+C = CoverWork("Star Wars - Cantina", "starwars", spoken="Star Wars - Cantina")
+
+
+def test_ten_minute_star_wars_set_plays_different_pieces_never_back_to_back(tmp_path):
+    """Приёмка В16: сет «звёздные войны» на 10 минут при деньгах — ≥ 3 произведения, главная тема первой, одно
+    произведение не подряд; вторые варианты задач — у другого места сета, новых задач — по числу произведений."""
+    routes = _plan(tmp_path, [A, B, C]).routes
+    works = [r.work for r in routes]
+    assert len(set(works)) == 3 and works[0] == A and all(a != b for a, b in zip(works, works[1:]))
+    assert works == [A, B, C, A, B, C, A]
+
+
+def test_two_pieces_from_one_score_keep_their_own_melody(tmp_path):
+    """Медли — материал двух произведений (Cantina 0.71 на роботе): у каждого свой трек (свой такт мотива), ключ
+    исполнителя — произведение, а не id партитуры."""
+    maker = Maker()
+    medley = CoverWork("Star Wars - Cantina", A.material, spoken="Кантина")
+    plan = gs.SetRoutes(("club", "club"), tuple(_router(tmp_path, Sets()).route_slots(CLUB[:2], works=[A, medley])),
+                        theme_covers=((A, "T-main"), (medley, "T-cantina")))
+    run = gs.GenSetMaker(Kie(), lambda: _lib(tmp_path), DeterministicChooser(), cover=maker)._set_cover(plan)
+    covers = gs.SetCovers(plan.covers(), run)
+    for key in plan.keys():
+        covers.task(key, SourceAsk(genre="club"), 0.0)
+    made = [(track, work.title) for track, work, *_rest in maker.made]
+    assert made == [("T-main", "STAR WARS"), ("T-cantina", "Star Wars - Cantina")]
+
+
+def _played_cover(lib, hours):
+    """Кэш кавера главной темы (стиль клуб), игранный ``hours`` часов назад."""
+    from datetime import datetime, timedelta, timezone
+
+    track = lib.save_track(b"MP3:90.0", prompt="cover", title="STAR WARS (RoBBox cover)", is_instrumental=True,
+                           kind="cover", style_key="club", task_id="OLD", variant=0, duration_ms=90000,
+                           work_id="STAR WARS")["id"]
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    lib._conn.execute("UPDATE generated_tracks SET last_played_at = ? WHERE id = ?", (stamp, track))  # noqa: SLF001
+    lib._conn.commit()  # noqa: SLF001
+    return track
+
+
+@pytest.mark.parametrize("hours, first", [(1.0, GEN), (20.0, "cache")])
+def test_instrumental_cache_of_a_set_obeys_the_same_replay_rule(tmp_path, hours, first):
+    """Сет без материала темы: инструментал кэша, игранный час назад, при деньгах уступает новому заказу."""
+    from datetime import datetime, timedelta, timezone
+
+    lib = _lib(tmp_path, cached=1, style="club")
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    lib._conn.execute("UPDATE generated_tracks SET last_played_at = ?", (stamp,))  # noqa: SLF001
+    lib._conn.commit()  # noqa: SLF001
+    route = SourceRouter(DeterministicChooser(), lambda: lib, sets=Sets()).route_slots(CLUB[:1])[0]
+    assert route.id.startswith(first)
+
+
+@pytest.mark.parametrize("hours, money, first", [(1.0, 900.0, COVER), (20.0, 900.0, "cache"), (1.0, 0.0, "cache")])
+def test_cache_played_an_hour_ago_loses_to_a_new_order_with_money(tmp_path, hours, money, first):
+    """Кэш, игранный за ``GEN_FRESH_HOURS``, при деньгах проигрывает новому заказу (14.10: 4 трека из сета часом
+    раньше); давно игранный — первым, как раньше; без денег сыгранное лучше синтеза."""
+    lib = _lib(tmp_path)
+    cached = _played_cover(lib, hours)
+    router = SourceRouter(DeterministicChooser(), lambda: lib, sets=Sets(balance=money))
+    routes = router.route_slots(CLUB[:2], works=[A, B])
+    assert routes[0].id == (f"cache:{cached}" if first == "cache" else first)
 
 
 def test_star_wars_set_through_dj_set_routes_covers(tmp_path, monkeypatch):
     """«сет на тему звёздных войн» при деньгах: путь каждого трека — кавер материала темы, мост — наш синтез."""
-    monkeypatch.setattr("rob_box_mcp_tools.engine.tools_v2.theme_covers", lambda dj, theme, seed, log: [(A, object())])
+    monkeypatch.setattr("rob_box_mcp_tools.engine.tools_v2.theme_covers",
+                        lambda dj, theme, seed, log, records: [(A, object())])
     lib, maker = _lib(tmp_path), Maker()
     dj = _dj(lib, Kie())
     dj.gen_sets = gs.GenSetMaker(Kie(), lambda: lib, DeterministicChooser(), cover=maker)

@@ -2620,11 +2620,18 @@ COVER_LIVE_WEIGHT = 4.0
 #: Сколько материалов темы сета проверять на кавер (В14): партитуры темы по порядку поиска, мелодия — ``score_song`` с
 #: эталонами RTTTL темы (порог ``CLASSIC_REF_MATCH_MIN``); проверка — на пути запуска сета, поэтому немного.
 SET_COVER_MATERIALS = 3
+#: Сколько произведений темы сета кавером (В16, 14.10): хуки темы по мелодии в произведения (``hook.tune_groups``),
+#: главная тема первой; у каждого — свой эталон и своя мелодия кавера (партитура с его мотивом или сам RTTTL).
+SET_COVER_PIECES = 4
+#: Две RTTTL — одно произведение (``hook.same_tune``): контур начала одной (``THEME_REF_NOTES`` нот) во всей мелодии
+#: другой не хуже этого. Замер 14.10 на RTTTL робота: версии главной темы Star Wars (starwars_6/7/8/9) и Имперского
+#: марша (starwars_3/4/5, _imp, _imp_2) между собой 1.00, разные пьесы (Cantina, Final, марш, тема) — 0.29–0.58.
+PIECE_SAME_TUNE_MIN = 0.8
 
 __all__ += ["COVER_ACOUSTIC_NEGATIVE_TAGS", "COVER_AUDIO_WEIGHT", "COVER_DEFAULT_STYLE",
             "COVER_DURATION_S", "COVER_ELECTRONIC_STYLES", "COVER_LIVE_WEIGHT", "COVER_MODEL", "COVER_NEGATIVE_TAGS",
             "COVER_SOURCE_MAX_S", "COVER_SOURCE_MIN_S", "COVER_SOURCE_RATE_HZ", "COVER_STYLES", "COVER_WAIT_S",
-            "SET_COVER_MATERIALS"]
+            "PIECE_SAME_TUNE_MIN", "SET_COVER_MATERIALS", "SET_COVER_PIECES"]
 
 
 # ── Вселенные и настроение темы сета (#3581, ADR-0157 §2.1): «ты диджей Анакин… веселье на звезде смерти» ─────────
