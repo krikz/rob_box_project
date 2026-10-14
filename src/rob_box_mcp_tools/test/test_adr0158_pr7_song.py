@@ -120,7 +120,7 @@ class FakeSuno:
     def balance(self):
         return 100.0
 
-    def download(self, url):
+    def download(self, url, timeout_s=None):
         return b"ID3" + url.encode()
 
 

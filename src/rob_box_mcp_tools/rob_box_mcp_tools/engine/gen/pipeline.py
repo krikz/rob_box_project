@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import stream
 from .budget import Budget
@@ -54,6 +54,11 @@ class _Order:
     spent: float
     extra: Dict[str, str]
     log: Callable[[], Any]
+    clock: Callable[[], float] = time.monotonic
+    started: float = 0.0
+
+    def elapsed(self) -> float:
+        return self.clock() - self.started
 
     def save(self, track: GenTrack, audio: bytes, duration_s: float) -> dict:
         job = self.job
@@ -70,21 +75,26 @@ class _Order:
         self.library.ledger.record_spend(self.ticket.task_id, self.spent, kind=self.job.kind, request_key=self.rkey,
                                          model=self.job.model, gen_provider=self.provider.name)
 
-    def save_all(self, status: GenStatus, done: Dict[int, str]) -> List[dict]:
-        """Варианты ``complete``: новые — в кэш; ``done`` (вариант → id раннего) — финальный файл и длина."""
+    def save_all(self, status: GenStatus, done: Dict[int, Tuple[str, str]]) -> List[dict]:
+        """Варианты ``complete``: новые — в кэш; ``done`` (вариант → (id, url) раннего) — финальный файл и длина,
+        если ранний пришёл не с финального ``audio_url``."""
         saved = []
         for track in status.tracks:
+            early_id, early_url = done.get(track.variant, ("", ""))
+            if early_url and early_url == track.audio_url:
+                continue  # ранний и есть финальный файл
             audio = self.provider.download(track.audio_url)  # медиа KIE живут 14 дней — качаем сразу
-            if track.variant in done:
-                same = self.library.get_track_info(done[track.variant]).get("file_sha256") == sha256_bytes(audio)
-                self.library.replace_audio(done[track.variant], audio, duration_ms=int(track.duration_s * 1000),
+            if early_id:
+                same = self.library.get_track_info(early_id).get("file_sha256") == sha256_bytes(audio)
+                self.library.replace_audio(early_id, audio, duration_ms=int(track.duration_s * 1000),
                                            title=track.title)
                 self.log().info(f"🎼 [gen] {self.ticket.task_id} вариант {track.variant}: финальный audio_url "
                                 f"{'= стрим' if same else '≠ стрим, файл заменён'}, {track.duration_s:.1f} с")
                 continue
             saved.append(self.save(track, audio, track.duration_s))
         # квота диска (PR-9): новое не трогаем, уходят худшие и давно не игранные заказы
-        enforce_quota(self.library, protect=[*done.values(), *(str(s["id"]) for s in saved if s.get("id"))])
+        enforce_quota(self.library, protect=[*(i for i, _ in done.values()), *(str(s["id"]) for s in saved
+                                                                              if s.get("id"))])
         return saved
 
 
@@ -128,12 +138,14 @@ def generate_into_cache(
     )
     extra = dict(tts_provider=tts_provider, voice=voice, work_id=work_id, instrument=instrument,
                  source_audio_sha=source_audio_sha)
-    order = _Order(provider, library, job, ticket, rkey, cost, extra, log)
+    order = _Order(provider, library, job, ticket, rkey, cost, extra, log, clock, started)
     probe = _EarlyProbe(order) if early else None
     status = wait_complete(provider, ticket, timeout_s=timeout_s, sleep=sleep, clock=clock,
                            stop=probe.try_status if probe else None)
-    if status.stage != "complete" and probe is not None and probe.got is not None:
-        return _deliver_early(order, probe.got, status, timeout_s - (clock() - started), sleep, clock, spawn)
+    if probe is not None and (probe.got is not None or probe.try_status(status)):
+        # ранний звук — или на complete первый вариант мосту сразу, остальные финишёром (14.10: V6 без
+        # промежуточных стадий, success на 21 с у сервера, а последовательное скачивание двух mp3 — ещё ≈ 9 с)
+        return _deliver_early(order, probe.got, status, timeout_s - order.elapsed(), sleep, clock, spawn)
 
     estimated = status.credits is None
     order.spent = cost if estimated else float(status.credits)
@@ -144,9 +156,10 @@ def generate_into_cache(
 
 class _EarlyProbe:
     """``stop``-хук ``wait_complete``: одна попытка раннего звука на стадию (``text`` — стрим, ``first`` —
-    ``audio_url`` первого варианта), URL не повторяется."""
+    ``audio_url`` первого варианта; ``complete`` — явным вызовом: первый вариант до скачивания второго),
+    URL не повторяется."""
 
-    def __init__(self, order: _Order) -> None:
+    def __init__(self, order: "_Order") -> None:
         self.order: _Order = order
         self.got: Optional[stream.EarlyAudio] = None
         self.tried: set = set()
@@ -167,11 +180,13 @@ class _EarlyProbe:
             blob = self.order.provider.download(url, timeout_s=stream.STREAM_DOWNLOAD_TIMEOUT_S)
             wav, seconds = stream.verify(blob, minimum)
         except (stream.StreamIncomplete, GenUnavailable) as exc:
-            self.order.log().warning(f"⚠️ [gen] {task} ранний звук ({status.stage}) не принят: {exc} — жду success")
+            then = "качаю оба варианта" if status.stage == "complete" else "жду success"
+            self.order.log().warning(f"⚠️ [gen] {task} ранний звук ({status.stage}) не принят: {exc} — {then}")
             return False
         self.got = stream.EarlyAudio(track, url, blob, wav, seconds)
-        self.order.log().info(f"🎼 [gen] {task} ранний звук на стадии {status.stage}: вариант {track.variant}, "
-                              f"{seconds:.1f} с (≥ {minimum:.1f}), {len(blob)} байт")
+        self.order.log().info(f"🎼 [gen] {task} ранний звук на стадии {status.stage} через "
+                              f"{self.order.elapsed():.1f} с: вариант {track.variant}, {seconds:.1f} с "
+                              f"(≥ {minimum:.1f}), {len(blob)} байт")
         return True
 
 
@@ -188,12 +203,12 @@ def _deliver_early(order: _Order, got: stream.EarlyAudio, status: GenStatus, rem
         stream.discard(got)
         raise GenUnavailable("provider_down", f"ранний звук не записан в кэш: {saved.get('error')}", order.ticket)
     stream.adopt_wav(got.wav_path, str(saved["path"]))
-    done = {got.track.variant: str(saved["id"])}
+    done = {got.track.variant: (str(saved["id"]), got.url)}
 
     def finish() -> None:
         try:
-            final = wait_complete(order.provider, order.ticket, timeout_s=max(1.0, remaining_s), sleep=sleep,
-                                  clock=clock)
+            final = status if status.stage == "complete" else wait_complete(
+                order.provider, order.ticket, timeout_s=max(1.0, remaining_s), sleep=sleep, clock=clock)
             if final.credits is not None and float(final.credits) != order.spent:
                 order.library.ledger.settle(order.ticket.task_id, float(final.credits))
             more = order.save_all(final, done)

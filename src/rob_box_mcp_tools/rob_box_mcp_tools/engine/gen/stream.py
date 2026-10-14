@@ -29,8 +29,9 @@ STREAM_TOLERANCE_S = 3.0
 SONG_MIN_FRACTION = 0.85
 #: Потолок скачивания стрима: целиком он пришёл за 6 с; дольше — значит идёт вровень с генерацией, ждём ``success``.
 STREAM_DOWNLOAD_TIMEOUT_S = 20.0
-#: Стадии, на которых пробуется ранний звук (по попытке на стадию): стрим на ``text``, ``audio_url`` 1-го на ``first``.
-EARLY_STAGES = ("text", "first")
+#: Стадии, на которых пробуется ранний звук (по попытке на стадию): стрим на ``text``, ``audio_url`` 1-го на ``first``;
+#: на ``complete`` — первый вариант мосту до скачивания второго.
+EARLY_STAGES = ("text", "first", "complete")
 
 
 class StreamIncomplete(Exception):

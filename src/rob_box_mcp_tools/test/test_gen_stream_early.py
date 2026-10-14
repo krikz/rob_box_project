@@ -144,21 +144,30 @@ class TestEarlyStream:
     def test_truncated_stream_falls_back_to_success(self, tmp_path):
         media = {**MEDIA, STREAM0: (200, b"SEC:40.0|half")}
         res, lib, t, log, _ = _run(tmp_path, ["text", "success"], media)
-        assert not res.early and lib.count == 2
         assert "ранний звук (text) не принят: short: 40.0 с < 117.0 с" in log.text()
+        # на success первый вариант — мосту сразу, второй качает финишёр; audio_url 1-го не качается дважды
+        assert res.early and "ранний звук на стадии complete" in log.text() and lib.count == 2
+        assert t.calls.count(AUDIO0) == 1
         assert Path(lib.get_track_info(res.saved[0]["id"])["path"]).read_bytes() == b"SEC:119.4|final"
 
     def test_stream_403_falls_back_to_success(self, tmp_path):
         media = {**MEDIA, STREAM0: (403, b"Forbidden")}
         res, lib, t, log, _ = _run(tmp_path, ["text", "success"], media)
-        assert not res.early and lib.count == 2
+        assert res.early and lib.count == 2
         assert "provider_down: скачивание: HTTP 403" in log.text() and "жду success" in log.text()
 
     def test_no_stream_field_waits_for_success_without_extra_downloads(self, tmp_path):
         stages = [_record("text", no_stream=True), _record("success", no_stream=True)]
-        res, lib, t, log, _ = _run(tmp_path, stages, MEDIA)
-        assert not res.early and lib.count == 2 and STREAM0 not in t.calls
-        assert "ранний звук" not in log.text()
+        res, lib, t, log, polls = _run(tmp_path, stages, MEDIA, run_finisher=False)
+        assert STREAM0 not in t.calls and "не принят" not in log.text()
+        assert res.early and polls == 2 and lib.count == 1  # второй вариант ещё не качался
+        assert t.calls.count("https://tempfile.example/1.mp3") == 0
+
+    def test_complete_stage_first_variant_short_downloads_both_as_before(self, tmp_path):
+        media = {**MEDIA, AUDIO0: (200, b"SEC:30.0|bad")}
+        res, lib, t, log, _ = _run(tmp_path, [_record("success", no_stream=True)], media)
+        assert not res.early and lib.count == 2 and len(res.saved) == 2
+        assert "ранний звук (complete) не принят: short" in log.text() and "качаю оба варианта" in log.text()
 
     def test_first_stage_uses_audio_url_of_first_variant(self, tmp_path):
         media = {**MEDIA, STREAM0: (200, b"SEC:30.0|half")}
