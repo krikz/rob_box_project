@@ -125,11 +125,25 @@ FUZZ_SYNTHDEF = """SynthDef.new(\\fuzz, {
 # file) lets ``/n_set 1 fadeT <s> fadeA 0`` fade only deck A's file notes
 # (``render.audio.deck_fade_args``): a file note plays its whole ``sus`` after
 # its player stops, and ``/g_freeAll 1`` would also kill the incoming result.
+#
+# Deck file keep-alive (live 14.10, silent bridge): every Renardo note ends in
+# ``makeSound`` (``sceffects/makeSound.scd``) with ``DetectSilence.ar(osc,
+# amp: 0.0001, time: 0.1, doneAction: 14)`` — 0.1 s below −80 dBFS frees the
+# note's whole group. A deck file note fades in from 0 over the crossfade
+# (``atk`` = 16 s): a generated track's head (a click, then ~0.1 s at
+# −70 dBFS) times a near-zero edge is "silence", so the bridge's one note per
+# pass died 128 ms after ``/n_go`` (``/notify``) and the deck stayed silent
+# until the result came in. File notes of a deck (``fdeck > 0``) add a DC
+# floor ``LOOP_ALIVE_FLOOR`` (inaudible, −70 dBFS) for ``sus`` and under the
+# deck fade — the group lives exactly as long as the note sounds. Synthesis
+# notes (``fdeck = 0``) are untouched.
+MAKESOUND_SILENCE_AMP = 0.0001
+LOOP_ALIVE_FLOOR = 0.0003
 LOOP_SYNTHDEF = """SynthDef.new(\\loop,
 {|amp=1, sus=1, pan=0, freq=0, vib=0, fmod=0, rate=1.0, bus=0, blur=1, beat_dur=1,
 atk=0.01, decay=0.01, rel=0.01, peak=1, level=0.8, buf=0, pos=0, room=0.1, sample=0, spack=0, beat_stretch=0,
 fdeck=0, fadeA=1, fadeB=1, fadeT=0.01|
-var osc, edgeA, edgeR, deckGain;
+var osc, edgeA, edgeR, deckGain, alive;
 sus = sus * blur;
 rate = In.kr(bus, 1);
 rate = (rate * (1-(beat_stretch>0))) + ((BufDur.kr(buf) / sus) * (beat_stretch>0));
@@ -141,8 +155,10 @@ deckGain = EnvGen.ar(Env([1, 1, 0], [0, 1], \\wel, 1), Select.kr(fdeck, [1, fade
 osc = (osc * deckGain * amp);
 osc = Mix(osc) * 0.5;
 osc = Pan2.ar(osc, pan);
+alive = EnvGen.ar(Env([1, 1, 0], [sus, 0])) * deckGain * (fdeck > 0) * %(floor)s;
+osc = osc + alive;
 \tReplaceOut.ar(bus, osc)}).add;
-"""
+""" % {"floor": LOOP_ALIVE_FLOOR}
 
 
 # Issue #3008 (regression 27.09): some synths are NOT file-based in upstream
