@@ -249,14 +249,15 @@ def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
 
 def _play_cached(node: Any) -> Any:
     """Шов «сыграть трек кэша» для внутренних исполнителей (путь, песня, кавер, сет; ADR-0158 PR-9): функция
-    ``play_library_track`` на кэше ноды, а не тул по реестру. Кэш поднимается позже движка — читаем лениво."""
-    def play(track_id: str) -> Any:
+    ``play_library_track`` на кэше ноды, а не тул по реестру. Кэш поднимается позже движка — читаем лениво.
+    ``hold`` — мост ожидания песни (петля с кроссфейдом через ``BridgeHold``, ``tools_v2.hold_start``)."""
+    def play(track_id: str, hold: Any = None) -> Any:
         library = getattr(node, "_generated_music_library", None)
         if library is None:
             from .base import MCPToolResult
 
             return MCPToolResult(success=False, error="библиотека генераций недоступна — трек не заиграл")
-        return play_library_track(node, library, track_id)
+        return play_library_track(node, library, track_id, hold=hold)
 
     return play
 

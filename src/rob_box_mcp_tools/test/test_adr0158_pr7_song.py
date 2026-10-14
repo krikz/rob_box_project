@@ -333,7 +333,7 @@ def cache(tmp_path):
 def _request(rig, studio, library=None, played=None):
     dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: ThemeHits(), seed=lambda: 4242)
 
-    def play(track_id):
+    def play(track_id, hold=None):
         played.append(track_id)
         return MCPToolResult(success=True, data={"ok": True, "track_id": f"gen_{track_id[:8]}_1", "started": True})
 

@@ -41,6 +41,30 @@ def _missing_synth_fail(detail: str) -> bool:
     return detail.startswith("/s_new") and "not found" in detail
 
 
+def _with_timing(facts: Dict[str, Any], current: Optional[Mapping[str, Any]], once: Optional[str]) -> Dict[str, Any]:
+    """Факты снимка + время звучания играющего трека: ``started_at``, ``bpm``, у конечного — ``length_s`` (один проход
+    формы)."""
+    if current:
+        facts["started_at"] = current["started_at"]
+        facts.setdefault("bpm", current.get("bpm"))
+        if current.get("track_id") == once:
+            facts["length_s"] = round(current["form_beats"] * 60.0 / current["bpm"], 1)
+    return facts
+
+
+def _log_started(log: Any, snap: Mapping[str, Any], line: str) -> None:
+    """Строка ``started``: встал на фазу 0 — info, иначе warning. rclpy кэширует severity по месту вызова: info и
+    warning — из РАЗНЫХ строк (иначе ValueError). Сбой логгера не должен терять событие started (06.10: сет завис
+    на первом треке)."""
+    try:
+        if snap.get("phase_in_form") == 0 and snap.get("players_aligned"):
+            log.info(line)
+        else:
+            log.warning(line)
+    except Exception:  # noqa: BLE001 — только логирование; ошибки логики ниже не глотаются
+        pass
+
+
 class PlayerOwner:
     """Одна дека: старт трека, события ``started``/``rejected``, latched-снимок.
 
@@ -113,16 +137,8 @@ class PlayerOwner:
             return
         fields = {k: snap.get(k) for k in ("clock_beat", "start_beat", "phase_in_form", "late_beats",
                                            "bpm", "deck", "form_beats", "players_aligned", "latency_s")}
-        line = f"🎵 [music v2] started track_id={track_id} " + " ".join(f"{k}={v}" for k, v in fields.items())
-        # rclpy кэширует severity по месту вызова: info и warning — из РАЗНЫХ строк (иначе ValueError).
-        # Сбой логгера не должен терять событие started (06.10: сет завис на первом треке).
-        try:
-            if snap.get("phase_in_form") == 0 and snap.get("players_aligned"):
-                self._log.info(line)
-            else:
-                self._log.warning(line)
-        except Exception:  # noqa: BLE001 — только логирование; ошибки логики ниже не глотаются
-            pass
+        _log_started(self._log, snap, f"🎵 [music v2] started track_id={track_id} "
+                     + " ".join(f"{k}={v}" for k, v in fields.items()))
         self._publish_event(build_music_event_payload("started", track_id, ts=self._clock(), **fields))
         self.publish_state()
         listener = self.on_started
@@ -254,12 +270,16 @@ class PlayerOwner:
             current = dict(self._current) if self._current else None
             facts = dict(self._dj)
             once = self._once
-        if current:
-            facts["started_at"] = current["started_at"]
-            facts.setdefault("bpm", current.get("bpm"))
-            if current.get("track_id") == once:
-                facts["length_s"] = round(current["form_beats"] * 60.0 / current["bpm"], 1)
-        return current, facts
+        return current, _with_timing(facts, current, once)
+
+    def position(self, track_id: str) -> Optional[Tuple[float, float, float]]:
+        """``(доля клока, доля старта, форма)`` играющего ``track_id`` — вход результата по такту поверх моста
+        ожидания (``gen_session.cut_in_beat``); играет не он — ``None``."""
+        with self._lock:
+            current = dict(self._current or {})
+        if current.get("track_id") != track_id:
+            return None
+        return self._adapter.beat_now(), float(current["start_beat"]), float(current["form_beats"])
 
     def now_playing(self) -> Dict[str, Any]:
         """Что звучит на деке — для ``get_music_state`` (#3613): ``playing``, ``pending`` (поставлен, ждёт

@@ -724,7 +724,8 @@ class RequestMusicTool(MCPTool):
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:
-            return self._off_synth(route, what, ask, (intent, text, mood, genre, turn_id, heard_text))
+            return self._off_synth(route, what, ask, (intent, text, mood, genre, turn_id, heard_text),
+                                   gen_failed == "pending")
         staged = self._stage(route, piece, text, mood, heard_text, bridge_find(self._dj, gen_failed))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
@@ -767,28 +768,16 @@ class RequestMusicTool(MCPTool):
             staged["source_note"] = note
         return staged
 
-    def _off_synth(self, route: Route, what: str, ask: SourceAsk, args: Tuple[Any, ...]) -> MCPToolResult:
-        """Путь не синтез: песня голосом робота (PR-7), трек кэша (есть шов проигрывания) или честный отказ с фразой
-        кода — без тихой подмены."""
+    def _off_synth(self, route: Route, what: str, ask: SourceAsk, args: Tuple[Any, ...],
+                   held: bool = False) -> MCPToolResult:
+        """Путь не синтез: песня голосом робота (PR-7), трек кэша (есть шов проигрывания; ``held`` — мост ожидания
+        песни) или честный отказ с фразой кода — без тихой подмены."""
         if self._song_order.handles(route):
             return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
-            return self._play_cache(route, what)
+            return play_cache(self._play_cached, route, what, hold_start(self) if held else None)
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
                             "message": decline_text(route)}, what)
-
-    def _play_cache(self, route: Route, what: str) -> MCPToolResult:
-        """Трек кэша — ``play_library_track`` на деке владельца (ADR-0158 PR-2): сет закрывает и деку заменяет он
-        сам, ``ok`` — только по ``started`` запуска; ``track_id`` результата — id запуска на деке (его ``started`` ждёт
-        роутер медиакоманд)."""
-        track = route.track
-        result = self._play_cached(track.id)
-        data = dict(result.data or {})
-        if not result.success:
-            return tool_result({"ok": False, "reason": "cache_play_failed", "route": route.id,
-                                "detail": result.error or data.get("reason")}, what)
-        return tool_result({**data, "ok": True, "source": CACHE, "route": route.id,
-                            "title": track.title, "source_message": cache_text(route)}, what)
 
     def _write_model(self, model: Any) -> None:
         try:
@@ -975,15 +964,43 @@ def play_bridged(req: RequestMusicTool, program: Any, staged: Dict[str, Any], pl
                  held: bool) -> Tuple[Dict[str, Any], Any]:
     """Запуск собранного заказа: ``(результат, мост ожидания | None)``. Мост ожидания генерации (``held``) — сет из
     двух треков ``BridgeHold``: мост держит звук до результата/провала, результат входит кроссфейдом (ADR-0158 PR-8)."""
-    from .gen.gen_session import BridgeHold
-
     facts, bridge_model = track_facts(staged), staged.pop("bridge_model", None) or played[0]
     if not held or bridge_model is None:
         return confirmed({**req._owner.play(program, dj=facts, once=played[1]), **staged}, req._confirm), None  # noqa: SLF001
-    hold = BridgeHold(req._owner, bridge_model, program, req.gen_library, facts=facts, logger=req._log())  # noqa: SLF001
-    result = confirmed({**hold.start(), **staged}, req._confirm)  # noqa: SLF001
-    req.hold = hold if result.get("ok") else None
-    return result, hold
+    result = confirmed({**hold_start(req)(bridge_model, program, facts), **staged}, req._confirm)  # noqa: SLF001
+    if not result.get("ok"):
+        req.hold = None
+    return result, req.hold
+
+
+def hold_start(req: RequestMusicTool) -> Callable[[Any, Any, Mapping[str, Any]], Dict[str, Any]]:
+    """Запуск моста ожидания генерации (``BridgeHold``, одна реализация для синтеза-моста, кавера и трека кэша под
+    песню): ``(модель моста, программа, факты) -> результат play``; мост — ``req.hold`` (песня/кавер входят вместо
+    него кроссфейдом)."""
+    from .gen.gen_session import BridgeHold
+
+    def start(model: Any, program: Any, facts: Mapping[str, Any]) -> Dict[str, Any]:
+        req.hold = BridgeHold(req._owner, model, program, req.gen_library, facts=dict(facts),  # noqa: SLF001
+                              logger=req._log())  # noqa: SLF001
+        return req.hold.start()
+
+    return start
+
+
+def play_cache(play: Callable[..., MCPToolResult], route: Route, what: str,
+               hold: Optional[Callable[..., Dict[str, Any]]] = None) -> MCPToolResult:
+    """Трек кэша — ``play_library_track`` на деке владельца (ADR-0158 PR-2): сет закрывает и деку заменяет он
+    сам, ``ok`` — только по ``started`` запуска; ``track_id`` результата — id запуска на деке (его ``started`` ждёт
+    роутер медиакоманд). ``hold`` (:func:`hold_start`) — трек кэша мостом ожидания песни: петля с кроссфейдом, пока
+    песня пишется, а не один проход и тишина."""
+    track = route.track
+    result = play(track.id, hold=hold) if hold is not None else play(track.id)
+    data = dict(result.data or {})
+    if not result.success:
+        return tool_result({"ok": False, "reason": "cache_play_failed", "route": route.id,
+                            "detail": result.error or data.get("reason")}, what)
+    return tool_result({**data, "ok": True, "source": CACHE, "route": route.id,
+                        "title": track.title, "source_message": cache_text(route)}, what)
 
 
 def is_bridge(route: Route, cover: Any) -> bool:
@@ -1021,4 +1038,4 @@ __all__ = ["AUTO_STYLE", "CLASSIC_GENRES", "NOT_A_SET_REQUEST", "NOT_FOUND", "NO
            "DjSetTool", "MelodyLookup", "RequestMusicTool", "ThemeFinder", "club_theme", "confirmed", "lead_data",
            "lead_for", "library_melodies", "library_records", "music_busy", "not_found", "set_refusal", "set_style",
            "theme_finder", "theme_links", "tool_result", "word_hooks", "GEN_KINDS", "GEN_STYLE_CHOICES",
-           "GenerateMusicTool", "SOURCE_DECLINED"]
+           "GenerateMusicTool", "SOURCE_DECLINED", "hold_start", "play_cache"]
