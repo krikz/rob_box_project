@@ -222,6 +222,19 @@ def _played_cover(lib, hours):
     return track
 
 
+@pytest.mark.parametrize("hours, first", [(1.0, GEN), (20.0, "cache")])
+def test_instrumental_cache_of_a_set_obeys_the_same_replay_rule(tmp_path, hours, first):
+    """Сет без материала темы: инструментал кэша, игранный час назад, при деньгах уступает новому заказу."""
+    from datetime import datetime, timedelta, timezone
+
+    lib = _lib(tmp_path, cached=1, style="club")
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    lib._conn.execute("UPDATE generated_tracks SET last_played_at = ?", (stamp,))  # noqa: SLF001
+    lib._conn.commit()  # noqa: SLF001
+    route = SourceRouter(DeterministicChooser(), lambda: lib, sets=Sets()).route_slots(CLUB[:1])[0]
+    assert route.id.startswith(first)
+
+
 @pytest.mark.parametrize("hours, money, first", [(1.0, 900.0, COVER), (20.0, 900.0, "cache"), (1.0, 0.0, "cache")])
 def test_cache_played_an_hour_ago_loses_to_a_new_order_with_money(tmp_path, hours, money, first):
     """Кэш, игранный за ``GEN_FRESH_HOURS``, при деньгах проигрывает новому заказу (14.10: 4 трека из сета часом
