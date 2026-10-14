@@ -867,6 +867,20 @@ def sorted_labels(issue):
             names.append(n)
     return ",".join(sorted(set(names)))
 
+DEPLOY_SIG_RE = re.compile(r"deploy-signature:\s*(\S+)")
+
+def deploy_signature(issue):
+    """Если в body issue есть строка ``deploy-signature: <value>`` — извлечь.
+    Это позволяет различать разные deploy-fail events, у которых одинаковый
+    title-prefix (например, 🚨 Deploy issues on develop (staging) — 2026-10-02
+    vs 2026-10-03: первые 6 слов совпадают, но deploy-signature разный).
+    Без этого discriminator G9a skip-литит новые deploy-фейлы как дубли
+    (ретро t_cdd9524a / issue #3374).
+    """
+    body = issue.get("body") or ""
+    m = DEPLOY_SIG_RE.search(body)
+    return m.group(1) if m else "<none>"
+
 groups = {}
 for it in issues:
     if not isinstance(it, dict):
@@ -874,7 +888,11 @@ for it in issues:
     n = it.get("number")
     if not isinstance(n, int):
         continue
-    key = sorted_labels(it) + "||" + title_prefix(it.get("title", ""), TITLE_WORDS)
+    key = (
+        sorted_labels(it)
+        + "||" + title_prefix(it.get("title", ""), TITLE_WORDS)
+        + "||deploy:" + deploy_signature(it)
+    )
     groups.setdefault(key, []).append(it)
 
 leader_nums = set()
@@ -929,8 +947,12 @@ for r, leader_num in skips:
         ):
             try:
                 subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
-            except Exception:
-                pass
+            except Exception as e:
+                # fail-OPEN, но логируем warning — иначе side-effect-фейлы
+                # невидимы (ретро t_cdd9524a / issue #3374: #3354 остался
+                # без dedup-skip маркера, потому что gh-вызов упал тихо).
+                sys.stderr.write("DEDUP_INTRA_WARN\tphase=%s\tskip=%s\tside_effect=%s\terror=%s\n" %
+                                 (PHASE_LABEL, n, argv[:3], repr(e)[:160]))
 '
 }
 

@@ -362,6 +362,87 @@ else
     fail "T11i: dedup_race_skipped counter NOT referenced"
 fi
 
+# ============================================================================
+# T12-T14: deploy-signature discriminator в dedup_intra_filter.
+# Ретро t_cdd9524a / issue #3374: G9a skip-литит #3354 как дубль #3346 потому
+# что у них одинаковый title-prefix (deploy issues on develop staging 2026),
+# а дата идёт 7-м токеном. Фикс: добавить deploy-signature из body в group key.
+# ============================================================================
+echo ""
+echo "=== T12: 2 deploy-issues с одинаковым title-prefix, НО разными deploy-signature → НЕ схлопываются ==="
+FIXTURE_T12='[
+  {"number": 3346, "title": "🚨 Deploy issues on develop (staging) — 2026-10-02", "labels": [{"name":"agent:devops"}, {"name":"deployment"}, {"name":"hermes"}], "body": "deploy-signature: deploy-fail:develop:staging:2026-10-02\n\ncadvisor ARM..."},
+  {"number": 3354, "title": "🚨 Deploy issues on develop (staging) — 2026-10-03", "labels": [{"name":"agent:devops"}, {"name":"deployment"}, {"name":"hermes"}], "body": "deploy-signature: deploy-fail:develop:staging:2026-10-03\n\npromtail 1.42..."}
+]'
+ERR_T12="$(mktemp -t g9a-err-t12.XXXXXX)" || exit 1
+OUT_T12="$(dedup_intra_filter "phase1" "$FIXTURE_T12" 2>"$ERR_T12" || true)"
+COUNT_T12_KEEP="$(printf '%s' "$OUT_T12" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
+COUNT_T12_MARKERS="$(grep -c '^DEDUP_INTRA' "$ERR_T12" || true)"
+if [ "$COUNT_T12_KEEP" = "2" ] && [ "$COUNT_T12_MARKERS" = "0" ]; then
+    pass "T12: 2 deploy-issues, разные deploy-signature → 2 kept, 0 markers (фикс #3374)"
+else
+    fail "T12: expected kept=2, markers=0; got kept=$COUNT_T12_KEEP, markers=$COUNT_T12_MARKERS" \
+        "stdout=$OUT_T12"
+fi
+rm -f "$ERR_T12"
+
+# T13: 2 deploy-issues с одинаковым title-prefix И одинаковой deploy-signature → 1 keep, 1 marker.
+echo ""
+echo "=== T13: 2 deploy-issues, одинаковый title-prefix И deploy-signature → схлопываются ==="
+FIXTURE_T13='[
+  {"number": 3346, "title": "🚨 Deploy issues on develop (staging) — 2026-10-02", "labels": [{"name":"agent:devops"}, {"name":"deployment"}], "body": "deploy-signature: deploy-fail:develop:staging:2026-10-02\n..."},
+  {"number": 3347, "title": "🚨 Deploy issues on develop (staging) — 2026-10-02", "labels": [{"name":"agent:devops"}, {"name":"deployment"}], "body": "deploy-signature: deploy-fail:develop:staging:2026-10-02\n..."}
+]'
+ERR_T13="$(mktemp -t g9a-err-t13.XXXXXX)" || exit 1
+OUT_T13="$(dedup_intra_filter "phase1" "$FIXTURE_T13" 2>"$ERR_T13" || true)"
+COUNT_T13_KEEP="$(printf '%s' "$OUT_T13" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
+COUNT_T13_MARKERS="$(grep -c '^DEDUP_INTRA' "$ERR_T13" || true)"
+KEPT_NUM_T13="$(printf '%s' "$OUT_T13" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0]["number"])' 2>/dev/null || echo 0)"
+if [ "$COUNT_T13_KEEP" = "1" ] && [ "$COUNT_T13_MARKERS" = "1" ] && [ "$KEPT_NUM_T13" = "3346" ]; then
+    pass "T13: 2 deploy-issues, идентичный deploy-signature → 1 kept (oldest=3346), 1 marker"
+else
+    fail "T13: expected kept=1 leader=3346 markers=1; got kept=$COUNT_T13_KEEP leader=$KEPT_NUM_T13 markers=$COUNT_T13_MARKERS"
+fi
+rm -f "$ERR_T13"
+
+# T14: 1 deploy-issue + 1 non-deploy с тем же title-prefix → 2 keep, 0 markers.
+# (deploy-signature для non-deploy = <none>, для deploy = значение → разные ключи).
+echo ""
+echo "=== T14: deploy-issue + non-deploy с тем же title-prefix → НЕ схлопываются (current behaviour preserved) ==="
+FIXTURE_T14='[
+  {"number": 100, "title": "stt empty on echo in voice mode retry path", "labels": [{"name":"bug"}, {"name":"voice"}], "body": ""},
+  {"number": 200, "title": "stt empty on echo in voice mode retry path", "labels": [{"name":"bug"}, {"name":"voice"}], "body": "deploy-signature: deploy-fail:develop:staging:2026-10-04\n..."}
+]'
+ERR_T14="$(mktemp -t g9a-err-t14.XXXXXX)" || exit 1
+OUT_T14="$(dedup_intra_filter "phase1" "$FIXTURE_T14" 2>"$ERR_T14" || true)"
+COUNT_T14_KEEP="$(printf '%s' "$OUT_T14" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
+COUNT_T14_MARKERS="$(grep -c '^DEDUP_INTRA' "$ERR_T14" || true)"
+if [ "$COUNT_T14_KEEP" = "2" ] && [ "$COUNT_T14_MARKERS" = "0" ]; then
+    pass "T14: deploy + non-deploy с одинаковым title-prefix → 2 kept, 0 markers (не сломано)"
+else
+    fail "T14: expected kept=2, markers=0; got kept=$COUNT_T14_KEEP, markers=$COUNT_T14_MARKERS"
+fi
+rm -f "$ERR_T14"
+
+# T15: presence check: deploy-signature discriminator + warning-log присутствуют в коде.
+echo ""
+echo "=== T15: presence-of-deploy-signature-discriminator в triage.sh ==="
+if grep -qF 'DEPLOY_SIG_RE' "$SCRIPT_UNDER_TEST" && grep -qF 'deploy-signature' "$SCRIPT_UNDER_TEST"; then
+    pass "T15a: deploy-signature regex (DEPLOY_SIG_RE) присутствует в dedup_intra_filter"
+else
+    fail "T15a: deploy-signature regex НЕ найден в dedup_intra_filter (G9a fix regressed)"
+fi
+if grep -q '||deploy:" + deploy_signature' "$SCRIPT_UNDER_TEST"; then
+    pass "T15b: deploy_signature() вызывается в group key"
+else
+    fail "T15b: deploy_signature() НЕ вызывается в group key"
+fi
+if grep -q 'DEDUP_INTRA_WARN' "$SCRIPT_UNDER_TEST"; then
+    pass "T15c: DEDUP_INTRA_WARN warning-log при side-effect exception"
+else
+    fail "T15c: DEDUP_INTRA_WARN warning-log НЕ добавлен (silent fail-OPEN regressed)"
+fi
+
 # --- summary -----------------------------------------------------------------
 echo ""
 echo "============================================================"
