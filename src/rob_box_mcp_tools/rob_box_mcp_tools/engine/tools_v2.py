@@ -740,7 +740,7 @@ class RequestMusicTool(MCPTool):
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
         ask = ask or source_ask(heard_text or text)
         piece = self._stage_piece(text, heard_text) if classic else None
-        work = cover_work(piece)
+        work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:
