@@ -76,45 +76,62 @@ def _number(words: Sequence[str], i: int) -> Tuple[Optional[float], int]:
     return (None, i) if value is None else (float(value), i + 1)
 
 
-def _from_minutes(minutes: float) -> int:
-    return max(1, round(minutes * 60 / TRACK_SECONDS))
+def tracks_for(seconds: float, track_seconds: float = TRACK_SECONDS) -> int:
+    """Треков на ``seconds`` при средней длине трека ``track_seconds`` (синтез — ``TRACK_SECONDS``, кэш и генерация —
+    ``knowledge.GEN_SET_DURATION_S``), не меньше одного."""
+    return max(1, round(seconds / track_seconds))
 
 
-def _length_at(words: Sequence[str], i: int) -> Tuple[int, int]:
-    """``(треков, конец)`` длины, начатой словом ``i``; ``(0, i)`` — длины там нет."""
+def _amount_at(words: Sequence[str], i: int) -> Tuple[float, bool, int]:
+    """``(число, время ли, конец)`` длины, начатой словом ``i``: треки или секунды; ``(0, False, i)`` — длины нет."""
     word = words[i]
     if word == "полчаса":
-        return _from_minutes(30), i + 1
+        return 1800.0, True, i + 1
     if word in _HOUR_WORDS and i > 0 and words[i - 1] == "на":  # «сет на час»
-        return _from_minutes(60), i + 1
+        return 3600.0, True, i + 1
     value, end = _number(words, i)
     if value is None and word in _GROUPS:  # «десяток треков»
         value, end = 1.0, i
     if value is None:
-        return 0, i
+        return 0.0, False, i
     unit = words[end] if end < len(words) else ""
     if unit in _GROUPS:
         value, end = value * _GROUPS[unit], end + 1
         unit = words[end] if end < len(words) else ""
-        return int(value), end + (1 if unit in _TRACK_WORDS else 0)
+        return float(int(value)), False, end + (1 if unit in _TRACK_WORDS else 0)
     if unit in _TRACK_WORDS:
-        return int(value), end + 1
+        return float(int(value)), False, end + 1
     if unit in _MINUTE_WORDS:
-        return _from_minutes(value), end + 1
+        return value * 60, True, end + 1
     if unit in _HOUR_WORDS:
-        return _from_minutes(value * 60), end + 1
-    return 0, i
+        return value * 3600, True, end + 1
+    return 0.0, False, i
+
+
+def _find_amount(words: Sequence[str]) -> Tuple[float, bool, int, int]:
+    for i in range(len(words)):
+        value, timed, end = _amount_at(words, i)
+        if value:
+            start = i - 1 if i > 0 and words[i - 1] in _LEADS else i
+            return value, timed, start, end
+    return 0.0, False, 0, 0
 
 
 def find_set_length(words: Sequence[str]) -> Tuple[int, int, int]:
     """``(треков, начало, конец)`` первой длины сета в словах (с «на»/«из» перед ней); ``(0, 0, 0)`` — числа нет.
-    Число зажато в 1..``MAX_TRACKS``: «сет на два часа» — самый длинный сет, а не отказ."""
-    for i in range(len(words)):
-        tracks, end = _length_at(words, i)
-        if tracks:
-            start = i - 1 if i > 0 and words[i - 1] in _LEADS else i
-            return min(max(1, tracks), MAX_TRACKS), start, end
-    return 0, 0, 0
+    Время — в треки по ``TRACK_SECONDS``. Число зажато в 1..``MAX_TRACKS``: «сет на два часа» — самый длинный сет."""
+    value, timed, start, end = _find_amount(words)
+    if not value:
+        return 0, 0, 0
+    tracks = tracks_for(value) if timed else int(value)
+    return min(max(1, tracks), MAX_TRACKS), start, end
+
+
+def heard_set_seconds(text: str) -> Optional[float]:
+    """Длина сета временем («хочу 10 минут музыки», «на полчаса») в секундах; названы треки или ничего — ``None``.
+    Сет из кэша и генерации (ADR-0158) считает треки по своей длине трека, а не по ``TRACK_SECONDS`` синтеза."""
+    value, timed, _start, _end = _find_amount([t[0] for t in tokens(text or "")])
+    return value if value and timed else None
 
 
 def split_set_length(text: str) -> Tuple[int, str]:
@@ -134,4 +151,5 @@ def heard_set_length(text: str) -> Optional[int]:
     return tracks if tracks else None
 
 
-__all__ = ["LENGTH_WORDS", "Token", "find_set_length", "heard_set_length", "split_set_length", "tokens"]
+__all__ = ["LENGTH_WORDS", "Token", "find_set_length", "heard_set_length", "heard_set_seconds", "split_set_length",
+           "tokens", "tracks_for"]

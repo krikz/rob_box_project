@@ -70,7 +70,7 @@ INSTRUCTIONS = (f"Выбери, что сыграть роботу. У канд�
 _POINTS = {"title_match": "название", "composer_match": "композитор", "fit": "подходит",
            "rating": "рейтинг", "recent": "повтор", "known": "известное", "long": "длинная форма",
            # путь музыки (ADR-0158 §2.2, ``SOURCE_WEIGHTS``)
-           "synth_fit": "синтез годен", "theme_match": "тема", "cache_theme": "тема сочинённого раньше",
+           "fallback": "синтез-запас", "theme_match": "тема", "cache_theme": "тема сочинённого раньше",
            "asked": "что просили", "fresh": "свежее",
            "cost": "кредиты", "wait_s": "ожидание"}
 

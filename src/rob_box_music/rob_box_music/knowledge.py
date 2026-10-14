@@ -2679,6 +2679,25 @@ class GenStyle:
     synth: Optional[str] = None
 
 
+#: Слова стиля целиком в перечне стилей сета («в стилях клуб, рэйв и джаз», ``source.set_genres``): основой их
+#: не взять — «клуб» начинает «клубника» (``STYLE_WORDS`` берёт «клубны…»).
+SET_STYLE_EXACT: Mapping[str, str] = {"клуб": "club", "club": "club", "хаус": "club", "house": "club"}
+#: Начало перечня стилей сета («в стиле», «в стилях», «жанры»), связки внутри и слова, на которых перечень кончается.
+SET_STYLE_LIST_STEMS: Tuple[str, ...] = ("стил", "жанр")
+SET_STYLE_LIST_JOIN: Tuple[str, ...] = ("и", "или", "а", "еще", "также", "потом", "немного", "чуть", "плюс")
+SET_STYLE_LIST_STOP: Tuple[str, ...] = ("хочу", "хотим", "на", "про", "о", "об", "для", "тема", "тему", "минут",
+                                        "минуты", "трек", "трека", "треков", "чтобы", "давай", "пожалуйста", "сет",
+                                        "сэт", "музык")
+#: Тема сета → EN-теги генерации (решение Шифу 14.10: тема при Suno — в теги трека). Ключ — основы слов темы; тема
+#: без строки — теги только стиля. Правит Шифу; на слух теги тем не проверены.
+GEN_THEME_TAGS: Mapping[Tuple[str, ...], str] = {
+    ("патриот", "родин", "отечеств", "гимн", "побед"): "patriotic, anthemic, heroic, marching snare",
+    ("косм", "звезд", "галакт", "планет"): "cosmic, spacey, wide pads",
+    ("кибер", "неон", "матриц"): "cyberpunk, dark neon",
+    ("зим", "новогод", "рождеств", "снег"): "festive, winter, sleigh bells",
+    ("детск", "дети", "мульт"): "playful, cheerful, cartoon",
+    ("праздн", "рожден", "вечеринк"): "festive, celebratory, party",
+}
 #: Стили генерации (ADR-0158 §3.2). Правит Шифу; на слух проверены только теги «synthwave» и «grunge» (§1.3).
 GEN_STYLES: Mapping[str, GenStyle] = {
     "club": GenStyle("club house, four on the floor, punchy kick, warm bass", "клуб", "club"),
@@ -2712,14 +2731,15 @@ SONG_STEMS: Tuple[str, ...] = ("песн", "песен")
 #: «своим голосом»: слово-владелец перед «голос…» — песня голосом робота (``robot_song``).
 ROBOT_VOICE_OWNERS: Tuple[str, ...] = ("сво", "тво")
 #: Веса признаков кандидатов пути (ADR-0158 §2.2; ``choice.score`` с весами вопроса). Правит Шифу.
-#: Решение Шифу 13.10 (ADR-0158 §8, В13): где Suno звучит достойно — генерация/кэш по умолчанию, синтез — запас.
-#: ``cache_theme`` (тема трека кэша: свой жанр 1, семья 0.5) > ``synth_fit`` + ``theme_match`` + разрыв
-#: ``CHOOSER_CLEAR_GAP``: «включи <жанр>» с треком кэша по теме — кэш, а не синтез, даже давно игранный не свежий;
-#: кэша нет — синтез годного жанра выше генерации без просьбы. ``asked`` (генерация 1, синтез −1, кэш —
-#: :data:`SOURCE_CACHE_ASKED`) на «сгенерируй» перекрывает тему кэша с разрывом ≥ 1 и при «нравится» у трека.
-#: Таблица «фраза → путь» и очки — тест ``test_source_weights_table``.
-SOURCE_WEIGHTS: Mapping[str, float] = {"synth_fit": 2.0, "theme_match": 1.5, "cache_theme": 5.0, "asked": 6.0,
-                                       "fresh": 0.5, "rating": 0.5, "cost": -0.02, "wait_s": -0.005,
+#: Решение Шифу 13–14.10 (ADR-0158 §8, В13): порядок пути ВЕЗДЕ (трек, сет, тематический сет) — кэш по теме/стилю →
+#: генерация (деньги, лимит дня/сета, живой провайдер — жёсткие фильтры ``source.gen_block``) → синтез, только когда
+#: больше нечего включить. ``Style.synth_fit`` — лишь фильтр «синтез для стиля вообще допустим» (``SYNTH_FIT_MIN``),
+#: не очки: признака ``synth_fit`` в весах нет. ``fallback`` (1 у синтеза) — синтез запас: ниже генерации и кэша
+#: с разрывом ≥ ``CHOOSER_CLEAR_GAP``. ``cache_theme`` (свой жанр 1, семья 0.5) — кэш выше генерации без просьбы;
+#: ``asked`` (генерация 1, синтез −1, кэш — :data:`SOURCE_CACHE_ASKED`) на «сгенерируй» — генерация выше кэша темы.
+#: ``cost`` −0.03 (12 кр. = −0.36): без жанра свежий трек кэша выше генерации с разрывом ≥ 1. Таблица «фраза → путь» и очки — тест ``test_source_weights_table``.
+SOURCE_WEIGHTS: Mapping[str, float] = {"fallback": -2.0, "theme_match": 1.5, "cache_theme": 5.0, "asked": 6.0,
+                                       "fresh": 0.5, "rating": 0.5, "cost": -0.03, "wait_s": -0.005,
                                        "live": COVER_LIVE_WEIGHT}
 #: Признак ``asked`` трека кэша по слотам просьбы (первый совпавший): «новую» и «сгенерируй»/«сочини» — новое, кэш
 #: ниже генерации (а без генерации — выше синтеза: сочинённое раньше лучше своего); «спой» — спетое раньше годится.
@@ -2778,6 +2798,7 @@ __all__ += ["GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_SET_FIRST_MODEL", "G
             "GEN_XFADE_BARS"]
 
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
+__all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
             "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
