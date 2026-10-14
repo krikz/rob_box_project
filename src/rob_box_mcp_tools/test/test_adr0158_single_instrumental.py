@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rob_box_mcp_tools.engine.gen.budget import DAILY_CREDITS_DEFAULT
 from rob_box_mcp_tools.engine.gen import gen_session as gs
 from rob_box_mcp_tools.engine.gen.instrumental import InstrumentalMaker
 from rob_box_mcp_tools.engine.gen.library_play import play_library_track
@@ -100,7 +101,7 @@ def test_generation_failure_keeps_the_bridge_and_names_the_reason(tmp_path, monk
 
 def test_day_limit_is_a_hard_filter_cache_plays_with_the_reason(tmp_path, monkeypatch):
     t = _request(tmp_path, monkeypatch)
-    t.lib.ledger.record_spend("X1", 120.0, kind="instrumental", request_key="k", model="V6", gen_provider="kie_suno")
+    t.lib.ledger.record_spend("X1", DAILY_CREDITS_DEFAULT, kind="instrumental", request_key="k", model="V6", gen_provider="kie_suno")
     result = t.req.execute(intent="track", text=ROCK, heard_text=ROCK)
     assert result.success and result.data["source"] == "cache" and not t.jobs
     assert result.data["source_message"] == ("Сгенерировать сейчас не могу: лимит генерации на сегодня вышел. "
