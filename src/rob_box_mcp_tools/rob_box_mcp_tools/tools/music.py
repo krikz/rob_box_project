@@ -16,6 +16,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.works import key_slot
 
+# ADR-0134 / Issue #3014 phase 1 — code-safety / music-quality passes
+# из бывшего MusicManager теперь живут в ``core.music_code_filter``
+# (импорт намеренно отсутствует: MusicManager удалён в рамках ADR-0149 v1
+# sunset (#3391); потребители этого модуля будут подключаться в #3014
+# phase 6, когда обе копии — этот класс и ``core.renardo_sanitizer`` —
+# сольются в один).
 from ..engine.search import find, find_rare
 from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
