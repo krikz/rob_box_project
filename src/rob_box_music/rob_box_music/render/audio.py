@@ -64,16 +64,24 @@ def deck_fade_args(deck: str, seconds: float) -> Tuple[object, ...]:
     return ("fadeT", round(max(0.01, float(seconds)), 3), f"fade{deck}", 0.0)
 
 
-def _shape(track: AudioTrack, bpm: int, xfade_bars: int) -> Tuple[float, float, float, float]:
+def _shape(duration_s: float, bpm: int, xfade_bars: int) -> Tuple[float, float, float, float]:
     """``(форма, sus, край, перекрытие)`` — доли, секунды, доли: одиночный трек — форма вверх до такта, края
     ``AUDIO_EDGE_S``; трек сета — форма вниз до такта (не меньше такта), край — кроссфейд целыми тактами, не длиннее
     трети файла; перекрытие проходов — край (файл короче трёх тактов — без перекрытия, край — треть)."""
-    sus = round(track.duration_s * bpm / 60.0, 3)
+    sus = round(duration_s * bpm / 60.0, 3)
     if not xfade_bars:
         return float(math.ceil(sus / BEATS_PER_BAR) * BEATS_PER_BAR), sus, 0.0, 0.0
     form = float(max(1, math.floor(sus / BEATS_PER_BAR)) * BEATS_PER_BAR)
     overlap = float(min(xfade_bars, int(form // (3 * BEATS_PER_BAR))) * BEATS_PER_BAR)
     return form, form, (overlap or form / 3.0), overlap
+
+
+def set_track_seconds(duration_s: float, last: bool, bpm: int = kn.AUDIO_DEFAULT_BPM) -> float:
+    """Сколько секунд сета занимает файл ``duration_s`` в сете (``xfade_bars=GEN_XFADE_BARS``): форма вниз до такта,
+    у не последнего трека за вычетом кроссфейда (следующий встаёт на границу прохода). Одно место с
+    :func:`render_audio` — по нему считается длина сета «на N минут» (``source.route_seconds``)."""
+    form, _sus, _edge, overlap = _shape(duration_s, bpm, kn.GEN_XFADE_BARS)
+    return (form if last else form - overlap) * 60.0 / bpm
 
 
 def render_audio(track: AudioTrack, deck: str, *, xfade_bars: int = 0, once: bool = True) -> Program:
@@ -84,7 +92,7 @@ def render_audio(track: AudioTrack, deck: str, *, xfade_bars: int = 0, once: boo
         raise RenderError(f"деки {deck!r} нет (есть {sorted(kn.DECK_SLOTS)})")
     slot = kn.DECK_SLOTS[deck][ROLE_SLOT["loop"]]
     bpm = audio_bpm(track)
-    form, sus, edge, overlap = _shape(track, bpm, xfade_bars)
+    form, sus, edge, overlap = _shape(track.duration_s, bpm, xfade_bars)
     atk, rel = (round(edge * 60.0 / bpm, 3),) * 2 if xfade_bars else kn.AUDIO_EDGE_S
     tail = 0.0 if once else overlap
     period = form - tail  # проход: следующая нота файла — за перекрытие до конца этой
@@ -98,4 +106,4 @@ def render_audio(track: AudioTrack, deck: str, *, xfade_bars: int = 0, once: boo
                    sample_files=frozenset({track.path}), tail_beats=tail)
 
 
-__all__ = ["DECK_FADE", "audio_bpm", "deck_fade_args", "render_audio"]
+__all__ = ["DECK_FADE", "audio_bpm", "deck_fade_args", "render_audio", "set_track_seconds"]

@@ -2793,7 +2793,11 @@ GEN_BRIDGE_STYLES: Mapping[str, str] = {"rock": "breaks", "grunge": "breaks", "m
                                         "jazz": "synthwave", "lofi": "synthwave", "orchestral": "synthwave",
                                         "acoustic": "synthwave", "chanson": "synthwave"}
 
-__all__ += ["GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_SET_FIRST_MODEL", "GEN_SET_MAX_TASKS", "GEN_SET_MODEL",
+#: Сет «на N минут» набирает треки, пока плановая сумма не дойдёт до N минут минус этот запас (последний трек не
+#: тянут ради последних секунд): ``source.route_seconds`` — длина трека по пути.
+SET_FILL_SLACK_S = 60
+
+__all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_SET_FIRST_MODEL", "GEN_SET_MAX_TASKS", "GEN_SET_MODEL",
             "GEN_XFADE_BARS"]
 
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]

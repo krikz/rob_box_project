@@ -25,8 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
 from rob_box_music.source import (CACHE, GENERATE, CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
-                                  choose_route, choose_with_fallback, gen_kind, set_cache, set_candidates,
-                                  source_candidates)
+                                  choose_route, choose_with_fallback, gen_kind, route_seconds, set_cache,
+                                  set_candidates, source_candidates)
 
 _LOG = logging.getLogger(__name__)
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
@@ -54,7 +54,7 @@ def cache_track(row: Any, now: datetime) -> CacheTrack:
     return CacheTrack(str(row["id"]), title, kind, style, instrumental, int(row.get("rating") or 0),
                       _hours_ago(row.get("last_played_at"), now), str(row.get("task_id") or f"{kind}|{title}"),
                       str(row.get("work_id") or ""), str(row.get("instrument") or ""), str(row.get("voice") or ""),
-                      str(row.get("prompt") or ""))
+                      str(row.get("prompt") or ""), float(row.get("duration_ms") or 0) / 1000.0)
 
 
 def cache_tracks(library: Any, now: Optional[datetime] = None) -> Tuple[CacheTrack, ...]:
@@ -149,21 +149,31 @@ class SourceRouter:
         return route
 
     def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "",
-                    works: Sequence[CoverWork] = ()) -> List[Route]:
+                    works: Sequence[CoverWork] = (), seconds: Optional[float] = None,
+                    minimum: int = 1) -> List[Route]:
         """Путь каждого трека сета (ADR-0158 §2.7, В13, В14): у темы есть наш материал (``works``) — кавер материала
         в стиле трека (кэш того же кавера, затем ``generate:cover``); иначе кэш стиля и темы трека (инструментал,
         ``set_cache``; взятый трек следующему не достаётся) → генерация (деньги, лимит дня и сета — жёсткие фильтры,
         уже заказанное этим сетом вычитается; второй вариант задачи закрывает следующий трек того же стиля без новой
-        траты) → синтез. Строка лога ``[source] сет i/N`` на каждый трек."""
+        траты) → синтез. Строка лога ``[source] сет i/N`` на каждый трек.
+        ``seconds`` — сет «на N минут»: ``asks`` — запас просьб (по стилям по кругу), треки берутся, пока конец сета
+        (``source.route_seconds``: треки за вычетом кроссфейдов + весь последний) не дойдёт до ``seconds`` минус
+        ``SET_FILL_SLACK_S`` (не меньше ``minimum`` треков); лимит задач сета ``GEN_SET_MAX_TASKS`` и отказ пути тоже
+        останавливают набор."""
         ledger = SetLedger(self.context(asks[0] if asks else None, for_set=True), theme_tags, works)
         out = []
+        body = end = 0.0  # секунды сета: треки до этого (без кроссфейда) и конец, если этот трек последний
         for no, ask in enumerate(asks, 1):
+            if seconds and no > minimum and (end >= seconds - kn.SET_FILL_SLACK_S or ledger.tasks_full()):
+                break
             ctx, free = ledger.context(ask)
             work = ledger.work_for(ask)
             options, reason = set_candidates(ask, ctx, work)
             route = choose_route(ask, ctx, self._chooser, work=work, for_set=True)
             ledger.take(ask, route, free)
-            self._log().info(f"🎚️ [source] сет {no}/{len(asks)}: {ask.describe()} кандидаты={[o.id for o in options]} "
+            end, body = body + route_seconds(route, True), body + route_seconds(route)
+            of = no if seconds else f"{no}/{len(asks)}"
+            self._log().info(f"🎚️ [source] сет {of}: {ask.describe()} кандидаты={[o.id for o in options]} "
                              f"→ {route.id} ({route.provider or 'code'}) gen={reason or 'ok'}"
                              + (" (второй вариант задачи)" if route.kind == GENERATE and free else ""))
             out.append(route)
@@ -192,6 +202,10 @@ class SetLedger:
         self._spare_work: Dict[str, CoverWork] = {}  # стиль → материал задачи кавера, чей второй вариант в запасе
         self._covers = 0  # заказано задач кавера: следующий материал по кругу
         self.spent = 0.0
+
+    def tasks_full(self) -> bool:
+        """Задач генерации заказано ``GEN_SET_MAX_TASKS``, запасного варианта нет: следующий трек заказать нечем."""
+        return round(self.spent / self._cost) >= kn.GEN_SET_MAX_TASKS and not any(self._spare.values())
 
     def work_for(self, ask: SourceAsk) -> Optional[CoverWork]:
         """Материал кавера трека: второй вариант задачи того же стиля, иначе следующий по кругу; нет — ``None``."""

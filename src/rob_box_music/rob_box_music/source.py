@@ -140,6 +140,7 @@ class CacheTrack:
     instrument: str = ""   # кавер: ключ ``INSTRUMENTS`` или «»
     voice: str = ""  # голос, которым спета песня (``tts``-голос из кэша); «» — неизвестен
     prompt: str = ""  # теги заказа (``generated_tracks.prompt``): тема сета — по тегам темы (``GEN_THEME_TAGS``)
+    seconds: float = 0.0  # фактическая длина файла (``duration_ms``); 0 — неизвестна
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,21 @@ def gen_kind(option_id: str) -> str:
     """Вид генерации кандидата ``generate:<вид>:<модель>`` (instrumental, song, robot_song, cover); иначе «»."""
     parts = option_id.split(":")
     return parts[1] if len(parts) == 3 and parts[0] == GENERATE else ""
+
+
+def route_seconds(route: "Route", last: bool = False) -> float:
+    """Сколько секунд сета занимает трек по выбранному пути (одно место, ADR-0148): длина файла — кавер
+    ``COVER_DURATION_S``, прочая генерация ``GEN_SET_DURATION_S``, трек кэша — своя (неизвестна — как у генерации) —
+    как её играет дека (``render.audio.set_track_seconds``: форма вниз до такта, не последний трек за вычетом кроссфейда
+    ``GEN_XFADE_BARS``); синтез — ``SET_TRACK_SECONDS``; отказ — 0."""
+    from .render.audio import set_track_seconds
+
+    if route.kind == GENERATE:
+        return set_track_seconds(float(kn.COVER_DURATION_S if gen_kind(route.id) == "cover"
+                                       else kn.GEN_SET_DURATION_S), last)
+    if route.kind == CACHE:
+        return set_track_seconds((route.track.seconds if route.track else 0.0) or float(kn.GEN_SET_DURATION_S), last)
+    return float(kn.SET_TRACK_SECONDS) if route.kind == SYNTH else 0.0
 
 
 def gen_block(ctx: SourceContext, cost: float) -> str:
@@ -516,5 +532,6 @@ def decline_text(route: Route) -> str:
 __all__ = ["CACHE", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note", "cover_ready_text",
            "cover_style_key", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
-           "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "set_cache",
+           "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
+           "set_cache",
            "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags"]

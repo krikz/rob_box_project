@@ -611,11 +611,12 @@ class GenSetMaker:
         ask = source_ask(heard_text or theme)
         asks = [replace(ask, genre=g, vocal=False, robot_voice=False) for g in slots]
         tags = theme_tags(theme)
+        routes = self.router.route_slots(asks, tags, [w for w, _t in covers], seconds=seconds, minimum=len(genres))
+        slots, asks = slots[:len(routes)], asks[:len(routes)]
         self._log().info(f"🎛️ [gen set] слоты: стили={list(genres)} треков={len(slots)} "
                          f"время={f'{seconds:.0f} с' if seconds else '—'} тема-теги={tags or '—'} "
                          f"непонято={list(unknown)} каверы={[w.material for w, _t in covers]}")
-        return SetRoutes(slots, tuple(self.router.route_slots(asks, tags, [w for w, _t in covers])), unknown, tags,
-                         tuple(covers))
+        return SetRoutes(slots, tuple(routes), unknown, tags, tuple(covers))
 
     def start(self, plan: "SetRoutes", owner: Any, *, theme: str, persona: Optional[str], set_id: str,
               bridge: Bridge, line_ask: Any = None, speak: Optional[Callable[[str], Any]] = None,
@@ -672,13 +673,13 @@ def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) ->
 
 
 def slot_count(styles: int, length: int, named: bool, seconds: Optional[float]) -> int:
-    """Треков сета: время («10 минут») — по ``GEN_SET_DURATION_S`` и не меньше числа стилей; число, названное
-    человеком, — как есть; иначе ``length`` (по умолчанию сета), не меньше числа стилей. Зажато в 1..``MAX_TRACKS``."""
+    """Треков сета (запас просьб): время («10 минут») — ``MAX_TRACKS``, сколько из них играет, решает набор по
+    плановой длине пути (``route_slots(seconds=…)``, ``source.route_seconds``); число, названное человеком, — как
+    есть; иначе ``length`` (по умолчанию сета), не меньше числа стилей. Зажато в 1..``MAX_TRACKS``."""
     from rob_box_music.set_plan import MAX_TRACKS
-    from rob_box_voice.core.set_length_words import tracks_for
 
     if seconds:
-        n = max(styles, tracks_for(seconds, kn.GEN_SET_DURATION_S))
+        n = MAX_TRACKS
     else:
         n = length if named else max(styles, length)
     return min(max(1, n), MAX_TRACKS)
