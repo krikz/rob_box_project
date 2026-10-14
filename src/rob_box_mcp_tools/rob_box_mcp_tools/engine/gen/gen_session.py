@@ -14,6 +14,9 @@
   пишется первая генерация (сет продлевает мост проходами формы). Фразу моста строит код из фактов; LLM только
   окрашивает её подстановками с дедлайном (:func:`bridge_line`), опоздала или соврала — голая фраза кода.
 * Провал генерации (В3): заказов больше нет, сет доигрывает то, что есть; фраза причины — от кода.
+* Стили по трекам (решение Шифу 14.10): «в стилях клуб, джангл и джаз» — стиль каждого трека по кругу
+  (``GenSet.genres``); путь каждого трека — чойсер (``SourceRouter.route_slots``: кэш → генерация → синтез), заказ —
+  для ближайшего трека, чьему стилю не хватает готового; тема сета — в теги заказа (``source.theme_tags``).
 
 Стрим до ``success`` (замер 13.10, ``f5aa62a5…``, V6 × 120 с): ``stream_audio_url`` на стадии ``text`` (32 с) отдал весь
 файл за 6 с, ``success`` — на 50 с; после ``success`` тот же URL отдаёт те же байты (не пусто). Выигрыш 12–18 с нужен
@@ -32,7 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
-from rob_box_music.source import REASON_WORDS, CacheTrack, SourceAsk
+from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, CacheTrack, SourceAsk
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
@@ -62,6 +65,7 @@ class SetItem:
     group: str
     title: str
     origin: str = "cache"
+    genre: str = ""
 
 
 def pick_item(ready: Sequence[SetItem], used: Set[str], prev_group: str) -> Tuple[Optional[SetItem], str]:
@@ -152,9 +156,37 @@ def bridge_line(facts: Dict[str, str], ask: Optional[Callable[..., Tuple[str, An
     return line or bridge_template(facts)
 
 
-def launch_text(genre: str, tracks: int, cached: int, gen_reason: str) -> str:
+def set_head(genres: Any) -> str:
+    """«Рок-сет» одним стилем; «Сет «клуб, драм-н-бейс, джаз»» — стили по трекам."""
+    names = [genre_name(g) for g in ((genres,) if isinstance(genres, str) else dict.fromkeys(genres))]
+    if len(names) == 1:
+        return f"{names[0][:1].upper()}{names[0][1:]}-сет"
+    return f"Сет «{', '.join(names)}»"
+
+
+def set_notes(unknown: Sequence[str], dropped: Sequence[Tuple[str, str]]) -> str:
+    """Что из просьбы не сыграет — от кода: непонятые слова стилей и стили без пути (``(стиль, причина)``)."""
+    parts = []
+    if unknown:
+        listed = ", ".join(f"«{w}»" for w in unknown)
+        parts.append(f"{'Стиль' if len(unknown) == 1 else 'Стили'} {listed} не знаю.")
+    for genre, reason in dropped:
+        parts.append(f"Без «{genre_name(genre)}»: {REASON_WORDS.get(reason, reason) if reason else 'нечем играть'}.")
+    return " ".join(parts)
+
+
+def synth_set_note(reason: str, style: str) -> str:
+    """Синтез-сет — запас (В13): почему не кэш и не генерация; генерации нет совсем — «»."""
+    from rob_box_music.source import QUIET_REASONS
+
+    if reason in QUIET_REASONS:
+        return ""
+    return f"Сгенерировать сет сейчас не могу: {REASON_WORDS.get(reason, reason)} — играю своё: {genre_name(style)}."
+
+
+def launch_text(genre: Any, tracks: int, cached: int, gen_reason: str) -> str:
     """Фраза запуска сета без моста — от кода: сколько из сочинённого раньше, допишет ли остальное (G3)."""
-    head = f"{genre_name(genre)[:1].upper()}{genre_name(genre)[1:]}-сет"
+    head = set_head(genre)
     if cached >= tracks:
         return f"{head} из сочинённого раньше: {tracks} {tracks_word(tracks)}."
     if not gen_reason:
@@ -180,15 +212,21 @@ class GenSet:
                  gen_reason: str = "", speak: Optional[Callable[[str], Any]] = None, log: Any = _LOG,
                  spawn: Callable[[Callable[[], None]], None] = _thread, run: Callable[..., Any] = subprocess.run,
                  clock: Callable[[], float] = time.monotonic,
-                 publish: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> None:
-        self._provider, self._library, self._ask, self.genre, self._theme = provider, library, ask, genre, theme
+                 publish: Optional[Callable[[str, Dict[str, Any]], Any]] = None, genres: Sequence[str] = (),
+                 theme_tags: str = "") -> None:
+        self._provider, self._library, self._ask, self._theme = provider, library, ask, theme
         self._publish = publish  # ``PlayerOwner.update_dj``: название играющего трека — в снимок («что играет»)
         self.set_id, self.bpm, self.slots = set_id, int(bpm), int(tracks)
+        self.genres = tuple(dict.fromkeys(genres)) or (genre,)
+        self.genre, self._tags = self.genres[0], theme_tags
+        self._plan = (list(genres) if len(genres) == self.slots  # стиль каждого трека-файла
+                      else [self.genres[i % len(self.genres)] for i in range(max(1, self.slots))])
         self._bridge, self.gen_reason, self._speak, self._log = bridge, gen_reason, speak, log
         self._spawn, self._run, self._clock = spawn, run, clock
-        self._ready: List[SetItem] = [SetItem(t.id, t.group or t.id, t.title) for t in cache]
+        self._ready: List[SetItem] = [SetItem(t.id, t.group or t.id, t.title, genre=self._genre_of(t)) for t in cache]
         self._used: Set[str] = set()
         self._prev, self._taken, self._inflight, self.ordered, self.spent = "", 0, 0, 0, 0.0
+        self._inflight_genre = ""
         self._playing_s: Optional[float] = None  # длина играющего файла; None — играет мост (продлевается)
         self._items: Dict[str, Tuple[SetItem, str]] = {}  # track_id деки → (трек, как выбран)
         self.task_ids: List[str] = []
@@ -197,6 +235,17 @@ class GenSet:
     @property
     def bridged(self) -> bool:
         return self._bridge is not None
+
+    def _genre_of(self, track: CacheTrack) -> str:
+        """Стиль сета трека кэша: свой, иначе стиль той же семьи синтеза (гранж — рок), иначе первый."""
+        if track.style_key in self.genres:
+            return track.style_key
+        family = kn.GEN_STYLES.get(track.style_key)
+        return next((g for g in self.genres if family is not None and family.synth is not None
+                     and kn.GEN_STYLES[g].synth == family.synth), self.genres[0])
+
+    def _slot_genre(self) -> str:
+        return self._plan[min(self._taken, len(self._plan) - 1)]
 
     def next_track(self, track_no: int, deck: str) -> Any:
         """Шов ``TrackSource``: мост (трек 1, кэш пуст) или файл кэша; заказ недостающего — здесь же."""
@@ -232,14 +281,19 @@ class GenSet:
         return max(1.0, self._playing_s - lead_s - WAIT_MARGIN_S)
 
     def _take(self, wait_s: float) -> Tuple[Optional[SetItem], str]:
-        end = self._clock() + wait_s
+        """Трек стиля этого слота; пишется его задача — ждать до срока; иначе вариант-сосед, трек другого стиля
+        сета (``other``), повтор сыгранного — но не тишина."""
+        end, genre = self._clock() + wait_s, self._slot_genre()
         with self._cond:
             while True:
-                item, how = pick_item(self._ready, self._used, self._prev)
+                item, how = pick_item([i for i in self._ready if i.genre == genre], self._used, self._prev)
                 left = end - self._clock()
-                if how == "ok" or not self._inflight or left <= 0:
+                if how == "ok" or not (self._inflight and self._inflight_genre == genre) or left <= 0:
                     break
                 self._cond.wait(left)
+            if item is None:
+                item, how = pick_item(self._ready, self._used, self._prev)
+                how = "other" if item is not None else how
             if item is None:
                 item, how = self._repeat()
             if item is not None:
@@ -265,34 +319,45 @@ class GenSet:
         self._library.increment_play_count(item.id)
         self._playing_s = track.duration_s
         self._items[track_id] = (item, how)
-        self._log.info(f"🎧 [gen set] {self.set_id} трек {track_no}: {item.origin} {item.id} «{item.title}» "
-                       f"({how}, задача {item.group}) {track.duration_s:.0f} с")
+        self._log.info(f"🎧 [gen set] {self.set_id} трек {track_no}: {item.genre} {item.origin} {item.id} "
+                       f"«{item.title}» ({how}, задача {item.group}) {track.duration_s:.0f} с")
         return track
+
+    def _short_genre(self) -> Optional[str]:
+        """Стиль ближайшего трека, которому не хватает готового (одним стилем — с учётом вариантов-соседей)."""
+        upcoming = self._plan[self._taken:]
+        for genre in dict.fromkeys(upcoming):
+            ready = [i for i in self._ready if i.genre == genre]
+            supply = (supply_of(ready, self._used, 0) if len(self.genres) == 1
+                      else sum(i.id not in self._used for i in ready))
+            if tasks_needed(upcoming.count(genre), supply, self.ordered):
+                return genre
+        return None
 
     def order_more(self) -> None:
         """Заказать следующую задачу, если недостающих треков больше, чем готовых и заказанных (одна за раз)."""
         with self._cond:
-            supply = supply_of(self._ready, self._used, self._inflight)
-            if self.gen_reason or self._inflight or not tasks_needed(self.slots - self._taken, supply, self.ordered):
+            genre = None if self.gen_reason or self._inflight else self._short_genre()
+            if genre is None:
                 return
             model = task_model(self.ordered, self._bridge is not None)
-            self._inflight, self.ordered = 1, self.ordered + 1
-        self._spawn(lambda: self._generate(model))
+            self._inflight, self._inflight_genre, self.ordered = 1, genre, self.ordered + 1
+        self._spawn(lambda: self._generate(model, genre))
 
-    def _job(self, model: str) -> GenJob:
-        name = kn.GEN_STYLES[self.genre]
-        return GenJob(kind="instrumental", style_key=self.genre, title=f"RoBBox {self.genre} set",
-                      style_tags=name.tags, duration_s=kn.GEN_SET_DURATION_S, model=model)
+    def _job(self, model: str, genre: str) -> GenJob:
+        tags = ", ".join(t for t in (kn.GEN_STYLES[genre].tags, self._tags) if t)
+        return GenJob(kind="instrumental", style_key=genre, title=f"RoBBox {genre} set",
+                      style_tags=tags, duration_s=kn.GEN_SET_DURATION_S, model=model)
 
-    def _generate(self, model: str) -> None:
-        started, items, reason = self._clock(), [], ""
+    def _generate(self, model: str, genre: str = "") -> None:
+        started, items, reason, genre = self._clock(), [], "", genre or self.genre
         try:
-            result = generate_into_cache(self._provider, self._library, Budget(self._library), self._job(model),
+            result = generate_into_cache(self._provider, self._library, Budget(self._library), self._job(model, genre),
                                          theme=self._theme, set_spent=self.spent)
-            items = [SetItem(str(s["id"]), result.task_id, str(s.get("title") or ""), "generated")
+            items = [SetItem(str(s["id"]), result.task_id, str(s.get("title") or ""), "generated", genre)
                      for s in result.saved if s.get("success")]
             self.task_ids.append(result.task_id)
-            self._log.info(f"🎛️ [gen set] {self.set_id} задача {result.task_id} {model}: {len(items)} вар., "
+            self._log.info(f"🎛️ [gen set] {self.set_id} задача {result.task_id} {genre} {model}: {len(items)} вар., "
                            f"{result.credits:g} кр., {self._clock() - started:.0f} с")
             spent = result.credits
         except GenUnavailable as exc:
@@ -306,12 +371,12 @@ class GenSet:
             self.gen_reason = reason or ("" if items else "provider_down")
             self._cond.notify_all()
         if self.gen_reason:
-            self._failed(model)
+            self._failed(model, genre)
 
-    def _failed(self, model: str) -> None:
-        self._log.warning(f"⚠️ [gen set] {self.set_id} генерация {model} не вышла: {self.gen_reason}")
+    def _failed(self, model: str, genre: str) -> None:
+        self._log.warning(f"⚠️ [gen set] {self.set_id} генерация {genre} {model} не вышла: {self.gen_reason}")
         if self._speak is not None:
-            self._speak(failed_text(self.genre, self.gen_reason))
+            self._speak(failed_text(genre, self.gen_reason))
 
 
 #: Сколько мост ждёт результат генерации (кавер, песня: TTS + загрузка + Suno) до финала без него.
@@ -482,52 +547,133 @@ class GenSetMaker:
     def balance(self) -> Optional[float]:
         return self._balance()
 
-    def route(self, theme: str, style: str, heard_text: Optional[str]) -> Any:
-        """Путь сета или None — сет синтезом, как раньше: жанр синтез играет («у нас норм играет»), генерацию не
-        просили. Жанр — из слов реплики, иначе стиль сета, если он есть в ``GEN_STYLES``."""
-        from rob_box_music.source import SYNTH, source_ask, synth_fit
+    def plan(self, theme: str, style: str, heard_text: Optional[str], length: int, *, named: bool = False,
+             styles: Sequence[str] = (), minutes: Optional[int] = None) -> "SetRoutes":
+        """Стили по трекам, длина и путь каждого трека — кодом (ADR-0148, решение Шифу 14.10): :func:`slot_genres`,
+        :func:`slot_count`, путь — ``SourceRouter.route_slots``."""
+        from rob_box_music.source import source_ask, theme_tags
+        from rob_box_voice.core.set_length_words import heard_set_seconds
 
+        genres, unknown = slot_genres(heard_text, styles, style)
+        seconds = heard_set_seconds(heard_text or "") or (float(minutes) * 60 if minutes else None)
+        slots = tuple(genres[i % len(genres)] for i in range(slot_count(len(genres), length, named, seconds)))
         ask = source_ask(heard_text or theme)
-        genre = ask.genre or (style if style in kn.GEN_STYLES else "")
-        if not genre or (synth_fit(genre) >= kn.SYNTH_FIT_MIN and not (ask.generated or ask.fresh)):
-            return None
-        route = self.router.route(replace(ask, genre=genre, vocal=False, robot_voice=False), for_set=True)
-        return None if route.kind == SYNTH else route
+        asks = [replace(ask, genre=g, vocal=False, robot_voice=False) for g in slots]
+        tags = theme_tags(theme)
+        self._log().info(f"🎛️ [gen set] слоты: стили={list(genres)} треков={len(slots)} "
+                         f"время={f'{seconds:.0f} с' if seconds else '—'} тема-теги={tags or '—'} "
+                         f"непонято={list(unknown)}")
+        return SetRoutes(slots, tuple(self.router.route_slots(asks, tags)), unknown, tags)
 
-    def start(self, route: Any, owner: Any, *, theme: str, persona: Optional[str], length: int, set_id: str,
+    def start(self, plan: "SetRoutes", owner: Any, *, theme: str, persona: Optional[str], set_id: str,
               bridge: Bridge, line_ask: Any = None, speak: Optional[Callable[[str], Any]] = None,
               replace_set: Callable[[], None] = lambda: None) -> Dict[str, Any]:
-        """Запустить сет пути ``route`` (кэш или генерация): ``{ok, …, source_message, session}`` — фраза от кода.
-        Играть нечем (отказ пути, кэш жанра пуст и генерации нет) — отказ с фразой кода, идущий сет не трогается;
+        """Запустить сет по путям треков ``plan`` (кэш и генерация): ``{ok, …, source_message, session}`` — фраза от
+        кода. Треков с путём нет — отказ с фразой кода, идущий сет не трогается (синтез-запас решает ``dj_set``);
         иначе ``replace_set`` снимает идущий сет до старта нового."""
-        from rob_box_music.source import DECLINE, decline_text, set_cache
+        from rob_box_music.source import decline_text
 
-        from ..session import SetSession
-
-        ask, reason = route.ask, route.gen_reason
-        cache = set_cache(ask, self.router.context(ask, for_set=True))
-        if route.kind == DECLINE or (reason and not cache):
-            return {"ok": False, "reason": DECLINED, "route": route.id, "message": decline_text(route)}
+        played = plan.played()
+        if not played:
+            return {"ok": False, "reason": DECLINED, "route": plan.routes[0].id, "message": decline_text(plan.routes[0])}
         replace_set()
-        tracks = length if not reason else min(length, len(cache))
-        style = bridge_style(ask.genre)
-        made = bridge(style) if not cache and not reason else None
+        genres, reason, cache = [plan.genres[i] for i in played], plan.gen_reason(), plan.cache()
+        first = plan.routes[played[0]]
+        made = bridge(bridge_style(genres[0])) if first.kind != CACHE and not reason else None
         logger = self._log()
-        gen = GenSet(provider=self._provider, library=self._library(), ask=ask, genre=ask.genre, theme=theme,
-                     set_id=set_id, bpm=made[1] if made else kn.AUDIO_DEFAULT_BPM, tracks=tracks, cache=cache,
+        gen = GenSet(provider=self._provider, library=self._library(), ask=first.ask, genre=genres[0], theme=theme,
+                     set_id=set_id, bpm=made[1] if made else kn.AUDIO_DEFAULT_BPM, tracks=len(played), cache=cache,
                      bridge=made[0] if made else None, gen_reason=reason, speak=speak, log=logger,
-                     publish=getattr(owner, "update_dj", None))
-        line = _LineBox(bridge_facts(ask.genre, task_model(0, True)), line_ask, logger) if made else None
-        session = SetSession(owner, gen.next_track, set_id=set_id, bpm=gen.bpm, logger=logger, tracks=tracks + bool(made),
-                             dj={"theme": theme or genre_name(ask.genre), "persona": persona, "style": ask.genre,
-                                 "source": "generated"}, on_track_started=gen.on_started)
+                     publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags)
+        line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if made else None
+        session = _gen_session(owner, gen, theme, persona, logger)
         result = session.start()
-        message = line.text() if line else launch_text(ask.genre, tracks, min(len(cache), tracks), reason)
-        logger.info(f"🎛️ [gen set] {set_id} {route.id}: {ask.genre} {tracks} {tracks_word(tracks)}, кэш {len(cache)}, "
-                    f"мост={style if made else '—'} gen={reason or 'ok'} → {result.get('ok')}")
-        return {**result, "theme": theme, "style": ask.genre, "source": "generated", "tracks": tracks,
-                "cached": min(len(cache), tracks), "route": route.id, "source_message": message,
+        message = start_message(line.text() if line else launch_text(genres, gen.slots, min(len(cache), gen.slots),
+                                                                     reason), plan)
+        logger.info(f"🎛️ [gen set] {set_id} {[r.id for r in plan.routes]}: {genres} {gen.slots} "
+                    f"{tracks_word(gen.slots)}, кэш {len(cache)}, мост={'да' if made else '—'} gen={reason or 'ok'} "
+                    f"→ {result.get('ok')}")
+        return {**result, "theme": theme, "style": genres[0], "styles": list(gen.genres), "source": "generated",
+                "tracks": gen.slots, "cached": min(len(cache), gen.slots), "route": first.id,
+                "routes": [r.id for r in plan.routes], "source_message": message,
                 "session": session if result.get("ok") else None}
+
+
+def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """``(стили по порядку, непонятые слова)``: слова человека (``source.set_genres``) важнее ``styles`` LLM, те —
+    стиля сета (``dj_set``: слова реплики, ключ LLM, строка темы); стиль не из ``GEN_STYLES`` — ``DEFAULT_STYLE``."""
+    from rob_box_music.source import set_genres
+
+    heard, unknown = set_genres(heard_text or "")
+    llm = tuple(g for g in dict.fromkeys(styles) if g in kn.GEN_STYLES)
+    return heard or llm or ((style if style in kn.GEN_STYLES else kn.DEFAULT_STYLE),), unknown
+
+
+def slot_count(styles: int, length: int, named: bool, seconds: Optional[float]) -> int:
+    """Треков сета: время («10 минут») — по ``GEN_SET_DURATION_S`` и не меньше числа стилей; число, названное
+    человеком, — как есть; иначе ``length`` (по умолчанию сета), не меньше числа стилей. Зажато в 1..``MAX_TRACKS``."""
+    from rob_box_music.set_plan import MAX_TRACKS
+    from rob_box_voice.core.set_length_words import tracks_for
+
+    if seconds:
+        n = max(styles, tracks_for(seconds, kn.GEN_SET_DURATION_S))
+    else:
+        n = length if named else max(styles, length)
+    return min(max(1, n), MAX_TRACKS)
+
+
+def start_message(head: str, plan: "SetRoutes") -> str:
+    """Фраза запуска сета: голова (мост или ``launch_text``) и что из просьбы не сыграет (:func:`set_notes`)."""
+    return " ".join(p for p in (head, set_notes(plan.unknown, plan.dropped())) if p)
+
+
+def _gen_session(owner: Any, gen: GenSet, theme: str, persona: Optional[str], logger: Any) -> Any:
+    from ..session import SetSession
+
+    return SetSession(owner, gen.next_track, set_id=gen.set_id, bpm=gen.bpm, logger=logger,
+                      tracks=gen.slots + gen.bridged, on_track_started=gen.on_started,
+                      dj={"theme": theme or genre_name(gen.genre), "persona": persona, "style": gen.genre,
+                          "styles": list(gen.genres), "source": "generated"})
+
+
+@dataclass(frozen=True)
+class SetRoutes:
+    """План сета из кэша и генерации: стиль и путь (``source.Route``) каждого трека, непонятые слова стилей, теги
+    темы для заказа."""
+
+    genres: Tuple[str, ...]
+    routes: Tuple[Any, ...]
+    unknown: Tuple[str, ...] = ()
+    theme_tags: str = ""
+
+    def cache(self) -> List[CacheTrack]:
+        """Треки кэша, выбранные путями треков (в сет — именно они)."""
+        return [r.track for r in self.routes if r.kind == CACHE and r.track is not None]
+
+    def played(self) -> List[int]:
+        """Треки, которые сыграет сет: путь — кэш или генерация (синтез и отказ — не в этом сете)."""
+        return [i for i, r in enumerate(self.routes) if r.kind in (CACHE, GENERATE)]
+
+    def gen_reason(self) -> str:
+        """Почему генерации нет («» — хоть один трек генерируется)."""
+        if any(r.kind == GENERATE for r in self.routes):
+            return ""
+        return next((r.gen_reason for r in self.routes if r.gen_reason), "")
+
+    def dropped(self) -> List[Tuple[str, str]]:
+        """Стили, которых в сете не будет, с причиной (стиль, у которого есть трек, не выпал)."""
+        played = {self.genres[i] for i in self.played()}
+        out: Dict[str, str] = {}
+        for genre, route in zip(self.genres, self.routes):
+            if genre not in played:
+                out.setdefault(genre, route.gen_reason)
+        return list(out.items())
+
+    def synth_style(self) -> Optional[str]:
+        """Стиль синтеза-запаса: первый стиль сета, который синтез играет; нет — ``None``."""
+        from rob_box_music.source import synth_fit, synth_style
+
+        return next((synth_style(g) for g in dict.fromkeys(self.genres) if synth_fit(g) >= kn.SYNTH_FIT_MIN), None)
 
 
 class _LineBox:
@@ -554,6 +700,6 @@ class _LineBox:
         return self._line or bridge_template(self._facts)
 
 
-__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetItem", "bridge_facts", "bridge_line", "bridge_style",
-           "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "supply_of", "task_model", "tasks_needed",
-           "validate_bridge"]
+__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetItem", "SetRoutes", "bridge_facts", "bridge_line",
+           "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "set_head", "set_notes",
+           "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

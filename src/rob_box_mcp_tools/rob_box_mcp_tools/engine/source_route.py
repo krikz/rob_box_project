@@ -11,7 +11,8 @@
 (``engine.gen.instrumental.InstrumentalMaker``: ``gen_ready`` для просьбы без пения при готовом исполнителе;
 живой прогон 14.10 — «сгенерируй рок» уходил в кэш с ``not_wired``).
 
-Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>``.
+Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>``; сет — по
+строке на каждый трек (:meth:`SourceRouter.route_slots`, решение Шифу 14.10: кэш → генерация → синтез на каждый трек).
 """
 
 from __future__ import annotations
@@ -19,12 +20,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from dataclasses import replace
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
-from rob_box_music.source import (CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
-                                  choose_with_fallback, gen_kind, source_candidates)
+from rob_box_music.source import (CACHE, GENERATE, CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
+                                  choose_route, choose_with_fallback, gen_kind, set_cache, source_candidates)
 
 _LOG = logging.getLogger(__name__)
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
@@ -51,7 +52,8 @@ def cache_track(row: Any, now: datetime) -> CacheTrack:
     title = str(row.get("title") or "")
     return CacheTrack(str(row["id"]), title, kind, style, instrumental, int(row.get("rating") or 0),
                       _hours_ago(row.get("last_played_at"), now), str(row.get("task_id") or f"{kind}|{title}"),
-                      str(row.get("work_id") or ""), str(row.get("instrument") or ""), str(row.get("voice") or ""))
+                      str(row.get("work_id") or ""), str(row.get("instrument") or ""), str(row.get("voice") or ""),
+                      str(row.get("prompt") or ""))
 
 
 def cache_tracks(library: Any, now: Optional[datetime] = None) -> Tuple[CacheTrack, ...]:
@@ -144,6 +146,24 @@ class SourceRouter:
                          f"gen={reason or 'ok'}")
         return route
 
+    def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "") -> List[Route]:
+        """Путь каждого трека сета (ADR-0158 §2.7, В13): кэш стиля и темы трека (инструментал, ``set_cache``; взятый
+        трек следующему не достаётся) → генерация (деньги, лимит дня и сета — жёсткие фильтры, уже заказанное этим
+        сетом вычитается; второй вариант задачи закрывает следующий трек того же стиля без новой траты) → синтез.
+        Строка лога ``[source] сет i/N`` на каждый трек."""
+        ledger = SetLedger(self.context(asks[0] if asks else None, for_set=True), theme_tags)
+        out = []
+        for no, ask in enumerate(asks, 1):
+            ctx, free = ledger.context(ask)
+            options, reason = source_candidates(ask, ctx)
+            route = choose_route(ask, ctx, self._chooser)
+            ledger.take(ask, route, free)
+            self._log().info(f"🎚️ [source] сет {no}/{len(asks)}: {ask.describe()} кандидаты={[o.id for o in options]} "
+                             f"→ {route.id} ({route.provider or 'code'}) gen={reason or 'ok'}"
+                             + (" (второй вариант задачи)" if route.kind == GENERATE and free else ""))
+            out.append(route)
+        return out
+
     def _executable(self, route: Route) -> str:
         """Кавер, песня и инструментал исполняются в фоне после выбора (мост играет сразу): выбор остаётся;
         исполнителя нет — ``not_wired``."""
@@ -154,4 +174,36 @@ class SourceRouter:
         return "" if executor is not None and route.work is None else "not_wired"
 
 
-__all__ = ["CACHE_LIMIT", "SourceRouter", "cache_track", "cache_tracks", "day_left"]
+class SetLedger:
+    """Учёт пути сета по трекам: взятые треки кэша, потраченное заказами (вычитается из лимитов дня и сета) и
+    запасные вторые варианты задач по стилю (задача — 2 варианта: следующий трек того же стиля бесплатен)."""
+
+    def __init__(self, base: SourceContext, theme_tags: str = "") -> None:
+        self._base, self._tags = base, theme_tags
+        self._cost = kn.GEN_MODELS[kn.GEN_SET_MODEL].credits_per_task
+        self._used: Set[str] = set()
+        self._spare: Dict[str, int] = {}
+        self.spent = 0.0
+
+    def context(self, ask: SourceAsk) -> Tuple[SourceContext, bool]:
+        """Контекст трека: кэш стиля и темы без взятых, лимиты за вычетом потраченного; ``True`` — есть запасной
+        вариант стиля (генерация трека бесплатна)."""
+        base = self._base
+        free = self._spare.get(ask.genre, 0) > 0
+        back = self._cost if free else 0.0
+        pool = replace(base, cache=tuple(t for t in base.cache if t.id not in self._used))
+        left = None if base.set_left is None else base.set_left - self.spent + back
+        return replace(pool, cache=tuple(set_cache(ask, pool, self._tags)), day_left=base.day_left - self.spent + back,
+                       set_left=left), free
+
+    def take(self, ask: SourceAsk, route: Route, free: bool) -> None:
+        if route.kind == CACHE and route.track is not None:
+            self._used.add(route.track.id)
+        elif route.kind == GENERATE and free:
+            self._spare[ask.genre] -= 1
+        elif route.kind == GENERATE:
+            self.spent += self._cost
+            self._spare[ask.genre] = self._spare.get(ask.genre, 0) + 1
+
+
+__all__ = ["CACHE_LIMIT", "SetLedger", "SourceRouter", "cache_track", "cache_tracks", "day_left"]

@@ -191,7 +191,43 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'человек '
                                                                          'назвал число',
                                                           'minimum': 1,
-                                                          'maximum': 60}},
+                                                          'maximum': 60},
+                                            'styles': {   'type': 'array',
+                                                          'description': 'Стили по '
+                                                                         'трекам, если '
+                                                                         'человек '
+                                                                         'назвал '
+                                                                         'несколько, — '
+                                                                         'по порядку '
+                                                                         'его слов',
+                                                          'items': {   'type': 'string',
+                                                                       'description': 'стиль '
+                                                                                      'трека',
+                                                                       'enum': [   'club',
+                                                                                   'rave',
+                                                                                   'synthwave',
+                                                                                   'chiptune',
+                                                                                   'breaks',
+                                                                                   'dnb',
+                                                                                   'lofi',
+                                                                                   'jazz',
+                                                                                   'rock',
+                                                                                   'grunge',
+                                                                                   'metal',
+                                                                                   'blues',
+                                                                                   'chanson',
+                                                                                   'orchestral',
+                                                                                   'acoustic']}},
+                                            'minutes': {   'type': 'integer',
+                                                           'description': 'Сколько '
+                                                                          'минут '
+                                                                          'музыки — '
+                                                                          'только если '
+                                                                          'человек '
+                                                                          'назвал '
+                                                                          'время',
+                                                           'minimum': 1,
+                                                           'maximum': 180}},
                           'required': ['action'],
                           'additionalProperties': False},
         'signature': {   'params': [   'action',
@@ -199,6 +235,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'persona',
                                        'style',
                                        'tracks',
+                                       'styles',
+                                       'minutes',
                                        'heard_tracks',
                                        'turn_id',
                                        'heard_text'],

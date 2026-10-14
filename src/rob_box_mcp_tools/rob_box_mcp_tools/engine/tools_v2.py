@@ -38,7 +38,7 @@ import logging
 import threading
 import time
 from dataclasses import replace
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import LeadChoice, lead_choice
@@ -391,8 +391,8 @@ class DjSetTool(MCPTool):
         self._last_dj: Optional[Tuple[str, Optional[str]]] = None  # (тема, персона) последнего сета: «продолжай сэт»
         # треки прошлых сетов (``history`` — music_history в БД): разнообразие между сетами (A13, I17)
         self._memory = SetMemory(store=history)
-        #: Сет из генерации (ADR-0158 PR-8, ``engine.gen.gen_session.GenSetMaker``): жанр, который синтез не играет
-        #: (рок, гранж), — путём чойсера из кэша и генерации; ``None`` — только синтез (подключает ``mcp_server``).
+        #: Сет из кэша и генерации (ADR-0158 PR-8, ``engine.gen.gen_session.GenSetMaker``): любой сет (тема, стиль,
+        #: auto) — путь каждого трека чойсером: кэш → генерация → синтез-запас (В13, 14.10); ``None`` — только синтез.
         self.gen_sets: Any = None
 
     @property
@@ -418,6 +418,12 @@ class DjSetTool(MCPTool):
                              description="Стиль сета (один на весь сет); auto — по словам темы, иначе клубный"),
             MCPToolParameter(name="tracks", type="integer", required=False, minimum=1, maximum=MAX_TRACKS,
                              description="Сколько треков в сете — только если человек назвал число"),
+            MCPToolParameter(name="styles", type="array", required=False,
+                             items=MCPToolParameter(name="style", type="string", description="стиль трека",
+                                                    enum=list(kn.GEN_STYLES)),
+                             description="Стили по трекам, если человек назвал несколько, — по порядку его слов"),
+            MCPToolParameter(name="minutes", type="integer", required=False, minimum=1, maximum=180,
+                             description="Сколько минут музыки — только если человек назвал время"),
         ]
 
     @property
@@ -434,12 +440,14 @@ class DjSetTool(MCPTool):
 
     def execute(self, action: str = "start", theme: Optional[str] = None,
                 persona: Optional[str] = None, style: Optional[str] = None,
-                tracks: Optional[int] = None, heard_tracks: Optional[int] = None,
-                turn_id: Optional[str] = None, heard_text: Optional[str] = None) -> MCPToolResult:
+                tracks: Optional[int] = None, styles: Optional[List[str]] = None, minutes: Optional[int] = None,
+                heard_tracks: Optional[int] = None, turn_id: Optional[str] = None,
+                heard_text: Optional[str] = None) -> MCPToolResult:
         """``heard_tracks``, ``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``):
         длина сета из слов человека по грамматике (``set_length_words``; есть — она решает, а не ``tracks`` от LLM,
         ADR-0148), ход, запустивший сет (:meth:`started_in_turn`), и реплика хода: тема LLM не из неё (взята из
-        истории диалога, 06.10 18:04) — тема реплики (``theme_grounding``)."""
+        истории диалога, 06.10 18:04) — тема реплики (``theme_grounding``). ``styles``/``minutes`` LLM — подсказка:
+        стили и время из слов человека решает код (``GenSetMaker.plan``)."""
         tracks = heard_tracks or tracks
         refusal = set_refusal(heard_text, self.running) if action == "start" else None
         if refusal is not None:
@@ -457,7 +465,8 @@ class DjSetTool(MCPTool):
                     return MCPToolResult(success=False, error=str(exc))
                 # окно стиля словами человека («гранж» → rock/grunge, ADR-0153 S5); нет слов — окно выбирает план
                 window = match_window_text(key, heard_text, theme)
-                result = self._start(theme or "", persona, key, named, window, heard_text)
+                result = self._start(theme or "", persona, key, named, window, heard_text,
+                                     hints=(styles, minutes))
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(result, self._confirm)  # ждём started вне замка
@@ -532,11 +541,15 @@ class DjSetTool(MCPTool):
 
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
                tracks: Optional[int] = None, window: Optional[str] = None,
-               heard_text: Optional[str] = None) -> Dict[str, Any]:
+               heard_text: Optional[str] = None,
+               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None)) -> Dict[str, Any]:
+        """Сет: путь каждого трека — кэш, генерация (:func:`generated_set`); синтез-сет (ADR-0149) — только запас
+        (В13), тогда фраза кода ``source_note`` говорит почему."""
         length, why = self.set_length(tracks)
-        generated = generated_set(self, theme, style, persona, length, heard_text)
-        if generated is not None:  # ADR-0158 PR-8: жанр не по силам синтезу — кэш и генерация путём чойсера
+        generated, fallback = generated_set(self, theme, (style, window), persona, (length, why), heard_text, hints)
+        if generated is not None:
             return generated
+        style, window = fallback.style, fallback.window
         profile = self.theme_profile(theme, style)
         if self._not_found:  # названное не нашлось — не пул по хешу темы вместо него; идущий сет не трогаем
             return {"ok": False, "reason": NOT_FOUND, "theme": theme, "missing": list(self._not_found),
@@ -563,8 +576,9 @@ class DjSetTool(MCPTool):
         if self._session is not None:  # звук уже поставлен seeded-планом; LLM — в фоне (§4.8)
             self._last_dj = (theme, persona)
             reasoner = self._reasoner.request(set_id, theme, plan, lambda ref: (box.apply(ref), session.replan()))
-        return {**result, "theme": theme, "style": plan.style, "genre": plan.genre, "theme_source": profile.source,
-                "seed": set_seed, "tracks": length, "reasoner": reasoner}
+        return noted({**result, "theme": theme, "style": plan.style, "genre": plan.genre,
+                      "theme_source": profile.source, "seed": set_seed, "tracks": length, "reasoner": reasoner},
+                     fallback.note)
 
     def _drop_session(self) -> None:
         """Новый сет снимает идущий (под замком ``execute``)."""
@@ -942,24 +956,51 @@ def bridge_source(dj: DjSetTool, theme: str, set_id: str,
     return bridge
 
 
-def generated_set(dj: DjSetTool, theme: str, style: str, persona: Optional[str], length: int,
-                  heard_text: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Сет из генерации (ADR-0158 PR-8) или ``None`` — сет синтезом, как раньше (исполнителя нет, жанр синтез играет,
-    чойсер выбрал синтез). Треки кэша и генерации — на тех же деках; отказ пути — фраза кода, идущий сет не снят."""
+class SynthFallback(NamedTuple):
+    """Синтез-сет запасом (В13): стиль, окно и фраза кода, почему не кэш и не генерация («» — молчать)."""
+
+    style: str
+    window: Optional[str]
+    note: str = ""
+
+
+def noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
+    """Фраза пути перед фразой запуска (``media_phrases.launch_text``), если сет заиграл."""
+    return {**result, "source_note": note} if note and result.get("ok") else result
+
+
+def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], persona: Optional[str],
+                  length: Tuple[int, str], heard_text: Optional[str],
+                  hints: Tuple[Optional[List[str]], Optional[int]] = (None, None),
+                  ) -> Tuple[Optional[Dict[str, Any]], SynthFallback]:
+    """Сет из кэша и генерации (ADR-0158 PR-8, решение Шифу 14.10 — любой сет: тема, стиль, auto) →
+    ``(результат, …)``; ни у одного трека нет пути кэша/генерации — ``(None, запас)``: синтез-сет первым стилем,
+    который синтез играет, с фразой почему; исполнителя нет — ``(None, запас)`` стилем сета без фразы, как раньше.
+    Синтез стили сета не играет (джаз, рок без денег и кэша) — отказ с фразой кода, идущий сет не снят.
+    ``style`` — ``(стиль сета, окно)``, ``length`` — ``(длина, откуда)``."""
+    from .gen.gen_session import synth_set_note
+
+    key, window = style
     makers = dj.gen_sets
-    route = makers.route(theme, style, heard_text) if makers is not None else None
-    if route is None:
-        return None
+    if makers is None:
+        return None, SynthFallback(key, window)
+    genre = window if window in kn.GEN_STYLES else key
+    plan = makers.plan(theme, genre, heard_text, length[0], named=length[1] == "названо", styles=hints[0] or (),
+                       minutes=hints[1])
+    fallback = plan.synth_style()
+    if not plan.played() and fallback is not None:  # окно — у стиля сета, не у стиля запаса
+        return None, SynthFallback(fallback, window if fallback == key else None,
+                                   synth_set_note(plan.gen_reason(), fallback))
     seed = dj._seed()  # noqa: SLF001 — тот же сид, что у сета синтезом
     set_id = f"gen{seed % 100000:05d}"
     reasoner = dj._reasoner  # noqa: SLF001
-    result = makers.start(route, dj._owner, theme=theme, persona=persona, length=length, set_id=set_id,  # noqa: SLF001
+    result = makers.start(plan, dj._owner, theme=theme, persona=persona, set_id=set_id,  # noqa: SLF001
                           bridge=bridge_source(dj, theme, set_id, seed), speak=dj._speak,  # noqa: SLF001
                           line_ask=reasoner.ask if reasoner.enabled else None, replace_set=dj._drop_session)  # noqa: SLF001
     session = result.pop("session", None)
     if session is not None:
         dj.adopt(session, theme, persona)
-    return {**result, "seed": seed}
+    return {**result, "seed": seed}, SynthFallback(key, window)
 
 
 def bridge_find(dj: Any, gen_failed: str) -> Optional[ThemeFinder]:

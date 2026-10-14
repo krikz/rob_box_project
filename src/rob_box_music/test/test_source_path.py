@@ -3,6 +3,8 @@
 Живой прогон 13.10: «Робот, сгенерируй пиздатый музон своим голосом» → синтез и «Включаю музыку.» — тихая подмена.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from rob_box_music import knowledge as kn
@@ -98,7 +100,7 @@ def test_candidate_sets_g1():
 
 @pytest.mark.parametrize("text,ctx,winner", [
     ("поставь клубный трек", SourceContext(cache=CACHE), "synth:club"),
-    ("включи музон", SourceContext(cache=CACHE), "synth:club"),
+    ("включи музон", SourceContext(cache=CACHE), "cache:c"),  # сочинённое раньше выше своего синтеза (В13)
     ("сгенерируй музыку", SourceContext(cache=CACHE), "cache:c"),  # сгенерированное раньше, инструментал
     ("сгенерируй музыку", RICH, "generate:instrumental:V6"),
     ("сгенерируй музыку", SourceContext(), "synth:club"),
@@ -137,7 +139,7 @@ def test_phrases_name_the_ask_and_the_reason_g3():
     assert route_note(choose_route(source_ask("поставь клубный трек"), SourceContext(), DET)) == ""
 
 
-# ── Решение Шифу 13.10 (ADR-0158 §8, В13): Suno по умолчанию, синтез — запас; таблица «фраза → путь» ──────────────
+# ── Решение Шифу 13–14.10 (ADR-0158 §8, В13): кэш → генерация → синтез ВЕЗДЕ; таблица «фраза → путь» ────────────
 #: Кэш: рок давно игранный (не свежий), рок «нравится», клуб, гранж-инструментал и песня (как на роботе).
 ROCK_OLD = CacheTrack("r", "Rock Old", "instrumental", "rock", True, played_ago_h=1.0, group="t5")
 ROCK_LIKED = CacheTrack("rl", "Rock Liked", "instrumental", "rock", True, rating=kn.RATING_LIKE, group="t6")
@@ -152,7 +154,9 @@ def rich(cache=()):
 
 
 #: фраза, контекст → путь. Явное «сгенерируй» при деньгах — генерация (даже с треком «нравится» по теме);
-#: «включи <жанр>» — кэш по теме (и давно не свежий), иначе генерация для жанра без синтеза, иначе синтез.
+#: «включи <жанр>» — кэш по теме (и давно не свежий), иначе генерация — и для жанров, которые синтез играет хорошо
+#: (``synth_fit`` 1.0: клуб, джангл, рейв, синтвейв — только фильтр допуска синтеза); синтез — только когда нет
+#: ни кэша, ни генерации (денег, лимита, провайдера).
 TABLE = [
     ("Робот, сгенерируй рок", rich(SHELF), "generate:instrumental:V6"),
     ("сгенерируй рок", rich((ROCK_LIKED,)), "generate:instrumental:V6"),
@@ -162,9 +166,17 @@ TABLE = [
     ("Робот, включи гранж", rich(SHELF), "cache:c"),
     ("включи метал", rich(SHELF), "generate:instrumental:V6"),  # кэша метала нет, синтез метал не играет
     ("поставь клубный трек", rich(SHELF), "cache:k"),
-    ("поставь клубный трек", rich(), "synth:club"),
-    ("включи музон", rich(SHELF), "synth:club"),  # жанра нет — «по теме» нечему: своё
+    ("поставь клубный трек", rich(), "generate:instrumental:V6"),  # synth_fit 1.0 — не причина синтеза (14.10)
+    ("включи джангл", rich(), "generate:instrumental:V6"),
+    ("поставь синтвейв", rich(), "generate:instrumental:V6"),
+    ("включи рейв", rich((CLUB,)), "generate:instrumental:V6"),  # кэш чужого стиля — не «по теме»
+    ("включи музон", rich(SHELF), "cache:k"),  # жанра нет — любое сочинённое раньше (свежее), не синтез
+    ("включи музон", rich(), "generate:instrumental:V6"),
     ("сгенерируй рок", POOR, "cache:r"),  # денег нет — сочинённое раньше
+    ("поставь клубный трек", POOR, "cache:k"),
+    ("включи джангл", POOR, "synth:dnb"),  # денег нет, кэша нет — синтез запасом
+    ("включи джангл", SPENT, "synth:dnb"),  # лимит дня вышел
+    ("включи джангл", replace(rich(), provider_ok=False), "synth:dnb"),  # провайдер лежит
     ("сгенерируй клубный трек", SourceContext(gen_ready=True, balance=0.0, day_left=120.0), "synth:club"),
     ("сгенерируй рок", SPENT, "decline:budget_exhausted"),
 ]
@@ -172,13 +184,32 @@ TABLE = [
 
 @pytest.mark.parametrize("text,ctx,winner", TABLE)
 def test_source_weights_table(text, ctx, winner):
-    """Победитель — с разрывом ≥ ``CHOOSER_CLEAR_GAP``: код решает сам, Jev/LLM/кубик не зовутся."""
+    """Путь победителя — с разрывом ≥ ``CHOOSER_CLEAR_GAP`` над лучшим кандидатом другого пути: код решает сам
+    (треки кэша между собой — ничья, её решает модель среди кэша)."""
     route = choose_route(source_ask(text), ctx, DeterministicChooser(Boom()))
     assert route.id == winner
     options, _reason = source_candidates(source_ask(text), ctx)
-    if len(options) > 1:
-        ranked = DET.rank(ChoiceQuestion("путь", options, weights=kn.SOURCE_WEIGHTS))
-        assert ranked[0][0] - ranked[1][0] >= kn.CHOOSER_CLEAR_GAP, ranked
+    ranked = DET.rank(ChoiceQuestion("путь", options, weights=kn.SOURCE_WEIGHTS))
+    other = [score for score, o in ranked if o.id.split(":")[0] != winner.split(":")[0]]
+    if other:
+        assert ranked[0][0] - other[0] >= kn.CHOOSER_CLEAR_GAP, ranked
+
+
+def test_synth_fit_is_a_filter_not_points():
+    """В13: годность синтеза — допуск кандидата, не очки: у кандидата синтеза нет признака ``synth_fit``."""
+    assert "synth_fit" not in kn.SOURCE_WEIGHTS and kn.SOURCE_WEIGHTS["fallback"] < 0
+    synth = next(o for o in source_candidates(source_ask("включи джангл"), rich())[0] if o.id.startswith("synth:"))
+    assert "synth_fit" not in synth.features and synth.features["fallback"] == 1.0
+    assert not any(o.id.startswith("synth:") for o in source_candidates(source_ask("включи джаз"), rich())[0])
+
+
+def test_synth_fallback_phrase_names_why():
+    """Синтез запасом при деньгах/лимите/провайдере — фраза кода говорит почему; генерации нет совсем — молчит."""
+    poor = choose_route(source_ask("включи джангл"), SourceContext(gen_ready=True, balance=0.0, day_left=120.0), DET)
+    assert route_note(poor) == "Сгенерировать сейчас не могу: на счёте генерации нет кредитов, играю своё."
+    assert route_note(choose_route(source_ask("включи джангл"), SPENT, DET)) == (
+        "Сгенерировать сейчас не могу: лимит генерации на сегодня вышел, играю своё.")
+    assert route_note(choose_route(source_ask("включи джангл"), SourceContext(), DET)) == ""
 
 
 def test_cache_freshness_still_orders_cache_tracks():

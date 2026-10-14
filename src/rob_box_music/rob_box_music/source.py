@@ -139,6 +139,7 @@ class CacheTrack:
     work_id: str = ""      # кавер: каталожное название пьесы (ADR-0158 §2.5)
     instrument: str = ""   # кавер: ключ ``INSTRUMENTS`` или «»
     voice: str = ""  # голос, которым спета песня (``tts``-голос из кэша); «» — неизвестен
+    prompt: str = ""  # теги заказа (``generated_tracks.prompt``): тема сета — по тегам темы (``GEN_THEME_TAGS``)
 
 
 @dataclass(frozen=True)
@@ -184,7 +185,7 @@ def _synth_option(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[O
     if ask.vocal or ctx.mode == "generate" or fit < kn.SYNTH_FIT_MIN:
         return None
     key = PIECE if piece else synth_style(ask.genre)
-    return Option(f"{SYNTH}:{key}", {"synth_fit": fit, "theme_match": 1.0 if ask.genre else 0.0,
+    return Option(f"{SYNTH}:{key}", {"fallback": 1.0, "theme_match": 1.0 if ask.genre else 0.0,
                                      "asked": -1.0 if ask.generated else 0.0, "wait_s": kn.INSTANT_WAIT_S},
                   "своё: синтез" + ("" if piece else f" «{kn.GEN_STYLES.get(str(key), kn.GEN_STYLES['club']).name}»"))
 
@@ -243,18 +244,54 @@ def _cache_options(ask: SourceAsk, ctx: SourceContext) -> List[Option]:
     return out
 
 
-def set_cache(ask: SourceAsk, ctx: SourceContext) -> List[CacheTrack]:
+def set_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str = "") -> List[CacheTrack]:
     """Треки кэша для сета (ADR-0158 §2.7): инструментал жанра просьбы (тот же жанр или семья синтеза), не
-    «не нравится»; давно не игранные первыми, затем свой жанр раньше семьи. Варианты одной задачи — все (соседями их
-    не ставит ``engine.gen.gen_session``)."""
+    «не нравится», с тегами темы сета (``theme_tags``, «» — любая тема); давно не игранные первыми, затем свой жанр
+    раньше семьи. Варианты одной задачи — все (соседями их не ставит ``engine.gen.gen_session``)."""
     def order(track: CacheTrack) -> Tuple[int, float, float]:
         fresh = track.played_ago_h is None or track.played_ago_h >= kn.GEN_FRESH_HOURS
         return (0 if fresh else 1, -(_theme(ask, track) or 0.0),
                 -(track.played_ago_h if track.played_ago_h is not None else 1e9))
 
     usable = [t for t in ctx.cache if t.instrumental and t.kind == "instrumental" and t.rating >= 0
-              and _theme(ask, t) is not None]
+              and _theme(ask, t) is not None and theme_tags in t.prompt]
     return sorted(usable, key=order)
+
+
+def theme_tags(theme: str) -> str:
+    """EN-теги генерации темы сета (``GEN_THEME_TAGS``: «патриотический» → patriotic, anthemic…); нет строки — «»."""
+    words = _words(theme)
+    return next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+
+
+def _slot_genre(token: str, mark: Optional[str]) -> str:
+    """Ключ ``GEN_STYLES`` слова перечня: жанр без синтеза, окно («гранж»), слово целиком («клуб»), слово стиля."""
+    for stems in (kn.GEN_GENRE_WORDS, kn.WINDOW_WORDS):
+        found = next((key for stem, key in stems.items() if key in kn.GEN_STYLES and token.startswith(stem)), "")
+        if found:
+            return found
+    found = kn.SET_STYLE_EXACT.get(token) or mark or ""
+    return found if found in kn.GEN_STYLES else ""
+
+
+def set_genres(text: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Стили сета по порядку слов человека и непонятые слова перечня стилей (ADR-0148: слоты — код, не LLM).
+    «в стилях клуб джангл рэйв синтвейв и джаз» → (club, dnb, rave, synthwave, jazz); «в стиле клуб и полька» —
+    «полька» непонята. Перечень — после «стил…/жанр…» до знака препинания или слова-конца (``SET_STYLE_LIST_STOP``)."""
+    from .theme import style_marks
+
+    tokens = re.findall(r"[^\W_]+|[.,!?;:]", (text or "").lower().replace("ё", "е"))
+    marks = style_marks(tokens)
+    genres = [_slot_genre(tok, mark) for tok, mark in zip(tokens, marks)]
+    unknown: List[str] = []
+    head = next((i for i, tok in enumerate(tokens) if tok.startswith(kn.SET_STYLE_LIST_STEMS)), None)
+    for i in range(len(tokens) if head is None else head + 1, len(tokens)):
+        tok = tokens[i]
+        if not tok.isalnum() or tok.isdigit() or tok.startswith(kn.SET_STYLE_LIST_STOP):
+            break
+        if not genres[i] and tok not in kn.SET_STYLE_LIST_JOIN:
+            unknown.append(tok)
+    return tuple(dict.fromkeys(g for g in genres if g)), tuple(unknown)
 
 
 @dataclass(frozen=True)
@@ -418,12 +455,27 @@ def cover_ready_text(work: CoverWork, ask: SourceAsk) -> str:
     return f"А вот живая версия «{work.spoken or work.title}»{' ' + tail if tail else ''}."
 
 
+#: Причины, о которых синтез-запас молчит: генерации нет совсем или её выключили (просили своё).
+QUIET_REASONS: Tuple[str, ...] = ("", "not_wired", "mode_synth")
+
+
+def fallback_note(reason: str) -> str:
+    """Синтез — запас (В13): генерация была бы, но нельзя — «Сгенерировать сейчас не могу: <причина>, играю своё.»;
+    генерации нет совсем — «»."""
+    if reason in QUIET_REASONS:
+        return ""
+    return f"Сгенерировать сейчас не могу: {REASON_WORDS.get(reason, reason)}, играю своё."
+
+
 def route_note(route: Route) -> str:
-    """Фраза перед фразой запуска синтеза/пьесы: почему своё, а не то, что просили; просьба исполнена — «»."""
+    """Фраза перед фразой запуска синтеза/пьесы: почему своё, а не то, что просили или что шло бы по умолчанию
+    (генерация, В13); просьба исполнена — «»."""
     if route.work is not None:
         return cover_note(route)
     excuse = _excuse(route)
-    return f"{excuse[:-1]}, играю своё." if excuse and route.kind == SYNTH and route.style != PIECE else excuse
+    if route.kind != SYNTH or route.style == PIECE:
+        return excuse
+    return f"{excuse[:-1]}, играю своё." if excuse else fallback_note(route.gen_reason)
 
 
 def cache_text(route: Route) -> str:
@@ -447,5 +499,5 @@ def decline_text(route: Route) -> str:
 __all__ = ["CACHE", "CacheTrack", "CoverWork", "DECLINE", "cover_failed_text", "cover_note", "cover_ready_text",
            "cover_style_key", "GENERATE", "INSTRUCTIONS", "PIECE", "REASON_WORDS", "Route", "SYNTH",
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
-           "decline_text", "gen_block", "gen_kind", "route_note", "set_cache", "source_ask", "source_candidates",
-           "synth_fit", "synth_style"]
+           "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "set_cache",
+           "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags"]
