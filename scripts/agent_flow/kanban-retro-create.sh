@@ -152,9 +152,23 @@ except Exception:
     tasks = []
 marker = "ретро-key: " + key
 for t in tasks:
-    if t.get("status") == "archived":
-        continue
+    status = t.get("status")
     body = t.get("body") or ""
+    # Archived: marker/title НЕ блокируют (тест D — "archived card does not
+    # block new work"). Archived = "предыдущая попытка отработана, отменена"
+    # → старый marker мёртв, можно создавать новую. Pre-D фикса archived
+    # пропускался вместе с active — это сохраняем.
+    if status == "archived":
+        continue
+    # Done (ретро t_6ea502e3, 2026-10-04): marker/title тоже НЕ блокируют.
+    # Смысл: done = "предыдущая попытка отработана, но PR всё ещё CONFLICTING
+    # (premise-obsolete или upstream-merge не помог) → НУЖНА НОВАЯ карточка".
+    # Раньше done считался "active" в pre-check → SKIP → watchdog не мог
+    # создать вторую карточку для того же PR.
+    if status == "done":
+        continue
+    # running/todo/ready/blocked/review — активная, marker в body → SKIP,
+    # или совпадение title → SKIP.
     if marker in body:
         print(t.get("id", "?"))
         sys.exit(0)

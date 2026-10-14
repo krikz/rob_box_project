@@ -120,6 +120,10 @@ KANBAN_RETRO_CREATE_SH="${KANBAN_RETRO_CREATE_SH:-}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-stale-conflicting-watchdog.lock}"
 LOG_FILE="${LOG_FILE:-/tmp/agent-flow-stale-conflicting-watchdog.log}"
 WATCHDOG_BOARD="${WATCHDOG_BOARD:-robbox}"
+# DISABLE_REST_FALLBACK=1 отключает fallback на REST API при пустом ответе gh.
+# Используется в test_stale_conflicting_watchdog.sh (S1, где MOCK_GH_PRS_JSON=[]),
+# чтобы не уходить в реальный GitHub. В проде default=0 (fallback включён).
+DISABLE_REST_FALLBACK="${DISABLE_REST_FALLBACK:-0}"
 
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -177,9 +181,76 @@ fi
 }
 
 # --- get open PRs -----------------------------------------------------------
+# gh CLI (GraphQL) hit rate limit на krikz user: 12 PRs/min — легко упереться
+# в 30 calls/hour. Fallback на REST API (pat из git-credentials, если есть).
+# Ретро t_6ea502e3 (2026-10-04): PR #3370/#3372/#3373 пропущены именно из-за
+# rate-limit → scanned=0.
 _prs_json="$(gh pr list --repo "$GH_REPO" --state open \
     --json number,mergeable,mergeStateStatus,headRefName,baseRefName,updatedAt,title \
     --limit 50 2>/dev/null || echo '[]')"
+
+# rate-limit detection: gh возвращает stderr с "rate limit" при проблеме,
+# но в stdout идёт `[]` (или даже ошибка). Дополнительно проверяем наличие
+# хотя бы одного PR с реальными полями. Если prs_json == '[]' и на /tmp
+# раньше watchdog видел PR — это подозрительно → пробуем REST fallback.
+_rest_fallback_used="false"
+if [ "$_prs_json" = "[]" ] && [ "$DISABLE_REST_FALLBACK" != "1" ]; then
+    # Пытаемся REST через urllib + PAT из ~/.git-credentials (memory workaround).
+    _rest_json="$(PAT="" python3 - "$GH_REPO" <<'PYEOF' 2>/dev/null || echo '[]'
+import json, os, re, sys, urllib.request, urllib.error
+repo = sys.argv[1]
+# Extract PAT из ~/.git-credentials — стандартный workaround для Hermes
+# (см. memory: gh в devops падает без GH_CONFIG_DIR, keyring хранит мусор).
+try:
+    cred_path = os.path.expanduser("~/.git-credentials")
+    with open(cred_path) as f:
+        cred = f.read()
+except Exception:
+    sys.exit(0)
+m = re.search(r"krikz:(ghp_[A-Za-z0-9]+)", cred)
+if not m:
+    sys.exit(0)
+pat = m.group(1)
+url = f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=50"
+try:
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"token {pat}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    with urllib.request.urlopen(req, timeout=30) as r:
+        d = json.loads(r.read())
+except Exception:
+    sys.exit(0)
+if not isinstance(d, list):
+    sys.exit(0)
+# Нормализуем REST-поля в формат gh CLI: number,mergeable,mergeStateStatus,
+# headRefName,baseRefName,updatedAt,title. REST-mergeable state → uppercase
+# (DIRTY/CLEAN/BLOCKED/BEHIND/UNSTABLE).
+norm = []
+for p in d:
+    if not isinstance(p, dict):
+        continue
+    norm.append({
+        "number": p.get("number"),
+        "mergeable": "CONFLICTING" if p.get("mergeable") is False else (
+            "MERGEABLE" if p.get("mergeable") is True else None),
+        "mergeStateStatus": (p.get("mergeable_state") or "").upper(),
+        "headRefName": (p.get("head") or {}).get("ref", ""),
+        "baseRefName": (p.get("base") or {}).get("ref", ""),
+        "updatedAt": p.get("updated_at") or "",
+        "title": p.get("title") or "",
+    })
+print(json.dumps(norm))
+PYEOF
+)"
+    if [ "$_rest_json" != "[]" ] && [ -n "$_rest_json" ]; then
+        _prs_json="$_rest_json"
+        _rest_fallback_used="true"
+        echo "[$(_now_iso)] stale-conflicting-watchdog: REST fallback used (gh GraphQL rate-limited?) — repo=${GH_REPO} prs=$(printf '%s' "$_prs_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" >&2
+    fi
+fi
+export _rest_fallback_used
 
 _threshold_epoch=$(( $(date -u +%s) - STALE_THRESHOLD_HOURS * 3600 ))
 
@@ -371,6 +442,20 @@ Touchpoints: ADR-0018 (process honesty), ADR-0045 (worker worktree base ref), #2
             continue
         }
 
+    # SKIP от kanban-retro-create.sh означает "карточка с таким marker/title
+    # уже есть" → это dedup, НЕ рекомендация. Не инкрементим _recommended_total
+    # и не пишем RECOMMEND (иначе счётчик alerts в cron шумит, и Шифу в
+    # ночном-ревью видит "recommended=1" для карточки, которой не было).
+    # Ретро t_6ea502e3: до этого фикса SKIP-карточки проходили как "рекомендации"
+    # → exit 2 в тике когда ничего не создано.
+    case "$_emit_out" in
+        SKIP*)
+            _has_card_total=$(( _has_card_total + 1 ))
+            echo "[$(_now_iso)] stale-conflicting-watchdog: SKIP PR #${pr_number} ($_emit_out)" >&2
+            continue
+            ;;
+    esac
+
     _recommended_total=$(( _recommended_total + 1 ))
     _records+=("$(printf '%s\tPR #%s\thead=%s\tbase=%s\tage=%sh\t%s' \
         "$(_now_iso)" "$pr_number" "$pr_head" "$pr_base" "$_age_hours" "$_emit_out")")
@@ -378,7 +463,7 @@ Touchpoints: ADR-0018 (process honesty), ADR-0045 (worker worktree base ref), #2
 done < "$_SCAN_TMP"
 
 # --- summary ---------------------------------------------------------------
-echo "[$(_now_iso)] stale-conflicting-watchdog: ✓ done scanned=${_scan_total} stale=${_stale_total} has_card=${_has_card_total} recommended=${_recommended_total} errors=${_errors_total} repo=${GH_REPO}" >&2
+echo "[$(_now_iso)] stale-conflicting-watchdog: ✓ done scanned=${_scan_total} stale=${_stale_total} has_card=${_has_card_total} recommended=${_recommended_total} errors=${_errors_total} repo=${GH_REPO} rest_fallback=${_rest_fallback_used}" >&2
 
 # --- write stats log -------------------------------------------------------
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
@@ -388,9 +473,9 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
     for r in "${_records[@]:-}"; do
         [ -n "$r" ] && printf '%s\n' "$r"
     done
-    printf '# scanned=%s stale=%s has_card=%s recommended=%s errors=%s repo=%s dry_run=%s threshold=%sh\n' \
+    printf '# scanned=%s stale=%s has_card=%s recommended=%s errors=%s repo=%s rest_fallback=%s dry_run=%s threshold=%sh\n' \
         "$_scan_total" "$_stale_total" "$_has_card_total" \
-        "$_recommended_total" "$_errors_total" "$GH_REPO" "$DRY_RUN" "$STALE_THRESHOLD_HOURS"
+        "$_recommended_total" "$_errors_total" "$GH_REPO" "$_rest_fallback_used" "$DRY_RUN" "$STALE_THRESHOLD_HOURS"
 } >> "$LOG_FILE" 2>/dev/null || true
 
 # --- exit code -------------------------------------------------------------
