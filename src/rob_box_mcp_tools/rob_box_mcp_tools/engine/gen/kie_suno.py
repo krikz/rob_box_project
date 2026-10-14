@@ -49,6 +49,7 @@ _KIND_MODEL = {
 }
 
 RATE_LIMIT_RETRY_S = 10.0
+_CHUNK = 64 * 1024
 
 # (status, body) — заголовки ответа нам не нужны.
 Transport = Callable[[str, str, Mapping[str, str], Optional[bytes], float], Tuple[int, bytes]]
@@ -57,11 +58,22 @@ Transport = Callable[[str, str, Mapping[str, str], Optional[bytes], float], Tupl
 def urllib_transport(
     method: str, url: str, headers: Mapping[str, str], body: Optional[bytes], timeout: float,
 ) -> Tuple[int, bytes]:
-    """Боевой транспорт. HTTP-ошибки возвращает как (status, body); сеть — ``GenUnavailable``."""
+    """Боевой транспорт. HTTP-ошибки возвращает как (status, body); сеть — ``GenUnavailable``.
+
+    ``timeout`` — потолок всего ответа, а не одного чтения сокета: стрим, идущий вровень с генерацией, не держит
+    заказ дольше потолка (``stream.STREAM_DOWNLOAD_TIMEOUT_S``)."""
     req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
+    deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — https, фиксированные хосты
-            return resp.status, resp.read()
+            chunks = []
+            while True:
+                chunk = resp.read(_CHUNK)
+                if not chunk:
+                    return resp.status, b"".join(chunks)
+                chunks.append(chunk)
+                if time.monotonic() > deadline:
+                    raise GenUnavailable("provider_down", f"ответ дольше {timeout:.0f} с")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -283,8 +295,8 @@ class KieSunoProvider:
             return GenStatus("text", tracks, **base)
         return GenStatus("queued", (), **base)
 
-    def download(self, url: str) -> bytes:
-        status, raw = self._transport("GET", url, {"User-Agent": USER_AGENT}, None, self._timeout * 2)
+    def download(self, url: str, timeout_s: Optional[float] = None) -> bytes:
+        status, raw = self._transport("GET", url, {"User-Agent": USER_AGENT}, None, timeout_s or self._timeout * 2)
         if status != 200 or not raw:
             raise GenUnavailable("provider_down", f"скачивание: HTTP {status}, {len(raw)} байт")
         return raw

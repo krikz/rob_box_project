@@ -165,7 +165,7 @@ class CoverMaker:
         try:
             result = generate_into_cache(self._provider, library, Budget(library), cover_job(work, ask, wav),
                                          work_id=work.title, instrument=work.instrument,
-                                         source_audio_sha=sha256_file(wav))
+                                         source_audio_sha=sha256_file(wav), early=True, log=self._log)
         except GenUnavailable as exc:
             self._log().warning(f"⚠️ [cover] «{work.title}» не сгенерирован: {exc}")
             return CoverResult(reason=exc.reason, source_s=source_s, seconds=self._clock() - started)
