@@ -36,7 +36,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
 from rob_box_music.render.audio import xfade_beats
-from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk, gen_kind
+from rob_box_music.source import (CACHE, COVER_SLOT, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk,
+                                  cover_slot, gen_kind, slot_style)
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
@@ -56,8 +57,6 @@ DECLINED = "music_source"
 SUBMIT_BRIDGE = "submit_bridge_line"
 BRIDGE_FIELDS = ("next", "bridge", "eta")
 BRIDGE_LINE_MAX = 140
-#: Ключ слота сета «кавер материала темы в стиле трека» (В14): ``cover|<стиль>``; инструментал — ключ = стиль.
-COVER_SLOT = "cover|"
 
 
 @dataclass(frozen=True)
@@ -102,7 +101,7 @@ def task_model(ordered: int, bridge: bool) -> str:
 
 
 def genre_name(genre: str) -> str:
-    genre = genre[len(COVER_SLOT):] if genre.startswith(COVER_SLOT) else genre
+    genre = slot_style(genre)
     return kn.GEN_STYLES[genre].name if genre in kn.GEN_STYLES else genre
 
 
@@ -213,20 +212,20 @@ def slot_plan(keys: Sequence[str], genres: Sequence[str], unique: Sequence[str],
 
 
 class SetCovers:
-    """Каверы материала темы в треках сета (В14): ``works`` — материалы по ключу слота ``cover|<стиль>`` (задачи
-    берут их по кругу), ``make(work, ask, set_spent)`` — тот же ``CoverMaker.make``, что у пьесы."""
+    """Каверы произведений темы в треках сета (В14, В16): ``works`` — произведение по ключу слота
+    ``cover|<стиль>|<пьеса>`` (план решил, какое произведение у какого трека), ``make(work, ask, set_spent)`` — тот же
+    ``CoverMaker.make``, что у пьесы."""
 
-    def __init__(self, works: Optional[Mapping[str, Sequence[CoverWork]]] = None,
+    def __init__(self, works: Optional[Mapping[str, CoverWork]] = None,
                  make: Optional[Callable[[CoverWork, SourceAsk, float], Any]] = None) -> None:
-        self._works, self._make, self._no = dict(works or {}), make, 0
+        self._works, self._make = dict(works or {}), make
 
     def task(self, key: str, ask: SourceAsk, spent: float) -> Tuple[List["SetItem"], str, float]:
-        """Задача кавера: следующий материал по кругу в стиле слота → ``(варианты, task_id, кредиты)``."""
-        works = self._works.get(key) or ()
-        if not works or self._make is None:
+        """Задача кавера произведения слота в его стиле → ``(варианты, task_id, кредиты)``."""
+        work = self._works.get(key)
+        if work is None or self._make is None:
             raise GenUnavailable("no_material", f"кавер {key}: материала нет")
-        work, self._no = works[self._no % len(works)], self._no + 1
-        result = self._make(work, replace(ask, genre=key[len(COVER_SLOT):]), spent)
+        result = self._make(work, replace(ask, genre=slot_style(key)), spent)
         if result.reason:
             raise GenUnavailable(result.reason, f"кавер «{work.title}»")
         title = f"{work.spoken or work.title} (кавер)"
@@ -272,10 +271,10 @@ class GenSet:
         return self._bridge is not None
 
     def _genre_of(self, track: CacheTrack) -> str:
-        """Ключ слота трека кэша: кавер — кавер своего стиля; стиль свой, иначе стиль той же семьи синтеза (гранж —
-        рок), иначе первый."""
-        if track.kind == "cover" and COVER_SLOT + track.style_key in self._plan:
-            return COVER_SLOT + track.style_key
+        """Ключ слота трека кэша: кавер — кавер своего произведения и стиля; стиль свой, иначе стиль той же семьи
+        синтеза (гранж — рок), иначе первый."""
+        if track.kind == "cover" and cover_slot(track.style_key, track.work_id) in self._plan:
+            return cover_slot(track.style_key, track.work_id)
         if track.style_key in self.genres:
             return track.style_key
         family = kn.GEN_STYLES.get(track.style_key)
@@ -658,9 +657,8 @@ class GenSetMaker:
         """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодией материала темы, оба варианта."""
         if self._cover is None:
             return None
-        tracks = {work.material: track for work, track in plan.theme_covers}
-        return lambda work, ask, spent: self._cover.make(tracks[work.material], work, ask, set_spent=spent,
-                                                         early=False)
+        tracks = {work: track for work, track in plan.theme_covers}  # у двух пьес может быть одна партитура
+        return lambda work, ask, spent: self._cover.make(tracks[work], work, ask, set_spent=spent, early=False)
 
 
 def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
@@ -712,19 +710,20 @@ class SetRoutes:
     theme_covers: Tuple[Tuple[CoverWork, Any], ...] = ()  # материал темы для каверов (В14): (произведение, трек)
 
     def keys(self) -> List[str]:
-        """Ключ слота каждого трека: кавер (новый или из кэша) — ``cover|<стиль>``, иначе стиль трека."""
-        def cover(route: Any) -> bool:
-            return gen_kind(route.id) == "cover" or (route.kind == CACHE and getattr(route.track, "kind", "") == "cover")
+        """Ключ слота каждого трека: кавер (новый или из кэша) — ``cover|<стиль>|<пьеса>``, иначе стиль трека."""
+        def key(genre: str, route: Any) -> str:
+            if gen_kind(route.id) == "cover" and route.work is not None:
+                return cover_slot(genre, route.work.title)
+            if route.kind == CACHE and getattr(route.track, "kind", "") == "cover":
+                return cover_slot(route.track.style_key, route.track.work_id)
+            return genre
 
-        return [COVER_SLOT + g if cover(r) else g for g, r in zip(self.genres, self.routes)]
+        return [key(g, r) for g, r in zip(self.genres, self.routes)]
 
-    def covers(self) -> Dict[str, List[CoverWork]]:
-        """Материалы каверов по ключу слота, по порядку треков (задачи берут их по кругу)."""
-        out: Dict[str, List[CoverWork]] = {}
-        for key, route in zip(self.keys(), self.routes):
-            if gen_kind(route.id) == "cover" and route.work is not None and route.work not in out.get(key, []):
-                out.setdefault(key, []).append(route.work)
-        return out
+    def covers(self) -> Dict[str, CoverWork]:
+        """Произведение кавера по ключу слота (задачи генерации каверов сета)."""
+        return {key: route.work for key, route in zip(self.keys(), self.routes)
+                if gen_kind(route.id) == "cover" and route.work is not None}
 
     def cache(self) -> List[CacheTrack]:
         """Треки кэша, выбранные путями треков (в сет — именно они)."""

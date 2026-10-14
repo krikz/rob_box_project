@@ -986,8 +986,8 @@ def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], p
         return None, SynthFallback(key, window)
     genre = window if window in kn.GEN_STYLES else key
     log = dj.node.get_logger() if dj.node is not None else _LOG
-    covers = (theme_covers(dj, theme, dj._seed(), log)  # noqa: SLF001 — В14: кавер по нашему материалу темы
-              if theme and makers.cover_ready() else [])
+    covers = (theme_covers(dj, theme, dj._seed(), log,  # noqa: SLF001 — В14/В16: каверы произведений темы
+                           library_records(dj.library)) if theme and makers.cover_ready() else [])
     plan = makers.plan(theme, genre, heard_text, length[0], named=length[1] == "названо", styles=hints[0] or (),
                        minutes=hints[1], covers=covers)
     fallback = plan.synth_style()
