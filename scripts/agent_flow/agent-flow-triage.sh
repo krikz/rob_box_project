@@ -850,8 +850,35 @@ if not isinstance(issues, list) or not issues:
     sys.exit(0)
 
 def title_prefix(t, n):
+    """Build first-N-token signature of a title for G9a intra-tick dedup.
+
+    Critical (ретро t_cdd9524a, issue #3374, ADR-AF-0080): YYYY-MM-DD даты
+    должны быть АТОМАРНЫМ токеном, иначе разные deploy-issue одной серии
+    (#3346 «2026-10-02» vs #3354 «2026-10-03») схлопываются как дубли
+    (t_dfd3d19d-баг: G9a видел first-6=deploy issues on develop staging 2026
+    для ОБОИХ и оставлял старейшую → skip младшей → 19+ часов orphan).
+
+    Алгоритм:
+      1) выделить ISO-даты (YYYY-MM-DD) как атомарные токены
+      2) оставшиеся куски разбить на word-tokens (\\w+)
+      3) собрать плоский список, вернуть первые n через пробел
+    """
     s = (t or "").lower()
-    tokens = re.findall(r"[\w]+", s, flags=re.UNICODE)
+    if not s:
+        return ""
+    # Step 1: ISO-даты заменяем на placeholder, чтобы они стали «атомами».
+    iso_re = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+    word_re = re.compile(r"[\w]+", flags=re.UNICODE)
+    tokens = []
+    cursor = 0
+    for m in iso_re.finditer(s):
+        # word-tokens ДО даты
+        tokens.extend(word_re.findall(s[cursor:m.start()]))
+        # сама дата — один токен
+        tokens.append(m.group(0))
+        cursor = m.end()
+    # word-tokens ПОСЛЕ последней даты
+    tokens.extend(word_re.findall(s[cursor:]))
     return " ".join(tokens[:n])
 
 def sorted_labels(issue):
