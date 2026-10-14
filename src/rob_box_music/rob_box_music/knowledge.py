@@ -2711,10 +2711,22 @@ SOURCE_ASK_STEMS: Mapping[str, Tuple[str, ...]] = {
 SONG_STEMS: Tuple[str, ...] = ("песн", "песен")
 #: «своим голосом»: слово-владелец перед «голос…» — песня голосом робота (``robot_song``).
 ROBOT_VOICE_OWNERS: Tuple[str, ...] = ("сво", "тво")
-#: Веса признаков кандидатов пути (ADR-0158 §2.2; ``choice.score`` с весами вопроса). ``asked`` на «сгенерируй»:
-#: генерация 1, кэш 0.5 (сгенерировано раньше), синтез −1; на «новую» кэш −1. Правит Шифу.
-SOURCE_WEIGHTS: Mapping[str, float] = {"synth_fit": 2.0, "theme_match": 1.5, "asked": 3.0, "fresh": 0.5,
-                                       "rating": 0.5, "cost": -0.02, "wait_s": -0.005, "live": COVER_LIVE_WEIGHT}
+#: Веса признаков кандидатов пути (ADR-0158 §2.2; ``choice.score`` с весами вопроса). Правит Шифу.
+#: Решение Шифу 13.10 (ADR-0158 §8, В13): где Suno звучит достойно — генерация/кэш по умолчанию, синтез — запас.
+#: ``cache_theme`` (тема трека кэша: свой жанр 1, семья 0.5) > ``synth_fit`` + ``theme_match`` + разрыв
+#: ``CHOOSER_CLEAR_GAP``: «включи <жанр>» с треком кэша по теме — кэш, а не синтез, даже давно игранный не свежий;
+#: кэша нет — синтез годного жанра выше генерации без просьбы. ``asked`` (генерация 1, синтез −1, кэш —
+#: :data:`SOURCE_CACHE_ASKED`) на «сгенерируй» перекрывает тему кэша с разрывом ≥ 1 и при «нравится» у трека.
+#: Таблица «фраза → путь» и очки — тест ``test_source_weights_table``.
+SOURCE_WEIGHTS: Mapping[str, float] = {"synth_fit": 2.0, "theme_match": 1.5, "cache_theme": 5.0, "asked": 6.0,
+                                       "fresh": 0.5, "rating": 0.5, "cost": -0.02, "wait_s": -0.005,
+                                       "live": COVER_LIVE_WEIGHT}
+#: Признак ``asked`` трека кэша по слотам просьбы (первый совпавший): «новую» и «сгенерируй»/«сочини» — новое, кэш
+#: ниже генерации (а без генерации — выше синтеза: сочинённое раньше лучше своего); «спой» — спетое раньше годится.
+SOURCE_CACHE_ASKED: Tuple[Tuple[str, float], ...] = (("fresh", -1.0), ("generated", -0.5), ("own", -0.5),
+                                                     ("vocal", 0.5))
+#: Петь не просили — песня кэша ниже инструментала (добавка к ``asked``).
+SOURCE_CACHE_SONG_PENALTY = -0.25
 #: Трек кэша, игранный ближе этого, не «свежий» (признак ``fresh``).
 GEN_FRESH_HOURS = 12
 #: Оценка трека кэша (``generated_tracks.rating``): «нравится» / «не нравится» (ADR-0158 §2.5, PR-9). Меньше нуля — трек
@@ -2769,4 +2781,4 @@ __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
             "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
-            "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]
+            "SOURCE_CACHE_ASKED", "SOURCE_CACHE_SONG_PENALTY", "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]

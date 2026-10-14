@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from rob_box_music.source import DECLINE, GENERATE, Route, SourceAsk, decline_text
+from rob_box_music.source import DECLINE, GENERATE, Route, SourceAsk, decline_text, gen_kind
 
 from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, wait_text
 
@@ -52,8 +52,9 @@ class SongOrder:
         self._hold = hold  # мост ожидания (``BridgeHold``, ADR-0158 PR-8): песня входит вместо него кроссфейдом
 
     def handles(self, route: Route) -> bool:
-        """Путь выбрал генерацию песни и студия подключена."""
-        return route.kind == GENERATE and self._studio is not None and route.work is None
+        """Путь выбрал генерацию песни (не инструментал) и студия подключена."""
+        return (route.kind == GENERATE and self._studio is not None and route.work is None
+                and gen_kind(route.id) != "instrumental")
 
     def start(self, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any], wrap: Callable[..., Any]) -> Any:
         """``MCPToolResult`` заказа (ожидание или отказ; ``wrap`` — ``tools_v2.tool_result``). Мост не встал не из-за
