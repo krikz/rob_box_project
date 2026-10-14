@@ -321,19 +321,29 @@ CUT_IN_CUE_BEATS = ALIGN_LEAD_BEATS + 1.0
 _BAR = 4.0  # доли такта (``model.BEATS_PER_BAR``)
 
 
-def cut_in_beat(position: Optional[Tuple[float, float, float]], lead: float = NEARLY_LEAD_BEATS,
-                cue: float = CUT_IN_CUE_BEATS) -> Optional[float]:
-    """Доля входа готового результата поверх синтеза-моста: ближайший такт, до которого успевает cue, — а не граница
-    прохода формы моста (13.10: песня после клуба вставала до ~2 мин после готовности). ``position`` —
-    ``PlayerOwner.position`` моста: ``(доля клока, доля старта, форма)``. ``None`` — мост не играет или штатный
-    ``nearly_finished`` этого прохода сработает раньше входа: тогда сводит ``SetSession`` на границе (≤ ``lead`` долей),
-    иначе его проверка увидела бы пустую очередь и продлила бы мост ещё на проход."""
+def cut_in_beat(position: Optional[Tuple[float, float, float]], cue: float = CUT_IN_CUE_BEATS) -> Optional[float]:
+    """Доля входа готового результата поверх моста: ближайший такт, до которого успевает cue, — а не граница прохода
+    формы моста (13.10: песня после клуба вставала до ~2 мин после готовности; 14.10: после моста-файла — 52 с).
+    ``position`` — ``PlayerOwner.position`` моста: ``(доля клока, доля старта, форма)``; ``None`` — мост не играет.
+    Штатный ``nearly_finished`` моста, попавший между постановкой и входом, видит поставленный результат и ничего не
+    продлевает (``SetSession._on_nearly_finished``)."""
     if position is None:
         return None
-    now, start, form = position
-    at = (math.floor((now + cue) / _BAR) + 1) * _BAR
-    nearly = start + math.ceil((at - start) / form) * form - lead
-    return None if now < nearly <= at else at
+    now = position[0]
+    return (math.floor((now + cue) / _BAR) + 1) * _BAR
+
+
+def cut_in_leave(position: Tuple[float, float, float], at: float, file: bool) -> Tuple[float, float]:
+    """``(leave_at, fade)`` входа на доле ``at``: мост уходит через кроссфейд. Мост-файл: его нота звучит всю ``sus`` и
+    после снятия плеера — её гасит огибающая деки (``fade`` долей, ``render.audio.deck_fade_args``), а плеер снимается
+    до начала следующего прохода (новая нота прохода звучала бы полностью поверх результата); вход ровно на границе
+    прохода — нота уже гаснет своим хвостом, огибающая деки не нужна."""
+    xfade = kn.GEN_XFADE_BARS * _BAR
+    if not file:
+        return at + xfade, 0.0
+    _, start, form = position
+    boundary = start + math.ceil((at - start) / form) * form
+    return min(at + xfade, boundary), (xfade if boundary > at else 0.0)
 
 
 class BridgeHold:
@@ -371,7 +381,7 @@ class BridgeHold:
         return self.session.active and bool(ids & {now.get("track_id"), now.get("pending")})
 
     def deliver(self, library_id: str, title: str = "") -> bool:
-        """Результат готов: войдёт кроссфейдом на конце прохода моста. ``False`` — деку занял другой заказ."""
+        """Результат готов: войдёт кроссфейдом на ближайшем такте. ``False`` — деку занял другой заказ."""
         return self._settle((library_id, title))
 
     def fail(self) -> bool:
@@ -395,18 +405,21 @@ class BridgeHold:
         self._submit(run)
 
     def _cut_in(self) -> None:
-        """Результат в очереди владельца: входит на ближайшем такте кроссфейдом ``GEN_XFADE_BARS`` (огибающая файла),
-        синтез-мост уходит в конце кроссфейда. Мост — файл кэша: его нота звучит до конца прохода и после снятия
-        плеера, поэтому вход — на конце прохода (кроссфейд ``SetSession``), а не посреди."""
+        """Результат в очереди владельца: входит на ближайшем такте кроссфейдом ``GEN_XFADE_BARS`` (огибающая файла).
+        Синтез-мост уходит в конце кроссфейда; мост-файл гаснет огибающей своей деки (:func:`cut_in_leave`)."""
         from rob_box_music.model import AudioTrack
 
-        if self._result is None or not self.live_id or isinstance(self._model, AudioTrack):
+        if self._result is None or not self.live_id:
             return
-        at = cut_in_beat(self._owner.position(self.bridge_id))
-        if at is not None and self._owner.advance(at, dj=self._fields(2), leave_at=at + kn.GEN_XFADE_BARS * _BAR,
-                                                  once=True):
+        position = self._owner.position(self.bridge_id)
+        at = cut_in_beat(position)
+        if at is None:
+            return
+        leave, fade = cut_in_leave(position, at, isinstance(self._model, AudioTrack))
+        if self._owner.advance(at, dj=self._fields(2), leave_at=leave, once=True, fade_beats=fade):
             self._log.info(f"🎚️ [bridge] {self.bridge_id}: результат {self._result[0]} входит на доле {at:g} "
-                           f"кроссфейдом {kn.GEN_XFADE_BARS} такта, не ждёт конца формы моста")
+                           f"кроссфейдом {kn.GEN_XFADE_BARS} такта, не ждёт конца формы моста"
+                           + (f"; мост-файл гаснет за {fade:g} долей" if fade else ""))
 
     def _fields(self, track_no: int) -> Dict[str, Any]:
         if track_no == 1 or self._result is None:

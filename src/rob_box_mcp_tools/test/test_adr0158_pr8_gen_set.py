@@ -112,12 +112,15 @@ def test_render_audio_crossfade_shape():
     one = render_audio(track, "B")  # одиночный трек — как PR-2: форма вверх до такта, глушитель повтора
     assert one.form_beats == 152.0 and "var([1, 0]" in one.code
     mid = render_audio(track, "B", xfade_bars=4, once=False)
-    assert mid.form_beats == 148.0 and "sus=148" in mid.code and "atk=16" in mid.code and "rel=16" in mid.code
+    assert "sus=148" in mid.code and "atk=16" in mid.code and "rel=16" in mid.code
+    # проход короче файла на кроссфейд: следующий проход нарастает, пока этот гаснет (стык петли без провала, 14.10)
+    assert mid.form_beats == 148.0 - 16 and mid.tail_beats == 16.0
     # плеер встаёт на долю, кратную сумме dur (Renardo ``Player.count``): dur — такт, иначе стык на форму позже
     # (живой рок-сет 13.10: 296-я доля вместо 224-й, 56 с тишины); звучит первый такт формы, повтор — проход файла
-    assert "dur=4," in mid.code and "amp=var([1, 0], [4, 144]" in mid.code
+    assert "dur=4," in mid.code and "amp=var([1, 0], [4, 128]" in mid.code
     last = render_audio(track, "B", xfade_bars=4, once=True)
     assert "dur=4," in last.code and "amp=var([1, 0], [4, 292]" in last.code  # последний: один проход
+    assert last.form_beats == 148.0 and last.tail_beats == 0.0
     assert "var([1, 0]" in deck_program(track, "A", last=True).code
 
 
@@ -201,7 +204,8 @@ def test_set_session_crossfades_files_on_two_decks(tmp_path):
     started = [e for e in rig.events if e["event"] == "started"]
     assert [e["deck"] for e in started] == ["A", "B", "A"] and not [e for e in rig.events if e["event"] == "rejected"]
     form = started[0]["form_beats"]
-    assert started[1]["start_beat"] == started[0]["start_beat"] + form - kn.GEN_XFADE_BARS * 4
+    # проход файла короче файла на кроссфейд: следующий трек встаёт на границу прохода, хвост уходящего — кроссфейд
+    assert started[1]["start_beat"] == started[0]["start_beat"] + form
     assert any(e["event"] == "finished" for e in rig.events)
     # Renardo ставит плеер на долю, кратную сумме dur: каждая доля стыка кратна dur своей программы
     assert all(e["start_beat"] % 4 == 0 for e in started[1:])
@@ -342,13 +346,22 @@ def test_bridge_hold_keeps_sound_until_result_then_crossfades(tmp_path, monkeypa
     assert rig.owner.now_playing()["track_id"] == "bridge1" and not [e for e in rig.events if e["event"] == "finished"]
     track_id = cache_tracks(lib)[0].id
     assert held_play(hold)(track_id).success  # песня/кавер готовы — тот же шов у SongOrder и PieceCover
-    live = _queued_program(rig)
+    ready = rig.clock.beat
+    _wait_pending(rig)
     rig.clock.run_until(rig.clock.beat + 2 * bridge["form_beats"])
     started = [e for e in rig.events if e["event"] == "started"]
-    assert started[-1]["track_id"] == live.track_id and started[-1]["deck"] == "B" and said == ["live"]
-    assert (started[-1]["start_beat"] - bridge["start_beat"]) % bridge["form_beats"] == (
-        bridge["form_beats"] - kn.GEN_XFADE_BARS * 4)  # вход за кроссфейд до границы прохода моста
-    assert "var([1, 0]" in live.code  # результат — последний: один проход, потом finished
+    assert started[-1]["track_id"] == hold.live_id and started[-1]["deck"] == "B" and said == ["live"]
+    # вход на ближайшем такте (мост-файл гаснет огибающей деки), а не на конце прохода моста (14.10: 52 с ожидания)
+    assert started[-1]["start_beat"] - ready <= 4 + gs.CUT_IN_CUE_BEATS
+
+
+def _wait_pending(rig, timeout=5.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while rig.owner._pending is None and time.monotonic() < end:  # noqa: SLF001
+        time.sleep(0.01)
+    assert rig.owner._pending is not None  # noqa: SLF001
 
 
 def test_bridge_hold_failure_and_timeout_end_with_a_bridge_finale(tmp_path, monkeypatch):

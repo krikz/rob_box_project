@@ -7,6 +7,9 @@ test_style_same_tracks.py --write``): на каждый сид × тему × т
 Переснят в ADR-0157 PR-5 (#3562): программа клуба получила ``hpf=var(...)`` входа деки (``Transition.filter_in``);
 модели ``Track`` и остальной текст программ — побайтно прежние (проверено: эталон без ``_hpf`` — 0/850 расхождений).
 
+Поле ``Program.tail_beats`` (хвосты ADR-0158 после #3631: хвост ноты файла петлёй) добавлено после эталона: у
+программ синтеза оно всегда 0.0 и в канонический вид не входит (:data:`ADDED_AFTER_GOLDEN`) — синтез побайтно прежний.
+
 Канонический вид: dataclass → (имя, поля по порядку), множества — отсортированы (``repr(frozenset)`` зависит от
 ``PYTHONHASHSEED``), словари — в порядке вставки (порядок ролей виден рендеру).
 """
@@ -41,12 +44,18 @@ TRACKS = 3
 SONG_LEAD = ((69, 0.75), (72, 0.375), (71, 0.125), (None, 0.75), (76, 2.0), (74, 1.0), (72, 1.0), (69, 2.0))
 
 
+#: Поля, добавленные после снятия эталона: при значении по умолчанию в канонический вид не входят (иначе эталон
+#: «поменялся» у всех 850 треков без единого изменения звука).
+ADDED_AFTER_GOLDEN = ("tail_beats",)
+
+
 def _canon(value):
     text = repr(value)
     if "{" not in text and "frozenset(" not in text:
         return text  # лист без множеств и словарей (ноты, шаги сетки): repr от сида процесса не зависит
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return [type(value).__name__] + [[f.name, _canon(getattr(value, f.name))] for f in dataclasses.fields(value)]
+        return [type(value).__name__] + [[f.name, _canon(getattr(value, f.name))] for f in dataclasses.fields(value)
+                                         if not (f.name in ADDED_AFTER_GOLDEN and getattr(value, f.name) == f.default)]
     if isinstance(value, (set, frozenset)):
         return sorted(repr(_canon(v)) for v in value)
     if isinstance(value, dict) or hasattr(value, "items"):
