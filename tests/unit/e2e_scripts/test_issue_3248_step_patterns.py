@@ -1,12 +1,11 @@
-"""Issue #3248 — паттерны mv02/mv03/ml01 проверяют реальное событие, а не дамп.
+"""Issue #3248 — паттерны mv02/mv03 проверяют реальное событие, а не дамп.
 
 Run 36775544782 / 36777967495 (30.09.2026): шаги краснели по паттернам, которые
 не могли найтись (``current_voice`` пишется только при СМЕНЕ голоса,
-``voice_used`` — только при синтезе MiniMax, ``generate_music`` снят с
-регистрации 22.08 в db84ff590). Обратная сторона той же беды: голое имя тула
-в ``patterns`` матчит строку ``tools(61): …`` — её dialogue_node печатает на
-каждом ходе (ml06 run 36777967495: PATTERN_OK music_library при НЕвызванном
-туле, GATE-1 это поймал).
+``voice_used`` — только при синтезе MiniMax). Обратная сторона той же беды:
+голое имя тула в ``patterns`` матчит строку ``tools(61): …`` — её dialogue_node
+печатает на каждом ходе. Сценарий music_library_* про снятые тулы v1 удалён
+(#3618), его проверка — вместе с ним.
 
 Строки-образцы ниже — дословно из ``docker logs voice-assistant`` робота за
 окна этих шагов.
@@ -32,10 +31,6 @@ TTS_ERMIL = (
 SPEAK_TEXT_ALENA = (
     "[mcp_server-10] [INFO] [1790801751.132630578] [mcp_server]: [speak_text] Произношение текста: "
     "animation=happy voice=alena text='Говорю голосом Алены через Яндекс!'"
-)
-COMPOSE_CALL = (
-    "[mcp_server-10] [INFO] [1790802853.579022058] [mcp_server]: 📥 Запрос выполнения: compose_music "
-    "с параметрами {'bpm': 76, 'root': 'F', 'scale': 'major'}"
 )
 CATALOG_DUMP = (
     "[dialogue_node-4]   tools(61): add_music_material, clear_waypoints, compose_music, "
@@ -70,14 +65,6 @@ def test_mv03_requires_real_speak_text_and_set_voice() -> None:
     # RULE #VOICE-MULTI: set_voice МЕЖДУ speak_text-фрагментами. Без
     # speak_text реплики персонажей остаются в content и не звучат.
     assert "set_voice" in calls and "speak_text" in calls
-
-
-def test_ml01_matches_real_music_call_not_catalog_or_dead_tool() -> None:
-    pats = _steps("music_library_suite_v1.json")["ml01_generate_romantic"]["patterns"]
-    assert "generate_music" not in pats
-    assert _hits(pats, COMPOSE_CALL)
-    assert _hits(pats, COMPOSE_CALL.replace("compose_music", "execute_music_code"))
-    assert not _hits(pats, CATALOG_DUMP), "имя тула в дампе каталога — не вызов"
 
 
 def test_log_lines_the_patterns_rely_on_still_exist_in_source() -> None:

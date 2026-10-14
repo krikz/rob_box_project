@@ -48,6 +48,7 @@ from nav_msgs.msg import Odometry
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_TOPIC,
 )
+from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.prompt_sections import (
     PromptMarkupError,
     merge_skill_prompts,
@@ -6400,11 +6401,8 @@ tentative_plan(question, kind, name)
         # ``tools_called`` still lists both names so operators can see
         # the suppression happened. Log a one-line diagnostic so the
         # live log makes the pattern obvious without grepping.
-        # Mirrors agent_core._MUSIC_LAUNCH_TOOLS — keep the two lists
-        # in sync if a new music tool is added to the manifest.
-        _music_tool_names = {
-            "generate_music", "music_library",
-        }
+        # Единая таблица музыкальных тулов — rob_box_core.music_tools (ADR-0158 §7).
+        _music_tool_names = MUSIC_AUDIBLE_LYRICS_TOOLS
         _has_music_tool = any(
             name in _music_tool_names for name in tools_called
         )

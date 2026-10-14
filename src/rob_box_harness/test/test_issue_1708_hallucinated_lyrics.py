@@ -797,7 +797,7 @@ class TestIssue1708GuardIntegration:
 
         Mirrors :func:`_is_hallucinated_speak_text`'s acceptance of
         ``generate_music`` in ``same_batch_music_calls`` — verified at
-        the integration level so a regression in ``_MUSIC_LAUNCH_TOOLS``
+        the integration level so a regression in ``MUSIC_AUDIBLE_LYRICS_TOOLS``
         (which feeds the same-batch-music detection) gets caught.
         """
         # User input is NON-vocal: «включи трек» is library/track play,
