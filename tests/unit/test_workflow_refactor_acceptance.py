@@ -68,9 +68,6 @@ _MANIFEST = gen_build_matrix.load_manifest(BUILD_MANIFEST)
 MAIN_SERVICES = gen_build_matrix.services_for_pi(_MANIFEST, "main")
 VISION_SERVICES = gen_build_matrix.services_for_pi(_MANIFEST, "vision")
 SOUND_SERVICES = gen_build_matrix.services_for_pi(_MANIFEST, "sound")
-# supervisor (Vision) наследует образ voice-assistant (Sound): BASE_IMAGE
-# разрешается по каталогу всех Pi (ADR-0159).
-_CATALOG = gen_build_matrix.catalog_for_manifest(_MANIFEST)
 
 # TEMP(ADR-0159 PR-3): для sound своего workflow ещё нет — voice-base /
 # voice-assistant пока физически собирает Vision-workflow. Тесты уровня
@@ -124,7 +121,7 @@ def _entry(pi: str, service: str) -> dict[str, str]:
     """Параметры сборки сервиса — то, что реально уедет в composite action."""
     _, services = PI_DATA[pi]
     ctx = gen_build_matrix.build_context(_MANIFEST, docker_tag=DOCKER_TAG)
-    return gen_build_matrix.matrix_entry(service, services, ctx, _CATALOG)
+    return gen_build_matrix.matrix_entry(service, services, ctx)
 
 
 # --- уровень workflow: шаблон job'а ---------------------------------------
@@ -308,7 +305,7 @@ def test_dockerfile_and_context_exist_on_disk(pi, service):
         ("main", "robot-state-publisher", "URDF_FILES_HASH"),
         ("sound", "voice-assistant", "SOURCE_HASH"),
         ("vision", "telegram-bot", "SOURCE_HASH"),
-        ("vision", "supervisor", "SOURCE_HASH"),
+        ("sound", "supervisor", "SOURCE_HASH"),
         ("vision", "quest", "SOURCE_HASH"),
         ("vision", "vision-hailo", "SOURCE_HASH"),
     ],

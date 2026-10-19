@@ -187,87 +187,10 @@ services:
   # Vision Pi общается с ним топиками через Zenoh (/voice/*, /avatar/*), а не
   # compose-зависимостями: межузловой depends_on compose не выражает.
 
-# ============ Avatar Supervisor (AV-9, ADR-0028) ============
-  # Phase 1 monitor-only: publishes /avatar/state, no twist_mux /
-  # dialogue_node mutation. Phase 2 (mode=active) — after voice_input_mode
-  # lands in dialogue_node (расхождение #1 плана Quest).
-  #
-  # Build context: docker/vision/supervisor/Dockerfile — наследует
-  # voice-assistant image (pytorch/renardo не пересобираются); образ
-  # voice-assistant собирается для Sound Pi, но берётся из registry.
-  supervisor:
-    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
-    container_name: avatar-supervisor
-    pull_policy: if_not_present
-    network_mode: host
-    # mem_limit ADR-0111 (issue #2621): 253 MB RSS замер, даём 512 MB
-    mem_limit: 512m
-    memswap_limit: 768m
-    environment:
-      - ROS_DOMAIN_ID=0
-      - ROS_DISTRO=humble
-      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
-      - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
-      - *zenoh_listen_ip  # адрес локального роутера для session config
-      - PYTHONUNBUFFERED=1
-      # AV-9 Phase 1: monitor only. Phase 2 (active) requires voice_input_mode
-      # in dialogue_node + AV-10 telegram refactor — see ADR-0028 §4.5.
-      # P7-simple (2026-08-27): voice_input_mode уже принят в dialogue_node
-      # (PR #1618) → включаем active, чтобы супервизор применял voice_input_mode
-      # (SetVoiceMode). Teleop-FSM/floors остаются Phase 2 (NOT_IMPLEMENTED).
-      - AVATAR_SUPERVISOR_MODE=active
-      # issue #2184 — TarsPanelDispatcher ходит за метриками сам (Prometheus
-      # /api/v1/query_range, Loki /loki/api/v1/query_range) и публикует ряды
-      # точек в /avatar/tars/panel_data. Стек мониторинга живёт на katana,
-      # не в этой compose-сети — адрес задаём явно (см. metrics_source.py).
-      - MONITORING_HOST=${MONITORING_HOST:-10.1.1.249}
-      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://${MONITORING_HOST:-10.1.1.249}:9090}
-      - LOKI_URL=${LOKI_URL:-http://${MONITORING_HOST:-10.1.1.249}:3100}
-      - GRAFANA_URL=${GRAFANA_URL:-http://${MONITORING_HOST:-10.1.1.249}:3000}
-    # issue #2111 — БЕЗ ЭТОГО У ТАРС НЕТ LLM ВООБЩЕ.
-    # avatar_supervisor._build_operator_llm строит провайдеров из ключей в
-    # окружении (MINIMAX_API_KEY / DEEPSEEK_API_KEY). У сервиса не было
-    # env_file, поэтому в контейнере не было НИ ОДНОГО *_API_KEY, и на
-    # роботе 2026-09-08 в логах висело:
-    #   _build_operator_llm: deepseek build failed: missing API key
-    #   _build_operator_llm: no LLM provider built (chain=['deepseek'])
-    # Агент оператора принимал фразы из шлема и молча не мог ответить.
-    # Тот же файл уже подключён у voice-assistant (см. ниже) и telegram-bot.
-    env_file:
-      - .env.secrets  # MINIMAX_API_KEY, DEEPSEEK_API_KEY — операторский LLM (ТАРС)
-    volumes:
-      - ./config:/config:ro
-      - ../common/scripts:/ros_scripts:ro
-      - ../common/config:/common_config:ro
-      - ./scripts/supervisor:/scripts:ro
-      # issue #1988 — память оператора и журнал ТАРС. После ADR-0083 §E
-      # обе ноды (supervisor + voice-assistant) пишут в одну
-      # ``/data/harness_voice.db``, различая факты через колонку ``agent``
-      # (``operator`` / ``personality``, миграция 011_agent_namespace.sql).
-      # Тот же host-path, что у voice-assistant (./data/voice → /data).
-      - ./data/voice:/data
-      # issue #3299 — инструмент ТАРС ``list_faces`` читает лицевую базу.
-      # Только чтение (как у telegram-bot, #3025): нода vision-face пишет сюда
-      # сама, supervisor не должен менять базу даже случайно (ADR-0123).
-      - ./data/faces:/data/faces:ro
-    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]
-    depends_on:
-      zenoh-router:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'supervisor_node' || exit 1"]
-      interval: 15s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
-    labels:
-      logging: "promtail"
+  # avatar-supervisor (ТАРС) переехал на Sound Pi вместе с голосовым стеком (ADR-0159 В8):
+  # он и voice-assistant пишут в один /data/harness_voice.db, а файл на двух хостах
+  # общим не бывает. См. docker/sound/docker-compose.yaml. Арбитр остаётся здесь:
+  # файлов голосового стека ему не нужно (он берёт только scripts/supervisor/start_arbiter.sh).
 
   # ============ Avatar Arbiter (ADR-0051 §2.2, issue #1987) ============
   # Отдельная нода без LLM: арбитр floor/FSM (LockManager, ModeManager,

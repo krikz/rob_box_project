@@ -16,7 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SOUND = REPO_ROOT / "docker" / "sound"
 VISION = REPO_ROOT / "docker" / "vision"
 
-MOVED_SERVICES = ("voice-assistant", "supercollider", "voice-action-server")
+# supervisor (ТАРС) — решение Шифу 19.10 (ADR-0159 В8): пишет в тот же harness_voice.db.
+MOVED_SERVICES = ("voice-assistant", "supercollider", "voice-action-server", "supervisor")
 
 
 def _compose(pi_dir: Path) -> dict:
@@ -51,9 +52,35 @@ def test_voice_stack_lives_on_sound_pi_only() -> None:
 
 def test_moved_files_left_vision() -> None:
     for rel in ("config/voice_assistant", "config/audio", "config/wake_words.yaml",
-                "scripts/voice_assistant", "scripts/supercollider"):
+                "scripts/voice_assistant", "scripts/supercollider",
+                "scripts/supervisor/start_supervisor.sh"):
         assert not (VISION / rel).exists(), f"docker/vision/{rel} вернулся"
         assert (SOUND / rel).exists(), f"docker/sound/{rel} нет"
+    # арбитр остался на Vision и берёт только свой скрипт
+    assert (VISION / "scripts/supervisor/start_arbiter.sh").exists()
+    assert not (SOUND / "scripts/supervisor/start_arbiter.sh").exists()
+
+
+def test_supervisor_shares_state_dir_with_voice_assistant_on_one_node() -> None:
+    """Смысл переезда ТАРС (В8): оба пишут в один /data/harness_voice.db — каталог один и узел один."""
+    services = _compose(SOUND)["services"]
+    sup, va = services["supervisor"], services["voice-assistant"]
+    assert "./data/voice:/data" in sup["volumes"]
+    assert "./data/voice:/data" in va["volumes"]
+    # лицевую базу ТАРС читает только на чтение; пишет её vision-face на Vision Pi
+    assert "./data/faces:/data/faces:ro" in sup["volumes"]
+    assert sup["container_name"] == "avatar-supervisor"
+    # арбитр остался на Vision и не ходит за файлами голосового стека
+    vision = _compose(VISION)["services"]
+    assert "avatar-arbiter" in vision and "supervisor" not in vision
+    for vol in vision["avatar-arbiter"]["volumes"]:
+        assert "data/voice" not in vol and "voice_assistant" not in vol
+
+
+def test_supervisor_dockerfile_copies_script_from_its_new_place() -> None:
+    dockerfile = (VISION / "supervisor" / "Dockerfile").read_text(encoding="utf-8")
+    assert "docker/sound/scripts/supervisor/start_supervisor.sh" in dockerfile
+    assert "docker/vision/scripts/supervisor/start_supervisor.sh" not in dockerfile
 
 
 def test_zenoh_router_of_sound_pi() -> None:

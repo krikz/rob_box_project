@@ -79,7 +79,7 @@ COPY src/rob_box_supervisor/prompts /ws/src/rob_box_supervisor/prompts
 # ============================================================
 # Шаг 4: scripts (start_supervisor.sh)
 # ============================================================
-COPY docker/vision/scripts/supervisor/start_supervisor.sh /scripts/start_supervisor.sh
+COPY docker/sound/scripts/supervisor/start_supervisor.sh /scripts/start_supervisor.sh
 RUN chmod +x /scripts/start_supervisor.sh
 
 # ============================================================

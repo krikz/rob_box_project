@@ -7,6 +7,7 @@ LED-кольцо) и TTL-USB конвертер сенсорного хаба.
 |---|---|---|
 | `zenoh-router` (`zenoh-router-sound`) | — | общий шаблон из `../common`; `connect` на Main и на Vision (вариант Б) |
 | `voice-assistant`, `supercollider`, `voice-action-server` | — | перенесены из `docker/vision` |
+| `supervisor` (`avatar-supervisor`, ТАРС) | — | перенесён из `docker/vision` (ADR-0159 В8): пишет в тот же `data/voice/harness_voice.db`, что и `voice-assistant`; `avatar-arbiter` остался на Vision |
 | `sensor-bridge` | `sensors` | образ `perception`, нода `perception_bridge`, `/dev/sensor_hub` |
 | `cadvisor`, `promtail` | `monitoring` | как на Vision, лейбл `host: sound-pi` |
 

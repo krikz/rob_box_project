@@ -108,26 +108,6 @@ pis:
           ros_distro: true
         image_versions: TELEGRAM_BOT_TAG
 
-      supervisor:
-        dockerfile: docker/vision/supervisor/Dockerfile
-        build_context: "."
-        base:
-          service: voice-assistant
-        depends_on: [voice-assistant]
-        source_hash:
-          arg: SOURCE_HASH
-          groups:
-            - paths:
-                - src/rob_box_supervisor/rob_box_supervisor
-                - src/rob_box_core
-              extensions: [".py"]
-        tag:
-          ros_distro: true
-        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
-        # Без комментария в коде, объясняющего исключение — причина не
-        # найдена (план §1.3, §11, открытый вопрос №1).
-        image_versions: false
-
       quest:
         dockerfile: docker/vision/quest/Dockerfile
         build_context: "."
@@ -175,7 +155,8 @@ pis:
 
   # ---------------------------------------------------------------------
   # Sound Pi (ADR-0159, PR-2b) — голосовой стек переехал с Vision Pi.
-  # Блоки voice-base / voice-assistant / supercollider перенесены БЕЗ
+  # Блоки voice-base / voice-assistant / supercollider (и supervisor — ТАРС,
+  # решение Шифу 19.10, В8) перенесены БЕЗ
   # изменений (git diff: те же строки −/+). Dockerfile и build_context
   # остаются в docker/vision/{voice_base,voice_assistant,supercollider}:
   # их путь зашит в "L-Build Single Service.yml" и dependabot.yml, а
@@ -242,6 +223,26 @@ pis:
         # Задокументировано в коде: "supercollider excluded: tag naming is
         # inconsistent" — единственный сервис из четырёх, где исключение из
         # tag_and_push/verify_in_registry объяснено комментарием.
+        image_versions: false
+
+      supervisor:
+        dockerfile: docker/vision/supervisor/Dockerfile
+        build_context: "."
+        base:
+          service: voice-assistant
+        depends_on: [voice-assistant]
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_supervisor/rob_box_supervisor
+                - src/rob_box_core
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # Без комментария в коде, объясняющего исключение — причина не
+        # найдена (план §1.3, §11, открытый вопрос №1).
         image_versions: false
 
   # ---------------------------------------------------------------------

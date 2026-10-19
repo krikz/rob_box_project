@@ -2,7 +2,7 @@
 
 Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - обработка визуальных данных, лидара, голосового управления и анимаций.
 
-> **ADR-0159 (PR-2b):** `voice-assistant`, `supercollider` и `voice-action-server`, а с ними
+> **ADR-0159 (PR-2b):** `voice-assistant`, `supercollider`, `voice-action-server` и `supervisor` (ТАРС, В8), а с ними
 > `config/{voice_assistant,audio,wake_words.yaml}` и `scripts/{voice_assistant,supercollider}`
 > переехали на Sound Pi — см. [`docker/sound`](../sound/docker-compose.yaml). Разделы ниже про голосовой
 > стек описывают его прежнее место и будут переписаны в PR-5; Dockerfile'ы сборки голосовых образов

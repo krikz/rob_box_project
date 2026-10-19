@@ -118,12 +118,22 @@ def test_empty_base_is_honest(tmp_path: Path) -> None:
     assert out["status"] == "ok"
     assert out["faces"] == [] and out["total_in_base"] == 0
     assert "пуста" in out["message"]
+    # ADR-0159 В8: галерею пишет Vision Pi, на узле ТАРС она может быть не синхронизирована —
+    # пустой ответ обязан это оговаривать, а не звучать как «лиц не было».
+    assert "Vision Pi" in out["message"]
+
+
+def test_populated_base_has_no_node_caveat(faces_root: Path) -> None:
+    out = build_faces_listing(str(faces_root), now=NOW)
+    assert out["total_in_base"] > 0
+    assert "Vision Pi" not in out["message"]
 
 
 def test_missing_mount_is_unavailable_not_empty(tmp_path: Path) -> None:
     out = build_faces_listing(str(tmp_path / "nope"), now=NOW)
     assert out["status"] == "unavailable"
     assert "faces" not in out
+    assert "Vision Pi" in out["message"]
 
 
 def test_listing_never_writes_to_base(faces_root: Path) -> None:

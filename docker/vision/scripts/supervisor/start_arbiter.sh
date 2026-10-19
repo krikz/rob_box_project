@@ -10,7 +10,7 @@
 #   - docs/adr/0051-operator-agent.md §2.2 (или target-архитектура)
 #   - docs/architecture/target-operator-agent-and-dialogue.md §4, §9.7
 #   - issue #1987 (operator-agent 04: avatar_arbiter)
-#   - docker/vision/scripts/supervisor/start_supervisor.sh (паттерн)
+#   - docker/sound/scripts/supervisor/start_supervisor.sh (паттерн)
 
 set -e
 

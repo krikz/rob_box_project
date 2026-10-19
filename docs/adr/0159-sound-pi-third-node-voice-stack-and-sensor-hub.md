@@ -26,7 +26,7 @@
   - пропускная способность и задержка Zenoh между тремя роутерами по гигабиту — не мерено (Sound Pi без кабеля, стека на нём нет);
   - реальный RSS голосового стека на Sound Pi после переезда — только лимиты compose и текущий `docker stats` на Vision Pi;
   - протокол ESP32 ↔ хост по serial (формат кадров, скорость) — прошивки сенсорного хаба в этом репо нет (`src/sensor_hub` из `setup_node.sh` не существует), есть только сообщения `robot_sensor_hub_msg` (`DeviceData`, `DeviceSnapshot`, `DeviceCommand`);
-  - как ТАРС (`supervisor`) аутентифицируется в `/mcp/execute`, когда `mcp_server` на другом хосте (§3.6, В5);
+  - как ТАРС (`supervisor`) аутентифицируется в `/mcp/execute`, когда `mcp_server` на другом хосте (§3.6, В5) — **снято В8: `supervisor` переехал на Sound Pi, к `mcp_server` на тот же узел**;
   - `ollama` (profile `ai`, Vision Pi) — используется ли VoiceMemory сегодня вообще (в `docker ps` Vision Pi 19.10 контейнера `ollama` нет);
   - ничего из §5 на роботе не запускалось; `setup_sound_pi.sh` на SoundPi **не прогонялся** — только `bash -n`.
 
@@ -127,10 +127,10 @@ ReSpeaker 4 Mic Array (`2886:0018`, ALSA card `ArrayUAC10`) — **и микро�
 | Узел | Адреса | Что держит | Почему |
 |---|---|---|---|
 | **Main Pi** (16 ГБ) | `.10/.20` | как сейчас: `zenoh-router` (корень, выход в облако), `nav2`, `rtabmap`, `perception`, `ros2-control`, `lslidar`, `twist-mux`, `teleop`, `robot-state-publisher` | движение и карта — не трогаем, CPU уже ~4 на 4 ядра |
-| **Vision Pi** (8 ГБ) | `.11/.21` | `zenoh-router-vision`, `oak-d`, `vision-hailo`, `vision-face`, `ceiling-camera`, **`led-matrix`** (SPI), `supervisor`, `avatar-arbiter`, `ollama` (profile) | камеры и Hailo — PCIe/USB здесь; LED — SPI здесь |
-| **Sound Pi** (8 ГБ) | `.12/.22` | `zenoh-router-sound`, **`voice-assistant`**, **`supercollider`**, **`voice-action-server`**, **`quest`**, **`telegram-bot`** (волна 2, В2), **`sensor-bridge`** (В6/В7, заложен), `cadvisor`, `promtail` | ReSpeaker (вход+выход звука, LED-кольцо) и TTL-USB конвертер — USB здесь; `quest`/`telegram-bot` — только топики, едут ради баланса |
+| **Vision Pi** (8 ГБ) | `.11/.21` | `zenoh-router-vision`, `oak-d`, `vision-hailo`, `vision-face`, `ceiling-camera`, **`led-matrix`** (SPI), `avatar-arbiter`, `ollama` (profile) | камеры и Hailo — PCIe/USB здесь; LED — SPI здесь |
+| **Sound Pi** (8 ГБ) | `.12/.22` | `zenoh-router-sound`, **`voice-assistant`**, **`supercollider`**, **`voice-action-server`**, **`supervisor`** (ТАРС, В8), **`quest`**, **`telegram-bot`** (волна 2, В2), **`sensor-bridge`** (В6/В7, заложен), `cadvisor`, `promtail` | ReSpeaker (вход+выход звука, LED-кольцо) и TTL-USB конвертер — USB здесь; `quest`/`telegram-bot` — только топики, едут ради баланса |
 
-Ожидаемый эффект на Vision Pi по цифрам §1.1: минус ~33 % CPU голосового стека, минус часть ~30 % `zenohd` (трафик аудио/TTS уйдёт в другой роутер), минус 2.3 ГБ RSS и 5 ГБ резерва. Sound Pi получает лимиты 5g + 512m + 128m + 128m + ~128m (`sensor-bridge`, profile `sensors`, по умолчанию выключен) ≈ 6 ГБ из 8 — плюс `quest` 512m и `telegram-bot` 512m в волне 2 — потому zram обязателен (как ADR-0111).
+Ожидаемый эффект на Vision Pi по цифрам §1.1: минус ~33 % CPU голосового стека, минус часть ~30 % `zenohd` (трафик аудио/TTS уйдёт в другой роутер), минус 2.3 ГБ RSS и 5 ГБ резерва. Sound Pi получает лимиты 5g + 512m + 128m + 128m + ~128m (`sensor-bridge`, profile `sensors`, по умолчанию выключен) ≈ 6 ГБ из 8 — плюс `supervisor` 512m (В8, в PR-2b — сразу) и `quest` 512m и `telegram-bot` 512m в волне 2 — потому zram обязателен (как ADR-0111).
 
 **Волна 2 (В2, решение Шифу: «можно перевезти, смотреть, чтобы все одноплатники не были перегружены»):** `quest` (21 % CPU, топики и WebRTC — ему не нужны устройства Vision Pi) и `telegram-bot` (STT голосовых — тоже топики) переезжают на Sound Pi **после** замера волны 1 (§4): если на Vision Pi `load` остаётся выше числа ядер или на Sound Pi `available` после голоса меньше ~1.5 ГБ — волна 2 откладывается, иначе едет. Критерий — одинаковая загрузка трёх узлов по `docker stats`/`load`, а не «лишь бы Vision разгрузить». Оформляется отдельным PR в этом эпике (§5, PR-7).
 
@@ -143,7 +143,7 @@ zenoh-router-sound:  listen tcp/10.1.1.12:7447,  connect tcp/10.1.1.10:7447#ifac
 сессии нод Sound Pi: peer → tcp/10.1.1.12:7447 (копия zenoh_session_config.json5 с заменой .11 → .12)
 ```
 
-Путь `audio_node` (Sound) → `supervisor` (Vision) при звезде становится двухзвенным: Sound → Main → Vision по гигабиту. **Решение Шифу по В3: «взвесить, но напрямую, кажется, ок».** Взвешиваем:
+Путь `audio_node` (Sound) → `avatar-arbiter`/`quest`/`led-matrix` (Vision) при звезде становится двухзвенным: Sound → Main → Vision по гигабиту (`supervisor` после В8 на Sound Pi — для него путь локальный). **Решение Шифу по В3: «взвесить, но напрямую, кажется, ок».** Взвешиваем:
 
 | Вариант | Плюсы | Минусы |
 |---|---|---|
@@ -218,13 +218,13 @@ Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 10
 
 1. `setup_sound_pi.sh` на SoundPi; кабель eth0; DHCP-резерв `.12`; `reboot` (config.txt).
 2. Деплой PR-2…PR-4 **без** переключения ReSpeaker: Sound Pi поднимает только `zenoh-router`; voice-стек ещё на Vision — **нет**, так не выйдет: PR-2 переносит сервисы из vision-compose. Поэтому cutover атомарный: мёрж PR-2a…PR-4 → `Build All` → **стоп** стека Vision Pi → `rsync -a` `docker/vision/data/voice/` и `docker/vision/cache/tts/` на Sound Pi в `docker/sound/…` (это `speakers.db`, `voice_memory.db`, `music_library`, `.mcp_token` — живые данные людей, память `robot-data-is-shared-with-live-people`) → переткнуть ReSpeaker и колонки → `Deploy and Verify`.
-3. Evidence: `docker stats` на всех трёх; `ros2 topic hz /voice/stt/result` из supervisor-контейнера на Vision (сквозной путь Sound→Main→Vision); живая реплика «Робот, …» (память `live-check-by-topic-injection`) с ответом в динамики; LED-матрица реагирует на анимацию (`/panel_image` приходит с другого узла).
+3. Evidence: `docker stats` на всех трёх; `ros2 topic hz /voice/stt/result` из контейнера `avatar-arbiter` на Vision (сквозной путь Sound→Main→Vision); живая реплика «Робот, …» (память `live-check-by-topic-injection`) с ответом в динамики; LED-матрица реагирует на анимацию (`/panel_image` приходит с другого узла).
 
 ### 3.6 Что может сломаться при разнесении по хостам
 
 | Риск | Где | Что делать |
 |---|---|---|
-| `/mcp/execute` аутентификация: токен лежит в `/data/.mcp_token` voice-assistant; `supervisor` на Vision Pi его файла не видит | `docker-compose.yaml:303–308` («Set ROB_BOX_MCP_TOKEN here instead if the nodes are ever split») | **В5, Шифу: «пока не усложняем»** — ничего не меняем до cutover; в приёмке §4 ТАРС вызывает любой тул (`container_status`) и результат виден в его логе. Если упадёт по токену — тогда `ROB_BOX_MCP_TOKEN` в `.env.secrets` обоих узлов отдельной карточкой |
+| ~~`/mcp/execute` аутентификация: токен лежит в `/data/.mcp_token` voice-assistant; `supervisor` на Vision Pi его файла не видит~~ **Снято В8: `supervisor` на Sound Pi, тот же `./data/voice:/data`** | `docker-compose.yaml:303–308` («Set ROB_BOX_MCP_TOKEN here instead if the nodes are ever split») | **В5, Шифу: «пока не усложняем»** — ничего не меняем до cutover; в приёмке §4 ТАРС вызывает любой тул (`container_status`) и результат виден в его логе. Если упадёт по токену — тогда `ROB_BOX_MCP_TOKEN` в `.env.secrets` обоих узлов отдельной карточкой |
 | `OLLAMA_BASE_URL=localhost` | §2.3 | env-переменная на хост Vision |
 | `ipc: host` dmix между voice-assistant и supercollider | оба на Sound Pi — сохраняется | — |
 | E2E/хотпатч ходят на `.21` за логами voice-assistant | §1.5 | PR-5 |
@@ -241,9 +241,9 @@ Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 10
 - `Build All` зелёный с третьим workflow; `docker/sound/.image-versions.dev` обновлён CI (`gh run view <id>`).
 - `Deploy and Verify` зелёный на трёх узлах; `check_container_status` `SCOPE=sound` healthy.
 - `docker stats` Vision Pi после переезда: нет `voice-assistant`/`supercollider`; CPU idle вырос против §1.1 — приложить обе таблицы.
-- Сквозной голос: реплика в ReSpeaker (Sound) → ответ TTS в динамики (Sound) → анимация на LED (Vision) → запись в журнал ТАРС (Vision). `docker logs voice-assistant` (Sound) и `docker logs avatar-supervisor` (Vision) — последние 30 строк каждого.
-- Zenoh вариант Б (§2.2): `ros2 topic hz /voice/tts/state` из `avatar-supervisor` при обоих линках и при выдернутом кабеле Vision Pi — поток не прерывается дольше ретрая роутера (≤ 4 с, `period_max_ms`), дублей нет (`hz` совпадает с публикуемой частотой).
-- ТАРС зовёт тул (`container_status`) после разнесения — ответ в `docker logs avatar-supervisor` (В5).
+- Сквозной голос: реплика в ReSpeaker (Sound) → ответ TTS в динамики (Sound) → анимация на LED (Vision) → запись в журнал ТАРС (Sound, `avatar-supervisor`). `docker logs voice-assistant` и `docker logs avatar-supervisor` (оба Sound) — последние 30 строк каждого.
+- Zenoh вариант Б (§2.2): `ros2 topic hz /voice/tts/state` из `avatar-arbiter` (Vision) при обоих линках и при выдернутом кабеле Vision Pi — поток не прерывается дольше ретрая роутера (≤ 4 с, `period_max_ms`), дублей нет (`hz` совпадает с публикуемой частотой).
+- ТАРС зовёт тул (`container_status`) после разнесения — ответ в `docker logs avatar-supervisor`; `list_faces` на Sound Pi отвечает честно («база пуста/недоступна на этом узле»), пока галерея `vision-face` не синхронизирована (В8).
 - Волна 2 (§2.1): таблицы `docker stats` + `uptime` трёх узлов до и после переезда `quest`/`telegram-bot`; решение «везём/не везём» записано в карточке PR-7 со ссылкой на эти таблицы.
 - `sensor-bridge` — profile `sensors` не стартует по умолчанию: `docker compose ps` на Sound Pi без него; `docker compose --profile sensors config` валиден. Живая проверка `/sensors/data` — в задаче подключения ESP32 (В6), не здесь.
 - `grep -rn "micro-ros\|micro_ros\|microros" docker scripts docs/architecture src` — пусто, кроме истории в ADR и `test_service_manifest_sync.py` (он охраняет отсутствие).
@@ -288,9 +288,10 @@ PR-2b…PR-4 **мёржатся подряд перед одной сборко�
 | В2 | Переезжают ли во второй волне `quest` и `telegram-bot` | решать по `docker stats` после первого переезда | **Можно перевезти.** Цель — ни один одноплатник не перегружен; решение по замеру волны 1 (§2.1, PR-7) |
 | В3 | Топология Zenoh: звезда через Main или прямой линк Sound↔Vision | звезда; прямой линк после замера | **Взвесить все варианты; напрямую, скорее всего, ок.** Принят вариант Б — прямой линк плюс линк на Main (§2.2), звезда остаётся откатом |
 | В4 | Дубли `zenoh-router`/`ros_with_namespace.sh`/session-config ×3 и три build-workflow | принять долг, карточка позже | **Унифицируем** в этом эпике: `docker/common/` (PR-2a), единый build-workflow с входом `pi` (PR-3) |
-| В5 | Как ТАРС зовёт тулы `mcp_server` через хосты (`.mcp_token`) | выяснить до PR-2 | **Пока не усложняем.** Проверяется в приёмке cutover; чиним, только если упадёт |
+| В5 | Как ТАРС зовёт тулы `mcp_server` через хосты (`.mcp_token`) | выяснить до PR-2 | **Пока не усложняем.** Проверяется в приёмке cutover; чиним, только если упадёт. **Снято В8** (19.10): `mcp_server` и `supervisor` снова на одном узле |
 | В6 | Протокол ESP32 ↔ хост, когда подключать | Шифу даёт прошивку/описание | **Пока не делаем**, заложиться на путь: udev `/dev/sensor_hub`, profile `sensors` в compose Sound Pi. Подключение хаба — отдельная задача |
 | В7 | Образ для ноды сенсорного хаба | новый пакет в образе `voice-assistant` | **Координатор напутал**: нода уже есть — `perception_bridge` в образе `perception`; новое не пишем (§2.4) |
+| В8 | ТАРС (`avatar-supervisor`) и личность пишут в один `/data/harness_voice.db` (ADR-0083 §E, `./data/voice:/data`) — на двух хостах файл общим не бывает | найдено при PR-2b | **Шифу 19.10: «ТАРС на SoundPi».** `avatar-supervisor` тоже на Sound Pi (PR-2b); В5 (`.mcp_token`) снимается — `mcp_server` и `supervisor` снова на одном узле. `avatar-arbiter` остаётся на Vision Pi (файлов голосового стека не читает). Лицевая база `/data/faces` читается ТАРС `:ro` на Sound, а пишет её `vision-face` на Vision — синхронизация Vision→Sound не сделана (остаток, карточка) |
 
 Открытых вопросов после 19.10 нет; новые — заводить строками ниже.
 

@@ -15,7 +15,7 @@
 #
 # Источники истины:
 #   - docs/adr/0027-meta-quest-ar-control.md §4.1, §4.5
-#   - docker/vision/scripts/supervisor/start_supervisor.sh (паттерн Zenoh-wait)
+#   - docker/sound/scripts/supervisor/start_supervisor.sh (паттерн Zenoh-wait)
 #   - docker/sound/scripts/voice_assistant/start_voice_assistant.sh (env)
 
 set -eo pipefail
