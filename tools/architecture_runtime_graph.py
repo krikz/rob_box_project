@@ -61,8 +61,9 @@ UPSTREAM_EXECUTABLE_NODES = {
     "usb_cam_node_exe": "usb_cam",
 }
 
-HOST_BY_COMPOSE_DIR = {"docker/main/": "Main Pi", "docker/vision/": "Vision Pi"}
-DEFAULT_HOST_ADDRESSES = {"Main Pi": "10.1.1.20", "Vision Pi": "10.1.1.21"}
+# ADR-0159: третий узел Sound Pi (голосовой стек); wlan-адрес по тому же ряду .20/.21/.22.
+HOST_BY_COMPOSE_DIR = {"docker/main/": "Main Pi", "docker/vision/": "Vision Pi", "docker/sound/": "Sound Pi"}
+DEFAULT_HOST_ADDRESSES = {"Main Pi": "10.1.1.20", "Vision Pi": "10.1.1.21", "Sound Pi": "10.1.1.22"}
 
 MAX_EDGE_TOPICS = 3
 MAX_BOX_NODES = 8
