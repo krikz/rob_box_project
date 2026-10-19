@@ -490,7 +490,7 @@ def test_tts_node_init_does_not_touch_torch_attribute() -> None:
 
 # ── Layer 4: the DEPLOYED configs actually turn the warm-loads off ──────────
 
-_DOCKER_VOICE_CONFIG = _REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant"
+_DOCKER_VOICE_CONFIG = _REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant"
 
 
 def test_deployed_tts_yaml_disables_silero_warm_load() -> None:

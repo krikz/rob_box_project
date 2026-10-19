@@ -1809,7 +1809,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     # классифицирует все восемь шагов выше (n303/n304/n305 ловятся,
     # n302/n306 не ловятся). Порог по файлу = speech_max_duration - 2.5.
     #
-    # Дефолты синхронизированы с docker/vision/config/voice_assistant/
+    # Дефолты синхронизированы с docker/sound/config/voice_assistant/
     # audio_node.yaml → audio_node → ros__parameters → speech_max_duration.
     # Рассинхрон дефолта и конфига ловит
     # scripts/testing/test_e2e_scenario_playable.sh.

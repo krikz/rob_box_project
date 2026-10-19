@@ -40,6 +40,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_FILE = REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
 COMPOSE_DIR = COMPOSE_FILE.parent
+# ADR-0159 PR-2b: voice-assistant / supercollider / voice-action-server живут на Sound Pi.
+SOUND_COMPOSE_FILE = REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"
 
 
 # --------------------------------------------------------------------------- #
@@ -171,7 +173,9 @@ def test_samples_come_from_host_bind_mount(service_name: str, read_only: bool) -
     Python-файл (sample_search.py, foxdot_init.sc) трогать не потребовалось.
     supercollider получает каталог ``:ro`` — сэмплы меняет только хост.
     """
-    services = _all_services_with_profiles()
+    # Оба потребителя сэмплов теперь в compose Sound Pi.
+    with SOUND_COMPOSE_FILE.open("r", encoding="utf-8") as f:
+        services = yaml.safe_load(f)["services"]
     volumes = services[service_name].get("volumes") or []
     expected = f"{SAMPLES_HOST_DIR}:{SAMPLES_CONTAINER_DIR}"
     if read_only:
@@ -296,9 +300,10 @@ def test_total_service_count_matches_known_inventory() -> None:
     all_services = _all_services_with_profiles()
     total = len(all_services)
     # Было 17, стало 16: voice-resources-init удалён вместе с образом.
-    # Допускаем ±2 для будущих PR с обоснованным изменением.
-    assert 15 <= total <= 19, (
-        f"обнаружено {total} сервисов в compose, ожидалось ~16. "
+    # ADR-0159 PR-2b: voice-assistant, supercollider, voice-action-server уехали
+    # на Sound Pi → на Vision 13. Допускаем ±2 для будущих PR с обоснованным изменением.
+    assert 11 <= total <= 15, (
+        f"обнаружено {total} сервисов в compose, ожидалось ~13. "
         f"Сервисы: {sorted(all_services.keys())}. "
         f"Если это намеренное изменение — обновите этот guard."
     )

@@ -482,7 +482,7 @@ jobs:
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
           # Sibling directories referenced by tests (NOT compiled by colcon).
           # Same as the unit-tests job above. Without this, tests that walk up
-          # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
+          # to find e.g. docker/sound/scripts/supercollider/metrics_server.py
           # raise FileNotFoundError at collection time
           # (test_supercollider_metrics_osc_status).
           # scripts is here for the same reason as in unit-tests above

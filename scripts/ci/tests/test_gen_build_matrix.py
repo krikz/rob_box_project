@@ -238,17 +238,93 @@ def test_image_versions_map_skips_false():
 def test_real_manifest_parses_and_has_18_services():
     manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
     vision = gen_build_matrix.services_for_pi(manifest, "vision")
+    sound = gen_build_matrix.services_for_pi(manifest, "sound")
     main = gen_build_matrix.services_for_pi(manifest, "main")
 
     # Было 11: узел voice-resources удалён вместе с образом — Renardo-сэмплы
-    # кладёт на хост Ресурсный пак, а не собирает CI.
-    assert len(vision) == 10, f"expected 10 Vision Pi services, got {sorted(vision)}"
+    # кладёт на хост Ресурсный пак, а не собирает CI. Затем (ADR-0159 PR-2b)
+    # voice-base / voice-assistant / supercollider переехали на Sound Pi: 10 → 7.
+    assert len(vision) == 7, f"expected 7 Vision Pi services, got {sorted(vision)}"
+    assert sorted(sound) == ["supercollider", "voice-assistant", "voice-base"]
     assert len(main) == 8, f"expected 8 Main Pi services, got {sorted(main)}"
 
-    # Двухуровневая цепочка должна разрешиться без ошибок и в правильном
-    # порядке — это же покрытие интеграционно, не только синтетически.
+    # Двухуровневая цепочка voice-base → voice-assistant теперь на Sound Pi, а
+    # supervisor (Vision Pi) наследует образ voice-assistant ДРУГОГО Pi — это
+    # зависимость между Pi, в графе Vision она не учитывается.
+    chained = gen_build_matrix.chained_services(sound)
+    assert [s["name"] for s in chained] == ["voice-assistant"]
     chained = gen_build_matrix.chained_services(vision)
-    assert [s["name"] for s in chained] == ["voice-assistant", "supervisor"]
+    assert [s["name"] for s in chained] == ["supervisor"]
+
+
+# --- зависимость между Pi (ADR-0159: supervisor@vision ← voice-assistant@sound) --
+
+
+_CROSS_PI_MANIFEST = """\
+version: 1
+defaults:
+  registry:
+    ghcr: ghcr.io/o/r
+    local: localhost:5000/o/r
+  base_registry: localhost:5000/o/r_base
+  ros_distro: humble
+  apt_proxy: http://proxy
+pis:
+  vision:
+    services:
+      child:
+        dockerfile: docker/vision/child/Dockerfile
+        build_context: "."
+        base:
+          service: parent
+        depends_on: [parent]
+        tag:
+          ros_distro: true
+        image_versions: false
+  sound:
+    services:
+      parent:
+        dockerfile: docker/vision/parent/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        image_versions: false
+"""
+
+
+def test_dependency_on_service_of_another_pi_is_allowed(tmp_path):
+    p = tmp_path / "m.yaml"
+    p.write_text(_CROSS_PI_MANIFEST, encoding="utf-8")
+    manifest = gen_build_matrix.load_manifest(p)
+    vision = gen_build_matrix.services_for_pi(manifest, "vision")
+
+    # В графе Vision зависимость чужого Pi не создаёт ни цикла, ни ожидания.
+    assert gen_build_matrix.topo_layers(vision) == [["child"]]
+
+    # BASE_IMAGE разрешается по каталогу всех Pi, а не только по своему.
+    ctx = gen_build_matrix.build_context(manifest, docker_tag="dev")
+    entries = gen_build_matrix.named_entries(
+        vision, ctx, gen_build_matrix.catalog_for_manifest(manifest)
+    )
+    assert "BASE_IMAGE=localhost:5000/o/r:parent-humble-dev" in entries["child"][0]["build_args"]
+
+
+def test_dependency_on_unknown_service_still_fails_with_several_pis(tmp_path):
+    p = tmp_path / "m.yaml"
+    p.write_text(_CROSS_PI_MANIFEST.replace("[parent]", "[ghost]").replace(
+        "service: parent", "service: ghost"), encoding="utf-8")
+    with pytest.raises(gen_build_matrix.ManifestError, match="unknown service 'ghost'"):
+        gen_build_matrix.load_manifest(p)
+
+
+def test_same_service_name_in_two_pis_is_rejected(tmp_path):
+    p = tmp_path / "m.yaml"
+    p.write_text(_CROSS_PI_MANIFEST.replace("      parent:", "      child:"),
+                 encoding="utf-8")
+    with pytest.raises(gen_build_matrix.ManifestError, match="уже занято"):
+        gen_build_matrix.load_manifest(p)
 
 
 # --- CLI smoke --------------------------------------------------------------
@@ -269,7 +345,7 @@ def test_cli_mode_tags_prints_json(tmp_path, capsys):
 """,
         pi="vision",
     )
-    # --pi ограничен choices=["vision", "main"] (план §4.2 — CLI работает
+    # --pi ограничен choices=["vision", "sound", "main"] (план §4.2 — CLI работает
     # только над реальными Pi), поэтому синтетический манифест здесь тоже
     # использует ключ "vision", а не произвольное имя "test".
     rc = gen_build_matrix.main(
@@ -322,21 +398,26 @@ def _real(pi: str, docker_tag: str = "dev"):
 
 
 def test_dependency_target_is_not_a_matrix_service():
-    """voice-base НЕ имеет depends_on, но на него ссылается voice-assistant.
+    """voice-base (Sound Pi) НЕ имеет depends_on, но на него ссылается voice-assistant.
 
     Он обязан остаться именованным job'ом: `needs:` умеет ссылаться только на
     job ID, не на элемент матрицы (план §3.1). Если бы voice-base уехал в
     matrix, build-voice-assistant пришлось бы вешать на ВЕСЬ matrix-job —
     огрубление графа и изменение поведения при падении соседнего сервиса.
     """
-    services, _ = _real("vision")
+    services, _ = _real("sound")
     matrix = gen_build_matrix.matrix_service_names(services)
     named = gen_build_matrix.named_service_names(services)
 
     assert "voice-base" not in matrix
-    assert named == ["voice-base", "voice-assistant", "supervisor"], named
+    assert named == ["voice-base", "voice-assistant"], named
     assert set(matrix) | set(named) == set(services)
     assert not set(matrix) & set(named)
+
+    # supervisor (Vision Pi) зависит от voice-assistant ДРУГОГО Pi: в графе
+    # Vision он остаётся именованным job'ом, но порядок задаёт чужой workflow.
+    vision, _ = _real("vision")
+    assert gen_build_matrix.named_service_names(vision) == ["supervisor"]
 
 
 def test_main_pi_graph_is_flat_so_everything_is_matrix():
@@ -361,7 +442,7 @@ def test_tag_formula_omits_ros_distro_for_supercollider():
     """Единственный сервис с tag.ros_distro: false ("tag naming is
     inconsistent"). Манифест фиксирует факт, генератор его воспроизводит.
     """
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")
     entry = gen_build_matrix.matrix_entry("supercollider", services, ctx)
     assert entry["tags"].splitlines() == [
         "ghcr.io/krikz/rob_box:supercollider-dev",
@@ -387,7 +468,11 @@ def test_base_service_resolves_to_local_prefix_tag_of_that_service():
     именно поэтому у него есть и base.service, и depends_on (план §2.3).
     """
     services, ctx = _real("vision")
-    entry = gen_build_matrix.matrix_entry("supervisor", services, ctx)
+    # voice-assistant теперь в pis.sound — база разрешается по каталогу всех Pi.
+    catalog = gen_build_matrix.catalog_for_manifest(
+        gen_build_matrix.load_manifest(REAL_MANIFEST)
+    )
+    entry = gen_build_matrix.matrix_entry("supervisor", services, ctx, catalog)
     assert (
         "BASE_IMAGE=localhost:5000/krikz/rob_box:voice-assistant-humble-dev"
         in entry["build_args"].splitlines()
@@ -396,7 +481,7 @@ def test_base_service_resolves_to_local_prefix_tag_of_that_service():
 
 
 def test_service_without_base_gets_no_base_image_arg():
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")
     # voice-resources тут был вторым примером сервиса без base; узел удалён
     # вместе с образом (сэмплы едут Ресурсным паком на хост).
     for name in ("supercollider",):
@@ -463,11 +548,14 @@ def test_every_matrix_entry_has_the_same_keys():
     """Шаблон job'а один на все сервисы, поэтому набор ключей обязан
     совпадать — иначе `matrix.<key>` у части сервисов молча даст пустоту.
     """
-    for pi in ("vision", "main"):
+    catalog = gen_build_matrix.catalog_for_manifest(
+        gen_build_matrix.load_manifest(REAL_MANIFEST)
+    )
+    for pi in ("vision", "sound", "main"):
         services, ctx = _real(pi)
-        entries = gen_build_matrix.matrix_entries(services, ctx) + [
+        entries = gen_build_matrix.matrix_entries(services, ctx, catalog) + [
             e
-            for lst in gen_build_matrix.named_entries(services, ctx).values()
+            for lst in gen_build_matrix.named_entries(services, ctx, catalog).values()
             for e in lst
         ]
         keys = {frozenset(e) for e in entries}
@@ -509,14 +597,14 @@ def test_cli_chained_is_keyed_by_service_name(capsys):
     rc = gen_build_matrix.main(
         [
             "--manifest", str(REAL_MANIFEST),
-            "--pi", "vision",
+            "--pi", "sound",
             "--mode", "chained",
             "--docker-tag", "dev",
         ]
     )
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
-    assert set(out) == {"voice-base", "voice-assistant", "supervisor"}
+    assert set(out) == {"voice-base", "voice-assistant"}
     # Каждое значение — массив из ОДНОГО элемента: strategy.matrix.include
     # принимает только массив.
     for name, entries in out.items():

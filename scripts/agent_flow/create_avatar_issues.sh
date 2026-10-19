@@ -560,7 +560,7 @@ create_issue \
 - \`docs/development/DOCKER_STANDARDS.md\` (правила Docker)
 - \`docker/vision/docker-compose.yaml:170\` (образец \`voice-assistant\`)
 - \`docker/vision/voice_assistant/Dockerfile\` (образец app-layer Dockerfile)
-- \`docker/vision/scripts/voice_assistant/\` (образец start-скрипта)
+- \`docker/sound/scripts/voice_assistant/\` (образец start-скрипта)
 - \`docs/plans/2026-08-24-avatar-decomposition.md\` §4 (AV-9 acceptance)
 
 ## Acceptance criteria

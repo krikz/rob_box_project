@@ -890,7 +890,7 @@ def test_extract_relevant_log_line_ignores_voice_assistant_music_stack_validatio
     startup wrapper prints `⚠ Music stack validation found non-critical
     errors (degraded but usable)` whenever validate_music_stack.py exits
     non-zero without declaring a fatal sclang crash (see
-    docker/vision/scripts/voice_assistant/start_voice_assistant.sh:138
+    docker/sound/scripts/voice_assistant/start_voice_assistant.sh:138
     and src/rob_box_voice/scripts/validate_music_stack.py — returns 1 on
     degraded mode). The container is INTENTIONALLY continuing with a
     degraded music stack; voice/TTS/STT stay healthy. The plain word

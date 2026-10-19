@@ -32,8 +32,8 @@ def _repo_root(start: Path) -> Path:
 
 
 REPO = _repo_root(Path(__file__).resolve())
-SCRIPT = REPO / "docker/vision/scripts/supercollider/start_supercollider.sh"
-COMPOSE = REPO / "docker/vision/docker-compose.yaml"
+SCRIPT = REPO / "docker/sound/scripts/supercollider/start_supercollider.sh"
+COMPOSE = REPO / "docker/sound/docker-compose.yaml"
 
 ALLOWED = {64, 128, 256, 512, 1024}
 # Поменять ТОЛЬКО по результатам замера на Pi (issue #3114 / #3115).

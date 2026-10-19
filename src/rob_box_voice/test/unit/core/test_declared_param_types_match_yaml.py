@@ -59,7 +59,7 @@ REPO_ROOT = _repo_root(Path(__file__).resolve())
 PKG_DIR = REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice"
 CONFIG_DIRS = [
     REPO_ROOT / "src" / "rob_box_voice" / "config",
-    REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant",
+    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant",
 ]
 
 #: Ноды, у которых есть и declare_parameter(), и YAML-конфиг с тем же
@@ -184,7 +184,7 @@ def test_setup_actually_found_config_pairs() -> None:
     """Smoke: если пары ноды/YAML не находятся, весь остальной тест пуст."""
     assert len(_CASES) >= len(NODE_NAMES), (
         "найдено подозрительно мало пар нода/YAML — сверь NODE_NAMES "
-        "с реальными файлами в config/ и docker/vision/config/voice_assistant/"
+        "с реальными файлами в config/ и docker/sound/config/voice_assistant/"
     )
 
 

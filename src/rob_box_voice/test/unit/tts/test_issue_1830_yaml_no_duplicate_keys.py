@@ -6,7 +6,7 @@ workflow run https://github.com/krikz/rob_box_project/actions/runs/33445415280):
 
 After PR #1793 (`feat(voice #1780): emotion/pitch/volume/pronunciation_dict +
 yandex_ssml_aware`) both ``src/rob_box_voice/config/tts_node.yaml`` and
-``docker/vision/config/voice_assistant/tts_node.yaml`` ended up with TWO
+``docker/sound/config/voice_assistant/tts_node.yaml`` ended up with TWO
 blocks of ``minimax_emotion / minimax_pitch / minimax_volume /
 minimax_pronunciation_dict`` parameters with DIFFERENT types::
 
@@ -65,10 +65,10 @@ _REPO_ROOT = _PKG_ROOT.parent.parent
 
 # Canonical tts_node ROS YAML config files. Issue #1830 affects both:
 # - src/rob_box_voice/config/tts_node.yaml (used by ``ros2 launch`` from src)
-# - docker/vision/config/voice_assistant/tts_node.yaml (baked into image)
+# - docker/sound/config/voice_assistant/tts_node.yaml (baked into image)
 _TTS_NODE_YAMLS: tuple[Path, ...] = (
     _REPO_ROOT / 'src' / 'rob_box_voice' / 'config' / 'tts_node.yaml',
-    _REPO_ROOT / 'docker' / 'vision' / 'config' / 'voice_assistant' / 'tts_node.yaml',
+    _REPO_ROOT / 'docker' / 'sound' / 'config' / 'voice_assistant' / 'tts_node.yaml',
 )
 
 # Issue #1830 / #1780 — MiniMax TTS provider params that were duplicated.

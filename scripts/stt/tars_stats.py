@@ -11,7 +11,7 @@
 * читает JSONL, группирует по ``raw_text`` (нормализация lower + strip);
 * печатает таблицу с **частотой, длительностью, распределением
   yandex-only vs yandex+vosk, долей wake-хитов**;
-* в режиме ``--diff`` сравнивает с текущим ``docker/vision/config/wake_words.yaml``::operator
+* в режиме ``--diff`` сравнивает с текущим ``docker/sound/config/wake_words.yaml``::operator
   и печатает **только подсказку** «вот слова, которых нет, но они встречаются
   N раз на M сегментов». Ничего не правит.
 
@@ -19,7 +19,7 @@
 
 * (по умолчанию) сводка: топ-N вариантов «как STT слышит ТАРС» с частотой,
   длительностью и распределением провайдеров.
-* ``--diff``: сверяет с текущим ``docker/vision/config/wake_words.yaml``
+* ``--diff``: сверяет с текущим ``docker/sound/config/wake_words.yaml``
   operator namespace и печатает кандидаты на добавление (нечётко — это
   пишет Шифу, не эта утилита).
 
@@ -265,9 +265,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("jsonl", type=Path, help="путь к stt_tars_samples.jsonl")
     ap.add_argument("--diff", action="store_true",
-                    help="сверить с docker/vision/config/wake_words.yaml::operator")
+                    help="сверить с docker/sound/config/wake_words.yaml::operator")
     ap.add_argument("--yaml", type=Path,
-                    default=Path(__file__).resolve().parents[2] / "docker" / "vision" / "config" / "wake_words.yaml",
+                    default=Path(__file__).resolve().parents[2] / "docker" / "sound" / "config" / "wake_words.yaml",
                     help="путь к wake_words.yaml (по умолчанию репо-relative)")
     ap.add_argument("--top", type=int, default=15, help="сколько строк в сводке (по умолчанию 15)")
     args = ap.parse_args()

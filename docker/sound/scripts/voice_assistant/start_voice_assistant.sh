@@ -168,7 +168,7 @@ echo "=========================================="
 # Issue #1004 fix (ADR-0004): launch грузит per-node YAML
 # (audio_node.yaml, tts_node.yaml, ...) из config_dir. Операторские
 # конфиги лежат в /config/voice_assistant (монтируется из
-# docker/vision/config/voice_assistant/) — правки применяются при
+# docker/sound/config/voice_assistant/) — правки применяются при
 # рестарте контейнера. Монолитного voice_assistant.yaml больше нет:
 # вложенные <node>: секции создавали dotted-имена, которые ноды не читали.
 if [ -f /config/voice_assistant/tts_node.yaml ]; then

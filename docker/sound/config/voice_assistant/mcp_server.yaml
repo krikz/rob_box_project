@@ -1,6 +1,6 @@
 # mcp_server.yaml — per-node ROS2 config ноды mcp_server (ADR-0004: <node>: ros__parameters:).
 #
-# Две копии: docker/vision/config/voice_assistant/ (живой, docker) и src/rob_box_voice/config/ —
+# Две копии: docker/sound/config/voice_assistant/ (живой, docker) и src/rob_box_voice/config/ —
 # менять синхронно (сверяет test_player_owner_wiring.py). Ключи = declare_parameter()
 # в rob_box_mcp_tools/mcp_server.py.
 

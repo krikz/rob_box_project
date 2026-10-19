@@ -25,7 +25,7 @@ def _history_in_memory(monkeypatch):
 
 
 REPO = Path(__file__).resolve().parents[3]
-CONFIG_DIRS = [REPO / "src/rob_box_voice/config", REPO / "docker/vision/config/voice_assistant"]
+CONFIG_DIRS = [REPO / "src/rob_box_voice/config", REPO / "docker/sound/config/voice_assistant"]
 
 
 class _Node:
@@ -112,7 +112,7 @@ def test_music_engine_flag_is_gone():
     paths = [
         "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
         "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-        "docker/vision/config/voice_assistant/voice_assistant_headless.launch.py",
+        "docker/sound/config/voice_assistant/voice_assistant_headless.launch.py",
         "src/rob_box_voice/launch/voice_assistant.launch.py",
     ]
     for rel in paths:

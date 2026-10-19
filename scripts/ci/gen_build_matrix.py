@@ -59,7 +59,7 @@ from typing import Any, NamedTuple
 
 import yaml
 
-# Валидное имя переменной *_TAG в docker/{main,vision}/.image-versions.* —
+# Валидное имя переменной *_TAG в docker/{main,vision,sound}/.image-versions.* —
 # заглавные буквы/цифры/подчёркивания, обязательно оканчивается на _TAG.
 _IMAGE_VERSIONS_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]*_TAG$")
 
@@ -88,9 +88,10 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
     if not isinstance(manifest, dict) or "pis" not in manifest:
         raise ManifestError(f"{p}: manifest must be a mapping with a 'pis' key")
 
+    catalog = _service_catalog(manifest)
     for pi_name, pi_data in manifest["pis"].items():
         services = (pi_data or {}).get("services") or {}
-        _validate_services(pi_name, services)
+        _validate_services(pi_name, services, catalog)
         # topo_layers сам кидает ManifestError при цикле — валидируем
         # структуру графа зависимостей здесь же, при загрузке, а не только
         # по требованию потребителя chained/topo_layers.
@@ -99,7 +100,28 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
     return manifest
 
 
-def _validate_services(pi_name: str, services: dict[str, Any]) -> None:
+def _service_catalog(manifest: dict[str, Any]) -> dict[str, Any]:
+    """{имя: описание} по ВСЕМ Pi. Имя сервиса уникально во всём манифесте.
+
+    Нужен для зависимостей между Pi (ADR-0159): `supervisor` собирается для
+    Vision Pi, но его Dockerfile наследует образ `voice-assistant`, который
+    теперь собирается для Sound Pi.
+    """
+    catalog: dict[str, Any] = {}
+    for pi_name, pi_data in manifest["pis"].items():
+        for name, svc in ((pi_data or {}).get("services") or {}).items():
+            if name in catalog:
+                raise ManifestError(
+                    f"pis.{pi_name}.services.{name}: имя сервиса уже занято другим Pi"
+                )
+            catalog[name] = svc
+    return catalog
+
+
+def _validate_services(
+    pi_name: str, services: dict[str, Any], catalog: dict[str, Any] | None = None
+) -> None:
+    known = services if catalog is None else catalog
     for name, svc in services.items():
         base = svc.get("base")
         depends_on = svc.get("depends_on") or []
@@ -124,7 +146,7 @@ def _validate_services(pi_name: str, services: dict[str, Any]) -> None:
             )
 
         for dep in depends_on:
-            if dep not in services:
+            if dep not in known:
                 raise ManifestError(
                     f"pis.{pi_name}.services.{name}: depends_on references unknown "
                     f"service {dep!r}"
@@ -135,7 +157,7 @@ def _validate_services(pi_name: str, services: dict[str, Any]) -> None:
 
 
 def services_for_pi(manifest: dict[str, Any], pi: str) -> dict[str, Any]:
-    """Возвращает {имя_сервиса: описание} для одного pi (vision|main)."""
+    """Возвращает {имя_сервиса: описание} для одного pi (vision|sound|main)."""
     try:
         pi_data = manifest["pis"][pi]
     except KeyError as exc:
@@ -143,6 +165,11 @@ def services_for_pi(manifest: dict[str, Any], pi: str) -> dict[str, Any]:
             f"manifest has no pis.{pi} (known: {sorted(manifest.get('pis', {}))})"
         ) from exc
     return dict((pi_data or {}).get("services") or {})
+
+
+def catalog_for_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Все сервисы всех Pi — чтобы разрешить base.service из другого Pi."""
+    return _service_catalog(manifest)
 
 
 def independent_services(services: dict[str, Any]) -> list[dict[str, Any]]:
@@ -187,8 +214,11 @@ def topo_layers(services: dict[str, Any]) -> list[list[str]]:
     Кидает ManifestError, если граф содержит цикл — вместо RecursionError
     или бесконечного цикла (план §4.3, тест-кейс "манифест с циклом").
     """
+    # Зависимость, которой нет в этом Pi (сервис другого Pi, ADR-0159), здесь не
+    # учитывается: её порядок обеспечивает workflow другого Pi, а не граф этого.
     remaining = {
-        name: list(svc.get("depends_on") or []) for name, svc in services.items()
+        name: [d for d in (svc.get("depends_on") or []) if d in services]
+        for name, svc in services.items()
     }
     layers: list[list[str]] = []
     resolved: set[str] = set()
@@ -328,6 +358,7 @@ def tag_basename(name: str, svc: dict[str, Any], ctx: BuildContext) -> str:
 
 
 def _base_image(svc: dict[str, Any], services: dict[str, Any], ctx: BuildContext):
+    # `services` здесь — каталог: base.service может жить в другом Pi.
     """BASE_IMAGE build-arg или None (сервис без базового образа)."""
     base = svc.get("base")
     if not base:
@@ -359,7 +390,10 @@ def _source_hash_spec(svc: dict[str, Any]) -> str:
 
 
 def matrix_entry(
-    name: str, services: dict[str, Any], ctx: BuildContext
+    name: str,
+    services: dict[str, Any],
+    ctx: BuildContext,
+    catalog: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Один элемент matrix — полностью разрешённые параметры сборки сервиса.
 
@@ -371,7 +405,7 @@ def matrix_entry(
     basename = tag_basename(name, svc, ctx)
 
     build_args = []
-    base_image = _base_image(svc, services, ctx)
+    base_image = _base_image(svc, catalog if catalog is not None else services, ctx)
     if base_image:
         build_args.append(f"BASE_IMAGE={base_image}")
     build_args.append(f"APT_PROXY={ctx.apt_proxy}")
@@ -392,13 +426,22 @@ def matrix_entry(
     }
 
 
-def matrix_entries(services: dict[str, Any], ctx: BuildContext) -> list[dict[str, str]]:
+def matrix_entries(
+    services: dict[str, Any],
+    ctx: BuildContext,
+    catalog: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     """matrix-job: список элементов для `strategy.matrix.include`."""
-    return [matrix_entry(name, services, ctx) for name in matrix_service_names(services)]
+    return [
+        matrix_entry(name, services, ctx, catalog)
+        for name in matrix_service_names(services)
+    ]
 
 
 def named_entries(
-    services: dict[str, Any], ctx: BuildContext
+    services: dict[str, Any],
+    ctx: BuildContext,
+    catalog: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     """Именованные job'ы: {имя_сервиса: [единственный элемент matrix]}.
 
@@ -413,7 +456,7 @@ def named_entries(
     общего matrix-job'а (требование плана §5 Phase 2 п.3).
     """
     return {
-        name: [matrix_entry(name, services, ctx)]
+        name: [matrix_entry(name, services, ctx, catalog)]
         for name in named_service_names(services)
     }
 
@@ -506,7 +549,7 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pi",
         required=False,  # обязателен для всех режимов, кроме base (проверка в main)
-        choices=["vision", "main"],
+        choices=["vision", "sound", "main"],
         help="Для какого Pi генерировать вывод",
     )
     parser.add_argument(
@@ -591,9 +634,9 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.mode == "matrix":
-            result: Any = matrix_entries(services, ctx)
+            result: Any = matrix_entries(services, ctx, catalog_for_manifest(manifest))
         elif args.mode == "chained":
-            result = named_entries(services, ctx)
+            result = named_entries(services, ctx, catalog_for_manifest(manifest))
         elif args.mode == "services":
             result = sorted(services)
         else:  # tags

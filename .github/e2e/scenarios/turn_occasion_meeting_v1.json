@@ -17,7 +17,7 @@
       "git grep -c 'from rob_box_perception.core.event_detector import EventDetector' -- src/  # >= 2 (тест + core/occasion.py)"
     ],
     "config": [
-      "docker/vision/config/wake_words.yaml содержит personality с 'роб бокс' (ADR-0065 SSoT)"
+      "docker/sound/config/wake_words.yaml содержит personality с 'роб бокс' (ADR-0065 SSoT)"
     ],
     "runtime": [
       "ros2 node info /dialogue_node показывает подписку на /vision/hailo/events",

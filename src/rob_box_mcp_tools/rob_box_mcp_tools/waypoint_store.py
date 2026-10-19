@@ -12,7 +12,7 @@ Pointing this class at that file would make ``CREATE TABLE IF NOT EXISTS``
 a no-op against the wrong schema and every insert here would then fail
 with "no such column: map_id". Deliberate, documented blocker — not an
 oversight. See the ``sqlite_db_path`` comment in
-``docker/vision/config/voice_assistant/dialogue_node.yaml`` and
+``docker/sound/config/voice_assistant/dialogue_node.yaml`` and
 ``docs/adr/0055-voice-memory-db-unify-with-harness.md``.
 
 Thread-safe: every public method acquires ``self._lock``.

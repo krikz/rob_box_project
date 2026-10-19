@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_wake_words_config.py — SSoT wake_words.yaml (issue #1990).
 
-Проверяет, что ``docker/vision/config/wake_words.yaml`` — единственный
+Проверяет, что ``docker/sound/config/wake_words.yaml`` — единственный
 источник истины в проде — несёт оба namespace, а ``personality`` байт-в-байт
 совпадает (и по составу, и по порядку) с кодовым фолбеком
 ``DEFAULT_WAKE_WORDS`` (иначе personality в проде и в dev-env разъедутся —
@@ -25,7 +25,7 @@ from rob_box_voice.core.dialogue_text import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
-SSOT = REPO_ROOT / "docker" / "vision" / "config" / "wake_words.yaml"
+SSOT = REPO_ROOT / "docker" / "sound" / "config" / "wake_words.yaml"
 
 
 def _load_ssot() -> dict:
@@ -43,7 +43,7 @@ class TestWakeWordsSSoT:
         """Порядок важен для strip_wake_word (regex leftmost-first)."""
         data = _load_ssot()
         assert data["personality"] == list(DEFAULT_WAKE_WORDS), (
-            "docker/vision/config/wake_words.yaml personality разошёлся с "
+            "docker/sound/config/wake_words.yaml personality разошёлся с "
             "DEFAULT_WAKE_WORDS — это ровно класс ошибки #1252. Правь оба "
             "места в одном коммите."
         )

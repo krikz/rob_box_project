@@ -402,7 +402,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
 **Изменения БЕЗ rebuild** (применяются мгновенно через volumes):
 - Конфиги: `docker/vision/config/**`
 - Скрипты: `docker/vision/scripts/**`
-- Launch файлы: `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
+- Launch файлы: `docker/sound/config/voice_assistant/voice_assistant_headless.launch.py`
 
 **Изменения С rebuild** (требуют GitHub Actions):
 - `Dockerfile` (установка пакетов, зависимостей)

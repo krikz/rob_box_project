@@ -36,7 +36,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[5]
 TTS_NODE_SRC = REPO_ROOT / "src/rob_box_voice/rob_box_voice/tts_node.py"
 SRC_YAML = REPO_ROOT / "src/rob_box_voice/config/tts_node.yaml"
-DOCKER_YAML = REPO_ROOT / "docker/vision/config/voice_assistant/tts_node.yaml"
+DOCKER_YAML = REPO_ROOT / "docker/sound/config/voice_assistant/tts_node.yaml"
 
 # Пара → (YAML-ключ, declare_parameter-имя, тип default).
 # Тип default'а важен для обратной совместимости (issue #1004:

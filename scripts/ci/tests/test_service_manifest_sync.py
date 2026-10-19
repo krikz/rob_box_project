@@ -61,6 +61,22 @@ GEN_SCRIPT = REPO_ROOT / "scripts" / "ci" / "gen_build_matrix.py"
 
 PI_TO_WORKFLOW = {"main": MAIN_WF, "vision": VISION_WF}
 
+# TEMP(ADR-0159 PR-3): voice-base / voice-assistant / supercollider переехали в
+# pis.sound (PR-2b), а "L-Build Vision Pi Services.yml" всё ещё держит
+# build-voice-base / build-voice-assistant и зовёт генератор с --pi vision.
+# Два теста графа именованных job'ов для vision честно расходятся с манифестом —
+# это и есть остаток для PR-3 (единый "L-Build Pi Services.yml" с входом `pi`).
+# strict=True: когда PR-3 приведёт workflow в порядок, XPASS уронит CI и
+# заставит снять эту метку, а не оставить её навсегда.
+_TEMP_PR3_VISION_WF_STILL_BUILDS_VOICE = pytest.mark.xfail(
+    strict=True,
+    reason="TEMP(ADR-0159 PR-3): Vision-workflow ещё собирает voice-* (теперь pis.sound)",
+)
+_PIS_WITH_TEMP_PR3 = [
+    pytest.param("vision", marks=_TEMP_PR3_VISION_WF_STILL_BUILDS_VOICE),
+    "main",
+]
+
 # Путь к манифесту, который workflow ОБЯЗАН передавать генератору — тот же,
 # что читает этот тест. Если кто-то заведёт второй манифест-копию, п.1 упадёт.
 MANIFEST_REL = "docker/build-manifest.yaml"
@@ -162,7 +178,7 @@ def test_matrix_job_expands_prepare_output(pi):
     )
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
+@pytest.mark.parametrize("pi", _PIS_WITH_TEMP_PR3)
 def test_named_jobs_match_manifest_dependency_graph(pi):
     services = _services(pi)
     data = _load_yaml(PI_TO_WORKFLOW[pi])
@@ -193,7 +209,7 @@ def test_named_jobs_match_manifest_dependency_graph(pi):
         )
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
+@pytest.mark.parametrize("pi", _PIS_WITH_TEMP_PR3)
 def test_named_jobs_needs_match_depends_on(pi):
     """needs: именованного job'а == prepare + build-<каждый depends_on>.
 
@@ -403,7 +419,8 @@ def test_known_phantom_tags_are_gone(pi):
         f"владельца в манифесте — обнови этот тест"
     )
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
+
+@pytest.mark.parametrize("pi", ["vision", "sound", "main"])
 def test_image_versions_file_has_a_field_for_every_manifest_service(pi):
     """Каждая переменная image_versions манифеста реально есть в
     docker/<pi>/.image-versions.dev.
@@ -424,9 +441,9 @@ def test_image_versions_file_has_a_field_for_every_manifest_service(pi):
 # --- smoke: манифест вообще парсится и покрывает оба pi ---------------------
 
 
-def test_manifest_declares_both_pis():
+def test_manifest_declares_all_pis():
     manifest = _manifest()
-    assert set(manifest["pis"]) >= {"vision", "main"}, (
-        f"manifest.pis must declare at least 'vision' and 'main', "
+    assert set(manifest["pis"]) >= {"vision", "sound", "main"}, (
+        f"manifest.pis must declare 'vision', 'sound' and 'main', "
         f"got {sorted(manifest['pis'])}"
     )

@@ -167,7 +167,7 @@ except ImportError:
 # (indexed_at, FTS5 triggers). ``CREATE TABLE IF NOT EXISTS`` would silently
 # keep whichever schema got created first and every write from the other
 # store would then fail with "no such column". See the comment on
-# ``sqlite_db_path`` in docker/vision/config/voice_assistant/dialogue_node.yaml
+# ``sqlite_db_path`` in docker/sound/config/voice_assistant/dialogue_node.yaml
 # and docs/adr/0055-voice-memory-db-unify-with-harness.md (§1.3, §3) for the
 # full analysis. Merging them needs a schema-reconciling adapter (like this
 # one, but for waypoints/faq), not a default-value edit.
