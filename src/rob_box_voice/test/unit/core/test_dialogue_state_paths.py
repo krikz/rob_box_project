@@ -26,7 +26,7 @@ def _repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
-COMPOSE = REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
+COMPOSE = REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"
 
 # Every config that sets the parameter — a fix in one and not the others is
 # how it drifted in the first place.
