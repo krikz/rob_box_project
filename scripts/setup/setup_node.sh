@@ -11,6 +11,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s vision
 #   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s main
 #   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s sensor-hub
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_node.sh | bash -s sound
 #
 # Что делает скрипт:
 #   1. Определяет тип узла (интерактивно или через параметр)
@@ -102,8 +103,9 @@ show_node_menu() {
     echo -e "  ${GREEN}3)${NC} 📡 Sensor Hub     - Датчики (IMU, GPS, энкодеры, мотор-драйверы)"
     echo -e "  ${GREEN}4)${NC} 🦾 Manipulator    - Манипулятор/рука (в разработке)"
     echo -e "  ${GREEN}5)${NC} 🛠️  Custom         - Пользовательская конфигурация"
+    echo -e "  ${GREEN}6)${NC} 🔊 Sound Pi       - ReSpeaker, голосовой стек, SuperCollider, нода сенсорного хаба (ADR-0159)"
     echo ""
-    echo -e "${YELLOW}Примечание:${NC} Для Sensor Hub используйте ESP32 с micro-ROS"
+    echo -e "${YELLOW}Примечание:${NC} Sensor Hub — прошивка ESP32; нода связи с ним (serial, без micro-ROS) живёт на Sound Pi (ADR-0159)"
     echo ""
 }
 
@@ -138,6 +140,11 @@ detect_node_type() {
                 log_info "Тип узла задан через параметр: Custom"
                 return
                 ;;
+            sound|Sound|SOUND|audio)
+                NODE_TYPE="sound"
+                log_info "Тип узла задан через параметр: Sound Pi"
+                return
+                ;;
             *)
                 log_warning "Неизвестный тип узла: $1"
                 ;;
@@ -148,7 +155,7 @@ detect_node_type() {
     show_node_menu
     
     while true; do
-        read -p "Введите номер (1-5): " choice
+        read -p "Введите номер (1-6): " choice
         case $choice in
             1)
                 NODE_TYPE="vision"
@@ -168,6 +175,10 @@ detect_node_type() {
                 ;;
             5)
                 NODE_TYPE="custom"
+                break
+                ;;
+            6)
+                NODE_TYPE="sound"
                 break
                 ;;
             *)
@@ -215,6 +226,17 @@ configure_node_params() {
             NODE_EMOJI="🛠️"
             DOCKER_COMPOSE_DIR=""
             SERVICE_NAME=""
+            ;;
+        sound)
+            # ADR-0159: третий узел. Схема адресов та же, что у Main (.10/.20)
+            # и Vision (.11/.21): eth0 → .12, wlan0 → .22 (wlan0 уже получил
+            # 10.1.1.22 от роутера 19.10.2026; .12 для eth0 нужно закрепить
+            # в DHCP роутера по MAC — см. ADR-0159 §3.1).
+            NODE_NAME="Sound Pi"
+            NODE_IP="10.1.1.12"
+            NODE_EMOJI="🔊"
+            DOCKER_COMPOSE_DIR="$HOME/rob_box_project/docker/sound"
+            SERVICE_NAME="robbox-sound"
             ;;
     esac
     
@@ -685,6 +707,9 @@ setup_node_specific() {
         custom)
             setup_custom_node
             ;;
+        sound)
+            setup_sound_node
+            ;;
     esac
 }
 
@@ -860,6 +885,171 @@ setup_sensor_hub() {
     log_info "  cd ~/rob_box_project/src/sensor_hub"
     log_info "  pio run -t upload"
     log_success "Инструкции добавлены"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SOUND PI (ADR-0159): ReSpeaker + голосовой стек + SuperCollider + сенсорный хаб
+# ═══════════════════════════════════════════════════════════════════════════
+# Третий узел робота. Сюда переезжают с Vision Pi контейнеры, привязанные к
+# ReSpeaker (voice-assistant, supercollider, voice-action-server), и
+# нода sensor_hub — обычная ROS-нода, говорящая с ESP32 по serial через
+# TTL-USB конвертер (от micro-ROS отказались, решение Шифу 19.10.2026). LED-матрица
+# остаётся на Vision Pi (SPI), общение с ней — по ROS-топикам через Zenoh.
+#
+# Что делает эта роль (всё идемпотентно, повторный запуск безопасен):
+#   1. netplan: eth0 metric 100 (основной) + wlan0 metric 600 (резерв) —
+#      тот же 01-netcfg.yaml, что реально лежит на Vision Pi (снят 19.10.2026).
+#      50-cloud-init.yaml (только wlan0, hidden SSID) не трогаем: netplan
+#      сливает файлы по имени интерфейса, а cloud-init свой файл перезаписывает.
+#   2. /boot/firmware/config.txt: usb_max_current_enable=1 (ReSpeaker + TTL
+#      конвертер на USB), enable_uart=1 (запасной путь к ESP32 по GPIO UART).
+#   3. udev: стабильное имя /dev/sensor_hub для TTL-USB конвертера, чтобы
+#      compose не зависел от номера ttyUSBN.
+#   4. alsa-utils на хост — для диагностики (aplay -l / arecord -l; на Vision
+#      Pi их нет, и каждый раз приходится лезть внутрь контейнера).
+#   5. zram-своп — та же функция, что для Vision Pi (#2621, ADR-0111):
+#      voice-assistant один держит mem_limit 5g на 8 ГБ узле.
+
+setup_sound_network() {
+    log_step "Настройка сети Sound Pi: eth0 (metric 100) + wlan0 (metric 600)"
+
+    local netplan_file="/etc/netplan/01-netcfg.yaml"
+    if [ -f "$netplan_file" ] && sudo grep -q "route-metric: 100" "$netplan_file"; then
+        log_info "$netplan_file уже содержит eth0 metric 100 — пропускаю"
+    else
+        sudo tee "$netplan_file" > /dev/null << 'NETPLANEOF'
+# ROBBOX Sound Pi (ADR-0159). Копия схемы Vision Pi:
+# eth0 — основной канал данных (metric 100), wlan0 — резерв/SSH (metric 600).
+# При подключённом кабеле весь трафик идёт через eth0, без кабеля — через wlan0.
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+      dhcp-identifier: mac
+      optional: true
+      dhcp4-overrides:
+        route-metric: 100
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+  wifis:
+    wlan0:
+      dhcp4: true
+      dhcp-identifier: mac
+      optional: true
+      access-points:
+        "ROS2":
+          password: "1234567890"
+      dhcp4-overrides:
+        route-metric: 600
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+NETPLANEOF
+        sudo chmod 600 "$netplan_file"
+        log_info "Применяю netplan (SSH по wlan0 не рвётся: адрес wlan0 не меняется)..."
+        if sudo netplan apply; then
+            log_success "netplan применён"
+        else
+            log_error "netplan apply завершился с ошибкой — проверьте: sudo netplan --debug generate"
+            return 1
+        fi
+    fi
+
+    echo ""
+    log_info "Маршруты по умолчанию (ожидаем eth0 metric 100, wlan0 metric 600):"
+    ip route show | grep default || log_warning "default-маршрутов нет"
+    if ip -br link show eth0 2>/dev/null | grep -q " UP "; then
+        log_success "eth0 поднят: $(ip -4 -br addr show eth0 | awk '{print $3}')"
+    else
+        log_warning "eth0 без линка — подключите кабель; адрес ${NODE_IP} закрепите в DHCP роутера по MAC eth0"
+    fi
+}
+
+setup_sound_boot_config() {
+    log_step "Настройка /boot/firmware/config.txt (USB power, UART)"
+    local cfg="/boot/firmware/config.txt"
+    [ -f "$cfg" ] || cfg="/boot/config.txt"
+    if [ ! -f "$cfg" ]; then
+        log_warning "config.txt не найден — пропускаю"
+        return 0
+    fi
+    local changed=0
+    if ! grep -q '^usb_max_current_enable=1' "$cfg"; then
+        echo 'usb_max_current_enable=1' | sudo tee -a "$cfg" > /dev/null
+        changed=1
+        log_info "Добавлено usb_max_current_enable=1 (ReSpeaker + TTL-USB на одном хабе)"
+    fi
+    if ! grep -q '^enable_uart=1' "$cfg"; then
+        echo 'enable_uart=1' | sudo tee -a "$cfg" > /dev/null
+        changed=1
+        log_info "Добавлено enable_uart=1 (запасной путь к ESP32 через GPIO UART /dev/ttyAMA0)"
+    fi
+    if [ "$changed" -eq 1 ]; then
+        log_warning "config.txt изменён — для применения нужна перезагрузка"
+    else
+        log_success "config.txt уже настроен"
+    fi
+}
+
+setup_sound_udev() {
+    log_step "udev: стабильное имя /dev/sensor_hub для TTL-USB конвертера"
+    local rule="/etc/udev/rules.d/99-robbox-sensor-hub.rules"
+    if [ -f "$rule" ]; then
+        log_info "$rule уже есть — пропускаю"
+        return 0
+    fi
+    # Ходовые TTL-USB мосты: CP210x (10c4:ea60), CH340 (1a86:7523),
+    # FTDI FT232 (0403:6001), PL2303 (067b:2303). Если конвертер другой —
+    # дописать строку по `lsusb` и `udevadm info -a -n /dev/ttyUSB0`.
+    sudo tee "$rule" > /dev/null << 'UDEVEOF'
+# ROBBOX Sound Pi (ADR-0159): сенсорный хаб ESP32 через TTL-USB конвертер.
+# Compose монтирует /dev/sensor_hub, а не /dev/ttyUSBN — номер плавает.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="sensor_hub", MODE="0666"
+UDEVEOF
+    sudo udevadm control --reload-rules && sudo udevadm trigger
+    log_success "udev-правило установлено: $rule"
+}
+
+setup_sound_node() {
+    log_info "Настройка Sound Pi (ADR-0159)..."
+
+    log_info "Проверка USB устройств..."
+    if lsusb | grep -q "2886:0018"; then
+        log_success "✓ ReSpeaker 4 Mic Array обнаружен"
+    else
+        log_warning "! ReSpeaker не найден — переткните его с Vision Pi (голосовой стек без него не стартует)"
+    fi
+    if ls /dev/ttyUSB* >/dev/null 2>&1; then
+        log_success "✓ TTL-USB конвертер: $(ls /dev/ttyUSB* | tr '\n' ' ')"
+    else
+        log_warning "! /dev/ttyUSB* нет — сенсорный хаб ESP32 подключите позже"
+    fi
+
+    log_info "Установка alsa-utils (aplay/arecord для диагностики на хосте)..."
+    if sudo apt install -y alsa-utils >/dev/null 2>&1; then
+        log_success "alsa-utils установлен"
+    else
+        log_warning "alsa-utils не установился — диагностика звука только из контейнера"
+    fi
+
+    setup_sound_network
+    setup_sound_boot_config
+    setup_sound_udev
+
+    # Каталоги ресурсного пака — те же пути, что на Vision Pi, чтобы
+    # docker/sound/docker-compose.yaml монтировал их без переименований
+    # (/opt/rob_box/{models,samples,scores}; содержимое кладёт
+    # apply_resource_pack.sh на шаге деплоя, не этот скрипт).
+    sudo mkdir -p /opt/rob_box/models /opt/rob_box/samples /opt/rob_box/scores
+    sudo chown -R "$USER:$USER" /opt/rob_box
+    log_success "Каталоги /opt/rob_box/{models,samples,scores} готовы (пустые — наполнит деплой)"
+
+    # 5 ГБ voice-assistant на 8 ГБ узле — без свопа будет то же, что на
+    # Vision Pi до #2621.
+    setup_zram_swap
 }
 
 setup_manipulator_node() {
