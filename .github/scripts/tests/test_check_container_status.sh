@@ -175,6 +175,7 @@ run_case() {
         "SCOPE=vision"
         "SUMMARY_FILE=$(mktemp)"
         "FINDINGS_FILE=/dev/null"
+        "EXPECTED_CONTAINERS=${EXPECTED_CONTAINERS:-}"
     )
 
     # Запускаем скрипт как subshell (НЕ source) — это нативный путь, и
@@ -248,6 +249,24 @@ run_case false 1 "$FIX1" "$FIX2" "F: running+running but RestartCount grew 3→4
 FIX1="$(inspect oak-d dead none 5 137)"
 FIX2="$(inspect oak-d dead none 5 137)"
 run_case false 1 "$FIX1" "$FIX2" "G: State.Status=dead → healthy=false"
+
+# Кейсы H-J: EXPECTED_CONTAINERS (ADR-0159, Sound Pi) — обязательные
+# контейнеры узла. Пустой `compose ps` НЕ должен давать «healthy» по пустому
+# списку, если вызывающий знает, что на узле должно что-то работать.
+EXPECTED_CONTAINERS="voice-assistant supercollider"
+FIX1="$(inspect voice-assistant running healthy 0 0
+inspect supercollider running healthy 0 0)"
+run_case true 0 "$FIX1" "$FIX1" "H: expected both present and running → healthy=true"
+
+FIX1="$(inspect voice-assistant running healthy 0 0)"
+run_case false 1 "$FIX1" "$FIX1" "I: expected supercollider absent from compose ps → healthy=false"
+
+run_case false 2 "" "" "J: empty compose ps with 2 expected → healthy=false (no green on empty list)"
+EXPECTED_CONTAINERS=""
+
+# Кейс K: без EXPECTED_CONTAINERS пустой список по-прежнему healthy (поведение
+# Vision/Main не меняется).
+run_case true 0 "" "" "K: empty compose ps, nothing expected → healthy=true (legacy behaviour kept)"
 
 # --- summary ----------------------------------------------------------------
 

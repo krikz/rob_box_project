@@ -827,6 +827,11 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # bug (e.g. an unrelated ImportError mid-loop) keeps its
         # WARN severity.
         r"audio_common_msgs недоступен",
+    ],
+    # ADR-0159: voice-assistant/supercollider/supervisor живут на Sound Pi, их
+    # логи разбираются в scope "sound". Правило ниже раньше стояло в "vision"
+    # (там жил voice-assistant) — перенесено, а не продублировано.
+    "sound": [
         # audio_node HPFONOFF write (issue #1680, deploy round-244):
         # voice-assistant prints "[WARN] HPFONOFF: write_parameter вернул
         # False (устройство занято?). Используется дефолт firmware."
@@ -958,8 +963,9 @@ def _build_issue_body(
     timestamp: str,
     vision_pi_ip: str,
     main_pi_ip: str,
+    sound_pi_ip: str = "",
 ) -> str:
-    diagnostic_ip = vision_pi_ip if candidate["scope"] == "vision" else main_pi_ip
+    diagnostic_ip = {"vision": vision_pi_ip, "sound": sound_pi_ip or main_pi_ip}.get(candidate["scope"], main_pi_ip)
     marker = build_signature_marker(candidate["signature"])
     return f"""## Deployment Problem Report
 
@@ -1007,6 +1013,7 @@ def prepare_issue_candidates(
     timestamp: str,
     vision_pi_ip: str,
     main_pi_ip: str,
+    sound_pi_ip: str = "",
 ) -> list[dict[str, str | int | list[str]]]:
     grouped: dict[str, dict[str, str | int | list[str]]] = {}
 
@@ -1037,6 +1044,7 @@ def prepare_issue_candidates(
                 timestamp=timestamp,
                 vision_pi_ip=vision_pi_ip,
                 main_pi_ip=main_pi_ip,
+                sound_pi_ip=sound_pi_ip,
             )
             grouped[signature] = candidate
             continue
@@ -1053,6 +1061,7 @@ def prepare_issue_candidates(
             timestamp=timestamp,
             vision_pi_ip=vision_pi_ip,
             main_pi_ip=main_pi_ip,
+            sound_pi_ip=sound_pi_ip,
         )
 
     return sorted(candidates, key=lambda item: str(item["signature"]))
@@ -1099,6 +1108,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
         timestamp=args.timestamp,
         vision_pi_ip=args.vision_pi_ip,
         main_pi_ip=args.main_pi_ip,
+        sound_pi_ip=args.sound_pi_ip,
     )
     json.dump(candidates, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
@@ -1133,6 +1143,9 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--timestamp", required=True)
     prepare_parser.add_argument("--vision-pi-ip", required=True)
     prepare_parser.add_argument("--main-pi-ip", required=True)
+    # ADR-0159: третий узел. Необязателен — старые вызовы без него валидны
+    # (scope=sound без адреса получит диагностику с main_pi_ip, как раньше любой не-vision).
+    prepare_parser.add_argument("--sound-pi-ip", default="")
     prepare_parser.set_defaults(func=_cmd_prepare)
 
     filter_parser = subparsers.add_parser("filter", help="Remove candidates that already exist as open issues.")
@@ -1141,7 +1154,7 @@ def build_parser() -> argparse.ArgumentParser:
     filter_parser.set_defaults(func=_cmd_filter)
 
     extract_parser = subparsers.add_parser("extract-log", help="Extract the first relevant log line for a scope and severity.")
-    extract_parser.add_argument("--scope", required=True, choices=["main", "vision"])
+    extract_parser.add_argument("--scope", required=True, choices=["main", "vision", "sound"])
     extract_parser.add_argument("--severity", required=True, choices=["critical", "warning"])
     extract_parser.set_defaults(func=_cmd_extract_log)
 

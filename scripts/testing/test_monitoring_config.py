@@ -125,11 +125,11 @@ def test_monitoring_agents_deployed_and_loki_host_real(project_root):
     """
     wf = (project_root / ".github/workflows/L-Deploy and Verify.yml").read_text(encoding="utf-8")
     n = wf.count("compose --profile monitoring up -d cadvisor promtail")
-    assert n >= 2, (
+    assert n >= 3, (
         f"L-Deploy and Verify.yml: шаг поднятия агентов мониторинга найден {n} раз, "
-        f"нужен на обоих Pi (Main + Vision). См. issue #3300."
+        f"нужен на всех трёх Pi (Main + Vision + Sound, ADR-0159). См. issue #3300."
     )
-    for pi in ("main", "vision"):
+    for pi in ("main", "vision", "sound"):
         env = (project_root / f"docker/{pi}/.env").read_text(encoding="utf-8")
         loki = [l.split("=", 1)[1].strip() for l in env.splitlines() if l.startswith("LOKI_HOST=")]
         assert loki and loki[0] != "monitoring-machine", (

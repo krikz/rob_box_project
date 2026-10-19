@@ -99,6 +99,20 @@ else
   fail "T8" "bash -n failed"
 fi
 
+# --- T9: scope "sound" (ADR-0159) идёт на SOUND_PI_IP, а не на Main Pi --------
+# Берём ровно определения (SOUND_PI_IP= и pi_ip_for_scope) из скрипта и
+# выполняем их отдельно: сам скрипт при source идёт в gh/сеть.
+fn_src="$(sed -n '/^MAIN_PI_IP=/p;/^VISION_PI_IP=/p;/^SOUND_PI_IP=/p;/^pi_ip_for_scope() {/,/^}/p' "$SCRIPT_UNDER_TEST")"
+got_sound="$(env -i PATH="$PATH" bash -c "$fn_src"'; pi_ip_for_scope sound')"
+got_vision="$(env -i PATH="$PATH" bash -c "$fn_src"'; pi_ip_for_scope vision')"
+got_main="$(env -i PATH="$PATH" bash -c "$fn_src"'; pi_ip_for_scope main')"
+got_override="$(env -i PATH="$PATH" SOUND_PI_IP=10.9.9.9 bash -c "$fn_src"'; pi_ip_for_scope sound')"
+if [ "$got_sound|$got_vision|$got_main|$got_override" = "10.1.1.12|10.1.1.11|10.1.1.10|10.9.9.9" ]; then
+  pass "T9: pi_ip_for_scope sound/vision/main → .12/.11/.10, SOUND_PI_IP переопределяем"
+else
+  fail "T9" "got sound=$got_sound vision=$got_vision main=$got_main override=$got_override"
+fi
+
 # --- summary ------------------------------------------------------------------
 echo
 echo "=========================================="

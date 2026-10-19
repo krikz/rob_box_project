@@ -817,9 +817,47 @@ def test_extract_relevant_log_line_ignores_audio_node_hpfonoff_fallback() -> Non
         "Используется дефолт firmware."
     )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    # ADR-0159: voice-assistant переехал на Sound Pi — правило живёт в scope "sound".
+    line = MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
 
     assert line is None
+    # ...и не продублировано в vision: там голосового стека больше нет.
+    assert MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning") is not None
+
+
+def test_sound_scope_is_accepted_by_extract_log_cli_and_still_flags_real_errors() -> None:
+    """ADR-0159: `extract-log --scope sound` (шаг Check Container Logs для Sound Pi)."""
+    parser = MODULE.build_parser()
+    args = parser.parse_args(["extract-log", "--scope", "sound", "--severity", "critical"])
+    assert args.scope == "sound"
+
+    line = MODULE.extract_relevant_log_line(
+        "[voice_assistant] ERROR scsynth crashed: segfault in audio thread", scope="sound", severity="critical"
+    )
+    assert line is not None
+
+
+def test_issue_body_for_sound_scope_points_at_sound_pi() -> None:
+    candidates = MODULE.prepare_issue_candidates(
+        findings=[
+            {
+                "environment": "staging",
+                "scope": "sound",
+                "container": "voice-assistant",
+                "kind": "critical_log",
+                "severity": "critical",
+                "summary": "Critical log pattern detected",
+                "raw_text": "boom",
+            }
+        ],
+        branch="develop",
+        workflow_run_url="https://example/run/1",
+        timestamp="t",
+        vision_pi_ip="10.1.1.11",
+        main_pi_ip="10.1.1.10",
+        sound_pi_ip="10.1.1.12",
+    )
+    assert "ros2@10.1.1.12" in candidates[0]["body"]
 
 
 def test_extract_relevant_log_line_ignores_respeaker_threshold_warnings() -> None:
