@@ -33,6 +33,7 @@ from rob_box_harness.providers.deepseek import (
 )
 from rob_box_harness.providers.minimax import (
     DEFAULT_BASE_URL as MINIMAX_DEFAULT_BASE_URL,
+    DEFAULT_FIRST_CHUNK_TIMEOUT_S as MINIMAX_FIRST_CHUNK_TIMEOUT_S,
     DEFAULT_MODEL as MINIMAX_DEFAULT_MODEL,
     build_minimax_provider,
 )
@@ -154,7 +155,12 @@ def build_provider(
                 model=resolved_model or MINIMAX_DEFAULT_MODEL,
                 api_key=resolved_key,
                 timeout_s=timeout_s or 90.0,
-            )
+            ),
+            # Агентские цепочки (личность, ТАРС) — с first-chunk-гуардом
+            # #2718. Фабрика по умолчанию его выключает (None), и с #2721
+            # гуард ни разу не работал в проде: зависший MiniMax стоил
+            # 3 × 90 с = 270 с до фолбека на deepseek (ТАРС 19.10, #2939).
+            first_chunk_timeout_s=MINIMAX_FIRST_CHUNK_TIMEOUT_S,
         )
     # Everything else is OpenAI-compatible (deepseek, mimo, qwen) and
     # goes through the same chat-completions client. NB: the timeout is
