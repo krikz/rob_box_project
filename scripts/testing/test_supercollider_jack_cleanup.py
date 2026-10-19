@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[2] / "docker/vision/scripts/supercollider/start_supercollider.sh"
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / "docker/sound/scripts/supercollider/start_supercollider.sh"
 
 
 def test_supercollider_cleans_host_jack_registry_and_db_dirs() -> None:

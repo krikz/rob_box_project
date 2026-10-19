@@ -113,7 +113,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # "JackAudioDriver::ProcessGraphAsyncMaster: Process error" whenever a
     # single DSP cycle overruns the period (typically the scsynth client
     # under ALSA dmix without realtime scheduling, see
-    # docker/vision/scripts/supercollider/start_supercollider.sh). jackd
+    # docker/sound/scripts/supercollider/start_supercollider.sh). jackd
     # drops the cycle and recovers automatically — scsynth stays up and
     # music/TTS keep flowing. Deploy gate must not flag this as critical.
     r"jackaudiodriver::processgraphasyncmaster: process error",
@@ -190,7 +190,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # 31.08): start_voice_assistant.sh prints `⚠ Music stack validation
     # found non-critical errors (degraded but usable)` whenever
     # validate_music_stack.py exits non-zero but did not declare a fatal
-    # sclang crash — see docker/vision/scripts/voice_assistant/start_voice_
+    # sclang crash — see docker/sound/scripts/voice_assistant/start_voice_
     # assistant.sh:138 and src/rob_box_voice/scripts/validate_music_stack.py
     # (returns 1 on degraded mode). The container is INTENTIONALLY
     # continuing with a degraded music stack; voice/TTS/STT stay healthy

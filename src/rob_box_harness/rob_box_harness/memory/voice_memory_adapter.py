@@ -19,7 +19,7 @@ legacy FAQStore's ``faq_items`` (``indexed_at``, FTS5 triggers) — pointing
 either store at ``harness_voice.db`` today would silently keep whichever
 schema was created first and break every write from the other. See the
 ``sqlite_db_path`` comment in
-``docker/vision/config/voice_assistant/dialogue_node.yaml`` and
+``docker/sound/config/voice_assistant/dialogue_node.yaml`` and
 ``docs/adr/0055-voice-memory-db-unify-with-harness.md`` (§1.3, §3) for the
 full analysis. Unifying those needs a schema-reconciling adapter of their
 own, not a change of this one's scope.

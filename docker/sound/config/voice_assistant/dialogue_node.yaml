@@ -10,7 +10,7 @@
 
 dialogue_node:
   ros__parameters:
-    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # wake_words намеренно НЕ здесь: списки — в docker/sound/config/wake_words.yaml
     # (SSoT, issue #1990). Нода читает его через wake_words_file: namespace
     # personality — единственный источник вейк-слов личности (ReSpeaker →
     # /voice/stt/result). Кодовая DEFAULT_WAKE_WORDS — фолбек для dev-env без

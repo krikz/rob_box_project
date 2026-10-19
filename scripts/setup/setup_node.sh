@@ -994,23 +994,33 @@ setup_sound_boot_config() {
 setup_sound_udev() {
     log_step "udev: стабильное имя /dev/sensor_hub для TTL-USB конвертера"
     local rule="/etc/udev/rules.d/99-robbox-sensor-hub.rules"
-    if [ -f "$rule" ]; then
-        log_info "$rule уже есть — пропускаю"
-        return 0
-    fi
+    local tmp
+    tmp="$(mktemp)"
     # Ходовые TTL-USB мосты: CP210x (10c4:ea60), CH340 (1a86:7523),
-    # FTDI FT232 (0403:6001), PL2303 (067b:2303). Если конвертер другой —
-    # дописать строку по `lsusb` и `udevadm info -a -n /dev/ttyUSB0`.
-    sudo tee "$rule" > /dev/null << 'UDEVEOF'
+    # CH343/CH9102 «USB Single Serial» (1a86:55d3 — реальный конвертер на
+    # SoundPi, ядро отдаёт /dev/ttyACM0, не ttyUSB), FTDI FT232 (0403:6001),
+    # PL2303 (067b:2303). Если конвертер другой — дописать строку по `lsusb`
+    # и `udevadm info -a -n /dev/ttyACM0` (или ttyUSB0).
+    cat > "$tmp" << 'UDEVEOF'
 # ROBBOX Sound Pi (ADR-0159): сенсорный хаб ESP32 через TTL-USB конвертер.
 # Compose монтирует /dev/sensor_hub, а не /dev/ttyUSBN — номер плавает.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="sensor_hub", MODE="0666"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="sensor_hub", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", SYMLINK+="sensor_hub", MODE="0666"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="sensor_hub", MODE="0666"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="sensor_hub", MODE="0666"
 UDEVEOF
+    # Сравниваем содержимое, а не наличие файла: правило из PR-1 знало только
+    # CH340 и на SoundPi уже стоит — «файл есть, пропускаю» не доставило бы 1a86:55d3.
+    if [ -f "$rule" ] && cmp -s "$tmp" "$rule"; then
+        log_info "$rule уже актуально — пропускаю"
+        rm -f "$tmp"
+        return 0
+    fi
+    sudo install -m 0644 "$tmp" "$rule"
+    rm -f "$tmp"
     sudo udevadm control --reload-rules && sudo udevadm trigger
-    log_success "udev-правило установлено: $rule"
+    log_success "udev-правило установлено/обновлено: $rule"
 }
 
 setup_sound_node() {
@@ -1022,10 +1032,11 @@ setup_sound_node() {
     else
         log_warning "! ReSpeaker не найден — переткните его с Vision Pi (голосовой стек без него не стартует)"
     fi
-    if ls /dev/ttyUSB* >/dev/null 2>&1; then
-        log_success "✓ TTL-USB конвертер: $(ls /dev/ttyUSB* | tr '\n' ' ')"
+    # CH340/CP210x/FTDI дают /dev/ttyUSBN, CH343 (1a86:55d3) — /dev/ttyACMN
+    if ls /dev/ttyUSB* /dev/ttyACM* >/dev/null 2>&1; then
+        log_success "✓ TTL-USB конвертер: $(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | tr '\n' ' ')"
     else
-        log_warning "! /dev/ttyUSB* нет — сенсорный хаб ESP32 подключите позже"
+        log_warning "! /dev/ttyUSB*, /dev/ttyACM* нет — сенсорный хаб ESP32 подключите позже"
     fi
 
     log_info "Установка alsa-utils (aplay/arecord для диагностики на хосте)..."

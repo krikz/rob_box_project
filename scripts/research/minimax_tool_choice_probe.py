@@ -4,7 +4,7 @@
 Behavioural probe: does MiniMax's OpenAI-compatible Chat Completions API
 (``https://api.minimax.io/v1``, model ``MiniMax-M3`` — same endpoint/model
 rob_box_voice uses, see
-``docker/vision/config/voice_assistant/dialogue_node.yaml``) actually
+``docker/sound/config/voice_assistant/dialogue_node.yaml``) actually
 honour ``tool_choice="required"`` and the named-function form
 ``{"type": "function", "function": {"name": "<tool>"}}``, or does it silently
 degrade to plain text the way MiMo did (only ``auto`` supported as of

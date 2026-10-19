@@ -84,7 +84,7 @@ def _repo_root(start: Path) -> Path:
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
 _TARGET = str(
-    REPO_ROOT / "docker" / "vision" / "scripts" / "supercollider" / "metrics_server.py"
+    REPO_ROOT / "docker" / "sound" / "scripts" / "supercollider" / "metrics_server.py"
 )
 
 _spec = _ilu.spec_from_file_location("supercollider_metrics_server", _TARGET)

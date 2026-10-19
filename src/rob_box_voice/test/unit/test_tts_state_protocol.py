@@ -7,7 +7,7 @@
 * ``stt_node`` не знал ``"stopped"`` — а его публикует STOP/barge-in
   (``tts_node._handle_stop_command``). Флаг ``is_robot_speaking``
   оставался ``True``, и в hardware-AEC (это конфиг робота,
-  ``docker/vision/config/voice_assistant/stt_node.yaml``) фразы короче
+  ``docker/sound/config/voice_assistant/stt_node.yaml``) фразы короче
   0.8 с молча отбрасывались — «робот», «стоп», «да».
 * ``tts_silero_warming`` не знал НИКТО. Его публикует путь, где чанк
   пропущен и НЕ будет озвучен; после него шёл ``return`` без

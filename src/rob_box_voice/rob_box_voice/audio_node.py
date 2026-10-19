@@ -551,7 +551,7 @@ class AudioNode(Node):
     def _touch_audio_heartbeat(self) -> None:
         """Обновить heartbeat-файл для healthcheck контейнера (issue #2701 п.3).
 
-        docker/vision/scripts/voice_assistant/healthcheck_audio.sh
+        docker/sound/scripts/voice_assistant/healthcheck_audio.sh
         проверяет возраст этого файла; если захват завис дольше
         audio_stall_timeout_s, файл не обновляется, и healthcheck
         возвращает unhealthy вместо молчаливого «healthy». Полноценная

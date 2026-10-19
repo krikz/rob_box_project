@@ -59,7 +59,7 @@ from typing import Any, NamedTuple
 
 import yaml
 
-# Валидное имя переменной *_TAG в docker/{main,vision}/.image-versions.* —
+# Валидное имя переменной *_TAG в docker/{main,vision,sound}/.image-versions.* —
 # заглавные буквы/цифры/подчёркивания, обязательно оканчивается на _TAG.
 _IMAGE_VERSIONS_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]*_TAG$")
 
@@ -135,7 +135,7 @@ def _validate_services(pi_name: str, services: dict[str, Any]) -> None:
 
 
 def services_for_pi(manifest: dict[str, Any], pi: str) -> dict[str, Any]:
-    """Возвращает {имя_сервиса: описание} для одного pi (vision|main)."""
+    """Возвращает {имя_сервиса: описание} для одного pi (vision|sound|main)."""
     try:
         pi_data = manifest["pis"][pi]
     except KeyError as exc:
@@ -506,7 +506,7 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pi",
         required=False,  # обязателен для всех режимов, кроме base (проверка в main)
-        choices=["vision", "main"],
+        choices=["vision", "sound", "main"],
         help="Для какого Pi генерировать вывод",
     )
     parser.add_argument(

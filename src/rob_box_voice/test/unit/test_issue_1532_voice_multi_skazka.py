@@ -381,7 +381,7 @@ def _vad_max_duration() -> float:
 
     config = (
         Path(__file__).resolve().parents[4]
-        / "docker" / "vision" / "config" / "voice_assistant" / "audio_node.yaml"
+        / "docker" / "sound" / "config" / "voice_assistant" / "audio_node.yaml"
     )
     with config.open(encoding="utf-8") as fh:
         loaded = yaml.safe_load(fh)

@@ -198,7 +198,7 @@ resources:
       теряется офлайн-фолбэк STT при недоступном Yandex) — но required
       определяется по худшему последствию, поэтому hard.
     consumers:
-      - "stt_node (model_path, docker/vision/config/voice_assistant/stt_node.yaml:8)"
+      - "stt_node (model_path, docker/sound/config/voice_assistant/stt_node.yaml:8)"
       - "stt_node (src/rob_box_voice/config/stt_node.yaml:14)"
       - "telegram_node, VOSK_MODEL_PATH по умолчанию (src/rob_box_telegram/rob_box_telegram/voice_processor.py:40)"
 

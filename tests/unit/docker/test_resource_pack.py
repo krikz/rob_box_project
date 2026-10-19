@@ -889,8 +889,9 @@ def test_samples_are_not_delivered_by_an_image_anymore() -> None:
         "каталог docker/vision/voice_resources вернулся — сэмплы снова "
         "доставляются двумя способами сразу"
     )
+    # supercollider и voice-assistant переехали на Sound Pi (ADR-0159 PR-2b).
     compose = yaml.safe_load(
-        (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
+        (REPO_ROOT / "docker" / "sound" / "docker-compose.yaml").read_text(
             encoding="utf-8"
         )
     )
@@ -937,7 +938,13 @@ def test_container_paths_did_not_move() -> None:
     Весь смысл §6.1 плана: ни один Python-файл не правится, потому что
     /models/... остаётся /models/... — меняется только, чем он наполнен.
     """
+    # voice-assistant — на Sound Pi (ADR-0159 PR-2b), telegram-bot — пока на Vision.
     compose = yaml.safe_load(
+        (REPO_ROOT / "docker" / "sound" / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    vision_compose = yaml.safe_load(
         (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
             encoding="utf-8"
         )
@@ -950,7 +957,7 @@ def test_container_paths_did_not_move() -> None:
     )
 
     stt_cfg = (
-        REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant" / "stt_node.yaml"
+        REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant" / "stt_node.yaml"
     ).read_text(encoding="utf-8")
     assert "/models/vosk-model-small-ru-0.22" in stt_cfg
 
@@ -958,7 +965,7 @@ def test_container_paths_did_not_move() -> None:
     # Его Dockerfile качал её сам; том обязан быть ровно тем же, иначе бот
     # молча теряет офлайн-фолбэк STT (и падает обратно на один Yandex —
     # ровно тот сценарий 2026-09-03, ради которого Vosk сюда и завезли).
-    tg_volumes = compose["services"]["telegram-bot"]["volumes"]
+    tg_volumes = vision_compose["services"]["telegram-bot"]["volumes"]
     assert "/opt/rob_box/models:/models:ro" in tg_volumes, (
         "telegram-bot не монтирует host-каталог моделей: после удаления "
         "ступени скачивания из telegram_bot/Dockerfile Vosk-фолбэка в боте "

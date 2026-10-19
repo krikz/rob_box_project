@@ -7,7 +7,7 @@ rejected: ``SQLiteVoiceMemory`` (harness, ``rob_box_harness/memory/sqlite_voice.
 already defines its own ``waypoints`` (``name`` TEXT PRIMARY KEY) and
 ``faq_items`` (``created_at``, no FTS5) tables in ``harness_voice.db`` — see
 the ``sqlite_db_path`` comment in
-``docker/vision/config/voice_assistant/dialogue_node.yaml`` and
+``docker/sound/config/voice_assistant/dialogue_node.yaml`` and
 ``docs/adr/0055-voice-memory-db-unify-with-harness.md`` (§1.3, §3). Those
 schemas are incompatible with ``WaypointStore``'s ``waypoints`` (``id`` PK,
 ``map_id`` NOT NULL FK -> ``maps``) and the legacy ``FAQStore``'s
@@ -91,7 +91,7 @@ def test_default_is_not_silently_repointed_at_harness_voice_db():
                 f"{path.name} now defaults VOICE_MEMORY_DB_PATH to "
                 f"{default!r} — this collides with SQLiteVoiceMemory's "
                 "waypoints/faq_items schema in harness_voice.db (see "
-                "ADR-0055 and docker/vision/config/voice_assistant/"
+                "ADR-0055 and docker/sound/config/voice_assistant/"
                 "dialogue_node.yaml). Do not flip this default without a "
                 "real reconciliation adapter for waypoints/faq_items."
             )

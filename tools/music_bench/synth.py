@@ -1,7 +1,7 @@
 """Нотные события -> аудио-буферы (issue #2977).
 
 Наивные (без oversampling) осцилляторы на частоте дискретизации робота
-(16 kHz, ``docker/vision/scripts/supercollider/start_supercollider.sh``)
+(16 kHz, ``docker/sound/scripts/supercollider/start_supercollider.sh``)
 — НАМЕРЕННО: цель RC5 аудита ``docs/analysis/2026-08-30-music-quality-
 audit.md`` — «пила/меандр алиасят в слышимой полосе», и наивная пила даёт
 ровно этот класс искажений, не притворяясь конкретным SynthDef. Это не

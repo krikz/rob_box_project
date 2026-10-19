@@ -12,7 +12,10 @@
   не попадает в MCP-каталог вообще — личность его физически не видит, без
   правки среза ``slice_policy.yaml`` и каталога ``_tool_catalog_data``.
 * Том ``/data/faces`` монтируется read-only в avatar-supervisor
-  (docker/vision/docker-compose.yaml) — тот же приём, что для telegram-bot.
+  (docker/sound/docker-compose.yaml, ADR-0159 В8). Галерею пишет vision-face
+  на ДРУГОМ узле (Vision Pi), поэтому на этом узле каталог может быть пуст или
+  отсутствовать, пока его не наполнит синхронизация/cutover — ответ «пуста»
+  без оговорки был бы тихой деградацией (:data:`NODE_HINT`).
 * Образец — ``show_metrics`` (:mod:`rob_box_supervisor.tars_panel`).
 
 Только чтение. В ответе нет эмбеддингов, путей к файлам и снимков.
@@ -38,6 +41,13 @@ DEFAULT_FACES_ROOT = "/data/faces"
 TOOL_NAME = "list_faces"
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 30
+
+#: Оговорка к «пусто/недоступно»: галерею пишет vision-face на Vision Pi, а этот
+#: каталог на узле ТАРС только читается — пустой ответ не доказывает, что лиц не было.
+NODE_HINT = (
+    " Галерею лиц пишет vision-face на Vision Pi; на этом узле каталог только читается "
+    "и может не быть синхронизирован, поэтому пустой ответ не значит, что лиц не видели."
+)
 
 
 def _last_seen_ts(s: FaceSummary) -> Optional[float]:
@@ -93,7 +103,7 @@ def build_faces_listing(
     if not os.path.isdir(root):
         return {
             "status": "unavailable",
-            "message": "Лицевая база недоступна: каталог лиц не примонтирован.",
+            "message": "Лицевая база недоступна: каталог лиц не примонтирован." + NODE_HINT,
         }
     people = list_people(root, load_gallery=False)
     total = len(people)
@@ -103,7 +113,7 @@ def build_faces_listing(
     people.sort(key=lambda p: _last_seen_ts(p) or 0.0, reverse=True)
     shown = people[:limit]
     if total == 0:
-        message = "Лицевая база пуста."
+        message = "Лицевая база пуста." + NODE_HINT
     else:
         message = (
             f"В базе {total} лиц (с именем {named}), показано {len(shown)}, "

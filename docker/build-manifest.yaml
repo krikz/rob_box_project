@@ -60,7 +60,7 @@ base_images:
 
 pis:
   # ---------------------------------------------------------------------
-  # Vision Pi — 11 build-* job'ов в "L-Build Vision Pi Services.yml"
+  # Vision Pi — build-* job'ы в "L-Build Vision Pi Services.yml"
   # ---------------------------------------------------------------------
   vision:
     services:
@@ -92,47 +92,6 @@ pis:
           ros_distro: true
         image_versions: CEILING_CAMERA_TAG
 
-      voice-base:
-        dockerfile: docker/vision/voice_base/Dockerfile
-        build_context: docker/vision/voice_base
-        base:
-          family: rtabmap
-        tag:
-          ros_distro: true
-        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
-        # В коде workflow нет комментария, объясняющего это исключение
-        # (в отличие от supercollider, где причина явно написана) — причина
-        # не найдена (план §1.3, §11, открытый вопрос №1). Phase 1 фиксирует
-        # факт как есть, не чинит.
-        image_versions: false
-
-      # Здесь был узел voice-resources (образ с Renardo/FoxDot сэмплами,
-      # ~600 МБ, VOICE_RESOURCES_TAG). Удалён: сэмплы больше не едут образом,
-      # их кладёт на хост Ресурсный пак (запись renardo-samples в
-      # docker/vision/scripts/resource_pack/manifest.yaml), а контейнеры
-      # видят их bind-mount'ом /opt/rob_box/samples. Вместе с узлом ушли
-      # его job в обоих build-workflow и VOICE_RESOURCES_TAG из
-      # .image-versions.*.
-
-      voice-assistant:
-        dockerfile: docker/vision/voice_assistant/Dockerfile
-        build_context: "."
-        base:
-          service: voice-base
-        depends_on: [voice-base]
-        source_hash:
-          arg: SOURCE_HASH
-          groups:
-            - paths:
-                - src/rob_box_voice/rob_box_voice
-                - src/rob_box_animations/rob_box_animations
-                - src/rob_box_core
-                - src/rob_box_music/rob_box_music
-              extensions: [".py"]
-        tag:
-          ros_distro: true
-        image_versions: VOICE_ASSISTANT_TAG
-
       telegram-bot:
         dockerfile: docker/vision/telegram_bot/Dockerfile
         build_context: "."
@@ -148,41 +107,6 @@ pis:
         tag:
           ros_distro: true
         image_versions: TELEGRAM_BOT_TAG
-
-      supercollider:
-        dockerfile: docker/vision/supercollider/Dockerfile
-        build_context: docker/vision/supercollider
-        base: null
-        tag:
-          # Единственный сервис с нестандартным форматом тега — тег НЕ
-          # включает ROS_DISTRO ("${SERVICE}-${docker_tag}", а не
-          # "${SERVICE}-${ROS_DISTRO}-${docker_tag}"). Задокументировано в
-          # коде: "tag naming is inconsistent".
-          ros_distro: false
-        # Задокументировано в коде: "supercollider excluded: tag naming is
-        # inconsistent" — единственный сервис из четырёх, где исключение из
-        # tag_and_push/verify_in_registry объяснено комментарием.
-        image_versions: false
-
-      supervisor:
-        dockerfile: docker/vision/supervisor/Dockerfile
-        build_context: "."
-        base:
-          service: voice-assistant
-        depends_on: [voice-assistant]
-        source_hash:
-          arg: SOURCE_HASH
-          groups:
-            - paths:
-                - src/rob_box_supervisor/rob_box_supervisor
-                - src/rob_box_core
-              extensions: [".py"]
-        tag:
-          ros_distro: true
-        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
-        # Без комментария в коде, объясняющего исключение — причина не
-        # найдена (план §1.3, §11, открытый вопрос №1).
-        image_versions: false
 
       quest:
         dockerfile: docker/vision/quest/Dockerfile
@@ -228,6 +152,98 @@ pis:
         tag:
           ros_distro: true
         image_versions: VISION_HAILO_TAG
+
+  # ---------------------------------------------------------------------
+  # Sound Pi (ADR-0159, PR-2b) — голосовой стек переехал с Vision Pi.
+  # Блоки voice-base / voice-assistant / supercollider (и supervisor — ТАРС,
+  # решение Шифу 19.10, В8) перенесены БЕЗ
+  # изменений (git diff: те же строки −/+). Dockerfile и build_context
+  # остаются в docker/vision/{voice_base,voice_assistant,supercollider}:
+  # их путь зашит в "L-Build Single Service.yml" и dependabot.yml, а
+  # workflow трогает PR-3 (единый "L-Build Pi Services.yml") — там же
+  # переедут и каталоги сборки.
+  # TEMP(ADR-0159 PR-3): "L-Build Vision Pi Services.yml" пока сам держит
+  # build-voice-base/-voice-assistant и зовёт генератор с --pi vision, так
+  # что Build All между PR-2b и PR-3 не соберёт голосовые образы (ADR §5:
+  # PR-2b…PR-4 мёржатся подряд перед одной сборкой).
+  # ---------------------------------------------------------------------
+  sound:
+    services:
+      voice-base:
+        dockerfile: docker/vision/voice_base/Dockerfile
+        build_context: docker/vision/voice_base
+        base:
+          family: rtabmap
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # В коде workflow нет комментария, объясняющего это исключение
+        # (в отличие от supercollider, где причина явно написана) — причина
+        # не найдена (план §1.3, §11, открытый вопрос №1). Phase 1 фиксирует
+        # факт как есть, не чинит.
+        image_versions: false
+
+      # Здесь был узел voice-resources (образ с Renardo/FoxDot сэмплами,
+      # ~600 МБ, VOICE_RESOURCES_TAG). Удалён: сэмплы больше не едут образом,
+      # их кладёт на хост Ресурсный пак (запись renardo-samples в
+      # docker/vision/scripts/resource_pack/manifest.yaml), а контейнеры
+      # видят их bind-mount'ом /opt/rob_box/samples. Вместе с узлом ушли
+      # его job в обоих build-workflow и VOICE_RESOURCES_TAG из
+      # .image-versions.*.
+
+      voice-assistant:
+        dockerfile: docker/vision/voice_assistant/Dockerfile
+        build_context: "."
+        base:
+          service: voice-base
+        depends_on: [voice-base]
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_voice/rob_box_voice
+                - src/rob_box_animations/rob_box_animations
+                - src/rob_box_core
+                - src/rob_box_music/rob_box_music
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        image_versions: VOICE_ASSISTANT_TAG
+
+      supercollider:
+        dockerfile: docker/vision/supercollider/Dockerfile
+        build_context: docker/vision/supercollider
+        base: null
+        tag:
+          # Единственный сервис с нестандартным форматом тега — тег НЕ
+          # включает ROS_DISTRO ("${SERVICE}-${docker_tag}", а не
+          # "${SERVICE}-${ROS_DISTRO}-${docker_tag}"). Задокументировано в
+          # коде: "tag naming is inconsistent".
+          ros_distro: false
+        # Задокументировано в коде: "supercollider excluded: tag naming is
+        # inconsistent" — единственный сервис из четырёх, где исключение из
+        # tag_and_push/verify_in_registry объяснено комментарием.
+        image_versions: false
+
+      supervisor:
+        dockerfile: docker/vision/supervisor/Dockerfile
+        build_context: "."
+        base:
+          service: voice-assistant
+        depends_on: [voice-assistant]
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_supervisor/rob_box_supervisor
+                - src/rob_box_core
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # Без комментария в коде, объясняющего исключение — причина не
+        # найдена (план §1.3, §11, открытый вопрос №1).
+        image_versions: false
 
   # ---------------------------------------------------------------------
   # Main Pi — 8 build-* job'ов в "L-Build Main Pi Services.yml"

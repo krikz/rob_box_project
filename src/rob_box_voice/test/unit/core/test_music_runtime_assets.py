@@ -17,7 +17,7 @@ def _resolve_repo_root(start: Path) -> Path:
 _THIS_FILE = Path(__file__).resolve()
 REPO_ROOT = _resolve_repo_root(_THIS_FILE)
 FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
-START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "vision" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
+START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "sound" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
 CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "custom_synthdefs"
 MASTER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
 COMPOSER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"

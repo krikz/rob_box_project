@@ -32,6 +32,7 @@ render_router_config() { # <pi> → путь к отрендеренному к�
 
 VISION_CONFIG="$(render_router_config vision)"
 MAIN_CONFIG="$(render_router_config main)"
+SOUND_CONFIG="$(render_router_config sound)"
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -113,6 +114,30 @@ else
     echo -e "${GREEN}✅ OK: Main Pi не использует проблемный [::]:7447${NC}"
     SUCCESS=$((SUCCESS + 1))
 fi
+
+echo ""
+echo "Проверка Sound Pi конфигурации (ADR-0159, вариант Б)..."
+echo "-----------------------------------"
+
+# Проверка 7: Sound Pi слушает на своём IP eth0 10.1.1.12:7447
+if grep -q '"tcp/10.1.1.12:7447"' "$SOUND_CONFIG"; then
+    echo -e "${GREEN}✅ OK: Sound Pi роутер слушает на 10.1.1.12:7447${NC}"
+    SUCCESS=$((SUCCESS + 1))
+else
+    echo -e "${RED}❌ ОШИБКА: Sound Pi роутер не слушает на 10.1.1.12:7447${NC}"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Проверка 8: Sound Pi подключается и к Main Pi, и к Vision Pi (прямой линк) через eth0
+for peer in 10.1.1.10 10.1.1.11; do
+    if grep -q "\"tcp/$peer:7447#iface=eth0\"" "$SOUND_CONFIG"; then
+        echo -e "${GREEN}✅ OK: Sound Pi подключается к $peer через eth0${NC}"
+        SUCCESS=$((SUCCESS + 1))
+    else
+        echo -e "${RED}❌ ОШИБКА: у Sound Pi нет connect на $peer через eth0${NC}"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
 
 echo ""
 echo "=========================================="

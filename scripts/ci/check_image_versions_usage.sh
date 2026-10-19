@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check that every *_TAG declared in docker/{main,vision}/.image-versions.*
+# Check that every *_TAG declared in docker/{main,vision,sound}/.image-versions.*
 # is actually referenced somewhere in the component (compose / dockerfile /
 # shell script). Flags phantom env-variables that get written to .image-versions
 # but never consumed by anyone — silent tech debt (issue #2425 #2377).
@@ -26,7 +26,7 @@ RC=0
 WARN_COUNT=0
 
 if [ "$#" -eq 0 ]; then
-  set -- docker/main docker/vision
+  set -- docker/main docker/vision docker/sound
 fi
 
 for component_dir in "$@"; do

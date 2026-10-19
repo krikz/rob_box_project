@@ -43,6 +43,11 @@ EXPECTED = {
         "ip": "10.1.1.11",
         "connect": ["tcp/10.1.1.10:7447#iface=eth0"],
     },
+    # ADR-0159 §2.2 вариант Б (В3): прямой линк на Vision + линк на Main.
+    "sound": {
+        "ip": "10.1.1.12",
+        "connect": ["tcp/10.1.1.10:7447#iface=eth0", "tcp/10.1.1.11:7447#iface=eth0"],
+    },
 }
 
 SH = shutil.which("sh")
@@ -204,6 +209,11 @@ def test_session_wrapper_refuses_to_start_without_listen_ip(tmp_path: Path) -> N
     "vision/config/zenoh_session_config.json5",
     "main/zenoh-router/Dockerfile",
     "vision/zenoh-router/Dockerfile",
+    "sound/scripts/ros_with_namespace.sh",
+    "sound/scripts/zenoh-router/start_zenoh_router.sh",
+    "sound/config/zenoh_router_config.json5",
+    "sound/config/zenoh_session_config.json5",
+    "sound/zenoh-router/Dockerfile",
 ])
 def test_no_per_node_copies_left(rel: str) -> None:
     """Одна реализация в docker/common, не копия на узел (ADR-0159 В4)."""

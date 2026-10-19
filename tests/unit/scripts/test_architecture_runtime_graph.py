@@ -216,6 +216,13 @@ def test_real_repo_places_every_node_from_run_36339397150(tmp_path):
     assert where["diff_drive_controller"] == "ros2-control"
     assert where["rtabmap/rtabmap"] == "rtabmap"
     assert where["tts_node"] == "voice-assistant"
+    # ADR-0159: голосовой стек живёт на Sound Pi — каждая голосовая нода обязана
+    # получить хост из docker/sound, а не остаться «Other»/неразмещённой.
+    assert placement["tts_node"]["service"]["host"] == "Sound Pi"
+    assert placement["stt_node"]["service"]["host"] == "Sound Pi"
+    # ТАРС тоже на Sound Pi (ADR-0159 В8), арбитр остался на Vision Pi.
+    assert placement["avatar_supervisor"]["service"]["host"] == "Sound Pi"
+    assert placement["avatar_arbiter"]["service"]["host"] == "Vision Pi"
     assert where["avatar_supervisor"] == "avatar-supervisor"
     assert where["ceiling_camera/usb_cam"] == "ceiling-camera"
     assert placement["lslidar_driver_node"]["service"]["host"] == "Main Pi"
