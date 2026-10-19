@@ -13,7 +13,7 @@ setup(
     # а не data_files: find_packages() собирает только *.py, а
     # ament-share из importlib.resources не виден. Прод-образ
     # собирается БЕЗ --symlink-install
-    # (docker/vision/voice_assistant/Dockerfile:239), то есть пакет
+    # (docker/sound/voice_assistant/Dockerfile:239), то есть пакет
     # реально устанавливается — без этой строки YAML в
     # install-дерево не попадает. Четвёртый случай этого
     # класса в репозитории: prompts/ (6bb0f999), wake_words.yaml

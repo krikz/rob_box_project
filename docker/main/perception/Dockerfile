@@ -36,7 +36,7 @@ ARG ROS_DISTRO
 ARG APT_PROXY=""
 
 # apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
-# ("L-Build Main Pi Services.yml", build-args джоба build-perception), но
+# ("L-Build Pi Services.yml", build-args джоба build-perception), но
 # Dockerfile его не объявлял — build-arg молча игнорировался, и apt ходил
 # напрямую в packages.ros.org. Та же дыра, что нашёл пилот led_matrix
 # (коммит dc7ed68a2): ARG APT_PROXY обязан быть в ОБЕИХ стадиях, иначе

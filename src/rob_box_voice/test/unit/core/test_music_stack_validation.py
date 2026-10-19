@@ -135,7 +135,7 @@ def test_classify_sclang_log_matches_actual_foxdot_init_log_format():
     sc_path = (
         Path(__file__).resolve().parents[5]
         / "docker"
-        / "vision"
+        / "sound"
         / "voice_assistant"
         / "foxdot_init.sc"
     )

@@ -16,8 +16,8 @@
 #   - docs/adr/0028-avatar-supervisor.md §4.6 (deploy-слой)
 #   - docs/development/DOCKER_STANDARDS.md
 #   - docs/architecture/adr-reviews/2026-09-09-docker-build-deploy.md (issue #2279)
-#   - docker/vision/voice_assistant/Dockerfile (база, эталон структуры)
-#   - docker/vision/docker-compose.yaml (zenoh-router как depends_on)
+#   - docker/sound/voice_assistant/Dockerfile (база, эталон структуры)
+#   - docker/sound/docker-compose.yaml (zenoh-router как depends_on)
 
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-assistant-humble-latest
 ARG BUILD_VERSION=2026-08-25-supervisor-app-layer
@@ -26,7 +26,7 @@ FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
 
-LABEL org.opencontainers.image.title="Avatar Supervisor (Vision Pi, Phase 1 monitor)"
+LABEL org.opencontainers.image.title="Avatar Supervisor (Sound Pi, Phase 1 monitor)"
 LABEL org.opencontainers.image.description="ADR-0028. Phase 1 monitor mode publishes /avatar/state."
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 

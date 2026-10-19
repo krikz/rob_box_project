@@ -989,7 +989,7 @@ def test_container_paths_did_not_move() -> None:
 def test_voice_base_no_longer_downloads_models() -> None:
     """Ступень скачивания моделей ушла из образа (deletion test, план §8)."""
     dockerfile = (
-        REPO_ROOT / "docker" / "vision" / "voice_base" / "Dockerfile"
+        REPO_ROOT / "docker" / "sound" / "voice_base" / "Dockerfile"
     ).read_text(encoding="utf-8")
     active = [
         line

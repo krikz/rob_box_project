@@ -14,7 +14,7 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:rtabmap
 # (как для rob_box_supervisor_msgs) — apt-зависимости резолвятся здесь,
 # consumers (voice-assistant) переиспользуют. Bump при изменении apt-слоя —
 # voice-assistant наследует через BASE_IMAGE=$LOCAL_PREFIX:voice-base-$ROS-$TAG
-# (см. .github/workflows/L-Build Vision Pi Services.yml build-voice-assistant).
+# (см. .github/workflows/L-Build Pi Services.yml build-voice-assistant).
 ARG BUILD_VERSION=2026-09-14-2378-httpx-aiohttp
 
 FROM ${BASE_IMAGE}
@@ -85,7 +85,7 @@ RUN apt-get update && apt-get install -y debconf-utils \
     ros-${ROS_DISTRO}-rosidl-default-runtime \
     # Issue #2378: добавили python3-httpx + python3-aiohttp для voice-assistant,
     # чтобы он мог убрать `rosdep install || true` (см. Шаг 2 в
-    # docker/vision/voice_assistant/Dockerfile). python3-yaml/pil/numpy уже
+    # docker/sound/voice_assistant/Dockerfile). python3-yaml/pil/numpy уже
     # доступны из rob_box_base:rtabmap (introlab3it/rtabmap_ros:humble-latest
     # наследует Ubuntu jammy со всем python3-набором). python3-openai
     # НЕ существует в apt — rob_box_llm ставит openai через pip в setup.py

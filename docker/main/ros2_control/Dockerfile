@@ -40,7 +40,7 @@ ARG VESC_NEXUS_SHA
 ARG APT_PROXY=""
 
 # apt-cacher-ng на build-хосте. Раннер передаёт APT_PROXY этому сервису
-# ("L-Build Main Pi Services.yml", build-ros2-control), но Dockerfile его
+# ("L-Build Pi Services.yml", build-ros2-control), но Dockerfile его
 # никогда не объявлял — build-arg молча игнорировался, apt ходил напрямую в
 # packages.ros.org. Та же дыра, что чинил коммит dc7ed68a2 в пилоте led_matrix;
 # multi-stage удваивает число apt-get update, поэтому нужен в ОБЕИХ стадиях.

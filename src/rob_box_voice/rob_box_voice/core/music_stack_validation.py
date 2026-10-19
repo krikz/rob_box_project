@@ -30,7 +30,7 @@ _MERGE_CONFLICT_END_RE = re.compile(r"^>{7}(?:\s|$)")
 _MISSING_SYNTH_RE = re.compile(r"SynthDef\s+([A-Za-z0-9_]+)\s+not found", re.IGNORECASE)
 # 🔴 FIX (живой инцидент 21.09.2026, Vision Pi): foxdot_init.sc поменял
 # формат подтверждения ещё в live-фиксе 30.08 ("SynthDef preload ok: X" →
-# "SynthDef in scsynth: X", см. docker/vision/voice_assistant/foxdot_init.sc
+# "SynthDef in scsynth: X", см. docker/sound/voice_assistant/foxdot_init.sc
 # :159-179 — старая строка печаталась сразу после path.load(), то есть
 # подтверждала лишь то, что sclang СКОМПИЛИРОВАЛ .scd, а не что scsynth его
 # принял; Server.sync дал правдивое "ok", но заодно сменил текст лога).

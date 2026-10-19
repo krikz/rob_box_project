@@ -87,6 +87,7 @@ check "input triggered_by_script present" "triggered_by_script:"
 # Test 12: original jobs (build-base-images etc) still exist
 check "build-base-images job intact" "build-base-images:"
 check "build-main-services job intact" "build-main-services:"
+check "build-sound-services job intact" "build-sound-services:"
 check "build-vision-services job intact" "build-vision-services:"
 check "summary job intact" "^[[:space:]]+summary:"
 

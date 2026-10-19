@@ -54,7 +54,7 @@ def _repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
-FOXDOT_INIT = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
+FOXDOT_INIT = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "foxdot_init.sc"
 MASTER_PROMPT = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
 COMPOSER_PROMPT = (
     REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"

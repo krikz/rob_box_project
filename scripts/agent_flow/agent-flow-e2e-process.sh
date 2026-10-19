@@ -2671,7 +2671,7 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
     # SHA-tag noise. Сравниваем с threshold уже real_behind.
     if [ "${_behind}" -gt "${threshold}" ] 2>/dev/null; then
         _real_behind="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
-            | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
+            | { grep -vE '^[0-9a-f]+ ci: (vision|main|sound) SHA tags ' || true; } \
             | wc -l | tr -d '[:space:]')"
         if [ -z "$_real_behind" ]; then
             _real_behind="$_behind"  # fail-safe: если log упал, считаем raw
@@ -2687,7 +2687,7 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
         # голого «raw=53, real=32». Экономим 30-минутный detective-work.
         if [ "${DEBUG_E2E_PICKUP:-0}" = "1" ] || [ "${E2E_DIAG_STALE_COMMITS:-1}" = "1" ]; then
             _stale_top="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
-                | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
+                | { grep -vE '^[0-9a-f]+ ci: (vision|main|sound) SHA tags ' || true; } \
                 | head -5)"
             if [ -n "$_stale_top" ]; then
                 log "stale-branch: top-$(( $(printf '%s\n' "$_stale_top" | wc -l) )) реальных коммитов (после whitelist SHA-tag noise):"

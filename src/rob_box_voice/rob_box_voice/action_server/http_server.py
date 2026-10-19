@@ -29,7 +29,7 @@ def _import_aiohttp():
         raise RuntimeError(
             "voice-action-server requires the 'aiohttp' Python package. "
             "It is declared in src/rob_box_voice/package.xml as <exec_depend> "
-            "and pinned in docker/vision/voice_assistant/requirements.txt. "
+            "and pinned in docker/sound/voice_assistant/requirements.txt. "
             "If you see this on a freshly built image, the build cache was "
             "stale — bump BASE image or rebuild without cache."
         ) from exc

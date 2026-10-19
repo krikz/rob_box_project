@@ -361,7 +361,7 @@ git push origin feature/fix-voice-assistant
 
 # 4. GitHub Actions автоматически:
 #    - Определяет что изменился Vision Pi
-#    - Запускает "L-Build Vision Pi Services.yml" (см. docs/CI_CD_PIPELINE.md)
+#    - Запускает "L-Build Pi Services.yml" (-f pi=...) (см. docs/CI_CD_PIPELINE.md)
 #    - Собирает voice-assistant-humble-test
 #    - Пушит образ в ghcr.io
 #    - Мерджит в develop (если сборка успешна)

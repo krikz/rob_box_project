@@ -7,14 +7,13 @@ L-Build-All-Services триггерится каждые ~3-4 мин на z-{e2e
      в round → agent-flow видит новый HEAD → триггерит ещё build → loop.
 
 Решение (двухслойное):
-  1) CI side (root): L-Build Main/Vision Services.yml — skip SHA-tag commit
+  1) CI side (root): L-Build Pi Services.yml — skip SHA-tag commit
      для веток z-{e2e}/test-round-* и z-{e2e}/wip-*.
   2) agent-flow side (defense in depth): если последний коммит round —
      SHA-tag noise и для parent уже есть SUCCESS build → resume.
 
 Тесты покрывают:
-  - YAML guard присутствует в L-Build Main Pi Services.yml
-  - YAML guard присутствует в L-Build Vision Pi Services.yml
+  - YAML guard присутствует в L-Build Pi Services.yml (один на main/sound/vision)
   - Regex корректно матчит test-round-* и wip-* ветки (positive)
   - Regex НЕ матчит develop/main/feature/* ветки (negative)
   - Regex НЕ матчит произвольные строки (negative)
@@ -111,53 +110,37 @@ def _read_yaml(path: Path) -> str:
     return path.read_text()
 
 
-def test_main_build_workflow_has_skip_guard() -> None:
-    """L-Build Main Pi Services.yml ДОЛЖЕН содержать guard от SHA-tag push на round."""
-    yml = _read_yaml(REPO_ROOT / ".github" / "workflows" / "L-Build Main Pi Services.yml")
+# ADR-0159 PR-3: две копии (Main/Vision) стали одним "L-Build Pi Services.yml"
+# с входом `pi` — guard один на всех трёх Pi.
+PI_SERVICES_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Pi Services.yml"
+
+
+def test_pi_build_workflow_has_skip_guard() -> None:
+    """L-Build Pi Services.yml ДОЛЖЕН содержать guard от SHA-tag push на round."""
+    yml = _read_yaml(PI_SERVICES_WF)
     assert "#1826" in yml or "issue #1826" in yml.lower(), (
-        "L-Build Main Pi Services.yml должен иметь ссылку на issue #1826 в guard-комментарии"
+        "L-Build Pi Services.yml должен иметь ссылку на issue #1826 в guard-комментарии"
     )
     assert r"^z-\{e2e\}/test-round-" in yml, (
-        "L-Build Main Pi Services.yml должен иметь regex guard для test-round-*"
+        "L-Build Pi Services.yml должен иметь regex guard для test-round-*"
     )
     assert r"^z-\{e2e\}/wip-" in yml, (
-        "L-Build Main Pi Services.yml должен иметь regex guard для wip-*"
+        "L-Build Pi Services.yml должен иметь regex guard для wip-*"
     )
     assert "Issue #1826: skip SHA-tag push" in yml, (
-        "Main: должен быть echo с skip-сообщением для round-ветки"
+        "должен быть echo с skip-сообщением для round-ветки"
     )
 
 
-def test_vision_build_workflow_has_skip_guard() -> None:
-    """L-Build Vision Pi Services.yml ДОЛЖЕН содержать guard от SHA-tag push на round."""
-    yml = _read_yaml(REPO_ROOT / ".github" / "workflows" / "L-Build Vision Pi Services.yml")
-    assert "#1826" in yml or "issue #1826" in yml.lower(), (
-        "L-Build Vision Pi Services.yml должен иметь ссылку на issue #1826 в guard-комментарии"
-    )
-    assert r"^z-\{e2e\}/test-round-" in yml, (
-        "L-Build Vision Pi Services.yml должен иметь regex guard для test-round-*"
-    )
-    assert r"^z-\{e2e\}/wip-" in yml, (
-        "L-Build Vision Pi Services.yml должен иметь regex guard для wip-*"
-    )
-    assert "Issue #1826: skip SHA-tag push" in yml, (
-        "Vision: должен быть echo с skip-сообщением для round-ветки"
-    )
+def test_pi_build_workflow_preserves_commit_for_non_round() -> None:
+    """Проверяем что оригинальная логика commit сохранена для develop/main/feature/*.
 
-
-def test_main_build_workflow_preserves_commit_for_non_round() -> None:
-    """Проверяем что оригинальная логика commit сохранена для develop/main/feature/*."""
-    yml = _read_yaml(REPO_ROOT / ".github" / "workflows" / "L-Build Main Pi Services.yml")
-    # В else-ветке должен остаться git commit.
-    assert 'git commit -m "ci: main SHA tags' in yml, (
-        "Main: должна сохраняться оригинальная логика commit для non-round веток"
-    )
-
-
-def test_vision_build_workflow_preserves_commit_for_non_round() -> None:
-    yml = _read_yaml(REPO_ROOT / ".github" / "workflows" / "L-Build Vision Pi Services.yml")
-    assert 'git commit -m "ci: vision SHA tags' in yml, (
-        "Vision: должна сохраняться оригинальная логика commit для non-round веток"
+    Имя коммита `ci: <pi> SHA tags → ...` — его отфильтровывает
+    agent-flow-e2e-process.sh (`ci: (vision|main|sound) SHA tags`).
+    """
+    yml = _read_yaml(PI_SERVICES_WF)
+    assert 'git commit -m "ci: ${PI} SHA tags' in yml, (
+        "должна сохраняться оригинальная логика commit для non-round веток"
     )
 
 

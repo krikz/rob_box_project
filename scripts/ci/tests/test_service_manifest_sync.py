@@ -1,42 +1,40 @@
-"""Guard: docker/build-manifest.yaml ⇔ реальные L-Build workflow.
+"""Guard: docker/build-manifest.yaml ⇔ реальный L-Build workflow.
 
-docs/plans/2026-09-15-service-manifest.md, §6.
+docs/plans/2026-09-15-service-manifest.md, §6; ADR-0159 PR-3 (В4).
 
 Режим Phase 1 (манифест только ДОГОНЯЛ руками написанные workflow) закрыт:
 после Phase 2 workflow-файлы больше не содержат списка сервисов — они
 вычисляют matrix из этого же манифеста в `prepare`-job'е. Поэтому guard
-сменил предмет проверки ровно так, как предписывает план §5 Phase 2 п.4:
-он проверяет не «совпадают ли два списка», а «действительно ли workflow
+проверяет не «совпадают ли два списка», а «действительно ли workflow
 берёт состав сборки из docker/build-manifest.yaml, а не из копии списка».
 Конкретные значения параметров сборки (теги, build-args) покрыты тестами
 генератора (scripts/ci/tests/test_gen_build_matrix.py) и acceptance-тестами
 (tests/unit/test_workflow_refactor_acceptance.py), здесь не дублируются.
 
+ADR-0159 PR-3: per-Pi workflow (Main, Vision) заменены ОДНИМ
+".github/workflows/L-Build Pi Services.yml" с входом `pi`; guard сверяет
+манифест с одним файлом. Именованных job'ов по сервисам больше нет — граф
+depends_on собирается волнами (`build`, `build-wave-1`, …).
+
 Что проверяется:
 
-1. `prepare` зовёт scripts/ci/gen_build_matrix.py ИМЕННО с этим манифестом
-   и отдаёт matrix/chained/services как outputs job'а.
-2. matrix-job `build` разворачивается из fromJSON(needs.prepare.outputs.matrix),
-   а именованные job'ы — из своего элемента chained по ИМЕНИ.
-3. Множество именованных build-* job'ов == множеству сервисов графа
-   зависимостей манифеста (ни больше, ни меньше), и их needs: совпадает с
-   depends_on (инвариант §2.3).
-4. НЕГАТИВНЫЙ КОНТРОЛЬ: имя сервиса из манифеста не встречается в
-   исполняемом (не-комментарии) тексте workflow нигде, кроме id именованного
-   job'а и обращения к своему элементу chained. Именно это отличает
-   «workflow читает данные» от «в workflow снова завёлся список».
-5. env: workflow'а (IMAGE_PREFIX/LOCAL_PREFIX/ROS_DISTRO) == defaults
-   манифеста — иначе генератор разрешит теги не теми префиксами, которыми
-   реально собирает CI.
-6. Все build-job'ы одного workflow имеют ПОБАЙТОВО один и тот же список
-   шагов (план §5 Phase 2 п.3: тело именованного job'а обязано дословно
-   совпадать с шаблоном matrix-job'а).
-7. Каждый pre_build-хук манифеста реализован шагом в том workflow, где
-   живёт его сервис.
-8. tag_and_push/verify_in_registry/sed в update-image-versions идут по
-   выводу `gen_build_matrix.py --mode tags` (Phase 3), а не по ручному
-   списку; механизм push (ADR-0094) при этом на месте, а phantom-поля
-   .image-versions.* больше никем не переписываются.
+1. `prepare` зовёт scripts/ci/gen_build_matrix.py ИМЕННО с этим манифестом,
+   для Pi из входа `pi`, и отдаёт waves/wave_count/services как outputs.
+2. Вход `pi` предлагает ровно Pi манифеста; "L: Build All Services" зовёт
+   workflow для каждого Pi манифеста.
+3. Wave-job'ы: волна k разворачивается из fromJSON(...waves)[k], ждёт волну
+   k-1 и пропускается, когда волн у Pi меньше; job'ов не меньше, чем волн у
+   самого глубокого Pi манифеста.
+4. НЕГАТИВНЫЙ КОНТРОЛЬ: ни имя сервиса, ни имя *_TAG-поля манифеста не
+   встречается в исполняемом (не-комментарии) тексте workflow.
+5. env: workflow'а (IMAGE_PREFIX/LOCAL_PREFIX/ROS_DISTRO) == defaults манифеста.
+6. Все build-job'ы имеют ПОБАЙТОВО один и тот же список шагов.
+7. Каждый pre_build-хук манифеста реализован шагом workflow.
+8. update-image-versions идёт по выводу `gen_build_matrix.py --mode tags`
+   (Phase 3), пишет файлы общим scripts/ci/write-image-versions.sh, механизм
+   push (ADR-0094) на месте, phantom-поля .image-versions.* никем не пишутся.
+9. В .image-versions.* соседние строки полей пишет одна сборка (иначе
+   параллельные коммиты Build All конфликтуют на rebase).
 
 Hard gate в G-Lint Code.yml (рядом с validate_test_packages.py) — см.
 ADR-0057 §2.1 (паттерн "guard рядом с уже существующим guard'ом того же
@@ -55,27 +53,11 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST_PATH = REPO_ROOT / "docker" / "build-manifest.yaml"
-MAIN_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Main Pi Services.yml"
-VISION_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Vision Pi Services.yml"
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+PI_WF = WORKFLOWS / "L-Build Pi Services.yml"
+BUILD_ALL_WF = WORKFLOWS / "L-Build-All-Services.yml"
+SINGLE_WF = WORKFLOWS / "L-Build Single Service.yml"
 GEN_SCRIPT = REPO_ROOT / "scripts" / "ci" / "gen_build_matrix.py"
-
-PI_TO_WORKFLOW = {"main": MAIN_WF, "vision": VISION_WF}
-
-# TEMP(ADR-0159 PR-3): voice-base / voice-assistant / supercollider переехали в
-# pis.sound (PR-2b), а "L-Build Vision Pi Services.yml" всё ещё держит
-# build-voice-base / build-voice-assistant и зовёт генератор с --pi vision.
-# Два теста графа именованных job'ов для vision честно расходятся с манифестом —
-# это и есть остаток для PR-3 (единый "L-Build Pi Services.yml" с входом `pi`).
-# strict=True: когда PR-3 приведёт workflow в порядок, XPASS уронит CI и
-# заставит снять эту метку, а не оставить её навсегда.
-_TEMP_PR3_VISION_WF_STILL_BUILDS_VOICE = pytest.mark.xfail(
-    strict=True,
-    reason="TEMP(ADR-0159 PR-3): Vision-workflow ещё собирает voice-* (теперь pis.sound)",
-)
-_PIS_WITH_TEMP_PR3 = [
-    pytest.param("vision", marks=_TEMP_PR3_VISION_WF_STILL_BUILDS_VOICE),
-    "main",
-]
 
 # Путь к манифесту, который workflow ОБЯЗАН передавать генератору — тот же,
 # что читает этот тест. Если кто-то заведёт второй манифест-копию, п.1 упадёт.
@@ -86,8 +68,8 @@ MANIFEST_REL = "docker/build-manifest.yaml"
 
 
 def _load_yaml(path: Path) -> dict:
-    # Как и в test_workflow_refactor_acceptance.py: workflow-файлы содержат
-    # русские комментарии в UTF-8, на Windows дефолтная codepage — cp1252.
+    # Workflow-файлы содержат русские комментарии в UTF-8, на Windows
+    # дефолтная codepage — cp1252.
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
@@ -102,187 +84,191 @@ def _manifest() -> dict[str, Any]:
     return gen_build_matrix.load_manifest(MANIFEST_PATH)
 
 
+def _pis() -> list[str]:
+    return sorted(_manifest()["pis"])
+
+
 def _services(pi: str) -> dict[str, Any]:
     return gen_build_matrix.services_for_pi(_manifest(), pi)
 
 
+def _wf() -> dict:
+    return _load_yaml(PI_WF)
+
+
+def _on(data: dict) -> dict:
+    # PyYAML (YAML 1.1) читает ключ `on:` как булево True.
+    return data.get("on") or data.get(True)
+
+
 def _build_jobs(data: dict) -> dict[str, dict]:
-    """Именованные build-* job'ы (общий matrix-job называется `build`)."""
-    return {k: v for k, v in data["jobs"].items() if k.startswith("build-")}
+    """Wave-job'ы: `build` (волна 0) и `build-wave-<k>`."""
+    return {
+        k: v for k, v in data["jobs"].items() if k == "build" or k.startswith("build-")
+    }
+
+
+def _wave_index(job_name: str) -> int:
+    return 0 if job_name == "build" else int(job_name.removeprefix("build-wave-"))
 
 
 def _prepare_gen_step(data: dict) -> dict:
     for step in data["jobs"]["prepare"]["steps"]:
         if "gen_build_matrix.py" in (step.get("run") or ""):
             return step
-    raise AssertionError("prepare: нет шага, вызывающего scripts/ci/gen_build_matrix.py")
+    raise AssertionError(
+        "prepare: нет шага, вызывающего scripts/ci/gen_build_matrix.py"
+    )
 
 
-def _strip_comments(path: Path, skip_jobs: frozenset[str] = frozenset()) -> str:
-    """Текст workflow без строк-комментариев (для негативного контроля).
-
-    `skip_jobs` вырезает блоки указанных job'ов целиком — нужно, пока какой-то
-    job ещё не переведён на манифест (см. вызов в негативном контроле).
-    """
-    lines = []
-    skipping = False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
-            skipping = line.strip().rstrip(":") in skip_jobs
-        if skipping or line.lstrip().startswith("#"):
-            continue
-        lines.append(line)
-    return "\n".join(lines)
+def _strip_comments(path: Path) -> str:
+    """Текст workflow без строк-комментариев (для негативного контроля)."""
+    return "\n".join(
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
 
 
-# --- 1. prepare читает ИМЕННО этот манифест --------------------------------
+# --- 1. prepare читает ИМЕННО этот манифест для Pi из входа -----------------
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_prepare_generates_matrix_from_the_manifest(pi):
-    data = _load_yaml(PI_TO_WORKFLOW[pi])
+def test_prepare_generates_waves_from_the_manifest():
+    data = _wf()
     step = _prepare_gen_step(data)
     run = step["run"]
 
     assert MANIFEST_REL in run, (
-        f"{pi}: prepare обязан звать генератор с --manifest {MANIFEST_REL} "
+        f"prepare обязан звать генератор с --manifest {MANIFEST_REL} "
         f"(иначе матрица считается по какому-то другому файлу)"
     )
-    assert f"--pi {pi}" in run, f"{pi}: prepare зовёт генератор не для своего Pi"
-    for mode in ("--mode matrix", "--mode chained"):
-        assert mode in run, f"{pi}: prepare не вызывает генератор с {mode}"
-    assert "$GITHUB_OUTPUT" in run, f"{pi}: результат генератора не попадает в outputs"
+    assert '--pi "$PI"' in run, "prepare зовёт генератор не для Pi из входа `pi`"
+    assert (
+        data["env"]["PI"] == "${{ inputs.pi }}"
+    ), "env.PI обязан быть входом `pi` — иначе генератор соберёт не тот Pi"
+    assert "--mode waves" in run, "prepare не вызывает генератор с --mode waves"
+    assert "$GITHUB_OUTPUT" in run, "результат генератора не попадает в outputs"
 
     outputs = data["jobs"]["prepare"]["outputs"]
-    for key in ("matrix", "chained", "services"):
-        assert key in outputs, f"{pi}: prepare.outputs.{key} отсутствует"
-        assert f"steps.{step['id']}.outputs.{key}" in outputs[key], (
-            f"{pi}: prepare.outputs.{key} не ссылается на шаг генератора"
-        )
+    for key in ("waves", "wave_count", "services"):
+        assert key in outputs, f"prepare.outputs.{key} отсутствует"
+        assert (
+            f"steps.{step['id']}.outputs.{key}" in outputs[key]
+        ), f"prepare.outputs.{key} не ссылается на шаг генератора"
 
 
-# --- 2/3. matrix-job и именованные job'ы разворачиваются из манифеста ------
+# --- 2. вход pi и три вызова из Build All -----------------------------------
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_matrix_job_expands_prepare_output(pi):
-    data = _load_yaml(PI_TO_WORKFLOW[pi])
-    matrix = data["jobs"]["build"]["strategy"]["matrix"]
-    assert "fromJSON(needs.prepare.outputs.matrix)" in str(matrix["include"]), (
-        f"{pi}: job `build` обязан разворачиваться из "
-        f"fromJSON(needs.prepare.outputs.matrix), получено {matrix!r}"
-    )
-    assert data["jobs"]["build"]["strategy"].get("fail-fast") is False, (
-        f"{pi}: без fail-fast: false падение одного сервиса отменяло бы сборку "
-        f"остальных — это изменение поведения относительно отдельных job'ов"
-    )
+def test_pi_input_offers_exactly_the_manifest_pis():
+    on = _on(_wf())
+    dispatch = on["workflow_dispatch"]["inputs"]["pi"]
+    assert dispatch["type"] == "choice"
+    assert (
+        sorted(dispatch["options"]) == _pis()
+    ), f"workflow_dispatch.inputs.pi.options={dispatch['options']} != Pi манифеста {_pis()}"
+    call = on["workflow_call"]["inputs"]["pi"]
+    assert call["required"] is True and call["type"] == "string"
 
 
-@pytest.mark.parametrize("pi", _PIS_WITH_TEMP_PR3)
-def test_named_jobs_match_manifest_dependency_graph(pi):
-    services = _services(pi)
-    data = _load_yaml(PI_TO_WORKFLOW[pi])
-
-    expected = {
-        f"build-{name}" for name in gen_build_matrix.named_service_names(services)
+def test_build_all_calls_the_one_workflow_for_every_pi():
+    jobs = _load_yaml(BUILD_ALL_WF)["jobs"]
+    called = {
+        job["with"]["pi"]: name
+        for name, job in jobs.items()
+        if job.get("uses") == "./.github/workflows/L-Build Pi Services.yml"
     }
-    actual = set(_build_jobs(data))
-    assert actual == expected, (
-        f"{pi}: именованными job'ами должны остаться РОВНО сервисы графа "
-        f"зависимостей манифеста {sorted(expected)}, в workflow {sorted(actual)}. "
-        f"Лишний именованный job = список сервисов снова просочился в workflow; "
-        f"недостающий = цель ребра попала в matrix, и needs: на неё сослаться "
-        f"не сможет (план §3.1)."
+    assert sorted(called) == _pis(), (
+        f"L-Build-All-Services зовёт L-Build Pi Services для {sorted(called)}, "
+        f"а в манифесте Pi {_pis()}"
+    )
+    for pi, name in called.items():
+        assert (
+            name == f"build-{pi}-services"
+        ), f"{name}: job id не по шаблону build-<pi>-services"
+        # Pi независимы (depends_on — только внутри Pi): ни один вызов не ждёт
+        # другой Pi, только базовые образы.
+        assert jobs[name]["needs"] == "build-base-images", (pi, jobs[name]["needs"])
+    assert set(called.values()) <= set(jobs["summary"]["needs"])
+
+
+def test_old_per_pi_workflows_are_gone():
+    for old in ("L-Build Main Pi Services.yml", "L-Build Vision Pi Services.yml"):
+        assert not (
+            WORKFLOWS / old
+        ).exists(), f"{old} вернулся — сборка Pi живёт в {PI_WF.name}"
+
+
+# --- 3. волны -------------------------------------------------------------
+
+
+def test_wave_jobs_cover_the_deepest_pi():
+    jobs = _build_jobs(_wf())
+    indexes = sorted(_wave_index(name) for name in jobs)
+    need = gen_build_matrix.max_wave_count(_manifest())
+    assert indexes == list(range(len(indexes))), f"номера волн с дырой: {indexes}"
+    assert len(indexes) >= need, (
+        f"в манифесте Pi с {need} волнами сборки, а wave-job'ов {len(indexes)} — "
+        f"последняя волна молча не соберётся. Добавь build-wave-{len(indexes)}."
     )
 
-    for job_name, job in _build_jobs(data).items():
-        name = job_name.removeprefix("build-")
+
+def test_wave_job_reads_its_wave_and_waits_for_the_previous_one():
+    jobs = _build_jobs(_wf())
+    for name, job in jobs.items():
+        k = _wave_index(name)
+        assert job["strategy"]["fail-fast"] is False, f"{name}: нужен fail-fast: false"
         include = str(job["strategy"]["matrix"]["include"])
-        assert "fromJSON(needs.prepare.outputs.chained)" in include, (
-            f"{pi}/{job_name}: тело job'а должно брать свой элемент из "
-            f"chained-вывода генератора, получено {include!r}"
-        )
-        assert f"'{name}'" in include, (
-            f"{pi}/{job_name}: обращение к своему элементу chained должно быть "
-            f"по имени '{name}' (обращение по индексу молча поехало бы при "
-            f"добавлении сервиса в цепочку), получено {include!r}"
-        )
+        assert f"fromJSON(needs.prepare.outputs.waves)[{k}]" in include, (name, include)
+        needs = job["needs"]
+        needs = [needs] if isinstance(needs, str) else list(needs)
+        prev = [] if k == 0 else ["build" if k == 1 else f"build-wave-{k - 1}"]
+        assert needs == ["prepare", *prev], (name, needs)
+        if k > 0:
+            cond = job.get("if", "")
+            assert f"fromJSON(needs.prepare.outputs.wave_count) > {k}" in cond, (
+                name,
+                cond,
+            )
+            assert "!failure()" in cond and "!cancelled()" in cond, (name, cond)
 
 
-@pytest.mark.parametrize("pi", _PIS_WITH_TEMP_PR3)
-def test_named_jobs_needs_match_depends_on(pi):
-    """needs: именованного job'а == prepare + build-<каждый depends_on>.
-
-    Тот самый инвариант, ради которого voice-assistant/supervisor не
-    растворились в общей matrix (план §3.4): supervisor ждёт ИМЕННО
-    voice-assistant, а не весь набор сервисов.
-    """
-    services = _services(pi)
-    data = _load_yaml(PI_TO_WORKFLOW[pi])
-
-    for job_name, job in _build_jobs(data).items():
-        name = job_name.removeprefix("build-")
-        needs = job.get("needs")
-        needs = [needs] if isinstance(needs, str) else list(needs or [])
-        expected = ["prepare"] + [
-            f"build-{dep}" for dep in (services[name].get("depends_on") or [])
-        ]
-        assert needs == expected, (
-            f"{pi}/{job_name}: needs: {needs} != ожидаемого из манифеста "
-            f"{expected} (depends_on={services[name].get('depends_on')})"
-        )
+def test_consumers_wait_for_every_wave():
+    data = _wf()
+    waves = set(_build_jobs(data))
+    for consumer in ("update-image-versions", "summary"):
+        needs = set(data["jobs"][consumer]["needs"])
+        assert {"prepare", *waves} <= needs, (consumer, sorted(needs))
+    # Пропущенная волна (у Pi меньше волн) — не повод пропускать запись тегов.
+    cond = data["jobs"]["update-image-versions"]["if"]
+    assert "!failure()" in cond and "success()" not in cond, cond
 
 
-# --- 4. негативный контроль: списка сервисов в workflow больше нет ---------
+# --- 4. негативный контроль: списка сервисов в workflow нет ----------------
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_no_service_names_left_in_workflow_body(pi):
-    """Имя сервиса не должно встречаться в исполняемом тексте workflow.
-
-    Разрешены ровно два места: id именованного job'а (`build-voice-base:`)
-    и обращение к своему элементу chained (`['voice-base']`). Всё остальное —
-    признак того, что список сервисов снова просочился в workflow (ровно та
-    болезнь, ради которой заведён манифест, план §1.1).
-    """
-    services = _services(pi)
-    named = set(gen_build_matrix.named_service_names(services))
-    body = _strip_comments(PI_TO_WORKFLOW[pi])
-
-    for name in services:
-        # У сервиса графа зависимостей легально остаются id его job'а
-        # (`build-voice-base:`), ссылки на этот id в needs: и обращение к
-        # своему элементу chained. Вырезаем эти формы из строки и смотрим,
-        # осталось ли имя сервиса где-то ещё.
-        allowed = [f"build-{name}", f"['{name}']"] if name in named else []
-        leftovers = []
-        for i, line in enumerate(body.splitlines(), 1):
-            if name not in line:
-                continue
-            rest = line
-            for token in allowed:
-                rest = rest.replace(token, "")
-            if name not in rest:
-                continue
-            leftovers.append(f"    {i}: {line.strip()}")
-        assert not leftovers, (
-            f"{pi}: имя сервиса {name!r} осталось в теле workflow — состав "
-            f"сборки обязан приходить из {MANIFEST_REL}:\n" + "\n".join(leftovers)
-        )
+def test_no_service_or_tag_names_in_workflow_body():
+    body = _strip_comments(PI_WF)
+    for pi in _pis():
+        services = _services(pi)
+        for name in [*services, *gen_build_matrix.image_versions_map(services)]:
+            hits = [
+                f"    {i}: {line.strip()}"
+                for i, line in enumerate(body.splitlines(), 1)
+                if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", line)
+            ]
+            assert not hits, (
+                f"{pi}: {name!r} в теле {PI_WF.name} — состав сборки обязан "
+                f"приходить из {MANIFEST_REL}:\n" + "\n".join(hits)
+            )
 
 
 # --- 5. env workflow == defaults манифеста ---------------------------------
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_workflow_env_matches_manifest_defaults(pi):
-    """Генератор разрешает теги префиксами, которые ему передаёт workflow из
-    своих env. Если env и defaults манифеста разойдутся, guard-и и тесты
-    генератора будут проверять не то, что реально собирает CI.
-    """
+def test_workflow_env_matches_manifest_defaults():
     defaults = _manifest()["defaults"]
-    env = _load_yaml(PI_TO_WORKFLOW[pi])["env"]
-
+    env = _wf()["env"]
     assert env["IMAGE_PREFIX"] == defaults["registry"]["ghcr"]
     assert env["LOCAL_PREFIX"] == defaults["registry"]["local"]
     assert env["ROS_DISTRO"] == defaults["ros_distro"]
@@ -292,81 +278,60 @@ def test_workflow_env_matches_manifest_defaults(pi):
 # --- 6. тело всех build-job'ов — один шаблон -------------------------------
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_all_build_jobs_share_one_step_template(pi):
-    """План §5 Phase 2 п.3: тело именованного job'а дословно совпадает с
-    шаблоном matrix-job'а — отличается только источник данных матрицы.
-    """
-    data = _load_yaml(PI_TO_WORKFLOW[pi])
+def test_all_build_jobs_share_one_step_template():
+    data = _wf()
     template = data["jobs"]["build"]["steps"]
     for job_name, job in _build_jobs(data).items():
         assert job["steps"] == template, (
-            f"{pi}/{job_name}: шаги разошлись с шаблоном matrix-job'а `build`. "
-            f"Именно из такого расхождения копий вырастают stale-слои "
-            f"(issue #2314) — правь шаблон целиком, а не одну копию."
+            f"{job_name}: шаги разошлись с шаблоном `build`. Из такого "
+            f"расхождения копий вырастают stale-слои (issue #2314) — правь "
+            f"шаблон целиком, а не одну копию."
         )
 
 
 # --- 7. pre_build-хуки манифеста реализованы в workflow --------------------
 
 
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_pre_build_hooks_are_implemented(pi):
-    services = _services(pi)
+def test_pre_build_hooks_are_implemented():
+    body = _strip_comments(PI_WF)
     hooks = {
-        svc["pre_build"] for svc in services.values() if svc.get("pre_build")
+        svc["pre_build"]
+        for pi in _pis()
+        for svc in _services(pi).values()
+        if svc.get("pre_build")
     }
-    body = _strip_comments(PI_TO_WORKFLOW[pi])
     for hook in hooks:
         assert f"matrix.pre_build == '{hook}'" in body, (
-            f"{pi}: манифест объявляет pre_build-хук {hook!r}, но в workflow нет "
-            f"шага с `if: matrix.pre_build == '{hook}'` — сервис собрался бы без "
-            f"предсборочной подготовки и упал бы внутри docker build"
+            f"манифест объявляет pre_build-хук {hook!r}, но в workflow нет шага "
+            f"с `if: matrix.pre_build == '{hook}'`"
         )
 
 
 # --- 8. update-image-versions идёт по выводу генератора (Phase 3) ----------
 
-# sed собирается циклом по выводу генератора, поэтому шаблон подстановки
-# один, с переменной цикла вместо имени поля.
-_SED_LOOP_RE = re.compile(r"s\|\^\$\{VERSION_VAR\}=")
 
-
-@pytest.mark.parametrize("pi", ["vision", "main"])
-def test_update_image_versions_reads_tags_from_manifest(pi):
-    """tag_and_push/verify_in_registry/sed больше не перечисляют сервисы.
-
-    План §5 Phase 3 п.1-2: список `*_TAG`-переменных и соответствующих им
-    тегов приходит из `gen_build_matrix.py --mode tags --format shell`.
-    Сам механизм push (SHA-тег, коммит в develop, push-image-versions.sh)
-    этим не затрагивается — это территория ADR-0094.
-    """
-    data = _load_yaml(PI_TO_WORKFLOW[pi])
-    job = data["jobs"]["update-image-versions"]
+def test_update_image_versions_reads_tags_from_manifest():
+    job = _wf()["jobs"]["update-image-versions"]
     run = "\n".join(step.get("run") or "" for step in job["steps"])
 
-    assert "gen_build_matrix.py" in run and "--mode tags" in run, (
-        f"{pi}: update-image-versions обязан брать список *_TAG из "
-        f"`gen_build_matrix.py --mode tags`, а не из ручного перечисления"
-    )
-    assert MANIFEST_REL in run, f"{pi}: update-image-versions читает не тот манифест"
-    assert _SED_LOOP_RE.search(run), (
-        f"{pi}: sed по .image-versions.* должен собираться из переменной цикла "
-        f"($VERSION_VAR), а не из захардкоженных имён полей"
-    )
+    assert "gen_build_matrix.py" in run and "--mode tags" in run
+    assert MANIFEST_REL in run
+    assert '--pi "$PI"' in run
+    # Запись файлов — общий скрипт (тот же у Single Service), а не свой sed.
+    assert "scripts/ci/write-image-versions.sh" in run
+    assert "sed -i" not in run
+    assert (
+        "scripts/ci/push-image-versions.sh" in run
+    ), "пропал вызов scripts/ci/push-image-versions.sh (ADR-0094)"
+    assert 'git commit -m "ci: ${PI} SHA tags' in run
 
-    # Ни одно имя *_TAG-переменной манифеста не вписано руками.
-    for var in gen_build_matrix.image_versions_map(_services(pi)):
-        assert var not in run, (
-            f"{pi}: переменная {var} перечислена в update-image-versions руками — "
-            f"это снова копия списка из {MANIFEST_REL}"
-        )
 
-    # push-механизм ADR-0094 остался на месте (Phase 3 его НЕ трогает).
-    assert "scripts/ci/push-image-versions.sh" in run, (
-        f"{pi}: пропал вызов scripts/ci/push-image-versions.sh — Phase 3 не "
-        f"должна была трогать механизм push (ADR-0094)"
-    )
+def test_single_service_writes_through_the_same_script():
+    body = _strip_comments(SINGLE_WF)
+    assert "scripts/ci/write-image-versions.sh" in body
+    assert 'sed -i "s|^${VERSION_VAR}=' not in body
+    pi_type = _on(_load_yaml(SINGLE_WF))["workflow_dispatch"]["inputs"]["pi_type"]
+    assert set(_pis()) <= set(pi_type["options"]), pi_type["options"]
 
 
 @pytest.mark.parametrize("pi", ["vision", "main"])
@@ -374,76 +339,101 @@ def test_known_phantom_tags_are_gone(pi):
     """Phantom-поля .image-versions.* удалены (план §1.3/§1.4, ADR-0094 §1.4, §3.3).
 
     RTABMAP_SYNC_TAG (vision) и MICRO_ROS_AGENT_TAG (main) не принадлежали ни
-    одному сервису манифеста: rtabmap собирается только на Main Pi, а
-    micro-ros-agent не собирается вовсе. До Phase 3 sed писал их наравне с
-    настоящими; Phase 3 перестала их обновлять, а этот шаг
-    (docs/plans/2026-09-15-image-versions-seam.md §7.2) удалил сами поля.
-
-    Предыдущая версия теста держала обратный факт — «поля ещё лежат, их никто
-    не обновляет» — и прямо просила переписать себя, когда phantom вычистят.
-    Переписана: теперь guard стоит с другой стороны и ловит их возвращение.
-    Вернуть phantom можно ровно двумя способами, оба закрыты:
-    дописать поле руками в .image-versions.* или вернуть ветку
-    PI_TYPE=vision у rtabmap в L-Build Single Service.yml.
+    одному сервису манифеста. Guard ловит их возвращение: в .image-versions.*,
+    в теле workflow сборки Pi и в L-Build Single Service.yml.
     """
     phantoms = {
         "vision": {"RTABMAP_SYNC_TAG"},
         "main": {"MICRO_ROS_AGENT_TAG"},
     }[pi]
-    body = _strip_comments(PI_TO_WORKFLOW[pi])
-    single_service = _strip_comments(
-        REPO_ROOT / ".github" / "workflows" / "L-Build Single Service.yml"
-    )
+    body = _strip_comments(PI_WF)
+    single_service = _strip_comments(SINGLE_WF)
 
     for var in phantoms:
         for suffix in ("dev", "test", "latest"):
             versions_file = REPO_ROOT / "docker" / pi / f".image-versions.{suffix}"
             if not versions_file.exists():
                 continue
-            assert f"{var}=" not in versions_file.read_text(encoding="utf-8"), (
-                f"{pi}: {var} снова в {versions_file.name} — это поле никто не "
-                f"читает (scripts/ci/check_image_versions_usage.sh), удалено "
-                f"по ADR-0094 §3.3"
-            )
-        assert var not in body, (
-            f"{pi}: {var} снова появился в исполняемом тексте workflow"
-        )
-        assert var not in single_service, (
-            f"{pi}: {var} вернулся в L-Build Single Service.yml — один запуск "
-            f"этого workflow допишет phantom обратно в .image-versions.*"
-        )
+            assert f"{var}=" not in versions_file.read_text(
+                encoding="utf-8"
+            ), f"{pi}: {var} снова в {versions_file.name} — поле никто не читает"
+        assert var not in body
+        assert var not in single_service
 
     manifest_vars = set(gen_build_matrix.image_versions_map(_services(pi)))
-    assert not (phantoms & manifest_vars), (
-        f"{pi}: phantom-поля {sorted(phantoms & manifest_vars)} внезапно обрели "
-        f"владельца в манифесте — обнови этот тест"
-    )
+    assert not (phantoms & manifest_vars)
 
 
 @pytest.mark.parametrize("pi", ["vision", "sound", "main"])
 def test_image_versions_file_has_a_field_for_every_manifest_service(pi):
     """Каждая переменная image_versions манифеста реально есть в
-    docker/<pi>/.image-versions.dev.
-
-    Без этого sed отработал бы вхолостую (шаблон ^VAR= ничего не нашёл бы),
-    а deploy продолжил тянуть старый тег — молча.
+    docker/<pi>/.image-versions.dev — иначе запись прошла бы вхолостую.
     """
-    versions_text = (
-        REPO_ROOT / "docker" / pi / ".image-versions.dev"
-    ).read_text(encoding="utf-8")
+    versions_text = (REPO_ROOT / "docker" / pi / ".image-versions.dev").read_text(
+        encoding="utf-8"
+    )
     for var in gen_build_matrix.image_versions_map(_services(pi)):
         assert f"{var}=" in versions_text, (
             f"{pi}: манифест объявляет {var}, но такого поля нет в "
-            f"docker/{pi}/.image-versions.dev — sed не нашёл бы что заменить"
+            f"docker/{pi}/.image-versions.dev"
         )
 
 
-# --- smoke: манифест вообще парсится и покрывает оба pi ---------------------
+@pytest.mark.parametrize("compose_pi", ["vision", "sound", "main"])
+def test_compose_tag_vars_of_manifest_images_are_declared_for_that_pi(compose_pi):
+    """Compose Pi ссылается на `${X_TAG:-…}` образа из манифеста — поле X_TAG
+    обязано быть в docker/<этот Pi>/.image-versions.*, даже если образ собирает
+    другой Pi (avatar-arbiter на Vision берёт supervisor из Sound-сборки).
+    Иначе deploy этого Pi молча катит плавающий IMAGE_TAG, а не SHA-тег сборки.
+    """
+    all_vars = {
+        var
+        for pi in _pis()
+        for var in gen_build_matrix.image_versions_map(_services(pi))
+    }
+    compose = (REPO_ROOT / "docker" / compose_pi / "docker-compose.yaml").read_text(
+        encoding="utf-8"
+    )
+    used = set(re.findall(r"\$\{([A-Z0-9_]+_TAG):-", compose)) & all_vars
+    for suffix in ("dev", "test", "latest"):
+        path = REPO_ROOT / "docker" / compose_pi / f".image-versions.{suffix}"
+        text = path.read_text(encoding="utf-8")
+        missing = sorted(v for v in used if not re.search(rf"^{v}=", text, re.M))
+        assert not missing, (
+            f"docker/{compose_pi}/docker-compose.yaml берёт {missing}, но в "
+            f"{path.relative_to(REPO_ROOT)} поля нет — write-image-versions.sh "
+            f"его не обновит, deploy возьмёт плавающий IMAGE_TAG"
+        )
+
+
+# --- 9. соседние поля .image-versions.* пишет одна сборка ------------------
+
+
+def test_adjacent_image_versions_fields_have_one_writer():
+    """Build All собирает Pi параллельно, и две сборки могут править один файл
+    (PERCEPTION_TAG пишет Main в docker/sound/). Правки соседних строк git не
+    сливает: rebase в push-image-versions.sh падает. Между полями разных
+    сборок должна стоять хотя бы одна неизменяемая строка (комментарий).
+    """
+    owner = {
+        var: pi
+        for pi in _pis()
+        for var in gen_build_matrix.image_versions_map(_services(pi))
+    }
+    for path in sorted((REPO_ROOT / "docker").glob("*/.image-versions.*")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for upper, lower in zip(lines, lines[1:]):
+            a, b = upper.split("=", 1)[0], lower.split("=", 1)[0]
+            if a in owner and b in owner:
+                assert owner[a] == owner[b], (
+                    f"{path.relative_to(REPO_ROOT)}: {a} (сборка {owner[a]}) и {b} "
+                    f"(сборка {owner[b]}) на соседних строках — параллельные коммиты "
+                    f"конфликтуют на rebase; вставь между ними строку-комментарий"
+                )
+
+
+# --- smoke: манифест вообще парсится и покрывает три Pi --------------------
 
 
 def test_manifest_declares_all_pis():
-    manifest = _manifest()
-    assert set(manifest["pis"]) >= {"vision", "sound", "main"}, (
-        f"manifest.pis must declare 'vision', 'sound' and 'main', "
-        f"got {sorted(manifest['pis'])}"
-    )
+    assert set(_pis()) >= {"vision", "sound", "main"}, _pis()

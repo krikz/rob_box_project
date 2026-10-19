@@ -12,7 +12,7 @@
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest
 # Issue #2314 (devops, raw-evidence): после deploy z-{e2e}/test-round-387
 # quest_node падал с `ModuleNotFoundError: rob_box_core.avatar_command`.
-# Root cause: SOURCE_HASH в L-Build Vision Pi Services.yml не покрывал
+# Root cause: SOURCE_HASH в L-Build Pi Services.yml не покрывал
 # src/rob_box_core → слой `COPY src/rob_box_core/rob_box_core`
 # не инвалидировался при правках rob_box_core → avatar_command.py
 # не доезжал до image. Лечение SOURCE_HASH сделано в том же PR.
@@ -90,7 +90,7 @@ COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
 #
 # Лечение: паттерн «build once, share with all» (как для rob_box_supervisor_msgs
 # после PR #2286). Все apt-зависимости voice-assistant (python3-httpx,
-# python3-aiohttp) добавлены в docker/vision/voice_base/Dockerfile apt-get
+# python3-aiohttp) добавлены в docker/sound/voice_base/Dockerfile apt-get
 # install — оттуда они доступны потребителю. python3-yaml/pil/numpy/action-msgs/
 # tf2-ros/nav2-msgs/rclpy уже стоят в rob_box_base:rtabmap (introlab3it/
 # rtabmap_ros:humble-latest). python3-openai НЕ существует в apt — rob_box_llm
@@ -104,7 +104,7 @@ COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
 #   - `rosdep install` больше НИГДЕ в vision/ не вызывается (был единственный
 #     экземпляр — здесь). supervisor/quest уже без него после PR #2286.
 #   - voice-base apt-слой единственный, инвалидируется bump'ой BUILD_VERSION
-#     (см. docker/vision/voice_base/Dockerfile) — артефакт переиспользуется.
+#     (см. docker/sound/voice_base/Dockerfile) — артефакт переиспользуется.
 
 # =============================================================================
 # Шаг 2.5: APP-LAYER PYTHON ЗАВИСИМОСТИ (issue #2277)
@@ -206,7 +206,7 @@ COPY src/rob_box_llm/rob_box_llm /ws/src/rob_box_llm/rob_box_llm
 
 # После копирования Python исходников можно переиспользовать patch helper для
 # ремонта broken Renardo SynthDef-ов в установленном пакете.
-COPY docker/vision/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
+COPY docker/sound/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
 RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
 
 # Live 13.08 — тихие ворнинги renardo при каждом старте контейнера:
@@ -268,8 +268,8 @@ COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
 # Шаг 10: Копируем FoxDot SC init скрипт для sclang
 # sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
 # на порту 57120 для получения запросов на компиляцию SynthDef-ов от renardo.
-COPY docker/vision/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
-COPY docker/vision/voice_assistant/custom_synthdefs /ws/custom_synthdefs
+COPY docker/sound/voice_assistant/foxdot_init.sc /ws/foxdot_init.sc
+COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ

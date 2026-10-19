@@ -287,7 +287,7 @@ def test_stop_ends_the_arc():
 def test_master_defaults_are_the_synthdef_defaults_and_trim_sits_after_the_dynamics():
     """Дефолты ручек движка = дефолты ``masterfilter.scd`` (v1 без движка звучит как раньше: trim 0)."""
     root = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "docker").is_dir())
-    scd = (root / "docker/vision/voice_assistant/custom_synthdefs/masterfilter.scd").read_text(encoding="utf-8")
+    scd = (root / "docker/sound/voice_assistant/custom_synthdefs/masterfilter.scd").read_text(encoding="utf-8")
     code = "\n".join(line.split("//", 1)[0] for line in scd.splitlines())
     head = code.index("|", code.index("SynthDef.new(\\masterfilter"))
     args = dict(item.split("=") for item in "".join(code[head + 1:code.index("|", head + 1)].split()).split(","))

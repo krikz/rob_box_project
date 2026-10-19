@@ -8,7 +8,7 @@
 #
 # Источники истины:
 #   - docs/adr/0028-avatar-supervisor.md §4.6
-#   - docker/vision/voice_assistant/start_voice_assistant.sh (паттерн)
+#   - docker/sound/scripts/voice_assistant/start_voice_assistant.sh (паттерн)
 
 set -e
 

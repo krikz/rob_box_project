@@ -4,4 +4,6 @@
 # PERCEPTION_TAG — для sensor-bridge (profile sensors); образ perception собирает Main-сборка.
 
 VOICE_ASSISTANT_TAG=dev-6cbc66b
+SUPERVISOR_TAG=dev
+# ↓ пишет Main-сборка (perception), ↑ — Sound-сборка. Строка-разделитель: их параллельные коммиты (Build All) правят этот файл без конфликта rebase.
 PERCEPTION_TAG=dev-17d7a06

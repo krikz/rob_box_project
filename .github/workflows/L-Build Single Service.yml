@@ -5,9 +5,9 @@ name: "L: Build Single Service"
 #
 # ВАЖНО: список `service` ниже (per pi_type) и `case "$SERVICE"` в job
 # `prepare` обязаны оставаться зеркалом сервисов, которые собирает
-# "L: Build Vision Pi Services" (job-ы build-*) / "L: Build Main Pi
-# Services". Если там появляется новый build-* job — добавь сюда
-# соответствующий пункт в choice-список И ветку case, иначе пересборка
+# сервисами docker/build-manifest.yaml (pis.main/sound/vision), которые
+# собирает "L: Build Pi Services". Если там появляется новый сервис — добавь
+# сюда соответствующий пункт в choice-список И ветку case, иначе пересборка
 # этого сервиса в одиночку невозможна и разработчик вынужден гонять
 # весь набор из ~11 сервисов ради одной правки (см. docs/guides/
 # SINGLE_SERVICE_BUILD.md — держи список сервисов там тоже синхронным).
@@ -19,7 +19,7 @@ name: "L: Build Single Service"
 #
 # Хендофф 2026-09-21 §8 (Phase 4 плана docs/plans/2026-09-15-service-manifest.md):
 # job `build-service` собирает через ./.github/actions/l-build-service — то же
-# действие, что используют L-Build Main/Vision Pi Services.yml. Раньше здесь
+# действие, что использует L-Build Pi Services.yml. Раньше здесь
 # был собственный `docker buildx build`, и registry-кеш/docker-container
 # билдер/подмена host-gateway на одиночные сборки не распространялись.
 # `docker/build-manifest.yaml` эту сборку НЕ покрывает (base-образы — вне
@@ -36,11 +36,12 @@ on:
         type: string
 
       pi_type:
-        description: 'Pi type (main/vision/base)'
+        description: 'Pi type (main/sound/vision/base)'
         required: true
         type: choice
         options:
           - main
+          - sound
           - vision
           - base
 
@@ -57,16 +58,17 @@ on:
           - nav2
           - lslidar
           - perception
+          # Sound Pi services (ADR-0159)
+          - voice-base
+          - voice-assistant
+          - supercollider
+          - supervisor
           # Vision Pi services
           - oak-d
           - led-matrix
           - ceiling-camera
-          - voice-base
-          - voice-assistant
           - telegram-bot
-          - supercollider
           - apriltag
-          - supervisor
           - quest
           - vision-hailo
           # zenoh-router здесь нет: compose берёт готовый eclipse/zenoh:1.6.2,
@@ -110,7 +112,7 @@ jobs:
       # image_name — hyphenated component name (== IMAGE_NAME, часть тега:
       # ...:<image_name>-${ROS_DISTRO}-<tag>). Передаётся в composite как
       # service-name, чтобы registry-кеш одиночной сборки делил ОДИН
-      # buildcache-тег с L-Build Main/Vision Pi Services.yml (там
+      # buildcache-тег с L-Build Pi Services.yml (там
       # service-name == matrix.name == тот же hyphenated идентификатор,
       # docker/build-manifest.yaml). service_name (underscored) — отдельно,
       # он завязан на Dockerfile/ROS-пакет и .image-versions VERSION_VAR.
@@ -209,6 +211,48 @@ jobs:
               esac
               ;;
 
+            "sound")
+              # ADR-0159: голосовой стек собирается для Sound Pi
+              # (pis.sound в docker/build-manifest.yaml, docker/sound/).
+              case "$SERVICE" in
+                "voice-assistant"|"voice_assistant")
+                  SERVICE_NAME="voice_assistant"
+                  IMAGE_NAME="voice-assistant"
+                  DOCKERFILE="docker/sound/voice_assistant/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box:voice-base-${ROS_DISTRO}-${DOCKER_TAG}"
+                  ;;
+                "voice-base"|"voice_base")
+                  SERVICE_NAME="voice_base"
+                  IMAGE_NAME="voice-base"
+                  DOCKERFILE="docker/sound/voice_base/Dockerfile"
+                  BUILD_CONTEXT="docker/sound/voice_base"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
+                  ;;
+                "supercollider")
+                  SERVICE_NAME="supercollider"
+                  IMAGE_NAME="supercollider"
+                  DOCKERFILE="docker/sound/supercollider/Dockerfile"
+                  BUILD_CONTEXT="docker/sound/supercollider"
+                  BASE_IMAGE=""
+                  ;;
+                "supervisor")
+                  # AV-9 (ADR-0028): наследует voice-assistant image (см.
+                  # docker/sound/supervisor/Dockerfile) — BASE_IMAGE-механизм
+                  # ниже (build-service) подставляет его как обычный build-arg.
+                  SERVICE_NAME="supervisor"
+                  IMAGE_NAME="supervisor"
+                  DOCKERFILE="docker/sound/supervisor/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
+                  ;;
+                *)
+                  echo "❌ Unknown Sound Pi service: $SERVICE"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
             "vision")
               case "$SERVICE" in
                 "oak-d")
@@ -232,20 +276,6 @@ jobs:
                   BUILD_CONTEXT="docker/vision"
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
-                "voice-assistant"|"voice_assistant")
-                  SERVICE_NAME="voice_assistant"
-                  IMAGE_NAME="voice-assistant"
-                  DOCKERFILE="docker/vision/voice_assistant/Dockerfile"
-                  BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box:voice-base-${ROS_DISTRO}-${DOCKER_TAG}"
-                  ;;
-                "voice-base"|"voice_base")
-                  SERVICE_NAME="voice_base"
-                  IMAGE_NAME="voice-base"
-                  DOCKERFILE="docker/vision/voice_base/Dockerfile"
-                  BUILD_CONTEXT="docker/vision/voice_base"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
-                  ;;
                 "apriltag")
                   SERVICE_NAME="apriltag"
                   IMAGE_NAME="apriltag"
@@ -259,23 +289,6 @@ jobs:
                   DOCKERFILE="docker/vision/telegram_bot/Dockerfile"
                   BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
-                  ;;
-                "supercollider")
-                  SERVICE_NAME="supercollider"
-                  IMAGE_NAME="supercollider"
-                  DOCKERFILE="docker/vision/supercollider/Dockerfile"
-                  BUILD_CONTEXT="docker/vision/supercollider"
-                  BASE_IMAGE=""
-                  ;;
-                "supervisor")
-                  # AV-9 (ADR-0028): наследует voice-assistant image (см.
-                  # docker/vision/supervisor/Dockerfile) — BASE_IMAGE-механизм
-                  # ниже (build-service) подставляет его как обычный build-arg.
-                  SERVICE_NAME="supervisor"
-                  IMAGE_NAME="supervisor"
-                  DOCKERFILE="docker/vision/supervisor/Dockerfile"
-                  BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
                   ;;
                 "quest")
                   # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль. Тег
@@ -411,7 +424,7 @@ jobs:
         # ADR-0089 Phase 1.5: HailoRT python wheel + libhailort.so — закрытые
         # артефакты Hailo Developer Zone, скриптом не качаются. Совпадает 1:1
         # с pre_build-хуком fetch_hailort_wheel в docker/build-manifest.yaml /
-        # scripts/ci/fetch_hailort_wheel.sh (L-Build Vision Pi Services.yml),
+        # scripts/ci/fetch_hailort_wheel.sh (L-Build Pi Services.yml),
         # оставлен здесь inline: манифест не покрывает Single Service (план
         # docs/plans/2026-09-15-service-manifest.md §11 вопрос №2).
         if: needs.prepare.outputs.service_name == 'vision_hailo'
@@ -503,7 +516,7 @@ jobs:
       - name: Build ${{ needs.prepare.outputs.service_name }}
         # Композит — единственное место с docker buildx build для одиночной
         # сборки теперь тоже (было: свой buildx-вызов мимо действия). Даёт те
-        # же гарантии, что уже есть у L-Build Main/Vision Pi Services.yml:
+        # же гарантии, что уже есть у L-Build Pi Services.yml:
         # registry-кеш (--cache-from/--cache-to, mode=max), билдер
         # docker-container, заведённый шагом внутри композита (раннеры на
         # katana — контейнеры myoung34/github-runner с проброшенным
@@ -514,7 +527,7 @@ jobs:
         with:
           # image_name (hyphenated), не service_name (underscored): так
           # cache-ref (<service-name>-buildcache) совпадает с тем, что
-          # использует matrix-job Main/Vision Pi для того же сервиса —
+          # использует L-Build Pi Services.yml для того же сервиса —
           # одиночная сборка делит registry-кеш с пакетной, а не заводит свой.
           service-name: ${{ needs.prepare.outputs.image_name }}
           dockerfile-path: ${{ needs.prepare.outputs.dockerfile_path }}
@@ -528,7 +541,7 @@ jobs:
           # push_to_registry=false → load=true (образ только в daemon, без
           # docker push). push_to_registry=true (default) → load=false: тот
           # же режим "buildx --load + docker push ТОЛЬКО localhost:5000", что
-          # уже используют Main/Vision — GHCR не пушится (issue #1503).
+          # уже использует L-Build Pi Services — GHCR не пушится (issue #1503).
           load: ${{ !inputs.push_to_registry }}
 
       - name: Tag with SHA and update .image-versions
@@ -572,11 +585,13 @@ jobs:
           case "$SERVICE_NAME" in
             voice_assistant)       VERSION_VAR="VOICE_ASSISTANT_TAG" ;;
             telegram_bot)          VERSION_VAR="TELEGRAM_BOT_TAG" ;;
+            # supervisor: поле в docker/sound и docker/vision (avatar-arbiter) —
+            # write-image-versions.sh пишет во все файлы, где оно объявлено.
+            supervisor)            VERSION_VAR="SUPERVISOR_TAG" ;;
             oak-d)                 VERSION_VAR="OAK_D_TAG" ;;
             led_matrix)            VERSION_VAR="LED_MATRIX_TAG" ;;
             ceiling-camera)        VERSION_VAR="CEILING_CAMERA_TAG" ;;
-            # rtabmap собирается ТОЛЬКО на Main Pi: job build-rtabmap есть
-            # в L-Build Main Pi Services.yml и отсутствует в Vision. Ветка
+            # rtabmap собирается ТОЛЬКО для Main Pi (pis.main манифеста). Ветка
             # PI_TYPE=vision писала сюда RTABMAP_SYNC_TAG — phantom-поле без
             # владельца, его не читал ни compose, ни скрипты (проверено
             # scripts/ci/check_image_versions_usage.sh). Поле удалено из
@@ -598,14 +613,16 @@ jobs:
             exit 0
           fi
 
-          VERSIONS_FILE="docker/${PI_TYPE}/.image-versions.${DOCKER_TAG}"
-          if [ ! -f "$VERSIONS_FILE" ]; then
-            echo "⚠️  $VERSIONS_FILE not found — skipping version update"
+          # Поле пишется во все docker/*/.image-versions.${DOCKER_TAG}, где оно
+          # объявлено (ADR-0159 §2.5: PERCEPTION_TAG читают main и sound) — тот же
+          # скрипт, что у "L: Build Pi Services". Пусто — файла под тег нет
+          # (local) или поле нигде не объявлено.
+          VERSIONS_FILES="$(bash scripts/ci/write-image-versions.sh "$DOCKER_TAG" "$NEW_TAG" "$VERSION_VAR")"
+          if [ -z "$VERSIONS_FILES" ]; then
+            echo "⚠️  ${VERSION_VAR}: нет docker/*/.image-versions.${DOCKER_TAG} с этим полем — skipping version update"
             exit 0
           fi
-
-          sed -i "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|" "$VERSIONS_FILE"
-          echo "✅ Updated: ${VERSION_VAR}=${NEW_TAG} in $VERSIONS_FILE"
+          mapfile -t FILES <<< "$VERSIONS_FILES"
 
           # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): коммитим .image-versions
           # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-{pi_type} — текущая
@@ -613,14 +630,14 @@ jobs:
           # на origin-типе и НЕ сбрасывается → теги накапливаются и не теряются.
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
-          git add "$VERSIONS_FILE"
+          git add "${FILES[@]}"
           if git diff --cached --quiet; then
             echo "ℹ️  No changes to commit"
           else
             bash scripts/ci/commit-image-versions.sh \
               "ci/image-versions-${PI_TYPE}" \
               "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]" \
-              "$VERSIONS_FILE"
+              "${FILES[@]}"
           fi
 
   # Итоговая сводка
@@ -655,15 +672,17 @@ jobs:
           echo "  - lslidar"
           echo "  - perception"
           echo ""
+          echo "Sound Pi services:"
+          echo "  - voice-base (voice_base)"
+          echo "  - voice-assistant (voice_assistant)"
+          echo "  - supercollider"
+          echo "  - supervisor"
+          echo ""
           echo "Vision Pi services:"
           echo "  - oak-d"
           echo "  - led-matrix (led_matrix)"
           echo "  - ceiling-camera"
-          echo "  - voice-base (voice_base)"
-          echo "  - voice-assistant (voice_assistant)"
-          echo "  - supercollider"
           echo "  - apriltag"
-          echo "  - supervisor"
           echo "  - quest"
           echo ""
           echo "Base images:"
