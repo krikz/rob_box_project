@@ -196,35 +196,25 @@ jobs:
         run: |
           echo "📁 Проверка структуры директорий сервисов..."
 
-          # Main Pi сервисы
-          # zenoh-router — образ eclipse/zenoh из compose, своего Dockerfile нет
-          # (мёртвые docker/{main,vision}/zenoh-router удалены, ADR-0159 PR-2a)
-          for service in robot_state_publisher rtabmap lslidar perception; do
-            if [ ! -d "docker/main/$service" ]; then
-              echo "❌ Отсутствует директория сервиса: docker/main/$service"
+          # Каталоги сборки сервисов: <pi>/<каталог>. zenoh-router — образ
+          # eclipse/zenoh из compose, своего Dockerfile нет (ADR-0159 PR-2a);
+          # apriltag удалён (интегрирован в oak-d). Голосовой стек и supervisor
+          # собираются для Sound Pi из docker/sound (ADR-0159 PR-3). Полную
+          # сверку всех Dockerfile манифеста с диском делает
+          # tests/unit/test_workflow_refactor_acceptance.py.
+          for dir in \
+              main/robot_state_publisher main/rtabmap main/lslidar main/perception \
+              vision/oak-d \
+              sound/voice_base sound/voice_assistant sound/supercollider sound/supervisor; do
+            if [ ! -d "docker/$dir" ]; then
+              echo "❌ Отсутствует директория сервиса: docker/$dir"
               exit 1
             fi
-            if [ ! -f "docker/main/$service/Dockerfile" ]; then
-              echo "❌ Отсутствует Dockerfile в: docker/main/$service"
+            if [ ! -f "docker/$dir/Dockerfile" ]; then
+              echo "❌ Отсутствует Dockerfile в: docker/$dir"
               exit 1
             fi
-            echo "✅ docker/main/$service"
-          done
-
-          # Vision Pi сервисы (apriltag удален - интегрирован в oak-d).
-          # supercollider — build-контекст голосового стека Sound Pi; каталоги
-          # сборки (voice_base, voice_assistant, supercollider) пока лежат в
-          # docker/vision, переедут вместе с workflow в PR-3 (ADR-0159).
-          for service in oak-d supercollider; do
-            if [ ! -d "docker/vision/$service" ]; then
-              echo "❌ Отсутствует директория сервиса: docker/vision/$service"
-              exit 1
-            fi
-            if [ ! -f "docker/vision/$service/Dockerfile" ]; then
-              echo "❌ Отсутствует Dockerfile в: docker/vision/$service"
-              exit 1
-            fi
-            echo "✅ docker/vision/$service"
+            echo "✅ docker/$dir"
           done
 
           echo ""
