@@ -39,7 +39,7 @@
 set -euo pipefail
 
 # Main Pi на проводном линке с Vision Pi: eth0 = 10.1.1.10 (тот же адрес, что
-# docker/vision/config/zenoh_router_config.json5 "tcp/10.1.1.10:7447#iface=eth0").
+# ZENOH_CONNECT_ENDPOINTS роутера в docker/vision/docker-compose.yaml "tcp/10.1.1.10:7447#iface=eth0").
 # 10.1.1.20 — это Wi-Fi Main Pi (SSH), время по Wi-Fi не гоняем (ADR-0130 §2.11).
 DEFAULT_SERVER="10.1.1.10"
 ALLOW_SUBNET="10.1.1.0/24"

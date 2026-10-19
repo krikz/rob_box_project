@@ -7,7 +7,7 @@ RTABMAP_INI = REPO_ROOT / "docker/main/config/rtabmap/rtabmap.ini"
 
 
 def load_module():
-    module_path = REPO_ROOT / "docker/main/scripts/patch_rtabmap_launch.py"
+    module_path = REPO_ROOT / "docker/main/scripts/rtabmap/patch_rtabmap_launch.py"
     spec = spec_from_file_location("patch_rtabmap_launch", module_path)
     module = module_from_spec(spec)
     assert spec.loader is not None

@@ -580,7 +580,7 @@ Vision Pi:
 | Тип данных | Размещение | Монтирование | Причина |
 |------------|------------|--------------|---------|
 | **Config files** | `docker/*/config/` | `./config:/config:ro` | Изменение без пересборки |
-| **Shared helper scripts** | `docker/*/scripts/` | `./scripts:/ros_scripts:ro` | Общая runtime-логика для нескольких сервисов |
+| **Shared helper scripts** | `docker/common/scripts/` | `../common/scripts:/ros_scripts:ro` | Общая для всех Pi runtime-логика (`ros_with_namespace.sh`, старт Zenoh-роутера; ADR-0159 В4) |
 | **Service startup scripts** | `docker/*/scripts/<service>/` | `./scripts/<service>:/scripts:ro` | Быстрое обновление service-local startup logic |
 | **Launch files** | `docker/*/config/<service>/launch/` | доступны через `./config:/config:ro` | Гибкость в настройке без пересборки |
 | **Maps** | `docker/main/maps/` | `./maps:/maps` | Persistence данных и RTAB-Map database |

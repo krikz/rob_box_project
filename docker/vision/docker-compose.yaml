@@ -1,3 +1,9 @@
+# Узловые адреса Zenoh (ADR-0159 В4, PR-2a): общие шаблоны конфигов и
+# скрипты лежат в docker/common; узлы различаются только ZENOH_LISTEN_IP (здесь)
+# и ZENOH_CONNECT_ENDPOINTS (сервис zenoh-router).
+# Дефолт = адрес eth0 этого Pi; переопределение — в .env.
+x-zenoh-listen-ip: &zenoh_listen_ip "ZENOH_LISTEN_IP=${ZENOH_LISTEN_IP:-10.1.1.11}"
+
 services:
   # Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
   # Namespace НЕ используется здесь - он добавляется только на Main Pi при отправке в облако
@@ -20,9 +26,13 @@ services:
     memswap_limit: 128m
     environment:
       - RUST_LOG=zenoh=info
+      - *zenoh_listen_ip  # listen tcp/<IP>:7447
+      # Куда подключается роутер (через запятую): Main Pi по Gigabit Ethernet,
+      # #iface=eth0 — принудительно через eth0, не WiFi
+      - ZENOH_CONNECT_ENDPOINTS=${ZENOH_CONNECT_ENDPOINTS:-tcp/10.1.1.10:7447#iface=eth0}
     volumes:
-      - ./config:/config:ro
-      - ./scripts/zenoh-router:/scripts:ro
+      - ../common/config:/common_config:ro
+      - ../common/scripts/zenoh-router:/scripts:ro
     entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
@@ -51,10 +61,12 @@ services:
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/oak-d:/scripts:ro
       - ./config/oak-d/launch:/config/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
@@ -103,9 +115,11 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/led_matrix:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_led_matrix.sh"]
     depends_on:
@@ -140,10 +154,12 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85  # JPEG качество для compressed transport
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/ceiling-camera:/scripts:ro
       - ./config/ceiling-camera/ceiling_camera.yaml:/root/.ros/camera_info/ceiling_camera.yaml:ro  # Калибровка камеры
       - /dev/shm:/dev/shm
@@ -276,6 +292,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       # Audio settings
       - ALSA_CARD=ReSpeaker
       - TTS_CACHE_DIR=/cache/tts
@@ -325,7 +342,8 @@ services:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID, KIE_API (ADR-0158, генерация музыки)
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/voice_assistant:/scripts:ro
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
@@ -492,6 +510,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - PYTHONUNBUFFERED=1
       # AV-9 Phase 1: monitor only. Phase 2 (active) requires voice_input_mode
       # in dialogue_node + AV-10 telegram refactor — see ADR-0028 §4.5.
@@ -520,7 +539,8 @@ services:
       - .env.secrets  # MINIMAX_API_KEY, DEEPSEEK_API_KEY — операторский LLM (ТАРС)
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/supervisor:/scripts:ro
       # issue #1988 — память оператора и журнал ТАРС. После ADR-0083 §E
       # обе ноды (supervisor + voice-assistant) пишут в одну
@@ -571,13 +591,15 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - PYTHONUNBUFFERED=1
       # Арбитр по умолчанию в active-режиме — это его единственная роль
       # (он не monitor-нода). Захват/освобождение floor + FSM работают.
       - AVATAR_ARBITER_MODE=active
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/supervisor:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_arbiter.sh"]
     depends_on:
@@ -623,6 +645,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - PYTHONUNBUFFERED=1
       - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
@@ -644,7 +667,8 @@ services:
       - quest-certs:/certs
       # Конфиги Zenoh + scripts (DOCKER_STANDARDS: нет COPY config/scripts)
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/quest:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_quest.sh"]
     depends_on:
@@ -679,12 +703,14 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - PYTHONUNBUFFERED=1
     env_file:
       - .env.secrets  # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, DEEPSEEK_API_KEY, YANDEX_API_KEY, etc.
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/telegram_bot:/scripts:ro
       # Vosk-модель с хоста (Ресурсный пак, ADR-0125) — тот же том, что у
       # voice-assistant (:362). До 21.09.2026 telegram_bot/Dockerfile качал
@@ -824,6 +850,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - PYTHONUNBUFFERED=1
       # ADR-0089 §9 Phase 1 acceptance: hailo_enabled=false → stub.
       # Переключение на real inference — Phase 1.5 после установки HEF.
@@ -832,7 +859,8 @@ services:
       - HAILO_MODELS_YAML=/config/hailo_models.yaml
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/vision-hailo:/scripts:ro
       # Phase 1.5: HEF models монтируются read-only из host. На CI/локально
       # если /opt/rob_box/models отсутствует — compose упадёт; для dev-режима
@@ -896,6 +924,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - PYTHONUNBUFFERED=1
       # ADR-0120 §8: у vision-face СВОИ хостовые переменные. Общие
       # HAILO_ENABLED / HEF_PATH принадлежат vision-hailo — через них в
@@ -923,7 +952,8 @@ services:
       - FACE_ENROLL_THRESHOLD=${FACE_ENROLL_THRESHOLD:-}
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/vision-hailo:/scripts:ro
       - /opt/rob_box/models:/opt/rob_box/models:ro
       - /dev/shm:/dev/shm

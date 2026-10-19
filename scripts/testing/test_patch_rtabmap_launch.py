@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def load_module():
-    module_path = Path(__file__).resolve().parents[2] / "docker/main/scripts/patch_rtabmap_launch.py"
+    module_path = Path(__file__).resolve().parents[2] / "docker/main/scripts/rtabmap/patch_rtabmap_launch.py"
     spec = spec_from_file_location("patch_rtabmap_launch", module_path)
     module = module_from_spec(spec)
     assert spec.loader is not None

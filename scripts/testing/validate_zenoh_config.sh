@@ -9,8 +9,29 @@ echo "  Проверка конфигурации Zenoh роутеров"
 echo "=========================================="
 echo ""
 
-VISION_CONFIG="docker/vision/config/zenoh_router_config.json5"
-MAIN_CONFIG="docker/main/config/zenoh_router_config.json5"
+# ADR-0159 В4 (PR-2a): шаблон роутера общий (docker/common/config), узловые
+# адреса — дефолты ZENOH_LISTEN_IP / ZENOH_CONNECT_ENDPOINTS в compose узла.
+# Проверяем то, что реально получит роутер: рендер общим start-скриптом с
+# дефолтами из compose.
+RENDER_DIR="$(mktemp -d)"
+trap 'rm -rf "$RENDER_DIR"' EXIT
+
+compose_default() { # <compose> <VAR> → значение после ":-" в ${VAR:-...}
+    sed -n "s/.*\${$2:-\([^}]*\)}.*/\1/p" "$1" | head -1
+}
+
+render_router_config() { # <pi> → путь к отрендеренному конфигу
+    local compose="docker/$1/docker-compose.yaml" out="$RENDER_DIR/$1_router.json5"
+    env ZENOH_LISTEN_IP="$(compose_default "$compose" ZENOH_LISTEN_IP)" \
+        ZENOH_CONNECT_ENDPOINTS="$(compose_default "$compose" ZENOH_CONNECT_ENDPOINTS)" \
+        ZENOH_ROUTER_TEMPLATE="docker/common/config/zenoh_router_config.json5" \
+        ZENOH_ROUTER_CONFIG_OUT="$out" ZENOH_RENDER_ONLY=1 \
+        sh docker/common/scripts/zenoh-router/start_zenoh_router.sh > /dev/null
+    echo "$out"
+}
+
+VISION_CONFIG="$(render_router_config vision)"
+MAIN_CONFIG="$(render_router_config main)"
 
 # Цвета для вывода
 RED='\033[0;31m'

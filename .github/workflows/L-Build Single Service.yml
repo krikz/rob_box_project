@@ -22,8 +22,8 @@ name: "L: Build Single Service"
 # действие, что используют L-Build Main/Vision Pi Services.yml. Раньше здесь
 # был собственный `docker buildx build`, и registry-кеш/docker-container
 # билдер/подмена host-gateway на одиночные сборки не распространялись.
-# `docker/build-manifest.yaml` эту сборку НЕ покрывает (base-образы,
-# zenoh-router — вне манифеста, план §11 вопрос №2), поэтому case-конфигурация
+# `docker/build-manifest.yaml` эту сборку НЕ покрывает (base-образы — вне
+# манифеста, план §11 вопрос №2), поэтому case-конфигурация
 # ниже остаётся ручной; композиту передаются уже готовые параметры job'а
 # `prepare`, а не элемент matrix.
 on:
@@ -69,8 +69,9 @@ on:
           - supervisor
           - quest
           - vision-hailo
-          # Common to both
-          - zenoh-router
+          # zenoh-router здесь нет: compose берёт готовый eclipse/zenoh:1.6.2,
+          # а docker/{main,vision}/zenoh-router/Dockerfile (rmw_zenohd, ни разу
+          # не использованный compose) удалены в ADR-0159 PR-2a.
           # Base images
           - ros2-zenoh
           - depthai
@@ -201,13 +202,6 @@ jobs:
                   BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
-                "zenoh-router")
-                  SERVICE_NAME="zenoh-router"
-                  IMAGE_NAME="zenoh-router"
-                  DOCKERFILE="docker/main/zenoh-router/Dockerfile"
-                  BUILD_CONTEXT="docker/main/zenoh-router"
-                  BASE_IMAGE="eclipse/zenoh:1.6.2"
-                  ;;
                 *)
                   echo "❌ Unknown Main Pi service: $SERVICE"
                   exit 1
@@ -272,13 +266,6 @@ jobs:
                   DOCKERFILE="docker/vision/supercollider/Dockerfile"
                   BUILD_CONTEXT="docker/vision/supercollider"
                   BASE_IMAGE=""
-                  ;;
-                "zenoh-router")
-                  SERVICE_NAME="zenoh-router"
-                  IMAGE_NAME="zenoh-router"
-                  DOCKERFILE="docker/vision/zenoh-router/Dockerfile"
-                  BUILD_CONTEXT="docker/vision/zenoh-router"
-                  BASE_IMAGE="eclipse/zenoh:1.6.2"
                   ;;
                 "supervisor")
                   # AV-9 (ADR-0028): наследует voice-assistant image (см.
@@ -607,7 +594,7 @@ jobs:
           esac
 
           if [ -z "$VERSION_VAR" ]; then
-            echo "⚠️  No .image-versions mapping for '$SERVICE_NAME' (base image / zenoh-router) — skipping"
+            echo "⚠️  No .image-versions mapping for '$SERVICE_NAME' (base image) — skipping"
             exit 0
           fi
 
@@ -667,7 +654,6 @@ jobs:
           echo "  - nav2"
           echo "  - lslidar"
           echo "  - perception"
-          echo "  - zenoh-router"
           echo ""
           echo "Vision Pi services:"
           echo "  - oak-d"
@@ -679,7 +665,6 @@ jobs:
           echo "  - apriltag"
           echo "  - supervisor"
           echo "  - quest"
-          echo "  - zenoh-router"
           echo ""
           echo "Base images:"
           echo "  - ros2-zenoh"

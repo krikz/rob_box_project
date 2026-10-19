@@ -39,9 +39,14 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/10.10.10.10:7447"], peer: ["tcp/11.11.11.11:7447"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    /// ЯВНОЕ подключение к облачному Zenoh router (рекомендация из Articulated Robotics видео)
+    /// ЯВНОЕ подключение (рекомендация из Articulated Robotics видео).
+    /// Общий шаблон всех Pi (ADR-0159 В4): список подставляет start_zenoh_router.sh
+    /// из ZENOH_CONNECT_ENDPOINTS (через запятую), дефолт — в docker-compose.yaml узла:
+    /// - Main Pi:   "tcp/zenoh.robbox.online:7447" — облачный Zenoh router
+    /// - Vision Pi: "tcp/10.1.1.10:7447#iface=eth0" — Main Pi по Gigabit Ethernet.
+    ///   КРИТИЧНО: #iface=eth0 принудительно направляет трафик через Gigabit Ethernet вместо WiFi
     endpoints: [
-      "tcp/zenoh.robbox.online:7447"  // Cloud Zenoh router
+      "${ZENOH_CONNECT_ENDPOINTS}"  // узловое значение, см. выше
     ],
 
     /// Global connect configuration,
@@ -90,14 +95,16 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     /// РЕШЕНИЕ: Используем ТОЛЬКО IP eth0 (без localhost)
-    /// - Локальные ROS ноды подключаются к 10.1.1.10:7447 (через session config)
-    /// - Vision Pi подключается к 10.1.1.10:7447 через eth0
+    /// - ZENOH_LISTEN_IP — IP eth0 этого Pi (Main 10.1.1.10, Vision 10.1.1.11),
+    ///   дефолт в docker-compose.yaml узла, подставляет start_zenoh_router.sh
+    /// - Локальные ROS ноды подключаются к ZENOH_LISTEN_IP:7447 (через session config)
+    /// - Vision Pi подключается к 10.1.1.10:7447 (Main Pi) через eth0
     /// ПРЕИМУЩЕСТВА:
     /// - Весь трафик гарантированно через Gigabit Ethernet (eth0)
     /// - Нет конфликта портов (один endpoint)
     /// - Простая и понятная конфигурация
     endpoints: [
-      "tcp/10.1.1.10:7447"            // Все подключения к Main Pi через eth0 IP
+      "tcp/${ZENOH_LISTEN_IP}:7447"            // Все подключения к этому Pi через eth0 IP
     ],
 
     /// Global listen configuration,
@@ -248,6 +255,7 @@
       /// and peers are configured with gossip target "router".
       /// ROS setting: disabled by default because it serves no purpose when each peer connects directly to all others,
       ///              and it introduces additional management overhead and extra messages during system startup.
+      ///              MAXIMUM FIX (2025-11-10): Enabled on all robot routers to improve peer connectivity.
       peers_failover_brokering: true,
       /// Linkstate mode configuration.
       linkstate: {

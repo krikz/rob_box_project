@@ -40,11 +40,14 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     ///
-    /// Vision Pi setting: Подключаемся к локальному роутеру через IP eth0 (НЕ localhost!)
+    /// Подключаемся к локальному роутеру через IP eth0 (НЕ localhost!)
     /// Это гарантирует что весь трафик идёт через Gigabit Ethernet интерфейс
-    // so_sndbuf/so_rcvbuf=16MB: защита от Zenoh transport closure при получении
-    // больших сообщений (rtabmap cloud_map после loop closure ~50-200MB).
-    endpoints: ["tcp/10.1.1.11:7447#so_sndbuf=16777216;so_rcvbuf=16777216"],
+    /// Общий шаблон всех Pi (ADR-0159 В4): ZENOH_LISTEN_IP — IP eth0 этого Pi
+    /// (Main 10.1.1.10, Vision 10.1.1.11), подставляет ros_with_namespace.sh.
+    // so_sndbuf/so_rcvbuf=16MB: защита от Zenoh transport closure при публикации
+    // (Main Pi) и получении (Vision Pi) больших сообщений
+    // (rtabmap cloud_map после loop closure ~50-200MB без вокселизации).
+    endpoints: ["tcp/${ZENOH_LISTEN_IP}:7447#so_sndbuf=16777216;so_rcvbuf=16777216"],
 
     /// Global connect configuration,
     /// Accepts a single value or different values for router, peer and client.
@@ -647,7 +650,8 @@
           /// then amount of memory being allocated for each queue is SIZE_XXX * LINK_MTU.
           /// If qos is false, then only the DATA priority will be allocated.
           // Увеличены с 2 до 16 (макс): защита от Zenoh transport closure при
-          // бурстовой публикации больших reliable-сообщений (rtabmap cloud_map/mapData).
+          // бурстовой публикации больших reliable-сообщений (rtabmap cloud_map/mapData
+          // после optimize_map/finish_mapping). 16 × 65535 = ~1MB буфера на приоритет.
           size: {
             control: 2,
             real_time: 2,
@@ -673,6 +677,7 @@
               /// if still no batch is available.
               /// ROS setting: 5s — компромисс между защитой от ложных закрытий при старте
               /// и быстрым recovery после congestion (вместо 60s висеть сломанным).
+              /// При старте с большим числом нод достаточно 5s (все ноды стартуют < 30s).
               wait_before_close: 5000000,
             },
           },
@@ -701,7 +706,8 @@
         /// For very high throughput scenarios, the rx_buffer_size can be increased to accommodate
         /// more in-flight data. This is particularly relevant when dealing with large messages.
         /// E.g. for 16MiB rx_buffer_size set the value to: 16777216.
-        /// 16MB для приёма больших фрагментированных сообщений от rtabmap.
+        /// Увеличен до 16MB чтобы соответствовать TCP so_rcvbuf=16MB и принимать
+        /// большие сообщения (rtabmap cloud_map после loop closure до 200MB фрагментами).
         buffer_size: 16777216,
         /// Maximum size of the defragmentation buffer at receiver end.
         /// Fragmented messages that are larger than the configured size will be dropped.
@@ -816,11 +822,19 @@
   /// QoS overwrite: make large visualization topics droppable.
   ///
   /// Problem: rtabmap publishes cloud_map with RELIABLE QoS (CongestionControl::Block).
-  /// After optimize_map/finish_mapping, cloud_map can be 10-200MB. If Vision Pi's
-  /// Zenoh session queue fills up, it closes the entire transport — kills ALL topics.
+  /// At loop closure, cloud_map can be 10-200MB. If the Zenoh router's TCP buffer fills
+  /// up (e.g. RViz subscriber on slow WiFi), Zenoh closes the entire transport session —
+  /// rtabmap loses ALL input topics (camera, lidar) and freezes.
+  /// On the receiving side (Vision Pi) the same happens after optimize_map/finish_mapping:
+  /// a full session queue closes the whole transport and kills ALL topics.
   ///
   /// Fix: override congestion_control to "drop" for ALL rtabmap output topics.
-  /// Message will be silently skipped if network is congested, but transport stays alive.
+  /// Covers cloud_map, cloud_obstacles, cloud_ground, cloud_empty_space, grid_map,
+  /// proj_map, mapData (heaviest at high WM), and any future rtabmap outputs.
+  /// The message will be silently skipped if the network is congested, but the
+  /// Zenoh transport stays alive. ROS2 subscribers see no QoS incompatibility.
+  /// Root cause: at WM=200+ loop closure triggers massive mapData + grid_map publish,
+  /// which with RELIABLE/CongestionControl::Block would freeze then kill transport.
   qos: {
     publication: [
       {

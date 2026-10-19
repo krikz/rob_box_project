@@ -194,9 +194,10 @@ if [ "$HOST_TYPE" == "main" ]; then
     echo ""
     echo "Checking cloud connectivity..."
     
-    # Check if Main Pi router config has cloud endpoint
-    ROUTER_CONFIG="$HOME/rob_box_project/docker/main/config/zenoh_router_config.json5"
-    if grep -q "zenoh.robbox.online" "$ROUTER_CONFIG"; then
+    # Check if Main Pi router config has cloud endpoint. Шаблон общий
+    # (docker/common/config, ADR-0159 PR-2a) — смотрим отрендеренный конфиг
+    # живого роутера, а не файл в репо.
+    if docker exec zenoh-router cat /tmp/zenoh_router_config.json5 2>/dev/null | grep -q "zenoh.robbox.online"; then
         echo -e "${GREEN}✓ Cloud endpoint configured in router config${NC}"
         
         # Test network connectivity to cloud
