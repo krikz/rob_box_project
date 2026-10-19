@@ -7,4 +7,4 @@ CEILING_CAMERA_TAG=dev-2ed4c89
 TELEGRAM_BOT_TAG=dev-2ed4c89
 VISION_HAILO_TAG=dev-2ed4c89
 # ↓ пишет Sound-сборка (supervisor, ADR-0159): образ avatar-arbiter. Строка-разделитель — параллельные коммиты Build All без конфликта rebase.
-SUPERVISOR_TAG=dev-6893763
+SUPERVISOR_TAG=dev-2ed4c89
