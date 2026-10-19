@@ -5,7 +5,7 @@
 
 ## DOCKER_TAG mapping (issue #1041)
 
-`L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml` определяют
+`L-Build Pi Services.yml` (вход `pi`) определяют
 `DOCKER_TAG` по `GITHUB_REF_TYPE` + `GITHUB_REF_NAME`:
 
 | Source ref                        | DOCKER_TAG |
@@ -32,7 +32,7 @@ runtime-скиптами).
 **SHA-теги в текущей ветке:** SHA-теги `.image-versions.*` коммитятся напрямую
 в ветку, на которой запущен build (`develop` для разработки, `feature/*` для
 тестов, `main` для production) через job `update-image-versions` в
-`L-Build Main Pi Services.yml` / `L-Build Vision Pi Services.yml` →
+`L-Build Pi Services.yml` →
 `scripts/ci/push-image-versions.sh` (retry+rebase+timeout). Per-service ветки
 `ci/image-visions-main/-vision` НЕ используются (был реверт в #1244, см. §ADR-0094).
 Это устраняет класс конфликтов при local-деплое, но создаёт риск phantom
@@ -47,7 +47,7 @@ vision-сервисов в `ci/image-versions` тоже не были заком
 
 ### Как восстановить SHA-теги после-фактум
 
-1. По артефактам workflow run `L-Build Vision Pi Services` для тега
+1. По артефактам workflow run `L-Build Pi Services` для тега
    `v1.0.0-1-2ce5de92-humble-rc1` (run_id из #1041, например 31152997328)
    достать SHA каждого сервиса из собранных docker images:
 
@@ -69,15 +69,15 @@ vision-сервисов в `ci/image-versions` тоже не были заком
    git push origin ci/image-versions
    ```
 
-3. Прогнать `L-Build Vision Pi Services` с `--ref v1.0.0-1-2ce5de92-humble-rc1`
+3. Прогнать `L-Build Pi Services` (`-f pi=vision`, `sound`, `main`) с `--ref v1.0.0-1-2ce5de92-humble-rc1`
    повторно — теперь workflow корректно определит `DOCKER_TAG=latest`, найдёт
    `.image-versions.latest` и сам обновит SHA-теги.
 
 ### После фикса
 
 Следующий релиз (`v1.0.0-2-<build>-humble-rc1`) этим мануалом пользоваться
-не должен — фикс `GITHUB_REF_TYPE=tag` уже в `L-Build Vision Pi Services.yml`
-и `L-Build Main Pi Services.yml` (merged в develop).
+не должен — фикс `GITHUB_REF_TYPE=tag` уже в `L-Build Pi Services.yml`
+(ранее L-Build Vision/Main Pi Services, merged в develop).
 
 ## Preventative checklist для CI-workflow изменений
 
@@ -110,4 +110,4 @@ vision-сервисов в `ci/image-versions` тоже не были заком
 - `scripts/ci/push-image-versions.sh` (issue #1388) — выделенный helper для race-safe push:
   `pull --rebase origin <branch>` перед push, retry-loop, **exit≠0** при невосстановимой ошибке
   (раньше job завершался `success` даже когда push терялся). Используется в
-  `L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml`.
+  `L-Build Pi Services.yml` (вход `pi`).

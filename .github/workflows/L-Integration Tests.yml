@@ -6,15 +6,17 @@ name: "L: Integration Tests"
 #   - GitHub Actions runner зарегистрирован с label: self-hosted
 #   - Docker + docker compose установлены
 #   - Локальный registry доступен на localhost:5000
-#     (образы уже собраны через L-Build Vision Pi Services)
+#     (образ voice-assistant уже собран через L-Build Pi Services, pi=sound)
 #
 # Запуск:
-#   - Автоматически после L-Build Vision Pi Services
+#   - Автоматически после прямого запуска L-Build Pi Services с pi=sound
+#     (ADR-0159: voice-assistant собирается для Sound Pi; Pi различаем по
+#     run-name «L: Build Pi Services (sound)» — display_title события)
 #   - Вручную через workflow_dispatch
 
 on:
   workflow_run:
-    workflows: ["L: Build Vision Pi Services"]
+    workflows: ["L: Build Pi Services"]
     types: [completed]
   workflow_dispatch:
     # Ветка выбирается в UI комбобоксе при запуске → github.ref_name.
@@ -37,7 +39,8 @@ jobs:
     runs-on: [self-hosted, rob-box]
     if: >
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       endsWith(github.event.workflow_run.display_title, '(sound)'))
 
     steps:
       - name: Checkout repository

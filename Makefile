@@ -16,7 +16,7 @@
 # Сборка и анализ — ТЕМ ЖЕ кодом, что в CI (run 36351952819):
 #   make build-list                  — что можно собрать (из docker/build-manifest.yaml)
 #   make build-base [BASE=depthai]   — базовые образы (по умолчанию все, pcl после ros2-zenoh)
-#   make build SERVICE=oak-d         — один сервис; PI=vision|main — весь Pi
+#   make build SERVICE=oak-d         — один сервис; PI=main|sound|vision — весь Pi
 #   make build-all                   — базы + оба Pi
 #     BUILD_FLAGS='--dry-run|--no-push|--no-cache|--platform linux/amd64|--docker-tag dev'
 #   make ci-list                     — какие workflow/job'ы гоняются локально
@@ -101,7 +101,7 @@ ifdef SERVICE
 else ifdef PI
 	$(BUILD_PY) pi $(PI) $(BUILD_FLAGS)
 else
-	@echo "usage: make build SERVICE=<name> | make build PI=vision|main (см. make build-list)"; exit 2
+	@echo "usage: make build SERVICE=<name> | make build PI=main|sound|vision (см. make build-list)"; exit 2
 endif
 
 build-all:

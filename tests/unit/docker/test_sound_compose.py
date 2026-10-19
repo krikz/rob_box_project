@@ -78,7 +78,8 @@ def test_supervisor_shares_state_dir_with_voice_assistant_on_one_node() -> None:
 
 
 def test_supervisor_dockerfile_copies_script_from_its_new_place() -> None:
-    dockerfile = (VISION / "supervisor" / "Dockerfile").read_text(encoding="utf-8")
+    # Каталог сборки supervisor переехал в docker/sound (ADR-0159 PR-3).
+    dockerfile = (SOUND / "supervisor" / "Dockerfile").read_text(encoding="utf-8")
     assert "docker/sound/scripts/supervisor/start_supervisor.sh" in dockerfile
     assert "docker/vision/scripts/supervisor/start_supervisor.sh" not in dockerfile
 

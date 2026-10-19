@@ -15,7 +15,7 @@ echo ""
 # Параметры
 IMAGE_NAME_LOCAL="rob_box:voice-assistant-humble-test"
 IMAGE_NAME_PROD="ghcr.io/krikz/rob_box:voice-assistant-humble-latest"
-DOCKERFILE="docker/vision/voice_assistant/Dockerfile"
+DOCKERFILE="docker/sound/voice_assistant/Dockerfile"
 CONTEXT="."
 
 # Переход в корень проекта

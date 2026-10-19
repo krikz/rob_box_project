@@ -34,7 +34,7 @@ def _repo_root(start: Path) -> Path:
 
 FOXDOT_INIT = (
     _repo_root(Path(__file__).resolve())
-    / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
+    / "docker" / "sound" / "voice_assistant" / "foxdot_init.sc"
 )
 
 

@@ -29,8 +29,8 @@ updates:
       - "/src/rob_box_voice"
       - "/src/rob_box_perception"
       - "/docker/main/perception"
-      - "/docker/vision/voice_base"
-      - "/docker/vision/voice_assistant"
+      - "/docker/sound/voice_base"
+      - "/docker/sound/voice_assistant"
       - "/tools/animation_editor"
     schedule:
       interval: "weekly"

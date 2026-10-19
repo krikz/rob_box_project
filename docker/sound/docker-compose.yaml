@@ -359,7 +359,7 @@ services:
   # dialogue_node mutation. Phase 2 (mode=active) — after voice_input_mode
   # lands in dialogue_node (расхождение #1 плана Quest).
   #
-  # Build context: docker/vision/supervisor/Dockerfile — наследует
+  # Build context: docker/sound/supervisor/Dockerfile — наследует
   # voice-assistant image (pytorch/renardo не пересобираются).
   supervisor:
     # supervisor-образ тегируется по IMAGE_TAG (манифест: image_versions: false)

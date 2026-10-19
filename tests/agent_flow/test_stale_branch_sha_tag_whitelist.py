@@ -296,7 +296,11 @@ def repo_dir(tmp_path: Path) -> Path:
 
 
 def _sha_tag_noise(n: int) -> list[str]:
-    """Генерит n SHA-tag noise onelines (по реальному develop pattern)."""
+    """Генерит n SHA-tag noise onelines (по реальному develop pattern).
+
+    ADR-0159 PR-3: "L: Build Pi Services" коммитит `ci: <pi> SHA tags` для
+    трёх Pi — sound тоже шум.
+    """
     lines = []
     for i in range(n):
         lines.append(
@@ -304,6 +308,9 @@ def _sha_tag_noise(n: int) -> list[str]:
         )
         lines.append(
             f"ea8d9b0{i:02d} ci: vision SHA tags → dev-2bb777{i:02d} [skip ci]"
+        )
+        lines.append(
+            f"5d0a1c2{i:02d} ci: sound SHA tags → dev-2bb777{i:02d} [skip ci]"
         )
     return lines[:n]
 

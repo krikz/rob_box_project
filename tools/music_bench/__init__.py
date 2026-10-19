@@ -8,7 +8,7 @@
 не «вроде звучит нормально»). Этот пакет превращает жалобу в число:
 
 * сколько времени сумма слоёв ДО ``tanh`` превышает 1.0 (мягкое насыщение
-  на мастер-шине, см. ``docker/vision/voice_assistant/custom_synthdefs/
+  на мастер-шине, см. ``docker/sound/voice_assistant/custom_synthdefs/
   masterfilter.scd``);
 * true peak и crest factor на выходе;
 * спектральный центроид по ролям (бас/пэд/лид/контрголос/ударные);

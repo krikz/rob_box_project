@@ -118,36 +118,19 @@ push:
 - PR готов для ревью и ручного мерджа
 - После мерджа в main будут созданы образы `*-humble-latest`
 
-### 3. Build Vision Services (GitHub Actions)
+### 3–4. Build Pi Services (один workflow на три Pi)
 
-**Файл:** `.github/workflows/L-Build Vision Pi Services.yml`
+**Файл:** `.github/workflows/L-Build Pi Services.yml` (ADR-0159 PR-3: заменил
+`L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml`)
 
-**Сервисы:**
-- `oak-d` - OAK-D camera
-- `lslidar` - LSLIDAR N10
-- `led-matrix` - NeoPixel LED matrix driver
-- `voice-assistant` - Voice assistant + animations
-- `perception` - Perception nodes
-
-**Платформа:** `linux/arm64` (Raspberry Pi 5)
-**Runner:** `ubuntu-latest` (GitHub Actions)
-
-### 4. Build Main Services (GitHub Actions)
-
-**Файл:** `.github/workflows/L-Build Main Pi Services.yml`
-
-**Сервисы:**
-- `robot-state-publisher` - Robot state publisher
-- `rtabmap` - RTAB-Map SLAM
-- `twist-mux` - Twist multiplexer
-- `micro-ros-agent` - micro-ROS bridge
-- `ros2-control` - ROS 2 Control
-- `nav2` - Nav2 navigation stack
-- `lslidar` - LSLIDAR N10 driver
-- `perception` - Perception nodes
+**Вход `pi`:** `main` | `sound` | `vision`. Состав сборки, Dockerfile'ы и теги —
+`pis.<pi>` в `docker/build-manifest.yaml`; сервисы с `depends_on` собираются
+волнами (`build` → `build-wave-1` → `build-wave-2`), коммит тегов —
+`ci: <pi> SHA tags → <тег>` в `docker/<pi>/.image-versions.*` (поле, объявленное
+в нескольких Pi, например `PERCEPTION_TAG` в main и sound, пишется во все).
 
 **Платформа:** `linux/arm64` (Raspberry Pi 5)
-**Runner:** `ubuntu-latest` (GitHub Actions)
+**Runner:** `self-hosted` (локальный build machine)
 
 ### 5. Build Base Images (GitHub Actions)
 
@@ -171,8 +154,7 @@ push:
 
 **Вызывает workflows:**
 - `L-Build Base Images.yml`
-- `L-Build Main Pi Services.yml`
-- `L-Build Vision Pi Services.yml`
+- `L-Build Pi Services.yml` ×3 (`pi: main`, `pi: sound`, `pi: vision`, параллельно)
 
 **Триггеры:**
 - `push` в ветку `main` (автоматически)
@@ -200,23 +182,9 @@ push:
 - В 2-3x быстрее чем GitHub Actions
 - Публикует в локальный registry для быстрого pull на Raspberry Pi
 
-### 8. Build Vision Services (Local Runner)
+### 8–9. Build Pi Services (Local Runner)
 
-**Файл:** `.github/workflows/L-Build Vision Pi Services.yml`
-
-Аналог `L-Build Vision Pi Services.yml`, но:
-- Собирается на локальном build machine
-- Использует локальный APT cache
-- Публикует в `localhost:5000`
-
-### 9. Build Main Services (Local Runner)
-
-**Файл:** `.github/workflows/L-Build Main Pi Services.yml`
-
-Аналог `L-Build Main Pi Services.yml`, но:
-- Собирается на локальном build machine
-- Использует локальный APT cache
-- Публикует в `localhost:5000`
+См. п. 3–4: `L-Build Pi Services.yml` с входом `pi`.
 
 ### 10. Build All Services (Local Runner)
 
@@ -226,8 +194,7 @@ push:
 
 **Вызывает workflows:**
 - `L-Build Base Images.yml` (опционально, если `build_base_images=true`)
-- `L-Build Main Pi Services.yml`
-- `L-Build Vision Pi Services.yml`
+- `L-Build Pi Services.yml` ×3 (`pi: main`, `pi: sound`, `pi: vision`, параллельно)
 
 **Триггеры:**
 - `workflow_dispatch` (только ручной запуск)
@@ -508,10 +475,10 @@ on:
 
 ```bash
 # Через GitHub CLI
-gh workflow run "L-Build Vision Pi Services.yml" --ref develop
+gh workflow run "L-Build Pi Services.yml" --ref develop -f pi=vision
 
 # Или через web interface
-# GitHub → Actions → Build Vision Pi Services → Run workflow
+# GitHub → Actions → L: Build Pi Services → Run workflow (выбрать pi)
 ```
 
 ### Откат изменений
@@ -554,7 +521,7 @@ git push origin main
 Проверить статус сборки:
 ```bash
 # Через GitHub CLI
-gh run list --workflow="L-Build Vision Pi Services.yml"
+gh run list --workflow="L-Build Pi Services.yml"
 
 # Последний статус
 gh run view --log

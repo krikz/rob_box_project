@@ -6,7 +6,7 @@ issue #3154 (выравниватель + компрессор + лимитер,
 (``club_loudness_nrt.py``, удалён с клубным аранжировщиком v1 в PR-13b ADR-0149).
 
 Повторяет ЧЕТЫРЕ шага реального ``.scd`` (см. docstring файла в
-``docker/vision/voice_assistant/custom_synthdefs/masterfilter.scd``):
+``docker/sound/voice_assistant/custom_synthdefs/masterfilter.scd``):
 чистка NaN/Inf -> HPF 35 Гц -> LPF ``min(lpf, nyquist*0.55)`` -> мягкий
 потолок ``tanh(sig*drive)`` -> мастер-фейдер ``gain``.
 

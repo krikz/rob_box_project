@@ -11,7 +11,7 @@ setup(
     # ``importlib.resources.files("rob_box_mcp_tools.data")``, а не через
     # ament share. Значит доставка — package_data, а не data_files:
     # прод-образ собирается БЕЗ ``--symlink-install``
-    # (docker/vision/voice_assistant/Dockerfile:239), то есть пакет реально
+    # (docker/sound/voice_assistant/Dockerfile:239), то есть пакет реально
     # устанавливается, и без этой строки .yaml в install-дерево не попадает.
     # Последствие пропуска — ``load_default_authority()`` бросает ConfigError,
     # mcp_server стартует с пустой политикой и блокирует ВСЕ инструменты.

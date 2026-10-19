@@ -1,7 +1,7 @@
 name: "L: Build All Services"
 
 # Полная сборка всех образов на self-hosted runner с локальным registry
-# Собирает базовые образы, Main Pi и Vision Pi сервисы параллельно
+# Собирает базовые образы, затем сервисы Main, Sound и Vision Pi параллельно
 #
 # === Issue #1560: spam-runs protection (23.08.2026) ===
 # До этого фикса workflow запускался 30+ раз в день на develop с пустыми inputs.
@@ -154,27 +154,42 @@ jobs:
     with:
       push_to_registry: true
 
-  # Main Pi сервисы
+  # Сервисы трёх Pi — один workflow "L-Build Pi Services.yml" с входом `pi`
+  # (ADR-0159 PR-3, В4). Три вызова идут ПАРАЛЛЕЛЬНО: depends_on в манифесте
+  # допустим только внутри своего Pi (gen_build_matrix.load_manifest), цепочка
+  # voice-base → voice-assistant → supervisor целиком в pis.sound и
+  # упорядочена волнами внутри своего вызова. Job id прежние
+  # (build-main-services/build-vision-services) — на них смотрят скрипты.
   build-main-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    uses: ./.github/workflows/L-Build Main Pi Services.yml
+    uses: ./.github/workflows/L-Build Pi Services.yml
     secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
+      pi: main
       push_to_registry: true
 
-  # Vision Pi сервисы
+  build-sound-services:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Pi Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
+    with:
+      pi: sound
+      push_to_registry: true
+
   build-vision-services:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
-    uses: ./.github/workflows/L-Build Vision Pi Services.yml
+    uses: ./.github/workflows/L-Build Pi Services.yml
     secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
+      pi: vision
       push_to_registry: true
 
   # Итоговая сводка
   summary:
-    needs: [build-base-images, build-main-services, build-vision-services]
+    needs: [build-base-images, build-main-services, build-sound-services, build-vision-services]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -190,12 +205,13 @@ jobs:
           echo "📊 Build Results:"
           echo "  Base Images: ${{ needs.build-base-images.result }}"
           echo "  Main Services: ${{ needs.build-main-services.result }}"
+          echo "  Sound Services: ${{ needs.build-sound-services.result }}"
           echo "  Vision Services: ${{ needs.build-vision-services.result }}"
           echo ""
           echo "📦 Local Registry Contents:"
-          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read repo; do
+          curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]' | grep rob_box | while read -r repo; do
             echo "  📁 $repo"
-            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read tag; do
+            curl -s "http://localhost:5000/v2/$repo/tags/list" | jq -r '.tags[]?' | while read -r tag; do
               echo "    🏷️ $tag"
             done
           done
