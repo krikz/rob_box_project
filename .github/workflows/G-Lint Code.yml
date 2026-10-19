@@ -154,7 +154,7 @@ jobs:
       # Библиотечные функции scripts/ci/gen_build_matrix.py (читатель
       # манифеста) — покрыты отдельно от guard'а выше: guard сверяет
       # манифест с workflow, эти тесты проверяют сам генератор
-      # (load_manifest/topo_layers/independent_services/chained_services/
+      # (load_manifest/topo_layers/wave_entries/
       # image_versions_map) на синтетических мини-манифестах. План §4.3.
       - name: Build-manifest generator self-tests (docs/plans/2026-09-15-service-manifest.md)
         run: |
@@ -559,12 +559,15 @@ jobs:
       # каждый `runs-on: [self-hosted, rob-box]`.
       # "G-Auto-close Issues on Develop Merge.yml" (issue 3013) добавлен в
       # область сразу — новый файл, проходит actionlint+shellcheck чисто.
+      # ADR-0159 PR-3: два per-Pi workflow стали одним "L-Build Pi Services.yml"
+      # (вход `pi`); в область добавлен его вызывающий "L-Build-All-Services.yml" —
+      # actionlint сверяет `with:` трёх вызовов с inputs вызываемого workflow.
       - name: actionlint (build workflows, hard gate)
         run: |
           echo "::group::actionlint"
           docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color \
-            ".github/workflows/L-Build Vision Pi Services.yml" \
-            ".github/workflows/L-Build Main Pi Services.yml" \
+            ".github/workflows/L-Build Pi Services.yml" \
+            ".github/workflows/L-Build-All-Services.yml" \
             ".github/workflows/L-Build Single Service.yml" \
             ".github/workflows/L-Build Base Images.yml" \
             ".github/workflows/G-Auto-close Issues on Develop Merge.yml"

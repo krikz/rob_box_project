@@ -257,7 +257,7 @@ def test_really_missing_synth_is_resent_and_already_added_goes_through_load(monk
 
 def _foxdot_init_preload() -> list:
     root = next(p for p in Path(__file__).resolve().parents if (p / "docker").is_dir() and (p / "src").is_dir())
-    content = (root / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc").read_text(encoding="utf-8")
+    content = (root / "docker" / "sound" / "voice_assistant" / "foxdot_init.sc").read_text(encoding="utf-8")
     names: list = []
     for var in ("startupSynths", "customSynths"):
         match = re.search(r"var " + var + r" = \[(.*?)\];", content, re.S)

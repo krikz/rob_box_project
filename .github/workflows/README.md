@@ -20,8 +20,7 @@ This directory contains all automated workflows for the Rob Box project.
 | **G: Build Main Pi Services** | Called by other workflows | Build Main Pi services |
 | **L: Build All Services** | Manual | Build all services on local build machine |
 | **L: Build Base Images** | Called by local workflows | Build base images locally |
-| **L: Build Vision Pi Services** | Called by local workflows | Build Vision Pi services locally |
-| **L: Build Main Pi Services** | Called by local workflows | Build Main Pi services locally |
+| **L: Build Pi Services** | Manual / Called by L: Build All Services | Build one Pi's services locally (input `pi`: main / sound / vision) |
 | **L: Build Single Service** | Manual | Build a single service on local build machine |
 
 ### 🏛️ Architecture Audit

@@ -169,7 +169,7 @@ osc = osc + alive;
 # replaces our build-time patch of ``sclang_code/scsynth/<name>.scd`` in
 # scsynth. foxdot_init.sc therefore redirects ``/foxdot`` for these names to
 # the patched file. Keep in sync with ``pygenPatchedSynths`` in
-# docker/vision/voice_assistant/foxdot_init.sc (guarded by a unit test).
+# docker/sound/voice_assistant/foxdot_init.sc (guarded by a unit test).
 PYGEN_PATCHED_SYNTHS: tuple[str, ...] = ("fuzz", "loop")
 
 

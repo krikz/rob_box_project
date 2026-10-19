@@ -293,7 +293,7 @@ nano /path/to/rob_box_project/src/rob_box_voice/config/tts_node.yaml
 
 # 3. Пересоберите Docker
 cd /path/to/rob_box_project
-docker build -f docker/vision/voice_assistant/Dockerfile -t robbox-voice .
+docker build -f docker/sound/voice_assistant/Dockerfile -t robbox-voice .
 
 # 4. Тестируйте
 docker run -it robbox-voice python3 test_voice.py

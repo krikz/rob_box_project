@@ -52,7 +52,7 @@ MASTER = {"gain": 0.5, "dyn": 0.0}
 NOTE_OFFSET_S = 0.01
 TAIL_S = 2.0
 FRAME_FILE = Path(__file__).with_name("loudness_frame_0929.json")
-CUSTOM_DEFS = REPO / "docker/vision/voice_assistant/custom_synthdefs"
+CUSTOM_DEFS = REPO / "docker/sound/voice_assistant/custom_synthdefs"
 TOLERANCE_DB = 1.5
 #: ``LAYER_MEASURED_DB`` проверяемых вариантов регресса: (роль, вариант).
 REGRESS = (("pad", "sinepad"), ("lead", "pluck"), ("bass", "bass"), ("kick", "four_on_floor"))

@@ -21,7 +21,7 @@
 #
 # Зависимость от webxr_client: Phase 1.4/1.5 должны быть merged в
 # текущую ветку ДО сборки этого образа (build контекст — корень репо,
-# см. docker/vision/supervisor/Dockerfile как эталон по структуре).
+# см. docker/sound/supervisor/Dockerfile как эталон по структуре).
 # Когда Phase 1.5 приедет в develop — этот Dockerfile начнёт собираться
 # «как есть». До тех пор CI на нём даст ошибку COPY про отсутствующий
 # путь — это явный сигнал зависимости, не silent degradation (ADR-0018).
@@ -30,7 +30,7 @@
 #   - docs/adr/0027-meta-quest-ar-control.md §4.1, §4.5
 #   - docs/architecture/meta-quest-api.md §1, §3
 #   - docker/base/Dockerfile.ros2-zenoh (база)
-#   - docker/vision/supervisor/Dockerfile (паттерн COPY-этапов)
+#   - docker/sound/supervisor/Dockerfile (паттерн COPY-этапов)
 #   - docs/development/DOCKER_STANDARDS.md (нет COPY config/, нет COPY scripts/)
 
 ARG BUILDER_IMAGE=node:20-alpine
@@ -139,7 +139,7 @@ RUN if [ -n "$APT_PROXY" ]; then \
 #   7. ros-humble-nav2-msgs (issue #3151) — action NavigateToPose для nav-цели
 #      из VR (rob_box_quest/nav2_goal.py). Импорт ленивый: без пакета нода
 #      жива, но nav_goal отвечает nack nav2_unavailable. Тот же apt-пакет
-#      уже ставят docker/main/nav2 и docker/vision/voice_base.
+#      уже ставят docker/main/nav2 и docker/sound/voice_base.
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       openssl \

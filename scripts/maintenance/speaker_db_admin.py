@@ -159,7 +159,7 @@ journal_mode=WAL``, у ``speakers.db`` их обычно нет, но прове
 теперь прописанный явно и здесь).
 
 * содержимое ``scripts/`` НЕ копируется в образ ``voice-assistant``
-  (``docker/vision/voice_assistant/Dockerfile`` копирует только
+  (``docker/sound/voice_assistant/Dockerfile`` копирует только
   ``src/rob_box_core``, ``src/rob_box_voice``, ``src/rob_box_harness`` и
   т. д. через colcon build) — доставка ТОЛЬКО разовым ``docker cp
   speaker_db_admin.py voice-assistant:/tmp/speaker_db_admin.py`` (или
@@ -174,7 +174,7 @@ journal_mode=WAL``, у ``speakers.db`` их обычно нет, но прове
   разработки/тестов из чекаута репозитория (см. issue #2775, тот же класс
   бага уже ловился на ``face_store_admin.py`` и исправлен там же);
 * ROS-окружение внутри контейнера ``voice-assistant`` живёт в
-  ``/ws/install`` (``docker/vision/voice_assistant/Dockerfile``:
+  ``/ws/install`` (``docker/sound/voice_assistant/Dockerfile``:
   ``colcon build`` пишет туда), а НЕ в ``/ros2_ws/install`` — это другой
   контейнер/другой сервис в этом репозитории;
 * путь к БД — параметром ``--db-path``, дефолт ``/data/speakers.db`` (тот

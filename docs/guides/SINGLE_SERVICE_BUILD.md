@@ -123,7 +123,7 @@ quest
 zenoh-router
 ```
 
-> `quest` and `supervisor` build the same way `L: Build Vision Pi Services`
+> `quest` and `supervisor` build the same way `L: Build Pi Services`
 > does (job `build-quest` / `build-supervisor`) — same Dockerfile, same
 > `SOURCE_HASH` cache-busting inputs, same `quest-`/`supervisor-` image tag
 > component name. Keep this list in sync with the `service` choice options
@@ -313,7 +313,7 @@ docker images localhost:5000/krikz/rob_box:voice-assistant-humble-dev
 A: When you only changed one service, building all services wastes 25-55 minutes. This workflow builds just what you need.
 
 **Q: Can I build multiple services at once?**
-A: No, this workflow is designed for single service builds. For multiple services, use `L-Build Main Pi Services`, `L-Build Vision Pi Services`, or `L-Build All Services`.
+A: No, this workflow is designed for single service builds. For multiple services, use `L-Build Pi Services` (input `pi`: main/sound/vision) or `L-Build All Services`.
 
 **Q: What happens to the old image?**
 A: Docker keeps the old image. You can clean up old images with `docker image prune` on the build machine.

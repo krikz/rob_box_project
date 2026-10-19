@@ -133,7 +133,7 @@ ROS дистрибутив: humble
 📦 Сборка сервиса: voice-assistant
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Контекст: /path/to/rob_box_project
-Dockerfile: /path/to/docker/vision/voice_assistant/Dockerfile
+Dockerfile: /path/to/docker/sound/voice_assistant/Dockerfile
 Образ: ghcr.io/krikz/rob_box:voice-assistant-humble-local
 
 [build output...]

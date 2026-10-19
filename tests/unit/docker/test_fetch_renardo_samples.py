@@ -29,7 +29,7 @@ def load_module():
 def test_module_lives_in_resource_pack() -> None:
     """Фетчер — часть Ресурсного пака, а не образа voice-assistant.
 
-    Если файл уедет обратно в docker/vision/voice_assistant, запись
+    Если файл уедет обратно в docker/sound/voice_assistant, запись
     ``renardo-samples`` в manifest.yaml и apply_resource_pack.sh
     перестанут его находить — и деплой молча уйдёт в synth-only.
     """

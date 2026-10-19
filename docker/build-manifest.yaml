@@ -1,13 +1,12 @@
 # Манифест сервисов — единственный источник истины для CI-сборки docker-образов.
 #
-# Phase 1 (docs/plans/2026-09-15-service-manifest.md, §5): этот файл
-# ТОЛЬКО фиксирует текущее (2026-09-15) состояние двух матричных workflow —
-# ".github/workflows/L-Build Vision Pi Services.yml" и
-# ".github/workflows/L-Build Main Pi Services.yml". Ни один workflow пока
-# не читает этот файл (см. scripts/ci/gen_build_matrix.py — реализация
-# читателя, тоже пока не подключена к CI). Guard-тест
+# Читатель — scripts/ci/gen_build_matrix.py; потребитель —
+# ".github/workflows/L-Build Pi Services.yml" (вход `pi` = ключ pis ниже,
+# ADR-0159 PR-3; раньше — по workflow на Pi). Сборка Pi идёт волнами по
+# depends_on, а depends_on допустим ТОЛЬКО внутри своего Pi: "L: Build All
+# Services" собирает Pi параллельно. Guard-тест
 # scripts/ci/tests/test_service_manifest_sync.py сверяет манифест с
-# реальными workflow построчно — расхождение красит CI.
+# workflow — расхождение красит CI.
 #
 # ВАЖНО: манифест описывает ТО, ЧТО ЕСТЬ, а не то, как «должно быть».
 # Странности реального кода (несогласованное исключение сервисов из
@@ -60,7 +59,7 @@ base_images:
 
 pis:
   # ---------------------------------------------------------------------
-  # Vision Pi — build-* job'ы в "L-Build Vision Pi Services.yml"
+  # Vision Pi
   # ---------------------------------------------------------------------
   vision:
     services:
@@ -154,24 +153,16 @@ pis:
         image_versions: VISION_HAILO_TAG
 
   # ---------------------------------------------------------------------
-  # Sound Pi (ADR-0159, PR-2b) — голосовой стек переехал с Vision Pi.
-  # Блоки voice-base / voice-assistant / supercollider (и supervisor — ТАРС,
-  # решение Шифу 19.10, В8) перенесены БЕЗ
-  # изменений (git diff: те же строки −/+). Dockerfile и build_context
-  # остаются в docker/vision/{voice_base,voice_assistant,supercollider}:
-  # их путь зашит в "L-Build Single Service.yml" и dependabot.yml, а
-  # workflow трогает PR-3 (единый "L-Build Pi Services.yml") — там же
-  # переедут и каталоги сборки.
-  # TEMP(ADR-0159 PR-3): "L-Build Vision Pi Services.yml" пока сам держит
-  # build-voice-base/-voice-assistant и зовёт генератор с --pi vision, так
-  # что Build All между PR-2b и PR-3 не соберёт голосовые образы (ADR §5:
-  # PR-2b…PR-4 мёржатся подряд перед одной сборкой).
+  # Sound Pi (ADR-0159) — голосовой стек и supervisor (ТАРС, В8) переехали
+  # с Vision Pi: блоки перенесены без изменений (PR-2b), каталоги сборки —
+  # в docker/sound/ (PR-3). Цепочка FROM целиком здесь, три волны:
+  # voice-base + supercollider → voice-assistant → supervisor.
   # ---------------------------------------------------------------------
   sound:
     services:
       voice-base:
-        dockerfile: docker/vision/voice_base/Dockerfile
-        build_context: docker/vision/voice_base
+        dockerfile: docker/sound/voice_base/Dockerfile
+        build_context: docker/sound/voice_base
         base:
           family: rtabmap
         tag:
@@ -192,7 +183,7 @@ pis:
       # .image-versions.*.
 
       voice-assistant:
-        dockerfile: docker/vision/voice_assistant/Dockerfile
+        dockerfile: docker/sound/voice_assistant/Dockerfile
         build_context: "."
         base:
           service: voice-base
@@ -211,8 +202,8 @@ pis:
         image_versions: VOICE_ASSISTANT_TAG
 
       supercollider:
-        dockerfile: docker/vision/supercollider/Dockerfile
-        build_context: docker/vision/supercollider
+        dockerfile: docker/sound/supercollider/Dockerfile
+        build_context: docker/sound/supercollider
         base: null
         tag:
           # Единственный сервис с нестандартным форматом тега — тег НЕ
@@ -226,7 +217,7 @@ pis:
         image_versions: false
 
       supervisor:
-        dockerfile: docker/vision/supervisor/Dockerfile
+        dockerfile: docker/sound/supervisor/Dockerfile
         build_context: "."
         base:
           service: voice-assistant
@@ -246,7 +237,7 @@ pis:
         image_versions: false
 
   # ---------------------------------------------------------------------
-  # Main Pi — 8 build-* job'ов в "L-Build Main Pi Services.yml"
+  # Main Pi
   # ---------------------------------------------------------------------
   main:
     services:
@@ -303,7 +294,7 @@ pis:
         build_context: "."
         base:
           # Не ros2-zenoh, несмотря на имя сервиса — так в реальном коде
-          # ("L-Build Main Pi Services.yml", build-ros2-control).
+          # (тогда "L-Build Main Pi Services.yml", build-ros2-control).
           family: rtabmap
         submodule_sha: src/vesc_nexus
         tag:
@@ -337,11 +328,10 @@ pis:
           ros_distro: true
         image_versions: PERCEPTION_TAG
 
-# Итого: 19 сервисов (11 Vision + 8 Main) — ровно те, у которых сегодня
-# есть build-* job в двух матричных workflow. "L-Build Single Service.yml"
+# Итого: 18 сервисов (6 Vision + 4 Sound + 8 Main). "L-Build Single Service.yml"
 # и base-образы (ros2-zenoh/depthai/pcl/rtabmap как базовые образы,
-# zenoh-router) сознательно вне области Phase 1-3 этого манифеста (план
-# §11, открытый вопрос №2).
+# zenoh-router) сознательно вне области манифеста (план §11, открытый
+# вопрос №2).
 #
 # Почему в манифесте НЕТ сервиса vesc-nexus, хотя есть субмодуль
 # src/vesc_nexus: образ docker/main/vesc_nexus/Dockerfile удалён 21.09.2026

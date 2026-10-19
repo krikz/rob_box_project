@@ -1,7 +1,7 @@
 name: 'L-Build Service (composite)'
 description: >-
-  Reusable composite action для self-hosted build-job'ов в L-Build Main Pi Services /
-  L-Build Vision Pi Services / L-Build Single Service. Оборачивает docker-сборку
+  Reusable composite action для self-hosted build-job'ов в L-Build Pi Services /
+  L-Build Single Service. Оборачивает docker-сборку
   сервиса: buildx build + (опционально) docker push ТОЛЬКО в локальный registry.
 
   Clean stale submodules + actions/checkout живут в вызывающем job'е, а НЕ здесь:

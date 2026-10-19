@@ -13,8 +13,7 @@ name: "[DEPRECATED] build-all-local"
 # Правильные workflows для локальной сборки:
 # - L-Build All Services.yml - полная сборка всех сервисов
 # - L-Build Base Images.yml - сборка базовых образов
-# - L-Build Main Pi Services.yml - сборка Main Pi сервисов
-# - L-Build Vision Pi Services.yml - сборка Vision Pi сервисов
+# - L-Build Pi Services.yml - сборка сервисов одного Pi (вход pi: main/sound/vision)
 
 on:
   workflow_dispatch:

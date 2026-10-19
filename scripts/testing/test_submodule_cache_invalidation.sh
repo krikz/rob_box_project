@@ -111,8 +111,8 @@ else
     exit 1
 fi
 
-# 4.4 Пер-Pi workflow'ы передают поле матрицы в композит
-for wf in "L-Build Vision Pi Services" "L-Build Main Pi Services"; do
+# 4.4 Единый workflow сборки Pi (вход pi) передаёт поле матрицы в композит
+for wf in "L-Build Pi Services"; do
     if grep -qF 'compute-submodule-sha: ${{ matrix.submodule_sha }}' ".github/workflows/${wf}.yml"; then
         echo -e "   ${GREEN}✓${NC} ${wf} передаёт submodule_sha в композит"
     else

@@ -705,7 +705,7 @@ class STTNode(Node):
 
         Architect decision G-VOSK: the model is bundled in the voice_base
         image at /models/vosk-model-small-ru-0.22 (see
-        docker/vision/voice_base/Dockerfile). We fail-fast with a helpful
+        docker/sound/voice_base/Dockerfile). We fail-fast with a helpful
         error message (instead of the opaque 'Folder does not contain model
         files' from the Vosk C++ binding) when it isn't there, pointing the
         operator at the docs.
@@ -733,7 +733,7 @@ class STTNode(Node):
             self.get_logger().error(
                 f'❌ Vosk model not found at "{self.model_path}".\n'
                 f"   The model should be bundled in the voice_base image "
-                f"(see docker/vision/voice_base/Dockerfile).\n"
+                f"(see docker/sound/voice_base/Dockerfile).\n"
                 f"   To install on a bare-metal host, see "
                 f"docs/development/VOICE_ASSISTANT_DOCKER.md or run "
                 f"src/rob_box_voice/scripts/quick_start_stt.sh.\n"
@@ -783,7 +783,7 @@ class STTNode(Node):
             self.get_logger().error(
                 f"❌ Ошибка загрузки Vosk из {self.model_path}: {e}\n"
                 f"   Path exists but the model files are missing or invalid.\n"
-                f"   See docker/vision/voice_base/Dockerfile — the model "
+                f"   See docker/sound/voice_base/Dockerfile — the model "
                 f"should be bundled at build time."
             )
             self._vosk_available = False
