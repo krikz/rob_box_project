@@ -4,6 +4,12 @@
 # - BASE_IMAGE_PREFIX: ghcr.io/krikz/rob_box_base
 # - SERVICE_IMAGE_PREFIX: ghcr.io/krikz/rob_box
 
+# Узловые адреса Zenoh (ADR-0159 В4, PR-2a): общие шаблоны конфигов и
+# скрипты лежат в docker/common; узлы различаются только ZENOH_LISTEN_IP (здесь)
+# и ZENOH_CONNECT_ENDPOINTS (сервис zenoh-router).
+# Дефолт = адрес eth0 этого Pi; переопределение — в .env.
+x-zenoh-listen-ip: &zenoh_listen_ip "ZENOH_LISTEN_IP=${ZENOH_LISTEN_IP:-10.1.1.10}"
+
 services:
   # Zenoh Router - центральный роутер для связи между Pi и облаком
   zenoh-router:
@@ -13,9 +19,12 @@ services:
     environment:
       - RUST_LOG=zenoh=info
       - ROBOT_ID=${ROBOT_ID}  # ID робота для namespace при публикации в облако
+      - *zenoh_listen_ip  # listen tcp/<IP>:7447
+      # Куда подключается роутер (через запятую): облачный Zenoh router
+      - ZENOH_CONNECT_ENDPOINTS=${ZENOH_CONNECT_ENDPOINTS:-tcp/zenoh.robbox.online:7447}
     volumes:
-      - ./config:/config:ro
-      - ./scripts/zenoh-router:/scripts:ro
+      - ../common/config:/common_config:ro
+      - ../common/scripts/zenoh-router:/scripts:ro
     entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
     restart: unless-stopped
     healthcheck:
@@ -40,10 +49,12 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/twist_mux:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_twist_mux.sh"]
     depends_on:
@@ -71,10 +82,12 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/robot_state_publisher:/scripts:ro
       - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_robot_state_publisher.sh"]
@@ -99,11 +112,13 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-humble}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-humble}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-humble}/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/rtabmap:/scripts:ro
       - ./maps:/maps
     # === RTAB-Map конфигурация: stable LiDAR SLAM on Main Pi ===
@@ -188,13 +203,15 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
       - CONTROLLER_CONFIG=/config/controllers/controller_manager.yaml
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/ros2_control:/scripts:ro
       - /dev:/dev  # Доступ к CAN устройствам
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ros2_control.sh"]
@@ -229,9 +246,11 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/lslidar:/scripts:ro
       - /dev/shm:/dev/shm
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_lslidar.sh"]
@@ -255,6 +274,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       # Reflection parameters (v2.0 Event-Driven)
       - DIALOGUE_TIMEOUT=10.0  # секунды - тайм-аут диалога
       - URGENT_RESPONSE_TIMEOUT=2.0  # секунды - тайм-аут срочного ответа
@@ -276,7 +296,8 @@ services:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback)
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/perception:/scripts:ro
       - /dev/shm:/dev/shm
     # Memory limits отключены для Raspberry Pi (kernel не поддерживает cgroup memory limits)
@@ -309,10 +330,12 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_nav2_direct.sh"]
@@ -377,10 +400,12 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
       - LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
       - ./scripts/teleop:/scripts:ro
       - /dev/input:/dev/input  # Доступ к джойстику (для non-SBUS режима)
       - /dev:/dev  # Полный доступ к /dev для SBUS (номера ttyACM могут меняться)

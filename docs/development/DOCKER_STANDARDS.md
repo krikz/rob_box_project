@@ -252,7 +252,7 @@ docker/<env>/
 
 - `../../src/rob_box_description:/workspace/src/rob_box_description:ro` в `robot-state-publisher` — это source bind для URDF package, а не runtime-config и не runtime-script.
 - `config/monitoring/...` — это shared subsystem config для monitoring-стека, а не нарушение правила `config/<service>/...`.
-- Общие helper scripts вроде `ros_with_namespace.sh` и `patch_rtabmap_launch.py` могут оставаться в корне `scripts/`, потому что используются несколькими сервисами.
+- Общие для всех Pi скрипты и шаблоны Zenoh (`ros_with_namespace.sh`, `zenoh-router/start_zenoh_router.sh`, `zenoh_{router,session}_config.json5`) лежат в `docker/common/{scripts,config}` и монтируются `../common/scripts:/ros_scripts:ro` и `../common/config:/common_config:ro` (ADR-0159 В4); узловые адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в compose узла. `patch_rtabmap_launch.py` — скрипт одного сервиса, лежит в `scripts/rtabmap/`.
 
 ### 2. Правила volumes
 
@@ -261,7 +261,8 @@ docker/<env>/
 ```yaml
 volumes:
   - ./config:/config  # ВСЕГДА монтируем общую папку config
-  - ./scripts:/ros_scripts  # Shared helper scripts для нескольких сервисов
+  - ../common/scripts:/ros_scripts:ro  # ros_with_namespace.sh, общий для всех Pi
+  - ../common/config:/common_config:ro  # шаблон zenoh_session_config.json5
   - ./scripts/<service>:/scripts  # Service-local startup script, если нужен runtime script
 ```
 
@@ -489,12 +490,14 @@ depends_on:
        - ROS_DOMAIN_ID=0
        - RMW_IMPLEMENTATION=rmw_zenoh_cpp
        - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+       - *zenoh_listen_ip  # x-zenoh-listen-ip в начале compose узла (ADR-0159 В4)
        - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
        - ZENOH_ROUTER_CHECK_ATTEMPTS=10
        - RUST_LOG=zenoh=info
      volumes:
        - ./config:/config:ro
-       - ./scripts:/ros_scripts:ro
+       - ../common/scripts:/ros_scripts:ro
+       - ../common/config:/common_config:ro
        - ./scripts/my-service:/scripts:ro
        - /dev/shm:/dev/shm
      depends_on:

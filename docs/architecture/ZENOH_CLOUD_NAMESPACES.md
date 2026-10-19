@@ -83,7 +83,7 @@ ROBOT_ID=RBXU100001
 
 ### Скрипт-обёртка для Namespace
 
-**Расположение:** `docker/vision/scripts/ros_with_namespace.sh`
+**Расположение:** `docker/common/scripts/ros_with_namespace.sh` (общий для всех Pi, ADR-0159 В4; монтируется как `/ros_scripts`)
 
 Этот скрипт:
 1. Читает переменную окружения `ROBOT_ID`
@@ -181,7 +181,7 @@ lslidar:
 
 ### Конфигурация роутера Vision Pi
 
-**Расположение:** `docker/vision/config/zenoh_router_config.json5`
+**Расположение:** шаблон `docker/common/config/zenoh_router_config.json5`; адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в `docker/vision/docker-compose.yaml`
 
 ```json5
 {
@@ -204,7 +204,7 @@ lslidar:
 
 ### Конфигурация роутера Main Pi
 
-**Расположение:** `docker/main/config/zenoh_router_config.json5`
+**Расположение:** шаблон `docker/common/config/zenoh_router_config.json5`; адреса — `ZENOH_LISTEN_IP`/`ZENOH_CONNECT_ENDPOINTS` в `docker/main/docker-compose.yaml`
 
 ```json5
 {
@@ -239,7 +239,7 @@ lslidar:
 
 ### Конфигурация сессии (обе Pi)
 
-**Расположение:** `docker/*/config/zenoh_session_config.json5`
+**Расположение:** `docker/common/config/zenoh_session_config.json5` (адрес роутера `${ZENOH_LISTEN_IP}` подставляет `ros_with_namespace.sh`)
 
 Базовая конфигурация (namespace закомментирован по умолчанию):
 
@@ -644,9 +644,9 @@ Main Pi ──TCP (незашифрованный)──> zenoh.robbox.online:74
 
 ### Файлы проекта
 
-- `docker/vision/scripts/ros_with_namespace.sh` - Скрипт-обёртка для namespace
-- `docker/vision/config/zenoh_session_config.json5` - Конфигурация сессии Vision Pi
-- `docker/main/config/zenoh_router_config.json5` - Конфигурация роутера Main Pi (облачное подключение)
+- `docker/common/scripts/ros_with_namespace.sh` - Скрипт-обёртка для namespace
+- `docker/common/config/zenoh_session_config.json5` - Шаблон конфигурации сессии (все Pi)
+- `docker/common/config/zenoh_router_config.json5` - Шаблон конфигурации роутера (все Pi; облачное подключение Main Pi — `ZENOH_CONNECT_ENDPOINTS` в `docker/main/docker-compose.yaml`)
 - `docker/vision/.env` - Конфигурация ROBOT_ID
 - `docs/architecture/SOFTWARE.md` - Обзор архитектуры Zenoh
 - `docs/development/AGENT_GUIDE.md` - Руководство по разработке для AI агентов
