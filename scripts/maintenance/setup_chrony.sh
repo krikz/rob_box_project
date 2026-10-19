@@ -10,6 +10,9 @@
 #   Vision Pi (--role vision) — клиент ТОЛЬКО Main Pi (без внешних пулов):
 #                                межпайное расхождение не должно зависеть
 #                                от интернета. Цель: |offset| < 5 мс.
+#   Sound Pi  (--role sound)  — то же, что vision (ADR-0159: третий узел).
+#                                Роли vision и sound различаются только именем
+#                                в логах и маркере конфига.
 #
 # chrony ставится на ХОСТ Pi, не в контейнер: системные часы — общие для
 # ядра, контейнерам их менять нельзя (нужен CAP_SYS_TIME). systemd-timesyncd
@@ -20,8 +23,9 @@
 # Использование:
 #   sudo ./setup_chrony.sh --role main
 #   sudo ./setup_chrony.sh --role vision [--server 10.1.1.10]
-#   ./setup_chrony.sh --check [--role main|vision] [--server IP] [--max-offset-ms 5]
-#   ./setup_chrony.sh --print-config --role main|vision [--server IP]
+#   sudo ./setup_chrony.sh --role sound [--server 10.1.1.10]
+#   ./setup_chrony.sh --check [--role main|vision|sound] [--server IP] [--max-offset-ms 5]
+#   ./setup_chrony.sh --print-config --role main|vision|sound [--server IP]
 #
 # --check ничего не меняет и root не требует. Роль и сервер по умолчанию
 # берутся из /etc/chrony/chrony.conf, если его писал этот скрипт (маркер).
@@ -83,10 +87,10 @@ done
 read -r -a CHRONYC_CMD <<< "${CHRONYC:-chronyc}"
 
 detect_role_from_conf() {
-    # Роль из маркера "# role: main|vision", который пишет generate_config.
+    # Роль из маркера "# role: main|vision|sound", который пишет generate_config.
     [ -r "$CHRONY_CONF" ] || return 0
     grep -q "^${MARKER}\$" "$CHRONY_CONF" || return 0
-    sed -n 's/^# role: \(main\|vision\)$/\1/p' "$CHRONY_CONF" | head -n 1
+    sed -n 's/^# role: \(main\|vision\|sound\)$/\1/p' "$CHRONY_CONF" | head -n 1
 }
 
 detect_server_from_conf() {
@@ -97,9 +101,9 @@ detect_server_from_conf() {
 
 validate_role() {
     case "$ROLE" in
-        main|vision) ;;
-        "") log_error "Роль не задана: --role main|vision (или конфиг без маркера setup_chrony.sh)"; exit 1 ;;
-        *)  log_error "Неверная роль '$ROLE': ожидается main или vision"; exit 1 ;;
+        main|vision|sound) ;;
+        "") log_error "Роль не задана: --role main|vision|sound (или конфиг без маркера setup_chrony.sh)"; exit 1 ;;
+        *)  log_error "Неверная роль '$ROLE': ожидается main, vision или sound"; exit 1 ;;
     esac
 }
 
@@ -135,7 +139,7 @@ generate_config() {
 run_check() {
     local src_csv selected sel_addr sel_off sel_err off_ms err_ms verdict
     if ! command -v "${CHRONYC_CMD[0]}" >/dev/null 2>&1; then
-        log_error "chronyc не найден — chrony не установлен. Запустите: sudo $0 --role <main|vision>"
+        log_error "chronyc не найден — chrony не установлен. Запустите: sudo $0 --role <main|vision|sound>"
         return 3
     fi
     if ! src_csv=$("${CHRONYC_CMD[@]}" -n -c sources 2>&1); then
@@ -163,9 +167,9 @@ run_check() {
     fi
 
     verdict="PASS"
-    if [ "$ROLE" = "vision" ]; then
+    if [ "$ROLE" != "main" ]; then
         if [ -z "$sel_addr" ]; then
-            log_error "Нет выбранного источника (^*): Vision Pi не синхронизирован с Main Pi"
+            log_error "Нет выбранного источника (^*): ${ROLE^} Pi не синхронизирован с Main Pi"
             verdict="FAIL"
         elif [ "$sel_addr" != "$SERVER" ]; then
             log_error "Источник времени $sel_addr, а должен быть Main Pi ($SERVER)"
@@ -259,7 +263,7 @@ if [ "$changed" = true ] || ! systemctl is-active --quiet chrony; then
 fi
 
 log_info "Жду синхронизацию (до ${WAITSYNC_TRIES} с)..."
-if [ "$ROLE" = "vision" ]; then
+if [ "$ROLE" != "main" ]; then
     # waitsync <tries> <max-correction, s> <max-skew> <interval, s>
     "${CHRONYC_CMD[@]}" waitsync "$WAITSYNC_TRIES" 0.005 0 1 || log_warn "waitsync: не дождались |коррекции| < 5 мс"
 else

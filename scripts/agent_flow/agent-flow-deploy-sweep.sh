@@ -30,7 +30,7 @@
 #
 # Usage:
 #   agent-flow-deploy-sweep.sh [--stale-hours 72] [--dry-run] [--limit 100]
-# Env: GH_REPO, STALE_HOURS, SSHPASS (или -p open), MAIN_PI_IP, VISION_PI_IP,
+# Env: GH_REPO, STALE_HOURS, SSHPASS (или -p open), MAIN_PI_IP, VISION_PI_IP, SOUND_PI_IP,
 #      SSH_USER, SSH_OPTS, LOCK_FILE, DRY_RUN, HERMES_HOME
 # ============================================================================
 set -euo pipefail
@@ -46,6 +46,8 @@ SSHPASS_VAL="${SSHPASS:-open}"
 SSH_USER="${SSH_USER:-ros2}"
 MAIN_PI_IP="${MAIN_PI_IP:-10.1.1.10}"
 VISION_PI_IP="${VISION_PI_IP:-10.1.1.11}"
+# ADR-0159: третий узел (голосовой стек). scope "sound" в deploy-issue → этот адрес.
+SOUND_PI_IP="${SOUND_PI_IP:-10.1.1.12}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8}"
 PREFIX="[agent-flow-deploy-sweep]"
 
@@ -115,7 +117,11 @@ parse_signature() {  # $1=body → echo "env|scope|container|kind" or empty
 }
 
 pi_ip_for_scope() {  # $1=scope
-  if [ "$1" = "vision" ]; then echo "$VISION_PI_IP"; else echo "$MAIN_PI_IP"; fi
+  case "$1" in
+    vision) echo "$VISION_PI_IP" ;;
+    sound)  echo "$SOUND_PI_IP" ;;
+    *)      echo "$MAIN_PI_IP" ;;
+  esac
 }
 
 ssh_cmd() {  # $1=ip, $2=remote_cmd
@@ -164,17 +170,21 @@ verify_warning_log() {  # $1=ip $2=container $3=scope
   fi
 }
 
-verify_topic_check() {  # $1=ip $2=container
+verify_topic_check() {  # $1=ip $2=container $3=scope
   local topics
   topics="$(ssh_cmd "$1" "docker exec $2 bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null' || true")"
   if [ -z "$topics" ]; then
     log "  verify topic_check: no topics from '$2' on $1 — actual"
     echo "actual"; return 0
   fi
-  if printf '%s\n' "$topics" | grep -qE 'camera|rgb|depth|image'; then
+  # sound: голосовой стек — смотрим /voice/*, а не камеры (workflow
+  # "[Sound Pi] Check ROS2 Topics" ждёт /voice/stt/result).
+  local pattern='camera|rgb|depth|image' what="camera/rgb/depth"
+  if [ "${3:-}" = "sound" ]; then pattern='^/voice/stt/result$'; what="/voice/stt/result"; fi
+  if printf '%s\n' "$topics" | grep -qE "$pattern"; then
     echo "resolved"
   else
-    log "  verify topic_check: topics present but no camera/rgb/depth — actual"
+    log "  verify topic_check: topics present but no ${what} — actual"
     echo "actual"
   fi
 }
@@ -308,7 +318,7 @@ while IFS=$'\t' read -r number title_b64 updated_at body_b64; do
     container_status) verdict="$(verify_container_status "$ip" "$container")" ;;
     critical_log)     verdict="$(verify_critical_log "$ip" "$container" "$scope")" ;;
     warning_log)      verdict="$(verify_warning_log "$ip" "$container" "$scope")" ;;
-    topic_check)      verdict="$(verify_topic_check "$ip" "$container")" ;;
+    topic_check)      verdict="$(verify_topic_check "$ip" "$container" "$scope")" ;;
     *) log "  unknown kind '${kind}' — skip"; skipped=$((skipped+1)); continue ;;
   esac
 
