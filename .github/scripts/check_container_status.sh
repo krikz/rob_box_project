@@ -42,6 +42,8 @@
 #   * в stderr — диагностика (как в workflow).
 #   * в FINDINGS_FILE (env) — JSONL одна запись на каждый failed-контейнер
 #     (для совместимости с остальным deploy-verify pipeline).
+#   * EXPECTED_CONTAINERS (env, опционально) — имена, обязанные присутствовать
+#     в compose ps -a; отсутствующий засчитывается как failed (ADR-0159, Sound Pi).
 #
 # Для тестов: docker-inspect мокается через PATH (`docker` → test wrapper).
 # ============================================================================
@@ -176,6 +178,36 @@ for name in $NAMES; do
                 '{environment:env.ENVIRONMENT, scope:env.SCOPE, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
                 >> "$FINDINGS_JSONL" 2>/dev/null || true
         fi
+    fi
+done
+
+# EXPECTED_CONTAINERS (опционально, через пробел) — container_name'ы, которые
+# обязаны быть в `docker compose ps -a` узла. Без этого узел, где `compose up`
+# ничего не поднял (или стек исчез), отчитывается `healthy: true` по пустому
+# списку — ровно та «зелёная галочка без evidence», которую ADR-0018 запрещает.
+# Задаёт только вызывающий, у которого есть источник истины (для Sound Pi — список
+# сервисов без profile в docker/sound/docker-compose.yaml, сверяется тестом).
+for expected in ${EXPECTED_CONTAINERS:-}; do
+    if printf '%s\n' "$NAMES" | grep -Fxq -- "$expected"; then
+        continue
+    fi
+    REASON="expected container is absent from 'docker compose ps -a' (never created or removed)"
+    FAILED_COUNT=$((FAILED_COUNT + 1))
+    log "❌ $expected: $REASON"
+    {
+        echo "=== $expected ==="
+        echo "Reason: $REASON"
+        echo ""
+    } >> "$SUMMARY_FILE"
+    if [ "$FINDINGS_JSONL" != "/dev/null" ]; then
+        jq -nc \
+            --arg container "$expected" \
+            --arg kind "container_status" \
+            --arg severity "critical" \
+            --arg summary "Expected container is missing" \
+            --arg raw_text "$REASON" \
+            '{environment:env.ENVIRONMENT, scope:env.SCOPE, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+            >> "$FINDINGS_JSONL" 2>/dev/null || true
     fi
 done
 
