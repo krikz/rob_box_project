@@ -6,3 +6,5 @@ LED_MATRIX_TAG=test-26f5779
 CEILING_CAMERA_TAG=test-26f5779
 TELEGRAM_BOT_TAG=test-26f5779
 VISION_HAILO_TAG=test-26f5779
+# ↓ пишет Sound-сборка (supervisor, ADR-0159): образ avatar-arbiter. Строка-разделитель — параллельные коммиты Build All без конфликта rebase.
+SUPERVISOR_TAG=test

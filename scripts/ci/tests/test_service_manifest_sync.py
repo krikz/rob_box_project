@@ -379,6 +379,33 @@ def test_image_versions_file_has_a_field_for_every_manifest_service(pi):
         )
 
 
+@pytest.mark.parametrize("compose_pi", ["vision", "sound", "main"])
+def test_compose_tag_vars_of_manifest_images_are_declared_for_that_pi(compose_pi):
+    """Compose Pi ссылается на `${X_TAG:-…}` образа из манифеста — поле X_TAG
+    обязано быть в docker/<этот Pi>/.image-versions.*, даже если образ собирает
+    другой Pi (avatar-arbiter на Vision берёт supervisor из Sound-сборки).
+    Иначе deploy этого Pi молча катит плавающий IMAGE_TAG, а не SHA-тег сборки.
+    """
+    all_vars = {
+        var
+        for pi in _pis()
+        for var in gen_build_matrix.image_versions_map(_services(pi))
+    }
+    compose = (REPO_ROOT / "docker" / compose_pi / "docker-compose.yaml").read_text(
+        encoding="utf-8"
+    )
+    used = set(re.findall(r"\$\{([A-Z0-9_]+_TAG):-", compose)) & all_vars
+    for suffix in ("dev", "test", "latest"):
+        path = REPO_ROOT / "docker" / compose_pi / f".image-versions.{suffix}"
+        text = path.read_text(encoding="utf-8")
+        missing = sorted(v for v in used if not re.search(rf"^{v}=", text, re.M))
+        assert not missing, (
+            f"docker/{compose_pi}/docker-compose.yaml берёт {missing}, но в "
+            f"{path.relative_to(REPO_ROOT)} поля нет — write-image-versions.sh "
+            f"его не обновит, deploy возьмёт плавающий IMAGE_TAG"
+        )
+
+
 # --- 9. соседние поля .image-versions.* пишет одна сборка ------------------
 
 

@@ -585,6 +585,9 @@ jobs:
           case "$SERVICE_NAME" in
             voice_assistant)       VERSION_VAR="VOICE_ASSISTANT_TAG" ;;
             telegram_bot)          VERSION_VAR="TELEGRAM_BOT_TAG" ;;
+            # supervisor: поле в docker/sound и docker/vision (avatar-arbiter) —
+            # write-image-versions.sh пишет во все файлы, где оно объявлено.
+            supervisor)            VERSION_VAR="SUPERVISOR_TAG" ;;
             oak-d)                 VERSION_VAR="OAK_D_TAG" ;;
             led_matrix)            VERSION_VAR="LED_MATRIX_TAG" ;;
             ceiling-camera)        VERSION_VAR="CEILING_CAMERA_TAG" ;;
