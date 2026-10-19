@@ -3,7 +3,7 @@
 # 🔊 РОББОКС Sound Pi Setup (ADR-0159)
 # ═══════════════════════════════════════════════════════════════════════════
 # Быстрая настройка третьего узла — Sound Pi: ReSpeaker, голосовой стек,
-# SuperCollider, нода сенсорного хаба ESP32 (serial через TTL-USB). Обёртка над setup_node.sh
+# SuperCollider, perception_bridge для ESP32 (serial через TTL-USB, profile sensors). Обёртка над setup_node.sh
 # с ролью `sound`, по образцу setup_main_pi.sh.
 #
 # Использование (на самом Sound Pi, пользователь ros2):

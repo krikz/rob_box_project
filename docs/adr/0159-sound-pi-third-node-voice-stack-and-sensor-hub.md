@@ -2,12 +2,13 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | **Proposed** — решения товарища Шифу по В1–В7 (§8) ещё не получены; §2 — предложение координатора |
+| Статус | **Proposed → к принятию**: решения товарища Шифу по В1–В7 получены 19.10 (§8) и внесены в §2/§5 |
 | Дата | 2026-10-19 |
 | Автор | Claude Code (координатор), по словам товарища Шифу 19.10 |
 | Issue | эпик — завести после решений §8 |
 | Код сверен | `origin/develop` @ `ca413e652` (19.10) |
-| Слова Шифу (19.10) | «я добавил ещё одну распберри в робота — SoundPi, 10.1.1.22 … она пока работает через вайфай, надо настроить изернет так же, как на других … вижен пи уже был сильно загружен … переключу микрофон-аррей респикер на неё, и жирный войс-ассистент перейдёт туда … физический лед-матрикс останется на вижен пи … распределить нагрузку равномерно … как менять сиайсиди и все контейнеры … к саунд пи подкинуть сенсор-борт по TTL-конвертору через USB, так что нода, что отвечает за коммуникацию с ней, тоже туда … мы от micro-ROS отказались, нода будет просто нода, которая коммуницирует с железкой» |
+| Слова Шифу (19.10, вечер, В1–В7) | «В1 да … сделаю, когда изернет поднимется на саунд пи. В2 можно перевезти … надо смотреть, чтобы все одноплатники не были перегружены. В3 надо взвесить все варианты, но мне кажется, что напрямую будет ок. В4 давай унифицируем. В5 пока не усложняем. В6 пока не делаем, просто имеем в виду … заложиться на этот путь. В7 у нас уже есть образ, который работает с сенсор-хабом» |
+| Слова Шифу (19.10, утро) | «я добавил ещё одну распберри в робота — SoundPi, 10.1.1.22 … она пока работает через вайфай, надо настроить изернет так же, как на других … вижен пи уже был сильно загружен … переключу микрофон-аррей респикер на неё, и жирный войс-ассистент перейдёт туда … физический лед-матрикс останется на вижен пи … распределить нагрузку равномерно … как менять сиайсиди и все контейнеры … к саунд пи подкинуть сенсор-борт по TTL-конвертору через USB, так что нода, что отвечает за коммуникацию с ней, тоже туда … мы от micro-ROS отказались, нода будет просто нода, которая коммуницирует с железкой» |
 | Родители | ADR-0111 (zram и лимиты контейнеров Vision Pi), ADR-0122 (voice-assistant 5g/6g — «долгосрочно вынести тяжёлые ноды», §3.1), ADR-0013 (инкрементальные PR), ADR-0018 (честность), ADR-0148 (код решает) |
 | Что меняет | добавляет третий compose-проект `docker/sound` и роль `sound` в `scripts/setup/setup_node.sh`; переносит `voice-assistant`, `supercollider`, `voice-action-server` с Vision Pi на Sound Pi; добавляет третий Zenoh-роутер; расширяет манифест сборки, build/deploy workflow и E2E-скрипты на третий хост; заводит ноду `sensor_hub` (serial ↔ ESP32) на Sound Pi; хоронит micro-ROS в документации и меню setup |
 
@@ -19,6 +20,7 @@
   - SoundPi по SSH (`plink`, пароль `open`, user `ros2`): модель, ОС, память, диск, сеть, netplan, `config.txt`, USB, `/dev/snd`, `/dev/ttyAMA*`, группы пользователя, отсутствие Docker;
   - Vision Pi: `docker stats`, `top`, `free`, `lsusb`, оба netplan-файла, маршруты, `IpcMode`/`Memory` контейнера `voice-assistant`;
   - Main Pi: `ip`, netplan, `docker stats`, `free`, `/dev/ttyACM*`;
+  - В7: `perception_bridge` (`src/rob_box_perception/rob_box_perception/perception_bridge.py`) — UART-нода уже есть, стартует в контейнере `perception` на Main Pi (`internal_dialogue_docker.launch.py:46`), но без `devices:` в compose и без `pyserial` в `docker/main/perception/requirements.txt` → `_open_uart` возвращает `None`, нода в stub-режиме; `/sensors/data` (JSON `String`) никто не подписан (`grep -rn "/sensors/data" src` — только сама нода);
   - код на `develop @ ca413e652`: compose обоих Pi, zenoh-конфиги, `start_voice_assistant.sh` и headless-launch (10 нод), `asound.conf`, `led_node.py` (USB-кольцо ReSpeaker), `build-manifest.yaml`, `L-Build Vision Pi Services.yml`, `L-Build Single Service.yml`, `L-Deploy and Verify.yml`, `check_container_status.sh`, `L-E2E Voice Test.yml`, agent-flow/E2E/hotpatch скрипты с адресами робота, `setup_node.sh`/`setup_main_pi.sh`/`setup_vision_pi.sh`, история micro-ROS в git.
 - **Не проверено:**
   - пропускная способность и задержка Zenoh между тремя роутерами по гигабиту — не мерено (Sound Pi без кабеля, стека на нём нет);
@@ -98,7 +100,8 @@ ReSpeaker 4 Mic Array (`2886:0018`, ALSA card `ArrayUAC10`) — **и микро�
 - `micro-ros-agent` был добавлен в compose Main Pi (`bf6744fe6`) и **удалён** (`fd8d95dfb`, «CR-06 part 1»); в манифесте сборки его нет, `test_service_manifest_sync.py:360` фиксирует «micro-ros-agent не собирается вовсе». Остатки: `robbox_aliases.sh:45` (`rblog-agent`), `setup_node.sh` (`setup_main_node` обещает micro-ROS agent; `setup_sensor_hub` шлёт в несуществующий `src/sensor_hub`), `docs/architecture/HARDWARE.md:104,111,171` («Micro-ROS Agent», `/dev/ttyUSB0`).
 - Потребитель данных есть, но закомментирован: `context_aggregator_node.py:170–175` (`/device/snapshot`, `DeviceSnapshot`).
 - Сообщения есть: `src/robot_sensor_hub_msg/msg/{DeviceData,DeviceSnapshot,DeviceCommand}.msg`.
-- Решение Шифу 19.10: **micro-ROS не будет**; нода — обычная ROS-нода, читающая serial.
+- Нода связи **уже написана** (В7): `perception_bridge` читает `SENSOR_UART_PORT` (по умолчанию `/dev/ttyAMA0`, 115200), публикует `/sensors/data` (JSON) и `/perception/health`; в Docker-образе `perception` она запускается, но в stub-режиме (§0). `robot_sensor_hub_msg` она не использует.
+- Решение Шифу 19.10: **micro-ROS не будет**; нода — обычная ROS-нода, читающая serial. Это и есть `perception_bridge`.
 
 ### 1.5 Где CI/CD и скрипты знают «ровно два Pi»
 
@@ -124,14 +127,14 @@ ReSpeaker 4 Mic Array (`2886:0018`, ALSA card `ArrayUAC10`) — **и микро�
 | Узел | Адреса | Что держит | Почему |
 |---|---|---|---|
 | **Main Pi** (16 ГБ) | `.10/.20` | как сейчас: `zenoh-router` (корень, выход в облако), `nav2`, `rtabmap`, `perception`, `ros2-control`, `lslidar`, `twist-mux`, `teleop`, `robot-state-publisher` | движение и карта — не трогаем, CPU уже ~4 на 4 ядра |
-| **Vision Pi** (8 ГБ) | `.11/.21` | `zenoh-router-vision`, `oak-d`, `vision-hailo`, `vision-face`, `ceiling-camera`, **`led-matrix`** (SPI), `quest`, `supervisor`, `avatar-arbiter`, `telegram-bot`, `ollama` (profile) | камеры и Hailo — PCIe/USB здесь; LED — SPI здесь |
-| **Sound Pi** (8 ГБ) | `.12/.22` | `zenoh-router-sound`, **`voice-assistant`**, **`supercollider`**, **`voice-action-server`**, **`sensor-hub`** (новая нода), `cadvisor`, `promtail` | ReSpeaker (вход+выход звука, LED-кольцо) и TTL-USB конвертер — USB здесь |
+| **Vision Pi** (8 ГБ) | `.11/.21` | `zenoh-router-vision`, `oak-d`, `vision-hailo`, `vision-face`, `ceiling-camera`, **`led-matrix`** (SPI), `supervisor`, `avatar-arbiter`, `ollama` (profile) | камеры и Hailo — PCIe/USB здесь; LED — SPI здесь |
+| **Sound Pi** (8 ГБ) | `.12/.22` | `zenoh-router-sound`, **`voice-assistant`**, **`supercollider`**, **`voice-action-server`**, **`quest`**, **`telegram-bot`** (волна 2, В2), **`sensor-bridge`** (В6/В7, заложен), `cadvisor`, `promtail` | ReSpeaker (вход+выход звука, LED-кольцо) и TTL-USB конвертер — USB здесь; `quest`/`telegram-bot` — только топики, едут ради баланса |
 
-Ожидаемый эффект на Vision Pi по цифрам §1.1: минус ~33 % CPU голосового стека, минус часть ~30 % `zenohd` (трафик аудио/TTS уйдёт в другой роутер), минус 2.3 ГБ RSS и 5 ГБ резерва. Sound Pi получает лимиты 5g + 512m + 128m + 128m + ~128m (`sensor-hub`) ≈ 6 ГБ из 8 — потому zram обязателен (как ADR-0111).
+Ожидаемый эффект на Vision Pi по цифрам §1.1: минус ~33 % CPU голосового стека, минус часть ~30 % `zenohd` (трафик аудио/TTS уйдёт в другой роутер), минус 2.3 ГБ RSS и 5 ГБ резерва. Sound Pi получает лимиты 5g + 512m + 128m + 128m + ~128m (`sensor-bridge`, profile `sensors`, по умолчанию выключен) ≈ 6 ГБ из 8 — плюс `quest` 512m и `telegram-bot` 512m в волне 2 — потому zram обязателен (как ADR-0111).
 
-**Второй шаг (В2, после замера):** если Vision Pi всё ещё в красной зоне, следующие кандидаты на переезд на Sound Pi — `quest` (21 % CPU, топики) и `telegram-bot` (STT голосовых — тоже топики). Решение по ним — отдельно, по `docker stats` после первого переезда, не в этом ADR.
+**Волна 2 (В2, решение Шифу: «можно перевезти, смотреть, чтобы все одноплатники не были перегружены»):** `quest` (21 % CPU, топики и WebRTC — ему не нужны устройства Vision Pi) и `telegram-bot` (STT голосовых — тоже топики) переезжают на Sound Pi **после** замера волны 1 (§4): если на Vision Pi `load` остаётся выше числа ядер или на Sound Pi `available` после голоса меньше ~1.5 ГБ — волна 2 откладывается, иначе едет. Критерий — одинаковая загрузка трёх узлов по `docker stats`/`load`, а не «лишь бы Vision разгрузить». Оформляется отдельным PR в этом эпике (§5, PR-7).
 
-### 2.2 Сеть: третий Zenoh-роутер звездой через Main Pi
+### 2.2 Сеть: третий Zenoh-роутер — прямой линк на Vision Pi плюс линк на Main Pi (В3)
 
 Как у Vision Pi сегодня (`zenoh_router_config.json5`: `listen tcp/10.1.1.11:7447`, `connect tcp/10.1.1.10:7447#iface=eth0`):
 
@@ -140,39 +143,52 @@ zenoh-router-sound:  listen tcp/10.1.1.12:7447,  connect tcp/10.1.1.10:7447#ifac
 сессии нод Sound Pi: peer → tcp/10.1.1.12:7447 (копия zenoh_session_config.json5 с заменой .11 → .12)
 ```
 
-Путь `audio_node` (Sound) → `supervisor` (Vision) становится двухзвенным: Sound → Main → Vision по гигабиту. **Альтернатива** (В3): второй `connect`-endpoint у роутера Sound Pi напрямую на `10.1.1.11:7447`; Zenoh-роутеры образуют граф и маршруты считают сами, но это не проверено на нашей версии (`eclipse/zenoh:1.6.2`) — включать только после замера задержки голос→ТАРС на звезде.
+Путь `audio_node` (Sound) → `supervisor` (Vision) при звезде становится двухзвенным: Sound → Main → Vision по гигабиту. **Решение Шифу по В3: «взвесить, но напрямую, кажется, ок».** Взвешиваем:
+
+| Вариант | Плюсы | Минусы |
+|---|---|---|
+| А. Звезда через Main (как Vision сегодня) | проверено на `zenoh:1.6.2`; один шаблон роутер-конфига на все узлы-листья; нет циклов в графе роутеров | голос ↔ ТАРС/Quest/LED — два хопа и лишняя нагрузка на `zenohd` Main Pi (у него уже 26 % CPU и облачный линк) |
+| Б. Прямой линк Sound ↔ Vision **плюс** Sound → Main | один хоп для всего голосового трафика (аудио Quest-рации, TTS-состояния для LED, `/voice/*` для ТАРС); разгружает роутер Main | граф роутеров с циклом Main–Vision–Sound; Zenoh это поддерживает (роутеры держат таблицы маршрутов и гасят дубли), но на нашей версии не проверено; два `connect`-endpoint в конфиге Sound |
+| В. Только Sound ↔ Vision, без Main | один хоп к голосу; простой граф | нав-стек (`/cmd_vel` от `command_node`, `/odom` для контекста) идёт через Vision — зависимость голоса от Vision Pi; при падении Vision робот глохнет и в Telegram |
+
+**Принято Б**: `connect.endpoints: ["tcp/10.1.1.10:7447#iface=eth0", "tcp/10.1.1.11:7447#iface=eth0"]` у роутера Sound Pi; роутеры Main и Vision не трогаем (их `connect` остаются как есть). Проверка на стенде до cutover — приёмка §4: `ros2 topic hz` на `/voice/tts/state` из `supervisor` при обоих линках и при выдернутом кабеле Vision (должен переключиться на путь через Main, не замолчать). Если на `1.6.2` всплывут дубли сообщений или шторм переподключений — откат на А одной строкой конфига.
 
 Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 100 + wlan0 metric 600, cloud-init'овский файл не трогаем. Адрес `10.1.1.12` для eth0 закрепляется в DHCP роутера по MAC eth0 (на Main/Vision это так и работает: «роутер выдаёт»). Это делает Шифу на роутере (В1).
 
 ### 2.3 Compose: `docker/sound` — перенос, не копия
 
-Новый проект `docker/sound/docker-compose.yaml` с сервисами `zenoh-router`, `voice-assistant`, `supercollider`, `voice-action-server`, `sensor-hub`, `cadvisor`, `promtail`. Правила (память `no-two-implementations`):
+Новый проект `docker/sound/docker-compose.yaml` с сервисами `zenoh-router`, `voice-assistant`, `supercollider`, `voice-action-server`, `sensor-bridge` (profile `sensors`), `cadvisor`, `promtail`; `quest` и `telegram-bot` — волной 2 (§2.1). Правила (память `no-two-implementations`):
 
 - Сервисные блоки `voice-assistant`, `supercollider`, `voice-action-server` **`git mv`-ятся** из `docker/vision/docker-compose.yaml`, не копируются; из vision они удаляются в том же PR, что добавляет их в sound (иначе один `depends_on supercollider` в двух местах и два источника правды).
 - Конфиги и скрипты переезжают: `docker/vision/config/{audio,voice_assistant,wake_words.yaml}` → `docker/sound/config/…`, `docker/vision/scripts/{voice_assistant,supercollider}` → `docker/sound/scripts/…`. Пути **внутри** контейнеров не меняются (`/config/voice_assistant/*.yaml`, `/etc/asound.conf`, `/models`, `/data`), чтобы ноды и ресурсный пак ничего не заметили.
-- `zenoh-router/Dockerfile`, `scripts/zenoh-router/start_zenoh_router.sh`, `scripts/ros_with_namespace.sh`, `config/zenoh_session_config.json5` сегодня уже лежат **двумя копиями** (main и vision). Третья копия для sound — честно заявленный долг: один общий `docker/common/` — отдельная карточка, не этот эпик (В4).
+- `zenoh-router/Dockerfile`, `scripts/zenoh-router/start_zenoh_router.sh`, `scripts/ros_with_namespace.sh`, `config/zenoh_session_config.json5` сегодня лежат **двумя копиями** (main и vision). **Решение Шифу по В4: унифицируем** — третьей копии не будет: общие файлы переезжают в `docker/common/{zenoh-router,scripts,config}`, compose всех трёх узлов монтирует их относительным путём (`../common/scripts:/ros_scripts:ro`), а узловые различия (`listen`/`connect` адреса роутера, адрес роутера в session-config) становятся **переменными `.env`** (`ZENOH_LISTEN_IP`, `ZENOH_CONNECT_ENDPOINTS`), которые `start_zenoh_router.sh` и `ros_with_namespace.sh` подставляют `sed`-ом так же, как сегодня подставляют namespace. Это PR-2a (§5), до `docker/sound`. Проверка: `diff -r` между бывшими копиями перед удалением — расхождения разбираются явно, не «берём vision».
 - `ollama`: `OLLAMA_BASE_URL=http://localhost:11434` перестанет работать. Переменная становится `${OLLAMA_HOST_URL:-http://10.1.1.11:11434}` в `.env` Sound Pi; `ollama` остаётся на Vision Pi под profile `ai` (сегодня не запущен — §0).
 - `.image-versions.{dev,test,latest}` для `docker/sound` — пишет CI (как для vision/main).
 - Данные состояния (`data/voice/*`, `cache/tts`) — **не в git**, их переносит cutover (§3.5), compose только монтирует те же относительные пути.
 
-### 2.4 Нода `sensor-hub`: обычная ROS-нода, serial, без micro-ROS
+### 2.4 Сенсорный хаб: `perception_bridge` переезжает на Sound Pi, когда ESP32 подключат (В6, В7)
 
-- Пакет `src/rob_box_sensor_hub` (rclpy + `pyserial`): открывает `/dev/sensor_hub` (udev-симлинк на TTL-USB конвертер, правило ставит `setup_node.sh` роль `sound`), парсит кадры прошивки ESP32, публикует `/device/snapshot` (`DeviceSnapshot`), слушает `/device/command` (`DeviceCommand`). Протокол кадров — **открытый вопрос В6** (прошивки в репо нет).
-- Контейнер `sensor-hub` в `docker/sound`: `devices: [/dev/sensor_hub:/dev/sensor_hub]`, `mem_limit 128m`, без `privileged`. Образ — **тот же `voice-assistant`** (build_context `.` уже собирает все `src/*`; добавить `pyserial` в его Dockerfile), по образцу `voice-action-server`: ноль новых build-job'ов. Отдельный образ — только если `voice-assistant` станет узким местом сборки (В7).
-- `context_aggregator_node.py:170` — раскомментировать подписку, когда нода реально публикует (`ros2 topic hz /device/snapshot` в evidence).
-- Хоронится: `rblog-agent` alias, micro-ROS в `setup_node.sh` (`setup_main_node`, `setup_sensor_hub`), `HARDWARE.md:104,111,171` → «нода `sensor_hub` на Sound Pi, serial через TTL-USB».
+Решения Шифу: нода уже есть (В7); сам хаб пока не подключаем, но **путь закладываем** (В6).
+
+- Нода — существующий `perception_bridge` из образа `perception` (§1.4). Ничего нового не пишем. Путь закладывается так:
+  - `setup_node.sh` роль `sound` уже ставит udev-правило `/dev/sensor_hub` для TTL-USB конвертера и `enable_uart=1` (§3.1) — **сделано**;
+  - в `docker/sound/docker-compose.yaml` заводится сервис `sensor-bridge` под **profile `sensors`** (не стартует по умолчанию): образ `perception` (он уже собирается для Main Pi, тег `PERCEPTION_TAG`), `devices: [/dev/sensor_hub:/dev/sensor_hub]`, `SENSOR_UART_PORT=/dev/sensor_hub`, `SENSOR_UART_BAUD=115200`, `mem_limit 128m`, команда — `ros2 run rob_box_perception perception_bridge` (не весь `internal_dialogue_docker.launch.py`, там ещё `context_aggregator` и `health_monitor`, которые остаются на Main Pi);
+  - `pyserial` добавляется в `docker/main/perception/requirements.txt` — иначе нода и на Sound Pi останется в stub-режиме.
+- Когда Шифу подключит ESP32 — **отдельная задача**: включить profile, снять `perception_bridge` из `internal_dialogue_docker.launch.py` на Main Pi (одна реализация, не две), договориться, кто слушает `/sensors/data` (`context_aggregator` на Main Pi сегодня ждёт `/device/snapshot` типа `DeviceSnapshot` — §1.4, а bridge публикует JSON-`String` в `/sensors/data`; расхождение разбирается в той задаче, не здесь).
+- Хоронится в этом эпике только документация micro-ROS: `rblog-agent` alias, `setup_main_node`/`setup_sensor_hub` в `setup_node.sh`, `HARDWARE.md:104,111,171` → «`perception_bridge` на Sound Pi, serial через TTL-USB».
 
 ### 2.5 CI/CD: третий Pi как данные, а не как третья копия — где это дёшево
 
 | Что | Решение |
 |---|---|
 | `build-manifest.yaml` | `pis.sound: {voice-base, voice-assistant, supercollider}` — **перенос** из `pis.vision` (`git diff` покажет −/+ одних и тех же блоков); guard `test_service_manifest_sync.py` обновляется в том же PR |
-| Сборка | `L-Build Sound Pi Services.yml` — копия Vision-workflow с `--pi sound` (матрица из манифеста, так что копия почти вся — обвязка). Параметризация одного workflow по `pi` — отдельная карточка (В4); `L-Build-All-Services.yml` получает третий `uses:` |
+| Сборка | **В4 — унифицируем:** один `L-Build Pi Services.yml` с входом `pi: {main, vision, sound}` (матрица уже из манифеста через `gen_build_matrix.py --pi`); `L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml` становятся его тонкими обёртками (`workflow_call` с `pi:`) или удаляются после переключения `L-Build-All-Services.yml` на три вызова одного workflow. Guard `test_service_manifest_sync.py` сверяет манифест с одним файлом вместо двух |
 | `L-Build Single Service.yml` | `pi_type` += `sound`; `case "$PI_TYPE"` += ветка; `.image-versions` путь уже параметризован |
 | `L-Deploy and Verify.yml` | `sound_pi_ip=10.1.1.12` во все `case environment`; шаги `[Sound Pi] Pull / Stop / Start / Check Container Status / Cleanup` по образцу Vision; **ресурсный пак** `--only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit,score-library` и STT/TTS-модели гоняются **на Sound Pi**, Hailo `.hef` — остаются на Vision Pi; `check_container_status.sh` вызывается третий раз с `SCOPE=sound` |
 | `G-Validate Docker Compose.yml` | третий путь в `paths:` и третий job (или матрица по трём каталогам — предпочтительно, это и есть «данные, не копия») |
 | E2E и agent-flow | дефолты хоста voice-assistant → `10.1.1.22` (wlan, как сейчас `.21`) / `.12`: `L-E2E Voice Test.yml` (5 мест), `agent-flow-e2e-process.sh:254`, `padavan-step4-voice-smoke.sh:77`, `watchdog-tts.sh:32`, `hotpatch.sh:17`; `agent-flow-deploy-sweep.sh` += `SOUND_PI_IP` |
 | Мониторинг | `NODE_MAPPING.md`, Grafana «Sound Pi CPU/Memory», promtail/cadvisor из `docker/sound` с теми же labels |
+| `.image-versions` Sound Pi | `VOICE_ASSISTANT_TAG`, `SUPERCOLLIDER_TAG`, `QUEST_TAG`, `TELEGRAM_BOT_TAG` (после волны 2) и `PERCEPTION_TAG` для `sensor-bridge` — последний пишет main-сборка, значит `docker/sound/.image-versions.*` обновляют две сборки; при унифицированном workflow это один код с разными `pi` |
 | Setup | роль `sound` в `setup_node.sh` + обёртка `setup_sound_pi.sh` — **сделано в этом PR** (§3.1); деплой-шаг «Ensure systemd unit» для Vision (`reinstall_vision_pi_systemd.sh`) на Sound не копируем, пока `robbox-sound.service` не понадобится в CI |
 
 ---
@@ -188,7 +204,7 @@ Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 10
 
 ### 3.2 Zenoh-конфиги Sound Pi
 
-`docker/sound/config/zenoh_router_config.json5` = vision-файл с `listen tcp/10.1.1.12:7447`, `connect tcp/10.1.1.10:7447#iface=eth0`. `zenoh_session_config.json5` = vision-файл с `connect tcp/10.1.1.12:7447`. `scouting.multicast.enabled: false` сохраняется — три роутера видят друг друга только явными endpoint'ами, никакого автодискавери по WiFi.
+После PR-2a (В4) это не отдельные файлы, а `.env` Sound Pi: `ZENOH_LISTEN_IP=10.1.1.12`, `ZENOH_CONNECT_ENDPOINTS="tcp/10.1.1.10:7447#iface=eth0,tcp/10.1.1.11:7447#iface=eth0"` (вариант Б, §2.2), общий шаблон роутера из `docker/common`. Сессии нод — общий шаблон session-config с `connect tcp/${ZENOH_LISTEN_IP}:7447`. `scouting.multicast.enabled: false` сохраняется — три роутера видят друг друга только явными endpoint'ами, никакого автодискавери по WiFi.
 
 ### 3.3 Порядок старта и healthcheck
 
@@ -201,14 +217,14 @@ Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 10
 ### 3.5 Cutover на роботе (ручной, с Шифу, один раз)
 
 1. `setup_sound_pi.sh` на SoundPi; кабель eth0; DHCP-резерв `.12`; `reboot` (config.txt).
-2. Деплой PR-2…PR-4 **без** переключения ReSpeaker: Sound Pi поднимает только `zenoh-router`, `sensor-hub` (если ESP32 уже есть); voice-стек ещё на Vision — **нет**, так не выйдет: PR-2 переносит сервисы из vision-compose. Поэтому cutover атомарный: мёрж PR-2…PR-4 → `Build All` → **стоп** стека Vision Pi → `rsync -a` `docker/vision/data/voice/` и `docker/vision/cache/tts/` на Sound Pi в `docker/sound/…` (это `speakers.db`, `voice_memory.db`, `music_library`, `.mcp_token` — живые данные людей, память `robot-data-is-shared-with-live-people`) → переткнуть ReSpeaker и колонки → `Deploy and Verify`.
+2. Деплой PR-2…PR-4 **без** переключения ReSpeaker: Sound Pi поднимает только `zenoh-router`; voice-стек ещё на Vision — **нет**, так не выйдет: PR-2 переносит сервисы из vision-compose. Поэтому cutover атомарный: мёрж PR-2a…PR-4 → `Build All` → **стоп** стека Vision Pi → `rsync -a` `docker/vision/data/voice/` и `docker/vision/cache/tts/` на Sound Pi в `docker/sound/…` (это `speakers.db`, `voice_memory.db`, `music_library`, `.mcp_token` — живые данные людей, память `robot-data-is-shared-with-live-people`) → переткнуть ReSpeaker и колонки → `Deploy and Verify`.
 3. Evidence: `docker stats` на всех трёх; `ros2 topic hz /voice/stt/result` из supervisor-контейнера на Vision (сквозной путь Sound→Main→Vision); живая реплика «Робот, …» (память `live-check-by-topic-injection`) с ответом в динамики; LED-матрица реагирует на анимацию (`/panel_image` приходит с другого узла).
 
 ### 3.6 Что может сломаться при разнесении по хостам
 
 | Риск | Где | Что делать |
 |---|---|---|
-| `/mcp/execute` аутентификация: токен лежит в `/data/.mcp_token` voice-assistant; `supervisor` на Vision Pi его файла не видит | `docker-compose.yaml:303–308` («Set ROB_BOX_MCP_TOKEN here instead if the nodes are ever split») | выяснить, как ТАРС зовёт тулы сегодня (В5); если через `/mcp/execute` с токеном — переносить токен в `.env.secrets` обоих узлов |
+| `/mcp/execute` аутентификация: токен лежит в `/data/.mcp_token` voice-assistant; `supervisor` на Vision Pi его файла не видит | `docker-compose.yaml:303–308` («Set ROB_BOX_MCP_TOKEN here instead if the nodes are ever split») | **В5, Шифу: «пока не усложняем»** — ничего не меняем до cutover; в приёмке §4 ТАРС вызывает любой тул (`container_status`) и результат виден в его логе. Если упадёт по токену — тогда `ROB_BOX_MCP_TOKEN` в `.env.secrets` обоих узлов отдельной карточкой |
 | `OLLAMA_BASE_URL=localhost` | §2.3 | env-переменная на хост Vision |
 | `ipc: host` dmix между voice-assistant и supercollider | оба на Sound Pi — сохраняется | — |
 | E2E/хотпатч ходят на `.21` за логами voice-assistant | §1.5 | PR-5 |
@@ -226,7 +242,10 @@ Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 10
 - `Deploy and Verify` зелёный на трёх узлах; `check_container_status` `SCOPE=sound` healthy.
 - `docker stats` Vision Pi после переезда: нет `voice-assistant`/`supercollider`; CPU idle вырос против §1.1 — приложить обе таблицы.
 - Сквозной голос: реплика в ReSpeaker (Sound) → ответ TTS в динамики (Sound) → анимация на LED (Vision) → запись в журнал ТАРС (Vision). `docker logs voice-assistant` (Sound) и `docker logs avatar-supervisor` (Vision) — последние 30 строк каждого.
-- `ros2 topic hz /device/snapshot` > 0 из `perception` на Main Pi — только когда ESP32 подключён (иначе пункт переносится в карточку ноды).
+- Zenoh вариант Б (§2.2): `ros2 topic hz /voice/tts/state` из `avatar-supervisor` при обоих линках и при выдернутом кабеле Vision Pi — поток не прерывается дольше ретрая роутера (≤ 4 с, `period_max_ms`), дублей нет (`hz` совпадает с публикуемой частотой).
+- ТАРС зовёт тул (`container_status`) после разнесения — ответ в `docker logs avatar-supervisor` (В5).
+- Волна 2 (§2.1): таблицы `docker stats` + `uptime` трёх узлов до и после переезда `quest`/`telegram-bot`; решение «везём/не везём» записано в карточке PR-7 со ссылкой на эти таблицы.
+- `sensor-bridge` — profile `sensors` не стартует по умолчанию: `docker compose ps` на Sound Pi без него; `docker compose --profile sensors config` валиден. Живая проверка `/sensors/data` — в задаче подключения ESP32 (В6), не здесь.
 - `grep -rn "micro-ros\|micro_ros\|microros" docker scripts docs/architecture src` — пусто, кроме истории в ADR и `test_service_manifest_sync.py` (он охраняет отсутствие).
 
 ## 5. План PR (каждый ≤ ~600 строк, ADR-0013)
@@ -234,22 +253,26 @@ Netplan — ровно как на Vision Pi: `01-netcfg.yaml` с eth0 metric 10
 | # | Содержимое | Зависит от |
 |---|---|---|
 | PR-1 (этот) | ADR-0159; `setup_node.sh` роль `sound`; `setup_sound_pi.sh` | — |
-| PR-2 | `docker/sound/` (compose + config + scripts, `git mv` из vision); удаление трёх сервисов из `docker/vision/docker-compose.yaml`; `build-manifest.yaml` `pis.sound`; guard-тест манифеста; `G-Validate Docker Compose` третий путь | PR-1 |
-| PR-3 | `L-Build Sound Pi Services.yml`; `L-Build-All-Services.yml` третий `uses:`; `L-Build Single Service.yml` `pi_type=sound` | PR-2 |
+| PR-2a | **В4:** `docker/common/` (zenoh-router Dockerfile/скрипт, `ros_with_namespace.sh`, session/router json5 с `.env`-подстановкой адресов); compose main и vision переводятся на него, копии удаляются с `diff -r`-доказательством | PR-1 |
+| PR-2b | `docker/sound/` (compose + config + scripts, `git mv` голосовых сервисов из vision, роутер с двумя `connect` — В3); удаление трёх сервисов из `docker/vision/docker-compose.yaml`; сервис `sensor-bridge` под profile `sensors` (В6/В7); `pyserial` в `perception/requirements.txt`; `build-manifest.yaml` `pis.sound`; guard-тест манифеста; `G-Validate Docker Compose` матрица по трём каталогам | PR-2a |
+| PR-3 | **В4:** единый `L-Build Pi Services.yml` с входом `pi`; `L-Build-All-Services.yml` → три вызова; `L-Build Single Service.yml` `pi_type=sound`; старые два workflow — обёртки или удаление | PR-2b |
 | PR-4 | `L-Deploy and Verify.yml`: `sound_pi_ip`, шаги Sound Pi, ресурсный пак на Sound; `agent-flow-deploy-sweep.sh` | PR-3 |
-| PR-5 | E2E/agent-flow/hotpatch/watchdog дефолты хоста; `robbox_aliases.sh` (`rbstop-all` третий каталог, удалить `rblog-agent`); `NODE_MAPPING.md`, Grafana | PR-4 |
-| PR-6 | `src/rob_box_sensor_hub` + сервис `sensor-hub` в `docker/sound`; `pyserial` в Dockerfile voice-assistant; `context_aggregator` подписка; похороны micro-ROS в `setup_node.sh`/`HARDWARE.md` | PR-2, протокол В6 |
-| cutover | §3.5 с Шифу | PR-2…PR-5 влиты и собраны |
+| PR-5 | E2E/agent-flow/hotpatch/watchdog дефолты хоста; `robbox_aliases.sh` (`rbstop-all` третий каталог, удалить `rblog-agent`); `NODE_MAPPING.md`, Grafana; micro-ROS из `setup_node.sh`/`HARDWARE.md` | PR-4 |
+| cutover (волна 1) | §3.5 с Шифу: голосовой стек на Sound Pi, замер §4 | PR-2…PR-5 влиты и собраны |
+| PR-7 (волна 2, В2) | `quest` и `telegram-bot` → `docker/sound` по замеру волны 1; `L-E2E`/quest-smoke хосты | cutover |
+| отдельная задача (В6) | подключение ESP32: profile `sensors`, снять `perception_bridge` с Main Pi, потребитель `/sensors/data` | когда Шифу подключит хаб |
 
-PR-2…PR-4 **мёржатся подряд перед одной сборкой**: после PR-2 compose Vision уже без голоса, а деплой ещё не знает Sound Pi — между ними робот без голоса. Либо держать их одной веткой-стеком и влить за один вечер (память `stacked-pr-breaks-after-squash`: пушить под новыми именами после сквоша нижнего).
+PR-2b…PR-4 **мёржатся подряд перед одной сборкой**: после PR-2b compose Vision уже без голоса, а деплой ещё не знает Sound Pi — между ними робот без голоса. Либо держать их одной веткой-стеком и влить за один вечер (память `stacked-pr-breaks-after-squash`: пушить под новыми именами после сквоша нижнего).
 
 ## 6. Альтернативы
 
 - **Резать `voice-assistant` на контейнеры на Vision Pi (ADR-0122 §3.1).** Не снимает 5 ГБ с узла и не разгружает CPU — переставляет мебель в той же комнате. Отклонено Шифу покупкой третьего Pi.
 - **Перенести голос на Main Pi (16 ГБ).** Память есть, CPU — нет (`load 4`, `perception` 76 %); Main — узел движения, OOM/лаг там дороже, чем на Vision. Отклонено.
-- **Один «общий» compose на три узла с профилями.** Один файл, три `docker compose --profile`; но `.image-versions`, deploy-шаги и guard'ы заточены на `docker/<pi>/` — миграция дороже третьего каталога. Отклонено сейчас; дубли `zenoh-router`/`ros_with_namespace.sh` вынести в `docker/common/` отдельной карточкой (В4).
-- **micro-ROS agent для ESP32.** Отклонено Шифу 19.10: «нода будет просто нода». Плюс: нет ещё одного рантайма и образа; минус: протокол кадров — наш, его надо задокументировать (В6).
-- **Sound Pi роутер напрямую к Vision Pi (mesh).** См. §2.2 — после замера.
+- **Один «общий» compose на три узла с профилями.** Один файл, три `docker compose --profile`; но `.image-versions`, deploy-шаги и guard'ы заточены на `docker/<pi>/` — миграция дороже третьего каталога. Отклонено; вместо этого общие части уходят в `docker/common/` (В4, принято).
+- **Третья копия роутера/скриптов и третий build-workflow.** Быстрее на один вечер, но три источника правды. Отклонено Шифу (В4: «давай унифицируем»).
+- **micro-ROS agent для ESP32.** Отклонено Шифу 19.10: «нода будет просто нода» — и она уже есть (`perception_bridge`, В7).
+- **Новый пакет/нода `sensor_hub` под `robot_sensor_hub_msg`.** Первая версия этого ADR предлагала написать её; Шифу поправил (В7) — дубль `perception_bridge`. Отклонено.
+- **Звезда Zenoh через Main Pi.** Вариант А в §2.2 — проверенный, остаётся откатом; принят Б (прямой линк плюс Main).
 
 ## 7. Что удалить (с grep-доказательством, по PR)
 
@@ -259,16 +282,18 @@ PR-2…PR-4 **мёржатся подряд перед одной сборкой
 
 ## 8. Решения товарища Шифу и открытые вопросы
 
-| # | Вопрос | Предложение координатора | Решение Шифу |
+| # | Вопрос | Предложение координатора | Решение Шифу (19.10) |
 |---|---|---|---|
-| В1 | Адреса Sound Pi `10.1.1.12` (eth0) / `.22` (wlan0), резерв `.12` по MAC на роутере | да, продолжить ряд .10/.11/.12 | — |
-| В2 | Переезжают ли во второй волне `quest` и `telegram-bot` | решать по `docker stats` после первого переезда | — |
-| В3 | Топология Zenoh: звезда через Main (как Vision) или + прямой линк Sound↔Vision | звезда; прямой линк после замера | — |
-| В4 | Дубли `zenoh-router`/`ros_with_namespace.sh`/`zenoh_session_config.json5` ×3 и три build-workflow | принять долг, карточка «`docker/common` + workflow по `pi`» | — |
-| В5 | Как ТАРС зовёт тулы `mcp_server` через хосты (`.mcp_token`) | выяснить до PR-2; если нужно — токен в `.env.secrets` обоих узлов | — |
-| В6 | Протокол ESP32 ↔ хост по serial (кадр, скорость, где прошивка) | Шифу даёт прошивку/описание; нода пишется по ней | — |
-| В7 | Образ для `sensor-hub`: тот же `voice-assistant` или свой | тот же, по образцу `voice-action-server` | — |
+| В1 | Адреса Sound Pi `10.1.1.12` (eth0) / `.22` (wlan0), резерв `.12` по MAC на роутере | да, продолжить ряд .10/.11/.12 | **Да.** Резерв на роутере Шифу сделает, когда на Sound Pi поднимется Ethernet |
+| В2 | Переезжают ли во второй волне `quest` и `telegram-bot` | решать по `docker stats` после первого переезда | **Можно перевезти.** Цель — ни один одноплатник не перегружен; решение по замеру волны 1 (§2.1, PR-7) |
+| В3 | Топология Zenoh: звезда через Main или прямой линк Sound↔Vision | звезда; прямой линк после замера | **Взвесить все варианты; напрямую, скорее всего, ок.** Принят вариант Б — прямой линк плюс линк на Main (§2.2), звезда остаётся откатом |
+| В4 | Дубли `zenoh-router`/`ros_with_namespace.sh`/session-config ×3 и три build-workflow | принять долг, карточка позже | **Унифицируем** в этом эпике: `docker/common/` (PR-2a), единый build-workflow с входом `pi` (PR-3) |
+| В5 | Как ТАРС зовёт тулы `mcp_server` через хосты (`.mcp_token`) | выяснить до PR-2 | **Пока не усложняем.** Проверяется в приёмке cutover; чиним, только если упадёт |
+| В6 | Протокол ESP32 ↔ хост, когда подключать | Шифу даёт прошивку/описание | **Пока не делаем**, заложиться на путь: udev `/dev/sensor_hub`, profile `sensors` в compose Sound Pi. Подключение хаба — отдельная задача |
+| В7 | Образ для ноды сенсорного хаба | новый пакет в образе `voice-assistant` | **Координатор напутал**: нода уже есть — `perception_bridge` в образе `perception`; новое не пишем (§2.4) |
+
+Открытых вопросов после 19.10 нет; новые — заводить строками ниже.
 
 ## 9. Что не проверено
 
-См. §0. Дополнительно: ничего из §5 кроме PR-1 не написано; `setup_sound_pi.sh` на SoundPi не запускался (только `bash -n`); цифры §1.1 — один снимок через 20 минут после загрузки Vision Pi, не среднее за день.
+См. §0. Дополнительно: вариант Б Zenoh (§2.2) на `zenoh:1.6.2` не проверен — приёмка §4; ничего из §5 кроме PR-1 не написано; `setup_sound_pi.sh` на SoundPi не запускался (только `bash -n`); цифры §1.1 — один снимок через 20 минут после загрузки Vision Pi, не среднее за день.

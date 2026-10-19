@@ -103,7 +103,7 @@ show_node_menu() {
     echo -e "  ${GREEN}3)${NC} 📡 Sensor Hub     - Датчики (IMU, GPS, энкодеры, мотор-драйверы)"
     echo -e "  ${GREEN}4)${NC} 🦾 Manipulator    - Манипулятор/рука (в разработке)"
     echo -e "  ${GREEN}5)${NC} 🛠️  Custom         - Пользовательская конфигурация"
-    echo -e "  ${GREEN}6)${NC} 🔊 Sound Pi       - ReSpeaker, голосовой стек, SuperCollider, нода сенсорного хаба (ADR-0159)"
+    echo -e "  ${GREEN}6)${NC} 🔊 Sound Pi       - ReSpeaker, голосовой стек, SuperCollider, perception_bridge для ESP32 (ADR-0159)"
     echo ""
     echo -e "${YELLOW}Примечание:${NC} Sensor Hub — прошивка ESP32; нода связи с ним (serial, без micro-ROS) живёт на Sound Pi (ADR-0159)"
     echo ""
@@ -892,7 +892,7 @@ setup_sensor_hub() {
 # ═══════════════════════════════════════════════════════════════════════════
 # Третий узел робота. Сюда переезжают с Vision Pi контейнеры, привязанные к
 # ReSpeaker (voice-assistant, supercollider, voice-action-server), и
-# нода sensor_hub — обычная ROS-нода, говорящая с ESP32 по serial через
+# perception_bridge (образ perception) — обычная ROS-нода, говорящая с ESP32 по serial через
 # TTL-USB конвертер (от micro-ROS отказались, решение Шифу 19.10.2026). LED-матрица
 # остаётся на Vision Pi (SPI), общение с ней — по ROS-топикам через Zenoh.
 #
