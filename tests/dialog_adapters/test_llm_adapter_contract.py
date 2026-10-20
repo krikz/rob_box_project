@@ -5,7 +5,7 @@ FakeLLMProvider в каждом из 4 режимов отвечает на эт
 Тест проверяет водопровод (запрос -> ответ -> один парсер), а не качество живой модели: живые адаптеры меряет
 ``scripts/dialog/adapter_benchmark.py``.
 
-Парсер: ``pick_parser`` берёт ``rob_box_dialog.command.parse`` (PR-1), пока его нет — ``scripts/dialog/stub_parse``. Какой парсер работал, видно в id.
+Парсер — настоящий ``rob_box_dialog.command.parse`` (PR-1): разобранная команда сверяется с эталонной поле в поле.
 """
 
 from __future__ import annotations
@@ -28,13 +28,29 @@ from rob_box_dialog.speech_channel import (
 )
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.fake import FakeLLMProvider
-from scripts.dialog.stub_parse import pick_parser, stub_parse
+from rob_box_dialog.command import Command, Invalid
+from rob_box_dialog.command import parse as PARSE
 
 REFERENCE_SET = Path(__file__).resolve().parents[2] / "scripts" / "dialog" / "reference_set.yaml"
 SCHEMA = {"type": "object", "properties": {"speech": {"type": "string", "maxLength": 280}}}
 
 
-PARSER_KIND, PARSE = pick_parser()
+def _as_dict(cmd: Command) -> dict[str, Any]:
+    """Команда в форме эталона ``_canonical``: только непустые speech / ask / actions / passed."""
+    out: dict[str, Any] = {}
+    if cmd.speech:
+        out["speech"] = cmd.speech
+    if cmd.ask:
+        out["ask"] = {"expects": cmd.ask.expects, "text": cmd.ask.text}
+    if cmd.actions:
+        out["actions"] = [{"tool": a.tool, "args": dict(a.args)} for a in cmd.actions]
+    if cmd.passed:
+        out["passed"] = cmd.passed
+    return out
+
+
+def _nonempty(canonical: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in canonical.items() if v}
 
 
 # ---- эталонный набор -------------------------------------------------------------------------------------------
@@ -125,14 +141,12 @@ def test_field_channel_parses_every_reference_phrase(mode):
     failures = []
     for pid, canonical in CASES:
         provider = _honest_fake(canonical, mode)
-        try:
-            parsed = channel.parse(_ask(provider, channel, mode), mode, PARSE)
-        except Exception as exc:  # noqa: BLE001 - собираем все провалы в один отчёт
-            failures.append(f"{pid}: {exc}")
-            continue
-        if PARSER_KIND == "stub" and parsed != canonical:
-            failures.append(f"{pid}: {parsed} != {canonical}")
-    assert failures == [], f"[{PARSER_KIND} parser, mode={mode}] {len(failures)}/{len(CASES)} failed"
+        parsed = channel.parse(_ask(provider, channel, mode), mode, PARSE)
+        if not isinstance(parsed, Command):
+            failures.append(f"{pid}: {parsed}")
+        elif _as_dict(parsed) != _nonempty(canonical):
+            failures.append(f"{pid}: {_as_dict(parsed)} != {canonical}")
+    assert failures == [], f"[command.parse, mode={mode}] {len(failures)}/{len(CASES)} failed: {failures[:3]}"
 
 
 @pytest.mark.parametrize("mode", MODE_ORDER)
@@ -145,9 +159,10 @@ def test_tool_channel_parses_speech_and_action_phrases_and_ignores_content(mode)
             continue
         provider = _honest_fake(canonical, mode)
         parsed = channel.parse(_ask(provider, channel, mode), mode, PARSE)
-        if PARSER_KIND == "stub":
-            assert parsed.get("speech") == canonical.get("speech"), pid  # «УТЕЧКА» из content не просочилась
-            assert parsed.get("actions") == canonical.get("actions", []), pid
+        assert isinstance(parsed, Command), (pid, parsed)
+        got = _as_dict(parsed)
+        assert got.get("speech") == canonical.get("speech"), pid  # «УТЕЧКА» из content не просочилась
+        assert got.get("actions", []) == canonical.get("actions", []), pid
         checked += 1
     assert checked >= 20
 
@@ -169,5 +184,6 @@ def test_tool_channel_requires_tool_only_where_adapter_enforces_it():
 
 def test_field_channel_tool_mode_without_command_call_is_unparseable_not_silently_empty():
     """Модель не позвала тул `command`: текст пуст -> парсер обязан отказать (потеря видна, а не молчаливая)."""
-    with pytest.raises(ValueError):
-        FieldChannel(SCHEMA).parse(ModeReply(content="просто текст"), "tool_choice", stub_parse)
+    parsed = FieldChannel(SCHEMA).parse(ModeReply(content="просто текст"), "tool_choice", PARSE)
+    assert isinstance(parsed, Invalid) and parsed.reason == "no_command"
+    assert parsed.ask.key == "understand.invalid"
