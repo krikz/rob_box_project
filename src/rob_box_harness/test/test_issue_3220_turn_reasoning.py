@@ -137,20 +137,11 @@ class _Client:
         self.is_closed = True
 
 
-#: Модель, умеющая выключать thinking: файл про ходы и гуард, а не про модель.
-#: ``MiniMax-M3.1-Flash`` (выключить нельзя) — в test_minimax_m3_1_flash.py.
-CAN_DISABLE_THINKING = "MiniMax-M3"
-
-
 def _provider(
-    completions: _Completions,
-    *,
-    first_chunk_s: float | None = 10.0,
-    model: str = CAN_DISABLE_THINKING,
+    completions: _Completions, *, first_chunk_s: float | None = 10.0
 ) -> HarnessMiniMaxProvider:
     return HarnessMiniMaxProvider(
         api_key="sk-test",
-        model=model,
         client=_Client(completions),  # type: ignore[arg-type]
         first_chunk_timeout_s=first_chunk_s,
         retry=RetryPolicy(max_attempts=1),

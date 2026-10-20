@@ -28,7 +28,8 @@
         -c 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; \\
             python3 /probe.py'
 
-``PROBE_MODEL`` — модель (по умолчанию ``DEFAULT_MODEL`` из кода),
+``PROBE_MODEL`` — модель (по умолчанию ``DEFAULT_MODEL`` из кода — сейчас M3;
+для Flash: ``PROBE_MODEL=MiniMax-M3.1-Flash``),
 ``PROBE_ONLY`` — список случаев через запятую (``a1,b1``).
 Вывод — строки ``PROBE[<случай>] {json}``: их можно вставлять в карточку как
 есть.

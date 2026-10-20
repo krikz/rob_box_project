@@ -51,10 +51,11 @@ BASE_URL = "https://api.minimax.io/v1"
 def _model() -> str:
     """``PROBE_MODEL`` из окружения, иначе модель робота из кода (одна точка — ``DEFAULT_MODEL``).
 
-    Был ``"MiniMax-M3"`` намертво: проба мерила бы модель, которой на роботе уже
-    нет. ADR-0143 снят с M3; на MiniMax-M3.1-Flash одна проба 20.10
-    (minimax_model_compat_probe.py, случай c3) дала для ``required`` HTTP 200
-    без ``tool_calls`` — как у M3, но это один запрос, не замер.
+    Был ``"MiniMax-M3"`` намертво: после смены модели робота проба мерила бы не
+    ту модель. ADR-0143 снят с M3; на MiniMax-M3.1-Flash одна проба 20.10
+    (minimax_model_compat_probe.py, случай c3, ``PROBE_MODEL=MiniMax-M3.1-Flash``)
+    дала для ``required`` HTTP 200 без ``tool_calls`` — как у M3, но это три
+    запроса, не замер.
     """
     explicit = os.environ.get("PROBE_MODEL", "").strip()
     if explicit:

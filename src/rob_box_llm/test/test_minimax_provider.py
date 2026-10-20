@@ -47,6 +47,7 @@ from rob_box_llm.provider import (
     TextPart,
 )
 from rob_box_llm.providers.minimax import (
+    DEFAULT_THINKING_POLICY,
     MINIMAX_MAX_IMAGE_BYTES,
     MiniMaxProvider,
     MiniMaxRedactedLogFilter,
@@ -247,7 +248,7 @@ def _make_minimax(
 
 def test_default_base_url_and_model():
     assert MiniMaxProvider.DEFAULT_BASE_URL == "https://api.minimax.io/v1"
-    assert MiniMaxProvider.DEFAULT_MODEL == "MiniMax-M3.1-Flash"
+    assert MiniMaxProvider.DEFAULT_MODEL == "MiniMax-M3"
 
 
 def test_provider_name_is_minimax():
@@ -323,16 +324,13 @@ def test_complete_passes_model_and_messages():
         )
     )
     kwargs = c.chat.completions.calls[0]
-    assert kwargs["model"] == "MiniMax-M3.1-Flash"
+    assert kwargs["model"] == "MiniMax-M3"
     assert kwargs["stream"] is False
     assert kwargs["messages"][0]["role"] == "system"
     assert kwargs["messages"][1]["role"] == "user"
     # Default thinking policy is injected via extra_body (live 06.08:
     # кастомные поля через extra_body — create(thinking=...) = TypeError).
-    # Модель по умолчанию (Flash) не умеет без thinking — «выключено»
-    # доезжает глубиной (test_minimax_always_thinking_model.py).
-    assert "thinking" not in kwargs["extra_body"]
-    assert kwargs["extra_body"]["reasoning_effort"] == "low"
+    assert kwargs["extra_body"]["thinking"] == DEFAULT_THINKING_POLICY
 
 
 def test_complete_settings_override_model_and_temperature():
@@ -366,8 +364,7 @@ def test_complete_swallows_bad_tool_json():
 
 
 def test_thinking_policy_applied_by_default():
-    # MiniMax-M3 умеет выключать thinking; Flash — нет (см. test_minimax_always_thinking_model.py).
-    p, c = _make_minimax(model="MiniMax-M3")
+    p, c = _make_minimax()
     c.chat.completions.next_response = _ok_response("ok")
     asyncio.run(p.complete([LLMMessage(role="user", content="hi")]))
     assert c.chat.completions.calls[0]["extra_body"]["thinking"] == {"type": "disabled"}
@@ -408,7 +405,7 @@ def test_thinking_policy_still_applied_when_caller_sets_only_max_tokens(
     in ``extra_body``; otherwise MiniMax-M3 silently flips back to
     adaptive thinking and the voice latency goes from ~1.5 s to ~15 s.
     """
-    p, c = _make_minimax(model="MiniMax-M3")  # instance default: thinking={"type": "disabled"}
+    p, c = _make_minimax()  # instance default: thinking={"type": "disabled"}
     c.chat.completions.next_response = _ok_response("ok")
     asyncio.run(
         p.complete(

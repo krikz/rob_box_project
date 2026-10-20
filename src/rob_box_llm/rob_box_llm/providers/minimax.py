@@ -1,10 +1,16 @@
-"""MiniMax provider (MiniMax-M3.1-Flash, OpenAI-compatible).
+"""MiniMax provider (MiniMax-M3, OpenAI-compatible).
 
 Adds ``MiniMaxProvider`` to the ``rob_box_llm`` shared layer. The endpoint is
-``https://api.minimax.io/v1`` (global), the default model is
-``MiniMax-M3.1-Flash`` — the ONE place the robot's MiniMax model is named
-(``DEFAULT_MODEL``); every caller (personality, TARS, set reasoner, song
-lyrics, chooser) reaches it through ``rob_box_harness`` ``catalog``.
+``https://api.minimax.io/v1`` (global), the default model is ``MiniMax-M3``.
+``DEFAULT_MODEL`` is the ONE place the robot's MiniMax model is named; every
+caller (personality, TARS, set reasoner, song lyrics, chooser) reaches it
+through ``rob_box_harness`` ``catalog``.
+
+``MiniMax-M3.1-Flash`` is supported by the adapter but NOT the default (decision
+of the owner, 20.10: stay on M3, switch later): its quirks — thinking cannot be
+disabled, image input, depth — are handled below and measured in
+``scripts/research/minimax_model_compat_probe.py``. What still stands between
+the robot and Flash is written down in issue #3670 (measurements of 20.10).
 
 MiniMax is NOT the same as Xiaomi MiMo — the latter is already shipped as
 ``MiMoProvider`` against ``api.xiaomimimo.com``. Use this adapter only when
@@ -301,7 +307,7 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
     """MiniMax (global) chat-completions adapter.
 
     Default base URL: ``https://api.minimax.io/v1``.
-    Default model:    ``MiniMax-M3.1-Flash`` (vision-capable, always thinks).
+    Default model:    ``MiniMax-M3`` (vision-capable; thinking can be disabled).
 
     Pass ``api_key`` directly in tests; in production set the
     ``MINIMAX_API_KEY`` env var and pass it through the composition root /
@@ -309,9 +315,9 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
     """
 
     DEFAULT_BASE_URL = "https://api.minimax.io/v1"
-    DEFAULT_MODEL = "MiniMax-M3.1-Flash"
+    DEFAULT_MODEL = "MiniMax-M3"
 
-    # The default model supports image input, tools and streaming text.
+    # ``MiniMax-M3`` supports image input, tools and streaming text.
     # Streaming tool calls are deliberately False — the OpenAI-compatible
     # wire-format adapter doesn't aggregate streaming tool-call deltas.
     _CAPABILITIES = ProviderCapabilities(

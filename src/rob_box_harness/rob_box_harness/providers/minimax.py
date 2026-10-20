@@ -241,7 +241,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         logged.
     model:
         Default model name. Defaults to :data:`DEFAULT_MODEL` (the
-        upstream default, ``MiniMax-M3.1-Flash``; vision-capable).
+        upstream default, ``MiniMax-M3``; vision-capable).
     base_url:
         Endpoint URL. Defaults to ``https://api.minimax.io/v1``.
     timeout:

@@ -15,6 +15,11 @@
 Двойник API здесь отвечает так же, как MiniMax: 400 на ``disabled`` для
 Flash. Правило в двойнике записано отдельно от кода провайдера, чтобы тест не
 сверял код сам с собой.
+
+Решение Шифу 20.10: по умолчанию остаётся MiniMax-M3 (``DEFAULT_MODEL``), Flash
+— запас на будущее. Поэтому Flash-тесты называют модель явно, а отдельный блок
+ниже фиксирует, что экземпляр по умолчанию (M3) шлёт ровно то, что слал до
+адаптера под Flash.
 """
 
 from __future__ import annotations
@@ -81,11 +86,20 @@ class _Completions:
         yield _event(finish="stop")
 
 
-def _provider(model: str | None = None, **kwargs: Any) -> tuple[MiniMaxProvider, _Completions]:
+def _client() -> tuple[Any, _Completions]:
     completions = _Completions()
-    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), is_closed=False)
-    extra = {"model": model} if model else {}
-    return MiniMaxProvider(api_key="sk-test", client=client, **extra, **kwargs), completions  # type: ignore[arg-type]
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions), is_closed=False), completions
+
+
+def _provider(model: str = FLASH, **kwargs: Any) -> tuple[MiniMaxProvider, _Completions]:
+    client, completions = _client()
+    return MiniMaxProvider(api_key="sk-test", client=client, model=model, **kwargs), completions  # type: ignore[arg-type]
+
+
+def _default_provider() -> tuple[MiniMaxProvider, _Completions]:
+    """Экземпляр без имени модели — как собирает прод (``catalog`` → ``DEFAULT_MODEL``)."""
+    client, completions = _client()
+    return MiniMaxProvider(api_key="sk-test", client=client), completions  # type: ignore[arg-type]
 
 
 async def _drain(provider: MiniMaxProvider, settings: LLMSettings | None) -> str:
@@ -99,18 +113,51 @@ def _ask(provider: MiniMaxProvider, settings: LLMSettings | None, *, stream: boo
     return asyncio.run(provider.complete([LLMMessage(role="user", content="привет")], settings=settings)).content
 
 
-# ── имя модели живёт в одном месте ─────────────────────────────────────
+# ── имя модели живёт в одном месте; по умолчанию — M3 ───────────────────
 
 
-def test_default_model_is_flash() -> None:
-    assert MiniMaxProvider.DEFAULT_MODEL == FLASH
+def test_default_model_is_m3_and_flash_is_opt_in() -> None:
+    assert MiniMaxProvider.DEFAULT_MODEL == M3
+    assert _default_provider()[0]._default_model == M3
 
 
-# ── голосовой ход: «thinking выключен» на модели, которая не умеет ─────
+# ── M3 по умолчанию: на проде не меняется ни бита ───────────────────────
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_voice_turn_on_default_model_is_not_rejected_by_the_api(stream: bool) -> None:
+def test_default_instance_sends_thinking_disabled_as_before(stream: bool) -> None:
+    provider, completions = _default_provider()
+
+    _ask(provider, LLMSettings(temperature=0.7, max_tokens=3000), stream=stream)
+
+    sent = completions.calls[0]
+    assert sent["model"] == M3
+    assert sent["extra_body"] == {"thinking": {"type": "disabled"}}, "M3 получает disabled, глубины нет"
+    assert "reasoning_effort" not in sent["extra_body"]
+
+
+def test_default_instance_keeps_image_input_and_sends_thinking_disabled_with_a_picture() -> None:
+    from rob_box_llm.provider import ImagePart, TextPart
+
+    provider, completions = _default_provider()
+    jpeg = bytes([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]) + b"JFIF"
+    content = (TextPart("Что на картинке?"), ImagePart(source=jpeg, media_type="image/jpeg"))
+
+    assert provider.capabilities_for(None).image_input is True
+    assert provider.capabilities_for(M3).image_input is True
+    asyncio.run(provider.complete([LLMMessage(role="user", content=content)]))
+
+    sent = completions.calls[0]
+    parts = sent["messages"][0]["content"]
+    assert [part["type"] for part in parts] == ["text", "image_url"]
+    assert sent["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+# ── Flash (опционально): «thinking выключен» на модели, которая не умеет ─
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_voice_turn_on_flash_is_not_rejected_by_the_api(stream: bool) -> None:
     provider, completions = _provider()
 
     text = _ask(provider, LLMSettings(temperature=0.7, max_tokens=3000), stream=stream)
@@ -163,8 +210,18 @@ def test_model_chosen_per_call_decides_not_the_instance_default() -> None:
     assert completions.calls[0]["extra_body"] == {"thinking": DEFAULT_THINKING_POLICY}
 
 
+def test_default_instance_asked_for_flash_per_call_gets_the_depth_not_disabled() -> None:
+    """Обратное: экземпляр по умолчанию (M3), вызов явно просит Flash — API не получит ``disabled``."""
+    provider, completions = _default_provider()
+
+    text = _ask(provider, LLMSettings(model=FLASH), stream=False)
+
+    assert text == "ок"
+    assert completions.calls[0]["extra_body"] == {"reasoning_effort": LOWEST_REASONING_EFFORT}
+
+
 def test_model_that_can_disable_thinking_keeps_the_old_request() -> None:
-    provider, completions = _provider(model=M3)
+    provider, completions = _provider(model=M3)  # явная M3 — то же, что и по умолчанию
 
     _ask(provider, LLMSettings(max_tokens=3000), stream=False)
 

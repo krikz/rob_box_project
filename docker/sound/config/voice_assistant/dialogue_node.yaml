@@ -61,7 +61,8 @@ dialogue_node:
     # Модель здесь НЕ задаётся: ``minimax.model`` ROS-параметр объявлен, но
     # провайдер строит каталог (``assembly.build_agent`` → ``build_provider``)
     # и берёт имя из ``rob_box_llm.providers.minimax.MiniMaxProvider.DEFAULT_MODEL``
-    # — единственная точка (сейчас MiniMax-M3.1-Flash). Строка ``model:`` тут
+    # — единственная точка (сейчас MiniMax-M3; M3.1-Flash адаптер умеет, но не
+    # включён — решение Шифу 20.10, см. issue #3670). Строка ``model:`` тут
     # раньше была мёртвой и врала, что смена модели — правка yaml.
     minimax:
       api_key: ""                  # MINIMAX_API_KEY env (или явно)

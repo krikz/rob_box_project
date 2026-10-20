@@ -1,5 +1,9 @@
 """MiniMax-M3.1-Flash в харнессе — то, что видно только на уровне провайдера харнесса.
 
+Решение Шифу 20.10: по умолчанию остаётся MiniMax-M3, адаптер под Flash сохранён
+на будущее. Поэтому здесь модель называется явно (``model=FLASH``), а то, что
+по умолчанию всё осталось как было, держит ``test_minimax_m3_wire_unchanged.py``.
+
 Форма ответов взята с живой пробы 20.10 (Sound Pi, ``scripts/research/
 minimax_model_compat_probe.py``): рассуждение приходит ОТДЕЛЬНЫМ полем
 ``reasoning_content`` (в стриме — в каждой дельте до ответа), а не
@@ -103,6 +107,7 @@ def _provider(completions: _Completions, *, first_chunk_s: float | None = 10.0) 
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions), is_closed=False)
     return HarnessMiniMaxProvider(
         api_key="sk-test",
+        model=FLASH,
         client=client,  # type: ignore[arg-type]
         first_chunk_timeout_s=first_chunk_s,
         retry=RetryPolicy(max_attempts=1),
@@ -132,7 +137,7 @@ def _in_turn(coro_fn: Any, *, reasoning: bool) -> Any:
 
 
 def test_catalog_and_provider_share_the_one_default_model() -> None:
-    assert DEFAULT_MODEL == FLASH
+    assert DEFAULT_MODEL == "MiniMax-M3"
     assert LLM_PROVIDER_REGISTRY["minimax"]["default_model"] == DEFAULT_MODEL
 
 
@@ -141,6 +146,14 @@ def test_catalog_builds_the_personality_provider_on_the_default_model() -> None:
 
     assert provider._inner._default_model == DEFAULT_MODEL
     assert provider._first_chunk_timeout_s == 10.0
+
+
+def test_catalog_switches_to_flash_by_the_model_argument_alone() -> None:
+    """Переключение — одна строка (``DEFAULT_MODEL``) или ``model=`` в каталоге; адаптер включается сам."""
+    provider = build_provider("minimax", api_key="sk-test", model=FLASH)
+
+    assert provider._inner._default_model == FLASH
+    assert provider.capabilities_for(FLASH).image_input is True
 
 
 # ── запрос: голосовой ход и ход с рассуждением ──────────────────────────

@@ -45,7 +45,7 @@ config = HarnessConfig.from_dict(
         "harness": {"kind": "echo"},
         "llm": {
             "provider": "minimax",
-            "model": "MiniMax-M3.1-Flash",
+            "model": "MiniMax-M3",
             "timeout_s": 30,
             "api_key": "${MINIMAX_API_KEY}",  # resolved via env
         },
@@ -57,7 +57,7 @@ provider = build_minimax_provider(config.llm)
 # 2. Or construct directly (handy for scripts / notebooks).
 provider = MiniMaxProvider(
     api_key="sk-test",
-    model="MiniMax-M3.1-Flash",
+    model="MiniMax-M3",
     retry=RetryPolicy(max_attempts=4, backoff_base=0.5),
 )
 
@@ -87,7 +87,7 @@ harness:
 
 llm:
   provider: minimax
-  model: MiniMax-M3.1-Flash   # default; vision-capable; thinking always on (see below)
+  model: MiniMax-M3        # default; vision-capable
   timeout_s: 30            # HTTP timeout; default 30
   api_key: ${MINIMAX_API_KEY}   # required; resolved from env
   fallback:
@@ -136,7 +136,7 @@ capabilities to a specific model (the harness' fallback chain
 relies on this).
 
 ```python
-caps = provider.capabilities_for("MiniMax-M3.1-Flash")
+caps = provider.capabilities_for("MiniMax-M3")
 assert caps.image_input is True
 
 caps = provider.capabilities_for("MiniMax-M2.7")
@@ -146,7 +146,7 @@ assert caps.image_input is False
 ### Thinking depends on the model
 
 The voice path asks for "thinking off" (`DEFAULT_THINKING_POLICY`). `MiniMax-M3`
-honours it; `MiniMax-M3.1-Flash` always thinks and answers HTTP 400 to
+(the default) honours it; `MiniMax-M3.1-Flash` (supported, not the default) always thinks and answers HTTP 400 to
 `thinking.type="disabled"` (live probe 20.10). The upstream provider
 (`rob_box_llm.providers.minimax.apply_model_thinking`) turns "off" into the
 lowest `reasoning_effort` for such a model; a turn that is allowed to think

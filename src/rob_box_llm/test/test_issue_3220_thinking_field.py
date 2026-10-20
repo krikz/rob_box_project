@@ -1,7 +1,6 @@
 """Issue #3220 — ``extra={"thinking": None}`` значит «поле thinking не слать».
 
-Модель здесь — MiniMax-M3, умеющая выключать thinking (Flash — в
-test_minimax_always_thinking_model.py). Включённый thinking у MiniMax-M3 — дефолт модели, когда поля нет: так было
+Включённый thinking у MiniMax-M3 — дефолт модели, когда поля нет: так было
 вживую с b5879b79 (05.08, ``thinking=None``) до 6901a14e (06.08, ответы с
 ``<think>``, +10-20 с). ``{"type": "enabled"}`` с API не сверялся.
 Проверяем, что пер-вызовное ``None`` пересиливает дефолт инстанса
@@ -32,12 +31,10 @@ class _Completions:
         )
 
 
-def _sent(thinking_instance: Any, extra: dict[str, Any], model: str = "MiniMax-M3") -> dict[str, Any]:
+def _sent(thinking_instance: Any, extra: dict[str, Any]) -> dict[str, Any]:
     completions = _Completions()
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    provider = MiniMaxProvider(
-        api_key="sk-test", client=client, thinking=thinking_instance, model=model  # type: ignore[arg-type]
-    )
+    provider = MiniMaxProvider(api_key="sk-test", client=client, thinking=thinking_instance)  # type: ignore[arg-type]
     asyncio.run(
         provider.complete(
             [LLMMessage(role="user", content="сочини трек")],
