@@ -215,9 +215,11 @@ TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
 PROVIDER_KINDS: Tuple[str, ...] = ("llm", "stt", "tts", "music_gen")
 #: Классы здоровья провайдера (``ProviderState.health``). Единственная таблица: ``degraded`` - ещё пробуем (лимит
 #: частоты), остальные - провайдер пропускаем; причина (quota/network/timeout/auth) - класс, а не подстрока ответа.
-PROVIDER_HEALTH: Tuple[str, ...] = ("ok", "degraded", "quota", "network", "timeout", "auth", "down")
+PROVIDER_HEALTH: Tuple[str, ...] = ("ok", "degraded", "quota", "network", "timeout", "auth", "down", "unknown")
+#: Записи ``ProviderState`` старше этого срока без переиздания писателем считаются устаревшими (``unknown``).
+PROVIDER_STALE_S: float = 10.0
 #: Классы здоровья, при которых провайдер ещё годится в цепочку.
-PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded")
+PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded", "unknown")
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.invalid", "understand.timeout",

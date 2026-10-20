@@ -28,6 +28,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rob_box_dialog_msgs.msg import SpeechEvent, Utterance
 from rob_box_core import speech_client
+from rob_box_core.provider_publisher import ProviderStatePublisher
+from .core.provider_health import stt_provider_states
 from std_msgs.msg import String
 from vosk import KaldiRecognizer, Model
 
@@ -606,6 +608,8 @@ class STTNode(Node):
         self.initialize_vosk()
         self._load_persisted_provider_state()
         self._log_provider_state("startup")
+        # ADR-0150 §8 (PR-4 ч.2): состояния провайдеров STT (kind=stt) - переиздание раз в 2 с.
+        self._providers_publisher = ProviderStatePublisher(self, lambda: stt_provider_states(self))
 
     def initialize_yandex(self):
         """Инициализация Yandex STT gRPC v3."""

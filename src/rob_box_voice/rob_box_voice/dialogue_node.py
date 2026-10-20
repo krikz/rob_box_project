@@ -106,7 +106,8 @@ from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser
-from rob_box_voice.core.provider_reporter import ProviderStateReporter, publish_provider_states
+from rob_box_core.provider_publisher import make_publisher, publish_provider_states
+from rob_box_voice.core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.music_player_state import (
     MUSIC_EVENT_TOPIC,
@@ -817,12 +818,16 @@ class DialogueNode(Node):
         # ADR-0150 PR-3 — отмена речи личности (SpeechCancel) одним клиентом.
         speech_client.prepare(self, "cancel")
         # ADR-0150 PR-4 (#3693) - здоровье LLM-провайдеров: latched /voice/providers/state + одна фраза на смену.
-        self._provider_state_pub = self.create_publisher(
-            ProviderStateArray, "/voice/providers/state",
-            QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
-                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        # Один топик, писатели по видам: свой kind=llm переиздаётся каждый тик, чужие (tts/stt/music_gen) читаются
+        # в доску ``ProviderBoard`` (запись без обновлений 10 с = unknown). Фраза об отказе - любого вида.
+        self._provider_state_pub = make_publisher(self)
         self._provider_reporter = ProviderStateReporter(
             self._llm, functools.partial(publish_provider_states, self._provider_state_pub), self._speak_direct)
+        self.create_subscription(
+            ProviderStateArray, "/voice/providers/state",
+            functools.partial(on_provider_states, self._provider_reporter.board, time.time),
+            QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_timer(2.0, self._provider_reporter.tick)
         # Issue #1734 — единственный источник истины для barge_in_policy:
         # latched (TRANSIENT_LOCAL) топик вместо ВТОРОГО параметра в
@@ -4152,6 +4157,7 @@ tentative_plan(question, kind, name)
             lines.append("  <position>unknown</position>")
         # Issue #1219 — LLM voice selection (Q8): единая строка с голосами.
         lines.append(f"  <tts_context>{tts_context_line}</tts_context>")
+        lines.extend(reporter_context(getattr(self, "_provider_reporter", None)))
         # Issue #1544 — единый <music_state> снимок: объединяет все
         # источники истины (DJ-режим + AI-генерация + активный Renardo бит +
         # cleanup-флаг). Без этого LLM не знал, играет музыка или нет, и

@@ -140,6 +140,8 @@ from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
 from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
+from rob_box_core.provider_publisher import ProviderStatePublisher
+from .engine.gen.provider import gen_provider_states
 from .voice_state import VoiceStateStore
 from .perception_projection import project_perception_event
 
@@ -613,6 +615,8 @@ class MCPServer(Node):
         # иначе LLM выбирает minimax-голоса, которых нет у yandex после
         # фолбека, и слышит один и тот же дефолтный голос.
         self.actual_tts_provider: str | None = None
+        # ADR-0150 §8 (PR-4 ч.2): здоровье генерации музыки (kind=music_gen) - переиздание раз в 2 с.
+        self._providers_publisher = ProviderStatePublisher(self, gen_provider_states)
         try:
             self._provider_state_sub = self.create_subscription(
                 String, "/voice/tts/provider_state", self._on_tts_provider_state, 10

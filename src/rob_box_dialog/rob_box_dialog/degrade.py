@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Literal, Optional, Protocol, Sequence, Tuple
 
 from . import phrases
-from .knowledge import PROVIDER_HEALTH, PROVIDER_KINDS, PROVIDER_USABLE_HEALTH
+from .knowledge import PROVIDER_HEALTH, PROVIDER_KINDS, PROVIDER_STALE_S, PROVIDER_USABLE_HEALTH
 
 CommandMode = Literal["structured_output", "tool_choice", "json_mode", "json_in_text"]
 
@@ -19,11 +19,11 @@ CommandMode = Literal["structured_output", "tool_choice", "json_mode", "json_in_
 MODE_ORDER: tuple[CommandMode, ...] = ("structured_output", "tool_choice", "json_mode", "json_in_text")
 
 ProviderKind = Literal["llm", "stt", "tts", "music_gen"]
-ProviderHealth = Literal["ok", "degraded", "quota", "network", "timeout", "auth", "down"]
+ProviderHealth = Literal["ok", "degraded", "quota", "network", "timeout", "auth", "down", "unknown"]
 
 # Состояния, при которых провайдера ещё можно пробовать (в порядке предпочтения): таблица знания - knowledge.
 _USABLE_HEALTH: Tuple[str, ...] = PROVIDER_USABLE_HEALTH
-#: Не чаще одной фразы деградации на (вид, провайдер) за это время (ADR §8).
+#: Не чаще одной фразы деградации на (провайдер, причину) за это время (ADR §8).
 ANNOUNCE_MIN_INTERVAL_S = 600.0
 #: Состояние -> причина в ключе ``provider.exhausted.{причина}``; ``down`` - непонятная ошибка (``error``).
 _EXHAUSTED_REASON: Dict[str, str] = {
@@ -77,6 +77,33 @@ def provider_order(states: Iterable[ProviderState], priority: Sequence[str], kin
     return tuple(name for _, _, name in ranked)
 
 
+class ProviderBoard:
+    """Снимок всех писателей ``/voice/providers/state``: ``(kind, name)`` -> последнее состояние и время получения.
+
+    Каждый писатель переиздаёт только свой вид раз в 2 с (поздний подписчик по transient_local получает не всех
+    писателей, проверено на rmw_zenoh), поэтому корректность - от переиздания: запись без обновлений дольше
+    ``PROVIDER_STALE_S`` отдаётся как ``unknown`` (фраза о ней не звучит, ``provider_order`` её не отбрасывает).
+    """
+
+    def __init__(self, stale_s: float = PROVIDER_STALE_S) -> None:
+        self._stale_s = stale_s
+        self._seen: Dict[Tuple[str, str], Tuple[ProviderState, float]] = {}
+
+    def update(self, states: Iterable[ProviderState], now: float) -> None:
+        for st in states:
+            self._seen[(st.kind, st.name)] = (st, now)
+
+    def states(self, now: float, kinds: Optional[Iterable[str]] = None) -> List[ProviderState]:
+        wanted = None if kinds is None else set(kinds)
+        out: List[ProviderState] = []
+        for (kind, _), (st, at) in self._seen.items():
+            if wanted is not None and kind not in wanted:
+                continue
+            fresh = now - at <= self._stale_s
+            out.append(st if fresh else ProviderState(st.name, st.kind, "unknown", st.since, st.last_error_code))
+        return out
+
+
 def phrase_on_change(prev: Optional[ProviderState], cur: ProviderState) -> Optional[str]:
     """Ключ фразы о смене состояния или ``None``: молчим, пока ничего не изменилось и при возврате в ``ok``.
 
@@ -90,7 +117,7 @@ def phrase_on_change(prev: Optional[ProviderState], cur: ProviderState) -> Optio
 
 
 class ProviderAnnouncer:
-    """Одна фраза на смену состояния, не чаще ``ANNOUNCE_MIN_INTERVAL_S`` на (вид, провайдер).
+    """Одна фраза на смену состояния, не чаще ``ANNOUNCE_MIN_INTERVAL_S`` на (провайдер, причина).
 
     Состояние хранит само: вызывающий отдаёт текущий снимок ``observe(states, priority, now)`` и получает готовые
     тексты (ключ и слоты - код, текст - ``phrases``). Что провайдер вылечился, помнится: следующий отказ после
@@ -112,10 +139,12 @@ class ProviderAnnouncer:
             phrase_key = phrase_on_change(prev, cur)
             if phrase_key is None:
                 continue
-            last = self._spoken_at.get(key)
+            # Тариф один на LLM и TTS (MiniMax): одна причина у одного имени - одна фраза, а не по фразе на вид.
+            spoken_key = (cur.name, phrase_key)
+            last = self._spoken_at.get(spoken_key)
             if last is not None and now - last < self._min_interval_s:
                 continue
-            self._spoken_at[key] = now
+            self._spoken_at[spoken_key] = now
             out.append(_compose(phrase_key, cur, states, priority))
         return out
 
