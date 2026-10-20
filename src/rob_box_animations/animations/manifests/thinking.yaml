@@ -1,72 +1,307 @@
-# Thinking Animation
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "thinking"
-description: "Thinking with eyes looking around and dots"
-version: "1.0"
-author: "rob_box"
+description: "Думает: огонёк бежит по зубам и прищур, потом зрачки по кругу и прикус наискось"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 3200
+duration_ms: 8320
 loop: true
-fps: 10
+fps: 25
 
-# Panels
 panels:
-  # Eyes looking around (8 positions)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fl_think_01.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_02.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_03.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_04.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_05.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_06.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_07.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fl_think_08.png"
-        duration_ms: 400
-
+      - image: "frames/thinking/p8_001.png"
+        duration_ms: 920
+      - image: "frames/thinking/p8_004.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_008.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_010.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_012.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_001.png"
+        duration_ms: 1480
+      - image: "frames/thinking/p8_014.png"
+        duration_ms: 1400
+      - image: "frames/thinking/p8_001.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_016.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_018.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_022.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 80
+      - image: "frames/thinking/p8_024.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_025.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_026.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_027.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_028.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_029.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_030.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_024.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_025.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_026.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_027.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_028.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_029.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_030.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_024.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_025.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_026.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_027.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_028.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_029.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_030.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 80
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fr_think_01.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_02.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_03.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_04.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_05.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_06.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_07.png"
-        duration_ms: 400
-      - image: "frames/emotions/eye_fr_think_08.png"
-        duration_ms: 400
-
-  # Main display (thinking dots)
+      - image: "frames/thinking/p8_000.png"
+        duration_ms: 920
+      - image: "frames/thinking/p8_003.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_005.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_007.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_011.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_000.png"
+        duration_ms: 1480
+      - image: "frames/thinking/p8_013.png"
+        duration_ms: 1400
+      - image: "frames/thinking/p8_000.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_015.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_017.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_005.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_019.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_021.png"
+        duration_ms: 40
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 80
+      - image: "frames/thinking/p8_024.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_025.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_026.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_027.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_028.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_029.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_030.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_024.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_025.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_026.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_027.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_028.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_029.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_030.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_024.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_025.png"
+        duration_ms: 120
+      - image: "frames/thinking/p8_026.png"
+        duration_ms: 200
+      - image: "frames/thinking/p8_027.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_028.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_029.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_030.png"
+        duration_ms: 160
+      - image: "frames/thinking/p8_023.png"
+        duration_ms: 80
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/thinking/p8_002.png"
+        duration_ms: 8320
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/thinking/p8_002.png"
+        duration_ms: 8320
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/dots_01.png"
-        duration_ms: 800
-      - image: "frames/emotions/dots_02.png"
-        duration_ms: 800
-      - image: "frames/emotions/dots_03.png"
-        duration_ms: 800
-      - image: "frames/emotions/dots_04.png"
-        duration_ms: 800
+      - image: "frames/thinking/m_000.png"
+        duration_ms: 40
+      - image: "frames/thinking/m_001.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_002.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_003.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_004.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_005.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_006.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_007.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_008.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_009.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_010.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_011.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_012.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_000.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_013.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_003.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_004.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_005.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_006.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_007.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_008.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_009.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_010.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_011.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_012.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_000.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_013.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_003.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_004.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_005.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_006.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_007.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_008.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_009.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_010.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_011.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_012.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_000.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_013.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_003.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_004.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_005.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_006.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_007.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_008.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_009.png"
+        duration_ms: 120
+      - image: "frames/thinking/m_010.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_011.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_012.png"
+        duration_ms: 80
+      - image: "frames/thinking/m_014.png"
+        duration_ms: 160
+      - image: "frames/thinking/m_015.png"
+        duration_ms: 1000
+      - image: "frames/thinking/m_014.png"
+        duration_ms: 320
+      - image: "frames/thinking/m_016.png"
+        duration_ms: 1000
+      - image: "frames/thinking/m_014.png"
+        duration_ms: 280
+      - image: "frames/thinking/m_015.png"
+        duration_ms: 1000
+      - image: "frames/thinking/m_014.png"
+        duration_ms: 160
 
-# Metadata
 metadata:
   priority: "normal"
   category: "emotions"
-  tags: ["thinking", "processing", "contemplating", "dots"]
+  tags: [thinking, processing, contemplating, dots]
+  brightness_budget: 159
+  bake_scale: 1.000
+  peak_ma_at_255: 6594

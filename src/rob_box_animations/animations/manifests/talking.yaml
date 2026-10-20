@@ -1,155 +1,681 @@
-# Talking Animation (Advanced with realistic eyes and waveform mouth)
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "talking"
-description: "Robot speaking with realistic gradient eyes and sine/sawtooth wave mouth with teeth"
-version: "2.0"
-author: "rob_box"
+description: "Говорит: решётка Бендера, проём линзой по слогам А/О/Э, взгляд в сторону в начале фразы, кивок на ударном, моргание в конце фразы"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 1200
+duration_ms: 8000
 loop: true
-fps: 12
-
-# Audio reactive settings
+fps: 25
 audio_reactive: true
-audio_source: "system_audio_output"  # Monitor audio output
-audio_threshold: 0.3  # Volume threshold to trigger animation (0.0-1.0)
-audio_smoothing: 0.2  # Smoothing factor for volume changes
+audio_source: system_audio_output
+audio_threshold: 0.3
+audio_smoothing: 0.2
 
-# Panels
 panels:
-  # Realistic gradient eyes (cyan/blue theme)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fl_normal.png"
-        duration_ms: 1200
-
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 280
+      - image: "frames/talking/p8_002.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_004.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_005.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 440
+      - image: "frames/talking/p8_007.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_008.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_010.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_011.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_004.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_012.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 480
+      - image: "frames/talking/p8_013.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_014.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_015.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_016.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 480
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 200
+      - image: "frames/talking/p8_007.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_017.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_018.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_019.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 120
+      - image: "frames/talking/p8_022.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 120
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 400
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 240
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 200
+      - image: "frames/talking/p8_023.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_024.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_025.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_026.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_027.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_022.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 600
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 440
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 240
+      - image: "frames/talking/p8_028.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_029.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_030.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 360
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fr_normal.png"
-        duration_ms: 1200
-
-  # Rear wheels - cyan pulsing glow (12 frames)
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 280
+      - image: "frames/talking/p8_002.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_004.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_005.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 440
+      - image: "frames/talking/p8_007.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_008.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_010.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_011.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_004.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_003.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_012.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 480
+      - image: "frames/talking/p8_013.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_014.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_015.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_016.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 480
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 200
+      - image: "frames/talking/p8_007.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_017.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_018.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_019.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 120
+      - image: "frames/talking/p8_022.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 120
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 400
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 240
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 200
+      - image: "frames/talking/p8_023.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_024.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_025.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_026.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_027.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_022.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_021.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_020.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 160
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 600
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 440
+      - image: "frames/talking/p8_006.png"
+        duration_ms: 80
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 240
+      - image: "frames/talking/p8_028.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_009.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_029.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_030.png"
+        duration_ms: 40
+      - image: "frames/talking/p8_000.png"
+        duration_ms: 360
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/wheel_rl_talk_01.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_02.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_03.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_04.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_05.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_06.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_07.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_08.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_09.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_10.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_11.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rl_talk_12.png"
-        duration_ms: 100
-
+      - image: "frames/talking/p8_001.png"
+        duration_ms: 8000
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/wheel_rr_talk_01.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_02.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_03.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_04.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_05.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_06.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_07.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_08.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_09.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_10.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_11.png"
-        duration_ms: 100
-      - image: "frames/emotions/wheel_rr_talk_12.png"
-        duration_ms: 100
-
-  # Advanced mouth animation (12 frames - sine/sawtooth waves with teeth)
-  # When audio_reactive is true, frame selection is based on audio volume
-  # Smooth progression from closed to wide open with curved waveforms
+      - image: "frames/talking/p8_001.png"
+        duration_ms: 8000
   - logical_group: "main_display"
     offset_ms: 0
-    audio_controlled: true  # This panel responds to audio level
     frames:
-      # Opening phase (sawtooth wave) - frames 1-3
-      - image: "frames/emotions/mouth_talk_01.png"
-        duration_ms: 100
-        audio_range: [0.0, 0.08]
-      - image: "frames/emotions/mouth_talk_02.png"
-        duration_ms: 100
-        audio_range: [0.08, 0.17]
-      - image: "frames/emotions/mouth_talk_03.png"
-        duration_ms: 100
-        audio_range: [0.17, 0.25]
+      - image: "frames/talking/m_000.png"
+        duration_ms: 280
+      - image: "frames/talking/m_001.png"
+        duration_ms: 40
+      - image: "frames/talking/m_002.png"
+        duration_ms: 40
+      - image: "frames/talking/m_003.png"
+        duration_ms: 40
+      - image: "frames/talking/m_004.png"
+        duration_ms: 40
+      - image: "frames/talking/m_005.png"
+        duration_ms: 40
+      - image: "frames/talking/m_006.png"
+        duration_ms: 40
+      - image: "frames/talking/m_007.png"
+        duration_ms: 40
+      - image: "frames/talking/m_008.png"
+        duration_ms: 40
+      - image: "frames/talking/m_009.png"
+        duration_ms: 40
+      - image: "frames/talking/m_010.png"
+        duration_ms: 40
+      - image: "frames/talking/m_011.png"
+        duration_ms: 40
+      - image: "frames/talking/m_012.png"
+        duration_ms: 40
+      - image: "frames/talking/m_013.png"
+        duration_ms: 40
+      - image: "frames/talking/m_014.png"
+        duration_ms: 40
+      - image: "frames/talking/m_015.png"
+        duration_ms: 40
+      - image: "frames/talking/m_016.png"
+        duration_ms: 40
+      - image: "frames/talking/m_017.png"
+        duration_ms: 40
+      - image: "frames/talking/m_018.png"
+        duration_ms: 40
+      - image: "frames/talking/m_019.png"
+        duration_ms: 40
+      - image: "frames/talking/m_020.png"
+        duration_ms: 40
+      - image: "frames/talking/m_021.png"
+        duration_ms: 40
+      - image: "frames/talking/m_022.png"
+        duration_ms: 40
+      - image: "frames/talking/m_023.png"
+        duration_ms: 40
+      - image: "frames/talking/m_024.png"
+        duration_ms: 40
+      - image: "frames/talking/m_000.png"
+        duration_ms: 120
+      - image: "frames/talking/m_025.png"
+        duration_ms: 40
+      - image: "frames/talking/m_026.png"
+        duration_ms: 40
+      - image: "frames/talking/m_027.png"
+        duration_ms: 40
+      - image: "frames/talking/m_028.png"
+        duration_ms: 40
+      - image: "frames/talking/m_029.png"
+        duration_ms: 40
+      - image: "frames/talking/m_030.png"
+        duration_ms: 40
+      - image: "frames/talking/m_031.png"
+        duration_ms: 40
+      - image: "frames/talking/m_032.png"
+        duration_ms: 40
+      - image: "frames/talking/m_033.png"
+        duration_ms: 40
+      - image: "frames/talking/m_034.png"
+        duration_ms: 40
+      - image: "frames/talking/m_035.png"
+        duration_ms: 40
+      - image: "frames/talking/m_036.png"
+        duration_ms: 40
+      - image: "frames/talking/m_037.png"
+        duration_ms: 40
+      - image: "frames/talking/m_038.png"
+        duration_ms: 40
+      - image: "frames/talking/m_039.png"
+        duration_ms: 40
+      - image: "frames/talking/m_040.png"
+        duration_ms: 40
+      - image: "frames/talking/m_041.png"
+        duration_ms: 40
+      - image: "frames/talking/m_042.png"
+        duration_ms: 40
+      - image: "frames/talking/m_043.png"
+        duration_ms: 40
+      - image: "frames/talking/m_044.png"
+        duration_ms: 40
+      - image: "frames/talking/m_045.png"
+        duration_ms: 40
+      - image: "frames/talking/m_046.png"
+        duration_ms: 40
+      - image: "frames/talking/m_047.png"
+        duration_ms: 40
+      - image: "frames/talking/m_048.png"
+        duration_ms: 40
+      - image: "frames/talking/m_049.png"
+        duration_ms: 40
+      - image: "frames/talking/m_000.png"
+        duration_ms: 240
+      - image: "frames/talking/m_050.png"
+        duration_ms: 40
+      - image: "frames/talking/m_051.png"
+        duration_ms: 40
+      - image: "frames/talking/m_052.png"
+        duration_ms: 40
+      - image: "frames/talking/m_053.png"
+        duration_ms: 40
+      - image: "frames/talking/m_054.png"
+        duration_ms: 40
+      - image: "frames/talking/m_055.png"
+        duration_ms: 40
+      - image: "frames/talking/m_036.png"
+        duration_ms: 40
+      - image: "frames/talking/m_056.png"
+        duration_ms: 40
+      - image: "frames/talking/m_057.png"
+        duration_ms: 40
+      - image: "frames/talking/m_058.png"
+        duration_ms: 40
+      - image: "frames/talking/m_059.png"
+        duration_ms: 40
+      - image: "frames/talking/m_060.png"
+        duration_ms: 40
+      - image: "frames/talking/m_061.png"
+        duration_ms: 40
+      - image: "frames/talking/m_062.png"
+        duration_ms: 40
+      - image: "frames/talking/m_063.png"
+        duration_ms: 40
+      - image: "frames/talking/m_061.png"
+        duration_ms: 40
+      - image: "frames/talking/m_064.png"
+        duration_ms: 40
+      - image: "frames/talking/m_065.png"
+        duration_ms: 40
+      - image: "frames/talking/m_066.png"
+        duration_ms: 40
+      - image: "frames/talking/m_067.png"
+        duration_ms: 40
+      - image: "frames/talking/m_068.png"
+        duration_ms: 40
+      - image: "frames/talking/m_069.png"
+        duration_ms: 40
+      - image: "frames/talking/m_070.png"
+        duration_ms: 40
+      - image: "frames/talking/m_071.png"
+        duration_ms: 40
+      - image: "frames/talking/m_072.png"
+        duration_ms: 40
+      - image: "frames/talking/m_073.png"
+        duration_ms: 40
+      - image: "frames/talking/m_074.png"
+        duration_ms: 40
+      - image: "frames/talking/m_000.png"
+        duration_ms: 80
+      - image: "frames/talking/m_075.png"
+        duration_ms: 40
+      - image: "frames/talking/m_076.png"
+        duration_ms: 40
+      - image: "frames/talking/m_077.png"
+        duration_ms: 40
+      - image: "frames/talking/m_078.png"
+        duration_ms: 40
+      - image: "frames/talking/m_019.png"
+        duration_ms: 40
+      - image: "frames/talking/m_079.png"
+        duration_ms: 40
+      - image: "frames/talking/m_080.png"
+        duration_ms: 40
+      - image: "frames/talking/m_081.png"
+        duration_ms: 40
+      - image: "frames/talking/m_082.png"
+        duration_ms: 40
+      - image: "frames/talking/m_083.png"
+        duration_ms: 40
+      - image: "frames/talking/m_084.png"
+        duration_ms: 40
+      - image: "frames/talking/m_085.png"
+        duration_ms: 40
+      - image: "frames/talking/m_086.png"
+        duration_ms: 40
+      - image: "frames/talking/m_087.png"
+        duration_ms: 40
+      - image: "frames/talking/m_088.png"
+        duration_ms: 40
+      - image: "frames/talking/m_089.png"
+        duration_ms: 40
+      - image: "frames/talking/m_090.png"
+        duration_ms: 40
+      - image: "frames/talking/m_091.png"
+        duration_ms: 40
+      - image: "frames/talking/m_092.png"
+        duration_ms: 40
+      - image: "frames/talking/m_093.png"
+        duration_ms: 40
+      - image: "frames/talking/m_094.png"
+        duration_ms: 40
+      - image: "frames/talking/m_095.png"
+        duration_ms: 40
+      - image: "frames/talking/m_096.png"
+        duration_ms: 40
+      - image: "frames/talking/m_097.png"
+        duration_ms: 40
+      - image: "frames/talking/m_098.png"
+        duration_ms: 40
+      - image: "frames/talking/m_099.png"
+        duration_ms: 40
+      - image: "frames/talking/m_100.png"
+        duration_ms: 40
+      - image: "frames/talking/m_101.png"
+        duration_ms: 40
+      - image: "frames/talking/m_102.png"
+        duration_ms: 40
+      - image: "frames/talking/m_103.png"
+        duration_ms: 40
+      - image: "frames/talking/m_104.png"
+        duration_ms: 40
+      - image: "frames/talking/m_105.png"
+        duration_ms: 40
+      - image: "frames/talking/m_106.png"
+        duration_ms: 40
+      - image: "frames/talking/m_107.png"
+        duration_ms: 40
+      - image: "frames/talking/m_108.png"
+        duration_ms: 40
+      - image: "frames/talking/m_109.png"
+        duration_ms: 40
+      - image: "frames/talking/m_110.png"
+        duration_ms: 40
+      - image: "frames/talking/m_111.png"
+        duration_ms: 40
+      - image: "frames/talking/m_000.png"
+        duration_ms: 120
+      - image: "frames/talking/m_112.png"
+        duration_ms: 40
+      - image: "frames/talking/m_113.png"
+        duration_ms: 40
+      - image: "frames/talking/m_114.png"
+        duration_ms: 40
+      - image: "frames/talking/m_115.png"
+        duration_ms: 40
+      - image: "frames/talking/m_116.png"
+        duration_ms: 40
+      - image: "frames/talking/m_117.png"
+        duration_ms: 40
+      - image: "frames/talking/m_118.png"
+        duration_ms: 40
+      - image: "frames/talking/m_119.png"
+        duration_ms: 40
+      - image: "frames/talking/m_120.png"
+        duration_ms: 40
+      - image: "frames/talking/m_121.png"
+        duration_ms: 40
+      - image: "frames/talking/m_122.png"
+        duration_ms: 40
+      - image: "frames/talking/m_123.png"
+        duration_ms: 40
+      - image: "frames/talking/m_124.png"
+        duration_ms: 40
+      - image: "frames/talking/m_125.png"
+        duration_ms: 40
+      - image: "frames/talking/m_126.png"
+        duration_ms: 40
+      - image: "frames/talking/m_127.png"
+        duration_ms: 40
+      - image: "frames/talking/m_012.png"
+        duration_ms: 40
+      - image: "frames/talking/m_079.png"
+        duration_ms: 40
+      - image: "frames/talking/m_128.png"
+        duration_ms: 40
+      - image: "frames/talking/m_129.png"
+        duration_ms: 40
+      - image: "frames/talking/m_130.png"
+        duration_ms: 40
+      - image: "frames/talking/m_131.png"
+        duration_ms: 40
+      - image: "frames/talking/m_132.png"
+        duration_ms: 40
+      - image: "frames/talking/m_133.png"
+        duration_ms: 40
+      - image: "frames/talking/m_134.png"
+        duration_ms: 40
+      - image: "frames/talking/m_135.png"
+        duration_ms: 40
+      - image: "frames/talking/m_136.png"
+        duration_ms: 40
+      - image: "frames/talking/m_137.png"
+        duration_ms: 40
+      - image: "frames/talking/m_138.png"
+        duration_ms: 40
+      - image: "frames/talking/m_139.png"
+        duration_ms: 40
+      - image: "frames/talking/m_140.png"
+        duration_ms: 40
+      - image: "frames/talking/m_141.png"
+        duration_ms: 40
+      - image: "frames/talking/m_142.png"
+        duration_ms: 40
+      - image: "frames/talking/m_143.png"
+        duration_ms: 40
+      - image: "frames/talking/m_144.png"
+        duration_ms: 40
+      - image: "frames/talking/m_145.png"
+        duration_ms: 40
+      - image: "frames/talking/m_146.png"
+        duration_ms: 40
+      - image: "frames/talking/m_079.png"
+        duration_ms: 40
+      - image: "frames/talking/m_147.png"
+        duration_ms: 40
+      - image: "frames/talking/m_148.png"
+        duration_ms: 40
+      - image: "frames/talking/m_149.png"
+        duration_ms: 40
+      - image: "frames/talking/m_150.png"
+        duration_ms: 40
+      - image: "frames/talking/m_151.png"
+        duration_ms: 40
+      - image: "frames/talking/m_152.png"
+        duration_ms: 40
+      - image: "frames/talking/m_153.png"
+        duration_ms: 40
+      - image: "frames/talking/m_127.png"
+        duration_ms: 40
+      - image: "frames/talking/m_012.png"
+        duration_ms: 40
+      - image: "frames/talking/m_154.png"
+        duration_ms: 40
+      - image: "frames/talking/m_155.png"
+        duration_ms: 40
+      - image: "frames/talking/m_156.png"
+        duration_ms: 40
+      - image: "frames/talking/m_157.png"
+        duration_ms: 40
+      - image: "frames/talking/m_158.png"
+        duration_ms: 40
+      - image: "frames/talking/m_159.png"
+        duration_ms: 40
+      - image: "frames/talking/m_160.png"
+        duration_ms: 40
+      - image: "frames/talking/m_024.png"
+        duration_ms: 40
+      - image: "frames/talking/m_000.png"
+        duration_ms: 400
 
-      # Peak phase (sine wave) - frames 4-6
-      - image: "frames/emotions/mouth_talk_04.png"
-        duration_ms: 100
-        audio_range: [0.25, 0.40]
-      - image: "frames/emotions/mouth_talk_05.png"
-        duration_ms: 100
-        audio_range: [0.40, 0.55]
-      - image: "frames/emotions/mouth_talk_06.png"
-        duration_ms: 100
-        audio_range: [0.55, 0.70]
-
-      # Closing phase (sawtooth wave) - frames 7-9
-      - image: "frames/emotions/mouth_talk_07.png"
-        duration_ms: 100
-        audio_range: [0.70, 0.78]
-      - image: "frames/emotions/mouth_talk_08.png"
-        duration_ms: 100
-        audio_range: [0.78, 0.87]
-      - image: "frames/emotions/mouth_talk_09.png"
-        duration_ms: 100
-        audio_range: [0.87, 0.92]
-
-      # Rest phase (low sine wave) - frames 10-12
-      - image: "frames/emotions/mouth_talk_10.png"
-        duration_ms: 100
-        audio_range: [0.92, 0.95]
-      - image: "frames/emotions/mouth_talk_11.png"
-        duration_ms: 100
-        audio_range: [0.95, 0.98]
-      - image: "frames/emotions/mouth_talk_12.png"
-        duration_ms: 100
-        audio_range: [0.98, 1.0]
-
-# Metadata
 metadata:
   priority: "normal"
   category: "emotions"
-  tags: ["talking", "speaking", "audio", "realistic", "mouth", "reactive", "waveform", "sine", "sawtooth", "teeth"]
-  audio_features:
-    - "volume_reactive"
-    - "real_time"
-    - "lip_sync"
-    - "waveform_animation"
-  features:
-    - "realistic_gradient_eyes"
-    - "advanced_mouth_curves"
-    - "visible_teeth"
-    - "full_25x5_display"
+  tags: [talking, speaking, audio, realistic, mouth, reactive, waveform, sine, sawtooth, teeth]
+  brightness_budget: 160
+  bake_scale: 1.000
+  peak_ma_at_255: 6556

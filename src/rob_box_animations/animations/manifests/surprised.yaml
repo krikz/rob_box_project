@@ -1,42 +1,139 @@
-# Surprised Emotion Animation
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "surprised"
-description: "Surprised emotion with wide eyes and O mouth"
-version: "1.0"
-author: "rob_box"
+description: "Удивление: моргнул, глаза распахнуты, зрачок-точка, рот «О»"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 1500
+duration_ms: 5000
 loop: true
-fps: 10
+fps: 25
 
-# Panels
 panels:
-  # Wide eyes (surprised)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fl_surprised.png"
-        duration_ms: 1500
-
+      - image: "frames/surprised/p8_000.png"
+        duration_ms: 120
+      - image: "frames/surprised/p8_002.png"
+        duration_ms: 240
+      - image: "frames/surprised/p8_003.png"
+        duration_ms: 2880
+      - image: "frames/surprised/p8_004.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_005.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_006.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_007.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_008.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_009.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_010.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_011.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_012.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_013.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_014.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_015.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_016.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_017.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_018.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_019.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_020.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_021.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_022.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_023.png"
+        duration_ms: 1000
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fr_surprised.png"
-        duration_ms: 1500
-
-  # Main display (O-shaped mouth growing)
+      - image: "frames/surprised/p8_000.png"
+        duration_ms: 120
+      - image: "frames/surprised/p8_002.png"
+        duration_ms: 240
+      - image: "frames/surprised/p8_003.png"
+        duration_ms: 2880
+      - image: "frames/surprised/p8_004.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_005.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_006.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_007.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_008.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_009.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_010.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_011.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_012.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_013.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_014.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_015.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_016.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_017.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_018.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_019.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_020.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_021.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_022.png"
+        duration_ms: 40
+      - image: "frames/surprised/p8_023.png"
+        duration_ms: 1000
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/surprised/p8_001.png"
+        duration_ms: 5000
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/surprised/p8_001.png"
+        duration_ms: 5000
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/mouth_surprised_01.png"
-        duration_ms: 500
-      - image: "frames/emotions/mouth_surprised_02.png"
-        duration_ms: 500
-      - image: "frames/emotions/mouth_surprised_03.png"
-        duration_ms: 500
+      - image: "frames/surprised/m_000.png"
+        duration_ms: 120
+      - image: "frames/surprised/m_001.png"
+        duration_ms: 3400
+      - image: "frames/surprised/m_002.png"
+        duration_ms: 240
+      - image: "frames/surprised/m_000.png"
+        duration_ms: 1240
 
-# Metadata
 metadata:
   priority: "normal"
   category: "emotions"
-  tags: ["surprised", "emotion", "shock", "wide_eyes"]
+  tags: [surprised, emotion, shock, wide_eyes]
+  brightness_budget: 158
+  bake_scale: 1.000
+  peak_ma_at_255: 6613

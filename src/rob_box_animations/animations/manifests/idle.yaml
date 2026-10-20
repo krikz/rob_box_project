@@ -1,113 +1,527 @@
-# Idle Animation - Robot in standby mode (IMPROVED v2.5)
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "idle"
-description: "Idle state with realistic gradient eyes breathing and rear glow"
-version: "2.5"
-author: "rob_box"
+description: "Покой: моргания 2–6 с (иногда двойные), саккады, осмотр, ухмылка; раз в цикл заскучал и зевнул"
+version: "3.0"
+author: "led_face_lab"
 
-duration_ms: 3000
+duration_ms: 28000
 loop: true
-fps: 15
-
-fade_in_ms: 500
-fade_out_ms: 500
+fps: 25
 
 panels:
-  # Front wheels - realistic gradient eyes with breathing (6 frames)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/idle/eye_fl_breath_01.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fl_breath_02.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fl_breath_03.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fl_breath_04.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fl_breath_05.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fl_breath_06.png"
-        duration_ms: 500
-
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 800
+      - image: "frames/idle/p8_002.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_004.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_005.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_006.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 760
+      - image: "frames/idle/p8_007.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_008.png"
+        duration_ms: 3320
+      - image: "frames/idle/p8_007.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 360
+      - image: "frames/idle/p8_010.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_011.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_012.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_013.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 1280
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 120
+      - image: "frames/idle/p8_014.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_015.png"
+        duration_ms: 280
+      - image: "frames/idle/p8_016.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_015.png"
+        duration_ms: 280
+      - image: "frames/idle/p8_014.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_017.png"
+        duration_ms: 280
+      - image: "frames/idle/p8_018.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_017.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_019.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_020.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_021.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_022.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_023.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 1080
+      - image: "frames/idle/p8_014.png"
+        duration_ms: 2560
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 440
+      - image: "frames/idle/p8_024.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_025.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_026.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_027.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_028.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 840
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 1240
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 200
+      - image: "frames/idle/p8_029.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_030.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_031.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_032.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 120
+      - image: "frames/idle/p8_029.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_030.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_031.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_032.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 2000
+      - image: "frames/idle/p8_033.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_034.png"
+        duration_ms: 1240
+      - image: "frames/idle/p8_035.png"
+        duration_ms: 680
+      - image: "frames/idle/p8_036.png"
+        duration_ms: 680
+      - image: "frames/idle/p8_037.png"
+        duration_ms: 400
+      - image: "frames/idle/p8_038.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_039.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_040.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_041.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_042.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_043.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_044.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_045.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_046.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_047.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_037.png"
+        duration_ms: 2120
+      - image: "frames/idle/p8_036.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_035.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_048.png"
+        duration_ms: 680
+      - image: "frames/idle/p8_049.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_050.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_051.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_052.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_053.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_054.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_055.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_056.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_057.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_058.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_059.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_060.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_061.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_062.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_063.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_064.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_065.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_066.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_067.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_068.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_069.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_070.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_071.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_072.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_073.png"
+        duration_ms: 1040
+      - image: "frames/idle/p8_074.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_075.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_076.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_068.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_077.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_078.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_079.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_063.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_080.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_081.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_082.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_058.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_083.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_084.png"
+        duration_ms: 40
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/idle/eye_fr_breath_01.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fr_breath_02.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fr_breath_03.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fr_breath_04.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fr_breath_05.png"
-        duration_ms: 500
-      - image: "frames/idle/eye_fr_breath_06.png"
-        duration_ms: 500
-
-  # Rear wheels - red breathing glow (6 frames)
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 800
+      - image: "frames/idle/p8_002.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_004.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_005.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_006.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 760
+      - image: "frames/idle/p8_007.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_008.png"
+        duration_ms: 3320
+      - image: "frames/idle/p8_007.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 360
+      - image: "frames/idle/p8_010.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_011.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_012.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_013.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 1280
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 120
+      - image: "frames/idle/p8_014.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_015.png"
+        duration_ms: 280
+      - image: "frames/idle/p8_016.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_015.png"
+        duration_ms: 280
+      - image: "frames/idle/p8_014.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 160
+      - image: "frames/idle/p8_017.png"
+        duration_ms: 280
+      - image: "frames/idle/p8_018.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_017.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_019.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_020.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_021.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_022.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_023.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 1080
+      - image: "frames/idle/p8_014.png"
+        duration_ms: 2560
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 440
+      - image: "frames/idle/p8_024.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_025.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_026.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_027.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_028.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 840
+      - image: "frames/idle/p8_009.png"
+        duration_ms: 1240
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 200
+      - image: "frames/idle/p8_029.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_030.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_031.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_032.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 120
+      - image: "frames/idle/p8_029.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_030.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_003.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_031.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_032.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_000.png"
+        duration_ms: 2000
+      - image: "frames/idle/p8_033.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_034.png"
+        duration_ms: 1240
+      - image: "frames/idle/p8_035.png"
+        duration_ms: 680
+      - image: "frames/idle/p8_036.png"
+        duration_ms: 680
+      - image: "frames/idle/p8_037.png"
+        duration_ms: 400
+      - image: "frames/idle/p8_038.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_039.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_040.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_041.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_042.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_043.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_044.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_045.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_046.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_047.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_037.png"
+        duration_ms: 2120
+      - image: "frames/idle/p8_036.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_035.png"
+        duration_ms: 240
+      - image: "frames/idle/p8_048.png"
+        duration_ms: 680
+      - image: "frames/idle/p8_049.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_050.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_051.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_052.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_053.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_054.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_055.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_056.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_057.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_058.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_059.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_060.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_061.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_062.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_063.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_064.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_065.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_066.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_067.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_068.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_069.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_070.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_071.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_072.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_073.png"
+        duration_ms: 1040
+      - image: "frames/idle/p8_074.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_075.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_076.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_068.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_077.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_078.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_079.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_063.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_080.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_081.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_082.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_058.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_083.png"
+        duration_ms: 40
+      - image: "frames/idle/p8_084.png"
+        duration_ms: 40
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/idle/wheel_rl_glow_01.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rl_glow_02.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rl_glow_03.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rl_glow_04.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rl_glow_05.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rl_glow_06.png"
-        duration_ms: 500
-
+      - image: "frames/idle/p8_001.png"
+        duration_ms: 28000
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/idle/wheel_rr_glow_01.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rr_glow_02.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rr_glow_03.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rr_glow_04.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rr_glow_05.png"
-        duration_ms: 500
-      - image: "frames/idle/wheel_rr_glow_06.png"
-        duration_ms: 500
-
-  # Main display - running lights around mouth perimeter (12 frames)
+      - image: "frames/idle/p8_001.png"
+        duration_ms: 28000
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/idle/mouth_idle_01.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_02.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_03.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_04.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_05.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_06.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_07.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_08.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_09.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_10.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_11.png"
-        duration_ms: 250
-      - image: "frames/idle/mouth_idle_12.png"
-        duration_ms: 250
+      - image: "frames/idle/m_000.png"
+        duration_ms: 10360
+      - image: "frames/idle/m_001.png"
+        duration_ms: 1440
+      - image: "frames/idle/m_000.png"
+        duration_ms: 8200
+      - image: "frames/idle/m_002.png"
+        duration_ms: 5600
+      - image: "frames/idle/m_000.png"
+        duration_ms: 120
+      - image: "frames/idle/m_003.png"
+        duration_ms: 160
+      - image: "frames/idle/m_004.png"
+        duration_ms: 200
+      - image: "frames/idle/m_005.png"
+        duration_ms: 1600
+      - image: "frames/idle/m_004.png"
+        duration_ms: 160
+      - image: "frames/idle/m_003.png"
+        duration_ms: 160
 
 metadata:
   priority: "low"
   category: "state"
-  tags: ["idle", "standby", "breathing", "calm"]
+  tags: [idle, standby, breathing, calm]
+  brightness_budget: 156
+  bake_scale: 1.000
+  peak_ma_at_255: 6706

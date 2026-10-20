@@ -1,68 +1,163 @@
-# Turn Left Navigation Animation
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "turn_left"
-description: "Left turn signal with arrow"
-version: "2.5"
-author: "rob_box"
+description: "Поворот налево: левая фара робота мигает жёлтым, взгляд в поворот, сзади бегущая заливка"
+version: "3.0"
+author: "led_face_lab"
 
-duration_ms: 1000
+duration_ms: 4000
 loop: true
-fps: 10
+fps: 25
 
 panels:
-  # Front left wheel - orange flashing (4 frames)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_fl_blink_01.png"
-        duration_ms: 250
-      - image: "frames/navigation/wheel_fl_blink_02.png"
-        duration_ms: 250
-      - image: "frames/navigation/wheel_fl_blink_03.png"
-        duration_ms: 250
-      - image: "frames/navigation/wheel_fl_blink_04.png"
-        duration_ms: 250
-
-  # Front right wheel - dim white
+      - image: "frames/turn_left/p8_001.png"
+        duration_ms: 480
+      - image: "frames/turn_left/p8_000.png"
+        duration_ms: 280
+      - image: "frames/turn_left/p8_001.png"
+        duration_ms: 480
+      - image: "frames/turn_left/p8_000.png"
+        duration_ms: 280
+      - image: "frames/turn_left/p8_001.png"
+        duration_ms: 440
+      - image: "frames/turn_left/p8_000.png"
+        duration_ms: 320
+      - image: "frames/turn_left/p8_001.png"
+        duration_ms: 440
+      - image: "frames/turn_left/p8_000.png"
+        duration_ms: 280
+      - image: "frames/turn_left/p8_001.png"
+        duration_ms: 480
+      - image: "frames/turn_left/p8_000.png"
+        duration_ms: 280
+      - image: "frames/turn_left/p8_001.png"
+        duration_ms: 240
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_fr_dim.png"
-        duration_ms: 1000
-
-  # Rear left wheel - orange flashing (4 frames)
+      - image: "frames/turn_left/p8_000.png"
+        duration_ms: 4000
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_rl_blink_01.png"
-        duration_ms: 250
-      - image: "frames/navigation/wheel_rl_blink_02.png"
-        duration_ms: 250
-      - image: "frames/navigation/wheel_rl_blink_03.png"
-        duration_ms: 250
-      - image: "frames/navigation/wheel_rl_blink_04.png"
-        duration_ms: 250
-
-  # Rear right wheel - red brake light
+      - image: "frames/turn_left/p8_002.png"
+        duration_ms: 80
+      - image: "frames/turn_left/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_left/p8_002.png"
+        duration_ms: 320
+      - image: "frames/turn_left/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_007.png"
+        duration_ms: 80
+      - image: "frames/turn_left/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_011.png"
+        duration_ms: 80
+      - image: "frames/turn_left/p8_002.png"
+        duration_ms: 360
+      - image: "frames/turn_left/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_left/p8_002.png"
+        duration_ms: 360
+      - image: "frames/turn_left/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_left/p8_002.png"
+        duration_ms: 360
+      - image: "frames/turn_left/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_left/p8_002.png"
+        duration_ms: 320
+      - image: "frames/turn_left/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_left/p8_007.png"
+        duration_ms: 80
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_rr_red.png"
-        duration_ms: 1000
-
-  # Main display - left arrow
+      - image: "frames/turn_left/p8_003.png"
+        duration_ms: 4000
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/arrow_left_01.png"
-        duration_ms: 250
-      - image: "frames/navigation/arrow_left_02.png"
-        duration_ms: 250
-      - image: "frames/navigation/arrow_left_03.png"
-        duration_ms: 250
-      - image: "frames/navigation/arrow_left_04.png"
-        duration_ms: 250
+      - image: "frames/turn_left/m_000.png"
+        duration_ms: 4000
 
 metadata:
   priority: "normal"
   category: "navigation"
-  tags: ["turn", "left", "navigation", "signal", "orange", "brake"]
+  tags: [turn, left, navigation, signal, orange, brake]
+  brightness_budget: 144
+  bake_scale: 1.000
+  peak_ma_at_255: 7293
