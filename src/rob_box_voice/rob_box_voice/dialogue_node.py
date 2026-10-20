@@ -557,10 +557,8 @@ class DialogueNode(Node):
         self._command_intent_gate_confidence: float = float(
             self.get_parameter("command_intent_gate_confidence").value
         )
-        self._command_parser = CommandParser(
-            wake_words=["робот", "робокс", "робобокс"],
-            confidence_base=0.8,
-        )
+        # Вейк-слова парсера — по умолчанию из одной таблицы rob_box_dialog.knowledge.
+        self._command_parser = CommandParser(confidence_base=0.8)
         # Пред-роутер домена переиспользует ТОТ ЖЕ CommandParser, что и
         # command_intent_gate — второй классификатор не заводим.
         if self._skill_prompts:

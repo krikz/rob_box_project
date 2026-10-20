@@ -22,6 +22,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Callable, Optional
 
+from rob_box_dialog.knowledge import TIER1_POLICY
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
 
 
@@ -35,8 +36,9 @@ class QuickVerdict(str, Enum):
 
 #: §4.7.2 table row: "Императив с модальным глаголом и одним
 #: существительным → REPLACE". Kept as an explicit whitelist (not a
-#: broader heuristic) so it stays precise and fast.
-_REPLACE_IMPERATIVES: tuple[str, ...] = ("хватит", "стоп", "замолчи", "отставить")
+#: broader heuristic) so it stays precise and fast. Слова — одна таблица
+#: ``rob_box_dialog.knowledge.TIER1_POLICY["stop"]`` (ADR-0150 PR-1).
+_REPLACE_IMPERATIVES: tuple[str, ...] = TIER1_POLICY["stop"].words
 
 #: §4.7.2 table row: interjections/fillers → IGNORE. Deliberately a
 #: small, exact-match set (not substring) — these are short enough
@@ -123,7 +125,7 @@ def quick_decide(
         return QuickVerdict.IGNORE
 
     # Imperatives are checked BEFORE the word-count rule — most of
-    # them ("хватит", "стоп") are themselves a single word and would
+    # them (``TIER1_POLICY["stop"]``) are themselves a single word and would
     # otherwise be swallowed by "< 2 слов → IGNORE".
     if (
         any(kw in text_lower for kw in _REPLACE_IMPERATIVES)

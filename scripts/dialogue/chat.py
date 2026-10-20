@@ -50,6 +50,7 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 #: you are testing the code in front of you, not last week's wheel.
 _SRC_PACKAGES = (
     "rob_box_core",
+    "rob_box_dialog",  # knowledge table (wake words, silence) for dialogue_text and the harness DSM
     "rob_box_llm",
     "rob_box_harness",
     "rob_box_voice",  # only pure helpers (dialogue_text); never the node

@@ -25,6 +25,7 @@ from typing import Mapping, Optional
 # (раньше здесь была своя, разошедшаяся копия). Имя оставлено как
 # re-export для существующих импортов.
 from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES  # noqa: F401
+from rob_box_dialog.knowledge import VOLUME_WORDS
 
 EMOTION_TO_ANIMATION: dict = {
     "happy": "happy",
@@ -77,20 +78,13 @@ def generate_fallback_response(text: str) -> str:
 
 
 def detect_volume_intent(text: str):
-    """Detect volume adjustment intent from user text."""
+    """Detect volume adjustment intent from user text (фразы — ``rob_box_dialog.knowledge.VOLUME_WORDS``)."""
     if not text:
         return None
     low = text.lower()
-    if any(w in low for w in ("максимальная громкость", "максимум громк")):
-        return "max"
-    if any(w in low for w in ("нормальная громкость", "стандартная громкость", "обычная громкость")):
-        return "normal"
-    if "говори громко" in low:
-        return "max"
-    if any(w in low for w in ("громче", "громко")):
-        return "louder"
-    if any(w in low for w in ("тише", "потише")):
-        return "quieter"
+    for intent, phrases in VOLUME_WORDS:
+        if any(w in low for w in phrases):
+            return intent
     return None
 
 

@@ -76,11 +76,9 @@ class CommandNode(Node):
             self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.current_goal_handle = None  # Для отмены текущего goal
 
-        # CommandParser from core module (replaces _build_command_patterns)
-        self.command_parser = CommandParser(
-            wake_words=['робот', 'робокс', 'робобокс'],
-            confidence_base=0.8
-        )
+        # CommandParser from core module (replaces _build_command_patterns);
+        # вейк-слова — по умолчанию из одной таблицы rob_box_dialog.knowledge.
+        self.command_parser = CommandParser(confidence_base=0.8)
 
         # Waypoints — deprecated: dynamic waypoints are now managed via MCP tools
         # (save_waypoint, list_waypoints, etc.) and stored in SQLite DB.

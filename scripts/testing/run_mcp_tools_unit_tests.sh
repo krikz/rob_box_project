@@ -37,8 +37,9 @@ PER_FILE_TIMEOUT="${MCP_TOOLS_PER_FILE_TIMEOUT:-300}"
 
 # Соседние пакеты, которые импортируют тесты и сам rob_box_mcp_tools:
 # rob_box_harness (slice_authority, mcp_server), rob_box_voice (music,
-# dialogue), rob_box_core (utterance), rob_box_llm (harness).
-export PYTHONPATH="$PKG_DIR:$REPO_ROOT/src/rob_box_harness:$REPO_ROOT/src/rob_box_llm:$REPO_ROOT/src/rob_box_core:$REPO_ROOT/src/rob_box_music:$REPO_ROOT/src/rob_box_voice${PYTHONPATH:+:$PYTHONPATH}"
+# dialogue), rob_box_core (utterance), rob_box_llm (harness), rob_box_dialog
+# (знание диалога: его импортируют rob_box_voice.core и DSM харнесса).
+export PYTHONPATH="$PKG_DIR:$REPO_ROOT/src/rob_box_harness:$REPO_ROOT/src/rob_box_llm:$REPO_ROOT/src/rob_box_core:$REPO_ROOT/src/rob_box_music:$REPO_ROOT/src/rob_box_voice:$REPO_ROOT/src/rob_box_dialog${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ -n "$JUNIT_DIR" ]; then
   mkdir -p "$JUNIT_DIR"
