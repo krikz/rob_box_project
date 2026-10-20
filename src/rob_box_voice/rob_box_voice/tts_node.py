@@ -1514,7 +1514,8 @@ class TTSNode(Node):
         # Issue #1229 — публикуем фактического провайдера сразу при старте
         # (значение из персистентного файла, если он есть). dialogue_node /
         # mcp_server получают корректный контекст ДО первого диалога.
-        self._publish_provider_state("startup")
+        # голос из файла выбора (VoiceOwner.restore) - иначе контекст LLM до первого синтеза видит дефолт провайдера
+        self._publish_provider_state("startup", voice=self._voice_owner.state.get("applied"))
 
         self.get_logger().info("✅ TTSNode инициализирован")
         self.get_logger().info(
