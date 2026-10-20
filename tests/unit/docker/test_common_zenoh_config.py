@@ -13,6 +13,10 @@
 * Vision Pi: listen ``tcp/10.1.1.11:7447``, connect ``tcp/10.1.1.10:7447#iface=eth0``
 * сессии нод: ``tcp/<IP узла>:7447#so_sndbuf=16777216;so_rcvbuf=16777216``
 
+Плюс гард issue #3669: у роутеров нет ``storage_manager`` на ключ ``robots/**`` —
+иначе каждый роутер подписан на весь трафик робота, и соседи шлют ему сырые
+кадры камер (~24 МБ/с на роутер) ради in-memory копии, у которой не нашлось потребителей.
+
 Docker не нужен.
 """
 
@@ -196,6 +200,59 @@ def test_session_wrapper_refuses_to_start_without_listen_ip(tmp_path: Path) -> N
                          capture_output=True, text=True, encoding="utf-8", check=False)
     assert res.returncode != 0
     assert "NODE-STARTED" not in res.stdout
+
+
+def _plugins_block(text: str) -> str:
+    """Тело ``plugins: { ... }`` верхнего уровня (без комментариев), по счёту скобок."""
+    body = _strip_comments(text)
+    m = re.search(r"\n  plugins: \{", body)
+    assert m, "не нашёл верхнеуровневый plugins"
+    depth, start = 1, m.end()
+    for i in range(start, len(body)):
+        if body[i] == "{":
+            depth += 1
+        elif body[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return body[start:i]
+    raise AssertionError("plugins: не закрыт")
+
+
+def test_router_template_has_no_storage_manager() -> None:
+    """issue #3669: хранилище ``robots/**`` на роутере = подписка роутера на весь трафик.
+
+    Все топики ROS лежат под ``robots/<ROBOT_ID>/…``, поэтому storage с таким ключом
+    заставляет каждого соседа слать роутеру ВСЁ (в т.ч. кадры oak-d ~24 МБ/с) ради
+    копии последнего значения в памяти. transient_local хранилища роутера не требует
+    (история берётся из кэша издателя по ``<топик>/@adv/**``, а ``**`` не матчит ``@adv``).
+    """
+    plugins = _plugins_block(ROUTER_TEMPLATE.read_text(encoding="utf-8"))
+    assert "storage_manager" not in plugins, "storage_manager вернулся в шаблон роутера (#3669)"
+    assert "storages" not in plugins
+    assert "key_expr" not in plugins
+
+
+def test_router_template_keeps_rest_admin_on_8000() -> None:
+    """REST-админка нужна: healthcheck всех Pi и ожидание роутера в start_*.sh ходят на :8000."""
+    plugins = _plugins_block(ROUTER_TEMPLATE.read_text(encoding="utf-8"))
+    assert re.search(r"rest:\s*\{\s*http_port:\s*8000,?\s*\}", plugins), plugins
+
+
+@pytest.mark.parametrize("pi", sorted(EXPECTED))
+def test_router_healthcheck_uses_rest_admin(pi: str) -> None:
+    """Связка: healthcheck compose ↔ плагин rest в шаблоне (его нельзя убрать вместе со storage)."""
+    check = _compose(pi)["services"]["zenoh-router"]["healthcheck"]["test"]
+    assert "http://localhost:8000/@/local/router" in " ".join(check)
+
+
+def test_no_router_config_under_docker_declares_storage_manager() -> None:
+    """Копированием чужого шаблона хранилище не должно вернуться ни в один конфиг docker/."""
+    offenders = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in sorted((REPO_ROOT / "docker").rglob("*.json5"))
+        if "storage_manager" in _strip_comments(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], f"storage_manager в конфигах роутера (#3669): {offenders}"
 
 
 @pytest.mark.parametrize("rel", [
