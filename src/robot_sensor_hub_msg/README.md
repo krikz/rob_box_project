@@ -124,7 +124,8 @@ class SensorFilter(Node):
 
 ## Building
 
-This package is **archived** — micro-ROS was removed in Phase 6 (Plan 06-04).
+This package is **archived** — the ESP32 bridge agent was removed in Phase 6 (Plan 06-04);
+the host side is now `perception_bridge` (serial, see ADR-0159 §2.4).
 The message definitions remain for reference but are no longer built.
 
 **Manual build:**
@@ -151,4 +152,4 @@ See **robot_sensor_hub** firmware repository:
 
 ## Documentation
 
-Full setup guide: `docs/guides/MICROROS_SETUP.md`
+Host-side data path: `docs/adr/0159-sound-pi-third-node-voice-stack-and-sensor-hub.md` §2.4.

@@ -594,12 +594,6 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 - **Устройство**: `/dev/spidev0.0` (MCP2515 CAN hat)
 - **Privileged**: Да (доступ к SPI)
 
-#### micro-ros-agent
-- **Образ**: `ghcr.io/krikz/rob_box:micro-ros-agent-humble-latest`
-- **Назначение**: Мост между ESP32 (Micro-ROS) и ROS 2
-- **Устройство**: `/dev/ttyUSB0` (ESP32 Serial)
-- **Скорость**: 115200 baud
-
 ---
 
 ### 3.2. Vision Pi сервисы

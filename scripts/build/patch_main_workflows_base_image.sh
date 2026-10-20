@@ -7,12 +7,6 @@ WORKFLOW_FILE=".github/workflows/build-main-services.yml"
 
 echo "🔧 Patching $WORKFLOW_FILE with BASE_IMAGE build-args..."
 
-# micro-ros-agent
-echo "  - Patching micro-ros-agent..."
-sed -i '/name: Build and push micro-ros-agent/,/cache-to: type=gha,mode=max/ {
-  /cache-to: type=gha,mode=max/a\          build-args: |\n            BASE_IMAGE=${{ env.LOCAL_BASE_REGISTRY || '\''ghcr.io/krikz/rob_box_base'\'' }}:ros2-zenoh
-}' "$WORKFLOW_FILE"
-
 # ros2-control
 echo "  - Patching ros2-control..."
 sed -i '/name: Build and push ros2-control/,/cache-to: type=gha,mode=max/ {
