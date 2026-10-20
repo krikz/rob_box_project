@@ -219,13 +219,14 @@ def failed_words(reason: str) -> str:
     return REASON_WORDS.get(reason, reason)
 
 
-def current_voice(provider: Optional[str], store: Any = None) -> Tuple[str, str]:
-    """``(провайдер, голос)`` сейчас: провайдер — из ``/voice/tts/provider_state`` (``node.actual_tts_provider``), голос —
-    ``VoiceStateStore.resolve`` (установленный ``set_voice`` или дефолт провайдера). Нет провайдера — ``no_voice``."""
+def current_voice(provider: Optional[str], actual_voice: Optional[str] = None) -> Tuple[str, str]:
+    """``(провайдер, голос)`` сейчас: оба — из ``/voice/tts/provider_state`` (``node.actual_tts_provider`` /
+    ``actual_tts_voice``: то, что реально звучит; выбор хранит ``tts_node``), нет голоса — дефолт провайдера.
+    Нет провайдера — ``no_voice``."""
     if not provider:
         raise SongFailed("no_voice", "провайдер TTS ещё не известен")
-    if store is not None:
-        return provider, store.resolve(provider)[0]
+    if actual_voice:
+        return provider, actual_voice
     from rob_box_voice.tts_voice_registry import default_voice_for
 
     return provider, default_voice_for(provider)

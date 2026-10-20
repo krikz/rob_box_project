@@ -18,8 +18,8 @@ TTS озвучивал эту метаинструкцию через Yandex→M
 1. :func:`DialogueNode._check_system_template_regurgitate_and_retry`
    распознаёт regurgitates по regex ``^<system>...</system>$`` и
    отправляет ОДИН одноразовый CRITICAL-ретрай.
-2. ``dialogue_node._on_tts_current_voice`` и ``_on_tts_provider_state``
-   сбрасывают guard-флаг после смены голоса/провайдера, чтобы
+2. ``dialogue_node._on_tts_provider_state`` (его же шлёт tts_node после смены голоса)
+   сбрасывает guard-флаг после смены голоса/провайдера, чтобы
    следующий запрос после ``set_voice`` снова был защищён.
 
 Эти тесты используют ``object.__new__(DialogueNode)`` паттерн
@@ -29,7 +29,6 @@ TTS озвучивал эту метаинструкцию через Yandex→M
 * guard срабатывает на regurgitated template и диспатчит ретрай;
 * guard НЕ срабатывает на обычные фразы;
 * guard срабатывает РОВНО ОДИН раз на turn (нет ping-pong);
-* после ``_on_tts_current_voice`` guard-флаг сброшен;
 * после ``_on_tts_provider_state`` guard-флаг сброшен;
 
 Run with::
@@ -249,30 +248,8 @@ class TestProviderSwitchResetsGuard(unittest.TestCase):
     """Issue #2175 acceptance #3 — ``set_voice`` / ``set_tts_provider``
     инвалидируют MiniMax's кэш system-context, поэтому guard-флаг
     сбрасывается после публикации нового голоса/провайдера в
-    ``/voice/tts/current_voice`` / ``/voice/tts/provider_state``.
+    ``/voice/tts/provider_state``.
     """
-
-    def test_on_tts_current_voice_resets_flag(self) -> None:
-        """Симулируем сценарий: прошлый turn regurgitates → флаг взведён
-        → юзер зовёт set_voice → dialogue_node получает
-        /voice/tts/current_voice → guard-флаг должен быть сброшен."""
-        node, _ = _make_stub_node()
-        # Имитируем взведённый флаг от прошлого turn'а
-        node._system_regurgitate_retry_used = True
-        node._current_tts_voice = "old_voice"
-        # get_parameter используется в _on_tts_current_voice для provider fallback
-        class _Param:
-            value = "minimax"
-
-        node.get_parameter = lambda name: _Param()
-        # Публикация в /voice/tts/current_voice (set_voice подтверждение)
-        msg = MagicMock()
-        msg.data = '{"voice": "Russian_ReliableMan", "provider": "minimax"}'
-        node._on_tts_current_voice(msg)
-        # Флаг сброшен — следующий turn снова защищён
-        self.assertFalse(node._system_regurgitate_retry_used)
-        # Голос обновлён (sanity: handler отработал)
-        self.assertEqual(node._current_tts_voice, "Russian_ReliableMan")
 
     def test_on_tts_provider_state_resets_flag(self) -> None:
         """Симулируем fallback провайдера (yandex→minimax), который
@@ -295,18 +272,8 @@ class TestProviderSwitchResetsGuard(unittest.TestCase):
         node._system_regurgitate_retry_used = True
         msg = MagicMock()
         msg.data = "{not valid json}"
-        node._on_tts_current_voice(msg)
+        node._on_tts_provider_state(msg)
         # Флаг НЕ сброшен — handler не дошёл до reset'а
-        self.assertTrue(node._system_regurgitate_retry_used)
-
-    def test_empty_voice_in_payload_does_not_touch_flag(self) -> None:
-        """Пустой voice в payload (такое бывает в edge-кейсах mcp_server) —
-        handler возвращается раньше, флаг НЕ сбрасывается."""
-        node, _ = _make_stub_node()
-        node._system_regurgitate_retry_used = True
-        msg = MagicMock()
-        msg.data = '{"voice": "", "provider": "minimax"}'
-        node._on_tts_current_voice(msg)
         self.assertTrue(node._system_regurgitate_retry_used)
 
 

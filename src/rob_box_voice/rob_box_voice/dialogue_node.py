@@ -934,12 +934,6 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/finished", self._on_tts_finished, 10,
             callback_group=cbg)
-        # Issue #1219 — LLM voice selection: mcp_server (SetVoiceTool)
-        # публикует смену голоса JSON {"voice": str, "provider": str};
-        # dialogue_node хранит current_voice для контекста [TTS].
-        self.create_subscription(
-            String, "/voice/tts/current_voice", self._on_tts_current_voice, 10,
-            callback_group=cbg)
         # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
         # JSON {"provider": str, "voice": str, ...}. Используется в контексте
         # [TTS], чтобы LLM видела голоса РЕАЛЬНОГО провайдера (а не
@@ -1396,10 +1390,8 @@ class DialogueNode(Node):
         self._meeting_greeter: MeetingGreeter = MeetingGreeter()
         # Issue #1219 — LLM voice selection: активный TTS-провайдер для
         # контекста [TTS]. Должен совпадать с tts_node.yaml provider
-        # (minimax). Рядом храним current_voice (установленный set_voice),
-        # который приходит от mcp_server через /voice/tts/current_voice.
+        # (minimax). Установленный голос хранит tts_node (VoiceOwner, PR-4 ч.3) и сообщает его в provider_state.
         self.declare_parameter("tts_provider", "minimax")
-        self._current_tts_voice: str | None = None
         # Issue #1229 — фактический провайдер TTS (после фолбека) и голос,
         # который РЕАЛЬНО использовал tts_node. Приходят из /voice/tts/
         # provider_state; используются в LLM-контексте [TTS], чтобы LLM
@@ -3014,45 +3006,6 @@ class DialogueNode(Node):
                 f"batch_id={batch_id!r}, batch_total={batch_total!r}"
             )
 
-    def _on_tts_current_voice(self, msg: String) -> None:
-        """Issue #1219 — LLM voice selection: обновить current_voice.
-
-        mcp_server (SetVoiceTool) публикует JSON {"voice": str, "provider": str}
-        в /voice/tts/current_voice при вызове set_voice. Храним голос для
-        контекста [TTS] (Q8): LLM видит current_voice и может вернуть его
-        дефолтным голосом или сменить снова.
-
-        Issue #2175 — provider/voice switch invalidates MiniMax's internal
-        кэш system-context. После ``set_voice`` MiniMax-M3 три запроса
-        подряд regurgitates ``<system>...</system>`` template. Сбрасываем
-        «грязный» маркер, который dialogue_node использует для guard'а —
-        теперь следующий LLM-ответ пройдёт через guard заново (один
-        одноразовый ретрай защитит от первого regurgitates, но если LLM
-        продолжит после смены голоса — защита должна быть готова).
-        """
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        voice = payload.get("voice")
-        if not voice:
-            return
-        self._current_tts_voice = str(voice)
-        try:
-            provider = payload.get("provider") or self.get_parameter("tts_provider").value
-        except Exception:  # noqa: BLE001 — stub без параметра
-            provider = payload.get("provider")
-        # Issue #2175 — инвалидируем system-template guard после смены
-        # голоса/провайдера. Без этого следующий regurgitates прошёл бы
-        # без retry (флаг уже взведён от прошлого turn'а) и юзер
-        # услышал бы «получатель ответа забыл указать антропоморфные
-        # атрибуты» прямо поверх только что сменённого голоса.
-        self._system_regurgitate_retry_used = False
-        self.get_logger().info(
-            f"🎙️ [issue 1219] TTS current_voice → '{self._current_tts_voice}' "
-            f"(provider: {provider})"
-        )
-
     def _on_tts_provider_state(self, msg: String) -> None:
         """Issue #1229 — обновить фактический провайдер TTS (от tts_node).
 
@@ -3082,7 +3035,7 @@ class DialogueNode(Node):
         # голом объекте; лог не должен падать).
         actual_voice = getattr(self, "_actual_tts_voice", None)
         # Issue #2175 — ресетим guard-флаг после смены провайдера
-        # (см. _on_tts_current_voice для обоснования).
+        # (guard сбрасывается на любой смене провайдера/голоса).
         self._system_regurgitate_retry_used = False
         self.get_logger().info(
             f"🎙️ [issue 1229] TTS actual provider → '{self._actual_tts_provider}' "
@@ -4104,7 +4057,7 @@ tentative_plan(question, kind, name)
         # при фолбеке minimax→yandex реально звучал anton), показываем его:
         # LLM видит, ЧТО реально прозвучало, а не что было запрошено.
         actual_voice = getattr(self, "_actual_tts_voice", None)
-        current_voice = actual_voice or getattr(self, "_current_tts_voice", None)
+        current_voice = actual_voice
         try:
             tts_context_line = format_tts_context(
                 tts_provider,
@@ -7006,7 +6959,7 @@ tentative_plan(question, kind, name)
             text,
             animation,
             tg_chat_id=self._active_tg_chat_id,
-            voice=getattr(self, "_current_tts_voice", None),
+            voice=None,  # текущий голос ведёт tts_node (VoiceOwner)
             language=language,
             epoch=self._session_epoch_gate().epoch_for_dispatch(),
         )
@@ -7040,7 +6993,7 @@ tentative_plan(question, kind, name)
                 batch_index=idx,
                 batch_total=total,
                 tg_chat_id=self._active_tg_chat_id,
-                voice=getattr(self, "_current_tts_voice", None),
+                voice=None,  # текущий голос ведёт tts_node (VoiceOwner)
                 epoch=self._session_epoch_gate().epoch_for_dispatch(),
             )
             self._response_pub.publish(msg)

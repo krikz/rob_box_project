@@ -227,6 +227,7 @@ def test_avatar_tts_request_headset_sink_submits_synthesis():
 def test_avatar_tts_request_emits_finished_with_speech_id_on_unsupported_script():
     """Unicode-script guard (issue 1709) → /avatar/tts/error + finished(Fail)."""
     node = _make_request_node()
+    node.provider_chain = ["yandex", "silero"]  # #3728: Yandex иероглифы не читает
     node._on_avatar_tts_request(
         _msg({
             "request_id": "req-cjk",

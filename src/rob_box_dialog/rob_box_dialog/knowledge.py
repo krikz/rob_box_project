@@ -225,6 +225,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.invalid", "understand.timeout",
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "provider.switched", "provider.no_fallback",
+    "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "identity.ask_name", "identity.confirm",
 )

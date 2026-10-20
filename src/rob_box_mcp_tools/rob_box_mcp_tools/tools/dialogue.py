@@ -19,7 +19,7 @@ from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES
 from rob_box_core import speech_client
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, shared_publisher
-from ..voice_state import VoiceStateStore
+from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
 from ..animations import (
     KNOWN_ANIMATIONS,
     normalize_animation,
@@ -56,13 +56,13 @@ try:
         should_skip as should_skip_foreign_scripts,
     )
 except ImportError:  # pragma: no cover — fallback для minimal environments
-    def analyze_foreign_scripts(text: str):
+    def analyze_foreign_scripts(text: str, provider=None):
         return None
 
     def describe_foreign_scripts(report) -> str:
         return "guard unavailable"
 
-    def should_skip_foreign_scripts(text: str) -> bool:
+    def should_skip_foreign_scripts(text: str, threshold: float = 0.10, provider=None) -> bool:
         return False
 
 
@@ -89,11 +89,8 @@ def _active_tts_provider(node) -> str:
 class SpeakTextTool(MCPTool):
     """Инструмент для произнесения текста голосом."""
 
-    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+    def __init__(self, node):
         super().__init__(node)
-        # Issue #1219 — общее in-memory хранилище current_voice с
-        # SetVoiceTool (персистентный голос на диалог, Q7/Q11).
-        self._voice_store = voice_store or VoiceStateStore()
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
         from rob_box_dialog_msgs.msg import SpeechEvent
@@ -307,9 +304,8 @@ class SpeakTextTool(MCPTool):
         # Резолв голоса (issue #1219, Q6/Q7): разовый voice= из speak_text
         # важнее установленного set_voice; если оба отсутствуют — дефолт
         # провайдера. Неизвестный голос → дефолт + voice_used в результате.
-        voice_used, voice_fell_back = self._voice_store.resolve(
-            provider, requested=voice
-        )
+        # Без voice= - пусто: реплика звучит текущим голосом tts_node (его выбор хранит владелец голоса, PR-4 ч.3).
+        voice_used, voice_fell_back = resolve_speak_voice(provider, voice)
         if voice and voice_fell_back:
             self.log_warning(
                 f"⚠️ Голос '{voice}' недоступен у провайдера '{provider}' — "
@@ -347,8 +343,9 @@ class SpeakTextTool(MCPTool):
         # букв неподдерживаемых письменностей (>10%, см. tts_text_guard) —
         # НЕ произносим: логируем warning с полным текстом и возвращаем
         # честную ошибку, чтобы LLM переписала фразу транслитом.
-        _guard_report = analyze_foreign_scripts(text)
-        if _guard_report is not None and should_skip_foreign_scripts(text):
+        # #3728: решает возможность активного провайдера (MiniMax читает CJK, Yandex/Silero нет).
+        _guard_report = analyze_foreign_scripts(text, provider)
+        if _guard_report is not None and should_skip_foreign_scripts(text, provider=provider):
             self.log_warning(
                 "🚫 [issue 1709] Чанк не произнесён: слишком много символов "
                 f"неподдерживаемых письменностей — "
@@ -1001,9 +998,9 @@ class SetVoiceTool(MCPTool):
 
     LLM вызывает этот tool когда пользователь просит «говори голосом X»
     или когда хочет сменить голос на диалог (например, рассказывать
-    сказку от разных лиц). Голос хранится in-memory (VoiceStateStore) с
-    привязкой к speaker_id; следующий ``speak_text`` без voice= говорит
-    установленным голосом.
+    сказку от разных лиц). Голос хранит и применяет tts_node (``VoiceOwner``,
+    переживает рестарт); тул просит и ждёт ``SpeechEvent voice_changed``,
+    следующий ``speak_text`` без voice= говорит установленным голосом.
 
     Опциональный параметр ``provider`` (issue #1765): если задан, бот
     СНАЧАЛА переключает активного TTS-провайдера (yandex ↔ minimax ↔
@@ -1025,25 +1022,8 @@ class SetVoiceTool(MCPTool):
        "provider_switched": true, ...}``
     """
 
-    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+    def __init__(self, node):
         super().__init__(node)
-        self._voice_store = voice_store or VoiceStateStore()
-        # Публикуем изменение, чтобы dialogue_node мог обновить LLM-контекст
-        # ([TTS] current_voice) — payload JSON {"voice": str}.
-        from std_msgs.msg import String
-
-        self._voice_state_pub = node.create_publisher(
-            String, "/voice/tts/current_voice", 10
-        )
-        # Issue #1765 — переключение TTS-провайдера. tts_node подписан на
-        # этот topic и пересобирает provider_chain (новый провайдер
-        # первым), чистит provider_dead_until для этого провайдера и
-        # публикует provider_state обратно (dialogue_node/mcp_server
-        # увидят нового провайдера в LLM-контексте).
-        # Issue #3108: SetVoiceTool и SetTtsProviderTool делят один publisher.
-        self._set_provider_pub = shared_publisher(
-            node, String, "/voice/tts/set_provider", 10
-        )
 
     @property
     def name(self) -> str:
@@ -1123,8 +1103,6 @@ class SetVoiceTool(MCPTool):
                 silero). Если задано и отличается от активного — сначала
                 переключает провайдера, потом валидирует voice.
         """
-        import json as _json
-
         voice_clean = (voice or "").strip()
         if not voice_clean:
             return MCPToolResult(
@@ -1166,91 +1144,29 @@ class SetVoiceTool(MCPTool):
             requested_provider and requested_provider != active_provider
         )
 
-        # Валидация голоса. Делаем ПОСЛЕ вычисления target_provider, чтобы
-        # для cross-provider случая (set_voice(voice="artem", provider="yandex")
-        # при активном minimax) валидировали против yandex-списка, а не
-        # против minimax (где «artem» отсутствует → voice_unavailable).
-        known = voices_for(target_provider)
-        if known and voice_clean not in known:
-            return MCPToolResult(
-                success=False,
-                data={
-                    "error": "voice_unavailable",
-                    "requested": voice_clean,
-                    "provider": target_provider,
-                    "available": known,
-                    "default_voice": default_voice_for(target_provider),
-                },
-                message=(
-                    f"Голос '{voice_clean}' недоступен у провайдера "
-                    f"'{target_provider}'. Доступные: {', '.join(known)}. "
-                    f"Дефолтный: {default_voice_for(target_provider)}. "
-                    f"Выбери голос из списка."
-                ),
-            )
-
-        # Если провайдер переключался — публикуем set_provider ДО
-        # сохранения голоса. tts_node подписан, пересоберёт chain и
-        # переопубликует provider_state → mcp_server/dialogue_node
-        # обновят [TTS] в LLM-контексте до следующего speak_text.
-        if provider_switched:
-            try:
-                from std_msgs.msg import String as _String
-
-                msg = _String()
-                msg.data = _json.dumps(
-                    {
-                        "provider": requested_provider,
-                        "voice": voice_clean,
-                        "source": "set_voice",
-                    },
-                    ensure_ascii=False,
-                )
-                self._set_provider_pub.publish(msg)
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                self.log_warning(
-                    f"⚠️ [set_voice] publish set_provider failed: {exc}"
-                )
-
-        self._voice_store.set_voice(voice_clean)
+        # Голос хранит и применяет tts_node (VoiceOwner): просим и ждём SpeechEvent voice_changed (PR-4 ч.3). Фразу об
+        # исходе («Говорю голосом X» / «Голос X недоступен, остаюсь на Y») строит код по событию, а не LLM.
+        outcome = voice_requests(self.node).request(voice_clean, requested_provider or "")
+        phrase = outcome_phrase(outcome)
+        # Формат строки читают e2e-скрипты (voice_changed: голос != default): голос здесь - ПРИМЕНЁННЫЙ.
+        shown = outcome.provider or target_provider
         self.log_info(
-            f"[set_voice] voice={voice_clean!r} provider={target_provider} "
-            f"default={default_voice_for(target_provider)} "
-            f"switched={provider_switched}"
+            f"[set_voice] voice={(outcome.applied or voice_clean)!r} provider={shown} "
+            f"default={default_voice_for(shown)} switched={provider_switched} status={outcome.status}"
         )
-        # Публикуем смену голоса — dialogue_node обновит [TTS] current_voice.
-        try:
-            from std_msgs.msg import String as _String
-
-            msg = _String()
-            msg.data = _json.dumps(
-                {"voice": voice_clean, "provider": target_provider},
-                ensure_ascii=False,
-            )
-            self._voice_state_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            self.log_warning(f"⚠️ [set_voice] publish voice_state failed: {exc}")
-
+        _say_outcome(self.node, phrase)
         return MCPToolResult(
-            success=True,
+            success=outcome.status == "applied",
             data={
-                "status": "ok",
-                "voice_set": voice_clean,
-                "default_voice": default_voice_for(target_provider),
-                "provider": target_provider,
+                "status": outcome.status,
+                "voice_requested": voice_clean,
+                "voice_applied": outcome.applied,
+                "provider": outcome.provider or target_provider,
                 "previous_provider": active_provider if provider_switched else None,
                 "provider_switched": provider_switched,
+                "available": voices_for(outcome.provider or target_provider),
             },
-            message=(
-                f"Голос установлен: '{voice_clean}' на провайдере "
-                f"'{target_provider}' (дефолтный: "
-                f"{default_voice_for(target_provider)})"
-                + (
-                    f"; переключились с '{active_provider}'"
-                    if provider_switched
-                    else ""
-                )
-            ),
+            message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
         )
 
 
@@ -1269,15 +1185,8 @@ class SetTtsProviderTool(MCPTool):
     → ``{"status": "ok", "provider": "yandex", "default_voice": "anton"}``
     """
 
-    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+    def __init__(self, node):
         super().__init__(node)
-        self._voice_store = voice_store or VoiceStateStore()
-        from std_msgs.msg import String
-
-        # Issue #3108: SetVoiceTool и SetTtsProviderTool делят один publisher.
-        self._set_provider_pub = shared_publisher(
-            node, String, "/voice/tts/set_provider", 10
-        )
 
     @property
     def name(self) -> str:
@@ -1325,8 +1234,6 @@ class SetTtsProviderTool(MCPTool):
         return False
 
     def execute(self, provider: str) -> MCPToolResult:
-        import json as _json
-
         target_provider, prov_err = _validate_provider(provider)
         if prov_err == "provider_empty":
             return MCPToolResult(
@@ -1373,52 +1280,33 @@ class SetTtsProviderTool(MCPTool):
                 ),
             )
 
-        default_voice = default_voice_for(target_provider)
-        # Публикуем set_provider — tts_node пересоберёт chain,
-        # почистит dead_until для нового провайдера и переопубликует
-        # provider_state.
-        try:
-            from std_msgs.msg import String as _String
-
-            msg = _String()
-            msg.data = _json.dumps(
-                {
-                    "provider": target_provider,
-                    "voice": default_voice,
-                    "source": "set_tts_provider",
-                },
-                ensure_ascii=False,
-            )
-            self._set_provider_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            self.log_warning(
-                f"⚠️ [set_tts_provider] publish set_provider failed: {exc}"
-            )
-
-        # Запоминаем дефолтный голос нового провайдера в voice_store,
-        # чтобы следующий speak_text без voice= говорил им (а не
-        # старым голосом от старого провайдера).
-        self._voice_store.set_voice(default_voice)
-
+        # Провайдера переключает владелец голоса (tts_node); пустой голос = дефолт нового провайдера. Исход - событие.
+        outcome = voice_requests(self.node).request("", target_provider)
+        phrase = outcome_phrase(outcome)
         self.log_info(
-            f"[set_tts_provider] provider={target_provider!r} "
-            f"default_voice={default_voice!r} previous={active_provider!r}"
+            f"[set_tts_provider] provider={target_provider!r} -> {outcome.status} "
+            f"applied={outcome.applied!r} previous={active_provider!r}"
         )
-
+        _say_outcome(self.node, phrase)
         return MCPToolResult(
-            success=True,
+            success=outcome.status == "applied",
             data={
-                "status": "ok",
-                "provider": target_provider,
-                "default_voice": default_voice,
+                "status": outcome.status,
+                "provider": outcome.provider or target_provider,
+                "voice_applied": outcome.applied,
                 "previous_provider": active_provider,
                 "provider_switched": True,
             },
-            message=(
-                f"Провайдер переключён: '{active_provider}' → "
-                f"'{target_provider}'. Дефолтный голос: '{default_voice}'."
-            ),
+            message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
         )
+
+
+def _say_outcome(node, phrase: str) -> None:
+    """Озвучить фразу исхода смены голоса (новым голосом); сбой озвучки не меняет исход."""
+    try:
+        node.registry.execute("speak_text", text=phrase)
+    except Exception:  # noqa: BLE001 - озвучка best-effort, результат тула уже честный
+        pass
 
 
 class ListTtsVoicesTool(MCPTool):

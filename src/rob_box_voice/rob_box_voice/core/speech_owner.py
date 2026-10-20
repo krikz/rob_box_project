@@ -384,6 +384,20 @@ class SpeechOwner:
             f"epoch={rec.meta.epoch} text_len={rec.text_len} {extra}"
         )
 
+    def voice_changed(self, request_id: str, requested: str, applied: str, provider: str, reason: str = "") -> None:
+        """Итог запроса смены голоса (``/voice/tts/voice_request``): не привязан к реплике.
+
+        ``turn_id`` несёт ``request_id`` запроса - так ждущий (тул ``set_voice``) узнаёт свой ответ.
+        """
+        ev = self._msgs.SpeechEvent()
+        ev.kind = _KINDS.index("voice_changed")
+        ev.turn_id, ev.agent, ev.provider, ev.reason = request_id, "system", provider, reason
+        ev.voice_requested, ev.voice_applied = requested, applied
+        ev.stamp = self._node.get_clock().now().to_msg()
+        self._event_pub.publish(ev)
+        self._log(f"🗣️ SpeechEvent voice_changed request={request_id[:8]} requested={requested!r} "
+                  f"applied={applied!r} provider={provider} reason={reason}")
+
     def _log(self, text: str) -> None:
         self._node.get_logger().info(text)
 

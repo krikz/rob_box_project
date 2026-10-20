@@ -99,6 +99,7 @@ tts_node:
     # реального провайдера (не номинального minimax). Пустая строка —
     # отключить персистентность.
     provider_state_file: /data/tts_provider_state.json
+    voice_state_file: /data/tts_voice_state.json  # выбранный голос переживает рестарт (ADR-0150 PR-4 ч.3)
     audio_topic: /voice/audio/speech
     audio_output_sample_rate: 16000
     audio_qos_reliability: best_effort

@@ -466,12 +466,6 @@ class TestBuildDynamicSystemContextTtsVoiceTag(object):
         assert "<tts_voice>male-qn-qingse</tts_voice>" in ctx
         assert "Yandex_Maxim" not in ctx
 
-    def test_current_voice_set_via_set_voice(self, node):
-        """set_voice выставил ``_current_tts_voice`` -- тег его отражает."""
-        node._current_tts_voice = "Russian_ReliableMan"
-        ctx = node._build_dynamic_system_context()
-        assert "<tts_voice>Russian_ReliableMan</tts_voice>" in ctx
-
     def test_actual_voice_after_fallback_wins(self, node):
         """Фолбек minimax->yandex сообщил фактический голос (issue #1229) --
         тег показывает его, а не номинальный provider'а/set_voice."""

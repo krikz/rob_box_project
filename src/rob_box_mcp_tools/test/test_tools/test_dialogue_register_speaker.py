@@ -117,8 +117,8 @@ def _load_dialogue_isolated():
     pkg_root = sys.modules.setdefault(
         "rob_box_mcp_tools", types.ModuleType("rob_box_mcp_tools")
     )
-    # Issue #2932 — dialogue.py делает `from ..voice_state import
-    # VoiceStateStore` (и `from ..animations import ...`), т.е. относительные
+    # Issue #2932 — dialogue.py делает `from ..voice_request import
+    # outcome_phrase` (и `from ..animations import ...`), т.е. относительные
     # импорты СОСЕДНИХ модулей пакета, а не только ``base``. Без __path__
     # на стаб-пакете относительный импорт падает с "'rob_box_mcp_tools' is
     # not a package" — сами модули (voice_state.py/animations.py) не тянут
