@@ -23,7 +23,10 @@ from rob_box_voice.core.speech_owner import (
 )
 
 M = install_dialog_msgs_stub()
-KIND = {getattr(M.SpeechEvent, k): k[5:].lower() for k in dir(M.SpeechEvent) if k.startswith("KIND_")}
+_KIND_NAMES = ("queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")
+KIND = {getattr(M.SpeechEvent, f"KIND_{name.upper()}"): name for name in _KIND_NAMES}
+#: Тип ``builtin_interfaces/Time`` той сборки сообщений, что под рукой (rosidl в CI, заглушка без ROS).
+TIME = type(M.SpeechEvent().stamp)
 
 
 class _Clock:
@@ -64,7 +67,7 @@ class _Node:
 
     def get_clock(self):
         ns = int(self.ros_now_s * 1e9)
-        stamp = types.SimpleNamespace(sec=ns // 10**9, nanosec=ns % 10**9)
+        stamp = TIME(sec=ns // 10**9, nanosec=ns % 10**9)
         return types.SimpleNamespace(now=lambda: types.SimpleNamespace(nanoseconds=ns, to_msg=lambda: stamp))
 
     def get_logger(self):

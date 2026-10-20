@@ -11,6 +11,8 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub
 from rob_box_core.utterance import PRIORITY_OPERATOR, Utterance
 
 M = install_dialog_msgs_stub()
+#: ``builtin_interfaces/Time`` той сборки сообщений, что под рукой (rosidl в CI, заглушка без ROS).
+TIME = type(M.SpeechRequest().stamp)
 
 
 class _Pub:
@@ -31,7 +33,7 @@ class _Node:
         return pub
 
     def get_clock(self):
-        stamp = types.SimpleNamespace(sec=7, nanosec=5)
+        stamp = TIME(sec=7, nanosec=5)
         return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
 
 
