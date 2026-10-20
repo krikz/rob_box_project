@@ -111,8 +111,6 @@ class Eye:
     lid_color: np.ndarray = field(default_factory=lambda: LID.copy())
     shades: float = 0.0       # 0..1 sunglasses drop-in
     glint: float = -1.0       # sunglasses glint position (-1 = none)
-    x_shift: int = 0
-    y_shift: int = 0
     bot_lid_dark: bool = False   # happy ^^: lower lid black so the crescent pops
 
 
@@ -196,17 +194,6 @@ def draw_eye(arr, e: Eye, side: str):
                             out[yy, x] = col(25, 25, 25)
                         elif abs(d) < 1.6:
                             out[yy, x] = col(5, 5, 6)
-    out = np.roll(out, e.x_shift, axis=1)
-    if e.x_shift > 0:
-        out[:, :e.x_shift] = 0
-    elif e.x_shift < 0:
-        out[:, e.x_shift:] = 0
-    if e.y_shift:
-        out = np.roll(out, e.y_shift, axis=0)
-        if e.y_shift > 0:
-            out[:e.y_shift] = 0
-        else:
-            out[e.y_shift:] = 0
     arr[:] = out
 
 

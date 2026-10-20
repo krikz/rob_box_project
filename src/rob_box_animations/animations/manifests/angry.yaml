@@ -24,59 +24,7 @@ panels:
       - image: "frames/angry/p8_009.png"
         duration_ms: 40
       - image: "frames/angry/p8_011.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 120
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 160
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 2320
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_011.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_015.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_013.png"
-        duration_ms: 2120
+        duration_ms: 5800
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
@@ -91,59 +39,7 @@ panels:
       - image: "frames/angry/p8_008.png"
         duration_ms: 40
       - image: "frames/angry/p8_010.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 120
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 80
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 160
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 2320
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_010.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_014.png"
-        duration_ms: 40
-      - image: "frames/angry/p8_012.png"
-        duration_ms: 2120
+        duration_ms: 5800
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
@@ -210,6 +106,6 @@ metadata:
   priority: "normal"
   category: "emotions"
   tags: [angry, emotion, red, intense]
-  brightness_budget: 167
+  brightness_budget: 162
   bake_scale: 1.000
-  peak_ma_at_255: 6282
+  peak_ma_at_255: 6448

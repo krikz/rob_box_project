@@ -82,7 +82,7 @@ def acting(t, phrases, stressed, rng_seed):
             # small drift toward one side during the phrase
             e = replace(e, gx=e.gx or (1 if i % 2 else -1) * (1 if (t - p0) > 0.8 else 0))
     if stressed:
-        e = replace(e, top=0.0, y_shift=1)
+        e = replace(e, top=0.0)        # brows up on the stressed syllable
     k = max((blink_curve(t, p1 + 0.04, 0.2) for (_, p1) in phrases), default=0.0)
     return apply_blink(e, k)
 

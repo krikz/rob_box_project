@@ -57,7 +57,7 @@ python tools/led_face_lab/render_gifs.py src/rob_box_animations/animations docs/
 | `turn_left` | Левая фара робота мигает жёлтым, взгляд в поворот, сзади бегущая заливка | ![](../../../docs/assets/animations/turn_left.gif) |
 | `turn_right` | То же зеркально | ![](../../../docs/assets/animations/turn_right.gif) |
 | `braking` | Стоп-сигнал, прищур | ![](../../../docs/assets/animations/braking.gif) |
-| `accelerating` | Прищур, сжатые зубы, дрожь, сзади форсаж | ![](../../../docs/assets/animations/accelerating.gif) |
+| `accelerating` | Прищур, сжатые зубы, сзади форсаж | ![](../../../docs/assets/animations/accelerating.gif) |
 
 ### Лицо и эмоции
 
@@ -66,11 +66,11 @@ python tools/led_face_lab/render_gifs.py src/rob_box_animations/animations docs/
 | `idle` | Моргания 2–6 с (иногда двойные), саккады, осмотр, ухмылка; раз в цикл заскучал и зевнул | ![](../../../docs/assets/animations/idle.gif) |
 | `talking` | Проём между зубами линзой по слогам А/О/Э; взгляд в сторону в начале фразы, кивок на ударном, моргание в конце | ![](../../../docs/assets/animations/talking.gif) |
 | `thinking` | Огонёк бежит по зубам и прищур, потом зрачки по кругу | ![](../../../docs/assets/animations/thinking.gif) |
-| `happy` | Глаза ^^, хихиканье | ![](../../../docs/assets/animations/happy.gif) |
+| `happy` | Глаза ^^ щурятся от смеха, хихиканье | ![](../../../docs/assets/animations/happy.gif) |
 | `sad` | Веки домиком, зрачки вниз, слеза | ![](../../../docs/assets/animations/sad.gif) |
 | `angry` | Веки клином, глаза краснеют, скрежет зубами | ![](../../../docs/assets/animations/angry.gif) |
 | `surprised` | Моргнул, глаза распахнуты, зрачок-точка, рот «О» | ![](../../../docs/assets/animations/surprised.gif) |
-| `victory` | Глаза ^^ прыгают, радуга по зубам, салют и конфетти сзади | ![](../../../docs/assets/animations/victory.gif) |
+| `victory` | Глаза ^^ щурятся в такт, радуга по зубам, салют и конфетти сзади | ![](../../../docs/assets/animations/victory.gif) |
 
 ### Системные
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import replace
 
 import numpy as np
 
@@ -88,14 +87,10 @@ def listening(seed=3, T=9.0):
     out = []
     for t in frames(T):
         jitter = 0.5 if (int(t * 1.3) % 3 == 1) else 0.0
-        e = Eye(top=max(0.0, perk(t)), gx=round(target(t) + jitter), gy=-0.4)
-        yb = 1 if any(n <= t < n + 0.16 for n in nods) else 0
-        e = replace(e, y_shift=yb)
+        nod = max((math.sin(math.pi * (t - n) / 0.4) for n in nods if n <= t < n + 0.4), default=0.0)
+        e = Eye(top=max(0.0, perk(t)) + 1.4 * nod, gx=round(target(t) + jitter), gy=-0.4)
         f = Frame()
         put_face(f, blinked(e, t, blinks), blinked(e, t, blinks), Mouth())
-        if t < 0.35:   # perk: eyes hop up a pixel
-            f.eye_l = np.roll(f.eye_l, -1, axis=0); f.eye_l[-1] = 0
-            f.eye_r = np.roll(f.eye_r, -1, axis=0); f.eye_r[-1] = 0
         out.append(f)
     return out
 
@@ -200,7 +195,7 @@ def talking(seed=6, T=9.0, mood='neutral'):
             e = Eye(top=0.0, bot=6.4, bot_arc=1.4, gx=round(gx), gy=-0.5, bot_lid_dark=True)
         elif mood == 'excited':
             m = Mouth(shape=shape)
-            e = Eye(top=0.0, gx=round(gx), gy=round(gy), y_shift=-1 if lvl == 3 else 0)
+            e = Eye(top=0.0, gx=round(gx), gy=round(gy))
         else:
             m = Mouth(shape=shape)
             e = Eye(top=0.9 if o < 0.8 else 0.0, gx=round(gx), gy=round(gy))
@@ -217,7 +212,8 @@ def happy(seed=7, T=6.0):
     for t in frames(T):
         kk = k(t)
         giggle = t < 2.2 and (t * 5.0) % 1.0 < 0.5
-        e = Eye(top=0.0, bot=lerp(7, 6.2, kk), bot_arc=3.4 * kk, gx=0, gy=-1, y_shift=-1 if giggle else 0, bot_lid_dark=True)
+        squeeze = 0.5 + 0.5 * math.sin(t * math.tau * 2.5) if t < 2.2 else 0.0
+        e = Eye(top=0.0, bot=lerp(7, 6.2, kk), bot_arc=3.4 * kk + 0.7 * squeeze, gx=0, gy=-1, bot_lid_dark=True)
         m = Mouth(curve=1.0, shape='E1' if giggle else 'C')
         f = Frame()
         put_face(f, e, e, m)
@@ -258,17 +254,13 @@ def sad(seed=9, T=7.0):
 
 
 def angry(seed=10, T=6.0):
-    rng = random.Random(seed)
     k = Track(0.0).to(0.2, 1.0)
     red, red_rim = col(25, 5, 0), col(13, 1, 0)
     out = []
     for t in frames(T):
         kk = k(t)
-        shake = 0
-        if t < 1.2 or 3.4 < t < 3.9:
-            shake = rng.choice([-1, 0, 1])
         e = Eye(top=lerp(1.0, 1.6, kk), slant=2.3 * kk, gy=0.6, gx=0,
-                color=EYE * (1 - kk) + red * kk, rim=EYE_RIM * (1 - kk) + red_rim * kk, x_shift=shake)
+                color=EYE * (1 - kk) + red * kk, rim=EYE_RIM * (1 - kk) + red_rim * kk)
         grind = (int(t * 12) % 2) if (t < 1.2 or 3.4 < t < 3.9) else 0
         m = Mouth(curve=-1.0 if kk > 0.5 else 0.0, color=TEETH * (1 - kk) + col(25, 25, 22) * kk, x_shift=grind, grid=0.0)
         f = Frame()
@@ -284,9 +276,8 @@ def surprised(seed=11, T=5.0):
             e = apply_blink(Eye(top=1.0), 1.0)
             m = Mouth()
         else:
-            pop = t < 0.35
             relax = ease_io((t - 3.2) / 0.8) if t > 3.2 else 0.0
-            e = Eye(top=lerp(0.0, 1.0, relax), pupil=1 if relax < 0.5 else 2, gx=0, gy=0, y_shift=-1 if pop else 0)
+            e = Eye(top=lerp(0.0, 1.0, relax), pupil=1 if relax < 0.5 else 2, gx=0, gy=0)
             o = 1 - relax
             m = Mouth(shape='O2' if o > 0.66 else ('O1' if o > 0.25 else 'C'))
         f = Frame()
@@ -386,7 +377,7 @@ def music_groove(seed=14, T=8.0, bpm=118):
         ph = beat % 1.0
         bar = int(beat // 4)
         side = 1 if int(beat // 2) % 2 == 0 else -1
-        e = Eye(top=1.0, gx=1.6 * side, gy=0, y_shift=1 if ph < 0.14 else 0)
+        e = Eye(top=1.0 + 0.9 * math.exp(-ph * 9), gx=1.6 * side, gy=0)
         f = Frame()
         put_face(f, e, e, Mouth())
         eq_mouth(f, t, bpm, accents[bar % 4], seed)
@@ -403,7 +394,7 @@ def music_shades(seed=15, T=8.0, bpm=118):
         drop = clamp(t / 0.7, 0, 1)
         bar_ph = (beat % 4) / 4
         glint = bar_ph * 16 - 4 if bar_ph < 0.6 else -1
-        e = Eye(top=1.0, shades=drop, glint=glint if drop >= 1 else -1, y_shift=1 if ph < 0.14 and drop >= 1 else 0)
+        e = Eye(top=1.0, shades=drop, glint=glint if drop >= 1 else -1)
         m = Mouth(curve=1.0, smirk=1.0, shape='E1' if ph < 0.15 else 'C')
         f = Frame()
         put_face(f, e, e, m)
@@ -416,7 +407,7 @@ def music_vibe(seed=16, T=8.0, bpm=96):
     out = []
     for t in frames(T):
         beat = t * bpm / 60.0
-        e = Eye(top=0.0, bot=6.2, bot_arc=3.4, gy=-1, y_shift=-1 if (beat % 2) < 0.25 else 0, bot_lid_dark=True)
+        e = Eye(top=0.0, bot=6.2, bot_arc=3.4 + 0.6 * math.exp(-(beat % 2) * 4), gy=-1, bot_lid_dark=True)
         f = Frame()
         put_face(f, e, e, Mouth(curve=1.0))
         # humming: a warm glow rolls along the teeth with the beat
@@ -542,7 +533,7 @@ def new_year_eve(seed=20, T=8.0):
     text = "2027"
     out = []
     for t in frames(T):
-        e = Eye(top=0.0, bot=6.2, bot_arc=3.4, gy=-1, y_shift=-1 if (t * 2.4) % 1.0 < 0.2 else 0, bot_lid_dark=True)
+        e = Eye(top=0.0, bot=6.2, bot_arc=3.4 + 0.6 * (0.5 + 0.5 * math.sin(t * math.tau * 2.4)), gy=-1, bot_lid_dark=True)
         f = Frame()
         put_face(f, e, e, Mouth(curve=1.0))
         if 2.0 < t < 7.2:     # mouth flips to the year, digits drop in one by one
