@@ -23,7 +23,11 @@ class _FakeNode:
         return pub
 
     def get_clock(self):
-        return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: None))
+        try:    # real sensor_msgs/Image (CI) insists on builtin_interfaces/Time
+            from builtin_interfaces.msg import Time
+        except ImportError:
+            Time = type(None)
+        return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=Time))
 
 
 def test_one_publisher_all_groups_first_then_only_changes():
