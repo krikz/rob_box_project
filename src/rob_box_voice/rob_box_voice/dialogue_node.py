@@ -1202,8 +1202,8 @@ class DialogueNode(Node):
         )
         self.get_logger().info("✅ DialogueNode shell ready (AgentCore wired)")
     def _declare_params(self) -> None:
-        # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
-        # 'Token Plan usage limit reached'). YAML мёртв (#1004) — дефолт
+        # 🔴 FIX (live 18:00): тариф MiniMax кончился (429 rate_limit
+        # 'usage limit reached'). YAML мёртв (#1004) — дефолт
         # в коде единственный живой путь → переключаем на deepseek.
         # DEEPSEEK_API_KEY в env voice-assistant.
         # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
@@ -1344,7 +1344,7 @@ class DialogueNode(Node):
         self.declare_parameter("accumulate_no_wake_enabled", True)
         self.declare_parameter("accumulate_window_sec", 180.0)
         # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
-        # рестарт робота: если MiniMax мёртв (2056 Token Plan), первый же
+        # рестарт робота: если MiniMax мёртв (квота), первый же
         # запрос после ребута идёт на deepseek, а не тратит время на
         # мёртвого. Пусто = кэш только в памяти.
         self.declare_parameter("health_cache_path", "~/.rob_box/llm_health.json")

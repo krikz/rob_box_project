@@ -441,7 +441,7 @@ class HealthCache:
 def is_quota_exhausted(exc: BaseException) -> bool:
     """True when the error signals quota / balance exhaustion.
 
-    These errors describe a *long* usage window (MiniMax Token Plan is
+    These errors describe a *long* usage window (тариф MiniMax is
     a 5-hour window; the vendor documents them as "do not
     retry aggressively") — retrying them with a seconds-scale backoff
     only wastes the user's time. The fallback chain should switch
