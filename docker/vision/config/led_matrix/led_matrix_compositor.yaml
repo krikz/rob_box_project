@@ -11,6 +11,8 @@
 #   Panel 7-8: 8x8 задние фары (wheel_rear_left / wheel_rear_right)
 #   Total: 381 LEDs
 # Лево/право — борта робота: у человека напротив wheel_front_left справа.
+# Весь перед смонтирован повёрнутым на 180° — проверено тест-кадром с
+# буквой F 20.10.2026 (фото Шифу); раскладка ниже это учитывает.
 
 led_matrix_compositor:
   ros__parameters:
@@ -49,31 +51,34 @@ led_matrix_compositor:
 
     # Логические группы (как приложения обращаются к панелям)
     logical_groups:
-      # Главный дисплей: 5 панелей объединены горизонтально (5×25)
+      # Весь перед (рот + фары) смонтирован повёрнутым на 180° — проверено
+      # тест-кадром с буквой F 20.10.2026 (фото Шифу): при прежнем конфиге
+      # F во рту и в фарах были вверх ногами, рот реверсирован, а
+      # wheel_front_left оказывалась на другом борту, чем wheel_rear_left.
+      # Поэтому рот идёт панелями в обратном порядке с отражением по X,
+      # а имена передних фар закреплены за бортами: wheel_front_left — на
+      # том же борту, что wheel_rear_left (у человека напротив лица — справа).
       - name: main_display
-        physical_indices: [0, 1, 2, 3, 4]
+        physical_indices: [4, 3, 2, 1, 0]
         arrangement: [5, 1]
-        flip_x: false
-        flip_y: true
+        flip_x: true
+        flip_y: false
         snake_arrangement: false
 
-      # Передняя левая фара (8×8)
       - name: wheel_front_left
-        physical_indices: [5]
+        physical_indices: [6]
         arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
-      # Передняя правая фара (8×8)
       - name: wheel_front_right
-        physical_indices: [6]
+        physical_indices: [5]
         arrangement: [1, 1]
         flip_x: true
         flip_y: true
         snake_arrangement: false
 
-      # Задняя левая фара (8×8)
       - name: wheel_rear_left
         physical_indices: [7]
         arrangement: [1, 1]

@@ -4,8 +4,9 @@
 кода. До этого PR том держал устаревший файл на 253 светодиода без задних
 фар и с другим порядком панелей — поднять сабмодуль, не поправив его,
 значило перемешать всю ленту на роботе. Раскладка, на которой робот
-работал до TD-7 (ros2leds afb263d, зашита в коде), совпадает с YAML пакета;
-тест держит том равным ему.
+работал до TD-7 (ros2leds afb263d, зашита в коде), показывала перед
+повёрнутым на 180° — исправлено по тест-кадру 20.10.2026; том держится
+равным YAML пакета.
 """
 
 from __future__ import annotations
@@ -19,12 +20,14 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 VOLUME = REPO_ROOT / "docker" / "vision" / "config" / "led_matrix"
 PACKAGE_YAML = REPO_ROOT / "src" / "ros2leds" / "led_matrix_compositor" / "config" / "led_matrix_compositor.yaml"
 
-# Раскладка живого робота до TD-7 (ros2leds afb263d, LEDMatrixCompositor.__init__).
+# Раскладка, проверенная на роботе тест-кадром с буквой F 20.10.2026 (фото
+# Шифу): прежняя раскладка (ros2leds afb263d) показывала весь перед повёрнутым
+# на 180°, а wheel_front_left стояла на другом борту, чем wheel_rear_left.
 LIVE_PANELS = [(5, 5, True)] * 5 + [(8, 8, False)] * 4
 LIVE_GROUPS = {
-    "main_display": ([0, 1, 2, 3, 4], [5, 1], False, True),
-    "wheel_front_left": ([5], [1, 1], False, False),
-    "wheel_front_right": ([6], [1, 1], True, True),
+    "main_display": ([4, 3, 2, 1, 0], [5, 1], True, False),
+    "wheel_front_left": ([6], [1, 1], False, False),
+    "wheel_front_right": ([5], [1, 1], True, True),
     "wheel_rear_left": ([7], [1, 1], False, False),
     "wheel_rear_right": ([8], [1, 1], False, False),
 }
@@ -45,7 +48,7 @@ def driver() -> dict:
     return _params(VOLUME / "led_matrix_driver.yaml", "led_matrix_driver")
 
 
-def test_volume_layout_is_the_live_robot_layout(compositor):
+def test_volume_layout_is_the_photo_verified_layout(compositor):
     panels = [(p["width"], p["height"], p["snake_connection"]) for p in compositor["physical_panels"]]
     assert panels == LIVE_PANELS
     groups = {
