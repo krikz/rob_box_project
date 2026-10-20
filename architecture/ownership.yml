@@ -90,6 +90,12 @@ nodes:
     # Ещё на старом JSON /voice/tts/request (адаптер speech_compat): джойстик
     # rob_box_teleop - в образе teleop нет rob_box_dialog_msgs.
     source: [src/rob_box_core/rob_box_core/speech_client.py]
+  provider_publisher:
+    owner: voice
+    package: rob_box_core
+    # PR-4 ч.2 (#3693): писатель /voice/providers/state своего вида; ставят tts_node (tts), stt_node (stt),
+    # dialogue_node (llm), mcp_server (music_gen). Переиздаёт раз в 2 с.
+    source: [src/rob_box_core/rob_box_core/provider_publisher.py]
   face_node:
     owner: dialog-v2
     package: rob_box_animations
@@ -229,10 +235,11 @@ topics:
     status: live
     introduced_by: "PR-4 (#3693)"
     # писатели по видам (by-design, ADR-0150 §2.3/§8): tts_node - kind=tts, stt_node - kind=stt, dialogue_node/dialog_node -
-    # kind=llm, mcp_server - kind=music_gen; каждый публикует только свои ProviderState[], подписчик сливает по (kind, name)
-    writers_allowed: [tts_node, stt_node, dialogue_node, dialog_node]
-    readers: []
-    debt: "потребители (панель ТАРС, dialog_node) - PR-6/PR-7; до них - seam_allowlist.json"
+    # kind=llm, mcp_server - kind=music_gen; каждый публикует только свои ProviderState[], подписчик сливает по (kind, name).
+    # Почему переиздание раз в 2 с: поздний подписчик по transient_local получает не всех писателей (rmw_zenoh, PR #3729) -
+    # корректность от переиздания, запись без обновлений 10 с = unknown.
+    writers_allowed: [provider_publisher, dialog_node]
+    readers: [dialogue_node, dialog_node]
   /dialog/session:
     owner: dialog_node
     type: rob_box_dialog_msgs/SessionState
