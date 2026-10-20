@@ -187,7 +187,7 @@ jobs:
           SSHPASS: open
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "docker ps --filter name=voice-assistant --format '{{.Status}}'"
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 "docker ps --filter name=voice-assistant --format '{{.Status}}'"
 
       - name: Ensure TTS keys on build machine
         env:
@@ -204,9 +204,9 @@ jobs:
           # файл — валидное состояние, а не повод валить весь прогон.
           YKEY_LOCAL=/tmp/yandex_key_$$.txt
           MMKEY_LOCAL=/tmp/minimax_key_$$.txt
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 \
             "docker exec voice-assistant printenv YANDEX_API_KEY" > "$YKEY_LOCAL" || true
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 \
             "docker exec voice-assistant printenv MINIMAX_API_KEY" > "$MMKEY_LOCAL" || true
           echo "yandex key bytes:  $(wc -c < "$YKEY_LOCAL")"
           echo "minimax key bytes: $(wc -c < "$MMKEY_LOCAL")"
@@ -373,7 +373,7 @@ jobs:
           # каталоги (e2e_v2_20260813_031333 и т.п.) → в звуковой артефакт попадало
           # «что-то левое» (ретро 22.08 t_944df2c5, issue #1506).
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "export YANDEX_API_KEY='${YKEY}'; export MINIMAX_API_KEY='${MMKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
+            "export YANDEX_API_KEY='${YKEY}'; export MINIMAX_API_KEY='${MMKEY}'; export ROBOT_HOST=10.1.1.22; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
@@ -475,7 +475,7 @@ jobs:
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 \
             "docker logs voice-assistant --since 15m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
@@ -738,7 +738,7 @@ jobs:
           #    двойное экранирование через ssh.
           #    stderr НЕ глушим: по нему отличаем сбой запроса от «фактов нет».
           DB_ERR="/tmp/e2e_dbfacts_err_${RID}.txt"
-          DB_OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+          DB_OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 \
             "docker exec voice-assistant python3 -c \"import json,sqlite3; c=sqlite3.connect('file:/data/voice_memory.db?mode=ro',uri=True); t=c.execute('SELECT COUNT(*) FROM voice_facts').fetchone()[0]; b=c.execute('SELECT COUNT(*) FROM voice_facts WHERE speaker_id IS NOT NULL').fetchone()[0]; r=c.execute('SELECT id,fact,category,speaker_id FROM voice_facts ORDER BY created_at DESC LIMIT 5').fetchall(); print(json.dumps({'total':t,'speaker_bound':b,'recent':[[str(x) for x in q] for q in r]},ensure_ascii=False))\"" 2>"$DB_ERR")" || DB_OUT=""
           if [ -z "$DB_OUT" ]; then
             # Пусто — значит мы НЕ СПРОСИЛИ, а не «фактов нет». Разные вещи,

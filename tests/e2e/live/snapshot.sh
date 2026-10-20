@@ -33,7 +33,7 @@ set -u
 
 ARTIFACTS="${1:-tests/e2e/_artifacts/$(date -u +%Y%m%d_%H%M%S)}"
 RUN_ID="${2:-}"
-ROBOT="${ROBOT:-10.1.1.21}"
+ROBOT="${ROBOT:-10.1.1.22}"
 BUILD="${BUILD:-10.1.1.249}"
 SSHPASS="${SSHPASS:-open}"
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# на Vision Pi: bash /tmp/cc_night_dj.sh  (запускать через nohup)
+# на Sound Pi: bash /tmp/cc_night_dj.sh  (запускать через nohup)
 D=/tmp/night_dj; mkdir -p $D
 THEMES=("космос" "пираты" "дождливый ночной город" "детский праздник" "киберпанк" "море и чайки" "ретро восьмидесятые денди" "весенний лес")
 i=0

@@ -41,10 +41,10 @@
 #   KATANA_HOST=10.1.1.249           — ssh-target
 #   KATANA_USER=ros2                 — ssh-user
 #   KATANA_PASS=open                 — sshpass (для dev/test харнесса)
-#   ROBOT_HOST=10.1.1.21             — voice-assistant контейнер
+#   ROBOT_HOST=10.1.1.22             — voice-assistant контейнер
 #   ROBOT_USER=ros2
 #   ROBOT_PASS=open
-#   VOICE_CONTAINER=voice-assistant  — имя контейнера на 10.1.1.21
+#   VOICE_CONTAINER=voice-assistant  — имя контейнера на 10.1.1.22
 #   PAUSE_SECONDS=45                 — пауза между двумя командами
 #   LOOKBACK_SECONDS=180             — окно логов voice-assistant
 #   SMOKE_COMMANDS                   — override список команд (формат
@@ -64,7 +64,7 @@
 #   - paplay на Katana может вернуть «File descriptor in bad state» если
 #     /dev/snd уже занят предыдущим запуском — добавляем `; sleep 1`
 #     и считаем это «уже играет», не валим.
-#   - docker logs --since требует timestamp; на 10.1.1.21 tz может быть
+#   - docker logs --since требует timestamp; на 10.1.1.22 tz может быть
 #     другой — используем абсолютный `--since <Ns>`, форматт через
 #     `date -u +%s` от текущего момента.
 # ============================================================================
@@ -74,7 +74,7 @@ set -u  # НЕ -e: каждый шаг сам управляет failure.
 KATANA_HOST="${KATANA_HOST:-10.1.1.249}"
 KATANA_USER="${KATANA_USER:-ros2}"
 KATANA_PASS="${KATANA_PASS:-open}"
-ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
+ROBOT_HOST="${ROBOT_HOST:-10.1.1.22}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
 ROBOT_PASS="${ROBOT_PASS:-open}"
 VOICE_CONTAINER="${VOICE_CONTAINER:-voice-assistant}"

@@ -8,17 +8,17 @@
 
 | Файл | Где запускать | Что делает |
 |---|---|---|
-| `runs.sh <каталог>` | **Vision Pi** (nohup) | Серия 5 DJ-сетов × 360 с с полной записью `jack_rec` (scsynth) и логом `voice-assistant` на каждый сет. Темы: «славянская вечеринка» ×2, «космос», «киберпанк», «детский праздник». Фразы инъекцией в `/voice/stt/result`. Результат: `<каталог>/r{1..5}.wav`, `set{1..5}.full.log`, `index.txt` (старты/финиши в UTC). Каталог перезаписывается. |
-| `night_dj.sh` | **Vision Pi** (nohup) | Ночной прогон 8 сетов × 10 мин с короткими записями. Использует `/tmp/cc_say.sh` и `/tmp/cc_rec.sh`, которых в репо нет (тонкие обёртки над инъекцией фразы и `jack_rec`); нужны для воспроизведения, но приёмке ADR-0149 не нужны. |
-| `tgogg.sh <wav> "<подпись>"` | Vision Pi | Отправка записи Шифу голосовым в Telegram через контейнер `telegram-bot` (OGG/Opus 48k, **без `-ac 1`**, стерео сохраняется). Нужен `TG_CHAT_ID`; токен берётся из окружения контейнера, в скрипте секретов нет. |
+| `runs.sh <каталог>` | **Sound Pi** (nohup) | Серия 5 DJ-сетов × 360 с с полной записью `jack_rec` (scsynth) и логом `voice-assistant` на каждый сет. Темы: «славянская вечеринка» ×2, «космос», «киберпанк», «детский праздник». Фразы инъекцией в `/voice/stt/result`. Результат: `<каталог>/r{1..5}.wav`, `set{1..5}.full.log`, `index.txt` (старты/финиши в UTC). Каталог перезаписывается. |
+| `night_dj.sh` | **Sound Pi** (nohup) | Ночной прогон 8 сетов × 10 мин с короткими записями. Использует `/tmp/cc_say.sh` и `/tmp/cc_rec.sh`, которых в репо нет (тонкие обёртки над инъекцией фразы и `jack_rec`); нужны для воспроизведения, но приёмке ADR-0149 не нужны. |
+| `tgogg.sh <wav> "<подпись>"` | **Sound Pi** (там `telegram-bot` с ADR-0159 PR-7) | Отправка записи Шифу голосовым в Telegram через контейнер `telegram-bot` (OGG/Opus 48k, **без `-ac 1`**, стерео сохраняется). Нужен `TG_CHAT_ID`; токен берётся из окружения контейнера, в скрипте секретов нет. |
 | `compare.py file.wav [--chunk 60] [--from S --to E]` | хост с numpy+scipy | Профиль записи по кускам: RMS, crest, L/R-корреляция, доли энергии низ/середина/верх, bpm, захват сетки R, онсеты/с, «вне лада», тональность. В конце строка МЕДИАНА. **bpm ищется только в 100–140** (у эталона есть октавные ошибки 100–105). |
 | `audit_wav.py file.wav [--win 8] [--bpm N]` | хост | Разбор по окнам (8 с): уровень, тональность, «вне лада», bpm, R, сдвиг фазы сетки; сводка. Показывает пик записи. |
 | `tracks.py setN.full.log rN.wav "<старт UTC из index.txt>"` | хост | Лог ↔ запись: по каждому треку каркас, сэмпл, хук, bpm и R по записи. |
 | `an_set.py set1.full.log [...]` | хост | Таймлайн DJ-сета из лога (STT, `set_dj_mode`, `compose_music`, `DJ TRACK`, мышление LLM), сводка каркасов и сэмплов. Только stdlib. |
-| `dj_set_v2.sh <каталог> [сек=1200] [тема]` | **Vision Pi**, под `flock -w 900 /tmp/music_test.lock` | Приёмка PR-5 ADR-0149: сет движка v2 через тул `dj_set` (`../live_check_mcp_call.py`, подпись `harness`) с записью `jack_rec` всего сета. Гасит `oak-d`/`rob-box-quest`/`vision-face`. В `summary.txt`: тишина до/после, число `started`, фаза ≠ 0, темпы, продления, `rejected`, `artifact_stale`, `DJ_AUTO` (A3 = 0), `late`; в `accept.txt` — `accept.py` (A1) и `compare.py --chunk 60` (A5). С `TG_CHAT_ID` запись уходит в Telegram. Нужен образ с PR-5 (движок v2 единственный, флага `music_engine` больше нет). |
+| `dj_set_v2.sh <каталог> [сек=1200] [тема]` | **Sound Pi**, под `flock -w 900 /tmp/music_test.lock` | Приёмка PR-5 ADR-0149: сет движка v2 через тул `dj_set` (`../live_check_mcp_call.py`, подпись `harness`) с записью `jack_rec` всего сета. Гасит `oak-d`/`rob-box-quest`/`vision-face`. В `summary.txt`: тишина до/после, число `started`, фаза ≠ 0, темпы, продления, `rejected`, `artifact_stale`, `DJ_AUTO` (A3 = 0), `late`; в `accept.txt` — `accept.py` (A1) и `compare.py --chunk 60` (A5). С `TG_CHAT_ID` запись уходит в Telegram. Нужен образ с PR-5 (движок v2 единственный, флага `music_engine` больше нет). |
 | `router_offline.py [фраза ...]` | хост, `PYTHONPATH` на `src/*` | PR-6: фразы → `strip_wake_word` → `MediaRouter` → тул движка v2 (`dj_set`/`request_music`, настоящие `compose`/`render`, фейковый плеер). JSON на фразу: решение, `route_ms`, `to_player_ms`, фраза по `started`. Это не A2: нет Renardo и старта на такте. |
 | `diversity.py` | хост, `pip install numpy scipy librosa soundfile` | A16 (ADR-0149 §7.2). `--dir <серия> --prefix r\|t --ref ref_dj_16k.wav` — звук: признаки трека (MFCC, spectral contrast, onset-rate, centroid), границы по `[music v2] started`, расстояние между треками в сигмах эталона (медиана/минимум по соседним и всем парам) и % к эталону; `--offline N --seed S` — состав: N случайных мелодий RTTTL-архива → `seeded_plan` → `compose` ×5 треков, число разных синтов/бочек/форм/хэтов (нужен `PYTHONPATH` на `src/rob_box_music`); `--pick N --seed S` — темы для серии. |
-| `runs_random.sh <каталог> [seed]` | **Vision Pi** (nohup) | Как `runs.sh`, но 5 случайных тем из архива, сид в `index.txt`. Не гонялось на роботе. |
+| `runs_random.sh <каталог> [seed]` | **Sound Pi** (nohup) | Как `runs.sh`, но 5 случайных тем из архива, сид в `index.txt`. Не гонялось на роботе. |
 | `accept.py file.wav [...]` | хост | Числа приёмки, которых нет в остальных: A1 (макс. тишина < −50 dBFS), A6 (размах RMS по минутам в 6-мин окне), A7 (пик, клипы), A8 (L−R в дБ, Side/Mid 150–2000 Гц). Добавлен в PR-0. |
 
 ## Как запускать
@@ -33,13 +33,13 @@ PYTHONUTF8=1 python accept.py runs/r1.wav runs/r2.wav
 PYTHONUTF8=1 python tracks.py runs/set2.full.log runs/r2.wav 2026-10-01T14:24:43Z
 ```
 
-Серия на роботе (Vision Pi `ros2@10.1.1.21`, пароль в README харнесса не хранится; см. политику доступа в проекте):
+Серия на роботе (Sound Pi `ros2@10.1.1.22`; voice-assistant и supercollider переехали с Vision Pi 19.10.2026, ADR-0159; пароль в README харнесса не хранится; см. политику доступа в проекте):
 
 ```bash
-scp scripts/music/live_dj/runs.sh ros2@10.1.1.21:/tmp/cc_runs.sh
-ssh ros2@10.1.1.21 'nohup bash /tmp/cc_runs.sh /tmp/runs_v2 >/dev/null 2>&1 &'
+scp scripts/music/live_dj/runs.sh ros2@10.1.1.22:/tmp/cc_runs.sh
+ssh ros2@10.1.1.22 'nohup bash /tmp/cc_runs.sh /tmp/runs_v2 >/dev/null 2>&1 &'
 # ~32 минуты. Забрать:
-scp -r ros2@10.1.1.21:/tmp/runs_v2 ./runs_v2
+scp -r ros2@10.1.1.22:/tmp/runs_v2 ./runs_v2
 ```
 
 Скрипт сам работает через `docker exec voice-assistant` / `docker exec supercollider`. Перед серией: `music_master_gain 0.5`,

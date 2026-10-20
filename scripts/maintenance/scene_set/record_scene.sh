@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# record_scene.sh — снять одну сцену набора (ADR-0144 §2, §4). Запуск на ХОСТЕ Vision Pi.
+# record_scene.sh — снять одну сцену набора (ADR-0144 §2, §4). Запуск на ХОСТЕ Sound Pi (там voice-assistant, ADR-0159).
 #
 #   bash record_scene.sh scenes/s01_owner_enter_leave.yaml
 #   bash record_scene.sh --probe-anchor 10        # коридор подставки: поставить маску, выйти из кадра

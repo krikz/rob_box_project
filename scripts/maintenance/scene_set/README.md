@@ -6,10 +6,10 @@
 
 | Файл | Где работает | Что делает |
 |---|---|---|
-| `record_scene.sh` | хост Vision Pi | копирует этот каталог в `voice-assistant`, запускает дирижёра, забирает сцену в `~/scenes/` |
+| `record_scene.sh` | хост Sound Pi | копирует этот каталог в `voice-assistant`, запускает дирижёра, забирает сцену в `~/scenes/` |
 | `conductor.py` | `voice-assistant` | пишет бэг, командует голосом робота, проверяет пустой кадр, пишет `scene.yaml` |
 | `scenes/sNN_*.yaml` | — | сценарии 13 сцен (s00 — сид) |
-| `replay.py` | хост Vision Pi | изолированный офлайн-прогон одной сцены (свой Zenoh-роутер, домен 77, без `/data`) |
+| `replay.py` | хост Sound Pi | изолированный офлайн-прогон одной сцены (свой Zenoh-роутер, домен 77, без `/data`) |
 | `decoder_node.py` | `vision-hailo` (контейнер прогона) | сжатые кадры → сырые `Image` для узла лица |
 | `extract.py` | `vision-hailo` | выходы 1.1 из бэга → `journal.jsonl` |
 | `metrics.py` | где угодно (PyYAML) | `scene.yaml` + `journal.jsonl` → raw-таблица метрик |

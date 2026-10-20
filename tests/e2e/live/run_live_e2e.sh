@@ -11,7 +11,7 @@
 #     SCENARIOS=R1,R2,R3 bash tests/e2e/live/run_live_e2e.sh
 #
 # ENV:
-#   ROBOT (default 10.1.1.21)   — для snapshot
+#   ROBOT (default 10.1.1.22)   — для snapshot
 #   BUILD (default 10.1.1.249)  — recorder host
 #   LLM (default minimax-m2)
 #   TTS (default minimax-male-qn-qingse)
@@ -21,7 +21,7 @@
 #   REPORT (default tests/e2e/_artifacts/live_<UTC-ts>/)
 set -u
 
-ROBOT="${ROBOT:-10.1.1.21}"
+ROBOT="${ROBOT:-10.1.1.22}"
 BUILD="${BUILD:-10.1.1.249}"
 LLM="${LLM:-minimax-m2}"
 TTS="${TTS:-minimax-male-qn-qingse}"

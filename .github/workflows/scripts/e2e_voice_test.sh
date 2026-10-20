@@ -24,7 +24,7 @@
 #   FAIL c понятным сообщением. Отключить: --acceptance-skip (НЕ
 #   рекомендуется — smoke-false-PASS, ADR-0022 §4.1 R1).
 #
-# Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.21, SSHPASS
+# Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.22 (Sound Pi), SSHPASS
 # Env (опциональные): E2E_MAX_ATTEMPTS=3, E2E_REACTION_WINDOW=40,
 #                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20,
 #                     GITHUB_RUN_ID (для OUT_DIR и симлинка
@@ -47,7 +47,7 @@ E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-40}"   # сек ждём полны�
 E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"
 E2E_RECORD_EXTRA="${E2E_RECORD_EXTRA:-15}"          # хвост записи после реакции
 E2E_RECORDING="${E2E_RECORDING:-1}"                 # 1 = писать микрофон (issue #1353)
-ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
+ROBOT_HOST="${ROBOT_HOST:-10.1.1.22}"   # Sound Pi (wlan0): voice-assistant и telegram-bot, ADR-0159 (PR-7)
 ROBOT_USER="${ROBOT_USER:-ros2}"
 # GITHUB_RUN_ID — передаётся из workflow L-E2E Voice Test.yml (${{ github.run_id }}),
 # используется как RUN_ID (→ OUT_DIR и симлинк /tmp/dialog_e2e_<run_id>.wav).

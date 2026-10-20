@@ -11,7 +11,7 @@
 # (A42 multi-model observability — see docs/design/E2E_TESTING_DESIGN_v2.md §E/F.2).
 #
 # Retry loop (live 08.08): после проигрывания команды проверяем в логах
-# робота (10.1.1.21 voice-assistant), появился ли ОТВЕТ (TTS finished ПОСЛЕ
+# робота (10.1.1.22 voice-assistant), появился ли ОТВЕТ (TTS finished ПОСЛЕ
 # нашей команды). Если реакции нет — повторяем команду до E2E_MAX_ATTEMPTS раз.
 # Приветствие (startup greeting до команды) не считается ответом.
 set -u
@@ -26,7 +26,7 @@ VOICE_STT="${VOICE_STT:-yandex}"
 E2E_MAX_ATTEMPTS="${E2E_MAX_ATTEMPTS:-3}"
 E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-35}"  # сек ждём после play (LLM 429→fallback думает 15-20с)
 E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"          # пауза между попытками
-ROBOT_HOST="10.1.1.21"
+ROBOT_HOST="10.1.1.22"
 ROBOT_SSH="sshpass -p open ssh -o StrictHostKeyChecking=no ros2@${ROBOT_HOST}"
 
 # Derive run_id from the output wav filename: dialog_e2e_<run_id>.wav

@@ -250,7 +250,7 @@ fi
 # --- FLAKY-DETECT gate (issue t_f33ecbf8) ----------------------------------
 # Решаем: streak — это РЕАЛЬНАЯ регрессия (разные headSha между fails, т.е.
 # в develop накатывали новый код и он сломал e2e) или FLAKY (3+ fails на
-# ОДНОМ headSha, т.е. race/timing/robot 10.1.1.21 нестабилен).
+# ОДНОМ headSha, т.е. race/timing/robot 10.1.1.22 нестабилен).
 # Один и тот же headSha «не должен» дважды подряд фейлить — если это так,
 # то это не баг кода, а flaky-инфраструктура. Auto-create `e2e-fail-streak`
 # issue подавляется; вместо этого пишем `[flaky-detect]` marker-комментарий
@@ -323,7 +323,7 @@ else:
             _fd_issue="$(gh issue list --repo "$GH_REPO" --state open \
                 --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --limit 1 \
                 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-            _fd_marker_body="🤖 [agent:devops] flaky-detect: ${_fd_streak} fails подряд, ${_fd_count}/${_fd_streak} на sha=${_fd_sha} (ratio=${_fd_ratio}). Это НЕ регрессия — auto-create \`${E2E_FAIL_STREAK_ISSUE_LABEL}\` подавлен (retros t_f33ecbf8). Реальный run на одном headSha мигнул, скорее всего race/timing (speaker_id_node / STT latency / robot 10.1.1.21). Ручной разбор Шифу: если 2/3 retry успешны на свежем прогоне — закрыть как flaky (close --reason 'not_planned'); если реальная регрессия — следующий tick увидит свежие fails, dedup не помешает."
+            _fd_marker_body="🤖 [agent:devops] flaky-detect: ${_fd_streak} fails подряд, ${_fd_count}/${_fd_streak} на sha=${_fd_sha} (ratio=${_fd_ratio}). Это НЕ регрессия — auto-create \`${E2E_FAIL_STREAK_ISSUE_LABEL}\` подавлен (retros t_f33ecbf8). Реальный run на одном headSha мигнул, скорее всего race/timing (speaker_id_node / STT latency / robot 10.1.1.22). Ручной разбор Шифу: если 2/3 retry успешны на свежем прогоне — закрыть как flaky (close --reason 'not_planned'); если реальная регрессия — следующий tick увидит свежие fails, dedup не помешает."
             if [ -n "$_fd_issue" ]; then
                 if [ "$DRY_RUN" = "true" ]; then
                     log "DRY-RUN would: gh issue comment ${_fd_issue} with [flaky-detect] marker"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# на Vision Pi: nohup bash /tmp/cc_runs_random.sh <каталог> [seed] &
+# на Sound Pi: nohup bash /tmp/cc_runs_random.sh <каталог> [seed] &
 # Как runs.sh, но 5 СЛУЧАЙНЫХ мелодий из RTTTL-архива (ADR-0149 §7.1, A16): тема = название мелодии.
 # Сид выбора печатается и пишется в index.txt первой строкой - публиковать вместе с результатом.
 # Темы выбирает diversity.py --pick (хост или контейнер voice-assistant с rob_box_mcp_tools); можно задать вручную:

@@ -1,5 +1,5 @@
 #!/bin/bash
-# на Vision Pi: nohup bash /tmp/cc_runs.sh &   — 5 DJ-сетов по 360 с, полная запись
+# на Sound Pi: nohup bash /tmp/cc_runs.sh &   — 5 DJ-сетов по 360 с, полная запись
 D="${1:?usage: runs.sh <result_dir>}"; rm -rf "$D"; mkdir -p "$D"
 THEMES=("славянская вечеринка" "космос" "славянская вечеринка" "киберпанк" "детский праздник")
 inj(){ docker exec -e T="$1" voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 topic pub --once /voice/stt/result std_msgs/msg/String "{data: \"$T\"}" >/dev/null 2>&1'; }

@@ -9,15 +9,16 @@
 #   scripts/robot_dev/hotpatch.sh revert              # пересоздать контейнер из образа — горячий код исчезает
 #   scripts/robot_dev/hotpatch.sh logs   [SINCE]      # хвост логов контейнера (SINCE — docker logs --since, по умолчанию 5m)
 #
-# Переменные: ROBOT (ros2@10.1.1.21), CONTAINER (voice-assistant), PACKAGES ("rob_box_music rob_box_mcp_tools"),
-# NO_RESTART=1 — только залить, COMPOSE_DIR (/home/ros2/rob_box_project/docker/vision).
+# Хост — Sound Pi (ADR-0159): voice-assistant, supercollider и avatar-supervisor живут там, не на Vision Pi.
+# Переменные: ROBOT (ros2@10.1.1.22), CONTAINER (voice-assistant), PACKAGES ("rob_box_music rob_box_mcp_tools"),
+# NO_RESTART=1 — только залить, COMPOSE_DIR (/home/ros2/rob_box_project/docker/sound).
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
-ROBOT="${ROBOT:-ros2@10.1.1.21}"
+ROBOT="${ROBOT:-ros2@10.1.1.22}"
 CONTAINER="${CONTAINER:-voice-assistant}"
 PACKAGES="${PACKAGES:-rob_box_music rob_box_mcp_tools}"
-COMPOSE_DIR="${COMPOSE_DIR:-/home/ros2/rob_box_project/docker/vision}"
+COMPOSE_DIR="${COMPOSE_DIR:-/home/ros2/rob_box_project/docker/sound}"
 PY_SITE="lib/python3.10/site-packages"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$ROBOT")
 
@@ -68,5 +69,5 @@ case "$cmd" in
     "${SSH[@]}" "docker logs $CONTAINER --since ${1:-5m} 2>&1 | tail -n ${TAIL:-200}"
     ;;
   *)
-    sed -n '2,13p' "$0"; exit 2 ;;
+    sed -n '2,14p' "$0"; exit 2 ;;
 esac
