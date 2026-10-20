@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import FrozenSet, List, Optional, Sequence, Tuple
 
 _REPO = Path(__file__).resolve().parents[2]
-for _pkg in ("rob_box_voice", "rob_box_core", "rob_box_music"):
+for _pkg in ("rob_box_voice", "rob_box_core", "rob_box_music", "rob_box_dialog"):
     sys.path.insert(0, str(_REPO / "src" / _pkg))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
