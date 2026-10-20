@@ -436,6 +436,10 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     AcquireFloor(voice). Если супервизор отказывает (другой клиент
     держит voice) — пользователь видит уведомление, а не молчаливый
     «произношу».
+
+    Правило Шифу (#3727): вслух звучит ТОЛЬКО введённый текст - ровно один SpeechRequest, без LLM, префиксов и
+    подтверждений голосом. Итог («Озвучил» / «Не озвучил: причина» / «не знаю, прозвучало ли») приходит в чат
+    ТЕКСТОМ по ``SpeechEvent`` той же реплики (``telegram_node`` -> ``SpeechReceipts``), а не «Озвучиваю» до итога.
     """
     text = " ".join(context.args) if context.args else ""
     if not text:
@@ -446,14 +450,12 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Issue #1195 — echo path: remember the chat so the TTS output of
     # /say is also echoed into the right chat.
     node.set_active_chat(update.effective_chat.id)
-    result = node.publish_tts_with_floor(text)
+    result = node.publish_tts_with_floor(text, receipt_chat_id=update.effective_chat.id)
     if not result.granted:
         held = result.held_by or "другим оператором"
         await update.message.reply_text(
             f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа или используйте текст."
         )
-        return
-    await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
 
 
 # ─── /playvoice ──────────────────────────────────────────────────────────

@@ -520,6 +520,36 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(req.agent, "telegram")
         self.assertEqual(req.text, "<speak>Всем привет &amp; пока</speak>")
 
+    def test_say_speaks_exactly_the_typed_text_once_and_receipt_follows_the_event(self) -> None:
+        """#3727: /say - ровно один SpeechRequest с введённым текстом (agent=telegram), никаких других реплик и
+        публикаций за ход; итог в чат приходит по SpeechEvent того же speech_id, а не «Озвучиваю» заранее."""
+        from unittest.mock import MagicMock
+
+        pub = self._publisher_for("/voice/speech/request")
+        others = [p for p in self.node._created_publishers if p.topic != "/voice/speech/request"]
+        before = [p.publish.call_count for p in others]
+        loop, queue = MagicMock(), MagicMock()
+        self.node._telegram_loop, self.node._response_queue = loop, queue
+
+        result = self.node.publish_tts_with_floor("Привет, мир & пока", receipt_chat_id=7)
+
+        self.assertTrue(result.granted)
+        self.assertEqual(pub.publish.call_count, 1)
+        req = pub.publish.call_args.args[0]
+        self.assertEqual(req.agent, "telegram")
+        self.assertEqual(req.text, "<speak>Привет, мир &amp; пока</speak>")
+        self.assertEqual([p.publish.call_count for p in others], before)
+        loop.call_soon_threadsafe.assert_not_called()  # до итога чату ничего не говорим
+
+        sub = self._subscription_for("/voice/speech/event")
+        sub.callback(MagicMock(kind=2, speech_id=req.speech_id, reason="", seconds=0.0))  # started
+        loop.call_soon_threadsafe.assert_not_called()
+        sub.callback(MagicMock(kind=7, speech_id=req.speech_id, reason="unsupported_script", seconds=0.0))
+        args = loop.call_soon_threadsafe.call_args.args
+        self.assertEqual(args[0], queue.put_nowait)
+        self.assertEqual(args[1][0], 7)
+        self.assertIn("Не озвучил", args[1][1])
+
     def test_set_active_chat_records_chat(self) -> None:
         """``set_active_chat`` must store the chat for echo routing."""
 

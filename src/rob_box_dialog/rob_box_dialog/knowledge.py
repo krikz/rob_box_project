@@ -224,6 +224,7 @@ PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded", "unknown")
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.invalid", "understand.timeout",
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
+    "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
     "provider.switched", "provider.no_fallback",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "identity.ask_name", "identity.confirm",
