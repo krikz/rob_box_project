@@ -90,6 +90,14 @@ class ProviderCapabilities:
     tools: bool = False
     streaming_tools: bool = False
     image_input: bool = False
+    # ADR-0150 §4.5: how the dialog engine asks for a structured command.
+    # Honest declaration only — ``degrade.select_mode`` picks the mode from
+    # these flags, so a ``True`` that the wire does not honour is a bug.
+    tool_choice: bool = False  # ``tool_choice="required"`` is actually enforced
+    json_mode: bool = False  # ``response_format={"type": "json_object"}``
+    structured_output: bool = False  # ``response_format`` with a JSON schema
+    thinking: bool = False  # model always/optionally emits reasoning tokens
+    max_context_tokens: int = 0  # 0 = not declared
 
 
 # ---------------------------------------------------------------------------

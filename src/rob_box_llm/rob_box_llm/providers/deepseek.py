@@ -14,6 +14,7 @@ P0 plan ("Что НЕ делаем: не трогаем существующих
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import logging
 import os
@@ -251,6 +252,13 @@ class _OpenAICompatibleProvider(LLMProvider):
         # фрагментами), stream() теперь агрегирует их в ToolCall.
         streaming_tools=True,
         image_input=False,
+        # ADR-0150 §4.5. Base for every OpenAI-compatible adapter: nothing
+        # beyond plain tools is assumed; adapters that measured more override.
+        tool_choice=False,
+        json_mode=False,
+        structured_output=False,
+        thinking=False,
+        max_context_tokens=0,
     )
 
     def __init__(
@@ -737,6 +745,16 @@ class DeepSeekProvider(_OpenAICompatibleProvider):
 
     DEFAULT_BASE_URL = "https://api.deepseek.com"
     DEFAULT_MODEL = "deepseek-chat"
+
+    # ADR-0150 §4.5: DeepSeek honours ``tool_choice`` and ``json_object``
+    # response_format (api-docs.deepseek.com). No JSON-schema structured
+    # output, no reasoning tokens in ``deepseek-chat``; 128K context.
+    _CAPABILITIES = dataclasses.replace(
+        _OpenAICompatibleProvider._CAPABILITIES,
+        tool_choice=True,
+        json_mode=True,
+        max_context_tokens=128_000,
+    )
 
     def __init__(
         self,

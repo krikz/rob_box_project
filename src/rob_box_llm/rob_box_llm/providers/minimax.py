@@ -329,6 +329,14 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         # теперь агрегирует их в ToolCall.
         streaming_tools=True,
         image_input=True,
+        # ADR-0143: MiniMax silently ignores ``tool_choice`` -> declared False,
+        # so ``degrade.select_mode`` never picks the "required tool" mode.
+        # ``json_mode`` / ``structured_output`` are not measured -> False
+        # (ADR-0150 §4.5; raise them only after ``adapter_benchmark``).
+        tool_choice=False,
+        json_mode=False,
+        structured_output=False,
+        thinking=True,  # M3 is an always-thinking model
     )
 
     def __init__(
@@ -390,13 +398,7 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         """
         base = self._CAPABILITIES
         if base.image_input and not _model_supports_vision(model or self._default_model):
-            return ProviderCapabilities(
-                text=base.text,
-                streaming_text=base.streaming_text,
-                tools=base.tools,
-                streaming_tools=base.streaming_tools,
-                image_input=False,
-            )
+            return dataclasses.replace(base, image_input=False)
         return base
 
     # -- pre-flight validation --------------------------------------------

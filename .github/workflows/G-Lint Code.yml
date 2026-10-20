@@ -105,6 +105,18 @@ jobs:
         run: |
           python -m pytest -q -o addopts= tests/unit/dialog
 
+      # ADR-0150 PR-1b (#3686): контракт адаптеров LLM. Тесты тянут rob_box_llm (openai/httpx/respx), поэтому лежат в
+      # tests/dialog_adapters (отдельный каталог: ни TTS-job rob_box_llm, ни G-Run Tests его не собирают; зависимостей pyyaml/rob_box_llm в лёгком tests/unit/dialog быть не должно). Чистые тесты пакета rob_box_dialog (в т.ч. test_degrade)
+      # гоняет G-Run Tests (шаг pytest: rob_box_dialog) — здесь их нет, чтобы не дублировать.
+      - name: Dialog adapter contract tests (ADR-0150)
+        run: |
+          pip install httpx openai respx pytest-asyncio
+          PYTHONPATH="src/rob_box_dialog:src/rob_box_llm:src/rob_box_core" \
+          python -m pytest -v -o addopts= -p no:cacheprovider \
+            tests/dialog_adapters/test_llm_adapter_contract.py \
+            tests/dialog_adapters/test_adapter_benchmark.py \
+            src/rob_box_llm/test/test_provider_capabilities_3686.py
+
       # ADR-0145: class-size budget. ADR-0021 bounds only per-method CC, so code
       # was "extracted" into more private methods of the SAME class (DialogueNode:
       # 4062 LOC/74 methods on 18.08 -> 9872 LOC/218 methods, WMC 1184). A class is
